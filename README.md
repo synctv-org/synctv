@@ -8,9 +8,12 @@
         <a href="https://github.com/synctv-org/synctv/blob/main/LICENSE">
             <img src="https://img.shields.io/github/license/synctv-org/synctv" alt="License" />
         </a>
+        <a href="https://github.com/synctv-org/synctv/actions?query=workflow%3Abuild">
+            <img src="https://img.shields.io/github/actions/workflow/status/synctv-org/synctv/build.yml?branch=main" alt="Build status" />
+        </a>
     </div>
 </div>
-
+<!-- https://github.com/synctv-org/synctv/actions?query=workflow%3Abuild -->
 ---
 
 English | [中文](./README-CN.md)

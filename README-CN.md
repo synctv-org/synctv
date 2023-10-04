@@ -1,3 +1,16 @@
+<div align="center">
+  <a href="https://github.com/synctv-org/docs"><img height="100px" alt="logo" src="https://cdn.jsdelivr.net/gh/synctv-org/docs@main/logo/logo.png"/></a>
+  <p><em>👫一个可以远程一起看电影/直播的程序🍿</em></p>
+    <div>
+        <a href="https://goreportcard.com/report/github.com/synctv-org/synctv">
+            <img src="https://goreportcard.com/badge/github.com/synctv-org/synctv" alt="latest version" />
+        </a>
+        <a href="https://github.com/synctv-org/synctv/blob/main/LICENSE">
+            <img src="https://img.shields.io/github/license/synctv-org/synctv" alt="License" />
+        </a>
+    </div>
+</div>
+
 [English](./README.md) | 中文
 
 # 特点
@@ -10,6 +23,11 @@
 - [x] 代理
   - [ ] 视频代理
   - [ ] 直播代理
+
+# 贡献者
+Thanks goes to these wonderful people:
+
+[![贡献者](https://contrib.nn.ci/api?repo=synctv-org/synctv&repo=synctv-org/synctv-web&repo=synctv-org/docs)](https://github.com/synctv-org/synctv/graphs/contributors)
 
 # 免责声明
 - 这个程序是一个免费且开源的项目。它旨在播放网络上的视频文件，方便多人共同观看视频和学习golang。

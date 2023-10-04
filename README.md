@@ -1,3 +1,18 @@
+<div align="center">
+  <a href="https://github.com/synctv-org/docs"><img height="100px" alt="logo" src="https://cdn.jsdelivr.net/gh/synctv-org/docs@main/logo/logo.png"/></a>
+  <p><em>👫A program that allows you to watch movies/live broadcasts together remotely🍿</em></p>
+    <div>
+        <a href="https://goreportcard.com/report/github.com/synctv-org/synctv">
+            <img src="https://goreportcard.com/badge/github.com/synctv-org/synctv" alt="latest version" />
+        </a>
+        <a href="https://github.com/synctv-org/synctv/blob/main/LICENSE">
+            <img src="https://img.shields.io/github/license/synctv-org/synctv" alt="License" />
+        </a>
+    </div>
+</div>
+
+---
+
 English | [中文](./README-CN.md)
 
 # Features
@@ -10,6 +25,11 @@ English | [中文](./README-CN.md)
 - [x] Proxy
   - [ ] Videos proxy
   - [ ] Live proxy
+
+# Contributors
+Thanks goes to these wonderful people:
+
+[![Contributors](https://contrib.nn.ci/api?repo=synctv-org/synctv&repo=synctv-org/synctv-web&repo=synctv-org/docs)](https://github.com/synctv-org/synctv/graphs/contributors)
 
 # License
 The `SyncTV` is open-source software licensed under the AGPL-3.0 license.

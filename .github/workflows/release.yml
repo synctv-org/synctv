@@ -10,7 +10,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
+  release:
     strategy:
       matrix:
         platform: [ubuntu-latest]

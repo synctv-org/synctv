@@ -1,6 +1,6 @@
 module github.com/synctv-org/synctv
 
-go 1.18
+go 1.20
 
 require (
 	github.com/caarlos0/env/v9 v9.0.0

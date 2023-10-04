@@ -1,0 +1,50 @@
+name: build
+
+on:
+  push:
+    branches: [ 'main' ]
+  pull_request:
+    branches: [ 'main' ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        platform: [ubuntu-latest]
+        go-version: [ '1.21' ]
+    name: Build
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Install dependencies
+        run: |
+          echo "$(pwd)"
+          echo "$(ls -ahl)"
+
+      - name: Build
+        uses: crazy-max/ghaction-xgo@v3
+        with:
+            xgo_version: latest
+            go_version: ${{ matrix.go-version }}
+            dest: build
+            targets: windows/amd64,linux/amd64,linux/arm64,darwin/amd64,darwin/arm64
+            v: false
+            x: false
+            race: false
+            tags: jsoniter
+            ldflags: -s -w --extldflags "-static -fpic -Wl,-z,relro,-z,now"
+            buildmode: pie
+            trimpath: true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: synctv
+          path: build/github.com/synctv-org

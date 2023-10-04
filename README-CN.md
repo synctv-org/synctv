@@ -14,6 +14,8 @@
     </div>
 </div>
 
+---
+
 [English](./README.md) | 中文
 
 # 特点
@@ -26,6 +28,52 @@
 - [x] 代理
   - [ ] 视频代理
   - [ ] 直播代理
+
+---
+
+# 用法
+## 全局标志:
+
+```
+-f, --config string   config file path
+    --dev             start with dev mode
+    --env-no-prefix   env no SYNCTV_ prefix
+    --log-std         log to std (default true)
+    --skip-config     skip config
+    --skip-env        skip env
+```
+
+如果你想使用自定义配置文件，你可以使用 `-f` 标志，否则它将使用 `$home/.config/synctv/config.yaml`
+
+## Init
+`synctv init` 来初始化配置文件
+
+```bash
+synctv init
+# or
+synctv init -f ./config.yaml
+```
+
+## Server
+`synctv server` 启动服务器
+
+```bash
+synctv server
+# or
+synctv server -f ./config.yaml
+```
+
+服务器默认侦听`127.0.0.1:8080`，您可以在配置文件中更改它
+
+示例:
+
+```yaml
+server:
+    listen: 0.0.0.0 # server listen addr
+    port: 8080 # server listen port
+```
+
+---
 
 # 贡献者
 感谢这些出色的人们：

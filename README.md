@@ -13,7 +13,7 @@
         </a>
     </div>
 </div>
-<!-- https://github.com/synctv-org/synctv/actions?query=workflow%3Abuild -->
+
 ---
 
 English | [中文](./README-CN.md)
@@ -28,6 +28,52 @@ English | [中文](./README-CN.md)
 - [x] Proxy
   - [ ] Videos proxy
   - [ ] Live proxy
+
+---
+
+# Usage
+## Global Flags:
+
+```
+-f, --config string   config file path
+    --dev             start with dev mode
+    --env-no-prefix   env no SYNCTV_ prefix
+    --log-std         log to std (default true)
+    --skip-config     skip config
+    --skip-env        skip env
+```
+
+if you want to use a custom config file, you can use `-f` flag, else it will use `$home/.config/synctv/config.yaml`
+
+## Init
+`synctv init` to init config file
+
+```bash
+synctv init
+# or
+synctv init -f ./config.yaml
+```
+
+## Server
+`synctv server` to start the server
+
+```bash
+synctv server
+# or
+synctv server -f ./config.yaml
+```
+
+server default listen on `127.0.0.1:8080`, you can change it in config file
+
+example:
+
+```yaml
+server:
+    listen: 0.0.0.0 # server listen addr
+    port: 8080 # server listen port
+```
+
+---
 
 # Contributors
 Thanks goes to these wonderful people:

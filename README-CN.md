@@ -25,7 +25,7 @@
   - [ ] 直播代理
 
 # 贡献者
-Thanks goes to these wonderful people:
+感谢这些出色的人们：
 
 [![贡献者](https://contrib.nn.ci/api?repo=synctv-org/synctv&repo=synctv-org/synctv-web&repo=synctv-org/docs)](https://github.com/synctv-org/synctv/graphs/contributors)
 

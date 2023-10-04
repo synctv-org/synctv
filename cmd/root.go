@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/synctv-org/synctv/cmd/flags"
+	"github.com/synctv-org/synctv/internal/conf"
 )
 
 var RootCmd = &cobra.Command{
@@ -22,7 +23,7 @@ func Execute() {
 }
 
 func init() {
-	RootCmd.PersistentFlags().BoolVar(&flags.Dev, "dev", false, "start with dev mode")
+	RootCmd.PersistentFlags().BoolVar(&flags.Dev, "dev", conf.Version == "dev", "start with dev mode")
 	RootCmd.PersistentFlags().BoolVar(&flags.LogStd, "log-std", true, "log to std")
 	RootCmd.PersistentFlags().BoolVar(&flags.EnvNoPrefix, "env-no-prefix", false, "env no SYNCTV_ prefix")
 	RootCmd.PersistentFlags().BoolVar(&flags.SkipConfig, "skip-config", false, "skip config")

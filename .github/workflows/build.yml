@@ -23,28 +23,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v3
 
-      - name: Install dependencies
-        run: |
-          echo "$(pwd)"
-          echo "$(ls -ahl)"
-
       - name: Build
-        uses: crazy-max/ghaction-xgo@v3
-        with:
-            xgo_version: latest
-            go_version: ${{ matrix.go-version }}
-            dest: build
-            targets: windows/amd64,linux/amd64,linux/arm64,darwin/amd64,darwin/arm64
-            v: false
-            x: false
-            race: false
-            tags: jsoniter
-            ldflags: -s -w --extldflags "-static -fpic -Wl,-z,relro,-z,now"
-            buildmode: pie
-            trimpath: true
+        run: |
+          bash build.sh -v dev -P -p "windows/amd64,linux/amd64,linux/arm64,darwin/amd64,darwin/arm64"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v3
         with:
           name: synctv
-          path: build/github.com/synctv-org
+          path: build

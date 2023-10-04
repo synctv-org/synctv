@@ -1,0 +1,4 @@
+/log
+/public/dist/*
+!*.gitkeep
+.DS_Store

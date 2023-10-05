@@ -149,6 +149,16 @@ function CheckPlatform() {
 
 function CheckAllPlatform() {
     for platform in $(echo "$PLATFORM" | tr "," "\n"); do
+        if [ "$platform" == "all" ]; then
+            PLATFORM="all"
+            return 0
+        elif [ "$platform" == "linux" ]; then
+            continue
+        elif [ "$platform" == "darwin" ]; then
+            continue
+        elif [ "$platform" == "windows" ]; then
+            continue
+        fi
         CheckPlatform "$platform"
         if [ $? -ne 0 ]; then
             echo "platform $platform not allowd"
@@ -172,6 +182,10 @@ function Build() {
     else
         GOOS=$GOOS GOARCH=$GOARCH go build -tags "$TAGS" -ldflags "$LDFLAGS" -o "$BUILD_DIR/$(basename $PWD)-$GOOS-$GOARCH$EXT" .
     fi
+    if [ $? -ne 0 ]; then
+        echo "build $GOOS/$GOARCH error"
+        exit 1
+    fi
 }
 
 function BuildSingle() {
@@ -188,24 +202,31 @@ function BuildSingle() {
     else
         go build -tags "$TAGS" -ldflags "$LDFLAGS" -o "$BUILD_DIR/$(basename $PWD)$EXT" .
     fi
+    if [ $? -ne 0 ]; then
+        echo "build $GOOS/$GOARCH error"
+        exit 1
+    fi
 }
 
 function BuildAll() {
-    if [ ! "$PLATFORM" ]; then
+    if [ ! "$1" ]; then
         BuildSingle
         return
-    elif [ "$PLATFORM" == "all" ]; then
-        PLATFORM="$ALLOWD_PLATFORM"
-    elif [ "$PLATFORM" == "linux" ]; then
-        PLATFORM="$LINUX_ALLOWED_PLATFORM"
-    elif [ "$PLATFORM" == "darwin" ]; then
-        PLATFORM="$DARWIN_ALLOWED_PLATFORM"
-    elif [ "$PLATFORM" == "windows" ]; then
-        PLATFORM="$WINDOWS_ALLOWED_PLATFORM"
+    else
+        for platform in $(echo "$1" | tr "," "\n"); do
+            if [ "$platform" == "all" ]; then
+                BuildAll "$ALLOWD_PLATFORM"
+            elif [ "$platform" == "linux" ]; then
+                BuildAll "$LINUX_ALLOWED_PLATFORM"
+            elif [ "$platform" == "darwin" ]; then
+                BuildAll "$DARWIN_ALLOWED_PLATFORM"
+            elif [ "$platform" == "windows" ]; then
+                BuildAll "$WINDOWS_ALLOWED_PLATFORM"
+            else
+                Build "$platform"
+            fi
+        done
     fi
-    for platform in $(echo "$PLATFORM" | tr "," "\n"); do
-        Build "$platform"
-    done
 }
 
 ChToScriptFileDir
@@ -213,4 +234,4 @@ Init
 ParseArgs "$@"
 FixArgs
 InitDep
-BuildAll
+BuildAll "$PLATFORM"

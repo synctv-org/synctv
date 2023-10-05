@@ -1,6 +1,8 @@
 version: '3.3'
 services:
-  alist:
+  synctv:
+    image: 'synctvorg/synctv:latest'
+    container_name: synctv
     restart: unless-stopped
     ports:
       - '8080:8080/tcp'
@@ -10,5 +12,3 @@ services:
       - PGID=0
       - UMASK=022
       - TZ=UTC
-    container_name: synctv
-    image: 'synctvorg/synctv:latest'

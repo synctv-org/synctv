@@ -116,7 +116,11 @@ function FixArgs() {
         exit 1
     fi
     if [ ! "$WEB_VERSION" ]; then
-        GetLatestWebVersion "synctv-org/synctv-web"
+        if [ "$VERSION" == "dev" ]; then
+            WEB_VERSION="dev"
+        else
+            GetLatestWebVersion "synctv-org/synctv-web"
+        fi
     fi
     LDFLAGS="$LDFLAGS \
         -X 'github.com/synctv-org/synctv/internal/conf.Version=$VERSION' \

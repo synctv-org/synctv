@@ -21,6 +21,7 @@ function Help() {
 }
 
 function Init() {
+    CGO_ENABLED=0
     VERSION="dev"
     WEB_VERSION=""
     commit="$(git log --pretty=format:"%h" -1)"
@@ -178,9 +179,9 @@ function Build() {
         EXT=""
     fi
     if [ "$TRIM_PATH" ]; then
-        GOOS=$GOOS GOARCH=$GOARCH go build -trimpath -tags "$TAGS" -ldflags "$LDFLAGS" -o "$BUILD_DIR/$(basename $PWD)-$GOOS-$GOARCH$EXT" .
+        CGO_ENABLED=$CGO_ENABLED GOOS=$GOOS GOARCH=$GOARCH go build -trimpath -tags "$TAGS" -ldflags "$LDFLAGS" -o "$BUILD_DIR/$(basename $PWD)-$GOOS-$GOARCH$EXT" .
     else
-        GOOS=$GOOS GOARCH=$GOARCH go build -tags "$TAGS" -ldflags "$LDFLAGS" -o "$BUILD_DIR/$(basename $PWD)-$GOOS-$GOARCH$EXT" .
+        CGO_ENABLED=$CGO_ENABLED GOOS=$GOOS GOARCH=$GOARCH go build -tags "$TAGS" -ldflags "$LDFLAGS" -o "$BUILD_DIR/$(basename $PWD)-$GOOS-$GOARCH$EXT" .
     fi
     if [ $? -ne 0 ]; then
         echo "build $GOOS/$GOARCH error"
@@ -198,9 +199,9 @@ function BuildSingle() {
     fi
     echo "build $GOOS/$GOARCH"
     if [ "$TRIM_PATH" ]; then
-        go build -trimpath -tags "$TAGS" -ldflags "$LDFLAGS" -o "$BUILD_DIR/$(basename $PWD)$EXT" .
+        CGO_ENABLED=$CGO_ENABLED go build -trimpath -tags "$TAGS" -ldflags "$LDFLAGS" -o "$BUILD_DIR/$(basename $PWD)$EXT" .
     else
-        go build -tags "$TAGS" -ldflags "$LDFLAGS" -o "$BUILD_DIR/$(basename $PWD)$EXT" .
+        CGO_ENABLED=$CGO_ENABLED go build -tags "$TAGS" -ldflags "$LDFLAGS" -o "$BUILD_DIR/$(basename $PWD)$EXT" .
     fi
     if [ $? -ne 0 ]; then
         echo "build $GOOS/$GOARCH error"

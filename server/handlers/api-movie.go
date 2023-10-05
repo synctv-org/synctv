@@ -564,7 +564,6 @@ func JoinLive(ctx *gin.Context) {
 	fileExt := path.Ext(pullKey)
 	channelName := strings.TrimSuffix(fileName, fileExt)
 	m, err := user.Room().GetMovieWithPullKey(channelName)
-	// channel, err := s.GetChannelWithApp(r.ID(), channelName)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusNotFound, NewApiErrorResp(err))
 		return

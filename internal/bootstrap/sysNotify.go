@@ -10,31 +10,45 @@ import (
 	log "github.com/sirupsen/logrus"
 
 	"github.com/zijiren233/gencontainer/pqueue"
+	"github.com/zijiren233/gencontainer/rwmap"
 )
 
 var (
-	c               chan os.Signal
-	notifyTaskLock  sync.Mutex
-	notifyTaskQueue = pqueue.NewMaxPriorityQueue[*SysNotifyTask]()
-	once            sync.Once
-	WaitCbk         func()
+	c         chan os.Signal
+	once      sync.Once
+	TaskGroup rwmap.RWMap[NotifyType, *taskQueue]
+	WaitCbk   func()
 )
 
-type SysNotifyTask struct {
-	Task func() error
-	Name string
+type NotifyType int
+
+const (
+	NotifyTypeEXIT NotifyType = iota + 1
+	NotifyTypeRELOAD
+)
+
+type taskQueue struct {
+	notifyTaskLock  sync.Mutex
+	notifyTaskQueue *pqueue.PQueue[*SysNotifyTask]
 }
 
-func NewSysNotifyTask(name string, task func() error) *SysNotifyTask {
+type SysNotifyTask struct {
+	Task       func() error
+	NotifyType NotifyType
+	Name       string
+}
+
+func NewSysNotifyTask(name string, NotifyType NotifyType, task func() error) *SysNotifyTask {
 	return &SysNotifyTask{
-		Name: name,
-		Task: task,
+		Name:       name,
+		NotifyType: NotifyType,
+		Task:       task,
 	}
 }
 
 func InitSysNotify() {
 	c = make(chan os.Signal, 1)
-	signal.Notify(c, syscall.SIGHUP /*1*/, syscall.SIGINT /*2*/, syscall.SIGQUIT /*3*/, syscall.SIGTERM /*15*/)
+	signal.Notify(c, syscall.SIGHUP /*1*/, syscall.SIGINT /*2*/, syscall.SIGQUIT /*3*/, syscall.SIGTERM /*15*/, syscall.SIGUSR1 /*10*/, syscall.SIGUSR2 /*12*/)
 	WaitCbk = func() {
 		once.Do(waitCbk)
 	}
@@ -42,12 +56,32 @@ func InitSysNotify() {
 
 func waitCbk() {
 	log.Info("wait sys notify")
-	log.Infof("receive sys notify: %v", <-c)
-	notifyTaskLock.Lock()
-	defer notifyTaskLock.Unlock()
-	log.Infof("task: running...")
-	for notifyTaskQueue.Len() > 0 {
-		_, task := notifyTaskQueue.Pop()
+	for s := range c {
+		log.Infof("receive sys notify: %v", s)
+		switch s {
+		case syscall.SIGHUP, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM:
+			tq, ok := TaskGroup.Load(NotifyTypeEXIT)
+			if ok {
+				log.Info("task: NotifyTypeEXIT running...")
+				runTask(tq)
+			}
+			return
+		case syscall.SIGUSR1, syscall.SIGUSR2:
+			tq, ok := TaskGroup.Load(NotifyTypeRELOAD)
+			if ok {
+				log.Info("task: NotifyTypeRELOAD running...")
+				runTask(tq)
+			}
+		}
+		log.Info("task: all done")
+	}
+}
+
+func runTask(tq *taskQueue) {
+	tq.notifyTaskLock.Lock()
+	defer tq.notifyTaskLock.Unlock()
+	for tq.notifyTaskQueue.Len() > 0 {
+		_, task := tq.notifyTaskQueue.Pop()
 		func() {
 			defer func() {
 				if err := recover(); err != nil {
@@ -61,15 +95,20 @@ func waitCbk() {
 			log.Infof("task: %s done", task.Name)
 		}()
 	}
-	log.Info("task: all done")
 }
 
 func RegisterSysNotifyTask(priority int, task *SysNotifyTask) error {
 	if task == nil || task.Task == nil {
 		return errors.New("task is nil")
 	}
-	notifyTaskLock.Lock()
-	defer notifyTaskLock.Unlock()
-	notifyTaskQueue.Push(priority, task)
+	if task.NotifyType == 0 {
+		panic("task notify type is 0")
+	}
+	tasks, _ := TaskGroup.LoadOrStore(task.NotifyType, &taskQueue{
+		notifyTaskQueue: pqueue.NewMinPriorityQueue[*SysNotifyTask](),
+	})
+	tasks.notifyTaskLock.Lock()
+	defer tasks.notifyTaskLock.Unlock()
+	tasks.notifyTaskQueue.Push(priority, task)
 	return nil
 }

@@ -1,4 +1,4 @@
-From alpine:latest as builder
+From alpine:3 as builder
 
 ARG VERSION=v0.0.0
 
@@ -10,7 +10,7 @@ RUN apk add --no-cache bash curl gcc git go musl-dev
 
 RUN bash build.sh -P -v ${VERSION} -b build
 
-From alpine:latest
+From alpine:3
 
 WORKDIR /opt/synctv
 

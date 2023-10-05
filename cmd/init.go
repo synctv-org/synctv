@@ -6,9 +6,9 @@ import (
 )
 
 func Init(cmd *cobra.Command, args []string) error {
+	bootstrap.InitSysNotify()
 	bootstrap.InitConfig()
 	bootstrap.InitLog()
-	bootstrap.InitSysNotify()
 	return nil
 }
 

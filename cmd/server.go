@@ -109,7 +109,7 @@ func Server(cmd *cobra.Command, args []string) {
 	} else {
 		log.Infof("website run on http://%s:%d", tcpServerAddr.IP, tcpServerAddr.Port)
 	}
-	bootstrap.WaitCbk()
+	bootstrap.SysNotify.WaitCbk()
 }
 
 func init() {

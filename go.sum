@@ -153,6 +153,8 @@ github.com/zijiren233/livelib v0.0.0-20230930062256-1d07bbddcefb h1:t6zLooW4uVz2
 github.com/zijiren233/livelib v0.0.0-20230930062256-1d07bbddcefb/go.mod h1:C4OwAodQXpMLYiioqH4ANjZJD4+sFRK0nPbXNoYZU5k=
 github.com/zijiren233/livelib v0.0.0-20231005100909-7893feb306a9 h1:GRhW0AmqeUN0CbAzJQhQXQ5sz139/lMn6yuD+ZBVn/s=
 github.com/zijiren233/livelib v0.0.0-20231005100909-7893feb306a9/go.mod h1:2wrAAqNIdMZjQrdbO7ERQfqK4VS5fzgUj2xXwrJ8/uo=
+github.com/zijiren233/livelib v0.1.0 h1:QdNj39eaIB/g7bBhDFbwrDuGkoghHWEwZXgBVwQ5QtY=
+github.com/zijiren233/livelib v0.1.0/go.mod h1:2wrAAqNIdMZjQrdbO7ERQfqK4VS5fzgUj2xXwrJ8/uo=
 github.com/zijiren233/stream v0.5.1 h1:9SUwM/fpET6frtBRT5WZBHnan0Hyzkezk/P8N78cgZQ=
 github.com/zijiren233/stream v0.5.1/go.mod h1:iIrOm3qgIepQFmptD/HDY+YzamSSzQOtPjpVcK7FCOw=
 github.com/zijiren233/yaml-comment v0.2.0 h1:xGcmpFsjK+IIK1InHtl+rKxYVKQ9rne/aRP1gkczZt4=
@@ -174,6 +176,8 @@ golang.org/x/mod v0.6.0-dev.0.20220419223038-86c51ed26bb4/go.mod h1:jJ57K6gSWd91
 golang.org/x/mod v0.8.0/go.mod h1:iBbtSCu2XBx23ZKBPSOrRkjjQPZFPuis4dIYUhu/chs=
 golang.org/x/mod v0.12.0 h1:rmsUpXtvNzj340zd98LZ4KntptpfRHwpFOHG188oHXc=
 golang.org/x/mod v0.12.0/go.mod h1:iBbtSCu2XBx23ZKBPSOrRkjjQPZFPuis4dIYUhu/chs=
+golang.org/x/mod v0.13.0 h1:I/DsJXRlw/8l/0c24sM9yb0T4z9liZTduXvdAWYiysY=
+golang.org/x/mod v0.13.0/go.mod h1:hTbmBsO62+eylJbnUtE2MGJUyE7QWk4xUqPFrRgJ+7c=
 golang.org/x/net v0.0.0-20190404232315-eb5bcb51f2a3/go.mod h1:t9HGtf8HONx5eT2rtn7q6eTqICYqUVnKs3thJo3Qplg=
 golang.org/x/net v0.0.0-20190620200207-3b0461eec859/go.mod h1:z5CRVTTTmAJ677TzLLGU+0bjPO0LkuOLi4/5GtJWs/s=
 golang.org/x/net v0.0.0-20201202161906-c7110b5ffcbb/go.mod h1:sp8m0HH+o8qH0wwXwYZr8TS3Oi6o0r6Gce1SSxlDquU=
@@ -201,6 +205,8 @@ golang.org/x/sys v0.6.0/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
 golang.org/x/sys v0.8.0/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
 golang.org/x/sys v0.12.0 h1:CM0HF96J0hcLAwsHPJZjfdNzs0gftsLfgKt57wWHJ0o=
 golang.org/x/sys v0.12.0/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+golang.org/x/sys v0.13.0 h1:Af8nKPmuFypiUBjVoU9V20FiaFXOcuZI21p0ycVYYGE=
+golang.org/x/sys v0.13.0/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
 golang.org/x/term v0.0.0-20201126162022-7de9c90e9dd1/go.mod h1:bj7SfCRtBDWHUb9snDiAeCFNEtKQo2Wmx5Cou7ajbmo=
 golang.org/x/term v0.0.0-20210927222741-03fcf44c2211/go.mod h1:jbD1KX2456YbFQfuXm/mYQcufACuNUgVhRMnK/tPxf8=
 golang.org/x/term v0.5.0/go.mod h1:jMB1sMXY+tzblOD4FWmEbocvup2/aLOaQEp7JmGp78k=

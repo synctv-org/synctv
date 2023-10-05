@@ -139,7 +139,7 @@ ALLOWED_PLATFORM="$LINUX_ALLOWED_PLATFORM,$DARWIN_ALLOWED_PLATFORM,$WINDOWS_ALLO
 
 function CheckPlatform() {
     platform="$1"
-    for p in $(echo "$ALLOWD_PLATFORM" | tr "," "\n"); do
+    for p in $(echo "$ALLOWED_PLATFORM" | tr "," "\n"); do
         if [ "$p" == "$platform" ]; then
             return 0
         fi

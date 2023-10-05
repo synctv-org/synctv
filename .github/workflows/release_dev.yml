@@ -1,22 +1,15 @@
-name: build
+name: release_dev
 
 on:
-  push:
-    branches: ["main"]
-  pull_request:
-    branches: ["main"]
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  workflow_dispatch:
 
 jobs:
-  build:
+  release_dev:
     strategy:
       matrix:
         platform: [ubuntu-latest]
         go-version: ["1.21"]
-    name: Build
+    name: Release
     runs-on: ${{ matrix.platform }}
     steps:
       - name: Setup Go
@@ -31,8 +24,11 @@ jobs:
         run: |
           bash build.sh -v dev -P -p "windows,linux,darwin"
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v3
+      - uses: "marvinpinto/action-automatic-releases@latest"
         with:
-          name: synctv
-          path: build
+          repo_token: "${{ secrets.GITHUB_TOKEN }}"
+          automatic_release_tag: "dev"
+          title: "Dev Build"
+          prerelease: true
+          files: |
+            build/*

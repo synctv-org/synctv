@@ -14,9 +14,10 @@ function Help() {
     echo "-w set web version (default: latest releases)"
     echo "-m set build mode (default: pie)"
     echo "-l set ldflags (default: -s -w --extldflags \"-static -fpic -Wl,-z,relro,-z,now\")"
-    echo "-p set platform (default: linux/amd64,darwin/arm64)"
+    echo "-p set platform (default: host platform, support: all, linux, darwin, windows)"
     echo "-P set trim path (default: disable)"
     echo "-b set build result dir (default: build)"
+    echo "-T set tags (default: jsoniter)"
 }
 
 function Init() {
@@ -31,13 +32,14 @@ function Init() {
     fi
     BUILD_MODE="pie"
     LDFLAGS='-s -w --extldflags "-static -fpic -Wl,-z,relro,-z,now"'
-    PLATFORM="linux/amd64,darwin/arm64"
+    PLATFORM=""
     TRIM_PATH=""
     BUILD_DIR="build"
+    TAGS="jsoniter"
 }
 
 function ParseArgs() {
-    while getopts "hv:w:m:l:p:Pb:" arg; do
+    while getopts "hv:w:m:l:p:Pb:T:" arg; do
         case $arg in
         h)
             Help
@@ -63,6 +65,9 @@ function ParseArgs() {
             ;;
         b)
             BUILD_DIR="$OPTARG"
+            ;;
+        T)
+            TAGS="$OPTARG"
             ;;
         ?)
             echo "unkonw argument"
@@ -126,7 +131,11 @@ function InitDep() {
     curl -sL "https://github.com/synctv-org/synctv-web/releases/download/${WEB_VERSION}/dist.tar.gz" | tar --strip-components 1 -C "public/dist" -z -x -v -f -
 }
 
-ALLOWD_PLATFORM="linux/amd64,linux/arm64,darwin/amd64,darwin/arm64,windows/amd64,windows/arm64"
+LINUX_ALLOWED_PLATFORM="linux/386,linux/amd64,linux/arm,linux/arm64,linux/loong64,linux/mips,linux/mips64,linux/mips64le,linux/mipsle,linux/ppc64,linux/ppc64le,linux/riscv64,linux/s390x"
+DARWIN_ALLOWED_PLATFORM="darwin/amd64,darwin/arm64"
+WINDOWS_ALLOWED_PLATFORM="windows/386,windows/amd64,windows/arm,windows/arm64"
+
+ALLOWED_PLATFORM="$LINUX_ALLOWED_PLATFORM,$DARWIN_ALLOWED_PLATFORM,$WINDOWS_ALLOWED_PLATFORM"
 
 function CheckPlatform() {
     platform="$1"
@@ -159,13 +168,41 @@ function Build() {
         EXT=""
     fi
     if [ "$TRIM_PATH" ]; then
-        GOOS=$GOOS GOARCH=$GOARCH go build -trimpath -ldflags "$LDFLAGS" -o "$BUILD_DIR/$(basename $PWD)-$GOOS-$GOARCH$EXT" .
+        GOOS=$GOOS GOARCH=$GOARCH go build -trimpath -tags "$TAGS" -ldflags "$LDFLAGS" -o "$BUILD_DIR/$(basename $PWD)-$GOOS-$GOARCH$EXT" .
     else
-        GOOS=$GOOS GOARCH=$GOARCH go build -ldflags "$LDFLAGS" -o "$BUILD_DIR/$(basename $PWD)-$GOOS-$GOARCH$EXT" .
+        GOOS=$GOOS GOARCH=$GOARCH go build -tags "$TAGS" -ldflags "$LDFLAGS" -o "$BUILD_DIR/$(basename $PWD)-$GOOS-$GOARCH$EXT" .
+    fi
+}
+
+function BuildSingle() {
+    GOOS="$(go env GOOS)"
+    GOARCH="$(go env GOARCH)"
+    if [ "$GOOS" == "windows" ]; then
+        EXT=".exe"
+    else
+        EXT=""
+    fi
+    echo "build $GOOS/$GOARCH"
+    if [ "$TRIM_PATH" ]; then
+        go build -trimpath -tags "$TAGS" -ldflags "$LDFLAGS" -o "$BUILD_DIR/$(basename $PWD)$EXT" .
+    else
+        go build -tags "$TAGS" -ldflags "$LDFLAGS" -o "$BUILD_DIR/$(basename $PWD)$EXT" .
     fi
 }
 
 function BuildAll() {
+    if [ ! "$PLATFORM" ]; then
+        BuildSingle
+        return
+    elif [ "$PLATFORM" == "all" ]; then
+        PLATFORM="$ALLOWD_PLATFORM"
+    elif [ "$PLATFORM" == "linux" ]; then
+        PLATFORM="$LINUX_ALLOWED_PLATFORM"
+    elif [ "$PLATFORM" == "darwin" ]; then
+        PLATFORM="$DARWIN_ALLOWED_PLATFORM"
+    elif [ "$PLATFORM" == "windows" ]; then
+        PLATFORM="$WINDOWS_ALLOWED_PLATFORM"
+    fi
     for platform in $(echo "$PLATFORM" | tr "," "\n"); do
         Build "$platform"
     done

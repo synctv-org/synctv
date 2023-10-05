@@ -16,6 +16,7 @@ var (
 	c               chan os.Signal
 	notifyTaskLock  sync.Mutex
 	notifyTaskQueue = pqueue.NewMaxPriorityQueue[*SysNotifyTask]()
+	once            sync.Once
 	WaitCbk         func()
 )
 
@@ -34,7 +35,9 @@ func NewSysNotifyTask(name string, task func() error) *SysNotifyTask {
 func InitSysNotify() {
 	c = make(chan os.Signal, 1)
 	signal.Notify(c, syscall.SIGHUP /*1*/, syscall.SIGINT /*2*/, syscall.SIGQUIT /*3*/, syscall.SIGTERM /*15*/)
-	WaitCbk = sync.OnceFunc(waitCbk)
+	WaitCbk = func() {
+		once.Do(waitCbk)
+	}
 }
 
 func waitCbk() {

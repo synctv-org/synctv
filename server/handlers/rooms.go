@@ -17,9 +17,12 @@ const (
 
 var (
 	Rooms    *rooms
-	initOnce = sync.OnceFunc(func() {
-		Rooms = newRooms()
-	})
+	once     = sync.Once{}
+	initOnce = func() {
+		once.Do(func() {
+			Rooms = newRooms()
+		})
+	}
 )
 
 var (

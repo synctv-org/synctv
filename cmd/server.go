@@ -101,10 +101,14 @@ func Server(cmd *cobra.Command, args []string) {
 	if conf.Conf.Rtmp.Enable {
 		log.Infof("rtmp run on tcp://%s:%d", tcpServerAddr.IP, tcpRtmpAddr.Port)
 	}
-	if conf.Conf.Server.Quic && conf.Conf.Server.CertPath != "" && conf.Conf.Server.KeyPath != "" {
-		log.Infof("quic run on udp://%s:%d", udpServerAddr.IP, udpServerAddr.Port)
+	if conf.Conf.Server.CertPath != "" && conf.Conf.Server.KeyPath != "" {
+		if conf.Conf.Server.Quic {
+			log.Infof("quic run on udp://%s:%d", udpServerAddr.IP, udpServerAddr.Port)
+		}
+		log.Infof("website run on https://%s:%d", tcpServerAddr.IP, tcpServerAddr.Port)
+	} else {
+		log.Infof("website run on http://%s:%d", tcpServerAddr.IP, tcpServerAddr.Port)
 	}
-	log.Infof("website run on http://%s:%d", tcpServerAddr.IP, tcpServerAddr.Port)
 	bootstrap.WaitCbk()
 }
 

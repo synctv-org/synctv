@@ -1,0 +1,14 @@
+version: '3.3'
+services:
+  alist:
+    restart: unless-stopped
+    ports:
+      - '8080:8080/tcp'
+      - '8080:8080/udp'
+    environment:
+      - PUID=0
+      - PGID=0
+      - UMASK=022
+      - TZ=UTC
+    container_name: synctv
+    image: 'synctvorg/synctv:latest'

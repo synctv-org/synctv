@@ -29,17 +29,17 @@ import (
 )
 
 func GetPageItems[T any](ctx *gin.Context, items []T) ([]T, error) {
-	max, err := strconv.ParseUint(ctx.DefaultQuery("max", "10"), 10, 64)
+	max, err := strconv.ParseInt(ctx.DefaultQuery("max", "10"), 10, 64)
 	if err != nil {
 		return items, errors.New("max must be a number")
 	}
 
-	page, err := strconv.ParseUint(ctx.DefaultQuery("page", "1"), 10, 64)
+	page, err := strconv.ParseInt(ctx.DefaultQuery("page", "1"), 10, 64)
 	if err != nil {
 		return items, errors.New("page must be a number")
 	}
 
-	return utils.GetPageItems(items, int(max), int(page)), nil
+	return utils.GetPageItems(items, max, page), nil
 }
 
 func MovieList(ctx *gin.Context) {

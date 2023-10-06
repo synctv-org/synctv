@@ -27,16 +27,18 @@ func RandBytes(n int) []byte {
 	return b
 }
 
-func GetPageItems[T any](items []T, max, page int) []T {
-	start := (page - 1) * max
-	if start < 0 {
-		start = 0
-	} else if start > len(items) {
-		start = len(items)
+func GetPageItems[T any](items []T, max, page int64) []T {
+	if max <= 0 || page <= 0 {
+		return nil
 	}
-	end := int(page * max)
-	if end > len(items) {
-		end = len(items)
+	start := (page - 1) * max
+	l := int64(len(items))
+	if start > l {
+		start = l
+	}
+	end := page * max
+	if end > l {
+		end = l
 	}
 	return items[start:end]
 }

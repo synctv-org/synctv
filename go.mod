@@ -21,10 +21,10 @@ require (
 	github.com/zijiren233/gencontainer v0.0.0-20230930135658-e410015e13cc
 	github.com/zijiren233/go-colorable v0.0.0-20230930131441-997304c961cb
 	github.com/zijiren233/ksync v0.2.0
-	github.com/zijiren233/livelib v0.1.0
+	github.com/zijiren233/livelib v0.1.1
 	github.com/zijiren233/stream v0.5.1
 	github.com/zijiren233/yaml-comment v0.2.0
-	golang.org/x/crypto v0.13.0
+	golang.org/x/crypto v0.14.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -56,12 +56,12 @@ require (
 	github.com/ugorji/go/codec v1.2.11 // indirect
 	go.uber.org/mock v0.3.0 // indirect
 	golang.org/x/arch v0.5.0 // indirect
-	golang.org/x/exp v0.0.0-20230905200255-921286631fa9 // indirect
+	golang.org/x/exp v0.0.0-20231006140011-7918f672742d // indirect
 	golang.org/x/mod v0.13.0 // indirect
-	golang.org/x/net v0.15.0 // indirect
+	golang.org/x/net v0.16.0 // indirect
 	golang.org/x/sys v0.13.0 // indirect
 	golang.org/x/text v0.13.0 // indirect
-	golang.org/x/tools v0.13.0 // indirect
+	golang.org/x/tools v0.14.0 // indirect
 	google.golang.org/protobuf v1.31.0 // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 )

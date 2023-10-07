@@ -58,7 +58,7 @@ func (c *Current) SetMovie(movie MovieInfo) {
 	defer c.lock.Unlock()
 
 	c.movie = movie
-	c.status.Seek = 0
+	c.setSeek(0, 0)
 }
 
 func (c *Current) Status() Status {
@@ -98,6 +98,22 @@ func (c *Current) SetSeekRate(seek, rate, timeDiff float64) Status {
 		c.status.Seek = seek
 	}
 	c.status.Rate = rate
+	c.status.lastUpdateTime = time.Now()
+	return c.status
+}
+
+func (c *Current) SetSeek(seek, timeDiff float64) Status {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	return c.setSeek(seek, timeDiff)
+}
+
+func (c *Current) setSeek(seek, timeDiff float64) Status {
+	if c.status.Playing {
+		c.status.Seek = seek + (timeDiff * c.status.Rate)
+	} else {
+		c.status.Seek = seek
+	}
 	c.status.lastUpdateTime = time.Now()
 	return c.status
 }

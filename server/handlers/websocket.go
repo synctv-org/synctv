@@ -173,6 +173,12 @@ func handleReaderMessage(c *room.Client) error {
 						Seek: status.Seek,
 						Rate: status.Rate,
 					})
+				} else {
+					c.Send(&room.ElementMessage{
+						Type: room.CheckSeek,
+						Seek: status.Seek,
+						Rate: status.Rate,
+					})
 				}
 			}
 		}

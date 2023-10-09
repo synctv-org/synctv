@@ -13,12 +13,13 @@ var VersionCmd = &cobra.Command{
 	Short: "Print the version number of Sync TV Server",
 	Long:  `All software has versions. This is Sync TV Server's`,
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Printf("Sync TV Server version %s\n", conf.Version)
-		fmt.Printf("Sync TV Web version %s\n", conf.WebVersion)
-		fmt.Printf("Git commit %s\n", conf.GitCommit)
-		fmt.Printf("Go version %s\n", runtime.Version())
-		fmt.Printf("Built with %s\n", runtime.Compiler)
-		fmt.Printf("OS/Arch %s/%s\n", runtime.GOOS, runtime.GOARCH)
+		fmt.Printf("synctv %s\n", conf.Version)
+		fmt.Printf("- web/version: %s\n", conf.WebVersion)
+		fmt.Printf("- git/commit: %s\n", conf.GitCommit)
+		fmt.Printf("- os/platform: %s\n", runtime.GOOS)
+		fmt.Printf("- os/arch: %s\n", runtime.GOARCH)
+		fmt.Printf("- go/version: %s\n", runtime.Version())
+		fmt.Printf("- go/compiler: %s\n", runtime.Compiler)
 	},
 }
 

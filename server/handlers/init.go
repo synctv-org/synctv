@@ -74,8 +74,6 @@ func Init(e *gin.Engine, s *rtmps.Server) {
 			room.PUT("/admin", AddAdmin)
 
 			room.DELETE("/admin", DelAdmin)
-
-			room.POST("/close", CloseRoom)
 		}
 
 		{

@@ -50,6 +50,11 @@ The theater feature provides a chat and bullet chat function, allowing you to co
 
 ---
 
+# Demo
+https://synctv.pyhdxy.com/
+
+---
+
 # Installation
 ## Binary
 You can download the latest binary from [release page](https://github.com/synctv-org/synctv/releases) and install it manually.

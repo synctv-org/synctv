@@ -3,7 +3,7 @@ name: release_docker
 on:
   push:
     tags:
-      - "*"
+      - "v*"
 
 jobs:
   release_docker:
@@ -31,13 +31,17 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Get version
+        id: get_version
+        run: echo "VERSION=${GITHUB_REF/refs\/tags\/v/}" >> $GITHUB_OUTPUT
+
       - name: Build and push
         id: docker_build
         uses: docker/build-push-action@v5
         with:
           context: .
           build-args: |
-            VERSION=${{ steps.meta.outputs.tags }}
+            VERSION="v${{ steps.get_version.outputs.VERSION }}"
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

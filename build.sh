@@ -47,7 +47,7 @@ function ParseArgs() {
             exit 0
             ;;
         v)
-            VERSION="$(echo "$OPTARG" | sed 's/ //g')"
+            VERSION="$(echo "$OPTARG" | sed 's/ //g' | sed 's/"//g' | sed 's/\n//g')"
             ;;
         w)
             WEB_VERSION="$OPTARG"

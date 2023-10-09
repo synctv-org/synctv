@@ -11,7 +11,7 @@ func Init(e *gin.Engine) {
 	e.
 		Use(gin.LoggerWithWriter(w), gin.RecoveryWithWriter(w)).
 		Use(NewCors())
-	if conf.Conf.Server.Quic {
+	if conf.Conf.Server.Quic && conf.Conf.Server.CertPath != "" && conf.Conf.Server.KeyPath != "" {
 		e.Use(NewQuic())
 	}
 }

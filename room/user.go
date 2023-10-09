@@ -149,8 +149,7 @@ func (u *User) NewMovie(url string, name string, type_ string, live bool, proxy 
 }
 
 func (u *User) NewMovieWithBaseMovie(baseMovie BaseMovie, conf ...MovieConf) (*Movie, error) {
-	conf = append(conf, WithCreator(u))
-	return NewMovieWithBaseMovie(atomic.AddUint64(&u.room.mid, 1), baseMovie, conf...)
+	return NewMovieWithBaseMovie(atomic.AddUint64(&u.room.mid, 1), baseMovie, append(conf, WithCreator(u))...)
 }
 
 func (u *User) Movie(id uint64) (*MovieInfo, error) {

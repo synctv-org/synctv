@@ -145,7 +145,6 @@ func NewCreateRoomHandler(s *rtmps.Server) gin.HandlerFunc {
 
 		r, err := Rooms.CreateRoom(req.RoomID, req.Password, s,
 			room.WithHidden(req.Hidden),
-			room.WithMaxInactivityTime(roomMaxInactivityTime),
 			room.WithRootUser(user),
 		)
 		if err != nil {
@@ -158,6 +157,9 @@ func NewCreateRoomHandler(s *rtmps.Server) gin.HandlerFunc {
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, NewApiErrorResp(err))
 			return
 		}
+
+		r.Init()
+		r.Start()
 
 		go func() {
 			ticker := time.NewTicker(time.Second * 5)
@@ -187,10 +189,6 @@ func NewCreateRoomHandler(s *rtmps.Server) gin.HandlerFunc {
 			}
 		}()
 
-		r.Start()
-
-		r.SetRootUser(user)
-
 		ctx.JSON(http.StatusCreated, NewApiDataResp(gin.H{
 			"token": token,
 		}))
@@ -218,7 +216,7 @@ func RoomList(ctx *gin.Context) {
 			PeopleNum:    v.ClientNum(),
 			NeedPassword: v.NeedPassword(),
 			Creator:      v.RootUser().Name(),
-			CreateAt:     v.CreateAt().UnixMilli(),
+			CreateAt:     v.CreateAt(),
 		})
 	}
 
@@ -364,8 +362,14 @@ func DeleteRoom(ctx *gin.Context) {
 		return
 	}
 
-	if err := Rooms.DelRoom(user.Room().ID()); err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorResp(err))
+	if !user.IsRoot() {
+		ctx.AbortWithStatusJSON(http.StatusUnauthorized, NewApiErrorStringResp("only root can close room"))
+		return
+	}
+
+	err = Rooms.DelRoom(user.Room().ID())
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, NewApiErrorResp(err))
 		return
 	}
 

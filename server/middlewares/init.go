@@ -7,8 +7,9 @@ import (
 )
 
 func Init(e *gin.Engine) {
+	w := log.StandardLogger().Writer()
 	e.
-		Use(gin.LoggerWithWriter(log.StandardLogger().Out), gin.RecoveryWithWriter(log.StandardLogger().Out)).
+		Use(gin.LoggerWithWriter(w), gin.RecoveryWithWriter(w)).
 		Use(NewCors())
 	if conf.Conf.Server.Quic {
 		e.Use(NewQuic())

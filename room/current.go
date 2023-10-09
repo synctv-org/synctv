@@ -10,14 +10,13 @@ import (
 type Current struct {
 	movie  MovieInfo
 	status Status
-	lock   *sync.RWMutex
+	lock   sync.RWMutex
 }
 
 func newCurrent() *Current {
 	return &Current{
 		movie:  MovieInfo{},
 		status: newStatus(),
-		lock:   new(sync.RWMutex),
 	}
 }
 

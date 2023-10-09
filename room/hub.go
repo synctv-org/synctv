@@ -15,8 +15,7 @@ import (
 
 type hub struct {
 	id        string
-	clientNum int64
-	clients   *rwmap.RWMap[string, *Client]
+	clients   rwmap.RWMap[string, *Client]
 	broadcast chan *broadcastMessage
 	exit      chan struct{}
 	closed    uint32
@@ -54,7 +53,7 @@ func newHub(id string) *hub {
 	return &hub{
 		id:        id,
 		broadcast: make(chan *broadcastMessage, 128),
-		clients:   &rwmap.RWMap[string, *Client]{},
+		clients:   rwmap.RWMap[string, *Client]{},
 		exit:      make(chan struct{}),
 	}
 }
@@ -156,7 +155,6 @@ func (h *hub) RegClient(user *User, conn *websocket.Conn) (*Client, error) {
 	if loaded {
 		return nil, errors.New("client already registered")
 	}
-	atomic.AddInt64(&h.clientNum, 1)
 	return c, nil
 }
 
@@ -171,10 +169,9 @@ func (h *hub) UnRegClient(user *User) error {
 	if !loaded {
 		return errors.New("client not found")
 	}
-	atomic.AddInt64(&h.clientNum, -1)
 	return nil
 }
 
 func (h *hub) ClientNum() int64 {
-	return atomic.LoadInt64(&h.clientNum)
+	return h.clients.Len()
 }

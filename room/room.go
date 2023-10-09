@@ -20,25 +20,22 @@ var (
 )
 
 type Room struct {
-	id                string
-	lock              *sync.RWMutex
-	password          []byte
-	needPassword      bool
-	version           uint64
-	current           *Current
-	maxInactivityTime time.Duration
-	lastActive        time.Time
-	rtmps             *rtmps.Server
-	rtmpa             *rtmps.App
-	hidden            bool
-	timer             *time.Timer
-	inited            bool
-	users             *rwmap.RWMap[string, *User]
-	rootUser          *User
-	createAt          time.Time
-	mid               uint64
+	id           string
+	password     []byte
+	needPassword uint32
+	version      uint64
+	current      *Current
+	rtmps        *rtmps.Server
+	rtmpa        *rtmps.App
+	hidden       uint32
+	initOnce     sync.Once
+	users        rwmap.RWMap[string, *User]
+	rootUser     *User
+	lastActive   int64
+	createAt     int64
+	mid          uint64
+	hub          *hub
 	*movies
-	*hub
 }
 
 type RoomConf func(r *Room)
@@ -49,15 +46,9 @@ func WithVersion(version uint64) RoomConf {
 	}
 }
 
-func WithMaxInactivityTime(maxInactivityTime time.Duration) RoomConf {
-	return func(r *Room) {
-		r.maxInactivityTime = maxInactivityTime
-	}
-}
-
 func WithHidden(hidden bool) RoomConf {
 	return func(r *Room) {
-		r.hidden = hidden
+		r.SetHidden(hidden)
 	}
 }
 
@@ -75,18 +66,12 @@ func NewRoom(RoomID string, Password string, rtmps *rtmps.Server, conf ...RoomCo
 	if RoomID == "" {
 		return nil, ErrRoomIDEmpty
 	}
-
+	now := time.Now().UnixMilli()
 	r := &Room{
-		id:                RoomID,
-		lock:              new(sync.RWMutex),
-		movies:            newMovies(),
-		current:           newCurrent(),
-		maxInactivityTime: 12 * time.Hour,
-		lastActive:        time.Now(),
-		hub:               newHub(RoomID),
-		rtmps:             rtmps,
-		users:             &rwmap.RWMap[string, *User]{},
-		createAt:          time.Now(),
+		id:         RoomID,
+		rtmps:      rtmps,
+		lastActive: now,
+		createAt:   now,
 	}
 
 	for _, c := range conf {
@@ -94,14 +79,23 @@ func NewRoom(RoomID string, Password string, rtmps *rtmps.Server, conf ...RoomCo
 	}
 
 	if r.version == 0 {
-		r.version = rand.New(rand.NewSource(time.Now().UnixNano())).Uint64()
+		r.version = rand.New(rand.NewSource(now)).Uint64()
 	}
 
 	return r, r.SetPassword(Password)
 }
 
-func (r *Room) CreateAt() time.Time {
-	return r.createAt
+func (r *Room) Init() {
+	r.initOnce.Do(func() {
+		r.rtmpa = r.rtmps.GetOrNewApp(r.id)
+		r.hub = newHub(r.id)
+		r.movies = newMovies()
+		r.current = newCurrent()
+	})
+}
+
+func (r *Room) CreateAt() int64 {
+	return atomic.LoadInt64(&r.createAt)
 }
 
 func (r *Room) RootUser() *User {
@@ -183,28 +177,10 @@ func (r *Room) Start() {
 }
 
 func (r *Room) Serve() {
-	r.init()
 	r.hub.Serve()
 }
 
-func (r *Room) init() {
-	r.lock.Lock()
-	defer r.lock.Unlock()
-	if r.inited {
-		return
-	}
-	r.inited = true
-	if r.maxInactivityTime != 0 {
-		r.timer = time.AfterFunc(time.Duration(r.maxInactivityTime), func() {
-			r.Close()
-		})
-	}
-	r.rtmpa = r.rtmps.GetOrNewApp(r.id)
-}
-
 func (r *Room) Close() error {
-	r.lock.Lock()
-	defer r.lock.Unlock()
 	if err := r.hub.Close(); err != nil {
 		return err
 	}
@@ -212,22 +188,19 @@ func (r *Room) Close() error {
 	if err != nil {
 		return err
 	}
-	if r.timer != nil {
-		r.timer.Stop()
-	}
 	return nil
 }
 
 func (r *Room) SetHidden(hidden bool) {
-	r.lock.Lock()
-	defer r.lock.Unlock()
-	r.hidden = hidden
+	if hidden {
+		atomic.StoreUint32(&r.hidden, 1)
+	} else {
+		atomic.StoreUint32(&r.hidden, 0)
+	}
 }
 
 func (r *Room) Hidden() bool {
-	r.lock.RLock()
-	defer r.lock.RUnlock()
-	return r.hidden
+	return atomic.LoadUint32(&r.hidden) == 1
 }
 
 func (r *Room) ID() string {
@@ -235,45 +208,34 @@ func (r *Room) ID() string {
 }
 
 func (r *Room) UpdateActiveTime() {
-	r.lock.Lock()
-	defer r.lock.Unlock()
-	r.updateActiveTime()
+	atomic.StoreInt64(&r.lastActive, time.Now().UnixMilli())
 }
 
-func (r *Room) updateActiveTime() {
-	if r.maxInactivityTime != 0 {
-		r.timer.Reset(r.maxInactivityTime)
-	}
-	r.lastActive = time.Now()
-}
-
-func (r *Room) ResetMaxInactivityTime(maxInactivityTime time.Duration) {
-	r.lock.Lock()
-	defer r.lock.Unlock()
-	r.maxInactivityTime = maxInactivityTime
-	r.updateActiveTime()
-}
-
-func (r *Room) LateActiveTime() time.Time {
-	r.lock.RLock()
-	defer r.lock.RUnlock()
-	return r.lastActive
+func (r *Room) LateActiveTime() int64 {
+	return atomic.LoadInt64(&r.lastActive)
 }
 
 func (r *Room) SetPassword(password string) error {
-	r.lock.Lock()
-	defer r.lock.Unlock()
 	if password != "" {
 		b, err := bcrypt.GenerateFromPassword(stream.StringToBytes(password), bcrypt.DefaultCost)
 		if err != nil {
 			return err
 		}
 		r.password = b
-		r.needPassword = true
+		atomic.StoreUint32(&r.needPassword, 1)
 	} else {
-		r.needPassword = false
+		atomic.StoreUint32(&r.needPassword, 0)
+		r.password = nil
 	}
 	r.updateVersion()
+	return nil
+}
+
+func (r *Room) SetPasswordAndCloseAll(password string) error {
+	err := r.SetPassword(password)
+	if err != nil {
+		return err
+	}
 	r.hub.clients.Range(func(_ string, value *Client) bool {
 		value.Close()
 		return true
@@ -282,18 +244,14 @@ func (r *Room) SetPassword(password string) error {
 }
 
 func (r *Room) CheckPassword(password string) (ok bool) {
-	r.lock.RLock()
-	defer r.lock.RUnlock()
-	if !r.needPassword {
+	if !r.NeedPassword() {
 		return true
 	}
 	return bcrypt.CompareHashAndPassword(r.password, stream.StringToBytes(password)) == nil
 }
 
 func (r *Room) NeedPassword() bool {
-	r.lock.RLock()
-	defer r.lock.RUnlock()
-	return r.needPassword
+	return atomic.LoadUint32(&r.needPassword) == 1
 }
 
 func (r *Room) Version() uint64 {
@@ -318,6 +276,7 @@ func (r *Room) Current() *Current {
 
 // Seek will be set to 0
 func (r *Room) ChangeCurrentMovie(id uint64) error {
+	r.UpdateActiveTime()
 	e, err := r.movies.getMovie(id)
 	if err != nil {
 		return err
@@ -353,22 +312,19 @@ func (r *Room) PushBackMovie(movie *Movie) error {
 	if r.hub.Closed() {
 		return ErrAlreadyClosed
 	}
+	r.UpdateActiveTime()
 
 	return r.movies.PushBackMovie(movie)
 }
 
 func (r *Room) PushFrontMovie(movie *Movie) error {
-	if r.hub.Closed() {
-		return ErrAlreadyClosed
-	}
+	r.UpdateActiveTime()
 
 	return r.movies.PushFrontMovie(movie)
 }
 
 func (r *Room) DelMovie(id ...uint64) error {
-	if r.hub.Closed() {
-		return ErrAlreadyClosed
-	}
+	r.UpdateActiveTime()
 	m, err := r.movies.GetAndDelMovie(id...)
 	if err != nil {
 		return err
@@ -377,15 +333,13 @@ func (r *Room) DelMovie(id ...uint64) error {
 }
 
 func (r *Room) ClearMovies() (err error) {
-	if r.hub.Closed() {
-		return ErrAlreadyClosed
-	}
+	r.UpdateActiveTime()
 	return r.closeLive(r.movies.GetAndClear())
 }
 
 func (r *Room) closeLive(m []*Movie) error {
 	for _, m := range m {
-		if m.Live {
+		if m.RtmpSource || (m.Proxy && m.Live) {
 			if err := r.rtmpa.DelChannel(m.PullKey); err != nil {
 				return err
 			}
@@ -395,9 +349,7 @@ func (r *Room) closeLive(m []*Movie) error {
 }
 
 func (r *Room) SwapMovie(id1, id2 uint64) error {
-	if r.hub.Closed() {
-		return ErrAlreadyClosed
-	}
+	r.UpdateActiveTime()
 	return r.movies.SwapMovie(id1, id2)
 }
 
@@ -407,6 +359,20 @@ func (r *Room) Broadcast(msg Message, conf ...BroadcastConf) error {
 }
 
 func (r *Room) RegClient(user *User, conn *websocket.Conn) (*Client, error) {
-	r.updateActiveTime()
+	r.UpdateActiveTime()
 	return r.hub.RegClient(user, conn)
+}
+
+func (r *Room) UnRegClient(user *User) error {
+	r.UpdateActiveTime()
+	return r.hub.UnRegClient(user)
+}
+
+func (r *Room) Closed() bool {
+	return r.hub.Closed()
+}
+
+func (r *Room) ClientNum() int64 {
+	r.UpdateActiveTime()
+	return r.hub.ClientNum()
 }

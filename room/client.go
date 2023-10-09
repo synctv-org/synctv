@@ -16,7 +16,7 @@ type Client struct {
 	wg      sync.WaitGroup
 	conn    *websocket.Conn
 	timeOut time.Duration
-	closed  uint64
+	closed  uint32
 }
 
 func NewClient(user *User, conn *websocket.Conn) (*Client, error) {
@@ -65,7 +65,7 @@ func (c *Client) Unregister() error {
 }
 
 func (c *Client) Close() error {
-	if !atomic.CompareAndSwapUint64(&c.closed, 0, 1) {
+	if !atomic.CompareAndSwapUint32(&c.closed, 0, 1) {
 		return ErrAlreadyClosed
 	}
 	c.wg.Wait()
@@ -74,7 +74,7 @@ func (c *Client) Close() error {
 }
 
 func (c *Client) Closed() bool {
-	return atomic.LoadUint64(&c.closed) == 1
+	return atomic.LoadUint32(&c.closed) == 1
 }
 
 func (c *Client) GetReadChan() <-chan Message {

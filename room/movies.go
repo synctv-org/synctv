@@ -24,7 +24,7 @@ func (e FormatErrMovieAlreadyExist) Error() string {
 
 type movies struct {
 	l    *dllist.Dllist[*Movie]
-	lock *sync.RWMutex
+	lock sync.RWMutex
 }
 
 // Url will be `PullKey` when Live and Proxy are true
@@ -128,7 +128,7 @@ func (m *Movie) SetChannel(channel *rtmps.Channel) {
 }
 
 func newMovies() *movies {
-	return &movies{l: dllist.New[*Movie](), lock: &sync.RWMutex{}}
+	return &movies{l: dllist.New[*Movie]()}
 }
 
 func (m *movies) Range(f func(e *dllist.Element[*Movie]) bool) (interrupt bool) {

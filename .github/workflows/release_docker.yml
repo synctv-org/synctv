@@ -40,7 +40,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          build-args: |
+          build-args:
             VERSION="v${{ steps.get_version.outputs.VERSION }}"
           push: true
           tags: ${{ steps.meta.outputs.tags }}

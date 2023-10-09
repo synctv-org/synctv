@@ -47,7 +47,7 @@ function ParseArgs() {
             exit 0
             ;;
         v)
-            VERSION="$OPTARG"
+            VERSION="$(echo "$OPTARG" | sed 's/ //g')"
             ;;
         w)
             WEB_VERSION="$OPTARG"
@@ -99,22 +99,17 @@ function GetLatestWebVersion() {
 
 # Comply with golang version rules
 function CheckVersionFormat() {
-    if [ "$1" == "dev" ]; then
+    if [ "$1" == "dev" ] || [ "$(echo "$1" | grep -oE "^v?[0-9]+\.[0-9]+\.[0-9]+$")" ]; then
         return 0
+    else
+        echo "version format error: $1"
+        exit 1
     fi
-    if [ "$(echo "$1" | grep -oE "^v?[0-9]+\.[0-9]+\.[0-9]+$")" ]; then
-        return 0
-    fi
-    return 1
 }
 
 function FixArgs() {
     CheckAllPlatform
     CheckVersionFormat "$VERSION"
-    if [ $? -ne 0 ]; then
-        echo "version format error"
-        exit 1
-    fi
     if [ ! "$WEB_VERSION" ]; then
         if [ "$VERSION" == "dev" ]; then
             WEB_VERSION="dev"

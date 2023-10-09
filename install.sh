@@ -6,7 +6,7 @@ download_tools_list=(
 )
 
 function Help() {
-    echo "Usage: sudo -v ; curl https://raw.githubusercontent.com/synctv-org/synctv/main/install.sh | sudo bash"
+    echo "Usage: sudo -v ; curl https://raw.githubusercontent.com/synctv-org/synctv/main/install.sh | sudo bash -s -- -v latest"
     echo "-h: help"
     echo "-v: install version (default: latest)"
 }
@@ -138,6 +138,7 @@ function InstallVersion() {
     cd "$tmp_dir"
     trap 'rm -rf "$tmp_dir"' EXIT
 
+    echo "download: https://github.com/synctv-org/synctv/releases/download/$1/synctv-${OS}-${ARCH}"
     Download "https://github.com/synctv-org/synctv/releases/download/$1/synctv-${OS}-${ARCH}" "synctv"
 
     case "$OS" in

@@ -50,6 +50,28 @@ The theater feature provides a chat and bullet chat function, allowing you to co
 
 ---
 
+# Installation
+## Binary
+You can download the latest binary from [release page](https://github.com/synctv-org/synctv/releases) and install it manually.
+
+## Script
+You can use the script to install and run SyncTV.
+
+```bash
+sudo -v ; curl https://raw.githubusercontent.com/synctv-org/synctv/main/install.sh | sudo bash -s -- -v latest
+```
+
+## Docker
+You can also use docker to install and run SyncTV.
+
+```bash
+docker run -d --name synctv -p 8080:8080 synctvorg/synctv
+```
+
+More information about docker image, please see [here](https://hub.docker.com/r/synctvorg/synctv).
+
+---
+
 # Usage
 ## Global Flags:
 

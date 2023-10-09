@@ -122,6 +122,13 @@ func handleReaderMessage(c *room.Client) error {
 			}
 			switch msg.Type {
 			case room.ChatMessage:
+				if len(msg.Message) > 4096 {
+					c.Send(&room.ElementMessage{
+						Type:    room.Error,
+						Message: "message too long",
+					})
+					continue
+				}
 				c.Broadcast(&room.ElementMessage{
 					Type:    room.ChatMessage,
 					Sender:  c.Username(),

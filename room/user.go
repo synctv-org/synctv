@@ -22,8 +22,10 @@ type User struct {
 }
 
 var (
-	ErrUsernameEmpty     = errors.New("user name is empty")
-	ErrUserPasswordEmpty = errors.New("user password is empty")
+	ErrUsernameEmpty       = errors.New("user name is empty")
+	ErrUsernameTooLong     = errors.New("user name is too long")
+	ErrUserPasswordEmpty   = errors.New("user password is empty")
+	ErrUserPasswordTooLong = errors.New("user password is too long")
 )
 
 type UserConf func(*User)
@@ -43,9 +45,13 @@ func WithUserAdmin(admin bool) UserConf {
 func NewUser(id string, password string, room *Room, conf ...UserConf) (*User, error) {
 	if id == "" {
 		return nil, ErrUsernameEmpty
+	} else if len(id) > 32 {
+		return nil, ErrUsernameTooLong
 	}
 	if password == "" {
 		return nil, ErrUserPasswordEmpty
+	} else if len(password) > 32 {
+		return nil, ErrUserPasswordTooLong
 	}
 	hashedPassword, err := bcrypt.GenerateFromPassword(stream.StringToBytes(password), bcrypt.DefaultCost)
 	if err != nil {

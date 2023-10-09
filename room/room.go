@@ -16,6 +16,7 @@ import (
 
 var (
 	ErrRoomIDEmpty        = errors.New("roomid is empty")
+	ErrRoomIDTooLong      = errors.New("roomid is too long")
 	ErrAdminPassWordEmpty = errors.New("admin password is empty")
 )
 
@@ -65,6 +66,8 @@ func WithRootUser(u *User) RoomConf {
 func NewRoom(RoomID string, Password string, rtmps *rtmps.Server, conf ...RoomConf) (*Room, error) {
 	if RoomID == "" {
 		return nil, ErrRoomIDEmpty
+	} else if len(RoomID) > 32 {
+		return nil, ErrRoomIDTooLong
 	}
 	now := time.Now().UnixMilli()
 	r := &Room{

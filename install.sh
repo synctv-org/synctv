@@ -133,7 +133,7 @@ function Download() {
     esac
 }
 
-function InstallVersion() {
+function InstallWithVersion() {
     tmp_dir=$(mktemp -d 2>/dev/null || mktemp -d -t 'synctv-install.XXXXXXXXXX')
     cd "$tmp_dir"
     trap 'rm -rf "$tmp_dir"' EXIT
@@ -161,7 +161,7 @@ function InstallVersion() {
     esac
 }
 
-function CheckAndInstallVersion() {
+function Install() {
     current_version="$(CurrentVersion)"
     echo "current version: $current_version"
     echo "install version: $VERSION"
@@ -170,7 +170,7 @@ function CheckAndInstallVersion() {
         exit 0
     fi
 
-    InstallVersion "$VERSION"
+    InstallWithVersion "$VERSION"
 }
 
 Init
@@ -178,4 +178,4 @@ ParseArgs "$@"
 FixArgs
 InitOS
 InitArch
-CheckAndInstallVersion
+Install

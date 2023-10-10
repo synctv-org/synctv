@@ -126,6 +126,9 @@ func PushMovie(ctx *gin.Context) {
 		if !conf.Conf.Rtmp.Enable {
 			ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorStringResp("rtmp source is not enabled"))
 			return
+		} else if movie.Type == "m3u8" && !conf.Conf.Rtmp.HlsPlayer {
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorStringResp("hls player is not enabled"))
+			return
 		}
 		movie.PullKey = uuid.New().String()
 		c, err := user.Room().NewLiveChannel(movie.PullKey)

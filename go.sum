@@ -163,6 +163,8 @@ github.com/zijiren233/livelib v0.1.1 h1:PjGqQXgJw2sqWWBp5JEtwqnpNplWqX5BY3yo+5U9
 github.com/zijiren233/livelib v0.1.1/go.mod h1:2wrAAqNIdMZjQrdbO7ERQfqK4VS5fzgUj2xXwrJ8/uo=
 github.com/zijiren233/livelib v0.1.2-0.20231010021513-5130877d6f5e h1:x1KhyR/CIaZ2Yfb1mGwX0nUhRVOJnFPUFNN+AVqv7VA=
 github.com/zijiren233/livelib v0.1.2-0.20231010021513-5130877d6f5e/go.mod h1:2wrAAqNIdMZjQrdbO7ERQfqK4VS5fzgUj2xXwrJ8/uo=
+github.com/zijiren233/livelib v0.1.2-0.20231010145337-1651f7b4be26 h1:h7cw3cPQX3VheviU0y0bUVV0CnQ8fJegJgZMBpb/tfw=
+github.com/zijiren233/livelib v0.1.2-0.20231010145337-1651f7b4be26/go.mod h1:2wrAAqNIdMZjQrdbO7ERQfqK4VS5fzgUj2xXwrJ8/uo=
 github.com/zijiren233/stream v0.5.1 h1:9SUwM/fpET6frtBRT5WZBHnan0Hyzkezk/P8N78cgZQ=
 github.com/zijiren233/stream v0.5.1/go.mod h1:iIrOm3qgIepQFmptD/HDY+YzamSSzQOtPjpVcK7FCOw=
 github.com/zijiren233/yaml-comment v0.2.0 h1:xGcmpFsjK+IIK1InHtl+rKxYVKQ9rne/aRP1gkczZt4=

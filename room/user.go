@@ -142,7 +142,7 @@ func (u *User) SetAdmin(admin bool) {
 	u.admin = admin
 }
 
-func (u *User) NewMovie(url string, name string, type_ string, live bool, proxy bool, rtmpSource bool, headers map[string][]string, conf ...MovieConf) (*Movie, error) {
+func (u *User) NewMovie(url string, name string, type_ string, live bool, proxy bool, rtmpSource bool, headers map[string]string, conf ...MovieConf) (*Movie, error) {
 	return u.NewMovieWithBaseMovie(BaseMovie{
 		Url:        url,
 		Name:       name,

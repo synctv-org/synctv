@@ -281,11 +281,11 @@ func NewPublishKey(ctx *gin.Context) {
 }
 
 type EditMovieReq struct {
-	Id      uint64              `json:"id"`
-	Url     string              `json:"url"`
-	Name    string              `json:"name"`
-	Type    string              `json:"type"`
-	Headers map[string][]string `json:"headers"`
+	Id      uint64            `json:"id"`
+	Url     string            `json:"url"`
+	Name    string            `json:"name"`
+	Type    string            `json:"type"`
+	Headers map[string]string `json:"headers"`
 }
 
 func EditMovie(ctx *gin.Context) {
@@ -519,7 +519,7 @@ func ProxyMovie(ctx *gin.Context) {
 
 	if cm.Headers != nil {
 		for k, v := range cm.Headers {
-			req.SetHeader(k, v[0])
+			req.SetHeader(k, v)
 		}
 	}
 

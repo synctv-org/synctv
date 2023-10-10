@@ -40,13 +40,13 @@ type Movie struct {
 }
 
 type BaseMovie struct {
-	Url        string              `json:"url"`
-	Name       string              `json:"name"`
-	Live       bool                `json:"live"`
-	Proxy      bool                `json:"proxy"`
-	RtmpSource bool                `json:"rtmpSource"`
-	Type       string              `json:"type"`
-	Headers    map[string][]string `json:"headers"`
+	Url        string            `json:"url"`
+	Name       string            `json:"name"`
+	Live       bool              `json:"live"`
+	Proxy      bool              `json:"proxy"`
+	RtmpSource bool              `json:"rtmpSource"`
+	Type       string            `json:"type"`
+	Headers    map[string]string `json:"headers"`
 }
 
 type MovieConf func(m *Movie)
@@ -69,7 +69,7 @@ func WithCreator(creator *User) MovieConf {
 	}
 }
 
-func NewMovie(id uint64, url, name, type_ string, live, proxy, rtmpSource bool, headers map[string][]string, conf ...MovieConf) (*Movie, error) {
+func NewMovie(id uint64, url, name, type_ string, live, proxy, rtmpSource bool, headers map[string]string, conf ...MovieConf) (*Movie, error) {
 	return NewMovieWithBaseMovie(id, BaseMovie{
 		Url:        url,
 		Name:       name,
@@ -151,18 +151,18 @@ func (m *movies) range_(f func(e *dllist.Element[*Movie]) bool) (interrupt bool)
 }
 
 type MovieInfo struct {
-	Id         uint64              `json:"id"`
-	Url        string              `json:"url"`
-	Name       string              `json:"name"`
-	Live       bool                `json:"live"`
-	Proxy      bool                `json:"proxy"`
-	RtmpSource bool                `json:"rtmpSource"`
-	Type       string              `json:"type"`
-	Headers    map[string][]string `json:"headers"`
-	PullKey    string              `json:"pullKey"`
-	CreateAt   int64               `json:"createAt"`
-	LastEditAt int64               `json:"lastEditAt"`
-	Creator    string              `json:"creator"`
+	Id         uint64            `json:"id"`
+	Url        string            `json:"url"`
+	Name       string            `json:"name"`
+	Live       bool              `json:"live"`
+	Proxy      bool              `json:"proxy"`
+	RtmpSource bool              `json:"rtmpSource"`
+	Type       string            `json:"type"`
+	Headers    map[string]string `json:"headers"`
+	PullKey    string            `json:"pullKey"`
+	CreateAt   int64             `json:"createAt"`
+	LastEditAt int64             `json:"lastEditAt"`
+	Creator    string            `json:"creator"`
 }
 
 func (m *movies) MovieList() (movies []MovieInfo) {

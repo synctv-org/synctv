@@ -88,7 +88,7 @@ docker run -d --name synctv -p 8080:8080 synctvorg/synctv
     --skip-env        skip env
 ```
 
-如果你想使用自定义配置文件，你可以使用 `-f` 标志，否则它将使用 `$home/.config/synctv/config.yaml`
+如果你想使用自定义配置文件，你可以使用 `-f` 标志，否则它将使用 `${HOME}/.config/synctv/config.yaml`
 
 ## Init
 `synctv init` 来初始化配置文件

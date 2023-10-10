@@ -89,7 +89,7 @@ More information about docker image, please see [here](https://hub.docker.com/r/
     --skip-env        skip env
 ```
 
-if you want to use a custom config file, you can use `-f` flag, else it will use `$home/.config/synctv/config.yaml`
+if you want to use a custom config file, you can use `-f` flag, else it will use `${HOME}/.config/synctv/config.yaml`
 
 ## Init
 `synctv init` to init config file

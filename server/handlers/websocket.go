@@ -5,16 +5,15 @@ import (
 	"net/http"
 	"time"
 
-	json "github.com/json-iterator/go"
-	"google.golang.org/protobuf/proto"
-
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
+	json "github.com/json-iterator/go"
 	log "github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/cmd/flags"
 	pb "github.com/synctv-org/synctv/proto"
 	"github.com/synctv-org/synctv/room"
 	"github.com/synctv-org/synctv/utils"
+	"google.golang.org/protobuf/proto"
 )
 
 const maxInterval = 10
@@ -141,17 +140,32 @@ func handleReaderMessage(c *room.Client) error {
 				}
 				continue
 			}
+		default:
+			log.Errorf("ws: room %s user %s receive unknown message type: %d", c.Room().ID(), c.Username(), t)
+			continue
 		}
 		if flags.Dev {
 			log.Infof("ws: receive room %s user %s message: %+v", c.Room().ID(), c.Username(), msg.String())
 		}
-		if err := handleElementMsg(c.Room(), &msg, func(em *pb.ElementMessage) error {
-			em.Sender = c.Username()
-			return c.Send(&room.ElementMessage{ElementMessage: em})
-		}, func(em *pb.ElementMessage, bc ...room.BroadcastConf) error {
-			em.Sender = c.Username()
-			return c.Broadcast(&room.ElementMessage{ElementMessage: em}, bc...)
-		}); err != nil {
+		switch t {
+		case websocket.BinaryMessage:
+			err = handleElementMsg(c.Room(), &msg, func(em *pb.ElementMessage) error {
+				em.Sender = c.Username()
+				return c.Send(&room.ElementMessage{ElementMessage: em})
+			}, func(em *pb.ElementMessage, bc ...room.BroadcastConf) error {
+				em.Sender = c.Username()
+				return c.Broadcast(&room.ElementMessage{ElementMessage: em}, bc...)
+			})
+		case websocket.TextMessage:
+			err = handleElementMsg(c.Room(), &msg, func(em *pb.ElementMessage) error {
+				em.Sender = c.Username()
+				return c.Send(&room.ElementJsonMessage{ElementMessage: em})
+			}, func(em *pb.ElementMessage, bc ...room.BroadcastConf) error {
+				em.Sender = c.Username()
+				return c.Broadcast(&room.ElementJsonMessage{ElementMessage: em}, bc...)
+			})
+		}
+		if err != nil {
 			log.Errorf("ws: room %s user %s handle message error: %v", c.Room().ID(), c.Username(), err)
 			return err
 		}

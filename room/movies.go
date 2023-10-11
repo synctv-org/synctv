@@ -29,17 +29,16 @@ type movies struct {
 
 // Url will be `PullKey` when Live and Proxy are true
 type Movie struct {
-	BaseMovie
-	PullKey    string `json:"pullKey"`
-	CreateAt   int64  `json:"createAt"`
-	LastEditAt int64  `json:"lastEditAt"`
+	BaseMovieInfo
+	PullKey   string `json:"pullKey"`
+	CreatedAt int64  `json:"createAt"`
 
 	id      uint64
 	channel *rtmps.Channel
 	creator *User
 }
 
-type BaseMovie struct {
+type BaseMovieInfo struct {
 	Url        string            `json:"url"`
 	Name       string            `json:"name"`
 	Live       bool              `json:"live"`
@@ -70,7 +69,7 @@ func WithCreator(creator *User) MovieConf {
 }
 
 func NewMovie(id uint64, url, name, type_ string, live, proxy, rtmpSource bool, headers map[string]string, conf ...MovieConf) (*Movie, error) {
-	return NewMovieWithBaseMovie(id, BaseMovie{
+	return NewMovieWithBaseMovie(id, BaseMovieInfo{
 		Url:        url,
 		Name:       name,
 		Live:       live,
@@ -81,13 +80,11 @@ func NewMovie(id uint64, url, name, type_ string, live, proxy, rtmpSource bool, 
 	})
 }
 
-func NewMovieWithBaseMovie(id uint64, baseMovie BaseMovie, conf ...MovieConf) (*Movie, error) {
-	now := time.Now().UnixMicro()
+func NewMovieWithBaseMovie(id uint64, baseMovie BaseMovieInfo, conf ...MovieConf) (*Movie, error) {
 	m := &Movie{
-		id:         id,
-		BaseMovie:  baseMovie,
-		CreateAt:   now,
-		LastEditAt: now,
+		id:            id,
+		BaseMovieInfo: baseMovie,
+		CreatedAt:     time.Now().UnixMilli(),
 	}
 	m.Init(conf...)
 	return m, m.Check()
@@ -151,18 +148,11 @@ func (m *movies) range_(f func(e *dllist.Element[*Movie]) bool) (interrupt bool)
 }
 
 type MovieInfo struct {
-	Id         uint64            `json:"id"`
-	Url        string            `json:"url"`
-	Name       string            `json:"name"`
-	Live       bool              `json:"live"`
-	Proxy      bool              `json:"proxy"`
-	RtmpSource bool              `json:"rtmpSource"`
-	Type       string            `json:"type"`
-	Headers    map[string]string `json:"headers"`
-	PullKey    string            `json:"pullKey"`
-	CreateAt   int64             `json:"createAt"`
-	LastEditAt int64             `json:"lastEditAt"`
-	Creator    string            `json:"creator"`
+	Id uint64 `json:"id"`
+	BaseMovieInfo
+	PullKey   string `json:"pullKey"`
+	CreatedAt int64  `json:"createdAt"`
+	Creator   string `json:"creator"`
 }
 
 func (m *movies) MovieList() (movies []MovieInfo) {
@@ -172,17 +162,18 @@ func (m *movies) MovieList() (movies []MovieInfo) {
 	movies = make([]MovieInfo, 0, m.l.Len())
 	m.range_(func(e *dllist.Element[*Movie]) bool {
 		movies = append(movies, MovieInfo{
-			Id:         e.Value.id,
-			Url:        e.Value.Url,
-			Name:       e.Value.Name,
-			Live:       e.Value.Live,
-			Proxy:      e.Value.Proxy,
-			RtmpSource: e.Value.RtmpSource,
-			Type:       e.Value.Type,
-			Headers:    e.Value.Headers,
-			CreateAt:   e.Value.CreateAt,
-			LastEditAt: e.Value.LastEditAt,
-			Creator:    e.Value.Creator().Name(),
+			Id: e.Value.id,
+			BaseMovieInfo: BaseMovieInfo{
+				Url:        e.Value.Url,
+				Name:       e.Value.Name,
+				Live:       e.Value.Live,
+				Proxy:      e.Value.Proxy,
+				RtmpSource: e.Value.RtmpSource,
+				Type:       e.Value.Type,
+				Headers:    e.Value.Headers,
+			},
+			CreatedAt: e.Value.CreatedAt,
+			Creator:   e.Value.Creator().Name(),
 		})
 		return true
 	})

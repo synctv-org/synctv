@@ -46,8 +46,8 @@ func (c *Client) Room() *Room {
 	return c.user.room
 }
 
-func (c *Client) Broadcast(msg Message, conf ...BroadcastConf) {
-	c.user.Broadcast(msg, conf...)
+func (c *Client) Broadcast(msg Message, conf ...BroadcastConf) error {
+	return c.user.Broadcast(msg, conf...)
 }
 
 func (c *Client) Send(msg Message) error {

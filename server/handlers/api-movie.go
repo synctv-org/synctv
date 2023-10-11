@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 	json "github.com/json-iterator/go"
 	"github.com/synctv-org/synctv/internal/conf"
+	pb "github.com/synctv-org/synctv/proto"
 	"github.com/synctv-org/synctv/room"
 	"github.com/synctv-org/synctv/utils"
 	"github.com/zijiren233/livelib/av"
@@ -97,7 +98,7 @@ func Movies(ctx *gin.Context) {
 	}))
 }
 
-type PushMovieReq = room.BaseMovie
+type PushMovieReq = room.BaseMovieInfo
 
 func PushMovie(ctx *gin.Context) {
 	user, err := AuthRoom(ctx.GetHeader("Authorization"))
@@ -219,8 +220,10 @@ func PushMovie(ctx *gin.Context) {
 	}
 
 	if err := user.Broadcast(&room.ElementMessage{
-		Type:   room.ChangeMovieList,
-		Sender: user.Name(),
+		ElementMessage: &pb.ElementMessage{
+			Type:   pb.ElementMessageType_CHANGE_MOVIES,
+			Sender: user.Name(),
+		},
 	}, room.WithSendToSelf()); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, NewApiErrorResp(err))
 		return
@@ -318,8 +321,10 @@ func EditMovie(ctx *gin.Context) {
 	m.Headers = req.Headers
 
 	if err := user.Broadcast(&room.ElementMessage{
-		Type:   room.ChangeMovieList,
-		Sender: user.Name(),
+		ElementMessage: &pb.ElementMessage{
+			Type:   pb.ElementMessageType_CHANGE_MOVIES,
+			Sender: user.Name(),
+		},
 	}, room.WithSendToSelf()); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, NewApiErrorResp(err))
 		return
@@ -351,8 +356,10 @@ func DelMovie(ctx *gin.Context) {
 	}
 
 	if err := user.Broadcast(&room.ElementMessage{
-		Type:   room.ChangeMovieList,
-		Sender: user.Name(),
+		ElementMessage: &pb.ElementMessage{
+			Type:   pb.ElementMessageType_CHANGE_MOVIES,
+			Sender: user.Name(),
+		},
 	}, room.WithSendToSelf()); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, NewApiErrorResp(err))
 		return
@@ -374,8 +381,10 @@ func ClearMovies(ctx *gin.Context) {
 	}
 
 	if err := user.Broadcast(&room.ElementMessage{
-		Type:   room.ChangeMovieList,
-		Sender: user.Name(),
+		ElementMessage: &pb.ElementMessage{
+			Type:   pb.ElementMessageType_CHANGE_MOVIES,
+			Sender: user.Name(),
+		},
 	}, room.WithSendToSelf()); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, NewApiErrorResp(err))
 		return
@@ -408,8 +417,10 @@ func SwapMovie(ctx *gin.Context) {
 	}
 
 	if err := user.Broadcast(&room.ElementMessage{
-		Type:   room.ChangeMovieList,
-		Sender: user.Name(),
+		ElementMessage: &pb.ElementMessage{
+			Type:   pb.ElementMessageType_CHANGE_MOVIES,
+			Sender: user.Name(),
+		},
 	}, room.WithSendToSelf()); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, NewApiErrorResp(err))
 		return
@@ -439,11 +450,12 @@ func ChangeCurrentMovie(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorResp(err))
 		return
 	}
-
 	if err := user.Broadcast(&room.ElementMessage{
-		Type:    room.ChangeCurrent,
-		Sender:  user.Name(),
-		Current: user.Room().Current(),
+		ElementMessage: &pb.ElementMessage{
+			Type:    pb.ElementMessageType_CHANGE_CURRENT,
+			Sender:  user.Name(),
+			Current: user.Room().Current().Proto(),
+		},
 	}, room.WithSendToSelf()); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, NewApiErrorResp(err))
 		return
@@ -499,7 +511,7 @@ func ProxyMovie(ctx *gin.Context) {
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorResp(err))
 	}
-	cm := room.Current().Movie()
+	cm := room.Current().Movie
 	if !cm.Proxy || cm.Live {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorStringResp("not support proxy"))
 		return

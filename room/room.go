@@ -25,7 +25,7 @@ type Room struct {
 	password     []byte
 	needPassword uint32
 	version      uint64
-	current      *Current
+	current      *current
 	rtmps        *rtmps.Server
 	rtmpa        *rtmps.App
 	hidden       uint32
@@ -274,7 +274,8 @@ func (r *Room) updateVersion() uint64 {
 }
 
 func (r *Room) Current() *Current {
-	return r.current
+	c := r.current.Current()
+	return &c
 }
 
 // Seek will be set to 0
@@ -285,18 +286,19 @@ func (r *Room) ChangeCurrentMovie(id uint64) error {
 		return err
 	}
 	r.current.SetMovie(MovieInfo{
-		Id:         e.Value.id,
-		Url:        e.Value.Url,
-		Name:       e.Value.Name,
-		Live:       e.Value.Live,
-		Proxy:      e.Value.Proxy,
-		RtmpSource: e.Value.RtmpSource,
-		Type:       e.Value.Type,
-		Headers:    e.Value.Headers,
-		PullKey:    e.Value.PullKey,
-		CreateAt:   e.Value.CreateAt,
-		LastEditAt: e.Value.LastEditAt,
-		Creator:    e.Value.Creator().Name(),
+		Id: e.Value.id,
+		BaseMovieInfo: BaseMovieInfo{
+			Url:        e.Value.Url,
+			Name:       e.Value.Name,
+			Live:       e.Value.Live,
+			Proxy:      e.Value.Proxy,
+			RtmpSource: e.Value.RtmpSource,
+			Type:       e.Value.Type,
+			Headers:    e.Value.Headers,
+		},
+		PullKey:   e.Value.PullKey,
+		CreatedAt: e.Value.CreatedAt,
+		Creator:   e.Value.Creator().Name(),
 	})
 	return nil
 }

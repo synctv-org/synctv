@@ -1,0 +1,56 @@
+syntax = "proto3";
+option go_package = ".;pb";
+
+package proto;
+
+enum ElementMessageType {
+  UNKNOWN = 0;
+  ERROR = 1;
+  CHAT_MESSAGE = 2;
+  PLAY = 3;
+  PAUSE = 4;
+  CHECK_SEEK = 5;
+  TOO_FAST = 6;
+  TOO_SLOW = 7;
+  CHANGE_RATE = 8;
+  CHANGE_SEEK = 9;
+  CHANGE_CURRENT = 10;
+  CHANGE_MOVIES = 11;
+  CHANGE_PEOPLE = 12;
+}
+
+message MovieInfo {
+  uint64 id = 1;
+  string url = 2;
+  string name = 3;
+  bool live = 4;
+  bool proxy = 5;
+  bool rtmp_source = 6;
+  string type = 7;
+  map<string, string> headers = 8;
+  string pull_key = 9;
+  int64 created_at = 10;
+  string creator = 11;
+}
+
+message Status {
+  double seek = 1;
+  double rate = 2;
+  bool playing = 3;
+}
+
+message Current {
+  MovieInfo movie = 1;
+  Status status = 2;
+}
+
+message ElementMessage {
+  ElementMessageType type = 1;
+  string sender = 2;
+  string message = 3;
+  double rate = 4;
+  double seek = 5;
+  optional Current current = 6;
+  int64 people_num = 7;
+  int64 time = 8;
+}

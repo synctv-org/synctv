@@ -1,15 +1,18 @@
 package handlers
 
 import (
+	"io"
 	"net/http"
 	"time"
 
 	json "github.com/json-iterator/go"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 	log "github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/cmd/flags"
+	pb "github.com/synctv-org/synctv/proto"
 	"github.com/synctv-org/synctv/room"
 	"github.com/synctv-org/synctv/utils"
 )
@@ -34,8 +37,10 @@ func NewWSMessageHandler(u *room.User) func(c *websocket.Conn) error {
 		if err != nil {
 			log.Errorf("ws: register client error: %v", err)
 			b, err := json.Marshal(room.ElementMessage{
-				Type:    room.Error,
-				Message: err.Error(),
+				ElementMessage: &pb.ElementMessage{
+					Type:    pb.ElementMessageType_ERROR,
+					Message: err.Error(),
+				},
 			})
 			if err != nil {
 				return err
@@ -78,7 +83,7 @@ func handleWriterMessage(c *room.Client) error {
 
 func handleReaderMessage(c *room.Client) error {
 	defer c.Close()
-	var timeDiff float64
+	var msg pb.ElementMessage
 	for {
 		t, rd, err := c.NextReader()
 		if err != nil {
@@ -94,100 +99,143 @@ func handleReaderMessage(c *room.Client) error {
 				log.Infof("ws: room %s user %s receive close message", c.Room().ID(), c.Username())
 			}
 			return nil
-		case websocket.TextMessage:
-			msg := room.ElementMessage{}
-			if err := json.NewDecoder(rd).Decode(&msg); err != nil {
-				log.Errorf("ws: room %s user %s decode message error: %v", c.Room().ID(), c.Username(), err)
+		case websocket.BinaryMessage:
+			var data []byte
+			if data, err = io.ReadAll(rd); err != nil {
+				log.Errorf("ws: room %s user %s read message error: %v", c.Room().ID(), c.Username(), err)
 				if err := c.Send(&room.ElementMessage{
-					Type:    room.Error,
-					Message: err.Error(),
+					ElementMessage: &pb.ElementMessage{
+						Type:    pb.ElementMessageType_ERROR,
+						Message: err.Error(),
+					},
 				}); err != nil {
 					log.Errorf("ws: room %s user %s send error message error: %v", c.Room().ID(), c.Username(), err)
 					return err
 				}
 				continue
 			}
-			if flags.Dev {
-				log.Infof("ws: receive room %s user %s message: %+v", c.Room().ID(), c.Username(), msg)
-			}
-			if msg.Time != 0 {
-				timeDiff = time.Since(time.UnixMilli(msg.Time)).Seconds()
-			} else {
-				timeDiff = 0.0
-			}
-			if timeDiff < 0 {
-				timeDiff = 0
-			} else if timeDiff > 1.5 {
-				timeDiff = 1.5
-			}
-			switch msg.Type {
-			case room.ChatMessage:
-				if len(msg.Message) > 4096 {
-					c.Send(&room.ElementMessage{
-						Type:    room.Error,
-						Message: "message too long",
-					})
-					continue
+			if err := proto.Unmarshal(data, &msg); err != nil {
+				log.Errorf("ws: room %s user %s decode message error: %v", c.Room().ID(), c.Username(), err)
+				if err := c.Send(&room.ElementMessage{
+					ElementMessage: &pb.ElementMessage{
+						Type:    pb.ElementMessageType_ERROR,
+						Message: err.Error(),
+					},
+				}); err != nil {
+					log.Errorf("ws: room %s user %s send error message error: %v", c.Room().ID(), c.Username(), err)
+					return err
 				}
-				c.Broadcast(&room.ElementMessage{
-					Type:    room.ChatMessage,
-					Sender:  c.Username(),
-					Message: msg.Message,
-				}, room.WithSendToSelf())
-			case room.Play:
-				status := c.Room().SetStatus(true, msg.Seek, msg.Rate, timeDiff)
-				c.Broadcast(&room.ElementMessage{
-					Type:   room.Play,
-					Sender: c.Username(),
-					Seek:   status.Seek,
-					Rate:   status.Rate,
-				})
-			case room.Pause:
-				status := c.Room().SetStatus(false, msg.Seek, msg.Rate, timeDiff)
-				c.Broadcast(&room.ElementMessage{
-					Type:   room.Pause,
-					Sender: c.Username(),
-					Seek:   status.Seek,
-					Rate:   status.Rate,
-				})
-			case room.ChangeRate:
-				status := c.Room().SetSeekRate(msg.Seek, msg.Rate, timeDiff)
-				c.Broadcast(&room.ElementMessage{
-					Type:   room.ChangeRate,
-					Sender: c.Username(),
-					Seek:   status.Seek,
-					Rate:   status.Rate,
-				})
-			case room.ChangeSeek:
-				status := c.Room().SetSeekRate(msg.Seek, msg.Rate, timeDiff)
-				c.Broadcast(&room.ElementMessage{
-					Type:   room.ChangeSeek,
-					Sender: c.Username(),
-					Seek:   status.Seek,
-					Rate:   status.Rate,
-				})
-			case room.CheckSeek:
-				status := c.Room().Current().Status()
-				if status.Seek+maxInterval < msg.Seek+timeDiff {
-					c.Send(&room.ElementMessage{
-						Type: room.TooFast,
-						Seek: status.Seek,
-						Rate: status.Rate,
-					})
-				} else if status.Seek-maxInterval > msg.Seek+timeDiff {
-					c.Send(&room.ElementMessage{
-						Type: room.TooSlow,
-						Seek: status.Seek,
-						Rate: status.Rate,
-					})
-				} else {
-					c.Send(&room.ElementMessage{
-						Type: room.CheckSeek,
-						Seek: status.Seek,
-						Rate: status.Rate,
-					})
+				continue
+			}
+		case websocket.TextMessage:
+			if err := json.NewDecoder(rd).Decode(&msg); err != nil {
+				log.Errorf("ws: room %s user %s decode message error: %v", c.Room().ID(), c.Username(), err)
+				if err := c.Send(&room.ElementMessage{
+					ElementMessage: &pb.ElementMessage{
+						Type:    pb.ElementMessageType_ERROR,
+						Message: err.Error(),
+					},
+				}); err != nil {
+					log.Errorf("ws: room %s user %s send error message error: %v", c.Room().ID(), c.Username(), err)
+					return err
 				}
+				continue
 			}
 		}
+		if flags.Dev {
+			log.Infof("ws: receive room %s user %s message: %+v", c.Room().ID(), c.Username(), msg.String())
+		}
+		if err := handleElementMsg(c.Room(), &msg, func(em *pb.ElementMessage) error {
+			em.Sender = c.Username()
+			return c.Send(&room.ElementMessage{ElementMessage: em})
+		}, func(em *pb.ElementMessage, bc ...room.BroadcastConf) error {
+			em.Sender = c.Username()
+			return c.Broadcast(&room.ElementMessage{ElementMessage: em}, bc...)
+		}); err != nil {
+			log.Errorf("ws: room %s user %s handle message error: %v", c.Room().ID(), c.Username(), err)
+			return err
+		}
 	}
+}
+
+type send func(*pb.ElementMessage) error
+
+type broadcast func(*pb.ElementMessage, ...room.BroadcastConf) error
+
+func handleElementMsg(r *room.Room, msg *pb.ElementMessage, send send, broadcast broadcast) error {
+	var timeDiff float64
+	if msg.Time != 0 {
+		timeDiff = time.Since(time.UnixMilli(msg.Time)).Seconds()
+	} else {
+		timeDiff = 0.0
+	}
+	if timeDiff < 0 {
+		timeDiff = 0
+	} else if timeDiff > 1.5 {
+		timeDiff = 1.5
+	}
+	switch msg.Type {
+	case pb.ElementMessageType_CHAT_MESSAGE:
+		if len(msg.Message) > 4096 {
+			send(&pb.ElementMessage{
+				Type:    pb.ElementMessageType_ERROR,
+				Message: "message too long",
+			})
+			return nil
+		}
+		broadcast(&pb.ElementMessage{
+			Type:    pb.ElementMessageType_CHAT_MESSAGE,
+			Message: msg.Message,
+		}, room.WithSendToSelf())
+	case pb.ElementMessageType_PLAY:
+		status := r.SetStatus(true, msg.Seek, msg.Rate, timeDiff)
+		broadcast(&pb.ElementMessage{
+			Type: pb.ElementMessageType_PLAY,
+			Seek: status.Seek,
+			Rate: status.Rate,
+		})
+	case pb.ElementMessageType_PAUSE:
+		status := r.SetStatus(false, msg.Seek, msg.Rate, timeDiff)
+		broadcast(&pb.ElementMessage{
+			Type: pb.ElementMessageType_PAUSE,
+			Seek: status.Seek,
+			Rate: status.Rate,
+		})
+	case pb.ElementMessageType_CHANGE_RATE:
+		status := r.SetSeekRate(msg.Seek, msg.Rate, timeDiff)
+		broadcast(&pb.ElementMessage{
+			Type: pb.ElementMessageType_CHANGE_RATE,
+			Seek: status.Seek,
+			Rate: status.Rate,
+		})
+	case pb.ElementMessageType_CHANGE_SEEK:
+		status := r.SetSeekRate(msg.Seek, msg.Rate, timeDiff)
+		broadcast(&pb.ElementMessage{
+			Type: pb.ElementMessageType_CHANGE_SEEK,
+			Seek: status.Seek,
+			Rate: status.Rate,
+		})
+	case pb.ElementMessageType_CHECK_SEEK:
+		status := r.Current().Status
+		if status.Seek+maxInterval < msg.Seek+timeDiff {
+			send(&pb.ElementMessage{
+				Type: pb.ElementMessageType_TOO_FAST,
+				Seek: status.Seek,
+				Rate: status.Rate,
+			})
+		} else if status.Seek-maxInterval > msg.Seek+timeDiff {
+			send(&pb.ElementMessage{
+				Type: pb.ElementMessageType_TOO_SLOW,
+				Seek: status.Seek,
+				Rate: status.Rate,
+			})
+		} else {
+			send(&pb.ElementMessage{
+				Type: pb.ElementMessageType_CHECK_SEEK,
+				Seek: status.Seek,
+				Rate: status.Rate,
+			})
+		}
+	}
+	return nil
 }

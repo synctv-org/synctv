@@ -15,6 +15,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/maruel/natural"
 	"github.com/synctv-org/synctv/internal/conf"
+	pb "github.com/synctv-org/synctv/proto"
 	"github.com/synctv-org/synctv/room"
 	"github.com/zijiren233/gencontainer/vec"
 	rtmps "github.com/zijiren233/livelib/server"
@@ -173,8 +174,10 @@ func NewCreateRoomHandler(s *rtmps.Server) gin.HandlerFunc {
 				current := r.ClientNum()
 				if current != pre {
 					if err := r.Broadcast(&room.ElementMessage{
-						Type:      room.ChangePeopleNum,
-						PeopleNum: current,
+						ElementMessage: &pb.ElementMessage{
+							Type:      pb.ElementMessageType_CHANGE_PEOPLE,
+							PeopleNum: current,
+						},
 					}); err != nil {
 						log.Errorf("ws: room %s broadcast people num error: %v", r.ID(), err)
 						continue

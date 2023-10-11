@@ -4,136 +4,165 @@ import (
 	"sync"
 	"time"
 
-	json "github.com/json-iterator/go"
+	pb "github.com/synctv-org/synctv/proto"
 )
 
-type Current struct {
-	movie  MovieInfo
-	status Status
-	lock   sync.RWMutex
+type current struct {
+	current Current
+	lock    sync.RWMutex
 }
 
-func newCurrent() *Current {
-	return &Current{
-		movie:  MovieInfo{},
-		status: newStatus(),
+type Current struct {
+	Movie  MovieInfo `json:"movie"`
+	Status Status    `json:"status"`
+}
+
+func newCurrent() *current {
+	return &current{
+		current: Current{
+			Status: newStatus(),
+		},
 	}
 }
 
 type Status struct {
-	Seek           float64 `json:"seek"`
-	Rate           float64 `json:"rate"`
-	Playing        bool    `json:"playing"`
-	lastUpdateTime time.Time
+	Seek       float64 `json:"seek"`
+	Rate       float64 `json:"rate"`
+	Playing    bool    `json:"playing"`
+	lastUpdate time.Time
 }
 
 func newStatus() Status {
 	return Status{
-		Seek:           0,
-		Rate:           1.0,
-		lastUpdateTime: time.Now(),
+		Seek:       0,
+		Rate:       1.0,
+		lastUpdate: time.Now(),
 	}
 }
 
-func (c *Current) MarshalJSON() ([]byte, error) {
+func (c *current) Current() Current {
 	c.lock.RLock()
 	defer c.lock.RUnlock()
-	c.updateSeek()
-	return json.Marshal(map[string]interface{}{
-		"movie":  c.movie,
-		"status": c.status,
-	})
+	c.current.updateSeek()
+	return c.current
 }
 
-func (c *Current) Movie() MovieInfo {
+func (c *current) Movie() MovieInfo {
 	c.lock.RLock()
 	defer c.lock.RUnlock()
 
-	return c.movie
+	return c.current.Movie
 }
 
-func (c *Current) SetMovie(movie MovieInfo) {
+func (c *current) SetMovie(movie MovieInfo) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 
-	c.movie = movie
-	c.setSeek(0, 0)
+	c.current.Movie = movie
+	c.current.SetSeek(0, 0)
 }
 
-func (c *Current) Status() Status {
+func (c *current) Status() Status {
 	c.lock.RLock()
 	defer c.lock.RUnlock()
-	c.updateSeek()
-	return c.status
+	c.current.updateSeek()
+	return c.current.Status
+}
+
+func (c *current) SetStatus(playing bool, seek, rate, timeDiff float64) Status {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+
+	return c.current.SetStatus(playing, seek, rate, timeDiff)
+}
+
+func (c *current) SetSeekRate(seek, rate, timeDiff float64) Status {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+
+	return c.current.SetSeekRate(seek, rate, timeDiff)
+}
+
+func (c *Current) Proto() *pb.Current {
+	return &pb.Current{
+		Movie: &pb.MovieInfo{
+			Id:         c.Movie.Id,
+			Url:        c.Movie.Url,
+			Name:       c.Movie.Name,
+			Live:       c.Movie.Live,
+			Proxy:      c.Movie.Proxy,
+			RtmpSource: c.Movie.RtmpSource,
+			Type:       c.Movie.Type,
+			Headers:    c.Movie.Headers,
+			PullKey:    c.Movie.PullKey,
+			CreatedAt:  c.Movie.CreatedAt,
+			Creator:    c.Movie.Creator,
+		},
+		Status: &pb.Status{
+			Seek:    c.Status.Seek,
+			Rate:    c.Status.Rate,
+			Playing: c.Status.Playing,
+		},
+	}
 }
 
 func (c *Current) updateSeek() {
-	if c.movie.Live {
-		c.status.lastUpdateTime = time.Now()
+	if c.Movie.Live {
+		c.Status.lastUpdate = time.Now()
 		return
 	}
-	if c.status.Playing {
-		c.status.Seek += time.Since(c.status.lastUpdateTime).Seconds() * c.status.Rate
+	if c.Status.Playing {
+		c.Status.Seek += time.Since(c.Status.lastUpdate).Seconds() * c.Status.Rate
 	}
-	c.status.lastUpdateTime = time.Now()
+	c.Status.lastUpdate = time.Now()
 }
 
 func (c *Current) setLiveStatus() Status {
-	c.status.Playing = true
-	c.status.Rate = 1.0
-	c.status.Seek = 0
-	c.status.lastUpdateTime = time.Now()
-	return c.status
+	c.Status.Playing = true
+	c.Status.Rate = 1.0
+	c.Status.Seek = 0
+	c.Status.lastUpdate = time.Now()
+	return c.Status
 }
 
 func (c *Current) SetStatus(playing bool, seek, rate, timeDiff float64) Status {
-	c.lock.Lock()
-	defer c.lock.Unlock()
-	if c.movie.Live {
+	if c.Movie.Live {
 		return c.setLiveStatus()
 	}
-	c.status.Playing = playing
-	c.status.Rate = rate
+	c.Status.Playing = playing
+	c.Status.Rate = rate
 	if playing {
-		c.status.Seek = seek + (timeDiff * rate)
+		c.Status.Seek = seek + (timeDiff * rate)
 	} else {
-		c.status.Seek = seek
+		c.Status.Seek = seek
 	}
-	c.status.lastUpdateTime = time.Now()
-	return c.status
+	c.Status.lastUpdate = time.Now()
+	return c.Status
 }
 
 func (c *Current) SetSeekRate(seek, rate, timeDiff float64) Status {
-	c.lock.Lock()
-	defer c.lock.Unlock()
-	if c.movie.Live {
+	if c.Movie.Live {
 		return c.setLiveStatus()
 	}
-	if c.status.Playing {
-		c.status.Seek = seek + (timeDiff * rate)
+	if c.Status.Playing {
+		c.Status.Seek = seek + (timeDiff * rate)
 	} else {
-		c.status.Seek = seek
+		c.Status.Seek = seek
 	}
-	c.status.Rate = rate
-	c.status.lastUpdateTime = time.Now()
-	return c.status
+	c.Status.Rate = rate
+	c.Status.lastUpdate = time.Now()
+	return c.Status
 }
 
 func (c *Current) SetSeek(seek, timeDiff float64) Status {
-	c.lock.Lock()
-	defer c.lock.Unlock()
-	return c.setSeek(seek, timeDiff)
-}
-
-func (c *Current) setSeek(seek, timeDiff float64) Status {
-	if c.movie.Live {
+	if c.Movie.Live {
 		return c.setLiveStatus()
 	}
-	if c.status.Playing {
-		c.status.Seek = seek + (timeDiff * c.status.Rate)
+	if c.Status.Playing {
+		c.Status.Seek = seek + (timeDiff * c.Status.Rate)
 	} else {
-		c.status.Seek = seek
+		c.Status.Seek = seek
 	}
-	c.status.lastUpdateTime = time.Now()
-	return c.status
+	c.Status.lastUpdate = time.Now()
+	return c.Status
 }

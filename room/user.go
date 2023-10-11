@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	pb "github.com/synctv-org/synctv/proto"
 	"github.com/zijiren233/gencontainer/dllist"
 	"github.com/zijiren233/stream"
 	"golang.org/x/crypto/bcrypt"
@@ -143,7 +144,7 @@ func (u *User) SetAdmin(admin bool) {
 }
 
 func (u *User) NewMovie(url string, name string, type_ string, live bool, proxy bool, rtmpSource bool, headers map[string]string, conf ...MovieConf) (*Movie, error) {
-	return u.NewMovieWithBaseMovie(BaseMovie{
+	return u.NewMovieWithBaseMovie(BaseMovieInfo{
 		Url:        url,
 		Name:       name,
 		Live:       live,
@@ -154,11 +155,11 @@ func (u *User) NewMovie(url string, name string, type_ string, live bool, proxy 
 	}, conf...)
 }
 
-func (u *User) NewMovieWithBaseMovie(baseMovie BaseMovie, conf ...MovieConf) (*Movie, error) {
+func (u *User) NewMovieWithBaseMovie(baseMovie BaseMovieInfo, conf ...MovieConf) (*Movie, error) {
 	return NewMovieWithBaseMovie(atomic.AddUint64(&u.room.mid, 1), baseMovie, append(conf, WithCreator(u))...)
 }
 
-func (u *User) Movie(id uint64) (*MovieInfo, error) {
+func (u *User) Movie(id uint64) (*pb.MovieInfo, error) {
 	u.room.movies.lock.RLock()
 	defer u.room.movies.lock.RUnlock()
 
@@ -166,7 +167,7 @@ func (u *User) Movie(id uint64) (*MovieInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	movie := &MovieInfo{
+	movie := &pb.MovieInfo{
 		Id:         m.Id(),
 		Url:        m.Url,
 		Name:       m.Name,
@@ -176,8 +177,7 @@ func (u *User) Movie(id uint64) (*MovieInfo, error) {
 		Type:       m.Type,
 		Headers:    m.Headers,
 		PullKey:    m.PullKey,
-		CreateAt:   m.CreateAt,
-		LastEditAt: m.LastEditAt,
+		CreatedAt:  m.CreatedAt,
 		Creator:    m.Creator().Name(),
 	}
 	if movie.Proxy && u.name != movie.Creator {
@@ -186,13 +186,13 @@ func (u *User) Movie(id uint64) (*MovieInfo, error) {
 	return movie, nil
 }
 
-func (u *User) MovieList() []*MovieInfo {
+func (u *User) MovieList() []*pb.MovieInfo {
 	u.room.movies.lock.RLock()
 	defer u.room.movies.lock.RUnlock()
 
-	movies := make([]*MovieInfo, 0, u.room.movies.l.Len())
+	movies := make([]*pb.MovieInfo, 0, u.room.movies.l.Len())
 	u.room.movies.range_(func(e *dllist.Element[*Movie]) bool {
-		m := &MovieInfo{
+		m := &pb.MovieInfo{
 			Id:         e.Value.Id(),
 			Url:        e.Value.Url,
 			Name:       e.Value.Name,
@@ -202,8 +202,7 @@ func (u *User) MovieList() []*MovieInfo {
 			Type:       e.Value.Type,
 			Headers:    e.Value.Headers,
 			PullKey:    e.Value.PullKey,
-			CreateAt:   e.Value.CreateAt,
-			LastEditAt: e.Value.LastEditAt,
+			CreatedAt:  e.Value.CreatedAt,
 			Creator:    e.Value.Creator().Name(),
 		}
 		if e.Value.Proxy && u.name != m.Creator {

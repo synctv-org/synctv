@@ -42,7 +42,7 @@ type AuthClaims struct {
 	jwt.RegisteredClaims
 }
 
-func AuthRoom(Authorization string) (*room.User, error) {
+func AuthRoom(Authorization string, rooms *room.Rooms) (*room.User, error) {
 	t, err := jwt.ParseWithClaims(strings.TrimPrefix(Authorization, `Bearer `), &AuthClaims{}, func(token *jwt.Token) (any, error) {
 		return stream.StringToBytes(conf.Conf.Jwt.Secret), nil
 	})
@@ -51,7 +51,7 @@ func AuthRoom(Authorization string) (*room.User, error) {
 	}
 	claims := t.Claims.(*AuthClaims)
 
-	r, err := Rooms.GetRoom(claims.RoomID)
+	r, err := rooms.GetRoom(claims.RoomID)
 	if err != nil {
 		return nil, err
 	}
@@ -62,7 +62,7 @@ func AuthRoom(Authorization string) (*room.User, error) {
 
 	user, err := r.GetUser(claims.Username)
 	if err != nil {
-		return nil, ErrUserNotFound
+		return nil, err
 	}
 
 	if !user.CheckVersion(claims.UserVersion) {
@@ -72,8 +72,8 @@ func AuthRoom(Authorization string) (*room.User, error) {
 	return user, nil
 }
 
-func authWithPassword(roomid, password, username, userPassword string) (*room.User, error) {
-	r, err := Rooms.GetRoom(roomid)
+func authWithPassword(rooms *room.Rooms, roomid, password, username, userPassword string) (*room.User, error) {
+	r, err := rooms.GetRoom(roomid)
 	if err != nil {
 		return nil, err
 	}
@@ -82,7 +82,7 @@ func authWithPassword(roomid, password, username, userPassword string) (*room.Us
 	}
 	user, err := r.GetUser(username)
 	if err != nil {
-		return nil, ErrUserNotFound
+		return nil, err
 	}
 	if !user.CheckPassword(userPassword) {
 		return nil, ErrAuthFailed
@@ -90,8 +90,8 @@ func authWithPassword(roomid, password, username, userPassword string) (*room.Us
 	return user, nil
 }
 
-func authOrNewWithPassword(roomid, password, username, userPassword string, conf ...room.UserConf) (*room.User, error) {
-	r, err := Rooms.GetRoom(roomid)
+func authOrNewWithPassword(rooms *room.Rooms, roomid, password, username, userPassword string, conf ...room.UserConf) (*room.User, error) {
+	r, err := rooms.GetRoom(roomid)
 	if err != nil {
 		return nil, err
 	}
@@ -132,6 +132,7 @@ type CreateRoomReq struct {
 
 func NewCreateRoomHandler(s *rtmps.Server) gin.HandlerFunc {
 	return func(ctx *gin.Context) {
+		rooms := ctx.Value("rooms").(*room.Rooms)
 		req := new(CreateRoomReq)
 		if err := json.NewDecoder(ctx.Request.Body).Decode(req); err != nil {
 			ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorResp(err))
@@ -144,7 +145,7 @@ func NewCreateRoomHandler(s *rtmps.Server) gin.HandlerFunc {
 			return
 		}
 
-		r, err := Rooms.CreateRoom(req.RoomID, req.Password, s,
+		r, err := rooms.CreateRoom(req.RoomID, req.Password, s,
 			room.WithHidden(req.Hidden),
 			room.WithRootUser(user),
 		)
@@ -207,7 +208,8 @@ type RoomListResp struct {
 }
 
 func RoomList(ctx *gin.Context) {
-	r := Rooms.ListNonHidden()
+	rooms := ctx.Value("rooms").(*room.Rooms)
+	r := rooms.ListNonHidden()
 	resp := vec.New[*RoomListResp](vec.WithCmpLess[*RoomListResp](func(v1, v2 *RoomListResp) bool {
 		return v1.PeopleNum < v2.PeopleNum
 	}), vec.WithCmpEqual[*RoomListResp](func(v1, v2 *RoomListResp) bool {
@@ -278,7 +280,8 @@ func RoomList(ctx *gin.Context) {
 }
 
 func CheckRoom(ctx *gin.Context) {
-	r, err := Rooms.GetRoom(ctx.Query("roomId"))
+	rooms := ctx.Value("rooms").(*room.Rooms)
+	r, err := rooms.GetRoom(ctx.Query("roomId"))
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusNotFound, NewApiErrorResp(err))
 		return
@@ -291,7 +294,8 @@ func CheckRoom(ctx *gin.Context) {
 }
 
 func CheckUser(ctx *gin.Context) {
-	r, err := Rooms.GetRoom(ctx.Query("roomId"))
+	rooms := ctx.Value("rooms").(*room.Rooms)
+	r, err := rooms.GetRoom(ctx.Query("roomId"))
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusNotFound, NewApiErrorResp(err))
 		return
@@ -318,6 +322,7 @@ type LoginRoomReq struct {
 }
 
 func LoginRoom(ctx *gin.Context) {
+	rooms := ctx.Value("rooms").(*room.Rooms)
 	req := new(LoginRoomReq)
 	if err := json.NewDecoder(ctx.Request.Body).Decode(req); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorResp(err))
@@ -334,13 +339,13 @@ func LoginRoom(ctx *gin.Context) {
 		user *room.User
 	)
 	if autoNew {
-		user, err = authOrNewWithPassword(req.RoomID, req.Password, req.Username, req.UserPassword)
+		user, err = authOrNewWithPassword(rooms, req.RoomID, req.Password, req.Username, req.UserPassword)
 		if err != nil {
 			ctx.AbortWithStatusJSON(http.StatusUnauthorized, NewApiErrorResp(err))
 			return
 		}
 	} else {
-		user, err = authWithPassword(req.RoomID, req.Password, req.Username, req.UserPassword)
+		user, err = authWithPassword(rooms, req.RoomID, req.Password, req.Username, req.UserPassword)
 		if err != nil {
 			ctx.AbortWithStatusJSON(http.StatusUnauthorized, NewApiErrorResp(err))
 			return
@@ -359,7 +364,8 @@ func LoginRoom(ctx *gin.Context) {
 }
 
 func DeleteRoom(ctx *gin.Context) {
-	user, err := AuthRoom(ctx.GetHeader("Authorization"))
+	rooms := ctx.Value("rooms").(*room.Rooms)
+	user, err := AuthRoom(ctx.GetHeader("Authorization"), rooms)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusUnauthorized, NewApiErrorResp(err))
 		return
@@ -370,7 +376,7 @@ func DeleteRoom(ctx *gin.Context) {
 		return
 	}
 
-	err = Rooms.DelRoom(user.Room().ID())
+	err = rooms.DelRoom(user.Room().ID())
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, NewApiErrorResp(err))
 		return
@@ -384,7 +390,8 @@ type SetPasswordReq struct {
 }
 
 func SetPassword(ctx *gin.Context) {
-	user, err := AuthRoom(ctx.GetHeader("Authorization"))
+	rooms := ctx.Value("rooms").(*room.Rooms)
+	user, err := AuthRoom(ctx.GetHeader("Authorization"), rooms)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusUnauthorized, NewApiErrorResp(err))
 		return
@@ -419,7 +426,8 @@ type UsernameReq struct {
 }
 
 func AddAdmin(ctx *gin.Context) {
-	user, err := AuthRoom(ctx.GetHeader("Authorization"))
+	rooms := ctx.Value("rooms").(*room.Rooms)
+	user, err := AuthRoom(ctx.GetHeader("Authorization"), rooms)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusUnauthorized, NewApiErrorResp(err))
 		return
@@ -448,7 +456,8 @@ func AddAdmin(ctx *gin.Context) {
 }
 
 func DelAdmin(ctx *gin.Context) {
-	user, err := AuthRoom(ctx.GetHeader("Authorization"))
+	rooms := ctx.Value("rooms").(*room.Rooms)
+	user, err := AuthRoom(ctx.GetHeader("Authorization"), rooms)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusUnauthorized, NewApiErrorResp(err))
 		return
@@ -477,7 +486,8 @@ func DelAdmin(ctx *gin.Context) {
 }
 
 func CloseRoom(ctx *gin.Context) {
-	user, err := AuthRoom(ctx.GetHeader("Authorization"))
+	rooms := ctx.Value("rooms").(*room.Rooms)
+	user, err := AuthRoom(ctx.GetHeader("Authorization"), rooms)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusUnauthorized, NewApiErrorResp(err))
 		return
@@ -488,7 +498,7 @@ func CloseRoom(ctx *gin.Context) {
 		return
 	}
 
-	err = Rooms.DelRoom(user.Room().ID())
+	err = rooms.DelRoom(user.Room().ID())
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, NewApiErrorResp(err))
 		return

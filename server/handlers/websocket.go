@@ -20,8 +20,9 @@ const maxInterval = 10
 
 func NewWebSocketHandler(wss *utils.WebSocket) gin.HandlerFunc {
 	return func(ctx *gin.Context) {
+		rooms := ctx.Value("rooms").(*room.Rooms)
 		token := ctx.GetHeader("Sec-WebSocket-Protocol")
-		user, err := AuthRoom(token)
+		user, err := AuthRoom(token, rooms)
 		if err != nil {
 			ctx.AbortWithStatusJSON(http.StatusUnauthorized, NewApiErrorResp(err))
 			return

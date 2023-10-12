@@ -5,10 +5,12 @@ import (
 
 	"github.com/gin-gonic/gin"
 	json "github.com/json-iterator/go"
+	"github.com/synctv-org/synctv/room"
 )
 
 func Me(ctx *gin.Context) {
-	user, err := AuthRoom(ctx.GetHeader("Authorization"))
+	rooms := ctx.Value("rooms").(*room.Rooms)
+	user, err := AuthRoom(ctx.GetHeader("Authorization"), rooms)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusUnauthorized, NewApiErrorResp(err))
 		return
@@ -23,7 +25,8 @@ func Me(ctx *gin.Context) {
 }
 
 func SetUserPassword(ctx *gin.Context) {
-	user, err := AuthRoom(ctx.GetHeader("Authorization"))
+	rooms := ctx.Value("rooms").(*room.Rooms)
+	user, err := AuthRoom(ctx.GetHeader("Authorization"), rooms)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusUnauthorized, NewApiErrorResp(err))
 		return

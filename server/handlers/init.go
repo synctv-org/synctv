@@ -8,13 +8,12 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/internal/conf"
 	"github.com/synctv-org/synctv/public"
+	"github.com/synctv-org/synctv/room"
 	"github.com/synctv-org/synctv/utils"
 	rtmps "github.com/zijiren233/livelib/server"
 )
 
-func Init(e *gin.Engine, s *rtmps.Server) {
-	initOnce()
-
+func Init(e *gin.Engine, s *rtmps.Server, r *room.Rooms) {
 	{
 		s.SetParseChannelFunc(func(ReqAppName, ReqChannelName string, IsPublisher bool) (TrueAppName string, TrueChannel string, err error) {
 			if IsPublisher {
@@ -23,7 +22,7 @@ func Init(e *gin.Engine, s *rtmps.Server) {
 					log.Errorf("rtmp: publish auth to %s error: %v", ReqAppName, err)
 					return "", "", err
 				}
-				if !Rooms.HasRoom(ReqAppName) {
+				if !r.HasRoom(ReqAppName) {
 					log.Infof("rtmp: publish to %s/%s error: %s", ReqAppName, channelName, fmt.Sprintf("room %s not exist", ReqAppName))
 					return "", "", fmt.Errorf("room %s not exist", ReqAppName)
 				}

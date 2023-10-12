@@ -3,7 +3,6 @@ package handlers
 import (
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"path"
@@ -18,6 +17,7 @@ import (
 	json "github.com/json-iterator/go"
 	"github.com/synctv-org/synctv/internal/conf"
 	pb "github.com/synctv-org/synctv/proto"
+	"github.com/synctv-org/synctv/proxy"
 	"github.com/synctv-org/synctv/room"
 	"github.com/synctv-org/synctv/utils"
 	"github.com/zijiren233/livelib/av"
@@ -193,6 +193,7 @@ func PushMovie(ctx *gin.Context) {
 			ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorStringResp("movie proxy is not enabled"))
 			return
 		}
+		movie.PullKey = uuid.New().String()
 		fallthrough
 	case !movie.Live && !movie.Proxy, movie.Live && !movie.Proxy && !movie.RtmpSource:
 		u, err := url.Parse(movie.Url)
@@ -513,58 +514,65 @@ const UserAgent = `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/5
 
 func ProxyMovie(ctx *gin.Context) {
 	rooms := ctx.Value("rooms").(*room.Rooms)
-	roomid := ctx.Query("roomid")
-	if roomid == "" {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorStringResp("roomid is empty"))
+	roomId := ctx.Param("roomId")
+	if roomId == "" {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorStringResp("roomId is empty"))
 		return
 	}
-	room, err := rooms.GetRoom(roomid)
+	room, err := rooms.GetRoom(roomId)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorResp(err))
 	}
-	cm := room.Current().Movie
-	if !cm.Proxy || cm.Live {
+
+	m, err := room.GetMovieWithPullKey(ctx.Param("pullKey"))
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorResp(err))
+		return
+	}
+
+	if !m.Proxy || m.Live || m.RtmpSource {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorStringResp("not support proxy"))
 		return
 	}
 
-	u, err := url.Parse(cm.Url)
+	r := resty.New().R()
+
+	for k, v := range m.Headers {
+		r.SetHeader(k, v)
+	}
+	resp, err := r.Head(m.Url)
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, NewApiErrorResp(err))
 		return
 	}
+	defer resp.RawBody().Close()
 
-	req := resty.New().R().
-		SetHeader("Range", ctx.GetHeader("Range")).
-		SetHeader("User-Agent", UserAgent).
-		SetHeader("Referer", fmt.Sprintf("%s://%s/", u.Scheme, u.Host)).
-		SetHeader("Origin", fmt.Sprintf("%s://%s", u.Scheme, u.Host)).
-		SetHeader("Accept", ctx.GetHeader("Accept")).
-		SetHeader("Accept-Encoding", ctx.GetHeader("Accept-Encoding")).
-		SetHeader("Accept-Language", ctx.GetHeader("Accept-Language"))
-
-	if cm.Headers != nil {
-		for k, v := range cm.Headers {
-			req.SetHeader(k, v)
-		}
+	if _, ok := allowedProxyMovieType[resp.Header().Get("Content-Type")]; !ok {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorResp(fmt.Errorf("this movie type support proxy: %s", resp.Header().Get("Content-Type"))))
+		return
 	}
+	ctx.Status(resp.StatusCode())
+	ctx.Header("Content-Type", resp.Header().Get("Content-Type"))
+	l := resp.Header().Get("Content-Length")
+	ctx.Header("Content-Length", l)
 
-	resp, err := req.Get(cm.Url)
+	length, err := strconv.ParseInt(l, 10, 64)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, NewApiErrorResp(err))
 		return
 	}
 
-	defer resp.RawBody().Close()
-	if _, ok := allowedProxyMovieType[resp.Header().Get("Content-Type")]; !ok {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorResp(fmt.Errorf("this movie type support proxy: %s", resp.Header().Get("Content-Type"))))
-		return
+	hrs := proxy.NewBufferedHttpReadSeeker(128*1024, m.Url,
+		proxy.WithContext(ctx),
+		proxy.WithHeaders(m.Headers),
+		proxy.WithContext(ctx),
+		proxy.WithContentLength(length),
+	)
+	name := resp.Header().Get("Content-Disposition")
+	if name == "" {
+		name = m.Url
 	}
-	for k, v := range resp.Header() {
-		ctx.Header(k, v[0])
-	}
-	ctx.Status(resp.StatusCode())
-	io.Copy(ctx.Writer, resp.RawBody())
+	http.ServeContent(ctx.Writer, ctx.Request, name, time.Now(), hrs)
 }
 
 type FormatErrNotSupportFileType string

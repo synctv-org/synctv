@@ -110,6 +110,17 @@ server:
     port: 8080 # server listen port
 ```
 
+## Update
+`synctv self-update` to auto update the binary
+
+if you use `--dev` flag, it will update to the latest dev version force
+
+```bash
+synctv self-update
+# or
+synctv self-update --dev
+```
+
 ---
 
 # Contributors

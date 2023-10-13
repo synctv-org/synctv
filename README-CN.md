@@ -109,6 +109,17 @@ server:
     port: 8080 # server listen port
 ```
 
+## 升级
+`synctv self-update` 自动更新二进制文件
+
+如果你使用了 `--dev` 标志，它将强制更新到最新的开发版本
+
+```bash
+synctv self-update
+# or
+synctv self-update --dev
+```
+
 ---
 
 # 贡献者

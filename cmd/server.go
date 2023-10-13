@@ -24,14 +24,14 @@ var ServerCmd = &cobra.Command{
 			bootstrap.InitSysNotify,
 			bootstrap.InitConfig,
 			bootstrap.InitLog,
+			bootstrap.InitGinMode,
 		)
 		if !flags.DisableUpdateCheck {
 			boot.Add(bootstrap.InitCheckUpdate)
 		}
 		return boot.Run()
 	},
-	PreRunE: func(cmd *cobra.Command, args []string) error { return InitGinMode() },
-	Run:     Server,
+	Run: Server,
 }
 
 func Server(cmd *cobra.Command, args []string) {

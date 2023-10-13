@@ -52,7 +52,7 @@ func MovieList(ctx *gin.Context) {
 		return
 	}
 
-	ml := user.MovieList()
+	ml := user.Movies()
 
 	movies, err := GetPageItems(ctx, ml)
 	if err != nil {
@@ -88,7 +88,7 @@ func Movies(ctx *gin.Context) {
 		return
 	}
 
-	ml := user.MovieList()
+	ml := user.Movies()
 
 	movies, err := GetPageItems(ctx, ml)
 	if err != nil {
@@ -294,11 +294,8 @@ func NewPublishKey(ctx *gin.Context) {
 }
 
 type EditMovieReq struct {
-	Id      uint64            `json:"id"`
-	Url     string            `json:"url"`
-	Name    string            `json:"name"`
-	Type    string            `json:"type"`
-	Headers map[string]string `json:"headers"`
+	Id uint64 `json:"id"`
+	room.BaseMovieInfo
 }
 
 func EditMovie(ctx *gin.Context) {
@@ -315,18 +312,10 @@ func EditMovie(ctx *gin.Context) {
 		return
 	}
 
-	m, err := user.Room().GetMovie(req.Id)
-	if err != nil {
+	if err := user.EditMovie(req.Id, req.BaseMovieInfo); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorResp(err))
 		return
 	}
-
-	// Dont edit live and proxy
-
-	m.Url = req.Url
-	m.Name = req.Name
-	m.Type = req.Type
-	m.Headers = req.Headers
 
 	if err := user.Broadcast(&room.ElementMessage{
 		ElementMessage: &pb.ElementMessage{

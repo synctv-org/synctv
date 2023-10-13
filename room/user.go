@@ -186,7 +186,7 @@ func (u *User) Movie(id uint64) (*pb.MovieInfo, error) {
 	return movie, nil
 }
 
-func (u *User) MovieList() []*pb.MovieInfo {
+func (u *User) Movies() []*pb.MovieInfo {
 	u.room.movies.lock.RLock()
 	defer u.room.movies.lock.RUnlock()
 
@@ -212,6 +212,27 @@ func (u *User) MovieList() []*pb.MovieInfo {
 		return true
 	})
 	return movies
+}
+
+func (u *User) EditMovie(id uint64, movie BaseMovieInfo) error {
+	m, err := u.room.movies.GetMovie(id)
+	if err != nil {
+		return err
+	}
+	if !u.IsAdmin() && !u.IsRoot() && m.Creator().name != u.name {
+		return errors.New("you are not the creator of this movie, you can't edit it")
+	}
+	pre := m.BaseMovieInfo
+	m.BaseMovieInfo = movie
+	switch {
+	case pre.RtmpSource && !movie.RtmpSource:
+		u.room.rtmpa.DelChannel(m.PullKey)
+		m.PullKey = ""
+		// TODO: live proxy
+	case pre.Proxy && !movie.Proxy:
+		m.PullKey = ""
+	}
+	return nil
 }
 
 func (u *User) RegClient(conn *websocket.Conn) (*Client, error) {

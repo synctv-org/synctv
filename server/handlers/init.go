@@ -105,6 +105,8 @@ func Init(e *gin.Engine, s *rtmps.Server, r *room.Rooms) {
 
 			movie.POST("/clear", ClearMovies)
 
+			movie.HEAD("/proxy/:roomId/:pullKey", ProxyMovie)
+
 			movie.GET("/proxy/:roomId/:pullKey", ProxyMovie)
 
 			{

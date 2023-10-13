@@ -555,6 +555,7 @@ func ProxyMovie(ctx *gin.Context) {
 	ctx.Header("Content-Type", resp.Header().Get("Content-Type"))
 	l := resp.Header().Get("Content-Length")
 	ctx.Header("Content-Length", l)
+	ctx.Header("Content-Encoding", resp.Header().Get("Content-Encoding"))
 
 	length, err := strconv.ParseInt(l, 10, 64)
 	if err != nil {

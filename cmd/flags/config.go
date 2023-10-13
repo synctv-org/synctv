@@ -13,4 +13,6 @@ var (
 	SkipConfig bool
 
 	EnvNoPrefix bool
+
+	DisableUpdateCheck bool
 )

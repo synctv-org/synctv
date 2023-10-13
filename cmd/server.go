@@ -9,6 +9,7 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/soheilhy/cmux"
 	"github.com/spf13/cobra"
+	"github.com/synctv-org/synctv/cmd/flags"
 	"github.com/synctv-org/synctv/internal/bootstrap"
 	"github.com/synctv-org/synctv/internal/conf"
 	"github.com/synctv-org/synctv/server"
@@ -19,12 +20,15 @@ var ServerCmd = &cobra.Command{
 	Short: "Start synctv-server",
 	Long:  `Start synctv-server`,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-		return bootstrap.New(bootstrap.WithContext(cmd.Context())).Add(
+		boot := bootstrap.New(bootstrap.WithContext(cmd.Context())).Add(
 			bootstrap.InitSysNotify,
 			bootstrap.InitConfig,
 			bootstrap.InitLog,
-			bootstrap.InitCheckUpdate,
-		).Run()
+		)
+		if !flags.DisableUpdateCheck {
+			boot.Add(bootstrap.InitCheckUpdate)
+		}
+		return boot.Run()
 	},
 	PreRunE: func(cmd *cobra.Command, args []string) error { return InitGinMode() },
 	Run:     Server,
@@ -121,4 +125,5 @@ func Server(cmd *cobra.Command, args []string) {
 
 func init() {
 	RootCmd.AddCommand(ServerCmd)
+	ServerCmd.Flags().BoolVar(&flags.DisableUpdateCheck, "disable-update-check", false, "disable update check")
 }

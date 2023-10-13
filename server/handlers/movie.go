@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -494,7 +495,7 @@ func AuthRtmpPublish(Authorization string) (channelName string, err error) {
 	return claims.PullKey, nil
 }
 
-var allowedProxyMovieType = map[string]struct{}{
+var allowedProxyMovieContentType = map[string]struct{}{
 	"video/avi":  {},
 	"video/mp4":  {},
 	"video/webm": {},
@@ -522,6 +523,7 @@ func ProxyMovie(ctx *gin.Context) {
 	room, err := rooms.GetRoom(roomId)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorResp(err))
+		return
 	}
 
 	m, err := room.GetMovieWithPullKey(ctx.Param("pullKey"))
@@ -547,7 +549,7 @@ func ProxyMovie(ctx *gin.Context) {
 	}
 	defer resp.RawBody().Close()
 
-	if _, ok := allowedProxyMovieType[resp.Header().Get("Content-Type")]; !ok {
+	if _, ok := allowedProxyMovieContentType[resp.Header().Get("Content-Type")]; !ok {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorResp(fmt.Errorf("this movie type support proxy: %s", resp.Header().Get("Content-Type"))))
 		return
 	}
@@ -571,7 +573,9 @@ func ProxyMovie(ctx *gin.Context) {
 	)
 	name := resp.Header().Get("Content-Disposition")
 	if name == "" {
-		name = m.Url
+		name = filepath.Base(resp.Request.RawRequest.URL.Path)
+	} else {
+		ctx.Header("Content-Disposition", name)
 	}
 	http.ServeContent(ctx.Writer, ctx.Request, name, time.Now(), hrs)
 }

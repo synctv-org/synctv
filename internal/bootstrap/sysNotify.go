@@ -1,11 +1,16 @@
 package bootstrap
 
-import sysnotify "github.com/synctv-org/synctv/utils/sysNotify"
+import (
+	"context"
 
-var (
-	SysNotify *sysnotify.SysNotify
+	sysnotify "github.com/synctv-org/synctv/utils/sysNotify"
 )
 
-func InitSysNotify() {
-	SysNotify = sysnotify.New()
+var (
+	SysNotify sysnotify.SysNotify
+)
+
+func InitSysNotify(ctx context.Context) error {
+	SysNotify.Init()
+	return nil
 }

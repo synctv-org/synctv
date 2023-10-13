@@ -16,7 +16,10 @@ var ConfCmd = &cobra.Command{
 }
 
 func Conf(cmd *cobra.Command, args []string) error {
-	bootstrap.InitConfig()
+	err := bootstrap.InitConfig(cmd.Context())
+	if err != nil {
+		return err
+	}
 	fmt.Println(conf.Conf.String())
 	return nil
 }

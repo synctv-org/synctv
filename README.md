@@ -91,15 +91,6 @@ More information about docker image, please see [here](https://hub.docker.com/r/
 
 if you want to use a custom config file, you can use `-f` flag, else it will use `${HOME}/.config/synctv/config.yaml`
 
-## Init
-`synctv init` to init config file
-
-```bash
-synctv init
-# or
-synctv init -f ./config.yaml
-```
-
 ## Server
 `synctv server` to start the server
 

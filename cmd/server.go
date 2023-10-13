@@ -15,12 +15,19 @@ import (
 )
 
 var ServerCmd = &cobra.Command{
-	Use:               "server",
-	Short:             "Start synctv-server",
-	Long:              `Start synctv-server`,
-	PersistentPreRunE: Init,
-	PreRunE:           func(cmd *cobra.Command, args []string) error { return InitGinMode() },
-	Run:               Server,
+	Use:   "server",
+	Short: "Start synctv-server",
+	Long:  `Start synctv-server`,
+	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		return bootstrap.New(bootstrap.WithContext(cmd.Context())).Add(
+			bootstrap.InitSysNotify,
+			bootstrap.InitConfig,
+			bootstrap.InitLog,
+			bootstrap.InitCheckUpdate,
+		).Run()
+	},
+	PreRunE: func(cmd *cobra.Command, args []string) error { return InitGinMode() },
+	Run:     Server,
 }
 
 func Server(cmd *cobra.Command, args []string) {

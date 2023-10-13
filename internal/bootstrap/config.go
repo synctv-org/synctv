@@ -1,6 +1,7 @@
 package bootstrap
 
 import (
+	"context"
 	"errors"
 	"path/filepath"
 
@@ -13,10 +14,10 @@ import (
 	"github.com/synctv-org/synctv/utils"
 )
 
-func InitConfig() {
+func InitConfig(ctx context.Context) error {
 	if flags.SkipConfig && flags.SkipEnv {
 		log.Fatal("skip config and skip env at the same time")
-		return
+		return errors.New("skip config and skip env at the same time")
 	}
 	conf.Conf = conf.DefaultConfig()
 	if !flags.SkipConfig {
@@ -58,6 +59,7 @@ func InitConfig() {
 		}
 		log.Info("load config success from env")
 	}
+	return nil
 }
 
 func confFromConfig(filePath string, conf *conf.Config) error {

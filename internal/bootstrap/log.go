@@ -1,6 +1,7 @@
 package bootstrap
 
 import (
+	"context"
 	"io"
 	"log"
 	"os"
@@ -22,7 +23,7 @@ func setLog(l *logrus.Logger) {
 	}
 }
 
-func InitLog() {
+func InitLog(ctx context.Context) error {
 	setLog(logrus.StandardLogger())
 	if conf.Conf.Log.Enable {
 		var l = &lumberjack.Logger{
@@ -60,4 +61,5 @@ func InitLog() {
 		}
 	}
 	log.SetOutput(logrus.StandardLogger().Out)
+	return nil
 }

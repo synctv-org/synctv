@@ -9,12 +9,9 @@ import (
 	"syscall"
 )
 
-func New() *SysNotify {
-	s := &SysNotify{
-		c: make(chan os.Signal, 1),
-	}
+func (s *SysNotify) Init() {
+	s.c = make(chan os.Signal, 1)
 	signal.Notify(s.c, syscall.SIGHUP /*1*/, syscall.SIGINT /*2*/, syscall.SIGQUIT /*3*/, syscall.SIGTERM /*15*/, syscall.SIGUSR1 /*10*/, syscall.SIGUSR2 /*12*/)
-	return s
 }
 
 func parseSysNotifyType(s os.Signal) NotifyType {

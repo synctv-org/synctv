@@ -4,6 +4,8 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 
 	yamlcomment "github.com/zijiren233/yaml-comment"
 	"gopkg.in/yaml.v3"
@@ -85,4 +87,49 @@ func ReadYaml(file string, module any) error {
 	}
 	defer f.Close()
 	return yaml.NewDecoder(f).Decode(module)
+}
+
+const (
+	VersionEqual = iota
+	VersionGreater
+	VersionLess
+)
+
+func CompVersion(v1, v2 string) (int, error) {
+	if v1 == v2 {
+		return VersionEqual, nil
+	}
+	v1s, err := SplitVersion(strings.TrimLeft(v1, "v"))
+	if err != nil {
+		return VersionEqual, err
+	}
+	v2s, err := SplitVersion(strings.TrimLeft(v2, "v"))
+	if err != nil {
+		return VersionEqual, err
+	}
+	for i := 0; i < len(v1s) && i < len(v2s); i++ {
+		if v1s[i] > v2s[i] {
+			return VersionGreater, nil
+		} else if v1s[i] < v2s[i] {
+			return VersionLess, nil
+		}
+	}
+	if len(v1s) > len(v2s) {
+		return VersionGreater, nil
+	} else if len(v1s) < len(v2s) {
+		return VersionLess, nil
+	}
+	return VersionGreater, nil
+}
+
+func SplitVersion(v string) ([]int, error) {
+	var vs []int
+	for _, s := range strings.Split(v, ".") {
+		i, err := strconv.Atoi(s)
+		if err != nil {
+			return nil, err
+		}
+		vs = append(vs, i)
+	}
+	return vs, nil
 }

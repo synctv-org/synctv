@@ -54,3 +54,15 @@ func TestGetPageItems(t *testing.T) {
 		})
 	}
 }
+
+func FuzzCompVersion(f *testing.F) {
+	f.Add("v1.0.0", "v1.0.1")
+	f.Add("v0.2.9", "v1.5.2")
+	f.Fuzz(func(t *testing.T, a, b string) {
+		t.Logf("a: %s, b: %s", a, b)
+		_, err := utils.CompVersion(a, b)
+		if err != nil {
+			t.Errorf("CompVersion error = %v", err)
+		}
+	})
+}

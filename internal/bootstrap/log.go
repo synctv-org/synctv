@@ -24,14 +24,13 @@ func setLog(l *logrus.Logger) {
 
 func InitLog() {
 	setLog(logrus.StandardLogger())
-	logConfig := conf.Conf.Log
-	if logConfig.Enable {
+	if conf.Conf.Log.Enable {
 		var l = &lumberjack.Logger{
-			Filename:   logConfig.FilePath,
-			MaxSize:    logConfig.MaxSize,
-			MaxBackups: logConfig.MaxBackups,
-			MaxAge:     logConfig.MaxAge,
-			Compress:   logConfig.Compress,
+			Filename:   conf.Conf.Log.FilePath,
+			MaxSize:    conf.Conf.Log.MaxSize,
+			MaxBackups: conf.Conf.Log.MaxBackups,
+			MaxAge:     conf.Conf.Log.MaxAge,
+			Compress:   conf.Conf.Log.Compress,
 		}
 		if err := l.Rotate(); err != nil {
 			logrus.Fatalf("log: rotate log file error: %v", err)
@@ -39,8 +38,9 @@ func InitLog() {
 		var w io.Writer = colorable.NewNonColorableWriter(l)
 		if flags.Dev || flags.LogStd {
 			w = io.MultiWriter(os.Stdout, w)
+			logrus.Infof("log: enable log to stdout and file: %s", conf.Conf.Log.FilePath)
 		} else {
-			logrus.Infof("log: disable log to stdout, only log to file: %s", logConfig.FilePath)
+			logrus.Infof("log: disable log to stdout, only log to file: %s", conf.Conf.Log.FilePath)
 		}
 		logrus.SetOutput(w)
 	}

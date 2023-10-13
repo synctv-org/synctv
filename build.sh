@@ -118,9 +118,9 @@ function FixArgs() {
         fi
     fi
     LDFLAGS="$LDFLAGS \
-        -X 'github.com/synctv-org/synctv/internal/conf.Version=$VERSION' \
-        -X 'github.com/synctv-org/synctv/internal/conf.WebVersion=$WEB_VERSION' \
-        -X 'github.com/synctv-org/synctv/internal/conf.GitCommit=$GIT_COMMIT'"
+        -X 'github.com/synctv-org/synctv/internal/version.Version=$VERSION' \
+        -X 'github.com/synctv-org/synctv/internal/version.WebVersion=$WEB_VERSION' \
+        -X 'github.com/synctv-org/synctv/internal/version.GitCommit=$GIT_COMMIT'"
 
     BUILD_DIR="$(echo "$BUILD_DIR" | sed 's#/$##')"
 }

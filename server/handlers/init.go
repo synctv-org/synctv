@@ -23,13 +23,13 @@ func Init(e *gin.Engine, s *rtmps.Server, r *room.Rooms) {
 					return "", "", err
 				}
 				if !r.HasRoom(ReqAppName) {
-					log.Infof("rtmp: publish to %s/%s error: %s", ReqAppName, channelName, fmt.Sprintf("room %s not exist", ReqAppName))
+					log.Warnf("rtmp: publish to %s/%s error: %s", ReqAppName, channelName, fmt.Sprintf("room %s not exist", ReqAppName))
 					return "", "", fmt.Errorf("room %s not exist", ReqAppName)
 				}
-				log.Infof("rtmp: publish to success: %s/%s", ReqAppName, channelName)
+				log.Infof("rtmp: publisher login success: %s/%s", ReqAppName, channelName)
 				return ReqAppName, channelName, nil
 			} else if !conf.Conf.Rtmp.RtmpPlayer {
-				log.Infof("rtmp: dial to %s/%s error: %s", ReqAppName, ReqChannelName, "rtmp player is not enabled")
+				log.Warnf("rtmp: dial to %s/%s error: %s", ReqAppName, ReqChannelName, "rtmp player is not enabled")
 				return "", "", fmt.Errorf("rtmp: dial to %s/%s error: %s", ReqAppName, ReqChannelName, "rtmp player is not enabled")
 			}
 			return ReqAppName, ReqChannelName, nil

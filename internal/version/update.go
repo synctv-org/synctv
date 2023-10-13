@@ -18,7 +18,7 @@ func SelfUpdate(ctx context.Context, url string) error {
 		log.Errorf("self update: get current executable file error: %v", err)
 		return err
 	}
-	log.Infof("self update: current executable file: %s", currentExecFile)
+	log.Debugf("self update: current executable file: %s", currentExecFile)
 
 	tmp := filepath.Join(os.TempDir(), "synctv-server", fmt.Sprintf("self-update-%d", now))
 	if err := os.MkdirAll(tmp, 0755); err != nil {
@@ -43,30 +43,31 @@ func SelfUpdate(ctx context.Context, url string) error {
 		log.Errorf("self update: chmod %s error: %v", file, err)
 		return err
 	}
-	log.Infof("self update: chmod success: %s", file)
+	log.Debugf("self update: chmod success: %s", file)
 
 	oldName := fmt.Sprintf("%s-%d.old", currentExecFile, now)
 	if err := os.Rename(currentExecFile, oldName); err != nil {
 		log.Errorf("self update: rename %s -> %s error: %v", currentExecFile, oldName, err)
 		return err
 	}
-	log.Infof("self update: rename success: %s -> %s", currentExecFile, oldName)
+	log.Debugf("self update: rename success: %s -> %s", currentExecFile, oldName)
 
 	defer func() {
 		if err != nil {
-			log.Infof("self update: rollback: %s -> %s", oldName, currentExecFile)
+			log.Warnf("self update: rollback: %s -> %s", oldName, currentExecFile)
 			if err := os.Rename(oldName, currentExecFile); err != nil {
 				log.Errorf("self update: rollback: rename %s -> %s error: %v", oldName, currentExecFile, err)
 			}
 		} else {
-			log.Infof("self update: remove old executable file: %s", oldName)
+			log.Debugf("self update: remove old executable file: %s", oldName)
 			if err := os.Remove(oldName); err != nil {
 				log.Warnf("self update: remove old executable file error: %v", err)
 			}
 		}
 	}()
 
-	if err := os.Rename(file, currentExecFile); err != nil {
+	err = os.Rename(file, currentExecFile)
+	if err != nil {
 		log.Errorf("self update: rename %s -> %s error: %v", file, currentExecFile, err)
 		return err
 	}

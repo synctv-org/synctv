@@ -169,7 +169,7 @@ func NewCreateRoomHandler(s *rtmps.Server) gin.HandlerFunc {
 			var pre int64 = 0
 			for range ticker.C {
 				if r.Closed() {
-					log.Infof("ws: room %s closed, stop broadcast people num", r.ID())
+					log.Debugf("ws: room %s closed, stop broadcast people num", r.ID())
 					return
 				}
 				current := r.ClientNum()

@@ -8,7 +8,6 @@ import (
 
 	"github.com/gorilla/websocket"
 	log "github.com/sirupsen/logrus"
-	"github.com/synctv-org/synctv/cmd/flags"
 	"github.com/synctv-org/synctv/utils"
 	"github.com/zijiren233/gencontainer/rwmap"
 )
@@ -88,26 +87,22 @@ func (h *hub) Serve() error {
 					return true
 				}
 				if err := cli.Send(message.data); err != nil {
-					if flags.Dev {
-						log.Errorf("hub: %s, write to client err: %s\nmessage: %+v", h.id, err, message)
-					}
+					log.Debugf("hub: %s, write to client err: %s\nmessage: %+v", h.id, err, message)
 					cli.Close()
 				}
 				return true
 			})
 		case <-h.exit:
-			log.Infof("hub: %s, closed", h.id)
+			log.Debugf("hub: %s, closed", h.id)
 			return nil
 		}
 	}
 }
 
 func (h *hub) devMessage(msg Message) {
-	if flags.Dev {
-		switch msg.MessageType() {
-		case websocket.TextMessage:
-			log.Infof("hub: %s, broadcast:\nmessage: %+v", h.id, msg.String())
-		}
+	switch msg.MessageType() {
+	case websocket.TextMessage:
+		log.Debugf("hub: %s, broadcast:\nmessage: %+v", h.id, msg.String())
 	}
 }
 

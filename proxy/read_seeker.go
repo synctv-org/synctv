@@ -167,7 +167,3 @@ func (h *HttpReadSeeker) Seek(offset int64, whence int) (int64, error) {
 	}
 	return h.offset, nil
 }
-
-func (h *HttpReadSeeker) Close() error {
-	return nil
-}

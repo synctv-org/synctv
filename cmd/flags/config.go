@@ -14,5 +14,5 @@ var (
 
 	EnvNoPrefix bool
 
-	DisableUpdateCheck bool
+	GitHubBaseURL string
 )

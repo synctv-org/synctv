@@ -7,9 +7,6 @@ import (
 )
 
 type Config struct {
-	// Global
-	Global GlobalConfig `yaml:"global"`
-
 	// Log
 	Log LogConfig `yaml:"log"`
 
@@ -37,9 +34,6 @@ func (c *Config) String() string {
 
 func DefaultConfig() *Config {
 	return &Config{
-		// Global
-		Global: DefaultGlobalConfig(),
-
 		// Log
 		Log: DefaultLogConfig(),
 

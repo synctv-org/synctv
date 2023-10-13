@@ -1,6 +1,8 @@
 package bootstrap
 
-import "context"
+import (
+	"context"
+)
 
 type BootstrapConf func(*Bootstrap)
 

@@ -3,8 +3,8 @@ package cmd
 import (
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
+	"github.com/synctv-org/synctv/cmd/flags"
 	"github.com/synctv-org/synctv/internal/bootstrap"
-	"github.com/synctv-org/synctv/internal/conf"
 	"github.com/synctv-org/synctv/internal/version"
 )
 
@@ -20,15 +20,14 @@ var SelfUpdateCmd = &cobra.Command{
 	Long:  SelfUpdateLong,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		return bootstrap.New(bootstrap.WithContext(cmd.Context())).Add(
-			bootstrap.InitConfig,
-			bootstrap.InitLog,
+			bootstrap.InitStdLog,
 		).Run()
 	},
 	RunE: SelfUpdate,
 }
 
 func SelfUpdate(cmd *cobra.Command, args []string) error {
-	v, err := version.NewVersionInfo(version.WithBaseURL(conf.Conf.Global.GitHubBaseURL))
+	v, err := version.NewVersionInfo(version.WithBaseURL(flags.GitHubBaseURL))
 	if err != nil {
 		log.Errorf("get version info error: %v", err)
 		return err

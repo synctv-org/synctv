@@ -14,6 +14,11 @@ import (
 	"github.com/synctv-org/synctv/utils"
 )
 
+func InitDefaultConfig(ctx context.Context) error {
+	conf.Conf = conf.DefaultConfig()
+	return nil
+}
+
 func InitConfig(ctx context.Context) error {
 	if flags.SkipConfig && flags.SkipEnv {
 		log.Fatal("skip config and skip env at the same time")

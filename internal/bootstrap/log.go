@@ -63,3 +63,8 @@ func InitLog(ctx context.Context) error {
 	log.SetOutput(logrus.StandardLogger().Out)
 	return nil
 }
+
+func InitStdLog(ctx context.Context) error {
+	setLog(logrus.StandardLogger())
+	return nil
+}

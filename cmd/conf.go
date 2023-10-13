@@ -12,14 +12,15 @@ var ConfCmd = &cobra.Command{
 	Use:   "conf",
 	Short: "conf",
 	Long:  `config file`,
-	RunE:  Conf,
+	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		return bootstrap.New(bootstrap.WithContext(cmd.Context())).Add(
+			bootstrap.InitConfig,
+		).Run()
+	},
+	RunE: Conf,
 }
 
 func Conf(cmd *cobra.Command, args []string) error {
-	err := bootstrap.InitConfig(cmd.Context())
-	if err != nil {
-		return err
-	}
 	fmt.Println(conf.Conf.String())
 	return nil
 }

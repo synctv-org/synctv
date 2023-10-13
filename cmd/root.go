@@ -29,4 +29,5 @@ func init() {
 	RootCmd.PersistentFlags().BoolVar(&flags.SkipConfig, "skip-config", false, "skip config")
 	RootCmd.PersistentFlags().BoolVar(&flags.SkipEnv, "skip-env", false, "skip env")
 	RootCmd.PersistentFlags().StringVarP(&flags.ConfigFile, "config", "f", "", "config file path")
+	RootCmd.PersistentFlags().StringVar(&flags.GitHubBaseURL, "github-base-url", "https://api.github.com/", "github api base url")
 }

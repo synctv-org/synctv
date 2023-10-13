@@ -71,6 +71,14 @@ func WithContentLength(contentLength int64) HttpReadSeekerConf {
 	}
 }
 
+func WithStartOffset(offset int64) HttpReadSeekerConf {
+	return func(h *HttpReadSeeker) {
+		if offset >= 0 {
+			h.offset = offset
+		}
+	}
+}
+
 func NewHttpReadSeeker(url string, conf ...HttpReadSeekerConf) *HttpReadSeeker {
 	rs := &HttpReadSeeker{
 		offset:        0,

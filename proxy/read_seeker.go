@@ -81,9 +81,6 @@ func NewHttpReadSeeker(url string, conf ...HttpReadSeekerConf) *HttpReadSeeker {
 	for _, c := range conf {
 		c(rs)
 	}
-	if rs.client == nil {
-		rs.client = http.DefaultClient
-	}
 	rs.fix()
 	return rs
 }
@@ -101,6 +98,9 @@ func (h *HttpReadSeeker) fix() *HttpReadSeeker {
 	}
 	if h.ctx == nil {
 		h.ctx = context.Background()
+	}
+	if h.client == nil {
+		h.client = http.DefaultClient
 	}
 	return h
 }

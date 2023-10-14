@@ -20,6 +20,7 @@ import (
 	pb "github.com/synctv-org/synctv/proto"
 	"github.com/synctv-org/synctv/proxy"
 	"github.com/synctv-org/synctv/room"
+	"github.com/synctv-org/synctv/server/model"
 	"github.com/synctv-org/synctv/utils"
 	"github.com/zijiren233/livelib/av"
 	"github.com/zijiren233/livelib/container/flv"
@@ -45,22 +46,17 @@ func GetPageItems[T any](ctx *gin.Context, items []T) ([]T, error) {
 }
 
 func MovieList(ctx *gin.Context) {
-	rooms := ctx.Value("rooms").(*room.Rooms)
-	user, err := AuthRoom(ctx.GetHeader("Authorization"), rooms)
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusUnauthorized, NewApiErrorResp(err))
-		return
-	}
+	user := ctx.Value("user").(*room.User)
 
 	ml := user.Movies()
 
 	movies, err := GetPageItems(ctx, ml)
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
-	ctx.JSON(http.StatusOK, NewApiDataResp(gin.H{
+	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
 		"current": user.Room().Current(),
 		"total":   len(ml),
 		"movies":  movies,
@@ -68,35 +64,25 @@ func MovieList(ctx *gin.Context) {
 }
 
 func CurrentMovie(ctx *gin.Context) {
-	rooms := ctx.Value("rooms").(*room.Rooms)
-	user, err := AuthRoom(ctx.GetHeader("Authorization"), rooms)
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusUnauthorized, NewApiErrorResp(err))
-		return
-	}
+	user := ctx.Value("user").(*room.User)
 
-	ctx.JSON(http.StatusOK, NewApiDataResp(gin.H{
+	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
 		"current": user.Room().Current(),
 	}))
 }
 
 func Movies(ctx *gin.Context) {
-	rooms := ctx.Value("rooms").(*room.Rooms)
-	user, err := AuthRoom(ctx.GetHeader("Authorization"), rooms)
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusUnauthorized, NewApiErrorResp(err))
-		return
-	}
+	user := ctx.Value("user").(*room.User)
 
 	ml := user.Movies()
 
 	movies, err := GetPageItems(ctx, ml)
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
-	ctx.JSON(http.StatusOK, NewApiDataResp(gin.H{
+	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
 		"total":  len(ml),
 		"movies": movies,
 	}))
@@ -105,52 +91,47 @@ func Movies(ctx *gin.Context) {
 type PushMovieReq = room.BaseMovieInfo
 
 func PushMovie(ctx *gin.Context) {
-	rooms := ctx.Value("rooms").(*room.Rooms)
-	user, err := AuthRoom(ctx.GetHeader("Authorization"), rooms)
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusUnauthorized, NewApiErrorResp(err))
-		return
-	}
+	user := ctx.Value("user").(*room.User)
 
 	req := new(PushMovieReq)
 	if err := json.NewDecoder(ctx.Request.Body).Decode(req); err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
 	movie, err := user.NewMovieWithBaseMovie(*req)
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
 	switch {
 	case movie.RtmpSource && movie.Proxy:
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorStringResp("rtmp source and proxy can not be true at the same time"))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("rtmp source and proxy can not be true at the same time"))
 		return
 	case movie.Live && movie.RtmpSource:
 		if !conf.Conf.Rtmp.Enable {
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorStringResp("rtmp source is not enabled"))
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("rtmp source is not enabled"))
 			return
 		} else if movie.Type == "m3u8" && !conf.Conf.Rtmp.HlsPlayer {
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorStringResp("hls player is not enabled"))
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("hls player is not enabled"))
 			return
 		}
 		movie.PullKey = uuid.New().String()
 		c, err := user.Room().NewLiveChannel(movie.PullKey)
 		if err != nil {
-			ctx.AbortWithStatusJSON(http.StatusInternalServerError, NewApiErrorResp(err))
+			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 			return
 		}
 		movie.SetChannel(c)
 	case movie.Live && movie.Proxy:
 		if !conf.Conf.Proxy.LiveProxy {
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorStringResp("live proxy is not enabled"))
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("live proxy is not enabled"))
 			return
 		}
 		u, err := url.Parse(movie.Url)
 		if err != nil {
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorResp(err))
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 			return
 		}
 		switch u.Scheme {
@@ -158,7 +139,7 @@ func PushMovie(ctx *gin.Context) {
 			PullKey := uuid.New().String()
 			c, err := user.Room().NewLiveChannel(PullKey)
 			if err != nil {
-				ctx.AbortWithStatusJSON(http.StatusInternalServerError, NewApiErrorResp(err))
+				ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 				return
 			}
 			movie.PullKey = PullKey
@@ -184,7 +165,7 @@ func PushMovie(ctx *gin.Context) {
 			PullKey := uuid.New().String()
 			c, err := user.Room().NewLiveChannel(PullKey)
 			if err != nil {
-				ctx.AbortWithStatusJSON(http.StatusInternalServerError, NewApiErrorResp(err))
+				ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 				return
 			}
 			movie.PullKey = PullKey
@@ -209,15 +190,15 @@ func PushMovie(ctx *gin.Context) {
 				}
 			}()
 		default:
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorStringResp("only support rtmp temporarily"))
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("only support rtmp temporarily"))
 			return
 		}
 	case !movie.Live && movie.RtmpSource:
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorStringResp("rtmp source must be live"))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("rtmp source must be live"))
 		return
 	case !movie.Live && movie.Proxy:
 		if !conf.Conf.Proxy.MovieProxy {
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorStringResp("movie proxy is not enabled"))
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("movie proxy is not enabled"))
 			return
 		}
 		movie.PullKey = uuid.New().String()
@@ -225,15 +206,15 @@ func PushMovie(ctx *gin.Context) {
 	case !movie.Live && !movie.Proxy, movie.Live && !movie.Proxy && !movie.RtmpSource:
 		u, err := url.Parse(movie.Url)
 		if err != nil {
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorResp(err))
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 			return
 		}
 		if u.Scheme != "http" && u.Scheme != "https" {
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorStringResp("only support http or https"))
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("only support http or https"))
 			return
 		}
 	default:
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorStringResp("unknown error"))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("unknown error"))
 		return
 	}
 
@@ -247,7 +228,7 @@ func PushMovie(ctx *gin.Context) {
 		err = FormatErrNotSupportPosition(s)
 	}
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
@@ -257,32 +238,27 @@ func PushMovie(ctx *gin.Context) {
 			Sender: user.Name(),
 		},
 	}, room.WithSendToSelf()); err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}
 
-	ctx.JSON(http.StatusCreated, NewApiDataResp(gin.H{
+	ctx.JSON(http.StatusCreated, model.NewApiDataResp(gin.H{
 		"id": movie.Id(),
 	}))
 }
 
 func NewPublishKey(ctx *gin.Context) {
-	rooms := ctx.Value("rooms").(*room.Rooms)
-	user, err := AuthRoom(ctx.GetHeader("Authorization"), rooms)
-	if err != nil {
-		ctx.AbortWithStatus(http.StatusUnauthorized)
-		return
-	}
+	user := ctx.Value("user").(*room.User)
 
 	req := new(IdReq)
 	if err := json.NewDecoder(ctx.Request.Body).Decode(req); err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
 	movie, err := user.Room().GetMovie(req.Id)
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
@@ -292,18 +268,18 @@ func NewPublishKey(ctx *gin.Context) {
 	}
 
 	if !movie.RtmpSource {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorStringResp("only live movie can get publish key"))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("only live movie can get publish key"))
 		return
 	}
 
 	if movie.PullKey == "" {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, NewApiErrorStringResp("pull key is empty"))
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorStringResp("pull key is empty"))
 		return
 	}
 
 	token, err := NewRtmpAuthorization(movie.PullKey)
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}
 
@@ -312,7 +288,7 @@ func NewPublishKey(ctx *gin.Context) {
 		host = ctx.Request.Host
 	}
 
-	ctx.JSON(http.StatusOK, NewApiDataResp(gin.H{
+	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
 		"host":  host,
 		"app":   user.Room().ID(),
 		"token": token,
@@ -325,21 +301,16 @@ type EditMovieReq struct {
 }
 
 func EditMovie(ctx *gin.Context) {
-	rooms := ctx.Value("rooms").(*room.Rooms)
-	user, err := AuthRoom(ctx.GetHeader("Authorization"), rooms)
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusUnauthorized, NewApiErrorResp(err))
-		return
-	}
+	user := ctx.Value("user").(*room.User)
 
 	req := new(EditMovieReq)
 	if err := json.NewDecoder(ctx.Request.Body).Decode(req); err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
 	if err := user.EditMovie(req.Id, req.BaseMovieInfo); err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
@@ -349,7 +320,7 @@ func EditMovie(ctx *gin.Context) {
 			Sender: user.Name(),
 		},
 	}, room.WithSendToSelf()); err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}
 
@@ -361,21 +332,16 @@ type IdsReq struct {
 }
 
 func DelMovie(ctx *gin.Context) {
-	rooms := ctx.Value("rooms").(*room.Rooms)
-	user, err := AuthRoom(ctx.GetHeader("Authorization"), rooms)
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusUnauthorized, NewApiErrorResp(err))
-		return
-	}
+	user := ctx.Value("user").(*room.User)
 
 	req := new(IdsReq)
 	if err := json.NewDecoder(ctx.Request.Body).Decode(req); err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
 	if err := user.Room().DelMovie(req.Ids...); err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
@@ -385,7 +351,7 @@ func DelMovie(ctx *gin.Context) {
 			Sender: user.Name(),
 		},
 	}, room.WithSendToSelf()); err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}
 
@@ -393,15 +359,10 @@ func DelMovie(ctx *gin.Context) {
 }
 
 func ClearMovies(ctx *gin.Context) {
-	rooms := ctx.Value("rooms").(*room.Rooms)
-	user, err := AuthRoom(ctx.GetHeader("Authorization"), rooms)
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusUnauthorized, NewApiErrorResp(err))
-		return
-	}
+	user := ctx.Value("user").(*room.User)
 
 	if err := user.Room().ClearMovies(); err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
@@ -411,7 +372,7 @@ func ClearMovies(ctx *gin.Context) {
 			Sender: user.Name(),
 		},
 	}, room.WithSendToSelf()); err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}
 
@@ -424,21 +385,16 @@ type SwapMovieReq struct {
 }
 
 func SwapMovie(ctx *gin.Context) {
-	rooms := ctx.Value("rooms").(*room.Rooms)
-	user, err := AuthRoom(ctx.GetHeader("Authorization"), rooms)
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusUnauthorized, NewApiErrorResp(err))
-		return
-	}
+	user := ctx.Value("user").(*room.User)
 
 	req := new(SwapMovieReq)
 	if err := json.NewDecoder(ctx.Request.Body).Decode(req); err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
 	if err := user.Room().SwapMovie(req.Id1, req.Id2); err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
@@ -448,7 +404,7 @@ func SwapMovie(ctx *gin.Context) {
 			Sender: user.Name(),
 		},
 	}, room.WithSendToSelf()); err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}
 
@@ -460,21 +416,16 @@ type IdReq struct {
 }
 
 func ChangeCurrentMovie(ctx *gin.Context) {
-	rooms := ctx.Value("rooms").(*room.Rooms)
-	user, err := AuthRoom(ctx.GetHeader("Authorization"), rooms)
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusUnauthorized, NewApiErrorResp(err))
-		return
-	}
+	user := ctx.Value("user").(*room.User)
 
 	req := new(IdReq)
 	if err := json.NewDecoder(ctx.Request.Body).Decode(req); err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
 	if err := user.Room().ChangeCurrentMovie(req.Id); err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 	if err := user.Broadcast(&room.ElementMessage{
@@ -484,7 +435,7 @@ func ChangeCurrentMovie(ctx *gin.Context) {
 			Current: user.Room().Current().Proto(),
 		},
 	}, room.WithSendToSelf()); err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}
 
@@ -532,23 +483,23 @@ func ProxyMovie(ctx *gin.Context) {
 	rooms := ctx.Value("rooms").(*room.Rooms)
 	roomId := ctx.Param("roomId")
 	if roomId == "" {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorStringResp("roomId is empty"))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("roomId is empty"))
 		return
 	}
 	room, err := rooms.GetRoom(roomId)
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
 	m, err := room.GetMovieWithPullKey(ctx.Param("pullKey"))
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
 	if !m.Proxy || m.Live || m.RtmpSource {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorStringResp("not support proxy"))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support proxy"))
 		return
 	}
 
@@ -559,13 +510,13 @@ func ProxyMovie(ctx *gin.Context) {
 	}
 	resp, err := r.Head(m.Url)
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}
 	defer resp.RawBody().Close()
 
 	if _, ok := allowedProxyMovieContentType[resp.Header().Get("Content-Type")]; !ok {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorResp(fmt.Errorf("this movie type support proxy: %s", resp.Header().Get("Content-Type"))))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(fmt.Errorf("this movie type support proxy: %s", resp.Header().Get("Content-Type"))))
 		return
 	}
 	ctx.Status(resp.StatusCode())
@@ -576,7 +527,7 @@ func ProxyMovie(ctx *gin.Context) {
 
 	length, err := strconv.ParseInt(l, 10, 64)
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}
 
@@ -602,16 +553,11 @@ func (e FormatErrNotSupportFileType) Error() string {
 }
 
 func JoinLive(ctx *gin.Context) {
-	rooms := ctx.Value("rooms").(*room.Rooms)
 	if !conf.Conf.Proxy.LiveProxy && !conf.Conf.Rtmp.Enable {
-		ctx.AbortWithStatusJSON(http.StatusForbidden, NewApiErrorStringResp("live proxy and rtmp source is not enabled"))
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("live proxy and rtmp source is not enabled"))
 		return
 	}
-	user, err := AuthRoom(ctx.GetHeader("Authorization"), rooms)
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusUnauthorized, NewApiErrorResp(err))
-		return
-	}
+	user := ctx.Value("user").(*room.User)
 
 	pullKey := strings.Trim(ctx.Param("pullKey"), "/")
 	pullKeySplitd := strings.Split(pullKey, "/")
@@ -620,7 +566,7 @@ func JoinLive(ctx *gin.Context) {
 	channelName := strings.TrimSuffix(fileName, fileExt)
 	m, err := user.Room().GetMovieWithPullKey(channelName)
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusNotFound, NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(err))
 		return
 	}
 	channel := m.Channel()
@@ -635,20 +581,20 @@ func JoinLive(ctx *gin.Context) {
 		ctx.Header("Cache-Control", "no-store")
 		b, err := channel.GenM3U8PlayList(fmt.Sprintf("/api/movie/live/%s", channelName))
 		if err != nil {
-			ctx.AbortWithStatusJSON(http.StatusNotFound, NewApiErrorResp(err))
+			ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(err))
 			return
 		}
 		ctx.Data(http.StatusOK, hls.M3U8ContentType, b.Bytes())
 	case ".ts":
 		b, err := channel.GetTsFile(pullKeySplitd[1])
 		if err != nil {
-			ctx.AbortWithStatusJSON(http.StatusNotFound, NewApiErrorResp(err))
+			ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(err))
 			return
 		}
 		ctx.Header("Cache-Control", "public, max-age=90")
 		ctx.Data(http.StatusOK, hls.TSContentType, b)
 	default:
 		ctx.Header("Cache-Control", "no-store")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorResp(FormatErrNotSupportFileType(fileExt)))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(FormatErrNotSupportFileType(fileExt)))
 	}
 }

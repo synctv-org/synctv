@@ -9,6 +9,7 @@ import (
 	"github.com/synctv-org/synctv/internal/conf"
 	"github.com/synctv-org/synctv/public"
 	"github.com/synctv-org/synctv/room"
+	"github.com/synctv-org/synctv/server/middlewares"
 	"github.com/synctv-org/synctv/utils"
 	rtmps "github.com/zijiren233/livelib/server"
 )
@@ -54,6 +55,9 @@ func Init(e *gin.Engine, s *rtmps.Server, r *room.Rooms) {
 	{
 		api := e.Group("/api")
 
+		needAuthApi := api.Group("")
+		needAuthApi.Use(middlewares.AuthRoom)
+
 		{
 			public := api.Group("/public")
 
@@ -62,6 +66,7 @@ func Init(e *gin.Engine, s *rtmps.Server, r *room.Rooms) {
 
 		{
 			room := api.Group("/room")
+			needAuthRoom := needAuthApi.Group("/room")
 
 			room.GET("/ws", NewWebSocketHandler(utils.NewWebSocketServer()))
 
@@ -75,42 +80,43 @@ func Init(e *gin.Engine, s *rtmps.Server, r *room.Rooms) {
 
 			room.POST("/login", LoginRoom)
 
-			room.POST("/delete", DeleteRoom)
+			needAuthRoom.POST("/delete", DeleteRoom)
 
-			room.POST("/pwd", SetPassword)
+			needAuthRoom.POST("/pwd", SetPassword)
 
-			room.PUT("/admin", AddAdmin)
+			needAuthRoom.PUT("/admin", AddAdmin)
 
-			room.DELETE("/admin", DelAdmin)
+			needAuthRoom.DELETE("/admin", DelAdmin)
 		}
 
 		{
 			movie := api.Group("/movie")
+			needAuthMovie := needAuthApi.Group("/movie")
 
-			movie.GET("/list", MovieList)
+			needAuthMovie.GET("/list", MovieList)
 
-			movie.GET("/movies", Movies)
+			needAuthMovie.GET("/current", CurrentMovie)
 
-			movie.GET("/current", CurrentMovie)
+			needAuthMovie.GET("/movies", Movies)
 
-			movie.POST("/current", ChangeCurrentMovie)
+			needAuthMovie.POST("/current", ChangeCurrentMovie)
 
-			movie.POST("/push", PushMovie)
+			needAuthMovie.POST("/push", PushMovie)
 
-			movie.POST("/edit", EditMovie)
+			needAuthMovie.POST("/edit", EditMovie)
 
-			movie.POST("/swap", SwapMovie)
+			needAuthMovie.POST("/swap", SwapMovie)
 
-			movie.POST("/delete", DelMovie)
+			needAuthMovie.POST("/delete", DelMovie)
 
-			movie.POST("/clear", ClearMovies)
+			needAuthMovie.POST("/clear", ClearMovies)
 
 			movie.HEAD("/proxy/:roomId/:pullKey", ProxyMovie)
 
 			movie.GET("/proxy/:roomId/:pullKey", ProxyMovie)
 
 			{
-				live := movie.Group("/live")
+				live := needAuthMovie.Group("/live")
 
 				live.POST("/publishKey", NewPublishKey)
 
@@ -119,11 +125,12 @@ func Init(e *gin.Engine, s *rtmps.Server, r *room.Rooms) {
 		}
 
 		{
-			user := api.Group("/user")
+			// user := api.Group("/user")
+			needAuthUser := needAuthApi.Group("/user")
 
-			user.GET("/me", Me)
+			needAuthUser.GET("/me", Me)
 
-			user.POST("/pwd", SetUserPassword)
+			needAuthUser.POST("/pwd", SetUserPassword)
 		}
 	}
 

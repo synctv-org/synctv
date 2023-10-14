@@ -5,21 +5,19 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	json "github.com/json-iterator/go"
 	log "github.com/sirupsen/logrus"
 
 	"github.com/gin-gonic/gin"
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/maruel/natural"
-	"github.com/synctv-org/synctv/internal/conf"
 	pb "github.com/synctv-org/synctv/proto"
 	"github.com/synctv-org/synctv/room"
+	"github.com/synctv-org/synctv/server/middlewares"
+	"github.com/synctv-org/synctv/server/model"
 	"github.com/zijiren233/gencontainer/vec"
 	rtmps "github.com/zijiren233/livelib/server"
-	"github.com/zijiren233/stream"
 )
 
 var (
@@ -32,94 +30,6 @@ type FormatErrNotSupportPosition string
 
 func (e FormatErrNotSupportPosition) Error() string {
 	return fmt.Sprintf("not support position %s", string(e))
-}
-
-type AuthClaims struct {
-	RoomID      string `json:"id"`
-	Version     uint64 `json:"v"`
-	Username    string `json:"un"`
-	UserVersion uint64 `json:"uv"`
-	jwt.RegisteredClaims
-}
-
-func AuthRoom(Authorization string, rooms *room.Rooms) (*room.User, error) {
-	t, err := jwt.ParseWithClaims(strings.TrimPrefix(Authorization, `Bearer `), &AuthClaims{}, func(token *jwt.Token) (any, error) {
-		return stream.StringToBytes(conf.Conf.Jwt.Secret), nil
-	})
-	if err != nil {
-		return nil, ErrAuthFailed
-	}
-	claims := t.Claims.(*AuthClaims)
-
-	r, err := rooms.GetRoom(claims.RoomID)
-	if err != nil {
-		return nil, err
-	}
-
-	if !r.CheckVersion(claims.Version) {
-		return nil, ErrAuthExpired
-	}
-
-	user, err := r.GetUser(claims.Username)
-	if err != nil {
-		return nil, err
-	}
-
-	if !user.CheckVersion(claims.UserVersion) {
-		return nil, ErrAuthExpired
-	}
-
-	return user, nil
-}
-
-func authWithPassword(rooms *room.Rooms, roomid, password, username, userPassword string) (*room.User, error) {
-	r, err := rooms.GetRoom(roomid)
-	if err != nil {
-		return nil, err
-	}
-	if !r.CheckPassword(password) {
-		return nil, ErrAuthFailed
-	}
-	user, err := r.GetUser(username)
-	if err != nil {
-		return nil, err
-	}
-	if !user.CheckPassword(userPassword) {
-		return nil, ErrAuthFailed
-	}
-	return user, nil
-}
-
-func authOrNewWithPassword(rooms *room.Rooms, roomid, password, username, userPassword string, conf ...room.UserConf) (*room.User, error) {
-	r, err := rooms.GetRoom(roomid)
-	if err != nil {
-		return nil, err
-	}
-	if !r.CheckPassword(password) {
-		return nil, ErrAuthFailed
-	}
-	user, err := r.GetOrNewUser(username, userPassword, conf...)
-	if err != nil {
-		return nil, err
-	}
-	if !user.CheckPassword(userPassword) {
-		return nil, ErrAuthFailed
-	}
-	return user, nil
-}
-
-func newAuthorization(user *room.User) (string, error) {
-	claims := &AuthClaims{
-		RoomID:      user.Room().ID(),
-		Version:     user.Room().Version(),
-		Username:    user.Name(),
-		UserVersion: user.Version(),
-		RegisteredClaims: jwt.RegisteredClaims{
-			NotBefore: jwt.NewNumericDate(time.Now()),
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour * time.Duration(conf.Conf.Jwt.Expire))),
-		},
-	}
-	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(stream.StringToBytes(conf.Conf.Jwt.Secret))
 }
 
 type CreateRoomReq struct {
@@ -135,13 +45,13 @@ func NewCreateRoomHandler(s *rtmps.Server) gin.HandlerFunc {
 		rooms := ctx.Value("rooms").(*room.Rooms)
 		req := new(CreateRoomReq)
 		if err := json.NewDecoder(ctx.Request.Body).Decode(req); err != nil {
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorResp(err))
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 			return
 		}
 
 		user, err := room.NewUser(req.Username, req.UserPassword, nil, room.WithUserAdmin(true))
 		if err != nil {
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorResp(err))
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 			return
 		}
 
@@ -150,13 +60,13 @@ func NewCreateRoomHandler(s *rtmps.Server) gin.HandlerFunc {
 			room.WithRootUser(user),
 		)
 		if err != nil {
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorResp(err))
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 			return
 		}
 
-		token, err := newAuthorization(user)
+		token, err := middlewares.NewAuthToken(user)
 		if err != nil {
-			ctx.AbortWithStatusJSON(http.StatusInternalServerError, NewApiErrorResp(err))
+			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 			return
 		}
 
@@ -193,7 +103,7 @@ func NewCreateRoomHandler(s *rtmps.Server) gin.HandlerFunc {
 			}
 		}()
 
-		ctx.JSON(http.StatusCreated, NewApiDataResp(gin.H{
+		ctx.JSON(http.StatusCreated, model.NewApiDataResp(gin.H{
 			"token": token,
 		}))
 	}
@@ -253,7 +163,7 @@ func RoomList(ctx *gin.Context) {
 			return t1.NeedPassword == t2.NeedPassword
 		})
 	default:
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorStringResp("sort must be peoplenum or roomid"))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("sort must be peoplenum or roomid"))
 		return
 	}
 
@@ -263,17 +173,17 @@ func RoomList(ctx *gin.Context) {
 	case "desc":
 		resp.Reverse()
 	default:
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorStringResp("order must be asc or desc"))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("order must be asc or desc"))
 		return
 	}
 
 	list, err := GetPageItems(ctx, resp.Slice())
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
-	ctx.JSON(http.StatusOK, NewApiDataResp(gin.H{
+	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
 		"total": resp.Len(),
 		"list":  list,
 	}))
@@ -283,11 +193,11 @@ func CheckRoom(ctx *gin.Context) {
 	rooms := ctx.Value("rooms").(*room.Rooms)
 	r, err := rooms.GetRoom(ctx.Query("roomId"))
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusNotFound, NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(err))
 		return
 	}
 
-	ctx.JSON(http.StatusOK, NewApiDataResp(gin.H{
+	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
 		"peopleNum":    r.ClientNum(),
 		"needPassword": r.NeedPassword(),
 	}))
@@ -297,17 +207,17 @@ func CheckUser(ctx *gin.Context) {
 	rooms := ctx.Value("rooms").(*room.Rooms)
 	r, err := rooms.GetRoom(ctx.Query("roomId"))
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusNotFound, NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(err))
 		return
 	}
 
 	u, err := r.GetUser(ctx.Query("username"))
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusNotFound, NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(err))
 		return
 	}
 
-	ctx.JSON(http.StatusOK, NewApiDataResp(gin.H{
+	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
 		"idRoot":  u.IsRoot(),
 		"idAdmin": u.IsAdmin(),
 		"lastAct": u.LastAct(),
@@ -325,13 +235,13 @@ func LoginRoom(ctx *gin.Context) {
 	rooms := ctx.Value("rooms").(*room.Rooms)
 	req := new(LoginRoomReq)
 	if err := json.NewDecoder(ctx.Request.Body).Decode(req); err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
 	autoNew, err := strconv.ParseBool(ctx.DefaultQuery("autoNew", "false"))
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorStringResp("autoNew must be bool"))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("autoNew must be bool"))
 		return
 	}
 
@@ -339,46 +249,42 @@ func LoginRoom(ctx *gin.Context) {
 		user *room.User
 	)
 	if autoNew {
-		user, err = authOrNewWithPassword(rooms, req.RoomID, req.Password, req.Username, req.UserPassword)
+		user, err = middlewares.AuthOrNewWithPassword(req.RoomID, req.Password, req.Username, req.UserPassword, rooms)
 		if err != nil {
-			ctx.AbortWithStatusJSON(http.StatusUnauthorized, NewApiErrorResp(err))
+			ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
 			return
 		}
 	} else {
-		user, err = authWithPassword(rooms, req.RoomID, req.Password, req.Username, req.UserPassword)
+		user, err = middlewares.AuthWithPassword(req.RoomID, req.Password, req.Username, req.UserPassword, rooms)
 		if err != nil {
-			ctx.AbortWithStatusJSON(http.StatusUnauthorized, NewApiErrorResp(err))
+			ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
 			return
 		}
 	}
 
-	token, err := newAuthorization(user)
+	token, err := middlewares.NewAuthToken(user)
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}
 
-	ctx.JSON(http.StatusOK, NewApiDataResp(gin.H{
+	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
 		"token": token,
 	}))
 }
 
 func DeleteRoom(ctx *gin.Context) {
 	rooms := ctx.Value("rooms").(*room.Rooms)
-	user, err := AuthRoom(ctx.GetHeader("Authorization"), rooms)
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusUnauthorized, NewApiErrorResp(err))
-		return
-	}
+	user := ctx.Value("user").(*room.User)
 
 	if !user.IsRoot() {
-		ctx.AbortWithStatusJSON(http.StatusUnauthorized, NewApiErrorStringResp("only root can close room"))
+		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorStringResp("only root can close room"))
 		return
 	}
 
-	err = rooms.DelRoom(user.Room().ID())
+	err := rooms.DelRoom(user.Room().ID())
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}
 
@@ -390,33 +296,28 @@ type SetPasswordReq struct {
 }
 
 func SetPassword(ctx *gin.Context) {
-	rooms := ctx.Value("rooms").(*room.Rooms)
-	user, err := AuthRoom(ctx.GetHeader("Authorization"), rooms)
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusUnauthorized, NewApiErrorResp(err))
-		return
-	}
+	user := ctx.Value("user").(*room.User)
 
 	if !user.IsRoot() || !user.IsAdmin() {
-		ctx.AbortWithStatusJSON(http.StatusUnauthorized, NewApiErrorStringResp("only root or admin can set password"))
+		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorStringResp("only root or admin can set password"))
 		return
 	}
 
 	req := new(SetPasswordReq)
 	if err := json.NewDecoder(ctx.Request.Body).Decode(req); err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
 	user.Room().SetPassword(req.Password)
 
-	token, err := newAuthorization(user)
+	token, err := middlewares.NewAuthToken(user)
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}
 
-	ctx.JSON(http.StatusOK, NewApiDataResp(gin.H{
+	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
 		"token": token,
 	}))
 }
@@ -426,27 +327,22 @@ type UsernameReq struct {
 }
 
 func AddAdmin(ctx *gin.Context) {
-	rooms := ctx.Value("rooms").(*room.Rooms)
-	user, err := AuthRoom(ctx.GetHeader("Authorization"), rooms)
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusUnauthorized, NewApiErrorResp(err))
-		return
-	}
+	user := ctx.Value("user").(*room.User)
 
 	if !user.IsRoot() && !user.IsAdmin() {
-		ctx.AbortWithStatusJSON(http.StatusUnauthorized, NewApiErrorStringResp("only root or admin can add admin"))
+		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorStringResp("only root or admin can add admin"))
 		return
 	}
 
 	req := new(UsernameReq)
 	if err := json.NewDecoder(ctx.Request.Body).Decode(req); err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
 	u, err := user.Room().GetUser(req.Username)
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusNotFound, NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(err))
 		return
 	}
 
@@ -456,53 +352,26 @@ func AddAdmin(ctx *gin.Context) {
 }
 
 func DelAdmin(ctx *gin.Context) {
-	rooms := ctx.Value("rooms").(*room.Rooms)
-	user, err := AuthRoom(ctx.GetHeader("Authorization"), rooms)
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusUnauthorized, NewApiErrorResp(err))
-		return
-	}
+	user := ctx.Value("user").(*room.User)
 
 	if !user.IsRoot() {
-		ctx.AbortWithStatusJSON(http.StatusUnauthorized, NewApiErrorStringResp("only root can del admin"))
+		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorStringResp("only root can del admin"))
 		return
 	}
 
 	req := new(UsernameReq)
 	if err := json.NewDecoder(ctx.Request.Body).Decode(req); err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
 	u, err := user.Room().GetUser(req.Username)
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusNotFound, NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(err))
 		return
 	}
 
 	u.SetAdmin(false)
-
-	ctx.Status(http.StatusNoContent)
-}
-
-func CloseRoom(ctx *gin.Context) {
-	rooms := ctx.Value("rooms").(*room.Rooms)
-	user, err := AuthRoom(ctx.GetHeader("Authorization"), rooms)
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusUnauthorized, NewApiErrorResp(err))
-		return
-	}
-
-	if !user.IsRoot() {
-		ctx.AbortWithStatusJSON(http.StatusUnauthorized, NewApiErrorStringResp("only root can close room"))
-		return
-	}
-
-	err = rooms.DelRoom(user.Room().ID())
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, NewApiErrorResp(err))
-		return
-	}
 
 	ctx.Status(http.StatusNoContent)
 }

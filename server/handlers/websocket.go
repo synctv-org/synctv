@@ -11,6 +11,8 @@ import (
 	log "github.com/sirupsen/logrus"
 	pb "github.com/synctv-org/synctv/proto"
 	"github.com/synctv-org/synctv/room"
+	"github.com/synctv-org/synctv/server/middlewares"
+	"github.com/synctv-org/synctv/server/model"
 	"github.com/synctv-org/synctv/utils"
 	"google.golang.org/protobuf/proto"
 )
@@ -21,9 +23,9 @@ func NewWebSocketHandler(wss *utils.WebSocket) gin.HandlerFunc {
 	return func(ctx *gin.Context) {
 		rooms := ctx.Value("rooms").(*room.Rooms)
 		token := ctx.GetHeader("Sec-WebSocket-Protocol")
-		user, err := AuthRoom(token, rooms)
+		user, err := middlewares.Auth(token, rooms)
 		if err != nil {
-			ctx.AbortWithStatusJSON(http.StatusUnauthorized, NewApiErrorResp(err))
+			ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
 			return
 		}
 		wss.Server(ctx.Writer, ctx.Request, []string{token}, NewWSMessageHandler(user))

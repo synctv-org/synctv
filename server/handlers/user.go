@@ -6,17 +6,14 @@ import (
 	"github.com/gin-gonic/gin"
 	json "github.com/json-iterator/go"
 	"github.com/synctv-org/synctv/room"
+	"github.com/synctv-org/synctv/server/middlewares"
+	"github.com/synctv-org/synctv/server/model"
 )
 
 func Me(ctx *gin.Context) {
-	rooms := ctx.Value("rooms").(*room.Rooms)
-	user, err := AuthRoom(ctx.GetHeader("Authorization"), rooms)
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusUnauthorized, NewApiErrorResp(err))
-		return
-	}
+	user := ctx.Value("user").(*room.User)
 
-	ctx.JSON(http.StatusOK, NewApiDataResp(gin.H{
+	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
 		"isRoot":   user.IsRoot(),
 		"isAdmin":  user.IsAdmin(),
 		"username": user.Name(),
@@ -25,33 +22,28 @@ func Me(ctx *gin.Context) {
 }
 
 func SetUserPassword(ctx *gin.Context) {
-	rooms := ctx.Value("rooms").(*room.Rooms)
-	user, err := AuthRoom(ctx.GetHeader("Authorization"), rooms)
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusUnauthorized, NewApiErrorResp(err))
-		return
-	}
+	user := ctx.Value("user").(*room.User)
 
 	req := new(SetPasswordReq)
 	if err := json.NewDecoder(ctx.Request.Body).Decode(req); err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
 	if err := user.SetPassword(req.Password); err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
 	user.CloseHub()
 
-	token, err := newAuthorization(user)
+	token, err := middlewares.NewAuthToken(user)
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}
 
-	ctx.JSON(http.StatusOK, NewApiDataResp(gin.H{
+	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
 		"token": token,
 	}))
 }

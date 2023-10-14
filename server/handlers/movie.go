@@ -22,11 +22,11 @@ import (
 	"github.com/synctv-org/synctv/room"
 	"github.com/synctv-org/synctv/utils"
 	"github.com/zijiren233/livelib/av"
+	"github.com/zijiren233/livelib/container/flv"
 	"github.com/zijiren233/livelib/protocol/hls"
 	"github.com/zijiren233/livelib/protocol/httpflv"
 	"github.com/zijiren233/livelib/protocol/rtmp"
 	"github.com/zijiren233/livelib/protocol/rtmp/core"
-	rtmps "github.com/zijiren233/livelib/server"
 	"github.com/zijiren233/stream"
 )
 
@@ -164,24 +164,50 @@ func PushMovie(ctx *gin.Context) {
 			movie.PullKey = PullKey
 			go func() {
 				for {
+					if c.Closed() {
+						return
+					}
 					cli := core.NewConnClient()
-					err = cli.Start(movie.PullKey, av.PLAY)
-					if err != nil {
+					if err = cli.Start(movie.Url, av.PLAY); err != nil {
 						cli.Close()
 						time.Sleep(time.Second)
 						continue
 					}
-					if err := c.PushStart(rtmp.NewReader(cli)); err != nil && err == rtmps.ErrClosed {
+					if err := c.PushStart(rtmp.NewReader(cli)); err != nil {
 						cli.Close()
 						time.Sleep(time.Second)
-						continue
 					}
-					return
 				}
 			}()
 		case "http", "https":
 			// TODO: http https flv proxy
-			fallthrough
+			PullKey := uuid.New().String()
+			c, err := user.Room().NewLiveChannel(PullKey)
+			if err != nil {
+				ctx.AbortWithStatusJSON(http.StatusInternalServerError, NewApiErrorResp(err))
+				return
+			}
+			movie.PullKey = PullKey
+			go func() {
+				for {
+					if c.Closed() {
+						return
+					}
+					r := resty.New().R()
+					for k, v := range ctx.Request.Header {
+						r.SetHeader(k, v[0])
+					}
+					resp, err := r.SetHeader("User-Agent", UserAgent).Get(movie.Url)
+					if err != nil {
+						time.Sleep(time.Second)
+						continue
+					}
+					if err := c.PushStart(flv.NewReader(resp.RawBody())); err != nil {
+						time.Sleep(time.Second)
+					}
+					resp.RawBody().Close()
+				}
+			}()
 		default:
 			ctx.AbortWithStatusJSON(http.StatusBadRequest, NewApiErrorStringResp("only support rtmp temporarily"))
 			return

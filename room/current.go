@@ -60,6 +60,7 @@ func (c *current) SetMovie(movie MovieInfo) {
 
 	c.current.Movie = movie
 	c.current.SetSeek(0, 0)
+	c.current.Status.Playing = true
 }
 
 func (c *current) Status() Status {

@@ -46,6 +46,7 @@ type BaseMovieInfo struct {
 	RtmpSource bool              `json:"rtmpSource"`
 	Type       string            `json:"type"`
 	Headers    map[string]string `json:"headers"`
+	// BulletChatUrl string            `json:"bulletChatUrl"` // TODO: bullet chat
 }
 
 type MovieConf func(m *Movie)

@@ -149,11 +149,11 @@ func (m *movies) range_(f func(e *dllist.Element[*Movie]) bool) (interrupt bool)
 }
 
 type MovieInfo struct {
-	Id uint64 `json:"id"`
-	BaseMovieInfo
-	PullKey   string `json:"pullKey"`
-	CreatedAt int64  `json:"createdAt"`
-	Creator   string `json:"creator"`
+	Id            uint64        `json:"id"`
+	BaseMovieInfo BaseMovieInfo `json:"base"`
+	PullKey       string        `json:"pullKey"`
+	CreatedAt     int64         `json:"createdAt"`
+	Creator       string        `json:"creator"`
 }
 
 func (m *movies) MovieList() (movies []MovieInfo) {

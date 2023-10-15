@@ -19,18 +19,22 @@ enum ElementMessageType {
   CHANGE_PEOPLE = 12;
 }
 
+message BaseMovieInfo {
+  string url = 1;
+  string name = 2;
+  bool live = 3;
+  bool proxy = 4;
+  bool rtmpSource = 5;
+  string type = 6;
+  map<string, string> headers = 7;
+}
+
 message MovieInfo {
   uint64 id = 1;
-  string url = 2;
-  string name = 3;
-  bool live = 4;
-  bool proxy = 5;
-  bool rtmpSource = 6;
-  string type = 7;
-  map<string, string> headers = 8;
-  string pullKey = 9;
-  int64 createdAt = 10;
-  string creator = 11;
+  BaseMovieInfo base = 2;
+  string pullKey = 3;
+  int64 createdAt = 4;
+  string creator = 5;
 }
 
 message Status {

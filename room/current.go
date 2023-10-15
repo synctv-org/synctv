@@ -87,17 +87,19 @@ func (c *current) SetSeekRate(seek, rate, timeDiff float64) Status {
 func (c *Current) Proto() *pb.Current {
 	return &pb.Current{
 		Movie: &pb.MovieInfo{
-			Id:         c.Movie.Id,
-			Url:        c.Movie.Url,
-			Name:       c.Movie.Name,
-			Live:       c.Movie.Live,
-			Proxy:      c.Movie.Proxy,
-			RtmpSource: c.Movie.RtmpSource,
-			Type:       c.Movie.Type,
-			Headers:    c.Movie.Headers,
-			PullKey:    c.Movie.PullKey,
-			CreatedAt:  c.Movie.CreatedAt,
-			Creator:    c.Movie.Creator,
+			Id: c.Movie.Id,
+			Base: &pb.BaseMovieInfo{
+				Url:        c.Movie.BaseMovieInfo.Url,
+				Name:       c.Movie.BaseMovieInfo.Name,
+				Live:       c.Movie.BaseMovieInfo.Live,
+				Proxy:      c.Movie.BaseMovieInfo.Proxy,
+				RtmpSource: c.Movie.BaseMovieInfo.RtmpSource,
+				Type:       c.Movie.BaseMovieInfo.Type,
+				Headers:    c.Movie.BaseMovieInfo.Headers,
+			},
+			PullKey:   c.Movie.PullKey,
+			CreatedAt: c.Movie.CreatedAt,
+			Creator:   c.Movie.Creator,
 		},
 		Status: &pb.Status{
 			Seek:    c.Status.Seek,
@@ -108,7 +110,7 @@ func (c *Current) Proto() *pb.Current {
 }
 
 func (c *Current) updateSeek() {
-	if c.Movie.Live {
+	if c.Movie.BaseMovieInfo.Live {
 		c.Status.lastUpdate = time.Now()
 		return
 	}
@@ -127,7 +129,7 @@ func (c *Current) setLiveStatus() Status {
 }
 
 func (c *Current) SetStatus(playing bool, seek, rate, timeDiff float64) Status {
-	if c.Movie.Live {
+	if c.Movie.BaseMovieInfo.Live {
 		return c.setLiveStatus()
 	}
 	c.Status.Playing = playing
@@ -142,7 +144,7 @@ func (c *Current) SetStatus(playing bool, seek, rate, timeDiff float64) Status {
 }
 
 func (c *Current) SetSeekRate(seek, rate, timeDiff float64) Status {
-	if c.Movie.Live {
+	if c.Movie.BaseMovieInfo.Live {
 		return c.setLiveStatus()
 	}
 	if c.Status.Playing {
@@ -156,7 +158,7 @@ func (c *Current) SetSeekRate(seek, rate, timeDiff float64) Status {
 }
 
 func (c *Current) SetSeek(seek, timeDiff float64) Status {
-	if c.Movie.Live {
+	if c.Movie.BaseMovieInfo.Live {
 		return c.setLiveStatus()
 	}
 	if c.Status.Playing {

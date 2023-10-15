@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	pb "github.com/synctv-org/synctv/proto"
 	"github.com/zijiren233/gencontainer/dllist"
 	"github.com/zijiren233/stream"
 	"golang.org/x/crypto/bcrypt"
@@ -159,7 +158,7 @@ func (u *User) NewMovieWithBaseMovie(baseMovie BaseMovieInfo, conf ...MovieConf)
 	return NewMovieWithBaseMovie(atomic.AddUint64(&u.room.mid, 1), baseMovie, append(conf, WithCreator(u))...)
 }
 
-func (u *User) Movie(id uint64) (*pb.MovieInfo, error) {
+func (u *User) Movie(id uint64) (*MovieInfo, error) {
 	u.room.movies.lock.RLock()
 	defer u.room.movies.lock.RUnlock()
 
@@ -167,20 +166,22 @@ func (u *User) Movie(id uint64) (*pb.MovieInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	movie := &pb.MovieInfo{
-		Id:         m.Id(),
-		Url:        m.Url,
-		Name:       m.Name,
-		Live:       m.Live,
-		Proxy:      m.Proxy,
-		RtmpSource: m.RtmpSource,
-		Type:       m.Type,
-		Headers:    m.Headers,
-		PullKey:    m.PullKey,
-		CreatedAt:  m.CreatedAt,
-		Creator:    m.Creator().Name(),
+	movie := &MovieInfo{
+		Id: m.Id(),
+		BaseMovieInfo: BaseMovieInfo{
+			Url:        m.Url,
+			Name:       m.Name,
+			Live:       m.Live,
+			Proxy:      m.Proxy,
+			RtmpSource: m.RtmpSource,
+			Type:       m.Type,
+			Headers:    m.Headers,
+		},
+		PullKey:   m.PullKey,
+		CreatedAt: m.CreatedAt,
+		Creator:   m.Creator().Name(),
 	}
-	if movie.Proxy && u.name != movie.Creator {
+	if movie.BaseMovieInfo.Proxy && u.name != movie.Creator {
 		m.Headers = nil
 	}
 	return movie, nil
@@ -208,7 +209,7 @@ func (u *User) Movies() []*MovieInfo {
 			Creator:   e.Value.Creator().Name(),
 		}
 		if e.Value.Proxy && u.name != m.Creator {
-			m.Headers = nil
+			m.BaseMovieInfo.Headers = nil
 		}
 		movies = append(movies, m)
 		return true

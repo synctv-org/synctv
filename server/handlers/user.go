@@ -4,7 +4,6 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	json "github.com/json-iterator/go"
 	"github.com/synctv-org/synctv/room"
 	"github.com/synctv-org/synctv/server/middlewares"
 	"github.com/synctv-org/synctv/server/model"
@@ -24,8 +23,8 @@ func Me(ctx *gin.Context) {
 func SetUserPassword(ctx *gin.Context) {
 	user := ctx.Value("user").(*room.User)
 
-	req := new(SetPasswordReq)
-	if err := json.NewDecoder(ctx.Request.Body).Decode(req); err != nil {
+	req := model.SetUserPasswordReq{}
+	if err := model.Decode(ctx, &req); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}

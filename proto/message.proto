@@ -25,11 +25,11 @@ message MovieInfo {
   string name = 3;
   bool live = 4;
   bool proxy = 5;
-  bool rtmp_source = 6;
+  bool rtmpSource = 6;
   string type = 7;
   map<string, string> headers = 8;
-  string pull_key = 9;
-  int64 created_at = 10;
+  string pullKey = 9;
+  int64 createdAt = 10;
   string creator = 11;
 }
 
@@ -51,6 +51,6 @@ message ElementMessage {
   double rate = 4;
   double seek = 5;
   optional Current current = 6;
-  int64 people_num = 7;
+  int64 peopleNum = 7;
   int64 time = 8;
 }

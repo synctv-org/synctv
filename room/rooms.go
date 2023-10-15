@@ -64,7 +64,7 @@ func (rs *Rooms) HasRoom(id string) bool {
 
 func (rs *Rooms) GetRoom(id string) (*Room, error) {
 	if id == "" {
-		return nil, ErrRoomIDEmpty
+		return nil, ErrRoomIdEmpty
 	}
 	r, ok := rs.rooms.Load(id)
 	if !ok {
@@ -78,7 +78,7 @@ func (rs *Rooms) CreateRoom(id string, password string, s *rtmps.Server, conf ..
 	if err != nil {
 		return nil, err
 	}
-	r, loaded := rs.rooms.LoadOrStore(r.ID(), r)
+	r, loaded := rs.rooms.LoadOrStore(r.Id(), r)
 	if loaded {
 		return nil, ErrRoomAlreadyExist
 	}
@@ -87,7 +87,7 @@ func (rs *Rooms) CreateRoom(id string, password string, s *rtmps.Server, conf ..
 
 func (rs *Rooms) DelRoom(id string) error {
 	if id == "" {
-		return ErrRoomIDEmpty
+		return ErrRoomIdEmpty
 	}
 	r, ok := rs.rooms.LoadAndDelete(id)
 	if !ok {

@@ -15,7 +15,6 @@ import (
 	"github.com/go-resty/resty/v2"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
-	json "github.com/json-iterator/go"
 	"github.com/synctv-org/synctv/internal/conf"
 	pb "github.com/synctv-org/synctv/proto"
 	"github.com/synctv-org/synctv/proxy"
@@ -88,18 +87,16 @@ func Movies(ctx *gin.Context) {
 	}))
 }
 
-type PushMovieReq = room.BaseMovieInfo
-
 func PushMovie(ctx *gin.Context) {
 	user := ctx.Value("user").(*room.User)
 
-	req := new(PushMovieReq)
-	if err := json.NewDecoder(ctx.Request.Body).Decode(req); err != nil {
+	req := model.PushMovieReq{}
+	if err := model.Decode(ctx, &req); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
-	movie, err := user.NewMovieWithBaseMovie(*req)
+	movie, err := user.NewMovieWithBaseMovie(room.BaseMovieInfo(req))
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
@@ -250,8 +247,8 @@ func PushMovie(ctx *gin.Context) {
 func NewPublishKey(ctx *gin.Context) {
 	user := ctx.Value("user").(*room.User)
 
-	req := new(IdReq)
-	if err := json.NewDecoder(ctx.Request.Body).Decode(req); err != nil {
+	req := model.IdReq{}
+	if err := model.Decode(ctx, &req); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
@@ -290,26 +287,21 @@ func NewPublishKey(ctx *gin.Context) {
 
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
 		"host":  host,
-		"app":   user.Room().ID(),
+		"app":   user.Room().Id(),
 		"token": token,
 	}))
-}
-
-type EditMovieReq struct {
-	Id uint64 `json:"id"`
-	room.BaseMovieInfo
 }
 
 func EditMovie(ctx *gin.Context) {
 	user := ctx.Value("user").(*room.User)
 
-	req := new(EditMovieReq)
-	if err := json.NewDecoder(ctx.Request.Body).Decode(req); err != nil {
+	req := model.EditMovieReq{}
+	if err := model.Decode(ctx, &req); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
-	if err := user.EditMovie(req.Id, req.BaseMovieInfo); err != nil {
+	if err := user.EditMovie(req.Id, room.BaseMovieInfo(req.PushMovieReq)); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
@@ -327,15 +319,11 @@ func EditMovie(ctx *gin.Context) {
 	ctx.Status(http.StatusNoContent)
 }
 
-type IdsReq struct {
-	Ids []uint64 `json:"ids"`
-}
-
 func DelMovie(ctx *gin.Context) {
 	user := ctx.Value("user").(*room.User)
 
-	req := new(IdsReq)
-	if err := json.NewDecoder(ctx.Request.Body).Decode(req); err != nil {
+	req := model.IdsReq{}
+	if err := model.Decode(ctx, &req); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
@@ -379,16 +367,11 @@ func ClearMovies(ctx *gin.Context) {
 	ctx.Status(http.StatusNoContent)
 }
 
-type SwapMovieReq struct {
-	Id1 uint64 `json:"id1"`
-	Id2 uint64 `json:"id2"`
-}
-
 func SwapMovie(ctx *gin.Context) {
 	user := ctx.Value("user").(*room.User)
 
-	req := new(SwapMovieReq)
-	if err := json.NewDecoder(ctx.Request.Body).Decode(req); err != nil {
+	req := model.SwapMovieReq{}
+	if err := model.Decode(ctx, &req); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
@@ -411,15 +394,11 @@ func SwapMovie(ctx *gin.Context) {
 	ctx.Status(http.StatusNoContent)
 }
 
-type IdReq struct {
-	Id uint64 `json:"id"`
-}
-
 func ChangeCurrentMovie(ctx *gin.Context) {
 	user := ctx.Value("user").(*room.User)
 
-	req := new(IdReq)
-	if err := json.NewDecoder(ctx.Request.Body).Decode(req); err != nil {
+	req := model.IdReq{}
+	if err := model.Decode(ctx, &req); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}

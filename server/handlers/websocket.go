@@ -48,11 +48,11 @@ func NewWSMessageHandler(u *room.User) func(c *websocket.Conn) error {
 			}
 			return c.WriteMessage(websocket.TextMessage, b)
 		}
-		log.Infof("ws: room %s user %s connected", u.Room().ID(), u.Name())
+		log.Infof("ws: room %s user %s connected", u.Room().Id(), u.Name())
 		defer func() {
 			client.Unregister()
 			client.Close()
-			log.Infof("ws: room %s user %s disconnected", u.Room().ID(), u.Name())
+			log.Infof("ws: room %s user %s disconnected", u.Room().Id(), u.Name())
 		}()
 		go handleReaderMessage(client)
 		return handleWriterMessage(client)
@@ -63,12 +63,12 @@ func handleWriterMessage(c *room.Client) error {
 	for v := range c.GetReadChan() {
 		wc, err := c.NextWriter(v.MessageType())
 		if err != nil {
-			log.Debugf("ws: room %s user %s get next writer error: %v", c.Room().ID(), c.Username(), err)
+			log.Debugf("ws: room %s user %s get next writer error: %v", c.Room().Id(), c.Username(), err)
 			return err
 		}
 
 		if err := v.Encode(wc); err != nil {
-			log.Debugf("ws: room %s user %s encode message error: %v", c.Room().ID(), c.Username(), err)
+			log.Debugf("ws: room %s user %s encode message error: %v", c.Room().Id(), c.Username(), err)
 			continue
 		}
 		if err := wc.Close(); err != nil {
@@ -84,61 +84,61 @@ func handleReaderMessage(c *room.Client) error {
 	for {
 		t, rd, err := c.NextReader()
 		if err != nil {
-			log.Debugf("ws: room %s user %s get next reader error: %v", c.Room().ID(), c.Username(), err)
+			log.Debugf("ws: room %s user %s get next reader error: %v", c.Room().Id(), c.Username(), err)
 			return err
 		}
-		log.Debugf("ws: room %s user %s receive message type: %d", c.Room().ID(), c.Username(), t)
+		log.Debugf("ws: room %s user %s receive message type: %d", c.Room().Id(), c.Username(), t)
 		switch t {
 		case websocket.CloseMessage:
-			log.Debugf("ws: room %s user %s receive close message", c.Room().ID(), c.Username())
+			log.Debugf("ws: room %s user %s receive close message", c.Room().Id(), c.Username())
 			return nil
 		case websocket.BinaryMessage:
 			var data []byte
 			if data, err = io.ReadAll(rd); err != nil {
-				log.Errorf("ws: room %s user %s read message error: %v", c.Room().ID(), c.Username(), err)
+				log.Errorf("ws: room %s user %s read message error: %v", c.Room().Id(), c.Username(), err)
 				if err := c.Send(&room.ElementMessage{
 					ElementMessage: &pb.ElementMessage{
 						Type:    pb.ElementMessageType_ERROR,
 						Message: err.Error(),
 					},
 				}); err != nil {
-					log.Errorf("ws: room %s user %s send error message error: %v", c.Room().ID(), c.Username(), err)
+					log.Errorf("ws: room %s user %s send error message error: %v", c.Room().Id(), c.Username(), err)
 					return err
 				}
 				continue
 			}
 			if err := proto.Unmarshal(data, &msg); err != nil {
-				log.Errorf("ws: room %s user %s decode message error: %v", c.Room().ID(), c.Username(), err)
+				log.Errorf("ws: room %s user %s decode message error: %v", c.Room().Id(), c.Username(), err)
 				if err := c.Send(&room.ElementMessage{
 					ElementMessage: &pb.ElementMessage{
 						Type:    pb.ElementMessageType_ERROR,
 						Message: err.Error(),
 					},
 				}); err != nil {
-					log.Errorf("ws: room %s user %s send error message error: %v", c.Room().ID(), c.Username(), err)
+					log.Errorf("ws: room %s user %s send error message error: %v", c.Room().Id(), c.Username(), err)
 					return err
 				}
 				continue
 			}
 		case websocket.TextMessage:
 			if err := json.NewDecoder(rd).Decode(&msg); err != nil {
-				log.Errorf("ws: room %s user %s decode message error: %v", c.Room().ID(), c.Username(), err)
+				log.Errorf("ws: room %s user %s decode message error: %v", c.Room().Id(), c.Username(), err)
 				if err := c.Send(&room.ElementMessage{
 					ElementMessage: &pb.ElementMessage{
 						Type:    pb.ElementMessageType_ERROR,
 						Message: err.Error(),
 					},
 				}); err != nil {
-					log.Errorf("ws: room %s user %s send error message error: %v", c.Room().ID(), c.Username(), err)
+					log.Errorf("ws: room %s user %s send error message error: %v", c.Room().Id(), c.Username(), err)
 					return err
 				}
 				continue
 			}
 		default:
-			log.Errorf("ws: room %s user %s receive unknown message type: %d", c.Room().ID(), c.Username(), t)
+			log.Errorf("ws: room %s user %s receive unknown message type: %d", c.Room().Id(), c.Username(), t)
 			continue
 		}
-		log.Debugf("ws: receive room %s user %s message: %+v", c.Room().ID(), c.Username(), msg.String())
+		log.Debugf("ws: receive room %s user %s message: %+v", c.Room().Id(), c.Username(), msg.String())
 		switch t {
 		case websocket.BinaryMessage:
 			err = handleElementMsg(c.Room(), &msg, func(em *pb.ElementMessage) error {
@@ -158,7 +158,7 @@ func handleReaderMessage(c *room.Client) error {
 			})
 		}
 		if err != nil {
-			log.Errorf("ws: room %s user %s handle message error: %v", c.Room().ID(), c.Username(), err)
+			log.Errorf("ws: room %s user %s handle message error: %v", c.Room().Id(), c.Username(), err)
 			return err
 		}
 	}

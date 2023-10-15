@@ -25,7 +25,7 @@ type broadcastMessage struct {
 	data       Message
 	sender     string
 	sendToSelf bool
-	ignoreID   []string
+	ignoreId   []string
 }
 
 type BroadcastConf func(*broadcastMessage)
@@ -42,9 +42,9 @@ func WithSendToSelf() BroadcastConf {
 	}
 }
 
-func WithIgnoreID(id ...string) BroadcastConf {
+func WithIgnoreId(id ...string) BroadcastConf {
 	return func(bm *broadcastMessage) {
-		bm.ignoreID = append(bm.ignoreID, id...)
+		bm.ignoreId = append(bm.ignoreId, id...)
 	}
 }
 
@@ -83,7 +83,7 @@ func (h *hub) Serve() error {
 						return true
 					}
 				}
-				if utils.In(message.ignoreID, cli.user.name) {
+				if utils.In(message.ignoreId, cli.user.name) {
 					return true
 				}
 				if err := cli.Send(message.data); err != nil {

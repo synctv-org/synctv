@@ -7,7 +7,6 @@ import (
 	"strconv"
 	"time"
 
-	json "github.com/json-iterator/go"
 	log "github.com/sirupsen/logrus"
 
 	"github.com/gin-gonic/gin"
@@ -32,19 +31,11 @@ func (e FormatErrNotSupportPosition) Error() string {
 	return fmt.Sprintf("not support position %s", string(e))
 }
 
-type CreateRoomReq struct {
-	RoomID       string `json:"roomId"`
-	Password     string `json:"password"`
-	Username     string `json:"username"`
-	UserPassword string `json:"userPassword"`
-	Hidden       bool   `json:"hidden"`
-}
-
 func NewCreateRoomHandler(s *rtmps.Server) gin.HandlerFunc {
 	return func(ctx *gin.Context) {
 		rooms := ctx.Value("rooms").(*room.Rooms)
-		req := new(CreateRoomReq)
-		if err := json.NewDecoder(ctx.Request.Body).Decode(req); err != nil {
+		req := model.CreateRoomReq{}
+		if err := model.Decode(ctx, &req); err != nil {
 			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 			return
 		}
@@ -55,7 +46,7 @@ func NewCreateRoomHandler(s *rtmps.Server) gin.HandlerFunc {
 			return
 		}
 
-		r, err := rooms.CreateRoom(req.RoomID, req.Password, s,
+		r, err := rooms.CreateRoom(req.RoomId, req.Password, s,
 			room.WithHidden(req.Hidden),
 			room.WithRootUser(user),
 		)
@@ -79,7 +70,7 @@ func NewCreateRoomHandler(s *rtmps.Server) gin.HandlerFunc {
 			var pre int64 = 0
 			for range ticker.C {
 				if r.Closed() {
-					log.Debugf("ws: room %s closed, stop broadcast people num", r.ID())
+					log.Debugf("ws: room %s closed, stop broadcast people num", r.Id())
 					return
 				}
 				current := r.ClientNum()
@@ -90,13 +81,13 @@ func NewCreateRoomHandler(s *rtmps.Server) gin.HandlerFunc {
 							PeopleNum: current,
 						},
 					}); err != nil {
-						log.Errorf("ws: room %s broadcast people num error: %v", r.ID(), err)
+						log.Errorf("ws: room %s broadcast people num error: %v", r.Id(), err)
 						continue
 					}
 					pre = current
 				} else {
 					if err := r.Broadcast(&room.PingMessage{}); err != nil {
-						log.Errorf("ws: room %s broadcast ping error: %v", r.ID(), err)
+						log.Errorf("ws: room %s broadcast ping error: %v", r.Id(), err)
 						continue
 					}
 				}
@@ -109,25 +100,17 @@ func NewCreateRoomHandler(s *rtmps.Server) gin.HandlerFunc {
 	}
 }
 
-type RoomListResp struct {
-	RoomID       string `json:"roomId"`
-	PeopleNum    int64  `json:"peopleNum"`
-	NeedPassword bool   `json:"needPassword"`
-	Creator      string `json:"creator"`
-	CreateAt     int64  `json:"createAt"`
-}
-
 func RoomList(ctx *gin.Context) {
 	rooms := ctx.Value("rooms").(*room.Rooms)
 	r := rooms.ListNonHidden()
-	resp := vec.New[*RoomListResp](vec.WithCmpLess[*RoomListResp](func(v1, v2 *RoomListResp) bool {
+	resp := vec.New[*model.RoomListResp](vec.WithCmpLess[*model.RoomListResp](func(v1, v2 *model.RoomListResp) bool {
 		return v1.PeopleNum < v2.PeopleNum
-	}), vec.WithCmpEqual[*RoomListResp](func(v1, v2 *RoomListResp) bool {
+	}), vec.WithCmpEqual[*model.RoomListResp](func(v1, v2 *model.RoomListResp) bool {
 		return v1.PeopleNum == v2.PeopleNum
 	}))
 	for _, v := range r {
-		resp.Push(&RoomListResp{
-			RoomID:       v.ID(),
+		resp.Push(&model.RoomListResp{
+			RoomId:       v.Id(),
 			PeopleNum:    v.ClientNum(),
 			NeedPassword: v.NeedPassword(),
 			Creator:      v.RootUser().Name(),
@@ -139,27 +122,27 @@ func RoomList(ctx *gin.Context) {
 	case "peopleNum":
 		resp.SortStable()
 	case "creator":
-		resp.SortStableFunc(func(v1, v2 *RoomListResp) bool {
+		resp.SortStableFunc(func(v1, v2 *model.RoomListResp) bool {
 			return natural.Less(v1.Creator, v2.Creator)
-		}, func(t1, t2 *RoomListResp) bool {
+		}, func(t1, t2 *model.RoomListResp) bool {
 			return t1.Creator == t2.Creator
 		})
 	case "createAt":
-		resp.SortStableFunc(func(v1, v2 *RoomListResp) bool {
+		resp.SortStableFunc(func(v1, v2 *model.RoomListResp) bool {
 			return v1.CreateAt < v2.CreateAt
-		}, func(t1, t2 *RoomListResp) bool {
+		}, func(t1, t2 *model.RoomListResp) bool {
 			return t1.CreateAt == t2.CreateAt
 		})
 	case "roomId":
-		resp.SortStableFunc(func(v1, v2 *RoomListResp) bool {
-			return natural.Less(v1.RoomID, v2.RoomID)
-		}, func(t1, t2 *RoomListResp) bool {
-			return t1.RoomID == t2.RoomID
+		resp.SortStableFunc(func(v1, v2 *model.RoomListResp) bool {
+			return natural.Less(v1.RoomId, v2.RoomId)
+		}, func(t1, t2 *model.RoomListResp) bool {
+			return t1.RoomId == t2.RoomId
 		})
 	case "needPassword":
-		resp.SortStableFunc(func(v1, v2 *RoomListResp) bool {
+		resp.SortStableFunc(func(v1, v2 *model.RoomListResp) bool {
 			return v1.NeedPassword && !v2.NeedPassword
-		}, func(t1, t2 *RoomListResp) bool {
+		}, func(t1, t2 *model.RoomListResp) bool {
 			return t1.NeedPassword == t2.NeedPassword
 		})
 	default:
@@ -224,17 +207,10 @@ func CheckUser(ctx *gin.Context) {
 	}))
 }
 
-type LoginRoomReq struct {
-	RoomID       string `json:"roomId"`
-	Password     string `json:"password"`
-	Username     string `json:"username"`
-	UserPassword string `json:"userPassword"`
-}
-
 func LoginRoom(ctx *gin.Context) {
 	rooms := ctx.Value("rooms").(*room.Rooms)
-	req := new(LoginRoomReq)
-	if err := json.NewDecoder(ctx.Request.Body).Decode(req); err != nil {
+	req := model.LoginRoomReq{}
+	if err := model.Decode(ctx, &req); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
@@ -249,13 +225,13 @@ func LoginRoom(ctx *gin.Context) {
 		user *room.User
 	)
 	if autoNew {
-		user, err = middlewares.AuthOrNewWithPassword(req.RoomID, req.Password, req.Username, req.UserPassword, rooms)
+		user, err = middlewares.AuthOrNewWithPassword(req.RoomId, req.Password, req.Username, req.UserPassword, rooms)
 		if err != nil {
 			ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
 			return
 		}
 	} else {
-		user, err = middlewares.AuthWithPassword(req.RoomID, req.Password, req.Username, req.UserPassword, rooms)
+		user, err = middlewares.AuthWithPassword(req.RoomId, req.Password, req.Username, req.UserPassword, rooms)
 		if err != nil {
 			ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
 			return
@@ -282,17 +258,13 @@ func DeleteRoom(ctx *gin.Context) {
 		return
 	}
 
-	err := rooms.DelRoom(user.Room().ID())
+	err := rooms.DelRoom(user.Room().Id())
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}
 
 	ctx.Status(http.StatusNoContent)
-}
-
-type SetPasswordReq struct {
-	Password string `json:"password"`
 }
 
 func SetPassword(ctx *gin.Context) {
@@ -303,8 +275,8 @@ func SetPassword(ctx *gin.Context) {
 		return
 	}
 
-	req := new(SetPasswordReq)
-	if err := json.NewDecoder(ctx.Request.Body).Decode(req); err != nil {
+	req := model.SetRoomPasswordReq{}
+	if err := model.Decode(ctx, &req); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
@@ -322,10 +294,6 @@ func SetPassword(ctx *gin.Context) {
 	}))
 }
 
-type UsernameReq struct {
-	Username string `json:"username"`
-}
-
 func AddAdmin(ctx *gin.Context) {
 	user := ctx.Value("user").(*room.User)
 
@@ -334,8 +302,8 @@ func AddAdmin(ctx *gin.Context) {
 		return
 	}
 
-	req := new(UsernameReq)
-	if err := json.NewDecoder(ctx.Request.Body).Decode(req); err != nil {
+	req := model.UsernameReq{}
+	if err := model.Decode(ctx, &req); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
@@ -359,8 +327,8 @@ func DelAdmin(ctx *gin.Context) {
 		return
 	}
 
-	req := new(UsernameReq)
-	if err := json.NewDecoder(ctx.Request.Body).Decode(req); err != nil {
+	req := model.UsernameReq{}
+	if err := model.Decode(ctx, &req); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}

@@ -19,7 +19,7 @@ var (
 )
 
 type AuthClaims struct {
-	RoomID      string `json:"id"`
+	RoomId      string `json:"id"`
 	Version     uint64 `json:"v"`
 	Username    string `json:"un"`
 	UserVersion uint64 `json:"uv"`
@@ -45,7 +45,7 @@ func Auth(Authorization string, rooms *room.Rooms) (*room.User, error) {
 	if err != nil {
 		return nil, err
 	}
-	r, err := rooms.GetRoom(claims.RoomID)
+	r, err := rooms.GetRoom(claims.RoomId)
 	if err != nil {
 		return nil, err
 	}
@@ -66,8 +66,8 @@ func Auth(Authorization string, rooms *room.Rooms) (*room.User, error) {
 	return user, nil
 }
 
-func AuthWithPassword(roomID, roomPassword, username, password string, rooms *room.Rooms) (*room.User, error) {
-	room, err := rooms.GetRoom(roomID)
+func AuthWithPassword(roomId, roomPassword, username, password string, rooms *room.Rooms) (*room.User, error) {
+	room, err := rooms.GetRoom(roomId)
 	if err != nil {
 		return nil, err
 	}
@@ -84,8 +84,8 @@ func AuthWithPassword(roomID, roomPassword, username, password string, rooms *ro
 	return user, nil
 }
 
-func AuthOrNewWithPassword(roomID, roomPassword, username, password string, rooms *room.Rooms) (*room.User, error) {
-	room, err := rooms.GetRoom(roomID)
+func AuthOrNewWithPassword(roomId, roomPassword, username, password string, rooms *room.Rooms) (*room.User, error) {
+	room, err := rooms.GetRoom(roomId)
 	if err != nil {
 		return nil, err
 	}
@@ -116,7 +116,7 @@ func AuthRoom(ctx *gin.Context) {
 
 func NewAuthToken(user *room.User) (string, error) {
 	claims := &AuthClaims{
-		RoomID:      user.Room().ID(),
+		RoomId:      user.Room().Id(),
 		Version:     user.Room().Version(),
 		Username:    user.Name(),
 		UserVersion: user.Version(),

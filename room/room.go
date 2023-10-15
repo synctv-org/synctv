@@ -15,8 +15,8 @@ import (
 )
 
 var (
-	ErrRoomIDEmpty        = errors.New("roomid is empty")
-	ErrRoomIDTooLong      = errors.New("roomid is too long")
+	ErrRoomIdEmpty        = errors.New("roomid is empty")
+	ErrRoomIdTooLong      = errors.New("roomid is too long")
 	ErrAdminPassWordEmpty = errors.New("admin password is empty")
 )
 
@@ -63,15 +63,15 @@ func WithRootUser(u *User) RoomConf {
 }
 
 // Version cant is 0
-func NewRoom(RoomID string, Password string, rtmps *rtmps.Server, conf ...RoomConf) (*Room, error) {
-	if RoomID == "" {
-		return nil, ErrRoomIDEmpty
-	} else if len(RoomID) > 32 {
-		return nil, ErrRoomIDTooLong
+func NewRoom(RoomId string, Password string, rtmps *rtmps.Server, conf ...RoomConf) (*Room, error) {
+	if RoomId == "" {
+		return nil, ErrRoomIdEmpty
+	} else if len(RoomId) > 32 {
+		return nil, ErrRoomIdTooLong
 	}
 	now := time.Now().UnixMilli()
 	r := &Room{
-		id:         RoomID,
+		id:         RoomId,
 		rtmps:      rtmps,
 		lastActive: now,
 		createAt:   now,
@@ -206,7 +206,7 @@ func (r *Room) Hidden() bool {
 	return atomic.LoadUint32(&r.hidden) == 1
 }
 
-func (r *Room) ID() string {
+func (r *Room) Id() string {
 	return r.id
 }
 

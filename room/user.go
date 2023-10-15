@@ -186,24 +186,26 @@ func (u *User) Movie(id uint64) (*pb.MovieInfo, error) {
 	return movie, nil
 }
 
-func (u *User) Movies() []*pb.MovieInfo {
+func (u *User) Movies() []*MovieInfo {
 	u.room.movies.lock.RLock()
 	defer u.room.movies.lock.RUnlock()
 
-	movies := make([]*pb.MovieInfo, 0, u.room.movies.l.Len())
+	movies := make([]*MovieInfo, 0, u.room.movies.l.Len())
 	u.room.movies.range_(func(e *dllist.Element[*Movie]) bool {
-		m := &pb.MovieInfo{
-			Id:         e.Value.Id(),
-			Url:        e.Value.Url,
-			Name:       e.Value.Name,
-			Live:       e.Value.Live,
-			Proxy:      e.Value.Proxy,
-			RtmpSource: e.Value.RtmpSource,
-			Type:       e.Value.Type,
-			Headers:    e.Value.Headers,
-			PullKey:    e.Value.PullKey,
-			CreatedAt:  e.Value.CreatedAt,
-			Creator:    e.Value.Creator().Name(),
+		m := &MovieInfo{
+			Id: e.Value.Id(),
+			BaseMovieInfo: BaseMovieInfo{
+				Url:        e.Value.Url,
+				Name:       e.Value.Name,
+				Live:       e.Value.Live,
+				Proxy:      e.Value.Proxy,
+				RtmpSource: e.Value.RtmpSource,
+				Type:       e.Value.Type,
+				Headers:    e.Value.Headers,
+			},
+			PullKey:   e.Value.PullKey,
+			CreatedAt: e.Value.CreatedAt,
+			Creator:   e.Value.Creator().Name(),
 		}
 		if e.Value.Proxy && u.name != m.Creator {
 			m.Headers = nil

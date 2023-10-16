@@ -2,9 +2,11 @@ package model
 
 import (
 	"errors"
+	"fmt"
 	"regexp"
 
 	json "github.com/json-iterator/go"
+	"github.com/synctv-org/synctv/internal/conf"
 
 	"github.com/gin-gonic/gin"
 )
@@ -14,7 +16,6 @@ var (
 	ErrRoomIdTooLong        = errors.New("room id too long")
 	ErrRoomIdHasInvalidChar = errors.New("room id has invalid char")
 
-	ErrEmptyPassword          = errors.New("empty password")
 	ErrPasswordTooLong        = errors.New("password too long")
 	ErrPasswordHasInvalidChar = errors.New("password has invalid char")
 
@@ -27,6 +28,12 @@ var (
 	alphaNumReg        = regexp.MustCompile(`^[a-zA-Z0-9_\-]+$`)
 	alphaNumChineseReg = regexp.MustCompile(`^[\p{Han}a-zA-Z0-9_\-]+$`)
 )
+
+type FormatEmptyPasswordError string
+
+func (f FormatEmptyPasswordError) Error() string {
+	return fmt.Sprintf("%s password empty", string(f))
+}
 
 type CreateRoomReq struct {
 	RoomId       string `json:"roomId"`
@@ -55,6 +62,8 @@ func (c *CreateRoomReq) Validate() error {
 		} else if !alphaNumReg.MatchString(c.Password) {
 			return ErrPasswordHasInvalidChar
 		}
+	} else if conf.Conf.Room.MustPassword {
+		return FormatEmptyPasswordError("room")
 	}
 
 	if c.Username == "" {
@@ -66,7 +75,7 @@ func (c *CreateRoomReq) Validate() error {
 	}
 
 	if c.UserPassword == "" {
-		return ErrEmptyPassword
+		return FormatEmptyPasswordError("user")
 	} else if len(c.UserPassword) > 32 {
 		return ErrPasswordTooLong
 	} else if !alphaNumReg.MatchString(c.UserPassword) {
@@ -105,7 +114,7 @@ func (l *LoginRoomReq) Validate() error {
 	}
 
 	if l.UserPassword == "" {
-		return ErrEmptyPassword
+		return FormatEmptyPasswordError("user")
 	}
 
 	return nil

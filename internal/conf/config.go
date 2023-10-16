@@ -21,6 +21,9 @@ type Config struct {
 
 	// Proxy
 	Proxy ProxyConfig `yaml:"proxy" hc:"you can use proxy to proxy movie and live when custom headers or network is slow to connect to origin server"`
+
+	// Room
+	Room RoomConfig `yaml:"room"`
 }
 
 func (c *Config) Save(file string) error {
@@ -48,5 +51,8 @@ func DefaultConfig() *Config {
 
 		// Proxy
 		Proxy: DefaultProxyConfig(),
+
+		// Room
+		Room: DefaultRoomConfig(),
 	}
 }

@@ -15,7 +15,7 @@ func (s *SetUserPasswordReq) Decode(ctx *gin.Context) error {
 
 func (s *SetUserPasswordReq) Validate() error {
 	if s.Password == "" {
-		return ErrEmptyPassword
+		return FormatEmptyPasswordError("user")
 	} else if len(s.Password) > 32 {
 		return ErrPasswordTooLong
 	} else if !alphaNumReg.MatchString(s.Password) {

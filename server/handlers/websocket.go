@@ -37,16 +37,18 @@ func NewWSMessageHandler(u *room.User) func(c *websocket.Conn) error {
 		client, err := u.RegClient(c)
 		if err != nil {
 			log.Errorf("ws: register client error: %v", err)
-			b, err := json.Marshal(room.ElementMessage{
+			wc, err2 := c.NextWriter(websocket.BinaryMessage)
+			if err2 != nil {
+				return err2
+			}
+			defer wc.Close()
+			em := room.ElementMessage{
 				ElementMessage: &pb.ElementMessage{
 					Type:    pb.ElementMessageType_ERROR,
 					Message: err.Error(),
 				},
-			})
-			if err != nil {
-				return err
 			}
-			return c.WriteMessage(websocket.TextMessage, b)
+			return em.Encode(wc)
 		}
 		log.Infof("ws: room %s user %s connected", u.Room().Id(), u.Name())
 		defer func() {

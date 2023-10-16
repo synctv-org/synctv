@@ -2,8 +2,6 @@ package conf
 
 import (
 	"github.com/synctv-org/synctv/utils"
-	"github.com/zijiren233/stream"
-	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
@@ -28,11 +26,6 @@ type Config struct {
 
 func (c *Config) Save(file string) error {
 	return utils.WriteYaml(file, c)
-}
-
-func (c *Config) String() string {
-	o, _ := yaml.Marshal(c)
-	return stream.BytesToString(o)
 }
 
 func DefaultConfig() *Config {

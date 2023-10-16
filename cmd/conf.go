@@ -1,17 +1,15 @@
 package cmd
 
 import (
-	"fmt"
-
+	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"github.com/synctv-org/synctv/internal/bootstrap"
-	"github.com/synctv-org/synctv/internal/conf"
 )
 
 var ConfCmd = &cobra.Command{
 	Use:   "conf",
-	Short: "conf",
-	Long:  `config file`,
+	Short: "init or check",
+	Long:  `Init or check config file for correctness`,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		return bootstrap.New(bootstrap.WithContext(cmd.Context())).Add(
 			bootstrap.InitConfig,
@@ -21,7 +19,7 @@ var ConfCmd = &cobra.Command{
 }
 
 func Conf(cmd *cobra.Command, args []string) error {
-	fmt.Println(conf.Conf.String())
+	logrus.Infof("success")
 	return nil
 }
 

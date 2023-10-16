@@ -49,10 +49,12 @@ func (c *CreateRoomReq) Validate() error {
 		return ErrRoomIdHasInvalidChar
 	}
 
-	if len(c.Password) > 32 {
-		return ErrPasswordTooLong
-	} else if !alphaNumReg.MatchString(c.Password) {
-		return ErrPasswordHasInvalidChar
+	if c.Password != "" {
+		if len(c.Password) > 32 {
+			return ErrPasswordTooLong
+		} else if !alphaNumReg.MatchString(c.Password) {
+			return ErrPasswordHasInvalidChar
+		}
 	}
 
 	if c.Username == "" {

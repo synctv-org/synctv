@@ -38,12 +38,12 @@ func InitLog(ctx context.Context) error {
 		}
 		var w io.Writer = colorable.NewNonColorableWriter(l)
 		if flags.Dev || flags.LogStd {
-			w = io.MultiWriter(os.Stdout, w)
+			logrus.SetOutput(io.MultiWriter(os.Stdout, w))
 			logrus.Infof("log: enable log to stdout and file: %s", conf.Conf.Log.FilePath)
 		} else {
+			logrus.SetOutput(w)
 			logrus.Infof("log: disable log to stdout, only log to file: %s", conf.Conf.Log.FilePath)
 		}
-		logrus.SetOutput(w)
 	}
 	switch conf.Conf.Log.LogFormat {
 	case "json":
@@ -60,7 +60,7 @@ func InitLog(ctx context.Context) error {
 			logrus.SetFormatter(&logrus.TextFormatter{})
 		}
 	}
-	log.SetOutput(logrus.StandardLogger().Out)
+	log.SetOutput(logrus.StandardLogger().Writer())
 	return nil
 }
 

@@ -21,21 +21,20 @@ var (
 )
 
 type Room struct {
-	id           string
-	password     []byte
-	needPassword uint32
-	version      uint64
-	current      *current
-	rtmps        *rtmps.Server
-	rtmpa        *rtmps.App
-	hidden       uint32
-	initOnce     sync.Once
-	users        rwmap.RWMap[string, *User]
-	rootUser     *User
-	lastActive   int64
-	createdAt    int64
-	mid          uint64
-	hub          *hub
+	id         string
+	settings   settings
+	password   []byte
+	version    uint64
+	current    *current
+	rtmps      *rtmps.Server
+	rtmpa      *rtmps.App
+	initOnce   sync.Once
+	users      rwmap.RWMap[string, *User]
+	rootUser   *User
+	lastActive int64
+	createdAt  int64
+	mid        uint64
+	hub        *hub
 	*movies
 }
 
@@ -195,15 +194,11 @@ func (r *Room) Close() error {
 }
 
 func (r *Room) SetHidden(hidden bool) {
-	if hidden {
-		atomic.StoreUint32(&r.hidden, 1)
-	} else {
-		atomic.StoreUint32(&r.hidden, 0)
-	}
+	r.settings.SetHidden(hidden)
 }
 
 func (r *Room) Hidden() bool {
-	return atomic.LoadUint32(&r.hidden) == 1
+	return r.settings.Hidden()
 }
 
 func (r *Room) Id() string {
@@ -225,9 +220,9 @@ func (r *Room) SetPassword(password string) error {
 			return err
 		}
 		r.password = b
-		atomic.StoreUint32(&r.needPassword, 1)
+		r.settings.SetNeedPassword(true)
 	} else {
-		atomic.StoreUint32(&r.needPassword, 0)
+		r.settings.SetNeedPassword(false)
 		r.password = nil
 	}
 	r.updateVersion()
@@ -254,7 +249,7 @@ func (r *Room) CheckPassword(password string) (ok bool) {
 }
 
 func (r *Room) NeedPassword() bool {
-	return atomic.LoadUint32(&r.needPassword) == 1
+	return r.settings.NeedPassword()
 }
 
 func (r *Room) Version() uint64 {

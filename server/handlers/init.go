@@ -87,6 +87,8 @@ func Init(e *gin.Engine, s *rtmps.Server, r *room.Rooms) {
 			needAuthRoom.PUT("/admin", AddAdmin)
 
 			needAuthRoom.DELETE("/admin", DelAdmin)
+
+			needAuthRoom.GET("/settings", RoomSettings)
 		}
 
 		{

@@ -343,3 +343,19 @@ func DelAdmin(ctx *gin.Context) {
 
 	ctx.Status(http.StatusNoContent)
 }
+
+func RoomSettings(ctx *gin.Context) {
+	user := ctx.Value("user").(*room.User)
+
+	if !user.IsRoot() && !user.IsAdmin() {
+		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorStringResp("only root or admin can get room settings"))
+		return
+	}
+
+	room := user.Room()
+
+	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
+		"hidden":       room.Hidden(),
+		"needPassword": room.NeedPassword(),
+	}))
+}

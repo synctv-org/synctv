@@ -31,7 +31,7 @@ type movies struct {
 type Movie struct {
 	BaseMovieInfo
 	PullKey   string `json:"pullKey"`
-	CreatedAt int64  `json:"createAt"`
+	CreatedAt int64  `json:"createdAt"`
 
 	id      uint64
 	channel *rtmps.Channel

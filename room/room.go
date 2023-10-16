@@ -33,7 +33,7 @@ type Room struct {
 	users        rwmap.RWMap[string, *User]
 	rootUser     *User
 	lastActive   int64
-	createAt     int64
+	createdAt    int64
 	mid          uint64
 	hub          *hub
 	*movies
@@ -74,7 +74,7 @@ func NewRoom(RoomId string, Password string, rtmps *rtmps.Server, conf ...RoomCo
 		id:         RoomId,
 		rtmps:      rtmps,
 		lastActive: now,
-		createAt:   now,
+		createdAt:  now,
 	}
 
 	for _, c := range conf {
@@ -97,8 +97,8 @@ func (r *Room) Init() {
 	})
 }
 
-func (r *Room) CreateAt() int64 {
-	return atomic.LoadInt64(&r.createAt)
+func (r *Room) CreatedAt() int64 {
+	return atomic.LoadInt64(&r.createdAt)
 }
 
 func (r *Room) RootUser() *User {

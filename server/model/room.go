@@ -73,7 +73,7 @@ type RoomListResp struct {
 	PeopleNum    int64  `json:"peopleNum"`
 	NeedPassword bool   `json:"needPassword"`
 	Creator      string `json:"creator"`
-	CreateAt     int64  `json:"createAt"`
+	CreatedAt    int64  `json:"createdAt"`
 }
 
 type LoginRoomReq struct {

@@ -114,7 +114,7 @@ func RoomList(ctx *gin.Context) {
 			PeopleNum:    v.ClientNum(),
 			NeedPassword: v.NeedPassword(),
 			Creator:      v.RootUser().Name(),
-			CreateAt:     v.CreateAt(),
+			CreatedAt:    v.CreatedAt(),
 		})
 	}
 
@@ -127,11 +127,11 @@ func RoomList(ctx *gin.Context) {
 		}, func(t1, t2 *model.RoomListResp) bool {
 			return t1.Creator == t2.Creator
 		})
-	case "createAt":
+	case "createdAt":
 		resp.SortStableFunc(func(v1, v2 *model.RoomListResp) bool {
-			return v1.CreateAt < v2.CreateAt
+			return v1.CreatedAt < v2.CreatedAt
 		}, func(t1, t2 *model.RoomListResp) bool {
-			return t1.CreateAt == t2.CreateAt
+			return t1.CreatedAt == t2.CreatedAt
 		})
 	case "roomId":
 		resp.SortStableFunc(func(v1, v2 *model.RoomListResp) bool {

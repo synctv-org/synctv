@@ -14,8 +14,9 @@ var (
 	ErrRoomIdTooLong        = errors.New("room id too long")
 	ErrRoomIdHasInvalidChar = errors.New("room id has invalid char")
 
-	ErrEmptyPassword   = errors.New("empty password")
-	ErrPasswordTooLong = errors.New("password too long")
+	ErrEmptyPassword          = errors.New("empty password")
+	ErrPasswordTooLong        = errors.New("password too long")
+	ErrPasswordHasInvalidChar = errors.New("password has invalid char")
 
 	ErrEmptyUsername          = errors.New("empty username")
 	ErrUsernameTooLong        = errors.New("username too long")
@@ -23,7 +24,8 @@ var (
 )
 
 var (
-	alphaNumReg = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+	alphaNumReg        = regexp.MustCompile(`^[a-zA-Z0-9_\-]+$`)
+	alphaNumChineseReg = regexp.MustCompile(`^[\p{Han}a-zA-Z0-9_\-]+$`)
 )
 
 type CreateRoomReq struct {
@@ -43,19 +45,21 @@ func (c *CreateRoomReq) Validate() error {
 		return ErrEmptyRoomId
 	} else if len(c.RoomId) > 32 {
 		return ErrRoomIdTooLong
-	} else if !alphaNumReg.MatchString(c.RoomId) {
+	} else if !alphaNumChineseReg.MatchString(c.RoomId) {
 		return ErrRoomIdHasInvalidChar
 	}
 
 	if len(c.Password) > 32 {
 		return ErrPasswordTooLong
+	} else if !alphaNumReg.MatchString(c.Password) {
+		return ErrPasswordHasInvalidChar
 	}
 
 	if c.Username == "" {
 		return ErrEmptyUsername
 	} else if len(c.Username) > 32 {
 		return ErrUsernameTooLong
-	} else if !alphaNumReg.MatchString(c.Username) {
+	} else if !alphaNumChineseReg.MatchString(c.Username) {
 		return ErrUsernameHasInvalidChar
 	}
 
@@ -63,6 +67,8 @@ func (c *CreateRoomReq) Validate() error {
 		return ErrEmptyPassword
 	} else if len(c.UserPassword) > 32 {
 		return ErrPasswordTooLong
+	} else if !alphaNumReg.MatchString(c.UserPassword) {
+		return ErrPasswordHasInvalidChar
 	}
 
 	return nil
@@ -114,6 +120,8 @@ func (s *SetRoomPasswordReq) Decode(ctx *gin.Context) error {
 func (s *SetRoomPasswordReq) Validate() error {
 	if len(s.Password) > 32 {
 		return ErrPasswordTooLong
+	} else if !alphaNumReg.MatchString(s.Password) {
+		return ErrPasswordHasInvalidChar
 	}
 	return nil
 }
@@ -131,7 +139,7 @@ func (u *UsernameReq) Validate() error {
 		return ErrEmptyUsername
 	} else if len(u.Username) > 32 {
 		return ErrUsernameTooLong
-	} else if !alphaNumReg.MatchString(u.Username) {
+	} else if !alphaNumChineseReg.MatchString(u.Username) {
 		return ErrUsernameHasInvalidChar
 	}
 	return nil

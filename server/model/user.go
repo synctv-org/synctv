@@ -18,6 +18,8 @@ func (s *SetUserPasswordReq) Validate() error {
 		return ErrEmptyPassword
 	} else if len(s.Password) > 32 {
 		return ErrPasswordTooLong
+	} else if !alphaNumReg.MatchString(s.Password) {
+		return ErrPasswordHasInvalidChar
 	}
 	return nil
 }

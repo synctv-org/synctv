@@ -14,7 +14,7 @@ type DatabaseConfig struct {
 	Port     uint16       `yaml:"port" lc:"database port" env:"DATABASE_PORT"`
 	User     string       `yaml:"user" lc:"database user" env:"DATABASE_USER"`
 	Password string       `yaml:"password" lc:"database password" env:"DATABASE_PASSWORD"`
-	DBName   string       `yaml:"db_name" lc:"database name, when type is sqlite3, it will use sqlite db file or memery" env:"DATABASE_DB_NAME"`
+	DBName   string       `yaml:"db_name" lc:"database name, when type is sqlite3, it will use sqlite db file or memory" env:"DATABASE_DB_NAME"`
 	SslMode  string       `yaml:"ssl_mode" lc:"database ssl mode, default disable" env:"DATABASE_SSL_MODE"`
 }
 

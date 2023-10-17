@@ -11,6 +11,22 @@ import (
 	"github.com/zijiren233/gencontainer/rwmap"
 )
 
+var (
+	sysNotify SysNotify
+)
+
+func Init() {
+	sysNotify.Init()
+}
+
+func RegisterSysNotifyTask(priority int, task *sysNotifyTask) error {
+	return sysNotify.RegisterSysNotifyTask(priority, task)
+}
+
+func WaitCbk() {
+	sysNotify.WaitCbk()
+}
+
 type SysNotify struct {
 	c         chan os.Signal
 	once      sync.Once

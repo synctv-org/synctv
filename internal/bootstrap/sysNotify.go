@@ -3,14 +3,10 @@ package bootstrap
 import (
 	"context"
 
-	sysnotify "github.com/synctv-org/synctv/utils/sysNotify"
-)
-
-var (
-	SysNotify sysnotify.SysNotify
+	sysnotify "github.com/synctv-org/synctv/internal/sysNotify"
 )
 
 func InitSysNotify(ctx context.Context) error {
-	SysNotify.Init()
+	sysnotify.Init()
 	return nil
 }

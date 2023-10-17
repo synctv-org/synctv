@@ -1,4 +1,4 @@
-package room
+package op
 
 import (
 	"errors"
@@ -12,9 +12,9 @@ import (
 	"github.com/zijiren233/gencontainer/rwmap"
 )
 
-type hub struct {
-	id        string
-	clients   rwmap.RWMap[string, *Client]
+type Hub struct {
+	id        uint
+	clients   rwmap.RWMap[uint, *Client]
 	broadcast chan *broadcastMessage
 	exit      chan struct{}
 	closed    uint32
@@ -48,16 +48,15 @@ func WithIgnoreId(id ...string) BroadcastConf {
 	}
 }
 
-func newHub(id string) *hub {
-	return &hub{
+func newHub(id uint) *Hub {
+	return &Hub{
 		id:        id,
 		broadcast: make(chan *broadcastMessage, 128),
-		clients:   rwmap.RWMap[string, *Client]{},
 		exit:      make(chan struct{}),
 	}
 }
 
-func (h *hub) Closed() bool {
+func (h *Hub) Closed() bool {
 	return atomic.LoadUint32(&h.closed) == 1
 }
 
@@ -65,11 +64,11 @@ var (
 	ErrAlreadyClosed = fmt.Errorf("already closed")
 )
 
-func (h *hub) Start() {
+func (h *Hub) Start() {
 	go h.Serve()
 }
 
-func (h *hub) Serve() error {
+func (h *Hub) Serve() error {
 	if h.Closed() {
 		return ErrAlreadyClosed
 	}
@@ -77,41 +76,41 @@ func (h *hub) Serve() error {
 		select {
 		case message := <-h.broadcast:
 			h.devMessage(message.data)
-			h.clients.Range(func(_ string, cli *Client) bool {
+			h.clients.Range(func(_ uint, cli *Client) bool {
 				if !message.sendToSelf {
-					if cli.user.name == message.sender {
+					if cli.u.Username == message.sender {
 						return true
 					}
 				}
-				if utils.In(message.ignoreId, cli.user.name) {
+				if utils.In(message.ignoreId, cli.u.Username) {
 					return true
 				}
 				if err := cli.Send(message.data); err != nil {
-					log.Debugf("hub: %s, write to client err: %s\nmessage: %+v", h.id, err, message)
+					log.Debugf("hub: %d, write to client err: %s\nmessage: %+v", h.id, err, message)
 					cli.Close()
 				}
 				return true
 			})
 		case <-h.exit:
-			log.Debugf("hub: %s, closed", h.id)
+			log.Debugf("hub: %d, closed", h.id)
 			return nil
 		}
 	}
 }
 
-func (h *hub) devMessage(msg Message) {
+func (h *Hub) devMessage(msg Message) {
 	switch msg.MessageType() {
 	case websocket.TextMessage:
-		log.Debugf("hub: %s, broadcast:\nmessage: %+v", h.id, msg.String())
+		log.Debugf("hub: %d, broadcast:\nmessage: %+v", h.id, msg.String())
 	}
 }
 
-func (h *hub) Close() error {
+func (h *Hub) Close() error {
 	if !atomic.CompareAndSwapUint32(&h.closed, 0, 1) {
 		return ErrAlreadyClosed
 	}
 	close(h.exit)
-	h.clients.Range(func(_ string, client *Client) bool {
+	h.clients.Range(func(_ uint, client *Client) bool {
 		client.Close()
 		return true
 	})
@@ -120,7 +119,7 @@ func (h *hub) Close() error {
 	return nil
 }
 
-func (h *hub) Broadcast(data Message, conf ...BroadcastConf) error {
+func (h *Hub) Broadcast(data Message, conf ...BroadcastConf) error {
 	h.wg.Add(1)
 	defer h.wg.Done()
 	if h.Closed() {
@@ -138,35 +137,31 @@ func (h *hub) Broadcast(data Message, conf ...BroadcastConf) error {
 	}
 }
 
-func (h *hub) RegClient(user *User, conn *websocket.Conn) (*Client, error) {
+func (h *Hub) RegClient(cli *Client) (*Client, error) {
 	if h.Closed() {
 		return nil, ErrAlreadyClosed
 	}
-	cli, err := NewClient(user, conn)
-	if err != nil {
-		return nil, err
-	}
-	c, loaded := h.clients.LoadOrStore(user.name, cli)
+	c, loaded := h.clients.LoadOrStore(cli.u.ID, cli)
 	if loaded {
 		return nil, errors.New("client already registered")
 	}
 	return c, nil
 }
 
-func (h *hub) UnRegClient(user *User) error {
+func (h *Hub) UnRegClient(user *User) error {
 	if h.Closed() {
 		return ErrAlreadyClosed
 	}
 	if user == nil {
 		return errors.New("user is nil")
 	}
-	_, loaded := h.clients.LoadAndDelete(user.name)
+	_, loaded := h.clients.LoadAndDelete(user.ID)
 	if !loaded {
 		return errors.New("client not found")
 	}
 	return nil
 }
 
-func (h *hub) ClientNum() int64 {
+func (h *Hub) ClientNum() int64 {
 	return h.clients.Len()
 }

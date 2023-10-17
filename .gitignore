@@ -3,3 +3,5 @@
 !*.gitkeep
 .DS_Store
 /build
+*.db
+.vscode

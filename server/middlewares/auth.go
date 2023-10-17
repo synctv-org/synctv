@@ -8,7 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/synctv-org/synctv/internal/conf"
-	"github.com/synctv-org/synctv/room"
+	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/server/model"
 	"github.com/zijiren233/stream"
 )
@@ -19,14 +19,32 @@ var (
 )
 
 type AuthClaims struct {
-	RoomId      string `json:"id"`
-	Version     uint64 `json:"v"`
-	Username    string `json:"un"`
-	UserVersion uint64 `json:"uv"`
+	UserId      uint   `json:"u"`
+	UserVersion uint32 `json:"uv"`
 	jwt.RegisteredClaims
 }
 
-func auth(Authorization string) (*AuthClaims, error) {
+type AuthRoomClaims struct {
+	AuthClaims
+	RoomId  uint   `json:"r"`
+	Version uint32 `json:"rv"`
+}
+
+func authRoom(Authorization string) (*AuthRoomClaims, error) {
+	t, err := jwt.ParseWithClaims(strings.TrimPrefix(Authorization, `Bearer `), &AuthRoomClaims{}, func(token *jwt.Token) (any, error) {
+		return stream.StringToBytes(conf.Conf.Jwt.Secret), nil
+	})
+	if err != nil {
+		return nil, ErrAuthFailed
+	}
+	claims, ok := t.Claims.(*AuthRoomClaims)
+	if !ok || !t.Valid {
+		return nil, ErrAuthFailed
+	}
+	return claims, nil
+}
+
+func authUser(Authorization string) (*AuthClaims, error) {
 	t, err := jwt.ParseWithClaims(strings.TrimPrefix(Authorization, `Bearer `), &AuthClaims{}, func(token *jwt.Token) (any, error) {
 		return stream.StringToBytes(conf.Conf.Jwt.Secret), nil
 	})
@@ -40,85 +58,85 @@ func auth(Authorization string) (*AuthClaims, error) {
 	return claims, nil
 }
 
-func Auth(Authorization string, rooms *room.Rooms) (*room.User, error) {
-	claims, err := auth(Authorization)
+func AuthRoom(Authorization string) (*op.User, *op.Room, error) {
+	claims, err := authRoom(Authorization)
 	if err != nil {
-		return nil, err
-	}
-	r, err := rooms.GetRoom(claims.RoomId)
-	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
+	if claims.RoomId == 0 {
+		return nil, nil, ErrAuthFailed
+	}
+
+	if claims.UserId == 0 {
+		return nil, nil, ErrAuthFailed
+	}
+
+	u, err := op.GetUserById(claims.UserId)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !u.CheckVersion(claims.UserVersion) {
+		return nil, nil, ErrAuthExpired
+	}
+
+	r, err := op.GetRoomByID(claims.RoomId)
+	if err != nil {
+		return nil, nil, err
+	}
 	if !r.CheckVersion(claims.Version) {
+		return nil, nil, ErrAuthExpired
+	}
+
+	return u, r, nil
+}
+
+func AuthRoomWithPassword(u *op.User, roomId uint, password string) (*op.Room, error) {
+	r, err := op.GetRoomByID(roomId)
+	if err != nil {
+		return nil, err
+	}
+	if !r.CheckPassword(password) {
+		return nil, ErrAuthFailed
+	}
+	return r, nil
+}
+
+func AuthUserWithPassword(username, password string) (*op.User, error) {
+	u, err := op.GetUserByUsername(username)
+	if err != nil {
+		return nil, err
+	}
+	if !u.CheckPassword(password) {
+		return nil, ErrAuthFailed
+	}
+	return u, nil
+}
+
+func AuthUser(Authorization string) (*op.User, error) {
+	claims, err := authUser(Authorization)
+	if err != nil {
+		return nil, err
+	}
+
+	if claims.UserId == 0 {
+		return nil, ErrAuthFailed
+	}
+
+	u, err := op.GetUserById(claims.UserId)
+	if err != nil {
+		return nil, err
+	}
+	if !u.CheckVersion(claims.UserVersion) {
 		return nil, ErrAuthExpired
 	}
 
-	user, err := r.GetUser(claims.Username)
-	if err != nil {
-		return nil, err
-	}
-
-	if !user.CheckVersion(claims.UserVersion) {
-		return nil, ErrAuthExpired
-	}
-
-	return user, nil
+	return u, nil
 }
 
-func AuthWithPassword(roomId, roomPassword, username, password string, rooms *room.Rooms) (*room.User, error) {
-	room, err := rooms.GetRoom(roomId)
-	if err != nil {
-		return nil, err
-	}
-	if !room.CheckPassword(roomPassword) {
-		return nil, ErrAuthFailed
-	}
-	user, err := room.GetUser(username)
-	if err != nil {
-		return nil, err
-	}
-	if !user.CheckPassword(password) {
-		return nil, ErrAuthFailed
-	}
-	return user, nil
-}
-
-func AuthOrNewWithPassword(roomId, roomPassword, username, password string, rooms *room.Rooms) (*room.User, error) {
-	room, err := rooms.GetRoom(roomId)
-	if err != nil {
-		return nil, err
-	}
-	if !room.CheckPassword(roomPassword) {
-		return nil, ErrAuthFailed
-	}
-	user, err := room.GetOrNewUser(username, password)
-	if err != nil {
-		return nil, err
-	}
-	if !user.CheckPassword(password) {
-		return nil, ErrAuthFailed
-	}
-	return user, nil
-}
-
-func AuthRoom(ctx *gin.Context) {
-	rooms := ctx.Value("rooms").(*room.Rooms)
-	user, err := Auth(ctx.GetHeader("Authorization"), rooms)
-	if err != nil {
-		ctx.AbortWithStatusJSON(401, model.NewApiErrorResp(err))
-		return
-	}
-
-	ctx.Set("user", user)
-	ctx.Next()
-}
-
-func NewAuthToken(user *room.User) (string, error) {
+func NewAuthUserToken(user *op.User) (string, error) {
 	claims := &AuthClaims{
-		RoomId:      user.Room().Id(),
-		Version:     user.Room().Version(),
-		Username:    user.Name(),
+		UserId:      user.ID,
 		UserVersion: user.Version(),
 		RegisteredClaims: jwt.RegisteredClaims{
 			NotBefore: jwt.NewNumericDate(time.Now()),
@@ -126,4 +144,43 @@ func NewAuthToken(user *room.User) (string, error) {
 		},
 	}
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(stream.StringToBytes(conf.Conf.Jwt.Secret))
+}
+
+func NewAuthRoomToken(user *op.User, room *op.Room) (string, error) {
+	claims := &AuthRoomClaims{
+		AuthClaims: AuthClaims{
+			UserId:      user.ID,
+			UserVersion: user.Version(),
+			RegisteredClaims: jwt.RegisteredClaims{
+				NotBefore: jwt.NewNumericDate(time.Now()),
+				ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour * time.Duration(conf.Conf.Jwt.Expire))),
+			},
+		},
+		RoomId:  room.ID,
+		Version: room.Version(),
+	}
+	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(stream.StringToBytes(conf.Conf.Jwt.Secret))
+}
+
+func AuthRoomMiddleware(ctx *gin.Context) {
+	user, room, err := AuthRoom(ctx.GetHeader("Authorization"))
+	if err != nil {
+		ctx.AbortWithStatusJSON(401, model.NewApiErrorResp(err))
+		return
+	}
+
+	ctx.Set("user", user)
+	ctx.Set("room", room)
+	ctx.Next()
+}
+
+func AuthUserMiddleware(ctx *gin.Context) {
+	user, err := AuthUser(ctx.GetHeader("Authorization"))
+	if err != nil {
+		ctx.AbortWithStatusJSON(401, model.NewApiErrorResp(err))
+		return
+	}
+
+	ctx.Set("user", user)
+	ctx.Next()
 }

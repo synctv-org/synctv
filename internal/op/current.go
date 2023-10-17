@@ -1,9 +1,10 @@
-package room
+package op
 
 import (
 	"sync"
 	"time"
 
+	"github.com/synctv-org/synctv/internal/model"
 	pb "github.com/synctv-org/synctv/proto"
 )
 
@@ -13,8 +14,8 @@ type current struct {
 }
 
 type Current struct {
-	Movie  MovieInfo `json:"movie"`
-	Status Status    `json:"status"`
+	Movie  model.Movie `json:"movie"`
+	Status Status      `json:"status"`
 }
 
 func newCurrent() *current {
@@ -47,14 +48,14 @@ func (c *current) Current() Current {
 	return c.current
 }
 
-func (c *current) Movie() MovieInfo {
+func (c *current) Movie() model.Movie {
 	c.lock.RLock()
 	defer c.lock.RUnlock()
 
 	return c.current.Movie
 }
 
-func (c *current) SetMovie(movie MovieInfo) {
+func (c *current) SetMovie(movie model.Movie) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 
@@ -87,7 +88,7 @@ func (c *current) SetSeekRate(seek, rate, timeDiff float64) Status {
 func (c *Current) Proto() *pb.Current {
 	return &pb.Current{
 		Movie: &pb.MovieInfo{
-			Id: c.Movie.Id,
+			Id: uint64(c.Movie.ID),
 			Base: &pb.BaseMovieInfo{
 				Url:        c.Movie.BaseMovieInfo.Url,
 				Name:       c.Movie.BaseMovieInfo.Name,
@@ -98,8 +99,8 @@ func (c *Current) Proto() *pb.Current {
 				Headers:    c.Movie.BaseMovieInfo.Headers,
 			},
 			PullKey:   c.Movie.PullKey,
-			CreatedAt: c.Movie.CreatedAt,
-			Creator:   c.Movie.Creator,
+			CreatedAt: c.Movie.CreatedAt.UnixMilli(),
+			// Creator:   c.Movie.CreatorID,
 		},
 		Status: &pb.Status{
 			Seek:    c.Status.Seek,

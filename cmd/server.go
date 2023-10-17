@@ -12,6 +12,8 @@ import (
 	"github.com/synctv-org/synctv/cmd/flags"
 	"github.com/synctv-org/synctv/internal/bootstrap"
 	"github.com/synctv-org/synctv/internal/conf"
+	"github.com/synctv-org/synctv/internal/rtmp"
+	sysnotify "github.com/synctv-org/synctv/internal/sysNotify"
 	"github.com/synctv-org/synctv/server"
 )
 
@@ -25,6 +27,9 @@ var ServerCmd = &cobra.Command{
 			bootstrap.InitConfig,
 			bootstrap.InitLog,
 			bootstrap.InitGinMode,
+			bootstrap.InitDatabase,
+			bootstrap.InitRtmp,
+			bootstrap.InitRoom,
 		)
 		if !flags.DisableUpdateCheck {
 			boot.Add(bootstrap.InitCheckUpdate)
@@ -59,7 +64,7 @@ func Server(cmd *cobra.Command, args []string) {
 	if conf.Conf.Rtmp.Enable {
 		if useMux {
 			muxer := cmux.New(serverListener)
-			e, s := server.NewAndInit()
+			e := server.NewAndInit()
 			switch {
 			case conf.Conf.Server.CertPath != "" && conf.Conf.Server.KeyPath != "":
 				httpl := muxer.Match(cmux.HTTP2(), cmux.TLS())
@@ -74,10 +79,10 @@ func Server(cmd *cobra.Command, args []string) {
 				log.Panic("cert and key must be both set")
 			}
 			tcp := muxer.Match(cmux.Any())
-			go s.Serve(tcp)
+			go rtmp.RtmpServer().Serve(tcp)
 			go muxer.Serve()
 		} else {
-			e, s := server.NewAndInit()
+			e := server.NewAndInit()
 			switch {
 			case conf.Conf.Server.CertPath != "" && conf.Conf.Server.KeyPath != "":
 				go http.ServeTLS(serverListener, e.Handler(), conf.Conf.Server.CertPath, conf.Conf.Server.KeyPath)
@@ -93,10 +98,10 @@ func Server(cmd *cobra.Command, args []string) {
 			if err != nil {
 				log.Fatal(err)
 			}
-			go s.Serve(rtmpListener)
+			go rtmp.RtmpServer().Serve(rtmpListener)
 		}
 	} else {
-		e, _ := server.NewAndInit()
+		e := server.NewAndInit()
 		switch {
 		case conf.Conf.Server.CertPath != "" && conf.Conf.Server.KeyPath != "":
 			go http.ServeTLS(serverListener, e.Handler(), conf.Conf.Server.CertPath, conf.Conf.Server.KeyPath)
@@ -120,7 +125,7 @@ func Server(cmd *cobra.Command, args []string) {
 	} else {
 		log.Infof("website run on http://%s:%d", tcpServerAddr.IP, tcpServerAddr.Port)
 	}
-	bootstrap.SysNotify.WaitCbk()
+	sysnotify.WaitCbk()
 }
 
 func init() {

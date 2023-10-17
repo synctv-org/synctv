@@ -1,42 +1,15 @@
 package handlers
 
 import (
-	"fmt"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	log "github.com/sirupsen/logrus"
-	"github.com/synctv-org/synctv/internal/conf"
 	"github.com/synctv-org/synctv/public"
-	"github.com/synctv-org/synctv/room"
 	"github.com/synctv-org/synctv/server/middlewares"
 	"github.com/synctv-org/synctv/utils"
-	rtmps "github.com/zijiren233/livelib/server"
 )
 
-func Init(e *gin.Engine, s *rtmps.Server, r *room.Rooms) {
-	{
-		s.SetParseChannelFunc(func(ReqAppName, ReqChannelName string, IsPublisher bool) (TrueAppName string, TrueChannel string, err error) {
-			if IsPublisher {
-				channelName, err := AuthRtmpPublish(ReqChannelName)
-				if err != nil {
-					log.Errorf("rtmp: publish auth to %s error: %v", ReqAppName, err)
-					return "", "", err
-				}
-				if !r.HasRoom(ReqAppName) {
-					log.Warnf("rtmp: publish to %s/%s error: %s", ReqAppName, channelName, fmt.Sprintf("room %s not exist", ReqAppName))
-					return "", "", fmt.Errorf("room %s not exist", ReqAppName)
-				}
-				log.Infof("rtmp: publisher login success: %s/%s", ReqAppName, channelName)
-				return ReqAppName, channelName, nil
-			} else if !conf.Conf.Rtmp.RtmpPlayer {
-				log.Warnf("rtmp: dial to %s/%s error: %s", ReqAppName, ReqChannelName, "rtmp player is not enabled")
-				return "", "", fmt.Errorf("rtmp: dial to %s/%s error: %s", ReqAppName, ReqChannelName, "rtmp player is not enabled")
-			}
-			return ReqAppName, ReqChannelName, nil
-		})
-	}
-
+func Init(e *gin.Engine) {
 	{
 		web := e.Group("/web")
 
@@ -55,8 +28,11 @@ func Init(e *gin.Engine, s *rtmps.Server, r *room.Rooms) {
 	{
 		api := e.Group("/api")
 
-		needAuthApi := api.Group("")
-		needAuthApi.Use(middlewares.AuthRoom)
+		needAuthUserApi := api.Group("")
+		needAuthUserApi.Use(middlewares.AuthUserMiddleware)
+
+		needAuthRoomApi := api.Group("")
+		needAuthRoomApi.Use(middlewares.AuthRoomMiddleware)
 
 		{
 			public := api.Group("/public")
@@ -66,34 +42,33 @@ func Init(e *gin.Engine, s *rtmps.Server, r *room.Rooms) {
 
 		{
 			room := api.Group("/room")
-			needAuthRoom := needAuthApi.Group("/room")
+			needAuthRoom := needAuthRoomApi.Group("/room")
+			needAuthUser := needAuthUserApi.Group("/room")
 
 			room.GET("/ws", NewWebSocketHandler(utils.NewWebSocketServer()))
 
 			room.GET("/check", CheckRoom)
 
-			room.GET("/user", CheckUser)
-
 			room.GET("/list", RoomList)
 
-			room.POST("/create", NewCreateRoomHandler(s))
+			needAuthUser.POST("/create", CreateRoom)
 
-			room.POST("/login", LoginRoom)
+			needAuthUser.POST("/login", LoginRoom)
 
 			needAuthRoom.POST("/delete", DeleteRoom)
 
-			needAuthRoom.POST("/pwd", SetPassword)
+			needAuthRoom.POST("/pwd", SetRoomPassword)
 
 			needAuthRoom.PUT("/admin", AddAdmin)
 
 			needAuthRoom.DELETE("/admin", DelAdmin)
 
-			needAuthRoom.GET("/settings", RoomSettings)
+			needAuthRoom.GET("/setting", RoomSetting)
 		}
 
 		{
 			movie := api.Group("/movie")
-			needAuthMovie := needAuthApi.Group("/movie")
+			needAuthMovie := needAuthRoomApi.Group("/movie")
 
 			needAuthMovie.GET("/list", MovieList)
 
@@ -127,8 +102,12 @@ func Init(e *gin.Engine, s *rtmps.Server, r *room.Rooms) {
 		}
 
 		{
-			// user := api.Group("/user")
-			needAuthUser := needAuthApi.Group("/user")
+			user := api.Group("/user")
+			needAuthUser := needAuthUserApi.Group("/user")
+
+			user.POST("/login", LoginUser)
+
+			user.POST("/signup", SignupUser)
 
 			needAuthUser.GET("/me", Me)
 

@@ -1,7 +1,6 @@
-package room
+package op
 
 import (
-	"errors"
 	"io"
 	"sync"
 	"sync/atomic"
@@ -11,7 +10,8 @@ import (
 )
 
 type Client struct {
-	user    *User
+	u       *User
+	r       *Room
 	c       chan Message
 	wg      sync.WaitGroup
 	conn    *websocket.Conn
@@ -19,35 +19,26 @@ type Client struct {
 	closed  uint32
 }
 
-func NewClient(user *User, conn *websocket.Conn) (*Client, error) {
-	if user == nil {
-		return nil, errors.New("user is nil")
-	}
-	if conn == nil {
-		return nil, errors.New("conn is nil")
-	}
+func newClient(user *User, room *Room, conn *websocket.Conn) *Client {
 	return &Client{
-		user:    user,
+		r:       room,
+		u:       user,
 		c:       make(chan Message, 128),
 		conn:    conn,
 		timeOut: 10 * time.Second,
-	}, nil
+	}
 }
 
 func (c *Client) User() *User {
-	return c.user
-}
-
-func (c *Client) Username() string {
-	return c.user.name
+	return c.u
 }
 
 func (c *Client) Room() *Room {
-	return c.user.room
+	return c.r
 }
 
 func (c *Client) Broadcast(msg Message, conf ...BroadcastConf) error {
-	return c.user.Broadcast(msg, conf...)
+	return c.r.hub.Broadcast(msg, conf...)
 }
 
 func (c *Client) Send(msg Message) error {
@@ -58,10 +49,6 @@ func (c *Client) Send(msg Message) error {
 	}
 	c.c <- msg
 	return nil
-}
-
-func (c *Client) Unregister() error {
-	return c.user.room.UnRegClient(c.user)
 }
 
 func (c *Client) Close() error {

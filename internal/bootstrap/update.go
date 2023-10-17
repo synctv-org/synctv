@@ -5,8 +5,8 @@ import (
 	"time"
 
 	log "github.com/sirupsen/logrus"
+	sysnotify "github.com/synctv-org/synctv/internal/sysNotify"
 	"github.com/synctv-org/synctv/internal/version"
-	sysnotify "github.com/synctv-org/synctv/utils/sysNotify"
 )
 
 func InitCheckUpdate(ctx context.Context) error {
@@ -36,7 +36,7 @@ func InitCheckUpdate(ctx context.Context) error {
 			}
 		}
 
-		SysNotify.RegisterSysNotifyTask(0, sysnotify.NewSysNotifyTask(
+		sysnotify.RegisterSysNotifyTask(0, sysnotify.NewSysNotifyTask(
 			"check-update",
 			sysnotify.NotifyTypeEXIT,
 			func() error {

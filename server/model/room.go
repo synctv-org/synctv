@@ -7,6 +7,7 @@ import (
 
 	json "github.com/json-iterator/go"
 	"github.com/synctv-org/synctv/internal/conf"
+	"github.com/synctv-org/synctv/internal/model"
 
 	"github.com/gin-gonic/gin"
 )
@@ -19,6 +20,7 @@ var (
 	ErrPasswordTooLong        = errors.New("password too long")
 	ErrPasswordHasInvalidChar = errors.New("password has invalid char")
 
+	ErrEmptyUserId            = errors.New("empty user id")
 	ErrEmptyUsername          = errors.New("empty username")
 	ErrUsernameTooLong        = errors.New("username too long")
 	ErrUsernameHasInvalidChar = errors.New("username has invalid char")
@@ -36,11 +38,9 @@ func (f FormatEmptyPasswordError) Error() string {
 }
 
 type CreateRoomReq struct {
-	RoomId       string `json:"roomId"`
-	Password     string `json:"password"`
-	Username     string `json:"username"`
-	UserPassword string `json:"userPassword"`
-	Hidden       bool   `json:"hidden"`
+	RoomId   string        `json:"roomId"`
+	Password string        `json:"password"`
+	Setting  model.Setting `json:"setting"`
 }
 
 func (c *CreateRoomReq) Decode(ctx *gin.Context) error {
@@ -66,27 +66,12 @@ func (c *CreateRoomReq) Validate() error {
 		return FormatEmptyPasswordError("room")
 	}
 
-	if c.Username == "" {
-		return ErrEmptyUsername
-	} else if len(c.Username) > 32 {
-		return ErrUsernameTooLong
-	} else if !alphaNumChineseReg.MatchString(c.Username) {
-		return ErrUsernameHasInvalidChar
-	}
-
-	if c.UserPassword == "" {
-		return FormatEmptyPasswordError("user")
-	} else if len(c.UserPassword) > 32 {
-		return ErrPasswordTooLong
-	} else if !alphaNumReg.MatchString(c.UserPassword) {
-		return ErrPasswordHasInvalidChar
-	}
-
 	return nil
 }
 
 type RoomListResp struct {
-	RoomId       string `json:"roomId"`
+	RoomId       uint   `json:"roomId"`
+	RoomName     string `json:"roomName"`
 	PeopleNum    int64  `json:"peopleNum"`
 	NeedPassword bool   `json:"needPassword"`
 	Creator      string `json:"creator"`
@@ -94,10 +79,8 @@ type RoomListResp struct {
 }
 
 type LoginRoomReq struct {
-	RoomId       string `json:"roomId"`
-	Password     string `json:"password"`
-	Username     string `json:"username"`
-	UserPassword string `json:"userPassword"`
+	RoomId   uint   `json:"roomId"`
+	Password string `json:"password"`
 }
 
 func (l *LoginRoomReq) Decode(ctx *gin.Context) error {
@@ -105,16 +88,8 @@ func (l *LoginRoomReq) Decode(ctx *gin.Context) error {
 }
 
 func (l *LoginRoomReq) Validate() error {
-	if l.RoomId == "" {
+	if l.RoomId == 0 {
 		return ErrEmptyRoomId
-	}
-
-	if l.Username == "" {
-		return ErrEmptyUsername
-	}
-
-	if l.UserPassword == "" {
-		return FormatEmptyPasswordError("user")
 	}
 
 	return nil
@@ -137,21 +112,17 @@ func (s *SetRoomPasswordReq) Validate() error {
 	return nil
 }
 
-type UsernameReq struct {
-	Username string `json:"username"`
+type UserIdReq struct {
+	UserId uint `json:"userId"`
 }
 
-func (u *UsernameReq) Decode(ctx *gin.Context) error {
+func (u *UserIdReq) Decode(ctx *gin.Context) error {
 	return json.NewDecoder(ctx.Request.Body).Decode(u)
 }
 
-func (u *UsernameReq) Validate() error {
-	if u.Username == "" {
-		return ErrEmptyUsername
-	} else if len(u.Username) > 32 {
-		return ErrUsernameTooLong
-	} else if !alphaNumChineseReg.MatchString(u.Username) {
-		return ErrUsernameHasInvalidChar
+func (u *UserIdReq) Validate() error {
+	if u.UserId == 0 {
+		return ErrEmptyUserId
 	}
 	return nil
 }

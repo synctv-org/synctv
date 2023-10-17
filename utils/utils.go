@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	yamlcomment "github.com/zijiren233/yaml-comment"
 	"gopkg.in/yaml.v3"
@@ -132,4 +134,34 @@ func SplitVersion(v string) ([]int, error) {
 		vs = append(vs, i)
 	}
 	return vs, nil
+}
+
+type Once struct {
+	done uint32
+	m    sync.Mutex
+}
+
+func (o *Once) Done() (doned bool) {
+	o.m.Lock()
+	defer o.m.Unlock()
+	if o.done == 0 {
+		o.done = 1
+		return false
+	}
+	return true
+}
+
+func (o *Once) Do(f func()) {
+	if atomic.LoadUint32(&o.done) == 0 {
+		o.doSlow(f)
+	}
+}
+
+func (o *Once) doSlow(f func()) {
+	o.m.Lock()
+	defer o.m.Unlock()
+	if o.done == 0 {
+		defer atomic.StoreUint32(&o.done, 1)
+		f()
+	}
 }

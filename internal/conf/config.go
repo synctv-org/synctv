@@ -22,6 +22,9 @@ type Config struct {
 
 	// Room
 	Room RoomConfig `yaml:"room"`
+
+	// Database
+	Database DatabaseConfig `yaml:"database"`
 }
 
 func (c *Config) Save(file string) error {
@@ -47,5 +50,8 @@ func DefaultConfig() *Config {
 
 		// Room
 		Room: DefaultRoomConfig(),
+
+		// Database
+		Database: DefaultDatabaseConfig(),
 	}
 }

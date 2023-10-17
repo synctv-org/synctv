@@ -5,7 +5,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	json "github.com/json-iterator/go"
-	"github.com/synctv-org/synctv/room"
+	"github.com/synctv-org/synctv/internal/model"
 )
 
 var (
@@ -19,7 +19,7 @@ var (
 	ErrEmptyIds = errors.New("empty ids")
 )
 
-type PushMovieReq room.BaseMovieInfo
+type PushMovieReq model.BaseMovieInfo
 
 func (p *PushMovieReq) Decode(ctx *gin.Context) error {
 	return json.NewDecoder(ctx.Request.Body).Decode(p)
@@ -44,7 +44,7 @@ func (p *PushMovieReq) Validate() error {
 }
 
 type IdReq struct {
-	Id uint64 `json:"id"`
+	Id uint `json:"id"`
 }
 
 func (i *IdReq) Decode(ctx *gin.Context) error {
@@ -78,7 +78,7 @@ func (e *EditMovieReq) Validate() error {
 }
 
 type IdsReq struct {
-	Ids []uint64 `json:"ids"`
+	Ids []uint `json:"ids"`
 }
 
 func (i *IdsReq) Decode(ctx *gin.Context) error {
@@ -93,8 +93,8 @@ func (i *IdsReq) Validate() error {
 }
 
 type SwapMovieReq struct {
-	Id1 uint64 `json:"id1"`
-	Id2 uint64 `json:"id2"`
+	Id1 uint `json:"id1"`
+	Id2 uint `json:"id2"`
 }
 
 func (s *SwapMovieReq) Decode(ctx *gin.Context) error {

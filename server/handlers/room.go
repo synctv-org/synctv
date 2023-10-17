@@ -180,6 +180,10 @@ func RoomList(ctx *gin.Context) {
 
 func CheckRoom(ctx *gin.Context) {
 	id, err := strconv.Atoi(ctx.Query("roomId"))
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
 
 	r, err := op.GetRoomByID(uint(id))
 	if err != nil {

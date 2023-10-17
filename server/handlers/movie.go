@@ -344,6 +344,10 @@ func ProxyMovie(ctx *gin.Context) {
 		return
 	}
 	id, err := strconv.ParseUint(roomId, 10, 64)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
 	room, err := op.GetRoomByID(uint(id))
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))

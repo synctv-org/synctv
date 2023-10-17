@@ -48,9 +48,9 @@ func InitDatabase(ctx context.Context) error {
 		opts = append(opts, &gorm.Config{})
 	case conf.DatabaseTypeSqlite3:
 		var dsn string
-		if conf.Conf.Database.Host == "memory" || strings.HasPrefix(conf.Conf.Database.Host, ":memory:") {
+		if conf.Conf.Database.DBName == "memory" || strings.HasPrefix(conf.Conf.Database.DBName, ":memory:") {
 			dsn = "file::memory:?cache=shared"
-		} else if !strings.HasSuffix(conf.Conf.Database.Host, ".db") {
+		} else if !strings.HasSuffix(conf.Conf.Database.DBName, ".db") {
 			dsn = fmt.Sprintf("%s.db?_journal_mode=WAL&_vacuum=incremental", conf.Conf.Database.DBName)
 		} else {
 			dsn = conf.Conf.Database.DBName

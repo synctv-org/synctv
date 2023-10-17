@@ -27,17 +27,17 @@ import (
 type Room struct {
 	model.Room
 	version    uint32
-	current    current
+	current    *current
 	rtmpa      *rtmps.App
 	initOnce   utils.Once
 	lastActive int64
 	hub        *Hub
 }
 
-func (r *Room) Init() {
+func (r *Room) lazyInit() {
 	r.initOnce.Do(func() {
 		atomic.CompareAndSwapUint32(&r.version, 0, 1)
-		r.current = *newCurrent()
+		r.current = newCurrent()
 		r.hub = newHub(r.ID)
 		a, err := rtmp.RtmpServer().NewApp(r.Name)
 		if err != nil {
@@ -48,10 +48,12 @@ func (r *Room) Init() {
 }
 
 func (r *Room) Hub() *Hub {
+	r.lazyInit()
 	return r.hub
 }
 
 func (r *Room) App() *rtmps.App {
+	r.lazyInit()
 	return r.rtmpa
 }
 
@@ -77,6 +79,7 @@ func (r *Room) UpdateMovie(movieId uint, movie model.BaseMovieInfo) error {
 	}
 	switch {
 	case (m.RtmpSource && !movie.RtmpSource) || (m.Live && m.Proxy && !movie.Proxy):
+		r.lazyInit()
 		r.rtmpa.DelChannel(m.PullKey)
 		m.PullKey = ""
 	case m.Proxy && !movie.Proxy:
@@ -96,6 +99,7 @@ func (r *Room) InitMovie(movie *model.Movie) error {
 			return errors.New("hls player is not enabled")
 		}
 		movie.PullKey = uuid.New().String()
+		r.lazyInit()
 		_, err := r.rtmpa.NewChannel(movie.PullKey)
 		if err != nil {
 			return err
@@ -111,6 +115,7 @@ func (r *Room) InitMovie(movie *model.Movie) error {
 		switch u.Scheme {
 		case "rtmp":
 			PullKey := uuid.New().String()
+			r.lazyInit()
 			c, err := r.rtmpa.NewChannel(PullKey)
 			if err != nil {
 				return err
@@ -135,6 +140,7 @@ func (r *Room) InitMovie(movie *model.Movie) error {
 			}()
 		case "http", "https":
 			PullKey := uuid.New().String()
+			r.lazyInit()
 			c, err := r.rtmpa.NewChannel(PullKey)
 			if err != nil {
 				return err
@@ -267,6 +273,7 @@ func (r *Room) DeleteMovieByID(id uint) error {
 		return err
 	}
 	if m.PullKey != "" {
+		r.lazyInit()
 		r.rtmpa.DelChannel(m.PullKey)
 	}
 	return nil
@@ -277,6 +284,7 @@ func (r *Room) ClearMovies() error {
 	if err != nil {
 		return err
 	}
+	r.lazyInit()
 	for _, m := range ms {
 		if m.PullKey != "" {
 			r.rtmpa.DelChannel(m.PullKey)
@@ -286,6 +294,7 @@ func (r *Room) ClearMovies() error {
 }
 
 func (r *Room) Current() *Current {
+	r.lazyInit()
 	c := r.current.Current()
 	return &c
 }
@@ -295,6 +304,7 @@ func (r *Room) ChangeCurrentMovie(id uint) error {
 	if err != nil {
 		return err
 	}
+	r.lazyInit()
 	r.current.SetMovie(*m)
 	return nil
 }
@@ -308,17 +318,21 @@ func (r *Room) GetMovieWithPullKey(pullKey string) (*model.Movie, error) {
 }
 
 func (r *Room) RegClient(user *User, conn *websocket.Conn) (*Client, error) {
+	r.lazyInit()
 	return r.hub.RegClient(newClient(user, r, conn))
 }
 
 func (r *Room) UnregisterClient(user *User) error {
+	r.lazyInit()
 	return r.hub.UnRegClient(user)
 }
 
 func (r *Room) SetStatus(playing bool, seek float64, rate float64, timeDiff float64) Status {
+	r.lazyInit()
 	return r.current.SetStatus(playing, seek, rate, timeDiff)
 }
 
 func (r *Room) SetSeekRate(seek float64, rate float64, timeDiff float64) Status {
+	r.lazyInit()
 	return r.current.SetSeekRate(seek, rate, timeDiff)
 }

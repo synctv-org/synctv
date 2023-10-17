@@ -142,13 +142,24 @@ type Once struct {
 }
 
 func (o *Once) Done() (doned bool) {
+	done := atomic.LoadUint32(&o.done)
+	if done == 1 {
+		return true
+	} else if done == 2 {
+		return false
+	}
+
 	o.m.Lock()
 	defer o.m.Unlock()
 	if o.done == 0 {
-		o.done = 1
-		return false
+		doned = false
+		atomic.StoreUint32(&o.done, 2)
+	} else if o.done == 1 {
+		doned = true
+	} else {
+		doned = false
 	}
-	return true
+	return
 }
 
 func (o *Once) Do(f func()) {

@@ -5,16 +5,12 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
-	"time"
-
-	log "github.com/sirupsen/logrus"
 
 	"github.com/gin-gonic/gin"
 	"github.com/maruel/natural"
 	"github.com/synctv-org/synctv/internal/db"
 	dbModel "github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
-	pb "github.com/synctv-org/synctv/proto"
 	"github.com/synctv-org/synctv/server/middlewares"
 	"github.com/synctv-org/synctv/server/model"
 	"github.com/zijiren233/gencontainer/vec"
@@ -46,50 +42,17 @@ func CreateRoom(ctx *gin.Context) {
 		return
 	}
 
-	room, err := op.LoadRoom(r)
+	_, err = op.LoadRoom(r)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}
-
-	room.Init()
-	room.Hub().Start()
 
 	token, err := middlewares.NewAuthUserToken(user)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}
-
-	go func() {
-		ticker := time.NewTicker(time.Second * 5)
-		defer ticker.Stop()
-		var pre int64 = 0
-		for range ticker.C {
-			if room.Hub().Closed() {
-				log.Debugf("ws: room %s closed, stop broadcast people num", room.Name)
-				return
-			}
-			current := room.Hub().ClientNum()
-			if current != pre {
-				if err := room.Hub().Broadcast(&op.ElementMessage{
-					ElementMessage: &pb.ElementMessage{
-						Type:      pb.ElementMessageType_CHANGE_PEOPLE,
-						PeopleNum: current,
-					},
-				}); err != nil {
-					log.Errorf("ws: room %s broadcast people num error: %v", room.Name, err)
-					continue
-				}
-				pre = current
-			} else {
-				if err := room.Hub().Broadcast(&op.PingMessage{}); err != nil {
-					log.Errorf("ws: room %s broadcast ping error: %v", room.Name, err)
-					continue
-				}
-			}
-		}
-	}()
 
 	ctx.JSON(http.StatusCreated, model.NewApiDataResp(gin.H{
 		"token": token,

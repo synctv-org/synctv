@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/gorilla/websocket"
 	log "github.com/sirupsen/logrus"
+	pb "github.com/synctv-org/synctv/proto"
 	"github.com/synctv-org/synctv/utils"
 	"github.com/zijiren233/gencontainer/rwmap"
 )
@@ -19,6 +21,8 @@ type Hub struct {
 	exit      chan struct{}
 	closed    uint32
 	wg        sync.WaitGroup
+
+	once utils.Once
 }
 
 type broadcastMessage struct {
@@ -56,22 +60,15 @@ func newHub(id uint) *Hub {
 	}
 }
 
-func (h *Hub) Closed() bool {
-	return atomic.LoadUint32(&h.closed) == 1
+func (h *Hub) Start() error {
+	h.once.Do(func() {
+		go h.serve()
+		go h.ping()
+	})
+	return nil
 }
 
-var (
-	ErrAlreadyClosed = fmt.Errorf("already closed")
-)
-
-func (h *Hub) Start() {
-	go h.Serve()
-}
-
-func (h *Hub) Serve() error {
-	if h.Closed() {
-		return ErrAlreadyClosed
-	}
+func (h *Hub) serve() error {
 	for {
 		select {
 		case message := <-h.broadcast:
@@ -98,6 +95,35 @@ func (h *Hub) Serve() error {
 	}
 }
 
+func (h *Hub) ping() {
+	ticker := time.NewTicker(time.Second * 5)
+	defer ticker.Stop()
+	var pre int64 = 0
+	for {
+		select {
+		case <-ticker.C:
+			current := h.ClientNum()
+			if current != pre {
+				if err := h.Broadcast(&ElementMessage{
+					ElementMessage: &pb.ElementMessage{
+						Type:      pb.ElementMessageType_CHANGE_PEOPLE,
+						PeopleNum: current,
+					},
+				}); err != nil {
+					continue
+				}
+				pre = current
+			} else {
+				if err := h.Broadcast(&PingMessage{}); err != nil {
+					continue
+				}
+			}
+		case <-h.exit:
+			return
+		}
+	}
+}
+
 func (h *Hub) devMessage(msg Message) {
 	switch msg.MessageType() {
 	case websocket.TextMessage:
@@ -105,12 +131,21 @@ func (h *Hub) devMessage(msg Message) {
 	}
 }
 
+func (h *Hub) Closed() bool {
+	return atomic.LoadUint32(&h.closed) == 1
+}
+
+var (
+	ErrAlreadyClosed = fmt.Errorf("already closed")
+)
+
 func (h *Hub) Close() error {
 	if !atomic.CompareAndSwapUint32(&h.closed, 0, 1) {
 		return ErrAlreadyClosed
 	}
 	close(h.exit)
 	h.clients.Range(func(_ uint, client *Client) bool {
+		h.clients.Delete(client.u.ID)
 		client.Close()
 		return true
 	})
@@ -125,6 +160,7 @@ func (h *Hub) Broadcast(data Message, conf ...BroadcastConf) error {
 	if h.Closed() {
 		return ErrAlreadyClosed
 	}
+	h.once.Done()
 	msg := &broadcastMessage{data: data}
 	for _, c := range conf {
 		c(msg)
@@ -140,6 +176,10 @@ func (h *Hub) Broadcast(data Message, conf ...BroadcastConf) error {
 func (h *Hub) RegClient(cli *Client) (*Client, error) {
 	if h.Closed() {
 		return nil, ErrAlreadyClosed
+	}
+	err := h.Start()
+	if err != nil {
+		return nil, err
 	}
 	c, loaded := h.clients.LoadOrStore(cli.u.ID, cli)
 	if loaded {

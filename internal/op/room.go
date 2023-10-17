@@ -36,7 +36,6 @@ type Room struct {
 
 func (r *Room) lazyInit() {
 	r.initOnce.Do(func() {
-		atomic.CompareAndSwapUint32(&r.version, 0, 1)
 		r.current = newCurrent()
 		r.hub = newHub(r.ID)
 		a, err := rtmp.RtmpServer().NewApp(r.Name)
@@ -85,7 +84,7 @@ func (r *Room) UpdateMovie(movieId uint, movie model.BaseMovieInfo) error {
 	case m.Proxy && !movie.Proxy:
 		m.PullKey = ""
 	}
-	return db.UpdateMovie(*m)
+	return UpdateMovie(*m)
 }
 
 func (r *Room) InitMovie(movie *model.Movie) error {
@@ -203,7 +202,7 @@ func (r *Room) AddMovie(m model.MovieInfo) error {
 		return err
 	}
 
-	return db.CreateMovie(movie)
+	return CreateMovie(movie)
 }
 
 func (r *Room) HasPermission(user *model.User, permission model.Permission) bool {
@@ -251,24 +250,24 @@ func (r *Room) RemoveUserPermission(userID uint, permission model.Permission) er
 	return db.RemoveUserPermission(r.ID, userID, permission)
 }
 
-func (r *Room) GetMovies(conf ...db.GetMoviesConfig) ([]model.Movie, error) {
-	return db.GetMoviesByRoomID(r.ID, conf...)
-}
-
-func (r *Room) GetMoviesCount() (int64, error) {
-	return db.GetMoviesCountByRoomID(r.ID)
+func (r *Room) GetMoviesCount() (int, error) {
+	return GetMoviesCountByRoomID(r.ID)
 }
 
 func (r *Room) GetAllMoviesByRoomID() ([]model.Movie, error) {
-	return db.GetAllMoviesByRoomID(r.ID)
+	return GetAllMoviesByRoomID(r.ID)
+}
+
+func (r *Room) GetMoviesByRoomIDWithPage(page, pageSize int) ([]model.Movie, error) {
+	return GetMoviesByRoomIDWithPage(r.ID, page, pageSize)
 }
 
 func (r *Room) GetMovieByID(id uint) (*model.Movie, error) {
-	return db.GetMovieByID(r.ID, id)
+	return GetMovieByID(r.ID, id)
 }
 
 func (r *Room) DeleteMovieByID(id uint) error {
-	m, err := db.LoadAndDeleteMovieByID(r.ID, id)
+	m, err := LoadAndDeleteMovieByID(r.ID, id)
 	if err != nil {
 		return err
 	}
@@ -300,7 +299,7 @@ func (r *Room) Current() *Current {
 }
 
 func (r *Room) ChangeCurrentMovie(id uint) error {
-	m, err := db.GetMovieByID(r.ID, id)
+	m, err := GetMovieByID(r.ID, id)
 	if err != nil {
 		return err
 	}
@@ -310,11 +309,11 @@ func (r *Room) ChangeCurrentMovie(id uint) error {
 }
 
 func (r *Room) SwapMoviePositions(id1, id2 uint) error {
-	return db.SwapMoviePositions(r.ID, id1, id2)
+	return SwapMoviePositions(r.ID, id1, id2)
 }
 
 func (r *Room) GetMovieWithPullKey(pullKey string) (*model.Movie, error) {
-	return db.GetMovieWithPullKey(r.ID, pullKey)
+	return GetMovieWithPullKey(r.ID, pullKey)
 }
 
 func (r *Room) RegClient(user *User, conn *websocket.Conn) (*Client, error) {

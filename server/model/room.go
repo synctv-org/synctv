@@ -13,9 +13,9 @@ import (
 )
 
 var (
-	ErrEmptyRoomId          = errors.New("empty room id")
-	ErrRoomIdTooLong        = errors.New("room id too long")
-	ErrRoomIdHasInvalidChar = errors.New("room id has invalid char")
+	ErrEmptyRoomName          = errors.New("empty room name")
+	ErrRoomNameTooLong        = errors.New("room name too long")
+	ErrRoomNameHasInvalidChar = errors.New("room name has invalid char")
 
 	ErrPasswordTooLong        = errors.New("password too long")
 	ErrPasswordHasInvalidChar = errors.New("password has invalid char")
@@ -38,7 +38,7 @@ func (f FormatEmptyPasswordError) Error() string {
 }
 
 type CreateRoomReq struct {
-	RoomId   string        `json:"roomId"`
+	RoomName string        `json:"roomName"`
 	Password string        `json:"password"`
 	Setting  model.Setting `json:"setting"`
 }
@@ -48,12 +48,12 @@ func (c *CreateRoomReq) Decode(ctx *gin.Context) error {
 }
 
 func (c *CreateRoomReq) Validate() error {
-	if c.RoomId == "" {
-		return ErrEmptyRoomId
-	} else if len(c.RoomId) > 32 {
-		return ErrRoomIdTooLong
-	} else if !alphaNumChineseReg.MatchString(c.RoomId) {
-		return ErrRoomIdHasInvalidChar
+	if c.RoomName == "" {
+		return ErrEmptyRoomName
+	} else if len(c.RoomName) > 32 {
+		return ErrRoomNameTooLong
+	} else if !alphaNumChineseReg.MatchString(c.RoomName) {
+		return ErrRoomNameHasInvalidChar
 	}
 
 	if c.Password != "" {
@@ -89,7 +89,7 @@ func (l *LoginRoomReq) Decode(ctx *gin.Context) error {
 
 func (l *LoginRoomReq) Validate() error {
 	if l.RoomId == 0 {
-		return ErrEmptyRoomId
+		return ErrEmptyRoomName
 	}
 
 	return nil

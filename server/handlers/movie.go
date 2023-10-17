@@ -13,7 +13,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/go-resty/resty/v2"
 	"github.com/synctv-org/synctv/internal/conf"
-	"github.com/synctv-org/synctv/internal/db"
 	dbModel "github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/internal/rtmp"
@@ -56,10 +55,26 @@ func MovieList(ctx *gin.Context) {
 		return
 	}
 
-	m, err := room.GetMovies(db.GetMoviesPage(int(page)), db.GetMoviesMax(int(max)))
+	m, err := room.GetMoviesByRoomIDWithPage(int(page), int(max))
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
+	}
+
+	mresp := make([]model.MoviesResp, len(m))
+	var creater string
+	for i, v := range m {
+		// get cteater
+		u, err := op.GetUserById(v.CreatorID)
+		if err == nil {
+			creater = u.Username
+		}
+		mresp[i] = model.MoviesResp{
+			Id:      v.ID,
+			Base:    m[i].BaseMovieInfo,
+			PullKey: v.PullKey,
+			Creater: creater,
+		}
 	}
 
 	i, err := room.GetMoviesCount()
@@ -71,7 +86,7 @@ func MovieList(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
 		"current": room.Current(),
 		"total":   i,
-		"movies":  m,
+		"movies":  mresp,
 	}))
 }
 
@@ -94,10 +109,26 @@ func Movies(ctx *gin.Context) {
 		return
 	}
 
-	m, err := room.GetMovies(db.GetMoviesPage(int(page)), db.GetMoviesMax(int(max)))
+	m, err := room.GetMoviesByRoomIDWithPage(int(page), int(max))
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
+	}
+
+	mresp := make([]model.MoviesResp, len(m))
+	var creater string
+	for i, v := range m {
+		// get cteater
+		u, err := op.GetUserById(v.CreatorID)
+		if err == nil {
+			creater = u.Username
+		}
+		mresp[i] = model.MoviesResp{
+			Id:      v.ID,
+			Base:    m[i].BaseMovieInfo,
+			PullKey: v.PullKey,
+			Creater: creater,
+		}
 	}
 
 	i, err := room.GetMoviesCount()
@@ -108,7 +139,7 @@ func Movies(ctx *gin.Context) {
 
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
 		"total":  i,
-		"movies": m,
+		"movies": mresp,
 	}))
 }
 

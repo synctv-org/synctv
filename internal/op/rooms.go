@@ -2,6 +2,7 @@ package op
 
 import (
 	"errors"
+	"math/rand"
 	"sync/atomic"
 	"time"
 
@@ -32,6 +33,7 @@ func initRoom(room *model.Room, conf ...RoomConf) (*Room, error) {
 	r := &Room{
 		Room:       *room,
 		lastActive: time.Now().UnixMilli(),
+		version:    rand.Uint32(),
 	}
 	for _, c := range conf {
 		c(r)

@@ -9,70 +9,17 @@ func CreateMovie(movie *model.Movie) error {
 	return db.Create(movie).Error
 }
 
-type GetMovies struct {
-	max  int
-	page int
-}
-
-func DefaultGetMovies() *GetMovies {
-	return &GetMovies{
-		max:  10,
-		page: 1,
-	}
-}
-
-type GetMoviesConfig func(gm *GetMovies)
-
-func GetMoviesMax(max int) GetMoviesConfig {
-	return func(gm *GetMovies) {
-		gm.max = max
-	}
-}
-
-func GetMoviesPage(page int) GetMoviesConfig {
-	return func(gm *GetMovies) {
-		gm.page = page
-	}
-}
-
-func GetMoviesByRoomID(roomID uint, conf ...GetMoviesConfig) ([]model.Movie, error) {
-	movies := []model.Movie{}
-	df := DefaultGetMovies()
-	for _, c := range conf {
-		c(df)
-	}
-	err := db.Where("room_id = ?", roomID).Limit(df.max).Offset((df.page - 1) * df.max).Find(&movies).Error
-	return movies, err
-}
-
 func GetAllMoviesByRoomID(roomID uint) ([]model.Movie, error) {
 	movies := []model.Movie{}
-	err := db.Where("room_id = ?", roomID).Find(&movies).Error
+	err := db.Where("room_id = ?", roomID).Order("position ASC").Find(&movies).Error
 	return movies, err
-}
-
-func GetMovieWithPullKey(roomID uint, pullKey string) (*model.Movie, error) {
-	movie := &model.Movie{}
-	err := db.Where("room_id = ? AND pull_key = ?", roomID, pullKey).First(movie).Error
-	return movie, err
-}
-
-func GetMoviesCountByRoomID(roomID uint) (int64, error) {
-	var count int64
-	err := db.Model(&model.Movie{}).Where("room_id = ?", roomID).Count(&count).Error
-	return count, err
-}
-
-func GetMovieByID(roomID, id uint) (*model.Movie, error) {
-	movie := &model.Movie{}
-	err := db.Where("room_id = ? AND id = ?", roomID, id).First(movie).Error
-	return movie, err
 }
 
 func DeleteMovieByID(roomID, id uint) error {
 	return db.Where("room_id = ? AND id = ?", roomID, id).Delete(&model.Movie{}).Error
 }
 
+// TODO: delete error
 func LoadAndDeleteMovieByID(roomID, id uint, columns ...clause.Column) (*model.Movie, error) {
 	movie := &model.Movie{}
 	err := db.Clauses(clause.Returning{Columns: columns}).Where("room_id = ? AND id = ?", roomID, id).Delete(movie).Error
@@ -93,8 +40,8 @@ func UpdateMovie(movie model.Movie) error {
 	return db.Model(&model.Movie{}).Where("room_id = ? AND id = ?", movie.RoomID, movie.ID).Updates(movie).Error
 }
 
-func LoadAndUpdateMovie(movie model.Movie, columns ...string) (*model.Movie, error) {
-	err := db.Model(&model.Movie{}).Where("room_id = ? AND id = ?", movie.RoomID, movie.ID).Updates(movie).Error
+func LoadAndUpdateMovie(movie model.Movie, columns ...clause.Column) (*model.Movie, error) {
+	err := db.Model(&model.Movie{}).Clauses(clause.Returning{Columns: columns}).Where("room_id = ? AND id = ?", movie.RoomID, movie.ID).Updates(&movie).Error
 	return &movie, err
 }
 

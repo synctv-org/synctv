@@ -6,23 +6,23 @@ import (
 
 type Movie struct {
 	gorm.Model
-	Position uint `gorm:"not null"`
-	RoomID   uint `gorm:"not null"`
-	MovieInfo
+	Position  uint `gorm:"not null" json:"-"`
+	RoomID    uint `gorm:"not null" json:"roomId"`
+	MovieInfo `gorm:"embedded"`
 }
 
 type MovieInfo struct {
-	BaseMovieInfo
-	PullKey   string
-	CreatorID uint `gorm:"not null"`
+	BaseMovieInfo `gorm:"embedded"`
+	PullKey       string `gorm:"varchar(16)" json:"pullKey"`
+	CreatorID     uint   `gorm:"not null" json:"creatorId"`
 }
 
 type BaseMovieInfo struct {
-	Url        string `gorm:"varchar(4096)"`
-	Name       string `gorm:"not null;varchar(256)"`
-	Live       bool
-	Proxy      bool
-	RtmpSource bool
-	Type       string
-	Headers    map[string]string `gorm:"serializer:json"`
+	Url        string            `gorm:"varchar(4096)" json:"url"`
+	Name       string            `gorm:"not null;varchar(256)" json:"name"`
+	Live       bool              `json:"live"`
+	Proxy      bool              `json:"proxy"`
+	RtmpSource bool              `json:"rtmpSource"`
+	Type       string            `gorm:"varchar(32)" json:"type"`
+	Headers    map[string]string `gorm:"serializer:json" json:"headers"`
 }

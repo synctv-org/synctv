@@ -107,3 +107,10 @@ func (s *SwapMovieReq) Validate() error {
 	}
 	return nil
 }
+
+type MoviesResp struct {
+	Id      uint                `json:"id"`
+	Base    model.BaseMovieInfo `json:"base"`
+	PullKey string              `json:"pullKey"`
+	Creater string              `json:"creater"`
+}

@@ -1,0 +1,38 @@
+log:
+    enable: true # enable log to file (default: true)
+    log_format: text # log format, can be set: text | json (default: text)
+    file_path: log/log.log # log file path (default: log/log.log)
+    max_size: 10 # max size per log file (default: 10 megabytes)
+    max_backups: 10 # max backups (default: 10)
+    max_age: 28 # max age (default: 28 days)
+    compress: false # compress (default: false)
+server:
+    listen: 0.0.0.0 # server listen addr (default: 0.0.0.0)
+    port: 8080 # server listen port (default: 8080)
+    quic: true # enable http3/quic, need enable ssl, set cert and key file (default: true)
+    cert_path: "" # cert path
+    key_path: "" # key path
+jwt:
+    secret: sXpUIwmOZqwqnyJHfaQtzkSjINgcsXGJ # jwt secret (default rand string)
+    expire: 12 # expire time (default: 12 hour)
+# you can use rtmp to publish live
+rtmp:
+    enable: true # enable rtmp server (default: true)
+    port: 0 # rtmp server port (default use server port)
+    custom_publish_host: "" # publish host (default use http header host)
+    rtmp_player: false # enable rtmp player (default: false)
+    hls_player: true # enable hls player (default: true)
+# you can use proxy to proxy movie and live when custom headers or network is slow to connect to origin server
+proxy:
+    movie_proxy: true # enable movie proxy (default: true)
+    live_proxy: true # enable live proxy (default: true)
+room:
+    must_password: false # must input password to create room (default: false)
+database:
+    type: sqlite3 # database type, support sqlite3, mysql, postgres
+    host: "" # database host, when type is not sqlite3, and port is 0, it will use unix socket file
+    port: 0 # database port
+    user: "" # database user
+    password: "" # database password
+    db_name: synctv # database name, when type is sqlite3, it will use sqlite db file or memory
+    ssl_mode: disable # database ssl mode, default disable

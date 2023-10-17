@@ -3,10 +3,12 @@ package bootstrap
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/glebarez/sqlite"
 	log "github.com/sirupsen/logrus"
+	"github.com/synctv-org/synctv/cmd/flags"
 	"github.com/synctv-org/synctv/internal/conf"
 	"github.com/synctv-org/synctv/internal/db"
 	"gorm.io/driver/mysql"
@@ -27,6 +29,7 @@ func InitDatabase(ctx context.Context) error {
 				conf.Conf.Database.DBName,
 				conf.Conf.Database.SslMode,
 			)
+			log.Infof("mysql database unix socket: %s", conf.Conf.Database.Host)
 		} else {
 			dsn = fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=utf8mb4&parseTime=True&loc=Local&tls=%s",
 				conf.Conf.Database.User,
@@ -36,6 +39,7 @@ func InitDatabase(ctx context.Context) error {
 				conf.Conf.Database.DBName,
 				conf.Conf.Database.SslMode,
 			)
+			log.Infof("mysql database tcp: %s:%d", conf.Conf.Database.Host, conf.Conf.Database.Port)
 		}
 		dialector = mysql.New(mysql.Config{
 			DSN:                       dsn,
@@ -50,10 +54,16 @@ func InitDatabase(ctx context.Context) error {
 		var dsn string
 		if conf.Conf.Database.DBName == "memory" || strings.HasPrefix(conf.Conf.Database.DBName, ":memory:") {
 			dsn = "file::memory:?cache=shared"
-		} else if !strings.HasSuffix(conf.Conf.Database.DBName, ".db") {
-			dsn = fmt.Sprintf("%s.db?_journal_mode=WAL&_vacuum=incremental", conf.Conf.Database.DBName)
+			log.Infof("sqlite3 database memory")
 		} else {
-			dsn = conf.Conf.Database.DBName
+			if !strings.HasSuffix(conf.Conf.Database.DBName, ".db") {
+				conf.Conf.Database.DBName = conf.Conf.Database.DBName + ".db"
+			}
+			if !filepath.IsAbs(conf.Conf.Database.DBName) {
+				conf.Conf.Database.DBName = filepath.Join(flags.DataDir, conf.Conf.Database.DBName)
+			}
+			dsn = fmt.Sprintf("%s?_journal_mode=WAL&_vacuum=incremental", conf.Conf.Database.DBName)
+			log.Infof("sqlite3 database file: %s", conf.Conf.Database.DBName)
 		}
 		dialector = sqlite.Open(dsn)
 		opts = append(opts, &gorm.Config{})
@@ -67,6 +77,7 @@ func InitDatabase(ctx context.Context) error {
 				conf.Conf.Database.DBName,
 				conf.Conf.Database.SslMode,
 			)
+			log.Infof("postgres database unix socket: %s", conf.Conf.Database.Host)
 		} else {
 			dsn = fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
 				conf.Conf.Database.Host,
@@ -76,6 +87,7 @@ func InitDatabase(ctx context.Context) error {
 				conf.Conf.Database.DBName,
 				conf.Conf.Database.SslMode,
 			)
+			log.Infof("postgres database tcp: %s:%d", conf.Conf.Database.Host, conf.Conf.Database.Port)
 		}
 		dialector = mysql.Open(dsn)
 		opts = append(opts, &gorm.Config{})

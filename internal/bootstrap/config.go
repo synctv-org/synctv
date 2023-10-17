@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 
 	"github.com/caarlos0/env/v9"
-	"github.com/mitchellh/go-homedir"
 	log "github.com/sirupsen/logrus"
 
 	"github.com/synctv-org/synctv/cmd/flags"
@@ -27,11 +26,7 @@ func InitConfig(ctx context.Context) error {
 	conf.Conf = conf.DefaultConfig()
 	if !flags.SkipConfig {
 		if flags.ConfigFile == "" {
-			homeDir, err := homedir.Dir()
-			if err != nil {
-				log.Fatalf("find home dir error: %v", err)
-			}
-			flags.ConfigFile = filepath.Join(homeDir, ".config", "synctv", "config.yaml")
+			flags.ConfigFile = filepath.Join(flags.DataDir, "config.yaml")
 		} else {
 			fileAbs, err := filepath.Abs(flags.ConfigFile)
 			if err != nil {

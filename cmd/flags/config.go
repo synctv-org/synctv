@@ -15,4 +15,6 @@ var (
 	EnvNoPrefix bool
 
 	GitHubBaseURL string
+
+	DataDir string
 )

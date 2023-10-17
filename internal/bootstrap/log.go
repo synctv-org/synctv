@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
 
 	"github.com/natefinch/lumberjack"
 	"github.com/sirupsen/logrus"
@@ -26,6 +27,9 @@ func setLog(l *logrus.Logger) {
 func InitLog(ctx context.Context) error {
 	setLog(logrus.StandardLogger())
 	if conf.Conf.Log.Enable {
+		if !filepath.IsAbs(conf.Conf.Log.FilePath) {
+			conf.Conf.Log.FilePath = filepath.Join(flags.DataDir, conf.Conf.Log.FilePath)
+		}
 		var l = &lumberjack.Logger{
 			Filename:   conf.Conf.Log.FilePath,
 			MaxSize:    conf.Conf.Log.MaxSize,

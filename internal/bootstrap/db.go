@@ -12,6 +12,7 @@ import (
 	"github.com/synctv-org/synctv/internal/conf"
 	"github.com/synctv-org/synctv/internal/db"
 	"gorm.io/driver/mysql"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
 
@@ -89,7 +90,10 @@ func InitDatabase(ctx context.Context) error {
 			)
 			log.Infof("postgres database tcp: %s:%d", conf.Conf.Database.Host, conf.Conf.Database.Port)
 		}
-		dialector = mysql.Open(dsn)
+		dialector = postgres.New(postgres.Config{
+			DSN:                  dsn,
+			PreferSimpleProtocol: true,
+		})
 		opts = append(opts, &gorm.Config{})
 	default:
 		log.Fatalf("unknown database type: %s", conf.Conf.Database.Type)

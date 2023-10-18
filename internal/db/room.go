@@ -1,9 +1,12 @@
 package db
 
 import (
+	"errors"
+
 	"github.com/synctv-org/synctv/internal/model"
 	"github.com/zijiren233/stream"
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
 )
 
 type CreateRoomConfig func(r *model.Room)
@@ -42,46 +45,74 @@ func CreateRoom(name, password string, conf ...CreateRoomConfig) (*model.Room, e
 	for _, c := range conf {
 		c(r)
 	}
-	return r, db.Create(r).Error
+	err := db.Create(r).Error
+	if err != nil && errors.Is(err, gorm.ErrDuplicatedKey) {
+		return r, errors.New("room already exists")
+	}
+	return r, err
 }
 
 func GetRoomByID(id uint) (*model.Room, error) {
 	r := &model.Room{}
 	err := db.Where("id = ?", id).First(r).Error
+	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
+		return r, errors.New("room not found")
+	}
 	return r, err
 }
 
 func GetRoomAndCreatorByID(id uint) (*model.Room, error) {
 	r := &model.Room{}
 	err := db.Preload("Creator").Where("id = ?", id).First(r).Error
+	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
+		return r, errors.New("room not found")
+	}
 	return r, err
 }
 
 func ChangeRoomSetting(roomID uint, setting model.Setting) error {
-	return db.Model(&model.Room{}).Where("id = ?", roomID).Update("setting", setting).Error
+	err := db.Model(&model.Room{}).Where("id = ?", roomID).Update("setting", setting).Error
+	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
+		return errors.New("room not found")
+	}
+	return err
 }
 
 func ChangeUserPermission(roomID uint, userID uint, permission model.Permission) error {
-	return db.Model(&model.RoomUserRelation{}).Where("room_id = ? AND user_id = ?", roomID, userID).Update("permissions", permission).Error
+	err := db.Model(&model.RoomUserRelation{}).Where("room_id = ? AND user_id = ?", roomID, userID).Update("permissions", permission).Error
+	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
+		return errors.New("room or user not found")
+	}
+	return err
 }
 
 func HasPermission(roomID uint, userID uint, permission model.Permission) (bool, error) {
 	ur := &model.RoomUserRelation{}
 	err := db.Where("room_id = ? AND user_id = ?", roomID, userID).First(ur).Error
 	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			err = errors.New("room or user not found")
+		}
 		return false, err
 	}
 	return ur.Permissions.Has(permission), nil
 }
 
 func DeleteRoomByID(roomID uint) error {
-	return db.Where("id = ?", roomID).Delete(&model.Room{}).Error
+	err := db.Where("id = ?", roomID).Delete(&model.Room{}).Error
+	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
+		return errors.New("room not found")
+	}
+	return err
 }
 
 func HasRoom(roomID uint) (bool, error) {
 	r := &model.Room{}
 	err := db.Where("id = ?", roomID).First(r).Error
 	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			err = nil
+		}
 		return false, err
 	}
 	return true, nil
@@ -91,6 +122,9 @@ func HasRoomByName(name string) (bool, error) {
 	r := &model.Room{}
 	err := db.Where("name = ?", name).First(r).Error
 	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			err = nil
+		}
 		return false, err
 	}
 	return true, nil
@@ -105,37 +139,63 @@ func SetRoomPassword(roomID uint, password string) error {
 			return err
 		}
 	}
-	return db.Model(&model.Room{}).Where("id = ?", roomID).Update("hashed_password", hashedPassword).Error
+	return SetRoomHashedPassword(roomID, hashedPassword)
 }
 
 func SetRoomHashedPassword(roomID uint, hashedPassword []byte) error {
-	return db.Model(&model.Room{}).Where("id = ?", roomID).Update("hashed_password", hashedPassword).Error
+	err := db.Model(&model.Room{}).Where("id = ?", roomID).Update("hashed_password", hashedPassword).Error
+	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
+		return errors.New("room not found")
+	}
+	return err
 }
 
 func SetUserRole(roomID uint, userID uint, role model.Role) error {
-	return db.Model(&model.RoomUserRelation{}).Where("room_id = ? AND user_id = ?", roomID, userID).Update("role", role).Error
+	err := db.Model(&model.RoomUserRelation{}).Where("room_id = ? AND user_id = ?", roomID, userID).Update("role", role).Error
+	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
+		return errors.New("room or user not found")
+	}
+	return err
 }
 
 func SetUserPermission(roomID uint, userID uint, permission model.Permission) error {
-	return db.Model(&model.RoomUserRelation{}).Where("room_id = ? AND user_id = ?", roomID, userID).Update("permissions", permission).Error
+	err := db.Model(&model.RoomUserRelation{}).Where("room_id = ? AND user_id = ?", roomID, userID).Update("permissions", permission).Error
+	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
+		return errors.New("room or user not found")
+	}
+	return err
 }
 
 func AddUserPermission(roomID uint, userID uint, permission model.Permission) error {
-	return db.Model(&model.RoomUserRelation{}).Where("room_id = ? AND user_id = ?", roomID, userID).Update("permissions", db.Raw("permissions | ?", permission)).Error
+	err := db.Model(&model.RoomUserRelation{}).Where("room_id = ? AND user_id = ?", roomID, userID).Update("permissions", db.Raw("permissions | ?", permission)).Error
+	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
+		return errors.New("room or user not found")
+	}
+	return err
 }
 
 func RemoveUserPermission(roomID uint, userID uint, permission model.Permission) error {
-	return db.Model(&model.RoomUserRelation{}).Where("room_id = ? AND user_id = ?", roomID, userID).Update("permissions", db.Raw("permissions & ?", ^permission)).Error
+	err := db.Model(&model.RoomUserRelation{}).Where("room_id = ? AND user_id = ?", roomID, userID).Update("permissions", db.Raw("permissions & ?", ^permission)).Error
+	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
+		return errors.New("room or user not found")
+	}
+	return err
 }
 
 func GetAllRooms() ([]*model.Room, error) {
 	rooms := []*model.Room{}
 	err := db.Find(&rooms).Error
+	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
+		return rooms, nil
+	}
 	return rooms, err
 }
 
 func GetAllRoomsAndCreator() ([]*model.Room, error) {
 	rooms := []*model.Room{}
 	err := db.Preload("Creater").Find(&rooms).Error
+	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
+		return rooms, nil
+	}
 	return rooms, err
 }

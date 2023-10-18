@@ -70,5 +70,5 @@ func (u *User) SetPassword(password string) error {
 	}
 	u.HashedPassword = hashedPassword
 	atomic.AddUint32(&u.version, 1)
-	return db.SetUserPassword(u.ID, hashedPassword)
+	return db.SetUserHashedPassword(u.ID, hashedPassword)
 }

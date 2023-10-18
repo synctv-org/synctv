@@ -100,9 +100,9 @@ func DeleteUserByUsername(username string) error {
 	return nil
 }
 
-func UpdateUser(u *model.User) error {
+func SaveUser(u *model.User) error {
 	userCache.Remove(u.ID)
-	return db.UpdateUser(u)
+	return db.SaveUser(u)
 }
 
 func GetUserName(userID uint) string {

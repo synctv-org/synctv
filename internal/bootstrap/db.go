@@ -50,7 +50,7 @@ func InitDatabase(ctx context.Context) error {
 			DontSupportRenameColumn:   true,
 			SkipInitializeWithVersion: false,
 		})
-		opts = append(opts, &gorm.Config{})
+		opts = append(opts, &gorm.Config{TranslateError: true})
 	case conf.DatabaseTypeSqlite3:
 		var dsn string
 		if conf.Conf.Database.DBName == "memory" || strings.HasPrefix(conf.Conf.Database.DBName, ":memory:") {
@@ -67,7 +67,7 @@ func InitDatabase(ctx context.Context) error {
 			log.Infof("sqlite3 database file: %s", conf.Conf.Database.DBName)
 		}
 		dialector = sqlite.Open(dsn)
-		opts = append(opts, &gorm.Config{})
+		opts = append(opts, &gorm.Config{TranslateError: true})
 	case conf.DatabaseTypePostgres:
 		var dsn string
 		if conf.Conf.Database.Port == 0 {
@@ -94,7 +94,7 @@ func InitDatabase(ctx context.Context) error {
 			DSN:                  dsn,
 			PreferSimpleProtocol: true,
 		})
-		opts = append(opts, &gorm.Config{})
+		opts = append(opts, &gorm.Config{TranslateError: true})
 	default:
 		log.Fatalf("unknown database type: %s", conf.Conf.Database.Type)
 	}

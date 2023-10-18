@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/bluele/gcache"
-	log "github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/model"
 	"github.com/zijiren233/gencontainer/dllist"
@@ -102,7 +101,6 @@ func UpdateMovie(movie *model.Movie) error {
 }
 
 func SaveMovie(movie *model.Movie) error {
-	log.Debug(movie)
 	err := db.SaveMovie(movie)
 	if err != nil {
 		return err

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/glebarez/sqlite"
 	log "github.com/sirupsen/logrus"
@@ -14,6 +15,7 @@ import (
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 func InitDatabase(ctx context.Context) error {
@@ -50,7 +52,7 @@ func InitDatabase(ctx context.Context) error {
 			DontSupportRenameColumn:   true,
 			SkipInitializeWithVersion: false,
 		})
-		opts = append(opts, &gorm.Config{TranslateError: true})
+		// opts = append(opts, &gorm.Config{})
 	case conf.DatabaseTypeSqlite3:
 		var dsn string
 		if conf.Conf.Database.DBName == "memory" || strings.HasPrefix(conf.Conf.Database.DBName, ":memory:") {
@@ -67,7 +69,7 @@ func InitDatabase(ctx context.Context) error {
 			log.Infof("sqlite3 database file: %s", conf.Conf.Database.DBName)
 		}
 		dialector = sqlite.Open(dsn)
-		opts = append(opts, &gorm.Config{TranslateError: true})
+		// opts = append(opts, &gorm.Config{})
 	case conf.DatabaseTypePostgres:
 		var dsn string
 		if conf.Conf.Database.Port == 0 {
@@ -94,13 +96,36 @@ func InitDatabase(ctx context.Context) error {
 			DSN:                  dsn,
 			PreferSimpleProtocol: true,
 		})
-		opts = append(opts, &gorm.Config{TranslateError: true})
+		// opts = append(opts, &gorm.Config{})
 	default:
 		log.Fatalf("unknown database type: %s", conf.Conf.Database.Type)
 	}
+	opts = append(opts, &gorm.Config{
+		TranslateError: true,
+		Logger:         newDBLogger(),
+	})
 	d, err := gorm.Open(dialector, opts...)
 	if err != nil {
 		log.Fatalf("failed to connect database: %s", err.Error())
 	}
 	return db.Init(d)
+}
+
+func newDBLogger() logger.Interface {
+	var logLevel logger.LogLevel
+	if flags.Dev {
+		logLevel = logger.Info
+	} else {
+		logLevel = logger.Warn
+	}
+	return logger.New(
+		log.StandardLogger(),
+		logger.Config{
+			SlowThreshold:             time.Second,
+			LogLevel:                  logLevel,
+			IgnoreRecordNotFoundError: true,
+			ParameterizedQueries:      true,
+			Colorful:                  false,
+		},
+	)
 }

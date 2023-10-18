@@ -10,11 +10,11 @@ type Room struct {
 	gorm.Model
 	Name string `gorm:"not null;uniqueIndex;varchar(32)"`
 	Setting
-	CreatorID          uint `gorm:"not null;index"`
-	Creator            User `gorm:"foreignKey:CreatorID"`
+	CreatorID          uint `gorm:"index"`
+	Creator            User `gorm:"foreignKey:CreatorID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL"`
 	HashedPassword     []byte
-	GroupUserRelations []RoomUserRelation `gorm:"foreignKey:RoomID"`
-	Movies             []Movie            `gorm:"foreignKey:RoomID"`
+	GroupUserRelations []RoomUserRelation `gorm:"foreignKey:RoomID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
+	Movies             []Movie            `gorm:"foreignKey:RoomID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 }
 
 func (r *Room) CheckPassword(password string) bool {

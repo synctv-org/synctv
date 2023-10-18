@@ -10,7 +10,8 @@ type User struct {
 	gorm.Model
 	Username           string `gorm:"not null;uniqueIndex;varchar(32)"`
 	HashedPassword     []byte
-	GroupUserRelations []RoomUserRelation `gorm:"foreignKey:UserID"`
+	GroupUserRelations []RoomUserRelation `gorm:"foreignKey:UserID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
+	Movies             []Movie            `gorm:"foreignKey:CreatorID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL"`
 }
 
 func (u *User) CheckPassword(password string) bool {

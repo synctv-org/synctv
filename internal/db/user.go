@@ -64,7 +64,7 @@ func GetUsersByRoomID(roomID uint) ([]model.User, error) {
 }
 
 func DeleteUserByID(userID uint) error {
-	err := db.Where("id = ?", userID).Delete(&model.User{}).Error
+	err := db.Unscoped().Delete(&model.User{}, userID).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return errors.New("user not found")
 	}
@@ -73,7 +73,7 @@ func DeleteUserByID(userID uint) error {
 
 func LoadAndDeleteUserByID(userID uint, columns ...clause.Column) (*model.User, error) {
 	u := &model.User{}
-	err := db.Clauses(clause.Returning{Columns: columns}).Where("id = ?", userID).Delete(u).Error
+	err := db.Unscoped().Clauses(clause.Returning{Columns: columns}).Delete(u, userID).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return u, errors.New("user not found")
 	}
@@ -81,7 +81,7 @@ func LoadAndDeleteUserByID(userID uint, columns ...clause.Column) (*model.User, 
 }
 
 func DeleteUserByUsername(username string) error {
-	err := db.Where("username = ?", username).Delete(&model.User{}).Error
+	err := db.Unscoped().Where("username = ?", username).Delete(&model.User{}).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return errors.New("user not found")
 	}
@@ -90,7 +90,7 @@ func DeleteUserByUsername(username string) error {
 
 func LoadAndDeleteUserByUsername(username string, columns ...clause.Column) (*model.User, error) {
 	u := &model.User{}
-	err := db.Clauses(clause.Returning{Columns: columns}).Where("username = ?", username).Delete(u).Error
+	err := db.Unscoped().Clauses(clause.Returning{Columns: columns}).Where("username = ?", username).Delete(u).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return u, errors.New("user not found")
 	}

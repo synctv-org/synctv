@@ -6,6 +6,7 @@ type Movie struct {
 	gorm.Model
 	Position  uint `gorm:"not null"`
 	RoomID    uint `gorm:"not null;index"`
+	Room      Room `gorm:"foreignKey:RoomID"`
 	MovieInfo `gorm:"embedded"`
 }
 
@@ -13,7 +14,6 @@ type MovieInfo struct {
 	BaseMovieInfo `gorm:"embedded"`
 	PullKey       string `gorm:"varchar(128)" json:"pullKey"`
 	CreatorID     uint   `gorm:"not null;index" json:"creatorId"`
-	Creator       User   `gorm:"foreignKey:CreatorID" json:"creator"`
 }
 
 type BaseMovieInfo struct {

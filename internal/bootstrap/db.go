@@ -24,7 +24,9 @@ func InitDatabase(ctx context.Context) error {
 	switch conf.Conf.Database.Type {
 	case conf.DatabaseTypeMysql:
 		var dsn string
-		if conf.Conf.Database.Port == 0 {
+		if conf.Conf.Database.CustomDSN != "" {
+			dsn = conf.Conf.Database.CustomDSN
+		} else if conf.Conf.Database.Port == 0 {
 			dsn = fmt.Sprintf("%s:%s@unix(%s)/%s?charset=utf8mb4&parseTime=True&loc=Local&tls=%s",
 				conf.Conf.Database.User,
 				conf.Conf.Database.Password,
@@ -55,7 +57,9 @@ func InitDatabase(ctx context.Context) error {
 		// opts = append(opts, &gorm.Config{})
 	case conf.DatabaseTypeSqlite3:
 		var dsn string
-		if conf.Conf.Database.DBName == "memory" || strings.HasPrefix(conf.Conf.Database.DBName, ":memory:") {
+		if conf.Conf.Database.CustomDSN != "" {
+			dsn = conf.Conf.Database.CustomDSN
+		} else if conf.Conf.Database.DBName == "memory" || strings.HasPrefix(conf.Conf.Database.DBName, ":memory:") {
 			dsn = "file::memory:?cache=shared&_journal_mode=WAL&_vacuum=incremental&_pragma=foreign_keys(1)"
 			log.Infof("sqlite3 database memory")
 		} else {
@@ -72,7 +76,9 @@ func InitDatabase(ctx context.Context) error {
 		// opts = append(opts, &gorm.Config{})
 	case conf.DatabaseTypePostgres:
 		var dsn string
-		if conf.Conf.Database.Port == 0 {
+		if conf.Conf.Database.CustomDSN != "" {
+			dsn = conf.Conf.Database.CustomDSN
+		} else if conf.Conf.Database.Port == 0 {
 			dsn = fmt.Sprintf("host=%s user=%s password=%s dbname=%s sslmode=%s",
 				conf.Conf.Database.Host,
 				conf.Conf.Database.User,

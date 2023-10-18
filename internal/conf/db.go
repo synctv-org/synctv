@@ -16,6 +16,8 @@ type DatabaseConfig struct {
 	Password string       `yaml:"password" lc:"database password" env:"DATABASE_PASSWORD"`
 	DBName   string       `yaml:"db_name" lc:"database name, when type is sqlite3, it will use sqlite db file or memory" env:"DATABASE_DB_NAME"`
 	SslMode  string       `yaml:"ssl_mode" lc:"database ssl mode, default disable" env:"DATABASE_SSL_MODE"`
+
+	CustomDSN string `yaml:"custom_dsn" lc:"custom dsn, when not empty, it will ignore other config" env:"DATABASE_CUSTOM_DSN"`
 }
 
 func DefaultDatabaseConfig() DatabaseConfig {

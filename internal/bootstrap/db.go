@@ -53,7 +53,7 @@ func InitDatabase(ctx context.Context) error {
 	case conf.DatabaseTypeSqlite3:
 		var dsn string
 		if conf.Conf.Database.DBName == "memory" || strings.HasPrefix(conf.Conf.Database.DBName, ":memory:") {
-			dsn = "file::memory:?cache=shared"
+			dsn = "file::memory:?cache=shared&_journal_mode=WAL&_vacuum=incremental&_pragma=foreign_keys(1)"
 			log.Infof("sqlite3 database memory")
 		} else {
 			if !strings.HasSuffix(conf.Conf.Database.DBName, ".db") {
@@ -62,7 +62,7 @@ func InitDatabase(ctx context.Context) error {
 			if !filepath.IsAbs(conf.Conf.Database.DBName) {
 				conf.Conf.Database.DBName = filepath.Join(flags.DataDir, conf.Conf.Database.DBName)
 			}
-			dsn = fmt.Sprintf("%s?_journal_mode=WAL&_vacuum=incremental", conf.Conf.Database.DBName)
+			dsn = fmt.Sprintf("%s?_journal_mode=WAL&_vacuum=incremental&_pragma=foreign_keys(1)", conf.Conf.Database.DBName)
 			log.Infof("sqlite3 database file: %s", conf.Conf.Database.DBName)
 		}
 		dialector = sqlite.Open(dsn)

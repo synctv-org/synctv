@@ -131,9 +131,13 @@ function InitDep() {
     curl -sL "https://github.com/synctv-org/synctv-web/releases/download/${WEB_VERSION}/dist.tar.gz" | tar --strip-components 1 -C "public/dist" -z -x -v -f -
 }
 
-LINUX_ALLOWED_PLATFORM="linux/386,linux/amd64,linux/arm,linux/arm64,linux/loong64,linux/mips,linux/mips64,linux/mips64le,linux/mipsle,linux/ppc64,linux/ppc64le,linux/riscv64,linux/s390x"
+# sqlite3 not support linux/loong64,linux/mips linux/mips64,linux/mips64le,linux/mipsle,linux/ppc64,
+LINUX_ALLOWED_PLATFORM="linux/386,linux/amd64,linux/arm,linux/arm64,linux/ppc64le,linux/riscv64,linux/s390x"
+
 DARWIN_ALLOWED_PLATFORM="darwin/amd64,darwin/arm64"
-WINDOWS_ALLOWED_PLATFORM="windows/386,windows/amd64,windows/arm,windows/arm64"
+
+# sqlite3 not support windows/arm,windows/386
+WINDOWS_ALLOWED_PLATFORM="windows/amd64,windows/arm64"
 
 ALLOWED_PLATFORM="$LINUX_ALLOWED_PLATFORM,$DARWIN_ALLOWED_PLATFORM,$WINDOWS_ALLOWED_PLATFORM"
 

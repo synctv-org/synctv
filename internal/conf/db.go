@@ -18,6 +18,10 @@ type DatabaseConfig struct {
 	SslMode  string       `yaml:"ssl_mode" lc:"database ssl mode, default disable" env:"DATABASE_SSL_MODE"`
 
 	CustomDSN string `yaml:"custom_dsn" lc:"custom dsn, when not empty, it will ignore other config" env:"DATABASE_CUSTOM_DSN"`
+
+	MaxIdleConns    int `yaml:"max_idle_conns" lc:"max idle connections (default 10)" env:"DATABASE_MAX_IDLE_CONNS"`
+	MaxOpenConns    int `yaml:"max_open_conns" lc:"max open connections (default 100)" env:"DATABASE_MAX_OPEN_CONNS"`
+	ConnMaxLifetime int `yaml:"conn_max_lifetime" lc:"connection max lifetime (default 3600 seconds)" env:"DATABASE_CONN_MAX_LIFETIME"`
 }
 
 func DefaultDatabaseConfig() DatabaseConfig {
@@ -26,5 +30,9 @@ func DefaultDatabaseConfig() DatabaseConfig {
 		Host:    "",
 		DBName:  "synctv",
 		SslMode: "disable",
+
+		MaxIdleConns:    10,
+		MaxOpenConns:    100,
+		ConnMaxLifetime: 3600,
 	}
 }

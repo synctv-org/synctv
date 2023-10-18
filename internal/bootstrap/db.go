@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -27,7 +28,7 @@ func InitDatabase(ctx context.Context) error {
 		if conf.Conf.Database.CustomDSN != "" {
 			dsn = conf.Conf.Database.CustomDSN
 		} else if conf.Conf.Database.Port == 0 {
-			dsn = fmt.Sprintf("%s:%s@unix(%s)/%s?charset=utf8mb4&parseTime=True&loc=Local&tls=%s",
+			dsn = fmt.Sprintf("%s:%s@unix(%s)/%s?charset=utf8mb4&parseTime=True&loc=Local&tls=%s&interpolateParams=true",
 				conf.Conf.Database.User,
 				conf.Conf.Database.Password,
 				conf.Conf.Database.Host,
@@ -36,7 +37,7 @@ func InitDatabase(ctx context.Context) error {
 			)
 			log.Infof("mysql database unix socket: %s", conf.Conf.Database.Host)
 		} else {
-			dsn = fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=utf8mb4&parseTime=True&loc=Local&tls=%s",
+			dsn = fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=utf8mb4&parseTime=True&loc=Local&tls=%s&interpolateParams=true",
 				conf.Conf.Database.User,
 				conf.Conf.Database.Password,
 				conf.Conf.Database.Host,
@@ -109,11 +110,17 @@ func InitDatabase(ctx context.Context) error {
 	opts = append(opts, &gorm.Config{
 		TranslateError: true,
 		Logger:         newDBLogger(),
+		PrepareStmt:    true,
 	})
 	d, err := gorm.Open(dialector, opts...)
 	if err != nil {
 		log.Fatalf("failed to connect database: %s", err.Error())
 	}
+	sqlDB, err := d.DB()
+	if err != nil {
+		log.Fatalf("failed to get sqlDB: %s", err.Error())
+	}
+	initRawDB(sqlDB)
 	return db.Init(d)
 }
 
@@ -134,4 +141,10 @@ func newDBLogger() logger.Interface {
 			Colorful:                  false,
 		},
 	)
+}
+
+func initRawDB(db *sql.DB) {
+	db.SetMaxOpenConns(conf.Conf.Database.MaxOpenConns)
+	db.SetMaxIdleConns(conf.Conf.Database.MaxIdleConns)
+	db.SetConnMaxLifetime(time.Duration(conf.Conf.Database.ConnMaxLifetime) * time.Second)
 }

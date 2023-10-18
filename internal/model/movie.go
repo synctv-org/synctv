@@ -23,5 +23,5 @@ type BaseMovieInfo struct {
 	Proxy      bool              `json:"proxy"`
 	RtmpSource bool              `json:"rtmpSource"`
 	Type       string            `gorm:"varchar(32)" json:"type"`
-	Headers    map[string]string `gorm:"serializer:json" json:"headers"`
+	Headers    map[string]string `gorm:"serializer:fastjson" json:"headers"`
 }

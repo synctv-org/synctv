@@ -45,15 +45,15 @@ func CreateRoom(name, password string, conf ...CreateRoomConfig) (*model.Room, e
 	return r, db.Create(r).Error
 }
 
-func GetRoomByName(name string) (*model.Room, error) {
-	r := &model.Room{}
-	err := db.Where("name = ?", name).First(r).Error
-	return r, err
-}
-
 func GetRoomByID(id uint) (*model.Room, error) {
 	r := &model.Room{}
 	err := db.Where("id = ?", id).First(r).Error
+	return r, err
+}
+
+func GetRoomAndCreatorByID(id uint) (*model.Room, error) {
+	r := &model.Room{}
+	err := db.Preload("Creator").Where("id = ?", id).First(r).Error
 	return r, err
 }
 
@@ -128,8 +128,14 @@ func RemoveUserPermission(roomID uint, userID uint, permission model.Permission)
 	return db.Model(&model.RoomUserRelation{}).Where("room_id = ? AND user_id = ?", roomID, userID).Update("permissions", db.Raw("permissions & ?", ^permission)).Error
 }
 
-func GetAllRooms() ([]model.Room, error) {
-	rooms := []model.Room{}
+func GetAllRooms() ([]*model.Room, error) {
+	rooms := []*model.Room{}
 	err := db.Find(&rooms).Error
+	return rooms, err
+}
+
+func GetAllRoomsAndCreator() ([]*model.Room, error) {
+	rooms := []*model.Room{}
+	err := db.Preload("Creater").Find(&rooms).Error
 	return rooms, err
 }

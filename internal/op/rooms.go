@@ -55,28 +55,16 @@ func DeleteRoom(room *Room) error {
 	return db.DeleteRoomByID(room.ID)
 }
 
-func GetRoomByName(name string) (*Room, error) {
-	r, err := db.GetRoomByName(name)
-	if err != nil {
-		return nil, err
-	}
-	r2, ok := roomCache.Load(r.ID)
-	if !ok {
-		return initRoom(r)
-	}
-	return r2, nil
-}
-
 func GetRoomByID(id uint) (*Room, error) {
+	r2, ok := roomCache.Load(id)
+	if ok {
+		return r2, nil
+	}
 	r, err := db.GetRoomByID(id)
 	if err != nil {
 		return nil, err
 	}
-	r2, ok := roomCache.Load(r.ID)
-	if !ok {
-		return initRoom(r)
-	}
-	return r2, nil
+	return initRoom(r)
 }
 
 func HasRoom(roomID uint) bool {
@@ -128,7 +116,7 @@ func GetAllRoomsWithNoNeedPassword() []*Room {
 }
 
 func GetAllRoomsWithoutHidden() []*Room {
-	rooms := make([]*Room, roomCache.Len())
+	rooms := make([]*Room, 0, roomCache.Len())
 	roomCache.Range(func(key uint, value *Room) bool {
 		if !value.Setting.Hidden {
 			rooms = append(rooms, value)

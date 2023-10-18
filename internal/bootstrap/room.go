@@ -14,7 +14,7 @@ func InitRoom(ctx context.Context) error {
 		return err
 	}
 	for _, room := range r {
-		r, err := op.LoadRoom(&room)
+		r, err := op.LoadRoom(room)
 		if err != nil {
 			log.Errorf("load room error: %v", err)
 			return err

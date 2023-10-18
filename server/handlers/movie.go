@@ -62,18 +62,12 @@ func MovieList(ctx *gin.Context) {
 	}
 
 	mresp := make([]model.MoviesResp, len(m))
-	var creater string
 	for i, v := range m {
-		// get cteater
-		u, err := op.GetUserById(v.CreatorID)
-		if err == nil {
-			creater = u.Username
-		}
 		mresp[i] = model.MoviesResp{
 			Id:      v.ID,
 			Base:    m[i].BaseMovieInfo,
 			PullKey: v.PullKey,
-			Creater: creater,
+			Creater: op.GetUserName(v.CreatorID),
 		}
 	}
 
@@ -116,18 +110,12 @@ func Movies(ctx *gin.Context) {
 	}
 
 	mresp := make([]model.MoviesResp, len(m))
-	var creater string
 	for i, v := range m {
-		// get cteater
-		u, err := op.GetUserById(v.CreatorID)
-		if err == nil {
-			creater = u.Username
-		}
 		mresp[i] = model.MoviesResp{
 			Id:      v.ID,
 			Base:    m[i].BaseMovieInfo,
 			PullKey: v.PullKey,
-			Creater: creater,
+			Creater: op.GetUserName(v.CreatorID),
 		}
 	}
 

@@ -66,17 +66,13 @@ func RoomList(ctx *gin.Context) {
 	}), vec.WithCmpEqual[*model.RoomListResp](func(v1, v2 *model.RoomListResp) bool {
 		return v1.PeopleNum == v2.PeopleNum
 	}))
-	var Creator string
 	for _, v := range r {
-		u, err := op.GetUserById(v.Room.CreatorID)
-		if err == nil {
-			Creator = u.Username
-		}
 		resp.Push(&model.RoomListResp{
 			RoomId:       v.ID,
+			RoomName:     v.Name,
 			PeopleNum:    v.Hub().ClientNum(),
 			NeedPassword: v.NeedPassword(),
-			Creator:      Creator,
+			Creator:      op.GetUserName(v.Room.CreatorID),
 			CreatedAt:    v.Room.CreatedAt.UnixMilli(),
 		})
 	}

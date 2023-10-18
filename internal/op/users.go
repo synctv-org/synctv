@@ -101,3 +101,11 @@ func UpdateUser(u *model.User) error {
 	userCache.Remove(u.ID)
 	return db.UpdateUser(u)
 }
+
+func GetUserName(userID uint) string {
+	u, err := GetUserById(userID)
+	if err != nil {
+		return ""
+	}
+	return u.Username
+}

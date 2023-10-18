@@ -1,9 +1,0 @@
-INFO[0000]/Users/zijiren/workspace/go/synctv/internal/bootstrap/log.go:46 github.com/synctv-org/synctv/internal/bootstrap.InitLog() log: enable log to stdout and file: ~/.synctv/log/log.log 
-INFO[0000]/Users/zijiren/workspace/go/synctv/internal/bootstrap/db.go:66 github.com/synctv-org/synctv/internal/bootstrap.InitDatabase() sqlite3 database file: ~/.synctv/memery.db   
-INFO[0000]/Users/zijiren/workspace/go/synctv/cmd/server.go:118 github.com/synctv-org/synctv/cmd.Server() rtmp run on tcp://127.0.0.1:8088             
-INFO[0000]/Users/zijiren/workspace/go/synctv/cmd/server.go:126 github.com/synctv-org/synctv/cmd.Server() website run on http://127.0.0.1:8088         
-INFO[0000]/Users/zijiren/workspace/go/synctv/internal/sysNotify/sysNotify.go:99 github.com/synctv-org/synctv/internal/sysNotify.(*SysNotify).waitCbk() wait sys notify                              
-INFO[0002]/Users/zijiren/workspace/go/synctv/internal/sysNotify/sysNotify.go:101 github.com/synctv-org/synctv/internal/sysNotify.(*SysNotify).waitCbk() receive sys notify: interrupt                
-INFO[0002]/Users/zijiren/workspace/go/synctv/internal/sysNotify/sysNotify.go:106 github.com/synctv-org/synctv/internal/sysNotify.(*SysNotify).waitCbk() task: NotifyTypeEXIT running...              
-INFO[0002]/Users/zijiren/workspace/go/synctv/internal/sysNotify/sysNotify.go:73 github.com/synctv-org/synctv/internal/sysNotify.runTask.func1() task: check-update running                   
-INFO[0002]/Users/zijiren/workspace/go/synctv/internal/sysNotify/sysNotify.go:77 github.com/synctv-org/synctv/internal/sysNotify.runTask.func1() task: check-update done                      

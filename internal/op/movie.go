@@ -11,9 +11,7 @@ import (
 	"github.com/zijiren233/gencontainer/dllist"
 )
 
-var movieCache = gcache.New(2048).
-	LRU().
-	Build()
+var movieCache gcache.Cache
 
 func GetAllMoviesByRoomID(roomID uint) (*dllist.Dllist[*model.Movie], error) {
 	i, err := movieCache.Get(roomID)

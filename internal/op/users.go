@@ -3,12 +3,15 @@ package op
 import (
 	"time"
 
+	"github.com/bluele/gcache"
 	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/model"
 	"github.com/zijiren233/stream"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm/clause"
 )
+
+var userCache gcache.Cache
 
 func GetUserById(id uint) (*User, error) {
 	i, err := userCache.Get(id)

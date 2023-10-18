@@ -4,16 +4,11 @@ import (
 	"errors"
 	"sync/atomic"
 
-	"github.com/bluele/gcache"
 	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/model"
 	"github.com/zijiren233/stream"
 	"golang.org/x/crypto/bcrypt"
 )
-
-var userCache = gcache.New(2048).
-	LRU().
-	Build()
 
 type User struct {
 	model.User

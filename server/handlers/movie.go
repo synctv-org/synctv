@@ -149,7 +149,7 @@ func PushMovie(ctx *gin.Context) {
 		return
 	}
 
-	if err := room.Hub().Broadcast(&op.ElementMessage{
+	if err := room.Broadcast(&op.ElementMessage{
 		ElementMessage: &pb.ElementMessage{
 			Type:   pb.ElementMessageType_CHANGE_MOVIES,
 			Sender: user.Username,
@@ -226,7 +226,7 @@ func EditMovie(ctx *gin.Context) {
 		return
 	}
 
-	if err := room.Hub().Broadcast(&op.ElementMessage{
+	if err := room.Broadcast(&op.ElementMessage{
 		ElementMessage: &pb.ElementMessage{
 			Type:   pb.ElementMessageType_CHANGE_MOVIES,
 			Sender: user.Username,
@@ -257,7 +257,7 @@ func DelMovie(ctx *gin.Context) {
 		}
 	}
 
-	if err := room.Hub().Broadcast(&op.ElementMessage{
+	if err := room.Broadcast(&op.ElementMessage{
 		ElementMessage: &pb.ElementMessage{
 			Type:   pb.ElementMessageType_CHANGE_MOVIES,
 			Sender: user.Username,
@@ -279,7 +279,7 @@ func ClearMovies(ctx *gin.Context) {
 		return
 	}
 
-	if err := room.Hub().Broadcast(&op.ElementMessage{
+	if err := room.Broadcast(&op.ElementMessage{
 		ElementMessage: &pb.ElementMessage{
 			Type:   pb.ElementMessageType_CHANGE_MOVIES,
 			Sender: user.Username,
@@ -307,7 +307,7 @@ func SwapMovie(ctx *gin.Context) {
 		return
 	}
 
-	if err := room.Hub().Broadcast(&op.ElementMessage{
+	if err := room.Broadcast(&op.ElementMessage{
 		ElementMessage: &pb.ElementMessage{
 			Type:   pb.ElementMessageType_CHANGE_MOVIES,
 			Sender: user.Username,
@@ -334,7 +334,7 @@ func ChangeCurrentMovie(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
-	if err := room.Hub().Broadcast(&op.ElementMessage{
+	if err := room.Broadcast(&op.ElementMessage{
 		ElementMessage: &pb.ElementMessage{
 			Type:    pb.ElementMessageType_CHANGE_CURRENT,
 			Sender:  user.Username,
@@ -451,7 +451,7 @@ func JoinLive(ctx *gin.Context) {
 	// 	ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(err))
 	// 	return
 	// }
-	channel, err := room.App().GetChannel(channelName)
+	channel, err := room.GetChannel(channelName)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(err))
 		return

@@ -34,6 +34,7 @@ func initRoom(room *model.Room, conf ...RoomConf) (*Room, error) {
 		Room:       *room,
 		lastActive: time.Now().UnixMilli(),
 		version:    rand.Uint32(),
+		current:    newCurrent(),
 	}
 	for _, c := range conf {
 		c(r)

@@ -6,7 +6,6 @@ type RtmpConfig struct {
 
 	CustomPublishHost string `yaml:"custom_publish_host" lc:"publish host (default use http header host)" env:"RTMP_CUSTOM_PUBLISH_HOST"`
 	RtmpPlayer        bool   `yaml:"rtmp_player" lc:"enable rtmp player (default: false)" env:"RTMP_PLAYER"`
-	HlsPlayer         bool   `yaml:"hls_player" lc:"enable hls player (default: true)" env:"HLS_PLAYER"`
 }
 
 func DefaultRtmpConfig() RtmpConfig {
@@ -15,6 +14,5 @@ func DefaultRtmpConfig() RtmpConfig {
 		Port:              0,
 		CustomPublishHost: "",
 		RtmpPlayer:        false,
-		HlsPlayer:         true,
 	}
 }

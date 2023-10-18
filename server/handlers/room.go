@@ -70,7 +70,7 @@ func RoomList(ctx *gin.Context) {
 		resp.Push(&model.RoomListResp{
 			RoomId:       v.ID,
 			RoomName:     v.Name,
-			PeopleNum:    v.Hub().ClientNum(),
+			PeopleNum:    v.ClientNum(),
 			NeedPassword: v.NeedPassword(),
 			Creator:      op.GetUserName(v.Room.CreatorID),
 			CreatedAt:    v.Room.CreatedAt.UnixMilli(),
@@ -151,7 +151,7 @@ func CheckRoom(ctx *gin.Context) {
 	}
 
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
-		"peopleNum":    r.Hub().ClientNum(),
+		"peopleNum":    r.ClientNum(),
 		"needPassword": r.NeedPassword(),
 	}))
 }

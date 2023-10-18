@@ -11,7 +11,6 @@ func Settings(ctx *gin.Context) {
 		"rtmp": gin.H{
 			"enable":     conf.Conf.Rtmp.Enable,
 			"rtmpPlayer": conf.Conf.Rtmp.RtmpPlayer,
-			"hlsPlayer":  conf.Conf.Rtmp.HlsPlayer,
 		},
 		"proxy": gin.H{
 			"movieProxy": conf.Conf.Proxy.MovieProxy,

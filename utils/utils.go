@@ -176,3 +176,7 @@ func (o *Once) doSlow(f func()) {
 		f()
 	}
 }
+
+func (o *Once) Reset() {
+	atomic.StoreUint32(&o.done, 0)
+}

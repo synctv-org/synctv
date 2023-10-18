@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/bluele/gcache"
+	log "github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/model"
 	"github.com/zijiren233/gencontainer/dllist"
@@ -17,7 +18,6 @@ var movieCache = gcache.New(2048).
 func GetAllMoviesByRoomID(roomID uint) (*dllist.Dllist[*model.Movie], error) {
 	i, err := movieCache.Get(roomID)
 	if err == nil {
-
 		return i.(*dllist.Dllist[*model.Movie]), nil
 	}
 	m, err := db.GetAllMoviesByRoomID(roomID)
@@ -92,6 +92,20 @@ func DeleteMovieByID(roomID, id uint) error {
 
 func UpdateMovie(movie *model.Movie) error {
 	err := db.UpdateMovie(movie)
+	if err != nil {
+		return err
+	}
+	m, err := GetMovieByID(movie.RoomID, movie.ID)
+	if err != nil {
+		return err
+	}
+	*m = *movie
+	return nil
+}
+
+func SaveMovie(movie *model.Movie) error {
+	log.Debug(movie)
+	err := db.SaveMovie(movie)
 	if err != nil {
 		return err
 	}

@@ -3,6 +3,7 @@ package op
 import (
 	"errors"
 	"net/url"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -34,26 +35,52 @@ type Room struct {
 	hub        *Hub
 }
 
-func (r *Room) lazyInit() {
+func (r *Room) LazyInit() (err error) {
 	r.initOnce.Do(func() {
-		r.current = newCurrent()
 		r.hub = newHub(r.ID)
-		a, err := rtmp.RtmpServer().NewApp(r.Name)
+		r.rtmpa, err = rtmp.RtmpServer().NewApp(strconv.Itoa(int(r.ID)))
 		if err != nil {
-			log.Fatalf("failed to create rtmp app: %s", err.Error())
+			log.Errorf("failed to create rtmp app: %s", err.Error())
+			return
 		}
-		r.rtmpa = a
+
+		var ms []*model.Movie
+		ms, err = r.GetAllMoviesByRoomID()
+		if err != nil {
+			log.Errorf("failed to get movies: %s", err.Error())
+			return
+		}
+		for _, m := range ms {
+			if err = r.initMovie(m); err != nil {
+				log.Errorf("failed to init movie: %s", err.Error())
+				return
+			}
+		}
 	})
+	return
 }
 
-func (r *Room) Hub() *Hub {
-	r.lazyInit()
-	return r.hub
+func (r *Room) ClientNum() int64 {
+	if r.hub == nil {
+		return 0
+	}
+	return r.hub.ClientNum()
 }
 
-func (r *Room) App() *rtmps.App {
-	r.lazyInit()
-	return r.rtmpa
+func (r *Room) Broadcast(data Message, conf ...BroadcastConf) error {
+	if r.hub == nil {
+		return nil
+	}
+	return r.hub.Broadcast(data, conf...)
+}
+
+func (r *Room) GetChannel(channelName string) (*rtmps.Channel, error) {
+	err := r.LazyInit()
+	if err != nil {
+		return nil, err
+	}
+
+	return r.rtmpa.GetChannel(channelName)
 }
 
 func (r *Room) close() {
@@ -72,34 +99,37 @@ func (r *Room) CheckVersion(version uint32) bool {
 }
 
 func (r *Room) UpdateMovie(movieId uint, movie model.BaseMovieInfo) error {
+	err := r.LazyInit()
+	if err != nil {
+		return err
+	}
+
 	m, err := GetMovieByID(r.ID, movieId)
 	if err != nil {
 		return err
 	}
 	switch {
 	case ((m.Live && m.Proxy) || (m.Live && m.RtmpSource)) && (!movie.Live && !movie.Proxy && !movie.RtmpSource):
-		r.lazyInit()
 		r.rtmpa.DelChannel(m.PullKey)
 		m.PullKey = ""
 	case m.Proxy && !movie.Proxy:
 		m.PullKey = ""
 	}
 	m.MovieInfo.BaseMovieInfo = movie
-	return db.UpdateMovie(m)
+	return SaveMovie(m)
 }
 
-func (r *Room) InitMovie(movie *model.Movie) error {
+func (r *Room) initMovie(movie *model.Movie) error {
 	switch {
 	case movie.RtmpSource && movie.Proxy:
 		return errors.New("rtmp source and proxy can't be true at the same time")
 	case movie.Live && movie.RtmpSource:
 		if !conf.Conf.Rtmp.Enable {
 			return errors.New("rtmp is not enabled")
-		} else if movie.Type == "m3u8" && !conf.Conf.Rtmp.HlsPlayer {
-			return errors.New("hls player is not enabled")
 		}
-		movie.PullKey = uuid.New().String()
-		r.lazyInit()
+		if movie.PullKey == "" {
+			movie.PullKey = uuid.New().String()
+		}
 		_, err := r.rtmpa.NewChannel(movie.PullKey)
 		if err != nil {
 			return err
@@ -114,13 +144,13 @@ func (r *Room) InitMovie(movie *model.Movie) error {
 		}
 		switch u.Scheme {
 		case "rtmp":
-			PullKey := uuid.New().String()
-			r.lazyInit()
-			c, err := r.rtmpa.NewChannel(PullKey)
+			if movie.PullKey == "" {
+				movie.PullKey = uuid.New().String()
+			}
+			c, err := r.rtmpa.NewChannel(movie.PullKey)
 			if err != nil {
 				return err
 			}
-			movie.PullKey = PullKey
 			go func() {
 				for {
 					if c.Closed() {
@@ -139,13 +169,13 @@ func (r *Room) InitMovie(movie *model.Movie) error {
 				}
 			}()
 		case "http", "https":
-			PullKey := uuid.New().String()
-			r.lazyInit()
-			c, err := r.rtmpa.NewChannel(PullKey)
+			if movie.PullKey == "" {
+				movie.PullKey = uuid.New().String()
+			}
+			c, err := r.rtmpa.NewChannel(movie.PullKey)
 			if err != nil {
 				return err
 			}
-			movie.PullKey = PullKey
 			go func() {
 				for {
 					if c.Closed() {
@@ -176,7 +206,9 @@ func (r *Room) InitMovie(movie *model.Movie) error {
 		if !conf.Conf.Proxy.MovieProxy {
 			return errors.New("movie proxy is not enabled")
 		}
-		movie.PullKey = uuid.New().String()
+		if movie.PullKey == "" {
+			movie.PullKey = uuid.New().String()
+		}
 		fallthrough
 	case !movie.Live && !movie.Proxy, movie.Live && !movie.Proxy && !movie.RtmpSource:
 		u, err := url.Parse(movie.Url)
@@ -193,13 +225,18 @@ func (r *Room) InitMovie(movie *model.Movie) error {
 }
 
 func (r *Room) AddMovie(m model.MovieInfo) error {
+	err := r.LazyInit()
+	if err != nil {
+		return err
+	}
+
 	movie := &model.Movie{
 		RoomID:    r.ID,
 		Position:  uint(time.Now().UnixMilli()),
 		MovieInfo: m,
 	}
 
-	err := r.InitMovie(movie)
+	err = r.initMovie(movie)
 	if err != nil {
 		return err
 	}
@@ -261,9 +298,9 @@ func (r *Room) GetAllMoviesByRoomID() ([]*model.Movie, error) {
 	if err != nil {
 		return nil, err
 	}
-	var m []*model.Movie = make([]*model.Movie, ms.Len())
+	var m []*model.Movie = make([]*model.Movie, 0, ms.Len())
 	for i := ms.Front(); i != nil; i = i.Next() {
-		m[i.Value.Position-1] = i.Value
+		m = append(m, i.Value)
 	}
 	return m, nil
 }
@@ -277,23 +314,23 @@ func (r *Room) GetMovieByID(id uint) (*model.Movie, error) {
 }
 
 func (r *Room) DeleteMovieByID(id uint) error {
+	r.LazyInit()
 	m, err := LoadAndDeleteMovieByID(r.ID, id)
 	if err != nil {
 		return err
 	}
 	if m.PullKey != "" {
-		r.lazyInit()
 		r.rtmpa.DelChannel(m.PullKey)
 	}
 	return nil
 }
 
 func (r *Room) ClearMovies() error {
+	r.LazyInit()
 	ms, err := db.LoadAndDeleteMoviesByRoomID(r.ID)
 	if err != nil {
 		return err
 	}
-	r.lazyInit()
 	for _, m := range ms {
 		if m.PullKey != "" {
 			r.rtmpa.DelChannel(m.PullKey)
@@ -303,22 +340,22 @@ func (r *Room) ClearMovies() error {
 }
 
 func (r *Room) Current() *Current {
-	r.lazyInit()
 	c := r.current.Current()
 	return &c
 }
 
 func (r *Room) ChangeCurrentMovie(id uint) error {
+	r.LazyInit()
 	m, err := GetMovieByID(r.ID, id)
 	if err != nil {
 		return err
 	}
-	r.lazyInit()
 	r.current.SetMovie(*m)
 	return nil
 }
 
 func (r *Room) SwapMoviePositions(id1, id2 uint) error {
+	r.LazyInit()
 	return SwapMoviePositions(r.ID, id1, id2)
 }
 
@@ -327,21 +364,19 @@ func (r *Room) GetMovieWithPullKey(pullKey string) (*model.Movie, error) {
 }
 
 func (r *Room) RegClient(user *User, conn *websocket.Conn) (*Client, error) {
-	r.lazyInit()
+	r.LazyInit()
 	return r.hub.RegClient(newClient(user, r, conn))
 }
 
 func (r *Room) UnregisterClient(user *User) error {
-	r.lazyInit()
+	r.LazyInit()
 	return r.hub.UnRegClient(user)
 }
 
 func (r *Room) SetStatus(playing bool, seek float64, rate float64, timeDiff float64) Status {
-	r.lazyInit()
 	return r.current.SetStatus(playing, seek, rate, timeDiff)
 }
 
 func (r *Room) SetSeekRate(seek float64, rate float64, timeDiff float64) Status {
-	r.lazyInit()
 	return r.current.SetSeekRate(seek, rate, timeDiff)
 }

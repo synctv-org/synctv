@@ -14,22 +14,10 @@ func InitRoom(ctx context.Context) error {
 		return err
 	}
 	for _, room := range r {
-		r, err := op.LoadRoom(room)
+		_, err := op.LoadRoom(room)
 		if err != nil {
 			log.Errorf("load room error: %v", err)
 			return err
-		}
-		m, err := r.GetAllMoviesByRoomID()
-		if err != nil {
-			log.Errorf("get all movies by room id error: %v", err)
-			return err
-		}
-		for _, movie := range m {
-			err = r.InitMovie(movie)
-			if err != nil {
-				log.Errorf("init movie error: %v", err)
-				return err
-			}
 		}
 	}
 	return nil

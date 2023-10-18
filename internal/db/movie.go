@@ -40,6 +40,10 @@ func UpdateMovie(movie *model.Movie, columns ...clause.Column) error {
 	return db.Model(movie).Clauses(clause.Returning{Columns: columns}).Where("room_id = ? AND id = ?", movie.RoomID, movie.ID).Updates(movie).Error
 }
 
+func SaveMovie(movie *model.Movie, columns ...clause.Column) error {
+	return db.Model(movie).Clauses(clause.Returning{Columns: columns}).Where("room_id = ? AND id = ?", movie.RoomID, movie.ID).Save(movie).Error
+}
+
 func SwapMoviePositions(roomID uint, movie1ID uint, movie2ID uint) (err error) {
 	tx := db.Begin()
 	defer func() {

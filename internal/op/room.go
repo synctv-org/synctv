@@ -77,14 +77,15 @@ func (r *Room) UpdateMovie(movieId uint, movie model.BaseMovieInfo) error {
 		return err
 	}
 	switch {
-	case (m.RtmpSource && !movie.RtmpSource) || (m.Live && m.Proxy && !movie.Proxy):
+	case ((m.Live && m.Proxy) || (m.Live && m.RtmpSource)) && (!movie.Live && !movie.Proxy && !movie.RtmpSource):
 		r.lazyInit()
 		r.rtmpa.DelChannel(m.PullKey)
 		m.PullKey = ""
 	case m.Proxy && !movie.Proxy:
 		m.PullKey = ""
 	}
-	return UpdateMovie(*m)
+	m.MovieInfo.BaseMovieInfo = movie
+	return db.UpdateMovie(m)
 }
 
 func (r *Room) InitMovie(movie *model.Movie) error {
@@ -194,6 +195,7 @@ func (r *Room) InitMovie(movie *model.Movie) error {
 func (r *Room) AddMovie(m model.MovieInfo) error {
 	movie := &model.Movie{
 		RoomID:    r.ID,
+		Position:  uint(time.Now().UnixMilli()),
 		MovieInfo: m,
 	}
 
@@ -254,11 +256,19 @@ func (r *Room) GetMoviesCount() (int, error) {
 	return GetMoviesCountByRoomID(r.ID)
 }
 
-func (r *Room) GetAllMoviesByRoomID() ([]model.Movie, error) {
-	return GetAllMoviesByRoomID(r.ID)
+func (r *Room) GetAllMoviesByRoomID() ([]*model.Movie, error) {
+	ms, err := GetAllMoviesByRoomID(r.ID)
+	if err != nil {
+		return nil, err
+	}
+	var m []*model.Movie = make([]*model.Movie, ms.Len())
+	for i := ms.Front(); i != nil; i = i.Next() {
+		m[i.Value.Position-1] = i.Value
+	}
+	return m, nil
 }
 
-func (r *Room) GetMoviesByRoomIDWithPage(page, pageSize int) ([]model.Movie, error) {
+func (r *Room) GetMoviesByRoomIDWithPage(page, pageSize int) ([]*model.Movie, error) {
 	return GetMoviesByRoomIDWithPage(r.ID, page, pageSize)
 }
 

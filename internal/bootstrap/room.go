@@ -25,7 +25,7 @@ func InitRoom(ctx context.Context) error {
 			return err
 		}
 		for _, movie := range m {
-			err = r.InitMovie(&movie)
+			err = r.InitMovie(movie)
 			if err != nil {
 				log.Errorf("init movie error: %v", err)
 				return err

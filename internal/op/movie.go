@@ -7,61 +7,62 @@ import (
 	"github.com/bluele/gcache"
 	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/model"
+	"github.com/zijiren233/gencontainer/dllist"
 )
 
 var movieCache = gcache.New(2048).
 	LRU().
 	Build()
 
-func GetAllMoviesByRoomID(roomID uint) ([]model.Movie, error) {
+func GetAllMoviesByRoomID(roomID uint) (*dllist.Dllist[*model.Movie], error) {
 	i, err := movieCache.Get(roomID)
 	if err == nil {
-		return i.([]model.Movie), nil
+
+		return i.(*dllist.Dllist[*model.Movie]), nil
 	}
 	m, err := db.GetAllMoviesByRoomID(roomID)
 	if err != nil {
 		return nil, err
 	}
-	return m, movieCache.SetWithExpire(roomID, m, time.Hour)
+	d := dllist.New[*model.Movie]()
+	for i := range m {
+		d.PushBack(m[i])
+	}
+	return d, movieCache.SetWithExpire(roomID, d, time.Hour)
 }
 
-func GetMoviesByRoomIDWithPage(roomID uint, page, pageSize int) ([]model.Movie, error) {
-	i, err := movieCache.Get(roomID)
+func GetMoviesByRoomIDWithPage(roomID uint, page, max int) ([]*model.Movie, error) {
+	ms, err := GetAllMoviesByRoomID(roomID)
 	if err != nil {
 		return nil, err
 	}
-	ms := i.([]model.Movie)
-	if page < 1 {
-		page = 1
+	start := (page - 1) * max
+	if start >= ms.Len() {
+		start = ms.Len()
 	}
-	if pageSize < 1 {
-		pageSize = 1
+	end := start + max
+	if end > ms.Len() {
+		end = ms.Len()
 	}
-	start := (page - 1) * pageSize
-	end := page * pageSize
-	if start > len(ms) {
-		start = len(ms)
+	var m []*model.Movie = make([]*model.Movie, 0, end-start)
+	idx := 0
+	for i := ms.Front(); i != nil; i = i.Next() {
+		if idx >= start && idx < end {
+			m = append(m, i.Value)
+		}
+		idx++
 	}
-	if end > len(ms) {
-		end = len(ms)
-	}
-	return ms[start:end], nil
+	return m, nil
 }
 
 func GetMovieByID(roomID, id uint) (*model.Movie, error) {
-	var m []model.Movie
-	i, err := movieCache.Get(roomID)
-	if err == nil {
-		m = i.([]model.Movie)
-	} else {
-		m, err = GetAllMoviesByRoomID(roomID)
-		if err != nil {
-			return nil, err
-		}
+	ms, err := GetAllMoviesByRoomID(roomID)
+	if err != nil {
+		return nil, err
 	}
-	for _, v := range m {
-		if v.ID == id {
-			return &v, nil
+	for i := ms.Front(); i != nil; i = i.Next() {
+		if i.Value.ID == id {
+			return i.Value, nil
 		}
 	}
 	return nil, errors.New("movie not found")
@@ -69,126 +70,102 @@ func GetMovieByID(roomID, id uint) (*model.Movie, error) {
 
 func GetMoviesCountByRoomID(roomID uint) (int, error) {
 	ms, err := GetAllMoviesByRoomID(roomID)
-	return len(ms), err
+	if err != nil {
+		return 0, err
+	}
+	return ms.Len(), nil
 }
 
 func DeleteMovieByID(roomID, id uint) error {
-	err := db.DeleteMovieByID(roomID, id)
+	ms, err := GetAllMoviesByRoomID(roomID)
 	if err != nil {
 		return err
 	}
-	i, err := movieCache.Get(roomID)
-	if err != nil {
-		return err
-	}
-	ms := i.([]model.Movie)
-	for i, v := range ms {
-		if v.ID == id {
-			ms = append(ms[:i], ms[i+1:]...)
-			break
+	for i := ms.Front(); i != nil; i = i.Next() {
+		if i.Value.ID == id {
+			ms.Remove(i)
+			return db.DeleteMovieByID(roomID, id)
 		}
 	}
-	return nil
+	return errors.New("movie not found")
 }
 
-func UpdateMovie(movie model.Movie) error {
-	m, err := db.LoadAndUpdateMovie(movie)
+func UpdateMovie(movie *model.Movie) error {
+	err := db.UpdateMovie(movie)
 	if err != nil {
 		return err
 	}
-	i, err := movieCache.Get(movie.RoomID)
+	m, err := GetMovieByID(movie.RoomID, movie.ID)
 	if err != nil {
 		return err
 	}
-	ms := i.([]model.Movie)
-	for i, v := range ms {
-		if v.ID == movie.ID {
-			ms[i] = *m
-			break
-		}
-	}
+	*m = *movie
 	return nil
 }
 
 func DeleteMoviesByRoomID(roomID uint) error {
-	err := db.DeleteMoviesByRoomID(roomID)
-	if err != nil {
-		return err
-	}
 	movieCache.Remove(roomID)
-	return nil
+	return db.DeleteMoviesByRoomID(roomID)
 }
 
 func LoadAndDeleteMovieByID(roomID, id uint) (*model.Movie, error) {
-	m, err := db.LoadAndDeleteMovieByID(roomID, id)
+	ms, err := GetAllMoviesByRoomID(roomID)
 	if err != nil {
 		return nil, err
 	}
-	i, err := movieCache.Get(roomID)
-	if err != nil {
-		return nil, err
-	}
-	ms := i.([]model.Movie)
-	for i, v := range ms {
-		if v.ID == id {
-			ms = append(ms[:i], ms[i+1:]...)
-			break
+	for i := ms.Front(); i != nil; i = i.Next() {
+		if i.Value.ID == id {
+			ms.Remove(i)
+			return db.LoadAndDeleteMovieByID(roomID, id)
 		}
 	}
-	return m, nil
+	return nil, errors.New("movie not found")
 }
 
 // data race
 func CreateMovie(movie *model.Movie) error {
-	err := db.CreateMovie(movie)
+	ms, err := GetAllMoviesByRoomID(movie.RoomID)
 	if err != nil {
 		return err
 	}
-	i, err := movieCache.Get(movie.RoomID)
+	err = db.CreateMovie(movie)
 	if err != nil {
-		movieCache.Set(movie.RoomID, []model.Movie{*movie})
-		return nil
+		return err
 	}
-	ms := i.([]model.Movie)
-	ms = append(ms, *movie)
-	movieCache.Set(movie.RoomID, ms)
+	ms.PushBack(movie)
 	return nil
 }
 
 func GetMovieWithPullKey(roomID uint, pullKey string) (*model.Movie, error) {
-	i, err := movieCache.Get(roomID)
+	ms, err := GetAllMoviesByRoomID(roomID)
 	if err != nil {
 		return nil, err
 	}
-	ms := i.([]model.Movie)
-	for _, v := range ms {
-		if v.PullKey == pullKey {
-			return &v, nil
+	for i := ms.Front(); i != nil; i = i.Next() {
+		if i.Value.PullKey == pullKey {
+			return i.Value, nil
 		}
 	}
 	return nil, errors.New("movie not found")
 }
 
 func SwapMoviePositions(roomID uint, movie1ID uint, movie2ID uint) error {
-	err := db.SwapMoviePositions(roomID, movie1ID, movie2ID)
+	ms, err := GetAllMoviesByRoomID(roomID)
 	if err != nil {
 		return err
 	}
-	i, err := movieCache.Get(roomID)
-	if err != nil {
-		return err
-	}
-	ms := i.([]model.Movie)
-	movie1I, movie2I := 0, 0
-	for i, v := range ms {
-		if v.ID == movie1ID {
-			movie1I = i
+	var m1, m2 *model.Movie
+	for i := ms.Front(); i != nil; i = i.Next() {
+		if i.Value.ID == movie1ID {
+			m1 = i.Value
 		}
-		if v.ID == movie2ID {
-			movie2I = i
+		if i.Value.ID == movie2ID {
+			m2 = i.Value
 		}
 	}
-	ms[movie1I].Position, ms[movie2I].Position = ms[movie2I].Position, ms[movie1I].Position
-	ms[movie1I], ms[movie2I] = ms[movie2I], ms[movie1I]
-	return nil
+	if m1 == nil || m2 == nil {
+		return errors.New("movie not found")
+	}
+	m1.Position, m2.Position = m2.Position, m1.Position
+	return db.SwapMoviePositions(roomID, movie1ID, movie2ID)
 }

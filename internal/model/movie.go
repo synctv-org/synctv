@@ -1,13 +1,11 @@
 package model
 
-import (
-	"gorm.io/gorm"
-)
+import "gorm.io/gorm"
 
 type Movie struct {
 	gorm.Model
-	Position  uint `gorm:"not null" json:"-"`
-	RoomID    uint `gorm:"not null;index" json:"roomId"`
+	Position  uint `gorm:"not null"`
+	RoomID    uint `gorm:"not null;index"`
 	MovieInfo `gorm:"embedded"`
 }
 

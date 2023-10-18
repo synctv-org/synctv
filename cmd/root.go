@@ -36,5 +36,5 @@ func init() {
 		home = "~"
 	}
 	RootCmd.PersistentFlags().StringVar(&flags.DataDir, "data-dir", filepath.Join(home, ".synctv"), "data dir")
-	RootCmd.PersistentFlags().StringVarP(&flags.ConfigFile, "config", "f", filepath.Join(flags.DataDir, "config.yaml"), "config file path")
+	RootCmd.PersistentFlags().StringVarP(&flags.ConfigFile, "config", "f", "", "config file path")
 }

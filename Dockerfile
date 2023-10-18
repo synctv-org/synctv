@@ -18,9 +18,6 @@ ENV SERVER_LISTEN=0.0.0.0
 
 ENV SERVER_PORT=8080
 
-# only log to stdout
-ENV LOG_ENABLE=false
-
 COPY --from=builder /synctv/build/synctv /usr/local/bin/synctv
 
 COPY entrypoint.sh /entrypoint.sh
@@ -31,6 +28,10 @@ RUN chmod +x /entrypoint.sh
 
 ENV PUID=0 PGID=0 UMASK=022
 
+WORKDIR /opt/synctv
+
 EXPOSE 8080/tcp 8080/udp
+
+VOLUME [ "/opt/synctv" ]
 
 CMD [ "/entrypoint.sh" ]

@@ -59,7 +59,7 @@ func TestAddUserToRoom(t *testing.T) {
 	ur := model.RoomUserRelation{
 		UserID:      1,
 		RoomID:      1,
-		Role:        model.RoleUser,
+		Role:        model.RoomRoleUser,
 		Permissions: model.DefaultPermissions,
 	}
 	err = db.Create(&ur).Error

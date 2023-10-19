@@ -244,7 +244,7 @@ func AddAdmin(ctx *gin.Context) {
 		return
 	}
 
-	err := room.SetUserRole(req.UserId, dbModel.RoleAdmin)
+	err := room.SetUserRole(req.UserId, dbModel.RoomRoleAdmin)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
@@ -268,7 +268,7 @@ func DelAdmin(ctx *gin.Context) {
 		return
 	}
 
-	err := room.SetUserRole(req.UserId, dbModel.RoleUser)
+	err := room.SetUserRole(req.UserId, dbModel.RoomRoleUser)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return

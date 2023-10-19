@@ -5,10 +5,10 @@ import "gorm.io/gorm"
 type Role uint32
 
 const (
-	RoleBanned Role = iota + 1
-	RoleUser
-	RoleAdmin
-	RoleCreator
+	RoomRoleBanned Role = iota + 1
+	RoomRoleUser
+	RoomRoleAdmin
+	RoomRoleCreator
 )
 
 type Permission uint32
@@ -48,11 +48,11 @@ type RoomUserRelation struct {
 
 func (r *RoomUserRelation) HasPermission(permission Permission) bool {
 	switch r.Role {
-	case RoleCreator:
+	case RoomRoleCreator:
 		return true
-	case RoleAdmin:
-		return r.Permissions.Has(permission) // TODO: add more permissions
-	case RoleUser:
+	case RoomRoleAdmin:
+		return r.Permissions.Has(permission)
+	case RoomRoleUser:
 		return r.Permissions.Has(permission)
 	default:
 		return false

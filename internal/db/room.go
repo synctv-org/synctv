@@ -17,15 +17,22 @@ func WithSetting(setting model.Setting) CreateRoomConfig {
 	}
 }
 
-func WithCreaterID(createrID uint) CreateRoomConfig {
+func WithCreator(creator *model.User) CreateRoomConfig {
 	return func(r *model.Room) {
-		r.CreatorID = createrID
+		r.Creator = *creator
+		r.GroupUserRelations = []model.RoomUserRelation{
+			{
+				UserID:      creator.ID,
+				Role:        model.RoomRoleCreator,
+				Permissions: model.AllPermissions,
+			},
+		}
 	}
 }
 
 func WithRelations(relations []model.RoomUserRelation) CreateRoomConfig {
 	return func(r *model.Room) {
-		r.GroupUserRelations = relations
+		r.GroupUserRelations = append(r.GroupUserRelations, relations...)
 	}
 }
 
@@ -146,38 +153,6 @@ func SetRoomHashedPassword(roomID uint, hashedPassword []byte) error {
 	err := db.Model(&model.Room{}).Where("id = ?", roomID).Update("hashed_password", hashedPassword).Error
 	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
 		return errors.New("room not found")
-	}
-	return err
-}
-
-func SetUserRole(roomID uint, userID uint, role model.Role) error {
-	err := db.Model(&model.RoomUserRelation{}).Where("room_id = ? AND user_id = ?", roomID, userID).Update("role", role).Error
-	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
-		return errors.New("room or user not found")
-	}
-	return err
-}
-
-func SetUserPermission(roomID uint, userID uint, permission model.Permission) error {
-	err := db.Model(&model.RoomUserRelation{}).Where("room_id = ? AND user_id = ?", roomID, userID).Update("permissions", permission).Error
-	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
-		return errors.New("room or user not found")
-	}
-	return err
-}
-
-func AddUserPermission(roomID uint, userID uint, permission model.Permission) error {
-	err := db.Model(&model.RoomUserRelation{}).Where("room_id = ? AND user_id = ?", roomID, userID).Update("permissions", db.Raw("permissions | ?", permission)).Error
-	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
-		return errors.New("room or user not found")
-	}
-	return err
-}
-
-func RemoveUserPermission(roomID uint, userID uint, permission model.Permission) error {
-	err := db.Model(&model.RoomUserRelation{}).Where("room_id = ? AND user_id = ?", roomID, userID).Update("permissions", db.Raw("permissions & ?", ^permission)).Error
-	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
-		return errors.New("room or user not found")
 	}
 	return err
 }

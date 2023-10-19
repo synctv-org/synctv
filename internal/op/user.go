@@ -24,14 +24,7 @@ func (u *User) CheckVersion(version uint32) bool {
 }
 
 func (u *User) CreateRoom(name, password string, conf ...db.CreateRoomConfig) (*model.Room, error) {
-	return db.CreateRoom(name, password, append(conf, db.WithCreaterID(u.ID), db.WithRelations(
-		[]model.RoomUserRelation{
-			{
-				UserID: u.ID,
-				Role:   model.RoleCreator,
-			},
-		},
-	))...)
+	return db.CreateRoom(name, password, append(conf, db.WithCreator(&u.User))...)
 }
 
 func (u *User) NewMovie(movie model.BaseMovieInfo) model.MovieInfo {

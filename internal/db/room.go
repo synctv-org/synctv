@@ -19,7 +19,7 @@ func WithSetting(setting model.Setting) CreateRoomConfig {
 
 func WithCreator(creator *model.User) CreateRoomConfig {
 	return func(r *model.Room) {
-		r.Creator = *creator
+		r.CreatorID = creator.ID
 		r.GroupUserRelations = []model.RoomUserRelation{
 			{
 				UserID:      creator.ID,
@@ -169,6 +169,15 @@ func GetAllRooms() ([]*model.Room, error) {
 func GetAllRoomsAndCreator() ([]*model.Room, error) {
 	rooms := []*model.Room{}
 	err := db.Preload("Creater").Find(&rooms).Error
+	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
+		return rooms, nil
+	}
+	return rooms, err
+}
+
+func GetAllRoomsByUserID(userID uint) ([]*model.Room, error) {
+	rooms := []*model.Room{}
+	err := db.Where("creator_id = ?", userID).Find(&rooms).Error
 	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
 		return rooms, nil
 	}

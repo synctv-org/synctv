@@ -110,6 +110,8 @@ func Init(e *gin.Engine) {
 
 			user.POST("/signup", SignupUser)
 
+			needAuthUser.POST("/logout", LogoutUser)
+
 			needAuthUser.GET("/me", Me)
 
 			needAuthUser.POST("/pwd", SetUserPassword)

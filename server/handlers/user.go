@@ -94,3 +94,15 @@ func SignupUser(ctx *gin.Context) {
 		"token": token,
 	}))
 }
+
+func LogoutUser(ctx *gin.Context) {
+	user := ctx.MustGet("user").(*op.User)
+
+	err := op.DeleteUserByID(user.ID)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
+
+	ctx.Status(http.StatusNoContent)
+}

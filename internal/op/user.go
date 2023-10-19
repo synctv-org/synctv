@@ -28,10 +28,10 @@ func (u *User) CreateRoom(name, password string, conf ...db.CreateRoomConfig) (*
 	return db.CreateRoom(name, password, append(conf, db.WithCreator(&u.User))...)
 }
 
-func (u *User) NewMovie(movie model.BaseMovieInfo) model.MovieInfo {
-	return model.MovieInfo{
-		BaseMovieInfo: movie,
-		CreatorID:     u.ID,
+func (u *User) NewMovie(movie model.MovieInfo) model.Movie {
+	return model.Movie{
+		MovieInfo: movie,
+		CreatorID: u.ID,
 	}
 }
 

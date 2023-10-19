@@ -141,7 +141,9 @@ func PushMovie(ctx *gin.Context) {
 		return
 	}
 
-	mi := user.NewMovie(dbModel.BaseMovieInfo(req))
+	mi := user.NewMovie(dbModel.MovieInfo{
+		BaseMovieInfo: dbModel.BaseMovieInfo(req),
+	})
 
 	err := room.AddMovie(mi)
 	if err != nil {

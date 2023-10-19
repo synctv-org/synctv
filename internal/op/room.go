@@ -256,24 +256,26 @@ func (r *Room) initMovie(movie *model.Movie) error {
 	return nil
 }
 
-func (r *Room) AddMovie(m model.MovieInfo) error {
+func (r *Room) AddMovie(m model.Movie) error {
 	err := r.LazyInit()
 	if err != nil {
 		return err
 	}
 
-	movie := &model.Movie{
-		RoomID:    r.ID,
-		Position:  uint(time.Now().UnixMilli()),
-		MovieInfo: m,
-	}
+	m.Position = uint(time.Now().UnixMilli())
 
-	err = r.initMovie(movie)
+	m.RoomID = r.ID
+
+	err = r.initMovie(&m)
 	if err != nil {
 		return err
 	}
 
-	return CreateMovie(movie)
+	err = CreateMovie(&m)
+	if err != nil {
+		r.terminateMovie(&m)
+	}
+	return err
 }
 
 func (r *Room) HasPermission(user *model.User, permission model.Permission) bool {

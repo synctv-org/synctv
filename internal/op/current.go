@@ -100,7 +100,7 @@ func (c *Current) Proto() *pb.Current {
 			},
 			PullKey:   c.Movie.PullKey,
 			CreatedAt: c.Movie.CreatedAt.UnixMilli(),
-			Creator:   GetUserName(c.Movie.MovieInfo.CreatorID),
+			Creator:   GetUserName(c.Movie.CreatorID),
 		},
 		Status: &pb.Status{
 			Seek:    c.Status.Seek,

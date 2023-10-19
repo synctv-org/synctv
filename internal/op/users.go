@@ -9,7 +9,6 @@ import (
 	"github.com/synctv-org/synctv/internal/model"
 	"github.com/zijiren233/stream"
 	"golang.org/x/crypto/bcrypt"
-	"gorm.io/gorm/clause"
 )
 
 var userCache gcache.Cache
@@ -42,7 +41,7 @@ func GetUserByUsername(username string) (*User, error) {
 
 	u2 := &User{
 		User:    *u,
-		version: 1,
+		version: crc32.ChecksumIEEE(u.HashedPassword),
 	}
 
 	return u2, userCache.SetWithExpire(u.ID, u2, time.Hour)
@@ -80,24 +79,22 @@ func SetUserPassword(userID uint, password string) error {
 }
 
 func DeleteUserByID(userID uint) error {
-	u, err := db.LoadAndDeleteUserByID(userID, clause.Column{
-		Name: "id",
-	})
+	rs, err := db.GetAllRoomsByUserID(userID)
 	if err != nil {
 		return err
 	}
-	userCache.Remove(u.ID)
-	return nil
-}
+	err = db.DeleteUserByID(userID)
+	if err != nil {
+		return err
+	}
+	userCache.Remove(userID)
 
-func DeleteUserByUsername(username string) error {
-	u, err := db.LoadAndDeleteUserByUsername(username, clause.Column{
-		Name: "id",
-	})
-	if err != nil {
-		return err
+	for _, r := range rs {
+		r2, loaded := roomCache.LoadAndDelete(r.ID)
+		if loaded {
+			r2.close()
+		}
 	}
-	userCache.Remove(u.ID)
 	return nil
 }
 

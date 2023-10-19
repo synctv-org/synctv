@@ -12,6 +12,7 @@ const (
 	RoleBanned Role = iota
 	RoleUser
 	RoleAdmin
+	RoleRoot
 )
 
 type User struct {
@@ -20,6 +21,7 @@ type User struct {
 	Role               Role   `gorm:"not null"`
 	HashedPassword     []byte
 	GroupUserRelations []RoomUserRelation `gorm:"foreignKey:UserID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
+	Rooms              []Room             `gorm:"foreignKey:CreatorID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 	Movies             []Movie            `gorm:"foreignKey:CreatorID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL"`
 }
 

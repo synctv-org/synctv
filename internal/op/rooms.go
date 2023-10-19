@@ -54,6 +54,15 @@ func DeleteRoom(room *Room) error {
 	return db.DeleteRoomByID(room.ID)
 }
 
+func DeleteRoomByID(id uint) error {
+	r, ok := roomCache.LoadAndDelete(id)
+	if ok {
+		r.close()
+	}
+
+	return db.DeleteRoomByID(r.ID)
+}
+
 func GetRoomByID(id uint) (*Room, error) {
 	r2, ok := roomCache.Load(id)
 	if ok {

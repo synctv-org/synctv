@@ -85,7 +85,10 @@ func DeleteUserByID(userID uint) error {
 
 func LoadAndDeleteUserByID(userID uint, columns ...clause.Column) (*model.User, error) {
 	u := &model.User{}
-	err := db.Unscoped().Clauses(clause.Returning{Columns: columns}).Delete(u, userID).Error
+	err := db.Unscoped().
+		Clauses(clause.Returning{Columns: columns}).
+		Delete(u, userID).
+		Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return u, errors.New("user not found")
 	}

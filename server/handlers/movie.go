@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"path"
 	"path/filepath"
 	"strconv"
@@ -381,6 +382,17 @@ func ProxyMovie(ctx *gin.Context) {
 
 	if !m.Proxy || m.Live || m.RtmpSource {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support proxy"))
+		return
+	}
+
+	u, err := url.Parse(m.Url)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	if utils.IsLocalIP(u.Host) {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("local ip is not allowed"))
 		return
 	}
 

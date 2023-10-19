@@ -2,6 +2,7 @@ package utils
 
 import (
 	"math/rand"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -179,4 +180,44 @@ func (o *Once) doSlow(f func()) {
 
 func (o *Once) Reset() {
 	atomic.StoreUint32(&o.done, 0)
+}
+
+func IsLocalIP(address string) bool {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		host = address
+	}
+
+	ipAddr, err := net.ResolveIPAddr("ip", host)
+	if err != nil {
+		return false
+	}
+
+	localIPs := getLocalIPs()
+
+	for _, localIP := range localIPs {
+		if ipAddr.IP.Equal(localIP) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func getLocalIPs() []net.IP {
+	var localIPs []net.IP
+
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return localIPs
+
+	}
+
+	for _, addr := range addrs {
+		if ipNet, ok := addr.(*net.IPNet); ok && ipNet.IP.To4() != nil {
+			localIPs = append(localIPs, ipNet.IP)
+		}
+	}
+
+	return localIPs
 }

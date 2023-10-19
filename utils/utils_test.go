@@ -66,3 +66,39 @@ func FuzzCompVersion(f *testing.F) {
 		}
 	})
 }
+
+func TestIsLocalIP(t *testing.T) {
+	tests := []struct {
+		name string
+		host string
+		want bool
+	}{
+		{
+			name: "Test Case 1",
+			host: "www.baidu.com",
+			want: false,
+		},
+		{
+			name: "Test Case 2",
+			host: "127.0.0.1",
+			want: true,
+		},
+		{
+			name: "Test Case 2",
+			host: "127.0.0.1:9012",
+			want: true,
+		},
+		{
+			name: "Test Case 3",
+			host: "localhost:9012",
+			want: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := utils.IsLocalIP(tt.host); got != tt.want {
+				t.Errorf("IsLocalIP() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

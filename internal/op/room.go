@@ -162,6 +162,9 @@ func (r *Room) initMovie(movie *model.Movie) error {
 		if err != nil {
 			return err
 		}
+		if utils.IsLocalIP(u.Host) {
+			return errors.New("local ip is not allowed")
+		}
 		switch u.Scheme {
 		case "rtmp":
 			movie.PullKey = uuid.NewMD5(r.uuid, []byte(movie.Url)).String()
@@ -228,6 +231,9 @@ func (r *Room) initMovie(movie *model.Movie) error {
 		u, err := url.Parse(movie.Url)
 		if err != nil {
 			return err
+		}
+		if utils.IsLocalIP(u.Host) {
+			return errors.New("local ip is not allowed")
 		}
 		if u.Scheme != "http" && u.Scheme != "https" {
 			return errors.New("unsupported scheme")

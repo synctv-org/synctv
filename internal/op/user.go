@@ -28,7 +28,7 @@ func (u *User) CreateRoom(name, password string, conf ...db.CreateRoomConfig) (*
 		[]model.RoomUserRelation{
 			{
 				UserID: u.ID,
-				Role:   model.RoleCreater,
+				Role:   model.RoleCreator,
 			},
 		},
 	))...)

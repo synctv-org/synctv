@@ -8,7 +8,7 @@ const (
 	RoleBanned Role = iota + 1
 	RoleUser
 	RoleAdmin
-	RoleCreater
+	RoleCreator
 )
 
 type Permission uint32
@@ -48,7 +48,7 @@ type RoomUserRelation struct {
 
 func (r *RoomUserRelation) HasPermission(permission Permission) bool {
 	switch r.Role {
-	case RoleCreater:
+	case RoleCreator:
 		return true
 	case RoleAdmin:
 		return r.Permissions.Has(permission) // TODO: add more permissions

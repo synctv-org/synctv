@@ -26,13 +26,13 @@ func (p *PushMovieReq) Decode(ctx *gin.Context) error {
 }
 
 func (p *PushMovieReq) Validate() error {
-	if len(p.Url) > 1024 {
+	if len(p.Url) > 8192 {
 		return ErrUrlTooLong
 	}
 
 	if p.Name == "" {
 		return ErrEmptyName
-	} else if len(p.Name) > 1024 {
+	} else if len(p.Name) > 512 {
 		return ErrNameTooLong
 	}
 

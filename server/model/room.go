@@ -27,8 +27,9 @@ var (
 )
 
 var (
-	alphaNumReg        = regexp.MustCompile(`^[a-zA-Z0-9_\-]+$`)
-	alphaNumChineseReg = regexp.MustCompile(`^[\p{Han}a-zA-Z0-9_\-]+$`)
+	alnumReg         = regexp.MustCompile(`^[[:alnum:]]+$`)
+	alnumPrintReg    = regexp.MustCompile(`^[[:print:][:alnum:]]+$`)
+	alnumPrintHanReg = regexp.MustCompile(`^[[:print:][:alnum:]\p{Han}]+$`)
 )
 
 type FormatEmptyPasswordError string
@@ -52,14 +53,14 @@ func (c *CreateRoomReq) Validate() error {
 		return ErrEmptyRoomName
 	} else if len(c.RoomName) > 32 {
 		return ErrRoomNameTooLong
-	} else if !alphaNumChineseReg.MatchString(c.RoomName) {
+	} else if !alnumPrintHanReg.MatchString(c.RoomName) {
 		return ErrRoomNameHasInvalidChar
 	}
 
 	if c.Password != "" {
 		if len(c.Password) > 32 {
 			return ErrPasswordTooLong
-		} else if !alphaNumReg.MatchString(c.Password) {
+		} else if !alnumPrintReg.MatchString(c.Password) {
 			return ErrPasswordHasInvalidChar
 		}
 	} else if conf.Conf.Room.MustPassword {
@@ -106,7 +107,7 @@ func (s *SetRoomPasswordReq) Decode(ctx *gin.Context) error {
 func (s *SetRoomPasswordReq) Validate() error {
 	if len(s.Password) > 32 {
 		return ErrPasswordTooLong
-	} else if !alphaNumReg.MatchString(s.Password) {
+	} else if !alnumPrintReg.MatchString(s.Password) {
 		return ErrPasswordHasInvalidChar
 	}
 	return nil

@@ -20,7 +20,7 @@ func (s *SetUserPasswordReq) Validate() error {
 		return FormatEmptyPasswordError("user")
 	} else if len(s.Password) > 32 {
 		return ErrPasswordTooLong
-	} else if !alphaNumReg.MatchString(s.Password) {
+	} else if !alnumPrintReg.MatchString(s.Password) {
 		return ErrPasswordHasInvalidChar
 	}
 	return nil
@@ -64,7 +64,7 @@ func (s *SignupUserReq) Validate() error {
 		return errors.New("username is empty")
 	} else if len(s.Username) > 32 {
 		return ErrUsernameTooLong
-	} else if !alphaNumChineseReg.MatchString(s.Username) {
+	} else if !alnumPrintHanReg.MatchString(s.Username) {
 		return ErrUsernameHasInvalidChar
 	}
 
@@ -72,7 +72,7 @@ func (s *SignupUserReq) Validate() error {
 		return FormatEmptyPasswordError("user")
 	} else if len(s.Password) > 32 {
 		return ErrPasswordTooLong
-	} else if !alphaNumReg.MatchString(s.Password) {
+	} else if !alnumPrintReg.MatchString(s.Password) {
 		return ErrPasswordHasInvalidChar
 	}
 	return nil

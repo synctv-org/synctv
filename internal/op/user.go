@@ -2,6 +2,7 @@ package op
 
 import (
 	"errors"
+	"hash/crc32"
 	"sync/atomic"
 
 	"github.com/synctv-org/synctv/internal/db"
@@ -62,6 +63,7 @@ func (u *User) SetPassword(password string) error {
 		}
 	}
 	u.HashedPassword = hashedPassword
-	atomic.AddUint32(&u.version, 1)
+
+	atomic.StoreUint32(&u.version, crc32.ChecksumIEEE(u.HashedPassword))
 	return db.SetUserHashedPassword(u.ID, hashedPassword)
 }

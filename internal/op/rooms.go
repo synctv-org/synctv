@@ -2,7 +2,7 @@ package op
 
 import (
 	"errors"
-	"math/rand"
+	"hash/crc32"
 	"sync/atomic"
 
 	"github.com/synctv-org/synctv/internal/db"
@@ -31,7 +31,7 @@ func WithVersion(version uint32) RoomConf {
 func initRoom(room *model.Room, conf ...RoomConf) (*Room, error) {
 	r := &Room{
 		Room:    *room,
-		version: rand.Uint32(),
+		version: crc32.ChecksumIEEE(room.HashedPassword),
 		current: newCurrent(),
 	}
 	for _, c := range conf {

@@ -2,6 +2,7 @@ package op
 
 import (
 	"errors"
+	"hash/crc32"
 	"net/url"
 	"sync/atomic"
 	"time"
@@ -298,7 +299,7 @@ func (r *Room) SetPassword(password string) error {
 		if err != nil {
 			return err
 		}
-		atomic.AddUint32(&r.version, 1)
+		atomic.StoreUint32(&r.version, crc32.ChecksumIEEE(hashedPassword))
 	}
 	r.HashedPassword = hashedPassword
 	return db.SetRoomHashedPassword(r.ID, hashedPassword)

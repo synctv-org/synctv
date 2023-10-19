@@ -1,6 +1,7 @@
 package op
 
 import (
+	"hash/crc32"
 	"time"
 
 	"github.com/bluele/gcache"
@@ -26,7 +27,7 @@ func GetUserById(id uint) (*User, error) {
 
 	u2 := &User{
 		User:    *u,
-		version: 1,
+		version: crc32.ChecksumIEEE(u.HashedPassword),
 	}
 
 	return u2, userCache.SetWithExpire(id, u2, time.Hour)
@@ -64,7 +65,7 @@ func CreateUser(username, password string) (*User, error) {
 
 	u2 := &User{
 		User:    *u,
-		version: 1,
+		version: crc32.ChecksumIEEE(u.HashedPassword),
 	}
 
 	return u2, userCache.SetWithExpire(u.ID, u2, time.Hour)

@@ -3,15 +3,11 @@ package op
 import (
 	"errors"
 	"math/rand"
-	"strconv"
 	"sync/atomic"
-	"time"
 
-	"github.com/google/uuid"
 	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/model"
 	"github.com/zijiren233/gencontainer/rwmap"
-	"github.com/zijiren233/stream"
 )
 
 var roomCache rwmap.RWMap[uint, *Room]
@@ -34,11 +30,9 @@ func WithVersion(version uint32) RoomConf {
 
 func initRoom(room *model.Room, conf ...RoomConf) (*Room, error) {
 	r := &Room{
-		Room:       *room,
-		uuid:       uuid.NewMD5(uuid.NameSpaceURL, stream.StringToBytes(strconv.Itoa(int(room.ID)))),
-		lastActive: time.Now().UnixMilli(),
-		version:    rand.Uint32(),
-		current:    newCurrent(),
+		Room:    *room,
+		version: rand.Uint32(),
+		current: newCurrent(),
 	}
 	for _, c := range conf {
 		c(r)

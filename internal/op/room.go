@@ -3,7 +3,6 @@ package op
 import (
 	"errors"
 	"net/url"
-	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -14,8 +13,8 @@ import (
 	"github.com/synctv-org/synctv/internal/conf"
 	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/model"
-	"github.com/synctv-org/synctv/internal/rtmp"
 	"github.com/synctv-org/synctv/utils"
+	"github.com/zijiren233/gencontainer/rwmap"
 	"github.com/zijiren233/livelib/av"
 	"github.com/zijiren233/livelib/container/flv"
 	rtmpProto "github.com/zijiren233/livelib/protocol/rtmp"
@@ -27,23 +26,17 @@ import (
 
 type Room struct {
 	model.Room
-	uuid       uuid.UUID
-	version    uint32
-	current    *current
-	rtmpa      *rtmps.App
-	initOnce   utils.Once
-	lastActive int64
-	hub        *Hub
+	version  uint32
+	current  *current
+	initOnce utils.Once
+	hub      *Hub
+
+	channles rwmap.RWMap[string, *rtmps.Channel]
 }
 
 func (r *Room) LazyInit() (err error) {
 	r.initOnce.Do(func() {
 		r.hub = newHub(r.ID)
-		r.rtmpa, err = rtmp.RtmpServer().NewApp(strconv.Itoa(int(r.ID)))
-		if err != nil {
-			log.Errorf("failed to create rtmp app: %s", err.Error())
-			return
-		}
 
 		var ms []*model.Movie
 		ms, err = r.GetAllMoviesByRoomID()
@@ -81,13 +74,21 @@ func (r *Room) GetChannel(channelName string) (*rtmps.Channel, error) {
 		return nil, err
 	}
 
-	return r.rtmpa.GetChannel(channelName)
+	c, ok := r.channles.Load(channelName)
+	if !ok {
+		return nil, errors.New("channel not found")
+	}
+
+	return c, nil
 }
 
 func (r *Room) close() {
 	if r.initOnce.Done() {
 		r.hub.Close()
-		rtmp.RtmpServer().DelApp(r.Name)
+		r.channles.Range(func(_ string, c *rtmps.Channel) bool {
+			c.Close()
+			return true
+		})
 	}
 }
 
@@ -127,13 +128,10 @@ func (r *Room) UpdateMovie(movieId uint, movie model.BaseMovieInfo) error {
 
 func (r *Room) terminateMovie(movie *model.Movie) error {
 	switch {
-	case movie.Live && movie.RtmpSource:
-		if movie.PullKey != "" {
-			r.rtmpa.DelChannel(movie.PullKey)
-		}
-	case movie.Live && movie.Proxy:
-		if movie.PullKey != "" {
-			r.rtmpa.DelChannel(movie.PullKey)
+	case movie.Live && movie.RtmpSource, movie.Live && movie.Proxy:
+		c, loaded := r.channles.LoadAndDelete(movie.PullKey)
+		if loaded {
+			return c.Close()
 		}
 	}
 	return nil
@@ -150,10 +148,11 @@ func (r *Room) initMovie(movie *model.Movie) error {
 		if movie.PullKey == "" {
 			movie.PullKey = uuid.NewString()
 		}
-		_, err := r.rtmpa.NewChannel(movie.PullKey)
-		if err != nil {
-			return err
+		c, loaded := r.channles.LoadOrStore(movie.PullKey, rtmps.NewChannel())
+		if loaded {
+			return errors.New("pull key already exists")
 		}
+		c.InitHlsPlayer()
 	case movie.Live && movie.Proxy:
 		if !conf.Conf.Proxy.LiveProxy {
 			return errors.New("live proxy is not enabled")
@@ -167,11 +166,12 @@ func (r *Room) initMovie(movie *model.Movie) error {
 		}
 		switch u.Scheme {
 		case "rtmp":
-			movie.PullKey = uuid.NewMD5(r.uuid, []byte(movie.Url)).String()
-			c, err := r.rtmpa.NewChannel(movie.PullKey)
-			if err != nil {
-				return err
+			movie.PullKey = uuid.NewMD5(uuid.NameSpaceURL, []byte(movie.Url)).String()
+			c, loaded := r.channles.LoadOrStore(movie.PullKey, rtmps.NewChannel())
+			if loaded {
+				return errors.New("pull key already exists")
 			}
+			c.InitHlsPlayer()
 			go func() {
 				for {
 					if c.Closed() {
@@ -193,11 +193,12 @@ func (r *Room) initMovie(movie *model.Movie) error {
 			if movie.Type != "flv" {
 				return errors.New("only flv is supported")
 			}
-			movie.PullKey = uuid.NewMD5(r.uuid, []byte(movie.Url)).String()
-			c, err := r.rtmpa.NewChannel(movie.PullKey)
-			if err != nil {
-				return err
+			movie.PullKey = uuid.NewMD5(uuid.NameSpaceURL, []byte(movie.Url)).String()
+			c, loaded := r.channles.LoadOrStore(movie.PullKey, rtmps.NewChannel())
+			if loaded {
+				return errors.New("pull key already exists")
 			}
+			c.InitHlsPlayer()
 			go func() {
 				for {
 					if c.Closed() {
@@ -238,7 +239,7 @@ func (r *Room) initMovie(movie *model.Movie) error {
 		if u.Scheme != "http" && u.Scheme != "https" {
 			return errors.New("unsupported scheme")
 		}
-		movie.PullKey = uuid.NewMD5(r.uuid, []byte(movie.Url)).String()
+		movie.PullKey = uuid.NewMD5(uuid.NameSpaceURL, []byte(movie.Url)).String()
 	case !movie.Live && !movie.Proxy, movie.Live && !movie.Proxy && !movie.RtmpSource:
 		u, err := url.Parse(movie.Url)
 		if err != nil {

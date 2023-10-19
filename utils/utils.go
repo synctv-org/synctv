@@ -3,6 +3,7 @@ package utils
 import (
 	"math/rand"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -180,6 +181,14 @@ func (o *Once) doSlow(f func()) {
 
 func (o *Once) Reset() {
 	atomic.StoreUint32(&o.done, 0)
+}
+
+func ParseURLIsLocalIP(u string) (bool, error) {
+	url, err := url.Parse(u)
+	if err != nil {
+		return false, err
+	}
+	return IsLocalIP(url.Host), nil
 }
 
 func IsLocalIP(address string) bool {

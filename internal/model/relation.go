@@ -2,12 +2,11 @@ package model
 
 import "gorm.io/gorm"
 
-type Role uint32
+type RoomRole uint32
 
 const (
-	RoomRoleBanned Role = iota + 1
+	RoomRoleBanned RoomRole = iota + 1
 	RoomRoleUser
-	RoomRoleAdmin
 	RoomRoleCreator
 )
 
@@ -40,9 +39,9 @@ func (p Permission) Has(permission Permission) bool {
 
 type RoomUserRelation struct {
 	gorm.Model
-	UserID      uint `gorm:"not null;uniqueIndex:idx_user_room"`
-	RoomID      uint `gorm:"not null;uniqueIndex:idx_user_room"`
-	Role        Role `gorm:"not null"`
+	UserID      uint     `gorm:"not null;uniqueIndex:idx_user_room"`
+	RoomID      uint     `gorm:"not null;uniqueIndex:idx_user_room"`
+	Role        RoomRole `gorm:"not null"`
 	Permissions Permission
 }
 
@@ -50,8 +49,6 @@ func (r *RoomUserRelation) HasPermission(permission Permission) bool {
 	switch r.Role {
 	case RoomRoleCreator:
 		return true
-	case RoomRoleAdmin:
-		return r.Permissions.Has(permission)
 	case RoomRoleUser:
 		return r.Permissions.Has(permission)
 	default:

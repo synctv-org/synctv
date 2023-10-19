@@ -229,54 +229,6 @@ func SetRoomPassword(ctx *gin.Context) {
 	}))
 }
 
-func AddAdmin(ctx *gin.Context) {
-	room := ctx.MustGet("room").(*op.Room)
-	user := ctx.MustGet("user").(*op.User)
-
-	if !user.HasPermission(room, dbModel.CanSetAdmin) {
-		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorStringResp("you don't have permission to add admin"))
-		return
-	}
-
-	req := model.UserIdReq{}
-	if err := model.Decode(ctx, &req); err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
-		return
-	}
-
-	err := room.SetUserRole(req.UserId, dbModel.RoomRoleAdmin)
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
-		return
-	}
-
-	ctx.Status(http.StatusNoContent)
-}
-
-func DelAdmin(ctx *gin.Context) {
-	room := ctx.MustGet("room").(*op.Room)
-	user := ctx.MustGet("user").(*op.User)
-
-	if !user.HasPermission(room, dbModel.CanSetAdmin) {
-		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorStringResp("you don't have permission to del admin"))
-		return
-	}
-
-	req := model.UserIdReq{}
-	if err := model.Decode(ctx, &req); err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
-		return
-	}
-
-	err := room.SetUserRole(req.UserId, dbModel.RoomRoleUser)
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
-		return
-	}
-
-	ctx.Status(http.StatusNoContent)
-}
-
 func RoomSetting(ctx *gin.Context) {
 	room := ctx.MustGet("room").(*op.Room)
 	// user := ctx.MustGet("user").(*op.User)

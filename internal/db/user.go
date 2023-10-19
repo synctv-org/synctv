@@ -10,10 +10,22 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-func CreateUser(username string, hashedPassword []byte) (*model.User, error) {
+type CreateUserConfig func(u *model.User)
+
+func WithRole(role model.Role) CreateUserConfig {
+	return func(u *model.User) {
+		u.Role = role
+	}
+}
+
+func CreateUser(username string, hashedPassword []byte, conf ...CreateUserConfig) (*model.User, error) {
 	u := &model.User{
 		Username:       username,
 		HashedPassword: hashedPassword,
+		Role:           model.RoleUser,
+	}
+	for _, c := range conf {
+		c(u)
 	}
 	err := db.Create(u).Error
 	if err != nil && errors.Is(err, gorm.ErrDuplicatedKey) {
@@ -22,7 +34,7 @@ func CreateUser(username string, hashedPassword []byte) (*model.User, error) {
 	return u, err
 }
 
-func AddUserToRoom(userID uint, roomID uint, role model.Role, permission model.Permission) error {
+func AddUserToRoom(userID uint, roomID uint, role model.RoomRole, permission model.Permission) error {
 	ur := &model.RoomUserRelation{
 		UserID:      userID,
 		RoomID:      roomID,

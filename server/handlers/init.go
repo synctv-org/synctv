@@ -41,6 +41,11 @@ func Init(e *gin.Engine) {
 		}
 
 		{
+			// TODO: admin api implement
+			// admin := api.Group("/admin")
+		}
+
+		{
 			room := api.Group("/room")
 			needAuthRoom := needAuthRoomApi.Group("/room")
 			needAuthUser := needAuthUserApi.Group("/room")
@@ -58,10 +63,6 @@ func Init(e *gin.Engine) {
 			needAuthRoom.POST("/delete", DeleteRoom)
 
 			needAuthRoom.POST("/pwd", SetRoomPassword)
-
-			needAuthRoom.PUT("/admin", AddAdmin)
-
-			needAuthRoom.DELETE("/admin", DelAdmin)
 
 			needAuthRoom.GET("/setting", RoomSetting)
 		}

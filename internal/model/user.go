@@ -6,9 +6,18 @@ import (
 	"gorm.io/gorm"
 )
 
+type Role uint8
+
+const (
+	RoleBanned Role = iota
+	RoleUser
+	RoleAdmin
+)
+
 type User struct {
 	gorm.Model
 	Username           string `gorm:"not null;uniqueIndex"`
+	Role               Role   `gorm:"not null"`
 	HashedPassword     []byte
 	GroupUserRelations []RoomUserRelation `gorm:"foreignKey:UserID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 	Movies             []Movie            `gorm:"foreignKey:CreatorID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL"`

@@ -305,7 +305,7 @@ func (r *Room) SetPassword(password string) error {
 	return db.SetRoomHashedPassword(r.ID, hashedPassword)
 }
 
-func (r *Room) SetUserRole(userID uint, role model.Role) error {
+func (r *Room) SetUserRole(userID uint, role model.RoomRole) error {
 	return db.SetUserRole(r.ID, userID, role)
 }
 
@@ -319,6 +319,10 @@ func (r *Room) AddUserPermission(userID uint, permission model.Permission) error
 
 func (r *Room) RemoveUserPermission(userID uint, permission model.Permission) error {
 	return db.RemoveUserPermission(r.ID, userID, permission)
+}
+
+func (r *Room) DeleteUserPermission(userID uint) error {
+	return db.DeleteUserPermission(r.ID, userID)
 }
 
 func (r *Room) GetMoviesCount() (int, error) {

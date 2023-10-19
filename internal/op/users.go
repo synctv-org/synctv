@@ -50,7 +50,7 @@ func GetUserByUsername(username string) (*User, error) {
 
 var ErrInvalidUsernameOrPassword = bcrypt.ErrMismatchedHashAndPassword
 
-func CreateUser(username, password string) (*User, error) {
+func CreateUser(username, password string, conf ...db.CreateUserConfig) (*User, error) {
 	if username == "" || password == "" {
 		return nil, ErrInvalidUsernameOrPassword
 	}
@@ -58,7 +58,7 @@ func CreateUser(username, password string) (*User, error) {
 	if err != nil {
 		return nil, err
 	}
-	u, err := db.CreateUser(username, hashedPassword)
+	u, err := db.CreateUser(username, hashedPassword, conf...)
 	if err != nil {
 		return nil, err
 	}

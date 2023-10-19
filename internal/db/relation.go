@@ -21,7 +21,7 @@ func GetRoomUserRelation(roomID, userID uint) (*model.RoomUserRelation, error) {
 	return roomUserRelation, err
 }
 
-func CreateRoomUserRelation(roomID, userID uint, role model.Role, permissions model.Permission) (*model.RoomUserRelation, error) {
+func CreateRoomUserRelation(roomID, userID uint, role model.RoomRole, permissions model.Permission) (*model.RoomUserRelation, error) {
 	roomUserRelation := &model.RoomUserRelation{
 		RoomID:      roomID,
 		UserID:      userID,
@@ -32,7 +32,7 @@ func CreateRoomUserRelation(roomID, userID uint, role model.Role, permissions mo
 	return roomUserRelation, err
 }
 
-func SetUserRole(roomID uint, userID uint, role model.Role) error {
+func SetUserRole(roomID uint, userID uint, role model.RoomRole) error {
 	err := db.Model(&model.RoomUserRelation{}).Where("room_id = ? AND user_id = ?", roomID, userID).Update("role", role).Error
 	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
 		return errors.New("room or user not found")

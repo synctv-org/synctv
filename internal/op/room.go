@@ -108,15 +108,34 @@ func (r *Room) UpdateMovie(movieId uint, movie model.BaseMovieInfo) error {
 	if err != nil {
 		return err
 	}
-	switch {
-	case ((m.Live && m.Proxy) || (m.Live && m.RtmpSource)) && (!movie.Live && !movie.Proxy && !movie.RtmpSource):
-		r.rtmpa.DelChannel(m.PullKey)
-		m.PullKey = ""
-	case m.Proxy && !movie.Proxy:
-		m.PullKey = ""
+
+	err = r.terminateMovie(m)
+	if err != nil {
+		return err
 	}
+
 	m.MovieInfo.BaseMovieInfo = movie
+
+	err = r.initMovie(m)
+	if err != nil {
+		return err
+	}
+
 	return SaveMovie(m)
+}
+
+func (r *Room) terminateMovie(movie *model.Movie) error {
+	switch {
+	case movie.Live && movie.RtmpSource:
+		if movie.PullKey != "" {
+			r.rtmpa.DelChannel(movie.PullKey)
+		}
+	case movie.Live && movie.Proxy:
+		if movie.PullKey != "" {
+			r.rtmpa.DelChannel(movie.PullKey)
+		}
+	}
+	return nil
 }
 
 func (r *Room) initMovie(movie *model.Movie) error {
@@ -206,10 +225,16 @@ func (r *Room) initMovie(movie *model.Movie) error {
 		if !conf.Conf.Proxy.MovieProxy {
 			return errors.New("movie proxy is not enabled")
 		}
+		u, err := url.Parse(movie.Url)
+		if err != nil {
+			return err
+		}
+		if u.Scheme != "http" && u.Scheme != "https" {
+			return errors.New("unsupported scheme")
+		}
 		if movie.PullKey == "" {
 			movie.PullKey = uuid.New().String()
 		}
-		fallthrough
 	case !movie.Live && !movie.Proxy, movie.Live && !movie.Proxy && !movie.RtmpSource:
 		u, err := url.Parse(movie.Url)
 		if err != nil {
@@ -218,6 +243,7 @@ func (r *Room) initMovie(movie *model.Movie) error {
 		if u.Scheme != "http" && u.Scheme != "https" {
 			return errors.New("unsupported scheme")
 		}
+		movie.PullKey = ""
 	default:
 		return errors.New("unknown error")
 	}

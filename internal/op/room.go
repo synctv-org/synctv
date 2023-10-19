@@ -27,6 +27,7 @@ import (
 
 type Room struct {
 	model.Room
+	uuid       uuid.UUID
 	version    uint32
 	current    *current
 	rtmpa      *rtmps.App
@@ -52,8 +53,8 @@ func (r *Room) LazyInit() (err error) {
 		}
 		for _, m := range ms {
 			if err = r.initMovie(m); err != nil {
-				log.Errorf("failed to init movie: %s", err.Error())
-				return
+				log.Errorf("lazy init room %d movie %d failed: %s", r.ID, m.ID, err.Error())
+				DeleteMovieByID(r.ID, m.ID)
 			}
 		}
 	})
@@ -147,7 +148,7 @@ func (r *Room) initMovie(movie *model.Movie) error {
 			return errors.New("rtmp is not enabled")
 		}
 		if movie.PullKey == "" {
-			movie.PullKey = uuid.New().String()
+			movie.PullKey = uuid.NewString()
 		}
 		_, err := r.rtmpa.NewChannel(movie.PullKey)
 		if err != nil {
@@ -163,7 +164,7 @@ func (r *Room) initMovie(movie *model.Movie) error {
 		}
 		switch u.Scheme {
 		case "rtmp":
-			movie.PullKey = uuid.NewMD5(uuid.NameSpaceURL, []byte(movie.Url)).String()
+			movie.PullKey = uuid.NewMD5(r.uuid, []byte(movie.Url)).String()
 			c, err := r.rtmpa.NewChannel(movie.PullKey)
 			if err != nil {
 				return err
@@ -186,7 +187,10 @@ func (r *Room) initMovie(movie *model.Movie) error {
 				}
 			}()
 		case "http", "https":
-			movie.PullKey = uuid.NewMD5(uuid.NameSpaceURL, []byte(movie.Url)).String()
+			if movie.Type != "flv" {
+				return errors.New("only flv is supported")
+			}
+			movie.PullKey = uuid.NewMD5(r.uuid, []byte(movie.Url)).String()
 			c, err := r.rtmpa.NewChannel(movie.PullKey)
 			if err != nil {
 				return err
@@ -228,7 +232,7 @@ func (r *Room) initMovie(movie *model.Movie) error {
 		if u.Scheme != "http" && u.Scheme != "https" {
 			return errors.New("unsupported scheme")
 		}
-		movie.PullKey = uuid.NewMD5(uuid.NameSpaceURL, []byte(movie.Url)).String()
+		movie.PullKey = uuid.NewMD5(r.uuid, []byte(movie.Url)).String()
 	case !movie.Live && !movie.Proxy, movie.Live && !movie.Proxy && !movie.RtmpSource:
 		u, err := url.Parse(movie.Url)
 		if err != nil {

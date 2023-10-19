@@ -8,7 +8,7 @@ import (
 
 type Room struct {
 	gorm.Model
-	Name string `gorm:"not null;uniqueIndex;varchar(32)"`
+	Name string `gorm:"not null;uniqueIndex"`
 	Setting
 	CreatorID          uint `gorm:"index"`
 	Creator            User `gorm:"foreignKey:CreatorID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL"`

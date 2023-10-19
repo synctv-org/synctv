@@ -8,7 +8,7 @@ import (
 
 type User struct {
 	gorm.Model
-	Username           string `gorm:"not null;uniqueIndex;varchar(32)"`
+	Username           string `gorm:"not null;uniqueIndex"`
 	HashedPassword     []byte
 	GroupUserRelations []RoomUserRelation `gorm:"foreignKey:UserID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 	Movies             []Movie            `gorm:"foreignKey:CreatorID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL"`

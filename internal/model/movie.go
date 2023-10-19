@@ -4,24 +4,24 @@ import "gorm.io/gorm"
 
 type Movie struct {
 	gorm.Model
-	Position  uint `gorm:"not null"`
-	RoomID    uint `gorm:"not null;index"`
-	Room      Room `gorm:"foreignKey:RoomID"`
-	MovieInfo `gorm:"embedded"`
+	Position uint `gorm:"not null"`
+	RoomID   uint `gorm:"not null;index"`
+	Room     Room `gorm:"foreignKey:RoomID"`
+	MovieInfo
 }
 
 type MovieInfo struct {
-	BaseMovieInfo `gorm:"embedded"`
-	PullKey       string `gorm:"varchar(128)" json:"pullKey"`
-	CreatorID     uint   `gorm:"not null;index" json:"creatorId"`
+	BaseMovieInfo
+	PullKey   string `json:"pullKey"`
+	CreatorID uint   `gorm:"not null;index" json:"creatorId"`
 }
 
 type BaseMovieInfo struct {
-	Url        string            `gorm:"varchar(4096)" json:"url"`
-	Name       string            `gorm:"not null;varchar(256)" json:"name"`
+	Url        string            `json:"url"`
+	Name       string            `gorm:"not null" json:"name"`
 	Live       bool              `json:"live"`
 	Proxy      bool              `json:"proxy"`
 	RtmpSource bool              `json:"rtmpSource"`
-	Type       string            `gorm:"varchar(32)" json:"type"`
+	Type       string            `json:"type"`
 	Headers    map[string]string `gorm:"serializer:fastjson" json:"headers"`
 }

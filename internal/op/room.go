@@ -163,9 +163,7 @@ func (r *Room) initMovie(movie *model.Movie) error {
 		}
 		switch u.Scheme {
 		case "rtmp":
-			if movie.PullKey == "" {
-				movie.PullKey = uuid.New().String()
-			}
+			movie.PullKey = uuid.NewMD5(uuid.NameSpaceURL, []byte(movie.Url)).String()
 			c, err := r.rtmpa.NewChannel(movie.PullKey)
 			if err != nil {
 				return err
@@ -188,9 +186,7 @@ func (r *Room) initMovie(movie *model.Movie) error {
 				}
 			}()
 		case "http", "https":
-			if movie.PullKey == "" {
-				movie.PullKey = uuid.New().String()
-			}
+			movie.PullKey = uuid.NewMD5(uuid.NameSpaceURL, []byte(movie.Url)).String()
 			c, err := r.rtmpa.NewChannel(movie.PullKey)
 			if err != nil {
 				return err
@@ -232,9 +228,7 @@ func (r *Room) initMovie(movie *model.Movie) error {
 		if u.Scheme != "http" && u.Scheme != "https" {
 			return errors.New("unsupported scheme")
 		}
-		if movie.PullKey == "" {
-			movie.PullKey = uuid.New().String()
-		}
+		movie.PullKey = uuid.NewMD5(uuid.NameSpaceURL, []byte(movie.Url)).String()
 	case !movie.Live && !movie.Proxy, movie.Live && !movie.Proxy && !movie.RtmpSource:
 		u, err := url.Parse(movie.Url)
 		if err != nil {
@@ -345,10 +339,7 @@ func (r *Room) DeleteMovieByID(id uint) error {
 	if err != nil {
 		return err
 	}
-	if m.PullKey != "" {
-		r.rtmpa.DelChannel(m.PullKey)
-	}
-	return nil
+	return r.terminateMovie(m)
 }
 
 func (r *Room) ClearMovies() error {
@@ -358,9 +349,7 @@ func (r *Room) ClearMovies() error {
 		return err
 	}
 	for _, m := range ms {
-		if m.PullKey != "" {
-			r.rtmpa.DelChannel(m.PullKey)
-		}
+		r.terminateMovie(m)
 	}
 	return nil
 }

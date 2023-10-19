@@ -55,7 +55,8 @@ func CreateRoom(ctx *gin.Context) {
 	}
 
 	ctx.JSON(http.StatusCreated, model.NewApiDataResp(gin.H{
-		"token": token,
+		"roomId": room.ID,
+		"token":  token,
 	}))
 }
 
@@ -178,7 +179,8 @@ func LoginRoom(ctx *gin.Context) {
 	}
 
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
-		"token": token,
+		"roomId": room.ID,
+		"token":  token,
 	}))
 }
 
@@ -222,7 +224,8 @@ func SetRoomPassword(ctx *gin.Context) {
 	}
 
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
-		"token": token,
+		"roomId": room.ID,
+		"token":  token,
 	}))
 }
 

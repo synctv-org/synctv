@@ -1,14 +1,13 @@
 package op
 
 import (
-	"hash/crc32"
+	"errors"
 	"time"
 
 	"github.com/bluele/gcache"
 	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/model"
-	"github.com/zijiren233/stream"
-	"golang.org/x/crypto/bcrypt"
+	"github.com/synctv-org/synctv/internal/provider"
 )
 
 var userCache gcache.Cache
@@ -25,8 +24,7 @@ func GetUserById(id uint) (*User, error) {
 	}
 
 	u2 := &User{
-		User:    *u,
-		version: crc32.ChecksumIEEE(u.HashedPassword),
+		User: *u,
 	}
 
 	return u2, userCache.SetWithExpire(id, u2, time.Hour)
@@ -40,42 +38,42 @@ func GetUserByUsername(username string) (*User, error) {
 	}
 
 	u2 := &User{
-		User:    *u,
-		version: crc32.ChecksumIEEE(u.HashedPassword),
+		User: *u,
 	}
 
 	return u2, userCache.SetWithExpire(u.ID, u2, time.Hour)
 }
 
-var ErrInvalidUsernameOrPassword = bcrypt.ErrMismatchedHashAndPassword
-
-func CreateUser(username, password string, conf ...db.CreateUserConfig) (*User, error) {
-	if username == "" || password == "" {
-		return nil, ErrInvalidUsernameOrPassword
+func CreateUser(username string, p provider.OAuth2Provider, pid uint, conf ...db.CreateUserConfig) (*User, error) {
+	if username == "" {
+		return nil, errors.New("username cannot be empty")
 	}
-	hashedPassword, err := bcrypt.GenerateFromPassword(stream.StringToBytes(password), bcrypt.DefaultCost)
-	if err != nil {
-		return nil, err
-	}
-	u, err := db.CreateUser(username, hashedPassword, conf...)
+	u, err := db.CreateUser(username, p, pid, conf...)
 	if err != nil {
 		return nil, err
 	}
 
 	u2 := &User{
-		User:    *u,
-		version: crc32.ChecksumIEEE(u.HashedPassword),
+		User: *u,
 	}
 
 	return u2, userCache.SetWithExpire(u.ID, u2, time.Hour)
 }
 
-func SetUserPassword(userID uint, password string) error {
-	u, err := GetUserById(userID)
-	if err != nil {
-		return err
+func CreateOrLoadUser(username string, p provider.OAuth2Provider, pid uint, conf ...db.CreateUserConfig) (*User, error) {
+	if username == "" {
+		return nil, errors.New("username cannot be empty")
 	}
-	return u.SetPassword(password)
+	u, err := db.CreateOrLoadUser(username, p, pid, conf...)
+	if err != nil {
+		return nil, err
+	}
+
+	u2 := &User{
+		User: *u,
+	}
+
+	return u2, userCache.SetWithExpire(u.ID, u2, time.Hour)
 }
 
 func DeleteUserByID(userID uint) error {

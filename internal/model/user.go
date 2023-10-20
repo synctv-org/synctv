@@ -1,8 +1,9 @@
 package model
 
 import (
-	"github.com/zijiren233/stream"
-	"golang.org/x/crypto/bcrypt"
+	"fmt"
+	"math/rand"
+
 	"gorm.io/gorm"
 )
 
@@ -17,23 +18,19 @@ const (
 
 type User struct {
 	gorm.Model
-	Username           string `gorm:"not null;uniqueIndex"`
-	Role               Role   `gorm:"not null"`
-	HashedPassword     []byte
+	Providers          []UserProvider     `gorm:"foreignKey:UserID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
+	Username           string             `gorm:"not null;uniqueIndex"`
+	Role               Role               `gorm:"not null"`
 	GroupUserRelations []RoomUserRelation `gorm:"foreignKey:UserID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 	Rooms              []Room             `gorm:"foreignKey:CreatorID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 	Movies             []Movie            `gorm:"foreignKey:CreatorID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL"`
 }
 
-func (u *User) CheckPassword(password string) bool {
-	return bcrypt.CompareHashAndPassword(u.HashedPassword, stream.StringToBytes(password)) == nil
-}
-
-func (u *User) SetPassword(password string) error {
-	hashedPassword, err := bcrypt.GenerateFromPassword(stream.StringToBytes(password), bcrypt.DefaultCost)
-	if err != nil {
-		return err
+func (u *User) BeforeCreate(tx *gorm.DB) error {
+	var existingUser User
+	err := tx.Where("username = ?", u.Username).First(&existingUser).Error
+	if err == nil {
+		u.Username = fmt.Sprintf("%s#%d", u.Username, rand.Intn(9999))
 	}
-	u.HashedPassword = hashedPassword
 	return nil
 }

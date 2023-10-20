@@ -42,7 +42,6 @@ func TestCreateUser(t *testing.T) {
 	}
 	user := model.User{
 		Username:           "user1",
-		HashedPassword:     nil,
 		GroupUserRelations: []model.RoomUserRelation{},
 	}
 	err = db.Create(&user).Error

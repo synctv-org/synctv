@@ -12,7 +12,7 @@ var db *gorm.DB
 
 func Init(d *gorm.DB) error {
 	db = d
-	return AutoMigrate(new(model.Movie), new(model.Room), new(model.User), new(model.RoomUserRelation))
+	return AutoMigrate(new(model.Movie), new(model.Room), new(model.User), new(model.RoomUserRelation), new(model.UserProvider))
 }
 
 func AutoMigrate(dst ...any) error {

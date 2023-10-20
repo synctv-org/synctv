@@ -4,6 +4,7 @@ import (
 	"errors"
 
 	"github.com/synctv-org/synctv/internal/model"
+	"github.com/synctv-org/synctv/internal/provider"
 	"github.com/zijiren233/stream"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
@@ -18,18 +19,51 @@ func WithRole(role model.Role) CreateUserConfig {
 	}
 }
 
-func CreateUser(username string, hashedPassword []byte, conf ...CreateUserConfig) (*model.User, error) {
+func CreateUser(username string, p provider.OAuth2Provider, puid uint, conf ...CreateUserConfig) (*model.User, error) {
 	u := &model.User{
-		Username:       username,
-		HashedPassword: hashedPassword,
-		Role:           model.RoleUser,
+		Username: username,
+		Role:     model.RoleUser,
+		Providers: []model.UserProvider{
+			{
+				Provider:       p,
+				ProviderUserID: puid,
+			},
+		},
 	}
 	for _, c := range conf {
 		c(u)
 	}
 	err := db.Create(u).Error
 	if err != nil && errors.Is(err, gorm.ErrDuplicatedKey) {
-		return u, errors.New("username already exists")
+		return u, errors.New("user already exists")
+	}
+	return u, err
+}
+
+func CreateOrLoadUser(username string, p provider.OAuth2Provider, puid uint, conf ...CreateUserConfig) (*model.User, error) {
+	u := &model.User{
+		Username: username,
+		Role:     model.RoleUser,
+		Providers: []model.UserProvider{
+			{
+				Provider:       p,
+				ProviderUserID: puid,
+			},
+		},
+	}
+	for _, c := range conf {
+		c(u)
+	}
+	return u, db.Preload("Providers", "provider = ? AND provider_user_id = ?", p, puid).
+		FirstOrCreate(u).
+		Error
+}
+
+func GetUserByProvider(p provider.OAuth2Provider, puid uint) (*model.User, error) {
+	u := &model.User{}
+	err := db.Preload("Providers", "provider = ? AND provider_user_id = ?", p, puid).First(u).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return u, errors.New("user not found")
 	}
 	return u, err
 }

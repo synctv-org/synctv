@@ -25,6 +25,9 @@ type Config struct {
 
 	// Database
 	Database DatabaseConfig `yaml:"database"`
+
+	// OAuth2
+	OAuth2 OAuth2Config `yaml:"oauth2"`
 }
 
 func (c *Config) Save(file string) error {
@@ -53,5 +56,8 @@ func DefaultConfig() *Config {
 
 		// Database
 		Database: DefaultDatabaseConfig(),
+
+		// OAuth2
+		OAuth2: DefaultOAuth2Config(),
 	}
 }

@@ -19,8 +19,7 @@ var (
 )
 
 type AuthClaims struct {
-	UserId      uint   `json:"u"`
-	UserVersion uint32 `json:"uv"`
+	UserId uint `json:"u"`
 	jwt.RegisteredClaims
 }
 
@@ -76,9 +75,6 @@ func AuthRoom(Authorization string) (*op.User, *op.Room, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	if !u.CheckVersion(claims.UserVersion) {
-		return nil, nil, ErrAuthExpired
-	}
 
 	r, err := op.GetRoomByID(claims.RoomId)
 	if err != nil {
@@ -102,17 +98,6 @@ func AuthRoomWithPassword(u *op.User, roomId uint, password string) (*op.Room, e
 	return r, nil
 }
 
-func AuthUserWithPassword(username, password string) (*op.User, error) {
-	u, err := op.GetUserByUsername(username)
-	if err != nil {
-		return nil, err
-	}
-	if !u.CheckPassword(password) {
-		return nil, ErrAuthFailed
-	}
-	return u, nil
-}
-
 func AuthUser(Authorization string) (*op.User, error) {
 	claims, err := authUser(Authorization)
 	if err != nil {
@@ -127,17 +112,13 @@ func AuthUser(Authorization string) (*op.User, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !u.CheckVersion(claims.UserVersion) {
-		return nil, ErrAuthExpired
-	}
 
 	return u, nil
 }
 
 func NewAuthUserToken(user *op.User) (string, error) {
 	claims := &AuthClaims{
-		UserId:      user.ID,
-		UserVersion: user.Version(),
+		UserId: user.ID,
 		RegisteredClaims: jwt.RegisteredClaims{
 			NotBefore: jwt.NewNumericDate(time.Now()),
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour * time.Duration(conf.Conf.Jwt.Expire))),
@@ -149,8 +130,7 @@ func NewAuthUserToken(user *op.User) (string, error) {
 func NewAuthRoomToken(user *op.User, room *op.Room) (string, error) {
 	claims := &AuthRoomClaims{
 		AuthClaims: AuthClaims{
-			UserId:      user.ID,
-			UserVersion: user.Version(),
+			UserId: user.ID,
 			RegisteredClaims: jwt.RegisteredClaims{
 				NotBefore: jwt.NewNumericDate(time.Now()),
 				ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour * time.Duration(conf.Conf.Jwt.Expire))),

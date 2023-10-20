@@ -11,6 +11,10 @@ import (
 
 func Init(e *gin.Engine) {
 	{
+		e.GET("/", func(ctx *gin.Context) {
+			ctx.Redirect(http.StatusMovedPermanently, "/web/")
+		})
+
 		web := e.Group("/web")
 
 		web.Use(func(ctx *gin.Context) {
@@ -103,22 +107,12 @@ func Init(e *gin.Engine) {
 		}
 
 		{
-			user := api.Group("/user")
+			// user := api.Group("/user")
 			needAuthUser := needAuthUserApi.Group("/user")
-
-			user.POST("/login", LoginUser)
-
-			user.POST("/signup", SignupUser)
 
 			needAuthUser.POST("/logout", LogoutUser)
 
 			needAuthUser.GET("/me", Me)
-
-			needAuthUser.POST("/pwd", SetUserPassword)
 		}
 	}
-
-	e.NoRoute(func(c *gin.Context) {
-		c.Redirect(http.StatusFound, "/web/")
-	})
 }

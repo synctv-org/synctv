@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -13,6 +12,7 @@ import (
 	"github.com/synctv-org/synctv/cmd/flags"
 	"github.com/synctv-org/synctv/internal/conf"
 	"github.com/synctv-org/synctv/internal/db"
+	"github.com/synctv-org/synctv/utils"
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -67,9 +67,7 @@ func InitDatabase(ctx context.Context) error {
 			if !strings.HasSuffix(conf.Conf.Database.DBName, ".db") {
 				conf.Conf.Database.DBName = conf.Conf.Database.DBName + ".db"
 			}
-			if !filepath.IsAbs(conf.Conf.Database.DBName) {
-				conf.Conf.Database.DBName = filepath.Join(flags.DataDir, conf.Conf.Database.DBName)
-			}
+			utils.OptFilePath(&conf.Conf.Database.DBName)
 			dsn = fmt.Sprintf("%s?_journal_mode=WAL&_vacuum=incremental&_pragma=foreign_keys(1)", conf.Conf.Database.DBName)
 			log.Infof("sqlite3 database file: %s", conf.Conf.Database.DBName)
 		}

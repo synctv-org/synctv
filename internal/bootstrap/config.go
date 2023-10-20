@@ -28,11 +28,7 @@ func InitConfig(ctx context.Context) error {
 		if flags.ConfigFile == "" {
 			flags.ConfigFile = filepath.Join(flags.DataDir, "config.yaml")
 		} else {
-			fileAbs, err := filepath.Abs(flags.ConfigFile)
-			if err != nil {
-				log.Fatalf("get config file abs path error: %v", err)
-			}
-			flags.ConfigFile = fileAbs
+			utils.OptFilePath(&flags.ConfigFile)
 		}
 		err := confFromConfig(flags.ConfigFile, conf.Conf)
 		if err != nil {

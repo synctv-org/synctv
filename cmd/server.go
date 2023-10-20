@@ -15,6 +15,7 @@ import (
 	"github.com/synctv-org/synctv/internal/rtmp"
 	sysnotify "github.com/synctv-org/synctv/internal/sysNotify"
 	"github.com/synctv-org/synctv/server"
+	"github.com/synctv-org/synctv/utils"
 )
 
 var ServerCmd = &cobra.Command{
@@ -63,6 +64,8 @@ func Server(cmd *cobra.Command, args []string) {
 	if err != nil {
 		log.Fatal(err)
 	}
+	utils.OptFilePath(&conf.Conf.Server.CertPath)
+	utils.OptFilePath(&conf.Conf.Server.KeyPath)
 	if conf.Conf.Rtmp.Enable {
 		if useMux {
 			muxer := cmux.New(serverListener)

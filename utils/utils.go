@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/synctv-org/synctv/cmd/flags"
 	yamlcomment "github.com/zijiren233/yaml-comment"
 	"gopkg.in/yaml.v3"
 )
@@ -229,4 +230,13 @@ func getLocalIPs() []net.IP {
 	}
 
 	return localIPs
+}
+
+func OptFilePath(filePath *string) {
+	if filePath == nil || *filePath == "" {
+		return
+	}
+	if !filepath.IsAbs(*filePath) {
+		*filePath = filepath.Join(flags.DataDir, *filePath)
+	}
 }

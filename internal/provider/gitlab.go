@@ -8,22 +8,29 @@ import (
 	"golang.org/x/oauth2/gitlab"
 )
 
-type GitlabProvider struct{}
+type GitlabProvider struct {
+	ClientID, ClientSecret string
+}
 
-func (g GitlabProvider) Provider() OAuth2Provider {
+func (g *GitlabProvider) Init(ClientID, ClientSecret string) {
+	g.ClientID = ClientID
+	g.ClientSecret = ClientSecret
+}
+
+func (g *GitlabProvider) Provider() OAuth2Provider {
 	return "gitlab"
 }
 
-func (g GitlabProvider) NewConfig(ClientID, ClientSecret string) *oauth2.Config {
+func (g *GitlabProvider) NewConfig() *oauth2.Config {
 	return &oauth2.Config{
-		ClientID:     ClientID,
-		ClientSecret: ClientSecret,
+		ClientID:     g.ClientID,
+		ClientSecret: g.ClientSecret,
 		Scopes:       []string{"read_user"},
 		Endpoint:     gitlab.Endpoint,
 	}
 }
 
-func (g GitlabProvider) GetUserInfo(ctx context.Context, config *oauth2.Config, code string) (*UserInfo, error) {
+func (g *GitlabProvider) GetUserInfo(ctx context.Context, config *oauth2.Config, code string) (*UserInfo, error) {
 	oauth2Token, err := config.Exchange(ctx, code)
 	if err != nil {
 		return nil, err
@@ -42,5 +49,5 @@ func (g GitlabProvider) GetUserInfo(ctx context.Context, config *oauth2.Config, 
 }
 
 func init() {
-	RegisterProvider(GitlabProvider{})
+	registerProvider(new(GitlabProvider))
 }

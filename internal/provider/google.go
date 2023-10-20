@@ -8,22 +8,29 @@ import (
 	"golang.org/x/oauth2/google"
 )
 
-type GoogleProvider struct{}
+type GoogleProvider struct {
+	ClientID, ClientSecret string
+}
 
-func (g GoogleProvider) Provider() OAuth2Provider {
+func (g *GoogleProvider) Init(ClientID, ClientSecret string) {
+	g.ClientID = ClientID
+	g.ClientSecret = ClientSecret
+}
+
+func (g *GoogleProvider) Provider() OAuth2Provider {
 	return "google"
 }
 
-func (g GoogleProvider) NewConfig(ClientID, ClientSecret string) *oauth2.Config {
+func (g *GoogleProvider) NewConfig() *oauth2.Config {
 	return &oauth2.Config{
-		ClientID:     ClientID,
-		ClientSecret: ClientSecret,
+		ClientID:     g.ClientID,
+		ClientSecret: g.ClientSecret,
 		Scopes:       []string{"profile"},
 		Endpoint:     google.Endpoint,
 	}
 }
 
-func (g GoogleProvider) GetUserInfo(ctx context.Context, config *oauth2.Config, code string) (*UserInfo, error) {
+func (g *GoogleProvider) GetUserInfo(ctx context.Context, config *oauth2.Config, code string) (*UserInfo, error) {
 	oauth2Token, err := config.Exchange(ctx, code)
 	if err != nil {
 		return nil, err
@@ -42,5 +49,5 @@ func (g GoogleProvider) GetUserInfo(ctx context.Context, config *oauth2.Config, 
 }
 
 func init() {
-	RegisterProvider(GoogleProvider{})
+	registerProvider(new(GoogleProvider))
 }

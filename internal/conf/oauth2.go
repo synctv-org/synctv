@@ -14,7 +14,7 @@ type OAuth2ProviderConfig struct {
 
 func DefaultOAuth2Config() OAuth2Config {
 	return OAuth2Config{
-		provider.GithubProvider{}.Provider(): {
+		(&provider.GithubProvider{}).Provider(): {
 			ClientID:     "github_client_id",
 			ClientSecret: "github_client_secret",
 		},

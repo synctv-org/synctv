@@ -10,22 +10,29 @@ import (
 	"golang.org/x/oauth2/github"
 )
 
-type GithubProvider struct{}
+type GithubProvider struct {
+	ClientID, ClientSecret string
+}
 
-func (p GithubProvider) Provider() OAuth2Provider {
+func (p *GithubProvider) Init(ClientID, ClientSecret string) {
+	p.ClientID = ClientID
+	p.ClientSecret = ClientSecret
+}
+
+func (p *GithubProvider) Provider() OAuth2Provider {
 	return "github"
 }
 
-func (p GithubProvider) NewConfig(ClientID, ClientSecret string) *oauth2.Config {
+func (p *GithubProvider) NewConfig() *oauth2.Config {
 	return &oauth2.Config{
-		ClientID:     ClientID,
-		ClientSecret: ClientSecret,
+		ClientID:     p.ClientID,
+		ClientSecret: p.ClientSecret,
 		Scopes:       []string{"user"},
 		Endpoint:     github.Endpoint,
 	}
 }
 
-func (p GithubProvider) GetUserInfo(ctx context.Context, config *oauth2.Config, code string) (*UserInfo, error) {
+func (p *GithubProvider) GetUserInfo(ctx context.Context, config *oauth2.Config, code string) (*UserInfo, error) {
 	oauth2Token, err := config.Exchange(ctx, code)
 	if err != nil {
 		return nil, err
@@ -49,10 +56,6 @@ func (p GithubProvider) GetUserInfo(ctx context.Context, config *oauth2.Config, 
 		Username:       ui.Login,
 		ProviderUserID: ui.ID,
 	}, nil
-}
-
-func init() {
-	RegisterProvider(GithubProvider{})
 }
 
 type githubUserInfo struct {
@@ -101,4 +104,8 @@ type Plan struct {
 	Space         int    `json:"space"`
 	Collaborators int    `json:"collaborators"`
 	PrivateRepos  int    `json:"private_repos"`
+}
+
+func init() {
+	registerProvider(new(GithubProvider))
 }

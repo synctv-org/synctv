@@ -3,7 +3,6 @@ package provider
 import (
 	"context"
 	"fmt"
-	"sync"
 
 	"golang.org/x/oauth2"
 )
@@ -11,8 +10,8 @@ import (
 type OAuth2Provider string
 
 var (
-	providers = make(map[OAuth2Provider]ProviderInterface)
-	lock      sync.Mutex
+	enabledProviders map[OAuth2Provider]ProviderInterface
+	allowedProviders = make(map[OAuth2Provider]ProviderInterface)
 )
 
 type UserInfo struct {
@@ -21,25 +20,45 @@ type UserInfo struct {
 }
 
 type ProviderInterface interface {
+	Init(ClientID, ClientSecret string)
 	Provider() OAuth2Provider
-	NewConfig(ClientID, ClientSecret string) *oauth2.Config
+	NewConfig() *oauth2.Config
 	GetUserInfo(ctx context.Context, config *oauth2.Config, code string) (*UserInfo, error)
 }
 
-func RegisterProvider(provider ProviderInterface) {
-	lock.Lock()
-	defer lock.Unlock()
-	providers[provider.Provider()] = provider
+func InitProvider(p OAuth2Provider, ClientID, ClientSecret string) error {
+	pi, ok := allowedProviders[p]
+	if !ok {
+		return FormatErrNotImplemented(p)
+	}
+	pi.Init(ClientID, ClientSecret)
+	if enabledProviders == nil {
+		enabledProviders = make(map[OAuth2Provider]ProviderInterface)
+	}
+	enabledProviders[pi.Provider()] = pi
+	return nil
 }
 
-func (p OAuth2Provider) GetProvider() (ProviderInterface, error) {
-	lock.Lock()
-	defer lock.Unlock()
-	pi, ok := providers[p]
+func registerProvider(ps ...ProviderInterface) {
+	for _, p := range ps {
+		allowedProviders[p.Provider()] = p
+	}
+}
+
+func GetProvider(p OAuth2Provider) (ProviderInterface, error) {
+	pi, ok := enabledProviders[p]
 	if !ok {
 		return nil, FormatErrNotImplemented(p)
 	}
 	return pi, nil
+}
+
+func AllowedProvider() map[OAuth2Provider]ProviderInterface {
+	return allowedProviders
+}
+
+func EnabledProvider() map[OAuth2Provider]ProviderInterface {
+	return enabledProviders
 }
 
 type FormatErrNotImplemented string

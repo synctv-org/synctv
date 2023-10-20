@@ -22,6 +22,7 @@ require (
 	github.com/sirupsen/logrus v1.9.3
 	github.com/soheilhy/cmux v0.1.5
 	github.com/spf13/cobra v1.7.0
+	github.com/ulule/limiter/v3 v3.11.2
 	github.com/zijiren233/gencontainer v0.0.0-20230930135658-e410015e13cc
 	github.com/zijiren233/go-colorable v0.0.0-20230930131441-997304c961cb
 	github.com/zijiren233/livelib v0.2.1
@@ -70,6 +71,7 @@ require (
 	github.com/modern-go/reflect2 v1.0.2 // indirect
 	github.com/onsi/ginkgo/v2 v2.13.0 // indirect
 	github.com/pelletier/go-toml/v2 v2.1.0 // indirect
+	github.com/pkg/errors v0.9.1 // indirect
 	github.com/quic-go/qpack v0.4.0 // indirect
 	github.com/quic-go/qtls-go1-20 v0.3.4 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect

@@ -28,6 +28,9 @@ type Config struct {
 
 	// OAuth2
 	OAuth2 OAuth2Config `yaml:"oauth2"`
+
+	// RateLimit
+	RateLimit RateLimitConfig `yaml:"rate_limit"`
 }
 
 func (c *Config) Save(file string) error {
@@ -59,5 +62,8 @@ func DefaultConfig() *Config {
 
 		// OAuth2
 		OAuth2: DefaultOAuth2Config(),
+
+		// RateLimit
+		RateLimit: DefaultRateLimitConfig(),
 	}
 }

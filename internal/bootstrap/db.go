@@ -146,5 +146,9 @@ func newDBLogger() logger.Interface {
 func initRawDB(db *sql.DB) {
 	db.SetMaxOpenConns(conf.Conf.Database.MaxOpenConns)
 	db.SetMaxIdleConns(conf.Conf.Database.MaxIdleConns)
-	db.SetConnMaxLifetime(time.Duration(conf.Conf.Database.ConnMaxLifetime) * time.Second)
+	d, err := time.ParseDuration(conf.Conf.Database.ConnMaxLifetime)
+	if err != nil {
+		log.Fatalf("failed to parse conn_max_lifetime: %s", err.Error())
+	}
+	db.SetConnMaxLifetime(d)
 }

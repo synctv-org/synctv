@@ -1,13 +1,13 @@
 package conf
 
 type LogConfig struct {
-	Enable     bool   `yaml:"enable" lc:"enable log to file (default: true)" env:"LOG_ENABLE"`
-	LogFormat  string `yaml:"log_format" lc:"log format, can be set: text | json (default: text)" env:"LOG_FORMAT"`
-	FilePath   string `yaml:"file_path" lc:"log file path (default: log/log.log)" env:"LOG_FILE_PATH"`
-	MaxSize    int    `yaml:"max_size" lc:"max size per log file (default: 10 megabytes)" env:"LOG_MAX_SIZE"`
-	MaxBackups int    `yaml:"max_backups" lc:"max backups (default: 10)" env:"LOG_MAX_BACKUPS"`
-	MaxAge     int    `yaml:"max_age" lc:"max age (default: 28 days)" env:"LOG_MAX_AGE"`
-	Compress   bool   `yaml:"compress" lc:"compress (default: false)" env:"LOG_COMPRESS"`
+	Enable     bool   `yaml:"enable" env:"LOG_ENABLE"`
+	LogFormat  string `yaml:"log_format" hc:"can be set: text | json" env:"LOG_FORMAT"`
+	FilePath   string `yaml:"file_path" hc:"if it is a relative path, the data-dir directory will be used." env:"LOG_FILE_PATH"`
+	MaxSize    int    `yaml:"max_size" cm:"mb" hc:"max size per log file" env:"LOG_MAX_SIZE"`
+	MaxBackups int    `yaml:"max_backups" env:"LOG_MAX_BACKUPS"`
+	MaxAge     int    `yaml:"max_age" env:"LOG_MAX_AGE"`
+	Compress   bool   `yaml:"compress" env:"LOG_COMPRESS"`
 }
 
 func DefaultLogConfig() LogConfig {

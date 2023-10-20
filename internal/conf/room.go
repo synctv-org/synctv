@@ -1,7 +1,7 @@
 package conf
 
 type RoomConfig struct {
-	MustPassword bool `yaml:"must_password" lc:"must input password to create room (default: false)" env:"ROOM_MUST_PASSWORD"`
+	MustPassword bool `yaml:"must_password" hc:"must input password to create room" env:"ROOM_MUST_PASSWORD"`
 }
 
 func DefaultRoomConfig() RoomConfig {

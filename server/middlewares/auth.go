@@ -117,23 +117,31 @@ func AuthUser(Authorization string) (*op.User, error) {
 }
 
 func NewAuthUserToken(user *op.User) (string, error) {
+	t, err := time.ParseDuration(conf.Conf.Jwt.Expire)
+	if err != nil {
+		return "", err
+	}
 	claims := &AuthClaims{
 		UserId: user.ID,
 		RegisteredClaims: jwt.RegisteredClaims{
 			NotBefore: jwt.NewNumericDate(time.Now()),
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour * time.Duration(conf.Conf.Jwt.Expire))),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(t)),
 		},
 	}
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(stream.StringToBytes(conf.Conf.Jwt.Secret))
 }
 
 func NewAuthRoomToken(user *op.User, room *op.Room) (string, error) {
+	t, err := time.ParseDuration(conf.Conf.Jwt.Expire)
+	if err != nil {
+		return "", err
+	}
 	claims := &AuthRoomClaims{
 		AuthClaims: AuthClaims{
 			UserId: user.ID,
 			RegisteredClaims: jwt.RegisteredClaims{
 				NotBefore: jwt.NewNumericDate(time.Now()),
-				ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour * time.Duration(conf.Conf.Jwt.Expire))),
+				ExpiresAt: jwt.NewNumericDate(time.Now().Add(t)),
 			},
 		},
 		RoomId:  room.ID,

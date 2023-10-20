@@ -7,9 +7,8 @@ import (
 type OAuth2Config map[provider.OAuth2Provider]OAuth2ProviderConfig
 
 type OAuth2ProviderConfig struct {
-	ClientID     string `yaml:"client_id" lc:"oauth2 client id"`
-	ClientSecret string `yaml:"client_secret" lc:"oauth2 client secret"`
-	// CustomRedirectURL string               `yaml:"custom_redirect_url" lc:"oauth2 custom redirect url"`
+	ClientID     string `yaml:"client_id"`
+	ClientSecret string `yaml:"client_secret"`
 }
 
 func DefaultOAuth2Config() OAuth2Config {

@@ -17,14 +17,7 @@ func Init(e *gin.Engine) {
 
 		web := e.Group("/web")
 
-		web.Use(func(ctx *gin.Context) {
-			if ctx.Request.URL.Path == "/web/" {
-				ctx.Header("Cache-Control", "no-store")
-			} else {
-				ctx.Header("Cache-Control", "public, max-age=31536000")
-			}
-			ctx.Next()
-		})
+		web.Use(middlewares.NewDistCacheControl("/web/"))
 
 		web.StaticFS("", http.FS(public.Public))
 	}

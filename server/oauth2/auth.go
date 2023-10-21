@@ -68,6 +68,7 @@ func OAuth2Callback(ctx *gin.Context) {
 	pi, err := provider.GetProvider(p)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
 	}
 
 	ui, err := pi.GetUserInfo(ctx, pi.NewConfig(), code)

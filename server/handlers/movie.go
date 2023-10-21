@@ -55,11 +55,7 @@ func MovieList(ctx *gin.Context) {
 		return
 	}
 
-	m, err := room.GetMoviesByRoomIDWithPage(int(page), int(max))
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
-		return
-	}
+	m := room.GetMoviesWithPage(page, max)
 
 	mresp := make([]model.MoviesResp, len(m))
 	for i, v := range m {
@@ -71,15 +67,9 @@ func MovieList(ctx *gin.Context) {
 		}
 	}
 
-	i, err := room.GetMoviesCount()
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
-		return
-	}
-
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
 		"current": room.Current(),
-		"total":   i,
+		"total":   room.GetMoviesCount(),
 		"movies":  mresp,
 	}))
 }
@@ -103,11 +93,7 @@ func Movies(ctx *gin.Context) {
 		return
 	}
 
-	m, err := room.GetMoviesByRoomIDWithPage(int(page), int(max))
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
-		return
-	}
+	m := room.GetMoviesWithPage(int(page), int(max))
 
 	mresp := make([]model.MoviesResp, len(m))
 	for i, v := range m {
@@ -119,14 +105,8 @@ func Movies(ctx *gin.Context) {
 		}
 	}
 
-	i, err := room.GetMoviesCount()
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
-		return
-	}
-
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
-		"total":  i,
+		"total":  room.GetMoviesCount(),
 		"movies": mresp,
 	}))
 }
@@ -173,7 +153,6 @@ func NewPublishKey(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
-
 	movie, err := room.GetMovieByID(req.Id)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))

@@ -9,9 +9,5 @@ func Init(size int) error {
 		LRU().
 		Build()
 
-	movieCache = gcache.New(size).
-		LRU().
-		Build()
-
 	return nil
 }

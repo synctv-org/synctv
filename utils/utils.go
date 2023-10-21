@@ -35,19 +35,23 @@ func RandBytes(n int) []byte {
 }
 
 func GetPageItems[T any](items []T, page, pageSize int) []T {
-	if pageSize <= 0 || page <= 0 {
-		return nil
-	}
-	start := (page - 1) * pageSize
-	l := len(items)
-	if start > l {
-		start = l
-	}
-	end := page * pageSize
-	if end > l {
-		end = l
-	}
+	start, end := GetPageItemsRange(len(items), page, pageSize)
 	return items[start:end]
+}
+
+func GetPageItemsRange(total, page, pageSize int) (start, end int) {
+	if pageSize <= 0 || page <= 0 {
+		return 0, 0
+	}
+	start = (page - 1) * pageSize
+	if start > total {
+		start = total
+	}
+	end = page * pageSize
+	if end > total {
+		end = total
+	}
+	return
 }
 
 func Index[T comparable](items []T, item T) int {

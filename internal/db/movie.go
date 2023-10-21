@@ -13,13 +13,10 @@ func CreateMovie(movie *model.Movie) error {
 	return db.Create(movie).Error
 }
 
-func GetAllMoviesByRoomID(roomID uint) ([]*model.Movie, error) {
+func GetAllMoviesByRoomID(roomID uint) []*model.Movie {
 	movies := []*model.Movie{}
-	err := db.Where("room_id = ?", roomID).Order("position ASC").Find(&movies).Error
-	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
-		return movies, errors.New("room not found")
-	}
-	return movies, err
+	db.Where("room_id = ?", roomID).Order("position ASC").Find(&movies)
+	return movies
 }
 
 func DeleteMovieByID(roomID, id uint) error {

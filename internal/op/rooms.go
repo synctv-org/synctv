@@ -24,6 +24,9 @@ func InitRoom(room *model.Room) (*Room, error) {
 		Room:    *room,
 		version: crc32.ChecksumIEEE(room.HashedPassword),
 		current: newCurrent(),
+		movies: movies{
+			roomID: room.ID,
+		},
 	}
 	r, loaded := roomCache.LoadOrStore(room.ID, r)
 	if loaded {
@@ -32,14 +35,15 @@ func InitRoom(room *model.Room) (*Room, error) {
 	return r, nil
 }
 
-func LoadOrInitRoom(room *model.Room) (r *Room, loaded bool) {
-	r = &Room{
+func LoadOrInitRoom(room *model.Room) (*Room, bool) {
+	return roomCache.LoadOrStore(room.ID, &Room{
 		Room:    *room,
 		version: crc32.ChecksumIEEE(room.HashedPassword),
 		current: newCurrent(),
-	}
-	r, loaded = roomCache.LoadOrStore(room.ID, r)
-	return
+		movies: movies{
+			roomID: room.ID,
+		},
+	})
 }
 
 func DeleteRoom(room *Room) error {

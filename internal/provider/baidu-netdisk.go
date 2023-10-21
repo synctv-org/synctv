@@ -6,7 +6,6 @@ import (
 	"net/http"
 
 	json "github.com/json-iterator/go"
-	"github.com/sirupsen/logrus"
 	"golang.org/x/oauth2"
 )
 
@@ -45,7 +44,6 @@ func (p *BaiduNetDiskProvider) GetUserInfo(ctx context.Context, config *oauth2.C
 	if err != nil {
 		return nil, err
 	}
-	logrus.Info(oauth2Token)
 	client := config.Client(ctx, oauth2Token)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("https://pan.baidu.com/rest/2.0/xpan/nas?method=uinfo&access_token=%s", oauth2Token.AccessToken), nil)
 	if err != nil {

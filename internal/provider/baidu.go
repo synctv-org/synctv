@@ -1,0 +1,77 @@
+package provider
+
+import (
+	"context"
+	"fmt"
+	"hash/crc32"
+	"net/http"
+
+	json "github.com/json-iterator/go"
+	"github.com/zijiren233/stream"
+	"golang.org/x/oauth2"
+)
+
+// https://pan.baidu.com/union/apply
+type BaiduProvider struct {
+	config oauth2.Config
+}
+
+func (p *BaiduProvider) Init(ClientID, ClientSecret string, options ...Oauth2Option) {
+	p.config.ClientID = ClientID
+	p.config.ClientSecret = ClientSecret
+	p.config.Scopes = []string{"basic"}
+	p.config.Endpoint = oauth2.Endpoint{
+		AuthURL:  "https://openapi.baidu.com/oauth/2.0/authorize",
+		TokenURL: "https://openapi.baidu.com/oauth/2.0/token",
+	}
+	for _, o := range options {
+		o(&p.config)
+	}
+}
+
+func (p *BaiduProvider) Provider() OAuth2Provider {
+	return "baidu"
+}
+
+func (p *BaiduProvider) NewConfig(options ...Oauth2Option) *oauth2.Config {
+	c := p.config
+	for _, o := range options {
+		o(&c)
+	}
+	return &c
+}
+
+func (p *BaiduProvider) GetUserInfo(ctx context.Context, config *oauth2.Config, code string) (*UserInfo, error) {
+	oauth2Token, err := config.Exchange(ctx, code)
+	if err != nil {
+		return nil, err
+	}
+	client := config.Client(ctx, oauth2Token)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("https://openapi.baidu.com/rest/2.0/passport/users/getLoggedInUser?access_token=%s", oauth2Token.AccessToken), nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	ui := baiduProviderUserInfo{}
+	err = json.NewDecoder(resp.Body).Decode(&ui)
+	if err != nil {
+		return nil, err
+	}
+	return &UserInfo{
+		Username:       ui.Uname,
+		ProviderUserID: uint(crc32.ChecksumIEEE(stream.StringToBytes(ui.Openid))),
+	}, nil
+}
+
+func init() {
+	registerProvider(new(BaiduProvider))
+}
+
+type baiduProviderUserInfo struct {
+	Uname  string `json:"uname"`
+	Openid string `json:"openid"`
+}

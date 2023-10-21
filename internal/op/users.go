@@ -77,22 +77,20 @@ func CreateOrLoadUser(username string, p provider.OAuth2Provider, pid uint, conf
 }
 
 func DeleteUserByID(userID uint) error {
-	rs, err := db.GetAllRoomsByUserID(userID)
-	if err != nil {
-		return err
-	}
-	err = db.DeleteUserByID(userID)
+	err := db.DeleteUserByID(userID)
 	if err != nil {
 		return err
 	}
 	userCache.Remove(userID)
 
-	for _, r := range rs {
-		r2, loaded := roomCache.LoadAndDelete(r.ID)
-		if loaded {
-			r2.close()
+	roomCache.Range(func(key uint, value *Room) bool {
+		if value.CreatorID == userID {
+			roomCache.Delete(key)
+			value.close()
 		}
-	}
+		return true
+	})
+
 	return nil
 }
 

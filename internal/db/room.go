@@ -13,7 +13,7 @@ type CreateRoomConfig func(r *model.Room)
 
 func WithSetting(setting model.Setting) CreateRoomConfig {
 	return func(r *model.Room) {
-		r.Setting = setting
+		r.Settings = setting
 	}
 }
 
@@ -157,29 +157,26 @@ func SetRoomHashedPassword(roomID uint, hashedPassword []byte) error {
 	return err
 }
 
-func GetAllRooms() ([]*model.Room, error) {
+func GetAllRooms(scopes ...func(*gorm.DB) *gorm.DB) []*model.Room {
 	rooms := []*model.Room{}
-	err := db.Find(&rooms).Error
-	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
-		return rooms, nil
-	}
-	return rooms, err
+	db.Scopes(scopes...).Find(&rooms)
+	return rooms
 }
 
-func GetAllRoomsAndCreator() ([]*model.Room, error) {
+func GetAllRoomsWithoutHidden(scopes ...func(*gorm.DB) *gorm.DB) []*model.Room {
 	rooms := []*model.Room{}
-	err := db.Preload("Creater").Find(&rooms).Error
-	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
-		return rooms, nil
-	}
-	return rooms, err
+	db.Preload("Setting").Where("setting.hidden = ?", false).Scopes(scopes...).Find(&rooms)
+	return rooms
 }
 
-func GetAllRoomsByUserID(userID uint) ([]*model.Room, error) {
+func GetAllRoomsAndCreator(scopes ...func(*gorm.DB) *gorm.DB) []*model.Room {
 	rooms := []*model.Room{}
-	err := db.Where("creator_id = ?", userID).Find(&rooms).Error
-	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
-		return rooms, nil
-	}
-	return rooms, err
+	db.Preload("Creator").Scopes(scopes...).Find(&rooms)
+	return rooms
+}
+
+func GetAllRoomsByUserID(userID uint) []*model.Room {
+	rooms := []*model.Room{}
+	db.Where("creator_id = ?", userID).Find(&rooms)
+	return rooms
 }

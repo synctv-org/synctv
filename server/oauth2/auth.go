@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/internal/provider"
 	"github.com/synctv-org/synctv/server/middlewares"
@@ -89,6 +90,8 @@ func OAuth2Callback(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}
+
+	logrus.Info("asdasd")
 
 	RenderToken(ctx, "/web/", token)
 }

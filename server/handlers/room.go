@@ -7,13 +7,14 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
-	"github.com/maruel/natural"
 	"github.com/synctv-org/synctv/internal/db"
 	dbModel "github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/server/middlewares"
 	"github.com/synctv-org/synctv/server/model"
+	"github.com/synctv-org/synctv/utils"
 	"github.com/zijiren233/gencontainer/vec"
+	"gorm.io/gorm"
 )
 
 var (
@@ -42,11 +43,7 @@ func CreateRoom(ctx *gin.Context) {
 		return
 	}
 
-	room, err := op.LoadRoom(r)
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
-		return
-	}
+	room, _ := op.LoadOrInitRoom(r)
 
 	token, err := middlewares.NewAuthRoomToken(user, room)
 	if err != nil {
@@ -61,81 +58,97 @@ func CreateRoom(ctx *gin.Context) {
 }
 
 func RoomList(ctx *gin.Context) {
-	r := op.GetAllRoomsWithoutHidden()
-	resp := vec.New[*model.RoomListResp](vec.WithCmpLess[*model.RoomListResp](func(v1, v2 *model.RoomListResp) bool {
-		return v1.PeopleNum < v2.PeopleNum
-	}), vec.WithCmpEqual[*model.RoomListResp](func(v1, v2 *model.RoomListResp) bool {
-		return v1.PeopleNum == v2.PeopleNum
-	}))
-	for _, v := range r {
-		resp.Push(&model.RoomListResp{
-			RoomId:       v.ID,
-			RoomName:     v.Name,
-			PeopleNum:    v.ClientNum(),
-			NeedPassword: v.NeedPassword(),
-			Creator:      op.GetUserName(v.Room.CreatorID),
-			CreatedAt:    v.Room.CreatedAt.UnixMilli(),
-		})
-	}
-
-	switch ctx.DefaultQuery("sort", "peopleNum") {
-	case "peopleNum":
-		resp.SortStable()
-	case "creator":
-		resp.SortStableFunc(func(v1, v2 *model.RoomListResp) bool {
-			return natural.Less(v1.Creator, v2.Creator)
-		}, func(t1, t2 *model.RoomListResp) bool {
-			return t1.Creator == t2.Creator
-		})
-	case "createdAt":
-		resp.SortStableFunc(func(v1, v2 *model.RoomListResp) bool {
-			return v1.CreatedAt < v2.CreatedAt
-		}, func(t1, t2 *model.RoomListResp) bool {
-			return t1.CreatedAt == t2.CreatedAt
-		})
-	case "roomName":
-		resp.SortStableFunc(func(v1, v2 *model.RoomListResp) bool {
-			return natural.Less(v1.RoomName, v2.RoomName)
-		}, func(t1, t2 *model.RoomListResp) bool {
-			return t1.RoomName == t2.RoomName
-		})
-	case "roomId":
-		resp.SortStableFunc(func(v1, v2 *model.RoomListResp) bool {
-			return v1.RoomId < v2.RoomId
-		}, func(t1, t2 *model.RoomListResp) bool {
-			return t1.RoomId == t2.RoomId
-		})
-	case "needPassword":
-		resp.SortStableFunc(func(v1, v2 *model.RoomListResp) bool {
-			return v1.NeedPassword && !v2.NeedPassword
-		}, func(t1, t2 *model.RoomListResp) bool {
-			return t1.NeedPassword == t2.NeedPassword
-		})
-	default:
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("sort must be peoplenum or roomid"))
-		return
-	}
-
-	switch ctx.DefaultQuery("order", "desc") {
-	case "asc":
-		// do nothing
-	case "desc":
-		resp.Reverse()
-	default:
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("order must be asc or desc"))
-		return
-	}
-
-	list, err := GetPageItems(ctx, resp.Slice())
+	page, pageSize, err := GetPageAndPageSize(ctx)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
+	resp := make([]*model.RoomListResp, 0, pageSize)
+
+	var desc = ctx.DefaultQuery("sort", "desc") == "desc"
+
+	scopes := []func(db *gorm.DB) *gorm.DB{
+		db.Paginate(page, pageSize),
+	}
+
+	total := 0
+
+	switch ctx.DefaultQuery("order", "peopleNum") {
+	case "peopleNum":
+		r := op.GetAllRoomsInCacheWithoutHidden()
+		rs := vec.New[*model.RoomListResp](vec.WithCmpLess[*model.RoomListResp](func(v1, v2 *model.RoomListResp) bool {
+			return v1.PeopleNum < v2.PeopleNum
+		}), vec.WithCmpEqual[*model.RoomListResp](func(v1, v2 *model.RoomListResp) bool {
+			return v1.PeopleNum == v2.PeopleNum
+		}))
+		for _, v := range r {
+			rs.Push(&model.RoomListResp{
+				RoomId:       v.ID,
+				RoomName:     v.Name,
+				PeopleNum:    v.ClientNum(),
+				NeedPassword: v.NeedPassword(),
+				Creator:      op.GetUserName(v.Room.CreatorID),
+				CreatedAt:    v.Room.CreatedAt.UnixMilli(),
+			})
+		}
+		rs.SortStable()
+		if desc {
+			rs.Reverse()
+		}
+		total = rs.Len()
+		resp = utils.GetPageItems(rs.Slice(), page, pageSize)
+	case "createdAt":
+		if desc {
+			scopes = append(scopes, db.OrderByCreatedAtDesc)
+		} else {
+			scopes = append(scopes, db.OrderByCreatedAtAsc)
+		}
+		resp = genRoomsResp(resp, scopes...)
+	case "roomName":
+		if desc {
+			scopes = append(scopes, db.OrderByDesc("name"))
+		} else {
+			scopes = append(scopes, db.OrderByAsc("name"))
+		}
+		resp = genRoomsResp(resp, scopes...)
+	case "roomId":
+		if desc {
+			scopes = append(scopes, db.OrderByIDDesc)
+		} else {
+			scopes = append(scopes, db.OrderByIDAsc)
+		}
+		resp = genRoomsResp(resp, scopes...)
+	default:
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support order"))
+		return
+	}
 
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
-		"total": resp.Len(),
-		"list":  list,
+		"total": total,
+		"list":  resp,
 	}))
+}
+
+func genRoomsResp(resp []*model.RoomListResp, scopes ...func(db *gorm.DB) *gorm.DB) []*model.RoomListResp {
+	var clientNum int64
+	for _, r := range db.GetAllRooms(scopes...) {
+		room, err := op.LoadRoomByID(r.ID)
+		if err != nil {
+			clientNum = 0
+		} else {
+			clientNum = room.ClientNum()
+		}
+
+		resp = append(resp, &model.RoomListResp{
+			RoomId:       r.ID,
+			RoomName:     r.Name,
+			PeopleNum:    clientNum,
+			NeedPassword: len(r.HashedPassword) != 0,
+			Creator:      op.GetUserName(r.CreatorID),
+			CreatedAt:    r.CreatedAt.UnixMilli(),
+		})
+	}
+	return resp
 }
 
 func CheckRoom(ctx *gin.Context) {
@@ -145,14 +158,21 @@ func CheckRoom(ctx *gin.Context) {
 		return
 	}
 
-	r, err := op.GetRoomByID(uint(id))
+	r, err := db.GetRoomByID(uint(id))
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(err))
 		return
 	}
 
+	var peopleNum int64
+
+	room, err := op.LoadRoomByID(r.ID)
+	if err == nil {
+		peopleNum = room.ClientNum()
+	}
+
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
-		"peopleNum":    r.ClientNum(),
+		"peopleNum":    peopleNum,
 		"needPassword": r.NeedPassword(),
 	}))
 }
@@ -234,7 +254,7 @@ func RoomSetting(ctx *gin.Context) {
 	// user := ctx.MustGet("user").(*op.User)
 
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
-		"hidden":       room.Setting.Hidden,
+		"hidden":       room.Settings.Hidden,
 		"needPassword": room.NeedPassword(),
 	}))
 }

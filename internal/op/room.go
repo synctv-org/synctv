@@ -40,7 +40,7 @@ func (r *Room) LazyInit() (err error) {
 		r.hub = newHub(r.ID)
 
 		var ms []*model.Movie
-		ms, err = r.GetAllMoviesByRoomID()
+		ms, err = r.GetAllMovies()
 		if err != nil {
 			log.Errorf("failed to get movies: %s", err.Error())
 			return
@@ -331,7 +331,7 @@ func (r *Room) GetMoviesCount() (int, error) {
 	return GetMoviesCountByRoomID(r.ID)
 }
 
-func (r *Room) GetAllMoviesByRoomID() ([]*model.Movie, error) {
+func (r *Room) GetAllMovies() ([]*model.Movie, error) {
 	ms, err := GetAllMoviesByRoomID(r.ID)
 	if err != nil {
 		return nil, err

@@ -8,14 +8,18 @@ import (
 
 type Room struct {
 	gorm.Model
-	Name string `gorm:"not null;uniqueIndex"`
-	Setting
-	CreatorID          uint `gorm:"index"`
+	Name               string  `gorm:"not null;uniqueIndex"`
+	Settings           Setting `gorm:"foreignKey:RoomID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
+	CreatorID          uint    `gorm:"index"`
 	HashedPassword     []byte
 	GroupUserRelations []RoomUserRelation `gorm:"foreignKey:RoomID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 	Movies             []Movie            `gorm:"foreignKey:RoomID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 }
 
+func (r *Room) NeedPassword() bool {
+	return len(r.HashedPassword) != 0
+}
+
 func (r *Room) CheckPassword(password string) bool {
-	return len(r.HashedPassword) == 0 || bcrypt.CompareHashAndPassword(r.HashedPassword, stream.StringToBytes(password)) == nil
+	return !r.NeedPassword() || bcrypt.CompareHashAndPassword(r.HashedPassword, stream.StringToBytes(password)) == nil
 }

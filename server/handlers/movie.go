@@ -24,32 +24,32 @@ import (
 	"github.com/zijiren233/livelib/protocol/httpflv"
 )
 
-func GetPageAndMax(ctx *gin.Context) (int64, int64, error) {
-	max, err := strconv.ParseInt(ctx.DefaultQuery("max", "10"), 10, 64)
+func GetPageAndPageSize(ctx *gin.Context) (int, int, error) {
+	pageSize, err := strconv.Atoi(ctx.DefaultQuery("max", "10"))
 	if err != nil {
 		return 0, 0, errors.New("max must be a number")
 	}
-	page, err := strconv.ParseInt(ctx.DefaultQuery("page", "1"), 10, 64)
+	page, err := strconv.Atoi(ctx.DefaultQuery("page", "1"))
 	if err != nil {
 		return 0, 0, errors.New("page must be a number")
 	}
-	return page, max, nil
+	return page, pageSize, nil
 }
 
 func GetPageItems[T any](ctx *gin.Context, items []T) ([]T, error) {
-	page, max, err := GetPageAndMax(ctx)
+	page, max, err := GetPageAndPageSize(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	return utils.GetPageItems(items, max, page), nil
+	return utils.GetPageItems(items, page, max), nil
 }
 
 func MovieList(ctx *gin.Context) {
 	room := ctx.MustGet("room").(*op.Room)
 	// user := ctx.MustGet("user").(*op.User)
 
-	page, max, err := GetPageAndMax(ctx)
+	page, max, err := GetPageAndPageSize(ctx)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
@@ -97,7 +97,7 @@ func Movies(ctx *gin.Context) {
 	room := ctx.MustGet("room").(*op.Room)
 	// user := ctx.MustGet("user").(*op.User)
 
-	page, max, err := GetPageAndMax(ctx)
+	page, max, err := GetPageAndPageSize(ctx)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
@@ -369,7 +369,8 @@ func ProxyMovie(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
-	room, err := op.GetRoomByID(uint(id))
+
+	room, err := op.LoadOrInitRoomByID(uint(id))
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return

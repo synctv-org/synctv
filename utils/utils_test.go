@@ -9,9 +9,9 @@ import (
 
 func TestGetPageItems(t *testing.T) {
 	type args struct {
-		items []int
-		max   int64
-		page  int64
+		items    []int
+		page     int
+		pageSize int
 	}
 	tests := []struct {
 		name string
@@ -21,34 +21,34 @@ func TestGetPageItems(t *testing.T) {
 		{
 			name: "Test Case 1",
 			args: args{
-				items: []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
-				max:   5,
-				page:  1,
+				items:    []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
+				pageSize: 5,
+				page:     1,
 			},
 			want: []int{1, 2, 3, 4, 5},
 		},
 		{
 			name: "Test Case 2",
 			args: args{
-				items: []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
-				max:   5,
-				page:  2,
+				items:    []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
+				pageSize: 5,
+				page:     2,
 			},
 			want: []int{6, 7, 8, 9, 10},
 		},
 		{
 			name: "Test Case 3",
 			args: args{
-				items: []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
-				max:   5,
-				page:  3,
+				items:    []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
+				pageSize: 5,
+				page:     3,
 			},
 			want: []int{},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := utils.GetPageItems(tt.args.items, tt.args.max, tt.args.page); !reflect.DeepEqual(got, tt.want) {
+			if got := utils.GetPageItems(tt.args.items, tt.args.page, tt.args.pageSize); !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("GetPageItems() = %v, want %v", got, tt.want)
 			}
 		})

@@ -32,7 +32,6 @@ var ServerCmd = &cobra.Command{
 			bootstrap.InitProvider,
 			bootstrap.InitOp,
 			bootstrap.InitRtmp,
-			bootstrap.InitRoom,
 		)
 		if !flags.DisableUpdateCheck {
 			boot.Add(bootstrap.InitCheckUpdate)

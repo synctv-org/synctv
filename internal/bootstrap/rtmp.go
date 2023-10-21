@@ -32,7 +32,7 @@ func auth(ReqAppName, ReqChannelName string, IsPublisher bool) (*rtmps.Channel, 
 			log.Errorf("rtmp: parse channel name to id error: %v", err)
 			return nil, err
 		}
-		r, err := op.GetRoomByID(uint(id))
+		r, err := op.LoadOrInitRoomByID(uint(id))
 		if err != nil {
 			log.Errorf("rtmp: get room by id error: %v", err)
 			return nil, err
@@ -49,7 +49,7 @@ func auth(ReqAppName, ReqChannelName string, IsPublisher bool) (*rtmps.Channel, 
 		log.Errorf("rtmp: parse channel name to id error: %v", err)
 		return nil, err
 	}
-	r, err := op.GetRoomByID(uint(id))
+	r, err := op.LoadOrInitRoomByID(uint(id))
 	if err != nil {
 		log.Errorf("rtmp: get room by id error: %v", err)
 		return nil, err

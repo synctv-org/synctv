@@ -3,7 +3,6 @@ package op
 import (
 	"errors"
 	"hash/crc32"
-	"sync/atomic"
 
 	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/model"
@@ -17,35 +16,30 @@ func CreateRoom(name, password string, conf ...db.CreateRoomConfig) (*Room, erro
 	if err != nil {
 		return nil, err
 	}
-	return initRoom(r)
+	return InitRoom(r)
 }
 
-type RoomConf func(r *Room)
-
-func WithVersion(version uint32) RoomConf {
-	return func(r *Room) {
-		atomic.StoreUint32(&r.version, version)
-	}
-}
-
-func initRoom(room *model.Room, conf ...RoomConf) (*Room, error) {
+func InitRoom(room *model.Room) (*Room, error) {
 	r := &Room{
 		Room:    *room,
 		version: crc32.ChecksumIEEE(room.HashedPassword),
 		current: newCurrent(),
 	}
-	for _, c := range conf {
-		c(r)
-	}
 	r, loaded := roomCache.LoadOrStore(room.ID, r)
 	if loaded {
-		return r, errors.New("room already exists")
+		return r, errors.New("room already init")
 	}
 	return r, nil
 }
 
-func LoadRoom(room *model.Room) (*Room, error) {
-	return initRoom(room)
+func LoadOrInitRoom(room *model.Room) (r *Room, loaded bool) {
+	r = &Room{
+		Room:    *room,
+		version: crc32.ChecksumIEEE(room.HashedPassword),
+		current: newCurrent(),
+	}
+	r, loaded = roomCache.LoadOrStore(room.ID, r)
+	return
 }
 
 func DeleteRoom(room *Room) error {
@@ -63,16 +57,25 @@ func DeleteRoomByID(id uint) error {
 	return db.DeleteRoomByID(r.ID)
 }
 
-func GetRoomByID(id uint) (*Room, error) {
+func LoadRoomByID(id uint) (*Room, error) {
 	r2, ok := roomCache.Load(id)
 	if ok {
 		return r2, nil
 	}
-	r, err := db.GetRoomByID(id)
+	return nil, errors.New("room not found")
+}
+
+func LoadOrInitRoomByID(id uint) (*Room, error) {
+	r, ok := roomCache.Load(id)
+	if ok {
+		return r, nil
+	}
+	room, err := db.GetRoomByID(id)
 	if err != nil {
 		return nil, err
 	}
-	return initRoom(r)
+	r, _ = LoadOrInitRoom(room)
+	return r, nil
 }
 
 func HasRoom(roomID uint) bool {
@@ -96,14 +99,14 @@ func HasRoomByName(name string) bool {
 }
 
 func SetRoomPassword(roomID uint, password string) error {
-	r, err := GetRoomByID(roomID)
+	r, err := LoadOrInitRoomByID(roomID)
 	if err != nil {
 		return err
 	}
 	return r.SetPassword(password)
 }
 
-func GetAllRooms() []*Room {
+func GetAllRoomsInCache() []*Room {
 	rooms := make([]*Room, roomCache.Len())
 	roomCache.Range(func(key uint, value *Room) bool {
 		rooms = append(rooms, value)
@@ -112,7 +115,7 @@ func GetAllRooms() []*Room {
 	return rooms
 }
 
-func GetAllRoomsWithNoNeedPassword() []*Room {
+func GetAllRoomsInCacheWithNoNeedPassword() []*Room {
 	rooms := make([]*Room, roomCache.Len())
 	roomCache.Range(func(key uint, value *Room) bool {
 		if !value.NeedPassword() {
@@ -123,10 +126,10 @@ func GetAllRoomsWithNoNeedPassword() []*Room {
 	return rooms
 }
 
-func GetAllRoomsWithoutHidden() []*Room {
+func GetAllRoomsInCacheWithoutHidden() []*Room {
 	rooms := make([]*Room, 0, roomCache.Len())
 	roomCache.Range(func(key uint, value *Room) bool {
-		if !value.Setting.Hidden {
+		if !value.Settings.Hidden {
 			rooms = append(rooms, value)
 		}
 		return true

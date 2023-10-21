@@ -45,3 +45,45 @@ func Close() {
 		return
 	}
 }
+
+func Paginate(page, pageSize int) func(db *gorm.DB) *gorm.DB {
+	return func(db *gorm.DB) *gorm.DB {
+		if page <= 0 {
+			page = 1
+		}
+		if pageSize <= 0 {
+			pageSize = 10
+		}
+
+		offset := (page - 1) * pageSize
+		return db.Offset(offset).Limit(pageSize)
+	}
+}
+
+func OrderByAsc(column string) func(db *gorm.DB) *gorm.DB {
+	return func(db *gorm.DB) *gorm.DB {
+		return db.Order(column + " asc")
+	}
+}
+
+func OrderByDesc(column string) func(db *gorm.DB) *gorm.DB {
+	return func(db *gorm.DB) *gorm.DB {
+		return db.Order(column + " desc")
+	}
+}
+
+func OrderByCreatedAtAsc(db *gorm.DB) *gorm.DB {
+	return db.Order("created_at asc")
+}
+
+func OrderByCreatedAtDesc(db *gorm.DB) *gorm.DB {
+	return db.Order("created_at desc")
+}
+
+func OrderByIDAsc(db *gorm.DB) *gorm.DB {
+	return db.Order("id asc")
+}
+
+func OrderByIDDesc(db *gorm.DB) *gorm.DB {
+	return db.Order("id desc")
+}

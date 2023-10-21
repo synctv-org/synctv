@@ -9,7 +9,7 @@ import (
 
 func InitProvider(ctx context.Context) error {
 	for op, v := range conf.Conf.OAuth2 {
-		err := provider.InitProvider(op, v.ClientID, v.ClientSecret)
+		err := provider.InitProvider(op, v.ClientID, v.ClientSecret, provider.WithRedirectURL(v.RedirectURL))
 		if err != nil {
 			return err
 		}

@@ -9,25 +9,29 @@ import (
 )
 
 type GitlabProvider struct {
-	ClientID, ClientSecret string
+	config oauth2.Config
 }
 
-func (g *GitlabProvider) Init(ClientID, ClientSecret string) {
-	g.ClientID = ClientID
-	g.ClientSecret = ClientSecret
+func (g *GitlabProvider) Init(ClientID, ClientSecret string, options ...Oauth2Option) {
+	g.config.ClientID = ClientID
+	g.config.ClientSecret = ClientSecret
+	g.config.Scopes = []string{"read_user"}
+	g.config.Endpoint = gitlab.Endpoint
+	for _, o := range options {
+		o(&g.config)
+	}
 }
 
 func (g *GitlabProvider) Provider() OAuth2Provider {
 	return "gitlab"
 }
 
-func (g *GitlabProvider) NewConfig() *oauth2.Config {
-	return &oauth2.Config{
-		ClientID:     g.ClientID,
-		ClientSecret: g.ClientSecret,
-		Scopes:       []string{"read_user"},
-		Endpoint:     gitlab.Endpoint,
+func (g *GitlabProvider) NewConfig(options ...Oauth2Option) *oauth2.Config {
+	c := g.config
+	for _, o := range options {
+		o(&c)
 	}
+	return &c
 }
 
 func (g *GitlabProvider) GetUserInfo(ctx context.Context, config *oauth2.Config, code string) (*UserInfo, error) {

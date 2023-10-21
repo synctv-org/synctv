@@ -19,19 +19,27 @@ type UserInfo struct {
 	ProviderUserID uint
 }
 
+type Oauth2Option func(*oauth2.Config)
+
+func WithRedirectURL(url string) Oauth2Option {
+	return func(c *oauth2.Config) {
+		c.RedirectURL = url
+	}
+}
+
 type ProviderInterface interface {
-	Init(ClientID, ClientSecret string)
+	Init(ClientID, ClientSecret string, options ...Oauth2Option)
 	Provider() OAuth2Provider
-	NewConfig() *oauth2.Config
+	NewConfig(options ...Oauth2Option) *oauth2.Config
 	GetUserInfo(ctx context.Context, config *oauth2.Config, code string) (*UserInfo, error)
 }
 
-func InitProvider(p OAuth2Provider, ClientID, ClientSecret string) error {
+func InitProvider(p OAuth2Provider, ClientID, ClientSecret string, options ...Oauth2Option) error {
 	pi, ok := allowedProviders[p]
 	if !ok {
 		return FormatErrNotImplemented(p)
 	}
-	pi.Init(ClientID, ClientSecret)
+	pi.Init(ClientID, ClientSecret, options...)
 	if enabledProviders == nil {
 		enabledProviders = make(map[OAuth2Provider]ProviderInterface)
 	}

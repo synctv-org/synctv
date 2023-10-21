@@ -10,25 +10,29 @@ import (
 )
 
 type GithubProvider struct {
-	ClientID, ClientSecret string
+	config oauth2.Config
 }
 
-func (p *GithubProvider) Init(ClientID, ClientSecret string) {
-	p.ClientID = ClientID
-	p.ClientSecret = ClientSecret
+func (p *GithubProvider) Init(ClientID, ClientSecret string, options ...Oauth2Option) {
+	p.config.ClientID = ClientID
+	p.config.ClientSecret = ClientSecret
+	p.config.Scopes = []string{"user"}
+	p.config.Endpoint = github.Endpoint
+	for _, o := range options {
+		o(&p.config)
+	}
 }
 
 func (p *GithubProvider) Provider() OAuth2Provider {
 	return "github"
 }
 
-func (p *GithubProvider) NewConfig() *oauth2.Config {
-	return &oauth2.Config{
-		ClientID:     p.ClientID,
-		ClientSecret: p.ClientSecret,
-		Scopes:       []string{"user"},
-		Endpoint:     github.Endpoint,
+func (p *GithubProvider) NewConfig(options ...Oauth2Option) *oauth2.Config {
+	c := p.config
+	for _, o := range options {
+		o(&c)
 	}
+	return &c
 }
 
 func (p *GithubProvider) GetUserInfo(ctx context.Context, config *oauth2.Config, code string) (*UserInfo, error) {

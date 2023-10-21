@@ -7,8 +7,17 @@ import (
 )
 
 type SyncCache[K comparable, V any] struct {
-	cache  rwmap.RWMap[K, *entry[V]]
-	ticker *time.Ticker
+	cache           rwmap.RWMap[K, *entry[V]]
+	deletedCallback func(v V)
+	ticker          *time.Ticker
+}
+
+type SyncCacheConfig[K comparable, V any] func(sc *SyncCache[K, V])
+
+func WithDeletedCallback[K comparable, V any](callback func(v V)) SyncCacheConfig[K, V] {
+	return func(sc *SyncCache[K, V]) {
+		sc.deletedCallback = callback
+	}
 }
 
 func NewSyncCache[K comparable, V any](trimTime time.Duration) *SyncCache[K, V] {
@@ -31,7 +40,10 @@ func (sc *SyncCache[K, V]) Releases() {
 func (sc *SyncCache[K, V]) trim() {
 	sc.cache.Range(func(key K, value *entry[V]) bool {
 		if value.IsExpired() {
-			sc.cache.Delete(key)
+			e, loaded := sc.cache.LoadAndDelete(key)
+			if loaded && sc.deletedCallback != nil {
+				sc.deletedCallback(e.value)
+			}
 		}
 		return true
 	})

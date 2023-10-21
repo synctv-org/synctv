@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/internal/provider"
 	"github.com/synctv-org/synctv/server/middlewares"
@@ -16,9 +15,9 @@ import (
 
 // /oauth2/login/:type
 func OAuth2(ctx *gin.Context) {
-	p := provider.OAuth2Provider(ctx.Param("type"))
+	t := ctx.Param("type")
 
-	pi, err := provider.GetProvider(p)
+	pi, err := provider.GetProvider(provider.OAuth2Provider(t))
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
@@ -31,9 +30,8 @@ func OAuth2(ctx *gin.Context) {
 }
 
 func OAuth2Api(ctx *gin.Context) {
-	p := provider.OAuth2Provider(ctx.Param("type"))
-
-	pi, err := provider.GetProvider(p)
+	t := ctx.Param("type")
+	pi, err := provider.GetProvider(provider.OAuth2Provider(t))
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 	}
@@ -48,8 +46,6 @@ func OAuth2Api(ctx *gin.Context) {
 
 // /oauth2/callback/:type
 func OAuth2Callback(ctx *gin.Context) {
-	p := provider.OAuth2Provider(ctx.Param("type"))
-
 	code := ctx.Query("code")
 	if code == "" {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("invalid oauth2 code"))
@@ -68,6 +64,7 @@ func OAuth2Callback(ctx *gin.Context) {
 		return
 	}
 
+	p := provider.OAuth2Provider(ctx.Param("type"))
 	pi, err := provider.GetProvider(p)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
@@ -91,15 +88,11 @@ func OAuth2Callback(ctx *gin.Context) {
 		return
 	}
 
-	logrus.Info("asdasd")
-
 	RenderToken(ctx, "/web/", token)
 }
 
 // /oauth2/callback/:type
 func OAuth2CallbackApi(ctx *gin.Context) {
-	p := provider.OAuth2Provider(ctx.Param("type"))
-
 	req := model.OAuth2CallbackReq{}
 	if err := req.Decode(ctx); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
@@ -112,6 +105,7 @@ func OAuth2CallbackApi(ctx *gin.Context) {
 		return
 	}
 
+	p := provider.OAuth2Provider(ctx.Param("type"))
 	pi, err := provider.GetProvider(p)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))

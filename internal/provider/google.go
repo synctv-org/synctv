@@ -32,6 +32,9 @@ func (g *GoogleProvider) NewConfig(options ...Oauth2Option) *oauth2.Config {
 	for _, o := range options {
 		o(&c)
 	}
+	if c.RedirectURL == "" {
+		panic("google oauth2 redirect url is empty")
+	}
 	return &c
 }
 

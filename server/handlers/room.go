@@ -8,7 +8,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/synctv-org/synctv/internal/db"
-	dbModel "github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/server/middlewares"
 	"github.com/synctv-org/synctv/server/model"
@@ -208,14 +207,8 @@ func DeleteRoom(ctx *gin.Context) {
 	room := ctx.MustGet("room").(*op.Room)
 	user := ctx.MustGet("user").(*op.User)
 
-	if !user.HasPermission(room, dbModel.CanDeleteRoom) {
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("you don't have permission to delete room"))
-		return
-	}
-
-	err := op.DeleteRoom(room)
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+	if err := user.DeleteRoom(room.ID); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(err))
 		return
 	}
 
@@ -226,18 +219,18 @@ func SetRoomPassword(ctx *gin.Context) {
 	room := ctx.MustGet("room").(*op.Room)
 	user := ctx.MustGet("user").(*op.User)
 
-	if !user.HasPermission(room, dbModel.CanSetRoomPassword) {
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("you don't have permission to set room password"))
-		return
-	}
-
 	req := model.SetRoomPasswordReq{}
 	if err := model.Decode(ctx, &req); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
-	token, err := middlewares.NewAuthUserToken(user)
+	if err := user.SetRoomPassword(room.ID, req.Password); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(err))
+		return
+	}
+
+	token, err := middlewares.NewAuthRoomToken(user, room)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return

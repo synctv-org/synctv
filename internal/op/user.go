@@ -22,13 +22,24 @@ func (u *User) NewMovie(movie model.MovieInfo) model.Movie {
 	}
 }
 
-func (u *User) HasPermission(room *Room, permission model.Permission) bool {
-	return room.HasPermission(&u.User, permission)
+func (u *User) HasPermission(roomID uint, permission model.Permission) bool {
+	ur, err := db.GetRoomUserRelation(roomID, u.ID)
+	if err != nil {
+		return false
+	}
+	return ur.HasPermission(permission)
 }
 
-func (u *User) DeleteRoom(room *Room) error {
-	if !u.HasPermission(room, model.CanDeleteRoom) {
+func (u *User) DeleteRoom(roomID uint) error {
+	if !u.HasPermission(roomID, model.CanDeleteRoom) {
 		return errors.New("no permission")
 	}
-	return DeleteRoom(room)
+	return DeleteRoom(roomID)
+}
+
+func (u *User) SetRoomPassword(roomID uint, password string) error {
+	if !u.HasPermission(roomID, model.CanSetRoomPassword) {
+		return errors.New("no permission")
+	}
+	return SetRoomPassword(roomID, password)
 }

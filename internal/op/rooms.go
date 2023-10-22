@@ -46,19 +46,20 @@ func LoadOrInitRoom(room *model.Room) (*Room, bool) {
 	})
 }
 
-func DeleteRoom(room *Room) error {
-	room.close()
-	roomCache.Delete(room.ID)
-	return db.DeleteRoomByID(room.ID)
+func DeleteRoom(roomID uint) error {
+	err := db.DeleteRoomByID(roomID)
+	if err != nil {
+		return err
+	}
+	return CloseRoom(roomID)
 }
 
-func DeleteRoomByID(id uint) error {
-	r, ok := roomCache.LoadAndDelete(id)
-	if ok {
+func CloseRoom(roomID uint) error {
+	r, loaded := roomCache.LoadAndDelete(roomID)
+	if loaded {
 		r.close()
 	}
-
-	return db.DeleteRoomByID(r.ID)
+	return nil
 }
 
 func LoadRoomByID(id uint) (*Room, error) {

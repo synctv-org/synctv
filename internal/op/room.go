@@ -71,8 +71,8 @@ func (r *Room) AddMovie(m model.Movie) error {
 	return r.movies.Add(&m)
 }
 
-func (r *Room) HasPermission(user *model.User, permission model.Permission) bool {
-	ur, err := db.GetRoomUserRelation(r.ID, user.ID)
+func (r *Room) HasPermission(userID uint, permission model.Permission) bool {
+	ur, err := db.GetRoomUserRelation(r.ID, userID)
 	if err != nil {
 		return false
 	}

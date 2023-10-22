@@ -159,7 +159,7 @@ func NewPublishKey(ctx *gin.Context) {
 		return
 	}
 
-	if !user.HasPermission(room, dbModel.CanCreateUserPublishKey) && movie.CreatorID != user.ID {
+	if !user.HasPermission(room.ID, dbModel.CanCreateUserPublishKey) && movie.CreatorID != user.ID {
 		ctx.AbortWithStatus(http.StatusForbidden)
 		return
 	}

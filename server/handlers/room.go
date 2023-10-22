@@ -109,11 +109,7 @@ func RoomList(ctx *gin.Context) {
 	// search mode, all, name, creator
 	var search = ctx.DefaultQuery("search", "all")
 
-	scopes := []func(db *gorm.DB) *gorm.DB{
-		db.Paginate(page, pageSize),
-	}
-
-	total := 0
+	scopes := []func(db *gorm.DB) *gorm.DB{}
 
 	switch order {
 	case "createdAt":
@@ -132,7 +128,6 @@ func RoomList(ctx *gin.Context) {
 				scopes = append(scopes, db.WhereCreatorIDIn(db.GerUsersIDByUsernameLike(keyword)))
 			}
 		}
-		resp = genRoomListResp(resp, scopes...)
 	case "roomName":
 		if desc {
 			scopes = append(scopes, db.OrderByDesc("name"))
@@ -149,7 +144,6 @@ func RoomList(ctx *gin.Context) {
 				scopes = append(scopes, db.WhereCreatorIDIn(db.GerUsersIDByUsernameLike(keyword)))
 			}
 		}
-		resp = genRoomListResp(resp, scopes...)
 	case "roomId":
 		if desc {
 			scopes = append(scopes, db.OrderByIDDesc)
@@ -166,14 +160,15 @@ func RoomList(ctx *gin.Context) {
 				scopes = append(scopes, db.WhereCreatorIDIn(db.GerUsersIDByUsernameLike(keyword)))
 			}
 		}
-		resp = genRoomListResp(resp, scopes...)
 	default:
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support order"))
 		return
 	}
 
+	resp = genRoomListResp(resp, append(scopes, db.Paginate(page, pageSize))...)
+
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
-		"total": total,
+		"total": db.GetAllRoomsWithoutHiddenCount(scopes...),
 		"list":  resp,
 	}))
 }

@@ -169,6 +169,12 @@ func GetAllRoomsWithoutHidden(scopes ...func(*gorm.DB) *gorm.DB) []*model.Room {
 	return rooms
 }
 
+func GetAllRoomsWithoutHiddenCount(scopes ...func(*gorm.DB) *gorm.DB) int64 {
+	var count int64
+	db.Model(&model.Room{}).Preload("Setting", "hidden = ?", false).Scopes(scopes...).Count(&count)
+	return count
+}
+
 func GetAllRoomsAndCreator(scopes ...func(*gorm.DB) *gorm.DB) []*model.Room {
 	rooms := []*model.Room{}
 	db.Preload("Creator").Scopes(scopes...).Find(&rooms)

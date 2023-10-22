@@ -165,7 +165,7 @@ func GetAllRooms(scopes ...func(*gorm.DB) *gorm.DB) []*model.Room {
 
 func GetAllRoomsWithoutHidden(scopes ...func(*gorm.DB) *gorm.DB) []*model.Room {
 	rooms := []*model.Room{}
-	db.Preload("Setting").Where("setting.hidden = ?", false).Scopes(scopes...).Find(&rooms)
+	db.Preload("Setting", "hidden = ?", false).Scopes(scopes...).Find(&rooms)
 	return rooms
 }
 

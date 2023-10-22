@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"fmt"
 	"math/rand"
 	"net"
 	"net/url"
@@ -243,4 +244,8 @@ func OptFilePath(filePath *string) {
 	if !filepath.IsAbs(*filePath) {
 		*filePath = filepath.Join(flags.DataDir, *filePath)
 	}
+}
+
+func LIKE(s string) string {
+	return fmt.Sprintf("%%%s%%", s)
 }

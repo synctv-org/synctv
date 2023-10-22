@@ -119,7 +119,7 @@ func InitDatabase(ctx context.Context) error {
 		log.Fatalf("failed to get sqlDB: %s", err.Error())
 	}
 	initRawDB(sqlDB)
-	return db.Init(d)
+	return db.Init(d, conf.Conf.Database.Type)
 }
 
 func newDBLogger() logger.Interface {

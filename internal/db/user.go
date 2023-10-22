@@ -2,6 +2,7 @@ package db
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/provider"
@@ -91,6 +92,18 @@ func GetUserByUsername(username string) (*model.User, error) {
 	return u, err
 }
 
+func GetUserByUsernameLike(username string, scopes ...func(*gorm.DB) *gorm.DB) []*model.User {
+	var users []*model.User
+	db.Where(`username LIKE ?`, fmt.Sprintf("%%%s%%", username)).Scopes(scopes...).Find(&users)
+	return users
+}
+
+func GerUsersIDByUsernameLike(username string, scopes ...func(*gorm.DB) *gorm.DB) []uint {
+	var ids []uint
+	db.Model(&model.User{}).Where(`username LIKE ?`, fmt.Sprintf("%%%s%%", username)).Scopes(scopes...).Pluck("id", &ids)
+	return ids
+}
+
 func GetUserByID(id uint) (*model.User, error) {
 	u := &model.User{}
 	err := db.Where("id = ?", id).First(u).Error
@@ -100,9 +113,9 @@ func GetUserByID(id uint) (*model.User, error) {
 	return u, err
 }
 
-func GetUsersByRoomID(roomID uint) ([]model.User, error) {
+func GetUsersByRoomID(roomID uint, scopes ...func(*gorm.DB) *gorm.DB) ([]model.User, error) {
 	users := []model.User{}
-	err := db.Model(&model.RoomUserRelation{}).Where("room_id = ?", roomID).Find(&users).Error
+	err := db.Model(&model.RoomUserRelation{}).Where("room_id = ?", roomID).Scopes(scopes...).Find(&users).Error
 	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
 		return users, errors.New("room not found")
 	}

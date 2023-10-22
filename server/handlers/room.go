@@ -66,6 +66,9 @@ func RoomList(ctx *gin.Context) {
 
 	var desc = ctx.DefaultQuery("sort", "desc") == "desc"
 
+	// search mode, all, name, creator
+	var search = ctx.DefaultQuery("search", "all")
+
 	scopes := []func(db *gorm.DB) *gorm.DB{
 		db.Paginate(page, pageSize),
 	}
@@ -102,21 +105,51 @@ func RoomList(ctx *gin.Context) {
 		} else {
 			scopes = append(scopes, db.OrderByCreatedAtAsc)
 		}
-		resp = genRoomsResp(resp, scopes...)
+		if keyword := ctx.Query("keyword"); keyword != "" {
+			switch search {
+			case "all":
+				scopes = append(scopes, db.WhereRoomNameLikeOrCreatorIn(keyword, db.GerUsersIDByUsernameLike(keyword)))
+			case "name":
+				scopes = append(scopes, db.WhereRoomNameLike(keyword))
+			case "creator":
+				scopes = append(scopes, db.WhereCreatorIDIn(db.GerUsersIDByUsernameLike(keyword)))
+			}
+		}
+		resp = genRoomListResp(resp, scopes...)
 	case "roomName":
 		if desc {
 			scopes = append(scopes, db.OrderByDesc("name"))
 		} else {
 			scopes = append(scopes, db.OrderByAsc("name"))
 		}
-		resp = genRoomsResp(resp, scopes...)
+		if keyword := ctx.Query("keyword"); keyword != "" {
+			switch search {
+			case "all":
+				scopes = append(scopes, db.WhereRoomNameLikeOrCreatorIn(keyword, db.GerUsersIDByUsernameLike(keyword)))
+			case "name":
+				scopes = append(scopes, db.WhereRoomNameLike(keyword))
+			case "creator":
+				scopes = append(scopes, db.WhereCreatorIDIn(db.GerUsersIDByUsernameLike(keyword)))
+			}
+		}
+		resp = genRoomListResp(resp, scopes...)
 	case "roomId":
 		if desc {
 			scopes = append(scopes, db.OrderByIDDesc)
 		} else {
 			scopes = append(scopes, db.OrderByIDAsc)
 		}
-		resp = genRoomsResp(resp, scopes...)
+		if keyword := ctx.Query("keyword"); keyword != "" {
+			switch search {
+			case "all":
+				scopes = append(scopes, db.WhereRoomNameLikeOrCreatorIn(keyword, db.GerUsersIDByUsernameLike(keyword)))
+			case "name":
+				scopes = append(scopes, db.WhereRoomNameLike(keyword))
+			case "creator":
+				scopes = append(scopes, db.WhereCreatorIDIn(db.GerUsersIDByUsernameLike(keyword)))
+			}
+		}
+		resp = genRoomListResp(resp, scopes...)
 	default:
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support order"))
 		return
@@ -128,8 +161,8 @@ func RoomList(ctx *gin.Context) {
 	}))
 }
 
-func genRoomsResp(resp []*model.RoomListResp, scopes ...func(db *gorm.DB) *gorm.DB) []*model.RoomListResp {
-	for _, r := range db.GetAllRooms(scopes...) {
+func genRoomListResp(resp []*model.RoomListResp, scopes ...func(db *gorm.DB) *gorm.DB) []*model.RoomListResp {
+	for _, r := range db.GetAllRoomsWithoutHidden(scopes...) {
 		resp = append(resp, &model.RoomListResp{
 			RoomId:       r.ID,
 			RoomName:     r.Name,

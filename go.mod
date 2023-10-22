@@ -24,7 +24,7 @@ require (
 	github.com/ulule/limiter/v3 v3.11.2
 	github.com/zijiren233/gencontainer v0.0.0-20230930135658-e410015e13cc
 	github.com/zijiren233/go-colorable v0.0.0-20230930131441-997304c961cb
-	github.com/zijiren233/livelib v0.2.1
+	github.com/zijiren233/livelib v0.2.2-0.20231021080243-c5097432686c
 	github.com/zijiren233/stream v0.5.1
 	github.com/zijiren233/yaml-comment v0.2.1
 	golang.org/x/crypto v0.14.0

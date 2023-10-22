@@ -51,6 +51,8 @@ func Init(e *gin.Engine) {
 
 			room.GET("/check", CheckRoom)
 
+			room.GET("/hot", RoomHotList)
+
 			room.GET("/list", RoomList)
 
 			needAuthUser.POST("/create", CreateRoom)

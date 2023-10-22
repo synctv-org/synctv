@@ -56,7 +56,47 @@ func CreateRoom(ctx *gin.Context) {
 	}))
 }
 
+func RoomHotList(ctx *gin.Context) {
+	page, pageSize, err := GetPageAndPageSize(ctx)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	r := op.GetAllRoomsInCacheWithoutHidden()
+	rs := vec.New[*model.RoomListResp](vec.WithCmpLess[*model.RoomListResp](func(v1, v2 *model.RoomListResp) bool {
+		return v1.PeopleNum < v2.PeopleNum
+	}), vec.WithCmpEqual[*model.RoomListResp](func(v1, v2 *model.RoomListResp) bool {
+		return v1.PeopleNum == v2.PeopleNum
+	}))
+	for _, v := range r {
+		rs.Push(&model.RoomListResp{
+			RoomId:       v.ID,
+			RoomName:     v.Name,
+			PeopleNum:    v.ClientNum(),
+			NeedPassword: v.NeedPassword(),
+			Creator:      op.GetUserName(v.Room.CreatorID),
+			CreatedAt:    v.Room.CreatedAt.UnixMilli(),
+		})
+	}
+
+	rs.SortStable()
+	if ctx.DefaultQuery("sort", "desc") == "desc" {
+		rs.Reverse()
+	}
+
+	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
+		"total": rs.Len(),
+		"list":  utils.GetPageItems(rs.Slice(), page, pageSize),
+	}))
+}
+
 func RoomList(ctx *gin.Context) {
+	order := ctx.Query("order")
+	if order == "" {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("order is required"))
+		return
+	}
 	page, pageSize, err := GetPageAndPageSize(ctx)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
@@ -75,30 +115,7 @@ func RoomList(ctx *gin.Context) {
 
 	total := 0
 
-	switch ctx.DefaultQuery("order", "peopleNum") {
-	case "peopleNum":
-		r := op.GetAllRoomsInCacheWithoutHidden()
-		rs := vec.New[*model.RoomListResp](vec.WithCmpLess[*model.RoomListResp](func(v1, v2 *model.RoomListResp) bool {
-			return v1.PeopleNum < v2.PeopleNum
-		}), vec.WithCmpEqual[*model.RoomListResp](func(v1, v2 *model.RoomListResp) bool {
-			return v1.PeopleNum == v2.PeopleNum
-		}))
-		for _, v := range r {
-			rs.Push(&model.RoomListResp{
-				RoomId:       v.ID,
-				RoomName:     v.Name,
-				PeopleNum:    v.ClientNum(),
-				NeedPassword: v.NeedPassword(),
-				Creator:      op.GetUserName(v.Room.CreatorID),
-				CreatedAt:    v.Room.CreatedAt.UnixMilli(),
-			})
-		}
-		rs.SortStable()
-		if desc {
-			rs.Reverse()
-		}
-		total = rs.Len()
-		resp = utils.GetPageItems(rs.Slice(), page, pageSize)
+	switch order {
 	case "createdAt":
 		if desc {
 			scopes = append(scopes, db.OrderByCreatedAtDesc)

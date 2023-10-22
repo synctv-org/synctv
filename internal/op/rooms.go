@@ -83,6 +83,14 @@ func LoadOrInitRoomByID(id uint) (*Room, error) {
 	return r, nil
 }
 
+func ClientNum(roomID uint) int64 {
+	r, ok := roomCache.Load(roomID)
+	if ok {
+		return r.ClientNum()
+	}
+	return 0
+}
+
 func HasRoom(roomID uint) bool {
 	_, ok := roomCache.Load(roomID)
 	if ok {

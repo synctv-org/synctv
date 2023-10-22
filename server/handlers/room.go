@@ -129,19 +129,11 @@ func RoomList(ctx *gin.Context) {
 }
 
 func genRoomsResp(resp []*model.RoomListResp, scopes ...func(db *gorm.DB) *gorm.DB) []*model.RoomListResp {
-	var clientNum int64
 	for _, r := range db.GetAllRooms(scopes...) {
-		room, err := op.LoadRoomByID(r.ID)
-		if err != nil {
-			clientNum = 0
-		} else {
-			clientNum = room.ClientNum()
-		}
-
 		resp = append(resp, &model.RoomListResp{
 			RoomId:       r.ID,
 			RoomName:     r.Name,
-			PeopleNum:    clientNum,
+			PeopleNum:    op.ClientNum(r.ID),
 			NeedPassword: len(r.HashedPassword) != 0,
 			Creator:      op.GetUserName(r.CreatorID),
 			CreatedAt:    r.CreatedAt.UnixMilli(),
@@ -163,15 +155,8 @@ func CheckRoom(ctx *gin.Context) {
 		return
 	}
 
-	var peopleNum int64
-
-	room, err := op.LoadRoomByID(r.ID)
-	if err == nil {
-		peopleNum = room.ClientNum()
-	}
-
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
-		"peopleNum":    peopleNum,
+		"peopleNum":    op.ClientNum(r.ID),
 		"needPassword": r.NeedPassword(),
 	}))
 }

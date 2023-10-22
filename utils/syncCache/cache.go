@@ -62,18 +62,26 @@ func (sc *SyncCache[K, V]) Load(key K) (value V, loaded bool) {
 }
 
 func (sc *SyncCache[K, V]) LoadOrStore(key K, value V, expire time.Duration) (actual V, loaded bool) {
-	e, loaded := sc.cache.LoadOrStore(key, &entry[V]{
-		expiration: time.Now().Add(expire),
-		value:      value,
-	})
+	e, loaded := sc.cache.LoadOrStore(key, NewEntry[V](value, expire))
 	if e.IsExpired() {
-		sc.cache.Store(key, &entry[V]{
-			expiration: time.Now().Add(expire),
-			value:      value,
-		})
+		sc.cache.Store(key, NewEntry[V](value, expire))
 		return value, false
 	}
 	return e.value, loaded
+}
+
+func (sc *SyncCache[K, V]) AddExpiration(key K, d time.Duration) {
+	e, ok := sc.cache.Load(key)
+	if ok {
+		e.AddExpiration(d)
+	}
+}
+
+func (sc *SyncCache[K, V]) SetExpiration(key K, t time.Time) {
+	e, ok := sc.cache.Load(key)
+	if ok {
+		e.SetExpiration(t)
+	}
 }
 
 func (sc *SyncCache[K, V]) Delete(key K) {

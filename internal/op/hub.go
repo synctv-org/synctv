@@ -9,7 +9,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	log "github.com/sirupsen/logrus"
-	pb "github.com/synctv-org/synctv/proto"
+	pb "github.com/synctv-org/synctv/proto/message"
 	"github.com/synctv-org/synctv/utils"
 	"github.com/zijiren233/gencontainer/rwmap"
 )

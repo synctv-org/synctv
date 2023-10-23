@@ -10,7 +10,6 @@ import (
 	"github.com/synctv-org/synctv/server/middlewares"
 	"github.com/synctv-org/synctv/server/model"
 	"github.com/synctv-org/synctv/utils"
-	"golang.org/x/oauth2"
 )
 
 // /oauth2/login/:type
@@ -26,7 +25,7 @@ func OAuth2(ctx *gin.Context) {
 	state := utils.RandString(16)
 	states.Store(state, struct{}{}, time.Minute*5)
 
-	RenderRedirect(ctx, pi.NewConfig().AuthCodeURL(state, oauth2.AccessTypeOnline))
+	RenderRedirect(ctx, pi.NewAuthURL(state))
 }
 
 func OAuth2Api(ctx *gin.Context) {
@@ -40,7 +39,7 @@ func OAuth2Api(ctx *gin.Context) {
 	states.Store(state, struct{}{}, time.Minute*5)
 
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
-		"url": pi.NewConfig().AuthCodeURL(state, oauth2.AccessTypeOnline),
+		"url": pi.NewAuthURL(state),
 	}))
 }
 
@@ -71,7 +70,13 @@ func OAuth2Callback(ctx *gin.Context) {
 		return
 	}
 
-	ui, err := pi.GetUserInfo(ctx, pi.NewConfig(), code)
+	t, err := pi.GetToken(ctx, code)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	ui, err := pi.GetUserInfo(ctx, t)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
@@ -112,7 +117,13 @@ func OAuth2CallbackApi(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 	}
 
-	ui, err := pi.GetUserInfo(ctx, pi.NewConfig(), req.Code)
+	t, err := pi.GetToken(ctx, req.Code)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	ui, err := pi.GetUserInfo(ctx, t)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return

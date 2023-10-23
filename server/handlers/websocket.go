@@ -10,7 +10,7 @@ import (
 	json "github.com/json-iterator/go"
 	log "github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/internal/op"
-	pb "github.com/synctv-org/synctv/proto"
+	pb "github.com/synctv-org/synctv/proto/message"
 	"github.com/synctv-org/synctv/server/middlewares"
 	"github.com/synctv-org/synctv/server/model"
 	"github.com/synctv-org/synctv/utils"

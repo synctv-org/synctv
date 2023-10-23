@@ -13,37 +13,28 @@ type GoogleProvider struct {
 	config oauth2.Config
 }
 
-func (g *GoogleProvider) Init(ClientID, ClientSecret string, options ...Oauth2Option) {
-	g.config.ClientID = ClientID
-	g.config.ClientSecret = ClientSecret
+func (g *GoogleProvider) Init(c Oauth2Option) {
 	g.config.Scopes = []string{"profile"}
 	g.config.Endpoint = google.Endpoint
-	for _, o := range options {
-		o(&g.config)
-	}
+	g.config.ClientID = c.ClientID
+	g.config.ClientSecret = c.ClientSecret
+	g.config.RedirectURL = c.RedirectURL
 }
 
 func (g *GoogleProvider) Provider() OAuth2Provider {
 	return "google"
 }
 
-func (g *GoogleProvider) NewConfig(options ...Oauth2Option) *oauth2.Config {
-	c := g.config
-	for _, o := range options {
-		o(&c)
-	}
-	if c.RedirectURL == "" {
-		panic("google oauth2 redirect url is empty")
-	}
-	return &c
+func (g *GoogleProvider) NewAuthURL(state string) string {
+	return g.config.AuthCodeURL(state, oauth2.AccessTypeOnline)
 }
 
-func (g *GoogleProvider) GetUserInfo(ctx context.Context, config *oauth2.Config, code string) (*UserInfo, error) {
-	oauth2Token, err := config.Exchange(ctx, code)
-	if err != nil {
-		return nil, err
-	}
-	client := config.Client(ctx, oauth2Token)
+func (g *GoogleProvider) GetToken(ctx context.Context, code string) (*oauth2.Token, error) {
+	return g.config.Exchange(ctx, code)
+}
+
+func (g *GoogleProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*UserInfo, error) {
+	client := g.config.Client(ctx, tk)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://www.googleapis.com/oauth2/v2/userinfo", nil)
 	if err != nil {
 		return nil, err

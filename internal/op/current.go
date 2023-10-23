@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/synctv-org/synctv/internal/model"
-	pb "github.com/synctv-org/synctv/proto"
+	pb "github.com/synctv-org/synctv/proto/message"
 )
 
 type current struct {

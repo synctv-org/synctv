@@ -16,7 +16,7 @@ import (
 	dbModel "github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/internal/rtmp"
-	pb "github.com/synctv-org/synctv/proto"
+	pb "github.com/synctv-org/synctv/proto/message"
 	"github.com/synctv-org/synctv/proxy"
 	"github.com/synctv-org/synctv/server/model"
 	"github.com/synctv-org/synctv/utils"

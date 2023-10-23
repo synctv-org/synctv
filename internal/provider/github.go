@@ -13,34 +13,28 @@ type GithubProvider struct {
 	config oauth2.Config
 }
 
-func (p *GithubProvider) Init(ClientID, ClientSecret string, options ...Oauth2Option) {
-	p.config.ClientID = ClientID
-	p.config.ClientSecret = ClientSecret
+func (p *GithubProvider) Init(c Oauth2Option) {
 	p.config.Scopes = []string{"user"}
 	p.config.Endpoint = github.Endpoint
-	for _, o := range options {
-		o(&p.config)
-	}
+	p.config.ClientID = c.ClientID
+	p.config.ClientSecret = c.ClientSecret
+	p.config.RedirectURL = c.RedirectURL
 }
 
 func (p *GithubProvider) Provider() OAuth2Provider {
 	return "github"
 }
 
-func (p *GithubProvider) NewConfig(options ...Oauth2Option) *oauth2.Config {
-	c := p.config
-	for _, o := range options {
-		o(&c)
-	}
-	return &c
+func (p *GithubProvider) NewAuthURL(state string) string {
+	return p.config.AuthCodeURL(state, oauth2.AccessTypeOnline)
 }
 
-func (p *GithubProvider) GetUserInfo(ctx context.Context, config *oauth2.Config, code string) (*UserInfo, error) {
-	oauth2Token, err := config.Exchange(ctx, code)
-	if err != nil {
-		return nil, err
-	}
-	client := config.Client(ctx, oauth2Token)
+func (p *GithubProvider) GetToken(ctx context.Context, code string) (*oauth2.Token, error) {
+	return p.config.Exchange(ctx, code)
+}
+
+func (p *GithubProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*UserInfo, error) {
+	client := p.config.Client(ctx, tk)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/user", nil)
 	if err != nil {
 		return nil, err

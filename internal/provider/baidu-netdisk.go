@@ -14,38 +14,31 @@ type BaiduNetDiskProvider struct {
 	config oauth2.Config
 }
 
-func (p *BaiduNetDiskProvider) Init(ClientID, ClientSecret string, options ...Oauth2Option) {
-	p.config.ClientID = ClientID
-	p.config.ClientSecret = ClientSecret
+func (p *BaiduNetDiskProvider) Init(c Oauth2Option) {
 	p.config.Scopes = []string{"basic", "netdisk"}
 	p.config.Endpoint = oauth2.Endpoint{
 		AuthURL:  "https://openapi.baidu.com/oauth/2.0/authorize",
 		TokenURL: "https://openapi.baidu.com/oauth/2.0/token",
 	}
-	for _, o := range options {
-		o(&p.config)
-	}
+	p.config.ClientID = c.ClientID
+	p.config.ClientSecret = c.ClientSecret
+	p.config.RedirectURL = c.RedirectURL
 }
 
 func (p *BaiduNetDiskProvider) Provider() OAuth2Provider {
 	return "baidu-netdisk"
 }
 
-func (p *BaiduNetDiskProvider) NewConfig(options ...Oauth2Option) *oauth2.Config {
-	c := p.config
-	for _, o := range options {
-		o(&c)
-	}
-	return &c
+func (p *BaiduNetDiskProvider) NewAuthURL(state string) string {
+	return p.config.AuthCodeURL(state, oauth2.AccessTypeOnline)
 }
 
-func (p *BaiduNetDiskProvider) GetUserInfo(ctx context.Context, config *oauth2.Config, code string) (*UserInfo, error) {
-	oauth2Token, err := config.Exchange(ctx, code)
-	if err != nil {
-		return nil, err
-	}
-	client := config.Client(ctx, oauth2Token)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("https://pan.baidu.com/rest/2.0/xpan/nas?method=uinfo&access_token=%s", oauth2Token.AccessToken), nil)
+func (p *BaiduNetDiskProvider) GetToken(ctx context.Context, code string) (*oauth2.Token, error) {
+	return p.config.Exchange(ctx, code)
+}
+func (p *BaiduNetDiskProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*UserInfo, error) {
+	client := p.config.Client(ctx, tk)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("https://pan.baidu.com/rest/2.0/xpan/nas?method=uinfo&access_token=%s", tk.AccessToken), nil)
 	if err != nil {
 		return nil, err
 	}

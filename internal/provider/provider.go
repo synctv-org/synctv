@@ -14,32 +14,37 @@ var (
 	allowedProviders = make(map[OAuth2Provider]ProviderInterface)
 )
 
+type TokenRefreshed struct {
+	Refreshed bool
+	Token     *oauth2.Token
+}
+
 type UserInfo struct {
 	Username       string
 	ProviderUserID uint
+	TokenRefreshed *TokenRefreshed
 }
 
-type Oauth2Option func(*oauth2.Config)
-
-func WithRedirectURL(url string) Oauth2Option {
-	return func(c *oauth2.Config) {
-		c.RedirectURL = url
-	}
+type Oauth2Option struct {
+	ClientID     string
+	ClientSecret string
+	RedirectURL  string
 }
 
 type ProviderInterface interface {
-	Init(ClientID, ClientSecret string, options ...Oauth2Option)
+	Init(Oauth2Option)
 	Provider() OAuth2Provider
-	NewConfig(options ...Oauth2Option) *oauth2.Config
-	GetUserInfo(ctx context.Context, config *oauth2.Config, code string) (*UserInfo, error)
+	NewAuthURL(string) string
+	GetToken(context.Context, string) (*oauth2.Token, error)
+	GetUserInfo(context.Context, *oauth2.Token) (*UserInfo, error)
 }
 
-func InitProvider(p OAuth2Provider, ClientID, ClientSecret string, options ...Oauth2Option) error {
+func InitProvider(p OAuth2Provider, c Oauth2Option) error {
 	pi, ok := allowedProviders[p]
 	if !ok {
 		return FormatErrNotImplemented(p)
 	}
-	pi.Init(ClientID, ClientSecret, options...)
+	pi.Init(c)
 	if enabledProviders == nil {
 		enabledProviders = make(map[OAuth2Provider]ProviderInterface)
 	}

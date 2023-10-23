@@ -15,34 +15,28 @@ type MicrosoftProvider struct {
 	config oauth2.Config
 }
 
-func (p *MicrosoftProvider) Init(ClientID, ClientSecret string, options ...Oauth2Option) {
-	p.config.ClientID = ClientID
-	p.config.ClientSecret = ClientSecret
+func (p *MicrosoftProvider) Init(c Oauth2Option) {
 	p.config.Scopes = []string{"user.read"}
 	p.config.Endpoint = microsoft.LiveConnectEndpoint
-	for _, o := range options {
-		o(&p.config)
-	}
+	p.config.ClientID = c.ClientID
+	p.config.ClientSecret = c.ClientSecret
+	p.config.RedirectURL = c.RedirectURL
 }
 
 func (p *MicrosoftProvider) Provider() OAuth2Provider {
 	return "microsoft"
 }
 
-func (p *MicrosoftProvider) NewConfig(options ...Oauth2Option) *oauth2.Config {
-	c := p.config
-	for _, o := range options {
-		o(&c)
-	}
-	return &c
+func (p *MicrosoftProvider) NewAuthURL(state string) string {
+	return p.config.AuthCodeURL(state, oauth2.AccessTypeOnline)
 }
 
-func (p *MicrosoftProvider) GetUserInfo(ctx context.Context, config *oauth2.Config, code string) (*UserInfo, error) {
-	oauth2Token, err := config.Exchange(ctx, code)
-	if err != nil {
-		return nil, err
-	}
-	client := config.Client(ctx, oauth2Token)
+func (p *MicrosoftProvider) GetToken(ctx context.Context, code string) (*oauth2.Token, error) {
+	return p.config.Exchange(ctx, code)
+}
+
+func (p *MicrosoftProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*UserInfo, error) {
+	client := p.config.Client(ctx, tk)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://graph.microsoft.com/v1.0/me", nil)
 	if err != nil {
 		return nil, err

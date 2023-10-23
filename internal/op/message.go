@@ -6,7 +6,7 @@ import (
 	json "github.com/json-iterator/go"
 
 	"github.com/gorilla/websocket"
-	pb "github.com/synctv-org/synctv/proto"
+	pb "github.com/synctv-org/synctv/proto/message"
 	"google.golang.org/protobuf/proto"
 )
 

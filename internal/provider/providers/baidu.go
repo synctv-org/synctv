@@ -1,4 +1,4 @@
-package provider
+package providers
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	json "github.com/json-iterator/go"
+	"github.com/synctv-org/synctv/internal/provider"
 	"github.com/zijiren233/stream"
 	"golang.org/x/oauth2"
 )
@@ -16,7 +17,7 @@ type BaiduProvider struct {
 	config oauth2.Config
 }
 
-func (p *BaiduProvider) Init(c Oauth2Option) {
+func (p *BaiduProvider) Init(c provider.Oauth2Option) {
 	p.config.Scopes = []string{"basic"}
 	p.config.Endpoint = oauth2.Endpoint{
 		AuthURL:  "https://openapi.baidu.com/oauth/2.0/authorize",
@@ -27,7 +28,7 @@ func (p *BaiduProvider) Init(c Oauth2Option) {
 	p.config.RedirectURL = c.RedirectURL
 }
 
-func (p *BaiduProvider) Provider() OAuth2Provider {
+func (p *BaiduProvider) Provider() provider.OAuth2Provider {
 	return "baidu"
 }
 
@@ -39,7 +40,7 @@ func (p *BaiduProvider) GetToken(ctx context.Context, code string) (*oauth2.Toke
 	return p.config.Exchange(ctx, code)
 }
 
-func (p *BaiduProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*UserInfo, error) {
+func (p *BaiduProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*provider.UserInfo, error) {
 	client := p.config.Client(ctx, tk)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("https://openapi.baidu.com/rest/2.0/passport/users/getLoggedInUser?access_token=%s", tk.AccessToken), nil)
 	if err != nil {
@@ -55,14 +56,14 @@ func (p *BaiduProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*Use
 	if err != nil {
 		return nil, err
 	}
-	return &UserInfo{
+	return &provider.UserInfo{
 		Username:       ui.Uname,
 		ProviderUserID: uint(crc32.ChecksumIEEE(stream.StringToBytes(ui.Openid))),
 	}, nil
 }
 
 func init() {
-	registerProvider(new(BaiduProvider))
+	provider.RegisterProvider(new(BaiduProvider))
 }
 
 type baiduProviderUserInfo struct {

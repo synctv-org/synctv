@@ -1,10 +1,11 @@
-package provider
+package providers
 
 import (
 	"context"
 	"net/http"
 
 	json "github.com/json-iterator/go"
+	"github.com/synctv-org/synctv/internal/provider"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/github"
 )
@@ -13,7 +14,7 @@ type GithubProvider struct {
 	config oauth2.Config
 }
 
-func (p *GithubProvider) Init(c Oauth2Option) {
+func (p *GithubProvider) Init(c provider.Oauth2Option) {
 	p.config.Scopes = []string{"user"}
 	p.config.Endpoint = github.Endpoint
 	p.config.ClientID = c.ClientID
@@ -21,7 +22,7 @@ func (p *GithubProvider) Init(c Oauth2Option) {
 	p.config.RedirectURL = c.RedirectURL
 }
 
-func (p *GithubProvider) Provider() OAuth2Provider {
+func (p *GithubProvider) Provider() provider.OAuth2Provider {
 	return "github"
 }
 
@@ -33,7 +34,7 @@ func (p *GithubProvider) GetToken(ctx context.Context, code string) (*oauth2.Tok
 	return p.config.Exchange(ctx, code)
 }
 
-func (p *GithubProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*UserInfo, error) {
+func (p *GithubProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*provider.UserInfo, error) {
 	client := p.config.Client(ctx, tk)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/user", nil)
 	if err != nil {
@@ -49,7 +50,7 @@ func (p *GithubProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*Us
 	if err != nil {
 		return nil, err
 	}
-	return &UserInfo{
+	return &provider.UserInfo{
 		Username:       ui.Login,
 		ProviderUserID: ui.ID,
 	}, nil
@@ -61,5 +62,5 @@ type githubUserInfo struct {
 }
 
 func init() {
-	registerProvider(new(GithubProvider))
+	provider.RegisterProvider(new(GithubProvider))
 }

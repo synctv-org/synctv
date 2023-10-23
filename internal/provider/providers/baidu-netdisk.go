@@ -1,4 +1,4 @@
-package provider
+package providers
 
 import (
 	"context"
@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	json "github.com/json-iterator/go"
+	"github.com/synctv-org/synctv/internal/provider"
 	"golang.org/x/oauth2"
 )
 
@@ -14,7 +15,7 @@ type BaiduNetDiskProvider struct {
 	config oauth2.Config
 }
 
-func (p *BaiduNetDiskProvider) Init(c Oauth2Option) {
+func (p *BaiduNetDiskProvider) Init(c provider.Oauth2Option) {
 	p.config.Scopes = []string{"basic", "netdisk"}
 	p.config.Endpoint = oauth2.Endpoint{
 		AuthURL:  "https://openapi.baidu.com/oauth/2.0/authorize",
@@ -25,7 +26,7 @@ func (p *BaiduNetDiskProvider) Init(c Oauth2Option) {
 	p.config.RedirectURL = c.RedirectURL
 }
 
-func (p *BaiduNetDiskProvider) Provider() OAuth2Provider {
+func (p *BaiduNetDiskProvider) Provider() provider.OAuth2Provider {
 	return "baidu-netdisk"
 }
 
@@ -36,7 +37,7 @@ func (p *BaiduNetDiskProvider) NewAuthURL(state string) string {
 func (p *BaiduNetDiskProvider) GetToken(ctx context.Context, code string) (*oauth2.Token, error) {
 	return p.config.Exchange(ctx, code)
 }
-func (p *BaiduNetDiskProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*UserInfo, error) {
+func (p *BaiduNetDiskProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*provider.UserInfo, error) {
 	client := p.config.Client(ctx, tk)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("https://pan.baidu.com/rest/2.0/xpan/nas?method=uinfo&access_token=%s", tk.AccessToken), nil)
 	if err != nil {
@@ -55,14 +56,14 @@ func (p *BaiduNetDiskProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token
 	if ui.Errno != 0 {
 		return nil, fmt.Errorf("baidu oauth2 get user info error: %s", ui.Errmsg)
 	}
-	return &UserInfo{
+	return &provider.UserInfo{
 		Username:       ui.BaiduName,
 		ProviderUserID: ui.Uk,
 	}, nil
 }
 
 func init() {
-	registerProvider(new(BaiduNetDiskProvider))
+	provider.RegisterProvider(new(BaiduNetDiskProvider))
 }
 
 type baiduNetDiskProviderUserInfo struct {

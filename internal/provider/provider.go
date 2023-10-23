@@ -9,11 +9,6 @@ import (
 
 type OAuth2Provider string
 
-var (
-	enabledProviders map[OAuth2Provider]ProviderInterface
-	allowedProviders = make(map[OAuth2Provider]ProviderInterface)
-)
-
 type TokenRefreshed struct {
 	Refreshed bool
 	Token     *oauth2.Token
@@ -39,6 +34,11 @@ type ProviderInterface interface {
 	GetUserInfo(context.Context, *oauth2.Token) (*UserInfo, error)
 }
 
+var (
+	enabledProviders map[OAuth2Provider]ProviderInterface
+	allowedProviders = make(map[OAuth2Provider]ProviderInterface)
+)
+
 func InitProvider(p OAuth2Provider, c Oauth2Option) error {
 	pi, ok := allowedProviders[p]
 	if !ok {
@@ -52,7 +52,7 @@ func InitProvider(p OAuth2Provider, c Oauth2Option) error {
 	return nil
 }
 
-func registerProvider(ps ...ProviderInterface) {
+func RegisterProvider(ps ...ProviderInterface) {
 	for _, p := range ps {
 		allowedProviders[p.Provider()] = p
 	}

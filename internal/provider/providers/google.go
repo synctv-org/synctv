@@ -1,10 +1,11 @@
-package provider
+package providers
 
 import (
 	"context"
 	"net/http"
 
 	json "github.com/json-iterator/go"
+	"github.com/synctv-org/synctv/internal/provider"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 )
@@ -13,7 +14,7 @@ type GoogleProvider struct {
 	config oauth2.Config
 }
 
-func (g *GoogleProvider) Init(c Oauth2Option) {
+func (g *GoogleProvider) Init(c provider.Oauth2Option) {
 	g.config.Scopes = []string{"profile"}
 	g.config.Endpoint = google.Endpoint
 	g.config.ClientID = c.ClientID
@@ -21,7 +22,7 @@ func (g *GoogleProvider) Init(c Oauth2Option) {
 	g.config.RedirectURL = c.RedirectURL
 }
 
-func (g *GoogleProvider) Provider() OAuth2Provider {
+func (g *GoogleProvider) Provider() provider.OAuth2Provider {
 	return "google"
 }
 
@@ -33,7 +34,7 @@ func (g *GoogleProvider) GetToken(ctx context.Context, code string) (*oauth2.Tok
 	return g.config.Exchange(ctx, code)
 }
 
-func (g *GoogleProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*UserInfo, error) {
+func (g *GoogleProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*provider.UserInfo, error) {
 	client := g.config.Client(ctx, tk)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://www.googleapis.com/oauth2/v2/userinfo", nil)
 	if err != nil {
@@ -49,14 +50,14 @@ func (g *GoogleProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*Us
 	if err != nil {
 		return nil, err
 	}
-	return &UserInfo{
+	return &provider.UserInfo{
 		Username:       ui.Name,
 		ProviderUserID: ui.ID,
 	}, nil
 }
 
 func init() {
-	registerProvider(new(GoogleProvider))
+	provider.RegisterProvider(new(GoogleProvider))
 }
 
 type googleUserInfo struct {

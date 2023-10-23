@@ -10,6 +10,21 @@ import (
 	"golang.org/x/oauth2"
 )
 
+// go build -o gitee ./internal/provider/plugins/gitee.go
+//
+// mv gitee {data-dir}/plugins/oauth2/gitee
+//
+// config.yaml:
+//
+//	oauth2:
+//		providers:
+//			gitee:
+//				client_id: xxx
+//				client_secret: xxx
+//				redirect_url: xxx
+//		plugins:
+//			- plugin_file: plugins/oauth2/gitee
+//			arges: []
 type GiteeProvider struct {
 	config oauth2.Config
 }

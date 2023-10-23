@@ -1,9 +1,10 @@
-package provider
+package providers
 
 import (
 	"context"
 	"net/http"
 
+	"github.com/synctv-org/synctv/internal/provider"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/gitlab"
 )
@@ -12,7 +13,7 @@ type GitlabProvider struct {
 	config oauth2.Config
 }
 
-func (g *GitlabProvider) Init(c Oauth2Option) {
+func (g *GitlabProvider) Init(c provider.Oauth2Option) {
 	g.config.Scopes = []string{"read_user"}
 	g.config.Endpoint = gitlab.Endpoint
 	g.config.ClientID = c.ClientID
@@ -20,7 +21,7 @@ func (g *GitlabProvider) Init(c Oauth2Option) {
 	g.config.RedirectURL = c.RedirectURL
 }
 
-func (g *GitlabProvider) Provider() OAuth2Provider {
+func (g *GitlabProvider) Provider() provider.OAuth2Provider {
 	return "gitlab"
 }
 
@@ -32,7 +33,7 @@ func (g *GitlabProvider) GetToken(ctx context.Context, code string) (*oauth2.Tok
 	return g.config.Exchange(ctx, code)
 }
 
-func (g *GitlabProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*UserInfo, error) {
+func (g *GitlabProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*provider.UserInfo, error) {
 	client := g.config.Client(ctx, tk)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://gitlab.com/api/v4/user", nil)
 	if err != nil {
@@ -43,9 +44,9 @@ func (g *GitlabProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*Us
 		return nil, err
 	}
 	defer resp.Body.Close()
-	return nil, FormatErrNotImplemented("gitlab")
+	return nil, provider.FormatErrNotImplemented("gitlab")
 }
 
 func init() {
-	registerProvider(new(GitlabProvider))
+	provider.RegisterProvider(new(GitlabProvider))
 }

@@ -1,4 +1,4 @@
-package provider
+package providers
 
 import (
 	"context"
@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	json "github.com/json-iterator/go"
+	"github.com/synctv-org/synctv/internal/provider"
 	"github.com/zijiren233/stream"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/microsoft"
@@ -15,7 +16,7 @@ type MicrosoftProvider struct {
 	config oauth2.Config
 }
 
-func (p *MicrosoftProvider) Init(c Oauth2Option) {
+func (p *MicrosoftProvider) Init(c provider.Oauth2Option) {
 	p.config.Scopes = []string{"user.read"}
 	p.config.Endpoint = microsoft.LiveConnectEndpoint
 	p.config.ClientID = c.ClientID
@@ -23,7 +24,7 @@ func (p *MicrosoftProvider) Init(c Oauth2Option) {
 	p.config.RedirectURL = c.RedirectURL
 }
 
-func (p *MicrosoftProvider) Provider() OAuth2Provider {
+func (p *MicrosoftProvider) Provider() provider.OAuth2Provider {
 	return "microsoft"
 }
 
@@ -35,7 +36,7 @@ func (p *MicrosoftProvider) GetToken(ctx context.Context, code string) (*oauth2.
 	return p.config.Exchange(ctx, code)
 }
 
-func (p *MicrosoftProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*UserInfo, error) {
+func (p *MicrosoftProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*provider.UserInfo, error) {
 	client := p.config.Client(ctx, tk)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://graph.microsoft.com/v1.0/me", nil)
 	if err != nil {
@@ -51,7 +52,7 @@ func (p *MicrosoftProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (
 	if err != nil {
 		return nil, err
 	}
-	return &UserInfo{
+	return &provider.UserInfo{
 		Username:       ui.DisplayName,
 		ProviderUserID: uint(crc32.ChecksumIEEE(stream.StringToBytes(ui.ID))),
 	}, nil
@@ -63,5 +64,5 @@ type microsoftUserInfo struct {
 }
 
 func init() {
-	registerProvider(new(MicrosoftProvider))
+	provider.RegisterProvider(new(MicrosoftProvider))
 }

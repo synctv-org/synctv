@@ -1,6 +1,9 @@
 package conf
 
-import "github.com/synctv-org/synctv/internal/provider"
+import (
+	"github.com/synctv-org/synctv/internal/provider"
+	"github.com/synctv-org/synctv/internal/provider/providers"
+)
 
 type OAuth2Config struct {
 	Providers map[provider.OAuth2Provider]OAuth2ProviderConfig `yaml:"providers"`
@@ -21,7 +24,7 @@ type OAuth2ProviderConfig struct {
 func DefaultOAuth2Config() OAuth2Config {
 	return OAuth2Config{
 		Providers: map[provider.OAuth2Provider]OAuth2ProviderConfig{
-			(&provider.GithubProvider{}).Provider(): {
+			(&providers.GithubProvider{}).Provider(): {
 				ClientID:     "",
 				ClientSecret: "",
 				RedirectURL:  "",

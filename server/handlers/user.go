@@ -46,7 +46,7 @@ func UserRooms(ctx *gin.Context) {
 
 	var desc = ctx.DefaultQuery("sort", "desc") == "desc"
 
-	// search mode, all, name, creator
+	// search mode, all, name
 	var search = ctx.DefaultQuery("search", "all")
 
 	scopes := []func(db *gorm.DB) *gorm.DB{
@@ -66,8 +66,6 @@ func UserRooms(ctx *gin.Context) {
 				scopes = append(scopes, db.WhereRoomNameLikeOrCreatorIn(keyword, db.GerUsersIDByUsernameLike(keyword)))
 			case "name":
 				scopes = append(scopes, db.WhereRoomNameLike(keyword))
-			case "creator":
-				scopes = append(scopes, db.WhereCreatorIDIn(db.GerUsersIDByUsernameLike(keyword)))
 			}
 		}
 	case "roomName":
@@ -82,8 +80,6 @@ func UserRooms(ctx *gin.Context) {
 				scopes = append(scopes, db.WhereRoomNameLikeOrCreatorIn(keyword, db.GerUsersIDByUsernameLike(keyword)))
 			case "name":
 				scopes = append(scopes, db.WhereRoomNameLike(keyword))
-			case "creator":
-				scopes = append(scopes, db.WhereCreatorIDIn(db.GerUsersIDByUsernameLike(keyword)))
 			}
 		}
 	case "roomId":
@@ -98,8 +94,6 @@ func UserRooms(ctx *gin.Context) {
 				scopes = append(scopes, db.WhereRoomNameLikeOrCreatorIn(keyword, db.GerUsersIDByUsernameLike(keyword)))
 			case "name":
 				scopes = append(scopes, db.WhereRoomNameLike(keyword))
-			case "creator":
-				scopes = append(scopes, db.WhereCreatorIDIn(db.GerUsersIDByUsernameLike(keyword)))
 			}
 		}
 	default:

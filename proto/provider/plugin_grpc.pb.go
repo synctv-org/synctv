@@ -19,11 +19,12 @@ import (
 const _ = grpc.SupportPackageIsVersion7
 
 const (
-	Oauth2Plugin_Init_FullMethodName        = "/proto.Oauth2Plugin/Init"
-	Oauth2Plugin_Provider_FullMethodName    = "/proto.Oauth2Plugin/Provider"
-	Oauth2Plugin_NewAuthURL_FullMethodName  = "/proto.Oauth2Plugin/NewAuthURL"
-	Oauth2Plugin_GetToken_FullMethodName    = "/proto.Oauth2Plugin/GetToken"
-	Oauth2Plugin_GetUserInfo_FullMethodName = "/proto.Oauth2Plugin/GetUserInfo"
+	Oauth2Plugin_Init_FullMethodName         = "/proto.Oauth2Plugin/Init"
+	Oauth2Plugin_Provider_FullMethodName     = "/proto.Oauth2Plugin/Provider"
+	Oauth2Plugin_NewAuthURL_FullMethodName   = "/proto.Oauth2Plugin/NewAuthURL"
+	Oauth2Plugin_GetToken_FullMethodName     = "/proto.Oauth2Plugin/GetToken"
+	Oauth2Plugin_RefreshToken_FullMethodName = "/proto.Oauth2Plugin/RefreshToken"
+	Oauth2Plugin_GetUserInfo_FullMethodName  = "/proto.Oauth2Plugin/GetUserInfo"
 )
 
 // Oauth2PluginClient is the client API for Oauth2Plugin service.
@@ -34,6 +35,7 @@ type Oauth2PluginClient interface {
 	Provider(ctx context.Context, in *Enpty, opts ...grpc.CallOption) (*ProviderResp, error)
 	NewAuthURL(ctx context.Context, in *NewAuthURLReq, opts ...grpc.CallOption) (*NewAuthURLResp, error)
 	GetToken(ctx context.Context, in *GetTokenReq, opts ...grpc.CallOption) (*Token, error)
+	RefreshToken(ctx context.Context, in *RefreshTokenReq, opts ...grpc.CallOption) (*RefreshTokenResp, error)
 	GetUserInfo(ctx context.Context, in *GetUserInfoReq, opts ...grpc.CallOption) (*GetUserInfoResp, error)
 }
 
@@ -81,6 +83,15 @@ func (c *oauth2PluginClient) GetToken(ctx context.Context, in *GetTokenReq, opts
 	return out, nil
 }
 
+func (c *oauth2PluginClient) RefreshToken(ctx context.Context, in *RefreshTokenReq, opts ...grpc.CallOption) (*RefreshTokenResp, error) {
+	out := new(RefreshTokenResp)
+	err := c.cc.Invoke(ctx, Oauth2Plugin_RefreshToken_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *oauth2PluginClient) GetUserInfo(ctx context.Context, in *GetUserInfoReq, opts ...grpc.CallOption) (*GetUserInfoResp, error) {
 	out := new(GetUserInfoResp)
 	err := c.cc.Invoke(ctx, Oauth2Plugin_GetUserInfo_FullMethodName, in, out, opts...)
@@ -98,6 +109,7 @@ type Oauth2PluginServer interface {
 	Provider(context.Context, *Enpty) (*ProviderResp, error)
 	NewAuthURL(context.Context, *NewAuthURLReq) (*NewAuthURLResp, error)
 	GetToken(context.Context, *GetTokenReq) (*Token, error)
+	RefreshToken(context.Context, *RefreshTokenReq) (*RefreshTokenResp, error)
 	GetUserInfo(context.Context, *GetUserInfoReq) (*GetUserInfoResp, error)
 	mustEmbedUnimplementedOauth2PluginServer()
 }
@@ -117,6 +129,9 @@ func (UnimplementedOauth2PluginServer) NewAuthURL(context.Context, *NewAuthURLRe
 }
 func (UnimplementedOauth2PluginServer) GetToken(context.Context, *GetTokenReq) (*Token, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetToken not implemented")
+}
+func (UnimplementedOauth2PluginServer) RefreshToken(context.Context, *RefreshTokenReq) (*RefreshTokenResp, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RefreshToken not implemented")
 }
 func (UnimplementedOauth2PluginServer) GetUserInfo(context.Context, *GetUserInfoReq) (*GetUserInfoResp, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetUserInfo not implemented")
@@ -206,6 +221,24 @@ func _Oauth2Plugin_GetToken_Handler(srv interface{}, ctx context.Context, dec fu
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Oauth2Plugin_RefreshToken_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RefreshTokenReq)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(Oauth2PluginServer).RefreshToken(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Oauth2Plugin_RefreshToken_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(Oauth2PluginServer).RefreshToken(ctx, req.(*RefreshTokenReq))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Oauth2Plugin_GetUserInfo_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetUserInfoReq)
 	if err := dec(in); err != nil {
@@ -246,6 +279,10 @@ var Oauth2Plugin_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetToken",
 			Handler:    _Oauth2Plugin_GetToken_Handler,
+		},
+		{
+			MethodName: "RefreshToken",
+			Handler:    _Oauth2Plugin_RefreshToken_Handler,
 		},
 		{
 			MethodName: "GetUserInfo",

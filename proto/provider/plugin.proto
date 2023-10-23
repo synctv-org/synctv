@@ -18,6 +18,10 @@ message Token {
   int64 expiry = 4;
 }
 
+message RefreshTokenReq { string refresh_token = 1; }
+
+message RefreshTokenResp { Token token = 1; }
+
 message ProviderResp { string name = 1; }
 
 message NewAuthURLReq { string state = 1; }
@@ -29,7 +33,6 @@ message GetUserInfoReq { Token token = 1; }
 message GetUserInfoResp {
   string username = 1;
   uint64 provider_user_id = 2;
-  Token token_refreshed = 3;
 }
 
 message Enpty {}
@@ -39,5 +42,6 @@ service Oauth2Plugin {
   rpc Provider(Enpty) returns (ProviderResp) {}
   rpc NewAuthURL(NewAuthURLReq) returns (NewAuthURLResp) {}
   rpc GetToken(GetTokenReq) returns (Token) {}
+  rpc RefreshToken(RefreshTokenReq) returns (RefreshTokenResp) {}
   rpc GetUserInfo(GetUserInfoReq) returns (GetUserInfoResp) {}
 }

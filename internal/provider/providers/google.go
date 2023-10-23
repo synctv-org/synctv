@@ -34,6 +34,10 @@ func (g *GoogleProvider) GetToken(ctx context.Context, code string) (*oauth2.Tok
 	return g.config.Exchange(ctx, code)
 }
 
+func (g *GoogleProvider) RefreshToken(ctx context.Context, tk string) (*oauth2.Token, error) {
+	return g.config.TokenSource(ctx, &oauth2.Token{RefreshToken: tk}).Token()
+}
+
 func (g *GoogleProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*provider.UserInfo, error) {
 	client := g.config.Client(ctx, tk)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://www.googleapis.com/oauth2/v2/userinfo", nil)

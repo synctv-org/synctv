@@ -49,6 +49,21 @@ func (c *GRPCClient) GetToken(ctx context.Context, code string) (*oauth2.Token, 
 	}, nil
 }
 
+func (c *GRPCClient) RefreshToken(ctx context.Context, tk string) (*oauth2.Token, error) {
+	resp, err := c.client.RefreshToken(ctx, &providerpb.RefreshTokenReq{
+		RefreshToken: tk,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &oauth2.Token{
+		AccessToken:  resp.Token.AccessToken,
+		TokenType:    resp.Token.TokenType,
+		RefreshToken: resp.Token.RefreshToken,
+		Expiry:       time.Unix(resp.Token.Expiry, 0),
+	}, nil
+}
+
 func (c *GRPCClient) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*UserInfo, error) {
 	resp, err := c.client.GetUserInfo(ctx, &providerpb.GetUserInfoReq{
 		Token: &providerpb.Token{

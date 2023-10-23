@@ -36,6 +36,10 @@ func (p *MicrosoftProvider) GetToken(ctx context.Context, code string) (*oauth2.
 	return p.config.Exchange(ctx, code)
 }
 
+func (p *MicrosoftProvider) RefreshToken(ctx context.Context, tk string) (*oauth2.Token, error) {
+	return p.config.TokenSource(ctx, &oauth2.Token{RefreshToken: tk}).Token()
+}
+
 func (p *MicrosoftProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*provider.UserInfo, error) {
 	client := p.config.Client(ctx, tk)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://graph.microsoft.com/v1.0/me", nil)

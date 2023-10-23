@@ -37,6 +37,11 @@ func (p *BaiduNetDiskProvider) NewAuthURL(state string) string {
 func (p *BaiduNetDiskProvider) GetToken(ctx context.Context, code string) (*oauth2.Token, error) {
 	return p.config.Exchange(ctx, code)
 }
+
+func (p *BaiduNetDiskProvider) RefreshToken(ctx context.Context, tk string) (*oauth2.Token, error) {
+	return p.config.TokenSource(ctx, &oauth2.Token{RefreshToken: tk}).Token()
+}
+
 func (p *BaiduNetDiskProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*provider.UserInfo, error) {
 	client := p.config.Client(ctx, tk)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("https://pan.baidu.com/rest/2.0/xpan/nas?method=uinfo&access_token=%s", tk.AccessToken), nil)

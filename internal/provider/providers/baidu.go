@@ -40,6 +40,10 @@ func (p *BaiduProvider) GetToken(ctx context.Context, code string) (*oauth2.Toke
 	return p.config.Exchange(ctx, code)
 }
 
+func (p *BaiduProvider) RefreshToken(ctx context.Context, tk string) (*oauth2.Token, error) {
+	return p.config.TokenSource(ctx, &oauth2.Token{RefreshToken: tk}).Token()
+}
+
 func (p *BaiduProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*provider.UserInfo, error) {
 	client := p.config.Client(ctx, tk)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("https://openapi.baidu.com/rest/2.0/passport/users/getLoggedInUser?access_token=%s", tk.AccessToken), nil)

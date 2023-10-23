@@ -36,6 +36,10 @@ func (p *GiteeProvider) GetToken(ctx context.Context, code string) (*oauth2.Toke
 	return p.config.Exchange(ctx, code)
 }
 
+func (p *GiteeProvider) RefreshToken(ctx context.Context, tk string) (*oauth2.Token, error) {
+	return p.config.TokenSource(ctx, &oauth2.Token{RefreshToken: tk}).Token()
+}
+
 func (p *GiteeProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*provider.UserInfo, error) {
 	client := p.config.Client(ctx, tk)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://gitee.com/api/v5/user", nil)

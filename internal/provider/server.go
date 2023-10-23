@@ -57,13 +57,5 @@ func (s *GRPCServer) GetUserInfo(ctx context.Context, req *providerpb.GetUserInf
 		Username:       userInfo.Username,
 		ProviderUserId: uint64(userInfo.ProviderUserID),
 	}
-	if userInfo.TokenRefreshed != nil {
-		resp.TokenRefreshed = &providerpb.Token{
-			AccessToken:  userInfo.TokenRefreshed.Token.AccessToken,
-			TokenType:    userInfo.TokenRefreshed.Token.TokenType,
-			RefreshToken: userInfo.TokenRefreshed.Token.RefreshToken,
-			Expiry:       userInfo.TokenRefreshed.Token.Expiry.Unix(),
-		}
-	}
 	return resp, nil
 }

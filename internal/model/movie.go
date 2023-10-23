@@ -1,20 +1,20 @@
 package model
 
-import (
-	"gorm.io/gorm"
-)
+import "time"
 
 type Movie struct {
-	gorm.Model
-	Position  uint `gorm:"not null"`
-	RoomID    uint `gorm:"not null;index"`
-	CreatorID uint `gorm:"not null;index" json:"creatorId"`
+	ID        uint      `gorm:"primarykey" json:"id"`
+	CreatedAt time.Time `json:"-"`
+	UpdatedAt time.Time `json:"-"`
+	Position  uint      `gorm:"not null" json:"-"`
+	RoomID    uint      `gorm:"not null;index" json:"-"`
+	CreatorID uint      `gorm:"not null;index" json:"creatorId"`
 	MovieInfo
 }
 
 type MovieInfo struct {
-	BaseMovieInfo
-	PullKey string `json:"pullKey"`
+	Base    BaseMovieInfo `gorm:"embedded;embeddedPrefix:base_" json:"base"`
+	PullKey string        `json:"pullKey"`
 }
 
 type BaseMovieInfo struct {

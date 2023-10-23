@@ -61,16 +61,26 @@ func MovieList(ctx *gin.Context) {
 	for i, v := range m {
 		mresp[i] = model.MoviesResp{
 			Id:      v.ID,
-			Base:    m[i].BaseMovieInfo,
+			Base:    m[i].Base,
 			PullKey: v.PullKey,
 			Creater: op.GetUserName(v.CreatorID),
 		}
 	}
 
+	current := room.Current()
+
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
-		"current": room.Current(),
-		"total":   room.GetMoviesCount(),
-		"movies":  mresp,
+		"current": &model.CurrentMovieResp{
+			Status: current.Status,
+			Movie: model.MoviesResp{
+				Id:      current.Movie.ID,
+				Base:    current.Movie.Base,
+				PullKey: current.Movie.PullKey,
+				Creater: op.GetUserName(current.Movie.CreatorID),
+			},
+		},
+		"total":  room.GetMoviesCount(),
+		"movies": mresp,
 	}))
 }
 
@@ -99,7 +109,7 @@ func Movies(ctx *gin.Context) {
 	for i, v := range m {
 		mresp[i] = model.MoviesResp{
 			Id:      v.ID,
-			Base:    m[i].BaseMovieInfo,
+			Base:    m[i].Base,
 			PullKey: v.PullKey,
 			Creater: op.GetUserName(v.CreatorID),
 		}
@@ -122,7 +132,7 @@ func PushMovie(ctx *gin.Context) {
 	}
 
 	mi := user.NewMovie(dbModel.MovieInfo{
-		BaseMovieInfo: dbModel.BaseMovieInfo(req),
+		Base: dbModel.BaseMovieInfo(req),
 	})
 
 	err := room.AddMovie(mi)
@@ -164,7 +174,7 @@ func NewPublishKey(ctx *gin.Context) {
 		return
 	}
 
-	if !movie.RtmpSource {
+	if !movie.Base.RtmpSource {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("only live movie can get publish key"))
 		return
 	}
@@ -361,22 +371,22 @@ func ProxyMovie(ctx *gin.Context) {
 		return
 	}
 
-	if !m.Proxy || m.Live || m.RtmpSource {
+	if !m.Base.Proxy || m.Base.Live || m.Base.RtmpSource {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support proxy"))
 		return
 	}
 
-	if l, err := utils.ParseURLIsLocalIP(m.Url); err != nil || l {
+	if l, err := utils.ParseURLIsLocalIP(m.Base.Url); err != nil || l {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("parse url error or url is local ip"))
 		return
 	}
 
 	r := resty.New().R()
 
-	for k, v := range m.Headers {
+	for k, v := range m.Base.Headers {
 		r.SetHeader(k, v)
 	}
-	resp, err := r.Head(m.Url)
+	resp, err := r.Head(m.Base.Url)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
@@ -399,9 +409,9 @@ func ProxyMovie(ctx *gin.Context) {
 		return
 	}
 
-	hrs := proxy.NewBufferedHttpReadSeeker(128*1024, m.Url,
+	hrs := proxy.NewBufferedHttpReadSeeker(128*1024, m.Base.Url,
 		proxy.WithContext(ctx),
-		proxy.WithHeaders(m.Headers),
+		proxy.WithHeaders(m.Base.Headers),
 		proxy.WithContext(ctx),
 		proxy.WithContentLength(length),
 	)

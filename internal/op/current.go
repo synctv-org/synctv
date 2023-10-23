@@ -90,13 +90,13 @@ func (c *Current) Proto() *pb.Current {
 		Movie: &pb.MovieInfo{
 			Id: uint64(c.Movie.ID),
 			Base: &pb.BaseMovieInfo{
-				Url:        c.Movie.BaseMovieInfo.Url,
-				Name:       c.Movie.BaseMovieInfo.Name,
-				Live:       c.Movie.BaseMovieInfo.Live,
-				Proxy:      c.Movie.BaseMovieInfo.Proxy,
-				RtmpSource: c.Movie.BaseMovieInfo.RtmpSource,
-				Type:       c.Movie.BaseMovieInfo.Type,
-				Headers:    c.Movie.BaseMovieInfo.Headers,
+				Url:        c.Movie.Base.Url,
+				Name:       c.Movie.Base.Name,
+				Live:       c.Movie.Base.Live,
+				Proxy:      c.Movie.Base.Proxy,
+				RtmpSource: c.Movie.Base.RtmpSource,
+				Type:       c.Movie.Base.Type,
+				Headers:    c.Movie.Base.Headers,
 			},
 			PullKey:   c.Movie.PullKey,
 			CreatedAt: c.Movie.CreatedAt.UnixMilli(),
@@ -111,7 +111,7 @@ func (c *Current) Proto() *pb.Current {
 }
 
 func (c *Current) updateSeek() {
-	if c.Movie.BaseMovieInfo.Live {
+	if c.Movie.Base.Live {
 		c.Status.lastUpdate = time.Now()
 		return
 	}
@@ -130,7 +130,7 @@ func (c *Current) setLiveStatus() Status {
 }
 
 func (c *Current) SetStatus(playing bool, seek, rate, timeDiff float64) Status {
-	if c.Movie.BaseMovieInfo.Live {
+	if c.Movie.Base.Live {
 		return c.setLiveStatus()
 	}
 	c.Status.Playing = playing
@@ -145,7 +145,7 @@ func (c *Current) SetStatus(playing bool, seek, rate, timeDiff float64) Status {
 }
 
 func (c *Current) SetSeekRate(seek, rate, timeDiff float64) Status {
-	if c.Movie.BaseMovieInfo.Live {
+	if c.Movie.Base.Live {
 		return c.setLiveStatus()
 	}
 	if c.Status.Playing {
@@ -159,7 +159,7 @@ func (c *Current) SetSeekRate(seek, rate, timeDiff float64) Status {
 }
 
 func (c *Current) SetSeek(seek, timeDiff float64) Status {
-	if c.Movie.BaseMovieInfo.Live {
+	if c.Movie.Base.Live {
 		return c.setLiveStatus()
 	}
 	if c.Status.Playing {

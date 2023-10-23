@@ -11,7 +11,7 @@ import (
 
 type CreateRoomConfig func(r *model.Room)
 
-func WithSetting(setting model.Setting) CreateRoomConfig {
+func WithSetting(setting model.Settings) CreateRoomConfig {
 	return func(r *model.Room) {
 		r.Settings = setting
 	}
@@ -77,7 +77,7 @@ func GetRoomAndCreatorByID(id uint) (*model.Room, error) {
 	return r, err
 }
 
-func ChangeRoomSetting(roomID uint, setting model.Setting) error {
+func ChangeRoomSetting(roomID uint, setting model.Settings) error {
 	err := db.Model(&model.Room{}).Where("id = ?", roomID).Update("setting", setting).Error
 	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
 		return errors.New("room not found")
@@ -165,13 +165,13 @@ func GetAllRooms(scopes ...func(*gorm.DB) *gorm.DB) []*model.Room {
 
 func GetAllRoomsWithoutHidden(scopes ...func(*gorm.DB) *gorm.DB) []*model.Room {
 	rooms := []*model.Room{}
-	db.Preload("Setting", "hidden = ?", false).Scopes(scopes...).Find(&rooms)
+	db.Where("settings_hidden = ?", false).Scopes(scopes...).Find(&rooms)
 	return rooms
 }
 
 func GetAllRoomsWithoutHiddenCount(scopes ...func(*gorm.DB) *gorm.DB) int64 {
 	var count int64
-	db.Model(&model.Room{}).Preload("Setting", "hidden = ?", false).Scopes(scopes...).Count(&count)
+	db.Model(&model.Room{}).Where("settings_hidden = ?", false).Scopes(scopes...).Count(&count)
 	return count
 }
 

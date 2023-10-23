@@ -32,9 +32,9 @@ func (m *movie) Channel() (*rtmps.Channel, error) {
 
 func (m *movie) init() (err error) {
 	switch {
-	case m.RtmpSource && m.Proxy:
+	case m.Base.RtmpSource && m.Base.Proxy:
 		return errors.New("rtmp source and proxy can't be true at the same time")
-	case m.Live && m.RtmpSource:
+	case m.Base.Live && m.Base.RtmpSource:
 		if !conf.Conf.Rtmp.Enable {
 			return errors.New("rtmp is not enabled")
 		}
@@ -45,11 +45,11 @@ func (m *movie) init() (err error) {
 			m.channel = rtmps.NewChannel()
 			m.channel.InitHlsPlayer()
 		}
-	case m.Live && m.Proxy:
+	case m.Base.Live && m.Base.Proxy:
 		if !conf.Conf.Proxy.LiveProxy {
 			return errors.New("live proxy is not enabled")
 		}
-		u, err := url.Parse(m.Url)
+		u, err := url.Parse(m.Base.Url)
 		if err != nil {
 			return err
 		}
@@ -58,7 +58,7 @@ func (m *movie) init() (err error) {
 		}
 		switch u.Scheme {
 		case "rtmp":
-			m.PullKey = uuid.NewMD5(uuid.NameSpaceURL, []byte(m.Url)).String()
+			m.PullKey = uuid.NewMD5(uuid.NameSpaceURL, []byte(m.Base.Url)).String()
 			if m.channel == nil {
 				m.channel = rtmps.NewChannel()
 				m.channel.InitHlsPlayer()
@@ -68,7 +68,7 @@ func (m *movie) init() (err error) {
 							return
 						}
 						cli := core.NewConnClient()
-						if err = cli.Start(m.Url, av.PLAY); err != nil {
+						if err = cli.Start(m.Base.Url, av.PLAY); err != nil {
 							cli.Close()
 							time.Sleep(time.Second)
 							continue
@@ -81,10 +81,10 @@ func (m *movie) init() (err error) {
 				}()
 			}
 		case "http", "https":
-			if m.Type != "flv" {
+			if m.Base.Type != "flv" {
 				return errors.New("only flv is supported")
 			}
-			m.PullKey = uuid.NewMD5(uuid.NameSpaceURL, []byte(m.Url)).String()
+			m.PullKey = uuid.NewMD5(uuid.NameSpaceURL, []byte(m.Base.Url)).String()
 			if m.channel == nil {
 				m.channel = rtmps.NewChannel()
 				m.channel.InitHlsPlayer()
@@ -94,11 +94,11 @@ func (m *movie) init() (err error) {
 							return
 						}
 						r := resty.New().R()
-						for k, v := range m.Headers {
+						for k, v := range m.Base.Headers {
 							r.SetHeader(k, v)
 						}
 						// r.SetHeader("User-Agent", UserAgent)
-						resp, err := r.Get(m.Url)
+						resp, err := r.Get(m.Base.Url)
 						if err != nil {
 							time.Sleep(time.Second)
 							continue
@@ -113,13 +113,13 @@ func (m *movie) init() (err error) {
 		default:
 			return errors.New("unsupported scheme")
 		}
-	case !m.Live && m.RtmpSource:
+	case !m.Base.Live && m.Base.RtmpSource:
 		return errors.New("rtmp source can't be true when movie is not live")
-	case !m.Live && m.Proxy:
+	case !m.Base.Live && m.Base.Proxy:
 		if !conf.Conf.Proxy.MovieProxy {
 			return errors.New("movie proxy is not enabled")
 		}
-		u, err := url.Parse(m.Url)
+		u, err := url.Parse(m.Base.Url)
 		if err != nil {
 			return err
 		}
@@ -129,9 +129,9 @@ func (m *movie) init() (err error) {
 		if u.Scheme != "http" && u.Scheme != "https" {
 			return errors.New("unsupported scheme")
 		}
-		m.PullKey = uuid.NewMD5(uuid.NameSpaceURL, []byte(m.Url)).String()
-	case !m.Live && !m.Proxy, m.Live && !m.Proxy && !m.RtmpSource:
-		u, err := url.Parse(m.Url)
+		m.PullKey = uuid.NewMD5(uuid.NameSpaceURL, []byte(m.Base.Url)).String()
+	case !m.Base.Live && !m.Base.Proxy, m.Base.Live && !m.Base.Proxy && !m.Base.RtmpSource:
+		u, err := url.Parse(m.Base.Url)
 		if err != nil {
 			return err
 		}
@@ -162,6 +162,6 @@ func (m *movie) Update(movie model.BaseMovieInfo) error {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 	m.terminate()
-	m.Movie.BaseMovieInfo = movie
+	m.Movie.Base = movie
 	return m.init()
 }

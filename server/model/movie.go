@@ -6,6 +6,7 @@ import (
 	"github.com/gin-gonic/gin"
 	json "github.com/json-iterator/go"
 	"github.com/synctv-org/synctv/internal/model"
+	"github.com/synctv-org/synctv/internal/op"
 )
 
 var (
@@ -113,4 +114,9 @@ type MoviesResp struct {
 	Base    model.BaseMovieInfo `json:"base"`
 	PullKey string              `json:"pullKey"`
 	Creater string              `json:"creater"`
+}
+
+type CurrentMovieResp struct {
+	Status op.Status  `json:"status"`
+	Movie  MoviesResp `json:"movie"`
 }

@@ -1,6 +1,6 @@
 package model
 
-import "gorm.io/gorm"
+import "time"
 
 type RoomRole uint32
 
@@ -38,7 +38,9 @@ func (p Permission) Has(permission Permission) bool {
 }
 
 type RoomUserRelation struct {
-	gorm.Model
+	ID          uint `gorm:"primarykey"`
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 	UserID      uint     `gorm:"not null;uniqueIndex:idx_user_room"`
 	RoomID      uint     `gorm:"not null;uniqueIndex:idx_user_room"`
 	Role        RoomRole `gorm:"not null"`

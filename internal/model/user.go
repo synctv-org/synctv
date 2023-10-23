@@ -3,6 +3,7 @@ package model
 import (
 	"fmt"
 	"math/rand"
+	"time"
 
 	"gorm.io/gorm"
 )
@@ -17,7 +18,9 @@ const (
 )
 
 type User struct {
-	gorm.Model
+	ID                 uint `gorm:"primarykey"`
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 	Providers          []UserProvider     `gorm:"foreignKey:UserID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 	Username           string             `gorm:"not null;uniqueIndex"`
 	Role               Role               `gorm:"not null"`

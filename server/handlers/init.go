@@ -108,6 +108,8 @@ func Init(e *gin.Engine) {
 			needAuthUser.POST("/logout", LogoutUser)
 
 			needAuthUser.GET("/me", Me)
+
+			needAuthUser.GET("/rooms", UserRooms)
 		}
 	}
 }

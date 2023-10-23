@@ -215,9 +215,14 @@ func LoginRoom(ctx *gin.Context) {
 		return
 	}
 
-	room, err := middlewares.AuthRoomWithPassword(user, req.RoomId, req.Password)
+	room, err := op.LoadOrInitRoomByID(req.RoomId)
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(err))
+		return
+	}
+
+	if room.CreatorID != user.ID && !room.CheckPassword(req.Password) {
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("password error"))
 		return
 	}
 

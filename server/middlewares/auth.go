@@ -87,17 +87,6 @@ func AuthRoom(Authorization string) (*op.User, *op.Room, error) {
 	return u, r, nil
 }
 
-func AuthRoomWithPassword(u *op.User, roomId uint, password string) (*op.Room, error) {
-	r, err := op.LoadOrInitRoomByID(roomId)
-	if err != nil {
-		return nil, err
-	}
-	if !r.CheckPassword(password) {
-		return nil, ErrAuthFailed
-	}
-	return r, nil
-}
-
 func AuthUser(Authorization string) (*op.User, error) {
 	claims, err := authUser(Authorization)
 	if err != nil {

@@ -1,12 +1,12 @@
 package handlers
 
 import (
-	"fmt"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 	dbModel "github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
+	"github.com/synctv-org/synctv/internal/setting"
 	"github.com/synctv-org/synctv/server/model"
 )
 
@@ -14,25 +14,16 @@ func EditAdminSettings(ctx *gin.Context) {
 	// user := ctx.MustGet("user").(*op.User)
 
 	req := model.AdminSettingsReq{}
-	if err := req.Decode(ctx); err != nil {
-		ctx.AbortWithError(http.StatusBadRequest, err)
+	if err := model.Decode(ctx, &req); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
 	for k, v := range req {
-		t, ok := op.GetSettingType(k)
-		if !ok {
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp(fmt.Sprintf("setting %s not found", k)))
+		err := setting.SetValue(k, v)
+		if err != nil {
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 			return
-		}
-		switch t {
-		case dbModel.SettingTypeBool:
-			b, ok := v.(bool)
-			if !ok {
-				ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp(fmt.Sprintf("setting %s is not bool", k)))
-				return
-			}
-			op.BoolSettings[k].Set(b)
 		}
 	}
 
@@ -41,13 +32,17 @@ func EditAdminSettings(ctx *gin.Context) {
 
 func AdminSettings(ctx *gin.Context) {
 	// user := ctx.MustGet("user").(*op.User)
-	group := ctx.Query("group")
+	group := ctx.Param("group")
 	if group == "" {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("group is required"))
 		return
 	}
 
-	s := op.GetSettingByGroup(dbModel.SettingGroup(group))
+	s, ok := setting.GroupsSetting[dbModel.SettingGroup(group)]
+	if !ok {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("group not found"))
+		return
+	}
 	resp := make(gin.H, len(s))
 	for _, v := range s {
 		i, err := v.Interface()
@@ -59,4 +54,48 @@ func AdminSettings(ctx *gin.Context) {
 	}
 
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(resp))
+}
+
+func AddAdmin(ctx *gin.Context) {
+	user := ctx.MustGet("user").(*op.User)
+
+	if !user.IsRoot() {
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("permission denied"))
+		return
+	}
+
+	req := model.IdReq{}
+	if err := model.Decode(ctx, &req); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	if err := user.SetRole(dbModel.RoleAdmin); err != nil {
+		ctx.AbortWithError(http.StatusInternalServerError, err)
+		return
+	}
+
+	ctx.Status(http.StatusNoContent)
+}
+
+func DeleteAdmin(ctx *gin.Context) {
+	user := ctx.MustGet("user").(*op.User)
+
+	if !user.IsRoot() {
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("permission denied"))
+		return
+	}
+
+	req := model.IdReq{}
+	if err := model.Decode(ctx, &req); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	if err := user.SetRole(dbModel.RoleUser); err != nil {
+		ctx.AbortWithError(http.StatusInternalServerError, err)
+		return
+	}
+
+	ctx.Status(http.StatusNoContent)
 }

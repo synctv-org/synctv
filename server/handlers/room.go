@@ -9,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/op"
+	"github.com/synctv-org/synctv/internal/setting"
 	"github.com/synctv-org/synctv/server/middlewares"
 	"github.com/synctv-org/synctv/server/model"
 	"github.com/synctv-org/synctv/utils"
@@ -31,7 +32,7 @@ func (e FormatErrNotSupportPosition) Error() string {
 func CreateRoom(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*op.User)
 
-	v, err := op.DisableCreateRoom.Get()
+	v, err := setting.DisableCreateRoom.Get()
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return

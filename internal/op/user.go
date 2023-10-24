@@ -22,8 +22,12 @@ func (u *User) NewMovie(movie model.MovieInfo) model.Movie {
 	}
 }
 
+func (u *User) IsRoot() bool {
+	return u.Role == model.RoleRoot
+}
+
 func (u *User) IsAdmin() bool {
-	return u.Role == model.RoleAdmin
+	return u.Role >= model.RoleAdmin
 }
 
 func (u *User) IsBanned() bool {
@@ -31,7 +35,7 @@ func (u *User) IsBanned() bool {
 }
 
 func (u *User) HasPermission(roomID uint, permission model.Permission) bool {
-	if u.Role == model.RoleAdmin {
+	if u.Role >= model.RoleAdmin {
 		return true
 	}
 	ur, err := db.GetRoomUserRelation(roomID, u.ID)
@@ -53,4 +57,12 @@ func (u *User) SetRoomPassword(roomID uint, password string) error {
 		return errors.New("no permission")
 	}
 	return SetRoomPassword(roomID, password)
+}
+
+func (u *User) SetRole(role model.Role) error {
+	if err := db.SetRoleByID(u.ID, role); err != nil {
+		return err
+	}
+	u.Role = role
+	return nil
 }

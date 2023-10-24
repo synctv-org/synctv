@@ -14,6 +14,7 @@ const (
 	RoleBanned Role = iota
 	RoleUser
 	RoleAdmin
+	RoleRoot
 )
 
 func (r Role) String() string {
@@ -24,6 +25,8 @@ func (r Role) String() string {
 		return "user"
 	case RoleAdmin:
 		return "admin"
+	case RoleRoot:
+		return "root"
 	default:
 		return "unknown"
 	}
@@ -48,6 +51,10 @@ func (u *User) BeforeCreate(tx *gorm.DB) error {
 		u.Username = fmt.Sprintf("%s#%d", u.Username, rand.Intn(9999))
 	}
 	return nil
+}
+
+func (u *User) IsRoot() bool {
+	return u.Role == RoleRoot
 }
 
 func (u *User) IsAdmin() bool {

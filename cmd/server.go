@@ -29,6 +29,7 @@ var ServerCmd = &cobra.Command{
 			bootstrap.InitLog,
 			bootstrap.InitGinMode,
 			bootstrap.InitDatabase,
+			bootstrap.InitSetting,
 			bootstrap.InitProvider,
 			bootstrap.InitOp,
 			bootstrap.InitRtmp,

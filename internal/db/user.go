@@ -245,3 +245,70 @@ func GetAdmins() []*model.User {
 	db.Where("role >= ?", model.RoleAdmin).Find(&users)
 	return users
 }
+
+func AddAdminByID(userID uint) error {
+	err := db.Model(&model.User{}).Where("id = ?", userID).Update("role", model.RoleAdmin).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return errors.New("user not found")
+	}
+	return err
+}
+
+func RemoveAdminByID(userID uint) error {
+	err := db.Model(&model.User{}).Where("id = ?", userID).Update("role", model.RoleUser).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return errors.New("user not found")
+	}
+	return err
+}
+
+func AddRoot(u *model.User) error {
+	if u.Role == model.RoleRoot {
+		return nil
+	}
+	u.Role = model.RoleRoot
+	return SaveUser(u)
+}
+
+func RemoveRoot(u *model.User) error {
+	if u.Role != model.RoleRoot {
+		return nil
+	}
+	u.Role = model.RoleUser
+	return SaveUser(u)
+}
+
+func AddRootByID(userID uint) error {
+	err := db.Model(&model.User{}).Where("id = ?", userID).Update("role", model.RoleRoot).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return errors.New("user not found")
+	}
+	return err
+}
+
+func RemoveRootByID(userID uint) error {
+	err := db.Model(&model.User{}).Where("id = ?", userID).Update("role", model.RoleUser).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return errors.New("user not found")
+	}
+	return err
+}
+
+func GetRoots() []*model.User {
+	var users []*model.User
+	db.Where("role = ?", model.RoleRoot).Find(&users)
+	return users
+}
+
+func SetRole(u *model.User, role model.Role) error {
+	u.Role = role
+	return SaveUser(u)
+}
+
+func SetRoleByID(userID uint, role model.Role) error {
+	err := db.Model(&model.User{}).Where("id = ?", userID).Update("role", role).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return errors.New("user not found")
+	}
+	return err
+}

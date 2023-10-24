@@ -24,7 +24,7 @@ import (
 //				redirect_url: xxx
 //		plugins:
 //			- plugin_file: plugins/oauth2/gitee
-//			arges: []
+//			  arges: []
 type GiteeProvider struct {
 	config oauth2.Config
 }

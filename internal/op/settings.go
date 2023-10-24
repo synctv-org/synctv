@@ -5,17 +5,26 @@ import (
 	"github.com/synctv-org/synctv/internal/model"
 )
 
-var boolSettings map[string]*Bool
+var BoolSettings map[string]BoolSetting
 
 type Setting interface {
 	Name() string
+	SetRaw(string)
 	Raw() string
 	Type() model.SettingType
 }
 
+func ToSettings[s Setting](settings map[string]s) []Setting {
+	var ss []Setting
+	for _, v := range settings {
+		ss = append(ss, v)
+	}
+	return ss
+}
+
 type BoolSetting interface {
 	Setting
-	Set(value bool) error
+	Set(bool) error
 	Get() (bool, error)
 }
 
@@ -35,13 +44,26 @@ func (b *Bool) Name() string {
 	return b.name
 }
 
+func (b *Bool) SetRaw(s string) {
+	if b.value == s {
+		return
+	}
+	b.value = s
+}
+
 func (b *Bool) Set(value bool) error {
 	if value {
+		if b.value == "1" {
+			return nil
+		}
 		b.value = "1"
 	} else {
+		if b.value == "0" {
+			return nil
+		}
 		b.value = "0"
 	}
-	return db.SetSettingItemValue(b.name, b.value)
+	return db.UpdateSettingItemValue(b.name, b.value)
 }
 
 func (b *Bool) Get() (bool, error) {
@@ -57,34 +79,38 @@ func (b *Bool) Type() model.SettingType {
 }
 
 type Int64Setting interface {
-	Set(value int64) error
+	Set(int64) error
 	Get() (int64, error)
 	Raw() string
 }
 
 type Float64Setting interface {
-	Set(value float64) error
+	Set(float64) error
 	Get() (float64, error)
 	Raw() string
 }
 
 type StringSetting interface {
-	Set(value string) error
+	Set(string) error
 	Get() (string, error)
 	Raw() string
 }
 
-func cleanReg() {
-	boolSettings = nil
-}
-
 func newRegBoolSetting(k, v string) BoolSetting {
 	b := NewBool(k, v)
-	if boolSettings == nil {
-		boolSettings = make(map[string]*Bool)
+	if BoolSettings == nil {
+		BoolSettings = make(map[string]BoolSetting)
 	}
-	boolSettings[k] = b
+	BoolSettings[k] = b
 	return b
+}
+
+func GetSettingType(name string) (model.SettingType, bool) {
+	s, ok := BoolSettings[name]
+	if !ok {
+		return "", false
+	}
+	return s.Type(), true
 }
 
 var (

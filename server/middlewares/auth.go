@@ -2,6 +2,7 @@ package middlewares
 
 import (
 	"errors"
+	"net/http"
 	"strings"
 	"time"
 
@@ -111,6 +112,17 @@ func AuthUser(Authorization string) (*op.User, error) {
 	return u, nil
 }
 
+func AuthAdmin(Authorization string) (*op.User, error) {
+	u, err := AuthUser(Authorization)
+	if err != nil {
+		return nil, err
+	}
+	if !u.IsAdmin() {
+		return nil, errors.New("user is not admin")
+	}
+	return u, nil
+}
+
 func NewAuthUserToken(user *op.User) (string, error) {
 	if user.IsBanned() {
 		return "", errors.New("user banned")
@@ -154,7 +166,7 @@ func NewAuthRoomToken(user *op.User, room *op.Room) (string, error) {
 func AuthRoomMiddleware(ctx *gin.Context) {
 	user, room, err := AuthRoom(ctx.GetHeader("Authorization"))
 	if err != nil {
-		ctx.AbortWithStatusJSON(401, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
 		return
 	}
 
@@ -166,7 +178,18 @@ func AuthRoomMiddleware(ctx *gin.Context) {
 func AuthUserMiddleware(ctx *gin.Context) {
 	user, err := AuthUser(ctx.GetHeader("Authorization"))
 	if err != nil {
-		ctx.AbortWithStatusJSON(401, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
+		return
+	}
+
+	ctx.Set("user", user)
+	ctx.Next()
+}
+
+func AuthAdminMiddleware(ctx *gin.Context) {
+	user, err := AuthAdmin(ctx.GetHeader("Authorization"))
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(err))
 		return
 	}
 

@@ -11,20 +11,26 @@ func Init(size int) error {
 		LRU().
 		Build()
 
-	si, err := db.GetSettingItems()
+	err := initSettings(ToSettings(BoolSettings)...)
 	if err != nil {
-		panic(err)
+		return err
 	}
-	for _, si2 := range si {
-		switch si2.Type {
-		case model.SettingTypeBool:
-			b, ok := boolSettings[si2.Name]
-			if ok {
-				b.value = si2.Value
-			}
-		}
-	}
-	cleanReg()
 
+	return nil
+}
+
+func initSettings(i ...Setting) error {
+	for _, b := range i {
+		s := &model.Setting{
+			Name:  b.Name(),
+			Value: b.Raw(),
+			Type:  model.SettingTypeBool,
+		}
+		err := db.FirstOrCreateSettingItemValue(s)
+		if err != nil {
+			return err
+		}
+		b.SetRaw(s.Value)
+	}
 	return nil
 }

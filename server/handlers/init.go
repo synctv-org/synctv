@@ -38,8 +38,10 @@ func Init(e *gin.Engine) {
 		}
 
 		{
-			// TODO: admin api implement
-			// admin := api.Group("/admin")
+			admin := api.Group("/admin")
+			admin.Use(middlewares.AuthAdminMiddleware)
+
+			admin.POST("/settings", AdminSettings)
 		}
 
 		{

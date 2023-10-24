@@ -37,6 +37,13 @@ func GetSettingItemValue(name string) (string, error) {
 	return value, err
 }
 
-func SetSettingItemValue(name, value string) error {
-	return db.Model(&model.Setting{}).Where("name = ?", name).Assign("value", value).FirstOrCreate(&model.Setting{}).Error
+func FirstOrCreateSettingItemValue(s *model.Setting) error {
+	return db.Where("name = ?", s.Name).Attrs(model.Setting{
+		Value: s.Value,
+		Type:  s.Type,
+	}).FirstOrCreate(s).Error
+}
+
+func UpdateSettingItemValue(name, value string) error {
+	return db.Model(&model.Setting{}).Where("name = ?", name).Update("value", value).Error
 }

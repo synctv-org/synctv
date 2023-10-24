@@ -1,18 +1,19 @@
-package provider
+package plugins
 
 import (
 	"context"
 	"time"
 
+	"github.com/synctv-org/synctv/internal/provider"
 	providerpb "github.com/synctv-org/synctv/proto/provider"
 	"golang.org/x/oauth2"
 )
 
 type GRPCClient struct{ client providerpb.Oauth2PluginClient }
 
-var _ ProviderInterface = (*GRPCClient)(nil)
+var _ provider.ProviderInterface = (*GRPCClient)(nil)
 
-func (c *GRPCClient) Init(o Oauth2Option) {
+func (c *GRPCClient) Init(o provider.Oauth2Option) {
 	c.client.Init(context.Background(), &providerpb.InitReq{
 		ClientId:     o.ClientID,
 		ClientSecret: o.ClientSecret,
@@ -20,12 +21,12 @@ func (c *GRPCClient) Init(o Oauth2Option) {
 	})
 }
 
-func (c *GRPCClient) Provider() OAuth2Provider {
+func (c *GRPCClient) Provider() provider.OAuth2Provider {
 	resp, err := c.client.Provider(context.Background(), &providerpb.Enpty{})
 	if err != nil {
 		return ""
 	}
-	return OAuth2Provider(resp.Name)
+	return provider.OAuth2Provider(resp.Name)
 }
 
 func (c *GRPCClient) NewAuthURL(state string) string {
@@ -64,7 +65,7 @@ func (c *GRPCClient) RefreshToken(ctx context.Context, tk string) (*oauth2.Token
 	}, nil
 }
 
-func (c *GRPCClient) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*UserInfo, error) {
+func (c *GRPCClient) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*provider.UserInfo, error) {
 	resp, err := c.client.GetUserInfo(ctx, &providerpb.GetUserInfoReq{
 		Token: &providerpb.Token{
 			AccessToken:  tk.AccessToken,
@@ -76,7 +77,7 @@ func (c *GRPCClient) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*UserIn
 	if err != nil {
 		return nil, err
 	}
-	return &UserInfo{
+	return &provider.UserInfo{
 		Username:       resp.Username,
 		ProviderUserID: uint(resp.ProviderUserId),
 	}, nil

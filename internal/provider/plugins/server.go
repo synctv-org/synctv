@@ -1,20 +1,21 @@
-package provider
+package plugins
 
 import (
 	"context"
 	"time"
 
+	"github.com/synctv-org/synctv/internal/provider"
 	providerpb "github.com/synctv-org/synctv/proto/provider"
 	"golang.org/x/oauth2"
 )
 
 type GRPCServer struct {
 	providerpb.UnimplementedOauth2PluginServer
-	Impl ProviderInterface
+	Impl provider.ProviderInterface
 }
 
 func (s *GRPCServer) Init(ctx context.Context, req *providerpb.InitReq) (*providerpb.Enpty, error) {
-	s.Impl.Init(Oauth2Option{
+	s.Impl.Init(provider.Oauth2Option{
 		ClientID:     req.ClientId,
 		ClientSecret: req.ClientSecret,
 		RedirectURL:  req.RedirectUrl,

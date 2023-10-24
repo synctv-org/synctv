@@ -30,6 +30,17 @@ func (e FormatErrNotSupportPosition) Error() string {
 
 func CreateRoom(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*op.User)
+
+	v, err := op.DisableCreateRoom.Get()
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
+	if v && !user.IsAdmin() {
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("create room is disabled"))
+		return
+	}
+
 	req := model.CreateRoomReq{}
 	if err := model.Decode(ctx, &req); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))

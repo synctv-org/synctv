@@ -67,13 +67,13 @@ func (p *BaiduNetDiskProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token
 	}, nil
 }
 
-func init() {
-	provider.RegisterProvider(new(BaiduNetDiskProvider))
-}
-
 type baiduNetDiskProviderUserInfo struct {
 	BaiduName string `json:"baidu_name"`
 	Errmsg    string `json:"errmsg"`
 	Errno     int    `json:"errno"`
 	Uk        uint   `json:"uk"`
+}
+
+func init() {
+	RegisterProvider(new(BaiduNetDiskProvider))
 }

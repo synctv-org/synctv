@@ -5,38 +5,38 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-func GetSettingItems() ([]*model.SettingItem, error) {
-	var items []*model.SettingItem
+func GetSettingItems() ([]*model.Setting, error) {
+	var items []*model.Setting
 	err := db.Find(&items).Error
 	return items, err
 }
 
-func GetSettingItemByName(name string) (*model.SettingItem, error) {
-	var item model.SettingItem
+func GetSettingItemByName(name string) (*model.Setting, error) {
+	var item model.Setting
 	err := db.Where("name = ?", name).First(&item).Error
 	return &item, err
 }
 
-func SaveSettingItem(item *model.SettingItem) error {
+func SaveSettingItem(item *model.Setting) error {
 	return db.Clauses(clause.OnConflict{
 		UpdateAll: true,
 	}).Save(item).Error
 }
 
-func DeleteSettingItem(item *model.SettingItem) error {
+func DeleteSettingItem(item *model.Setting) error {
 	return db.Delete(item).Error
 }
 
 func DeleteSettingItemByName(name string) error {
-	return db.Where("name = ?", name).Delete(&model.SettingItem{}).Error
+	return db.Where("name = ?", name).Delete(&model.Setting{}).Error
 }
 
 func GetSettingItemValue(name string) (string, error) {
 	var value string
-	err := db.Model(&model.SettingItem{}).Where("name = ?", name).Select("value").First(&value).Error
+	err := db.Model(&model.Setting{}).Where("name = ?", name).Select("value").First(&value).Error
 	return value, err
 }
 
 func SetSettingItemValue(name, value string) error {
-	return db.Model(&model.SettingItem{}).Where("name = ?", name).Update("value", value).Error
+	return db.Model(&model.Setting{}).Where("name = ?", name).Assign("value", value).FirstOrCreate(&model.Setting{}).Error
 }

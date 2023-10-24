@@ -48,9 +48,9 @@ func (g *GitlabProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*pr
 		return nil, err
 	}
 	defer resp.Body.Close()
-	return nil, provider.FormatErrNotImplemented("gitlab")
+	return nil, FormatErrNotImplemented("gitlab")
 }
 
 func init() {
-	provider.RegisterProvider(new(GitlabProvider))
+	RegisterProvider(new(GitlabProvider))
 }

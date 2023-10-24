@@ -8,7 +8,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/synctv-org/synctv/internal/conf"
-	dbModel "github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/server/model"
 	"github.com/zijiren233/stream"
@@ -76,7 +75,7 @@ func AuthRoom(Authorization string) (*op.User, *op.Room, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	if u.Role == dbModel.RoleBanned {
+	if u.IsBanned() {
 		return nil, nil, errors.New("user banned")
 	}
 
@@ -105,7 +104,7 @@ func AuthUser(Authorization string) (*op.User, error) {
 	if err != nil {
 		return nil, err
 	}
-	if u.Role == dbModel.RoleBanned {
+	if u.IsBanned() {
 		return nil, errors.New("user banned")
 	}
 
@@ -113,7 +112,7 @@ func AuthUser(Authorization string) (*op.User, error) {
 }
 
 func NewAuthUserToken(user *op.User) (string, error) {
-	if user.Role == dbModel.RoleBanned {
+	if user.IsBanned() {
 		return "", errors.New("user banned")
 	}
 	t, err := time.ParseDuration(conf.Conf.Jwt.Expire)
@@ -131,7 +130,7 @@ func NewAuthUserToken(user *op.User) (string, error) {
 }
 
 func NewAuthRoomToken(user *op.User, room *op.Room) (string, error) {
-	if user.Role == dbModel.RoleBanned {
+	if user.IsBanned() {
 		return "", errors.New("user banned")
 	}
 	t, err := time.ParseDuration(conf.Conf.Jwt.Expire)

@@ -67,7 +67,7 @@ func (p *BaiduProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*pro
 }
 
 func init() {
-	provider.RegisterProvider(new(BaiduProvider))
+	RegisterProvider(new(BaiduProvider))
 }
 
 type baiduProviderUserInfo struct {

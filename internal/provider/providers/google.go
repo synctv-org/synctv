@@ -61,7 +61,7 @@ func (g *GoogleProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*pr
 }
 
 func init() {
-	provider.RegisterProvider(new(GoogleProvider))
+	RegisterProvider(new(GoogleProvider))
 }
 
 type googleUserInfo struct {

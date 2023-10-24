@@ -1,4 +1,4 @@
-package provider
+package plugins
 
 import (
 	"context"
@@ -7,6 +7,8 @@ import (
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/go-plugin"
+	"github.com/synctv-org/synctv/internal/provider"
+	"github.com/synctv-org/synctv/internal/provider/providers"
 	sysnotify "github.com/synctv-org/synctv/internal/sysNotify"
 	providerpb "github.com/synctv-org/synctv/proto/provider"
 	"google.golang.org/grpc"
@@ -26,11 +28,11 @@ func InitProviderPlugins(name string, arg []string, Logger hclog.Logger) error {
 	if err != nil {
 		return err
 	}
-	provider, ok := i.(ProviderInterface)
+	provider, ok := i.(provider.ProviderInterface)
 	if !ok {
 		return fmt.Errorf("%s not implement ProviderInterface", name)
 	}
-	RegisterProvider(provider)
+	providers.RegisterProvider(provider)
 	return nil
 }
 
@@ -46,7 +48,7 @@ var pluginMap = map[string]plugin.Plugin{
 
 type ProviderPlugin struct {
 	plugin.Plugin
-	Impl ProviderInterface
+	Impl provider.ProviderInterface
 }
 
 func (p *ProviderPlugin) GRPCServer(broker *plugin.GRPCBroker, s *grpc.Server) error {

@@ -22,6 +22,14 @@ func (u *User) NewMovie(movie model.MovieInfo) model.Movie {
 	}
 }
 
+func (u *User) IsAdmin() bool {
+	return u.Role == model.RoleAdmin
+}
+
+func (u *User) IsBanned() bool {
+	return u.Role == model.RoleBanned
+}
+
 func (u *User) HasPermission(roomID uint, permission model.Permission) bool {
 	if u.Role == model.RoleAdmin {
 		return true

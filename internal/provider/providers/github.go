@@ -66,5 +66,5 @@ type githubUserInfo struct {
 }
 
 func init() {
-	provider.RegisterProvider(new(GithubProvider))
+	RegisterProvider(new(GithubProvider))
 }

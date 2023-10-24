@@ -68,5 +68,5 @@ type microsoftUserInfo struct {
 }
 
 func init() {
-	provider.RegisterProvider(new(MicrosoftProvider))
+	RegisterProvider(new(MicrosoftProvider))
 }

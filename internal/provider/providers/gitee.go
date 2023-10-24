@@ -68,5 +68,5 @@ type giteeUserInfo struct {
 }
 
 func init() {
-	provider.RegisterProvider(new(GiteeProvider))
+	RegisterProvider(new(GiteeProvider))
 }

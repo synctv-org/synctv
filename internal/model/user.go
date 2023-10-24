@@ -49,3 +49,11 @@ func (u *User) BeforeCreate(tx *gorm.DB) error {
 	}
 	return nil
 }
+
+func (u *User) IsAdmin() bool {
+	return u.Role == RoleAdmin
+}
+
+func (u *User) IsBanned() bool {
+	return u.Role == RoleBanned
+}

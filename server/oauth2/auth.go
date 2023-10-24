@@ -7,6 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/internal/provider"
+	"github.com/synctv-org/synctv/internal/provider/providers"
 	"github.com/synctv-org/synctv/server/middlewares"
 	"github.com/synctv-org/synctv/server/model"
 	"github.com/synctv-org/synctv/utils"
@@ -16,7 +17,7 @@ import (
 func OAuth2(ctx *gin.Context) {
 	t := ctx.Param("type")
 
-	pi, err := provider.GetProvider(provider.OAuth2Provider(t))
+	pi, err := providers.GetProvider(provider.OAuth2Provider(t))
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
@@ -30,7 +31,7 @@ func OAuth2(ctx *gin.Context) {
 
 func OAuth2Api(ctx *gin.Context) {
 	t := ctx.Param("type")
-	pi, err := provider.GetProvider(provider.OAuth2Provider(t))
+	pi, err := providers.GetProvider(provider.OAuth2Provider(t))
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 	}
@@ -64,7 +65,7 @@ func OAuth2Callback(ctx *gin.Context) {
 	}
 
 	p := provider.OAuth2Provider(ctx.Param("type"))
-	pi, err := provider.GetProvider(p)
+	pi, err := providers.GetProvider(p)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
@@ -112,7 +113,7 @@ func OAuth2CallbackApi(ctx *gin.Context) {
 	}
 
 	p := provider.OAuth2Provider(ctx.Param("type"))
-	pi, err := provider.GetProvider(p)
+	pi, err := providers.GetProvider(p)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 	}

@@ -10,6 +10,8 @@ import (
 	"github.com/synctv-org/synctv/cmd/flags"
 	"github.com/synctv-org/synctv/internal/conf"
 	"github.com/synctv-org/synctv/internal/provider"
+	"github.com/synctv-org/synctv/internal/provider/plugins"
+	"github.com/synctv-org/synctv/internal/provider/providers"
 	"github.com/synctv-org/synctv/utils"
 )
 
@@ -27,7 +29,7 @@ func InitProvider(ctx context.Context) error {
 			log.Errorf("create plugin dir: %s failed: %s", filepath.Dir(op.PluginFile), err)
 			return err
 		}
-		err = provider.InitProviderPlugins(op.PluginFile, op.Arges, hclog.New(&hclog.LoggerOptions{
+		err = plugins.InitProviderPlugins(op.PluginFile, op.Arges, hclog.New(&hclog.LoggerOptions{
 			Name:   op.PluginFile,
 			Level:  logLevle,
 			Output: logOur,
@@ -39,7 +41,7 @@ func InitProvider(ctx context.Context) error {
 		}
 	}
 	for op, v := range conf.Conf.OAuth2.Providers {
-		err := provider.InitProvider(op, provider.Oauth2Option{
+		err := providers.InitProvider(op, provider.Oauth2Option{
 			ClientID:     v.ClientID,
 			ClientSecret: v.ClientSecret,
 			RedirectURL:  v.RedirectURL,

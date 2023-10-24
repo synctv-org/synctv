@@ -27,7 +27,14 @@ func AdminSettings(ctx *gin.Context) {
 		}
 		switch t {
 		case dbModel.SettingTypeBool:
-			op.BoolSettings[k].Set(v == "1")
+			b, ok := v.(bool)
+			if !ok {
+				ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp(fmt.Sprintf("setting %s is not bool", k)))
+				return
+			}
+			op.BoolSettings[k].Set(b)
 		}
 	}
+
+	ctx.Status(http.StatusNoContent)
 }

@@ -5,7 +5,7 @@ import (
 	json "github.com/json-iterator/go"
 )
 
-type AdminSettingsReq map[string]string
+type AdminSettingsReq map[string]any
 
 func (asr *AdminSettingsReq) Validate() error {
 	return nil

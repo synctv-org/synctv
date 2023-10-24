@@ -41,7 +41,9 @@ func Init(e *gin.Engine) {
 			admin := api.Group("/admin")
 			admin.Use(middlewares.AuthAdminMiddleware)
 
-			admin.POST("/settings", AdminSettings)
+			admin.GET("/settings", AdminSettings)
+
+			admin.POST("/settings", EditAdminSettings)
 		}
 
 		{

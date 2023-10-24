@@ -24,13 +24,14 @@ func initSettings(i ...Setting) error {
 		s := &model.Setting{
 			Name:  b.Name(),
 			Value: b.Raw(),
-			Type:  model.SettingTypeBool,
+			Type:  b.Type(),
+			Group: b.Group(),
 		}
 		err := db.FirstOrCreateSettingItemValue(s)
 		if err != nil {
 			return err
 		}
-		b.SetRaw(s.Value)
+		b.InitRaw(s.Value)
 	}
 	return nil
 }

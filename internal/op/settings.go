@@ -5,19 +5,43 @@ import (
 	"github.com/synctv-org/synctv/internal/model"
 )
 
-var BoolSettings map[string]BoolSetting
+var (
+	BoolSettings map[string]BoolSetting
+)
 
 type Setting interface {
 	Name() string
-	SetRaw(string)
+	InitRaw(string)
 	Raw() string
 	Type() model.SettingType
+	Group() model.SettingGroup
+	Interface() (any, error)
 }
 
-func ToSettings[s Setting](settings map[string]s) []Setting {
-	var ss []Setting
+func GetSettingByGroup(group model.SettingGroup) []Setting {
+	return settingByGroup(group, ToSettings(BoolSettings)...)
+}
+
+func settingByGroup(group model.SettingGroup, settings ...Setting) []Setting {
+	s := make([]Setting, 0, len(settings))
+	for _, bs := range settings {
+		if bs.Group() == group {
+			s = append(s, bs)
+		}
+	}
+	return s
+}
+
+func ToSettings[s Setting](settings ...map[string]s) []Setting {
+	l := 0
 	for _, v := range settings {
-		ss = append(ss, v)
+		l += len(v)
+	}
+	var ss []Setting = make([]Setting, 0, l)
+	for _, v := range settings {
+		for _, s := range v {
+			ss = append(ss, s)
+		}
 	}
 	return ss
 }
@@ -44,7 +68,7 @@ func (b *Bool) Name() string {
 	return b.name
 }
 
-func (b *Bool) SetRaw(s string) {
+func (b *Bool) InitRaw(s string) {
 	if b.value == s {
 		return
 	}
@@ -76,6 +100,14 @@ func (b *Bool) Raw() string {
 
 func (b *Bool) Type() model.SettingType {
 	return model.SettingTypeBool
+}
+
+func (b *Bool) Group() model.SettingGroup {
+	return model.SettingGroupRoom
+}
+
+func (b *Bool) Interface() (any, error) {
+	return b.Get()
 }
 
 type Int64Setting interface {

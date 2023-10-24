@@ -41,6 +41,7 @@ func FirstOrCreateSettingItemValue(s *model.Setting) error {
 	return db.Where("name = ?", s.Name).Attrs(model.Setting{
 		Value: s.Value,
 		Type:  s.Type,
+		Group: s.Group,
 	}).FirstOrCreate(s).Error
 }
 

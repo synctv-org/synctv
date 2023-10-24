@@ -11,6 +11,10 @@ const (
 
 type SettingGroup string
 
+func (s SettingGroup) String() string {
+	return string(s)
+}
+
 const (
 	SettingGroupRoom SettingGroup = "room"
 	SettingGroupUser SettingGroup = "user"

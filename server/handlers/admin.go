@@ -6,7 +6,7 @@ import (
 	"github.com/gin-gonic/gin"
 	dbModel "github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
-	"github.com/synctv-org/synctv/internal/setting"
+	"github.com/synctv-org/synctv/internal/settings"
 	"github.com/synctv-org/synctv/server/model"
 )
 
@@ -20,7 +20,7 @@ func EditAdminSettings(ctx *gin.Context) {
 	}
 
 	for k, v := range req {
-		err := setting.SetValue(k, v)
+		err := settings.SetValue(k, v)
 		if err != nil {
 			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 			return
@@ -38,7 +38,7 @@ func AdminSettings(ctx *gin.Context) {
 		return
 	}
 
-	s, ok := setting.GroupsSetting[dbModel.SettingGroup(group)]
+	s, ok := settings.GroupSettings[dbModel.SettingGroup(group)]
 	if !ok {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("group not found"))
 		return

@@ -1,4 +1,4 @@
-package setting
+package settings
 
 import (
 	"fmt"
@@ -10,15 +10,18 @@ import (
 
 var (
 	Settings      map[string]Setting
-	GroupsSetting map[model.SettingGroup][]Setting
+	GroupSettings map[model.SettingGroup][]Setting
 )
 
 type Setting interface {
 	Name() string
-	InitRaw(string)
-	Raw() string
 	Type() model.SettingType
 	Group() model.SettingGroup
+	Init(string)
+	String() string
+	SetString(string) error
+	DefaultString() string
+	DefaultInterface() any
 	Interface() (any, error)
 }
 
@@ -112,7 +115,7 @@ func initSettings(i ...Setting) error {
 	for _, b := range i {
 		s := &model.Setting{
 			Name:  b.Name(),
-			Value: b.Raw(),
+			Value: b.String(),
 			Type:  b.Type(),
 			Group: b.Group(),
 		}
@@ -120,7 +123,7 @@ func initSettings(i ...Setting) error {
 		if err != nil {
 			return err
 		}
-		b.InitRaw(s.Value)
+		b.Init(s.Value)
 	}
 	return nil
 }

@@ -14,8 +14,20 @@ const (
 	RoleBanned Role = iota
 	RoleUser
 	RoleAdmin
-	RoleRoot
 )
+
+func (r Role) String() string {
+	switch r {
+	case RoleBanned:
+		return "banned"
+	case RoleUser:
+		return "user"
+	case RoleAdmin:
+		return "admin"
+	default:
+		return "unknown"
+	}
+}
 
 type User struct {
 	ID                 uint `gorm:"primarykey"`

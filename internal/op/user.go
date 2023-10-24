@@ -23,6 +23,9 @@ func (u *User) NewMovie(movie model.MovieInfo) model.Movie {
 }
 
 func (u *User) HasPermission(roomID uint, permission model.Permission) bool {
+	if u.Role == model.RoleAdmin {
+		return true
+	}
 	ur, err := db.GetRoomUserRelation(roomID, u.ID)
 	if err != nil {
 		return false

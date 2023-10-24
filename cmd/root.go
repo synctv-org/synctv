@@ -7,14 +7,16 @@ import (
 
 	"github.com/mitchellh/go-homedir"
 	"github.com/spf13/cobra"
+	"github.com/synctv-org/synctv/cmd/admin"
 	"github.com/synctv-org/synctv/cmd/flags"
+	"github.com/synctv-org/synctv/cmd/user"
 	"github.com/synctv-org/synctv/internal/version"
 )
 
 var RootCmd = &cobra.Command{
-	Use:   "synctv-server",
-	Short: "synctv-server",
-	Long:  `synctv-server https://github.com/synctv-org/synctv`,
+	Use:   "synctv",
+	Short: "synctv",
+	Long:  `synctv https://github.com/synctv-org/synctv`,
 }
 
 func Execute() {
@@ -37,4 +39,9 @@ func init() {
 	}
 	RootCmd.PersistentFlags().StringVar(&flags.DataDir, "data-dir", filepath.Join(home, ".synctv"), "data dir")
 	RootCmd.PersistentFlags().StringVarP(&flags.ConfigFile, "config", "f", "", "config file path")
+}
+
+func init() {
+	RootCmd.AddCommand(admin.AdminCmd)
+	RootCmd.AddCommand(user.UserCmd)
 }

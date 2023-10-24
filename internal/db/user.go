@@ -105,6 +105,15 @@ func GerUsersIDByUsernameLike(username string, scopes ...func(*gorm.DB) *gorm.DB
 	return ids
 }
 
+func GetUserByIDOrUsernameLike(idOrUsername string, scopes ...func(*gorm.DB) *gorm.DB) ([]*model.User, error) {
+	var users []*model.User
+	err := db.Where("id = ? OR username LIKE ?", idOrUsername, fmt.Sprintf("%%%s%%", idOrUsername)).Scopes(scopes...).Find(&users).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return users, errors.New("user not found")
+	}
+	return users, err
+}
+
 func GetUserByID(id uint) (*model.User, error) {
 	u := &model.User{}
 	err := db.Where("id = ?", id).First(u).Error
@@ -123,6 +132,38 @@ func GetUsersByRoomID(roomID uint, scopes ...func(*gorm.DB) *gorm.DB) ([]model.U
 	return users, err
 }
 
+func BanUser(u *model.User) error {
+	if u.Role == model.RoleBanned {
+		return nil
+	}
+	u.Role = model.RoleBanned
+	return SaveUser(u)
+}
+
+func BanUserByID(userID uint) error {
+	err := db.Model(&model.User{}).Where("id = ?", userID).Update("role", model.RoleBanned).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return errors.New("user not found")
+	}
+	return err
+}
+
+func UnbanUser(u *model.User) error {
+	if u.Role != model.RoleBanned {
+		return errors.New("user is not banned")
+	}
+	u.Role = model.RoleUser
+	return SaveUser(u)
+}
+
+func UnbanUserByID(userID uint) error {
+	err := db.Model(&model.User{}).Where("id = ?", userID).Update("role", model.RoleUser).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return errors.New("user not found")
+	}
+	return err
+}
+
 func DeleteUserByID(userID uint) error {
 	err := db.Unscoped().Delete(&model.User{}, userID).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -133,14 +174,13 @@ func DeleteUserByID(userID uint) error {
 
 func LoadAndDeleteUserByID(userID uint, columns ...clause.Column) (*model.User, error) {
 	u := &model.User{}
-	err := db.Unscoped().
+	if db.Unscoped().
 		Clauses(clause.Returning{Columns: columns}).
 		Delete(u, userID).
-		Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
+		RowsAffected == 0 {
 		return u, errors.New("user not found")
 	}
-	return u, err
+	return u, nil
 }
 
 func DeleteUserByUsername(username string) error {
@@ -182,4 +222,26 @@ func SetUserHashedPassword(userID uint, hashedPassword []byte) error {
 
 func SaveUser(u *model.User) error {
 	return db.Save(u).Error
+}
+
+func AddAdmin(u *model.User) error {
+	if u.Role >= model.RoleAdmin {
+		return nil
+	}
+	u.Role = model.RoleAdmin
+	return SaveUser(u)
+}
+
+func RemoveAdmin(u *model.User) error {
+	if u.Role < model.RoleAdmin {
+		return nil
+	}
+	u.Role = model.RoleUser
+	return SaveUser(u)
+}
+
+func GetAdmins() []*model.User {
+	var users []*model.User
+	db.Where("role >= ?", model.RoleAdmin).Find(&users)
+	return users
 }

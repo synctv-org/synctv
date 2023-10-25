@@ -19,9 +19,10 @@ type DatabaseConfig struct {
 
 	CustomDSN string `yaml:"custom_dsn" hc:"when not empty, it will ignore other config" env:"DATABASE_CUSTOM_DSN"`
 
-	MaxIdleConns    int    `yaml:"max_idle_conns" lc:"default: 4" hc:"the maximum number of connections in the idle connection pool." env:"DATABASE_MAX_IDLE_CONNS"`
-	MaxOpenConns    int    `yaml:"max_open_conns" lc:"default: 64" hc:"the maximum number of open connections to the database." env:"DATABASE_MAX_OPEN_CONNS"`
-	ConnMaxLifetime string `yaml:"conn_max_lifetime" lc:"default: 1h" hc:"maximum amount of time a connection may be reused." env:"DATABASE_CONN_MAX_LIFETIME"`
+	MaxIdleConns    int    `yaml:"max_idle_conns" hc:"sqlite3 does not support setting connection parameters"  env:"DATABASE_MAX_IDLE_CONNS"`
+	MaxOpenConns    int    `yaml:"max_open_conns" env:"DATABASE_MAX_OPEN_CONNS"`
+	ConnMaxLifetime string `yaml:"conn_max_lifetime" env:"DATABASE_CONN_MAX_LIFETIME"`
+	ConnMaxIdleTime string `yaml:"conn_max_idle_time" env:"DATABASE_CONN_MAX_IDLE_TIME"`
 }
 
 func DefaultDatabaseConfig() DatabaseConfig {
@@ -33,6 +34,7 @@ func DefaultDatabaseConfig() DatabaseConfig {
 
 		MaxIdleConns:    4,
 		MaxOpenConns:    64,
-		ConnMaxLifetime: "1h",
+		ConnMaxLifetime: "2h",
+		ConnMaxIdleTime: "30m",
 	}
 }

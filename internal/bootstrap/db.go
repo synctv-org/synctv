@@ -118,7 +118,9 @@ func InitDatabase(ctx context.Context) error {
 	if err != nil {
 		log.Fatalf("failed to get sqlDB: %s", err.Error())
 	}
-	initRawDB(sqlDB)
+	if conf.Conf.Database.Type != conf.DatabaseTypeSqlite3 {
+		initRawDB(sqlDB)
+	}
 	return db.Init(d, conf.Conf.Database.Type)
 }
 
@@ -149,4 +151,9 @@ func initRawDB(db *sql.DB) {
 		log.Fatalf("failed to parse conn_max_lifetime: %s", err.Error())
 	}
 	db.SetConnMaxLifetime(d)
+	d, err = time.ParseDuration(conf.Conf.Database.ConnMaxIdleTime)
+	if err != nil {
+		log.Fatalf("failed to parse conn_max_idle_time: %s", err.Error())
+	}
+	db.SetConnMaxIdleTime(d)
 }

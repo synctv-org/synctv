@@ -13,8 +13,11 @@ import (
 func Me(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*op.User)
 
-	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
-		"username": user.Username,
+	ctx.JSON(http.StatusOK, model.NewApiDataResp(&model.UserInfoResp{
+		ID:        user.ID,
+		Username:  user.Username,
+		Role:      user.Role,
+		CreatedAt: user.CreatedAt.UnixMilli(),
 	}))
 }
 

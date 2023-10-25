@@ -30,20 +30,6 @@ func GetUserById(id uint) (*User, error) {
 	return u2, userCache.SetWithExpire(id, u2, time.Hour)
 }
 
-// slow
-func GetUserByUsername(username string) (*User, error) {
-	u, err := db.GetUserByUsername(username)
-	if err != nil {
-		return nil, err
-	}
-
-	u2 := &User{
-		User: *u,
-	}
-
-	return u2, userCache.SetWithExpire(u.ID, u2, time.Hour)
-}
-
 func CreateUser(username string, p provider.OAuth2Provider, pid uint, conf ...db.CreateUserConfig) (*User, error) {
 	if username == "" {
 		return nil, errors.New("username cannot be empty")
@@ -104,7 +90,7 @@ func DeleteUserByID(userID uint) error {
 }
 
 func SaveUser(u *model.User) error {
-	userCache.Remove(u.ID)
+	defer userCache.Remove(u.ID)
 	return db.SaveUser(u)
 }
 

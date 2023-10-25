@@ -8,6 +8,7 @@ import (
 	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/internal/provider"
 	"github.com/synctv-org/synctv/internal/provider/providers"
+	"github.com/synctv-org/synctv/internal/settings"
 	"github.com/synctv-org/synctv/server/middlewares"
 	"github.com/synctv-org/synctv/server/model"
 	"github.com/synctv-org/synctv/utils"
@@ -83,7 +84,17 @@ func OAuth2Callback(ctx *gin.Context) {
 		return
 	}
 
-	user, err := op.CreateOrLoadUser(ui.Username, p, ui.ProviderUserID)
+	disable, err := settings.DisableUserSignup.Get()
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
+	var user *op.User
+	if disable {
+		user, err = op.GetUserByProvider(p, ui.ProviderUserID)
+	} else {
+		user, err = op.CreateOrLoadUser(ui.Username, p, ui.ProviderUserID)
+	}
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
@@ -130,7 +141,17 @@ func OAuth2CallbackApi(ctx *gin.Context) {
 		return
 	}
 
-	user, err := op.CreateOrLoadUser(ui.Username, p, ui.ProviderUserID)
+	disable, err := settings.DisableUserSignup.Get()
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
+	var user *op.User
+	if disable {
+		user, err = op.GetUserByProvider(p, ui.ProviderUserID)
+	} else {
+		user, err = op.CreateOrLoadUser(ui.Username, p, ui.ProviderUserID)
+	}
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return

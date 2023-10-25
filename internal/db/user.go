@@ -61,13 +61,16 @@ func CreateOrLoadUser(username string, p provider.OAuth2Provider, puid uint, con
 	return &user, nil
 }
 
-func GetUserByProvider(p provider.OAuth2Provider, puid uint) (*model.User, error) {
-	u := &model.User{}
-	err := db.Preload("Providers", "provider = ? AND provider_user_id = ?", p, puid).First(u).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return u, errors.New("user not found")
+func GetProviderUserID(p provider.OAuth2Provider, puid uint) (uint, error) {
+	var userProvider model.UserProvider
+	if err := db.Where("provider = ? AND provider_user_id = ?", p, puid).First(&userProvider).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return 0, errors.New("user not found")
+		} else {
+			return 0, err
+		}
 	}
-	return u, err
+	return userProvider.UserID, nil
 }
 
 func AddUserToRoom(userID uint, roomID uint, role model.RoomRole, permission model.Permission) error {

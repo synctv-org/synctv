@@ -29,14 +29,14 @@ var SetCmd = &cobra.Command{
 		if !ok {
 			return errors.New("setting not found")
 		}
-		current := s.String()
-		err := s.SetString(args[1])
+		current := s.Raw()
+		err := s.SetRaw(args[1])
 		if err != nil {
-			s.SetString(current)
+			s.SetRaw(current)
 			fmt.Printf("set setting %s error: %v\n", args[0], err)
 		}
 		if v, err := s.Interface(); err != nil {
-			s.SetString(current)
+			s.SetRaw(current)
 			fmt.Printf("set setting %s error: %v\n", args[0], err)
 		} else {
 			fmt.Printf("set setting success:\n%s: %v\n", args[0], v)

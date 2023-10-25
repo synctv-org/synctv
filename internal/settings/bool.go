@@ -49,7 +49,7 @@ func (b *Bool) Default() bool {
 	return b.defaultValue
 }
 
-func (b *Bool) DefaultString() string {
+func (b *Bool) DefaultRaw() string {
 	if b.defaultValue {
 		return "1"
 	} else {
@@ -61,7 +61,7 @@ func (b *Bool) DefaultInterface() any {
 	return b.Default()
 }
 
-func (b *Bool) SetString(value string) error {
+func (b *Bool) SetRaw(value string) error {
 	if b.value == value {
 		return nil
 	}
@@ -71,9 +71,9 @@ func (b *Bool) SetString(value string) error {
 
 func (b *Bool) Set(value bool) error {
 	if value {
-		return b.SetString("1")
+		return b.SetRaw("1")
 	} else {
-		return b.SetString("0")
+		return b.SetRaw("0")
 	}
 }
 
@@ -81,7 +81,7 @@ func (b *Bool) Get() (bool, error) {
 	return b.value == "1", nil
 }
 
-func (b *Bool) String() string {
+func (b *Bool) Raw() string {
 	return b.value
 }
 

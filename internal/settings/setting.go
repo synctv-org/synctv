@@ -18,9 +18,9 @@ type Setting interface {
 	Type() model.SettingType
 	Group() model.SettingGroup
 	Init(string)
-	String() string
-	SetString(string) error
-	DefaultString() string
+	Raw() string
+	SetRaw(string) error
+	DefaultRaw() string
 	DefaultInterface() any
 	Interface() (any, error)
 }
@@ -115,7 +115,7 @@ func initSettings(i ...Setting) error {
 	for _, b := range i {
 		s := &model.Setting{
 			Name:  b.Name(),
-			Value: b.String(),
+			Value: b.Raw(),
 			Type:  b.Type(),
 			Group: b.Group(),
 		}

@@ -76,6 +76,15 @@ func CreateOrLoadUser(username string, p provider.OAuth2Provider, pid uint, conf
 	return u2, userCache.SetWithExpire(u.ID, u2, time.Hour)
 }
 
+func GetUserByProvider(p provider.OAuth2Provider, pid uint) (*User, error) {
+	uid, err := db.GetProviderUserID(p, pid)
+	if err != nil {
+		return nil, err
+	}
+
+	return GetUserById(uid)
+}
+
 func DeleteUserByID(userID uint) error {
 	err := db.DeleteUserByID(userID)
 	if err != nil {

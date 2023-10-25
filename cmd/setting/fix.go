@@ -27,7 +27,7 @@ var FixCmd = &cobra.Command{
 			_, err := s.Interface()
 			if err != nil {
 				fmt.Printf("setting %s, interface error: %v\n", k, err)
-				err = s.SetString(s.DefaultString())
+				err = s.SetRaw(s.DefaultRaw())
 				if err != nil {
 					errorCount++
 					fmt.Printf("setting %s fix error: %v\n", k, err)

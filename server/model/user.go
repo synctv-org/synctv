@@ -5,6 +5,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	json "github.com/json-iterator/go"
+	dbModel "github.com/synctv-org/synctv/internal/model"
 )
 
 type SetUserPasswordReq struct {
@@ -76,4 +77,11 @@ func (s *SignupUserReq) Validate() error {
 		return ErrPasswordHasInvalidChar
 	}
 	return nil
+}
+
+type UserInfoResp struct {
+	ID        uint         `json:"id"`
+	Username  string       `json:"username"`
+	Role      dbModel.Role `json:"role"`
+	CreatedAt int64        `json:"createdAt"`
 }

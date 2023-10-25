@@ -115,3 +115,12 @@ func GetUserName(userID uint) string {
 	}
 	return u.Username
 }
+
+func SetRoleByID(userID uint, role model.Role) error {
+	err := db.SetRoleByID(userID, role)
+	if err != nil {
+		return err
+	}
+	userCache.Remove(userID)
+	return nil
+}

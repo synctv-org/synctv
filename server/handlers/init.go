@@ -39,11 +39,25 @@ func Init(e *gin.Engine) {
 
 		{
 			admin := api.Group("/admin")
+			root := api.Group("/admin")
 			admin.Use(middlewares.AuthAdminMiddleware)
+			root.Use(middlewares.AuthRootMiddleware)
 
-			admin.GET("/settings/:group", AdminSettings)
+			{
+				admin.GET("/settings/:group", AdminSettings)
 
-			admin.POST("/settings", EditAdminSettings)
+				admin.POST("/settings", EditAdminSettings)
+
+				admin.GET("/users", Users)
+			}
+
+			{
+				root.GET("/admins", Admins)
+
+				root.POST("/addAdmin", AddAdmin)
+
+				root.POST("deleteAdmin", DeleteAdmin)
+			}
 		}
 
 		{

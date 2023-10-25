@@ -42,7 +42,6 @@ func UserRooms(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
-	resp := make([]*model.RoomListResp, 0, pageSize)
 
 	var desc = ctx.DefaultQuery("sort", "desc") == "desc"
 
@@ -101,10 +100,8 @@ func UserRooms(ctx *gin.Context) {
 		return
 	}
 
-	resp = genRoomListResp(resp, append(scopes, db.Paginate(page, pageSize))...)
-
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
 		"total": db.GetAllRoomsWithoutHiddenCount(scopes...),
-		"list":  resp,
+		"list":  genRoomListResp(append(scopes, db.Paginate(page, pageSize))...),
 	}))
 }

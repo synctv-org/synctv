@@ -245,7 +245,7 @@ func RemoveAdmin(u *model.User) error {
 
 func GetAdmins() []*model.User {
 	var users []*model.User
-	db.Where("role >= ?", model.RoleAdmin).Find(&users)
+	db.Where("role == ?", model.RoleAdmin).Find(&users)
 	return users
 }
 
@@ -314,4 +314,16 @@ func SetRoleByID(userID uint, role model.Role) error {
 		return errors.New("user not found")
 	}
 	return err
+}
+
+func GetAllUserWithRoleUser(role model.Role, scopes ...func(*gorm.DB) *gorm.DB) []*model.User {
+	users := []*model.User{}
+	db.Where("role = ?", role).Scopes(scopes...).Find(&users)
+	return users
+}
+
+func GetAllUserWithRoleUserCount(scopes ...func(*gorm.DB) *gorm.DB) int64 {
+	var count int64
+	db.Model(&model.User{}).Where("role = ?", model.RoleUser).Scopes(scopes...).Count(&count)
+	return count
 }

@@ -114,7 +114,6 @@ func RoomList(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
-	resp := make([]*model.RoomListResp, 0, pageSize)
 
 	var desc = ctx.DefaultQuery("sort", "desc") == "desc"
 
@@ -177,24 +176,24 @@ func RoomList(ctx *gin.Context) {
 		return
 	}
 
-	resp = genRoomListResp(resp, append(scopes, db.Paginate(page, pageSize))...)
-
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
 		"total": db.GetAllRoomsWithoutHiddenCount(scopes...),
-		"list":  resp,
+		"list":  genRoomListResp(append(scopes, db.Paginate(page, pageSize))...),
 	}))
 }
 
-func genRoomListResp(resp []*model.RoomListResp, scopes ...func(db *gorm.DB) *gorm.DB) []*model.RoomListResp {
-	for _, r := range db.GetAllRoomsWithoutHidden(scopes...) {
-		resp = append(resp, &model.RoomListResp{
+func genRoomListResp(scopes ...func(db *gorm.DB) *gorm.DB) []*model.RoomListResp {
+	rs := db.GetAllRoomsWithoutHidden(scopes...)
+	resp := make([]*model.RoomListResp, len(rs))
+	for i, r := range rs {
+		resp[i] = &model.RoomListResp{
 			RoomId:       r.ID,
 			RoomName:     r.Name,
 			PeopleNum:    op.ClientNum(r.ID),
 			NeedPassword: len(r.HashedPassword) != 0,
 			Creator:      op.GetUserName(r.CreatorID),
 			CreatedAt:    r.CreatedAt.UnixMilli(),
-		})
+		}
 	}
 	return resp
 }

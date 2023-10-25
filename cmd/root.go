@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/synctv-org/synctv/cmd/admin"
 	"github.com/synctv-org/synctv/cmd/flags"
+	"github.com/synctv-org/synctv/cmd/root"
 	"github.com/synctv-org/synctv/cmd/setting"
 	"github.com/synctv-org/synctv/cmd/user"
 	"github.com/synctv-org/synctv/internal/version"
@@ -46,4 +47,5 @@ func init() {
 	RootCmd.AddCommand(admin.AdminCmd)
 	RootCmd.AddCommand(user.UserCmd)
 	RootCmd.AddCommand(setting.SettingCmd)
+	RootCmd.AddCommand(root.RootCmd)
 }

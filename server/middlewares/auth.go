@@ -123,6 +123,17 @@ func AuthAdmin(Authorization string) (*op.User, error) {
 	return u, nil
 }
 
+func AuthRoot(Authorization string) (*op.User, error) {
+	u, err := AuthUser(Authorization)
+	if err != nil {
+		return nil, err
+	}
+	if !u.IsRoot() {
+		return nil, errors.New("user is not admin")
+	}
+	return u, nil
+}
+
 func NewAuthUserToken(user *op.User) (string, error) {
 	if user.IsBanned() {
 		return "", errors.New("user banned")
@@ -188,6 +199,17 @@ func AuthUserMiddleware(ctx *gin.Context) {
 
 func AuthAdminMiddleware(ctx *gin.Context) {
 	user, err := AuthAdmin(ctx.GetHeader("Authorization"))
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(err))
+		return
+	}
+
+	ctx.Set("user", user)
+	ctx.Next()
+}
+
+func AuthRootMiddleware(ctx *gin.Context) {
+	user, err := AuthRoot(ctx.GetHeader("Authorization"))
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(err))
 		return

@@ -4,10 +4,11 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/synctv-org/synctv/internal/db"
 	dbModel "github.com/synctv-org/synctv/internal/model"
-	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/internal/settings"
 	"github.com/synctv-org/synctv/server/model"
+	"gorm.io/gorm"
 )
 
 func EditAdminSettings(ctx *gin.Context) {
@@ -56,46 +57,68 @@ func AdminSettings(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(resp))
 }
 
-func AddAdmin(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.User)
-
-	if !user.IsRoot() {
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("permission denied"))
+func Users(ctx *gin.Context) {
+	// user := ctx.MustGet("user").(*op.User)
+	order := ctx.Query("order")
+	if order == "" {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("order is required"))
 		return
 	}
 
-	req := model.IdReq{}
-	if err := model.Decode(ctx, &req); err != nil {
+	page, pageSize, err := GetPageAndPageSize(ctx)
+	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
-	if err := user.SetRole(dbModel.RoleAdmin); err != nil {
-		ctx.AbortWithError(http.StatusInternalServerError, err)
+	var desc = ctx.DefaultQuery("sort", "desc") == "desc"
+
+	scopes := []func(db *gorm.DB) *gorm.DB{}
+
+	if keyword := ctx.Query("keyword"); keyword != "" {
+		scopes = append(scopes, db.WhereUserNameLike(keyword))
+	}
+
+	switch order {
+	case "createdAt":
+		if desc {
+			scopes = append(scopes, db.OrderByCreatedAtDesc)
+		} else {
+			scopes = append(scopes, db.OrderByCreatedAtAsc)
+		}
+	case "name":
+		if desc {
+			scopes = append(scopes, db.OrderByDesc("username"))
+		} else {
+			scopes = append(scopes, db.OrderByAsc("username"))
+		}
+	case "id":
+		if desc {
+			scopes = append(scopes, db.OrderByIDDesc)
+		} else {
+			scopes = append(scopes, db.OrderByIDAsc)
+		}
+	default:
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support order"))
 		return
 	}
 
-	ctx.Status(http.StatusNoContent)
+	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
+		"total": db.GetAllUserWithRoleUserCount(scopes...),
+		"list":  genUserListResp(dbModel.RoleUser, append(scopes, db.Paginate(page, pageSize))...),
+	}))
 }
 
-func DeleteAdmin(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.User)
-
-	if !user.IsRoot() {
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("permission denied"))
-		return
+func genUserListResp(role dbModel.Role, scopes ...func(db *gorm.DB) *gorm.DB) []*model.UserInfoResp {
+	us := db.GetAllUserWithRoleUser(role, scopes...)
+	resp := make([]*model.UserInfoResp, len(us))
+	for i, v := range us {
+		resp[i] = &model.UserInfoResp{
+			ID:        v.ID,
+			Username:  v.Username,
+			Role:      v.Role,
+			CreatedAt: v.CreatedAt.UnixMilli(),
+		}
 	}
-
-	req := model.IdReq{}
-	if err := model.Decode(ctx, &req); err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
-		return
-	}
-
-	if err := user.SetRole(dbModel.RoleUser); err != nil {
-		ctx.AbortWithError(http.StatusInternalServerError, err)
-		return
-	}
-
-	ctx.Status(http.StatusNoContent)
+	return resp
 }

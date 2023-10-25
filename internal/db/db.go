@@ -162,6 +162,17 @@ func WhereRoomNameLike(name string) func(db *gorm.DB) *gorm.DB {
 	}
 }
 
+func WhereUserNameLike(name string) func(db *gorm.DB) *gorm.DB {
+	return func(db *gorm.DB) *gorm.DB {
+		switch dbType {
+		case conf.DatabaseTypePostgres:
+			return db.Where("username ILIKE ?", utils.LIKE(name))
+		default:
+			return db.Where("username LIKE ?", utils.LIKE(name))
+		}
+	}
+}
+
 func WhereCreatorIDIn(ids []uint) func(db *gorm.DB) *gorm.DB {
 	return func(db *gorm.DB) *gorm.DB {
 		return db.Where("creator_id IN ?", ids)

@@ -135,7 +135,7 @@ func newDBLogger() logger.Interface {
 			SlowThreshold:             time.Second,
 			LogLevel:                  logLevel,
 			IgnoreRecordNotFoundError: true,
-			ParameterizedQueries:      flags.Dev,
+			ParameterizedQueries:      !flags.Dev,
 			Colorful:                  true,
 		},
 	)

@@ -66,3 +66,11 @@ func (u *User) SetRole(role model.Role) error {
 	u.Role = role
 	return nil
 }
+
+func (u *User) SetUsername(username string) error {
+	if err := db.SetUsernameByID(u.ID, username); err != nil {
+		return err
+	}
+	u.Username = username
+	return nil
+}

@@ -51,37 +51,28 @@ func (l *LoginUserReq) Validate() error {
 	return nil
 }
 
-type SignupUserReq struct {
-	Username string `json:"username"`
-	Password string `json:"password"`
-}
-
-func (s *SignupUserReq) Decode(ctx *gin.Context) error {
-	return json.NewDecoder(ctx.Request.Body).Decode(s)
-}
-
-func (s *SignupUserReq) Validate() error {
-	if s.Username == "" {
-		return errors.New("username is empty")
-	} else if len(s.Username) > 32 {
-		return ErrUsernameTooLong
-	} else if !alnumPrintHanReg.MatchString(s.Username) {
-		return ErrUsernameHasInvalidChar
-	}
-
-	if s.Password == "" {
-		return FormatEmptyPasswordError("user")
-	} else if len(s.Password) > 32 {
-		return ErrPasswordTooLong
-	} else if !alnumPrintReg.MatchString(s.Password) {
-		return ErrPasswordHasInvalidChar
-	}
-	return nil
-}
-
 type UserInfoResp struct {
 	ID        uint         `json:"id"`
 	Username  string       `json:"username"`
 	Role      dbModel.Role `json:"role"`
 	CreatedAt int64        `json:"createdAt"`
+}
+
+type SetUsernameReq struct {
+	Username string `json:"username"`
+}
+
+func (s *SetUsernameReq) Validate() error {
+	if s.Username == "" {
+		return errors.New("username is empty")
+	} else if len(s.Username) > 32 {
+		return ErrUsernameTooLong
+	} else if !alnumPrintReg.MatchString(s.Username) {
+		return ErrUsernameHasInvalidChar
+	}
+	return nil
+}
+
+func (s *SetUsernameReq) Decode(ctx *gin.Context) error {
+	return json.NewDecoder(ctx.Request.Body).Decode(s)
 }

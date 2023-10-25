@@ -108,3 +108,21 @@ func UserRooms(ctx *gin.Context) {
 		"list":  genRoomListResp(append(scopes, db.Paginate(page, pageSize))...),
 	}))
 }
+
+func SetUsername(ctx *gin.Context) {
+	user := ctx.MustGet("user").(*op.User)
+
+	var req model.SetUsernameReq
+	if err := model.Decode(ctx, &req); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	err := user.SetUsername(req.Username)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
+
+	ctx.Status(http.StatusNoContent)
+}

@@ -6,8 +6,6 @@ import (
 
 	"github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/provider"
-	"github.com/zijiren233/stream"
-	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -186,43 +184,6 @@ func LoadAndDeleteUserByID(userID uint, columns ...clause.Column) (*model.User, 
 	return u, nil
 }
 
-func DeleteUserByUsername(username string) error {
-	err := db.Unscoped().Where("username = ?", username).Delete(&model.User{}).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return errors.New("user not found")
-	}
-	return err
-}
-
-func LoadAndDeleteUserByUsername(username string, columns ...clause.Column) (*model.User, error) {
-	u := &model.User{}
-	err := db.Unscoped().Clauses(clause.Returning{Columns: columns}).Where("username = ?", username).Delete(u).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return u, errors.New("user not found")
-	}
-	return u, err
-}
-
-func SetUserPassword(userID uint, password string) error {
-	var hashedPassword []byte
-	if password != "" {
-		var err error
-		hashedPassword, err = bcrypt.GenerateFromPassword(stream.StringToBytes(password), bcrypt.DefaultCost)
-		if err != nil {
-			return err
-		}
-	}
-	return SetUserHashedPassword(userID, hashedPassword)
-}
-
-func SetUserHashedPassword(userID uint, hashedPassword []byte) error {
-	err := db.Model(&model.User{}).Where("id = ?", userID).Update("hashed_password", hashedPassword).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return errors.New("user not found")
-	}
-	return err
-}
-
 func SaveUser(u *model.User) error {
 	return db.Save(u).Error
 }
@@ -326,4 +287,12 @@ func GetAllUserWithRoleUserCount(scopes ...func(*gorm.DB) *gorm.DB) int64 {
 	var count int64
 	db.Model(&model.User{}).Where("role = ?", model.RoleUser).Scopes(scopes...).Count(&count)
 	return count
+}
+
+func SetUsernameByID(userID uint, username string) error {
+	err := db.Model(&model.User{}).Where("id = ?", userID).Update("username", username).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return errors.New("user not found")
+	}
+	return err
 }

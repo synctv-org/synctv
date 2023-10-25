@@ -128,6 +128,8 @@ func Init(e *gin.Engine) {
 			needAuthUser.GET("/me", Me)
 
 			needAuthUser.GET("/rooms", UserRooms)
+
+			needAuthUser.POST("/username", SetUsername)
 		}
 	}
 }

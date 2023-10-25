@@ -20,7 +20,7 @@ type Room struct {
 }
 
 type Settings struct {
-	Hidden bool
+	Hidden bool `json:"hidden"`
 }
 
 func (r *Room) NeedPassword() bool {

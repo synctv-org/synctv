@@ -12,6 +12,6 @@ type JwtConfig struct {
 func DefaultJwtConfig() JwtConfig {
 	return JwtConfig{
 		Secret: utils.RandString(32),
-		Expire: "12h",
+		Expire: "48h",
 	}
 }

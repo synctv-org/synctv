@@ -82,8 +82,7 @@ func DeleteUserByID(userID uint) error {
 	roomCache.Range(func(key uint, value *synccache.Entry[*Room]) bool {
 		v := value.Value()
 		if v.CreatorID == userID {
-			roomCache.Delete(key)
-			v.close()
+			roomCache.CompareAndDelete(key, value)
 		}
 		return true
 	})

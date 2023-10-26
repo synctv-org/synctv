@@ -43,9 +43,9 @@ func (sc *SyncCache[K, V]) Releases() {
 func (sc *SyncCache[K, V]) trim() {
 	sc.cache.Range(func(key K, value *Entry[V]) bool {
 		if value.IsExpired() {
-			e, loaded := sc.cache.LoadAndDelete(key)
-			if loaded && sc.deletedCallback != nil {
-				sc.deletedCallback(e.value)
+			sc.cache.CompareAndDelete(key, value)
+			if sc.deletedCallback != nil {
+				sc.deletedCallback(value.value)
 			}
 		}
 		return true
@@ -98,6 +98,14 @@ func (sc *SyncCache[K, V]) LoadAndDelete(key K) (value *Entry[V], loaded bool) {
 		return e, loaded
 	}
 	return
+}
+
+func (sc *SyncCache[K, V]) CompareAndDelete(key K, oldEntry *Entry[V]) (success bool) {
+	b := sc.cache.CompareAndDelete(key, oldEntry)
+	if b && sc.deletedCallback != nil {
+		sc.deletedCallback(oldEntry.value)
+	}
+	return b
 }
 
 func (sc *SyncCache[K, V]) Clear() {

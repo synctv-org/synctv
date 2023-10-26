@@ -8,6 +8,7 @@ import (
 	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/provider"
+	synccache "github.com/synctv-org/synctv/utils/syncCache"
 )
 
 var userCache gcache.Cache
@@ -78,10 +79,11 @@ func DeleteUserByID(userID uint) error {
 	}
 	userCache.Remove(userID)
 
-	roomCache.Range(func(key uint, value *Room) bool {
-		if value.CreatorID == userID {
+	roomCache.Range(func(key uint, value *synccache.Entry[*Room]) bool {
+		v := value.Value()
+		if v.CreatorID == userID {
 			roomCache.Delete(key)
-			value.close()
+			v.close()
 		}
 		return true
 	})

@@ -8,29 +8,15 @@ import (
 	"gorm.io/gorm"
 )
 
-type Role uint8
+type Role string
 
 const (
-	RoleBanned Role = iota
-	RoleUser
-	RoleAdmin
-	RoleRoot
+	RoleBanned  Role = "banned"
+	RolePending Role = "pending"
+	RoleUser    Role = "user"
+	RoleAdmin   Role = "admin"
+	RoleRoot    Role = "root"
 )
-
-func (r Role) String() string {
-	switch r {
-	case RoleBanned:
-		return "banned"
-	case RoleUser:
-		return "user"
-	case RoleAdmin:
-		return "admin"
-	case RoleRoot:
-		return "root"
-	default:
-		return "unknown"
-	}
-}
 
 type User struct {
 	ID                 uint `gorm:"primarykey"`
@@ -38,7 +24,7 @@ type User struct {
 	UpdatedAt          time.Time
 	Providers          []UserProvider     `gorm:"foreignKey:UserID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 	Username           string             `gorm:"not null;uniqueIndex"`
-	Role               Role               `gorm:"not null"`
+	Role               Role               `gorm:"not null;default:user"`
 	GroupUserRelations []RoomUserRelation `gorm:"foreignKey:UserID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 	Rooms              []Room             `gorm:"foreignKey:CreatorID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 	Movies             []Movie            `gorm:"foreignKey:CreatorID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL"`

@@ -34,6 +34,10 @@ func (u *User) IsBanned() bool {
 	return u.Role == model.RoleBanned
 }
 
+func (u *User) IsPending() bool {
+	return u.Role == model.RolePending
+}
+
 func (u *User) HasPermission(roomID uint, permission model.Permission) bool {
 	if u.Role >= model.RoleAdmin {
 		return true

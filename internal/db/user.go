@@ -283,9 +283,9 @@ func GetAllUserWithRoleUser(role model.Role, scopes ...func(*gorm.DB) *gorm.DB) 
 	return users
 }
 
-func GetAllUserWithRoleUserCount(scopes ...func(*gorm.DB) *gorm.DB) int64 {
+func GetAllUserCountWithRole(role model.Role, scopes ...func(*gorm.DB) *gorm.DB) int64 {
 	var count int64
-	db.Model(&model.User{}).Where("role = ?", model.RoleUser).Scopes(scopes...).Count(&count)
+	db.Model(&model.User{}).Where("role = ?", role).Scopes(scopes...).Count(&count)
 	return count
 }
 

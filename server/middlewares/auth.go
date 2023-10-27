@@ -79,6 +79,9 @@ func AuthRoom(Authorization string) (*op.User, *op.Room, error) {
 	if u.IsBanned() {
 		return nil, nil, errors.New("user banned")
 	}
+	if u.IsPending() {
+		return nil, nil, errors.New("user is pending, need admin to approve")
+	}
 
 	r, err := op.LoadOrInitRoomByID(claims.RoomId)
 	if err != nil {
@@ -107,6 +110,9 @@ func AuthUser(Authorization string) (*op.User, error) {
 	}
 	if u.IsBanned() {
 		return nil, errors.New("user banned")
+	}
+	if u.IsPending() {
+		return nil, errors.New("user is pending, need admin to approve")
 	}
 
 	return u, nil
@@ -138,6 +144,9 @@ func NewAuthUserToken(user *op.User) (string, error) {
 	if user.IsBanned() {
 		return "", errors.New("user banned")
 	}
+	if user.IsPending() {
+		return "", errors.New("user is pending, need admin to approve")
+	}
 	t, err := time.ParseDuration(conf.Conf.Jwt.Expire)
 	if err != nil {
 		return "", err
@@ -155,6 +164,9 @@ func NewAuthUserToken(user *op.User) (string, error) {
 func NewAuthRoomToken(user *op.User, room *op.Room) (string, error) {
 	if user.IsBanned() {
 		return "", errors.New("user banned")
+	}
+	if user.IsPending() {
+		return "", errors.New("user is pending, need admin to approve")
 	}
 	t, err := time.ParseDuration(conf.Conf.Jwt.Expire)
 	if err != nil {

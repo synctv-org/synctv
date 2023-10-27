@@ -8,4 +8,5 @@ var (
 
 var (
 	DisableUserSignup = newBoolSetting("disable_user_signup", false, model.SettingGroupUser)
+	SignupNeedReview  = newBoolSetting("signup_need_review", false, model.SettingGroupUser)
 )

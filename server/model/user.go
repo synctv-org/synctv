@@ -76,3 +76,18 @@ func (s *SetUsernameReq) Validate() error {
 func (s *SetUsernameReq) Decode(ctx *gin.Context) error {
 	return json.NewDecoder(ctx.Request.Body).Decode(s)
 }
+
+type UserIDReq struct {
+	ID uint `json:"id"`
+}
+
+func (u *UserIDReq) Decode(ctx *gin.Context) error {
+	return json.NewDecoder(ctx.Request.Body).Decode(u)
+}
+
+func (u *UserIDReq) Validate() error {
+	if u.ID == 0 {
+		return errors.New("id is required")
+	}
+	return nil
+}

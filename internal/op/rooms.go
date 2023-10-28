@@ -8,6 +8,7 @@ import (
 	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/model"
 	synccache "github.com/synctv-org/synctv/utils/syncCache"
+	"github.com/zijiren233/gencontainer/heap"
 )
 
 var roomTTL = time.Hour * 24 * 2
@@ -145,6 +146,60 @@ func GetAllRoomsInCacheWithoutHidden() []*Room {
 		v := value.Value()
 		if !v.Settings.Hidden {
 			rooms = append(rooms, v)
+		}
+		return true
+	})
+	return rooms
+}
+
+type RoomHeapItem struct {
+	ID           uint
+	RoomName     string
+	ClientNum    int64
+	NeedPassword bool
+	CreatorID    uint
+	CreatedAt    time.Time
+}
+
+type RoomHeap []*RoomHeapItem
+
+func (h RoomHeap) Len() int {
+	return len(h)
+}
+
+func (h RoomHeap) Less(i, j int) bool {
+	return h[i].ClientNum < h[j].ClientNum
+}
+
+func (h RoomHeap) Swap(i, j int) {
+	h[i], h[j] = h[j], h[i]
+}
+
+func (h *RoomHeap) Push(x *RoomHeapItem) {
+	*h = append(*h, x)
+}
+
+func (h *RoomHeap) Pop() *RoomHeapItem {
+	old := *h
+	n := len(old)
+	x := old[n-1]
+	*h = old[0 : n-1]
+	return x
+}
+
+func GetRoomHeapInCacheWithoutHidden() RoomHeap {
+	rooms := make(RoomHeap, 0)
+	roomCache.Range(func(key uint, value *synccache.Entry[*Room]) bool {
+		v := value.Value()
+		if !v.Settings.Hidden {
+			heap.Push[*RoomHeapItem](&rooms, &RoomHeapItem{
+				ID:           v.ID,
+				RoomName:     v.Name,
+				ClientNum:    v.ClientNum(),
+				NeedPassword: v.NeedPassword(),
+				CreatorID:    v.CreatorID,
+				CreatedAt:    v.CreatedAt,
+			})
 		}
 		return true
 	})

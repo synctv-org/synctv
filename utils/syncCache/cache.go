@@ -35,18 +35,10 @@ func NewSyncCache[K comparable, V any](trimTime time.Duration, conf ...SyncCache
 	return sc
 }
 
-func (sc *SyncCache[K, V]) Releases() {
-	sc.ticker.Stop()
-	sc.cache.Clear()
-}
-
 func (sc *SyncCache[K, V]) trim() {
 	sc.cache.Range(func(key K, value *Entry[V]) bool {
 		if value.IsExpired() {
-			sc.cache.CompareAndDelete(key, value)
-			if sc.deletedCallback != nil {
-				sc.deletedCallback(value.value)
-			}
+			sc.CompareAndDelete(key, value)
 		}
 		return true
 	})
@@ -61,31 +53,17 @@ func (sc *SyncCache[K, V]) Load(key K) (value *Entry[V], loaded bool) {
 	if ok && !e.IsExpired() {
 		return e, ok
 	}
+	sc.CompareAndDelete(key, e)
 	return
 }
 
 func (sc *SyncCache[K, V]) LoadOrStore(key K, value V, expire time.Duration) (actual *Entry[V], loaded bool) {
 	e, loaded := sc.cache.LoadOrStore(key, NewEntry[V](value, expire))
-	if e.IsExpired() {
-		e = NewEntry[V](value, expire)
-		sc.cache.Store(key, e)
-		return e, false
+	if loaded && e.IsExpired() {
+		sc.CompareAndDelete(key, e)
+		return sc.LoadOrStore(key, value, expire)
 	}
 	return e, loaded
-}
-
-func (sc *SyncCache[K, V]) AddExpiration(key K, d time.Duration) {
-	e, ok := sc.cache.Load(key)
-	if ok {
-		e.AddExpiration(d)
-	}
-}
-
-func (sc *SyncCache[K, V]) SetExpiration(key K, t time.Time) {
-	e, ok := sc.cache.Load(key)
-	if ok {
-		e.SetExpiration(t)
-	}
 }
 
 func (sc *SyncCache[K, V]) Delete(key K) {
@@ -117,6 +95,7 @@ func (sc *SyncCache[K, V]) Range(f func(key K, value *Entry[V]) bool) {
 		if !value.IsExpired() {
 			return f(key, value)
 		}
+		sc.cache.CompareAndDelete(key, value)
 		return true
 	})
 }

@@ -52,7 +52,7 @@ func (l *LoginUserReq) Validate() error {
 }
 
 type UserInfoResp struct {
-	ID        uint         `json:"id"`
+	ID        string       `json:"id"`
 	Username  string       `json:"username"`
 	Role      dbModel.Role `json:"role"`
 	CreatedAt int64        `json:"createdAt"`
@@ -78,7 +78,7 @@ func (s *SetUsernameReq) Decode(ctx *gin.Context) error {
 }
 
 type UserIDReq struct {
-	ID uint `json:"id"`
+	ID string `json:"id"`
 }
 
 func (u *UserIDReq) Decode(ctx *gin.Context) error {
@@ -86,7 +86,7 @@ func (u *UserIDReq) Decode(ctx *gin.Context) error {
 }
 
 func (u *UserIDReq) Validate() error {
-	if u.ID == 0 {
+	if len(u.ID) != 36 {
 		return errors.New("id is required")
 	}
 	return nil

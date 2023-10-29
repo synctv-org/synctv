@@ -12,7 +12,7 @@ import (
 )
 
 var roomTTL = time.Hour * 24 * 2
-var roomCache *synccache.SyncCache[uint, *Room]
+var roomCache *synccache.SyncCache[string, *Room]
 
 func CreateRoom(name, password string, conf ...db.CreateRoomConfig) (*Room, error) {
 	r, err := db.CreateRoom(name, password, conf...)
@@ -53,7 +53,7 @@ func LoadOrInitRoom(room *model.Room) (*Room, bool) {
 	return i.Value(), loaded
 }
 
-func DeleteRoom(roomID uint) error {
+func DeleteRoom(roomID string) error {
 	err := db.DeleteRoomByID(roomID)
 	if err != nil {
 		return err
@@ -61,7 +61,7 @@ func DeleteRoom(roomID uint) error {
 	return CloseRoom(roomID)
 }
 
-func CloseRoom(roomID uint) error {
+func CloseRoom(roomID string) error {
 	r, loaded := roomCache.LoadAndDelete(roomID)
 	if loaded {
 		r.Value().close()
@@ -69,7 +69,7 @@ func CloseRoom(roomID uint) error {
 	return errors.New("room not found in cache")
 }
 
-func LoadRoomByID(id uint) (*Room, error) {
+func LoadRoomByID(id string) (*Room, error) {
 	r2, loaded := roomCache.Load(id)
 	if loaded {
 		r2.SetExpiration(time.Now().Add(roomTTL))
@@ -78,7 +78,10 @@ func LoadRoomByID(id uint) (*Room, error) {
 	return nil, errors.New("room not found")
 }
 
-func LoadOrInitRoomByID(id uint) (*Room, error) {
+func LoadOrInitRoomByID(id string) (*Room, error) {
+	if len(id) != 36 {
+		return nil, errors.New("room id is not 32 bit")
+	}
 	i, loaded := roomCache.Load(id)
 	if loaded {
 		i.SetExpiration(time.Now().Add(roomTTL))
@@ -92,7 +95,7 @@ func LoadOrInitRoomByID(id uint) (*Room, error) {
 	return r, nil
 }
 
-func ClientNum(roomID uint) int64 {
+func ClientNum(roomID string) int64 {
 	r, loaded := roomCache.Load(roomID)
 	if loaded {
 		return r.Value().ClientNum()
@@ -100,7 +103,7 @@ func ClientNum(roomID uint) int64 {
 	return 0
 }
 
-func HasRoom(roomID uint) bool {
+func HasRoom(roomID string) bool {
 	_, ok := roomCache.Load(roomID)
 	if ok {
 		return true
@@ -120,7 +123,7 @@ func HasRoomByName(name string) bool {
 	return ok
 }
 
-func SetRoomPassword(roomID uint, password string) error {
+func SetRoomPassword(roomID, password string) error {
 	r, err := LoadOrInitRoomByID(roomID)
 	if err != nil {
 		return err
@@ -130,7 +133,7 @@ func SetRoomPassword(roomID uint, password string) error {
 
 func GetAllRoomsInCacheWithNoNeedPassword() []*Room {
 	rooms := make([]*Room, 0)
-	roomCache.Range(func(key uint, value *synccache.Entry[*Room]) bool {
+	roomCache.Range(func(key string, value *synccache.Entry[*Room]) bool {
 		v := value.Value()
 		if !v.NeedPassword() {
 			rooms = append(rooms, v)
@@ -142,7 +145,7 @@ func GetAllRoomsInCacheWithNoNeedPassword() []*Room {
 
 func GetAllRoomsInCacheWithoutHidden() []*Room {
 	rooms := make([]*Room, 0)
-	roomCache.Range(func(key uint, value *synccache.Entry[*Room]) bool {
+	roomCache.Range(func(key string, value *synccache.Entry[*Room]) bool {
 		v := value.Value()
 		if !v.Settings.Hidden {
 			rooms = append(rooms, v)
@@ -153,11 +156,11 @@ func GetAllRoomsInCacheWithoutHidden() []*Room {
 }
 
 type RoomHeapItem struct {
-	ID           uint
+	ID           string
 	RoomName     string
 	ClientNum    int64
 	NeedPassword bool
-	CreatorID    uint
+	CreatorID    string
 	CreatedAt    time.Time
 }
 
@@ -189,7 +192,7 @@ func (h *RoomHeap) Pop() *RoomHeapItem {
 
 func GetRoomHeapInCacheWithoutHidden() RoomHeap {
 	rooms := make(RoomHeap, 0)
-	roomCache.Range(func(key uint, value *synccache.Entry[*Room]) bool {
+	roomCache.Range(func(key string, value *synccache.Entry[*Room]) bool {
 		v := value.Value()
 		if !v.Settings.Hidden {
 			heap.Push[*RoomHeapItem](&rooms, &RoomHeapItem{

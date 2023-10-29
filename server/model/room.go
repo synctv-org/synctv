@@ -71,7 +71,7 @@ func (c *CreateRoomReq) Validate() error {
 }
 
 type RoomListResp struct {
-	RoomId       uint   `json:"roomId"`
+	RoomId       string `json:"roomId"`
 	RoomName     string `json:"roomName"`
 	PeopleNum    int64  `json:"peopleNum"`
 	NeedPassword bool   `json:"needPassword"`
@@ -80,7 +80,7 @@ type RoomListResp struct {
 }
 
 type LoginRoomReq struct {
-	RoomId   uint   `json:"roomId"`
+	RoomId   string `json:"roomId"`
 	Password string `json:"password"`
 }
 
@@ -89,7 +89,7 @@ func (l *LoginRoomReq) Decode(ctx *gin.Context) error {
 }
 
 func (l *LoginRoomReq) Validate() error {
-	if l.RoomId == 0 {
+	if len(l.RoomId) != 36 {
 		return ErrEmptyRoomName
 	}
 
@@ -114,7 +114,7 @@ func (s *SetRoomPasswordReq) Validate() error {
 }
 
 type UserIdReq struct {
-	UserId uint `json:"userId"`
+	UserId string `json:"userId"`
 }
 
 func (u *UserIdReq) Decode(ctx *gin.Context) error {
@@ -122,7 +122,7 @@ func (u *UserIdReq) Decode(ctx *gin.Context) error {
 }
 
 func (u *UserIdReq) Validate() error {
-	if u.UserId == 0 {
+	if len(u.UserId) != 36 {
 		return ErrEmptyUserId
 	}
 	return nil

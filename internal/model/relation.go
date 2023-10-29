@@ -38,11 +38,10 @@ func (p Permission) Has(permission Permission) bool {
 }
 
 type RoomUserRelation struct {
-	ID          uint `gorm:"primarykey"`
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
-	UserID      uint     `gorm:"not null;uniqueIndex:idx_user_room"`
-	RoomID      uint     `gorm:"not null;uniqueIndex:idx_user_room"`
+	UserID      string   `gorm:"not null;primarykey"`
+	RoomID      string   `gorm:"not null;primarykey"`
 	Role        RoomRole `gorm:"not null"`
 	Permissions Permission
 }

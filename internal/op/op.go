@@ -9,7 +9,7 @@ import (
 
 func Init(size int, ttl time.Duration) error {
 	roomTTL = ttl
-	roomCache = synccache.NewSyncCache[uint, *Room](time.Minute*5, synccache.WithDeletedCallback[uint, *Room](func(v *Room) {
+	roomCache = synccache.NewSyncCache[string, *Room](time.Minute*5, synccache.WithDeletedCallback[string, *Room](func(v *Room) {
 		v.close()
 	}))
 	userCache = gcache.New(size).

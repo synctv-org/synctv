@@ -30,11 +30,10 @@ message BaseMovieInfo {
 }
 
 message MovieInfo {
-  uint64 id = 1;
+  string id = 1;
   BaseMovieInfo base = 2;
-  string pullKey = 3;
-  int64 createdAt = 4;
-  string creator = 5;
+  int64 createdAt = 3;
+  string creator = 4;
 }
 
 message Status {

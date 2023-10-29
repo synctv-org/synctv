@@ -3,20 +3,29 @@ package model
 import (
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/zijiren233/stream"
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
 )
 
 type Room struct {
-	ID                 uint `gorm:"primarykey"`
+	ID                 string `gorm:"not null;primaryKey;type:varchar(36)" json:"id"`
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
 	Name               string   `gorm:"not null;uniqueIndex"`
 	Settings           Settings `gorm:"embedded;embeddedPrefix:settings_"`
-	CreatorID          uint     `gorm:"index"`
+	CreatorID          string   `gorm:"index"`
 	HashedPassword     []byte
 	GroupUserRelations []RoomUserRelation `gorm:"foreignKey:RoomID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 	Movies             []Movie            `gorm:"foreignKey:RoomID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
+}
+
+func (r *Room) BeforeCreate(tx *gorm.DB) error {
+	if r.ID == "" {
+		r.ID = uuid.NewString()
+	}
+	return nil
 }
 
 type Settings struct {

@@ -13,13 +13,13 @@ func CreateMovie(movie *model.Movie) error {
 	return db.Create(movie).Error
 }
 
-func GetAllMoviesByRoomID(roomID uint) []*model.Movie {
+func GetAllMoviesByRoomID(roomID string) []*model.Movie {
 	movies := []*model.Movie{}
 	db.Where("room_id = ?", roomID).Order("position ASC").Find(&movies)
 	return movies
 }
 
-func DeleteMovieByID(roomID, id uint) error {
+func DeleteMovieByID(roomID, id string) error {
 	err := db.Unscoped().Where("room_id = ? AND id = ?", roomID, id).Delete(&model.Movie{}).Error
 	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
 		return errors.New("room or movie not found")
@@ -27,7 +27,7 @@ func DeleteMovieByID(roomID, id uint) error {
 	return err
 }
 
-func LoadAndDeleteMovieByID(roomID, id uint, columns ...clause.Column) (*model.Movie, error) {
+func LoadAndDeleteMovieByID(roomID, id string, columns ...clause.Column) (*model.Movie, error) {
 	movie := &model.Movie{}
 	err := db.Unscoped().Clauses(clause.Returning{Columns: columns}).Where("room_id = ? AND id = ?", roomID, id).Delete(movie).Error
 	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
@@ -36,7 +36,7 @@ func LoadAndDeleteMovieByID(roomID, id uint, columns ...clause.Column) (*model.M
 	return movie, err
 }
 
-func DeleteMoviesByRoomID(roomID uint) error {
+func DeleteMoviesByRoomID(roomID string) error {
 	err := db.Unscoped().Where("room_id = ?", roomID).Delete(&model.Movie{}).Error
 	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
 		return errors.New("room not found")
@@ -44,7 +44,7 @@ func DeleteMoviesByRoomID(roomID uint) error {
 	return err
 }
 
-func LoadAndDeleteMoviesByRoomID(roomID uint, columns ...clause.Column) ([]*model.Movie, error) {
+func LoadAndDeleteMoviesByRoomID(roomID string, columns ...clause.Column) ([]*model.Movie, error) {
 	movies := []*model.Movie{}
 	err := db.Unscoped().Clauses(clause.Returning{Columns: columns}).Where("room_id = ?", roomID).Delete(&movies).Error
 	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
@@ -69,7 +69,7 @@ func SaveMovie(movie *model.Movie, columns ...clause.Column) error {
 	return err
 }
 
-func SwapMoviePositions(roomID uint, movie1ID uint, movie2ID uint) (err error) {
+func SwapMoviePositions(roomID, movie1ID, movie2ID string) (err error) {
 	tx := db.Begin()
 	defer func() {
 		if err != nil {
@@ -83,14 +83,14 @@ func SwapMoviePositions(roomID uint, movie1ID uint, movie2ID uint) (err error) {
 	err = tx.Select("position").Where("room_id = ? AND id = ?", roomID, movie1ID).First(movie1).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			err = fmt.Errorf("movie with id %d not found", movie1ID)
+			err = fmt.Errorf("movie with id %s not found", movie1ID)
 		}
 		return
 	}
 	err = tx.Select("position").Where("room_id = ? AND id = ?", roomID, movie2ID).First(movie2).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			err = fmt.Errorf("movie with id %d not found", movie2ID)
+			err = fmt.Errorf("movie with id %s not found", movie2ID)
 		}
 		return
 	}

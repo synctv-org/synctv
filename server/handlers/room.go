@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/synctv-org/synctv/internal/db"
@@ -190,13 +189,7 @@ func genRoomListResp(scopes ...func(db *gorm.DB) *gorm.DB) []*model.RoomListResp
 }
 
 func CheckRoom(ctx *gin.Context) {
-	id, err := strconv.Atoi(ctx.Query("roomId"))
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
-		return
-	}
-
-	r, err := db.GetRoomByID(uint(id))
+	r, err := db.GetRoomByID(ctx.Query("roomId"))
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(err))
 		return

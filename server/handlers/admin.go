@@ -177,7 +177,7 @@ func PendingUsers(ctx *gin.Context) {
 	}))
 }
 
-func ApprovePendingUser(Authorization string, userID uint) error {
+func ApprovePendingUser(Authorization, userID string) error {
 	user, err := op.GetUserById(userID)
 	if err != nil {
 		return err

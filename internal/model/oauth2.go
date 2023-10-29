@@ -7,9 +7,9 @@ import (
 )
 
 type UserProvider struct {
-	Provider       provider.OAuth2Provider `gorm:"primarykey"`
-	ProviderUserID uint                    `gorm:"primarykey;autoIncrement:false"`
+	Provider       provider.OAuth2Provider `gorm:"not null;primarykey"`
+	ProviderUserID uint                    `gorm:"not null;primarykey;autoIncrement:false"`
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
-	UserID         uint `gorm:"not null"`
+	UserID         string `gorm:"not null;index"`
 }

@@ -20,13 +20,13 @@ var (
 )
 
 type AuthClaims struct {
-	UserId uint `json:"u"`
+	UserId string `json:"u"`
 	jwt.RegisteredClaims
 }
 
 type AuthRoomClaims struct {
 	AuthClaims
-	RoomId  uint   `json:"r"`
+	RoomId  string `json:"r"`
 	Version uint32 `json:"rv"`
 }
 
@@ -64,11 +64,11 @@ func AuthRoom(Authorization string) (*op.User, *op.Room, error) {
 		return nil, nil, err
 	}
 
-	if claims.RoomId == 0 {
+	if len(claims.RoomId) != 36 {
 		return nil, nil, ErrAuthFailed
 	}
 
-	if claims.UserId == 0 {
+	if len(claims.UserId) != 36 {
 		return nil, nil, ErrAuthFailed
 	}
 
@@ -100,7 +100,7 @@ func AuthUser(Authorization string) (*op.User, error) {
 		return nil, err
 	}
 
-	if claims.UserId == 0 {
+	if len(claims.UserId) != 36 {
 		return nil, ErrAuthFailed
 	}
 

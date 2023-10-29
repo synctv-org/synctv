@@ -15,9 +15,9 @@ func (u *User) CreateRoom(name, password string, conf ...db.CreateRoomConfig) (*
 	return db.CreateRoom(name, password, append(conf, db.WithCreator(&u.User))...)
 }
 
-func (u *User) NewMovie(movie model.MovieInfo) model.Movie {
+func (u *User) NewMovie(movie model.BaseMovie) model.Movie {
 	return model.Movie{
-		MovieInfo: movie,
+		Base:      movie,
 		CreatorID: u.ID,
 	}
 }
@@ -38,7 +38,7 @@ func (u *User) IsPending() bool {
 	return u.Role == model.RolePending
 }
 
-func (u *User) HasPermission(roomID uint, permission model.Permission) bool {
+func (u *User) HasPermission(roomID string, permission model.Permission) bool {
 	if u.Role >= model.RoleAdmin {
 		return true
 	}
@@ -49,14 +49,14 @@ func (u *User) HasPermission(roomID uint, permission model.Permission) bool {
 	return ur.HasPermission(permission)
 }
 
-func (u *User) DeleteRoom(roomID uint) error {
+func (u *User) DeleteRoom(roomID string) error {
 	if !u.HasPermission(roomID, model.CanDeleteRoom) {
 		return errors.New("no permission")
 	}
 	return DeleteRoom(roomID)
 }
 
-func (u *User) SetRoomPassword(roomID uint, password string) error {
+func (u *User) SetRoomPassword(roomID, password string) error {
 	if !u.HasPermission(roomID, model.CanSetRoomPassword) {
 		return errors.New("no permission")
 	}

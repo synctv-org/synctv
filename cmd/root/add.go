@@ -3,7 +3,6 @@ package root
 import (
 	"errors"
 	"fmt"
-	"strconv"
 
 	"github.com/spf13/cobra"
 	"github.com/synctv-org/synctv/internal/bootstrap"
@@ -25,11 +24,7 @@ var AddCmd = &cobra.Command{
 		if len(args) == 0 {
 			return errors.New("missing user id")
 		}
-		id, err := strconv.Atoi(args[0])
-		if err != nil {
-			return fmt.Errorf("invalid user id: %s", args[0])
-		}
-		u, err := db.GetUserByID(uint(id))
+		u, err := db.GetUserByID(args[0])
 		if err != nil {
 			fmt.Printf("get user failed: %s", err)
 			return nil

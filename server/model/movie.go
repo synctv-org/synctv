@@ -20,7 +20,7 @@ var (
 	ErrEmptyIds = errors.New("empty ids")
 )
 
-type PushMovieReq model.BaseMovieInfo
+type PushMovieReq model.BaseMovie
 
 func (p *PushMovieReq) Decode(ctx *gin.Context) error {
 	return json.NewDecoder(ctx.Request.Body).Decode(p)
@@ -41,11 +41,15 @@ func (p *PushMovieReq) Validate() error {
 		return ErrTypeTooLong
 	}
 
+	if p.VendorInfo.Vendor != "" && p.VendorInfo.Info == nil {
+		return errors.New("vendor info is empty")
+	}
+
 	return nil
 }
 
 type IdReq struct {
-	Id uint `json:"id"`
+	Id string `json:"id"`
 }
 
 func (i *IdReq) Decode(ctx *gin.Context) error {
@@ -53,7 +57,7 @@ func (i *IdReq) Decode(ctx *gin.Context) error {
 }
 
 func (i *IdReq) Validate() error {
-	if i.Id <= 0 {
+	if len(i.Id) != 36 {
 		return ErrId
 	}
 	return nil
@@ -79,7 +83,7 @@ func (e *EditMovieReq) Validate() error {
 }
 
 type IdsReq struct {
-	Ids []uint `json:"ids"`
+	Ids []string `json:"ids"`
 }
 
 func (i *IdsReq) Decode(ctx *gin.Context) error {
@@ -90,12 +94,17 @@ func (i *IdsReq) Validate() error {
 	if len(i.Ids) == 0 {
 		return ErrEmptyIds
 	}
+	for _, v := range i.Ids {
+		if len(v) != 36 {
+			return ErrId
+		}
+	}
 	return nil
 }
 
 type SwapMovieReq struct {
-	Id1 uint `json:"id1"`
-	Id2 uint `json:"id2"`
+	Id1 string `json:"id1"`
+	Id2 string `json:"id2"`
 }
 
 func (s *SwapMovieReq) Decode(ctx *gin.Context) error {
@@ -103,17 +112,16 @@ func (s *SwapMovieReq) Decode(ctx *gin.Context) error {
 }
 
 func (s *SwapMovieReq) Validate() error {
-	if s.Id1 <= 0 || s.Id2 <= 0 {
+	if len(s.Id1) != 36 || len(s.Id2) != 36 {
 		return ErrId
 	}
 	return nil
 }
 
 type MoviesResp struct {
-	Id      uint                `json:"id"`
-	Base    model.BaseMovieInfo `json:"base"`
-	PullKey string              `json:"pullKey"`
-	Creater string              `json:"creater"`
+	Id      string          `json:"id"`
+	Base    model.BaseMovie `json:"base"`
+	Creator string          `json:"creator"`
 }
 
 type CurrentMovieResp struct {

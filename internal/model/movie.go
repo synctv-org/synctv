@@ -1,23 +1,30 @@
 package model
 
-import "time"
+import (
+	"time"
+
+	"github.com/google/uuid"
+	"gorm.io/gorm"
+)
 
 type Movie struct {
-	ID        uint      `gorm:"primarykey" json:"id"`
+	ID        string    `gorm:"primaryKey;type:varchar(36)" json:"id"`
 	CreatedAt time.Time `json:"-"`
 	UpdatedAt time.Time `json:"-"`
 	Position  uint      `gorm:"not null" json:"-"`
-	RoomID    uint      `gorm:"not null;index" json:"-"`
-	CreatorID uint      `gorm:"not null;index" json:"creatorId"`
-	MovieInfo
+	RoomID    string    `gorm:"not null;index" json:"-"`
+	CreatorID string    `gorm:"not null;index" json:"creatorId"`
+	Base      BaseMovie `gorm:"embedded;embeddedPrefix:base_" json:"base"`
 }
 
-type MovieInfo struct {
-	Base    BaseMovieInfo `gorm:"embedded;embeddedPrefix:base_" json:"base"`
-	PullKey string        `json:"pullKey"`
+func (m *Movie) BeforeCreate(tx *gorm.DB) error {
+	if m.ID == "" {
+		m.ID = uuid.NewString()
+	}
+	return nil
 }
 
-type BaseMovieInfo struct {
+type BaseMovie struct {
 	Url        string            `json:"url"`
 	Name       string            `gorm:"not null" json:"name"`
 	Live       bool              `json:"live"`
@@ -25,4 +32,10 @@ type BaseMovieInfo struct {
 	RtmpSource bool              `json:"rtmpSource"`
 	Type       string            `json:"type"`
 	Headers    map[string]string `gorm:"serializer:fastjson" json:"headers"`
+	VendorInfo `gorm:"embedded;embeddedPrefix:vendor_info_" json:"vendorInfo"`
+}
+
+type VendorInfo struct {
+	Vendor StreamingVendor `json:"vendor"`
+	Info   map[string]any  `gorm:"serializer:fastjson" json:"info"`
 }

@@ -14,11 +14,11 @@ import (
 var s *rtmps.Server
 
 type RtmpClaims struct {
-	PullKey string `json:"p"`
+	MovieID string `json:"m"`
 	jwt.RegisteredClaims
 }
 
-func AuthRtmpPublish(Authorization string) (channelName string, err error) {
+func AuthRtmpPublish(Authorization string) (movieID string, err error) {
 	t, err := jwt.ParseWithClaims(strings.TrimPrefix(Authorization, `Bearer `), &RtmpClaims{}, func(token *jwt.Token) (any, error) {
 		return stream.StringToBytes(conf.Conf.Jwt.Secret), nil
 	})
@@ -29,12 +29,12 @@ func AuthRtmpPublish(Authorization string) (channelName string, err error) {
 	if !ok {
 		return "", errors.New("auth failed")
 	}
-	return claims.PullKey, nil
+	return claims.MovieID, nil
 }
 
-func NewRtmpAuthorization(channelName string) (string, error) {
+func NewRtmpAuthorization(movieID string) (string, error) {
 	claims := &RtmpClaims{
-		PullKey: channelName,
+		MovieID: movieID,
 		RegisteredClaims: jwt.RegisteredClaims{
 			NotBefore: jwt.NewNumericDate(time.Now()),
 		},

@@ -15,8 +15,8 @@ import (
 )
 
 type Hub struct {
-	id        uint
-	clients   rwmap.RWMap[uint, *Client]
+	id        string
+	clients   rwmap.RWMap[string, *Client]
 	broadcast chan *broadcastMessage
 	exit      chan struct{}
 	closed    uint32
@@ -52,7 +52,7 @@ func WithIgnoreId(id ...string) BroadcastConf {
 	}
 }
 
-func newHub(id uint) *Hub {
+func newHub(id string) *Hub {
 	return &Hub{
 		id:        id,
 		broadcast: make(chan *broadcastMessage, 128),
@@ -73,7 +73,7 @@ func (h *Hub) serve() error {
 		select {
 		case message := <-h.broadcast:
 			h.devMessage(message.data)
-			h.clients.Range(func(_ uint, cli *Client) bool {
+			h.clients.Range(func(_ string, cli *Client) bool {
 				if !message.sendToSelf {
 					if cli.u.Username == message.sender {
 						return true
@@ -83,13 +83,13 @@ func (h *Hub) serve() error {
 					return true
 				}
 				if err := cli.Send(message.data); err != nil {
-					log.Debugf("hub: %d, write to client err: %s\nmessage: %+v", h.id, err, message)
+					log.Debugf("hub: %s, write to client err: %s\nmessage: %+v", h.id, err, message)
 					cli.Close()
 				}
 				return true
 			})
 		case <-h.exit:
-			log.Debugf("hub: %d, closed", h.id)
+			log.Debugf("hub: %s, closed", h.id)
 			return nil
 		}
 	}
@@ -127,7 +127,7 @@ func (h *Hub) ping() {
 func (h *Hub) devMessage(msg Message) {
 	switch msg.MessageType() {
 	case websocket.TextMessage:
-		log.Debugf("hub: %d, broadcast:\nmessage: %+v", h.id, msg.String())
+		log.Debugf("hub: %s, broadcast:\nmessage: %+v", h.id, msg.String())
 	}
 }
 
@@ -144,7 +144,7 @@ func (h *Hub) Close() error {
 		return ErrAlreadyClosed
 	}
 	close(h.exit)
-	h.clients.Range(func(_ uint, client *Client) bool {
+	h.clients.Range(func(_ string, client *Client) bool {
 		h.clients.Delete(client.u.ID)
 		client.Close()
 		return true

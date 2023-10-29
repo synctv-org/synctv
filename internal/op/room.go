@@ -62,7 +62,7 @@ func (r *Room) CheckVersion(version uint32) bool {
 	return atomic.LoadUint32(&r.version) == version
 }
 
-func (r *Room) UpdateMovie(movieId uint, movie model.BaseMovieInfo) error {
+func (r *Room) UpdateMovie(movieId string, movie model.BaseMovie) error {
 	return r.movies.Update(movieId, movie)
 }
 
@@ -71,7 +71,7 @@ func (r *Room) AddMovie(m model.Movie) error {
 	return r.movies.Add(&m)
 }
 
-func (r *Room) HasPermission(userID uint, permission model.Permission) bool {
+func (r *Room) HasPermission(userID string, permission model.Permission) bool {
 	ur, err := db.GetRoomUserRelation(r.ID, userID)
 	if err != nil {
 		return false
@@ -100,23 +100,23 @@ func (r *Room) SetPassword(password string) error {
 	return db.SetRoomHashedPassword(r.ID, hashedPassword)
 }
 
-func (r *Room) SetUserRole(userID uint, role model.RoomRole) error {
+func (r *Room) SetUserRole(userID string, role model.RoomRole) error {
 	return db.SetUserRole(r.ID, userID, role)
 }
 
-func (r *Room) SetUserPermission(userID uint, permission model.Permission) error {
+func (r *Room) SetUserPermission(userID string, permission model.Permission) error {
 	return db.SetUserPermission(r.ID, userID, permission)
 }
 
-func (r *Room) AddUserPermission(userID uint, permission model.Permission) error {
+func (r *Room) AddUserPermission(userID string, permission model.Permission) error {
 	return db.AddUserPermission(r.ID, userID, permission)
 }
 
-func (r *Room) RemoveUserPermission(userID uint, permission model.Permission) error {
+func (r *Room) RemoveUserPermission(userID string, permission model.Permission) error {
 	return db.RemoveUserPermission(r.ID, userID, permission)
 }
 
-func (r *Room) DeleteUserPermission(userID uint) error {
+func (r *Room) DeleteUserPermission(userID string) error {
 	return db.DeleteUserPermission(r.ID, userID)
 }
 
@@ -124,7 +124,7 @@ func (r *Room) GetMoviesCount() int {
 	return r.movies.Len()
 }
 
-func (r *Room) DeleteMovieByID(id uint) error {
+func (r *Room) DeleteMovieByID(id string) error {
 	return r.movies.DeleteMovieByID(id)
 }
 
@@ -132,7 +132,7 @@ func (r *Room) ClearMovies() error {
 	return r.movies.Clear()
 }
 
-func (r *Room) GetMovieByID(id uint) (*movie, error) {
+func (r *Room) GetMovieByID(id string) (*movie, error) {
 	return r.movies.GetMovieByID(id)
 }
 
@@ -141,7 +141,7 @@ func (r *Room) Current() *Current {
 	return &c
 }
 
-func (r *Room) ChangeCurrentMovie(id uint) error {
+func (r *Room) ChangeCurrentMovie(id string) error {
 	m, err := r.movies.GetMovieByID(id)
 	if err != nil {
 		return err
@@ -150,12 +150,8 @@ func (r *Room) ChangeCurrentMovie(id uint) error {
 	return nil
 }
 
-func (r *Room) SwapMoviePositions(id1, id2 uint) error {
+func (r *Room) SwapMoviePositions(id1, id2 string) error {
 	return r.movies.SwapMoviePositions(id1, id2)
-}
-
-func (r *Room) GetMovieWithPullKey(pullKey string) (*movie, error) {
-	return r.movies.GetMovieWithPullKey(pullKey)
 }
 
 func (r *Room) GetMoviesWithPage(page, pageSize int) []*movie {

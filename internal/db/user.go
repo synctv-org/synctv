@@ -59,19 +59,19 @@ func CreateOrLoadUser(username string, p provider.OAuth2Provider, puid uint, con
 	return &user, nil
 }
 
-func GetProviderUserID(p provider.OAuth2Provider, puid uint) (uint, error) {
+func GetProviderUserID(p provider.OAuth2Provider, puid uint) (string, error) {
 	var userProvider model.UserProvider
 	if err := db.Where("provider = ? AND provider_user_id = ?", p, puid).First(&userProvider).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return 0, errors.New("user not found")
+			return "", errors.New("user not found")
 		} else {
-			return 0, err
+			return "", err
 		}
 	}
 	return userProvider.UserID, nil
 }
 
-func AddUserToRoom(userID uint, roomID uint, role model.RoomRole, permission model.Permission) error {
+func AddUserToRoom(userID, roomID string, role model.RoomRole, permission model.Permission) error {
 	ur := &model.RoomUserRelation{
 		UserID:      userID,
 		RoomID:      roomID,
@@ -100,8 +100,8 @@ func GetUserByUsernameLike(username string, scopes ...func(*gorm.DB) *gorm.DB) [
 	return users
 }
 
-func GerUsersIDByUsernameLike(username string, scopes ...func(*gorm.DB) *gorm.DB) []uint {
-	var ids []uint
+func GerUsersIDByUsernameLike(username string, scopes ...func(*gorm.DB) *gorm.DB) []string {
+	var ids []string
 	db.Model(&model.User{}).Where(`username LIKE ?`, fmt.Sprintf("%%%s%%", username)).Scopes(scopes...).Pluck("id", &ids)
 	return ids
 }
@@ -115,7 +115,10 @@ func GetUserByIDOrUsernameLike(idOrUsername string, scopes ...func(*gorm.DB) *go
 	return users, err
 }
 
-func GetUserByID(id uint) (*model.User, error) {
+func GetUserByID(id string) (*model.User, error) {
+	if len(id) != 36 {
+		return nil, errors.New("user id is not 32 bit")
+	}
 	u := &model.User{}
 	err := db.Where("id = ?", id).First(u).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -124,7 +127,7 @@ func GetUserByID(id uint) (*model.User, error) {
 	return u, err
 }
 
-func GetUsersByRoomID(roomID uint, scopes ...func(*gorm.DB) *gorm.DB) ([]model.User, error) {
+func GetUsersByRoomID(roomID string, scopes ...func(*gorm.DB) *gorm.DB) ([]model.User, error) {
 	users := []model.User{}
 	err := db.Model(&model.RoomUserRelation{}).Where("room_id = ?", roomID).Scopes(scopes...).Find(&users).Error
 	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
@@ -141,7 +144,7 @@ func BanUser(u *model.User) error {
 	return SaveUser(u)
 }
 
-func BanUserByID(userID uint) error {
+func BanUserByID(userID string) error {
 	err := db.Model(&model.User{}).Where("id = ?", userID).Update("role", model.RoleBanned).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return errors.New("user not found")
@@ -157,7 +160,7 @@ func UnbanUser(u *model.User) error {
 	return SaveUser(u)
 }
 
-func UnbanUserByID(userID uint) error {
+func UnbanUserByID(userID string) error {
 	err := db.Model(&model.User{}).Where("id = ?", userID).Update("role", model.RoleUser).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return errors.New("user not found")
@@ -165,7 +168,7 @@ func UnbanUserByID(userID uint) error {
 	return err
 }
 
-func DeleteUserByID(userID uint) error {
+func DeleteUserByID(userID string) error {
 	err := db.Unscoped().Delete(&model.User{}, userID).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return errors.New("user not found")
@@ -173,7 +176,7 @@ func DeleteUserByID(userID uint) error {
 	return err
 }
 
-func LoadAndDeleteUserByID(userID uint, columns ...clause.Column) (*model.User, error) {
+func LoadAndDeleteUserByID(userID string, columns ...clause.Column) (*model.User, error) {
 	u := &model.User{}
 	if db.Unscoped().
 		Clauses(clause.Returning{Columns: columns}).
@@ -210,7 +213,7 @@ func GetAdmins() []*model.User {
 	return users
 }
 
-func AddAdminByID(userID uint) error {
+func AddAdminByID(userID string) error {
 	err := db.Model(&model.User{}).Where("id = ?", userID).Update("role", model.RoleAdmin).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return errors.New("user not found")
@@ -218,7 +221,7 @@ func AddAdminByID(userID uint) error {
 	return err
 }
 
-func RemoveAdminByID(userID uint) error {
+func RemoveAdminByID(userID string) error {
 	err := db.Model(&model.User{}).Where("id = ?", userID).Update("role", model.RoleUser).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return errors.New("user not found")
@@ -242,7 +245,7 @@ func RemoveRoot(u *model.User) error {
 	return SaveUser(u)
 }
 
-func AddRootByID(userID uint) error {
+func AddRootByID(userID string) error {
 	err := db.Model(&model.User{}).Where("id = ?", userID).Update("role", model.RoleRoot).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return errors.New("user not found")
@@ -250,7 +253,7 @@ func AddRootByID(userID uint) error {
 	return err
 }
 
-func RemoveRootByID(userID uint) error {
+func RemoveRootByID(userID string) error {
 	err := db.Model(&model.User{}).Where("id = ?", userID).Update("role", model.RoleUser).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return errors.New("user not found")
@@ -269,7 +272,7 @@ func SetRole(u *model.User, role model.Role) error {
 	return SaveUser(u)
 }
 
-func SetRoleByID(userID uint, role model.Role) error {
+func SetRoleByID(userID string, role model.Role) error {
 	err := db.Model(&model.User{}).Where("id = ?", userID).Update("role", role).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return errors.New("user not found")
@@ -289,7 +292,7 @@ func GetAllUserCountWithRole(role model.Role, scopes ...func(*gorm.DB) *gorm.DB)
 	return count
 }
 
-func SetUsernameByID(userID uint, username string) error {
+func SetUsernameByID(userID string, username string) error {
 	err := db.Model(&model.User{}).Where("id = ?", userID).Update("username", username).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return errors.New("user not found")

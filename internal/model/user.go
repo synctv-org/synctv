@@ -5,6 +5,7 @@ import (
 	"math/rand"
 	"time"
 
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
@@ -19,15 +20,16 @@ const (
 )
 
 type User struct {
-	ID                 uint `gorm:"primarykey"`
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
-	Providers          []UserProvider     `gorm:"foreignKey:UserID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
-	Username           string             `gorm:"not null;uniqueIndex"`
-	Role               Role               `gorm:"not null;default:user"`
-	GroupUserRelations []RoomUserRelation `gorm:"foreignKey:UserID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
-	Rooms              []Room             `gorm:"foreignKey:CreatorID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
-	Movies             []Movie            `gorm:"foreignKey:CreatorID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL"`
+	ID                   string `gorm:"primaryKey;type:varchar(36)" json:"id"`
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
+	Providers            []UserProvider        `gorm:"foreignKey:UserID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
+	Username             string                `gorm:"not null;uniqueIndex"`
+	Role                 Role                  `gorm:"not null;default:user"`
+	GroupUserRelations   []RoomUserRelation    `gorm:"foreignKey:UserID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
+	Rooms                []Room                `gorm:"foreignKey:CreatorID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
+	Movies               []Movie               `gorm:"foreignKey:CreatorID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL"`
+	StreamingVendorInfos []StreamingVendorInfo `gorm:"foreignKey:UserID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 }
 
 func (u *User) BeforeCreate(tx *gorm.DB) error {
@@ -35,6 +37,9 @@ func (u *User) BeforeCreate(tx *gorm.DB) error {
 	err := tx.Where("username = ?", u.Username).First(&existingUser).Error
 	if err == nil {
 		u.Username = fmt.Sprintf("%s#%d", u.Username, rand.Intn(9999))
+	}
+	if u.ID == "" {
+		u.ID = uuid.NewString()
 	}
 	return nil
 }

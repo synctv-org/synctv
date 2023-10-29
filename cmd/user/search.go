@@ -33,7 +33,7 @@ var SearchCmd = &cobra.Command{
 			return nil
 		}
 		for _, u := range us {
-			fmt.Printf("id: %d\tusername: %s\tcreated_at: %s\trole: %s\n", u.ID, u.Username, u.CreatedAt, u.Role)
+			fmt.Printf("id: %s\tusername: %s\tcreated_at: %s\trole: %s\n", u.ID, u.Username, u.CreatedAt, u.Role)
 		}
 		return nil
 	},

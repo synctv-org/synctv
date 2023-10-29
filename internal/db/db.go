@@ -19,7 +19,7 @@ var (
 func Init(d *gorm.DB, t conf.DatabaseType) error {
 	db = d
 	dbType = t
-	return AutoMigrate(new(model.Movie), new(model.Room), new(model.User), new(model.RoomUserRelation), new(model.UserProvider), new(model.Setting))
+	return AutoMigrate(new(model.Movie), new(model.Room), new(model.User), new(model.RoomUserRelation), new(model.UserProvider), new(model.Setting), new(model.StreamingVendorInfo))
 }
 
 func AutoMigrate(dst ...any) error {
@@ -103,19 +103,19 @@ func WithUserAndProvider(db *gorm.DB) *gorm.DB {
 	return db.Preload("User").Preload("User.Provider")
 }
 
-func WhereRoomID(roomID uint) func(db *gorm.DB) *gorm.DB {
+func WhereRoomID(roomID string) func(db *gorm.DB) *gorm.DB {
 	return func(db *gorm.DB) *gorm.DB {
 		return db.Where("room_id = ?", roomID)
 	}
 }
 
-func WhereUserID(userID uint) func(db *gorm.DB) *gorm.DB {
+func WhereUserID(userID string) func(db *gorm.DB) *gorm.DB {
 	return func(db *gorm.DB) *gorm.DB {
 		return db.Where("user_id = ?", userID)
 	}
 }
 
-func WhereCreatorID(creatorID uint) func(db *gorm.DB) *gorm.DB {
+func WhereCreatorID(creatorID string) func(db *gorm.DB) *gorm.DB {
 	return func(db *gorm.DB) *gorm.DB {
 		return db.Where("creator_id = ?", creatorID)
 	}
@@ -140,7 +140,7 @@ func WhereLike(column string, value string) func(db *gorm.DB) *gorm.DB {
 	}
 }
 
-func WhereRoomNameLikeOrCreatorIn(name string, ids []uint) func(db *gorm.DB) *gorm.DB {
+func WhereRoomNameLikeOrCreatorIn(name string, ids []string) func(db *gorm.DB) *gorm.DB {
 	return func(db *gorm.DB) *gorm.DB {
 		switch dbType {
 		case conf.DatabaseTypePostgres:
@@ -173,7 +173,7 @@ func WhereUserNameLike(name string) func(db *gorm.DB) *gorm.DB {
 	}
 }
 
-func WhereCreatorIDIn(ids []uint) func(db *gorm.DB) *gorm.DB {
+func WhereCreatorIDIn(ids []string) func(db *gorm.DB) *gorm.DB {
 	return func(db *gorm.DB) *gorm.DB {
 		return db.Where("creator_id IN ?", ids)
 	}

@@ -88,7 +88,7 @@ func (c *current) SetSeekRate(seek, rate, timeDiff float64) Status {
 func (c *Current) Proto() *pb.Current {
 	return &pb.Current{
 		Movie: &pb.MovieInfo{
-			Id: uint64(c.Movie.ID),
+			Id: c.Movie.ID,
 			Base: &pb.BaseMovieInfo{
 				Url:        c.Movie.Base.Url,
 				Name:       c.Movie.Base.Name,
@@ -98,7 +98,6 @@ func (c *Current) Proto() *pb.Current {
 				Type:       c.Movie.Base.Type,
 				Headers:    c.Movie.Base.Headers,
 			},
-			PullKey:   c.Movie.PullKey,
 			CreatedAt: c.Movie.CreatedAt.UnixMilli(),
 			Creator:   GetUserName(c.Movie.CreatorID),
 		},

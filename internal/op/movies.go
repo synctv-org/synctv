@@ -13,7 +13,7 @@ import (
 )
 
 type movies struct {
-	roomID uint
+	roomID string
 	lock   sync.RWMutex
 	list   dllist.Dllist[*movie]
 	once   sync.Once
@@ -45,7 +45,6 @@ func (m *movies) Add(mo *model.Movie) error {
 		Movie: mo,
 	}
 
-	// You need to init to get the pullKey first, and then create it into the database.
 	err := movie.init()
 	if err != nil {
 		return err
@@ -61,22 +60,22 @@ func (m *movies) Add(mo *model.Movie) error {
 	return nil
 }
 
-func (m *movies) GetChannel(channelName string) (*rtmps.Channel, error) {
-	if channelName == "" {
+func (m *movies) GetChannel(id string) (*rtmps.Channel, error) {
+	if id == "" {
 		return nil, errors.New("channel name is nil")
 	}
 	m.lock.RLock()
 	defer m.lock.RUnlock()
 	m.init()
 	for e := m.list.Front(); e != nil; e = e.Next() {
-		if e.Value.PullKey == channelName {
+		if e.Value.ID == id {
 			return e.Value.Channel()
 		}
 	}
 	return nil, errors.New("channel not found")
 }
 
-func (m *movies) Update(movieId uint, movie model.BaseMovieInfo) error {
+func (m *movies) Update(movieId string, movie model.BaseMovie) error {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 	m.init()
@@ -116,7 +115,7 @@ func (m *movies) Close() error {
 	return nil
 }
 
-func (m *movies) DeleteMovieByID(id uint) error {
+func (m *movies) DeleteMovieByID(id string) error {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 	m.init()
@@ -135,13 +134,13 @@ func (m *movies) DeleteMovieByID(id uint) error {
 	return errors.New("movie not found")
 }
 
-func (m *movies) GetMovieByID(id uint) (*movie, error) {
+func (m *movies) GetMovieByID(id string) (*movie, error) {
 	m.lock.RLock()
 	defer m.lock.RUnlock()
 	return m.getMovieByID(id)
 }
 
-func (m *movies) getMovieByID(id uint) (*movie, error) {
+func (m *movies) getMovieByID(id string) (*movie, error) {
 	m.init()
 	for e := m.list.Front(); e != nil; e = e.Next() {
 		if e.Value.ID == id {
@@ -151,7 +150,7 @@ func (m *movies) getMovieByID(id uint) (*movie, error) {
 	return nil, errors.New("movie not found")
 }
 
-func (m *movies) getMovieElementByID(id uint) (*dllist.Element[*movie], error) {
+func (m *movies) getMovieElementByID(id string) (*dllist.Element[*movie], error) {
 	m.init()
 	for e := m.list.Front(); e != nil; e = e.Next() {
 		if e.Value.ID == id {
@@ -161,20 +160,7 @@ func (m *movies) getMovieElementByID(id uint) (*dllist.Element[*movie], error) {
 	return nil, errors.New("movie not found")
 }
 
-func (m *movies) GetMovieWithPullKey(pullKey string) (*movie, error) {
-	m.lock.RLock()
-	defer m.lock.RUnlock()
-	m.init()
-
-	for e := m.list.Front(); e != nil; e = e.Next() {
-		if e.Value.PullKey == pullKey {
-			return e.Value, nil
-		}
-	}
-	return nil, errors.New("movie not found")
-}
-
-func (m *movies) SwapMoviePositions(id1, id2 uint) error {
+func (m *movies) SwapMoviePositions(id1, id2 string) error {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 	m.init()

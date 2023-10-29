@@ -13,7 +13,7 @@ import (
 
 var userCache gcache.Cache
 
-func GetUserById(id uint) (*User, error) {
+func GetUserById(id string) (*User, error) {
 	i, err := userCache.Get(id)
 	if err == nil {
 		return i.(*User), nil
@@ -72,14 +72,14 @@ func GetUserByProvider(p provider.OAuth2Provider, pid uint) (*User, error) {
 	return GetUserById(uid)
 }
 
-func DeleteUserByID(userID uint) error {
+func DeleteUserByID(userID string) error {
 	err := db.DeleteUserByID(userID)
 	if err != nil {
 		return err
 	}
 	userCache.Remove(userID)
 
-	roomCache.Range(func(key uint, value *synccache.Entry[*Room]) bool {
+	roomCache.Range(func(key string, value *synccache.Entry[*Room]) bool {
 		v := value.Value()
 		if v.CreatorID == userID {
 			roomCache.CompareAndDelete(key, value)
@@ -95,7 +95,7 @@ func SaveUser(u *model.User) error {
 	return db.SaveUser(u)
 }
 
-func GetUserName(userID uint) string {
+func GetUserName(userID string) string {
 	u, err := GetUserById(userID)
 	if err != nil {
 		return ""
@@ -103,7 +103,7 @@ func GetUserName(userID uint) string {
 	return u.Username
 }
 
-func SetRoleByID(userID uint, role model.Role) error {
+func SetRoleByID(userID string, role model.Role) error {
 	err := db.SetRoleByID(userID, role)
 	if err != nil {
 		return err

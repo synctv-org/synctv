@@ -3,7 +3,6 @@ package bootstrap
 import (
 	"context"
 	"fmt"
-	"strconv"
 
 	log "github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/internal/conf"
@@ -27,12 +26,7 @@ func auth(ReqAppName, ReqChannelName string, IsPublisher bool) (*rtmps.Channel, 
 			return nil, err
 		}
 		log.Infof("rtmp: publisher login success: %s/%s", ReqAppName, channelName)
-		id, err := strconv.Atoi(ReqAppName)
-		if err != nil {
-			log.Errorf("rtmp: parse channel name to id error: %v", err)
-			return nil, err
-		}
-		r, err := op.LoadOrInitRoomByID(uint(id))
+		r, err := op.LoadOrInitRoomByID(ReqAppName)
 		if err != nil {
 			log.Errorf("rtmp: get room by id error: %v", err)
 			return nil, err
@@ -44,12 +38,7 @@ func auth(ReqAppName, ReqChannelName string, IsPublisher bool) (*rtmps.Channel, 
 		log.Warnf("rtmp: dial to %s/%s error: %s", ReqAppName, ReqChannelName, "rtmp player is not enabled")
 		return nil, fmt.Errorf("rtmp: dial to %s/%s error: %s", ReqAppName, ReqChannelName, "rtmp player is not enabled")
 	}
-	id, err := strconv.Atoi(ReqAppName)
-	if err != nil {
-		log.Errorf("rtmp: parse channel name to id error: %v", err)
-		return nil, err
-	}
-	r, err := op.LoadOrInitRoomByID(uint(id))
+	r, err := op.LoadOrInitRoomByID(ReqAppName)
 	if err != nil {
 		log.Errorf("rtmp: get room by id error: %v", err)
 		return nil, err

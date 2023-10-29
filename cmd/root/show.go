@@ -22,7 +22,7 @@ var ShowCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		roots := db.GetRoots()
 		for _, root := range roots {
-			fmt.Printf("id: %d\tusername: %s\n", root.ID, root.Username)
+			fmt.Printf("id: %s\tusername: %s\n", root.ID, root.Username)
 		}
 		return nil
 	},

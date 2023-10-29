@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/go-resty/resty/v2"
-	"github.com/google/uuid"
 	"github.com/synctv-org/synctv/internal/conf"
 	"github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/utils"
@@ -38,9 +37,6 @@ func (m *movie) init() (err error) {
 		if !conf.Conf.Rtmp.Enable {
 			return errors.New("rtmp is not enabled")
 		}
-		if m.PullKey == "" {
-			m.PullKey = uuid.NewString()
-		}
 		if m.channel == nil {
 			m.channel = rtmps.NewChannel()
 			m.channel.InitHlsPlayer()
@@ -58,7 +54,6 @@ func (m *movie) init() (err error) {
 		}
 		switch u.Scheme {
 		case "rtmp":
-			m.PullKey = uuid.NewMD5(uuid.NameSpaceURL, []byte(m.Base.Url)).String()
 			if m.channel == nil {
 				m.channel = rtmps.NewChannel()
 				m.channel.InitHlsPlayer()
@@ -84,7 +79,6 @@ func (m *movie) init() (err error) {
 			if m.Base.Type != "flv" {
 				return errors.New("only flv is supported")
 			}
-			m.PullKey = uuid.NewMD5(uuid.NameSpaceURL, []byte(m.Base.Url)).String()
 			if m.channel == nil {
 				m.channel = rtmps.NewChannel()
 				m.channel.InitHlsPlayer()
@@ -119,6 +113,9 @@ func (m *movie) init() (err error) {
 		if !conf.Conf.Proxy.MovieProxy {
 			return errors.New("movie proxy is not enabled")
 		}
+		if m.Base.VendorInfo.Vendor != "" {
+			return errors.New("vendor movie info is not supported in movie proxy mode")
+		}
 		u, err := url.Parse(m.Base.Url)
 		if err != nil {
 			return err
@@ -129,16 +126,16 @@ func (m *movie) init() (err error) {
 		if u.Scheme != "http" && u.Scheme != "https" {
 			return errors.New("unsupported scheme")
 		}
-		m.PullKey = uuid.NewMD5(uuid.NameSpaceURL, []byte(m.Base.Url)).String()
 	case !m.Base.Live && !m.Base.Proxy, m.Base.Live && !m.Base.Proxy && !m.Base.RtmpSource:
-		u, err := url.Parse(m.Base.Url)
-		if err != nil {
-			return err
+		if m.Base.VendorInfo.Vendor == "" {
+			u, err := url.Parse(m.Base.Url)
+			if err != nil {
+				return err
+			}
+			if u.Scheme != "http" && u.Scheme != "https" {
+				return errors.New("unsupported scheme")
+			}
 		}
-		if u.Scheme != "http" && u.Scheme != "https" {
-			return errors.New("unsupported scheme")
-		}
-		m.PullKey = ""
 	default:
 		return errors.New("unknown error")
 	}
@@ -158,7 +155,7 @@ func (m *movie) terminate() {
 	}
 }
 
-func (m *movie) Update(movie model.BaseMovieInfo) error {
+func (m *movie) Update(movie model.BaseMovie) error {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 	m.terminate()

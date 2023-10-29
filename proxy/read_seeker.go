@@ -31,6 +31,9 @@ func WithHeaders(headers map[string]string) HttpReadSeekerConf {
 
 func WithAppendHeaders(headers map[string]string) HttpReadSeekerConf {
 	return func(h *HttpReadSeeker) {
+		if h.headers == nil {
+			h.headers = make(map[string]string)
+		}
 		for k, v := range headers {
 			h.headers[k] = v
 		}

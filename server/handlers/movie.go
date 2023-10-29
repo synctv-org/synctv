@@ -59,14 +59,14 @@ func MovieList(ctx *gin.Context) {
 
 	mresp := make([]model.MoviesResp, len(m))
 	for i, v := range m {
-		// hide headers when proxy
-		if m[i].Base.Proxy {
-			m[i].Base.Headers = nil
-		}
 		mresp[i] = model.MoviesResp{
 			Id:      v.ID,
 			Base:    m[i].Base,
 			Creator: op.GetUserName(v.CreatorID),
+		}
+		// hide headers when proxy
+		if mresp[i].Base.Proxy {
+			mresp[i].Base.Headers = nil
 		}
 	}
 
@@ -93,11 +93,7 @@ func genCurrent(current *op.Current, userID string) (*op.Current, error) {
 }
 
 func genCurrentResp(current *op.Current) *model.CurrentMovieResp {
-	// hide headers when proxy
-	if current.Movie.Base.Proxy {
-		current.Movie.Base.Headers = nil
-	}
-	return &model.CurrentMovieResp{
+	c := &model.CurrentMovieResp{
 		Status: current.Status,
 		Movie: model.MoviesResp{
 			Id:      current.Movie.ID,
@@ -105,6 +101,11 @@ func genCurrentResp(current *op.Current) *model.CurrentMovieResp {
 			Creator: op.GetUserName(current.Movie.CreatorID),
 		},
 	}
+	// hide headers when proxy
+	if c.Movie.Base.Proxy {
+		c.Movie.Base.Headers = nil
+	}
+	return c
 }
 
 func CurrentMovie(ctx *gin.Context) {
@@ -138,14 +139,14 @@ func Movies(ctx *gin.Context) {
 
 	mresp := make([]model.MoviesResp, len(m))
 	for i, v := range m {
-		// hide headers when proxy
-		if m[i].Base.Proxy {
-			m[i].Base.Headers = nil
-		}
 		mresp[i] = model.MoviesResp{
 			Id:      v.ID,
 			Base:    m[i].Base,
 			Creator: op.GetUserName(v.CreatorID),
+		}
+		// hide headers when proxy
+		if mresp[i].Base.Proxy {
+			mresp[i].Base.Headers = nil
 		}
 	}
 

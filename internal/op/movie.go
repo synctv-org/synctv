@@ -114,7 +114,7 @@ func (m *movie) init() (err error) {
 			return errors.New("movie proxy is not enabled")
 		}
 		if m.Base.VendorInfo.Vendor != "" {
-			return errors.New("vendor movie info is not supported in movie proxy mode")
+			return nil
 		}
 		u, err := url.Parse(m.Base.Url)
 		if err != nil {

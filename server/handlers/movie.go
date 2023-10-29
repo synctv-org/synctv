@@ -74,6 +74,8 @@ func MovieList(ctx *gin.Context) {
 		return
 	}
 
+	current.UpdateSeek()
+
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
 		"current": genCurrentResp(current),
 		"total":   room.GetMoviesCount(),
@@ -109,6 +111,8 @@ func CurrentMovie(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}
+
+	current.UpdateSeek()
 
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
 		"current": genCurrentResp(current),
@@ -339,11 +343,20 @@ func ChangeCurrentMovie(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
+
+	current, err := genCurrent(room)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
+
+	current.UpdateSeek()
+
 	if err := room.Broadcast(&op.ElementMessage{
 		ElementMessage: &pb.ElementMessage{
 			Type:    pb.ElementMessageType_CHANGE_CURRENT,
 			Sender:  user.Username,
-			Current: room.Current().Proto(),
+			Current: current.Proto(),
 		},
 	}); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
@@ -378,13 +391,13 @@ func ProxyMovie(ctx *gin.Context) {
 		return
 	}
 
-	if m.Base.VendorInfo.Vendor != "" {
-		ProxyVendorMovie(ctx, m.Movie)
+	if !m.Base.Proxy || m.Base.Live || m.Base.RtmpSource {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support movie proxy"))
 		return
 	}
 
-	if !m.Base.Proxy || m.Base.Live || m.Base.RtmpSource {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support proxy"))
+	if m.Base.VendorInfo.Vendor != "" {
+		ProxyVendorMovie(ctx, m.Movie)
 		return
 	}
 
@@ -544,35 +557,24 @@ func ProxyVendorMovie(ctx *gin.Context, m *dbModel.Movie) {
 		}
 		cli := bilibili.NewClient(vendor.Cookies)
 
+		var mu *bilibili.VideoURL
 		if bvid != "" {
-			mu, err := cli.GetVideoURL(0, bvid, uint(cid))
-			if err != nil {
-				ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
-				return
-			}
-			// s, err := cli.GetSubtitles(0, bvid, uint(cid))
-			// if err != nil {
-			// 	ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
-			// 	return
-			// }
-			ctx.Redirect(http.StatusFound, mu.URL)
-			return
+			mu, err = cli.GetVideoURL(0, bvid, uint(cid))
 		} else {
-			mu, err := cli.GetPGCURL(uint(epId), uint(cid))
-			if err != nil {
-				ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
-				return
-			}
-			hrs := proxy.NewBufferedHttpReadSeeker(128*1024, mu.URL,
-				proxy.WithContext(ctx),
-				proxy.WithAppendHeaders(map[string]string{
-					"Referer":    "https://www.bilibili.com/",
-					"User-Agent": utils.UA,
-				}),
-			)
-			http.ServeContent(ctx.Writer, ctx.Request, mu.URL, time.Now(), hrs)
+			mu, err = cli.GetPGCURL(uint(epId), uint(cid))
+		}
+		if err != nil {
+			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 			return
 		}
+		hrs := proxy.NewBufferedHttpReadSeeker(128*1024, mu.URL,
+			proxy.WithContext(ctx),
+			proxy.WithAppendHeaders(map[string]string{
+				"Referer":    "https://www.bilibili.com/",
+				"User-Agent": utils.UA,
+			}),
+		)
+		http.ServeContent(ctx.Writer, ctx.Request, mu.URL, time.Now(), hrs)
 
 	default:
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("vendor not support"))
@@ -581,6 +583,10 @@ func ProxyVendorMovie(ctx *gin.Context, m *dbModel.Movie) {
 }
 
 func parse2VendorMovie(movie *dbModel.Movie) error {
+	if movie.Base.Proxy {
+		return nil
+	}
+
 	switch movie.Base.VendorInfo.Vendor {
 	case dbModel.StreamingVendorBilibili:
 		bvidI := movie.Base.VendorInfo.Info["bvid"]
@@ -618,13 +624,12 @@ func parse2VendorMovie(movie *dbModel.Movie) error {
 			return fmt.Errorf("cid is not number")
 		}
 
-		vendor, err := db.AssignFirstOrCreateVendorByUserIDAndVendor(movie.CreatorID, dbModel.StreamingVendorBilibili)
-		if err != nil {
-			return err
-		}
-		cli := bilibili.NewClient(vendor.Cookies)
-
 		if bvid != "" {
+			vendor, err := db.AssignFirstOrCreateVendorByUserIDAndVendor(movie.CreatorID, dbModel.StreamingVendorBilibili)
+			if err != nil {
+				return err
+			}
+			cli := bilibili.NewClient(vendor.Cookies)
 			mu, err := cli.GetVideoURL(0, bvid, uint(cid))
 			if err != nil {
 				return err
@@ -632,10 +637,6 @@ func parse2VendorMovie(movie *dbModel.Movie) error {
 			movie.Base.Url = mu.URL
 			return nil
 		} else {
-			// mu, err := cli.GetPGCURL(uint(epId), uint(cid))
-			// if err != nil {
-			// 	return err
-			// }
 			return nil
 		}
 

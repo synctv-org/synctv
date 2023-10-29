@@ -59,6 +59,10 @@ func MovieList(ctx *gin.Context) {
 
 	mresp := make([]model.MoviesResp, len(m))
 	for i, v := range m {
+		// hide headers when proxy
+		if m[i].Base.Proxy {
+			m[i].Base.Headers = nil
+		}
 		mresp[i] = model.MoviesResp{
 			Id:      v.ID,
 			Base:    m[i].Base,
@@ -83,12 +87,16 @@ func MovieList(ctx *gin.Context) {
 
 func genCurrent(current *op.Current, userID string) (*op.Current, error) {
 	if current.Movie.Base.Vendor != "" {
-		return current, parse2VendorMovie(userID, &current.Movie)
+		return current, parse2VendorMovie(userID, &current.Movie, !current.Movie.Base.Proxy)
 	}
 	return current, nil
 }
 
 func genCurrentResp(current *op.Current) *model.CurrentMovieResp {
+	// hide headers when proxy
+	if current.Movie.Base.Proxy {
+		current.Movie.Base.Headers = nil
+	}
 	return &model.CurrentMovieResp{
 		Status: current.Status,
 		Movie: model.MoviesResp{
@@ -130,6 +138,10 @@ func Movies(ctx *gin.Context) {
 
 	mresp := make([]model.MoviesResp, len(m))
 	for i, v := range m {
+		// hide headers when proxy
+		if m[i].Base.Proxy {
+			m[i].Base.Headers = nil
+		}
 		mresp[i] = model.MoviesResp{
 			Id:      v.ID,
 			Base:    m[i].Base,
@@ -420,7 +432,7 @@ func ProxyMovie(ctx *gin.Context) {
 	}
 
 	if m.Base.VendorInfo.Vendor != "" {
-		err = parse2VendorMovie(m.Movie.CreatorID, m.Movie)
+		err = parse2VendorMovie(m.Movie.CreatorID, m.Movie, true)
 		if err != nil {
 			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 			return
@@ -492,7 +504,7 @@ func JoinLive(ctx *gin.Context) {
 	}
 }
 
-func parse2VendorMovie(userID string, movie *dbModel.Movie) (err error) {
+func parse2VendorMovie(userID string, movie *dbModel.Movie, getUrl bool) (err error) {
 	if movie.Base.VendorInfo.Shared {
 		userID = movie.CreatorID
 	}
@@ -507,18 +519,20 @@ func parse2VendorMovie(userID string, movie *dbModel.Movie) (err error) {
 		}
 		cli := bilibili.NewClient(vendor.Cookies)
 
-		var mu *bilibili.VideoURL
-		if info.Bvid != "" {
-			mu, err = cli.GetVideoURL(0, info.Bvid, info.Cid, bilibili.WithQuality(info.Quality))
-		} else if info.Epid != 0 {
-			mu, err = cli.GetPGCURL(info.Epid, 0, bilibili.WithQuality(info.Quality))
-		} else {
-			err = errors.New("bvid and epid are empty")
+		if getUrl {
+			var mu *bilibili.VideoURL
+			if info.Bvid != "" {
+				mu, err = cli.GetVideoURL(0, info.Bvid, info.Cid, bilibili.WithQuality(info.Quality))
+			} else if info.Epid != 0 {
+				mu, err = cli.GetPGCURL(info.Epid, 0, bilibili.WithQuality(info.Quality))
+			} else {
+				err = errors.New("bvid and epid are empty")
+			}
+			if err != nil {
+				return err
+			}
+			movie.Base.Url = mu.URL
 		}
-		if err != nil {
-			return err
-		}
-		movie.Base.Url = mu.URL
 
 		return nil
 

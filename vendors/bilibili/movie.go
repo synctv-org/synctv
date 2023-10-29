@@ -233,7 +233,16 @@ func (c *Client) GetPGCURL(ep_id, cid uint, conf ...GetVideoURLConfig) (*VideoUR
 	for _, v := range conf {
 		v(config)
 	}
-	url := fmt.Sprintf("https://api.bilibili.com/pgc/player/web/playurl?ep_id=%d&cid=%d&qn=%d&fourk=1&fnval=0", ep_id, cid, config.Quality)
+
+	var url string
+	if ep_id != 0 {
+		url = fmt.Sprintf("https://api.bilibili.com/pgc/player/web/playurl?ep_id=%d&qn=%d&fourk=1&fnval=0", ep_id, config.Quality)
+	} else if cid != 0 {
+		url = fmt.Sprintf("https://api.bilibili.com/pgc/player/web/playurl?cid=%d&qn=%d&fourk=1&fnval=0", cid, config.Quality)
+	} else {
+		return nil, fmt.Errorf("edId and season_id are both empty")
+	}
+
 	req, err := c.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err

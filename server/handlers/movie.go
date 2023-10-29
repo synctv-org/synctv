@@ -550,9 +550,9 @@ func ProxyVendorMovie(ctx *gin.Context, m *dbModel.Movie) {
 		var (
 			bvid string
 			epId float64
-			cid  float64
 			ok   bool
 		)
+
 		if bvidI != nil {
 			bvid, ok = bvidI.(string)
 			if !ok {
@@ -570,17 +570,6 @@ func ProxyVendorMovie(ctx *gin.Context, m *dbModel.Movie) {
 			return
 		}
 
-		cidI := m.Base.VendorInfo.Info["cid"]
-		if cidI == nil {
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("cid is empty"))
-			return
-		}
-		cid, ok = cidI.(float64)
-		if !ok {
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("cid is not number"))
-			return
-		}
-
 		vendor, err := db.AssignFirstOrCreateVendorByUserIDAndVendor(m.CreatorID, dbModel.StreamingVendorBilibili)
 		if err != nil {
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
@@ -590,14 +579,25 @@ func ProxyVendorMovie(ctx *gin.Context, m *dbModel.Movie) {
 
 		var mu *bilibili.VideoURL
 		if bvid != "" {
+			cidI := m.Base.VendorInfo.Info["cid"]
+			if cidI == nil {
+				ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("cid is empty"))
+				return
+			}
+			cid, ok := cidI.(float64)
+			if !ok {
+				ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("cid is not number"))
+				return
+			}
 			mu, err = cli.GetVideoURL(0, bvid, uint(cid))
 		} else {
-			mu, err = cli.GetPGCURL(uint(epId), uint(cid))
+			mu, err = cli.GetPGCURL(uint(epId), 0)
 		}
 		if err != nil {
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 			return
 		}
+
 		hrs := proxy.NewBufferedHttpReadSeeker(128*1024, mu.URL,
 			proxy.WithContext(ctx),
 			proxy.WithAppendHeaders(map[string]string{
@@ -628,10 +628,9 @@ func parse2VendorMovie(user *op.User, movie *dbModel.Movie) (err error) {
 
 		var (
 			bvid string
-			// epId float64
-			cid float64
-			ok  bool
+			ok   bool
 		)
+
 		if bvidI != nil {
 			bvid, ok = bvidI.(string)
 			if !ok {
@@ -642,46 +641,44 @@ func parse2VendorMovie(user *op.User, movie *dbModel.Movie) (err error) {
 			if !ok {
 				return fmt.Errorf("epId is not number")
 			}
+			return
 		} else {
 			return fmt.Errorf("bvid and epId is empty")
+		}
+
+		id := user.ID
+		if movie.Base.VendorInfo.Shared {
+			id = movie.CreatorID
+		}
+		vendor, err := db.AssignFirstOrCreateVendorByUserIDAndVendor(id, dbModel.StreamingVendorBilibili)
+		if err != nil {
+			return err
+		}
+		cli := bilibili.NewClient(vendor.Cookies)
+		var qn float64 = float64(bilibili.Q1080PP)
+		qnI, ok := movie.Base.VendorInfo.Info["qn"]
+		if ok {
+			qn, ok = qnI.(float64)
+			if !ok {
+				return fmt.Errorf("qn is not number")
+			}
 		}
 
 		cidI := movie.Base.VendorInfo.Info["cid"]
 		if cidI == nil {
 			return fmt.Errorf("cid is empty")
 		}
-		cid, ok = cidI.(float64)
+		cid, ok := cidI.(float64)
 		if !ok {
 			return fmt.Errorf("cid is not number")
 		}
 
-		if bvid != "" {
-			id := user.ID
-			if movie.Base.VendorInfo.Shared {
-				id = movie.CreatorID
-			}
-			vendor, err := db.AssignFirstOrCreateVendorByUserIDAndVendor(id, dbModel.StreamingVendorBilibili)
-			if err != nil {
-				return err
-			}
-			cli := bilibili.NewClient(vendor.Cookies)
-			var qn float64 = float64(bilibili.Q1080PP)
-			qnI, ok := movie.Base.VendorInfo.Info["qn"]
-			if ok {
-				qn, ok = qnI.(float64)
-				if !ok {
-					return fmt.Errorf("qn is not number")
-				}
-			}
-			mu, err := cli.GetVideoURL(0, bvid, uint(cid), bilibili.WithQuality(uint(qn)))
-			if err != nil {
-				return err
-			}
-			movie.Base.Url = mu.URL
-			return nil
-		} else {
-			return nil
+		mu, err := cli.GetVideoURL(0, bvid, uint(cid), bilibili.WithQuality(uint(qn)))
+		if err != nil {
+			return err
 		}
+		movie.Base.Url = mu.URL
+		return nil
 
 	default:
 		return fmt.Errorf("vendor not support")

@@ -2,6 +2,7 @@ package op
 
 import (
 	"errors"
+	"fmt"
 	"net/url"
 	"sync"
 	"time"
@@ -30,6 +31,10 @@ func (m *movie) Channel() (*rtmps.Channel, error) {
 }
 
 func (m *movie) init() (err error) {
+	err = m.validateVendorMovie()
+	if err != nil {
+		return
+	}
 	switch {
 	case m.Base.RtmpSource && m.Base.Proxy:
 		return errors.New("rtmp source and proxy can't be true at the same time")
@@ -140,6 +145,73 @@ func (m *movie) init() (err error) {
 		return errors.New("unknown error")
 	}
 	return nil
+}
+
+func (m *movie) validateVendorMovie() (err error) {
+	if m.Base.VendorInfo.Vendor == "" {
+		return
+	}
+	switch m.Base.VendorInfo.Vendor {
+	case model.StreamingVendorBilibili:
+		info := map[string]any{}
+		bvidI := m.Base.VendorInfo.Info["bvid"]
+		epIdI := m.Base.VendorInfo.Info["epId"]
+		if bvidI != nil && epIdI != nil {
+			return fmt.Errorf("bvid(%v) and epId(%v) can't be used at the same time", bvidI, epIdI)
+		}
+
+		if bvidI != nil {
+			bvid, ok := bvidI.(string)
+			if !ok {
+				return fmt.Errorf("bvid is not string")
+			}
+			info["bvid"] = bvid
+		} else if epIdI != nil {
+			epId, ok := epIdI.(float64)
+			if !ok {
+				return fmt.Errorf("epId is not number")
+			}
+			info["epId"] = epId
+		} else {
+			return fmt.Errorf("bvid and epId is empty")
+		}
+
+		qnI, ok := m.Base.VendorInfo.Info["qn"]
+		if ok {
+			qn, ok := qnI.(float64)
+			if !ok {
+				return fmt.Errorf("qn is not number")
+			}
+			info["qn"] = qn
+		}
+
+		if bvidI != nil {
+			cidI := m.Base.VendorInfo.Info["cid"]
+			if cidI == nil {
+				return fmt.Errorf("cid is empty")
+			}
+			cid, ok := cidI.(float64)
+			if !ok {
+				return fmt.Errorf("cid is not number")
+			}
+			info["cid"] = cid
+
+			m.Base.Url = ""
+			m.Base.Proxy = false
+			m.Base.RtmpSource = false
+			m.Base.VendorInfo.Info = info
+			return nil
+		} else {
+			m.Base.Url = ""
+			m.Base.RtmpSource = false
+			m.Base.Proxy = true
+			m.Base.VendorInfo.Info = info
+			return nil
+		}
+
+	default:
+		return fmt.Errorf("vendor not support")
+	}
 }
 
 func (m *movie) Terminate() {

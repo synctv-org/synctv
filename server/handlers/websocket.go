@@ -69,11 +69,17 @@ func handleWriterMessage(c *op.Client) error {
 			return err
 		}
 
-		if err := v.Encode(wc); err != nil {
-			log.Debugf("ws: room %s user %s encode message error: %v", c.Room().Name, c.User().Username, err)
+		if err = v.BeforeSend(c.User()); err != nil {
+			log.Debugf("ws: room %s user %s before send message error: %v", c.Room().Name, c.User().Username, err)
 			continue
 		}
-		if err := wc.Close(); err != nil {
+
+		if err = v.Encode(wc); err != nil {
+			log.Debugf("ws: room %s user %s encode message error: %v", c.Room().Name, c.User().Username, err)
+			return err
+		}
+
+		if err = wc.Close(); err != nil {
 			return err
 		}
 	}

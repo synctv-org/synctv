@@ -43,6 +43,13 @@ func (r *Room) Broadcast(data Message, conf ...BroadcastConf) error {
 	return r.hub.Broadcast(data, conf...)
 }
 
+func (r *Room) SendToUser(user *User, data Message) error {
+	if r.hub == nil {
+		return nil
+	}
+	return r.hub.SendToUser(user.ID, data)
+}
+
 func (r *Room) GetChannel(channelName string) (*rtmps.Channel, error) {
 	return r.movies.GetChannel(channelName)
 }

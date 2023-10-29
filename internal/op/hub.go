@@ -205,3 +205,14 @@ func (h *Hub) UnRegClient(user *User) error {
 func (h *Hub) ClientNum() int64 {
 	return h.clients.Len()
 }
+
+func (h *Hub) SendToUser(userID string, data Message) error {
+	if h.Closed() {
+		return ErrAlreadyClosed
+	}
+	cli, ok := h.clients.Load(userID)
+	if !ok {
+		return nil
+	}
+	return cli.Send(data)
+}

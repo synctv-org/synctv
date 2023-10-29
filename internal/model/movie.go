@@ -37,5 +37,6 @@ type BaseMovie struct {
 
 type VendorInfo struct {
 	Vendor StreamingVendor `json:"vendor"`
+	Shared bool            `gorm:"not null;default:false" json:"shared"`
 	Info   map[string]any  `gorm:"serializer:fastjson" json:"info"`
 }

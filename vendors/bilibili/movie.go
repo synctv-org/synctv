@@ -88,6 +88,12 @@ type GetVideoURLConf struct {
 
 type GetVideoURLConfig func(*GetVideoURLConf)
 
+func WithQuality(q uint) GetVideoURLConfig {
+	return func(c *GetVideoURLConf) {
+		c.Quality = q
+	}
+}
+
 // https://github.com/SocialSisterYi/bilibili-API-collect/blob/master/docs/video/videostream_url.md
 func (c *Client) GetVideoURL(aid uint, bvid string, cid uint, conf ...GetVideoURLConfig) (*VideoURL, error) {
 	config := &GetVideoURLConf{

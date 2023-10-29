@@ -14,9 +14,11 @@ type Message interface {
 	MessageType() int
 	String() string
 	Encode(w io.Writer) error
+	BeforeSend(sendTo *User) error
 }
 
 type ElementJsonMessage struct {
+	BeforeSendFunc func(sendTo *User) error
 	*pb.ElementMessage
 }
 
@@ -32,7 +34,15 @@ func (em *ElementJsonMessage) Encode(w io.Writer) error {
 	return json.NewEncoder(w).Encode(em)
 }
 
+func (em *ElementJsonMessage) BeforeSend(sendTo *User) error {
+	if em.BeforeSendFunc != nil {
+		return em.BeforeSendFunc(sendTo)
+	}
+	return nil
+}
+
 type ElementMessage struct {
+	BeforeSendFunc func(sendTo *User) error
 	*pb.ElementMessage
 }
 
@@ -53,6 +63,13 @@ func (em *ElementMessage) Encode(w io.Writer) error {
 	return err
 }
 
+func (em *ElementMessage) BeforeSend(sendTo *User) error {
+	if em.BeforeSendFunc != nil {
+		return em.BeforeSendFunc(sendTo)
+	}
+	return nil
+}
+
 type PingMessage struct{}
 
 func (pm *PingMessage) MessageType() int {
@@ -64,5 +81,9 @@ func (pm *PingMessage) String() string {
 }
 
 func (pm *PingMessage) Encode(w io.Writer) error {
+	return nil
+}
+
+func (pm *PingMessage) BeforeSend(sendTo *User) error {
 	return nil
 }

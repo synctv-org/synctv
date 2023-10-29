@@ -36,9 +36,9 @@ type BaseMovie struct {
 }
 
 type VendorInfo struct {
-	Vendor             StreamingVendor    `json:"vendor"`
-	Shared             bool               `gorm:"not null;default:false" json:"shared"`
-	BilibiliVendorInfo BilibiliVendorInfo `gorm:"embedded;embeddedPrefix:bilibili_" json:"bilibiliVendorInfo,omitempty"`
+	Vendor   StreamingVendor    `json:"vendor"`
+	Shared   bool               `gorm:"not null;default:false" json:"shared"`
+	Bilibili BilibiliVendorInfo `gorm:"embedded;embeddedPrefix:bilibili_" json:"bilibili,omitempty"`
 }
 
 type BilibiliVendorInfo struct {

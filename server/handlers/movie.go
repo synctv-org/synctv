@@ -499,7 +499,7 @@ func parse2VendorMovie(userID string, movie *dbModel.Movie) (err error) {
 
 	switch movie.Base.VendorInfo.Vendor {
 	case dbModel.StreamingVendorBilibili:
-		info := movie.Base.VendorInfo.BilibiliVendorInfo
+		info := movie.Base.VendorInfo.Bilibili
 
 		vendor, err := db.AssignFirstOrCreateVendorByUserIDAndVendor(userID, dbModel.StreamingVendorBilibili)
 		if err != nil {

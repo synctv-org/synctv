@@ -153,7 +153,7 @@ func (m *movie) validateVendorMovie() error {
 	}
 	switch m.Base.VendorInfo.Vendor {
 	case model.StreamingVendorBilibili:
-		info := m.Base.VendorInfo.BilibiliVendorInfo
+		info := m.Base.VendorInfo.Bilibili
 		if info.Bvid == "" && info.Epid == 0 {
 			return fmt.Errorf("bvid and epid are empty")
 		}

@@ -227,7 +227,7 @@ func (c *Client) GetPGCURL(ep_id, cid uint, conf ...GetVideoURLConfig) (*VideoUR
 	for _, v := range conf {
 		v(config)
 	}
-	url := fmt.Sprintf("https://api.bilibili.com/pgc/player/web/playurl?ep_id=%d&cid=%d&qn=%d&fourk=1", ep_id, cid, config.Quality)
+	url := fmt.Sprintf("https://api.bilibili.com/pgc/player/web/playurl?ep_id=%d&cid=%d&qn=%d&fourk=1&fnval=0", ep_id, cid, config.Quality)
 	req, err := c.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -248,5 +248,4 @@ func (c *Client) GetPGCURL(ep_id, cid uint, conf ...GetVideoURLConfig) (*VideoUR
 		CurrentQuality:    info.Result.Quality,
 		URL:               info.Result.Durl[0].URL,
 	}, nil
-
 }

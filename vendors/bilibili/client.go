@@ -32,6 +32,10 @@ func NewClient(cookies []*http.Cookie, conf ...ClientConfig) *Client {
 }
 
 func (c *Client) NewRequest(method, url string, body io.Reader) (*http.Request, error) {
+	url, err := signAndGenerateURL(url)
+	if err != nil {
+		return nil, err
+	}
 	req, err := http.NewRequest(method, url, body)
 	if err != nil {
 		return nil, err
@@ -40,6 +44,6 @@ func (c *Client) NewRequest(method, url string, body io.Reader) (*http.Request, 
 		req.AddCookie(cookie)
 	}
 	req.Header.Set("User-Agent", utils.UA)
-	req.Header.Set("Referer", "https://www.bilibili.com/")
+	req.Header.Set("Referer", "https://www.bilibili.com")
 	return req, nil
 }

@@ -812,3 +812,16 @@ type pgcURLInfo struct {
 		Status            int           `json:"status"`
 	} `json:"result"`
 }
+
+type wbi struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+	TTL     int    `json:"ttl"`
+	Data    struct {
+		IsLogin bool `json:"isLogin"`
+		WbiImg  struct {
+			ImgURL string `json:"img_url"`
+			SubURL string `json:"sub_url"`
+		} `json:"wbi_img"`
+	} `json:"data"`
+}

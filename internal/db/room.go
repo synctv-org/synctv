@@ -109,7 +109,7 @@ func HasPermission(roomID, userID string, permission model.Permission) (bool, er
 }
 
 func DeleteRoomByID(roomID string) error {
-	err := db.Unscoped().Delete(&model.Room{}, roomID).Error
+	err := db.Unscoped().Where("id = ?", roomID).Delete(&model.Room{}).Error
 	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
 		return errors.New("room not found")
 	}

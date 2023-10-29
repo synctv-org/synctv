@@ -51,7 +51,7 @@ func CreateOrLoadUser(username string, p provider.OAuth2Provider, puid uint, con
 			return nil, err
 		}
 	} else {
-		if err := db.First(&user, userProvider.UserID).Error; err != nil {
+		if err := db.Where("id = ?", userProvider.UserID).First(&user).Error; err != nil {
 			return nil, err
 		}
 	}
@@ -127,15 +127,6 @@ func GetUserByID(id string) (*model.User, error) {
 	return u, err
 }
 
-func GetUsersByRoomID(roomID string, scopes ...func(*gorm.DB) *gorm.DB) ([]model.User, error) {
-	users := []model.User{}
-	err := db.Model(&model.RoomUserRelation{}).Where("room_id = ?", roomID).Scopes(scopes...).Find(&users).Error
-	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
-		return users, errors.New("room not found")
-	}
-	return users, err
-}
-
 func BanUser(u *model.User) error {
 	if u.Role == model.RoleBanned {
 		return nil
@@ -169,7 +160,7 @@ func UnbanUserByID(userID string) error {
 }
 
 func DeleteUserByID(userID string) error {
-	err := db.Unscoped().Delete(&model.User{}, userID).Error
+	err := db.Unscoped().Where("id = ?", userID).Delete(&model.User{}).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return errors.New("user not found")
 	}

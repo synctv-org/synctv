@@ -66,7 +66,7 @@ func CloseRoom(roomID string) error {
 	if loaded {
 		r.Value().close()
 	}
-	return errors.New("room not found in cache")
+	return nil
 }
 
 func LoadRoomByID(id string) (*Room, error) {

@@ -41,10 +41,6 @@ func (p *PushMovieReq) Validate() error {
 		return ErrTypeTooLong
 	}
 
-	if p.VendorInfo.Vendor != "" && p.VendorInfo.Info == nil {
-		return errors.New("vendor info is empty")
-	}
-
 	return nil
 }
 

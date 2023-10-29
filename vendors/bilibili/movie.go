@@ -8,17 +8,18 @@ import (
 )
 
 type VideoPageInfo struct {
-	Bvid       string       `json:"bvid"`
 	Title      string       `json:"title"`
 	CoverImage string       `json:"coverImage"`
+	Actors     string       `json:"actors"`
 	VideoInfos []*VideoInfo `json:"videoInfos"`
 }
 
 type VideoInfo struct {
-	Cid int `json:"cid"`
-	// 分P
+	Bvid       string `json:"bvid,omitempty"`
+	Cid        int    `json:"cid,omitempty"`
+	Epid       uint   `json:"epid,omitempty"`
 	Name       string `json:"name"`
-	FirstFrame string `json:"firstFrame"`
+	CoverImage string `json:"coverImage"`
 }
 
 func (c *Client) ParseVideoPage(aid uint, bvid string) (*VideoPageInfo, error) {
@@ -46,16 +47,17 @@ func (c *Client) ParseVideoPage(aid uint, bvid string) (*VideoPageInfo, error) {
 	}
 	// TODO: error message
 	r := &VideoPageInfo{
-		Bvid:       info.Data.Bvid,
 		Title:      info.Data.Title,
 		CoverImage: info.Data.Pic,
+		Actors:     info.Data.Owner.Name,
+		VideoInfos: make([]*VideoInfo, 0, len(info.Data.Pages)),
 	}
-	r.VideoInfos = make([]*VideoInfo, 0, len(info.Data.Pages))
 	for _, page := range info.Data.Pages {
 		r.VideoInfos = append(r.VideoInfos, &VideoInfo{
+			Bvid:       info.Data.Bvid,
 			Cid:        page.Cid,
 			Name:       page.Part,
-			FirstFrame: page.FirstFrame,
+			CoverImage: page.FirstFrame,
 		})
 	}
 	return r, nil
@@ -170,20 +172,7 @@ func (c *Client) GetSubtitles(aid uint, bvid string, cid uint) ([]*Subtitle, err
 	return r, nil
 }
 
-type PGCPageInfo struct {
-	Actors     string     `json:"actors"`
-	CoverImage string     `json:"coverImage"`
-	PGCInfos   []*PGCInfo `json:"pgcInfos"`
-}
-
-type PGCInfo struct {
-	EpId       uint   `json:"epId"`
-	Cid        uint   `json:"cid"`
-	Name       string `json:"name"`
-	CoverImage string `json:"coverImage"`
-}
-
-func (c *Client) ParsePGCPage(epId, season_id uint) (*PGCPageInfo, error) {
+func (c *Client) ParsePGCPage(epId, season_id uint) (*VideoPageInfo, error) {
 	var url string
 	if epId != 0 {
 		url = fmt.Sprintf("https://api.bilibili.com/pgc/view/web/season?ep_id=%d", epId)
@@ -208,16 +197,16 @@ func (c *Client) ParsePGCPage(epId, season_id uint) (*PGCPageInfo, error) {
 		return nil, err
 	}
 
-	r := &PGCPageInfo{
-		Actors:     info.Result.Actors,
+	r := &VideoPageInfo{
+		Title:      info.Result.Title,
 		CoverImage: info.Result.Cover,
-		PGCInfos:   make([]*PGCInfo, len(info.Result.Episodes)),
+		Actors:     info.Result.Actors,
+		VideoInfos: make([]*VideoInfo, len(info.Result.Episodes)),
 	}
 
 	for i, v := range info.Result.Episodes {
-		r.PGCInfos[i] = &PGCInfo{
-			EpId:       v.EpID,
-			Cid:        v.Cid,
+		r.VideoInfos[i] = &VideoInfo{
+			Epid:       v.EpID,
 			Name:       v.ShareCopy,
 			CoverImage: v.Cover,
 		}

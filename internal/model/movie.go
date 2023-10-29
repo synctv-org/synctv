@@ -25,18 +25,25 @@ func (m *Movie) BeforeCreate(tx *gorm.DB) error {
 }
 
 type BaseMovie struct {
-	Url        string            `json:"url"`
+	Url        string            `json:"url,omitempty"`
 	Name       string            `gorm:"not null" json:"name"`
-	Live       bool              `json:"live"`
-	Proxy      bool              `json:"proxy"`
-	RtmpSource bool              `json:"rtmpSource"`
-	Type       string            `json:"type"`
-	Headers    map[string]string `gorm:"serializer:fastjson" json:"headers"`
-	VendorInfo `gorm:"embedded;embeddedPrefix:vendor_info_" json:"vendorInfo"`
+	Live       bool              `json:"live,omitempty"`
+	Proxy      bool              `json:"proxy,omitempty"`
+	RtmpSource bool              `json:"rtmpSource,omitempty"`
+	Type       string            `json:"type,omitempty"`
+	Headers    map[string]string `gorm:"serializer:fastjson" json:"headers,omitempty"`
+	VendorInfo `gorm:"embedded;embeddedPrefix:vendor_info_" json:"vendorInfo,omitempty"`
 }
 
 type VendorInfo struct {
-	Vendor StreamingVendor `json:"vendor"`
-	Shared bool            `gorm:"not null;default:false" json:"shared"`
-	Info   map[string]any  `gorm:"serializer:fastjson" json:"info"`
+	Vendor             StreamingVendor    `json:"vendor"`
+	Shared             bool               `gorm:"not null;default:false" json:"shared"`
+	BilibiliVendorInfo BilibiliVendorInfo `gorm:"embedded;embeddedPrefix:bilibili_" json:"bilibiliVendorInfo,omitempty"`
+}
+
+type BilibiliVendorInfo struct {
+	Bvid    string `json:"bvid,omitempty"`
+	Cid     uint   `json:"cid,omitempty"`
+	Epid    uint   `json:"epid,omitempty"`
+	Quality uint   `json:"quality,omitempty"`
 }

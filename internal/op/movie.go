@@ -147,71 +147,40 @@ func (m *movie) init() (err error) {
 	return nil
 }
 
-func (m *movie) validateVendorMovie() (err error) {
+func (m *movie) validateVendorMovie() error {
 	if m.Base.VendorInfo.Vendor == "" {
-		return
+		return nil
 	}
 	switch m.Base.VendorInfo.Vendor {
 	case model.StreamingVendorBilibili:
-		info := map[string]any{}
-		bvidI := m.Base.VendorInfo.Info["bvid"]
-		epIdI := m.Base.VendorInfo.Info["epId"]
-		if bvidI != nil && epIdI != nil {
-			return fmt.Errorf("bvid(%v) and epId(%v) can't be used at the same time", bvidI, epIdI)
+		info := m.Base.VendorInfo.BilibiliVendorInfo
+		if info.Bvid == "" && info.Epid == 0 {
+			return fmt.Errorf("bvid and epid are empty")
 		}
 
-		if bvidI != nil {
-			bvid, ok := bvidI.(string)
-			if !ok {
-				return fmt.Errorf("bvid is not string")
+		if info.Bvid != "" && info.Epid != 0 {
+			return fmt.Errorf("bvid and epid can't be set at the same time")
+		}
+
+		if info.Bvid != "" && info.Cid == 0 {
+			return fmt.Errorf("cid is empty")
+		}
+
+		if m.Base.Headers == nil {
+			m.Base.Headers = map[string]string{
+				"Referer":    "https://www.bilibili.com",
+				"User-Agent": utils.UA,
 			}
-			info["bvid"] = bvid
-		} else if epIdI != nil {
-			epId, ok := epIdI.(float64)
-			if !ok {
-				return fmt.Errorf("epId is not number")
-			}
-			info["epId"] = epId
 		} else {
-			return fmt.Errorf("bvid and epId is empty")
-		}
-
-		qnI, ok := m.Base.VendorInfo.Info["qn"]
-		if ok {
-			qn, ok := qnI.(float64)
-			if !ok {
-				return fmt.Errorf("qn is not number")
-			}
-			info["qn"] = qn
-		}
-
-		if bvidI != nil {
-			cidI := m.Base.VendorInfo.Info["cid"]
-			if cidI == nil {
-				return fmt.Errorf("cid is empty")
-			}
-			cid, ok := cidI.(float64)
-			if !ok {
-				return fmt.Errorf("cid is not number")
-			}
-			info["cid"] = cid
-
-			m.Base.Url = ""
-			m.Base.Proxy = false
-			m.Base.RtmpSource = false
-			m.Base.VendorInfo.Info = info
-			return nil
-		} else {
-			m.Base.Url = ""
-			m.Base.RtmpSource = false
-			m.Base.Proxy = true
-			m.Base.VendorInfo.Info = info
-			return nil
+			m.Base.Headers["Referer"] = "https://www.bilibili.com"
+			m.Base.Headers["User-Agent"] = utils.UA
 		}
 
 	default:
 		return fmt.Errorf("vendor not support")
 	}
+
+	return nil
 }
 
 func (m *movie) Terminate() {

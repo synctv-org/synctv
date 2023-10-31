@@ -7,11 +7,11 @@ import (
 
 	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/model"
+	"github.com/synctv-org/synctv/internal/settings"
 	synccache "github.com/synctv-org/synctv/utils/syncCache"
 	"github.com/zijiren233/gencontainer/heap"
 )
 
-var roomTTL = time.Hour * 24 * 2
 var roomCache *synccache.SyncCache[string, *Room]
 
 func CreateRoom(name, password string, conf ...db.CreateRoomConfig) (*Room, error) {
@@ -31,14 +31,16 @@ func InitRoom(room *model.Room) (*Room, error) {
 			roomID: room.ID,
 		},
 	}
-	i, loaded := roomCache.LoadOrStore(room.ID, r, roomTTL)
+
+	i, loaded := roomCache.LoadOrStore(room.ID, r, time.Duration(settings.RoomTTL.Get()))
 	if loaded {
 		return r, errors.New("room already init")
 	}
 	return i.Value(), nil
 }
 
-func LoadOrInitRoom(room *model.Room) (*Room, bool) {
+func LoadOrInitRoom(room *model.Room) (*Room, error) {
+	t := time.Duration(settings.RoomTTL.Get())
 	i, loaded := roomCache.LoadOrStore(room.ID, &Room{
 		Room:    *room,
 		version: crc32.ChecksumIEEE(room.HashedPassword),
@@ -46,11 +48,19 @@ func LoadOrInitRoom(room *model.Room) (*Room, bool) {
 		movies: movies{
 			roomID: room.ID,
 		},
-	}, roomTTL)
+	}, t)
 	if loaded {
-		i.SetExpiration(time.Now().Add(roomTTL))
+		i.SetExpiration(time.Now().Add(t))
 	}
-	return i.Value(), loaded
+	switch room.Status {
+	case model.RoomStatusBanned:
+		return nil, errors.New("room banned")
+	case model.RoomStatusPending:
+		return nil, errors.New("room pending, please wait for admin to approve")
+	case model.RoomStatusStopped:
+		return nil, errors.New("room stopped")
+	}
+	return i.Value(), nil
 }
 
 func DeleteRoom(roomID string) error {
@@ -72,7 +82,7 @@ func CloseRoom(roomID string) error {
 func LoadRoomByID(id string) (*Room, error) {
 	r2, loaded := roomCache.Load(id)
 	if loaded {
-		r2.SetExpiration(time.Now().Add(roomTTL))
+		r2.SetExpiration(time.Now().Add(time.Duration(settings.RoomTTL.Get())))
 		return r2.Value(), nil
 	}
 	return nil, errors.New("room not found")
@@ -84,15 +94,14 @@ func LoadOrInitRoomByID(id string) (*Room, error) {
 	}
 	i, loaded := roomCache.Load(id)
 	if loaded {
-		i.SetExpiration(time.Now().Add(roomTTL))
+		i.SetExpiration(time.Now().Add(time.Duration(settings.RoomTTL.Get())))
 		return i.Value(), nil
 	}
 	room, err := db.GetRoomByID(id)
 	if err != nil {
 		return nil, err
 	}
-	r, _ := LoadOrInitRoom(room)
-	return r, nil
+	return LoadOrInitRoom(room)
 }
 
 func ClientNum(roomID string) int64 {

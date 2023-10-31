@@ -20,9 +20,6 @@ type Config struct {
 	// Proxy
 	Proxy ProxyConfig `yaml:"proxy" hc:"you can use proxy to proxy movie and live when custom headers or network is slow to connect to origin server"`
 
-	// Room
-	Room RoomConfig `yaml:"room"`
-
 	// Database
 	Database DatabaseConfig `yaml:"database"`
 
@@ -53,9 +50,6 @@ func DefaultConfig() *Config {
 
 		// Proxy
 		Proxy: DefaultProxyConfig(),
-
-		// Room
-		Room: DefaultRoomConfig(),
 
 		// Database
 		Database: DefaultDatabaseConfig(),

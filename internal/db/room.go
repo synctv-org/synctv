@@ -36,6 +36,12 @@ func WithRelations(relations []model.RoomUserRelation) CreateRoomConfig {
 	}
 }
 
+func WithStatus(status model.RoomStatus) CreateRoomConfig {
+	return func(r *model.Room) {
+		r.Status = status
+	}
+}
+
 func CreateRoom(name, password string, conf ...CreateRoomConfig) (*model.Room, error) {
 	var hashedPassword []byte
 	if password != "" {

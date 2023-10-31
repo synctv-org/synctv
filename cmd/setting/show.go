@@ -1,7 +1,6 @@
 package setting
 
 import (
-	"fmt"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -30,12 +29,7 @@ var ShowCmd = &cobra.Command{
 				m[g] = make(map[string]any)
 			}
 			for _, v := range s {
-				i, err := v.Interface()
-				if err != nil {
-					fmt.Printf("parse setting %s error: %v\ntry to fix setting\n", v.Name(), err)
-					return nil
-				}
-				m[g][v.Name()] = i
+				m[g][v.Name()] = v.Interface()
 			}
 		}
 		return yaml.NewEncoder(os.Stdout).Encode(m)

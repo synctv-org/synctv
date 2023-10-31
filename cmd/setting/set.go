@@ -35,7 +35,7 @@ var SetCmd = &cobra.Command{
 			s.SetRaw(current)
 			fmt.Printf("set setting %s error: %v\n", args[0], err)
 		}
-		if v, err := s.Interface(); err != nil {
+		if v := s.Interface(); err != nil {
 			s.SetRaw(current)
 			fmt.Printf("set setting %s error: %v\n", args[0], err)
 		} else {

@@ -9,13 +9,23 @@ import (
 	"gorm.io/gorm"
 )
 
+type RoomStatus string
+
+const (
+	RoomStatusBanned  RoomStatus = "banned"
+	RoomStatusPending RoomStatus = "pending"
+	RoomStatusStopped RoomStatus = "stopped"
+	RoomStatusActive  RoomStatus = "active"
+)
+
 type Room struct {
 	ID                 string `gorm:"not null;primaryKey;type:varchar(36)" json:"id"`
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
-	Name               string   `gorm:"not null;uniqueIndex"`
-	Settings           Settings `gorm:"embedded;embeddedPrefix:settings_"`
-	CreatorID          string   `gorm:"index"`
+	Status             RoomStatus `gorm:"not null;default:pending"`
+	Name               string     `gorm:"not null;uniqueIndex"`
+	Settings           Settings   `gorm:"embedded;embeddedPrefix:settings_"`
+	CreatorID          string     `gorm:"index"`
 	HashedPassword     []byte
 	GroupUserRelations []RoomUserRelation `gorm:"foreignKey:RoomID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 	Movies             []Movie            `gorm:"foreignKey:RoomID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`

@@ -6,8 +6,8 @@ import (
 	"regexp"
 
 	json "github.com/json-iterator/go"
-	"github.com/synctv-org/synctv/internal/conf"
 	"github.com/synctv-org/synctv/internal/model"
+	"github.com/synctv-org/synctv/internal/settings"
 
 	"github.com/gin-gonic/gin"
 )
@@ -63,7 +63,7 @@ func (c *CreateRoomReq) Validate() error {
 		} else if !alnumPrintReg.MatchString(c.Password) {
 			return ErrPasswordHasInvalidChar
 		}
-	} else if conf.Conf.Room.MustPassword {
+	} else if settings.CreateRoomNeedPwd.Get() {
 		return FormatEmptyPasswordError("room")
 	}
 

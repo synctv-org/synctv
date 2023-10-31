@@ -16,8 +16,5 @@ func Settings(ctx *gin.Context) {
 			"movieProxy": conf.Conf.Proxy.MovieProxy,
 			"liveProxy":  conf.Conf.Proxy.LiveProxy,
 		},
-		"room": gin.H{
-			"mustPassword": conf.Conf.Room.MustPassword,
-		},
 	}))
 }

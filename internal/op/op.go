@@ -7,8 +7,7 @@ import (
 	synccache "github.com/synctv-org/synctv/utils/syncCache"
 )
 
-func Init(size int, ttl time.Duration) error {
-	roomTTL = ttl
+func Init(size int) error {
 	roomCache = synccache.NewSyncCache[string, *Room](time.Minute*5, synccache.WithDeletedCallback[string, *Room](func(v *Room) {
 		v.close()
 	}))

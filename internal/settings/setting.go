@@ -9,20 +9,20 @@ import (
 )
 
 var (
-	Settings      map[string]Setting
-	GroupSettings map[model.SettingGroup][]Setting
+	Settings      = make(map[string]Setting)
+	GroupSettings = make(map[model.SettingGroup][]Setting)
 )
 
 type Setting interface {
 	Name() string
 	Type() model.SettingType
 	Group() model.SettingGroup
-	Init(string)
+	Init(string) error
 	Raw() string
 	SetRaw(string) error
 	DefaultRaw() string
 	DefaultInterface() any
-	Interface() (any, error)
+	Interface() any
 }
 
 func SetValue(name string, value any) error {
@@ -89,26 +89,8 @@ func ToSettings[s Setting](settings map[string]s) []Setting {
 	return ss
 }
 
-type Int64Setting interface {
-	Set(int64) error
-	Get() (int64, error)
-	Raw() string
-}
-
-type Float64Setting interface {
-	Set(float64) error
-	Get() (float64, error)
-	Raw() string
-}
-
-type StringSetting interface {
-	Set(string) error
-	Get() (string, error)
-	Raw() string
-}
-
 func Init() error {
-	return initSettings(ToSettings(Settings)...)
+	return initAndFixSettings(ToSettings(Settings)...)
 }
 
 func initSettings(i ...Setting) error {
@@ -123,7 +105,51 @@ func initSettings(i ...Setting) error {
 		if err != nil {
 			return err
 		}
-		b.Init(s.Value)
+		err = b.Init(s.Value)
+		if err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+func initAndFixSettings(i ...Setting) error {
+	for _, b := range i {
+		s := &model.Setting{
+			Name:  b.Name(),
+			Value: b.Raw(),
+			Type:  b.Type(),
+			Group: b.Group(),
+		}
+		err := db.FirstOrCreateSettingItemValue(s)
+		if err != nil {
+			return err
+		}
+		err = b.Init(s.Value)
+		if err != nil {
+			// auto fix
+			err = b.SetRaw(b.DefaultRaw())
+			if err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+type setting struct {
+	name  string
+	group model.SettingGroup
+}
+
+func (d *setting) Name() string {
+	return d.name
+}
+
+func (d *setting) Type() model.SettingType {
+	return model.SettingTypeString
+}
+
+func (d *setting) Group() model.SettingGroup {
+	return d.group
 }

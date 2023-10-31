@@ -25,7 +25,7 @@ type User struct {
 	UpdatedAt            time.Time
 	Providers            []UserProvider        `gorm:"foreignKey:UserID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 	Username             string                `gorm:"not null;uniqueIndex"`
-	Role                 Role                  `gorm:"not null;default:user"`
+	Role                 Role                  `gorm:"not null;default:pending"`
 	GroupUserRelations   []RoomUserRelation    `gorm:"foreignKey:UserID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 	Rooms                []Room                `gorm:"foreignKey:CreatorID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 	Movies               []Movie               `gorm:"foreignKey:CreatorID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL"`

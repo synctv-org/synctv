@@ -48,12 +48,7 @@ func AdminSettings(ctx *gin.Context) {
 	}
 	resp := make(gin.H, len(s))
 	for _, v := range s {
-		i, err := v.Interface()
-		if err != nil {
-			ctx.AbortWithError(http.StatusInternalServerError, err)
-			return
-		}
-		resp[v.Name()] = i
+		resp[v.Name()] = v.Interface()
 	}
 
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(resp))

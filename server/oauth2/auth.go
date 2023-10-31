@@ -86,22 +86,11 @@ func OAuth2Callback(ctx *gin.Context) {
 		return
 	}
 
-	disable, err := settings.DisableUserSignup.Get()
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
-		return
-	}
 	var user *op.User
-	if disable {
+	if settings.DisableUserSignup.Get() {
 		user, err = op.GetUserByProvider(p, ui.ProviderUserID)
 	} else {
-		var review bool
-		review, err = settings.SignupNeedReview.Get()
-		if err != nil {
-			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
-			return
-		}
-		if review {
+		if settings.SignupNeedReview.Get() {
 			user, err = op.CreateOrLoadUser(ui.Username, p, ui.ProviderUserID, db.WithRole(dbModel.RolePending))
 		} else {
 			user, err = op.CreateOrLoadUser(ui.Username, p, ui.ProviderUserID)
@@ -153,13 +142,8 @@ func OAuth2CallbackApi(ctx *gin.Context) {
 		return
 	}
 
-	disable, err := settings.DisableUserSignup.Get()
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
-		return
-	}
 	var user *op.User
-	if disable {
+	if settings.DisableUserSignup.Get() {
 		user, err = op.GetUserByProvider(p, ui.ProviderUserID)
 	} else {
 		user, err = op.CreateOrLoadUser(ui.Username, p, ui.ProviderUserID)

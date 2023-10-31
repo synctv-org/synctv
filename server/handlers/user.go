@@ -36,11 +36,7 @@ func LogoutUser(ctx *gin.Context) {
 
 func UserRooms(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*op.User)
-	order := ctx.Query("order")
-	if order == "" {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("order is required"))
-		return
-	}
+
 	page, pageSize, err := GetPageAndPageSize(ctx)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
@@ -62,24 +58,18 @@ func UserRooms(ctx *gin.Context) {
 		scopes = append(scopes, db.WhereStatus(dbModel.RoomStatusBanned))
 	}
 
-	switch order {
+	switch ctx.DefaultQuery("order", "name") {
 	case "createdAt":
 		if desc {
 			scopes = append(scopes, db.OrderByCreatedAtDesc)
 		} else {
 			scopes = append(scopes, db.OrderByCreatedAtAsc)
 		}
-	case "roomName":
+	case "name":
 		if desc {
 			scopes = append(scopes, db.OrderByDesc("name"))
 		} else {
 			scopes = append(scopes, db.OrderByAsc("name"))
-		}
-	case "roomId":
-		if desc {
-			scopes = append(scopes, db.OrderByIDDesc)
-		} else {
-			scopes = append(scopes, db.OrderByIDAsc)
 		}
 	default:
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support order"))

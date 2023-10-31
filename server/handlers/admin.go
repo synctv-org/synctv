@@ -80,7 +80,7 @@ func Users(ctx *gin.Context) {
 		return
 	}
 
-	switch ctx.DefaultQuery("order", "createdAt") {
+	switch ctx.DefaultQuery("order", "name") {
 	case "createdAt":
 		if desc {
 			scopes = append(scopes, db.OrderByCreatedAtDesc)
@@ -92,12 +92,6 @@ func Users(ctx *gin.Context) {
 			scopes = append(scopes, db.OrderByDesc("username"))
 		} else {
 			scopes = append(scopes, db.OrderByAsc("username"))
-		}
-	case "id":
-		if desc {
-			scopes = append(scopes, db.OrderByIDDesc)
-		} else {
-			scopes = append(scopes, db.OrderByIDAsc)
 		}
 	default:
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support order"))
@@ -206,11 +200,6 @@ func BanUser(ctx *gin.Context) {
 
 func Rooms(ctx *gin.Context) {
 	// user := ctx.MustGet("user").(*op.User)
-	order := ctx.Query("order")
-	if order == "" {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("order is required"))
-		return
-	}
 
 	page, pageSize, err := GetPageAndPageSize(ctx)
 	if err != nil {
@@ -234,7 +223,7 @@ func Rooms(ctx *gin.Context) {
 		return
 	}
 
-	switch order {
+	switch ctx.DefaultQuery("order", "name") {
 	case "createdAt":
 		if desc {
 			scopes = append(scopes, db.OrderByCreatedAtDesc)
@@ -246,12 +235,6 @@ func Rooms(ctx *gin.Context) {
 			scopes = append(scopes, db.OrderByDesc("name"))
 		} else {
 			scopes = append(scopes, db.OrderByAsc("name"))
-		}
-	case "id":
-		if desc {
-			scopes = append(scopes, db.OrderByIDDesc)
-		} else {
-			scopes = append(scopes, db.OrderByIDAsc)
 		}
 	default:
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support order"))

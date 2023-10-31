@@ -92,24 +92,18 @@ func RoomList(ctx *gin.Context) {
 		db.WhereStatus(dbModel.RoomStatusActive),
 	}
 
-	switch ctx.DefaultQuery("order", "createdAt") {
+	switch ctx.DefaultQuery("order", "name") {
 	case "createdAt":
 		if desc {
 			scopes = append(scopes, db.OrderByCreatedAtDesc)
 		} else {
 			scopes = append(scopes, db.OrderByCreatedAtAsc)
 		}
-	case "roomName":
+	case "name":
 		if desc {
 			scopes = append(scopes, db.OrderByDesc("name"))
 		} else {
 			scopes = append(scopes, db.OrderByAsc("name"))
-		}
-	case "roomId":
-		if desc {
-			scopes = append(scopes, db.OrderByIDDesc)
-		} else {
-			scopes = append(scopes, db.OrderByIDAsc)
 		}
 	default:
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support order"))

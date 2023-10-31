@@ -6,10 +6,10 @@ import (
 )
 
 var (
-	BVRegex = regexp.MustCompile(`(?:https://www.bilibili.com/video/)?((?:bv|bV|Bv|BV)\w+)(?:/(\?.*)?)?$`)
-	ARegex  = regexp.MustCompile(`(?:https://www.bilibili.com/video/)?(?:av|aV|Av|AV)(\d+)(?:/(\?.*)?)?$`)
-	SSRegex = regexp.MustCompile(`(?:https://www.bilibili.com/bangumi/play/)?(?:ss|sS|Ss|SS)(\d+)(?:\?.*)?$`)
-	EPRegex = regexp.MustCompile(`(?:https://www.bilibili.com/bangumi/play/)?(?:ep|eP|Ep|EP)(\d+)(?:\?.*)?$`)
+	BVRegex = regexp.MustCompile(`(?:https://www\.bilibili\.com/video/)?((?:bv|bV|Bv|BV)\w+)(?:/(\?.*)?)?$`)
+	ARegex  = regexp.MustCompile(`(?:https://www\.bilibili\.com/video/)?(?:av|aV|Av|AV)(\d+)(?:/(\?.*)?)?$`)
+	SSRegex = regexp.MustCompile(`(?:https://www\.bilibili\.com/bangumi/play/)?(?:ss|sS|Ss|SS)(\d+)(?:\?.*)?$`)
+	EPRegex = regexp.MustCompile(`(?:https://www\.bilibili\.com/bangumi/play/)?(?:ep|eP|Ep|EP)(\d+)(?:\?.*)?$`)
 )
 
 func Match(url string) (t string, id string, err error) {

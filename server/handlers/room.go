@@ -7,7 +7,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/synctv-org/synctv/internal/db"
-	dbModel "github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/internal/settings"
 	"github.com/synctv-org/synctv/server/middlewares"
@@ -42,15 +41,7 @@ func CreateRoom(ctx *gin.Context) {
 		return
 	}
 
-	var (
-		r   *dbModel.Room
-		err error
-	)
-	if settings.CreateRoomNeedReview.Get() {
-		r, err = user.CreateRoom(req.RoomName, req.Password, db.WithSetting(req.Setting), db.WithStatus(dbModel.RoomStatusPending))
-	} else {
-		r, err = user.CreateRoom(req.RoomName, req.Password, db.WithSetting(req.Setting), db.WithStatus(dbModel.RoomStatusActive))
-	}
+	r, err := user.CreateRoom(req.RoomName, req.Password, db.WithSetting(req.Setting))
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return

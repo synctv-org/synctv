@@ -28,8 +28,9 @@ type Bool struct {
 func NewBool(name string, value bool, group model.SettingGroup) *Bool {
 	b := &Bool{
 		setting: setting{
-			name:  name,
-			group: group,
+			name:        name,
+			group:       group,
+			settingType: model.SettingTypeBool,
 		},
 		defaultValue: value,
 		value:        value,
@@ -47,14 +48,7 @@ func (b *Bool) Init(value string) error {
 }
 
 func (b *Bool) Parse(value string) (bool, error) {
-	switch value {
-	case "1":
-		return true, nil
-	case "0":
-		return false, nil
-	default:
-		return strconv.ParseBool(value)
-	}
+	return strconv.ParseBool(value)
 }
 
 func (b *Bool) Stringify(value bool) string {

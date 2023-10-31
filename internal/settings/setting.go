@@ -138,8 +138,9 @@ func initAndFixSettings(i ...Setting) error {
 }
 
 type setting struct {
-	name  string
-	group model.SettingGroup
+	name        string
+	settingType model.SettingType
+	group       model.SettingGroup
 }
 
 func (d *setting) Name() string {
@@ -147,7 +148,7 @@ func (d *setting) Name() string {
 }
 
 func (d *setting) Type() model.SettingType {
-	return model.SettingTypeString
+	return d.settingType
 }
 
 func (d *setting) Group() model.SettingGroup {

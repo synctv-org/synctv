@@ -27,8 +27,9 @@ type String struct {
 func NewString(name string, value string, group model.SettingGroup) *String {
 	s := &String{
 		setting: setting{
-			name:  name,
-			group: group,
+			name:        name,
+			group:       group,
+			settingType: model.SettingTypeString,
 		},
 		defaultValue: value,
 		value:        value,

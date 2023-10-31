@@ -28,8 +28,9 @@ type Float64 struct {
 func NewFloat64(name string, value float64, group model.SettingGroup) *Float64 {
 	f := &Float64{
 		setting: setting{
-			name:  name,
-			group: group,
+			name:        name,
+			group:       group,
+			settingType: model.SettingTypeFloat64,
 		},
 		defaultValue: value,
 		value:        value,

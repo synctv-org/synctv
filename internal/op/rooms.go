@@ -39,7 +39,21 @@ func InitRoom(room *model.Room) (*Room, error) {
 	return i.Value(), nil
 }
 
+var (
+	ErrRoomPending = errors.New("room pending, please wait for admin to approve")
+	ErrRoomStopped = errors.New("room stopped")
+	ErrRoomBanned  = errors.New("room banned")
+)
+
 func LoadOrInitRoom(room *model.Room) (*Room, error) {
+	switch room.Status {
+	case model.RoomStatusBanned:
+		return nil, ErrRoomBanned
+	case model.RoomStatusPending:
+		return nil, ErrRoomPending
+	case model.RoomStatusStopped:
+		return nil, ErrRoomStopped
+	}
 	t := time.Duration(settings.RoomTTL.Get())
 	i, loaded := roomCache.LoadOrStore(room.ID, &Room{
 		Room:    *room,
@@ -51,14 +65,6 @@ func LoadOrInitRoom(room *model.Room) (*Room, error) {
 	}, t)
 	if loaded {
 		i.SetExpiration(time.Now().Add(t))
-	}
-	switch room.Status {
-	case model.RoomStatusBanned:
-		return nil, errors.New("room banned")
-	case model.RoomStatusPending:
-		return nil, errors.New("room pending, please wait for admin to approve")
-	case model.RoomStatusStopped:
-		return nil, errors.New("room stopped")
 	}
 	return i.Value(), nil
 }
@@ -75,6 +81,19 @@ func CloseRoom(roomID string) error {
 	r, loaded := roomCache.LoadAndDelete(roomID)
 	if loaded {
 		r.Value().close()
+	}
+	return nil
+}
+
+func CompareAndCloseRoom(room *Room) error {
+	r, loaded := roomCache.Load(room.ID)
+	if loaded {
+		if r.Value() != room {
+			return nil
+		}
+		if roomCache.CompareAndDelete(room.ID, r) {
+			r.Value().close()
+		}
 	}
 	return nil
 }

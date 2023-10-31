@@ -13,6 +13,11 @@ import (
 
 var userCache gcache.Cache
 
+var (
+	ErrUserBanned  = errors.New("user banned")
+	ErrUserPending = errors.New("user pending, please wait for admin to approve")
+)
+
 func GetUserById(id string) (*User, error) {
 	i, err := userCache.Get(id)
 	if err == nil {
@@ -22,6 +27,13 @@ func GetUserById(id string) (*User, error) {
 	u, err := db.GetUserByID(id)
 	if err != nil {
 		return nil, err
+	}
+
+	switch u.Role {
+	case model.RoleBanned:
+		return nil, ErrUserBanned
+	case model.RolePending:
+		return nil, ErrUserPending
 	}
 
 	u2 := &User{

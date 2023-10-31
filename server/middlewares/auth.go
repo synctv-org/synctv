@@ -76,12 +76,6 @@ func AuthRoom(Authorization string) (*op.User, *op.Room, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	if u.IsBanned() {
-		return nil, nil, errors.New("user banned")
-	}
-	if u.IsPending() {
-		return nil, nil, errors.New("user is pending, need admin to approve")
-	}
 
 	r, err := op.LoadOrInitRoomByID(claims.RoomId)
 	if err != nil {
@@ -107,12 +101,6 @@ func AuthUser(Authorization string) (*op.User, error) {
 	u, err := op.GetUserById(claims.UserId)
 	if err != nil {
 		return nil, err
-	}
-	if u.IsBanned() {
-		return nil, errors.New("user banned")
-	}
-	if u.IsPending() {
-		return nil, errors.New("user is pending, need admin to approve")
 	}
 
 	return u, nil

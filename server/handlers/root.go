@@ -44,7 +44,7 @@ func AddAdmin(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorStringResp("user not found"))
 		return
 	}
-	if u.Role >= dbModel.RoleAdmin {
+	if u.IsAdmin() {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("user is already admin"))
 		return
 	}
@@ -75,7 +75,7 @@ func DeleteAdmin(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorStringResp("user not found"))
 		return
 	}
-	if u.Role == dbModel.RoleRoot {
+	if u.IsRoot() {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("cannot remove root"))
 		return
 	}

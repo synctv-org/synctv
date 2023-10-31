@@ -49,3 +49,19 @@ func (r *Room) NeedPassword() bool {
 func (r *Room) CheckPassword(password string) bool {
 	return !r.NeedPassword() || bcrypt.CompareHashAndPassword(r.HashedPassword, stream.StringToBytes(password)) == nil
 }
+
+func (r *Room) IsBanned() bool {
+	return r.Status == RoomStatusBanned
+}
+
+func (r *Room) IsPending() bool {
+	return r.Status == RoomStatusPending
+}
+
+func (r *Room) IsStopped() bool {
+	return r.Status == RoomStatusStopped
+}
+
+func (r *Room) IsActive() bool {
+	return r.Status == RoomStatusActive
+}

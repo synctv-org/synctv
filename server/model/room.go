@@ -107,17 +107,18 @@ func (s *SetRoomPasswordReq) Validate() error {
 	return nil
 }
 
-type UserIdReq struct {
-	UserId string `json:"userId"`
+type RoomIDReq struct {
+	Id string `json:"id"`
 }
 
-func (u *UserIdReq) Decode(ctx *gin.Context) error {
-	return json.NewDecoder(ctx.Request.Body).Decode(u)
+func (r *RoomIDReq) Decode(ctx *gin.Context) error {
+	return json.NewDecoder(ctx.Request.Body).Decode(r)
 }
 
-func (u *UserIdReq) Validate() error {
-	if len(u.UserId) != 36 {
-		return ErrEmptyUserId
+func (r *RoomIDReq) Validate() error {
+	if len(r.Id) != 36 {
+		return ErrEmptyRoomName
 	}
+
 	return nil
 }

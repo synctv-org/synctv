@@ -182,3 +182,16 @@ func (r *Room) SetStatus(playing bool, seek float64, rate float64, timeDiff floa
 func (r *Room) SetSeekRate(seek float64, rate float64, timeDiff float64) Status {
 	return r.current.SetSeekRate(seek, rate, timeDiff)
 }
+
+func (r *Room) SetRoomStatus(status model.RoomStatus) error {
+	err := db.SetRoomStatus(r.ID, status)
+	if err != nil {
+		return err
+	}
+	r.Status = status
+	switch status {
+	case model.RoomStatusBanned, model.RoomStatusStopped, model.RoomStatusPending:
+		return CompareAndCloseRoom(r)
+	}
+	return nil
+}

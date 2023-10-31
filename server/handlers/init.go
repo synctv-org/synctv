@@ -50,6 +50,18 @@ func Init(e *gin.Engine) {
 				admin.POST("/settings", EditAdminSettings)
 
 				admin.GET("/users", Users)
+
+				admin.GET("/pending/users", PendingUsers)
+
+				admin.GET("/pending/rooms", PendingRooms)
+
+				admin.POST("/approve/user", ApprovePendingUser)
+
+				admin.POST("/approve/room", ApprovePendingRoom)
+
+				admin.POST("/ban/user", BanUser)
+
+				admin.POST("/ban/room", BanRoom)
 			}
 
 			{
@@ -57,7 +69,7 @@ func Init(e *gin.Engine) {
 
 				root.POST("/addAdmin", AddAdmin)
 
-				root.POST("deleteAdmin", DeleteAdmin)
+				root.POST("/deleteAdmin", DeleteAdmin)
 			}
 		}
 

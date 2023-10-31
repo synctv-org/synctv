@@ -7,6 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/synctv-org/synctv/internal/db"
+	dbModel "github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/internal/settings"
 	"github.com/synctv-org/synctv/server/middlewares"
@@ -91,10 +92,9 @@ func RoomList(ctx *gin.Context) {
 
 	var desc = ctx.DefaultQuery("sort", "desc") == "desc"
 
-	// search mode, all, name, creator
-	var search = ctx.DefaultQuery("search", "all")
-
-	scopes := []func(db *gorm.DB) *gorm.DB{}
+	scopes := []func(db *gorm.DB) *gorm.DB{
+		db.WhereStatus(dbModel.RoomStatusActive),
+	}
 
 	switch order {
 	case "createdAt":
@@ -103,31 +103,11 @@ func RoomList(ctx *gin.Context) {
 		} else {
 			scopes = append(scopes, db.OrderByCreatedAtAsc)
 		}
-		if keyword := ctx.Query("keyword"); keyword != "" {
-			switch search {
-			case "all":
-				scopes = append(scopes, db.WhereRoomNameLikeOrCreatorIn(keyword, db.GerUsersIDByUsernameLike(keyword)))
-			case "name":
-				scopes = append(scopes, db.WhereRoomNameLike(keyword))
-			case "creator":
-				scopes = append(scopes, db.WhereCreatorIDIn(db.GerUsersIDByUsernameLike(keyword)))
-			}
-		}
 	case "roomName":
 		if desc {
 			scopes = append(scopes, db.OrderByDesc("name"))
 		} else {
 			scopes = append(scopes, db.OrderByAsc("name"))
-		}
-		if keyword := ctx.Query("keyword"); keyword != "" {
-			switch search {
-			case "all":
-				scopes = append(scopes, db.WhereRoomNameLikeOrCreatorIn(keyword, db.GerUsersIDByUsernameLike(keyword)))
-			case "name":
-				scopes = append(scopes, db.WhereRoomNameLike(keyword))
-			case "creator":
-				scopes = append(scopes, db.WhereCreatorIDIn(db.GerUsersIDByUsernameLike(keyword)))
-			}
 		}
 	case "roomId":
 		if desc {
@@ -135,19 +115,21 @@ func RoomList(ctx *gin.Context) {
 		} else {
 			scopes = append(scopes, db.OrderByIDAsc)
 		}
-		if keyword := ctx.Query("keyword"); keyword != "" {
-			switch search {
-			case "all":
-				scopes = append(scopes, db.WhereRoomNameLikeOrCreatorIn(keyword, db.GerUsersIDByUsernameLike(keyword)))
-			case "name":
-				scopes = append(scopes, db.WhereRoomNameLike(keyword))
-			case "creator":
-				scopes = append(scopes, db.WhereCreatorIDIn(db.GerUsersIDByUsernameLike(keyword)))
-			}
-		}
 	default:
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support order"))
 		return
+	}
+
+	if keyword := ctx.Query("keyword"); keyword != "" {
+		// search mode, all, name, creator
+		switch ctx.DefaultQuery("search", "all") {
+		case "all":
+			scopes = append(scopes, db.WhereRoomNameLikeOrCreatorIn(keyword, db.GerUsersIDByUsernameLike(keyword)))
+		case "name":
+			scopes = append(scopes, db.WhereRoomNameLike(keyword))
+		case "creator":
+			scopes = append(scopes, db.WhereCreatorIDIn(db.GerUsersIDByUsernameLike(keyword)))
+		}
 	}
 
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{

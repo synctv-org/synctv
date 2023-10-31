@@ -49,7 +49,11 @@ func (u *User) IsRoot() bool {
 }
 
 func (u *User) IsAdmin() bool {
-	return u.Role == RoleAdmin
+	return u.Role == RoleAdmin || u.IsRoot()
+}
+
+func (u *User) IsPending() bool {
+	return u.Role == RolePending
 }
 
 func (u *User) IsBanned() bool {

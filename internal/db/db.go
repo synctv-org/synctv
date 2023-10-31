@@ -184,3 +184,9 @@ func Select(columns ...string) func(db *gorm.DB) *gorm.DB {
 		return db.Select(columns)
 	}
 }
+
+func WhereStatus(status model.RoomStatus) func(db *gorm.DB) *gorm.DB {
+	return func(db *gorm.DB) *gorm.DB {
+		return db.Where("status = ?", status)
+	}
+}

@@ -195,3 +195,11 @@ func GetAllRoomsByUserID(userID string) []*model.Room {
 	db.Where("creator_id = ?", userID).Find(&rooms)
 	return rooms
 }
+
+func SetRoomStatus(roomID string, status model.RoomStatus) error {
+	err := db.Model(&model.Room{}).Where("id = ?", roomID).Update("status", status).Error
+	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
+		return errors.New("room not found")
+	}
+	return err
+}

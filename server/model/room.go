@@ -7,6 +7,7 @@ import (
 
 	json "github.com/json-iterator/go"
 	"github.com/synctv-org/synctv/internal/model"
+	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/internal/settings"
 
 	"github.com/gin-gonic/gin"
@@ -70,14 +71,7 @@ func (c *CreateRoomReq) Validate() error {
 	return nil
 }
 
-type RoomListResp struct {
-	RoomId       string `json:"roomId"`
-	RoomName     string `json:"roomName"`
-	PeopleNum    int64  `json:"peopleNum"`
-	NeedPassword bool   `json:"needPassword"`
-	Creator      string `json:"creator"`
-	CreatedAt    int64  `json:"createdAt"`
-}
+type RoomListResp = op.RoomHeapItem
 
 type LoginRoomReq struct {
 	RoomId   string `json:"roomId"`

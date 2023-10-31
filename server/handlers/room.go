@@ -42,13 +42,11 @@ func CreateRoom(ctx *gin.Context) {
 		return
 	}
 
-	CreateRoomNeedReview := settings.CreateRoomNeedReview.Get()
-
 	var (
 		r   *dbModel.Room
 		err error
 	)
-	if CreateRoomNeedReview {
+	if settings.CreateRoomNeedReview.Get() {
 		r, err = user.CreateRoom(req.RoomName, req.Password, db.WithSetting(req.Setting), db.WithStatus(dbModel.RoomStatusPending))
 	} else {
 		r, err = user.CreateRoom(req.RoomName, req.Password, db.WithSetting(req.Setting), db.WithStatus(dbModel.RoomStatusActive))
@@ -81,17 +79,6 @@ func RoomHotList(ctx *gin.Context) {
 
 	r := op.GetRoomHeapInCacheWithoutHidden()
 	rs := utils.GetPageItems(r, page, pageSize)
-	resp := make([]*model.RoomListResp, len(rs))
-	for i, v := range rs {
-		resp[i] = &model.RoomListResp{
-			RoomId:       v.ID,
-			RoomName:     v.RoomName,
-			PeopleNum:    v.ClientNum,
-			NeedPassword: v.NeedPassword,
-			Creator:      op.GetUserName(v.CreatorID),
-			CreatedAt:    v.CreatedAt.UnixMilli(),
-		}
-	}
 
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
 		"total": len(r),

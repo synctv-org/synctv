@@ -165,12 +165,12 @@ func GetAllRoomsInCacheWithoutHidden() []*Room {
 }
 
 type RoomHeapItem struct {
-	ID           string
-	RoomName     string
-	ClientNum    int64
-	NeedPassword bool
-	CreatorID    string
-	CreatedAt    time.Time
+	RoomId       string `json:"roomId"`
+	RoomName     string `json:"roomName"`
+	PeopleNum    int64  `json:"peopleNum"`
+	NeedPassword bool   `json:"needPassword"`
+	Creator      string `json:"creator"`
+	CreatedAt    int64  `json:"createdAt"`
 }
 
 type RoomHeap []*RoomHeapItem
@@ -180,7 +180,7 @@ func (h RoomHeap) Len() int {
 }
 
 func (h RoomHeap) Less(i, j int) bool {
-	return h[i].ClientNum < h[j].ClientNum
+	return h[i].PeopleNum < h[j].PeopleNum
 }
 
 func (h RoomHeap) Swap(i, j int) {
@@ -205,12 +205,12 @@ func GetRoomHeapInCacheWithoutHidden() RoomHeap {
 		v := value.Value()
 		if !v.Settings.Hidden {
 			heap.Push[*RoomHeapItem](&rooms, &RoomHeapItem{
-				ID:           v.ID,
+				RoomId:       v.ID,
 				RoomName:     v.Name,
-				ClientNum:    v.ClientNum(),
+				PeopleNum:    v.ClientNum(),
 				NeedPassword: v.NeedPassword(),
-				CreatorID:    v.CreatorID,
-				CreatedAt:    v.CreatedAt,
+				Creator:      v.CreatorID,
+				CreatedAt:    v.CreatedAt.UnixMilli(),
 			})
 		}
 		return true

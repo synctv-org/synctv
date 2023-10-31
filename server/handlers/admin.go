@@ -56,12 +56,6 @@ func AdminSettings(ctx *gin.Context) {
 
 func Users(ctx *gin.Context) {
 	// user := ctx.MustGet("user").(*op.User)
-	order := ctx.Query("order")
-	if order == "" {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("order is required"))
-		return
-	}
-
 	page, pageSize, err := GetPageAndPageSize(ctx)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
@@ -72,11 +66,21 @@ func Users(ctx *gin.Context) {
 
 	scopes := []func(db *gorm.DB) *gorm.DB{}
 
-	if keyword := ctx.Query("keyword"); keyword != "" {
-		scopes = append(scopes, db.WhereUserNameLike(keyword))
+	switch ctx.DefaultQuery("role", "user") {
+	case "admin":
+		scopes = append(scopes, db.WhereRole(dbModel.RoleAdmin))
+	case "user":
+		scopes = append(scopes, db.WhereRole(dbModel.RoleUser))
+	case "pending":
+		scopes = append(scopes, db.WhereRole(dbModel.RolePending))
+	case "banned":
+		scopes = append(scopes, db.WhereRole(dbModel.RoleBanned))
+	default:
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support role"))
+		return
 	}
 
-	switch order {
+	switch ctx.DefaultQuery("order", "createdAt") {
 	case "createdAt":
 		if desc {
 			scopes = append(scopes, db.OrderByCreatedAtDesc)
@@ -100,14 +104,26 @@ func Users(ctx *gin.Context) {
 		return
 	}
 
+	if keyword := ctx.Query("keyword"); keyword != "" {
+		// search mode, all, name, id
+		switch ctx.DefaultQuery("search", "all") {
+		case "all":
+			scopes = append(scopes, db.WhereUsernameLikeOrIDIn(keyword, db.GerUsersIDByIDLike(keyword)))
+		case "name":
+			scopes = append(scopes, db.WhereUsernameLike(keyword))
+		case "id":
+			scopes = append(scopes, db.WhereIDIn(db.GerUsersIDByIDLike(keyword)))
+		}
+	}
+
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
-		"total": db.GetAllUserCountWithRole(dbModel.RoleUser, scopes...),
-		"list":  genUserListResp(dbModel.RoleUser, append(scopes, db.Paginate(page, pageSize))...),
+		"total": db.GetAllUserCount(scopes...),
+		"list":  genUserListResp(append(scopes, db.Paginate(page, pageSize))...),
 	}))
 }
 
-func genUserListResp(role dbModel.Role, scopes ...func(db *gorm.DB) *gorm.DB) []*model.UserInfoResp {
-	us := db.GetAllUserWithRoleUser(role, scopes...)
+func genUserListResp(scopes ...func(db *gorm.DB) *gorm.DB) []*model.UserInfoResp {
+	us := db.GetAllUsers(scopes...)
 	resp := make([]*model.UserInfoResp, len(us))
 	for i, v := range us {
 		resp[i] = &model.UserInfoResp{
@@ -118,58 +134,6 @@ func genUserListResp(role dbModel.Role, scopes ...func(db *gorm.DB) *gorm.DB) []
 		}
 	}
 	return resp
-}
-
-func PendingUsers(ctx *gin.Context) {
-	// user := ctx.MustGet("user").(*op.User)
-	order := ctx.Query("order")
-	if order == "" {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("order is required"))
-		return
-	}
-
-	page, pageSize, err := GetPageAndPageSize(ctx)
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
-		return
-	}
-
-	var desc = ctx.DefaultQuery("sort", "desc") == "desc"
-
-	scopes := []func(db *gorm.DB) *gorm.DB{}
-
-	if keyword := ctx.Query("keyword"); keyword != "" {
-		scopes = append(scopes, db.WhereUserNameLike(keyword))
-	}
-
-	switch order {
-	case "createdAt":
-		if desc {
-			scopes = append(scopes, db.OrderByCreatedAtDesc)
-		} else {
-			scopes = append(scopes, db.OrderByCreatedAtAsc)
-		}
-	case "name":
-		if desc {
-			scopes = append(scopes, db.OrderByDesc("username"))
-		} else {
-			scopes = append(scopes, db.OrderByAsc("username"))
-		}
-	case "id":
-		if desc {
-			scopes = append(scopes, db.OrderByIDDesc)
-		} else {
-			scopes = append(scopes, db.OrderByIDAsc)
-		}
-	default:
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support order"))
-		return
-	}
-
-	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
-		"total": db.GetAllUserCountWithRole(dbModel.RolePending, scopes...),
-		"list":  genUserListResp(dbModel.RolePending, append(scopes, db.Paginate(page, pageSize))...),
-	}))
 }
 
 func ApprovePendingUser(ctx *gin.Context) {
@@ -240,7 +204,7 @@ func BanUser(ctx *gin.Context) {
 	ctx.Status(http.StatusNoContent)
 }
 
-func PendingRooms(ctx *gin.Context) {
+func Rooms(ctx *gin.Context) {
 	// user := ctx.MustGet("user").(*op.User)
 	order := ctx.Query("order")
 	if order == "" {
@@ -256,12 +220,18 @@ func PendingRooms(ctx *gin.Context) {
 
 	var desc = ctx.DefaultQuery("sort", "desc") == "desc"
 
-	scopes := []func(db *gorm.DB) *gorm.DB{
-		db.WhereStatus(dbModel.RoomStatusPending),
-	}
+	scopes := []func(db *gorm.DB) *gorm.DB{}
 
-	if keyword := ctx.Query("keyword"); keyword != "" {
-		scopes = append(scopes, db.WhereRoomNameLike(keyword))
+	switch ctx.DefaultQuery("status", "active") {
+	case "active":
+		scopes = append(scopes, db.WhereStatus(dbModel.RoomStatusActive))
+	case "pending":
+		scopes = append(scopes, db.WhereStatus(dbModel.RoomStatusPending))
+	case "banned":
+		scopes = append(scopes, db.WhereStatus(dbModel.RoomStatusBanned))
+	default:
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support status"))
+		return
 	}
 
 	switch order {
@@ -292,16 +262,18 @@ func PendingRooms(ctx *gin.Context) {
 		// search mode, all, name, creator
 		switch ctx.DefaultQuery("search", "all") {
 		case "all":
-			scopes = append(scopes, db.WhereRoomNameLikeOrCreatorIn(keyword, db.GerUsersIDByUsernameLike(keyword)))
+			scopes = append(scopes, db.WhereRoomNameLikeOrCreatorInOrIDLike(keyword, db.GerUsersIDByUsernameLike(keyword), keyword))
 		case "name":
 			scopes = append(scopes, db.WhereRoomNameLike(keyword))
 		case "creator":
 			scopes = append(scopes, db.WhereCreatorIDIn(db.GerUsersIDByUsernameLike(keyword)))
+		case "id":
+			scopes = append(scopes, db.WhereIDLike(keyword))
 		}
 	}
 
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
-		"total": db.GetAllRoomsWithoutHiddenCount(scopes...),
+		"total": db.GetAllRoomsCount(scopes...),
 		"list":  genRoomListResp(append(scopes, db.Paginate(page, pageSize))...),
 	}))
 }

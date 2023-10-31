@@ -172,15 +172,9 @@ func GetAllRooms(scopes ...func(*gorm.DB) *gorm.DB) []*model.Room {
 	return rooms
 }
 
-func GetAllRoomsWithoutHidden(scopes ...func(*gorm.DB) *gorm.DB) []*model.Room {
-	rooms := []*model.Room{}
-	db.Where("settings_hidden = ?", false).Scopes(scopes...).Find(&rooms)
-	return rooms
-}
-
-func GetAllRoomsWithoutHiddenCount(scopes ...func(*gorm.DB) *gorm.DB) int64 {
+func GetAllRoomsCount(scopes ...func(*gorm.DB) *gorm.DB) int64 {
 	var count int64
-	db.Model(&model.Room{}).Where("settings_hidden = ?", false).Scopes(scopes...).Count(&count)
+	db.Model(&model.Room{}).Scopes(scopes...).Count(&count)
 	return count
 }
 

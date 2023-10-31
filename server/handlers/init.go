@@ -51,9 +51,7 @@ func Init(e *gin.Engine) {
 
 				admin.GET("/users", Users)
 
-				admin.GET("/pending/users", PendingUsers)
-
-				admin.GET("/pending/rooms", PendingRooms)
+				admin.GET("/rooms", Rooms)
 
 				admin.POST("/approve/user", ApprovePendingUser)
 
@@ -65,11 +63,9 @@ func Init(e *gin.Engine) {
 			}
 
 			{
-				root.GET("/admins", Admins)
+				root.POST("/admin/add", AddAdmin)
 
-				root.POST("/addAdmin", AddAdmin)
-
-				root.POST("/deleteAdmin", DeleteAdmin)
+				root.POST("/admin/delete", DeleteAdmin)
 			}
 		}
 

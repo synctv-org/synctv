@@ -79,11 +79,6 @@ func RoomHotList(ctx *gin.Context) {
 }
 
 func RoomList(ctx *gin.Context) {
-	order := ctx.Query("order")
-	if order == "" {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("order is required"))
-		return
-	}
 	page, pageSize, err := GetPageAndPageSize(ctx)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
@@ -93,10 +88,11 @@ func RoomList(ctx *gin.Context) {
 	var desc = ctx.DefaultQuery("sort", "desc") == "desc"
 
 	scopes := []func(db *gorm.DB) *gorm.DB{
+		db.WhereRoomSettingWithoutHidden(),
 		db.WhereStatus(dbModel.RoomStatusActive),
 	}
 
-	switch order {
+	switch ctx.DefaultQuery("order", "createdAt") {
 	case "createdAt":
 		if desc {
 			scopes = append(scopes, db.OrderByCreatedAtDesc)
@@ -124,22 +120,24 @@ func RoomList(ctx *gin.Context) {
 		// search mode, all, name, creator
 		switch ctx.DefaultQuery("search", "all") {
 		case "all":
-			scopes = append(scopes, db.WhereRoomNameLikeOrCreatorIn(keyword, db.GerUsersIDByUsernameLike(keyword)))
+			scopes = append(scopes, db.WhereRoomNameLikeOrCreatorInOrIDLike(keyword, db.GerUsersIDByUsernameLike(keyword), keyword))
 		case "name":
 			scopes = append(scopes, db.WhereRoomNameLike(keyword))
 		case "creator":
 			scopes = append(scopes, db.WhereCreatorIDIn(db.GerUsersIDByUsernameLike(keyword)))
+		case "id":
+			scopes = append(scopes, db.WhereIDLike(keyword))
 		}
 	}
 
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
-		"total": db.GetAllRoomsWithoutHiddenCount(scopes...),
+		"total": db.GetAllRoomsCount(scopes...),
 		"list":  genRoomListResp(append(scopes, db.Paginate(page, pageSize))...),
 	}))
 }
 
 func genRoomListResp(scopes ...func(db *gorm.DB) *gorm.DB) []*model.RoomListResp {
-	rs := db.GetAllRoomsWithoutHidden(scopes...)
+	rs := db.GetAllRooms(scopes...)
 	resp := make([]*model.RoomListResp, len(rs))
 	for i, r := range rs {
 		resp[i] = &model.RoomListResp{

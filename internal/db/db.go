@@ -140,13 +140,13 @@ func WhereLike(column string, value string) func(db *gorm.DB) *gorm.DB {
 	}
 }
 
-func WhereRoomNameLikeOrCreatorIn(name string, ids []string) func(db *gorm.DB) *gorm.DB {
+func WhereRoomNameLikeOrCreatorInOrIDLike(name string, ids []string, id string) func(db *gorm.DB) *gorm.DB {
 	return func(db *gorm.DB) *gorm.DB {
 		switch dbType {
 		case conf.DatabaseTypePostgres:
-			return db.Where("name ILIKE ? OR creator_id IN ?", utils.LIKE(name), ids)
+			return db.Where("name ILIKE ? OR creator_id IN ? OR id ILIKE ?", utils.LIKE(name), ids, id)
 		default:
-			return db.Where("name LIKE ? OR creator_id IN ?", utils.LIKE(name), ids)
+			return db.Where("name LIKE ? OR creator_id IN ? OR id LIKE ?", utils.LIKE(name), ids, id)
 		}
 	}
 }
@@ -162,7 +162,7 @@ func WhereRoomNameLike(name string) func(db *gorm.DB) *gorm.DB {
 	}
 }
 
-func WhereUserNameLike(name string) func(db *gorm.DB) *gorm.DB {
+func WhereUsernameLike(name string) func(db *gorm.DB) *gorm.DB {
 	return func(db *gorm.DB) *gorm.DB {
 		switch dbType {
 		case conf.DatabaseTypePostgres:
@@ -188,5 +188,51 @@ func Select(columns ...string) func(db *gorm.DB) *gorm.DB {
 func WhereStatus(status model.RoomStatus) func(db *gorm.DB) *gorm.DB {
 	return func(db *gorm.DB) *gorm.DB {
 		return db.Where("status = ?", status)
+	}
+}
+
+func WhereRole(role model.Role) func(db *gorm.DB) *gorm.DB {
+	return func(db *gorm.DB) *gorm.DB {
+		return db.Where("role = ?", role)
+	}
+}
+
+func WhereUsernameLikeOrIDIn(name string, ids []string) func(db *gorm.DB) *gorm.DB {
+	return func(db *gorm.DB) *gorm.DB {
+		switch dbType {
+		case conf.DatabaseTypePostgres:
+			return db.Where("username ILIKE ? OR id IN ?", utils.LIKE(name), ids)
+		default:
+			return db.Where("username LIKE ? OR id IN ?", utils.LIKE(name), ids)
+		}
+	}
+}
+
+func WhereIDIn(ids []string) func(db *gorm.DB) *gorm.DB {
+	return func(db *gorm.DB) *gorm.DB {
+		return db.Where("id IN ?", ids)
+	}
+}
+
+func WhereRoomSettingWithoutHidden() func(db *gorm.DB) *gorm.DB {
+	return func(db *gorm.DB) *gorm.DB {
+		return db.Where("settings_hidden = ?", false)
+	}
+}
+
+func WhereRoomSettingHidden() func(db *gorm.DB) *gorm.DB {
+	return func(db *gorm.DB) *gorm.DB {
+		return db.Where("settings_hidden = ?", true)
+	}
+}
+
+func WhereIDLike(id string) func(db *gorm.DB) *gorm.DB {
+	return func(db *gorm.DB) *gorm.DB {
+		switch dbType {
+		case conf.DatabaseTypePostgres:
+			return db.Where("id ILIKE ?", utils.LIKE(id))
+		default:
+			return db.Where("id LIKE ?", utils.LIKE(id))
+		}
 	}
 }

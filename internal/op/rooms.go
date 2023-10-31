@@ -228,7 +228,7 @@ func GetRoomHeapInCacheWithoutHidden() RoomHeap {
 				RoomName:     v.Name,
 				PeopleNum:    v.ClientNum(),
 				NeedPassword: v.NeedPassword(),
-				Creator:      v.CreatorID,
+				Creator:      GetUserName(v.CreatorID),
 				CreatedAt:    v.CreatedAt.UnixMilli(),
 			})
 		}

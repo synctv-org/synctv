@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"sync"
 
 	"github.com/synctv-org/synctv/utils"
 )
@@ -13,6 +14,7 @@ type Client struct {
 	httpClient *http.Client
 	cookies    []*http.Cookie
 	buvid3     *http.Cookie
+	once       sync.Once
 	ctx        context.Context
 }
 
@@ -39,12 +41,14 @@ func NewClient(cookies []*http.Cookie, conf ...ClientConfig) (*Client, error) {
 	for _, v := range conf {
 		v(cli)
 	}
-	c, err := newBuvid3(cli.ctx)
-	if err != nil {
-		return nil, err
-	}
-	cli.buvid3 = c
 	return cli, nil
+}
+
+func (c *Client) InitBuvid3() (err error) {
+	c.once.Do(func() {
+		c.buvid3, err = newBuvid3(c.ctx)
+	})
+	return
 }
 
 func newBuvid3(ctx context.Context) (*http.Cookie, error) {
@@ -103,7 +107,9 @@ func (c *Client) NewRequest(method, url string, body io.Reader, conf ...RequestO
 	if err != nil {
 		return nil, err
 	}
-	req.AddCookie(c.buvid3)
+	if c.buvid3 != nil {
+		req.AddCookie(c.buvid3)
+	}
 	for _, cookie := range c.cookies {
 		req.AddCookie(cookie)
 	}

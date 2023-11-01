@@ -91,6 +91,12 @@ type GetVideoURLConf struct {
 	Quality uint
 }
 
+func (c *GetVideoURLConf) fix() {
+	if c.Quality == 0 {
+		c.Quality = Q1080PP
+	}
+}
+
 type GetVideoURLConfig func(*GetVideoURLConf)
 
 func WithQuality(q uint) GetVideoURLConfig {
@@ -107,6 +113,8 @@ func (c *Client) GetVideoURL(aid uint, bvid string, cid uint, conf ...GetVideoUR
 	for _, v := range conf {
 		v(config)
 	}
+	config.fix()
+
 	var url string
 	if aid != 0 {
 		url = fmt.Sprintf("https://api.bilibili.com/x/player/wbi/playurl?aid=%d&cid=%d&qn=%d&platform=html5&high_quality=1", aid, cid, config.Quality)
@@ -234,6 +242,7 @@ func (c *Client) GetPGCURL(ep_id, cid uint, conf ...GetVideoURLConfig) (*VideoUR
 	for _, v := range conf {
 		v(config)
 	}
+	config.fix()
 
 	var url string
 	if ep_id != 0 {

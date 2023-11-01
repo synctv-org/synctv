@@ -150,8 +150,8 @@ type VendorInfo struct {
 }
 
 type BilibiliVendorInfo struct {
-	Bvid    string `json:"bvid"`
-	Cid     uint   `json:"cid"`
-	Epid    uint   `json:"epid"`
-	Quality uint   `json:"quality"`
+	Bvid    string `json:"bvid,omitempty"`
+	Cid     uint   `json:"cid,omitempty"`
+	Epid    uint   `json:"epid,omitempty"`
+	Quality uint   `json:"quality,omitempty"`
 }

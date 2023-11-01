@@ -14,54 +14,6 @@ import (
 	"github.com/synctv-org/synctv/vendors/bilibili"
 )
 
-func QRCode(ctx *gin.Context) {
-	r, err := bilibili.NewQRCode()
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
-		return
-	}
-	ctx.JSON(http.StatusOK, model.NewApiDataResp(r))
-}
-
-type LoginReq struct {
-	Key string `json:"key"`
-}
-
-func (r *LoginReq) Validate() error {
-	if r.Key == "" {
-		return errors.New("key is empty")
-	}
-	return nil
-}
-
-func (r *LoginReq) Decode(ctx *gin.Context) error {
-	return json.NewDecoder(ctx.Request.Body).Decode(r)
-}
-
-func Login(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.User)
-
-	req := LoginReq{}
-	if err := model.Decode(ctx, &req); err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
-		return
-	}
-
-	cookie, err := bilibili.Login(req.Key)
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
-		return
-	}
-
-	_, err = db.AssignFirstOrCreateVendorByUserIDAndVendor(user.ID, dbModel.StreamingVendorBilibili, db.WithCookie([]*http.Cookie{cookie}))
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
-		return
-	}
-
-	ctx.Status(http.StatusNoContent)
-}
-
 type ParseReq struct {
 	URL string `json:"url"`
 }
@@ -97,7 +49,11 @@ func Parse(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}
-	cli := bilibili.NewClient(vendor.Cookies)
+	cli, err := bilibili.NewClient(vendor.Cookies)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
 
 	switch matchType {
 	case "bv":

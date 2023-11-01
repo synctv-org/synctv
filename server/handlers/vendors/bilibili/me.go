@@ -31,7 +31,12 @@ func Me(ctx *gin.Context) {
 		}))
 		return
 	}
-	cli := bilibili.NewClient(vendor.Cookies)
+	cli, err := bilibili.NewClient(vendor.Cookies)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
+
 	nav, err := cli.UserInfo()
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))

@@ -147,9 +147,17 @@ func Init(e *gin.Engine) {
 			{
 				bilibili := vendor.Group("/bilibili")
 
-				bilibili.GET("/qr", Vbilibili.QRCode)
+				login := bilibili.Group("/login")
 
-				bilibili.POST("/login", Vbilibili.Login)
+				login.GET("/qr", Vbilibili.NewQRCode)
+
+				login.POST("/qr", Vbilibili.LoginWithQR)
+
+				login.GET("/captcha", Vbilibili.NewCaptcha)
+
+				login.POST("/sms/send", Vbilibili.NewSMS)
+
+				login.POST("/sms/login", Vbilibili.LoginWithSMS)
 
 				bilibili.POST("/parse", Vbilibili.Parse)
 

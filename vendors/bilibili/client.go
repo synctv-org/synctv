@@ -1,6 +1,7 @@
 package bilibili
 
 import (
+	"errors"
 	"io"
 	"net/http"
 
@@ -10,6 +11,7 @@ import (
 type Client struct {
 	httpClient *http.Client
 	cookies    []*http.Cookie
+	buvid3     *http.Cookie
 }
 
 type ClientConfig func(*Client)
@@ -20,15 +22,43 @@ func WithHttpClient(httpClient *http.Client) ClientConfig {
 	}
 }
 
-func NewClient(cookies []*http.Cookie, conf ...ClientConfig) *Client {
-	c := &Client{
+func NewClient(cookies []*http.Cookie, conf ...ClientConfig) (*Client, error) {
+	cli := &Client{
 		httpClient: http.DefaultClient,
 		cookies:    cookies,
 	}
 	for _, v := range conf {
-		v(c)
+		v(cli)
 	}
-	return c
+	c, err := newBuvid3()
+	if err != nil {
+		return nil, err
+	}
+	cli.buvid3 = c
+	return cli, nil
+}
+
+func newBuvid3() (*http.Cookie, error) {
+	req, err := http.NewRequest(http.MethodGet, "https://www.bilibili.com/", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", utils.UA)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	for _, c := range resp.Cookies() {
+		if c.Name == "buvid3" {
+			return c, nil
+		}
+	}
+	return nil, errors.New("no buvid3 cookie")
+}
+
+func (c *Client) SetCookies(cookies []*http.Cookie) {
+	c.cookies = cookies
 }
 
 type RequestConfig struct {
@@ -64,6 +94,7 @@ func (c *Client) NewRequest(method, url string, body io.Reader, conf ...RequestO
 	if err != nil {
 		return nil, err
 	}
+	req.AddCookie(c.buvid3)
 	for _, cookie := range c.cookies {
 		req.AddCookie(cookie)
 	}

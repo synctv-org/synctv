@@ -518,7 +518,10 @@ func parse2VendorMovie(userID string, movie *dbModel.Movie, getUrl bool) (err er
 		if err != nil {
 			return err
 		}
-		cli := bilibili.NewClient(vendor.Cookies)
+		cli, err := bilibili.NewClient(vendor.Cookies)
+		if err != nil {
+			return err
+		}
 
 		if getUrl {
 			var mu *bilibili.VideoURL

@@ -31,12 +31,36 @@ func NewClient(cookies []*http.Cookie, conf ...ClientConfig) *Client {
 	return c
 }
 
-func (c *Client) NewRequest(method, url string, body io.Reader) (*http.Request, error) {
-	url, err := signAndGenerateURL(url)
-	if err != nil {
-		return nil, err
+type RequestConfig struct {
+	wbi bool
+}
+
+func defaultRequestConfig() *RequestConfig {
+	return &RequestConfig{
+		wbi: true,
 	}
-	req, err := http.NewRequest(method, url, body)
+}
+
+type RequestOption func(*RequestConfig)
+
+func WithoutWbi() RequestOption {
+	return func(c *RequestConfig) {
+		c.wbi = false
+	}
+}
+
+func (c *Client) NewRequest(method, url string, body io.Reader, conf ...RequestOption) (req *http.Request, err error) {
+	config := defaultRequestConfig()
+	for _, v := range conf {
+		v(config)
+	}
+	if config.wbi {
+		url, err = signAndGenerateURL(url)
+		if err != nil {
+			return nil, err
+		}
+	}
+	req, err = http.NewRequest(method, url, body)
 	if err != nil {
 		return nil, err
 	}

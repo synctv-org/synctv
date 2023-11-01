@@ -127,7 +127,7 @@ func getWbiKeys() (string, string, error) {
 		return "", "", err
 	}
 	defer resp.Body.Close()
-	info := wbi{}
+	info := Nav{}
 	err = json.NewDecoder(resp.Body).Decode(&info)
 	if err != nil {
 		return "", "", err

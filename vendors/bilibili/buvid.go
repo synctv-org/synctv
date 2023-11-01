@@ -3,58 +3,46 @@ package bilibili
 import (
 	"errors"
 	"net/http"
-	"sync"
 	"time"
 
 	json "github.com/json-iterator/go"
 	"github.com/synctv-org/synctv/utils"
+	refreshcache "github.com/synctv-org/synctv/utils/refreshCache"
 )
 
-var (
-	bLock           sync.RWMutex
-	b3, b4          string
-	bLastUpdateTime time.Time
-)
+type buvid struct {
+	b3, b4 string
+}
+
+var buvidCache = refreshcache.NewRefreshCache[buvid](func() (buvid, error) {
+	b3, b4, err := newBuvid()
+	if err != nil {
+		return buvid{}, err
+	}
+	return buvid{
+		b3: b3,
+		b4: b4,
+	}, nil
+}, time.Hour)
 
 func getBuvidCookies() ([]*http.Cookie, error) {
-	b3, b4, err := getBuvid()
+	buvid, err := buvidCache.Get()
 	if err != nil {
 		return nil, err
 	}
 	return []*http.Cookie{
 		{
 			Name:  "buvid3",
-			Value: b3,
+			Value: buvid.b3,
 		},
 		{
 			Name:  "buvid4",
-			Value: b4,
+			Value: buvid.b4,
 		},
 	}, nil
 }
 
-func getBuvid() (string, string, error) {
-	bLock.RLock()
-	if time.Since(bLastUpdateTime) < time.Hour {
-		bLock.RUnlock()
-		return b3, b4, nil
-	}
-	bLock.RUnlock()
-	bLock.Lock()
-	defer bLock.Unlock()
-	if time.Since(bLastUpdateTime) < time.Hour {
-		return b3, b4, nil
-	}
-	var err error
-	b3, b4, err = newBuvid()
-	if err != nil {
-		return "", "", err
-	}
-	bLastUpdateTime = time.Now()
-	return b3, b4, nil
-}
-
-type buvid struct {
+type spiResp struct {
 	Code int `json:"code"`
 	Data struct {
 		B3 string `json:"b_3"`
@@ -75,7 +63,7 @@ func newBuvid() (string, string, error) {
 		return "", "", err
 	}
 	defer resp.Body.Close()
-	var b buvid
+	var b spiResp
 	err = json.NewDecoder(resp.Body).Decode(&b)
 	if err != nil {
 		return "", "", err

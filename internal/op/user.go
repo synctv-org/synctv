@@ -24,11 +24,19 @@ func (u *User) CreateRoom(name, password string, conf ...db.CreateRoomConfig) (*
 	return db.CreateRoom(name, password, append(conf, db.WithCreator(&u.User))...)
 }
 
-func (u *User) NewMovie(movie model.BaseMovie) model.Movie {
-	return model.Movie{
-		Base:      movie,
+func (u *User) NewMovie(movie *model.BaseMovie) *model.Movie {
+	return &model.Movie{
+		Base:      *movie,
 		CreatorID: u.ID,
 	}
+}
+
+func (u *User) NewMovies(movies []*model.BaseMovie) []*model.Movie {
+	var ms = make([]*model.Movie, 0, len(movies))
+	for i, m := range movies {
+		ms[i] = u.NewMovie(m)
+	}
+	return ms
 }
 
 func (u *User) IsRoot() bool {

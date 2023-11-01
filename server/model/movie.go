@@ -44,6 +44,21 @@ func (p *PushMovieReq) Validate() error {
 	return nil
 }
 
+type PushMoviesReq []*PushMovieReq
+
+func (p *PushMoviesReq) Decode(ctx *gin.Context) error {
+	return json.NewDecoder(ctx.Request.Body).Decode(p)
+}
+
+func (p *PushMoviesReq) Validate() error {
+	for _, v := range *p {
+		if err := v.Validate(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 type IdReq struct {
 	Id string `json:"id"`
 }

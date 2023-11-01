@@ -107,6 +107,8 @@ func Init(e *gin.Engine) {
 
 			needAuthMovie.POST("/push", PushMovie)
 
+			needAuthMovie.POST("/pushs", PushMovies)
+
 			needAuthMovie.POST("/edit", EditMovie)
 
 			needAuthMovie.POST("/swap", SwapMovie)

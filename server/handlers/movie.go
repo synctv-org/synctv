@@ -166,12 +166,55 @@ func PushMovie(ctx *gin.Context) {
 		return
 	}
 
-	mi := user.NewMovie(dbModel.BaseMovie(req))
+	mi := user.NewMovie((*dbModel.BaseMovie)(&req))
 
 	err := room.AddMovie(mi)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
+	}
+
+	if err := room.Broadcast(&op.ElementMessage{
+		ElementMessage: &pb.ElementMessage{
+			Type:   pb.ElementMessageType_CHANGE_MOVIES,
+			Sender: user.Username,
+		},
+	}); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
+
+	ctx.Status(http.StatusNoContent)
+}
+
+func PushMovies(ctx *gin.Context) {
+	room := ctx.MustGet("room").(*op.Room)
+	user := ctx.MustGet("user").(*op.User)
+
+	req := model.PushMoviesReq{}
+	if err := model.Decode(ctx, &req); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	var ms []*dbModel.Movie = make([]*dbModel.Movie, len(req))
+
+	for i, v := range req {
+		m := (*dbModel.BaseMovie)(v)
+		err := m.Validate()
+		if err != nil {
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+			return
+		}
+		ms[i] = user.NewMovie(m)
+	}
+
+	for _, m := range ms {
+		err := room.AddMovie(m)
+		if err != nil {
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+			return
+		}
 	}
 
 	if err := room.Broadcast(&op.ElementMessage{

@@ -73,9 +73,9 @@ func (r *Room) UpdateMovie(movieId string, movie model.BaseMovie) error {
 	return r.movies.Update(movieId, movie)
 }
 
-func (r *Room) AddMovie(m model.Movie) error {
+func (r *Room) AddMovie(m *model.Movie) error {
 	m.RoomID = r.ID
-	return r.movies.Add(&m)
+	return r.movies.Add(m)
 }
 
 func (r *Room) HasPermission(userID string, permission model.Permission) bool {

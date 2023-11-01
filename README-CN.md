@@ -58,7 +58,7 @@ https://synctv.pyhdxy.com/
 ## 二进制
 您可以从[发布页面](https://github.com/synctv-org/synctv/releases)下载最新的二进制文件并手动安装。
 
-## 一件脚本
+## 一键脚本
 您可以使用该脚本来安装和运行 SyncTV。
 
 ```bash

@@ -116,7 +116,7 @@ type sms struct {
 }
 
 func NewSMS(ctx context.Context, tel, token, challenge, validate string) (captchaKey string, err error) {
-	buvid3, err := newBuvid3(ctx)
+	b, err := getBuvidCookies()
 	if err != nil {
 		return "", err
 	}
@@ -136,7 +136,9 @@ func NewSMS(ctx context.Context, tel, token, challenge, validate string) (captch
 	req.Header.Set("Referer", "https://passport.bilibili.com/login")
 	req.Header.Set("User-Agent", utils.UA)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.AddCookie(buvid3)
+	for _, c := range b {
+		req.AddCookie(c)
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

@@ -14,7 +14,7 @@ import (
 )
 
 func NewQRCode(ctx *gin.Context) {
-	r, err := bilibili.NewQRCode()
+	r, err := bilibili.NewQRCode(ctx)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
@@ -46,7 +46,7 @@ func LoginWithQR(ctx *gin.Context) {
 		return
 	}
 
-	cookie, err := bilibili.LoginWithQRCode(req.Key)
+	cookie, err := bilibili.LoginWithQRCode(ctx, req.Key)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
@@ -62,7 +62,7 @@ func LoginWithQR(ctx *gin.Context) {
 }
 
 func NewCaptcha(ctx *gin.Context) {
-	r, err := bilibili.NewCaptcha()
+	r, err := bilibili.NewCaptcha(ctx)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
@@ -103,7 +103,7 @@ func NewSMS(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
-	r, err := bilibili.NewSMS(req.Telephone, req.Token, req.Challenge, req.Validate_)
+	r, err := bilibili.NewSMS(ctx, req.Telephone, req.Token, req.Challenge, req.Validate_)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
@@ -142,7 +142,7 @@ func LoginWithSMS(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
-	c, err := bilibili.LoginWithSMS(req.Telephone, req.Code, req.CaptchaKey)
+	c, err := bilibili.LoginWithSMS(ctx, req.Telephone, req.Code, req.CaptchaKey)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return

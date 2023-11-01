@@ -1,6 +1,7 @@
 package bilibili
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -15,11 +16,13 @@ type RQCode struct {
 	Key string `json:"key"`
 }
 
-func NewQRCode() (*RQCode, error) {
-	req, err := http.NewRequest(http.MethodGet, "https://passport.bilibili.com/x/passport-login/web/qrcode/generate", nil)
+func NewQRCode(ctx context.Context) (*RQCode, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://passport.bilibili.com/x/passport-login/web/qrcode/generate", nil)
 	if err != nil {
 		return nil, err
 	}
+	req.Header.Set("Referer", "https://passport.bilibili.com/login")
+	req.Header.Set("User-Agent", utils.UA)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, err
@@ -38,11 +41,12 @@ func NewQRCode() (*RQCode, error) {
 }
 
 // return SESSDATA cookie
-func LoginWithQRCode(key string) (*http.Cookie, error) {
-	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("https://passport.bilibili.com/x/passport-login/web/qrcode/auth?oauthKey=%s", key), nil)
+func LoginWithQRCode(ctx context.Context, key string) (*http.Cookie, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("https://passport.bilibili.com/x/passport-login/web/qrcode/poll?qrcode_key=%s", key), nil)
 	if err != nil {
 		return nil, err
 	}
+	req.Header.Set("Referer", "https://passport.bilibili.com/login")
 	req.Header.Set("User-Agent", utils.UA)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -63,11 +67,12 @@ type CaptchaResp struct {
 	Challenge string `json:"challenge"`
 }
 
-func NewCaptcha() (*CaptchaResp, error) {
-	req, err := http.NewRequest(http.MethodGet, "https://passport.bilibili.com/x/passport-login/captcha", nil)
+func NewCaptcha(ctx context.Context) (*CaptchaResp, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://passport.bilibili.com/x/passport-login/captcha", nil)
 	if err != nil {
 		return nil, err
 	}
+	req.Header.Set("Referer", "https://passport.bilibili.com/login")
 	req.Header.Set("User-Agent", utils.UA)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -110,8 +115,8 @@ type sms struct {
 	} `json:"data"`
 }
 
-func NewSMS(tel, token, challenge, validate string) (captchaKey string, err error) {
-	buvid3, err := newBuvid3()
+func NewSMS(ctx context.Context, tel, token, challenge, validate string) (captchaKey string, err error) {
+	buvid3, err := newBuvid3(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -124,10 +129,11 @@ func NewSMS(tel, token, challenge, validate string) (captchaKey string, err erro
 	data.Set("validate", validate)
 	data.Set("seccode", fmt.Sprintf("%s|jordan", validate))
 
-	req, err := http.NewRequest(http.MethodPost, "https://passport.bilibili.com/x/passport-login/web/sms/send", strings.NewReader(data.Encode()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://passport.bilibili.com/x/passport-login/web/sms/send", strings.NewReader(data.Encode()))
 	if err != nil {
 		return "", err
 	}
+	req.Header.Set("Referer", "https://passport.bilibili.com/login")
 	req.Header.Set("User-Agent", utils.UA)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.AddCookie(buvid3)
@@ -144,7 +150,7 @@ func NewSMS(tel, token, challenge, validate string) (captchaKey string, err erro
 	return sms.Data.CaptchaKey, nil
 }
 
-func LoginWithSMS(tel, code, captchaKey string) (*http.Cookie, error) {
+func LoginWithSMS(ctx context.Context, tel, code, captchaKey string) (*http.Cookie, error) {
 	data := url.Values{}
 	data.Set("cid", "86")
 	data.Set("tel", tel)
@@ -152,10 +158,11 @@ func LoginWithSMS(tel, code, captchaKey string) (*http.Cookie, error) {
 	data.Set("source", "main-fe-header")
 	data.Set("captcha_key", captchaKey)
 
-	req, err := http.NewRequest(http.MethodPost, "https://passport.bilibili.com/x/passport-login/web/login/sms", strings.NewReader(data.Encode()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://passport.bilibili.com/x/passport-login/web/login/sms", strings.NewReader(data.Encode()))
 	if err != nil {
 		return nil, err
 	}
+	req.Header.Set("Referer", "https://passport.bilibili.com/login")
 	req.Header.Set("User-Agent", utils.UA)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := http.DefaultClient.Do(req)

@@ -1,6 +1,7 @@
 package bilibili
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -12,6 +13,7 @@ type Client struct {
 	httpClient *http.Client
 	cookies    []*http.Cookie
 	buvid3     *http.Cookie
+	ctx        context.Context
 }
 
 type ClientConfig func(*Client)
@@ -22,15 +24,22 @@ func WithHttpClient(httpClient *http.Client) ClientConfig {
 	}
 }
 
+func WithContext(ctx context.Context) ClientConfig {
+	return func(c *Client) {
+		c.ctx = ctx
+	}
+}
+
 func NewClient(cookies []*http.Cookie, conf ...ClientConfig) (*Client, error) {
 	cli := &Client{
 		httpClient: http.DefaultClient,
 		cookies:    cookies,
+		ctx:        context.Background(),
 	}
 	for _, v := range conf {
 		v(cli)
 	}
-	c, err := newBuvid3()
+	c, err := newBuvid3(cli.ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -38,8 +47,8 @@ func NewClient(cookies []*http.Cookie, conf ...ClientConfig) (*Client, error) {
 	return cli, nil
 }
 
-func newBuvid3() (*http.Cookie, error) {
-	req, err := http.NewRequest(http.MethodGet, "https://www.bilibili.com/", nil)
+func newBuvid3(ctx context.Context) (*http.Cookie, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://www.bilibili.com/", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -90,7 +99,7 @@ func (c *Client) NewRequest(method, url string, body io.Reader, conf ...RequestO
 			return nil, err
 		}
 	}
-	req, err = http.NewRequest(method, url, body)
+	req, err = http.NewRequestWithContext(c.ctx, method, url, body)
 	if err != nil {
 		return nil, err
 	}

@@ -48,7 +48,20 @@ func LoginWithQR(ctx *gin.Context) {
 
 	cookie, err := bilibili.LoginWithQRCode(ctx, req.Key)
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		switch err {
+		case bilibili.ErrQRCodeExpired:
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		case bilibili.ErrQRCodeScanned:
+			ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
+				"status": "scanned",
+			}))
+		case bilibili.ErrQRCodeNotScanned:
+			ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
+				"status": "notScanned",
+			}))
+		default:
+			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		}
 		return
 	}
 
@@ -58,7 +71,9 @@ func LoginWithQR(ctx *gin.Context) {
 		return
 	}
 
-	ctx.Status(http.StatusNoContent)
+	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
+		"status": "success",
+	}))
 }
 
 func NewCaptcha(ctx *gin.Context) {

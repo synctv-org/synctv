@@ -1,6 +1,7 @@
 package bilibili
 
 import (
+	"errors"
 	"net/http"
 
 	json "github.com/json-iterator/go"
@@ -19,6 +20,9 @@ func (c *Client) UserInfo() (*Nav, error) {
 	err = json.NewDecoder(resp.Body).Decode(&nav)
 	if err != nil {
 		return nil, err
+	}
+	if nav.Code != 0 {
+		return nil, errors.New(nav.Message)
 	}
 	return &nav, nil
 }

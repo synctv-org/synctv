@@ -1,6 +1,7 @@
 package bilibili
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -45,7 +46,9 @@ func (c *Client) ParseVideoPage(aid uint, bvid string) (*VideoPageInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	// TODO: error message
+	if info.Code != 0 {
+		return nil, errors.New(info.Message)
+	}
 	r := &VideoPageInfo{
 		Title:      info.Data.Title,
 		CoverImage: info.Data.Pic,
@@ -126,6 +129,9 @@ func (c *Client) GetVideoURL(aid uint, bvid string, cid uint, conf ...GetVideoUR
 	if err != nil {
 		return nil, err
 	}
+	if info.Code != 0 {
+		return nil, errors.New(info.Message)
+	}
 	return &VideoURL{
 		AcceptDescription: info.Data.AcceptDescription,
 		AcceptQuality:     info.Data.AcceptQuality,
@@ -162,6 +168,9 @@ func (c *Client) GetSubtitles(aid uint, bvid string, cid uint) ([]*Subtitle, err
 	if err != nil {
 		return nil, err
 	}
+	if info.Code != 0 {
+		return nil, errors.New(info.Message)
+	}
 	r := make([]*Subtitle, len(info.Data.Subtitle.Subtitles))
 	for i, s := range info.Data.Subtitle.Subtitles {
 		r[i] = &Subtitle{
@@ -195,6 +204,9 @@ func (c *Client) ParsePGCPage(epId, season_id uint) (*VideoPageInfo, error) {
 	err = json.NewDecoder(resp.Body).Decode(&info)
 	if err != nil {
 		return nil, err
+	}
+	if info.Code != 0 {
+		return nil, errors.New(info.Message)
 	}
 
 	r := &VideoPageInfo{
@@ -246,6 +258,10 @@ func (c *Client) GetPGCURL(ep_id, cid uint, conf ...GetVideoURLConfig) (*VideoUR
 	if err != nil {
 		return nil, err
 	}
+	if info.Code != 0 {
+		return nil, errors.New(info.Message)
+	}
+
 	return &VideoURL{
 		AcceptDescription: info.Result.AcceptDescription,
 		AcceptQuality:     info.Result.AcceptQuality,

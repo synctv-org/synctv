@@ -2,6 +2,7 @@ package bilibili
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -33,14 +34,41 @@ func NewQRCode(ctx context.Context) (*RQCode, error) {
 	if err != nil {
 		return nil, err
 	}
-	// TODO: error message
+	if qr.Code != 0 {
+		return nil, errors.New(qr.Message)
+	}
 	return &RQCode{
 		URL: qr.Data.URL,
 		Key: qr.Data.QrcodeKey,
 	}, nil
 }
 
-// return SESSDATA cookie
+type loginQRResp struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+	TTL     int    `json:"ttl"`
+	Data    struct {
+		URL          string `json:"url"`
+		RefreshToken string `json:"refresh_token"`
+		Timestamp    int    `json:"timestamp"`
+		Code         uint   `json:"code"`
+		Message      string `json:"message"`
+	} `json:"data"`
+}
+
+const (
+	qrStatusSuccess    uint = 0
+	qrStatusExpired    uint = 86038
+	qrStatusScanned    uint = 86090
+	qrStatusNotScanned uint = 86101
+)
+
+var (
+	ErrQRCodeExpired    = errors.New("qr code expired")
+	ErrQRCodeScanned    = errors.New("qr code scanned")
+	ErrQRCodeNotScanned = errors.New("qr code not scanned")
+)
+
 func LoginWithQRCode(ctx context.Context, key string) (*http.Cookie, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("https://passport.bilibili.com/x/passport-login/web/qrcode/poll?qrcode_key=%s", key), nil)
 	if err != nil {
@@ -53,12 +81,31 @@ func LoginWithQRCode(ctx context.Context, key string) (*http.Cookie, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	for _, cookie := range resp.Cookies() {
-		if cookie.Name == "SESSDATA" {
-			return cookie, nil
-		}
+	var loginQRResp loginQRResp
+	err = json.NewDecoder(resp.Body).Decode(&loginQRResp)
+	if err != nil {
+		return nil, err
 	}
-	return nil, fmt.Errorf("no SESSDATA cookie")
+	if loginQRResp.Code != 0 {
+		return nil, errors.New(loginQRResp.Message)
+	}
+	switch loginQRResp.Data.Code {
+	case qrStatusSuccess:
+		for _, cookie := range resp.Cookies() {
+			if cookie.Name == "SESSDATA" {
+				return cookie, nil
+			}
+		}
+		return nil, fmt.Errorf("no cookie")
+	case qrStatusExpired:
+		return nil, ErrQRCodeExpired
+	case qrStatusScanned:
+		return nil, ErrQRCodeScanned
+	case qrStatusNotScanned:
+		return nil, ErrQRCodeNotScanned
+	default:
+		return nil, fmt.Errorf("unknown qr code status: %d", loginQRResp.Data.Code)
+	}
 }
 
 type CaptchaResp struct {
@@ -82,6 +129,9 @@ func NewCaptcha(ctx context.Context) (*CaptchaResp, error) {
 	err = json.NewDecoder(resp.Body).Decode(&captcha)
 	if err != nil {
 		return nil, err
+	}
+	if captcha.Code != 0 {
+		return nil, errors.New(captcha.Message)
 	}
 	return &CaptchaResp{
 		Token:     captcha.Data.Token,
@@ -114,6 +164,17 @@ type sms struct {
 		CaptchaKey string `json:"captcha_key"`
 	} `json:"data"`
 }
+
+const (
+	smsStatusSuccess      int = 0
+	smsStatusBadReq       int = -400
+	smsStatusTelFormatErr int = 1002
+	smsStatusRateLimit    int = 86203
+	smsStatusSended       int = 1003
+	smsStatusBanned       int = 1025
+	smsStatusTokenErr     int = 2400
+	smsStatusGeetestErr   int = 2406
+)
 
 func NewSMS(ctx context.Context, tel, token, challenge, validate string) (captchaKey string, err error) {
 	b, err := getBuvidCookies()
@@ -149,7 +210,20 @@ func NewSMS(ctx context.Context, tel, token, challenge, validate string) (captch
 	if err != nil {
 		return "", err
 	}
+	if sms.Code != smsStatusSuccess {
+		return "", errors.New(sms.Message)
+	}
 	return sms.Data.CaptchaKey, nil
+}
+
+type loginSMSResp struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+	Data    struct {
+		IsNew  bool   `json:"is_new"`
+		Status int    `json:"status"`
+		URL    string `json:"url"`
+	} `json:"data"`
 }
 
 func LoginWithSMS(ctx context.Context, tel, code, captchaKey string) (*http.Cookie, error) {
@@ -171,10 +245,19 @@ func LoginWithSMS(ctx context.Context, tel, code, captchaKey string) (*http.Cook
 	if err != nil {
 		return nil, err
 	}
+	var loginSMSResp loginSMSResp
+	err = json.NewDecoder(resp.Body).Decode(&loginSMSResp)
+	if err != nil {
+		return nil, err
+	}
+	if loginSMSResp.Code != 0 {
+		return nil, errors.New(loginSMSResp.Message)
+	}
+
 	for _, cookie := range resp.Cookies() {
 		if cookie.Name == "SESSDATA" {
 			return cookie, nil
 		}
 	}
-	return nil, fmt.Errorf("no SESSDATA cookie")
+	return nil, fmt.Errorf("no cookie")
 }

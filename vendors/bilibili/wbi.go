@@ -3,6 +3,7 @@ package bilibili
 import (
 	"crypto/md5"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"net/url"
 	"sort"
@@ -118,6 +119,9 @@ func getWbiKeys() (string, string, error) {
 	err = json.NewDecoder(resp.Body).Decode(&info)
 	if err != nil {
 		return "", "", err
+	}
+	if info.Data.WbiImg.ImgURL == "" || info.Data.WbiImg.SubURL == "" {
+		return "", "", errors.New(info.Message)
 	}
 
 	imgKey := strings.Split(strings.Split(info.Data.WbiImg.ImgURL, "/")[len(strings.Split(info.Data.WbiImg.ImgURL, "/"))-1], ".")[0]

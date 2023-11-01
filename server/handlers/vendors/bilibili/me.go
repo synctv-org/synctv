@@ -25,13 +25,19 @@ func Me(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}
+	if len(vendor.Cookies) == 0 {
+		ctx.JSON(http.StatusOK, model.NewApiDataResp(&MeResp{
+			IsLogin: false,
+		}))
+		return
+	}
 	cli := bilibili.NewClient(vendor.Cookies)
 	nav, err := cli.UserInfo()
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}
-	ctx.JSON(http.StatusOK, model.NewApiDataResp(MeResp{
+	ctx.JSON(http.StatusOK, model.NewApiDataResp(&MeResp{
 		IsLogin:  nav.Data.IsLogin,
 		Username: nav.Data.Uname,
 		Face:     nav.Data.Face,

@@ -3,6 +3,7 @@ package settings
 import (
 	"fmt"
 	"strconv"
+	"sync/atomic"
 
 	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/model"
@@ -50,7 +51,7 @@ func (i *Int64) Init(value string) error {
 	if err != nil {
 		return err
 	}
-	i.value = v
+	i.set(v)
 	return nil
 }
 
@@ -67,7 +68,7 @@ func (i *Int64) DefaultInterface() any {
 }
 
 func (i *Int64) Raw() string {
-	return i.Stringify(i.value)
+	return i.Stringify(i.Get())
 }
 
 func (i *Int64) SetRaw(value string) error {
@@ -78,12 +79,21 @@ func (i *Int64) SetRaw(value string) error {
 	return db.UpdateSettingItemValue(i.Name(), i.Raw())
 }
 
+func (i *Int64) set(value int64) {
+	atomic.StoreInt64(&i.value, value)
+}
+
 func (i *Int64) Set(value int64) error {
-	return i.SetRaw(strconv.FormatInt(value, 10))
+	err := db.UpdateSettingItemValue(i.Name(), i.Stringify(value))
+	if err != nil {
+		return err
+	}
+	i.set(value)
+	return nil
 }
 
 func (i *Int64) Get() int64 {
-	return i.value
+	return atomic.LoadInt64(&i.value)
 }
 
 func (i *Int64) Interface() any {

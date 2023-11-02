@@ -2,6 +2,7 @@ package settings
 
 import (
 	"fmt"
+	"sync"
 
 	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/model"
@@ -21,6 +22,7 @@ var _ StringSetting = (*String)(nil)
 type String struct {
 	setting
 	defaultValue string
+	lock         sync.RWMutex
 	value        string
 }
 
@@ -50,7 +52,7 @@ func (s *String) Init(value string) error {
 	if err != nil {
 		return err
 	}
-	s.value = v
+	s.set(v)
 	return nil
 }
 
@@ -67,7 +69,7 @@ func (s *String) DefaultInterface() any {
 }
 
 func (s *String) Raw() string {
-	return s.Stringify(s.value)
+	return s.Stringify(s.Get())
 }
 
 func (s *String) SetRaw(value string) error {
@@ -78,11 +80,24 @@ func (s *String) SetRaw(value string) error {
 	return db.UpdateSettingItemValue(s.Name(), s.Raw())
 }
 
+func (s *String) set(value string) {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	s.value = value
+}
+
 func (s *String) Set(value string) error {
-	return s.SetRaw(value)
+	err := db.UpdateSettingItemValue(s.Name(), s.Stringify(value))
+	if err != nil {
+		return err
+	}
+	s.set(value)
+	return nil
 }
 
 func (s *String) Get() string {
+	s.lock.RLock()
+	defer s.lock.RUnlock()
 	return s.value
 }
 

@@ -3,6 +3,7 @@ package settings
 import (
 	"fmt"
 	"strconv"
+	"sync/atomic"
 
 	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/model"
@@ -22,7 +23,7 @@ var _ BoolSetting = (*Bool)(nil)
 type Bool struct {
 	setting
 	defaultValue bool
-	value        bool
+	value        uint32
 }
 
 func NewBool(name string, value bool, group model.SettingGroup) *Bool {
@@ -33,9 +34,21 @@ func NewBool(name string, value bool, group model.SettingGroup) *Bool {
 			settingType: model.SettingTypeBool,
 		},
 		defaultValue: value,
-		value:        value,
 	}
+	b.set(value)
 	return b
+}
+
+func (b *Bool) set(value bool) {
+	if value {
+		atomic.StoreUint32(&b.value, 1)
+	} else {
+		atomic.StoreUint32(&b.value, 0)
+	}
+}
+
+func (b *Bool) Get() bool {
+	return atomic.LoadUint32(&b.value) == 1
 }
 
 func (b *Bool) Init(value string) error {
@@ -43,7 +56,7 @@ func (b *Bool) Init(value string) error {
 	if err != nil {
 		return err
 	}
-	b.value = v
+	b.set(v)
 	return nil
 }
 
@@ -64,7 +77,7 @@ func (b *Bool) DefaultRaw() string {
 }
 
 func (b *Bool) Raw() string {
-	return b.Stringify(b.value)
+	return b.Stringify(b.Get())
 }
 
 func (b *Bool) DefaultInterface() any {
@@ -80,11 +93,12 @@ func (b *Bool) SetRaw(value string) error {
 }
 
 func (b *Bool) Set(value bool) error {
-	return b.SetRaw(b.Stringify(value))
-}
-
-func (b *Bool) Get() bool {
-	return b.value
+	err := db.UpdateSettingItemValue(b.Name(), b.Stringify(value))
+	if err != nil {
+		return err
+	}
+	b.set(value)
+	return nil
 }
 
 func (b *Bool) Interface() any {

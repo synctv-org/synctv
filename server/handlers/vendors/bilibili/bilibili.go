@@ -57,7 +57,7 @@ func Parse(ctx *gin.Context) {
 
 	switch matchType {
 	case "bv":
-		mpis, err := cli.ParseVideoPage(0, id)
+		mpis, err := cli.ParseVideoPage(0, id, bilibili.WithGetSections(ctx.DefaultQuery("sections", "false") == "true"))
 		if err != nil {
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 			return
@@ -69,7 +69,7 @@ func Parse(ctx *gin.Context) {
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 			return
 		}
-		mpis, err := cli.ParseVideoPage(uint(aid), "")
+		mpis, err := cli.ParseVideoPage(uint(aid), "", bilibili.WithGetSections(ctx.DefaultQuery("sections", "false") == "true"))
 		if err != nil {
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 			return

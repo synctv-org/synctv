@@ -10,20 +10,35 @@ import (
 
 type VideoPageInfo struct {
 	Title      string       `json:"title"`
-	CoverImage string       `json:"coverImage"`
 	Actors     string       `json:"actors"`
 	VideoInfos []*VideoInfo `json:"videoInfos"`
 }
 
 type VideoInfo struct {
 	Bvid       string `json:"bvid,omitempty"`
-	Cid        int    `json:"cid,omitempty"`
+	Cid        uint   `json:"cid,omitempty"`
 	Epid       uint   `json:"epid,omitempty"`
 	Name       string `json:"name"`
 	CoverImage string `json:"coverImage"`
 }
 
-func (c *Client) ParseVideoPage(aid uint, bvid string) (*VideoPageInfo, error) {
+type ParseVideoPageConf struct {
+	GetSections bool
+}
+
+type ParseVideoPageConfig func(*ParseVideoPageConf)
+
+func WithGetSections(GetSections bool) ParseVideoPageConfig {
+	return func(c *ParseVideoPageConf) {
+		c.GetSections = GetSections
+	}
+}
+
+func (c *Client) ParseVideoPage(aid uint, bvid string, conf ...ParseVideoPageConfig) (*VideoPageInfo, error) {
+	config := &ParseVideoPageConf{}
+	for _, v := range conf {
+		v(config)
+	}
 	var url string
 	if aid != 0 {
 		url = fmt.Sprintf("https://api.bilibili.com/x/web-interface/view?aid=%d", aid)
@@ -50,18 +65,35 @@ func (c *Client) ParseVideoPage(aid uint, bvid string) (*VideoPageInfo, error) {
 		return nil, errors.New(info.Message)
 	}
 	r := &VideoPageInfo{
-		Title:      info.Data.Title,
-		CoverImage: info.Data.Pic,
-		Actors:     info.Data.Owner.Name,
-		VideoInfos: make([]*VideoInfo, 0, len(info.Data.Pages)),
+		Title:  info.Data.Title,
+		Actors: info.Data.Owner.Name,
 	}
-	for _, page := range info.Data.Pages {
-		r.VideoInfos = append(r.VideoInfos, &VideoInfo{
-			Bvid:       info.Data.Bvid,
-			Cid:        page.Cid,
-			Name:       page.Part,
-			CoverImage: page.FirstFrame,
-		})
+
+	if config.GetSections && len(info.Data.UgcSeason.Sections) != 0 {
+		r.Title = info.Data.UgcSeason.Title
+		for _, v := range info.Data.UgcSeason.Sections {
+			for _, episode := range v.Episodes {
+				r.VideoInfos = append(r.VideoInfos, &VideoInfo{
+					Bvid:       episode.Bvid,
+					Cid:        episode.Cid,
+					Name:       episode.Title,
+					CoverImage: episode.Arc.Pic,
+				})
+			}
+		}
+	} else {
+		r.VideoInfos = make([]*VideoInfo, len(info.Data.Pages))
+		if len(info.Data.Pages) == 1 {
+			info.Data.Pages[0].Part = info.Data.Title
+		}
+		for i, page := range info.Data.Pages {
+			r.VideoInfos[i] = &VideoInfo{
+				Bvid:       info.Data.Bvid,
+				Cid:        page.Cid,
+				Name:       page.Part,
+				CoverImage: info.Data.Pic,
+			}
+		}
 	}
 	return r, nil
 }
@@ -219,7 +251,6 @@ func (c *Client) ParsePGCPage(epId, season_id uint) (*VideoPageInfo, error) {
 
 	r := &VideoPageInfo{
 		Title:      info.Result.Title,
-		CoverImage: info.Result.Cover,
 		Actors:     info.Result.Actors,
 		VideoInfos: make([]*VideoInfo, len(info.Result.Episodes)),
 	}

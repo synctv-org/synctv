@@ -92,7 +92,7 @@ type videoPageInfo struct {
 		VtDisplay          string      `json:"vt_display"`
 		NoCache            bool        `json:"no_cache"`
 		Pages              []struct {
-			Cid       int    `json:"cid"`
+			Cid       uint   `json:"cid"`
 			Page      int    `json:"page"`
 			From      string `json:"from"`
 			Part      string `json:"part"`
@@ -128,7 +128,7 @@ type videoPageInfo struct {
 					SectionID int    `json:"section_id"`
 					ID        int    `json:"id"`
 					Aid       int    `json:"aid"`
-					Cid       int    `json:"cid"`
+					Cid       uint   `json:"cid"`
 					Title     string `json:"title"`
 					Attribute int    `json:"attribute"`
 					Arc       struct {

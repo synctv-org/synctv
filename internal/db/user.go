@@ -123,7 +123,7 @@ func GetUserByIDOrUsernameLike(idOrUsername string, scopes ...func(*gorm.DB) *go
 }
 
 func GetUserByID(id string) (*model.User, error) {
-	if len(id) != 36 {
+	if len(id) != 32 {
 		return nil, errors.New("user id is not 32 bit")
 	}
 	u := &model.User{}

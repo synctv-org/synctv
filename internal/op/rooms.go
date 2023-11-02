@@ -108,7 +108,7 @@ func LoadRoomByID(id string) (*Room, error) {
 }
 
 func LoadOrInitRoomByID(id string) (*Room, error) {
-	if len(id) != 36 {
+	if len(id) != 32 {
 		return nil, errors.New("room id is not 32 bit")
 	}
 	i, loaded := roomCache.Load(id)

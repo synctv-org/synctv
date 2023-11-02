@@ -83,7 +83,7 @@ func (l *LoginRoomReq) Decode(ctx *gin.Context) error {
 }
 
 func (l *LoginRoomReq) Validate() error {
-	if len(l.RoomId) != 36 {
+	if len(l.RoomId) != 32 {
 		return ErrEmptyRoomName
 	}
 
@@ -116,7 +116,7 @@ func (r *RoomIDReq) Decode(ctx *gin.Context) error {
 }
 
 func (r *RoomIDReq) Validate() error {
-	if len(r.Id) != 36 {
+	if len(r.Id) != 32 {
 		return ErrEmptyRoomName
 	}
 

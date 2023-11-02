@@ -6,7 +6,6 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/synctv-org/synctv/internal/conf"
 	"github.com/synctv-org/synctv/utils"
 	"gorm.io/gorm"
@@ -24,7 +23,7 @@ type Movie struct {
 
 func (m *Movie) BeforeCreate(tx *gorm.DB) error {
 	if m.ID == "" {
-		m.ID = uuid.NewString()
+		m.ID = utils.SortUUID()
 	}
 	return nil
 }

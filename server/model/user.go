@@ -86,7 +86,7 @@ func (u *UserIDReq) Decode(ctx *gin.Context) error {
 }
 
 func (u *UserIDReq) Validate() error {
-	if len(u.ID) != 36 {
+	if len(u.ID) != 32 {
 		return errors.New("id is required")
 	}
 	return nil

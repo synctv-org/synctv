@@ -66,7 +66,7 @@ func CreateRoom(name, password string, conf ...CreateRoomConfig) (*model.Room, e
 }
 
 func GetRoomByID(id string) (*model.Room, error) {
-	if len(id) != 36 {
+	if len(id) != 32 {
 		return nil, errors.New("room id is not 32 bit")
 	}
 	r := &model.Room{}

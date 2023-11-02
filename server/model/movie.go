@@ -68,7 +68,7 @@ func (i *IdReq) Decode(ctx *gin.Context) error {
 }
 
 func (i *IdReq) Validate() error {
-	if len(i.Id) != 36 {
+	if len(i.Id) != 32 {
 		return ErrId
 	}
 	return nil
@@ -106,7 +106,7 @@ func (i *IdsReq) Validate() error {
 		return ErrEmptyIds
 	}
 	for _, v := range i.Ids {
-		if len(v) != 36 {
+		if len(v) != 32 {
 			return ErrId
 		}
 	}
@@ -123,7 +123,7 @@ func (s *SwapMovieReq) Decode(ctx *gin.Context) error {
 }
 
 func (s *SwapMovieReq) Validate() error {
-	if len(s.Id1) != 36 || len(s.Id2) != 36 {
+	if len(s.Id1) != 32 || len(s.Id2) != 32 {
 		return ErrId
 	}
 	return nil

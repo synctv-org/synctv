@@ -5,7 +5,7 @@ import (
 	"math/rand"
 	"time"
 
-	"github.com/google/uuid"
+	"github.com/synctv-org/synctv/utils"
 	"gorm.io/gorm"
 )
 
@@ -39,7 +39,7 @@ func (u *User) BeforeCreate(tx *gorm.DB) error {
 		u.Username = fmt.Sprintf("%s#%d", u.Username, rand.Intn(9999))
 	}
 	if u.ID == "" {
-		u.ID = uuid.NewString()
+		u.ID = utils.SortUUID()
 	}
 	return nil
 }

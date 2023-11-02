@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"encoding/hex"
 	"fmt"
 	"math/rand"
 	"net"
@@ -13,10 +14,16 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/google/uuid"
 	"github.com/synctv-org/synctv/cmd/flags"
+	"github.com/zijiren233/stream"
 	yamlcomment "github.com/zijiren233/yaml-comment"
 	"gopkg.in/yaml.v3"
 )
+
+func init() {
+	uuid.EnableRandPool()
+}
 
 var (
 	letters              = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
@@ -264,4 +271,11 @@ func OptFilePath(filePath *string) {
 
 func LIKE(s string) string {
 	return fmt.Sprintf("%%%s%%", s)
+}
+
+func SortUUID() string {
+	src := uuid.New()
+	dst := make([]byte, 32)
+	hex.Encode(dst, src[:])
+	return stream.BytesToString(dst)
 }

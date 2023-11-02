@@ -3,7 +3,7 @@ package model
 import (
 	"time"
 
-	"github.com/google/uuid"
+	"github.com/synctv-org/synctv/utils"
 	"github.com/zijiren233/stream"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
@@ -33,7 +33,7 @@ type Room struct {
 
 func (r *Room) BeforeCreate(tx *gorm.DB) error {
 	if r.ID == "" {
-		r.ID = uuid.NewString()
+		r.ID = utils.SortUUID()
 	}
 	return nil
 }

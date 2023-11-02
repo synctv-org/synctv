@@ -64,11 +64,11 @@ func AuthRoom(Authorization string) (*op.User, *op.Room, error) {
 		return nil, nil, err
 	}
 
-	if len(claims.RoomId) != 36 {
+	if len(claims.RoomId) != 32 {
 		return nil, nil, ErrAuthFailed
 	}
 
-	if len(claims.UserId) != 36 {
+	if len(claims.UserId) != 32 {
 		return nil, nil, ErrAuthFailed
 	}
 
@@ -94,7 +94,7 @@ func AuthUser(Authorization string) (*op.User, error) {
 		return nil, err
 	}
 
-	if len(claims.UserId) != 36 {
+	if len(claims.UserId) != 32 {
 		return nil, ErrAuthFailed
 	}
 

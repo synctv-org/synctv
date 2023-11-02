@@ -2,15 +2,16 @@ package refreshcache
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 type RefreshCache[T any] struct {
-	lock        sync.RWMutex
-	last        time.Time
-	maxAge      time.Duration
+	lock        sync.Mutex
+	last        int64
+	maxAge      int64
 	refreshFunc func() (T, error)
-	data        T
+	data        atomic.Pointer[T]
 }
 
 func NewRefreshCache[T any](refreshFunc func() (T, error), maxAge time.Duration) *RefreshCache[T] {
@@ -22,26 +23,35 @@ func NewRefreshCache[T any](refreshFunc func() (T, error), maxAge time.Duration)
 	}
 	return &RefreshCache[T]{
 		refreshFunc: refreshFunc,
-		maxAge:      maxAge,
+		maxAge:      int64(maxAge),
 	}
 }
 
 func (r *RefreshCache[T]) Get() (data T, err error) {
-	r.lock.RLock()
-	if time.Since(r.last) < r.maxAge {
-		r.lock.RUnlock()
-		return r.data, nil
+	if time.Now().UnixNano()-atomic.LoadInt64(&r.last) < r.maxAge {
+		return *r.data.Load(), nil
 	}
-	r.lock.RUnlock()
 	r.lock.Lock()
 	defer r.lock.Unlock()
-	if time.Since(r.last) < r.maxAge {
-		return r.data, nil
+	if time.Now().UnixNano()-r.last < r.maxAge {
+		return *r.data.Load(), nil
 	}
 	defer func() {
 		if err == nil {
-			r.data = data
-			r.last = time.Now()
+			r.data.Store(&data)
+			atomic.StoreInt64(&r.last, time.Now().UnixNano())
+		}
+	}()
+	return r.refreshFunc()
+}
+
+func (r *RefreshCache[T]) Refresh() (data T, err error) {
+	r.lock.Lock()
+	defer r.lock.Unlock()
+	defer func() {
+		if err == nil {
+			r.data.Store(&data)
+			atomic.StoreInt64(&r.last, time.Now().UnixNano())
 		}
 	}()
 	return r.refreshFunc()

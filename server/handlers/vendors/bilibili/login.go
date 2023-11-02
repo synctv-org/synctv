@@ -50,7 +50,9 @@ func LoginWithQR(ctx *gin.Context) {
 	if err != nil {
 		switch err {
 		case bilibili.ErrQRCodeExpired:
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+			ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
+				"status": "expired",
+			}))
 		case bilibili.ErrQRCodeScanned:
 			ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
 				"status": "scanned",

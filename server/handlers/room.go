@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/synctv-org/synctv/internal/db"
@@ -13,6 +14,7 @@ import (
 	"github.com/synctv-org/synctv/server/middlewares"
 	"github.com/synctv-org/synctv/server/model"
 	"github.com/synctv-org/synctv/utils"
+	refreshcache "github.com/synctv-org/synctv/utils/refreshCache"
 	"gorm.io/gorm"
 )
 
@@ -62,6 +64,10 @@ func CreateRoom(ctx *gin.Context) {
 	}))
 }
 
+var roomHotCache = refreshcache.NewRefreshCache[op.RoomHeap](func() (op.RoomHeap, error) {
+	return op.GetRoomHeapInCacheWithoutHidden(), nil
+}, time.Second*3)
+
 func RoomHotList(ctx *gin.Context) {
 	page, pageSize, err := GetPageAndPageSize(ctx)
 	if err != nil {
@@ -69,7 +75,7 @@ func RoomHotList(ctx *gin.Context) {
 		return
 	}
 
-	r := op.GetRoomHeapInCacheWithoutHidden()
+	r, _ := roomHotCache.Get()
 	rs := utils.GetPageItems(r, page, pageSize)
 
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{

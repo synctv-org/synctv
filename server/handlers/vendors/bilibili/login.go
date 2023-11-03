@@ -172,3 +172,13 @@ func LoginWithSMS(ctx *gin.Context) {
 	}
 	ctx.Status(http.StatusNoContent)
 }
+
+func Logout(ctx *gin.Context) {
+	user := ctx.MustGet("user").(*op.User)
+	err := db.DeleteVendorByUserIDAndVendor(user.ID, dbModel.StreamingVendorBilibili)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
+	ctx.Status(http.StatusNoContent)
+}

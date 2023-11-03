@@ -63,3 +63,7 @@ func AssignFirstOrCreateVendorByUserIDAndVendor(userID string, vendor model.Stre
 	).FirstOrCreate(&vendorInfo).Error
 	return &vendorInfo, err
 }
+
+func DeleteVendorByUserIDAndVendor(userID string, vendor model.StreamingVendor) error {
+	return db.Where("user_id = ? AND vendor = ?", userID, vendor).Delete(&model.StreamingVendorInfo{}).Error
+}

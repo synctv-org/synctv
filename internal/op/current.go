@@ -86,7 +86,7 @@ func (c *current) SetSeekRate(seek, rate, timeDiff float64) Status {
 }
 
 func (c *Current) Proto() *pb.Current {
-	return &pb.Current{
+	current := &pb.Current{
 		Movie: &pb.MovieInfo{
 			Id: c.Movie.ID,
 			Base: &pb.BaseMovieInfo{
@@ -107,6 +107,22 @@ func (c *Current) Proto() *pb.Current {
 			Playing: c.Status.Playing,
 		},
 	}
+	if c.Movie.Base.VendorInfo.Vendor != "" {
+		current.Movie.Base.VendorInfo = &pb.VendorInfo{
+			Vendor: string(c.Movie.Base.VendorInfo.Vendor),
+			Shared: c.Movie.Base.VendorInfo.Shared,
+		}
+		switch c.Movie.Base.VendorInfo.Vendor {
+		case model.StreamingVendorBilibili:
+			current.Movie.Base.VendorInfo.Bilibili = &pb.BilibiliVendorInfo{
+				Bvid:    c.Movie.Base.VendorInfo.Bilibili.Bvid,
+				Cid:     uint64(c.Movie.Base.VendorInfo.Bilibili.Cid),
+				Epid:    uint64(c.Movie.Base.VendorInfo.Bilibili.Epid),
+				Quality: uint32(c.Movie.Base.VendorInfo.Bilibili.Quality),
+			}
+		}
+	}
+	return current
 }
 
 func (c *Current) UpdateSeek() {

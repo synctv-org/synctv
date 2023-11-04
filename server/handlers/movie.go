@@ -90,7 +90,7 @@ func MovieList(ctx *gin.Context) {
 }
 
 func genCurrent(current *op.Current, userID string) (*op.Current, error) {
-	if current.Movie.Base.Vendor != "" {
+	if current.Movie.Base.VendorInfo.Vendor != "" {
 		return current, parse2VendorMovie(userID, &current.Movie, !current.Movie.Base.Proxy)
 	}
 	return current, nil
@@ -408,7 +408,7 @@ func ChangeCurrentMovie(ctx *gin.Context) {
 	}
 	current.UpdateSeek()
 
-	if current.Movie.Base.VendorInfo.Shared {
+	if (current.Movie.Base.VendorInfo.Vendor == "") || (current.Movie.Base.VendorInfo.Vendor != "" && current.Movie.Base.VendorInfo.Shared) {
 		if err := room.Broadcast(&op.ElementMessage{
 			ElementMessage: &pb.ElementMessage{
 				Type:    pb.ElementMessageType_CHANGE_CURRENT,

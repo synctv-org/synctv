@@ -40,7 +40,7 @@ type BaseMovie struct {
 	RtmpSource bool              `json:"rtmpSource"`
 	Type       string            `json:"type"`
 	Headers    map[string]string `gorm:"serializer:fastjson" json:"headers"`
-	VendorInfo `gorm:"embedded;embeddedPrefix:vendor_info_" json:"vendorInfo,omitempty"`
+	VendorInfo VendorInfo        `gorm:"embedded;embeddedPrefix:vendor_info_" json:"vendorInfo,omitempty"`
 }
 
 func (m *BaseMovie) Validate() error {
@@ -94,7 +94,7 @@ func (m *BaseMovie) Validate() error {
 			return errors.New("unsupported scheme")
 		}
 	case !m.Live && !m.Proxy, m.Live && !m.Proxy && !m.RtmpSource:
-		if m.VendorInfo.Vendor == "" {
+		if m.VendorInfo.Vendor != "" {
 			u, err := url.Parse(m.Url)
 			if err != nil {
 				return err
@@ -143,9 +143,9 @@ func (m *BaseMovie) validateVendorMovie() error {
 }
 
 type VendorInfo struct {
-	Vendor   StreamingVendor    `json:"vendor"`
-	Shared   bool               `gorm:"not null;default:false" json:"shared"`
-	Bilibili BilibiliVendorInfo `gorm:"embedded;embeddedPrefix:bilibili_" json:"bilibili,omitempty"`
+	Vendor   StreamingVendor     `json:"vendor"`
+	Shared   bool                `gorm:"not null;default:false" json:"shared"`
+	Bilibili *BilibiliVendorInfo `gorm:"embedded;embeddedPrefix:bilibili_" json:"bilibili,omitempty"`
 }
 
 type BilibiliVendorInfo struct {

@@ -51,7 +51,7 @@ message Current {
 message VendorInfo {
   string vendor = 1;
   bool shared = 2;
-  BilibiliVendorInfo bilibili = 3;
+  optional BilibiliVendorInfo bilibili = 3;
 }
 
 message BilibiliVendorInfo {

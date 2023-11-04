@@ -831,9 +831,9 @@ type Nav struct {
 		} `json:"level_info"`
 		Mid            int `json:"mid"`
 		MobileVerified int `json:"mobile_verified"`
-		Money          int `json:"money"`
-		Moral          int `json:"moral"`
-		Official       struct {
+		// Money          int `json:"money"` // 可能为float
+		Moral    int `json:"moral"`
+		Official struct {
 			Role  int    `json:"role"`
 			Title string `json:"title"`
 			Desc  string `json:"desc"`

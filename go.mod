@@ -26,7 +26,7 @@ require (
 	github.com/ulule/limiter/v3 v3.11.2
 	github.com/zijiren233/gencontainer v0.0.0-20230930135658-e410015e13cc
 	github.com/zijiren233/go-colorable v0.0.0-20230930131441-997304c961cb
-	github.com/zijiren233/livelib v0.2.2-0.20231021080243-c5097432686c
+	github.com/zijiren233/livelib v0.2.3-0.20231103145812-58de2ae7f423
 	github.com/zijiren233/stream v0.5.1
 	github.com/zijiren233/yaml-comment v0.2.1
 	golang.org/x/crypto v0.14.0
@@ -46,7 +46,7 @@ require (
 	github.com/BurntSushi/toml v1.3.2 // indirect
 	github.com/bytedance/sonic v1.10.2 // indirect
 	github.com/chenzhuoyu/base64x v0.0.0-20230717121745-296ad89f973d // indirect
-	github.com/chenzhuoyu/iasm v0.9.0 // indirect
+	github.com/chenzhuoyu/iasm v0.9.1 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/fatih/color v1.7.0 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.3 // indirect

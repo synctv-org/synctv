@@ -8,8 +8,10 @@ import (
 
 	"github.com/go-resty/resty/v2"
 	"github.com/synctv-org/synctv/internal/model"
+	"github.com/synctv-org/synctv/utils"
 	"github.com/zijiren233/livelib/av"
 	"github.com/zijiren233/livelib/container/flv"
+	"github.com/zijiren233/livelib/protocol/hls"
 	rtmpProto "github.com/zijiren233/livelib/protocol/rtmp"
 	"github.com/zijiren233/livelib/protocol/rtmp/core"
 	rtmps "github.com/zijiren233/livelib/server"
@@ -27,6 +29,10 @@ func (m *movie) Channel() (*rtmps.Channel, error) {
 	return m.channel, m.init()
 }
 
+func genTsName() string {
+	return utils.SortUUID()
+}
+
 func (m *movie) init() (err error) {
 	if err = m.Movie.Validate(); err != nil {
 		return
@@ -35,7 +41,7 @@ func (m *movie) init() (err error) {
 	case m.Base.Live && m.Base.RtmpSource:
 		if m.channel == nil {
 			m.channel = rtmps.NewChannel()
-			m.channel.InitHlsPlayer()
+			m.channel.InitHlsPlayer(hls.WithGenTsNameFunc(genTsName))
 		}
 	case m.Base.Live && m.Base.Proxy:
 		u, err := url.Parse(m.Base.Url)
@@ -46,7 +52,7 @@ func (m *movie) init() (err error) {
 		case "rtmp":
 			if m.channel == nil {
 				m.channel = rtmps.NewChannel()
-				m.channel.InitHlsPlayer()
+				m.channel.InitHlsPlayer(hls.WithGenTsNameFunc(genTsName))
 				go func() {
 					for {
 						if m.channel.Closed() {
@@ -68,7 +74,7 @@ func (m *movie) init() (err error) {
 		case "http", "https":
 			if m.channel == nil {
 				m.channel = rtmps.NewChannel()
-				m.channel.InitHlsPlayer()
+				m.channel.InitHlsPlayer(hls.WithGenTsNameFunc(genTsName))
 				go func() {
 					for {
 						if m.channel.Closed() {

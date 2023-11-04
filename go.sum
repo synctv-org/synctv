@@ -21,6 +21,8 @@ github.com/chenzhuoyu/base64x v0.0.0-20230717121745-296ad89f973d h1:77cEq6EriyTZ
 github.com/chenzhuoyu/base64x v0.0.0-20230717121745-296ad89f973d/go.mod h1:8EPpVsBuRksnlj1mLy4AWzRNQYxauNi62uWcE3to6eA=
 github.com/chenzhuoyu/iasm v0.9.0 h1:9fhXjVzq5hUy2gkhhgHl95zG2cEAhw9OSGs8toWWAwo=
 github.com/chenzhuoyu/iasm v0.9.0/go.mod h1:Xjy2NpN3h7aUqeqM+woSuuvxmIe6+DDsiNLIrkAmYog=
+github.com/chenzhuoyu/iasm v0.9.1 h1:tUHQJXo3NhBqw6s33wkGn9SP3bvrWLdlVIJ3hQBL7P0=
+github.com/chenzhuoyu/iasm v0.9.1/go.mod h1:Xjy2NpN3h7aUqeqM+woSuuvxmIe6+DDsiNLIrkAmYog=
 github.com/cpuguy83/go-md2man/v2 v2.0.2/go.mod h1:tgQtvFlXSQOSOSIRvRPT7W67SCa46tRHOmNcaadrF8o=
 github.com/creack/pty v1.1.9/go.mod h1:oKZEueFk5CKHvIhNR5MUki03XCEU+Q6VDXinZuGJ33E=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
@@ -204,6 +206,10 @@ github.com/zijiren233/go-colorable v0.0.0-20230930131441-997304c961cb h1:0DyOxf/
 github.com/zijiren233/go-colorable v0.0.0-20230930131441-997304c961cb/go.mod h1:6TCzjDiQ8+5gWZiwsC3pnA5M0vUy2jV2Y7ciHJh729g=
 github.com/zijiren233/livelib v0.2.2-0.20231021080243-c5097432686c h1:sQtkWQi+QWdmx4Jx2MA/Ib9pYPmnVw5Qd/xOB8K5zs0=
 github.com/zijiren233/livelib v0.2.2-0.20231021080243-c5097432686c/go.mod h1:2wrAAqNIdMZjQrdbO7ERQfqK4VS5fzgUj2xXwrJ8/uo=
+github.com/zijiren233/livelib v0.2.2 h1:2VeJSg9tmmQ7KfeeVQwVZhmzj/FkXRErdwdvZVxUyN0=
+github.com/zijiren233/livelib v0.2.2/go.mod h1:2wrAAqNIdMZjQrdbO7ERQfqK4VS5fzgUj2xXwrJ8/uo=
+github.com/zijiren233/livelib v0.2.3-0.20231103145812-58de2ae7f423 h1:6febr/evRs52lo2lHSpcc6e7+yVPI04ba9eEl26tl+Y=
+github.com/zijiren233/livelib v0.2.3-0.20231103145812-58de2ae7f423/go.mod h1:2wrAAqNIdMZjQrdbO7ERQfqK4VS5fzgUj2xXwrJ8/uo=
 github.com/zijiren233/stream v0.5.1 h1:9SUwM/fpET6frtBRT5WZBHnan0Hyzkezk/P8N78cgZQ=
 github.com/zijiren233/stream v0.5.1/go.mod h1:iIrOm3qgIepQFmptD/HDY+YzamSSzQOtPjpVcK7FCOw=
 github.com/zijiren233/yaml-comment v0.2.1 h1:/ymMfauuR6zPme+c59FvGNmvxmjOS+BRZSU9YEM82g4=

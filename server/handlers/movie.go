@@ -3,6 +3,10 @@ package handlers
 import (
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
+	"math/rand"
 	"net/http"
 	"path"
 	"strconv"
@@ -528,13 +532,23 @@ func JoinLive(ctx *gin.Context) {
 		w.SendPacket()
 	case ".m3u8":
 		ctx.Header("Cache-Control", "no-store")
-		b, err := channel.GenM3U8PlayList(fmt.Sprintf("/api/movie/live/%s", channelName))
+		b, err := channel.GenM3U8File(func(tsName string) (tsPath string) {
+			ext := "ts"
+			if conf.Conf.Rtmp.TsDisguisedAsPng {
+				ext = "png"
+			}
+			return fmt.Sprintf("/api/movie/live/%s.%s", channelName, ext)
+		})
 		if err != nil {
 			ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(err))
 			return
 		}
-		ctx.Data(http.StatusOK, hls.M3U8ContentType, b.Bytes())
+		ctx.Data(http.StatusOK, hls.M3U8ContentType, b)
 	case ".ts":
+		if conf.Conf.Rtmp.TsDisguisedAsPng {
+			ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(FormatErrNotSupportFileType(fileExt)))
+			return
+		}
 		b, err := channel.GetTsFile(movieIdSplitd[1])
 		if err != nil {
 			ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(err))
@@ -542,6 +556,22 @@ func JoinLive(ctx *gin.Context) {
 		}
 		ctx.Header("Cache-Control", "public, max-age=90")
 		ctx.Data(http.StatusOK, hls.TSContentType, b)
+	case ".png":
+		if !conf.Conf.Rtmp.TsDisguisedAsPng {
+			ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(FormatErrNotSupportFileType(fileExt)))
+			return
+		}
+		b, err := channel.GetTsFile(movieIdSplitd[1])
+		if err != nil {
+			ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(err))
+			return
+		}
+		ctx.Header("Cache-Control", "public, max-age=90")
+		ctx.Header("Content-Type", "image/png")
+		img := image.NewGray(image.Rect(0, 0, 1, 1))
+		img.Set(1, 1, color.Gray{uint8(rand.Intn(255))})
+		png.Encode(ctx.Writer, img)
+		ctx.Writer.Write(b)
 	default:
 		ctx.Header("Cache-Control", "no-store")
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(FormatErrNotSupportFileType(fileExt)))

@@ -94,7 +94,7 @@ func (m *BaseMovie) Validate() error {
 			return errors.New("unsupported scheme")
 		}
 	case !m.Live && !m.Proxy, m.Live && !m.Proxy && !m.RtmpSource:
-		if m.VendorInfo.Vendor != "" {
+		if m.VendorInfo.Vendor == "" {
 			u, err := url.Parse(m.Url)
 			if err != nil {
 				return err

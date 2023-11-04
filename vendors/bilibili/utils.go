@@ -10,8 +10,8 @@ import (
 var (
 	BVRegex  = regexp.MustCompile(`^(?:https://www\.bilibili\.com/video/)?((?:bv|bV|Bv|BV)\w+)(?:[/\?].*)?$`)
 	ARegex   = regexp.MustCompile(`^(?:https://www\.bilibili\.com/video/)?(?:av|aV|Av|AV)(\d+)(?:[/\?].*)?$`)
-	SSRegex  = regexp.MustCompile(`^(?:https://www\.bilibili\.com/bangumi/play/)?(?:ss|sS|Ss|SS)(\d+)(?:\?.*)?$`)
-	EPRegex  = regexp.MustCompile(`^(?:https://www\.bilibili\.com/bangumi/play/)?(?:ep|eP|Ep|EP)(\d+)(?:\?.*)?$`)
+	SSRegex  = regexp.MustCompile(`^(?:https://www\.bilibili\.com/bangumi/play/)?(?:ss|sS|Ss|SS)(\d+)(?:[/\?].*)?$`)
+	EPRegex  = regexp.MustCompile(`^(?:https://www\.bilibili\.com/bangumi/play/)?(?:ep|eP|Ep|EP)(\d+)(?:[/\?].*)?$`)
 	B23Regex = regexp.MustCompile(`^(https://)?b23\.tv/(\w+)$`)
 )
 

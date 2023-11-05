@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strconv"
 	"time"
 
 	json "github.com/json-iterator/go"
@@ -309,7 +308,7 @@ func (c *Client) GetDashVideoURL(aid uint, bvid string, cid uint, conf ...GetDas
 		if err != nil {
 			return nil, err
 		}
-		audio, err := as.AddNewRepresentationAudio(44100, a.Bandwidth, a.Codecs, strconv.Itoa(a.ID))
+		audio, err := as.AddNewRepresentationAudio(44100, a.Bandwidth, a.Codecs, fmt.Sprint(time.Now().UnixMicro()))
 		if err != nil {
 			return nil, err
 		}
@@ -540,7 +539,7 @@ func (c *Client) GetDashPGCURL(ep_id, cid uint, conf ...GetDashVideoURLConfig) (
 		if err != nil {
 			return nil, err
 		}
-		audio, err := as.AddNewRepresentationAudio(44100, a.Bandwidth, a.Codecs, strconv.Itoa(a.ID))
+		audio, err := as.AddNewRepresentationAudio(44100, a.Bandwidth, a.Codecs, fmt.Sprint(time.Now().UnixMicro()))
 		if err != nil {
 			return nil, err
 		}

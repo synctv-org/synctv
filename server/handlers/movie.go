@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"image"
@@ -539,10 +540,9 @@ func JoinLive(ctx *gin.Context) {
 	// user := ctx.MustGet("user").(*op.User)
 
 	movieId := strings.Trim(ctx.Param("movieId"), "/")
-	movieIdSplitd := strings.Split(movieId, "/")
-	fileName := movieIdSplitd[0]
 	fileExt := path.Ext(movieId)
-	channelName := strings.TrimSuffix(fileName, fileExt)
+	splitedMovieId := strings.Split(movieId, "/")
+	channelName := strings.TrimSuffix(splitedMovieId[0], fileExt)
 	channel, err := room.GetChannel(channelName)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(err))
@@ -562,7 +562,7 @@ func JoinLive(ctx *gin.Context) {
 			if conf.Conf.Rtmp.TsDisguisedAsPng {
 				ext = "png"
 			}
-			return fmt.Sprintf("/api/movie/live/%s.%s", channelName, ext)
+			return fmt.Sprintf("/api/movie/live/%s/%s.%s", channelName, tsName, ext)
 		})
 		if err != nil {
 			ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(err))
@@ -574,7 +574,7 @@ func JoinLive(ctx *gin.Context) {
 			ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(FormatErrNotSupportFileType(fileExt)))
 			return
 		}
-		b, err := channel.GetTsFile(movieIdSplitd[1])
+		b, err := channel.GetTsFile(splitedMovieId[1])
 		if err != nil {
 			ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(err))
 			return
@@ -586,17 +586,21 @@ func JoinLive(ctx *gin.Context) {
 			ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(FormatErrNotSupportFileType(fileExt)))
 			return
 		}
-		b, err := channel.GetTsFile(movieIdSplitd[1])
+		b, err := channel.GetTsFile(splitedMovieId[1])
 		if err != nil {
 			ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(err))
 			return
 		}
 		ctx.Header("Cache-Control", "public, max-age=90")
-		ctx.Header("Content-Type", "image/png")
 		img := image.NewGray(image.Rect(0, 0, 1, 1))
 		img.Set(1, 1, color.Gray{uint8(rand.Intn(255))})
-		png.Encode(ctx.Writer, img)
-		ctx.Writer.Write(b)
+		cache := bytes.NewBuffer(make([]byte, 0, 71))
+		err = png.Encode(cache, img)
+		if err != nil {
+			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+			return
+		}
+		ctx.Data(http.StatusOK, "image/png", append(cache.Bytes(), b...))
 	default:
 		ctx.Header("Cache-Control", "no-store")
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(FormatErrNotSupportFileType(fileExt)))

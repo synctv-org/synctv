@@ -1,6 +1,7 @@
 package bilibili_test
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/synctv-org/synctv/vendors/bilibili"
@@ -61,4 +62,62 @@ func TestMatch(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestGetDashVideoURL(t *testing.T) {
+	c, err := bilibili.NewClient(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := c.GetDashVideoURL(0, "BV1y7411Q7Eq", 171776208)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, as := range m.GetCurrentPeriod().AdaptationSets {
+		for _, r := range as.Representations {
+			t.Log(r.BaseURL)
+		}
+	}
+}
+
+func TestGetDashVideoURLMPDFile(t *testing.T) {
+	c, err := bilibili.NewClient(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := c.GetDashVideoURL(0, "BV1y7411Q7Eq", 171776208)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := m.WriteToString()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Log(s)
+}
+
+func TestEditAndGetDashVideoURLMPDFile(t *testing.T) {
+	c, err := bilibili.NewClient(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := c.GetDashVideoURL(0, "BV1y7411Q7Eq", 171776208)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.BaseURL = append(m.BaseURL, "/")
+	id := 0
+	for _, as := range m.GetCurrentPeriod().AdaptationSets {
+		for _, r := range as.Representations {
+			for i := range r.BaseURL {
+				r.BaseURL[i] = fmt.Sprintf("/api/movie/proxy/roomid/movieid?id=%d", id)
+				id++
+			}
+		}
+	}
+	s, err := m.WriteToString()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Log(s)
 }

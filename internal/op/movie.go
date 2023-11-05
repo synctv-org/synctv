@@ -17,13 +17,13 @@ import (
 	rtmps "github.com/zijiren233/livelib/server"
 )
 
-type movie struct {
+type Movie struct {
 	*model.Movie
 	lock    sync.RWMutex
 	channel *rtmps.Channel
 }
 
-func (m *movie) Channel() (*rtmps.Channel, error) {
+func (m *Movie) Channel() (*rtmps.Channel, error) {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 	return m.channel, m.init()
@@ -33,7 +33,7 @@ func genTsName() string {
 	return utils.SortUUID()
 }
 
-func (m *movie) init() (err error) {
+func (m *Movie) init() (err error) {
 	if err = m.Movie.Validate(); err != nil {
 		return
 	}
@@ -104,20 +104,20 @@ func (m *movie) init() (err error) {
 	return nil
 }
 
-func (m *movie) Terminate() {
+func (m *Movie) Terminate() {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 	m.terminate()
 }
 
-func (m *movie) terminate() {
+func (m *Movie) terminate() {
 	if m.channel != nil {
 		m.channel.Close()
 		m.channel = nil
 	}
 }
 
-func (m *movie) Update(movie model.BaseMovie) error {
+func (m *Movie) Update(movie model.BaseMovie) error {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 	m.terminate()

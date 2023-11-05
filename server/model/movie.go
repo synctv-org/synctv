@@ -41,7 +41,7 @@ func (p *PushMovieReq) Validate() error {
 		return ErrTypeTooLong
 	}
 
-	return nil
+	return (*model.BaseMovie)(p).Validate()
 }
 
 type PushMoviesReq []*PushMovieReq

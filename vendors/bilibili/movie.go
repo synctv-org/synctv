@@ -4,8 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
+	"time"
 
 	json "github.com/json-iterator/go"
+	"github.com/zencoder/go-dash/v3/mpd"
 )
 
 type VideoPageInfo struct {
@@ -180,6 +183,149 @@ func (c *Client) GetVideoURL(aid uint, bvid string, cid uint, conf ...GetVideoUR
 	}, nil
 }
 
+type GetDashVideoURLConf struct {
+	HDR            bool
+	Need4K         bool
+	NeedDOLBY      bool
+	NeedDOLBYAudio bool
+	Need8K         bool
+	NeedAV1        bool
+}
+
+type GetDashVideoURLConfig func(*GetDashVideoURLConf)
+
+func WithHDR(hdr bool) GetDashVideoURLConfig {
+	return func(c *GetDashVideoURLConf) {
+		c.HDR = hdr
+	}
+}
+
+func WithNeed4K(need4k bool) GetDashVideoURLConfig {
+	return func(c *GetDashVideoURLConf) {
+		c.Need4K = need4k
+	}
+}
+
+func WithNeedDOLBY(needDOLBY bool) GetDashVideoURLConfig {
+	return func(c *GetDashVideoURLConf) {
+		c.NeedDOLBY = needDOLBY
+	}
+}
+
+func WithNeedDOLBYAudio(needDOLBYAudio bool) GetDashVideoURLConfig {
+	return func(c *GetDashVideoURLConf) {
+		c.NeedDOLBYAudio = needDOLBYAudio
+	}
+}
+
+func WithNeed8K(need8k bool) GetDashVideoURLConfig {
+	return func(c *GetDashVideoURLConf) {
+		c.Need8K = need8k
+	}
+}
+
+// https://github.com/SocialSisterYi/bilibili-API-collect/blob/master/docs/video/videostream_url.md
+func (c *Client) GetDashVideoURL(aid uint, bvid string, cid uint, conf ...GetDashVideoURLConfig) (*mpd.MPD, error) {
+	config := &GetDashVideoURLConf{}
+	for _, v := range conf {
+		v(config)
+	}
+
+	var (
+		fnval    uint = 16
+		extQuery string
+	)
+	if config.Need4K {
+		fnval = 128
+		extQuery = "&fourk=1"
+	} else if config.Need8K {
+		fnval = 1024
+	}
+
+	if config.HDR {
+		fnval |= 64
+	}
+	if config.NeedDOLBY {
+		fnval |= 512
+	}
+	if config.NeedDOLBYAudio {
+		fnval |= 256
+	}
+	if config.NeedAV1 {
+		fnval |= 2048
+	}
+
+	var url string
+	if aid != 0 {
+		url = fmt.Sprintf("https://api.bilibili.com/x/player/wbi/playurl?aid=%d&cid=%d&fnver=0&platform=pc&fnval=%d%s", aid, cid, fnval, extQuery)
+	} else if bvid != "" {
+		url = fmt.Sprintf("https://api.bilibili.com/x/player/wbi/playurl?bvid=%s&cid=%d&fnver=0&platform=pc&fnval=%d%s", bvid, cid, fnval, extQuery)
+	} else {
+		return nil, fmt.Errorf("aid and bvid are both empty")
+	}
+	req, err := c.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	info := dashResp{}
+	err = json.NewDecoder(resp.Body).Decode(&info)
+	if err != nil {
+		return nil, err
+	}
+	if info.Code != 0 {
+		return nil, errors.New(info.Message)
+	}
+	m := mpd.NewMPD(mpd.DASH_PROFILE_ONDEMAND, fmt.Sprintf("PT%.2fS", info.Data.Dash.Duration), fmt.Sprintf("PT%.2fS", info.Data.Dash.MinBufferTime))
+
+	var as *mpd.AdaptationSet
+	for _, v := range info.Data.Dash.Video {
+		as, err = m.AddNewAdaptationSetVideo(v.MimeType, "progressive", true, v.StartWithSap)
+		if err != nil {
+			return nil, err
+		}
+		video, err := as.AddNewRepresentationVideo(v.Bandwidth, v.Codecs, fmt.Sprint(time.Now().UnixMicro()), v.FrameRate, v.Width, v.Height)
+		if err != nil {
+			return nil, err
+		}
+		video.Sar = &v.Sar
+		err = video.AddNewBaseURL(v.BaseURL)
+		if err != nil {
+			return nil, err
+		}
+		_, err = video.AddNewSegmentBase(v.SegmentBase.IndexRange, v.SegmentBase.Initialization)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	as = nil
+	for _, a := range info.Data.Dash.Audio {
+		as, err = m.AddNewAdaptationSetAudio(a.MimeType, true, a.StartWithSap, "und")
+		if err != nil {
+			return nil, err
+		}
+		audio, err := as.AddNewRepresentationAudio(44100, a.Bandwidth, a.Codecs, strconv.Itoa(a.ID))
+		if err != nil {
+			return nil, err
+		}
+		audio.Sar = &a.Sar
+		err = audio.AddNewBaseURL(a.BaseURL)
+		if err != nil {
+			return nil, err
+		}
+		_, err = audio.AddNewSegmentBase(a.SegmentBase.IndexRange, a.SegmentBase.Initialization)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return m, nil
+}
+
 type Subtitle struct {
 	Name string `json:"name"`
 	URL  string `json:"url"`
@@ -308,4 +454,105 @@ func (c *Client) GetPGCURL(ep_id, cid uint, conf ...GetVideoURLConfig) (*VideoUR
 		CurrentQuality:    info.Result.Quality,
 		URL:               info.Result.Durl[0].URL,
 	}, nil
+}
+
+func (c *Client) GetDashPGCURL(ep_id, cid uint, conf ...GetDashVideoURLConfig) (*mpd.MPD, error) {
+	config := &GetDashVideoURLConf{}
+	for _, v := range conf {
+		v(config)
+	}
+
+	var (
+		fnval    uint = 16
+		extQuery string
+	)
+	if config.Need4K {
+		fnval = 128
+		extQuery = "&fourk=1"
+	} else if config.Need8K {
+		fnval = 1024
+	}
+
+	if config.HDR {
+		fnval |= 64
+	}
+	if config.NeedDOLBY {
+		fnval |= 512
+	}
+	if config.NeedDOLBYAudio {
+		fnval |= 256
+	}
+	if config.NeedAV1 {
+		fnval |= 2048
+	}
+
+	var url string
+	if ep_id != 0 {
+		url = fmt.Sprintf("https://api.bilibili.com/pgc/player/web/playurl?ep_id=%d&fnval=%d%s", ep_id, fnval, extQuery)
+	} else if cid != 0 {
+		url = fmt.Sprintf("https://api.bilibili.com/pgc/player/web/playurl?cid=%d&fnval=%d%s", ep_id, fnval, extQuery)
+	} else {
+		return nil, fmt.Errorf("edId and season_id are both empty")
+	}
+	req, err := c.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	info := dashPGCResp{}
+	err = json.NewDecoder(resp.Body).Decode(&info)
+	if err != nil {
+		return nil, err
+	}
+	if info.Code != 0 {
+		return nil, errors.New(info.Message)
+	}
+	m := mpd.NewMPD(mpd.DASH_PROFILE_ONDEMAND, fmt.Sprintf("PT%.2fS", info.Result.Dash.Duration), fmt.Sprintf("PT%.2fS", info.Result.Dash.MinBufferTime))
+
+	var as *mpd.AdaptationSet
+	for _, v := range info.Result.Dash.Video {
+		as, err = m.AddNewAdaptationSetVideo(v.MimeType, "progressive", true, v.StartWithSap)
+		if err != nil {
+			return nil, err
+		}
+		video, err := as.AddNewRepresentationVideo(v.Bandwidth, v.Codecs, fmt.Sprint(time.Now().UnixMicro()), v.FrameRate, v.Width, v.Height)
+		if err != nil {
+			return nil, err
+		}
+		video.Sar = &v.Sar
+		err = video.AddNewBaseURL(v.BaseURL)
+		if err != nil {
+			return nil, err
+		}
+		_, err = video.AddNewSegmentBase(v.SegmentBase.IndexRange, v.SegmentBase.Initialization)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	as = nil
+	for _, a := range info.Result.Dash.Audio {
+		as, err = m.AddNewAdaptationSetAudio(a.MimeType, true, a.StartWithSap, "und")
+		if err != nil {
+			return nil, err
+		}
+		audio, err := as.AddNewRepresentationAudio(44100, a.Bandwidth, a.Codecs, strconv.Itoa(a.ID))
+		if err != nil {
+			return nil, err
+		}
+		audio.Sar = &a.Sar
+		err = audio.AddNewBaseURL(a.BaseURL)
+		if err != nil {
+			return nil, err
+		}
+		_, err = audio.AddNewSegmentBase(a.SegmentBase.IndexRange, a.SegmentBase.Initialization)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return m, nil
 }

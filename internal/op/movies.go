@@ -15,14 +15,14 @@ import (
 type movies struct {
 	roomID string
 	lock   sync.RWMutex
-	list   dllist.Dllist[*movie]
+	list   dllist.Dllist[*Movie]
 	once   sync.Once
 }
 
 func (m *movies) init() {
 	m.once.Do(func() {
 		for _, m2 := range db.GetAllMoviesByRoomID(m.roomID) {
-			m.list.PushBack(&movie{
+			m.list.PushBack(&Movie{
 				Movie: m2,
 			})
 		}
@@ -41,7 +41,7 @@ func (m *movies) Add(mo *model.Movie) error {
 	defer m.lock.Unlock()
 	m.init()
 	mo.Position = uint(time.Now().UnixMilli())
-	movie := &movie{
+	movie := &Movie{
 		Movie: mo,
 	}
 
@@ -134,13 +134,13 @@ func (m *movies) DeleteMovieByID(id string) error {
 	return errors.New("movie not found")
 }
 
-func (m *movies) GetMovieByID(id string) (*movie, error) {
+func (m *movies) GetMovieByID(id string) (*Movie, error) {
 	m.lock.RLock()
 	defer m.lock.RUnlock()
 	return m.getMovieByID(id)
 }
 
-func (m *movies) getMovieByID(id string) (*movie, error) {
+func (m *movies) getMovieByID(id string) (*Movie, error) {
 	m.init()
 	for e := m.list.Front(); e != nil; e = e.Next() {
 		if e.Value.ID == id {
@@ -150,7 +150,7 @@ func (m *movies) getMovieByID(id string) (*movie, error) {
 	return nil, errors.New("movie not found")
 }
 
-func (m *movies) getMovieElementByID(id string) (*dllist.Element[*movie], error) {
+func (m *movies) getMovieElementByID(id string) (*dllist.Element[*Movie], error) {
 	m.init()
 	for e := m.list.Front(); e != nil; e = e.Next() {
 		if e.Value.ID == id {
@@ -186,13 +186,13 @@ func (m *movies) SwapMoviePositions(id1, id2 string) error {
 	return nil
 }
 
-func (m *movies) GetMoviesWithPage(page, pageSize int) []*movie {
+func (m *movies) GetMoviesWithPage(page, pageSize int) []*Movie {
 	m.lock.RLock()
 	defer m.lock.RUnlock()
 	m.init()
 
 	start, end := utils.GetPageItemsRange(m.list.Len(), page, pageSize)
-	ms := make([]*movie, 0, end-start)
+	ms := make([]*Movie, 0, end-start)
 	i := 0
 	for e := m.list.Front(); e != nil; e = e.Next() {
 		if i >= start && i < end {

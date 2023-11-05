@@ -4,10 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"sync/atomic"
 	"time"
 
 	"github.com/synctv-org/synctv/internal/conf"
 	"github.com/synctv-org/synctv/utils"
+	refreshcache "github.com/synctv-org/synctv/utils/refreshCache"
 	"gorm.io/gorm"
 )
 
@@ -149,8 +151,26 @@ type VendorInfo struct {
 }
 
 type BilibiliVendorInfo struct {
-	Bvid    string `json:"bvid,omitempty"`
-	Cid     uint   `json:"cid,omitempty"`
-	Epid    uint   `json:"epid,omitempty"`
-	Quality uint   `json:"quality,omitempty"`
+	Bvid    string                                                          `json:"bvid,omitempty"`
+	Cid     uint                                                            `json:"cid,omitempty"`
+	Epid    uint                                                            `json:"epid,omitempty"`
+	Quality uint                                                            `json:"quality,omitempty"`
+	Cache   atomic.Pointer[refreshcache.RefreshCache[*BilibiliVendorCache]] `gorm:"-:all" json:"-"`
+}
+
+type BilibiliVendorCache struct {
+	MPDFile string
+	URLs    []string
+}
+
+func (b *BilibiliVendorInfo) InitOrLoadCache(initCache func() *refreshcache.RefreshCache[*BilibiliVendorCache]) *refreshcache.RefreshCache[*BilibiliVendorCache] {
+	if c := b.Cache.Load(); c != nil {
+		return c
+	}
+	c := initCache()
+	if b.Cache.CompareAndSwap(nil, c) {
+		return c
+	} else {
+		return b.Cache.Load()
+	}
 }

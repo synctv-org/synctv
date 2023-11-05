@@ -139,7 +139,7 @@ func (r *Room) ClearMovies() error {
 	return r.movies.Clear()
 }
 
-func (r *Room) GetMovieByID(id string) (*movie, error) {
+func (r *Room) GetMovieByID(id string) (*Movie, error) {
 	return r.movies.GetMovieByID(id)
 }
 
@@ -161,7 +161,7 @@ func (r *Room) SwapMoviePositions(id1, id2 string) error {
 	return r.movies.SwapMoviePositions(id1, id2)
 }
 
-func (r *Room) GetMoviesWithPage(page, pageSize int) []*movie {
+func (r *Room) GetMoviesWithPage(page, pageSize int) []*Movie {
 	return r.movies.GetMoviesWithPage(page, pageSize)
 }
 

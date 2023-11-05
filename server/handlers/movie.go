@@ -394,13 +394,15 @@ func ChangeCurrentMovie(ctx *gin.Context) {
 	room := ctx.MustGet("room").(*op.Room)
 	user := ctx.MustGet("user").(*op.User)
 
-	req := model.IdReq{}
+	req := model.IdCanEmptyReq{}
 	if err := model.Decode(ctx, &req); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
-	if err := room.ChangeCurrentMovie(req.Id); err != nil {
+	if req.Id == "" {
+		room.SetCurrentMovie(&dbModel.Movie{}, false)
+	} else if err := room.ChangeCurrentMovie(req.Id, true); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}

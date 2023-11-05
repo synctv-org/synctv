@@ -148,13 +148,17 @@ func (r *Room) Current() *Current {
 	return &c
 }
 
-func (r *Room) ChangeCurrentMovie(id string) error {
+func (r *Room) ChangeCurrentMovie(id string, play bool) error {
 	m, err := r.movies.GetMovieByID(id)
 	if err != nil {
 		return err
 	}
-	r.current.SetMovie(*m.Movie)
+	r.current.SetMovie(*m.Movie, play)
 	return nil
+}
+
+func (r *Room) SetCurrentMovie(movie *model.Movie, play bool) {
+	r.current.SetMovie(*movie, play)
 }
 
 func (r *Room) SwapMoviePositions(id1, id2 string) error {

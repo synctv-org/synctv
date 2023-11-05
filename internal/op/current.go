@@ -55,13 +55,13 @@ func (c *current) Movie() model.Movie {
 	return c.current.Movie
 }
 
-func (c *current) SetMovie(movie model.Movie) {
+func (c *current) SetMovie(movie model.Movie, play bool) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 
 	c.current.Movie = movie
 	c.current.SetSeek(0, 0)
-	c.current.Status.Playing = true
+	c.current.Status.Playing = play
 }
 
 func (c *current) Status() Status {

@@ -74,6 +74,21 @@ func (i *IdReq) Validate() error {
 	return nil
 }
 
+type IdCanEmptyReq struct {
+	Id string `json:"id"`
+}
+
+func (i *IdCanEmptyReq) Decode(ctx *gin.Context) error {
+	return json.NewDecoder(ctx.Request.Body).Decode(i)
+}
+
+func (i *IdCanEmptyReq) Validate() error {
+	if len(i.Id) != 32 && i.Id != "" {
+		return ErrId
+	}
+	return nil
+}
+
 type EditMovieReq struct {
 	IdReq
 	PushMovieReq

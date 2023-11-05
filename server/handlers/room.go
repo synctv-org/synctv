@@ -64,7 +64,7 @@ func CreateRoom(ctx *gin.Context) {
 	}))
 }
 
-var roomHotCache = refreshcache.NewRefreshCache[op.RoomHeap](func() (op.RoomHeap, error) {
+var roomHotCache = refreshcache.NewRefreshCache[[]*op.RoomInfo](func() ([]*op.RoomInfo, error) {
 	return op.GetRoomHeapInCacheWithoutHidden(), nil
 }, time.Second*3)
 

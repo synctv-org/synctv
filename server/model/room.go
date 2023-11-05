@@ -71,7 +71,7 @@ func (c *CreateRoomReq) Validate() error {
 	return nil
 }
 
-type RoomListResp = op.RoomHeapItem
+type RoomListResp = op.RoomInfo
 
 type LoginRoomReq struct {
 	RoomId   string `json:"roomId"`

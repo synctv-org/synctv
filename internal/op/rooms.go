@@ -9,7 +9,7 @@ import (
 	"github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/settings"
 	synccache "github.com/synctv-org/synctv/utils/syncCache"
-	"github.com/zijiren233/gencontainer/heap"
+	"github.com/zijiren233/gencontainer/vec"
 )
 
 var roomCache *synccache.SyncCache[string, *Room]
@@ -183,7 +183,7 @@ func GetAllRoomsInCacheWithoutHidden() []*Room {
 	return rooms
 }
 
-type RoomHeapItem struct {
+type RoomInfo struct {
 	RoomId       string `json:"roomId"`
 	RoomName     string `json:"roomName"`
 	PeopleNum    int64  `json:"peopleNum"`
@@ -192,38 +192,16 @@ type RoomHeapItem struct {
 	CreatedAt    int64  `json:"createdAt"`
 }
 
-type RoomHeap []*RoomHeapItem
-
-func (h RoomHeap) Len() int {
-	return len(h)
-}
-
-func (h RoomHeap) Less(i, j int) bool {
-	return h[i].PeopleNum < h[j].PeopleNum
-}
-
-func (h RoomHeap) Swap(i, j int) {
-	h[i], h[j] = h[j], h[i]
-}
-
-func (h *RoomHeap) Push(x *RoomHeapItem) {
-	*h = append(*h, x)
-}
-
-func (h *RoomHeap) Pop() *RoomHeapItem {
-	old := *h
-	n := len(old)
-	x := old[n-1]
-	*h = old[0 : n-1]
-	return x
-}
-
-func GetRoomHeapInCacheWithoutHidden() RoomHeap {
-	rooms := make(RoomHeap, 0)
+func GetRoomHeapInCacheWithoutHidden() []*RoomInfo {
+	rooms := vec.New[*RoomInfo](vec.WithCmpLess[*RoomInfo](func(v1, v2 *RoomInfo) bool {
+		return v1.PeopleNum > v2.PeopleNum
+	}), vec.WithCmpEqual[*RoomInfo](func(v1, v2 *RoomInfo) bool {
+		return v1.RoomId == v2.RoomId
+	}))
 	roomCache.Range(func(key string, value *synccache.Entry[*Room]) bool {
 		v := value.Value()
 		if !v.Settings.Hidden {
-			heap.Push[*RoomHeapItem](&rooms, &RoomHeapItem{
+			rooms.Push(&RoomInfo{
 				RoomId:       v.ID,
 				RoomName:     v.Name,
 				PeopleNum:    v.ClientNum(),
@@ -234,5 +212,5 @@ func GetRoomHeapInCacheWithoutHidden() RoomHeap {
 		}
 		return true
 	})
-	return rooms
+	return rooms.Slice()
 }

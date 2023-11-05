@@ -6,6 +6,7 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"io"
 	"math/rand"
 	"net/http"
 	"path"
@@ -21,7 +22,6 @@ import (
 	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/internal/rtmp"
 	pb "github.com/synctv-org/synctv/proto/message"
-	"github.com/synctv-org/synctv/proxy"
 	"github.com/synctv-org/synctv/server/model"
 	"github.com/synctv-org/synctv/utils"
 	refreshcache "github.com/synctv-org/synctv/utils/refreshCache"
@@ -497,16 +497,31 @@ func ProxyMovie(ctx *gin.Context) {
 	}
 }
 
-func proxyURL(ctx *gin.Context, url string, headers map[string]string) error {
-	if l, err := utils.ParseURLIsLocalIP(url); err != nil || l {
+func proxyURL(ctx *gin.Context, u string, headers map[string]string) error {
+	if l, err := utils.ParseURLIsLocalIP(u); err != nil || l {
 		return err
 	}
-	hrs := proxy.NewBufferedHttpReadSeeker(512*1024, url,
-		proxy.WithContext(ctx),
-		proxy.WithHeaders(headers),
-	)
-	http.ServeContent(ctx.Writer, ctx.Request, url, time.Now(), hrs)
-	return nil
+	r, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return err
+	}
+	for k, v := range headers {
+		r.Header.Set(k, v)
+	}
+	r.Header.Set("Range", ctx.GetHeader("Range"))
+	resp, err := http.DefaultClient.Do(r)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	ctx.Header("Content-Type", resp.Header.Get("Content-Type"))
+	ctx.Header("Content-Length", resp.Header.Get("Content-Length"))
+	ctx.Header("Accept-Ranges", resp.Header.Get("Accept-Ranges"))
+	ctx.Header("Cache-Control", resp.Header.Get("Cache-Control"))
+	ctx.Header("Content-Range", resp.Header.Get("Content-Range"))
+	ctx.Status(resp.StatusCode)
+	_, err = io.Copy(ctx.Writer, resp.Body)
+	return err
 }
 
 type FormatErrNotSupportFileType string

@@ -99,10 +99,14 @@ func (s *SetRoomPasswordReq) Decode(ctx *gin.Context) error {
 }
 
 func (s *SetRoomPasswordReq) Validate() error {
-	if len(s.Password) > 32 {
-		return ErrPasswordTooLong
-	} else if !alnumPrintReg.MatchString(s.Password) {
-		return ErrPasswordHasInvalidChar
+	if s.Password != "" {
+		if len(s.Password) > 32 {
+			return ErrPasswordTooLong
+		} else if !alnumPrintReg.MatchString(s.Password) {
+			return ErrPasswordHasInvalidChar
+		}
+	} else if settings.CreateRoomNeedPwd.Get() {
+		return FormatEmptyPasswordError("room")
 	}
 	return nil
 }

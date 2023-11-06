@@ -39,7 +39,10 @@ func initFSRouter(e *gin.RouterGroup, f fs.ReadDirFS, path string) error {
 	}
 	for _, dir := range dirs {
 		if dir.IsDir() {
-			return initFSRouter(e, f, filepath.Join(path, dir.Name()))
+			err = initFSRouter(e, f, filepath.Join(path, dir.Name()))
+			if err != nil {
+				return err
+			}
 		} else {
 			e.StaticFileFS(filepath.Join(path, dir.Name()), filepath.Join(path, dir.Name()), http.FS(f))
 		}

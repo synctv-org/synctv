@@ -1,28 +1,13 @@
 package handlers
 
 import (
-	"net/http"
-
 	"github.com/gin-gonic/gin"
-	"github.com/synctv-org/synctv/public"
 	Vbilibili "github.com/synctv-org/synctv/server/handlers/vendors/bilibili"
 	"github.com/synctv-org/synctv/server/middlewares"
 	"github.com/synctv-org/synctv/utils"
 )
 
 func Init(e *gin.Engine) {
-	{
-		e.GET("/", func(ctx *gin.Context) {
-			ctx.Redirect(http.StatusMovedPermanently, "/web/")
-		})
-
-		web := e.Group("/web")
-
-		web.Use(middlewares.NewDistCacheControl("/web/"))
-
-		web.StaticFS("", http.FS(public.Public))
-	}
-
 	{
 		api := e.Group("/api")
 

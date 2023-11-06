@@ -5,7 +5,7 @@ import (
 	"io/fs"
 )
 
-//go:embed dist/*
+//go:embed dist
 var dist embed.FS
 
 var Public, _ = fs.Sub(dist, "dist")

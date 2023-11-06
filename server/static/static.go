@@ -3,7 +3,7 @@ package static
 import (
 	"io/fs"
 	"net/http"
-	"path/filepath"
+	"net/url"
 
 	"github.com/gin-gonic/gin"
 	"github.com/synctv-org/synctv/public"
@@ -38,13 +38,17 @@ func initFSRouter(e *gin.RouterGroup, f fs.ReadDirFS, path string) error {
 		return err
 	}
 	for _, dir := range dirs {
+		u, err := url.JoinPath(path, dir.Name())
+		if err != nil {
+			return err
+		}
 		if dir.IsDir() {
-			err = initFSRouter(e, f, filepath.Join(path, dir.Name()))
+			err = initFSRouter(e, f, u)
 			if err != nil {
 				return err
 			}
 		} else {
-			e.StaticFileFS(filepath.Join(path, dir.Name()), filepath.Join(path, dir.Name()), http.FS(f))
+			e.StaticFileFS(u, u, http.FS(f))
 		}
 	}
 	return nil

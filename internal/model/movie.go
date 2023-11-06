@@ -67,7 +67,7 @@ func (m *BaseMovie) Validate() error {
 		if err != nil {
 			return err
 		}
-		if utils.IsLocalIP(u.Host) {
+		if !conf.Conf.Proxy.AllowProxyToLocal && utils.IsLocalIP(u.Host) {
 			return errors.New("local ip is not allowed")
 		}
 		switch u.Scheme {
@@ -89,7 +89,7 @@ func (m *BaseMovie) Validate() error {
 		if err != nil {
 			return err
 		}
-		if utils.IsLocalIP(u.Host) {
+		if !conf.Conf.Proxy.AllowProxyToLocal && utils.IsLocalIP(u.Host) {
 			return errors.New("local ip is not allowed")
 		}
 		if u.Scheme != "http" && u.Scheme != "https" {

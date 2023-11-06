@@ -499,8 +499,12 @@ func ProxyMovie(ctx *gin.Context) {
 }
 
 func proxyURL(ctx *gin.Context, u string, headers map[string]string) error {
-	if l, err := utils.ParseURLIsLocalIP(u); err != nil || l {
-		return err
+	if !conf.Conf.Proxy.AllowProxyToLocal {
+		if l, err := utils.ParseURLIsLocalIP(u); err != nil {
+			return err
+		} else if l {
+			return errors.New("not allow proxy to local")
+		}
 	}
 	r, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {

@@ -30,13 +30,11 @@
 [English](./README.md) | 中文
 
 # 什么是SyncTV?
-
 SyncTV 是一个允许您远程一起观看电影和直播的程序。它提供了同步观看、剧院和代理功能。使用 SyncTV，您可以与朋友和家人一起观看视频和直播，无论他们在哪里。
 
 SyncTV 的同步观看功能确保所有观看视频的人都在同一点上。这意味着您可以暂停、倒带或快进视频，其他人也会同步到同一点。SyncTV 还支持实时直播，因此您可以一起实时观看直播事件。
 
 剧院功能提供了聊天和弹幕功能，让您在观看视频时与朋友和家人交流。代理功能允许您观看在您连接到源服务器缓慢的视频和直播。
-
 
 # 特点
 - [x] 同步观看
@@ -51,7 +49,7 @@ SyncTV 的同步观看功能确保所有观看视频的人都在同一点上。�
 ---
 
 # Demo
-https://synctv.pyhdxy.com/
+https://demo.synctv.wiki
 
 ---
 # 安装方式
@@ -72,53 +70,19 @@ sudo -v ; curl https://raw.githubusercontent.com/synctv-org/synctv/main/install.
 docker run -d --name synctv -p 8080:8080 synctvorg/synctv
 ```
 
-有关 docker 镜像的更多信息，请参阅[此处](https://hub.docker.com/r/synctvorg/synctv)。
-
 ---
 
-# 用法
-## 全局标志:
-
-```
--f, --config string   config file path
-    --dev             start with dev mode
-    --env-no-prefix   env no SYNCTV_ prefix
-    --log-std         log to std (default true)
-    --skip-config     skip config
-    --skip-env        skip env
-```
-
-如果你想使用自定义配置文件，你可以使用 `-f` 标志，否则它将使用 `${HOME}/.config/synctv/config.yaml`
-
-## Server
+# 运行
 `synctv server` 启动服务器
 
 ```bash
 synctv server
 # or
-synctv server -f ./config.yaml
+synctv server --data-dir ./
 ```
 
-服务器默认侦听`127.0.0.1:8080`，您可以在配置文件中更改它
-
-示例:
-
-```yaml
-server:
-    listen: 0.0.0.0 # server listen addr
-    port: 8080 # server listen port
-```
-
-## 升级
-`synctv self-update` 自动更新二进制文件
-
-如果你使用了 `--dev` 标志，它将强制更新到最新的开发版本
-
-```bash
-synctv self-update
-# or
-synctv self-update --dev
-```
+# 文档
+https://synctv.wiki
 
 ---
 

@@ -30,7 +30,6 @@
 English | [中文](./README-CN.md)
 
 # What is SyncTV?
-
 SyncTV is a program that allows you to watch movies and live broadcasts together remotely. It provides synchronized viewing, theater, and proxy features. With SyncTV, you can watch videos and live streams with your friends and family, no matter where they are.
 
 SyncTV's synchronized viewing feature ensures that everyone watching the video is at the same point in the video. This means that you can pause, rewind, or fast-forward the video, and everyone else will be synced to the same point. SyncTV also supports live streaming, so you can watch live events together in real-time.
@@ -51,7 +50,7 @@ The theater feature provides a chat and bullet chat function, allowing you to co
 ---
 
 # Demo
-https://synctv.pyhdxy.com/
+https://demo.synctv.wiki
 
 ---
 
@@ -73,53 +72,19 @@ You can also use docker to install and run SyncTV.
 docker run -d --name synctv -p 8080:8080 synctvorg/synctv
 ```
 
-More information about docker image, please see [here](https://hub.docker.com/r/synctvorg/synctv).
-
 ---
 
-# Usage
-## Global Flags:
-
-```
--f, --config string   config file path
-    --dev             start with dev mode
-    --env-no-prefix   env no SYNCTV_ prefix
-    --log-std         log to std (default true)
-    --skip-config     skip config
-    --skip-env        skip env
-```
-
-if you want to use a custom config file, you can use `-f` flag, else it will use `${HOME}/.config/synctv/config.yaml`
-
-## Server
+# Run
 `synctv server` to start the server
 
 ```bash
 synctv server
 # or
-synctv server -f ./config.yaml
+synctv server --data-dir ./
 ```
 
-server default listen on `127.0.0.1:8080`, you can change it in config file
-
-example:
-
-```yaml
-server:
-    listen: 0.0.0.0 # server listen addr
-    port: 8080 # server listen port
-```
-
-## Update
-`synctv self-update` to auto update the binary
-
-if you use `--dev` flag, it will update to the latest dev version force
-
-```bash
-synctv self-update
-# or
-synctv self-update --dev
-```
+# Documentation
+https://synctv.wiki
 
 ---
 

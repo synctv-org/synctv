@@ -15,9 +15,6 @@ func GetRoomUserRelation(roomID, userID string) (*model.RoomUserRelation, error)
 		Role:        model.RoomRoleUser,
 		Permissions: model.DefaultPermissions,
 	}).FirstOrInit(roomUserRelation).Error
-	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
-		return roomUserRelation, errors.New("room or user not found")
-	}
 	return roomUserRelation, err
 }
 

@@ -56,7 +56,7 @@ func (u *User) IsPending() bool {
 }
 
 func (u *User) HasPermission(roomID string, permission model.Permission) bool {
-	if u.Role >= model.RoleAdmin {
+	if u.IsAdmin() {
 		return true
 	}
 	ur, err := db.GetRoomUserRelation(roomID, u.ID)

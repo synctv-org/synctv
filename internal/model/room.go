@@ -14,7 +14,6 @@ type RoomStatus string
 const (
 	RoomStatusBanned  RoomStatus = "banned"
 	RoomStatusPending RoomStatus = "pending"
-	RoomStatusStopped RoomStatus = "stopped"
 	RoomStatusActive  RoomStatus = "active"
 )
 
@@ -39,7 +38,8 @@ func (r *Room) BeforeCreate(tx *gorm.DB) error {
 }
 
 type Settings struct {
-	Hidden bool `json:"hidden"`
+	Hidden       bool `json:"hidden"`
+	CanPushMovie bool `gorm:"default:true" json:"canPushMovie"`
 }
 
 func (r *Room) NeedPassword() bool {
@@ -56,10 +56,6 @@ func (r *Room) IsBanned() bool {
 
 func (r *Room) IsPending() bool {
 	return r.Status == RoomStatusPending
-}
-
-func (r *Room) IsStopped() bool {
-	return r.Status == RoomStatusStopped
 }
 
 func (r *Room) IsActive() bool {

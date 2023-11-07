@@ -77,15 +77,6 @@ func GetRoomByID(id string) (*model.Room, error) {
 	return r, err
 }
 
-func GetRoomAndCreatorByID(id string) (*model.Room, error) {
-	r := &model.Room{}
-	err := db.Preload("Creator").Where("id = ?", id).First(r).Error
-	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
-		return r, errors.New("room not found")
-	}
-	return r, err
-}
-
 func ChangeRoomSetting(roomID string, setting model.Settings) error {
 	err := db.Model(&model.Room{}).Where("id = ?", roomID).Update("setting", setting).Error
 	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
@@ -196,4 +187,8 @@ func SetRoomStatus(roomID string, status model.RoomStatus) error {
 		return errors.New("room not found")
 	}
 	return err
+}
+
+func SetRoomStatusByCreator(userID string, status model.RoomStatus) error {
+	return db.Model(&model.Room{}).Where("creator_id = ?", userID).Update("status", status).Error
 }

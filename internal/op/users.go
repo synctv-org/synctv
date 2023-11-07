@@ -121,5 +121,24 @@ func SetRoleByID(userID string, role model.Role) error {
 		return err
 	}
 	userCache.Remove(userID)
+
+	err = db.SetRoomStatusByCreator(userID, model.RoomStatusBanned)
+	if err != nil {
+		return err
+	}
+
+	switch role {
+	case model.RoleBanned:
+		roomCache.Range(func(key string, value *synccache.Entry[*Room]) bool {
+			v := value.Value()
+			if v.CreatorID == userID {
+				if roomCache.CompareAndDelete(key, value) {
+					v.close()
+				}
+			}
+			return true
+		})
+	}
+
 	return nil
 }

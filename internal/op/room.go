@@ -194,7 +194,7 @@ func (r *Room) SetRoomStatus(status model.RoomStatus) error {
 	}
 	r.Status = status
 	switch status {
-	case model.RoomStatusBanned, model.RoomStatusStopped, model.RoomStatusPending:
+	case model.RoomStatusBanned, model.RoomStatusPending:
 		return CompareAndCloseRoom(r)
 	}
 	return nil

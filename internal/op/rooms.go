@@ -41,7 +41,6 @@ func InitRoom(room *model.Room) (*Room, error) {
 
 var (
 	ErrRoomPending = errors.New("room pending, please wait for admin to approve")
-	ErrRoomStopped = errors.New("room stopped")
 	ErrRoomBanned  = errors.New("room banned")
 )
 
@@ -51,8 +50,6 @@ func LoadOrInitRoom(room *model.Room) (*Room, error) {
 		return nil, ErrRoomBanned
 	case model.RoomStatusPending:
 		return nil, ErrRoomPending
-	case model.RoomStatusStopped:
-		return nil, ErrRoomStopped
 	}
 	t := time.Duration(settings.RoomTTL.Get())
 	i, loaded := roomCache.LoadOrStore(room.ID, &Room{
@@ -213,4 +210,16 @@ func GetRoomHeapInCacheWithoutHidden() []*RoomInfo {
 		return true
 	})
 	return rooms.Slice()
+}
+
+func SetRoomStatus(roomID string, status model.RoomStatus) error {
+	err := db.SetRoomStatus(roomID, status)
+	if err != nil {
+		return err
+	}
+	e, loaded := roomCache.LoadAndDelete(roomID)
+	if loaded {
+		e.Value().close()
+	}
+	return nil
 }

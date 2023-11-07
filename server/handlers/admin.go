@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -166,17 +165,9 @@ func BanUser(ctx *gin.Context) {
 		return
 	}
 
-	u, err := op.GetUserById(req.ID)
+	u, err := db.GetUserByID(req.ID)
 	if err != nil {
-		if errors.Is(err, op.ErrUserPending) {
-			err = db.SetRoleByID(req.ID, dbModel.RoleBanned)
-			if err != nil {
-				ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
-				return
-			}
-		} else {
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
-		}
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
@@ -189,7 +180,7 @@ func BanUser(ctx *gin.Context) {
 		return
 	}
 
-	err = u.SetRole(dbModel.RoleBanned)
+	err = op.SetRoleByID(req.ID, dbModel.RoleBanned)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
@@ -297,21 +288,13 @@ func BanRoom(ctx *gin.Context) {
 		return
 	}
 
-	room, err := op.LoadOrInitRoomByID(req.Id)
+	r, err := db.GetRoomByID(req.Id)
 	if err != nil {
-		if errors.Is(err, op.ErrRoomPending) || errors.Is(err, op.ErrRoomStopped) {
-			err = db.SetRoomStatus(req.Id, dbModel.RoomStatusBanned)
-			if err != nil {
-				ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
-				return
-			}
-		} else {
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
-		}
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
-	creator, err := db.GetUserByID(room.CreatorID)
+	creator, err := db.GetUserByID(r.CreatorID)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
@@ -327,12 +310,7 @@ func BanRoom(ctx *gin.Context) {
 		return
 	}
 
-	if room.IsBanned() {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("room is already banned"))
-		return
-	}
-
-	err = room.SetRoomStatus(dbModel.RoomStatusBanned)
+	err = op.SetRoomStatus(req.Id, dbModel.RoomStatusBanned)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return

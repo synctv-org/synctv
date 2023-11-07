@@ -162,6 +162,7 @@ func CheckRoom(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
 		"peopleNum":    op.ClientNum(r.ID),
 		"needPassword": r.NeedPassword(),
+		"creator":      op.GetUserName(r.CreatorID),
 	}))
 }
 

@@ -89,7 +89,7 @@ func UserRooms(ctx *gin.Context) {
 	}
 
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
-		"total": db.GetAllRooms(scopes...),
+		"total": db.GetAllRoomsCount(scopes...),
 		"list":  genRoomListResp(append(scopes, db.Paginate(page, pageSize))...),
 	}))
 }

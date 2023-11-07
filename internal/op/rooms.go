@@ -217,7 +217,7 @@ func GetRoomHeapInCacheWithoutHidden() []*RoomInfo {
 		}
 		return true
 	})
-	return rooms.Slice()
+	return rooms.SortStable().Slice()
 }
 
 func SetRoomStatus(roomID string, status model.RoomStatus) error {

@@ -75,7 +75,9 @@ func Init(e *gin.Engine) {
 
 			needAuthRoom.POST("/pwd", SetRoomPassword)
 
-			needAuthRoom.GET("/setting", RoomSetting)
+			needAuthRoom.GET("/settings", RoomSetting)
+
+			needAuthRoom.POST("/settings", SetRoomSetting)
 		}
 
 		{

@@ -11,7 +11,7 @@ import (
 
 type CreateRoomConfig func(r *model.Room)
 
-func WithSetting(setting model.Settings) CreateRoomConfig {
+func WithSetting(setting model.RoomSettings) CreateRoomConfig {
 	return func(r *model.Room) {
 		r.Settings = setting
 	}
@@ -23,8 +23,8 @@ func WithCreator(creator *model.User) CreateRoomConfig {
 		r.GroupUserRelations = []model.RoomUserRelation{
 			{
 				UserID:      creator.ID,
-				Role:        model.RoomRoleCreator,
-				Permissions: model.AllPermissions,
+				Status:      model.RoomRoleActive,
+				Permissions: model.PermissionAll,
 			},
 		}
 	}
@@ -77,32 +77,12 @@ func GetRoomByID(id string) (*model.Room, error) {
 	return r, err
 }
 
-func ChangeRoomSetting(roomID string, setting model.Settings) error {
+func SaveRoomSettings(roomID string, setting model.RoomSettings) error {
 	err := db.Model(&model.Room{}).Where("id = ?", roomID).Update("setting", setting).Error
 	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
 		return errors.New("room not found")
 	}
 	return err
-}
-
-func ChangeUserPermission(roomID, userID string, permission model.Permission) error {
-	err := db.Model(&model.RoomUserRelation{}).Where("room_id = ? AND user_id = ?", roomID, userID).Update("permissions", permission).Error
-	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
-		return errors.New("room or user not found")
-	}
-	return err
-}
-
-func HasPermission(roomID, userID string, permission model.Permission) (bool, error) {
-	ur := &model.RoomUserRelation{}
-	err := db.Where("room_id = ? AND user_id = ?", roomID, userID).First(ur).Error
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			err = errors.New("room or user not found")
-		}
-		return false, err
-	}
-	return ur.Permissions.Has(permission), nil
 }
 
 func DeleteRoomByID(roomID string) error {

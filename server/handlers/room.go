@@ -202,7 +202,7 @@ func DeleteRoom(ctx *gin.Context) {
 	room := ctx.MustGet("room").(*op.Room)
 	user := ctx.MustGet("user").(*op.User)
 
-	if err := user.DeleteRoom(room.ID); err != nil {
+	if err := user.DeleteRoom(room); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(err))
 		return
 	}
@@ -220,7 +220,7 @@ func SetRoomPassword(ctx *gin.Context) {
 		return
 	}
 
-	if err := user.SetRoomPassword(room.ID, req.Password); err != nil {
+	if err := user.SetRoomPassword(room, req.Password); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(err))
 		return
 	}
@@ -241,8 +241,23 @@ func RoomSetting(ctx *gin.Context) {
 	room := ctx.MustGet("room").(*op.Room)
 	// user := ctx.MustGet("user").(*op.User)
 
-	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
-		"hidden":       room.Settings.Hidden,
-		"needPassword": room.NeedPassword(),
-	}))
+	ctx.JSON(http.StatusOK, model.NewApiDataResp(room.Settings))
+}
+
+func SetRoomSetting(ctx *gin.Context) {
+	room := ctx.MustGet("room").(*op.Room)
+	user := ctx.MustGet("user").(*op.User)
+
+	req := model.SetRoomSettingReq{}
+	if err := model.Decode(ctx, &req); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	if err := user.SetRoomSetting(room, dbModel.RoomSettings(req)); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(err))
+		return
+	}
+
+	ctx.Status(http.StatusNoContent)
 }

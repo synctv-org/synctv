@@ -36,7 +36,7 @@ func (m *movies) Len() int {
 	return m.list.Len()
 }
 
-func (m *movies) Add(mo *model.Movie) error {
+func (m *movies) AddMovie(mo *model.Movie) error {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 	m.init()
@@ -57,6 +57,43 @@ func (m *movies) Add(mo *model.Movie) error {
 	}
 
 	m.list.PushBack(movie)
+	return nil
+}
+
+func (m *movies) AddMovies(mos []*model.Movie) error {
+	m.lock.Lock()
+	defer m.lock.Unlock()
+	m.init()
+	inited := make([]*Movie, 0, len(mos))
+	for _, mo := range mos {
+		mo.Position = uint(time.Now().UnixMilli())
+		movie := &Movie{
+			Movie: mo,
+		}
+
+		err := movie.init()
+		if err != nil {
+			for _, movie := range inited {
+				movie.terminate()
+			}
+			return err
+		}
+
+		inited = append(inited, movie)
+	}
+
+	err := db.CreateMovies(mos)
+	if err != nil {
+		for _, movie := range inited {
+			movie.terminate()
+		}
+		return err
+	}
+
+	for _, mo := range inited {
+		m.list.PushBack(mo)
+	}
+
 	return nil
 }
 

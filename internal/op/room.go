@@ -75,15 +75,51 @@ func (r *Room) UpdateMovie(movieId string, movie model.BaseMovie) error {
 
 func (r *Room) AddMovie(m *model.Movie) error {
 	m.RoomID = r.ID
-	return r.movies.Add(m)
+	return r.movies.AddMovie(m)
 }
 
-func (r *Room) HasPermission(userID string, permission model.Permission) bool {
-	ur, err := db.GetRoomUserRelation(r.ID, userID)
+func (r *Room) AddMovies(movies []*model.Movie) error {
+	for _, m := range movies {
+		m.RoomID = r.ID
+	}
+	return r.movies.AddMovies(movies)
+}
+
+func (r *Room) HasPermission(userID string, permission model.RoomUserPermission) bool {
+	if r.CreatorID == userID {
+		return true
+	}
+
+	rur, err := r.LoadOrCreateRoomUserRelation(userID)
 	if err != nil {
 		return false
 	}
-	return ur.HasPermission(permission)
+
+	return rur.HasPermission(permission)
+}
+
+func (r *Room) LoadOrCreateRoomUserRelation(userID string) (*model.RoomUserRelation, error) {
+	var conf []db.CreateRoomUserRelationConfig
+	if r.Settings.JoinNeedReview {
+		conf = []db.CreateRoomUserRelationConfig{db.WithRoomUserRelationStatus(model.RoomRolePending)}
+	} else {
+		conf = []db.CreateRoomUserRelationConfig{db.WithRoomUserRelationStatus(model.RoomRoleActive)}
+	}
+	if r.Settings.UserDefaultPermissions != 0 {
+		conf = append(conf, db.WithRoomUserRelationPermissions(r.Settings.UserDefaultPermissions))
+	}
+	return db.FirstOrCreateRoomUserRelation(r.ID, userID, conf...)
+}
+
+func (r *Room) GetRoomUserRelation(userID string) (model.RoomUserPermission, error) {
+	if r.CreatorID == userID {
+		return model.PermissionAll, nil
+	}
+	ur, err := db.GetRoomUserRelation(r.ID, userID)
+	if err != nil {
+		return 0, err
+	}
+	return ur.Permissions, nil
 }
 
 func (r *Room) NeedPassword() bool {
@@ -107,24 +143,20 @@ func (r *Room) SetPassword(password string) error {
 	return db.SetRoomHashedPassword(r.ID, hashedPassword)
 }
 
-func (r *Room) SetUserRole(userID string, role model.RoomRole) error {
-	return db.SetUserRole(r.ID, userID, role)
+func (r *Room) SetUserStatus(userID string, status model.RoomUserStatus) error {
+	return db.SetRoomUserStatus(r.ID, userID, status)
 }
 
-func (r *Room) SetUserPermission(userID string, permission model.Permission) error {
+func (r *Room) SetUserPermission(userID string, permission model.RoomUserPermission) error {
 	return db.SetUserPermission(r.ID, userID, permission)
 }
 
-func (r *Room) AddUserPermission(userID string, permission model.Permission) error {
+func (r *Room) AddUserPermission(userID string, permission model.RoomUserPermission) error {
 	return db.AddUserPermission(r.ID, userID, permission)
 }
 
-func (r *Room) RemoveUserPermission(userID string, permission model.Permission) error {
+func (r *Room) RemoveUserPermission(userID string, permission model.RoomUserPermission) error {
 	return db.RemoveUserPermission(r.ID, userID, permission)
-}
-
-func (r *Room) DeleteUserPermission(userID string) error {
-	return db.DeleteUserPermission(r.ID, userID)
 }
 
 func (r *Room) GetMoviesCount() int {
@@ -197,5 +229,14 @@ func (r *Room) SetRoomStatus(status model.RoomStatus) error {
 	case model.RoomStatusBanned, model.RoomStatusPending:
 		return CompareAndCloseRoom(r)
 	}
+	return nil
+}
+
+func (r *Room) SetSettings(settings model.RoomSettings) error {
+	err := db.SaveRoomSettings(r.ID, settings)
+	if err != nil {
+		return err
+	}
+	r.Settings = settings
 	return nil
 }

@@ -175,10 +175,12 @@ func PushMovie(ctx *gin.Context) {
 		return
 	}
 
-	mi := user.NewMovie((*dbModel.BaseMovie)(&req))
-
-	err := room.AddMovie(mi)
+	err := user.AddMovieToRoom(room, (*dbModel.BaseMovie)(&req))
 	if err != nil {
+		if errors.Is(err, dbModel.ErrNoPermission) {
+			ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(err))
+			return
+		}
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
@@ -206,24 +208,21 @@ func PushMovies(ctx *gin.Context) {
 		return
 	}
 
-	var ms []*dbModel.Movie = make([]*dbModel.Movie, len(req))
+	var ms []*dbModel.BaseMovie = make([]*dbModel.BaseMovie, len(req))
 
 	for i, v := range req {
 		m := (*dbModel.BaseMovie)(v)
-		err := m.Validate()
-		if err != nil {
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
-			return
-		}
-		ms[i] = user.NewMovie(m)
+		ms[i] = m
 	}
 
-	for _, m := range ms {
-		err := room.AddMovie(m)
-		if err != nil {
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+	err := user.AddMoviesToRoom(room, ms)
+	if err != nil {
+		if errors.Is(err, dbModel.ErrNoPermission) {
+			ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(err))
 			return
 		}
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
 	}
 
 	if err := room.Broadcast(&op.ElementMessage{
@@ -254,7 +253,7 @@ func NewPublishKey(ctx *gin.Context) {
 		return
 	}
 
-	if !user.HasPermission(room.ID, dbModel.CanCreateUserPublishKey) && movie.CreatorID != user.ID {
+	if movie.CreatorID != user.ID && !user.HasRoomPermission(room, dbModel.PermissionEditUser) {
 		ctx.AbortWithStatus(http.StatusForbidden)
 		return
 	}
@@ -292,7 +291,7 @@ func EditMovie(ctx *gin.Context) {
 		return
 	}
 
-	if err := room.UpdateMovie(req.Id, dbModel.BaseMovie(req.PushMovieReq)); err != nil {
+	if err := user.UpdateMovie(room, req.Id, dbModel.BaseMovie(req.PushMovieReq)); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}

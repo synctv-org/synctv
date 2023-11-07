@@ -31,12 +31,26 @@ func (u *User) NewMovie(movie *model.BaseMovie) *model.Movie {
 	}
 }
 
+func (u *User) AddMovieToRoom(room *Room, movie *model.BaseMovie) error {
+	if !u.HasRoomPermission(room, model.PermissionCreateMovie) {
+		return model.ErrNoPermission
+	}
+	return room.AddMovie(u.NewMovie(movie))
+}
+
 func (u *User) NewMovies(movies []*model.BaseMovie) []*model.Movie {
-	var ms = make([]*model.Movie, 0, len(movies))
+	var ms = make([]*model.Movie, len(movies))
 	for i, m := range movies {
 		ms[i] = u.NewMovie(m)
 	}
 	return ms
+}
+
+func (u *User) AddMoviesToRoom(room *Room, movies []*model.BaseMovie) error {
+	if !u.HasRoomPermission(room, model.PermissionCreateMovie) {
+		return model.ErrNoPermission
+	}
+	return room.AddMovies(u.NewMovies(movies))
 }
 
 func (u *User) IsRoot() bool {
@@ -55,29 +69,25 @@ func (u *User) IsPending() bool {
 	return u.Role == model.RolePending
 }
 
-func (u *User) HasPermission(roomID string, permission model.Permission) bool {
+func (u *User) HasRoomPermission(room *Room, permission model.RoomUserPermission) bool {
 	if u.IsAdmin() {
 		return true
 	}
-	ur, err := db.GetRoomUserRelation(roomID, u.ID)
-	if err != nil {
-		return false
-	}
-	return ur.HasPermission(permission)
+	return room.HasPermission(u.ID, permission)
 }
 
-func (u *User) DeleteRoom(roomID string) error {
-	if !u.HasPermission(roomID, model.CanDeleteRoom) {
-		return errors.New("no permission")
+func (u *User) DeleteRoom(room *Room) error {
+	if !u.HasRoomPermission(room, model.PermissionEditRoom) {
+		return model.ErrNoPermission
 	}
-	return DeleteRoom(roomID)
+	return CompareAndDeleteRoom(room)
 }
 
-func (u *User) SetRoomPassword(roomID, password string) error {
-	if !u.HasPermission(roomID, model.CanSetRoomPassword) {
-		return errors.New("no permission")
+func (u *User) SetRoomPassword(room *Room, password string) error {
+	if !u.HasRoomPermission(room, model.PermissionEditRoom) {
+		return model.ErrNoPermission
 	}
-	return SetRoomPassword(roomID, password)
+	return room.SetPassword(password)
 }
 
 func (u *User) SetRole(role model.Role) error {
@@ -94,4 +104,22 @@ func (u *User) SetUsername(username string) error {
 	}
 	u.Username = username
 	return nil
+}
+
+func (u *User) UpdateMovie(room *Room, movieID string, movie model.BaseMovie) error {
+	m, err := room.GetMovieByID(movieID)
+	if err != nil {
+		return err
+	}
+	if m.CreatorID != u.ID && !u.HasRoomPermission(room, model.PermissionEditUser) {
+		return model.ErrNoPermission
+	}
+	return room.UpdateMovie(movieID, movie)
+}
+
+func (u *User) SetRoomSetting(room *Room, setting model.RoomSettings) error {
+	if !u.HasRoomPermission(room, model.PermissionEditRoom) {
+		return model.ErrNoPermission
+	}
+	return room.SetSettings(setting)
 }

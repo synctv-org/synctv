@@ -11,6 +11,7 @@ import (
 	"github.com/synctv-org/synctv/internal/settings"
 
 	"github.com/gin-gonic/gin"
+	dbModel "github.com/synctv-org/synctv/internal/model"
 )
 
 var (
@@ -40,9 +41,9 @@ func (f FormatEmptyPasswordError) Error() string {
 }
 
 type CreateRoomReq struct {
-	RoomName string         `json:"roomName"`
-	Password string         `json:"password"`
-	Setting  model.Settings `json:"setting"`
+	RoomName string             `json:"roomName"`
+	Password string             `json:"password"`
+	Setting  model.RoomSettings `json:"setting"`
 }
 
 func (c *CreateRoomReq) Decode(ctx *gin.Context) error {
@@ -124,5 +125,15 @@ func (r *RoomIDReq) Validate() error {
 		return ErrEmptyRoomName
 	}
 
+	return nil
+}
+
+type SetRoomSettingReq dbModel.RoomSettings
+
+func (s *SetRoomSettingReq) Decode(ctx *gin.Context) error {
+	return json.NewDecoder(ctx.Request.Body).Decode(s)
+}
+
+func (s *SetRoomSettingReq) Validate() error {
 	return nil
 }

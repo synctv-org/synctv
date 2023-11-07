@@ -72,20 +72,6 @@ func GetProviderUserID(p provider.OAuth2Provider, puid uint) (string, error) {
 	return userProvider.UserID, nil
 }
 
-func AddUserToRoom(userID, roomID string, role model.RoomRole, permission model.Permission) error {
-	ur := &model.RoomUserRelation{
-		UserID:      userID,
-		RoomID:      roomID,
-		Role:        role,
-		Permissions: permission,
-	}
-	err := db.Create(ur).Error
-	if err != nil && errors.Is(err, gorm.ErrDuplicatedKey) {
-		return errors.New("user already exists in room")
-	}
-	return err
-}
-
 func GetUserByUsername(username string) (*model.User, error) {
 	u := &model.User{}
 	err := db.Where("username = ?", username).First(u).Error

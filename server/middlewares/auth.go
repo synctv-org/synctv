@@ -156,6 +156,14 @@ func NewAuthRoomToken(user *op.User, room *op.Room) (string, error) {
 	if user.IsPending() {
 		return "", errors.New("user is pending, need admin to approve")
 	}
+	if room.Settings.DisableJoinNewUser {
+		if _, err := room.GetRoomUserRelation(user.ID); err != nil {
+			return "", errors.New("room is not allow new user to join")
+		}
+	} else if _, err := room.LoadOrCreateRoomUserRelation(user.ID); err != nil {
+		return "", err
+	}
+
 	t, err := time.ParseDuration(conf.Conf.Jwt.Expire)
 	if err != nil {
 		return "", err

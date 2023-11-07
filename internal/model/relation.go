@@ -1,56 +1,64 @@
 package model
 
-import "time"
-
-type RoomRole uint32
-
-const (
-	RoomRoleBanned RoomRole = iota + 1
-	RoomRoleUser
-	RoomRoleCreator
+import (
+	"errors"
+	"time"
 )
 
-type Permission uint32
+type RoomUserStatus uint
 
 const (
-	CanRenameRoom Permission = 1 << iota
-	CanSetAdmin
-	CanSetRoomPassword
-	CanSetRoomSetting
-	CanSetUserPermission
-	CanSetUserPassword
-	CanCreateUserPublishKey
-	CanEditUserMovies
-	CanDeleteUserMovies
-	CanCreateMovie
-	CanChangeCurrentMovie
-	CanChangeMovieStatus
-	CanDeleteRoom
-	AllPermissions Permission = 0xffffffff
+	RoomRoleBanned RoomUserStatus = iota + 1
+	RoomRolePending
+	RoomRoleActive
+)
+
+func (r RoomUserStatus) String() string {
+	switch r {
+	case RoomRoleBanned:
+		return "banned"
+	case RoomRolePending:
+		return "pending"
+	case RoomRoleActive:
+		return "active"
+	default:
+		return "unknown"
+	}
+}
+
+type RoomUserPermission uint32
+
+const (
+	PermissionAll      RoomUserPermission = 0xffffffff
+	PermissionEditRoom RoomUserPermission = 1 << iota
+	PermissionEditUser
+	PermissionCreateMovie
+	PermissionEditCurrent
+	PermissionSendChat
 )
 
 const (
-	DefaultPermissions = CanCreateMovie | CanChangeCurrentMovie | CanChangeMovieStatus
+	DefaultPermissions = PermissionCreateMovie | PermissionEditCurrent | PermissionSendChat
 )
 
-func (p Permission) Has(permission Permission) bool {
+func (p RoomUserPermission) Has(permission RoomUserPermission) bool {
 	return p&permission == permission
 }
 
 type RoomUserRelation struct {
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
-	UserID      string   `gorm:"not null;primarykey"`
-	RoomID      string   `gorm:"not null;primarykey"`
-	Role        RoomRole `gorm:"not null"`
-	Permissions Permission
+	UserID      string         `gorm:"not null;primarykey"`
+	RoomID      string         `gorm:"not null;primarykey"`
+	Status      RoomUserStatus `gorm:"not null;default:2"`
+	Permissions RoomUserPermission
 }
 
-func (r *RoomUserRelation) HasPermission(permission Permission) bool {
-	switch r.Role {
-	case RoomRoleCreator:
-		return true
-	case RoomRoleUser:
+var ErrNoPermission = errors.New("no permission")
+
+func (r *RoomUserRelation) HasPermission(permission RoomUserPermission) bool {
+	switch r.Status {
+	case RoomRoleActive:
 		return r.Permissions.Has(permission)
 	default:
 		return false

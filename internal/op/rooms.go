@@ -66,15 +66,23 @@ func LoadOrInitRoom(room *model.Room) (*Room, error) {
 	return i.Value(), nil
 }
 
-func DeleteRoom(roomID string) error {
+func DeleteRoomByID(roomID string) error {
 	err := db.DeleteRoomByID(roomID)
 	if err != nil {
 		return err
 	}
-	return CloseRoom(roomID)
+	return CloseRoomByID(roomID)
 }
 
-func CloseRoom(roomID string) error {
+func CompareAndDeleteRoom(room *Room) error {
+	err := CompareAndCloseRoom(room)
+	if err != nil {
+		return err
+	}
+	return db.DeleteRoomByID(room.ID)
+}
+
+func CloseRoomByID(roomID string) error {
 	r, loaded := roomCache.LoadAndDelete(roomID)
 	if loaded {
 		r.Value().close()

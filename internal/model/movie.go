@@ -14,7 +14,7 @@ import (
 )
 
 type Movie struct {
-	ID        string    `gorm:"primaryKey;type:varchar(36)" json:"id"`
+	ID        string    `gorm:"primaryKey;type:varchar(32)" json:"id"`
 	CreatedAt time.Time `json:"-"`
 	UpdatedAt time.Time `json:"-"`
 	Position  uint      `gorm:"not null" json:"-"`

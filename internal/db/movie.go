@@ -13,6 +13,10 @@ func CreateMovie(movie *model.Movie) error {
 	return db.Create(movie).Error
 }
 
+func CreateMovies(movies []*model.Movie) error {
+	return db.Create(movies).Error
+}
+
 func GetAllMoviesByRoomID(roomID string) []*model.Movie {
 	movies := []*model.Movie{}
 	db.Where("room_id = ?", roomID).Order("position ASC").Find(&movies)

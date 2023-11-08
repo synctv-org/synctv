@@ -6,7 +6,6 @@ import (
 	"regexp"
 
 	json "github.com/json-iterator/go"
-	"github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/internal/settings"
 
@@ -41,9 +40,9 @@ func (f FormatEmptyPasswordError) Error() string {
 }
 
 type CreateRoomReq struct {
-	RoomName string             `json:"roomName"`
-	Password string             `json:"password"`
-	Setting  model.RoomSettings `json:"setting"`
+	RoomName string               `json:"roomName"`
+	Password string               `json:"password"`
+	Setting  dbModel.RoomSettings `json:"setting"`
 }
 
 func (c *CreateRoomReq) Decode(ctx *gin.Context) error {

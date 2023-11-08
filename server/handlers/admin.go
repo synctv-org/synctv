@@ -111,12 +111,11 @@ func Users(ctx *gin.Context) {
 
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
 		"total": db.GetAllUserCount(scopes...),
-		"list":  genUserListResp(append(scopes, db.Paginate(page, pageSize))...),
+		"list":  genUserListResp(db.GetAllUsers(append(scopes, db.Paginate(page, pageSize))...)),
 	}))
 }
 
-func genUserListResp(scopes ...func(db *gorm.DB) *gorm.DB) []*model.UserInfoResp {
-	us := db.GetAllUsers(scopes...)
+func genUserListResp(us []*dbModel.User) []*model.UserInfoResp {
 	resp := make([]*model.UserInfoResp, len(us))
 	for i, v := range us {
 		resp[i] = &model.UserInfoResp{

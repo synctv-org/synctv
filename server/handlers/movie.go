@@ -319,12 +319,10 @@ func DelMovie(ctx *gin.Context) {
 		return
 	}
 
-	for _, id := range req.Ids {
-		err := room.DeleteMovieByID(id)
-		if err != nil {
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
-			return
-		}
+	err := user.DeleteMoviesByID(room, req.Ids)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
 	}
 
 	if err := room.Broadcast(&op.ElementMessage{
@@ -344,7 +342,7 @@ func ClearMovies(ctx *gin.Context) {
 	room := ctx.MustGet("room").(*op.Room)
 	user := ctx.MustGet("user").(*op.User)
 
-	if err := room.ClearMovies(); err != nil {
+	if err := user.ClearMovies(room); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
@@ -401,8 +399,12 @@ func ChangeCurrentMovie(ctx *gin.Context) {
 	}
 
 	if req.Id == "" {
-		room.SetCurrentMovie(&dbModel.Movie{}, false)
-	} else if err := room.ChangeCurrentMovie(req.Id, true); err != nil {
+		err := user.SetCurrentMovie(room, &dbModel.Movie{}, false)
+		if err != nil {
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+			return
+		}
+	} else if err := user.SetCurrentMovieByID(room, req.Id, true); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}

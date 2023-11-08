@@ -236,3 +236,9 @@ func WhereIDLike(id string) func(db *gorm.DB) *gorm.DB {
 		}
 	}
 }
+
+func WhereRoomUserStatus(status model.RoomUserStatus) func(db *gorm.DB) *gorm.DB {
+	return func(db *gorm.DB) *gorm.DB {
+		return db.Where("status = ?", status)
+	}
+}

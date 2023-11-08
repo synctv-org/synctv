@@ -75,3 +75,9 @@ func RemoveUserPermission(roomID string, userID string, permission model.RoomUse
 	}
 	return err
 }
+
+func GetAllRoomUsersRelation(roomID string, scopes ...func(*gorm.DB) *gorm.DB) []*model.RoomUserRelation {
+	var roomUserRelations []*model.RoomUserRelation
+	db.Where("room_id = ?", roomID).Scopes(scopes...).Find(&roomUserRelations)
+	return roomUserRelations
+}

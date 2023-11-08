@@ -78,6 +78,8 @@ func Init(e *gin.Engine) {
 			needAuthRoom.GET("/settings", RoomSetting)
 
 			needAuthRoom.POST("/settings", SetRoomSetting)
+
+			// needAuthRoom.GET("/users", RoomUsers)
 		}
 
 		{

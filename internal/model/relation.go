@@ -8,18 +8,18 @@ import (
 type RoomUserStatus uint
 
 const (
-	RoomRoleBanned RoomUserStatus = iota + 1
-	RoomRolePending
-	RoomRoleActive
+	RoomUserStatusBanned RoomUserStatus = iota + 1
+	RoomUserStatusPending
+	RoomUserStatusActive
 )
 
 func (r RoomUserStatus) String() string {
 	switch r {
-	case RoomRoleBanned:
+	case RoomUserStatusBanned:
 		return "banned"
-	case RoomRolePending:
+	case RoomUserStatusPending:
 		return "pending"
-	case RoomRoleActive:
+	case RoomUserStatusActive:
 		return "active"
 	default:
 		return "unknown"
@@ -58,7 +58,7 @@ var ErrNoPermission = errors.New("no permission")
 
 func (r *RoomUserRelation) HasPermission(permission RoomUserPermission) bool {
 	switch r.Status {
-	case RoomRoleActive:
+	case RoomUserStatusActive:
 		return r.Permissions.Has(permission)
 	default:
 		return false

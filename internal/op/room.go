@@ -101,9 +101,9 @@ func (r *Room) HasPermission(userID string, permission model.RoomUserPermission)
 func (r *Room) LoadOrCreateRoomUserRelation(userID string) (*model.RoomUserRelation, error) {
 	var conf []db.CreateRoomUserRelationConfig
 	if r.Settings.JoinNeedReview {
-		conf = []db.CreateRoomUserRelationConfig{db.WithRoomUserRelationStatus(model.RoomRolePending)}
+		conf = []db.CreateRoomUserRelationConfig{db.WithRoomUserRelationStatus(model.RoomUserStatusPending)}
 	} else {
-		conf = []db.CreateRoomUserRelationConfig{db.WithRoomUserRelationStatus(model.RoomRoleActive)}
+		conf = []db.CreateRoomUserRelationConfig{db.WithRoomUserRelationStatus(model.RoomUserStatusActive)}
 	}
 	if r.Settings.UserDefaultPermissions != 0 {
 		conf = append(conf, db.WithRoomUserRelationPermissions(r.Settings.UserDefaultPermissions))
@@ -180,12 +180,12 @@ func (r *Room) Current() *Current {
 	return &c
 }
 
-func (r *Room) ChangeCurrentMovie(id string, play bool) error {
+func (r *Room) SetCurrentMovieByID(id string, play bool) error {
 	m, err := r.movies.GetMovieByID(id)
 	if err != nil {
 		return err
 	}
-	r.current.SetMovie(*m.Movie, play)
+	r.SetCurrentMovie(m.Movie, play)
 	return nil
 }
 

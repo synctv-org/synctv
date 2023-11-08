@@ -12,6 +12,7 @@ function Help() {
     echo "-h get help"
     echo "-v set build version (default: dev)"
     echo "-w set web version (default: latest releases)"
+    echo "-s sekp init dep (default: false)"
     echo "-m set build mode (default: pie)"
     echo "-l set ldflags (default: -s -w --extldflags \"-static -fpic -Wl,-z,relro,-z,now\")"
     echo "-p set platform (default: host platform, support: all, linux, darwin, windows)"
@@ -35,12 +36,13 @@ function Init() {
     LDFLAGS='-s -w --extldflags "-static -fpic -Wl,-z,relro,-z,now"'
     PLATFORM=""
     TRIM_PATH=""
+    SKIP_INIT_DEP=""
     BUILD_DIR="build"
     TAGS="jsoniter"
 }
 
 function ParseArgs() {
-    while getopts "hv:w:m:l:p:Pb:T:" arg; do
+    while getopts "hsv:w:m:l:p:Pb:T:" arg; do
         case $arg in
         h)
             Help
@@ -48,6 +50,9 @@ function ParseArgs() {
             ;;
         v)
             VERSION="$(echo "$OPTARG" | sed 's/ //g' | sed 's/"//g' | sed 's/\n//g')"
+            ;;
+        s)
+            SKIP_INIT_DEP="true"
             ;;
         w)
             WEB_VERSION="$OPTARG"
@@ -126,6 +131,10 @@ function FixArgs() {
 }
 
 function InitDep() {
+    if [ "$SKIP_INIT_DEP" ]; then
+        echo "skip init dep"
+        return
+    fi
     rm -rf public/dist/*
     echo "download: https://github.com/synctv-org/synctv-web/releases/download/${WEB_VERSION}/dist.tar.gz"
     curl -sL "https://github.com/synctv-org/synctv-web/releases/download/${WEB_VERSION}/dist.tar.gz" | tar --strip-components 1 -C "public/dist" -z -x -v -f -

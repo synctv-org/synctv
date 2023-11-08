@@ -23,7 +23,7 @@ func WithCreator(creator *model.User) CreateRoomConfig {
 		r.GroupUserRelations = []model.RoomUserRelation{
 			{
 				UserID:      creator.ID,
-				Status:      model.RoomRoleActive,
+				Status:      model.RoomUserStatusActive,
 				Permissions: model.PermissionAll,
 			},
 		}

@@ -10,6 +10,7 @@ import (
 	"github.com/synctv-org/synctv/internal/conf"
 	"github.com/synctv-org/synctv/utils"
 	refreshcache "github.com/synctv-org/synctv/utils/refreshCache"
+	"github.com/zijiren233/gencontainer/rwmap"
 	"gorm.io/gorm"
 )
 
@@ -151,26 +152,48 @@ type VendorInfo struct {
 }
 
 type BilibiliVendorInfo struct {
-	Bvid    string                                                          `json:"bvid,omitempty"`
-	Cid     uint                                                            `json:"cid,omitempty"`
-	Epid    uint                                                            `json:"epid,omitempty"`
-	Quality uint                                                            `json:"quality,omitempty"`
-	Cache   atomic.Pointer[refreshcache.RefreshCache[*BilibiliVendorCache]] `gorm:"-:all" json:"-"`
+	Bvid    string              `json:"bvid,omitempty"`
+	Cid     uint                `json:"cid,omitempty"`
+	Epid    uint                `json:"epid,omitempty"`
+	Quality uint                `json:"quality,omitempty"`
+	Cache   BilibiliVendorCache `gorm:"-:all" json:"-"`
 }
 
 type BilibiliVendorCache struct {
+	URL rwmap.RWMap[string, *refreshcache.RefreshCache[string]]
+	MPD atomic.Pointer[refreshcache.RefreshCache[*MPDCache]]
+}
+
+type MPDCache struct {
 	MPDFile string
 	URLs    []string
 }
 
-func (b *BilibiliVendorInfo) InitOrLoadCache(initCache func() *refreshcache.RefreshCache[*BilibiliVendorCache]) *refreshcache.RefreshCache[*BilibiliVendorCache] {
-	if c := b.Cache.Load(); c != nil {
-		return c
+func (b *BilibiliVendorInfo) InitOrLoadURLCache(id string, initCache func(*BilibiliVendorInfo) (*refreshcache.RefreshCache[string], error)) (*refreshcache.RefreshCache[string], error) {
+	if c, loaded := b.Cache.URL.Load(id); loaded {
+		return c, nil
 	}
-	c := initCache()
-	if b.Cache.CompareAndSwap(nil, c) {
-		return c
+	c, err := initCache(b)
+	if err != nil {
+		return nil, err
+	}
+
+	c, _ = b.Cache.URL.LoadOrStore(id, c)
+
+	return c, nil
+}
+
+func (b *BilibiliVendorInfo) InitOrLoadMPDCache(initCache func(*BilibiliVendorInfo) (*refreshcache.RefreshCache[*MPDCache], error)) (*refreshcache.RefreshCache[*MPDCache], error) {
+	if c := b.Cache.MPD.Load(); c != nil {
+		return c, nil
+	}
+	c, err := initCache(b)
+	if err != nil {
+		return nil, err
+	}
+	if b.Cache.MPD.CompareAndSwap(nil, c) {
+		return c, nil
 	} else {
-		return b.Cache.Load()
+		return b.InitOrLoadMPDCache(initCache)
 	}
 }

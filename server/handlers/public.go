@@ -9,8 +9,8 @@ import (
 func Settings(ctx *gin.Context) {
 	ctx.JSON(200, model.NewApiDataResp(gin.H{
 		"rtmp": gin.H{
-			"enable":     conf.Conf.Rtmp.Enable,
-			"rtmpPlayer": conf.Conf.Rtmp.RtmpPlayer,
+			"enable":     conf.Conf.Server.Rtmp.Enable,
+			"rtmpPlayer": conf.Conf.Server.Rtmp.RtmpPlayer,
 		},
 		"proxy": gin.H{
 			"movieProxy": conf.Conf.Proxy.MovieProxy,

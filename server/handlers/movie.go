@@ -269,7 +269,7 @@ func NewPublishKey(ctx *gin.Context) {
 		return
 	}
 
-	host := conf.Conf.Rtmp.CustomPublishHost
+	host := conf.Conf.Server.Rtmp.CustomPublishHost
 	if host == "" {
 		host = ctx.Request.Host
 	}
@@ -537,10 +537,6 @@ func (e FormatErrNotSupportFileType) Error() string {
 }
 
 func JoinLive(ctx *gin.Context) {
-	if !conf.Conf.Proxy.LiveProxy && !conf.Conf.Rtmp.Enable {
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("live proxy and rtmp source is not enabled"))
-		return
-	}
 	room := ctx.MustGet("room").(*op.Room)
 	// user := ctx.MustGet("user").(*op.User)
 
@@ -564,7 +560,7 @@ func JoinLive(ctx *gin.Context) {
 		ctx.Header("Cache-Control", "no-store")
 		b, err := channel.GenM3U8File(func(tsName string) (tsPath string) {
 			ext := "ts"
-			if conf.Conf.Rtmp.TsDisguisedAsPng {
+			if conf.Conf.Server.Rtmp.TsDisguisedAsPng {
 				ext = "png"
 			}
 			return fmt.Sprintf("/api/movie/live/%s/%s.%s", channelName, tsName, ext)
@@ -575,7 +571,7 @@ func JoinLive(ctx *gin.Context) {
 		}
 		ctx.Data(http.StatusOK, hls.M3U8ContentType, b)
 	case ".ts":
-		if conf.Conf.Rtmp.TsDisguisedAsPng {
+		if conf.Conf.Server.Rtmp.TsDisguisedAsPng {
 			ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(FormatErrNotSupportFileType(fileExt)))
 			return
 		}
@@ -587,7 +583,7 @@ func JoinLive(ctx *gin.Context) {
 		ctx.Header("Cache-Control", "public, max-age=90")
 		ctx.Data(http.StatusOK, hls.TSContentType, b)
 	case ".png":
-		if !conf.Conf.Rtmp.TsDisguisedAsPng {
+		if !conf.Conf.Server.Rtmp.TsDisguisedAsPng {
 			ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(FormatErrNotSupportFileType(fileExt)))
 			return
 		}

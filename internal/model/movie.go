@@ -57,7 +57,7 @@ func (m *BaseMovie) Validate() error {
 	case m.RtmpSource && m.Proxy:
 		return errors.New("rtmp source and proxy can't be true at the same time")
 	case m.Live && m.RtmpSource:
-		if !conf.Conf.Rtmp.Enable {
+		if !conf.Conf.Server.Rtmp.Enable {
 			return errors.New("rtmp is not enabled")
 		}
 	case m.Live && m.Proxy:

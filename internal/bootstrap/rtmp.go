@@ -34,7 +34,7 @@ func auth(ReqAppName, ReqChannelName string, IsPublisher bool) (*rtmps.Channel, 
 		return r.GetChannel(channelName)
 	}
 
-	if !conf.Conf.Rtmp.RtmpPlayer {
+	if !conf.Conf.Server.Rtmp.RtmpPlayer {
 		log.Warnf("rtmp: dial to %s/%s error: %s", ReqAppName, ReqChannelName, "rtmp player is not enabled")
 		return nil, fmt.Errorf("rtmp: dial to %s/%s error: %s", ReqAppName, ReqChannelName, "rtmp player is not enabled")
 	}

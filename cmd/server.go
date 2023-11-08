@@ -43,41 +43,50 @@ var ServerCmd = &cobra.Command{
 }
 
 func Server(cmd *cobra.Command, args []string) {
-	tcpServerAddr, err := net.ResolveTCPAddr("tcp", fmt.Sprintf("%s:%d", conf.Conf.Server.Listen, conf.Conf.Server.Port))
+	tcpServerHttpAddr, err := net.ResolveTCPAddr("tcp", fmt.Sprintf("%s:%d", conf.Conf.Server.Http.Listen, conf.Conf.Server.Http.Port))
 	if err != nil {
 		log.Panic(err)
 	}
-	udpServerAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", conf.Conf.Server.Listen, conf.Conf.Server.Port))
+	udpServerHttpAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", conf.Conf.Server.Http.Listen, conf.Conf.Server.Http.Port))
 	if err != nil {
 		log.Panic(err)
 	}
-	serverListener, err := net.ListenTCP("tcp", tcpServerAddr)
+	serverHttpListener, err := net.ListenTCP("tcp", tcpServerHttpAddr)
 	if err != nil {
 		log.Panic(err)
+	}
+
+	if conf.Conf.Server.Rtmp.Listen == "" {
+		conf.Conf.Server.Rtmp.Listen = conf.Conf.Server.Http.Listen
+	}
+	if conf.Conf.Server.Rtmp.Port == 0 {
+		conf.Conf.Server.Rtmp.Port = conf.Conf.Server.Http.Port
 	}
 	var useMux bool
-	if conf.Conf.Rtmp.Port == 0 || conf.Conf.Rtmp.Port == conf.Conf.Server.Port {
+	if conf.Conf.Server.Rtmp.Port == conf.Conf.Server.Http.Port && conf.Conf.Server.Rtmp.Listen == conf.Conf.Server.Http.Listen {
 		useMux = true
-		conf.Conf.Rtmp.Port = conf.Conf.Server.Port
+		conf.Conf.Server.Rtmp.Port = conf.Conf.Server.Http.Port
+		conf.Conf.Server.Rtmp.Listen = conf.Conf.Server.Http.Listen
 	}
-	tcpRtmpAddr, err := net.ResolveTCPAddr("tcp", fmt.Sprintf("%s:%d", conf.Conf.Server.Listen, conf.Conf.Rtmp.Port))
+
+	serverRtmpAddr, err := net.ResolveTCPAddr("tcp", fmt.Sprintf("%s:%d", conf.Conf.Server.Rtmp.Listen, conf.Conf.Server.Rtmp.Port))
 	if err != nil {
 		log.Fatal(err)
 	}
-	utils.OptFilePath(&conf.Conf.Server.CertPath)
-	utils.OptFilePath(&conf.Conf.Server.KeyPath)
-	if conf.Conf.Rtmp.Enable {
+	utils.OptFilePath(&conf.Conf.Server.Http.CertPath)
+	utils.OptFilePath(&conf.Conf.Server.Http.KeyPath)
+	if conf.Conf.Server.Rtmp.Enable {
 		if useMux {
-			muxer := cmux.New(serverListener)
+			muxer := cmux.New(serverHttpListener)
 			e := server.NewAndInit()
 			switch {
-			case conf.Conf.Server.CertPath != "" && conf.Conf.Server.KeyPath != "":
+			case conf.Conf.Server.Http.CertPath != "" && conf.Conf.Server.Http.KeyPath != "":
 				httpl := muxer.Match(cmux.HTTP2(), cmux.TLS())
-				go http.ServeTLS(httpl, e.Handler(), conf.Conf.Server.CertPath, conf.Conf.Server.KeyPath)
-				if conf.Conf.Server.Quic {
-					go http3.ListenAndServeQUIC(udpServerAddr.String(), conf.Conf.Server.CertPath, conf.Conf.Server.KeyPath, e.Handler())
+				go http.ServeTLS(httpl, e.Handler(), conf.Conf.Server.Http.CertPath, conf.Conf.Server.Http.KeyPath)
+				if conf.Conf.Server.Http.Quic {
+					go http3.ListenAndServeQUIC(udpServerHttpAddr.String(), conf.Conf.Server.Http.CertPath, conf.Conf.Server.Http.KeyPath, e.Handler())
 				}
-			case conf.Conf.Server.CertPath == "" && conf.Conf.Server.KeyPath == "":
+			case conf.Conf.Server.Http.CertPath == "" && conf.Conf.Server.Http.KeyPath == "":
 				httpl := muxer.Match(cmux.HTTP1Fast())
 				go e.RunListener(httpl)
 			default:
@@ -89,17 +98,17 @@ func Server(cmd *cobra.Command, args []string) {
 		} else {
 			e := server.NewAndInit()
 			switch {
-			case conf.Conf.Server.CertPath != "" && conf.Conf.Server.KeyPath != "":
-				go http.ServeTLS(serverListener, e.Handler(), conf.Conf.Server.CertPath, conf.Conf.Server.KeyPath)
-				if conf.Conf.Server.Quic {
-					go http3.ListenAndServeQUIC(udpServerAddr.String(), conf.Conf.Server.CertPath, conf.Conf.Server.KeyPath, e.Handler())
+			case conf.Conf.Server.Http.CertPath != "" && conf.Conf.Server.Http.KeyPath != "":
+				go http.ServeTLS(serverHttpListener, e.Handler(), conf.Conf.Server.Http.CertPath, conf.Conf.Server.Http.KeyPath)
+				if conf.Conf.Server.Http.Quic {
+					go http3.ListenAndServeQUIC(udpServerHttpAddr.String(), conf.Conf.Server.Http.CertPath, conf.Conf.Server.Http.KeyPath, e.Handler())
 				}
-			case conf.Conf.Server.CertPath == "" && conf.Conf.Server.KeyPath == "":
-				go e.RunListener(serverListener)
+			case conf.Conf.Server.Http.CertPath == "" && conf.Conf.Server.Http.KeyPath == "":
+				go e.RunListener(serverHttpListener)
 			default:
 				log.Panic("cert and key must be both set")
 			}
-			rtmpListener, err := net.ListenTCP("tcp", tcpRtmpAddr)
+			rtmpListener, err := net.ListenTCP("tcp", serverRtmpAddr)
 			if err != nil {
 				log.Fatal(err)
 			}
@@ -108,27 +117,27 @@ func Server(cmd *cobra.Command, args []string) {
 	} else {
 		e := server.NewAndInit()
 		switch {
-		case conf.Conf.Server.CertPath != "" && conf.Conf.Server.KeyPath != "":
-			go http.ServeTLS(serverListener, e.Handler(), conf.Conf.Server.CertPath, conf.Conf.Server.KeyPath)
-			if conf.Conf.Server.Quic {
-				go http3.ListenAndServeQUIC(udpServerAddr.String(), conf.Conf.Server.CertPath, conf.Conf.Server.KeyPath, e.Handler())
+		case conf.Conf.Server.Http.CertPath != "" && conf.Conf.Server.Http.KeyPath != "":
+			go http.ServeTLS(serverHttpListener, e.Handler(), conf.Conf.Server.Http.CertPath, conf.Conf.Server.Http.KeyPath)
+			if conf.Conf.Server.Http.Quic {
+				go http3.ListenAndServeQUIC(udpServerHttpAddr.String(), conf.Conf.Server.Http.CertPath, conf.Conf.Server.Http.KeyPath, e.Handler())
 			}
-		case conf.Conf.Server.CertPath == "" && conf.Conf.Server.KeyPath == "":
-			go e.RunListener(serverListener)
+		case conf.Conf.Server.Http.CertPath == "" && conf.Conf.Server.Http.KeyPath == "":
+			go e.RunListener(serverHttpListener)
 		default:
 			log.Panic("cert and key must be both set")
 		}
 	}
-	if conf.Conf.Rtmp.Enable {
-		log.Infof("rtmp run on tcp://%s:%d", tcpServerAddr.IP, tcpRtmpAddr.Port)
+	if conf.Conf.Server.Rtmp.Enable {
+		log.Infof("rtmp run on tcp://%s:%d", serverRtmpAddr.IP, serverRtmpAddr.Port)
 	}
-	if conf.Conf.Server.CertPath != "" && conf.Conf.Server.KeyPath != "" {
-		if conf.Conf.Server.Quic {
-			log.Infof("quic run on udp://%s:%d", udpServerAddr.IP, udpServerAddr.Port)
+	if conf.Conf.Server.Http.CertPath != "" && conf.Conf.Server.Http.KeyPath != "" {
+		if conf.Conf.Server.Http.Quic {
+			log.Infof("quic run on udp://%s:%d", udpServerHttpAddr.IP, udpServerHttpAddr.Port)
 		}
-		log.Infof("website run on https://%s:%d", tcpServerAddr.IP, tcpServerAddr.Port)
+		log.Infof("website run on https://%s:%d", tcpServerHttpAddr.IP, tcpServerHttpAddr.Port)
 	} else {
-		log.Infof("website run on http://%s:%d", tcpServerAddr.IP, tcpServerAddr.Port)
+		log.Infof("website run on http://%s:%d", tcpServerHttpAddr.IP, tcpServerHttpAddr.Port)
 	}
 	sysnotify.WaitCbk()
 }

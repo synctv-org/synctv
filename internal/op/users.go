@@ -8,7 +8,7 @@ import (
 	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/provider"
-	synccache "github.com/synctv-org/synctv/utils/syncCache"
+	"github.com/zijiren233/gencontainer/synccache"
 )
 
 var userCache gcache.Cache

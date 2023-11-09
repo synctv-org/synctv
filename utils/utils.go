@@ -279,3 +279,22 @@ func SortUUID() string {
 	hex.Encode(dst, src[:])
 	return stream.BytesToString(dst)
 }
+
+func HttpCookieToMap(c []*http.Cookie) map[string]string {
+	m := make(map[string]string)
+	for _, v := range c {
+		m[v.Name] = v.Value
+	}
+	return m
+}
+
+func MapToHttpCookie(m map[string]string) []*http.Cookie {
+	var c []*http.Cookie
+	for k, v := range m {
+		c = append(c, &http.Cookie{
+			Name:  k,
+			Value: v,
+		})
+	}
+	return c
+}

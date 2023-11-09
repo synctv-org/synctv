@@ -14,7 +14,7 @@ import (
 	"github.com/synctv-org/synctv/server/middlewares"
 	"github.com/synctv-org/synctv/server/model"
 	"github.com/synctv-org/synctv/utils"
-	refreshcache "github.com/synctv-org/synctv/utils/refreshCache"
+	"github.com/zijiren233/gencontainer/refreshcache"
 	"gorm.io/gorm"
 )
 

@@ -9,12 +9,14 @@ import (
 	"github.com/synctv-org/synctv/internal/db"
 	dbModel "github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
+	"github.com/synctv-org/synctv/internal/vendor"
 	"github.com/synctv-org/synctv/server/model"
-	"github.com/synctv-org/synctv/vendors/bilibili"
+	"github.com/synctv-org/synctv/utils"
+	"github.com/synctv-org/vendors/api/bilibili"
 )
 
 func NewQRCode(ctx *gin.Context) {
-	r, err := bilibili.NewQRCode(ctx)
+	r, err := vendor.BilibiliClient().NewQRCode(ctx, &bilibili.Empty{})
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
@@ -46,40 +48,47 @@ func LoginWithQR(ctx *gin.Context) {
 		return
 	}
 
-	cookie, err := bilibili.LoginWithQRCode(ctx, req.Key)
-	if err != nil {
-		switch err {
-		case bilibili.ErrQRCodeExpired:
-			ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
-				"status": "expired",
-			}))
-		case bilibili.ErrQRCodeScanned:
-			ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
-				"status": "scanned",
-			}))
-		case bilibili.ErrQRCodeNotScanned:
-			ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
-				"status": "notScanned",
-			}))
-		default:
-			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
-		}
-		return
-	}
-
-	_, err = db.AssignFirstOrCreateVendorByUserIDAndVendor(user.ID, dbModel.StreamingVendorBilibili, db.WithCookie([]*http.Cookie{cookie}))
+	resp, err := vendor.BilibiliClient().LoginWithQRCode(ctx, &bilibili.LoginWithQRCodeReq{
+		Key: req.Key,
+	})
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}
 
-	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
-		"status": "success",
-	}))
+	switch resp.Status {
+	case bilibili.QRCodeStatus_EXPIRED:
+		ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
+			"status": "expired",
+		}))
+		return
+	case bilibili.QRCodeStatus_SCANNED:
+		ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
+			"status": "scanned",
+		}))
+		return
+	case bilibili.QRCodeStatus_NOTSCANNED:
+		ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
+			"status": "notScanned",
+		}))
+		return
+	case bilibili.QRCodeStatus_SUCCESS:
+		_, err = db.AssignFirstOrCreateVendorByUserIDAndVendor(user.ID, dbModel.StreamingVendorBilibili, db.WithCookie(utils.MapToHttpCookie(resp.Cookies)))
+		if err != nil {
+			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+			return
+		}
+		ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
+			"status": "success",
+		}))
+	default:
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorStringResp("unknown status"))
+		return
+	}
 }
 
 func NewCaptcha(ctx *gin.Context) {
-	r, err := bilibili.NewCaptcha(ctx)
+	r, err := vendor.BilibiliClient().NewCaptcha(ctx, &bilibili.Empty{})
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
@@ -120,13 +129,19 @@ func NewSMS(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
-	r, err := bilibili.NewSMS(ctx, req.Telephone, req.Token, req.Challenge, req.Validate_)
+
+	r, err := vendor.BilibiliClient().NewSMS(ctx, &bilibili.NewSMSReq{
+		Phone:     req.Telephone,
+		Token:     req.Token,
+		Challenge: req.Challenge,
+		Validate:  req.Validate_,
+	})
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
-		"captchaKey": r,
+		"captchaKey": r.CaptchaKey,
 	}))
 }
 
@@ -159,13 +174,18 @@ func LoginWithSMS(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
-	c, err := bilibili.LoginWithSMS(ctx, req.Telephone, req.Code, req.CaptchaKey)
+
+	c, err := vendor.BilibiliClient().LoginWithSMS(ctx, &bilibili.LoginWithSMSReq{
+		Phone:      req.Telephone,
+		CaptchaKey: req.CaptchaKey,
+		Code:       req.Code,
+	})
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}
 	user := ctx.MustGet("user").(*op.User)
-	_, err = db.AssignFirstOrCreateVendorByUserIDAndVendor(user.ID, dbModel.StreamingVendorBilibili, db.WithCookie([]*http.Cookie{c}))
+	_, err = db.AssignFirstOrCreateVendorByUserIDAndVendor(user.ID, dbModel.StreamingVendorBilibili, db.WithCookie(utils.MapToHttpCookie(c.Cookies)))
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return

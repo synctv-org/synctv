@@ -1,0 +1,15 @@
+package vendor
+
+import (
+	klog "github.com/go-kratos/kratos/v2/log"
+	log "github.com/sirupsen/logrus"
+	"github.com/synctv-org/synctv/internal/conf"
+)
+
+func Init(conf *conf.VendorConfig) error {
+	klog.SetLogger(klog.NewStdLogger(log.StandardLogger().Writer()))
+	if err := InitBilibili(&conf.Bilibili); err != nil {
+		return err
+	}
+	return nil
+}

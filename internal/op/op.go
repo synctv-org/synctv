@@ -4,7 +4,7 @@ import (
 	"time"
 
 	"github.com/bluele/gcache"
-	synccache "github.com/synctv-org/synctv/utils/syncCache"
+	"github.com/zijiren233/gencontainer/synccache"
 )
 
 func Init(size int) error {

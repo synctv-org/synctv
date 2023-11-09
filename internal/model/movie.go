@@ -9,7 +9,7 @@ import (
 
 	"github.com/synctv-org/synctv/internal/conf"
 	"github.com/synctv-org/synctv/utils"
-	refreshcache "github.com/synctv-org/synctv/utils/refreshCache"
+	"github.com/zijiren233/gencontainer/refreshcache"
 	"github.com/zijiren233/gencontainer/rwmap"
 	"gorm.io/gorm"
 )
@@ -153,9 +153,9 @@ type VendorInfo struct {
 
 type BilibiliVendorInfo struct {
 	Bvid    string              `json:"bvid,omitempty"`
-	Cid     uint                `json:"cid,omitempty"`
-	Epid    uint                `json:"epid,omitempty"`
-	Quality uint                `json:"quality,omitempty"`
+	Cid     uint64              `json:"cid,omitempty"`
+	Epid    uint64              `json:"epid,omitempty"`
+	Quality uint64              `json:"quality,omitempty"`
 	Cache   BilibiliVendorCache `gorm:"-:all" json:"-"`
 }
 

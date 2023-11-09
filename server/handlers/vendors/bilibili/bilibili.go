@@ -7,11 +7,14 @@ import (
 
 	"github.com/gin-gonic/gin"
 	json "github.com/json-iterator/go"
+	"github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/internal/db"
 	dbModel "github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
+	"github.com/synctv-org/synctv/internal/vendor"
 	"github.com/synctv-org/synctv/server/model"
-	"github.com/synctv-org/synctv/vendors/bilibili"
+	"github.com/synctv-org/synctv/utils"
+	"github.com/synctv-org/vendors/api/bilibili"
 )
 
 type ParseReq struct {
@@ -38,67 +41,79 @@ func Parse(ctx *gin.Context) {
 		return
 	}
 
-	matchType, id, err := bilibili.Match(req.URL)
+	resp, err := vendor.BilibiliClient().Match(ctx, &bilibili.MatchReq{
+		Url: req.URL,
+	})
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
-	vendor, err := db.FirstOrCreateVendorByUserIDAndVendor(user.ID, dbModel.StreamingVendorBilibili)
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
-		return
-	}
-	cli, err := bilibili.NewClient(vendor.Cookies)
+	v, err := db.FirstOrCreateVendorByUserIDAndVendor(user.ID, dbModel.StreamingVendorBilibili)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}
 
-	switch matchType {
+	switch resp.Type {
 	case "bv":
-		mpis, err := cli.ParseVideoPage(0, id, bilibili.WithGetSections(ctx.DefaultQuery("sections", "false") == "true"))
+		resp, err := vendor.BilibiliClient().ParseVideoPage(ctx, &bilibili.ParseVideoPageReq{
+			Cookies:  utils.HttpCookieToMap(v.Cookies),
+			Bvid:     resp.Id,
+			Sections: ctx.DefaultQuery("sections", "false") == "true",
+		})
 		if err != nil {
-			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 			return
 		}
-		ctx.JSON(http.StatusOK, model.NewApiDataResp(mpis))
+		ctx.JSON(http.StatusOK, model.NewApiDataResp(resp))
 	case "av":
-		aid, err := strconv.Atoi(id)
+		aid, err := strconv.ParseUint(resp.Id, 10, 64)
 		if err != nil {
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 			return
 		}
-		mpis, err := cli.ParseVideoPage(uint(aid), "", bilibili.WithGetSections(ctx.DefaultQuery("sections", "false") == "true"))
+		resp, err := vendor.BilibiliClient().ParseVideoPage(ctx, &bilibili.ParseVideoPageReq{
+			Cookies:  utils.HttpCookieToMap(v.Cookies),
+			Aid:      aid,
+			Sections: ctx.DefaultQuery("sections", "false") == "true",
+		})
 		if err != nil {
-			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 			return
 		}
-		ctx.JSON(http.StatusOK, model.NewApiDataResp(mpis))
+		ctx.JSON(http.StatusOK, model.NewApiDataResp(resp))
 	case "ep":
-		epId, err := strconv.Atoi(id)
+		epid, err := strconv.ParseUint(resp.Id, 10, 64)
 		if err != nil {
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 			return
 		}
-		mpis, err := cli.ParsePGCPage(uint(epId), 0)
+		resp, err := vendor.BilibiliClient().ParsePGCPage(ctx, &bilibili.ParsePGCPageReq{
+			Cookies: utils.HttpCookieToMap(v.Cookies),
+			Epid:    epid,
+		})
 		if err != nil {
-			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 			return
 		}
-		ctx.JSON(http.StatusOK, model.NewApiDataResp(mpis))
+		logrus.Info(resp)
+		ctx.JSON(http.StatusOK, model.NewApiDataResp(resp))
 	case "ss":
-		seasonId, err := strconv.Atoi(id)
+		ssid, err := strconv.ParseUint(resp.Id, 10, 64)
 		if err != nil {
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 			return
 		}
-		mpis, err := cli.ParsePGCPage(0, uint(seasonId))
+		resp, err := vendor.BilibiliClient().ParsePGCPage(ctx, &bilibili.ParsePGCPageReq{
+			Cookies: utils.HttpCookieToMap(v.Cookies),
+			Ssid:    ssid,
+		})
 		if err != nil {
-			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 			return
 		}
-		ctx.JSON(http.StatusOK, model.NewApiDataResp(mpis))
+		ctx.JSON(http.StatusOK, model.NewApiDataResp(resp))
 	default:
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorStringResp("unknown match type"))
 		return

@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	synccache "github.com/synctv-org/synctv/utils/syncCache"
+	"github.com/zijiren233/gencontainer/synccache"
 )
 
 //go:embed templates/*.html

@@ -2,8 +2,11 @@ package vendor
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/go-kratos/aegis/circuitbreaker"
@@ -12,8 +15,8 @@ import (
 	"github.com/go-kratos/kratos/contrib/registry/etcd/v2"
 	"github.com/go-kratos/kratos/v2/middleware/auth/jwt"
 	kcircuitbreaker "github.com/go-kratos/kratos/v2/middleware/circuitbreaker"
-	"github.com/go-kratos/kratos/v2/selector"
-	"github.com/go-kratos/kratos/v2/selector/wrr"
+	"google.golang.org/grpc"
+
 	ggrpc "github.com/go-kratos/kratos/v2/transport/grpc"
 	"github.com/go-kratos/kratos/v2/transport/http"
 	jwtv4 "github.com/golang-jwt/jwt/v4"
@@ -31,7 +34,7 @@ func BilibiliClient() Bilibili {
 
 var (
 	bilibiliClient        Bilibili
-	bilibiliDefaultClient = bilibiliService.NewBilibiliService(nil)
+	bilibiliDefaultClient Bilibili
 )
 
 type Bilibili interface {
@@ -63,147 +66,187 @@ var (
 
 func InitBilibili(conf *conf.Bilibili) error {
 	key := []byte(conf.JwtSecret)
-	selector.SetGlobalSelector(wrr.NewBuilder())
-	if conf.Endpoint != "" {
-		switch conf.Scheme {
-		case "grpc":
-			con, err := ggrpc.DialInsecure(
-				context.Background(),
-				ggrpc.WithEndpoint(conf.Endpoint),
-				ggrpc.WithMiddleware(
-					jwt.Client(func(token *jwtv4.Token) (interface{}, error) {
-						return key, nil
-					}, jwt.WithSigningMethod(jwtv4.SigningMethodHS256)),
-					circuitBreaker,
-				),
-			)
-			if err != nil {
-				return err
-			}
-			bilibiliClient = newGrpcBilibili(bilibili.NewBilibiliClient(con))
-			log.Infof("bilibili client init success with endpoint: %s", conf.Endpoint)
-		case "http":
-			cli, err := http.NewClient(
-				context.Background(),
-				http.WithEndpoint(conf.Endpoint),
-				http.WithMiddleware(
-					jwt.Client(func(token *jwtv4.Token) (interface{}, error) {
-						return key, nil
-					}, jwt.WithSigningMethod(jwtv4.SigningMethodHS256)),
-					circuitBreaker,
-				),
-			)
-			if err != nil {
-				return err
-			}
-			bilibiliClient = newHTTPBilibili(bilibili.NewBilibiliHTTPClient(cli))
-		default:
-			return errors.New("unknow bilibili scheme")
+	bilibiliDefaultClient = bilibiliService.NewBilibiliService(nil)
+	switch conf.Scheme {
+	case "grpc":
+		opts := []ggrpc.ClientOption{}
+
+		if conf.JwtSecret != "" {
+			opts = append(opts, ggrpc.WithMiddleware(
+				jwt.Client(func(token *jwtv4.Token) (interface{}, error) {
+					return key, nil
+				}, jwt.WithSigningMethod(jwtv4.SigningMethodHS256)),
+				circuitBreaker,
+			))
 		}
 
-	} else if conf.Consul.Endpoint != "" {
-		if conf.ServerName == "" {
-			return errors.New("bilibili server name is empty")
-		}
-		c := api.DefaultConfig()
-		c.Address = conf.Consul.Endpoint
-		client, err := api.NewClient(c)
-		if err != nil {
-			panic(err)
-		}
-		endpoint := fmt.Sprintf("discovery:///%s", conf.ServerName)
-		dis := consul.New(client)
-		switch conf.Scheme {
-		case "grpc":
-			con, err := ggrpc.DialInsecure(
-				context.Background(),
-				ggrpc.WithEndpoint(endpoint),
-				ggrpc.WithDiscovery(dis),
-				ggrpc.WithMiddleware(
-					jwt.Client(func(token *jwtv4.Token) (interface{}, error) {
-						return key, nil
-					}, jwt.WithSigningMethod(jwtv4.SigningMethodHS256)),
-					circuitBreaker,
-				),
-			)
+		if conf.TimeOut != "" {
+			timeout, err := time.ParseDuration(conf.TimeOut)
 			if err != nil {
 				return err
 			}
-			bilibiliClient = newGrpcBilibili(bilibili.NewBilibiliClient(con))
-		case "http":
-			cli, err := http.NewClient(
-				context.Background(),
-				http.WithEndpoint(endpoint),
-				http.WithDiscovery(dis),
-				http.WithMiddleware(
-					jwt.Client(func(token *jwtv4.Token) (interface{}, error) {
-						return key, nil
-					}, jwt.WithSigningMethod(jwtv4.SigningMethodHS256)),
-					circuitBreaker,
-				),
-			)
+			opts = append(opts, ggrpc.WithTimeout(timeout))
+		}
+
+		if conf.Endpoint != "" {
+			opts = append(opts, ggrpc.WithEndpoint(conf.Endpoint))
+			log.Infof("bilibili client init success with endpoint: %s", conf.Endpoint)
+		} else if conf.Consul.Endpoint != "" {
+			if conf.ServerName == "" {
+				return errors.New("bilibili server name is empty")
+			}
+			c := api.DefaultConfig()
+			c.Address = conf.Consul.Endpoint
+			client, err := api.NewClient(c)
 			if err != nil {
 				return err
 			}
-			bilibiliClient = newHTTPBilibili(bilibili.NewBilibiliHTTPClient(cli))
-		default:
-			return errors.New("unknow bilibili scheme")
+			endpoint := fmt.Sprintf("discovery:///%s", conf.ServerName)
+			dis := consul.New(client)
+			opts = append(opts, ggrpc.WithEndpoint(endpoint), ggrpc.WithDiscovery(dis))
+			log.Infof("bilibili client init success with consul: %s", conf.Consul.Endpoint)
+		} else if len(conf.Etcd.Endpoints) > 0 {
+			if conf.ServerName == "" {
+				return errors.New("bilibili server name is empty")
+			}
+			endpoint := fmt.Sprintf("discovery:///%s", conf.ServerName)
+			cli, err := clientv3.New(clientv3.Config{
+				Endpoints: conf.Etcd.Endpoints,
+				Username:  conf.Etcd.Username,
+				Password:  conf.Etcd.Password,
+			})
+			if err != nil {
+				return err
+			}
+			dis := etcd.New(cli)
+			opts = append(opts, ggrpc.WithEndpoint(endpoint), ggrpc.WithDiscovery(dis))
+			log.Infof("bilibili client init success with etcd: %v", conf.Etcd.Endpoints)
+		} else {
+			bilibiliClient = bilibiliDefaultClient
+			return nil
 		}
-		log.Infof("bilibili client init success with consul: %s", conf.Consul.Endpoint)
-	} else if len(conf.Etcd.Endpoints) > 0 {
-		if conf.ServerName == "" {
-			return errors.New("bilibili server name is empty")
+		var (
+			con *grpc.ClientConn
+			err error
+		)
+		if conf.Tls {
+			var rootCAs *x509.CertPool
+			rootCAs, err = x509.SystemCertPool()
+			if err != nil {
+				fmt.Println("Failed to load system root CA:", err)
+				return err
+			}
+			if conf.CustomCAFile != "" {
+				b, err := os.ReadFile(conf.CustomCAFile)
+				if err != nil {
+					panic(err)
+				}
+				rootCAs.AppendCertsFromPEM(b)
+			}
+			opts = append(opts, ggrpc.WithTLSConfig(&tls.Config{
+				RootCAs: rootCAs,
+			}))
+
+			con, err = ggrpc.Dial(
+				context.Background(),
+				opts...,
+			)
+		} else {
+			con, err = ggrpc.DialInsecure(
+				context.Background(),
+				opts...,
+			)
 		}
-		endpoint := fmt.Sprintf("discovery:///%s", conf.ServerName)
-		cli, err := clientv3.New(clientv3.Config{
-			Endpoints: conf.Etcd.Endpoints,
-			Username:  conf.Etcd.Username,
-			Password:  conf.Etcd.Password,
-		})
 		if err != nil {
 			return err
 		}
-		dis := etcd.New(cli)
-		switch conf.Scheme {
-		case "grpc":
-			con, err := ggrpc.DialInsecure(
-				context.Background(),
-				ggrpc.WithEndpoint(endpoint),
-				ggrpc.WithDiscovery(dis),
-				ggrpc.WithMiddleware(
-					jwt.Client(func(token *jwtv4.Token) (interface{}, error) {
-						return key, nil
-					}, jwt.WithSigningMethod(jwtv4.SigningMethodHS256)),
-					circuitBreaker,
-				),
-			)
+		bilibiliClient = newGrpcBilibili(bilibili.NewBilibiliClient(con))
+	case "http":
+		opts := []http.ClientOption{}
+		if conf.Tls {
+			rootCAs, err := x509.SystemCertPool()
 			if err != nil {
+				fmt.Println("Failed to load system root CA:", err)
 				return err
 			}
-			bilibiliClient = newGrpcBilibili(bilibili.NewBilibiliClient(con))
-		case "http":
-			cli, err := http.NewClient(
-				context.Background(),
-				http.WithEndpoint(endpoint),
-				http.WithDiscovery(dis),
-				http.WithMiddleware(
-					jwt.Client(func(token *jwtv4.Token) (interface{}, error) {
-						return key, nil
-					}, jwt.WithSigningMethod(jwtv4.SigningMethodHS256)),
-					circuitBreaker,
-				),
-			)
-			if err != nil {
-				return err
+			if conf.CustomCAFile != "" {
+				b, err := os.ReadFile(conf.CustomCAFile)
+				if err != nil {
+					panic(err)
+				}
+				rootCAs.AppendCertsFromPEM(b)
 			}
-			bilibiliClient = newHTTPBilibili(bilibili.NewBilibiliHTTPClient(cli))
-		default:
-			return errors.New("unknow bilibili scheme")
+			opts = append(opts, http.WithTLSConfig(&tls.Config{
+				RootCAs: rootCAs,
+			}))
 		}
-		log.Infof("bilibili client init success with etcd: %v", conf.Etcd.Endpoints)
-	} else {
-		bilibiliClient = bilibiliDefaultClient
+
+		if conf.JwtSecret != "" {
+			opts = append(opts, http.WithMiddleware(
+				jwt.Client(func(token *jwtv4.Token) (interface{}, error) {
+					return key, nil
+				}, jwt.WithSigningMethod(jwtv4.SigningMethodHS256)),
+				circuitBreaker,
+			))
+		}
+
+		if conf.TimeOut != "" {
+			timeout, err := time.ParseDuration(conf.TimeOut)
+			if err != nil {
+				return err
+			}
+			opts = append(opts, http.WithTimeout(timeout))
+		}
+
+		if conf.Endpoint != "" {
+			opts = append(opts, http.WithEndpoint(conf.Endpoint))
+			log.Infof("bilibili client init success with endpoint: %s", conf.Endpoint)
+		} else if conf.Consul.Endpoint != "" {
+			if conf.ServerName == "" {
+				return errors.New("bilibili server name is empty")
+			}
+			c := api.DefaultConfig()
+			c.Address = conf.Consul.Endpoint
+			client, err := api.NewClient(c)
+			if err != nil {
+				return err
+			}
+			endpoint := fmt.Sprintf("discovery:///%s", conf.ServerName)
+			dis := consul.New(client)
+			opts = append(opts, http.WithEndpoint(endpoint), http.WithDiscovery(dis))
+			log.Infof("bilibili client init success with consul: %s", conf.Consul.Endpoint)
+		} else if len(conf.Etcd.Endpoints) > 0 {
+			if conf.ServerName == "" {
+				return errors.New("bilibili server name is empty")
+			}
+			endpoint := fmt.Sprintf("discovery:///%s", conf.ServerName)
+			cli, err := clientv3.New(clientv3.Config{
+				Endpoints: conf.Etcd.Endpoints,
+				Username:  conf.Etcd.Username,
+				Password:  conf.Etcd.Password,
+			})
+			if err != nil {
+				return err
+			}
+			dis := etcd.New(cli)
+			opts = append(opts, http.WithEndpoint(endpoint), http.WithDiscovery(dis))
+			log.Infof("bilibili client init success with etcd: %v", conf.Etcd.Endpoints)
+		} else {
+			bilibiliClient = bilibiliDefaultClient
+			return nil
+		}
+		con, err := http.NewClient(
+			context.Background(),
+			opts...,
+		)
+		if err != nil {
+			return err
+		}
+		bilibiliClient = newHTTPBilibili(bilibili.NewBilibiliHTTPClient(con))
+	default:
+		return errors.New("unknow bilibili scheme")
 	}
+
 	return nil
 }
 

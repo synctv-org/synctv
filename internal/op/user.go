@@ -16,10 +16,17 @@ func (u *User) CreateRoom(name, password string, conf ...db.CreateRoomConfig) (*
 	if u.IsBanned() {
 		return nil, errors.New("user banned")
 	}
-	if !u.IsAdmin() && settings.CreateRoomNeedReview.Get() {
-		conf = append(conf, db.WithStatus(model.RoomStatusPending))
-	} else {
+	if u.IsAdmin() {
 		conf = append(conf, db.WithStatus(model.RoomStatusActive))
+	} else {
+		if password == "" && settings.RoomMustNeedPwd.Get() {
+			return nil, errors.New("room must need password")
+		}
+		if settings.CreateRoomNeedReview.Get() {
+			conf = append(conf, db.WithStatus(model.RoomStatusPending))
+		} else {
+			conf = append(conf, db.WithStatus(model.RoomStatusActive))
+		}
 	}
 	return db.CreateRoom(name, password, append(conf, db.WithCreator(&u.User))...)
 }
@@ -86,6 +93,9 @@ func (u *User) DeleteRoom(room *Room) error {
 func (u *User) SetRoomPassword(room *Room, password string) error {
 	if !u.HasRoomPermission(room, model.PermissionEditRoom) {
 		return model.ErrNoPermission
+	}
+	if !u.IsAdmin() && password == "" && settings.RoomMustNeedPwd.Get() {
+		return errors.New("room must need password")
 	}
 	return room.SetPassword(password)
 }

@@ -7,7 +7,6 @@ import (
 
 	json "github.com/json-iterator/go"
 	"github.com/synctv-org/synctv/internal/op"
-	"github.com/synctv-org/synctv/internal/settings"
 
 	"github.com/gin-gonic/gin"
 	dbModel "github.com/synctv-org/synctv/internal/model"
@@ -64,8 +63,6 @@ func (c *CreateRoomReq) Validate() error {
 		} else if !alnumPrintReg.MatchString(c.Password) {
 			return ErrPasswordHasInvalidChar
 		}
-	} else if settings.CreateRoomNeedPwd.Get() {
-		return FormatEmptyPasswordError("room")
 	}
 
 	return nil
@@ -105,8 +102,6 @@ func (s *SetRoomPasswordReq) Validate() error {
 		} else if !alnumPrintReg.MatchString(s.Password) {
 			return ErrPasswordHasInvalidChar
 		}
-	} else if settings.CreateRoomNeedPwd.Get() {
-		return FormatEmptyPasswordError("room")
 	}
 	return nil
 }

@@ -26,7 +26,7 @@ func Me(ctx *gin.Context) {
 		}))
 		return
 	}
-	resp, err := vendor.BilibiliClient().UserInfo(ctx, &bilibili.UserInfoReq{
+	resp, err := vendor.BilibiliClient("").UserInfo(ctx, &bilibili.UserInfoReq{
 		Cookies: utils.HttpCookieToMap(v.Cookies),
 	})
 	if err != nil {

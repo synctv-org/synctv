@@ -28,13 +28,22 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
-func BilibiliClient() Bilibili {
-	return bilibiliClient
+func BilibiliClient(name string) Bilibili {
+	if name != "" && clients != nil {
+		if cli, ok := clients[name]; ok {
+			return cli
+		}
+	}
+	return bilibiliDefaultClient
+}
+
+func BilibiliClients() map[string]Bilibili {
+	return clients
 }
 
 var (
-	bilibiliClient        Bilibili
 	bilibiliDefaultClient Bilibili
+	clients               map[string]Bilibili
 )
 
 type Bilibili interface {
@@ -54,19 +63,23 @@ type Bilibili interface {
 	Match(ctx context.Context, in *bilibili.MatchReq) (*bilibili.MatchResp, error)
 }
 
-var (
-	b = sre.NewBreaker(
-		sre.WithRequest(25),
-		sre.WithWindow(time.Second*15),
-	)
-	circuitBreaker = kcircuitbreaker.Client(kcircuitbreaker.WithCircuitBreaker(func() circuitbreaker.CircuitBreaker {
-		return b
-	}))
-)
-
-func InitBilibili(conf *conf.Bilibili) error {
-	key := []byte(conf.JwtSecret)
+func InitBilibiliVendors(conf map[string]conf.VendorBilibili) error {
 	bilibiliDefaultClient = bilibiliService.NewBilibiliService(nil)
+	if clients == nil {
+		clients = make(map[string]Bilibili, len(conf))
+	}
+	for k, vb := range conf {
+		cli, err := InitBilibili(&vb)
+		if err != nil {
+			return err
+		}
+		clients[k] = cli
+	}
+	return nil
+}
+
+func InitBilibili(conf *conf.VendorBilibili) (Bilibili, error) {
+	key := []byte(conf.JwtSecret)
 	switch conf.Scheme {
 	case "grpc":
 		opts := []ggrpc.ClientOption{}
@@ -76,14 +89,19 @@ func InitBilibili(conf *conf.Bilibili) error {
 				jwt.Client(func(token *jwtv4.Token) (interface{}, error) {
 					return key, nil
 				}, jwt.WithSigningMethod(jwtv4.SigningMethodHS256)),
-				circuitBreaker,
+				kcircuitbreaker.Client(kcircuitbreaker.WithCircuitBreaker(func() circuitbreaker.CircuitBreaker {
+					return sre.NewBreaker(
+						sre.WithRequest(25),
+						sre.WithWindow(time.Second*15),
+					)
+				})),
 			))
 		}
 
 		if conf.TimeOut != "" {
 			timeout, err := time.ParseDuration(conf.TimeOut)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			opts = append(opts, ggrpc.WithTimeout(timeout))
 		}
@@ -93,13 +111,13 @@ func InitBilibili(conf *conf.Bilibili) error {
 			log.Infof("bilibili client init success with endpoint: %s", conf.Endpoint)
 		} else if conf.Consul.Endpoint != "" {
 			if conf.ServerName == "" {
-				return errors.New("bilibili server name is empty")
+				return nil, errors.New("bilibili server name is empty")
 			}
 			c := api.DefaultConfig()
 			c.Address = conf.Consul.Endpoint
 			client, err := api.NewClient(c)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			endpoint := fmt.Sprintf("discovery:///%s", conf.ServerName)
 			dis := consul.New(client)
@@ -107,7 +125,7 @@ func InitBilibili(conf *conf.Bilibili) error {
 			log.Infof("bilibili client init success with consul: %s", conf.Consul.Endpoint)
 		} else if len(conf.Etcd.Endpoints) > 0 {
 			if conf.ServerName == "" {
-				return errors.New("bilibili server name is empty")
+				return nil, errors.New("bilibili server name is empty")
 			}
 			endpoint := fmt.Sprintf("discovery:///%s", conf.ServerName)
 			cli, err := clientv3.New(clientv3.Config{
@@ -116,14 +134,13 @@ func InitBilibili(conf *conf.Bilibili) error {
 				Password:  conf.Etcd.Password,
 			})
 			if err != nil {
-				return err
+				return nil, err
 			}
 			dis := etcd.New(cli)
 			opts = append(opts, ggrpc.WithEndpoint(endpoint), ggrpc.WithDiscovery(dis))
 			log.Infof("bilibili client init success with etcd: %v", conf.Etcd.Endpoints)
 		} else {
-			bilibiliClient = bilibiliDefaultClient
-			return nil
+			return bilibiliDefaultClient, nil
 		}
 		var (
 			con *grpc.ClientConn
@@ -133,8 +150,7 @@ func InitBilibili(conf *conf.Bilibili) error {
 			var rootCAs *x509.CertPool
 			rootCAs, err = x509.SystemCertPool()
 			if err != nil {
-				fmt.Println("Failed to load system root CA:", err)
-				return err
+				return nil, err
 			}
 			if conf.CustomCAFile != "" {
 				b, err := os.ReadFile(conf.CustomCAFile)
@@ -158,16 +174,15 @@ func InitBilibili(conf *conf.Bilibili) error {
 			)
 		}
 		if err != nil {
-			return err
+			return nil, err
 		}
-		bilibiliClient = newGrpcBilibili(bilibili.NewBilibiliClient(con))
+		return newGrpcBilibili(bilibili.NewBilibiliClient(con)), nil
 	case "http":
 		opts := []http.ClientOption{}
 		if conf.Tls {
 			rootCAs, err := x509.SystemCertPool()
 			if err != nil {
-				fmt.Println("Failed to load system root CA:", err)
-				return err
+				return nil, err
 			}
 			if conf.CustomCAFile != "" {
 				b, err := os.ReadFile(conf.CustomCAFile)
@@ -186,14 +201,19 @@ func InitBilibili(conf *conf.Bilibili) error {
 				jwt.Client(func(token *jwtv4.Token) (interface{}, error) {
 					return key, nil
 				}, jwt.WithSigningMethod(jwtv4.SigningMethodHS256)),
-				circuitBreaker,
+				kcircuitbreaker.Client(kcircuitbreaker.WithCircuitBreaker(func() circuitbreaker.CircuitBreaker {
+					return sre.NewBreaker(
+						sre.WithRequest(25),
+						sre.WithWindow(time.Second*15),
+					)
+				})),
 			))
 		}
 
 		if conf.TimeOut != "" {
 			timeout, err := time.ParseDuration(conf.TimeOut)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			opts = append(opts, http.WithTimeout(timeout))
 		}
@@ -203,21 +223,26 @@ func InitBilibili(conf *conf.Bilibili) error {
 			log.Infof("bilibili client init success with endpoint: %s", conf.Endpoint)
 		} else if conf.Consul.Endpoint != "" {
 			if conf.ServerName == "" {
-				return errors.New("bilibili server name is empty")
+				return nil, errors.New("bilibili server name is empty")
 			}
 			c := api.DefaultConfig()
 			c.Address = conf.Consul.Endpoint
 			client, err := api.NewClient(c)
 			if err != nil {
-				return err
+				return nil, err
 			}
+			c.Token = conf.Consul.Token
+			c.TokenFile = conf.Consul.TokenFile
+			c.PathPrefix = conf.Consul.PathPrefix
+			c.Namespace = conf.Consul.Namespace
+			c.Partition = conf.Consul.Partition
 			endpoint := fmt.Sprintf("discovery:///%s", conf.ServerName)
 			dis := consul.New(client)
 			opts = append(opts, http.WithEndpoint(endpoint), http.WithDiscovery(dis))
 			log.Infof("bilibili client init success with consul: %s", conf.Consul.Endpoint)
 		} else if len(conf.Etcd.Endpoints) > 0 {
 			if conf.ServerName == "" {
-				return errors.New("bilibili server name is empty")
+				return nil, errors.New("bilibili server name is empty")
 			}
 			endpoint := fmt.Sprintf("discovery:///%s", conf.ServerName)
 			cli, err := clientv3.New(clientv3.Config{
@@ -226,28 +251,25 @@ func InitBilibili(conf *conf.Bilibili) error {
 				Password:  conf.Etcd.Password,
 			})
 			if err != nil {
-				return err
+				return nil, err
 			}
 			dis := etcd.New(cli)
 			opts = append(opts, http.WithEndpoint(endpoint), http.WithDiscovery(dis))
 			log.Infof("bilibili client init success with etcd: %v", conf.Etcd.Endpoints)
 		} else {
-			bilibiliClient = bilibiliDefaultClient
-			return nil
+			return bilibiliDefaultClient, nil
 		}
 		con, err := http.NewClient(
 			context.Background(),
 			opts...,
 		)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		bilibiliClient = newHTTPBilibili(bilibili.NewBilibiliHTTPClient(con))
+		return newHTTPBilibili(bilibili.NewBilibiliHTTPClient(con)), nil
 	default:
-		return errors.New("unknow bilibili scheme")
+		return nil, errors.New("unknow bilibili scheme")
 	}
-
-	return nil
 }
 
 var _ Bilibili = (*grpcBilibili)(nil)
@@ -263,115 +285,59 @@ func newGrpcBilibili(client bilibili.BilibiliClient) *grpcBilibili {
 }
 
 func (g *grpcBilibili) NewQRCode(ctx context.Context, in *bilibili.Empty) (*bilibili.NewQRCodeResp, error) {
-	resp, err := g.client.NewQRCode(ctx, in)
-	if err != nil && errors.Is(err, kcircuitbreaker.ErrNotAllowed) {
-		return bilibiliDefaultClient.NewQRCode(ctx, in)
-	}
-	return resp, err
+	return g.client.NewQRCode(ctx, in)
 }
 
 func (g *grpcBilibili) LoginWithQRCode(ctx context.Context, in *bilibili.LoginWithQRCodeReq) (*bilibili.LoginWithQRCodeResp, error) {
-	resp, err := g.client.LoginWithQRCode(ctx, in)
-	if err != nil && errors.Is(err, kcircuitbreaker.ErrNotAllowed) {
-		return bilibiliDefaultClient.LoginWithQRCode(ctx, in)
-	}
-	return resp, err
+	return g.client.LoginWithQRCode(ctx, in)
 }
 
 func (g *grpcBilibili) NewCaptcha(ctx context.Context, in *bilibili.Empty) (*bilibili.NewCaptchaResp, error) {
-	resp, err := g.client.NewCaptcha(ctx, in)
-	if err != nil && errors.Is(err, kcircuitbreaker.ErrNotAllowed) {
-		return bilibiliDefaultClient.NewCaptcha(ctx, in)
-	}
-	return resp, err
+	return g.client.NewCaptcha(ctx, in)
 }
 
 func (g *grpcBilibili) NewSMS(ctx context.Context, in *bilibili.NewSMSReq) (*bilibili.NewSMSResp, error) {
-	resp, err := g.client.NewSMS(ctx, in)
-	if err != nil && errors.Is(err, kcircuitbreaker.ErrNotAllowed) {
-		return bilibiliDefaultClient.NewSMS(ctx, in)
-	}
-	return resp, err
+	return g.client.NewSMS(ctx, in)
 }
 
 func (g *grpcBilibili) LoginWithSMS(ctx context.Context, in *bilibili.LoginWithSMSReq) (*bilibili.LoginWithSMSResp, error) {
-	resp, err := g.client.LoginWithSMS(ctx, in)
-	if err != nil && errors.Is(err, kcircuitbreaker.ErrNotAllowed) {
-		return bilibiliDefaultClient.LoginWithSMS(ctx, in)
-	}
-	return resp, err
+	return g.client.LoginWithSMS(ctx, in)
 }
 
 func (g *grpcBilibili) ParseVideoPage(ctx context.Context, in *bilibili.ParseVideoPageReq) (*bilibili.VideoPageInfo, error) {
-	resp, err := g.client.ParseVideoPage(ctx, in)
-	if err != nil && errors.Is(err, kcircuitbreaker.ErrNotAllowed) {
-		return bilibiliDefaultClient.ParseVideoPage(ctx, in)
-	}
-	return resp, err
+	return g.client.ParseVideoPage(ctx, in)
 }
 
 func (g *grpcBilibili) GetVideoURL(ctx context.Context, in *bilibili.GetVideoURLReq) (*bilibili.VideoURL, error) {
-	resp, err := g.client.GetVideoURL(ctx, in)
-	if err != nil && errors.Is(err, kcircuitbreaker.ErrNotAllowed) {
-		return bilibiliDefaultClient.GetVideoURL(ctx, in)
-	}
-	return resp, err
+	return g.client.GetVideoURL(ctx, in)
 }
 
 func (g *grpcBilibili) GetDashVideoURL(ctx context.Context, in *bilibili.GetDashVideoURLReq) (*bilibili.GetDashVideoURLResp, error) {
-	resp, err := g.client.GetDashVideoURL(ctx, in)
-	if err != nil && errors.Is(err, kcircuitbreaker.ErrNotAllowed) {
-		return bilibiliDefaultClient.GetDashVideoURL(ctx, in)
-	}
-	return resp, err
+	return g.client.GetDashVideoURL(ctx, in)
 }
 
 func (g *grpcBilibili) GetSubtitles(ctx context.Context, in *bilibili.GetSubtitlesReq) (*bilibili.GetSubtitlesResp, error) {
-	resp, err := g.client.GetSubtitles(ctx, in)
-	if err != nil && errors.Is(err, kcircuitbreaker.ErrNotAllowed) {
-		return bilibiliDefaultClient.GetSubtitles(ctx, in)
-	}
-	return resp, err
+	return g.client.GetSubtitles(ctx, in)
 }
 
 func (g *grpcBilibili) ParsePGCPage(ctx context.Context, in *bilibili.ParsePGCPageReq) (*bilibili.VideoPageInfo, error) {
-	resp, err := g.client.ParsePGCPage(ctx, in)
-	if err != nil && errors.Is(err, kcircuitbreaker.ErrNotAllowed) {
-		return bilibiliDefaultClient.ParsePGCPage(ctx, in)
-	}
-	return resp, err
+	return g.client.ParsePGCPage(ctx, in)
 }
 
 func (g *grpcBilibili) GetPGCURL(ctx context.Context, in *bilibili.GetPGCURLReq) (*bilibili.VideoURL, error) {
-	resp, err := g.client.GetPGCURL(ctx, in)
-	if err != nil && errors.Is(err, kcircuitbreaker.ErrNotAllowed) {
-		return bilibiliDefaultClient.GetPGCURL(ctx, in)
-	}
-	return resp, err
+	return g.client.GetPGCURL(ctx, in)
 }
 
 func (g *grpcBilibili) GetDashPGCURL(ctx context.Context, in *bilibili.GetDashPGCURLReq) (*bilibili.GetDashPGCURLResp, error) {
-	resp, err := g.client.GetDashPGCURL(ctx, in)
-	if err != nil && errors.Is(err, kcircuitbreaker.ErrNotAllowed) {
-		return bilibiliDefaultClient.GetDashPGCURL(ctx, in)
-	}
-	return resp, err
+	return g.client.GetDashPGCURL(ctx, in)
 }
 
 func (g *grpcBilibili) UserInfo(ctx context.Context, in *bilibili.UserInfoReq) (*bilibili.UserInfoResp, error) {
-	resp, err := g.client.UserInfo(ctx, in)
-	if err != nil && errors.Is(err, kcircuitbreaker.ErrNotAllowed) {
-		return bilibiliDefaultClient.UserInfo(ctx, in)
-	}
-	return resp, err
+	return g.client.UserInfo(ctx, in)
 }
 
 func (g *grpcBilibili) Match(ctx context.Context, in *bilibili.MatchReq) (*bilibili.MatchResp, error) {
-	resp, err := g.client.Match(ctx, in)
-	if err != nil && errors.Is(err, kcircuitbreaker.ErrNotAllowed) {
-		return bilibiliDefaultClient.Match(ctx, in)
-	}
-	return resp, err
+	return g.client.Match(ctx, in)
 }
 
 var _ Bilibili = (*httpBilibili)(nil)
@@ -387,113 +353,57 @@ func newHTTPBilibili(client bilibili.BilibiliHTTPClient) *httpBilibili {
 }
 
 func (h *httpBilibili) NewQRCode(ctx context.Context, in *bilibili.Empty) (*bilibili.NewQRCodeResp, error) {
-	resp, err := h.client.NewQRCode(ctx, in)
-	if err != nil && errors.Is(err, kcircuitbreaker.ErrNotAllowed) {
-		return bilibiliDefaultClient.NewQRCode(ctx, in)
-	}
-	return resp, err
+	return h.client.NewQRCode(ctx, in)
 }
 
 func (h *httpBilibili) LoginWithQRCode(ctx context.Context, in *bilibili.LoginWithQRCodeReq) (*bilibili.LoginWithQRCodeResp, error) {
-	resp, err := h.client.LoginWithQRCode(ctx, in)
-	if err != nil && errors.Is(err, kcircuitbreaker.ErrNotAllowed) {
-		return bilibiliDefaultClient.LoginWithQRCode(ctx, in)
-	}
-	return resp, err
+	return h.client.LoginWithQRCode(ctx, in)
 }
 
 func (h *httpBilibili) NewCaptcha(ctx context.Context, in *bilibili.Empty) (*bilibili.NewCaptchaResp, error) {
-	resp, err := h.client.NewCaptcha(ctx, in)
-	if err != nil && errors.Is(err, kcircuitbreaker.ErrNotAllowed) {
-		return bilibiliDefaultClient.NewCaptcha(ctx, in)
-	}
-	return resp, err
+	return h.client.NewCaptcha(ctx, in)
 }
 
 func (h *httpBilibili) NewSMS(ctx context.Context, in *bilibili.NewSMSReq) (*bilibili.NewSMSResp, error) {
-	resp, err := h.client.NewSMS(ctx, in)
-	if err != nil && errors.Is(err, kcircuitbreaker.ErrNotAllowed) {
-		return bilibiliDefaultClient.NewSMS(ctx, in)
-	}
-	return resp, err
+	return h.client.NewSMS(ctx, in)
 }
 
 func (h *httpBilibili) LoginWithSMS(ctx context.Context, in *bilibili.LoginWithSMSReq) (*bilibili.LoginWithSMSResp, error) {
-	resp, err := h.client.LoginWithSMS(ctx, in)
-	if err != nil && errors.Is(err, kcircuitbreaker.ErrNotAllowed) {
-		return bilibiliDefaultClient.LoginWithSMS(ctx, in)
-	}
-	return resp, err
+	return h.client.LoginWithSMS(ctx, in)
 }
 
 func (h *httpBilibili) ParseVideoPage(ctx context.Context, in *bilibili.ParseVideoPageReq) (*bilibili.VideoPageInfo, error) {
-	resp, err := h.client.ParseVideoPage(ctx, in)
-	if err != nil && errors.Is(err, kcircuitbreaker.ErrNotAllowed) {
-		return bilibiliDefaultClient.ParseVideoPage(ctx, in)
-	}
-	return resp, err
+	return h.client.ParseVideoPage(ctx, in)
 }
 
 func (h *httpBilibili) GetVideoURL(ctx context.Context, in *bilibili.GetVideoURLReq) (*bilibili.VideoURL, error) {
-	resp, err := h.client.GetVideoURL(ctx, in)
-	if err != nil && errors.Is(err, kcircuitbreaker.ErrNotAllowed) {
-		return bilibiliDefaultClient.GetVideoURL(ctx, in)
-	}
-	return resp, err
+	return h.client.GetVideoURL(ctx, in)
 }
 
 func (h *httpBilibili) GetDashVideoURL(ctx context.Context, in *bilibili.GetDashVideoURLReq) (*bilibili.GetDashVideoURLResp, error) {
-	resp, err := h.client.GetDashVideoURL(ctx, in)
-	if err != nil && errors.Is(err, kcircuitbreaker.ErrNotAllowed) {
-		return bilibiliDefaultClient.GetDashVideoURL(ctx, in)
-	}
-	return resp, err
+	return h.client.GetDashVideoURL(ctx, in)
 }
 
 func (h *httpBilibili) GetSubtitles(ctx context.Context, in *bilibili.GetSubtitlesReq) (*bilibili.GetSubtitlesResp, error) {
-	resp, err := h.client.GetSubtitles(ctx, in)
-	if err != nil && errors.Is(err, kcircuitbreaker.ErrNotAllowed) {
-		return bilibiliDefaultClient.GetSubtitles(ctx, in)
-	}
-	return resp, err
+	return h.client.GetSubtitles(ctx, in)
 }
 
 func (h *httpBilibili) ParsePGCPage(ctx context.Context, in *bilibili.ParsePGCPageReq) (*bilibili.VideoPageInfo, error) {
-	resp, err := h.client.ParsePGCPage(ctx, in)
-	if err != nil && errors.Is(err, kcircuitbreaker.ErrNotAllowed) {
-		return bilibiliDefaultClient.ParsePGCPage(ctx, in)
-	}
-	return resp, err
+	return h.client.ParsePGCPage(ctx, in)
 }
 
 func (h *httpBilibili) GetPGCURL(ctx context.Context, in *bilibili.GetPGCURLReq) (*bilibili.VideoURL, error) {
-	resp, err := h.client.GetPGCURL(ctx, in)
-	if err != nil && errors.Is(err, kcircuitbreaker.ErrNotAllowed) {
-		return bilibiliDefaultClient.GetPGCURL(ctx, in)
-	}
-	return resp, err
+	return h.client.GetPGCURL(ctx, in)
 }
 
 func (h *httpBilibili) GetDashPGCURL(ctx context.Context, in *bilibili.GetDashPGCURLReq) (*bilibili.GetDashPGCURLResp, error) {
-	resp, err := h.client.GetDashPGCURL(ctx, in)
-	if err != nil && errors.Is(err, kcircuitbreaker.ErrNotAllowed) {
-		return bilibiliDefaultClient.GetDashPGCURL(ctx, in)
-	}
-	return resp, err
+	return h.client.GetDashPGCURL(ctx, in)
 }
 
 func (h *httpBilibili) UserInfo(ctx context.Context, in *bilibili.UserInfoReq) (*bilibili.UserInfoResp, error) {
-	resp, err := h.client.UserInfo(ctx, in)
-	if err != nil && errors.Is(err, kcircuitbreaker.ErrNotAllowed) {
-		return bilibiliDefaultClient.UserInfo(ctx, in)
-	}
-	return resp, err
+	return h.client.UserInfo(ctx, in)
 }
 
 func (h *httpBilibili) Match(ctx context.Context, in *bilibili.MatchReq) (*bilibili.MatchResp, error) {
-	resp, err := h.client.Match(ctx, in)
-	if err != nil && errors.Is(err, kcircuitbreaker.ErrNotAllowed) {
-		return bilibiliDefaultClient.Match(ctx, in)
-	}
-	return resp, err
+	return h.client.Match(ctx, in)
 }

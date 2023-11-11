@@ -7,7 +7,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	json "github.com/json-iterator/go"
-	"github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/internal/db"
 	dbModel "github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
@@ -15,6 +14,7 @@ import (
 	"github.com/synctv-org/synctv/server/model"
 	"github.com/synctv-org/synctv/utils"
 	"github.com/synctv-org/vendors/api/bilibili"
+	"golang.org/x/exp/maps"
 )
 
 type ParseReq struct {
@@ -32,6 +32,10 @@ func (r *ParseReq) Decode(ctx *gin.Context) error {
 	return json.NewDecoder(ctx.Request.Body).Decode(r)
 }
 
+func Vendors(ctx *gin.Context) {
+	ctx.JSON(http.StatusOK, model.NewApiDataResp(maps.Keys(vendor.BilibiliClients())))
+}
+
 func Parse(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*op.User)
 
@@ -41,7 +45,9 @@ func Parse(ctx *gin.Context) {
 		return
 	}
 
-	resp, err := vendor.BilibiliClient().Match(ctx, &bilibili.MatchReq{
+	var cli = vendor.BilibiliClient(ctx.Query("vendor"))
+
+	resp, err := cli.Match(ctx, &bilibili.MatchReq{
 		Url: req.URL,
 	})
 	if err != nil {
@@ -57,7 +63,7 @@ func Parse(ctx *gin.Context) {
 
 	switch resp.Type {
 	case "bv":
-		resp, err := vendor.BilibiliClient().ParseVideoPage(ctx, &bilibili.ParseVideoPageReq{
+		resp, err := cli.ParseVideoPage(ctx, &bilibili.ParseVideoPageReq{
 			Cookies:  utils.HttpCookieToMap(v.Cookies),
 			Bvid:     resp.Id,
 			Sections: ctx.DefaultQuery("sections", "false") == "true",
@@ -73,7 +79,7 @@ func Parse(ctx *gin.Context) {
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 			return
 		}
-		resp, err := vendor.BilibiliClient().ParseVideoPage(ctx, &bilibili.ParseVideoPageReq{
+		resp, err := cli.ParseVideoPage(ctx, &bilibili.ParseVideoPageReq{
 			Cookies:  utils.HttpCookieToMap(v.Cookies),
 			Aid:      aid,
 			Sections: ctx.DefaultQuery("sections", "false") == "true",
@@ -89,7 +95,7 @@ func Parse(ctx *gin.Context) {
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 			return
 		}
-		resp, err := vendor.BilibiliClient().ParsePGCPage(ctx, &bilibili.ParsePGCPageReq{
+		resp, err := cli.ParsePGCPage(ctx, &bilibili.ParsePGCPageReq{
 			Cookies: utils.HttpCookieToMap(v.Cookies),
 			Epid:    epid,
 		})
@@ -97,7 +103,6 @@ func Parse(ctx *gin.Context) {
 			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 			return
 		}
-		logrus.Info(resp)
 		ctx.JSON(http.StatusOK, model.NewApiDataResp(resp))
 	case "ss":
 		ssid, err := strconv.ParseUint(resp.Id, 10, 64)
@@ -105,7 +110,7 @@ func Parse(ctx *gin.Context) {
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 			return
 		}
-		resp, err := vendor.BilibiliClient().ParsePGCPage(ctx, &bilibili.ParsePGCPageReq{
+		resp, err := cli.ParsePGCPage(ctx, &bilibili.ParsePGCPageReq{
 			Cookies: utils.HttpCookieToMap(v.Cookies),
 			Ssid:    ssid,
 		})

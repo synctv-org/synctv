@@ -115,19 +115,10 @@ func (m *BaseMovie) Validate() error {
 func (m *BaseMovie) validateVendorMovie() error {
 	switch m.VendorInfo.Vendor {
 	case StreamingVendorBilibili:
-		info := m.VendorInfo.Bilibili
-		if info.Bvid == "" && info.Epid == 0 {
-			return fmt.Errorf("bvid and epid are empty")
+		err := m.VendorInfo.Bilibili.Validate()
+		if err != nil {
+			return err
 		}
-
-		if info.Bvid != "" && info.Epid != 0 {
-			return fmt.Errorf("bvid and epid can't be set at the same time")
-		}
-
-		if info.Bvid != "" && info.Cid == 0 {
-			return fmt.Errorf("cid is empty")
-		}
-
 		if m.Headers == nil {
 			m.Headers = map[string]string{
 				"Referer":    "https://www.bilibili.com",
@@ -137,7 +128,6 @@ func (m *BaseMovie) validateVendorMovie() error {
 			m.Headers["Referer"] = "https://www.bilibili.com"
 			m.Headers["User-Agent"] = utils.UA
 		}
-
 	default:
 		return fmt.Errorf("vendor not support")
 	}
@@ -152,11 +142,28 @@ type VendorInfo struct {
 }
 
 type BilibiliVendorInfo struct {
-	Bvid    string              `json:"bvid,omitempty"`
-	Cid     uint64              `json:"cid,omitempty"`
-	Epid    uint64              `json:"epid,omitempty"`
-	Quality uint64              `json:"quality,omitempty"`
-	Cache   BilibiliVendorCache `gorm:"-:all" json:"-"`
+	Bvid       string              `json:"bvid,omitempty"`
+	Cid        uint64              `json:"cid,omitempty"`
+	Epid       uint64              `json:"epid,omitempty"`
+	Quality    uint64              `json:"quality,omitempty"`
+	VendorName string              `json:"vendorName,omitempty"`
+	Cache      BilibiliVendorCache `gorm:"-:all" json:"-"`
+}
+
+func (b *BilibiliVendorInfo) Validate() error {
+	if b.Bvid == "" && b.Epid == 0 {
+		return fmt.Errorf("bvid and epid are empty")
+	}
+
+	if b.Bvid != "" && b.Epid != 0 {
+		return fmt.Errorf("bvid and epid can't be set at the same time")
+	}
+
+	if b.Bvid != "" && b.Cid == 0 {
+		return fmt.Errorf("cid is empty")
+	}
+
+	return nil
 }
 
 type BilibiliVendorCache struct {

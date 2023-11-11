@@ -1,42 +1,39 @@
 package conf
 
 type VendorConfig struct {
-	Bilibili Bilibili `yaml:"bilibili"`
+	Bilibili map[string]VendorBilibili `yaml:"bilibili" hc:"default use local vendor"`
 }
 
 func DefaultVendorConfig() VendorConfig {
 	return VendorConfig{
-		Bilibili: DefaultBilibiliConfig(),
+		Bilibili: nil,
 	}
 }
 
 type Consul struct {
-	Endpoint string `yaml:"endpoint"`
+	Endpoint   string `yaml:"endpoint"`
+	Token      string `yaml:"token,omitempty"`
+	TokenFile  string `yaml:"token_file,omitempty"`
+	PathPrefix string `yaml:"path_prefix,omitempty"`
+	Namespace  string `yaml:"namespace,omitempty"`
+	Partition  string `yaml:"partition,omitempty"`
 }
 
 type Etcd struct {
 	Endpoints []string `yaml:"endpoints"`
-	Username  string   `yaml:"username"`
-	Password  string   `yaml:"password"`
+	Username  string   `yaml:"username,omitempty"`
+	Password  string   `yaml:"password,omitempty"`
 }
 
-type Bilibili struct {
-	ServerName   string `yaml:"server_name" env:"BILIBILI_SERVER_NAME"`
+type VendorBilibili struct {
+	ServerName   string `yaml:"server_name" hc:"if use tls and grpc, servername must set the cert server name" env:"BILIBILI_SERVER_NAME"`
 	Endpoint     string `yaml:"endpoint" env:"BILIBILI_ENDPOINT"`
 	JwtSecret    string `yaml:"jwt_secret" env:"BILIBILI_JWT_SECRET"`
 	Scheme       string `yaml:"scheme" lc:"grpc | http" env:"BILIBILI_SCHEME"`
 	Tls          bool   `yaml:"tls" env:"BILIBILI_TLS"`
-	CustomCAFile string `yaml:"custom_ca_file" env:"BILIBILI_CUSTOM_CA_FILE"`
+	CustomCAFile string `yaml:"custom_ca_file,omitempty" env:"BILIBILI_CUSTOM_CA_FILE"`
 	TimeOut      string `yaml:"time_out" env:"BILIBILI_TIME_OUT"`
 
-	Consul Consul `yaml:"consul,omitempty"`
-	Etcd   Etcd   `yaml:"etcd,omitempty"`
-}
-
-func DefaultBilibiliConfig() Bilibili {
-	return Bilibili{
-		ServerName: "bilibili",
-		Scheme:     "grpc",
-		TimeOut:    "5s",
-	}
+	Consul Consul `yaml:"consul,omitempty" hc:"if use consul, must set the endpoint"`
+	Etcd   Etcd   `yaml:"etcd,omitempty" hc:"if use etcd, must set the endpoints"`
 }

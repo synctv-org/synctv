@@ -608,11 +608,11 @@ func JoinLive(ctx *gin.Context) {
 	}
 }
 
-func initBilibiliMPDCache(ctx context.Context, cookies []*http.Cookie, bvid string, cid, epid uint64, roomID, movieID string) *refreshcache.RefreshCache[*dbModel.MPDCache] {
+func initBilibiliMPDCache(ctx context.Context, cli vendor.Bilibili, cookies []*http.Cookie, bvid string, cid, epid uint64, roomID, movieID string) *refreshcache.RefreshCache[*dbModel.MPDCache] {
 	return refreshcache.NewRefreshCache[*dbModel.MPDCache](func() (*dbModel.MPDCache, error) {
 		var m *mpd.MPD
 		if bvid != "" && cid != 0 {
-			resp, err := vendor.BilibiliClient().GetDashVideoURL(ctx, &bilibili.GetDashVideoURLReq{
+			resp, err := cli.GetDashVideoURL(ctx, &bilibili.GetDashVideoURLReq{
 				Cookies: utils.HttpCookieToMap(cookies),
 				Bvid:    bvid,
 				Cid:     cid,
@@ -625,7 +625,7 @@ func initBilibiliMPDCache(ctx context.Context, cookies []*http.Cookie, bvid stri
 				return nil, err
 			}
 		} else if epid != 0 {
-			resp, err := vendor.BilibiliClient().GetDashPGCURL(ctx, &bilibili.GetDashPGCURLReq{
+			resp, err := cli.GetDashPGCURL(ctx, &bilibili.GetDashPGCURLReq{
 				Cookies: utils.HttpCookieToMap(cookies),
 				Epid:    epid,
 			})
@@ -664,11 +664,11 @@ func initBilibiliMPDCache(ctx context.Context, cookies []*http.Cookie, bvid stri
 	}, time.Minute*119)
 }
 
-func initBilibiliShareCache(ctx context.Context, cookies []*http.Cookie, bvid string, cid, epid uint64) *refreshcache.RefreshCache[string] {
+func initBilibiliShareCache(ctx context.Context, cli vendor.Bilibili, cookies []*http.Cookie, bvid string, cid, epid uint64) *refreshcache.RefreshCache[string] {
 	return refreshcache.NewRefreshCache[string](func() (string, error) {
 		var u string
 		if bvid != "" {
-			resp, err := vendor.BilibiliClient().GetVideoURL(ctx, &bilibili.GetVideoURLReq{
+			resp, err := cli.GetVideoURL(ctx, &bilibili.GetVideoURLReq{
 				Cookies: utils.HttpCookieToMap(cookies),
 				Bvid:    bvid,
 				Cid:     cid,
@@ -678,7 +678,7 @@ func initBilibiliShareCache(ctx context.Context, cookies []*http.Cookie, bvid st
 			}
 			u = resp.Url
 		} else if epid != 0 {
-			resp, err := vendor.BilibiliClient().GetPGCURL(ctx, &bilibili.GetPGCURLReq{
+			resp, err := cli.GetPGCURL(ctx, &bilibili.GetPGCURLReq{
 				Cookies: utils.HttpCookieToMap(cookies),
 				Epid:    epid,
 			})
@@ -697,11 +697,11 @@ func proxyVendorMovie(ctx *gin.Context, movie *dbModel.Movie) {
 	switch movie.Base.VendorInfo.Vendor {
 	case dbModel.StreamingVendorBilibili:
 		bvc, err := movie.Base.VendorInfo.Bilibili.InitOrLoadMPDCache(func(info *dbModel.BilibiliVendorInfo) (*refreshcache.RefreshCache[*dbModel.MPDCache], error) {
-			vendor, err := db.FirstOrInitVendorByUserIDAndVendor(movie.CreatorID, dbModel.StreamingVendorBilibili)
+			v, err := db.FirstOrInitVendorByUserIDAndVendor(movie.CreatorID, dbModel.StreamingVendorBilibili)
 			if err != nil {
 				return nil, err
 			}
-			return initBilibiliMPDCache(ctx, vendor.Cookies, info.Bvid, info.Cid, info.Epid, movie.RoomID, movie.ID), nil
+			return initBilibiliMPDCache(ctx, vendor.BilibiliClient(info.VendorName), v.Cookies, info.Bvid, info.Cid, info.Epid, movie.RoomID, movie.ID), nil
 		})
 		if err != nil {
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
@@ -743,15 +743,13 @@ func parse2VendorMovie(ctx context.Context, userID string, movie *dbModel.Movie)
 
 	switch movie.Base.VendorInfo.Vendor {
 	case dbModel.StreamingVendorBilibili:
-		info := movie.Base.VendorInfo.Bilibili
-
 		if !movie.Base.Proxy {
-			c, err := movie.Base.VendorInfo.Bilibili.InitOrLoadURLCache(userID, func(bvi *dbModel.BilibiliVendorInfo) (*refreshcache.RefreshCache[string], error) {
-				vendor, err := db.FirstOrInitVendorByUserIDAndVendor(userID, dbModel.StreamingVendorBilibili)
+			c, err := movie.Base.VendorInfo.Bilibili.InitOrLoadURLCache(userID, func(info *dbModel.BilibiliVendorInfo) (*refreshcache.RefreshCache[string], error) {
+				v, err := db.FirstOrInitVendorByUserIDAndVendor(userID, dbModel.StreamingVendorBilibili)
 				if err != nil {
 					return nil, err
 				}
-				return initBilibiliShareCache(ctx, vendor.Cookies, info.Bvid, info.Cid, info.Epid), nil
+				return initBilibiliShareCache(ctx, vendor.BilibiliClient(info.VendorName), v.Cookies, info.Bvid, info.Cid, info.Epid), nil
 			})
 			if err != nil {
 				return err

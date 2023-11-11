@@ -11,7 +11,7 @@ import (
 func Init(conf *conf.VendorConfig) error {
 	klog.SetLogger(klog.NewStdLogger(log.StandardLogger().Writer()))
 	selector.SetGlobalSelector(wrr.NewBuilder())
-	if err := InitBilibili(&conf.Bilibili); err != nil {
+	if err := InitBilibiliVendors(conf.Bilibili); err != nil {
 		return err
 	}
 	return nil

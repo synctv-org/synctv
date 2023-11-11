@@ -152,6 +152,8 @@ func Init(e *gin.Engine) {
 
 				bilibili.POST("/parse", Vbilibili.Parse)
 
+				bilibili.GET("/vendors", Vbilibili.Vendors)
+
 				bilibili.GET("/me", Vbilibili.Me)
 
 				bilibili.POST("/logout", Vbilibili.Logout)

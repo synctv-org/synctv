@@ -68,19 +68,15 @@ func InitBilibiliVendors(conf map[string]conf.VendorBilibili) error {
 		bilibiliClients = make(map[string]Bilibili, len(conf))
 	}
 	for k, vb := range conf {
-		if k == "" {
-			cli, err := InitBilibili(&vb)
-			if err != nil {
-				return err
-			}
-			bilibiliDefaultClient = cli
-			continue
-		}
 		cli, err := InitBilibili(&vb)
 		if err != nil {
 			return err
 		}
-		bilibiliClients[k] = cli
+		if k == "" {
+			bilibiliDefaultClient = cli
+		} else {
+			bilibiliClients[k] = cli
+		}
 	}
 	if bilibiliDefaultClient == nil {
 		bilibiliDefaultClient = bilibiliService.NewBilibiliService(nil)

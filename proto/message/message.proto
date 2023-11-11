@@ -58,7 +58,8 @@ message BilibiliVendorInfo {
   string bvid = 1;
   uint64 cid = 2;
   uint64 epid = 3;
-  uint32 quality = 4;
+  uint64 quality = 4;
+  string vendorName = 5;
 }
 
 message ElementMessage {

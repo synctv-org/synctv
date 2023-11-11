@@ -115,10 +115,11 @@ func (c *Current) Proto() *pb.Current {
 		switch c.Movie.Base.VendorInfo.Vendor {
 		case model.StreamingVendorBilibili:
 			current.Movie.Base.VendorInfo.Bilibili = &pb.BilibiliVendorInfo{
-				Bvid:    c.Movie.Base.VendorInfo.Bilibili.Bvid,
-				Cid:     uint64(c.Movie.Base.VendorInfo.Bilibili.Cid),
-				Epid:    uint64(c.Movie.Base.VendorInfo.Bilibili.Epid),
-				Quality: uint32(c.Movie.Base.VendorInfo.Bilibili.Quality),
+				Bvid:       c.Movie.Base.VendorInfo.Bilibili.Bvid,
+				Cid:        c.Movie.Base.VendorInfo.Bilibili.Cid,
+				Epid:       c.Movie.Base.VendorInfo.Bilibili.Epid,
+				Quality:    c.Movie.Base.VendorInfo.Bilibili.Quality,
+				VendorName: c.Movie.Base.VendorInfo.Bilibili.VendorName,
 			}
 		}
 	}

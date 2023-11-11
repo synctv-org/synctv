@@ -29,8 +29,8 @@ import (
 )
 
 func BilibiliClient(name string) Bilibili {
-	if name != "" && clients != nil {
-		if cli, ok := clients[name]; ok {
+	if name != "" {
+		if cli, ok := bilibiliClients[name]; ok {
 			return cli
 		}
 	}
@@ -38,12 +38,12 @@ func BilibiliClient(name string) Bilibili {
 }
 
 func BilibiliClients() map[string]Bilibili {
-	return clients
+	return bilibiliClients
 }
 
 var (
+	bilibiliClients       map[string]Bilibili
 	bilibiliDefaultClient Bilibili
-	clients               map[string]Bilibili
 )
 
 type Bilibili interface {
@@ -64,16 +64,26 @@ type Bilibili interface {
 }
 
 func InitBilibiliVendors(conf map[string]conf.VendorBilibili) error {
-	bilibiliDefaultClient = bilibiliService.NewBilibiliService(nil)
-	if clients == nil {
-		clients = make(map[string]Bilibili, len(conf))
+	if bilibiliClients == nil {
+		bilibiliClients = make(map[string]Bilibili, len(conf))
 	}
 	for k, vb := range conf {
+		if k == "" {
+			cli, err := InitBilibili(&vb)
+			if err != nil {
+				return err
+			}
+			bilibiliDefaultClient = cli
+			continue
+		}
 		cli, err := InitBilibili(&vb)
 		if err != nil {
 			return err
 		}
-		clients[k] = cli
+		bilibiliClients[k] = cli
+	}
+	if bilibiliDefaultClient == nil {
+		bilibiliDefaultClient = bilibiliService.NewBilibiliService(nil)
 	}
 	return nil
 }
@@ -140,7 +150,7 @@ func InitBilibili(conf *conf.VendorBilibili) (Bilibili, error) {
 			opts = append(opts, ggrpc.WithEndpoint(endpoint), ggrpc.WithDiscovery(dis))
 			log.Infof("bilibili client init success with etcd: %v", conf.Etcd.Endpoints)
 		} else {
-			return bilibiliDefaultClient, nil
+			return nil, errors.New("bilibili client init failed, endpoint is empty")
 		}
 		var (
 			con *grpc.ClientConn
@@ -257,7 +267,7 @@ func InitBilibili(conf *conf.VendorBilibili) (Bilibili, error) {
 			opts = append(opts, http.WithEndpoint(endpoint), http.WithDiscovery(dis))
 			log.Infof("bilibili client init success with etcd: %v", conf.Etcd.Endpoints)
 		} else {
-			return bilibiliDefaultClient, nil
+			return nil, errors.New("bilibili client init failed, endpoint is empty")
 		}
 		con, err := http.NewClient(
 			context.Background(),

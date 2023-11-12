@@ -145,6 +145,7 @@ func genRoomListResp(scopes ...func(db *gorm.DB) *gorm.DB) []*model.RoomListResp
 			RoomName:     r.Name,
 			PeopleNum:    op.ClientNum(r.ID),
 			NeedPassword: len(r.HashedPassword) != 0,
+			CreatorID:    r.CreatorID,
 			Creator:      op.GetUserName(r.CreatorID),
 			CreatedAt:    r.CreatedAt.UnixMilli(),
 			Status:       r.Status,

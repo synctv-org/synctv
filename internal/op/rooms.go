@@ -193,6 +193,7 @@ type RoomInfo struct {
 	RoomName     string           `json:"roomName"`
 	PeopleNum    int64            `json:"peopleNum"`
 	NeedPassword bool             `json:"needPassword"`
+	CreatorID    string           `json:"creatorId"`
 	Creator      string           `json:"creator"`
 	CreatedAt    int64            `json:"createdAt"`
 	Status       model.RoomStatus `json:"status"`

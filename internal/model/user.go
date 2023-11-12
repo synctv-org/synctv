@@ -69,6 +69,10 @@ func (u *User) IsAdmin() bool {
 	return u.Role == RoleAdmin || u.IsRoot()
 }
 
+func (u *User) IsUser() bool {
+	return u.Role == RoleUser || u.IsAdmin()
+}
+
 func (u *User) IsPending() bool {
 	return u.Role == RolePending
 }

@@ -45,6 +45,10 @@ func Init(e *gin.Engine) {
 				admin.POST("/ban/user", BanUser)
 
 				admin.POST("/ban/room", BanRoom)
+
+				admin.POST("/unban/user", UnBanUser)
+
+				admin.POST("/unban/room", UnBanRoom)
 			}
 
 			{

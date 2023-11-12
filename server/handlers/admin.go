@@ -156,7 +156,6 @@ func ApprovePendingUser(ctx *gin.Context) {
 
 func BanUser(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*op.User)
-
 	req := model.UserIDReq{}
 	if err := model.Decode(ctx, &req); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
@@ -169,16 +168,40 @@ func BanUser(ctx *gin.Context) {
 		return
 	}
 
-	if u.ID == user.ID {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("cannot ban yourself"))
-		return
-	}
-	if u.IsRoot() {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("cannot ban root user"))
+	if u.IsAdmin() && !user.IsRoot() {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("cannot ban admin"))
 		return
 	}
 
 	err = op.SetRoleByID(req.ID, dbModel.RoleBanned)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
+
+	ctx.Status(http.StatusNoContent)
+}
+
+func UnBanUser(ctx *gin.Context) {
+	// user := ctx.MustGet("user").(*op.User)
+	req := model.UserIDReq{}
+	if err := model.Decode(ctx, &req); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	u, err := db.GetUserByID(req.ID)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	if !u.IsBanned() {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("user is not banned"))
+		return
+	}
+
+	err = op.SetRoleByID(req.ID, dbModel.RoleUser)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
@@ -276,7 +299,6 @@ func ApprovePendingRoom(ctx *gin.Context) {
 
 func BanRoom(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*op.User)
-
 	req := model.RoomIDReq{}
 	if err := model.Decode(ctx, &req); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
@@ -295,17 +317,40 @@ func BanRoom(ctx *gin.Context) {
 		return
 	}
 
-	if creator.ID == user.ID {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("cannot ban yourself"))
-		return
-	}
-
-	if creator.IsAdmin() {
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("no permission"))
+	if creator.IsAdmin() && !user.IsRoot() {
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("cannot ban admin"))
 		return
 	}
 
 	err = op.SetRoomStatus(req.Id, dbModel.RoomStatusBanned)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
+
+	ctx.Status(http.StatusNoContent)
+}
+
+func UnBanRoom(ctx *gin.Context) {
+	// user := ctx.MustGet("user").(*op.User)
+	req := model.RoomIDReq{}
+	if err := model.Decode(ctx, &req); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	r, err := db.GetRoomByID(req.Id)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	if !r.IsBanned() {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("room is not banned"))
+		return
+	}
+
+	err = op.SetRoomStatus(req.Id, dbModel.RoomStatusActive)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return

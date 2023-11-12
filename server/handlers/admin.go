@@ -239,6 +239,11 @@ func BanUser(ctx *gin.Context) {
 		return
 	}
 
+	if u.IsRoot() {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("cannot ban root"))
+		return
+	}
+
 	if u.IsAdmin() && !user.IsRoot() {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("cannot ban admin"))
 		return

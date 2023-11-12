@@ -42,27 +42,41 @@ func WithStatus(status model.RoomStatus) CreateRoomConfig {
 	}
 }
 
-func CreateRoom(name, password string, conf ...CreateRoomConfig) (*model.Room, error) {
-	var hashedPassword []byte
-	if password != "" {
-		var err error
-		hashedPassword, err = bcrypt.GenerateFromPassword(stream.StringToBytes(password), bcrypt.DefaultCost)
-		if err != nil {
-			return nil, err
-		}
-	}
+// if maxCount is 0, it will be ignored
+func CreateRoom(name, password string, maxCount int64, conf ...CreateRoomConfig) (*model.Room, error) {
 	r := &model.Room{
-		Name:           name,
-		HashedPassword: hashedPassword,
+		Name: name,
 	}
 	for _, c := range conf {
 		c(r)
 	}
-	err := db.Create(r).Error
-	if err != nil && errors.Is(err, gorm.ErrDuplicatedKey) {
-		return r, errors.New("room already exists")
+	if password != "" {
+		var err error
+		r.HashedPassword, err = bcrypt.GenerateFromPassword(stream.StringToBytes(password), bcrypt.DefaultCost)
+		if err != nil {
+			return nil, err
+		}
 	}
-	return r, err
+
+	tx := db.Begin()
+	if maxCount != 0 {
+		var count int64
+		tx.Model(&model.Room{}).Where("creator_id = ?", r.CreatorID).Count(&count)
+		if count >= maxCount {
+			tx.Rollback()
+			return nil, errors.New("room count is over limit")
+		}
+	}
+	err := tx.Create(r).Error
+	if err != nil {
+		tx.Rollback()
+		if errors.Is(err, gorm.ErrDuplicatedKey) {
+			return r, errors.New("room already exists")
+		}
+		return r, err
+	}
+	tx.Commit()
+	return r, nil
 }
 
 func GetRoomByID(id string) (*model.Room, error) {

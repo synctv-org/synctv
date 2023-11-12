@@ -14,8 +14,8 @@ import (
 
 var roomCache *synccache.SyncCache[string, *Room]
 
-func CreateRoom(name, password string, conf ...db.CreateRoomConfig) (*Room, error) {
-	r, err := db.CreateRoom(name, password, conf...)
+func CreateRoom(name, password string, maxCount int64, conf ...db.CreateRoomConfig) (*Room, error) {
+	r, err := db.CreateRoom(name, password, maxCount, conf...)
 	if err != nil {
 		return nil, err
 	}

@@ -44,13 +44,11 @@ func CreateRoom(ctx *gin.Context) {
 		return
 	}
 
-	r, err := user.CreateRoom(req.RoomName, req.Password, db.WithSetting(req.Setting))
+	room, err := user.CreateRoom(req.RoomName, req.Password, db.WithSetting(req.Setting))
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
-
-	room, _ := op.LoadOrInitRoomByID(r.ID)
 
 	token, err := middlewares.NewAuthRoomToken(user, room)
 	if err != nil {

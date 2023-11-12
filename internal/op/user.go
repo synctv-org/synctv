@@ -12,7 +12,7 @@ type User struct {
 	model.User
 }
 
-func (u *User) CreateRoom(name, password string, conf ...db.CreateRoomConfig) (*model.Room, error) {
+func (u *User) CreateRoom(name, password string, conf ...db.CreateRoomConfig) (*Room, error) {
 	if u.IsBanned() {
 		return nil, errors.New("user banned")
 	}
@@ -28,7 +28,13 @@ func (u *User) CreateRoom(name, password string, conf ...db.CreateRoomConfig) (*
 			conf = append(conf, db.WithStatus(model.RoomStatusActive))
 		}
 	}
-	return db.CreateRoom(name, password, append(conf, db.WithCreator(&u.User))...)
+
+	var maxCount int64
+	if !u.IsAdmin() {
+		maxCount = settings.UserMaxRoomCount.Get()
+	}
+
+	return CreateRoom(name, password, maxCount, append(conf, db.WithCreator(&u.User))...)
 }
 
 func (u *User) NewMovie(movie *model.BaseMovie) *model.Movie {

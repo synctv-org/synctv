@@ -3,6 +3,7 @@ package settings
 import (
 	"fmt"
 
+	json "github.com/json-iterator/go"
 	log "github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/model"
@@ -34,49 +35,17 @@ func SetValue(name string, value any) error {
 }
 
 func SetSettingValue(s Setting, value any) error {
-	switch s.Type() {
-	case model.SettingTypeBool:
-		i, ok := s.(BoolSetting)
-		if !ok {
-			log.Fatalf("setting %s is not bool", s.Name())
-		}
-		v, ok := value.(bool)
-		if !ok {
-			return fmt.Errorf("setting %s, value %v is not bool", s.Name(), value)
-		}
-		i.Set(v)
-	case model.SettingTypeInt64:
-		i, ok := s.(Int64Setting)
-		if !ok {
-			log.Fatalf("setting %s is not int64", s.Name())
-		}
-		v, ok := value.(int64)
-		if !ok {
-			return fmt.Errorf("setting %s, value %v is not int64", s.Name(), value)
-		}
-		i.Set(v)
-	case model.SettingTypeFloat64:
-		i, ok := s.(Float64Setting)
-		if !ok {
-			log.Fatalf("setting %s is not float64", s.Name())
-		}
-		v, ok := value.(float64)
-		if !ok {
-			return fmt.Errorf("setting %s, value %v is not float64", s.Name(), value)
-		}
-		i.Set(v)
-	case model.SettingTypeString:
-		i, ok := s.(StringSetting)
-		if !ok {
-			log.Fatalf("setting %s is not string", s.Name())
-		}
-		v, ok := value.(string)
-		if !ok {
-			return fmt.Errorf("setting %s, value %v is not string", s.Name(), value)
-		}
-		i.Set(v)
+	switch s := s.(type) {
+	case BoolSetting:
+		return s.Set(json.Wrap(value).ToBool())
+	case Int64Setting:
+		return s.Set(json.Wrap(value).ToInt64())
+	case Float64Setting:
+		return s.Set(json.Wrap(value).ToFloat64())
+	case StringSetting:
+		return s.Set(json.Wrap(value).ToString())
 	default:
-		log.Fatalf("unknown setting type: %s", s.Type())
+		log.Fatalf("unknown setting %s type: %s", s.Name(), s.Type())
 	}
 	return nil
 }

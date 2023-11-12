@@ -29,8 +29,9 @@ type Int64 struct {
 func NewInt64(name string, value int64, group model.SettingGroup) *Int64 {
 	i := &Int64{
 		setting: setting{
-			name:  name,
-			group: group,
+			name:        name,
+			group:       group,
+			settingType: model.SettingTypeInt64,
 		},
 		defaultValue: value,
 		value:        value,

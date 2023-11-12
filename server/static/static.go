@@ -4,6 +4,7 @@ import (
 	"io/fs"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/synctv-org/synctv/public"
@@ -26,9 +27,11 @@ func Init(e *gin.Engine) {
 		}
 
 		e.NoRoute(func(ctx *gin.Context) {
-			ctx.FileFromFS("", http.FS(public.Public))
+			if strings.HasPrefix(ctx.Request.URL.Path, "/web/") {
+				ctx.FileFromFS("", http.FS(public.Public))
+				return
+			}
 		})
-
 	}
 }
 

@@ -9,7 +9,7 @@ import (
 	"gorm.io/gorm"
 )
 
-type RoomStatus uint
+type RoomStatus uint64
 
 const (
 	RoomStatusBanned  RoomStatus = 1

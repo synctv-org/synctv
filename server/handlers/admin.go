@@ -65,7 +65,7 @@ func Users(ctx *gin.Context) {
 
 	scopes := []func(db *gorm.DB) *gorm.DB{}
 
-	switch ctx.DefaultQuery("role", "user") {
+	switch ctx.Query("role") {
 	case "admin":
 		scopes = append(scopes, db.WhereRole(dbModel.RoleAdmin))
 	case "user":
@@ -74,9 +74,8 @@ func Users(ctx *gin.Context) {
 		scopes = append(scopes, db.WhereRole(dbModel.RolePending))
 	case "banned":
 		scopes = append(scopes, db.WhereRole(dbModel.RoleBanned))
-	default:
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support role"))
-		return
+	case "root":
+		scopes = append(scopes, db.WhereRole(dbModel.RoleRoot))
 	}
 
 	switch ctx.DefaultQuery("order", "name") {
@@ -201,16 +200,13 @@ func Rooms(ctx *gin.Context) {
 
 	scopes := []func(db *gorm.DB) *gorm.DB{}
 
-	switch ctx.DefaultQuery("status", "active") {
+	switch ctx.Query("status") {
 	case "active":
 		scopes = append(scopes, db.WhereStatus(dbModel.RoomStatusActive))
 	case "pending":
 		scopes = append(scopes, db.WhereStatus(dbModel.RoomStatusPending))
 	case "banned":
 		scopes = append(scopes, db.WhereStatus(dbModel.RoomStatusBanned))
-	default:
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support status"))
-		return
 	}
 
 	switch ctx.DefaultQuery("order", "name") {

@@ -189,12 +189,13 @@ func GetAllRoomsInCacheWithoutHidden() []*Room {
 }
 
 type RoomInfo struct {
-	RoomId       string `json:"roomId"`
-	RoomName     string `json:"roomName"`
-	PeopleNum    int64  `json:"peopleNum"`
-	NeedPassword bool   `json:"needPassword"`
-	Creator      string `json:"creator"`
-	CreatedAt    int64  `json:"createdAt"`
+	RoomId       string           `json:"roomId"`
+	RoomName     string           `json:"roomName"`
+	PeopleNum    int64            `json:"peopleNum"`
+	NeedPassword bool             `json:"needPassword"`
+	Creator      string           `json:"creator"`
+	CreatedAt    int64            `json:"createdAt"`
+	Status       model.RoomStatus `json:"status"`
 }
 
 func GetRoomHeapInCacheWithoutHidden() []*RoomInfo {

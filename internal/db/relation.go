@@ -81,3 +81,9 @@ func GetAllRoomUsersRelation(roomID string, scopes ...func(*gorm.DB) *gorm.DB) [
 	db.Where("room_id = ?", roomID).Scopes(scopes...).Find(&roomUserRelations)
 	return roomUserRelations
 }
+
+func GetAllRoomUsersRelationCount(roomID string, scopes ...func(*gorm.DB) *gorm.DB) int64 {
+	var count int64
+	db.Model(&model.RoomUserRelation{}).Where("room_id = ?", roomID).Scopes(scopes...).Count(&count)
+	return count
+}

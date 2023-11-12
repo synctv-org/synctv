@@ -91,11 +91,3 @@ func (u *UserIDReq) Validate() error {
 	}
 	return nil
 }
-
-type RoomUserInfoResp struct {
-	ID         string                     `json:"id"`
-	Username   string                     `json:"username"`
-	JoinedAt   int64                      `json:"joinedAt"`
-	Status     string                     `json:"status"`
-	Permission dbModel.RoomUserPermission `json:"permission"`
-}

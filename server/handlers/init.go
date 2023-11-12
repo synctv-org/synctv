@@ -34,21 +34,36 @@ func Init(e *gin.Engine) {
 
 				admin.POST("/settings", EditAdminSettings)
 
-				admin.GET("/users", Users)
+				{
+					user := admin.Group("/user")
 
-				admin.GET("/rooms", Rooms)
+					// 查找用户
+					user.GET("/list", Users)
 
-				admin.POST("/approve/user", ApprovePendingUser)
+					user.POST("/approve", ApprovePendingUser)
 
-				admin.POST("/approve/room", ApprovePendingRoom)
+					user.POST("/ban", BanUser)
 
-				admin.POST("/ban/user", BanUser)
+					user.POST("/unban", UnBanUser)
 
-				admin.POST("/ban/room", BanRoom)
+					// 查找某个用户的房间
+					user.GET("/rooms", GetUserRooms)
+				}
 
-				admin.POST("/unban/user", UnBanUser)
+				{
+					room := admin.Group("/room")
 
-				admin.POST("/unban/room", UnBanRoom)
+					// 查找房间
+					room.GET("/list", Rooms)
+
+					room.POST("/room", ApprovePendingRoom)
+
+					room.POST("/ban", BanRoom)
+
+					room.POST("/unban", UnBanRoom)
+
+					room.GET("/users", GetRoomUsers)
+				}
 			}
 
 			{
@@ -83,7 +98,7 @@ func Init(e *gin.Engine) {
 
 			needAuthRoom.POST("/settings", SetRoomSetting)
 
-			// needAuthRoom.GET("/users", RoomUsers)
+			needAuthRoom.GET("/users", RoomUsers)
 		}
 
 		{

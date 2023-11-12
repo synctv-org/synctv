@@ -109,6 +109,14 @@ func WhereRoomID(roomID string) func(db *gorm.DB) *gorm.DB {
 	}
 }
 
+func PreloadRoomUserRelation(scopes ...func(*gorm.DB) *gorm.DB) func(db *gorm.DB) *gorm.DB {
+	return func(db *gorm.DB) *gorm.DB {
+		return db.Preload("RoomUserRelations", func(db *gorm.DB) *gorm.DB {
+			return db.Scopes(scopes...)
+		})
+	}
+}
+
 func WhereUserID(userID string) func(db *gorm.DB) *gorm.DB {
 	return func(db *gorm.DB) *gorm.DB {
 		return db.Where("user_id = ?", userID)
@@ -147,6 +155,17 @@ func WhereRoomNameLikeOrCreatorInOrIDLike(name string, ids []string, id string) 
 			return db.Where("name ILIKE ? OR creator_id IN ? OR id ILIKE ?", utils.LIKE(name), ids, id)
 		default:
 			return db.Where("name LIKE ? OR creator_id IN ? OR id LIKE ?", utils.LIKE(name), ids, id)
+		}
+	}
+}
+
+func WhereRoomNameLikeOrIDLike(name string, id string) func(db *gorm.DB) *gorm.DB {
+	return func(db *gorm.DB) *gorm.DB {
+		switch dbType {
+		case conf.DatabaseTypePostgres:
+			return db.Where("name ILIKE ? OR id ILIKE ?", utils.LIKE(name), id)
+		default:
+			return db.Where("name LIKE ? OR id LIKE ?", utils.LIKE(name), id)
 		}
 	}
 }

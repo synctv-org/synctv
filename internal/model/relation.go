@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-type RoomUserStatus uint
+type RoomUserStatus uint64
 
 const (
 	RoomUserStatusBanned RoomUserStatus = iota + 1
@@ -26,7 +26,7 @@ func (r RoomUserStatus) String() string {
 	}
 }
 
-type RoomUserPermission uint32
+type RoomUserPermission uint64
 
 const (
 	PermissionAll      RoomUserPermission = 0xffffffff

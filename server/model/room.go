@@ -131,3 +131,13 @@ func (s *SetRoomSettingReq) Decode(ctx *gin.Context) error {
 func (s *SetRoomSettingReq) Validate() error {
 	return nil
 }
+
+type RoomUsersResp struct {
+	UserID      string                     `json:"userId"`
+	Username    string                     `json:"username"`
+	Role        dbModel.Role               `json:"role"`
+	JoinAt      int64                      `json:"joinAt"`
+	RoomID      string                     `json:"roomId"`
+	Status      dbModel.RoomUserStatus     `json:"status"`
+	Permissions dbModel.RoomUserPermission `json:"permissions"`
+}

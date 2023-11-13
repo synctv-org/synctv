@@ -22,9 +22,7 @@ func newCurrent() *current {
 	return &current{
 		current: Current{
 			Status: newStatus(),
-			Movie: &Movie{
-				Movie: &model.Movie{},
-			},
+			Movie:  &Movie{},
 		},
 	}
 }
@@ -62,10 +60,8 @@ func (c *current) SetMovie(movie *Movie, play bool) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 
-	if movie == nil || movie.Movie == nil {
-		c.current.Movie = &Movie{
-			Movie: &model.Movie{},
-		}
+	if movie == nil {
+		c.current.Movie = &Movie{}
 	} else {
 		c.current.Movie = movie
 	}
@@ -104,32 +100,32 @@ func (c *Current) Proto() *pb.Current {
 	}
 	if c.Movie != nil {
 		current.Movie = &pb.MovieInfo{
-			Id: c.Movie.ID,
+			Id: c.Movie.Movie.ID,
 			Base: &pb.BaseMovieInfo{
-				Url:        c.Movie.Base.Url,
-				Name:       c.Movie.Base.Name,
-				Live:       c.Movie.Base.Live,
-				Proxy:      c.Movie.Base.Proxy,
-				RtmpSource: c.Movie.Base.RtmpSource,
-				Type:       c.Movie.Base.Type,
-				Headers:    c.Movie.Base.Headers,
+				Url:        c.Movie.Movie.Base.Url,
+				Name:       c.Movie.Movie.Base.Name,
+				Live:       c.Movie.Movie.Base.Live,
+				Proxy:      c.Movie.Movie.Base.Proxy,
+				RtmpSource: c.Movie.Movie.Base.RtmpSource,
+				Type:       c.Movie.Movie.Base.Type,
+				Headers:    c.Movie.Movie.Base.Headers,
 			},
-			CreatedAt: c.Movie.CreatedAt.UnixMilli(),
-			Creator:   GetUserName(c.Movie.CreatorID),
+			CreatedAt: c.Movie.Movie.CreatedAt.UnixMilli(),
+			Creator:   GetUserName(c.Movie.Movie.CreatorID),
 		}
-		if c.Movie.Base.VendorInfo.Vendor != "" {
+		if c.Movie.Movie.Base.VendorInfo.Vendor != "" {
 			current.Movie.Base.VendorInfo = &pb.VendorInfo{
-				Vendor: string(c.Movie.Base.VendorInfo.Vendor),
-				Shared: c.Movie.Base.VendorInfo.Shared,
+				Vendor: string(c.Movie.Movie.Base.VendorInfo.Vendor),
+				Shared: c.Movie.Movie.Base.VendorInfo.Shared,
 			}
-			switch c.Movie.Base.VendorInfo.Vendor {
+			switch c.Movie.Movie.Base.VendorInfo.Vendor {
 			case model.StreamingVendorBilibili:
 				current.Movie.Base.VendorInfo.Bilibili = &pb.BilibiliVendorInfo{
-					Bvid:       c.Movie.Base.VendorInfo.Bilibili.Bvid,
-					Cid:        c.Movie.Base.VendorInfo.Bilibili.Cid,
-					Epid:       c.Movie.Base.VendorInfo.Bilibili.Epid,
-					Quality:    c.Movie.Base.VendorInfo.Bilibili.Quality,
-					VendorName: c.Movie.Base.VendorInfo.Bilibili.VendorName,
+					Bvid:       c.Movie.Movie.Base.VendorInfo.Bilibili.Bvid,
+					Cid:        c.Movie.Movie.Base.VendorInfo.Bilibili.Cid,
+					Epid:       c.Movie.Movie.Base.VendorInfo.Bilibili.Epid,
+					Quality:    c.Movie.Movie.Base.VendorInfo.Bilibili.Quality,
+					VendorName: c.Movie.Movie.Base.VendorInfo.Bilibili.VendorName,
 				}
 			}
 		}
@@ -138,7 +134,7 @@ func (c *Current) Proto() *pb.Current {
 }
 
 func (c *Current) UpdateSeek() {
-	if c.Movie.Base.Live {
+	if c.Movie.Movie.Base.Live {
 		c.Status.lastUpdate = time.Now()
 		return
 	}
@@ -157,7 +153,7 @@ func (c *Current) setLiveStatus() Status {
 }
 
 func (c *Current) SetStatus(playing bool, seek, rate, timeDiff float64) Status {
-	if c.Movie.Base.Live {
+	if c.Movie.Movie.Base.Live {
 		return c.setLiveStatus()
 	}
 	c.Status.Playing = playing
@@ -172,7 +168,7 @@ func (c *Current) SetStatus(playing bool, seek, rate, timeDiff float64) Status {
 }
 
 func (c *Current) SetSeekRate(seek, rate, timeDiff float64) Status {
-	if c.Movie.Base.Live {
+	if c.Movie.Movie.Base.Live {
 		return c.setLiveStatus()
 	}
 	if c.Status.Playing {
@@ -186,7 +182,7 @@ func (c *Current) SetSeekRate(seek, rate, timeDiff float64) Status {
 }
 
 func (c *Current) SetSeek(seek, timeDiff float64) Status {
-	if c.Movie.Base.Live {
+	if c.Movie.Movie.Base.Live {
 		return c.setLiveStatus()
 	}
 	if c.Status.Playing {

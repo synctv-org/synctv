@@ -24,10 +24,10 @@ import (
 )
 
 type Movie struct {
-	*model.Movie
+	Movie   model.Movie
 	lock    sync.RWMutex
 	channel *rtmps.Channel
-	cache   *BaseCache `gorm:"-:all" json:"-"`
+	cache   *BaseCache
 }
 
 type BaseCache struct {
@@ -94,13 +94,13 @@ func (m *Movie) init() (err error) {
 	}
 
 	switch {
-	case m.Base.Live && m.Base.RtmpSource:
+	case m.Movie.Base.Live && m.Movie.Base.RtmpSource:
 		if m.channel == nil {
 			m.channel = rtmps.NewChannel()
 			m.channel.InitHlsPlayer(hls.WithGenTsNameFunc(genTsName))
 		}
-	case m.Base.Live && m.Base.Proxy:
-		u, err := url.Parse(m.Base.Url)
+	case m.Movie.Base.Live && m.Movie.Base.Proxy:
+		u, err := url.Parse(m.Movie.Base.Url)
 		if err != nil {
 			return err
 		}
@@ -115,7 +115,7 @@ func (m *Movie) init() (err error) {
 							return
 						}
 						cli := core.NewConnClient()
-						if err = cli.Start(m.Base.Url, av.PLAY); err != nil {
+						if err = cli.Start(m.Movie.Base.Url, av.PLAY); err != nil {
 							cli.Close()
 							time.Sleep(time.Second)
 							continue
@@ -137,11 +137,11 @@ func (m *Movie) init() (err error) {
 							return
 						}
 						r := resty.New().R()
-						for k, v := range m.Base.Headers {
+						for k, v := range m.Movie.Base.Headers {
 							r.SetHeader(k, v)
 						}
 						// r.SetHeader("User-Agent", UserAgent)
-						resp, err := r.Get(m.Base.Url)
+						resp, err := r.Get(m.Movie.Base.Url)
 						if err != nil {
 							time.Sleep(time.Second)
 							continue
@@ -161,7 +161,7 @@ func (m *Movie) init() (err error) {
 }
 
 func (movie *Movie) Validate() error {
-	m := movie.Base
+	m := movie.Movie.Base
 	if m.VendorInfo.Vendor != "" {
 		err := movie.validateVendorMovie()
 		if err != nil {
@@ -228,21 +228,20 @@ func (movie *Movie) Validate() error {
 }
 
 func (movie *Movie) validateVendorMovie() error {
-	m := movie.Base
-	switch m.VendorInfo.Vendor {
+	switch movie.Movie.Base.VendorInfo.Vendor {
 	case model.StreamingVendorBilibili:
-		err := m.VendorInfo.Bilibili.Validate()
+		err := movie.Movie.Base.VendorInfo.Bilibili.Validate()
 		if err != nil {
 			return err
 		}
-		if m.Headers == nil {
-			m.Headers = map[string]string{
+		if movie.Movie.Base.Headers == nil {
+			movie.Movie.Base.Headers = map[string]string{
 				"Referer":    "https://www.bilibili.com",
 				"User-Agent": utils.UA,
 			}
 		} else {
-			m.Headers["Referer"] = "https://www.bilibili.com"
-			m.Headers["User-Agent"] = utils.UA
+			movie.Movie.Base.Headers["Referer"] = "https://www.bilibili.com"
+			movie.Movie.Base.Headers["User-Agent"] = utils.UA
 		}
 	default:
 		return fmt.Errorf("vendor not support")

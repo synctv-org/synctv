@@ -127,7 +127,7 @@ func (u *User) UpdateMovie(room *Room, movieID string, movie *model.BaseMovie) e
 	if err != nil {
 		return err
 	}
-	if m.CreatorID != u.ID && !u.HasRoomPermission(room, model.PermissionEditUser) {
+	if m.Movie.CreatorID != u.ID && !u.HasRoomPermission(room, model.PermissionEditUser) {
 		return model.ErrNoPermission
 	}
 	return room.UpdateMovie(movieID, movie)
@@ -145,7 +145,7 @@ func (u *User) DeleteMovieByID(room *Room, movieID string) error {
 	if err != nil {
 		return err
 	}
-	if m.CreatorID != u.ID && !u.HasRoomPermission(room, model.PermissionEditUser) {
+	if m.Movie.CreatorID != u.ID && !u.HasRoomPermission(room, model.PermissionEditUser) {
 		return model.ErrNoPermission
 	}
 	return room.DeleteMovieByID(movieID)
@@ -157,7 +157,7 @@ func (u *User) DeleteMoviesByID(room *Room, movieIDs []string) error {
 		if err != nil {
 			return err
 		}
-		if m.CreatorID != u.ID && !u.HasRoomPermission(room, model.PermissionEditUser) {
+		if m.Movie.CreatorID != u.ID && !u.HasRoomPermission(room, model.PermissionEditUser) {
 			return model.ErrNoPermission
 		}
 	}

@@ -76,9 +76,9 @@ func MovieList(ctx *gin.Context) {
 	mresp := make([]model.MoviesResp, len(m))
 	for i, v := range m {
 		mresp[i] = model.MoviesResp{
-			Id:      v.ID,
-			Base:    v.Base,
-			Creator: op.GetUserName(v.CreatorID),
+			Id:      v.Movie.ID,
+			Base:    v.Movie.Base,
+			Creator: op.GetUserName(v.Movie.CreatorID),
 		}
 		// hide url and headers when proxy
 		if mresp[i].Base.Proxy {
@@ -97,7 +97,7 @@ func MovieList(ctx *gin.Context) {
 }
 
 func genCurrent(ctx context.Context, current *op.Current, userID string) (*op.Current, error) {
-	if current.Movie.Base.VendorInfo.Vendor != "" {
+	if current.Movie.Movie.Base.VendorInfo.Vendor != "" {
 		return current, parse2VendorMovie(ctx, userID, current.Movie)
 	}
 	return current, nil
@@ -107,9 +107,9 @@ func genCurrentResp(current *op.Current) *model.CurrentMovieResp {
 	c := &model.CurrentMovieResp{
 		Status: current.Status,
 		Movie: model.MoviesResp{
-			Id:      current.Movie.ID,
-			Base:    current.Movie.Base,
-			Creator: op.GetUserName(current.Movie.CreatorID),
+			Id:      current.Movie.Movie.ID,
+			Base:    current.Movie.Movie.Base,
+			Creator: op.GetUserName(current.Movie.Movie.CreatorID),
 		},
 	}
 	// hide url and headers when proxy
@@ -152,9 +152,9 @@ func Movies(ctx *gin.Context) {
 	mresp := make([]*model.MoviesResp, len(m))
 	for i, v := range m {
 		mresp[i] = &model.MoviesResp{
-			Id:      v.ID,
-			Base:    v.Base,
-			Creator: op.GetUserName(v.CreatorID),
+			Id:      v.Movie.ID,
+			Base:    v.Movie.Base,
+			Creator: op.GetUserName(v.Movie.CreatorID),
 		}
 		// hide url and headers when proxy
 		if mresp[i].Base.Proxy {
@@ -262,17 +262,17 @@ func NewPublishKey(ctx *gin.Context) {
 		return
 	}
 
-	if movie.CreatorID != user.ID && !user.HasRoomPermission(room, dbModel.PermissionEditUser) {
+	if movie.Movie.CreatorID != user.ID && !user.HasRoomPermission(room, dbModel.PermissionEditUser) {
 		ctx.AbortWithStatus(http.StatusForbidden)
 		return
 	}
 
-	if !movie.Base.RtmpSource {
+	if !movie.Movie.Base.RtmpSource {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("only live movie can get publish key"))
 		return
 	}
 
-	token, err := rtmp.NewRtmpAuthorization(movie.ID)
+	token, err := rtmp.NewRtmpAuthorization(movie.Movie.ID)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
@@ -425,7 +425,7 @@ func ChangeCurrentMovie(ctx *gin.Context) {
 	}
 	current.UpdateSeek()
 
-	if (current.Movie.Base.VendorInfo.Vendor == "") || (current.Movie.Base.VendorInfo.Vendor != "" && current.Movie.Base.VendorInfo.Shared) {
+	if (current.Movie.Movie.Base.VendorInfo.Vendor == "") || (current.Movie.Movie.Base.VendorInfo.Vendor != "" && current.Movie.Movie.Base.VendorInfo.Shared) {
 		if err := room.Broadcast(&op.ElementMessage{
 			ElementMessage: &pb.ElementMessage{
 				Type:    pb.ElementMessageType_CHANGE_CURRENT,
@@ -495,19 +495,19 @@ func ProxyMovie(ctx *gin.Context) {
 		return
 	}
 
-	if !m.Base.Proxy || m.Base.Live || m.Base.RtmpSource {
+	if !m.Movie.Base.Proxy || m.Movie.Base.Live || m.Movie.Base.RtmpSource {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support movie proxy"))
 		return
 	}
 
-	if m.Base.VendorInfo.Vendor != "" {
+	if m.Movie.Base.VendorInfo.Vendor != "" {
 		proxyVendorMovie(ctx, m)
 		return
 	}
 
-	switch m.Base.Type {
+	switch m.Movie.Base.Type {
 	case "mpd":
-		mpdCache, err := m.Cache().InitOrLoadMPDCache(initDashCache(ctx, m.Movie), time.Minute*5)
+		mpdCache, err := m.Cache().InitOrLoadMPDCache(initDashCache(ctx, &m.Movie), time.Minute*5)
 		if err != nil {
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 			return
@@ -520,7 +520,7 @@ func ProxyMovie(ctx *gin.Context) {
 		ctx.Data(http.StatusOK, "application/dash+xml", []byte(mpd.MPDFile))
 		return
 	default:
-		err = proxyURL(ctx, m.Base.Url, m.Base.Headers)
+		err = proxyURL(ctx, m.Movie.Base.Url, m.Movie.Base.Headers)
 		if err != nil {
 			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 			return
@@ -577,15 +577,15 @@ func proxyURL(ctx *gin.Context, u string, headers map[string]string) error {
 			return errors.New("not allow proxy to local")
 		}
 	}
-	r, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return err
 	}
 	for k, v := range headers {
-		r.Header.Set(k, v)
+		req.Header.Set(k, v)
 	}
-	r.Header.Set("Range", ctx.GetHeader("Range"))
-	resp, err := http.DefaultClient.Do(r)
+	req.Header.Set("Range", ctx.GetHeader("Range"))
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return err
 	}
@@ -619,10 +619,10 @@ func JoinLive(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(err))
 		return
 	}
-	if m.Base.RtmpSource && !conf.Conf.Server.Rtmp.Enable {
+	if m.Movie.Base.RtmpSource && !conf.Conf.Server.Rtmp.Enable {
 		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("rtmp is not enabled"))
 		return
-	} else if m.Base.Live && !settings.LiveProxy.Get() {
+	} else if m.Movie.Base.Live && !settings.LiveProxy.Get() {
 		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("live proxy is not enabled"))
 		return
 	}
@@ -791,9 +791,9 @@ func initBilibiliShareCache(ctx context.Context, CreatorID string, info *dbModel
 }
 
 func proxyVendorMovie(ctx *gin.Context, movie *op.Movie) {
-	switch movie.Base.VendorInfo.Vendor {
+	switch movie.Movie.Base.VendorInfo.Vendor {
 	case dbModel.StreamingVendorBilibili:
-		bvc, err := movie.Cache().InitOrLoadMPDCache(initBilibiliMPDCache(ctx, movie.RoomID, movie.ID, movie.CreatorID, movie.Base.VendorInfo.Bilibili), time.Minute*119)
+		bvc, err := movie.Cache().InitOrLoadMPDCache(initBilibiliMPDCache(ctx, movie.Movie.RoomID, movie.Movie.ID, movie.Movie.CreatorID, movie.Movie.Base.VendorInfo.Bilibili), time.Minute*119)
 		if err != nil {
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 			return
@@ -816,7 +816,7 @@ func proxyVendorMovie(ctx *gin.Context, movie *op.Movie) {
 				ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("stream id out of range"))
 				return
 			}
-			proxyURL(ctx, mpd.URLs[streamId], movie.Base.Headers)
+			proxyURL(ctx, mpd.URLs[streamId], movie.Movie.Base.Headers)
 			return
 		}
 
@@ -827,14 +827,14 @@ func proxyVendorMovie(ctx *gin.Context, movie *op.Movie) {
 }
 
 func parse2VendorMovie(ctx context.Context, userID string, movie *op.Movie) (err error) {
-	if movie.Base.VendorInfo.Shared {
-		userID = movie.CreatorID
+	if movie.Movie.Base.VendorInfo.Shared {
+		userID = movie.Movie.CreatorID
 	}
 
-	switch movie.Base.VendorInfo.Vendor {
+	switch movie.Movie.Base.VendorInfo.Vendor {
 	case dbModel.StreamingVendorBilibili:
-		if !movie.Base.Proxy {
-			c, err := movie.Cache().InitOrLoadURLCache(userID, initBilibiliShareCache(ctx, movie.CreatorID, movie.Base.VendorInfo.Bilibili), time.Minute*119)
+		if !movie.Movie.Base.Proxy {
+			c, err := movie.Cache().InitOrLoadURLCache(userID, initBilibiliShareCache(ctx, movie.Movie.CreatorID, movie.Movie.Base.VendorInfo.Bilibili), time.Minute*119)
 			if err != nil {
 				return err
 			}
@@ -844,9 +844,9 @@ func parse2VendorMovie(ctx context.Context, userID string, movie *op.Movie) (err
 				return err
 			}
 
-			movie.Base.Url = data
+			movie.Movie.Base.Url = data
 		} else {
-			movie.Base.Type = "mpd"
+			movie.Movie.Base.Type = "mpd"
 		}
 
 		return nil

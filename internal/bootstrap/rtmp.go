@@ -5,9 +5,9 @@ import (
 	"fmt"
 
 	log "github.com/sirupsen/logrus"
-	"github.com/synctv-org/synctv/internal/conf"
 	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/internal/rtmp"
+	"github.com/synctv-org/synctv/internal/settings"
 	rtmps "github.com/zijiren233/livelib/server"
 )
 
@@ -34,7 +34,7 @@ func auth(ReqAppName, ReqChannelName string, IsPublisher bool) (*rtmps.Channel, 
 		return r.GetChannel(channelName)
 	}
 
-	if !conf.Conf.Server.Rtmp.RtmpPlayer {
+	if !settings.RtmpPlayer.Get() {
 		log.Warnf("rtmp: dial to %s/%s error: %s", ReqAppName, ReqChannelName, "rtmp player is not enabled")
 		return nil, fmt.Errorf("rtmp: dial to %s/%s error: %s", ReqAppName, ReqChannelName, "rtmp player is not enabled")
 	}

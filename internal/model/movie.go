@@ -1,13 +1,10 @@
 package model
 
 import (
-	"errors"
 	"fmt"
-	"net/url"
 	"sync/atomic"
 	"time"
 
-	"github.com/synctv-org/synctv/internal/conf"
 	"github.com/synctv-org/synctv/utils"
 	"github.com/zijiren233/gencontainer/refreshcache"
 	"github.com/zijiren233/gencontainer/rwmap"
@@ -22,6 +19,46 @@ type Movie struct {
 	RoomID    string    `gorm:"not null;index" json:"-"`
 	CreatorID string    `gorm:"not null;index" json:"creatorId"`
 	Base      BaseMovie `gorm:"embedded;embeddedPrefix:base_" json:"base"`
+	Cache     BaseCache `gorm:"-:all" json:"-"`
+}
+
+type BaseCache struct {
+	URL rwmap.RWMap[string, *refreshcache.RefreshCache[string]]
+	MPD atomic.Pointer[refreshcache.RefreshCache[*MPDCache]]
+}
+
+type MPDCache struct {
+	MPDFile string
+	URLs    []string
+}
+
+func (b *BaseCache) Clear() {
+	b.MPD.Store(nil)
+	b.URL.Clear()
+}
+
+func (b *BaseCache) InitOrLoadURLCache(id string, refreshFunc func() (string, error), maxAge time.Duration) (*refreshcache.RefreshCache[string], error) {
+	c, loaded := b.URL.Load(id)
+	if loaded {
+		return c, nil
+	}
+
+	c, _ = b.URL.LoadOrStore(id, refreshcache.NewRefreshCache[string](refreshFunc, maxAge))
+	return c, nil
+}
+
+func (b *BaseCache) InitOrLoadMPDCache(refreshFunc func() (*MPDCache, error), maxAge time.Duration) (*refreshcache.RefreshCache[*MPDCache], error) {
+	c := b.MPD.Load()
+	if c != nil {
+		return c, nil
+	}
+
+	c = refreshcache.NewRefreshCache[*MPDCache](refreshFunc, maxAge)
+	if b.MPD.CompareAndSwap(nil, c) {
+		return c, nil
+	} else {
+		return b.InitOrLoadMPDCache(refreshFunc, maxAge)
+	}
 }
 
 func (m *Movie) BeforeCreate(tx *gorm.DB) error {
@@ -29,10 +66,6 @@ func (m *Movie) BeforeCreate(tx *gorm.DB) error {
 		m.ID = utils.SortUUID()
 	}
 	return nil
-}
-
-func (m *Movie) Validate() error {
-	return m.Base.Validate()
 }
 
 type BaseMovie struct {
@@ -46,95 +79,6 @@ type BaseMovie struct {
 	VendorInfo VendorInfo        `gorm:"embedded;embeddedPrefix:vendor_info_" json:"vendorInfo,omitempty"`
 }
 
-func (m *BaseMovie) Validate() error {
-	if m.VendorInfo.Vendor != "" {
-		err := m.validateVendorMovie()
-		if err != nil {
-			return err
-		}
-	}
-	switch {
-	case m.RtmpSource && m.Proxy:
-		return errors.New("rtmp source and proxy can't be true at the same time")
-	case m.Live && m.RtmpSource:
-		if !conf.Conf.Server.Rtmp.Enable {
-			return errors.New("rtmp is not enabled")
-		}
-	case m.Live && m.Proxy:
-		if !conf.Conf.Proxy.LiveProxy {
-			return errors.New("live proxy is not enabled")
-		}
-		u, err := url.Parse(m.Url)
-		if err != nil {
-			return err
-		}
-		if !conf.Conf.Proxy.AllowProxyToLocal && utils.IsLocalIP(u.Host) {
-			return errors.New("local ip is not allowed")
-		}
-		switch u.Scheme {
-		case "rtmp":
-		case "http", "https":
-		default:
-			return errors.New("unsupported scheme")
-		}
-	case !m.Live && m.RtmpSource:
-		return errors.New("rtmp source can't be true when movie is not live")
-	case !m.Live && m.Proxy:
-		if !conf.Conf.Proxy.MovieProxy {
-			return errors.New("movie proxy is not enabled")
-		}
-		if m.VendorInfo.Vendor != "" {
-			return nil
-		}
-		u, err := url.Parse(m.Url)
-		if err != nil {
-			return err
-		}
-		if !conf.Conf.Proxy.AllowProxyToLocal && utils.IsLocalIP(u.Host) {
-			return errors.New("local ip is not allowed")
-		}
-		if u.Scheme != "http" && u.Scheme != "https" {
-			return errors.New("unsupported scheme")
-		}
-	case !m.Live && !m.Proxy, m.Live && !m.Proxy && !m.RtmpSource:
-		if m.VendorInfo.Vendor == "" {
-			u, err := url.Parse(m.Url)
-			if err != nil {
-				return err
-			}
-			if u.Scheme != "http" && u.Scheme != "https" {
-				return errors.New("unsupported scheme")
-			}
-		}
-	default:
-		return errors.New("unknown error")
-	}
-	return nil
-}
-
-func (m *BaseMovie) validateVendorMovie() error {
-	switch m.VendorInfo.Vendor {
-	case StreamingVendorBilibili:
-		err := m.VendorInfo.Bilibili.Validate()
-		if err != nil {
-			return err
-		}
-		if m.Headers == nil {
-			m.Headers = map[string]string{
-				"Referer":    "https://www.bilibili.com",
-				"User-Agent": utils.UA,
-			}
-		} else {
-			m.Headers["Referer"] = "https://www.bilibili.com"
-			m.Headers["User-Agent"] = utils.UA
-		}
-	default:
-		return fmt.Errorf("vendor not support")
-	}
-
-	return nil
-}
-
 type VendorInfo struct {
 	Vendor   StreamingVendor     `json:"vendor"`
 	Shared   bool                `gorm:"not null;default:false" json:"shared"`
@@ -142,12 +86,11 @@ type VendorInfo struct {
 }
 
 type BilibiliVendorInfo struct {
-	Bvid       string              `json:"bvid,omitempty"`
-	Cid        uint64              `json:"cid,omitempty"`
-	Epid       uint64              `json:"epid,omitempty"`
-	Quality    uint64              `json:"quality,omitempty"`
-	VendorName string              `json:"vendorName,omitempty"`
-	Cache      BilibiliVendorCache `gorm:"-:all" json:"-"`
+	Bvid       string `json:"bvid,omitempty"`
+	Cid        uint64 `json:"cid,omitempty"`
+	Epid       uint64 `json:"epid,omitempty"`
+	Quality    uint64 `json:"quality,omitempty"`
+	VendorName string `json:"vendorName,omitempty"`
 }
 
 func (b *BilibiliVendorInfo) Validate() error {
@@ -164,43 +107,4 @@ func (b *BilibiliVendorInfo) Validate() error {
 	}
 
 	return nil
-}
-
-type BilibiliVendorCache struct {
-	URL rwmap.RWMap[string, *refreshcache.RefreshCache[string]]
-	MPD atomic.Pointer[refreshcache.RefreshCache[*MPDCache]]
-}
-
-type MPDCache struct {
-	MPDFile string
-	URLs    []string
-}
-
-func (b *BilibiliVendorInfo) InitOrLoadURLCache(id string, initCache func(*BilibiliVendorInfo) (*refreshcache.RefreshCache[string], error)) (*refreshcache.RefreshCache[string], error) {
-	if c, loaded := b.Cache.URL.Load(id); loaded {
-		return c, nil
-	}
-	c, err := initCache(b)
-	if err != nil {
-		return nil, err
-	}
-
-	c, _ = b.Cache.URL.LoadOrStore(id, c)
-
-	return c, nil
-}
-
-func (b *BilibiliVendorInfo) InitOrLoadMPDCache(initCache func(*BilibiliVendorInfo) (*refreshcache.RefreshCache[*MPDCache], error)) (*refreshcache.RefreshCache[*MPDCache], error) {
-	if c := b.Cache.MPD.Load(); c != nil {
-		return c, nil
-	}
-	c, err := initCache(b)
-	if err != nil {
-		return nil, err
-	}
-	if b.Cache.MPD.CompareAndSwap(nil, c) {
-		return c, nil
-	} else {
-		return b.InitOrLoadMPDCache(initCache)
-	}
 }

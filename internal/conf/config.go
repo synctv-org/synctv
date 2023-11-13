@@ -14,9 +14,6 @@ type Config struct {
 	// Jwt
 	Jwt JwtConfig `yaml:"jwt"`
 
-	// Proxy
-	Proxy ProxyConfig `yaml:"proxy" hc:"you can use proxy to proxy movie and live when custom headers or network is slow to connect to origin server"`
-
 	// Database
 	Database DatabaseConfig `yaml:"database"`
 
@@ -44,9 +41,6 @@ func DefaultConfig() *Config {
 
 		// Jwt
 		Jwt: DefaultJwtConfig(),
-
-		// Proxy
-		Proxy: DefaultProxyConfig(),
 
 		// Database
 		Database: DefaultDatabaseConfig(),

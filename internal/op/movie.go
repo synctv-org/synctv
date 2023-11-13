@@ -2,12 +2,15 @@ package op
 
 import (
 	"errors"
+	"fmt"
 	"net/url"
 	"sync"
 	"time"
 
 	"github.com/go-resty/resty/v2"
+	"github.com/synctv-org/synctv/internal/conf"
 	"github.com/synctv-org/synctv/internal/model"
+	"github.com/synctv-org/synctv/internal/settings"
 	"github.com/synctv-org/synctv/utils"
 	"github.com/zijiren233/livelib/av"
 	"github.com/zijiren233/livelib/container/flv"
@@ -34,7 +37,7 @@ func genTsName() string {
 }
 
 func (m *Movie) init() (err error) {
-	if err = m.Movie.Validate(); err != nil {
+	if err = m.Validate(); err != nil {
 		return
 	}
 	switch {
@@ -104,6 +107,97 @@ func (m *Movie) init() (err error) {
 	return nil
 }
 
+func (movie *Movie) Validate() error {
+	m := movie.Base
+	if m.VendorInfo.Vendor != "" {
+		err := movie.validateVendorMovie()
+		if err != nil {
+			return err
+		}
+	}
+	switch {
+	case m.RtmpSource && m.Proxy:
+		return errors.New("rtmp source and proxy can't be true at the same time")
+	case m.Live && m.RtmpSource:
+		if !conf.Conf.Server.Rtmp.Enable {
+			return errors.New("rtmp is not enabled")
+		}
+	case m.Live && m.Proxy:
+		if !settings.LiveProxy.Get() {
+			return errors.New("live proxy is not enabled")
+		}
+		u, err := url.Parse(m.Url)
+		if err != nil {
+			return err
+		}
+		if !settings.AllowProxyToLocal.Get() && utils.IsLocalIP(u.Host) {
+			return errors.New("local ip is not allowed")
+		}
+		switch u.Scheme {
+		case "rtmp":
+		case "http", "https":
+		default:
+			return errors.New("unsupported scheme")
+		}
+	case !m.Live && m.RtmpSource:
+		return errors.New("rtmp source can't be true when movie is not live")
+	case !m.Live && m.Proxy:
+		if !settings.MovieProxy.Get() {
+			return errors.New("movie proxy is not enabled")
+		}
+		if m.VendorInfo.Vendor != "" {
+			return nil
+		}
+		u, err := url.Parse(m.Url)
+		if err != nil {
+			return err
+		}
+		if !settings.AllowProxyToLocal.Get() && utils.IsLocalIP(u.Host) {
+			return errors.New("local ip is not allowed")
+		}
+		if u.Scheme != "http" && u.Scheme != "https" {
+			return errors.New("unsupported scheme")
+		}
+	case !m.Live && !m.Proxy, m.Live && !m.Proxy && !m.RtmpSource:
+		if m.VendorInfo.Vendor == "" {
+			u, err := url.Parse(m.Url)
+			if err != nil {
+				return err
+			}
+			if u.Scheme != "http" && u.Scheme != "https" {
+				return errors.New("unsupported scheme")
+			}
+		}
+	default:
+		return errors.New("unknown error")
+	}
+	return nil
+}
+
+func (movie *Movie) validateVendorMovie() error {
+	m := movie.Base
+	switch m.VendorInfo.Vendor {
+	case model.StreamingVendorBilibili:
+		err := m.VendorInfo.Bilibili.Validate()
+		if err != nil {
+			return err
+		}
+		if m.Headers == nil {
+			m.Headers = map[string]string{
+				"Referer":    "https://www.bilibili.com",
+				"User-Agent": utils.UA,
+			}
+		} else {
+			m.Headers["Referer"] = "https://www.bilibili.com"
+			m.Headers["User-Agent"] = utils.UA
+		}
+	default:
+		return fmt.Errorf("vendor not support")
+	}
+
+	return nil
+}
+
 func (m *Movie) Terminate() {
 	m.lock.Lock()
 	defer m.lock.Unlock()
@@ -115,6 +209,7 @@ func (m *Movie) terminate() {
 		m.channel.Close()
 		m.channel = nil
 	}
+	m.Cache.Clear()
 }
 
 func (m *Movie) Update(movie model.BaseMovie) error {

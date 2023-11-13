@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-resty/resty/v2"
@@ -12,6 +13,8 @@ import (
 	"github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/settings"
 	"github.com/synctv-org/synctv/utils"
+	"github.com/zijiren233/gencontainer/refreshcache"
+	"github.com/zijiren233/gencontainer/rwmap"
 	"github.com/zijiren233/livelib/av"
 	"github.com/zijiren233/livelib/container/flv"
 	"github.com/zijiren233/livelib/protocol/hls"
@@ -24,12 +27,61 @@ type Movie struct {
 	*model.Movie
 	lock    sync.RWMutex
 	channel *rtmps.Channel
+	cache   *BaseCache `gorm:"-:all" json:"-"`
+}
+
+type BaseCache struct {
+	URL rwmap.RWMap[string, *refreshcache.RefreshCache[string]]
+	MPD atomic.Pointer[refreshcache.RefreshCache[*MPDCache]]
+}
+
+type MPDCache struct {
+	MPDFile string
+	URLs    []string
+}
+
+func (b *BaseCache) Clear() {
+	b.MPD.Store(nil)
+	b.URL.Clear()
+}
+
+func (b *BaseCache) InitOrLoadURLCache(id string, refreshFunc func() (string, error), maxAge time.Duration) (*refreshcache.RefreshCache[string], error) {
+	c, loaded := b.URL.Load(id)
+	if loaded {
+		return c, nil
+	}
+
+	c, _ = b.URL.LoadOrStore(id, refreshcache.NewRefreshCache[string](refreshFunc, maxAge))
+	return c, nil
+}
+
+func (b *BaseCache) InitOrLoadMPDCache(refreshFunc func() (*MPDCache, error), maxAge time.Duration) (*refreshcache.RefreshCache[*MPDCache], error) {
+	c := b.MPD.Load()
+	if c != nil {
+		return c, nil
+	}
+
+	c = refreshcache.NewRefreshCache[*MPDCache](refreshFunc, maxAge)
+	if b.MPD.CompareAndSwap(nil, c) {
+		return c, nil
+	} else {
+		return b.InitOrLoadMPDCache(refreshFunc, maxAge)
+	}
 }
 
 func (m *Movie) Channel() (*rtmps.Channel, error) {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 	return m.channel, m.init()
+}
+
+func (m *Movie) Cache() *BaseCache {
+	m.lock.Lock()
+	defer m.lock.Unlock()
+	if m.cache == nil {
+		m.cache = &BaseCache{}
+	}
+	return m.cache
 }
 
 func genTsName() string {
@@ -40,6 +92,7 @@ func (m *Movie) init() (err error) {
 	if err = m.Validate(); err != nil {
 		return
 	}
+
 	switch {
 	case m.Base.Live && m.Base.RtmpSource:
 		if m.channel == nil {
@@ -209,13 +262,15 @@ func (m *Movie) terminate() {
 		m.channel.Close()
 		m.channel = nil
 	}
-	m.Cache.Clear()
+	if m.cache != nil {
+		m.cache.Clear()
+	}
 }
 
-func (m *Movie) Update(movie model.BaseMovie) error {
+func (m *Movie) Update(movie *model.BaseMovie) error {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 	m.terminate()
-	m.Movie.Base = movie
+	m.Movie.Base = *movie
 	return m.init()
 }

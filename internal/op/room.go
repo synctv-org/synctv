@@ -69,7 +69,7 @@ func (r *Room) CheckVersion(version uint32) bool {
 	return atomic.LoadUint32(&r.version) == version
 }
 
-func (r *Room) UpdateMovie(movieId string, movie model.BaseMovie) error {
+func (r *Room) UpdateMovie(movieId string, movie *model.BaseMovie) error {
 	return r.movies.Update(movieId, movie)
 }
 
@@ -185,12 +185,12 @@ func (r *Room) SetCurrentMovieByID(id string, play bool) error {
 	if err != nil {
 		return err
 	}
-	r.SetCurrentMovie(m.Movie, play)
+	r.SetCurrentMovie(m, play)
 	return nil
 }
 
-func (r *Room) SetCurrentMovie(movie *model.Movie, play bool) {
-	r.current.SetMovie(*movie, play)
+func (r *Room) SetCurrentMovie(movie *Movie, play bool) {
+	r.current.SetMovie(movie, play)
 }
 
 func (r *Room) SwapMoviePositions(id1, id2 string) error {

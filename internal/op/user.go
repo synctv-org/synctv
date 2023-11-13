@@ -122,7 +122,7 @@ func (u *User) SetUsername(username string) error {
 	return nil
 }
 
-func (u *User) UpdateMovie(room *Room, movieID string, movie model.BaseMovie) error {
+func (u *User) UpdateMovie(room *Room, movieID string, movie *model.BaseMovie) error {
 	m, err := room.GetMovieByID(movieID)
 	if err != nil {
 		return err
@@ -176,7 +176,7 @@ func (u *User) ClearMovies(room *Room) error {
 	return room.ClearMovies()
 }
 
-func (u *User) SetCurrentMovie(room *Room, movie *model.Movie, play bool) error {
+func (u *User) SetCurrentMovie(room *Room, movie *Movie, play bool) error {
 	if !u.HasRoomPermission(room, model.PermissionEditCurrent) {
 		return model.ErrNoPermission
 	}
@@ -189,5 +189,5 @@ func (u *User) SetCurrentMovieByID(room *Room, movieID string, play bool) error 
 	if err != nil {
 		return err
 	}
-	return u.SetCurrentMovie(room, m.Movie, play)
+	return u.SetCurrentMovie(room, m, play)
 }

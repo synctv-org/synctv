@@ -112,7 +112,7 @@ func (m *movies) GetChannel(id string) (*rtmps.Channel, error) {
 	return nil, errors.New("channel not found")
 }
 
-func (m *movies) Update(movieId string, movie model.BaseMovie) error {
+func (m *movies) Update(movieId string, movie *model.BaseMovie) error {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 	m.init()

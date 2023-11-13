@@ -2,12 +2,9 @@ package model
 
 import (
 	"fmt"
-	"sync/atomic"
 	"time"
 
 	"github.com/synctv-org/synctv/utils"
-	"github.com/zijiren233/gencontainer/refreshcache"
-	"github.com/zijiren233/gencontainer/rwmap"
 	"gorm.io/gorm"
 )
 
@@ -19,46 +16,6 @@ type Movie struct {
 	RoomID    string    `gorm:"not null;index" json:"-"`
 	CreatorID string    `gorm:"not null;index" json:"creatorId"`
 	Base      BaseMovie `gorm:"embedded;embeddedPrefix:base_" json:"base"`
-	Cache     BaseCache `gorm:"-:all" json:"-"`
-}
-
-type BaseCache struct {
-	URL rwmap.RWMap[string, *refreshcache.RefreshCache[string]]
-	MPD atomic.Pointer[refreshcache.RefreshCache[*MPDCache]]
-}
-
-type MPDCache struct {
-	MPDFile string
-	URLs    []string
-}
-
-func (b *BaseCache) Clear() {
-	b.MPD.Store(nil)
-	b.URL.Clear()
-}
-
-func (b *BaseCache) InitOrLoadURLCache(id string, refreshFunc func() (string, error), maxAge time.Duration) (*refreshcache.RefreshCache[string], error) {
-	c, loaded := b.URL.Load(id)
-	if loaded {
-		return c, nil
-	}
-
-	c, _ = b.URL.LoadOrStore(id, refreshcache.NewRefreshCache[string](refreshFunc, maxAge))
-	return c, nil
-}
-
-func (b *BaseCache) InitOrLoadMPDCache(refreshFunc func() (*MPDCache, error), maxAge time.Duration) (*refreshcache.RefreshCache[*MPDCache], error) {
-	c := b.MPD.Load()
-	if c != nil {
-		return c, nil
-	}
-
-	c = refreshcache.NewRefreshCache[*MPDCache](refreshFunc, maxAge)
-	if b.MPD.CompareAndSwap(nil, c) {
-		return c, nil
-	} else {
-		return b.InitOrLoadMPDCache(refreshFunc, maxAge)
-	}
 }
 
 func (m *Movie) BeforeCreate(tx *gorm.DB) error {

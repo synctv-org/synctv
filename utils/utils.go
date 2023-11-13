@@ -298,3 +298,14 @@ func MapToHttpCookie(m map[string]string) []*http.Cookie {
 	}
 	return c
 }
+
+func GetUrlExtension(u string) string {
+	if u == "" {
+		return ""
+	}
+	p, err := url.Parse(u)
+	if err != nil {
+		return ""
+	}
+	return filepath.Ext(p.Path)
+}

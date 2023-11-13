@@ -81,7 +81,7 @@ func MovieList(ctx *gin.Context) {
 			Creator: op.GetUserName(v.Movie.CreatorID),
 		}
 		// hide url and headers when proxy
-		if mresp[i].Base.Proxy {
+		if user.ID != v.Movie.CreatorID && v.Movie.Base.Proxy {
 			mresp[i].Base.Url = ""
 			mresp[i].Base.Headers = nil
 		}
@@ -112,6 +112,9 @@ func genCurrentResp(current *op.Current) *model.CurrentMovieResp {
 			Creator: op.GetUserName(current.Movie.Movie.CreatorID),
 		},
 	}
+	if c.Movie.Base.Type == "" && c.Movie.Base.Url != "" {
+		c.Movie.Base.Type = utils.GetUrlExtension(c.Movie.Base.Url)
+	}
 	// hide url and headers when proxy
 	if c.Movie.Base.Proxy {
 		c.Movie.Base.Url = ""
@@ -139,7 +142,7 @@ func CurrentMovie(ctx *gin.Context) {
 
 func Movies(ctx *gin.Context) {
 	room := ctx.MustGet("room").(*op.Room)
-	// user := ctx.MustGet("user").(*op.User)
+	user := ctx.MustGet("user").(*op.User)
 
 	page, max, err := GetPageAndPageSize(ctx)
 	if err != nil {
@@ -157,7 +160,7 @@ func Movies(ctx *gin.Context) {
 			Creator: op.GetUserName(v.Movie.CreatorID),
 		}
 		// hide url and headers when proxy
-		if mresp[i].Base.Proxy {
+		if user.ID != v.Movie.CreatorID && v.Movie.Base.Proxy {
 			mresp[i].Base.Url = ""
 			mresp[i].Base.Headers = nil
 		}

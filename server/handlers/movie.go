@@ -580,7 +580,9 @@ func proxyURL(ctx *gin.Context, u string, headers map[string]string) error {
 			return errors.New("not allow proxy to local")
 		}
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	ctx2, cf := context.WithCancel(ctx)
+	defer cf()
+	req, err := http.NewRequestWithContext(ctx2, http.MethodGet, u, nil)
 	if err != nil {
 		return err
 	}

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/url"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/go-resty/resty/v2"
@@ -14,13 +13,13 @@ import (
 	"github.com/synctv-org/synctv/internal/settings"
 	"github.com/synctv-org/synctv/utils"
 	"github.com/zijiren233/gencontainer/refreshcache"
-	"github.com/zijiren233/gencontainer/rwmap"
 	"github.com/zijiren233/livelib/av"
 	"github.com/zijiren233/livelib/container/flv"
 	"github.com/zijiren233/livelib/protocol/hls"
 	rtmpProto "github.com/zijiren233/livelib/protocol/rtmp"
 	"github.com/zijiren233/livelib/protocol/rtmp/core"
 	rtmps "github.com/zijiren233/livelib/server"
+	"golang.org/x/exp/maps"
 )
 
 type Movie struct {
@@ -31,8 +30,9 @@ type Movie struct {
 }
 
 type BaseCache struct {
-	URL rwmap.RWMap[string, *refreshcache.RefreshCache[string]]
-	MPD atomic.Pointer[refreshcache.RefreshCache[*MPDCache]]
+	lock sync.RWMutex
+	url  map[string]*refreshcache.RefreshCache[string]
+	mpd  *refreshcache.RefreshCache[*MPDCache]
 }
 
 type MPDCache struct {
@@ -41,31 +41,57 @@ type MPDCache struct {
 }
 
 func (b *BaseCache) Clear() {
-	b.MPD.Store(nil)
-	b.URL.Clear()
+	b.lock.Lock()
+	defer b.lock.Unlock()
+	b.mpd = nil
+	maps.Clear(b.url)
 }
 
 func (b *BaseCache) InitOrLoadURLCache(id string, refreshFunc func() (string, error), maxAge time.Duration) (*refreshcache.RefreshCache[string], error) {
-	c, loaded := b.URL.Load(id)
+	b.lock.RLock()
+	c, loaded := b.url[id]
+	if loaded {
+		b.lock.RUnlock()
+		return c, nil
+	}
+	b.lock.RUnlock()
+	b.lock.Lock()
+	defer b.lock.Unlock()
+
+	c, loaded = b.url[id]
 	if loaded {
 		return c, nil
 	}
 
-	c, _ = b.URL.LoadOrStore(id, refreshcache.NewRefreshCache[string](refreshFunc, maxAge))
+	c = refreshcache.NewRefreshCache[string](refreshFunc, maxAge)
+	b.url[id] = c
 	return c, nil
 }
 
 func (b *BaseCache) InitOrLoadMPDCache(refreshFunc func() (*MPDCache, error), maxAge time.Duration) (*refreshcache.RefreshCache[*MPDCache], error) {
-	c := b.MPD.Load()
-	if c != nil {
-		return c, nil
+	b.lock.RLock()
+
+	if b.mpd != nil {
+		b.lock.RUnlock()
+		return b.mpd, nil
+	}
+	b.lock.RUnlock()
+	b.lock.Lock()
+	defer b.lock.Unlock()
+
+	if b.mpd != nil {
+		return b.mpd, nil
 	}
 
-	c = refreshcache.NewRefreshCache[*MPDCache](refreshFunc, maxAge)
-	if b.MPD.CompareAndSwap(nil, c) {
-		return c, nil
-	} else {
-		return b.InitOrLoadMPDCache(refreshFunc, maxAge)
+	b.mpd = refreshcache.NewRefreshCache[*MPDCache](refreshFunc, maxAge)
+	return b.mpd, nil
+}
+
+func (m *Movie) Clone() *Movie {
+	return &Movie{
+		Movie:   m.Movie,
+		channel: m.channel,
+		cache:   m.cache,
 	}
 }
 

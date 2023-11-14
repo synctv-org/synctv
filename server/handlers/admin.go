@@ -36,7 +36,16 @@ func AdminSettings(ctx *gin.Context) {
 	// user := ctx.MustGet("user").(*op.User)
 	group := ctx.Param("group")
 	if group == "" {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("group is required"))
+		resp := make(model.AdminSettingsResp, len(settings.GroupSettings))
+		for sg, v := range settings.GroupSettings {
+			if resp[string(sg)] == nil {
+				resp[string(sg)] = make(gin.H, len(v))
+			}
+			for _, s2 := range v {
+				resp[string(sg)][s2.Name()] = s2.Interface()
+			}
+		}
+		ctx.JSON(http.StatusOK, model.NewApiDataResp(resp))
 		return
 	}
 

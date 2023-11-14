@@ -30,6 +30,8 @@ func Init(e *gin.Engine) {
 			root.Use(middlewares.AuthRootMiddleware)
 
 			{
+				admin.GET("/settings", AdminSettings)
+
 				admin.GET("/settings/:group", AdminSettings)
 
 				admin.POST("/settings", EditAdminSettings)

@@ -20,3 +20,5 @@ func (asr *AdminSettingsReq) Validate() error {
 func (asr *AdminSettingsReq) Decode(ctx *gin.Context) error {
 	return json.NewDecoder(ctx.Request.Body).Decode(asr)
 }
+
+type AdminSettingsResp map[string]map[string]any

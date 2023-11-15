@@ -510,7 +510,7 @@ func ProxyMovie(ctx *gin.Context) {
 
 	switch m.Movie.Base.Type {
 	case "mpd":
-		mpdCache, err := m.Cache().InitOrLoadMPDCache(initDashCache(ctx, &m.Movie), time.Minute*5)
+		mpdCache, err := m.Cache().InitOrLoadMPDCache("", initDashCache(ctx, &m.Movie), time.Minute*5)
 		if err != nil {
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 			return
@@ -700,7 +700,7 @@ func JoinLive(ctx *gin.Context) {
 	}
 }
 
-func initBilibiliMPDCache(ctx context.Context, roomID, movieID, CreatorID string, info *dbModel.BilibiliVendorInfo) func() (*op.MPDCache, error) {
+func initBilibiliMPDCache(ctx context.Context, hevc bool, roomID, movieID, CreatorID string, info *dbModel.BilibiliVendorInfo) func() (*op.MPDCache, error) {
 	return func() (*op.MPDCache, error) {
 		v, err := db.FirstOrInitVendorByUserIDAndVendor(CreatorID, dbModel.StreamingVendorBilibili)
 		if err != nil {
@@ -713,6 +713,7 @@ func initBilibiliMPDCache(ctx context.Context, roomID, movieID, CreatorID string
 				Cookies: utils.HttpCookieToMap(v.Cookies),
 				Bvid:    info.Bvid,
 				Cid:     info.Cid,
+				Hevc:    hevc,
 			})
 			if err != nil {
 				return nil, err
@@ -725,6 +726,7 @@ func initBilibiliMPDCache(ctx context.Context, roomID, movieID, CreatorID string
 			resp, err := cli.GetDashPGCURL(ctx, &bilibili.GetDashPGCURLReq{
 				Cookies: utils.HttpCookieToMap(v.Cookies),
 				Epid:    info.Epid,
+				Hevc:    hevc,
 			})
 			if err != nil {
 				return nil, err
@@ -744,7 +746,11 @@ func initBilibiliMPDCache(ctx context.Context, roomID, movieID, CreatorID string
 				for _, r := range as.Representations {
 					for i := range r.BaseURL {
 						movies = append(movies, r.BaseURL[i])
-						r.BaseURL[i] = fmt.Sprintf("%s?id=%d", movieID, id)
+						if hevc {
+							r.BaseURL[i] = fmt.Sprintf("%s?id=%d&t=hevc", movieID, id)
+						} else {
+							r.BaseURL[i] = fmt.Sprintf("%s?id=%d", movieID, id)
+						}
 						id++
 					}
 				}
@@ -798,7 +804,11 @@ func initBilibiliShareCache(ctx context.Context, CreatorID string, info *dbModel
 func proxyVendorMovie(ctx *gin.Context, movie *op.Movie) {
 	switch movie.Movie.Base.VendorInfo.Vendor {
 	case dbModel.StreamingVendorBilibili:
-		bvc, err := movie.Cache().InitOrLoadMPDCache(initBilibiliMPDCache(ctx, movie.Movie.RoomID, movie.Movie.ID, movie.Movie.CreatorID, movie.Movie.Base.VendorInfo.Bilibili), time.Minute*119)
+		t := ctx.Query("t")
+		if t != "hevc" {
+			t = ""
+		}
+		bvc, err := movie.Cache().InitOrLoadMPDCache(t, initBilibiliMPDCache(ctx, t == "hevc", movie.Movie.RoomID, movie.Movie.ID, movie.Movie.CreatorID, movie.Movie.Base.VendorInfo.Bilibili), time.Minute*119)
 		if err != nil {
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 			return

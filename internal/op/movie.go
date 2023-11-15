@@ -32,12 +32,13 @@ type Movie struct {
 type BaseCache struct {
 	lock sync.RWMutex
 	url  map[string]*refreshcache.RefreshCache[string]
-	mpd  *refreshcache.RefreshCache[*MPDCache]
+	mpd  map[string]*refreshcache.RefreshCache[*MPDCache]
 }
 
 func newBaseCache() *BaseCache {
 	return &BaseCache{
 		url: make(map[string]*refreshcache.RefreshCache[string]),
+		mpd: make(map[string]*refreshcache.RefreshCache[*MPDCache]),
 	}
 }
 
@@ -74,23 +75,24 @@ func (b *BaseCache) InitOrLoadURLCache(id string, refreshFunc func() (string, er
 	return c, nil
 }
 
-func (b *BaseCache) InitOrLoadMPDCache(refreshFunc func() (*MPDCache, error), maxAge time.Duration) (*refreshcache.RefreshCache[*MPDCache], error) {
+func (b *BaseCache) InitOrLoadMPDCache(id string, refreshFunc func() (*MPDCache, error), maxAge time.Duration) (*refreshcache.RefreshCache[*MPDCache], error) {
 	b.lock.RLock()
-
-	if b.mpd != nil {
-		b.lock.RUnlock()
-		return b.mpd, nil
+	c, loaded := b.mpd[id]
+	if loaded {
+		return c, nil
 	}
 	b.lock.RUnlock()
 	b.lock.Lock()
 	defer b.lock.Unlock()
 
-	if b.mpd != nil {
-		return b.mpd, nil
+	c, loaded = b.mpd[id]
+	if loaded {
+		return c, nil
 	}
 
-	b.mpd = refreshcache.NewRefreshCache[*MPDCache](refreshFunc, maxAge)
-	return b.mpd, nil
+	c = refreshcache.NewRefreshCache[*MPDCache](refreshFunc, maxAge)
+	b.mpd[id] = c
+	return c, nil
 }
 
 func (m *Movie) Channel() (*rtmps.Channel, error) {

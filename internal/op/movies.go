@@ -60,6 +60,7 @@ func (m *movies) AddMovie(mo *model.Movie) error {
 		return err
 	}
 
+	movie.Movie.ID = mo.ID
 	m.list.PushBack(movie)
 	return nil
 }
@@ -96,7 +97,8 @@ func (m *movies) AddMovies(mos []*model.Movie) error {
 		return err
 	}
 
-	for _, mo := range inited {
+	for i, mo := range inited {
+		mo.Movie.ID = mos[i].ID
 		m.list.PushBack(mo)
 	}
 

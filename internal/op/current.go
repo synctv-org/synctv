@@ -59,7 +59,11 @@ func (c *current) SetMovie(movie *Movie, play bool) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 
-	c.current.Movie = *movie
+	if movie == nil {
+		c.current.Movie = Movie{}
+	} else {
+		c.current.Movie = *movie
+	}
 	c.current.SetSeek(0, 0)
 	c.current.Status.Playing = play
 }

@@ -98,7 +98,7 @@ func MovieList(ctx *gin.Context) {
 
 func genCurrent(ctx context.Context, current *op.Current, userID string) (*op.Current, error) {
 	if current.Movie.Movie.Base.VendorInfo.Vendor != "" {
-		return current, parse2VendorMovie(ctx, userID, current.Movie)
+		return current, parse2VendorMovie(ctx, userID, &current.Movie)
 	}
 	return current, nil
 }

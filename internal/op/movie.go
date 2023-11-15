@@ -24,7 +24,7 @@ import (
 
 type Movie struct {
 	Movie   model.Movie
-	lock    sync.RWMutex
+	lock    *sync.RWMutex
 	channel *rtmps.Channel
 	cache   *BaseCache
 }
@@ -33,6 +33,12 @@ type BaseCache struct {
 	lock sync.RWMutex
 	url  map[string]*refreshcache.RefreshCache[string]
 	mpd  *refreshcache.RefreshCache[*MPDCache]
+}
+
+func newBaseCache() *BaseCache {
+	return &BaseCache{
+		url: make(map[string]*refreshcache.RefreshCache[string]),
+	}
 }
 
 type MPDCache struct {
@@ -87,14 +93,6 @@ func (b *BaseCache) InitOrLoadMPDCache(refreshFunc func() (*MPDCache, error), ma
 	return b.mpd, nil
 }
 
-func (m *Movie) Clone() *Movie {
-	return &Movie{
-		Movie:   m.Movie,
-		channel: m.channel,
-		cache:   m.cache,
-	}
-}
-
 func (m *Movie) Channel() (*rtmps.Channel, error) {
 	m.lock.Lock()
 	defer m.lock.Unlock()
@@ -102,11 +100,6 @@ func (m *Movie) Channel() (*rtmps.Channel, error) {
 }
 
 func (m *Movie) Cache() *BaseCache {
-	m.lock.Lock()
-	defer m.lock.Unlock()
-	if m.cache == nil {
-		m.cache = &BaseCache{}
-	}
 	return m.cache
 }
 
@@ -287,9 +280,7 @@ func (m *Movie) terminate() {
 		m.channel.Close()
 		m.channel = nil
 	}
-	if m.cache != nil {
-		m.cache.Clear()
-	}
+	m.cache.Clear()
 }
 
 func (m *Movie) Update(movie *model.BaseMovie) error {

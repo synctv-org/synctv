@@ -177,7 +177,6 @@ func (r *Room) GetMovieByID(id string) (*Movie, error) {
 
 func (r *Room) Current() *Current {
 	c := r.current.Current()
-	c.Movie = c.Movie.Clone()
 	return &c
 }
 

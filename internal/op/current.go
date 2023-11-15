@@ -14,7 +14,7 @@ type current struct {
 }
 
 type Current struct {
-	Movie  *Movie `json:"movie"`
+	Movie  Movie  `json:"movie"`
 	Status Status `json:"status"`
 }
 
@@ -22,7 +22,6 @@ func newCurrent() *current {
 	return &current{
 		current: Current{
 			Status: newStatus(),
-			Movie:  &Movie{},
 		},
 	}
 }
@@ -49,7 +48,7 @@ func (c *current) Current() Current {
 	return c.current
 }
 
-func (c *current) Movie() *Movie {
+func (c *current) Movie() Movie {
 	c.lock.RLock()
 	defer c.lock.RUnlock()
 
@@ -60,11 +59,7 @@ func (c *current) SetMovie(movie *Movie, play bool) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 
-	if movie == nil {
-		c.current.Movie = &Movie{}
-	} else {
-		c.current.Movie = movie
-	}
+	c.current.Movie = *movie
 	c.current.SetSeek(0, 0)
 	c.current.Status.Playing = play
 }
@@ -98,35 +93,33 @@ func (c *Current) Proto() *pb.Current {
 			Playing: c.Status.Playing,
 		},
 	}
-	if c.Movie != nil {
-		current.Movie = &pb.MovieInfo{
-			Id: c.Movie.Movie.ID,
-			Base: &pb.BaseMovieInfo{
-				Url:        c.Movie.Movie.Base.Url,
-				Name:       c.Movie.Movie.Base.Name,
-				Live:       c.Movie.Movie.Base.Live,
-				Proxy:      c.Movie.Movie.Base.Proxy,
-				RtmpSource: c.Movie.Movie.Base.RtmpSource,
-				Type:       c.Movie.Movie.Base.Type,
-				Headers:    c.Movie.Movie.Base.Headers,
-			},
-			CreatedAt: c.Movie.Movie.CreatedAt.UnixMilli(),
-			Creator:   GetUserName(c.Movie.Movie.CreatorID),
+	current.Movie = &pb.MovieInfo{
+		Id: c.Movie.Movie.ID,
+		Base: &pb.BaseMovieInfo{
+			Url:        c.Movie.Movie.Base.Url,
+			Name:       c.Movie.Movie.Base.Name,
+			Live:       c.Movie.Movie.Base.Live,
+			Proxy:      c.Movie.Movie.Base.Proxy,
+			RtmpSource: c.Movie.Movie.Base.RtmpSource,
+			Type:       c.Movie.Movie.Base.Type,
+			Headers:    c.Movie.Movie.Base.Headers,
+		},
+		CreatedAt: c.Movie.Movie.CreatedAt.UnixMilli(),
+		Creator:   GetUserName(c.Movie.Movie.CreatorID),
+	}
+	if c.Movie.Movie.Base.VendorInfo.Vendor != "" {
+		current.Movie.Base.VendorInfo = &pb.VendorInfo{
+			Vendor: string(c.Movie.Movie.Base.VendorInfo.Vendor),
+			Shared: c.Movie.Movie.Base.VendorInfo.Shared,
 		}
-		if c.Movie.Movie.Base.VendorInfo.Vendor != "" {
-			current.Movie.Base.VendorInfo = &pb.VendorInfo{
-				Vendor: string(c.Movie.Movie.Base.VendorInfo.Vendor),
-				Shared: c.Movie.Movie.Base.VendorInfo.Shared,
-			}
-			switch c.Movie.Movie.Base.VendorInfo.Vendor {
-			case model.StreamingVendorBilibili:
-				current.Movie.Base.VendorInfo.Bilibili = &pb.BilibiliVendorInfo{
-					Bvid:       c.Movie.Movie.Base.VendorInfo.Bilibili.Bvid,
-					Cid:        c.Movie.Movie.Base.VendorInfo.Bilibili.Cid,
-					Epid:       c.Movie.Movie.Base.VendorInfo.Bilibili.Epid,
-					Quality:    c.Movie.Movie.Base.VendorInfo.Bilibili.Quality,
-					VendorName: c.Movie.Movie.Base.VendorInfo.Bilibili.VendorName,
-				}
+		switch c.Movie.Movie.Base.VendorInfo.Vendor {
+		case model.StreamingVendorBilibili:
+			current.Movie.Base.VendorInfo.Bilibili = &pb.BilibiliVendorInfo{
+				Bvid:       c.Movie.Movie.Base.VendorInfo.Bilibili.Bvid,
+				Cid:        c.Movie.Movie.Base.VendorInfo.Bilibili.Cid,
+				Epid:       c.Movie.Movie.Base.VendorInfo.Bilibili.Epid,
+				Quality:    c.Movie.Movie.Base.VendorInfo.Bilibili.Quality,
+				VendorName: c.Movie.Movie.Base.VendorInfo.Bilibili.VendorName,
 			}
 		}
 	}

@@ -375,6 +375,15 @@ func GetUserRooms(ctx *gin.Context) {
 		db.WhereCreatorID(id),
 	}
 
+	switch ctx.Query("status") {
+	case "active":
+		scopes = append(scopes, db.WhereStatus(dbModel.RoomStatusActive))
+	case "pending":
+		scopes = append(scopes, db.WhereStatus(dbModel.RoomStatusPending))
+	case "banned":
+		scopes = append(scopes, db.WhereStatus(dbModel.RoomStatusBanned))
+	}
+
 	switch ctx.DefaultQuery("order", "name") {
 	case "createdAt":
 		if desc {

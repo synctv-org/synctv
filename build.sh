@@ -11,8 +11,8 @@ function ChToScriptFileDir() {
 function Help() {
     echo "-h get help"
     echo "-v set build version (default: dev)"
-    echo "-w set web version (default: latest releases)"
-    echo "-s sekp init dep (default: false)"
+    echo "-w init web version (default: build version)"
+    echo "-s skip init web"
     echo "-m set build mode (default: pie)"
     echo "-l set ldflags (default: -s -w --extldflags \"-static -fpic -Wl,-z,relro,-z,now\")"
     echo "-p set platform (default: host platform, support: all, linux, darwin, windows)"
@@ -36,7 +36,7 @@ function Init() {
     LDFLAGS='-s -w --extldflags "-static -fpic -Wl,-z,relro,-z,now"'
     PLATFORM=""
     TRIM_PATH=""
-    SKIP_INIT_DEP=""
+    SKIP_INIT_WEB=""
     BUILD_DIR="build"
     TAGS="jsoniter"
 }
@@ -52,7 +52,7 @@ function ParseArgs() {
             VERSION="$(echo "$OPTARG" | sed 's/ //g' | sed 's/"//g' | sed 's/\n//g')"
             ;;
         s)
-            SKIP_INIT_DEP="true"
+            SKIP_INIT_WEB="true"
             ;;
         w)
             WEB_VERSION="$OPTARG"
@@ -104,7 +104,7 @@ function GetLatestWebVersion() {
 
 # Comply with golang version rules
 function CheckVersionFormat() {
-    if [ "$1" == "dev" ] || [ "$(echo "$1" | grep -oE "^v?[0-9]+\.[0-9]+\.[0-9]+$")" ]; then
+    if [ "$1" == "dev" ] || [ "$(echo "$1" | grep -oE "^v?[0-9]+\.[0-9]+\.[0-9]+(\-beta.*|\-rc.*|\-alpha.*)?$")" ]; then
         return 0
     else
         echo "version format error: $1"
@@ -115,9 +115,9 @@ function CheckVersionFormat() {
 function FixArgs() {
     CheckAllPlatform
     CheckVersionFormat "$VERSION"
-    if [ ! "$WEB_VERSION" ]; then
-        if [ "$VERSION" == "dev" ]; then
-            WEB_VERSION="dev"
+    if [ "$SKIP_INIT_WEB" && ! "$WEB_VERSION" ]; then
+        if [ "$VERSION" != "" ]; then
+            WEB_VERSION="$VERSION"
         else
             GetLatestWebVersion "synctv-org/synctv-web"
         fi
@@ -131,13 +131,17 @@ function FixArgs() {
 }
 
 function InitDep() {
-    if [ "$SKIP_INIT_DEP" ]; then
-        echo "skip init dep"
+    if [ ! "$SKIP_INIT_WEB" ]; then
+        echo "skip init web"
         return
     fi
     rm -rf public/dist/*
     echo "download: https://github.com/synctv-org/synctv-web/releases/download/${WEB_VERSION}/dist.tar.gz"
     curl -sL "https://github.com/synctv-org/synctv-web/releases/download/${WEB_VERSION}/dist.tar.gz" | tar --strip-components 1 -C "public/dist" -z -x -v -f -
+    if [ $? -ne 0 ]; then
+        echo "download web error"
+        exit 1
+    fi
 }
 
 # sqlite3 not support linux/loong64,linux/mips linux/mips64,linux/mips64le,linux/mipsle,linux/ppc64,

@@ -73,7 +73,7 @@ func CompareAndCloseRoom(room *Room) error {
 	r, loaded := roomCache.Load(room.ID)
 	if loaded {
 		if r.Value() != room {
-			return nil
+			return errors.New("room compare failed")
 		}
 		if roomCache.CompareAndDelete(room.ID, r) {
 			r.Value().close()

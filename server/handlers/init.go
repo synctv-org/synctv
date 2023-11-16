@@ -58,7 +58,7 @@ func Init(e *gin.Engine) {
 					// 查找房间
 					room.GET("/list", Rooms)
 
-					room.POST("/room", ApprovePendingRoom)
+					room.POST("/approve", ApprovePendingRoom)
 
 					room.POST("/ban", BanRoom)
 

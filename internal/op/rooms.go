@@ -19,24 +19,7 @@ func CreateRoom(name, password string, maxCount int64, conf ...db.CreateRoomConf
 	if err != nil {
 		return nil, err
 	}
-	return InitRoom(r)
-}
-
-func InitRoom(room *model.Room) (*Room, error) {
-	r := &Room{
-		Room:    *room,
-		version: crc32.ChecksumIEEE(room.HashedPassword),
-		current: newCurrent(),
-		movies: movies{
-			roomID: room.ID,
-		},
-	}
-
-	i, loaded := roomCache.LoadOrStore(room.ID, r, time.Duration(settings.RoomTTL.Get()))
-	if loaded {
-		return r, errors.New("room already init")
-	}
-	return i.Value(), nil
+	return LoadOrInitRoom(r)
 }
 
 var (
@@ -51,18 +34,14 @@ func LoadOrInitRoom(room *model.Room) (*Room, error) {
 	case model.RoomStatusPending:
 		return nil, ErrRoomPending
 	}
-	t := time.Duration(settings.RoomTTL.Get())
-	i, loaded := roomCache.LoadOrStore(room.ID, &Room{
+	i, _ := roomCache.LoadOrStore(room.ID, &Room{
 		Room:    *room,
 		version: crc32.ChecksumIEEE(room.HashedPassword),
 		current: newCurrent(),
 		movies: movies{
 			roomID: room.ID,
 		},
-	}, t)
-	if loaded {
-		i.SetExpiration(time.Now().Add(t))
-	}
+	}, time.Duration(settings.RoomTTL.Get()))
 	return i.Value(), nil
 }
 

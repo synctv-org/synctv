@@ -203,7 +203,11 @@ func DeleteRoom(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*op.User)
 
 	if err := user.DeleteRoom(room); err != nil {
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(err))
+		if errors.Is(err, dbModel.ErrNoPermission) {
+			ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(err))
+			return
+		}
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
@@ -221,7 +225,11 @@ func SetRoomPassword(ctx *gin.Context) {
 	}
 
 	if err := user.SetRoomPassword(room, req.Password); err != nil {
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(err))
+		if errors.Is(err, dbModel.ErrNoPermission) {
+			ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(err))
+			return
+		}
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
@@ -255,7 +263,11 @@ func SetRoomSetting(ctx *gin.Context) {
 	}
 
 	if err := user.SetRoomSetting(room, dbModel.RoomSettings(req)); err != nil {
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(err))
+		if errors.Is(err, dbModel.ErrNoPermission) {
+			ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(err))
+			return
+		}
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 

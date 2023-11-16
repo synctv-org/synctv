@@ -266,7 +266,7 @@ func NewPublishKey(ctx *gin.Context) {
 	}
 
 	if movie.Movie.CreatorID != user.ID && !user.HasRoomPermission(room, dbModel.PermissionEditUser) {
-		ctx.AbortWithStatus(http.StatusForbidden)
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(dbModel.ErrNoPermission))
 		return
 	}
 
@@ -304,6 +304,10 @@ func EditMovie(ctx *gin.Context) {
 	}
 
 	if err := user.UpdateMovie(room, req.Id, (*dbModel.BaseMovie)(&req.PushMovieReq)); err != nil {
+		if errors.Is(err, dbModel.ErrNoPermission) {
+			ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(err))
+			return
+		}
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
@@ -333,6 +337,10 @@ func DelMovie(ctx *gin.Context) {
 
 	err := user.DeleteMoviesByID(room, req.Ids)
 	if err != nil {
+		if errors.Is(err, dbModel.ErrNoPermission) {
+			ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(err))
+			return
+		}
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
@@ -355,6 +363,10 @@ func ClearMovies(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*op.User)
 
 	if err := user.ClearMovies(room); err != nil {
+		if errors.Is(err, dbModel.ErrNoPermission) {
+			ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(err))
+			return
+		}
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
@@ -405,20 +417,23 @@ func ChangeCurrentMovie(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*op.User)
 
 	req := model.IdCanEmptyReq{}
-	if err := model.Decode(ctx, &req); err != nil {
+	err := model.Decode(ctx, &req)
+	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
 	if req.Id == "" {
-		err := user.SetCurrentMovie(room, nil, false)
-		if err != nil {
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		err = user.SetCurrentMovie(room, nil, false)
+	} else {
+		err = user.SetCurrentMovieByID(room, req.Id, true)
+	}
+	if err != nil {
+		if errors.Is(err, dbModel.ErrNoPermission) {
+			ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(err))
 			return
 		}
-	} else if err := user.SetCurrentMovieByID(room, req.Id, true); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
-		return
 	}
 
 	current, err := genCurrent(ctx, room.Current(), user.ID)

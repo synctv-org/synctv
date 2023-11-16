@@ -115,7 +115,7 @@ function CheckVersionFormat() {
 function FixArgs() {
     CheckAllPlatform
     CheckVersionFormat "$VERSION"
-    if [ ! "$SKIP_INIT_WEB" && ! "$WEB_VERSION" ]; then
+    if [ ! "$SKIP_INIT_WEB" ] && [ ! "$WEB_VERSION" ]; then
         if [ "$VERSION" != "" ]; then
             WEB_VERSION="$VERSION"
         else

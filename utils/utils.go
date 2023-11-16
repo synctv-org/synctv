@@ -132,11 +132,13 @@ func CompVersion(v1, v2 string) (int, error) {
 	if v1 == v2 {
 		return VersionEqual, nil
 	}
-	v1s, err := SplitVersion(strings.TrimLeft(v1, "v"))
+	sub1 := strings.Split(v1, "-")
+	sub2 := strings.Split(v2, "-")
+	v1s, err := SplitVersion(strings.TrimLeft(sub1[0], "v"))
 	if err != nil {
 		return VersionEqual, err
 	}
-	v2s, err := SplitVersion(strings.TrimLeft(v2, "v"))
+	v2s, err := SplitVersion(strings.TrimLeft(sub2[0], "v"))
 	if err != nil {
 		return VersionEqual, err
 	}
@@ -151,8 +153,20 @@ func CompVersion(v1, v2 string) (int, error) {
 		return VersionGreater, nil
 	} else if len(v1s) < len(v2s) {
 		return VersionLess, nil
+	} else {
+		sub1 = sub1[1:]
+		sub2 = sub2[1:]
+		if len(sub1) == 2 && len(sub2) == 2 {
+			if sub1[0] == "beta" && sub2[0] == "alpha" {
+				return VersionGreater, nil
+			} else if sub1[0] == "alpha" && sub2[0] == "beta" {
+				return VersionLess, nil
+			}
+			return CompVersion(sub1[1], sub2[1])
+		} else {
+			return VersionEqual, fmt.Errorf("invalid version: %s, %s", v1, v2)
+		}
 	}
-	return VersionGreater, nil
 }
 
 func SplitVersion(v string) ([]int, error) {

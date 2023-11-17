@@ -62,7 +62,7 @@ func (p *GithubProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*pr
 
 type githubUserInfo struct {
 	Login string `json:"login"`
-	ID    uint   `json:"id"`
+	ID    uint64 `json:"id"`
 }
 
 func init() {

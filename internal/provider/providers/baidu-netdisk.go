@@ -71,7 +71,7 @@ type baiduNetDiskProviderUserInfo struct {
 	BaiduName string `json:"baidu_name"`
 	Errmsg    string `json:"errmsg"`
 	Errno     int    `json:"errno"`
-	Uk        uint   `json:"uk"`
+	Uk        uint64 `json:"uk"`
 }
 
 func init() {

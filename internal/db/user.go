@@ -19,7 +19,7 @@ func WithRole(role model.Role) CreateUserConfig {
 	}
 }
 
-func CreateUser(username string, p provider.OAuth2Provider, puid uint, conf ...CreateUserConfig) (*model.User, error) {
+func CreateUser(username string, p provider.OAuth2Provider, puid uint64, conf ...CreateUserConfig) (*model.User, error) {
 	u := &model.User{
 		Username: username,
 		Role:     model.RoleUser,
@@ -41,7 +41,7 @@ func CreateUser(username string, p provider.OAuth2Provider, puid uint, conf ...C
 }
 
 // 只有当provider和puid没有找到对应的user时才会创建
-func CreateOrLoadUser(username string, p provider.OAuth2Provider, puid uint, conf ...CreateUserConfig) (*model.User, error) {
+func CreateOrLoadUser(username string, p provider.OAuth2Provider, puid uint64, conf ...CreateUserConfig) (*model.User, error) {
 	var user model.User
 	var userProvider model.UserProvider
 
@@ -60,7 +60,7 @@ func CreateOrLoadUser(username string, p provider.OAuth2Provider, puid uint, con
 	return &user, nil
 }
 
-func GetProviderUserID(p provider.OAuth2Provider, puid uint) (string, error) {
+func GetProviderUserID(p provider.OAuth2Provider, puid uint64) (string, error) {
 	var userProvider model.UserProvider
 	if err := db.Where("provider = ? AND provider_user_id = ?", p, puid).First(&userProvider).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {

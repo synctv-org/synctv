@@ -3,12 +3,11 @@ package providers
 import (
 	"context"
 	"fmt"
-	"hash/crc32"
+	"hash/crc64"
 	"net/http"
 
 	json "github.com/json-iterator/go"
 	"github.com/synctv-org/synctv/internal/provider"
-	"github.com/zijiren233/stream"
 	"golang.org/x/oauth2"
 )
 
@@ -62,7 +61,7 @@ func (p *BaiduProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*pro
 	}
 	return &provider.UserInfo{
 		Username:       ui.Uname,
-		ProviderUserID: uint(crc32.ChecksumIEEE(stream.StringToBytes(ui.Openid))),
+		ProviderUserID: crc64.Checksum([]byte(ui.Openid), crc64.MakeTable(crc64.ECMA)),
 	}, nil
 }
 

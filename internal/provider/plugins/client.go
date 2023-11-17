@@ -79,6 +79,6 @@ func (c *GRPCClient) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*provid
 	}
 	return &provider.UserInfo{
 		Username:       resp.Username,
-		ProviderUserID: uint(resp.ProviderUserId),
+		ProviderUserID: resp.ProviderUserId,
 	}, nil
 }

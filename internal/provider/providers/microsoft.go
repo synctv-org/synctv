@@ -2,7 +2,7 @@ package providers
 
 import (
 	"context"
-	"hash/crc32"
+	"hash/crc64"
 	"net/http"
 
 	json "github.com/json-iterator/go"
@@ -58,7 +58,7 @@ func (p *MicrosoftProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (
 	}
 	return &provider.UserInfo{
 		Username:       ui.DisplayName,
-		ProviderUserID: uint(crc32.ChecksumIEEE(stream.StringToBytes(ui.ID))),
+		ProviderUserID: crc64.Checksum(stream.StringToBytes(ui.ID), crc64.MakeTable(crc64.ECMA)),
 	}, nil
 }
 

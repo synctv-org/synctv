@@ -63,7 +63,7 @@ func (p *GiteeProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*pro
 }
 
 type giteeUserInfo struct {
-	ID    uint   `json:"id"`
+	ID    uint64 `json:"id"`
 	Login string `json:"login"`
 }
 

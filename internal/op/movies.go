@@ -32,16 +32,16 @@ func (m *movies) init() {
 }
 
 func (m *movies) Len() int {
+	m.init()
 	m.lock.RLock()
 	defer m.lock.RUnlock()
-	m.init()
 	return m.list.Len()
 }
 
 func (m *movies) AddMovie(mo *model.Movie) error {
+	m.init()
 	m.lock.Lock()
 	defer m.lock.Unlock()
-	m.init()
 	mo.Position = uint(time.Now().UnixMilli())
 	movie := &Movie{
 		Movie: *mo,
@@ -66,9 +66,9 @@ func (m *movies) AddMovie(mo *model.Movie) error {
 }
 
 func (m *movies) AddMovies(mos []*model.Movie) error {
+	m.init()
 	m.lock.Lock()
 	defer m.lock.Unlock()
-	m.init()
 	inited := make([]*Movie, 0, len(mos))
 	for _, mo := range mos {
 		mo.Position = uint(time.Now().UnixMilli())
@@ -109,9 +109,9 @@ func (m *movies) GetChannel(id string) (*rtmps.Channel, error) {
 	if id == "" {
 		return nil, errors.New("channel name is nil")
 	}
+	m.init()
 	m.lock.RLock()
 	defer m.lock.RUnlock()
-	m.init()
 	for e := m.list.Front(); e != nil; e = e.Next() {
 		if e.Value.Movie.ID == id {
 			return e.Value.Channel()
@@ -121,9 +121,9 @@ func (m *movies) GetChannel(id string) (*rtmps.Channel, error) {
 }
 
 func (m *movies) Update(movieId string, movie *model.BaseMovie) error {
+	m.init()
 	m.lock.Lock()
 	defer m.lock.Unlock()
-	m.init()
 	for e := m.list.Front(); e != nil; e = e.Next() {
 		if e.Value.Movie.ID == movieId {
 			err := e.Value.Update(movie)
@@ -161,9 +161,9 @@ func (m *movies) Close() error {
 }
 
 func (m *movies) DeleteMovieByID(id string) error {
+	m.init()
 	m.lock.Lock()
 	defer m.lock.Unlock()
-	m.init()
 
 	err := db.DeleteMovieByID(m.roomID, id)
 	if err != nil {
@@ -206,9 +206,9 @@ func (m *movies) getMovieElementByID(id string) (*dllist.Element[*Movie], error)
 }
 
 func (m *movies) SwapMoviePositions(id1, id2 string) error {
+	m.init()
 	m.lock.Lock()
 	defer m.lock.Unlock()
-	m.init()
 
 	err := db.SwapMoviePositions(m.roomID, id1, id2)
 	if err != nil {
@@ -232,9 +232,9 @@ func (m *movies) SwapMoviePositions(id1, id2 string) error {
 }
 
 func (m *movies) GetMoviesWithPage(page, pageSize int) []*Movie {
+	m.init()
 	m.lock.RLock()
 	defer m.lock.RUnlock()
-	m.init()
 
 	start, end := utils.GetPageItemsRange(m.list.Len(), page, pageSize)
 	ms := make([]*Movie, 0, end-start)

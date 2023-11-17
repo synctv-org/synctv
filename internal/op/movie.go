@@ -50,6 +50,10 @@ type MPDCache struct {
 func (b *BaseCache) Clear() {
 	b.lock.Lock()
 	defer b.lock.Unlock()
+	b.clear()
+}
+
+func (b *BaseCache) clear() {
 	b.mpd = nil
 	maps.Clear(b.url)
 }
@@ -282,7 +286,7 @@ func (m *Movie) terminate() {
 		m.channel.Close()
 		m.channel = nil
 	}
-	m.cache.Clear()
+	m.cache.clear()
 }
 
 func (m *Movie) Update(movie *model.BaseMovie) error {

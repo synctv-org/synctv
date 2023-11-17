@@ -102,3 +102,6 @@ The `SyncTV` is open-source software licensed under the AGPL-3.0 license.
 - The program only plays video files/forwards traffic on the client-side and will not intercept, store, or tamper with any user data.
 - Before using the program, you should understand and assume the corresponding risks, including but not limited to copyright disputes, legal restrictions, etc., which are not related to the program.
 - If there is any infringement, please contact me via [email](mailto:pyh1670605849@gmail.com), and it will be dealt with promptly.
+
+# Discussion
+- [Telegram](https://t.me/synctv)

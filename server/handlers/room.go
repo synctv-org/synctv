@@ -89,14 +89,14 @@ func RoomList(ctx *gin.Context) {
 		return
 	}
 
-	var desc = ctx.DefaultQuery("sort", "desc") == "desc"
+	var desc = ctx.DefaultQuery("order", "desc") == "desc"
 
 	scopes := []func(db *gorm.DB) *gorm.DB{
 		db.WhereRoomSettingWithoutHidden(),
 		db.WhereStatus(dbModel.RoomStatusActive),
 	}
 
-	switch ctx.DefaultQuery("order", "name") {
+	switch ctx.DefaultQuery("sort", "name") {
 	case "createdAt":
 		if desc {
 			scopes = append(scopes, db.OrderByCreatedAtDesc)
@@ -110,7 +110,7 @@ func RoomList(ctx *gin.Context) {
 			scopes = append(scopes, db.OrderByAsc("name"))
 		}
 	default:
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support order"))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support sort"))
 		return
 	}
 
@@ -282,7 +282,7 @@ func RoomUsers(ctx *gin.Context) {
 		return
 	}
 
-	var desc = ctx.DefaultQuery("sort", "desc") == "desc"
+	var desc = ctx.DefaultQuery("order", "desc") == "desc"
 
 	preloadScopes := []func(db *gorm.DB) *gorm.DB{db.WhereRoomID(room.ID)}
 	scopes := []func(db *gorm.DB) *gorm.DB{}
@@ -296,7 +296,7 @@ func RoomUsers(ctx *gin.Context) {
 		preloadScopes = append(preloadScopes, db.WhereRoomUserStatus(dbModel.RoomUserStatusActive))
 	}
 
-	switch ctx.DefaultQuery("order", "name") {
+	switch ctx.DefaultQuery("sort", "name") {
 	case "join":
 		if desc {
 			preloadScopes = append(preloadScopes, db.OrderByCreatedAtDesc)
@@ -310,7 +310,7 @@ func RoomUsers(ctx *gin.Context) {
 			scopes = append(scopes, db.OrderByAsc("username"))
 		}
 	default:
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support order"))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support sort"))
 		return
 	}
 

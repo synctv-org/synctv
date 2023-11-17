@@ -15,7 +15,7 @@ type DatabaseConfig struct {
 	User     string       `yaml:"user" env:"DATABASE_USER"`
 	Password string       `yaml:"password" env:"DATABASE_PASSWORD"`
 	DBName   string       `yaml:"db_name" lc:"default: synctv" hc:"when type is sqlite3, it will use sqlite db file or memory" env:"DATABASE_DB_NAME"`
-	SslMode  string       `yaml:"ssl_mode" env:"DATABASE_SSL_MODE"`
+	SslMode  string       `yaml:"ssl_mode" env:"DATABASE_SSL_MODE" hc:"mysql: true, false, skip-verify, preferred, <name> postgres: disable, require, verify-ca, verify-full"`
 
 	CustomDSN string `yaml:"custom_dsn" hc:"when not empty, it will ignore other config" env:"DATABASE_CUSTOM_DSN"`
 
@@ -27,10 +27,9 @@ type DatabaseConfig struct {
 
 func DefaultDatabaseConfig() DatabaseConfig {
 	return DatabaseConfig{
-		Type:    DatabaseTypeSqlite3,
-		Host:    "",
-		DBName:  "synctv",
-		SslMode: "disable",
+		Type:   DatabaseTypeSqlite3,
+		Host:   "",
+		DBName: "synctv",
 
 		MaxIdleConns:    4,
 		MaxOpenConns:    64,

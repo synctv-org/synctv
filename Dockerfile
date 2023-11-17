@@ -12,12 +12,6 @@ RUN bash build.sh -P -v ${VERSION} -b build
 
 From alpine:latest
 
-WORKDIR /opt/synctv
-
-ENV SERVER_LISTEN=0.0.0.0
-
-ENV SERVER_PORT=8080
-
 COPY --from=builder /synctv/build/synctv /usr/local/bin/synctv
 
 COPY entrypoint.sh /entrypoint.sh
@@ -28,10 +22,12 @@ RUN chmod +x /entrypoint.sh
 
 ENV PUID=0 PGID=0 UMASK=022
 
-WORKDIR /opt/synctv
+RUN mkdir -p ~/.synctv
+
+WORKDIR ~/.synctv
 
 EXPOSE 8080/tcp 8080/udp
 
-VOLUME [ "/opt/synctv" ]
+VOLUME [ ~/.synctv ]
 
 CMD [ "/entrypoint.sh" ]

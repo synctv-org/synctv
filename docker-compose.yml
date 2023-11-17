@@ -8,9 +8,9 @@ services:
       - '8080:8080/tcp'
       - '8080:8080/udp'
     volumes:
-      - /opt/synctv:/opt/synctv
+      - /opt/synctv:~/.synctv
     environment:
       - PUID=0
       - PGID=0
       - UMASK=022
-      - TZ=UTC
+      - TZ=Asia/Shanghai

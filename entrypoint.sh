@@ -4,4 +4,4 @@ chown -R ${PUID}:${PGID} /opt/synctv
 
 umask ${UMASK}
 
-exec su-exec ${PUID}:${PGID} synctv server --env-no-prefix --data-dir /opt/synctv
+exec su-exec ${PUID}:${PGID} synctv server --env-no-prefix

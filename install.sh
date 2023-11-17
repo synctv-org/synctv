@@ -44,7 +44,7 @@ function FixArgs() {
 
 function InitOS() {
     OS="$(uname)"
-    case $OS in
+    case "$OS" in
     Linux)
         OS='linux'
         ;;
@@ -52,7 +52,7 @@ function InitOS() {
         OS='darwin'
         ;;
     *)
-        echo 'OS not supported'
+        echo "OS: ${OS} not supported"
         exit 2
         ;;
     esac
@@ -60,21 +60,21 @@ function InitOS() {
 
 function InitArch() {
     ARCH="$(uname -m)"
-    case $ARCH in
+    case "$ARCH" in
     x86_64 | amd64)
         ARCH='amd64'
         ;;
     i?86 | x86)
         ARCH='386'
         ;;
-    arm64)
+    arm64 | aarch64)
         ARCH='arm64'
         ;;
     arm*)
         ARCH='arm'
         ;;
     *)
-        echo 'OS not supported'
+        echo "arch: ${ARCH} not supported"
         exit 2
         ;;
     esac

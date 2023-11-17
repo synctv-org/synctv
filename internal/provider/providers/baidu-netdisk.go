@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strconv"
 
 	json "github.com/json-iterator/go"
 	"github.com/synctv-org/synctv/internal/provider"
@@ -63,7 +64,7 @@ func (p *BaiduNetDiskProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token
 	}
 	return &provider.UserInfo{
 		Username:       ui.BaiduName,
-		ProviderUserID: ui.Uk,
+		ProviderUserID: strconv.FormatUint(ui.Uk, 10),
 	}, nil
 }
 

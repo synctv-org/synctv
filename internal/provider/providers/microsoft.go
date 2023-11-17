@@ -2,12 +2,10 @@ package providers
 
 import (
 	"context"
-	"hash/crc64"
 	"net/http"
 
 	json "github.com/json-iterator/go"
 	"github.com/synctv-org/synctv/internal/provider"
-	"github.com/zijiren233/stream"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/microsoft"
 )
@@ -58,7 +56,7 @@ func (p *MicrosoftProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (
 	}
 	return &provider.UserInfo{
 		Username:       ui.DisplayName,
-		ProviderUserID: crc64.Checksum(stream.StringToBytes(ui.ID), crc64.MakeTable(crc64.ECMA)),
+		ProviderUserID: ui.ID,
 	}, nil
 }
 

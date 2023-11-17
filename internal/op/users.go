@@ -43,7 +43,7 @@ func GetUserById(id string) (*User, error) {
 	return u2, userCache.SetWithExpire(id, u2, time.Hour)
 }
 
-func CreateUser(username string, p provider.OAuth2Provider, pid uint64, conf ...db.CreateUserConfig) (*User, error) {
+func CreateUser(username string, p provider.OAuth2Provider, pid string, conf ...db.CreateUserConfig) (*User, error) {
 	if username == "" {
 		return nil, errors.New("username cannot be empty")
 	}
@@ -59,7 +59,7 @@ func CreateUser(username string, p provider.OAuth2Provider, pid uint64, conf ...
 	return u2, userCache.SetWithExpire(u.ID, u2, time.Hour)
 }
 
-func CreateOrLoadUser(username string, p provider.OAuth2Provider, pid uint64, conf ...db.CreateUserConfig) (*User, error) {
+func CreateOrLoadUser(username string, p provider.OAuth2Provider, pid string, conf ...db.CreateUserConfig) (*User, error) {
 	if username == "" {
 		return nil, errors.New("username cannot be empty")
 	}
@@ -75,7 +75,7 @@ func CreateOrLoadUser(username string, p provider.OAuth2Provider, pid uint64, co
 	return u2, userCache.SetWithExpire(u.ID, u2, time.Hour)
 }
 
-func GetUserByProvider(p provider.OAuth2Provider, pid uint64) (*User, error) {
+func GetUserByProvider(p provider.OAuth2Provider, pid string) (*User, error) {
 	uid, err := db.GetProviderUserID(p, pid)
 	if err != nil {
 		return nil, err

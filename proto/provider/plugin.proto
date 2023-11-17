@@ -32,7 +32,7 @@ message GetUserInfoReq { Token token = 1; }
 
 message GetUserInfoResp {
   string username = 1;
-  uint64 provider_user_id = 2;
+  string provider_user_id = 2;
 }
 
 message Enpty {}

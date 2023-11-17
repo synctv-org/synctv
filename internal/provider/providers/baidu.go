@@ -3,7 +3,6 @@ package providers
 import (
 	"context"
 	"fmt"
-	"hash/crc64"
 	"net/http"
 
 	json "github.com/json-iterator/go"
@@ -61,7 +60,7 @@ func (p *BaiduProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*pro
 	}
 	return &provider.UserInfo{
 		Username:       ui.Uname,
-		ProviderUserID: crc64.Checksum([]byte(ui.Openid), crc64.MakeTable(crc64.ECMA)),
+		ProviderUserID: ui.Openid,
 	}, nil
 }
 

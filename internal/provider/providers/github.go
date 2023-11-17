@@ -3,6 +3,7 @@ package providers
 import (
 	"context"
 	"net/http"
+	"strconv"
 
 	json "github.com/json-iterator/go"
 	"github.com/synctv-org/synctv/internal/provider"
@@ -56,7 +57,7 @@ func (p *GithubProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*pr
 	}
 	return &provider.UserInfo{
 		Username:       ui.Login,
-		ProviderUserID: ui.ID,
+		ProviderUserID: strconv.FormatUint(ui.ID, 10),
 	}, nil
 }
 

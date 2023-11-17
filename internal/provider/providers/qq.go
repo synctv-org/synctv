@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"strconv"
 
 	json "github.com/json-iterator/go"
 	"github.com/synctv-org/synctv/internal/provider"
@@ -59,7 +58,7 @@ func (p *QQProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*provid
 		return nil, err
 	}
 	return &provider.UserInfo{
-		Username:       strconv.FormatUint(ui.Openid, 10),
+		Username:       ui.Openid,
 		ProviderUserID: ui.Openid,
 	}, nil
 }
@@ -70,5 +69,5 @@ func init() {
 
 type qqProviderUserInfo struct {
 	ClientID string `json:"client_id"`
-	Openid   uint64 `json:"openid,string"`
+	Openid   string `json:"openid"`
 }

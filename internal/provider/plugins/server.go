@@ -56,7 +56,7 @@ func (s *GRPCServer) GetUserInfo(ctx context.Context, req *providerpb.GetUserInf
 	}
 	resp := &providerpb.GetUserInfoResp{
 		Username:       userInfo.Username,
-		ProviderUserId: uint64(userInfo.ProviderUserID),
+		ProviderUserId: userInfo.ProviderUserID,
 	}
 	return resp, nil
 }

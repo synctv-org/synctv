@@ -10,7 +10,7 @@ type OAuth2Provider string
 
 type UserInfo struct {
 	Username       string
-	ProviderUserID uint64
+	ProviderUserID string
 }
 
 type Oauth2Option struct {

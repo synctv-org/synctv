@@ -65,6 +65,6 @@ func init() {
 }
 
 type googleUserInfo struct {
-	ID   uint64 `json:"id,string"`
+	ID   string `json:"id"`
 	Name string `json:"name"`
 }

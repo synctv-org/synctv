@@ -28,22 +28,20 @@ func InitDatabase(ctx context.Context) error {
 		if conf.Conf.Database.CustomDSN != "" {
 			dsn = conf.Conf.Database.CustomDSN
 		} else if conf.Conf.Database.Port == 0 {
-			dsn = fmt.Sprintf("%s:%s@unix(%s)/%s?charset=utf8mb4&parseTime=True&loc=Local&tls=%s&interpolateParams=true",
+			dsn = fmt.Sprintf("%s:%s@unix(%s)/%s?charset=utf8mb4&parseTime=True&loc=Local&interpolateParams=true",
 				conf.Conf.Database.User,
 				conf.Conf.Database.Password,
 				conf.Conf.Database.Host,
 				conf.Conf.Database.DBName,
-				conf.Conf.Database.SslMode,
 			)
 			log.Infof("mysql database unix socket: %s", conf.Conf.Database.Host)
 		} else {
-			dsn = fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=utf8mb4&parseTime=True&loc=Local&tls=%s&interpolateParams=true",
+			dsn = fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=utf8mb4&parseTime=True&loc=Local&interpolateParams=true",
 				conf.Conf.Database.User,
 				conf.Conf.Database.Password,
 				conf.Conf.Database.Host,
 				conf.Conf.Database.Port,
 				conf.Conf.Database.DBName,
-				conf.Conf.Database.SslMode,
 			)
 			log.Infof("mysql database tcp: %s:%d", conf.Conf.Database.Host, conf.Conf.Database.Port)
 		}

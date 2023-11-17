@@ -14,7 +14,7 @@ type Movie struct {
 	UpdatedAt time.Time `json:"-"`
 	Position  uint      `gorm:"not null" json:"-"`
 	RoomID    string    `gorm:"not null;index" json:"-"`
-	CreatorID string    `gorm:"not null;index" json:"creatorId"`
+	CreatorID string    `gorm:"index" json:"creatorId"`
 	Base      BaseMovie `gorm:"embedded;embeddedPrefix:base_" json:"base"`
 }
 

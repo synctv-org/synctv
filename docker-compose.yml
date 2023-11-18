@@ -8,7 +8,7 @@ services:
       - '8080:8080/tcp'
       - '8080:8080/udp'
     volumes:
-      - /opt/synctv:~/.synctv
+      - /opt/synctv:/root/.synctv
     environment:
       - PUID=0
       - PGID=0

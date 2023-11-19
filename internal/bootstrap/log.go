@@ -24,10 +24,13 @@ func setLog(l *logrus.Logger) {
 	}
 }
 
-func InitLog(ctx context.Context) error {
+func InitLog(ctx context.Context) (err error) {
 	setLog(logrus.StandardLogger())
 	if conf.Conf.Log.Enable {
-		utils.OptFilePath(&conf.Conf.Log.FilePath)
+		conf.Conf.Log.FilePath, err = utils.OptFilePath(conf.Conf.Log.FilePath)
+		if err != nil {
+			logrus.Fatalf("log: log file path error: %v", err)
+		}
 		var l = &lumberjack.Logger{
 			Filename:   conf.Conf.Log.FilePath,
 			MaxSize:    conf.Conf.Log.MaxSize,

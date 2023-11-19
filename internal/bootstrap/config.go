@@ -18,7 +18,7 @@ func InitDefaultConfig(ctx context.Context) error {
 	return nil
 }
 
-func InitConfig(ctx context.Context) error {
+func InitConfig(ctx context.Context) (err error) {
 	if flags.SkipConfig && flags.SkipEnv {
 		log.Fatal("skip config and skip env at the same time")
 		return errors.New("skip config and skip env at the same time")
@@ -28,9 +28,12 @@ func InitConfig(ctx context.Context) error {
 		if flags.ConfigFile == "" {
 			flags.ConfigFile = filepath.Join(flags.DataDir, "config.yaml")
 		} else {
-			utils.OptFilePath(&flags.ConfigFile)
+			flags.ConfigFile, err = utils.OptFilePath(flags.ConfigFile)
+			if err != nil {
+				log.Fatalf("config file path error: %v", err)
+			}
 		}
-		err := confFromConfig(flags.ConfigFile, conf.Conf)
+		err = confFromConfig(flags.ConfigFile, conf.Conf)
 		if err != nil {
 			log.Fatalf("load config from file error: %v", err)
 		}

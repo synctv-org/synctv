@@ -15,18 +15,22 @@ import (
 	"github.com/synctv-org/synctv/utils"
 )
 
-func InitProvider(ctx context.Context) error {
+func InitProvider(ctx context.Context) (err error) {
 	logOur := log.StandardLogger().Writer()
 	logLevle := hclog.Info
 	if flags.Dev {
 		logLevle = hclog.Debug
 	}
 	for _, op := range conf.Conf.OAuth2.Plugins {
-		utils.OptFilePath(&op.PluginFile)
+		op.PluginFile, err = utils.OptFilePath(op.PluginFile)
+		if err != nil {
+			log.Fatalf("oauth2 plugin file path error: %v", err)
+			return err
+		}
 		log.Infof("load oauth2 plugin: %s", op.PluginFile)
 		err := os.MkdirAll(filepath.Dir(op.PluginFile), 0755)
 		if err != nil {
-			log.Errorf("create plugin dir: %s failed: %s", filepath.Dir(op.PluginFile), err)
+			log.Fatalf("create plugin dir: %s failed: %s", filepath.Dir(op.PluginFile), err)
 			return err
 		}
 		err = plugins.InitProviderPlugins(op.PluginFile, op.Arges, hclog.New(&hclog.LoggerOptions{
@@ -36,7 +40,7 @@ func InitProvider(ctx context.Context) error {
 			Color:  hclog.ForceColor,
 		}))
 		if err != nil {
-			log.Errorf("load oauth2 plugin: %s failed: %s", op.PluginFile, err)
+			log.Fatalf("load oauth2 plugin: %s failed: %s", op.PluginFile, err)
 			return err
 		}
 	}

@@ -274,13 +274,11 @@ func getLocalIPs() []net.IP {
 	return localIPs
 }
 
-func OptFilePath(filePath *string) {
-	if filePath == nil || *filePath == "" {
-		return
+func OptFilePath(filePath string) (string, error) {
+	if !filepath.IsAbs(filePath) {
+		return filepath.Abs(filepath.Join(flags.DataDir, filePath))
 	}
-	if !filepath.IsAbs(*filePath) {
-		*filePath = filepath.Join(flags.DataDir, *filePath)
-	}
+	return filePath, nil
 }
 
 func LIKE(s string) string {

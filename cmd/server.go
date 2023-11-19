@@ -74,14 +74,20 @@ func Server(cmd *cobra.Command, args []string) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	utils.OptFilePath(&conf.Conf.Server.Http.CertPath)
-	utils.OptFilePath(&conf.Conf.Server.Http.KeyPath)
 	if conf.Conf.Server.Rtmp.Enable {
 		if useMux {
 			muxer := cmux.New(serverHttpListener)
 			e := server.NewAndInit()
 			switch {
 			case conf.Conf.Server.Http.CertPath != "" && conf.Conf.Server.Http.KeyPath != "":
+				conf.Conf.Server.Http.CertPath, err = utils.OptFilePath(conf.Conf.Server.Http.CertPath)
+				if err != nil {
+					log.Fatalf("cert path error: %s", err)
+				}
+				conf.Conf.Server.Http.KeyPath, err = utils.OptFilePath(conf.Conf.Server.Http.KeyPath)
+				if err != nil {
+					log.Fatalf("key path error: %s", err)
+				}
 				httpl := muxer.Match(cmux.HTTP2(), cmux.TLS())
 				go http.ServeTLS(httpl, e.Handler(), conf.Conf.Server.Http.CertPath, conf.Conf.Server.Http.KeyPath)
 				if conf.Conf.Server.Http.Quic {
@@ -100,6 +106,14 @@ func Server(cmd *cobra.Command, args []string) {
 			e := server.NewAndInit()
 			switch {
 			case conf.Conf.Server.Http.CertPath != "" && conf.Conf.Server.Http.KeyPath != "":
+				conf.Conf.Server.Http.CertPath, err = utils.OptFilePath(conf.Conf.Server.Http.CertPath)
+				if err != nil {
+					log.Fatalf("cert path error: %s", err)
+				}
+				conf.Conf.Server.Http.KeyPath, err = utils.OptFilePath(conf.Conf.Server.Http.KeyPath)
+				if err != nil {
+					log.Fatalf("key path error: %s", err)
+				}
 				go http.ServeTLS(serverHttpListener, e.Handler(), conf.Conf.Server.Http.CertPath, conf.Conf.Server.Http.KeyPath)
 				if conf.Conf.Server.Http.Quic {
 					go http3.ListenAndServeQUIC(udpServerHttpAddr.String(), conf.Conf.Server.Http.CertPath, conf.Conf.Server.Http.KeyPath, e.Handler())

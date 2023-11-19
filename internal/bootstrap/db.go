@@ -19,7 +19,7 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-func InitDatabase(ctx context.Context) error {
+func InitDatabase(ctx context.Context) (err error) {
 	var dialector gorm.Dialector
 	var opts []gorm.Option
 	switch conf.Conf.Database.Type {
@@ -67,7 +67,10 @@ func InitDatabase(ctx context.Context) error {
 			if !strings.HasSuffix(conf.Conf.Database.DBName, ".db") {
 				conf.Conf.Database.DBName = conf.Conf.Database.DBName + ".db"
 			}
-			utils.OptFilePath(&conf.Conf.Database.DBName)
+			conf.Conf.Database.DBName, err = utils.OptFilePath(conf.Conf.Database.DBName)
+			if err != nil {
+				log.Fatalf("sqlite3 database file path error: %v", err)
+			}
 			dsn = fmt.Sprintf("%s?_journal_mode=WAL&_vacuum=incremental&_pragma=foreign_keys(1)", conf.Conf.Database.DBName)
 			log.Infof("sqlite3 database file: %s", conf.Conf.Database.DBName)
 		}

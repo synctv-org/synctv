@@ -84,6 +84,14 @@ func GetUserByProvider(p provider.OAuth2Provider, pid string) (*User, error) {
 	return GetUserById(uid)
 }
 
+func BindProvider(uid string, p provider.OAuth2Provider, pid string) error {
+	err := db.BindProvider(uid, p, pid)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 func DeleteUserByID(userID string) error {
 	err := db.DeleteUserByID(userID)
 	if err != nil {

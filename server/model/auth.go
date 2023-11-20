@@ -30,3 +30,15 @@ func (o *OAuth2CallbackReq) Validate() error {
 func (o *OAuth2CallbackReq) Decode(ctx *gin.Context) error {
 	return json.NewDecoder(ctx.Request.Body).Decode(o)
 }
+
+type OAuth2Req struct {
+	Redirect string `json:"redirect"`
+}
+
+func (o *OAuth2Req) Validate() error {
+	return nil
+}
+
+func (o *OAuth2Req) Decode(ctx *gin.Context) error {
+	return json.NewDecoder(ctx.Request.Body).Decode(o)
+}

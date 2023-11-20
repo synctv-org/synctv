@@ -111,3 +111,24 @@ func SetUsername(ctx *gin.Context) {
 
 	ctx.Status(http.StatusNoContent)
 }
+
+func UserBindProviders(ctx *gin.Context) {
+	user := ctx.MustGet("user").(*op.User)
+
+	up, err := db.GetBindProviders(user.ID)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
+
+	resp := make([]model.UserBindProviderReq, len(up))
+	for i, v := range up {
+		resp[i] = model.UserBindProviderReq{
+			Provider:       v.Provider,
+			ProviderUserID: v.ProviderUserID,
+			CreatedAt:      v.CreatedAt.UnixMilli(),
+		}
+	}
+
+	ctx.JSON(http.StatusOK, resp)
+}

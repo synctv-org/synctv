@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/synctv-org/synctv/server/model"
 	"github.com/zijiren233/gencontainer/synccache"
 )
 
@@ -15,8 +16,13 @@ var temp embed.FS
 var (
 	redirectTemplate *template.Template
 	tokenTemplate    *template.Template
-	states           *synccache.SyncCache[string, struct{}]
+	states           *synccache.SyncCache[string, stateMeta]
 )
+
+type stateMeta struct {
+	model.OAuth2Req
+	BindUserId string
+}
 
 func RenderRedirect(ctx *gin.Context, url string) error {
 	ctx.Header("Content-Type", "text/html; charset=utf-8")
@@ -31,5 +37,5 @@ func RenderToken(ctx *gin.Context, url, token string) error {
 func init() {
 	redirectTemplate = template.Must(template.ParseFS(temp, "templates/redirect.html"))
 	tokenTemplate = template.Must(template.ParseFS(temp, "templates/token.html"))
-	states = synccache.NewSyncCache[string, struct{}](time.Minute * 10)
+	states = synccache.NewSyncCache[string, stateMeta](time.Minute * 10)
 }

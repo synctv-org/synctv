@@ -6,6 +6,7 @@ import (
 	"github.com/gin-gonic/gin"
 	json "github.com/json-iterator/go"
 	dbModel "github.com/synctv-org/synctv/internal/model"
+	"github.com/synctv-org/synctv/internal/provider"
 )
 
 type SetUserPasswordReq struct {
@@ -90,4 +91,10 @@ func (u *UserIDReq) Validate() error {
 		return errors.New("id is required")
 	}
 	return nil
+}
+
+type UserBindProviderReq struct {
+	Provider       provider.OAuth2Provider `json:"provider"`
+	ProviderUserID string                  `json:"providerUserID"`
+	CreatedAt      int64                   `json:"createdAt"`
 }

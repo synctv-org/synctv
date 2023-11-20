@@ -72,6 +72,35 @@ func GetProviderUserID(p provider.OAuth2Provider, puid string) (string, error) {
 	return userProvider.UserID, nil
 }
 
+func BindProvider(uid string, p provider.OAuth2Provider, puid string) error {
+	err := db.Create(&model.UserProvider{
+		UserID:         uid,
+		Provider:       p,
+		ProviderUserID: puid,
+	}).Error
+	if err != nil && errors.Is(err, gorm.ErrDuplicatedKey) {
+		return errors.New("provider already bind")
+	}
+	return err
+}
+
+func UnBindProvider(uid string, p provider.OAuth2Provider) error {
+	err := db.Where("user_id = ? AND provider = ?", uid, p).Delete(&model.UserProvider{}).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return errors.New("user could not bind provider")
+	}
+	return err
+}
+
+func GetBindProviders(uid string) ([]*model.UserProvider, error) {
+	var providers []*model.UserProvider
+	err := db.Where("user_id = ?", uid).Find(&providers).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return providers, errors.New("user not found")
+	}
+	return providers, err
+}
+
 func GetUserByUsername(username string) (*model.User, error) {
 	u := &model.User{}
 	err := db.Where("username = ?", username).First(u).Error

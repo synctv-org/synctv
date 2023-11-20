@@ -51,7 +51,7 @@ func (p *FeishuProvider) Init(c provider.Oauth2Option) {
 }
 
 func (p *FeishuProvider) Provider() provider.OAuth2Provider {
-	return "feishuSSO"
+	return "feishuSSO" //插件名
 }
 
 func (p *FeishuProvider) NewAuthURL(state string) string {
@@ -89,8 +89,8 @@ func (p *FeishuProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*pr
 }
 
 type feishuUserInfo struct {
-	UserID string `json:"user_id"` // 飞书UserID
-	Name   string `json:"name"`    // 飞书姓名
+	UserID string `json:"user_id"` // 飞书UserID （企业内唯一ID）
+	Name   string `json:"name"`    // 飞书姓名（会作为SyncTV登录用户名）
 }
 
 func main() {

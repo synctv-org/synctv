@@ -16,10 +16,11 @@ func (s SettingGroup) String() string {
 }
 
 const (
-	SettingGroupRoom  SettingGroup = "room"
-	SettingGroupUser  SettingGroup = "user"
-	SettingGroupProxy SettingGroup = "proxy"
-	SettingGroupRtmp  SettingGroup = "rtmp"
+	SettingGroupRoom     SettingGroup = "room"
+	SettingGroupUser     SettingGroup = "user"
+	SettingGroupProxy    SettingGroup = "proxy"
+	SettingGroupRtmp     SettingGroup = "rtmp"
+	SettingGroupDatabase SettingGroup = "database"
 )
 
 type Setting struct {

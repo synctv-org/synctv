@@ -5,7 +5,6 @@ import (
 	"strconv"
 	"sync/atomic"
 
-	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/model"
 )
 
@@ -24,9 +23,18 @@ type Bool struct {
 	setting
 	defaultValue bool
 	value        uint32
+	beforeSet    func(BoolSetting, bool) error
 }
 
-func NewBool(name string, value bool, group model.SettingGroup) *Bool {
+type BoolSettingOption func(*Bool)
+
+func WithBeforeSetBool(beforeSet func(BoolSetting, bool) error) BoolSettingOption {
+	return func(s *Bool) {
+		s.beforeSet = beforeSet
+	}
+}
+
+func newBool(name string, value bool, group model.SettingGroup, options ...BoolSettingOption) *Bool {
 	b := &Bool{
 		setting: setting{
 			name:        name,
@@ -34,6 +42,9 @@ func NewBool(name string, value bool, group model.SettingGroup) *Bool {
 			settingType: model.SettingTypeBool,
 		},
 		defaultValue: value,
+	}
+	for _, option := range options {
+		option(b)
 	}
 	b.set(value)
 	return b
@@ -72,11 +83,11 @@ func (b *Bool) Default() bool {
 	return b.defaultValue
 }
 
-func (b *Bool) DefaultRaw() string {
+func (b *Bool) DefaultString() string {
 	return b.Stringify(b.defaultValue)
 }
 
-func (b *Bool) Raw() string {
+func (b *Bool) String() string {
 	return b.Stringify(b.Get())
 }
 
@@ -84,33 +95,45 @@ func (b *Bool) DefaultInterface() any {
 	return b.Default()
 }
 
-func (b *Bool) SetRaw(value string) error {
-	err := b.Init(value)
+func (b *Bool) SetString(value string) error {
+	v, err := b.Parse(value)
 	if err != nil {
 		return err
 	}
-	return db.UpdateSettingItemValue(b.Name(), b.Raw())
+
+	if b.beforeSet != nil {
+		err = b.beforeSet(b, v)
+		if err != nil {
+			return err
+		}
+	}
+
+	b.set(v)
+	return nil
 }
 
-func (b *Bool) Set(value bool) error {
-	err := db.UpdateSettingItemValue(b.Name(), b.Stringify(value))
-	if err != nil {
-		return err
+func (b *Bool) Set(value bool) (err error) {
+	if b.beforeSet != nil {
+		err = b.beforeSet(b, value)
+		if err != nil {
+			return err
+		}
 	}
+
 	b.set(value)
-	return nil
+	return
 }
 
 func (b *Bool) Interface() any {
 	return b.Get()
 }
 
-func newBoolSetting(k string, v bool, g model.SettingGroup) BoolSetting {
+func NewBoolSetting(k string, v bool, g model.SettingGroup, options ...BoolSettingOption) BoolSetting {
 	_, loaded := Settings[k]
 	if loaded {
 		panic(fmt.Sprintf("setting %s already exists", k))
 	}
-	b := NewBool(k, v, g)
+	b := newBool(k, v, g, options...)
 	Settings[k] = b
 	GroupSettings[g] = append(GroupSettings[g], b)
 	return b

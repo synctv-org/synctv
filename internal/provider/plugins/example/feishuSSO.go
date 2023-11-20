@@ -2,6 +2,7 @@ package providers
 
 import (
 	"context"
+	"fmt"
 	json "github.com/json-iterator/go"
 	"github.com/synctv-org/synctv/internal/provider"
 	"golang.org/x/oauth2"
@@ -9,19 +10,20 @@ import (
 )
 
 type FeishuProvider struct {
-	config      oauth2.Config
-	UserInfoURL string
+	config oauth2.Config
+	SSOID  string
 }
 
 func (p *FeishuProvider) Init(c provider.Oauth2Option) {
+	var SSOID = c.FeishuSSOID
+	p.config.Scopes = []string{"profile"}
 	p.config.Endpoint = oauth2.Endpoint{
-		AuthURL:  "授权端点",
-		TokenURL: "Token 端点",
+		AuthURL:  fmt.Sprintf("https://anycross.feishu.cn/sso/%s/oauth2/auth", SSOID),
+		TokenURL: fmt.Sprintf("https://anycross.feishu.cn/sso/571495907/oauth2/token", SSOID),
 	}
 	p.config.ClientID = c.ClientID
 	p.config.ClientSecret = c.ClientSecret
 	p.config.RedirectURL = c.RedirectURL
-	p.UserInfoURL = "用户信息端点"
 }
 
 func (p *FeishuProvider) Provider() provider.OAuth2Provider {
@@ -42,7 +44,7 @@ func (p *FeishuProvider) RefreshToken(ctx context.Context, tk string) (*oauth2.T
 
 func (p *FeishuProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*provider.UserInfo, error) {
 	client := p.config.Client(ctx, tk)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.UserInfoURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("https://anycross.feishu.cn/sso/%s/oauth2/userinfo", p.SSOID), nil)
 	if err != nil {
 		return nil, err
 	}

@@ -18,9 +18,13 @@ type BaiduNetDiskProvider struct {
 
 func (p *BaiduNetDiskProvider) Init(c provider.Oauth2Option) {
 	p.config.Scopes = []string{"basic", "netdisk"}
-	p.config.Endpoint = oauth2.Endpoint{
-		AuthURL:  "https://openapi.baidu.com/oauth/2.0/authorize",
-		TokenURL: "https://openapi.baidu.com/oauth/2.0/token",
+	if c.Endpoint != nil {
+		p.config.Endpoint = *c.Endpoint
+	} else {
+		p.config.Endpoint = oauth2.Endpoint{
+			AuthURL:  "https://openapi.baidu.com/oauth/2.0/authorize",
+			TokenURL: "https://openapi.baidu.com/oauth/2.0/token",
+		}
 	}
 	p.config.ClientID = c.ClientID
 	p.config.ClientSecret = c.ClientSecret

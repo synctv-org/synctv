@@ -17,6 +17,7 @@ type Oauth2Option struct {
 	ClientID     string
 	ClientSecret string
 	RedirectURL  string
+	Endpoint     *oauth2.Endpoint
 }
 
 type ProviderInterface interface {

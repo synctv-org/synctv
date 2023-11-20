@@ -15,7 +15,11 @@ type GitlabProvider struct {
 
 func (g *GitlabProvider) Init(c provider.Oauth2Option) {
 	g.config.Scopes = []string{"read_user"}
-	g.config.Endpoint = gitlab.Endpoint
+	if c.Endpoint != nil {
+		g.config.Endpoint = *c.Endpoint
+	} else {
+		g.config.Endpoint = gitlab.Endpoint
+	}
 	g.config.ClientID = c.ClientID
 	g.config.ClientSecret = c.ClientSecret
 	g.config.RedirectURL = c.RedirectURL

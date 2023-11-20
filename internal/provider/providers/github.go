@@ -17,7 +17,11 @@ type GithubProvider struct {
 
 func (p *GithubProvider) Init(c provider.Oauth2Option) {
 	p.config.Scopes = []string{"user"}
-	p.config.Endpoint = github.Endpoint
+	if c.Endpoint != nil {
+		p.config.Endpoint = *c.Endpoint
+	} else {
+		p.config.Endpoint = github.Endpoint
+	}
 	p.config.ClientID = c.ClientID
 	p.config.ClientSecret = c.ClientSecret
 	p.config.RedirectURL = c.RedirectURL

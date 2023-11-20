@@ -16,9 +16,13 @@ type GiteeProvider struct {
 
 func (p *GiteeProvider) Init(c provider.Oauth2Option) {
 	p.config.Scopes = []string{"user_info"}
-	p.config.Endpoint = oauth2.Endpoint{
-		AuthURL:  "https://gitee.com/oauth/authorize",
-		TokenURL: "https://gitee.com/oauth/token",
+	if c.Endpoint != nil {
+		p.config.Endpoint = *c.Endpoint
+	} else {
+		p.config.Endpoint = oauth2.Endpoint{
+			AuthURL:  "https://gitee.com/oauth/authorize",
+			TokenURL: "https://gitee.com/oauth/token",
+		}
 	}
 	p.config.ClientID = c.ClientID
 	p.config.ClientSecret = c.ClientSecret

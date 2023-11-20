@@ -16,9 +16,13 @@ type QQProvider struct {
 
 func (p *QQProvider) Init(c provider.Oauth2Option) {
 	p.config.Scopes = []string{"get_user_info"}
-	p.config.Endpoint = oauth2.Endpoint{
-		AuthURL:  "https://graph.qq.com/oauth2.0/authorize",
-		TokenURL: "https://graph.qq.com/oauth2.0/token?grant_type=authorization_code",
+	if c.Endpoint != nil {
+		p.config.Endpoint = *c.Endpoint
+	} else {
+		p.config.Endpoint = oauth2.Endpoint{
+			AuthURL:  "https://graph.qq.com/oauth2.0/authorize",
+			TokenURL: "https://graph.qq.com/oauth2.0/token?grant_type=authorization_code",
+		}
 	}
 	p.config.ClientID = c.ClientID
 	p.config.ClientSecret = c.ClientSecret

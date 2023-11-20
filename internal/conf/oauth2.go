@@ -14,10 +14,17 @@ type Oauth2Plugin struct {
 	Arges      []string `yaml:"arges"`
 }
 
+type Endpoint struct {
+	AuthURL       string `yaml:"auth_url"`
+	DeviceAuthURL string `yaml:"device_auth_url"`
+	TokenURL      string `yaml:"token_url"`
+}
+
 type OAuth2ProviderConfig struct {
-	ClientID     string `yaml:"client_id"`
-	ClientSecret string `yaml:"client_secret"`
-	RedirectURL  string `yaml:"redirect_url"`
+	ClientID     string    `yaml:"client_id"`
+	ClientSecret string    `yaml:"client_secret"`
+	RedirectURL  string    `yaml:"redirect_url"`
+	Endpoint     *Endpoint `yaml:"endpoint,omitempty"`
 }
 
 func DefaultOAuth2Config() OAuth2Config {

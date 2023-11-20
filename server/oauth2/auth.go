@@ -158,13 +158,8 @@ func login(ctx context.Context, state, code string, pi provider.ProviderInterfac
 		return nil, err
 	}
 
-	redirect := "/web/"
-	if meta.Value().Redirect != "" {
-		redirect = meta.Value().Redirect
-	}
-
 	return &loginData{
 		token:    token,
-		redirect: redirect,
+		redirect: meta.Value().Redirect,
 	}, nil
 }

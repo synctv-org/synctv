@@ -13,6 +13,7 @@ import (
 	"github.com/synctv-org/synctv/internal/provider/plugins"
 	"github.com/synctv-org/synctv/internal/provider/providers"
 	"github.com/synctv-org/synctv/utils"
+	"golang.org/x/oauth2"
 )
 
 func InitProvider(ctx context.Context) (err error) {
@@ -45,11 +46,19 @@ func InitProvider(ctx context.Context) (err error) {
 		}
 	}
 	for op, v := range conf.Conf.OAuth2.Providers {
-		err := providers.InitProvider(op, provider.Oauth2Option{
+		opt := provider.Oauth2Option{
 			ClientID:     v.ClientID,
 			ClientSecret: v.ClientSecret,
 			RedirectURL:  v.RedirectURL,
-		})
+		}
+		if v.Endpoint != nil {
+			opt.Endpoint = &oauth2.Endpoint{
+				AuthURL:       v.Endpoint.AuthURL,
+				DeviceAuthURL: v.Endpoint.DeviceAuthURL,
+				TokenURL:      v.Endpoint.TokenURL,
+			}
+		}
+		err := providers.InitProvider(op, opt)
 		if err != nil {
 			return err
 		}

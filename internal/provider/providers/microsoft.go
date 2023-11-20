@@ -16,7 +16,11 @@ type MicrosoftProvider struct {
 
 func (p *MicrosoftProvider) Init(c provider.Oauth2Option) {
 	p.config.Scopes = []string{"user.read"}
-	p.config.Endpoint = microsoft.LiveConnectEndpoint
+	if c.Endpoint != nil {
+		p.config.Endpoint = *c.Endpoint
+	} else {
+		p.config.Endpoint = microsoft.LiveConnectEndpoint
+	}
 	p.config.ClientID = c.ClientID
 	p.config.ClientSecret = c.ClientSecret
 	p.config.RedirectURL = c.RedirectURL

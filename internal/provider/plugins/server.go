@@ -15,11 +15,19 @@ type GRPCServer struct {
 }
 
 func (s *GRPCServer) Init(ctx context.Context, req *providerpb.InitReq) (*providerpb.Enpty, error) {
-	s.Impl.Init(provider.Oauth2Option{
+	opt := provider.Oauth2Option{
 		ClientID:     req.ClientId,
 		ClientSecret: req.ClientSecret,
 		RedirectURL:  req.RedirectUrl,
-	})
+	}
+	if req.Endpoint != nil {
+		opt.Endpoint = &oauth2.Endpoint{
+			AuthURL:       req.Endpoint.AuthUrl,
+			DeviceAuthURL: req.Endpoint.DeviceAuthUrl,
+			TokenURL:      req.Endpoint.TokenUrl,
+		}
+	}
+	s.Impl.Init(opt)
 	return &providerpb.Enpty{}, nil
 }
 

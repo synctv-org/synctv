@@ -14,11 +14,19 @@ type GRPCClient struct{ client providerpb.Oauth2PluginClient }
 var _ provider.ProviderInterface = (*GRPCClient)(nil)
 
 func (c *GRPCClient) Init(o provider.Oauth2Option) {
-	c.client.Init(context.Background(), &providerpb.InitReq{
+	opt := providerpb.InitReq{
 		ClientId:     o.ClientID,
 		ClientSecret: o.ClientSecret,
 		RedirectUrl:  o.RedirectURL,
-	})
+	}
+	if o.Endpoint != nil {
+		opt.Endpoint = &providerpb.InitReq_Endpoint{
+			AuthUrl:       o.Endpoint.AuthURL,
+			DeviceAuthUrl: o.Endpoint.DeviceAuthURL,
+			TokenUrl:      o.Endpoint.TokenURL,
+		}
+	}
+	c.client.Init(context.Background(), &opt)
 }
 
 func (c *GRPCClient) Provider() provider.OAuth2Provider {

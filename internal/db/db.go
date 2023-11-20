@@ -32,7 +32,10 @@ func AutoMigrate(dst ...any) error {
 	default:
 		log.Fatalf("unknown database type: %s", conf.Conf.Database.Type)
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	return upgradeDatabase()
 }
 
 func DB() *gorm.DB {

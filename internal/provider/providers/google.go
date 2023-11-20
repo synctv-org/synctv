@@ -16,7 +16,11 @@ type GoogleProvider struct {
 
 func (g *GoogleProvider) Init(c provider.Oauth2Option) {
 	g.config.Scopes = []string{"profile"}
-	g.config.Endpoint = google.Endpoint
+	if c.Endpoint != nil {
+		g.config.Endpoint = *c.Endpoint
+	} else {
+		g.config.Endpoint = google.Endpoint
+	}
 	g.config.ClientID = c.ClientID
 	g.config.ClientSecret = c.ClientSecret
 	g.config.RedirectURL = c.RedirectURL

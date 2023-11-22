@@ -39,6 +39,10 @@ func Init(e *gin.Engine) {
 				{
 					user := admin.Group("/user")
 
+					user.POST("/add", AddUser)
+
+					user.POST("/delete", DeleteUser)
+
 					// 查找用户
 					user.GET("/list", Users)
 
@@ -141,8 +145,10 @@ func Init(e *gin.Engine) {
 		}
 
 		{
-			// user := api.Group("/user")
+			user := api.Group("/user")
 			needAuthUser := needAuthUserApi.Group("/user")
+
+			user.POST("/login", LoginUser)
 
 			needAuthUser.POST("/logout", LogoutUser)
 
@@ -151,6 +157,8 @@ func Init(e *gin.Engine) {
 			needAuthUser.GET("/rooms", UserRooms)
 
 			needAuthUser.POST("/username", SetUsername)
+
+			needAuthUser.POST("/password", SetUserPassword)
 		}
 
 		{

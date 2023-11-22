@@ -152,7 +152,7 @@ func GetRoomUsers(ctx *gin.Context) {
 	var desc = ctx.DefaultQuery("order", "desc") == "desc"
 
 	scopes := []func(db *gorm.DB) *gorm.DB{
-		db.PreloadRoomUserRelation(db.WhereRoomID(id)),
+		db.PreloadRoomUserRelations(db.WhereRoomID(id)),
 	}
 
 	switch ctx.DefaultQuery("sort", "name") {
@@ -502,6 +502,52 @@ func UnBanRoom(ctx *gin.Context) {
 
 	err = op.SetRoomStatus(req.Id, dbModel.RoomStatusActive)
 	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
+
+	ctx.Status(http.StatusNoContent)
+}
+
+func AddUser(ctx *gin.Context) {
+	// user := ctx.MustGet("user").(*op.User)
+
+	req := model.AddUserReq{}
+	if err := model.Decode(ctx, &req); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	_, err := op.CreateOrLoadUser(req.Username, req.Password, db.WithRole(req.Role))
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	ctx.Status(http.StatusNoContent)
+}
+
+func DeleteUser(ctx *gin.Context) {
+	user := ctx.MustGet("user").(*op.User)
+
+	req := model.UserIDReq{}
+	if err := model.Decode(ctx, &req); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	u, err := db.GetUserByID(req.ID)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	if u.IsAdmin() && !user.IsRoot() {
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("cannot delete admin"))
+		return
+	}
+
+	if err := op.DeleteUserByID(req.ID); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}

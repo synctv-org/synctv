@@ -50,21 +50,28 @@ func DeleteRoomByID(roomID string) error {
 	if err != nil {
 		return err
 	}
-	return CloseRoomByID(roomID)
+	return CloseRoomById(roomID)
 }
 
 func CompareAndDeleteRoom(room *Room) error {
-	err := CompareAndCloseRoom(room)
+	err := db.DeleteRoomByID(room.ID)
 	if err != nil {
 		return err
 	}
-	return db.DeleteRoomByID(room.ID)
+	return CompareAndCloseRoom(room)
 }
 
-func CloseRoomByID(roomID string) error {
+func CloseRoomById(roomID string) error {
 	r, loaded := roomCache.LoadAndDelete(roomID)
 	if loaded {
 		r.Value().close()
+	}
+	return nil
+}
+
+func CompareAndCloseRoomEntry(id string, room *synccache.Entry[*Room]) error {
+	if roomCache.CompareAndDelete(id, room) {
+		room.Value().close()
 	}
 	return nil
 }
@@ -133,14 +140,6 @@ func HasRoomByName(name string) bool {
 		return false
 	}
 	return ok
-}
-
-func SetRoomPassword(roomID, password string) error {
-	r, err := LoadOrInitRoomByID(roomID)
-	if err != nil {
-		return err
-	}
-	return r.SetPassword(password)
 }
 
 func GetAllRoomsInCacheWithNoNeedPassword() []*Room {

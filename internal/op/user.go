@@ -2,14 +2,41 @@ package op
 
 import (
 	"errors"
+	"hash/crc32"
+	"sync/atomic"
 
 	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/model"
+	"github.com/synctv-org/synctv/internal/provider"
 	"github.com/synctv-org/synctv/internal/settings"
+	"github.com/zijiren233/stream"
+	"golang.org/x/crypto/bcrypt"
 )
 
 type User struct {
 	model.User
+	version uint32
+}
+
+func (u *User) Version() uint32 {
+	return atomic.LoadUint32(&u.version)
+}
+
+func (u *User) CheckVersion(version uint32) bool {
+	return atomic.LoadUint32(&u.version) == version
+}
+
+func (u *User) SetPassword(password string) error {
+	if u.CheckPassword(password) {
+		return errors.New("password is the same")
+	}
+	hashedPassword, err := bcrypt.GenerateFromPassword(stream.StringToBytes(password), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+	atomic.StoreUint32(&u.version, crc32.ChecksumIEEE(hashedPassword))
+	u.HashedPassword = hashedPassword
+	return db.SetUserHashedPassword(u.ID, hashedPassword)
 }
 
 func (u *User) CreateRoom(name, password string, conf ...db.CreateRoomConfig) (*Room, error) {
@@ -190,4 +217,12 @@ func (u *User) SetCurrentMovieByID(room *Room, movieID string, play bool) error 
 		return err
 	}
 	return u.SetCurrentMovie(room, m, play)
+}
+
+func (u *User) BindProvider(p provider.OAuth2Provider, pid string) error {
+	err := db.BindProvider(u.ID, p, pid)
+	if err != nil {
+		return err
+	}
+	return nil
 }

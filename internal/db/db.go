@@ -1,6 +1,7 @@
 package db
 
 import (
+	"errors"
 	"fmt"
 
 	log "github.com/sirupsen/logrus"
@@ -35,7 +36,21 @@ func AutoMigrate(dst ...any) error {
 	if err != nil {
 		return err
 	}
+	err = initRootUser()
+	if err != nil {
+		return err
+	}
 	return upgradeDatabase()
+}
+
+func initRootUser() error {
+	user := model.User{}
+	err := db.Where("role = ?", model.RoleRoot).First(&user).Error
+	if err == nil || !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+	_, err = CreateUser("root", "root", WithRole(model.RoleRoot))
+	return err
 }
 
 func DB() *gorm.DB {
@@ -102,19 +117,23 @@ func WithUser(db *gorm.DB) *gorm.DB {
 	return db.Preload("User")
 }
 
-func WithUserAndProvider(db *gorm.DB) *gorm.DB {
-	return db.Preload("User").Preload("User.Provider")
-}
-
 func WhereRoomID(roomID string) func(db *gorm.DB) *gorm.DB {
 	return func(db *gorm.DB) *gorm.DB {
 		return db.Where("room_id = ?", roomID)
 	}
 }
 
-func PreloadRoomUserRelation(scopes ...func(*gorm.DB) *gorm.DB) func(db *gorm.DB) *gorm.DB {
+func PreloadRoomUserRelations(scopes ...func(*gorm.DB) *gorm.DB) func(db *gorm.DB) *gorm.DB {
 	return func(db *gorm.DB) *gorm.DB {
 		return db.Preload("RoomUserRelations", func(db *gorm.DB) *gorm.DB {
+			return db.Scopes(scopes...)
+		})
+	}
+}
+
+func PreloadUserProviders(scopes ...func(*gorm.DB) *gorm.DB) func(db *gorm.DB) *gorm.DB {
+	return func(db *gorm.DB) *gorm.DB {
+		return db.Preload("UserProviders", func(db *gorm.DB) *gorm.DB {
 			return db.Scopes(scopes...)
 		})
 	}

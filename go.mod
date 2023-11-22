@@ -3,7 +3,6 @@ module github.com/synctv-org/synctv
 go 1.20
 
 require (
-	github.com/bluele/gcache v0.0.2
 	github.com/caarlos0/env/v9 v9.0.0
 	github.com/cavaliergopher/grab/v3 v3.0.1
 	github.com/gin-contrib/cors v1.4.0

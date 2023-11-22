@@ -7,6 +7,7 @@ import (
 	"github.com/synctv-org/synctv/internal/db"
 	dbModel "github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
+	"github.com/synctv-org/synctv/server/middlewares"
 	"github.com/synctv-org/synctv/server/model"
 	"gorm.io/gorm"
 )
@@ -22,10 +23,43 @@ func Me(ctx *gin.Context) {
 	}))
 }
 
+func LoginUser(ctx *gin.Context) {
+	req := model.LoginUserReq{}
+	if err := model.Decode(ctx, &req); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	user, err := op.LoadUserByUsername(req.Username)
+	if err != nil {
+		if err == op.ErrUserBanned || err == op.ErrUserPending {
+			ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(err))
+			return
+		}
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
+
+	if ok := user.CheckPassword(req.Password); !ok {
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("password incorrect"))
+		return
+	}
+
+	token, err := middlewares.NewAuthUserToken(user)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
+
+	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
+		"token": token,
+	}))
+}
+
 func LogoutUser(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*op.User)
 
-	err := op.DeleteUserByID(user.ID)
+	err := op.CompareAndDeleteUser(user)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
@@ -112,6 +146,24 @@ func SetUsername(ctx *gin.Context) {
 	ctx.Status(http.StatusNoContent)
 }
 
+func SetUserPassword(ctx *gin.Context) {
+	user := ctx.MustGet("user").(*op.User)
+
+	var req model.SetUserPasswordReq
+	if err := model.Decode(ctx, &req); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	err := user.SetPassword(req.Password)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	ctx.Status(http.StatusNoContent)
+}
+
 func UserBindProviders(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*op.User)
 
@@ -121,9 +173,9 @@ func UserBindProviders(ctx *gin.Context) {
 		return
 	}
 
-	resp := make([]model.UserBindProviderReq, len(up))
+	resp := make([]model.UserBindProviderResp, len(up))
 	for i, v := range up {
-		resp[i] = model.UserBindProviderReq{
+		resp[i] = model.UserBindProviderResp{
 			Provider:       v.Provider,
 			ProviderUserID: v.ProviderUserID,
 			CreatedAt:      v.CreatedAt.UnixMilli(),

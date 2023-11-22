@@ -554,3 +554,93 @@ func DeleteUser(ctx *gin.Context) {
 
 	ctx.Status(http.StatusNoContent)
 }
+
+func AdminUserPassword(ctx *gin.Context) {
+	user := ctx.MustGet("user").(*op.User)
+
+	req := model.AdminUserPasswordReq{}
+	if err := model.Decode(ctx, &req); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp(err.Error()))
+		return
+	}
+
+	u, err := op.LoadOrInitUserByID(req.ID)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("user not found"))
+		return
+	}
+
+	if u.IsAdmin() && !user.IsRoot() {
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("cannot change admin password"))
+		return
+	}
+
+	if err := u.SetPassword(req.Password); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorStringResp(err.Error()))
+		return
+	}
+
+	ctx.Status(http.StatusNoContent)
+}
+
+func AdminUsername(ctx *gin.Context) {
+	user := ctx.MustGet("user").(*op.User)
+
+	req := model.AdminUsernameReq{}
+	if err := model.Decode(ctx, &req); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp(err.Error()))
+		return
+	}
+
+	u, err := op.LoadOrInitUserByID(req.ID)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("user not found"))
+		return
+	}
+
+	if u.IsAdmin() && !user.IsRoot() {
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("cannot change admin username"))
+		return
+	}
+
+	if err := u.SetUsername(req.Username); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorStringResp(err.Error()))
+		return
+	}
+
+	ctx.Status(http.StatusNoContent)
+}
+
+func AdminRoomPassword(ctx *gin.Context) {
+	user := ctx.MustGet("user").(*op.User)
+
+	req := model.AdminRoomPasswordReq{}
+	if err := model.Decode(ctx, &req); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp(err.Error()))
+		return
+	}
+
+	r, err := op.LoadOrInitRoomByID(req.ID)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("room not found"))
+		return
+	}
+
+	creator, err := op.LoadOrInitUserByID(r.CreatorID)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("room creator not found"))
+		return
+	}
+
+	if creator.IsAdmin() && !user.IsRoot() {
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("cannot change admin room password"))
+		return
+	}
+
+	if err := r.SetPassword(req.Password); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorStringResp(err.Error()))
+		return
+	}
+
+	ctx.Status(http.StatusNoContent)
+}

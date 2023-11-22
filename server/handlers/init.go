@@ -43,6 +43,10 @@ func Init(e *gin.Engine) {
 
 					user.POST("/delete", DeleteUser)
 
+					user.POST("/password", AdminUserPassword)
+
+					user.POST("/username", AdminUsername)
+
 					// 查找用户
 					user.GET("/list", Users)
 
@@ -58,6 +62,8 @@ func Init(e *gin.Engine) {
 
 				{
 					room := admin.Group("/room")
+
+					room.POST("/password", AdminRoomPassword)
 
 					// 查找房间
 					room.GET("/list", Rooms)

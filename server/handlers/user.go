@@ -7,6 +7,7 @@ import (
 	"github.com/synctv-org/synctv/internal/db"
 	dbModel "github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
+	"github.com/synctv-org/synctv/internal/provider/providers"
 	"github.com/synctv-org/synctv/server/middlewares"
 	"github.com/synctv-org/synctv/server/model"
 	"gorm.io/gorm"
@@ -173,12 +174,30 @@ func UserBindProviders(ctx *gin.Context) {
 		return
 	}
 
-	resp := make([]model.UserBindProviderResp, len(up))
-	for i, v := range up {
-		resp[i] = model.UserBindProviderResp{
-			Provider:       v.Provider,
-			ProviderUserID: v.ProviderUserID,
-			CreatedAt:      v.CreatedAt.UnixMilli(),
+	m := providers.EnabledProvider()
+
+	resp := make(model.UserBindProviderResp, len(up))
+	for _, v := range up {
+		if _, ok := m[v.Provider]; ok {
+			resp[v.Provider] = struct {
+				ProviderUserID string "json:\"providerUserID\""
+				CreatedAt      int64  "json:\"createdAt\""
+			}{
+				ProviderUserID: v.ProviderUserID,
+				CreatedAt:      v.CreatedAt.UnixMilli(),
+			}
+		}
+	}
+
+	for p := range m {
+		if _, ok := resp[p]; !ok {
+			resp[p] = struct {
+				ProviderUserID string "json:\"providerUserID\""
+				CreatedAt      int64  "json:\"createdAt\""
+			}{
+				ProviderUserID: "",
+				CreatedAt:      0,
+			}
 		}
 	}
 

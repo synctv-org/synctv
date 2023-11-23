@@ -97,8 +97,7 @@ func (u *UserIDReq) Validate() error {
 	return nil
 }
 
-type UserBindProviderResp struct {
-	Provider       provider.OAuth2Provider `json:"provider"`
-	ProviderUserID string                  `json:"providerUserID"`
-	CreatedAt      int64                   `json:"createdAt"`
+type UserBindProviderResp map[provider.OAuth2Provider]struct {
+	ProviderUserID string `json:"providerUserID"`
+	CreatedAt      int64  `json:"createdAt"`
 }

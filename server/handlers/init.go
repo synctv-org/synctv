@@ -165,6 +165,8 @@ func Init(e *gin.Engine) {
 			needAuthUser.POST("/username", SetUsername)
 
 			needAuthUser.POST("/password", SetUserPassword)
+
+			needAuthUser.GET("/providers", UserBindProviders)
 		}
 
 		{

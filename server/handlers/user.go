@@ -162,7 +162,15 @@ func SetUserPassword(ctx *gin.Context) {
 		return
 	}
 
-	ctx.Status(http.StatusNoContent)
+	token, err := middlewares.NewAuthUserToken(user)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
+
+	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
+		"token": token,
+	}))
 }
 
 func UserBindProviders(ctx *gin.Context) {

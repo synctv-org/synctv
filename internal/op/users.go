@@ -68,6 +68,18 @@ func CreateOrLoadUser(username string, password string, conf ...db.CreateUserCon
 	return LoadOrInitUser(u)
 }
 
+func CreateUser(username string, password string, conf ...db.CreateUserConfig) (*User, error) {
+	if username == "" {
+		return nil, errors.New("username cannot be empty")
+	}
+	u, err := db.CreateUser(username, password, conf...)
+	if err != nil {
+		return nil, err
+	}
+
+	return LoadOrInitUser(u)
+}
+
 func CreateOrLoadUserWithProvider(username, password string, p provider.OAuth2Provider, pid string, conf ...db.CreateUserConfig) (*User, error) {
 	if username == "" {
 		return nil, errors.New("username cannot be empty")

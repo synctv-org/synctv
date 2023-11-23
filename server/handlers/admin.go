@@ -518,7 +518,7 @@ func AddUser(ctx *gin.Context) {
 		return
 	}
 
-	_, err := op.CreateOrLoadUser(req.Username, req.Password, db.WithRole(req.Role))
+	_, err := op.CreateUser(req.Username, req.Password, db.WithRole(req.Role))
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return

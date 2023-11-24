@@ -42,12 +42,16 @@ func (l *LoginUserReq) Validate() error {
 		return errors.New("username is empty")
 	} else if len(l.Username) > 32 {
 		return ErrUsernameTooLong
+	} else if !alnumPrintHanReg.MatchString(l.Username) {
+		return ErrUsernameHasInvalidChar
 	}
 
 	if l.Password == "" {
 		return FormatEmptyPasswordError("user")
 	} else if len(l.Password) > 32 {
 		return ErrPasswordTooLong
+	} else if !alnumPrintReg.MatchString(l.Password) {
+		return ErrPasswordHasInvalidChar
 	}
 	return nil
 }
@@ -68,7 +72,7 @@ func (s *SetUsernameReq) Validate() error {
 		return errors.New("username is empty")
 	} else if len(s.Username) > 32 {
 		return ErrUsernameTooLong
-	} else if !alnumPrintReg.MatchString(s.Username) {
+	} else if !alnumPrintHanReg.MatchString(s.Username) {
 		return ErrUsernameHasInvalidChar
 	}
 	return nil
@@ -93,8 +97,7 @@ func (u *UserIDReq) Validate() error {
 	return nil
 }
 
-type UserBindProviderReq struct {
-	Provider       provider.OAuth2Provider `json:"provider"`
-	ProviderUserID string                  `json:"providerUserID"`
-	CreatedAt      int64                   `json:"createdAt"`
+type UserBindProviderResp map[provider.OAuth2Provider]struct {
+	ProviderUserID string `json:"providerUserID"`
+	CreatedAt      int64  `json:"createdAt"`
 }

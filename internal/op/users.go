@@ -2,121 +2,152 @@ package op
 
 import (
 	"errors"
+	"hash/crc32"
 	"time"
 
-	"github.com/bluele/gcache"
 	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/provider"
 	"github.com/zijiren233/gencontainer/synccache"
 )
 
-var userCache gcache.Cache
+var userCache *synccache.SyncCache[string, *User]
 
 var (
 	ErrUserBanned  = errors.New("user banned")
 	ErrUserPending = errors.New("user pending, please wait for admin to approve")
 )
 
-func GetUserById(id string) (*User, error) {
-	i, err := userCache.Get(id)
-	if err == nil {
-		return i.(*User), nil
-	}
-
-	u, err := db.GetUserByID(id)
-	if err != nil {
-		return nil, err
-	}
-
+func LoadOrInitUser(u *model.User) (*User, error) {
 	switch u.Role {
 	case model.RoleBanned:
 		return nil, ErrUserBanned
 	case model.RolePending:
 		return nil, ErrUserPending
 	}
-
-	u2 := &User{
-		User: *u,
-	}
-
-	return u2, userCache.SetWithExpire(id, u2, time.Hour)
+	i, _ := userCache.LoadOrStore(u.ID, &User{
+		User:    *u,
+		version: crc32.ChecksumIEEE(u.HashedPassword),
+	}, time.Hour)
+	return i.Value(), nil
 }
 
-func CreateUser(username string, p provider.OAuth2Provider, pid string, conf ...db.CreateUserConfig) (*User, error) {
-	if username == "" {
-		return nil, errors.New("username cannot be empty")
+func LoadOrInitUserByID(id string) (*User, error) {
+	u, ok := userCache.Load(id)
+	if ok {
+		u.SetExpiration(time.Now().Add(time.Hour))
+		return u.Value(), nil
 	}
-	u, err := db.CreateUser(username, p, pid, conf...)
+
+	user, err := db.GetUserByID(id)
 	if err != nil {
 		return nil, err
 	}
 
-	u2 := &User{
-		User: *u,
-	}
-
-	return u2, userCache.SetWithExpire(u.ID, u2, time.Hour)
+	return LoadOrInitUser(user)
 }
 
-func CreateOrLoadUser(username string, p provider.OAuth2Provider, pid string, conf ...db.CreateUserConfig) (*User, error) {
-	if username == "" {
-		return nil, errors.New("username cannot be empty")
-	}
-	u, err := db.CreateOrLoadUser(username, p, pid, conf...)
+func LoadUserByUsername(username string) (*User, error) {
+	u, err := db.GetUserByUsername(username)
 	if err != nil {
 		return nil, err
 	}
 
-	u2 := &User{
-		User: *u,
+	return LoadOrInitUser(u)
+}
+
+func CreateOrLoadUser(username string, password string, conf ...db.CreateUserConfig) (*User, error) {
+	if username == "" {
+		return nil, errors.New("username cannot be empty")
+	}
+	u, err := db.CreateOrLoadUser(username, password, conf...)
+	if err != nil {
+		return nil, err
 	}
 
-	return u2, userCache.SetWithExpire(u.ID, u2, time.Hour)
+	return LoadOrInitUser(u)
+}
+
+func CreateUser(username string, password string, conf ...db.CreateUserConfig) (*User, error) {
+	if username == "" {
+		return nil, errors.New("username cannot be empty")
+	}
+	u, err := db.CreateUser(username, password, conf...)
+	if err != nil {
+		return nil, err
+	}
+
+	return LoadOrInitUser(u)
+}
+
+func CreateOrLoadUserWithProvider(username, password string, p provider.OAuth2Provider, pid string, conf ...db.CreateUserConfig) (*User, error) {
+	if username == "" {
+		return nil, errors.New("username cannot be empty")
+	}
+	u, err := db.CreateOrLoadUserWithProvider(username, password, p, pid, conf...)
+	if err != nil {
+		return nil, err
+	}
+
+	return LoadOrInitUser(u)
 }
 
 func GetUserByProvider(p provider.OAuth2Provider, pid string) (*User, error) {
-	uid, err := db.GetProviderUserID(p, pid)
+	u, err := db.GetUserByProvider(p, pid)
 	if err != nil {
 		return nil, err
 	}
 
-	return GetUserById(uid)
+	return LoadOrInitUser(u)
 }
 
-func BindProvider(uid string, p provider.OAuth2Provider, pid string) error {
-	err := db.BindProvider(uid, p, pid)
+func CompareAndDeleteUser(user *User) error {
+	err := db.DeleteUserByID(user.ID)
 	if err != nil {
 		return err
 	}
-	return nil
+	return CompareAndCloseUser(user)
 }
 
-func DeleteUserByID(userID string) error {
-	err := db.DeleteUserByID(userID)
+func DeleteUserByID(id string) error {
+	err := db.DeleteUserByID(id)
 	if err != nil {
 		return err
 	}
-	userCache.Remove(userID)
+	return CloseUserById(id)
+}
 
+func CloseUserById(id string) error {
+	userCache.Delete(id)
 	roomCache.Range(func(key string, value *synccache.Entry[*Room]) bool {
-		v := value.Value()
-		if v.CreatorID == userID {
-			roomCache.CompareAndDelete(key, value)
+		if value.Value().CreatorID == id {
+			CompareAndCloseRoomEntry(key, value)
 		}
 		return true
 	})
-
 	return nil
 }
 
-func SaveUser(u *model.User) error {
-	defer userCache.Remove(u.ID)
-	return db.SaveUser(u)
+func CompareAndCloseUser(user *User) error {
+	u, loaded := userCache.LoadAndDelete(user.ID)
+	if loaded {
+		if u.Value() != user {
+			return errors.New("user compare failed")
+		}
+		if userCache.CompareAndDelete(user.ID, u) {
+			roomCache.Range(func(key string, value *synccache.Entry[*Room]) bool {
+				if value.Value().CreatorID == user.ID {
+					CompareAndCloseRoomEntry(key, value)
+				}
+				return true
+			})
+		}
+	}
+	return nil
 }
 
 func GetUserName(userID string) string {
-	u, err := GetUserById(userID)
+	u, err := LoadOrInitUserByID(userID)
 	if err != nil {
 		return ""
 	}
@@ -128,21 +159,18 @@ func SetRoleByID(userID string, role model.Role) error {
 	if err != nil {
 		return err
 	}
-	userCache.Remove(userID)
 
-	err = db.SetRoomStatusByCreator(userID, model.RoomStatusBanned)
-	if err != nil {
-		return err
-	}
+	userCache.Delete(userID)
 
 	switch role {
 	case model.RoleBanned:
+		err = db.SetRoomStatusByCreator(userID, model.RoomStatusBanned)
+		if err != nil {
+			return err
+		}
 		roomCache.Range(func(key string, value *synccache.Entry[*Room]) bool {
-			v := value.Value()
-			if v.CreatorID == userID {
-				if roomCache.CompareAndDelete(key, value) {
-					v.close()
-				}
+			if value.Value().CreatorID == userID {
+				CompareAndCloseRoomEntry(key, value)
 			}
 			return true
 		})

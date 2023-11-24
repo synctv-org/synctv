@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/synctv-org/synctv/utils"
+	"github.com/zijiren233/stream"
+	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 )
 
@@ -40,13 +42,19 @@ type User struct {
 	ID                   string `gorm:"primaryKey;type:varchar(32)" json:"id"`
 	CreatedAt            time.Time
 	UpdatedAt            time.Time
-	Providers            []UserProvider        `gorm:"foreignKey:UserID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
+	RegisteredByProvider bool                  `gorm:"not null;default:false"`
+	UserProviders        []UserProvider        `gorm:"foreignKey:UserID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 	Username             string                `gorm:"not null;uniqueIndex"`
+	HashedPassword       []byte                `gorm:"not null"`
 	Role                 Role                  `gorm:"not null;default:2"`
 	RoomUserRelations    []RoomUserRelation    `gorm:"foreignKey:UserID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 	Rooms                []Room                `gorm:"foreignKey:CreatorID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 	Movies               []Movie               `gorm:"foreignKey:CreatorID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL"`
 	StreamingVendorInfos []StreamingVendorInfo `gorm:"foreignKey:UserID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
+}
+
+func (u *User) CheckPassword(password string) bool {
+	return bcrypt.CompareHashAndPassword(u.HashedPassword, stream.StringToBytes(password)) == nil
 }
 
 func (u *User) BeforeCreate(tx *gorm.DB) error {

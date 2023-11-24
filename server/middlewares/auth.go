@@ -20,14 +20,15 @@ var (
 )
 
 type AuthClaims struct {
-	UserId string `json:"u"`
+	UserId      string `json:"u"`
+	UserVersion uint32 `json:"uv"`
 	jwt.RegisteredClaims
 }
 
 type AuthRoomClaims struct {
 	AuthClaims
-	RoomId  string `json:"r"`
-	Version uint32 `json:"rv"`
+	RoomId      string `json:"r"`
+	RoomVersion uint32 `json:"rv"`
 }
 
 func authRoom(Authorization string) (*AuthRoomClaims, error) {
@@ -72,16 +73,21 @@ func AuthRoom(Authorization string) (*op.User, *op.Room, error) {
 		return nil, nil, ErrAuthFailed
 	}
 
-	u, err := op.GetUserById(claims.UserId)
+	u, err := op.LoadOrInitUserByID(claims.UserId)
 	if err != nil {
 		return nil, nil, err
+	}
+
+	if !u.CheckVersion(claims.UserVersion) {
+		return nil, nil, ErrAuthExpired
 	}
 
 	r, err := op.LoadOrInitRoomByID(claims.RoomId)
 	if err != nil {
 		return nil, nil, err
 	}
-	if !r.CheckVersion(claims.Version) {
+
+	if !r.CheckVersion(claims.RoomVersion) {
 		return nil, nil, ErrAuthExpired
 	}
 
@@ -98,9 +104,13 @@ func AuthUser(Authorization string) (*op.User, error) {
 		return nil, ErrAuthFailed
 	}
 
-	u, err := op.GetUserById(claims.UserId)
+	u, err := op.LoadOrInitUserByID(claims.UserId)
 	if err != nil {
 		return nil, err
+	}
+
+	if !u.CheckVersion(claims.UserVersion) {
+		return nil, ErrAuthExpired
 	}
 
 	return u, nil
@@ -118,7 +128,8 @@ func NewAuthUserToken(user *op.User) (string, error) {
 		return "", err
 	}
 	claims := &AuthClaims{
-		UserId: user.ID,
+		UserId:      user.ID,
+		UserVersion: user.Version(),
 		RegisteredClaims: jwt.RegisteredClaims{
 			NotBefore: jwt.NewNumericDate(time.Now()),
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(t)),
@@ -154,14 +165,15 @@ func NewAuthRoomToken(user *op.User, room *op.Room) (string, error) {
 	}
 	claims := &AuthRoomClaims{
 		AuthClaims: AuthClaims{
-			UserId: user.ID,
+			UserId:      user.ID,
+			UserVersion: user.Version(),
 			RegisteredClaims: jwt.RegisteredClaims{
 				NotBefore: jwt.NewNumericDate(time.Now()),
 				ExpiresAt: jwt.NewNumericDate(time.Now().Add(t)),
 			},
 		},
-		RoomId:  room.ID,
-		Version: room.Version(),
+		RoomId:      room.ID,
+		RoomVersion: room.Version(),
 	}
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(stream.StringToBytes(conf.Conf.Jwt.Secret))
 }

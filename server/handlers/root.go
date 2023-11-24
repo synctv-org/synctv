@@ -22,7 +22,7 @@ func AddAdmin(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("cannot add yourself"))
 		return
 	}
-	u, err := op.GetUserById(req.Id)
+	u, err := op.LoadOrInitUserByID(req.Id)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorStringResp("user not found"))
 		return
@@ -53,7 +53,7 @@ func DeleteAdmin(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("cannot remove yourself"))
 		return
 	}
-	u, err := op.GetUserById(req.Id)
+	u, err := op.LoadOrInitUserByID(req.Id)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorStringResp("user not found"))
 		return

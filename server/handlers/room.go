@@ -177,6 +177,10 @@ func LoginRoom(ctx *gin.Context) {
 
 	room, err := op.LoadOrInitRoomByID(req.RoomId)
 	if err != nil {
+		if err == op.ErrRoomBanned || err == op.ErrRoomPending {
+			ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(err))
+			return
+		}
 		ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(err))
 		return
 	}
@@ -325,7 +329,7 @@ func RoomUsers(ctx *gin.Context) {
 			scopes = append(scopes, db.WhereIDIn(db.GerUsersIDByIDLike(keyword)))
 		}
 	}
-	scopes = append(scopes, db.PreloadRoomUserRelation(preloadScopes...))
+	scopes = append(scopes, db.PreloadRoomUserRelations(preloadScopes...))
 
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
 		"total": db.GetAllUserCount(scopes...),

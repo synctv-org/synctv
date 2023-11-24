@@ -77,6 +77,10 @@ func OAuth2Callback(ctx *gin.Context) {
 
 	ld, err := login(ctx, ctx.Query("state"), code, pi)
 	if err != nil {
+		if err == op.ErrUserBanned || err == op.ErrUserPending {
+			ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(err))
+			return
+		}
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
@@ -100,6 +104,10 @@ func OAuth2CallbackApi(ctx *gin.Context) {
 
 	ld, err := login(ctx, req.State, req.Code, pi)
 	if err != nil {
+		if err == op.ErrUserBanned || err == op.ErrUserPending {
+			ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(err))
+			return
+		}
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
@@ -132,14 +140,14 @@ func login(ctx context.Context, state, code string, pi provider.ProviderInterfac
 
 	var user *op.User
 	if meta.Value().BindUserId != "" {
-		user, err = op.GetUserById(meta.Value().BindUserId)
+		user, err = op.LoadOrInitUserByID(meta.Value().BindUserId)
 	} else if settings.DisableUserSignup.Get() {
 		user, err = op.GetUserByProvider(pi.Provider(), ui.ProviderUserID)
 	} else {
 		if settings.SignupNeedReview.Get() {
-			user, err = op.CreateOrLoadUser(ui.Username, pi.Provider(), ui.ProviderUserID, db.WithRole(dbModel.RolePending))
+			user, err = op.CreateOrLoadUserWithProvider(ui.Username, utils.RandString(16), pi.Provider(), ui.ProviderUserID, db.WithRole(dbModel.RolePending))
 		} else {
-			user, err = op.CreateOrLoadUser(ui.Username, pi.Provider(), ui.ProviderUserID)
+			user, err = op.CreateOrLoadUserWithProvider(ui.Username, utils.RandString(16), pi.Provider(), ui.ProviderUserID)
 		}
 	}
 	if err != nil {
@@ -147,7 +155,7 @@ func login(ctx context.Context, state, code string, pi provider.ProviderInterfac
 	}
 
 	if meta.Value().BindUserId != "" {
-		err = op.BindProvider(meta.Value().BindUserId, pi.Provider(), ui.ProviderUserID)
+		err = user.BindProvider(pi.Provider(), ui.ProviderUserID)
 		if err != nil {
 			return nil, err
 		}

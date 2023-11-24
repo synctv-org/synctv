@@ -467,6 +467,11 @@ func BanRoom(ctx *gin.Context) {
 		return
 	}
 
+	if creator.IsRoot() {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("cannot ban root"))
+		return
+	}
+
 	if creator.IsAdmin() && !user.IsRoot() {
 		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("cannot ban admin"))
 		return
@@ -510,11 +515,16 @@ func UnBanRoom(ctx *gin.Context) {
 }
 
 func AddUser(ctx *gin.Context) {
-	// user := ctx.MustGet("user").(*op.User)
+	user := ctx.MustGet("user").(*op.User)
 
 	req := model.AddUserReq{}
 	if err := model.Decode(ctx, &req); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	if req.Role == dbModel.RoleRoot && !user.IsRoot() {
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("you cannot add root user"))
 		return
 	}
 
@@ -575,6 +585,11 @@ func AdminUserPassword(ctx *gin.Context) {
 		return
 	}
 
+	if u.IsRoot() {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("cannot change root password"))
+		return
+	}
+
 	if u.IsAdmin() && !user.IsRoot() {
 		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("cannot change admin password"))
 		return
@@ -600,6 +615,11 @@ func AdminUsername(ctx *gin.Context) {
 	u, err := op.LoadOrInitUserByID(req.ID)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("user not found"))
+		return
+	}
+
+	if u.IsRoot() {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("cannot change root username"))
 		return
 	}
 
@@ -634,6 +654,11 @@ func AdminRoomPassword(ctx *gin.Context) {
 	creator, err := op.LoadOrInitUserByID(r.CreatorID)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("room creator not found"))
+		return
+	}
+
+	if creator.IsRoot() {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("cannot change root room password"))
 		return
 	}
 

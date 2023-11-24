@@ -542,6 +542,11 @@ func DeleteUser(ctx *gin.Context) {
 		return
 	}
 
+	if u.IsRoot() {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("cannot delete root"))
+		return
+	}
+
 	if u.IsAdmin() && !user.IsRoot() {
 		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("cannot delete admin"))
 		return

@@ -15,16 +15,19 @@ type BaiduProvider struct {
 	config oauth2.Config
 }
 
-func (p *BaiduProvider) Init(c provider.Oauth2Option) {
-	p.config.Scopes = []string{"basic"}
-	if c.Endpoint != nil {
-		p.config.Endpoint = *c.Endpoint
-	} else {
-		p.config.Endpoint = oauth2.Endpoint{
-			AuthURL:  "https://openapi.baidu.com/oauth/2.0/authorize",
-			TokenURL: "https://openapi.baidu.com/oauth/2.0/token",
-		}
+func newBaiduProvider() provider.ProviderInterface {
+	return &BaiduProvider{
+		config: oauth2.Config{
+			Scopes: []string{"basic"},
+			Endpoint: oauth2.Endpoint{
+				AuthURL:  "https://openapi.baidu.com/oauth/2.0/authorize",
+				TokenURL: "https://openapi.baidu.com/oauth/2.0/token",
+			},
+		},
 	}
+}
+
+func (p *BaiduProvider) Init(c provider.Oauth2Option) {
 	p.config.ClientID = c.ClientID
 	p.config.ClientSecret = c.ClientSecret
 	p.config.RedirectURL = c.RedirectURL
@@ -68,11 +71,11 @@ func (p *BaiduProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*pro
 	}, nil
 }
 
-func init() {
-	RegisterProvider(new(BaiduProvider))
-}
-
 type baiduProviderUserInfo struct {
 	Uname  string `json:"uname"`
 	Openid string `json:"openid"`
+}
+
+func init() {
+	RegisterProvider(newBaiduProvider())
 }

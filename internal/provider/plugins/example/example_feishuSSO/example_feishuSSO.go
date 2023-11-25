@@ -4,12 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"os"
+
 	plugin "github.com/hashicorp/go-plugin"
 	"github.com/synctv-org/synctv/internal/provider"
 	"github.com/synctv-org/synctv/internal/provider/plugins"
 	"golang.org/x/oauth2"
-	"net/http"
-	"os"
 )
 
 // Mac/Linux:
@@ -39,12 +40,20 @@ type FeishuProvider struct {
 	ssoid  string // Your SSO Application ID in Feishu Anycross
 }
 
-func (p *FeishuProvider) Init(c provider.Oauth2Option) {
-	p.config.Scopes = []string{"profile"}
-	p.config.Endpoint = oauth2.Endpoint{
-		AuthURL:  fmt.Sprintf("https://anycross.feishu.cn/sso/%s/oauth2/auth", p.ssoid),  // 认证端点
-		TokenURL: fmt.Sprintf("https://anycross.feishu.cn/sso/%s/oauth2/token", p.ssoid), //Token 端点
+func newFeishuProvider(ssoid string) provider.ProviderInterface {
+	return &FeishuProvider{
+		config: oauth2.Config{
+			Scopes: []string{"profile"},
+			Endpoint: oauth2.Endpoint{
+				AuthURL:  fmt.Sprintf("https://anycross.feishu.cn/sso/%s/oauth2/auth", ssoid),  // 认证端点
+				TokenURL: fmt.Sprintf("https://anycross.feishu.cn/sso/%s/oauth2/token", ssoid), //Token 端点
+			},
+		},
+		ssoid: ssoid,
 	}
+}
+
+func (p *FeishuProvider) Init(c provider.Oauth2Option) {
 	p.config.ClientID = c.ClientID
 	p.config.ClientSecret = c.ClientSecret
 	p.config.RedirectURL = c.RedirectURL
@@ -96,7 +105,7 @@ type feishuUserInfo struct {
 func main() {
 	args := os.Args
 	var pluginMap = map[string]plugin.Plugin{
-		"Provider": &plugins.ProviderPlugin{Impl: &FeishuProvider{ssoid: args[1]}},
+		"Provider": &plugins.ProviderPlugin{Impl: newFeishuProvider(args[1])},
 	}
 	plugin.Serve(&plugin.ServeConfig{
 		HandshakeConfig: plugins.HandshakeConfig,

@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"sync/atomic"
 
+	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/model"
 )
 
@@ -21,10 +22,10 @@ var _ Int64Setting = (*Int64)(nil)
 
 type Int64 struct {
 	setting
-	defaultValue int64
-	value        int64
-	validator    func(int64) error
-	beforeSet    func(Int64Setting, int64) error
+	defaultValue          int64
+	value                 int64
+	validator             func(int64) error
+	beforeInit, beforeSet func(Int64Setting, int64) error
 }
 
 type Int64SettingOption func(*Int64)
@@ -32,6 +33,12 @@ type Int64SettingOption func(*Int64)
 func WithValidatorInt64(validator func(int64) error) Int64SettingOption {
 	return func(s *Int64) {
 		s.validator = validator
+	}
+}
+
+func WithBeforeInitInt64(beforeInit func(Int64Setting, int64) error) Int64SettingOption {
+	return func(s *Int64) {
+		s.beforeInit = beforeInit
 	}
 }
 
@@ -77,6 +84,14 @@ func (i *Int64) Init(value string) error {
 	if err != nil {
 		return err
 	}
+
+	if i.beforeInit != nil {
+		err = i.beforeInit(i, v)
+		if err != nil {
+			return err
+		}
+	}
+
 	i.set(v)
 	return nil
 }
@@ -110,6 +125,11 @@ func (i *Int64) SetString(value string) error {
 		}
 	}
 
+	err = db.UpdateSettingItemValue(i.name, i.Stringify(v))
+	if err != nil {
+		return err
+	}
+
 	i.set(v)
 	return nil
 }
@@ -131,6 +151,11 @@ func (i *Int64) Set(value int64) (err error) {
 		if err != nil {
 			return err
 		}
+	}
+
+	err = db.UpdateSettingItemValue(i.name, i.Stringify(value))
+	if err != nil {
+		return err
 	}
 
 	i.set(value)

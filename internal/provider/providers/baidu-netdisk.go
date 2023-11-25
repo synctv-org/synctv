@@ -16,16 +16,19 @@ type BaiduNetDiskProvider struct {
 	config oauth2.Config
 }
 
-func (p *BaiduNetDiskProvider) Init(c provider.Oauth2Option) {
-	p.config.Scopes = []string{"basic", "netdisk"}
-	if c.Endpoint != nil {
-		p.config.Endpoint = *c.Endpoint
-	} else {
-		p.config.Endpoint = oauth2.Endpoint{
-			AuthURL:  "https://openapi.baidu.com/oauth/2.0/authorize",
-			TokenURL: "https://openapi.baidu.com/oauth/2.0/token",
-		}
+func newBaiduNetDiskProvider() provider.ProviderInterface {
+	return &BaiduNetDiskProvider{
+		config: oauth2.Config{
+			Scopes: []string{"basic", "netdisk"},
+			Endpoint: oauth2.Endpoint{
+				AuthURL:  "https://openapi.baidu.com/oauth/2.0/authorize",
+				TokenURL: "https://openapi.baidu.com/oauth/2.0/token",
+			},
+		},
 	}
+}
+
+func (p *BaiduNetDiskProvider) Init(c provider.Oauth2Option) {
 	p.config.ClientID = c.ClientID
 	p.config.ClientSecret = c.ClientSecret
 	p.config.RedirectURL = c.RedirectURL
@@ -80,5 +83,5 @@ type baiduNetDiskProviderUserInfo struct {
 }
 
 func init() {
-	RegisterProvider(new(BaiduNetDiskProvider))
+	RegisterProvider(newBaiduNetDiskProvider())
 }

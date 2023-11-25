@@ -14,16 +14,19 @@ type QQProvider struct {
 	config oauth2.Config
 }
 
-func (p *QQProvider) Init(c provider.Oauth2Option) {
-	p.config.Scopes = []string{"get_user_info"}
-	if c.Endpoint != nil {
-		p.config.Endpoint = *c.Endpoint
-	} else {
-		p.config.Endpoint = oauth2.Endpoint{
-			AuthURL:  "https://graph.qq.com/oauth2.0/authorize",
-			TokenURL: "https://graph.qq.com/oauth2.0/token?grant_type=authorization_code",
-		}
+func newQQProvider() provider.ProviderInterface {
+	return &QQProvider{
+		config: oauth2.Config{
+			Scopes: []string{"get_user_info"},
+			Endpoint: oauth2.Endpoint{
+				AuthURL:  "https://graph.qq.com/oauth2.0/authorize",
+				TokenURL: "https://graph.qq.com/oauth2.0/token?grant_type=authorization_code",
+			},
+		},
 	}
+}
+
+func (p *QQProvider) Init(c provider.Oauth2Option) {
 	p.config.ClientID = c.ClientID
 	p.config.ClientSecret = c.ClientSecret
 	p.config.RedirectURL = c.RedirectURL
@@ -67,11 +70,11 @@ func (p *QQProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*provid
 	}, nil
 }
 
-func init() {
-	RegisterProvider(new(QQProvider))
-}
-
 type qqProviderUserInfo struct {
 	ClientID string `json:"client_id"`
 	Openid   string `json:"openid"`
+}
+
+func init() {
+	RegisterProvider(newQQProvider())
 }

@@ -14,13 +14,16 @@ type GoogleProvider struct {
 	config oauth2.Config
 }
 
-func (g *GoogleProvider) Init(c provider.Oauth2Option) {
-	g.config.Scopes = []string{"profile"}
-	if c.Endpoint != nil {
-		g.config.Endpoint = *c.Endpoint
-	} else {
-		g.config.Endpoint = google.Endpoint
+func newGoogleProvider() provider.ProviderInterface {
+	return &GoogleProvider{
+		config: oauth2.Config{
+			Scopes:   []string{"profile"},
+			Endpoint: google.Endpoint,
+		},
 	}
+}
+
+func (g *GoogleProvider) Init(c provider.Oauth2Option) {
 	g.config.ClientID = c.ClientID
 	g.config.ClientSecret = c.ClientSecret
 	g.config.RedirectURL = c.RedirectURL
@@ -65,7 +68,7 @@ func (g *GoogleProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*pr
 }
 
 func init() {
-	RegisterProvider(new(GoogleProvider))
+	RegisterProvider(newGoogleProvider())
 }
 
 type googleUserInfo struct {

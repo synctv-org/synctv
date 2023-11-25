@@ -20,13 +20,6 @@ func (s *GRPCServer) Init(ctx context.Context, req *providerpb.InitReq) (*provid
 		ClientSecret: req.ClientSecret,
 		RedirectURL:  req.RedirectUrl,
 	}
-	if req.Endpoint != nil {
-		opt.Endpoint = &oauth2.Endpoint{
-			AuthURL:       req.Endpoint.AuthUrl,
-			DeviceAuthURL: req.Endpoint.DeviceAuthUrl,
-			TokenURL:      req.Endpoint.TokenUrl,
-		}
-	}
 	s.Impl.Init(opt)
 	return &providerpb.Enpty{}, nil
 }

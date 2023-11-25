@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"sync/atomic"
 
+	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/model"
 )
 
@@ -22,10 +23,10 @@ var _ Float64Setting = (*Float64)(nil)
 
 type Float64 struct {
 	setting
-	defaultValue float64
-	value        uint64
-	validator    func(float64) error
-	beforeSet    func(Float64Setting, float64) error
+	defaultValue          float64
+	value                 uint64
+	validator             func(float64) error
+	beforeInit, beforeSet func(Float64Setting, float64) error
 }
 
 type Float64SettingOption func(*Float64)
@@ -33,6 +34,12 @@ type Float64SettingOption func(*Float64)
 func WithValidatorFloat64(validator func(float64) error) Float64SettingOption {
 	return func(s *Float64) {
 		s.validator = validator
+	}
+}
+
+func WithBeforeInitFloat64(beforeInit func(Float64Setting, float64) error) Float64SettingOption {
+	return func(s *Float64) {
+		s.beforeInit = beforeInit
 	}
 }
 
@@ -78,6 +85,14 @@ func (f *Float64) Init(value string) error {
 	if err != nil {
 		return err
 	}
+
+	if f.beforeInit != nil {
+		err = f.beforeInit(f, v)
+		if err != nil {
+			return err
+		}
+	}
+
 	f.set(v)
 	return nil
 }
@@ -111,6 +126,11 @@ func (f *Float64) SetString(value string) error {
 		}
 	}
 
+	err = db.UpdateSettingItemValue(f.name, f.Stringify(v))
+	if err != nil {
+		return err
+	}
+
 	f.set(v)
 	return nil
 }
@@ -132,6 +152,11 @@ func (f *Float64) Set(value float64) (err error) {
 		if err != nil {
 			return err
 		}
+	}
+
+	err = db.UpdateSettingItemValue(f.name, f.Stringify(value))
+	if err != nil {
+		return err
 	}
 
 	f.set(value)

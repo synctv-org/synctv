@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"sync/atomic"
 
+	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/model"
 )
 
@@ -21,12 +22,18 @@ var _ BoolSetting = (*Bool)(nil)
 
 type Bool struct {
 	setting
-	defaultValue bool
-	value        uint32
-	beforeSet    func(BoolSetting, bool) error
+	defaultValue          bool
+	value                 uint32
+	beforeInit, beforeSet func(BoolSetting, bool) error
 }
 
 type BoolSettingOption func(*Bool)
+
+func WithBeforeInitBool(beforeInit func(BoolSetting, bool) error) BoolSettingOption {
+	return func(s *Bool) {
+		s.beforeInit = beforeInit
+	}
+}
 
 func WithBeforeSetBool(beforeSet func(BoolSetting, bool) error) BoolSettingOption {
 	return func(s *Bool) {
@@ -67,6 +74,14 @@ func (b *Bool) Init(value string) error {
 	if err != nil {
 		return err
 	}
+
+	if b.beforeInit != nil {
+		err = b.beforeInit(b, v)
+		if err != nil {
+			return err
+		}
+	}
+
 	b.set(v)
 	return nil
 }
@@ -108,6 +123,11 @@ func (b *Bool) SetString(value string) error {
 		}
 	}
 
+	err = db.UpdateSettingItemValue(b.name, b.Stringify(v))
+	if err != nil {
+		return err
+	}
+
 	b.set(v)
 	return nil
 }
@@ -118,6 +138,11 @@ func (b *Bool) Set(value bool) (err error) {
 		if err != nil {
 			return err
 		}
+	}
+
+	err = db.UpdateSettingItemValue(b.name, b.Stringify(value))
+	if err != nil {
+		return err
 	}
 
 	b.set(value)

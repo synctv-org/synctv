@@ -25,16 +25,9 @@ import (
 //
 // config.yaml:
 //
-//	oauth2:
-//		providers:
-//			feishuSSO:
-//				client_id: "App ID"
-//				client_secret: "App Secret"
-//				redirect_url: "登录回调地址"
-//		plugins:
-//			- plugin_file: plugins/oauth2/feishuSSO
-//			  arges:
-//				- "OAuth2.0协议端点中的一串数字"
+// oauth2_plugins:
+//   - plugin_file: plugins/oauth2/feishuSSO
+//     args: ["OAuth2.0协议端点中的一串数字"]
 type FeishuProvider struct {
 	config oauth2.Config
 	ssoid  string // Your SSO Application ID in Feishu Anycross

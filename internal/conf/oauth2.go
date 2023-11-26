@@ -1,12 +1,10 @@
 package conf
 
-type OAuth2Config []Oauth2Plugin
-
-type Oauth2Plugin struct {
+type Oauth2Plugins []struct {
 	PluginFile string   `yaml:"plugin_file"`
 	Args       []string `yaml:"args"`
 }
 
-func DefaultOAuth2Config() OAuth2Config {
+func DefaultOauth2Plugins() Oauth2Plugins {
 	return nil
 }

@@ -27,7 +27,7 @@ func InitProvider(ctx context.Context) (err error) {
 	if flags.Dev {
 		logLevle = hclog.Debug
 	}
-	for _, op := range conf.Conf.OAuth2 {
+	for _, op := range conf.Conf.Oauth2Plugins {
 		op.PluginFile, err = utils.OptFilePath(op.PluginFile)
 		if err != nil {
 			log.Fatalf("oauth2 plugin file path error: %v", err)

@@ -17,8 +17,8 @@ type Config struct {
 	// Database
 	Database DatabaseConfig `yaml:"database"`
 
-	// OAuth2
-	OAuth2 OAuth2Config `yaml:"oauth2"`
+	// Oauth2Plugins
+	Oauth2Plugins Oauth2Plugins `yaml:"oauth2_plugins"`
 
 	// RateLimit
 	RateLimit RateLimitConfig `yaml:"rate_limit"`
@@ -46,7 +46,7 @@ func DefaultConfig() *Config {
 		Database: DefaultDatabaseConfig(),
 
 		// OAuth2
-		OAuth2: DefaultOAuth2Config(),
+		Oauth2Plugins: DefaultOauth2Plugins(),
 
 		// RateLimit
 		RateLimit: DefaultRateLimitConfig(),

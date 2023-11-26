@@ -18,15 +18,8 @@ import (
 //
 // config.yaml:
 //
-//	oauth2:
-//		providers:
-//			gitee:
-//				client_id: xxx
-//				client_secret: xxx
-//				redirect_url: xxx
-//		plugins:
-//			- plugin_file: plugins/oauth2/gitee
-//			  arges: []
+// oauth2_plugins:
+//   - plugin_file: plugins/oauth2/gitee
 type GiteeProvider struct {
 	config oauth2.Config
 }

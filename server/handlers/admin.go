@@ -67,10 +67,12 @@ func AdminSettings(ctx *gin.Context) {
 			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("group not found"))
 			return
 		}
-		resp := make(gin.H, len(s))
+		data := make(map[string]any, len(s))
 		for _, v := range s {
-			resp[v.Name()] = v.Interface()
+			data[v.Name()] = v.Interface()
 		}
+
+		resp := model.AdminSettingsResp{dbModel.SettingGroup(group): data}
 
 		ctx.JSON(http.StatusOK, model.NewApiDataResp(resp))
 	}

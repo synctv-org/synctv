@@ -83,6 +83,8 @@ synctv server
 synctv server --data-dir ./
 ```
 
+Every time it starts, it will check for users with root permissions. If none are found, it will initialize a `root` user with the password `root`. Please change the username and password promptly.
+
 # Documentation
 https://synctv.wiki
 

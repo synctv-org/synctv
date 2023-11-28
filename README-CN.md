@@ -81,6 +81,8 @@ synctv server
 synctv server --data-dir ./
 ```
 
+每次启动会检测是否有root权限的用户，如果没有则会初始化一个`root`用户，密码为`root`，请及时修改用户名密码。
+
 # 文档
 https://synctv.wiki
 

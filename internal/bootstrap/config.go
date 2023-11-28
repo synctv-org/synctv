@@ -25,20 +25,16 @@ func InitConfig(ctx context.Context) (err error) {
 	}
 	conf.Conf = conf.DefaultConfig()
 	if !flags.SkipConfig {
-		if flags.ConfigFile == "" {
-			flags.ConfigFile = filepath.Join(flags.DataDir, "config.yaml")
-		} else {
-			flags.ConfigFile, err = utils.OptFilePath(flags.ConfigFile)
-			if err != nil {
-				log.Fatalf("config file path error: %v", err)
-			}
+		configFile, err := utils.OptFilePath(filepath.Join(flags.DataDir, "config.yaml"))
+		if err != nil {
+			log.Fatalf("config file path error: %v", err)
 		}
-		err = confFromConfig(flags.ConfigFile, conf.Conf)
+		err = confFromConfig(configFile, conf.Conf)
 		if err != nil {
 			log.Fatalf("load config from file error: %v", err)
 		}
-		log.Infof("load config success from file: %s", flags.ConfigFile)
-		if err = restoreConfig(flags.ConfigFile, conf.Conf); err != nil {
+		log.Infof("load config success from file: %s", configFile)
+		if err = restoreConfig(configFile, conf.Conf); err != nil {
 			log.Warnf("restore config error: %v", err)
 		} else {
 			log.Info("restore config success")

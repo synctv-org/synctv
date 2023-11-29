@@ -605,6 +605,9 @@ func proxyURL(ctx *gin.Context, u string, headers map[string]string) error {
 		req.Header.Set(k, v)
 	}
 	req.Header.Set("Range", ctx.GetHeader("Range"))
+	if req.Header.Get("User-Agent") == "" {
+		req.Header.Set("User-Agent", utils.UA)
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return err

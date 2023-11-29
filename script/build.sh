@@ -1,5 +1,7 @@
 #!/bin/bash
 
+BIN_NAME="synctv"
+
 function ChToScriptFileDir() {
     cd "$(dirname "$0")"
     if [ $? -ne 0 ]; then
@@ -17,7 +19,7 @@ function Help() {
     echo "-l set ldflags (default: -s -w --extldflags \"-static -fpic -Wl,-z,relro,-z,now\")"
     echo "-p set platform (default: host platform, support: all, linux, darwin, windows)"
     echo "-P set trim path (default: disable)"
-    echo "-b set build result dir (default: build)"
+    echo "-d set build result dir (default: build)"
     echo "-T set tags (default: jsoniter)"
 }
 
@@ -37,12 +39,12 @@ function Init() {
     PLATFORM=""
     TRIM_PATH=""
     SKIP_INIT_WEB=""
-    BUILD_DIR="build"
+    BUILD_DIR="../build"
     TAGS="jsoniter"
 }
 
 function ParseArgs() {
-    while getopts "hsv:w:m:l:p:Pb:T:" arg; do
+    while getopts "hsv:w:m:l:p:Pd:T:" arg; do
         case $arg in
         h)
             Help
@@ -69,7 +71,7 @@ function ParseArgs() {
         P)
             TRIM_PATH="true"
             ;;
-        b)
+        d)
             BUILD_DIR="$OPTARG"
             ;;
         T)
@@ -81,25 +83,6 @@ function ParseArgs() {
             ;;
         esac
     done
-}
-
-function GetLatestWebVersion() {
-    while true; do
-        LATEST=$(curl -sL https://api.github.com/repos/$1/releases/latest)
-        if [ $? -ne 0 ]; then exit $?; fi
-        if [ "$(echo "$LATEST" | grep -o "API rate limit exceeded")" ]; then
-            echo "API rate limit exceeded"
-            echo "sleep 5s"
-            sleep 5
-        elif [ "$(echo "$LATEST" | grep -o "Not Found")" ]; then
-            echo "Not Found"
-            exit 1
-        else
-            break
-        fi
-    done
-
-    WEB_VERSION=$(echo "$LATEST" | grep -o '"tag_name": "[^"]*' | grep -o '[^"]*$')
 }
 
 # Comply with golang version rules
@@ -116,17 +99,14 @@ function FixArgs() {
     CheckAllPlatform
     CheckVersionFormat "$VERSION"
     if [ ! "$SKIP_INIT_WEB" ] && [ ! "$WEB_VERSION" ]; then
-        if [ "$VERSION" != "" ]; then
-            WEB_VERSION="$VERSION"
-        else
-            GetLatestWebVersion "synctv-org/synctv-web"
-        fi
+        WEB_VERSION="$VERSION"
     fi
     LDFLAGS="$LDFLAGS \
         -X 'github.com/synctv-org/synctv/internal/version.Version=$VERSION' \
         -X 'github.com/synctv-org/synctv/internal/version.WebVersion=$WEB_VERSION' \
         -X 'github.com/synctv-org/synctv/internal/version.GitCommit=$GIT_COMMIT'"
 
+    # trim / at the end
     BUILD_DIR="$(echo "$BUILD_DIR" | sed 's#/$##')"
 }
 
@@ -135,9 +115,9 @@ function InitDep() {
         echo "skip init web"
         return
     fi
-    rm -rf public/dist/*
+    rm -rf "../public/dist/*"
     echo "download: https://github.com/synctv-org/synctv-web/releases/download/${WEB_VERSION}/dist.tar.gz"
-    curl -sL "https://github.com/synctv-org/synctv-web/releases/download/${WEB_VERSION}/dist.tar.gz" | tar --strip-components 1 -C "public/dist" -z -x -v -f -
+    curl -sL "https://github.com/synctv-org/synctv-web/releases/download/${WEB_VERSION}/dist.tar.gz" | tar --strip-components 1 -C "../public/dist" -z -x -v -f -
     if [ $? -ne 0 ]; then
         echo "download web error"
         exit 1
@@ -195,9 +175,9 @@ function Build() {
         EXT=""
     fi
     if [ "$TRIM_PATH" ]; then
-        CGO_ENABLED=$CGO_ENABLED GOOS=$GOOS GOARCH=$GOARCH go build -trimpath -tags "$TAGS" -ldflags "$LDFLAGS" -o "$BUILD_DIR/$(basename $PWD)-$GOOS-$GOARCH$EXT" .
+        CGO_ENABLED=$CGO_ENABLED GOOS=$GOOS GOARCH=$GOARCH go build -trimpath -tags "$TAGS" -ldflags "$LDFLAGS" -o "$BUILD_DIR/$BIN_NAME-$GOOS-$GOARCH$EXT" ../
     else
-        CGO_ENABLED=$CGO_ENABLED GOOS=$GOOS GOARCH=$GOARCH go build -tags "$TAGS" -ldflags "$LDFLAGS" -o "$BUILD_DIR/$(basename $PWD)-$GOOS-$GOARCH$EXT" .
+        CGO_ENABLED=$CGO_ENABLED GOOS=$GOOS GOARCH=$GOARCH go build -tags "$TAGS" -ldflags "$LDFLAGS" -o "$BUILD_DIR/$BIN_NAME-$GOOS-$GOARCH$EXT" ../
     fi
     if [ $? -ne 0 ]; then
         echo "build $GOOS/$GOARCH error"
@@ -215,9 +195,9 @@ function BuildSingle() {
     fi
     echo "build $GOOS/$GOARCH"
     if [ "$TRIM_PATH" ]; then
-        CGO_ENABLED=$CGO_ENABLED go build -trimpath -tags "$TAGS" -ldflags "$LDFLAGS" -o "$BUILD_DIR/$(basename $PWD)$EXT" .
+        CGO_ENABLED=$CGO_ENABLED go build -trimpath -tags "$TAGS" -ldflags "$LDFLAGS" -o "$BUILD_DIR/$BIN_NAME$EXT" ../
     else
-        CGO_ENABLED=$CGO_ENABLED go build -tags "$TAGS" -ldflags "$LDFLAGS" -o "$BUILD_DIR/$(basename $PWD)$EXT" .
+        CGO_ENABLED=$CGO_ENABLED go build -tags "$TAGS" -ldflags "$LDFLAGS" -o "$BUILD_DIR/$BIN_NAME$EXT" ../
     fi
     if [ $? -ne 0 ]; then
         echo "build $GOOS/$GOARCH error"

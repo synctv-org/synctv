@@ -28,7 +28,7 @@ jobs:
 
       - name: Build
         run: |
-          bash build.sh -v "v${{ steps.get_version.outputs.VERSION }}" -P -p "windows,linux,darwin"
+          bash script/build.sh -v "v${{ steps.get_version.outputs.VERSION }}" -P -p "windows,linux,darwin"
 
       - uses: "marvinpinto/action-automatic-releases@latest"
         with:

@@ -8,13 +8,13 @@ COPY ./ ./
 
 RUN apk add --no-cache bash curl gcc git go musl-dev
 
-RUN bash build.sh -P -v ${VERSION} -b build
+RUN bash script/build.sh -P -v ${VERSION}
 
 From alpine:latest
 
 COPY --from=builder /synctv/build/synctv /usr/local/bin/synctv
 
-COPY entrypoint.sh /entrypoint.sh
+COPY script/entrypoint.sh /entrypoint.sh
 
 RUN apk add --no-cache bash ca-certificates su-exec tzdata
 

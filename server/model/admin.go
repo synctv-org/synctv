@@ -22,7 +22,7 @@ func (asr *AdminSettingsReq) Decode(ctx *gin.Context) error {
 	return json.NewDecoder(ctx.Request.Body).Decode(asr)
 }
 
-type AdminSettingsResp map[string]map[string]any
+type AdminSettingsResp map[dbModel.SettingGroup]map[string]any
 
 type AddUserReq struct {
 	Username string       `json:"username"`

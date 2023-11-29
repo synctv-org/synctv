@@ -21,6 +21,7 @@ const (
 	SettingGroupProxy    SettingGroup = "proxy"
 	SettingGroupRtmp     SettingGroup = "rtmp"
 	SettingGroupDatabase SettingGroup = "database"
+	SettingGroupOauth2   SettingGroup = "oauth2"
 )
 
 type Setting struct {

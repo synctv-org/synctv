@@ -4,15 +4,9 @@ option go_package = ".;providerpb";
 package proto;
 
 message InitReq {
-  message Endpoint {
-    string auth_url = 1;
-    string device_auth_url = 2;
-    string token_url = 3;
-  }
   string client_id = 1;
   string client_secret = 2;
   string redirect_url = 3;
-  optional Endpoint endpoint = 4;
 }
 
 message GetTokenReq { string code = 1; }

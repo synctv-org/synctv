@@ -18,29 +18,25 @@ import (
 //
 // config.yaml:
 //
-//	oauth2:
-//		providers:
-//			gitee:
-//				client_id: xxx
-//				client_secret: xxx
-//				redirect_url: xxx
-//		plugins:
-//			- plugin_file: plugins/oauth2/gitee
-//			  arges: []
+// oauth2_plugins:
+//   - plugin_file: plugins/oauth2/gitee
 type GiteeProvider struct {
 	config oauth2.Config
 }
 
-func (p *GiteeProvider) Init(c provider.Oauth2Option) {
-	p.config.Scopes = []string{"user_info"}
-	if c.Endpoint != nil {
-		p.config.Endpoint = *c.Endpoint
-	} else {
-		p.config.Endpoint = oauth2.Endpoint{
-			AuthURL:  "https://gitee.com/oauth/authorize",
-			TokenURL: "https://gitee.com/oauth/token",
-		}
+func newGiteeProvider() provider.ProviderInterface {
+	return &GiteeProvider{
+		config: oauth2.Config{
+			Scopes: []string{"user_info"},
+			Endpoint: oauth2.Endpoint{
+				AuthURL:  "https://gitee.com/oauth/authorize",
+				TokenURL: "https://gitee.com/oauth/token",
+			},
+		},
 	}
+}
+
+func (p *GiteeProvider) Init(c provider.Oauth2Option) {
 	p.config.ClientID = c.ClientID
 	p.config.ClientSecret = c.ClientSecret
 	p.config.RedirectURL = c.RedirectURL
@@ -91,7 +87,7 @@ type giteeUserInfo struct {
 
 func main() {
 	var pluginMap = map[string]plugin.Plugin{
-		"Provider": &plugins.ProviderPlugin{Impl: &GiteeProvider{}},
+		"Provider": &plugins.ProviderPlugin{Impl: newGiteeProvider()},
 	}
 	plugin.Serve(&plugin.ServeConfig{
 		HandshakeConfig: plugins.HandshakeConfig,

@@ -49,7 +49,8 @@ func initRootUser() error {
 	if err == nil || !errors.Is(err, gorm.ErrRecordNotFound) {
 		return err
 	}
-	_, err = CreateUser("root", "root", WithRole(model.RoleRoot))
+	u, err := CreateUser("root", "root", WithRole(model.RoleRoot))
+	log.Infof("init root user:\nid: %s\nusername: %s\npassword: %s", u.ID, u.Username, "root")
 	return err
 }
 

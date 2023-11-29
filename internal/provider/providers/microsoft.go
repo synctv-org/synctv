@@ -14,13 +14,16 @@ type MicrosoftProvider struct {
 	config oauth2.Config
 }
 
-func (p *MicrosoftProvider) Init(c provider.Oauth2Option) {
-	p.config.Scopes = []string{"user.read"}
-	if c.Endpoint != nil {
-		p.config.Endpoint = *c.Endpoint
-	} else {
-		p.config.Endpoint = microsoft.LiveConnectEndpoint
+func newMicrosoftProvider() provider.ProviderInterface {
+	return &MicrosoftProvider{
+		config: oauth2.Config{
+			Scopes:   []string{"user.read"},
+			Endpoint: microsoft.LiveConnectEndpoint,
+		},
 	}
+}
+
+func (p *MicrosoftProvider) Init(c provider.Oauth2Option) {
 	p.config.ClientID = c.ClientID
 	p.config.ClientSecret = c.ClientSecret
 	p.config.RedirectURL = c.RedirectURL
@@ -70,5 +73,5 @@ type microsoftUserInfo struct {
 }
 
 func init() {
-	RegisterProvider(new(MicrosoftProvider))
+	RegisterProvider(newMicrosoftProvider())
 }

@@ -6,8 +6,6 @@ var (
 
 	LogStd bool
 
-	ConfigFile string
-
 	SkipEnv bool
 
 	SkipConfig bool

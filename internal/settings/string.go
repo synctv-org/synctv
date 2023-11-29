@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/model"
 )
 
@@ -20,11 +21,11 @@ var _ StringSetting = (*String)(nil)
 
 type String struct {
 	setting
-	defaultValue string
-	lock         sync.RWMutex
-	value        string
-	validator    func(string) error
-	beforeSet    func(StringSetting, string) error
+	defaultValue          string
+	lock                  sync.RWMutex
+	value                 string
+	validator             func(string) error
+	beforeInit, beforeSet func(StringSetting, string) error
 }
 
 type StringSettingOption func(*String)
@@ -32,6 +33,12 @@ type StringSettingOption func(*String)
 func WithValidatorString(validator func(string) error) StringSettingOption {
 	return func(s *String) {
 		s.validator = validator
+	}
+}
+
+func WithBeforeInitString(beforeInit func(StringSetting, string) error) StringSettingOption {
+	return func(s *String) {
+		s.beforeInit = beforeInit
 	}
 }
 
@@ -73,6 +80,14 @@ func (s *String) Init(value string) error {
 	if err != nil {
 		return err
 	}
+
+	if s.beforeInit != nil {
+		err = s.beforeInit(s, v)
+		if err != nil {
+			return err
+		}
+	}
+
 	s.set(v)
 	return nil
 }
@@ -106,6 +121,11 @@ func (s *String) SetString(value string) error {
 		}
 	}
 
+	err = db.UpdateSettingItemValue(s.name, s.Stringify(v))
+	if err != nil {
+		return err
+	}
+
 	s.set(v)
 	return nil
 }
@@ -129,6 +149,11 @@ func (s *String) Set(value string) (err error) {
 		if err != nil {
 			return err
 		}
+	}
+
+	err = db.UpdateSettingItemValue(s.name, s.Stringify(value))
+	if err != nil {
+		return err
 	}
 
 	s.set(value)

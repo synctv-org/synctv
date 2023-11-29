@@ -7,6 +7,7 @@ import (
 	"github.com/synctv-org/synctv/internal/db"
 	dbModel "github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
+	"github.com/synctv-org/synctv/internal/provider"
 	"github.com/synctv-org/synctv/internal/provider/providers"
 	"github.com/synctv-org/synctv/server/middlewares"
 	"github.com/synctv-org/synctv/server/model"
@@ -185,8 +186,9 @@ func UserBindProviders(ctx *gin.Context) {
 	m := providers.EnabledProvider()
 
 	resp := make(model.UserBindProviderResp, len(up))
+
 	for _, v := range up {
-		if _, ok := m[v.Provider]; ok {
+		if _, ok := m.Load(v.Provider); ok {
 			resp[v.Provider] = struct {
 				ProviderUserID string "json:\"providerUserID\""
 				CreatedAt      int64  "json:\"createdAt\""
@@ -197,7 +199,7 @@ func UserBindProviders(ctx *gin.Context) {
 		}
 	}
 
-	for p := range m {
+	m.Range(func(p provider.OAuth2Provider, pi provider.ProviderInterface) bool {
 		if _, ok := resp[p]; !ok {
 			resp[p] = struct {
 				ProviderUserID string "json:\"providerUserID\""
@@ -207,7 +209,8 @@ func UserBindProviders(ctx *gin.Context) {
 				CreatedAt:      0,
 			}
 		}
-	}
+		return true
+	})
 
 	ctx.JSON(http.StatusOK, resp)
 }

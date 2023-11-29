@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/synctv-org/synctv/internal/bootstrap"
 	"github.com/synctv-org/synctv/internal/db"
 	dbModel "github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
@@ -35,31 +36,47 @@ func EditAdminSettings(ctx *gin.Context) {
 func AdminSettings(ctx *gin.Context) {
 	// user := ctx.MustGet("user").(*op.User)
 	group := ctx.Param("group")
-	if group == "" {
-		resp := make(model.AdminSettingsResp, len(settings.GroupSettings))
-		for sg, v := range settings.GroupSettings {
-			if resp[string(sg)] == nil {
-				resp[string(sg)] = make(gin.H, len(v))
+	switch group {
+	case "oauth2":
+		resp := make(model.AdminSettingsResp, len(bootstrap.ProviderGroupSettings))
+		for k, v := range bootstrap.ProviderGroupSettings {
+			if resp[k] == nil {
+				resp[k] = make(gin.H, len(v))
 			}
 			for _, s2 := range v {
-				resp[string(sg)][s2.Name()] = s2.Interface()
+				resp[k][s2.Name()] = s2.Interface()
 			}
 		}
+
 		ctx.JSON(http.StatusOK, model.NewApiDataResp(resp))
-		return
+	case "":
+		resp := make(model.AdminSettingsResp, len(settings.GroupSettings))
+		for sg, v := range settings.GroupSettings {
+			if resp[sg] == nil {
+				resp[sg] = make(gin.H, len(v))
+			}
+			for _, s2 := range v {
+				resp[sg][s2.Name()] = s2.Interface()
+			}
+		}
+
+		ctx.JSON(http.StatusOK, model.NewApiDataResp(resp))
+	default:
+		s, ok := settings.GroupSettings[dbModel.SettingGroup(group)]
+		if !ok {
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("group not found"))
+			return
+		}
+		data := make(map[string]any, len(s))
+		for _, v := range s {
+			data[v.Name()] = v.Interface()
+		}
+
+		resp := model.AdminSettingsResp{dbModel.SettingGroup(group): data}
+
+		ctx.JSON(http.StatusOK, model.NewApiDataResp(resp))
 	}
 
-	s, ok := settings.GroupSettings[dbModel.SettingGroup(group)]
-	if !ok {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("group not found"))
-		return
-	}
-	resp := make(gin.H, len(s))
-	for _, v := range s {
-		resp[v.Name()] = v.Interface()
-	}
-
-	ctx.JSON(http.StatusOK, model.NewApiDataResp(resp))
 }
 
 func Users(ctx *gin.Context) {

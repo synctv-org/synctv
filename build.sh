@@ -232,7 +232,7 @@ function BuildAll() {
     else
         for platform in $(echo "$1" | tr "," "\n"); do
             if [ "$platform" == "all" ]; then
-                BuildAll "$ALLOWD_PLATFORM"
+                BuildAll "$ALLOWED_PLATFORM"
             elif [ "$platform" == "linux" ]; then
                 BuildAll "$LINUX_ALLOWED_PLATFORM"
             elif [ "$platform" == "darwin" ]; then

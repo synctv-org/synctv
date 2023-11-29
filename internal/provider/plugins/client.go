@@ -19,13 +19,6 @@ func (c *GRPCClient) Init(o provider.Oauth2Option) {
 		ClientSecret: o.ClientSecret,
 		RedirectUrl:  o.RedirectURL,
 	}
-	if o.Endpoint != nil {
-		opt.Endpoint = &providerpb.InitReq_Endpoint{
-			AuthUrl:       o.Endpoint.AuthURL,
-			DeviceAuthUrl: o.Endpoint.DeviceAuthURL,
-			TokenUrl:      o.Endpoint.TokenURL,
-		}
-	}
 	c.client.Init(context.Background(), &opt)
 }
 

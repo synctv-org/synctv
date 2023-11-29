@@ -13,13 +13,16 @@ type GitlabProvider struct {
 	config oauth2.Config
 }
 
-func (g *GitlabProvider) Init(c provider.Oauth2Option) {
-	g.config.Scopes = []string{"read_user"}
-	if c.Endpoint != nil {
-		g.config.Endpoint = *c.Endpoint
-	} else {
-		g.config.Endpoint = gitlab.Endpoint
+func newGitlabProvider() provider.ProviderInterface {
+	return &GitlabProvider{
+		config: oauth2.Config{
+			Scopes:   []string{"read_user"},
+			Endpoint: gitlab.Endpoint,
+		},
 	}
+}
+
+func (g *GitlabProvider) Init(c provider.Oauth2Option) {
 	g.config.ClientID = c.ClientID
 	g.config.ClientSecret = c.ClientSecret
 	g.config.RedirectURL = c.RedirectURL
@@ -56,5 +59,5 @@ func (g *GitlabProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*pr
 }
 
 func init() {
-	RegisterProvider(new(GitlabProvider))
+	RegisterProvider(newGitlabProvider())
 }

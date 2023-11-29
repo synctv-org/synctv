@@ -15,13 +15,16 @@ type GithubProvider struct {
 	config oauth2.Config
 }
 
-func (p *GithubProvider) Init(c provider.Oauth2Option) {
-	p.config.Scopes = []string{"user"}
-	if c.Endpoint != nil {
-		p.config.Endpoint = *c.Endpoint
-	} else {
-		p.config.Endpoint = github.Endpoint
+func newGithubProvider() provider.ProviderInterface {
+	return &GithubProvider{
+		config: oauth2.Config{
+			Scopes:   []string{"user"},
+			Endpoint: github.Endpoint,
+		},
 	}
+}
+
+func (p *GithubProvider) Init(c provider.Oauth2Option) {
 	p.config.ClientID = c.ClientID
 	p.config.ClientSecret = c.ClientSecret
 	p.config.RedirectURL = c.RedirectURL
@@ -71,5 +74,5 @@ type githubUserInfo struct {
 }
 
 func init() {
-	RegisterProvider(new(GithubProvider))
+	RegisterProvider(newGithubProvider())
 }

@@ -3,9 +3,6 @@ package op
 import (
 	"sync"
 	"time"
-
-	"github.com/synctv-org/synctv/internal/model"
-	pb "github.com/synctv-org/synctv/proto/message"
 )
 
 type current struct {
@@ -87,47 +84,6 @@ func (c *current) SetSeekRate(seek, rate, timeDiff float64) Status {
 	defer c.lock.Unlock()
 
 	return c.current.SetSeekRate(seek, rate, timeDiff)
-}
-
-func (c *Current) Proto() *pb.Current {
-	current := &pb.Current{
-		Status: &pb.Status{
-			Seek:    c.Status.Seek,
-			Rate:    c.Status.Rate,
-			Playing: c.Status.Playing,
-		},
-	}
-	current.Movie = &pb.MovieInfo{
-		Id: c.Movie.Movie.ID,
-		Base: &pb.BaseMovieInfo{
-			Url:        c.Movie.Movie.Base.Url,
-			Name:       c.Movie.Movie.Base.Name,
-			Live:       c.Movie.Movie.Base.Live,
-			Proxy:      c.Movie.Movie.Base.Proxy,
-			RtmpSource: c.Movie.Movie.Base.RtmpSource,
-			Type:       c.Movie.Movie.Base.Type,
-			Headers:    c.Movie.Movie.Base.Headers,
-		},
-		CreatedAt: c.Movie.Movie.CreatedAt.UnixMilli(),
-		Creator:   GetUserName(c.Movie.Movie.CreatorID),
-	}
-	if c.Movie.Movie.Base.VendorInfo.Vendor != "" {
-		current.Movie.Base.VendorInfo = &pb.VendorInfo{
-			Vendor: string(c.Movie.Movie.Base.VendorInfo.Vendor),
-			Shared: c.Movie.Movie.Base.VendorInfo.Shared,
-		}
-		switch c.Movie.Movie.Base.VendorInfo.Vendor {
-		case model.StreamingVendorBilibili:
-			current.Movie.Base.VendorInfo.Bilibili = &pb.BilibiliVendorInfo{
-				Bvid:       c.Movie.Movie.Base.VendorInfo.Bilibili.Bvid,
-				Cid:        c.Movie.Movie.Base.VendorInfo.Bilibili.Cid,
-				Epid:       c.Movie.Movie.Base.VendorInfo.Bilibili.Epid,
-				Quality:    c.Movie.Movie.Base.VendorInfo.Bilibili.Quality,
-				VendorName: c.Movie.Movie.Base.VendorInfo.Bilibili.VendorName,
-			}
-		}
-	}
-	return current
 }
 
 func (c *Current) UpdateSeek() {

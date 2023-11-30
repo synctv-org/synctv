@@ -16,7 +16,7 @@ import (
 
 type Hub struct {
 	id        string
-	clients   rwmap.RWMap[string, *Client]
+	clients   rwmap.RWMap[string, *rwmap.RWMap[*Client, struct{}]]
 	broadcast chan *broadcastMessage
 	exit      chan struct{}
 	closed    uint32
@@ -26,29 +26,22 @@ type Hub struct {
 }
 
 type broadcastMessage struct {
-	data       Message
-	sender     string
-	sendToSelf bool
-	ignoreId   []string
+	data         Message
+	ignoreClient []*Client
+	ignoreId     []string
 }
 
 type BroadcastConf func(*broadcastMessage)
 
-func WithSender(sender string) BroadcastConf {
+func WithIgnoreClient(cli ...*Client) BroadcastConf {
 	return func(bm *broadcastMessage) {
-		bm.sender = sender
-	}
-}
-
-func WithSendToSelf() BroadcastConf {
-	return func(bm *broadcastMessage) {
-		bm.sendToSelf = true
+		bm.ignoreClient = cli
 	}
 }
 
 func WithIgnoreId(id ...string) BroadcastConf {
 	return func(bm *broadcastMessage) {
-		bm.ignoreId = append(bm.ignoreId, id...)
+		bm.ignoreId = id
 	}
 }
 
@@ -73,19 +66,21 @@ func (h *Hub) serve() error {
 		select {
 		case message := <-h.broadcast:
 			h.devMessage(message.data)
-			h.clients.Range(func(_ string, cli *Client) bool {
-				if !message.sendToSelf {
-					if cli.u.Username == message.sender {
+			h.clients.Range(func(id string, cli *rwmap.RWMap[*Client, struct{}]) bool {
+				cli.Range(func(c *Client, value struct{}) bool {
+					if utils.In(message.ignoreId, c.u.ID) {
 						return true
 					}
-				}
-				if utils.In(message.ignoreId, cli.u.Username) {
+					if utils.In(message.ignoreClient, c) {
+						return true
+					}
+					if err := c.Send(message.data); err != nil {
+						log.Debugf("hub: %s, write to client err: %s\nmessage: %+v", h.id, err, message)
+						c.Close()
+					}
 					return true
-				}
-				if err := cli.Send(message.data); err != nil {
-					log.Debugf("hub: %s, write to client err: %s\nmessage: %+v", h.id, err, message)
-					cli.Close()
-				}
+				})
+
 				return true
 			})
 		case <-h.exit:
@@ -98,17 +93,18 @@ func (h *Hub) serve() error {
 func (h *Hub) ping() {
 	ticker := time.NewTicker(time.Second * 5)
 	defer ticker.Stop()
-	var pre int64 = 0
+	var (
+		pre     int64 = 0
+		current int64
+	)
 	for {
 		select {
 		case <-ticker.C:
-			current := h.ClientNum()
+			current = h.PeopleNum()
 			if current != pre {
 				if err := h.Broadcast(&ElementMessage{
-					ElementMessage: &pb.ElementMessage{
-						Type:      pb.ElementMessageType_CHANGE_PEOPLE,
-						PeopleNum: current,
-					},
+					Type:      pb.ElementMessageType_CHANGE_PEOPLE,
+					PeopleNum: current,
 				}); err != nil {
 					continue
 				}
@@ -144,9 +140,13 @@ func (h *Hub) Close() error {
 		return ErrAlreadyClosed
 	}
 	close(h.exit)
-	h.clients.Range(func(_ string, client *Client) bool {
-		h.clients.Delete(client.u.ID)
-		client.Close()
+	h.clients.Range(func(id string, client *rwmap.RWMap[*Client, struct{}]) bool {
+		h.clients.Delete(id)
+		client.Range(func(key *Client, value struct{}) bool {
+			client.Delete(key)
+			key.Close()
+			return true
+		})
 		return true
 	})
 	h.wg.Wait()
@@ -173,40 +173,54 @@ func (h *Hub) Broadcast(data Message, conf ...BroadcastConf) error {
 	}
 }
 
-func (h *Hub) RegClient(cli *Client) (*Client, error) {
-	if h.Closed() {
-		return nil, ErrAlreadyClosed
-	}
-	err := h.Start()
-	if err != nil {
-		return nil, err
-	}
-	c, loaded := h.clients.LoadOrStore(cli.u.ID, cli)
-	if loaded {
-		return nil, errors.New("client already registered")
-	}
-	return c, nil
-}
-
-func (h *Hub) UnRegClient(user *User) error {
+func (h *Hub) RegClient(cli *Client) error {
 	if h.Closed() {
 		return ErrAlreadyClosed
 	}
-	if user == nil {
-		return errors.New("user is nil")
+	err := h.Start()
+	if err != nil {
+		return err
 	}
-	_, loaded := h.clients.LoadAndDelete(user.ID)
-	if !loaded {
-		return errors.New("client not found")
+	c, _ := h.clients.LoadOrStore(cli.u.ID, &rwmap.RWMap[*Client, struct{}]{})
+	_, loaded := c.LoadOrStore(cli, struct{}{})
+	if loaded {
+		return errors.New("client already exist")
 	}
 	return nil
 }
 
-func (h *Hub) ClientNum() int64 {
+func (h *Hub) UnRegClient(cli *Client) error {
+	if h.Closed() {
+		return ErrAlreadyClosed
+	}
+	if cli == nil {
+		return errors.New("user is nil")
+	}
+	c, loaded := h.clients.Load(cli.u.ID)
+	if !loaded {
+		return errors.New("client not found")
+	}
+	_, loaded2 := c.LoadAndDelete(cli)
+	if !loaded2 {
+		return errors.New("client not found")
+	}
+	if c.Len() == 0 {
+		if h.clients.CompareAndDelete(cli.u.ID, c) {
+			c.Range(func(key *Client, value struct{}) bool {
+				c.Delete(key)
+				h.RegClient(key)
+				return true
+			})
+		}
+	}
+	return nil
+}
+
+func (h *Hub) PeopleNum() int64 {
 	return h.clients.Len()
 }
 
-func (h *Hub) SendToUser(userID string, data Message) error {
+func (h *Hub) SendToUser(userID string, data Message) (err error) {
 	if h.Closed() {
 		return ErrAlreadyClosed
 	}
@@ -214,5 +228,17 @@ func (h *Hub) SendToUser(userID string, data Message) error {
 	if !ok {
 		return nil
 	}
-	return cli.Send(data)
+	cli.Range(func(key *Client, value struct{}) bool {
+		if err = key.Send(data); err != nil {
+			cli.CompareAndDelete(key, value)
+			log.Debugf("hub: %s, write to client err: %s\nmessage: %+v", h.id, err, data)
+			key.Close()
+		}
+		return true
+	})
+	return
+}
+
+func (h *Hub) LoadClient(userID string) (*rwmap.RWMap[*Client, struct{}], bool) {
+	return h.clients.Load(userID)
 }

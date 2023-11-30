@@ -193,10 +193,8 @@ func PushMovie(ctx *gin.Context) {
 	}
 
 	if err := room.Broadcast(&op.ElementMessage{
-		ElementMessage: &pb.ElementMessage{
-			Type:   pb.ElementMessageType_CHANGE_MOVIES,
-			Sender: user.Username,
-		},
+		Type:   pb.ElementMessageType_CHANGE_MOVIES,
+		Sender: user.Username,
 	}); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
@@ -233,10 +231,8 @@ func PushMovies(ctx *gin.Context) {
 	}
 
 	if err := room.Broadcast(&op.ElementMessage{
-		ElementMessage: &pb.ElementMessage{
-			Type:   pb.ElementMessageType_CHANGE_MOVIES,
-			Sender: user.Username,
-		},
+		Type:   pb.ElementMessageType_CHANGE_MOVIES,
+		Sender: user.Username,
 	}); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
@@ -313,10 +309,8 @@ func EditMovie(ctx *gin.Context) {
 	}
 
 	if err := room.Broadcast(&op.ElementMessage{
-		ElementMessage: &pb.ElementMessage{
-			Type:   pb.ElementMessageType_CHANGE_MOVIES,
-			Sender: user.Username,
-		},
+		Type:   pb.ElementMessageType_CHANGE_MOVIES,
+		Sender: user.Username,
 	}); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
@@ -346,10 +340,8 @@ func DelMovie(ctx *gin.Context) {
 	}
 
 	if err := room.Broadcast(&op.ElementMessage{
-		ElementMessage: &pb.ElementMessage{
-			Type:   pb.ElementMessageType_CHANGE_MOVIES,
-			Sender: user.Username,
-		},
+		Type:   pb.ElementMessageType_CHANGE_MOVIES,
+		Sender: user.Username,
 	}); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
@@ -372,10 +364,8 @@ func ClearMovies(ctx *gin.Context) {
 	}
 
 	if err := room.Broadcast(&op.ElementMessage{
-		ElementMessage: &pb.ElementMessage{
-			Type:   pb.ElementMessageType_CHANGE_MOVIES,
-			Sender: user.Username,
-		},
+		Type:   pb.ElementMessageType_CHANGE_MOVIES,
+		Sender: user.Username,
 	}); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
@@ -400,10 +390,8 @@ func SwapMovie(ctx *gin.Context) {
 	}
 
 	if err := room.Broadcast(&op.ElementMessage{
-		ElementMessage: &pb.ElementMessage{
-			Type:   pb.ElementMessageType_CHANGE_MOVIES,
-			Sender: user.Username,
-		},
+		Type:   pb.ElementMessageType_CHANGE_MOVIES,
+		Sender: user.Username,
 	}); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
@@ -436,55 +424,12 @@ func ChangeCurrentMovie(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 	}
 
-	current, err := genCurrent(ctx, room.Current(), user.ID)
-	if err != nil {
+	if err := room.Broadcast(&op.ElementMessage{
+		Type:   pb.ElementMessageType_CHANGE_CURRENT,
+		Sender: user.Username,
+	}); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
-	}
-	current.UpdateSeek()
-
-	if (current.Movie.Movie.Base.VendorInfo.Vendor == "") || (current.Movie.Movie.Base.VendorInfo.Vendor != "" && current.Movie.Movie.Base.VendorInfo.Shared) {
-		if err := room.Broadcast(&op.ElementMessage{
-			ElementMessage: &pb.ElementMessage{
-				Type:    pb.ElementMessageType_CHANGE_CURRENT,
-				Sender:  user.Username,
-				Current: current.Proto(),
-			},
-		}); err != nil {
-			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
-			return
-		}
-	} else {
-		if err := room.SendToUser(user, &op.ElementMessage{
-			ElementMessage: &pb.ElementMessage{
-				Type:    pb.ElementMessageType_CHANGE_CURRENT,
-				Sender:  user.Username,
-				Current: current.Proto(),
-			},
-		}); err != nil {
-			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
-			return
-		}
-
-		m := &pb.ElementMessage{
-			Type:   pb.ElementMessageType_CHANGE_CURRENT,
-			Sender: user.Username,
-		}
-		if err := room.Broadcast(&op.ElementMessage{
-			ElementMessage: m,
-			BeforeSendFunc: func(sendTo *op.User) error {
-				current, err := genCurrent(ctx, room.Current(), sendTo.ID)
-				if err != nil {
-					return err
-				}
-				current.UpdateSeek()
-				m.Current = current.Proto()
-				return nil
-			},
-		}, op.WithIgnoreId(user.ID)); err != nil {
-			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
-			return
-		}
 	}
 
 	ctx.Status(http.StatusNoContent)

@@ -141,7 +141,7 @@ func genRoomListResp(scopes ...func(db *gorm.DB) *gorm.DB) []*model.RoomListResp
 		resp[i] = &model.RoomListResp{
 			RoomId:       r.ID,
 			RoomName:     r.Name,
-			PeopleNum:    op.ClientNum(r.ID),
+			PeopleNum:    op.PeopleNum(r.ID),
 			NeedPassword: len(r.HashedPassword) != 0,
 			CreatorID:    r.CreatorID,
 			Creator:      op.GetUserName(r.CreatorID),
@@ -160,7 +160,7 @@ func CheckRoom(ctx *gin.Context) {
 	}
 
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
-		"peopleNum":    op.ClientNum(r.ID),
+		"peopleNum":    op.PeopleNum(r.ID),
 		"needPassword": r.NeedPassword(),
 		"creator":      op.GetUserName(r.CreatorID),
 	}))

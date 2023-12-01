@@ -19,6 +19,7 @@ import (
 // mv gitee {data-dir}/plugins/oauth2/xiaomi
 //
 // 小米开放平台：https://dev.mi.com/
+// 小米OAuth2文档地址：https://dev.mi.com/distribute/doc/details?pId=1708
 //
 // config.yaml:
 //
@@ -34,8 +35,8 @@ func newXiaomiProvider() provider.ProviderInterface {
 		config: oauth2.Config{
 			Scopes: []string{"profile"},
 			Endpoint: oauth2.Endpoint{
-				AuthURL:  "https://account.xiaomi.com/oauth2/authorize", // 认证端点
-				TokenURL: "https://account.xiaomi.com/oauth2/token",     //Token 端点
+				AuthURL:  "https://account.xiaomi.com/oauth2/authorize", // 授权码（authorization_code）获取接口
+				TokenURL: "https://account.xiaomi.com/oauth2/token",     // 获取访问令牌（access_token）
 			},
 		},
 	}
@@ -86,8 +87,8 @@ func (p *XiaomiProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*pr
 }
 
 type XiaomiUserInfo struct {
-	UnionId string `json:"unionId"`    // 飞书UserID （企业内唯一ID）
-	Name    string `json:"miliaoNick"` // 飞书姓名（会作为SyncTV登录用户名）
+	UnionId string `json:"unionId"`    // 小米用户在您的所有 APP 范围内唯一标识
+	Name    string `json:"miliaoNick"` // 小米账号昵称
 }
 
 func main() {

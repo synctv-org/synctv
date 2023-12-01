@@ -74,13 +74,12 @@ func (h *Hub) serve() error {
 			h.clients.Range(func(id string, clients *clients) bool {
 				clients.lock.RLock()
 				defer clients.lock.RUnlock()
-
 				for c := range clients.m {
 					if utils.In(message.ignoreId, c.u.ID) {
-						return true
+						continue
 					}
 					if utils.In(message.ignoreClient, c) {
-						return true
+						continue
 					}
 					if err := c.Send(message.data); err != nil {
 						c.Close()

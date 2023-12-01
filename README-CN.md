@@ -81,9 +81,9 @@ synctv server
 synctv server --data-dir ./
 ```
 
-每次启动会检测是否有root权限的用户，如果没有则会初始化一个`root`用户，密码为`root`，请及时修改用户名密码。
-
-用户注册功能需要启用任意 `OAuth2` 服务，如 `Google`、`Github` 等等，具体配置请参考[文档](https://synctv.wiki/#/zh-cn/oauth2)。
+> 每次启动会检测是否有root权限的用户，如果没有则会初始化一个`root`用户，密码为`root`，请及时修改用户名密码。
+> 
+> 用户注册功能需要启用任意 `OAuth2` 服务，如 `Google`、`Github` 等等，具体配置请参考[文档](https://synctv.wiki/#/zh-cn/oauth2)。
 
 # 文档
 https://synctv.wiki

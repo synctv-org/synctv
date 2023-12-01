@@ -9,7 +9,6 @@ import (
 	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/utils"
-	"github.com/zijiren233/gencontainer/rwmap"
 	rtmps "github.com/zijiren233/livelib/server"
 	"github.com/zijiren233/stream"
 	"golang.org/x/crypto/bcrypt"
@@ -42,13 +41,6 @@ func (r *Room) Broadcast(data Message, conf ...BroadcastConf) error {
 		return nil
 	}
 	return r.hub.Broadcast(data, conf...)
-}
-
-func (r *Room) LoadClient(userID string) (*rwmap.RWMap[*Client, struct{}], bool) {
-	if r.hub == nil {
-		return nil, false
-	}
-	return r.hub.LoadClient(userID)
 }
 
 func (r *Room) SendToUser(user *User, data Message) error {

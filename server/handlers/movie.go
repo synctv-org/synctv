@@ -135,9 +135,7 @@ func CurrentMovie(ctx *gin.Context) {
 
 	current.UpdateSeek()
 
-	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
-		"current": genCurrentResp(current),
-	}))
+	ctx.JSON(http.StatusOK, model.NewApiDataResp(genCurrentResp(current)))
 }
 
 func Movies(ctx *gin.Context) {

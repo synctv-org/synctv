@@ -114,10 +114,10 @@ func LoadOrInitRoomByID(id string) (*Room, error) {
 	return LoadOrInitRoom(room)
 }
 
-func ClientNum(roomID string) int64 {
+func PeopleNum(roomID string) int64 {
 	r, loaded := roomCache.Load(roomID)
 	if loaded {
-		return r.Value().ClientNum()
+		return r.Value().PeopleNum()
 	}
 	return 0
 }
@@ -189,7 +189,7 @@ func GetRoomHeapInCacheWithoutHidden() []*RoomInfo {
 			rooms.Push(&RoomInfo{
 				RoomId:       v.ID,
 				RoomName:     v.Name,
-				PeopleNum:    v.ClientNum(),
+				PeopleNum:    v.PeopleNum(),
 				NeedPassword: v.NeedPassword(),
 				Creator:      GetUserName(v.CreatorID),
 				CreatedAt:    v.CreatedAt.UnixMilli(),

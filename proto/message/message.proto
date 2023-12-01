@@ -19,47 +19,10 @@ enum ElementMessageType {
   CHANGE_PEOPLE = 12;
 }
 
-message BaseMovieInfo {
-  string url = 1;
-  string name = 2;
-  bool live = 3;
-  bool proxy = 4;
-  bool rtmpSource = 5;
-  string type = 6;
-  map<string, string> headers = 7;
-  VendorInfo vendorInfo = 8;
-}
-
-message MovieInfo {
-  string id = 1;
-  BaseMovieInfo base = 2;
-  int64 createdAt = 3;
-  string creator = 4;
-}
-
 message Status {
   double seek = 1;
   double rate = 2;
   bool playing = 3;
-}
-
-message Current {
-  MovieInfo movie = 1;
-  Status status = 2;
-}
-
-message VendorInfo {
-  string vendor = 1;
-  bool shared = 2;
-  optional BilibiliVendorInfo bilibili = 3;
-}
-
-message BilibiliVendorInfo {
-  string bvid = 1;
-  uint64 cid = 2;
-  uint64 epid = 3;
-  uint64 quality = 4;
-  string vendorName = 5;
 }
 
 message ElementMessage {
@@ -68,7 +31,6 @@ message ElementMessage {
   string message = 3;
   double rate = 4;
   double seek = 5;
-  optional Current current = 6;
-  int64 peopleNum = 7;
-  int64 time = 8;
+  int64 peopleNum = 6;
+  int64 time = 7;
 }

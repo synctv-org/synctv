@@ -12,12 +12,10 @@ var (
 	RoomMustNeedPwd      = NewBoolSetting("room_must_need_pwd", false, model.SettingGroupRoom)
 	CreateRoomNeedReview = NewBoolSetting("create_room_need_review", false, model.SettingGroupRoom)
 	RoomTTL              = NewInt64Setting("room_ttl", int64(time.Hour*48), model.SettingGroupRoom)
-	UserMaxRoomCount     = NewInt64Setting("user_max_room_count", 3, model.SettingGroupRoom)
 )
 
 var (
-	DisableUserSignup = NewBoolSetting("disable_user_signup", false, model.SettingGroupUser)
-	SignupNeedReview  = NewBoolSetting("signup_need_review", false, model.SettingGroupUser)
+	UserMaxRoomCount = NewInt64Setting("user_max_room_count", 3, model.SettingGroupUser)
 )
 
 var (

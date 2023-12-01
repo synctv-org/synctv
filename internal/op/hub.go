@@ -14,9 +14,14 @@ import (
 	"github.com/zijiren233/gencontainer/rwmap"
 )
 
+type clients struct {
+	lock sync.RWMutex
+	m    map[*Client]struct{}
+}
+
 type Hub struct {
 	id        string
-	clients   rwmap.RWMap[string, *Client]
+	clients   rwmap.RWMap[string, *clients]
 	broadcast chan *broadcastMessage
 	exit      chan struct{}
 	closed    uint32
@@ -26,29 +31,22 @@ type Hub struct {
 }
 
 type broadcastMessage struct {
-	data       Message
-	sender     string
-	sendToSelf bool
-	ignoreId   []string
+	data         Message
+	ignoreClient []*Client
+	ignoreId     []string
 }
 
 type BroadcastConf func(*broadcastMessage)
 
-func WithSender(sender string) BroadcastConf {
+func WithIgnoreClient(cli ...*Client) BroadcastConf {
 	return func(bm *broadcastMessage) {
-		bm.sender = sender
-	}
-}
-
-func WithSendToSelf() BroadcastConf {
-	return func(bm *broadcastMessage) {
-		bm.sendToSelf = true
+		bm.ignoreClient = cli
 	}
 }
 
 func WithIgnoreId(id ...string) BroadcastConf {
 	return func(bm *broadcastMessage) {
-		bm.ignoreId = append(bm.ignoreId, id...)
+		bm.ignoreId = id
 	}
 }
 
@@ -73,19 +71,21 @@ func (h *Hub) serve() error {
 		select {
 		case message := <-h.broadcast:
 			h.devMessage(message.data)
-			h.clients.Range(func(_ string, cli *Client) bool {
-				if !message.sendToSelf {
-					if cli.u.Username == message.sender {
-						return true
+			h.clients.Range(func(id string, clients *clients) bool {
+				clients.lock.RLock()
+				defer clients.lock.RUnlock()
+				for c := range clients.m {
+					if utils.In(message.ignoreId, c.u.ID) {
+						continue
+					}
+					if utils.In(message.ignoreClient, c) {
+						continue
+					}
+					if err := c.Send(message.data); err != nil {
+						c.Close()
 					}
 				}
-				if utils.In(message.ignoreId, cli.u.Username) {
-					return true
-				}
-				if err := cli.Send(message.data); err != nil {
-					log.Debugf("hub: %s, write to client err: %s\nmessage: %+v", h.id, err, message)
-					cli.Close()
-				}
+
 				return true
 			})
 		case <-h.exit:
@@ -98,17 +98,18 @@ func (h *Hub) serve() error {
 func (h *Hub) ping() {
 	ticker := time.NewTicker(time.Second * 5)
 	defer ticker.Stop()
-	var pre int64 = 0
+	var (
+		pre     int64 = 0
+		current int64
+	)
 	for {
 		select {
 		case <-ticker.C:
-			current := h.ClientNum()
+			current = h.PeopleNum()
 			if current != pre {
 				if err := h.Broadcast(&ElementMessage{
-					ElementMessage: &pb.ElementMessage{
-						Type:      pb.ElementMessageType_CHANGE_PEOPLE,
-						PeopleNum: current,
-					},
+					Type:      pb.ElementMessageType_CHANGE_PEOPLE,
+					PeopleNum: current,
 				}); err != nil {
 					continue
 				}
@@ -126,7 +127,7 @@ func (h *Hub) ping() {
 
 func (h *Hub) devMessage(msg Message) {
 	switch msg.MessageType() {
-	case websocket.TextMessage:
+	case websocket.BinaryMessage:
 		log.Debugf("hub: %s, broadcast:\nmessage: %+v", h.id, msg.String())
 	}
 }
@@ -144,9 +145,12 @@ func (h *Hub) Close() error {
 		return ErrAlreadyClosed
 	}
 	close(h.exit)
-	h.clients.Range(func(_ string, client *Client) bool {
-		h.clients.Delete(client.u.ID)
-		client.Close()
+	h.clients.Range(func(id string, clients *clients) bool {
+		h.clients.Delete(id)
+		for c := range clients.m {
+			delete(clients.m, c)
+			c.Close()
+		}
 		return true
 	})
 	h.wg.Wait()
@@ -173,40 +177,54 @@ func (h *Hub) Broadcast(data Message, conf ...BroadcastConf) error {
 	}
 }
 
-func (h *Hub) RegClient(cli *Client) (*Client, error) {
-	if h.Closed() {
-		return nil, ErrAlreadyClosed
-	}
-	err := h.Start()
-	if err != nil {
-		return nil, err
-	}
-	c, loaded := h.clients.LoadOrStore(cli.u.ID, cli)
-	if loaded {
-		return nil, errors.New("client already registered")
-	}
-	return c, nil
-}
-
-func (h *Hub) UnRegClient(user *User) error {
+func (h *Hub) RegClient(cli *Client) error {
 	if h.Closed() {
 		return ErrAlreadyClosed
 	}
-	if user == nil {
+	err := h.Start()
+	if err != nil {
+		return err
+	}
+	c, _ := h.clients.LoadOrStore(cli.u.ID, &clients{})
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	if c.m == nil {
+		c.m = make(map[*Client]struct{})
+	} else if _, ok := c.m[cli]; ok {
+		return errors.New("client already exists")
+	}
+	c.m[cli] = struct{}{}
+	return nil
+}
+
+func (h *Hub) UnRegClient(cli *Client) error {
+	if h.Closed() {
+		return ErrAlreadyClosed
+	}
+	if cli == nil {
 		return errors.New("user is nil")
 	}
-	_, loaded := h.clients.LoadAndDelete(user.ID)
+	c, loaded := h.clients.Load(cli.u.ID)
 	if !loaded {
 		return errors.New("client not found")
+	}
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	if _, ok := c.m[cli]; !ok {
+		return errors.New("client not found")
+	}
+	delete(c.m, cli)
+	if len(c.m) == 0 {
+		h.clients.CompareAndDelete(cli.u.ID, c)
 	}
 	return nil
 }
 
-func (h *Hub) ClientNum() int64 {
+func (h *Hub) PeopleNum() int64 {
 	return h.clients.Len()
 }
 
-func (h *Hub) SendToUser(userID string, data Message) error {
+func (h *Hub) SendToUser(userID string, data Message) (err error) {
 	if h.Closed() {
 		return ErrAlreadyClosed
 	}
@@ -214,5 +232,12 @@ func (h *Hub) SendToUser(userID string, data Message) error {
 	if !ok {
 		return nil
 	}
-	return cli.Send(data)
+	cli.lock.RLock()
+	defer cli.lock.RUnlock()
+	for c := range cli.m {
+		if err = c.Send(data); err != nil {
+			c.Close()
+		}
+	}
+	return
 }

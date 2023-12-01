@@ -3,16 +3,17 @@ package auth
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/synctv-org/synctv/internal/bootstrap"
 	"github.com/synctv-org/synctv/internal/db"
 	dbModel "github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/internal/provider"
 	"github.com/synctv-org/synctv/internal/provider/providers"
-	"github.com/synctv-org/synctv/internal/settings"
 	"github.com/synctv-org/synctv/server/middlewares"
 	"github.com/synctv-org/synctv/server/model"
 	"github.com/synctv-org/synctv/utils"
@@ -138,13 +139,18 @@ func login(ctx context.Context, state, code string, pi provider.ProviderInterfac
 		return nil, err
 	}
 
+	pgs, loaded := bootstrap.ProviderGroupSettings[dbModel.SettingGroup(fmt.Sprintf("%s_%s", dbModel.SettingGroupOauth2, pi.Provider()))]
+	if !loaded {
+		return nil, errors.New("invalid oauth2 provider")
+	}
+
 	var user *op.User
 	if meta.Value().BindUserId != "" {
 		user, err = op.LoadOrInitUserByID(meta.Value().BindUserId)
-	} else if settings.DisableUserSignup.Get() {
+	} else if pgs.DisableUserSignup.Get() {
 		user, err = op.GetUserByProvider(pi.Provider(), ui.ProviderUserID)
 	} else {
-		if settings.SignupNeedReview.Get() {
+		if pgs.SignupNeedReview.Get() {
 			user, err = op.CreateOrLoadUserWithProvider(ui.Username, utils.RandString(16), pi.Provider(), ui.ProviderUserID, db.WithRole(dbModel.RolePending))
 		} else {
 			user, err = op.CreateOrLoadUserWithProvider(ui.Username, utils.RandString(16), pi.Provider(), ui.ProviderUserID)

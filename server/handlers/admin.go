@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"net/http"
+	"reflect"
 
 	"github.com/gin-gonic/gin"
 	"github.com/synctv-org/synctv/internal/bootstrap"
@@ -40,11 +41,18 @@ func AdminSettings(ctx *gin.Context) {
 	case "oauth2":
 		resp := make(model.AdminSettingsResp, len(bootstrap.ProviderGroupSettings))
 		for k, v := range bootstrap.ProviderGroupSettings {
-			if resp[k] == nil {
-				resp[k] = make(gin.H, len(v))
-			}
-			for _, s2 := range v {
-				resp[k][s2.Name()] = s2.Interface()
+			reflectV := reflect.ValueOf(*v)
+			for i := 0; i < reflectV.NumField(); i++ {
+				f := reflectV.Field(i)
+				if resp[k] == nil {
+					resp[k] = make(gin.H, 0)
+				}
+				s, ok := f.Interface().(settings.Setting)
+				if !ok {
+					ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorStringResp("type error"))
+					return
+				}
+				resp[k][s.Name()] = s.Interface()
 			}
 		}
 

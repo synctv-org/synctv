@@ -16,11 +16,6 @@ var (
 )
 
 var (
-	DisableUserSignup = NewBoolSetting("disable_user_signup", false, model.SettingGroupUser)
-	SignupNeedReview  = NewBoolSetting("signup_need_review", false, model.SettingGroupUser)
-)
-
-var (
 	MovieProxy        = NewBoolSetting("movie_proxy", true, model.SettingGroupProxy)
 	LiveProxy         = NewBoolSetting("live_proxy", true, model.SettingGroupProxy)
 	AllowProxyToLocal = NewBoolSetting("allow_proxy_to_local", false, model.SettingGroupProxy)

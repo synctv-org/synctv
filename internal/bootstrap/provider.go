@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/hashicorp/go-hclog"
 	log "github.com/sirupsen/logrus"
@@ -15,11 +16,36 @@ import (
 	"github.com/synctv-org/synctv/internal/provider/plugins"
 	"github.com/synctv-org/synctv/internal/provider/providers"
 	"github.com/synctv-org/synctv/internal/settings"
-	serverAuth "github.com/synctv-org/synctv/server/oauth2"
 	"github.com/synctv-org/synctv/utils"
+	"github.com/zijiren233/gencontainer/refreshcache"
+	"github.com/zijiren233/gencontainer/vec"
 )
 
-var ProviderGroupSettings = make(map[model.SettingGroup][]settings.Setting)
+var ProviderGroupSettings = make(map[model.SettingGroup]*ProviderGroupSetting)
+
+type ProviderGroupSetting struct {
+	Enabled           settings.BoolSetting
+	ClientID          settings.StringSetting
+	ClientSecret      settings.StringSetting
+	RedirectURL       settings.StringSetting
+	DisableUserSignup settings.BoolSetting
+	SignupNeedReview  settings.BoolSetting
+}
+
+var (
+	Oauth2EnabledCache = refreshcache.NewRefreshCache[[]provider.OAuth2Provider](func() ([]provider.OAuth2Provider, error) {
+		a := vec.New[provider.OAuth2Provider](vec.WithCmpEqual[provider.OAuth2Provider](func(v1, v2 provider.OAuth2Provider) bool {
+			return v1 == v2
+		}), vec.WithCmpLess[provider.OAuth2Provider](func(v1, v2 provider.OAuth2Provider) bool {
+			return v1 < v2
+		}))
+		providers.EnabledProvider().Range(func(key provider.OAuth2Provider, value provider.ProviderInterface) bool {
+			a.Push(key)
+			return true
+		})
+		return a.SortStable().Slice(), nil
+	}, time.Hour)
+)
 
 func InitProvider(ctx context.Context) (err error) {
 	logOur := log.StandardLogger().Writer()
@@ -54,9 +80,11 @@ func InitProvider(ctx context.Context) (err error) {
 	for op, pi := range providers.AllProvider() {
 		op, pi := op, pi
 		group := model.SettingGroup(fmt.Sprintf("%s_%s", model.SettingGroupOauth2, op))
+		groupSettings := &ProviderGroupSetting{}
+		ProviderGroupSettings[group] = groupSettings
 
-		e := settings.NewBoolSetting(fmt.Sprintf("%s_enabled", group), false, group, settings.WithBeforeInitBool(func(bs settings.BoolSetting, b bool) error {
-			defer serverAuth.Oauth2EnabledCache.Refresh()
+		groupSettings.Enabled = settings.NewBoolSetting(fmt.Sprintf("%s_enabled", group), false, group, settings.WithBeforeInitBool(func(bs settings.BoolSetting, b bool) error {
+			defer Oauth2EnabledCache.Refresh()
 			if b {
 				return providers.EnableProvider(op)
 			} else {
@@ -64,7 +92,7 @@ func InitProvider(ctx context.Context) (err error) {
 				return nil
 			}
 		}), settings.WithBeforeSetBool(func(bs settings.BoolSetting, b bool) error {
-			defer serverAuth.Oauth2EnabledCache.Refresh()
+			defer Oauth2EnabledCache.Refresh()
 			if b {
 				return providers.EnableProvider(op)
 			} else {
@@ -72,11 +100,10 @@ func InitProvider(ctx context.Context) (err error) {
 				return nil
 			}
 		}))
-		ProviderGroupSettings[group] = []settings.Setting{e}
 
 		opt := provider.Oauth2Option{}
 
-		cid := settings.NewStringSetting(fmt.Sprintf("%s_client_id", group), opt.ClientID, group, settings.WithBeforeInitString(func(ss settings.StringSetting, s string) error {
+		groupSettings.ClientID = settings.NewStringSetting(fmt.Sprintf("%s_client_id", group), opt.ClientID, group, settings.WithBeforeInitString(func(ss settings.StringSetting, s string) error {
 			opt.ClientID = s
 			pi.Init(opt)
 			return nil
@@ -85,9 +112,8 @@ func InitProvider(ctx context.Context) (err error) {
 			pi.Init(opt)
 			return nil
 		}))
-		ProviderGroupSettings[group] = append(ProviderGroupSettings[group], cid)
 
-		cs := settings.NewStringSetting(fmt.Sprintf("%s_client_secret", group), opt.ClientSecret, group, settings.WithBeforeInitString(func(ss settings.StringSetting, s string) error {
+		groupSettings.ClientSecret = settings.NewStringSetting(fmt.Sprintf("%s_client_secret", group), opt.ClientSecret, group, settings.WithBeforeInitString(func(ss settings.StringSetting, s string) error {
 			opt.ClientSecret = s
 			pi.Init(opt)
 			return nil
@@ -96,9 +122,8 @@ func InitProvider(ctx context.Context) (err error) {
 			pi.Init(opt)
 			return nil
 		}))
-		ProviderGroupSettings[group] = append(ProviderGroupSettings[group], cs)
 
-		ru := settings.NewStringSetting(fmt.Sprintf("%s_redirect_url", group), opt.RedirectURL, group, settings.WithBeforeInitString(func(ss settings.StringSetting, s string) error {
+		groupSettings.RedirectURL = settings.NewStringSetting(fmt.Sprintf("%s_redirect_url", group), opt.RedirectURL, group, settings.WithBeforeInitString(func(ss settings.StringSetting, s string) error {
 			opt.RedirectURL = s
 			pi.Init(opt)
 			return nil
@@ -107,7 +132,10 @@ func InitProvider(ctx context.Context) (err error) {
 			pi.Init(opt)
 			return nil
 		}))
-		ProviderGroupSettings[group] = append(ProviderGroupSettings[group], ru)
+
+		groupSettings.DisableUserSignup = settings.NewBoolSetting(fmt.Sprintf("%s_disable_user_signup", group), false, group)
+
+		groupSettings.SignupNeedReview = settings.NewBoolSetting(fmt.Sprintf("%s_signup_need_review", group), false, group)
 	}
 	return nil
 }

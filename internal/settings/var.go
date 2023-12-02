@@ -15,7 +15,9 @@ var (
 )
 
 var (
-	UserMaxRoomCount = NewInt64Setting("user_max_room_count", 3, model.SettingGroupUser)
+	DisableUserSignup = NewBoolSetting("disable_user_signup", false, model.SettingGroupUser)
+	SignupNeedReview  = NewBoolSetting("signup_need_review", false, model.SettingGroupUser)
+	UserMaxRoomCount  = NewInt64Setting("user_max_room_count", 3, model.SettingGroupUser)
 )
 
 var (

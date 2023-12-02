@@ -344,5 +344,5 @@ func GetUrlExtension(u string) string {
 	if err != nil {
 		return ""
 	}
-	return filepath.Ext(p.Path)
+	return strings.TrimLeft(filepath.Ext(p.Path), ".")
 }

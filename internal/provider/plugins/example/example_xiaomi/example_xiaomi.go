@@ -3,12 +3,12 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"net/http"
-
+	"fmt"
 	plugin "github.com/hashicorp/go-plugin"
 	"github.com/synctv-org/synctv/internal/provider"
 	"github.com/synctv-org/synctv/internal/provider/plugins"
 	"golang.org/x/oauth2"
+	"net/http"
 )
 
 // Linux/Mac/Windows:
@@ -66,7 +66,7 @@ func (p *XiaomiProvider) RefreshToken(ctx context.Context, tk string) (*oauth2.T
 
 func (p *XiaomiProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*provider.UserInfo, error) {
 	client := p.config.Client(ctx, tk)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://open.account.xiaomi.com/user/profile", nil) // 身份端点
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("https://open.account.xiaomi.com/user/profile?clientId=%s&token=%s", p.config.ClientID, tk.AccessToken), nil) // 身份端点
 	if err != nil {
 		return nil, err
 	}
@@ -75,15 +75,20 @@ func (p *XiaomiProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*pr
 		return nil, err
 	}
 	defer resp.Body.Close()
-	ui := XiaomiUserInfo{}
+	ui := ResponseData{}
 	err = json.NewDecoder(resp.Body).Decode(&ui)
 	if err != nil {
 		return nil, err
 	}
+	fmt.Printf("ResponseData: %+v\n", ui)
 	return &provider.UserInfo{
-		Username:       ui.Name,
-		ProviderUserID: ui.UnionId,
+		Username:       ui.Data.Name,
+		ProviderUserID: ui.Data.UnionId,
 	}, nil
+}
+
+type ResponseData struct {
+	Data XiaomiUserInfo `json:"data"`
 }
 
 type XiaomiUserInfo struct {

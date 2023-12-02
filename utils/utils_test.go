@@ -59,6 +59,10 @@ func FuzzCompVersion(f *testing.F) {
 	f.Add("v1.0.0", "v1.0.1")
 	f.Add("v0.2.9", "v1.5.2")
 	f.Add("v0.3.0-beta-1", "v0.3.0-alpha-2")
+	f.Add("v0.3.1-beta.1", "v0.3.1-alpha.2")
+	f.Add("v0.2.9", "v0.3.1-alpha.2")
+	f.Add("v0.2.9", "v0.3.1-alpha-2")
+	f.Add("v0.3.1", "v0.3.1-alpha.2")
 	f.Fuzz(func(t *testing.T, a, b string) {
 		t.Logf("a: %s, b: %s", a, b)
 		_, err := utils.CompVersion(a, b)

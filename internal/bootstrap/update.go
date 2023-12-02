@@ -51,10 +51,18 @@ func InitCheckUpdate(ctx context.Context) error {
 		t := time.NewTicker(time.Hour * 6)
 		defer t.Stop()
 		for range t.C {
-			need, latest, url, err = check(ctx, v)
-			if err != nil {
-				log.Errorf("check update error: %v", err)
-			}
+			func() {
+				defer func() {
+					if err := recover(); err != nil {
+						log.Errorf("check update panic: %v", err)
+					}
+				}()
+				need, latest, url, err = check(ctx, v)
+				if err != nil {
+					log.Errorf("check update error: %v", err)
+				}
+			}()
+
 		}
 	}()
 

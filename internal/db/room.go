@@ -58,25 +58,23 @@ func CreateRoom(name, password string, maxCount int64, conf ...CreateRoomConfig)
 		}
 	}
 
-	tx := db.Begin()
-	if maxCount != 0 {
-		var count int64
-		tx.Model(&model.Room{}).Where("creator_id = ?", r.CreatorID).Count(&count)
-		if count >= maxCount {
-			tx.Rollback()
-			return nil, errors.New("room count is over limit")
+	return r, Transactional(func(tx *gorm.DB) error {
+		if maxCount != 0 {
+			var count int64
+			tx.Model(&model.Room{}).Where("creator_id = ?", r.CreatorID).Count(&count)
+			if count >= maxCount {
+				return errors.New("room count is over limit")
+			}
 		}
-	}
-	err := tx.Create(r).Error
-	if err != nil {
-		tx.Rollback()
-		if errors.Is(err, gorm.ErrDuplicatedKey) {
-			return r, errors.New("room already exists")
+		err := tx.Create(r).Error
+		if err != nil {
+			if errors.Is(err, gorm.ErrDuplicatedKey) {
+				return errors.New("room already exists")
+			}
+			return err
 		}
-		return r, err
-	}
-	tx.Commit()
-	return r, nil
+		return nil
+	})
 }
 
 func GetRoomByID(id string) (*model.Room, error) {
@@ -85,50 +83,17 @@ func GetRoomByID(id string) (*model.Room, error) {
 	}
 	r := &model.Room{}
 	err := db.Where("id = ?", id).First(r).Error
-	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
-		return r, errors.New("room not found")
-	}
-	return r, err
+	return r, HandleNotFound(err, "room")
 }
 
 func SaveRoomSettings(roomID string, setting model.RoomSettings) error {
 	err := db.Model(&model.Room{}).Where("id = ?", roomID).Update("setting", setting).Error
-	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
-		return errors.New("room not found")
-	}
-	return err
+	return HandleNotFound(err, "room")
 }
 
 func DeleteRoomByID(roomID string) error {
 	err := db.Unscoped().Where("id = ?", roomID).Delete(&model.Room{}).Error
-	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
-		return errors.New("room not found")
-	}
-	return err
-}
-
-func HasRoom(roomID string) (bool, error) {
-	r := &model.Room{}
-	err := db.Where("id = ?", roomID).First(r).Error
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			err = nil
-		}
-		return false, err
-	}
-	return true, nil
-}
-
-func HasRoomByName(name string) (bool, error) {
-	r := &model.Room{}
-	err := db.Where("name = ?", name).First(r).Error
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			err = nil
-		}
-		return false, err
-	}
-	return true, nil
+	return HandleNotFound(err, "room")
 }
 
 func SetRoomPassword(roomID, password string) error {
@@ -145,10 +110,7 @@ func SetRoomPassword(roomID, password string) error {
 
 func SetRoomHashedPassword(roomID string, hashedPassword []byte) error {
 	err := db.Model(&model.Room{}).Where("id = ?", roomID).Update("hashed_password", hashedPassword).Error
-	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
-		return errors.New("room not found")
-	}
-	return err
+	return HandleNotFound(err, "room")
 }
 
 func GetAllRooms(scopes ...func(*gorm.DB) *gorm.DB) []*model.Room {
@@ -177,10 +139,7 @@ func GetAllRoomsByUserID(userID string) []*model.Room {
 
 func SetRoomStatus(roomID string, status model.RoomStatus) error {
 	err := db.Model(&model.Room{}).Where("id = ?", roomID).Update("status", status).Error
-	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
-		return errors.New("room not found")
-	}
-	return err
+	return HandleNotFound(err, "room")
 }
 
 func SetRoomStatusByCreator(userID string, status model.RoomStatus) error {

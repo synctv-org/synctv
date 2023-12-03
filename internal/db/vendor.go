@@ -1,11 +1,9 @@
 package db
 
 import (
-	"errors"
 	"net/http"
 
 	"github.com/synctv-org/synctv/internal/model"
-	"gorm.io/gorm"
 )
 
 func GetVendorByUserID(userID string) ([]*model.StreamingVendorInfo, error) {
@@ -20,10 +18,7 @@ func GetVendorByUserID(userID string) ([]*model.StreamingVendorInfo, error) {
 func GetVendorByUserIDAndVendor(userID string, vendor model.StreamingVendor) (*model.StreamingVendorInfo, error) {
 	var vendorInfo model.StreamingVendorInfo
 	err := db.Where("user_id = ? AND vendor = ?", userID, vendor).First(&vendorInfo).Error
-	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil, errors.New("vendor not found")
-	}
-	return &vendorInfo, err
+	return &vendorInfo, HandleNotFound(err, "vendor")
 }
 
 type CreateVendorConfig func(*model.StreamingVendorInfo)

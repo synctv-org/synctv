@@ -92,12 +92,8 @@ func In[T comparable](items []T, item T) bool {
 }
 
 func Exists(name string) bool {
-	if _, err := os.Stat(name); err != nil {
-		if os.IsNotExist(err) {
-			return false
-		}
-	}
-	return true
+	_, err := os.Stat(name)
+	return !os.IsNotExist(err)
 }
 
 func WriteYaml(file string, module any) error {

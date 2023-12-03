@@ -30,21 +30,14 @@ type Movie struct {
 }
 
 type BaseCache struct {
-	lock sync.RWMutex
-	url  map[string]*refreshcache.RefreshCache[string]
-	mpd  map[string]*refreshcache.RefreshCache[*MPDCache]
+	lock  sync.RWMutex
+	cache map[string]*refreshcache.RefreshCache[any]
 }
 
 func newBaseCache() *BaseCache {
 	return &BaseCache{
-		url: make(map[string]*refreshcache.RefreshCache[string]),
-		mpd: make(map[string]*refreshcache.RefreshCache[*MPDCache]),
+		cache: make(map[string]*refreshcache.RefreshCache[any]),
 	}
-}
-
-type MPDCache struct {
-	MPDFile string
-	URLs    []string
 }
 
 func (b *BaseCache) Clear() {
@@ -54,13 +47,12 @@ func (b *BaseCache) Clear() {
 }
 
 func (b *BaseCache) clear() {
-	b.mpd = nil
-	maps.Clear(b.url)
+	maps.Clear(b.cache)
 }
 
-func (b *BaseCache) InitOrLoadURLCache(id string, refreshFunc func() (string, error), maxAge time.Duration) (*refreshcache.RefreshCache[string], error) {
+func (b *BaseCache) InitOrLoadCache(id string, refreshFunc func() (any, error), maxAge time.Duration) (*refreshcache.RefreshCache[any], error) {
 	b.lock.RLock()
-	c, loaded := b.url[id]
+	c, loaded := b.cache[id]
 	if loaded {
 		b.lock.RUnlock()
 		return c, nil
@@ -69,33 +61,13 @@ func (b *BaseCache) InitOrLoadURLCache(id string, refreshFunc func() (string, er
 	b.lock.Lock()
 	defer b.lock.Unlock()
 
-	c, loaded = b.url[id]
+	c, loaded = b.cache[id]
 	if loaded {
 		return c, nil
 	}
 
-	c = refreshcache.NewRefreshCache[string](refreshFunc, maxAge)
-	b.url[id] = c
-	return c, nil
-}
-
-func (b *BaseCache) InitOrLoadMPDCache(id string, refreshFunc func() (*MPDCache, error), maxAge time.Duration) (*refreshcache.RefreshCache[*MPDCache], error) {
-	b.lock.RLock()
-	c, loaded := b.mpd[id]
-	if loaded {
-		return c, nil
-	}
-	b.lock.RUnlock()
-	b.lock.Lock()
-	defer b.lock.Unlock()
-
-	c, loaded = b.mpd[id]
-	if loaded {
-		return c, nil
-	}
-
-	c = refreshcache.NewRefreshCache[*MPDCache](refreshFunc, maxAge)
-	b.mpd[id] = c
+	c = refreshcache.NewRefreshCache[any](refreshFunc, maxAge)
+	b.cache[id] = c
 	return c, nil
 }
 

@@ -288,7 +288,7 @@ func WhereRoomUserStatus(status model.RoomUserStatus) func(db *gorm.DB) *gorm.DB
 
 func HandleNotFound(err error, errMsg ...string) error {
 	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
-		return fmt.Errorf("not found: %s", strings.Join(errMsg, " "))
+		return fmt.Errorf("%s not found", strings.Join(errMsg, " "))
 	}
 	return err
 }

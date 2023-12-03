@@ -12,6 +12,11 @@ function Help() {
 }
 
 function Init() {
+    # Check if the user is root or sudo
+    if [ "$EUID" -ne 0 ]; then
+        echo "Please run as root"
+        exit
+    fi
     VERSION="latest"
     InitOS
     InitArch
@@ -112,7 +117,7 @@ function InitDownloadTools() {
 function Download() {
     case "$download_tool" in
     curl)
-        curl -L "$1" -o "$2"
+        curl -L "$1" -o "$2" --progress-bar
         if [ $? -ne 0 ]; then
             echo "download $1 failed"
             exit 1
@@ -178,6 +183,10 @@ function InstallWithVersion() {
 }
 
 function InitLinuxSystemctlService() {
+    if [ -z "$(command -v systemctl)" ]; then
+        echo "systemctl command not found"
+        exit 1
+    fi
     mkdir -p "/opt/synctv"
     if [ ! -d "/etc/systemd/system" ]; then
         echo "/etc/systemd/system not found"
@@ -213,14 +222,6 @@ function InitSystemctlService() {
     case "$OS" in
     linux)
         InitLinuxSystemctlService
-        ;;
-    darwin)
-        echo "darwin not support"
-        exit 1
-        ;;
-    *)
-        echo "OS not supported"
-        exit 1
         ;;
     esac
 }

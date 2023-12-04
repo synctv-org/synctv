@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	plugin "github.com/hashicorp/go-plugin"
 	"github.com/synctv-org/synctv/internal/provider"
 	"github.com/synctv-org/synctv/internal/provider/plugins"
@@ -79,7 +78,6 @@ func (p *AuthingProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*p
 	if err != nil {
 		return nil, err
 	}
-	fmt.Printf("ResponseData: %+v\n", ui)
 	return &provider.UserInfo{
 		Username:       ui.Name,
 		ProviderUserID: ui.UnionId,

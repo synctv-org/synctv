@@ -12,9 +12,9 @@ import (
 )
 
 // Linux/Mac/Windows:
-// CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build ./internal/provider/plugins/example/example_xiaomi/example_xiaomi.go
-// CGO_ENABLED=0 GOOS=dawin GOARCH=amd64 go build ./internal/provider/plugins/example/example_xiaomi/example_xiaomi.go
-// CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build ./internal/provider/plugins/example/example_xiaomi/example_xiaomi.go
+// CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build ./internal/provider/plugins/example/example_xiaomi/example_FeishuSSO.go
+// CGO_ENABLED=0 GOOS=dawin GOARCH=amd64 go build ./internal/provider/plugins/example/example_xiaomi/example_FeishuSSO.go
+// CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build ./internal/provider/plugins/example/example_xiaomi/example_FeishuSSO.go
 //
 // mv gitee {data-dir}/plugins/oauth2/xiaomi
 //
@@ -80,7 +80,6 @@ func (p *XiaomiProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*pr
 	if err != nil {
 		return nil, err
 	}
-	fmt.Printf("ResponseData: %+v\n", ui)
 	return &provider.UserInfo{
 		Username:       ui.Data.Name,
 		ProviderUserID: ui.Data.UnionId,

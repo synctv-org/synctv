@@ -1,6 +1,7 @@
 package vendorAlist
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -16,6 +17,7 @@ import (
 type ListReq struct {
 	Path     string `json:"path"`
 	Password string `json:"password"`
+	Refresh  bool   `json:"refresh"`
 }
 
 func (r *ListReq) Validate() error {
@@ -44,10 +46,7 @@ func List(ctx *gin.Context) {
 		return
 	}
 
-	if v.Authorization == "" {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("unauthorized"))
-		return
-	}
+	fmt.Printf("v.Authorization: %v\n", v.Authorization)
 
 	var cli = vendor.AlistClient(ctx.Query("backend"))
 
@@ -56,7 +55,7 @@ func List(ctx *gin.Context) {
 		Password: req.Password,
 		Path:     req.Path,
 		Host:     v.Host,
-		Refresh:  true,
+		Refresh:  req.Refresh,
 	})
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))

@@ -282,6 +282,10 @@ func (a *grpcAlist) Login(ctx context.Context, req *alist.LoginReq) (*alist.Logi
 	return a.client.Login(ctx, req)
 }
 
+func (a *grpcAlist) Me(ctx context.Context, req *alist.MeReq) (*alist.MeResp, error) {
+	return a.client.Me(ctx, req)
+}
+
 var _ AlistInterface = (*httpAlist)(nil)
 
 type httpAlist struct {
@@ -308,4 +312,8 @@ func (a *httpAlist) FsOther(ctx context.Context, req *alist.FsOtherReq) (*alist.
 
 func (a *httpAlist) Login(ctx context.Context, req *alist.LoginReq) (*alist.LoginResp, error) {
 	return a.client.Login(ctx, req)
+}
+
+func (a *httpAlist) Me(ctx context.Context, req *alist.MeReq) (*alist.MeResp, error) {
+	return a.client.Me(ctx, req)
 }

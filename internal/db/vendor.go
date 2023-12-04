@@ -1,9 +1,11 @@
 package db
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/synctv-org/synctv/internal/model"
+	"gorm.io/gorm"
 )
 
 func GetVendorByUserID(userID string) ([]*model.StreamingVendorInfo, error) {
@@ -62,34 +64,24 @@ func FirstOrCreateVendorByUserIDAndVendor(userID string, vendor model.StreamingV
 	return &vendorInfo, err
 }
 
-func AssignFirstOrCreateVendorByUserIDAndVendor(userID string, vendor model.StreamingVendor, conf ...CreateVendorConfig) (*model.StreamingVendorInfo, error) {
-	var vendorInfo model.StreamingVendorInfo
-	v := &model.StreamingVendorInfo{
+func CreateOrSaveVendorByUserIDAndVendor(userID string, vendor model.StreamingVendor, conf ...CreateVendorConfig) (*model.StreamingVendorInfo, error) {
+	vendorInfo := model.StreamingVendorInfo{
 		UserID: userID,
 		Vendor: vendor,
 	}
-	for _, c := range conf {
-		c(v)
-	}
-	err := db.Where("user_id = ? AND vendor = ?", userID, vendor).Assign(
-		v,
-	).FirstOrCreate(&vendorInfo).Error
-	return &vendorInfo, err
-}
-
-func FirstOrInitVendorByUserIDAndVendor(userID string, vendor model.StreamingVendor, conf ...CreateVendorConfig) (*model.StreamingVendorInfo, error) {
-	var vendorInfo model.StreamingVendorInfo
-	v := &model.StreamingVendorInfo{
-		UserID: userID,
-		Vendor: vendor,
-	}
-	for _, c := range conf {
-		c(v)
-	}
-	err := db.Where("user_id = ? AND vendor = ?", userID, vendor).Attrs(
-		v,
-	).FirstOrInit(&vendorInfo).Error
-	return &vendorInfo, err
+	return &vendorInfo, Transactional(func(tx *gorm.DB) error {
+		if errors.Is(tx.First(&vendorInfo).Error, gorm.ErrRecordNotFound) {
+			for _, c := range conf {
+				c(&vendorInfo)
+			}
+			return tx.Create(&vendorInfo).Error
+		} else {
+			for _, c := range conf {
+				c(&vendorInfo)
+			}
+			return tx.Save(&vendorInfo).Error
+		}
+	})
 }
 
 func DeleteVendorByUserIDAndVendor(userID string, vendor model.StreamingVendor) error {

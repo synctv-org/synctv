@@ -40,14 +40,22 @@ func Login(ctx *gin.Context) {
 		return
 	}
 
+	cli := vendor.AlistClient("")
+
 	if req.Username == "" {
-		_, err := db.AssignFirstOrCreateVendorByUserIDAndVendor(user.ID, dbModel.StreamingVendorAlist, db.WithHost(req.Host))
+		_, err := cli.Me(ctx, &alist.MeReq{
+			Host: req.Host,
+		})
+		if err != nil {
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		}
+		_, err = db.CreateOrSaveVendorByUserIDAndVendor(user.ID, dbModel.StreamingVendorAlist, db.WithHost(req.Host), db.WithAuthorization(""))
 		if err != nil {
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 			return
 		}
 	} else {
-		resp, err := vendor.AlistClient("").Login(ctx, &alist.LoginReq{
+		resp, err := cli.Login(ctx, &alist.LoginReq{
 			Host:     req.Host,
 			Username: req.Username,
 			Password: req.Password,
@@ -57,7 +65,7 @@ func Login(ctx *gin.Context) {
 			return
 		}
 
-		_, err = db.AssignFirstOrCreateVendorByUserIDAndVendor(user.ID, dbModel.StreamingVendorAlist, db.WithAuthorization(resp.Token), db.WithHost(req.Host))
+		_, err = db.CreateOrSaveVendorByUserIDAndVendor(user.ID, dbModel.StreamingVendorAlist, db.WithAuthorization(resp.Token), db.WithHost(req.Host))
 		if err != nil {
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 			return

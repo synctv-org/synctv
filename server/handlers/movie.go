@@ -673,7 +673,7 @@ type bilibiliCache struct {
 
 func initBilibiliMPDCache(ctx context.Context, movie dbModel.Movie) func() (any, error) {
 	return func() (any, error) {
-		v, err := db.FirstOrInitVendorByUserIDAndVendor(movie.CreatorID, dbModel.StreamingVendorBilibili)
+		v, err := db.FirstOrCreateVendorByUserIDAndVendor(movie.CreatorID, dbModel.StreamingVendorBilibili)
 		if err != nil {
 			return nil, err
 		}
@@ -761,7 +761,7 @@ func initBilibiliMPDCache(ctx context.Context, movie dbModel.Movie) func() (any,
 
 func initBilibiliShareCache(ctx context.Context, movie dbModel.Movie) func() (any, error) {
 	return func() (any, error) {
-		v, err := db.FirstOrInitVendorByUserIDAndVendor(movie.CreatorID, dbModel.StreamingVendorBilibili)
+		v, err := db.FirstOrCreateVendorByUserIDAndVendor(movie.CreatorID, dbModel.StreamingVendorBilibili)
 		if err != nil {
 			return "", err
 		}

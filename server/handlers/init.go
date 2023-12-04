@@ -204,6 +204,8 @@ func Init(e *gin.Engine) {
 				alist.POST("/login", vendorAlist.Login)
 
 				alist.POST("/list", vendorAlist.List)
+
+				alist.GET("/me", vendorAlist.Me)
 			}
 		}
 	}

@@ -64,33 +64,58 @@ func (u *User) CreateRoom(name, password string, conf ...db.CreateRoomConfig) (*
 	return CreateRoom(name, password, maxCount, append(conf, db.WithCreator(&u.User))...)
 }
 
-func (u *User) NewMovie(movie *model.BaseMovie) *model.Movie {
+func (u *User) NewMovie(movie *model.BaseMovie) (*model.Movie, error) {
+	if movie == nil {
+		return nil, errors.New("movie is nil")
+	}
+	switch movie.VendorInfo.Vendor {
+	case model.StreamingVendorBilibili:
+		if movie.VendorInfo.Bilibili == nil {
+			return nil, errors.New("bilibili payload is nil")
+		}
+	case model.StreamingVendorAlist:
+		if movie.VendorInfo.Alist == nil {
+			return nil, errors.New("alist payload is nil")
+		}
+	}
 	return &model.Movie{
 		Base:      *movie,
 		CreatorID: u.ID,
-	}
+	}, nil
 }
 
 func (u *User) AddMovieToRoom(room *Room, movie *model.BaseMovie) error {
 	if !u.HasRoomPermission(room, model.PermissionCreateMovie) {
 		return model.ErrNoPermission
 	}
-	return room.AddMovie(u.NewMovie(movie))
+	m, err := u.NewMovie(movie)
+	if err != nil {
+		return err
+	}
+	return room.AddMovie(m)
 }
 
-func (u *User) NewMovies(movies []*model.BaseMovie) []*model.Movie {
+func (u *User) NewMovies(movies []*model.BaseMovie) ([]*model.Movie, error) {
 	var ms = make([]*model.Movie, len(movies))
 	for i, m := range movies {
-		ms[i] = u.NewMovie(m)
+		movie, err := u.NewMovie(m)
+		if err != nil {
+			return nil, err
+		}
+		ms[i] = movie
 	}
-	return ms
+	return ms, nil
 }
 
 func (u *User) AddMoviesToRoom(room *Room, movies []*model.BaseMovie) error {
 	if !u.HasRoomPermission(room, model.PermissionCreateMovie) {
 		return model.ErrNoPermission
 	}
-	return room.AddMovies(u.NewMovies(movies))
+	m, err := u.NewMovies(movies)
+	if err != nil {
+		return err
+	}
+	return room.AddMovies(m)
 }
 
 func (u *User) IsRoot() bool {

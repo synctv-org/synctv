@@ -1,7 +1,8 @@
 package conf
 
 type VendorConfig struct {
-	Bilibili map[string]VendorBilibili `yaml:"bilibili" hc:"default use local vendor"`
+	Bilibili map[string]BilibiliConfig `yaml:"bilibili" hc:"default use local vendor"`
+	Alist    map[string]AlistConfig    `yaml:"alist" hc:"default use local vendor"`
 }
 
 func DefaultVendorConfig() VendorConfig {
@@ -25,7 +26,7 @@ type Etcd struct {
 	Password  string   `yaml:"password,omitempty"`
 }
 
-type VendorBilibili struct {
+type VendorBase struct {
 	ServerName   string `yaml:"server_name" hc:"if use tls and grpc, servername must set the cert server name" env:"BILIBILI_SERVER_NAME"`
 	Endpoint     string `yaml:"endpoint" env:"BILIBILI_ENDPOINT"`
 	JwtSecret    string `yaml:"jwt_secret" env:"BILIBILI_JWT_SECRET"`
@@ -36,4 +37,12 @@ type VendorBilibili struct {
 
 	Consul Consul `yaml:"consul,omitempty" hc:"if use consul, must set the endpoint"`
 	Etcd   Etcd   `yaml:"etcd,omitempty" hc:"if use etcd, must set the endpoints"`
+}
+
+type BilibiliConfig struct {
+	VendorBase `yaml:",inline"`
+}
+
+type AlistConfig struct {
+	VendorBase `yaml:",inline"`
 }

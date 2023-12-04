@@ -1,0 +1,67 @@
+package vendorAlist
+
+import (
+	"net/http"
+
+	"github.com/gin-gonic/gin"
+	json "github.com/json-iterator/go"
+	"github.com/synctv-org/synctv/internal/db"
+	dbModel "github.com/synctv-org/synctv/internal/model"
+	"github.com/synctv-org/synctv/internal/op"
+	"github.com/synctv-org/synctv/internal/vendor"
+	"github.com/synctv-org/synctv/server/model"
+	"github.com/synctv-org/vendors/api/alist"
+)
+
+type ListReq struct {
+	Path     string `json:"path"`
+	Password string `json:"password"`
+}
+
+func (r *ListReq) Validate() error {
+	if r.Path == "" {
+		r.Password = "/"
+	}
+	return nil
+}
+
+func (r *ListReq) Decode(ctx *gin.Context) error {
+	return json.NewDecoder(ctx.Request.Body).Decode(r)
+}
+
+func List(ctx *gin.Context) {
+	user := ctx.MustGet("user").(*op.User)
+
+	req := ListReq{}
+	if err := model.Decode(ctx, &req); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	v, err := db.FirstOrCreateVendorByUserIDAndVendor(user.ID, dbModel.StreamingVendorAlist)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
+
+	if v.Authorization == "" {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("unauthorized"))
+		return
+	}
+
+	var cli = vendor.AlistClient(ctx.Query("backend"))
+
+	resp, err := cli.FsList(ctx, &alist.FsListReq{
+		Token:    v.Authorization,
+		Password: req.Password,
+		Path:     req.Path,
+		Host:     v.Host,
+		Refresh:  true,
+	})
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
+
+	ctx.JSON(http.StatusOK, model.NewApiDataResp(resp))
+}

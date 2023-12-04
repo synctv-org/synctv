@@ -1,4 +1,4 @@
-package Vbilibili
+package vendorBilibili
 
 import (
 	"errors"

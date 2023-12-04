@@ -9,6 +9,7 @@ type StreamingVendor string
 
 const (
 	StreamingVendorBilibili StreamingVendor = "bilibili"
+	StreamingVendorAlist    StreamingVendor = "alist"
 )
 
 type StreamingVendorInfo struct {
@@ -17,8 +18,11 @@ type StreamingVendorInfo struct {
 	CreatedAt time.Time
 	UpdatedAt time.Time
 	VendorToken
+	Host string
 }
 
 type VendorToken struct {
-	Cookies []*http.Cookie `gorm:"serializer:fastjson"`
+	Cookies       []*http.Cookie `gorm:"serializer:fastjson"`
+	Authorization string
+	Password      string
 }

@@ -240,6 +240,9 @@ func (movie *Movie) validateVendorMovie() error {
 			movie.Movie.Base.Headers["Referer"] = "https://www.bilibili.com"
 			movie.Movie.Base.Headers["User-Agent"] = utils.UA
 		}
+
+	case model.StreamingVendorAlist:
+
 	default:
 		return fmt.Errorf("vendor not support")
 	}

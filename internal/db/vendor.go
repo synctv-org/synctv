@@ -29,6 +29,24 @@ func WithCookie(cookie []*http.Cookie) CreateVendorConfig {
 	}
 }
 
+func WithAuthorization(authorization string) CreateVendorConfig {
+	return func(vendor *model.StreamingVendorInfo) {
+		vendor.Authorization = authorization
+	}
+}
+
+func WithPassword(password string) CreateVendorConfig {
+	return func(vendor *model.StreamingVendorInfo) {
+		vendor.Password = password
+	}
+}
+
+func WithHost(host string) CreateVendorConfig {
+	return func(vendor *model.StreamingVendorInfo) {
+		vendor.Host = host
+	}
+}
+
 func FirstOrCreateVendorByUserIDAndVendor(userID string, vendor model.StreamingVendor, conf ...CreateVendorConfig) (*model.StreamingVendorInfo, error) {
 	var vendorInfo model.StreamingVendorInfo
 	v := &model.StreamingVendorInfo{

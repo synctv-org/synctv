@@ -38,16 +38,17 @@ type BaseMovie struct {
 
 type VendorInfo struct {
 	Vendor   StreamingVendor     `json:"vendor"`
+	Backend  string              `json:"backend"`
 	Shared   bool                `gorm:"not null;default:false" json:"shared"`
 	Bilibili *BilibiliVendorInfo `gorm:"embedded;embeddedPrefix:bilibili_" json:"bilibili,omitempty"`
+	Alist    *AlistVendorInfo    `gorm:"embedded;embeddedPrefix:alist_" json:"alist,omitempty"`
 }
 
 type BilibiliVendorInfo struct {
-	Bvid       string `json:"bvid,omitempty"`
-	Cid        uint64 `json:"cid,omitempty"`
-	Epid       uint64 `json:"epid,omitempty"`
-	Quality    uint64 `json:"quality,omitempty"`
-	VendorName string `json:"vendorName,omitempty"`
+	Bvid    string `json:"bvid,omitempty"`
+	Cid     uint64 `json:"cid,omitempty"`
+	Epid    uint64 `json:"epid,omitempty"`
+	Quality uint64 `json:"quality,omitempty"`
 }
 
 func (b *BilibiliVendorInfo) Validate() error {
@@ -64,4 +65,9 @@ func (b *BilibiliVendorInfo) Validate() error {
 	}
 
 	return nil
+}
+
+type AlistVendorInfo struct {
+	Path     string `json:"path,omitempty"`
+	Password string `json:"password,omitempty"`
 }

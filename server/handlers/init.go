@@ -2,7 +2,9 @@ package handlers
 
 import (
 	"github.com/gin-gonic/gin"
-	Vbilibili "github.com/synctv-org/synctv/server/handlers/vendors/bilibili"
+	"github.com/synctv-org/synctv/server/handlers/vendors"
+	"github.com/synctv-org/synctv/server/handlers/vendors/vendorAlist"
+	"github.com/synctv-org/synctv/server/handlers/vendors/vendorBilibili"
 	"github.com/synctv-org/synctv/server/middlewares"
 	"github.com/synctv-org/synctv/utils"
 )
@@ -172,28 +174,36 @@ func Init(e *gin.Engine) {
 		{
 			vendor := needAuthUserApi.Group("/vendor")
 
+			vendor.GET("/backends/:vendor", vendors.Backends)
+
 			{
 				bilibili := vendor.Group("/bilibili")
 
 				login := bilibili.Group("/login")
 
-				login.GET("/qr", Vbilibili.NewQRCode)
+				login.GET("/qr", vendorBilibili.NewQRCode)
 
-				login.POST("/qr", Vbilibili.LoginWithQR)
+				login.POST("/qr", vendorBilibili.LoginWithQR)
 
-				login.GET("/captcha", Vbilibili.NewCaptcha)
+				login.GET("/captcha", vendorBilibili.NewCaptcha)
 
-				login.POST("/sms/send", Vbilibili.NewSMS)
+				login.POST("/sms/send", vendorBilibili.NewSMS)
 
-				login.POST("/sms/login", Vbilibili.LoginWithSMS)
+				login.POST("/sms/login", vendorBilibili.LoginWithSMS)
 
-				bilibili.POST("/parse", Vbilibili.Parse)
+				bilibili.POST("/parse", vendorBilibili.Parse)
 
-				bilibili.GET("/vendors", Vbilibili.Vendors)
+				bilibili.GET("/me", vendorBilibili.Me)
 
-				bilibili.GET("/me", Vbilibili.Me)
+				bilibili.POST("/logout", vendorBilibili.Logout)
+			}
 
-				bilibili.POST("/logout", Vbilibili.Logout)
+			{
+				alist := vendor.Group("/alist")
+
+				alist.POST("/login", vendorAlist.Login)
+
+				alist.POST("/list", vendorAlist.List)
 			}
 		}
 	}

@@ -13,9 +13,9 @@ import (
 )
 
 // Linux/Mac/Windows:
-// CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build ./internal/provider/plugins/example/example_Authing/example_Authing.go
-// CGO_ENABLED=0 GOOS=dawin GOARCH=amd64 go build ./internal/provider/plugins/example/example_Authing/example_Authing.go
-// CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build ./internal/provider/plugins/example/example_Authing/example_Authing.go
+// CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build ./internal/provider/plugins/example/example_authing/example_authing.go
+// CGO_ENABLED=0 GOOS=dawin GOARCH=amd64 go build ./internal/provider/plugins/example/example_authing/example_authing.go
+// CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build ./internal/provider/plugins/example/example_authing/example_authing.go
 //
 // mv gitee {data-dir}/plugins/oauth2/Authing
 //
@@ -49,7 +49,7 @@ func (p *AuthingProvider) Init(c provider.Oauth2Option) {
 }
 
 func (p *AuthingProvider) Provider() provider.OAuth2Provider {
-	return "Authing" //插件名
+	return "authing" //插件名
 }
 
 func (p *AuthingProvider) NewAuthURL(state string) string {

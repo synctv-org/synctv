@@ -14,9 +14,9 @@ import (
 )
 
 // Linux/Mac/Windows:
-// CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build ./internal/provider/plugins/example/example_FeishuSSO/example_FeishuSSO.go
-// CGO_ENABLED=0 GOOS=dawin GOARCH=amd64 go build ./internal/provider/plugins/example/example_FeishuSSO/example_FeishuSSO.go
-// CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build ./internal/provider/plugins/example/example_FeishuSSO/example_FeishuSSO.go
+// CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build ./internal/provider/plugins/example/example_feishu-sso/example_feishu-sso.go
+// CGO_ENABLED=0 GOOS=dawin GOARCH=amd64 go build ./internal/provider/plugins/example/example_feishu-sso/example_feishu-sso.go
+// CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build ./internal/provider/plugins/example/example_feishu-sso/example_feishu-sso.go
 //
 // mv gitee {data-dir}/plugins/oauth2/FeishuSSO
 //
@@ -52,7 +52,7 @@ func (p *FeishuSSOProvider) Init(c provider.Oauth2Option) {
 }
 
 func (p *FeishuSSOProvider) Provider() provider.OAuth2Provider {
-	return "FeishuSSO" //插件名
+	return "feishu-sso" //插件名
 }
 
 func (p *FeishuSSOProvider) NewAuthURL(state string) string {

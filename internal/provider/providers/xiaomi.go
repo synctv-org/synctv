@@ -58,7 +58,7 @@ func (p *XiaomiProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*pr
 		return nil, err
 	}
 	defer resp.Body.Close()
-	ui := ResponseData{}
+	ui := xiaomiUserInfo{}
 	err = json.NewDecoder(resp.Body).Decode(&ui)
 	if err != nil {
 		return nil, err
@@ -69,13 +69,11 @@ func (p *XiaomiProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*pr
 	}, nil
 }
 
-type ResponseData struct {
-	Data XiaomiUserInfo `json:"data"`
-}
-
-type XiaomiUserInfo struct {
-	UnionId string `json:"unionId"`
-	Name    string `json:"miliaoNick"`
+type xiaomiUserInfo struct {
+	Data struct {
+		UnionId string `json:"unionId"`
+		Name    string `json:"miliaoNick"`
+	} `json:"data"`
 }
 
 func init() {

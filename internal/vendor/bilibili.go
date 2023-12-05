@@ -13,6 +13,7 @@ import (
 	"github.com/go-kratos/aegis/circuitbreaker/sre"
 	consul "github.com/go-kratos/kratos/contrib/registry/consul/v2"
 	"github.com/go-kratos/kratos/contrib/registry/etcd/v2"
+	"github.com/go-kratos/kratos/v2/middleware"
 	"github.com/go-kratos/kratos/v2/middleware/auth/jwt"
 	kcircuitbreaker "github.com/go-kratos/kratos/v2/middleware/circuitbreaker"
 	"google.golang.org/grpc"
@@ -28,7 +29,9 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
-func BilibiliClient(name string) Bilibili {
+type BilibiliInterface = bilibili.BilibiliHTTPServer
+
+func BilibiliClient(name string) BilibiliInterface {
 	if name != "" {
 		if cli, ok := bilibiliClients[name]; ok {
 			return cli
@@ -37,35 +40,18 @@ func BilibiliClient(name string) Bilibili {
 	return bilibiliDefaultClient
 }
 
-func BilibiliClients() map[string]Bilibili {
+func BilibiliClients() map[string]BilibiliInterface {
 	return bilibiliClients
 }
 
 var (
-	bilibiliClients       map[string]Bilibili
-	bilibiliDefaultClient Bilibili
+	bilibiliClients       map[string]BilibiliInterface
+	bilibiliDefaultClient BilibiliInterface
 )
 
-type Bilibili interface {
-	NewQRCode(ctx context.Context, in *bilibili.Empty) (*bilibili.NewQRCodeResp, error)
-	LoginWithQRCode(ctx context.Context, in *bilibili.LoginWithQRCodeReq) (*bilibili.LoginWithQRCodeResp, error)
-	NewCaptcha(ctx context.Context, in *bilibili.Empty) (*bilibili.NewCaptchaResp, error)
-	NewSMS(ctx context.Context, in *bilibili.NewSMSReq) (*bilibili.NewSMSResp, error)
-	LoginWithSMS(ctx context.Context, in *bilibili.LoginWithSMSReq) (*bilibili.LoginWithSMSResp, error)
-	ParseVideoPage(ctx context.Context, in *bilibili.ParseVideoPageReq) (*bilibili.VideoPageInfo, error)
-	GetVideoURL(ctx context.Context, in *bilibili.GetVideoURLReq) (*bilibili.VideoURL, error)
-	GetDashVideoURL(ctx context.Context, in *bilibili.GetDashVideoURLReq) (*bilibili.GetDashVideoURLResp, error)
-	GetSubtitles(ctx context.Context, in *bilibili.GetSubtitlesReq) (*bilibili.GetSubtitlesResp, error)
-	ParsePGCPage(ctx context.Context, in *bilibili.ParsePGCPageReq) (*bilibili.VideoPageInfo, error)
-	GetPGCURL(ctx context.Context, in *bilibili.GetPGCURLReq) (*bilibili.VideoURL, error)
-	GetDashPGCURL(ctx context.Context, in *bilibili.GetDashPGCURLReq) (*bilibili.GetDashPGCURLResp, error)
-	UserInfo(ctx context.Context, in *bilibili.UserInfoReq) (*bilibili.UserInfoResp, error)
-	Match(ctx context.Context, in *bilibili.MatchReq) (*bilibili.MatchResp, error)
-}
-
-func InitBilibiliVendors(conf map[string]conf.VendorBilibili) error {
+func InitBilibiliVendors(conf map[string]conf.BilibiliConfig) error {
 	if bilibiliClients == nil {
-		bilibiliClients = make(map[string]Bilibili, len(conf))
+		bilibiliClients = make(map[string]BilibiliInterface, len(conf))
 	}
 	for k, vb := range conf {
 		cli, err := InitBilibili(&vb)
@@ -84,25 +70,26 @@ func InitBilibiliVendors(conf map[string]conf.VendorBilibili) error {
 	return nil
 }
 
-func InitBilibili(conf *conf.VendorBilibili) (Bilibili, error) {
-	key := []byte(conf.JwtSecret)
+func InitBilibili(conf *conf.BilibiliConfig) (BilibiliInterface, error) {
+	middlewares := []middleware.Middleware{kcircuitbreaker.Client(kcircuitbreaker.WithCircuitBreaker(func() circuitbreaker.CircuitBreaker {
+		return sre.NewBreaker(
+			sre.WithRequest(25),
+			sre.WithWindow(time.Second*15),
+		)
+	}))}
+
+	if conf.JwtSecret != "" {
+		key := []byte(conf.JwtSecret)
+		middlewares = append(middlewares, jwt.Client(func(token *jwtv4.Token) (interface{}, error) {
+			return key, nil
+		}, jwt.WithSigningMethod(jwtv4.SigningMethodHS256)))
+	}
+
 	switch conf.Scheme {
 	case "grpc":
 		opts := []ggrpc.ClientOption{}
 
-		if conf.JwtSecret != "" {
-			opts = append(opts, ggrpc.WithMiddleware(
-				jwt.Client(func(token *jwtv4.Token) (interface{}, error) {
-					return key, nil
-				}, jwt.WithSigningMethod(jwtv4.SigningMethodHS256)),
-				kcircuitbreaker.Client(kcircuitbreaker.WithCircuitBreaker(func() circuitbreaker.CircuitBreaker {
-					return sre.NewBreaker(
-						sre.WithRequest(25),
-						sre.WithWindow(time.Second*15),
-					)
-				})),
-			))
-		}
+		opts = append(opts, ggrpc.WithMiddleware(middlewares...))
 
 		if conf.TimeOut != "" {
 			timeout, err := time.ParseDuration(conf.TimeOut)
@@ -185,6 +172,17 @@ func InitBilibili(conf *conf.VendorBilibili) (Bilibili, error) {
 		return newGrpcBilibili(bilibili.NewBilibiliClient(con)), nil
 	case "http":
 		opts := []http.ClientOption{}
+
+		opts = append(opts, http.WithMiddleware(middlewares...))
+
+		if conf.TimeOut != "" {
+			timeout, err := time.ParseDuration(conf.TimeOut)
+			if err != nil {
+				return nil, err
+			}
+			opts = append(opts, http.WithTimeout(timeout))
+		}
+
 		if conf.Tls {
 			rootCAs, err := x509.SystemCertPool()
 			if err != nil {
@@ -200,28 +198,6 @@ func InitBilibili(conf *conf.VendorBilibili) (Bilibili, error) {
 			opts = append(opts, http.WithTLSConfig(&tls.Config{
 				RootCAs: rootCAs,
 			}))
-		}
-
-		if conf.JwtSecret != "" {
-			opts = append(opts, http.WithMiddleware(
-				jwt.Client(func(token *jwtv4.Token) (interface{}, error) {
-					return key, nil
-				}, jwt.WithSigningMethod(jwtv4.SigningMethodHS256)),
-				kcircuitbreaker.Client(kcircuitbreaker.WithCircuitBreaker(func() circuitbreaker.CircuitBreaker {
-					return sre.NewBreaker(
-						sre.WithRequest(25),
-						sre.WithWindow(time.Second*15),
-					)
-				})),
-			))
-		}
-
-		if conf.TimeOut != "" {
-			timeout, err := time.ParseDuration(conf.TimeOut)
-			if err != nil {
-				return nil, err
-			}
-			opts = append(opts, http.WithTimeout(timeout))
 		}
 
 		if conf.Endpoint != "" {
@@ -278,7 +254,7 @@ func InitBilibili(conf *conf.VendorBilibili) (Bilibili, error) {
 	}
 }
 
-var _ Bilibili = (*grpcBilibili)(nil)
+var _ BilibiliInterface = (*grpcBilibili)(nil)
 
 type grpcBilibili struct {
 	client bilibili.BilibiliClient
@@ -346,7 +322,7 @@ func (g *grpcBilibili) Match(ctx context.Context, in *bilibili.MatchReq) (*bilib
 	return g.client.Match(ctx, in)
 }
 
-var _ Bilibili = (*httpBilibili)(nil)
+var _ BilibiliInterface = (*httpBilibili)(nil)
 
 type httpBilibili struct {
 	client bilibili.BilibiliHTTPClient

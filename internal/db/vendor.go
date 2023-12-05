@@ -20,10 +20,7 @@ func GetVendorByUserID(userID string) ([]*model.StreamingVendorInfo, error) {
 func GetVendorByUserIDAndVendor(userID string, vendor model.StreamingVendor) (*model.StreamingVendorInfo, error) {
 	var vendorInfo model.StreamingVendorInfo
 	err := db.Where("user_id = ? AND vendor = ?", userID, vendor).First(&vendorInfo).Error
-	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil, errors.New("vendor not found")
-	}
-	return &vendorInfo, err
+	return &vendorInfo, HandleNotFound(err, "vendor")
 }
 
 type CreateVendorConfig func(*model.StreamingVendorInfo)
@@ -31,6 +28,24 @@ type CreateVendorConfig func(*model.StreamingVendorInfo)
 func WithCookie(cookie []*http.Cookie) CreateVendorConfig {
 	return func(vendor *model.StreamingVendorInfo) {
 		vendor.Cookies = cookie
+	}
+}
+
+func WithAuthorization(authorization string) CreateVendorConfig {
+	return func(vendor *model.StreamingVendorInfo) {
+		vendor.Authorization = authorization
+	}
+}
+
+func WithPassword(password string) CreateVendorConfig {
+	return func(vendor *model.StreamingVendorInfo) {
+		vendor.Password = password
+	}
+}
+
+func WithHost(host string) CreateVendorConfig {
+	return func(vendor *model.StreamingVendorInfo) {
+		vendor.Host = host
 	}
 }
 
@@ -49,34 +64,24 @@ func FirstOrCreateVendorByUserIDAndVendor(userID string, vendor model.StreamingV
 	return &vendorInfo, err
 }
 
-func AssignFirstOrCreateVendorByUserIDAndVendor(userID string, vendor model.StreamingVendor, conf ...CreateVendorConfig) (*model.StreamingVendorInfo, error) {
-	var vendorInfo model.StreamingVendorInfo
-	v := &model.StreamingVendorInfo{
+func CreateOrSaveVendorByUserIDAndVendor(userID string, vendor model.StreamingVendor, conf ...CreateVendorConfig) (*model.StreamingVendorInfo, error) {
+	vendorInfo := model.StreamingVendorInfo{
 		UserID: userID,
 		Vendor: vendor,
 	}
-	for _, c := range conf {
-		c(v)
-	}
-	err := db.Where("user_id = ? AND vendor = ?", userID, vendor).Assign(
-		v,
-	).FirstOrCreate(&vendorInfo).Error
-	return &vendorInfo, err
-}
-
-func FirstOrInitVendorByUserIDAndVendor(userID string, vendor model.StreamingVendor, conf ...CreateVendorConfig) (*model.StreamingVendorInfo, error) {
-	var vendorInfo model.StreamingVendorInfo
-	v := &model.StreamingVendorInfo{
-		UserID: userID,
-		Vendor: vendor,
-	}
-	for _, c := range conf {
-		c(v)
-	}
-	err := db.Where("user_id = ? AND vendor = ?", userID, vendor).Attrs(
-		v,
-	).FirstOrInit(&vendorInfo).Error
-	return &vendorInfo, err
+	return &vendorInfo, Transactional(func(tx *gorm.DB) error {
+		if errors.Is(tx.First(&vendorInfo).Error, gorm.ErrRecordNotFound) {
+			for _, c := range conf {
+				c(&vendorInfo)
+			}
+			return tx.Create(&vendorInfo).Error
+		} else {
+			for _, c := range conf {
+				c(&vendorInfo)
+			}
+			return tx.Save(&vendorInfo).Error
+		}
+	})
 }
 
 func DeleteVendorByUserIDAndVendor(userID string, vendor model.StreamingVendor) error {

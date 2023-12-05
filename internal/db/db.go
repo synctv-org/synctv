@@ -3,6 +3,7 @@ package db
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	log "github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/internal/conf"
@@ -283,4 +284,24 @@ func WhereRoomUserStatus(status model.RoomUserStatus) func(db *gorm.DB) *gorm.DB
 	return func(db *gorm.DB) *gorm.DB {
 		return db.Where("status = ?", status)
 	}
+}
+
+func HandleNotFound(err error, errMsg ...string) error {
+	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
+		return fmt.Errorf("%s not found", strings.Join(errMsg, " "))
+	}
+	return err
+}
+
+func Transactional(txFunc func(*gorm.DB) error) (err error) {
+	tx := db.Begin()
+	defer func() {
+		if err != nil {
+			tx.Rollback()
+		} else {
+			tx.Commit()
+		}
+	}()
+	err = txFunc(tx)
+	return
 }

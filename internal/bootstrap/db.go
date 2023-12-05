@@ -20,11 +20,35 @@ import (
 )
 
 func InitDatabase(ctx context.Context) (err error) {
-	var dialector gorm.Dialector
+	dialector, err := createDialector(conf.Conf.Database)
+	if err != nil {
+		log.Fatalf("failed to create dialector: %s", err.Error())
+	}
+
 	var opts []gorm.Option
+	opts = append(opts, &gorm.Config{
+		TranslateError: true,
+		Logger:         newDBLogger(),
+		PrepareStmt:    true,
+	})
+	d, err := gorm.Open(dialector, opts...)
+	if err != nil {
+		log.Fatalf("failed to connect database: %s", err.Error())
+	}
+	sqlDB, err := d.DB()
+	if err != nil {
+		log.Fatalf("failed to get sqlDB: %s", err.Error())
+	}
+	if conf.Conf.Database.Type != conf.DatabaseTypeSqlite3 {
+		initRawDB(sqlDB)
+	}
+	return db.Init(d, conf.Conf.Database.Type)
+}
+
+func createDialector(dbConf conf.DatabaseConfig) (dialector gorm.Dialector, err error) {
+	var dsn string
 	switch conf.Conf.Database.Type {
 	case conf.DatabaseTypeMysql:
-		var dsn string
 		if conf.Conf.Database.CustomDSN != "" {
 			dsn = conf.Conf.Database.CustomDSN
 		} else if conf.Conf.Database.Port == 0 {
@@ -55,9 +79,7 @@ func InitDatabase(ctx context.Context) (err error) {
 			DontSupportRenameColumn:   true,
 			SkipInitializeWithVersion: false,
 		})
-		// opts = append(opts, &gorm.Config{})
 	case conf.DatabaseTypeSqlite3:
-		var dsn string
 		if conf.Conf.Database.CustomDSN != "" {
 			dsn = conf.Conf.Database.CustomDSN
 		} else if conf.Conf.Database.DBName == "memory" || strings.HasPrefix(conf.Conf.Database.DBName, ":memory:") {
@@ -75,9 +97,7 @@ func InitDatabase(ctx context.Context) (err error) {
 			log.Infof("sqlite3 database file: %s", conf.Conf.Database.DBName)
 		}
 		dialector = sqlite.Open(dsn)
-		// opts = append(opts, &gorm.Config{})
 	case conf.DatabaseTypePostgres:
-		var dsn string
 		if conf.Conf.Database.CustomDSN != "" {
 			dsn = conf.Conf.Database.CustomDSN
 		} else if conf.Conf.Database.Port == 0 {
@@ -104,27 +124,10 @@ func InitDatabase(ctx context.Context) (err error) {
 			DSN:                  dsn,
 			PreferSimpleProtocol: true,
 		})
-		// opts = append(opts, &gorm.Config{})
 	default:
 		log.Fatalf("unknown database type: %s", conf.Conf.Database.Type)
 	}
-	opts = append(opts, &gorm.Config{
-		TranslateError: true,
-		Logger:         newDBLogger(),
-		PrepareStmt:    true,
-	})
-	d, err := gorm.Open(dialector, opts...)
-	if err != nil {
-		log.Fatalf("failed to connect database: %s", err.Error())
-	}
-	sqlDB, err := d.DB()
-	if err != nil {
-		log.Fatalf("failed to get sqlDB: %s", err.Error())
-	}
-	if conf.Conf.Database.Type != conf.DatabaseTypeSqlite3 {
-		initRawDB(sqlDB)
-	}
-	return db.Init(d, conf.Conf.Database.Type)
+	return
 }
 
 func newDBLogger() logger.Interface {

@@ -1,4 +1,4 @@
-package Vbilibili
+package vendorBilibili
 
 import (
 	"errors"
@@ -14,7 +14,6 @@ import (
 	"github.com/synctv-org/synctv/server/model"
 	"github.com/synctv-org/synctv/utils"
 	"github.com/synctv-org/vendors/api/bilibili"
-	"golang.org/x/exp/maps"
 )
 
 type ParseReq struct {
@@ -32,10 +31,6 @@ func (r *ParseReq) Decode(ctx *gin.Context) error {
 	return json.NewDecoder(ctx.Request.Body).Decode(r)
 }
 
-func Vendors(ctx *gin.Context) {
-	ctx.JSON(http.StatusOK, model.NewApiDataResp(maps.Keys(vendor.BilibiliClients())))
-}
-
 func Parse(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*op.User)
 
@@ -45,7 +40,7 @@ func Parse(ctx *gin.Context) {
 		return
 	}
 
-	var cli = vendor.BilibiliClient(ctx.Query("vendor"))
+	var cli = vendor.BilibiliClient(ctx.Query("backend"))
 
 	resp, err := cli.Match(ctx, &bilibili.MatchReq{
 		Url: req.URL,

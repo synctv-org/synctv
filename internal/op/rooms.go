@@ -122,26 +122,6 @@ func PeopleNum(roomID string) int64 {
 	return 0
 }
 
-func HasRoom(roomID string) bool {
-	_, ok := roomCache.Load(roomID)
-	if ok {
-		return true
-	}
-	ok, err := db.HasRoom(roomID)
-	if err != nil {
-		return false
-	}
-	return ok
-}
-
-func HasRoomByName(name string) bool {
-	ok, err := db.HasRoomByName(name)
-	if err != nil {
-		return false
-	}
-	return ok
-}
-
 func GetAllRoomsInCacheWithNoNeedPassword() []*Room {
 	rooms := make([]*Room, 0)
 	roomCache.Range(func(key string, value *synccache.Entry[*Room]) bool {

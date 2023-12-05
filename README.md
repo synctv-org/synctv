@@ -83,7 +83,9 @@ synctv server
 synctv server --data-dir ./
 ```
 
-Every time it starts, it will check for users with root permissions. If none are found, it will initialize a `root` user with the password `root`. Please change the username and password promptly.
+> Every time it starts, it will check for users with root permissions. If none are found, it will initialize a `root` user with the password `root`. Please change the username and password promptly.
+> 
+> The user registration function requires the use of any `OAuth2` service, such as `Google`, `Github`, etc. For specific configuration, please refer to [documentation](https://synctv.wiki/#/oauth2).
 
 # Documentation
 https://synctv.wiki

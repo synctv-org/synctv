@@ -12,27 +12,25 @@ import (
 )
 
 func Init(e *gin.Engine) {
-	{
-		e.GET("/", func(ctx *gin.Context) {
-			ctx.Redirect(http.StatusMovedPermanently, "/web/")
-		})
+	e.GET("/", func(ctx *gin.Context) {
+		ctx.Redirect(http.StatusMovedPermanently, "/web/")
+	})
 
-		web := e.Group("/web")
+	web := e.Group("/web")
 
-		web.Use(middlewares.NewDistCacheControl("/web/"))
+	web.Use(middlewares.NewDistCacheControl("/web/"))
 
-		err := initFSRouter(web, public.Public.(fs.ReadDirFS), ".")
-		if err != nil {
-			panic(err)
-		}
-
-		e.NoRoute(func(ctx *gin.Context) {
-			if strings.HasPrefix(ctx.Request.URL.Path, "/web/") {
-				ctx.FileFromFS("", http.FS(public.Public))
-				return
-			}
-		})
+	err := initFSRouter(web, public.Public.(fs.ReadDirFS), ".")
+	if err != nil {
+		panic(err)
 	}
+
+	e.NoRoute(func(ctx *gin.Context) {
+		if strings.HasPrefix(ctx.Request.URL.Path, "/web/") {
+			ctx.FileFromFS("", http.FS(public.Public))
+			return
+		}
+	})
 }
 
 func initFSRouter(e *gin.RouterGroup, f fs.ReadDirFS, path string) error {

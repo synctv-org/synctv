@@ -1,8 +1,6 @@
 package db
 
 import (
-	"errors"
-
 	"github.com/synctv-org/synctv/internal/model"
 	"gorm.io/gorm"
 )
@@ -38,42 +36,27 @@ func FirstOrCreateRoomUserRelation(roomID, userID string, conf ...CreateRoomUser
 func GetRoomUserRelation(roomID, userID string) (*model.RoomUserRelation, error) {
 	roomUserRelation := &model.RoomUserRelation{}
 	err := db.Where("room_id = ? AND user_id = ?", roomID, userID).First(roomUserRelation).Error
-	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
-		return roomUserRelation, errors.New("room or user not found")
-	}
-	return roomUserRelation, err
+	return roomUserRelation, HandleNotFound(err, "room or user")
 }
 
 func SetRoomUserStatus(roomID string, userID string, status model.RoomUserStatus) error {
 	err := db.Model(&model.RoomUserRelation{}).Where("room_id = ? AND user_id = ?", roomID, userID).Update("status", status).Error
-	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
-		return errors.New("room or user not found")
-	}
-	return err
+	return HandleNotFound(err, "room or user")
 }
 
 func SetUserPermission(roomID string, userID string, permission model.RoomUserPermission) error {
 	err := db.Model(&model.RoomUserRelation{}).Where("room_id = ? AND user_id = ?", roomID, userID).Update("permissions", permission).Error
-	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
-		return errors.New("room or user not found")
-	}
-	return err
+	return HandleNotFound(err, "room or user")
 }
 
 func AddUserPermission(roomID string, userID string, permission model.RoomUserPermission) error {
 	err := db.Model(&model.RoomUserRelation{}).Where("room_id = ? AND user_id = ?", roomID, userID).Update("permissions", db.Raw("permissions | ?", permission)).Error
-	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
-		return errors.New("room or user not found")
-	}
-	return err
+	return HandleNotFound(err, "room or user")
 }
 
 func RemoveUserPermission(roomID string, userID string, permission model.RoomUserPermission) error {
 	err := db.Model(&model.RoomUserRelation{}).Where("room_id = ? AND user_id = ?", roomID, userID).Update("permissions", db.Raw("permissions & ?", ^permission)).Error
-	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
-		return errors.New("room or user not found")
-	}
-	return err
+	return HandleNotFound(err, "room or user")
 }
 
 func GetAllRoomUsersRelation(roomID string, scopes ...func(*gorm.DB) *gorm.DB) []*model.RoomUserRelation {

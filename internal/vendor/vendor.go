@@ -14,5 +14,8 @@ func Init(conf *conf.VendorConfig) error {
 	if err := InitBilibiliVendors(conf.Bilibili); err != nil {
 		return err
 	}
+	if err := InitAlistVendors(conf.Alist); err != nil {
+		return err
+	}
 	return nil
 }

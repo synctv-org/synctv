@@ -143,26 +143,14 @@ func CreateOrLoadUserWithProvider(username, password string, p provider.OAuth2Pr
 
 func GetUserByProvider(p provider.OAuth2Provider, puid string) (*model.User, error) {
 	var user model.User
-	if err := db.Where("id = (?)", db.Table("user_providers").Where("provider = ? AND provider_user_id = ?", p, puid).Select("user_id")).First(&user).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return &user, errors.New("user not found")
-		} else {
-			return &user, err
-		}
-	}
-	return &user, nil
+	err := db.Where("id = (?)", db.Table("user_providers").Where("provider = ? AND provider_user_id = ?", p, puid).Select("user_id")).First(&user).Error
+	return &user, HandleNotFound(err, "user")
 }
 
 func GetProviderUserID(p provider.OAuth2Provider, puid string) (string, error) {
 	var userProvider model.UserProvider
-	if err := db.Where("provider = ? AND provider_user_id = ?", p, puid).Select("user_id").First(&userProvider).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return "", errors.New("user not found")
-		} else {
-			return "", err
-		}
-	}
-	return userProvider.UserID, nil
+	err := db.Where("provider = ? AND provider_user_id = ?", p, puid).Select("user_id").First(&userProvider).Error
+	return userProvider.UserID, HandleNotFound(err, "user")
 }
 
 func BindProvider(uid string, p provider.OAuth2Provider, puid string) error {
@@ -179,45 +167,31 @@ func BindProvider(uid string, p provider.OAuth2Provider, puid string) error {
 
 // 当用户是通过provider注册的时候，则最少保留一个provider，否则禁止解除绑定
 func UnBindProvider(uid string, p provider.OAuth2Provider) error {
-	tx := db.Begin()
-	user := model.User{}
-	if err := tx.Scopes(PreloadUserProviders()).Where("id = ?", uid).First(&user).Error; err != nil {
-		tx.Rollback()
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return errors.New("user not found")
+	return Transactional(func(tx *gorm.DB) error {
+		user := model.User{}
+		if err := tx.Scopes(PreloadUserProviders()).Where("id = ?", uid).First(&user).Error; err != nil {
+			return HandleNotFound(err, "user")
 		}
-		return err
-	}
-	if user.RegisteredByProvider && len(user.UserProviders) == 1 {
-		tx.Rollback()
-		return errors.New("user must have at least one provider")
-	}
-	if err := tx.Where("user_id = ? AND provider = ?", uid, p).Delete(&model.UserProvider{}).Error; err != nil {
-		tx.Rollback()
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return errors.New("user could not bind provider")
+		if user.RegisteredByProvider && len(user.UserProviders) == 1 {
+			return errors.New("user must have at least one provider")
 		}
-		return err
-	}
-	return tx.Commit().Error
+		if err := tx.Where("user_id = ? AND provider = ?", uid, p).Delete(&model.UserProvider{}).Error; err != nil {
+			return HandleNotFound(err, "provider")
+		}
+		return nil
+	})
 }
 
 func GetBindProviders(uid string) ([]*model.UserProvider, error) {
 	var providers []*model.UserProvider
 	err := db.Where("user_id = ?", uid).Find(&providers).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return providers, errors.New("user not found")
-	}
-	return providers, err
+	return providers, HandleNotFound(err, "user")
 }
 
 func GetUserByUsername(username string) (*model.User, error) {
 	u := &model.User{}
 	err := db.Where("username = ?", username).First(u).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return u, errors.New("user not found")
-	}
-	return u, err
+	return u, HandleNotFound(err, "user")
 }
 
 func GetUserByUsernameLike(username string, scopes ...func(*gorm.DB) *gorm.DB) []*model.User {
@@ -241,10 +215,7 @@ func GerUsersIDByIDLike(id string, scopes ...func(*gorm.DB) *gorm.DB) []string {
 func GetUserByIDOrUsernameLike(idOrUsername string, scopes ...func(*gorm.DB) *gorm.DB) ([]*model.User, error) {
 	var users []*model.User
 	err := db.Where("id = ? OR username LIKE ?", idOrUsername, fmt.Sprintf("%%%s%%", idOrUsername)).Scopes(scopes...).Find(&users).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return users, errors.New("user not found")
-	}
-	return users, err
+	return users, HandleNotFound(err, "user")
 }
 
 func GetUserByID(id string) (*model.User, error) {
@@ -253,10 +224,7 @@ func GetUserByID(id string) (*model.User, error) {
 	}
 	u := &model.User{}
 	err := db.Where("id = ?", id).First(u).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return u, errors.New("user not found")
-	}
-	return u, err
+	return u, HandleNotFound(err, "user")
 }
 
 func BanUser(u *model.User) error {
@@ -269,10 +237,7 @@ func BanUser(u *model.User) error {
 
 func BanUserByID(userID string) error {
 	err := db.Model(&model.User{}).Where("id = ?", userID).Update("role", model.RoleBanned).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return errors.New("user not found")
-	}
-	return err
+	return HandleNotFound(err, "user")
 }
 
 func UnbanUser(u *model.User) error {
@@ -285,18 +250,12 @@ func UnbanUser(u *model.User) error {
 
 func UnbanUserByID(userID string) error {
 	err := db.Model(&model.User{}).Where("id = ?", userID).Update("role", model.RoleUser).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return errors.New("user not found")
-	}
-	return err
+	return HandleNotFound(err, "user")
 }
 
 func DeleteUserByID(userID string) error {
 	err := db.Unscoped().Where("id = ?", userID).Delete(&model.User{}).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return errors.New("user not found")
-	}
-	return err
+	return HandleNotFound(err, "user")
 }
 
 func LoadAndDeleteUserByID(userID string, columns ...clause.Column) (*model.User, error) {
@@ -338,18 +297,12 @@ func GetAdmins() []*model.User {
 
 func AddAdminByID(userID string) error {
 	err := db.Model(&model.User{}).Where("id = ?", userID).Update("role", model.RoleAdmin).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return errors.New("user not found")
-	}
-	return err
+	return HandleNotFound(err, "user")
 }
 
 func RemoveAdminByID(userID string) error {
 	err := db.Model(&model.User{}).Where("id = ?", userID).Update("role", model.RoleUser).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return errors.New("user not found")
-	}
-	return err
+	return HandleNotFound(err, "user")
 }
 
 func AddRoot(u *model.User) error {
@@ -370,18 +323,12 @@ func RemoveRoot(u *model.User) error {
 
 func AddRootByID(userID string) error {
 	err := db.Model(&model.User{}).Where("id = ?", userID).Update("role", model.RoleRoot).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return errors.New("user not found")
-	}
-	return err
+	return HandleNotFound(err, "user")
 }
 
 func RemoveRootByID(userID string) error {
 	err := db.Model(&model.User{}).Where("id = ?", userID).Update("role", model.RoleUser).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return errors.New("user not found")
-	}
-	return err
+	return HandleNotFound(err, "user")
 }
 
 func GetRoots() []*model.User {
@@ -397,18 +344,12 @@ func SetRole(u *model.User, role model.Role) error {
 
 func SetRoleByID(userID string, role model.Role) error {
 	err := db.Model(&model.User{}).Where("id = ?", userID).Update("role", role).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return errors.New("user not found")
-	}
-	return err
+	return HandleNotFound(err, "user")
 }
 
 func SetUsernameByID(userID string, username string) error {
 	err := db.Model(&model.User{}).Where("id = ?", userID).Update("username", username).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return errors.New("user not found")
-	}
-	return err
+	return HandleNotFound(err, "user")
 }
 
 func GetAllUserCount(scopes ...func(*gorm.DB) *gorm.DB) int64 {
@@ -425,8 +366,5 @@ func GetAllUsers(scopes ...func(*gorm.DB) *gorm.DB) []*model.User {
 
 func SetUserHashedPassword(id string, hashedPassword []byte) error {
 	err := db.Model(&model.User{}).Where("id = ?", id).Update("hashed_password", hashedPassword).Error
-	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
-		return errors.New("user not found")
-	}
-	return err
+	return HandleNotFound(err, "user")
 }

@@ -350,6 +350,14 @@ github.com/stretchr/testify v1.8.4 h1:CcVxjf3Q8PM0mHUKJCdn+eZZtm5yQwehR5yeSVQQcU
 github.com/stretchr/testify v1.8.4/go.mod h1:sz/lmYIOXD/1dqDmKjjqLyZ2RngseejIcXlSw2iwfAo=
 github.com/synctv-org/vendors v0.1.1-0.20231123042423-562f72cd9f91 h1:NmpHW9fzZOsbh6oLEbL596eBbEwiqfcCr0uZ3LkYBX0=
 github.com/synctv-org/vendors v0.1.1-0.20231123042423-562f72cd9f91/go.mod h1:DQHEXvrsnX9Ke6B0KVJ+w8uMgM/DZKNkvi6cJmRn+zk=
+github.com/synctv-org/vendors v0.1.1-0.20231203062458-863dbc08c39d h1:FLjsoPTIUjrwsEKcISzbwmY5/4BUzqydYMaj3lp2aA8=
+github.com/synctv-org/vendors v0.1.1-0.20231203062458-863dbc08c39d/go.mod h1:DQHEXvrsnX9Ke6B0KVJ+w8uMgM/DZKNkvi6cJmRn+zk=
+github.com/synctv-org/vendors v0.1.1-0.20231203064919-c8eeb877a780 h1:59T2DtbXn8qkW986k+spwTlQlx8Wl1hmD2zZDYWHv5s=
+github.com/synctv-org/vendors v0.1.1-0.20231203064919-c8eeb877a780/go.mod h1:DQHEXvrsnX9Ke6B0KVJ+w8uMgM/DZKNkvi6cJmRn+zk=
+github.com/synctv-org/vendors v0.1.1-0.20231204112116-1882fc1116bf h1:E5Mu7mqdWCzjy+kSQBvjvmETfhiLXiTuEhfkGhgBRJk=
+github.com/synctv-org/vendors v0.1.1-0.20231204112116-1882fc1116bf/go.mod h1:DQHEXvrsnX9Ke6B0KVJ+w8uMgM/DZKNkvi6cJmRn+zk=
+github.com/synctv-org/vendors v0.1.1-0.20231204154145-d6bf737a7c0b h1:QsHSl+bzDrY8oiPv/KcoBPjHa7R1VeyDNlChJrEHzus=
+github.com/synctv-org/vendors v0.1.1-0.20231204154145-d6bf737a7c0b/go.mod h1:DQHEXvrsnX9Ke6B0KVJ+w8uMgM/DZKNkvi6cJmRn+zk=
 github.com/tv42/httpunix v0.0.0-20150427012821-b75d8614f926/go.mod h1:9ESjWnEqriFuLhtthL60Sar/7RFoluCcXsuvEwTV5KM=
 github.com/twitchyliquid64/golang-asm v0.15.1 h1:SU5vSMR7hnwNxj24w34ZyCi/FmDZTkS4MhqMhdFk5YI=
 github.com/twitchyliquid64/golang-asm v0.15.1/go.mod h1:a1lVb/DtPvCB8fslRZhAngC2+aY1QWCk3Cedj/Gdt08=

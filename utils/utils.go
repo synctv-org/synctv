@@ -92,12 +92,8 @@ func In[T comparable](items []T, item T) bool {
 }
 
 func Exists(name string) bool {
-	if _, err := os.Stat(name); err != nil {
-		if os.IsNotExist(err) {
-			return false
-		}
-	}
-	return true
+	_, err := os.Stat(name)
+	return !os.IsNotExist(err)
 }
 
 func WriteYaml(file string, module any) error {
@@ -142,6 +138,9 @@ func CompVersion(v1, v2 string) (int, error) {
 	if err != nil {
 		return VersionEqual, err
 	}
+	if len(v1s) != len(v2s) {
+		return VersionEqual, fmt.Errorf("invalid version: %s, %s", v1, v2)
+	}
 	for i := 0; i < len(v1s) && i < len(v2s); i++ {
 		if v1s[i] > v2s[i] {
 			return VersionGreater, nil
@@ -149,24 +148,46 @@ func CompVersion(v1, v2 string) (int, error) {
 			return VersionLess, nil
 		}
 	}
-	if len(v1s) > len(v2s) {
+	sub1 = sub1[1:]
+	sub2 = sub2[1:]
+	if len(sub1) == 0 && len(sub2) != 0 {
 		return VersionGreater, nil
-	} else if len(v1s) < len(v2s) {
+	} else if len(sub1) != 0 && len(sub2) == 0 {
 		return VersionLess, nil
-	} else {
-		sub1 = sub1[1:]
-		sub2 = sub2[1:]
-		if len(sub1) == 2 && len(sub2) == 2 {
-			if sub1[0] == "beta" && sub2[0] == "alpha" {
-				return VersionGreater, nil
-			} else if sub1[0] == "alpha" && sub2[0] == "beta" {
-				return VersionLess, nil
-			}
-			return CompVersion(sub1[1], sub2[1])
-		} else {
-			return VersionEqual, fmt.Errorf("invalid version: %s, %s", v1, v2)
+	}
+	switch {
+	case strings.HasPrefix(sub1[0], "beta"):
+		switch {
+		case strings.HasPrefix(sub2[0], "beta"):
+			return CompVersion(sub1[0], sub2[0])
+		case strings.HasPrefix(sub2[0], "alpha"):
+			return VersionGreater, nil
+		case strings.HasPrefix(sub2[0], "rc"):
+			return VersionGreater, nil
+		}
+	case strings.HasPrefix(sub1[0], "alpha"):
+		switch {
+		case strings.HasPrefix(sub2[0], "beta"):
+			return VersionLess, nil
+		case strings.HasPrefix(sub2[0], "alpha"):
+			return CompVersion(sub1[0], sub2[0])
+		case strings.HasPrefix(sub2[0], "rc"):
+			return VersionGreater, nil
+		}
+	case strings.HasPrefix(sub1[0], "rc"):
+		switch {
+		case strings.HasPrefix(sub2[0], "beta"):
+			return VersionLess, nil
+		case strings.HasPrefix(sub2[0], "alpha"):
+			return VersionLess, nil
+		case strings.HasPrefix(sub2[0], "rc"):
+			return CompVersion(sub1[0], sub2[0])
 		}
 	}
+	if len(sub1) == 2 && len(sub2) == 2 {
+		return CompVersion(sub1[1], sub2[1])
+	}
+	return VersionEqual, fmt.Errorf("invalid version: %s, %s", v1, v2)
 }
 
 func SplitVersion(v string) ([]int, error) {
@@ -319,5 +340,5 @@ func GetUrlExtension(u string) string {
 	if err != nil {
 		return ""
 	}
-	return filepath.Ext(p.Path)
+	return strings.TrimLeft(filepath.Ext(p.Path), ".")
 }

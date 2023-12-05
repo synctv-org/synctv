@@ -6,28 +6,26 @@ WORKDIR /synctv
 
 COPY ./ ./
 
-RUN apk add --no-cache bash curl gcc git go musl-dev
-
-RUN bash script/build.sh -P -v ${VERSION}
+RUN apk add --no-cache bash curl gcc git go musl-dev && \
+    bash script/build.sh -P -v ${VERSION}
 
 From alpine:latest
+
+ENV PUID=0 PGID=0 UMASK=022
 
 COPY --from=builder /synctv/build/synctv /usr/local/bin/synctv
 
 COPY script/entrypoint.sh /entrypoint.sh
 
-RUN apk add --no-cache bash ca-certificates su-exec tzdata
-
-RUN chmod +x /entrypoint.sh
-
-ENV PUID=0 PGID=0 UMASK=022
-
-RUN mkdir -p ~/.synctv
+RUN apk add --no-cache bash ca-certificates su-exec tzdata && \
+    rm -rf /var/cache/apk/* && \
+    chmod +x /entrypoint.sh && \
+    mkdir -p ~/.synctv
 
 WORKDIR ~/.synctv
 
 EXPOSE 8080/tcp 8080/udp
 
-VOLUME [ ~/.synctv ]
+VOLUME [ "~/.synctv" ]
 
 CMD [ "/entrypoint.sh" ]

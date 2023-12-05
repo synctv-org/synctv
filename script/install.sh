@@ -6,7 +6,7 @@ download_tools_list=(
 )
 
 function Help() {
-    echo "Usage: sudo -v ; curl -fsSL https://raw.gitmirror.com/synctv-org/synctv/main/script/install.sh | sudo bash -s -- -v latest"
+    echo "Usage: sudo -v ; curl -fsSL https://raw.githubusercontent.com/synctv-org/synctv/main/script/install.sh | sudo bash -s -- -v latest"
     echo "-h: help"
     echo "-v: install version (default: latest)"
     echo "-p: github proxy (default: https://mirror.ghproxy.com/)"
@@ -241,8 +241,8 @@ EOF
     fi
 
     systemctl daemon-reload
-    echo "synctv.service installed"
-    echo "run: systemctl enable synctv.service && systemctl start synctv.service"
+    echo "/etc/systemd/system/synctv.service install success"
+    echo "run: systemctl enable synctv && systemctl start synctv"
 }
 
 function InitSystemctlService() {

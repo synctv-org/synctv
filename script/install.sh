@@ -6,9 +6,10 @@ download_tools_list=(
 )
 
 function Help() {
-    echo "Usage: sudo -v ; curl https://raw.githubusercontent.com/synctv-org/synctv/main/script/install.sh | sudo bash -s -- -v latest"
+    echo "Usage: sudo -v ; curl -fsSL https://raw.githubusercontent.com/synctv-org/synctv/main/script/install.sh | sudo bash -s -- -v latest"
     echo "-h: help"
     echo "-v: install version (default: latest)"
+    echo "-p: github proxy (default: https://mirror.ghproxy.com/)"
 }
 
 function Init() {
@@ -18,13 +19,14 @@ function Init() {
         exit
     fi
     VERSION="latest"
+    GH_PROXY="https://mirror.ghproxy.com/"
     InitOS
     InitArch
     InitDownloadTools
 }
 
 function ParseArgs() {
-    while getopts "hv:" arg; do
+    while getopts "hv:p:" arg; do
         case $arg in
         h)
             Help
@@ -32,6 +34,9 @@ function ParseArgs() {
             ;;
         v)
             VERSION="$OPTARG"
+            ;;
+        p)
+            GH_PROXY="$OPTARG"
             ;;
         ?)
             echo "unkonw argument"
@@ -42,10 +47,9 @@ function ParseArgs() {
 }
 
 function FixArgs() {
-    if [ "$VERSION" = "latest" ]; then
-        VERSION="$(LatestVersion)"
-    elif [ "$VERSION" = "beta" ]; then
-        VERSION="dev"
+    # 如果GH_PROXY结尾不是/，则补上
+    if [ "${GH_PROXY: -1}" != "/" ]; then
+        GH_PROXY="$GH_PROXY/"
     fi
 }
 
@@ -93,14 +97,6 @@ function CurrentVersion() {
     fi
 }
 
-function LatestVersion() {
-    echo "$(curl -sL https://api.github.com/repos/synctv-org/synctv/releases/latest | grep -o '"tag_name": "[^"]*' | grep -o '[^"]*$')"
-    if [ $? -ne 0 ]; then
-        echo "get latest version failed"
-        exit 1
-    fi
-}
-
 function InitDownloadTools() {
     for tool in "${download_tools_list[@]}"; do
         if [ -n "$(command -v $tool)" ]; then
@@ -137,14 +133,24 @@ function Download() {
     esac
 }
 
+function DownloadURL() {
+    if [[ $1 == v* ]]; then
+        echo "${GH_PROXY}https://github.com/synctv-org/synctv/releases/download/$1/synctv-${OS}-${ARCH}"
+    else
+        echo "${GH_PROXY}https://github.com/synctv-org/synctv/releases/$1/download/synctv-${OS}-${ARCH}"
+    fi
+}
+
 function InstallWithVersion() {
     tmp_dir=$(mktemp -d 2>/dev/null || mktemp -d -t 'synctv-install.XXXXXXXXXX')
     trap 'rm -rf "$tmp_dir"' EXIT
 
+    URL="$(DownloadURL "$1")"
+    echo "download: $URL"
+
     case "$OS" in
     linux)
-        echo "download: https://github.com/synctv-org/synctv/releases/download/$1/synctv-${OS}-${ARCH}"
-        Download "https://github.com/synctv-org/synctv/releases/download/$1/synctv-${OS}-${ARCH}" "$tmp_dir/synctv"
+        Download "$URL" "$tmp_dir/synctv"
 
         cp "$tmp_dir/synctv" /usr/bin/synctv.new
         if [ $? -ne 0 ]; then
@@ -155,10 +161,14 @@ function InstallWithVersion() {
         chmod 755 /usr/bin/synctv.new
         chown root:root /usr/bin/synctv.new
         mv /usr/bin/synctv{.new,}
+        if [ $? -ne 0 ]; then
+            echo "move /usr/bin/synctv{.new,} failed"
+            exit 1
+        fi
+        echo "synctv installed to /usr/bin/synctv"
         ;;
     darwin)
-        echo "download: https://github.com/synctv-org/synctv/releases/download/$1/synctv-${OS}-${ARCH}"
-        Download "https://github.com/synctv-org/synctv/releases/download/$1/synctv-${OS}-${ARCH}" "$tmp_dir/synctv"
+        Download "$URL" "$tmp_dir/synctv"
 
         mkdir -m 0555 -p /usr/local/bin
         if [ $? -ne 0 ]; then
@@ -172,8 +182,13 @@ function InstallWithVersion() {
             exit 1
         fi
 
+        chmod a=x /usr/local/bin/synctv.new
         mv /usr/local/bin/synctv{.new,}
-        chmod a=x /usr/local/bin/synctv
+        if [ $? -ne 0 ]; then
+            echo "move /usr/local/bin/synctv{.new,} failed"
+            exit 1
+        fi
+        echo "synctv installed to /usr/local/bin/synctv"
         ;;
     *)
         echo 'OS not supported'
@@ -194,21 +209,33 @@ function InitLinuxSystemctlService() {
     fi
 
     if [ -f "/etc/systemd/system/synctv.service" ]; then
-        break
+        return
     fi
 
     if [ -f "./script/synctv.service" ]; then
         echo "use ./script/synctv.service"
         cp "./script/synctv.service" "/etc/systemd/system/synctv.service"
         if [ $? -ne 0 ]; then
-            echo "read ./script/synctv.service failed"
+            echo "copy ./script/synctv.service to /etc/systemd/system/synctv.service failed"
             exit 1
         fi
     else
         echo "use default synctv.service"
-        curl -sL "https://raw.githubusercontent.com/synctv-org/synctv/main/script/synctv.service" -o "/etc/systemd/system/synctv.service"
+        cat <<EOF >"/etc/systemd/system/synctv.service"
+[Unit]
+Description=SyncTV Service
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/synctv server --data-dir /opt/synctv
+WorkingDirectory=/opt/synctv
+Restart=unless-stopped
+
+[Install]
+WantedBy=multi-user.target
+EOF
         if [ $? -ne 0 ]; then
-            echo "download synctv.service failed"
+            echo "write /etc/systemd/system/synctv.service failed"
             exit 1
         fi
     fi
@@ -236,6 +263,8 @@ function Install() {
     fi
 
     InstallWithVersion "$VERSION"
+
+    echo "install success"
 }
 
 Init

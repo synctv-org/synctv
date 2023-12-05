@@ -60,7 +60,7 @@ https://demo.synctv.wiki
 您可以使用该脚本来安装和运行 SyncTV。
 
 ```bash
-sudo -v ; curl https://raw.githubusercontent.com/synctv-org/synctv/main/script/install.sh | sudo bash -s -- -v latest
+sudo -v ; curl -fsSL https://raw.githubusercontent.com/synctv-org/synctv/main/script/install.sh | sudo bash -s -- -v latest
 ```
 
 ## Docker

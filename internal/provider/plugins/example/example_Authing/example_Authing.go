@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	plugin "github.com/hashicorp/go-plugin"
 	"github.com/synctv-org/synctv/internal/provider"
 	"github.com/synctv-org/synctv/internal/provider/plugins"
 	"golang.org/x/oauth2"
 	"net/http"
+	"os"
 )
 
 // Linux/Mac/Windows:
@@ -23,18 +25,18 @@ import (
 //
 // oauth2_plugins:
 //   - plugin_file: plugins/oauth2/Authing
-//     args: []
+//     args: ["认证配置-认证地址（只需要你自定义的那个部分）"]
 type AuthingProvider struct {
 	config oauth2.Config
 }
 
-func newAuthingProvider() provider.ProviderInterface {
+func newAuthingProvider(AuthUrl string) provider.ProviderInterface {
 	return &AuthingProvider{
 		config: oauth2.Config{
 			Scopes: []string{"profile"},
 			Endpoint: oauth2.Endpoint{
-				AuthURL:  "https://synctv-login.authing.cn/oauth/auth",  // 授权码（authorization_code）获取接口
-				TokenURL: "https://synctv-login.authing.cn/oauth/token", // 获取访问令牌（access_token）
+				AuthURL:  fmt.Sprintf("https://%s.authing.cn/oauth/auth", AuthUrl),  // 授权码（authorization_code）获取接口
+				TokenURL: fmt.Sprintf("https://%s.authing.cn/oauth/token", AuthUrl), // Token端点
 			},
 		},
 	}
@@ -90,8 +92,9 @@ type AuthingUserInfo struct {
 }
 
 func main() {
+	args := os.Args
 	var pluginMap = map[string]plugin.Plugin{
-		"Provider": &plugins.ProviderPlugin{Impl: newAuthingProvider()},
+		"Provider": &plugins.ProviderPlugin{Impl: newAuthingProvider(args[1])},
 	}
 	plugin.Serve(&plugin.ServeConfig{
 		HandshakeConfig: plugins.HandshakeConfig,

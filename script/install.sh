@@ -6,7 +6,7 @@ download_tools_list=(
 )
 
 function Help() {
-    echo "Usage: sudo -v ; curl -fsSL https://raw.githubusercontent.com/synctv-org/synctv/main/script/install.sh | sudo bash -s -- -v latest"
+    echo "Usage: sudo -v ; curl -fsSL https://raw.gitmirror.com/synctv-org/synctv/main/script/install.sh | sudo bash -s -- -v latest"
     echo "-h: help"
     echo "-v: install version (default: latest)"
     echo "-p: github proxy (default: https://mirror.ghproxy.com/)"

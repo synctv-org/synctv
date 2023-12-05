@@ -17,14 +17,14 @@ import (
 // CGO_ENABLED=0 GOOS=dawin GOARCH=amd64 go build ./internal/provider/plugins/example/example_authing/example_authing.go
 // CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build ./internal/provider/plugins/example/example_authing/example_authing.go
 //
-// mv gitee {data-dir}/plugins/oauth2/Authing
+// mv gitee {data-dir}/plugins/oauth2/authing
 //
 // Authing：https://console.authing.cn/
 //
 // config.yaml:
 //
 // oauth2_plugins:
-//   - plugin_file: plugins/oauth2/Authing
+//   - plugin_file: plugins/oauth2/authing
 //     args: ["认证配置-认证地址（只需要你自定义的那个部分）"]
 type AuthingProvider struct {
 	config oauth2.Config

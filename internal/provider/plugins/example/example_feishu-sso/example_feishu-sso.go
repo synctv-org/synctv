@@ -18,15 +18,15 @@ import (
 // CGO_ENABLED=0 GOOS=dawin GOARCH=amd64 go build ./internal/provider/plugins/example/example_feishu-sso/example_feishu-sso.go
 // CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build ./internal/provider/plugins/example/example_feishu-sso/example_feishu-sso.go
 //
-// mv gitee {data-dir}/plugins/oauth2/FeishuSSO
+// mv gitee {data-dir}/plugins/oauth2/feishu-sso
 //
 // 飞书集成平台单点应用：https://anycross.feishu.cn/console/identity/sso-app-manager/
 //
 // config.yaml:
 //
 // oauth2_plugins:
-//   - plugin_file: plugins/oauth2/FeishuSSO
-//     args: ["单点应用ID（一串纯数字）"]
+//   - plugin_file: plugins/oauth2/feishu-sso
+//     args: ["单点应用Issuer最后一串纯数字"]
 type FeishuSSOProvider struct {
 	config oauth2.Config
 	ssoid  string

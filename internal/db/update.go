@@ -10,6 +10,8 @@ type dbVersion struct {
 	Upgrade     func() error
 }
 
+const CurrentVersion = "0.0.1"
+
 var dbVersions = map[string]dbVersion{
 	"0.0.1": {
 		NextVersion: "",
@@ -22,7 +24,7 @@ func upgradeDatabase() error {
 		Name:  "database_version",
 		Type:  model.SettingTypeString,
 		Group: model.SettingGroupDatabase,
-		Value: "0.0.1",
+		Value: CurrentVersion,
 	}
 	err := FirstOrCreateSettingItemValue(&setting)
 	if err != nil {

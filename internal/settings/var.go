@@ -4,6 +4,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/model"
 )
 
@@ -36,7 +37,7 @@ var (
 )
 
 var (
-	DatabaseVersion = NewStringSetting("database_version", "0.0.1", model.SettingGroupDatabase, WithBeforeSetString(func(ss StringSetting, s string) (string, error) {
+	DatabaseVersion = NewStringSetting("database_version", db.CurrentVersion, model.SettingGroupDatabase, WithBeforeSetString(func(ss StringSetting, s string) (string, error) {
 		return "", errors.New("not support change database version")
 	}))
 )

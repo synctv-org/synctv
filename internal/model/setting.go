@@ -21,6 +21,7 @@ const (
 	SettingGroupProxy    SettingGroup = "proxy"
 	SettingGroupRtmp     SettingGroup = "rtmp"
 	SettingGroupDatabase SettingGroup = "database"
+	SettingGroupServer   SettingGroup = "server"
 	SettingGroupOauth2   SettingGroup = "oauth2"
 )
 

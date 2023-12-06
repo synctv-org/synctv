@@ -12,6 +12,7 @@ import (
 	"github.com/synctv-org/synctv/cmd/flags"
 	"github.com/synctv-org/synctv/internal/conf"
 	"github.com/synctv-org/synctv/internal/db"
+	"github.com/synctv-org/synctv/internal/version"
 	"github.com/synctv-org/synctv/utils"
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
@@ -143,7 +144,7 @@ func newDBLogger() logger.Interface {
 			SlowThreshold:             time.Second,
 			LogLevel:                  logLevel,
 			IgnoreRecordNotFoundError: true,
-			ParameterizedQueries:      !flags.Dev,
+			ParameterizedQueries:      !flags.Dev && version.Version != "dev",
 			Colorful:                  true,
 		},
 	)

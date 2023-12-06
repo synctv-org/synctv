@@ -24,18 +24,18 @@ type Bool struct {
 	setting
 	defaultValue          bool
 	value                 uint32
-	beforeInit, beforeSet func(BoolSetting, bool) error
+	beforeInit, beforeSet func(BoolSetting, bool) (bool, error)
 }
 
 type BoolSettingOption func(*Bool)
 
-func WithBeforeInitBool(beforeInit func(BoolSetting, bool) error) BoolSettingOption {
+func WithBeforeInitBool(beforeInit func(BoolSetting, bool) (bool, error)) BoolSettingOption {
 	return func(s *Bool) {
 		s.beforeInit = beforeInit
 	}
 }
 
-func WithBeforeSetBool(beforeSet func(BoolSetting, bool) error) BoolSettingOption {
+func WithBeforeSetBool(beforeSet func(BoolSetting, bool) (bool, error)) BoolSettingOption {
 	return func(s *Bool) {
 		s.beforeSet = beforeSet
 	}
@@ -76,7 +76,7 @@ func (b *Bool) Init(value string) error {
 	}
 
 	if b.beforeInit != nil {
-		err = b.beforeInit(b, v)
+		v, err = b.beforeInit(b, v)
 		if err != nil {
 			return err
 		}
@@ -117,7 +117,7 @@ func (b *Bool) SetString(value string) error {
 	}
 
 	if b.beforeSet != nil {
-		err = b.beforeSet(b, v)
+		v, err = b.beforeSet(b, v)
 		if err != nil {
 			return err
 		}
@@ -132,20 +132,20 @@ func (b *Bool) SetString(value string) error {
 	return nil
 }
 
-func (b *Bool) Set(value bool) (err error) {
+func (b *Bool) Set(v bool) (err error) {
 	if b.beforeSet != nil {
-		err = b.beforeSet(b, value)
+		v, err = b.beforeSet(b, v)
 		if err != nil {
 			return err
 		}
 	}
 
-	err = db.UpdateSettingItemValue(b.name, b.Stringify(value))
+	err = db.UpdateSettingItemValue(b.name, b.Stringify(v))
 	if err != nil {
 		return err
 	}
 
-	b.set(value)
+	b.set(v)
 	return
 }
 

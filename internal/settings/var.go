@@ -36,7 +36,7 @@ var (
 )
 
 var (
-	DatabaseVersion = NewStringSetting("database_version", "0.0.1", model.SettingGroupDatabase, WithBeforeSetString(func(ss StringSetting, s string) error {
-		return errors.New("not support change database version")
+	DatabaseVersion = NewStringSetting("database_version", "0.0.1", model.SettingGroupDatabase, WithBeforeSetString(func(ss StringSetting, s string) (string, error) {
+		return "", errors.New("not support change database version")
 	}))
 )

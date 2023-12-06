@@ -10,6 +10,8 @@ import (
 	"github.com/google/go-github/v56/github"
 	log "github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/cmd/flags"
+	"github.com/synctv-org/synctv/internal/model"
+	"github.com/synctv-org/synctv/internal/settings"
 	"github.com/synctv-org/synctv/utils"
 )
 
@@ -22,6 +24,11 @@ var (
 	Version    string = "dev"
 	WebVersion string = "dev"
 	GitCommit  string
+	_          = settings.NewStringSetting("version", "placeholder string", model.SettingGroupServer, settings.WithBeforeInitString(func(ss settings.StringSetting, s string) (string, error) {
+		return Version, nil
+	}), settings.WithBeforeSetString(func(ss settings.StringSetting, s string) (string, error) {
+		return "", errors.New("version can not be set")
+	}))
 )
 
 type VersionInfo struct {

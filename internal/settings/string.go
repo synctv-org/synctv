@@ -25,7 +25,7 @@ type String struct {
 	lock                  sync.RWMutex
 	value                 string
 	validator             func(string) error
-	beforeInit, beforeSet func(StringSetting, string) error
+	beforeInit, beforeSet func(StringSetting, string) (string, error)
 }
 
 type StringSettingOption func(*String)
@@ -36,13 +36,13 @@ func WithValidatorString(validator func(string) error) StringSettingOption {
 	}
 }
 
-func WithBeforeInitString(beforeInit func(StringSetting, string) error) StringSettingOption {
+func WithBeforeInitString(beforeInit func(StringSetting, string) (string, error)) StringSettingOption {
 	return func(s *String) {
 		s.beforeInit = beforeInit
 	}
 }
 
-func WithBeforeSetString(beforeSet func(StringSetting, string) error) StringSettingOption {
+func WithBeforeSetString(beforeSet func(StringSetting, string) (string, error)) StringSettingOption {
 	return func(s *String) {
 		s.beforeSet = beforeSet
 	}
@@ -82,7 +82,7 @@ func (s *String) Init(value string) error {
 	}
 
 	if s.beforeInit != nil {
-		err = s.beforeInit(s, v)
+		v, err = s.beforeInit(s, v)
 		if err != nil {
 			return err
 		}
@@ -115,7 +115,7 @@ func (s *String) SetString(value string) error {
 	}
 
 	if s.beforeSet != nil {
-		err = s.beforeSet(s, v)
+		v, err = s.beforeSet(s, v)
 		if err != nil {
 			return err
 		}
@@ -136,27 +136,27 @@ func (s *String) set(value string) {
 	s.value = value
 }
 
-func (s *String) Set(value string) (err error) {
+func (s *String) Set(v string) (err error) {
 	if s.validator != nil {
-		err = s.validator(value)
+		err = s.validator(v)
 		if err != nil {
 			return err
 		}
 	}
 
 	if s.beforeSet != nil {
-		err = s.beforeSet(s, value)
+		v, err = s.beforeSet(s, v)
 		if err != nil {
 			return err
 		}
 	}
 
-	err = db.UpdateSettingItemValue(s.name, s.Stringify(value))
+	err = db.UpdateSettingItemValue(s.name, s.Stringify(v))
 	if err != nil {
 		return err
 	}
 
-	s.set(value)
+	s.set(v)
 	return
 }
 

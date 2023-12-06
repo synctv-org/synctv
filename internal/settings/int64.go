@@ -25,7 +25,7 @@ type Int64 struct {
 	defaultValue          int64
 	value                 int64
 	validator             func(int64) error
-	beforeInit, beforeSet func(Int64Setting, int64) error
+	beforeInit, beforeSet func(Int64Setting, int64) (int64, error)
 }
 
 type Int64SettingOption func(*Int64)
@@ -36,13 +36,13 @@ func WithValidatorInt64(validator func(int64) error) Int64SettingOption {
 	}
 }
 
-func WithBeforeInitInt64(beforeInit func(Int64Setting, int64) error) Int64SettingOption {
+func WithBeforeInitInt64(beforeInit func(Int64Setting, int64) (int64, error)) Int64SettingOption {
 	return func(s *Int64) {
 		s.beforeInit = beforeInit
 	}
 }
 
-func WithBeforeSetInt64(beforeSet func(Int64Setting, int64) error) Int64SettingOption {
+func WithBeforeSetInt64(beforeSet func(Int64Setting, int64) (int64, error)) Int64SettingOption {
 	return func(s *Int64) {
 		s.beforeSet = beforeSet
 	}
@@ -86,7 +86,7 @@ func (i *Int64) Init(value string) error {
 	}
 
 	if i.beforeInit != nil {
-		err = i.beforeInit(i, v)
+		v, err = i.beforeInit(i, v)
 		if err != nil {
 			return err
 		}
@@ -119,7 +119,7 @@ func (i *Int64) SetString(value string) error {
 	}
 
 	if i.beforeSet != nil {
-		err = i.beforeSet(i, v)
+		v, err = i.beforeSet(i, v)
 		if err != nil {
 			return err
 		}
@@ -138,27 +138,27 @@ func (i *Int64) set(value int64) {
 	atomic.StoreInt64(&i.value, value)
 }
 
-func (i *Int64) Set(value int64) (err error) {
+func (i *Int64) Set(v int64) (err error) {
 	if i.validator != nil {
-		err = i.validator(value)
+		err = i.validator(v)
 		if err != nil {
 			return err
 		}
 	}
 
 	if i.beforeSet != nil {
-		err = i.beforeSet(i, value)
+		v, err = i.beforeSet(i, v)
 		if err != nil {
 			return err
 		}
 	}
 
-	err = db.UpdateSettingItemValue(i.name, i.Stringify(value))
+	err = db.UpdateSettingItemValue(i.name, i.Stringify(v))
 	if err != nil {
 		return err
 	}
 
-	i.set(value)
+	i.set(v)
 	return
 }
 

@@ -83,54 +83,54 @@ func InitProvider(ctx context.Context) (err error) {
 		groupSettings := &ProviderGroupSetting{}
 		ProviderGroupSettings[group] = groupSettings
 
-		groupSettings.Enabled = settings.NewBoolSetting(fmt.Sprintf("%s_enabled", group), false, group, settings.WithBeforeInitBool(func(bs settings.BoolSetting, b bool) error {
+		groupSettings.Enabled = settings.NewBoolSetting(fmt.Sprintf("%s_enabled", group), false, group, settings.WithBeforeInitBool(func(bs settings.BoolSetting, b bool) (bool, error) {
 			defer Oauth2EnabledCache.Refresh()
 			if b {
-				return providers.EnableProvider(op)
+				return b, providers.EnableProvider(op)
 			} else {
 				providers.DisableProvider(op)
-				return nil
+				return b, nil
 			}
-		}), settings.WithBeforeSetBool(func(bs settings.BoolSetting, b bool) error {
+		}), settings.WithBeforeSetBool(func(bs settings.BoolSetting, b bool) (bool, error) {
 			defer Oauth2EnabledCache.Refresh()
 			if b {
-				return providers.EnableProvider(op)
+				return b, providers.EnableProvider(op)
 			} else {
 				providers.DisableProvider(op)
-				return nil
+				return b, nil
 			}
 		}))
 
 		opt := provider.Oauth2Option{}
 
-		groupSettings.ClientID = settings.NewStringSetting(fmt.Sprintf("%s_client_id", group), opt.ClientID, group, settings.WithBeforeInitString(func(ss settings.StringSetting, s string) error {
+		groupSettings.ClientID = settings.NewStringSetting(fmt.Sprintf("%s_client_id", group), opt.ClientID, group, settings.WithBeforeInitString(func(ss settings.StringSetting, s string) (string, error) {
 			opt.ClientID = s
 			pi.Init(opt)
-			return nil
-		}), settings.WithBeforeSetString(func(ss settings.StringSetting, s string) error {
+			return s, nil
+		}), settings.WithBeforeSetString(func(ss settings.StringSetting, s string) (string, error) {
 			opt.ClientID = s
 			pi.Init(opt)
-			return nil
+			return s, nil
 		}))
 
-		groupSettings.ClientSecret = settings.NewStringSetting(fmt.Sprintf("%s_client_secret", group), opt.ClientSecret, group, settings.WithBeforeInitString(func(ss settings.StringSetting, s string) error {
+		groupSettings.ClientSecret = settings.NewStringSetting(fmt.Sprintf("%s_client_secret", group), opt.ClientSecret, group, settings.WithBeforeInitString(func(ss settings.StringSetting, s string) (string, error) {
 			opt.ClientSecret = s
 			pi.Init(opt)
-			return nil
-		}), settings.WithBeforeSetString(func(ss settings.StringSetting, s string) error {
+			return s, nil
+		}), settings.WithBeforeSetString(func(ss settings.StringSetting, s string) (string, error) {
 			opt.ClientSecret = s
 			pi.Init(opt)
-			return nil
+			return s, nil
 		}))
 
-		groupSettings.RedirectURL = settings.NewStringSetting(fmt.Sprintf("%s_redirect_url", group), opt.RedirectURL, group, settings.WithBeforeInitString(func(ss settings.StringSetting, s string) error {
+		groupSettings.RedirectURL = settings.NewStringSetting(fmt.Sprintf("%s_redirect_url", group), opt.RedirectURL, group, settings.WithBeforeInitString(func(ss settings.StringSetting, s string) (string, error) {
 			opt.RedirectURL = s
 			pi.Init(opt)
-			return nil
-		}), settings.WithBeforeSetString(func(ss settings.StringSetting, s string) error {
+			return s, nil
+		}), settings.WithBeforeSetString(func(ss settings.StringSetting, s string) (string, error) {
 			opt.RedirectURL = s
 			pi.Init(opt)
-			return nil
+			return s, nil
 		}))
 
 		groupSettings.DisableUserSignup = settings.NewBoolSetting(fmt.Sprintf("%s_disable_user_signup", group), false, group)

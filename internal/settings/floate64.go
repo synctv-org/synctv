@@ -26,7 +26,7 @@ type Float64 struct {
 	defaultValue          float64
 	value                 uint64
 	validator             func(float64) error
-	beforeInit, beforeSet func(Float64Setting, float64) error
+	beforeInit, beforeSet func(Float64Setting, float64) (float64, error)
 }
 
 type Float64SettingOption func(*Float64)
@@ -37,13 +37,13 @@ func WithValidatorFloat64(validator func(float64) error) Float64SettingOption {
 	}
 }
 
-func WithBeforeInitFloat64(beforeInit func(Float64Setting, float64) error) Float64SettingOption {
+func WithBeforeInitFloat64(beforeInit func(Float64Setting, float64) (float64, error)) Float64SettingOption {
 	return func(s *Float64) {
 		s.beforeInit = beforeInit
 	}
 }
 
-func WithBeforeSetFloat64(beforeSet func(Float64Setting, float64) error) Float64SettingOption {
+func WithBeforeSetFloat64(beforeSet func(Float64Setting, float64) (float64, error)) Float64SettingOption {
 	return func(s *Float64) {
 		s.beforeSet = beforeSet
 	}
@@ -87,7 +87,7 @@ func (f *Float64) Init(value string) error {
 	}
 
 	if f.beforeInit != nil {
-		err = f.beforeInit(f, v)
+		v, err = f.beforeInit(f, v)
 		if err != nil {
 			return err
 		}
@@ -120,7 +120,7 @@ func (f *Float64) SetString(value string) error {
 	}
 
 	if f.beforeSet != nil {
-		err = f.beforeSet(f, v)
+		v, err = f.beforeSet(f, v)
 		if err != nil {
 			return err
 		}
@@ -139,27 +139,27 @@ func (f *Float64) set(value float64) {
 	atomic.StoreUint64(&f.value, math.Float64bits(value))
 }
 
-func (f *Float64) Set(value float64) (err error) {
+func (f *Float64) Set(v float64) (err error) {
 	if f.validator != nil {
-		err = f.validator(value)
+		err = f.validator(v)
 		if err != nil {
 			return err
 		}
 	}
 
 	if f.beforeSet != nil {
-		err = f.beforeSet(f, value)
+		v, err = f.beforeSet(f, v)
 		if err != nil {
 			return err
 		}
 	}
 
-	err = db.UpdateSettingItemValue(f.name, f.Stringify(value))
+	err = db.UpdateSettingItemValue(f.name, f.Stringify(v))
 	if err != nil {
 		return err
 	}
 
-	f.set(value)
+	f.set(v)
 	return
 }
 

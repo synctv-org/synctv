@@ -9,6 +9,7 @@ import (
 	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/internal/provider"
 	"github.com/synctv-org/synctv/internal/provider/providers"
+	"github.com/synctv-org/synctv/server/middlewares"
 	"github.com/synctv-org/synctv/server/model"
 	"github.com/synctv-org/synctv/utils"
 )
@@ -28,10 +29,7 @@ func BindApi(ctx *gin.Context) {
 	}
 
 	state := utils.RandString(16)
-	states.Store(state, stateMeta{
-		OAuth2Req:  meta,
-		BindUserId: user.ID,
-	}, time.Minute*5)
+	states.Store(state, newBindFunc(user.ID, meta.Redirect), time.Minute*5)
 
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
 		"url": pi.NewAuthURL(state),
@@ -54,4 +52,43 @@ func UnBindApi(ctx *gin.Context) {
 	}
 
 	ctx.Status(http.StatusNoContent)
+}
+
+func newBindFunc(userID, redirect string) stateHandler {
+	return func(ctx *gin.Context, pi provider.ProviderInterface, code string) {
+		t, err := pi.GetToken(ctx, code)
+		if err != nil {
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+			return
+		}
+
+		ui, err := pi.GetUserInfo(ctx, t)
+		if err != nil {
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+			return
+		}
+
+		user, err := op.LoadOrInitUserByID(userID)
+		if err != nil {
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+			return
+		}
+
+		err = user.BindProvider(pi.Provider(), ui.ProviderUserID)
+		if err != nil {
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+			return
+		}
+
+		token, err := middlewares.NewAuthUserToken(user)
+		if err != nil {
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+			return
+		}
+
+		ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
+			"token":    token,
+			"redirect": redirect,
+		}))
+	}
 }

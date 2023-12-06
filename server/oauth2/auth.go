@@ -1,8 +1,6 @@
 package auth
 
 import (
-	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -30,11 +28,7 @@ func OAuth2(ctx *gin.Context) {
 	}
 
 	state := utils.RandString(16)
-	states.Store(state, stateMeta{
-		OAuth2Req: model.OAuth2Req{
-			Redirect: ctx.Query("redirect"),
-		},
-	}, time.Minute*5)
+	states.Store(state, newAuthFunc(ctx.Query("redirect")), time.Minute*5)
 
 	RenderRedirect(ctx, pi.NewAuthURL(state))
 }
@@ -53,9 +47,7 @@ func OAuth2Api(ctx *gin.Context) {
 	}
 
 	state := utils.RandString(16)
-	states.Store(state, stateMeta{
-		OAuth2Req: meta,
-	}, time.Minute*5)
+	states.Store(state, newAuthFunc(meta.Redirect), time.Minute*5)
 
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
 		"url": pi.NewAuthURL(state),
@@ -77,17 +69,15 @@ func OAuth2Callback(ctx *gin.Context) {
 		return
 	}
 
-	ld, err := login(ctx, ctx.Query("state"), code, pi)
-	if err != nil {
-		if err == op.ErrUserBanned || err == op.ErrUserPending {
-			ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(err))
-			return
-		}
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+	meta, loaded := states.LoadAndDelete(ctx.Query("state"))
+	if !loaded {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("invalid oauth2 state"))
 		return
 	}
 
-	RenderToken(ctx, ld.redirect, ld.token)
+	if meta.Value() != nil {
+		meta.Value()(ctx, pi, code)
+	}
 }
 
 // POST
@@ -104,77 +94,65 @@ func OAuth2CallbackApi(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 	}
 
-	ld, err := login(ctx, req.State, req.Code, pi)
-	if err != nil {
-		if err == op.ErrUserBanned || err == op.ErrUserPending {
-			ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(err))
-			return
-		}
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+	meta, loaded := states.LoadAndDelete(req.State)
+	if !loaded {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("invalid oauth2 state"))
 		return
 	}
 
-	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
-		"token":    ld.token,
-		"redirect": ld.redirect,
-	}))
+	if meta.Value() != nil {
+		meta.Value()(ctx, pi, req.Code)
+	}
 }
 
-type loginData struct {
-	token, redirect string
-}
-
-func login(ctx context.Context, state, code string, pi provider.ProviderInterface) (*loginData, error) {
-	meta, loaded := states.LoadAndDelete(state)
-	if !loaded {
-		return nil, errors.New("invalid oauth2 state")
-	}
-
-	t, err := pi.GetToken(ctx, code)
-	if err != nil {
-		return nil, err
-	}
-
-	ui, err := pi.GetUserInfo(ctx, t)
-	if err != nil {
-		return nil, err
-	}
-
-	pgs, loaded := bootstrap.ProviderGroupSettings[dbModel.SettingGroup(fmt.Sprintf("%s_%s", dbModel.SettingGroupOauth2, pi.Provider()))]
-	if !loaded {
-		return nil, errors.New("invalid oauth2 provider")
-	}
-
-	var user *op.User
-	if meta.Value().BindUserId != "" {
-		user, err = op.LoadOrInitUserByID(meta.Value().BindUserId)
-	} else if settings.DisableUserSignup.Get() || pgs.DisableUserSignup.Get() {
-		user, err = op.GetUserByProvider(pi.Provider(), ui.ProviderUserID)
-	} else {
-		if settings.SignupNeedReview.Get() || pgs.SignupNeedReview.Get() {
-			user, err = op.CreateOrLoadUserWithProvider(ui.Username, utils.RandString(16), pi.Provider(), ui.ProviderUserID, db.WithRole(dbModel.RolePending))
-		} else {
-			user, err = op.CreateOrLoadUserWithProvider(ui.Username, utils.RandString(16), pi.Provider(), ui.ProviderUserID)
-		}
-	}
-	if err != nil {
-		return nil, err
-	}
-
-	if meta.Value().BindUserId != "" {
-		err = user.BindProvider(pi.Provider(), ui.ProviderUserID)
+func newAuthFunc(redirect string) stateHandler {
+	return func(ctx *gin.Context, pi provider.ProviderInterface, code string) {
+		t, err := pi.GetToken(ctx, code)
 		if err != nil {
-			return nil, err
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+			return
+		}
+
+		ui, err := pi.GetUserInfo(ctx, t)
+		if err != nil {
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+			return
+		}
+
+		pgs, loaded := bootstrap.ProviderGroupSettings[dbModel.SettingGroup(fmt.Sprintf("%s_%s", dbModel.SettingGroupOauth2, pi.Provider()))]
+		if !loaded {
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("invalid oauth2 provider"))
+			return
+		}
+
+		var user *op.User
+		if settings.DisableUserSignup.Get() || pgs.DisableUserSignup.Get() {
+			user, err = op.GetUserByProvider(pi.Provider(), ui.ProviderUserID)
+		} else {
+			if settings.SignupNeedReview.Get() || pgs.SignupNeedReview.Get() {
+				user, err = op.CreateOrLoadUserWithProvider(ui.Username, utils.RandString(16), pi.Provider(), ui.ProviderUserID, db.WithRole(dbModel.RolePending))
+			} else {
+				user, err = op.CreateOrLoadUserWithProvider(ui.Username, utils.RandString(16), pi.Provider(), ui.ProviderUserID)
+			}
+		}
+		if err != nil {
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+			return
+		}
+
+		token, err := middlewares.NewAuthUserToken(user)
+		if err != nil {
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+			return
+		}
+
+		if ctx.Request.Method == http.MethodGet {
+			RenderToken(ctx, redirect, token)
+		} else if ctx.Request.Method == http.MethodPost {
+			ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
+				"token":    token,
+				"redirect": redirect,
+			}))
 		}
 	}
-
-	token, err := middlewares.NewAuthUserToken(user)
-	if err != nil {
-		return nil, err
-	}
-
-	return &loginData{
-		token:    token,
-		redirect: meta.Value().Redirect,
-	}, nil
 }

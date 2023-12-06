@@ -41,7 +41,7 @@ func LoadOrInitRoom(room *model.Room) (*Room, error) {
 		movies: movies{
 			roomID: room.ID,
 		},
-	}, time.Duration(settings.RoomTTL.Get()))
+	}, time.Duration(settings.RoomTTL.Get())*time.Hour)
 	return i.Value(), nil
 }
 
@@ -92,7 +92,7 @@ func CompareAndCloseRoom(room *Room) error {
 func LoadRoomByID(id string) (*Room, error) {
 	r2, loaded := roomCache.Load(id)
 	if loaded {
-		r2.SetExpiration(time.Now().Add(time.Duration(settings.RoomTTL.Get())))
+		r2.SetExpiration(time.Now().Add(time.Duration(settings.RoomTTL.Get()) * time.Hour))
 		return r2.Value(), nil
 	}
 	return nil, errors.New("room not found")
@@ -104,7 +104,7 @@ func LoadOrInitRoomByID(id string) (*Room, error) {
 	}
 	i, loaded := roomCache.Load(id)
 	if loaded {
-		i.SetExpiration(time.Now().Add(time.Duration(settings.RoomTTL.Get())))
+		i.SetExpiration(time.Now().Add(time.Duration(settings.RoomTTL.Get()) * time.Hour))
 		return i.Value(), nil
 	}
 	room, err := db.GetRoomByID(id)

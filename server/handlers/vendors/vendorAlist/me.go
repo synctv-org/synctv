@@ -1,6 +1,7 @@
 package vendorAlist
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -12,10 +13,18 @@ import (
 	"github.com/synctv-org/vendors/api/alist"
 )
 
+type AlistMeResp = model.VendorMeResp[*alist.MeResp]
+
 func Me(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*op.User)
-	v, err := db.FirstOrCreateVendorByUserIDAndVendor(user.ID, dbModel.StreamingVendorAlist)
+	v, err := db.GetVendorByUserIDAndVendor(user.ID, dbModel.StreamingVendorAlist)
 	if err != nil {
+		if errors.Is(err, db.ErrNotFound("vendor")) {
+			ctx.JSON(http.StatusOK, model.NewApiDataResp(&AlistMeResp{
+				IsLogin: false,
+			}))
+			return
+		}
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}
@@ -29,5 +38,8 @@ func Me(ctx *gin.Context) {
 		return
 	}
 
-	ctx.JSON(http.StatusOK, model.NewApiDataResp(resp))
+	ctx.JSON(http.StatusOK, model.NewApiDataResp(&AlistMeResp{
+		IsLogin: false,
+		Info:    resp,
+	}))
 }

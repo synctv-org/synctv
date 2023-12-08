@@ -50,16 +50,21 @@ func Parse(ctx *gin.Context) {
 		return
 	}
 
-	v, err := db.FirstOrCreateVendorByUserIDAndVendor(user.ID, dbModel.StreamingVendorBilibili)
+	var cookies []*http.Cookie
+	vendorInfo, err := db.GetVendorByUserIDAndVendor(user.ID, dbModel.StreamingVendorBilibili)
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
-		return
+		if !errors.Is(err, db.ErrNotFound("vendor")) {
+			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+			return
+		}
+	} else {
+		cookies = vendorInfo.Cookies
 	}
 
 	switch resp.Type {
 	case "bv":
 		resp, err := cli.ParseVideoPage(ctx, &bilibili.ParseVideoPageReq{
-			Cookies:  utils.HttpCookieToMap(v.Cookies),
+			Cookies:  utils.HttpCookieToMap(cookies),
 			Bvid:     resp.Id,
 			Sections: ctx.DefaultQuery("sections", "false") == "true",
 		})
@@ -75,7 +80,7 @@ func Parse(ctx *gin.Context) {
 			return
 		}
 		resp, err := cli.ParseVideoPage(ctx, &bilibili.ParseVideoPageReq{
-			Cookies:  utils.HttpCookieToMap(v.Cookies),
+			Cookies:  utils.HttpCookieToMap(cookies),
 			Aid:      aid,
 			Sections: ctx.DefaultQuery("sections", "false") == "true",
 		})
@@ -91,7 +96,7 @@ func Parse(ctx *gin.Context) {
 			return
 		}
 		resp, err := cli.ParsePGCPage(ctx, &bilibili.ParsePGCPageReq{
-			Cookies: utils.HttpCookieToMap(v.Cookies),
+			Cookies: utils.HttpCookieToMap(cookies),
 			Epid:    epid,
 		})
 		if err != nil {
@@ -106,7 +111,7 @@ func Parse(ctx *gin.Context) {
 			return
 		}
 		resp, err := cli.ParsePGCPage(ctx, &bilibili.ParsePGCPageReq{
-			Cookies: utils.HttpCookieToMap(v.Cookies),
+			Cookies: utils.HttpCookieToMap(cookies),
 			Ssid:    ssid,
 		})
 		if err != nil {

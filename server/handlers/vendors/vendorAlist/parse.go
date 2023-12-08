@@ -40,7 +40,7 @@ func List(ctx *gin.Context) {
 		return
 	}
 
-	v, err := db.FirstOrCreateVendorByUserIDAndVendor(user.ID, dbModel.StreamingVendorAlist)
+	v, err := db.GetVendorByUserIDAndVendor(user.ID, dbModel.StreamingVendorAlist)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return

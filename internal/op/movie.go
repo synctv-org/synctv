@@ -12,7 +12,6 @@ import (
 	"github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/settings"
 	"github.com/synctv-org/synctv/utils"
-	"github.com/zijiren233/gencontainer/refreshcache"
 	"github.com/zijiren233/livelib/av"
 	"github.com/zijiren233/livelib/container/flv"
 	"github.com/zijiren233/livelib/protocol/hls"
@@ -31,12 +30,12 @@ type Movie struct {
 
 type BaseCache struct {
 	lock  sync.RWMutex
-	cache map[string]*refreshcache.RefreshCache[any]
+	cache map[string]any
 }
 
 func newBaseCache() *BaseCache {
 	return &BaseCache{
-		cache: make(map[string]*refreshcache.RefreshCache[any]),
+		cache: make(map[string]any),
 	}
 }
 
@@ -50,7 +49,7 @@ func (b *BaseCache) clear() {
 	maps.Clear(b.cache)
 }
 
-func (b *BaseCache) InitOrLoadCache(id string, refreshFunc func() (any, error), maxAge time.Duration) (*refreshcache.RefreshCache[any], error) {
+func (b *BaseCache) InitOrLoadCache(id string, refreshFunc func() (any, error), maxAge time.Duration) (any, error) {
 	b.lock.RLock()
 	c, loaded := b.cache[id]
 	if loaded {
@@ -66,7 +65,10 @@ func (b *BaseCache) InitOrLoadCache(id string, refreshFunc func() (any, error), 
 		return c, nil
 	}
 
-	c = refreshcache.NewRefreshCache[any](refreshFunc, maxAge)
+	c, err := refreshFunc()
+	if err != nil {
+		return nil, err
+	}
 	b.cache[id] = c
 	return c, nil
 }

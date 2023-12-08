@@ -314,7 +314,7 @@ func SortUUID() string {
 }
 
 func HttpCookieToMap(c []*http.Cookie) map[string]string {
-	m := make(map[string]string)
+	m := make(map[string]string, len(c))
 	for _, v := range c {
 		m[v.Name] = v.Value
 	}

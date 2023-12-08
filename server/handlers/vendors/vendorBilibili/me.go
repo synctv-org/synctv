@@ -1,6 +1,7 @@
 package vendorBilibili
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -13,15 +14,23 @@ import (
 	"github.com/synctv-org/vendors/api/bilibili"
 )
 
+type BilibiliMeResp = model.VendorMeResp[*bilibili.UserInfoResp]
+
 func Me(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*op.User)
-	v, err := db.FirstOrCreateVendorByUserIDAndVendor(user.ID, dbModel.StreamingVendorBilibili)
+	v, err := db.GetVendorByUserIDAndVendor(user.ID, dbModel.StreamingVendorBilibili)
 	if err != nil {
+		if errors.Is(err, db.ErrNotFound("vendor")) {
+			ctx.JSON(http.StatusOK, model.NewApiDataResp(&BilibiliMeResp{
+				IsLogin: false,
+			}))
+			return
+		}
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}
 	if len(v.Cookies) == 0 {
-		ctx.JSON(http.StatusOK, model.NewApiDataResp(&bilibili.UserInfoResp{
+		ctx.JSON(http.StatusOK, model.NewApiDataResp(&BilibiliMeResp{
 			IsLogin: false,
 		}))
 		return
@@ -34,5 +43,8 @@ func Me(ctx *gin.Context) {
 		return
 	}
 
-	ctx.JSON(http.StatusOK, model.NewApiDataResp(resp))
+	ctx.JSON(http.StatusOK, model.NewApiDataResp(&BilibiliMeResp{
+		IsLogin: resp.IsLogin,
+		Info:    resp,
+	}))
 }

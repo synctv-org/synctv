@@ -44,8 +44,12 @@ The theater feature provides a chat and bullet chat function, allowing you to co
   - [x] Chat
   - [x] Bullet chat
 - [x] Proxy
-  - [ ] Videos proxy
-  - [ ] Live proxy
+  - [x] Videos proxy
+  - [x] Live proxy
+- [x] Parse
+  - [x] Parse video
+    - [x] Bilibili
+  - [ ] Parse live
 
 ---
 
@@ -90,7 +94,8 @@ synctv server --data-dir ./
 # Documentation
 https://synctv.wiki
 
----
+# Special sponsors
+- [亚洲云](https://www.asiayun.com) supports the server for the demo site.
 
 # Contributors
 Thanks goes to these wonderful people:

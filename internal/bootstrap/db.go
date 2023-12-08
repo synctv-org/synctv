@@ -57,7 +57,7 @@ func createDialector(dbConf conf.DatabaseConfig) (dialector gorm.Dialector, err 
 				conf.Conf.Database.User,
 				conf.Conf.Database.Password,
 				conf.Conf.Database.Host,
-				conf.Conf.Database.DBName,
+				conf.Conf.Database.Name,
 				conf.Conf.Database.SslMode,
 			)
 			log.Infof("mysql database unix socket: %s", conf.Conf.Database.Host)
@@ -67,7 +67,7 @@ func createDialector(dbConf conf.DatabaseConfig) (dialector gorm.Dialector, err 
 				conf.Conf.Database.Password,
 				conf.Conf.Database.Host,
 				conf.Conf.Database.Port,
-				conf.Conf.Database.DBName,
+				conf.Conf.Database.Name,
 				conf.Conf.Database.SslMode,
 			)
 			log.Infof("mysql database tcp: %s:%d", conf.Conf.Database.Host, conf.Conf.Database.Port)
@@ -83,19 +83,19 @@ func createDialector(dbConf conf.DatabaseConfig) (dialector gorm.Dialector, err 
 	case conf.DatabaseTypeSqlite3:
 		if conf.Conf.Database.CustomDSN != "" {
 			dsn = conf.Conf.Database.CustomDSN
-		} else if conf.Conf.Database.DBName == "memory" || strings.HasPrefix(conf.Conf.Database.DBName, ":memory:") {
+		} else if conf.Conf.Database.Name == "memory" || strings.HasPrefix(conf.Conf.Database.Name, ":memory:") {
 			dsn = "file::memory:?cache=shared&_journal_mode=WAL&_vacuum=incremental&_pragma=foreign_keys(1)"
 			log.Infof("sqlite3 database memory")
 		} else {
-			if !strings.HasSuffix(conf.Conf.Database.DBName, ".db") {
-				conf.Conf.Database.DBName = conf.Conf.Database.DBName + ".db"
+			if !strings.HasSuffix(conf.Conf.Database.Name, ".db") {
+				conf.Conf.Database.Name = conf.Conf.Database.Name + ".db"
 			}
-			conf.Conf.Database.DBName, err = utils.OptFilePath(conf.Conf.Database.DBName)
+			conf.Conf.Database.Name, err = utils.OptFilePath(conf.Conf.Database.Name)
 			if err != nil {
 				log.Fatalf("sqlite3 database file path error: %v", err)
 			}
-			dsn = fmt.Sprintf("%s?_journal_mode=WAL&_vacuum=incremental&_pragma=foreign_keys(1)", conf.Conf.Database.DBName)
-			log.Infof("sqlite3 database file: %s", conf.Conf.Database.DBName)
+			dsn = fmt.Sprintf("%s?_journal_mode=WAL&_vacuum=incremental&_pragma=foreign_keys(1)", conf.Conf.Database.Name)
+			log.Infof("sqlite3 database file: %s", conf.Conf.Database.Name)
 		}
 		dialector = sqlite.Open(dsn)
 	case conf.DatabaseTypePostgres:
@@ -106,7 +106,7 @@ func createDialector(dbConf conf.DatabaseConfig) (dialector gorm.Dialector, err 
 				conf.Conf.Database.Host,
 				conf.Conf.Database.User,
 				conf.Conf.Database.Password,
-				conf.Conf.Database.DBName,
+				conf.Conf.Database.Name,
 				conf.Conf.Database.SslMode,
 			)
 			log.Infof("postgres database unix socket: %s", conf.Conf.Database.Host)
@@ -116,7 +116,7 @@ func createDialector(dbConf conf.DatabaseConfig) (dialector gorm.Dialector, err 
 				conf.Conf.Database.Port,
 				conf.Conf.Database.User,
 				conf.Conf.Database.Password,
-				conf.Conf.Database.DBName,
+				conf.Conf.Database.Name,
 				conf.Conf.Database.SslMode,
 			)
 			log.Infof("postgres database tcp: %s:%d", conf.Conf.Database.Host, conf.Conf.Database.Port)

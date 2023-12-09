@@ -31,7 +31,7 @@ require (
 	github.com/synctv-org/vendors v0.1.1-0.20231209122754-ebad9251fa7a
 	github.com/ulule/limiter/v3 v3.11.2
 	github.com/zencoder/go-dash/v3 v3.0.3
-	github.com/zijiren233/gencontainer v0.0.0-20231209055719-473cab2b7931
+	github.com/zijiren233/gencontainer v0.0.0-20231209155516-a52fcb19fee5
 	github.com/zijiren233/go-colorable v0.0.0-20230930131441-997304c961cb
 	github.com/zijiren233/ksync v0.2.0
 	github.com/zijiren233/livelib v0.2.3-0.20231103145812-58de2ae7f423

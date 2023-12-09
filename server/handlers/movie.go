@@ -33,6 +33,7 @@ import (
 	"github.com/synctv-org/vendors/api/alist"
 	"github.com/synctv-org/vendors/api/bilibili"
 	"github.com/zencoder/go-dash/v3/mpd"
+	"github.com/zijiren233/gencontainer/refreshcache"
 	"github.com/zijiren233/livelib/protocol/hls"
 	"github.com/zijiren233/livelib/protocol/httpflv"
 	"golang.org/x/exp/maps"
@@ -807,7 +808,10 @@ func initBilibiliCache(ctx context.Context, movie dbModel.Movie, cookieUserID st
 	}
 }
 
-type bilibiliSubtitleCache map[string]func(context.Context) ([]byte, error)
+type bilibiliSubtitleCache map[string]*struct {
+	url string
+	srt *refreshcache.RefreshData[[]byte]
+}
 
 type bilibiliSubtitleResp struct {
 	FontSize        float64 `json:"font_size"`
@@ -854,9 +858,12 @@ func initBilibiliSubtitleCache(ctx context.Context, movie dbModel.Movie) func() 
 		}
 		subtitleCache := make(bilibiliSubtitleCache, len(resp.Subtitles))
 		for k, v := range resp.Subtitles {
-			v := v
-			subtitleCache[k] = func(ctx context.Context) ([]byte, error) {
-				return translateBilibiliSubtitleToSrt(ctx, v)
+			subtitleCache[k] = &struct {
+				url string
+				srt *refreshcache.RefreshData[[]byte]
+			}{
+				url: v,
+				srt: refreshcache.NewRefreshData[[]byte](0),
 			}
 		}
 
@@ -1016,7 +1023,9 @@ func proxyVendorMovie(ctx *gin.Context, movie *op.Movie) {
 				return
 			}
 			if s, ok := srtFunc[id]; ok {
-				srtData, err := s(ctx)
+				srtData, err := s.srt.Get(func() ([]byte, error) {
+					return translateBilibiliSubtitleToSrt(ctx, s.url)
+				})
 				if err != nil {
 					ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 					return

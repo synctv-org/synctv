@@ -469,7 +469,7 @@ func ProxyMovie(ctx *gin.Context) {
 
 	switch m.Movie.Base.Type {
 	case "mpd":
-		mpdI, err := m.Cache().InitOrLoadCache("", initDashCache(ctx, &m.Movie), time.Minute*5)
+		mpdI, err := m.Cache().LoadOrStore("", initDashCache(ctx, &m.Movie), time.Minute*5)
 		if err != nil {
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 			return
@@ -854,7 +854,7 @@ func proxyVendorMovie(ctx *gin.Context, movie *op.Movie) {
 		if t != "hevc" {
 			t = ""
 		}
-		mpdI, err := movie.Cache().InitOrLoadCache(t, initBilibiliMPDCache(ctx, movie.Movie), time.Minute*119)
+		mpdI, err := movie.Cache().LoadOrStore(t, initBilibiliMPDCache(ctx, movie.Movie), time.Minute*119)
 		if err != nil {
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 			return
@@ -899,7 +899,7 @@ func parse2VendorMovie(ctx context.Context, userID string, movie *op.Movie) (err
 	switch movie.Movie.Base.VendorInfo.Vendor {
 	case dbModel.StreamingVendorBilibili:
 		if !movie.Movie.Base.Proxy {
-			dataI, err := movie.Cache().InitOrLoadCache(userID, initBilibiliShareCache(ctx, movie.Movie), time.Minute*119)
+			dataI, err := movie.Cache().LoadOrStore(userID, initBilibiliShareCache(ctx, movie.Movie), time.Minute*119)
 			if err != nil {
 				return err
 			}
@@ -916,7 +916,7 @@ func parse2VendorMovie(ctx context.Context, userID string, movie *op.Movie) (err
 		return nil
 
 	case dbModel.StreamingVendorAlist:
-		dataI, err := movie.Cache().InitOrLoadCache("", initAlistCache(ctx, movie.Movie), time.Minute*15)
+		dataI, err := movie.Cache().LoadOrStore("", initAlistCache(ctx, movie.Movie), time.Minute*15)
 		if err != nil {
 			return err
 		}

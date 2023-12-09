@@ -873,11 +873,14 @@ func initBilibiliSubtitleCache(ctx context.Context, movie dbModel.Movie) func() 
 
 func convertToSRT(subtitles bilibiliSubtitleResp) []byte {
 	srt := bytes.NewBuffer(nil)
-	counter := 1
+	counter := 0
 	for _, subtitle := range subtitles.Body {
-		start := formatTime(subtitle.From)
-		end := formatTime(subtitle.To)
-		srt.WriteString(fmt.Sprintf("%d\n%s --> %s\n%s\n\n", counter, start, end, subtitle.Content))
+		srt.WriteString(
+			fmt.Sprintf("%d\n%s --> %s\n%s\n\n",
+				counter,
+				formatTime(subtitle.From),
+				formatTime(subtitle.To),
+				subtitle.Content))
 		counter++
 	}
 	return srt.Bytes()

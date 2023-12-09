@@ -52,16 +52,18 @@ type BilibiliVendorInfo struct {
 }
 
 func (b *BilibiliVendorInfo) Validate() error {
-	if b.Bvid == "" && b.Epid == 0 {
-		return fmt.Errorf("bvid and epid are empty")
-	}
-
-	if b.Bvid != "" && b.Epid != 0 {
-		return fmt.Errorf("bvid and epid can't be set at the same time")
-	}
-
-	if b.Bvid != "" && b.Cid == 0 {
-		return fmt.Errorf("cid is empty")
+	switch {
+	// 先判断epid是否为0来确定是否是pgc
+	case b.Epid != 0:
+		if b.Bvid == "" || b.Cid == 0 {
+			return fmt.Errorf("bvid or cid is empty")
+		}
+	case b.Bvid != "":
+		if b.Cid == 0 {
+			return fmt.Errorf("cid is empty")
+		}
+	default:
+		return fmt.Errorf("bvid or epid is empty")
 	}
 
 	return nil

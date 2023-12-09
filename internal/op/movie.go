@@ -226,19 +226,7 @@ func (movie *Movie) Validate() error {
 func (movie *Movie) validateVendorMovie() error {
 	switch movie.Movie.Base.VendorInfo.Vendor {
 	case model.StreamingVendorBilibili:
-		err := movie.Movie.Base.VendorInfo.Bilibili.Validate()
-		if err != nil {
-			return err
-		}
-		if movie.Movie.Base.Headers == nil {
-			movie.Movie.Base.Headers = map[string]string{
-				"Referer":    "https://www.bilibili.com",
-				"User-Agent": utils.UA,
-			}
-		} else {
-			movie.Movie.Base.Headers["Referer"] = "https://www.bilibili.com"
-			movie.Movie.Base.Headers["User-Agent"] = utils.UA
-		}
+		return movie.Movie.Base.VendorInfo.Bilibili.Validate()
 
 	case model.StreamingVendorAlist:
 

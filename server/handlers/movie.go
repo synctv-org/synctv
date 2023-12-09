@@ -33,6 +33,7 @@ import (
 	"github.com/zencoder/go-dash/v3/mpd"
 	"github.com/zijiren233/livelib/protocol/hls"
 	"github.com/zijiren233/livelib/protocol/httpflv"
+	"golang.org/x/exp/maps"
 )
 
 func GetPageAndPageSize(ctx *gin.Context) (int, int, error) {
@@ -680,25 +681,8 @@ func initBilibiliMPDCache(ctx context.Context, movie dbModel.Movie) func() (any,
 		cli := vendor.BilibiliClient(movie.Base.VendorInfo.Backend)
 		var m, hevcM *mpd.MPD
 		biliInfo := movie.Base.VendorInfo.Bilibili
-		if biliInfo.Bvid != "" && biliInfo.Cid != 0 {
-			resp, err := cli.GetDashVideoURL(ctx, &bilibili.GetDashVideoURLReq{
-				Cookies: utils.HttpCookieToMap(cookies),
-				Bvid:    biliInfo.Bvid,
-				Cid:     biliInfo.Cid,
-			})
-			if err != nil {
-				return nil, err
-			}
-			m, err = mpd.ReadFromString(resp.Mpd)
-			if err != nil {
-				return nil, err
-			}
-			hevcM, err = mpd.ReadFromString(resp.HevcMpd)
-			if err != nil {
-				return nil, err
-			}
-
-		} else if biliInfo.Epid != 0 {
+		switch {
+		case biliInfo.Epid != 0:
 			resp, err := cli.GetDashPGCURL(ctx, &bilibili.GetDashPGCURLReq{
 				Cookies: utils.HttpCookieToMap(cookies),
 				Epid:    biliInfo.Epid,
@@ -715,7 +699,24 @@ func initBilibiliMPDCache(ctx context.Context, movie dbModel.Movie) func() (any,
 				return nil, err
 			}
 
-		} else {
+		case biliInfo.Bvid != "":
+			resp, err := cli.GetDashVideoURL(ctx, &bilibili.GetDashVideoURLReq{
+				Cookies: utils.HttpCookieToMap(cookies),
+				Bvid:    biliInfo.Bvid,
+				Cid:     biliInfo.Cid,
+			})
+			if err != nil {
+				return nil, err
+			}
+			m, err = mpd.ReadFromString(resp.Mpd)
+			if err != nil {
+				return nil, err
+			}
+			hevcM, err = mpd.ReadFromString(resp.HevcMpd)
+			if err != nil {
+				return nil, err
+			}
+		default:
 			return nil, errors.New("bvid and epid are empty")
 		}
 		m.BaseURL = append(m.BaseURL, fmt.Sprintf("/api/movie/proxy/%s/", movie.RoomID))
@@ -773,7 +774,18 @@ func initBilibiliShareCache(ctx context.Context, movie dbModel.Movie) func() (an
 		cli := vendor.BilibiliClient(movie.Base.VendorInfo.Backend)
 		var u string
 		biliInfo := movie.Base.VendorInfo.Bilibili
-		if biliInfo.Bvid != "" {
+		switch {
+		case biliInfo.Epid != 0:
+			resp, err := cli.GetPGCURL(ctx, &bilibili.GetPGCURLReq{
+				Cookies: utils.HttpCookieToMap(cookies),
+				Epid:    biliInfo.Epid,
+			})
+			if err != nil {
+				return nil, err
+			}
+			u = resp.Url
+
+		case biliInfo.Bvid != "":
 			resp, err := cli.GetVideoURL(ctx, &bilibili.GetVideoURLReq{
 				Cookies: utils.HttpCookieToMap(cookies),
 				Bvid:    biliInfo.Bvid,
@@ -783,18 +795,12 @@ func initBilibiliShareCache(ctx context.Context, movie dbModel.Movie) func() (an
 				return nil, err
 			}
 			u = resp.Url
-		} else if biliInfo.Epid != 0 {
-			resp, err := cli.GetPGCURL(ctx, &bilibili.GetPGCURLReq{
-				Cookies: utils.HttpCookieToMap(cookies),
-				Epid:    biliInfo.Epid,
-			})
-			if err != nil {
-				return nil, err
-			}
-			u = resp.Url
-		} else {
+
+		default:
 			return nil, errors.New("bvid and epid are empty")
+
 		}
+
 		return u, nil
 	}
 }
@@ -881,7 +887,17 @@ func proxyVendorMovie(ctx *gin.Context, movie *op.Movie) {
 				ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("stream id out of range"))
 				return
 			}
-			proxyURL(ctx, mpd.urls[streamId], movie.Movie.Base.Headers)
+			headers := maps.Clone(movie.Movie.Base.Headers)
+			if headers == nil {
+				headers = map[string]string{
+					"Referer":    "https://www.bilibili.com",
+					"User-Agent": utils.UA,
+				}
+			} else {
+				headers["Referer"] = "https://www.bilibili.com"
+				headers["User-Agent"] = utils.UA
+			}
+			proxyURL(ctx, mpd.urls[streamId], headers)
 			return
 		}
 

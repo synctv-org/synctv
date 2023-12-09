@@ -827,7 +827,7 @@ type bilibiliSubtitleResp struct {
 	} `json:"body"`
 }
 
-func initBilibiliSubtitleCache(ctx context.Context, movie dbModel.Movie, cookieUserID string) func() (any, error) {
+func initBilibiliSubtitleCache(ctx context.Context, movie dbModel.Movie) func() (any, error) {
 	return func() (any, error) {
 		biliInfo := movie.Base.VendorInfo.Bilibili
 		if biliInfo.Bvid == "" || biliInfo.Cid == 0 {
@@ -835,7 +835,7 @@ func initBilibiliSubtitleCache(ctx context.Context, movie dbModel.Movie, cookieU
 		}
 
 		var cookies []*http.Cookie
-		vendorInfo, err := db.GetVendorByUserIDAndVendor(cookieUserID, dbModel.StreamingVendorBilibili)
+		vendorInfo, err := db.GetVendorByUserIDAndVendor(movie.CreatorID, dbModel.StreamingVendorBilibili)
 		if err != nil {
 			if !errors.Is(err, db.ErrNotFound("vendor")) {
 				return nil, err
@@ -1005,7 +1005,7 @@ func proxyVendorMovie(ctx *gin.Context, movie *op.Movie) {
 				ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("n is empty"))
 				return
 			}
-			srtI, err := movie.Cache().LoadOrStore("subtitle", initBilibiliSubtitleCache(ctx, movie.Movie, movie.Movie.CreatorID), time.Minute*15)
+			srtI, err := movie.Cache().LoadOrStore("subtitle", initBilibiliSubtitleCache(ctx, movie.Movie), time.Minute*15)
 			if err != nil {
 				ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 				return
@@ -1057,7 +1057,7 @@ func parse2VendorMovie(ctx context.Context, userID string, movie *op.Movie) (err
 		} else {
 			movie.Movie.Base.Type = "mpd"
 		}
-		srtI, err := movie.Cache().LoadOrStore("subtitle", initBilibiliSubtitleCache(ctx, movie.Movie, userID), time.Minute*15)
+		srtI, err := movie.Cache().LoadOrStore("subtitle", initBilibiliSubtitleCache(ctx, movie.Movie), time.Minute*15)
 		if err != nil {
 			return err
 		}

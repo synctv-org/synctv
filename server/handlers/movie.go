@@ -461,13 +461,13 @@ func ProxyMovie(ctx *gin.Context) {
 		return
 	}
 
-	if !m.Movie.Base.Proxy || m.Movie.Base.Live || m.Movie.Base.RtmpSource {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support movie proxy"))
+	if m.Movie.Base.VendorInfo.Vendor != "" {
+		proxyVendorMovie(ctx, m)
 		return
 	}
 
-	if m.Movie.Base.VendorInfo.Vendor != "" {
-		proxyVendorMovie(ctx, m)
+	if !m.Movie.Base.Proxy || m.Movie.Base.Live || m.Movie.Base.RtmpSource {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support movie proxy"))
 		return
 	}
 
@@ -966,6 +966,11 @@ func proxyVendorMovie(ctx *gin.Context, movie *op.Movie) {
 		t := ctx.Query("t")
 		switch t {
 		case "", "hevc":
+			if !movie.Movie.Base.Proxy {
+				ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support movie proxy"))
+				return
+			}
+
 			mpdI, err := movie.Cache().LoadOrStore(t, initBilibiliMPDCache(ctx, movie.Movie), time.Minute*119)
 			if err != nil {
 				ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))

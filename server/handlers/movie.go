@@ -9,6 +9,7 @@ import (
 	"image/color"
 	"image/png"
 	"io"
+	"math"
 	"math/rand"
 	"net/http"
 	"net/url"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	json "github.com/json-iterator/go"
 	"github.com/synctv-org/synctv/internal/conf"
 	"github.com/synctv-org/synctv/internal/db"
 	dbModel "github.com/synctv-org/synctv/internal/model"
@@ -760,10 +762,10 @@ func initBilibiliMPDCache(ctx context.Context, movie dbModel.Movie) func() (any,
 	}
 }
 
-func initBilibiliShareCache(ctx context.Context, movie dbModel.Movie) func() (any, error) {
+func initBilibiliCache(ctx context.Context, movie dbModel.Movie, cookieUserID string) func() (any, error) {
 	return func() (any, error) {
 		var cookies []*http.Cookie
-		vendorInfo, err := db.GetVendorByUserIDAndVendor(movie.CreatorID, dbModel.StreamingVendorBilibili)
+		vendorInfo, err := db.GetVendorByUserIDAndVendor(cookieUserID, dbModel.StreamingVendorBilibili)
 		if err != nil {
 			if !errors.Is(err, db.ErrNotFound("vendor")) {
 				return nil, err
@@ -803,6 +805,104 @@ func initBilibiliShareCache(ctx context.Context, movie dbModel.Movie) func() (an
 
 		return u, nil
 	}
+}
+
+type bilibiliSubtitleCache map[string]func(context.Context) ([]byte, error)
+
+type bilibiliSubtitleResp struct {
+	FontSize        float64 `json:"font_size"`
+	FontColor       string  `json:"font_color"`
+	BackgroundAlpha float64 `json:"background_alpha"`
+	BackgroundColor string  `json:"background_color"`
+	Stroke          string  `json:"Stroke"`
+	Type            string  `json:"type"`
+	Lang            string  `json:"lang"`
+	Version         string  `json:"version"`
+	Body            []struct {
+		From     float64 `json:"from"`
+		To       float64 `json:"to"`
+		Sid      int     `json:"sid"`
+		Location int     `json:"location"`
+		Content  string  `json:"content"`
+	} `json:"body"`
+}
+
+func initBilibiliSubtitleCache(ctx context.Context, movie dbModel.Movie, cookieUserID string) func() (any, error) {
+	return func() (any, error) {
+		biliInfo := movie.Base.VendorInfo.Bilibili
+		if biliInfo.Bvid == "" || biliInfo.Cid == 0 {
+			return nil, errors.New("bvid or cid is empty")
+		}
+
+		var cookies []*http.Cookie
+		vendorInfo, err := db.GetVendorByUserIDAndVendor(cookieUserID, dbModel.StreamingVendorBilibili)
+		if err != nil {
+			if !errors.Is(err, db.ErrNotFound("vendor")) {
+				return nil, err
+			}
+		} else {
+			cookies = vendorInfo.Cookies
+		}
+		cli := vendor.BilibiliClient(movie.Base.VendorInfo.Backend)
+		resp, err := cli.GetSubtitles(ctx, &bilibili.GetSubtitlesReq{
+			Cookies: utils.HttpCookieToMap(cookies),
+			Bvid:    biliInfo.Bvid,
+			Cid:     biliInfo.Cid,
+		})
+		if err != nil {
+			return nil, err
+		}
+		subtitleCache := make(bilibiliSubtitleCache, len(resp.Subtitles))
+		for k, v := range resp.Subtitles {
+			v := v
+			subtitleCache[k] = func(ctx context.Context) ([]byte, error) {
+				return translateBilibiliSubtitleToSrt(ctx, v)
+			}
+		}
+
+		return subtitleCache, nil
+	}
+}
+
+func convertToSRT(subtitles bilibiliSubtitleResp) []byte {
+	srt := bytes.NewBuffer(nil)
+	counter := 1
+	for _, subtitle := range subtitles.Body {
+		start := formatTime(subtitle.From)
+		end := formatTime(subtitle.To)
+		srt.WriteString(fmt.Sprintf("%d\n%s --> %s\n%s\n\n", counter, start, end, subtitle.Content))
+		counter++
+	}
+	return srt.Bytes()
+}
+
+func formatTime(seconds float64) string {
+	hours := int(seconds) / 3600
+	seconds = math.Mod(seconds, 3600)
+	minutes := int(seconds) / 60
+	seconds = math.Mod(seconds, 60)
+	milliseconds := int((seconds - float64(int(seconds))) * 1000)
+	return fmt.Sprintf("%02d:%02d:%02d,%03d", hours, minutes, int(seconds), milliseconds)
+}
+
+func translateBilibiliSubtitleToSrt(ctx context.Context, url string) ([]byte, error) {
+	r, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("https:%s", url), nil)
+	if err != nil {
+		return nil, err
+	}
+	r.Header.Set("User-Agent", utils.UA)
+	r.Header.Set("Referer", "https://www.bilibili.com")
+	resp, err := http.DefaultClient.Do(r)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var srt bilibiliSubtitleResp
+	err = json.NewDecoder(resp.Body).Decode(&srt)
+	if err != nil {
+		return nil, err
+	}
+	return convertToSRT(srt), nil
 }
 
 type alistCache struct {
@@ -857,48 +957,76 @@ func proxyVendorMovie(ctx *gin.Context, movie *op.Movie) {
 	switch movie.Movie.Base.VendorInfo.Vendor {
 	case dbModel.StreamingVendorBilibili:
 		t := ctx.Query("t")
-		if t != "hevc" {
-			t = ""
-		}
-		mpdI, err := movie.Cache().LoadOrStore(t, initBilibiliMPDCache(ctx, movie.Movie), time.Minute*119)
-		if err != nil {
-			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
-			return
-		}
-		mpd, ok := mpdI.(*bilibiliCache)
-		if !ok {
-			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorStringResp("cache type error"))
-			return
-		}
-		if id := ctx.Query("id"); id == "" {
-			if t == "hevc" {
-				ctx.Data(http.StatusOK, "application/dash+xml", []byte(mpd.hevcMpd))
-			} else {
-				ctx.Data(http.StatusOK, "application/dash+xml", []byte(mpd.mpd))
-			}
-			return
-		} else {
-			streamId, err := strconv.Atoi(id)
+		switch t {
+		case "", "hevc":
+			mpdI, err := movie.Cache().LoadOrStore(t, initBilibiliMPDCache(ctx, movie.Movie), time.Minute*119)
 			if err != nil {
-				ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+				ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 				return
 			}
-			if streamId >= len(mpd.urls) {
-				ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("stream id out of range"))
+			mpd, ok := mpdI.(*bilibiliCache)
+			if !ok {
+				ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorStringResp("cache type error"))
 				return
 			}
-			headers := maps.Clone(movie.Movie.Base.Headers)
-			if headers == nil {
-				headers = map[string]string{
-					"Referer":    "https://www.bilibili.com",
-					"User-Agent": utils.UA,
+			if id := ctx.Query("id"); id == "" {
+				if t == "hevc" {
+					ctx.Data(http.StatusOK, "application/dash+xml", []byte(mpd.hevcMpd))
+				} else {
+					ctx.Data(http.StatusOK, "application/dash+xml", []byte(mpd.mpd))
 				}
+				return
 			} else {
-				headers["Referer"] = "https://www.bilibili.com"
-				headers["User-Agent"] = utils.UA
+				streamId, err := strconv.Atoi(id)
+				if err != nil {
+					ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+					return
+				}
+				if streamId >= len(mpd.urls) {
+					ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("stream id out of range"))
+					return
+				}
+				headers := maps.Clone(movie.Movie.Base.Headers)
+				if headers == nil {
+					headers = map[string]string{
+						"Referer":    "https://www.bilibili.com",
+						"User-Agent": utils.UA,
+					}
+				} else {
+					headers["Referer"] = "https://www.bilibili.com"
+					headers["User-Agent"] = utils.UA
+				}
+				proxyURL(ctx, mpd.urls[streamId], headers)
+				return
 			}
-			proxyURL(ctx, mpd.urls[streamId], headers)
-			return
+		case "subtitle":
+			id := ctx.Query("n")
+			if id == "" {
+				ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("n is empty"))
+				return
+			}
+			srtI, err := movie.Cache().LoadOrStore("subtitle", initBilibiliSubtitleCache(ctx, movie.Movie, movie.Movie.CreatorID), time.Minute*15)
+			if err != nil {
+				ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+				return
+			}
+			srtFunc, ok := srtI.(bilibiliSubtitleCache)
+			if !ok {
+				ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorStringResp("subtitle cache type error"))
+				return
+			}
+			if s, ok := srtFunc[id]; ok {
+				srtData, err := s(ctx)
+				if err != nil {
+					ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+					return
+				}
+				ctx.Data(http.StatusOK, "text/plain; charset=utf-8", srtData)
+				return
+			} else {
+				ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorStringResp("subtitle not found"))
+				return
+			}
 		}
 
 	default:
@@ -915,7 +1043,7 @@ func parse2VendorMovie(ctx context.Context, userID string, movie *op.Movie) (err
 	switch movie.Movie.Base.VendorInfo.Vendor {
 	case dbModel.StreamingVendorBilibili:
 		if !movie.Movie.Base.Proxy {
-			dataI, err := movie.Cache().LoadOrStore(userID, initBilibiliShareCache(ctx, movie.Movie), time.Minute*119)
+			dataI, err := movie.Cache().LoadOrStore(userID, initBilibiliCache(ctx, movie.Movie, userID), time.Minute*119)
 			if err != nil {
 				return err
 			}
@@ -928,6 +1056,23 @@ func parse2VendorMovie(ctx context.Context, userID string, movie *op.Movie) (err
 			movie.Movie.Base.Url = data
 		} else {
 			movie.Movie.Base.Type = "mpd"
+		}
+		srtI, err := movie.Cache().LoadOrStore("subtitle", initBilibiliSubtitleCache(ctx, movie.Movie, userID), time.Minute*15)
+		if err != nil {
+			return err
+		}
+		srt, ok := srtI.(bilibiliSubtitleCache)
+		if !ok {
+			return errors.New("subtitle cache type error")
+		}
+		for k := range srt {
+			if movie.Movie.Base.Subtitles == nil {
+				movie.Movie.Base.Subtitles = make(map[string]*dbModel.Subtitle, len(srt))
+			}
+			movie.Movie.Base.Subtitles[k] = &dbModel.Subtitle{
+				URL:  fmt.Sprintf("/api/movie/proxy/%s/%s?t=subtitle&n=%s", movie.Movie.RoomID, movie.Movie.ID, k),
+				Type: "srt",
+			}
 		}
 		return nil
 

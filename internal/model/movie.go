@@ -26,14 +26,20 @@ func (m *Movie) BeforeCreate(tx *gorm.DB) error {
 }
 
 type BaseMovie struct {
-	Url        string            `json:"url"`
-	Name       string            `gorm:"not null" json:"name"`
-	Live       bool              `json:"live"`
-	Proxy      bool              `json:"proxy"`
-	RtmpSource bool              `json:"rtmpSource"`
-	Type       string            `json:"type"`
-	Headers    map[string]string `gorm:"serializer:fastjson" json:"headers"`
-	VendorInfo VendorInfo        `gorm:"embedded;embeddedPrefix:vendor_info_" json:"vendorInfo,omitempty"`
+	Url        string               `json:"url"`
+	Name       string               `gorm:"not null" json:"name"`
+	Live       bool                 `json:"live"`
+	Proxy      bool                 `json:"proxy"`
+	RtmpSource bool                 `json:"rtmpSource"`
+	Type       string               `json:"type"`
+	Headers    map[string]string    `gorm:"serializer:fastjson" json:"headers"`
+	Subtitles  map[string]*Subtitle `gorm:"serializer:fastjson" json:"subtitles"`
+	VendorInfo VendorInfo           `gorm:"embedded;embeddedPrefix:vendor_info_" json:"vendorInfo,omitempty"`
+}
+
+type Subtitle struct {
+	URL  string `json:"url"`
+	Type string `json:"type"`
 }
 
 type VendorInfo struct {

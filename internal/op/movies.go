@@ -25,7 +25,7 @@ func (m *movies) init() {
 			m.list.PushBack(&Movie{
 				Movie: *m2,
 				lock:  new(sync.RWMutex),
-				cache: newBaseCache(),
+				Cache: newBaseCache(),
 			})
 		}
 	})
@@ -46,7 +46,7 @@ func (m *movies) AddMovie(mo *model.Movie) error {
 	movie := &Movie{
 		Movie: *mo,
 		lock:  new(sync.RWMutex),
-		cache: newBaseCache(),
+		Cache: newBaseCache(),
 	}
 
 	err := movie.init()
@@ -75,7 +75,7 @@ func (m *movies) AddMovies(mos []*model.Movie) error {
 		movie := &Movie{
 			Movie: *mo,
 			lock:  new(sync.RWMutex),
-			cache: newBaseCache(),
+			Cache: newBaseCache(),
 		}
 
 		err := movie.init()

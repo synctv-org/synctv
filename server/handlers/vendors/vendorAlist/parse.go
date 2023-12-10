@@ -1,13 +1,13 @@
 package vendorAlist
 
 import (
-	"fmt"
+	"errors"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	json "github.com/json-iterator/go"
 	"github.com/synctv-org/synctv/internal/db"
-	dbModel "github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/internal/vendor"
 	"github.com/synctv-org/synctv/server/model"
@@ -40,21 +40,30 @@ func List(ctx *gin.Context) {
 		return
 	}
 
-	v, err := db.GetVendorByUserIDAndVendor(user.ID, dbModel.StreamingVendorAlist)
+	var cli = vendor.AlistClient(ctx.Query("backend"))
+
+	cacheI, err := user.Cache.LoadOrStoreWithDynamicFunc("alist_authorization", initAlistAuthorizationCacheWithUserID(ctx, cli, user.ID), time.Hour*24)
 	if err != nil {
+		if errors.Is(err, db.ErrNotFound("vendor")) {
+			ctx.JSON(http.StatusOK, model.NewApiDataResp(&AlistMeResp{
+				IsLogin: false,
+			}))
+			return
+		}
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
+	cache, ok := cacheI.(*alistCache)
+	if !ok {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}
 
-	fmt.Printf("v.Authorization: %v\n", v.Authorization)
-
-	var cli = vendor.AlistClient(ctx.Query("backend"))
-
 	resp, err := cli.FsList(ctx, &alist.FsListReq{
-		Token:    v.Authorization,
+		Token:    cache.Token,
 		Password: req.Password,
 		Path:     req.Path,
-		Host:     v.Host,
+		Host:     cache.Host,
 		Refresh:  req.Refresh,
 	})
 	if err != nil {

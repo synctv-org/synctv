@@ -12,72 +12,25 @@ import (
 	"github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/settings"
 	"github.com/synctv-org/synctv/utils"
-	"github.com/zijiren233/gencontainer/refreshcache"
 	"github.com/zijiren233/livelib/av"
 	"github.com/zijiren233/livelib/container/flv"
 	"github.com/zijiren233/livelib/protocol/hls"
 	rtmpProto "github.com/zijiren233/livelib/protocol/rtmp"
 	"github.com/zijiren233/livelib/protocol/rtmp/core"
 	rtmps "github.com/zijiren233/livelib/server"
-	"golang.org/x/exp/maps"
 )
 
 type Movie struct {
 	Movie   model.Movie
 	lock    *sync.RWMutex
 	channel *rtmps.Channel
-	cache   *BaseCache
-}
-
-type BaseCache struct {
-	lock  sync.RWMutex
-	cache map[string]*refreshcache.RefreshData[any]
-}
-
-func newBaseCache() *BaseCache {
-	return &BaseCache{
-		cache: make(map[string]*refreshcache.RefreshData[any]),
-	}
-}
-
-func (b *BaseCache) Clear() {
-	b.lock.Lock()
-	defer b.lock.Unlock()
-	b.clear()
-}
-
-func (b *BaseCache) clear() {
-	maps.Clear(b.cache)
-}
-
-func (b *BaseCache) LoadOrStore(id string, refreshFunc func() (any, error), maxAge time.Duration) (any, error) {
-	b.lock.RLock()
-	c, loaded := b.cache[id]
-	if loaded {
-		b.lock.RUnlock()
-		return c.Get(refreshFunc)
-	}
-	b.lock.RUnlock()
-	b.lock.Lock()
-	c, loaded = b.cache[id]
-	if loaded {
-		b.lock.Unlock()
-		return c, nil
-	}
-	c = refreshcache.NewRefreshData[any](maxAge)
-	b.cache[id] = c
-	b.lock.Unlock()
-	return c.Get(refreshFunc)
+	Cache   *Cache
 }
 
 func (m *Movie) Channel() (*rtmps.Channel, error) {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 	return m.channel, m.init()
-}
-
-func (m *Movie) Cache() *BaseCache {
-	return m.cache
 }
 
 func genTsName() string {
@@ -225,10 +178,11 @@ func (movie *Movie) Validate() error {
 
 func (movie *Movie) validateVendorMovie() error {
 	switch movie.Movie.Base.VendorInfo.Vendor {
-	case model.StreamingVendorBilibili:
+	case model.VendorBilibili:
 		return movie.Movie.Base.VendorInfo.Bilibili.Validate()
 
-	case model.StreamingVendorAlist:
+	case model.VendorAlist:
+		// return movie.Movie.Base.VendorInfo.Alist.Validate()
 
 	default:
 		return fmt.Errorf("vendor not support")
@@ -248,7 +202,7 @@ func (m *Movie) terminate() {
 		m.channel.Close()
 		m.channel = nil
 	}
-	m.cache.clear()
+	m.Cache.clear()
 }
 
 func (m *Movie) Update(movie *model.BaseMovie) error {

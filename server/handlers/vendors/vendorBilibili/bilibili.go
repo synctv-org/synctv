@@ -8,7 +8,6 @@ import (
 	"github.com/gin-gonic/gin"
 	json "github.com/json-iterator/go"
 	"github.com/synctv-org/synctv/internal/db"
-	dbModel "github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/internal/vendor"
 	"github.com/synctv-org/synctv/server/model"
@@ -51,14 +50,14 @@ func Parse(ctx *gin.Context) {
 	}
 
 	var cookies []*http.Cookie
-	vendorInfo, err := db.GetVendorByUserIDAndVendor(user.ID, dbModel.StreamingVendorBilibili)
+	vendorInfo, err := db.GetBilibiliVendor(user.ID)
 	if err != nil {
 		if !errors.Is(err, db.ErrNotFound("vendor")) {
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 			return
 		}
 	} else {
-		cookies = vendorInfo.Cookies
+		cookies = utils.MapToHttpCookie(vendorInfo.Cookies)
 	}
 
 	switch resp.Type {

@@ -28,6 +28,7 @@ func LoadOrInitUser(u *model.User) (*User, error) {
 	i, _ := userCache.LoadOrStore(u.ID, &User{
 		User:    *u,
 		version: crc32.ChecksumIEEE(u.HashedPassword),
+		Cache:   newBaseCache(),
 	}, time.Hour)
 	return i.Value(), nil
 }

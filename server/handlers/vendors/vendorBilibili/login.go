@@ -11,7 +11,6 @@ import (
 	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/internal/vendor"
 	"github.com/synctv-org/synctv/server/model"
-	"github.com/synctv-org/synctv/utils"
 	"github.com/synctv-org/vendors/api/bilibili"
 )
 
@@ -73,7 +72,9 @@ func LoginWithQR(ctx *gin.Context) {
 		}))
 		return
 	case bilibili.QRCodeStatus_SUCCESS:
-		_, err = db.CreateOrSaveVendorByUserIDAndVendor(user.ID, dbModel.StreamingVendorBilibili, db.WithCookie(utils.MapToHttpCookie(resp.Cookies)))
+		_, err = db.CreateOrSaveBilibiliVendor(user.ID, &dbModel.BilibiliVendor{
+			Cookies: resp.Cookies,
+		})
 		if err != nil {
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 			return
@@ -185,7 +186,9 @@ func LoginWithSMS(ctx *gin.Context) {
 		return
 	}
 	user := ctx.MustGet("user").(*op.User)
-	_, err = db.CreateOrSaveVendorByUserIDAndVendor(user.ID, dbModel.StreamingVendorBilibili, db.WithCookie(utils.MapToHttpCookie(c.Cookies)))
+	_, err = db.CreateOrSaveBilibiliVendor(user.ID, &dbModel.BilibiliVendor{
+		Cookies: c.Cookies,
+	})
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
@@ -195,7 +198,7 @@ func LoginWithSMS(ctx *gin.Context) {
 
 func Logout(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*op.User)
-	err := db.DeleteVendorByUserIDAndVendor(user.ID, dbModel.StreamingVendorBilibili)
+	err := db.DeleteBilibiliVendor(user.ID)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return

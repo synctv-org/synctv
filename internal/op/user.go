@@ -16,6 +16,7 @@ import (
 type User struct {
 	model.User
 	version uint32
+	Cache   *Cache
 }
 
 func (u *User) Version() uint32 {
@@ -69,11 +70,11 @@ func (u *User) NewMovie(movie *model.BaseMovie) (*model.Movie, error) {
 		return nil, errors.New("movie is nil")
 	}
 	switch movie.VendorInfo.Vendor {
-	case model.StreamingVendorBilibili:
+	case model.VendorBilibili:
 		if movie.VendorInfo.Bilibili == nil {
 			return nil, errors.New("bilibili payload is nil")
 		}
-	case model.StreamingVendorAlist:
+	case model.VendorAlist:
 		if movie.VendorInfo.Alist == nil {
 			return nil, errors.New("alist payload is nil")
 		}

@@ -42,22 +42,29 @@ type Subtitle struct {
 	Type string `json:"type"`
 }
 
+type VendorName = string
+
+const (
+	VendorBilibili VendorName = "bilibili"
+	VendorAlist    VendorName = "alist"
+)
+
 type VendorInfo struct {
-	Vendor   StreamingVendor     `json:"vendor"`
-	Backend  string              `json:"backend"`
-	Shared   bool                `gorm:"not null;default:false" json:"shared"`
-	Bilibili *BilibiliVendorInfo `gorm:"embedded;embeddedPrefix:bilibili_" json:"bilibili,omitempty"`
-	Alist    *AlistVendorInfo    `gorm:"embedded;embeddedPrefix:alist_" json:"alist,omitempty"`
+	Vendor   VendorName             `json:"vendor"`
+	Backend  string                 `json:"backend"`
+	Shared   bool                   `gorm:"not null;default:false" json:"shared"`
+	Bilibili *BilibiliStreamingInfo `gorm:"embedded;embeddedPrefix:bilibili_" json:"bilibili,omitempty"`
+	Alist    *AlistStreamingInfo    `gorm:"embedded;embeddedPrefix:alist_" json:"alist,omitempty"`
 }
 
-type BilibiliVendorInfo struct {
+type BilibiliStreamingInfo struct {
 	Bvid    string `json:"bvid,omitempty"`
 	Cid     uint64 `json:"cid,omitempty"`
 	Epid    uint64 `json:"epid,omitempty"`
 	Quality uint64 `json:"quality,omitempty"`
 }
 
-func (b *BilibiliVendorInfo) Validate() error {
+func (b *BilibiliStreamingInfo) Validate() error {
 	switch {
 	// 先判断epid是否为0来确定是否是pgc
 	case b.Epid != 0:
@@ -75,7 +82,7 @@ func (b *BilibiliVendorInfo) Validate() error {
 	return nil
 }
 
-type AlistVendorInfo struct {
+type AlistStreamingInfo struct {
 	Path     string `json:"path,omitempty"`
 	Password string `json:"password,omitempty"`
 }

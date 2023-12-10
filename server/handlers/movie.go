@@ -473,7 +473,7 @@ func ProxyMovie(ctx *gin.Context) {
 
 	switch m.Movie.Base.Type {
 	case "mpd":
-		mpdI, err := m.Cache().LoadOrStore("", initDashCache(ctx, &m.Movie), time.Minute*5)
+		mpdI, err := m.Cache.LoadOrStoreWithDynamicFunc("", initDashCache(ctx, &m.Movie), time.Minute*5)
 		if err != nil {
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 			return
@@ -673,13 +673,13 @@ type bilibiliCache struct {
 func initBilibiliMPDCache(ctx context.Context, movie dbModel.Movie) func() (any, error) {
 	return func() (any, error) {
 		var cookies []*http.Cookie
-		vendorInfo, err := db.GetVendorByUserIDAndVendor(movie.CreatorID, dbModel.StreamingVendorBilibili)
+		vendorInfo, err := db.GetBilibiliVendor(movie.CreatorID)
 		if err != nil {
 			if !errors.Is(err, db.ErrNotFound("vendor")) {
 				return nil, err
 			}
 		} else {
-			cookies = vendorInfo.Cookies
+			cookies = utils.MapToHttpCookie(vendorInfo.Cookies)
 		}
 		cli := vendor.BilibiliClient(movie.Base.VendorInfo.Backend)
 		var m, hevcM *mpd.MPD
@@ -766,13 +766,13 @@ func initBilibiliMPDCache(ctx context.Context, movie dbModel.Movie) func() (any,
 func initBilibiliCache(ctx context.Context, movie dbModel.Movie, cookieUserID string) func() (any, error) {
 	return func() (any, error) {
 		var cookies []*http.Cookie
-		vendorInfo, err := db.GetVendorByUserIDAndVendor(cookieUserID, dbModel.StreamingVendorBilibili)
+		vendorInfo, err := db.GetBilibiliVendor(cookieUserID)
 		if err != nil {
 			if !errors.Is(err, db.ErrNotFound("vendor")) {
 				return nil, err
 			}
 		} else {
-			cookies = vendorInfo.Cookies
+			cookies = utils.MapToHttpCookie(vendorInfo.Cookies)
 		}
 		cli := vendor.BilibiliClient(movie.Base.VendorInfo.Backend)
 		var u string
@@ -839,13 +839,13 @@ func initBilibiliSubtitleCache(ctx context.Context, movie dbModel.Movie) func() 
 		}
 
 		var cookies []*http.Cookie
-		vendorInfo, err := db.GetVendorByUserIDAndVendor(movie.CreatorID, dbModel.StreamingVendorBilibili)
+		vendorInfo, err := db.GetBilibiliVendor(movie.CreatorID)
 		if err != nil {
 			if !errors.Is(err, db.ErrNotFound("vendor")) {
 				return nil, err
 			}
 		} else {
-			cookies = vendorInfo.Cookies
+			cookies = utils.MapToHttpCookie(vendorInfo.Cookies)
 		}
 		cli := vendor.BilibiliClient(movie.Base.VendorInfo.Backend)
 		resp, err := cli.GetSubtitles(ctx, &bilibili.GetSubtitlesReq{
@@ -921,17 +921,17 @@ type alistCache struct {
 
 func initAlistCache(ctx context.Context, movie dbModel.Movie) func() (any, error) {
 	return func() (any, error) {
-		v, err := db.GetVendorByUserIDAndVendor(movie.CreatorID, dbModel.StreamingVendorAlist)
-		if err != nil {
-			return nil, err
-		}
-		if v.Host == "" {
-			return nil, errors.New("not bind alist vendor")
-		}
+		// v, err := db.GetVendorByUserIDAndVendor(movie.CreatorID, dbModel.StreamingVendorAlist)
+		// if err != nil {
+		// 	return nil, err
+		// }
+		// if v.Host == "" {
+		// 	return nil, errors.New("not bind alist vendor")
+		// }
 		cli := vendor.AlistClient(movie.Base.VendorInfo.Backend)
 		fg, err := cli.FsGet(ctx, &alist.FsGetReq{
-			Host:     v.Host,
-			Token:    v.Authorization,
+			// Host:     v.Host,
+			// Token:    v.Authorization,
 			Path:     movie.Base.VendorInfo.Alist.Path,
 			Password: movie.Base.VendorInfo.Alist.Password,
 		})
@@ -948,8 +948,8 @@ func initAlistCache(ctx context.Context, movie dbModel.Movie) func() (any, error
 		}
 		if fg.Provider == "AliyundriveOpen" {
 			fo, err := cli.FsOther(ctx, &alist.FsOtherReq{
-				Host:     v.Host,
-				Token:    v.Authorization,
+				// Host:     v.Host,
+				// Token:    v.Authorization,
 				Path:     movie.Base.VendorInfo.Alist.Path,
 				Password: movie.Base.VendorInfo.Alist.Password,
 				Method:   "video_preview",
@@ -965,7 +965,7 @@ func initAlistCache(ctx context.Context, movie dbModel.Movie) func() (any, error
 
 func proxyVendorMovie(ctx *gin.Context, movie *op.Movie) {
 	switch movie.Movie.Base.VendorInfo.Vendor {
-	case dbModel.StreamingVendorBilibili:
+	case dbModel.VendorBilibili:
 		t := ctx.Query("t")
 		switch t {
 		case "", "hevc":
@@ -974,7 +974,7 @@ func proxyVendorMovie(ctx *gin.Context, movie *op.Movie) {
 				return
 			}
 
-			mpdI, err := movie.Cache().LoadOrStore(t, initBilibiliMPDCache(ctx, movie.Movie), time.Minute*119)
+			mpdI, err := movie.Cache.LoadOrStoreWithDynamicFunc(t, initBilibiliMPDCache(ctx, movie.Movie), time.Minute*119)
 			if err != nil {
 				ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 				return
@@ -1020,7 +1020,7 @@ func proxyVendorMovie(ctx *gin.Context, movie *op.Movie) {
 				ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("n is empty"))
 				return
 			}
-			srtI, err := movie.Cache().LoadOrStore("subtitle", initBilibiliSubtitleCache(ctx, movie.Movie), time.Minute*15)
+			srtI, err := movie.Cache.LoadOrStoreWithDynamicFunc("subtitle", initBilibiliSubtitleCache(ctx, movie.Movie), time.Minute*15)
 			if err != nil {
 				ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 				return
@@ -1058,9 +1058,9 @@ func parse2VendorMovie(ctx context.Context, userID string, movie *op.Movie) (err
 	}
 
 	switch movie.Movie.Base.VendorInfo.Vendor {
-	case dbModel.StreamingVendorBilibili:
+	case dbModel.VendorBilibili:
 		if !movie.Movie.Base.Proxy {
-			dataI, err := movie.Cache().LoadOrStore(userID, initBilibiliCache(ctx, movie.Movie, userID), time.Minute*119)
+			dataI, err := movie.Cache.LoadOrStoreWithDynamicFunc(userID, initBilibiliCache(ctx, movie.Movie, userID), time.Minute*119)
 			if err != nil {
 				return err
 			}
@@ -1074,7 +1074,7 @@ func parse2VendorMovie(ctx context.Context, userID string, movie *op.Movie) (err
 		} else {
 			movie.Movie.Base.Type = "mpd"
 		}
-		srtI, err := movie.Cache().LoadOrStore("subtitle", initBilibiliSubtitleCache(ctx, movie.Movie), time.Minute*15)
+		srtI, err := movie.Cache.LoadOrStoreWithDynamicFunc("subtitle", initBilibiliSubtitleCache(ctx, movie.Movie), time.Minute*15)
 		if err != nil {
 			return err
 		}
@@ -1093,8 +1093,8 @@ func parse2VendorMovie(ctx context.Context, userID string, movie *op.Movie) (err
 		}
 		return nil
 
-	case dbModel.StreamingVendorAlist:
-		dataI, err := movie.Cache().LoadOrStore("", initAlistCache(ctx, movie.Movie), time.Minute*15)
+	case dbModel.VendorAlist:
+		dataI, err := movie.Cache.LoadOrStoreWithDynamicFunc("", initAlistCache(ctx, movie.Movie), time.Minute*15)
 		if err != nil {
 			return err
 		}

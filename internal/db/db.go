@@ -21,7 +21,16 @@ var (
 func Init(d *gorm.DB, t conf.DatabaseType) error {
 	db = d
 	dbType = t
-	return AutoMigrate(new(model.Setting), new(model.User), new(model.UserProvider), new(model.Room), new(model.RoomUserRelation), new(model.StreamingVendorInfo), new(model.Movie))
+	return AutoMigrate(
+		new(model.Setting),
+		new(model.User),
+		new(model.UserProvider),
+		new(model.Room),
+		new(model.RoomUserRelation),
+		new(model.Movie),
+		new(model.BilibiliVendor),
+		new(model.AlistVendor),
+	)
 }
 
 func AutoMigrate(dst ...any) error {

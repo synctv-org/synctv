@@ -12,10 +12,10 @@ import (
 
 func Backends(ctx *gin.Context) {
 	var backends []string
-	switch dbModel.StreamingVendor(ctx.Param("vendor")) {
-	case dbModel.StreamingVendorBilibili:
+	switch ctx.Param("vendor") {
+	case dbModel.VendorBilibili:
 		backends = maps.Keys(vendor.BilibiliClients())
-	case dbModel.StreamingVendorAlist:
+	case dbModel.VendorAlist:
 		backends = maps.Keys(vendor.AlistClients())
 	default:
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("invalid vendor"))

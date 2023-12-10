@@ -14,7 +14,7 @@ var json = jsoniter.ConfigCompatibleWithStandardLibrary
 
 type JSONSerializer struct{}
 
-func (*JSONSerializer) Scan(ctx context.Context, field *schema.Field, dst reflect.Value, dbValue interface{}) (err error) {
+func (*JSONSerializer) Scan(ctx context.Context, field *schema.Field, dst reflect.Value, dbValue any) (err error) {
 	fieldValue := reflect.New(field.FieldType)
 
 	if dbValue != nil {
@@ -35,8 +35,7 @@ func (*JSONSerializer) Scan(ctx context.Context, field *schema.Field, dst reflec
 	return
 }
 
-// 实现 Value 方法
-func (*JSONSerializer) Value(ctx context.Context, field *schema.Field, dst reflect.Value, fieldValue interface{}) (interface{}, error) {
+func (*JSONSerializer) Value(ctx context.Context, field *schema.Field, dst reflect.Value, fieldValue any) (any, error) {
 	return json.Marshal(fieldValue)
 }
 

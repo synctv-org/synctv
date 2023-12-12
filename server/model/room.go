@@ -80,8 +80,10 @@ func (l *LoginRoomReq) Decode(ctx *gin.Context) error {
 }
 
 func (l *LoginRoomReq) Validate() error {
-	if len(l.RoomId) != 32 {
+	if l.RoomId == "" {
 		return ErrEmptyRoomName
+	} else if len(l.RoomId) != 32 {
+		return errors.New("invalid room id")
 	}
 
 	return nil

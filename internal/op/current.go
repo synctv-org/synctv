@@ -3,6 +3,8 @@ package op
 import (
 	"sync"
 	"time"
+
+	"github.com/synctv-org/synctv/internal/model"
 )
 
 type current struct {
@@ -11,8 +13,8 @@ type current struct {
 }
 
 type Current struct {
-	Movie  Movie  `json:"movie"`
-	Status Status `json:"status"`
+	Movie  model.Movie `json:"movie"`
+	Status Status      `json:"status"`
 }
 
 func newCurrent() *current {
@@ -45,19 +47,12 @@ func (c *current) Current() Current {
 	return c.current
 }
 
-func (c *current) Movie() Movie {
-	c.lock.RLock()
-	defer c.lock.RUnlock()
-
-	return c.current.Movie
-}
-
-func (c *current) SetMovie(movie *Movie, play bool) {
+func (c *current) SetMovie(movie *model.Movie, play bool) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 
 	if movie == nil {
-		c.current.Movie = Movie{}
+		c.current.Movie = model.Movie{}
 	} else {
 		c.current.Movie = *movie
 	}
@@ -87,7 +82,7 @@ func (c *current) SetSeekRate(seek, rate, timeDiff float64) Status {
 }
 
 func (c *Current) UpdateSeek() {
-	if c.Movie.Movie.Base.Live {
+	if c.Movie.Base.Live {
 		c.Status.lastUpdate = time.Now()
 		return
 	}
@@ -106,7 +101,7 @@ func (c *Current) setLiveStatus() Status {
 }
 
 func (c *Current) SetStatus(playing bool, seek, rate, timeDiff float64) Status {
-	if c.Movie.Movie.Base.Live {
+	if c.Movie.Base.Live {
 		return c.setLiveStatus()
 	}
 	c.Status.Playing = playing
@@ -121,7 +116,7 @@ func (c *Current) SetStatus(playing bool, seek, rate, timeDiff float64) Status {
 }
 
 func (c *Current) SetSeekRate(seek, rate, timeDiff float64) Status {
-	if c.Movie.Movie.Base.Live {
+	if c.Movie.Base.Live {
 		return c.setLiveStatus()
 	}
 	if c.Status.Playing {
@@ -135,7 +130,7 @@ func (c *Current) SetSeekRate(seek, rate, timeDiff float64) Status {
 }
 
 func (c *Current) SetSeek(seek, timeDiff float64) Status {
-	if c.Movie.Movie.Base.Live {
+	if c.Movie.Base.Live {
 		return c.setLiveStatus()
 	}
 	if c.Status.Playing {

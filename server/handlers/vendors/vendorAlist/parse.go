@@ -3,7 +3,6 @@ package vendorAlist
 import (
 	"errors"
 	"net/http"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	json "github.com/json-iterator/go"
@@ -22,7 +21,7 @@ type ListReq struct {
 
 func (r *ListReq) Validate() error {
 	if r.Path == "" {
-		r.Password = "/"
+		r.Path = "/"
 	}
 	return nil
 }
@@ -41,8 +40,7 @@ func List(ctx *gin.Context) {
 	}
 
 	var cli = vendor.AlistClient(ctx.Query("backend"))
-
-	cacheI, err := user.Cache.LoadOrStoreWithDynamicFunc("alist_authorization", initAlistAuthorizationCacheWithUserID(ctx, cli, user.ID), time.Hour*24)
+	aucd, err := user.AlistCache().Get(ctx, ctx.Query("backend"))
 	if err != nil {
 		if errors.Is(err, db.ErrNotFound("vendor")) {
 			ctx.JSON(http.StatusOK, model.NewApiDataResp(&AlistMeResp{
@@ -53,17 +51,12 @@ func List(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}
-	cache, ok := cacheI.(*alistCache)
-	if !ok {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
-		return
-	}
 
 	resp, err := cli.FsList(ctx, &alist.FsListReq{
-		Token:    cache.Token,
+		Token:    aucd.Token,
 		Password: req.Password,
 		Path:     req.Path,
-		Host:     cache.Host,
+		Host:     aucd.Host,
 		Refresh:  req.Refresh,
 	})
 	if err != nil {

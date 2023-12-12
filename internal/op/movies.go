@@ -24,8 +24,6 @@ func (m *movies) init() {
 		for _, m2 := range db.GetAllMoviesByRoomID(m.roomID) {
 			m.list.PushBack(&Movie{
 				Movie: *m2,
-				lock:  new(sync.RWMutex),
-				Cache: newBaseCache(),
 			})
 		}
 	})
@@ -45,18 +43,15 @@ func (m *movies) AddMovie(mo *model.Movie) error {
 	mo.Position = uint(time.Now().UnixMilli())
 	movie := &Movie{
 		Movie: *mo,
-		lock:  new(sync.RWMutex),
-		Cache: newBaseCache(),
 	}
 
-	err := movie.init()
+	err := movie.Validate()
 	if err != nil {
 		return err
 	}
 
 	err = db.CreateMovie(mo)
 	if err != nil {
-		movie.terminate()
 		return err
 	}
 
@@ -74,15 +69,10 @@ func (m *movies) AddMovies(mos []*model.Movie) error {
 		mo.Position = uint(time.Now().UnixMilli())
 		movie := &Movie{
 			Movie: *mo,
-			lock:  new(sync.RWMutex),
-			Cache: newBaseCache(),
 		}
 
-		err := movie.init()
+		err := movie.Validate()
 		if err != nil {
-			for _, movie := range inited {
-				movie.terminate()
-			}
 			return err
 		}
 
@@ -91,9 +81,6 @@ func (m *movies) AddMovies(mos []*model.Movie) error {
 
 	err := db.CreateMovies(mos)
 	if err != nil {
-		for _, movie := range inited {
-			movie.terminate()
-		}
 		return err
 	}
 

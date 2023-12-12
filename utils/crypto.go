@@ -60,3 +60,11 @@ func DecryptoFromBase64(v string, key []byte) ([]byte, error) {
 	}
 	return Decrypto(ciphertext, key)
 }
+
+func GenCryptoKey(base string) []byte {
+	key := make([]byte, 32)
+	for i := 0; i < len(base); i++ {
+		key[i%32] ^= base[i]
+	}
+	return key
+}

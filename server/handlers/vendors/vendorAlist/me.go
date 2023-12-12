@@ -3,7 +3,6 @@ package vendorAlist
 import (
 	"errors"
 	"net/http"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/synctv-org/synctv/internal/db"
@@ -20,7 +19,7 @@ func Me(ctx *gin.Context) {
 
 	cli := vendor.AlistClient(ctx.Query("backend"))
 
-	authorizationI, err := user.Cache.LoadOrStoreWithDynamicFunc("alist_authorization", initAlistAuthorizationCacheWithUserID(ctx, cli, user.ID), time.Hour*24)
+	aucd, err := user.AlistCache().Get(ctx, ctx.Query("backend"))
 	if err != nil {
 		if errors.Is(err, db.ErrNotFound("vendor")) {
 			ctx.JSON(http.StatusOK, model.NewApiDataResp(&AlistMeResp{
@@ -31,15 +30,10 @@ func Me(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}
-	cache, ok := authorizationI.(*alistCache)
-	if !ok {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
-		return
-	}
 
 	resp, err := cli.Me(ctx, &alist.MeReq{
-		Host:  cache.Host,
-		Token: cache.Token,
+		Host:  aucd.Host,
+		Token: aucd.Token,
 	})
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))

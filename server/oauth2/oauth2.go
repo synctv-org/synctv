@@ -9,7 +9,7 @@ import (
 )
 
 func OAuth2EnabledApi(ctx *gin.Context) {
-	data, err := bootstrap.Oauth2EnabledCache.Get()
+	data, err := bootstrap.Oauth2EnabledCache.Get(ctx)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return

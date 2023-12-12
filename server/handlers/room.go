@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -62,7 +63,7 @@ func CreateRoom(ctx *gin.Context) {
 	}))
 }
 
-var roomHotCache = refreshcache.NewRefreshCache[[]*op.RoomInfo](func() ([]*op.RoomInfo, error) {
+var roomHotCache = refreshcache.NewRefreshCache[[]*op.RoomInfo](func(context.Context, ...any) ([]*op.RoomInfo, error) {
 	return op.GetRoomHeapInCacheWithoutHidden(), nil
 }, time.Second*3)
 
@@ -73,7 +74,7 @@ func RoomHotList(ctx *gin.Context) {
 		return
 	}
 
-	r, _ := roomHotCache.Get()
+	r, _ := roomHotCache.Get(ctx)
 	rs := utils.GetPageItems(r, page, pageSize)
 
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{

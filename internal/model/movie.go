@@ -86,3 +86,25 @@ type AlistStreamingInfo struct {
 	Path     string `json:"path,omitempty"`
 	Password string `json:"password,omitempty"`
 }
+
+func (a *AlistStreamingInfo) BeforeSave(tx *gorm.DB) error {
+	if a.Password != "" {
+		s, err := utils.CryptoToBase64([]byte(a.Password), utils.GenCryptoKey(a.Path))
+		if err != nil {
+			return err
+		}
+		a.Password = s
+	}
+	return nil
+}
+
+func (a *AlistStreamingInfo) AfterFind(tx *gorm.DB) error {
+	if a.Password != "" {
+		b, err := utils.DecryptoFromBase64(a.Password, utils.GenCryptoKey(a.Path))
+		if err != nil {
+			return err
+		}
+		a.Password = string(b)
+	}
+	return nil
+}

@@ -185,11 +185,11 @@ func (r *Room) SetCurrentMovieByID(id string, play bool) error {
 	if err != nil {
 		return err
 	}
-	r.SetCurrentMovie(m, play)
+	r.SetCurrentMovie(&m.Movie, play)
 	return nil
 }
 
-func (r *Room) SetCurrentMovie(movie *Movie, play bool) {
+func (r *Room) SetCurrentMovie(movie *model.Movie, play bool) {
 	r.current.SetMovie(movie, play)
 }
 

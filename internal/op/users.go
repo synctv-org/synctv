@@ -5,6 +5,7 @@ import (
 	"hash/crc32"
 	"time"
 
+	"github.com/synctv-org/synctv/internal/cache"
 	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/provider"
@@ -26,9 +27,9 @@ func LoadOrInitUser(u *model.User) (*User, error) {
 		return nil, ErrUserPending
 	}
 	i, _ := userCache.LoadOrStore(u.ID, &User{
-		User:    *u,
-		version: crc32.ChecksumIEEE(u.HashedPassword),
-		Cache:   newBaseCache(),
+		User:       *u,
+		version:    crc32.ChecksumIEEE(u.HashedPassword),
+		alistCache: cache.NewAlistCache(u.ID),
 	}, time.Hour)
 	return i.Value(), nil
 }

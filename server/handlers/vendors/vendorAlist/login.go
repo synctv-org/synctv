@@ -52,7 +52,7 @@ func Login(ctx *gin.Context) {
 			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 			return
 		}
-		_, err = user.AlistCache().Data().Refresh(ctx, func(ctx context.Context, args ...any) (*cache.AlistUserCacheData, error) {
+		_, err = user.AlistCache().Data().Refresh(ctx, func(ctx context.Context, args ...string) (*cache.AlistUserCacheData, error) {
 			return &cache.AlistUserCacheData{
 				Host: req.Host,
 			}, nil
@@ -72,7 +72,7 @@ func Login(ctx *gin.Context) {
 			return
 		}
 
-		_, err = user.AlistCache().Data().Refresh(ctx, func(ctx context.Context, args ...any) (*cache.AlistUserCacheData, error) {
+		_, err = user.AlistCache().Data().Refresh(ctx, func(ctx context.Context, args ...string) (*cache.AlistUserCacheData, error) {
 			return &cache.AlistUserCacheData{
 				Host:  req.Host,
 				Token: resp.Token,

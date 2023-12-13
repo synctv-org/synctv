@@ -27,16 +27,16 @@ type BilibiliMpdCache struct {
 
 type BilibiliSubtitleCache map[string]*struct {
 	Url string
-	Srt *refreshcache.RefreshCache[[]byte]
+	Srt *refreshcache.RefreshCache[[]byte, struct{}]
 }
 
-func NewBilibiliSharedMpdCacheInitFunc(movie *model.Movie) func(ctx context.Context, args ...any) (*BilibiliMpdCache, error) {
-	return func(ctx context.Context, args ...any) (*BilibiliMpdCache, error) {
+func NewBilibiliSharedMpdCacheInitFunc(movie *model.Movie) func(ctx context.Context, args ...struct{}) (*BilibiliMpdCache, error) {
+	return func(ctx context.Context, args ...struct{}) (*BilibiliMpdCache, error) {
 		return BilibiliSharedMpdCacheInitFunc(ctx, movie, args...)
 	}
 }
 
-func BilibiliSharedMpdCacheInitFunc(ctx context.Context, movie *model.Movie, args ...any) (*BilibiliMpdCache, error) {
+func BilibiliSharedMpdCacheInitFunc(ctx context.Context, movie *model.Movie, args ...struct{}) (*BilibiliMpdCache, error) {
 	var cookies []*http.Cookie
 	vendorInfo, err := db.GetBilibiliVendor(movie.CreatorID)
 	if err != nil {
@@ -127,13 +127,13 @@ func BilibiliSharedMpdCacheInitFunc(ctx context.Context, movie *model.Movie, arg
 	}, nil
 }
 
-func NewBilibiliNoSharedMovieCacheInitFunc(movie *model.Movie) func(ctx context.Context, id string, args ...any) (string, error) {
-	return func(ctx context.Context, id string, args ...any) (string, error) {
+func NewBilibiliNoSharedMovieCacheInitFunc(movie *model.Movie) func(ctx context.Context, id string, args ...struct{}) (string, error) {
+	return func(ctx context.Context, id string, args ...struct{}) (string, error) {
 		return BilibiliNoSharedMovieCacheInitFunc(ctx, id, movie, args...)
 	}
 }
 
-func BilibiliNoSharedMovieCacheInitFunc(ctx context.Context, id string, movie *model.Movie, args ...any) (string, error) {
+func BilibiliNoSharedMovieCacheInitFunc(ctx context.Context, id string, movie *model.Movie, args ...struct{}) (string, error) {
 	var cookies []*http.Cookie
 	vendorInfo, err := db.GetBilibiliVendor(id)
 	if err != nil {
@@ -194,17 +194,17 @@ type bilibiliSubtitleResp struct {
 	} `json:"body"`
 }
 
-func NewBilibiliSubtitleCacheInitFunc(movie *model.Movie) func(ctx context.Context, args ...any) (BilibiliSubtitleCache, error) {
-	return func(ctx context.Context, args ...any) (BilibiliSubtitleCache, error) {
+func NewBilibiliSubtitleCacheInitFunc(movie *model.Movie) func(ctx context.Context, args ...struct{}) (BilibiliSubtitleCache, error) {
+	return func(ctx context.Context, args ...struct{}) (BilibiliSubtitleCache, error) {
 		return BilibiliSubtitleCacheInitFunc(ctx, movie)
 	}
 }
 
-func BilibiliSubtitleCacheInitFunc(ctx context.Context, movie *model.Movie, args ...any) (BilibiliSubtitleCache, error) {
+func BilibiliSubtitleCacheInitFunc(ctx context.Context, movie *model.Movie, args ...struct{}) (BilibiliSubtitleCache, error) {
 	return initBilibiliSubtitleCache(ctx, movie, args...)
 }
 
-func initBilibiliSubtitleCache(ctx context.Context, movie *model.Movie, args ...any) (BilibiliSubtitleCache, error) {
+func initBilibiliSubtitleCache(ctx context.Context, movie *model.Movie, args ...struct{}) (BilibiliSubtitleCache, error) {
 	biliInfo := movie.Base.VendorInfo.Bilibili
 	if biliInfo.Bvid == "" || biliInfo.Cid == 0 {
 		return nil, errors.New("bvid or cid is empty")
@@ -232,10 +232,10 @@ func initBilibiliSubtitleCache(ctx context.Context, movie *model.Movie, args ...
 	for k, v := range resp.Subtitles {
 		subtitleCache[k] = &struct {
 			Url string
-			Srt *refreshcache.RefreshCache[[]byte]
+			Srt *refreshcache.RefreshCache[[]byte, struct{}]
 		}{
 			Url: v,
-			Srt: refreshcache.NewRefreshCache[[]byte](func(ctx context.Context, args ...any) ([]byte, error) {
+			Srt: refreshcache.NewRefreshCache[[]byte](func(ctx context.Context, args ...struct{}) ([]byte, error) {
 				return translateBilibiliSubtitleToSrt(ctx, v)
 			}, 0),
 		}
@@ -289,15 +289,15 @@ func translateBilibiliSubtitleToSrt(ctx context.Context, url string) ([]byte, er
 }
 
 type BilibiliMovieCache struct {
-	NoSharedMovie *MapCache[string]
-	SharedMpd     *refreshcache.RefreshCache[*BilibiliMpdCache]
-	Subtitle      *refreshcache.RefreshCache[BilibiliSubtitleCache]
+	NoSharedMovie *MapCache[string, struct{}]
+	SharedMpd     *refreshcache.RefreshCache[*BilibiliMpdCache, struct{}]
+	Subtitle      *refreshcache.RefreshCache[BilibiliSubtitleCache, struct{}]
 }
 
 func NewBilibiliMovieCache(movie *model.Movie) *BilibiliMovieCache {
 	return &BilibiliMovieCache{
-		NoSharedMovie: newMapCache[string](NewBilibiliNoSharedMovieCacheInitFunc(movie), time.Minute*115),
-		SharedMpd:     refreshcache.NewRefreshCache[*BilibiliMpdCache](NewBilibiliSharedMpdCacheInitFunc(movie), time.Minute*115),
-		Subtitle:      refreshcache.NewRefreshCache[BilibiliSubtitleCache](NewBilibiliSubtitleCacheInitFunc(movie), time.Minute*60),
+		NoSharedMovie: newMapCache[string, struct{}](NewBilibiliNoSharedMovieCacheInitFunc(movie), time.Minute*115),
+		SharedMpd:     refreshcache.NewRefreshCache[*BilibiliMpdCache, struct{}](NewBilibiliSharedMpdCacheInitFunc(movie), time.Minute*115),
+		Subtitle:      refreshcache.NewRefreshCache[BilibiliSubtitleCache, struct{}](NewBilibiliSubtitleCacheInitFunc(movie), time.Minute*60),
 	}
 }

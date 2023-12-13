@@ -372,6 +372,8 @@ github.com/zijiren233/gencontainer v0.0.0-20231211155903-104d264ea2a6 h1:JHXq5Uh
 github.com/zijiren233/gencontainer v0.0.0-20231211155903-104d264ea2a6/go.mod h1:V5oL7PrZxgisuLCblFWd89Jg99O8vM1n58llcxZ2hDY=
 github.com/zijiren233/gencontainer v0.0.0-20231212054144-37b16bf11399 h1:3yWNkkPUIbSGXNvbzMu8eSS9apGGBsPvnVQVIIFUEsc=
 github.com/zijiren233/gencontainer v0.0.0-20231212054144-37b16bf11399/go.mod h1:V5oL7PrZxgisuLCblFWd89Jg99O8vM1n58llcxZ2hDY=
+github.com/zijiren233/gencontainer v0.0.0-20231213075414-f7f4c8261dca h1:mYxvu0DgfUFviM0GRqRIwC+nXBGZNV/WLnndTYGSwPA=
+github.com/zijiren233/gencontainer v0.0.0-20231213075414-f7f4c8261dca/go.mod h1:V5oL7PrZxgisuLCblFWd89Jg99O8vM1n58llcxZ2hDY=
 github.com/zijiren233/go-colorable v0.0.0-20230930131441-997304c961cb h1:0DyOxf/TbbGodHhOVHNoPk+7v/YBJACs22gKpKlatWw=
 github.com/zijiren233/go-colorable v0.0.0-20230930131441-997304c961cb/go.mod h1:6TCzjDiQ8+5gWZiwsC3pnA5M0vUy2jV2Y7ciHJh729g=
 github.com/zijiren233/livelib v0.2.3-0.20231103145812-58de2ae7f423 h1:6febr/evRs52lo2lHSpcc6e7+yVPI04ba9eEl26tl+Y=

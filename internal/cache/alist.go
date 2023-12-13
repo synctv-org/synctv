@@ -12,7 +12,7 @@ import (
 	"github.com/zijiren233/gencontainer/refreshcache"
 )
 
-type AlistUserCache = refreshcache.RefreshCache[*AlistUserCacheData]
+type AlistUserCache = refreshcache.RefreshCache[*AlistUserCacheData, string]
 
 type AlistUserCacheData struct {
 	Host  string
@@ -20,21 +20,17 @@ type AlistUserCacheData struct {
 }
 
 func NewAlistCache(userID string) *AlistUserCache {
-	return refreshcache.NewRefreshCache[*AlistUserCacheData](func(ctx context.Context, args ...any) (*AlistUserCacheData, error) {
+	return refreshcache.NewRefreshCache[*AlistUserCacheData](func(ctx context.Context, args ...string) (*AlistUserCacheData, error) {
 		var backend string
 		if len(args) == 1 {
-			var ok bool
-			backend, ok = args[0].(string)
-			if !ok {
-				panic("args[0] is not string")
-			}
+			backend = args[0]
 		}
 		return AlistAuthorizationCacheWithUserIDInitFunc(userID, backend)(ctx)
 	}, time.Hour*24)
 }
 
-func AlistAuthorizationCacheWithConfigInitFunc(host, username, password, backend string) func(ctx context.Context, args ...any) (*AlistUserCacheData, error) {
-	return func(ctx context.Context, args ...any) (*AlistUserCacheData, error) {
+func AlistAuthorizationCacheWithConfigInitFunc(host, username, password, backend string) func(ctx context.Context, args ...string) (*AlistUserCacheData, error) {
+	return func(ctx context.Context, args ...string) (*AlistUserCacheData, error) {
 		cli := vendor.AlistClient(backend)
 		if username == "" {
 			_, err := cli.Me(ctx, &alist.MeReq{
@@ -71,18 +67,18 @@ func AlistAuthorizationCacheWithUserIDInitFunc(userID string, backend string) fu
 	}
 }
 
-type AlistMovieCache = refreshcache.RefreshCache[*AlistMovieCacheData]
+type AlistMovieCache = refreshcache.RefreshCache[*AlistMovieCacheData, string]
 
 func NewAlistMovieCache(user *AlistUserCache, movie *model.Movie) *AlistMovieCache {
-	return refreshcache.NewRefreshCache[*AlistMovieCacheData](NewAlistMovieCacheInitFunc(user, movie), time.Hour)
+	return refreshcache.NewRefreshCache[*AlistMovieCacheData, string](NewAlistMovieCacheInitFunc(user, movie), time.Hour)
 }
 
 type AlistMovieCacheData struct {
 	URL string
 }
 
-func NewAlistMovieCacheInitFunc(user *AlistUserCache, movie *model.Movie) func(ctx context.Context, args ...any) (*AlistMovieCacheData, error) {
-	return func(ctx context.Context, args ...any) (*AlistMovieCacheData, error) {
+func NewAlistMovieCacheInitFunc(user *AlistUserCache, movie *model.Movie) func(ctx context.Context, args ...string) (*AlistMovieCacheData, error) {
+	return func(ctx context.Context, args ...string) (*AlistMovieCacheData, error) {
 		aucd, err := user.Get(ctx)
 		if err != nil {
 			return nil, err

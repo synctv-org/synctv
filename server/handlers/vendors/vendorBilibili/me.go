@@ -33,7 +33,7 @@ func Me(ctx *gin.Context) {
 		}))
 		return
 	}
-	resp, err := vendor.BilibiliClient("").UserInfo(ctx, &bilibili.UserInfoReq{
+	resp, err := vendor.LoadBilibiliClient("").UserInfo(ctx, &bilibili.UserInfoReq{
 		Cookies: v.Cookies,
 	})
 	if err != nil {

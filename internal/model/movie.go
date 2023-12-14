@@ -47,12 +47,12 @@ type VendorName = string
 const (
 	VendorBilibili VendorName = "bilibili"
 	VendorAlist    VendorName = "alist"
+	VendorEmby     VendorName = "emby"
 )
 
 type VendorInfo struct {
 	Vendor   VendorName             `json:"vendor"`
 	Backend  string                 `json:"backend"`
-	Shared   bool                   `gorm:"not null;default:false" json:"shared"`
 	Bilibili *BilibiliStreamingInfo `gorm:"embedded;embeddedPrefix:bilibili_" json:"bilibili,omitempty"`
 	Alist    *AlistStreamingInfo    `gorm:"embedded;embeddedPrefix:alist_" json:"alist,omitempty"`
 }
@@ -62,6 +62,7 @@ type BilibiliStreamingInfo struct {
 	Cid     uint64 `json:"cid,omitempty"`
 	Epid    uint64 `json:"epid,omitempty"`
 	Quality uint64 `json:"quality,omitempty"`
+	Shared  bool   `json:"shared,omitempty"`
 }
 
 func (b *BilibiliStreamingInfo) Validate() error {

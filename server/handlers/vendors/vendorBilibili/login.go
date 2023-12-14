@@ -15,7 +15,7 @@ import (
 )
 
 func NewQRCode(ctx *gin.Context) {
-	r, err := vendor.BilibiliClient("").NewQRCode(ctx, &bilibili.Empty{})
+	r, err := vendor.LoadBilibiliClient("").NewQRCode(ctx, &bilibili.Empty{})
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
@@ -47,7 +47,7 @@ func LoginWithQR(ctx *gin.Context) {
 		return
 	}
 
-	resp, err := vendor.BilibiliClient("").LoginWithQRCode(ctx, &bilibili.LoginWithQRCodeReq{
+	resp, err := vendor.LoadBilibiliClient("").LoginWithQRCode(ctx, &bilibili.LoginWithQRCodeReq{
 		Key: req.Key,
 	})
 	if err != nil {
@@ -89,7 +89,7 @@ func LoginWithQR(ctx *gin.Context) {
 }
 
 func NewCaptcha(ctx *gin.Context) {
-	r, err := vendor.BilibiliClient("").NewCaptcha(ctx, &bilibili.Empty{})
+	r, err := vendor.LoadBilibiliClient("").NewCaptcha(ctx, &bilibili.Empty{})
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
@@ -131,7 +131,7 @@ func NewSMS(ctx *gin.Context) {
 		return
 	}
 
-	r, err := vendor.BilibiliClient("").NewSMS(ctx, &bilibili.NewSMSReq{
+	r, err := vendor.LoadBilibiliClient("").NewSMS(ctx, &bilibili.NewSMSReq{
 		Phone:     req.Telephone,
 		Token:     req.Token,
 		Challenge: req.Challenge,
@@ -176,7 +176,7 @@ func LoginWithSMS(ctx *gin.Context) {
 		return
 	}
 
-	c, err := vendor.BilibiliClient("").LoginWithSMS(ctx, &bilibili.LoginWithSMSReq{
+	c, err := vendor.LoadBilibiliClient("").LoginWithSMS(ctx, &bilibili.LoginWithSMSReq{
 		Phone:      req.Telephone,
 		CaptchaKey: req.CaptchaKey,
 		Code:       req.Code,

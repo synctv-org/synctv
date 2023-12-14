@@ -30,6 +30,7 @@ func Init(d *gorm.DB, t conf.DatabaseType) error {
 		new(model.Movie),
 		new(model.BilibiliVendor),
 		new(model.AlistVendor),
+		new(model.VendorBackend),
 	)
 }
 

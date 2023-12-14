@@ -42,7 +42,7 @@ func Login(ctx *gin.Context) {
 		return
 	}
 
-	cli := vendor.AlistClient("")
+	cli := vendor.LoadAlistClient("")
 
 	if req.Username == "" {
 		_, err := cli.Me(ctx, &alist.MeReq{

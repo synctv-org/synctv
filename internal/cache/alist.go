@@ -31,7 +31,7 @@ func NewAlistCache(userID string) *AlistUserCache {
 
 func AlistAuthorizationCacheWithConfigInitFunc(host, username, password, backend string) func(ctx context.Context, args ...string) (*AlistUserCacheData, error) {
 	return func(ctx context.Context, args ...string) (*AlistUserCacheData, error) {
-		cli := vendor.AlistClient(backend)
+		cli := vendor.LoadAlistClient(backend)
 		if username == "" {
 			_, err := cli.Me(ctx, &alist.MeReq{
 				Host: host,
@@ -86,7 +86,7 @@ func NewAlistMovieCacheInitFunc(user *AlistUserCache, movie *model.Movie) func(c
 		if aucd.Host == "" {
 			return nil, errors.New("not bind alist vendor")
 		}
-		cli := vendor.AlistClient(movie.Base.VendorInfo.Backend)
+		cli := vendor.LoadAlistClient(movie.Base.VendorInfo.Backend)
 		fg, err := cli.FsGet(ctx, &alist.FsGetReq{
 			Host:     aucd.Host,
 			Token:    aucd.Token,

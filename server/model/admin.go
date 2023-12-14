@@ -5,7 +5,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 	json "github.com/json-iterator/go"
+	"github.com/synctv-org/synctv/internal/model"
 	dbModel "github.com/synctv-org/synctv/internal/model"
+	"google.golang.org/grpc/connectivity"
 )
 
 var (
@@ -127,4 +129,37 @@ func (aur *AdminRoomPasswordReq) Validate() error {
 
 func (aur *AdminRoomPasswordReq) Decode(ctx *gin.Context) error {
 	return json.NewDecoder(ctx.Request.Body).Decode(aur)
+}
+
+type GetVendorBackendResp struct {
+	Info   *dbModel.VendorBackend `json:"info"`
+	Status connectivity.State     `json:"status"`
+}
+
+type AddVendorBackendReq model.VendorBackend
+
+func (avbr *AddVendorBackendReq) Validate() error {
+	if avbr.Backend.Endpoint == "" {
+		return errors.New("endpoint is empty")
+	}
+	return nil
+}
+
+func (avbr *AddVendorBackendReq) Decode(ctx *gin.Context) error {
+	return json.NewDecoder(ctx.Request.Body).Decode(avbr)
+}
+
+type DeleteVendorBackendsReq struct {
+	Endpoints []string `json:"endpoints"`
+}
+
+func (dvbr *DeleteVendorBackendsReq) Validate() error {
+	if len(dvbr.Endpoints) == 0 {
+		return errors.New("endpoints is empty")
+	}
+	return nil
+}
+
+func (dvbr *DeleteVendorBackendsReq) Decode(ctx *gin.Context) error {
+	return json.NewDecoder(ctx.Request.Body).Decode(dvbr)
 }

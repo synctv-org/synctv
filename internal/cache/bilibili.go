@@ -46,7 +46,7 @@ func BilibiliSharedMpdCacheInitFunc(ctx context.Context, movie *model.Movie, arg
 	} else {
 		cookies = utils.MapToHttpCookie(vendorInfo.Cookies)
 	}
-	cli := vendor.BilibiliClient(movie.Base.VendorInfo.Backend)
+	cli := vendor.LoadBilibiliClient(movie.Base.VendorInfo.Backend)
 	var m, hevcM *mpd.MPD
 	biliInfo := movie.Base.VendorInfo.Bilibili
 	switch {
@@ -143,7 +143,7 @@ func BilibiliNoSharedMovieCacheInitFunc(ctx context.Context, id string, movie *m
 	} else {
 		cookies = utils.MapToHttpCookie(vendorInfo.Cookies)
 	}
-	cli := vendor.BilibiliClient(movie.Base.VendorInfo.Backend)
+	cli := vendor.LoadBilibiliClient(movie.Base.VendorInfo.Backend)
 	var u string
 	biliInfo := movie.Base.VendorInfo.Bilibili
 	switch {
@@ -219,7 +219,7 @@ func initBilibiliSubtitleCache(ctx context.Context, movie *model.Movie, args ...
 	} else {
 		cookies = utils.MapToHttpCookie(vendorInfo.Cookies)
 	}
-	cli := vendor.BilibiliClient(movie.Base.VendorInfo.Backend)
+	cli := vendor.LoadBilibiliClient(movie.Base.VendorInfo.Backend)
 	resp, err := cli.GetSubtitles(ctx, &bilibili.GetSubtitlesReq{
 		Cookies: utils.HttpCookieToMap(cookies),
 		Bvid:    biliInfo.Bvid,

@@ -732,11 +732,6 @@ func proxyVendorMovie(ctx *gin.Context, movie *op.Movie) {
 }
 
 func parse2VendorMovie(ctx context.Context, user *op.User, room *op.Room, movie *dbModel.Movie) (err error) {
-	userID := user.ID
-	if movie.Base.VendorInfo.Shared {
-		userID = movie.CreatorID
-	}
-
 	switch movie.Base.VendorInfo.Vendor {
 	case dbModel.VendorBilibili:
 		opM, err := room.GetMovieByID(movie.ID)
@@ -747,6 +742,10 @@ func parse2VendorMovie(ctx context.Context, user *op.User, room *op.Room, movie 
 			bmc, err := opM.BilibiliCache()
 			if err != nil {
 				return err
+			}
+			userID := user.ID
+			if movie.Base.VendorInfo.Bilibili.Shared {
+				userID = movie.CreatorID
 			}
 			s, err := bmc.NoSharedMovie.LoadOrStore(ctx, userID)
 			if err != nil {

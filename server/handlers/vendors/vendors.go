@@ -14,11 +14,13 @@ func Backends(ctx *gin.Context) {
 	var backends []string
 	switch ctx.Param("vendor") {
 	case dbModel.VendorBilibili:
-		backends = maps.Keys(vendor.BilibiliClients())
+		backends = maps.Keys(vendor.LoadBackends().BilibiliClients())
 	case dbModel.VendorAlist:
-		backends = maps.Keys(vendor.AlistClients())
+		backends = maps.Keys(vendor.LoadBackends().AlistClients())
+	case dbModel.VendorEmby:
+		backends = maps.Keys(vendor.LoadBackends().EmbyClients())
 	default:
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("invalid vendor"))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("invalid vendor name"))
 		return
 	}
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(backends))

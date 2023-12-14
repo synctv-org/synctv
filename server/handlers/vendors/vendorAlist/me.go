@@ -17,7 +17,7 @@ type AlistMeResp = model.VendorMeResp[*alist.MeResp]
 func Me(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*op.User)
 
-	cli := vendor.AlistClient(ctx.Query("backend"))
+	cli := vendor.LoadAlistClient(ctx.Query("backend"))
 
 	aucd, err := user.AlistCache().Get(ctx, ctx.Query("backend"))
 	if err != nil {

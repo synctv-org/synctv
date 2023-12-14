@@ -3,10 +3,19 @@ package bootstrap
 import (
 	"context"
 
-	"github.com/synctv-org/synctv/internal/conf"
+	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/vendor"
 )
 
-func InitVendor(ctx context.Context) error {
-	return vendor.Init(&conf.Conf.Vendor)
+func InitVendorBackend(ctx context.Context) error {
+	vb, err := db.GetAllVendorBackend()
+	if err != nil {
+		return err
+	}
+	b, err := vendor.NewBackends(ctx, vb)
+	if err != nil {
+		return err
+	}
+	vendor.StoreBackends(b)
+	return nil
 }

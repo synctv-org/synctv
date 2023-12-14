@@ -10,6 +10,7 @@ import (
 	dbModel "github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/internal/settings"
+	"github.com/synctv-org/synctv/internal/vendor"
 	"github.com/synctv-org/synctv/server/model"
 	"gorm.io/gorm"
 )
@@ -696,6 +697,126 @@ func AdminRoomPassword(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorStringResp(err.Error()))
 		return
 	}
+
+	ctx.Status(http.StatusNoContent)
+}
+
+func AdminGetVendorBackends(ctx *gin.Context) {
+	// user := ctx.MustGet("user").(*op.User)
+
+	conns := vendor.LoadBackends().Conns()
+	resp := make([]*model.GetVendorBackendResp, 0, len(conns))
+	for _, conn := range conns {
+		resp = append(resp, &model.GetVendorBackendResp{
+			Status: conn.Conn.GetState(),
+			Info:   conn.Info,
+		})
+	}
+
+	ctx.JSON(http.StatusOK, model.NewApiDataResp(resp))
+}
+
+func AdminAddVendorBackends(ctx *gin.Context) {
+	// user := ctx.MustGet("user").(*op.User)
+
+	var req model.AddVendorBackendReq
+	if err := model.Decode(ctx, &req); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	vb, err := db.GetAllVendorBackend()
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
+
+	vb = append(vb, (*dbModel.VendorBackend)(&req))
+
+	backends, err := vendor.NewBackends(ctx, vb)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	err = db.CreateVendorBackend((*dbModel.VendorBackend)(&req))
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	vendor.StoreBackends(backends)
+
+	ctx.Status(http.StatusNoContent)
+}
+
+func AdminDeleteVendorBackends(ctx *gin.Context) {
+	// user := ctx.MustGet("user").(*op.User)
+
+	var req model.DeleteVendorBackendsReq
+	if err := model.Decode(ctx, &req); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	err := db.DeleteVendorBackends(req.Endpoints)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	vb, err := db.GetAllVendorBackend()
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
+
+	backends, err := vendor.NewBackends(ctx, vb)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	vendor.StoreBackends(backends)
+
+	ctx.Status(http.StatusNoContent)
+}
+
+func AdminUpdateVendorBackends(ctx *gin.Context) {
+	// user := ctx.MustGet("user").(*op.User)
+
+	var req model.AddVendorBackendReq
+	if err := model.Decode(ctx, &req); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	vb, err := db.GetAllVendorBackend()
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
+
+	for i, vb2 := range vb {
+		if vb2.Backend.Endpoint == req.Backend.Endpoint {
+			vb[i] = (*dbModel.VendorBackend)(&req)
+			break
+		}
+	}
+
+	backends, err := vendor.NewBackends(ctx, vb)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	err = db.SaveVendorBackend((*dbModel.VendorBackend)(&req))
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	vendor.StoreBackends(backends)
 
 	ctx.Status(http.StatusNoContent)
 }

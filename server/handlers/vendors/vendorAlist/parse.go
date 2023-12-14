@@ -39,7 +39,7 @@ func List(ctx *gin.Context) {
 		return
 	}
 
-	var cli = vendor.AlistClient(ctx.Query("backend"))
+	var cli = vendor.LoadAlistClient(ctx.Query("backend"))
 	aucd, err := user.AlistCache().Get(ctx, ctx.Query("backend"))
 	if err != nil {
 		if errors.Is(err, db.ErrNotFound("vendor")) {

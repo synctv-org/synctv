@@ -40,7 +40,7 @@ func Init(e *gin.Engine) {
 
 				admin.GET("/vendors", AdminGetVendorBackends)
 
-				admin.POST("/vendors", AdminAddVendorBackends)
+				admin.POST("/vendors", AdminAddVendorBackend)
 
 				admin.PUT("/vendors", AdminUpdateVendorBackends)
 

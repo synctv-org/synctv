@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"fmt"
 	"net/http"
 	"reflect"
 
@@ -13,7 +12,6 @@ import (
 	"github.com/synctv-org/synctv/internal/settings"
 	"github.com/synctv-org/synctv/internal/vendor"
 	"github.com/synctv-org/synctv/server/model"
-	"golang.org/x/exp/maps"
 	"gorm.io/gorm"
 )
 
@@ -718,7 +716,7 @@ func AdminGetVendorBackends(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(resp))
 }
 
-func AdminAddVendorBackends(ctx *gin.Context) {
+func AdminAddVendorBackend(ctx *gin.Context) {
 	// user := ctx.MustGet("user").(*op.User)
 
 	var req model.AddVendorBackendReq
@@ -727,31 +725,7 @@ func AdminAddVendorBackends(ctx *gin.Context) {
 		return
 	}
 
-	raw := vendor.LoadConns()
-	if _, ok := raw[req.Backend.Endpoint]; ok {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("duplicate endpoint"))
-		return
-	}
-
-	bc, err := vendor.NewBackendConn(ctx, (*dbModel.VendorBackend)(&req))
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
-		return
-	}
-
-	m := maps.Clone(raw)
-	m[req.Backend.Endpoint] = bc
-
-	err = vendor.StoreConns(m)
-	if err != nil {
-		bc.Conn.Close()
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
-		return
-	}
-
-	err = db.CreateVendorBackend((*dbModel.VendorBackend)(&req))
-	if err != nil {
-		bc.Conn.Close()
+	if err := vendor.AddVendorBackend(ctx, (*dbModel.VendorBackend)(&req)); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
@@ -768,37 +742,9 @@ func AdminDeleteVendorBackends(ctx *gin.Context) {
 		return
 	}
 
-	raw := vendor.LoadConns()
-	for _, v := range req.Endpoints {
-		if _, ok := raw[v]; !ok {
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp(fmt.Sprintf("endpoint %s not found", v)))
-			return
-		}
-	}
-
-	err := db.DeleteVendorBackends(req.Endpoints)
-	if err != nil {
+	if err := vendor.DeleteVendorBackends(ctx, req.Endpoints); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
-	}
-
-	m := maps.Clone(raw)
-
-	var deletedConn = make([]*vendor.BackendConn, len(req.Endpoints))
-
-	for i, v := range req.Endpoints {
-		deletedConn[i] = m[v]
-		delete(m, v)
-	}
-
-	err = vendor.StoreConns(m)
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
-		return
-	}
-
-	for _, v := range deletedConn {
-		v.Conn.Close()
 	}
 
 	ctx.Status(http.StatusNoContent)
@@ -813,37 +759,7 @@ func AdminUpdateVendorBackends(ctx *gin.Context) {
 		return
 	}
 
-	var beforeConn *vendor.BackendConn
-
-	raw := vendor.LoadConns()
-	if c, ok := raw[req.Backend.Endpoint]; !ok {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("endpoint not found"))
-		return
-	} else {
-		beforeConn = c
-	}
-
-	bc, err := vendor.NewBackendConn(ctx, (*dbModel.VendorBackend)(&req))
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
-		return
-	}
-
-	m := maps.Clone(raw)
-	m[req.Backend.Endpoint] = bc
-
-	err = vendor.StoreConns(m)
-	if err != nil {
-		bc.Conn.Close()
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
-		return
-	}
-
-	beforeConn.Conn.Close()
-
-	err = db.SaveVendorBackend((*dbModel.VendorBackend)(&req))
-	if err != nil {
-		bc.Conn.Close()
+	if err := vendor.UpdateVendorBackend(ctx, (*dbModel.VendorBackend)(&req)); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}

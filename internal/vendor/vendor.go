@@ -6,7 +6,9 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -25,6 +27,7 @@ import (
 	jwtv4 "github.com/golang-jwt/jwt/v4"
 	"github.com/hashicorp/consul/api"
 	log "github.com/sirupsen/logrus"
+	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/model"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
@@ -35,30 +38,190 @@ func init() {
 	selector.SetGlobalSelector(wrr.NewBuilder())
 }
 
+type Backends struct {
+	conns   map[string]*BackendConn
+	clients *VendorClients
+}
+
 var (
-	conns   atomic.Value
-	clients atomic.Pointer[VendorClients]
+	backends atomic.Pointer[Backends]
+	lock     sync.Mutex
 )
 
 func LoadClients() *VendorClients {
-	return clients.Load()
+	return backends.Load().clients
 }
 
-func storeClients(b *VendorClients) {
-	clients.Store(b)
+func storeBackends(conns map[string]*BackendConn, clients *VendorClients) {
+	backends.Store(&Backends{
+		conns:   conns,
+		clients: clients,
+	})
+}
+
+func loadBackends() *Backends {
+	return backends.Load()
 }
 
 func LoadConns() map[string]*BackendConn {
-	return conns.Load().(map[string]*BackendConn)
+	return backends.Load().conns
 }
 
-func StoreConns(c map[string]*BackendConn) error {
-	vc, err := newVendorClients(c)
+func Init(ctx context.Context) error {
+	vb, err := db.GetAllVendorBackend()
 	if err != nil {
 		return err
 	}
-	conns.Store(c)
-	storeClients(vc)
+	bc, err := newBackendConns(ctx, vb)
+	if err != nil {
+		return err
+	}
+	vc, err := newVendorClients(bc)
+	if err != nil {
+		return err
+	}
+	storeBackends(bc, vc)
+	return nil
+}
+
+func AddVendorBackend(ctx context.Context, backend *model.VendorBackend) error {
+	if !lock.TryLock() {
+		return errors.New("vendor backend is updating")
+	}
+	defer lock.Unlock()
+
+	raw := LoadConns()
+	if _, ok := raw[backend.Backend.Endpoint]; ok {
+		return fmt.Errorf("duplicate endpoint: %s", backend.Backend.Endpoint)
+	}
+
+	bc, err := newBackendConn(ctx, backend)
+	if err != nil {
+		return err
+	}
+
+	m := maps.Clone(raw)
+	m[backend.Backend.Endpoint] = bc
+
+	vc, err := newVendorClients(m)
+	if err != nil {
+		bc.Conn.Close()
+		return err
+	}
+
+	err = db.CreateVendorBackend(backend)
+	if err != nil {
+		bc.Conn.Close()
+		return err
+	}
+
+	storeBackends(m, vc)
+
+	return nil
+}
+
+func DeleteVendorBackend(ctx context.Context, endpoint string) error {
+	if !lock.TryLock() {
+		return errors.New("vendor backend is updating")
+	}
+	defer lock.Unlock()
+
+	raw := LoadConns()
+	if _, ok := raw[endpoint]; !ok {
+		return fmt.Errorf("endpoint not found: %s", endpoint)
+	}
+
+	m := maps.Clone(raw)
+	beforeConn := m[endpoint].Conn
+	delete(m, endpoint)
+
+	vc, err := newVendorClients(m)
+	if err != nil {
+		return err
+	}
+
+	err = db.DeleteVendorBackend(endpoint)
+	if err != nil {
+		return err
+	}
+
+	storeBackends(m, vc)
+	beforeConn.Close()
+
+	return nil
+}
+
+func DeleteVendorBackends(ctx context.Context, endpoints []string) error {
+	if !lock.TryLock() {
+		return errors.New("vendor backend is updating")
+	}
+	defer lock.Unlock()
+
+	m := maps.Clone(LoadConns())
+
+	var beforeConn = make([]*grpc.ClientConn, len(endpoints))
+	for i, endpoint := range endpoints {
+		if conn, ok := m[endpoint]; !ok {
+			return fmt.Errorf("endpoint not found: %s", endpoint)
+		} else {
+			beforeConn[i] = conn.Conn
+		}
+		delete(m, endpoint)
+	}
+
+	vc, err := newVendorClients(m)
+	if err != nil {
+		return err
+	}
+
+	err = db.DeleteVendorBackends(endpoints)
+	if err != nil {
+		return err
+	}
+
+	storeBackends(m, vc)
+	for _, conn := range beforeConn {
+		conn.Close()
+	}
+
+	return nil
+}
+
+func UpdateVendorBackend(ctx context.Context, backend *model.VendorBackend) error {
+	if !lock.TryLock() {
+		return errors.New("vendor backend is updating")
+	}
+	defer lock.Unlock()
+
+	raw := LoadConns()
+	if _, ok := raw[backend.Backend.Endpoint]; !ok {
+		return fmt.Errorf("endpoint not found: %s", backend.Backend.Endpoint)
+	}
+
+	bc, err := newBackendConn(ctx, backend)
+	if err != nil {
+		return err
+	}
+
+	m := maps.Clone(raw)
+	beforeConn := m[backend.Backend.Endpoint].Conn
+	m[backend.Backend.Endpoint] = bc
+
+	vc, err := newVendorClients(m)
+	if err != nil {
+		bc.Conn.Close()
+		return err
+	}
+
+	err = db.SaveVendorBackend(backend)
+	if err != nil {
+		bc.Conn.Close()
+		return err
+	}
+
+	storeBackends(m, vc)
+	beforeConn.Close()
+
 	return nil
 }
 
@@ -85,7 +248,7 @@ func (b *VendorClients) EmbyClients() map[string]EmbyInterface {
 	return b.emby
 }
 
-func NewBackendConn(ctx context.Context, conf *model.VendorBackend) (conns *BackendConn, err error) {
+func newBackendConn(ctx context.Context, conf *model.VendorBackend) (conns *BackendConn, err error) {
 	cc, err := NewGrpcClientConn(ctx, &conf.Backend)
 	if err != nil {
 		return conns, err
@@ -96,7 +259,7 @@ func NewBackendConn(ctx context.Context, conf *model.VendorBackend) (conns *Back
 	}, nil
 }
 
-func NewBackendConns(ctx context.Context, conf []*model.VendorBackend) (conns map[string]*BackendConn, err error) {
+func newBackendConns(ctx context.Context, conf []*model.VendorBackend) (conns map[string]*BackendConn, err error) {
 	conns = make(map[string]*BackendConn, len(conf))
 	defer func() {
 		if err != nil {
@@ -110,7 +273,7 @@ func NewBackendConns(ctx context.Context, conf []*model.VendorBackend) (conns ma
 		if _, ok := conns[vb.Backend.Endpoint]; ok {
 			return conns, fmt.Errorf("duplicate endpoint: %s", vb.Backend.Endpoint)
 		}
-		cc, err := NewBackendConn(ctx, vb)
+		cc, err := newBackendConn(ctx, vb)
 		if err != nil {
 			return conns, err
 		}

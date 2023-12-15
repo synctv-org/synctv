@@ -13,7 +13,7 @@ import (
 type EmbyInterface = emby.EmbyHTTPServer
 
 func LoadEmbyClient(name string) EmbyInterface {
-	if cli, ok := clients.Load().emby[name]; ok && cli != nil {
+	if cli, ok := LoadClients().emby[name]; ok && cli != nil {
 		return cli
 	}
 	return embyLocalClient

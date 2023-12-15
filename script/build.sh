@@ -10,6 +10,12 @@ function ChToScriptFileDir() {
     fi
 }
 
+function EnvHelp() {
+    echo "SKIP_INIT_WEB"
+    echo "WEB_VERSION set web dependency version (default: build version)"
+    echo "TRIM_PATH enable trim path (default: disable)"
+}
+
 function Help() {
     echo "-h get help"
     echo "-v set build version (default: dev)"
@@ -21,12 +27,13 @@ function Help() {
     echo "-P set trim path (default: disable)"
     echo "-d set build result dir (default: build)"
     echo "-T set tags (default: jsoniter)"
+    echo "Env Help:"
+    EnvHelp
 }
 
 function Init() {
     CGO_ENABLED=0
     VERSION="dev"
-    WEB_VERSION=""
     commit="$(git log --pretty=format:"%h" -1)"
     if [ $? -ne 0 ]; then
         echo "git log error"
@@ -37,8 +44,6 @@ function Init() {
     BUILD_MODE="pie"
     LDFLAGS='-s -w --extldflags "-static -fpic -Wl,-z,relro,-z,now"'
     PLATFORM=""
-    TRIM_PATH=""
-    SKIP_INIT_WEB=""
     BUILD_DIR="../build"
     TAGS="jsoniter"
 }

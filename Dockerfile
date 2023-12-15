@@ -1,6 +1,8 @@
 From alpine:latest as builder
 
-ARG VERSION=v0.0.0
+ARG VERSION=dev
+
+ARG SKIP_INIT_WEB
 
 WORKDIR /synctv
 

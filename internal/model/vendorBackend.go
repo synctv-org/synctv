@@ -6,18 +6,18 @@ import (
 )
 
 type Consul struct {
-	ServerName string
-	Token      string
-	TokenFile  string
-	PathPrefix string
-	Namespace  string
-	Partition  string
+	ServerName string `json:"serverName"`
+	Token      string `json:"token"`
+	TokenFile  string `json:"tokenFile"`
+	PathPrefix string `json:"pathPrefix"`
+	Namespace  string `json:"namespace"`
+	Partition  string `json:"partition"`
 }
 
 type Etcd struct {
-	ServerName string
-	Username   string
-	Password   string
+	ServerName string `json:"serverName"`
+	Username   string `json:"username"`
+	Password   string `json:"password"`
 }
 
 type Backend struct {

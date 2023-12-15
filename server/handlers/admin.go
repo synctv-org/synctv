@@ -1,9 +1,9 @@
 package handlers
 
 import (
+	"fmt"
 	"net/http"
 	"reflect"
-	"sync"
 
 	"github.com/gin-gonic/gin"
 	"github.com/synctv-org/synctv/internal/bootstrap"
@@ -13,6 +13,7 @@ import (
 	"github.com/synctv-org/synctv/internal/settings"
 	"github.com/synctv-org/synctv/internal/vendor"
 	"github.com/synctv-org/synctv/server/model"
+	"golang.org/x/exp/maps"
 	"gorm.io/gorm"
 )
 
@@ -705,7 +706,7 @@ func AdminRoomPassword(ctx *gin.Context) {
 func AdminGetVendorBackends(ctx *gin.Context) {
 	// user := ctx.MustGet("user").(*op.User)
 
-	conns := vendor.LoadBackends().Conns()
+	conns := vendor.LoadConns()
 	resp := make([]*model.GetVendorBackendResp, 0, len(conns))
 	for _, conn := range conns {
 		resp = append(resp, &model.GetVendorBackendResp{
@@ -717,8 +718,6 @@ func AdminGetVendorBackends(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(resp))
 }
 
-var vendorBackendLock sync.Mutex
-
 func AdminAddVendorBackends(ctx *gin.Context) {
 	// user := ctx.MustGet("user").(*op.User)
 
@@ -728,34 +727,34 @@ func AdminAddVendorBackends(ctx *gin.Context) {
 		return
 	}
 
-	if !vendorBackendLock.TryLock() {
-		ctx.AbortWithStatusJSON(http.StatusConflict, model.NewApiErrorStringResp("vendor backend is updating"))
-		return
-	}
-	defer vendorBackendLock.Unlock()
-
-	vb, err := db.GetAllVendorBackend()
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+	raw := vendor.LoadConns()
+	if _, ok := raw[req.Backend.Endpoint]; ok {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("duplicate endpoint"))
 		return
 	}
 
-	vb = append(vb, (*dbModel.VendorBackend)(&req))
-
-	backends, err := vendor.NewBackends(ctx, vb)
+	bc, err := vendor.NewBackendConn(ctx, (*dbModel.VendorBackend)(&req))
 	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	m := maps.Clone(raw)
+	m[req.Backend.Endpoint] = bc
+
+	err = vendor.StoreConns(m)
+	if err != nil {
+		bc.Conn.Close()
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
 	err = db.CreateVendorBackend((*dbModel.VendorBackend)(&req))
 	if err != nil {
-		backends.Close()
+		bc.Conn.Close()
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
-
-	vendor.StoreBackends(backends)
 
 	ctx.Status(http.StatusNoContent)
 }
@@ -763,17 +762,19 @@ func AdminAddVendorBackends(ctx *gin.Context) {
 func AdminDeleteVendorBackends(ctx *gin.Context) {
 	// user := ctx.MustGet("user").(*op.User)
 
-	var req model.DeleteVendorBackendsReq
+	var req model.VendorBackendEndpointsReq
 	if err := model.Decode(ctx, &req); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
-	if !vendorBackendLock.TryLock() {
-		ctx.AbortWithStatusJSON(http.StatusConflict, model.NewApiErrorStringResp("vendor backend is updating"))
-		return
+	raw := vendor.LoadConns()
+	for _, v := range req.Endpoints {
+		if _, ok := raw[v]; !ok {
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp(fmt.Sprintf("endpoint %s not found", v)))
+			return
+		}
 	}
-	defer vendorBackendLock.Unlock()
 
 	err := db.DeleteVendorBackends(req.Endpoints)
 	if err != nil {
@@ -781,19 +782,24 @@ func AdminDeleteVendorBackends(ctx *gin.Context) {
 		return
 	}
 
-	vb, err := db.GetAllVendorBackend()
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
-		return
+	m := maps.Clone(raw)
+
+	var deletedConn = make([]*vendor.BackendConn, len(req.Endpoints))
+
+	for i, v := range req.Endpoints {
+		deletedConn[i] = m[v]
+		delete(m, v)
 	}
 
-	backends, err := vendor.NewBackends(ctx, vb)
+	err = vendor.StoreConns(m)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
-	vendor.StoreBackends(backends)
+	for _, v := range deletedConn {
+		v.Conn.Close()
+	}
 
 	ctx.Status(http.StatusNoContent)
 }
@@ -807,39 +813,40 @@ func AdminUpdateVendorBackends(ctx *gin.Context) {
 		return
 	}
 
-	if !vendorBackendLock.TryLock() {
-		ctx.AbortWithStatusJSON(http.StatusConflict, model.NewApiErrorStringResp("vendor backend is updating"))
+	var beforeConn *vendor.BackendConn
+
+	raw := vendor.LoadConns()
+	if c, ok := raw[req.Backend.Endpoint]; !ok {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("endpoint not found"))
 		return
-	}
-	defer vendorBackendLock.Unlock()
-
-	vb, err := db.GetAllVendorBackend()
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
-		return
+	} else {
+		beforeConn = c
 	}
 
-	for i, vb2 := range vb {
-		if vb2.Backend.Endpoint == req.Backend.Endpoint {
-			vb[i] = (*dbModel.VendorBackend)(&req)
-			break
-		}
-	}
-
-	backends, err := vendor.NewBackends(ctx, vb)
+	bc, err := vendor.NewBackendConn(ctx, (*dbModel.VendorBackend)(&req))
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
+
+	m := maps.Clone(raw)
+	m[req.Backend.Endpoint] = bc
+
+	err = vendor.StoreConns(m)
+	if err != nil {
+		bc.Conn.Close()
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	beforeConn.Conn.Close()
 
 	err = db.SaveVendorBackend((*dbModel.VendorBackend)(&req))
 	if err != nil {
-		backends.Close()
+		bc.Conn.Close()
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
-
-	vendor.StoreBackends(backends)
 
 	ctx.Status(http.StatusNoContent)
 }

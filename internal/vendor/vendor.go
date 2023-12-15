@@ -35,115 +35,131 @@ func init() {
 	selector.SetGlobalSelector(wrr.NewBuilder())
 }
 
-var backends atomic.Pointer[Backends]
+var (
+	conns   atomic.Value
+	clients atomic.Pointer[VendorClients]
+)
 
-type BackendConnInfo struct {
+func LoadClients() *VendorClients {
+	return clients.Load()
+}
+
+func storeClients(b *VendorClients) {
+	clients.Store(b)
+}
+
+func LoadConns() map[string]*BackendConn {
+	return conns.Load().(map[string]*BackendConn)
+}
+
+func StoreConns(c map[string]*BackendConn) error {
+	vc, err := newVendorClients(c)
+	if err != nil {
+		return err
+	}
+	conns.Store(c)
+	storeClients(vc)
+	return nil
+}
+
+type BackendConn struct {
 	Conn *grpc.ClientConn
 	Info *model.VendorBackend
 }
 
-type Backends struct {
-	conns    map[string]*BackendConnInfo
+type VendorClients struct {
 	bilibili map[string]BilibiliInterface
 	alist    map[string]AlistInterface
 	emby     map[string]EmbyInterface
 }
 
-func (b *Backends) Close() {
-	for _, conn := range b.conns {
-		conn.Conn.Close()
-	}
-}
-
-func (b *Backends) Conns() map[string]*BackendConnInfo {
-	return b.conns
-}
-
-func (b *Backends) BilibiliClients() map[string]BilibiliInterface {
+func (b *VendorClients) BilibiliClients() map[string]BilibiliInterface {
 	return b.bilibili
 }
 
-func (b *Backends) AlistClients() map[string]AlistInterface {
+func (b *VendorClients) AlistClients() map[string]AlistInterface {
 	return b.alist
 }
 
-func (b *Backends) EmbyClients() map[string]EmbyInterface {
+func (b *VendorClients) EmbyClients() map[string]EmbyInterface {
 	return b.emby
 }
 
-func NewBackends(ctx context.Context, conf []*model.VendorBackend) (backends *Backends, err error) {
-	newConns := make(map[string]*BackendConnInfo, len(conf))
-	backends = &Backends{
-		conns:    newConns,
+func NewBackendConn(ctx context.Context, conf *model.VendorBackend) (conns *BackendConn, err error) {
+	cc, err := NewGrpcClientConn(ctx, &conf.Backend)
+	if err != nil {
+		return conns, err
+	}
+	return &BackendConn{
+		Conn: cc,
+		Info: conf,
+	}, nil
+}
+
+func NewBackendConns(ctx context.Context, conf []*model.VendorBackend) (conns map[string]*BackendConn, err error) {
+	conns = make(map[string]*BackendConn, len(conf))
+	defer func() {
+		if err != nil {
+			for endpoint, conn := range conns {
+				delete(conns, endpoint)
+				conn.Conn.Close()
+			}
+		}
+	}()
+	for _, vb := range conf {
+		if _, ok := conns[vb.Backend.Endpoint]; ok {
+			return conns, fmt.Errorf("duplicate endpoint: %s", vb.Backend.Endpoint)
+		}
+		cc, err := NewBackendConn(ctx, vb)
+		if err != nil {
+			return conns, err
+		}
+		conns[vb.Backend.Endpoint] = cc
+	}
+
+	return conns, nil
+}
+
+func newVendorClients(conns map[string]*BackendConn) (*VendorClients, error) {
+	clients := &VendorClients{
 		bilibili: make(map[string]BilibiliInterface),
 		alist:    make(map[string]AlistInterface),
 		emby:     make(map[string]EmbyInterface),
 	}
-	defer func() {
-		if err != nil {
-			backends.Close()
-		}
-	}()
-	for _, vb := range conf {
-		if _, ok := newConns[vb.Backend.Endpoint]; ok {
-			return backends, fmt.Errorf("duplicate endpoint: %s", vb.Backend.Endpoint)
-		}
-		cc, err := NewGrpcClientConn(ctx, &vb.Backend)
-		if err != nil {
-			return backends, err
-		}
-		newConns[vb.Backend.Endpoint] = &BackendConnInfo{
-			Conn: cc,
-			Info: vb,
-		}
-		if vb.UsedBy.Bilibili {
-			if _, ok := backends.bilibili[vb.UsedBy.BilibiliBackendName]; ok {
-				return backends, fmt.Errorf("duplicate bilibili backend name: %s", vb.UsedBy.BilibiliBackendName)
+	for _, conn := range conns {
+		if conn.Info.UsedBy.Bilibili {
+			if _, ok := clients.bilibili[conn.Info.UsedBy.BilibiliBackendName]; ok {
+				return nil, fmt.Errorf("duplicate bilibili backend name: %s", conn.Info.UsedBy.BilibiliBackendName)
 			}
-			cli, err := NewBilibiliGrpcClient(cc)
+			cli, err := NewBilibiliGrpcClient(conn.Conn)
 			if err != nil {
-				return backends, err
+				return nil, err
 			}
-			backends.bilibili[vb.UsedBy.BilibiliBackendName] = cli
+			clients.bilibili[conn.Info.UsedBy.BilibiliBackendName] = cli
 		}
-		if vb.UsedBy.Alist {
-			if _, ok := backends.alist[vb.UsedBy.AlistBackendName]; ok {
-				return backends, fmt.Errorf("duplicate alist backend name: %s", vb.UsedBy.AlistBackendName)
+		if conn.Info.UsedBy.Alist {
+			if _, ok := clients.alist[conn.Info.UsedBy.AlistBackendName]; ok {
+				return nil, fmt.Errorf("duplicate alist backend name: %s", conn.Info.UsedBy.AlistBackendName)
 			}
-			cli, err := NewAlistGrpcClient(cc)
+			cli, err := NewAlistGrpcClient(conn.Conn)
 			if err != nil {
-				return backends, err
+				return nil, err
 			}
-			backends.alist[vb.UsedBy.AlistBackendName] = cli
+			clients.alist[conn.Info.UsedBy.AlistBackendName] = cli
 		}
-		if vb.UsedBy.Emby {
-			if _, ok := backends.emby[vb.UsedBy.EmbyBackendName]; ok {
-				return backends, fmt.Errorf("duplicate emby backend name: %s", vb.UsedBy.EmbyBackendName)
+		if conn.Info.UsedBy.Emby {
+			if _, ok := clients.emby[conn.Info.UsedBy.EmbyBackendName]; ok {
+				return nil, fmt.Errorf("duplicate emby backend name: %s", conn.Info.UsedBy.EmbyBackendName)
 			}
-			cli, err := NewEmbyGrpcClient(cc)
+			cli, err := NewEmbyGrpcClient(conn.Conn)
 			if err != nil {
-				return backends, err
+				return nil, err
 			}
-			backends.emby[vb.UsedBy.EmbyBackendName] = cli
+			clients.emby[conn.Info.UsedBy.EmbyBackendName] = cli
 		}
 	}
 
-	return backends, nil
-}
-
-func LoadBackends() *Backends {
-	return backends.Load()
-}
-
-func StoreBackends(b *Backends) {
-	old := backends.Swap(b)
-	if old == nil {
-		return
-	}
-	for k, conn := range old.conns {
-		conn.Conn.Close()
-		delete(old.conns, k)
-	}
+	return clients, nil
 }
 
 func NewGrpcClientConn(ctx context.Context, conf *model.Backend) (*grpc.ClientConn, error) {

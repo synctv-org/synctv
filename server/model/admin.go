@@ -149,17 +149,17 @@ func (avbr *AddVendorBackendReq) Decode(ctx *gin.Context) error {
 	return json.NewDecoder(ctx.Request.Body).Decode(avbr)
 }
 
-type DeleteVendorBackendsReq struct {
+type VendorBackendEndpointsReq struct {
 	Endpoints []string `json:"endpoints"`
 }
 
-func (dvbr *DeleteVendorBackendsReq) Validate() error {
+func (dvbr *VendorBackendEndpointsReq) Validate() error {
 	if len(dvbr.Endpoints) == 0 {
 		return errors.New("endpoints is empty")
 	}
 	return nil
 }
 
-func (dvbr *DeleteVendorBackendsReq) Decode(ctx *gin.Context) error {
+func (dvbr *VendorBackendEndpointsReq) Decode(ctx *gin.Context) error {
 	return json.NewDecoder(ctx.Request.Body).Decode(dvbr)
 }

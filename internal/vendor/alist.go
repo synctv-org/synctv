@@ -13,7 +13,7 @@ import (
 type AlistInterface = alist.AlistHTTPServer
 
 func LoadAlistClient(name string) AlistInterface {
-	if cli, ok := backends.Load().alist[name]; ok {
+	if cli, ok := clients.Load().alist[name]; ok {
 		return cli
 	}
 	return alistLocalClient

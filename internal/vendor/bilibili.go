@@ -13,7 +13,7 @@ import (
 type BilibiliInterface = bilibili.BilibiliHTTPServer
 
 func LoadBilibiliClient(name string) BilibiliInterface {
-	if cli, ok := backends.Load().bilibili[name]; ok {
+	if cli, ok := clients.Load().bilibili[name]; ok {
 		return cli
 	}
 	return bilibiliLocalClient

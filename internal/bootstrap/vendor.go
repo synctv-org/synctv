@@ -12,10 +12,9 @@ func InitVendorBackend(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	b, err := vendor.NewBackends(ctx, vb)
+	bc, err := vendor.NewBackendConns(ctx, vb)
 	if err != nil {
 		return err
 	}
-	vendor.StoreBackends(b)
-	return nil
+	return vendor.StoreConns(bc)
 }

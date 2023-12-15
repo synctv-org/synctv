@@ -3,6 +3,7 @@ package handlers
 import (
 	"net/http"
 	"reflect"
+	"sync"
 
 	"github.com/gin-gonic/gin"
 	"github.com/synctv-org/synctv/internal/bootstrap"
@@ -716,6 +717,8 @@ func AdminGetVendorBackends(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(resp))
 }
 
+var vendorBackendLock sync.Mutex
+
 func AdminAddVendorBackends(ctx *gin.Context) {
 	// user := ctx.MustGet("user").(*op.User)
 
@@ -724,6 +727,12 @@ func AdminAddVendorBackends(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
+
+	if !vendorBackendLock.TryLock() {
+		ctx.AbortWithStatusJSON(http.StatusConflict, model.NewApiErrorStringResp("vendor backend is updating"))
+		return
+	}
+	defer vendorBackendLock.Unlock()
 
 	vb, err := db.GetAllVendorBackend()
 	if err != nil {
@@ -741,6 +750,7 @@ func AdminAddVendorBackends(ctx *gin.Context) {
 
 	err = db.CreateVendorBackend((*dbModel.VendorBackend)(&req))
 	if err != nil {
+		backends.Close()
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
@@ -758,6 +768,12 @@ func AdminDeleteVendorBackends(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
+
+	if !vendorBackendLock.TryLock() {
+		ctx.AbortWithStatusJSON(http.StatusConflict, model.NewApiErrorStringResp("vendor backend is updating"))
+		return
+	}
+	defer vendorBackendLock.Unlock()
 
 	err := db.DeleteVendorBackends(req.Endpoints)
 	if err != nil {
@@ -791,6 +807,12 @@ func AdminUpdateVendorBackends(ctx *gin.Context) {
 		return
 	}
 
+	if !vendorBackendLock.TryLock() {
+		ctx.AbortWithStatusJSON(http.StatusConflict, model.NewApiErrorStringResp("vendor backend is updating"))
+		return
+	}
+	defer vendorBackendLock.Unlock()
+
 	vb, err := db.GetAllVendorBackend()
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
@@ -812,6 +834,7 @@ func AdminUpdateVendorBackends(ctx *gin.Context) {
 
 	err = db.SaveVendorBackend((*dbModel.VendorBackend)(&req))
 	if err != nil {
+		backends.Close()
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}

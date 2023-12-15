@@ -49,6 +49,12 @@ type Backends struct {
 	emby     map[string]EmbyInterface
 }
 
+func (b *Backends) Close() {
+	for _, conn := range b.conns {
+		conn.Conn.Close()
+	}
+}
+
 func (b *Backends) Conns() map[string]*BackendConnInfo {
 	return b.conns
 }
@@ -65,21 +71,26 @@ func (b *Backends) EmbyClients() map[string]EmbyInterface {
 	return b.emby
 }
 
-func NewBackends(ctx context.Context, conf []*model.VendorBackend) (*Backends, error) {
+func NewBackends(ctx context.Context, conf []*model.VendorBackend) (backends *Backends, err error) {
 	newConns := make(map[string]*BackendConnInfo, len(conf))
-	backends := &Backends{
+	backends = &Backends{
 		conns:    newConns,
 		bilibili: make(map[string]BilibiliInterface),
 		alist:    make(map[string]AlistInterface),
 		emby:     make(map[string]EmbyInterface),
 	}
+	defer func() {
+		if err != nil {
+			backends.Close()
+		}
+	}()
 	for _, vb := range conf {
+		if _, ok := newConns[vb.Backend.Endpoint]; ok {
+			return backends, fmt.Errorf("duplicate endpoint: %s", vb.Backend.Endpoint)
+		}
 		cc, err := NewGrpcClientConn(ctx, &vb.Backend)
 		if err != nil {
-			return nil, err
-		}
-		if _, ok := newConns[vb.Backend.Endpoint]; ok {
-			return nil, fmt.Errorf("duplicate endpoint: %s", vb.Backend.Endpoint)
+			return backends, err
 		}
 		newConns[vb.Backend.Endpoint] = &BackendConnInfo{
 			Conn: cc,
@@ -87,31 +98,31 @@ func NewBackends(ctx context.Context, conf []*model.VendorBackend) (*Backends, e
 		}
 		if vb.UsedBy.Bilibili {
 			if _, ok := backends.bilibili[vb.UsedBy.BilibiliBackendName]; ok {
-				return nil, fmt.Errorf("duplicate bilibili backend name: %s", vb.UsedBy.BilibiliBackendName)
+				return backends, fmt.Errorf("duplicate bilibili backend name: %s", vb.UsedBy.BilibiliBackendName)
 			}
 			cli, err := NewBilibiliGrpcClient(cc)
 			if err != nil {
-				return nil, err
+				return backends, err
 			}
 			backends.bilibili[vb.UsedBy.BilibiliBackendName] = cli
 		}
 		if vb.UsedBy.Alist {
 			if _, ok := backends.alist[vb.UsedBy.AlistBackendName]; ok {
-				return nil, fmt.Errorf("duplicate alist backend name: %s", vb.UsedBy.AlistBackendName)
+				return backends, fmt.Errorf("duplicate alist backend name: %s", vb.UsedBy.AlistBackendName)
 			}
 			cli, err := NewAlistGrpcClient(cc)
 			if err != nil {
-				return nil, err
+				return backends, err
 			}
 			backends.alist[vb.UsedBy.AlistBackendName] = cli
 		}
 		if vb.UsedBy.Emby {
 			if _, ok := backends.emby[vb.UsedBy.EmbyBackendName]; ok {
-				return nil, fmt.Errorf("duplicate emby backend name: %s", vb.UsedBy.EmbyBackendName)
+				return backends, fmt.Errorf("duplicate emby backend name: %s", vb.UsedBy.EmbyBackendName)
 			}
 			cli, err := NewEmbyGrpcClient(cc)
 			if err != nil {
-				return nil, err
+				return backends, err
 			}
 			backends.emby[vb.UsedBy.EmbyBackendName] = cli
 		}

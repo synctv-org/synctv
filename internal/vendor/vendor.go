@@ -400,12 +400,8 @@ func NewGrpcClientConn(ctx context.Context, conf *model.Backend) (*grpc.ClientCo
 		if err != nil {
 			return nil, err
 		}
-		if conf.CustomCAFile != "" {
-			b, err := os.ReadFile(conf.CustomCAFile)
-			if err != nil {
-				return nil, err
-			}
-			rootCAs.AppendCertsFromPEM(b)
+		if conf.CustomCA != "" {
+			rootCAs.AppendCertsFromPEM([]byte(conf.CustomCA))
 		}
 		opts = append(opts, ggrpc.WithTLSConfig(&tls.Config{
 			RootCAs: rootCAs,
@@ -462,8 +458,8 @@ func NewHttpClientConn(ctx context.Context, conf *model.Backend) (*http.Client, 
 		if err != nil {
 			return nil, err
 		}
-		if conf.CustomCAFile != "" {
-			b, err := os.ReadFile(conf.CustomCAFile)
+		if conf.CustomCA != "" {
+			b, err := os.ReadFile(conf.CustomCA)
 			if err != nil {
 				return nil, err
 			}

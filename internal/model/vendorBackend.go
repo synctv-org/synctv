@@ -21,12 +21,12 @@ type Etcd struct {
 }
 
 type Backend struct {
-	Endpoint     string `gorm:"primaryKey" json:"endpoint"`
-	Comment      string `gorm:"type:text" json:"comment"`
-	Tls          bool   `gorm:"default:false" json:"tls"`
-	JwtSecret    string `json:"jwtSecret"`
-	CustomCAFile string `json:"customCaFile"`
-	TimeOut      string `gorm:"default:10s" json:"timeOut"`
+	Endpoint  string `gorm:"primaryKey" json:"endpoint"`
+	Comment   string `gorm:"type:text" json:"comment"`
+	Tls       bool   `gorm:"default:false" json:"tls"`
+	JwtSecret string `json:"jwtSecret"`
+	CustomCA  string `gorm:"type:text" json:"customCA"`
+	TimeOut   string `gorm:"default:10s" json:"timeOut"`
 
 	Consul Consul `gorm:"embedded;embeddedPrefix:consul_" json:"consul"`
 	Etcd   Etcd   `gorm:"embedded;embeddedPrefix:etcd_" json:"etcd"`
@@ -64,6 +64,11 @@ func (v *VendorBackend) BeforeSave(tx *gorm.DB) error {
 			return err
 		}
 	}
+	if v.Backend.CustomCA != "" {
+		if v.Backend.CustomCA, err = utils.CryptoToBase64([]byte(v.Backend.CustomCA), key); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -92,6 +97,13 @@ func (v *VendorBackend) AfterFind(tx *gorm.DB) error {
 			return err
 		} else {
 			v.Backend.Etcd.Password = string(data)
+		}
+	}
+	if v.Backend.CustomCA != "" {
+		if data, err = utils.DecryptoFromBase64(v.Backend.CustomCA, key); err != nil {
+			return err
+		} else {
+			v.Backend.CustomCA = string(data)
 		}
 	}
 	return nil

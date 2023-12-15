@@ -32,7 +32,7 @@ jobs:
           bash script/build.sh -s -P -p "windows,linux,darwin"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: synctv
           path: build

@@ -32,4 +32,6 @@ EXPOSE 8080/tcp 8080/udp
 
 VOLUME [ "~/.synctv" ]
 
-CMD [ "/entrypoint.sh" ]
+ENTRYPOINT [ "/entrypoint.sh" ]
+
+CMD [ "server" ]

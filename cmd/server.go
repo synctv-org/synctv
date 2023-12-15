@@ -160,4 +160,5 @@ func Server(cmd *cobra.Command, args []string) {
 func init() {
 	RootCmd.AddCommand(ServerCmd)
 	ServerCmd.PersistentFlags().BoolVar(&flags.DisableUpdateCheck, "disable-update-check", false, "disable update check")
+	ServerCmd.PersistentFlags().BoolVar(&flags.DisableWeb, "disable-web", false, "disable web")
 }

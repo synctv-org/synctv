@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/maruel/natural"
 	"github.com/synctv-org/synctv/internal/db"
 	dbModel "github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
@@ -16,6 +18,7 @@ import (
 	"github.com/synctv-org/synctv/server/model"
 	"github.com/synctv-org/synctv/utils"
 	"github.com/zijiren233/gencontainer/refreshcache"
+	"github.com/zijiren233/gencontainer/synccache"
 	"gorm.io/gorm"
 )
 
@@ -63,8 +66,41 @@ func CreateRoom(ctx *gin.Context) {
 	}))
 }
 
-var roomHotCache = refreshcache.NewRefreshCache[[]*op.RoomInfo](func(context.Context, ...any) ([]*op.RoomInfo, error) {
-	return op.GetRoomHeapInCacheWithoutHidden(), nil
+var roomHotCache = refreshcache.NewRefreshCache[[]*model.RoomListResp](func(context.Context, ...any) ([]*model.RoomListResp, error) {
+	rooms := make([]*model.RoomListResp, 0)
+	op.RangeRoomCache(func(key string, value *synccache.Entry[*op.Room]) bool {
+		v := value.Value()
+		if !v.Settings.Hidden {
+			rooms = append(rooms, &model.RoomListResp{
+				RoomId:       v.ID,
+				RoomName:     v.Name,
+				PeopleNum:    v.PeopleNum(),
+				NeedPassword: v.NeedPassword(),
+				Creator:      op.GetUserName(v.CreatorID),
+				CreatedAt:    v.CreatedAt.UnixMilli(),
+			})
+		}
+		return true
+	})
+
+	slices.SortStableFunc(rooms, func(a, b *model.RoomListResp) int {
+		if a.PeopleNum == b.PeopleNum {
+			if a.RoomName == b.RoomName {
+				return 0
+			}
+			if natural.Less(a.RoomName, b.RoomName) {
+				return -1
+			} else {
+				return 1
+			}
+		} else if a.PeopleNum > b.PeopleNum {
+			return -1
+		} else {
+			return 1
+		}
+	})
+
+	return rooms, nil
 }, time.Second*3)
 
 func RoomHotList(ctx *gin.Context) {
@@ -74,12 +110,15 @@ func RoomHotList(ctx *gin.Context) {
 		return
 	}
 
-	r, _ := roomHotCache.Get(ctx)
-	rs := utils.GetPageItems(r, page, pageSize)
+	r, err := roomHotCache.Get(ctx)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
 
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
 		"total": len(r),
-		"list":  rs,
+		"list":  utils.GetPageItems(r, page, pageSize),
 	}))
 }
 

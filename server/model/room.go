@@ -6,9 +6,9 @@ import (
 	"regexp"
 
 	json "github.com/json-iterator/go"
-	"github.com/synctv-org/synctv/internal/op"
 
 	"github.com/gin-gonic/gin"
+	"github.com/synctv-org/synctv/internal/model"
 	dbModel "github.com/synctv-org/synctv/internal/model"
 )
 
@@ -68,7 +68,16 @@ func (c *CreateRoomReq) Validate() error {
 	return nil
 }
 
-type RoomListResp = op.RoomInfo
+type RoomListResp struct {
+	RoomId       string           `json:"roomId"`
+	RoomName     string           `json:"roomName"`
+	PeopleNum    int64            `json:"peopleNum"`
+	NeedPassword bool             `json:"needPassword"`
+	CreatorID    string           `json:"creatorId"`
+	Creator      string           `json:"creator"`
+	CreatedAt    int64            `json:"createdAt"`
+	Status       model.RoomStatus `json:"status"`
+}
 
 type LoginRoomReq struct {
 	RoomId   string `json:"roomId"`

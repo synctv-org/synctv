@@ -5,9 +5,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
+	"slices"
 
 	"github.com/hashicorp/go-hclog"
+	"github.com/maruel/natural"
 	log "github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/cmd/flags"
 	"github.com/synctv-org/synctv/internal/conf"
@@ -18,7 +19,6 @@ import (
 	"github.com/synctv-org/synctv/internal/settings"
 	"github.com/synctv-org/synctv/utils"
 	"github.com/zijiren233/gencontainer/refreshcache"
-	"github.com/zijiren233/gencontainer/vec"
 )
 
 var ProviderGroupSettings = make(map[model.SettingGroup]*ProviderGroupSetting)
@@ -34,17 +34,23 @@ type ProviderGroupSetting struct {
 
 var (
 	Oauth2EnabledCache = refreshcache.NewRefreshCache[[]provider.OAuth2Provider](func(context.Context, ...any) ([]provider.OAuth2Provider, error) {
-		a := vec.New[provider.OAuth2Provider](vec.WithCmpEqual[provider.OAuth2Provider](func(v1, v2 provider.OAuth2Provider) bool {
-			return v1 == v2
-		}), vec.WithCmpLess[provider.OAuth2Provider](func(v1, v2 provider.OAuth2Provider) bool {
-			return v1 < v2
-		}))
+		ps := providers.EnabledProvider()
+		r := make([]provider.OAuth2Provider, 0, ps.Len())
 		providers.EnabledProvider().Range(func(key provider.OAuth2Provider, value provider.ProviderInterface) bool {
-			a.Push(key)
+			r = append(r, key)
 			return true
 		})
-		return a.SortStable().Slice(), nil
-	}, time.Hour)
+		slices.SortStableFunc(r, func(a, b provider.OAuth2Provider) int {
+			if a == b {
+				return 0
+			} else if natural.Less(string(a), string(b)) {
+				return -1
+			} else {
+				return 1
+			}
+		})
+		return r, nil
+	}, 0)
 )
 
 func InitProvider(ctx context.Context) (err error) {

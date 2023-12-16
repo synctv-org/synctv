@@ -360,7 +360,6 @@ func NewGrpcClientConn(ctx context.Context, conf *model.Backend) (*grpc.ClientCo
 		c := api.DefaultConfig()
 		c.Address = conf.Endpoint
 		c.Token = conf.Consul.Token
-		c.TokenFile = conf.Consul.TokenFile
 		c.PathPrefix = conf.Consul.PathPrefix
 		c.Namespace = conf.Consul.Namespace
 		c.Partition = conf.Consul.Partition
@@ -474,7 +473,6 @@ func NewHttpClientConn(ctx context.Context, conf *model.Backend) (*http.Client, 
 		c := api.DefaultConfig()
 		c.Address = conf.Endpoint
 		c.Token = conf.Consul.Token
-		c.TokenFile = conf.Consul.TokenFile
 		c.PathPrefix = conf.Consul.PathPrefix
 		c.Namespace = conf.Consul.Namespace
 		c.Partition = conf.Consul.Partition

@@ -8,7 +8,6 @@ import (
 type Consul struct {
 	ServerName string `json:"serverName"`
 	Token      string `json:"token"`
-	TokenFile  string `json:"tokenFile"`
 	PathPrefix string `json:"pathPrefix"`
 	Namespace  string `json:"namespace"`
 	Partition  string `json:"partition"`

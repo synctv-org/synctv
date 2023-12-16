@@ -139,10 +139,7 @@ type GetVendorBackendResp struct {
 type AddVendorBackendReq model.VendorBackend
 
 func (avbr *AddVendorBackendReq) Validate() error {
-	if avbr.Backend.Endpoint == "" {
-		return errors.New("endpoint is empty")
-	}
-	return nil
+	return avbr.Backend.Validate()
 }
 
 func (avbr *AddVendorBackendReq) Decode(ctx *gin.Context) error {

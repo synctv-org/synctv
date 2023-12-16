@@ -1,6 +1,9 @@
 package model
 
 import (
+	"errors"
+	"time"
+
 	"github.com/synctv-org/synctv/utils"
 	"gorm.io/gorm"
 )
@@ -29,6 +32,21 @@ type Backend struct {
 
 	Consul Consul `gorm:"embedded;embeddedPrefix:consul_" json:"consul"`
 	Etcd   Etcd   `gorm:"embedded;embeddedPrefix:etcd_" json:"etcd"`
+}
+
+func (b *Backend) Validate() error {
+	if b.Endpoint == "" {
+		return errors.New("new http client failed, endpoint is empty")
+	}
+	if b.Consul.ServerName != "" && b.Etcd.ServerName != "" {
+		return errors.New("new grpc client failed, consul and etcd can't be used at the same time")
+	}
+	if b.TimeOut != "" {
+		if _, err := time.ParseDuration(b.TimeOut); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 type VendorBackend struct {

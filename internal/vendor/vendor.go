@@ -329,6 +329,9 @@ func NewGrpcClientConn(ctx context.Context, conf *model.Backend) (*grpc.ClientCo
 	if conf.Endpoint == "" {
 		return nil, errors.New("new grpc client failed, endpoint is empty")
 	}
+	if conf.Consul.ServerName != "" && conf.Etcd.ServerName != "" {
+		return nil, errors.New("new grpc client failed, consul and etcd can't be used at the same time")
+	}
 	middlewares := []middleware.Middleware{kcircuitbreaker.Client(kcircuitbreaker.WithCircuitBreaker(func() circuitbreaker.CircuitBreaker {
 		return sre.NewBreaker(
 			sre.WithRequest(25),
@@ -423,8 +426,8 @@ func NewGrpcClientConn(ctx context.Context, conf *model.Backend) (*grpc.ClientCo
 }
 
 func NewHttpClientConn(ctx context.Context, conf *model.Backend) (*http.Client, error) {
-	if conf.Endpoint == "" {
-		return nil, errors.New("new http client failed, endpoint is empty")
+	if err := conf.Validate(); err != nil {
+		return nil, err
 	}
 	middlewares := []middleware.Middleware{kcircuitbreaker.Client(kcircuitbreaker.WithCircuitBreaker(func() circuitbreaker.CircuitBreaker {
 		return sre.NewBreaker(
@@ -450,6 +453,8 @@ func NewHttpClientConn(ctx context.Context, conf *model.Backend) (*http.Client, 
 			return nil, err
 		}
 		opts = append(opts, http.WithTimeout(timeout))
+	} else {
+		opts = append(opts, http.WithTimeout(time.Second*10))
 	}
 
 	if conf.Tls {

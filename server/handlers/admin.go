@@ -3,8 +3,10 @@ package handlers
 import (
 	"net/http"
 	"reflect"
+	"slices"
 
 	"github.com/gin-gonic/gin"
+	"github.com/maruel/natural"
 	"github.com/synctv-org/synctv/internal/bootstrap"
 	"github.com/synctv-org/synctv/internal/db"
 	dbModel "github.com/synctv-org/synctv/internal/model"
@@ -12,6 +14,7 @@ import (
 	"github.com/synctv-org/synctv/internal/settings"
 	"github.com/synctv-org/synctv/internal/vendor"
 	"github.com/synctv-org/synctv/server/model"
+	"golang.org/x/exp/maps"
 	"gorm.io/gorm"
 )
 
@@ -705,15 +708,42 @@ func AdminGetVendorBackends(ctx *gin.Context) {
 	// user := ctx.MustGet("user").(*op.User)
 
 	conns := vendor.LoadConns()
-	resp := make([]*model.GetVendorBackendResp, 0, len(conns))
-	for _, conn := range conns {
-		resp = append(resp, &model.GetVendorBackendResp{
-			Status: conn.Conn.GetState(),
-			Info:   conn.Info,
+	page, size, err := GetPageAndPageSize(ctx)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+	s := maps.Keys(conns)
+	l := len(s)
+	var resp []*model.GetVendorBackendResp
+	if (page-1)*size <= l {
+		slices.SortStableFunc(s, func(a, b string) int {
+			if a == b {
+				return 0
+			}
+			if natural.Less(a, b) {
+				return -1
+			} else {
+				return 1
+			}
 		})
+
+		if l > size {
+			l = size
+		}
+		resp = make([]*model.GetVendorBackendResp, 0, l)
+		for _, v := range s[(page-1)*size : (page-1)*size+l] {
+			resp = append(resp, &model.GetVendorBackendResp{
+				Info:   conns[v].Info,
+				Status: conns[v].Conn.GetState(),
+			})
+		}
 	}
 
-	ctx.JSON(http.StatusOK, model.NewApiDataResp(resp))
+	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
+		"total": l,
+		"list":  resp,
+	}))
 }
 
 func AdminAddVendorBackend(ctx *gin.Context) {

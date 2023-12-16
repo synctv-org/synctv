@@ -139,6 +139,21 @@ type GetVendorBackendResp struct {
 type AddVendorBackendReq model.VendorBackend
 
 func (avbr *AddVendorBackendReq) Validate() error {
+	if avbr.UsedBy.AlistBackendName != "" {
+		if !alnumPrintHanReg.MatchString(avbr.UsedBy.AlistBackendName) {
+			return errors.New("alist backend name has invalid char")
+		}
+	}
+	if avbr.UsedBy.BilibiliBackendName != "" {
+		if !alnumPrintHanReg.MatchString(avbr.UsedBy.BilibiliBackendName) {
+			return errors.New("bilibili backend name has invalid char")
+		}
+	}
+	if avbr.UsedBy.EmbyBackendName != "" {
+		if !alnumPrintHanReg.MatchString(avbr.UsedBy.EmbyBackendName) {
+			return errors.New("emby backend name has invalid char")
+		}
+	}
 	return avbr.Backend.Validate()
 }
 

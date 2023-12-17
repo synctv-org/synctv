@@ -1,16 +1,19 @@
 package vendorBilibili
 
 import (
+	"context"
 	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 	json "github.com/json-iterator/go"
+	"github.com/synctv-org/synctv/internal/cache"
 	"github.com/synctv-org/synctv/internal/db"
 	dbModel "github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/internal/vendor"
 	"github.com/synctv-org/synctv/server/model"
+	"github.com/synctv-org/synctv/utils"
 	"github.com/synctv-org/vendors/api/bilibili"
 )
 
@@ -47,7 +50,8 @@ func LoginWithQR(ctx *gin.Context) {
 		return
 	}
 
-	resp, err := vendor.LoadBilibiliClient("").LoginWithQRCode(ctx, &bilibili.LoginWithQRCodeReq{
+	backend := ctx.Query("backend")
+	resp, err := vendor.LoadBilibiliClient(backend).LoginWithQRCode(ctx, &bilibili.LoginWithQRCodeReq{
 		Key: req.Key,
 	})
 	if err != nil {
@@ -74,6 +78,17 @@ func LoginWithQR(ctx *gin.Context) {
 	case bilibili.QRCodeStatus_SUCCESS:
 		_, err = db.CreateOrSaveBilibiliVendor(user.ID, &dbModel.BilibiliVendor{
 			Cookies: resp.Cookies,
+			Backend: backend,
+		})
+		if err != nil {
+			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+			return
+		}
+		_, err = user.BilibiliCache().Data().Refresh(ctx, func(ctx context.Context, args ...struct{}) (*cache.BilibiliUserCacheData, error) {
+			return &cache.BilibiliUserCacheData{
+				Backend: backend,
+				Cookies: utils.MapToHttpCookie(resp.Cookies),
+			}, nil
 		})
 		if err != nil {
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
@@ -170,13 +185,16 @@ func (r *SMSLoginReq) Decode(ctx *gin.Context) error {
 }
 
 func LoginWithSMS(ctx *gin.Context) {
+	user := ctx.MustGet("user").(*op.User)
+
 	var req SMSLoginReq
 	if err := model.Decode(ctx, &req); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
-	c, err := vendor.LoadBilibiliClient("").LoginWithSMS(ctx, &bilibili.LoginWithSMSReq{
+	backend := ctx.Query("backend")
+	c, err := vendor.LoadBilibiliClient(backend).LoginWithSMS(ctx, &bilibili.LoginWithSMSReq{
 		Phone:      req.Telephone,
 		CaptchaKey: req.CaptchaKey,
 		Code:       req.Code,
@@ -185,9 +203,19 @@ func LoginWithSMS(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}
-	user := ctx.MustGet("user").(*op.User)
 	_, err = db.CreateOrSaveBilibiliVendor(user.ID, &dbModel.BilibiliVendor{
+		Backend: backend,
 		Cookies: c.Cookies,
+	})
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
+	_, err = user.BilibiliCache().Data().Refresh(ctx, func(ctx context.Context, args ...struct{}) (*cache.BilibiliUserCacheData, error) {
+		return &cache.BilibiliUserCacheData{
+			Backend: backend,
+			Cookies: utils.MapToHttpCookie(c.Cookies),
+		}, nil
 	})
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))

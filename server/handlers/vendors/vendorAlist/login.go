@@ -2,6 +2,8 @@ package vendorAlist
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"net/http"
 
@@ -19,12 +21,16 @@ import (
 type LoginReq struct {
 	Host           string `json:"host"`
 	Username       string `json:"username"`
+	Password       string `json:"password"`
 	HashedPassword string `json:"hashedPassword"`
 }
 
 func (r *LoginReq) Validate() error {
 	if r.Host == "" {
 		return errors.New("host is required")
+	}
+	if r.Password != "" && r.HashedPassword != "" {
+		return errors.New("password and hashedPassword can't be both set")
 	}
 	return nil
 }
@@ -42,7 +48,14 @@ func Login(ctx *gin.Context) {
 		return
 	}
 
-	cli := vendor.LoadAlistClient("")
+	if req.Password != "" {
+		h := sha256.New()
+		h.Write([]byte(req.Password + `-https://github.com/alist-org/alist`))
+		req.HashedPassword = hex.EncodeToString(h.Sum(nil))
+	}
+
+	backend := ctx.Query("backend")
+	cli := vendor.LoadAlistClient(backend)
 
 	if req.Username == "" {
 		_, err := cli.Me(ctx, &alist.MeReq{
@@ -54,7 +67,8 @@ func Login(ctx *gin.Context) {
 		}
 		_, err = user.AlistCache().Data().Refresh(ctx, func(ctx context.Context, args ...struct{}) (*cache.AlistUserCacheData, error) {
 			return &cache.AlistUserCacheData{
-				Host: req.Host,
+				Host:    req.Host,
+				Backend: backend,
 			}, nil
 		})
 		if err != nil {
@@ -69,14 +83,15 @@ func Login(ctx *gin.Context) {
 			Hashed:   true,
 		})
 		if err != nil {
-			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 			return
 		}
 
 		_, err = user.AlistCache().Data().Refresh(ctx, func(ctx context.Context, args ...struct{}) (*cache.AlistUserCacheData, error) {
 			return &cache.AlistUserCacheData{
-				Host:  req.Host,
-				Token: resp.Token,
+				Host:    req.Host,
+				Token:   resp.Token,
+				Backend: backend,
 			}, nil
 		})
 		if err != nil {
@@ -86,6 +101,7 @@ func Login(ctx *gin.Context) {
 	}
 
 	_, err := db.CreateOrSaveAlistVendor(user.ID, &dbModel.AlistVendor{
+		Backend:        backend,
 		Host:           req.Host,
 		Username:       req.Username,
 		HashedPassword: []byte(req.HashedPassword),

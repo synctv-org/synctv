@@ -52,7 +52,6 @@ func (a *AlistVendor) BeforeSave(tx *gorm.DB) error {
 	if a.Username, err = utils.CryptoToBase64([]byte(a.Username), key); err != nil {
 		return err
 	}
-
 	if a.HashedPassword, err = utils.Crypto(a.HashedPassword, key); err != nil {
 		return err
 	}

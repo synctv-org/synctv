@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/synctv-org/synctv/cmd/flags"
+	"github.com/zijiren233/go-colorable"
 	"github.com/zijiren233/stream"
 	yamlcomment "github.com/zijiren233/yaml-comment"
 	"gopkg.in/yaml.v3"
@@ -341,4 +342,19 @@ func GetUrlExtension(u string) string {
 		return ""
 	}
 	return strings.TrimLeft(filepath.Ext(p.Path), ".")
+}
+
+var needColor atomic.Pointer[bool]
+
+func ForceColor() bool {
+	b := needColor.Load()
+	if b == nil {
+		forceColor := colorable.IsTerminal(os.Stdout.Fd())
+		if flags.DisableLogColor {
+			forceColor = false
+		}
+		needColor.Store(&forceColor)
+		return forceColor
+	}
+	return *b
 }

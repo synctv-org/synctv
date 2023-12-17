@@ -26,6 +26,7 @@ func setLog(l *logrus.Logger) {
 
 func InitLog(ctx context.Context) (err error) {
 	setLog(logrus.StandardLogger())
+	forceColor := utils.ForceColor()
 	if conf.Conf.Log.Enable {
 		conf.Conf.Log.FilePath, err = utils.OptFilePath(conf.Conf.Log.FilePath)
 		if err != nil {
@@ -57,13 +58,10 @@ func InitLog(ctx context.Context) (err error) {
 		if conf.Conf.Log.LogFormat != "text" {
 			logrus.Warnf("unknown log format: %s, use default: text", conf.Conf.Log.LogFormat)
 		}
-		if colorable.IsTerminal(os.Stdout.Fd()) {
-			logrus.SetFormatter(&logrus.TextFormatter{
-				ForceColors: true,
-			})
-		} else {
-			logrus.SetFormatter(&logrus.TextFormatter{})
-		}
+		logrus.SetFormatter(&logrus.TextFormatter{
+			ForceColors:   forceColor,
+			DisableColors: !forceColor,
+		})
 	}
 	log.SetOutput(logrus.StandardLogger().Writer())
 	return nil

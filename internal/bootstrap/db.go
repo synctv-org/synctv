@@ -145,7 +145,7 @@ func newDBLogger() logger.Interface {
 			LogLevel:                  logLevel,
 			IgnoreRecordNotFoundError: true,
 			ParameterizedQueries:      !flags.Dev && version.Version != "dev",
-			Colorful:                  true,
+			Colorful:                  utils.ForceColor(),
 		},
 	)
 }

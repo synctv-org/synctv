@@ -5,6 +5,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/synctv-org/synctv/cmd/flags"
+	"github.com/synctv-org/synctv/utils"
 )
 
 func InitGinMode(ctx context.Context) error {
@@ -13,7 +14,11 @@ func InitGinMode(ctx context.Context) error {
 	} else {
 		gin.SetMode(gin.ReleaseMode)
 	}
-	gin.ForceConsoleColor()
+	if utils.ForceColor() {
+		gin.ForceConsoleColor()
+	} else {
+		gin.DisableConsoleColor()
+	}
 
 	return nil
 }

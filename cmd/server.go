@@ -26,8 +26,8 @@ var ServerCmd = &cobra.Command{
 		boot := bootstrap.New(bootstrap.WithContext(cmd.Context())).Add(
 			bootstrap.InitSysNotify,
 			bootstrap.InitConfig,
-			bootstrap.InitLog,
 			bootstrap.InitGinMode,
+			bootstrap.InitLog,
 			bootstrap.InitDatabase,
 			bootstrap.InitProvider,
 			bootstrap.InitOp,
@@ -161,4 +161,5 @@ func init() {
 	RootCmd.AddCommand(ServerCmd)
 	ServerCmd.PersistentFlags().BoolVar(&flags.DisableUpdateCheck, "disable-update-check", false, "disable update check")
 	ServerCmd.PersistentFlags().BoolVar(&flags.DisableWeb, "disable-web", false, "disable web")
+	ServerCmd.PersistentFlags().BoolVar(&flags.DisableLogColor, "disable-log-color", false, "disable log color")
 }

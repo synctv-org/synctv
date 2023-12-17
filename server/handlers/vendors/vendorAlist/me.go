@@ -17,9 +17,7 @@ type AlistMeResp = model.VendorMeResp[*alist.MeResp]
 func Me(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*op.User)
 
-	cli := vendor.LoadAlistClient(ctx.Query("backend"))
-
-	aucd, err := user.AlistCache().Get(ctx, ctx.Query("backend"))
+	aucd, err := user.AlistCache().Get(ctx)
 	if err != nil {
 		if errors.Is(err, db.ErrNotFound("vendor")) {
 			ctx.JSON(http.StatusOK, model.NewApiDataResp(&AlistMeResp{
@@ -31,6 +29,8 @@ func Me(ctx *gin.Context) {
 		return
 	}
 
+	cli := vendor.LoadAlistClient(ctx.Query("backend"))
+
 	resp, err := cli.Me(ctx, &alist.MeReq{
 		Host:  aucd.Host,
 		Token: aucd.Token,
@@ -41,7 +41,7 @@ func Me(ctx *gin.Context) {
 	}
 
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(&AlistMeResp{
-		IsLogin: false,
+		IsLogin: true,
 		Info:    resp,
 	}))
 

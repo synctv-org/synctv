@@ -654,13 +654,12 @@ func proxyVendorMovie(ctx *gin.Context, movie *op.Movie) {
 				ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support movie proxy"))
 				return
 			}
-
-			bmc, err := movie.BilibiliCache()
+			u, err := op.LoadOrInitUserByID(movie.Movie.CreatorID)
 			if err != nil {
 				ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 				return
 			}
-			mpdC, err := bmc.SharedMpd.Get(ctx)
+			mpdC, err := movie.BilibiliCache().SharedMpd.Get(ctx, u.BilibiliCache())
 			if err != nil {
 				ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 				return
@@ -701,12 +700,12 @@ func proxyVendorMovie(ctx *gin.Context, movie *op.Movie) {
 				ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("n is empty"))
 				return
 			}
-			bmc, err := movie.BilibiliCache()
+			u, err := op.LoadOrInitUserByID(movie.Movie.CreatorID)
 			if err != nil {
 				ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 				return
 			}
-			srtI, err := bmc.Subtitle.Get(ctx)
+			srtI, err := movie.BilibiliCache().Subtitle.Get(ctx, u.BilibiliCache())
 			if err != nil {
 				ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 				return
@@ -738,16 +737,19 @@ func parse2VendorMovie(ctx context.Context, user *op.User, room *op.Room, movie 
 		if err != nil {
 			return err
 		}
+		bmc := opM.BilibiliCache()
 		if !movie.Base.Proxy {
-			bmc, err := opM.BilibiliCache()
-			if err != nil {
-				return err
-			}
-			userID := user.ID
+			var s string
 			if movie.Base.VendorInfo.Bilibili.Shared {
-				userID = movie.CreatorID
+				var u *op.User
+				u, err = op.LoadOrInitUserByID(movie.CreatorID)
+				if err != nil {
+					return err
+				}
+				s, err = opM.BilibiliCache().NoSharedMovie.LoadOrStore(ctx, movie.CreatorID, u.BilibiliCache())
+			} else {
+				s, err = opM.BilibiliCache().NoSharedMovie.LoadOrStore(ctx, user.ID, user.BilibiliCache())
 			}
-			s, err := bmc.NoSharedMovie.LoadOrStore(ctx, userID)
 			if err != nil {
 				return err
 			}
@@ -756,11 +758,7 @@ func parse2VendorMovie(ctx context.Context, user *op.User, room *op.Room, movie 
 		} else {
 			movie.Base.Type = "mpd"
 		}
-		bmc, err := opM.BilibiliCache()
-		if err != nil {
-			return err
-		}
-		srt, err := bmc.Subtitle.Get(ctx)
+		srt, err := bmc.Subtitle.Get(ctx, user.BilibiliCache())
 		if err != nil {
 			return err
 		}
@@ -780,12 +778,12 @@ func parse2VendorMovie(ctx context.Context, user *op.User, room *op.Room, movie 
 		if err != nil {
 			return err
 		}
-		rc, err := opM.AlistCache()
+
+		u, err := op.LoadOrInitUserByID(movie.CreatorID)
 		if err != nil {
 			return err
 		}
-
-		data, err := rc.Get(ctx)
+		data, err := opM.AlistCache().Get(ctx, u.AlistCache())
 		if err != nil {
 			return err
 		}

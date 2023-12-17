@@ -17,9 +17,9 @@ import (
 )
 
 type LoginReq struct {
-	Host     string `json:"host"`
-	Username string `json:"username"`
-	Password string `json:"password"`
+	Host           string `json:"host"`
+	Username       string `json:"username"`
+	HashedPassword string `json:"hashedPassword"`
 }
 
 func (r *LoginReq) Validate() error {
@@ -52,7 +52,7 @@ func Login(ctx *gin.Context) {
 			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 			return
 		}
-		_, err = user.AlistCache().Data().Refresh(ctx, func(ctx context.Context, args ...string) (*cache.AlistUserCacheData, error) {
+		_, err = user.AlistCache().Data().Refresh(ctx, func(ctx context.Context, args ...struct{}) (*cache.AlistUserCacheData, error) {
 			return &cache.AlistUserCacheData{
 				Host: req.Host,
 			}, nil
@@ -65,14 +65,15 @@ func Login(ctx *gin.Context) {
 		resp, err := cli.Login(ctx, &alist.LoginReq{
 			Host:     req.Host,
 			Username: req.Username,
-			Password: req.Password,
+			Password: req.HashedPassword,
+			Hashed:   true,
 		})
 		if err != nil {
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 			return
 		}
 
-		_, err = user.AlistCache().Data().Refresh(ctx, func(ctx context.Context, args ...string) (*cache.AlistUserCacheData, error) {
+		_, err = user.AlistCache().Data().Refresh(ctx, func(ctx context.Context, args ...struct{}) (*cache.AlistUserCacheData, error) {
 			return &cache.AlistUserCacheData{
 				Host:  req.Host,
 				Token: resp.Token,
@@ -85,14 +86,28 @@ func Login(ctx *gin.Context) {
 	}
 
 	_, err := db.CreateOrSaveAlistVendor(user.ID, &dbModel.AlistVendor{
-		Host:     req.Host,
-		Username: req.Username,
-		Password: req.Password,
+		Host:           req.Host,
+		Username:       req.Username,
+		HashedPassword: []byte(req.HashedPassword),
 	})
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}
+
+	ctx.Status(http.StatusNoContent)
+}
+
+func Logout(ctx *gin.Context) {
+	user := ctx.MustGet("user").(*op.User)
+
+	err := db.DeleteAlistVendor(user.ID)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
+
+	user.AlistCache().Clear()
 
 	ctx.Status(http.StatusNoContent)
 }

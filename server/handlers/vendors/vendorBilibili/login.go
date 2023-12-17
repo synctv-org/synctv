@@ -203,5 +203,6 @@ func Logout(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}
+	user.BilibiliCache().Clear()
 	ctx.Status(http.StatusNoContent)
 }

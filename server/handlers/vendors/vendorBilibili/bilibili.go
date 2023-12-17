@@ -49,15 +49,16 @@ func Parse(ctx *gin.Context) {
 		return
 	}
 
+	// can be no login
 	var cookies []*http.Cookie
-	vendorInfo, err := db.GetBilibiliVendor(user.ID)
+	bucd, err := user.BilibiliCache().Get(ctx)
 	if err != nil {
 		if !errors.Is(err, db.ErrNotFound("vendor")) {
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 			return
 		}
 	} else {
-		cookies = utils.MapToHttpCookie(vendorInfo.Cookies)
+		cookies = bucd.Cookies
 	}
 
 	switch resp.Type {

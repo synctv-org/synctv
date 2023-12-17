@@ -16,12 +16,17 @@ import (
 
 type User struct {
 	model.User
-	version    uint32
-	alistCache *cache.AlistUserCache
+	version       uint32
+	alistCache    *cache.AlistUserCache
+	bilibiliCache *cache.BilibiliUserCache
 }
 
 func (u *User) AlistCache() *cache.AlistUserCache {
 	return u.alistCache
+}
+
+func (u *User) BilibiliCache() *cache.BilibiliUserCache {
+	return u.bilibiliCache
 }
 
 func (u *User) Version() uint32 {

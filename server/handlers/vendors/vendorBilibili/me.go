@@ -9,6 +9,7 @@ import (
 	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/internal/vendor"
 	"github.com/synctv-org/synctv/server/model"
+	"github.com/synctv-org/synctv/utils"
 	"github.com/synctv-org/vendors/api/bilibili"
 )
 
@@ -16,7 +17,8 @@ type BilibiliMeResp = model.VendorMeResp[*bilibili.UserInfoResp]
 
 func Me(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*op.User)
-	v, err := db.GetBilibiliVendor(user.ID)
+
+	bucd, err := user.BilibiliCache().Get(ctx)
 	if err != nil {
 		if errors.Is(err, db.ErrNotFound("vendor")) {
 			ctx.JSON(http.StatusOK, model.NewApiDataResp(&BilibiliMeResp{
@@ -27,14 +29,14 @@ func Me(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}
-	if len(v.Cookies) == 0 {
+	if len(bucd.Cookies) == 0 {
 		ctx.JSON(http.StatusOK, model.NewApiDataResp(&BilibiliMeResp{
 			IsLogin: false,
 		}))
 		return
 	}
-	resp, err := vendor.LoadBilibiliClient("").UserInfo(ctx, &bilibili.UserInfoReq{
-		Cookies: v.Cookies,
+	resp, err := vendor.LoadBilibiliClient(bucd.Backend).UserInfo(ctx, &bilibili.UserInfoReq{
+		Cookies: utils.HttpCookieToMap(bucd.Cookies),
 	})
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))

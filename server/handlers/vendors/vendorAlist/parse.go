@@ -39,19 +39,17 @@ func List(ctx *gin.Context) {
 		return
 	}
 
-	var cli = vendor.LoadAlistClient(ctx.Query("backend"))
-	aucd, err := user.AlistCache().Get(ctx, ctx.Query("backend"))
+	aucd, err := user.AlistCache().Get(ctx)
 	if err != nil {
 		if errors.Is(err, db.ErrNotFound("vendor")) {
-			ctx.JSON(http.StatusOK, model.NewApiDataResp(&AlistMeResp{
-				IsLogin: false,
-			}))
+			ctx.JSON(http.StatusBadRequest, model.NewApiErrorStringResp("alist not login"))
 			return
 		}
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}
 
+	var cli = vendor.LoadAlistClient(ctx.Query("backend"))
 	resp, err := cli.FsList(ctx, &alist.FsListReq{
 		Token:    aucd.Token,
 		Password: req.Password,

@@ -6,7 +6,8 @@ import (
 )
 
 type BilibiliVendor struct {
-	UserID  string            `gorm:"primaryKey"`
+	UserID  string `gorm:"primaryKey"`
+	Backend string
 	Cookies map[string]string `gorm:"serializer:fastjson"`
 }
 
@@ -35,10 +36,11 @@ func (b *BilibiliVendor) AfterFind(tx *gorm.DB) error {
 }
 
 type AlistVendor struct {
-	UserID   string `gorm:"primaryKey"`
-	Host     string `gorm:"serializer:fastjson"`
-	Username string `gorm:"serializer:fastjson"`
-	Password string `gorm:"serializer:fastjson"`
+	UserID         string `gorm:"primaryKey"`
+	Backend        string
+	Host           string
+	Username       string
+	HashedPassword []byte
 }
 
 func (a *AlistVendor) BeforeSave(tx *gorm.DB) error {
@@ -50,7 +52,8 @@ func (a *AlistVendor) BeforeSave(tx *gorm.DB) error {
 	if a.Username, err = utils.CryptoToBase64([]byte(a.Username), key); err != nil {
 		return err
 	}
-	if a.Password, err = utils.CryptoToBase64([]byte(a.Password), key); err != nil {
+
+	if a.HashedPassword, err = utils.Crypto(a.HashedPassword, key); err != nil {
 		return err
 	}
 	return nil
@@ -68,10 +71,62 @@ func (a *AlistVendor) AfterFind(tx *gorm.DB) error {
 	} else {
 		a.Username = string(v)
 	}
-	if v, err := utils.DecryptoFromBase64(a.Password, key); err != nil {
+	if v, err := utils.Decrypto(a.HashedPassword, key); err != nil {
 		return err
 	} else {
-		a.Password = string(v)
+		a.HashedPassword = v
+	}
+	return nil
+}
+
+type EmbyVendor struct {
+	UserID   string `gorm:"primaryKey"`
+	Backend  string
+	Host     string
+	Username string
+	Password string
+	ApiKey   string
+}
+
+func (e *EmbyVendor) BeforeSave(tx *gorm.DB) error {
+	key := []byte(e.UserID)
+	var err error
+	if e.Host, err = utils.CryptoToBase64([]byte(e.Host), key); err != nil {
+		return err
+	}
+	if e.Username, err = utils.CryptoToBase64([]byte(e.Username), key); err != nil {
+		return err
+	}
+	if e.Password, err = utils.CryptoToBase64([]byte(e.Password), key); err != nil {
+		return err
+	}
+	if e.ApiKey, err = utils.CryptoToBase64([]byte(e.ApiKey), key); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (e *EmbyVendor) AfterFind(tx *gorm.DB) error {
+	key := []byte(e.UserID)
+	if v, err := utils.DecryptoFromBase64(e.Host, key); err != nil {
+		return err
+	} else {
+		e.Host = string(v)
+	}
+	if v, err := utils.DecryptoFromBase64(e.Username, key); err != nil {
+		return err
+	} else {
+		e.Username = string(v)
+	}
+	if v, err := utils.DecryptoFromBase64(e.Password, key); err != nil {
+		return err
+	} else {
+		e.Password = string(v)
+	}
+	if v, err := utils.DecryptoFromBase64(e.ApiKey, key); err != nil {
+		return err
+	} else {
+		e.ApiKey = string(v)
 	}
 	return nil
 }

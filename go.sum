@@ -350,6 +350,8 @@ github.com/stretchr/testify v1.8.4 h1:CcVxjf3Q8PM0mHUKJCdn+eZZtm5yQwehR5yeSVQQcU
 github.com/stretchr/testify v1.8.4/go.mod h1:sz/lmYIOXD/1dqDmKjjqLyZ2RngseejIcXlSw2iwfAo=
 github.com/synctv-org/vendors v0.1.1-0.20231213112456-9743b943a97c h1:FhIqTq7CKtqn3xvdDAxM6Po2ImcXDw2KaO/Um34KNAs=
 github.com/synctv-org/vendors v0.1.1-0.20231213112456-9743b943a97c/go.mod h1:C0ZGPeF8nYsx60gePPhSrgrjrONj6F72XFHW9Mh8+vU=
+github.com/synctv-org/vendors v0.1.1-0.20231217064743-ec33fdec2e09 h1:enRcXa6g7/LC8EcwUP5ccOC+2vX1TLDNHNQSrCuvFUI=
+github.com/synctv-org/vendors v0.1.1-0.20231217064743-ec33fdec2e09/go.mod h1:C0ZGPeF8nYsx60gePPhSrgrjrONj6F72XFHW9Mh8+vU=
 github.com/tv42/httpunix v0.0.0-20150427012821-b75d8614f926/go.mod h1:9ESjWnEqriFuLhtthL60Sar/7RFoluCcXsuvEwTV5KM=
 github.com/twitchyliquid64/golang-asm v0.15.1 h1:SU5vSMR7hnwNxj24w34ZyCi/FmDZTkS4MhqMhdFk5YI=
 github.com/twitchyliquid64/golang-asm v0.15.1/go.mod h1:a1lVb/DtPvCB8fslRZhAngC2+aY1QWCk3Cedj/Gdt08=

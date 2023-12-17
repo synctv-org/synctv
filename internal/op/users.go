@@ -27,9 +27,10 @@ func LoadOrInitUser(u *model.User) (*User, error) {
 		return nil, ErrUserPending
 	}
 	i, _ := userCache.LoadOrStore(u.ID, &User{
-		User:       *u,
-		version:    crc32.ChecksumIEEE(u.HashedPassword),
-		alistCache: cache.NewAlistCache(u.ID),
+		User:          *u,
+		version:       crc32.ChecksumIEEE(u.HashedPassword),
+		alistCache:    cache.NewAlistUserCache(u.ID),
+		bilibiliCache: cache.NewBilibiliCache(u.ID),
 	}, time.Hour)
 	return i.Value(), nil
 }

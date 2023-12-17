@@ -28,7 +28,7 @@ type Movie struct {
 	alistCache    atomic.Pointer[cache.AlistMovieCache]
 }
 
-func (m *Movie) BilibiliCache() (*cache.BilibiliMovieCache, error) {
+func (m *Movie) BilibiliCache() *cache.BilibiliMovieCache {
 	c := m.bilibiliCache.Load()
 	if c == nil {
 		c = cache.NewBilibiliMovieCache(&m.Movie)
@@ -36,22 +36,18 @@ func (m *Movie) BilibiliCache() (*cache.BilibiliMovieCache, error) {
 			return m.BilibiliCache()
 		}
 	}
-	return c, nil
+	return c
 }
 
-func (m *Movie) AlistCache() (*cache.AlistMovieCache, error) {
+func (m *Movie) AlistCache() *cache.AlistMovieCache {
 	c := m.alistCache.Load()
 	if c == nil {
-		u, err := LoadOrInitUserByID(m.Movie.CreatorID)
-		if err != nil {
-			return nil, err
-		}
-		c = cache.NewAlistMovieCache(u.AlistCache(), &m.Movie)
+		c = cache.NewAlistMovieCache(&m.Movie)
 		if !m.alistCache.CompareAndSwap(nil, c) {
 			return m.AlistCache()
 		}
 	}
-	return c, nil
+	return c
 }
 
 func (m *Movie) Channel() (*rtmps.Channel, error) {

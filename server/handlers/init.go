@@ -40,13 +40,13 @@ func Init(e *gin.Engine) {
 
 				admin.GET("/vendors", AdminGetVendorBackends)
 
-				admin.POST("/vendors", AdminAddVendorBackend)
+				admin.POST("/vendors/add", AdminAddVendorBackend)
 
-				admin.PUT("/vendors", AdminUpdateVendorBackends)
+				admin.POST("/vendors/update", AdminUpdateVendorBackends)
 
-				admin.DELETE("/vendors", AdminDeleteVendorBackends)
+				admin.POST("/vendors/delete", AdminDeleteVendorBackends)
 
-				admin.OPTIONS("/vendors", AdminReConnectVendorBackends)
+				admin.POST("/vendors/reconnect", AdminReconnectVendorBackends)
 
 				{
 					user := admin.Group("/user")

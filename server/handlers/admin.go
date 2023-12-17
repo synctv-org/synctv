@@ -1,10 +1,12 @@
 package handlers
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"reflect"
 	"slices"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/maruel/natural"
@@ -16,6 +18,7 @@ import (
 	"github.com/synctv-org/synctv/internal/vendor"
 	"github.com/synctv-org/synctv/server/model"
 	"golang.org/x/exp/maps"
+	"google.golang.org/grpc/connectivity"
 	"gorm.io/gorm"
 )
 
@@ -798,7 +801,7 @@ func AdminUpdateVendorBackends(ctx *gin.Context) {
 	ctx.Status(http.StatusNoContent)
 }
 
-func AdminReConnectVendorBackends(ctx *gin.Context) {
+func AdminReconnectVendorBackends(ctx *gin.Context) {
 	// user := ctx.MustGet("user").(*op.User)
 
 	var req model.VendorBackendEndpointsReq
@@ -810,7 +813,15 @@ func AdminReConnectVendorBackends(ctx *gin.Context) {
 	conns := vendor.LoadConns()
 	for _, v := range req.Endpoints {
 		if c, ok := conns[v]; ok {
-			c.Conn.ResetConnectBackoff()
+			if s := c.Conn.GetState(); s != connectivity.Ready {
+				c.Conn.Connect()
+				c.Conn.ResetConnectBackoff()
+				if len(req.Endpoints) == 1 {
+					ctx2, cf := context.WithTimeout(ctx, time.Second*5)
+					defer cf()
+					c.Conn.WaitForStateChange(ctx2, s)
+				}
+			}
 		} else {
 			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp(fmt.Sprintf("endpoint %s not found", v)))
 			return

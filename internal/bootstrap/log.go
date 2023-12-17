@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"time"
 
 	"github.com/natefinch/lumberjack"
 	"github.com/sirupsen/logrus"
@@ -42,7 +43,12 @@ func InitLog(ctx context.Context) (err error) {
 		if err := l.Rotate(); err != nil {
 			logrus.Fatalf("log: rotate log file error: %v", err)
 		}
-		var w io.Writer = colorable.NewNonColorableWriter(l)
+		var w io.Writer
+		if forceColor {
+			w = colorable.NewNonColorableWriter(l)
+		} else {
+			w = l
+		}
 		if flags.Dev || flags.LogStd {
 			logrus.SetOutput(io.MultiWriter(os.Stdout, w))
 			logrus.Infof("log: enable log to stdout and file: %s", conf.Conf.Log.FilePath)
@@ -53,14 +59,22 @@ func InitLog(ctx context.Context) (err error) {
 	}
 	switch conf.Conf.Log.LogFormat {
 	case "json":
-		logrus.SetFormatter(&logrus.JSONFormatter{})
+		logrus.SetFormatter(&logrus.JSONFormatter{
+			TimestampFormat: time.DateTime,
+		})
 	default:
 		if conf.Conf.Log.LogFormat != "text" {
 			logrus.Warnf("unknown log format: %s, use default: text", conf.Conf.Log.LogFormat)
 		}
 		logrus.SetFormatter(&logrus.TextFormatter{
-			ForceColors:   forceColor,
-			DisableColors: !forceColor,
+			ForceColors:      forceColor,
+			DisableColors:    !forceColor,
+			ForceQuote:       flags.Dev,
+			DisableQuote:     !flags.Dev,
+			DisableSorting:   true,
+			FullTimestamp:    true,
+			TimestampFormat:  time.DateTime,
+			QuoteEmptyFields: true,
 		})
 	}
 	log.SetOutput(logrus.StandardLogger().Writer())

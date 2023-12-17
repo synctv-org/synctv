@@ -344,17 +344,18 @@ func GetUrlExtension(u string) string {
 	return strings.TrimLeft(filepath.Ext(p.Path), ".")
 }
 
-var needColor atomic.Pointer[bool]
+var (
+	needColor     bool
+	needColorOnce sync.Once
+)
 
 func ForceColor() bool {
-	b := needColor.Load()
-	if b == nil {
-		forceColor := colorable.IsTerminal(os.Stdout.Fd())
+	needColorOnce.Do(func() {
 		if flags.DisableLogColor {
-			forceColor = false
+			needColor = false
+			return
 		}
-		needColor.Store(&forceColor)
-		return forceColor
-	}
-	return *b
+		needColor = colorable.IsTerminal(os.Stdout.Fd())
+	})
+	return needColor
 }

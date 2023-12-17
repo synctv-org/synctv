@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"net/http"
 	"reflect"
 	"slices"
@@ -792,6 +793,28 @@ func AdminUpdateVendorBackends(ctx *gin.Context) {
 	if err := vendor.UpdateVendorBackend(ctx, (*dbModel.VendorBackend)(&req)); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
+	}
+
+	ctx.Status(http.StatusNoContent)
+}
+
+func AdminReConnectVendorBackends(ctx *gin.Context) {
+	// user := ctx.MustGet("user").(*op.User)
+
+	var req model.VendorBackendEndpointsReq
+	if err := model.Decode(ctx, &req); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	conns := vendor.LoadConns()
+	for _, v := range req.Endpoints {
+		if c, ok := conns[v]; ok {
+			c.Conn.ResetConnectBackoff()
+		} else {
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp(fmt.Sprintf("endpoint %s not found", v)))
+			return
+		}
 	}
 
 	ctx.Status(http.StatusNoContent)

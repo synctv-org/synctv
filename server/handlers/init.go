@@ -46,6 +46,8 @@ func Init(e *gin.Engine) {
 
 				admin.DELETE("/vendors", AdminDeleteVendorBackends)
 
+				admin.OPTIONS("/vendors", AdminReConnectVendorBackends)
+
 				{
 					user := admin.Group("/user")
 

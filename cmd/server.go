@@ -162,4 +162,5 @@ func init() {
 	ServerCmd.PersistentFlags().BoolVar(&flags.DisableUpdateCheck, "disable-update-check", false, "disable update check")
 	ServerCmd.PersistentFlags().BoolVar(&flags.DisableWeb, "disable-web", false, "disable web")
 	ServerCmd.PersistentFlags().BoolVar(&flags.DisableLogColor, "disable-log-color", false, "disable log color")
+	ServerCmd.PersistentFlags().StringVar(&flags.WebPath, "web-path", "", "if not set, use embed web")
 }

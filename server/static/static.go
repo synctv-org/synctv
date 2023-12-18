@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/synctv-org/synctv/cmd/flags"
 	"github.com/synctv-org/synctv/public"
 	"github.com/synctv-org/synctv/server/middlewares"
 )
@@ -18,19 +19,31 @@ func Init(e *gin.Engine) {
 
 	web := e.Group("/web")
 
-	web.Use(middlewares.NewDistCacheControl("/web/"))
+	if flags.WebPath == "" {
+		web.Use(middlewares.NewDistCacheControl("/web/"))
 
-	err := initFSRouter(web, public.Public.(fs.ReadDirFS), ".")
-	if err != nil {
-		panic(err)
+		err := initFSRouter(web, public.Public.(fs.ReadDirFS), ".")
+		if err != nil {
+			panic(err)
+		}
+
+		e.NoRoute(func(ctx *gin.Context) {
+			if strings.HasPrefix(ctx.Request.URL.Path, "/web/") {
+				ctx.FileFromFS("", http.FS(public.Public))
+				return
+			}
+		})
+	} else {
+		web.Static("/", flags.WebPath)
+
+		e.NoRoute(func(ctx *gin.Context) {
+			if strings.HasPrefix(ctx.Request.URL.Path, "/web/") {
+				ctx.FileFromFS("", http.Dir(flags.WebPath))
+				return
+			}
+		})
 	}
 
-	e.NoRoute(func(ctx *gin.Context) {
-		if strings.HasPrefix(ctx.Request.URL.Path, "/web/") {
-			ctx.FileFromFS("", http.FS(public.Public))
-			return
-		}
-	})
 }
 
 func initFSRouter(e *gin.RouterGroup, f fs.ReadDirFS, path string) error {

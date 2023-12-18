@@ -77,6 +77,8 @@ func OAuth2Callback(ctx *gin.Context) {
 
 	if meta.Value() != nil {
 		meta.Value()(ctx, pi, code)
+	} else {
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorStringResp("invalid oauth2 handler"))
 	}
 }
 
@@ -102,6 +104,8 @@ func OAuth2CallbackApi(ctx *gin.Context) {
 
 	if meta.Value() != nil {
 		meta.Value()(ctx, pi, req.Code)
+	} else {
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorStringResp("invalid oauth2 handler"))
 	}
 }
 

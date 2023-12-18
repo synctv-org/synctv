@@ -304,9 +304,9 @@ type BilibiliMovieCache struct {
 
 func NewBilibiliMovieCache(movie *model.Movie) *BilibiliMovieCache {
 	return &BilibiliMovieCache{
-		NoSharedMovie: newMapCache(NewBilibiliNoSharedMovieCacheInitFunc(movie), time.Minute*115),
-		SharedMpd:     refreshcache.NewRefreshCache(NewBilibiliSharedMpdCacheInitFunc(movie), time.Minute*115),
-		Subtitle:      refreshcache.NewRefreshCache(NewBilibiliSubtitleCacheInitFunc(movie), time.Minute*60),
+		NoSharedMovie: newMapCache(NewBilibiliNoSharedMovieCacheInitFunc(movie), time.Minute*60),
+		SharedMpd:     refreshcache.NewRefreshCache(NewBilibiliSharedMpdCacheInitFunc(movie), time.Minute*60),
+		Subtitle:      refreshcache.NewRefreshCache(NewBilibiliSubtitleCacheInitFunc(movie), 0),
 	}
 }
 

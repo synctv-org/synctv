@@ -23,7 +23,7 @@ func (b *BilibiliVendor) BeforeSave(tx *gorm.DB) error {
 	return nil
 }
 
-func (b *BilibiliVendor) AfterFind(tx *gorm.DB) error {
+func (b *BilibiliVendor) AfterSave(tx *gorm.DB) error {
 	key := []byte(b.UserID)
 	for k, v := range b.Cookies {
 		value, err := utils.DecryptoFromBase64(v, key)
@@ -33,6 +33,10 @@ func (b *BilibiliVendor) AfterFind(tx *gorm.DB) error {
 		b.Cookies[k] = string(value)
 	}
 	return nil
+}
+
+func (b *BilibiliVendor) AfterFind(tx *gorm.DB) error {
+	return b.AfterSave(tx)
 }
 
 type AlistVendor struct {
@@ -58,7 +62,7 @@ func (a *AlistVendor) BeforeSave(tx *gorm.DB) error {
 	return nil
 }
 
-func (a *AlistVendor) AfterFind(tx *gorm.DB) error {
+func (a *AlistVendor) AfterSave(tx *gorm.DB) error {
 	key := []byte(a.UserID)
 	if v, err := utils.DecryptoFromBase64(a.Host, key); err != nil {
 		return err
@@ -76,6 +80,10 @@ func (a *AlistVendor) AfterFind(tx *gorm.DB) error {
 		a.HashedPassword = v
 	}
 	return nil
+}
+
+func (a *AlistVendor) AfterFind(tx *gorm.DB) error {
+	return a.AfterSave(tx)
 }
 
 type EmbyVendor struct {
@@ -105,7 +113,7 @@ func (e *EmbyVendor) BeforeSave(tx *gorm.DB) error {
 	return nil
 }
 
-func (e *EmbyVendor) AfterFind(tx *gorm.DB) error {
+func (e *EmbyVendor) AfterSave(tx *gorm.DB) error {
 	key := []byte(e.UserID)
 	if v, err := utils.DecryptoFromBase64(e.Host, key); err != nil {
 		return err
@@ -128,4 +136,8 @@ func (e *EmbyVendor) AfterFind(tx *gorm.DB) error {
 		e.ApiKey = string(v)
 	}
 	return nil
+}
+
+func (e *EmbyVendor) AfterFind(tx *gorm.DB) error {
+	return e.AfterSave(tx)
 }

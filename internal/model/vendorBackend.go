@@ -89,7 +89,7 @@ func (v *VendorBackend) BeforeSave(tx *gorm.DB) error {
 	return nil
 }
 
-func (v *VendorBackend) AfterFind(tx *gorm.DB) error {
+func (v *VendorBackend) AfterSave(tx *gorm.DB) error {
 	key := []byte(v.Backend.Endpoint)
 	var (
 		err  error
@@ -124,4 +124,8 @@ func (v *VendorBackend) AfterFind(tx *gorm.DB) error {
 		}
 	}
 	return nil
+}
+
+func (v *VendorBackend) AfterFind(tx *gorm.DB) error {
+	return v.AfterSave(tx)
 }

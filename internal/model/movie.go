@@ -99,7 +99,7 @@ func (a *AlistStreamingInfo) BeforeSave(tx *gorm.DB) error {
 	return nil
 }
 
-func (a *AlistStreamingInfo) AfterFind(tx *gorm.DB) error {
+func (a *AlistStreamingInfo) AfterSave(tx *gorm.DB) error {
 	if a.Password != "" {
 		b, err := utils.DecryptoFromBase64(a.Password, utils.GenCryptoKey(a.Path))
 		if err != nil {
@@ -108,4 +108,8 @@ func (a *AlistStreamingInfo) AfterFind(tx *gorm.DB) error {
 		a.Password = string(b)
 	}
 	return nil
+}
+
+func (a *AlistStreamingInfo) AfterFind(tx *gorm.DB) error {
+	return a.AfterSave(tx)
 }

@@ -96,15 +96,11 @@ func (m *movies) GetChannel(id string) (*rtmps.Channel, error) {
 	if id == "" {
 		return nil, errors.New("channel name is nil")
 	}
-	m.init()
-	m.lock.RLock()
-	defer m.lock.RUnlock()
-	for e := m.list.Front(); e != nil; e = e.Next() {
-		if e.Value.Movie.ID == id {
-			return e.Value.Channel()
-		}
+	movie, err := m.GetMovieByID(id)
+	if err != nil {
+		return nil, err
 	}
-	return nil, errors.New("channel not found")
+	return movie.Channel()
 }
 
 func (m *movies) Update(movieId string, movie *model.BaseMovie) error {

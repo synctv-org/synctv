@@ -51,30 +51,33 @@ func (m *Movie) AlistCache() *cache.AlistMovieCache {
 }
 
 func (m *Movie) Channel() (*rtmps.Channel, error) {
-	return m.channel.Load(), m.initChannel()
+	err := m.initChannel()
+	if err != nil {
+		return nil, err
+	}
+	return m.channel.Load(), nil
 }
 
 func genTsName() string {
 	return utils.SortUUID()
 }
 
-func (m *Movie) compareAndSwapInitChannel() (*rtmps.Channel, bool) {
-	if m.channel.Load() == nil {
-		c := rtmps.NewChannel()
+func (m *Movie) compareAndSwapInitChannel() *rtmps.Channel {
+	c := m.channel.Load()
+	if c == nil {
+		c = rtmps.NewChannel()
 		if !m.channel.CompareAndSwap(nil, c) {
-			return nil, false
+			return m.compareAndSwapInitChannel()
 		}
-		return c, true
+		c.InitHlsPlayer(hls.WithGenTsNameFunc(genTsName))
 	}
-	return nil, false
+	return c
 }
 
 func (m *Movie) initChannel() error {
 	switch {
 	case m.Movie.Base.Live && m.Movie.Base.RtmpSource:
-		if c, ok := m.compareAndSwapInitChannel(); ok {
-			return c.InitHlsPlayer(hls.WithGenTsNameFunc(genTsName))
-		}
+		m.compareAndSwapInitChannel()
 	case m.Movie.Base.Live && m.Movie.Base.Proxy:
 		u, err := url.Parse(m.Movie.Base.Url)
 		if err != nil {
@@ -82,10 +85,7 @@ func (m *Movie) initChannel() error {
 		}
 		switch u.Scheme {
 		case "rtmp":
-			c, ok := m.compareAndSwapInitChannel()
-			if !ok {
-				return nil
-			}
+			c := m.compareAndSwapInitChannel()
 			err = c.InitHlsPlayer(hls.WithGenTsNameFunc(genTsName))
 			if err != nil {
 				return err
@@ -108,10 +108,7 @@ func (m *Movie) initChannel() error {
 				}
 			}()
 		case "http", "https":
-			c, ok := m.compareAndSwapInitChannel()
-			if !ok {
-				return nil
-			}
+			c := m.compareAndSwapInitChannel()
 			c.InitHlsPlayer(hls.WithGenTsNameFunc(genTsName))
 			go func() {
 				for {

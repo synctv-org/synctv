@@ -111,8 +111,15 @@ func genCurrentResp(current *op.Current) *model.CurrentMovieResp {
 		c.Movie.Base.Type = utils.GetUrlExtension(c.Movie.Base.Url)
 	}
 	// hide url and headers when proxy
-	if c.Movie.Base.Proxy {
-		c.Movie.Base.Url = ""
+	if c.Movie.Base.RtmpSource || c.Movie.Base.Live && c.Movie.Base.Proxy {
+		t := c.Movie.Base.Type
+		if t != "flv" && t != "m3u8" {
+			t = "m3u8"
+		}
+		c.Movie.Base.Url = fmt.Sprintf("/api/movie/live/%s.%s", current.Movie.ID, t)
+		c.Movie.Base.Headers = nil
+	} else if c.Movie.Base.Proxy {
+		c.Movie.Base.Url = fmt.Sprintf("/api/movie/proxy/%s/%s", current.Movie.RoomID, current.Movie.ID)
 		c.Movie.Base.Headers = nil
 	}
 	return c

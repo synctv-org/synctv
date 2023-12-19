@@ -732,11 +732,12 @@ func proxyVendorMovie(ctx *gin.Context, movie *op.Movie) {
 		}
 
 	default:
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("vendor not support"))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("vendor not support proxy"))
 		return
 	}
 }
 
+// user is the api requester
 func parse2VendorMovie(ctx context.Context, user *op.User, room *op.Room, movie *dbModel.Movie) (err error) {
 	switch movie.Base.VendorInfo.Vendor {
 	case dbModel.VendorBilibili:
@@ -794,11 +795,54 @@ func parse2VendorMovie(ctx context.Context, user *op.User, room *op.Room, movie 
 			return err
 		}
 
+		// TODO: when proxy
 		movie.Base.Url = data.URLs[len(data.URLs)-1].URL
 		movie.Base.VendorInfo.Alist = nil
 		return nil
 
+	case dbModel.VendorEmby:
+		u, err := op.LoadOrInitUserByID(movie.CreatorID)
+		if err != nil {
+			return err
+		}
+		opM, err := room.GetMovieByID(movie.ID)
+		if err != nil {
+			return err
+		}
+		data, err := opM.EmbyCache().Get(ctx, u.EmbyCache())
+		if err != nil {
+			return err
+		}
+
+		// TODO: when proxy
+		for i, es := range data.Sources {
+			if len(es.URLs) == 0 {
+				if i != len(data.Sources)-1 {
+					continue
+				}
+				if movie.Base.Url == "" {
+					return errors.New("no source")
+				}
+			}
+			movie.Base.Url = es.URLs[0].URL
+
+			if len(es.Subtitles) == 0 {
+				continue
+			}
+			for _, s := range es.Subtitles {
+				if movie.Base.Subtitles == nil {
+					movie.Base.Subtitles = make(map[string]*dbModel.Subtitle, len(es.Subtitles))
+				}
+				movie.Base.Subtitles[s.Name] = &dbModel.Subtitle{
+					URL:  s.URL,
+					Type: "srt",
+				}
+			}
+		}
+		movie.Base.VendorInfo.Emby = nil
+		return nil
+
 	default:
-		return fmt.Errorf("vendor not support")
+		return fmt.Errorf("vendor not implement gen movie url")
 	}
 }

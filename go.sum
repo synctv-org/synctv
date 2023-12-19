@@ -356,6 +356,8 @@ github.com/synctv-org/vendors v0.1.1-0.20231219132638-e5f7129a6b4a h1:AX89ME2jh0
 github.com/synctv-org/vendors v0.1.1-0.20231219132638-e5f7129a6b4a/go.mod h1:C0ZGPeF8nYsx60gePPhSrgrjrONj6F72XFHW9Mh8+vU=
 github.com/synctv-org/vendors v0.1.1-0.20231219141441-14783f13d7cf h1:NtoqCZWMUjbIENKQnaLmw/cT2Wc8Fu7C212bc/EDtV0=
 github.com/synctv-org/vendors v0.1.1-0.20231219141441-14783f13d7cf/go.mod h1:C0ZGPeF8nYsx60gePPhSrgrjrONj6F72XFHW9Mh8+vU=
+github.com/synctv-org/vendors v0.1.1-0.20231219160707-b86154001009 h1:iT6l+r8aPkjSWaXFYD1LrpaC+Vt6afpb3CvrynivyXw=
+github.com/synctv-org/vendors v0.1.1-0.20231219160707-b86154001009/go.mod h1:C0ZGPeF8nYsx60gePPhSrgrjrONj6F72XFHW9Mh8+vU=
 github.com/tv42/httpunix v0.0.0-20150427012821-b75d8614f926/go.mod h1:9ESjWnEqriFuLhtthL60Sar/7RFoluCcXsuvEwTV5KM=
 github.com/twitchyliquid64/golang-asm v0.15.1 h1:SU5vSMR7hnwNxj24w34ZyCi/FmDZTkS4MhqMhdFk5YI=
 github.com/twitchyliquid64/golang-asm v0.15.1/go.mod h1:a1lVb/DtPvCB8fslRZhAngC2+aY1QWCk3Cedj/Gdt08=

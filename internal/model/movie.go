@@ -55,6 +55,7 @@ type VendorInfo struct {
 	Backend  string                 `json:"backend"`
 	Bilibili *BilibiliStreamingInfo `gorm:"embedded;embeddedPrefix:bilibili_" json:"bilibili,omitempty"`
 	Alist    *AlistStreamingInfo    `gorm:"embedded;embeddedPrefix:alist_" json:"alist,omitempty"`
+	Emby     *EmbyStreamingInfo     `gorm:"embedded;embeddedPrefix:emby_" json:"emby,omitempty"`
 }
 
 type BilibiliStreamingInfo struct {
@@ -112,4 +113,8 @@ func (a *AlistStreamingInfo) AfterSave(tx *gorm.DB) error {
 
 func (a *AlistStreamingInfo) AfterFind(tx *gorm.DB) error {
 	return a.AfterSave(tx)
+}
+
+type EmbyStreamingInfo struct {
+	Path string `json:"path,omitempty"`
 }

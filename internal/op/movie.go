@@ -24,8 +24,20 @@ import (
 type Movie struct {
 	Movie         model.Movie
 	channel       atomic.Pointer[rtmps.Channel]
-	bilibiliCache atomic.Pointer[cache.BilibiliMovieCache]
 	alistCache    atomic.Pointer[cache.AlistMovieCache]
+	bilibiliCache atomic.Pointer[cache.BilibiliMovieCache]
+	embyCache     atomic.Pointer[cache.EmbyMovieCache]
+}
+
+func (m *Movie) AlistCache() *cache.AlistMovieCache {
+	c := m.alistCache.Load()
+	if c == nil {
+		c = cache.NewAlistMovieCache(&m.Movie)
+		if !m.alistCache.CompareAndSwap(nil, c) {
+			return m.AlistCache()
+		}
+	}
+	return c
 }
 
 func (m *Movie) BilibiliCache() *cache.BilibiliMovieCache {
@@ -39,12 +51,12 @@ func (m *Movie) BilibiliCache() *cache.BilibiliMovieCache {
 	return c
 }
 
-func (m *Movie) AlistCache() *cache.AlistMovieCache {
-	c := m.alistCache.Load()
+func (m *Movie) EmbyCache() *cache.EmbyMovieCache {
+	c := m.embyCache.Load()
 	if c == nil {
-		c = cache.NewAlistMovieCache(&m.Movie)
-		if !m.alistCache.CompareAndSwap(nil, c) {
-			return m.AlistCache()
+		c = cache.NewEmbyMovieCache(&m.Movie)
+		if !m.embyCache.CompareAndSwap(nil, c) {
+			return m.EmbyCache()
 		}
 	}
 	return c
@@ -213,10 +225,12 @@ func (movie *Movie) validateVendorMovie() error {
 		return movie.Movie.Base.VendorInfo.Bilibili.Validate()
 
 	case model.VendorAlist:
-		// return movie.Movie.Base.VendorInfo.Alist.Validate()
+	// return movie.Movie.Base.VendorInfo.Alist.Validate()
+
+	case model.VendorEmby:
 
 	default:
-		return fmt.Errorf("vendor not support")
+		return fmt.Errorf("vendor not implement validate")
 	}
 
 	return nil

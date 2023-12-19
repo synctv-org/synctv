@@ -5,12 +5,11 @@ import (
 
 	"github.com/synctv-org/synctv/internal/model"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 func GetBilibiliVendor(userID string) (*model.BilibiliVendor, error) {
 	var vendor model.BilibiliVendor
-	err := db.Where("user_id = ?", userID).Preload(clause.Associations).First(&vendor).Error
+	err := db.Where("user_id = ?", userID).First(&vendor).Error
 	return &vendor, HandleNotFound(err, "vendor")
 }
 
@@ -33,7 +32,7 @@ func DeleteBilibiliVendor(userID string) error {
 
 func GetAlistVendor(userID string) (*model.AlistVendor, error) {
 	var vendor model.AlistVendor
-	err := db.Where("user_id = ?", userID).Preload(clause.Associations).First(&vendor).Error
+	err := db.Where("user_id = ?", userID).First(&vendor).Error
 	return &vendor, HandleNotFound(err, "vendor")
 }
 

@@ -2,7 +2,10 @@ package vendorAlist
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
+	"path/filepath"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	json "github.com/json-iterator/go"
@@ -39,18 +42,24 @@ func List(ctx *gin.Context) {
 		return
 	}
 
+	req.Path = strings.TrimRight(req.Path, "/")
+	if !strings.HasPrefix(req.Path, "/") {
+		req.Path = "/" + req.Path
+	}
+
 	aucd, err := user.AlistCache().Get(ctx)
 	if err != nil {
 		if errors.Is(err, db.ErrNotFound("vendor")) {
 			ctx.JSON(http.StatusBadRequest, model.NewApiErrorStringResp("alist not login"))
 			return
 		}
+
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}
 
 	var cli = vendor.LoadAlistClient(ctx.Query("backend"))
-	resp, err := cli.FsList(ctx, &alist.FsListReq{
+	data, err := cli.FsList(ctx, &alist.FsListReq{
 		Token:    aucd.Token,
 		Password: req.Password,
 		Path:     req.Path,
@@ -58,9 +67,32 @@ func List(ctx *gin.Context) {
 		Refresh:  req.Refresh,
 	})
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
-	ctx.JSON(http.StatusOK, model.NewApiDataResp(resp))
+	var resp model.VendorFSListResp
+	resp.Total = data.Total
+	if req.Path == "/" {
+		req.Path = ""
+	}
+	for i, v := range strings.Split(req.Path, string(filepath.Separator)) {
+		var p = v
+		if i != 0 {
+			p = fmt.Sprintf("%s/%s", resp.Paths[i-1].Path, v)
+		}
+		resp.Paths = append(resp.Paths, &model.Path{
+			Name: v,
+			Path: p,
+		})
+	}
+	for _, flr := range data.Content {
+		resp.Items = append(resp.Items, &model.Item{
+			Name:  flr.Name,
+			Path:  fmt.Sprintf("%s/%s", req.Path, flr.Name),
+			IsDir: flr.IsDir,
+		})
+	}
+
+	ctx.JSON(http.StatusOK, model.NewApiDataResp(&resp))
 }

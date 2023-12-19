@@ -781,12 +781,11 @@ func parse2VendorMovie(ctx context.Context, user *op.User, room *op.Room, movie 
 		return nil
 
 	case dbModel.VendorAlist:
-		opM, err := room.GetMovieByID(movie.ID)
+		u, err := op.LoadOrInitUserByID(movie.CreatorID)
 		if err != nil {
 			return err
 		}
-
-		u, err := op.LoadOrInitUserByID(movie.CreatorID)
+		opM, err := room.GetMovieByID(movie.ID)
 		if err != nil {
 			return err
 		}
@@ -795,7 +794,7 @@ func parse2VendorMovie(ctx context.Context, user *op.User, room *op.Room, movie 
 			return err
 		}
 
-		movie.Base.Url = data.URL
+		movie.Base.Url = data.URLs[len(data.URLs)-1].URL
 		movie.Base.VendorInfo.Alist = nil
 		return nil
 

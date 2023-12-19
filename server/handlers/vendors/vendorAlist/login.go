@@ -13,9 +13,7 @@ import (
 	"github.com/synctv-org/synctv/internal/db"
 	dbModel "github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
-	"github.com/synctv-org/synctv/internal/vendor"
 	"github.com/synctv-org/synctv/server/model"
-	"github.com/synctv-org/vendors/api/alist"
 )
 
 type LoginReq struct {
@@ -55,52 +53,27 @@ func Login(ctx *gin.Context) {
 	}
 
 	backend := ctx.Query("backend")
-	cli := vendor.LoadAlistClient(backend)
 
-	if req.Username == "" {
-		_, err := cli.Me(ctx, &alist.MeReq{
-			Host: req.Host,
-		})
-		if err != nil {
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
-			return
-		}
-		_, err = user.AlistCache().Data().Refresh(ctx, func(ctx context.Context, args ...struct{}) (*cache.AlistUserCacheData, error) {
-			return &cache.AlistUserCacheData{
-				Host:    req.Host,
-				Backend: backend,
-			}, nil
-		})
-		if err != nil {
-			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
-			return
-		}
-	} else {
-		resp, err := cli.Login(ctx, &alist.LoginReq{
-			Host:     req.Host,
-			Username: req.Username,
-			Password: req.HashedPassword,
-			Hashed:   true,
-		})
-		if err != nil {
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
-			return
-		}
-
-		_, err = user.AlistCache().Data().Refresh(ctx, func(ctx context.Context, args ...struct{}) (*cache.AlistUserCacheData, error) {
-			return &cache.AlistUserCacheData{
-				Host:    req.Host,
-				Token:   resp.Token,
-				Backend: backend,
-			}, nil
-		})
-		if err != nil {
-			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
-			return
-		}
+	data, err := cache.AlistAuthorizationCacheWithConfigInitFunc(ctx, &dbModel.AlistVendor{
+		Host:           req.Host,
+		Username:       req.Username,
+		HashedPassword: []byte(req.HashedPassword),
+		Backend:        backend,
+	})
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
 	}
 
-	_, err := db.CreateOrSaveAlistVendor(user.ID, &dbModel.AlistVendor{
+	_, err = user.AlistCache().Data().Refresh(ctx, func(ctx context.Context, args ...struct{}) (*cache.AlistUserCacheData, error) {
+		return data, nil
+	})
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
+
+	_, err = db.CreateOrSaveAlistVendor(user.ID, &dbModel.AlistVendor{
 		Backend:        backend,
 		Host:           req.Host,
 		Username:       req.Username,

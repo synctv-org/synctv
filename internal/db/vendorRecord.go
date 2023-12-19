@@ -52,3 +52,26 @@ func CreateOrSaveAlistVendor(userID string, vendorInfo *model.AlistVendor) (*mod
 func DeleteAlistVendor(userID string) error {
 	return db.Where("user_id = ?", userID).Delete(&model.AlistVendor{}).Error
 }
+
+func GetEmbyVendor(userID string) (*model.EmbyVendor, error) {
+	var vendor model.EmbyVendor
+	err := db.Where("user_id = ?", userID).First(&vendor).Error
+	return &vendor, HandleNotFound(err, "vendor")
+}
+
+func CreateOrSaveEmbyVendor(userID string, vendorInfo *model.EmbyVendor) (*model.EmbyVendor, error) {
+	vendorInfo.UserID = userID
+	return vendorInfo, Transactional(func(tx *gorm.DB) error {
+		if errors.Is(tx.First(&model.EmbyVendor{
+			UserID: userID,
+		}).Error, gorm.ErrRecordNotFound) {
+			return tx.Create(&vendorInfo).Error
+		} else {
+			return tx.Save(&vendorInfo).Error
+		}
+	})
+}
+
+func DeleteEmbyVendor(userID string) error {
+	return db.Where("user_id = ?", userID).Delete(&model.EmbyVendor{}).Error
+}

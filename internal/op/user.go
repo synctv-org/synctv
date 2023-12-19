@@ -17,16 +17,42 @@ import (
 type User struct {
 	model.User
 	version       uint32
-	alistCache    *cache.AlistUserCache
-	bilibiliCache *cache.BilibiliUserCache
+	alistCache    atomic.Pointer[cache.AlistUserCache]
+	bilibiliCache atomic.Pointer[cache.BilibiliUserCache]
+	embyCache     atomic.Pointer[cache.EmbyUserCache]
 }
 
 func (u *User) AlistCache() *cache.AlistUserCache {
-	return u.alistCache
+	c := u.alistCache.Load()
+	if c == nil {
+		c = cache.NewAlistUserCache(u.ID)
+		if !u.alistCache.CompareAndSwap(nil, c) {
+			return u.AlistCache()
+		}
+	}
+	return c
 }
 
 func (u *User) BilibiliCache() *cache.BilibiliUserCache {
-	return u.bilibiliCache
+	c := u.bilibiliCache.Load()
+	if c == nil {
+		c = cache.NewBilibiliUserCache(u.ID)
+		if !u.bilibiliCache.CompareAndSwap(nil, c) {
+			return u.BilibiliCache()
+		}
+	}
+	return c
+}
+
+func (u *User) EmbyCache() *cache.EmbyUserCache {
+	c := u.embyCache.Load()
+	if c == nil {
+		c = cache.NewEmbyUserCache(u.ID)
+		if !u.embyCache.CompareAndSwap(nil, c) {
+			return u.EmbyCache()
+		}
+	}
+	return c
 }
 
 func (u *User) Version() uint32 {

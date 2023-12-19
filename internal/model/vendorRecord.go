@@ -87,24 +87,16 @@ func (a *AlistVendor) AfterFind(tx *gorm.DB) error {
 }
 
 type EmbyVendor struct {
-	UserID   string `gorm:"primaryKey"`
-	Backend  string
-	Host     string
-	Username string
-	Password string
-	ApiKey   string
+	UserID  string `gorm:"primaryKey"`
+	Backend string
+	Host    string
+	ApiKey  string
 }
 
 func (e *EmbyVendor) BeforeSave(tx *gorm.DB) error {
 	key := []byte(e.UserID)
 	var err error
 	if e.Host, err = utils.CryptoToBase64([]byte(e.Host), key); err != nil {
-		return err
-	}
-	if e.Username, err = utils.CryptoToBase64([]byte(e.Username), key); err != nil {
-		return err
-	}
-	if e.Password, err = utils.CryptoToBase64([]byte(e.Password), key); err != nil {
 		return err
 	}
 	if e.ApiKey, err = utils.CryptoToBase64([]byte(e.ApiKey), key); err != nil {
@@ -119,16 +111,6 @@ func (e *EmbyVendor) AfterSave(tx *gorm.DB) error {
 		return err
 	} else {
 		e.Host = string(v)
-	}
-	if v, err := utils.DecryptoFromBase64(e.Username, key); err != nil {
-		return err
-	} else {
-		e.Username = string(v)
-	}
-	if v, err := utils.DecryptoFromBase64(e.Password, key); err != nil {
-		return err
-	} else {
-		e.Password = string(v)
 	}
 	if v, err := utils.DecryptoFromBase64(e.ApiKey, key); err != nil {
 		return err

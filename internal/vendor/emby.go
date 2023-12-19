@@ -63,7 +63,7 @@ func (e *grpcEmby) GetItems(ctx context.Context, req *emby.GetItemsReq) (*emby.G
 	return e.client.GetItems(ctx, req)
 }
 
-func (e *grpcEmby) GetSystemInfo(ctx context.Context, req *emby.Empty) (*emby.SystemInfoResp, error) {
+func (e *grpcEmby) GetSystemInfo(ctx context.Context, req *emby.SystemInfoReq) (*emby.SystemInfoResp, error) {
 	return e.client.GetSystemInfo(ctx, req)
 }
 

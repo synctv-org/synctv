@@ -317,7 +317,7 @@ type BilibiliUserCacheData struct {
 	Backend string
 }
 
-func NewBilibiliCache(userID string) *BilibiliUserCache {
+func NewBilibiliUserCache(userID string) *BilibiliUserCache {
 	f := BilibiliAuthorizationCacheWithUserIDInitFunc(userID)
 	return refreshcache.NewRefreshCache(func(ctx context.Context, args ...struct{}) (*BilibiliUserCacheData, error) {
 		return f(ctx)

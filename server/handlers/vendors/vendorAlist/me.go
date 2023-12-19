@@ -29,9 +29,7 @@ func Me(ctx *gin.Context) {
 		return
 	}
 
-	cli := vendor.LoadAlistClient(ctx.Query("backend"))
-
-	resp, err := cli.Me(ctx, &alist.MeReq{
+	resp, err := vendor.LoadAlistClient(aucd.Backend).Me(ctx, &alist.MeReq{
 		Host:  aucd.Host,
 		Token: aucd.Token,
 	})
@@ -44,5 +42,4 @@ func Me(ctx *gin.Context) {
 		IsLogin: true,
 		Info:    resp,
 	}))
-
 }

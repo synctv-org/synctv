@@ -847,6 +847,7 @@ func parse2VendorMovie(ctx context.Context, user *op.User, room *op.Room, movie 
 
 			movie.Base.Url = s
 		} else {
+			movie.Base.Url = fmt.Sprintf("/api/movie/proxy/%s/%s", movie.RoomID, movie.ID)
 			movie.Base.Type = "mpd"
 		}
 		srt, err := bmc.Subtitle.Get(ctx, user.BilibiliCache())
@@ -880,7 +881,7 @@ func parse2VendorMovie(ctx context.Context, user *op.User, room *op.Room, movie 
 
 		// TODO: when proxy
 		movie.Base.Url = data.URLs[len(data.URLs)-1].URL
-		movie.Base.VendorInfo.Alist = nil
+		movie.Base.VendorInfo.Alist.Password = ""
 		return nil
 
 	case dbModel.VendorEmby:

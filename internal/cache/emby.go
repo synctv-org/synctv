@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 
 	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/vendor"
+	"github.com/synctv-org/synctv/utils"
 	"github.com/synctv-org/vendors/api/emby"
 	"github.com/zijiren233/gencontainer/refreshcache"
 )
@@ -55,8 +58,10 @@ type EmbySource struct {
 	}
 	// TODO: cache subtitles
 	Subtitles []struct {
-		URL  string
-		Name string
+		URL   string
+		Type  string
+		Name  string
+		Cache *refreshcache.RefreshCache[[]byte, struct{}]
 	}
 }
 
@@ -122,22 +127,56 @@ func NewEmbyMovieCacheInitFunc(movie *model.Movie) func(ctx context.Context, arg
 			for _, msi := range v.MediaStreamInfo {
 				switch msi.Type {
 				case "Subtitle":
-					result, err = url.JoinPath("emby", "Videos", data.Id, v.Id, "Subtitles", fmt.Sprintf("%d", msi.Index), "Stream.srt")
+					subtutleType := "srt"
+					result, err = url.JoinPath("emby", "Videos", data.Id, v.Id, "Subtitles", fmt.Sprintf("%d", msi.Index), fmt.Sprintf("Stream.%s", subtutleType))
 					if err != nil {
 						return nil, err
 					}
 					u.Path = result
 					u.RawQuery = ""
+					url := u.String()
+					name := msi.DisplayTitle
+					if name == "" {
+						if msi.Title != "" {
+							name = msi.Title
+						} else {
+							name = msi.DisplayLanguage
+						}
+					}
 					resp.Sources[i].Subtitles = append(resp.Sources[i].Subtitles, struct {
-						URL  string
-						Name string
+						URL   string
+						Type  string
+						Name  string
+						Cache *refreshcache.RefreshCache[[]byte, struct{}]
 					}{
-						URL:  u.String(),
-						Name: msi.DisplayTitle,
+						URL:   url,
+						Type:  subtutleType,
+						Name:  name,
+						Cache: refreshcache.NewRefreshCache(newEmbySubtitleCacheInitFunc(url), 0),
 					})
 				}
 			}
 		}
 		return &resp, nil
+	}
+}
+
+func newEmbySubtitleCacheInitFunc(url string) func(ctx context.Context, args ...struct{}) ([]byte, error) {
+	return func(ctx context.Context, args ...struct{}) ([]byte, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("User-Agent", utils.UA)
+		req.Header.Set("Referer", req.URL.Host)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return nil, errors.New("bad status code")
+		}
+		return io.ReadAll(resp.Body)
 	}
 }

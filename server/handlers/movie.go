@@ -736,6 +736,35 @@ func proxyVendorMovie(ctx *gin.Context, movie *op.Movie) {
 		}
 
 	case dbModel.VendorAlist:
+		if !movie.Movie.Base.Proxy {
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support movie proxy"))
+			return
+		}
+		u, err := op.LoadOrInitUserByID(movie.Movie.CreatorID)
+		if err != nil {
+			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+			return
+		}
+		alistC, err := movie.AlistCache().Get(ctx, u.AlistCache())
+		if err != nil {
+			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+			return
+		}
+		idS := ctx.Query("id")
+		if idS == "" {
+			idS = "0"
+		}
+		id, err := strconv.Atoi(idS)
+		if err != nil {
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+			return
+		}
+		if id >= len(alistC.URLs) {
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("id out of range"))
+			return
+		}
+		proxyURL(ctx, alistC.URLs[id].URL, nil)
+		return
 
 	case dbModel.VendorEmby:
 		t := ctx.Query("t")
@@ -866,7 +895,7 @@ func parse2VendorMovie(ctx context.Context, user *op.User, room *op.Room, movie 
 		return nil
 
 	case dbModel.VendorAlist:
-		u, err := op.LoadOrInitUserByID(movie.CreatorID)
+		creator, err := op.LoadOrInitUserByID(movie.CreatorID)
 		if err != nil {
 			return err
 		}
@@ -874,13 +903,31 @@ func parse2VendorMovie(ctx context.Context, user *op.User, room *op.Room, movie 
 		if err != nil {
 			return err
 		}
-		data, err := opM.AlistCache().Get(ctx, u.AlistCache())
+		data, err := opM.AlistCache().Get(ctx, creator.AlistCache())
 		if err != nil {
 			return err
 		}
 
-		// TODO: when proxy
-		movie.Base.Url = data.URLs[len(data.URLs)-1].URL
+		if len(data.URLs) == 0 {
+			return errors.New("no source")
+		}
+		id := len(data.URLs) - 1
+		if !movie.Base.Proxy {
+			movie.Base.Url = data.URLs[id].URL
+		} else {
+			rawPath, err := url.JoinPath("/api/movie/proxy", movie.RoomID, movie.ID)
+			if err != nil {
+				return err
+			}
+			rawQuery := url.Values{}
+			rawQuery.Set("id", strconv.Itoa(id))
+			u := url.URL{
+				Path:     rawPath,
+				RawQuery: rawQuery.Encode(),
+			}
+			movie.Base.Url = u.String()
+			movie.Base.Type = utils.GetUrlExtension(data.URLs[id].URL)
+		}
 		movie.Base.VendorInfo.Alist.Password = ""
 		return nil
 
@@ -946,6 +993,7 @@ func parse2VendorMovie(ctx context.Context, user *op.User, room *op.Room, movie 
 					RawQuery: rawQuery.Encode(),
 				}
 				movie.Base.Url = u.String()
+				movie.Base.Type = utils.GetUrlExtension(es.URLs[0].URL)
 
 				if len(es.Subtitles) == 0 {
 					continue

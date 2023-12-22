@@ -51,6 +51,7 @@ func (b *Backend) Validate() error {
 
 type VendorBackend struct {
 	Backend Backend       `gorm:"embedded;embeddedPrefix:backend_" json:"backend"`
+	Enabled bool          `gorm:"default:true" json:"enabled"`
 	UsedBy  BackendUsedBy `gorm:"embedded;embeddedPrefix:used_by_" json:"usedBy"`
 }
 

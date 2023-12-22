@@ -830,3 +830,37 @@ func AdminReconnectVendorBackends(ctx *gin.Context) {
 
 	ctx.Status(http.StatusNoContent)
 }
+
+func AdminEnableVendorBackends(ctx *gin.Context) {
+	// user := ctx.MustGet("user").(*op.User)
+
+	var req model.VendorBackendEndpointsReq
+	if err := model.Decode(ctx, &req); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	if err := vendor.EnableVendorBackends(ctx, req.Endpoints); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	ctx.Status(http.StatusNoContent)
+}
+
+func AdminDisableVendorBackends(ctx *gin.Context) {
+	// user := ctx.MustGet("user").(*op.User)
+
+	var req model.VendorBackendEndpointsReq
+	if err := model.Decode(ctx, &req); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	if err := vendor.DisableVendorBackends(ctx, req.Endpoints); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	ctx.Status(http.StatusNoContent)
+}

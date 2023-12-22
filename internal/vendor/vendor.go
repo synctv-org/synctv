@@ -84,6 +84,162 @@ func Init(ctx context.Context) error {
 	return nil
 }
 
+func EnableVendorBackend(ctx context.Context, endpoint string) (err error) {
+	if !lock.TryLock() {
+		return errors.New("vendor backend is updating")
+	}
+	defer lock.Unlock()
+
+	raw := LoadConns()
+	if v, ok := raw[endpoint]; !ok {
+		return fmt.Errorf("endpoint not found: %s", endpoint)
+	} else if v.Info.Enabled {
+		return nil
+	}
+
+	raw[endpoint].Info.Enabled = true
+	defer func() {
+		if err != nil {
+			raw[endpoint].Info.Enabled = false
+		}
+	}()
+
+	vc, err := newVendorClients(raw)
+	if err != nil {
+		return err
+	}
+
+	err = db.EnableVendorBackend(endpoint)
+	if err != nil {
+		return err
+	}
+
+	storeBackends(raw, vc)
+
+	return nil
+}
+
+func EnableVendorBackends(ctx context.Context, endpoints []string) (err error) {
+	if !lock.TryLock() {
+		return errors.New("vendor backend is updating")
+	}
+	defer lock.Unlock()
+
+	raw := LoadConns()
+	needChangeEndpoints := make([]string, 0, len(endpoints))
+	for _, endpoint := range endpoints {
+		if v, ok := raw[endpoint]; !ok {
+			return fmt.Errorf("endpoint not found: %s", endpoint)
+		} else if !v.Info.Enabled {
+			needChangeEndpoints = append(needChangeEndpoints, endpoint)
+		}
+	}
+
+	for _, endpoint := range needChangeEndpoints {
+		raw[endpoint].Info.Enabled = true
+	}
+
+	defer func() {
+		if err != nil {
+			for _, endpoint := range needChangeEndpoints {
+				raw[endpoint].Info.Enabled = false
+			}
+		}
+	}()
+
+	vc, err := newVendorClients(raw)
+	if err != nil {
+		return err
+	}
+
+	err = db.EnableVendorBackends(needChangeEndpoints)
+	if err != nil {
+		return err
+	}
+
+	storeBackends(raw, vc)
+
+	return nil
+}
+
+func DisableVendorBackend(ctx context.Context, endpoint string) (err error) {
+	if !lock.TryLock() {
+		return errors.New("vendor backend is updating")
+	}
+	defer lock.Unlock()
+
+	raw := LoadConns()
+	if v, ok := raw[endpoint]; !ok {
+		return fmt.Errorf("endpoint not found: %s", endpoint)
+	} else if !v.Info.Enabled {
+		return nil
+	}
+
+	raw[endpoint].Info.Enabled = false
+	defer func() {
+		if err != nil {
+			raw[endpoint].Info.Enabled = true
+		}
+	}()
+
+	vc, err := newVendorClients(raw)
+	if err != nil {
+		return err
+	}
+
+	err = db.DisableVendorBackend(endpoint)
+	if err != nil {
+		return err
+	}
+
+	storeBackends(raw, vc)
+
+	return nil
+}
+
+func DisableVendorBackends(ctx context.Context, endpoints []string) (err error) {
+	if !lock.TryLock() {
+		return errors.New("vendor backend is updating")
+	}
+	defer lock.Unlock()
+
+	raw := LoadConns()
+	needChangeEndpoints := make([]string, 0, len(endpoints))
+	for _, endpoint := range endpoints {
+		if v, ok := raw[endpoint]; !ok {
+			return fmt.Errorf("endpoint not found: %s", endpoint)
+		} else if v.Info.Enabled {
+			needChangeEndpoints = append(needChangeEndpoints, endpoint)
+		}
+	}
+
+	for _, endpoint := range needChangeEndpoints {
+		raw[endpoint].Info.Enabled = false
+	}
+
+	defer func() {
+		if err != nil {
+			for _, endpoint := range needChangeEndpoints {
+				raw[endpoint].Info.Enabled = true
+			}
+		}
+	}()
+
+	vc, err := newVendorClients(raw)
+	if err != nil {
+		return err
+	}
+
+	err = db.DisableVendorBackends(needChangeEndpoints)
+	if err != nil {
+		return err
+	}
+
+	storeBackends(raw, vc)
+
+	return nil
+}
+
 func AddVendorBackend(ctx context.Context, backend *model.VendorBackend) error {
 	if !lock.TryLock() {
 		return errors.New("vendor backend is updating")
@@ -290,6 +446,9 @@ func newVendorClients(conns map[string]*BackendConn) (*VendorClients, error) {
 		emby:     make(map[string]EmbyInterface),
 	}
 	for _, conn := range conns {
+		if !conn.Info.Enabled {
+			continue
+		}
 		if conn.Info.UsedBy.Bilibili {
 			if _, ok := clients.bilibili[conn.Info.UsedBy.BilibiliBackendName]; ok {
 				return nil, fmt.Errorf("duplicate bilibili backend name: %s", conn.Info.UsedBy.BilibiliBackendName)

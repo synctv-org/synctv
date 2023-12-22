@@ -17,6 +17,22 @@ func CreateVendorBackend(backend *model.VendorBackend) error {
 	return db.Create(backend).Error
 }
 
+func EnableVendorBackend(endpoint string) error {
+	return db.Model(&model.VendorBackend{}).Where("backend_endpoint = ?", endpoint).Update("enabled", true).Error
+}
+
+func EnableVendorBackends(endpoints []string) error {
+	return db.Model(&model.VendorBackend{}).Where("backend_endpoint IN ?", endpoints).Update("enabled", true).Error
+}
+
+func DisableVendorBackend(endpoint string) error {
+	return db.Model(&model.VendorBackend{}).Where("backend_endpoint = ?", endpoint).Update("enabled", false).Error
+}
+
+func DisableVendorBackends(endpoints []string) error {
+	return db.Model(&model.VendorBackend{}).Where("backend_endpoint IN ?", endpoints).Update("enabled", false).Error
+}
+
 func DeleteVendorBackend(endpoint string) error {
 	return db.Where("backend_endpoint = ?", endpoint).Delete(&model.VendorBackend{}).Error
 }

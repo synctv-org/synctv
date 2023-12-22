@@ -83,6 +83,10 @@ func initAdmin(admin *gin.RouterGroup, root *gin.RouterGroup) {
 
 		admin.POST("/vendors/reconnect", AdminReconnectVendorBackends)
 
+		admin.POST("/vendors/enable", AdminEnableVendorBackends)
+
+		admin.POST("/vendors/disable", AdminDisableVendorBackends)
+
 		{
 			user := admin.Group("/user")
 

@@ -556,7 +556,10 @@ func proxyURL(ctx *gin.Context, u string, headers map[string]string) error {
 	ctx.Header("Content-Range", resp.Header.Get("Content-Range"))
 	ctx.Header("Content-Type", resp.Header.Get("Content-Type"))
 	ctx.Status(resp.StatusCode)
-	io.Copy(ctx.Writer, resp.Body)
+	_, err = io.Copy(ctx.Writer, resp.Body)
+	if err != nil && err != io.EOF {
+		return err
+	}
 	return nil
 }
 
@@ -736,10 +739,6 @@ func proxyVendorMovie(ctx *gin.Context, movie *op.Movie) {
 		}
 
 	case dbModel.VendorAlist:
-		if !movie.Movie.Base.Proxy {
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support movie proxy"))
-			return
-		}
 		u, err := op.LoadOrInitUserByID(movie.Movie.CreatorID)
 		if err != nil {
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
@@ -750,20 +749,41 @@ func proxyVendorMovie(ctx *gin.Context, movie *op.Movie) {
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 			return
 		}
-		idS := ctx.Query("id")
-		if idS == "" {
-			idS = "0"
-		}
-		id, err := strconv.Atoi(idS)
-		if err != nil {
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		if len(alistC.AliM3U8ListFile) != 0 {
+			t := ctx.Query("t")
+			switch t {
+			case "":
+				ctx.Data(http.StatusOK, "audio/mpegurl", alistC.AliM3U8ListFile)
+				return
+			case "subtitle":
+				idS := ctx.Query("id")
+				if idS == "" {
+					ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("id is empty"))
+					return
+				}
+				id, err := strconv.Atoi(idS)
+				if err != nil {
+					ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+					return
+				}
+				if id >= len(alistC.AliSubtitles) {
+					ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("id out of range"))
+					return
+				}
+				data, err := alistC.AliSubtitles[id].Cache.Get(ctx)
+				if err != nil {
+					ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+					return
+				}
+				ctx.Data(http.StatusOK, "text/plain; charset=utf-8", data)
+			}
+		} else if !movie.Movie.Base.Proxy {
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support movie proxy"))
 			return
+		} else {
+			proxyURL(ctx, alistC.URL, nil)
 		}
-		if id >= len(alistC.URLs) {
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("id out of range"))
-			return
-		}
-		proxyURL(ctx, alistC.URLs[id].URL, nil)
+
 		return
 
 	case dbModel.VendorEmby:
@@ -908,25 +928,38 @@ func parse2VendorMovie(ctx context.Context, user *op.User, room *op.Room, movie 
 			return err
 		}
 
-		if len(data.URLs) == 0 {
-			return errors.New("no source")
-		}
-		id := len(data.URLs) - 1
-		if !movie.Base.Proxy {
-			movie.Base.Url = data.URLs[id].URL
+		if len(data.AliM3U8ListFile) != 0 {
+			rawPath, err := url.JoinPath("/api/movie/proxy", movie.RoomID, movie.ID)
+			if err != nil {
+				return err
+			}
+			u := url.URL{
+				Path: rawPath,
+			}
+			movie.Base.Url = u.String()
+			movie.Base.Type = "m3u8"
+
+			for i, s := range data.AliSubtitles {
+				if movie.Base.Subtitles == nil {
+					movie.Base.Subtitles = make(map[string]*dbModel.Subtitle, len(data.AliSubtitles))
+				}
+				movie.Base.Subtitles[s.Raw.Language] = &dbModel.Subtitle{
+					URL:  fmt.Sprintf("/api/movie/proxy/%s/%s?t=subtitle&id=%d", movie.RoomID, movie.ID, i),
+					Type: utils.GetUrlExtension(s.Raw.Url),
+				}
+			}
+		} else if !movie.Base.Proxy {
+			movie.Base.Url = data.URL
 		} else {
 			rawPath, err := url.JoinPath("/api/movie/proxy", movie.RoomID, movie.ID)
 			if err != nil {
 				return err
 			}
-			rawQuery := url.Values{}
-			rawQuery.Set("id", strconv.Itoa(id))
 			u := url.URL{
-				Path:     rawPath,
-				RawQuery: rawQuery.Encode(),
+				Path: rawPath,
 			}
 			movie.Base.Url = u.String()
-			movie.Base.Type = utils.GetUrlExtension(data.URLs[id].URL)
+			movie.Base.Type = utils.GetUrlExtension(data.URL)
 		}
 		movie.Base.VendorInfo.Alist.Password = ""
 		return nil

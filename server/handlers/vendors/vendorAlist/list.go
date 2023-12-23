@@ -13,6 +13,7 @@ import (
 	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/internal/vendor"
 	"github.com/synctv-org/synctv/server/model"
+	"github.com/synctv-org/synctv/utils"
 	"github.com/synctv-org/vendors/api/alist"
 )
 
@@ -58,6 +59,12 @@ func List(ctx *gin.Context) {
 		return
 	}
 
+	page, size, err := utils.GetPageAndMax(ctx)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
 	var cli = vendor.LoadAlistClient(ctx.Query("backend"))
 	data, err := cli.FsList(ctx, &alist.FsListReq{
 		Token:    aucd.Token,
@@ -65,9 +72,11 @@ func List(ctx *gin.Context) {
 		Path:     req.Path,
 		Host:     aucd.Host,
 		Refresh:  req.Refresh,
+		Page:     uint64(page),
+		PerPage:  uint64(size),
 	})
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}
 

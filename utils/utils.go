@@ -2,6 +2,7 @@ package utils
 
 import (
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"math/rand"
 	"net"
@@ -14,6 +15,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/synctv-org/synctv/cmd/flags"
 	"github.com/zijiren233/go-colorable"
@@ -358,4 +360,24 @@ func ForceColor() bool {
 		needColor = colorable.IsTerminal(os.Stdout.Fd())
 	})
 	return needColor
+}
+
+func GetPageAndMax(ctx *gin.Context) (page int, max int, err error) {
+	max, err = strconv.Atoi(ctx.DefaultQuery("max", "10"))
+	if err != nil {
+		return 0, 0, errors.New("max must be a number")
+	}
+	page, err = strconv.Atoi(ctx.DefaultQuery("page", "1"))
+	if err != nil {
+		return 0, 0, errors.New("page must be a number")
+	}
+	if page <= 0 {
+		page = 1
+	}
+	if max <= 0 {
+		max = 10
+	} else if max > 100 {
+		max = 100
+	}
+	return
 }

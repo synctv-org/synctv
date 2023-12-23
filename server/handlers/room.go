@@ -104,7 +104,7 @@ var roomHotCache = refreshcache.NewRefreshCache[[]*model.RoomListResp](func(cont
 }, time.Second*3)
 
 func RoomHotList(ctx *gin.Context) {
-	page, pageSize, err := GetPageAndPageSize(ctx)
+	page, pageSize, err := utils.GetPageAndMax(ctx)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
@@ -123,7 +123,7 @@ func RoomHotList(ctx *gin.Context) {
 }
 
 func RoomList(ctx *gin.Context) {
-	page, pageSize, err := GetPageAndPageSize(ctx)
+	page, pageSize, err := utils.GetPageAndMax(ctx)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
@@ -320,7 +320,7 @@ func SetRoomSetting(ctx *gin.Context) {
 
 func RoomUsers(ctx *gin.Context) {
 	room := ctx.MustGet("room").(*op.Room)
-	page, pageSize, err := GetPageAndPageSize(ctx)
+	page, pageSize, err := utils.GetPageAndMax(ctx)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return

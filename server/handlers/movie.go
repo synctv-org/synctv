@@ -30,20 +30,8 @@ import (
 	"golang.org/x/exp/maps"
 )
 
-func GetPageAndPageSize(ctx *gin.Context) (int, int, error) {
-	pageSize, err := strconv.Atoi(ctx.DefaultQuery("max", "10"))
-	if err != nil {
-		return 0, 0, errors.New("max must be a number")
-	}
-	page, err := strconv.Atoi(ctx.DefaultQuery("page", "1"))
-	if err != nil {
-		return 0, 0, errors.New("page must be a number")
-	}
-	return page, pageSize, nil
-}
-
 func GetPageItems[T any](ctx *gin.Context, items []T) ([]T, error) {
-	page, max, err := GetPageAndPageSize(ctx)
+	page, max, err := utils.GetPageAndMax(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -55,7 +43,7 @@ func MovieList(ctx *gin.Context) {
 	room := ctx.MustGet("room").(*op.Room)
 	user := ctx.MustGet("user").(*op.User)
 
-	page, max, err := GetPageAndPageSize(ctx)
+	page, max, err := utils.GetPageAndMax(ctx)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
@@ -147,7 +135,7 @@ func Movies(ctx *gin.Context) {
 	room := ctx.MustGet("room").(*op.Room)
 	user := ctx.MustGet("user").(*op.User)
 
-	page, max, err := GetPageAndPageSize(ctx)
+	page, max, err := utils.GetPageAndMax(ctx)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return

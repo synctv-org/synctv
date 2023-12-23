@@ -8,6 +8,7 @@ import (
 	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/internal/vendor"
 	"github.com/synctv-org/synctv/server/model"
+	"github.com/synctv-org/synctv/utils"
 	"github.com/synctv-org/vendors/api/emby"
 )
 
@@ -41,14 +42,22 @@ func List(ctx *gin.Context) {
 		return
 	}
 
-	cli := vendor.LoadEmbyClient(ctx.Query("backend"))
-	data, err := cli.FsList(ctx, &emby.FsListReq{
-		Host:  aucd.Host,
-		Path:  req.Path,
-		Token: aucd.ApiKey,
-	})
+	page, size, err := utils.GetPageAndMax(ctx)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	cli := vendor.LoadEmbyClient(ctx.Query("backend"))
+	data, err := cli.FsList(ctx, &emby.FsListReq{
+		Host:       aucd.Host,
+		Path:       req.Path,
+		Token:      aucd.ApiKey,
+		Limit:      uint64(size),
+		StartIndex: uint64((page - 1) * size),
+	})
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}
 

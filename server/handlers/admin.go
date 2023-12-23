@@ -17,6 +17,7 @@ import (
 	"github.com/synctv-org/synctv/internal/settings"
 	"github.com/synctv-org/synctv/internal/vendor"
 	"github.com/synctv-org/synctv/server/model"
+	"github.com/synctv-org/synctv/utils"
 	"golang.org/x/exp/maps"
 	"google.golang.org/grpc/connectivity"
 	"gorm.io/gorm"
@@ -97,7 +98,7 @@ func AdminSettings(ctx *gin.Context) {
 
 func Users(ctx *gin.Context) {
 	// user := ctx.MustGet("user").(*op.User)
-	page, pageSize, err := GetPageAndPageSize(ctx)
+	page, pageSize, err := utils.GetPageAndMax(ctx)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
@@ -176,7 +177,7 @@ func GetRoomUsers(ctx *gin.Context) {
 		return
 	}
 
-	page, pageSize, err := GetPageAndPageSize(ctx)
+	page, pageSize, err := utils.GetPageAndMax(ctx)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
@@ -331,7 +332,7 @@ func UnBanUser(ctx *gin.Context) {
 func Rooms(ctx *gin.Context) {
 	// user := ctx.MustGet("user").(*op.User)
 
-	page, pageSize, err := GetPageAndPageSize(ctx)
+	page, pageSize, err := utils.GetPageAndMax(ctx)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
@@ -396,7 +397,7 @@ func GetUserRooms(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("user id error"))
 		return
 	}
-	page, pageSize, err := GetPageAndPageSize(ctx)
+	page, pageSize, err := utils.GetPageAndMax(ctx)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
@@ -712,7 +713,7 @@ func AdminGetVendorBackends(ctx *gin.Context) {
 	// user := ctx.MustGet("user").(*op.User)
 
 	conns := vendor.LoadConns()
-	page, size, err := GetPageAndPageSize(ctx)
+	page, size, err := utils.GetPageAndMax(ctx)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return

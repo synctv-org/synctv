@@ -11,6 +11,7 @@ import (
 	"github.com/synctv-org/synctv/internal/provider/providers"
 	"github.com/synctv-org/synctv/server/middlewares"
 	"github.com/synctv-org/synctv/server/model"
+	"github.com/synctv-org/synctv/utils"
 	"gorm.io/gorm"
 )
 
@@ -73,7 +74,7 @@ func LogoutUser(ctx *gin.Context) {
 func UserRooms(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*op.User)
 
-	page, pageSize, err := GetPageAndPageSize(ctx)
+	page, pageSize, err := utils.GetPageAndMax(ctx)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return

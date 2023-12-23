@@ -35,13 +35,10 @@ func EmbyAuthorizationCacheWithUserIDInitFunc(userID string) func(ctx context.Co
 	return func(ctx context.Context, args ...struct{}) (*EmbyUserCacheData, error) {
 		v, err := db.GetEmbyVendor(userID)
 		if err != nil {
-			if errors.Is(err, db.ErrNotFound("vendor")) {
-				return nil, errors.New("emby not logged in")
-			}
 			return nil, err
 		}
 		if v.ApiKey == "" || v.Host == "" {
-			return nil, errors.New("emby not logged in")
+			return nil, db.ErrNotFound("vendor")
 		}
 		return &EmbyUserCacheData{
 			Host:    v.Host,

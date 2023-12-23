@@ -107,5 +107,7 @@ func Logout(ctx *gin.Context) {
 		return
 	}
 
+	user.EmbyCache().Clear()
+
 	ctx.Status(http.StatusNoContent)
 }

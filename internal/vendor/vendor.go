@@ -488,7 +488,7 @@ func NewGrpcClientConn(ctx context.Context, conf *model.Backend) (*grpc.ClientCo
 	if conf.Endpoint == "" {
 		return nil, errors.New("new grpc client failed, endpoint is empty")
 	}
-	if conf.Consul.ServerName != "" && conf.Etcd.ServerName != "" {
+	if conf.Consul.ServiceName != "" && conf.Etcd.ServiceName != "" {
 		return nil, errors.New("new grpc client failed, consul and etcd can't be used at the same time")
 	}
 	middlewares := []middleware.Middleware{kcircuitbreaker.Client(kcircuitbreaker.WithCircuitBreaker(func() circuitbreaker.CircuitBreaker {
@@ -518,7 +518,7 @@ func NewGrpcClientConn(ctx context.Context, conf *model.Backend) (*grpc.ClientCo
 		opts = append(opts, ggrpc.WithTimeout(timeout))
 	}
 
-	if conf.Consul.ServerName != "" {
+	if conf.Consul.ServiceName != "" {
 		c := api.DefaultConfig()
 		c.Address = conf.Endpoint
 		c.Token = conf.Consul.Token
@@ -529,12 +529,12 @@ func NewGrpcClientConn(ctx context.Context, conf *model.Backend) (*grpc.ClientCo
 		if err != nil {
 			return nil, err
 		}
-		endpoint := fmt.Sprintf("discovery:///%s", conf.Consul.ServerName)
+		endpoint := fmt.Sprintf("discovery:///%s", conf.Consul.ServiceName)
 		dis := consul.New(client)
 		opts = append(opts, ggrpc.WithEndpoint(endpoint), ggrpc.WithDiscovery(dis))
 		log.Infof("new grpc client with consul: %s", conf.Endpoint)
-	} else if conf.Etcd.ServerName != "" {
-		endpoint := fmt.Sprintf("discovery:///%s", conf.Etcd.ServerName)
+	} else if conf.Etcd.ServiceName != "" {
+		endpoint := fmt.Sprintf("discovery:///%s", conf.Etcd.ServiceName)
 		cli, err := clientv3.New(clientv3.Config{
 			Endpoints: []string{conf.Endpoint},
 			Username:  conf.Etcd.Username,
@@ -633,7 +633,7 @@ func NewHttpClientConn(ctx context.Context, conf *model.Backend) (*http.Client, 
 		}))
 	}
 
-	if conf.Consul.ServerName != "" {
+	if conf.Consul.ServiceName != "" {
 		c := api.DefaultConfig()
 		c.Address = conf.Endpoint
 		c.Token = conf.Consul.Token
@@ -644,12 +644,12 @@ func NewHttpClientConn(ctx context.Context, conf *model.Backend) (*http.Client, 
 		if err != nil {
 			return nil, err
 		}
-		endpoint := fmt.Sprintf("discovery:///%s", conf.Consul.ServerName)
+		endpoint := fmt.Sprintf("discovery:///%s", conf.Consul.ServiceName)
 		dis := consul.New(client)
 		opts = append(opts, http.WithEndpoint(endpoint), http.WithDiscovery(dis))
 		log.Infof("new http client with consul: %s", conf.Endpoint)
-	} else if conf.Etcd.ServerName != "" {
-		endpoint := fmt.Sprintf("discovery:///%s", conf.Etcd.ServerName)
+	} else if conf.Etcd.ServiceName != "" {
+		endpoint := fmt.Sprintf("discovery:///%s", conf.Etcd.ServiceName)
 		cli, err := clientv3.New(clientv3.Config{
 			Endpoints: []string{conf.Endpoint},
 			Username:  conf.Etcd.Username,

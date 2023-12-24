@@ -13,7 +13,7 @@ function ChToScriptFileDir() {
 function EnvHelp() {
     echo "SKIP_INIT_WEB"
     echo "WEB_VERSION set web dependency version (default: build version)"
-    echo "TRIM_PATH enable trim path (default: disable)"
+    echo "DISABLE_TRIM_PATH enable trim path (default: disable)"
 }
 
 function Help() {
@@ -24,7 +24,7 @@ function Help() {
     echo "-m set build mode (default: pie)"
     echo "-l set ldflags (default: -s -w --extldflags \"-static -fpic -Wl,-z,relro,-z,now\")"
     echo "-p set platform (default: host platform, support: all, linux, darwin, windows)"
-    echo "-P set trim path (default: disable)"
+    echo "-P set disable trim path (default: disable)"
     echo "-d set build result dir (default: build)"
     echo "-T set tags (default: jsoniter)"
     echo "Env Help:"
@@ -74,7 +74,7 @@ function ParseArgs() {
             PLATFORM="$OPTARG"
             ;;
         P)
-            TRIM_PATH="true"
+            DISABLE_TRIM_PATH="true"
             ;;
         d)
             BUILD_DIR="$OPTARG"
@@ -179,7 +179,7 @@ function Build() {
     else
         EXT=""
     fi
-    if [ "$TRIM_PATH" ]; then
+    if [ ! "$DISABLE_TRIM_PATH" ]; then
         CGO_ENABLED=$CGO_ENABLED GOOS=$GOOS GOARCH=$GOARCH go build -trimpath -tags "$TAGS" -ldflags "$LDFLAGS" -o "$BUILD_DIR/$BIN_NAME-$GOOS-$GOARCH$EXT" ../
     else
         CGO_ENABLED=$CGO_ENABLED GOOS=$GOOS GOARCH=$GOARCH go build -tags "$TAGS" -ldflags "$LDFLAGS" -o "$BUILD_DIR/$BIN_NAME-$GOOS-$GOARCH$EXT" ../
@@ -199,7 +199,7 @@ function BuildSingle() {
         EXT=""
     fi
     echo "build $GOOS/$GOARCH"
-    if [ "$TRIM_PATH" ]; then
+    if [ ! "$DISABLE_TRIM_PATH" ]; then
         CGO_ENABLED=$CGO_ENABLED go build -trimpath -tags "$TAGS" -ldflags "$LDFLAGS" -o "$BUILD_DIR/$BIN_NAME$EXT" ../
     else
         CGO_ENABLED=$CGO_ENABLED go build -tags "$TAGS" -ldflags "$LDFLAGS" -o "$BUILD_DIR/$BIN_NAME$EXT" ../

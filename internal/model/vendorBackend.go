@@ -9,17 +9,17 @@ import (
 )
 
 type Consul struct {
-	ServerName string `json:"serverName"`
-	Token      string `json:"token"`
-	PathPrefix string `json:"pathPrefix"`
-	Namespace  string `json:"namespace"`
-	Partition  string `json:"partition"`
+	ServiceName string `json:"serviceName"`
+	Token       string `json:"token"`
+	PathPrefix  string `json:"pathPrefix"`
+	Namespace   string `json:"namespace"`
+	Partition   string `json:"partition"`
 }
 
 type Etcd struct {
-	ServerName string `json:"serverName"`
-	Username   string `json:"username"`
-	Password   string `json:"password"`
+	ServiceName string `json:"serviceName"`
+	Username    string `json:"username"`
+	Password    string `json:"password"`
 }
 
 type Backend struct {
@@ -38,7 +38,7 @@ func (b *Backend) Validate() error {
 	if b.Endpoint == "" {
 		return errors.New("new http client failed, endpoint is empty")
 	}
-	if b.Consul.ServerName != "" && b.Etcd.ServerName != "" {
+	if b.Consul.ServiceName != "" && b.Etcd.ServiceName != "" {
 		return errors.New("new grpc client failed, consul and etcd can't be used at the same time")
 	}
 	if b.TimeOut != "" {

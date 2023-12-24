@@ -11,7 +11,7 @@ WORKDIR /synctv
 COPY ./ ./
 
 RUN apk add --no-cache bash curl gcc git go musl-dev && \
-    bash script/build.sh -P -v ${VERSION}
+    bash script/build.sh -v ${VERSION}
 
 From alpine:latest
 

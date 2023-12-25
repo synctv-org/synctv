@@ -33,7 +33,7 @@ func (p *PushMovieReq) Validate() error {
 
 	if p.Name == "" {
 		return ErrEmptyName
-	} else if len(p.Name) > 512 {
+	} else if len(p.Name) > 128 {
 		return ErrNameTooLong
 	}
 

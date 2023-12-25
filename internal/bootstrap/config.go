@@ -3,9 +3,12 @@ package bootstrap
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/caarlos0/env/v9"
+	"github.com/joho/godotenv"
 	log "github.com/sirupsen/logrus"
 
 	"github.com/synctv-org/synctv/cmd/flags"
@@ -84,7 +87,46 @@ func restoreConfig(filePath string, conf *conf.Config) error {
 }
 
 func confFromEnv(prefix string, conf *conf.Config) error {
+	s, err := getEnvFiles(flags.DataDir)
+	if err != nil {
+		return err
+	}
+	if flags.Dev {
+		ss, err := getEnvFiles(".")
+		if err != nil {
+			return err
+		}
+		s = append(s, ss...)
+	}
+	if len(s) != 0 {
+		err = godotenv.Overload(s...)
+		if err != nil {
+			return err
+		}
+	}
 	return env.ParseWithOptions(conf, env.Options{
 		Prefix: prefix,
 	})
+}
+
+func getEnvFiles(root string) ([]string, error) {
+	var files []string
+
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if !info.IsDir() && strings.HasPrefix(info.Name(), ".env") {
+			files = append(files, path)
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	return files, nil
 }

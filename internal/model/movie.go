@@ -9,12 +9,12 @@ import (
 )
 
 type Movie struct {
-	ID        string    `gorm:"primaryKey;type:varchar(32)" json:"id"`
+	ID        string    `gorm:"primaryKey;type:char(32)" json:"id"`
 	CreatedAt time.Time `json:"-"`
 	UpdatedAt time.Time `json:"-"`
 	Position  uint      `gorm:"not null" json:"-"`
-	RoomID    string    `gorm:"not null;index" json:"-"`
-	CreatorID string    `gorm:"index" json:"creatorId"`
+	RoomID    string    `gorm:"not null;index;type:char(32)" json:"-"`
+	CreatorID string    `gorm:"index;type:char(32)" json:"creatorId"`
 	Base      BaseMovie `gorm:"embedded;embeddedPrefix:base_" json:"base"`
 }
 
@@ -26,14 +26,14 @@ func (m *Movie) BeforeCreate(tx *gorm.DB) error {
 }
 
 type BaseMovie struct {
-	Url        string               `json:"url"`
-	Name       string               `gorm:"not null" json:"name"`
+	Url        string               `gorm:"type:varchar(8192)" json:"url"`
+	Name       string               `gorm:"not null;type:varchar(128)" json:"name"`
 	Live       bool                 `json:"live"`
 	Proxy      bool                 `json:"proxy"`
 	RtmpSource bool                 `json:"rtmpSource"`
 	Type       string               `json:"type"`
-	Headers    map[string]string    `gorm:"serializer:fastjson" json:"headers"`
-	Subtitles  map[string]*Subtitle `gorm:"serializer:fastjson" json:"subtitles"`
+	Headers    map[string]string    `gorm:"serializer:fastjson;type:text" json:"headers"`
+	Subtitles  map[string]*Subtitle `gorm:"serializer:fastjson;type:text" json:"subtitles"`
 	VendorInfo VendorInfo           `gorm:"embedded;embeddedPrefix:vendor_info_" json:"vendorInfo,omitempty"`
 }
 
@@ -51,8 +51,8 @@ const (
 )
 
 type VendorInfo struct {
-	Vendor   VendorName             `json:"vendor"`
-	Backend  string                 `json:"backend"`
+	Vendor   VendorName             `gorm:"type:varchar(32)" json:"vendor"`
+	Backend  string                 `gorm:"type:varchar(64)" json:"backend"`
 	Bilibili *BilibiliStreamingInfo `gorm:"embedded;embeddedPrefix:bilibili_" json:"bilibili,omitempty"`
 	Alist    *AlistStreamingInfo    `gorm:"embedded;embeddedPrefix:alist_" json:"alist,omitempty"`
 	Emby     *EmbyStreamingInfo     `gorm:"embedded;embeddedPrefix:emby_" json:"emby,omitempty"`
@@ -85,8 +85,8 @@ func (b *BilibiliStreamingInfo) Validate() error {
 }
 
 type AlistStreamingInfo struct {
-	Path     string `json:"path,omitempty"`
-	Password string `json:"password,omitempty"`
+	Path     string `gorm:"type:varchar(4096)" json:"path,omitempty"`
+	Password string `gorm:"type:varchar(256)" json:"password,omitempty"`
 }
 
 func (a *AlistStreamingInfo) BeforeSave(tx *gorm.DB) error {
@@ -116,5 +116,5 @@ func (a *AlistStreamingInfo) AfterFind(tx *gorm.DB) error {
 }
 
 type EmbyStreamingInfo struct {
-	Path string `json:"path,omitempty"`
+	Path string `gorm:"type:varchar(20)" json:"path,omitempty"`
 }

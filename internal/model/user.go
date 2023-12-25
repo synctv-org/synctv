@@ -39,12 +39,12 @@ func (r Role) String() string {
 }
 
 type User struct {
-	ID                   string `gorm:"primaryKey;type:varchar(32)" json:"id"`
+	ID                   string `gorm:"primaryKey;type:char(32)" json:"id"`
 	CreatedAt            time.Time
 	UpdatedAt            time.Time
 	RegisteredByProvider bool               `gorm:"not null;default:false"`
 	UserProviders        []UserProvider     `gorm:"foreignKey:UserID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
-	Username             string             `gorm:"not null;uniqueIndex"`
+	Username             string             `gorm:"not null;uniqueIndex;type:varchar(32)"`
 	HashedPassword       []byte             `gorm:"not null"`
 	Role                 Role               `gorm:"not null;default:2"`
 	RoomUserRelations    []RoomUserRelation `gorm:"foreignKey:UserID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`

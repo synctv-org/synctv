@@ -31,13 +31,13 @@ func (r RoomStatus) String() string {
 }
 
 type Room struct {
-	ID                 string `gorm:"not null;primaryKey;type:varchar(32)" json:"id"`
+	ID                 string `gorm:"primaryKey;type:char(32)" json:"id"`
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
 	Status             RoomStatus   `gorm:"not null;default:2"`
-	Name               string       `gorm:"not null;uniqueIndex"`
+	Name               string       `gorm:"not null;uniqueIndex;type:varchar(32)"`
 	Settings           RoomSettings `gorm:"embedded;embeddedPrefix:settings_"`
-	CreatorID          string       `gorm:"index"`
+	CreatorID          string       `gorm:"index;type:char(32)"`
 	HashedPassword     []byte
 	GroupUserRelations []RoomUserRelation `gorm:"foreignKey:RoomID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 	Movies             []Movie            `gorm:"foreignKey:RoomID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`

@@ -9,24 +9,24 @@ import (
 )
 
 type Consul struct {
-	ServiceName string `json:"serviceName"`
-	Token       string `json:"token"`
-	PathPrefix  string `json:"pathPrefix"`
-	Namespace   string `json:"namespace"`
-	Partition   string `json:"partition"`
+	ServiceName string `gorm:"type:varchar(64)" json:"serviceName"`
+	Token       string `gorm:"type:varchar(256)" json:"token"`
+	PathPrefix  string `gorm:"type:varchar(64)" json:"pathPrefix"`
+	Namespace   string `gorm:"type:varchar(64)" json:"namespace"`
+	Partition   string `gorm:"type:varchar(64)" json:"partition"`
 }
 
 type Etcd struct {
-	ServiceName string `json:"serviceName"`
-	Username    string `json:"username"`
-	Password    string `json:"password"`
+	ServiceName string `gorm:"type:varchar(64)" json:"serviceName"`
+	Username    string `gorm:"type:varchar(64)" json:"username"`
+	Password    string `gorm:"type:varchar(256)" json:"password"`
 }
 
 type Backend struct {
-	Endpoint  string `gorm:"primaryKey" json:"endpoint"`
+	Endpoint  string `gorm:"primaryKey;type:varchar(512)" json:"endpoint"`
 	Comment   string `gorm:"type:text" json:"comment"`
 	Tls       bool   `gorm:"default:false" json:"tls"`
-	JwtSecret string `json:"jwtSecret"`
+	JwtSecret string `gorm:"type:varchar(256)" json:"jwtSecret"`
 	CustomCA  string `gorm:"type:text" json:"customCA"`
 	TimeOut   string `gorm:"default:10s" json:"timeOut"`
 
@@ -57,11 +57,11 @@ type VendorBackend struct {
 
 type BackendUsedBy struct {
 	Bilibili            bool   `gorm:"default:false" json:"bilibili"`
-	BilibiliBackendName string `json:"bilibiliBackendName"`
+	BilibiliBackendName string `gorm:"type:varchar(64)" json:"bilibiliBackendName"`
 	Alist               bool   `gorm:"default:false" json:"alist"`
-	AlistBackendName    string `json:"alistBackendName"`
+	AlistBackendName    string `gorm:"type:varchar(64)" json:"alistBackendName"`
 	Emby                bool   `gorm:"default:false" json:"emby"`
-	EmbyBackendName     string `json:"embyBackendName"`
+	EmbyBackendName     string `gorm:"type:varchar(64)" json:"embyBackendName"`
 }
 
 func (v *VendorBackend) BeforeSave(tx *gorm.DB) error {

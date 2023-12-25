@@ -7,9 +7,9 @@ import (
 )
 
 type UserProvider struct {
-	Provider       provider.OAuth2Provider `gorm:"not null;primarykey;uniqueIndex:idx_provider_user_id"`
-	ProviderUserID string                  `gorm:"not null;primarykey"`
+	Provider       provider.OAuth2Provider `gorm:"primarykey;type:varchar(32);uniqueIndex:idx_provider_user_id"`
+	ProviderUserID string                  `gorm:"primarykey;type:varchar(64)"`
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
-	UserID         string `gorm:"not null;uniqueIndex:idx_provider_user_id"`
+	UserID         string `gorm:"not null;type:char(32);uniqueIndex:idx_provider_user_id"`
 }

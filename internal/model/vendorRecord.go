@@ -6,9 +6,9 @@ import (
 )
 
 type BilibiliVendor struct {
-	UserID  string `gorm:"primaryKey"`
-	Backend string
-	Cookies map[string]string `gorm:"serializer:fastjson"`
+	UserID  string            `gorm:"primaryKey;type:char(32)"`
+	Backend string            `gorm:"type:varchar(64)"`
+	Cookies map[string]string `gorm:"serializer:fastjson;type:text"`
 }
 
 func (b *BilibiliVendor) BeforeSave(tx *gorm.DB) error {
@@ -40,10 +40,10 @@ func (b *BilibiliVendor) AfterFind(tx *gorm.DB) error {
 }
 
 type AlistVendor struct {
-	UserID         string `gorm:"primaryKey"`
-	Backend        string
-	Host           string
-	Username       string
+	UserID         string `gorm:"primaryKey;type:char(32)"`
+	Backend        string `gorm:"type:varchar(64)"`
+	Host           string `gorm:"type:varchar(256)"`
+	Username       string `gorm:"type:varchar(256)"`
 	HashedPassword []byte
 }
 
@@ -87,10 +87,10 @@ func (a *AlistVendor) AfterFind(tx *gorm.DB) error {
 }
 
 type EmbyVendor struct {
-	UserID  string `gorm:"primaryKey"`
-	Backend string
-	Host    string
-	ApiKey  string
+	UserID  string `gorm:"primaryKey;type:char(32)"`
+	Backend string `gorm:"type:varchar(64)"`
+	Host    string `gorm:"type:varchar(256)"`
+	ApiKey  string `gorm:"type:varchar(256)"`
 }
 
 func (e *EmbyVendor) BeforeSave(tx *gorm.DB) error {

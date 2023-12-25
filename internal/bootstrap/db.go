@@ -60,7 +60,7 @@ func createDialector(dbConf conf.DatabaseConfig) (dialector gorm.Dialector, err 
 				conf.Conf.Database.Name,
 				conf.Conf.Database.SslMode,
 			)
-			log.Infof("mysql database unix socket: %s", conf.Conf.Database.Host)
+			log.Infof("mysql database: %s", conf.Conf.Database.Host)
 		} else {
 			dsn = fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=utf8mb4&parseTime=True&loc=Local&interpolateParams=true&tls=%s",
 				conf.Conf.Database.User,
@@ -109,7 +109,7 @@ func createDialector(dbConf conf.DatabaseConfig) (dialector gorm.Dialector, err 
 				conf.Conf.Database.Name,
 				conf.Conf.Database.SslMode,
 			)
-			log.Infof("postgres database unix socket: %s", conf.Conf.Database.Host)
+			log.Infof("postgres database: %s", conf.Conf.Database.Host)
 		} else {
 			dsn = fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
 				conf.Conf.Database.Host,

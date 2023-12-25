@@ -77,7 +77,7 @@ func AlistAuthorizationCacheWithConfigInitFunc(ctx context.Context, v *model.Ali
 type AlistMovieCache = refreshcache.RefreshCache[*AlistMovieCacheData, *AlistUserCache]
 
 func NewAlistMovieCache(movie *model.Movie) *AlistMovieCache {
-	return refreshcache.NewRefreshCache(NewAlistMovieCacheInitFunc(movie), time.Minute*15)
+	return refreshcache.NewRefreshCache(NewAlistMovieCacheInitFunc(movie), time.Minute*14)
 }
 
 type AlistMovieCacheData struct {
@@ -96,6 +96,9 @@ type AliSubtitleCache = refreshcache.RefreshCache[[]byte, struct{}]
 func newAliSubtitlesCacheInitFunc(list []*alist.FsOtherResp_VideoPreviewPlayInfo_LiveTranscodingSubtitleTaskList) []*AliSubtitle {
 	caches := make([]*AliSubtitle, len(list))
 	for i, v := range list {
+		if v.Status != "finished" {
+			return nil
+		}
 		url := v.Url
 		caches[i] = &AliSubtitle{
 			Cache: refreshcache.NewRefreshCache(func(ctx context.Context, args ...struct{}) ([]byte, error) {
@@ -124,6 +127,9 @@ func genAliM3U8ListFile(urls []*alist.FsOtherResp_VideoPreviewPlayInfo_LiveTrans
 	buf.WriteString("#EXTM3U\n")
 	buf.WriteString("#EXT-X-VERSION:3\n")
 	for _, v := range urls {
+		if v.Status != "finished" {
+			return nil
+		}
 		buf.WriteString(fmt.Sprintf("#EXT-X-STREAM-INF:RESOLUTION=%dx%d,NAME=\"%d\"\n", v.TemplateWidth, v.TemplateHeight, v.TemplateWidth))
 		buf.WriteString(v.Url + "\n")
 	}

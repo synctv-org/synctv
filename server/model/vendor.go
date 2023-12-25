@@ -10,9 +10,9 @@ type VendorMeResp[T any] struct {
 	Info    T    `json:"info,omitempty"`
 }
 
-type VendorFSListResp struct {
+type VendorFSListResp[T any] struct {
 	Paths []*Path `json:"paths"`
-	Items []*Item `json:"items"`
+	Items []T     `json:"items"`
 	Total uint64  `json:"total"`
 }
 

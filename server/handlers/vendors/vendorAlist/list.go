@@ -33,6 +33,14 @@ func (r *ListReq) Decode(ctx *gin.Context) error {
 	return json.NewDecoder(ctx.Request.Body).Decode(r)
 }
 
+type AlistFileItem struct {
+	*model.Item
+	Size     uint64 `json:"size"`
+	Modified uint64 `json:"modified"`
+}
+
+type AlistFSListResp = model.VendorFSListResp[*AlistFileItem]
+
 func List(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*op.User)
 
@@ -79,15 +87,19 @@ func List(ctx *gin.Context) {
 	}
 
 	req.Path = strings.TrimRight(req.Path, "/")
-	resp := model.VendorFSListResp{
+	resp := AlistFSListResp{
 		Total: data.Total,
 		Paths: model.GenDefaultPaths(req.Path),
 	}
 	for _, flr := range data.Content {
-		resp.Items = append(resp.Items, &model.Item{
-			Name:  flr.Name,
-			Path:  fmt.Sprintf("%s/%s", req.Path, flr.Name),
-			IsDir: flr.IsDir,
+		resp.Items = append(resp.Items, &AlistFileItem{
+			Item: &model.Item{
+				Name:  flr.Name,
+				Path:  fmt.Sprintf("%s/%s", req.Path, flr.Name),
+				IsDir: flr.IsDir,
+			},
+			Size:     flr.Size,
+			Modified: flr.Modified,
 		})
 	}
 

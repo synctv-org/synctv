@@ -36,6 +36,13 @@ func (r *ListReq) Decode(ctx *gin.Context) error {
 	return json.NewDecoder(ctx.Request.Body).Decode(r)
 }
 
+type EmbyFileItem struct {
+	*model.Item
+	Type string `json:"type"`
+}
+
+type EmbyFSListResp = model.VendorFSListResp[*EmbyFileItem]
+
 func List(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*op.User)
 
@@ -70,7 +77,7 @@ func List(ctx *gin.Context) {
 		return
 	}
 
-	var resp model.VendorFSListResp
+	var resp EmbyFSListResp
 	for _, p := range data.Paths {
 		var n = p.Name
 		if p.Path == "1" {
@@ -82,10 +89,13 @@ func List(ctx *gin.Context) {
 		})
 	}
 	for _, i := range data.Items {
-		resp.Items = append(resp.Items, &model.Item{
-			Name:  i.Name,
-			Path:  i.Id,
-			IsDir: i.IsFolder,
+		resp.Items = append(resp.Items, &EmbyFileItem{
+			Item: &model.Item{
+				Name:  i.Name,
+				Path:  i.Id,
+				IsDir: i.IsFolder,
+			},
+			Type: i.Type,
 		})
 	}
 

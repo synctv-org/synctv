@@ -19,6 +19,9 @@ type ListReq struct {
 }
 
 func (r *ListReq) Validate() error {
+	if r.Path == "" {
+		return nil
+	}
 	i, err := strconv.Atoi(r.Path)
 	if err != nil {
 		return err

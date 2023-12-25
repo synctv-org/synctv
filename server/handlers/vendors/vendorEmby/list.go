@@ -1,7 +1,9 @@
 package vendorEmby
 
 import (
+	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 	json "github.com/json-iterator/go"
@@ -17,8 +19,12 @@ type ListReq struct {
 }
 
 func (r *ListReq) Validate() error {
-	if r.Path == "" {
-		r.Path = "/"
+	i, err := strconv.Atoi(r.Path)
+	if err != nil {
+		return err
+	}
+	if i < 0 {
+		return errors.New("path is invalid")
 	}
 	return nil
 }

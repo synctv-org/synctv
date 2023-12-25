@@ -53,7 +53,6 @@ type EmbySource struct {
 		URL  string
 		Name string
 	}
-	// TODO: cache subtitles
 	Subtitles []struct {
 		URL   string
 		Type  string
@@ -104,6 +103,9 @@ func NewEmbyMovieCacheInitFunc(movie *model.Movie) func(ctx context.Context, arg
 			Sources: make([]EmbySource, len(data.MediaSourceInfo)),
 		}
 		for i, v := range data.MediaSourceInfo {
+			if v.Container == "" {
+				continue
+			}
 			result, err := url.JoinPath("emby", "Videos", data.Id, fmt.Sprintf("stream.%s", v.Container))
 			if err != nil {
 				return nil, err

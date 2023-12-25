@@ -42,7 +42,6 @@ func List(ctx *gin.Context) {
 		return
 	}
 
-	req.Path = strings.TrimRight(req.Path, "/")
 	if !strings.HasPrefix(req.Path, "/") {
 		req.Path = "/" + req.Path
 	}
@@ -79,20 +78,10 @@ func List(ctx *gin.Context) {
 		return
 	}
 
-	var resp model.VendorFSListResp
-	resp.Total = data.Total
-	if req.Path == "/" {
-		req.Path = ""
-	}
-	for i, v := range strings.Split(req.Path, `/`) {
-		var p = v
-		if i != 0 {
-			p = fmt.Sprintf("%s/%s", resp.Paths[i-1].Path, v)
-		}
-		resp.Paths = append(resp.Paths, &model.Path{
-			Name: v,
-			Path: p,
-		})
+	req.Path = strings.TrimRight(req.Path, "/")
+	resp := model.VendorFSListResp{
+		Total: data.Total,
+		Paths: model.GenDefaultPaths(req.Path),
 	}
 	for _, flr := range data.Content {
 		resp.Items = append(resp.Items, &model.Item{

@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"path/filepath"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -85,7 +84,7 @@ func List(ctx *gin.Context) {
 	if req.Path == "/" {
 		req.Path = ""
 	}
-	for i, v := range strings.Split(req.Path, string(filepath.Separator)) {
+	for i, v := range strings.Split(req.Path, `/`) {
 		var p = v
 		if i != 0 {
 			p = fmt.Sprintf("%s/%s", resp.Paths[i-1].Path, v)

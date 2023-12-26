@@ -48,7 +48,9 @@ The theater feature provides a chat and bullet chat function, allowing you to co
   - [x] Live proxy
 - [x] Parse
   - [x] Parse video
+    - [x] Alist
     - [x] Bilibili
+    - [x] Emby
   - [ ] Parse live
 
 ---

@@ -12,37 +12,6 @@ func InitSetting(ctx context.Context) error {
 	return initAndFixSettings(settings.Settings)
 }
 
-func initSettings(s map[string]settings.Setting) error {
-	settingsCache, err := db.GetSettingItemsToMap()
-	if err != nil {
-		return err
-	}
-	for _, b := range s {
-		if s, ok := settingsCache[b.Name()]; ok {
-			err = b.Init(s.Value)
-			if err != nil {
-				return err
-			}
-		} else {
-			s := &model.Setting{
-				Name:  b.Name(),
-				Value: b.DefaultString(),
-				Type:  b.Type(),
-				Group: b.Group(),
-			}
-			err := db.FirstOrCreateSettingItemValue(s)
-			if err != nil {
-				return err
-			}
-			err = b.Init(s.Value)
-			if err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
 func settingEqual(s *model.Setting, b settings.Setting) bool {
 	return s.Type == b.Type() && s.Group == b.Group() && s.Name == b.Name()
 }

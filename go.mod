@@ -30,7 +30,7 @@ require (
 	github.com/sirupsen/logrus v1.9.3
 	github.com/soheilhy/cmux v0.1.5
 	github.com/spf13/cobra v1.8.0
-	github.com/synctv-org/vendors v0.1.1-0.20231222143031-9a863227415f
+	github.com/synctv-org/vendors v0.2.2-0.20231226084816-6cd79508ca08
 	github.com/ulule/limiter/v3 v3.11.2
 	github.com/zencoder/go-dash/v3 v3.0.3
 	github.com/zijiren233/gencontainer v0.0.0-20231213075414-f7f4c8261dca
@@ -40,7 +40,7 @@ require (
 	github.com/zijiren233/yaml-comment v0.2.1
 	go.etcd.io/etcd/client/v3 v3.5.11
 	golang.org/x/crypto v0.17.0
-	golang.org/x/exp v0.0.0-20231219180239-dc181d75b848
+	golang.org/x/exp v0.0.0-20231226003508-02704c960a9b
 	golang.org/x/oauth2 v0.15.0
 	google.golang.org/grpc v1.60.1
 	google.golang.org/protobuf v1.32.0

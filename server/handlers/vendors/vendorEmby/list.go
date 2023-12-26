@@ -15,7 +15,8 @@ import (
 )
 
 type ListReq struct {
-	Path string `json:"path"`
+	Path     string `json:"path"`
+	Keywords string `json:"keywords"`
 }
 
 func (r *ListReq) Validate() error {
@@ -71,6 +72,7 @@ func List(ctx *gin.Context) {
 		Token:      aucd.ApiKey,
 		Limit:      uint64(size),
 		StartIndex: uint64((page - 1) * size),
+		SearchTerm: req.Keywords,
 	})
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))

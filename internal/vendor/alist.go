@@ -70,3 +70,7 @@ func (a *grpcAlist) Login(ctx context.Context, req *alist.LoginReq) (*alist.Logi
 func (a *grpcAlist) Me(ctx context.Context, req *alist.MeReq) (*alist.MeResp, error) {
 	return a.client.Me(ctx, req)
 }
+
+func (a *grpcAlist) FsSearch(ctx context.Context, req *alist.FsSearchReq) (*alist.FsSearchResp, error) {
+	return a.client.FsSearch(ctx, req)
+}

@@ -71,6 +71,10 @@ func (e *grpcEmby) Login(ctx context.Context, req *emby.LoginReq) (*emby.LoginRe
 	return e.client.Login(ctx, req)
 }
 
+func (e *grpcEmby) Logout(ctx context.Context, req *emby.LogoutReq) (*emby.Empty, error) {
+	return e.client.Logout(ctx, req)
+}
+
 func (e *grpcEmby) Me(ctx context.Context, req *emby.MeReq) (*emby.MeResp, error) {
 	return e.client.Me(ctx, req)
 }

@@ -107,7 +107,20 @@ func Logout(ctx *gin.Context) {
 		return
 	}
 
+	eucd := user.EmbyCache().Raw()
 	user.EmbyCache().Clear()
 
+	go logoutEmby(eucd)
+
 	ctx.Status(http.StatusNoContent)
+}
+
+func logoutEmby(eucd *cache.EmbyUserCacheData) {
+	if eucd == nil || eucd.ApiKey == "" {
+		return
+	}
+	_, _ = vendor.LoadEmbyClient(eucd.Backend).Logout(context.Background(), &emby.LogoutReq{
+		Host:  eucd.Host,
+		Token: eucd.ApiKey,
+	})
 }

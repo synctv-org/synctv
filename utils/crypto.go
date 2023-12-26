@@ -68,3 +68,11 @@ func GenCryptoKey(base string) []byte {
 	}
 	return key
 }
+
+func GenCryptoKeyWithBytes(base []byte) []byte {
+	key := make([]byte, 32)
+	for i := 0; i < len(base); i++ {
+		key[i%32] ^= base[i]
+	}
+	return key
+}

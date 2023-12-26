@@ -48,7 +48,7 @@ type AlistVendor struct {
 }
 
 func (a *AlistVendor) BeforeSave(tx *gorm.DB) error {
-	key := []byte(a.UserID)
+	key := utils.GenCryptoKey(a.UserID)
 	var err error
 	if a.Host, err = utils.CryptoToBase64([]byte(a.Host), key); err != nil {
 		return err
@@ -63,7 +63,7 @@ func (a *AlistVendor) BeforeSave(tx *gorm.DB) error {
 }
 
 func (a *AlistVendor) AfterSave(tx *gorm.DB) error {
-	key := []byte(a.UserID)
+	key := utils.GenCryptoKey(a.UserID)
 	if v, err := utils.DecryptoFromBase64(a.Host, key); err != nil {
 		return err
 	} else {
@@ -94,7 +94,7 @@ type EmbyVendor struct {
 }
 
 func (e *EmbyVendor) BeforeSave(tx *gorm.DB) error {
-	key := []byte(e.UserID)
+	key := utils.GenCryptoKey(e.UserID)
 	var err error
 	if e.Host, err = utils.CryptoToBase64([]byte(e.Host), key); err != nil {
 		return err
@@ -106,7 +106,7 @@ func (e *EmbyVendor) BeforeSave(tx *gorm.DB) error {
 }
 
 func (e *EmbyVendor) AfterSave(tx *gorm.DB) error {
-	key := []byte(e.UserID)
+	key := utils.GenCryptoKey(e.UserID)
 	if v, err := utils.DecryptoFromBase64(e.Host, key); err != nil {
 		return err
 	} else {

@@ -65,7 +65,7 @@ type BackendUsedBy struct {
 }
 
 func (v *VendorBackend) BeforeSave(tx *gorm.DB) error {
-	key := []byte(v.Backend.Endpoint)
+	key := utils.GenCryptoKey(v.Backend.Endpoint)
 	var err error
 	if v.Backend.JwtSecret != "" {
 		if v.Backend.JwtSecret, err = utils.CryptoToBase64([]byte(v.Backend.JwtSecret), key); err != nil {
@@ -91,7 +91,7 @@ func (v *VendorBackend) BeforeSave(tx *gorm.DB) error {
 }
 
 func (v *VendorBackend) AfterSave(tx *gorm.DB) error {
-	key := []byte(v.Backend.Endpoint)
+	key := utils.GenCryptoKey(v.Backend.Endpoint)
 	var (
 		err  error
 		data []byte

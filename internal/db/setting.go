@@ -11,6 +11,18 @@ func GetSettingItems() ([]*model.Setting, error) {
 	return items, err
 }
 
+func GetSettingItemsToMap() (map[string]*model.Setting, error) {
+	items, err := GetSettingItems()
+	if err != nil {
+		return nil, err
+	}
+	m := make(map[string]*model.Setting)
+	for _, item := range items {
+		m[item.Name] = item
+	}
+	return m, nil
+}
+
 func GetSettingItemByName(name string) (*model.Setting, error) {
 	var item model.Setting
 	err := db.Where("name = ?", name).First(&item).Error

@@ -43,23 +43,33 @@ var dbVersions = map[string]dbVersion{
 }
 
 func UpgradeDatabase() error {
-	setting := model.Setting{
-		Name:  "database_version",
-		Type:  model.SettingTypeString,
-		Group: model.SettingGroupDatabase,
-		Value: CurrentVersion,
-	}
-	err := FirstOrCreateSettingItemValue(&setting)
-	if err != nil {
-		return err
-	}
-	currentVersion := setting.Value
-	if currentVersion != CurrentVersion {
-		err = autoMigrate(models...)
+	var currentVersion string
+	if db.Migrator().HasTable(&model.Setting{}) {
+		setting := model.Setting{
+			Name:  "database_version",
+			Type:  model.SettingTypeString,
+			Group: model.SettingGroupDatabase,
+			Value: CurrentVersion,
+		}
+		err := FirstOrCreateSettingItemValue(&setting)
 		if err != nil {
 			return err
 		}
+		currentVersion := setting.Value
+		if currentVersion != CurrentVersion {
+			err = autoMigrate(models...)
+			if err != nil {
+				return err
+			}
+		}
+	} else {
+		err := autoMigrate(models...)
+		if err != nil {
+			return err
+		}
+		currentVersion = CurrentVersion
 	}
+
 	version, ok := dbVersions[currentVersion]
 	if !ok {
 		return nil
@@ -72,12 +82,12 @@ func UpgradeDatabase() error {
 		}
 		log.Infof("Upgrading database to version %s", currentVersion)
 		if version.Upgrade != nil {
-			err = version.Upgrade(db)
+			err := version.Upgrade(db)
 			if err != nil {
 				return err
 			}
 		}
-		err = UpdateSettingItemValue("database_version", currentVersion)
+		err := UpdateSettingItemValue("database_version", currentVersion)
 		if err != nil {
 			return err
 		}

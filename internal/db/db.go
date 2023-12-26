@@ -21,38 +21,11 @@ var (
 func Init(d *gorm.DB, t conf.DatabaseType) error {
 	db = d
 	dbType = t
-	return AutoMigrate(
-		new(model.Setting),
-		new(model.User),
-		new(model.UserProvider),
-		new(model.Room),
-		new(model.RoomUserRelation),
-		new(model.Movie),
-		new(model.BilibiliVendor),
-		new(model.AlistVendor),
-		new(model.EmbyVendor),
-		new(model.VendorBackend),
-	)
-}
-
-func AutoMigrate(dst ...any) error {
-	var err error
-	switch conf.Conf.Database.Type {
-	case conf.DatabaseTypeMysql:
-		err = db.Set("gorm:table_options", "ENGINE=InnoDB CHARSET=utf8mb4").AutoMigrate(dst...)
-	case conf.DatabaseTypeSqlite3, conf.DatabaseTypePostgres:
-		err = db.AutoMigrate(dst...)
-	default:
-		log.Fatalf("unknown database type: %s", conf.Conf.Database.Type)
-	}
+	err := UpgradeDatabase()
 	if err != nil {
 		return err
 	}
-	err = initRootUser()
-	if err != nil {
-		return err
-	}
-	return upgradeDatabase()
+	return initRootUser()
 }
 
 func initRootUser() error {

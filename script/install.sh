@@ -51,6 +51,11 @@ function FixArgs() {
     if [ "${GH_PROXY: -1}" != "/" ]; then
         GH_PROXY="$GH_PROXY/"
     fi
+    # 如果VERSION不是以v开头且不是latest、dev，则补上v
+    if [[ "$VERSION" != v* ]] && [ "$VERSION" != "latest" ] && [ "$VERSION" != "dev" ]; then
+        VERSION="v$VERSION"
+    fi
+
 }
 
 function InitOS() {

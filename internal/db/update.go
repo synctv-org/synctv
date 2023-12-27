@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	log "github.com/sirupsen/logrus"
+	"github.com/synctv-org/synctv/cmd/flags"
 	"github.com/synctv-org/synctv/internal/conf"
 	"github.com/synctv-org/synctv/internal/model"
 	"gorm.io/gorm"
@@ -55,8 +56,8 @@ func UpgradeDatabase() error {
 		if err != nil {
 			return err
 		}
-		currentVersion := setting.Value
-		if currentVersion != CurrentVersion {
+		currentVersion = setting.Value
+		if flags.ForceAutoMigrate || currentVersion != CurrentVersion {
 			err = autoMigrate(models...)
 			if err != nil {
 				return err

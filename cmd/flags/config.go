@@ -15,4 +15,6 @@ var (
 	GitHubBaseURL string
 
 	DataDir string
+
+	ForceAutoMigrate bool
 )

@@ -44,6 +44,7 @@ var dbVersions = map[string]dbVersion{
 	"0.0.3": {
 		NextVersion: "",
 		Upgrade: func(db *gorm.DB) error {
+			_ = db.Exec("DELETE FROM movies WHERE base_vendor_info_vendor IN ('alist', 'emby')").Error
 			return db.Migrator().DropTable("alist_vendors", "emby_vendors")
 		},
 	},

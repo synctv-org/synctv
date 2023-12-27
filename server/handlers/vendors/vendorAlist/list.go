@@ -19,23 +19,12 @@ import (
 )
 
 type ListReq struct {
-	ServerID string `json:"-"`
 	Path     string `json:"path"`
 	Password string `json:"password"`
 	Refresh  bool   `json:"refresh"`
 }
 
 func (r *ListReq) Validate() (err error) {
-	if r.Path == "" {
-		return nil
-	}
-	r.ServerID, r.Path, err = dbModel.GetAlistServerIdFromPath(r.Path)
-	if err != nil {
-		return err
-	}
-	if r.Path == "" {
-		r.Path = "/"
-	}
 	return nil
 }
 
@@ -66,10 +55,21 @@ func List(ctx *gin.Context) {
 		return
 	}
 
-	if req.ServerID == "" {
+	if req.Path == "" {
 		socpes := [](func(*gorm.DB) *gorm.DB){
 			db.OrderByCreatedAtAsc,
 		}
+
+		total, err := db.GetAlistVendorsCount(user.ID, socpes...)
+		if err != nil {
+			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+			return
+		}
+		if total == 0 {
+			ctx.JSON(http.StatusBadRequest, model.NewApiErrorStringResp("alist server id not found"))
+			return
+		}
+
 		ev, err := db.GetAlistVendors(user.ID, append(socpes, db.Paginate(page, size))...)
 		if err != nil {
 			if errors.Is(err, db.ErrNotFound("vendor")) {
@@ -80,10 +80,9 @@ func List(ctx *gin.Context) {
 			return
 		}
 
-		total, err := db.GetAlistVendorsCount(user.ID, socpes...)
-		if err != nil {
-			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
-			return
+		if total == 1 {
+			req.Path = ev[0].ServerID + "/"
+			goto AlistFSListResp
 		}
 
 		resp := AlistFSListResp{
@@ -111,11 +110,20 @@ func List(ctx *gin.Context) {
 		return
 	}
 
+AlistFSListResp:
+
+	var serverID string
+	serverID, req.Path, err = dbModel.GetAlistServerIdFromPath(req.Path)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
 	if !strings.HasPrefix(req.Path, "/") {
 		req.Path = "/" + req.Path
 	}
 
-	aucd, err := user.AlistCache().LoadOrStore(ctx, req.ServerID)
+	aucd, err := user.AlistCache().LoadOrStore(ctx, serverID)
 	if err != nil {
 		if errors.Is(err, db.ErrNotFound("vendor")) {
 			ctx.JSON(http.StatusBadRequest, model.NewApiErrorStringResp("alist server id not found"))

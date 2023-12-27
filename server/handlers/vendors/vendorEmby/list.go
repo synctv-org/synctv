@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strconv"
 
 	"github.com/gin-gonic/gin"
 	json "github.com/json-iterator/go"
@@ -19,29 +18,11 @@ import (
 )
 
 type ListReq struct {
-	ServerID string `json:"-"`
 	Path     string `json:"path"`
 	Keywords string `json:"keywords"`
 }
 
 func (r *ListReq) Validate() (err error) {
-	if r.Path == "" {
-		return nil
-	}
-	r.ServerID, r.Path, err = dbModel.GetEmbyServerIdFromPath(r.Path)
-	if err != nil {
-		return err
-	}
-	if r.Path == "" {
-		return nil
-	}
-	i, err := strconv.Atoi(r.Path)
-	if err != nil {
-		return err
-	}
-	if i < 0 {
-		return errors.New("path is invalid")
-	}
 	return nil
 }
 
@@ -71,7 +52,7 @@ func List(ctx *gin.Context) {
 		return
 	}
 
-	if req.ServerID == "" {
+	if req.Path == "" {
 		if req.Keywords != "" {
 			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("keywords is not supported when not choose server (server id is empty)"))
 			return
@@ -79,6 +60,17 @@ func List(ctx *gin.Context) {
 		socpes := [](func(*gorm.DB) *gorm.DB){
 			db.OrderByCreatedAtAsc,
 		}
+
+		total, err := db.GetEmbyVendorsCount(user.ID, socpes...)
+		if err != nil {
+			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+			return
+		}
+		if total == 0 {
+			ctx.JSON(http.StatusBadRequest, model.NewApiErrorStringResp("emby server id not found"))
+			return
+		}
+
 		ev, err := db.GetEmbyVendors(user.ID, append(socpes, db.Paginate(page, size))...)
 		if err != nil {
 			if errors.Is(err, db.ErrNotFound("vendor")) {
@@ -89,10 +81,9 @@ func List(ctx *gin.Context) {
 			return
 		}
 
-		total, err := db.GetEmbyVendorsCount(user.ID, socpes...)
-		if err != nil {
-			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
-			return
+		if total == 1 {
+			req.Path = ev[0].ServerID + "/"
+			goto EmbyFSListResp
 		}
 
 		resp := EmbyFSListResp{
@@ -121,7 +112,16 @@ func List(ctx *gin.Context) {
 		return
 	}
 
-	aucd, err := user.EmbyCache().LoadOrStore(ctx, req.ServerID)
+EmbyFSListResp:
+
+	var serverID string
+	serverID, req.Path, err = dbModel.GetEmbyServerIdFromPath(req.Path)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	aucd, err := user.EmbyCache().LoadOrStore(ctx, serverID)
 	if err != nil {
 		if errors.Is(err, db.ErrNotFound("vendor")) {
 			ctx.JSON(http.StatusBadRequest, model.NewApiErrorStringResp("emby server id not found"))

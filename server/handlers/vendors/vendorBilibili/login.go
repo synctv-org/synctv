@@ -76,7 +76,8 @@ func LoginWithQR(ctx *gin.Context) {
 		}))
 		return
 	case bilibili.QRCodeStatus_SUCCESS:
-		_, err = db.CreateOrSaveBilibiliVendor(user.ID, &dbModel.BilibiliVendor{
+		_, err = db.CreateOrSaveBilibiliVendor(&dbModel.BilibiliVendor{
+			UserID:  user.ID,
 			Cookies: resp.Cookies,
 			Backend: backend,
 		})
@@ -203,7 +204,8 @@ func LoginWithSMS(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}
-	_, err = db.CreateOrSaveBilibiliVendor(user.ID, &dbModel.BilibiliVendor{
+	_, err = db.CreateOrSaveBilibiliVendor(&dbModel.BilibiliVendor{
+		UserID:  user.ID,
 		Backend: backend,
 		Cookies: c.Cookies,
 	})

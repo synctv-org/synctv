@@ -89,6 +89,13 @@ type AlistStreamingInfo struct {
 	Password string `gorm:"type:varchar(256)" json:"password,omitempty"`
 }
 
+func (a *AlistStreamingInfo) Validate() error {
+	if a.Path == "" {
+		return fmt.Errorf("path is empty")
+	}
+	return nil
+}
+
 func (a *AlistStreamingInfo) BeforeSave(tx *gorm.DB) error {
 	if a.Password != "" {
 		s, err := utils.CryptoToBase64([]byte(a.Password), utils.GenCryptoKey(a.Path))
@@ -116,5 +123,12 @@ func (a *AlistStreamingInfo) AfterFind(tx *gorm.DB) error {
 }
 
 type EmbyStreamingInfo struct {
-	Path string `gorm:"type:varchar(20)" json:"path,omitempty"`
+	Path string `gorm:"type:varchar(52)" json:"path,omitempty"`
+}
+
+func (e *EmbyStreamingInfo) Validate() error {
+	if e.Path == "" {
+		return fmt.Errorf("path is empty")
+	}
+	return nil
 }

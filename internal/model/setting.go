@@ -1,5 +1,7 @@
 package model
 
+import "time"
+
 type SettingType string
 
 const (
@@ -26,8 +28,9 @@ const (
 )
 
 type Setting struct {
-	Name  string       `gorm:"primaryKey;type:varchar(256)"`
-	Value string       `gorm:"not null;type:text"`
-	Type  SettingType  `gorm:"not null;default:string"`
-	Group SettingGroup `gorm:"not null"`
+	Name      string `gorm:"primaryKey;type:varchar(256)"`
+	UpdatedAt time.Time
+	Value     string       `gorm:"not null;type:text"`
+	Type      SettingType  `gorm:"not null;default:string"`
+	Group     SettingGroup `gorm:"not null"`
 }

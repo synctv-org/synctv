@@ -48,7 +48,7 @@ func UpdateMovie(movie *model.Movie, columns ...clause.Column) error {
 }
 
 func SaveMovie(movie *model.Movie, columns ...clause.Column) error {
-	err := db.Model(movie).Clauses(clause.Returning{Columns: columns}).Where("room_id = ? AND id = ?", movie.RoomID, movie.ID).Save(movie).Error
+	err := db.Model(movie).Clauses(clause.Returning{Columns: columns}).Where("room_id = ? AND id = ?", movie.RoomID, movie.ID).Omit("created_at").Save(movie).Error
 	return HandleNotFound(err, "room or movie")
 }
 
@@ -65,10 +65,10 @@ func SwapMoviePositions(roomID, movie1ID, movie2ID string) (err error) {
 			return HandleNotFound(err, "movie2")
 		}
 		movie1.Position, movie2.Position = movie2.Position, movie1.Position
-		err = tx.Save(movie1).Error
+		err = tx.Omit("created_at").Save(movie1).Error
 		if err != nil {
 			return err
 		}
-		return tx.Save(movie2).Error
+		return tx.Omit("created_at").Save(movie2).Error
 	})
 }

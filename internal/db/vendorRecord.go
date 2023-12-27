@@ -13,15 +13,17 @@ func GetBilibiliVendor(userID string) (*model.BilibiliVendor, error) {
 	return &vendor, HandleNotFound(err, "vendor")
 }
 
-func CreateOrSaveBilibiliVendor(userID string, vendorInfo *model.BilibiliVendor) (*model.BilibiliVendor, error) {
-	vendorInfo.UserID = userID
+func CreateOrSaveBilibiliVendor(vendorInfo *model.BilibiliVendor) (*model.BilibiliVendor, error) {
+	if vendorInfo.UserID == "" {
+		return nil, errors.New("user_id must not be empty")
+	}
 	return vendorInfo, Transactional(func(tx *gorm.DB) error {
 		if errors.Is(tx.First(&model.BilibiliVendor{
-			UserID: userID,
+			UserID: vendorInfo.UserID,
 		}).Error, gorm.ErrRecordNotFound) {
 			return tx.Create(&vendorInfo).Error
 		} else {
-			return tx.Save(&vendorInfo).Error
+			return tx.Omit("created_at").Save(&vendorInfo).Error
 		}
 	})
 }
@@ -36,15 +38,17 @@ func GetAlistVendor(userID string) (*model.AlistVendor, error) {
 	return &vendor, HandleNotFound(err, "vendor")
 }
 
-func CreateOrSaveAlistVendor(userID string, vendorInfo *model.AlistVendor) (*model.AlistVendor, error) {
-	vendorInfo.UserID = userID
+func CreateOrSaveAlistVendor(vendorInfo *model.AlistVendor) (*model.AlistVendor, error) {
+	if vendorInfo.UserID == "" {
+		return nil, errors.New("user_id must not be empty")
+	}
 	return vendorInfo, Transactional(func(tx *gorm.DB) error {
 		if errors.Is(tx.First(&model.AlistVendor{
-			UserID: userID,
+			UserID: vendorInfo.UserID,
 		}).Error, gorm.ErrRecordNotFound) {
 			return tx.Create(&vendorInfo).Error
 		} else {
-			return tx.Save(&vendorInfo).Error
+			return tx.Omit("created_at").Save(&vendorInfo).Error
 		}
 	})
 }
@@ -53,25 +57,46 @@ func DeleteAlistVendor(userID string) error {
 	return db.Where("user_id = ?", userID).Delete(&model.AlistVendor{}).Error
 }
 
-func GetEmbyVendor(userID string) (*model.EmbyVendor, error) {
+func GetEmbyVendors(userID string, scopes ...func(*gorm.DB) *gorm.DB) ([]*model.EmbyVendor, error) {
+	var vendors []*model.EmbyVendor
+	err := db.Scopes(scopes...).Where("user_id = ?", userID).Find(&vendors).Error
+	return vendors, err
+}
+
+func GetEmbyVendorsCount(userID string, scopes ...func(*gorm.DB) *gorm.DB) (int64, error) {
+	var count int64
+	err := db.Scopes(scopes...).Where("user_id = ?", userID).Model(&model.EmbyVendor{}).Count(&count).Error
+	return count, err
+}
+
+func GetEmbyVendor(userID, serverID string) (*model.EmbyVendor, error) {
+	var vendor model.EmbyVendor
+	err := db.Where("user_id = ? AND server_id = ?", userID, serverID).First(&vendor).Error
+	return &vendor, HandleNotFound(err, "vendor")
+}
+
+func GetEmbyFirstVendor(userID string) (*model.EmbyVendor, error) {
 	var vendor model.EmbyVendor
 	err := db.Where("user_id = ?", userID).First(&vendor).Error
 	return &vendor, HandleNotFound(err, "vendor")
 }
 
-func CreateOrSaveEmbyVendor(userID string, vendorInfo *model.EmbyVendor) (*model.EmbyVendor, error) {
-	vendorInfo.UserID = userID
+func CreateOrSaveEmbyVendor(vendorInfo *model.EmbyVendor) (*model.EmbyVendor, error) {
+	if vendorInfo.UserID == "" || vendorInfo.ServerID == "" {
+		return nil, errors.New("user_id and server_id must not be empty")
+	}
 	return vendorInfo, Transactional(func(tx *gorm.DB) error {
 		if errors.Is(tx.First(&model.EmbyVendor{
-			UserID: userID,
+			UserID:   vendorInfo.UserID,
+			ServerID: vendorInfo.ServerID,
 		}).Error, gorm.ErrRecordNotFound) {
 			return tx.Create(&vendorInfo).Error
 		} else {
-			return tx.Save(&vendorInfo).Error
+			return tx.Omit("created_at").Save(&vendorInfo).Error
 		}
 	})
 }
 
-func DeleteEmbyVendor(userID string) error {
-	return db.Where("user_id = ?", userID).Delete(&model.EmbyVendor{}).Error
+func DeleteEmbyVendor(userID, serverID string) error {
+	return db.Where("user_id = ? AND server_id = ?", userID, serverID).Delete(&model.EmbyVendor{}).Error
 }

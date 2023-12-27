@@ -257,5 +257,7 @@ func initVendor(vendor *gin.RouterGroup) {
 		emby.POST("/list", vendorEmby.List)
 
 		emby.GET("/me", vendorEmby.Me)
+
+		emby.GET("/binds", vendorEmby.Binds)
 	}
 }

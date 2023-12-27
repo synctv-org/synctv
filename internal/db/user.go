@@ -270,7 +270,7 @@ func LoadAndDeleteUserByID(userID string, columns ...clause.Column) (*model.User
 }
 
 func SaveUser(u *model.User) error {
-	return db.Save(u).Error
+	return db.Omit("created_at").Save(u).Error
 }
 
 func AddAdmin(u *model.User) error {

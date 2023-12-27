@@ -1,14 +1,18 @@
 package model
 
 import (
+	"time"
+
 	"github.com/synctv-org/synctv/utils"
 	"gorm.io/gorm"
 )
 
 type BilibiliVendor struct {
-	UserID  string            `gorm:"primaryKey;type:char(32)"`
-	Backend string            `gorm:"type:varchar(64)"`
-	Cookies map[string]string `gorm:"serializer:fastjson;type:text"`
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	UserID    string            `gorm:"primaryKey;type:char(32)"`
+	Backend   string            `gorm:"type:varchar(64)"`
+	Cookies   map[string]string `gorm:"not null;serializer:fastjson;type:text"`
 }
 
 func (b *BilibiliVendor) BeforeSave(tx *gorm.DB) error {
@@ -40,9 +44,11 @@ func (b *BilibiliVendor) AfterFind(tx *gorm.DB) error {
 }
 
 type AlistVendor struct {
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 	UserID         string `gorm:"primaryKey;type:char(32)"`
 	Backend        string `gorm:"type:varchar(64)"`
-	Host           string `gorm:"type:varchar(256)"`
+	Host           string `gorm:"not null;type:varchar(256)"`
 	Username       string `gorm:"type:varchar(256)"`
 	HashedPassword []byte
 }
@@ -87,14 +93,17 @@ func (a *AlistVendor) AfterFind(tx *gorm.DB) error {
 }
 
 type EmbyVendor struct {
-	UserID  string `gorm:"primaryKey;type:char(32)"`
-	Backend string `gorm:"type:varchar(64)"`
-	Host    string `gorm:"type:varchar(256)"`
-	ApiKey  string `gorm:"type:varchar(256)"`
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	UserID    string `gorm:"primaryKey;type:char(32)"`
+	Backend   string `gorm:"type:varchar(64)"`
+	ServerID  string `gorm:"primaryKey;type:char(32)"`
+	Host      string `gorm:"not null;type:varchar(256)"`
+	ApiKey    string `gorm:"not null;type:varchar(256)"`
 }
 
 func (e *EmbyVendor) BeforeSave(tx *gorm.DB) error {
-	key := utils.GenCryptoKey(e.UserID)
+	key := utils.GenCryptoKey(e.ServerID)
 	var err error
 	if e.Host, err = utils.CryptoToBase64([]byte(e.Host), key); err != nil {
 		return err
@@ -106,7 +115,7 @@ func (e *EmbyVendor) BeforeSave(tx *gorm.DB) error {
 }
 
 func (e *EmbyVendor) AfterSave(tx *gorm.DB) error {
-	key := utils.GenCryptoKey(e.UserID)
+	key := utils.GenCryptoKey(e.ServerID)
 	if v, err := utils.DecryptoFromBase64(e.Host, key); err != nil {
 		return err
 	} else {

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/model"
@@ -16,36 +17,43 @@ import (
 	"github.com/zijiren233/gencontainer/refreshcache"
 )
 
-type EmbyUserCache = refreshcache.RefreshCache[*EmbyUserCacheData, struct{}]
+type EmbyUserCache = MapCache[*EmbyUserCacheData, struct{}]
 
 type EmbyUserCacheData struct {
-	Host    string
-	ApiKey  string
-	Backend string
+	Host     string
+	ServerID string
+	ApiKey   string
+	Backend  string
 }
 
 func NewEmbyUserCache(userID string) *EmbyUserCache {
-	f := EmbyAuthorizationCacheWithUserIDInitFunc(userID)
-	return refreshcache.NewRefreshCache(func(ctx context.Context, args ...struct{}) (*EmbyUserCacheData, error) {
-		return f(ctx)
+	return newMapCache(func(ctx context.Context, key string, args ...struct{}) (*EmbyUserCacheData, error) {
+		return EmbyAuthorizationCacheWithUserIDInitFunc(userID, key)
 	}, 0)
 }
 
-func EmbyAuthorizationCacheWithUserIDInitFunc(userID string) func(ctx context.Context, args ...struct{}) (*EmbyUserCacheData, error) {
-	return func(ctx context.Context, args ...struct{}) (*EmbyUserCacheData, error) {
-		v, err := db.GetEmbyVendor(userID)
-		if err != nil {
-			return nil, err
-		}
-		if v.ApiKey == "" || v.Host == "" {
-			return nil, db.ErrNotFound("vendor")
-		}
-		return &EmbyUserCacheData{
-			Host:    v.Host,
-			ApiKey:  v.ApiKey,
-			Backend: v.Backend,
-		}, nil
+func EmbyAuthorizationCacheWithUserIDInitFunc(userID, serverID string) (*EmbyUserCacheData, error) {
+	var (
+		v   *model.EmbyVendor
+		err error
+	)
+	if serverID == "" {
+		v, err = db.GetEmbyFirstVendor(userID)
+	} else {
+		v, err = db.GetEmbyVendor(userID, serverID)
 	}
+	if err != nil {
+		return nil, err
+	}
+	if v.ApiKey == "" || v.Host == "" {
+		return nil, db.ErrNotFound("vendor")
+	}
+	return &EmbyUserCacheData{
+		Host:     v.Host,
+		ServerID: v.ServerID,
+		ApiKey:   v.ApiKey,
+		Backend:  v.Backend,
+	}, nil
 }
 
 type EmbySource struct {
@@ -76,7 +84,16 @@ func NewEmbyMovieCacheInitFunc(movie *model.Movie) func(ctx context.Context, arg
 		if len(args) == 0 {
 			return nil, errors.New("need emby user cache")
 		}
-		aucd, err := args[0].Get(ctx)
+
+		var serverID, itemID string
+		if s := strings.Split(movie.Base.VendorInfo.Emby.Path, "/"); len(s) == 2 {
+			serverID = s[0]
+			itemID = s[1]
+		} else {
+			return nil, errors.New("path is invalid")
+		}
+
+		aucd, err := args[0].LoadOrStore(ctx, serverID)
 		if err != nil {
 			return nil, err
 		}
@@ -91,7 +108,7 @@ func NewEmbyMovieCacheInitFunc(movie *model.Movie) func(ctx context.Context, arg
 		data, err := cli.GetItem(ctx, &emby.GetItemReq{
 			Host:   aucd.Host,
 			Token:  aucd.ApiKey,
-			ItemId: movie.Base.VendorInfo.Emby.Path,
+			ItemId: itemID,
 		})
 		if err != nil {
 			return nil, err

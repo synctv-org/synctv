@@ -225,9 +225,10 @@ func (movie *Movie) validateVendorMovie() error {
 		return movie.Movie.Base.VendorInfo.Bilibili.Validate()
 
 	case model.VendorAlist:
-	// return movie.Movie.Base.VendorInfo.Alist.Validate()
+		return movie.Movie.Base.VendorInfo.Alist.Validate()
 
 	case model.VendorEmby:
+		return movie.Movie.Base.VendorInfo.Emby.Validate()
 
 	default:
 		return fmt.Errorf("vendor not implement validate")

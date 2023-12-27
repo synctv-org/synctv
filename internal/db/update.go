@@ -33,42 +33,57 @@ var models = []any{
 var dbVersions = map[string]dbVersion{
 	"0.0.1": {
 		NextVersion: "0.0.2",
+		Upgrade:     nil,
+	},
+	"0.0.2": {
+		NextVersion: "0.0.3",
 		Upgrade: func(db *gorm.DB) error {
 			return db.Migrator().DropTable("streaming_vendor_infos")
 		},
 	},
-	"0.0.2": {
+	"0.0.3": {
 		NextVersion: "",
-		Upgrade:     nil,
+		Upgrade: func(db *gorm.DB) error {
+			return db.Migrator().DropTable("alist_vendors", "emby_vendors")
+		},
 	},
 }
 
 func UpgradeDatabase() error {
-	var currentVersion string
-	if db.Migrator().HasTable(&model.Setting{}) {
-		setting := model.Setting{
-			Name:  "database_version",
-			Type:  model.SettingTypeString,
-			Group: model.SettingGroupDatabase,
-			Value: CurrentVersion,
-		}
-		err := FirstOrCreateSettingItemValue(&setting)
-		if err != nil {
+	if conf.Conf.Database.Type == conf.DatabaseTypeMysql {
+		if err := db.Exec("SET FOREIGN_KEY_CHECKS = 0").Error; err != nil {
 			return err
 		}
-		currentVersion = setting.Value
-		if flags.ForceAutoMigrate || currentVersion != CurrentVersion {
+		defer func() {
+			err := db.Exec("SET FOREIGN_KEY_CHECKS = 1").Error
+			if err != nil {
+				log.Fatalf("failed to set foreign key checks: %s", err.Error())
+			}
+		}()
+	}
+
+	if !db.Migrator().HasTable(&model.Setting{}) {
+		return autoMigrate(models...)
+	}
+
+	setting := model.Setting{
+		Name:  "database_version",
+		Type:  model.SettingTypeString,
+		Group: model.SettingGroupDatabase,
+		Value: CurrentVersion,
+	}
+	err := FirstOrCreateSettingItemValue(&setting)
+	if err != nil {
+		return err
+	}
+	currentVersion := setting.Value
+	if flags.ForceAutoMigrate || currentVersion != CurrentVersion {
+		defer func() {
 			err = autoMigrate(models...)
 			if err != nil {
-				return err
+				log.Fatalf("failed to auto migrate: %s", err.Error())
 			}
-		}
-	} else {
-		err := autoMigrate(models...)
-		if err != nil {
-			return err
-		}
-		currentVersion = CurrentVersion
+		}()
 	}
 
 	version, ok := dbVersions[currentVersion]
@@ -101,13 +116,7 @@ func autoMigrate(dst ...any) error {
 	log.Info("migrating database...")
 	switch conf.Conf.Database.Type {
 	case conf.DatabaseTypeMysql:
-		if err := db.Exec("SET FOREIGN_KEY_CHECKS = 0").Error; err != nil {
-			return err
-		}
-		if err := db.Set("gorm:table_options", "ENGINE=InnoDB CHARSET=utf8mb4").AutoMigrate(dst...); err != nil {
-			return err
-		}
-		return db.Exec("SET FOREIGN_KEY_CHECKS = 1").Error
+		return db.Set("gorm:table_options", "ENGINE=InnoDB CHARSET=utf8mb4").AutoMigrate(dst...)
 	case conf.DatabaseTypeSqlite3, conf.DatabaseTypePostgres:
 		return db.AutoMigrate(dst...)
 	default:

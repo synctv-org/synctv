@@ -9,7 +9,7 @@ import (
 	"golang.org/x/exp/maps"
 )
 
-type MapRefreshFunc[T any, A any] func(ctx context.Context, args ...A) (T, error)
+type MapRefreshFunc[T any, A any] func(ctx context.Context, key string, args ...A) (T, error)
 
 type MapCache[T any, A any] struct {
 	lock        sync.RWMutex
@@ -36,82 +36,137 @@ func (b *MapCache[T, A]) clear() {
 	maps.Clear(b.cache)
 }
 
-func (b *MapCache[T, A]) LoadOrStore(ctx context.Context, id string, args ...A) (T, error) {
+func (b *MapCache[T, A]) Delete(key string) {
+	b.lock.Lock()
+	defer b.lock.Unlock()
+	delete(b.cache, key)
+}
+
+func (b *MapCache[T, A]) LoadOrStore(ctx context.Context, key string, args ...A) (T, error) {
 	b.lock.RLock()
-	c, loaded := b.cache[id]
+	c, loaded := b.cache[key]
 	if loaded {
 		b.lock.RUnlock()
 		return c.Get(ctx, args...)
 	}
 	b.lock.RUnlock()
 	b.lock.Lock()
-	c, loaded = b.cache[id]
+	c, loaded = b.cache[key]
 	if loaded {
 		b.lock.Unlock()
 		return c.Get(ctx, args...)
 	}
-	c = refreshcache.NewRefreshCache[T, A](refreshcache.RefreshFunc[T, A](b.refreshFunc), b.maxAge)
-	b.cache[id] = c
+	c = refreshcache.NewRefreshCache[T, A](refreshcache.RefreshFunc[T, A](func(ctx context.Context, args ...A) (T, error) {
+		return b.refreshFunc(ctx, key, args...)
+	}), b.maxAge)
+	b.cache[key] = c
 	b.lock.Unlock()
 	return c.Get(ctx, args...)
 }
 
-func (b *MapCache[T, A]) StoreOrRefresh(ctx context.Context, id string, args ...A) (T, error) {
+func (b *MapCache[T, A]) StoreOrRefresh(ctx context.Context, key string, args ...A) (T, error) {
 	b.lock.RLock()
-	c, ok := b.cache[id]
+	c, ok := b.cache[key]
 	if ok {
 		b.lock.RUnlock()
 		return c.Refresh(ctx, args...)
 	}
 	b.lock.RUnlock()
 	b.lock.Lock()
-	c, ok = b.cache[id]
+	c, ok = b.cache[key]
 	if ok {
 		b.lock.Unlock()
 		return c.Refresh(ctx, args...)
 	}
-	c = refreshcache.NewRefreshCache[T, A](refreshcache.RefreshFunc[T, A](b.refreshFunc), b.maxAge)
-	b.cache[id] = c
+	c = refreshcache.NewRefreshCache[T, A](refreshcache.RefreshFunc[T, A](func(ctx context.Context, args ...A) (T, error) {
+		return b.refreshFunc(ctx, key, args...)
+	}), b.maxAge)
+	b.cache[key] = c
 	b.lock.Unlock()
 	return c.Refresh(ctx, args...)
 }
 
-func (b *MapCache[T, A]) LoadOrStoreWithDynamicFunc(ctx context.Context, id string, refreshFunc MapRefreshFunc[T, A], args ...A) (T, error) {
+func (b *MapCache[T, A]) LoadCache(key string) (*refreshcache.RefreshCache[T, A], bool) {
 	b.lock.RLock()
-	c, loaded := b.cache[id]
-	if loaded {
-		b.lock.RUnlock()
-		return c.Data().Get(ctx, refreshcache.RefreshFunc[T, A](refreshFunc), args...)
-	}
+	c, ok := b.cache[key]
 	b.lock.RUnlock()
-	b.lock.Lock()
-	c, loaded = b.cache[id]
-	if loaded {
-		b.lock.Unlock()
-		return c.Data().Get(ctx, refreshcache.RefreshFunc[T, A](refreshFunc), args...)
-	}
-	c = refreshcache.NewRefreshCache[T, A](refreshcache.RefreshFunc[T, A](b.refreshFunc), b.maxAge)
-	b.cache[id] = c
-	b.lock.Unlock()
-	return c.Data().Get(ctx, refreshcache.RefreshFunc[T, A](refreshFunc), args...)
+	return c, ok
 }
 
-func (b *MapCache[T, A]) StoreOrRefreshWithDynamicFunc(ctx context.Context, id string, refreshFunc MapRefreshFunc[T, A], args ...A) (T, error) {
+func (b *MapCache[T, A]) LoadOrNewCache(key string) *refreshcache.RefreshCache[T, A] {
 	b.lock.RLock()
-	c, ok := b.cache[id]
+	c, ok := b.cache[key]
 	if ok {
 		b.lock.RUnlock()
-		return c.Data().Refresh(ctx, refreshcache.RefreshFunc[T, A](refreshFunc), args...)
+		return c
 	}
 	b.lock.RUnlock()
 	b.lock.Lock()
-	c, ok = b.cache[id]
+	c, ok = b.cache[key]
 	if ok {
 		b.lock.Unlock()
-		return c.Data().Refresh(ctx, refreshcache.RefreshFunc[T, A](refreshFunc), args...)
+		return c
 	}
-	c = refreshcache.NewRefreshCache[T, A](refreshcache.RefreshFunc[T, A](b.refreshFunc), b.maxAge)
-	b.cache[id] = c
+	c = refreshcache.NewRefreshCache[T, A](refreshcache.RefreshFunc[T, A](func(ctx context.Context, args ...A) (T, error) {
+		return b.refreshFunc(ctx, key, args...)
+	}), b.maxAge)
+	b.cache[key] = c
 	b.lock.Unlock()
-	return c.Data().Refresh(ctx, refreshcache.RefreshFunc[T, A](refreshFunc), args...)
+	return c
+}
+
+func (b *MapCache[T, A]) LoadOrStoreWithDynamicFunc(ctx context.Context, key string, refreshFunc MapRefreshFunc[T, A], args ...A) (T, error) {
+	b.lock.RLock()
+	c, loaded := b.cache[key]
+	if loaded {
+		b.lock.RUnlock()
+		return c.Data().Get(ctx, refreshcache.RefreshFunc[T, A](func(ctx context.Context, args ...A) (T, error) {
+			return refreshFunc(ctx, key, args...)
+		}), args...)
+	}
+	b.lock.RUnlock()
+	b.lock.Lock()
+	c, loaded = b.cache[key]
+	if loaded {
+		b.lock.Unlock()
+		return c.Data().Get(ctx, refreshcache.RefreshFunc[T, A](func(ctx context.Context, args ...A) (T, error) {
+			return refreshFunc(ctx, key, args...)
+		}), args...)
+	}
+	c = refreshcache.NewRefreshCache[T, A](refreshcache.RefreshFunc[T, A](func(ctx context.Context, args ...A) (T, error) {
+		return b.refreshFunc(ctx, key, args...)
+	}), b.maxAge)
+	b.cache[key] = c
+	b.lock.Unlock()
+	return c.Data().Get(ctx, refreshcache.RefreshFunc[T, A](func(ctx context.Context, args ...A) (T, error) {
+		return refreshFunc(ctx, key, args...)
+	}), args...)
+}
+
+func (b *MapCache[T, A]) StoreOrRefreshWithDynamicFunc(ctx context.Context, key string, refreshFunc MapRefreshFunc[T, A], args ...A) (T, error) {
+	b.lock.RLock()
+	c, ok := b.cache[key]
+	if ok {
+		b.lock.RUnlock()
+		return c.Data().Refresh(ctx, refreshcache.RefreshFunc[T, A](func(ctx context.Context, args ...A) (T, error) {
+			return refreshFunc(ctx, key, args...)
+		}), args...)
+	}
+	b.lock.RUnlock()
+	b.lock.Lock()
+	c, ok = b.cache[key]
+	if ok {
+		b.lock.Unlock()
+		return c.Data().Refresh(ctx, refreshcache.RefreshFunc[T, A](func(ctx context.Context, args ...A) (T, error) {
+			return refreshFunc(ctx, key, args...)
+		}), args...)
+	}
+	c = refreshcache.NewRefreshCache[T, A](refreshcache.RefreshFunc[T, A](func(ctx context.Context, args ...A) (T, error) {
+		return b.refreshFunc(ctx, key, args...)
+	}), b.maxAge)
+	b.cache[key] = c
+	b.lock.Unlock()
+	return c.Data().Refresh(ctx, refreshcache.RefreshFunc[T, A](func(ctx context.Context, args ...A) (T, error) {
+		return refreshFunc(ctx, key, args...)
+	}), args...)
 }

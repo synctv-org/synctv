@@ -48,9 +48,10 @@ func Login(ctx *gin.Context) {
 
 	backend := ctx.Query("backend")
 	cli := vendor.LoadEmbyClient(backend)
+	var serverID string
 
 	if req.ApiKey != "" {
-		_, err := cli.GetSystemInfo(ctx, &emby.SystemInfoReq{
+		i, err := cli.GetSystemInfo(ctx, &emby.SystemInfoReq{
 			Host:  req.Host,
 			Token: req.ApiKey,
 		})
@@ -58,6 +59,7 @@ func Login(ctx *gin.Context) {
 			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 			return
 		}
+		serverID = i.Id
 	} else {
 		data, err := cli.Login(ctx, &emby.LoginReq{
 			Host:     req.Host,
@@ -69,13 +71,20 @@ func Login(ctx *gin.Context) {
 			return
 		}
 		req.ApiKey = data.Token
+		serverID = data.ServerId
 	}
 
-	_, err := db.CreateOrSaveEmbyVendor(user.ID, &dbModel.EmbyVendor{
-		UserID:  user.ID,
-		Host:    req.Host,
-		ApiKey:  req.ApiKey,
-		Backend: backend,
+	if serverID == "" {
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorStringResp("serverID is empty"))
+		return
+	}
+
+	_, err := db.CreateOrSaveEmbyVendor(&dbModel.EmbyVendor{
+		UserID:   user.ID,
+		ServerID: serverID,
+		Host:     req.Host,
+		ApiKey:   req.ApiKey,
+		Backend:  backend,
 	})
 
 	if err != nil {
@@ -83,11 +92,12 @@ func Login(ctx *gin.Context) {
 		return
 	}
 
-	_, err = user.EmbyCache().Data().Refresh(ctx, func(ctx context.Context, args ...struct{}) (*cache.EmbyUserCacheData, error) {
+	_, err = user.EmbyCache().StoreOrRefreshWithDynamicFunc(ctx, serverID, func(ctx context.Context, key string, args ...struct{}) (*cache.EmbyUserCacheData, error) {
 		return &cache.EmbyUserCacheData{
-			Host:    req.Host,
-			ApiKey:  req.ApiKey,
-			Backend: backend,
+			Host:     req.Host,
+			ServerID: key,
+			ApiKey:   req.ApiKey,
+			Backend:  backend,
 		}, nil
 	})
 	if err != nil {
@@ -98,19 +108,40 @@ func Login(ctx *gin.Context) {
 	ctx.Status(http.StatusNoContent)
 }
 
+type LogoutReq struct {
+	ServerID string `json:"serverId"`
+}
+
+func (r *LogoutReq) Validate() error {
+	if r.ServerID == "" {
+		return errors.New("serverId is required")
+	}
+	return nil
+}
+
+func (r *LogoutReq) Decode(ctx *gin.Context) error {
+	return json.NewDecoder(ctx.Request.Body).Decode(r)
+}
+
 func Logout(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*op.User)
 
-	err := db.DeleteEmbyVendor(user.ID)
+	var req LogoutReq
+	if err := model.Decode(ctx, &req); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	err := db.DeleteEmbyVendor(user.ID, req.ServerID)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}
 
-	eucd := user.EmbyCache().Raw()
-	user.EmbyCache().Clear()
-
-	go logoutEmby(eucd)
+	eucd, ok := user.EmbyCache().LoadCache(req.ServerID)
+	if ok {
+		go logoutEmby(eucd.Raw())
+	}
 
 	ctx.Status(http.StatusNoContent)
 }

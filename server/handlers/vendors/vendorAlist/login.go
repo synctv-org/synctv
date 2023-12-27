@@ -65,7 +65,8 @@ func Login(ctx *gin.Context) {
 		return
 	}
 
-	_, err = db.CreateOrSaveAlistVendor(user.ID, &dbModel.AlistVendor{
+	_, err = db.CreateOrSaveAlistVendor(&dbModel.AlistVendor{
+		UserID:         user.ID,
 		Backend:        backend,
 		Host:           req.Host,
 		Username:       req.Username,

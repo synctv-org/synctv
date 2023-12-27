@@ -52,7 +52,7 @@ func CreateOrSaveVendorBackend(backend *model.VendorBackend) (*model.VendorBacke
 		if err := tx.Where("backend_endpoint = ?", backend.Backend.Endpoint).First(&model.VendorBackend{}).Error; errors.Is(err, gorm.ErrRecordNotFound) {
 			return tx.Create(&backend).Error
 		} else {
-			return tx.Save(&backend).Error
+			return tx.Omit("created_at").Save(&backend).Error
 		}
 	})
 }

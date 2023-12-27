@@ -17,14 +17,15 @@ type EmbyMeResp = model.VendorMeResp[*emby.SystemInfoResp]
 func Me(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*op.User)
 
-	eucd, err := user.EmbyCache().Get(ctx)
+	serverID := ctx.Query("serverID")
+	if serverID == "" {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(errors.New("serverID is required")))
+		return
+
+	}
+
+	eucd, err := user.EmbyCache().LoadOrStore(ctx, serverID)
 	if err != nil {
-		if errors.Is(err, db.ErrNotFound("vendor")) {
-			ctx.JSON(http.StatusOK, model.NewApiDataResp(&EmbyMeResp{
-				IsLogin: false,
-			}))
-			return
-		}
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}
@@ -42,4 +43,38 @@ func Me(ctx *gin.Context) {
 		IsLogin: true,
 		Info:    data,
 	}))
+}
+
+type EmbyBindsResp []*struct {
+	ServerID string `json:"serverID"`
+	Host     string `json:"host"`
+}
+
+func Binds(ctx *gin.Context) {
+	user := ctx.MustGet("user").(*op.User)
+
+	ev, err := db.GetEmbyVendors(user.ID)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound("vendor")) {
+			ctx.JSON(http.StatusOK, model.NewApiDataResp(&EmbyMeResp{
+				IsLogin: false,
+			}))
+			return
+		}
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
+
+	var resp EmbyBindsResp = make(EmbyBindsResp, len(ev))
+	for i, v := range ev {
+		resp[i] = &struct {
+			ServerID string "json:\"serverID\""
+			Host     string "json:\"host\""
+		}{
+			ServerID: v.ServerID,
+			Host:     v.Host,
+		}
+	}
+
+	ctx.JSON(http.StatusOK, model.NewApiDataResp(resp))
 }

@@ -130,8 +130,8 @@ func BilibiliSharedMpdCacheInitFunc(ctx context.Context, movie *model.Movie, arg
 	}, nil
 }
 
-func NewBilibiliNoSharedMovieCacheInitFunc(movie *model.Movie) func(ctx context.Context, args ...*BilibiliUserCache) (string, error) {
-	return func(ctx context.Context, args ...*BilibiliUserCache) (string, error) {
+func NewBilibiliNoSharedMovieCacheInitFunc(movie *model.Movie) func(ctx context.Context, key string, args ...*BilibiliUserCache) (string, error) {
+	return func(ctx context.Context, key string, args ...*BilibiliUserCache) (string, error) {
 		return BilibiliNoSharedMovieCacheInitFunc(ctx, movie, args...)
 	}
 }

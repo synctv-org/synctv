@@ -32,19 +32,32 @@ func DeleteBilibiliVendor(userID string) error {
 	return db.Where("user_id = ?", userID).Delete(&model.BilibiliVendor{}).Error
 }
 
-func GetAlistVendor(userID string) (*model.AlistVendor, error) {
+func GetAlistVendors(userID string, scopes ...func(*gorm.DB) *gorm.DB) ([]*model.AlistVendor, error) {
+	var vendors []*model.AlistVendor
+	err := db.Scopes(scopes...).Where("user_id = ?", userID).Find(&vendors).Error
+	return vendors, err
+}
+
+func GetAlistVendorsCount(userID string, scopes ...func(*gorm.DB) *gorm.DB) (int64, error) {
+	var count int64
+	err := db.Scopes(scopes...).Where("user_id = ?", userID).Model(&model.AlistVendor{}).Count(&count).Error
+	return count, err
+}
+
+func GetAlistVendor(userID, serverID string) (*model.AlistVendor, error) {
 	var vendor model.AlistVendor
-	err := db.Where("user_id = ?", userID).First(&vendor).Error
+	err := db.Where("user_id = ? AND server_id = ?", userID, serverID).First(&vendor).Error
 	return &vendor, HandleNotFound(err, "vendor")
 }
 
 func CreateOrSaveAlistVendor(vendorInfo *model.AlistVendor) (*model.AlistVendor, error) {
-	if vendorInfo.UserID == "" {
-		return nil, errors.New("user_id must not be empty")
+	if vendorInfo.UserID == "" || vendorInfo.ServerID == "" {
+		return nil, errors.New("user_id and server_id must not be empty")
 	}
 	return vendorInfo, Transactional(func(tx *gorm.DB) error {
 		if errors.Is(tx.First(&model.AlistVendor{
-			UserID: vendorInfo.UserID,
+			UserID:   vendorInfo.UserID,
+			ServerID: vendorInfo.ServerID,
 		}).Error, gorm.ErrRecordNotFound) {
 			return tx.Create(&vendorInfo).Error
 		} else {
@@ -53,8 +66,8 @@ func CreateOrSaveAlistVendor(vendorInfo *model.AlistVendor) (*model.AlistVendor,
 	})
 }
 
-func DeleteAlistVendor(userID string) error {
-	return db.Where("user_id = ?", userID).Delete(&model.AlistVendor{}).Error
+func DeleteAlistVendor(userID, serverID string) error {
+	return db.Where("user_id = ? AND server_id = ?", userID, serverID).Delete(&model.AlistVendor{}).Error
 }
 
 func GetEmbyVendors(userID string, scopes ...func(*gorm.DB) *gorm.DB) ([]*model.EmbyVendor, error) {

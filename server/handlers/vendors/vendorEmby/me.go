@@ -26,6 +26,10 @@ func Me(ctx *gin.Context) {
 
 	eucd, err := user.EmbyCache().LoadOrStore(ctx, serverID)
 	if err != nil {
+		if errors.Is(err, db.ErrNotFound("vendor")) {
+			ctx.JSON(http.StatusBadRequest, model.NewApiErrorStringResp("emby server id not found"))
+			return
+		}
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}

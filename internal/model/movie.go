@@ -2,6 +2,7 @@ package model
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/synctv-org/synctv/utils"
@@ -85,8 +86,17 @@ func (b *BilibiliStreamingInfo) Validate() error {
 }
 
 type AlistStreamingInfo struct {
+	// {/}serverId/Path
 	Path     string `gorm:"type:varchar(4096)" json:"path,omitempty"`
 	Password string `gorm:"type:varchar(256)" json:"password,omitempty"`
+}
+
+func GetAlistServerIdFromPath(path string) (serverID string, filePath string, err error) {
+	before, after, found := strings.Cut(strings.TrimLeft(path, "/"), "/")
+	if !found {
+		return "", path, fmt.Errorf("path is invalid")
+	}
+	return before, after, nil
 }
 
 func (a *AlistStreamingInfo) Validate() error {
@@ -123,7 +133,15 @@ func (a *AlistStreamingInfo) AfterFind(tx *gorm.DB) error {
 }
 
 type EmbyStreamingInfo struct {
+	// {/}serverId/ItemId
 	Path string `gorm:"type:varchar(52)" json:"path,omitempty"`
+}
+
+func GetEmbyServerIdFromPath(path string) (serverID string, filePath string, err error) {
+	if s := strings.Split(strings.TrimLeft(path, "/"), "/"); len(s) == 2 {
+		return s[0], s[1], nil
+	}
+	return "", path, fmt.Errorf("path is invalid")
 }
 
 func (e *EmbyStreamingInfo) Validate() error {

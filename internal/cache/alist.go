@@ -16,33 +16,32 @@ import (
 	"github.com/zijiren233/gencontainer/refreshcache"
 )
 
-type AlistUserCache = refreshcache.RefreshCache[*AlistUserCacheData, struct{}]
+type AlistUserCache = MapCache[*AlistUserCacheData, struct{}]
 
 type AlistUserCacheData struct {
-	Host    string
-	Token   string
-	Backend string
+	Host     string
+	ServerID string
+	Token    string
+	Backend  string
 }
 
 func NewAlistUserCache(userID string) *AlistUserCache {
-	f := AlistAuthorizationCacheWithUserIDInitFunc(userID)
-	return refreshcache.NewRefreshCache(func(ctx context.Context, args ...struct{}) (*AlistUserCacheData, error) {
-		return f(ctx)
+	return newMapCache[*AlistUserCacheData, struct{}](func(ctx context.Context, key string, args ...struct{}) (*AlistUserCacheData, error) {
+		return AlistAuthorizationCacheWithUserIDInitFunc(ctx, userID, key)
 	}, 0)
 }
 
-func AlistAuthorizationCacheWithUserIDInitFunc(userID string) func(ctx context.Context, args ...struct{}) (*AlistUserCacheData, error) {
-	return func(ctx context.Context, args ...struct{}) (*AlistUserCacheData, error) {
-		v, err := db.GetAlistVendor(userID)
-		if err != nil {
-			return nil, err
-		}
-		return AlistAuthorizationCacheWithConfigInitFunc(ctx, v)
+func AlistAuthorizationCacheWithUserIDInitFunc(ctx context.Context, userID, serverID string) (*AlistUserCacheData, error) {
+	v, err := db.GetAlistVendor(userID, serverID)
+	if err != nil {
+		return nil, err
 	}
+	return AlistAuthorizationCacheWithConfigInitFunc(ctx, v)
 }
 
 func AlistAuthorizationCacheWithConfigInitFunc(ctx context.Context, v *model.AlistVendor) (*AlistUserCacheData, error) {
 	cli := vendor.LoadAlistClient(v.Backend)
+	model.GenAlistServerID(v)
 
 	if v.Username == "" {
 		_, err := cli.Me(ctx, &alist.MeReq{
@@ -52,8 +51,9 @@ func AlistAuthorizationCacheWithConfigInitFunc(ctx context.Context, v *model.Ali
 			return nil, err
 		}
 		return &AlistUserCacheData{
-			Host:    v.Host,
-			Backend: v.Backend,
+			Host:     v.Host,
+			ServerID: v.ServerID,
+			Backend:  v.Backend,
 		}, nil
 	} else {
 		resp, err := cli.Login(ctx, &alist.LoginReq{
@@ -67,9 +67,10 @@ func AlistAuthorizationCacheWithConfigInitFunc(ctx context.Context, v *model.Ali
 		}
 
 		return &AlistUserCacheData{
-			Host:    v.Host,
-			Token:   resp.Token,
-			Backend: v.Backend,
+			Host:     v.Host,
+			ServerID: v.ServerID,
+			Token:    resp.Token,
+			Backend:  v.Backend,
 		}, nil
 	}
 }
@@ -141,7 +142,15 @@ func NewAlistMovieCacheInitFunc(movie *model.Movie) func(ctx context.Context, ar
 		if len(args) == 0 {
 			return nil, errors.New("need alist user cache")
 		}
-		aucd, err := args[0].Get(ctx)
+		var (
+			serverID string
+			err      error
+		)
+		serverID, movie.Base.VendorInfo.Alist.Path, err = model.GetAlistServerIdFromPath(movie.Base.VendorInfo.Alist.Path)
+		if err != nil {
+			return nil, err
+		}
+		aucd, err := args[0].LoadOrStore(ctx, serverID)
 		if err != nil {
 			return nil, err
 		}

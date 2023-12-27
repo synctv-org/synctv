@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strings"
 
 	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/model"
@@ -33,15 +32,10 @@ func NewEmbyUserCache(userID string) *EmbyUserCache {
 }
 
 func EmbyAuthorizationCacheWithUserIDInitFunc(userID, serverID string) (*EmbyUserCacheData, error) {
-	var (
-		v   *model.EmbyVendor
-		err error
-	)
 	if serverID == "" {
-		v, err = db.GetEmbyFirstVendor(userID)
-	} else {
-		v, err = db.GetEmbyVendor(userID, serverID)
+		return nil, errors.New("serverID is required")
 	}
+	v, err := db.GetEmbyVendor(userID, serverID)
 	if err != nil {
 		return nil, err
 	}
@@ -85,12 +79,13 @@ func NewEmbyMovieCacheInitFunc(movie *model.Movie) func(ctx context.Context, arg
 			return nil, errors.New("need emby user cache")
 		}
 
-		var serverID, itemID string
-		if s := strings.Split(movie.Base.VendorInfo.Emby.Path, "/"); len(s) == 2 {
-			serverID = s[0]
-			itemID = s[1]
-		} else {
-			return nil, errors.New("path is invalid")
+		var (
+			serverID string
+			err      error
+		)
+		serverID, movie.Base.VendorInfo.Emby.Path, err = model.GetEmbyServerIdFromPath(movie.Base.VendorInfo.Emby.Path)
+		if err != nil {
+			return nil, err
 		}
 
 		aucd, err := args[0].LoadOrStore(ctx, serverID)
@@ -108,7 +103,7 @@ func NewEmbyMovieCacheInitFunc(movie *model.Movie) func(ctx context.Context, arg
 		data, err := cli.GetItem(ctx, &emby.GetItemReq{
 			Host:   aucd.Host,
 			Token:  aucd.ApiKey,
-			ItemId: itemID,
+			ItemId: movie.Base.VendorInfo.Emby.Path,
 		})
 		if err != nil {
 			return nil, err

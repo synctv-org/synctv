@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
-	"strings"
 
 	"github.com/gin-gonic/gin"
 	json "github.com/json-iterator/go"
 	"github.com/synctv-org/synctv/internal/db"
+	dbModel "github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/internal/vendor"
 	"github.com/synctv-org/synctv/server/model"
@@ -24,10 +24,13 @@ type ListReq struct {
 	Keywords string `json:"keywords"`
 }
 
-func (r *ListReq) Validate() error {
-	if s := strings.Split(r.Path, "/"); len(s) == 2 {
-		r.ServerID = s[0]
-		r.Path = s[1]
+func (r *ListReq) Validate() (err error) {
+	if r.Path == "" {
+		return nil
+	}
+	r.ServerID, r.Path, err = dbModel.GetEmbyServerIdFromPath(r.Path)
+	if err != nil {
+		return err
 	}
 	if r.Path == "" {
 		return nil
@@ -79,7 +82,7 @@ func List(ctx *gin.Context) {
 		ev, err := db.GetEmbyVendors(user.ID, append(socpes, db.Paginate(page, size))...)
 		if err != nil {
 			if errors.Is(err, db.ErrNotFound("vendor")) {
-				ctx.JSON(http.StatusBadRequest, model.NewApiErrorStringResp("emby not login"))
+				ctx.JSON(http.StatusBadRequest, model.NewApiErrorStringResp("emby server id not found"))
 				return
 			}
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
@@ -121,7 +124,7 @@ func List(ctx *gin.Context) {
 	aucd, err := user.EmbyCache().LoadOrStore(ctx, req.ServerID)
 	if err != nil {
 		if errors.Is(err, db.ErrNotFound("vendor")) {
-			ctx.JSON(http.StatusBadRequest, model.NewApiErrorStringResp("emby not login"))
+			ctx.JSON(http.StatusBadRequest, model.NewApiErrorStringResp("emby server id not found"))
 			return
 		}
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))

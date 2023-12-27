@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"net/http"
+	"net/url"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	json "github.com/json-iterator/go"
@@ -27,6 +29,14 @@ func (r *LoginReq) Validate() error {
 	if r.Host == "" {
 		return errors.New("host is required")
 	}
+	url, err := url.Parse(r.Host)
+	if err != nil {
+		return err
+	}
+	if url.Scheme != "http" && url.Scheme != "https" {
+		return errors.New("host is invalid")
+	}
+	r.Host = strings.TrimRight(url.String(), "/")
 	if r.Password != "" && r.HashedPassword != "" {
 		return errors.New("password and hashedPassword can't be both set")
 	}
@@ -67,8 +77,9 @@ func Login(ctx *gin.Context) {
 
 	_, err = db.CreateOrSaveAlistVendor(&dbModel.AlistVendor{
 		UserID:         user.ID,
-		Backend:        backend,
-		Host:           req.Host,
+		ServerID:       data.ServerID,
+		Backend:        data.Backend,
+		Host:           data.Host,
 		Username:       req.Username,
 		HashedPassword: []byte(req.HashedPassword),
 	})
@@ -77,7 +88,7 @@ func Login(ctx *gin.Context) {
 		return
 	}
 
-	_, err = user.AlistCache().Data().Refresh(ctx, func(ctx context.Context, args ...struct{}) (*cache.AlistUserCacheData, error) {
+	_, err = user.AlistCache().StoreOrRefreshWithDynamicFunc(ctx, data.ServerID, func(ctx context.Context, key string, args ...struct{}) (*cache.AlistUserCacheData, error) {
 		return data, nil
 	})
 	if err != nil {
@@ -91,13 +102,21 @@ func Login(ctx *gin.Context) {
 func Logout(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*op.User)
 
-	err := db.DeleteAlistVendor(user.ID)
+	var req model.ServerIDReq
+	if err := model.Decode(ctx, &req); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	err := db.DeleteAlistVendor(user.ID, req.ServerID)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}
 
-	user.AlistCache().Clear()
+	if rc, ok := user.AlistCache().LoadCache(req.ServerID); ok {
+		rc.Clear()
+	}
 
 	ctx.Status(http.StatusNoContent)
 }

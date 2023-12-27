@@ -3,6 +3,7 @@ package model
 import (
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/synctv-org/synctv/utils"
 	"gorm.io/gorm"
 )
@@ -48,9 +49,16 @@ type AlistVendor struct {
 	UpdatedAt      time.Time
 	UserID         string `gorm:"primaryKey;type:char(32)"`
 	Backend        string `gorm:"type:varchar(64)"`
+	ServerID       string `gorm:"primaryKey;type:char(32)"`
 	Host           string `gorm:"not null;type:varchar(256)"`
 	Username       string `gorm:"type:varchar(256)"`
 	HashedPassword []byte
+}
+
+func GenAlistServerID(a *AlistVendor) {
+	if a.ServerID == "" {
+		a.ServerID = utils.SortUUIDWithUUID(uuid.NewMD5(uuid.NameSpaceURL, []byte(a.Host)))
+	}
 }
 
 func (a *AlistVendor) BeforeSave(tx *gorm.DB) error {

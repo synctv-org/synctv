@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/url"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	json "github.com/json-iterator/go"
@@ -27,6 +29,14 @@ func (r *LoginReq) Validate() error {
 	if r.Host == "" {
 		return errors.New("host is required")
 	}
+	url, err := url.Parse(r.Host)
+	if err != nil {
+		return err
+	}
+	if url.Scheme != "http" && url.Scheme != "https" {
+		return errors.New("host is invalid")
+	}
+	r.Host = strings.TrimRight(url.String(), "/")
 	if r.ApiKey == "" && (r.Username == "" || r.Password == "") {
 		return errors.New("username and password or apiKey is required")
 	}
@@ -108,25 +118,10 @@ func Login(ctx *gin.Context) {
 	ctx.Status(http.StatusNoContent)
 }
 
-type LogoutReq struct {
-	ServerID string `json:"serverId"`
-}
-
-func (r *LogoutReq) Validate() error {
-	if r.ServerID == "" {
-		return errors.New("serverId is required")
-	}
-	return nil
-}
-
-func (r *LogoutReq) Decode(ctx *gin.Context) error {
-	return json.NewDecoder(ctx.Request.Body).Decode(r)
-}
-
 func Logout(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*op.User)
 
-	var req LogoutReq
+	var req model.ServerIDReq
 	if err := model.Decode(ctx, &req); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return

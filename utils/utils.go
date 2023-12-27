@@ -310,7 +310,10 @@ func LIKE(s string) string {
 }
 
 func SortUUID() string {
-	src := uuid.New()
+	return SortUUIDWithUUID(uuid.New())
+}
+
+func SortUUIDWithUUID(src uuid.UUID) string {
 	dst := make([]byte, 32)
 	hex.Encode(dst, src[:])
 	return stream.BytesToString(dst)

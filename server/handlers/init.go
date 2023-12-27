@@ -245,6 +245,8 @@ func initVendor(vendor *gin.RouterGroup) {
 		alist.POST("/list", vendorAlist.List)
 
 		alist.GET("/me", vendorAlist.Me)
+
+		alist.GET("/binds", vendorAlist.Binds)
 	}
 
 	{

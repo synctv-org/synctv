@@ -27,7 +27,7 @@ func Me(ctx *gin.Context) {
 	aucd, err := user.AlistCache().LoadOrStore(ctx, serverID)
 	if err != nil {
 		if errors.Is(err, db.ErrNotFound("vendor")) {
-			ctx.JSON(http.StatusBadRequest, model.NewApiErrorStringResp("alist server id not found"))
+			ctx.JSON(http.StatusBadRequest, model.NewApiErrorStringResp("alist server not found"))
 			return
 		}
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))

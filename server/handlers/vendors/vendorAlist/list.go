@@ -66,14 +66,14 @@ func List(ctx *gin.Context) {
 			return
 		}
 		if total == 0 {
-			ctx.JSON(http.StatusBadRequest, model.NewApiErrorStringResp("alist server id not found"))
+			ctx.JSON(http.StatusBadRequest, model.NewApiErrorStringResp("alist server not found"))
 			return
 		}
 
 		ev, err := db.GetAlistVendors(user.ID, append(socpes, db.Paginate(page, size))...)
 		if err != nil {
 			if errors.Is(err, db.ErrNotFound("vendor")) {
-				ctx.JSON(http.StatusBadRequest, model.NewApiErrorStringResp("alist server id not found"))
+				ctx.JSON(http.StatusBadRequest, model.NewApiErrorStringResp("alist server not found"))
 				return
 			}
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
@@ -126,7 +126,7 @@ AlistFSListResp:
 	aucd, err := user.AlistCache().LoadOrStore(ctx, serverID)
 	if err != nil {
 		if errors.Is(err, db.ErrNotFound("vendor")) {
-			ctx.JSON(http.StatusBadRequest, model.NewApiErrorStringResp("alist server id not found"))
+			ctx.JSON(http.StatusBadRequest, model.NewApiErrorStringResp("alist server not found"))
 			return
 		}
 

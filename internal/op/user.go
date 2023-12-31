@@ -76,7 +76,7 @@ func (u *User) SetPassword(password string) error {
 	return db.SetUserHashedPassword(u.ID, hashedPassword)
 }
 
-func (u *User) CreateRoom(name, password string, conf ...db.CreateRoomConfig) (*Room, error) {
+func (u *User) CreateRoom(name, password string, conf ...db.CreateRoomConfig) (*RoomEntry, error) {
 	if u.IsBanned() {
 		return nil, errors.New("user banned")
 	}
@@ -178,8 +178,8 @@ func (u *User) HasRoomPermission(room *Room, permission model.RoomUserPermission
 	return room.HasPermission(u.ID, permission)
 }
 
-func (u *User) DeleteRoom(room *Room) error {
-	if !u.HasRoomPermission(room, model.PermissionEditRoom) {
+func (u *User) DeleteRoom(room *RoomEntry) error {
+	if !u.HasRoomPermission(room.Value(), model.PermissionEditRoom) {
 		return model.ErrNoPermission
 	}
 	return CompareAndDeleteRoom(room)

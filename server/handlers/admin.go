@@ -24,7 +24,7 @@ import (
 )
 
 func EditAdminSettings(ctx *gin.Context) {
-	// user := ctx.MustGet("user").(*op.User)
+	// user := ctx.MustGet("user").(*op.UserEntry)
 
 	req := model.AdminSettingsReq{}
 	if err := model.Decode(ctx, &req); err != nil {
@@ -44,7 +44,7 @@ func EditAdminSettings(ctx *gin.Context) {
 }
 
 func AdminSettings(ctx *gin.Context) {
-	// user := ctx.MustGet("user").(*op.User)
+	// user := ctx.MustGet("user").(*op.UserEntry)
 	group := ctx.Param("group")
 	switch group {
 	case "oauth2":
@@ -97,7 +97,7 @@ func AdminSettings(ctx *gin.Context) {
 }
 
 func Users(ctx *gin.Context) {
-	// user := ctx.MustGet("user").(*op.User)
+	// user := ctx.MustGet("user").(*op.UserEntry)
 	page, pageSize, err := utils.GetPageAndMax(ctx)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
@@ -269,30 +269,30 @@ func ApprovePendingUser(ctx *gin.Context) {
 }
 
 func BanUser(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.User)
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
 	req := model.UserIDReq{}
 	if err := model.Decode(ctx, &req); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
-	u, err := db.GetUserByID(req.ID)
+	u, err := op.LoadOrInitUserByID(req.ID)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
-	if u.IsRoot() {
+	if u.Value().IsRoot() {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("cannot ban root"))
 		return
 	}
 
-	if u.IsAdmin() && !user.IsRoot() {
+	if u.Value().IsAdmin() && !user.IsRoot() {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("cannot ban admin"))
 		return
 	}
 
-	err = op.SetRoleByID(req.ID, dbModel.RoleBanned)
+	err = u.Value().SetRole(dbModel.RoleBanned)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
@@ -302,25 +302,25 @@ func BanUser(ctx *gin.Context) {
 }
 
 func UnBanUser(ctx *gin.Context) {
-	// user := ctx.MustGet("user").(*op.User)
+	// user := ctx.MustGet("user").(*op.UserEntry)
 	req := model.UserIDReq{}
 	if err := model.Decode(ctx, &req); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
-	u, err := db.GetUserByID(req.ID)
+	u, err := op.LoadOrInitUserByID(req.ID)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
-	if !u.IsBanned() {
+	if !u.Value().IsBanned() {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("user is not banned"))
 		return
 	}
 
-	err = op.SetRoleByID(req.ID, dbModel.RoleUser)
+	err = u.Value().SetRole(dbModel.RoleUser)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
@@ -330,7 +330,7 @@ func UnBanUser(ctx *gin.Context) {
 }
 
 func Rooms(ctx *gin.Context) {
-	// user := ctx.MustGet("user").(*op.User)
+	// user := ctx.MustGet("user").(*op.UserEntry)
 
 	page, pageSize, err := utils.GetPageAndMax(ctx)
 	if err != nil {
@@ -482,7 +482,7 @@ func ApprovePendingRoom(ctx *gin.Context) {
 }
 
 func BanRoom(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.User)
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
 	req := model.RoomIDReq{}
 	if err := model.Decode(ctx, &req); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
@@ -511,7 +511,7 @@ func BanRoom(ctx *gin.Context) {
 		return
 	}
 
-	err = op.SetRoomStatus(req.Id, dbModel.RoomStatusBanned)
+	err = op.SetRoomStatusByID(req.Id, dbModel.RoomStatusBanned)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
@@ -521,7 +521,7 @@ func BanRoom(ctx *gin.Context) {
 }
 
 func UnBanRoom(ctx *gin.Context) {
-	// user := ctx.MustGet("user").(*op.User)
+	// user := ctx.MustGet("user").(*op.UserEntry)
 	req := model.RoomIDReq{}
 	if err := model.Decode(ctx, &req); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
@@ -539,7 +539,7 @@ func UnBanRoom(ctx *gin.Context) {
 		return
 	}
 
-	err = op.SetRoomStatus(req.Id, dbModel.RoomStatusActive)
+	err = op.SetRoomStatusByID(req.Id, dbModel.RoomStatusActive)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
@@ -549,7 +549,7 @@ func UnBanRoom(ctx *gin.Context) {
 }
 
 func AddUser(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.User)
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
 
 	req := model.AddUserReq{}
 	if err := model.Decode(ctx, &req); err != nil {
@@ -572,7 +572,7 @@ func AddUser(ctx *gin.Context) {
 }
 
 func DeleteUser(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.User)
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
 
 	req := model.UserIDReq{}
 	if err := model.Decode(ctx, &req); err != nil {
@@ -580,18 +580,18 @@ func DeleteUser(ctx *gin.Context) {
 		return
 	}
 
-	u, err := db.GetUserByID(req.ID)
+	u, err := op.LoadOrInitUserByID(req.ID)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
-	if u.IsRoot() {
+	if u.Value().IsRoot() {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("cannot delete root"))
 		return
 	}
 
-	if u.IsAdmin() && !user.IsRoot() {
+	if u.Value().IsAdmin() && !user.IsRoot() {
 		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("cannot delete admin"))
 		return
 	}
@@ -605,7 +605,7 @@ func DeleteUser(ctx *gin.Context) {
 }
 
 func AdminUserPassword(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.User)
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
 
 	req := model.AdminUserPasswordReq{}
 	if err := model.Decode(ctx, &req); err != nil {
@@ -619,17 +619,17 @@ func AdminUserPassword(ctx *gin.Context) {
 		return
 	}
 
-	if u.IsRoot() {
+	if u.Value().IsRoot() {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("cannot change root password"))
 		return
 	}
 
-	if u.IsAdmin() && !user.IsRoot() {
+	if u.Value().IsAdmin() && !user.IsRoot() {
 		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("cannot change admin password"))
 		return
 	}
 
-	if err := u.SetPassword(req.Password); err != nil {
+	if err := u.Value().SetPassword(req.Password); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorStringResp(err.Error()))
 		return
 	}
@@ -638,7 +638,7 @@ func AdminUserPassword(ctx *gin.Context) {
 }
 
 func AdminUsername(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.User)
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
 
 	req := model.AdminUsernameReq{}
 	if err := model.Decode(ctx, &req); err != nil {
@@ -652,17 +652,17 @@ func AdminUsername(ctx *gin.Context) {
 		return
 	}
 
-	if u.IsRoot() {
+	if u.Value().IsRoot() {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("cannot change root username"))
 		return
 	}
 
-	if u.IsAdmin() && !user.IsRoot() {
+	if u.Value().IsAdmin() && !user.IsRoot() {
 		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("cannot change admin username"))
 		return
 	}
 
-	if err := u.SetUsername(req.Username); err != nil {
+	if err := u.Value().SetUsername(req.Username); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorStringResp(err.Error()))
 		return
 	}
@@ -671,7 +671,7 @@ func AdminUsername(ctx *gin.Context) {
 }
 
 func AdminRoomPassword(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.User)
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
 
 	req := model.AdminRoomPasswordReq{}
 	if err := model.Decode(ctx, &req); err != nil {
@@ -685,23 +685,23 @@ func AdminRoomPassword(ctx *gin.Context) {
 		return
 	}
 
-	creator, err := op.LoadOrInitUserByID(r.CreatorID)
+	creator, err := op.LoadOrInitUserByID(r.Value().CreatorID)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("room creator not found"))
 		return
 	}
 
-	if creator.IsRoot() {
+	if creator.Value().IsRoot() {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("cannot change root room password"))
 		return
 	}
 
-	if creator.IsAdmin() && !user.IsRoot() {
+	if creator.Value().IsAdmin() && !user.IsRoot() {
 		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("cannot change admin room password"))
 		return
 	}
 
-	if err := r.SetPassword(req.Password); err != nil {
+	if err := r.Value().SetPassword(req.Password); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorStringResp(err.Error()))
 		return
 	}
@@ -710,7 +710,7 @@ func AdminRoomPassword(ctx *gin.Context) {
 }
 
 func AdminGetVendorBackends(ctx *gin.Context) {
-	// user := ctx.MustGet("user").(*op.User)
+	// user := ctx.MustGet("user").(*op.UserEntry)
 
 	conns := vendor.LoadConns()
 	page, size, err := utils.GetPageAndMax(ctx)
@@ -752,7 +752,7 @@ func AdminGetVendorBackends(ctx *gin.Context) {
 }
 
 func AdminAddVendorBackend(ctx *gin.Context) {
-	// user := ctx.MustGet("user").(*op.User)
+	// user := ctx.MustGet("user").(*op.UserEntry)
 
 	var req model.AddVendorBackendReq
 	if err := model.Decode(ctx, &req); err != nil {
@@ -769,7 +769,7 @@ func AdminAddVendorBackend(ctx *gin.Context) {
 }
 
 func AdminDeleteVendorBackends(ctx *gin.Context) {
-	// user := ctx.MustGet("user").(*op.User)
+	// user := ctx.MustGet("user").(*op.UserEntry)
 
 	var req model.VendorBackendEndpointsReq
 	if err := model.Decode(ctx, &req); err != nil {
@@ -786,7 +786,7 @@ func AdminDeleteVendorBackends(ctx *gin.Context) {
 }
 
 func AdminUpdateVendorBackends(ctx *gin.Context) {
-	// user := ctx.MustGet("user").(*op.User)
+	// user := ctx.MustGet("user").(*op.UserEntry)
 
 	var req model.AddVendorBackendReq
 	if err := model.Decode(ctx, &req); err != nil {
@@ -803,7 +803,7 @@ func AdminUpdateVendorBackends(ctx *gin.Context) {
 }
 
 func AdminReconnectVendorBackends(ctx *gin.Context) {
-	// user := ctx.MustGet("user").(*op.User)
+	// user := ctx.MustGet("user").(*op.UserEntry)
 
 	var req model.VendorBackendEndpointsReq
 	if err := model.Decode(ctx, &req); err != nil {
@@ -833,7 +833,7 @@ func AdminReconnectVendorBackends(ctx *gin.Context) {
 }
 
 func AdminEnableVendorBackends(ctx *gin.Context) {
-	// user := ctx.MustGet("user").(*op.User)
+	// user := ctx.MustGet("user").(*op.UserEntry)
 
 	var req model.VendorBackendEndpointsReq
 	if err := model.Decode(ctx, &req); err != nil {
@@ -850,7 +850,7 @@ func AdminEnableVendorBackends(ctx *gin.Context) {
 }
 
 func AdminDisableVendorBackends(ctx *gin.Context) {
-	// user := ctx.MustGet("user").(*op.User)
+	// user := ctx.MustGet("user").(*op.UserEntry)
 
 	var req model.VendorBackendEndpointsReq
 	if err := model.Decode(ctx, &req); err != nil {

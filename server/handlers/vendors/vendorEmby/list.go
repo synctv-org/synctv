@@ -38,7 +38,7 @@ type EmbyFileItem struct {
 type EmbyFSListResp = model.VendorFSListResp[*EmbyFileItem]
 
 func List(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.User)
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
 
 	req := ListReq{}
 	if err := model.Decode(ctx, &req); err != nil {

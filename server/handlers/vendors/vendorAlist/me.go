@@ -15,7 +15,7 @@ import (
 type AlistMeResp = model.VendorMeResp[*alist.MeResp]
 
 func Me(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.User)
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
 
 	serverID := ctx.Query("serverID")
 	if serverID == "" {
@@ -55,7 +55,7 @@ type AlistBindsResp []*struct {
 }
 
 func Binds(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.User)
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
 
 	ev, err := db.GetAlistVendors(user.ID)
 	if err != nil {

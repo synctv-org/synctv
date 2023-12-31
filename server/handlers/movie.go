@@ -40,8 +40,8 @@ func GetPageItems[T any](ctx *gin.Context, items []T) ([]T, error) {
 }
 
 func MovieList(ctx *gin.Context) {
-	room := ctx.MustGet("room").(*op.Room)
-	user := ctx.MustGet("user").(*op.User)
+	room := ctx.MustGet("room").(*op.RoomEntry).Value()
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
 
 	page, max, err := utils.GetPageAndMax(ctx)
 	if err != nil {
@@ -116,8 +116,8 @@ func genCurrentResp(current *op.Current) *model.CurrentMovieResp {
 }
 
 func CurrentMovie(ctx *gin.Context) {
-	room := ctx.MustGet("room").(*op.Room)
-	user := ctx.MustGet("user").(*op.User)
+	room := ctx.MustGet("room").(*op.RoomEntry).Value()
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
 
 	current := room.Current()
 	err := genCurrent(ctx, user, room, current)
@@ -132,8 +132,8 @@ func CurrentMovie(ctx *gin.Context) {
 }
 
 func Movies(ctx *gin.Context) {
-	room := ctx.MustGet("room").(*op.Room)
-	user := ctx.MustGet("user").(*op.User)
+	room := ctx.MustGet("room").(*op.RoomEntry).Value()
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
 
 	page, max, err := utils.GetPageAndMax(ctx)
 	if err != nil {
@@ -164,8 +164,8 @@ func Movies(ctx *gin.Context) {
 }
 
 func PushMovie(ctx *gin.Context) {
-	room := ctx.MustGet("room").(*op.Room)
-	user := ctx.MustGet("user").(*op.User)
+	room := ctx.MustGet("room").(*op.RoomEntry).Value()
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
 
 	req := model.PushMovieReq{}
 	if err := model.Decode(ctx, &req); err != nil {
@@ -195,8 +195,8 @@ func PushMovie(ctx *gin.Context) {
 }
 
 func PushMovies(ctx *gin.Context) {
-	room := ctx.MustGet("room").(*op.Room)
-	user := ctx.MustGet("user").(*op.User)
+	room := ctx.MustGet("room").(*op.RoomEntry).Value()
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
 
 	req := model.PushMoviesReq{}
 	if err := model.Decode(ctx, &req); err != nil {
@@ -238,8 +238,8 @@ func NewPublishKey(ctx *gin.Context) {
 		return
 	}
 
-	room := ctx.MustGet("room").(*op.Room)
-	user := ctx.MustGet("user").(*op.User)
+	room := ctx.MustGet("room").(*op.RoomEntry).Value()
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
 
 	req := model.IdReq{}
 	if err := model.Decode(ctx, &req); err != nil {
@@ -281,8 +281,8 @@ func NewPublishKey(ctx *gin.Context) {
 }
 
 func EditMovie(ctx *gin.Context) {
-	room := ctx.MustGet("room").(*op.Room)
-	user := ctx.MustGet("user").(*op.User)
+	room := ctx.MustGet("room").(*op.RoomEntry).Value()
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
 
 	req := model.EditMovieReq{}
 	if err := model.Decode(ctx, &req); err != nil {
@@ -311,8 +311,8 @@ func EditMovie(ctx *gin.Context) {
 }
 
 func DelMovie(ctx *gin.Context) {
-	room := ctx.MustGet("room").(*op.Room)
-	user := ctx.MustGet("user").(*op.User)
+	room := ctx.MustGet("room").(*op.RoomEntry).Value()
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
 
 	req := model.IdsReq{}
 	if err := model.Decode(ctx, &req); err != nil {
@@ -342,8 +342,8 @@ func DelMovie(ctx *gin.Context) {
 }
 
 func ClearMovies(ctx *gin.Context) {
-	room := ctx.MustGet("room").(*op.Room)
-	user := ctx.MustGet("user").(*op.User)
+	room := ctx.MustGet("room").(*op.RoomEntry).Value()
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
 
 	if err := user.ClearMovies(room); err != nil {
 		if errors.Is(err, dbModel.ErrNoPermission) {
@@ -366,8 +366,8 @@ func ClearMovies(ctx *gin.Context) {
 }
 
 func SwapMovie(ctx *gin.Context) {
-	room := ctx.MustGet("room").(*op.Room)
-	user := ctx.MustGet("user").(*op.User)
+	room := ctx.MustGet("room").(*op.RoomEntry).Value()
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
 
 	req := model.SwapMovieReq{}
 	if err := model.Decode(ctx, &req); err != nil {
@@ -392,8 +392,8 @@ func SwapMovie(ctx *gin.Context) {
 }
 
 func ChangeCurrentMovie(ctx *gin.Context) {
-	room := ctx.MustGet("room").(*op.Room)
-	user := ctx.MustGet("user").(*op.User)
+	room := ctx.MustGet("room").(*op.RoomEntry).Value()
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
 
 	req := model.IdCanEmptyReq{}
 	err := model.Decode(ctx, &req)
@@ -443,7 +443,7 @@ func ProxyMovie(ctx *gin.Context) {
 		return
 	}
 
-	m, err := room.GetMovieByID(ctx.Param("movieId"))
+	m, err := room.Value().GetMovieByID(ctx.Param("movieId"))
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
@@ -558,8 +558,8 @@ func (e FormatErrNotSupportFileType) Error() string {
 }
 
 func JoinLive(ctx *gin.Context) {
-	room := ctx.MustGet("room").(*op.Room)
-	// user := ctx.MustGet("user").(*op.User)
+	room := ctx.MustGet("room").(*op.RoomEntry).Value()
+	// user := ctx.MustGet("user").(*op.UserEntry)
 
 	movieId := strings.Trim(ctx.Param("movieId"), "/")
 	fileExt := path.Ext(movieId)
@@ -661,7 +661,7 @@ func proxyVendorMovie(ctx *gin.Context, movie *op.Movie) {
 				ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 				return
 			}
-			mpdC, err := movie.BilibiliCache().SharedMpd.Get(ctx, u.BilibiliCache())
+			mpdC, err := movie.BilibiliCache().SharedMpd.Get(ctx, u.Value().BilibiliCache())
 			if err != nil {
 				ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 				return
@@ -707,7 +707,7 @@ func proxyVendorMovie(ctx *gin.Context, movie *op.Movie) {
 				ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 				return
 			}
-			srtI, err := movie.BilibiliCache().Subtitle.Get(ctx, u.BilibiliCache())
+			srtI, err := movie.BilibiliCache().Subtitle.Get(ctx, u.Value().BilibiliCache())
 			if err != nil {
 				ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 				return
@@ -732,7 +732,7 @@ func proxyVendorMovie(ctx *gin.Context, movie *op.Movie) {
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 			return
 		}
-		alistC, err := movie.AlistCache().Get(ctx, u.AlistCache())
+		alistC, err := movie.AlistCache().Get(ctx, u.Value().AlistCache())
 		if err != nil {
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 			return
@@ -787,7 +787,7 @@ func proxyVendorMovie(ctx *gin.Context, movie *op.Movie) {
 				ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 				return
 			}
-			embyC, err := movie.EmbyCache().Get(ctx, u.EmbyCache())
+			embyC, err := movie.EmbyCache().Get(ctx, u.Value().EmbyCache())
 			if err != nil {
 				ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 				return
@@ -819,7 +819,7 @@ func proxyVendorMovie(ctx *gin.Context, movie *op.Movie) {
 				ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 				return
 			}
-			embyC, err := movie.EmbyCache().Get(ctx, u.EmbyCache())
+			embyC, err := movie.EmbyCache().Get(ctx, u.Value().EmbyCache())
 			if err != nil {
 				ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 				return
@@ -869,12 +869,12 @@ func parse2VendorMovie(ctx context.Context, user *op.User, room *op.Room, movie 
 		if !movie.Base.Proxy {
 			var s string
 			if movie.Base.VendorInfo.Bilibili.Shared {
-				var u *op.User
+				var u *op.UserEntry
 				u, err = op.LoadOrInitUserByID(movie.CreatorID)
 				if err != nil {
 					return err
 				}
-				s, err = opM.BilibiliCache().NoSharedMovie.LoadOrStore(ctx, movie.CreatorID, u.BilibiliCache())
+				s, err = opM.BilibiliCache().NoSharedMovie.LoadOrStore(ctx, movie.CreatorID, u.Value().BilibiliCache())
 			} else {
 				s, err = opM.BilibiliCache().NoSharedMovie.LoadOrStore(ctx, user.ID, user.BilibiliCache())
 			}
@@ -911,7 +911,7 @@ func parse2VendorMovie(ctx context.Context, user *op.User, room *op.Room, movie 
 		if err != nil {
 			return err
 		}
-		data, err := opM.AlistCache().Get(ctx, creator.AlistCache())
+		data, err := opM.AlistCache().Get(ctx, creator.Value().AlistCache())
 		if err != nil {
 			return err
 		}
@@ -961,7 +961,7 @@ func parse2VendorMovie(ctx context.Context, user *op.User, room *op.Room, movie 
 		if err != nil {
 			return err
 		}
-		data, err := opM.EmbyCache().Get(ctx, u.EmbyCache())
+		data, err := opM.EmbyCache().Get(ctx, u.Value().EmbyCache())
 		if err != nil {
 			return err
 		}

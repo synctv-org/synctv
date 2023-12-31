@@ -42,7 +42,7 @@ func (r *QRCodeLoginReq) Decode(ctx *gin.Context) error {
 }
 
 func LoginWithQR(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.User)
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
 
 	req := QRCodeLoginReq{}
 	if err := model.Decode(ctx, &req); err != nil {
@@ -186,7 +186,7 @@ func (r *SMSLoginReq) Decode(ctx *gin.Context) error {
 }
 
 func LoginWithSMS(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.User)
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
 
 	var req SMSLoginReq
 	if err := model.Decode(ctx, &req); err != nil {
@@ -227,7 +227,7 @@ func LoginWithSMS(ctx *gin.Context) {
 }
 
 func Logout(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.User)
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
 	err := db.DeleteBilibiliVendor(user.ID)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))

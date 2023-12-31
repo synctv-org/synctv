@@ -31,7 +31,7 @@ func (r *ParseReq) Decode(ctx *gin.Context) error {
 }
 
 func Parse(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.User)
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
 
 	req := ParseReq{}
 	if err := model.Decode(ctx, &req); err != nil {

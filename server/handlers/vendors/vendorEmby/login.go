@@ -48,7 +48,7 @@ func (r *LoginReq) Decode(ctx *gin.Context) error {
 }
 
 func Login(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.User)
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
 
 	req := LoginReq{}
 	if err := model.Decode(ctx, &req); err != nil {
@@ -119,7 +119,7 @@ func Login(ctx *gin.Context) {
 }
 
 func Logout(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.User)
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
 
 	var req model.ServerIDReq
 	if err := model.Decode(ctx, &req); err != nil {

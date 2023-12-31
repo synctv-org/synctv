@@ -235,10 +235,6 @@ func (r *Room) SetRoomStatus(status model.RoomStatus) error {
 		return err
 	}
 	r.Status = status
-	switch status {
-	case model.RoomStatusBanned, model.RoomStatusPending:
-		return CompareAndCloseRoom(r)
-	}
 	return nil
 }
 

@@ -15,7 +15,7 @@ import (
 )
 
 func BindApi(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.User)
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
 
 	pi, err := providers.GetProvider(provider.OAuth2Provider(ctx.Param("type")))
 	if err != nil {
@@ -37,7 +37,7 @@ func BindApi(ctx *gin.Context) {
 }
 
 func UnBindApi(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.User)
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
 
 	pi, err := providers.GetProvider(provider.OAuth2Provider(ctx.Param("type")))
 	if err != nil {
@@ -74,13 +74,13 @@ func newBindFunc(userID, redirect string) stateHandler {
 			return
 		}
 
-		err = user.BindProvider(pi.Provider(), ui.ProviderUserID)
+		err = user.Value().BindProvider(pi.Provider(), ui.ProviderUserID)
 		if err != nil {
 			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 			return
 		}
 
-		token, err := middlewares.NewAuthUserToken(user)
+		token, err := middlewares.NewAuthUserToken(user.Value())
 		if err != nil {
 			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 			return

@@ -16,7 +16,7 @@ import (
 )
 
 func Me(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.User)
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
 
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(&model.UserInfoResp{
 		ID:        user.ID,
@@ -43,12 +43,12 @@ func LoginUser(ctx *gin.Context) {
 		return
 	}
 
-	if ok := user.CheckPassword(req.Password); !ok {
+	if ok := user.Value().CheckPassword(req.Password); !ok {
 		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("password incorrect"))
 		return
 	}
 
-	token, err := middlewares.NewAuthUserToken(user)
+	token, err := middlewares.NewAuthUserToken(user.Value())
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
@@ -60,7 +60,7 @@ func LoginUser(ctx *gin.Context) {
 }
 
 func LogoutUser(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.User)
+	user := ctx.MustGet("user").(*op.UserEntry)
 
 	err := op.CompareAndDeleteUser(user)
 	if err != nil {
@@ -72,7 +72,7 @@ func LogoutUser(ctx *gin.Context) {
 }
 
 func UserRooms(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.User)
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
 
 	page, pageSize, err := utils.GetPageAndMax(ctx)
 	if err != nil {
@@ -132,7 +132,7 @@ func UserRooms(ctx *gin.Context) {
 }
 
 func SetUsername(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.User)
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
 
 	var req model.SetUsernameReq
 	if err := model.Decode(ctx, &req); err != nil {
@@ -150,7 +150,7 @@ func SetUsername(ctx *gin.Context) {
 }
 
 func SetUserPassword(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.User)
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
 
 	var req model.SetUserPasswordReq
 	if err := model.Decode(ctx, &req); err != nil {
@@ -176,7 +176,7 @@ func SetUserPassword(ctx *gin.Context) {
 }
 
 func UserBindProviders(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.User)
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
 
 	up, err := db.GetBindProviders(user.ID)
 	if err != nil {

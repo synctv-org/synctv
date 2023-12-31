@@ -15,7 +15,7 @@ import (
 type EmbyMeResp = model.VendorMeResp[*emby.SystemInfoResp]
 
 func Me(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.User)
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
 
 	serverID := ctx.Query("serverID")
 	if serverID == "" {
@@ -55,7 +55,7 @@ type EmbyBindsResp []*struct {
 }
 
 func Binds(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.User)
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
 
 	ev, err := db.GetEmbyVendors(user.ID)
 	if err != nil {

@@ -16,7 +16,7 @@ import (
 type BilibiliMeResp = model.VendorMeResp[*bilibili.UserInfoResp]
 
 func Me(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.User)
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
 
 	bucd, err := user.BilibiliCache().Get(ctx)
 	if err != nil {

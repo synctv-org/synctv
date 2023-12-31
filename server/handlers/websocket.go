@@ -31,8 +31,10 @@ func NewWebSocketHandler(wss *utils.WebSocket) gin.HandlerFunc {
 	}
 }
 
-func NewWSMessageHandler(u *op.User, r *op.Room) func(c *websocket.Conn) error {
+func NewWSMessageHandler(uE *op.UserEntry, rE *op.RoomEntry) func(c *websocket.Conn) error {
 	return func(c *websocket.Conn) error {
+		r := rE.Value()
+		u := uE.Value()
 		client, err := r.NewClient(u, c)
 		if err != nil {
 			log.Errorf("ws: register client error: %v", err)

@@ -129,7 +129,7 @@ func newAuthFunc(redirect string) stateHandler {
 			return
 		}
 
-		var user *op.User
+		var user *op.UserEntry
 		if settings.DisableUserSignup.Get() || pgs.DisableUserSignup.Get() {
 			user, err = op.GetUserByProvider(pi.Provider(), ui.ProviderUserID)
 		} else {
@@ -144,7 +144,7 @@ func newAuthFunc(redirect string) stateHandler {
 			return
 		}
 
-		token, err := middlewares.NewAuthUserToken(user)
+		token, err := middlewares.NewAuthUserToken(user.Value())
 		if err != nil {
 			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 			return

@@ -31,7 +31,7 @@ func auth(ReqAppName, ReqChannelName string, IsPublisher bool) (*rtmps.Channel, 
 			log.Errorf("rtmp: get room by id error: %v", err)
 			return nil, err
 		}
-		return r.GetChannel(channelName)
+		return r.Value().GetChannel(channelName)
 	}
 
 	if !settings.RtmpPlayer.Get() {
@@ -43,5 +43,5 @@ func auth(ReqAppName, ReqChannelName string, IsPublisher bool) (*rtmps.Channel, 
 		log.Errorf("rtmp: get room by id error: %v", err)
 		return nil, err
 	}
-	return r.GetChannel(ReqChannelName)
+	return r.Value().GetChannel(ReqChannelName)
 }

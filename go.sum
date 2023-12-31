@@ -366,6 +366,8 @@ github.com/zencoder/go-dash/v3 v3.0.3 h1:xqwGJ2fJCSArwONGx6sY26Z1lxQ7zTURoxdRjCp
 github.com/zencoder/go-dash/v3 v3.0.3/go.mod h1:30R5bKy1aUYY45yesjtZ9l8trNc2TwNqbS17WVQmCzk=
 github.com/zijiren233/gencontainer v0.0.0-20231213075414-f7f4c8261dca h1:mYxvu0DgfUFviM0GRqRIwC+nXBGZNV/WLnndTYGSwPA=
 github.com/zijiren233/gencontainer v0.0.0-20231213075414-f7f4c8261dca/go.mod h1:V5oL7PrZxgisuLCblFWd89Jg99O8vM1n58llcxZ2hDY=
+github.com/zijiren233/gencontainer v0.0.0-20231231082035-2008befd9bc8 h1:kQ74VfoQx+9G3H7t8CkrdtMXYRsO5/jV0U5gquZe1Gc=
+github.com/zijiren233/gencontainer v0.0.0-20231231082035-2008befd9bc8/go.mod h1:V5oL7PrZxgisuLCblFWd89Jg99O8vM1n58llcxZ2hDY=
 github.com/zijiren233/go-colorable v0.0.0-20230930131441-997304c961cb h1:0DyOxf/TbbGodHhOVHNoPk+7v/YBJACs22gKpKlatWw=
 github.com/zijiren233/go-colorable v0.0.0-20230930131441-997304c961cb/go.mod h1:6TCzjDiQ8+5gWZiwsC3pnA5M0vUy2jV2Y7ciHJh729g=
 github.com/zijiren233/livelib v0.3.0 h1:RLfx6vSUr7wfK6F0VY0aFOBDcT/ljvjQUTOlHEcUlUQ=

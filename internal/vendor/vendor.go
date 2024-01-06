@@ -93,14 +93,14 @@ func EnableVendorBackend(ctx context.Context, endpoint string) (err error) {
 	raw := LoadConns()
 	if v, ok := raw[endpoint]; !ok {
 		return fmt.Errorf("endpoint not found: %s", endpoint)
-	} else if v.Info.Enabled {
+	} else if v.Info.UsedBy.Enabled {
 		return nil
 	}
 
-	raw[endpoint].Info.Enabled = true
+	raw[endpoint].Info.UsedBy.Enabled = true
 	defer func() {
 		if err != nil {
-			raw[endpoint].Info.Enabled = false
+			raw[endpoint].Info.UsedBy.Enabled = false
 		}
 	}()
 
@@ -130,19 +130,19 @@ func EnableVendorBackends(ctx context.Context, endpoints []string) (err error) {
 	for _, endpoint := range endpoints {
 		if v, ok := raw[endpoint]; !ok {
 			return fmt.Errorf("endpoint not found: %s", endpoint)
-		} else if !v.Info.Enabled {
+		} else if !v.Info.UsedBy.Enabled {
 			needChangeEndpoints = append(needChangeEndpoints, endpoint)
 		}
 	}
 
 	for _, endpoint := range needChangeEndpoints {
-		raw[endpoint].Info.Enabled = true
+		raw[endpoint].Info.UsedBy.Enabled = true
 	}
 
 	defer func() {
 		if err != nil {
 			for _, endpoint := range needChangeEndpoints {
-				raw[endpoint].Info.Enabled = false
+				raw[endpoint].Info.UsedBy.Enabled = false
 			}
 		}
 	}()
@@ -171,14 +171,14 @@ func DisableVendorBackend(ctx context.Context, endpoint string) (err error) {
 	raw := LoadConns()
 	if v, ok := raw[endpoint]; !ok {
 		return fmt.Errorf("endpoint not found: %s", endpoint)
-	} else if !v.Info.Enabled {
+	} else if !v.Info.UsedBy.Enabled {
 		return nil
 	}
 
-	raw[endpoint].Info.Enabled = false
+	raw[endpoint].Info.UsedBy.Enabled = false
 	defer func() {
 		if err != nil {
-			raw[endpoint].Info.Enabled = true
+			raw[endpoint].Info.UsedBy.Enabled = true
 		}
 	}()
 
@@ -208,19 +208,19 @@ func DisableVendorBackends(ctx context.Context, endpoints []string) (err error) 
 	for _, endpoint := range endpoints {
 		if v, ok := raw[endpoint]; !ok {
 			return fmt.Errorf("endpoint not found: %s", endpoint)
-		} else if v.Info.Enabled {
+		} else if v.Info.UsedBy.Enabled {
 			needChangeEndpoints = append(needChangeEndpoints, endpoint)
 		}
 	}
 
 	for _, endpoint := range needChangeEndpoints {
-		raw[endpoint].Info.Enabled = false
+		raw[endpoint].Info.UsedBy.Enabled = false
 	}
 
 	defer func() {
 		if err != nil {
 			for _, endpoint := range needChangeEndpoints {
-				raw[endpoint].Info.Enabled = true
+				raw[endpoint].Info.UsedBy.Enabled = true
 			}
 		}
 	}()
@@ -405,7 +405,7 @@ func (b *VendorClients) EmbyClients() map[string]EmbyInterface {
 }
 
 func newBackendConn(ctx context.Context, conf *model.VendorBackend) (conns *BackendConn, err error) {
-	cc, err := NewGrpcClientConn(ctx, &conf.Backend)
+	cc, err := NewGrpcConn(ctx, &conf.Backend)
 	if err != nil {
 		return conns, err
 	}
@@ -446,7 +446,7 @@ func newVendorClients(conns map[string]*BackendConn) (*VendorClients, error) {
 		emby:     make(map[string]EmbyInterface),
 	}
 	for _, conn := range conns {
-		if !conn.Info.Enabled {
+		if !conn.Info.UsedBy.Enabled {
 			continue
 		}
 		if conn.Info.UsedBy.Bilibili {
@@ -484,7 +484,7 @@ func newVendorClients(conns map[string]*BackendConn) (*VendorClients, error) {
 	return clients, nil
 }
 
-func NewGrpcClientConn(ctx context.Context, conf *model.Backend) (*grpc.ClientConn, error) {
+func NewGrpcConn(ctx context.Context, conf *model.Backend) (*grpc.ClientConn, error) {
 	if conf.Endpoint == "" {
 		return nil, errors.New("new grpc client failed, endpoint is empty")
 	}

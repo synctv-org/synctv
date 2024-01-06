@@ -53,11 +53,11 @@ type VendorBackend struct {
 	CreatedAt time.Time
 	UpdatedAt time.Time
 	Backend   Backend       `gorm:"embedded;embeddedPrefix:backend_" json:"backend"`
-	Enabled   bool          `gorm:"default:true" json:"enabled"`
 	UsedBy    BackendUsedBy `gorm:"embedded;embeddedPrefix:used_by_" json:"usedBy"`
 }
 
 type BackendUsedBy struct {
+	Enabled             bool   `gorm:"default:false" json:"enabled"`
 	Bilibili            bool   `gorm:"default:false" json:"bilibili"`
 	BilibiliBackendName string `gorm:"type:varchar(64)" json:"bilibiliBackendName"`
 	Alist               bool   `gorm:"default:false" json:"alist"`

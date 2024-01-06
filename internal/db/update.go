@@ -100,17 +100,17 @@ func autoMigrate(dst ...any) error {
 	log.Info("migrating database...")
 	switch conf.Conf.Database.Type {
 	case conf.DatabaseTypeMysql:
-		if conf.Conf.Database.Type == conf.DatabaseTypeMysql {
-			if err := db.Exec("SET FOREIGN_KEY_CHECKS = 0").Error; err != nil {
-				return err
-			}
-			defer func() {
-				err := db.Exec("SET FOREIGN_KEY_CHECKS = 1").Error
-				if err != nil {
-					log.Fatalf("failed to set foreign key checks: %s", err.Error())
-				}
-			}()
-		}
+		// if conf.Conf.Database.Type == conf.DatabaseTypeMysql {
+		// 	if err := db.Exec("SET FOREIGN_KEY_CHECKS = 0").Error; err != nil {
+		// 		return err
+		// 	}
+		// 	defer func() {
+		// 		err := db.Exec("SET FOREIGN_KEY_CHECKS = 1").Error
+		// 		if err != nil {
+		// 			log.Fatalf("failed to set foreign key checks: %s", err.Error())
+		// 		}
+		// 	}()
+		// }
 		return db.Set("gorm:table_options", "ENGINE=InnoDB CHARSET=utf8mb4").AutoMigrate(dst...)
 	case conf.DatabaseTypeSqlite3, conf.DatabaseTypePostgres:
 		return db.AutoMigrate(dst...)

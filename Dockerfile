@@ -24,13 +24,13 @@ COPY script/entrypoint.sh /entrypoint.sh
 RUN apk add --no-cache bash ca-certificates su-exec tzdata && \
     rm -rf /var/cache/apk/* && \
     chmod +x /entrypoint.sh && \
-    mkdir -p ~/.synctv
+    mkdir -p /root/.synctv
 
-WORKDIR ~/.synctv
+WORKDIR /root/.synctv
 
 EXPOSE 8080/tcp 8080/udp
 
-VOLUME [ "~/.synctv" ]
+VOLUME [ "/root/.synctv" ]
 
 ENTRYPOINT [ "/entrypoint.sh" ]
 

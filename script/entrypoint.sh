@@ -1,6 +1,6 @@
 #!/bin/bash
 
-chown -R ${PUID}:${PGID} ~/.synctv
+chown -R ${PUID}:${PGID} /root/.synctv
 
 umask ${UMASK}
 

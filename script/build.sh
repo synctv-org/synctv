@@ -16,11 +16,14 @@ function EnvHelp() {
     echo "DISABLE_TRIM_PATH enable trim path (default: disable)"
 }
 
+function DepHelp() {
+    echo "-w init web version (default: build version)"
+    echo "-s skip init web"
+}
+
 function Help() {
     echo "-h get help"
     echo "-v set build version (default: dev)"
-    echo "-w init web version (default: build version)"
-    echo "-s skip init web"
     echo "-S set source dir (default: ../)"
     echo "-m set build mode (default: pie)"
     echo "-l set ldflags (default: -s -w --extldflags \"-static -fpic -Wl,-z,relro,-z,now\")"
@@ -28,8 +31,12 @@ function Help() {
     echo "-P set disable trim path (default: disable)"
     echo "-d set build result dir (default: build)"
     echo "-T set tags (default: jsoniter)"
+    echo "----"
     echo "Env Help:"
     EnvHelp
+    echo "----"
+    echo "Dep Help:"
+    DepHelp
 }
 
 function Init() {
@@ -60,14 +67,8 @@ function ParseArgs() {
         v)
             VERSION="$(echo "$OPTARG" | sed 's/ //g' | sed 's/"//g' | sed 's/\n//g')"
             ;;
-        s)
-            SKIP_INIT_WEB="true"
-            ;;
         S)
             SOURCH_DIR="$OPTARG"
-            ;;
-        w)
-            WEB_VERSION="$OPTARG"
             ;;
         m)
             BUILD_MODE="$OPTARG"
@@ -87,6 +88,15 @@ function ParseArgs() {
         T)
             TAGS="$OPTARG"
             ;;
+        # ----
+        # dep
+        s)
+            SKIP_INIT_WEB="true"
+            ;;
+        w)
+            WEB_VERSION="$OPTARG"
+            ;;
+        # ----
         ?)
             echo "unkonw argument"
             exit 1
@@ -285,7 +295,7 @@ function Build() {
         ;;
     "wasm")
         # no default
-        eval "$BUILD_ENV go build $BUILD_FLAGS -o \"$BUILD_DIR/$BIN_NAME-$GOOS-$GOARCH$EXT\" \"$SOURCH_DIR\""
+        eval "$BUILD_ENV GOWASM= go build $BUILD_FLAGS -o \"$BUILD_DIR/$BIN_NAME-$GOOS-$GOARCH$EXT\" \"$SOURCH_DIR\""
         echo "build $GOOS/$GOARCH satconv"
         eval "$BUILD_ENV GOWASM=satconv go build $BUILD_FLAGS -o \"$BUILD_DIR/$BIN_NAME-$GOOS-$GOARCH-satconv$EXT\" \"$SOURCH_DIR\""
         echo "build $GOOS/$GOARCH signext"

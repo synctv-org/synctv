@@ -10,6 +10,9 @@ function Help() {
     echo "-h: help"
     echo "-v: install version (default: latest)"
     echo "-p: github proxy (default: https://mirror.ghproxy.com/)"
+    # Microarchitecture
+    echo "-a: microarchitecture (no default value)"
+    echo "  example: -a v2"
 }
 
 function Init() {
@@ -23,6 +26,7 @@ function Init() {
     InitOS
     InitArch
     InitDownloadTools
+    Microarchitecture=""
 }
 
 function ParseArgs() {
@@ -37,6 +41,9 @@ function ParseArgs() {
             ;;
         p)
             GH_PROXY="$OPTARG"
+            ;;
+        a)
+            Microarchitecture="$OPTARG"
             ;;
         ?)
             echo "unkonw argument"
@@ -139,10 +146,13 @@ function Download() {
 }
 
 function DownloadURL() {
+    if [ -n "$Microarchitecture" ] && [ "${Microarchitecture:0:1}" != "-" ]; then
+        Microarchitecture="-$Microarchitecture"
+    fi
     if [[ $1 == v* ]]; then
-        echo "${GH_PROXY}https://github.com/synctv-org/synctv/releases/download/$1/synctv-${OS}-${ARCH}"
+        echo "${GH_PROXY}https://github.com/synctv-org/synctv/releases/download/$1/synctv-${OS}-${ARCH}${Microarchitecture}"
     else
-        echo "${GH_PROXY}https://github.com/synctv-org/synctv/releases/$1/download/synctv-${OS}-${ARCH}"
+        echo "${GH_PROXY}https://github.com/synctv-org/synctv/releases/$1/download/synctv-${OS}-${ARCH}${Microarchitecture}"
     fi
 }
 

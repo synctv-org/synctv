@@ -26,7 +26,7 @@ require (
 	github.com/maruel/natural v1.1.1
 	github.com/mitchellh/go-homedir v1.1.0
 	github.com/natefinch/lumberjack v2.0.0+incompatible
-	github.com/quic-go/quic-go v0.40.1
+	github.com/quic-go/quic-go v0.41.0
 	github.com/sirupsen/logrus v1.9.3
 	github.com/soheilhy/cmux v0.1.5
 	github.com/spf13/cobra v1.8.0
@@ -106,7 +106,6 @@ require (
 	github.com/pelletier/go-toml/v2 v2.1.1 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/quic-go/qpack v0.4.0 // indirect
-	github.com/quic-go/qtls-go1-20 v0.4.1 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect

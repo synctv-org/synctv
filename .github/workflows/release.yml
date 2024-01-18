@@ -6,18 +6,41 @@ on:
       - "v*"
 
 jobs:
+  get_all_targets:
+    name: Get all targets
+    runs-on: ubuntu-latest
+    outputs:
+      TARGETS: ${{ steps.get_all_targets.outputs.TARGETS }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get all targets
+        id: get_all_targets
+        run: |
+          declare -a arr=()
+          OIFS="$IFS"
+          IFS=$'\n,'
+          for line in $(script/build.sh -t); do
+            arr+=("$line")
+          done
+          IFS="$OIFS"
+          printf -v json '"%s",' "${arr[@]}"
+          json="[${json%,}]"
+          echo "TARGETS=$json" >> $GITHUB_OUTPUT
+
   release:
+    name: Release
+    needs: get_all_targets
+    runs-on: ubuntu-latest
     strategy:
       matrix:
-        platform: [ubuntu-latest]
-        go-version: ["1.21"]
-    name: Release
-    runs-on: ${{ matrix.platform }}
+        target: ${{ fromJson(needs.get_all_targets.outputs.TARGETS) }}
     steps:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: ${{ matrix.go-version }}
+          go-version: "1.21"
 
       - name: Checkout
         uses: actions/checkout@v4
@@ -28,13 +51,17 @@ jobs:
 
       - name: Build
         run: |
-          bash script/build.sh -v "v${{ steps.get_version.outputs.VERSION }}" -p "windows,linux,darwin"
+          bash script/build.sh -v "v${{ steps.get_version.outputs.VERSION }}" -p "${{ matrix.target }}"
 
-      - uses: "marvinpinto/action-automatic-releases@latest"
+      - name: Release
+        uses: softprops/action-gh-release@v1
         with:
-          repo_token: "${{ secrets.GITHUB_TOKEN }}"
-          automatic_release_tag: "v${{ steps.get_version.outputs.VERSION }}"
-          title: "Version ${{ steps.get_version.outputs.VERSION }}"
+          token: ${{ secrets.GITHUB_TOKEN }}
+          draft: false
           prerelease: ${{ contains(steps.get_version.outputs.VERSION, 'rc') || contains(steps.get_version.outputs.VERSION, 'beta') || contains(steps.get_version.outputs.VERSION, 'alpha') }}
+          append_body: false
+          fail_on_unmatched_files: true
+          name: "Version ${{ steps.get_version.outputs.VERSION }}"
+          tag_name: "v${{ steps.get_version.outputs.VERSION }}"
           files: |
             build/*

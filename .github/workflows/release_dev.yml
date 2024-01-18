@@ -4,31 +4,58 @@ on:
   workflow_dispatch:
 
 jobs:
+  get_all_targets:
+    name: Get all targets
+    runs-on: ubuntu-latest
+    outputs:
+      TARGETS: ${{ steps.get_all_targets.outputs.TARGETS }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get all targets
+        id: get_all_targets
+        run: |
+          declare -a arr=()
+          OIFS="$IFS"
+          IFS=$'\n,'
+          for line in $(script/build.sh -t); do
+            arr+=("$line")
+          done
+          IFS="$OIFS"
+          printf -v json '"%s",' "${arr[@]}"
+          json="[${json%,}]"
+          echo "TARGETS=$json" >> $GITHUB_OUTPUT
+
   release_dev:
+    name: Release dev
+    runs-on: ubuntu-latest
+    needs: get_all_targets
     strategy:
       matrix:
-        platform: [ubuntu-latest]
-        go-version: ["1.21"]
-    name: Release
-    runs-on: ${{ matrix.platform }}
+        target: ${{ fromJson(needs.get_all_targets.outputs.TARGETS) }}
     steps:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: ${{ matrix.go-version }}
+          go-version: "1.21"
 
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Build
         run: |
-          bash script/build.sh -v dev -p "windows,linux,darwin"
+          bash script/build.sh -v dev -p "${{ matrix.target }}"
 
-      - uses: "marvinpinto/action-automatic-releases@latest"
+      - name: Release
+        uses: softprops/action-gh-release@v1
         with:
-          repo_token: "${{ secrets.GITHUB_TOKEN }}"
-          automatic_release_tag: "dev"
-          title: "Dev Build"
+          token: ${{ secrets.GITHUB_TOKEN }}
+          draft: false
           prerelease: true
+          append_body: false
+          fail_on_unmatched_files: true
+          name: "Dev Build"
+          tag_name: dev
           files: |
             build/*

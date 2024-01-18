@@ -10,7 +10,7 @@ WORKDIR /synctv
 
 COPY ./ ./
 
-RUN apk add --no-cache bash curl gcc git go musl-dev && \
+RUN apk add --no-cache bash curl git go && \
     bash script/build.sh -v ${VERSION}
 
 From alpine:latest
@@ -28,7 +28,7 @@ RUN apk add --no-cache bash ca-certificates su-exec tzdata && \
 
 WORKDIR /root/.synctv
 
-EXPOSE 8080/tcp 8080/udp
+EXPOSE 8080/tcp
 
 VOLUME [ "/root/.synctv" ]
 

@@ -192,9 +192,11 @@ function DownloadAndUnzip() {
     url="$1"
     file="$2"
     type="$3"
+
+    mkdir -p "$file"
+    file="$(cd "$file" && pwd)"
     echo "download: $url"
     echo "to: $file"
-    mkdir -p "$file"
 
     if [ -z "$type" ]; then
         type="$(echo "$url" | sed 's/.*\.//g')"
@@ -292,7 +294,7 @@ function InitPlatforms() {
     ALLOWED_PLATFORM="$(echo "$ALLOWED_PLATFORM" | sed 's/,,*/,/g')"
     CGO_ALLOWED_PLATFORM="$(echo "$CGO_ALLOWED_PLATFORM" | sed 's/,,*/,/g')"
 
-    if [ "$CGO_ENABLED" != "1" ]; then
+    if [ "$CGO_ENABLED" == "1" ]; then
         CURRENT_ALLOWED_PLATFORM="$CGO_ALLOWED_PLATFORM"
         CURRENT_ALLOWED_LINUX_PLATFORM="$LINUX_CGO_ALLOWED_PLATFORM"
         CURRENT_ALLOWED_DARWIN_PLATFORM="$DARWIN_CGO_ALLOWED_PLATFORM"
@@ -945,6 +947,7 @@ function Build() {
         GOARCH=$GOARCH"
 
     if [ "$disable_micro" ]; then
+        echo "building $GOOS/$GOARCH"
         InitCGODeps "$GOOS" "$GOARCH"
         eval "$BUILD_ENV CC=\"$CC\" CXX=\"$CXX\" go build $BUILD_FLAGS -o \"$TARGET_FILE$EXT\" \"$SOURCH_DIR\""
         if [ $? -ne 0 ]; then
@@ -958,6 +961,7 @@ function Build() {
         case "$GOARCH" in
         "386")
             # default sse2
+            echo "building $GOOS/$GOARCH sse2"
             InitCGODeps "$GOOS" "$GOARCH"
             eval "$BUILD_ENV CC=\"$CC\" CXX=\"$CXX\" GO386=sse2 go build $BUILD_FLAGS -o \"$TARGET_FILE-sse2$EXT\" \"$SOURCH_DIR\""
             if [ $? -ne 0 ]; then
@@ -975,7 +979,7 @@ function Build() {
                 echo "copy $GOOS/$GOARCH sse2 to $GOOS/$GOARCH success"
             fi
 
-            echo "build $GOOS/$GOARCH softfloat"
+            echo "building $GOOS/$GOARCH softfloat"
             eval "$BUILD_ENV CC=\"$CC\" CXX=\"$CXX\" GO386=softfloat go build $BUILD_FLAGS -o \"$TARGET_FILE-softfloat$EXT\" \"$SOURCH_DIR\""
             if [ $? -ne 0 ]; then
                 echo "build $GOOS/$GOARCH softfloat failed"
@@ -987,7 +991,7 @@ function Build() {
         "arm")
             # default 6
             # https://go.dev/wiki/GoArm
-            echo "build $GOOS/$GOARCH 5"
+            echo "building $GOOS/$GOARCH 5"
             InitCGODeps "$GOOS" "$GOARCH" "5"
             eval "$BUILD_ENV CC=\"$CC\" CXX=\"$CXX\" GOARM=5 go build $BUILD_FLAGS -o \"$TARGET_FILE-5$EXT\" \"$SOURCH_DIR\""
             if [ $? -ne 0 ]; then
@@ -997,7 +1001,7 @@ function Build() {
                 echo "build $GOOS/$GOARCH 5 success"
             fi
 
-            echo "build $GOOS/$GOARCH 6"
+            echo "building $GOOS/$GOARCH 6"
             InitCGODeps "$GOOS" "$GOARCH" "6"
             eval "$BUILD_ENV CC=\"$CC\" CXX=\"$CXX\" GOARM=6 go build $BUILD_FLAGS -o \"$TARGET_FILE-6$EXT\" \"$SOURCH_DIR\""
             if [ $? -ne 0 ]; then
@@ -1015,6 +1019,7 @@ function Build() {
                 echo "copy $GOOS/$GOARCH 6 to $GOOS/$GOARCH success"
             fi
 
+            echo "building $GOOS/$GOARCH 7"
             InitCGODeps "$GOOS" "$GOARCH" "7"
             eval "$BUILD_ENV CC=\"$CC\" CXX=\"$CXX\" GOARM=7 go build $BUILD_FLAGS -o \"$TARGET_FILE-7$EXT\" \"$SOURCH_DIR\""
             if [ $? -ne 0 ]; then
@@ -1027,6 +1032,7 @@ function Build() {
         "amd64")
             # default v1
             # https://go.dev/wiki/MinimumRequirements#amd64
+            echo "building $GOOS/$GOARCH v1"
             InitCGODeps "$GOOS" "$GOARCH"
             eval "$BUILD_ENV CC=\"$CC\" CXX=\"$CXX\" GOAMD64=v1 go build $BUILD_FLAGS -o \"$TARGET_FILE-v1$EXT\" \"$SOURCH_DIR\""
             if [ $? -ne 0 ]; then
@@ -1044,7 +1050,7 @@ function Build() {
                 echo "copy $GOOS/$GOARCH v1 to $GOOS/$GOARCH success"
             fi
 
-            echo "build $GOOS/$GOARCH v2"
+            echo "building $GOOS/$GOARCH v2"
             eval "$BUILD_ENV CC=\"$CC\" CXX=\"$CXX\" GOAMD64=v2 go build $BUILD_FLAGS -o \"$TARGET_FILE-v2$EXT\" \"$SOURCH_DIR\""
             if [ $? -ne 0 ]; then
                 echo "build $GOOS/$GOARCH v2 failed"
@@ -1053,7 +1059,7 @@ function Build() {
                 echo "build $GOOS/$GOARCH v2 success"
             fi
 
-            echo "build $GOOS/$GOARCH v3"
+            echo "building $GOOS/$GOARCH v3"
             eval "$BUILD_ENV CC=\"$CC\" CXX=\"$CXX\" GOAMD64=v3 go build $BUILD_FLAGS -o \"$TARGET_FILE-v3$EXT\" \"$SOURCH_DIR\""
             if [ $? -ne 0 ]; then
                 echo "build $GOOS/$GOARCH v3 failed"
@@ -1062,7 +1068,7 @@ function Build() {
                 echo "build $GOOS/$GOARCH v3 success"
             fi
 
-            echo "build $GOOS/$GOARCH v4"
+            echo "building $GOOS/$GOARCH v4"
             eval "$BUILD_ENV CC=\"$CC\" CXX=\"$CXX\" GOAMD64=v4 go build $BUILD_FLAGS -o \"$TARGET_FILE-v4$EXT\" \"$SOURCH_DIR\""
             if [ $? -ne 0 ]; then
                 echo "build $GOOS/$GOARCH v4 failed"
@@ -1071,6 +1077,7 @@ function Build() {
             ;;
         "mips" | "mipsle" | "mips64" | "mips64le")
             # default hardfloat
+            echo "building $GOOS/$GOARCH hardfloat"
             InitCGODeps "$GOOS" "$GOARCH" "hardfloat"
             eval "$BUILD_ENV CC=\"$CC\" CXX=\"$CXX\" GOMIPS=hardfloat GOMIPS64=hardfloat go build $BUILD_FLAGS -o \"$TARGET_FILE-hardfloat$EXT\" \"$SOURCH_DIR\""
             if [ $? -ne 0 ]; then
@@ -1088,7 +1095,7 @@ function Build() {
                 echo "copy $GOOS/$GOARCH hardfloat to $GOOS/$GOARCH success"
             fi
 
-            echo "build $GOOS/$GOARCH softfloat"
+            echo "building $GOOS/$GOARCH softfloat"
             InitCGODeps "$GOOS" "$GOARCH" "softfloat"
             eval "$BUILD_ENV CC=\"$CC\" CXX=\"$CXX\" GOMIPS=softfloat GOMIPS64=softfloat go build $BUILD_FLAGS -o \"$TARGET_FILE-softfloat$EXT\" \"$SOURCH_DIR\""
             if [ $? -ne 0 ]; then
@@ -1100,6 +1107,7 @@ function Build() {
             ;;
         "ppc64" | "ppc64le")
             # default power8
+            echo "building $GOOS/$GOARCH power8"
             InitCGODeps "$GOOS" "$GOARCH" "power8"
             eval "$BUILD_ENV CC=\"$CC\" CXX=\"$CXX\" GOPPC64=power8 go build $BUILD_FLAGS -o \"$TARGET_FILE-power8$EXT\" \"$SOURCH_DIR\""
             if [ $? -ne 0 ]; then
@@ -1117,7 +1125,7 @@ function Build() {
                 echo "copy $GOOS/$GOARCH power8 to $GOOS/$GOARCH success"
             fi
 
-            echo "build $GOOS/$GOARCH power9"
+            echo "building $GOOS/$GOARCH power9"
             InitCGODeps "$GOOS" "$GOARCH" "power9"
             eval "$BUILD_ENV CC=\"$CC\" CXX=\"$CXX\" GOPPC64=power9 go build $BUILD_FLAGS -o \"$TARGET_FILE-power9$EXT\" \"$SOURCH_DIR\""
             if [ $? -ne 0 ]; then
@@ -1129,6 +1137,7 @@ function Build() {
             ;;
         "wasm")
             # no default
+            echo "building $GOOS/$GOARCH"
             eval "$BUILD_ENV GOWASM= go build $BUILD_FLAGS -o \"$TARGET_FILE$EXT\" \"$SOURCH_DIR\""
             if [ $? -ne 0 ]; then
                 echo "build $GOOS/$GOARCH failed"
@@ -1137,7 +1146,7 @@ function Build() {
                 echo "build $GOOS/$GOARCH success"
             fi
 
-            echo "build $GOOS/$GOARCH satconv"
+            echo "building $GOOS/$GOARCH satconv"
             eval "$BUILD_ENV GOWASM=satconv go build $BUILD_FLAGS -o \"$TARGET_FILE-satconv$EXT\" \"$SOURCH_DIR\""
             if [ $? -ne 0 ]; then
                 echo "build $GOOS/$GOARCH satconv failed"
@@ -1146,7 +1155,7 @@ function Build() {
                 echo "build $GOOS/$GOARCH satconv success"
             fi
 
-            echo "build $GOOS/$GOARCH signext"
+            echo "building $GOOS/$GOARCH signext"
             eval "$BUILD_ENV GOWASM=signext go build $BUILD_FLAGS -o \"$TARGET_FILE-signext$EXT\" \"$SOURCH_DIR\""
             if [ $? -ne 0 ]; then
                 echo "build $GOOS/$GOARCH signext failed"
@@ -1156,6 +1165,7 @@ function Build() {
             fi
             ;;
         *)
+            echo "building $GOOS/$GOARCH"
             InitCGODeps "$GOOS" "$GOARCH"
             eval "$BUILD_ENV CC=\"$CC\" CXX=\"$CXX\" go build $BUILD_FLAGS -o \"$TARGET_FILE$EXT\" \"$SOURCH_DIR\""
             if [ $? -ne 0 ]; then

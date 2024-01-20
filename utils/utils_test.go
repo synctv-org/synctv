@@ -2,6 +2,7 @@ package utils_test
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/synctv-org/synctv/utils"
@@ -105,5 +106,25 @@ func TestIsLocalIP(t *testing.T) {
 				t.Errorf("IsLocalIP() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestTruncateByRune(t *testing.T) {
+	// len("测") = 3
+	name := "abcd测试"
+	if !strings.EqualFold(utils.TruncateByRune(name, 6), "abcd") {
+		t.Errorf("TruncateByRune() = %v, want %v", utils.TruncateByRune(name, 6), "abcd")
+	}
+	if !strings.EqualFold(utils.TruncateByRune(name, 7), "abcd测") {
+		t.Errorf("TruncateByRune() = %v, want %v", utils.TruncateByRune(name, 7), "abcd测")
+	}
+	if !strings.EqualFold(utils.TruncateByRune(name, 8), "abcd测") {
+		t.Errorf("TruncateByRune() = %v, want %v", utils.TruncateByRune(name, 8), "abcd测")
+	}
+	if !strings.EqualFold(utils.TruncateByRune(name, 9), "abcd测") {
+		t.Errorf("TruncateByRune() = %v, want %v", utils.TruncateByRune(name, 9), "abcd测")
+	}
+	if !strings.EqualFold(utils.TruncateByRune(name, 10), "abcd测试") {
+		t.Errorf("TruncateByRune() = %v, want %v", utils.TruncateByRune(name, 10), "abcd测试")
 	}
 }

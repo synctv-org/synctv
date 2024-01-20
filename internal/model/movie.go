@@ -28,7 +28,7 @@ func (m *Movie) BeforeCreate(tx *gorm.DB) error {
 
 type BaseMovie struct {
 	Url        string               `gorm:"type:varchar(8192)" json:"url"`
-	Name       string               `gorm:"not null;type:varchar(128)" json:"name"`
+	Name       string               `gorm:"not null;type:varchar(256)" json:"name"`
 	Live       bool                 `json:"live"`
 	Proxy      bool                 `json:"proxy"`
 	RtmpSource bool                 `json:"rtmpSource"`

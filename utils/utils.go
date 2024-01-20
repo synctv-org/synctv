@@ -384,3 +384,17 @@ func GetPageAndMax(ctx *gin.Context) (page int, max int, err error) {
 	}
 	return
 }
+
+func TruncateByRune(s string, length int) string {
+	if len(s) <= length {
+		return s
+	}
+	total := 0
+	for _, v := range s {
+		total += len(string(v))
+		if total > length {
+			return s[:total-len(string(v))]
+		}
+	}
+	panic("truncate by rune error")
+}

@@ -202,13 +202,13 @@ function DownloadAndUnzip() {
 
     # gzip/bzip2/xz/lzma/zip
     if [ ! "$type" ] || [ "$type" == "tgz" ] || [ "$type" == "gz" ]; then
-        curl -sL "$url" | (tar -x -v -f - -C "$file" --strip-components 1 -z >/dev/null)
+        curl -sL "$url" | tar -xf - -C "$file" --strip-components 1 -z
     elif [ "$type" == "bz2" ]; then
-        curl -sL "$url" | (tar -x -v -f - -C "$file" --strip-components 1 -j >/dev/null)
+        curl -sL "$url" | tar -xf - -C "$file" --strip-components 1 -j
     elif [ "$type" == "xz" ]; then
-        curl -sL "$url" | (tar -x -v -f - -C "$file" --strip-components 1 -J >/dev/null)
+        curl -sL "$url" | tar -xf - -C "$file" --strip-components 1 -J
     elif [ "$type" == "lzma" ]; then
-        curl -sL "$url" | (tar -x -v -f - -C "$file" --strip-components 1 --lzma >/dev/null)
+        curl -sL "$url" | tar -xf - -C "$file" --strip-components 1 --lzma
     elif [ "$type" == "zip" ]; then
         rm -rf "$file/tmp.zip"
         curl --progress-bar -sL "$url" -o "$file/tmp.zip"
@@ -220,10 +220,10 @@ function DownloadAndUnzip() {
     fi
 
     if [ $? -ne 0 ]; then
-        echo "download $url error"
+        echo "download error"
         exit 1
     else
-        echo "download $url success"
+        echo "download success"
     fi
 }
 
@@ -403,7 +403,7 @@ function InitLinuxAmd64CGODeps() {
         case "$GOARCH" in
         "386")
             # Micro: sse2 softfloat or empty (not use)
-            # https://github.com/zijiren233/musl-cross-make/releases/download/v0.2.5/i686-linux-musl.tgz
+            # https://github.com/zijiren233/musl-cross-make/releases/download/v0.3.1/i686-linux-musl.tgz
             if [ ! "$CC_LINUX_386" ] && [ ! "$CXX_LINUX_386" ]; then
                 if command -v i686-linux-musl-gcc >/dev/null 2>&1 && command -v i686-linux-musl-g++ >/dev/null 2>&1; then
                     CC_LINUX_386="i686-linux-musl-gcc"
@@ -412,7 +412,7 @@ function InitLinuxAmd64CGODeps() {
                     CC_LINUX_386="$CGO_COMPILER_TMP_DIR/i686-linux-musl/bin/i686-linux-musl-gcc"
                     CXX_LINUX_386="$CGO_COMPILER_TMP_DIR/i686-linux-musl/bin/i686-linux-musl-g++"
                 else
-                    DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/v0.2.5/i686-linux-musl.tgz" "$CGO_COMPILER_TMP_DIR/i686-linux-musl"
+                    DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/v0.3.1/i686-linux-musl.tgz" "$CGO_COMPILER_TMP_DIR/i686-linux-musl"
                     CC_LINUX_386="$CGO_COMPILER_TMP_DIR/i686-linux-musl/bin/i686-linux-musl-gcc"
                     CXX_LINUX_386="$CGO_COMPILER_TMP_DIR/i686-linux-musl/bin/i686-linux-musl-g++"
                 fi
@@ -425,7 +425,7 @@ function InitLinuxAmd64CGODeps() {
             CXX="$CXX_LINUX_386"
             ;;
         "arm64")
-            # https://github.com/zijiren233/musl-cross-make/releases/download/v0.2.5/aarch64-linux-musl.tgz
+            # https://github.com/zijiren233/musl-cross-make/releases/download/v0.3.1/aarch64-linux-musl.tgz
             if [ ! "$CC_LINUX_ARM64" ] && [ ! "$CXX_LINUX_ARM64" ]; then
                 if command -v aarch64-linux-musl-gcc >/dev/null 2>&1 && command -v aarch64-linux-musl-g++ >/dev/null 2>&1; then
                     CC_LINUX_ARM64="aarch64-linux-musl-gcc"
@@ -434,7 +434,7 @@ function InitLinuxAmd64CGODeps() {
                     CC_LINUX_ARM64="$CGO_COMPILER_TMP_DIR/aarch64-linux-musl/bin/aarch64-linux-musl-gcc"
                     CXX_LINUX_ARM64="$CGO_COMPILER_TMP_DIR/aarch64-linux-musl/bin/aarch64-linux-musl-g++"
                 else
-                    DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/v0.2.5/aarch64-linux-musl.tgz" "$CGO_COMPILER_TMP_DIR/aarch64-linux-musl"
+                    DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/v0.3.1/aarch64-linux-musl.tgz" "$CGO_COMPILER_TMP_DIR/aarch64-linux-musl"
                     CC_LINUX_ARM64="$CGO_COMPILER_TMP_DIR/aarch64-linux-musl/bin/aarch64-linux-musl-gcc"
                     CXX_LINUX_ARM64="$CGO_COMPILER_TMP_DIR/aarch64-linux-musl/bin/aarch64-linux-musl-g++"
                 fi
@@ -447,7 +447,8 @@ function InitLinuxAmd64CGODeps() {
             CXX="$CXX_LINUX_ARM64"
             ;;
         "amd64")
-            # https://github.com/zijiren233/musl-cross-make/releases/download/v0.2.5/x86_64-linux-musl.tgz
+            # https://github.com/zijiren233/musl-cross-make/releases/download/v0.3.1/x86_64-linux-musl.tgz
+            # https://github.com/zijiren233/musl-cross-make/releases/download/v0.3.1/x86_64-linux-musl-native.tgz
             if [ ! "$CC_LINUX_AMD64" ] && [ ! "$CXX_LINUX_AMD64" ]; then
                 if command -v x86_64-linux-musl-gcc >/dev/null 2>&1 && command -v x86_64-linux-musl-g++ >/dev/null 2>&1; then
                     CC_LINUX_AMD64="x86_64-linux-musl-gcc"
@@ -456,7 +457,7 @@ function InitLinuxAmd64CGODeps() {
                     CC_LINUX_AMD64="$CGO_COMPILER_TMP_DIR/x86_64-linux-musl/bin/x86_64-linux-musl-gcc"
                     CXX_LINUX_AMD64="$CGO_COMPILER_TMP_DIR/x86_64-linux-musl/bin/x86_64-linux-musl-g++"
                 else
-                    DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/v0.2.5/x86_64-linux-musl.tgz" "$CGO_COMPILER_TMP_DIR/x86_64-linux-musl"
+                    DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/v0.3.1/x86_64-linux-musl-native.tgz" "$CGO_COMPILER_TMP_DIR/x86_64-linux-musl"
                     CC_LINUX_AMD64="$CGO_COMPILER_TMP_DIR/x86_64-linux-musl/bin/x86_64-linux-musl-gcc"
                     CXX_LINUX_AMD64="$CGO_COMPILER_TMP_DIR/x86_64-linux-musl/bin/x86_64-linux-musl-g++"
                 fi
@@ -470,7 +471,7 @@ function InitLinuxAmd64CGODeps() {
             ;;
         "arm")
             # MICRO: 5,6,7 or empty (not use)
-            # https://github.com/zijiren233/musl-cross-make/releases/download/v0.2.5/arm-linux-musleabi.tgz
+            # https://github.com/zijiren233/musl-cross-make/releases/download/v0.3.1/arm-linux-musleabi.tgz
             if [ ! "$CC_LINUX_ARM" ] && [ ! "$CXX_LINUX_ARM" ]; then
                 if command -v arm-linux-musleabi-gcc >/dev/null 2>&1 && command -v arm-linux-musleabi-g++ >/dev/null 2>&1; then
                     CC_LINUX_ARM="arm-linux-musleabi-gcc"
@@ -479,7 +480,7 @@ function InitLinuxAmd64CGODeps() {
                     CC_LINUX_ARM="$CGO_COMPILER_TMP_DIR/arm-linux-musleabi/bin/arm-linux-musleabi-gcc"
                     CXX_LINUX_ARM="$CGO_COMPILER_TMP_DIR/arm-linux-musleabi/bin/arm-linux-musleabi-g++"
                 else
-                    DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/v0.2.5/arm-linux-musleabi.tgz" "$CGO_COMPILER_TMP_DIR/arm-linux-musleabi"
+                    DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/v0.3.1/arm-linux-musleabi.tgz" "$CGO_COMPILER_TMP_DIR/arm-linux-musleabi"
                     CC_LINUX_ARM="$CGO_COMPILER_TMP_DIR/arm-linux-musleabi/bin/arm-linux-musleabi-gcc"
                     CXX_LINUX_ARM="$CGO_COMPILER_TMP_DIR/arm-linux-musleabi/bin/arm-linux-musleabi-g++"
                 fi
@@ -494,7 +495,7 @@ function InitLinuxAmd64CGODeps() {
         "mips")
             # MICRO: hardfloat softfloat or empty
             if [ ! "$MICRO" ] || [ "$MICRO" == "hardfloat" ]; then
-                # https://github.com/zijiren233/musl-cross-make/releases/download/v0.2.5/mips-linux-musl.tgz
+                # https://github.com/zijiren233/musl-cross-make/releases/download/v0.3.1/mips-linux-musl.tgz
                 if [ ! "$CC_LINUX_MIPS" ] && [ ! "$CXX_LINUX_MIPS" ]; then
                     if command -v mips-linux-musl-gcc >/dev/null 2>&1 && command -v mips-linux-musl-g++ >/dev/null 2>&1; then
                         CC_LINUX_MIPS="mips-linux-musl-gcc"
@@ -503,7 +504,7 @@ function InitLinuxAmd64CGODeps() {
                         CC_LINUX_MIPS="$CGO_COMPILER_TMP_DIR/mips-linux-musl/bin/mips-linux-musl-gcc"
                         CXX_LINUX_MIPS="$CGO_COMPILER_TMP_DIR/mips-linux-musl/bin/mips-linux-musl-g++"
                     else
-                        DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/v0.2.5/mips-linux-musl.tgz" "$CGO_COMPILER_TMP_DIR/mips-linux-musl"
+                        DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/v0.3.1/mips-linux-musl.tgz" "$CGO_COMPILER_TMP_DIR/mips-linux-musl"
                         CC_LINUX_MIPS="$CGO_COMPILER_TMP_DIR/mips-linux-musl/bin/mips-linux-musl-gcc"
                         CXX_LINUX_MIPS="$CGO_COMPILER_TMP_DIR/mips-linux-musl/bin/mips-linux-musl-g++"
                     fi
@@ -515,7 +516,7 @@ function InitLinuxAmd64CGODeps() {
                 CC="$CC_LINUX_MIPS"
                 CXX="$CXX_LINUX_MIPS"
             elif [ "$MICRO" == "softfloat" ]; then
-                # https://github.com/zijiren233/musl-cross-make/releases/download/v0.2.5/mips-linux-muslsf.tgz
+                # https://github.com/zijiren233/musl-cross-make/releases/download/v0.3.1/mips-linux-muslsf.tgz
                 if [ ! "$CC_LINUX_MIPS_SOFTFLOAT" ] && [ ! "$CXX_LINUX_MIPS_SOFTFLOAT" ]; then
                     if command -v mips-linux-muslsf-gcc >/dev/null 2>&1 && command -v mips-linux-muslsf-g++ >/dev/null 2>&1; then
                         CC_LINUX_MIPS_SOFTFLOAT="mips-linux-muslsf-gcc"
@@ -524,7 +525,7 @@ function InitLinuxAmd64CGODeps() {
                         CC_LINUX_MIPS_SOFTFLOAT="$CGO_COMPILER_TMP_DIR/mips-linux-muslsf/bin/mips-linux-muslsf-gcc"
                         CXX_LINUX_MIPS_SOFTFLOAT="$CGO_COMPILER_TMP_DIR/mips-linux-muslsf/bin/mips-linux-muslsf-g++"
                     else
-                        DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/v0.2.5/mips-linux-muslsf.tgz" "$CGO_COMPILER_TMP_DIR/mips-linux-muslsf"
+                        DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/v0.3.1/mips-linux-muslsf.tgz" "$CGO_COMPILER_TMP_DIR/mips-linux-muslsf"
                         CC_LINUX_MIPS_SOFTFLOAT="$CGO_COMPILER_TMP_DIR/mips-linux-muslsf/bin/mips-linux-muslsf-gcc"
                         CXX_LINUX_MIPS_SOFTFLOAT="$CGO_COMPILER_TMP_DIR/mips-linux-muslsf/bin/mips-linux-muslsf-g++"
                     fi
@@ -543,7 +544,7 @@ function InitLinuxAmd64CGODeps() {
         "mipsle")
             # MICRO: hardfloat softfloat or empty
             if [ ! "$MICRO" ] || [ "$MICRO" == "hardfloat" ]; then
-                # https://github.com/zijiren233/musl-cross-make/releases/download/v0.2.5/mipsel-linux-musl.tgz
+                # https://github.com/zijiren233/musl-cross-make/releases/download/v0.3.1/mipsel-linux-musl.tgz
                 if [ ! "$CC_LINUX_MIPSLE" ] && [ ! "$CXX_LINUX_MIPSLE" ]; then
                     if command -v mipsel-linux-musl-gcc >/dev/null 2>&1 && command -v mipsel-linux-musl-g++ >/dev/null 2>&1; then
                         CC_LINUX_MIPSLE="mipsel-linux-musl-gcc"
@@ -552,7 +553,7 @@ function InitLinuxAmd64CGODeps() {
                         CC_LINUX_MIPSLE="$CGO_COMPILER_TMP_DIR/mipsel-linux-musl/bin/mipsel-linux-musl-gcc"
                         CXX_LINUX_MIPSLE="$CGO_COMPILER_TMP_DIR/mipsel-linux-musl/bin/mipsel-linux-musl-g++"
                     else
-                        DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/v0.2.5/mipsel-linux-musl.tgz" "$CGO_COMPILER_TMP_DIR/mipsel-linux-musl"
+                        DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/v0.3.1/mipsel-linux-musl.tgz" "$CGO_COMPILER_TMP_DIR/mipsel-linux-musl"
                         CC_LINUX_MIPSLE="$CGO_COMPILER_TMP_DIR/mipsel-linux-musl/bin/mipsel-linux-musl-gcc"
                         CXX_LINUX_MIPSLE="$CGO_COMPILER_TMP_DIR/mipsel-linux-musl/bin/mipsel-linux-musl-g++"
                     fi
@@ -564,7 +565,7 @@ function InitLinuxAmd64CGODeps() {
                 CC="$CC_LINUX_MIPSLE"
                 CXX="$CXX_LINUX_MIPSLE"
             elif [ "$MICRO" == "softfloat" ]; then
-                # https://github.com/zijiren233/musl-cross-make/releases/download/v0.2.5/mipsel-linux-muslsf.tgz
+                # https://github.com/zijiren233/musl-cross-make/releases/download/v0.3.1/mipsel-linux-muslsf.tgz
                 if [ ! "$CC_LINUX_MIPSLE_SOFTFLOAT" ] && [ ! "$CXX_LINUX_MIPSLE_SOFTFLOAT" ]; then
                     if command -v mipsel-linux-muslsf-gcc >/dev/null 2>&1 && command -v mipsel-linux-muslsf-g++ >/dev/null 2>&1; then
                         CC_LINUX_MIPSLE_SOFTFLOAT="mipsel-linux-muslsf-gcc"
@@ -573,7 +574,7 @@ function InitLinuxAmd64CGODeps() {
                         CC_LINUX_MIPSLE_SOFTFLOAT="$CGO_COMPILER_TMP_DIR/mipsel-linux-muslsf/bin/mipsel-linux-muslsf-gcc"
                         CXX_LINUX_MIPSLE_SOFTFLOAT="$CGO_COMPILER_TMP_DIR/mipsel-linux-muslsf/bin/mipsel-linux-muslsf-g++"
                     else
-                        DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/v0.2.5/mipsel-linux-muslsf.tgz" "$CGO_COMPILER_TMP_DIR/mipsel-linux-muslsf"
+                        DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/v0.3.1/mipsel-linux-muslsf.tgz" "$CGO_COMPILER_TMP_DIR/mipsel-linux-muslsf"
                         CC_LINUX_MIPSLE_SOFTFLOAT="$CGO_COMPILER_TMP_DIR/mipsel-linux-muslsf/bin/mipsel-linux-muslsf-gcc"
                         CXX_LINUX_MIPSLE_SOFTFLOAT="$CGO_COMPILER_TMP_DIR/mipsel-linux-muslsf/bin/mipsel-linux-muslsf-g++"
                     fi
@@ -592,7 +593,7 @@ function InitLinuxAmd64CGODeps() {
         "mips64")
             # MICRO: hardfloat softfloat or empty
             if [ ! "$MICRO" ] || [ "$MICRO" == "hardfloat" ]; then
-                # https://github.com/zijiren233/musl-cross-make/releases/download/v0.2.5/mips64-linux-musl.tgz
+                # https://github.com/zijiren233/musl-cross-make/releases/download/v0.3.1/mips64-linux-musl.tgz
                 if [ ! "$CC_LINUX_MIPS64" ] && [ ! "$CXX_LINUX_MIPS64" ]; then
                     if command -v mips64-linux-musl-gcc >/dev/null 2>&1 && command -v mips64-linux-musl-g++ >/dev/null 2>&1; then
                         CC_LINUX_MIPS64="mips64-linux-musl-gcc"
@@ -601,7 +602,7 @@ function InitLinuxAmd64CGODeps() {
                         CC_LINUX_MIPS64="$CGO_COMPILER_TMP_DIR/mips64-linux-musl/bin/mips64-linux-musl-gcc"
                         CXX_LINUX_MIPS64="$CGO_COMPILER_TMP_DIR/mips64-linux-musl/bin/mips64-linux-musl-g++"
                     else
-                        DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/v0.2.5/mips64-linux-musl.tgz" "$CGO_COMPILER_TMP_DIR/mips64-linux-musl"
+                        DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/v0.3.1/mips64-linux-musl.tgz" "$CGO_COMPILER_TMP_DIR/mips64-linux-musl"
                         CC_LINUX_MIPS64="$CGO_COMPILER_TMP_DIR/mips64-linux-musl/bin/mips64-linux-musl-gcc"
                         CXX_LINUX_MIPS64="$CGO_COMPILER_TMP_DIR/mips64-linux-musl/bin/mips64-linux-musl-g++"
                     fi
@@ -613,7 +614,7 @@ function InitLinuxAmd64CGODeps() {
                 CC="$CC_LINUX_MIPS64"
                 CXX="$CXX_LINUX_MIPS64"
             elif [ "$MICRO" == "softfloat" ]; then
-                # https://github.com/zijiren233/musl-cross-make/releases/download/v0.2.5/mips64-linux-muslsf.tgz
+                # https://github.com/zijiren233/musl-cross-make/releases/download/v0.3.1/mips64-linux-muslsf.tgz
                 if [ ! "$CC_LINUX_MIPS64_SOFTFLOAT" ] && [ ! "$CXX_LINUX_MIPS64_SOFTFLOAT" ]; then
                     if command -v mips64-linux-muslsf-gcc >/dev/null 2>&1 && command -v mips64-linux-muslsf-g++ >/dev/null 2>&1; then
                         CC_LINUX_MIPS64_SOFTFLOAT="mips64-linux-muslsf-gcc"
@@ -622,7 +623,7 @@ function InitLinuxAmd64CGODeps() {
                         CC_LINUX_MIPS64_SOFTFLOAT="$CGO_COMPILER_TMP_DIR/mips64-linux-muslsf/bin/mips64-linux-muslsf-gcc"
                         CXX_LINUX_MIPS64_SOFTFLOAT="$CGO_COMPILER_TMP_DIR/mips64-linux-muslsf/bin/mips64-linux-muslsf-g++"
                     else
-                        DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/v0.2.5/mips64-linux-muslsf.tgz" "$CGO_COMPILER_TMP_DIR/mips64-linux-muslsf"
+                        DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/v0.3.1/mips64-linux-muslsf.tgz" "$CGO_COMPILER_TMP_DIR/mips64-linux-muslsf"
                         CC_LINUX_MIPS64_SOFTFLOAT="$CGO_COMPILER_TMP_DIR/mips64-linux-muslsf/bin/mips64-linux-muslsf-gcc"
                         CXX_LINUX_MIPS64_SOFTFLOAT="$CGO_COMPILER_TMP_DIR/mips64-linux-muslsf/bin/mips64-linux-muslsf-g++"
                     fi
@@ -641,7 +642,7 @@ function InitLinuxAmd64CGODeps() {
         "mips64le")
             # MICRO: hardfloat softfloat or empty
             if [ ! "$MICRO" ] || [ "$MICRO" == "hardfloat" ]; then
-                # https://github.com/zijiren233/musl-cross-make/releases/download/v0.2.5/mips64el-linux-musl.tgz
+                # https://github.com/zijiren233/musl-cross-make/releases/download/v0.3.1/mips64el-linux-musl.tgz
                 if [ ! "$CC_LINUX_MIPS64LE" ] && [ ! "$CXX_LINUX_MIPS64LE" ]; then
                     if command -v mips64el-linux-musl-gcc >/dev/null 2>&1 && command -v mips64el-linux-musl-g++ >/dev/null 2>&1; then
                         CC_LINUX_MIPS64LE="mips64el-linux-musl-gcc"
@@ -650,7 +651,7 @@ function InitLinuxAmd64CGODeps() {
                         CC_LINUX_MIPS64LE="$CGO_COMPILER_TMP_DIR/mips64el-linux-musl/bin/mips64el-linux-musl-gcc"
                         CXX_LINUX_MIPS64LE="$CGO_COMPILER_TMP_DIR/mips64el-linux-musl/bin/mips64el-linux-musl-g++"
                     else
-                        DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/v0.2.5/mips64el-linux-musl.tgz" "$CGO_COMPILER_TMP_DIR/mips64el-linux-musl"
+                        DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/v0.3.1/mips64el-linux-musl.tgz" "$CGO_COMPILER_TMP_DIR/mips64el-linux-musl"
                         CC_LINUX_MIPS64LE="$CGO_COMPILER_TMP_DIR/mips64el-linux-musl/bin/mips64el-linux-musl-gcc"
                         CXX_LINUX_MIPS64LE="$CGO_COMPILER_TMP_DIR/mips64el-linux-musl/bin/mips64el-linux-musl-g++"
                     fi
@@ -662,7 +663,7 @@ function InitLinuxAmd64CGODeps() {
                 CC="$CC_LINUX_MIPS64LE"
                 CXX="$CXX_LINUX_MIPS64LE"
             elif [ "$MICRO" == "softfloat" ]; then
-                # https://github.com/zijiren233/musl-cross-make/releases/download/v0.2.5/mips64el-linux-muslsf.tgz
+                # https://github.com/zijiren233/musl-cross-make/releases/download/v0.3.1/mips64el-linux-muslsf.tgz
                 if [ ! "$CC_LINUX_MIPS64LE_SOFTFLOAT" ] && [ ! "$CXX_LINUX_MIPS64LE_SOFTFLOAT" ]; then
                     if command -v mips64el-linux-muslsf-gcc >/dev/null 2>&1 && command -v mips64el-linux-muslsf-g++ >/dev/null 2>&1; then
                         CC_LINUX_MIPS64LE_SOFTFLOAT="mips64el-linux-muslsf-gcc"
@@ -671,7 +672,7 @@ function InitLinuxAmd64CGODeps() {
                         CC_LINUX_MIPS64LE_SOFTFLOAT="$CGO_COMPILER_TMP_DIR/mips64el-linux-muslsf/bin/mips64el-linux-muslsf-gcc"
                         CXX_LINUX_MIPS64LE_SOFTFLOAT="$CGO_COMPILER_TMP_DIR/mips64el-linux-muslsf/bin/mips64el-linux-muslsf-g++"
                     else
-                        DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/v0.2.5/mips64el-linux-muslsf.tgz" "$CGO_COMPILER_TMP_DIR/mips64el-linux-muslsf"
+                        DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/v0.3.1/mips64el-linux-muslsf.tgz" "$CGO_COMPILER_TMP_DIR/mips64el-linux-muslsf"
                         CC_LINUX_MIPS64LE_SOFTFLOAT="$CGO_COMPILER_TMP_DIR/mips64el-linux-muslsf/bin/mips64el-linux-muslsf-gcc"
                         CXX_LINUX_MIPS64LE_SOFTFLOAT="$CGO_COMPILER_TMP_DIR/mips64el-linux-muslsf/bin/mips64el-linux-muslsf-g++"
                     fi
@@ -689,7 +690,7 @@ function InitLinuxAmd64CGODeps() {
             ;;
         "ppc64")
             # MICRO: power8 power9 or empty (not use)
-            # https://github.com/zijiren233/musl-cross-make/releases/download/v0.2.5/powerpc64-linux-musl.tgz
+            # https://github.com/zijiren233/musl-cross-make/releases/download/v0.3.1/powerpc64-linux-musl.tgz
             if [ ! "$CC_LINUX_PPC64" ] && [ ! "$CXX_LINUX_PPC64" ]; then
                 if command -v powerpc64-linux-musl-gcc >/dev/null 2>&1 && command -v powerpc64-linux-musl-g++ >/dev/null 2>&1; then
                     CC_LINUX_PPC64="powerpc64-linux-musl-gcc"
@@ -698,7 +699,7 @@ function InitLinuxAmd64CGODeps() {
                     CC_LINUX_PPC64="$CGO_COMPILER_TMP_DIR/powerpc64-linux-musl/bin/powerpc64-linux-musl-gcc"
                     CXX_LINUX_PPC64="$CGO_COMPILER_TMP_DIR/powerpc64-linux-musl/bin/powerpc64-linux-musl-g++"
                 else
-                    DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/v0.2.5/powerpc64-linux-musl.tgz" "$CGO_COMPILER_TMP_DIR/powerpc64-linux-musl"
+                    DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/v0.3.1/powerpc64-linux-musl.tgz" "$CGO_COMPILER_TMP_DIR/powerpc64-linux-musl"
                     CC_LINUX_PPC64="$CGO_COMPILER_TMP_DIR/powerpc64-linux-musl/bin/powerpc64-linux-musl-gcc"
                     CXX_LINUX_PPC64="$CGO_COMPILER_TMP_DIR/powerpc64-linux-musl/bin/powerpc64-linux-musl-g++"
                 fi
@@ -712,7 +713,7 @@ function InitLinuxAmd64CGODeps() {
             ;;
         "ppc64le")
             # MICRO: power8 power9 or empty (not use)
-            # https://github.com/zijiren233/musl-cross-make/releases/download/v0.2.5/powerpc64le-linux-musl.tgz
+            # https://github.com/zijiren233/musl-cross-make/releases/download/v0.3.1/powerpc64le-linux-musl.tgz
             if [ ! "$CC_LINUX_PPC64LE" ] && [ ! "$CXX_LINUX_PPC64LE" ]; then
                 if command -v powerpc64le-linux-musl-gcc >/dev/null 2>&1 && command -v powerpc64le-linux-musl-g++ >/dev/null 2>&1; then
                     CC_LINUX_PPC64LE="powerpc64le-linux-musl-gcc"
@@ -721,7 +722,7 @@ function InitLinuxAmd64CGODeps() {
                     CC_LINUX_PPC64LE="$CGO_COMPILER_TMP_DIR/powerpc64le-linux-musl/bin/powerpc64le-linux-musl-gcc"
                     CXX_LINUX_PPC64LE="$CGO_COMPILER_TMP_DIR/powerpc64le-linux-musl/bin/powerpc64le-linux-musl-g++"
                 else
-                    DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/v0.2.5/powerpc64le-linux-musl.tgz" "$CGO_COMPILER_TMP_DIR/powerpc64le-linux-musl"
+                    DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/v0.3.1/powerpc64le-linux-musl.tgz" "$CGO_COMPILER_TMP_DIR/powerpc64le-linux-musl"
                     CC_LINUX_PPC64LE="$CGO_COMPILER_TMP_DIR/powerpc64le-linux-musl/bin/powerpc64le-linux-musl-gcc"
                     CXX_LINUX_PPC64LE="$CGO_COMPILER_TMP_DIR/powerpc64le-linux-musl/bin/powerpc64le-linux-musl-g++"
                 fi
@@ -734,7 +735,7 @@ function InitLinuxAmd64CGODeps() {
             CXX="$CXX_LINUX_PPC64LE"
             ;;
         "riscv64")
-            # https://github.com/zijiren233/musl-cross-make/releases/download/v0.2.5/riscv64-linux-musl.tgz
+            # https://github.com/zijiren233/musl-cross-make/releases/download/v0.3.1/riscv64-linux-musl.tgz
             if [ ! "$CC_LINUX_RISCV64" ] && [ ! "$CXX_LINUX_RISCV64" ]; then
                 if command -v riscv64-linux-musl-gcc >/dev/null 2>&1 && command -v riscv64-linux-musl-g++ >/dev/null 2>&1; then
                     CC_LINUX_RISCV64="riscv64-linux-musl-gcc"
@@ -743,7 +744,7 @@ function InitLinuxAmd64CGODeps() {
                     CC_LINUX_RISCV64="$CGO_COMPILER_TMP_DIR/riscv64-linux-musl/bin/riscv64-linux-musl-gcc"
                     CXX_LINUX_RISCV64="$CGO_COMPILER_TMP_DIR/riscv64-linux-musl/bin/riscv64-linux-musl-g++"
                 else
-                    DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/v0.2.5/riscv64-linux-musl.tgz" "$CGO_COMPILER_TMP_DIR/riscv64-linux-musl"
+                    DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/v0.3.1/riscv64-linux-musl.tgz" "$CGO_COMPILER_TMP_DIR/riscv64-linux-musl"
                     CC_LINUX_RISCV64="$CGO_COMPILER_TMP_DIR/riscv64-linux-musl/bin/riscv64-linux-musl-gcc"
                     CXX_LINUX_RISCV64="$CGO_COMPILER_TMP_DIR/riscv64-linux-musl/bin/riscv64-linux-musl-g++"
                 fi
@@ -756,7 +757,7 @@ function InitLinuxAmd64CGODeps() {
             CXX="$CXX_LINUX_RISCV64"
             ;;
         "s390x")
-            # https://github.com/zijiren233/musl-cross-make/releases/download/v0.2.5/s390x-linux-musl.tgz
+            # https://github.com/zijiren233/musl-cross-make/releases/download/v0.3.1/s390x-linux-musl.tgz
             if [ ! "$CC_LINUX_S390X" ] && [ ! "$CXX_LINUX_S390X" ]; then
                 if command -v s390x-linux-musl-gcc >/dev/null 2>&1 && command -v s390x-linux-musl-g++ >/dev/null 2>&1; then
                     CC_LINUX_S390X="s390x-linux-musl-gcc"
@@ -765,7 +766,7 @@ function InitLinuxAmd64CGODeps() {
                     CC_LINUX_S390X="$CGO_COMPILER_TMP_DIR/s390x-linux-musl/bin/s390x-linux-musl-gcc"
                     CXX_LINUX_S390X="$CGO_COMPILER_TMP_DIR/s390x-linux-musl/bin/s390x-linux-musl-g++"
                 else
-                    DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/v0.2.5/s390x-linux-musl.tgz" "$CGO_COMPILER_TMP_DIR/s390x-linux-musl"
+                    DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/v0.3.1/s390x-linux-musl.tgz" "$CGO_COMPILER_TMP_DIR/s390x-linux-musl"
                     CC_LINUX_S390X="$CGO_COMPILER_TMP_DIR/s390x-linux-musl/bin/s390x-linux-musl-gcc"
                     CXX_LINUX_S390X="$CGO_COMPILER_TMP_DIR/s390x-linux-musl/bin/s390x-linux-musl-g++"
                 fi
@@ -809,7 +810,7 @@ function InitLinuxAmd64CGODeps() {
         case "$GOARCH" in
         "386")
             # Micro: sse2 softfloat or empty (not use)
-            # https://github.com/zijiren233/musl-cross-make/releases/download/v0.2.5/i686-w64-mingw32.tgz
+            # https://github.com/zijiren233/musl-cross-make/releases/download/v0.3.1/i686-w64-mingw32.tgz
             if [ ! "$CC_WINDOWS_386" ] && [ ! "$CXX_WINDOWS_386" ]; then
                 if command -v i686-w64-mingw32-gcc >/dev/null 2>&1 && command -v i686-w64-mingw32-g++ >/dev/null 2>&1; then
                     CC_WINDOWS_386="i686-w64-mingw32-gcc"
@@ -818,7 +819,7 @@ function InitLinuxAmd64CGODeps() {
                     CC_WINDOWS_386="$CGO_COMPILER_TMP_DIR/i686-w64-mingw32/bin/i686-w64-mingw32-gcc"
                     CXX_WINDOWS_386="$CGO_COMPILER_TMP_DIR/i686-w64-mingw32/bin/i686-w64-mingw32-g++"
                 else
-                    DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/v0.2.5/i686-w64-mingw32.tgz" "$CGO_COMPILER_TMP_DIR/i686-w64-mingw32"
+                    DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/v0.3.1/i686-w64-mingw32.tgz" "$CGO_COMPILER_TMP_DIR/i686-w64-mingw32"
                     CC_WINDOWS_386="$CGO_COMPILER_TMP_DIR/i686-w64-mingw32/bin/i686-w64-mingw32-gcc"
                     CXX_WINDOWS_386="$CGO_COMPILER_TMP_DIR/i686-w64-mingw32/bin/i686-w64-mingw32-g++"
                 fi
@@ -831,7 +832,7 @@ function InitLinuxAmd64CGODeps() {
             CXX="$CXX_WINDOWS_386"
             ;;
         "amd64")
-            # https://github.com/zijiren233/musl-cross-make/releases/download/v0.2.5/x86_64-w64-mingw32.tgz
+            # https://github.com/zijiren233/musl-cross-make/releases/download/v0.3.1/x86_64-w64-mingw32.tgz
             if [ ! "$CC_WINDOWS_AMD64" ] && [ ! "$CXX_WINDOWS_AMD64" ]; then
                 if command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1 && command -v x86_64-w64-mingw32-g++ >/dev/null 2>&1; then
                     CC_WINDOWS_AMD64="x86_64-w64-mingw32-gcc"
@@ -840,7 +841,7 @@ function InitLinuxAmd64CGODeps() {
                     CC_WINDOWS_AMD64="$CGO_COMPILER_TMP_DIR/x86_64-w64-mingw32/bin/x86_64-w64-mingw32-gcc"
                     CXX_WINDOWS_AMD64="$CGO_COMPILER_TMP_DIR/x86_64-w64-mingw32/bin/x86_64-w64-mingw32-g++"
                 else
-                    DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/v0.2.5/x86_64-w64-mingw32.tgz" "$CGO_COMPILER_TMP_DIR/x86_64-w64-mingw32"
+                    DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/v0.3.1/x86_64-w64-mingw32.tgz" "$CGO_COMPILER_TMP_DIR/x86_64-w64-mingw32"
                     CC_WINDOWS_AMD64="$CGO_COMPILER_TMP_DIR/x86_64-w64-mingw32/bin/x86_64-w64-mingw32-gcc"
                     CXX_WINDOWS_AMD64="$CGO_COMPILER_TMP_DIR/x86_64-w64-mingw32/bin/x86_64-w64-mingw32-g++"
                 fi

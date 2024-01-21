@@ -15,7 +15,7 @@ type dbVersion struct {
 	Upgrade     func(*gorm.DB) error
 }
 
-const CurrentVersion = "0.0.3"
+const CurrentVersion = "0.0.4"
 
 var models = []any{
 	new(model.Setting),
@@ -50,6 +50,9 @@ var dbVersions = map[string]dbVersion{
 		},
 	},
 	"0.0.3": {
+		NextVersion: "0.0.4",
+	},
+	"0.0.4": {
 		NextVersion: "",
 	},
 }

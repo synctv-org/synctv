@@ -180,7 +180,12 @@ func NewAuthRoomToken(user *op.User, room *op.Room) (string, error) {
 }
 
 func AuthRoomMiddleware(ctx *gin.Context) {
-	userE, roomE, err := AuthRoom(ctx.GetHeader("Authorization"))
+	token, err := GetAuthorizationTokenFromContext(ctx)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
+		return
+	}
+	userE, roomE, err := AuthRoom(token)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
 		return
@@ -212,7 +217,12 @@ func AuthRoomMiddleware(ctx *gin.Context) {
 }
 
 func AuthUserMiddleware(ctx *gin.Context) {
-	user, err := AuthUser(ctx.GetHeader("Authorization"))
+	token, err := GetAuthorizationTokenFromContext(ctx)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
+		return
+	}
+	user, err := AuthUser(token)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
 		return
@@ -231,7 +241,12 @@ func AuthUserMiddleware(ctx *gin.Context) {
 }
 
 func AuthAdminMiddleware(ctx *gin.Context) {
-	user, err := AuthUser(ctx.GetHeader("Authorization"))
+	token, err := GetAuthorizationTokenFromContext(ctx)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
+		return
+	}
+	user, err := AuthUser(token)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
 		return
@@ -246,7 +261,12 @@ func AuthAdminMiddleware(ctx *gin.Context) {
 }
 
 func AuthRootMiddleware(ctx *gin.Context) {
-	user, err := AuthUser(ctx.GetHeader("Authorization"))
+	token, err := GetAuthorizationTokenFromContext(ctx)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
+		return
+	}
+	user, err := AuthUser(token)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
 		return
@@ -258,4 +278,16 @@ func AuthRootMiddleware(ctx *gin.Context) {
 
 	ctx.Set("user", user)
 	ctx.Next()
+}
+
+func GetAuthorizationTokenFromContext(ctx *gin.Context) (string, error) {
+	Authorization := ctx.GetHeader("Authorization")
+	if Authorization != "" {
+		return Authorization, nil
+	}
+	Authorization = ctx.Query("token")
+	if Authorization != "" {
+		return Authorization, nil
+	}
+	return "", errors.New("token is empty")
 }

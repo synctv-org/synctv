@@ -12,7 +12,7 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
-	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -85,11 +85,14 @@ func genCurrent(ctx context.Context, user *op.User, room *op.Room, current *op.C
 		return parse2VendorMovie(ctx, user, room, &current.Movie)
 	}
 	if current.Movie.Base.RtmpSource || current.Movie.Base.Live && current.Movie.Base.Proxy {
-		t := current.Movie.Base.Type
-		if t != "flv" && t != "m3u8" {
-			t = "m3u8"
+		switch current.Movie.Base.Type {
+		case "m3u8":
+			current.Movie.Base.Url = fmt.Sprintf("/api/movie/live/hls/list/%s.m3u8", current.Movie.ID)
+		case "flv":
+			current.Movie.Base.Url = fmt.Sprintf("/api/movie/live/flv/%s.flv", current.Movie.ID)
+		default:
+			return errors.New("not support live movie type")
 		}
-		current.Movie.Base.Url = fmt.Sprintf("/api/movie/live/%s.%s", current.Movie.ID, t)
 		current.Movie.Base.Headers = nil
 	} else if current.Movie.Base.Proxy {
 		current.Movie.Base.Url = fmt.Sprintf("/api/movie/proxy/%s/%s", current.Movie.RoomID, current.Movie.ID)
@@ -558,14 +561,10 @@ func (e FormatErrNotSupportFileType) Error() string {
 }
 
 func JoinLive(ctx *gin.Context) {
+	ctx.Header("Cache-Control", "no-store")
 	room := ctx.MustGet("room").(*op.RoomEntry).Value()
-	// user := ctx.MustGet("user").(*op.UserEntry)
-
 	movieId := strings.Trim(ctx.Param("movieId"), "/")
-	fileExt := path.Ext(movieId)
-	splitedMovieId := strings.Split(movieId, "/")
-	channelName := strings.TrimSuffix(splitedMovieId[0], fileExt)
-	m, err := room.GetMovieByID(channelName)
+	m, err := room.GetMovieByID(movieId)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(err))
 		return
@@ -582,38 +581,144 @@ func JoinLive(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(err))
 		return
 	}
-	if channel == nil {
-		ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorStringResp("channel is nil"))
-		return
-	}
 
-	switch fileExt {
-	case ".flv":
-		ctx.Header("Cache-Control", "no-store")
+	joinType := ctx.DefaultQuery("type", "auto")
+	if joinType == "auto" {
+		joinType = m.Movie.Base.Type
+	}
+	switch joinType {
+	case "flv":
 		w := httpflv.NewHttpFLVWriter(ctx.Writer)
 		defer w.Close()
-		channel.AddPlayer(w)
-		w.SendPacket()
-	case ".m3u8":
-		ctx.Header("Cache-Control", "no-store")
+		err = channel.AddPlayer(w)
+		if err != nil {
+			ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(err))
+			return
+		}
+		_ = w.SendPacket()
+	case "m3u8":
 		b, err := channel.GenM3U8File(func(tsName string) (tsPath string) {
 			ext := "ts"
 			if settings.TsDisguisedAsPng.Get() {
 				ext = "png"
 			}
-			return fmt.Sprintf("/api/movie/live/%s/%s.%s", channelName, tsName, ext)
+			return fmt.Sprintf("/api/movie/live/hls/data/%s/%s/%s.%s", room.ID, movieId, tsName, ext)
 		})
 		if err != nil {
 			ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(err))
 			return
 		}
 		ctx.Data(http.StatusOK, hls.M3U8ContentType, b)
+	default:
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp(fmt.Sprintf("not support join type: %s", joinType)))
+		return
+	}
+}
+
+func JoinFlvLive(ctx *gin.Context) {
+	ctx.Header("Cache-Control", "no-store")
+	room := ctx.MustGet("room").(*op.RoomEntry).Value()
+	movieId := strings.TrimSuffix(strings.Trim(ctx.Param("movieId"), "/"), ".flv")
+	m, err := room.GetMovieByID(movieId)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(err))
+		return
+	}
+	if m.Movie.Base.RtmpSource && !conf.Conf.Server.Rtmp.Enable {
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("rtmp is not enabled"))
+		return
+	} else if m.Movie.Base.Live && !settings.LiveProxy.Get() {
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("live proxy is not enabled"))
+		return
+	}
+	channel, err := m.Channel()
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(err))
+		return
+	}
+
+	w := httpflv.NewHttpFLVWriter(ctx.Writer)
+	defer w.Close()
+	err = channel.AddPlayer(w)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(err))
+		return
+	}
+	_ = w.SendPacket()
+}
+
+func JoinHlsLive(ctx *gin.Context) {
+	ctx.Header("Cache-Control", "no-store")
+	room := ctx.MustGet("room").(*op.RoomEntry).Value()
+	movieId := strings.TrimSuffix(strings.Trim(ctx.Param("movieId"), "/"), ".m3u8")
+	m, err := room.GetMovieByID(movieId)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(err))
+		return
+	}
+	if m.Movie.Base.RtmpSource && !conf.Conf.Server.Rtmp.Enable {
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("rtmp is not enabled"))
+		return
+	} else if m.Movie.Base.Live && !settings.LiveProxy.Get() {
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("live proxy is not enabled"))
+		return
+	}
+	channel, err := m.Channel()
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(err))
+		return
+	}
+
+	b, err := channel.GenM3U8File(func(tsName string) (tsPath string) {
+		ext := "ts"
+		if settings.TsDisguisedAsPng.Get() {
+			ext = "png"
+		}
+		return fmt.Sprintf("/api/movie/live/hls/data/%s/%s/%s.%s", room.ID, movieId, tsName, ext)
+	})
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(err))
+		return
+	}
+	ctx.Data(http.StatusOK, hls.M3U8ContentType, b)
+}
+
+func ServeHlsLive(ctx *gin.Context) {
+	ctx.Header("Cache-Control", "no-store")
+	roomId := ctx.Param("roomId")
+	roomE, err := op.LoadOrInitRoomByID(roomId)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(err))
+		return
+	}
+	room := roomE.Value()
+	movieId := ctx.Param("movieId")
+	m, err := room.GetMovieByID(movieId)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(err))
+		return
+	}
+	if m.Movie.Base.RtmpSource && !conf.Conf.Server.Rtmp.Enable {
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("rtmp is not enabled"))
+		return
+	} else if m.Movie.Base.Live && !settings.LiveProxy.Get() {
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("live proxy is not enabled"))
+		return
+	}
+	channel, err := m.Channel()
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(err))
+		return
+	}
+
+	dataId := ctx.Param("dataId")
+	switch fileExt := filepath.Ext(dataId); fileExt {
 	case ".ts":
 		if settings.TsDisguisedAsPng.Get() {
 			ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(FormatErrNotSupportFileType(fileExt)))
 			return
 		}
-		b, err := channel.GetTsFile(splitedMovieId[1])
+		b, err := channel.GetTsFile(strings.TrimSuffix(dataId, fileExt))
 		if err != nil {
 			ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(err))
 			return
@@ -625,7 +730,7 @@ func JoinLive(ctx *gin.Context) {
 			ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(FormatErrNotSupportFileType(fileExt)))
 			return
 		}
-		b, err := channel.GetTsFile(splitedMovieId[1])
+		b, err := channel.GetTsFile(strings.TrimSuffix(dataId, fileExt))
 		if err != nil {
 			ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(err))
 			return

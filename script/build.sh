@@ -27,6 +27,7 @@ function Help() {
     echo "-v set build version (default: dev)"
     echo "-S set source dir (default: ../)"
     echo "-m set build mode (default: pie)"
+    echo "-M disable build micro"
     echo "-l set ldflags (default: -s -w --extldflags \"-static -fpic\")"
     echo "-p set platform (default: host platform, support: all, linux, darwin, windows)"
     echo "-P set disable trim path (default: disable)"
@@ -77,7 +78,7 @@ function Init() {
 }
 
 function ParseArgs() {
-    while getopts "hCsS:v:w:m:l:p:Pd:T:tm" arg; do
+    while getopts "hCsS:v:w:m:l:p:Pd:T:tmM" arg; do
         case $arg in
         h)
             Help
@@ -115,6 +116,9 @@ function ParseArgs() {
             ;;
         m)
             GH_PROXY="https://mirror.ghproxy.com/"
+            ;;
+        M)
+            DISABLE_MICRO="true"
             ;;
         # ----
         # dep
@@ -898,7 +902,6 @@ function InitLinuxAmd64CGODeps() {
 function Build() {
     platform="$1"
     target_name="$2"
-    disable_micro="$3"
 
     GOOS=${platform%/*}
     GOARCH=${platform#*/}
@@ -946,10 +949,17 @@ function Build() {
         GOOS=$GOOS \
         GOARCH=$GOARCH"
 
-    if [ "$disable_micro" ]; then
+    if [ "$DISABLE_MICRO" ]; then
         echo "building $GOOS/$GOARCH"
         InitCGODeps "$GOOS" "$GOARCH"
-        eval "$BUILD_ENV CC=\"$CC\" CXX=\"$CXX\" go build $BUILD_FLAGS -o \"$TARGET_FILE$EXT\" \"$SOURCH_DIR\""
+        eval "$BUILD_ENV CC=\"$CC\" CXX=\"$CXX\" \
+            GO386=sse2 \
+            GOARM=6 \
+            GOAMD64=v1 \
+            GOMIPS=hardfloat GOMIPS64=hardfloat \
+            GOPPC64=power8 \
+            GOWASM= \
+            go build $BUILD_FLAGS -o \"$TARGET_FILE$EXT\" \"$SOURCH_DIR\""
         if [ $? -ne 0 ]; then
             echo "build $GOOS/$GOARCH failed"
             exit 1
@@ -1182,7 +1192,7 @@ function Build() {
 function AutoBuild() {
     if [ ! "$1" ]; then
         echo "build host platform: $GOHOSTOS/$GOHOSTARCH"
-        Build "$GOHOSTOS/$GOHOSTARCH" "$BIN_NAME" "disable_micro"
+        Build "$GOHOSTOS/$GOHOSTARCH" "$BIN_NAME"
     else
         for platform in $1; do
             if [ "$platform" == "all" ]; then

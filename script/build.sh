@@ -48,10 +48,8 @@ function Help() {
 function Init() {
     CGO_ENABLED="1"
     CGO_CFLAGS="-O2 -g0"
-    CGO_CPPFLAGS="-O2 -g0"
     CGO_CXXFLAGS="-O2 -g0"
-    CGO_FFLAGS="-O2 -g0"
-    CGO_LDFLAGS="-O2 -g0"
+    CGO_LDFLAGS="-s"
     VERSION="dev"
     GOHOSTOS="$(go env GOHOSTOS)"
     GOHOSTARCH="$(go env GOHOSTARCH)"
@@ -320,9 +318,8 @@ function InitPlatforms() {
 }
 
 function CheckPlatform() {
-    platform="$1"
     for p in $ALLOWED_PLATFORM; do
-        if [ "$p" == "$platform" ]; then
+        if [ "$p" == "$1" ]; then
             return 0
         fi
     done
@@ -330,22 +327,24 @@ function CheckPlatform() {
 }
 
 function CheckAllPlatform() {
-    for platform in $PLATFORM; do
-        if [ "$platform" == "all" ]; then
-            continue
-        elif [ "$platform" == "linux" ]; then
-            continue
-        elif [ "$platform" == "darwin" ]; then
-            continue
-        elif [ "$platform" == "windows" ]; then
-            continue
-        fi
-        CheckPlatform "$platform"
-        if [ $? -ne 0 ]; then
-            echo "platform: $platform not support"
-            exit 1
-        fi
-    done
+    if [ "$1" ]; then
+        for platform in $1; do
+            if [ "$platform" == "all" ]; then
+                continue
+            elif [ "$platform" == "linux" ]; then
+                continue
+            elif [ "$platform" == "darwin" ]; then
+                continue
+            elif [ "$platform" == "windows" ]; then
+                continue
+            fi
+            CheckPlatform "$platform"
+            if [ $? -ne 0 ]; then
+                echo "platform: $platform not support"
+                exit 1
+            fi
+        done
+    fi
 }
 
 function InitCGODeps() {
@@ -393,6 +392,36 @@ function InitCGODeps() {
         exit 1
         ;;
     esac
+
+    read -r CC_COMMAND arCC_OPTIONSgs <<<"$CC"
+    CC_COMMAND="$(command -v ${CC_COMMAND})"
+    if [ $? -ne 0 ]; then
+        echo "$CC_COMMAND not found"
+        exit 1
+    fi
+    if [[ "$CC_COMMAND" != /* ]]; then
+        CC="$(cd "$(dirname "$CC_COMMAND")" && pwd)/$(basename "$CC_COMMAND")"
+        if [ $? -ne 0 ]; then
+            echo "$CC_COMMAND not found"
+            exit 1
+        fi
+        if [ "$CC_OPTIONS" ]; then
+            CC="$CC $CC_OPTIONS"
+        fi
+    fi
+
+    read -r CXX_COMMAND CXX_OPTIONS <<<"$CXX"
+    CXX_COMMAND="$(command -v ${CXX_COMMAND})"
+    if [[ "$CXX_COMMAND" != /* ]]; then
+        CXX="$(cd "$(dirname "$CXX_COMMAND")" && pwd)/$(basename "$CXX_COMMAND")"
+        if [ $? -ne 0 ]; then
+            echo "$CXX_COMMAND not found"
+            exit 1
+        fi
+        if [ "$CXX_OPTIONS" ]; then
+            CXX="$CXX $CXX_OPTIONS"
+        fi
+    fi
 }
 
 function InitHostCGODeps() {
@@ -400,16 +429,13 @@ function InitHostCGODeps() {
     GOARCH="$2"
     MICRO="$3"
 
-    if [ -z $(command -v gcc) ]; then
-        echo "gcc not found in PATH"
-        exit 1
-    fi
-    if [ -z $(command -v g++) ]; then
-        echo "g++ not found in PATH"
-        exit 1
-    fi
     CC="gcc"
     CXX="g++"
+
+    if [ $(uname) != "Darwin" ]; then
+        CC="$CC -static --static"
+        CXX="$CXX -static --static"
+    fi
 }
 
 function InitLinuxAmd64CGODeps() {
@@ -439,8 +465,8 @@ function InitLinuxAmd64CGODeps() {
                 exit 1
             fi
 
-            CC="$CC_LINUX_386"
-            CXX="$CXX_LINUX_386"
+            CC="$CC_LINUX_386 -static --static"
+            CXX="$CXX_LINUX_386 -static --static"
             ;;
         "arm64")
             # https://github.com/zijiren233/musl-cross-make/releases/download/v0.3.2/aarch64-linux-musl.tgz
@@ -461,8 +487,8 @@ function InitLinuxAmd64CGODeps() {
                 exit 1
             fi
 
-            CC="$CC_LINUX_ARM64"
-            CXX="$CXX_LINUX_ARM64"
+            CC="$CC_LINUX_ARM64 -static --static"
+            CXX="$CXX_LINUX_ARM64 -static --static"
             ;;
         "amd64")
             # https://github.com/zijiren233/musl-cross-make/releases/download/v0.3.2/x86_64-linux-musl.tgz
@@ -484,8 +510,8 @@ function InitLinuxAmd64CGODeps() {
                 exit 1
             fi
 
-            CC="$CC_LINUX_AMD64"
-            CXX="$CXX_LINUX_AMD64"
+            CC="$CC_LINUX_AMD64 -static --static"
+            CXX="$CXX_LINUX_AMD64 -static --static"
             ;;
         "arm")
             # MICRO: 5,6,7 or empty (not use)
@@ -507,8 +533,8 @@ function InitLinuxAmd64CGODeps() {
                 exit 1
             fi
 
-            CC="$CC_LINUX_ARM"
-            CXX="$CXX_LINUX_ARM"
+            CC="$CC_LINUX_ARM -static --static"
+            CXX="$CXX_LINUX_ARM -static --static"
             ;;
         "mips")
             # MICRO: hardfloat softfloat or empty
@@ -531,8 +557,8 @@ function InitLinuxAmd64CGODeps() {
                     exit 1
                 fi
 
-                CC="$CC_LINUX_MIPS"
-                CXX="$CXX_LINUX_MIPS"
+                CC="$CC_LINUX_MIPS -static --static"
+                CXX="$CXX_LINUX_MIPS -static --static"
             elif [ "$MICRO" == "softfloat" ]; then
                 # https://github.com/zijiren233/musl-cross-make/releases/download/v0.3.2/mips-linux-muslsf.tgz
                 if [ ! "$CC_LINUX_MIPS_SOFTFLOAT" ] && [ ! "$CXX_LINUX_MIPS_SOFTFLOAT" ]; then
@@ -552,8 +578,8 @@ function InitLinuxAmd64CGODeps() {
                     exit 1
                 fi
 
-                CC="$CC_LINUX_MIPS_SOFTFLOAT"
-                CXX="$CXX_LINUX_MIPS_SOFTFLOAT"
+                CC="$CC_LINUX_MIPS_SOFTFLOAT -static --static"
+                CXX="$CXX_LINUX_MIPS_SOFTFLOAT -static --static"
             else
                 echo "MICRO: $MICRO not support"
                 exit 1
@@ -580,8 +606,8 @@ function InitLinuxAmd64CGODeps() {
                     exit 1
                 fi
 
-                CC="$CC_LINUX_MIPSLE"
-                CXX="$CXX_LINUX_MIPSLE"
+                CC="$CC_LINUX_MIPSLE -static --static"
+                CXX="$CXX_LINUX_MIPSLE -static --static"
             elif [ "$MICRO" == "softfloat" ]; then
                 # https://github.com/zijiren233/musl-cross-make/releases/download/v0.3.2/mipsel-linux-muslsf.tgz
                 if [ ! "$CC_LINUX_MIPSLE_SOFTFLOAT" ] && [ ! "$CXX_LINUX_MIPSLE_SOFTFLOAT" ]; then
@@ -601,8 +627,8 @@ function InitLinuxAmd64CGODeps() {
                     exit 1
                 fi
 
-                CC="$CC_LINUX_MIPSLE_SOFTFLOAT"
-                CXX="$CXX_LINUX_MIPSLE_SOFTFLOAT"
+                CC="$CC_LINUX_MIPSLE_SOFTFLOAT -static --static"
+                CXX="$CXX_LINUX_MIPSLE_SOFTFLOAT -static --static"
             else
                 echo "MICRO: $MICRO not support"
                 exit 1
@@ -629,8 +655,8 @@ function InitLinuxAmd64CGODeps() {
                     exit 1
                 fi
 
-                CC="$CC_LINUX_MIPS64"
-                CXX="$CXX_LINUX_MIPS64"
+                CC="$CC_LINUX_MIPS64 -static --static"
+                CXX="$CXX_LINUX_MIPS64 -static --static"
             elif [ "$MICRO" == "softfloat" ]; then
                 # https://github.com/zijiren233/musl-cross-make/releases/download/v0.3.2/mips64-linux-muslsf.tgz
                 if [ ! "$CC_LINUX_MIPS64_SOFTFLOAT" ] && [ ! "$CXX_LINUX_MIPS64_SOFTFLOAT" ]; then
@@ -650,8 +676,8 @@ function InitLinuxAmd64CGODeps() {
                     exit 1
                 fi
 
-                CC="$CC_LINUX_MIPS64_SOFTFLOAT"
-                CXX="$CXX_LINUX_MIPS64_SOFTFLOAT"
+                CC="$CC_LINUX_MIPS64_SOFTFLOAT -static --static"
+                CXX="$CXX_LINUX_MIPS64_SOFTFLOAT -static --static"
             else
                 echo "MICRO: $MICRO not support"
                 exit 1
@@ -678,8 +704,8 @@ function InitLinuxAmd64CGODeps() {
                     exit 1
                 fi
 
-                CC="$CC_LINUX_MIPS64LE"
-                CXX="$CXX_LINUX_MIPS64LE"
+                CC="$CC_LINUX_MIPS64LE -static --static"
+                CXX="$CXX_LINUX_MIPS64LE -static --static"
             elif [ "$MICRO" == "softfloat" ]; then
                 # https://github.com/zijiren233/musl-cross-make/releases/download/v0.3.2/mips64el-linux-muslsf.tgz
                 if [ ! "$CC_LINUX_MIPS64LE_SOFTFLOAT" ] && [ ! "$CXX_LINUX_MIPS64LE_SOFTFLOAT" ]; then
@@ -699,8 +725,8 @@ function InitLinuxAmd64CGODeps() {
                     exit 1
                 fi
 
-                CC="$CC_LINUX_MIPS64LE_SOFTFLOAT"
-                CXX="$CXX_LINUX_MIPS64LE_SOFTFLOAT"
+                CC="$CC_LINUX_MIPS64LE_SOFTFLOAT -static --static"
+                CXX="$CXX_LINUX_MIPS64LE_SOFTFLOAT -static --static"
             else
                 echo "MICRO: $MICRO not support"
                 exit 1
@@ -726,8 +752,8 @@ function InitLinuxAmd64CGODeps() {
                 exit 1
             fi
 
-            CC="$CC_LINUX_PPC64"
-            CXX="$CXX_LINUX_PPC64"
+            CC="$CC_LINUX_PPC64 -static --static"
+            CXX="$CXX_LINUX_PPC64 -static --static"
             ;;
         "ppc64le")
             # MICRO: power8 power9 or empty (not use)
@@ -749,8 +775,8 @@ function InitLinuxAmd64CGODeps() {
                 exit 1
             fi
 
-            CC="$CC_LINUX_PPC64LE"
-            CXX="$CXX_LINUX_PPC64LE"
+            CC="$CC_LINUX_PPC64LE -static --static"
+            CXX="$CXX_LINUX_PPC64LE -static --static"
             ;;
         "riscv64")
             # https://github.com/zijiren233/musl-cross-make/releases/download/v0.3.2/riscv64-linux-musl.tgz
@@ -771,8 +797,8 @@ function InitLinuxAmd64CGODeps() {
                 exit 1
             fi
 
-            CC="$CC_LINUX_RISCV64"
-            CXX="$CXX_LINUX_RISCV64"
+            CC="$CC_LINUX_RISCV64 -static --static"
+            CXX="$CXX_LINUX_RISCV64 -static --static"
             ;;
         "s390x")
             # https://github.com/zijiren233/musl-cross-make/releases/download/v0.3.2/s390x-linux-musl.tgz
@@ -793,8 +819,8 @@ function InitLinuxAmd64CGODeps() {
                 exit 1
             fi
 
-            CC="$CC_LINUX_S390X"
-            CXX="$CXX_LINUX_S390X"
+            CC="$CC_LINUX_S390X -static --static"
+            CXX="$CXX_LINUX_S390X -static --static"
             ;;
         "loong64")
             # https://github.com/zijiren233/musl-cross-make/releases/download/v0.3.2/loongarch64-linux-musl.tgz
@@ -815,8 +841,8 @@ function InitLinuxAmd64CGODeps() {
                 exit 1
             fi
 
-            CC="$CC_LINUX_LOONG64"
-            CXX="$CXX_LINUX_LOONG64"
+            CC="$CC_LINUX_LOONG64 -static --static"
+            CXX="$CXX_LINUX_LOONG64 -static --static"
             ;;
         *)
             echo "$GOOS/$GOARCH not support for cgo"
@@ -846,8 +872,8 @@ function InitLinuxAmd64CGODeps() {
                 exit 1
             fi
 
-            CC="$CC_WINDOWS_386"
-            CXX="$CXX_WINDOWS_386"
+            CC="$CC_WINDOWS_386 -static --static"
+            CXX="$CXX_WINDOWS_386 -static --static"
             ;;
         "amd64")
             # https://github.com/zijiren233/musl-cross-make/releases/download/v0.3.2/x86_64-w64-mingw32.tgz
@@ -868,8 +894,8 @@ function InitLinuxAmd64CGODeps() {
                 exit 1
             fi
 
-            CC="$CC_WINDOWS_AMD64"
-            CXX="$CXX_WINDOWS_AMD64"
+            CC="$CC_WINDOWS_AMD64 -static --static"
+            CXX="$CXX_WINDOWS_AMD64 -static --static"
             ;;
         "arm")
             # Micro: 5 6 7 or empty (not use)
@@ -887,20 +913,6 @@ function InitLinuxAmd64CGODeps() {
         exit 1
         ;;
     esac
-
-    CC=$(command -v "$CC")
-    if [ $? -ne 0 ]; then
-        echo "CC: $CC not found"
-        exit 1
-    fi
-    CXX=$(command -v "$CXX")
-    if [ $? -ne 0 ]; then
-        echo "CXX: $CXX not found"
-        exit 1
-    fi
-
-    CC="$CC -static --static"
-    CXX="$CXX -static --static"
 }
 
 function Build() {
@@ -946,9 +958,7 @@ function Build() {
 
     BUILD_ENV="CGO_ENABLED=$CGO_ENABLED \
         CGO_CFGLAGS=\"$CGO_CFGLAGS\" \
-        CGO_CPPFLAGS=\"$CGO_CPPFLAGS\" \
         CGO_CXXFLAGS=\"$CGO_CXXFLAGS\" \
-        CGO_FFLAGS=\"$CGO_FFLAGS\" \
         CGO_LDFLAGS=\"$CGO_LDFLAGS\" \
         GOOS=$GOOS \
         GOARCH=$GOARCH"
@@ -1195,18 +1205,17 @@ function Build() {
 
 function AutoBuild() {
     if [ ! "$1" ]; then
-        echo "build host platform: $GOHOSTOS/$GOHOSTARCH"
         Build "$GOHOSTOS/$GOHOSTARCH" "$BIN_NAME"
     else
         for platform in $1; do
             if [ "$platform" == "all" ]; then
                 AutoBuild "$CURRENT_ALLOWED_PLATFORM"
             elif [ "$platform" == "linux" ]; then
-                AutoBuild "$CURRENT_LINUX_ALLOWED_PLATFORM"
+                AutoBuild "$CURRENT_ALLOWED_LINUX_PLATFORM"
             elif [ "$platform" == "darwin" ]; then
-                AutoBuild "$CURRENT_DARWIN_ALLOWED_PLATFORM"
+                AutoBuild "$CURRENT_ALLOWED_DARWIN_PLATFORM"
             elif [ "$platform" == "windows" ]; then
-                AutoBuild "$CURRENT_WINDOWS_ALLOWED_PLATFORM"
+                AutoBuild "$CURRENT_ALLOWED_WINDOWS_PLATFORM"
             else
                 Build "$platform"
             fi
@@ -1219,6 +1228,6 @@ Init
 ParseArgs "$@"
 FixArgs
 InitPlatforms
-CheckAllPlatform
+CheckAllPlatform "$PLATFORM"
 InitDep
 AutoBuild "$PLATFORM"

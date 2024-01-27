@@ -24,6 +24,8 @@ function DepHelp() {
 function Help() {
     echo "-h get help"
     echo "-C disable cgo"
+    echo "-c force set gcc"
+    echo "-x force set g++"
     echo "-v set build version (default: dev)"
     echo "-S set source dir (default: ../)"
     echo "-m set build mode (default: pie)"
@@ -34,7 +36,7 @@ function Help() {
     echo "-d set build result dir (default: build)"
     echo "-T set tags (default: jsoniter)"
     echo "-t show all targets"
-    echo "-m use github proxy mirror"
+    echo "-g use github proxy mirror"
     echo "----"
     echo "Dep Help:"
     DepHelp
@@ -78,7 +80,7 @@ function Init() {
 }
 
 function ParseArgs() {
-    while getopts "hCsS:v:w:m:l:p:Pd:T:tmM" arg; do
+    while getopts "hCsS:v:w:m:l:p:Pd:T:tgMc:x:" arg; do
         case $arg in
         h)
             Help
@@ -89,6 +91,12 @@ function ParseArgs() {
             ;;
         C)
             CGO_ENABLED="0"
+            ;;
+        c)
+            FORCE_CC="$OPTARG"
+            ;;
+        x)
+            FORCE_CXX="$OPTARG"
             ;;
         S)
             SOURCH_DIR="$OPTARG"
@@ -114,7 +122,7 @@ function ParseArgs() {
         t)
             SHOW_TARGETS=1
             ;;
-        m)
+        g)
             GH_PROXY="https://mirror.ghproxy.com/"
             ;;
         M)
@@ -341,11 +349,33 @@ function CheckAllPlatform() {
 }
 
 function InitCGODeps() {
-    if [ "$CGO_ENABLED" != "1" ]; then
-        CC=""
-        CXX=""
+    if [ "$FORCE_CC" ] && [ ! "$FORCE_CXX" ]; then
+        echo "FORCE_CC and FORCE_CXX must be set at the same time"
+        exit 1
+    elif [ ! "$FORCE_CC" ] && [ "$FORCE_CXX" ]; then
+        echo "FORCE_CC and FORCE_CXX must be set at the same time"
+        exit 1
+    elif [ "$FORCE_CC" ] && [ "$FORCE_CXX" ]; then
+        CC="$FORCE_CC"
+        CXX="$FORCE_CXX"
         return
     fi
+
+    CC=""
+    CXX=""
+    if [ "$CGO_ENABLED" != "1" ]; then
+        return
+    fi
+
+    GOOS="$1"
+    GOARCH="$2"
+    MICRO="$3"
+
+    if [ "$GOOS" == "$GOHOSTOS" ] && [ "$GOARCH" == "$GOHOSTARCH" ]; then
+        InitHostCGODeps "$@"
+        return
+    fi
+
     case "$GOHOSTOS" in
     "linux")
         case "$GOHOSTARCH" in
@@ -359,7 +389,8 @@ function InitCGODeps() {
         esac
         ;;
     *)
-        InitHostCGODeps $@
+        echo "cgo not support for $GOOS"
+        exit 1
         ;;
     esac
 }
@@ -369,35 +400,16 @@ function InitHostCGODeps() {
     GOARCH="$2"
     MICRO="$3"
 
-    if [ "$GOOS" == "$GOHOSTOS" ] && [ "$GOARCH" == "$GOHOSTARCH" ]; then
-        CC="gcc"
-        CXX="g++"
-    else
-        echo "cgo not support for $GOOS"
+    if [ -z $(command -v gcc) ]; then
+        echo "gcc not found in PATH"
         exit 1
     fi
-
-    CC=$(command -v "$CC")
-    if [ $? -ne 0 ]; then
-        echo "CC: $CC not found"
+    if [ -z $(command -v g++) ]; then
+        echo "g++ not found in PATH"
         exit 1
     fi
-    CXX=$(command -v "$CXX")
-    if [ $? -ne 0 ]; then
-        echo "CXX: $CXX not found"
-        exit 1
-    fi
-
-    CC="$(cd "$(dirname "$CC")" && pwd)/$(basename "$CC")"
-    if [ $? -ne 0 ]; then
-        echo "CC: $CC not found"
-        exit 1
-    fi
-    CXX="$(cd "$(dirname "$CXX")" && pwd)/$(basename "$CXX")"
-    if [ $? -ne 0 ]; then
-        echo "CXX: $CXX not found"
-        exit 1
-    fi
+    CC="gcc"
+    CXX="g++"
 }
 
 function InitLinuxAmd64CGODeps() {
@@ -887,16 +899,8 @@ function InitLinuxAmd64CGODeps() {
         exit 1
     fi
 
-    CC="$(cd "$(dirname "$CC")" && pwd)/$(basename "$CC") -static --static"
-    if [ $? -ne 0 ]; then
-        echo "CC: $CC not found"
-        exit 1
-    fi
-    CXX="$(cd "$(dirname "$CXX")" && pwd)/$(basename "$CXX") -static --static"
-    if [ $? -ne 0 ]; then
-        echo "CXX: $CXX not found"
-        exit 1
-    fi
+    CC="$CC -static --static"
+    CXX="$CXX -static --static"
 }
 
 function Build() {

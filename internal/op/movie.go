@@ -29,6 +29,17 @@ type Movie struct {
 	embyCache     atomic.Pointer[cache.EmbyMovieCache]
 }
 
+func (m *Movie) ClearCache() {
+	m.alistCache.Store(nil)
+
+	bmc := m.bilibiliCache.Swap(nil)
+	if bmc != nil {
+		bmc.NoSharedMovie.Clear()
+	}
+
+	m.embyCache.Store(nil)
+}
+
 func (m *Movie) AlistCache() *cache.AlistMovieCache {
 	c := m.alistCache.Load()
 	if c == nil {
@@ -121,7 +132,10 @@ func (m *Movie) initChannel() error {
 			}()
 		case "http", "https":
 			c := m.compareAndSwapInitChannel()
-			c.InitHlsPlayer(hls.WithGenTsNameFunc(genTsName))
+			err := c.InitHlsPlayer(hls.WithGenTsNameFunc(genTsName))
+			if err != nil {
+				return err
+			}
 			go func() {
 				for {
 					if c.Closed() {
@@ -233,8 +247,6 @@ func (movie *Movie) validateVendorMovie() error {
 	default:
 		return fmt.Errorf("vendor not implement validate")
 	}
-
-	return nil
 }
 
 func (m *Movie) Terminate() error {
@@ -245,14 +257,11 @@ func (m *Movie) Terminate() error {
 			return err
 		}
 	}
-	bmc := m.bilibiliCache.Swap(nil)
-	if bmc != nil {
-		bmc.NoSharedMovie.Clear()
-	}
 	return nil
 }
 
 func (m *Movie) Update(movie *model.BaseMovie) error {
 	m.Movie.Base = *movie
+	m.ClearCache()
 	return m.Terminate()
 }

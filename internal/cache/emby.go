@@ -82,8 +82,9 @@ func NewEmbyMovieCacheInitFunc(movie *model.Movie) func(ctx context.Context, arg
 		var (
 			serverID string
 			err      error
+			truePath string
 		)
-		serverID, movie.Base.VendorInfo.Emby.Path, err = model.GetEmbyServerIdFromPath(movie.Base.VendorInfo.Emby.Path)
+		serverID, truePath, err = model.GetEmbyServerIdFromPath(movie.Base.VendorInfo.Emby.Path)
 		if err != nil {
 			return nil, err
 		}
@@ -103,7 +104,7 @@ func NewEmbyMovieCacheInitFunc(movie *model.Movie) func(ctx context.Context, arg
 		data, err := cli.GetItem(ctx, &emby.GetItemReq{
 			Host:   aucd.Host,
 			Token:  aucd.ApiKey,
-			ItemId: movie.Base.VendorInfo.Emby.Path,
+			ItemId: truePath,
 		})
 		if err != nil {
 			return nil, err

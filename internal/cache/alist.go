@@ -145,8 +145,9 @@ func NewAlistMovieCacheInitFunc(movie *model.Movie) func(ctx context.Context, ar
 		var (
 			serverID string
 			err      error
+			truePath string
 		)
-		serverID, movie.Base.VendorInfo.Alist.Path, err = model.GetAlistServerIdFromPath(movie.Base.VendorInfo.Alist.Path)
+		serverID, truePath, err = model.GetAlistServerIdFromPath(movie.Base.VendorInfo.Alist.Path)
 		if err != nil {
 			return nil, err
 		}
@@ -161,7 +162,7 @@ func NewAlistMovieCacheInitFunc(movie *model.Movie) func(ctx context.Context, ar
 		fg, err := cli.FsGet(ctx, &alist.FsGetReq{
 			Host:     aucd.Host,
 			Token:    aucd.Token,
-			Path:     movie.Base.VendorInfo.Alist.Path,
+			Path:     truePath,
 			Password: movie.Base.VendorInfo.Alist.Password,
 		})
 		if err != nil {
@@ -179,7 +180,7 @@ func NewAlistMovieCacheInitFunc(movie *model.Movie) func(ctx context.Context, ar
 			fo, err := cli.FsOther(ctx, &alist.FsOtherReq{
 				Host:     aucd.Host,
 				Token:    aucd.Token,
-				Path:     movie.Base.VendorInfo.Alist.Path,
+				Path:     truePath,
 				Password: movie.Base.VendorInfo.Alist.Password,
 				Method:   "video_preview",
 			})

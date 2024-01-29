@@ -9,28 +9,53 @@ enum ElementMessageType {
   CHAT_MESSAGE = 2;
   PLAY = 3;
   PAUSE = 4;
-  CHECK_SEEK = 5;
+  CHECK = 5;
   TOO_FAST = 6;
   TOO_SLOW = 7;
   CHANGE_RATE = 8;
   CHANGE_SEEK = 9;
-  CHANGE_CURRENT = 10;
-  CHANGE_MOVIES = 11;
-  CHANGE_PEOPLE = 12;
+  CURRENT_CHANGED = 10;
+  MOVIES_CHANGED = 11;
+  PEOPLE_CHANGED = 12;
 }
 
-message Status {
-  double seek = 1;
-  double rate = 2;
-  bool playing = 3;
+message ChatResp {
+  Sender sender = 1;
+  string message = 2;
+}
+
+message Sender {
+  string username = 1;
+  string userid = 2;
+}
+
+message MovieStatus {
+  bool playing = 1;
+  double seek = 2;
+  double rate = 3;
+}
+
+message MovieStatusChanged {
+  Sender sender = 1;
+  MovieStatus status = 2;
+}
+
+message CheckReq {
+  MovieStatus status = 1;
+  uint64 expireId = 2;
 }
 
 message ElementMessage {
   ElementMessageType type = 1;
-  string sender = 2;
-  string message = 3;
-  double rate = 4;
-  double seek = 5;
-  int64 peopleNum = 6;
-  int64 time = 7;
+  int64 time = 2;
+  string error = 3;
+  string chatReq = 4;
+  ChatResp chatResp = 5;
+  MovieStatus changeMovieStatusReq = 6;
+  MovieStatusChanged movieStatusChanged = 7;
+  double changeSeekReq = 8;
+  CheckReq checkReq = 9;
+  int64 peopleChanged = 11;
+  Sender moviesChanged = 12;
+  Sender currentChanged = 13;
 }

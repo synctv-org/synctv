@@ -154,6 +154,7 @@ type MoviesResp struct {
 }
 
 type CurrentMovieResp struct {
-	Status op.Status  `json:"status"`
-	Movie  MoviesResp `json:"movie"`
+	Status   op.Status  `json:"status"`
+	Movie    MoviesResp `json:"movie"`
+	ExpireId uint64     `json:"expireId"`
 }

@@ -43,9 +43,9 @@ func NewWSMessageHandler(uE *op.UserEntry, rE *op.RoomEntry) func(c *websocket.C
 				return err2
 			}
 			defer wc.Close()
-			em := op.ElementMessage{
-				Type:    pb.ElementMessageType_ERROR,
-				Message: err.Error(),
+			em := pb.ElementMessage{
+				Type:  pb.ElementMessageType_ERROR,
+				Error: err.Error(),
 			}
 			return em.Encode(wc)
 		}
@@ -97,9 +97,9 @@ func handleReaderMessage(c *op.Client) error {
 			var data []byte
 			if data, err = io.ReadAll(rd); err != nil {
 				log.Errorf("ws: room %s user %s read message error: %v", c.Room().Name, c.User().Username, err)
-				if err := c.Send(&op.ElementMessage{
-					Type:    pb.ElementMessageType_ERROR,
-					Message: err.Error(),
+				if err := c.Send(&pb.ElementMessage{
+					Type:  pb.ElementMessageType_ERROR,
+					Error: err.Error(),
 				}); err != nil {
 					log.Errorf("ws: room %s user %s send error message error: %v", c.Room().Name, c.User().Username, err)
 					return err
@@ -109,9 +109,9 @@ func handleReaderMessage(c *op.Client) error {
 			var msg pb.ElementMessage
 			if err := proto.Unmarshal(data, &msg); err != nil {
 				log.Errorf("ws: room %s user %s decode message error: %v", c.Room().Name, c.User().Username, err)
-				if err := c.Send(&op.ElementMessage{
-					Type:    pb.ElementMessageType_ERROR,
-					Message: err.Error(),
+				if err := c.Send(&pb.ElementMessage{
+					Type:  pb.ElementMessageType_ERROR,
+					Error: err.Error(),
 				}); err != nil {
 					log.Errorf("ws: room %s user %s send error message error: %v", c.Room().Name, c.User().Username, err)
 					return err
@@ -132,15 +132,9 @@ func handleReaderMessage(c *op.Client) error {
 	}
 }
 
+const MaxChatMessageLength = 4096
+
 func handleElementMsg(cli *op.Client, msg *pb.ElementMessage) error {
-	var send = func(em *pb.ElementMessage) error {
-		em.Sender = cli.User().Username
-		return cli.Send((*op.ElementMessage)(em))
-	}
-	var broadcast = func(em *pb.ElementMessage, bc ...op.BroadcastConf) error {
-		em.Sender = cli.User().Username
-		return cli.Broadcast((*op.ElementMessage)(em), bc...)
-	}
 	var timeDiff float64
 	if msg.Time != 0 {
 		timeDiff = time.Since(time.UnixMilli(msg.Time)).Seconds()
@@ -154,64 +148,84 @@ func handleElementMsg(cli *op.Client, msg *pb.ElementMessage) error {
 	}
 	switch msg.Type {
 	case pb.ElementMessageType_CHAT_MESSAGE:
-		if len(msg.Message) > 4096 {
-			send(&pb.ElementMessage{
-				Type:    pb.ElementMessageType_ERROR,
-				Message: "message too long",
+		message := msg.GetChatReq()
+		if len(message) > MaxChatMessageLength {
+			cli.Send(&pb.ElementMessage{
+				Type:  pb.ElementMessageType_ERROR,
+				Error: "message too long",
 			})
 			return nil
 		}
-		broadcast(&pb.ElementMessage{
-			Type:    pb.ElementMessageType_CHAT_MESSAGE,
-			Message: msg.Message,
+		cli.Broadcast(&pb.ElementMessage{
+			Type: pb.ElementMessageType_CHAT_MESSAGE,
+			ChatResp: &pb.ChatResp{
+				Sender: &pb.Sender{
+					Username: cli.User().Username,
+					Userid:   cli.User().ID,
+				},
+				Message: message,
+			},
 		})
-	case pb.ElementMessageType_PLAY:
-		status := cli.Room().SetStatus(true, msg.Seek, msg.Rate, timeDiff)
-		broadcast(&pb.ElementMessage{
-			Type: pb.ElementMessageType_PLAY,
-			Seek: status.Seek,
-			Rate: status.Rate,
+	case pb.ElementMessageType_PLAY,
+		pb.ElementMessageType_PAUSE,
+		pb.ElementMessageType_CHANGE_RATE,
+		pb.ElementMessageType_CHANGE_SEEK:
+		status := cli.Room().SetStatus(msg.ChangeMovieStatusReq.Playing, msg.ChangeMovieStatusReq.Seek, msg.ChangeMovieStatusReq.Rate, timeDiff)
+		cli.Broadcast(&pb.ElementMessage{
+			Type: msg.Type,
+			MovieStatusChanged: &pb.MovieStatusChanged{
+				Sender: &pb.Sender{
+					Username: cli.User().Username,
+					Userid:   cli.User().ID,
+				},
+				Status: &pb.MovieStatus{
+					Playing: status.Playing,
+					Seek:    status.Seek,
+					Rate:    status.Rate,
+				},
+			},
 		}, op.WithIgnoreClient(cli))
-	case pb.ElementMessageType_PAUSE:
-		status := cli.Room().SetStatus(false, msg.Seek, msg.Rate, timeDiff)
-		broadcast(&pb.ElementMessage{
-			Type: pb.ElementMessageType_PAUSE,
-			Seek: status.Seek,
-			Rate: status.Rate,
-		}, op.WithIgnoreClient(cli))
-	case pb.ElementMessageType_CHANGE_RATE:
-		status := cli.Room().SetSeekRate(msg.Seek, msg.Rate, timeDiff)
-		broadcast(&pb.ElementMessage{
-			Type: pb.ElementMessageType_CHANGE_RATE,
-			Seek: status.Seek,
-			Rate: status.Rate,
-		}, op.WithIgnoreClient(cli))
-	case pb.ElementMessageType_CHANGE_SEEK:
-		status := cli.Room().SetSeekRate(msg.Seek, msg.Rate, timeDiff)
-		broadcast(&pb.ElementMessage{
-			Type: pb.ElementMessageType_CHANGE_SEEK,
-			Seek: status.Seek,
-			Rate: status.Rate,
-		}, op.WithIgnoreClient(cli))
-	case pb.ElementMessageType_CHECK_SEEK:
-		status := cli.Room().Current().Status
-		if status.Seek+maxInterval < msg.Seek+timeDiff {
-			send(&pb.ElementMessage{
+	case pb.ElementMessageType_CHECK:
+		current := cli.Room().Current()
+		if msg.CheckReq.ExpireId != 0 {
+			currentMovie, err := cli.Room().GetMovieByID(current.Movie.ID)
+			if err != nil {
+				_ = cli.Send(&pb.ElementMessage{
+					Type:  pb.ElementMessageType_ERROR,
+					Error: err.Error(),
+				})
+				break
+			}
+			if currentMovie.CheckExpired(msg.CheckReq.ExpireId) {
+				_ = cli.Send(&pb.ElementMessage{
+					Type: pb.ElementMessageType_CURRENT_CHANGED,
+				})
+				break
+			}
+		}
+		status := current.Status
+		cliStatus := msg.CheckReq.Status
+		if status.Seek+maxInterval < cliStatus.Seek+timeDiff {
+			cli.Send(&pb.ElementMessage{
 				Type: pb.ElementMessageType_TOO_FAST,
-				Seek: status.Seek,
-				Rate: status.Rate,
+				MovieStatusChanged: &pb.MovieStatusChanged{
+					Status: &pb.MovieStatus{
+						Playing: status.Playing,
+						Seek:    status.Seek,
+						Rate:    status.Rate,
+					},
+				},
 			})
-		} else if status.Seek-maxInterval > msg.Seek+timeDiff {
-			send(&pb.ElementMessage{
+		} else if status.Seek-maxInterval > cliStatus.Seek+timeDiff {
+			cli.Send(&pb.ElementMessage{
 				Type: pb.ElementMessageType_TOO_SLOW,
-				Seek: status.Seek,
-				Rate: status.Rate,
-			})
-		} else {
-			send(&pb.ElementMessage{
-				Type: pb.ElementMessageType_CHECK_SEEK,
-				Seek: status.Seek,
-				Rate: status.Rate,
+				MovieStatusChanged: &pb.MovieStatusChanged{
+					Status: &pb.MovieStatus{
+						Playing: status.Playing,
+						Seek:    status.Seek,
+						Rate:    status.Rate,
+					},
+				},
 			})
 		}
 	}

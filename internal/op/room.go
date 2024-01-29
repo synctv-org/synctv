@@ -180,6 +180,18 @@ func (r *Room) Current() *Current {
 	return &c
 }
 
+func (r *Room) CurrentMovie() (*Movie, error) {
+	return r.GetMovieByID(r.current.current.Movie.ID)
+}
+
+func (r *Room) CheckCurrentExpired(expireId uint64) (bool, error) {
+	m, err := r.CurrentMovie()
+	if err != nil {
+		return false, err
+	}
+	return m.CheckExpired(expireId), nil
+}
+
 func (r *Room) SetCurrentMovieByID(id string, play bool) error {
 	m, err := r.movies.GetMovieByID(id)
 	if err != nil {

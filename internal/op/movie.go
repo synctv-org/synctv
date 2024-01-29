@@ -3,11 +3,13 @@ package op
 import (
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"net/url"
 	"sync/atomic"
 	"time"
 
 	"github.com/go-resty/resty/v2"
+	"github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/internal/cache"
 	"github.com/synctv-org/synctv/internal/conf"
 	"github.com/synctv-org/synctv/internal/model"
@@ -22,11 +24,33 @@ import (
 )
 
 type Movie struct {
-	Movie         model.Movie
+	model.Movie
 	channel       atomic.Pointer[rtmps.Channel]
 	alistCache    atomic.Pointer[cache.AlistMovieCache]
 	bilibiliCache atomic.Pointer[cache.BilibiliMovieCache]
 	embyCache     atomic.Pointer[cache.EmbyMovieCache]
+}
+
+func (m *Movie) ExpireId() uint64 {
+	switch {
+	default:
+		return uint64(crc32.ChecksumIEEE([]byte(m.Movie.ID)))
+	case m.Movie.Base.VendorInfo.Vendor == model.VendorAlist &&
+		len(m.AlistCache().Raw().AliM3U8ListFile) != 0:
+		return uint64(m.AlistCache().Last())
+	}
+}
+
+func (m *Movie) CheckExpired(expireId uint64) bool {
+	switch {
+	default:
+		return expireId != m.ExpireId()
+	case m.Movie.Base.VendorInfo.Vendor == model.VendorAlist &&
+		len(m.AlistCache().Raw().AliM3U8ListFile) != 0:
+		logrus.Info(expireId)
+		logrus.Info(time.Now().UnixNano())
+		return time.Now().UnixNano()-int64(expireId) > m.AlistCache().MaxAge()
+	}
 }
 
 func (m *Movie) ClearCache() {

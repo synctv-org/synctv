@@ -169,6 +169,9 @@ func (m *movies) GetMovieByID(id string) (*Movie, error) {
 }
 
 func (m *movies) getMovieByID(id string) (*Movie, error) {
+	if id == "" {
+		return nil, errors.New("movie id is nil")
+	}
 	m.init()
 	for e := m.list.Front(); e != nil; e = e.Next() {
 		if e.Value.Movie.ID == id {

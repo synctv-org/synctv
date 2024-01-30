@@ -87,7 +87,7 @@ func genCurrentRespWithCurrent(ctx context.Context, user *op.User, room *op.Room
 	}
 	opMovie, err := room.GetMovieByID(current.Movie.ID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("get current movie error: %w", err)
 	}
 	var movie = opMovie.Movie
 	if movie.Base.VendorInfo.Vendor != "" {
@@ -1042,7 +1042,7 @@ func genVendorMovie(ctx context.Context, user *op.User, opMovie *op.Movie) (*dbM
 			return nil, err
 		}
 
-		if len(data.Ali.M3U8ListFile) != 0 {
+		if data.Ali != nil {
 			rawPath, err := url.JoinPath("/api/movie/proxy", movie.RoomID, movie.ID)
 			if err != nil {
 				return nil, err

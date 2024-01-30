@@ -181,6 +181,9 @@ func (r *Room) Current() *Current {
 }
 
 func (r *Room) CurrentMovie() (*Movie, error) {
+	if r.current.current.Movie.ID == "" {
+		return nil, errors.New("no current movie")
+	}
 	return r.GetMovieByID(r.current.current.Movie.ID)
 }
 

@@ -36,7 +36,7 @@ func (m *Movie) ExpireId() uint64 {
 	default:
 		return uint64(crc32.ChecksumIEEE([]byte(m.Movie.ID)))
 	case m.Movie.Base.VendorInfo.Vendor == model.VendorAlist &&
-		len(m.AlistCache().Raw().AliM3U8ListFile) != 0:
+		m.AlistCache().Raw().Ali != nil:
 		return uint64(m.AlistCache().Last())
 	}
 }
@@ -46,7 +46,7 @@ func (m *Movie) CheckExpired(expireId uint64) bool {
 	default:
 		return expireId != m.ExpireId()
 	case m.Movie.Base.VendorInfo.Vendor == model.VendorAlist &&
-		len(m.AlistCache().Raw().AliM3U8ListFile) != 0:
+		m.AlistCache().Raw().Ali != nil:
 		logrus.Info(expireId)
 		logrus.Info(time.Now().UnixNano())
 		return time.Now().UnixNano()-int64(expireId) > m.AlistCache().MaxAge()

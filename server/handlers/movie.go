@@ -870,11 +870,11 @@ func proxyVendorMovie(ctx *gin.Context, movie *op.Movie) {
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 			return
 		}
-		if len(alistC.AliM3U8ListFile) != 0 {
+		if alistC.Ali != nil {
 			t := ctx.Query("t")
 			switch t {
 			case "":
-				ctx.Data(http.StatusOK, "audio/mpegurl", alistC.AliM3U8ListFile)
+				ctx.Data(http.StatusOK, "audio/mpegurl", alistC.Ali.M3U8ListFile)
 				return
 			case "subtitle":
 				idS := ctx.Query("id")
@@ -887,11 +887,11 @@ func proxyVendorMovie(ctx *gin.Context, movie *op.Movie) {
 					ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 					return
 				}
-				if id >= len(alistC.AliSubtitles) {
+				if id >= len(alistC.Ali.Subtitles) {
 					ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("id out of range"))
 					return
 				}
-				data, err := alistC.AliSubtitles[id].Cache.Get(ctx)
+				data, err := alistC.Ali.Subtitles[id].Cache.Get(ctx)
 				if err != nil {
 					ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 					return
@@ -1043,7 +1043,7 @@ func genVendorMovie(ctx context.Context, user *op.User, opMovie *op.Movie) (*dbM
 			return nil, err
 		}
 
-		if len(data.AliM3U8ListFile) != 0 {
+		if len(data.Ali.M3U8ListFile) != 0 {
 			rawPath, err := url.JoinPath("/api/movie/proxy", movie.RoomID, movie.ID)
 			if err != nil {
 				return nil, err
@@ -1054,9 +1054,9 @@ func genVendorMovie(ctx context.Context, user *op.User, opMovie *op.Movie) (*dbM
 			movie.Base.Url = u.String()
 			movie.Base.Type = "m3u8"
 
-			for i, s := range data.AliSubtitles {
+			for i, s := range data.Ali.Subtitles {
 				if movie.Base.Subtitles == nil {
-					movie.Base.Subtitles = make(map[string]*dbModel.Subtitle, len(data.AliSubtitles))
+					movie.Base.Subtitles = make(map[string]*dbModel.Subtitle, len(data.Ali.Subtitles))
 				}
 				movie.Base.Subtitles[s.Raw.Language] = &dbModel.Subtitle{
 					URL:  fmt.Sprintf("/api/movie/proxy/%s/%s?t=subtitle&id=%d", movie.RoomID, movie.ID, i),

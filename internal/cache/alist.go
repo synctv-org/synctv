@@ -82,9 +82,13 @@ func NewAlistMovieCache(movie *model.Movie) *AlistMovieCache {
 }
 
 type AlistMovieCacheData struct {
-	URL             string
-	AliM3U8ListFile []byte
-	AliSubtitles    []*AliSubtitle
+	URL string
+	Ali *AlistAliCache
+}
+
+type AlistAliCache struct {
+	M3U8ListFile []byte
+	Subtitles    []*AliSubtitle
 }
 
 type AliSubtitle struct {
@@ -131,7 +135,7 @@ func genAliM3U8ListFile(urls []*alist.FsOtherResp_VideoPreviewPlayInfo_LiveTrans
 		if v.Status != "finished" {
 			return nil
 		}
-		buf.WriteString(fmt.Sprintf("#EXT-X-STREAM-INF:RESOLUTION=%dx%d,NAME=\"%d\"\n", v.TemplateWidth, v.TemplateHeight, v.TemplateWidth))
+		buf.WriteString(fmt.Sprintf("#EXT-X-STREAM-INF:BANDWIDTH=%d,RESOLUTION=%dx%d,NAME=\"%d\"\n", v.TemplateWidth*v.TemplateHeight, v.TemplateWidth, v.TemplateHeight, v.TemplateWidth))
 		buf.WriteString(v.Url + "\n")
 	}
 	return buf.Bytes()
@@ -187,8 +191,10 @@ func NewAlistMovieCacheInitFunc(movie *model.Movie) func(ctx context.Context, ar
 			if err != nil {
 				return nil, err
 			}
-			cache.AliM3U8ListFile = genAliM3U8ListFile(fo.VideoPreviewPlayInfo.LiveTranscodingTaskList)
-			cache.AliSubtitles = newAliSubtitlesCacheInitFunc(fo.VideoPreviewPlayInfo.LiveTranscodingSubtitleTaskList)
+			cache.Ali = &AlistAliCache{
+				M3U8ListFile: genAliM3U8ListFile(fo.VideoPreviewPlayInfo.LiveTranscodingTaskList),
+				Subtitles:    newAliSubtitlesCacheInitFunc(fo.VideoPreviewPlayInfo.LiveTranscodingSubtitleTaskList),
+			}
 		}
 		return cache, nil
 	}

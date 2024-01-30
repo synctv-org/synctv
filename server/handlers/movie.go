@@ -89,33 +89,32 @@ func genCurrentRespWithCurrent(ctx context.Context, user *op.User, room *op.Room
 	if err != nil {
 		return nil, err
 	}
-	var movie *dbModel.Movie = &opMovie.Movie
-	if current.Movie.Base.VendorInfo.Vendor != "" {
+	var movie = opMovie.Movie
+	if movie.Base.VendorInfo.Vendor != "" {
 		vendorMovie, err := genVendorMovie(ctx, user, opMovie)
 		if err != nil {
 			return nil, err
 		}
-		movie = vendorMovie
-	} else if current.Movie.Base.RtmpSource || current.Movie.Base.Live && current.Movie.Base.Proxy {
-		switch current.Movie.Base.Type {
+		movie = *vendorMovie
+	} else if movie.Base.RtmpSource || movie.Base.Live && movie.Base.Proxy {
+		switch movie.Base.Type {
 		case "m3u8":
-			current.Movie.Base.Url = fmt.Sprintf("/api/movie/live/hls/list/%s.m3u8", current.Movie.ID)
+			movie.Base.Url = fmt.Sprintf("/api/movie/live/hls/list/%s.m3u8", movie.ID)
 		case "flv":
-			current.Movie.Base.Url = fmt.Sprintf("/api/movie/live/flv/%s.flv", current.Movie.ID)
+			movie.Base.Url = fmt.Sprintf("/api/movie/live/flv/%s.flv", movie.ID)
 		default:
 			return nil, errors.New("not support live movie type")
 		}
-		current.Movie.Base.Headers = nil
-	} else if current.Movie.Base.Proxy {
-		current.Movie.Base.Url = fmt.Sprintf("/api/movie/proxy/%s/%s", current.Movie.RoomID, current.Movie.ID)
-		current.Movie.Base.Headers = nil
+		movie.Base.Headers = nil
+	} else if movie.Base.Proxy {
+		movie.Base.Url = fmt.Sprintf("/api/movie/proxy/%s/%s", movie.RoomID, movie.ID)
+		movie.Base.Headers = nil
 	}
-	if current.Movie.Base.Type == "" && current.Movie.Base.Url != "" {
-		current.Movie.Base.Type = utils.GetUrlExtension(current.Movie.Base.Url)
+	if movie.Base.Type == "" && movie.Base.Url != "" {
+		movie.Base.Type = utils.GetUrlExtension(movie.Base.Url)
 	}
-	current.UpdateSeek()
 	resp := &model.CurrentMovieResp{
-		Status: current.Status,
+		Status: current.UpdateStatus(),
 		Movie: model.MoviesResp{
 			Id:        movie.ID,
 			CreatedAt: movie.CreatedAt.UnixMilli(),

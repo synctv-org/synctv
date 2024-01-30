@@ -43,7 +43,7 @@ func newStatus() Status {
 func (c *current) Current() Current {
 	c.lock.RLock()
 	defer c.lock.RUnlock()
-	c.current.UpdateSeek()
+	c.current.UpdateStatus()
 	return c.current
 }
 
@@ -63,7 +63,7 @@ func (c *current) SetMovie(movie *model.Movie, play bool) {
 func (c *current) Status() Status {
 	c.lock.RLock()
 	defer c.lock.RUnlock()
-	c.current.UpdateSeek()
+	c.current.UpdateStatus()
 	return c.current.Status
 }
 
@@ -81,15 +81,16 @@ func (c *current) SetSeekRate(seek, rate, timeDiff float64) Status {
 	return c.current.SetSeekRate(seek, rate, timeDiff)
 }
 
-func (c *Current) UpdateSeek() {
+func (c *Current) UpdateStatus() Status {
 	if c.Movie.Base.Live {
 		c.Status.lastUpdate = time.Now()
-		return
+		return c.Status
 	}
 	if c.Status.Playing {
 		c.Status.Seek += time.Since(c.Status.lastUpdate).Seconds() * c.Status.Rate
 	}
 	c.Status.lastUpdate = time.Now()
+	return c.Status
 }
 
 func (c *Current) setLiveStatus() Status {

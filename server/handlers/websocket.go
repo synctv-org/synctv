@@ -168,8 +168,7 @@ func handleElementMsg(cli *op.Client, msg *pb.ElementMessage) error {
 		})
 	case pb.ElementMessageType_PLAY,
 		pb.ElementMessageType_PAUSE,
-		pb.ElementMessageType_CHANGE_RATE,
-		pb.ElementMessageType_CHANGE_SEEK:
+		pb.ElementMessageType_CHANGE_RATE:
 		status := cli.Room().SetStatus(msg.ChangeMovieStatusReq.Playing, msg.ChangeMovieStatusReq.Seek, msg.ChangeMovieStatusReq.Rate, timeDiff)
 		cli.Broadcast(&pb.ElementMessage{
 			Type: msg.Type,
@@ -185,6 +184,38 @@ func handleElementMsg(cli *op.Client, msg *pb.ElementMessage) error {
 				},
 			},
 		}, op.WithIgnoreClient(cli))
+	case pb.ElementMessageType_CHANGE_SEEK:
+		status := cli.Room().SetSeekRate(msg.ChangeMovieStatusReq.Seek, msg.ChangeMovieStatusReq.Rate, timeDiff)
+		cli.Broadcast(&pb.ElementMessage{
+			Type: msg.Type,
+			MovieStatusChanged: &pb.MovieStatusChanged{
+				Sender: &pb.Sender{
+					Username: cli.User().Username,
+					Userid:   cli.User().ID,
+				},
+				Status: &pb.MovieStatus{
+					Playing: status.Playing,
+					Seek:    status.Seek,
+					Rate:    status.Rate,
+				},
+			},
+		}, op.WithIgnoreClient(cli))
+	case pb.ElementMessageType_SYNC_MOVIE_STATUS:
+		status := cli.Room().Current().Status
+		cli.Send(&pb.ElementMessage{
+			Type: pb.ElementMessageType_SYNC_MOVIE_STATUS,
+			MovieStatusChanged: &pb.MovieStatusChanged{
+				Sender: &pb.Sender{
+					Username: cli.User().Username,
+					Userid:   cli.User().ID,
+				},
+				Status: &pb.MovieStatus{
+					Playing: status.Playing,
+					Seek:    status.Seek,
+					Rate:    status.Rate,
+				},
+			},
+		})
 	case pb.ElementMessageType_CHECK:
 		current := cli.Room().Current()
 		if msg.CheckReq.ExpireId != 0 {

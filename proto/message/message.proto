@@ -17,6 +17,7 @@ enum ElementMessageType {
   CURRENT_CHANGED = 10;
   MOVIES_CHANGED = 11;
   PEOPLE_CHANGED = 12;
+  SYNC_MOVIE_STATUS = 13;
 }
 
 message ChatResp {

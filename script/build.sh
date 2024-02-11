@@ -162,15 +162,15 @@ function FixArgs() {
     fi
     if [ ! "$RESULT_DIR" ]; then
         RESULT_DIR="${DEFAULT_RESULT_DIR}"
-        mkdir -p "$RESULT_DIR"
     fi
+    mkdir -p "$RESULT_DIR"
     RESULT_DIR="$(cd "$RESULT_DIR" && pwd)"
     echo "build source dir: $SOURCE_DIR"
     echo "build result dir: $RESULT_DIR"
     if [ ! "$CGO_CROSS_COMPILER_DIR" ]; then
         CGO_CROSS_COMPILER_DIR="$DEFAULT_CGO_CROSS_COMPILER_DIR"
-        mkdir -p "$CGO_CROSS_COMPILER_DIR"
     fi
+    mkdir -p "$CGO_CROSS_COMPILER_DIR"
     CGO_CROSS_COMPILER_DIR="$(cd "$CGO_CROSS_COMPILER_DIR" && pwd)"
     if [ "$(CGOENABLED)" ]; then
         CGO_ENABLED="1"

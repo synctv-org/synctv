@@ -6,4 +6,4 @@
 *.db
 .vscode
 *.local
-/compiler
+/cross

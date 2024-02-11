@@ -3,9 +3,9 @@
 set -e
 
 DEFAULT_SOURCE_DIR="$(pwd)"
-DEFAULT_RESULT_DIR="build"
+DEFAULT_RESULT_DIR="$(pwd)/build"
 DEFAULT_BIN_NAME="$(basename "$(cd $DEFAULT_SOURCE_DIR && pwd)")"
-DEFAULT_CGO_COMPILER_DIR="compiler"
+DEFAULT_CGO_CROSS_COMPILER_DIR="$(pwd)/cross"
 
 function EnvHelp() {
     echo "SOURCE_DIR set source dir (default: $DEFAULT_SOURCE_DIR)"
@@ -26,7 +26,7 @@ function EnvHelp() {
     echo "VERSION"
     echo "SKIP_INIT_WEB"
     echo "WEB_VERSION set web dependency version (default: VERSION)"
-    echo "CGO_COMPILER_DIR set cgo compiler dir (default: $DEFAULT_CGO_COMPILER_DIR)"
+    echo "CGO_CROSS_COMPILER_DIR set cgo compiler dir (default: $DEFAULT_CGO_CROSS_COMPILER_DIR)"
 }
 
 function DepHelp() {
@@ -162,14 +162,16 @@ function FixArgs() {
     fi
     if [ ! "$RESULT_DIR" ]; then
         RESULT_DIR="${DEFAULT_RESULT_DIR}"
+        mkdir -p "$RESULT_DIR"
     fi
     RESULT_DIR="$(cd "$RESULT_DIR" && pwd)"
     echo "build source dir: $SOURCE_DIR"
     echo "build result dir: $RESULT_DIR"
-    if [ ! "$CGO_COMPILER_DIR" ]; then
-        CGO_COMPILER_DIR="$DEFAULT_CGO_COMPILER_DIR"
+    if [ ! "$CGO_CROSS_COMPILER_DIR" ]; then
+        CGO_CROSS_COMPILER_DIR="$DEFAULT_CGO_CROSS_COMPILER_DIR"
+        mkdir -p "$CGO_CROSS_COMPILER_DIR"
     fi
-    CGO_COMPILER_DIR="$(cd "$CGO_COMPILER_DIR" && pwd)"
+    CGO_CROSS_COMPILER_DIR="$(cd "$CGO_CROSS_COMPILER_DIR" && pwd)"
     if [ "$(CGOENABLED)" ]; then
         CGO_ENABLED="1"
     else
@@ -533,15 +535,15 @@ function InitDefaultCGODeps() {
                     command -v i686-linux-musl-g++ >/dev/null 2>&1; then
                     CC_LINUX_386="i686-linux-musl-gcc"
                     CXX_LINUX_386="i686-linux-musl-g++"
-                elif [ -x "$CGO_COMPILER_DIR/i686-linux-musl-cross/bin/i686-linux-musl-gcc" ] &&
-                    [ -x "$CGO_COMPILER_DIR/i686-linux-musl-cross/bin/i686-linux-musl-g++" ]; then
-                    CC_LINUX_386="$CGO_COMPILER_DIR/i686-linux-musl-cross/bin/i686-linux-musl-gcc"
-                    CXX_LINUX_386="$CGO_COMPILER_DIR/i686-linux-musl-cross/bin/i686-linux-musl-g++"
+                elif [ -x "$CGO_CROSS_COMPILER_DIR/i686-linux-musl-cross/bin/i686-linux-musl-gcc" ] &&
+                    [ -x "$CGO_CROSS_COMPILER_DIR/i686-linux-musl-cross/bin/i686-linux-musl-g++" ]; then
+                    CC_LINUX_386="$CGO_CROSS_COMPILER_DIR/i686-linux-musl-cross/bin/i686-linux-musl-gcc"
+                    CXX_LINUX_386="$CGO_CROSS_COMPILER_DIR/i686-linux-musl-cross/bin/i686-linux-musl-g++"
                 else
                     DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/i686-linux-musl-cross-${unamespacer}.tgz" \
-                        "$CGO_COMPILER_DIR/i686-linux-musl-cross"
-                    CC_LINUX_386="$CGO_COMPILER_DIR/i686-linux-musl-cross/bin/i686-linux-musl-gcc"
-                    CXX_LINUX_386="$CGO_COMPILER_DIR/i686-linux-musl-cross/bin/i686-linux-musl-g++"
+                        "$CGO_CROSS_COMPILER_DIR/i686-linux-musl-cross"
+                    CC_LINUX_386="$CGO_CROSS_COMPILER_DIR/i686-linux-musl-cross/bin/i686-linux-musl-gcc"
+                    CXX_LINUX_386="$CGO_CROSS_COMPILER_DIR/i686-linux-musl-cross/bin/i686-linux-musl-g++"
                 fi
             elif [ ! "$CC_LINUX_386" ] || [ ! "$CXX_LINUX_386" ]; then
                 echo "CC_LINUX_386 or CXX_LINUX_386 not found"
@@ -558,15 +560,15 @@ function InitDefaultCGODeps() {
                     command -v aarch64-linux-musl-g++ >/dev/null 2>&1; then
                     CC_LINUX_ARM64="aarch64-linux-musl-gcc"
                     CXX_LINUX_ARM64="aarch64-linux-musl-g++"
-                elif [ -x "$CGO_COMPILER_DIR/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc" ] &&
-                    [ -x "$CGO_COMPILER_DIR/aarch64-linux-musl-cross/bin/aarch64-linux-musl-g++" ]; then
-                    CC_LINUX_ARM64="$CGO_COMPILER_DIR/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc"
-                    CXX_LINUX_ARM64="$CGO_COMPILER_DIR/aarch64-linux-musl-cross/bin/aarch64-linux-musl-g++"
+                elif [ -x "$CGO_CROSS_COMPILER_DIR/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc" ] &&
+                    [ -x "$CGO_CROSS_COMPILER_DIR/aarch64-linux-musl-cross/bin/aarch64-linux-musl-g++" ]; then
+                    CC_LINUX_ARM64="$CGO_CROSS_COMPILER_DIR/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc"
+                    CXX_LINUX_ARM64="$CGO_CROSS_COMPILER_DIR/aarch64-linux-musl-cross/bin/aarch64-linux-musl-g++"
                 else
                     DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/aarch64-linux-musl-cross-${unamespacer}.tgz" \
-                        "$CGO_COMPILER_DIR/aarch64-linux-musl-cross"
-                    CC_LINUX_ARM64="$CGO_COMPILER_DIR/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc"
-                    CXX_LINUX_ARM64="$CGO_COMPILER_DIR/aarch64-linux-musl-cross/bin/aarch64-linux-musl-g++"
+                        "$CGO_CROSS_COMPILER_DIR/aarch64-linux-musl-cross"
+                    CC_LINUX_ARM64="$CGO_CROSS_COMPILER_DIR/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc"
+                    CXX_LINUX_ARM64="$CGO_CROSS_COMPILER_DIR/aarch64-linux-musl-cross/bin/aarch64-linux-musl-g++"
                 fi
             elif [ ! "$CC_LINUX_ARM64" ] || [ ! "$CXX_LINUX_ARM64" ]; then
                 echo "CC_LINUX_ARM64 or CXX_LINUX_ARM64 not found"
@@ -583,15 +585,15 @@ function InitDefaultCGODeps() {
                     command -v x86_64-linux-musl-g++ >/dev/null 2>&1; then
                     CC_LINUX_AMD64="x86_64-linux-musl-gcc"
                     CXX_LINUX_AMD64="x86_64-linux-musl-g++"
-                elif [ -x "$CGO_COMPILER_DIR/x86_64-linux-musl-cross/bin/x86_64-linux-musl-gcc" ] &&
-                    [ -x "$CGO_COMPILER_DIR/x86_64-linux-musl-cross/bin/x86_64-linux-musl-g++" ]; then
-                    CC_LINUX_AMD64="$CGO_COMPILER_DIR/x86_64-linux-musl-cross/bin/x86_64-linux-musl-gcc"
-                    CXX_LINUX_AMD64="$CGO_COMPILER_DIR/x86_64-linux-musl-cross/bin/x86_64-linux-musl-g++"
+                elif [ -x "$CGO_CROSS_COMPILER_DIR/x86_64-linux-musl-cross/bin/x86_64-linux-musl-gcc" ] &&
+                    [ -x "$CGO_CROSS_COMPILER_DIR/x86_64-linux-musl-cross/bin/x86_64-linux-musl-g++" ]; then
+                    CC_LINUX_AMD64="$CGO_CROSS_COMPILER_DIR/x86_64-linux-musl-cross/bin/x86_64-linux-musl-gcc"
+                    CXX_LINUX_AMD64="$CGO_CROSS_COMPILER_DIR/x86_64-linux-musl-cross/bin/x86_64-linux-musl-g++"
                 else
                     DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/x86_64-linux-musl-cross-${unamespacer}.tgz" \
-                        "$CGO_COMPILER_DIR/x86_64-linux-musl-cross"
-                    CC_LINUX_AMD64="$CGO_COMPILER_DIR/x86_64-linux-musl-cross/bin/x86_64-linux-musl-gcc"
-                    CXX_LINUX_AMD64="$CGO_COMPILER_DIR/x86_64-linux-musl-cross/bin/x86_64-linux-musl-g++"
+                        "$CGO_CROSS_COMPILER_DIR/x86_64-linux-musl-cross"
+                    CC_LINUX_AMD64="$CGO_CROSS_COMPILER_DIR/x86_64-linux-musl-cross/bin/x86_64-linux-musl-gcc"
+                    CXX_LINUX_AMD64="$CGO_CROSS_COMPILER_DIR/x86_64-linux-musl-cross/bin/x86_64-linux-musl-g++"
                 fi
             elif [ ! "$CC_LINUX_AMD64" ] || [ ! "$CXX_LINUX_AMD64" ]; then
                 echo "CC_LINUX_AMD64 or CXX_LINUX_AMD64 not found"
@@ -610,15 +612,15 @@ function InitDefaultCGODeps() {
                         command -v armv6-linux-musleabihf-g++ >/dev/null 2>&1; then
                         CC_LINUX_ARMV6="armv6-linux-musleabihf-gcc"
                         CXX_LINUX_ARMV6="armv6-linux-musleabihf-g++"
-                    elif [ -x "$CGO_COMPILER_DIR/armv6-linux-musleabihf-cross/bin/armv6-linux-musleabihf-gcc" ] &&
-                        [ -x "$CGO_COMPILER_DIR/armv6-linux-musleabihf-cross/bin/armv6-linux-musleabihf-g++" ]; then
-                        CC_LINUX_ARMV6="$CGO_COMPILER_DIR/armv6-linux-musleabihf-cross/bin/armv6-linux-musleabihf-gcc"
-                        CXX_LINUX_ARMV6="$CGO_COMPILER_DIR/armv6-linux-musleabihf-cross/bin/armv6-linux-musleabihf-g++"
+                    elif [ -x "$CGO_CROSS_COMPILER_DIR/armv6-linux-musleabihf-cross/bin/armv6-linux-musleabihf-gcc" ] &&
+                        [ -x "$CGO_CROSS_COMPILER_DIR/armv6-linux-musleabihf-cross/bin/armv6-linux-musleabihf-g++" ]; then
+                        CC_LINUX_ARMV6="$CGO_CROSS_COMPILER_DIR/armv6-linux-musleabihf-cross/bin/armv6-linux-musleabihf-gcc"
+                        CXX_LINUX_ARMV6="$CGO_CROSS_COMPILER_DIR/armv6-linux-musleabihf-cross/bin/armv6-linux-musleabihf-g++"
                     else
                         DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/armv6-linux-musleabihf-cross-${unamespacer}.tgz" \
-                            "$CGO_COMPILER_DIR/armv6-linux-musleabihf-cross"
-                        CC_LINUX_ARMV6="$CGO_COMPILER_DIR/armv6-linux-musleabihf-cross/bin/armv6-linux-musleabihf-gcc"
-                        CXX_LINUX_ARMV6="$CGO_COMPILER_DIR/armv6-linux-musleabihf-cross/bin/armv6-linux-musleabihf-g++"
+                            "$CGO_CROSS_COMPILER_DIR/armv6-linux-musleabihf-cross"
+                        CC_LINUX_ARMV6="$CGO_CROSS_COMPILER_DIR/armv6-linux-musleabihf-cross/bin/armv6-linux-musleabihf-gcc"
+                        CXX_LINUX_ARMV6="$CGO_CROSS_COMPILER_DIR/armv6-linux-musleabihf-cross/bin/armv6-linux-musleabihf-g++"
                     fi
                 elif [ ! "$CC_LINUX_ARMV6" ] || [ ! "$CXX_LINUX_ARMV6" ]; then
                     echo "CC_LINUX_ARMV6 or CXX_LINUX_ARMV6 not found"
@@ -634,15 +636,15 @@ function InitDefaultCGODeps() {
                         command -v armv7-linux-musleabihf-g++ >/dev/null 2>&1; then
                         CC_LINUX_ARMV7="armv7-linux-musleabihf-gcc"
                         CXX_LINUX_ARMV7="armv7-linux-musleabihf-g++"
-                    elif [ -x "$CGO_COMPILER_DIR/armv7-linux-musleabihf-cross/bin/armv7-linux-musleabihf-gcc" ] &&
-                        [ -x "$CGO_COMPILER_DIR/armv7-linux-musleabihf-cross/bin/armv7-linux-musleabihf-g++" ]; then
-                        CC_LINUX_ARMV7="$CGO_COMPILER_DIR/armv7-linux-musleabihf-cross/bin/armv7-linux-musleabihf-gcc"
-                        CXX_LINUX_ARMV7="$CGO_COMPILER_DIR/armv7-linux-musleabihf-cross/bin/armv7-linux-musleabihf-g++"
+                    elif [ -x "$CGO_CROSS_COMPILER_DIR/armv7-linux-musleabihf-cross/bin/armv7-linux-musleabihf-gcc" ] &&
+                        [ -x "$CGO_CROSS_COMPILER_DIR/armv7-linux-musleabihf-cross/bin/armv7-linux-musleabihf-g++" ]; then
+                        CC_LINUX_ARMV7="$CGO_CROSS_COMPILER_DIR/armv7-linux-musleabihf-cross/bin/armv7-linux-musleabihf-gcc"
+                        CXX_LINUX_ARMV7="$CGO_CROSS_COMPILER_DIR/armv7-linux-musleabihf-cross/bin/armv7-linux-musleabihf-g++"
                     else
                         DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/armv7-linux-musleabihf-cross-${unamespacer}.tgz" \
-                            "$CGO_COMPILER_DIR/armv7-linux-musleabihf-cross"
-                        CC_LINUX_ARMV7="$CGO_COMPILER_DIR/armv7-linux-musleabihf-cross/bin/armv7-linux-musleabihf-gcc"
-                        CXX_LINUX_ARMV7="$CGO_COMPILER_DIR/armv7-linux-musleabihf-cross/bin/armv7-linux-musleabihf-g++"
+                            "$CGO_CROSS_COMPILER_DIR/armv7-linux-musleabihf-cross"
+                        CC_LINUX_ARMV7="$CGO_CROSS_COMPILER_DIR/armv7-linux-musleabihf-cross/bin/armv7-linux-musleabihf-gcc"
+                        CXX_LINUX_ARMV7="$CGO_CROSS_COMPILER_DIR/armv7-linux-musleabihf-cross/bin/armv7-linux-musleabihf-g++"
                     fi
                 elif [ ! "$CC_LINUX_ARMV7" ] || [ ! "$CXX_LINUX_ARMV7" ]; then
                     echo "CC_LINUX_ARMV7 or CXX_LINUX_ARMV7 not found"
@@ -658,15 +660,15 @@ function InitDefaultCGODeps() {
                         command -v armv5-linux-musleabi-g++ >/dev/null 2>&1; then
                         CC_LINUX_ARMV5="armv5-linux-musleabi-gcc"
                         CXX_LINUX_ARMV5="armv5-linux-musleabi-g++"
-                    elif [ -x "$CGO_COMPILER_DIR/armv5-linux-musleabi-cross/bin/armv5-linux-musleabi-gcc" ] &&
-                        [ -x "$CGO_COMPILER_DIR/armv5-linux-musleabi-cross/bin/armv5-linux-musleabi-g++" ]; then
-                        CC_LINUX_ARMV5="$CGO_COMPILER_DIR/armv5-linux-musleabi-cross/bin/armv5-linux-musleabi-gcc"
-                        CXX_LINUX_ARMV5="$CGO_COMPILER_DIR/armv5-linux-musleabi-cross/bin/armv5-linux-musleabi-g++"
+                    elif [ -x "$CGO_CROSS_COMPILER_DIR/armv5-linux-musleabi-cross/bin/armv5-linux-musleabi-gcc" ] &&
+                        [ -x "$CGO_CROSS_COMPILER_DIR/armv5-linux-musleabi-cross/bin/armv5-linux-musleabi-g++" ]; then
+                        CC_LINUX_ARMV5="$CGO_CROSS_COMPILER_DIR/armv5-linux-musleabi-cross/bin/armv5-linux-musleabi-gcc"
+                        CXX_LINUX_ARMV5="$CGO_CROSS_COMPILER_DIR/armv5-linux-musleabi-cross/bin/armv5-linux-musleabi-g++"
                     else
                         DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/armv5-linux-musleabi-cross-${unamespacer}.tgz" \
-                            "$CGO_COMPILER_DIR/armv5-linux-musleabi-cross"
-                        CC_LINUX_ARMV5="$CGO_COMPILER_DIR/armv5-linux-musleabi-cross/bin/armv5-linux-musleabi-gcc"
-                        CXX_LINUX_ARMV5="$CGO_COMPILER_DIR/armv5-linux-musleabi-cross/bin/armv5-linux-musleabi-g++"
+                            "$CGO_CROSS_COMPILER_DIR/armv5-linux-musleabi-cross"
+                        CC_LINUX_ARMV5="$CGO_CROSS_COMPILER_DIR/armv5-linux-musleabi-cross/bin/armv5-linux-musleabi-gcc"
+                        CXX_LINUX_ARMV5="$CGO_CROSS_COMPILER_DIR/armv5-linux-musleabi-cross/bin/armv5-linux-musleabi-g++"
                     fi
                 elif [ ! "$CC_LINUX_ARMV5" ] || [ ! "$CXX_LINUX_ARMV5" ]; then
                     echo "CC_LINUX_ARMV5 or CXX_LINUX_ARMV5 not found"
@@ -690,15 +692,15 @@ function InitDefaultCGODeps() {
                         command -v mips-linux-musl-g++ >/dev/null 2>&1; then
                         CC_LINUX_MIPS="mips-linux-musl-gcc"
                         CXX_LINUX_MIPS="mips-linux-musl-g++"
-                    elif [ -x "$CGO_COMPILER_DIR/mips-linux-musl-cross/bin/mips-linux-musl-gcc" ] &&
-                        [ -x "$CGO_COMPILER_DIR/mips-linux-musl-cross/bin/mips-linux-musl-g++" ]; then
-                        CC_LINUX_MIPS="$CGO_COMPILER_DIR/mips-linux-musl-cross/bin/mips-linux-musl-gcc"
-                        CXX_LINUX_MIPS="$CGO_COMPILER_DIR/mips-linux-musl-cross/bin/mips-linux-musl-g++"
+                    elif [ -x "$CGO_CROSS_COMPILER_DIR/mips-linux-musl-cross/bin/mips-linux-musl-gcc" ] &&
+                        [ -x "$CGO_CROSS_COMPILER_DIR/mips-linux-musl-cross/bin/mips-linux-musl-g++" ]; then
+                        CC_LINUX_MIPS="$CGO_CROSS_COMPILER_DIR/mips-linux-musl-cross/bin/mips-linux-musl-gcc"
+                        CXX_LINUX_MIPS="$CGO_CROSS_COMPILER_DIR/mips-linux-musl-cross/bin/mips-linux-musl-g++"
                     else
                         DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/mips-linux-musl-cross-${unamespacer}.tgz" \
-                            "$CGO_COMPILER_DIR/mips-linux-musl-cross"
-                        CC_LINUX_MIPS="$CGO_COMPILER_DIR/mips-linux-musl-cross/bin/mips-linux-musl-gcc"
-                        CXX_LINUX_MIPS="$CGO_COMPILER_DIR/mips-linux-musl-cross/bin/mips-linux-musl-g++"
+                            "$CGO_CROSS_COMPILER_DIR/mips-linux-musl-cross"
+                        CC_LINUX_MIPS="$CGO_CROSS_COMPILER_DIR/mips-linux-musl-cross/bin/mips-linux-musl-gcc"
+                        CXX_LINUX_MIPS="$CGO_CROSS_COMPILER_DIR/mips-linux-musl-cross/bin/mips-linux-musl-g++"
                     fi
                 elif [ ! "$CC_LINUX_MIPS" ] || [ ! "$CXX_LINUX_MIPS" ]; then
                     echo "CC_LINUX_MIPS or CXX_LINUX_MIPS not found"
@@ -714,15 +716,15 @@ function InitDefaultCGODeps() {
                         command -v mips-linux-muslsf-g++ >/dev/null 2>&1; then
                         CC_LINUX_MIPS_SOFTFLOAT="mips-linux-muslsf-gcc"
                         CXX_LINUX_MIPS_SOFTFLOAT="mips-linux-muslsf-g++"
-                    elif [ -x "$CGO_COMPILER_DIR/mips-linux-muslsf-cross/bin/mips-linux-muslsf-gcc" ] &&
-                        [ -x "$CGO_COMPILER_DIR/mips-linux-muslsf-cross/bin/mips-linux-muslsf-g++" ]; then
-                        CC_LINUX_MIPS_SOFTFLOAT="$CGO_COMPILER_DIR/mips-linux-muslsf-cross/bin/mips-linux-muslsf-gcc"
-                        CXX_LINUX_MIPS_SOFTFLOAT="$CGO_COMPILER_DIR/mips-linux-muslsf-cross/bin/mips-linux-muslsf-g++"
+                    elif [ -x "$CGO_CROSS_COMPILER_DIR/mips-linux-muslsf-cross/bin/mips-linux-muslsf-gcc" ] &&
+                        [ -x "$CGO_CROSS_COMPILER_DIR/mips-linux-muslsf-cross/bin/mips-linux-muslsf-g++" ]; then
+                        CC_LINUX_MIPS_SOFTFLOAT="$CGO_CROSS_COMPILER_DIR/mips-linux-muslsf-cross/bin/mips-linux-muslsf-gcc"
+                        CXX_LINUX_MIPS_SOFTFLOAT="$CGO_CROSS_COMPILER_DIR/mips-linux-muslsf-cross/bin/mips-linux-muslsf-g++"
                     else
                         DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/mips-linux-muslsf-cross-${unamespacer}.tgz" \
-                            "$CGO_COMPILER_DIR/mips-linux-muslsf-cross"
-                        CC_LINUX_MIPS_SOFTFLOAT="$CGO_COMPILER_DIR/mips-linux-muslsf-cross/bin/mips-linux-muslsf-gcc"
-                        CXX_LINUX_MIPS_SOFTFLOAT="$CGO_COMPILER_DIR/mips-linux-muslsf-cross/bin/mips-linux-muslsf-g++"
+                            "$CGO_CROSS_COMPILER_DIR/mips-linux-muslsf-cross"
+                        CC_LINUX_MIPS_SOFTFLOAT="$CGO_CROSS_COMPILER_DIR/mips-linux-muslsf-cross/bin/mips-linux-muslsf-gcc"
+                        CXX_LINUX_MIPS_SOFTFLOAT="$CGO_CROSS_COMPILER_DIR/mips-linux-muslsf-cross/bin/mips-linux-muslsf-g++"
                     fi
                 elif [ ! "$CC_LINUX_MIPS_SOFTFLOAT" ] || [ ! "$CXX_LINUX_MIPS_SOFTFLOAT" ]; then
                     echo "CC_LINUX_MIPS_SOFTFLOAT or CXX_LINUX_MIPS_SOFTFLOAT not found"
@@ -745,15 +747,15 @@ function InitDefaultCGODeps() {
                         command -v mipsel-linux-musl-g++ >/dev/null 2>&1; then
                         CC_LINUX_MIPSLE="mipsel-linux-musl-gcc"
                         CXX_LINUX_MIPSLE="mipsel-linux-musl-g++"
-                    elif [ -x "$CGO_COMPILER_DIR/mipsel-linux-musl-cross/bin/mipsel-linux-musl-gcc" ] &&
-                        [ -x "$CGO_COMPILER_DIR/mipsel-linux-musl-cross/bin/mipsel-linux-musl-g++" ]; then
-                        CC_LINUX_MIPSLE="$CGO_COMPILER_DIR/mipsel-linux-musl-cross/bin/mipsel-linux-musl-gcc"
-                        CXX_LINUX_MIPSLE="$CGO_COMPILER_DIR/mipsel-linux-musl-cross/bin/mipsel-linux-musl-g++"
+                    elif [ -x "$CGO_CROSS_COMPILER_DIR/mipsel-linux-musl-cross/bin/mipsel-linux-musl-gcc" ] &&
+                        [ -x "$CGO_CROSS_COMPILER_DIR/mipsel-linux-musl-cross/bin/mipsel-linux-musl-g++" ]; then
+                        CC_LINUX_MIPSLE="$CGO_CROSS_COMPILER_DIR/mipsel-linux-musl-cross/bin/mipsel-linux-musl-gcc"
+                        CXX_LINUX_MIPSLE="$CGO_CROSS_COMPILER_DIR/mipsel-linux-musl-cross/bin/mipsel-linux-musl-g++"
                     else
                         DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/mipsel-linux-musl-cross-${unamespacer}.tgz" \
-                            "$CGO_COMPILER_DIR/mipsel-linux-musl-cross"
-                        CC_LINUX_MIPSLE="$CGO_COMPILER_DIR/mipsel-linux-musl-cross/bin/mipsel-linux-musl-gcc"
-                        CXX_LINUX_MIPSLE="$CGO_COMPILER_DIR/mipsel-linux-musl-cross/bin/mipsel-linux-musl-g++"
+                            "$CGO_CROSS_COMPILER_DIR/mipsel-linux-musl-cross"
+                        CC_LINUX_MIPSLE="$CGO_CROSS_COMPILER_DIR/mipsel-linux-musl-cross/bin/mipsel-linux-musl-gcc"
+                        CXX_LINUX_MIPSLE="$CGO_CROSS_COMPILER_DIR/mipsel-linux-musl-cross/bin/mipsel-linux-musl-g++"
                     fi
                 elif [ ! "$CC_LINUX_MIPSLE" ] || [ ! "$CXX_LINUX_MIPSLE" ]; then
                     echo "CC_LINUX_MIPSLE or CXX_LINUX_MIPSLE not found"
@@ -769,15 +771,15 @@ function InitDefaultCGODeps() {
                         command -v mipsel-linux-muslsf-g++ >/dev/null 2>&1; then
                         CC_LINUX_MIPSLE_SOFTFLOAT="mipsel-linux-muslsf-gcc"
                         CXX_LINUX_MIPSLE_SOFTFLOAT="mipsel-linux-muslsf-g++"
-                    elif [ -x "$CGO_COMPILER_DIR/mipsel-linux-muslsf-cross/bin/mipsel-linux-muslsf-gcc" ] &&
-                        [ -x "$CGO_COMPILER_DIR/mipsel-linux-muslsf-cross/bin/mipsel-linux-muslsf-g++" ]; then
-                        CC_LINUX_MIPSLE_SOFTFLOAT="$CGO_COMPILER_DIR/mipsel-linux-muslsf-cross/bin/mipsel-linux-muslsf-gcc"
-                        CXX_LINUX_MIPSLE_SOFTFLOAT="$CGO_COMPILER_DIR/mipsel-linux-muslsf-cross/bin/mipsel-linux-muslsf-g++"
+                    elif [ -x "$CGO_CROSS_COMPILER_DIR/mipsel-linux-muslsf-cross/bin/mipsel-linux-muslsf-gcc" ] &&
+                        [ -x "$CGO_CROSS_COMPILER_DIR/mipsel-linux-muslsf-cross/bin/mipsel-linux-muslsf-g++" ]; then
+                        CC_LINUX_MIPSLE_SOFTFLOAT="$CGO_CROSS_COMPILER_DIR/mipsel-linux-muslsf-cross/bin/mipsel-linux-muslsf-gcc"
+                        CXX_LINUX_MIPSLE_SOFTFLOAT="$CGO_CROSS_COMPILER_DIR/mipsel-linux-muslsf-cross/bin/mipsel-linux-muslsf-g++"
                     else
                         DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/mipsel-linux-muslsf-cross-${unamespacer}.tgz" \
-                            "$CGO_COMPILER_DIR/mipsel-linux-muslsf-cross"
-                        CC_LINUX_MIPSLE_SOFTFLOAT="$CGO_COMPILER_DIR/mipsel-linux-muslsf-cross/bin/mipsel-linux-muslsf-gcc"
-                        CXX_LINUX_MIPSLE_SOFTFLOAT="$CGO_COMPILER_DIR/mipsel-linux-muslsf-cross/bin/mipsel-linux-muslsf-g++"
+                            "$CGO_CROSS_COMPILER_DIR/mipsel-linux-muslsf-cross"
+                        CC_LINUX_MIPSLE_SOFTFLOAT="$CGO_CROSS_COMPILER_DIR/mipsel-linux-muslsf-cross/bin/mipsel-linux-muslsf-gcc"
+                        CXX_LINUX_MIPSLE_SOFTFLOAT="$CGO_CROSS_COMPILER_DIR/mipsel-linux-muslsf-cross/bin/mipsel-linux-muslsf-g++"
                     fi
                 elif [ ! "$CC_LINUX_MIPSLE_SOFTFLOAT" ] || [ ! "$CXX_LINUX_MIPSLE_SOFTFLOAT" ]; then
                     echo "CC_LINUX_MIPSLE_SOFTFLOAT or CXX_LINUX_MIPSLE_SOFTFLOAT not found"
@@ -800,15 +802,15 @@ function InitDefaultCGODeps() {
                         command -v mips64-linux-musl-g++ >/dev/null 2>&1; then
                         CC_LINUX_MIPS64="mips64-linux-musl-gcc"
                         CXX_LINUX_MIPS64="mips64-linux-musl-g++"
-                    elif [ -x "$CGO_COMPILER_DIR/mips64-linux-musl-cross/bin/mips64-linux-musl-gcc" ] &&
-                        [ -x "$CGO_COMPILER_DIR/mips64-linux-musl-cross/bin/mips64-linux-musl-g++" ]; then
-                        CC_LINUX_MIPS64="$CGO_COMPILER_DIR/mips64-linux-musl-cross/bin/mips64-linux-musl-gcc"
-                        CXX_LINUX_MIPS64="$CGO_COMPILER_DIR/mips64-linux-musl-cross/bin/mips64-linux-musl-g++"
+                    elif [ -x "$CGO_CROSS_COMPILER_DIR/mips64-linux-musl-cross/bin/mips64-linux-musl-gcc" ] &&
+                        [ -x "$CGO_CROSS_COMPILER_DIR/mips64-linux-musl-cross/bin/mips64-linux-musl-g++" ]; then
+                        CC_LINUX_MIPS64="$CGO_CROSS_COMPILER_DIR/mips64-linux-musl-cross/bin/mips64-linux-musl-gcc"
+                        CXX_LINUX_MIPS64="$CGO_CROSS_COMPILER_DIR/mips64-linux-musl-cross/bin/mips64-linux-musl-g++"
                     else
                         DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/mips64-linux-musl-cross-${unamespacer}.tgz" \
-                            "$CGO_COMPILER_DIR/mips64-linux-musl-cross"
-                        CC_LINUX_MIPS64="$CGO_COMPILER_DIR/mips64-linux-musl-cross/bin/mips64-linux-musl-gcc"
-                        CXX_LINUX_MIPS64="$CGO_COMPILER_DIR/mips64-linux-musl-cross/bin/mips64-linux-musl-g++"
+                            "$CGO_CROSS_COMPILER_DIR/mips64-linux-musl-cross"
+                        CC_LINUX_MIPS64="$CGO_CROSS_COMPILER_DIR/mips64-linux-musl-cross/bin/mips64-linux-musl-gcc"
+                        CXX_LINUX_MIPS64="$CGO_CROSS_COMPILER_DIR/mips64-linux-musl-cross/bin/mips64-linux-musl-g++"
                     fi
                 elif [ ! "$CC_LINUX_MIPS64" ] || [ ! "$CXX_LINUX_MIPS64" ]; then
                     echo "CC_LINUX_MIPS64 or CXX_LINUX_MIPS64 not found"
@@ -824,15 +826,15 @@ function InitDefaultCGODeps() {
                         command -v mips64-linux-muslsf-g++ >/dev/null 2>&1; then
                         CC_LINUX_MIPS64_SOFTFLOAT="mips64-linux-muslsf-gcc"
                         CXX_LINUX_MIPS64_SOFTFLOAT="mips64-linux-muslsf-g++"
-                    elif [ -x "$CGO_COMPILER_DIR/mips64-linux-muslsf-cross/bin/mips64-linux-muslsf-gcc" ] &&
-                        [ -x "$CGO_COMPILER_DIR/mips64-linux-muslsf-cross/bin/mips64-linux-muslsf-g++" ]; then
-                        CC_LINUX_MIPS64_SOFTFLOAT="$CGO_COMPILER_DIR/mips64-linux-muslsf-cross/bin/mips64-linux-muslsf-gcc"
-                        CXX_LINUX_MIPS64_SOFTFLOAT="$CGO_COMPILER_DIR/mips64-linux-muslsf-cross/bin/mips64-linux-muslsf-g++"
+                    elif [ -x "$CGO_CROSS_COMPILER_DIR/mips64-linux-muslsf-cross/bin/mips64-linux-muslsf-gcc" ] &&
+                        [ -x "$CGO_CROSS_COMPILER_DIR/mips64-linux-muslsf-cross/bin/mips64-linux-muslsf-g++" ]; then
+                        CC_LINUX_MIPS64_SOFTFLOAT="$CGO_CROSS_COMPILER_DIR/mips64-linux-muslsf-cross/bin/mips64-linux-muslsf-gcc"
+                        CXX_LINUX_MIPS64_SOFTFLOAT="$CGO_CROSS_COMPILER_DIR/mips64-linux-muslsf-cross/bin/mips64-linux-muslsf-g++"
                     else
                         DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/mips64-linux-muslsf-cross-${unamespacer}.tgz" \
-                            "$CGO_COMPILER_DIR/mips64-linux-muslsf-cross"
-                        CC_LINUX_MIPS64_SOFTFLOAT="$CGO_COMPILER_DIR/mips64-linux-muslsf-cross/bin/mips64-linux-muslsf-gcc"
-                        CXX_LINUX_MIPS64_SOFTFLOAT="$CGO_COMPILER_DIR/mips64-linux-muslsf-cross/bin/mips64-linux-muslsf-g++"
+                            "$CGO_CROSS_COMPILER_DIR/mips64-linux-muslsf-cross"
+                        CC_LINUX_MIPS64_SOFTFLOAT="$CGO_CROSS_COMPILER_DIR/mips64-linux-muslsf-cross/bin/mips64-linux-muslsf-gcc"
+                        CXX_LINUX_MIPS64_SOFTFLOAT="$CGO_CROSS_COMPILER_DIR/mips64-linux-muslsf-cross/bin/mips64-linux-muslsf-g++"
                     fi
                 elif [ ! "$CC_LINUX_MIPS64_SOFTFLOAT" ] || [ ! "$CXX_LINUX_MIPS64_SOFTFLOAT" ]; then
                     echo "CC_LINUX_MIPS64_SOFTFLOAT or CXX_LINUX_MIPS64_SOFTFLOAT not found"
@@ -855,15 +857,15 @@ function InitDefaultCGODeps() {
                         command -v mips64el-linux-musl-g++ >/dev/null 2>&1; then
                         CC_LINUX_MIPS64LE="mips64el-linux-musl-gcc"
                         CXX_LINUX_MIPS64LE="mips64el-linux-musl-g++"
-                    elif [ -x "$CGO_COMPILER_DIR/mips64el-linux-musl-cross/bin/mips64el-linux-musl-gcc" ] &&
-                        [ -x "$CGO_COMPILER_DIR/mips64el-linux-musl-cross/bin/mips64el-linux-musl-g++" ]; then
-                        CC_LINUX_MIPS64LE="$CGO_COMPILER_DIR/mips64el-linux-musl-cross/bin/mips64el-linux-musl-gcc"
-                        CXX_LINUX_MIPS64LE="$CGO_COMPILER_DIR/mips64el-linux-musl-cross/bin/mips64el-linux-musl-g++"
+                    elif [ -x "$CGO_CROSS_COMPILER_DIR/mips64el-linux-musl-cross/bin/mips64el-linux-musl-gcc" ] &&
+                        [ -x "$CGO_CROSS_COMPILER_DIR/mips64el-linux-musl-cross/bin/mips64el-linux-musl-g++" ]; then
+                        CC_LINUX_MIPS64LE="$CGO_CROSS_COMPILER_DIR/mips64el-linux-musl-cross/bin/mips64el-linux-musl-gcc"
+                        CXX_LINUX_MIPS64LE="$CGO_CROSS_COMPILER_DIR/mips64el-linux-musl-cross/bin/mips64el-linux-musl-g++"
                     else
                         DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/mips64el-linux-musl-cross-${unamespacer}.tgz" \
-                            "$CGO_COMPILER_DIR/mips64el-linux-musl-cross"
-                        CC_LINUX_MIPS64LE="$CGO_COMPILER_DIR/mips64el-linux-musl-cross/bin/mips64el-linux-musl-gcc"
-                        CXX_LINUX_MIPS64LE="$CGO_COMPILER_DIR/mips64el-linux-musl-cross/bin/mips64el-linux-musl-g++"
+                            "$CGO_CROSS_COMPILER_DIR/mips64el-linux-musl-cross"
+                        CC_LINUX_MIPS64LE="$CGO_CROSS_COMPILER_DIR/mips64el-linux-musl-cross/bin/mips64el-linux-musl-gcc"
+                        CXX_LINUX_MIPS64LE="$CGO_CROSS_COMPILER_DIR/mips64el-linux-musl-cross/bin/mips64el-linux-musl-g++"
                     fi
                 elif [ ! "$CC_LINUX_MIPS64LE" ] || [ ! "$CXX_LINUX_MIPS64LE" ]; then
                     echo "CC_LINUX_MIPS64LE or CXX_LINUX_MIPS64LE not found"
@@ -879,15 +881,15 @@ function InitDefaultCGODeps() {
                         command -v mips64el-linux-muslsf-g++ >/dev/null 2>&1; then
                         CC_LINUX_MIPS64LE_SOFTFLOAT="mips64el-linux-muslsf-gcc"
                         CXX_LINUX_MIPS64LE_SOFTFLOAT="mips64el-linux-muslsf-g++"
-                    elif [ -x "$CGO_COMPILER_DIR/mips64el-linux-muslsf-cross/bin/mips64el-linux-muslsf-gcc" ] &&
-                        [ -x "$CGO_COMPILER_DIR/mips64el-linux-muslsf-cross/bin/mips64el-linux-muslsf-g++" ]; then
-                        CC_LINUX_MIPS64LE_SOFTFLOAT="$CGO_COMPILER_DIR/mips64el-linux-muslsf-cross/bin/mips64el-linux-muslsf-gcc"
-                        CXX_LINUX_MIPS64LE_SOFTFLOAT="$CGO_COMPILER_DIR/mips64el-linux-muslsf-cross/bin/mips64el-linux-muslsf-g++"
+                    elif [ -x "$CGO_CROSS_COMPILER_DIR/mips64el-linux-muslsf-cross/bin/mips64el-linux-muslsf-gcc" ] &&
+                        [ -x "$CGO_CROSS_COMPILER_DIR/mips64el-linux-muslsf-cross/bin/mips64el-linux-muslsf-g++" ]; then
+                        CC_LINUX_MIPS64LE_SOFTFLOAT="$CGO_CROSS_COMPILER_DIR/mips64el-linux-muslsf-cross/bin/mips64el-linux-muslsf-gcc"
+                        CXX_LINUX_MIPS64LE_SOFTFLOAT="$CGO_CROSS_COMPILER_DIR/mips64el-linux-muslsf-cross/bin/mips64el-linux-muslsf-g++"
                     else
                         DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/mips64el-linux-muslsf-cross-${unamespacer}.tgz" \
-                            "$CGO_COMPILER_DIR/mips64el-linux-muslsf-cross"
-                        CC_LINUX_MIPS64LE_SOFTFLOAT="$CGO_COMPILER_DIR/mips64el-linux-muslsf-cross/bin/mips64el-linux-muslsf-gcc"
-                        CXX_LINUX_MIPS64LE_SOFTFLOAT="$CGO_COMPILER_DIR/mips64el-linux-muslsf-cross/bin/mips64el-linux-muslsf-g++"
+                            "$CGO_CROSS_COMPILER_DIR/mips64el-linux-muslsf-cross"
+                        CC_LINUX_MIPS64LE_SOFTFLOAT="$CGO_CROSS_COMPILER_DIR/mips64el-linux-muslsf-cross/bin/mips64el-linux-muslsf-gcc"
+                        CXX_LINUX_MIPS64LE_SOFTFLOAT="$CGO_CROSS_COMPILER_DIR/mips64el-linux-muslsf-cross/bin/mips64el-linux-muslsf-g++"
                     fi
                 elif [ ! "$CC_LINUX_MIPS64LE_SOFTFLOAT" ] || [ ! "$CXX_LINUX_MIPS64LE_SOFTFLOAT" ]; then
                     echo "CC_LINUX_MIPS64LE_SOFTFLOAT or CXX_LINUX_MIPS64LE_SOFTFLOAT not found"
@@ -909,15 +911,15 @@ function InitDefaultCGODeps() {
                     command -v powerpc64-linux-musl-g++ >/dev/null 2>&1; then
                     CC_LINUX_PPC64="powerpc64-linux-musl-gcc"
                     CXX_LINUX_PPC64="powerpc64-linux-musl-g++"
-                elif [ -x "$CGO_COMPILER_DIR/powerpc64-linux-musl-cross/bin/powerpc64-linux-musl-gcc" ] &&
-                    [ -x "$CGO_COMPILER_DIR/powerpc64-linux-musl-cross/bin/powerpc64-linux-musl-g++" ]; then
-                    CC_LINUX_PPC64="$CGO_COMPILER_DIR/powerpc64-linux-musl-cross/bin/powerpc64-linux-musl-gcc"
-                    CXX_LINUX_PPC64="$CGO_COMPILER_DIR/powerpc64-linux-musl-cross/bin/powerpc64-linux-musl-g++"
+                elif [ -x "$CGO_CROSS_COMPILER_DIR/powerpc64-linux-musl-cross/bin/powerpc64-linux-musl-gcc" ] &&
+                    [ -x "$CGO_CROSS_COMPILER_DIR/powerpc64-linux-musl-cross/bin/powerpc64-linux-musl-g++" ]; then
+                    CC_LINUX_PPC64="$CGO_CROSS_COMPILER_DIR/powerpc64-linux-musl-cross/bin/powerpc64-linux-musl-gcc"
+                    CXX_LINUX_PPC64="$CGO_CROSS_COMPILER_DIR/powerpc64-linux-musl-cross/bin/powerpc64-linux-musl-g++"
                 else
                     DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/powerpc64-linux-musl-cross-${unamespacer}.tgz" \
-                        "$CGO_COMPILER_DIR/powerpc64-linux-musl-cross"
-                    CC_LINUX_PPC64="$CGO_COMPILER_DIR/powerpc64-linux-musl-cross/bin/powerpc64-linux-musl-gcc"
-                    CXX_LINUX_PPC64="$CGO_COMPILER_DIR/powerpc64-linux-musl-cross/bin/powerpc64-linux-musl-g++"
+                        "$CGO_CROSS_COMPILER_DIR/powerpc64-linux-musl-cross"
+                    CC_LINUX_PPC64="$CGO_CROSS_COMPILER_DIR/powerpc64-linux-musl-cross/bin/powerpc64-linux-musl-gcc"
+                    CXX_LINUX_PPC64="$CGO_CROSS_COMPILER_DIR/powerpc64-linux-musl-cross/bin/powerpc64-linux-musl-g++"
                 fi
             elif [ ! "$CC_LINUX_PPC64" ] || [ ! "$CXX_LINUX_PPC64" ]; then
                 echo "CC_LINUX_PPC64 or CXX_LINUX_PPC64 not found"
@@ -935,15 +937,15 @@ function InitDefaultCGODeps() {
                     command -v powerpc64le-linux-musl-g++ >/dev/null 2>&1; then
                     CC_LINUX_PPC64LE="powerpc64le-linux-musl-gcc"
                     CXX_LINUX_PPC64LE="powerpc64le-linux-musl-g++"
-                elif [ -x "$CGO_COMPILER_DIR/powerpc64le-linux-musl-cross/bin/powerpc64le-linux-musl-gcc" ] &&
-                    [ -x "$CGO_COMPILER_DIR/powerpc64le-linux-musl-cross/bin/powerpc64le-linux-musl-g++" ]; then
-                    CC_LINUX_PPC64LE="$CGO_COMPILER_DIR/powerpc64le-linux-musl-cross/bin/powerpc64le-linux-musl-gcc"
-                    CXX_LINUX_PPC64LE="$CGO_COMPILER_DIR/powerpc64le-linux-musl-cross/bin/powerpc64le-linux-musl-g++"
+                elif [ -x "$CGO_CROSS_COMPILER_DIR/powerpc64le-linux-musl-cross/bin/powerpc64le-linux-musl-gcc" ] &&
+                    [ -x "$CGO_CROSS_COMPILER_DIR/powerpc64le-linux-musl-cross/bin/powerpc64le-linux-musl-g++" ]; then
+                    CC_LINUX_PPC64LE="$CGO_CROSS_COMPILER_DIR/powerpc64le-linux-musl-cross/bin/powerpc64le-linux-musl-gcc"
+                    CXX_LINUX_PPC64LE="$CGO_CROSS_COMPILER_DIR/powerpc64le-linux-musl-cross/bin/powerpc64le-linux-musl-g++"
                 else
                     DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/powerpc64le-linux-musl-cross-${unamespacer}.tgz" \
-                        "$CGO_COMPILER_DIR/powerpc64le-linux-musl-cross"
-                    CC_LINUX_PPC64LE="$CGO_COMPILER_DIR/powerpc64le-linux-musl-cross/bin/powerpc64le-linux-musl-gcc"
-                    CXX_LINUX_PPC64LE="$CGO_COMPILER_DIR/powerpc64le-linux-musl-cross/bin/powerpc64le-linux-musl-g++"
+                        "$CGO_CROSS_COMPILER_DIR/powerpc64le-linux-musl-cross"
+                    CC_LINUX_PPC64LE="$CGO_CROSS_COMPILER_DIR/powerpc64le-linux-musl-cross/bin/powerpc64le-linux-musl-gcc"
+                    CXX_LINUX_PPC64LE="$CGO_CROSS_COMPILER_DIR/powerpc64le-linux-musl-cross/bin/powerpc64le-linux-musl-g++"
                 fi
             elif [ ! "$CC_LINUX_PPC64LE" ] || [ ! "$CXX_LINUX_PPC64LE" ]; then
                 echo "CC_LINUX_PPC64LE or CXX_LINUX_PPC64LE not found"
@@ -960,15 +962,15 @@ function InitDefaultCGODeps() {
                     command -v riscv64-linux-musl-g++ >/dev/null 2>&1; then
                     CC_LINUX_RISCV64="riscv64-linux-musl-gcc"
                     CXX_LINUX_RISCV64="riscv64-linux-musl-g++"
-                elif [ -x "$CGO_COMPILER_DIR/riscv64-linux-musl-cross/bin/riscv64-linux-musl-gcc" ] &&
-                    [ -x "$CGO_COMPILER_DIR/riscv64-linux-musl-cross/bin/riscv64-linux-musl-g++" ]; then
-                    CC_LINUX_RISCV64="$CGO_COMPILER_DIR/riscv64-linux-musl-cross/bin/riscv64-linux-musl-gcc"
-                    CXX_LINUX_RISCV64="$CGO_COMPILER_DIR/riscv64-linux-musl-cross/bin/riscv64-linux-musl-g++"
+                elif [ -x "$CGO_CROSS_COMPILER_DIR/riscv64-linux-musl-cross/bin/riscv64-linux-musl-gcc" ] &&
+                    [ -x "$CGO_CROSS_COMPILER_DIR/riscv64-linux-musl-cross/bin/riscv64-linux-musl-g++" ]; then
+                    CC_LINUX_RISCV64="$CGO_CROSS_COMPILER_DIR/riscv64-linux-musl-cross/bin/riscv64-linux-musl-gcc"
+                    CXX_LINUX_RISCV64="$CGO_CROSS_COMPILER_DIR/riscv64-linux-musl-cross/bin/riscv64-linux-musl-g++"
                 else
                     DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/riscv64-linux-musl-cross-${unamespacer}.tgz" \
-                        "$CGO_COMPILER_DIR/riscv64-linux-musl-cross"
-                    CC_LINUX_RISCV64="$CGO_COMPILER_DIR/riscv64-linux-musl-cross/bin/riscv64-linux-musl-gcc"
-                    CXX_LINUX_RISCV64="$CGO_COMPILER_DIR/riscv64-linux-musl-cross/bin/riscv64-linux-musl-g++"
+                        "$CGO_CROSS_COMPILER_DIR/riscv64-linux-musl-cross"
+                    CC_LINUX_RISCV64="$CGO_CROSS_COMPILER_DIR/riscv64-linux-musl-cross/bin/riscv64-linux-musl-gcc"
+                    CXX_LINUX_RISCV64="$CGO_CROSS_COMPILER_DIR/riscv64-linux-musl-cross/bin/riscv64-linux-musl-g++"
                 fi
             elif [ ! "$CC_LINUX_RISCV64" ] || [ ! "$CXX_LINUX_RISCV64" ]; then
                 echo "CC_LINUX_RISCV64 or CXX_LINUX_RISCV64 not found"
@@ -985,15 +987,15 @@ function InitDefaultCGODeps() {
                     command -v s390x-linux-musl-g++ >/dev/null 2>&1; then
                     CC_LINUX_S390X="s390x-linux-musl-gcc"
                     CXX_LINUX_S390X="s390x-linux-musl-g++"
-                elif [ -x "$CGO_COMPILER_DIR/s390x-linux-musl-cross/bin/s390x-linux-musl-gcc" ] &&
-                    [ -x "$CGO_COMPILER_DIR/s390x-linux-musl-cross/bin/s390x-linux-musl-g++" ]; then
-                    CC_LINUX_S390X="$CGO_COMPILER_DIR/s390x-linux-musl-cross/bin/s390x-linux-musl-gcc"
-                    CXX_LINUX_S390X="$CGO_COMPILER_DIR/s390x-linux-musl-cross/bin/s390x-linux-musl-g++"
+                elif [ -x "$CGO_CROSS_COMPILER_DIR/s390x-linux-musl-cross/bin/s390x-linux-musl-gcc" ] &&
+                    [ -x "$CGO_CROSS_COMPILER_DIR/s390x-linux-musl-cross/bin/s390x-linux-musl-g++" ]; then
+                    CC_LINUX_S390X="$CGO_CROSS_COMPILER_DIR/s390x-linux-musl-cross/bin/s390x-linux-musl-gcc"
+                    CXX_LINUX_S390X="$CGO_CROSS_COMPILER_DIR/s390x-linux-musl-cross/bin/s390x-linux-musl-g++"
                 else
                     DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/s390x-linux-musl-cross-${unamespacer}.tgz" \
-                        "$CGO_COMPILER_DIR/s390x-linux-musl-cross"
-                    CC_LINUX_S390X="$CGO_COMPILER_DIR/s390x-linux-musl-cross/bin/s390x-linux-musl-gcc"
-                    CXX_LINUX_S390X="$CGO_COMPILER_DIR/s390x-linux-musl-cross/bin/s390x-linux-musl-g++"
+                        "$CGO_CROSS_COMPILER_DIR/s390x-linux-musl-cross"
+                    CC_LINUX_S390X="$CGO_CROSS_COMPILER_DIR/s390x-linux-musl-cross/bin/s390x-linux-musl-gcc"
+                    CXX_LINUX_S390X="$CGO_CROSS_COMPILER_DIR/s390x-linux-musl-cross/bin/s390x-linux-musl-g++"
                 fi
             elif [ ! "$CC_LINUX_S390X" ] || [ ! "$CXX_LINUX_S390X" ]; then
                 echo "CC_LINUX_S390X or CXX_LINUX_S390X not found"
@@ -1010,15 +1012,15 @@ function InitDefaultCGODeps() {
                     command -v loongarch64-linux-musl-g++ >/dev/null 2>&1; then
                     CC_LINUX_LOONG64="loongarch64-linux-musl-gcc"
                     CXX_LINUX_LOONG64="loongarch64-linux-musl-g++"
-                elif [ -x "$CGO_COMPILER_DIR/loongarch64-linux-musl-cross/bin/loongarch64-linux-musl-gcc" ] &&
-                    [ -x "$CGO_COMPILER_DIR/loongarch64-linux-musl-cross/bin/loongarch64-linux-musl-g++" ]; then
-                    CC_LINUX_LOONG64="$CGO_COMPILER_DIR/loongarch64-linux-musl-cross/bin/loongarch64-linux-musl-gcc"
-                    CXX_LINUX_LOONG64="$CGO_COMPILER_DIR/loongarch64-linux-musl-cross/bin/loongarch64-linux-musl-g++"
+                elif [ -x "$CGO_CROSS_COMPILER_DIR/loongarch64-linux-musl-cross/bin/loongarch64-linux-musl-gcc" ] &&
+                    [ -x "$CGO_CROSS_COMPILER_DIR/loongarch64-linux-musl-cross/bin/loongarch64-linux-musl-g++" ]; then
+                    CC_LINUX_LOONG64="$CGO_CROSS_COMPILER_DIR/loongarch64-linux-musl-cross/bin/loongarch64-linux-musl-gcc"
+                    CXX_LINUX_LOONG64="$CGO_CROSS_COMPILER_DIR/loongarch64-linux-musl-cross/bin/loongarch64-linux-musl-g++"
                 else
                     DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/loongarch64-linux-musl-cross-${unamespacer}.tgz" \
-                        "$CGO_COMPILER_DIR/loongarch64-linux-musl-cross"
-                    CC_LINUX_LOONG64="$CGO_COMPILER_DIR/loongarch64-linux-musl-cross/bin/loongarch64-linux-musl-gcc"
-                    CXX_LINUX_LOONG64="$CGO_COMPILER_DIR/loongarch64-linux-musl-cross/bin/loongarch64-linux-musl-g++"
+                        "$CGO_CROSS_COMPILER_DIR/loongarch64-linux-musl-cross"
+                    CC_LINUX_LOONG64="$CGO_CROSS_COMPILER_DIR/loongarch64-linux-musl-cross/bin/loongarch64-linux-musl-gcc"
+                    CXX_LINUX_LOONG64="$CGO_CROSS_COMPILER_DIR/loongarch64-linux-musl-cross/bin/loongarch64-linux-musl-g++"
                 fi
             elif [ ! "$CC_LINUX_LOONG64" ] || [ ! "$CXX_LINUX_LOONG64" ]; then
                 echo "CC_LINUX_LOONG64 or CXX_LINUX_LOONG64 not found"
@@ -1048,15 +1050,15 @@ function InitDefaultCGODeps() {
                     command -v i686-w64-mingw32-g++ >/dev/null 2>&1; then
                     CC_WINDOWS_386="i686-w64-mingw32-gcc"
                     CXX_WINDOWS_386="i686-w64-mingw32-g++"
-                elif [ -x "$CGO_COMPILER_DIR/i686-w64-mingw32-cross/bin/i686-w64-mingw32-gcc" ] &&
-                    [ -x "$CGO_COMPILER_DIR/i686-w64-mingw32-cross/bin/i686-w64-mingw32-g++" ]; then
-                    CC_WINDOWS_386="$CGO_COMPILER_DIR/i686-w64-mingw32-cross/bin/i686-w64-mingw32-gcc"
-                    CXX_WINDOWS_386="$CGO_COMPILER_DIR/i686-w64-mingw32-cross/bin/i686-w64-mingw32-g++"
+                elif [ -x "$CGO_CROSS_COMPILER_DIR/i686-w64-mingw32-cross/bin/i686-w64-mingw32-gcc" ] &&
+                    [ -x "$CGO_CROSS_COMPILER_DIR/i686-w64-mingw32-cross/bin/i686-w64-mingw32-g++" ]; then
+                    CC_WINDOWS_386="$CGO_CROSS_COMPILER_DIR/i686-w64-mingw32-cross/bin/i686-w64-mingw32-gcc"
+                    CXX_WINDOWS_386="$CGO_CROSS_COMPILER_DIR/i686-w64-mingw32-cross/bin/i686-w64-mingw32-g++"
                 else
                     DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/i686-w64-mingw32-cross-${unamespacer}.tgz" \
-                        "$CGO_COMPILER_DIR/i686-w64-mingw32-cross"
-                    CC_WINDOWS_386="$CGO_COMPILER_DIR/i686-w64-mingw32-cross/bin/i686-w64-mingw32-gcc"
-                    CXX_WINDOWS_386="$CGO_COMPILER_DIR/i686-w64-mingw32-cross/bin/i686-w64-mingw32-g++"
+                        "$CGO_CROSS_COMPILER_DIR/i686-w64-mingw32-cross"
+                    CC_WINDOWS_386="$CGO_CROSS_COMPILER_DIR/i686-w64-mingw32-cross/bin/i686-w64-mingw32-gcc"
+                    CXX_WINDOWS_386="$CGO_CROSS_COMPILER_DIR/i686-w64-mingw32-cross/bin/i686-w64-mingw32-g++"
                 fi
             elif [ ! "$CC_WINDOWS_386" ] || [ ! "$CXX_WINDOWS_386" ]; then
                 echo "CC_WINDOWS_386 or CXX_WINDOWS_386 not found"
@@ -1073,15 +1075,15 @@ function InitDefaultCGODeps() {
                     command -v x86_64-w64-mingw32-g++ >/dev/null 2>&1; then
                     CC_WINDOWS_AMD64="x86_64-w64-mingw32-gcc"
                     CXX_WINDOWS_AMD64="x86_64-w64-mingw32-g++"
-                elif [ -x "$CGO_COMPILER_DIR/x86_64-w64-mingw32-cross/bin/x86_64-w64-mingw32-gcc" ] &&
-                    [ -x "$CGO_COMPILER_DIR/x86_64-w64-mingw32-cross/bin/x86_64-w64-mingw32-g++" ]; then
-                    CC_WINDOWS_AMD64="$CGO_COMPILER_DIR/x86_64-w64-mingw32-cross/bin/x86_64-w64-mingw32-gcc"
-                    CXX_WINDOWS_AMD64="$CGO_COMPILER_DIR/x86_64-w64-mingw32-cross/bin/x86_64-w64-mingw32-g++"
+                elif [ -x "$CGO_CROSS_COMPILER_DIR/x86_64-w64-mingw32-cross/bin/x86_64-w64-mingw32-gcc" ] &&
+                    [ -x "$CGO_CROSS_COMPILER_DIR/x86_64-w64-mingw32-cross/bin/x86_64-w64-mingw32-g++" ]; then
+                    CC_WINDOWS_AMD64="$CGO_CROSS_COMPILER_DIR/x86_64-w64-mingw32-cross/bin/x86_64-w64-mingw32-gcc"
+                    CXX_WINDOWS_AMD64="$CGO_CROSS_COMPILER_DIR/x86_64-w64-mingw32-cross/bin/x86_64-w64-mingw32-g++"
                 else
                     DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/x86_64-w64-mingw32-cross-${unamespacer}.tgz" \
-                        "$CGO_COMPILER_DIR/x86_64-w64-mingw32-cross"
-                    CC_WINDOWS_AMD64="$CGO_COMPILER_DIR/x86_64-w64-mingw32-cross/bin/x86_64-w64-mingw32-gcc"
-                    CXX_WINDOWS_AMD64="$CGO_COMPILER_DIR/x86_64-w64-mingw32-cross/bin/x86_64-w64-mingw32-g++"
+                        "$CGO_CROSS_COMPILER_DIR/x86_64-w64-mingw32-cross"
+                    CC_WINDOWS_AMD64="$CGO_CROSS_COMPILER_DIR/x86_64-w64-mingw32-cross/bin/x86_64-w64-mingw32-gcc"
+                    CXX_WINDOWS_AMD64="$CGO_CROSS_COMPILER_DIR/x86_64-w64-mingw32-cross/bin/x86_64-w64-mingw32-g++"
                 fi
             elif [ ! "$CC_WINDOWS_AMD64" ] || [ ! "$CXX_WINDOWS_AMD64" ]; then
                 echo "CC_WINDOWS_AMD64 or CXX_WINDOWS_AMD64 not found"

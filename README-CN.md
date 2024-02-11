@@ -96,7 +96,8 @@ synctv server --data-dir ./
 https://synctv.wiki
 
 # 特别赞助商
-- [亚洲云](https://www.asiayun.com) 为演示站点提供服务器支持。
+- [亚洲云](https://www.asiayun.com) 为[演示站](https://demo.synctv.wiki)点提供服务器支持。
+- [LucasYuYu](https://github.com/LucasYuYu) ¥ 18.88
 
 # 贡献者
 感谢这些出色的人们：

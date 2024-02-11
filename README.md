@@ -97,7 +97,8 @@ synctv server --data-dir ./
 https://synctv.wiki
 
 # Special sponsors
-- [亚洲云](https://www.asiayun.com) supports the server for the demo site.
+- [亚洲云](https://www.asiayun.com) supports the server for the [demo](https://demo.synctv.wiki) site.
+- [LucasYuYu](https://github.com/LucasYuYu) ¥ 18.88
 
 # Contributors
 Thanks goes to these wonderful people:

@@ -2,10 +2,31 @@
 
 set -e
 
+DEFAULT_SOURCE_DIR="$(pwd)"
+DEFAULT_RESULT_DIR="build"
+DEFAULT_BIN_NAME="$(basename "$(cd $DEFAULT_SOURCE_DIR && pwd)")"
+DEFAULT_CGO_COMPILER_DIR="compiler"
+
 function EnvHelp() {
+    echo "SOURCE_DIR set source dir (default: $DEFAULT_SOURCE_DIR)"
+    echo "RESULT_DIR set build result dir (default: $DEFAULT_RESULT_DIR)"
+    echo "BIN_NAME set bin name (default: $DEFAULT_BIN_NAME)"
+    echo "PLATFORM set platform (default: host platform, support: all, linux, linux/arm*, ...)"
+    echo "DISABLE_MICRO set will not build micro"
+    echo "CGO_ENABLED set cgo enabled (default: 1)"
+    echo "HOST_CC set host cc (default: gcc)"
+    echo "HOST_CXX set host cxx (default: g++)"
+    echo "FORCE_CC set force gcc"
+    echo "FORCE_CXX set force g++"
+    echo "*_ALLOWED_PLATFORM set allowed platform (example: LINUX_ALLOWED_PLATFORM=\"linux/amd64\")"
+    echo "CGO_*_ALLOWED_PLATFORM set cgo allowed platform (example: CGO_LINUX_ALLOWED_PLATFORM=\"linux/amd64\")"
+    echo "GH_PROXY set github proxy releases mirror (example: https://mirror.ghproxy.com/)"
+    echo "----"
+    echo "Dep Env:"
+    echo "VERSION"
     echo "SKIP_INIT_WEB"
-    echo "WEB_VERSION set web dependency version (default: build version)"
-    echo "CGO_COMPILER_DIR set cgo compiler dir (default: ../compiler)"
+    echo "WEB_VERSION set web dependency version (default: VERSION)"
+    echo "CGO_COMPILER_DIR set cgo compiler dir (default: $DEFAULT_CGO_COMPILER_DIR)"
 }
 
 function DepHelp() {
@@ -17,13 +38,13 @@ function DepHelp() {
 function Help() {
     echo "-h get help"
     echo "-C disable cgo"
-    echo "-S set source dir (default: $SOURCE_DIR)"
+    echo "-S set source dir (default: $DEFAULT_SOURCE_DIR)"
     echo "-m more go cmd args"
     echo "-M disable build micro"
     echo "-l set ldflags (default: \"$LDFLAGS\""
-    echo "-p set platform (default: host platform, support: all, linux, darwin, windows)"
-    echo "-d set build result dir (default: build)"
-    echo "-T set tags (default: jsoniter)"
+    echo "-p set platform (default: host platform, support: all, linux, linux/arm*, ...)"
+    echo "-d set build result dir (default: $DEFAULT_RESULT_DIR)"
+    echo "-T set tags"
     echo "-t show all targets"
     echo "-g use github proxy mirror"
     echo "-f set force gcc"
@@ -39,17 +60,16 @@ function Help() {
 }
 
 function Init() {
-    CGO_ENABLED="1"
+    SHOW_TARGETS=""
+
     DEFAULT_CGO_FLAGS="-O2 -g0 -pipe"
     CGO_CFLAGS="$DEFAULT_CGO_FLAGS"
     CGO_CXXFLAGS="$DEFAULT_CGO_FLAGS"
     CGO_LDFLAGS="-s"
     GOHOSTOS="$(go env GOHOSTOS)"
     GOHOSTARCH="$(go env GOHOSTARCH)"
-
-    LDFLAGS="-s -w -linkmode external"
-    PLATFORM=""
-    SOURCE_DIR="."
+    GOHOSTPLATFORM="$GOHOSTOS/$GOHOSTARCH"
+    LDFLAGS="-s -w"
 
     OIFS="$IFS"
     IFS=$'\n\t, '
@@ -77,7 +97,7 @@ function ParseArgs() {
             PLATFORM="$OPTARG"
             ;;
         d)
-            BUILD_DIR="$OPTARG"
+            RESULT_DIR="$OPTARG"
             ;;
         T)
             AddTags "$OPTARG"
@@ -134,29 +154,32 @@ function ParseArgs() {
 
 function FixArgs() {
     if [ ! "$SOURCE_DIR" ]; then
-        echo "source dir not set"
-        return 1
+        SOURCE_DIR="$DEFAULT_SOURCE_DIR"
     fi
     SOURCE_DIR="$(cd "$SOURCE_DIR" && pwd)"
     if [ ! "$BIN_NAME" ]; then
-        BIN_NAME="$(basename "$SOURCE_DIR")"
+        BIN_NAME="$DEFAULT_BIN_NAME"
     fi
-    if [ ! "$BUILD_DIR" ]; then
-        BUILD_DIR="${SOURCE_DIR}/build"
-    else
-        BUILD_DIR="$(cd "$BUILD_DIR" && pwd)"
+    if [ ! "$RESULT_DIR" ]; then
+        RESULT_DIR="${DEFAULT_RESULT_DIR}"
     fi
+    RESULT_DIR="$(cd "$RESULT_DIR" && pwd)"
     echo "build source dir: $SOURCE_DIR"
-    echo "build result dir: $BUILD_DIR"
+    echo "build result dir: $RESULT_DIR"
     if [ ! "$CGO_COMPILER_DIR" ]; then
-        CGO_COMPILER_DIR="$SOURCE_DIR/compiler"
-    else
-        CGO_COMPILER_DIR="$(cd "$CGO_COMPILER_DIR" && pwd)"
+        CGO_COMPILER_DIR="$DEFAULT_CGO_COMPILER_DIR"
     fi
-    if [ "$CGO_ENABLED" == "1" ]; then
-        echo "cgo enabled"
+    CGO_COMPILER_DIR="$(cd "$CGO_COMPILER_DIR" && pwd)"
+    if [ "$(CGOENABLED)" ]; then
+        CGO_ENABLED="1"
     else
         CGO_ENABLED="0"
+    fi
+}
+
+function CGOENABLED() {
+    if [ ! "$CGO_ENABLED" ] || [ "$CGO_ENABLED" == "1" ]; then
+        echo "1"
     fi
 }
 
@@ -246,51 +269,122 @@ function DownloadAndUnzip() {
 # windows/arm64
 
 function InitPlatforms() {
-    LINUX_ALLOWED_PLATFORM="linux/386,linux/amd64,linux/arm,linux/arm64,linux/loong64,linux/mips,linux/mips64,linux/mips64le,linux/mipsle,linux/ppc64,linux/ppc64le,linux/riscv64,linux/s390x"
-    DARWIN_ALLOWED_PLATFORM="darwin/amd64,darwin/arm64"
-    WINDOWS_ALLOWED_PLATFORM="windows/386,windows/amd64,windows/arm,windows/arm64"
-    ALLOWED_PLATFORM="$LINUX_ALLOWED_PLATFORM,$DARWIN_ALLOWED_PLATFORM,$WINDOWS_ALLOWED_PLATFORM"
+    for var in $(compgen -v | grep "^CURRENT_.*_ALLOWED_PLATFORM$"); do
+        unset "$var"
+    done
 
-    LINUX_CGO_ALLOWED_PLATFORM="linux/386,linux/amd64,linux/arm,linux/arm64,linux/loong64,linux/mips,linux/mips64,linux/mips64le,linux/mipsle,linux/ppc64le,linux/riscv64,linux/s390x"
-    DARWIN_CGO_ALLOWED_PLATFORM=""
-    if [ $(uname) == "Darwin" ]; then
-        DARWIN_CGO_ALLOWED_PLATFORM="${GOHOSTOS}/${GOHOSTARCH}"
+    if [ -z "${LINUX_ALLOWED_PLATFORM+x}" ]; then
+        LINUX_ALLOWED_PLATFORM="linux/386,linux/amd64,linux/arm,linux/arm64,linux/loong64,linux/mips,linux/mips64,linux/mips64le,linux/mipsle,linux/ppc64,linux/ppc64le,linux/riscv64,linux/s390x"
     fi
-    WINDOWS_CGO_ALLOWED_PLATFORM="windows/386,windows/amd64"
-    CGO_ALLOWED_PLATFORM="$LINUX_CGO_ALLOWED_PLATFORM,$DARWIN_CGO_ALLOWED_PLATFORM,$WINDOWS_CGO_ALLOWED_PLATFORM"
+    if [ -z "${DARWIN_ALLOWED_PLATFORM+x}" ]; then
+        DARWIN_ALLOWED_PLATFORM="darwin/amd64,darwin/arm64"
+    fi
+    if [ -z "${WINDOWS_ALLOWED_PLATFORM+x}" ]; then
+        WINDOWS_ALLOWED_PLATFORM="windows/386,windows/amd64,windows/arm,windows/arm64"
+    fi
+    # if [ -z "${ANDROID_ALLOWED_PLATFORM+x}" ]; then
+    #     ANDROID_ALLOWED_PLATFORM="android/arm64"
+    # fi
+    # if [ -z "${OPENBSD_ALLOWED_PLATFORM+x}" ]; then
+    #     OPENBSD_ALLOWED_PLATFORM="openbsd/amd64,openbsd/arm64"
+    # fi
+    # if [ -z "${FREEBSD_ALLOWED_PLATFORM+x}" ]; then
+    #     FREEBSD_ALLOWED_PLATFORM="freebsd/386,freebsd/amd64,freebsd/arm,freebsd/arm64"
+    # fi
+    if [ -z "${ALLOWED_PLATFORM+x}" ]; then
+        HOST_ALLOWED_PLATFORM_ENV_NAME="$(echo "${GOHOSTOS}" | tr '[:lower:]' '[:upper:]')_ALLOWED_PLATFORM"
+        if [ "$(CheckPlatform "${GOHOSTPLATFORM}" "${!HOST_ALLOWED_PLATFORM_ENV_NAME}")" != "0" ]; then
+            if [ ! "${!HOST_ALLOWED_PLATFORM_ENV_NAME}" ]; then
+                eval "$HOST_ALLOWED_PLATFORM_ENV_NAME=\"${GOHOSTPLATFORM}\""
+            else
+                eval "$HOST_ALLOWED_PLATFORM_ENV_NAME=\"${!HOST_ALLOWED_PLATFORM_ENV_NAME},${GOHOSTPLATFORM}\""
+            fi
+        fi
 
+        for var in $(compgen -v | grep "_ALLOWED_PLATFORM$" | grep -v "^CGO_"); do
+            if [ ! "$ALLOWED_PLATFORM" ]; then
+                ALLOWED_PLATFORM="${!var}"
+            else
+                ALLOWED_PLATFORM="$ALLOWED_PLATFORM,${!var}"
+            fi
+        done
+    fi
+
+    if [ -z "${CGO_LINUX_ALLOWED_PLATFORM+x}" ]; then
+        CGO_LINUX_ALLOWED_PLATFORM="linux/386,linux/amd64,linux/arm,linux/arm64,linux/loong64,linux/mips,linux/mips64,linux/mips64le,linux/mipsle,linux/ppc64le,linux/riscv64,linux/s390x"
+    fi
+    if [ -z "${CGO_DARWIN_ALLOWED_PLATFORM+x}" ]; then
+        CGO_DARWIN_ALLOWED_PLATFORM=""
+    fi
+    if [ -z "${CGO_WINDOWS_ALLOWED_PLATFORM+x}" ]; then
+        CGO_WINDOWS_ALLOWED_PLATFORM="windows/386,windows/amd64"
+    fi
+    if [ -z "${CGO_ALLOWED_PLATFORM+x}" ]; then
+        CGO_HOST_ALLOWED_PLATFORM_ENV_NAME="CGO_$(echo "${GOHOSTOS}" | tr '[:lower:]' '[:upper:]')_ALLOWED_PLATFORM"
+        if [ "$(CheckPlatform "${GOHOSTPLATFORM}" "${!CGO_HOST_ALLOWED_PLATFORM_ENV_NAME}")" != "0" ]; then
+            if [ ! "${!CGO_HOST_ALLOWED_PLATFORM_ENV_NAME}" ]; then
+                eval "$CGO_HOST_ALLOWED_PLATFORM_ENV_NAME=\"${GOHOSTPLATFORM}\""
+            else
+                eval "$CGO_HOST_ALLOWED_PLATFORM_ENV_NAME=\"${!CGO_HOST_ALLOWED_PLATFORM_ENV_NAME},${GOHOSTPLATFORM}\""
+            fi
+        fi
+
+        for var in $(compgen -v | grep "^CGO_.*_ALLOWED_PLATFORM$"); do
+            if [ ! "$CGO_ALLOWED_PLATFORM" ]; then
+                CGO_ALLOWED_PLATFORM="${!var}"
+            else
+                CGO_ALLOWED_PLATFORM="$CGO_ALLOWED_PLATFORM,${!var}"
+            fi
+        done
+    fi
+
+    # remove double comma
     ALLOWED_PLATFORM="$(echo "$ALLOWED_PLATFORM" | sed 's/,,*/,/g')"
     CGO_ALLOWED_PLATFORM="$(echo "$CGO_ALLOWED_PLATFORM" | sed 's/,,*/,/g')"
 
-    if [ "$CGO_ENABLED" == "1" ]; then
+    if [ "$(CGOENABLED)" ]; then
         CURRENT_ALLOWED_PLATFORM="$CGO_ALLOWED_PLATFORM"
-        CURRENT_ALLOWED_LINUX_PLATFORM="$LINUX_CGO_ALLOWED_PLATFORM"
-        CURRENT_ALLOWED_DARWIN_PLATFORM="$DARWIN_CGO_ALLOWED_PLATFORM"
-        CURRENT_ALLOWED_WINDOWS_PLATFORM="$WINDOWS_CGO_ALLOWED_PLATFORM"
+        for var in $(compgen -v | grep "CGO_.*_ALLOWED_PLATFORM$"); do
+            eval "CURRENT_${var#CGO_}=\"${!var}\""
+        done
     else
         CURRENT_ALLOWED_PLATFORM="$ALLOWED_PLATFORM"
-        CURRENT_ALLOWED_LINUX_PLATFORM="$LINUX_ALLOWED_PLATFORM"
-        CURRENT_ALLOWED_DARWIN_PLATFORM="$DARWIN_ALLOWED_PLATFORM"
-        CURRENT_ALLOWED_WINDOWS_PLATFORM="$WINDOWS_ALLOWED_PLATFORM"
+        for var in $(compgen -v | grep ".*_ALLOWED_PLATFORM$" | grep -v "^CGO_"); do
+            eval "CURRENT_${var}=\"${!var}\""
+        done
     fi
+
+    # for var in $(compgen -v | grep "^CURRENT_.*_ALLOWED_PLATFORM$"); do
+    #     echo "${var}: ${!var}"
+    # done
+    # exit 0
 }
 
 function CheckPlatform() {
-    for p in $CURRENT_ALLOWED_PLATFORM; do
+    if [ ! "$1" ]; then
+        return 1
+    fi
+    if [ "$2" ]; then
+        current_allowed_platform="$2"
+    else
+        current_allowed_platform="$CURRENT_ALLOWED_PLATFORM"
+    fi
+    for p in $current_allowed_platform; do
         if [ "$p" == "$1" ]; then
+            echo "0"
             return
         fi
     done
-    if [ "$CGO_ENABLED" == "1" ]; then
+    if [ "$(CGOENABLED)" ]; then
         for p in $ALLOWED_PLATFORM; do
             if [ "$p" == "$1" ]; then
-                echo "platform: $1 not support for cgo"
+                echo "2"
+                return
             fi
         done
-        return 1
     fi
-    echo "platform: $1 not support"
-    return 1
+    echo "1"
+    return
 }
 
 function CheckAllPlatform() {
@@ -298,22 +392,45 @@ function CheckAllPlatform() {
         for platform in $1; do
             if [ "$platform" == "all" ]; then
                 continue
-            elif [ "$platform" == "linux" ]; then
+            elif [[ $platform == *\** ]]; then
                 continue
-            elif [ "$platform" == "darwin" ]; then
-                continue
-            elif [ "$platform" == "windows" ]; then
+            elif [[ $platform != */* ]]; then
                 continue
             fi
-            CheckPlatform "$platform"
+
+            case $(CheckPlatform "$platform") in
+            "0")
+                return
+                ;;
+            "1")
+                echo "platform: $1 not support"
+                return 1
+                ;;
+            "2")
+                echo "platform: $1 not support for cgo"
+                return 2
+                ;;
+            *)
+                echo "check platform error"
+                return 3
+                ;;
+            esac
         done
     fi
 }
 
 function InitCGODeps() {
+    CC=""
+    CXX=""
     MORE_CGO_CFLAGS=""
     MORE_CGO_CXXFLAGS=""
     MORE_CGO_LDFLAGS=""
+
+    if [ ! "$(CGOENABLED)" ]; then
+        InitHostCGODeps
+        return
+    fi
+
     if [ "$FORCE_CC" ] && [ ! "$FORCE_CXX" ]; then
         echo "FORCE_CC and FORCE_CXX must be set at the same time"
         return 1
@@ -323,12 +440,6 @@ function InitCGODeps() {
     elif [ "$FORCE_CC" ] && [ "$FORCE_CXX" ]; then
         CC="$FORCE_CC"
         CXX="$FORCE_CXX"
-        return
-    fi
-
-    CC=""
-    CXX=""
-    if [ "$CGO_ENABLED" != "1" ]; then
         return
     fi
 
@@ -1001,6 +1112,16 @@ function InitDefaultCGODeps() {
     esac
 }
 
+function SupportPie() {
+    if [[ "$1" != "linux/mips"* ]] &&
+        [ "$1" != "linux/ppc64" ] &&
+        [[ "$1" != "openbsd"* ]] &&
+        [[ "$1" != "freebsd"* ]] &&
+        [[ "$1" != "netbsd"* ]]; then
+        echo "1"
+    fi
+}
+
 function Build() {
     platform="$1"
     target_name="$2"
@@ -1029,12 +1150,12 @@ function Build() {
         TARGET_NAME="$BIN_NAME-$GOOS-$GOARCH"
     fi
 
-    TARGET_FILE="$BUILD_DIR/$TARGET_NAME"
+    TARGET_FILE="$RESULT_DIR/$TARGET_NAME"
 
     TMP_BUILD_ARGS="-tags \"$TAGS\" -ldflags \"$LDFLAGS\" -trimpath $BUILD_ARGS"
 
-    if [[ "$platform" != "linux/mips"* ]]; then
-        TMP_BUILD_ARGS="$TMP_BUILD_ARGS -buildmode=pie"
+    if [ "$(SupportPie "$platform")" ]; then
+        TMP_BUILD_ARGS="-buildmode pie $TMP_BUILD_ARGS"
     fi
 
     BUILD_ENV="CGO_ENABLED=$CGO_ENABLED \
@@ -1299,17 +1420,21 @@ function Build() {
 
 function AutoBuild() {
     if [ ! "$1" ]; then
-        Build "$GOHOSTOS/$GOHOSTARCH" "$BIN_NAME"
+        Build "$GOHOSTPLATFORM" "$BIN_NAME"
     else
         for platform in $1; do
             if [ "$platform" == "all" ]; then
-                AutoBuild "$CURRENT_ALLOWED_PLATFORM"
-            elif [ "$platform" == "linux" ]; then
-                AutoBuild "$CURRENT_ALLOWED_LINUX_PLATFORM"
-            elif [ "$platform" == "darwin" ]; then
-                AutoBuild "$CURRENT_ALLOWED_DARWIN_PLATFORM"
-            elif [ "$platform" == "windows" ]; then
-                AutoBuild "$CURRENT_ALLOWED_WINDOWS_PLATFORM"
+                if [ "$CURRENT_ALLOWED_PLATFORM" ]; then
+                    AutoBuild "$CURRENT_ALLOWED_PLATFORM"
+                fi
+            elif [[ $platform == *\** ]]; then
+                for var in $CURRENT_ALLOWED_PLATFORM; do
+                    if [[ $var == $platform ]]; then
+                        AutoBuild "$var"
+                    fi
+                done
+            elif [[ $platform != */* ]]; then
+                AutoBuild "$platform/*"
             else
                 Build "$platform"
             fi

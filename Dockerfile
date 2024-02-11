@@ -10,8 +10,10 @@ WORKDIR /synctv
 
 COPY ./ ./
 
-RUN apk add --no-cache bash curl git go musl-dev g++ && \
-    bash script/build.sh -Mv ${VERSION}
+RUN apk add --no-cache bash curl git go g++
+
+RUN bash script/build.sh -Mv ${VERSION} \
+    -f "gcc -static" -F "g++ -static"
 
 From alpine:latest
 
@@ -19,11 +21,12 @@ ENV PUID=0 PGID=0 UMASK=022
 
 COPY --from=builder /synctv/build/synctv /usr/local/bin/synctv
 
+RUN apk add --no-cache bash ca-certificates su-exec tzdata && \
+    rm -rf /var/cache/apk/*
+
 COPY script/entrypoint.sh /entrypoint.sh
 
-RUN apk add --no-cache bash ca-certificates su-exec tzdata && \
-    rm -rf /var/cache/apk/* && \
-    chmod +x /entrypoint.sh && \
+RUN chmod +x /entrypoint.sh && \
     mkdir -p /root/.synctv
 
 WORKDIR /root/.synctv

@@ -4,8 +4,18 @@ set -e
 
 DEFAULT_SOURCE_DIR="$(pwd)"
 DEFAULT_RESULT_DIR="$(pwd)/build"
-DEFAULT_BIN_NAME="$(basename "$(cd $DEFAULT_SOURCE_DIR && pwd)")"
+
+DEFAULT_CGO_ENABLED="1"
+DEFAULT_CC="gcc"
+DEFAULT_CXX="g++"
 DEFAULT_CGO_CROSS_COMPILER_DIR="$(pwd)/cross"
+DEFAULT_CGO_FLAGS="-O2 -g0 -pipe"
+
+GOHOSTOS="$(go env GOHOSTOS)"
+GOHOSTARCH="$(go env GOHOSTARCH)"
+GOHOSTPLATFORM="$GOHOSTOS/$GOHOSTARCH"
+
+DEFAULT_CGO_DEPS_VERSION="v0.4.3"
 
 function EnvHelp() {
     echo "SOURCE_DIR set source dir (default: $DEFAULT_SOURCE_DIR)"
@@ -13,25 +23,27 @@ function EnvHelp() {
     echo "BIN_NAME set bin name (default: $DEFAULT_BIN_NAME)"
     echo "PLATFORM set platform (default: host platform, support: all, linux, linux/arm*, ...)"
     echo "DISABLE_MICRO set will not build micro"
-    echo "CGO_ENABLED set cgo enabled (default: 1)"
-    echo "HOST_CC set host cc (default: gcc)"
-    echo "HOST_CXX set host cxx (default: g++)"
+    echo "CGO_ENABLED set cgo enabled (default: $DEFAULT_CGO_ENABLED)"
+    echo "HOST_CC set host cc (default: $DEFAULT_CC)"
+    echo "HOST_CXX set host cxx (default: $DEFAULT_CXX)"
     echo "FORCE_CC set force gcc"
     echo "FORCE_CXX set force g++"
+    echo "DISABLE_FIND_AR set will dont find ar with gcc"
+    echo "FORCE_AR set force ar"
     echo "*_ALLOWED_PLATFORM set allowed platform (example: LINUX_ALLOWED_PLATFORM=\"linux/amd64\")"
     echo "CGO_*_ALLOWED_PLATFORM set cgo allowed platform (example: CGO_LINUX_ALLOWED_PLATFORM=\"linux/amd64\")"
     echo "GH_PROXY set github proxy releases mirror (example: https://mirror.ghproxy.com/)"
     echo "----"
     echo "Dep Env:"
-    echo "VERSION"
-    echo "SKIP_INIT_WEB"
+    echo "VERSION (default: dev)"
     echo "WEB_VERSION set web dependency version (default: VERSION)"
+    echo "SKIP_INIT_WEB"
     echo "CGO_CROSS_COMPILER_DIR set cgo compiler dir (default: $DEFAULT_CGO_CROSS_COMPILER_DIR)"
 }
 
 function DepHelp() {
     echo "-v set build version (default: dev)"
-    echo "-w init web version (default: build version)"
+    echo "-w init web version (default: VERSION)"
     echo "-s skip init web"
 }
 
@@ -41,7 +53,7 @@ function Help() {
     echo "-S set source dir (default: $DEFAULT_SOURCE_DIR)"
     echo "-m more go cmd args"
     echo "-M disable build micro"
-    echo "-l set ldflags (default: \"$LDFLAGS\""
+    echo "-l set ldflags (default: \"$LDFLAGS\")"
     echo "-p set platform (default: host platform, support: all, linux, linux/arm*, ...)"
     echo "-d set build result dir (default: $DEFAULT_RESULT_DIR)"
     echo "-T set tags"
@@ -49,8 +61,8 @@ function Help() {
     echo "-g use github proxy mirror"
     echo "-f set force gcc"
     echo "-F set force g++"
-    echo "-c host cc"
-    echo "-X host cxx"
+    echo "-c host cc (default: $DEFAULT_CC)"
+    echo "-X host cxx (default: $DEFAULT_CXX)"
     echo "----"
     echo "Dep Help:"
     DepHelp
@@ -62,14 +74,22 @@ function Help() {
 function Init() {
     SHOW_TARGETS=""
 
-    DEFAULT_CGO_FLAGS="-O2 -g0 -pipe"
-    CGO_CFLAGS="$DEFAULT_CGO_FLAGS"
-    CGO_CXXFLAGS="$DEFAULT_CGO_FLAGS"
-    CGO_LDFLAGS="-s"
-    GOHOSTOS="$(go env GOHOSTOS)"
-    GOHOSTARCH="$(go env GOHOSTARCH)"
-    GOHOSTPLATFORM="$GOHOSTOS/$GOHOSTARCH"
-    LDFLAGS="-s -w"
+    SetDefault "CGO_ENABLED" "$DEFAULT_CGO_ENABLED"
+    if [ "$(CGOENABLED)" ]; then
+        CGO_ENABLED="1"
+    else
+        CGO_ENABLED="0"
+    fi
+
+    SetDefault "SOURCE_DIR" "$DEFAULT_SOURCE_DIR"
+    DEFAULT_BIN_NAME="$(basename "$(cd $SOURCE_DIR && pwd)")"
+    SetDefault "RESULT_DIR" "$DEFAULT_RESULT_DIR"
+    SetDefault "CGO_CROSS_COMPILER_DIR" "$DEFAULT_CGO_CROSS_COMPILER_DIR"
+    SetDefault "CGO_FLAGS" "$DEFAULT_CGO_FLAGS"
+    SetDefault "CGO_LDFLAGS" "-s"
+    SetDefault "LDFLAGS" "-s -w"
+    SetDefault "HOST_CC" "$DEFAULT_CC"
+    SetDefault "HOST_CXX" "$DEFAULT_CXX"
 
     OIFS="$IFS"
     IFS=$'\n\t, '
@@ -152,31 +172,28 @@ function ParseArgs() {
     fi
 }
 
+function SetDefault() {
+    if [ ! "$1" ]; then
+        return 1
+    fi
+    if [ ! "${!1}" ]; then
+        eval "$1=\"$2\""
+    fi
+}
+
 function FixArgs() {
-    if [ ! "$SOURCE_DIR" ]; then
-        SOURCE_DIR="$DEFAULT_SOURCE_DIR"
-    fi
     SOURCE_DIR="$(cd "$SOURCE_DIR" && pwd)"
-    if [ ! "$BIN_NAME" ]; then
-        BIN_NAME="$DEFAULT_BIN_NAME"
-    fi
-    if [ ! "$RESULT_DIR" ]; then
-        RESULT_DIR="${DEFAULT_RESULT_DIR}"
-    fi
+    SetDefault "BIN_NAME" "$(basename "$(cd $SOURCE_DIR && pwd)")"
     mkdir -p "$RESULT_DIR"
     RESULT_DIR="$(cd "$RESULT_DIR" && pwd)"
     echo "build source dir: $SOURCE_DIR"
     echo "build result dir: $RESULT_DIR"
-    if [ ! "$CGO_CROSS_COMPILER_DIR" ]; then
-        CGO_CROSS_COMPILER_DIR="$DEFAULT_CGO_CROSS_COMPILER_DIR"
-    fi
+
     mkdir -p "$CGO_CROSS_COMPILER_DIR"
     CGO_CROSS_COMPILER_DIR="$(cd "$CGO_CROSS_COMPILER_DIR" && pwd)"
-    if [ "$(CGOENABLED)" ]; then
-        CGO_ENABLED="1"
-    else
-        CGO_ENABLED="0"
-    fi
+
+    CGO_CFLAGS="$CGO_FLAGS"
+    CGO_CXXFLAGS="$CGO_FLAGS"
 }
 
 function CGOENABLED() {
@@ -198,6 +215,8 @@ function DownloadAndUnzip() {
     echo "download \"$url\" to \"$file\""
     rm -rf "$file"/*
 
+    start_time=$(date +%s)
+
     # gzip/bzip2/xz/lzma/zip
     if [ ! "$type" ] || [ "$type" == "tgz" ] || [ "$type" == "gz" ]; then
         curl -sL "$url" | tar -xf - -C "$file" --strip-components 1 -z
@@ -216,7 +235,9 @@ function DownloadAndUnzip() {
         echo "compress type: $type not support"
         return 1
     fi
-    echo "download and unzip success"
+
+    end_time=$(date +%s)
+    echo "download and unzip success: $((end_time - start_time))s"
 }
 
 # https://go.dev/doc/install/source#environment
@@ -428,11 +449,6 @@ function InitCGODeps() {
     MORE_CGO_CXXFLAGS=""
     MORE_CGO_LDFLAGS=""
 
-    if [ ! "$(CGOENABLED)" ]; then
-        InitHostCGODeps
-        return
-    fi
-
     if [ "$FORCE_CC" ] && [ ! "$FORCE_CXX" ]; then
         echo "FORCE_CC and FORCE_CXX must be set at the same time"
         return 1
@@ -442,6 +458,11 @@ function InitCGODeps() {
     elif [ "$FORCE_CC" ] && [ "$FORCE_CXX" ]; then
         CC="$FORCE_CC"
         CXX="$FORCE_CXX"
+        return
+    fi
+
+    if [ ! "$(CGOENABLED)" ]; then
+        InitHostCGODeps $@
         return
     fi
 
@@ -457,7 +478,7 @@ function InitCGODeps() {
             ;;
         *)
             if [ "$GOOS" == "$GOHOSTOS" ] && [ "$GOARCH" == "$GOHOSTARCH" ]; then
-                InitHostCGODeps "$@"
+                InitHostCGODeps $@
             else
                 echo "$GOOS/$GOARCH not support for cgo"
                 return 1
@@ -467,7 +488,7 @@ function InitCGODeps() {
         ;;
     *)
         if [ "$GOOS" == "$GOHOSTOS" ] && [ "$GOARCH" == "$GOHOSTARCH" ]; then
-            InitHostCGODeps "$@"
+            InitHostCGODeps $@
         else
             echo "$GOOS/$GOARCH not support for cgo"
             return 1
@@ -498,17 +519,9 @@ function InitHostCGODeps() {
     # GOOS="$1"
     # GOARCH="$2"
     # MICRO="$3"
-    if [ "$HOST_CC" ]; then
-        CC="$HOST_CC"
-    else
-        CC="gcc"
-    fi
 
-    if [ "$HOST_CXX" ]; then
-        CXX="$HOST_CXX"
-    else
-        CXX="g++"
-    fi
+    CC="$HOST_CC"
+    CXX="$HOST_CXX"
 }
 
 function InitDefaultCGODeps() {
@@ -520,7 +533,7 @@ function InitDefaultCGODeps() {
         unamespacer="$GOHOSTOS-$GOHOSTARCH"
         ;;
     esac
-    DEFAULT_CGO_DEPS_VERSION="v0.4.2"
+    SetDefault "CGO_DEPS_VERSION" "$DEFAULT_CGO_DEPS_VERSION"
     GOOS="$1"
     GOARCH="$2"
     MICRO="$3"
@@ -529,7 +542,7 @@ function InitDefaultCGODeps() {
         case "$GOARCH" in
         "386")
             # Micro: sse2 softfloat or empty (not use)
-            # https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/i686-linux-musl-cross-${unamespacer}.tgz
+            # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/i686-linux-musl-cross-${unamespacer}.tgz
             if [ ! "$CC_LINUX_386" ] && [ ! "$CXX_LINUX_386" ]; then
                 if command -v i686-linux-musl-gcc >/dev/null 2>&1 &&
                     command -v i686-linux-musl-g++ >/dev/null 2>&1; then
@@ -540,7 +553,7 @@ function InitDefaultCGODeps() {
                     CC_LINUX_386="$CGO_CROSS_COMPILER_DIR/i686-linux-musl-cross/bin/i686-linux-musl-gcc"
                     CXX_LINUX_386="$CGO_CROSS_COMPILER_DIR/i686-linux-musl-cross/bin/i686-linux-musl-g++"
                 else
-                    DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/i686-linux-musl-cross-${unamespacer}.tgz" \
+                    DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/i686-linux-musl-cross-${unamespacer}.tgz" \
                         "$CGO_CROSS_COMPILER_DIR/i686-linux-musl-cross"
                     CC_LINUX_386="$CGO_CROSS_COMPILER_DIR/i686-linux-musl-cross/bin/i686-linux-musl-gcc"
                     CXX_LINUX_386="$CGO_CROSS_COMPILER_DIR/i686-linux-musl-cross/bin/i686-linux-musl-g++"
@@ -554,7 +567,7 @@ function InitDefaultCGODeps() {
             CXX="$CXX_LINUX_386 -static"
             ;;
         "arm64")
-            # https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/aarch64-linux-musl-cross-${unamespacer}.tgz
+            # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/aarch64-linux-musl-cross-${unamespacer}.tgz
             if [ ! "$CC_LINUX_ARM64" ] && [ ! "$CXX_LINUX_ARM64" ]; then
                 if command -v aarch64-linux-musl-gcc >/dev/null 2>&1 &&
                     command -v aarch64-linux-musl-g++ >/dev/null 2>&1; then
@@ -565,7 +578,7 @@ function InitDefaultCGODeps() {
                     CC_LINUX_ARM64="$CGO_CROSS_COMPILER_DIR/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc"
                     CXX_LINUX_ARM64="$CGO_CROSS_COMPILER_DIR/aarch64-linux-musl-cross/bin/aarch64-linux-musl-g++"
                 else
-                    DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/aarch64-linux-musl-cross-${unamespacer}.tgz" \
+                    DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/aarch64-linux-musl-cross-${unamespacer}.tgz" \
                         "$CGO_CROSS_COMPILER_DIR/aarch64-linux-musl-cross"
                     CC_LINUX_ARM64="$CGO_CROSS_COMPILER_DIR/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc"
                     CXX_LINUX_ARM64="$CGO_CROSS_COMPILER_DIR/aarch64-linux-musl-cross/bin/aarch64-linux-musl-g++"
@@ -579,7 +592,7 @@ function InitDefaultCGODeps() {
             CXX="$CXX_LINUX_ARM64 -static"
             ;;
         "amd64")
-            # https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/x86_64-linux-musl-cross-${unamespacer}.tgz
+            # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/x86_64-linux-musl-cross-${unamespacer}.tgz
             if [ ! "$CC_LINUX_AMD64" ] && [ ! "$CXX_LINUX_AMD64" ]; then
                 if command -v x86_64-linux-musl-gcc >/dev/null 2>&1 &&
                     command -v x86_64-linux-musl-g++ >/dev/null 2>&1; then
@@ -590,7 +603,7 @@ function InitDefaultCGODeps() {
                     CC_LINUX_AMD64="$CGO_CROSS_COMPILER_DIR/x86_64-linux-musl-cross/bin/x86_64-linux-musl-gcc"
                     CXX_LINUX_AMD64="$CGO_CROSS_COMPILER_DIR/x86_64-linux-musl-cross/bin/x86_64-linux-musl-g++"
                 else
-                    DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/x86_64-linux-musl-cross-${unamespacer}.tgz" \
+                    DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/x86_64-linux-musl-cross-${unamespacer}.tgz" \
                         "$CGO_CROSS_COMPILER_DIR/x86_64-linux-musl-cross"
                     CC_LINUX_AMD64="$CGO_CROSS_COMPILER_DIR/x86_64-linux-musl-cross/bin/x86_64-linux-musl-gcc"
                     CXX_LINUX_AMD64="$CGO_CROSS_COMPILER_DIR/x86_64-linux-musl-cross/bin/x86_64-linux-musl-g++"
@@ -606,7 +619,7 @@ function InitDefaultCGODeps() {
         "arm")
             # MICRO: 5,6,7 or empty
             if [ ! "$MICRO" ] || [ "$MICRO" == "6" ]; then
-                # https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/armv6-linux-musleabihf-cross-${unamespacer}.tgz
+                # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/armv6-linux-musleabihf-cross-${unamespacer}.tgz
                 if [ ! "$CC_LINUX_ARMV6" ] && [ ! "$CXX_LINUX_ARMV6" ]; then
                     if command -v armv6-linux-musleabihf-gcc >/dev/null 2>&1 &&
                         command -v armv6-linux-musleabihf-g++ >/dev/null 2>&1; then
@@ -617,7 +630,7 @@ function InitDefaultCGODeps() {
                         CC_LINUX_ARMV6="$CGO_CROSS_COMPILER_DIR/armv6-linux-musleabihf-cross/bin/armv6-linux-musleabihf-gcc"
                         CXX_LINUX_ARMV6="$CGO_CROSS_COMPILER_DIR/armv6-linux-musleabihf-cross/bin/armv6-linux-musleabihf-g++"
                     else
-                        DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/armv6-linux-musleabihf-cross-${unamespacer}.tgz" \
+                        DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/armv6-linux-musleabihf-cross-${unamespacer}.tgz" \
                             "$CGO_CROSS_COMPILER_DIR/armv6-linux-musleabihf-cross"
                         CC_LINUX_ARMV6="$CGO_CROSS_COMPILER_DIR/armv6-linux-musleabihf-cross/bin/armv6-linux-musleabihf-gcc"
                         CXX_LINUX_ARMV6="$CGO_CROSS_COMPILER_DIR/armv6-linux-musleabihf-cross/bin/armv6-linux-musleabihf-g++"
@@ -630,7 +643,7 @@ function InitDefaultCGODeps() {
                 CC="$CC_LINUX_ARMV6 -static"
                 CXX="$CXX_LINUX_ARMV6 -static"
             elif [ "$MICRO" == "7" ]; then
-                # https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/armv7-linux-musleabihf-cross-${unamespacer}.tgz
+                # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/armv7-linux-musleabihf-cross-${unamespacer}.tgz
                 if [ ! "$CC_LINUX_ARMV7" ] && [ ! "$CXX_LINUX_ARMV7" ]; then
                     if command -v armv7-linux-musleabihf-gcc >/dev/null 2>&1 &&
                         command -v armv7-linux-musleabihf-g++ >/dev/null 2>&1; then
@@ -641,7 +654,7 @@ function InitDefaultCGODeps() {
                         CC_LINUX_ARMV7="$CGO_CROSS_COMPILER_DIR/armv7-linux-musleabihf-cross/bin/armv7-linux-musleabihf-gcc"
                         CXX_LINUX_ARMV7="$CGO_CROSS_COMPILER_DIR/armv7-linux-musleabihf-cross/bin/armv7-linux-musleabihf-g++"
                     else
-                        DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/armv7-linux-musleabihf-cross-${unamespacer}.tgz" \
+                        DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/armv7-linux-musleabihf-cross-${unamespacer}.tgz" \
                             "$CGO_CROSS_COMPILER_DIR/armv7-linux-musleabihf-cross"
                         CC_LINUX_ARMV7="$CGO_CROSS_COMPILER_DIR/armv7-linux-musleabihf-cross/bin/armv7-linux-musleabihf-gcc"
                         CXX_LINUX_ARMV7="$CGO_CROSS_COMPILER_DIR/armv7-linux-musleabihf-cross/bin/armv7-linux-musleabihf-g++"
@@ -654,7 +667,7 @@ function InitDefaultCGODeps() {
                 CC="$CC_LINUX_ARMV7 -static"
                 CXX="$CXX_LINUX_ARMV7 -static"
             elif [ "$MICRO" == "5" ]; then
-                # https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/armv5-linux-musleabi-cross-${unamespacer}.tgz
+                # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/armv5-linux-musleabi-cross-${unamespacer}.tgz
                 if [ ! "$CC_LINUX_ARMV5" ] && [ ! "$CXX_LINUX_ARMV5" ]; then
                     if command -v armv5-linux-musleabi-gcc >/dev/null 2>&1 &&
                         command -v armv5-linux-musleabi-g++ >/dev/null 2>&1; then
@@ -665,7 +678,7 @@ function InitDefaultCGODeps() {
                         CC_LINUX_ARMV5="$CGO_CROSS_COMPILER_DIR/armv5-linux-musleabi-cross/bin/armv5-linux-musleabi-gcc"
                         CXX_LINUX_ARMV5="$CGO_CROSS_COMPILER_DIR/armv5-linux-musleabi-cross/bin/armv5-linux-musleabi-g++"
                     else
-                        DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/armv5-linux-musleabi-cross-${unamespacer}.tgz" \
+                        DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/armv5-linux-musleabi-cross-${unamespacer}.tgz" \
                             "$CGO_CROSS_COMPILER_DIR/armv5-linux-musleabi-cross"
                         CC_LINUX_ARMV5="$CGO_CROSS_COMPILER_DIR/armv5-linux-musleabi-cross/bin/armv5-linux-musleabi-gcc"
                         CXX_LINUX_ARMV5="$CGO_CROSS_COMPILER_DIR/armv5-linux-musleabi-cross/bin/armv5-linux-musleabi-g++"
@@ -686,7 +699,7 @@ function InitDefaultCGODeps() {
         "mips")
             # MICRO: hardfloat softfloat or empty
             if [ ! "$MICRO" ] || [ "$MICRO" == "hardfloat" ]; then
-                # https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/mips-linux-musl-cross-${unamespacer}.tgz
+                # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/mips-linux-musl-cross-${unamespacer}.tgz
                 if [ ! "$CC_LINUX_MIPS" ] && [ ! "$CXX_LINUX_MIPS" ]; then
                     if command -v mips-linux-musl-gcc >/dev/null 2>&1 &&
                         command -v mips-linux-musl-g++ >/dev/null 2>&1; then
@@ -697,7 +710,7 @@ function InitDefaultCGODeps() {
                         CC_LINUX_MIPS="$CGO_CROSS_COMPILER_DIR/mips-linux-musl-cross/bin/mips-linux-musl-gcc"
                         CXX_LINUX_MIPS="$CGO_CROSS_COMPILER_DIR/mips-linux-musl-cross/bin/mips-linux-musl-g++"
                     else
-                        DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/mips-linux-musl-cross-${unamespacer}.tgz" \
+                        DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/mips-linux-musl-cross-${unamespacer}.tgz" \
                             "$CGO_CROSS_COMPILER_DIR/mips-linux-musl-cross"
                         CC_LINUX_MIPS="$CGO_CROSS_COMPILER_DIR/mips-linux-musl-cross/bin/mips-linux-musl-gcc"
                         CXX_LINUX_MIPS="$CGO_CROSS_COMPILER_DIR/mips-linux-musl-cross/bin/mips-linux-musl-g++"
@@ -710,7 +723,7 @@ function InitDefaultCGODeps() {
                 CC="$CC_LINUX_MIPS -static"
                 CXX="$CXX_LINUX_MIPS -static"
             elif [ "$MICRO" == "softfloat" ]; then
-                # https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/mips-linux-muslsf-cross-${unamespacer}.tgz
+                # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/mips-linux-muslsf-cross-${unamespacer}.tgz
                 if [ ! "$CC_LINUX_MIPS_SOFTFLOAT" ] && [ ! "$CXX_LINUX_MIPS_SOFTFLOAT" ]; then
                     if command -v mips-linux-muslsf-gcc >/dev/null 2>&1 &&
                         command -v mips-linux-muslsf-g++ >/dev/null 2>&1; then
@@ -721,7 +734,7 @@ function InitDefaultCGODeps() {
                         CC_LINUX_MIPS_SOFTFLOAT="$CGO_CROSS_COMPILER_DIR/mips-linux-muslsf-cross/bin/mips-linux-muslsf-gcc"
                         CXX_LINUX_MIPS_SOFTFLOAT="$CGO_CROSS_COMPILER_DIR/mips-linux-muslsf-cross/bin/mips-linux-muslsf-g++"
                     else
-                        DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/mips-linux-muslsf-cross-${unamespacer}.tgz" \
+                        DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/mips-linux-muslsf-cross-${unamespacer}.tgz" \
                             "$CGO_CROSS_COMPILER_DIR/mips-linux-muslsf-cross"
                         CC_LINUX_MIPS_SOFTFLOAT="$CGO_CROSS_COMPILER_DIR/mips-linux-muslsf-cross/bin/mips-linux-muslsf-gcc"
                         CXX_LINUX_MIPS_SOFTFLOAT="$CGO_CROSS_COMPILER_DIR/mips-linux-muslsf-cross/bin/mips-linux-muslsf-g++"
@@ -741,7 +754,7 @@ function InitDefaultCGODeps() {
         "mipsle")
             # MICRO: hardfloat softfloat or empty
             if [ ! "$MICRO" ] || [ "$MICRO" == "hardfloat" ]; then
-                # https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/mipsel-linux-musl-cross-${unamespacer}.tgz
+                # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/mipsel-linux-musl-cross-${unamespacer}.tgz
                 if [ ! "$CC_LINUX_MIPSLE" ] && [ ! "$CXX_LINUX_MIPSLE" ]; then
                     if command -v mipsel-linux-musl-gcc >/dev/null 2>&1 &&
                         command -v mipsel-linux-musl-g++ >/dev/null 2>&1; then
@@ -752,7 +765,7 @@ function InitDefaultCGODeps() {
                         CC_LINUX_MIPSLE="$CGO_CROSS_COMPILER_DIR/mipsel-linux-musl-cross/bin/mipsel-linux-musl-gcc"
                         CXX_LINUX_MIPSLE="$CGO_CROSS_COMPILER_DIR/mipsel-linux-musl-cross/bin/mipsel-linux-musl-g++"
                     else
-                        DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/mipsel-linux-musl-cross-${unamespacer}.tgz" \
+                        DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/mipsel-linux-musl-cross-${unamespacer}.tgz" \
                             "$CGO_CROSS_COMPILER_DIR/mipsel-linux-musl-cross"
                         CC_LINUX_MIPSLE="$CGO_CROSS_COMPILER_DIR/mipsel-linux-musl-cross/bin/mipsel-linux-musl-gcc"
                         CXX_LINUX_MIPSLE="$CGO_CROSS_COMPILER_DIR/mipsel-linux-musl-cross/bin/mipsel-linux-musl-g++"
@@ -765,7 +778,7 @@ function InitDefaultCGODeps() {
                 CC="$CC_LINUX_MIPSLE -static"
                 CXX="$CXX_LINUX_MIPSLE -static"
             elif [ "$MICRO" == "softfloat" ]; then
-                # https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/mipsel-linux-muslsf-cross-${unamespacer}.tgz
+                # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/mipsel-linux-muslsf-cross-${unamespacer}.tgz
                 if [ ! "$CC_LINUX_MIPSLE_SOFTFLOAT" ] && [ ! "$CXX_LINUX_MIPSLE_SOFTFLOAT" ]; then
                     if command -v mipsel-linux-muslsf-gcc >/dev/null 2>&1 &&
                         command -v mipsel-linux-muslsf-g++ >/dev/null 2>&1; then
@@ -776,7 +789,7 @@ function InitDefaultCGODeps() {
                         CC_LINUX_MIPSLE_SOFTFLOAT="$CGO_CROSS_COMPILER_DIR/mipsel-linux-muslsf-cross/bin/mipsel-linux-muslsf-gcc"
                         CXX_LINUX_MIPSLE_SOFTFLOAT="$CGO_CROSS_COMPILER_DIR/mipsel-linux-muslsf-cross/bin/mipsel-linux-muslsf-g++"
                     else
-                        DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/mipsel-linux-muslsf-cross-${unamespacer}.tgz" \
+                        DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/mipsel-linux-muslsf-cross-${unamespacer}.tgz" \
                             "$CGO_CROSS_COMPILER_DIR/mipsel-linux-muslsf-cross"
                         CC_LINUX_MIPSLE_SOFTFLOAT="$CGO_CROSS_COMPILER_DIR/mipsel-linux-muslsf-cross/bin/mipsel-linux-muslsf-gcc"
                         CXX_LINUX_MIPSLE_SOFTFLOAT="$CGO_CROSS_COMPILER_DIR/mipsel-linux-muslsf-cross/bin/mipsel-linux-muslsf-g++"
@@ -796,7 +809,7 @@ function InitDefaultCGODeps() {
         "mips64")
             # MICRO: hardfloat softfloat or empty
             if [ ! "$MICRO" ] || [ "$MICRO" == "hardfloat" ]; then
-                # https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/mips64-linux-musl-cross-${unamespacer}.tgz
+                # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/mips64-linux-musl-cross-${unamespacer}.tgz
                 if [ ! "$CC_LINUX_MIPS64" ] && [ ! "$CXX_LINUX_MIPS64" ]; then
                     if command -v mips64-linux-musl-gcc >/dev/null 2>&1 &&
                         command -v mips64-linux-musl-g++ >/dev/null 2>&1; then
@@ -807,7 +820,7 @@ function InitDefaultCGODeps() {
                         CC_LINUX_MIPS64="$CGO_CROSS_COMPILER_DIR/mips64-linux-musl-cross/bin/mips64-linux-musl-gcc"
                         CXX_LINUX_MIPS64="$CGO_CROSS_COMPILER_DIR/mips64-linux-musl-cross/bin/mips64-linux-musl-g++"
                     else
-                        DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/mips64-linux-musl-cross-${unamespacer}.tgz" \
+                        DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/mips64-linux-musl-cross-${unamespacer}.tgz" \
                             "$CGO_CROSS_COMPILER_DIR/mips64-linux-musl-cross"
                         CC_LINUX_MIPS64="$CGO_CROSS_COMPILER_DIR/mips64-linux-musl-cross/bin/mips64-linux-musl-gcc"
                         CXX_LINUX_MIPS64="$CGO_CROSS_COMPILER_DIR/mips64-linux-musl-cross/bin/mips64-linux-musl-g++"
@@ -820,7 +833,7 @@ function InitDefaultCGODeps() {
                 CC="$CC_LINUX_MIPS64 -static"
                 CXX="$CXX_LINUX_MIPS64 -static"
             elif [ "$MICRO" == "softfloat" ]; then
-                # https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/mips64-linux-muslsf-cross-${unamespacer}.tgz
+                # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/mips64-linux-muslsf-cross-${unamespacer}.tgz
                 if [ ! "$CC_LINUX_MIPS64_SOFTFLOAT" ] && [ ! "$CXX_LINUX_MIPS64_SOFTFLOAT" ]; then
                     if command -v mips64-linux-muslsf-gcc >/dev/null 2>&1 &&
                         command -v mips64-linux-muslsf-g++ >/dev/null 2>&1; then
@@ -831,7 +844,7 @@ function InitDefaultCGODeps() {
                         CC_LINUX_MIPS64_SOFTFLOAT="$CGO_CROSS_COMPILER_DIR/mips64-linux-muslsf-cross/bin/mips64-linux-muslsf-gcc"
                         CXX_LINUX_MIPS64_SOFTFLOAT="$CGO_CROSS_COMPILER_DIR/mips64-linux-muslsf-cross/bin/mips64-linux-muslsf-g++"
                     else
-                        DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/mips64-linux-muslsf-cross-${unamespacer}.tgz" \
+                        DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/mips64-linux-muslsf-cross-${unamespacer}.tgz" \
                             "$CGO_CROSS_COMPILER_DIR/mips64-linux-muslsf-cross"
                         CC_LINUX_MIPS64_SOFTFLOAT="$CGO_CROSS_COMPILER_DIR/mips64-linux-muslsf-cross/bin/mips64-linux-muslsf-gcc"
                         CXX_LINUX_MIPS64_SOFTFLOAT="$CGO_CROSS_COMPILER_DIR/mips64-linux-muslsf-cross/bin/mips64-linux-muslsf-g++"
@@ -851,7 +864,7 @@ function InitDefaultCGODeps() {
         "mips64le")
             # MICRO: hardfloat softfloat or empty
             if [ ! "$MICRO" ] || [ "$MICRO" == "hardfloat" ]; then
-                # https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/mips64el-linux-musl-cross-${unamespacer}.tgz
+                # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/mips64el-linux-musl-cross-${unamespacer}.tgz
                 if [ ! "$CC_LINUX_MIPS64LE" ] && [ ! "$CXX_LINUX_MIPS64LE" ]; then
                     if command -v mips64el-linux-musl-gcc >/dev/null 2>&1 &&
                         command -v mips64el-linux-musl-g++ >/dev/null 2>&1; then
@@ -862,7 +875,7 @@ function InitDefaultCGODeps() {
                         CC_LINUX_MIPS64LE="$CGO_CROSS_COMPILER_DIR/mips64el-linux-musl-cross/bin/mips64el-linux-musl-gcc"
                         CXX_LINUX_MIPS64LE="$CGO_CROSS_COMPILER_DIR/mips64el-linux-musl-cross/bin/mips64el-linux-musl-g++"
                     else
-                        DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/mips64el-linux-musl-cross-${unamespacer}.tgz" \
+                        DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/mips64el-linux-musl-cross-${unamespacer}.tgz" \
                             "$CGO_CROSS_COMPILER_DIR/mips64el-linux-musl-cross"
                         CC_LINUX_MIPS64LE="$CGO_CROSS_COMPILER_DIR/mips64el-linux-musl-cross/bin/mips64el-linux-musl-gcc"
                         CXX_LINUX_MIPS64LE="$CGO_CROSS_COMPILER_DIR/mips64el-linux-musl-cross/bin/mips64el-linux-musl-g++"
@@ -875,7 +888,7 @@ function InitDefaultCGODeps() {
                 CC="$CC_LINUX_MIPS64LE -static"
                 CXX="$CXX_LINUX_MIPS64LE -static"
             elif [ "$MICRO" == "softfloat" ]; then
-                # https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/mips64el-linux-muslsf-cross-${unamespacer}.tgz
+                # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/mips64el-linux-muslsf-cross-${unamespacer}.tgz
                 if [ ! "$CC_LINUX_MIPS64LE_SOFTFLOAT" ] && [ ! "$CXX_LINUX_MIPS64LE_SOFTFLOAT" ]; then
                     if command -v mips64el-linux-muslsf-gcc >/dev/null 2>&1 &&
                         command -v mips64el-linux-muslsf-g++ >/dev/null 2>&1; then
@@ -886,7 +899,7 @@ function InitDefaultCGODeps() {
                         CC_LINUX_MIPS64LE_SOFTFLOAT="$CGO_CROSS_COMPILER_DIR/mips64el-linux-muslsf-cross/bin/mips64el-linux-muslsf-gcc"
                         CXX_LINUX_MIPS64LE_SOFTFLOAT="$CGO_CROSS_COMPILER_DIR/mips64el-linux-muslsf-cross/bin/mips64el-linux-muslsf-g++"
                     else
-                        DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/mips64el-linux-muslsf-cross-${unamespacer}.tgz" \
+                        DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/mips64el-linux-muslsf-cross-${unamespacer}.tgz" \
                             "$CGO_CROSS_COMPILER_DIR/mips64el-linux-muslsf-cross"
                         CC_LINUX_MIPS64LE_SOFTFLOAT="$CGO_CROSS_COMPILER_DIR/mips64el-linux-muslsf-cross/bin/mips64el-linux-muslsf-gcc"
                         CXX_LINUX_MIPS64LE_SOFTFLOAT="$CGO_CROSS_COMPILER_DIR/mips64el-linux-muslsf-cross/bin/mips64el-linux-muslsf-g++"
@@ -905,7 +918,7 @@ function InitDefaultCGODeps() {
             ;;
         "ppc64")
             # MICRO: power8 power9 or empty (not use)
-            # https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/powerpc64-linux-musl-cross-${unamespacer}.tgz
+            # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/powerpc64-linux-musl-cross-${unamespacer}.tgz
             if [ ! "$CC_LINUX_PPC64" ] && [ ! "$CXX_LINUX_PPC64" ]; then
                 if command -v powerpc64-linux-musl-gcc >/dev/null 2>&1 &&
                     command -v powerpc64-linux-musl-g++ >/dev/null 2>&1; then
@@ -916,7 +929,7 @@ function InitDefaultCGODeps() {
                     CC_LINUX_PPC64="$CGO_CROSS_COMPILER_DIR/powerpc64-linux-musl-cross/bin/powerpc64-linux-musl-gcc"
                     CXX_LINUX_PPC64="$CGO_CROSS_COMPILER_DIR/powerpc64-linux-musl-cross/bin/powerpc64-linux-musl-g++"
                 else
-                    DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/powerpc64-linux-musl-cross-${unamespacer}.tgz" \
+                    DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/powerpc64-linux-musl-cross-${unamespacer}.tgz" \
                         "$CGO_CROSS_COMPILER_DIR/powerpc64-linux-musl-cross"
                     CC_LINUX_PPC64="$CGO_CROSS_COMPILER_DIR/powerpc64-linux-musl-cross/bin/powerpc64-linux-musl-gcc"
                     CXX_LINUX_PPC64="$CGO_CROSS_COMPILER_DIR/powerpc64-linux-musl-cross/bin/powerpc64-linux-musl-g++"
@@ -931,7 +944,7 @@ function InitDefaultCGODeps() {
             ;;
         "ppc64le")
             # MICRO: power8 power9 or empty (not use)
-            # https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/powerpc64le-linux-musl-cross-${unamespacer}.tgz
+            # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/powerpc64le-linux-musl-cross-${unamespacer}.tgz
             if [ ! "$CC_LINUX_PPC64LE" ] && [ ! "$CXX_LINUX_PPC64LE" ]; then
                 if command -v powerpc64le-linux-musl-gcc >/dev/null 2>&1 &&
                     command -v powerpc64le-linux-musl-g++ >/dev/null 2>&1; then
@@ -942,7 +955,7 @@ function InitDefaultCGODeps() {
                     CC_LINUX_PPC64LE="$CGO_CROSS_COMPILER_DIR/powerpc64le-linux-musl-cross/bin/powerpc64le-linux-musl-gcc"
                     CXX_LINUX_PPC64LE="$CGO_CROSS_COMPILER_DIR/powerpc64le-linux-musl-cross/bin/powerpc64le-linux-musl-g++"
                 else
-                    DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/powerpc64le-linux-musl-cross-${unamespacer}.tgz" \
+                    DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/powerpc64le-linux-musl-cross-${unamespacer}.tgz" \
                         "$CGO_CROSS_COMPILER_DIR/powerpc64le-linux-musl-cross"
                     CC_LINUX_PPC64LE="$CGO_CROSS_COMPILER_DIR/powerpc64le-linux-musl-cross/bin/powerpc64le-linux-musl-gcc"
                     CXX_LINUX_PPC64LE="$CGO_CROSS_COMPILER_DIR/powerpc64le-linux-musl-cross/bin/powerpc64le-linux-musl-g++"
@@ -956,7 +969,7 @@ function InitDefaultCGODeps() {
             CXX="$CXX_LINUX_PPC64LE -static"
             ;;
         "riscv64")
-            # https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/riscv64-linux-musl-cross-${unamespacer}.tgz
+            # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/riscv64-linux-musl-cross-${unamespacer}.tgz
             if [ ! "$CC_LINUX_RISCV64" ] && [ ! "$CXX_LINUX_RISCV64" ]; then
                 if command -v riscv64-linux-musl-gcc >/dev/null 2>&1 &&
                     command -v riscv64-linux-musl-g++ >/dev/null 2>&1; then
@@ -967,7 +980,7 @@ function InitDefaultCGODeps() {
                     CC_LINUX_RISCV64="$CGO_CROSS_COMPILER_DIR/riscv64-linux-musl-cross/bin/riscv64-linux-musl-gcc"
                     CXX_LINUX_RISCV64="$CGO_CROSS_COMPILER_DIR/riscv64-linux-musl-cross/bin/riscv64-linux-musl-g++"
                 else
-                    DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/riscv64-linux-musl-cross-${unamespacer}.tgz" \
+                    DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/riscv64-linux-musl-cross-${unamespacer}.tgz" \
                         "$CGO_CROSS_COMPILER_DIR/riscv64-linux-musl-cross"
                     CC_LINUX_RISCV64="$CGO_CROSS_COMPILER_DIR/riscv64-linux-musl-cross/bin/riscv64-linux-musl-gcc"
                     CXX_LINUX_RISCV64="$CGO_CROSS_COMPILER_DIR/riscv64-linux-musl-cross/bin/riscv64-linux-musl-g++"
@@ -981,7 +994,7 @@ function InitDefaultCGODeps() {
             CXX="$CXX_LINUX_RISCV64 -static"
             ;;
         "s390x")
-            # https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/s390x-linux-musl-cross-${unamespacer}.tgz
+            # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/s390x-linux-musl-cross-${unamespacer}.tgz
             if [ ! "$CC_LINUX_S390X" ] && [ ! "$CXX_LINUX_S390X" ]; then
                 if command -v s390x-linux-musl-gcc >/dev/null 2>&1 &&
                     command -v s390x-linux-musl-g++ >/dev/null 2>&1; then
@@ -992,7 +1005,7 @@ function InitDefaultCGODeps() {
                     CC_LINUX_S390X="$CGO_CROSS_COMPILER_DIR/s390x-linux-musl-cross/bin/s390x-linux-musl-gcc"
                     CXX_LINUX_S390X="$CGO_CROSS_COMPILER_DIR/s390x-linux-musl-cross/bin/s390x-linux-musl-g++"
                 else
-                    DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/s390x-linux-musl-cross-${unamespacer}.tgz" \
+                    DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/s390x-linux-musl-cross-${unamespacer}.tgz" \
                         "$CGO_CROSS_COMPILER_DIR/s390x-linux-musl-cross"
                     CC_LINUX_S390X="$CGO_CROSS_COMPILER_DIR/s390x-linux-musl-cross/bin/s390x-linux-musl-gcc"
                     CXX_LINUX_S390X="$CGO_CROSS_COMPILER_DIR/s390x-linux-musl-cross/bin/s390x-linux-musl-g++"
@@ -1006,7 +1019,7 @@ function InitDefaultCGODeps() {
             CXX="$CXX_LINUX_S390X -static"
             ;;
         "loong64")
-            # https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/loongarch64-linux-musl-cross-${unamespacer}.tgz
+            # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/loongarch64-linux-musl-cross-${unamespacer}.tgz
             if [ ! "$CC_LINUX_LOONG64" ] && [ ! "$CXX_LINUX_LOONG64" ]; then
                 if command -v loongarch64-linux-musl-gcc >/dev/null 2>&1 &&
                     command -v loongarch64-linux-musl-g++ >/dev/null 2>&1; then
@@ -1017,7 +1030,7 @@ function InitDefaultCGODeps() {
                     CC_LINUX_LOONG64="$CGO_CROSS_COMPILER_DIR/loongarch64-linux-musl-cross/bin/loongarch64-linux-musl-gcc"
                     CXX_LINUX_LOONG64="$CGO_CROSS_COMPILER_DIR/loongarch64-linux-musl-cross/bin/loongarch64-linux-musl-g++"
                 else
-                    DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/loongarch64-linux-musl-cross-${unamespacer}.tgz" \
+                    DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/loongarch64-linux-musl-cross-${unamespacer}.tgz" \
                         "$CGO_CROSS_COMPILER_DIR/loongarch64-linux-musl-cross"
                     CC_LINUX_LOONG64="$CGO_CROSS_COMPILER_DIR/loongarch64-linux-musl-cross/bin/loongarch64-linux-musl-gcc"
                     CXX_LINUX_LOONG64="$CGO_CROSS_COMPILER_DIR/loongarch64-linux-musl-cross/bin/loongarch64-linux-musl-g++"
@@ -1044,7 +1057,7 @@ function InitDefaultCGODeps() {
         case "$GOARCH" in
         "386")
             # Micro: sse2 softfloat or empty (not use)
-            # https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/i686-w64-mingw32-cross-${unamespacer}.tgz
+            # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/i686-w64-mingw32-cross-${unamespacer}.tgz
             if [ ! "$CC_WINDOWS_386" ] && [ ! "$CXX_WINDOWS_386" ]; then
                 if command -v i686-w64-mingw32-gcc >/dev/null 2>&1 &&
                     command -v i686-w64-mingw32-g++ >/dev/null 2>&1; then
@@ -1055,7 +1068,7 @@ function InitDefaultCGODeps() {
                     CC_WINDOWS_386="$CGO_CROSS_COMPILER_DIR/i686-w64-mingw32-cross/bin/i686-w64-mingw32-gcc"
                     CXX_WINDOWS_386="$CGO_CROSS_COMPILER_DIR/i686-w64-mingw32-cross/bin/i686-w64-mingw32-g++"
                 else
-                    DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/i686-w64-mingw32-cross-${unamespacer}.tgz" \
+                    DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/i686-w64-mingw32-cross-${unamespacer}.tgz" \
                         "$CGO_CROSS_COMPILER_DIR/i686-w64-mingw32-cross"
                     CC_WINDOWS_386="$CGO_CROSS_COMPILER_DIR/i686-w64-mingw32-cross/bin/i686-w64-mingw32-gcc"
                     CXX_WINDOWS_386="$CGO_CROSS_COMPILER_DIR/i686-w64-mingw32-cross/bin/i686-w64-mingw32-g++"
@@ -1069,7 +1082,7 @@ function InitDefaultCGODeps() {
             CXX="$CXX_WINDOWS_386 -static"
             ;;
         "amd64")
-            # https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/x86_64-w64-mingw32-cross-${unamespacer}.tgz
+            # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/x86_64-w64-mingw32-cross-${unamespacer}.tgz
             if [ ! "$CC_WINDOWS_AMD64" ] && [ ! "$CXX_WINDOWS_AMD64" ]; then
                 if command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1 &&
                     command -v x86_64-w64-mingw32-g++ >/dev/null 2>&1; then
@@ -1080,7 +1093,7 @@ function InitDefaultCGODeps() {
                     CC_WINDOWS_AMD64="$CGO_CROSS_COMPILER_DIR/x86_64-w64-mingw32-cross/bin/x86_64-w64-mingw32-gcc"
                     CXX_WINDOWS_AMD64="$CGO_CROSS_COMPILER_DIR/x86_64-w64-mingw32-cross/bin/x86_64-w64-mingw32-g++"
                 else
-                    DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${DEFAULT_CGO_DEPS_VERSION}/x86_64-w64-mingw32-cross-${unamespacer}.tgz" \
+                    DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/x86_64-w64-mingw32-cross-${unamespacer}.tgz" \
                         "$CGO_CROSS_COMPILER_DIR/x86_64-w64-mingw32-cross"
                     CC_WINDOWS_AMD64="$CGO_CROSS_COMPILER_DIR/x86_64-w64-mingw32-cross/bin/x86_64-w64-mingw32-gcc"
                     CXX_WINDOWS_AMD64="$CGO_CROSS_COMPILER_DIR/x86_64-w64-mingw32-cross/bin/x86_64-w64-mingw32-g++"
@@ -1112,6 +1125,20 @@ function InitDefaultCGODeps() {
         fi
         ;;
     esac
+}
+
+function FindARPath() {
+    if [ "$FORCE_AR" ]; then
+        echo "$FORCE_AR"
+    elif [ "$DISABLE_FIND_AR" ]; then
+        echo ""
+    elif [ "$CC" ]; then
+        find "$(dirname $(which $CC))" -name '*-ar' -o -name '*-ar-*' -o -name 'ar' 2>/dev/null | head -n 1
+    elif [ "$CXX" ]; then
+        find "$(dirname $(which $CXX))" -name '*-ar' -o -name '*-ar-*' -o -name 'ar' 2>/dev/null | head -n 1
+    else
+        echo ""
+    fi
 }
 
 function SupportPie() {
@@ -1168,7 +1195,7 @@ function Build() {
         echo "building $GOOS/$GOARCH"
         InitCGODeps "$GOOS" "$GOARCH"
         BUILD_ENV="$BUILD_ENV \
-            CC=\"$CC\" CXX=\"$CXX\" \
+            CC=\"$CC\" CXX=\"$CXX\" AR=\"$(FindARPath)\" \
             CGO_CFLAGS=\"$CGO_CFLAGS $MORE_CGO_CFLAGS\" \
             CGO_CXXFLAGS=\"$CGO_CXXFLAGS $MORE_CGO_CXXFLAGS\" \
             CGO_LDFLAGS=\"$CGO_LDFLAGS $MORE_CGO_LDFLAGS\" \
@@ -1191,7 +1218,7 @@ function Build() {
             echo "building $GOOS/$GOARCH sse2"
             InitCGODeps "$GOOS" "$GOARCH"
             BUILD_ENV="$BUILD_ENV \
-                CC=\"$CC\" CXX=\"$CXX\" \
+                CC=\"$CC\" CXX=\"$CXX\" AR=\"$(FindARPath)\" \
                 CGO_CFLAGS=\"$CGO_CFLAGS $MORE_CGO_CFLAGS\" \
                 CGO_CXXFLAGS=\"$CGO_CXXFLAGS $MORE_CGO_CXXFLAGS\" \
                 CGO_LDFLAGS=\"$CGO_LDFLAGS $MORE_CGO_LDFLAGS\""
@@ -1221,7 +1248,7 @@ function Build() {
             echo "building $GOOS/$GOARCH 5"
             InitCGODeps "$GOOS" "$GOARCH" "5"
             TMP_BUILD_ENV="$BUILD_ENV \
-                CC=\"$CC\" CXX=\"$CXX\" \
+                CC=\"$CC\" CXX=\"$CXX\" AR=\"$(FindARPath)\" \
                 CGO_CFLAGS=\"$CGO_CFLAGS $MORE_CGO_CFLAGS\" \
                 CGO_CXXFLAGS=\"$CGO_CXXFLAGS $MORE_CGO_CXXFLAGS\" \
                 CGO_LDFLAGS=\"$CGO_LDFLAGS $MORE_CGO_LDFLAGS\" \
@@ -1235,7 +1262,7 @@ function Build() {
             echo "building $GOOS/$GOARCH 6"
             InitCGODeps "$GOOS" "$GOARCH" "6"
             TMP_BUILD_ENV="$BUILD_ENV \
-                CC=\"$CC\" CXX=\"$CXX\" \
+                CC=\"$CC\" CXX=\"$CXX\" AR=\"$(FindARPath)\" \
                 CGO_CFLAGS=\"$CGO_CFLAGS $MORE_CGO_CFLAGS\" \
                 CGO_CXXFLAGS=\"$CGO_CXXFLAGS $MORE_CGO_CXXFLAGS\" \
                 CGO_LDFLAGS=\"$CGO_LDFLAGS $MORE_CGO_LDFLAGS\" \
@@ -1252,7 +1279,7 @@ function Build() {
             echo "building $GOOS/$GOARCH 7"
             InitCGODeps "$GOOS" "$GOARCH" "7"
             TMP_BUILD_ENV="$BUILD_ENV \
-                CC=\"$CC\" CXX=\"$CXX\" \
+                CC=\"$CC\" CXX=\"$CXX\" AR=\"$(FindARPath)\" \
                 CGO_CFLAGS=\"$CGO_CFLAGS $MORE_CGO_CFLAGS\" \
                 CGO_CXXFLAGS=\"$CGO_CXXFLAGS $MORE_CGO_CXXFLAGS\" \
                 CGO_LDFLAGS=\"$CGO_LDFLAGS $MORE_CGO_LDFLAGS\" \
@@ -1269,7 +1296,7 @@ function Build() {
             echo "building $GOOS/$GOARCH v1"
             InitCGODeps "$GOOS" "$GOARCH"
             BUILD_ENV="$BUILD_ENV \
-                CC=\"$CC\" CXX=\"$CXX\" \
+                CC=\"$CC\" CXX=\"$CXX\" AR=\"$(FindARPath)\" \
                 CGO_CFLAGS=\"$CGO_CFLAGS $MORE_CGO_CFLAGS\" \
                 CGO_CXXFLAGS=\"$CGO_CXXFLAGS $MORE_CGO_CXXFLAGS\" \
                 CGO_LDFLAGS=\"$CGO_LDFLAGS $MORE_CGO_LDFLAGS\""
@@ -1316,7 +1343,7 @@ function Build() {
             echo "building $GOOS/$GOARCH hardfloat"
             InitCGODeps "$GOOS" "$GOARCH" "hardfloat"
             TMP_BUILD_ENV="$BUILD_ENV \
-                CC=\"$CC\" CXX=\"$CXX\" \
+                CC=\"$CC\" CXX=\"$CXX\" AR=\"$(FindARPath)\" \
                 CGO_CFLAGS=\"$CGO_CFLAGS $MORE_CGO_CFLAGS\" \
                 CGO_CXXFLAGS=\"$CGO_CXXFLAGS $MORE_CGO_CXXFLAGS\" \
                 CGO_LDFLAGS=\"$CGO_LDFLAGS $MORE_CGO_LDFLAGS\" \
@@ -1333,7 +1360,7 @@ function Build() {
             echo "building $GOOS/$GOARCH softfloat"
             InitCGODeps "$GOOS" "$GOARCH" "softfloat"
             TMP_BUILD_ENV="$BUILD_ENV \
-                CC=\"$CC\" CXX=\"$CXX\" \
+                CC=\"$CC\" CXX=\"$CXX\" AR=\"$(FindARPath)\" \
                 CGO_CFLAGS=\"$CGO_CFLAGS $MORE_CGO_CFLAGS\" \
                 CGO_CXXFLAGS=\"$CGO_CXXFLAGS $MORE_CGO_CXXFLAGS\" \
                 CGO_LDFLAGS=\"$CGO_LDFLAGS $MORE_CGO_LDFLAGS\" \
@@ -1349,7 +1376,7 @@ function Build() {
             echo "building $GOOS/$GOARCH power8"
             InitCGODeps "$GOOS" "$GOARCH" "power8"
             BUILD_ENV="$BUILD_ENV \
-                CC=\"$CC\" CXX=\"$CXX\" \
+                CC=\"$CC\" CXX=\"$CXX\" AR=\"$(FindARPath)\" \
                 CGO_CFLAGS=\"$CGO_CFLAGS $MORE_CGO_CFLAGS\" \
                 CGO_CXXFLAGS=\"$CGO_CXXFLAGS $MORE_CGO_CXXFLAGS\" \
                 CGO_LDFLAGS=\"$CGO_LDFLAGS $MORE_CGO_LDFLAGS\""
@@ -1406,7 +1433,7 @@ function Build() {
             echo "building $GOOS/$GOARCH"
             InitCGODeps "$GOOS" "$GOARCH"
             BUILD_ENV="$BUILD_ENV \
-                CC=\"$CC\" CXX=\"$CXX\" \
+                CC=\"$CC\" CXX=\"$CXX\" AR=\"$(FindARPath)\" \
                 CGO_CFLAGS=\"$CGO_CFLAGS $MORE_CGO_CFLAGS\" \
                 CGO_CXXFLAGS=\"$CGO_CXXFLAGS $MORE_CGO_CXXFLAGS\" \
                 CGO_LDFLAGS=\"$CGO_LDFLAGS $MORE_CGO_LDFLAGS\""
@@ -1479,11 +1506,8 @@ function AddBuildArgs() {
 }
 
 function InitDep() {
-    if [ ! "$VERSION" ]; then
-        VERSION="dev"
-    else
-        VERSION="$(echo "$VERSION" | sed 's/ //g' | sed 's/"//g' | sed 's/\n//g')"
-    fi
+    SetDefault "VERSION" "dev"
+    VERSION="$(echo "$VERSION" | sed 's/ //g' | sed 's/"//g' | sed 's/\n//g')"
 
     # Comply with golang version rules
     function CheckVersionFormat() {
@@ -1497,8 +1521,8 @@ function InitDep() {
     CheckVersionFormat "$VERSION"
 
     AddLDFLAGS "-X 'github.com/synctv-org/synctv/internal/version.Version=$VERSION'"
-    if [ ! "$SKIP_INIT_WEB" ] && [ ! "$WEB_VERSION" ]; then
-        WEB_VERSION="$VERSION"
+    if [ ! "$SKIP_INIT_WEB" ]; then
+        SetDefault "WEB_VERSION" "$VERSION"
     fi
     AddLDFLAGS "-X 'github.com/synctv-org/synctv/internal/version.WebVersion=$WEB_VERSION'"
     set +e
@@ -1511,6 +1535,8 @@ function InitDep() {
 
     if [ "$SKIP_INIT_WEB" ]; then
         echo "skip init web"
+    elif [ ! "$WEB_VERSION" ]; then
+        echo "web version not found"
     else
         DownloadAndUnzip "https://github.com/synctv-org/synctv-web/releases/download/${WEB_VERSION}/dist.tar.gz" "$SOURCE_DIR/public/dist"
     fi

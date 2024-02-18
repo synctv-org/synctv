@@ -15,7 +15,7 @@ GOHOSTOS="$(go env GOHOSTOS)"
 GOHOSTARCH="$(go env GOHOSTARCH)"
 GOHOSTPLATFORM="$GOHOSTOS/$GOHOSTARCH"
 
-DEFAULT_CGO_DEPS_VERSION="v0.4.3"
+DEFAULT_CGO_DEPS_VERSION="v0.4.4"
 
 function EnvHelp() {
     echo "SOURCE_DIR set source dir (default: $DEFAULT_SOURCE_DIR)"
@@ -87,6 +87,7 @@ function Init() {
     SetDefault "CGO_CROSS_COMPILER_DIR" "$DEFAULT_CGO_CROSS_COMPILER_DIR"
     SetDefault "CGO_FLAGS" "$DEFAULT_CGO_FLAGS"
     SetDefault "CGO_LDFLAGS" "-s"
+    SetDefault "CGO_DEPS_VERSION" "$DEFAULT_CGO_DEPS_VERSION"
     SetDefault "LDFLAGS" "-s -w"
     SetDefault "HOST_CC" "$DEFAULT_CC"
     SetDefault "HOST_CXX" "$DEFAULT_CXX"
@@ -533,7 +534,6 @@ function InitDefaultCGODeps() {
         unamespacer="$GOHOSTOS-$GOHOSTARCH"
         ;;
     esac
-    SetDefault "CGO_DEPS_VERSION" "$DEFAULT_CGO_DEPS_VERSION"
     GOOS="$1"
     GOARCH="$2"
     MICRO="$3"
@@ -563,8 +563,8 @@ function InitDefaultCGODeps() {
                 return 1
             fi
 
-            CC="$CC_LINUX_386 -static"
-            CXX="$CXX_LINUX_386 -static"
+            CC="$CC_LINUX_386 -static --static"
+            CXX="$CXX_LINUX_386 -static --static"
             ;;
         "arm64")
             # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/aarch64-linux-musl-cross-${unamespacer}.tgz
@@ -588,8 +588,8 @@ function InitDefaultCGODeps() {
                 return 1
             fi
 
-            CC="$CC_LINUX_ARM64 -static"
-            CXX="$CXX_LINUX_ARM64 -static"
+            CC="$CC_LINUX_ARM64 -static --static"
+            CXX="$CXX_LINUX_ARM64 -static --static"
             ;;
         "amd64")
             # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/x86_64-linux-musl-cross-${unamespacer}.tgz
@@ -613,8 +613,8 @@ function InitDefaultCGODeps() {
                 return 1
             fi
 
-            CC="$CC_LINUX_AMD64 -static"
-            CXX="$CXX_LINUX_AMD64 -static"
+            CC="$CC_LINUX_AMD64 -static --static"
+            CXX="$CXX_LINUX_AMD64 -static --static"
             ;;
         "arm")
             # MICRO: 5,6,7 or empty
@@ -640,8 +640,8 @@ function InitDefaultCGODeps() {
                     return 1
                 fi
 
-                CC="$CC_LINUX_ARMV6 -static"
-                CXX="$CXX_LINUX_ARMV6 -static"
+                CC="$CC_LINUX_ARMV6 -static --static"
+                CXX="$CXX_LINUX_ARMV6 -static --static"
             elif [ "$MICRO" == "7" ]; then
                 # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/armv7-linux-musleabihf-cross-${unamespacer}.tgz
                 if [ ! "$CC_LINUX_ARMV7" ] && [ ! "$CXX_LINUX_ARMV7" ]; then
@@ -664,8 +664,8 @@ function InitDefaultCGODeps() {
                     return 1
                 fi
 
-                CC="$CC_LINUX_ARMV7 -static"
-                CXX="$CXX_LINUX_ARMV7 -static"
+                CC="$CC_LINUX_ARMV7 -static --static"
+                CXX="$CXX_LINUX_ARMV7 -static --static"
             elif [ "$MICRO" == "5" ]; then
                 # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/armv5-linux-musleabi-cross-${unamespacer}.tgz
                 if [ ! "$CC_LINUX_ARMV5" ] && [ ! "$CXX_LINUX_ARMV5" ]; then
@@ -688,8 +688,8 @@ function InitDefaultCGODeps() {
                     return 1
                 fi
 
-                CC="$CC_LINUX_ARMV5 -static"
-                CXX="$CXX_LINUX_ARMV5 -static"
+                CC="$CC_LINUX_ARMV5 -static --static"
+                CXX="$CXX_LINUX_ARMV5 -static --static"
             else
                 echo "MICRO: $MICRO not support"
                 return 1
@@ -720,8 +720,8 @@ function InitDefaultCGODeps() {
                     return 1
                 fi
 
-                CC="$CC_LINUX_MIPS -static"
-                CXX="$CXX_LINUX_MIPS -static"
+                CC="$CC_LINUX_MIPS -static --static"
+                CXX="$CXX_LINUX_MIPS -static --static"
             elif [ "$MICRO" == "softfloat" ]; then
                 # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/mips-linux-muslsf-cross-${unamespacer}.tgz
                 if [ ! "$CC_LINUX_MIPS_SOFTFLOAT" ] && [ ! "$CXX_LINUX_MIPS_SOFTFLOAT" ]; then
@@ -744,8 +744,8 @@ function InitDefaultCGODeps() {
                     return 1
                 fi
 
-                CC="$CC_LINUX_MIPS_SOFTFLOAT -static"
-                CXX="$CXX_LINUX_MIPS_SOFTFLOAT -static"
+                CC="$CC_LINUX_MIPS_SOFTFLOAT -static --static"
+                CXX="$CXX_LINUX_MIPS_SOFTFLOAT -static --static"
             else
                 echo "MICRO: $MICRO not support"
                 return 1
@@ -775,8 +775,8 @@ function InitDefaultCGODeps() {
                     return 1
                 fi
 
-                CC="$CC_LINUX_MIPSLE -static"
-                CXX="$CXX_LINUX_MIPSLE -static"
+                CC="$CC_LINUX_MIPSLE -static --static"
+                CXX="$CXX_LINUX_MIPSLE -static --static"
             elif [ "$MICRO" == "softfloat" ]; then
                 # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/mipsel-linux-muslsf-cross-${unamespacer}.tgz
                 if [ ! "$CC_LINUX_MIPSLE_SOFTFLOAT" ] && [ ! "$CXX_LINUX_MIPSLE_SOFTFLOAT" ]; then
@@ -799,8 +799,8 @@ function InitDefaultCGODeps() {
                     return 1
                 fi
 
-                CC="$CC_LINUX_MIPSLE_SOFTFLOAT -static"
-                CXX="$CXX_LINUX_MIPSLE_SOFTFLOAT -static"
+                CC="$CC_LINUX_MIPSLE_SOFTFLOAT -static --static"
+                CXX="$CXX_LINUX_MIPSLE_SOFTFLOAT -static --static"
             else
                 echo "MICRO: $MICRO not support"
                 return 1
@@ -830,8 +830,8 @@ function InitDefaultCGODeps() {
                     return 1
                 fi
 
-                CC="$CC_LINUX_MIPS64 -static"
-                CXX="$CXX_LINUX_MIPS64 -static"
+                CC="$CC_LINUX_MIPS64 -static --static"
+                CXX="$CXX_LINUX_MIPS64 -static --static"
             elif [ "$MICRO" == "softfloat" ]; then
                 # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/mips64-linux-muslsf-cross-${unamespacer}.tgz
                 if [ ! "$CC_LINUX_MIPS64_SOFTFLOAT" ] && [ ! "$CXX_LINUX_MIPS64_SOFTFLOAT" ]; then
@@ -854,8 +854,8 @@ function InitDefaultCGODeps() {
                     return 1
                 fi
 
-                CC="$CC_LINUX_MIPS64_SOFTFLOAT -static"
-                CXX="$CXX_LINUX_MIPS64_SOFTFLOAT -static"
+                CC="$CC_LINUX_MIPS64_SOFTFLOAT -static --static"
+                CXX="$CXX_LINUX_MIPS64_SOFTFLOAT -static --static"
             else
                 echo "MICRO: $MICRO not support"
                 return 1
@@ -885,8 +885,8 @@ function InitDefaultCGODeps() {
                     return 1
                 fi
 
-                CC="$CC_LINUX_MIPS64LE -static"
-                CXX="$CXX_LINUX_MIPS64LE -static"
+                CC="$CC_LINUX_MIPS64LE -static --static"
+                CXX="$CXX_LINUX_MIPS64LE -static --static"
             elif [ "$MICRO" == "softfloat" ]; then
                 # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/mips64el-linux-muslsf-cross-${unamespacer}.tgz
                 if [ ! "$CC_LINUX_MIPS64LE_SOFTFLOAT" ] && [ ! "$CXX_LINUX_MIPS64LE_SOFTFLOAT" ]; then
@@ -909,8 +909,8 @@ function InitDefaultCGODeps() {
                     return 1
                 fi
 
-                CC="$CC_LINUX_MIPS64LE_SOFTFLOAT -static"
-                CXX="$CXX_LINUX_MIPS64LE_SOFTFLOAT -static"
+                CC="$CC_LINUX_MIPS64LE_SOFTFLOAT -static --static"
+                CXX="$CXX_LINUX_MIPS64LE_SOFTFLOAT -static --static"
             else
                 echo "MICRO: $MICRO not support"
                 return 1
@@ -939,8 +939,8 @@ function InitDefaultCGODeps() {
                 return 1
             fi
 
-            CC="$CC_LINUX_PPC64 -static"
-            CXX="$CXX_LINUX_PPC64 -static"
+            CC="$CC_LINUX_PPC64 -static --static"
+            CXX="$CXX_LINUX_PPC64 -static --static"
             ;;
         "ppc64le")
             # MICRO: power8 power9 or empty (not use)
@@ -965,8 +965,8 @@ function InitDefaultCGODeps() {
                 return 1
             fi
 
-            CC="$CC_LINUX_PPC64LE -static"
-            CXX="$CXX_LINUX_PPC64LE -static"
+            CC="$CC_LINUX_PPC64LE -static --static"
+            CXX="$CXX_LINUX_PPC64LE -static --static"
             ;;
         "riscv64")
             # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/riscv64-linux-musl-cross-${unamespacer}.tgz
@@ -990,8 +990,8 @@ function InitDefaultCGODeps() {
                 return 1
             fi
 
-            CC="$CC_LINUX_RISCV64 -static"
-            CXX="$CXX_LINUX_RISCV64 -static"
+            CC="$CC_LINUX_RISCV64 -static --static"
+            CXX="$CXX_LINUX_RISCV64 -static --static"
             ;;
         "s390x")
             # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/s390x-linux-musl-cross-${unamespacer}.tgz
@@ -1015,8 +1015,8 @@ function InitDefaultCGODeps() {
                 return 1
             fi
 
-            CC="$CC_LINUX_S390X -static"
-            CXX="$CXX_LINUX_S390X -static"
+            CC="$CC_LINUX_S390X -static --static"
+            CXX="$CXX_LINUX_S390X -static --static"
             ;;
         "loong64")
             # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/loongarch64-linux-musl-cross-${unamespacer}.tgz
@@ -1040,8 +1040,8 @@ function InitDefaultCGODeps() {
                 return 1
             fi
 
-            CC="$CC_LINUX_LOONG64 -static"
-            CXX="$CXX_LINUX_LOONG64 -static"
+            CC="$CC_LINUX_LOONG64 -static --static"
+            CXX="$CXX_LINUX_LOONG64 -static --static"
             ;;
         *)
             if [ "$GOOS" == "$GOHOSTOS" ] && [ "$GOARCH" == "$GOHOSTARCH" ]; then
@@ -1078,8 +1078,8 @@ function InitDefaultCGODeps() {
                 return 1
             fi
 
-            CC="$CC_WINDOWS_386 -static"
-            CXX="$CXX_WINDOWS_386 -static"
+            CC="$CC_WINDOWS_386 -static --static"
+            CXX="$CXX_WINDOWS_386 -static --static"
             ;;
         "amd64")
             # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/x86_64-w64-mingw32-cross-${unamespacer}.tgz
@@ -1103,8 +1103,8 @@ function InitDefaultCGODeps() {
                 return 1
             fi
 
-            CC="$CC_WINDOWS_AMD64 -static"
-            CXX="$CXX_WINDOWS_AMD64 -static"
+            CC="$CC_WINDOWS_AMD64 -static --static"
+            CXX="$CXX_WINDOWS_AMD64 -static --static"
             ;;
         *)
             if [ "$GOOS" == "$GOHOSTOS" ] && [ "$GOARCH" == "$GOHOSTARCH" ]; then

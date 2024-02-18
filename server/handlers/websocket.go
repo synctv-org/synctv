@@ -7,6 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
+	"github.com/sirupsen/logrus"
 	log "github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/internal/op"
 	pb "github.com/synctv-org/synctv/proto/message"
@@ -21,20 +22,27 @@ const maxInterval = 10
 func NewWebSocketHandler(wss *utils.WebSocket) gin.HandlerFunc {
 	return func(ctx *gin.Context) {
 		token := ctx.GetHeader("Sec-WebSocket-Protocol")
-		user, room, err := middlewares.AuthRoom(token)
+		userE, roomE, err := middlewares.AuthRoom(token)
 		if err != nil {
 			ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
 			return
 		}
+		user := userE.Value()
+		room := roomE.Value()
+		entry := log.WithFields(log.Fields{
+			"rid": room.ID,
+			"rnm": room.Name,
+			"uid": user.ID,
+			"unm": user.Username,
+			"uro": user.Role.String(),
+		})
 
-		wss.Server(ctx.Writer, ctx.Request, []string{token}, NewWSMessageHandler(user, room))
+		_ = wss.Server(ctx.Writer, ctx.Request, []string{token}, NewWSMessageHandler(user, room, entry))
 	}
 }
 
-func NewWSMessageHandler(uE *op.UserEntry, rE *op.RoomEntry) func(c *websocket.Conn) error {
+func NewWSMessageHandler(u *op.User, r *op.Room, l *logrus.Entry) func(c *websocket.Conn) error {
 	return func(c *websocket.Conn) error {
-		r := rE.Value()
-		u := uE.Value()
 		client, err := r.NewClient(u, c)
 		if err != nil {
 			log.Errorf("ws: register client error: %v", err)
@@ -49,92 +57,92 @@ func NewWSMessageHandler(uE *op.UserEntry, rE *op.RoomEntry) func(c *websocket.C
 			}
 			return em.Encode(wc)
 		}
-		log.Infof("ws: room %s user %s connected", r.Name, u.Username)
+		l.Info("ws: connected")
 		defer func() {
-			r.UnregisterClient(client)
+			_ = r.UnregisterClient(client)
 			client.Close()
-			log.Infof("ws: room %s user %s disconnected", r.Name, u.Username)
+			l.Info("ws: disconnected")
 		}()
-		go handleReaderMessage(client)
-		return handleWriterMessage(client)
+		go handleReaderMessage(client, l)
+		return handleWriterMessage(client, l)
 	}
 }
 
-func handleWriterMessage(c *op.Client) error {
+func handleWriterMessage(c *op.Client, l *logrus.Entry) error {
 	for v := range c.GetReadChan() {
 		wc, err := c.NextWriter(v.MessageType())
 		if err != nil {
-			log.Debugf("ws: room %s user %s get next writer error: %v", c.Room().Name, c.User().Username, err)
+			l.Errorf("ws: get next writer error: %v", err)
 			return err
 		}
 
 		if err = v.Encode(wc); err != nil {
-			log.Debugf("ws: room %s user %s encode message error: %v", c.Room().Name, c.User().Username, err)
+			l.Errorf("ws: encode message error: %v", err)
 			return err
 		}
 
 		if err = wc.Close(); err != nil {
+			l.Errorf("ws: close writer error: %v", err)
 			return err
 		}
 	}
 	return nil
 }
 
-func handleReaderMessage(c *op.Client) error {
-	defer c.Close()
+func handleReaderMessage(c *op.Client, l *logrus.Entry) error {
+	defer func() {
+		c.Close()
+		if r := recover(); r != nil {
+			l.Errorf("ws: panic: %v", r)
+		}
+	}()
 	for {
 		t, rd, err := c.NextReader()
 		if err != nil {
-			log.Debugf("ws: room %s user %s get next reader error: %v", c.Room().Name, c.User().Username, err)
+			l.Errorf("ws: get next reader error: %v", err)
 			return err
 		}
-		log.Debugf("ws: room %s user %s receive message type: %d", c.Room().Name, c.User().Username, t)
-		switch t {
-		case websocket.CloseMessage:
-			log.Debugf("ws: room %s user %s receive close message", c.Room().Name, c.User().Username)
-			return nil
-		case websocket.BinaryMessage:
-			var data []byte
-			if data, err = io.ReadAll(rd); err != nil {
-				log.Errorf("ws: room %s user %s read message error: %v", c.Room().Name, c.User().Username, err)
-				if err := c.Send(&pb.ElementMessage{
-					Type:  pb.ElementMessageType_ERROR,
-					Error: err.Error(),
-				}); err != nil {
-					log.Errorf("ws: room %s user %s send error message error: %v", c.Room().Name, c.User().Username, err)
-					return err
-				}
-				continue
-			}
-			var msg pb.ElementMessage
-			if err := proto.Unmarshal(data, &msg); err != nil {
-				log.Errorf("ws: room %s user %s decode message error: %v", c.Room().Name, c.User().Username, err)
-				if err := c.Send(&pb.ElementMessage{
-					Type:  pb.ElementMessageType_ERROR,
-					Error: err.Error(),
-				}); err != nil {
-					log.Errorf("ws: room %s user %s send error message error: %v", c.Room().Name, c.User().Username, err)
-					return err
-				}
-				continue
-			}
-
-			log.Debugf("ws: receive room %s user %s message: %+v", c.Room().Name, c.User().Username, msg.String())
-			if err = handleElementMsg(c, &msg); err != nil {
-				log.Errorf("ws: room %s user %s handle message error: %v", c.Room().Name, c.User().Username, err)
+		l.Debugf("ws: receive message type: %d", t)
+		if t != websocket.BinaryMessage {
+			l.Errorf("ws: receive unknown message type: %d", t)
+			continue
+		}
+		var data []byte
+		if data, err = io.ReadAll(rd); err != nil {
+			l.Errorf("ws: read message error: %v", err)
+			if err := c.Send(&pb.ElementMessage{
+				Type:  pb.ElementMessageType_ERROR,
+				Error: err.Error(),
+			}); err != nil {
+				l.Errorf("ws: send error message error: %v", err)
 				return err
 			}
-
-		default:
-			log.Errorf("ws: room %s user %s receive unknown message type: %d", c.Room().Name, c.User().Username, t)
 			continue
+		}
+		var msg pb.ElementMessage
+		if err := proto.Unmarshal(data, &msg); err != nil {
+			l.Errorf("ws: unmarshal message error: %v", err)
+			if err := c.Send(&pb.ElementMessage{
+				Type:  pb.ElementMessageType_ERROR,
+				Error: err.Error(),
+			}); err != nil {
+				l.Errorf("ws: send error message error: %v", err)
+				return err
+			}
+			continue
+		}
+
+		l.Debugf("ws: receive message: %v", msg.String())
+		if err = handleElementMsg(c, &msg, l); err != nil {
+			l.Errorf("ws: handle message error: %v", err)
+			return err
 		}
 	}
 }
 
 const MaxChatMessageLength = 4096
 
-func handleElementMsg(cli *op.Client, msg *pb.ElementMessage) error {
+func handleElementMsg(cli *op.Client, msg *pb.ElementMessage, l *logrus.Entry) error {
 	var timeDiff float64
 	if msg.Time != 0 {
 		timeDiff = time.Since(time.UnixMilli(msg.Time)).Seconds()
@@ -150,13 +158,12 @@ func handleElementMsg(cli *op.Client, msg *pb.ElementMessage) error {
 	case pb.ElementMessageType_CHAT_MESSAGE:
 		message := msg.GetChatReq()
 		if len(message) > MaxChatMessageLength {
-			cli.Send(&pb.ElementMessage{
+			return cli.Send(&pb.ElementMessage{
 				Type:  pb.ElementMessageType_ERROR,
 				Error: "message too long",
 			})
-			return nil
 		}
-		cli.Broadcast(&pb.ElementMessage{
+		return cli.Broadcast(&pb.ElementMessage{
 			Type: pb.ElementMessageType_CHAT_MESSAGE,
 			ChatResp: &pb.ChatResp{
 				Sender: &pb.Sender{
@@ -170,7 +177,7 @@ func handleElementMsg(cli *op.Client, msg *pb.ElementMessage) error {
 		pb.ElementMessageType_PAUSE,
 		pb.ElementMessageType_CHANGE_RATE:
 		status := cli.Room().SetStatus(msg.ChangeMovieStatusReq.Playing, msg.ChangeMovieStatusReq.Seek, msg.ChangeMovieStatusReq.Rate, timeDiff)
-		cli.Broadcast(&pb.ElementMessage{
+		return cli.Broadcast(&pb.ElementMessage{
 			Type: msg.Type,
 			MovieStatusChanged: &pb.MovieStatusChanged{
 				Sender: &pb.Sender{
@@ -186,7 +193,7 @@ func handleElementMsg(cli *op.Client, msg *pb.ElementMessage) error {
 		}, op.WithIgnoreClient(cli))
 	case pb.ElementMessageType_CHANGE_SEEK:
 		status := cli.Room().SetSeekRate(msg.ChangeMovieStatusReq.Seek, msg.ChangeMovieStatusReq.Rate, timeDiff)
-		cli.Broadcast(&pb.ElementMessage{
+		return cli.Broadcast(&pb.ElementMessage{
 			Type: msg.Type,
 			MovieStatusChanged: &pb.MovieStatusChanged{
 				Sender: &pb.Sender{
@@ -202,7 +209,7 @@ func handleElementMsg(cli *op.Client, msg *pb.ElementMessage) error {
 		}, op.WithIgnoreClient(cli))
 	case pb.ElementMessageType_SYNC_MOVIE_STATUS:
 		status := cli.Room().Current().Status
-		cli.Send(&pb.ElementMessage{
+		return cli.Send(&pb.ElementMessage{
 			Type: pb.ElementMessageType_SYNC_MOVIE_STATUS,
 			MovieStatusChanged: &pb.MovieStatusChanged{
 				Sender: &pb.Sender{
@@ -237,7 +244,7 @@ func handleElementMsg(cli *op.Client, msg *pb.ElementMessage) error {
 		status := current.Status
 		cliStatus := msg.CheckReq.Status
 		if status.Seek+maxInterval < cliStatus.Seek+timeDiff {
-			cli.Send(&pb.ElementMessage{
+			return cli.Send(&pb.ElementMessage{
 				Type: pb.ElementMessageType_TOO_FAST,
 				MovieStatusChanged: &pb.MovieStatusChanged{
 					Status: &pb.MovieStatus{
@@ -248,7 +255,7 @@ func handleElementMsg(cli *op.Client, msg *pb.ElementMessage) error {
 				},
 			})
 		} else if status.Seek-maxInterval > cliStatus.Seek+timeDiff {
-			cli.Send(&pb.ElementMessage{
+			return cli.Send(&pb.ElementMessage{
 				Type: pb.ElementMessageType_TOO_SLOW,
 				MovieStatusChanged: &pb.MovieStatusChanged{
 					Status: &pb.MovieStatus{

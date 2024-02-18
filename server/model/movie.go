@@ -145,7 +145,7 @@ func (s *SwapMovieReq) Validate() error {
 	return nil
 }
 
-type MoviesResp struct {
+type MovieResp struct {
 	Id        string          `json:"id"`
 	CreatedAt int64           `json:"createAt"`
 	Base      model.BaseMovie `json:"base"`
@@ -155,6 +155,6 @@ type MoviesResp struct {
 
 type CurrentMovieResp struct {
 	Status   op.Status  `json:"status"`
-	Movie    MoviesResp `json:"movie"`
+	Movie    *MovieResp `json:"movie"`
 	ExpireId uint64     `json:"expireId"`
 }

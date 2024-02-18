@@ -8,6 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/internal/conf"
 	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/server/model"
@@ -213,6 +214,15 @@ func AuthRoomMiddleware(ctx *gin.Context) {
 
 	ctx.Set("user", userE)
 	ctx.Set("room", roomE)
+	log := ctx.MustGet("log").(*logrus.Entry)
+	if log.Data == nil {
+		log.Data = make(logrus.Fields, 5)
+	}
+	log.Data["rid"] = room.ID
+	log.Data["rnm"] = room.Name
+	log.Data["uid"] = user.ID
+	log.Data["unm"] = user.Username
+	log.Data["uro"] = user.Role.String()
 	ctx.Next()
 }
 
@@ -222,21 +232,29 @@ func AuthUserMiddleware(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
 		return
 	}
-	user, err := AuthUser(token)
+	userE, err := AuthUser(token)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
 		return
 	}
-	if user.Value().IsBanned() {
+	user := userE.Value()
+	if user.IsBanned() {
 		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("user banned"))
 		return
 	}
-	if user.Value().IsPending() {
+	if user.IsPending() {
 		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("user is pending, need admin to approve"))
 		return
 	}
 
-	ctx.Set("user", user)
+	ctx.Set("user", userE)
+	log := ctx.MustGet("log").(*logrus.Entry)
+	if log.Data == nil {
+		log.Data = make(logrus.Fields, 3)
+	}
+	log.Data["uid"] = user.ID
+	log.Data["unm"] = user.Username
+	log.Data["uro"] = user.Role.String()
 	ctx.Next()
 }
 
@@ -246,17 +264,25 @@ func AuthAdminMiddleware(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
 		return
 	}
-	user, err := AuthUser(token)
+	userE, err := AuthUser(token)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
 		return
 	}
-	if !user.Value().IsAdmin() {
+	user := userE.Value()
+	if !user.IsAdmin() {
 		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("user is not admin"))
 		return
 	}
 
-	ctx.Set("user", user)
+	ctx.Set("user", userE)
+	log := ctx.MustGet("log").(*logrus.Entry)
+	if log.Data == nil {
+		log.Data = make(logrus.Fields, 3)
+	}
+	log.Data["uid"] = user.ID
+	log.Data["unm"] = user.Username
+	log.Data["uro"] = user.Role.String()
 	ctx.Next()
 }
 
@@ -266,17 +292,25 @@ func AuthRootMiddleware(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
 		return
 	}
-	user, err := AuthUser(token)
+	userE, err := AuthUser(token)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
 		return
 	}
-	if !user.Value().IsRoot() {
+	user := userE.Value()
+	if !user.IsRoot() {
 		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("user is not root"))
 		return
 	}
 
-	ctx.Set("user", user)
+	ctx.Set("user", userE)
+	log := ctx.MustGet("log").(*logrus.Entry)
+	if log.Data == nil {
+		log.Data = make(logrus.Fields, 3)
+	}
+	log.Data["uid"] = user.ID
+	log.Data["unm"] = user.Username
+	log.Data["uro"] = user.Role.String()
 	ctx.Next()
 }
 

@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/internal/db"
 	dbModel "github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
@@ -27,14 +28,18 @@ func Me(ctx *gin.Context) {
 }
 
 func LoginUser(ctx *gin.Context) {
+	log := ctx.MustGet("log").(*logrus.Entry)
+
 	req := model.LoginUserReq{}
 	if err := model.Decode(ctx, &req); err != nil {
+		log.Errorf("failed to decode request: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
 	user, err := op.LoadUserByUsername(req.Username)
 	if err != nil {
+		log.Errorf("failed to load user: %v", err)
 		if err == op.ErrUserBanned || err == op.ErrUserPending {
 			ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(err))
 			return
@@ -44,12 +49,14 @@ func LoginUser(ctx *gin.Context) {
 	}
 
 	if ok := user.Value().CheckPassword(req.Password); !ok {
+		log.Errorf("password incorrect")
 		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("password incorrect"))
 		return
 	}
 
 	token, err := middlewares.NewAuthUserToken(user.Value())
 	if err != nil {
+		log.Errorf("failed to generate token: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}
@@ -61,9 +68,11 @@ func LoginUser(ctx *gin.Context) {
 
 func LogoutUser(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*op.UserEntry)
+	log := ctx.MustGet("log").(*logrus.Entry)
 
 	err := op.CompareAndDeleteUser(user)
 	if err != nil {
+		log.Errorf("failed to logout: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}
@@ -73,9 +82,11 @@ func LogoutUser(ctx *gin.Context) {
 
 func UserRooms(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*op.UserEntry).Value()
+	log := ctx.MustGet("log").(*logrus.Entry)
 
 	page, pageSize, err := utils.GetPageAndMax(ctx)
 	if err != nil {
+		log.Errorf("failed to get page and max: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
@@ -109,6 +120,7 @@ func UserRooms(ctx *gin.Context) {
 			scopes = append(scopes, db.OrderByAsc("name"))
 		}
 	default:
+		log.Errorf("not support sort")
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support sort"))
 		return
 	}
@@ -133,15 +145,18 @@ func UserRooms(ctx *gin.Context) {
 
 func SetUsername(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*op.UserEntry).Value()
+	log := ctx.MustGet("log").(*logrus.Entry)
 
 	var req model.SetUsernameReq
 	if err := model.Decode(ctx, &req); err != nil {
+		log.Errorf("failed to decode request: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
 	err := user.SetUsername(req.Username)
 	if err != nil {
+		log.Errorf("failed to set username: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}
@@ -151,21 +166,25 @@ func SetUsername(ctx *gin.Context) {
 
 func SetUserPassword(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*op.UserEntry).Value()
+	log := ctx.MustGet("log").(*logrus.Entry)
 
 	var req model.SetUserPasswordReq
 	if err := model.Decode(ctx, &req); err != nil {
+		log.Errorf("failed to decode request: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
 	err := user.SetPassword(req.Password)
 	if err != nil {
+		log.Errorf("failed to set password: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
 	token, err := middlewares.NewAuthUserToken(user)
 	if err != nil {
+		log.Errorf("failed to generate token: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}
@@ -177,9 +196,11 @@ func SetUserPassword(ctx *gin.Context) {
 
 func UserBindProviders(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*op.UserEntry).Value()
+	log := ctx.MustGet("log").(*logrus.Entry)
 
 	up, err := db.GetBindProviders(user.ID)
 	if err != nil {
+		log.Errorf("failed to get bind providers: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}

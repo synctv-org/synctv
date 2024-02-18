@@ -12,6 +12,7 @@ import (
 	"github.com/synctv-org/synctv/internal/conf"
 	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/server/model"
+	"github.com/zijiren233/gencontainer/synccache"
 	"github.com/zijiren233/stream"
 )
 
@@ -180,6 +181,37 @@ func NewAuthRoomToken(user *op.User, room *op.Room) (string, error) {
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(stream.StringToBytes(conf.Conf.Jwt.Secret))
 }
 
+func AuthUserMiddleware(ctx *gin.Context) {
+	token, err := GetAuthorizationTokenFromContext(ctx)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
+		return
+	}
+	userE, err := AuthUser(token)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
+		return
+	}
+	user := userE.Value()
+	if user.IsBanned() {
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("user banned"))
+		return
+	}
+	if user.IsPending() {
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("user is pending, need admin to approve"))
+		return
+	}
+
+	ctx.Set("user", userE)
+	log := ctx.MustGet("log").(*logrus.Entry)
+	if log.Data == nil {
+		log.Data = make(logrus.Fields, 3)
+	}
+	log.Data["uid"] = user.ID
+	log.Data["unm"] = user.Username
+	log.Data["uro"] = user.Role.String()
+}
+
 func AuthRoomMiddleware(ctx *gin.Context) {
 	token, err := GetAuthorizationTokenFromContext(ctx)
 	if err != nil {
@@ -223,95 +255,32 @@ func AuthRoomMiddleware(ctx *gin.Context) {
 	log.Data["uid"] = user.ID
 	log.Data["unm"] = user.Username
 	log.Data["uro"] = user.Role.String()
-	ctx.Next()
-}
-
-func AuthUserMiddleware(ctx *gin.Context) {
-	token, err := GetAuthorizationTokenFromContext(ctx)
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
-		return
-	}
-	userE, err := AuthUser(token)
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
-		return
-	}
-	user := userE.Value()
-	if user.IsBanned() {
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("user banned"))
-		return
-	}
-	if user.IsPending() {
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("user is pending, need admin to approve"))
-		return
-	}
-
-	ctx.Set("user", userE)
-	log := ctx.MustGet("log").(*logrus.Entry)
-	if log.Data == nil {
-		log.Data = make(logrus.Fields, 3)
-	}
-	log.Data["uid"] = user.ID
-	log.Data["unm"] = user.Username
-	log.Data["uro"] = user.Role.String()
-	ctx.Next()
 }
 
 func AuthAdminMiddleware(ctx *gin.Context) {
-	token, err := GetAuthorizationTokenFromContext(ctx)
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
+	AuthUserMiddleware(ctx)
+	if ctx.IsAborted() {
 		return
 	}
-	userE, err := AuthUser(token)
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
-		return
-	}
-	user := userE.Value()
-	if !user.IsAdmin() {
+
+	userE := ctx.MustGet("user").(*synccache.Entry[*op.User])
+	if !userE.Value().IsAdmin() {
 		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("user is not admin"))
 		return
 	}
-
-	ctx.Set("user", userE)
-	log := ctx.MustGet("log").(*logrus.Entry)
-	if log.Data == nil {
-		log.Data = make(logrus.Fields, 3)
-	}
-	log.Data["uid"] = user.ID
-	log.Data["unm"] = user.Username
-	log.Data["uro"] = user.Role.String()
-	ctx.Next()
 }
 
 func AuthRootMiddleware(ctx *gin.Context) {
-	token, err := GetAuthorizationTokenFromContext(ctx)
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
-		return
-	}
-	userE, err := AuthUser(token)
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
-		return
-	}
-	user := userE.Value()
-	if !user.IsRoot() {
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("user is not root"))
+	AuthUserMiddleware(ctx)
+	if ctx.IsAborted() {
 		return
 	}
 
-	ctx.Set("user", userE)
-	log := ctx.MustGet("log").(*logrus.Entry)
-	if log.Data == nil {
-		log.Data = make(logrus.Fields, 3)
+	userE := ctx.MustGet("user").(*synccache.Entry[*op.User])
+	if !userE.Value().IsRoot() {
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("user is not root"))
+		return
 	}
-	log.Data["uid"] = user.ID
-	log.Data["unm"] = user.Username
-	log.Data["uro"] = user.Role.String()
-	ctx.Next()
 }
 
 func GetAuthorizationTokenFromContext(ctx *gin.Context) (string, error) {

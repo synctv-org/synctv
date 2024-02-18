@@ -5,7 +5,10 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/go-kratos/kratos/v2/log"
+	"github.com/joho/godotenv"
 	"github.com/mitchellh/go-homedir"
+	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"github.com/synctv-org/synctv/cmd/admin"
 	"github.com/synctv-org/synctv/cmd/flags"
@@ -13,12 +16,33 @@ import (
 	"github.com/synctv-org/synctv/cmd/setting"
 	"github.com/synctv-org/synctv/cmd/user"
 	"github.com/synctv-org/synctv/internal/version"
+	"github.com/synctv-org/synctv/utils"
 )
 
 var RootCmd = &cobra.Command{
 	Use:   "synctv",
 	Short: "synctv",
 	Long:  `synctv https://github.com/synctv-org/synctv`,
+	PersistentPreRun: func(cmd *cobra.Command, args []string) {
+		s, err := utils.GetEnvFiles(flags.DataDir)
+		if err != nil {
+			logrus.Fatalf("get env files error: %v", err)
+		}
+		if flags.Dev {
+			ss, err := utils.GetEnvFiles(".")
+			if err != nil {
+				logrus.Fatalf("get env files error: %v", err)
+			}
+			s = append(s, ss...)
+		}
+		if len(s) != 0 {
+			log.Infof("Overload env from: %v", s)
+			err = godotenv.Overload(s...)
+			if err != nil {
+				logrus.Fatalf("load env error: %v", err)
+			}
+		}
+	},
 }
 
 func Execute() {

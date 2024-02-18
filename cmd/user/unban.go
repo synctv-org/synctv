@@ -13,7 +13,7 @@ var UnbanCmd = &cobra.Command{
 	Use:   "unban",
 	Short: "unban user with user id",
 	Long:  "unban user with user id",
-	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+	PreRunE: func(cmd *cobra.Command, args []string) error {
 		return bootstrap.New(bootstrap.WithContext(cmd.Context())).Add(
 			bootstrap.InitDiscardLog,
 			bootstrap.InitConfig,

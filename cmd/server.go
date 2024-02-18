@@ -22,7 +22,7 @@ var ServerCmd = &cobra.Command{
 	Use:   "server",
 	Short: "Start synctv-server",
 	Long:  `Start synctv-server`,
-	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+	PreRunE: func(cmd *cobra.Command, args []string) error {
 		boot := bootstrap.New(bootstrap.WithContext(cmd.Context())).Add(
 			bootstrap.InitSysNotify,
 			bootstrap.InitConfig,

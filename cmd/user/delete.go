@@ -13,7 +13,7 @@ var DeleteCmd = &cobra.Command{
 	Use:   "delete",
 	Short: "delete",
 	Long:  `delete user`,
-	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+	PreRunE: func(cmd *cobra.Command, args []string) error {
 		return bootstrap.New(bootstrap.WithContext(cmd.Context())).Add(
 			bootstrap.InitDiscardLog,
 			bootstrap.InitConfig,

@@ -13,7 +13,7 @@ var RemoveCmd = &cobra.Command{
 	Use:   "remove",
 	Short: "remove",
 	Long:  `remove root`,
-	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+	PreRunE: func(cmd *cobra.Command, args []string) error {
 		return bootstrap.New(bootstrap.WithContext(cmd.Context())).Add(
 			bootstrap.InitDiscardLog,
 			bootstrap.InitConfig,

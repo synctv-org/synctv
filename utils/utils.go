@@ -398,3 +398,20 @@ func TruncateByRune(s string, length int) string {
 	}
 	panic("truncate by rune error")
 }
+
+func GetEnvFiles(root string) ([]string, error) {
+	var envs []string
+
+	files, err := os.ReadDir(root)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, file := range files {
+		if !file.IsDir() && strings.HasPrefix(file.Name(), ".env") {
+			envs = append(envs, file.Name())
+		}
+	}
+
+	return envs, nil
+}

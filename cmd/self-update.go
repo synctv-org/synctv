@@ -18,7 +18,7 @@ var SelfUpdateCmd = &cobra.Command{
 	Use:   "self-update",
 	Short: "self-update",
 	Long:  SelfUpdateLong,
-	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+	PreRunE: func(cmd *cobra.Command, args []string) error {
 		return bootstrap.New(bootstrap.WithContext(cmd.Context())).Add(
 			bootstrap.InitStdLog,
 		).Run()

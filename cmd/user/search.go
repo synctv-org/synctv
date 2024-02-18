@@ -13,7 +13,7 @@ var SearchCmd = &cobra.Command{
 	Use:   "search",
 	Short: "search user by id or username",
 	Long:  `search user by id or username`,
-	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+	PreRunE: func(cmd *cobra.Command, args []string) error {
 		return bootstrap.New(bootstrap.WithContext(cmd.Context())).Add(
 			bootstrap.InitDiscardLog,
 			bootstrap.InitConfig,

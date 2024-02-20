@@ -36,8 +36,13 @@ var RootCmd = &cobra.Command{
 			s = append(s, ss...)
 		}
 		if len(s) != 0 {
-			log.Infof("Overload env from: %v", s)
-			err = godotenv.Overload(s...)
+			if flags.EnvFileOverload {
+				log.Infof("overload env from: %v", s)
+				err = godotenv.Overload(s...)
+			} else {
+				log.Infof("load env from: %v", s)
+				err = godotenv.Load(s...)
+			}
 			if err != nil {
 				logrus.Fatalf("load env error: %v", err)
 			}
@@ -58,6 +63,7 @@ func init() {
 	RootCmd.PersistentFlags().BoolVar(&flags.EnvNoPrefix, "env-no-prefix", false, "env no SYNCTV_ prefix")
 	RootCmd.PersistentFlags().BoolVar(&flags.SkipConfig, "skip-config", false, "skip config")
 	RootCmd.PersistentFlags().BoolVar(&flags.SkipEnv, "skip-env", false, "skip env")
+	RootCmd.PersistentFlags().BoolVar(&flags.EnvFileOverload, "env-file-overload", false, "env file overload")
 	RootCmd.PersistentFlags().StringVar(&flags.GitHubBaseURL, "github-base-url", "https://api.github.com/", "github api base url")
 	home, err := homedir.Dir()
 	if err != nil {

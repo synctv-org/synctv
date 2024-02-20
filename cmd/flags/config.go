@@ -8,6 +8,8 @@ var (
 
 	SkipEnv bool
 
+	EnvFileOverload bool
+
 	SkipConfig bool
 
 	EnvNoPrefix bool

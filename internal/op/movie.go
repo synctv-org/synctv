@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/go-resty/resty/v2"
-	"github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/internal/cache"
 	"github.com/synctv-org/synctv/internal/conf"
 	"github.com/synctv-org/synctv/internal/model"
@@ -33,23 +32,27 @@ type Movie struct {
 
 func (m *Movie) ExpireId() uint64 {
 	switch {
+	case m.Movie.Base.VendorInfo.Vendor == model.VendorAlist:
+		amcd, _ := m.AlistCache().Raw()
+		if amcd != nil && amcd.Ali != nil {
+			return uint64(m.AlistCache().Last())
+		}
+		fallthrough
 	default:
 		return uint64(crc32.ChecksumIEEE([]byte(m.Movie.ID)))
-	case m.Movie.Base.VendorInfo.Vendor == model.VendorAlist &&
-		m.AlistCache().Raw().Ali != nil:
-		return uint64(m.AlistCache().Last())
 	}
 }
 
 func (m *Movie) CheckExpired(expireId uint64) bool {
 	switch {
+	case m.Movie.Base.VendorInfo.Vendor == model.VendorAlist:
+		amcd, _ := m.AlistCache().Raw()
+		if amcd != nil && amcd.Ali != nil {
+			return time.Now().UnixNano()-int64(expireId) > m.AlistCache().MaxAge()
+		}
+		fallthrough
 	default:
 		return expireId != m.ExpireId()
-	case m.Movie.Base.VendorInfo.Vendor == model.VendorAlist &&
-		m.AlistCache().Raw().Ali != nil:
-		logrus.Info(expireId)
-		logrus.Info(time.Now().UnixNano())
-		return time.Now().UnixNano()-int64(expireId) > m.AlistCache().MaxAge()
 	}
 }
 

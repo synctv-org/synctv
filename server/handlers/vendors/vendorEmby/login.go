@@ -135,7 +135,8 @@ func Logout(ctx *gin.Context) {
 
 	eucd, ok := user.EmbyCache().LoadCache(req.ServerID)
 	if ok {
-		go logoutEmby(eucd.Raw())
+		eucdr, _ := eucd.Raw()
+		go logoutEmby(eucdr)
 	}
 
 	ctx.Status(http.StatusNoContent)

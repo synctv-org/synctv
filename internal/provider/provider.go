@@ -2,11 +2,9 @@ package provider
 
 import (
 	"context"
-
-	"golang.org/x/oauth2"
 )
 
-type OAuth2Provider string
+type OAuth2Provider = string
 
 type UserInfo struct {
 	Username       string
@@ -19,11 +17,13 @@ type Oauth2Option struct {
 	RedirectURL  string
 }
 
-type ProviderInterface interface {
+type Provider interface {
 	Init(Oauth2Option)
 	Provider() OAuth2Provider
-	NewAuthURL(string) string
-	GetToken(context.Context, string) (*oauth2.Token, error)
-	RefreshToken(context.Context, string) (*oauth2.Token, error)
-	GetUserInfo(context.Context, *oauth2.Token) (*UserInfo, error)
+}
+
+type ProviderInterface interface {
+	Provider
+	NewAuthURL(context.Context, string) (string, error)
+	GetUserInfo(context.Context, string) (*UserInfo, error)
 }

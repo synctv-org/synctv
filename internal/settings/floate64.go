@@ -17,6 +17,8 @@ type Float64Setting interface {
 	Default() float64
 	Parse(string) (float64, error)
 	Stringify(float64) string
+	SetBeforeInit(func(Float64Setting, float64) (float64, error))
+	SetBeforeSet(func(Float64Setting, float64) (float64, error))
 }
 
 var _ Float64Setting = (*Float64)(nil)
@@ -31,6 +33,12 @@ type Float64 struct {
 
 type Float64SettingOption func(*Float64)
 
+func WithInitPriorityFloat64(priority int) Float64SettingOption {
+	return func(s *Float64) {
+		s.SetInitPriority(priority)
+	}
+}
+
 func WithValidatorFloat64(validator func(float64) error) Float64SettingOption {
 	return func(s *Float64) {
 		s.validator = validator
@@ -39,13 +47,13 @@ func WithValidatorFloat64(validator func(float64) error) Float64SettingOption {
 
 func WithBeforeInitFloat64(beforeInit func(Float64Setting, float64) (float64, error)) Float64SettingOption {
 	return func(s *Float64) {
-		s.beforeInit = beforeInit
+		s.SetBeforeInit(beforeInit)
 	}
 }
 
 func WithBeforeSetFloat64(beforeSet func(Float64Setting, float64) (float64, error)) Float64SettingOption {
 	return func(s *Float64) {
-		s.beforeSet = beforeSet
+		s.SetBeforeSet(beforeSet)
 	}
 }
 
@@ -63,6 +71,18 @@ func newFloat64(name string, value float64, group model.SettingGroup, options ..
 	}
 	f.set(value)
 	return f
+}
+
+func (f *Float64) SetInitPriority(priority int) {
+	f.initPriority = priority
+}
+
+func (f *Float64) SetBeforeInit(beforeInit func(Float64Setting, float64) (float64, error)) {
+	f.beforeInit = beforeInit
+}
+
+func (f *Float64) SetBeforeSet(beforeSet func(Float64Setting, float64) (float64, error)) {
+	f.beforeSet = beforeSet
 }
 
 func (f *Float64) Parse(value string) (float64, error) {
@@ -171,13 +191,37 @@ func (f *Float64) Interface() any {
 	return f.Get()
 }
 
-func NewFloat64Setting(k string, v float64, g model.SettingGroup, options ...Float64SettingOption) *Float64 {
+func NewFloat64Setting(k string, v float64, g model.SettingGroup, options ...Float64SettingOption) Float64Setting {
 	_, loaded := Settings[k]
 	if loaded {
 		panic(fmt.Sprintf("setting %s already exists", k))
 	}
+	return CoverFloat64Setting(k, v, g, options...)
+}
+
+func CoverFloat64Setting(k string, v float64, g model.SettingGroup, options ...Float64SettingOption) Float64Setting {
 	f := newFloat64(k, v, g, options...)
 	Settings[k] = f
-	GroupSettings[g] = append(GroupSettings[g], f)
+	if GroupSettings[g] == nil {
+		GroupSettings[g] = make(map[string]Setting)
+	}
+	GroupSettings[g][k] = f
 	return f
+}
+
+func LoadFloat64Setting(k string) (Float64Setting, bool) {
+	s, ok := Settings[k]
+	if !ok {
+		return nil, false
+	}
+	f, ok := s.(Float64Setting)
+	return f, ok
+}
+
+func LoadOrNewFloat64Setting(k string, v float64, g model.SettingGroup, options ...Float64SettingOption) Float64Setting {
+	s, ok := LoadFloat64Setting(k)
+	if ok {
+		return s
+	}
+	return CoverFloat64Setting(k, v, g, options...)
 }

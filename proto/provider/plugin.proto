@@ -11,16 +11,7 @@ message InitReq {
 
 message GetTokenReq { string code = 1; }
 
-message Token {
-  string access_token = 1;
-  string token_type = 2;
-  string refresh_token = 3;
-  int64 expiry = 4;
-}
-
 message RefreshTokenReq { string refresh_token = 1; }
-
-message RefreshTokenResp { Token token = 1; }
 
 message ProviderResp { string name = 1; }
 
@@ -28,7 +19,7 @@ message NewAuthURLReq { string state = 1; }
 
 message NewAuthURLResp { string url = 1; }
 
-message GetUserInfoReq { Token token = 1; }
+message GetUserInfoReq { string code = 1; }
 
 message GetUserInfoResp {
   string username = 1;
@@ -41,7 +32,5 @@ service Oauth2Plugin {
   rpc Init(InitReq) returns (Enpty) {}
   rpc Provider(Enpty) returns (ProviderResp) {}
   rpc NewAuthURL(NewAuthURLReq) returns (NewAuthURLResp) {}
-  rpc GetToken(GetTokenReq) returns (Token) {}
-  rpc RefreshToken(RefreshTokenReq) returns (RefreshTokenResp) {}
   rpc GetUserInfo(GetUserInfoReq) returns (GetUserInfoResp) {}
 }

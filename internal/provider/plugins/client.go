@@ -2,11 +2,9 @@ package plugins
 
 import (
 	"context"
-	"time"
 
 	"github.com/synctv-org/synctv/internal/provider"
 	providerpb "github.com/synctv-org/synctv/proto/provider"
-	"golang.org/x/oauth2"
 )
 
 type GRPCClient struct{ client providerpb.Oauth2PluginClient }
@@ -30,50 +28,17 @@ func (c *GRPCClient) Provider() provider.OAuth2Provider {
 	return provider.OAuth2Provider(resp.Name)
 }
 
-func (c *GRPCClient) NewAuthURL(state string) string {
-	resp, err := c.client.NewAuthURL(context.Background(), &providerpb.NewAuthURLReq{State: state})
+func (c *GRPCClient) NewAuthURL(ctx context.Context, state string) (string, error) {
+	resp, err := c.client.NewAuthURL(ctx, &providerpb.NewAuthURLReq{State: state})
 	if err != nil {
-		return ""
+		return "", err
 	}
-	return resp.Url
+	return resp.Url, nil
 }
 
-func (c *GRPCClient) GetToken(ctx context.Context, code string) (*oauth2.Token, error) {
-	resp, err := c.client.GetToken(ctx, &providerpb.GetTokenReq{Code: code})
-	if err != nil {
-		return nil, err
-	}
-	return &oauth2.Token{
-		AccessToken:  resp.AccessToken,
-		TokenType:    resp.TokenType,
-		RefreshToken: resp.RefreshToken,
-		Expiry:       time.Unix(resp.Expiry, 0),
-	}, nil
-}
-
-func (c *GRPCClient) RefreshToken(ctx context.Context, tk string) (*oauth2.Token, error) {
-	resp, err := c.client.RefreshToken(ctx, &providerpb.RefreshTokenReq{
-		RefreshToken: tk,
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &oauth2.Token{
-		AccessToken:  resp.Token.AccessToken,
-		TokenType:    resp.Token.TokenType,
-		RefreshToken: resp.Token.RefreshToken,
-		Expiry:       time.Unix(resp.Token.Expiry, 0),
-	}, nil
-}
-
-func (c *GRPCClient) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*provider.UserInfo, error) {
+func (c *GRPCClient) GetUserInfo(ctx context.Context, code string) (*provider.UserInfo, error) {
 	resp, err := c.client.GetUserInfo(ctx, &providerpb.GetUserInfoReq{
-		Token: &providerpb.Token{
-			AccessToken:  tk.AccessToken,
-			TokenType:    tk.TokenType,
-			RefreshToken: tk.RefreshToken,
-			Expiry:       tk.Expiry.Unix(),
-		},
+		Code: code,
 	})
 	if err != nil {
 		return nil, err

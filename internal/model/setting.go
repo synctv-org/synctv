@@ -11,11 +11,7 @@ const (
 	SettingTypeString  SettingType = "string"
 )
 
-type SettingGroup string
-
-func (s SettingGroup) String() string {
-	return string(s)
-}
+type SettingGroup = string
 
 const (
 	SettingGroupRoom     SettingGroup = "room"

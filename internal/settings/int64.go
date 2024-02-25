@@ -16,6 +16,8 @@ type Int64Setting interface {
 	Default() int64
 	Parse(string) (int64, error)
 	Stringify(int64) string
+	SetBeforeInit(func(Int64Setting, int64) (int64, error))
+	SetBeforeSet(func(Int64Setting, int64) (int64, error))
 }
 
 var _ Int64Setting = (*Int64)(nil)
@@ -30,6 +32,12 @@ type Int64 struct {
 
 type Int64SettingOption func(*Int64)
 
+func WithInitPriorityInt64(priority int) Int64SettingOption {
+	return func(s *Int64) {
+		s.SetInitPriority(priority)
+	}
+}
+
 func WithValidatorInt64(validator func(int64) error) Int64SettingOption {
 	return func(s *Int64) {
 		s.validator = validator
@@ -38,13 +46,13 @@ func WithValidatorInt64(validator func(int64) error) Int64SettingOption {
 
 func WithBeforeInitInt64(beforeInit func(Int64Setting, int64) (int64, error)) Int64SettingOption {
 	return func(s *Int64) {
-		s.beforeInit = beforeInit
+		s.SetBeforeInit(beforeInit)
 	}
 }
 
 func WithBeforeSetInt64(beforeSet func(Int64Setting, int64) (int64, error)) Int64SettingOption {
 	return func(s *Int64) {
-		s.beforeSet = beforeSet
+		s.SetBeforeSet(beforeSet)
 	}
 }
 
@@ -62,6 +70,18 @@ func newInt64(name string, value int64, group model.SettingGroup, options ...Int
 		option(i)
 	}
 	return i
+}
+
+func (i *Int64) SetInitPriority(priority int) {
+	i.initPriority = priority
+}
+
+func (i *Int64) SetBeforeInit(beforeInit func(Int64Setting, int64) (int64, error)) {
+	i.beforeInit = beforeInit
+}
+
+func (i *Int64) SetBeforeSet(beforeSet func(Int64Setting, int64) (int64, error)) {
+	i.beforeSet = beforeSet
 }
 
 func (i *Int64) Parse(value string) (int64, error) {
@@ -170,13 +190,37 @@ func (i *Int64) Interface() any {
 	return i.Get()
 }
 
-func NewInt64Setting(k string, v int64, g model.SettingGroup, options ...Int64SettingOption) *Int64 {
+func NewInt64Setting(k string, v int64, g model.SettingGroup, options ...Int64SettingOption) Int64Setting {
 	_, loaded := Settings[k]
 	if loaded {
 		panic(fmt.Sprintf("setting %s already exists", k))
 	}
+	return CoverInt64Setting(k, v, g, options...)
+}
+
+func CoverInt64Setting(k string, v int64, g model.SettingGroup, options ...Int64SettingOption) Int64Setting {
 	i := newInt64(k, v, g, options...)
 	Settings[k] = i
-	GroupSettings[g] = append(GroupSettings[g], i)
+	if GroupSettings[g] == nil {
+		GroupSettings[g] = make(map[string]Setting)
+	}
+	GroupSettings[g][k] = i
 	return i
+}
+
+func LoadInt64Setting(k string) (Int64Setting, bool) {
+	s, ok := Settings[k]
+	if !ok {
+		return nil, false
+	}
+	i, ok := s.(Int64Setting)
+	return i, ok
+}
+
+func LoadOrNewInt64Setting(k string, v int64, g model.SettingGroup, options ...Int64SettingOption) Int64Setting {
+	s, ok := LoadInt64Setting(k)
+	if ok {
+		return s
+	}
+	return CoverInt64Setting(k, v, g, options...)
 }

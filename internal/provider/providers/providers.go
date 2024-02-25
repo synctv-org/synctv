@@ -8,12 +8,12 @@ import (
 )
 
 var (
-	enabledProviders rwmap.RWMap[provider.OAuth2Provider, provider.ProviderInterface]
-	allProviders     = make(map[provider.OAuth2Provider]provider.ProviderInterface)
+	enabledProviders rwmap.RWMap[provider.OAuth2Provider, struct{}]
+	allProviders     rwmap.RWMap[provider.OAuth2Provider, provider.ProviderInterface]
 )
 
 func InitProvider(p provider.OAuth2Provider, c provider.Oauth2Option) (provider.ProviderInterface, error) {
-	pi, ok := allProviders[p]
+	pi, ok := allProviders.Load(p)
 	if !ok {
 		return nil, FormatErrNotImplemented(p)
 	}
@@ -23,12 +23,16 @@ func InitProvider(p provider.OAuth2Provider, c provider.Oauth2Option) (provider.
 
 func RegisterProvider(ps ...provider.ProviderInterface) {
 	for _, p := range ps {
-		allProviders[p.Provider()] = p
+		allProviders.Store(p.Provider(), p)
 	}
 }
 
 func GetProvider(p provider.OAuth2Provider) (provider.ProviderInterface, error) {
-	pi, ok := enabledProviders.Load(p)
+	_, ok := enabledProviders.Load(p)
+	if !ok {
+		return nil, FormatErrNotImplemented(p)
+	}
+	pi, ok := allProviders.Load(p)
 	if !ok {
 		return nil, FormatErrNotImplemented(p)
 	}
@@ -36,24 +40,34 @@ func GetProvider(p provider.OAuth2Provider) (provider.ProviderInterface, error) 
 }
 
 func AllProvider() map[provider.OAuth2Provider]provider.ProviderInterface {
-	return allProviders
+	m := make(map[provider.OAuth2Provider]provider.ProviderInterface)
+	allProviders.Range(func(key string, value provider.ProviderInterface) bool {
+		m[key] = value
+		return true
+	})
+	return m
 }
 
-func EnabledProvider() *rwmap.RWMap[provider.OAuth2Provider, provider.ProviderInterface] {
+func EnabledProvider() *rwmap.RWMap[provider.OAuth2Provider, struct{}] {
 	return &enabledProviders
 }
 
 func EnableProvider(p provider.OAuth2Provider) error {
-	pi, ok := allProviders[p]
+	_, ok := allProviders.Load(p)
 	if !ok {
 		return FormatErrNotImplemented(p)
 	}
-	enabledProviders.Store(p, pi)
+	enabledProviders.Store(p, struct{}{})
 	return nil
 }
 
-func DisableProvider(p provider.OAuth2Provider) {
+func DisableProvider(p provider.OAuth2Provider) error {
+	_, ok := allProviders.Load(p)
+	if !ok {
+		return FormatErrNotImplemented(p)
+	}
 	enabledProviders.Delete(p)
+	return nil
 }
 
 type FormatErrNotImplemented string

@@ -4,12 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"os"
+
 	plugin "github.com/hashicorp/go-plugin"
 	"github.com/synctv-org/synctv/internal/provider"
 	"github.com/synctv-org/synctv/internal/provider/plugins"
 	"golang.org/x/oauth2"
-	"net/http"
-	"os"
 )
 
 // Linux/Mac/Windows:
@@ -52,19 +53,15 @@ func (p *AuthingProvider) Provider() provider.OAuth2Provider {
 	return "authing" //插件名
 }
 
-func (p *AuthingProvider) NewAuthURL(state string) string {
-	return p.config.AuthCodeURL(state, oauth2.AccessTypeOnline)
+func (p *AuthingProvider) NewAuthURL(ctx context.Context, state string) (string, error) {
+	return p.config.AuthCodeURL(state, oauth2.AccessTypeOnline), nil
 }
 
-func (p *AuthingProvider) GetToken(ctx context.Context, code string) (*oauth2.Token, error) {
-	return p.config.Exchange(ctx, code)
-}
-
-func (p *AuthingProvider) RefreshToken(ctx context.Context, tk string) (*oauth2.Token, error) {
-	return p.config.TokenSource(ctx, &oauth2.Token{RefreshToken: tk}).Token()
-}
-
-func (p *AuthingProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*provider.UserInfo, error) {
+func (p *AuthingProvider) GetUserInfo(ctx context.Context, code string) (*provider.UserInfo, error) {
+	tk, err := p.config.Exchange(ctx, code)
+	if err != nil {
+		return nil, err
+	}
 	client := p.config.Client(ctx, tk)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://core.authing.cn/oauth/me", nil) // 身份端点
 	if err != nil {

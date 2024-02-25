@@ -36,8 +36,8 @@ func (p *GiteeProvider) Provider() provider.OAuth2Provider {
 	return "gitee"
 }
 
-func (p *GiteeProvider) NewAuthURL(state string) string {
-	return p.config.AuthCodeURL(state, oauth2.AccessTypeOnline)
+func (p *GiteeProvider) NewAuthURL(ctx context.Context, state string) (string, error) {
+	return p.config.AuthCodeURL(state, oauth2.AccessTypeOnline), nil
 }
 
 func (p *GiteeProvider) GetToken(ctx context.Context, code string) (*oauth2.Token, error) {
@@ -48,7 +48,11 @@ func (p *GiteeProvider) RefreshToken(ctx context.Context, tk string) (*oauth2.To
 	return p.config.TokenSource(ctx, &oauth2.Token{RefreshToken: tk}).Token()
 }
 
-func (p *GiteeProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*provider.UserInfo, error) {
+func (p *GiteeProvider) GetUserInfo(ctx context.Context, code string) (*provider.UserInfo, error) {
+	tk, err := p.GetToken(ctx, code)
+	if err != nil {
+		return nil, err
+	}
 	client := p.config.Client(ctx, tk)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://gitee.com/api/v5/user", nil)
 	if err != nil {

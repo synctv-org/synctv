@@ -2,11 +2,9 @@ package plugins
 
 import (
 	"context"
-	"time"
 
 	"github.com/synctv-org/synctv/internal/provider"
 	providerpb "github.com/synctv-org/synctv/proto/provider"
-	"golang.org/x/oauth2"
 )
 
 type GRPCServer struct {
@@ -29,29 +27,15 @@ func (s *GRPCServer) Provider(ctx context.Context, req *providerpb.Enpty) (*prov
 }
 
 func (s *GRPCServer) NewAuthURL(ctx context.Context, req *providerpb.NewAuthURLReq) (*providerpb.NewAuthURLResp, error) {
-	return &providerpb.NewAuthURLResp{Url: s.Impl.NewAuthURL(req.State)}, nil
-}
-
-func (s *GRPCServer) GetToken(ctx context.Context, req *providerpb.GetTokenReq) (*providerpb.Token, error) {
-	token, err := s.Impl.GetToken(ctx, req.Code)
+	s2, err := s.Impl.NewAuthURL(ctx, req.State)
 	if err != nil {
 		return nil, err
 	}
-	return &providerpb.Token{
-		AccessToken:  token.AccessToken,
-		TokenType:    token.TokenType,
-		RefreshToken: token.RefreshToken,
-		Expiry:       token.Expiry.Unix(),
-	}, nil
+	return &providerpb.NewAuthURLResp{Url: s2}, nil
 }
 
 func (s *GRPCServer) GetUserInfo(ctx context.Context, req *providerpb.GetUserInfoReq) (*providerpb.GetUserInfoResp, error) {
-	userInfo, err := s.Impl.GetUserInfo(ctx, &oauth2.Token{
-		AccessToken:  req.Token.AccessToken,
-		TokenType:    req.Token.TokenType,
-		Expiry:       time.Unix(req.Token.Expiry, 0),
-		RefreshToken: req.Token.RefreshToken,
-	})
+	userInfo, err := s.Impl.GetUserInfo(ctx, req.Code)
 	if err != nil {
 		return nil, err
 	}

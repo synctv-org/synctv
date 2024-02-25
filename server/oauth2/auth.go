@@ -32,9 +32,15 @@ func OAuth2(ctx *gin.Context) {
 	}
 
 	state := utils.RandString(16)
+	url, err := pi.NewAuthURL(ctx, state)
+	if err != nil {
+		log.Errorf("failed to get auth url: %v", err)
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
 	states.Store(state, newAuthFunc(ctx.Query("redirect")), time.Minute*5)
 
-	err = RenderRedirect(ctx, pi.NewAuthURL(state))
+	err = RenderRedirect(ctx, url)
 	if err != nil {
 		log.Errorf("failed to render redirect: %v", err)
 	}
@@ -44,7 +50,7 @@ func OAuth2(ctx *gin.Context) {
 func OAuth2Api(ctx *gin.Context) {
 	log := ctx.MustGet("log").(*logrus.Entry)
 
-	pi, err := providers.GetProvider(provider.OAuth2Provider(ctx.Param("type")))
+	pi, err := providers.GetProvider(ctx.Param("type"))
 	if err != nil {
 		log.Errorf("failed to get provider: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
@@ -58,10 +64,15 @@ func OAuth2Api(ctx *gin.Context) {
 	}
 
 	state := utils.RandString(16)
+	url, err := pi.NewAuthURL(ctx, state)
+	if err != nil {
+		log.Errorf("failed to get auth url: %v", err)
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
 	states.Store(state, newAuthFunc(meta.Redirect), time.Minute*5)
-
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
-		"url": pi.NewAuthURL(state),
+		"url": url,
 	}))
 }
 
@@ -136,14 +147,7 @@ func newAuthFunc(redirect string) stateHandler {
 	return func(ctx *gin.Context, pi provider.ProviderInterface, code string) {
 		log := ctx.MustGet("log").(*logrus.Entry)
 
-		t, err := pi.GetToken(ctx, code)
-		if err != nil {
-			log.Errorf("failed to get token: %v", err)
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
-			return
-		}
-
-		ui, err := pi.GetUserInfo(ctx, t)
+		ui, err := pi.GetUserInfo(ctx, code)
 		if err != nil {
 			log.Errorf("failed to get user info: %v", err)
 			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))

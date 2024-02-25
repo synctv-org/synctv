@@ -221,7 +221,7 @@ func UserBindProviders(ctx *gin.Context) {
 		}
 	}
 
-	m.Range(func(p provider.OAuth2Provider, pi provider.ProviderInterface) bool {
+	m.Range(func(p provider.OAuth2Provider, pi struct{}) bool {
 		if _, ok := resp[p]; !ok {
 			resp[p] = struct {
 				ProviderUserID string "json:\"providerUserID\""

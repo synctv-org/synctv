@@ -3,10 +3,11 @@ package providers
 import (
 	"context"
 	"fmt"
+	"net/http"
+
 	json "github.com/json-iterator/go"
 	"github.com/synctv-org/synctv/internal/provider"
 	"golang.org/x/oauth2"
-	"net/http"
 )
 
 type XiaomiProvider struct {
@@ -35,8 +36,8 @@ func (p *XiaomiProvider) Provider() provider.OAuth2Provider {
 	return "xiaomi"
 }
 
-func (p *XiaomiProvider) NewAuthURL(state string) string {
-	return p.config.AuthCodeURL(state, oauth2.AccessTypeOnline)
+func (p *XiaomiProvider) NewAuthURL(ctx context.Context, state string) (string, error) {
+	return p.config.AuthCodeURL(state, oauth2.AccessTypeOnline), nil
 }
 
 func (p *XiaomiProvider) GetToken(ctx context.Context, code string) (*oauth2.Token, error) {
@@ -47,7 +48,11 @@ func (p *XiaomiProvider) RefreshToken(ctx context.Context, tk string) (*oauth2.T
 	return p.config.TokenSource(ctx, &oauth2.Token{RefreshToken: tk}).Token()
 }
 
-func (p *XiaomiProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*provider.UserInfo, error) {
+func (p *XiaomiProvider) GetUserInfo(ctx context.Context, code string) (*provider.UserInfo, error) {
+	tk, err := p.config.Exchange(ctx, code)
+	if err != nil {
+		return nil, err
+	}
 	client := p.config.Client(ctx, tk)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("https://open.account.xiaomi.com/user/profile?clientId=%s&token=%s", p.config.ClientID, tk.AccessToken), nil)
 	if err != nil {

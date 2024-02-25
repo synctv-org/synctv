@@ -34,8 +34,8 @@ func (p *GithubProvider) Provider() provider.OAuth2Provider {
 	return "github"
 }
 
-func (p *GithubProvider) NewAuthURL(state string) string {
-	return p.config.AuthCodeURL(state, oauth2.AccessTypeOnline)
+func (p *GithubProvider) NewAuthURL(ctx context.Context, state string) (string, error) {
+	return p.config.AuthCodeURL(state, oauth2.AccessTypeOnline), nil
 }
 
 func (p *GithubProvider) GetToken(ctx context.Context, code string) (*oauth2.Token, error) {
@@ -46,7 +46,11 @@ func (p *GithubProvider) RefreshToken(ctx context.Context, tk string) (*oauth2.T
 	return p.config.TokenSource(ctx, &oauth2.Token{RefreshToken: tk}).Token()
 }
 
-func (p *GithubProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*provider.UserInfo, error) {
+func (p *GithubProvider) GetUserInfo(ctx context.Context, code string) (*provider.UserInfo, error) {
+	tk, err := p.config.Exchange(ctx, code)
+	if err != nil {
+		return nil, err
+	}
 	client := p.config.Client(ctx, tk)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/user", nil)
 	if err != nil {

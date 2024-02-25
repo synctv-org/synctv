@@ -6,11 +6,12 @@ import (
 	"fmt"
 	"os"
 
+	"net/http"
+
 	plugin "github.com/hashicorp/go-plugin"
 	"github.com/synctv-org/synctv/internal/provider"
 	"github.com/synctv-org/synctv/internal/provider/plugins"
 	"golang.org/x/oauth2"
-	"net/http"
 )
 
 // Linux/Mac/Windows:
@@ -55,8 +56,8 @@ func (p *FeishuSSOProvider) Provider() provider.OAuth2Provider {
 	return "feishu-sso" //插件名
 }
 
-func (p *FeishuSSOProvider) NewAuthURL(state string) string {
-	return p.config.AuthCodeURL(state, oauth2.AccessTypeOnline)
+func (p *FeishuSSOProvider) NewAuthURL(ctx context.Context, state string) (string, error) {
+	return p.config.AuthCodeURL(state, oauth2.AccessTypeOnline), nil
 }
 
 func (p *FeishuSSOProvider) GetToken(ctx context.Context, code string) (*oauth2.Token, error) {
@@ -67,7 +68,11 @@ func (p *FeishuSSOProvider) RefreshToken(ctx context.Context, tk string) (*oauth
 	return p.config.TokenSource(ctx, &oauth2.Token{RefreshToken: tk}).Token()
 }
 
-func (p *FeishuSSOProvider) GetUserInfo(ctx context.Context, tk *oauth2.Token) (*provider.UserInfo, error) {
+func (p *FeishuSSOProvider) GetUserInfo(ctx context.Context, code string) (*provider.UserInfo, error) {
+	tk, err := p.GetToken(ctx, code)
+	if err != nil {
+		return nil, err
+	}
 	client := p.config.Client(ctx, tk)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("https://anycross.feishu.cn/sso/%s/oauth2/userinfo", p.ssoid), nil) // 身份端点
 	if err != nil {

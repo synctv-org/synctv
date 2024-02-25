@@ -4,14 +4,13 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"reflect"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/maruel/natural"
 	"github.com/sirupsen/logrus"
-	"github.com/synctv-org/synctv/internal/bootstrap"
 	"github.com/synctv-org/synctv/internal/db"
 	dbModel "github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
@@ -54,21 +53,20 @@ func AdminSettings(ctx *gin.Context) {
 	group := ctx.Param("group")
 	switch group {
 	case "oauth2":
-		resp := make(model.AdminSettingsResp, len(bootstrap.ProviderGroupSettings))
-		for k, v := range bootstrap.ProviderGroupSettings {
-			reflectV := reflect.ValueOf(*v)
-			for i := 0; i < reflectV.NumField(); i++ {
-				f := reflectV.Field(i)
-				if resp[k] == nil {
-					resp[k] = make(gin.H, 0)
-				}
-				s, ok := f.Interface().(settings.Setting)
-				if !ok {
-					log.Error("type error")
-					ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorStringResp("type error"))
-					return
-				}
-				resp[k][s.Name()] = s.Interface()
+		const groupPrefix = dbModel.SettingGroupOauth2
+		settingGroups := make(map[string]map[string]settings.Setting)
+		for sg, v := range settings.GroupSettings {
+			if strings.HasPrefix(sg, groupPrefix) {
+				settingGroups[sg] = v
+			}
+		}
+		resp := make(model.AdminSettingsResp, len(settingGroups))
+		for k, v := range settingGroups {
+			if resp[k] == nil {
+				resp[k] = make(gin.H, len(v))
+			}
+			for k2, s := range v {
+				resp[k][k2] = s.Interface()
 			}
 		}
 

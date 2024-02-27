@@ -39,7 +39,7 @@ require (
 	github.com/zijiren233/stream v0.5.2
 	github.com/zijiren233/yaml-comment v0.2.1
 	go.etcd.io/etcd/client/v3 v3.5.12
-	golang.org/x/crypto v0.19.0
+	golang.org/x/crypto v0.20.0
 	golang.org/x/exp v0.0.0-20240222234643-814bf88cf225
 	golang.org/x/oauth2 v0.17.0
 	google.golang.org/grpc v1.62.0

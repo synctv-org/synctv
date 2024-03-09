@@ -15,7 +15,7 @@ GOHOSTOS="$(go env GOHOSTOS)"
 GOHOSTARCH="$(go env GOHOSTARCH)"
 GOHOSTPLATFORM="$GOHOSTOS/$GOHOSTARCH"
 
-DEFAULT_CGO_DEPS_VERSION="v0.4.4"
+DEFAULT_CGO_DEPS_VERSION="v0.4.6"
 
 function EnvHelp() {
     echo "SOURCE_DIR set source dir (default: $DEFAULT_SOURCE_DIR)"
@@ -1451,12 +1451,14 @@ function AutoBuild() {
     if [ ! "$1" ]; then
         Build "$GOHOSTPLATFORM" "$BIN_NAME"
     else
+        local platform
         for platform in $1; do
             if [ "$platform" == "all" ]; then
                 if [ "$CURRENT_ALLOWED_PLATFORM" ]; then
                     AutoBuild "$CURRENT_ALLOWED_PLATFORM"
                 fi
             elif [[ $platform == *\** ]]; then
+                local var
                 for var in $CURRENT_ALLOWED_PLATFORM; do
                     if [[ $var == $platform ]]; then
                         AutoBuild "$var"

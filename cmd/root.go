@@ -26,12 +26,12 @@ var RootCmd = &cobra.Command{
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
 		s, err := utils.GetEnvFiles(flags.DataDir)
 		if err != nil {
-			logrus.Fatalf("get env files error: %v", err)
+			logrus.Warnf("get env files error: %v", err)
 		}
 		if flags.Dev {
 			ss, err := utils.GetEnvFiles(".")
 			if err != nil {
-				logrus.Fatalf("get env files error: %v", err)
+				logrus.Warnf("get env files error: %v", err)
 			}
 			s = append(s, ss...)
 		}

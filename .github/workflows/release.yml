@@ -54,7 +54,7 @@ jobs:
           bash script/build.sh -v "v${{ steps.get_version.outputs.VERSION }}" -p "${{ matrix.target }}" -m '-a -v'
 
       - name: Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           draft: false

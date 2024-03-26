@@ -45,7 +45,7 @@ jobs:
 
       - name: Build
         run: |
-          bash script/build.sh -v dev -p "${{ matrix.target }}" -m '-v -x'
+          bash script/build.sh -v dev -p "${{ matrix.target }}" -m '-a -v -x'
 
       - name: Release
         uses: softprops/action-gh-release@v1

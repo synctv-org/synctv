@@ -39,7 +39,6 @@ jobs:
     runs-on: ubuntu-latest
     needs: get_all_targets
     strategy:
-      max-parallel: 8
       matrix:
         target: ${{ fromJson(needs.get_all_targets.outputs.TARGETS) }}
     steps:
@@ -53,4 +52,4 @@ jobs:
 
       - name: Build
         run: |
-          bash script/build.sh -sp "${{ matrix.target }}" -m '-v -x'
+          bash script/build.sh -sp "${{ matrix.target }}" -m '-a -v -x'

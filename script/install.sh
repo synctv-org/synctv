@@ -78,6 +78,7 @@ function InitOS() {
     esac
 }
 
+# Ref: https://dl.xanmod.org/check_x86-64_psabi.sh
 AMD64_MICRO_DETECTION_SCRIPT=$(
     cat <<EOF
 BEGIN {

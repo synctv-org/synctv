@@ -51,7 +51,7 @@ jobs:
 
       - name: Build
         run: |
-          bash script/build.sh -v "v${{ steps.get_version.outputs.VERSION }}" -p "${{ matrix.target }}"
+          bash script/build.sh -v "v${{ steps.get_version.outputs.VERSION }}" -p "${{ matrix.target }}" -m '-v -x'
 
       - name: Release
         uses: softprops/action-gh-release@v1

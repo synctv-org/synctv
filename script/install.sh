@@ -79,6 +79,7 @@ function InitOS() {
 }
 
 # Ref: https://dl.xanmod.org/check_x86-64_psabi.sh
+# https://go.dev/wiki/MinimumRequirements#amd64
 AMD64_MICRO_DETECTION_SCRIPT=$(
     cat <<EOF
 BEGIN {

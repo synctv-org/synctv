@@ -24,7 +24,7 @@ import (
 	"github.com/go-kratos/kratos/v2/selector/wrr"
 	ggrpc "github.com/go-kratos/kratos/v2/transport/grpc"
 	"github.com/go-kratos/kratos/v2/transport/http"
-	jwtv4 "github.com/golang-jwt/jwt/v4"
+	jwtv5 "github.com/golang-jwt/jwt/v5"
 	"github.com/hashicorp/consul/api"
 	log "github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/internal/db"
@@ -500,9 +500,9 @@ func NewGrpcConn(ctx context.Context, conf *model.Backend) (*grpc.ClientConn, er
 
 	if conf.JwtSecret != "" {
 		key := []byte(conf.JwtSecret)
-		middlewares = append(middlewares, jwt.Client(func(token *jwtv4.Token) (interface{}, error) {
+		middlewares = append(middlewares, jwt.Client(func(token *jwtv5.Token) (interface{}, error) {
 			return key, nil
-		}, jwt.WithSigningMethod(jwtv4.SigningMethodHS256)))
+		}, jwt.WithSigningMethod(jwtv5.SigningMethodHS256)))
 	}
 
 	opts := []ggrpc.ClientOption{
@@ -597,9 +597,9 @@ func NewHttpClientConn(ctx context.Context, conf *model.Backend) (*http.Client, 
 
 	if conf.JwtSecret != "" {
 		key := []byte(conf.JwtSecret)
-		middlewares = append(middlewares, jwt.Client(func(token *jwtv4.Token) (interface{}, error) {
+		middlewares = append(middlewares, jwt.Client(func(token *jwtv5.Token) (interface{}, error) {
 			return key, nil
-		}, jwt.WithSigningMethod(jwtv4.SigningMethodHS256)))
+		}, jwt.WithSigningMethod(jwtv5.SigningMethodHS256)))
 	}
 
 	opts := []http.ClientOption{

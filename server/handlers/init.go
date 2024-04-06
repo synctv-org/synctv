@@ -79,6 +79,8 @@ func initAdmin(admin *gin.RouterGroup, root *gin.RouterGroup) {
 
 		admin.POST("/settings", EditAdminSettings)
 
+		admin.POST("/email/test", SendTestEmail)
+
 		admin.GET("/vendors", AdminGetVendorBackends)
 
 		admin.POST("/vendors/add", AdminAddVendorBackend)
@@ -241,8 +243,6 @@ func initUser(user *gin.RouterGroup, needAuthUser *gin.RouterGroup) {
 	needAuthUser.POST("/bind/email", UserBindEmail)
 
 	needAuthUser.POST("/unbind/email", UserUnbindEmail)
-
-	needAuthUser.POST("/bind/email/test", UserSendTestEmail)
 }
 
 func initVendor(vendor *gin.RouterGroup) {

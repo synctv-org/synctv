@@ -333,19 +333,6 @@ func UserUnbindEmail(ctx *gin.Context) {
 	ctx.Status(http.StatusNoContent)
 }
 
-func UserSendTestEmail(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.UserEntry).Value()
-	log := ctx.MustGet("log").(*logrus.Entry)
-
-	if err := user.SendTestEmail(); err != nil {
-		log.Errorf("failed to send test email: %v", err)
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
-		return
-	}
-
-	ctx.Status(http.StatusNoContent)
-}
-
 func GetUserSignupEmailStep1Captcha(ctx *gin.Context) {
 	log := ctx.MustGet("log").(*logrus.Entry)
 

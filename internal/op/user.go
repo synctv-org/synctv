@@ -316,9 +316,11 @@ func (u *User) UnbindEmail() error {
 	return nil
 }
 
+var ErrEmailUnbound = errors.New("email unbound")
+
 func (u *User) SendTestEmail() error {
 	if u.Email == "" {
-		return errors.New("unbound email")
+		return ErrEmailUnbound
 	}
 
 	return email.SendTestEmail(u.Username, u.Email)
@@ -326,7 +328,7 @@ func (u *User) SendTestEmail() error {
 
 func (u *User) SendRetrievePasswordCaptchaEmail(host string) error {
 	if u.Email == "" {
-		return errors.New("unbound email")
+		return ErrEmailUnbound
 	}
 
 	return email.SendRetrievePasswordCaptchaEmail(u.ID, u.Email, host)

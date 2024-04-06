@@ -175,3 +175,18 @@ func (dvbr *VendorBackendEndpointsReq) Validate() error {
 func (dvbr *VendorBackendEndpointsReq) Decode(ctx *gin.Context) error {
 	return json.NewDecoder(ctx.Request.Body).Decode(dvbr)
 }
+
+type SendTestEmailReq struct {
+	Email string `json:"email"`
+}
+
+func (ster *SendTestEmailReq) Validate() error {
+	if ster.Email != "" && !emailReg.MatchString(ster.Email) {
+		return errors.New("invalid email")
+	}
+	return nil
+}
+
+func (ster *SendTestEmailReq) Decode(ctx *gin.Context) error {
+	return json.NewDecoder(ctx.Request.Body).Decode(ster)
+}

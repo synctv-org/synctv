@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -12,6 +13,7 @@ import (
 	"github.com/maruel/natural"
 	"github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/internal/db"
+	"github.com/synctv-org/synctv/internal/email"
 	dbModel "github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/internal/settings"
@@ -29,7 +31,6 @@ func EditAdminSettings(ctx *gin.Context) {
 
 	req := model.AdminSettingsReq{}
 	if err := model.Decode(ctx, &req); err != nil {
-		log.WithError(err).Error("decode error")
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
@@ -261,7 +262,6 @@ func ApprovePendingUser(ctx *gin.Context) {
 
 	req := model.UserIDReq{}
 	if err := model.Decode(ctx, &req); err != nil {
-		log.WithError(err).Error("decode error")
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
@@ -295,7 +295,6 @@ func BanUser(ctx *gin.Context) {
 
 	req := model.UserIDReq{}
 	if err := model.Decode(ctx, &req); err != nil {
-		log.WithError(err).Error("decode error")
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
@@ -335,7 +334,6 @@ func UnBanUser(ctx *gin.Context) {
 
 	req := model.UserIDReq{}
 	if err := model.Decode(ctx, &req); err != nil {
-		log.WithError(err).Error("decode error")
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
@@ -501,7 +499,6 @@ func ApprovePendingRoom(ctx *gin.Context) {
 
 	req := model.RoomIDReq{}
 	if err := model.Decode(ctx, &req); err != nil {
-		log.WithError(err).Error("decode error")
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
@@ -535,7 +532,6 @@ func BanRoom(ctx *gin.Context) {
 
 	req := model.RoomIDReq{}
 	if err := model.Decode(ctx, &req); err != nil {
-		log.WithError(err).Error("decode error")
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
@@ -582,7 +578,6 @@ func UnBanRoom(ctx *gin.Context) {
 
 	req := model.RoomIDReq{}
 	if err := model.Decode(ctx, &req); err != nil {
-		log.WithError(err).Error("decode error")
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
@@ -616,7 +611,6 @@ func AddUser(ctx *gin.Context) {
 
 	req := model.AddUserReq{}
 	if err := model.Decode(ctx, &req); err != nil {
-		log.WithError(err).Error("decode error")
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
@@ -643,7 +637,6 @@ func DeleteUser(ctx *gin.Context) {
 
 	req := model.UserIDReq{}
 	if err := model.Decode(ctx, &req); err != nil {
-		log.WithError(err).Error("decode error")
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
@@ -682,7 +675,6 @@ func AdminUserPassword(ctx *gin.Context) {
 
 	req := model.AdminUserPasswordReq{}
 	if err := model.Decode(ctx, &req); err != nil {
-		log.WithError(err).Error("decode error")
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp(err.Error()))
 		return
 	}
@@ -721,7 +713,6 @@ func AdminUsername(ctx *gin.Context) {
 
 	req := model.AdminUsernameReq{}
 	if err := model.Decode(ctx, &req); err != nil {
-		log.WithError(err).Error("decode error")
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp(err.Error()))
 		return
 	}
@@ -760,7 +751,6 @@ func AdminRoomPassword(ctx *gin.Context) {
 
 	req := model.AdminRoomPasswordReq{}
 	if err := model.Decode(ctx, &req); err != nil {
-		log.WithError(err).Error("decode error")
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp(err.Error()))
 		return
 	}
@@ -850,7 +840,6 @@ func AdminAddVendorBackend(ctx *gin.Context) {
 
 	var req model.AddVendorBackendReq
 	if err := model.Decode(ctx, &req); err != nil {
-		log.WithError(err).Error("decode error")
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
@@ -870,7 +859,6 @@ func AdminDeleteVendorBackends(ctx *gin.Context) {
 
 	var req model.VendorBackendEndpointsReq
 	if err := model.Decode(ctx, &req); err != nil {
-		log.WithError(err).Error("decode error")
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
@@ -890,7 +878,6 @@ func AdminUpdateVendorBackends(ctx *gin.Context) {
 
 	var req model.AddVendorBackendReq
 	if err := model.Decode(ctx, &req); err != nil {
-		log.WithError(err).Error("decode error")
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
@@ -910,7 +897,6 @@ func AdminReconnectVendorBackends(ctx *gin.Context) {
 
 	var req model.VendorBackendEndpointsReq
 	if err := model.Decode(ctx, &req); err != nil {
-		log.WithError(err).Error("decode error")
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
@@ -943,7 +929,6 @@ func AdminEnableVendorBackends(ctx *gin.Context) {
 
 	var req model.VendorBackendEndpointsReq
 	if err := model.Decode(ctx, &req); err != nil {
-		log.WithError(err).Error("decode error")
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
@@ -963,7 +948,6 @@ func AdminDisableVendorBackends(ctx *gin.Context) {
 
 	var req model.VendorBackendEndpointsReq
 	if err := model.Decode(ctx, &req); err != nil {
-		log.WithError(err).Error("decode error")
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
@@ -972,6 +956,37 @@ func AdminDisableVendorBackends(ctx *gin.Context) {
 		log.WithError(err).Error("disable vendor backends error")
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
+	}
+
+	ctx.Status(http.StatusNoContent)
+}
+
+func SendTestEmail(ctx *gin.Context) {
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
+	log := ctx.MustGet("log").(*logrus.Entry)
+
+	var req model.SendTestEmailReq
+	if err := model.Decode(ctx, &req); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	if req.Email == "" {
+		if err := user.SendTestEmail(); err != nil {
+			log.Errorf("failed to send test email: %v", err)
+			if errors.Is(err, op.ErrEmailUnbound) {
+				ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+			} else {
+				ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+			}
+			return
+		}
+	} else {
+		if err := email.SendTestEmail(user.Username, req.Email); err != nil {
+			log.Errorf("failed to send test email: %v", err)
+			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+			return
+		}
 	}
 
 	ctx.Status(http.StatusNoContent)

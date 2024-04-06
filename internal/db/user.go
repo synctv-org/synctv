@@ -23,7 +23,7 @@ func WithRole(role model.Role) CreateUserConfig {
 
 func WithAppendProvider(p provider.OAuth2Provider, puid string) CreateUserConfig {
 	return func(u *model.User) {
-		u.UserProviders = append(u.UserProviders, model.UserProvider{
+		u.UserProviders = append(u.UserProviders, &model.UserProvider{
 			Provider:       p,
 			ProviderUserID: puid,
 		})
@@ -32,20 +32,20 @@ func WithAppendProvider(p provider.OAuth2Provider, puid string) CreateUserConfig
 
 func WithSetProvider(p provider.OAuth2Provider, puid string) CreateUserConfig {
 	return func(u *model.User) {
-		u.UserProviders = []model.UserProvider{{
+		u.UserProviders = []*model.UserProvider{{
 			Provider:       p,
 			ProviderUserID: puid,
 		}}
 	}
 }
 
-func WithAppendProviders(providers []model.UserProvider) CreateUserConfig {
+func WithAppendProviders(providers []*model.UserProvider) CreateUserConfig {
 	return func(u *model.User) {
 		u.UserProviders = append(u.UserProviders, providers...)
 	}
 }
 
-func WithSetProviders(providers []model.UserProvider) CreateUserConfig {
+func WithSetProviders(providers []*model.UserProvider) CreateUserConfig {
 	return func(u *model.User) {
 		u.UserProviders = providers
 	}

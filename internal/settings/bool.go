@@ -27,6 +27,7 @@ type Bool struct {
 	defaultValue          bool
 	value                 uint32
 	beforeInit, beforeSet func(BoolSetting, bool) (bool, error)
+	afterInit, afterSet   func(BoolSetting, bool)
 }
 
 type BoolSettingOption func(*Bool)
@@ -46,6 +47,18 @@ func WithBeforeInitBool(beforeInit func(BoolSetting, bool) (bool, error)) BoolSe
 func WithBeforeSetBool(beforeSet func(BoolSetting, bool) (bool, error)) BoolSettingOption {
 	return func(s *Bool) {
 		s.SetBeforeSet(beforeSet)
+	}
+}
+
+func WithAfterInitBool(afterInit func(BoolSetting, bool)) BoolSettingOption {
+	return func(s *Bool) {
+		s.SetAfterInit(afterInit)
+	}
+}
+
+func WithAfterSetBool(afterSet func(BoolSetting, bool)) BoolSettingOption {
+	return func(s *Bool) {
+		s.SetAfterSet(afterSet)
 	}
 }
 
@@ -77,6 +90,14 @@ func (b *Bool) SetBeforeSet(beforeSet func(BoolSetting, bool) (bool, error)) {
 	b.beforeSet = beforeSet
 }
 
+func (b *Bool) SetAfterInit(afterInit func(BoolSetting, bool)) {
+	b.afterInit = afterInit
+}
+
+func (b *Bool) SetAfterSet(afterSet func(BoolSetting, bool)) {
+	b.afterSet = afterSet
+}
+
 func (b *Bool) set(value bool) {
 	if value {
 		atomic.StoreUint32(&b.value, 1)
@@ -103,6 +124,11 @@ func (b *Bool) Init(value string) error {
 	}
 
 	b.set(v)
+
+	if b.afterInit != nil {
+		b.afterInit(b, v)
+	}
+
 	return nil
 }
 
@@ -149,6 +175,11 @@ func (b *Bool) SetString(value string) error {
 	}
 
 	b.set(v)
+
+	if b.afterSet != nil {
+		b.afterSet(b, v)
+	}
+
 	return nil
 }
 
@@ -166,6 +197,11 @@ func (b *Bool) Set(v bool) (err error) {
 	}
 
 	b.set(v)
+
+	if b.afterSet != nil {
+		b.afterSet(b, v)
+	}
+
 	return
 }
 

@@ -28,6 +28,7 @@ type Int64 struct {
 	value                 int64
 	validator             func(int64) error
 	beforeInit, beforeSet func(Int64Setting, int64) (int64, error)
+	afterInit, afterSet   func(Int64Setting, int64)
 }
 
 type Int64SettingOption func(*Int64)
@@ -53,6 +54,18 @@ func WithBeforeInitInt64(beforeInit func(Int64Setting, int64) (int64, error)) In
 func WithBeforeSetInt64(beforeSet func(Int64Setting, int64) (int64, error)) Int64SettingOption {
 	return func(s *Int64) {
 		s.SetBeforeSet(beforeSet)
+	}
+}
+
+func WithAfterInitInt64(afterInit func(Int64Setting, int64)) Int64SettingOption {
+	return func(s *Int64) {
+		s.SetAfterInit(afterInit)
+	}
+}
+
+func WithAfterSetInt64(afterSet func(Int64Setting, int64)) Int64SettingOption {
+	return func(s *Int64) {
+		s.SetAfterSet(afterSet)
 	}
 }
 
@@ -84,6 +97,14 @@ func (i *Int64) SetBeforeSet(beforeSet func(Int64Setting, int64) (int64, error))
 	i.beforeSet = beforeSet
 }
 
+func (i *Int64) SetAfterInit(afterInit func(Int64Setting, int64)) {
+	i.afterInit = afterInit
+}
+
+func (i *Int64) SetAfterSet(afterSet func(Int64Setting, int64)) {
+	i.afterSet = afterSet
+}
+
 func (i *Int64) Parse(value string) (int64, error) {
 	v, err := strconv.ParseInt(value, 10, 64)
 	if err != nil {
@@ -113,6 +134,11 @@ func (i *Int64) Init(value string) error {
 	}
 
 	i.set(v)
+
+	if i.afterInit != nil {
+		i.afterInit(i, v)
+	}
+
 	return nil
 }
 
@@ -151,6 +177,11 @@ func (i *Int64) SetString(value string) error {
 	}
 
 	i.set(v)
+
+	if i.afterSet != nil {
+		i.afterSet(i, v)
+	}
+
 	return nil
 }
 
@@ -179,6 +210,11 @@ func (i *Int64) Set(v int64) (err error) {
 	}
 
 	i.set(v)
+
+	if i.afterSet != nil {
+		i.afterSet(i, v)
+	}
+
 	return
 }
 

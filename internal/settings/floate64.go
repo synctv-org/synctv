@@ -29,6 +29,7 @@ type Float64 struct {
 	value                 uint64
 	validator             func(float64) error
 	beforeInit, beforeSet func(Float64Setting, float64) (float64, error)
+	afterInit, afterSet   func(Float64Setting, float64)
 }
 
 type Float64SettingOption func(*Float64)
@@ -54,6 +55,18 @@ func WithBeforeInitFloat64(beforeInit func(Float64Setting, float64) (float64, er
 func WithBeforeSetFloat64(beforeSet func(Float64Setting, float64) (float64, error)) Float64SettingOption {
 	return func(s *Float64) {
 		s.SetBeforeSet(beforeSet)
+	}
+}
+
+func WithAfterInitFloat64(afterInit func(Float64Setting, float64)) Float64SettingOption {
+	return func(s *Float64) {
+		s.SetAfterInit(afterInit)
+	}
+}
+
+func WithAfterSetFloat64(afterSet func(Float64Setting, float64)) Float64SettingOption {
+	return func(s *Float64) {
+		s.SetAfterSet(afterSet)
 	}
 }
 
@@ -85,6 +98,14 @@ func (f *Float64) SetBeforeSet(beforeSet func(Float64Setting, float64) (float64,
 	f.beforeSet = beforeSet
 }
 
+func (f *Float64) SetAfterInit(afterInit func(Float64Setting, float64)) {
+	f.afterInit = afterInit
+}
+
+func (f *Float64) SetAfterSet(afterSet func(Float64Setting, float64)) {
+	f.afterSet = afterSet
+}
+
 func (f *Float64) Parse(value string) (float64, error) {
 	v, err := strconv.ParseFloat(value, 64)
 	if err != nil {
@@ -114,6 +135,11 @@ func (f *Float64) Init(value string) error {
 	}
 
 	f.set(v)
+
+	if f.afterInit != nil {
+		f.afterInit(f, v)
+	}
+
 	return nil
 }
 
@@ -152,6 +178,11 @@ func (f *Float64) SetString(value string) error {
 	}
 
 	f.set(v)
+
+	if f.afterSet != nil {
+		f.afterSet(f, v)
+	}
+
 	return nil
 }
 
@@ -180,6 +211,11 @@ func (f *Float64) Set(v float64) (err error) {
 	}
 
 	f.set(v)
+
+	if f.afterSet != nil {
+		f.afterSet(f, v)
+	}
+
 	return
 }
 

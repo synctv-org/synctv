@@ -57,6 +57,18 @@ func WithRegisteredByProvider(b bool) CreateUserConfig {
 	}
 }
 
+func WithEmail(email string) CreateUserConfig {
+	return func(u *model.User) {
+		u.Email = email
+	}
+}
+
+func WithRegisteredByEmail(b bool) CreateUserConfig {
+	return func(u *model.User) {
+		u.RegisteredByEmail = b
+	}
+}
+
 func CreateUserWithHashedPassword(username string, hashedPassword []byte, conf ...CreateUserConfig) (*model.User, error) {
 	if username == "" {
 		return nil, errors.New("username cannot be empty")
@@ -128,8 +140,10 @@ func CreateOrLoadUserWithHashedPassword(username string, hashedPassword []byte, 
 
 // 只有当provider和puid没有找到对应的user时才会创建
 func CreateOrLoadUserWithProvider(username, password string, p provider.OAuth2Provider, puid string, conf ...CreateUserConfig) (*model.User, error) {
+	if puid == "" {
+		return nil, errors.New("provider user id cannot be empty")
+	}
 	var user model.User
-
 	if err := db.Where("id = (?)", db.Table("user_providers").Where("provider = ? AND provider_user_id = ?", p, puid).Select("user_id")).First(&user).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return CreateUser(username, password, append(conf, WithSetProvider(p, puid), WithRegisteredByProvider(true))...)
@@ -141,9 +155,37 @@ func CreateOrLoadUserWithProvider(username, password string, p provider.OAuth2Pr
 	}
 }
 
+func CreateOrLoadUserWithEmail(username, password, email string, conf ...CreateUserConfig) (*model.User, error) {
+	if email == "" {
+		return nil, errors.New("email cannot be empty")
+	}
+	var user model.User
+	if err := db.Where("email = ?", email).First(&user).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return CreateUser(username, password, append(conf, WithEmail(email), WithRegisteredByEmail(true))...)
+		} else {
+			return nil, err
+		}
+	}
+	return &user, nil
+}
+
+func CreateUserWithEmail(username, password, email string, conf ...CreateUserConfig) (*model.User, error) {
+	if email == "" {
+		return nil, errors.New("email cannot be empty")
+	}
+	return CreateUser(username, password, append(conf, WithEmail(email), WithRegisteredByEmail(true))...)
+}
+
 func GetUserByProvider(p provider.OAuth2Provider, puid string) (*model.User, error) {
 	var user model.User
 	err := db.Where("id = (?)", db.Table("user_providers").Where("provider = ? AND provider_user_id = ?", p, puid).Select("user_id")).First(&user).Error
+	return &user, HandleNotFound(err, "user")
+}
+
+func GetUserByEmail(email string) (*model.User, error) {
+	var user model.User
+	err := db.Where("email = ?", email).First(&user).Error
 	return &user, HandleNotFound(err, "user")
 }
 
@@ -367,4 +409,25 @@ func GetAllUsers(scopes ...func(*gorm.DB) *gorm.DB) []*model.User {
 func SetUserHashedPassword(id string, hashedPassword []byte) error {
 	err := db.Model(&model.User{}).Where("id = ?", id).Update("hashed_password", hashedPassword).Error
 	return HandleNotFound(err, "user")
+}
+
+func BindEmail(id string, email string) error {
+	err := db.Model(&model.User{}).Where("id = ?", id).Update("email", email).Error
+	return HandleNotFound(err, "user")
+}
+
+func UnbindEmail(uid string) error {
+	return Transactional(func(tx *gorm.DB) error {
+		user := model.User{}
+		if err := tx.Where("id = ?", uid).First(&user).Error; err != nil {
+			return HandleNotFound(err, "user")
+		}
+		if user.Email == "" {
+			return errors.New("user has no email")
+		}
+		if user.RegisteredByEmail {
+			return errors.New("user must have one email")
+		}
+		return tx.Model(&model.User{}).Where("id = ?", uid).Update("email", "").Error
+	})
 }

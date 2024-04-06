@@ -1,0 +1,39 @@
+<mjml>
+    <mj-head>
+        <mj-style>.indent div {
+            text-indent: 2em;
+            }
+            .code div {
+            text-shadow: 0 0 11px #bdbdff;
+            }
+            .footer div {
+            text-shadow: 0 0 5px #fef0df;
+            }
+            iframe {
+            border:none
+            }</mj-style>
+    </mj-head>
+    <mj-body>
+        <mj-section>
+            <mj-column>
+                <mj-text align="center" font-size="30px">SyncTV</mj-text>
+            </mj-column>
+        </mj-section>
+        <mj-section padding="10px" padding-left="0px" padding-right="0px" background-color="#f3f4f6"
+            border-radius=".75rem">
+            <mj-column>
+                <mj-text font-size="18px" font-weight="600">测试邮件：</mj-text>
+                <mj-text css-class="indent">Dear {{ .Username }}.</mj-text>
+                <mj-text css-class="indent">这是一封测试邮件。This is a test email.</mj-text>
+            </mj-column>
+        </mj-section>
+        <mj-section>
+            <mj-column>
+                <mj-text css-class="footer" align="center">Copyright {{ .Year }} <a
+                        href="https://github.com/synctv-org/synctv" target="_blank"
+                        style="text-decoration: none;font-weight: 600;color: #2563eb">SyncTV</a> All
+                    Rights Reserved.</mj-text>
+            </mj-column>
+        </mj-section>
+    </mj-body>
+</mjml>

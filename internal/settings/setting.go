@@ -31,6 +31,16 @@ func SetValue(name string, value any) error {
 	if !ok {
 		return fmt.Errorf("setting %s not found", name)
 	}
+	switch s.Type() {
+	case model.SettingTypeBool:
+		return s.(BoolSetting).Set(json.Wrap(value).ToBool())
+	case model.SettingTypeInt64:
+		return s.(Int64Setting).Set(json.Wrap(value).ToInt64())
+	case model.SettingTypeFloat64:
+		return s.(Float64Setting).Set(json.Wrap(value).ToFloat64())
+	case model.SettingTypeString:
+		return s.(StringSetting).Set(json.Wrap(value).ToString())
+	}
 	return s.SetString(json.Wrap(value).ToString())
 }
 

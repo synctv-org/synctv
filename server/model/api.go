@@ -1,7 +1,15 @@
 package model
 
 import (
+	"regexp"
 	"time"
+)
+
+var (
+	alnumReg         = regexp.MustCompile(`^[[:alnum:]]+$`)
+	alnumPrintReg    = regexp.MustCompile(`^[[:print:][:alnum:]]+$`)
+	alnumPrintHanReg = regexp.MustCompile(`^[[:print:][:alnum:]\p{Han}]+$`)
+	emailReg         = regexp.MustCompile(`^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`)
 )
 
 type ApiResp struct {

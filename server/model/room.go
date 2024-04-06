@@ -3,7 +3,6 @@ package model
 import (
 	"errors"
 	"fmt"
-	"regexp"
 
 	json "github.com/json-iterator/go"
 
@@ -19,17 +18,6 @@ var (
 
 	ErrPasswordTooLong        = errors.New("password too long")
 	ErrPasswordHasInvalidChar = errors.New("password has invalid char")
-
-	ErrEmptyUserId            = errors.New("empty user id")
-	ErrEmptyUsername          = errors.New("empty username")
-	ErrUsernameTooLong        = errors.New("username too long")
-	ErrUsernameHasInvalidChar = errors.New("username has invalid char")
-)
-
-var (
-	alnumReg         = regexp.MustCompile(`^[[:alnum:]]+$`)
-	alnumPrintReg    = regexp.MustCompile(`^[[:print:][:alnum:]]+$`)
-	alnumPrintHanReg = regexp.MustCompile(`^[[:print:][:alnum:]\p{Han}]+$`)
 )
 
 type FormatEmptyPasswordError string

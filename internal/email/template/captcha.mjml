@@ -1,0 +1,39 @@
+<mjml>
+    <mj-head>
+        <mj-style>.indent div {
+            text-indent: 2em;
+            }
+            .code div {
+            text-shadow: 0 0 11px #bdbdff;
+            }
+            .footer div {
+            text-shadow: 0 0 5px #fef0df;
+            }
+            iframe {
+            border:none
+            }</mj-style>
+    </mj-head>
+    <mj-body>
+        <mj-section>
+            <mj-column>
+                <mj-text align="center" font-size="30px">SyncTV</mj-text>
+            </mj-column>
+        </mj-section>
+        <mj-section padding="10px" padding-left="0px" padding-right="0px" background-color="#f3f4f6"
+            border-radius=".75rem">
+            <mj-column>
+                <mj-text font-size="18px" font-weight="600">验证码：</mj-text>
+                <mj-text css-class="indent">你的验证码为：</mj-text>
+                <mj-text css-class="code" color="#2563eb" align="center" font-size="40px">{{ .Captcha }}</mj-text>
+                <mj-text css-class="indent" font-family="MiSans">该验证码有效期为5分钟，如果您并没有访问过我们的网站，或没有进行上述操作，请忽略这封邮件。</mj-text>
+            </mj-column>
+        </mj-section>
+        <mj-section>
+            <mj-column>
+                <mj-text css-class="footer" align="center">Copyright {{ .Year }} <a href="https://github.com/synctv-org"
+                        target="_blank" style="text-decoration: none;font-weight: 600;color: #2563eb">SyncTV</a> All
+                    Rights Reserved.</mj-text>
+            </mj-column>
+        </mj-section>
+    </mj-body>
+</mjml>

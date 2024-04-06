@@ -43,9 +43,11 @@ type User struct {
 	CreatedAt            time.Time
 	UpdatedAt            time.Time
 	RegisteredByProvider bool               `gorm:"not null;default:false"`
+	RegisteredByEmail    bool               `gorm:"not null;default:false"`
 	UserProviders        []UserProvider     `gorm:"foreignKey:UserID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 	Username             string             `gorm:"not null;uniqueIndex;type:varchar(32)"`
 	HashedPassword       []byte             `gorm:"not null"`
+	Email                string             `gorm:"type:varchar(128);uniqueIndex:,where:email <> ''"`
 	Role                 Role               `gorm:"not null;default:2"`
 	RoomUserRelations    []RoomUserRelation `gorm:"foreignKey:UserID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 	Rooms                []Room             `gorm:"foreignKey:CreatorID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`

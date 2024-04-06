@@ -9,6 +9,13 @@ import (
 	"github.com/synctv-org/synctv/internal/provider"
 )
 
+var (
+	ErrEmptyUserId            = errors.New("empty user id")
+	ErrEmptyUsername          = errors.New("empty username")
+	ErrUsernameTooLong        = errors.New("username too long")
+	ErrUsernameHasInvalidChar = errors.New("username has invalid char")
+)
+
 type SetUserPasswordReq struct {
 	Password string `json:"password"`
 }
@@ -61,6 +68,7 @@ type UserInfoResp struct {
 	Username  string       `json:"username"`
 	Role      dbModel.Role `json:"role"`
 	CreatedAt int64        `json:"createdAt"`
+	Email     string       `json:"email"`
 }
 
 type SetUsernameReq struct {
@@ -100,4 +108,91 @@ func (u *UserIDReq) Validate() error {
 type UserBindProviderResp map[provider.OAuth2Provider]struct {
 	ProviderUserID string `json:"providerUserID"`
 	CreatedAt      int64  `json:"createdAt"`
+}
+
+type GetUserBindEmailStep1CaptchaResp struct {
+	CaptchaID     string `json:"captchaID"`
+	CaptchaBase64 string `json:"captchaBase64"`
+}
+
+type UserSendBindEmailCaptchaReq struct {
+	Email     string `json:"email"`
+	CaptchaID string `json:"captchaID"`
+	Answer    string `json:"answer"`
+}
+
+func (u *UserSendBindEmailCaptchaReq) Decode(ctx *gin.Context) error {
+	return json.NewDecoder(ctx.Request.Body).Decode(u)
+}
+
+var (
+	ErrEmailTooLong = errors.New("email is too long")
+	ErrInvalidEmail = errors.New("invalid email")
+)
+
+func (u *UserSendBindEmailCaptchaReq) Validate() error {
+	if u.Email == "" {
+		return errors.New("email is empty")
+	} else if len(u.Email) > 128 {
+		return ErrEmailTooLong
+	} else if !emailReg.MatchString(u.Email) {
+		return ErrInvalidEmail
+	}
+	if u.CaptchaID == "" {
+		return errors.New("captcha id is empty")
+	}
+	if u.Answer == "" {
+		return errors.New("answer is empty")
+	}
+	return nil
+}
+
+type UserBindEmailReq struct {
+	Email   string `json:"email"`
+	Captcha string `json:"captcha"`
+}
+
+func (u *UserBindEmailReq) Decode(ctx *gin.Context) error {
+	return json.NewDecoder(ctx.Request.Body).Decode(u)
+}
+
+func (u *UserBindEmailReq) Validate() error {
+	if u.Email == "" {
+		return errors.New("email is empty")
+	} else if len(u.Email) > 128 {
+		return ErrEmailTooLong
+	} else if !emailReg.MatchString(u.Email) {
+		return ErrInvalidEmail
+	}
+	if u.Captcha == "" {
+		return errors.New("captcha is empty")
+	}
+	return nil
+}
+
+type SendUserSignupEmailCaptchaReq = UserSendBindEmailCaptchaReq
+
+type UserSignupEmailReq = UserBindEmailReq
+
+type SendUserRetrievePasswordEmailCaptchaReq = UserSendBindEmailCaptchaReq
+
+type UserRetrievePasswordEmailReq struct {
+	UserID   string `json:"userID"`
+	Email    string `json:"email"`
+	Captcha  string `json:"captcha"`
+	Password string `json:"password"`
+}
+
+func (u *UserRetrievePasswordEmailReq) Decode(ctx *gin.Context) error {
+	return json.NewDecoder(ctx.Request.Body).Decode(u)
+}
+
+func (u *UserRetrievePasswordEmailReq) Validate() error {
+	if u.UserID == "" {
+		return errors.New("userID is empty")
+	}
+	if u.Captcha == "" {
+		return errors.New("captcha is empty")
+	}
+	return nil
 }

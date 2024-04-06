@@ -2,12 +2,22 @@ package handlers
 
 import (
 	"github.com/gin-gonic/gin"
+	"github.com/synctv-org/synctv/internal/model"
+	"github.com/synctv-org/synctv/internal/settings"
 	"github.com/synctv-org/synctv/server/handlers/vendors"
 	"github.com/synctv-org/synctv/server/handlers/vendors/vendorAlist"
 	"github.com/synctv-org/synctv/server/handlers/vendors/vendorBilibili"
 	"github.com/synctv-org/synctv/server/handlers/vendors/vendorEmby"
 	"github.com/synctv-org/synctv/server/middlewares"
 	"github.com/synctv-org/synctv/utils"
+)
+
+var (
+	HOST = settings.NewStringSetting(
+		"host",
+		"",
+		model.SettingGroupServer,
+	)
 )
 
 func Init(e *gin.Engine) {
@@ -200,6 +210,18 @@ func initMovie(movie *gin.RouterGroup, needAuthMovie *gin.RouterGroup) {
 func initUser(user *gin.RouterGroup, needAuthUser *gin.RouterGroup) {
 	user.POST("/login", LoginUser)
 
+	user.GET("/signup/email/captcha", GetUserSignupEmailStep1Captcha)
+
+	user.POST("/signup/email/captcha", SendUserSignupEmailCaptcha)
+
+	user.POST("/signup/email", UserSignupEmail)
+
+	user.GET("/retrieve/email/captcha", GetUserRetrievePasswordEmailStep1Captcha)
+
+	user.POST("/retrieve/email/captcha", SendUserRetrievePasswordEmailCaptcha)
+
+	user.POST("/retrieve/email", UserRetrievePasswordEmail)
+
 	needAuthUser.POST("/logout", LogoutUser)
 
 	needAuthUser.GET("/me", Me)
@@ -211,6 +233,16 @@ func initUser(user *gin.RouterGroup, needAuthUser *gin.RouterGroup) {
 	needAuthUser.POST("/password", SetUserPassword)
 
 	needAuthUser.GET("/providers", UserBindProviders)
+
+	needAuthUser.GET("/bind/email/captcha", GetUserBindEmailStep1Captcha)
+
+	needAuthUser.POST("/bind/email/captcha", SendUserBindEmailCaptcha)
+
+	needAuthUser.POST("/bind/email", UserBindEmail)
+
+	needAuthUser.POST("/unbind/email", UserUnbindEmail)
+
+	needAuthUser.POST("/bind/email/test", UserSendTestEmail)
 }
 
 func initVendor(vendor *gin.RouterGroup) {

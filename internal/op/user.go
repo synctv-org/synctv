@@ -7,6 +7,7 @@ import (
 
 	"github.com/synctv-org/synctv/internal/cache"
 	"github.com/synctv-org/synctv/internal/db"
+	"github.com/synctv-org/synctv/internal/email"
 	"github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/provider"
 	"github.com/synctv-org/synctv/internal/settings"
@@ -287,4 +288,53 @@ func (u *User) BindProvider(p provider.OAuth2Provider, pid string) error {
 		return err
 	}
 	return nil
+}
+
+func (u *User) SendBindCaptchaEmail(e string) error {
+	return email.SendBindCaptchaEmail(u.ID, e)
+}
+
+func (u *User) VerifyBindCaptchaEmail(e, captcha string) (bool, error) {
+	return email.VerifyBindCaptchaEmail(u.ID, e, captcha)
+}
+
+func (u *User) BindEmail(e string) error {
+	err := db.BindEmail(u.ID, e)
+	if err != nil {
+		return err
+	}
+	u.Email = e
+	return nil
+}
+
+func (u *User) UnbindEmail() error {
+	err := db.UnbindEmail(u.ID)
+	if err != nil {
+		return err
+	}
+	u.Email = ""
+	return nil
+}
+
+func (u *User) SendTestEmail() error {
+	if u.Email == "" {
+		return errors.New("unbound email")
+	}
+
+	return email.SendTestEmail(u.Username, u.Email)
+}
+
+func (u *User) SendRetrievePasswordCaptchaEmail(host string) error {
+	if u.Email == "" {
+		return errors.New("unbound email")
+	}
+
+	return email.SendRetrievePasswordCaptchaEmail(u.ID, u.Email, host)
+}
+
+func (u *User) VerifyRetrievePasswordCaptchaEmail(e, captcha string) (bool, error) {
+	if u.Email != e {
+		return false, errors.New("email has changed, please resend the captcha email")
+	}
+	return email.VerifyRetrievePasswordCaptchaEmail(u.ID, e, captcha)
 }

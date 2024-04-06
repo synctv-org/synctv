@@ -28,6 +28,7 @@ type String struct {
 	value                 string
 	validator             func(string) error
 	beforeInit, beforeSet func(StringSetting, string) (string, error)
+	afterInit, afterSet   func(StringSetting, string)
 }
 
 type StringSettingOption func(*String)
@@ -53,6 +54,18 @@ func WithBeforeInitString(beforeInit func(StringSetting, string) (string, error)
 func WithBeforeSetString(beforeSet func(StringSetting, string) (string, error)) StringSettingOption {
 	return func(s *String) {
 		s.SetBeforeSet(beforeSet)
+	}
+}
+
+func WithAfterInitString(afterInit func(StringSetting, string)) StringSettingOption {
+	return func(s *String) {
+		s.SetAfterInit(afterInit)
+	}
+}
+
+func WithAfterSetString(afterSet func(StringSetting, string)) StringSettingOption {
+	return func(s *String) {
+		s.SetAfterSet(afterSet)
 	}
 }
 
@@ -84,6 +97,14 @@ func (s *String) SetBeforeSet(beforeSet func(StringSetting, string) (string, err
 	s.beforeSet = beforeSet
 }
 
+func (s *String) SetAfterInit(afterInit func(StringSetting, string)) {
+	s.afterInit = afterInit
+}
+
+func (s *String) SetAfterSet(afterSet func(StringSetting, string)) {
+	s.afterSet = afterSet
+}
+
 func (s *String) Parse(value string) (string, error) {
 	if s.validator != nil {
 		return value, s.validator(value)
@@ -109,6 +130,11 @@ func (s *String) Init(value string) error {
 	}
 
 	s.set(v)
+
+	if s.afterInit != nil {
+		s.afterInit(s, v)
+	}
+
 	return nil
 }
 
@@ -147,6 +173,11 @@ func (s *String) SetString(value string) error {
 	}
 
 	s.set(v)
+
+	if s.afterSet != nil {
+		s.afterSet(s, v)
+	}
+
 	return nil
 }
 
@@ -177,6 +208,11 @@ func (s *String) Set(v string) (err error) {
 	}
 
 	s.set(v)
+
+	if s.afterSet != nil {
+		s.afterSet(s, v)
+	}
+
 	return
 }
 

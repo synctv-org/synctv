@@ -21,6 +21,7 @@ const (
 	SettingGroupDatabase SettingGroup = "database"
 	SettingGroupServer   SettingGroup = "server"
 	SettingGroupOauth2   SettingGroup = "oauth2"
+	SettingGroupEmail    SettingGroup = "email"
 )
 
 type Setting struct {

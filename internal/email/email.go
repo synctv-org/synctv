@@ -203,10 +203,6 @@ func VerifyBindCaptchaEmail(userID, userEmail, captcha string) (bool, error) {
 }
 
 func SendTestEmail(username, email string) error {
-	if !EnableEmail.Get() {
-		return ErrEmailNotEnabled
-	}
-
 	if email == "" {
 		return errors.New("email is empty")
 	}

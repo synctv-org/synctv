@@ -437,9 +437,9 @@ func UserSignupEmail(ctx *gin.Context) {
 
 	var user *op.UserEntry
 	if settings.SignupNeedReview.Get() || email.SignupNeedReview.Get() {
-		user, err = op.CreateUserWithEmail(req.Email, utils.RandString(16), req.Email, db.WithRole(dbModel.RolePending))
+		user, err = op.CreateUserWithEmail(req.Email, req.Password, req.Email, db.WithRole(dbModel.RolePending))
 	} else {
-		user, err = op.CreateUserWithEmail(req.Email, utils.RandString(16), req.Email)
+		user, err = op.CreateUserWithEmail(req.Email, req.Password, req.Email)
 	}
 	if err != nil {
 		log.Errorf("failed to create user: %v", err)

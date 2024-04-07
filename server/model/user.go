@@ -172,7 +172,28 @@ func (u *UserBindEmailReq) Validate() error {
 
 type SendUserSignupEmailCaptchaReq = UserSendBindEmailCaptchaReq
 
-type UserSignupEmailReq = UserBindEmailReq
+type UserSignupEmailReq struct {
+	UserBindEmailReq
+	Password string `json:"password"`
+}
+
+func (u *UserSignupEmailReq) Decode(ctx *gin.Context) error {
+	return json.NewDecoder(ctx.Request.Body).Decode(u)
+}
+
+func (u *UserSignupEmailReq) Validate() error {
+	if err := u.UserBindEmailReq.Validate(); err != nil {
+		return err
+	}
+	if u.Password == "" {
+		return FormatEmptyPasswordError("user")
+	} else if len(u.Password) > 32 {
+		return ErrPasswordTooLong
+	} else if !alnumPrintReg.MatchString(u.Password) {
+		return ErrPasswordHasInvalidChar
+	}
+	return nil
+}
 
 type SendUserRetrievePasswordEmailCaptchaReq = UserSendBindEmailCaptchaReq
 

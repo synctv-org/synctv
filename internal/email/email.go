@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strings"
 	"text/template"
 	"time"
 
@@ -119,8 +120,9 @@ type captchaPayload struct {
 }
 
 type retrievePasswordPayload struct {
-	Host string
-	Url  string
+	Captcha string
+	Host    string
+	Url     string
 
 	Year int
 }
@@ -292,16 +294,22 @@ func SendRetrievePasswordCaptchaEmail(userID, email, host string) error {
 	if userID == "" {
 		return errors.New("user id is empty")
 	}
-
 	if email == "" {
 		return errors.New("email is empty")
+	}
+	if host == "" {
+		return errors.New("host is empty")
+	}
+	if !strings.HasPrefix(host, "http://") && !strings.HasPrefix(host, "https://") {
+		log.Errorf("host: %s must start with http:// or https://", host)
+		return errors.New("get host error")
 	}
 
 	u, err := url.Parse(host)
 	if err != nil {
 		return err
 	}
-	u.Path = `/web/auth/reset`
+	u.Path = `web/auth/reset`
 
 	pool, err := getSmtpPool()
 	if err != nil {
@@ -317,16 +325,17 @@ func SendRetrievePasswordCaptchaEmail(userID, email, host string) error {
 		entry.SetExpiration(time.Now().Add(time.Minute * 5))
 	}
 
-	q := u.Query()
+	q := url.Values{}
 	q.Set("captcha", entry.Value())
 	q.Set("email", email)
 	u.RawQuery = q.Encode()
 
 	out := bytes.NewBuffer(nil)
 	err = retrievePasswordTemplate.Execute(out, retrievePasswordPayload{
-		Host: host,
-		Url:  u.String(),
-		Year: time.Now().Year(),
+		Captcha: entry.Value(),
+		Host:    host,
+		Url:     u.String(),
+		Year:    time.Now().Year(),
 	})
 	if err != nil {
 		return err

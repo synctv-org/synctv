@@ -10,7 +10,7 @@ import (
 
 type publicSettings struct {
 	EmailEnable            bool     `json:"emailEnable"`
-	EmailDisableUserSignup bool     `json:"EmailDisableUserSignup"`
+	EmailDisableUserSignup bool     `json:"emailDisableUserSignup"`
 	EmailWhitelistEnabled  bool     `json:"emailWhitelistEnabled"`
 	EmailWhitelist         []string `json:"emailWhitelist,omitempty"`
 }

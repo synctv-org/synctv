@@ -3,6 +3,7 @@ package handlers
 import (
 	"math/rand"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -505,7 +506,10 @@ func SendUserRetrievePasswordEmailCaptcha(ctx *gin.Context) {
 
 	host := HOST.Get()
 	if host == "" {
-		host = ctx.Request.Host
+		host = (&url.URL{
+			Scheme: "http",
+			Host:   ctx.Request.Host,
+		}).String()
 	}
 	if host == "" {
 		log.Error("failed to get host on send retrieve password email")

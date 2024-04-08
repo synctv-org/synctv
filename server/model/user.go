@@ -198,7 +198,6 @@ func (u *UserSignupEmailReq) Validate() error {
 type SendUserRetrievePasswordEmailCaptchaReq = UserSendBindEmailCaptchaReq
 
 type UserRetrievePasswordEmailReq struct {
-	UserID   string `json:"userID"`
 	Email    string `json:"email"`
 	Captcha  string `json:"captcha"`
 	Password string `json:"password"`
@@ -209,9 +208,6 @@ func (u *UserRetrievePasswordEmailReq) Decode(ctx *gin.Context) error {
 }
 
 func (u *UserRetrievePasswordEmailReq) Validate() error {
-	if u.UserID == "" {
-		return errors.New("userID is empty")
-	}
 	if u.Captcha == "" {
 		return errors.New("captcha is empty")
 	}

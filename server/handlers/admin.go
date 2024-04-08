@@ -266,12 +266,13 @@ func ApprovePendingUser(ctx *gin.Context) {
 		return
 	}
 
-	user, err := db.GetUserByID(req.ID)
+	userE, err := op.LoadOrInitUserByID(req.ID)
 	if err != nil {
 		log.WithError(err).Error("get user by id error")
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
+	user := userE.Value()
 
 	if !user.IsPending() {
 		log.Error("user is not pending")
@@ -279,7 +280,7 @@ func ApprovePendingUser(ctx *gin.Context) {
 		return
 	}
 
-	err = db.SetRoleByID(req.ID, dbModel.RoleUser)
+	err = user.SetRole(dbModel.RoleUser)
 	if err != nil {
 		log.WithError(err).Error("set role by id error")
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))

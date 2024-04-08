@@ -45,11 +45,6 @@ var (
 		false,
 		model.SettingGroupEmail,
 	)
-	RetrievePasswordUrlPath = settings.NewStringSetting(
-		"email_retrieve_password_url_path",
-		"/web/retrievePassword",
-		model.SettingGroupEmail,
-	)
 	EmailSignupWhiteListEnable = settings.NewBoolSetting(
 		"email_signup_white_list_enable",
 		false,
@@ -306,7 +301,7 @@ func SendRetrievePasswordCaptchaEmail(userID, email, host string) error {
 	if err != nil {
 		return err
 	}
-	u.Path = RetrievePasswordUrlPath.Get()
+	u.Path = `/web/auth/reset`
 
 	pool, err := getSmtpPool()
 	if err != nil {
@@ -323,7 +318,6 @@ func SendRetrievePasswordCaptchaEmail(userID, email, host string) error {
 	}
 
 	q := u.Query()
-	q.Set("userID", userID)
 	q.Set("captcha", entry.Value())
 	q.Set("email", email)
 	u.RawQuery = q.Encode()

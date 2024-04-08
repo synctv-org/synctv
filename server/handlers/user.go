@@ -532,7 +532,7 @@ func UserRetrievePasswordEmail(ctx *gin.Context) {
 		return
 	}
 
-	userE, err := op.LoadOrInitUserByID(req.UserID)
+	userE, err := op.LoadOrInitUserByEmail(req.Email)
 	if err != nil {
 		log.Errorf("failed to get user by email: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))

@@ -242,18 +242,17 @@ func SendSignupCaptchaEmail(email string) error {
 		return err
 	}
 
-	entry, loaded := emailCaptcha.LoadOrStore(
+	str := utils.RandString(6)
+
+	emailCaptcha.Store(
 		fmt.Sprintf("signup:%s", email),
-		utils.RandString(6),
+		str,
 		time.Minute*5,
 	)
-	if loaded {
-		entry.SetExpiration(time.Now().Add(time.Minute * 5))
-	}
 
 	out := bytes.NewBuffer(nil)
 	err = captchaTemplate.Execute(out, captchaPayload{
-		Captcha: entry.Value(),
+		Captcha: str,
 		Year:    time.Now().Year(),
 	})
 	if err != nil {

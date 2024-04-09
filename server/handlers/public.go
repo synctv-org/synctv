@@ -9,17 +9,19 @@ import (
 )
 
 type publicSettings struct {
-	EmailEnable           bool     `json:"emailEnable"`
-	EmailWhitelistEnabled bool     `json:"emailWhitelistEnabled"`
-	EmailWhitelist        []string `json:"emailWhitelist,omitempty"`
+	EmailEnable            bool     `json:"emailEnable"`
+	EmailDisableUserSignup bool     `json:"emailDisableUserSignup"`
+	EmailWhitelistEnabled  bool     `json:"emailWhitelistEnabled"`
+	EmailWhitelist         []string `json:"emailWhitelist,omitempty"`
 }
 
 func Settings(ctx *gin.Context) {
 	ctx.JSON(200, model.NewApiDataResp(
 		&publicSettings{
-			EmailEnable:           email.EnableEmail.Get(),
-			EmailWhitelistEnabled: email.EmailSignupWhiteListEnable.Get(),
-			EmailWhitelist:        strings.Split(email.EmailSignupWhiteList.Get(), ","),
+			EmailEnable:            email.EnableEmail.Get(),
+			EmailDisableUserSignup: email.DisableUserSignup.Get(),
+			EmailWhitelistEnabled:  email.EmailSignupWhiteListEnable.Get(),
+			EmailWhitelist:         strings.Split(email.EmailSignupWhiteList.Get(), ","),
 		},
 	))
 }

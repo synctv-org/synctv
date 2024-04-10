@@ -1,4 +1,4 @@
-From alpine:latest as builder
+FROM alpine:latest as builder
 
 ARG VERSION=dev
 
@@ -16,18 +16,18 @@ RUN bash script/build.sh -Mv ${VERSION} \
     -f "gcc -static" -F "g++ -static" \
     -m '-a -v'
 
-From alpine:latest
+FROM alpine:latest
 
 ENV PUID=0 PGID=0 UMASK=022
 
 COPY --from=builder /synctv/build/synctv /usr/local/bin/synctv
 
-RUN apk add --no-cache bash ca-certificates su-exec tzdata &&
+RUN apk add --no-cache bash ca-certificates su-exec tzdata && \
     rm -rf /var/cache/apk/*
 
 COPY script/entrypoint.sh /entrypoint.sh
 
-RUN chmod +x /entrypoint.sh &&
+RUN chmod +x /entrypoint.sh && \
     mkdir -p /root/.synctv
 
 WORKDIR /root/.synctv

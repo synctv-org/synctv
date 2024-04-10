@@ -284,6 +284,11 @@ func SendUserBindEmailCaptcha(ctx *gin.Context) {
 		return
 	}
 
+	if user.Email == req.Email {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("this email same as current email"))
+		return
+	}
+
 	_, err := op.LoadOrInitUserByEmail(req.Email)
 	if err == nil {
 		log.Errorf("email already bind")

@@ -284,6 +284,13 @@ func SendUserBindEmailCaptcha(ctx *gin.Context) {
 		return
 	}
 
+	_, err := op.LoadOrInitUserByEmail(req.Email)
+	if err == nil {
+		log.Errorf("email already bind")
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("email already bind"))
+		return
+	}
+
 	if err := user.SendBindCaptchaEmail(req.Email); err != nil {
 		log.Errorf("failed to send email captcha: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))

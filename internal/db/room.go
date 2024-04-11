@@ -7,6 +7,7 @@ import (
 	"github.com/zijiren233/stream"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type CreateRoomConfig func(r *model.Room)
@@ -20,7 +21,7 @@ func WithSetting(setting model.RoomSettings) CreateRoomConfig {
 func WithCreator(creator *model.User) CreateRoomConfig {
 	return func(r *model.Room) {
 		r.CreatorID = creator.ID
-		r.GroupUserRelations = []model.RoomUserRelation{
+		r.GroupUserRelations = []*model.RoomUserRelation{
 			{
 				UserID:      creator.ID,
 				Status:      model.RoomUserStatusActive,
@@ -30,7 +31,7 @@ func WithCreator(creator *model.User) CreateRoomConfig {
 	}
 }
 
-func WithRelations(relations []model.RoomUserRelation) CreateRoomConfig {
+func WithRelations(relations []*model.RoomUserRelation) CreateRoomConfig {
 	return func(r *model.Room) {
 		r.GroupUserRelations = append(r.GroupUserRelations, relations...)
 	}
@@ -92,7 +93,7 @@ func SaveRoomSettings(roomID string, setting model.RoomSettings) error {
 }
 
 func DeleteRoomByID(roomID string) error {
-	err := db.Unscoped().Where("id = ?", roomID).Delete(&model.Room{}).Error
+	err := db.Unscoped().Select(clause.Associations).Delete(&model.Room{ID: roomID}).Error
 	return HandleNotFound(err, "room")
 }
 

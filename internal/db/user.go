@@ -296,15 +296,16 @@ func UnbanUserByID(userID string) error {
 }
 
 func DeleteUserByID(userID string) error {
-	err := db.Unscoped().Where("id = ?", userID).Delete(&model.User{}).Error
+	err := db.Unscoped().Select(clause.Associations).Delete(&model.User{ID: userID}).Error
 	return HandleNotFound(err, "user")
 }
 
 func LoadAndDeleteUserByID(userID string, columns ...clause.Column) (*model.User, error) {
-	u := &model.User{}
+	u := &model.User{ID: userID}
 	if db.Unscoped().
 		Clauses(clause.Returning{Columns: columns}).
-		Delete(u, userID).
+		Select(clause.Associations).
+		Delete(u).
 		RowsAffected == 0 {
 		return u, errors.New("user not found")
 	}

@@ -39,8 +39,8 @@ type Room struct {
 	Settings           RoomSettings `gorm:"embedded;embeddedPrefix:settings_"`
 	CreatorID          string       `gorm:"index;type:char(32)"`
 	HashedPassword     []byte
-	GroupUserRelations []RoomUserRelation `gorm:"foreignKey:RoomID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
-	Movies             []Movie            `gorm:"foreignKey:RoomID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
+	GroupUserRelations []*RoomUserRelation `gorm:"foreignKey:RoomID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
+	Movies             []*Movie            `gorm:"foreignKey:RoomID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 }
 
 func (r *Room) BeforeCreate(tx *gorm.DB) error {

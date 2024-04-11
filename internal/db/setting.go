@@ -40,7 +40,7 @@ func DeleteSettingItem(item *model.Setting) error {
 }
 
 func DeleteSettingItemByName(name string) error {
-	return db.Where("name = ?", name).Delete(&model.Setting{}).Error
+	return db.Delete(&model.Setting{Name: name}).Error
 }
 
 func GetSettingItemValue(name string) (string, error) {

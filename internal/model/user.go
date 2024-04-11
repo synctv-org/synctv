@@ -50,8 +50,8 @@ type User struct {
 	Email                string              `gorm:"type:varchar(128);uniqueIndex:,where:email <> ''"`
 	Role                 Role                `gorm:"not null;default:2"`
 	RoomUserRelations    []*RoomUserRelation `gorm:"foreignKey:UserID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
-	Rooms                []Room              `gorm:"foreignKey:CreatorID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
-	Movies               []Movie             `gorm:"foreignKey:CreatorID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL"`
+	Rooms                []*Room             `gorm:"foreignKey:CreatorID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
+	Movies               []*Movie            `gorm:"foreignKey:CreatorID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL"`
 	BilibiliVendor       *BilibiliVendor     `gorm:"foreignKey:UserID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 	AlistVendor          []*AlistVendor      `gorm:"foreignKey:UserID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 	EmbyVendor           []*EmbyVendor       `gorm:"foreignKey:UserID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`

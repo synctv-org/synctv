@@ -70,6 +70,9 @@ func (r *Room) CheckVersion(version uint32) bool {
 }
 
 func (r *Room) UpdateMovie(movieId string, movie *model.BaseMovie) error {
+	if r.current.current.MovieID == movieId {
+		return errors.New("cannot update current movie")
+	}
 	return r.movies.Update(movieId, movie)
 }
 
@@ -164,10 +167,27 @@ func (r *Room) GetMoviesCount() int {
 }
 
 func (r *Room) DeleteMovieByID(id string) error {
+	if r.current.current.MovieID == id {
+		return errors.New("cannot delete current movie")
+	}
 	return r.movies.DeleteMovieByID(id)
 }
 
+func (r *Room) DeleteMoviesByID(ids []string) error {
+	if r.current.current.MovieID != "" {
+		for _, id := range ids {
+			if id == r.current.current.MovieID {
+				return errors.New("cannot delete current movie")
+			}
+		}
+	}
+	return r.movies.DeleteMoviesByID(ids)
+}
+
 func (r *Room) ClearMovies() error {
+	if r.current.current.MovieID != "" {
+		return errors.New("cannot clear movies when current movie is not empty")
+	}
 	return r.movies.Clear()
 }
 
@@ -180,11 +200,13 @@ func (r *Room) Current() *Current {
 	return &c
 }
 
+var ErrNoCurrentMovie = errors.New("no current movie")
+
 func (r *Room) CurrentMovie() (*Movie, error) {
-	if r.current.current.Movie.ID == "" {
-		return nil, errors.New("no current movie")
+	if r.current.current.MovieID == "" {
+		return nil, ErrNoCurrentMovie
 	}
-	return r.GetMovieByID(r.current.current.Movie.ID)
+	return r.GetMovieByID(r.current.current.MovieID)
 }
 
 func (r *Room) CheckCurrentExpired(expireId uint64) (bool, error) {
@@ -195,17 +217,17 @@ func (r *Room) CheckCurrentExpired(expireId uint64) (bool, error) {
 	return m.CheckExpired(expireId), nil
 }
 
-func (r *Room) SetCurrentMovieByID(id string, play bool) error {
-	m, err := r.movies.GetMovieByID(id)
+func (r *Room) SetCurrentMovie(movieID string, play bool) error {
+	if movieID == "" {
+		r.current.SetMovie("", false, play)
+		return nil
+	}
+	m, err := r.GetMovieByID(movieID)
 	if err != nil {
 		return err
 	}
-	r.SetCurrentMovie(&m.Movie, play)
+	r.current.SetMovie(m.ID, m.Base.Live, play)
 	return nil
-}
-
-func (r *Room) SetCurrentMovie(movie *model.Movie, play bool) {
-	r.current.SetMovie(movie, play)
 }
 
 func (r *Room) SwapMoviePositions(id1, id2 string) error {

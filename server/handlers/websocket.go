@@ -225,8 +225,8 @@ func handleElementMsg(cli *op.Client, msg *pb.ElementMessage, l *logrus.Entry) e
 		})
 	case pb.ElementMessageType_CHECK:
 		current := cli.Room().Current()
-		if msg.CheckReq.ExpireId != 0 {
-			currentMovie, err := cli.Room().GetMovieByID(current.Movie.ID)
+		if msg.CheckReq.ExpireId != 0 && current.MovieID != "" {
+			currentMovie, err := cli.Room().GetMovieByID(current.MovieID)
 			if err != nil {
 				_ = cli.Send(&pb.ElementMessage{
 					Type:  pb.ElementMessageType_ERROR,

@@ -127,7 +127,7 @@ func (m *movies) Clear() error {
 		return err
 	}
 	for e := m.list.Front(); e != nil; e = e.Next() {
-		e.Value.Terminate()
+		_ = e.Value.Terminate()
 	}
 	m.list.Clear()
 	return nil
@@ -137,7 +137,7 @@ func (m *movies) Close() error {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 	for e := m.list.Front(); e != nil; e = e.Next() {
-		e.Value.Terminate()
+		_ = e.Value.Terminate()
 	}
 	m.list.Clear()
 	return nil
@@ -155,11 +155,32 @@ func (m *movies) DeleteMovieByID(id string) error {
 
 	for e := m.list.Front(); e != nil; e = e.Next() {
 		if e.Value.Movie.ID == id {
-			m.list.Remove(e).Terminate()
+			_ = m.list.Remove(e).Terminate()
 			return nil
 		}
 	}
 	return errors.New("movie not found")
+}
+
+func (m *movies) DeleteMoviesByID(ids []string) error {
+	m.init()
+	m.lock.Lock()
+	defer m.lock.Unlock()
+
+	err := db.DeleteMoviesByID(m.roomID, ids)
+	if err != nil {
+		return err
+	}
+
+	for _, id := range ids {
+		for e := m.list.Front(); e != nil; e = e.Next() {
+			if e.Value.Movie.ID == id {
+				_ = m.list.Remove(e).Terminate()
+				break
+			}
+		}
+	}
+	return nil
 }
 
 func (m *movies) GetMovieByID(id string) (*Movie, error) {

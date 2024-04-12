@@ -11,7 +11,9 @@ func CreateMovie(movie *model.Movie) error {
 }
 
 func CreateMovies(movies []*model.Movie) error {
-	return db.Create(movies).Error
+	return db.Transaction(func(tx *gorm.DB) error {
+		return tx.Create(movies).Error
+	})
 }
 
 func GetAllMoviesByRoomID(roomID string) []*model.Movie {
@@ -25,6 +27,16 @@ func DeleteMovieByID(roomID, id string) error {
 	return HandleNotFound(err, "room or movie")
 }
 
+func DeleteMoviesByID(roomID string, ids []string) error {
+	return db.Transaction(func(tx *gorm.DB) error {
+		err := tx.Unscoped().Where("room_id = ? AND id IN ?", roomID, ids).Delete(&model.Movie{}).Error
+		if err != nil {
+			return HandleNotFound(err, "room or movie")
+		}
+		return nil
+	})
+}
+
 func LoadAndDeleteMovieByID(roomID, id string, columns ...clause.Column) (*model.Movie, error) {
 	movie := &model.Movie{}
 	err := db.Unscoped().Clauses(clause.Returning{Columns: columns}).Where("room_id = ? AND id = ?", roomID, id).Delete(movie).Error
@@ -32,14 +44,22 @@ func LoadAndDeleteMovieByID(roomID, id string, columns ...clause.Column) (*model
 }
 
 func DeleteMoviesByRoomID(roomID string) error {
-	err := db.Unscoped().Where("room_id = ?", roomID).Delete(&model.Movie{}).Error
-	return HandleNotFound(err, "room")
+	return db.Transaction(func(tx *gorm.DB) error {
+		err := tx.Where("room_id = ?", roomID).Delete(&model.Movie{}).Error
+		if err != nil {
+			return HandleNotFound(err, "room")
+		}
+		return nil
+	})
 }
 
 func LoadAndDeleteMoviesByRoomID(roomID string, columns ...clause.Column) ([]*model.Movie, error) {
 	movies := []*model.Movie{}
-	err := db.Unscoped().Clauses(clause.Returning{Columns: columns}).Where("room_id = ?", roomID).Delete(&movies).Error
-	return movies, HandleNotFound(err, "room")
+	err := db.Transaction(func(tx *gorm.DB) error {
+		err := tx.Unscoped().Clauses(clause.Returning{Columns: columns}).Where("room_id = ?", roomID).Delete(&movies).Error
+		return HandleNotFound(err, "room")
+	})
+	return movies, err
 }
 
 func UpdateMovie(movie *model.Movie, columns ...clause.Column) error {

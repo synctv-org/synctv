@@ -23,7 +23,6 @@ import (
 	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/internal/rtmp"
 	"github.com/synctv-org/synctv/internal/settings"
-	pb "github.com/synctv-org/synctv/proto/message"
 	"github.com/synctv-org/synctv/server/model"
 	"github.com/synctv-org/synctv/utils"
 	"github.com/zijiren233/livelib/protocol/hls"
@@ -124,12 +123,12 @@ func genCurrentMovieInfo(ctx context.Context, user *op.User, room *op.Room, opMo
 }
 
 func genCurrentRespWithCurrent(ctx context.Context, user *op.User, room *op.Room, current *op.Current) (*model.CurrentMovieResp, error) {
-	if current.Movie.ID == "" {
+	if current.MovieID == "" {
 		return &model.CurrentMovieResp{
 			Movie: &model.MovieResp{},
 		}, nil
 	}
-	opMovie, err := room.GetMovieByID(current.Movie.ID)
+	opMovie, err := room.GetMovieByID(current.MovieID)
 	if err != nil {
 		return nil, fmt.Errorf("get current movie error: %w", err)
 	}
@@ -217,18 +216,6 @@ func PushMovie(ctx *gin.Context) {
 		return
 	}
 
-	if err := room.Broadcast(&pb.ElementMessage{
-		Type: pb.ElementMessageType_MOVIES_CHANGED,
-		MoviesChanged: &pb.Sender{
-			Username: user.Username,
-			Userid:   user.ID,
-		},
-	}); err != nil {
-		log.Errorf("push movie error: %v", err)
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
-		return
-	}
-
 	ctx.Status(http.StatusNoContent)
 }
 
@@ -258,18 +245,6 @@ func PushMovies(ctx *gin.Context) {
 			return
 		}
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
-		return
-	}
-
-	if err := room.Broadcast(&pb.ElementMessage{
-		Type: pb.ElementMessageType_MOVIES_CHANGED,
-		MoviesChanged: &pb.Sender{
-			Username: user.Username,
-			Userid:   user.ID,
-		},
-	}); err != nil {
-		log.Errorf("push movies error: %v", err)
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}
 
@@ -357,18 +332,6 @@ func EditMovie(ctx *gin.Context) {
 		return
 	}
 
-	if err := room.Broadcast(&pb.ElementMessage{
-		Type: pb.ElementMessageType_MOVIES_CHANGED,
-		MoviesChanged: &pb.Sender{
-			Username: user.Username,
-			Userid:   user.ID,
-		},
-	}); err != nil {
-		log.Errorf("edit movie error: %v", err)
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
-		return
-	}
-
 	ctx.Status(http.StatusNoContent)
 }
 
@@ -395,17 +358,6 @@ func DelMovie(ctx *gin.Context) {
 		return
 	}
 
-	if err := room.Broadcast(&pb.ElementMessage{
-		Type: pb.ElementMessageType_MOVIES_CHANGED,
-		MoviesChanged: &pb.Sender{
-			Username: user.Username,
-			Userid:   user.ID,
-		},
-	}); err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
-		return
-	}
-
 	ctx.Status(http.StatusNoContent)
 }
 
@@ -422,17 +374,6 @@ func ClearMovies(ctx *gin.Context) {
 		return
 	}
 
-	if err := room.Broadcast(&pb.ElementMessage{
-		Type: pb.ElementMessageType_MOVIES_CHANGED,
-		MoviesChanged: &pb.Sender{
-			Username: user.Username,
-			Userid:   user.ID,
-		},
-	}); err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
-		return
-	}
-
 	ctx.Status(http.StatusNoContent)
 }
 
@@ -446,19 +387,8 @@ func SwapMovie(ctx *gin.Context) {
 		return
 	}
 
-	if err := room.SwapMoviePositions(req.Id1, req.Id2); err != nil {
+	if err := user.SwapMoviePositions(room, req.Id1, req.Id2); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
-		return
-	}
-
-	if err := room.Broadcast(&pb.ElementMessage{
-		Type: pb.ElementMessageType_MOVIES_CHANGED,
-		MoviesChanged: &pb.Sender{
-			Username: user.Username,
-			Userid:   user.ID,
-		},
-	}); err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}
 
@@ -477,24 +407,7 @@ func ChangeCurrentMovie(ctx *gin.Context) {
 		return
 	}
 
-	if req.Id == "" {
-		err = user.SetCurrentMovie(room, nil, false)
-	} else {
-		var movie *op.Movie
-		movie, err = room.GetMovieByID(req.Id)
-		if err != nil {
-			log.Errorf("change current movie error: %v", err)
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
-			return
-		}
-		_, err = genCurrentMovieInfo(ctx, user, room, movie)
-		if err != nil {
-			log.Errorf("change current movie error: %v", err)
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
-			return
-		}
-		err = user.SetCurrentMovie(room, &movie.Movie, true)
-	}
+	err = user.SetCurrentMovie(room, req.Id, false)
 	if err != nil {
 		log.Errorf("change current movie error: %v", err)
 		if errors.Is(err, dbModel.ErrNoPermission) {
@@ -502,18 +415,6 @@ func ChangeCurrentMovie(ctx *gin.Context) {
 			return
 		}
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
-		return
-	}
-
-	if err := room.Broadcast(&pb.ElementMessage{
-		Type: pb.ElementMessageType_CURRENT_CHANGED,
-		CurrentChanged: &pb.Sender{
-			Username: user.Username,
-			Userid:   user.ID,
-		},
-	}); err != nil {
-		log.Errorf("change current movie error: %v", err)
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}
 

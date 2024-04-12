@@ -11,6 +11,7 @@ import (
 	"github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/provider"
 	"github.com/synctv-org/synctv/internal/settings"
+	pb "github.com/synctv-org/synctv/proto/message"
 	"github.com/zijiren233/stream"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -130,7 +131,17 @@ func (u *User) AddMovieToRoom(room *Room, movie *model.BaseMovie) error {
 	if err != nil {
 		return err
 	}
-	return room.AddMovie(m)
+	err = room.AddMovie(m)
+	if err != nil {
+		return err
+	}
+	return room.Broadcast(&pb.ElementMessage{
+		Type: pb.ElementMessageType_MOVIES_CHANGED,
+		MoviesChanged: &pb.Sender{
+			Username: u.Username,
+			Userid:   u.ID,
+		},
+	})
 }
 
 func (u *User) NewMovies(movies []*model.BaseMovie) ([]*model.Movie, error) {
@@ -153,7 +164,17 @@ func (u *User) AddMoviesToRoom(room *Room, movies []*model.BaseMovie) error {
 	if err != nil {
 		return err
 	}
-	return room.AddMovies(m)
+	err = room.AddMovies(m)
+	if err != nil {
+		return err
+	}
+	return room.Broadcast(&pb.ElementMessage{
+		Type: pb.ElementMessageType_MOVIES_CHANGED,
+		MoviesChanged: &pb.Sender{
+			Username: u.Username,
+			Userid:   u.ID,
+		},
+	})
 }
 
 func (u *User) IsRoot() bool {
@@ -220,7 +241,17 @@ func (u *User) UpdateMovie(room *Room, movieID string, movie *model.BaseMovie) e
 	if m.Movie.CreatorID != u.ID && !u.HasRoomPermission(room, model.PermissionEditUser) {
 		return model.ErrNoPermission
 	}
-	return room.UpdateMovie(movieID, movie)
+	err = room.UpdateMovie(movieID, movie)
+	if err != nil {
+		return err
+	}
+	return room.Broadcast(&pb.ElementMessage{
+		Type: pb.ElementMessageType_MOVIES_CHANGED,
+		MoviesChanged: &pb.Sender{
+			Username: u.Username,
+			Userid:   u.ID,
+		},
+	})
 }
 
 func (u *User) SetRoomSetting(room *Room, setting model.RoomSettings) error {
@@ -251,35 +282,67 @@ func (u *User) DeleteMoviesByID(room *Room, movieIDs []string) error {
 			return model.ErrNoPermission
 		}
 	}
-	for _, v := range movieIDs {
-		if err := room.DeleteMovieByID(v); err != nil {
-			return err
-		}
+	if err := room.DeleteMoviesByID(movieIDs); err != nil {
+		return err
 	}
-	return nil
+	return room.Broadcast(&pb.ElementMessage{
+		Type: pb.ElementMessageType_MOVIES_CHANGED,
+		MoviesChanged: &pb.Sender{
+			Username: u.Username,
+			Userid:   u.ID,
+		},
+	})
 }
 
 func (u *User) ClearMovies(room *Room) error {
-	if !u.HasRoomPermission(room, model.PermissionEditUser) {
+	if !u.HasRoomPermission(room, model.PermissionEditRoom) {
 		return model.ErrNoPermission
 	}
-	return room.ClearMovies()
-}
-
-func (u *User) SetCurrentMovie(room *Room, movie *model.Movie, play bool) error {
-	if !u.HasRoomPermission(room, model.PermissionEditCurrent) {
-		return model.ErrNoPermission
-	}
-	room.SetCurrentMovie(movie, play)
-	return nil
-}
-
-func (u *User) SetCurrentMovieByID(room *Room, movieID string, play bool) error {
-	m, err := room.GetMovieByID(movieID)
+	err := room.ClearMovies()
 	if err != nil {
 		return err
 	}
-	return u.SetCurrentMovie(room, &m.Movie, play)
+	return room.Broadcast(&pb.ElementMessage{
+		Type: pb.ElementMessageType_MOVIES_CHANGED,
+		MoviesChanged: &pb.Sender{
+			Username: u.Username,
+			Userid:   u.ID,
+		},
+	})
+}
+
+func (u *User) SwapMoviePositions(room *Room, id1, id2 string) error {
+	if !u.HasRoomPermission(room, model.PermissionEditRoom) {
+		return model.ErrNoPermission
+	}
+	err := room.SwapMoviePositions(id1, id2)
+	if err != nil {
+		return err
+	}
+	return room.Broadcast(&pb.ElementMessage{
+		Type: pb.ElementMessageType_MOVIES_CHANGED,
+		MoviesChanged: &pb.Sender{
+			Username: u.Username,
+			Userid:   u.ID,
+		},
+	})
+}
+
+func (u *User) SetCurrentMovie(room *Room, movieID string, play bool) error {
+	if !u.HasRoomPermission(room, model.PermissionEditCurrent) {
+		return model.ErrNoPermission
+	}
+	err := room.SetCurrentMovie(movieID, play)
+	if err != nil {
+		return err
+	}
+	return room.Broadcast(&pb.ElementMessage{
+		Type: pb.ElementMessageType_CURRENT_CHANGED,
+		CurrentChanged: &pb.Sender{
+			Username: u.Username,
+			Userid:   u.ID,
+		},
+	})
 }
 
 func (u *User) BindProvider(p provider.OAuth2Provider, pid string) error {

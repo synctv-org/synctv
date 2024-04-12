@@ -2,6 +2,7 @@ package vendorBilibili
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 
@@ -119,8 +120,23 @@ func Parse(ctx *gin.Context) {
 			return
 		}
 		ctx.JSON(http.StatusOK, model.NewApiDataResp(resp))
+	case "live":
+		roomid, err := strconv.ParseUint(resp.Id, 10, 64)
+		if err != nil {
+			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+			return
+		}
+		resp, err := cli.ParseLivePage(ctx, &bilibili.ParseLivePageReq{
+			// Cookies: utils.HttpCookieToMap(cookies), // maybe no need login
+			RoomID: roomid,
+		})
+		if err != nil {
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+			return
+		}
+		ctx.JSON(http.StatusOK, model.NewApiDataResp(resp))
 	default:
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorStringResp("unknown match type"))
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorStringResp(fmt.Sprintf("unknown match type %s", resp.Type)))
 		return
 	}
 }

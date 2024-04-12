@@ -105,3 +105,11 @@ func (g *grpcBilibili) UserInfo(ctx context.Context, in *bilibili.UserInfoReq) (
 func (g *grpcBilibili) Match(ctx context.Context, in *bilibili.MatchReq) (*bilibili.MatchResp, error) {
 	return g.client.Match(ctx, in)
 }
+
+func (g *grpcBilibili) GetLiveStreams(ctx context.Context, in *bilibili.GetLiveStreamsReq) (*bilibili.GetLiveStreamsResp, error) {
+	return g.client.GetLiveStreams(ctx, in)
+}
+
+func (g *grpcBilibili) ParseLivePage(ctx context.Context, req *bilibili.ParseLivePageReq) (*bilibili.VideoPageInfo, error) {
+	return g.client.ParseLivePage(ctx, req)
+}

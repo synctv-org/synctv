@@ -296,10 +296,46 @@ func translateBilibiliSubtitleToSrt(ctx context.Context, url string) ([]byte, er
 	return convertToSRT(&srt), nil
 }
 
+type BilibiliLiveCache struct {
+}
+
+func NewBilibiliLiveCacheInitFunc(movie *model.Movie) func(ctx context.Context, args ...struct{}) ([]byte, error) {
+	return func(ctx context.Context, args ...struct{}) ([]byte, error) {
+		return BilibiliLiveCacheInitFunc(ctx, movie, args...)
+	}
+}
+
+func genBilibiliLiveM3U8ListFile(urls []*bilibili.LiveStream) []byte {
+	buf := bytes.NewBuffer(nil)
+	buf.WriteString("#EXTM3U\n")
+	buf.WriteString("#EXT-X-VERSION:3\n")
+	for _, v := range urls {
+		if len(v.Urls) == 0 {
+			continue
+		}
+		buf.WriteString(fmt.Sprintf("#EXT-X-STREAM-INF:BANDWIDTH=%d,NAME=\"%s\"\n", 1920*1080*v.Quality, v.Desc))
+		buf.WriteString(v.Urls[0] + "\n")
+	}
+	return buf.Bytes()
+}
+
+func BilibiliLiveCacheInitFunc(ctx context.Context, movie *model.Movie, args ...struct{}) ([]byte, error) {
+	cli := vendor.LoadBilibiliClient(movie.Base.VendorInfo.Backend)
+	resp, err := cli.GetLiveStreams(ctx, &bilibili.GetLiveStreamsReq{
+		Cid: movie.Base.VendorInfo.Bilibili.Cid,
+		Hls: true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return genBilibiliLiveM3U8ListFile(resp.LiveStreams), nil
+}
+
 type BilibiliMovieCache struct {
 	NoSharedMovie *MapCache[string, *BilibiliUserCache]
 	SharedMpd     *refreshcache.RefreshCache[*BilibiliMpdCache, *BilibiliUserCache]
 	Subtitle      *refreshcache.RefreshCache[BilibiliSubtitleCache, *BilibiliUserCache]
+	Live          *refreshcache.RefreshCache[[]byte, struct{}]
 }
 
 func NewBilibiliMovieCache(movie *model.Movie) *BilibiliMovieCache {
@@ -307,6 +343,7 @@ func NewBilibiliMovieCache(movie *model.Movie) *BilibiliMovieCache {
 		NoSharedMovie: newMapCache(NewBilibiliNoSharedMovieCacheInitFunc(movie), time.Minute*60),
 		SharedMpd:     refreshcache.NewRefreshCache(NewBilibiliSharedMpdCacheInitFunc(movie), time.Minute*60),
 		Subtitle:      refreshcache.NewRefreshCache(NewBilibiliSubtitleCacheInitFunc(movie), 0),
+		Live:          refreshcache.NewRefreshCache(NewBilibiliLiveCacheInitFunc(movie), 0),
 	}
 }
 

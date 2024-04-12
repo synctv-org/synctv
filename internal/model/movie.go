@@ -78,6 +78,8 @@ func (b *BilibiliStreamingInfo) Validate() error {
 		if b.Cid == 0 {
 			return fmt.Errorf("cid is empty")
 		}
+	case b.Cid != 0: // live
+		return nil
 	default:
 		return fmt.Errorf("bvid or epid is empty")
 	}

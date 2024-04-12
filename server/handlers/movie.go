@@ -790,93 +790,109 @@ func proxyVendorMovie(ctx *gin.Context, movie *op.Movie) {
 
 	switch movie.Movie.Base.VendorInfo.Vendor {
 	case dbModel.VendorBilibili:
-		t := ctx.Query("t")
-		switch t {
-		case "", "hevc":
-			if !movie.Movie.Base.Proxy {
-				log.Errorf("proxy vendor movie error: %v", "not support movie proxy")
-				ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support movie proxy"))
-				return
-			}
-			u, err := op.LoadOrInitUserByID(movie.Movie.CreatorID)
+		if movie.Base.Live {
+			data, err := movie.BilibiliCache().Live.Get(ctx)
 			if err != nil {
 				log.Errorf("proxy vendor movie error: %v", err)
 				ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 				return
 			}
-			mpdC, err := movie.BilibiliCache().SharedMpd.Get(ctx, u.Value().BilibiliCache())
-			if err != nil {
-				log.Errorf("proxy vendor movie error: %v", err)
-				ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+			if len(data) == 0 {
+				log.Error("proxy vendor movie error: live data is empty")
+				ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorStringResp("live data is empty"))
 				return
 			}
-			if id := ctx.Query("id"); id == "" {
-				if t == "hevc" {
-					ctx.Data(http.StatusOK, "application/dash+xml", []byte(mpdC.HevcMpd))
-				} else {
-					ctx.Data(http.StatusOK, "application/dash+xml", []byte(mpdC.Mpd))
-				}
-				return
-			} else {
-				streamId, err := strconv.Atoi(id)
-				if err != nil {
-					log.Errorf("proxy vendor movie error: %v", err)
-					ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+			ctx.Data(http.StatusOK, "application/vnd.apple.mpegurl", data)
+			return
+		} else {
+			t := ctx.Query("t")
+			switch t {
+			case "", "hevc":
+				if !movie.Movie.Base.Proxy {
+					log.Errorf("proxy vendor movie error: %v", "not support movie proxy")
+					ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support movie proxy"))
 					return
 				}
-				if streamId >= len(mpdC.Urls) {
-					log.Errorf("proxy vendor movie error: %v", "stream id out of range")
-					ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("stream id out of range"))
-					return
-				}
-				headers := maps.Clone(movie.Movie.Base.Headers)
-				if headers == nil {
-					headers = map[string]string{
-						"Referer":    "https://www.bilibili.com",
-						"User-Agent": utils.UA,
-					}
-				} else {
-					headers["Referer"] = "https://www.bilibili.com"
-					headers["User-Agent"] = utils.UA
-				}
-				err = proxyURL(ctx, mpdC.Urls[streamId], headers)
-				if err != nil {
-					log.Errorf("proxy vendor movie error: %v", err)
-				}
-				return
-			}
-		case "subtitle":
-			id := ctx.Query("n")
-			if id == "" {
-				log.Errorf("proxy vendor movie error: %v", "n is empty")
-				ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("n is empty"))
-				return
-			}
-			u, err := op.LoadOrInitUserByID(movie.Movie.CreatorID)
-			if err != nil {
-				log.Errorf("proxy vendor movie error: %v", err)
-				ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
-				return
-			}
-			srtI, err := movie.BilibiliCache().Subtitle.Get(ctx, u.Value().BilibiliCache())
-			if err != nil {
-				log.Errorf("proxy vendor movie error: %v", err)
-				ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
-				return
-			}
-			if s, ok := srtI[id]; ok {
-				srtData, err := s.Srt.Get(ctx)
+				u, err := op.LoadOrInitUserByID(movie.Movie.CreatorID)
 				if err != nil {
 					log.Errorf("proxy vendor movie error: %v", err)
 					ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 					return
 				}
-				ctx.Data(http.StatusOK, "text/plain; charset=utf-8", srtData)
-				return
-			} else {
-				log.Errorf("proxy vendor movie error: %v", "subtitle not found")
-				ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorStringResp("subtitle not found"))
-				return
+				mpdC, err := movie.BilibiliCache().SharedMpd.Get(ctx, u.Value().BilibiliCache())
+				if err != nil {
+					log.Errorf("proxy vendor movie error: %v", err)
+					ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+					return
+				}
+				if id := ctx.Query("id"); id == "" {
+					if t == "hevc" {
+						ctx.Data(http.StatusOK, "application/dash+xml", []byte(mpdC.HevcMpd))
+					} else {
+						ctx.Data(http.StatusOK, "application/dash+xml", []byte(mpdC.Mpd))
+					}
+					return
+				} else {
+					streamId, err := strconv.Atoi(id)
+					if err != nil {
+						log.Errorf("proxy vendor movie error: %v", err)
+						ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+						return
+					}
+					if streamId >= len(mpdC.Urls) {
+						log.Errorf("proxy vendor movie error: %v", "stream id out of range")
+						ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("stream id out of range"))
+						return
+					}
+					headers := maps.Clone(movie.Movie.Base.Headers)
+					if headers == nil {
+						headers = map[string]string{
+							"Referer":    "https://www.bilibili.com",
+							"User-Agent": utils.UA,
+						}
+					} else {
+						headers["Referer"] = "https://www.bilibili.com"
+						headers["User-Agent"] = utils.UA
+					}
+					err = proxyURL(ctx, mpdC.Urls[streamId], headers)
+					if err != nil {
+						log.Errorf("proxy vendor movie error: %v", err)
+					}
+					return
+				}
+			case "subtitle":
+				id := ctx.Query("n")
+				if id == "" {
+					log.Errorf("proxy vendor movie error: %v", "n is empty")
+					ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("n is empty"))
+					return
+				}
+				u, err := op.LoadOrInitUserByID(movie.Movie.CreatorID)
+				if err != nil {
+					log.Errorf("proxy vendor movie error: %v", err)
+					ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+					return
+				}
+				srtI, err := movie.BilibiliCache().Subtitle.Get(ctx, u.Value().BilibiliCache())
+				if err != nil {
+					log.Errorf("proxy vendor movie error: %v", err)
+					ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+					return
+				}
+				if s, ok := srtI[id]; ok {
+					srtData, err := s.Srt.Get(ctx)
+					if err != nil {
+						log.Errorf("proxy vendor movie error: %v", err)
+						ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+						return
+					}
+					ctx.Data(http.StatusOK, "text/plain; charset=utf-8", srtData)
+					return
+				} else {
+					log.Errorf("proxy vendor movie error: %v", "subtitle not found")
+					ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorStringResp("subtitle not found"))
+					return
+				}
 			}
 		}
 
@@ -1046,41 +1062,54 @@ func genVendorMovie(ctx context.Context, user *op.User, opMovie *op.Movie) (*dbM
 	switch movie.Base.VendorInfo.Vendor {
 	case dbModel.VendorBilibili:
 		bmc := opMovie.BilibiliCache()
-		if !movie.Base.Proxy {
-			var s string
-			if movie.Base.VendorInfo.Bilibili.Shared {
-				var u *op.UserEntry
-				u, err = op.LoadOrInitUserByID(movie.CreatorID)
-				if err != nil {
-					return nil, err
-				}
-				s, err = opMovie.BilibiliCache().NoSharedMovie.LoadOrStore(ctx, movie.CreatorID, u.Value().BilibiliCache())
-			} else {
-				s, err = opMovie.BilibiliCache().NoSharedMovie.LoadOrStore(ctx, user.ID, user.BilibiliCache())
-			}
+		if movie.Base.Live {
+			rawPath, err := url.JoinPath("/api/movie/proxy", movie.RoomID, movie.ID)
 			if err != nil {
 				return nil, err
 			}
-
-			movie.Base.Url = s
+			u := url.URL{
+				Path: rawPath,
+			}
+			movie.Base.Url = u.String()
+			movie.Base.Type = "m3u8"
+			return &movie, nil
 		} else {
-			movie.Base.Url = fmt.Sprintf("/api/movie/proxy/%s/%s", movie.RoomID, movie.ID)
-			movie.Base.Type = "mpd"
-		}
-		srt, err := bmc.Subtitle.Get(ctx, user.BilibiliCache())
-		if err != nil {
-			return nil, err
-		}
-		for k := range srt {
-			if movie.Base.Subtitles == nil {
-				movie.Base.Subtitles = make(map[string]*dbModel.Subtitle, len(srt))
+			if !movie.Base.Proxy {
+				var s string
+				if movie.Base.VendorInfo.Bilibili.Shared {
+					var u *op.UserEntry
+					u, err = op.LoadOrInitUserByID(movie.CreatorID)
+					if err != nil {
+						return nil, err
+					}
+					s, err = opMovie.BilibiliCache().NoSharedMovie.LoadOrStore(ctx, movie.CreatorID, u.Value().BilibiliCache())
+				} else {
+					s, err = opMovie.BilibiliCache().NoSharedMovie.LoadOrStore(ctx, user.ID, user.BilibiliCache())
+				}
+				if err != nil {
+					return nil, err
+				}
+
+				movie.Base.Url = s
+			} else {
+				movie.Base.Url = fmt.Sprintf("/api/movie/proxy/%s/%s", movie.RoomID, movie.ID)
+				movie.Base.Type = "mpd"
 			}
-			movie.Base.Subtitles[k] = &dbModel.Subtitle{
-				URL:  fmt.Sprintf("/api/movie/proxy/%s/%s?t=subtitle&n=%s", movie.RoomID, movie.ID, k),
-				Type: "srt",
+			srt, err := bmc.Subtitle.Get(ctx, user.BilibiliCache())
+			if err != nil {
+				return nil, err
 			}
+			for k := range srt {
+				if movie.Base.Subtitles == nil {
+					movie.Base.Subtitles = make(map[string]*dbModel.Subtitle, len(srt))
+				}
+				movie.Base.Subtitles[k] = &dbModel.Subtitle{
+					URL:  fmt.Sprintf("/api/movie/proxy/%s/%s?t=subtitle&n=%s", movie.RoomID, movie.ID, k),
+					Type: "srt",
+				}
+			}
+			return &movie, nil
 		}
-		return &movie, nil
 
 	case dbModel.VendorAlist:
 		creator, err := op.LoadOrInitUserByID(movie.CreatorID)

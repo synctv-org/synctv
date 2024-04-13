@@ -87,6 +87,8 @@ func (r RoomMemberRole) String() string {
 		return "member"
 	case RoomMemberRoleAdmin:
 		return "admin"
+	case RoomMemberRoleCreator:
+		return "creator"
 	default:
 		return "unknown"
 	}

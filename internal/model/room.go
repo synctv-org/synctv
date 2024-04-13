@@ -34,13 +34,13 @@ type Room struct {
 	ID                 string `gorm:"primaryKey;type:char(32)" json:"id"`
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
-	Status             RoomStatus   `gorm:"not null;default:2"`
-	Name               string       `gorm:"not null;uniqueIndex;type:varchar(32)"`
-	Settings           RoomSettings `gorm:"embedded;embeddedPrefix:settings_"`
-	CreatorID          string       `gorm:"index;type:char(32)"`
+	Status             RoomStatus    `gorm:"not null;default:2"`
+	Name               string        `gorm:"not null;uniqueIndex;type:varchar(32)"`
+	Settings           *RoomSettings `gorm:"foreignKey:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE" json:"settings"`
+	CreatorID          string        `gorm:"index;type:char(32)"`
 	HashedPassword     []byte
-	GroupUserRelations []*RoomUserRelation `gorm:"foreignKey:RoomID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
-	Movies             []*Movie            `gorm:"foreignKey:RoomID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
+	GroupUserRelations []*RoomMember `gorm:"foreignKey:RoomID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
+	Movies             []*Movie      `gorm:"foreignKey:RoomID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 }
 
 func (r *Room) BeforeCreate(tx *gorm.DB) error {
@@ -48,16 +48,6 @@ func (r *Room) BeforeCreate(tx *gorm.DB) error {
 		r.ID = utils.SortUUID()
 	}
 	return nil
-}
-
-type RoomSettings struct {
-	Hidden                 bool               `json:"hidden"`
-	CanCreateMovie         bool               `gorm:"default:true" json:"canCreateMovie"`
-	CanEditCurrent         bool               `gorm:"default:true" json:"canEditCurrent"`
-	CanSendChat            bool               `gorm:"default:true" json:"canSendChat"`
-	DisableJoinNewUser     bool               `gorm:"default:false" json:"disableJoinNewUser"`
-	JoinNeedReview         bool               `gorm:"default:false" json:"joinNeedReview"`
-	UserDefaultPermissions RoomUserPermission `json:"userDefaultPermissions"`
 }
 
 func (r *Room) NeedPassword() bool {
@@ -78,4 +68,38 @@ func (r *Room) IsPending() bool {
 
 func (r *Room) IsActive() bool {
 	return r.Status == RoomStatusActive
+}
+
+type RoomSettings struct {
+	ID                     string               `gorm:"primaryKey;type:char(32)" json:"-"`
+	UpdatedAt              time.Time            `gorm:"autoUpdateTime" json:"-"`
+	Hidden                 bool                 `gorm:"default:false" json:"hidden"`
+	DisableJoinNewUser     bool                 `gorm:"default:false" json:"disable_join_new_user"`
+	JoinNeedReview         bool                 `gorm:"default:false" json:"join_need_review"`
+	UserDefaultPermissions RoomMemberPermission `json:"user_default_permissions"`
+
+	CanGetMovieList     bool `gorm:"default:true" json:"can_get_movie_list"`
+	CanAddMovie         bool `gorm:"default:true" json:"can_add_movie"`
+	CanDeleteMovie      bool `gorm:"default:true" json:"can_delete_movie"`
+	CanEditMovie        bool `gorm:"default:true" json:"can_edit_movie"`
+	CanSetCurrentMovie  bool `gorm:"default:true" json:"can_set_current_movie"`
+	CanSetCurrentStatus bool `gorm:"default:true" json:"can_set_current_status"`
+	CanSendChatMessage  bool `gorm:"default:true" json:"can_send_chat_message"`
+}
+
+func DefaultRoomSettings() *RoomSettings {
+	return &RoomSettings{
+		Hidden:                 false,
+		DisableJoinNewUser:     false,
+		JoinNeedReview:         false,
+		UserDefaultPermissions: DefaultPermissions,
+
+		CanGetMovieList:     true,
+		CanAddMovie:         true,
+		CanDeleteMovie:      true,
+		CanEditMovie:        true,
+		CanSetCurrentMovie:  true,
+		CanSetCurrentStatus: true,
+		CanSendChatMessage:  true,
+	}
 }

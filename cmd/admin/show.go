@@ -20,7 +20,10 @@ var ShowCmd = &cobra.Command{
 		).Run()
 	},
 	RunE: func(cmd *cobra.Command, args []string) error {
-		admins := db.GetAdmins()
+		admins, err := db.GetAdmins()
+		if err != nil {
+			fmt.Printf("get admins failed: %s\n", err.Error())
+		}
 		for _, admin := range admins {
 			fmt.Printf("id: %s\tusername: %s\n", admin.ID, admin.Username)
 		}

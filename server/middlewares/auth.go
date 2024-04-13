@@ -2,6 +2,7 @@ package middlewares
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -93,6 +94,17 @@ func AuthRoom(Authorization string) (*op.UserEntry, *op.RoomEntry, error) {
 		return nil, nil, ErrAuthExpired
 	}
 
+	rus, err := r.Value().UserStatus(u.Value().ID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !rus.IsActive() {
+		if rus.IsPending() {
+			return nil, nil, fmt.Errorf("user is pending, need admin to approve")
+		}
+		return nil, nil, fmt.Errorf("user is banned")
+	}
+
 	return u, r, nil
 }
 
@@ -155,10 +167,10 @@ func NewAuthRoomToken(user *op.User, room *op.Room) (string, error) {
 		return "", errors.New("room is pending, need admin to approve")
 	}
 	if room.Settings.DisableJoinNewUser {
-		if _, err := room.GetRoomUserRelation(user.ID); err != nil {
+		if _, err := room.GetRoomMemberPermission(user.ID); err != nil {
 			return "", errors.New("room is not allow new user to join")
 		}
-	} else if _, err := room.LoadOrCreateRoomUserRelation(user.ID); err != nil {
+	} else if _, err := room.LoadOrCreateRoomMember(user.ID); err != nil {
 		return "", err
 	}
 
@@ -255,6 +267,36 @@ func AuthRoomMiddleware(ctx *gin.Context) {
 	log.Data["uid"] = user.ID
 	log.Data["unm"] = user.Username
 	log.Data["uro"] = user.Role.String()
+}
+
+func AuthRoomAdminMiddleware(ctx *gin.Context) {
+	AuthRoomMiddleware(ctx)
+	if ctx.IsAborted() {
+		return
+	}
+
+	room := ctx.MustGet("room").(*synccache.Entry[*op.Room]).Value()
+	user := ctx.MustGet("user").(*synccache.Entry[*op.User]).Value()
+
+	if !user.IsRoomAdmin(room) {
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("user has no permission"))
+		return
+	}
+}
+
+func AuthRoomCreatorMiddleware(ctx *gin.Context) {
+	AuthRoomMiddleware(ctx)
+	if ctx.IsAborted() {
+		return
+	}
+
+	room := ctx.MustGet("room").(*synccache.Entry[*op.Room]).Value()
+	user := ctx.MustGet("user").(*synccache.Entry[*op.User]).Value()
+
+	if room.CreatorID != user.ID {
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("user is not creator"))
+		return
+	}
 }
 
 func AuthAdminMiddleware(ctx *gin.Context) {

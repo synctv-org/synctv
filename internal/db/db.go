@@ -109,9 +109,9 @@ func WhereRoomID(roomID string) func(db *gorm.DB) *gorm.DB {
 	}
 }
 
-func PreloadRoomUserRelations(scopes ...func(*gorm.DB) *gorm.DB) func(db *gorm.DB) *gorm.DB {
+func PreloadRoomMembers(scopes ...func(*gorm.DB) *gorm.DB) func(db *gorm.DB) *gorm.DB {
 	return func(db *gorm.DB) *gorm.DB {
-		return db.Preload("RoomUserRelations", func(db *gorm.DB) *gorm.DB {
+		return db.Preload("RoomMembers", func(db *gorm.DB) *gorm.DB {
 			return db.Scopes(scopes...)
 		})
 	}
@@ -243,13 +243,7 @@ func WhereIDIn(ids []string) func(db *gorm.DB) *gorm.DB {
 
 func WhereRoomSettingWithoutHidden() func(db *gorm.DB) *gorm.DB {
 	return func(db *gorm.DB) *gorm.DB {
-		return db.Where("settings_hidden = ?", false)
-	}
-}
-
-func WhereRoomSettingHidden() func(db *gorm.DB) *gorm.DB {
-	return func(db *gorm.DB) *gorm.DB {
-		return db.Where("settings_hidden = ?", true)
+		return db.Where("hidden = ?", false)
 	}
 }
 
@@ -264,7 +258,7 @@ func WhereIDLike(id string) func(db *gorm.DB) *gorm.DB {
 	}
 }
 
-func WhereRoomUserStatus(status model.RoomUserStatus) func(db *gorm.DB) *gorm.DB {
+func WhereRoomMemberStatus(status model.RoomMemberStatus) func(db *gorm.DB) *gorm.DB {
 	return func(db *gorm.DB) *gorm.DB {
 		return db.Where("status = ?", status)
 	}

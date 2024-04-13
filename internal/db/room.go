@@ -12,7 +12,7 @@ import (
 
 type CreateRoomConfig func(r *model.Room)
 
-func WithSetting(setting model.RoomSettings) CreateRoomConfig {
+func WithSetting(setting *model.RoomSettings) CreateRoomConfig {
 	return func(r *model.Room) {
 		r.Settings = setting
 	}
@@ -21,17 +21,19 @@ func WithSetting(setting model.RoomSettings) CreateRoomConfig {
 func WithCreator(creator *model.User) CreateRoomConfig {
 	return func(r *model.Room) {
 		r.CreatorID = creator.ID
-		r.GroupUserRelations = []*model.RoomUserRelation{
+		r.GroupUserRelations = []*model.RoomMember{
 			{
-				UserID:      creator.ID,
-				Status:      model.RoomUserStatusActive,
-				Permissions: model.PermissionAll,
+				UserID:           creator.ID,
+				Status:           model.RoomMemberStatusActive,
+				Role:             model.RoomMemberRoleCreator,
+				Permissions:      model.AllPermissions,
+				AdminPermissions: model.AllAdminPermissions,
 			},
 		}
 	}
 }
 
-func WithRelations(relations []*model.RoomUserRelation) CreateRoomConfig {
+func WithRelations(relations []*model.RoomMember) CreateRoomConfig {
 	return func(r *model.Room) {
 		r.GroupUserRelations = append(r.GroupUserRelations, relations...)
 	}
@@ -43,10 +45,17 @@ func WithStatus(status model.RoomStatus) CreateRoomConfig {
 	}
 }
 
+func WithSettingHidden(hidden bool) CreateRoomConfig {
+	return func(r *model.Room) {
+		r.Settings.Hidden = hidden
+	}
+}
+
 // if maxCount is 0, it will be ignored
 func CreateRoom(name, password string, maxCount int64, conf ...CreateRoomConfig) (*model.Room, error) {
 	r := &model.Room{
-		Name: name,
+		Name:     name,
+		Settings: model.DefaultRoomSettings(),
 	}
 	for _, c := range conf {
 		c(r)
@@ -83,13 +92,27 @@ func GetRoomByID(id string) (*model.Room, error) {
 		return nil, errors.New("room id is not 32 bit")
 	}
 	r := &model.Room{}
-	err := db.Where("id = ?", id).First(r).Error
+	err := db.
+		Where("id = ?", id).
+		Preload("Settings", "id = ?", id).
+		First(r).Error
 	return r, HandleNotFound(err, "room")
 }
 
-func SaveRoomSettings(roomID string, setting model.RoomSettings) error {
-	err := db.Model(&model.Room{}).Where("id = ?", roomID).Update("setting", setting).Error
+func SaveRoomSettings(roomID string, settings *model.RoomSettings) error {
+	settings.ID = roomID
+	err := db.Save(settings).Error
 	return HandleNotFound(err, "room")
+}
+
+func UpdateRoomSettings(roomID string, settings map[string]interface{}) (*model.RoomSettings, error) {
+	rs := &model.RoomSettings{
+		ID: roomID,
+	}
+	err := db.Model(rs).
+		Clauses(clause.Returning{}).
+		Updates(settings).Error
+	return rs, HandleNotFound(err, "room")
 }
 
 func DeleteRoomByID(roomID string) error {
@@ -114,28 +137,28 @@ func SetRoomHashedPassword(roomID string, hashedPassword []byte) error {
 	return HandleNotFound(err, "room")
 }
 
-func GetAllRooms(scopes ...func(*gorm.DB) *gorm.DB) []*model.Room {
+func GetAllRooms(scopes ...func(*gorm.DB) *gorm.DB) ([]*model.Room, error) {
 	rooms := []*model.Room{}
-	db.Scopes(scopes...).Find(&rooms)
-	return rooms
+	err := db.Scopes(scopes...).Find(&rooms).Error
+	return rooms, err
 }
 
-func GetAllRoomsCount(scopes ...func(*gorm.DB) *gorm.DB) int64 {
+func GetAllRoomsCount(scopes ...func(*gorm.DB) *gorm.DB) (int64, error) {
 	var count int64
-	db.Model(&model.Room{}).Scopes(scopes...).Count(&count)
-	return count
+	err := db.Model(&model.Room{}).Scopes(scopes...).Count(&count).Error
+	return count, err
 }
 
-func GetAllRoomsAndCreator(scopes ...func(*gorm.DB) *gorm.DB) []*model.Room {
+func GetAllRoomsAndCreator(scopes ...func(*gorm.DB) *gorm.DB) ([]*model.Room, error) {
 	rooms := []*model.Room{}
-	db.Preload("Creator").Scopes(scopes...).Find(&rooms)
-	return rooms
+	err := db.Preload("Creator").Scopes(scopes...).Find(&rooms).Error
+	return rooms, err
 }
 
-func GetAllRoomsByUserID(userID string) []*model.Room {
+func GetAllRoomsByUserID(userID string) ([]*model.Room, error) {
 	rooms := []*model.Room{}
-	db.Where("creator_id = ?", userID).Find(&rooms)
-	return rooms
+	err := db.Where("creator_id = ?", userID).Find(&rooms).Error
+	return rooms, err
 }
 
 func SetRoomStatus(roomID string, status model.RoomStatus) error {

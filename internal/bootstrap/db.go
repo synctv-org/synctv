@@ -31,7 +31,7 @@ func InitDatabase(ctx context.Context) (err error) {
 		Logger:                                   newDBLogger(),
 		PrepareStmt:                              true,
 		DisableForeignKeyConstraintWhenMigrating: false,
-		IgnoreRelationshipsWhenMigrating:         true,
+		IgnoreRelationshipsWhenMigrating:         false,
 	})
 	d, err := gorm.Open(dialector, opts...)
 	if err != nil {

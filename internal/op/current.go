@@ -63,18 +63,20 @@ func (c *current) Status() Status {
 	return c.current.Status
 }
 
-func (c *current) SetStatus(playing bool, seek, rate, timeDiff float64) Status {
+func (c *current) SetStatus(playing bool, seek, rate, timeDiff float64) *Status {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 
-	return c.current.SetStatus(playing, seek, rate, timeDiff)
+	s := c.current.SetStatus(playing, seek, rate, timeDiff)
+	return &s
 }
 
-func (c *current) SetSeekRate(seek, rate, timeDiff float64) Status {
+func (c *current) SetSeekRate(seek, rate, timeDiff float64) *Status {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 
-	return c.current.SetSeekRate(seek, rate, timeDiff)
+	s := c.current.SetSeekRate(seek, rate, timeDiff)
+	return &s
 }
 
 func (c *Current) UpdateStatus() Status {

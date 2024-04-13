@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/synctv-org/synctv/internal/model"
+	pb "github.com/synctv-org/synctv/proto/message"
 )
 
 type Client struct {
@@ -39,6 +41,23 @@ func (c *Client) Room() *Room {
 
 func (c *Client) Broadcast(msg Message, conf ...BroadcastConf) error {
 	return c.r.hub.Broadcast(msg, conf...)
+}
+
+func (c *Client) SendChatMessage(message string) error {
+	if c.u.HasRoomPermission(c.r, model.PermissionSendChatMessage) {
+		return model.ErrNoPermission
+	}
+	return c.Broadcast(&pb.ElementMessage{
+		Type: pb.ElementMessageType_CHAT_MESSAGE,
+		Time: time.Now().UnixMilli(),
+		ChatResp: &pb.ChatResp{
+			Message: message,
+			Sender: &pb.Sender{
+				Userid:   c.u.ID,
+				Username: c.u.Username,
+			},
+		},
+	})
 }
 
 func (c *Client) Send(msg Message) error {
@@ -74,4 +93,12 @@ func (c *Client) NextWriter(messageType int) (io.WriteCloser, error) {
 
 func (c *Client) NextReader() (int, io.Reader, error) {
 	return c.conn.NextReader()
+}
+
+func (c *Client) SetSeekRate(seek float64, rate float64, timeDiff float64) (*Status, error) {
+	return c.u.SetRoomCurrentSeekRate(c.r, seek, rate, timeDiff)
+}
+
+func (c *Client) SetStatus(playing bool, seek float64, rate float64, timeDiff float64) (*Status, error) {
+	return c.u.SetRoomCurrentStatus(c.r, playing, seek, rate, timeDiff)
 }

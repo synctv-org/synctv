@@ -39,46 +39,46 @@ func GetPageItems[T any](ctx *gin.Context, items []T) ([]T, error) {
 	return utils.GetPageItems(items, page, max), nil
 }
 
-func MovieList(ctx *gin.Context) {
-	room := ctx.MustGet("room").(*op.RoomEntry).Value()
-	user := ctx.MustGet("user").(*op.UserEntry).Value()
-	log := ctx.MustGet("log").(*logrus.Entry)
+// func MovieList(ctx *gin.Context) {
+// 	room := ctx.MustGet("room").(*op.RoomEntry).Value()
+// 	user := ctx.MustGet("user").(*op.UserEntry).Value()
+// 	log := ctx.MustGet("log").(*logrus.Entry)
 
-	page, max, err := utils.GetPageAndMax(ctx)
-	if err != nil {
-		log.Errorf("get page and max error: %v", err)
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
-		return
-	}
+// 	page, max, err := utils.GetPageAndMax(ctx)
+// 	if err != nil {
+// 		log.Errorf("get page and max error: %v", err)
+// 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+// 		return
+// 	}
 
-	currentResp, err := genCurrentResp(ctx, user, room)
-	if err != nil {
-		log.Errorf("gen current resp error: %v", err)
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
-		return
-	}
+// 	currentResp, err := genCurrentResp(ctx, user, room)
+// 	if err != nil {
+// 		log.Errorf("gen current resp error: %v", err)
+// 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+// 		return
+// 	}
 
-	m := room.GetMoviesWithPage(page, max)
-	mresp := make([]model.MovieResp, len(m))
-	for i, v := range m {
-		mresp[i] = model.MovieResp{
-			Id:      v.Movie.ID,
-			Base:    v.Movie.Base,
-			Creator: op.GetUserName(v.Movie.CreatorID),
-		}
-		// hide url and headers when proxy
-		if user.ID != v.Movie.CreatorID && v.Movie.Base.Proxy {
-			mresp[i].Base.Url = ""
-			mresp[i].Base.Headers = nil
-		}
-	}
+// 	m := room.GetMoviesWithPage(page, max)
+// 	mresp := make([]model.MovieResp, len(m))
+// 	for i, v := range m {
+// 		mresp[i] = model.MovieResp{
+// 			Id:      v.Movie.ID,
+// 			Base:    v.Movie.Base,
+// 			Creator: op.GetUserName(v.Movie.CreatorID),
+// 		}
+// 		// hide url and headers when proxy
+// 		if user.ID != v.Movie.CreatorID && v.Movie.Base.Proxy {
+// 			mresp[i].Base.Url = ""
+// 			mresp[i].Base.Headers = nil
+// 		}
+// 	}
 
-	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
-		"current": currentResp,
-		"total":   room.GetMoviesCount(),
-		"movies":  mresp,
-	}))
-}
+// 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
+// 		"current": currentResp,
+// 		"total":   room.GetMoviesCount(),
+// 		"movies":  mresp,
+// 	}))
+// }
 
 func genCurrentResp(ctx context.Context, user *op.User, room *op.Room) (*model.CurrentMovieResp, error) {
 	return genCurrentRespWithCurrent(ctx, user, room, room.Current())
@@ -88,7 +88,7 @@ func genCurrentMovieInfo(ctx context.Context, user *op.User, room *op.Room, opMo
 	if opMovie == nil || opMovie.ID == "" {
 		return &model.MovieResp{}, nil
 	}
-	var movie = opMovie.Movie
+	var movie = *opMovie.Movie
 	if movie.Base.VendorInfo.Vendor != "" {
 		vendorMovie, err := genVendorMovie(ctx, user, opMovie)
 		if err != nil {
@@ -171,7 +171,7 @@ func Movies(ctx *gin.Context) {
 		return
 	}
 
-	m := room.GetMoviesWithPage(int(page), int(max))
+	m, total := user.GetRoomMoviesWithPage(room, int(page), int(max))
 
 	mresp := make([]*model.MovieResp, len(m))
 	for i, v := range m {
@@ -188,7 +188,7 @@ func Movies(ctx *gin.Context) {
 	}
 
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
-		"total":  room.GetMoviesCount(),
+		"total":  total,
 		"movies": mresp,
 	}))
 }
@@ -276,7 +276,7 @@ func NewPublishKey(ctx *gin.Context) {
 		return
 	}
 
-	if movie.Movie.CreatorID != user.ID && !user.HasRoomPermission(room, dbModel.PermissionEditUser) {
+	if movie.Movie.CreatorID != user.ID {
 		log.Errorf("new publish key error: %v", dbModel.ErrNoPermission)
 		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(dbModel.ErrNoPermission))
 		return
@@ -1057,7 +1057,7 @@ func proxyVendorMovie(ctx *gin.Context, movie *op.Movie) {
 
 // user is the api requester
 func genVendorMovie(ctx context.Context, user *op.User, opMovie *op.Movie) (*dbModel.Movie, error) {
-	movie := opMovie.Movie
+	movie := *opMovie.Movie
 	var err error
 	switch movie.Base.VendorInfo.Vendor {
 	case dbModel.VendorBilibili:

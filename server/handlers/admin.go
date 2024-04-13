@@ -154,17 +154,43 @@ func Users(ctx *gin.Context) {
 		// search mode, all, name, id
 		switch ctx.DefaultQuery("search", "all") {
 		case "all":
-			scopes = append(scopes, db.WhereUsernameLikeOrIDIn(keyword, db.GerUsersIDByIDLike(keyword)))
+			ids, err := db.GerUsersIDByIDLike(keyword)
+			if err != nil {
+				log.WithError(err).Error("get users id by id like error")
+				ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+				return
+			}
+			scopes = append(scopes, db.WhereUsernameLikeOrIDIn(keyword, ids))
 		case "name":
 			scopes = append(scopes, db.WhereUsernameLike(keyword))
 		case "id":
-			scopes = append(scopes, db.WhereIDIn(db.GerUsersIDByIDLike(keyword)))
+			ids, err := db.GerUsersIDByIDLike(keyword)
+			if err != nil {
+				log.WithError(err).Error("get users id by id like error")
+				ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+				return
+			}
+			scopes = append(scopes, db.WhereIDIn(ids))
 		}
 	}
 
+	total, err := db.GetAllUserCount(scopes...)
+	if err != nil {
+		log.WithError(err).Error("get all user count error")
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	list, err := db.GetAllUsers(append(scopes, db.Paginate(page, pageSize))...)
+	if err != nil {
+		log.WithError(err).Error("get all users error")
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
-		"total": db.GetAllUserCount(scopes...),
-		"list":  genUserListResp(db.GetAllUsers(append(scopes, db.Paginate(page, pageSize))...)),
+		"total": total,
+		"list":  genUserListResp(list),
 	}))
 }
 
@@ -181,31 +207,32 @@ func genUserListResp(us []*dbModel.User) []*model.UserInfoResp {
 	return resp
 }
 
-func GetRoomUsers(ctx *gin.Context) {
+func AdminGetRoomMembers(ctx *gin.Context) {
+	room := ctx.MustGet("room").(*op.RoomEntry).Value()
 	log := ctx.MustGet("log").(*logrus.Entry)
-
-	id := ctx.Query("id")
-	if len(id) != 32 {
-		log.Error("room id error")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("room id error"))
-		return
-	}
 
 	page, pageSize, err := utils.GetPageAndMax(ctx)
 	if err != nil {
-		log.WithError(err).Error("get page and max error")
+		log.Errorf("get room users failed: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 
 	var desc = ctx.DefaultQuery("order", "desc") == "desc"
 
-	scopes := []func(db *gorm.DB) *gorm.DB{
-		db.PreloadRoomUserRelations(db.WhereRoomID(id)),
+	scopes := []func(db *gorm.DB) *gorm.DB{}
+
+	switch ctx.DefaultQuery("status", "active") {
+	case "pending":
+		scopes = append(scopes, db.WhereRoomMemberStatus(dbModel.RoomMemberStatusPending))
+	case "banned":
+		scopes = append(scopes, db.WhereRoomMemberStatus(dbModel.RoomMemberStatusBanned))
+	case "active":
+		scopes = append(scopes, db.WhereRoomMemberStatus(dbModel.RoomMemberStatusActive))
 	}
 
 	switch ctx.DefaultQuery("sort", "name") {
-	case "createdAt":
+	case "join":
 		if desc {
 			scopes = append(scopes, db.OrderByCreatedAtDesc)
 		} else {
@@ -218,7 +245,7 @@ func GetRoomUsers(ctx *gin.Context) {
 			scopes = append(scopes, db.OrderByAsc("username"))
 		}
 	default:
-		log.Error("not support sort")
+		log.Errorf("get room users failed: not support sort")
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support sort"))
 		return
 	}
@@ -227,31 +254,60 @@ func GetRoomUsers(ctx *gin.Context) {
 		// search mode, all, name, id
 		switch ctx.DefaultQuery("search", "all") {
 		case "all":
-			scopes = append(scopes, db.WhereUsernameLikeOrIDIn(keyword, db.GerUsersIDByIDLike(keyword)))
+			ids, err := db.GerUsersIDByIDLike(keyword)
+			if err != nil {
+				log.Errorf("get room users failed: %v", err)
+				ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+				return
+			}
+			scopes = append(scopes, db.WhereUsernameLikeOrIDIn(keyword, ids))
 		case "name":
 			scopes = append(scopes, db.WhereUsernameLike(keyword))
 		case "id":
-			scopes = append(scopes, db.WhereIDIn(db.GerUsersIDByIDLike(keyword)))
+			ids, err := db.GerUsersIDByIDLike(keyword)
+			if err != nil {
+				log.Errorf("get room users failed: %v", err)
+				ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+				return
+			}
+			scopes = append(scopes, db.WhereIDIn(ids))
 		}
+	}
+	scopes = append(scopes, func(db *gorm.DB) *gorm.DB {
+		return db.InnerJoins("JOIN room_members ON users.id = room_members.user_id AND room_members.room_id = ?", room.ID)
+	}, db.PreloadRoomMembers())
+
+	total, err := db.GetAllUserCount(scopes...)
+	if err != nil {
+		log.Errorf("get room users failed: %v", err)
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
+
+	list, err := db.GetAllUsers(append(scopes, db.Paginate(page, pageSize))...)
+	if err != nil {
+		log.Errorf("get room users failed: %v", err)
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
 	}
 
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
-		"total": db.GetAllUserCount(scopes...),
-		"list":  genRoomUserListResp(db.GetAllUsers(append(scopes, db.Paginate(page, pageSize))...)),
+		"total": total,
+		"list":  genRoomMemberListResp(list),
 	}))
 }
 
-func genRoomUserListResp(us []*dbModel.User) []*model.RoomUsersResp {
-	resp := make([]*model.RoomUsersResp, len(us))
+func genRoomMemberListResp(us []*dbModel.User) []*model.RoomMembersResp {
+	resp := make([]*model.RoomMembersResp, len(us))
 	for i, v := range us {
-		resp[i] = &model.RoomUsersResp{
-			UserID:      v.ID,
-			Username:    v.Username,
-			Role:        v.Role,
-			JoinAt:      v.RoomUserRelations[0].CreatedAt.UnixMilli(),
-			RoomID:      v.RoomUserRelations[0].RoomID,
-			Status:      v.RoomUserRelations[0].Status,
-			Permissions: v.RoomUserRelations[0].Permissions,
+		resp[i] = &model.RoomMembersResp{
+			UserID:           v.ID,
+			Username:         v.Username,
+			JoinAt:           v.RoomMembers[0].CreatedAt.UnixMilli(),
+			Role:             v.RoomMembers[0].Role,
+			RoomID:           v.RoomMembers[0].RoomID,
+			Permissions:      v.RoomMembers[0].Permissions,
+			AdminPermissions: v.RoomMembers[0].AdminPermissions,
 		}
 	}
 	return resp
@@ -409,11 +465,23 @@ func Rooms(ctx *gin.Context) {
 		// search mode, all, name, creator
 		switch ctx.DefaultQuery("search", "all") {
 		case "all":
-			scopes = append(scopes, db.WhereRoomNameLikeOrCreatorInOrIDLike(keyword, db.GerUsersIDByUsernameLike(keyword), keyword))
+			ids, err := db.GerUsersIDByUsernameLike(keyword)
+			if err != nil {
+				log.WithError(err).Error("get users id by username like error")
+				ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+				return
+			}
+			scopes = append(scopes, db.WhereRoomNameLikeOrCreatorInOrIDLike(keyword, ids, keyword))
 		case "name":
 			scopes = append(scopes, db.WhereRoomNameLike(keyword))
 		case "creator":
-			scopes = append(scopes, db.WhereCreatorIDIn(db.GerUsersIDByUsernameLike(keyword)))
+			ids, err := db.GerUsersIDByUsernameLike(keyword)
+			if err != nil {
+				log.WithError(err).Error("get users id by username like error")
+				ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+				return
+			}
+			scopes = append(scopes, db.WhereCreatorIDIn(ids))
 		case "creatorId":
 			scopes = append(scopes, db.WhereCreatorID(keyword))
 		case "id":
@@ -421,9 +489,23 @@ func Rooms(ctx *gin.Context) {
 		}
 	}
 
+	total, err := db.GetAllRoomsCount(scopes...)
+	if err != nil {
+		log.WithError(err).Error("get all rooms count error")
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	list, err := genRoomListResp(append(scopes, db.Paginate(page, pageSize))...)
+	if err != nil {
+		log.WithError(err).Error("gen room list resp error")
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
-		"total": db.GetAllRoomsCount(scopes...),
-		"list":  genRoomListResp(append(scopes, db.Paginate(page, pageSize))...),
+		"total": total,
+		"list":  list,
 	}))
 }
 
@@ -489,9 +571,24 @@ func GetUserRooms(ctx *gin.Context) {
 		}
 	}
 
+	total, err := db.GetAllRoomsCount(scopes...)
+	if err != nil {
+		log.WithError(err).Error("get all rooms count error")
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	list, err := genRoomListResp(append(scopes, db.Paginate(page, pageSize))...)
+	if err != nil {
+		log.WithError(err).Error("gen room list resp error")
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+
+	}
+
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
-		"total": db.GetAllRoomsCount(scopes...),
-		"list":  genRoomListResp(append(scopes, db.Paginate(page, pageSize))...),
+		"total": total,
+		"list":  list,
 	}))
 }
 

@@ -147,7 +147,7 @@ func initAdmin(admin *gin.RouterGroup, root *gin.RouterGroup) {
 
 			room.POST("/unban", UnBanRoom)
 
-			room.GET("/users", GetRoomUsers)
+			room.GET("/members", AdminGetRoomMembers)
 		}
 	}
 
@@ -171,19 +171,42 @@ func initRoom(room *gin.RouterGroup, needAuthUser *gin.RouterGroup, needAuthRoom
 
 	needAuthUser.POST("/login", LoginRoom)
 
-	needAuthRoom.POST("/delete", DeleteRoom)
+	needAuthRoom.GET("/me", RoomMe)
 
-	needAuthRoom.POST("/pwd", SetRoomPassword)
+	needAuthRoom.GET("/members", RoomMembers)
 
-	needAuthRoom.GET("/settings", RoomSetting)
+	{
+		needAuthRoomAdmin := needAuthRoom.Group("/admin", middlewares.AuthRoomAdminMiddleware)
+		needAuthRoomCreator := needAuthRoom.Group("/admin", middlewares.AuthRoomCreatorMiddleware)
 
-	needAuthRoom.POST("/settings", SetRoomSetting)
+		needAuthRoomAdmin.GET("/settings", RoomSetting)
 
-	needAuthRoom.GET("/users", RoomUsers)
+		needAuthRoomAdmin.POST("/settings", SetRoomSetting)
+
+		needAuthRoomAdmin.POST("/delete", DeleteRoom)
+
+		needAuthRoomAdmin.POST("/pwd", SetRoomPassword)
+
+		needAuthRoomAdmin.GET("/members", RoomAdminMembers)
+
+		needAuthRoomAdmin.POST("/members/approve", RoomAdminApproveMember)
+
+		needAuthRoomAdmin.POST("/members/ban", RoomAdminBanMember)
+
+		needAuthRoomAdmin.POST("/members/unban", RoomAdminUnbanMember)
+
+		needAuthRoomCreator.POST("/members/permissions", RoomSetMemberPermissions)
+
+		needAuthRoomCreator.POST("/members", RoomSetMember)
+
+		needAuthRoomCreator.POST("/members/admin", RoomSetAdmin)
+
+		needAuthRoomCreator.POST("/members/admin/permissions", RoomSetAdminPermissions)
+	}
 }
 
 func initMovie(movie *gin.RouterGroup, needAuthMovie *gin.RouterGroup) {
-	needAuthMovie.GET("/list", MovieList)
+	// needAuthMovie.GET("/list", MovieList)
 
 	needAuthMovie.GET("/current", CurrentMovie)
 

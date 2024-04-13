@@ -138,7 +138,13 @@ func UserRooms(ctx *gin.Context) {
 		// search mode, all, name, creator
 		switch ctx.DefaultQuery("search", "all") {
 		case "all":
-			scopes = append(scopes, db.WhereRoomNameLikeOrCreatorInOrIDLike(keyword, db.GerUsersIDByUsernameLike(keyword), keyword))
+			ids, err := db.GerUsersIDByUsernameLike(keyword)
+			if err != nil {
+				log.Errorf("failed to get all rooms count: %v", err)
+				ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+				return
+			}
+			scopes = append(scopes, db.WhereRoomNameLikeOrCreatorInOrIDLike(keyword, ids, keyword))
 		case "name":
 			scopes = append(scopes, db.WhereRoomNameLike(keyword))
 		case "id":
@@ -146,9 +152,23 @@ func UserRooms(ctx *gin.Context) {
 		}
 	}
 
+	total, err := db.GetAllRoomsCount(scopes...)
+	if err != nil {
+		log.Errorf("failed to get all rooms count: %v", err)
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
+
+	list, err := genRoomListResp(append(scopes, db.Paginate(page, pageSize))...)
+	if err != nil {
+		log.Errorf("failed to get all rooms: %v", err)
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
+
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
-		"total": db.GetAllRoomsCount(scopes...),
-		"list":  genRoomListResp(append(scopes, db.Paginate(page, pageSize))...),
+		"total": total,
+		"list":  list,
 	}))
 }
 

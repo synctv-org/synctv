@@ -23,7 +23,7 @@ import (
 )
 
 type Movie struct {
-	model.Movie
+	*model.Movie
 	channel       atomic.Pointer[rtmps.Channel]
 	alistCache    atomic.Pointer[cache.AlistMovieCache]
 	bilibiliCache atomic.Pointer[cache.BilibiliMovieCache]
@@ -70,7 +70,7 @@ func (m *Movie) ClearCache() {
 func (m *Movie) AlistCache() *cache.AlistMovieCache {
 	c := m.alistCache.Load()
 	if c == nil {
-		c = cache.NewAlistMovieCache(&m.Movie)
+		c = cache.NewAlistMovieCache(m.Movie)
 		if !m.alistCache.CompareAndSwap(nil, c) {
 			return m.AlistCache()
 		}
@@ -81,7 +81,7 @@ func (m *Movie) AlistCache() *cache.AlistMovieCache {
 func (m *Movie) BilibiliCache() *cache.BilibiliMovieCache {
 	c := m.bilibiliCache.Load()
 	if c == nil {
-		c = cache.NewBilibiliMovieCache(&m.Movie)
+		c = cache.NewBilibiliMovieCache(m.Movie)
 		if !m.bilibiliCache.CompareAndSwap(nil, c) {
 			return m.BilibiliCache()
 		}
@@ -92,7 +92,7 @@ func (m *Movie) BilibiliCache() *cache.BilibiliMovieCache {
 func (m *Movie) EmbyCache() *cache.EmbyMovieCache {
 	c := m.embyCache.Load()
 	if c == nil {
-		c = cache.NewEmbyMovieCache(&m.Movie)
+		c = cache.NewEmbyMovieCache(m.Movie)
 		if !m.embyCache.CompareAndSwap(nil, c) {
 			return m.EmbyCache()
 		}

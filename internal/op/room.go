@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 
 	"github.com/gorilla/websocket"
+	log "github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/utils"
@@ -88,12 +89,55 @@ func (r *Room) AddMovies(movies []*model.Movie) error {
 	return r.movies.AddMovies(movies)
 }
 
-func (r *Room) HasPermission(userID string, permission model.RoomUserPermission) bool {
+func (r *Room) UserRole(userID string) (model.RoomMemberRole, error) {
+	if r.CreatorID == userID {
+		return model.RoomMemberRoleCreator, nil
+	}
+	rur, err := r.LoadOrCreateRoomMember(userID)
+	if err != nil {
+		return model.RoomMemberRoleUnknown, err
+	}
+	return rur.Role, nil
+}
+
+// do not use this value for permission determination
+func (r *Room) IsAdmin(userID string) bool {
+	role, err := r.UserRole(userID)
+	if err != nil {
+		log.Errorf("get user role failed: %s", err.Error())
+		return false
+	}
+	return role == model.RoomMemberRoleCreator
+}
+
+func (r *Room) HasAdminPermission(userID string, permission model.RoomAdminPermission) bool {
+	if r.CreatorID == userID {
+		return true
+	}
+	rur, err := r.LoadOrCreateRoomMember(userID)
+	if err != nil {
+		return false
+	}
+	return rur.HasAdminPermission(permission)
+}
+
+func (r *Room) UserStatus(userID string) (model.RoomMemberStatus, error) {
+	if r.CreatorID == userID {
+		return model.RoomMemberStatusActive, nil
+	}
+	rur, err := r.LoadOrCreateRoomMember(userID)
+	if err != nil {
+		return model.RoomMemberStatusUnknown, err
+	}
+	return rur.Status, nil
+}
+
+func (r *Room) HasPermission(userID string, permission model.RoomMemberPermission) bool {
 	if r.CreatorID == userID {
 		return true
 	}
 
-	rur, err := r.LoadOrCreateRoomUserRelation(userID)
+	rur, err := r.LoadOrCreateRoomMember(userID)
 	if err != nil {
 		return false
 	}
@@ -101,24 +145,35 @@ func (r *Room) HasPermission(userID string, permission model.RoomUserPermission)
 	return rur.HasPermission(permission)
 }
 
-func (r *Room) LoadOrCreateRoomUserRelation(userID string) (*model.RoomUserRelation, error) {
-	var conf []db.CreateRoomUserRelationConfig
-	if r.Settings.JoinNeedReview {
-		conf = []db.CreateRoomUserRelationConfig{db.WithRoomUserRelationStatus(model.RoomUserStatusPending)}
+func (r *Room) LoadOrCreateRoomMember(userID string) (*model.RoomMember, error) {
+	var conf []db.CreateRoomMemberRelationConfig
+	if r.CreatorID == userID {
+		conf = append(
+			conf,
+			db.WithRoomMemberStatus(model.RoomMemberStatusActive),
+			db.WithRoomMemberRelationPermissions(model.AllPermissions),
+			db.WithRoomMemberRole(model.RoomMemberRoleCreator),
+			db.WithRoomMemberAdminPermissions(model.AllAdminPermissions),
+		)
 	} else {
-		conf = []db.CreateRoomUserRelationConfig{db.WithRoomUserRelationStatus(model.RoomUserStatusActive)}
+		conf = append(
+			conf,
+			db.WithRoomMemberRelationPermissions(r.Settings.UserDefaultPermissions),
+		)
+		if r.Settings.JoinNeedReview {
+			conf = append(conf, db.WithRoomMemberStatus(model.RoomMemberStatusPending))
+		} else {
+			conf = append(conf, db.WithRoomMemberStatus(model.RoomMemberStatusActive))
+		}
 	}
-	if r.Settings.UserDefaultPermissions != 0 {
-		conf = append(conf, db.WithRoomUserRelationPermissions(r.Settings.UserDefaultPermissions))
-	}
-	return db.FirstOrCreateRoomUserRelation(r.ID, userID, conf...)
+	return db.FirstOrCreateRoomMemberRelation(r.ID, userID, conf...)
 }
 
-func (r *Room) GetRoomUserRelation(userID string) (model.RoomUserPermission, error) {
+func (r *Room) GetRoomMemberPermission(userID string) (model.RoomMemberPermission, error) {
 	if r.CreatorID == userID {
-		return model.PermissionAll, nil
+		return model.AllPermissions, nil
 	}
-	ur, err := db.GetRoomUserRelation(r.ID, userID)
+	ur, err := db.GetRoomMemberRelation(r.ID, userID)
 	if err != nil {
 		return 0, err
 	}
@@ -146,20 +201,16 @@ func (r *Room) SetPassword(password string) error {
 	return db.SetRoomHashedPassword(r.ID, hashedPassword)
 }
 
-func (r *Room) SetUserStatus(userID string, status model.RoomUserStatus) error {
-	return db.SetRoomUserStatus(r.ID, userID, status)
+func (r *Room) SetUserPermission(userID string, permission model.RoomMemberPermission) error {
+	return db.SetMemberPermissions(r.ID, userID, permission)
 }
 
-func (r *Room) SetUserPermission(userID string, permission model.RoomUserPermission) error {
-	return db.SetUserPermission(r.ID, userID, permission)
+func (r *Room) AddUserPermission(userID string, permission model.RoomMemberPermission) error {
+	return db.AddMemberPermissions(r.ID, userID, permission)
 }
 
-func (r *Room) AddUserPermission(userID string, permission model.RoomUserPermission) error {
-	return db.AddUserPermission(r.ID, userID, permission)
-}
-
-func (r *Room) RemoveUserPermission(userID string, permission model.RoomUserPermission) error {
-	return db.RemoveUserPermission(r.ID, userID, permission)
+func (r *Room) RemoveUserPermission(userID string, permission model.RoomMemberPermission) error {
+	return db.RemoveMemberPermissions(r.ID, userID, permission)
 }
 
 func (r *Room) GetMoviesCount() int {
@@ -234,8 +285,8 @@ func (r *Room) SwapMoviePositions(id1, id2 string) error {
 	return r.movies.SwapMoviePositions(id1, id2)
 }
 
-func (r *Room) GetMoviesWithPage(page, pageSize int) []*Movie {
-	return r.movies.GetMoviesWithPage(page, pageSize)
+func (r *Room) GetMoviesWithPage(page, pageSize int, creator string) ([]*Movie, int) {
+	return r.movies.GetMoviesWithPage(page, pageSize, creator)
 }
 
 func (r *Room) NewClient(user *User, conn *websocket.Conn) (*Client, error) {
@@ -258,28 +309,80 @@ func (r *Room) UnregisterClient(cli *Client) error {
 	return r.hub.UnRegClient(cli)
 }
 
-func (r *Room) SetStatus(playing bool, seek float64, rate float64, timeDiff float64) Status {
+func (r *Room) SetCurrentStatus(playing bool, seek float64, rate float64, timeDiff float64) *Status {
 	return r.current.SetStatus(playing, seek, rate, timeDiff)
 }
 
-func (r *Room) SetSeekRate(seek float64, rate float64, timeDiff float64) Status {
+func (r *Room) SetCurrentSeekRate(seek float64, rate float64, timeDiff float64) *Status {
 	return r.current.SetSeekRate(seek, rate, timeDiff)
 }
 
-func (r *Room) SetRoomStatus(status model.RoomStatus) error {
-	err := db.SetRoomStatus(r.ID, status)
-	if err != nil {
-		return err
-	}
-	r.Status = status
-	return nil
-}
-
-func (r *Room) SetSettings(settings model.RoomSettings) error {
+func (r *Room) SetSettings(settings *model.RoomSettings) error {
 	err := db.SaveRoomSettings(r.ID, settings)
 	if err != nil {
 		return err
 	}
 	r.Settings = settings
 	return nil
+}
+
+func (r *Room) UpdateSettings(settings map[string]any) error {
+	rs, err := db.UpdateRoomSettings(r.ID, settings)
+	if err != nil {
+		return err
+	}
+	r.Settings = rs
+	return nil
+}
+
+func (r *Room) ResetMemberPermissions(userID string) error {
+	return r.SetMemberPermissions(userID, r.Settings.UserDefaultPermissions)
+}
+
+func (r *Room) SetMemberPermissions(userID string, permissions model.RoomMemberPermission) error {
+	return db.SetMemberPermissions(r.ID, userID, permissions)
+}
+
+func (r *Room) AddMemberPermissions(userID string, permissions model.RoomMemberPermission) error {
+	return db.AddMemberPermissions(r.ID, userID, permissions)
+}
+
+func (r *Room) RemoveMemberPermissions(userID string, permissions model.RoomMemberPermission) error {
+	return db.RemoveMemberPermissions(r.ID, userID, permissions)
+}
+
+func (r *Room) ApprovePendingMember(userID string) error {
+	return db.RoomApprovePendingMember(r.ID, userID)
+}
+
+func (r *Room) BanMember(userID string) error {
+	return db.RoomBanMember(r.ID, userID)
+}
+
+func (r *Room) UnbanMember(userID string) error {
+	return db.RoomUnbanMember(r.ID, userID)
+}
+
+func (r *Room) ResetAdminPermissions(userID string) error {
+	return r.SetAdminPermissions(userID, model.DefaultAdminPermissions)
+}
+
+func (r *Room) SetAdminPermissions(userID string, permissions model.RoomAdminPermission) error {
+	return db.RoomSetAdminPermissions(r.ID, userID, permissions)
+}
+
+func (r *Room) AddAdminPermissions(userID string, permissions model.RoomAdminPermission) error {
+	return db.RoomSetAdminPermissions(r.ID, userID, permissions)
+}
+
+func (r *Room) RemoveAdminPermissions(userID string, permissions model.RoomAdminPermission) error {
+	return db.RoomSetAdminPermissions(r.ID, userID, 0)
+}
+
+func (r *Room) SetAdmin(userID string, permissions model.RoomAdminPermission) error {
+	return db.RoomSetAdmin(r.ID, userID, permissions)
+}
+
+func (r *Room) SetMember(userID string, permissions model.RoomMemberPermission) error {
+	return db.RoomSetMember(r.ID, userID, permissions)
 }

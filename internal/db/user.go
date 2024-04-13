@@ -236,22 +236,22 @@ func GetUserByUsername(username string) (*model.User, error) {
 	return u, HandleNotFound(err, "user")
 }
 
-func GetUserByUsernameLike(username string, scopes ...func(*gorm.DB) *gorm.DB) []*model.User {
+func GetUserByUsernameLike(username string, scopes ...func(*gorm.DB) *gorm.DB) ([]*model.User, error) {
 	var users []*model.User
-	db.Where(`username LIKE ?`, fmt.Sprintf("%%%s%%", username)).Scopes(scopes...).Find(&users)
-	return users
+	err := db.Where(`username LIKE ?`, fmt.Sprintf("%%%s%%", username)).Scopes(scopes...).Find(&users).Error
+	return users, err
 }
 
-func GerUsersIDByUsernameLike(username string, scopes ...func(*gorm.DB) *gorm.DB) []string {
+func GerUsersIDByUsernameLike(username string, scopes ...func(*gorm.DB) *gorm.DB) ([]string, error) {
 	var ids []string
-	db.Model(&model.User{}).Where(`username LIKE ?`, fmt.Sprintf("%%%s%%", username)).Scopes(scopes...).Pluck("id", &ids)
-	return ids
+	err := db.Model(&model.User{}).Where(`username LIKE ?`, fmt.Sprintf("%%%s%%", username)).Scopes(scopes...).Pluck("id", &ids).Error
+	return ids, err
 }
 
-func GerUsersIDByIDLike(id string, scopes ...func(*gorm.DB) *gorm.DB) []string {
+func GerUsersIDByIDLike(id string, scopes ...func(*gorm.DB) *gorm.DB) ([]string, error) {
 	var ids []string
-	db.Model(&model.User{}).Where(`id LIKE ?`, utils.LIKE(id)).Scopes(scopes...).Pluck("id", &ids)
-	return ids
+	err := db.Model(&model.User{}).Where(`id LIKE ?`, utils.LIKE(id)).Scopes(scopes...).Pluck("id", &ids).Error
+	return ids, err
 }
 
 func GetUserByIDOrUsernameLike(idOrUsername string, scopes ...func(*gorm.DB) *gorm.DB) ([]*model.User, error) {
@@ -332,10 +332,10 @@ func RemoveAdmin(u *model.User) error {
 	return SaveUser(u)
 }
 
-func GetAdmins() []*model.User {
+func GetAdmins() ([]*model.User, error) {
 	var users []*model.User
-	db.Where("role == ?", model.RoleAdmin).Find(&users)
-	return users
+	err := db.Where("role == ?", model.RoleAdmin).Find(&users).Error
+	return users, err
 }
 
 func AddAdminByID(userID string) error {
@@ -395,16 +395,16 @@ func SetUsernameByID(userID string, username string) error {
 	return HandleNotFound(err, "user")
 }
 
-func GetAllUserCount(scopes ...func(*gorm.DB) *gorm.DB) int64 {
+func GetAllUserCount(scopes ...func(*gorm.DB) *gorm.DB) (int64, error) {
 	var count int64
-	db.Model(&model.User{}).Scopes(scopes...).Count(&count)
-	return count
+	err := db.Model(&model.User{}).Scopes(scopes...).Count(&count).Error
+	return count, err
 }
 
-func GetAllUsers(scopes ...func(*gorm.DB) *gorm.DB) []*model.User {
+func GetAllUsers(scopes ...func(*gorm.DB) *gorm.DB) ([]*model.User, error) {
 	var users []*model.User
-	db.Scopes(scopes...).Find(&users)
-	return users
+	err := db.Scopes(scopes...).Find(&users).Error
+	return users, err
 }
 
 func SetUserHashedPassword(id string, hashedPassword []byte) error {

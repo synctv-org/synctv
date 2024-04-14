@@ -407,7 +407,7 @@ func ChangeCurrentMovie(ctx *gin.Context) {
 		return
 	}
 
-	err = user.SetCurrentMovie(room, req.Id, false)
+	err = user.SetCurrentMovie(room, req.Id, req.Id != "")
 	if err != nil {
 		log.Errorf("change current movie error: %v", err)
 		if errors.Is(err, dbModel.ErrNoPermission) {

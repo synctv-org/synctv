@@ -516,7 +516,7 @@ func ProxyMovie(ctx *gin.Context) {
 func proxyURL(ctx *gin.Context, u string, headers map[string]string) error {
 	if !settings.AllowProxyToLocal.Get() {
 		if l, err := utils.ParseURLIsLocalIP(u); err != nil {
-			return err
+			return fmt.Errorf("check url is local ip error: %w", err)
 		} else if l {
 			return errors.New("not allow proxy to local")
 		}
@@ -525,7 +525,7 @@ func proxyURL(ctx *gin.Context, u string, headers map[string]string) error {
 	defer cf()
 	req, err := http.NewRequestWithContext(ctx2, http.MethodGet, u, nil)
 	if err != nil {
-		return err
+		return fmt.Errorf("new request error: %w", err)
 	}
 	for k, v := range headers {
 		req.Header.Set(k, v)
@@ -537,7 +537,7 @@ func proxyURL(ctx *gin.Context, u string, headers map[string]string) error {
 	}
 	resp, err := uhc.Do(req)
 	if err != nil {
-		return err
+		return fmt.Errorf("request url error: %w", err)
 	}
 	defer resp.Body.Close()
 	ctx.Status(resp.StatusCode)
@@ -548,7 +548,7 @@ func proxyURL(ctx *gin.Context, u string, headers map[string]string) error {
 	ctx.Header("Content-Type", resp.Header.Get("Content-Type"))
 	_, err = io.Copy(ctx.Writer, resp.Body)
 	if err != nil && err != io.EOF {
-		return err
+		return fmt.Errorf("copy response body error: %w", err)
 	}
 	return nil
 }
@@ -857,7 +857,7 @@ func proxyVendorMovie(ctx *gin.Context, movie *op.Movie) {
 					}
 					err = proxyURL(ctx, mpdC.Urls[streamId], headers)
 					if err != nil {
-						log.Errorf("proxy vendor movie error: %v", err)
+						log.Errorf("proxy vendor movie [%s] error: %v", mpdC.Urls[streamId], err)
 					}
 					return
 				}

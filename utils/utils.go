@@ -1,7 +1,6 @@
 package utils
 
 import (
-	"context"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -18,12 +17,10 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	utls "github.com/refraction-networking/utls"
 	"github.com/synctv-org/synctv/cmd/flags"
 	"github.com/zijiren233/go-colorable"
 	"github.com/zijiren233/stream"
 	yamlcomment "github.com/zijiren233/yaml-comment"
-	"golang.org/x/net/http2"
 	"gopkg.in/yaml.v3"
 )
 
@@ -417,52 +414,4 @@ func GetEnvFiles(root string) ([]string, error) {
 	}
 
 	return envs, nil
-}
-
-func HttpDo(req *http.Request, handler func(*http.Response) error) error {
-	config := utls.Config{ServerName: req.URL.Hostname()}
-	dialConn, err := net.Dial("tcp", req.URL.Host)
-	if err != nil {
-		return err
-	}
-	uTlsConn := utls.UClient(dialConn, &config, utls.HelloChrome_Auto)
-	defer uTlsConn.Close()
-	err = uTlsConn.Handshake()
-	if err != nil {
-		return err
-	}
-	resp, err := httpGetOverConn(req, uTlsConn, uTlsConn.ConnectionState().NegotiatedProtocol)
-	if err != nil {
-		return err
-	}
-	return handler(resp)
-}
-
-func httpGetOverConn(req *http.Request, conn net.Conn, alpn string) (*http.Response, error) {
-	switch alpn {
-	case "h2":
-		req.Proto = "HTTP/2.0"
-		req.ProtoMajor = 2
-		req.ProtoMinor = 0
-
-		tr := http2.Transport{MaxHeaderListSize: 262144}
-		cConn, err := tr.NewClientConn(conn)
-		if err != nil {
-			return nil, err
-		}
-		return cConn.RoundTrip(req)
-	case "http/1.1", "":
-		req.Proto = "HTTP/1.1"
-		req.ProtoMajor = 1
-		req.ProtoMinor = 1
-
-		tr := (http.DefaultTransport).(*http.Transport).Clone()
-		tr.MaxResponseHeaderBytes = 262144
-		tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return conn, nil
-		}
-		return tr.RoundTrip(req)
-	default:
-		return nil, fmt.Errorf("unsupported ALPN: %v", alpn)
-	}
 }

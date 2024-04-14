@@ -1,13 +1,13 @@
 module github.com/synctv-org/synctv
 
-go 1.21
+go 1.22.2
 
 require (
 	github.com/Boostport/mjml-go v0.14.6
 	github.com/caarlos0/env/v9 v9.0.0
 	github.com/cavaliergopher/grab/v3 v3.0.1
 	github.com/emersion/go-sasl v0.0.0-20231106173351-e73c9f7bad43
-	github.com/emersion/go-smtp v0.21.0
+	github.com/emersion/go-smtp v0.21.1
 	github.com/gin-contrib/cors v1.7.1
 	github.com/gin-gonic/gin v1.9.1
 	github.com/glebarez/sqlite v1.11.0
@@ -30,22 +30,21 @@ require (
 	github.com/mojocn/base64Captcha v1.3.6
 	github.com/natefinch/lumberjack v2.0.0+incompatible
 	github.com/quic-go/quic-go v0.42.0
-	github.com/refraction-networking/utls v1.6.4
 	github.com/sirupsen/logrus v1.9.3
 	github.com/soheilhy/cmux v0.1.5
 	github.com/spf13/cobra v1.8.0
-	github.com/synctv-org/vendors v0.3.3-0.20240412151246-95cd0b530148
+	github.com/synctv-org/vendors v0.3.3-0.20240414101917-8db5b34bd15e
 	github.com/ulule/limiter/v3 v3.11.2
 	github.com/zencoder/go-dash/v3 v3.0.3
 	github.com/zijiren233/gencontainer v0.0.0-20240331174346-b5e420773df7
 	github.com/zijiren233/go-colorable v0.0.0-20230930131441-997304c961cb
+	github.com/zijiren233/go-uhc v0.1.0
 	github.com/zijiren233/livelib v0.3.1
 	github.com/zijiren233/stream v0.5.2
 	github.com/zijiren233/yaml-comment v0.2.2
 	go.etcd.io/etcd/client/v3 v3.5.13
 	golang.org/x/crypto v0.22.0
 	golang.org/x/exp v0.0.0-20240409090435-93d18d7e34b8
-	golang.org/x/net v0.24.0
 	golang.org/x/oauth2 v0.19.0
 	google.golang.org/grpc v1.63.2
 	google.golang.org/protobuf v1.33.0
@@ -103,7 +102,7 @@ require (
 	github.com/jackc/puddle/v2 v2.2.1 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
-	github.com/klauspost/compress v1.17.4 // indirect
+	github.com/klauspost/compress v1.17.8 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.7 // indirect
 	github.com/leodido/go-urn v1.4.0 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
@@ -116,9 +115,10 @@ require (
 	github.com/ncruces/go-strftime v0.1.9 // indirect
 	github.com/oklog/run v1.1.0 // indirect
 	github.com/onsi/ginkgo/v2 v2.17.1 // indirect
-	github.com/pelletier/go-toml/v2 v2.2.0 // indirect
+	github.com/pelletier/go-toml/v2 v2.2.1 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/quic-go/qpack v0.4.0 // indirect
+	github.com/refraction-networking/utls v1.6.4 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
 	github.com/tetratelabs/wazero v1.7.0 // indirect
@@ -132,12 +132,13 @@ require (
 	golang.org/x/arch v0.7.0 // indirect
 	golang.org/x/image v0.15.0 // indirect
 	golang.org/x/mod v0.17.0 // indirect
+	golang.org/x/net v0.24.0 // indirect
 	golang.org/x/sync v0.7.0 // indirect
 	golang.org/x/sys v0.19.0 // indirect
 	golang.org/x/text v0.14.0 // indirect
 	golang.org/x/tools v0.20.0 // indirect
-	google.golang.org/genproto/googleapis/api v0.0.0-20240401170217-c3f982113cda // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20240401170217-c3f982113cda // indirect
+	google.golang.org/genproto/googleapis/api v0.0.0-20240412170617-26222e5d3d56 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20240412170617-26222e5d3d56 // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 	modernc.org/libc v1.49.3 // indirect
 	modernc.org/mathutil v1.6.0 // indirect

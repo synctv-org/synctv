@@ -25,6 +25,7 @@ import (
 	"github.com/synctv-org/synctv/internal/settings"
 	"github.com/synctv-org/synctv/server/model"
 	"github.com/synctv-org/synctv/utils"
+	uhc "github.com/zijiren233/go-uhc"
 	"github.com/zijiren233/livelib/protocol/hls"
 	"github.com/zijiren233/livelib/protocol/httpflv"
 	"golang.org/x/exp/maps"
@@ -534,20 +535,22 @@ func proxyURL(ctx *gin.Context, u string, headers map[string]string) error {
 	if req.Header.Get("User-Agent") == "" {
 		req.Header.Set("User-Agent", utils.UA)
 	}
-	return utils.HttpDo(req, func(resp *http.Response) error {
-		defer resp.Body.Close()
-		ctx.Status(resp.StatusCode)
-		ctx.Header("Accept-Ranges", resp.Header.Get("Accept-Ranges"))
-		ctx.Header("Cache-Control", resp.Header.Get("Cache-Control"))
-		ctx.Header("Content-Length", resp.Header.Get("Content-Length"))
-		ctx.Header("Content-Range", resp.Header.Get("Content-Range"))
-		ctx.Header("Content-Type", resp.Header.Get("Content-Type"))
-		_, err = io.Copy(ctx.Writer, resp.Body)
-		if err != nil && err != io.EOF {
-			return err
-		}
-		return nil
-	})
+	resp, err := uhc.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	ctx.Status(resp.StatusCode)
+	ctx.Header("Accept-Ranges", resp.Header.Get("Accept-Ranges"))
+	ctx.Header("Cache-Control", resp.Header.Get("Cache-Control"))
+	ctx.Header("Content-Length", resp.Header.Get("Content-Length"))
+	ctx.Header("Content-Range", resp.Header.Get("Content-Range"))
+	ctx.Header("Content-Type", resp.Header.Get("Content-Type"))
+	_, err = io.Copy(ctx.Writer, resp.Body)
+	if err != nil && err != io.EOF {
+		return err
+	}
+	return nil
 }
 
 type FormatErrNotSupportFileType string

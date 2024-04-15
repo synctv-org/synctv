@@ -65,7 +65,10 @@ func RoomApprovePendingMember(roomID, userID string) error {
 	if roomMember.Status != model.RoomMemberStatusPending {
 		return fmt.Errorf("user is not pending")
 	}
-	err = db.Model(&model.RoomMember{}).Where("room_id = ? AND user_id = ? AND status = ?", roomID, userID, model.RoomMemberStatusPending).Update("status", model.RoomMemberStatusActive).Error
+	err = db.Model(&model.RoomMember{}).
+		Where("room_id = ? AND user_id = ? AND status = ?", roomID, userID, model.RoomMemberStatusPending).
+		Update("status", model.RoomMemberStatusActive).
+		Error
 	if err != nil && gorm.ErrRecordNotFound != err {
 		return fmt.Errorf("update status failed")
 	}
@@ -73,7 +76,10 @@ func RoomApprovePendingMember(roomID, userID string) error {
 }
 
 func RoomBanMember(roomID, userID string) error {
-	err := db.Model(&model.RoomMember{}).Where("room_id = ? AND user_id = ?", roomID, userID).Update("status", model.RoomMemberStatusBanned).Error
+	err := db.Model(&model.RoomMember{}).
+		Where("room_id = ? AND user_id = ?", roomID, userID).
+		Update("status", model.RoomMemberStatusBanned).
+		Error
 	return HandleNotFound(err, "room or user")
 }
 

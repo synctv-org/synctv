@@ -10,6 +10,7 @@ import (
 	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/utils"
+	"github.com/zijiren233/gencontainer/rwmap"
 	rtmps "github.com/zijiren233/livelib/server"
 	"github.com/zijiren233/stream"
 	"golang.org/x/crypto/bcrypt"
@@ -22,6 +23,7 @@ type Room struct {
 	initOnce utils.Once
 	hub      *Hub
 	movies   movies
+	members  rwmap.RWMap[string, *model.RoomMember]
 }
 
 func (r *Room) lazyInitHub() {
@@ -153,6 +155,10 @@ func (r *Room) HasPermission(userID string, permission model.RoomMemberPermissio
 }
 
 func (r *Room) LoadOrCreateRoomMember(userID string) (*model.RoomMember, error) {
+	member, ok := r.members.Load(userID)
+	if ok {
+		return member, nil
+	}
 	var conf []db.CreateRoomMemberRelationConfig
 	if r.CreatorID == userID {
 		conf = append(
@@ -173,18 +179,47 @@ func (r *Room) LoadOrCreateRoomMember(userID string) (*model.RoomMember, error) 
 			conf = append(conf, db.WithRoomMemberStatus(model.RoomMemberStatusActive))
 		}
 	}
-	return db.FirstOrCreateRoomMemberRelation(r.ID, userID, conf...)
+	member, err := db.FirstOrCreateRoomMemberRelation(r.ID, userID, conf...)
+	if err != nil {
+		return nil, err
+	}
+	member, _ = r.members.LoadOrStore(userID, member)
+	return member, nil
+}
+
+func (r *Room) LoadRoomMember(userID string) (*model.RoomMember, error) {
+	member, ok := r.members.Load(userID)
+	if ok {
+		return member, nil
+	}
+	member, err := db.GetRoomMemberRelation(r.ID, userID)
+	if err != nil {
+		return nil, err
+	}
+	member, _ = r.members.LoadOrStore(userID, member)
+	return member, nil
 }
 
 func (r *Room) GetRoomMemberPermission(userID string) (model.RoomMemberPermission, error) {
-	if r.CreatorID == userID {
+	if r.IsCreator(userID) {
 		return model.AllPermissions, nil
 	}
-	ur, err := db.GetRoomMemberRelation(r.ID, userID)
+	member, err := r.LoadRoomMember(userID)
 	if err != nil {
-		return 0, err
+		return model.NoPermission, err
 	}
-	return ur.Permissions, nil
+	return member.Permissions, nil
+}
+
+func (r *Room) GetRoomAdminPermission(userID string) (model.RoomAdminPermission, error) {
+	if r.IsCreator(userID) {
+		return model.AllAdminPermissions, nil
+	}
+	member, err := r.LoadRoomMember(userID)
+	if err != nil {
+		return model.NoAdminPermission, err
+	}
+	return member.AdminPermissions, nil
 }
 
 func (r *Room) NeedPassword() bool {
@@ -206,18 +241,6 @@ func (r *Room) SetPassword(password string) error {
 	}
 	r.HashedPassword = hashedPassword
 	return db.SetRoomHashedPassword(r.ID, hashedPassword)
-}
-
-func (r *Room) SetUserPermission(userID string, permission model.RoomMemberPermission) error {
-	return db.SetMemberPermissions(r.ID, userID, permission)
-}
-
-func (r *Room) AddUserPermission(userID string, permission model.RoomMemberPermission) error {
-	return db.AddMemberPermissions(r.ID, userID, permission)
-}
-
-func (r *Room) RemoveUserPermission(userID string, permission model.RoomMemberPermission) error {
-	return db.RemoveMemberPermissions(r.ID, userID, permission)
 }
 
 func (r *Room) GetMoviesCount() int {
@@ -347,26 +370,32 @@ func (r *Room) ResetMemberPermissions(userID string) error {
 }
 
 func (r *Room) SetMemberPermissions(userID string, permissions model.RoomMemberPermission) error {
+	defer r.members.Delete(userID)
 	return db.SetMemberPermissions(r.ID, userID, permissions)
 }
 
 func (r *Room) AddMemberPermissions(userID string, permissions model.RoomMemberPermission) error {
+	defer r.members.Delete(userID)
 	return db.AddMemberPermissions(r.ID, userID, permissions)
 }
 
 func (r *Room) RemoveMemberPermissions(userID string, permissions model.RoomMemberPermission) error {
+	defer r.members.Delete(userID)
 	return db.RemoveMemberPermissions(r.ID, userID, permissions)
 }
 
 func (r *Room) ApprovePendingMember(userID string) error {
+	defer r.members.Delete(userID)
 	return db.RoomApprovePendingMember(r.ID, userID)
 }
 
 func (r *Room) BanMember(userID string) error {
+	defer r.members.Delete(userID)
 	return db.RoomBanMember(r.ID, userID)
 }
 
 func (r *Room) UnbanMember(userID string) error {
+	defer r.members.Delete(userID)
 	return db.RoomUnbanMember(r.ID, userID)
 }
 
@@ -375,21 +404,26 @@ func (r *Room) ResetAdminPermissions(userID string) error {
 }
 
 func (r *Room) SetAdminPermissions(userID string, permissions model.RoomAdminPermission) error {
+	defer r.members.Delete(userID)
 	return db.RoomSetAdminPermissions(r.ID, userID, permissions)
 }
 
 func (r *Room) AddAdminPermissions(userID string, permissions model.RoomAdminPermission) error {
+	defer r.members.Delete(userID)
 	return db.RoomSetAdminPermissions(r.ID, userID, permissions)
 }
 
 func (r *Room) RemoveAdminPermissions(userID string, permissions model.RoomAdminPermission) error {
+	defer r.members.Delete(userID)
 	return db.RoomSetAdminPermissions(r.ID, userID, 0)
 }
 
 func (r *Room) SetAdmin(userID string, permissions model.RoomAdminPermission) error {
+	defer r.members.Delete(userID)
 	return db.RoomSetAdmin(r.ID, userID, permissions)
 }
 
 func (r *Room) SetMember(userID string, permissions model.RoomMemberPermission) error {
+	defer r.members.Delete(userID)
 	return db.RoomSetMember(r.ID, userID, permissions)
 }

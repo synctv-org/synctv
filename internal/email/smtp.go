@@ -27,6 +27,7 @@ var (
 			configChanged = true
 		}),
 	)
+	// Generally speaking, TLS uses port 587 and SSL uses port 465.
 	smtpPort = settings.NewInt64Setting(
 		"smtp_port",
 		587,

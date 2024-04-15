@@ -48,8 +48,10 @@ func newSmtpClient(c *SmtpConfig) (*smtp.Client, error) {
 	)
 
 	switch strings.ToUpper(c.Protocol) {
-	case "TLS", "SSL":
+	case "TLS": // 587
 		cli, err = smtp.DialStartTLS(fmt.Sprintf("%s:%d", c.Host, c.Port), nil)
+	case "SSL": // 465
+		cli, err = smtp.DialTLS(fmt.Sprintf("%s:%d", c.Host, c.Port), nil)
 	default:
 		cli, err = smtp.Dial(fmt.Sprintf("%s:%d", c.Host, c.Port))
 	}

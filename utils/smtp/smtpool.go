@@ -101,14 +101,15 @@ func (p *SmtpPool) Get() (*smtp.Client, error) {
 	if len(p.clients) > 0 {
 		cli := p.clients[len(p.clients)-1]
 		p.clients = p.clients[:len(p.clients)-1]
+		p.active++
 		p.mu.Unlock()
 		if cli.Noop() != nil {
 			cli.Close()
+			p.mu.Lock()
+			p.active--
+			p.mu.Unlock()
 			return p.Get()
 		}
-		p.mu.Lock()
-		p.active++
-		p.mu.Unlock()
 		return cli, nil
 	}
 

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"time"
@@ -169,10 +170,10 @@ func handleElementMsg(cli *op.Client, msg *pb.ElementMessage) error {
 		if err != nil && errors.Is(err, dbModel.ErrNoPermission) {
 			return cli.Send(&pb.ElementMessage{
 				Type:  pb.ElementMessageType_ERROR,
-				Error: err.Error(),
+				Error: fmt.Sprintf("send chat message error: %v", err),
 			})
 		}
-		return err
+		return nil
 	case pb.ElementMessageType_PLAY,
 		pb.ElementMessageType_PAUSE,
 		pb.ElementMessageType_CHANGE_RATE:
@@ -180,7 +181,7 @@ func handleElementMsg(cli *op.Client, msg *pb.ElementMessage) error {
 		if err != nil {
 			return cli.Send(&pb.ElementMessage{
 				Type:  pb.ElementMessageType_ERROR,
-				Error: err.Error(),
+				Error: fmt.Sprintf("set status error: %v", err),
 			})
 		}
 		return cli.Broadcast(&pb.ElementMessage{
@@ -202,7 +203,7 @@ func handleElementMsg(cli *op.Client, msg *pb.ElementMessage) error {
 		if err != nil {
 			return cli.Send(&pb.ElementMessage{
 				Type:  pb.ElementMessageType_ERROR,
-				Error: err.Error(),
+				Error: fmt.Sprintf("set seek rate error: %v", err),
 			})
 		}
 		return cli.Broadcast(&pb.ElementMessage{
@@ -240,17 +241,15 @@ func handleElementMsg(cli *op.Client, msg *pb.ElementMessage) error {
 		if msg.CheckReq.ExpireId != 0 && current.MovieID != "" {
 			currentMovie, err := cli.Room().GetMovieByID(current.MovieID)
 			if err != nil {
-				_ = cli.Send(&pb.ElementMessage{
+				return cli.Send(&pb.ElementMessage{
 					Type:  pb.ElementMessageType_ERROR,
-					Error: err.Error(),
+					Error: fmt.Sprintf("get movie by id error: %v", err),
 				})
-				break
 			}
 			if currentMovie.CheckExpired(msg.CheckReq.ExpireId) {
-				_ = cli.Send(&pb.ElementMessage{
+				return cli.Send(&pb.ElementMessage{
 					Type: pb.ElementMessageType_CURRENT_CHANGED,
 				})
-				break
 			}
 		}
 		status := current.Status

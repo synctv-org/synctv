@@ -210,7 +210,12 @@ func PushMovie(ctx *gin.Context) {
 	if err != nil {
 		log.Errorf("push movie error: %v", err)
 		if errors.Is(err, dbModel.ErrNoPermission) {
-			ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(err))
+			ctx.AbortWithStatusJSON(
+				http.StatusForbidden,
+				model.NewApiErrorResp(
+					fmt.Errorf("push movie error: %w", err),
+				),
+			)
 			return
 		}
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
@@ -242,7 +247,12 @@ func PushMovies(ctx *gin.Context) {
 	if err != nil {
 		log.Errorf("push movies error: %v", err)
 		if errors.Is(err, dbModel.ErrNoPermission) {
-			ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(err))
+			ctx.AbortWithStatusJSON(
+				http.StatusForbidden,
+				model.NewApiErrorResp(
+					fmt.Errorf("push movies error: %w", err),
+				),
+			)
 			return
 		}
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
@@ -257,7 +267,7 @@ func NewPublishKey(ctx *gin.Context) {
 
 	if !conf.Conf.Server.Rtmp.Enable {
 		log.Errorf("rtmp is not enabled")
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("rtmp is not enabled"))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("rtmp is not enabled"))
 		return
 	}
 
@@ -279,7 +289,12 @@ func NewPublishKey(ctx *gin.Context) {
 
 	if movie.Movie.CreatorID != user.ID {
 		log.Errorf("new publish key error: %v", dbModel.ErrNoPermission)
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(dbModel.ErrNoPermission))
+		ctx.AbortWithStatusJSON(
+			http.StatusForbidden,
+			model.NewApiErrorResp(
+				fmt.Errorf("new publish key error: %w", dbModel.ErrNoPermission),
+			),
+		)
 		return
 	}
 
@@ -326,7 +341,12 @@ func EditMovie(ctx *gin.Context) {
 	if err := user.UpdateMovie(room, req.Id, (*dbModel.BaseMovie)(&req.PushMovieReq)); err != nil {
 		log.Errorf("edit movie error: %v", err)
 		if errors.Is(err, dbModel.ErrNoPermission) {
-			ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(err))
+			ctx.AbortWithStatusJSON(
+				http.StatusForbidden,
+				model.NewApiErrorResp(
+					fmt.Errorf("edit movie error: %w", err),
+				),
+			)
 			return
 		}
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
@@ -352,7 +372,12 @@ func DelMovie(ctx *gin.Context) {
 	if err != nil {
 		log.Errorf("del movie error: %v", err)
 		if errors.Is(err, dbModel.ErrNoPermission) {
-			ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(err))
+			ctx.AbortWithStatusJSON(
+				http.StatusForbidden,
+				model.NewApiErrorResp(
+					fmt.Errorf("del movie error: %w", err),
+				),
+			)
 			return
 		}
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
@@ -368,7 +393,12 @@ func ClearMovies(ctx *gin.Context) {
 
 	if err := user.ClearMovies(room); err != nil {
 		if errors.Is(err, dbModel.ErrNoPermission) {
-			ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(err))
+			ctx.AbortWithStatusJSON(
+				http.StatusForbidden,
+				model.NewApiErrorResp(
+					fmt.Errorf("clear movies error: %w", err),
+				),
+			)
 			return
 		}
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
@@ -412,7 +442,12 @@ func ChangeCurrentMovie(ctx *gin.Context) {
 	if err != nil {
 		log.Errorf("change current movie error: %v", err)
 		if errors.Is(err, dbModel.ErrNoPermission) {
-			ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(err))
+			ctx.AbortWithStatusJSON(
+				http.StatusForbidden,
+				model.NewApiErrorResp(
+					fmt.Errorf("change current movie error: %w", err),
+				),
+			)
 			return
 		}
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
@@ -427,7 +462,7 @@ func ProxyMovie(ctx *gin.Context) {
 
 	if !settings.MovieProxy.Get() {
 		log.Errorf("movie proxy is not enabled")
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("movie proxy is not enabled"))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("movie proxy is not enabled"))
 		return
 	}
 	roomId := ctx.Param("roomId")
@@ -572,12 +607,12 @@ func JoinLive(ctx *gin.Context) {
 		return
 	}
 	if m.Movie.Base.RtmpSource && !conf.Conf.Server.Rtmp.Enable {
-		log.Errorf("join live error: %v", "rtmp is not enabled")
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("rtmp is not enabled"))
+		log.Error("join live error: rtmp is not enabled")
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("rtmp is not enabled"))
 		return
 	} else if m.Movie.Base.Live && !settings.LiveProxy.Get() {
-		log.Errorf("join live error: %v", "live proxy is not enabled")
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("live proxy is not enabled"))
+		log.Error("join live error: live proxy is not enabled")
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("live proxy is not enabled"))
 		return
 	}
 	channel, err := m.Channel()
@@ -636,12 +671,12 @@ func JoinFlvLive(ctx *gin.Context) {
 		return
 	}
 	if m.Movie.Base.RtmpSource && !conf.Conf.Server.Rtmp.Enable {
-		log.Errorf("join flv live error: %v", "rtmp is not enabled")
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("rtmp is not enabled"))
+		log.Error("join flv live error: rtmp is not enabled")
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("rtmp is not enabled"))
 		return
 	} else if m.Movie.Base.Live && !settings.LiveProxy.Get() {
-		log.Errorf("join flv live error: %v", "live proxy is not enabled")
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("live proxy is not enabled"))
+		log.Error("join flv live error: live proxy is not enabled")
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("live proxy is not enabled"))
 		return
 	}
 	channel, err := m.Channel()
@@ -675,12 +710,12 @@ func JoinHlsLive(ctx *gin.Context) {
 		return
 	}
 	if m.Movie.Base.RtmpSource && !conf.Conf.Server.Rtmp.Enable {
-		log.Errorf("join hls live error: %v", "rtmp is not enabled")
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("rtmp is not enabled"))
+		log.Error("join hls live error: rtmp is not enabled")
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("rtmp is not enabled"))
 		return
 	} else if m.Movie.Base.Live && !settings.LiveProxy.Get() {
-		log.Errorf("join hls live error: %v", "live proxy is not enabled")
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("live proxy is not enabled"))
+		log.Error("join hls live error: live proxy is not enabled")
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("live proxy is not enabled"))
 		return
 	}
 	channel, err := m.Channel()
@@ -725,12 +760,12 @@ func ServeHlsLive(ctx *gin.Context) {
 		return
 	}
 	if m.Movie.Base.RtmpSource && !conf.Conf.Server.Rtmp.Enable {
-		log.Errorf("serve hls live error: %v", "rtmp is not enabled")
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("rtmp is not enabled"))
+		log.Error("serve hls live error: rtmp is not enabled")
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("rtmp is not enabled"))
 		return
 	} else if m.Movie.Base.Live && !settings.LiveProxy.Get() {
-		log.Errorf("serve hls live error: %v", "live proxy is not enabled")
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("live proxy is not enabled"))
+		log.Error("serve hls live error: live proxy is not enabled")
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("live proxy is not enabled"))
 		return
 	}
 	channel, err := m.Channel()

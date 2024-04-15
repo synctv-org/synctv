@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"time"
@@ -55,8 +56,8 @@ func CreateRoom(ctx *gin.Context) {
 	log := ctx.MustGet("log").(*logrus.Entry)
 
 	if settings.DisableCreateRoom.Get() && !user.IsAdmin() {
-		log.Warn("create room is disabled")
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("create room is disabled"))
+		log.Error("create room is disabled")
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("create room is disabled"))
 		return
 	}
 
@@ -319,7 +320,12 @@ func DeleteRoom(ctx *gin.Context) {
 	if err := user.DeleteRoom(room); err != nil {
 		log.Errorf("delete room failed: %v", err)
 		if errors.Is(err, dbModel.ErrNoPermission) {
-			ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(err))
+			ctx.AbortWithStatusJSON(
+				http.StatusForbidden,
+				model.NewApiErrorResp(
+					fmt.Errorf("delete room failed: %w", err),
+				),
+			)
 			return
 		}
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
@@ -344,7 +350,12 @@ func SetRoomPassword(ctx *gin.Context) {
 	if err := user.SetRoomPassword(room, req.Password); err != nil {
 		log.Errorf("set room password failed: %v", err)
 		if errors.Is(err, dbModel.ErrNoPermission) {
-			ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(err))
+			ctx.AbortWithStatusJSON(
+				http.StatusForbidden,
+				model.NewApiErrorResp(
+					fmt.Errorf("set room password failed: %w", err),
+				),
+			)
 			return
 		}
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
@@ -386,7 +397,12 @@ func SetRoomSetting(ctx *gin.Context) {
 	if err := user.UpdateRoomSettings(room, req); err != nil {
 		log.Errorf("set room setting failed: %v", err)
 		if errors.Is(err, dbModel.ErrNoPermission) {
-			ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(err))
+			ctx.AbortWithStatusJSON(
+				http.StatusForbidden,
+				model.NewApiErrorResp(
+					fmt.Errorf("set room setting failed: %w", err),
+				),
+			)
 			return
 		}
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))

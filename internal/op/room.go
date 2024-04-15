@@ -102,12 +102,19 @@ func (r *Room) UserRole(userID string) (model.RoomMemberRole, error) {
 
 // do not use this value for permission determination
 func (r *Room) IsAdmin(userID string) bool {
+	if r.IsCreator(userID) {
+		return true
+	}
 	role, err := r.UserRole(userID)
 	if err != nil {
 		log.Errorf("get user role failed: %s", err.Error())
 		return false
 	}
-	return role == model.RoomMemberRoleCreator
+	return role.IsAdmin()
+}
+
+func (r *Room) IsCreator(userID string) bool {
+	return r.CreatorID == userID
 }
 
 func (r *Room) HasAdminPermission(userID string, permission model.RoomAdminPermission) bool {

@@ -208,14 +208,11 @@ func (u *User) HasRoomAdminPermission(room *Room, permission model.RoomAdminPerm
 }
 
 func (u *User) IsRoomAdmin(room *Room) bool {
-	if u.IsAdmin() {
-		return true
-	}
 	return room.IsAdmin(u.ID)
 }
 
 func (u *User) IsRoomCreator(room *Room) bool {
-	return room.CreatorID == u.ID
+	return room.IsCreator(u.ID)
 }
 
 func (u *User) DeleteRoom(room *RoomEntry) error {
@@ -454,12 +451,21 @@ func (u *User) BanRoomMember(room *Room, userID string) error {
 	if !u.HasRoomAdminPermission(room, model.PermissionBanRoomMember) {
 		return model.ErrNoPermission
 	}
+	if u.ID == userID {
+		return errors.New("cannot ban yourself")
+	}
+	if room.IsAdmin(userID) && !u.IsRoomCreator(room) {
+		return errors.New("cannot ban admin")
+	}
 	return room.BanMember(userID)
 }
 
 func (u *User) UnbanRoomMember(room *Room, userID string) error {
 	if !u.HasRoomAdminPermission(room, model.PermissionBanRoomMember) {
 		return model.ErrNoPermission
+	}
+	if u.ID == userID {
+		return errors.New("cannot unban yourself")
 	}
 	return room.UnbanMember(userID)
 }
@@ -468,12 +474,18 @@ func (u *User) SetMemberPermissions(room *Room, userID string, permissions model
 	if !u.HasRoomAdminPermission(room, model.PermissionSetUserPermission) {
 		return model.ErrNoPermission
 	}
+	if room.IsAdmin(userID) && !u.IsRoomCreator(room) {
+		return errors.New("cannot set admin permissions")
+	}
 	return room.SetMemberPermissions(userID, permissions)
 }
 
 func (u *User) AddMemberPermissions(room *Room, userID string, permissions model.RoomMemberPermission) error {
 	if !u.HasRoomAdminPermission(room, model.PermissionSetUserPermission) {
 		return model.ErrNoPermission
+	}
+	if room.IsAdmin(userID) && !u.IsRoomCreator(room) {
+		return errors.New("cannot add admin permissions")
 	}
 	return room.AddMemberPermissions(userID, permissions)
 }
@@ -482,12 +494,18 @@ func (u *User) RemoveMemberPermissions(room *Room, userID string, permissions mo
 	if !u.HasRoomAdminPermission(room, model.PermissionSetUserPermission) {
 		return model.ErrNoPermission
 	}
+	if room.IsAdmin(userID) && !u.IsRoomCreator(room) {
+		return errors.New("cannot remove admin permissions")
+	}
 	return room.RemoveMemberPermissions(userID, permissions)
 }
 
 func (u *User) ResetMemberPermissions(room *Room, userID string) error {
 	if !u.HasRoomAdminPermission(room, model.PermissionSetUserPermission) {
 		return model.ErrNoPermission
+	}
+	if room.IsAdmin(userID) && !u.IsRoomCreator(room) {
+		return errors.New("cannot reset admin permissions")
 	}
 	return room.ResetMemberPermissions(userID)
 }

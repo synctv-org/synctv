@@ -77,25 +77,27 @@ func AuthRoom(Authorization string) (*op.UserEntry, *op.RoomEntry, error) {
 		return nil, nil, ErrAuthFailed
 	}
 
-	u, err := op.LoadOrInitUserByID(claims.UserId)
+	userE, err := op.LoadOrInitUserByID(claims.UserId)
 	if err != nil {
 		return nil, nil, err
 	}
+	user := userE.Value()
 
-	if !u.Value().CheckVersion(claims.UserVersion) {
+	if !user.CheckVersion(claims.UserVersion) {
 		return nil, nil, ErrAuthExpired
 	}
 
-	r, err := op.LoadOrInitRoomByID(claims.RoomId)
+	roomE, err := op.LoadOrInitRoomByID(claims.RoomId)
 	if err != nil {
 		return nil, nil, err
 	}
+	room := roomE.Value()
 
-	if !r.Value().CheckVersion(claims.RoomVersion) {
+	if !room.CheckVersion(claims.RoomVersion) {
 		return nil, nil, ErrAuthExpired
 	}
 
-	rus, err := r.Value().UserStatus(u.Value().ID)
+	rus, err := room.LoadOrCreateMemberStatus(user.ID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -106,7 +108,7 @@ func AuthRoom(Authorization string) (*op.UserEntry, *op.RoomEntry, error) {
 		return nil, nil, fmt.Errorf("user is banned")
 	}
 
-	return u, r, nil
+	return userE, roomE, nil
 }
 
 func AuthUser(Authorization string) (*op.UserEntry, error) {

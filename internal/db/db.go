@@ -260,7 +260,13 @@ func WhereIDLike(id string) func(db *gorm.DB) *gorm.DB {
 
 func WhereRoomMemberStatus(status model.RoomMemberStatus) func(db *gorm.DB) *gorm.DB {
 	return func(db *gorm.DB) *gorm.DB {
-		return db.Where("status = ?", status)
+		return db.Where("room_members.status = ?", status)
+	}
+}
+
+func WhereRoomMemberRole(role model.RoomMemberRole) func(db *gorm.DB) *gorm.DB {
+	return func(db *gorm.DB) *gorm.DB {
+		return db.Where("room_members.role = ?", role)
 	}
 }
 

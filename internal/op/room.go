@@ -120,6 +120,27 @@ func (r *Room) IsCreator(userID string) bool {
 	return r.CreatorID == userID
 }
 
+func (r *Room) HasPermission(userID string, permission model.RoomMemberPermission) bool {
+	if r.IsCreator(userID) {
+		return true
+	}
+
+	rur, err := r.LoadOrCreateRoomMember(userID)
+	if err != nil {
+		return false
+	}
+
+	if rur.Role.IsAdmin() {
+		return true
+	}
+
+	switch permission {
+
+	}
+
+	return rur.HasPermission(permission)
+}
+
 func (r *Room) HasAdminPermission(userID string, permission model.RoomAdminPermission) bool {
 	if r.CreatorID == userID {
 		return true
@@ -131,7 +152,7 @@ func (r *Room) HasAdminPermission(userID string, permission model.RoomAdminPermi
 	return rur.HasAdminPermission(permission)
 }
 
-func (r *Room) UserStatus(userID string) (model.RoomMemberStatus, error) {
+func (r *Room) LoadOrCreateMemberStatus(userID string) (model.RoomMemberStatus, error) {
 	if r.CreatorID == userID {
 		return model.RoomMemberStatusActive, nil
 	}
@@ -142,17 +163,15 @@ func (r *Room) UserStatus(userID string) (model.RoomMemberStatus, error) {
 	return rur.Status, nil
 }
 
-func (r *Room) HasPermission(userID string, permission model.RoomMemberPermission) bool {
+func (r *Room) LoadMemberStatus(userID string) (model.RoomMemberStatus, error) {
 	if r.CreatorID == userID {
-		return true
+		return model.RoomMemberStatusActive, nil
 	}
-
-	rur, err := r.LoadOrCreateRoomMember(userID)
+	rur, err := r.LoadRoomMember(userID)
 	if err != nil {
-		return false
+		return model.RoomMemberStatusUnknown, err
 	}
-
-	return rur.HasPermission(permission)
+	return rur.Status, nil
 }
 
 func (r *Room) LoadOrCreateRoomMember(userID string) (*model.RoomMember, error) {
@@ -192,6 +211,8 @@ func (r *Room) LoadOrCreateRoomMember(userID string) (*model.RoomMember, error) 
 		member.Permissions = model.AllPermissions
 		member.AdminPermissions = model.AllAdminPermissions
 		member.Status = model.RoomMemberStatusActive
+	} else if member.Role.IsAdmin() {
+		member.Permissions = model.AllPermissions
 	}
 	member, _ = r.members.LoadOrStore(userID, member)
 	return member, nil
@@ -211,12 +232,14 @@ func (r *Room) LoadRoomMember(userID string) (*model.RoomMember, error) {
 		member.Permissions = model.AllPermissions
 		member.AdminPermissions = model.AllAdminPermissions
 		member.Status = model.RoomMemberStatusActive
+	} else if member.Role.IsAdmin() {
+		member.Permissions = model.AllPermissions
 	}
 	member, _ = r.members.LoadOrStore(userID, member)
 	return member, nil
 }
 
-func (r *Room) GetRoomMemberPermission(userID string) (model.RoomMemberPermission, error) {
+func (r *Room) LoadRoomMemberPermission(userID string) (model.RoomMemberPermission, error) {
 	if r.IsCreator(userID) {
 		return model.AllPermissions, nil
 	}
@@ -227,7 +250,7 @@ func (r *Room) GetRoomMemberPermission(userID string) (model.RoomMemberPermissio
 	return member.Permissions, nil
 }
 
-func (r *Room) GetRoomAdminPermission(userID string) (model.RoomAdminPermission, error) {
+func (r *Room) LoadRoomAdminPermission(userID string) (model.RoomAdminPermission, error) {
 	if r.IsCreator(userID) {
 		return model.AllAdminPermissions, nil
 	}

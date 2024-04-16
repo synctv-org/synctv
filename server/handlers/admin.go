@@ -231,6 +231,15 @@ func AdminGetRoomMembers(ctx *gin.Context) {
 		scopes = append(scopes, db.WhereRoomMemberStatus(dbModel.RoomMemberStatusActive))
 	}
 
+	switch ctx.DefaultQuery("role", "") {
+	case "admin":
+		scopes = append(scopes, db.WhereRoomMemberRole(dbModel.RoomMemberRoleAdmin))
+	case "member":
+		scopes = append(scopes, db.WhereRoomMemberRole(dbModel.RoomMemberRoleMember))
+	case "creator":
+		scopes = append(scopes, db.WhereRoomMemberRole(dbModel.RoomMemberRoleCreator))
+	}
+
 	switch ctx.DefaultQuery("sort", "name") {
 	case "join":
 		if desc {

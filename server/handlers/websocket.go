@@ -173,7 +173,7 @@ func handleElementMsg(cli *op.Client, msg *pb.ElementMessage) error {
 				Error: fmt.Sprintf("send chat message error: %v", err),
 			})
 		}
-		return nil
+		return err
 	case pb.ElementMessageType_PLAY,
 		pb.ElementMessageType_PAUSE,
 		pb.ElementMessageType_CHANGE_RATE:

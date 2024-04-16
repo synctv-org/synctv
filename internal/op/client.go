@@ -44,7 +44,7 @@ func (c *Client) Broadcast(msg Message, conf ...BroadcastConf) error {
 }
 
 func (c *Client) SendChatMessage(message string) error {
-	if c.u.HasRoomPermission(c.r, model.PermissionSendChatMessage) {
+	if !c.u.HasRoomPermission(c.r, model.PermissionSendChatMessage) {
 		return model.ErrNoPermission
 	}
 	return c.Broadcast(&pb.ElementMessage{

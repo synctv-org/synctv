@@ -11,7 +11,7 @@ import (
 	"gorm.io/gorm"
 )
 
-type Role uint
+type Role uint8
 
 const (
 	RoleBanned  Role = 1

@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-type RoomMemberStatus uint64
+type RoomMemberStatus uint8
 
 const (
 	RoomMemberStatusUnknown RoomMemberStatus = iota
@@ -72,7 +72,7 @@ func (p RoomMemberPermission) Remove(permission RoomMemberPermission) RoomMember
 	return p &^ permission
 }
 
-type RoomMemberRole uint
+type RoomMemberRole uint8
 
 const (
 	RoomMemberRoleUnknown RoomMemberRole = iota

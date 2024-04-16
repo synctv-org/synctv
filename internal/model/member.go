@@ -60,10 +60,6 @@ const (
 	DefaultPermissions RoomMemberPermission = PermissionGetMovieList | PermissionSendChatMessage
 )
 
-func (p RoomMemberPermission) RemoveAdmin() RoomMemberPermission {
-	return p & DefaultPermissions
-}
-
 func (p RoomMemberPermission) Has(permission RoomMemberPermission) bool {
 	return p&permission == permission
 }

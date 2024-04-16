@@ -304,7 +304,7 @@ func genRoomMemberListResp(us []*dbModel.User, room *op.Room) []*model.RoomMembe
 			UserID:           v.ID,
 			Username:         v.Username,
 			JoinAt:           v.RoomMembers[0].CreatedAt.UnixMilli(),
-			OnLine:           room.IsOnline(v.ID),
+			IsOnline:         room.IsOnline(v.ID),
 			Role:             v.RoomMembers[0].Role,
 			RoomID:           v.RoomMembers[0].RoomID,
 			Permissions:      v.RoomMembers[0].Permissions,

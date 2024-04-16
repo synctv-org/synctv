@@ -134,21 +134,30 @@ func (r *Room) HasPermission(userID string, permission model.RoomMemberPermissio
 		return true
 	}
 
-	switch permission {
-
+	switch {
+	case permission.Has(model.PermissionGetMovieList) && !r.Settings.CanGetMovieList,
+		permission.Has(model.PermissionAddMovie) && !r.Settings.CanAddMovie,
+		permission.Has(model.PermissionDeleteMovie) && !r.Settings.CanDeleteMovie,
+		permission.Has(model.PermissionEditMovie) && !r.Settings.CanEditMovie,
+		permission.Has(model.PermissionSetCurrentMovie) && !r.Settings.CanSetCurrentMovie,
+		permission.Has(model.PermissionSetCurrentStatus) && !r.Settings.CanSetCurrentStatus,
+		permission.Has(model.PermissionSendChatMessage) && !r.Settings.CanSendChatMessage:
+		return false
+	default:
+		return rur.Permissions.Has(permission)
 	}
-
-	return rur.HasPermission(permission)
 }
 
 func (r *Room) HasAdminPermission(userID string, permission model.RoomAdminPermission) bool {
 	if r.CreatorID == userID {
 		return true
 	}
+
 	rur, err := r.LoadOrCreateRoomMember(userID)
 	if err != nil {
 		return false
 	}
+
 	return rur.HasAdminPermission(permission)
 }
 

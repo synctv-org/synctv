@@ -151,25 +151,27 @@ type RoomMember struct {
 var ErrNoPermission = errors.New("no permission")
 
 func (r *RoomMember) HasPermission(permission RoomMemberPermission) bool {
-	switch r.Status {
-	case RoomMemberStatusActive:
-		return r.Permissions.Has(permission)
-	default:
+	if r.Role.IsAdmin() {
+		return true
+	}
+	if !r.Role.IsMember() {
 		return false
 	}
+	if r.Status != RoomMemberStatusActive {
+		return false
+	}
+	return r.Permissions.Has(permission)
 }
 
 func (r *RoomMember) HasAdminPermission(permission RoomAdminPermission) bool {
-	switch r.Status {
-	case RoomMemberStatusActive:
-		if !r.Role.IsAdmin() {
-			return false
-		}
-		if r.Role.IsCreator() {
-			return true
-		}
-		return r.AdminPermissions.Has(permission)
-	default:
+	if r.Role.IsCreator() {
+		return true
+	}
+	if !r.Role.IsAdmin() {
 		return false
 	}
+	if r.Status != RoomMemberStatusActive {
+		return false
+	}
+	return r.AdminPermissions.Has(permission)
 }

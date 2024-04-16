@@ -246,3 +246,19 @@ func (h *Hub) IsOnline(userID string) bool {
 	_, ok := h.clients.Load(userID)
 	return ok
 }
+
+func (h *Hub) KickUser(userID string) error {
+	if h.Closed() {
+		return ErrAlreadyClosed
+	}
+	cli, ok := h.clients.Load(userID)
+	if !ok {
+		return nil
+	}
+	cli.lock.RLock()
+	defer cli.lock.RUnlock()
+	for c := range cli.m {
+		c.Close()
+	}
+	return nil
+}

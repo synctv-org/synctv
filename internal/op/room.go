@@ -448,7 +448,10 @@ func (r *Room) BanMember(userID string) error {
 	if r.IsCreator(userID) {
 		return errors.New("you are creator, cannot ban")
 	}
-	defer r.members.Delete(userID)
+	defer func() {
+		r.members.Delete(userID)
+		_ = r.hub.KickUser(userID)
+	}()
 	return db.RoomBanMember(r.ID, userID)
 }
 

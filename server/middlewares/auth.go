@@ -11,6 +11,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/internal/conf"
+	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/server/model"
 	"github.com/zijiren233/gencontainer/synccache"
@@ -166,17 +167,17 @@ func NewAuthRoomToken(user *op.User, room *op.Room) (string, error) {
 	if room.IsPending() {
 		return "", errors.New("room is pending, need admin to approve")
 	}
-	if room.Settings.DisableJoinNewUser {
-		if _, err := room.GetRoomMemberPermission(user.ID); err != nil {
-			return "", errors.New("room is not allow new user to join")
+
+	if _, err := room.LoadOrCreateRoomMember(user.ID); err != nil {
+		if errors.Is(err, db.ErrNotFound("")) {
+			return "", fmt.Errorf("this room was disabled join new user")
 		}
-	} else if _, err := room.LoadOrCreateRoomMember(user.ID); err != nil {
-		return "", err
+		return "", fmt.Errorf("load room member failed: %w", err)
 	}
 
 	t, err := time.ParseDuration(conf.Conf.Jwt.Expire)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("parse jwt expire failed: %w", err)
 	}
 	claims := &AuthRoomClaims{
 		AuthClaims: AuthClaims{

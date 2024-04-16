@@ -2,6 +2,7 @@ package op
 
 import (
 	"errors"
+	"fmt"
 	"hash/crc32"
 	"sync/atomic"
 
@@ -155,6 +156,9 @@ func (r *Room) HasPermission(userID string, permission model.RoomMemberPermissio
 }
 
 func (r *Room) LoadOrCreateRoomMember(userID string) (*model.RoomMember, error) {
+	if r.Settings.DisableJoinNewUser {
+		return r.LoadRoomMember(userID)
+	}
 	member, ok := r.members.Load(userID)
 	if ok {
 		return member, nil
@@ -200,7 +204,7 @@ func (r *Room) LoadRoomMember(userID string) (*model.RoomMember, error) {
 	}
 	member, err := db.GetRoomMemberRelation(r.ID, userID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("get room member failed: %w", err)
 	}
 	if r.IsCreator(userID) {
 		member.Role = model.RoomMemberRoleCreator

@@ -314,9 +314,7 @@ func (r *Room) DeleteMoviesByID(ids []string) error {
 }
 
 func (r *Room) ClearMovies() error {
-	if r.current.current.MovieID != "" {
-		return errors.New("cannot clear movies when current movie is not empty")
-	}
+	_ = r.SetCurrentMovie("", false)
 	return r.movies.Clear()
 }
 
@@ -327,6 +325,10 @@ func (r *Room) GetMovieByID(id string) (*Movie, error) {
 func (r *Room) Current() *Current {
 	c := r.current.Current()
 	return &c
+}
+
+func (r *Room) CurrentMovieID() string {
+	return r.current.current.MovieID
 }
 
 var ErrNoCurrentMovie = errors.New("no current movie")

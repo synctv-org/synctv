@@ -206,7 +206,7 @@ func PushMovie(ctx *gin.Context) {
 		return
 	}
 
-	err := user.AddMovieToRoom(room, (*dbModel.BaseMovie)(&req))
+	err := user.AddRoomMovie(room, (*dbModel.BaseMovie)(&req))
 	if err != nil {
 		log.Errorf("push movie error: %v", err)
 		if errors.Is(err, dbModel.ErrNoPermission) {
@@ -243,7 +243,7 @@ func PushMovies(ctx *gin.Context) {
 		ms[i] = m
 	}
 
-	err := user.AddMoviesToRoom(room, ms)
+	err := user.AddRoomMovies(room, ms)
 	if err != nil {
 		log.Errorf("push movies error: %v", err)
 		if errors.Is(err, dbModel.ErrNoPermission) {
@@ -338,7 +338,7 @@ func EditMovie(ctx *gin.Context) {
 		return
 	}
 
-	if err := user.UpdateMovie(room, req.Id, (*dbModel.BaseMovie)(&req.PushMovieReq)); err != nil {
+	if err := user.UpdateRoomMovie(room, req.Id, (*dbModel.BaseMovie)(&req.PushMovieReq)); err != nil {
 		log.Errorf("edit movie error: %v", err)
 		if errors.Is(err, dbModel.ErrNoPermission) {
 			ctx.AbortWithStatusJSON(
@@ -368,7 +368,7 @@ func DelMovie(ctx *gin.Context) {
 		return
 	}
 
-	err := user.DeleteMoviesByID(room, req.Ids)
+	err := user.DeleteRoomMoviesByID(room, req.Ids)
 	if err != nil {
 		log.Errorf("del movie error: %v", err)
 		if errors.Is(err, dbModel.ErrNoPermission) {
@@ -391,7 +391,7 @@ func ClearMovies(ctx *gin.Context) {
 	room := ctx.MustGet("room").(*op.RoomEntry).Value()
 	user := ctx.MustGet("user").(*op.UserEntry).Value()
 
-	if err := user.ClearMovies(room); err != nil {
+	if err := user.ClearRoomMovies(room); err != nil {
 		if errors.Is(err, dbModel.ErrNoPermission) {
 			ctx.AbortWithStatusJSON(
 				http.StatusForbidden,
@@ -418,7 +418,7 @@ func SwapMovie(ctx *gin.Context) {
 		return
 	}
 
-	if err := user.SwapMoviePositions(room, req.Id1, req.Id2); err != nil {
+	if err := user.SwapRoomMoviePositions(room, req.Id1, req.Id2); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
@@ -438,7 +438,7 @@ func ChangeCurrentMovie(ctx *gin.Context) {
 		return
 	}
 
-	err = user.SetCurrentMovie(room, req.Id, req.Id != "")
+	err = user.SetRoomCurrentMovie(room, req.Id, req.Id != "")
 	if err != nil {
 		log.Errorf("change current movie error: %v", err)
 		if errors.Is(err, dbModel.ErrNoPermission) {

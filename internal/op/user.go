@@ -123,7 +123,7 @@ func (u *User) NewMovie(movie *model.BaseMovie) (*model.Movie, error) {
 	}, nil
 }
 
-func (u *User) AddMovieToRoom(room *Room, movie *model.BaseMovie) error {
+func (u *User) AddRoomMovie(room *Room, movie *model.BaseMovie) error {
 	if !u.HasRoomPermission(room, model.PermissionAddMovie) {
 		return model.ErrNoPermission
 	}
@@ -156,7 +156,7 @@ func (u *User) NewMovies(movies []*model.BaseMovie) ([]*model.Movie, error) {
 	return ms, nil
 }
 
-func (u *User) AddMoviesToRoom(room *Room, movies []*model.BaseMovie) error {
+func (u *User) AddRoomMovies(room *Room, movies []*model.BaseMovie) error {
 	if !u.HasRoomPermission(room, model.PermissionAddMovie) {
 		return model.ErrNoPermission
 	}
@@ -248,7 +248,7 @@ func (u *User) SetUsername(username string) error {
 	return nil
 }
 
-func (u *User) UpdateMovie(room *Room, movieID string, movie *model.BaseMovie) error {
+func (u *User) UpdateRoomMovie(room *Room, movieID string, movie *model.BaseMovie) error {
 	m, err := room.GetMovieByID(movieID)
 	if err != nil {
 		return err
@@ -269,7 +269,7 @@ func (u *User) UpdateMovie(room *Room, movieID string, movie *model.BaseMovie) e
 	})
 }
 
-func (u *User) SetRoomSetting(room *Room, setting *model.RoomSettings) error {
+func (u *User) SetRoomSettings(room *Room, setting *model.RoomSettings) error {
 	if !u.HasRoomAdminPermission(room, model.PermissionSetRoomSettings) {
 		return model.ErrNoPermission
 	}
@@ -283,7 +283,7 @@ func (u *User) UpdateRoomSettings(room *Room, settings map[string]interface{}) e
 	return room.UpdateSettings(settings)
 }
 
-func (u *User) DeleteMovieByID(room *Room, movieID string) error {
+func (u *User) DeleteRoomMovieByID(room *Room, movieID string) error {
 	m, err := room.GetMovieByID(movieID)
 	if err != nil {
 		return err
@@ -294,7 +294,7 @@ func (u *User) DeleteMovieByID(room *Room, movieID string) error {
 	return room.DeleteMovieByID(movieID)
 }
 
-func (u *User) DeleteMoviesByID(room *Room, movieIDs []string) error {
+func (u *User) DeleteRoomMoviesByID(room *Room, movieIDs []string) error {
 	for _, id := range movieIDs {
 		m, err := room.GetMovieByID(id)
 		if err != nil {
@@ -316,7 +316,7 @@ func (u *User) DeleteMoviesByID(room *Room, movieIDs []string) error {
 	})
 }
 
-func (u *User) ClearMovies(room *Room) error {
+func (u *User) ClearRoomMovies(room *Room) error {
 	if !u.HasRoomPermission(room, model.PermissionDeleteMovie) {
 		return model.ErrNoPermission
 	}
@@ -333,7 +333,7 @@ func (u *User) ClearMovies(room *Room) error {
 	})
 }
 
-func (u *User) SwapMoviePositions(room *Room, id1, id2 string) error {
+func (u *User) SwapRoomMoviePositions(room *Room, id1, id2 string) error {
 	if !u.HasRoomPermission(room, model.PermissionEditMovie) {
 		return model.ErrNoPermission
 	}
@@ -350,7 +350,7 @@ func (u *User) SwapMoviePositions(room *Room, id1, id2 string) error {
 	})
 }
 
-func (u *User) SetCurrentMovie(room *Room, movieID string, play bool) error {
+func (u *User) SetRoomCurrentMovie(room *Room, movieID string, play bool) error {
 	if !u.HasRoomPermission(room, model.PermissionSetCurrentMovie) {
 		return model.ErrNoPermission
 	}

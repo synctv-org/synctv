@@ -173,6 +173,8 @@ func initRoom(room *gin.RouterGroup, needAuthUser *gin.RouterGroup, needAuthRoom
 
 	needAuthRoom.GET("/me", RoomMe)
 
+	needAuthRoom.GET("/settings", RoomPiblicSettings)
+
 	needAuthRoom.GET("/members", RoomMembers)
 
 	{

@@ -51,6 +51,11 @@ func RoomMe(ctx *gin.Context) {
 	}))
 }
 
+func RoomPiblicSettings(ctx *gin.Context) {
+	room := ctx.MustGet("room").(*op.RoomEntry).Value()
+	ctx.JSON(http.StatusOK, model.NewApiDataResp(room.Settings))
+}
+
 func CreateRoom(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*op.UserEntry).Value()
 	log := ctx.MustGet("log").(*logrus.Entry)

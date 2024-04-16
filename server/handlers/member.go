@@ -40,9 +40,9 @@ func RoomMembers(ctx *gin.Context) {
 	switch ctx.DefaultQuery("sort", "name") {
 	case "join":
 		if desc {
-			scopes = append(scopes, db.OrderByCreatedAtDesc)
+			scopes = append(scopes, db.OrderByUsersCreatedAtDesc)
 		} else {
-			scopes = append(scopes, db.OrderByCreatedAtAsc)
+			scopes = append(scopes, db.OrderByUsersCreatedAtAsc)
 		}
 	case "name":
 		if desc {
@@ -139,9 +139,9 @@ func RoomAdminMembers(ctx *gin.Context) {
 	switch ctx.DefaultQuery("sort", "name") {
 	case "join":
 		if desc {
-			scopes = append(scopes, db.OrderByCreatedAtDesc)
+			scopes = append(scopes, db.OrderByUsersCreatedAtDesc)
 		} else {
-			scopes = append(scopes, db.OrderByCreatedAtAsc)
+			scopes = append(scopes, db.OrderByUsersCreatedAtAsc)
 		}
 	case "name":
 		if desc {

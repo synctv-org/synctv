@@ -87,8 +87,16 @@ func OrderByCreatedAtAsc(db *gorm.DB) *gorm.DB {
 	return db.Order("created_at asc")
 }
 
+func OrderByUsersCreatedAtAsc(db *gorm.DB) *gorm.DB {
+	return db.Order("users.created_at asc")
+}
+
 func OrderByCreatedAtDesc(db *gorm.DB) *gorm.DB {
 	return db.Order("created_at desc")
+}
+
+func OrderByUsersCreatedAtDesc(db *gorm.DB) *gorm.DB {
+	return db.Order("users.created_at desc")
 }
 
 func OrderByIDAsc(db *gorm.DB) *gorm.DB {

@@ -33,12 +33,12 @@ require (
 	github.com/sirupsen/logrus v1.9.3
 	github.com/soheilhy/cmux v0.1.5
 	github.com/spf13/cobra v1.8.0
-	github.com/synctv-org/vendors v0.3.3-0.20240415060029-ef65de81bf8a
+	github.com/synctv-org/vendors v0.3.3-0.20240416113343-ddc34bc4b8bb
 	github.com/ulule/limiter/v3 v3.11.2
 	github.com/zencoder/go-dash/v3 v3.0.3
 	github.com/zijiren233/gencontainer v0.0.0-20240331174346-b5e420773df7
 	github.com/zijiren233/go-colorable v0.0.0-20230930131441-997304c961cb
-	github.com/zijiren233/go-uhc v0.2.1
+	github.com/zijiren233/go-uhc v0.2.2
 	github.com/zijiren233/livelib v0.3.1
 	github.com/zijiren233/stream v0.5.2
 	github.com/zijiren233/yaml-comment v0.2.2

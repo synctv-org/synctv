@@ -14,6 +14,7 @@ import (
 	"github.com/synctv-org/synctv/utils"
 	"github.com/synctv-org/vendors/api/emby"
 	"github.com/zijiren233/gencontainer/refreshcache"
+	"github.com/zijiren233/go-uhc"
 )
 
 type EmbyUserCache = MapCache[*EmbyUserCacheData, struct{}]
@@ -181,7 +182,7 @@ func newEmbySubtitleCacheInitFunc(url string) func(ctx context.Context, args ...
 		}
 		req.Header.Set("User-Agent", utils.UA)
 		req.Header.Set("Referer", req.URL.Host)
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := uhc.Do(req)
 		if err != nil {
 			return nil, err
 		}

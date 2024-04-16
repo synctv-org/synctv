@@ -17,6 +17,7 @@ import (
 	"github.com/synctv-org/vendors/api/bilibili"
 	"github.com/zencoder/go-dash/v3/mpd"
 	"github.com/zijiren233/gencontainer/refreshcache"
+	"github.com/zijiren233/go-uhc"
 )
 
 type BilibiliMpdCache struct {
@@ -283,7 +284,7 @@ func translateBilibiliSubtitleToSrt(ctx context.Context, url string) ([]byte, er
 	}
 	r.Header.Set("User-Agent", utils.UA)
 	r.Header.Set("Referer", "https://www.bilibili.com")
-	resp, err := http.DefaultClient.Do(r)
+	resp, err := uhc.Do(r)
 	if err != nil {
 		return nil, err
 	}

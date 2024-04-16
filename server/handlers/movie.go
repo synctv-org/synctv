@@ -520,7 +520,7 @@ func ProxyMovie(ctx *gin.Context) {
 // 			req.Header.Set(k, v)
 // 		}
 // 		req.Header.Set("User-Agent", utils.UA)
-// 		resp, err := http.DefaultClient.Do(req)
+// 		resp, err := uhc.Do(req)
 // 		if err != nil {
 // 			return nil, err
 // 		}

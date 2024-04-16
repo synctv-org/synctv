@@ -8,6 +8,7 @@ import (
 
 	json "github.com/json-iterator/go"
 	"github.com/synctv-org/synctv/internal/provider"
+	"github.com/zijiren233/go-uhc"
 	"golang.org/x/oauth2"
 )
 
@@ -53,7 +54,7 @@ func (p *QQProvider) GetToken(ctx context.Context, code string) (*oauth2.Token, 
 	if err != nil {
 		return nil, err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := uhc.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -73,7 +74,7 @@ func (p *QQProvider) RefreshToken(ctx context.Context, tk string) (*oauth2.Token
 	if err != nil {
 		return nil, err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := uhc.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -91,7 +92,7 @@ func (p *QQProvider) GetUserInfo(ctx context.Context, code string) (*provider.Us
 	if err != nil {
 		return nil, err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := uhc.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -105,7 +106,7 @@ func (p *QQProvider) GetUserInfo(ctx context.Context, code string) (*provider.Us
 	if err != nil {
 		return nil, err
 	}
-	resp2, err := http.DefaultClient.Do(req)
+	resp2, err := uhc.Do(req)
 	if err != nil {
 		return nil, err
 	}

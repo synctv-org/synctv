@@ -8,6 +8,7 @@ import (
 
 	json "github.com/json-iterator/go"
 	"github.com/synctv-org/synctv/internal/provider"
+	"github.com/zijiren233/go-uhc"
 )
 
 var _ provider.AggregationProviderInterface = (*Rainbow)(nil)
@@ -84,7 +85,7 @@ func (p *rainbowGenericProvider) NewAuthURL(ctx context.Context, state string) (
 	if err != nil {
 		return "", err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := uhc.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -129,7 +130,7 @@ func (p *rainbowGenericProvider) GetUserInfo(ctx context.Context, code string) (
 	if err != nil {
 		return nil, err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := uhc.Do(req)
 	if err != nil {
 		return nil, err
 	}

@@ -68,7 +68,7 @@ func CreateRoom(ctx *gin.Context) {
 		return
 	}
 
-	room, err := user.CreateRoom(req.RoomName, req.Password, db.WithSettingHidden(req.Hidden))
+	room, err := user.CreateRoom(req.RoomName, req.Password, db.WithSettingHidden(req.Settings.Hidden))
 	if err != nil {
 		log.Errorf("create room failed: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))

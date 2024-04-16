@@ -28,7 +28,9 @@ func (f FormatEmptyPasswordError) Error() string {
 type CreateRoomReq struct {
 	RoomName string `json:"roomName"`
 	Password string `json:"password"`
-	Hidden   bool   `json:"hidden"`
+	Settings struct {
+		Hidden bool `json:"hidden"`
+	} `json:"settings"`
 }
 
 func (c *CreateRoomReq) Decode(ctx *gin.Context) error {

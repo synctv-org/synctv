@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"time"
 
 	"github.com/synctv-org/synctv/internal/db"
@@ -179,18 +178,8 @@ func NewAlistMovieCacheInitFunc(movie *model.Movie) func(ctx context.Context, ar
 			return nil, fmt.Errorf("path is dir: %s", truePath)
 		}
 
-		u, err := url.Parse(fg.RawUrl)
-		if err != nil {
-			return nil, fmt.Errorf("parse url error: %s", fg.RawUrl)
-		}
-		if fg.Sign != "" {
-			query := url.Values{}
-			query.Set("sign", fg.Sign)
-			u.RawQuery = query.Encode()
-		}
-
 		cache := &AlistMovieCacheData{
-			URL: u.String(),
+			URL: fg.RawUrl,
 		}
 		if fg.Provider == "AliyundriveOpen" {
 			fo, err := cli.FsOther(ctx, &alist.FsOtherReq{

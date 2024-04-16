@@ -411,11 +411,17 @@ func (r *Room) ApprovePendingMember(userID string) error {
 }
 
 func (r *Room) BanMember(userID string) error {
+	if r.IsCreator(userID) {
+		return errors.New("you are creator, cannot ban")
+	}
 	defer r.members.Delete(userID)
 	return db.RoomBanMember(r.ID, userID)
 }
 
 func (r *Room) UnbanMember(userID string) error {
+	if r.IsCreator(userID) {
+		return errors.New("you are creator, cannot unban")
+	}
 	defer r.members.Delete(userID)
 	return db.RoomUnbanMember(r.ID, userID)
 }
@@ -440,11 +446,17 @@ func (r *Room) RemoveAdminPermissions(userID string, permissions model.RoomAdmin
 }
 
 func (r *Room) SetAdmin(userID string, permissions model.RoomAdminPermission) error {
+	if r.IsCreator(userID) {
+		return errors.New("you are creator, cannot set admin")
+	}
 	defer r.members.Delete(userID)
 	return db.RoomSetAdmin(r.ID, userID, permissions)
 }
 
 func (r *Room) SetMember(userID string, permissions model.RoomMemberPermission) error {
+	if r.IsCreator(userID) {
+		return errors.New("you are creator, cannot set member")
+	}
 	defer r.members.Delete(userID)
 	return db.RoomSetMember(r.ID, userID, permissions)
 }

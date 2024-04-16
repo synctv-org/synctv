@@ -195,9 +195,9 @@ func initRoom(room *gin.RouterGroup, needAuthUser *gin.RouterGroup, needAuthRoom
 
 		needAuthRoomAdmin.POST("/members/unban", RoomAdminUnbanMember)
 
-		needAuthRoomCreator.POST("/members/permissions", RoomSetMemberPermissions)
+		needAuthRoomCreator.POST("/members/member", RoomSetMember)
 
-		needAuthRoomCreator.POST("/members", RoomSetMember)
+		needAuthRoomCreator.POST("/members/member/permissions", RoomSetMemberPermissions)
 
 		needAuthRoomCreator.POST("/members/admin", RoomSetAdmin)
 

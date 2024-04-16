@@ -8,6 +8,7 @@ type RoomMembersResp struct {
 	UserID           string                       `json:"userId"`
 	Username         string                       `json:"username"`
 	JoinAt           int64                        `json:"joinAt"`
+	OnLine           bool                         `json:"onLine"`
 	Role             dbModel.RoomMemberRole       `json:"role"`
 	RoomID           string                       `json:"roomId"`
 	Permissions      dbModel.RoomMemberPermission `json:"permissions"`

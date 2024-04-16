@@ -241,3 +241,8 @@ func (h *Hub) SendToUser(userID string, data Message) (err error) {
 	}
 	return
 }
+
+func (h *Hub) IsOnline(userID string) bool {
+	_, ok := h.clients.Load(userID)
+	return ok
+}

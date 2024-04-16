@@ -90,7 +90,7 @@ func RoomMembers(ctx *gin.Context) {
 
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
 		"total": total,
-		"list":  genRoomMemberListResp(list),
+		"list":  genRoomMemberListResp(list, room),
 	}))
 }
 
@@ -180,7 +180,7 @@ func RoomAdminMembers(ctx *gin.Context) {
 
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
 		"total": total,
-		"list":  genRoomMemberListResp(list),
+		"list":  genRoomMemberListResp(list, room),
 	}))
 }
 

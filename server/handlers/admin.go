@@ -293,17 +293,18 @@ func AdminGetRoomMembers(ctx *gin.Context) {
 
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
 		"total": total,
-		"list":  genRoomMemberListResp(list),
+		"list":  genRoomMemberListResp(list, room),
 	}))
 }
 
-func genRoomMemberListResp(us []*dbModel.User) []*model.RoomMembersResp {
+func genRoomMemberListResp(us []*dbModel.User, room *op.Room) []*model.RoomMembersResp {
 	resp := make([]*model.RoomMembersResp, len(us))
 	for i, v := range us {
 		resp[i] = &model.RoomMembersResp{
 			UserID:           v.ID,
 			Username:         v.Username,
 			JoinAt:           v.RoomMembers[0].CreatedAt.UnixMilli(),
+			OnLine:           room.IsOnline(v.ID),
 			Role:             v.RoomMembers[0].Role,
 			RoomID:           v.RoomMembers[0].RoomID,
 			Permissions:      v.RoomMembers[0].Permissions,

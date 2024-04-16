@@ -47,7 +47,7 @@ func (r RoomMemberStatus) IsBanned() bool {
 type RoomMemberPermission uint32
 
 const (
-	PermissionGetMovieList RoomMemberPermission = 2 << iota
+	PermissionGetMovieList RoomMemberPermission = 1 << iota
 	PermissionAddMovie
 	PermissionDeleteMovie
 	PermissionEditMovie

@@ -282,7 +282,7 @@ func LoginRoom(ctx *gin.Context) {
 		return
 	}
 
-	room, err := op.LoadOrInitRoomByID(req.RoomId)
+	roomE, err := op.LoadOrInitRoomByID(req.RoomId)
 	if err != nil {
 		log.Errorf("login room failed: %v", err)
 		if err == op.ErrRoomBanned || err == op.ErrRoomPending {
@@ -292,14 +292,28 @@ func LoginRoom(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(err))
 		return
 	}
+	room := roomE.Value()
 
-	if room.Value().CreatorID != user.ID && !room.Value().CheckPassword(req.Password) {
+	member, err := room.LoadOrCreateRoomMember(user.ID)
+	if err != nil {
+		log.Errorf("login room failed: %v", err)
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
+
+	if member.Status.IsNotActive() {
+		log.Warn("login room failed: member status not active")
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("member status not active"))
+		return
+	}
+
+	if !member.Role.IsAdmin() && !room.CheckPassword(req.Password) {
 		log.Warn("login room failed: password error")
 		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("password error"))
 		return
 	}
 
-	token, err := middlewares.NewAuthRoomToken(user, room.Value())
+	token, err := middlewares.NewAuthRoomToken(user, room)
 	if err != nil {
 		log.Errorf("login room failed: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
@@ -307,7 +321,7 @@ func LoginRoom(ctx *gin.Context) {
 	}
 
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
-		"roomId": room.Value().ID,
+		"roomId": room.ID,
 		"token":  token,
 	}))
 }

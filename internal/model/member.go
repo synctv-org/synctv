@@ -36,6 +36,10 @@ func (r RoomMemberStatus) IsActive() bool {
 	return r == RoomMemberStatusActive
 }
 
+func (r RoomMemberStatus) IsNotActive() bool {
+	return r != RoomMemberStatusActive
+}
+
 func (r RoomMemberStatus) IsBanned() bool {
 	return r == RoomMemberStatusBanned
 }

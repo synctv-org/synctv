@@ -183,6 +183,12 @@ func (r *Room) LoadOrCreateRoomMember(userID string) (*model.RoomMember, error) 
 	if err != nil {
 		return nil, err
 	}
+	if r.IsCreator(userID) {
+		member.Role = model.RoomMemberRoleCreator
+		member.Permissions = model.AllPermissions
+		member.AdminPermissions = model.AllAdminPermissions
+		member.Status = model.RoomMemberStatusActive
+	}
 	member, _ = r.members.LoadOrStore(userID, member)
 	return member, nil
 }
@@ -195,6 +201,12 @@ func (r *Room) LoadRoomMember(userID string) (*model.RoomMember, error) {
 	member, err := db.GetRoomMemberRelation(r.ID, userID)
 	if err != nil {
 		return nil, err
+	}
+	if r.IsCreator(userID) {
+		member.Role = model.RoomMemberRoleCreator
+		member.Permissions = model.AllPermissions
+		member.AdminPermissions = model.AllAdminPermissions
+		member.Status = model.RoomMemberStatusActive
 	}
 	member, _ = r.members.LoadOrStore(userID, member)
 	return member, nil

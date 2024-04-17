@@ -47,6 +47,9 @@ func WithStatus(status model.RoomStatus) CreateRoomConfig {
 
 func WithSettingHidden(hidden bool) CreateRoomConfig {
 	return func(r *model.Room) {
+		if r.Settings == nil {
+			r.Settings = model.DefaultRoomSettings()
+		}
 		r.Settings.Hidden = hidden
 	}
 }
@@ -94,9 +97,15 @@ func GetRoomByID(id string) (*model.Room, error) {
 	r := &model.Room{}
 	err := db.
 		Where("id = ?", id).
-		Preload("Settings", "id = ?", id).
 		First(r).Error
 	return r, HandleNotFound(err, "room")
+}
+
+func GetOrCreateRoomSettings(roomID string) (*model.RoomSettings, error) {
+	rs := model.DefaultRoomSettings()
+	rs.ID = roomID
+	err := db.FirstOrCreate(rs, rs).Error
+	return rs, err
 }
 
 func SaveRoomSettings(roomID string, settings *model.RoomSettings) error {

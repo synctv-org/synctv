@@ -1,6 +1,8 @@
 package model
 
 import (
+	"github.com/gin-gonic/gin"
+	json "github.com/json-iterator/go"
 	dbModel "github.com/synctv-org/synctv/internal/model"
 )
 
@@ -25,6 +27,10 @@ type RoomSetMemberPermissionsReq struct {
 	Permissions dbModel.RoomMemberPermission `json:"permissions"`
 }
 
+func (r *RoomSetMemberPermissionsReq) Decode(ctx *gin.Context) error {
+	return json.NewDecoder(ctx.Request.Body).Decode(r)
+}
+
 type RoomMeResp struct {
 	UserID           string                       `json:"userId"`
 	RoomID           string                       `json:"roomId"`
@@ -39,12 +45,24 @@ type RoomSetAdminReq struct {
 	AdminPermissions dbModel.RoomAdminPermission `json:"adminPermissions"`
 }
 
+func (r *RoomSetAdminReq) Decode(ctx *gin.Context) error {
+	return json.NewDecoder(ctx.Request.Body).Decode(r)
+}
+
 type RoomSetMemberReq struct {
 	UserIDReq
 	Permissions dbModel.RoomMemberPermission `json:"permissions"`
 }
 
+func (r *RoomSetMemberReq) Decode(ctx *gin.Context) error {
+	return json.NewDecoder(ctx.Request.Body).Decode(r)
+}
+
 type RoomSetAdminPermissionsReq struct {
 	UserIDReq
 	AdminPermissions dbModel.RoomAdminPermission `json:"adminPermissions"`
+}
+
+func (r *RoomSetAdminPermissionsReq) Decode(ctx *gin.Context) error {
+	return json.NewDecoder(ctx.Request.Body).Decode(r)
 }

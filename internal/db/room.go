@@ -102,9 +102,8 @@ func GetRoomByID(id string) (*model.Room, error) {
 }
 
 func GetOrCreateRoomSettings(roomID string) (*model.RoomSettings, error) {
-	rs := model.DefaultRoomSettings()
-	rs.ID = roomID
-	err := db.FirstOrCreate(rs, rs).Error
+	rs := &model.RoomSettings{}
+	err := db.Where(&model.RoomSettings{ID: roomID}).Attrs(model.DefaultRoomSettings()).FirstOrCreate(rs).Error
 	return rs, err
 }
 

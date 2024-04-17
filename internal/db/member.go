@@ -50,7 +50,7 @@ func FirstOrCreateRoomMemberRelation(roomID, userID string, conf ...CreateRoomMe
 	return roomMemberRelation, err
 }
 
-func GetRoomMemberRelation(roomID, userID string) (*model.RoomMember, error) {
+func GetRoomMember(roomID, userID string) (*model.RoomMember, error) {
 	roomMemberRelation := &model.RoomMember{}
 	err := db.Where("room_id = ? AND user_id = ?", roomID, userID).First(roomMemberRelation).Error
 	return roomMemberRelation, HandleNotFound(err, "room or user")

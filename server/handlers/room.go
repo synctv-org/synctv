@@ -276,6 +276,55 @@ func CheckRoom(ctx *gin.Context) {
 	}))
 }
 
+func GuestJoinRoom(ctx *gin.Context) {
+	log := ctx.MustGet("log").(*logrus.Entry)
+
+	req := model.LoginRoomReq{}
+	if err := model.Decode(ctx, &req); err != nil {
+		log.Errorf("guest join room failed: %v", err)
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	userE, err := op.LoadOrInitUserByID(db.GuestUserID)
+	if err != nil {
+		log.Errorf("guest join room failed: %v", err)
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
+	user := userE.Value()
+
+	roomE, err := op.LoadOrInitRoomByID(req.RoomId)
+	if err != nil {
+		log.Errorf("guest join room failed: %v", err)
+		if err == op.ErrRoomBanned || err == op.ErrRoomPending {
+			ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(err))
+			return
+		}
+		ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(err))
+		return
+	}
+	room := roomE.Value()
+
+	if !room.CheckPassword(req.Password) {
+		log.Warn("guest join room failed: password error")
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("password error"))
+		return
+	}
+
+	token, err := middlewares.NewAuthRoomToken(user, room)
+	if err != nil {
+		log.Errorf("guest join room failed: %v", err)
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
+
+	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
+		"roomId": room.ID,
+		"token":  token,
+	}))
+}
+
 func LoginRoom(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*op.UserEntry).Value()
 	log := ctx.MustGet("log").(*logrus.Entry)
@@ -299,20 +348,7 @@ func LoginRoom(ctx *gin.Context) {
 	}
 	room := roomE.Value()
 
-	member, err := room.LoadOrCreateRoomMember(user.ID)
-	if err != nil {
-		log.Errorf("login room failed: %v", err)
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
-		return
-	}
-
-	if member.Status.IsNotActive() {
-		log.Warn("login room failed: member status not active")
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("member status not active"))
-		return
-	}
-
-	if !member.Role.IsAdmin() && !room.CheckPassword(req.Password) {
+	if !user.IsAdmin() && !user.IsRoomAdmin(room) && !room.CheckPassword(req.Password) {
 		log.Warn("login room failed: password error")
 		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("password error"))
 		return

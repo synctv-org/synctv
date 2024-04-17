@@ -15,6 +15,12 @@ import (
 
 type CreateUserConfig func(u *model.User)
 
+func WithID(id string) CreateUserConfig {
+	return func(u *model.User) {
+		u.ID = id
+	}
+}
+
 func WithRole(role model.Role) CreateUserConfig {
 	return func(u *model.User) {
 		u.Role = role

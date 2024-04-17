@@ -193,6 +193,10 @@ func (u *User) IsPending() bool {
 	return u.Role == model.RolePending
 }
 
+func (u *User) IsGuest() bool {
+	return u.ID == db.GuestUserID
+}
+
 func (u *User) HasRoomPermission(room *Room, permission model.RoomMemberPermission) bool {
 	if u.IsAdmin() {
 		return true

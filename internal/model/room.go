@@ -77,6 +77,7 @@ type RoomSettings struct {
 	DisableJoinNewUser     bool                 `gorm:"default:false" json:"disable_join_new_user"`
 	JoinNeedReview         bool                 `gorm:"default:false" json:"join_need_review"`
 	UserDefaultPermissions RoomMemberPermission `json:"user_default_permissions"`
+	DisableGuest           bool                 `gorm:"default:false" json:"disable_guest"`
 
 	CanGetMovieList     bool `gorm:"default:true" json:"can_get_movie_list"`
 	CanAddMovie         bool `gorm:"default:true" json:"can_add_movie"`
@@ -93,6 +94,7 @@ func DefaultRoomSettings() *RoomSettings {
 		DisableJoinNewUser:     false,
 		JoinNeedReview:         false,
 		UserDefaultPermissions: DefaultPermissions,
+		DisableGuest:           false,
 
 		CanGetMovieList:     true,
 		CanAddMovie:         true,

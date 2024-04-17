@@ -7,9 +7,9 @@ import (
 	"sync/atomic"
 
 	"github.com/gorilla/websocket"
-	log "github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/model"
+	"github.com/synctv-org/synctv/internal/settings"
 	"github.com/synctv-org/synctv/utils"
 	"github.com/zijiren233/gencontainer/rwmap"
 	rtmps "github.com/zijiren233/livelib/server"
@@ -93,10 +93,10 @@ func (r *Room) AddMovies(movies []*model.Movie) error {
 }
 
 func (r *Room) UserRole(userID string) (model.RoomMemberRole, error) {
-	if r.CreatorID == userID {
+	if r.IsCreator(userID) {
 		return model.RoomMemberRoleCreator, nil
 	}
-	rur, err := r.LoadOrCreateRoomMember(userID)
+	rur, err := r.LoadRoomMember(userID)
 	if err != nil {
 		return model.RoomMemberRoleUnknown, err
 	}
@@ -105,12 +105,8 @@ func (r *Room) UserRole(userID string) (model.RoomMemberRole, error) {
 
 // do not use this value for permission determination
 func (r *Room) IsAdmin(userID string) bool {
-	if r.IsCreator(userID) {
-		return true
-	}
 	role, err := r.UserRole(userID)
 	if err != nil {
-		log.Errorf("get user role failed: %s", err.Error())
 		return false
 	}
 	return role.IsAdmin()
@@ -118,6 +114,10 @@ func (r *Room) IsAdmin(userID string) bool {
 
 func (r *Room) IsCreator(userID string) bool {
 	return r.CreatorID == userID
+}
+
+func (r *Room) IsGuest(userID string) bool {
+	return userID == db.GuestUserID
 }
 
 func (r *Room) HasPermission(userID string, permission model.RoomMemberPermission) bool {
@@ -162,7 +162,7 @@ func (r *Room) HasAdminPermission(userID string, permission model.RoomAdminPermi
 }
 
 func (r *Room) LoadOrCreateMemberStatus(userID string) (model.RoomMemberStatus, error) {
-	if r.CreatorID == userID {
+	if r.IsCreator(userID) {
 		return model.RoomMemberStatusActive, nil
 	}
 	rur, err := r.LoadOrCreateRoomMember(userID)
@@ -173,7 +173,7 @@ func (r *Room) LoadOrCreateMemberStatus(userID string) (model.RoomMemberStatus, 
 }
 
 func (r *Room) LoadMemberStatus(userID string) (model.RoomMemberStatus, error) {
-	if r.CreatorID == userID {
+	if r.IsCreator(userID) {
 		return model.RoomMemberStatusActive, nil
 	}
 	rur, err := r.LoadRoomMember(userID)
@@ -187,18 +187,29 @@ func (r *Room) LoadOrCreateRoomMember(userID string) (*model.RoomMember, error) 
 	if r.Settings.DisableJoinNewUser {
 		return r.LoadRoomMember(userID)
 	}
+	if r.IsGuest(userID) && (r.Settings.DisableGuest || !settings.EnableGuest.Get()) {
+		return nil, errors.New("guest is disabled")
+	}
 	member, ok := r.members.Load(userID)
 	if ok {
 		return member, nil
 	}
 	var conf []db.CreateRoomMemberRelationConfig
-	if r.CreatorID == userID {
+	if r.IsCreator(userID) {
 		conf = append(
 			conf,
 			db.WithRoomMemberStatus(model.RoomMemberStatusActive),
 			db.WithRoomMemberRelationPermissions(model.AllPermissions),
 			db.WithRoomMemberRole(model.RoomMemberRoleCreator),
 			db.WithRoomMemberAdminPermissions(model.AllAdminPermissions),
+		)
+	} else if r.IsGuest(userID) {
+		conf = append(
+			conf,
+			db.WithRoomMemberStatus(model.RoomMemberStatusActive),
+			db.WithRoomMemberRelationPermissions(model.NoPermission),
+			db.WithRoomMemberRole(model.RoomMemberRoleMember),
+			db.WithRoomMemberAdminPermissions(model.NoAdminPermission),
 		)
 	} else {
 		conf = append(
@@ -220,6 +231,11 @@ func (r *Room) LoadOrCreateRoomMember(userID string) (*model.RoomMember, error) 
 		member.Permissions = model.AllPermissions
 		member.AdminPermissions = model.AllAdminPermissions
 		member.Status = model.RoomMemberStatusActive
+	} else if r.IsGuest(userID) {
+		member.Role = model.RoomMemberRoleMember
+		member.Permissions = model.NoPermission
+		member.AdminPermissions = model.NoAdminPermission
+		member.Status = model.RoomMemberStatusActive
 	} else if member.Role.IsAdmin() {
 		member.Permissions = model.AllPermissions
 	}
@@ -228,11 +244,14 @@ func (r *Room) LoadOrCreateRoomMember(userID string) (*model.RoomMember, error) 
 }
 
 func (r *Room) LoadRoomMember(userID string) (*model.RoomMember, error) {
+	if r.IsGuest(userID) && (r.Settings.DisableGuest || !settings.EnableGuest.Get()) {
+		return nil, errors.New("guest is disabled")
+	}
 	member, ok := r.members.Load(userID)
 	if ok {
 		return member, nil
 	}
-	member, err := db.GetRoomMemberRelation(r.ID, userID)
+	member, err := db.GetRoomMember(r.ID, userID)
 	if err != nil {
 		return nil, fmt.Errorf("get room member failed: %w", err)
 	}
@@ -240,6 +259,11 @@ func (r *Room) LoadRoomMember(userID string) (*model.RoomMember, error) {
 		member.Role = model.RoomMemberRoleCreator
 		member.Permissions = model.AllPermissions
 		member.AdminPermissions = model.AllAdminPermissions
+		member.Status = model.RoomMemberStatusActive
+	} else if r.IsGuest(userID) {
+		member.Role = model.RoomMemberRoleMember
+		member.Permissions = model.NoPermission
+		member.AdminPermissions = model.NoAdminPermission
 		member.Status = model.RoomMemberStatusActive
 	} else if member.Role.IsAdmin() {
 		member.Permissions = model.AllPermissions

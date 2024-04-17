@@ -25,6 +25,10 @@ func Init(d *gorm.DB, t conf.DatabaseType) error {
 	if err != nil {
 		return err
 	}
+	err = initGuestUser()
+	if err != nil {
+		return err
+	}
 	return initRootUser()
 }
 
@@ -36,6 +40,22 @@ func initRootUser() error {
 	}
 	u, err := CreateUser("root", "root", WithRole(model.RoleRoot))
 	log.Infof("init root user:\nid: %s\nusername: %s\npassword: %s", u.ID, u.Username, "root")
+	return err
+}
+
+const (
+	GuestUsername = "guest"
+	GuestUserID   = "00000000000000000000000000000001"
+)
+
+func initGuestUser() error {
+	user := model.User{}
+	err := db.Where("id = ?", GuestUserID).First(&user).Error
+	if err == nil || !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+	u, err := CreateUser("guest", utils.RandString(32), WithRole(model.RoleUser), WithID(GuestUserID))
+	log.Infof("init guest user:\nid: %s\nusername: %s", u.ID, u.Username)
 	return err
 }
 

@@ -167,6 +167,8 @@ func initRoom(room *gin.RouterGroup, needAuthUser *gin.RouterGroup, needAuthRoom
 
 	room.GET("/list", RoomList)
 
+	room.POST("/guest", GuestJoinRoom)
+
 	needAuthUser.POST("/create", CreateRoom)
 
 	needAuthUser.POST("/login", LoginRoom)

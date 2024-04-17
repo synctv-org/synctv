@@ -121,16 +121,21 @@ func AuthUser(Authorization string) (*op.UserEntry, error) {
 		return nil, ErrAuthFailed
 	}
 
-	u, err := op.LoadOrInitUserByID(claims.UserId)
+	userE, err := op.LoadOrInitUserByID(claims.UserId)
 	if err != nil {
 		return nil, err
 	}
+	user := userE.Value()
 
-	if !u.Value().CheckVersion(claims.UserVersion) {
+	if user.IsGuest() {
+		return nil, errors.New("user is guest, can not login")
+	}
+
+	if !user.CheckVersion(claims.UserVersion) {
 		return nil, ErrAuthExpired
 	}
 
-	return u, nil
+	return userE, nil
 }
 
 func NewAuthUserToken(user *op.User) (string, error) {
@@ -139,6 +144,9 @@ func NewAuthUserToken(user *op.User) (string, error) {
 	}
 	if user.IsPending() {
 		return "", errors.New("user is pending, need admin to approve")
+	}
+	if user.IsGuest() {
+		return "", errors.New("user is guest, can not login")
 	}
 	t, err := time.ParseDuration(conf.Conf.Jwt.Expire)
 	if err != nil {

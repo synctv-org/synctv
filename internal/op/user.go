@@ -66,6 +66,9 @@ func (u *User) CheckVersion(version uint32) bool {
 }
 
 func (u *User) SetPassword(password string) error {
+	if u.IsGuest() {
+		return errors.New("guest cannot set password")
+	}
 	if u.CheckPassword(password) {
 		return errors.New("password is the same")
 	}
@@ -79,9 +82,6 @@ func (u *User) SetPassword(password string) error {
 }
 
 func (u *User) CreateRoom(name, password string, conf ...db.CreateRoomConfig) (*RoomEntry, error) {
-	if u.IsBanned() {
-		return nil, errors.New("user banned")
-	}
 	if u.IsAdmin() {
 		conf = append(conf, db.WithStatus(model.RoomStatusActive))
 	} else {
@@ -208,6 +208,9 @@ func (u *User) HasRoomAdminPermission(room *Room, permission model.RoomAdminPerm
 	if u.IsAdmin() {
 		return true
 	}
+	if u.IsGuest() {
+		return false
+	}
 	return room.HasAdminPermission(u.ID, permission)
 }
 
@@ -236,11 +239,55 @@ func (u *User) SetRoomPassword(room *Room, password string) error {
 	return room.SetPassword(password)
 }
 
-func (u *User) SetRole(role model.Role) error {
-	if err := db.SetRoleByID(u.ID, role); err != nil {
+func (u *User) SetUserRole() error {
+	if u.IsGuest() {
+		return errors.New("cannot set guest role")
+	}
+	if err := db.SetUserRoleByID(u.ID); err != nil {
 		return err
 	}
-	u.Role = role
+	u.Role = model.RoleUser
+	return nil
+}
+
+func (u *User) SetAdminRole() error {
+	if u.IsGuest() {
+		return errors.New("guest cannot be admin")
+	}
+	if err := db.SetAdminRoleByID(u.ID); err != nil {
+		return err
+	}
+	u.Role = model.RoleAdmin
+	return nil
+}
+
+func (u *User) SetRootRole() error {
+	if u.IsGuest() {
+		return errors.New("guest cannot be root")
+	}
+	if err := db.SetRootRoleByID(u.ID); err != nil {
+		return err
+	}
+	u.Role = model.RoleRoot
+	return nil
+}
+
+func (u *User) Ban() error {
+	if u.IsGuest() {
+		return errors.New("guest cannot be banned")
+	}
+	if err := db.BanUserByID(u.ID); err != nil {
+		return err
+	}
+	u.Role = model.RoleBanned
+	return nil
+}
+
+func (u *User) Unban() error {
+	if err := db.UnbanUserByID(u.ID); err != nil {
+		return err
+	}
+	u.Role = model.RoleUser
 	return nil
 }
 
@@ -253,14 +300,10 @@ func (u *User) SetUsername(username string) error {
 }
 
 func (u *User) UpdateRoomMovie(room *Room, movieID string, movie *model.BaseMovie) error {
-	m, err := room.GetMovieByID(movieID)
-	if err != nil {
-		return err
-	}
-	if m.Movie.CreatorID != u.ID && !u.HasRoomPermission(room, model.PermissionEditMovie) {
+	if !u.HasRoomPermission(room, model.PermissionEditMovie) {
 		return model.ErrNoPermission
 	}
-	err = room.UpdateMovie(movieID, movie)
+	err := room.UpdateMovie(movieID, movie)
 	if err != nil {
 		return err
 	}

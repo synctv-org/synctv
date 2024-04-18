@@ -386,13 +386,18 @@ func GetRoots() []*model.User {
 	return users
 }
 
-func SetRole(u *model.User, role model.Role) error {
-	u.Role = role
-	return SaveUser(u)
+func SetAdminRoleByID(userID string) error {
+	err := db.Model(&model.User{}).Where("id = ?", userID).Update("role", model.RoleAdmin).Error
+	return HandleNotFound(err, "user")
 }
 
-func SetRoleByID(userID string, role model.Role) error {
-	err := db.Model(&model.User{}).Where("id = ?", userID).Update("role", role).Error
+func SetRootRoleByID(userID string) error {
+	err := db.Model(&model.User{}).Where("id = ?", userID).Update("role", model.RoleRoot).Error
+	return HandleNotFound(err, "user")
+}
+
+func SetUserRoleByID(userID string) error {
+	err := db.Model(&model.User{}).Where("id = ?", userID).Update("role", model.RoleUser).Error
 	return HandleNotFound(err, "user")
 }
 

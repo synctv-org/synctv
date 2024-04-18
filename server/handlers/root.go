@@ -5,7 +5,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
-	dbModel "github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/server/model"
 )
@@ -38,7 +37,7 @@ func AddAdmin(ctx *gin.Context) {
 		return
 	}
 
-	if err := u.Value().SetRole(dbModel.RoleAdmin); err != nil {
+	if err := u.Value().SetAdminRole(); err != nil {
 		log.Errorf("failed to set role: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
@@ -75,7 +74,7 @@ func DeleteAdmin(ctx *gin.Context) {
 		return
 	}
 
-	if err := u.Value().SetRole(dbModel.RoleUser); err != nil {
+	if err := u.Value().SetUserRole(); err != nil {
 		log.Errorf("failed to set role: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return

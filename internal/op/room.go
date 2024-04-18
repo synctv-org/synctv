@@ -156,7 +156,7 @@ func (r *Room) HasPermission(userID string, permission model.RoomMemberPermissio
 }
 
 func (r *Room) HasAdminPermission(userID string, permission model.RoomAdminPermission) bool {
-	if r.CreatorID == userID {
+	if r.IsCreator(userID) {
 		return true
 	}
 
@@ -467,30 +467,33 @@ func (r *Room) ResetMemberPermissions(userID string) error {
 }
 
 func (r *Room) SetMemberPermissions(userID string, permissions model.RoomMemberPermission) error {
-	if r.IsGuest(userID) {
-		return errors.New("cannot set guest permissions")
+	if r.IsCreator(userID) {
+		return errors.New("you are creator, cannot set permissions")
 	}
 	defer r.members.Delete(userID)
 	return db.SetMemberPermissions(r.ID, userID, permissions)
 }
 
 func (r *Room) AddMemberPermissions(userID string, permissions model.RoomMemberPermission) error {
-	if r.IsGuest(userID) {
-		return errors.New("cannot add guest permissions")
+	if r.IsCreator(userID) {
+		return errors.New("you are creator, cannot add permissions")
 	}
 	defer r.members.Delete(userID)
 	return db.AddMemberPermissions(r.ID, userID, permissions)
 }
 
 func (r *Room) RemoveMemberPermissions(userID string, permissions model.RoomMemberPermission) error {
-	if r.IsGuest(userID) {
-		return errors.New("cannot remove guest permissions")
+	if r.IsCreator(userID) {
+		return errors.New("you are creator, cannot remove permissions")
 	}
 	defer r.members.Delete(userID)
 	return db.RemoveMemberPermissions(r.ID, userID, permissions)
 }
 
 func (r *Room) ApprovePendingMember(userID string) error {
+	if r.IsCreator(userID) {
+		return errors.New("you are creator, cannot approve")
+	}
 	defer r.members.Delete(userID)
 	return db.RoomApprovePendingMember(r.ID, userID)
 }
@@ -519,6 +522,9 @@ func (r *Room) ResetAdminPermissions(userID string) error {
 }
 
 func (r *Room) SetAdminPermissions(userID string, permissions model.RoomAdminPermission) error {
+	if r.IsGuest(userID) {
+		return errors.New("cannot set admin permissions to guest")
+	}
 	if member, err := r.LoadRoomMember(userID); err != nil {
 		return err
 	} else if !member.Role.IsAdmin() {
@@ -529,6 +535,9 @@ func (r *Room) SetAdminPermissions(userID string, permissions model.RoomAdminPer
 }
 
 func (r *Room) AddAdminPermissions(userID string, permissions model.RoomAdminPermission) error {
+	if r.IsGuest(userID) {
+		return errors.New("cannot add admin permissions to guest")
+	}
 	if member, err := r.LoadRoomMember(userID); err != nil {
 		return err
 	} else if !member.Role.IsAdmin() {
@@ -539,6 +548,9 @@ func (r *Room) AddAdminPermissions(userID string, permissions model.RoomAdminPer
 }
 
 func (r *Room) RemoveAdminPermissions(userID string, permissions model.RoomAdminPermission) error {
+	if r.IsGuest(userID) {
+		return errors.New("cannot remove admin permissions from guest")
+	}
 	if member, err := r.LoadRoomMember(userID); err != nil {
 		return err
 	} else if !member.Role.IsAdmin() {

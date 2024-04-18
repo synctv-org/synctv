@@ -349,7 +349,7 @@ func ApprovePendingUser(ctx *gin.Context) {
 		return
 	}
 
-	err = user.SetRole(dbModel.RoleUser)
+	err = user.SetUserRole()
 	if err != nil {
 		log.WithError(err).Error("set role by id error")
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
@@ -388,7 +388,7 @@ func BanUser(ctx *gin.Context) {
 		return
 	}
 
-	err = u.Value().SetRole(dbModel.RoleBanned)
+	err = u.Value().Ban()
 	if err != nil {
 		log.WithError(err).Error("set role error")
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
@@ -421,7 +421,7 @@ func UnBanUser(ctx *gin.Context) {
 		return
 	}
 
-	err = u.Value().SetRole(dbModel.RoleUser)
+	err = u.Value().Unban()
 	if err != nil {
 		log.WithError(err).Error("set role error")
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))

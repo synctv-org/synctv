@@ -122,7 +122,11 @@ func GetUserByProvider(p provider.OAuth2Provider, pid string) (*UserEntry, error
 }
 
 func CompareAndDeleteUser(user *UserEntry) error {
-	err := db.DeleteUserByID(user.Value().ID)
+	id := user.Value().ID
+	if id == db.GuestUserID {
+		return errors.New("cannot delete guest user")
+	}
+	err := db.DeleteUserByID(id)
 	if err != nil {
 		return err
 	}
@@ -130,6 +134,9 @@ func CompareAndDeleteUser(user *UserEntry) error {
 }
 
 func DeleteUserByID(id string) error {
+	if id == db.GuestUserID {
+		return errors.New("cannot delete guest user")
+	}
 	err := db.DeleteUserByID(id)
 	if err != nil {
 		return err

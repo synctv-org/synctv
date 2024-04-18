@@ -2,9 +2,11 @@ package bootstrap
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log"
 	"os"
+	"runtime"
 	"time"
 
 	"github.com/natefinch/lumberjack"
@@ -23,6 +25,10 @@ func setLog(l *logrus.Logger) {
 		l.SetLevel(logrus.InfoLevel)
 		l.SetReportCaller(false)
 	}
+}
+
+var logCallerIgnoreFuncs = map[string]struct{}{
+	"github.com/synctv-org/synctv/server/middlewares.Init.NewLog.func1": {},
 }
 
 func InitLog(ctx context.Context) (err error) {
@@ -61,6 +67,12 @@ func InitLog(ctx context.Context) (err error) {
 	case "json":
 		logrus.SetFormatter(&logrus.JSONFormatter{
 			TimestampFormat: time.DateTime,
+			CallerPrettyfier: func(f *runtime.Frame) (function string, file string) {
+				if _, ok := logCallerIgnoreFuncs[f.Function]; ok {
+					return "", ""
+				}
+				return f.Function, fmt.Sprintf("%s:%d", f.File, f.Line)
+			},
 		})
 	default:
 		if conf.Conf.Log.LogFormat != "text" {
@@ -75,6 +87,12 @@ func InitLog(ctx context.Context) (err error) {
 			FullTimestamp:    true,
 			TimestampFormat:  time.DateTime,
 			QuoteEmptyFields: true,
+			CallerPrettyfier: func(f *runtime.Frame) (function string, file string) {
+				if _, ok := logCallerIgnoreFuncs[f.Function]; ok {
+					return "", ""
+				}
+				return f.Function, fmt.Sprintf("%s:%d", f.File, f.Line)
+			},
 		})
 	}
 	log.SetOutput(logrus.StandardLogger().Writer())

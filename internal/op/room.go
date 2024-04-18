@@ -40,6 +40,13 @@ func (r *Room) PeopleNum() int64 {
 	return r.hub.PeopleNum()
 }
 
+func (r *Room) KickUser(userID string) error {
+	if r.hub == nil {
+		return nil
+	}
+	return r.hub.KickUser(userID)
+}
+
 func (r *Room) Broadcast(data Message, conf ...BroadcastConf) error {
 	if r.hub == nil {
 		return nil
@@ -437,6 +444,9 @@ func (r *Room) SetSettings(settings *model.RoomSettings) error {
 		return err
 	}
 	r.Settings = settings
+	if settings.DisableGuest {
+		return r.KickUser(db.GuestUserID)
+	}
 	return nil
 }
 
@@ -446,6 +456,9 @@ func (r *Room) UpdateSettings(settings map[string]any) error {
 		return err
 	}
 	r.Settings = rs
+	if rs.DisableGuest {
+		return r.KickUser(db.GuestUserID)
+	}
 	return nil
 }
 
@@ -488,7 +501,7 @@ func (r *Room) BanMember(userID string) error {
 	}
 	defer func() {
 		r.members.Delete(userID)
-		_ = r.hub.KickUser(userID)
+		_ = r.KickUser(userID)
 	}()
 	return db.RoomBanMember(r.ID, userID)
 }

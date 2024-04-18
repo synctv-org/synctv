@@ -470,6 +470,9 @@ func (r *Room) SetMemberPermissions(userID string, permissions model.RoomMemberP
 	if r.IsCreator(userID) {
 		return errors.New("you are creator, cannot set permissions")
 	}
+	if r.IsGuest(userID) {
+		return errors.New("cannot set permissions to guest")
+	}
 	defer r.members.Delete(userID)
 	return db.SetMemberPermissions(r.ID, userID, permissions)
 }
@@ -477,6 +480,9 @@ func (r *Room) SetMemberPermissions(userID string, permissions model.RoomMemberP
 func (r *Room) AddMemberPermissions(userID string, permissions model.RoomMemberPermission) error {
 	if r.IsCreator(userID) {
 		return errors.New("you are creator, cannot add permissions")
+	}
+	if r.IsGuest(userID) {
+		return errors.New("cannot add permissions to guest")
 	}
 	defer r.members.Delete(userID)
 	return db.AddMemberPermissions(r.ID, userID, permissions)

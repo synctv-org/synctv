@@ -202,7 +202,7 @@ func RoomList(ctx *gin.Context) {
 				ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 				return
 			}
-			scopes = append(scopes, db.WhereRoomNameLikeOrCreatorInOrIDLike(keyword, ids, keyword))
+			scopes = append(scopes, db.WhereRoomNameLikeOrCreatorInOrRoomsIDLike(keyword, ids, keyword))
 		case "name":
 			scopes = append(scopes, db.WhereRoomNameLike(keyword))
 		case "creator":
@@ -214,7 +214,7 @@ func RoomList(ctx *gin.Context) {
 			}
 			scopes = append(scopes, db.WhereCreatorIDIn(ids))
 		case "id":
-			scopes = append(scopes, db.WhereIDLike(keyword))
+			scopes = append(scopes, db.WhereRoomsIDLike(keyword))
 		}
 	}
 

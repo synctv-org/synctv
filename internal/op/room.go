@@ -413,9 +413,14 @@ func (r *Room) UnregisterClient(cli *Client) error {
 	return r.hub.UnRegClient(cli)
 }
 
-func (r *Room) IsOnline(userID string) bool {
+func (r *Room) UserIsOnline(userID string) bool {
 	r.lazyInitHub()
 	return r.hub.IsOnline(userID)
+}
+
+func (r *Room) UserOnlineCount(userID string) int {
+	r.lazyInitHub()
+	return r.hub.OnlineCount(userID)
 }
 
 func (r *Room) SetCurrentStatus(playing bool, seek float64, rate float64, timeDiff float64) *Status {

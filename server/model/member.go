@@ -10,7 +10,7 @@ type RoomMembersResp struct {
 	UserID           string                       `json:"userId"`
 	Username         string                       `json:"username"`
 	JoinAt           int64                        `json:"joinAt"`
-	IsOnline         bool                         `json:"isOnline"`
+	OnlineCount      int                          `json:"onlineCount"`
 	Role             dbModel.RoomMemberRole       `json:"role"`
 	Status           dbModel.RoomMemberStatus     `json:"status"`
 	RoomID           string                       `json:"roomId"`

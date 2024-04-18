@@ -247,6 +247,19 @@ func (h *Hub) IsOnline(userID string) bool {
 	return ok
 }
 
+func (h *Hub) OnlineCount(userID string) int {
+	c, ok := h.clients.Load(userID)
+	if !ok {
+		return 0
+	}
+	c.lock.RLock()
+	defer c.lock.RUnlock()
+	if len(c.m) == 0 {
+		h.clients.CompareAndDelete(userID, c)
+	}
+	return len(c.m)
+}
+
 func (h *Hub) KickUser(userID string) error {
 	if h.Closed() {
 		return ErrAlreadyClosed

@@ -12,6 +12,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/internal/conf"
 	"github.com/synctv-org/synctv/internal/db"
+	dbModel "github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/server/model"
 	"github.com/zijiren233/gencontainer/synccache"
@@ -178,11 +179,22 @@ func NewAuthRoomToken(user *op.User, room *op.Room) (string, error) {
 		return "", errors.New("room is pending, need admin to approve")
 	}
 
-	if _, err := room.LoadOrCreateRoomMember(user.ID); err != nil {
+	member, err := room.LoadOrCreateRoomMember(user.ID)
+	if err != nil {
 		if errors.Is(err, db.ErrNotFound("")) {
 			return "", fmt.Errorf("this room was disabled join new user")
 		}
 		return "", fmt.Errorf("load room member failed: %w", err)
+	}
+	switch member.Status {
+	case dbModel.RoomMemberStatusBanned:
+		return "", fmt.Errorf("user is banned")
+	case dbModel.RoomMemberStatusPending:
+		return "", fmt.Errorf("user is pending, need admin to approve")
+	default:
+		if member.Status.IsNotActive() {
+			return "", fmt.Errorf("user is not active")
+		}
 	}
 
 	t, err := time.ParseDuration(conf.Conf.Jwt.Expire)

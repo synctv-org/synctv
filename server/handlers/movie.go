@@ -18,6 +18,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
+	"github.com/synctv-org/synctv/internal/cache"
 	"github.com/synctv-org/synctv/internal/conf"
 	dbModel "github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
@@ -81,17 +82,13 @@ func GetPageItems[T any](ctx *gin.Context, items []T) ([]T, error) {
 // 	}))
 // }
 
-func genCurrentResp(ctx context.Context, user *op.User, room *op.Room) (*model.CurrentMovieResp, error) {
-	return genCurrentRespWithCurrent(ctx, user, room, room.Current())
-}
-
-func genCurrentMovieInfo(ctx context.Context, user *op.User, room *op.Room, opMovie *op.Movie) (*model.MovieResp, error) {
+func genMovieInfo(ctx context.Context, user *op.User, room *op.Room, opMovie *op.Movie, userAgent string) (*model.MovieResp, error) {
 	if opMovie == nil || opMovie.ID == "" {
 		return &model.MovieResp{}, nil
 	}
 	var movie = *opMovie.Movie
 	if movie.Base.VendorInfo.Vendor != "" {
-		vendorMovie, err := genVendorMovie(ctx, user, opMovie)
+		vendorMovie, err := genVendorMovie(ctx, user, opMovie, userAgent)
 		if err != nil {
 			return nil, err
 		}
@@ -123,7 +120,7 @@ func genCurrentMovieInfo(ctx context.Context, user *op.User, room *op.Room, opMo
 	return resp, nil
 }
 
-func genCurrentRespWithCurrent(ctx context.Context, user *op.User, room *op.Room, current *op.Current) (*model.CurrentMovieResp, error) {
+func genCurrentRespWithCurrent(ctx context.Context, user *op.User, room *op.Room, current *op.Current, userAgent string) (*model.CurrentMovieResp, error) {
 	if current.MovieID == "" {
 		return &model.CurrentMovieResp{
 			Movie: &model.MovieResp{},
@@ -133,7 +130,7 @@ func genCurrentRespWithCurrent(ctx context.Context, user *op.User, room *op.Room
 	if err != nil {
 		return nil, fmt.Errorf("get current movie error: %w", err)
 	}
-	mr, err := genCurrentMovieInfo(ctx, user, room, opMovie)
+	mr, err := genMovieInfo(ctx, user, room, opMovie, userAgent)
 	if err != nil {
 		return nil, fmt.Errorf("gen current movie info error: %w", err)
 	}
@@ -150,7 +147,7 @@ func CurrentMovie(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*op.UserEntry).Value()
 	log := ctx.MustGet("log").(*logrus.Entry)
 
-	currentResp, err := genCurrentResp(ctx, user, room)
+	currentResp, err := genCurrentRespWithCurrent(ctx, user, room, room.Current(), ctx.GetHeader("User-Agent"))
 	if err != nil {
 		log.Errorf("gen current resp error: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
@@ -939,17 +936,21 @@ func proxyVendorMovie(ctx *gin.Context, movie *op.Movie) {
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 			return
 		}
-		alistC, err := movie.AlistCache().Get(ctx, u.Value().AlistCache())
+		data, err := movie.AlistCache().Get(ctx, &cache.AlistMovieCacheFuncArgs{
+			UserCache: u.Value().AlistCache(),
+			UserAgent: utils.UA,
+		})
 		if err != nil {
 			log.Errorf("proxy vendor movie error: %v", err)
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 			return
 		}
-		if alistC.Ali != nil {
+		switch data.Provider {
+		case cache.AlistProviderAli:
 			t := ctx.Query("t")
 			switch t {
 			case "":
-				ctx.Data(http.StatusOK, "audio/mpegurl", alistC.Ali.M3U8ListFile)
+				ctx.Data(http.StatusOK, "audio/mpegurl", data.Ali.M3U8ListFile)
 				return
 			case "subtitle":
 				idS := ctx.Query("id")
@@ -964,12 +965,12 @@ func proxyVendorMovie(ctx *gin.Context, movie *op.Movie) {
 					ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 					return
 				}
-				if id >= len(alistC.Ali.Subtitles) {
+				if id >= len(data.Ali.Subtitles) {
 					log.Errorf("proxy vendor movie error: %v", "id out of range")
 					ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("id out of range"))
 					return
 				}
-				data, err := alistC.Ali.Subtitles[id].Cache.Get(ctx)
+				data, err := data.Ali.Subtitles[id].Cache.Get(ctx)
 				if err != nil {
 					log.Errorf("proxy vendor movie error: %v", err)
 					ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
@@ -977,15 +978,21 @@ func proxyVendorMovie(ctx *gin.Context, movie *op.Movie) {
 				}
 				ctx.Data(http.StatusOK, "text/plain; charset=utf-8", data)
 			}
-		} else if !movie.Movie.Base.Proxy {
-			log.Errorf("proxy vendor movie error: %v", "not support movie proxy")
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support movie proxy"))
-			return
-		} else {
-			err = proxyURL(ctx, alistC.URL, nil)
-			if err != nil {
-				log.Errorf("proxy vendor movie error: %v", err)
+
+		case cache.AlistProvider115:
+			fallthrough
+		default:
+			if !movie.Movie.Base.Proxy {
+				log.Errorf("proxy vendor movie error: %v", "not support movie proxy")
+				ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support movie proxy"))
+				return
+			} else {
+				err = proxyURL(ctx, data.URL, nil)
+				if err != nil {
+					log.Errorf("proxy vendor movie error: %v", err)
+				}
 			}
+
 		}
 
 		return
@@ -1092,7 +1099,7 @@ func proxyVendorMovie(ctx *gin.Context, movie *op.Movie) {
 }
 
 // user is the api requester
-func genVendorMovie(ctx context.Context, user *op.User, opMovie *op.Movie) (*dbModel.Movie, error) {
+func genVendorMovie(ctx context.Context, user *op.User, opMovie *op.Movie, userAgent string) (*dbModel.Movie, error) {
 	movie := *opMovie.Movie
 	var err error
 	switch movie.Base.VendorInfo.Vendor {
@@ -1152,12 +1159,17 @@ func genVendorMovie(ctx context.Context, user *op.User, opMovie *op.Movie) (*dbM
 		if err != nil {
 			return nil, err
 		}
-		data, err := opMovie.AlistCache().Get(ctx, creator.Value().AlistCache())
+		alistCache := opMovie.AlistCache()
+		data, err := alistCache.Get(ctx, &cache.AlistMovieCacheFuncArgs{
+			UserCache: creator.Value().AlistCache(),
+			UserAgent: utils.UA,
+		})
 		if err != nil {
 			return nil, err
 		}
 
-		if data.Ali != nil {
+		switch data.Provider {
+		case cache.AlistProviderAli:
 			rawPath, err := url.JoinPath("/api/movie/proxy", movie.RoomID, movie.ID)
 			if err != nil {
 				return nil, err
@@ -1177,19 +1189,44 @@ func genVendorMovie(ctx context.Context, user *op.User, opMovie *op.Movie) (*dbM
 					Type: utils.GetUrlExtension(s.Raw.Url),
 				}
 			}
-		} else if !movie.Base.Proxy {
-			movie.Base.Url = data.URL
-		} else {
-			rawPath, err := url.JoinPath("/api/movie/proxy", movie.RoomID, movie.ID)
-			if err != nil {
-				return nil, err
+		case cache.AlistProvider115:
+			if movie.Base.Proxy {
+				rawPath, err := url.JoinPath("/api/movie/proxy", movie.RoomID, movie.ID)
+				if err != nil {
+					return nil, err
+				}
+				u := url.URL{
+					Path: rawPath,
+				}
+				movie.Base.Url = u.String()
+				movie.Base.Type = utils.GetUrlExtension(data.URL)
+			} else {
+				data, err = alistCache.GetRefreshFunc()(ctx, &cache.AlistMovieCacheFuncArgs{
+					UserCache: creator.Value().AlistCache(),
+					UserAgent: userAgent,
+				})
+				if err != nil {
+					return nil, fmt.Errorf("refresh 115 movie cache error: %w", err)
+				}
+				movie.Base.Url = data.URL
 			}
-			u := url.URL{
-				Path: rawPath,
+
+		default:
+			if !movie.Base.Proxy {
+				movie.Base.Url = data.URL
+			} else {
+				rawPath, err := url.JoinPath("/api/movie/proxy", movie.RoomID, movie.ID)
+				if err != nil {
+					return nil, err
+				}
+				u := url.URL{
+					Path: rawPath,
+				}
+				movie.Base.Url = u.String()
+				movie.Base.Type = utils.GetUrlExtension(data.URL)
 			}
-			movie.Base.Url = u.String()
-			movie.Base.Type = utils.GetUrlExtension(data.URL)
 		}
+
 		movie.Base.VendorInfo.Alist.Password = ""
 		return &movie, nil
 

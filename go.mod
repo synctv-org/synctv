@@ -33,7 +33,7 @@ require (
 	github.com/sirupsen/logrus v1.9.3
 	github.com/soheilhy/cmux v0.1.5
 	github.com/spf13/cobra v1.8.0
-	github.com/synctv-org/vendors v0.3.3-0.20240416113343-ddc34bc4b8bb
+	github.com/synctv-org/vendors v0.3.3-0.20240418030630-39789ec55bd2
 	github.com/ulule/limiter/v3 v3.11.2
 	github.com/zencoder/go-dash/v3 v3.0.3
 	github.com/zijiren233/gencontainer v0.0.0-20240331174346-b5e420773df7

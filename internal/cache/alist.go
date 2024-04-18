@@ -76,15 +76,23 @@ func AlistAuthorizationCacheWithConfigInitFunc(ctx context.Context, v *model.Ali
 	}
 }
 
-type AlistMovieCache = refreshcache.RefreshCache[*AlistMovieCacheData, *AlistUserCache]
+type AlistMovieCache = refreshcache.RefreshCache[*AlistMovieCacheData, *AlistMovieCacheFuncArgs]
 
 func NewAlistMovieCache(movie *model.Movie) *AlistMovieCache {
 	return refreshcache.NewRefreshCache(NewAlistMovieCacheInitFunc(movie), time.Minute*14)
 }
 
+type AlistProvider = string
+
+const (
+	AlistProviderAli = "AliyundriveOpen"
+	AlistProvider115 = "115 Cloud"
+)
+
 type AlistMovieCacheData struct {
-	URL string
-	Ali *AlistAliCache
+	URL      string
+	Provider string
+	Ali      *AlistAliCache
 }
 
 type AlistAliCache struct {
@@ -142,9 +150,18 @@ func genAliM3U8ListFile(urls []*alist.FsOtherResp_VideoPreviewPlayInfo_LiveTrans
 	return buf.Bytes()
 }
 
-func NewAlistMovieCacheInitFunc(movie *model.Movie) func(ctx context.Context, args ...*AlistUserCache) (*AlistMovieCacheData, error) {
-	return func(ctx context.Context, args ...*AlistUserCache) (*AlistMovieCacheData, error) {
+type AlistMovieCacheFuncArgs struct {
+	UserCache *AlistUserCache
+	UserAgent string
+}
+
+func NewAlistMovieCacheInitFunc(movie *model.Movie) func(ctx context.Context, args ...*AlistMovieCacheFuncArgs) (*AlistMovieCacheData, error) {
+	return func(ctx context.Context, args ...*AlistMovieCacheFuncArgs) (*AlistMovieCacheData, error) {
 		if len(args) == 0 {
+			return nil, errors.New("need alist user cache")
+		}
+		userCache := args[0].UserCache
+		if userCache == nil {
 			return nil, errors.New("need alist user cache")
 		}
 		var (
@@ -156,7 +173,7 @@ func NewAlistMovieCacheInitFunc(movie *model.Movie) func(ctx context.Context, ar
 		if err != nil {
 			return nil, err
 		}
-		aucd, err := args[0].LoadOrStore(ctx, serverID)
+		aucd, err := userCache.LoadOrStore(ctx, serverID)
 		if err != nil {
 			return nil, err
 		}
@@ -165,10 +182,11 @@ func NewAlistMovieCacheInitFunc(movie *model.Movie) func(ctx context.Context, ar
 		}
 		cli := vendor.LoadAlistClient(movie.Base.VendorInfo.Backend)
 		fg, err := cli.FsGet(ctx, &alist.FsGetReq{
-			Host:     aucd.Host,
-			Token:    aucd.Token,
-			Path:     truePath,
-			Password: movie.Base.VendorInfo.Alist.Password,
+			Host:      aucd.Host,
+			Token:     aucd.Token,
+			Path:      truePath,
+			Password:  movie.Base.VendorInfo.Alist.Password,
+			UserAgent: args[0].UserAgent,
 		})
 		if err != nil {
 			return nil, err
@@ -179,9 +197,10 @@ func NewAlistMovieCacheInitFunc(movie *model.Movie) func(ctx context.Context, ar
 		}
 
 		cache := &AlistMovieCacheData{
-			URL: fg.RawUrl,
+			URL:      fg.RawUrl,
+			Provider: fg.Provider,
 		}
-		if fg.Provider == "AliyundriveOpen" {
+		if fg.Provider == AlistProviderAli {
 			fo, err := cli.FsOther(ctx, &alist.FsOtherReq{
 				Host:     aucd.Host,
 				Token:    aucd.Token,

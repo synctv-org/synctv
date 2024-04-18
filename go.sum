@@ -392,6 +392,8 @@ github.com/synctv-org/vendors v0.3.3-0.20240415060029-ef65de81bf8a h1:ikBOrImiBE
 github.com/synctv-org/vendors v0.3.3-0.20240415060029-ef65de81bf8a/go.mod h1:WlKzamZ0Nfim/8983x9EQLN1FuxbNS8+n9yTSmMIO+8=
 github.com/synctv-org/vendors v0.3.3-0.20240416113343-ddc34bc4b8bb h1:PbwjtwbhlaGBtbu4fFtnLB1FsAv5sDqeZ7k6szQ0TIA=
 github.com/synctv-org/vendors v0.3.3-0.20240416113343-ddc34bc4b8bb/go.mod h1:ysM3NZawuFF+zTwc1Qz70UcHA0b5uE0aIsrSvHybowE=
+github.com/synctv-org/vendors v0.3.3-0.20240418030630-39789ec55bd2 h1:ReE/Mz7Ycipo70yRn1DbMCXfq+dgTHLj3Rqugnit1lU=
+github.com/synctv-org/vendors v0.3.3-0.20240418030630-39789ec55bd2/go.mod h1:ysM3NZawuFF+zTwc1Qz70UcHA0b5uE0aIsrSvHybowE=
 github.com/tetratelabs/wazero v1.7.0 h1:jg5qPydno59wqjpGrHph81lbtHzTrWzwwtD4cD88+hQ=
 github.com/tetratelabs/wazero v1.7.0/go.mod h1:ytl6Zuh20R/eROuyDaGPkp82O9C/DJfXAwJfQ3X6/7Y=
 github.com/tv42/httpunix v0.0.0-20150427012821-b75d8614f926/go.mod h1:9ESjWnEqriFuLhtthL60Sar/7RFoluCcXsuvEwTV5KM=

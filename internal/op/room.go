@@ -502,6 +502,9 @@ func (r *Room) BanMember(userID string) error {
 	if r.IsCreator(userID) {
 		return errors.New("you are creator, cannot ban")
 	}
+	if r.IsGuest(userID) {
+		return errors.New("cannot ban guest")
+	}
 	defer func() {
 		r.members.Delete(userID)
 		_ = r.KickUser(userID)

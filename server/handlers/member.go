@@ -81,9 +81,11 @@ func RoomMembers(ctx *gin.Context) {
 	}
 	scopes = append(scopes, func(db *gorm.DB) *gorm.DB {
 		return db.
-			InnerJoins("JOIN room_members ON users.id = room_members.user_id AND room_members.room_id = ?", room.ID).
+			InnerJoins("JOIN room_members ON users.id = room_members.user_id").
 			Where("room_members.room_id = ?", room.ID)
-	}, db.PreloadRoomMembers())
+	}, db.PreloadRoomMembers(
+		db.WhereRoomID(room.ID),
+	))
 
 	total, err := db.GetAllUserCount(scopes...)
 	if err != nil {
@@ -182,9 +184,11 @@ func RoomAdminMembers(ctx *gin.Context) {
 	}
 	scopes = append(scopes, func(db *gorm.DB) *gorm.DB {
 		return db.
-			InnerJoins("JOIN room_members ON users.id = room_members.user_id AND room_members.room_id = ?", room.ID).
+			InnerJoins("JOIN room_members ON users.id = room_members.user_id").
 			Where("room_members.room_id = ?", room.ID)
-	}, db.PreloadRoomMembers())
+	}, db.PreloadRoomMembers(
+		db.WhereRoomID(room.ID),
+	))
 
 	total, err := db.GetAllUserCount(scopes...)
 	if err != nil {

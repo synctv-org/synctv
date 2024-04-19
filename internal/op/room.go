@@ -538,6 +538,9 @@ func (r *Room) ResetAdminPermissions(userID string) error {
 }
 
 func (r *Room) SetAdminPermissions(userID string, permissions model.RoomAdminPermission) error {
+	if r.IsCreator(userID) {
+		return errors.New("you are creator, cannot set admin permissions")
+	}
 	if r.IsGuest(userID) {
 		return errors.New("cannot set admin permissions to guest")
 	}
@@ -551,6 +554,9 @@ func (r *Room) SetAdminPermissions(userID string, permissions model.RoomAdminPer
 }
 
 func (r *Room) AddAdminPermissions(userID string, permissions model.RoomAdminPermission) error {
+	if r.IsCreator(userID) {
+		return errors.New("you are creator, cannot add admin permissions")
+	}
 	if r.IsGuest(userID) {
 		return errors.New("cannot add admin permissions to guest")
 	}
@@ -564,6 +570,9 @@ func (r *Room) AddAdminPermissions(userID string, permissions model.RoomAdminPer
 }
 
 func (r *Room) RemoveAdminPermissions(userID string, permissions model.RoomAdminPermission) error {
+	if r.IsCreator(userID) {
+		return errors.New("you are creator, cannot remove admin permissions")
+	}
 	if r.IsGuest(userID) {
 		return errors.New("cannot remove admin permissions from guest")
 	}

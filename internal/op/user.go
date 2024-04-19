@@ -88,6 +88,9 @@ func (u *User) CreateRoom(name, password string, conf ...db.CreateRoomConfig) (*
 		if password == "" && settings.RoomMustNeedPwd.Get() {
 			return nil, errors.New("room must need password")
 		}
+		if password != "" && settings.RoomMustNoNeedPwd.Get() {
+			return nil, errors.New("room must no need password")
+		}
 		if settings.CreateRoomNeedReview.Get() {
 			conf = append(conf, db.WithStatus(model.RoomStatusPending))
 		} else {
@@ -233,8 +236,13 @@ func (u *User) SetRoomPassword(room *Room, password string) error {
 	if !u.HasRoomAdminPermission(room, model.PermissionSetRoomPassword) {
 		return model.ErrNoPermission
 	}
-	if !u.IsAdmin() && password == "" && settings.RoomMustNeedPwd.Get() {
-		return errors.New("room must need password")
+	if !u.IsAdmin() {
+		if password == "" && settings.RoomMustNeedPwd.Get() {
+			return errors.New("room must need password")
+		}
+		if password != "" && settings.RoomMustNoNeedPwd.Get() {
+			return errors.New("room must no need password")
+		}
 	}
 	return room.SetPassword(password)
 }

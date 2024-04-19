@@ -9,11 +9,37 @@ import (
 
 var (
 	DisableCreateRoom    = NewBoolSetting("disable_create_room", false, model.SettingGroupRoom)
-	RoomMustNeedPwd      = NewBoolSetting("room_must_need_pwd", false, model.SettingGroupRoom)
+	RoomMustNeedPwd      BoolSetting
+	RoomMustNoNeedPwd    BoolSetting
 	CreateRoomNeedReview = NewBoolSetting("create_room_need_review", false, model.SettingGroupRoom)
 	// 48 hours
 	RoomTTL = NewInt64Setting("room_ttl", 48, model.SettingGroupRoom)
 )
+
+func init() {
+	RoomMustNeedPwd = NewBoolSetting(
+		"room_must_need_pwd",
+		false,
+		model.SettingGroupRoom,
+		WithBeforeSetBool(func(bs BoolSetting, b bool) (bool, error) {
+			if b && RoomMustNoNeedPwd.Get() {
+				return false, errors.New("room_must_need_pwd and room_must_no_need_pwd can't be true at the same time")
+			}
+			return b, nil
+		}),
+	)
+	RoomMustNoNeedPwd = NewBoolSetting(
+		"room_must_no_need_pwd",
+		false,
+		model.SettingGroupRoom,
+		WithBeforeSetBool(func(bs BoolSetting, b bool) (bool, error) {
+			if b && RoomMustNeedPwd.Get() {
+				return false, errors.New("room_must_need_pwd and room_must_no_need_pwd can't be true at the same time")
+			}
+			return b, nil
+		}),
+	)
+}
 
 var (
 	DisableUserSignup = NewBoolSetting("disable_user_signup", false, model.SettingGroupUser)

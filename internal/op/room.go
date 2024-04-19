@@ -206,23 +206,26 @@ func (r *Room) LoadOrCreateRoomMember(userID string) (*model.RoomMember, error) 
 		conf = append(
 			conf,
 			db.WithRoomMemberStatus(model.RoomMemberStatusActive),
-			db.WithRoomMemberRelationPermissions(model.AllPermissions),
+			db.WithRoomMemberPermissions(model.AllPermissions),
 			db.WithRoomMemberRole(model.RoomMemberRoleCreator),
 			db.WithRoomMemberAdminPermissions(model.AllAdminPermissions),
 		)
-	} else if r.IsGuest(userID) {
-		conf = append(
-			conf,
-			db.WithRoomMemberStatus(model.RoomMemberStatusActive),
-			db.WithRoomMemberRelationPermissions(model.NoPermission),
-			db.WithRoomMemberRole(model.RoomMemberRoleMember),
-			db.WithRoomMemberAdminPermissions(model.NoAdminPermission),
-		)
 	} else {
-		conf = append(
-			conf,
-			db.WithRoomMemberRelationPermissions(r.Settings.UserDefaultPermissions),
-		)
+		if r.IsGuest(userID) {
+			conf = append(
+				conf,
+				db.WithRoomMemberPermissions(model.NoPermission),
+				db.WithRoomMemberRole(model.RoomMemberRoleMember),
+				db.WithRoomMemberAdminPermissions(model.NoAdminPermission),
+			)
+		} else {
+			conf = append(
+				conf,
+				db.WithRoomMemberPermissions(r.Settings.UserDefaultPermissions),
+				db.WithRoomMemberRole(model.RoomMemberRoleMember),
+				db.WithRoomMemberAdminPermissions(model.NoAdminPermission),
+			)
+		}
 		if r.Settings.JoinNeedReview {
 			conf = append(conf, db.WithRoomMemberStatus(model.RoomMemberStatusPending))
 		} else {
@@ -242,7 +245,9 @@ func (r *Room) LoadOrCreateRoomMember(userID string) (*model.RoomMember, error) 
 		member.Role = model.RoomMemberRoleMember
 		member.Permissions = model.NoPermission
 		member.AdminPermissions = model.NoAdminPermission
-		member.Status = model.RoomMemberStatusActive
+		if member.Status.IsBanned() {
+			member.Status = model.RoomMemberStatusActive
+		}
 	} else if member.Role.IsAdmin() {
 		member.Permissions = model.AllPermissions
 	}
@@ -271,7 +276,9 @@ func (r *Room) LoadRoomMember(userID string) (*model.RoomMember, error) {
 		member.Role = model.RoomMemberRoleMember
 		member.Permissions = model.NoPermission
 		member.AdminPermissions = model.NoAdminPermission
-		member.Status = model.RoomMemberStatusActive
+		if member.Status.IsBanned() {
+			member.Status = model.RoomMemberStatusActive
+		}
 	} else if member.Role.IsAdmin() {
 		member.Permissions = model.AllPermissions
 	}

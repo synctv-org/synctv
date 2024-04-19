@@ -21,7 +21,7 @@ func WithRoomMemberRole(role model.RoomMemberRole) CreateRoomMemberRelationConfi
 	}
 }
 
-func WithRoomMemberRelationPermissions(permissions model.RoomMemberPermission) CreateRoomMemberRelationConfig {
+func WithRoomMemberPermissions(permissions model.RoomMemberPermission) CreateRoomMemberRelationConfig {
 	return func(r *model.RoomMember) {
 		r.Permissions = permissions
 	}

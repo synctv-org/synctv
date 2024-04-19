@@ -81,7 +81,7 @@ func RoomMembers(ctx *gin.Context) {
 	}
 	scopes = append(scopes, func(db *gorm.DB) *gorm.DB {
 		return db.
-			InnerJoins("JOIN room_members ON users.id = room_members.user_id").
+			InnerJoins("JOIN room_members ON users.id = room_members.user_id AND room_members.room_id = ?", room.ID).
 			Where("room_members.room_id = ?", room.ID)
 	}, db.PreloadRoomMembers())
 
@@ -182,7 +182,7 @@ func RoomAdminMembers(ctx *gin.Context) {
 	}
 	scopes = append(scopes, func(db *gorm.DB) *gorm.DB {
 		return db.
-			InnerJoins("JOIN room_members ON users.id = room_members.user_id").
+			InnerJoins("JOIN room_members ON users.id = room_members.user_id AND room_members.room_id = ?", room.ID).
 			Where("room_members.room_id = ?", room.ID)
 	}, db.PreloadRoomMembers())
 

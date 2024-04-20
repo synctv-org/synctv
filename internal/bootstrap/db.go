@@ -11,6 +11,7 @@ import (
 	"github.com/synctv-org/synctv/cmd/flags"
 	"github.com/synctv-org/synctv/internal/conf"
 	"github.com/synctv-org/synctv/internal/db"
+	sysnotify "github.com/synctv-org/synctv/internal/sysNotify"
 	"github.com/synctv-org/synctv/internal/version"
 	"github.com/synctv-org/synctv/utils"
 	"gorm.io/driver/mysql"
@@ -40,6 +41,12 @@ func InitDatabase(ctx context.Context) (err error) {
 	sqlDB, err := d.DB()
 	if err != nil {
 		log.Fatalf("failed to get sqlDB: %s", err.Error())
+	}
+	err = sysnotify.RegisterSysNotifyTask(0, sysnotify.NewSysNotifyTask("database", sysnotify.NotifyTypeEXIT, func() error {
+		return sqlDB.Close()
+	}))
+	if err != nil {
+		log.Fatalf("failed to register sysnotify task: %s", err.Error())
 	}
 	if conf.Conf.Database.Type != conf.DatabaseTypeSqlite3 {
 		initRawDB(sqlDB)

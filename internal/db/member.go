@@ -127,13 +127,15 @@ func RoomRemoveAdminPermissions(roomID, userID string, permissions model.RoomAdm
 func RoomSetAdmin(roomID, userID string, permissions model.RoomAdminPermission) error {
 	return db.Model(&model.RoomMember{}).Where("room_id = ? AND user_id = ?", roomID, userID).Updates(map[string]interface{}{
 		"role":              model.RoomMemberRoleAdmin,
+		"permissions":       model.AllPermissions,
 		"admin_permissions": permissions,
 	}).Error
 }
 
 func RoomSetMember(roomID, userID string, permissions model.RoomMemberPermission) error {
 	return db.Model(&model.RoomMember{}).Where("room_id = ? AND user_id = ?", roomID, userID).Updates(map[string]interface{}{
-		"role":        model.RoomMemberRoleMember,
-		"permissions": permissions,
+		"role":              model.RoomMemberRoleMember,
+		"permissions":       permissions,
+		"admin_permissions": model.NoAdminPermission,
 	}).Error
 }

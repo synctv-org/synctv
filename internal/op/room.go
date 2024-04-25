@@ -485,19 +485,19 @@ func (r *Room) SetMemberPermissions(userID string, permissions model.RoomMemberP
 }
 
 func (r *Room) AddMemberPermissions(userID string, permissions model.RoomMemberPermission) error {
-	if r.IsCreator(userID) {
-		return errors.New("you are creator, cannot add permissions")
-	}
 	if r.IsGuest(userID) {
 		return errors.New("cannot add permissions to guest")
+	}
+	if r.IsAdmin(userID) {
+		return errors.New("cannot add permissions to admin")
 	}
 	defer r.members.Delete(userID)
 	return db.AddMemberPermissions(r.ID, userID, permissions)
 }
 
 func (r *Room) RemoveMemberPermissions(userID string, permissions model.RoomMemberPermission) error {
-	if r.IsCreator(userID) {
-		return errors.New("you are creator, cannot remove permissions")
+	if r.IsAdmin(userID) {
+		return errors.New("cannot remove permissions from admin")
 	}
 	defer r.members.Delete(userID)
 	return db.RemoveMemberPermissions(r.ID, userID, permissions)

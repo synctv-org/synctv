@@ -1,6 +1,7 @@
 package op
 
 import (
+	"database/sql"
 	"errors"
 	"hash/crc32"
 	"sync/atomic"
@@ -443,7 +444,10 @@ func (u *User) BindEmail(e string) error {
 	if err != nil {
 		return err
 	}
-	u.Email = e
+	u.Email = sql.NullString{
+		String: e,
+		Valid:  true,
+	}
 	return nil
 }
 
@@ -452,30 +456,30 @@ func (u *User) UnbindEmail() error {
 	if err != nil {
 		return err
 	}
-	u.Email = ""
+	u.Email = sql.NullString{}
 	return nil
 }
 
 var ErrEmailUnbound = errors.New("email unbound")
 
 func (u *User) SendTestEmail() error {
-	if u.Email == "" {
+	if u.Email.String == "" {
 		return ErrEmailUnbound
 	}
 
-	return email.SendTestEmail(u.Username, u.Email)
+	return email.SendTestEmail(u.Username, u.Email.String)
 }
 
 func (u *User) SendRetrievePasswordCaptchaEmail(host string) error {
-	if u.Email == "" {
+	if u.Email.String == "" {
 		return ErrEmailUnbound
 	}
 
-	return email.SendRetrievePasswordCaptchaEmail(u.ID, u.Email, host)
+	return email.SendRetrievePasswordCaptchaEmail(u.ID, u.Email.String, host)
 }
 
 func (u *User) VerifyRetrievePasswordCaptchaEmail(e, captcha string) (bool, error) {
-	if u.Email != e {
+	if u.Email.String != e {
 		return false, errors.New("email has changed, please resend the captcha email")
 	}
 	return email.VerifyRetrievePasswordCaptchaEmail(u.ID, e, captcha)

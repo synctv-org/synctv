@@ -1,6 +1,7 @@
 package model
 
 import (
+	"database/sql"
 	"fmt"
 	"math/rand"
 	"time"
@@ -47,7 +48,7 @@ type User struct {
 	UserProviders        []*UserProvider `gorm:"foreignKey:UserID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 	Username             string          `gorm:"not null;uniqueIndex;type:varchar(32)"`
 	HashedPassword       []byte          `gorm:"not null"`
-	Email                string          `gorm:"type:varchar(128);uniqueIndex:,where:email <> ''"`
+	Email                sql.NullString  `gorm:"type:varchar(128);uniqueIndex"`
 	Role                 Role            `gorm:"not null;default:2"`
 	RoomMembers          []*RoomMember   `gorm:"foreignKey:UserID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 	Rooms                []*Room         `gorm:"foreignKey:CreatorID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`

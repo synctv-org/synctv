@@ -32,7 +32,7 @@ func Me(ctx *gin.Context) {
 		Username:  user.Username,
 		Role:      user.Role,
 		CreatedAt: user.CreatedAt.UnixMilli(),
-		Email:     user.Email,
+		Email:     user.Email.String,
 	}))
 }
 
@@ -304,7 +304,7 @@ func SendUserBindEmailCaptcha(ctx *gin.Context) {
 		return
 	}
 
-	if user.Email == req.Email {
+	if user.Email.String == req.Email {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("this email same as current email"))
 		return
 	}

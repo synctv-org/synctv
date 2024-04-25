@@ -49,8 +49,10 @@ const (
 )
 
 func initGuestUser() error {
-	user := model.User{}
-	err := db.Where("id = ?", GuestUserID).First(&user).Error
+	user := model.User{
+		ID: GuestUserID,
+	}
+	err := db.First(&user).Error
 	if err == nil || !errors.Is(err, gorm.ErrRecordNotFound) {
 		return err
 	}

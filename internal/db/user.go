@@ -1,6 +1,7 @@
 package db
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 
@@ -65,7 +66,10 @@ func WithRegisteredByProvider(b bool) CreateUserConfig {
 
 func WithEmail(email string) CreateUserConfig {
 	return func(u *model.User) {
-		u.Email = email
+		u.Email = sql.NullString{
+			String: email,
+			Valid:  true,
+		}
 	}
 }
 
@@ -424,7 +428,10 @@ func SetUserHashedPassword(id string, hashedPassword []byte) error {
 }
 
 func BindEmail(id string, email string) error {
-	err := db.Model(&model.User{}).Where("id = ?", id).Update("email", email).Error
+	err := db.Model(&model.User{}).Where("id = ?", id).Update("email", sql.NullString{
+		String: email,
+		Valid:  true,
+	}).Error
 	return HandleNotFound(err, "user")
 }
 
@@ -434,12 +441,12 @@ func UnbindEmail(uid string) error {
 		if err := tx.Where("id = ?", uid).First(&user).Error; err != nil {
 			return HandleNotFound(err, "user")
 		}
-		if user.Email == "" {
+		if user.Email.String == "" {
 			return errors.New("user has no email")
 		}
 		if user.RegisteredByEmail {
 			return errors.New("user must have one email")
 		}
-		return tx.Model(&model.User{}).Where("id = ?", uid).Update("email", "").Error
+		return tx.Model(&model.User{}).Where("id = ?", uid).Update("email", sql.NullString{}).Error
 	})
 }

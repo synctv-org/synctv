@@ -78,3 +78,11 @@ func (e *grpcEmby) Logout(ctx context.Context, req *emby.LogoutReq) (*emby.Empty
 func (e *grpcEmby) Me(ctx context.Context, req *emby.MeReq) (*emby.MeResp, error) {
 	return e.client.Me(ctx, req)
 }
+
+func (e *grpcEmby) PlaybackInfo(ctx context.Context, req *emby.PlaybackInfoReq) (*emby.PlaybackInfoResp, error) {
+	return e.client.PlaybackInfo(ctx, req)
+}
+
+func (e *grpcEmby) DeleteActiveEncodeings(ctx context.Context, req *emby.DeleteActiveEncodeingsReq) (*emby.Empty, error) {
+	return e.client.DeleteActiveEncodeings(ctx, req)
+}

@@ -387,6 +387,17 @@ func (r *Room) CheckCurrentExpired(expireId uint64) (bool, error) {
 }
 
 func (r *Room) SetCurrentMovie(movieID string, play bool) error {
+	currentMovie, err := r.CurrentMovie()
+	if err != nil {
+		if err != ErrNoCurrentMovie {
+			return err
+		}
+	} else {
+		err = currentMovie.ClearCache()
+		if err != nil {
+			return fmt.Errorf("clear cache failed: %w", err)
+		}
+	}
 	if movieID == "" {
 		r.current.SetMovie("", false, play)
 		return nil

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 
+	log "github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/vendor"
@@ -23,6 +24,7 @@ type EmbyUserCacheData struct {
 	Host     string
 	ServerID string
 	ApiKey   string
+	UserID   string
 	Backend  string
 }
 
@@ -47,14 +49,16 @@ func EmbyAuthorizationCacheWithUserIDInitFunc(userID, serverID string) (*EmbyUse
 		Host:     v.Host,
 		ServerID: v.ServerID,
 		ApiKey:   v.ApiKey,
+		UserID:   v.UserID,
 		Backend:  v.Backend,
 	}, nil
 }
 
 type EmbySource struct {
 	URLs []struct {
-		URL  string
-		Name string
+		URL         string
+		IsTranscode bool
+		Name        string
 	}
 	Subtitles []struct {
 		URL   string
@@ -65,13 +69,52 @@ type EmbySource struct {
 }
 
 type EmbyMovieCacheData struct {
-	Sources []EmbySource
+	Sources            []EmbySource
+	TranscodeSessionID string
 }
 
 type EmbyMovieCache = refreshcache.RefreshCache[*EmbyMovieCacheData, *EmbyUserCache]
 
 func NewEmbyMovieCache(movie *model.Movie) *EmbyMovieCache {
-	return refreshcache.NewRefreshCache(NewEmbyMovieCacheInitFunc(movie), 0)
+	cache := refreshcache.NewRefreshCache(NewEmbyMovieCacheInitFunc(movie), 0)
+	cache.SetClearFunc(NewEmbyMovieClearCacheFunc(movie))
+	return cache
+}
+
+func NewEmbyMovieClearCacheFunc(movie *model.Movie) func(ctx context.Context, args ...*EmbyUserCache) error {
+	return func(ctx context.Context, args ...*MapCache[*EmbyUserCacheData, struct{}]) error {
+		if !movie.Base.VendorInfo.Emby.Transcode {
+			return nil
+		}
+
+		serverID, _, err := model.GetEmbyServerIdFromPath(movie.Base.VendorInfo.Emby.Path)
+		if err != nil {
+			return err
+		}
+
+		oldVal, ok := ctx.Value(refreshcache.OldValKey).(*EmbyMovieCacheData)
+		if !ok {
+			return nil
+		}
+
+		aucd, err := args[0].LoadOrStore(ctx, serverID)
+		if err != nil {
+			return err
+		}
+		if aucd.Host == "" || aucd.ApiKey == "" {
+			return errors.New("not bind emby vendor")
+		}
+		cli := vendor.LoadEmbyClient(aucd.Backend)
+		_, err = cli.DeleteActiveEncodeings(ctx, &emby.DeleteActiveEncodeingsReq{
+			Host:          aucd.Host,
+			Token:         aucd.ApiKey,
+			PalySessionId: oldVal.TranscodeSessionID,
+		})
+		if err != nil {
+			log.Errorf("delete active encodeings: %v", err)
+		}
+		return nil
+	}
 }
 
 func NewEmbyMovieCacheInitFunc(movie *model.Movie) func(ctx context.Context, args ...*EmbyUserCache) (*EmbyMovieCacheData, error) {
@@ -97,51 +140,72 @@ func NewEmbyMovieCacheInitFunc(movie *model.Movie) func(ctx context.Context, arg
 		if aucd.Host == "" || aucd.ApiKey == "" {
 			return nil, errors.New("not bind emby vendor")
 		}
+		cli := vendor.LoadEmbyClient(aucd.Backend)
+		data, err := cli.PlaybackInfo(ctx, &emby.PlaybackInfoReq{
+			Host:   aucd.Host,
+			Token:  aucd.ApiKey,
+			UserId: aucd.UserID,
+			ItemId: truePath,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("playback info: %w", err)
+		}
+		var resp EmbyMovieCacheData = EmbyMovieCacheData{
+			Sources:            make([]EmbySource, len(data.MediaSourceInfo)),
+			TranscodeSessionID: data.PlaySessionID,
+		}
 		u, err := url.Parse(aucd.Host)
 		if err != nil {
 			return nil, err
 		}
-		cli := vendor.LoadEmbyClient(aucd.Backend)
-		data, err := cli.GetItem(ctx, &emby.GetItemReq{
-			Host:   aucd.Host,
-			Token:  aucd.ApiKey,
-			ItemId: truePath,
-		})
-		if err != nil {
-			return nil, err
-		}
-		if data.IsFolder {
-			return nil, errors.New("path is dir")
-		}
-		var resp EmbyMovieCacheData = EmbyMovieCacheData{
-			Sources: make([]EmbySource, len(data.MediaSourceInfo)),
-		}
 		for i, v := range data.MediaSourceInfo {
-			if v.Container == "" {
-				continue
+			if movie.Base.VendorInfo.Emby.Transcode && v.TranscodingUrl != "" {
+				resp.Sources[i].URLs = append(resp.Sources[i].URLs, struct {
+					URL         string
+					IsTranscode bool
+					Name        string
+				}{
+					URL:         fmt.Sprintf("%s/emby%s", aucd.Host, v.TranscodingUrl),
+					Name:        v.Name,
+					IsTranscode: true,
+				})
+			} else if v.DirectPlayUrl != "" {
+				resp.Sources[i].URLs = append(resp.Sources[i].URLs, struct {
+					URL         string
+					IsTranscode bool
+					Name        string
+				}{
+					URL:  fmt.Sprintf("%s/emby%s", aucd.Host, v.DirectPlayUrl),
+					Name: v.Name,
+				})
+			} else {
+				if v.Container == "" {
+					continue
+				}
+				result, err := url.JoinPath("emby", "Videos", truePath, fmt.Sprintf("stream.%s", v.Container))
+				if err != nil {
+					return nil, err
+				}
+				u.Path = result
+				query := url.Values{}
+				query.Set("api_key", aucd.ApiKey)
+				query.Set("Static", "true")
+				query.Set("MediaSourceId", v.Id)
+				u.RawQuery = query.Encode()
+				resp.Sources[i].URLs = append(resp.Sources[i].URLs, struct {
+					URL         string
+					IsTranscode bool
+					Name        string
+				}{
+					URL:  u.String(),
+					Name: v.Name,
+				})
 			}
-			result, err := url.JoinPath("emby", "Videos", data.Id, fmt.Sprintf("stream.%s", v.Container))
-			if err != nil {
-				return nil, err
-			}
-			u.Path = result
-			query := url.Values{}
-			query.Set("api_key", aucd.ApiKey)
-			query.Set("Static", "true")
-			query.Set("MediaSourceId", v.Id)
-			u.RawQuery = query.Encode()
-			resp.Sources[i].URLs = append(resp.Sources[i].URLs, struct {
-				URL  string
-				Name string
-			}{
-				URL:  u.String(),
-				Name: v.Name,
-			})
 			for _, msi := range v.MediaStreamInfo {
 				switch msi.Type {
 				case "Subtitle":
 					subtutleType := "srt"
-					result, err = url.JoinPath("emby", "Videos", data.Id, v.Id, "Subtitles", fmt.Sprintf("%d", msi.Index), fmt.Sprintf("Stream.%s", subtutleType))
+					result, err := url.JoinPath("emby", "Videos", truePath, v.Id, "Subtitles", fmt.Sprintf("%d", msi.Index), fmt.Sprintf("Stream.%s", subtutleType))
 					if err != nil {
 						return nil, err
 					}

@@ -1040,6 +1040,10 @@ func proxyVendorMovie(ctx *gin.Context, movie *op.Movie) {
 				ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("id out of range"))
 				return
 			}
+			if embyC.Sources[source].URLs[id].IsTranscode {
+				ctx.Redirect(http.StatusFound, embyC.Sources[source].URLs[id].URL)
+				return
+			}
 			err = proxyURL(ctx, embyC.Sources[source].URLs[id].URL, nil)
 			if err != nil {
 				log.Errorf("proxy vendor movie error: %v", err)

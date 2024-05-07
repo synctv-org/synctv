@@ -1,6 +1,7 @@
 package op
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"hash/crc32"
@@ -56,7 +57,7 @@ func (m *Movie) CheckExpired(expireId uint64) bool {
 	}
 }
 
-func (m *Movie) ClearCache() {
+func (m *Movie) ClearCache() error {
 	m.alistCache.Store(nil)
 
 	bmc := m.bilibiliCache.Swap(nil)
@@ -64,7 +65,19 @@ func (m *Movie) ClearCache() {
 		bmc.NoSharedMovie.Clear()
 	}
 
-	m.embyCache.Store(nil)
+	emc := m.embyCache.Swap(nil)
+	if emc != nil {
+		u, err := LoadOrInitUserByID(m.CreatorID)
+		if err != nil {
+			return err
+		}
+		err = emc.Clear(context.Background(), u.Value().EmbyCache())
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func (m *Movie) AlistCache() *cache.AlistMovieCache {

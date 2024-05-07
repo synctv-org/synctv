@@ -136,7 +136,8 @@ func (a *AlistStreamingInfo) AfterFind(tx *gorm.DB) error {
 
 type EmbyStreamingInfo struct {
 	// {/}serverId/ItemId
-	Path string `gorm:"type:varchar(52)" json:"path,omitempty"`
+	Path      string `gorm:"type:varchar(52)" json:"path,omitempty"`
+	Transcode bool   `json:"transcode,omitempty"`
 }
 
 func GetEmbyServerIdFromPath(path string) (serverID string, filePath string, err error) {

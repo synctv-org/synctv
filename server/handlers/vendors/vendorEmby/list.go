@@ -136,6 +136,7 @@ EmbyFSListResp:
 		Host:       aucd.Host,
 		Path:       req.Path,
 		Token:      aucd.ApiKey,
+		UserId:     aucd.UserID,
 		Limit:      uint64(size),
 		StartIndex: uint64((page - 1) * size),
 		SearchTerm: req.Keywords,

@@ -115,7 +115,7 @@ func Logout(ctx *gin.Context) {
 	}
 
 	if rc, ok := user.AlistCache().LoadCache(req.ServerID); ok {
-		rc.Clear()
+		rc.Clear(ctx)
 	}
 
 	ctx.Status(http.StatusNoContent)

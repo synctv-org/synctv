@@ -93,6 +93,7 @@ func Login(ctx *gin.Context) {
 			ServerID: key,
 			ApiKey:   data.Token,
 			Backend:  backend,
+			UserID:   data.UserId,
 		}, nil
 	})
 	if err != nil {

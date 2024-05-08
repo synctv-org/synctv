@@ -41,6 +41,8 @@ func Init(e *gin.Engine) {
 
 	needAuthRoomApi := api.Group("", middlewares.AuthRoomMiddleware)
 
+	needAuthRoomWithoutGuestApi := api.Group("", middlewares.AuthRoomWithoutGuestMiddleware)
+
 	{
 		public := api.Group("/public")
 
@@ -58,10 +60,11 @@ func Init(e *gin.Engine) {
 
 	{
 		room := api.Group("/room")
-		needAuthRoom := needAuthRoomApi.Group("/room")
 		needAuthUser := needAuthUserApi.Group("/room")
+		needAuthRoom := needAuthRoomApi.Group("/room")
+		needAuthRoomWithoutGuest := needAuthRoomWithoutGuestApi.Group("/room")
 
-		initRoom(room, needAuthUser, needAuthRoom)
+		initRoom(room, needAuthUser, needAuthRoom, needAuthRoomWithoutGuest)
 	}
 
 	{
@@ -160,7 +163,7 @@ func initAdmin(admin *gin.RouterGroup, root *gin.RouterGroup) {
 	}
 }
 
-func initRoom(room *gin.RouterGroup, needAuthUser *gin.RouterGroup, needAuthRoom *gin.RouterGroup) {
+func initRoom(room *gin.RouterGroup, needAuthUser *gin.RouterGroup, needAuthRoom *gin.RouterGroup, needAuthWithoutGuestRoom *gin.RouterGroup) {
 	room.GET("/ws", NewWebSocketHandler(utils.NewWebSocketServer()))
 
 	room.GET("/check", CheckRoom)
@@ -177,9 +180,9 @@ func initRoom(room *gin.RouterGroup, needAuthUser *gin.RouterGroup, needAuthRoom
 
 	needAuthRoom.GET("/me", RoomMe)
 
-	needAuthRoom.GET("/settings", RoomPiblicSettings)
+	needAuthWithoutGuestRoom.GET("/settings", RoomPiblicSettings)
 
-	needAuthRoom.GET("/members", RoomMembers)
+	needAuthWithoutGuestRoom.GET("/members", RoomMembers)
 
 	{
 		needAuthRoomAdmin := needAuthRoom.Group("/admin", middlewares.AuthRoomAdminMiddleware)

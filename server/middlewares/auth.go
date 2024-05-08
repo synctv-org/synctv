@@ -292,6 +292,19 @@ func AuthRoomMiddleware(ctx *gin.Context) {
 	log.Data["uro"] = user.Role.String()
 }
 
+func AuthRoomWithoutGuestMiddleware(ctx *gin.Context) {
+	AuthRoomMiddleware(ctx)
+	if ctx.IsAborted() {
+		return
+	}
+
+	user := ctx.MustGet("user").(*synccache.Entry[*op.User]).Value()
+	if user.IsGuest() {
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("guest is no permission"))
+		return
+	}
+}
+
 func AuthRoomAdminMiddleware(ctx *gin.Context) {
 	AuthRoomMiddleware(ctx)
 	if ctx.IsAborted() {

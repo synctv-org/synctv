@@ -13,6 +13,7 @@ import (
 	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/vendor"
+	"github.com/synctv-org/synctv/utils"
 	"github.com/synctv-org/vendors/api/alist"
 	"github.com/zijiren233/gencontainer/refreshcache"
 	"github.com/zijiren233/go-uhc"
@@ -90,33 +91,34 @@ const (
 	AlistProvider115 = "115 Cloud"
 )
 
+type AlistSubtitle struct {
+	Name  string
+	URL   string
+	Type  string
+	Cache *SubtitleDataCache
+}
+
 type AlistMovieCacheData struct {
 	URL       string
-	Subtitles map[string]string
+	Subtitles []*AlistSubtitle
 	Provider  string
 	Ali       *AlistAliCache
 }
 
 type AlistAliCache struct {
 	M3U8ListFile []byte
-	Subtitles    []*AliSubtitle
 }
 
-type AliSubtitle struct {
-	Raw   *alist.FsOtherResp_VideoPreviewPlayInfo_LiveTranscodingSubtitleTaskList
-	Cache *AliSubtitleCache
-}
+type SubtitleDataCache = refreshcache.RefreshCache[[]byte, struct{}]
 
-type AliSubtitleCache = refreshcache.RefreshCache[[]byte, struct{}]
-
-func newAliSubtitlesCacheInitFunc(list []*alist.FsOtherResp_VideoPreviewPlayInfo_LiveTranscodingSubtitleTaskList) []*AliSubtitle {
-	caches := make([]*AliSubtitle, len(list))
+func newAliSubtitles(list []*alist.FsOtherResp_VideoPreviewPlayInfo_LiveTranscodingSubtitleTaskList) []*AlistSubtitle {
+	caches := make([]*AlistSubtitle, len(list))
 	for i, v := range list {
 		if v.Status != "finished" {
 			return nil
 		}
 		url := v.Url
-		caches[i] = &AliSubtitle{
+		caches[i] = &AlistSubtitle{
 			Cache: refreshcache.NewRefreshCache(func(ctx context.Context, args ...struct{}) ([]byte, error) {
 				r, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 				if err != nil {
@@ -132,7 +134,9 @@ func newAliSubtitlesCacheInitFunc(list []*alist.FsOtherResp_VideoPreviewPlayInfo
 				}
 				return io.ReadAll(resp.Body)
 			}, 0),
-			Raw: v,
+			Name: v.Language,
+			URL:  v.Url,
+			Type: utils.GetFileExtension(v.Url),
 		}
 	}
 	return caches
@@ -216,10 +220,26 @@ func NewAlistMovieCacheInitFunc(movie *model.Movie) func(ctx context.Context, ar
 				if err != nil {
 					return nil, err
 				}
-				if cache.Subtitles == nil {
-					cache.Subtitles = make(map[string]string)
-				}
-				cache.Subtitles[resp.Name] = resp.RawUrl
+				cache.Subtitles = append(cache.Subtitles, &AlistSubtitle{
+					Name: related.Name,
+					URL:  resp.RawUrl,
+					Type: utils.GetFileExtension(resp.Name),
+					Cache: refreshcache.NewRefreshCache(func(ctx context.Context, args ...struct{}) ([]byte, error) {
+						r, err := http.NewRequestWithContext(ctx, http.MethodGet, resp.RawUrl, nil)
+						if err != nil {
+							return nil, err
+						}
+						resp, err := uhc.Do(r)
+						if err != nil {
+							return nil, err
+						}
+						defer resp.Body.Close()
+						if resp.StatusCode != http.StatusOK {
+							return nil, fmt.Errorf("status code: %d", resp.StatusCode)
+						}
+						return io.ReadAll(resp.Body)
+					}, -1),
+				})
 			}
 		}
 
@@ -236,8 +256,8 @@ func NewAlistMovieCacheInitFunc(movie *model.Movie) func(ctx context.Context, ar
 			}
 			cache.Ali = &AlistAliCache{
 				M3U8ListFile: genAliM3U8ListFile(fo.VideoPreviewPlayInfo.LiveTranscodingTaskList),
-				Subtitles:    newAliSubtitlesCacheInitFunc(fo.VideoPreviewPlayInfo.LiveTranscodingSubtitleTaskList),
 			}
+			cache.Subtitles = append(cache.Subtitles, newAliSubtitles(fo.VideoPreviewPlayInfo.LiveTranscodingSubtitleTaskList)...)
 		}
 		return cache, nil
 	}

@@ -782,6 +782,52 @@ func DeleteUser(ctx *gin.Context) {
 	ctx.Status(http.StatusNoContent)
 }
 
+func AdminDeleteRoom(ctx *gin.Context) {
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
+	log := ctx.MustGet("log").(*logrus.Entry)
+
+	req := model.RoomIDReq{}
+	if err := model.Decode(ctx, &req); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	r, err := db.GetRoomByID(req.Id)
+	if err != nil {
+		log.WithError(err).Error("get room by id error")
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	u, err := op.LoadOrInitUserByID(r.CreatorID)
+	if err != nil {
+		log.WithError(err).Error("get user by id error")
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+	creator := u.Value()
+
+	if creator.IsRoot() {
+		log.Error("cannot delete root's room")
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("cannot delete root's room"))
+		return
+	}
+
+	if creator.IsAdmin() && !user.IsRoot() {
+		log.Error("cannot delete admin's room")
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("cannot delete admin's room"))
+		return
+	}
+
+	if err := op.DeleteRoomByID(req.Id); err != nil {
+		log.WithError(err).Error("delete room by id error")
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
+
+	ctx.Status(http.StatusNoContent)
+}
+
 func AdminUserPassword(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*op.UserEntry).Value()
 	log := ctx.MustGet("log").(*logrus.Entry)

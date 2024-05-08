@@ -147,6 +147,8 @@ func initAdmin(admin *gin.RouterGroup, root *gin.RouterGroup) {
 
 			room.POST("/unban", UnBanRoom)
 
+			room.POST("/delete", AdminDeleteRoom)
+
 			room.GET("/members", AdminGetRoomMembers)
 		}
 	}

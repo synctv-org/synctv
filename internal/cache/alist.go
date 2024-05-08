@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/synctv-org/synctv/internal/db"
@@ -90,9 +91,10 @@ const (
 )
 
 type AlistMovieCacheData struct {
-	URL      string
-	Provider string
-	Ali      *AlistAliCache
+	URL       string
+	Subtitles map[string]string
+	Provider  string
+	Ali       *AlistAliCache
 }
 
 type AlistAliCache struct {
@@ -200,6 +202,27 @@ func NewAlistMovieCacheInitFunc(movie *model.Movie) func(ctx context.Context, ar
 			URL:      fg.RawUrl,
 			Provider: fg.Provider,
 		}
+
+		prefix := strings.TrimSuffix(truePath, fg.Name)
+		for _, related := range fg.Related {
+			if related.Type == 4 {
+				resp, err := cli.FsGet(ctx, &alist.FsGetReq{
+					Host:      aucd.Host,
+					Token:     aucd.Token,
+					Path:      prefix + related.Name,
+					Password:  movie.Base.VendorInfo.Alist.Password,
+					UserAgent: args[0].UserAgent,
+				})
+				if err != nil {
+					return nil, err
+				}
+				if cache.Subtitles == nil {
+					cache.Subtitles = make(map[string]string)
+				}
+				cache.Subtitles[resp.Name] = resp.RawUrl
+			}
+		}
+
 		if fg.Provider == AlistProviderAli {
 			fo, err := cli.FsOther(ctx, &alist.FsOtherReq{
 				Host:     aucd.Host,

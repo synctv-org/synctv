@@ -338,6 +338,10 @@ func MapToHttpCookie(m map[string]string) []*http.Cookie {
 	return c
 }
 
+func GetFileExtension(f string) string {
+	return strings.TrimLeft(filepath.Ext(f), ".")
+}
+
 func GetUrlExtension(u string) string {
 	if u == "" {
 		return ""
@@ -346,7 +350,7 @@ func GetUrlExtension(u string) string {
 	if err != nil {
 		return ""
 	}
-	return strings.TrimLeft(filepath.Ext(p.Path), ".")
+	return GetFileExtension(p.Path)
 }
 
 var (

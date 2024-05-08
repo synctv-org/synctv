@@ -1172,6 +1172,16 @@ func genVendorMovie(ctx context.Context, user *op.User, opMovie *op.Movie, userA
 			return nil, err
 		}
 
+		for name, url := range data.Subtitles {
+			if movie.Base.Subtitles == nil {
+				movie.Base.Subtitles = make(map[string]*dbModel.Subtitle, len(data.Subtitles))
+			}
+			movie.Base.Subtitles[name] = &dbModel.Subtitle{
+				URL:  url,
+				Type: utils.GetFileExtension(name),
+			}
+		}
+
 		switch data.Provider {
 		case cache.AlistProviderAli:
 			rawPath, err := url.JoinPath("/api/movie/proxy", movie.RoomID, movie.ID)

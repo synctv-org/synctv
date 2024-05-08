@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
@@ -919,7 +920,7 @@ func proxyVendorMovie(ctx *gin.Context, movie *op.Movie) {
 						ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 						return
 					}
-					ctx.Data(http.StatusOK, "text/plain; charset=utf-8", srtData)
+					http.ServeContent(ctx.Writer, ctx.Request, id, time.Now(), bytes.NewReader(srtData))
 					return
 				} else {
 					log.Errorf("proxy vendor movie error: %v", "subtitle not found")
@@ -970,13 +971,13 @@ func proxyVendorMovie(ctx *gin.Context, movie *op.Movie) {
 					ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("id out of range"))
 					return
 				}
-				data, err := data.Subtitles[id].Cache.Get(ctx)
+				b, err := data.Subtitles[id].Cache.Get(ctx)
 				if err != nil {
 					log.Errorf("proxy vendor movie error: %v", err)
 					ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 					return
 				}
-				ctx.Data(http.StatusOK, "text/plain; charset=utf-8", data)
+				http.ServeContent(ctx.Writer, ctx.Request, data.Subtitles[id].Name, time.Now(), bytes.NewReader(b))
 			}
 
 		case cache.AlistProvider115:
@@ -994,7 +995,6 @@ func proxyVendorMovie(ctx *gin.Context, movie *op.Movie) {
 			}
 
 		}
-
 		return
 
 	case dbModel.VendorEmby:
@@ -1091,7 +1091,7 @@ func proxyVendorMovie(ctx *gin.Context, movie *op.Movie) {
 				ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 				return
 			}
-			ctx.Data(http.StatusOK, "text/plain; charset=utf-8", data)
+			http.ServeContent(ctx.Writer, ctx.Request, embyC.Sources[source].Subtitles[id].Name, time.Now(), bytes.NewReader(data))
 			return
 		}
 

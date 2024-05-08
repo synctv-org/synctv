@@ -15,7 +15,7 @@ type dbVersion struct {
 	Upgrade     func(*gorm.DB) error
 }
 
-const CurrentVersion = "0.0.6"
+const CurrentVersion = "0.0.7"
 
 var models = []any{
 	new(model.Setting),
@@ -34,7 +34,6 @@ var models = []any{
 var dbVersions = map[string]dbVersion{
 	"0.0.1": {
 		NextVersion: "0.0.2",
-		Upgrade:     nil,
 	},
 	"0.0.2": {
 		NextVersion: "0.0.3",
@@ -60,6 +59,14 @@ var dbVersions = map[string]dbVersion{
 		NextVersion: "0.0.6",
 	},
 	"0.0.6": {
+		NextVersion: "0.0.7",
+		Upgrade: func(d *gorm.DB) error {
+			// delete all emby vendors records
+			_ = d.Exec("DELETE FROM emby_vendors").Error
+			return nil
+		},
+	},
+	"0.0.7": {
 		NextVersion: "",
 	},
 }

@@ -365,8 +365,8 @@ github.com/stretchr/testify v1.8.1/go.mod h1:w2LPCIKwWwSfY2zedu0+kehJoqGctiVI29o
 github.com/stretchr/testify v1.8.4/go.mod h1:sz/lmYIOXD/1dqDmKjjqLyZ2RngseejIcXlSw2iwfAo=
 github.com/stretchr/testify v1.9.0 h1:HtqpIVDClZ4nwg75+f6Lvsy/wHu+3BoSGCbBAcpTsTg=
 github.com/stretchr/testify v1.9.0/go.mod h1:r2ic/lqez/lEtzL7wO/rwa5dbSLXVDPFyf8C91i36aY=
-github.com/synctv-org/vendors v0.3.3-0.20240507143426-41159dcb43e3 h1:+KV0W7224USi8KqXVG3aAmJQEAbumzLi9/UhwALvkAk=
-github.com/synctv-org/vendors v0.3.3-0.20240507143426-41159dcb43e3/go.mod h1:8ONGycZGgULyvajYbmjwGo8fEN6g9c+Q1lhoeDn6rqY=
+github.com/synctv-org/vendors v0.3.3-0.20240508075033-898d00f19a7c h1:VjJoK5WRU1vGJZqS4U5xgepGuZrmwVs6daQluFTz89M=
+github.com/synctv-org/vendors v0.3.3-0.20240508075033-898d00f19a7c/go.mod h1:8ONGycZGgULyvajYbmjwGo8fEN6g9c+Q1lhoeDn6rqY=
 github.com/tetratelabs/wazero v1.7.1 h1:QtSfd6KLc41DIMpDYlJdoMc6k7QTN246DM2+n2Y/Dx8=
 github.com/tetratelabs/wazero v1.7.1/go.mod h1:ytl6Zuh20R/eROuyDaGPkp82O9C/DJfXAwJfQ3X6/7Y=
 github.com/tv42/httpunix v0.0.0-20150427012821-b75d8614f926/go.mod h1:9ESjWnEqriFuLhtthL60Sar/7RFoluCcXsuvEwTV5KM=

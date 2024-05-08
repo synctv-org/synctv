@@ -29,7 +29,7 @@ type AlistUserCacheData struct {
 func NewAlistUserCache(userID string) *AlistUserCache {
 	return newMapCache[*AlistUserCacheData, struct{}](func(ctx context.Context, key string, args ...struct{}) (*AlistUserCacheData, error) {
 		return AlistAuthorizationCacheWithUserIDInitFunc(ctx, userID, key)
-	}, 0)
+	}, -1)
 }
 
 func AlistAuthorizationCacheWithUserIDInitFunc(ctx context.Context, userID, serverID string) (*AlistUserCacheData, error) {

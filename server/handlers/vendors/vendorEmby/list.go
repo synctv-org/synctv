@@ -142,7 +142,7 @@ EmbyFSListResp:
 		SearchTerm: req.Keywords,
 	})
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(fmt.Errorf("emby fs list error: %w", err)))
 		return
 	}
 

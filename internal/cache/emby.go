@@ -31,7 +31,7 @@ type EmbyUserCacheData struct {
 func NewEmbyUserCache(userID string) *EmbyUserCache {
 	return newMapCache(func(ctx context.Context, key string, args ...struct{}) (*EmbyUserCacheData, error) {
 		return EmbyAuthorizationCacheWithUserIDInitFunc(userID, key)
-	}, 0)
+	}, -1)
 }
 
 func EmbyAuthorizationCacheWithUserIDInitFunc(userID, serverID string) (*EmbyUserCacheData, error) {
@@ -49,7 +49,7 @@ func EmbyAuthorizationCacheWithUserIDInitFunc(userID, serverID string) (*EmbyUse
 		Host:     v.Host,
 		ServerID: v.ServerID,
 		ApiKey:   v.ApiKey,
-		UserID:   v.UserID,
+		UserID:   v.EmbyUserID,
 		Backend:  v.Backend,
 	}, nil
 }

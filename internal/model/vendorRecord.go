@@ -101,13 +101,14 @@ func (a *AlistVendor) AfterFind(tx *gorm.DB) error {
 }
 
 type EmbyVendor struct {
-	CreatedAt time.Time
-	UpdatedAt time.Time
-	UserID    string `gorm:"primaryKey;type:char(32)"`
-	Backend   string `gorm:"type:varchar(64)"`
-	ServerID  string `gorm:"primaryKey;type:char(32)"`
-	Host      string `gorm:"not null;type:varchar(256)"`
-	ApiKey    string `gorm:"not null;type:varchar(256)"`
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+	UserID     string `gorm:"primaryKey;type:char(32)"`
+	Backend    string `gorm:"type:varchar(64)"`
+	ServerID   string `gorm:"primaryKey;type:char(32)"`
+	Host       string `gorm:"not null;type:varchar(256)"`
+	ApiKey     string `gorm:"not null;type:varchar(256)"`
+	EmbyUserID string `gorm:"type:varchar(32)"`
 }
 
 func (e *EmbyVendor) BeforeSave(tx *gorm.DB) error {

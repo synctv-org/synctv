@@ -22,7 +22,6 @@ type LoginReq struct {
 	Host     string `json:"host"`
 	Username string `json:"username"`
 	Password string `json:"password"`
-	ApiKey   string `json:"apiKey"`
 }
 
 func (r *LoginReq) Validate() error {
@@ -37,8 +36,8 @@ func (r *LoginReq) Validate() error {
 		return errors.New("host is invalid")
 	}
 	r.Host = strings.TrimRight(url.String(), "/")
-	if r.ApiKey == "" && (r.Username == "" || r.Password == "") {
-		return errors.New("username and password or apiKey is required")
+	if r.Username == "" || r.Password == "" {
+		return errors.New("username and password is required")
 	}
 	return nil
 }
@@ -58,43 +57,29 @@ func Login(ctx *gin.Context) {
 
 	backend := ctx.Query("backend")
 	cli := vendor.LoadEmbyClient(backend)
-	var serverID string
 
-	if req.ApiKey != "" {
-		i, err := cli.GetSystemInfo(ctx, &emby.SystemInfoReq{
-			Host:  req.Host,
-			Token: req.ApiKey,
-		})
-		if err != nil {
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
-			return
-		}
-		serverID = i.Id
-	} else {
-		data, err := cli.Login(ctx, &emby.LoginReq{
-			Host:     req.Host,
-			Username: req.Username,
-			Password: req.Password,
-		})
-		if err != nil {
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
-			return
-		}
-		req.ApiKey = data.Token
-		serverID = data.ServerId
+	data, err := cli.Login(ctx, &emby.LoginReq{
+		Host:     req.Host,
+		Username: req.Username,
+		Password: req.Password,
+	})
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
 	}
 
-	if serverID == "" {
+	if data.ServerId == "" {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorStringResp("serverID is empty"))
 		return
 	}
 
-	_, err := db.CreateOrSaveEmbyVendor(&dbModel.EmbyVendor{
-		UserID:   user.ID,
-		ServerID: serverID,
-		Host:     req.Host,
-		ApiKey:   req.ApiKey,
-		Backend:  backend,
+	_, err = db.CreateOrSaveEmbyVendor(&dbModel.EmbyVendor{
+		UserID:     user.ID,
+		ServerID:   data.ServerId,
+		Host:       req.Host,
+		ApiKey:     data.Token,
+		Backend:    backend,
+		EmbyUserID: data.UserId,
 	})
 
 	if err != nil {
@@ -102,11 +87,11 @@ func Login(ctx *gin.Context) {
 		return
 	}
 
-	_, err = user.EmbyCache().StoreOrRefreshWithDynamicFunc(ctx, serverID, func(ctx context.Context, key string, args ...struct{}) (*cache.EmbyUserCacheData, error) {
+	_, err = user.EmbyCache().StoreOrRefreshWithDynamicFunc(ctx, data.ServerId, func(ctx context.Context, key string, args ...struct{}) (*cache.EmbyUserCacheData, error) {
 		return &cache.EmbyUserCacheData{
 			Host:     req.Host,
 			ServerID: key,
-			ApiKey:   req.ApiKey,
+			ApiKey:   data.Token,
 			Backend:  backend,
 		}, nil
 	})

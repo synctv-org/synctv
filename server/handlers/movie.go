@@ -203,7 +203,7 @@ func PushMovie(ctx *gin.Context) {
 		return
 	}
 
-	err := user.AddRoomMovie(room, (*dbModel.BaseMovie)(&req))
+	m, err := user.AddRoomMovie(room, (*dbModel.BaseMovie)(&req))
 	if err != nil {
 		log.Errorf("push movie error: %v", err)
 		if errors.Is(err, dbModel.ErrNoPermission) {
@@ -219,7 +219,7 @@ func PushMovie(ctx *gin.Context) {
 		return
 	}
 
-	ctx.Status(http.StatusNoContent)
+	ctx.JSON(http.StatusOK, model.NewApiDataResp(m))
 }
 
 func PushMovies(ctx *gin.Context) {
@@ -240,7 +240,7 @@ func PushMovies(ctx *gin.Context) {
 		ms[i] = m
 	}
 
-	err := user.AddRoomMovies(room, ms)
+	m, err := user.AddRoomMovies(room, ms)
 	if err != nil {
 		log.Errorf("push movies error: %v", err)
 		if errors.Is(err, dbModel.ErrNoPermission) {
@@ -256,7 +256,7 @@ func PushMovies(ctx *gin.Context) {
 		return
 	}
 
-	ctx.Status(http.StatusNoContent)
+	ctx.JSON(http.StatusOK, model.NewApiDataResp(m))
 }
 
 func NewPublishKey(ctx *gin.Context) {

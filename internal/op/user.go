@@ -127,19 +127,19 @@ func (u *User) NewMovie(movie *model.BaseMovie) (*model.Movie, error) {
 	}, nil
 }
 
-func (u *User) AddRoomMovie(room *Room, movie *model.BaseMovie) error {
+func (u *User) AddRoomMovie(room *Room, movie *model.BaseMovie) (*model.Movie, error) {
 	if !u.HasRoomPermission(room, model.PermissionAddMovie) {
-		return model.ErrNoPermission
+		return nil, model.ErrNoPermission
 	}
 	m, err := u.NewMovie(movie)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	err = room.AddMovie(m)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return room.Broadcast(&pb.ElementMessage{
+	return m, room.Broadcast(&pb.ElementMessage{
 		Type: pb.ElementMessageType_MOVIES_CHANGED,
 		MoviesChanged: &pb.Sender{
 			Username: u.Username,
@@ -160,19 +160,19 @@ func (u *User) NewMovies(movies []*model.BaseMovie) ([]*model.Movie, error) {
 	return ms, nil
 }
 
-func (u *User) AddRoomMovies(room *Room, movies []*model.BaseMovie) error {
+func (u *User) AddRoomMovies(room *Room, movies []*model.BaseMovie) ([]*model.Movie, error) {
 	if !u.HasRoomPermission(room, model.PermissionAddMovie) {
-		return model.ErrNoPermission
+		return nil, model.ErrNoPermission
 	}
 	m, err := u.NewMovies(movies)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	err = room.AddMovies(m)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return room.Broadcast(&pb.ElementMessage{
+	return m, room.Broadcast(&pb.ElementMessage{
 		Type: pb.ElementMessageType_MOVIES_CHANGED,
 		MoviesChanged: &pb.Sender{
 			Username: u.Username,

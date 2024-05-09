@@ -235,9 +235,9 @@ func initMovie(movie *gin.RouterGroup, needAuthMovie *gin.RouterGroup) {
 
 	needAuthMovie.POST("/clear", ClearMovies)
 
-	movie.HEAD("/proxy/:roomId/:movieId", ProxyMovie)
+	needAuthMovie.HEAD("/proxy/:roomId/:movieId", ProxyMovie)
 
-	movie.GET("/proxy/:roomId/:movieId", ProxyMovie)
+	needAuthMovie.GET("/proxy/:roomId/:movieId", ProxyMovie)
 
 	{
 		live := movie.Group("/live")

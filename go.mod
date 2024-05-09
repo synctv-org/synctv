@@ -15,7 +15,7 @@ require (
 	github.com/go-kratos/kratos/contrib/registry/consul/v2 v2.0.0-20240504101732-d0d5761f9ca8
 	github.com/go-kratos/kratos/contrib/registry/etcd/v2 v2.0.0-20240504101732-d0d5761f9ca8
 	github.com/go-kratos/kratos/v2 v2.7.3
-	github.com/go-resty/resty/v2 v2.12.0
+	github.com/go-resty/resty/v2 v2.13.0
 	github.com/golang-jwt/jwt/v5 v5.2.1
 	github.com/google/go-github/v56 v56.0.0
 	github.com/google/uuid v1.6.0

@@ -15,7 +15,7 @@ var (
 	ErrEmptyName   = errors.New("empty name")
 	ErrTypeTooLong = errors.New("type too long")
 
-	ErrId = errors.New("id must be greater than 0")
+	ErrId = errors.New("id length must be 32")
 
 	ErrEmptyIds = errors.New("empty ids")
 )

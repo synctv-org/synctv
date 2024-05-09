@@ -289,6 +289,12 @@ func initUser(user *gin.RouterGroup, needAuthUser *gin.RouterGroup) {
 	needAuthUser.POST("/bind/email", UserBindEmail)
 
 	needAuthUser.POST("/unbind/email", UserUnbindEmail)
+
+	{
+		room := needAuthUser.Group("/room")
+
+		room.POST("/delete", UserDeleteRoom)
+	}
 }
 
 func initVendor(vendor *gin.RouterGroup) {

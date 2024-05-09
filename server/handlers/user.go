@@ -600,3 +600,37 @@ func UserRetrievePasswordEmail(ctx *gin.Context) {
 		"token": token,
 	}))
 }
+
+func UserDeleteRoom(ctx *gin.Context) {
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
+	log := ctx.MustGet("log").(*logrus.Entry)
+
+	var req model.IdReq
+	if err := model.Decode(ctx, &req); err != nil {
+		log.Errorf("failed to decode request: %v", err)
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	room, err := db.GetRoomByID(req.Id)
+	if err != nil {
+		log.Errorf("failed to get room: %v", err)
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	if room.CreatorID != user.ID {
+		log.Errorf("not creator")
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("not creator"))
+		return
+	}
+
+	err = op.DeleteRoomByID(room.ID)
+	if err != nil {
+		log.Errorf("failed to delete room: %v", err)
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
+
+	ctx.Status(http.StatusNoContent)
+}

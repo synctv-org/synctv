@@ -120,7 +120,6 @@ func NewEmbyMovieCacheInitFunc(movie *model.Movie) func(ctx context.Context, arg
 		if len(args) == 0 {
 			return nil, errors.New("need emby user cache")
 		}
-
 		var (
 			serverID string
 			err      error

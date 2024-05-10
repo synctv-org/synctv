@@ -21,8 +21,8 @@ import (
 )
 
 type BilibiliMpdCache struct {
-	Mpd     string
-	HevcMpd string
+	Mpd     *mpd.MPD
+	HevcMpd *mpd.MPD
 	Urls    []string
 }
 
@@ -116,19 +116,46 @@ func BilibiliSharedMpdCacheInitFunc(ctx context.Context, movie *model.Movie, arg
 			}
 		}
 	}
-	s, err := m.WriteToString()
-	if err != nil {
-		return nil, err
-	}
-	s2, err := hevcM.WriteToString()
-	if err != nil {
-		return nil, err
-	}
 	return &BilibiliMpdCache{
 		Urls:    movies,
-		Mpd:     s,
-		HevcMpd: s2,
+		Mpd:     m,
+		HevcMpd: hevcM,
 	}, nil
+}
+
+func BilibiliMpdToString(mpdRaw *mpd.MPD, token string) (string, error) {
+	newMpdRaw := *mpdRaw
+	newPeriods := make([]*mpd.Period, len(mpdRaw.Periods))
+	for i, p := range mpdRaw.Periods {
+		n := *p
+		newPeriods[i] = &n
+	}
+	newMpdRaw.Periods = newPeriods
+	for _, p := range newMpdRaw.Periods {
+		newAdaptationSets := make([]*mpd.AdaptationSet, len(p.AdaptationSets))
+		for i, as := range p.AdaptationSets {
+			n := *as
+			newAdaptationSets[i] = &n
+		}
+		p.AdaptationSets = newAdaptationSets
+		for _, as := range p.AdaptationSets {
+			newRepresentations := make([]*mpd.Representation, len(as.Representations))
+			for i, r := range as.Representations {
+				n := *r
+				newRepresentations[i] = &n
+			}
+			as.Representations = newRepresentations
+			for _, r := range as.Representations {
+				newBaseURL := make([]string, len(r.BaseURL))
+				copy(newBaseURL, r.BaseURL)
+				r.BaseURL = newBaseURL
+				for i := range r.BaseURL {
+					r.BaseURL[i] = fmt.Sprintf("%s&token=%s", r.BaseURL[i], token)
+				}
+			}
+		}
+	}
+	return newMpdRaw.WriteToString()
 }
 
 func NewBilibiliNoSharedMovieCacheInitFunc(movie *model.Movie) func(ctx context.Context, key string, args ...*BilibiliUserCache) (string, error) {

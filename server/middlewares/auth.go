@@ -364,10 +364,12 @@ func AuthRootMiddleware(ctx *gin.Context) {
 func GetAuthorizationTokenFromContext(ctx *gin.Context) (string, error) {
 	Authorization := ctx.GetHeader("Authorization")
 	if Authorization != "" {
+		ctx.Set("token", Authorization)
 		return Authorization, nil
 	}
 	Authorization = ctx.Query("token")
 	if Authorization != "" {
+		ctx.Set("token", Authorization)
 		return Authorization, nil
 	}
 	return "", errors.New("token is empty")

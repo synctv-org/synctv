@@ -30,6 +30,7 @@ import (
 	uhc "github.com/zijiren233/go-uhc"
 	"github.com/zijiren233/livelib/protocol/hls"
 	"github.com/zijiren233/livelib/protocol/httpflv"
+	"github.com/zijiren233/stream"
 	"golang.org/x/exp/maps"
 )
 
@@ -861,9 +862,21 @@ func proxyVendorMovie(ctx *gin.Context, movie *op.Movie) {
 				}
 				if id := ctx.Query("id"); id == "" {
 					if t == "hevc" {
-						ctx.Data(http.StatusOK, "application/dash+xml", []byte(mpdC.HevcMpd))
+						s, err := cache.BilibiliMpdToString(mpdC.HevcMpd, ctx.MustGet("token").(string))
+						if err != nil {
+							log.Errorf("proxy vendor movie error: %v", err)
+							ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+							return
+						}
+						ctx.Data(http.StatusOK, "application/dash+xml", stream.StringToBytes(s))
 					} else {
-						ctx.Data(http.StatusOK, "application/dash+xml", []byte(mpdC.Mpd))
+						s, err := cache.BilibiliMpdToString(mpdC.Mpd, ctx.MustGet("token").(string))
+						if err != nil {
+							log.Errorf("proxy vendor movie error: %v", err)
+							ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+							return
+						}
+						ctx.Data(http.StatusOK, "application/dash+xml", stream.StringToBytes(s))
 					}
 					return
 				} else {

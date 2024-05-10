@@ -1157,6 +1157,9 @@ func genVendorMovie(ctx context.Context, user *op.User, opMovie *op.Movie, userA
 			} else {
 				movie.Base.Url = fmt.Sprintf("/api/movie/proxy/%s/%s?token=%s", movie.RoomID, movie.ID, userToken)
 				movie.Base.Type = "mpd"
+				movie.Base.MoreSource = map[string]string{
+					"hevc": fmt.Sprintf("/api/movie/proxy/%s/%s?token=%s&t=hevc", movie.RoomID, movie.ID, userToken),
+				}
 			}
 			srt, err := bmc.Subtitle.Get(ctx, user.BilibiliCache())
 			if err != nil {

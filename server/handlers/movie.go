@@ -84,13 +84,20 @@ func GetPageItems[T any](ctx *gin.Context, items []T) ([]T, error) {
 // 	}))
 // }
 
-func genMovieInfo(ctx context.Context, user *op.User, room *op.Room, opMovie *op.Movie, userAgent string) (*model.MovieResp, error) {
+func genMovieInfo(
+	ctx context.Context,
+	user *op.User,
+	room *op.Room,
+	opMovie *op.Movie,
+	userAgent string,
+	userToken string,
+) (*model.MovieResp, error) {
 	if opMovie == nil || opMovie.ID == "" {
 		return &model.MovieResp{}, nil
 	}
 	var movie = *opMovie.Movie
 	if movie.Base.VendorInfo.Vendor != "" {
-		vendorMovie, err := genVendorMovie(ctx, user, opMovie, userAgent)
+		vendorMovie, err := genVendorMovie(ctx, user, opMovie, userAgent, userToken)
 		if err != nil {
 			return nil, err
 		}
@@ -98,15 +105,15 @@ func genMovieInfo(ctx context.Context, user *op.User, room *op.Room, opMovie *op
 	} else if movie.Base.RtmpSource || movie.Base.Live && movie.Base.Proxy {
 		switch movie.Base.Type {
 		case "m3u8":
-			movie.Base.Url = fmt.Sprintf("/api/movie/live/hls/list/%s.m3u8", movie.ID)
+			movie.Base.Url = fmt.Sprintf("/api/movie/live/hls/list/%s.m3u8?token=%s", movie.ID, userToken)
 		case "flv":
-			movie.Base.Url = fmt.Sprintf("/api/movie/live/flv/%s.flv", movie.ID)
+			movie.Base.Url = fmt.Sprintf("/api/movie/live/flv/%s.flv?token=%s", movie.ID, userToken)
 		default:
 			return nil, errors.New("not support live movie type")
 		}
 		movie.Base.Headers = nil
 	} else if movie.Base.Proxy {
-		movie.Base.Url = fmt.Sprintf("/api/movie/proxy/%s/%s", movie.RoomID, movie.ID)
+		movie.Base.Url = fmt.Sprintf("/api/movie/proxy/%s/%s?token=%s", movie.RoomID, movie.ID, userToken)
 		movie.Base.Headers = nil
 	}
 	if movie.Base.Type == "" && movie.Base.Url != "" {
@@ -122,7 +129,7 @@ func genMovieInfo(ctx context.Context, user *op.User, room *op.Room, opMovie *op
 	return resp, nil
 }
 
-func genCurrentRespWithCurrent(ctx context.Context, user *op.User, room *op.Room, current *op.Current, userAgent string) (*model.CurrentMovieResp, error) {
+func genCurrentRespWithCurrent(ctx context.Context, user *op.User, room *op.Room, current *op.Current, userAgent string, userToken string) (*model.CurrentMovieResp, error) {
 	if current.MovieID == "" {
 		return &model.CurrentMovieResp{
 			Movie: &model.MovieResp{},
@@ -132,7 +139,7 @@ func genCurrentRespWithCurrent(ctx context.Context, user *op.User, room *op.Room
 	if err != nil {
 		return nil, fmt.Errorf("get current movie error: %w", err)
 	}
-	mr, err := genMovieInfo(ctx, user, room, opMovie, userAgent)
+	mr, err := genMovieInfo(ctx, user, room, opMovie, userAgent, userToken)
 	if err != nil {
 		return nil, fmt.Errorf("gen current movie info error: %w", err)
 	}
@@ -149,7 +156,7 @@ func CurrentMovie(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*op.UserEntry).Value()
 	log := ctx.MustGet("log").(*logrus.Entry)
 
-	currentResp, err := genCurrentRespWithCurrent(ctx, user, room, room.Current(), ctx.GetHeader("User-Agent"))
+	currentResp, err := genCurrentRespWithCurrent(ctx, user, room, room.Current(), ctx.GetHeader("User-Agent"), ctx.MustGet("token").(string))
 	if err != nil {
 		log.Errorf("gen current resp error: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
@@ -596,6 +603,8 @@ func (e FormatErrNotSupportFileType) Error() string {
 func JoinLive(ctx *gin.Context) {
 	log := ctx.MustGet("log").(*logrus.Entry)
 
+	token := ctx.MustGet("token").(string)
+
 	ctx.Header("Cache-Control", "no-store")
 	room := ctx.MustGet("room").(*op.RoomEntry).Value()
 	movieId := strings.Trim(ctx.Param("movieId"), "/")
@@ -642,7 +651,7 @@ func JoinLive(ctx *gin.Context) {
 			if settings.TsDisguisedAsPng.Get() {
 				ext = "png"
 			}
-			return fmt.Sprintf("/api/movie/live/hls/data/%s/%s/%s.%s", room.ID, movieId, tsName, ext)
+			return fmt.Sprintf("/api/movie/live/hls/data/%s/%s/%s.%s?token=%s", room.ID, movieId, tsName, ext, token)
 		})
 		if err != nil {
 			log.Errorf("join live error: %v", err)
@@ -698,6 +707,7 @@ func JoinFlvLive(ctx *gin.Context) {
 
 func JoinHlsLive(ctx *gin.Context) {
 	log := ctx.MustGet("log").(*logrus.Entry)
+	token := ctx.MustGet("token").(string)
 
 	ctx.Header("Cache-Control", "no-store")
 	room := ctx.MustGet("room").(*op.RoomEntry).Value()
@@ -729,7 +739,7 @@ func JoinHlsLive(ctx *gin.Context) {
 		if settings.TsDisguisedAsPng.Get() {
 			ext = "png"
 		}
-		return fmt.Sprintf("/api/movie/live/hls/data/%s/%s/%s.%s", room.ID, movieId, tsName, ext)
+		return fmt.Sprintf("/api/movie/live/hls/data/%s/%s/%s.%s?token=%s", room.ID, movieId, tsName, ext, token)
 	})
 	if err != nil {
 		log.Errorf("join hls live error: %v", err)
@@ -1116,21 +1126,14 @@ func proxyVendorMovie(ctx *gin.Context, movie *op.Movie) {
 }
 
 // user is the api requester
-func genVendorMovie(ctx context.Context, user *op.User, opMovie *op.Movie, userAgent string) (*dbModel.Movie, error) {
+func genVendorMovie(ctx context.Context, user *op.User, opMovie *op.Movie, userAgent string, userToken string) (*dbModel.Movie, error) {
 	movie := *opMovie.Movie
 	var err error
 	switch movie.Base.VendorInfo.Vendor {
 	case dbModel.VendorBilibili:
 		bmc := opMovie.BilibiliCache()
 		if movie.Base.Live {
-			rawPath, err := url.JoinPath("/api/movie/proxy", movie.RoomID, movie.ID)
-			if err != nil {
-				return nil, err
-			}
-			u := url.URL{
-				Path: rawPath,
-			}
-			movie.Base.Url = u.String()
+			movie.Base.Url = fmt.Sprintf("/api/movie/proxy/%s/%s?token=%s", movie.RoomID, movie.ID, userToken)
 			movie.Base.Type = "m3u8"
 			return &movie, nil
 		} else {
@@ -1152,7 +1155,7 @@ func genVendorMovie(ctx context.Context, user *op.User, opMovie *op.Movie, userA
 
 				movie.Base.Url = s
 			} else {
-				movie.Base.Url = fmt.Sprintf("/api/movie/proxy/%s/%s", movie.RoomID, movie.ID)
+				movie.Base.Url = fmt.Sprintf("/api/movie/proxy/%s/%s?token=%s", movie.RoomID, movie.ID, userToken)
 				movie.Base.Type = "mpd"
 			}
 			srt, err := bmc.Subtitle.Get(ctx, user.BilibiliCache())
@@ -1164,7 +1167,7 @@ func genVendorMovie(ctx context.Context, user *op.User, opMovie *op.Movie, userA
 					movie.Base.Subtitles = make(map[string]*dbModel.Subtitle, len(srt))
 				}
 				movie.Base.Subtitles[k] = &dbModel.Subtitle{
-					URL:  fmt.Sprintf("/api/movie/proxy/%s/%s?t=subtitle&n=%s", movie.RoomID, movie.ID, k),
+					URL:  fmt.Sprintf("/api/movie/proxy/%s/%s?t=subtitle&n=%s&token=%s", movie.RoomID, movie.ID, k, userToken),
 					Type: "srt",
 				}
 			}
@@ -1197,14 +1200,7 @@ func genVendorMovie(ctx context.Context, user *op.User, opMovie *op.Movie, userA
 
 		switch data.Provider {
 		case cache.AlistProviderAli:
-			rawPath, err := url.JoinPath("/api/movie/proxy", movie.RoomID, movie.ID)
-			if err != nil {
-				return nil, err
-			}
-			u := url.URL{
-				Path: rawPath,
-			}
-			movie.Base.Url = u.String()
+			movie.Base.Url = fmt.Sprintf("/api/movie/proxy/%s/%s?token=%s", movie.RoomID, movie.ID, userToken)
 			movie.Base.Type = "m3u8"
 
 			for i, subt := range data.Subtitles {
@@ -1212,21 +1208,14 @@ func genVendorMovie(ctx context.Context, user *op.User, opMovie *op.Movie, userA
 					movie.Base.Subtitles = make(map[string]*dbModel.Subtitle, len(data.Subtitles))
 				}
 				movie.Base.Subtitles[subt.Name] = &dbModel.Subtitle{
-					URL:  fmt.Sprintf("/api/movie/proxy/%s/%s?t=subtitle&id=%d", movie.RoomID, movie.ID, i),
+					URL:  fmt.Sprintf("/api/movie/proxy/%s/%s?t=subtitle&id=%d&token=%s", movie.RoomID, movie.ID, i, userToken),
 					Type: subt.Type,
 				}
 			}
 
 		case cache.AlistProvider115:
 			if movie.Base.Proxy {
-				rawPath, err := url.JoinPath("/api/movie/proxy", movie.RoomID, movie.ID)
-				if err != nil {
-					return nil, err
-				}
-				u := url.URL{
-					Path: rawPath,
-				}
-				movie.Base.Url = u.String()
+				movie.Base.Url = fmt.Sprintf("/api/movie/proxy/%s/%s?token=%s", movie.RoomID, movie.ID, userToken)
 				movie.Base.Type = utils.GetUrlExtension(data.URL)
 
 				// TODO: proxy subtitle
@@ -1252,14 +1241,7 @@ func genVendorMovie(ctx context.Context, user *op.User, opMovie *op.Movie, userA
 			if !movie.Base.Proxy {
 				movie.Base.Url = data.URL
 			} else {
-				rawPath, err := url.JoinPath("/api/movie/proxy", movie.RoomID, movie.ID)
-				if err != nil {
-					return nil, err
-				}
-				u := url.URL{
-					Path: rawPath,
-				}
-				movie.Base.Url = u.String()
+				movie.Base.Url = fmt.Sprintf("/api/movie/proxy/%s/%s?token=%s", movie.RoomID, movie.ID, userToken)
 				movie.Base.Type = utils.GetUrlExtension(data.URL)
 			}
 		}
@@ -1320,6 +1302,7 @@ func genVendorMovie(ctx context.Context, user *op.User, opMovie *op.Movie, userA
 				rawQuery := url.Values{}
 				rawQuery.Set("source", strconv.Itoa(si))
 				rawQuery.Set("id", strconv.Itoa(0))
+				rawQuery.Set("token", userToken)
 				u := url.URL{
 					Path:     rawPath,
 					RawQuery: rawQuery.Encode(),
@@ -1338,6 +1321,7 @@ func genVendorMovie(ctx context.Context, user *op.User, opMovie *op.Movie, userA
 					rawQuery.Set("t", "subtitle")
 					rawQuery.Set("source", strconv.Itoa(si))
 					rawQuery.Set("id", strconv.Itoa(sbi))
+					rawQuery.Set("token", userToken)
 					u := url.URL{
 						Path:     rawPath,
 						RawQuery: rawQuery.Encode(),

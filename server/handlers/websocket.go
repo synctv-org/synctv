@@ -248,7 +248,7 @@ func handleElementMsg(cli *op.Client, msg *pb.ElementMessage) error {
 			}
 			if currentMovie.CheckExpired(msg.CheckReq.ExpireId) {
 				return cli.Send(&pb.ElementMessage{
-					Type: pb.ElementMessageType_CURRENT_CHANGED,
+					Type: pb.ElementMessageType_CURRENT_EXPIRED,
 				})
 			}
 		}

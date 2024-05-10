@@ -236,9 +236,9 @@ func handleElementMsg(cli *op.Client, msg *pb.ElementMessage) error {
 				},
 			},
 		})
-	case pb.ElementMessageType_CHECK:
+	case pb.ElementMessageType_CHECK_EXPIRED:
 		current := cli.Room().Current()
-		if msg.CheckReq.ExpireId != 0 && current.MovieID != "" {
+		if msg.ExpireId != 0 && current.MovieID != "" {
 			currentMovie, err := cli.Room().GetMovieByID(current.MovieID)
 			if err != nil {
 				return cli.Send(&pb.ElementMessage{
@@ -246,15 +246,16 @@ func handleElementMsg(cli *op.Client, msg *pb.ElementMessage) error {
 					Error: fmt.Sprintf("get movie by id error: %v", err),
 				})
 			}
-			if currentMovie.CheckExpired(msg.CheckReq.ExpireId) {
+			if currentMovie.CheckExpired(msg.ExpireId) {
 				return cli.Send(&pb.ElementMessage{
 					Type: pb.ElementMessageType_CURRENT_EXPIRED,
 				})
 			}
 		}
+	case pb.ElementMessageType_CHECK_STATUS:
+		current := cli.Room().Current()
 		status := current.Status
-		cliStatus := msg.CheckReq.Status
-		if status.Seek+maxInterval < cliStatus.Seek+timeDiff {
+		if status.Seek+maxInterval < msg.CheckStatusReq.Seek+timeDiff {
 			return cli.Send(&pb.ElementMessage{
 				Type: pb.ElementMessageType_TOO_FAST,
 				MovieStatusChanged: &pb.MovieStatusChanged{
@@ -265,7 +266,7 @@ func handleElementMsg(cli *op.Client, msg *pb.ElementMessage) error {
 					},
 				},
 			})
-		} else if status.Seek-maxInterval > cliStatus.Seek+timeDiff {
+		} else if status.Seek-maxInterval > msg.CheckStatusReq.Seek+timeDiff {
 			return cli.Send(&pb.ElementMessage{
 				Type: pb.ElementMessageType_TOO_SLOW,
 				MovieStatusChanged: &pb.MovieStatusChanged{

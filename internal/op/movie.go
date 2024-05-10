@@ -38,10 +38,10 @@ func (m *Movie) ExpireId() uint64 {
 		if amcd != nil && amcd.Ali != nil {
 			return uint64(m.AlistCache().Last())
 		}
-		fallthrough
-	default:
-		return uint64(crc32.ChecksumIEEE([]byte(m.Movie.ID)))
+	case m.Movie.Base.Live && m.Movie.Base.VendorInfo.Vendor == model.VendorBilibili:
+		return uint64(m.BilibiliCache().Live.Last())
 	}
+	return uint64(crc32.ChecksumIEEE([]byte(m.Movie.ID)))
 }
 
 func (m *Movie) CheckExpired(expireId uint64) bool {
@@ -51,10 +51,10 @@ func (m *Movie) CheckExpired(expireId uint64) bool {
 		if amcd != nil && amcd.Ali != nil {
 			return time.Now().UnixNano()-int64(expireId) > m.AlistCache().MaxAge()
 		}
-		fallthrough
-	default:
-		return expireId != m.ExpireId()
+	case m.Movie.Base.Live && m.Movie.Base.VendorInfo.Vendor == model.VendorBilibili:
+		return time.Now().UnixNano()-int64(expireId) > m.BilibiliCache().Live.MaxAge()
 	}
+	return expireId != m.ExpireId()
 }
 
 func (m *Movie) ClearCache() error {

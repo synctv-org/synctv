@@ -9,7 +9,7 @@ enum ElementMessageType {
   CHAT_MESSAGE = 2;
   PLAY = 3;
   PAUSE = 4;
-  CHECK = 5;
+  CHECK_STATUS = 5;
   TOO_FAST = 6;
   TOO_SLOW = 7;
   CHANGE_RATE = 8;
@@ -19,6 +19,7 @@ enum ElementMessageType {
   PEOPLE_CHANGED = 12;
   SYNC_MOVIE_STATUS = 13;
   CURRENT_EXPIRED = 14;
+  CHECK_EXPIRED = 15;
 }
 
 message ChatResp {
@@ -42,11 +43,6 @@ message MovieStatusChanged {
   MovieStatus status = 2;
 }
 
-message CheckReq {
-  MovieStatus status = 1;
-  uint64 expireId = 2;
-}
-
 message ElementMessage {
   ElementMessageType type = 1;
   int64 time = 2;
@@ -56,7 +52,8 @@ message ElementMessage {
   MovieStatus changeMovieStatusReq = 6;
   MovieStatusChanged movieStatusChanged = 7;
   double changeSeekReq = 8;
-  CheckReq checkReq = 9;
+  MovieStatus checkStatusReq = 9;
+  uint64 expireId = 10;
   int64 peopleChanged = 11;
   Sender moviesChanged = 12;
   Sender currentChanged = 13;

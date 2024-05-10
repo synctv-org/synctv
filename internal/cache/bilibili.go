@@ -371,7 +371,7 @@ func NewBilibiliMovieCache(movie *model.Movie) *BilibiliMovieCache {
 		NoSharedMovie: newMapCache(NewBilibiliNoSharedMovieCacheInitFunc(movie), time.Minute*60),
 		SharedMpd:     refreshcache.NewRefreshCache(NewBilibiliSharedMpdCacheInitFunc(movie), time.Minute*60),
 		Subtitle:      refreshcache.NewRefreshCache(NewBilibiliSubtitleCacheInitFunc(movie), 0),
-		Live:          refreshcache.NewRefreshCache(NewBilibiliLiveCacheInitFunc(movie), 0),
+		Live:          refreshcache.NewRefreshCache(NewBilibiliLiveCacheInitFunc(movie), time.Minute*55),
 	}
 }
 

@@ -1058,16 +1058,16 @@ func proxyVendorMovie(ctx *gin.Context, movie *op.Movie) {
 				ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 				return
 			}
-			if id >= len(embyC.Sources[source].URLs) {
+			if id >= len(embyC.Sources[source].URL) {
 				log.Errorf("proxy vendor movie error: %v", "id out of range")
 				ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("id out of range"))
 				return
 			}
-			if embyC.Sources[source].URLs[id].IsTranscode {
-				ctx.Redirect(http.StatusFound, embyC.Sources[source].URLs[id].URL)
+			if embyC.Sources[source].IsTranscode {
+				ctx.Redirect(http.StatusFound, embyC.Sources[source].URL)
 				return
 			}
-			err = proxyURL(ctx, embyC.Sources[source].URLs[id].URL, nil)
+			err = proxyURL(ctx, embyC.Sources[source].URL, nil)
 			if err != nil {
 				log.Errorf("proxy vendor movie error: %v", err)
 			}
@@ -1263,33 +1263,38 @@ func genVendorMovie(ctx context.Context, user *op.User, opMovie *op.Movie, userA
 		}
 
 		if !movie.Base.Proxy {
-			for i, es := range data.Sources {
-				if len(es.URLs) == 0 {
-					if i != len(data.Sources)-1 {
-						continue
-					}
-					if movie.Base.Url == "" {
-						return nil, errors.New("no source")
-					}
+			if len(data.Sources) == 0 {
+				return nil, errors.New("no source")
+			}
+			movie.Base.Url = data.Sources[0].URL
+			for _, s := range data.Sources[0].Subtitles {
+				if movie.Base.Subtitles == nil {
+					movie.Base.Subtitles = make(map[string]*dbModel.Subtitle, len(data.Sources[0].Subtitles))
 				}
-				movie.Base.Url = es.URLs[0].URL
+				movie.Base.Subtitles[s.Name] = &dbModel.Subtitle{
+					URL:  s.URL,
+					Type: s.Type,
+				}
+			}
+			for _, s := range data.Sources[1:] {
+				if movie.Base.MoreSource == nil {
+					movie.Base.MoreSource = make(map[string]string, len(data.Sources)-1)
+				}
+				movie.Base.MoreSource[s.Name] = s.URL
 
-				if len(es.Subtitles) == 0 {
-					continue
-				}
-				for _, s := range es.Subtitles {
+				for _, subt := range s.Subtitles {
 					if movie.Base.Subtitles == nil {
-						movie.Base.Subtitles = make(map[string]*dbModel.Subtitle, len(es.Subtitles))
+						movie.Base.Subtitles = make(map[string]*dbModel.Subtitle, len(s.Subtitles))
 					}
-					movie.Base.Subtitles[s.Name] = &dbModel.Subtitle{
-						URL:  s.URL,
-						Type: s.Type,
+					movie.Base.Subtitles[subt.Name] = &dbModel.Subtitle{
+						URL:  subt.URL,
+						Type: subt.Type,
 					}
 				}
 			}
 		} else {
 			for si, es := range data.Sources {
-				if len(es.URLs) == 0 {
+				if len(es.URL) == 0 {
 					if si != len(data.Sources)-1 {
 						continue
 					}
@@ -1304,14 +1309,13 @@ func genVendorMovie(ctx context.Context, user *op.User, opMovie *op.Movie, userA
 				}
 				rawQuery := url.Values{}
 				rawQuery.Set("source", strconv.Itoa(si))
-				rawQuery.Set("id", strconv.Itoa(0))
 				rawQuery.Set("token", userToken)
 				u := url.URL{
 					Path:     rawPath,
 					RawQuery: rawQuery.Encode(),
 				}
 				movie.Base.Url = u.String()
-				movie.Base.Type = utils.GetUrlExtension(es.URLs[0].URL)
+				movie.Base.Type = utils.GetUrlExtension(es.URL)
 
 				if len(es.Subtitles) == 0 {
 					continue

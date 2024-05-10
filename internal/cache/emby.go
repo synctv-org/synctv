@@ -55,12 +55,10 @@ func EmbyAuthorizationCacheWithUserIDInitFunc(userID, serverID string) (*EmbyUse
 }
 
 type EmbySource struct {
-	URLs []struct {
-		URL         string
-		IsTranscode bool
-		Name        string
-	}
-	Subtitles []struct {
+	URL         string
+	IsTranscode bool
+	Name        string
+	Subtitles   []struct {
 		URL   string
 		Type  string
 		Name  string
@@ -160,24 +158,13 @@ func NewEmbyMovieCacheInitFunc(movie *model.Movie) func(ctx context.Context, arg
 		}
 		for i, v := range data.MediaSourceInfo {
 			if movie.Base.VendorInfo.Emby.Transcode && v.TranscodingUrl != "" {
-				resp.Sources[i].URLs = append(resp.Sources[i].URLs, struct {
-					URL         string
-					IsTranscode bool
-					Name        string
-				}{
-					URL:         fmt.Sprintf("%s/emby%s", aucd.Host, v.TranscodingUrl),
-					Name:        v.Name,
-					IsTranscode: true,
-				})
+				resp.Sources[i].URL = fmt.Sprintf("%s/emby%s", aucd.Host, v.TranscodingUrl)
+				resp.Sources[i].IsTranscode = true
+				resp.Sources[i].Name = v.Name
 			} else if v.DirectPlayUrl != "" {
-				resp.Sources[i].URLs = append(resp.Sources[i].URLs, struct {
-					URL         string
-					IsTranscode bool
-					Name        string
-				}{
-					URL:  fmt.Sprintf("%s/emby%s", aucd.Host, v.DirectPlayUrl),
-					Name: v.Name,
-				})
+				resp.Sources[i].URL = fmt.Sprintf("%s/emby%s", aucd.Host, v.DirectPlayUrl)
+				resp.Sources[i].IsTranscode = false
+				resp.Sources[i].Name = v.Name
 			} else {
 				if v.Container == "" {
 					continue
@@ -192,14 +179,8 @@ func NewEmbyMovieCacheInitFunc(movie *model.Movie) func(ctx context.Context, arg
 				query.Set("Static", "true")
 				query.Set("MediaSourceId", v.Id)
 				u.RawQuery = query.Encode()
-				resp.Sources[i].URLs = append(resp.Sources[i].URLs, struct {
-					URL         string
-					IsTranscode bool
-					Name        string
-				}{
-					URL:  u.String(),
-					Name: v.Name,
-				})
+				resp.Sources[i].URL = u.String()
+				resp.Sources[i].Name = v.Name
 			}
 			for _, msi := range v.MediaStreamInfo {
 				switch msi.Type {

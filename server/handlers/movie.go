@@ -30,6 +30,7 @@ import (
 	"github.com/synctv-org/synctv/server/model"
 	"github.com/synctv-org/synctv/utils"
 	"github.com/synctv-org/vendors/api/alist"
+	"github.com/synctv-org/vendors/api/emby"
 	uhc "github.com/zijiren233/go-uhc"
 	"github.com/zijiren233/livelib/protocol/hls"
 	"github.com/zijiren233/livelib/protocol/httpflv"
@@ -294,7 +295,6 @@ func listVendorDynamicMovie(ctx context.Context, user *op.User, room *op.Room, m
 	}
 
 	switch movie.MovieBase.VendorInfo.Vendor {
-	// case dbModel.VendorEmby:
 	case dbModel.VendorAlist:
 		serverID, truePath, err := movie.VendorInfo.Alist.ServerIDAndFilePath()
 		if err != nil {
@@ -338,7 +338,8 @@ func listVendorDynamicMovie(ctx context.Context, user *op.User, room *op.Room, m
 					IsFolder: flr.IsDir,
 					ParentID: dbModel.EmptyNullString(movie.ID),
 					VendorInfo: dbModel.VendorInfo{
-						Vendor: dbModel.VendorAlist,
+						Vendor:  dbModel.VendorAlist,
+						Backend: movie.VendorInfo.Backend,
 						Alist: &dbModel.AlistStreamingInfo{
 							Path: dbModel.FormatAlistPath(serverID, fmt.Sprintf("/%s", strings.Trim(fmt.Sprintf("%s/%s", truePath, flr.Name), "/"))),
 						},
@@ -346,6 +347,58 @@ func listVendorDynamicMovie(ctx context.Context, user *op.User, room *op.Room, m
 				},
 			}
 		}
+
+	case dbModel.VendorEmby:
+		serverID, truePath, err := movie.VendorInfo.Emby.ServerIDAndFilePath()
+		if err != nil {
+			return nil, fmt.Errorf("load emby server id error: %w", err)
+		}
+		if subPath != "" {
+			truePath = subPath
+		}
+		aucd, err := user.EmbyCache().LoadOrStore(ctx, serverID)
+		if err != nil {
+			if errors.Is(err, db.ErrNotFound("vendor")) {
+				return nil, errors.New("emby server not found")
+			}
+			return nil, err
+		}
+		var cli = vendor.LoadEmbyClient(movie.VendorInfo.Backend)
+		data, err := cli.FsList(ctx, &emby.FsListReq{
+			Host:       aucd.Host,
+			Path:       truePath,
+			Token:      aucd.ApiKey,
+			UserId:     aucd.UserID,
+			Limit:      uint64(max),
+			StartIndex: uint64((page - 1) * max),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("emby fs list error: %w", err)
+		}
+		resp.Total = int64(data.Total)
+		resp.Movies = make([]*model.Movie, len(data.Items))
+		for i, flr := range data.Items {
+			resp.Movies[i] = &model.Movie{
+				Id:        movie.ID,
+				CreatedAt: movie.CreatedAt.UnixMilli(),
+				Creator:   op.GetUserName(movie.CreatorID),
+				CreatorId: movie.CreatorID,
+				SubPath:   flr.Id,
+				Base: dbModel.MovieBase{
+					Name:     flr.Name,
+					IsFolder: flr.IsFolder,
+					ParentID: dbModel.EmptyNullString(movie.ID),
+					VendorInfo: dbModel.VendorInfo{
+						Vendor:  dbModel.VendorEmby,
+						Backend: movie.VendorInfo.Backend,
+						Emby: &dbModel.EmbyStreamingInfo{
+							Path: dbModel.FormatEmbyPath(serverID, flr.Id),
+						},
+					},
+				},
+			}
+		}
+
 	default:
 		return nil, fmt.Errorf("%v vendor not implement list dynamic movie", movie.MovieBase.VendorInfo.Vendor)
 	}

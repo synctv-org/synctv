@@ -2,6 +2,8 @@ package model
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	json "github.com/json-iterator/go"
@@ -154,9 +156,37 @@ func (s *SwapMovieReq) Validate() error {
 	return nil
 }
 
+func GenDefaultSubPaths(path string, skipEmpty bool, paths ...*MoviePath) []*MoviePath {
+	if len(paths) == 0 {
+		return nil
+	}
+	id := paths[len(paths)-1].ID
+	path = strings.TrimRight(path, "/")
+	for _, v := range strings.Split(path, `/`) {
+		if v == "" && skipEmpty {
+			continue
+		}
+		if l := len(paths); l != 0 {
+			paths = append(paths, &MoviePath{
+				Name:    v,
+				ID:      id,
+				SubPath: fmt.Sprintf("%s/%s", strings.TrimRight(paths[l-1].SubPath, "/"), v),
+			})
+		} else {
+			paths = append(paths, &MoviePath{
+				Name:    v,
+				ID:      id,
+				SubPath: v,
+			})
+		}
+	}
+	return paths
+}
+
 type MoviePath struct {
-	Name string `json:"name"`
-	ID   string `json:"id"`
+	Name    string `json:"name"`
+	ID      string `json:"id"`
+	SubPath string `json:"subPath"`
 }
 
 type MoviesResp struct {

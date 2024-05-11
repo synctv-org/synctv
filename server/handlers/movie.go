@@ -275,10 +275,10 @@ func getParentMoviePath(room *op.Room, id string) ([]*model.MoviePath, error) {
 		if err != nil {
 			return nil, fmt.Errorf("get movie by id error: %w", err)
 		}
-		paths = append([]*model.MoviePath{{
+		paths = append(paths, &model.MoviePath{
 			Name: p.MovieBase.Name,
 			ID:   p.ID,
-		}}, paths...)
+		})
 		id = p.ParentID.String()
 	}
 	return paths, nil
@@ -347,6 +347,7 @@ func listVendorDynamicMovie(ctx context.Context, user *op.User, room *op.Room, m
 				},
 			}
 		}
+		resp.Paths = model.GenDefaultSubPaths(subPath, true, resp.Paths...)
 
 	case dbModel.VendorEmby:
 		serverID, truePath, err := movie.VendorInfo.Emby.ServerIDAndFilePath()

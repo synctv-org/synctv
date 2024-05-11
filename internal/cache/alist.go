@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -183,15 +184,10 @@ func NewAlistMovieCacheInitFunc(movie *model.Movie, subPath string) func(ctx con
 			return nil, err
 		}
 		if movie.IsFolder {
-			// if strings.HasPrefix(subPath, "/") {
-			// 	truePath = subPath
-			// } else {
-			// 	truePath, err = url.JoinPath(truePath, subPath)
-			// 	if err != nil {
-			// 		return nil, err
-			// 	}
-			// }
-			truePath = subPath
+			truePath, err = url.JoinPath(truePath, subPath)
+			if err != nil {
+				return nil, err
+			}
 		}
 		aucd, err := userCache.LoadOrStore(ctx, serverID)
 		if err != nil {

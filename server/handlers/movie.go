@@ -296,9 +296,13 @@ func listVendorDynamicMovie(ctx context.Context, user *op.User, room *op.Room, m
 	switch movie.MovieBase.VendorInfo.Vendor {
 	// case dbModel.VendorEmby:
 	case dbModel.VendorAlist:
-		serverID, err := movie.VendorInfo.Alist.ServerID()
+		serverID, truePath, err := movie.VendorInfo.Alist.ServerIDAndFilePath()
 		if err != nil {
 			return nil, fmt.Errorf("load alist server id error: %w", err)
+		}
+		truePath, err = url.JoinPath(truePath, subPath)
+		if err != nil {
+			return nil, fmt.Errorf("join path error: %w", err)
 		}
 		aucd, err := user.AlistCache().LoadOrStore(ctx, serverID)
 		if err != nil {
@@ -311,7 +315,7 @@ func listVendorDynamicMovie(ctx context.Context, user *op.User, room *op.Room, m
 		data, err := cli.FsList(ctx, &alist.FsListReq{
 			Token:    aucd.Token,
 			Password: movie.VendorInfo.Alist.Password,
-			Path:     subPath,
+			Path:     truePath,
 			Host:     aucd.Host,
 			Refresh:  false,
 			Page:     uint64(page),
@@ -336,7 +340,7 @@ func listVendorDynamicMovie(ctx context.Context, user *op.User, room *op.Room, m
 					VendorInfo: dbModel.VendorInfo{
 						Vendor: dbModel.VendorAlist,
 						Alist: &dbModel.AlistStreamingInfo{
-							Path: dbModel.FormatAlistPath(serverID, fmt.Sprintf("/%s", strings.Trim(fmt.Sprintf("%s/%s", subPath, flr.Name), "/"))),
+							Path: dbModel.FormatAlistPath(serverID, fmt.Sprintf("/%s", strings.Trim(fmt.Sprintf("%s/%s", truePath, flr.Name), "/"))),
 						},
 					},
 				},

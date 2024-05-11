@@ -73,19 +73,22 @@ type EmbyMovieCacheData struct {
 
 type EmbyMovieCache = refreshcache.RefreshCache[*EmbyMovieCacheData, *EmbyUserCache]
 
-func NewEmbyMovieCache(movie *model.Movie) *EmbyMovieCache {
-	cache := refreshcache.NewRefreshCache(NewEmbyMovieCacheInitFunc(movie), 0)
-	cache.SetClearFunc(NewEmbyMovieClearCacheFunc(movie))
+func NewEmbyMovieCache(movie *model.Movie, subPath string) *EmbyMovieCache {
+	cache := refreshcache.NewRefreshCache(NewEmbyMovieCacheInitFunc(movie, subPath), 0)
+	cache.SetClearFunc(NewEmbyMovieClearCacheFunc(movie, subPath))
 	return cache
 }
 
-func NewEmbyMovieClearCacheFunc(movie *model.Movie) func(ctx context.Context, args ...*EmbyUserCache) error {
+func NewEmbyMovieClearCacheFunc(movie *model.Movie, subPath string) func(ctx context.Context, args ...*EmbyUserCache) error {
 	return func(ctx context.Context, args ...*MapCache[*EmbyUserCacheData, struct{}]) error {
-		if !movie.Base.VendorInfo.Emby.Transcode {
+		if !movie.MovieBase.VendorInfo.Emby.Transcode {
 			return nil
 		}
+		if len(args) == 0 {
+			return errors.New("need emby user cache")
+		}
 
-		serverID, _, err := model.GetEmbyServerIdFromPath(movie.Base.VendorInfo.Emby.Path)
+		serverID, err := movie.MovieBase.VendorInfo.Emby.ServerID()
 		if err != nil {
 			return err
 		}
@@ -115,19 +118,25 @@ func NewEmbyMovieClearCacheFunc(movie *model.Movie) func(ctx context.Context, ar
 	}
 }
 
-func NewEmbyMovieCacheInitFunc(movie *model.Movie) func(ctx context.Context, args ...*EmbyUserCache) (*EmbyMovieCacheData, error) {
+func NewEmbyMovieCacheInitFunc(movie *model.Movie, subPath string) func(ctx context.Context, args ...*EmbyUserCache) (*EmbyMovieCacheData, error) {
 	return func(ctx context.Context, args ...*EmbyUserCache) (*EmbyMovieCacheData, error) {
 		if len(args) == 0 {
 			return nil, errors.New("need emby user cache")
+		}
+		if movie.IsFolder && subPath == "" {
+			return nil, errors.New("sub path is empty")
 		}
 		var (
 			serverID string
 			err      error
 			truePath string
 		)
-		serverID, truePath, err = model.GetEmbyServerIdFromPath(movie.Base.VendorInfo.Emby.Path)
+		serverID, truePath, err = movie.MovieBase.VendorInfo.Emby.ServerIDAndFilePath()
 		if err != nil {
 			return nil, err
+		}
+		if movie.IsFolder {
+			truePath = subPath
 		}
 
 		aucd, err := args[0].LoadOrStore(ctx, serverID)
@@ -156,7 +165,7 @@ func NewEmbyMovieCacheInitFunc(movie *model.Movie) func(ctx context.Context, arg
 			return nil, err
 		}
 		for i, v := range data.MediaSourceInfo {
-			if movie.Base.VendorInfo.Emby.Transcode && v.TranscodingUrl != "" {
+			if movie.MovieBase.VendorInfo.Emby.Transcode && v.TranscodingUrl != "" {
 				resp.Sources[i].URL = fmt.Sprintf("%s/emby%s", aucd.Host, v.TranscodingUrl)
 				resp.Sources[i].IsTranscode = true
 				resp.Sources[i].Name = v.Name

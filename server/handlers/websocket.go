@@ -238,8 +238,8 @@ func handleElementMsg(cli *op.Client, msg *pb.ElementMessage) error {
 		})
 	case pb.ElementMessageType_CHECK_EXPIRED:
 		current := cli.Room().Current()
-		if msg.ExpireId != 0 && current.MovieID != "" {
-			currentMovie, err := cli.Room().GetMovieByID(current.MovieID)
+		if msg.ExpireId != 0 && current.Movie.ID != "" {
+			currentMovie, err := cli.Room().GetMovieByID(current.Movie.ID)
 			if err != nil {
 				return cli.Send(&pb.ElementMessage{
 					Type:  pb.ElementMessageType_ERROR,

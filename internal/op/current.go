@@ -11,9 +11,13 @@ type current struct {
 }
 
 type Current struct {
-	MovieID string
-	IsLive  bool
-	Status  Status
+	Movie  CurrentMovie
+	Status Status
+}
+
+type CurrentMovie struct {
+	ID     string
+	IsLive bool
 }
 
 func newCurrent() *current {
@@ -46,12 +50,11 @@ func (c *current) Current() Current {
 	return c.current
 }
 
-func (c *current) SetMovie(movieID string, isLive, play bool) {
+func (c *current) SetMovie(movie CurrentMovie, play bool) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 
-	c.current.MovieID = movieID
-	c.current.IsLive = isLive
+	c.current.Movie = movie
 	c.current.SetSeek(0, 0)
 	c.current.Status.Playing = play
 }
@@ -80,7 +83,7 @@ func (c *current) SetSeekRate(seek, rate, timeDiff float64) *Status {
 }
 
 func (c *Current) UpdateStatus() Status {
-	if c.IsLive {
+	if c.Movie.IsLive {
 		c.Status.lastUpdate = time.Now()
 		return c.Status
 	}
@@ -100,7 +103,7 @@ func (c *Current) setLiveStatus() Status {
 }
 
 func (c *Current) SetStatus(playing bool, seek, rate, timeDiff float64) Status {
-	if c.IsLive {
+	if c.Movie.IsLive {
 		return c.setLiveStatus()
 	}
 	c.Status.Playing = playing
@@ -115,7 +118,7 @@ func (c *Current) SetStatus(playing bool, seek, rate, timeDiff float64) Status {
 }
 
 func (c *Current) SetSeekRate(seek, rate, timeDiff float64) Status {
-	if c.IsLive {
+	if c.Movie.IsLive {
 		return c.setLiveStatus()
 	}
 	if c.Status.Playing {
@@ -129,7 +132,7 @@ func (c *Current) SetSeekRate(seek, rate, timeDiff float64) Status {
 }
 
 func (c *Current) SetSeek(seek, timeDiff float64) Status {
-	if c.IsLive {
+	if c.Movie.IsLive {
 		return c.setLiveStatus()
 	}
 	if c.Status.Playing {

@@ -16,10 +16,31 @@ func CreateMovies(movies []*model.Movie) error {
 	})
 }
 
-func GetAllMoviesByRoomID(roomID string) []*model.Movie {
+func WithParentMovieID(parentMovieID string) func(*gorm.DB) *gorm.DB {
+	return func(db *gorm.DB) *gorm.DB {
+		if parentMovieID == "" {
+			return db.Where("base_parent_id IS NULL")
+		}
+		return db.Where("base_parent_id = ?", parentMovieID)
+	}
+}
+
+func GetMoviesByRoomID(roomID string, scopes ...func(*gorm.DB) *gorm.DB) ([]*model.Movie, error) {
 	movies := []*model.Movie{}
-	db.Where("room_id = ?", roomID).Order("position ASC").Find(&movies)
-	return movies
+	err := db.Where("room_id = ?", roomID).Order("position ASC").Scopes(scopes...).Find(&movies).Error
+	return movies, err
+}
+
+func GetMoviesCountByRoomID(roomID string, scopes ...func(*gorm.DB) *gorm.DB) (int64, error) {
+	var count int64
+	err := db.Model(&model.Movie{}).Where("room_id = ?", roomID).Scopes(scopes...).Count(&count).Error
+	return count, err
+}
+
+func GetMovieByID(roomID, id string, scopes ...func(*gorm.DB) *gorm.DB) (*model.Movie, error) {
+	movie := &model.Movie{}
+	err := db.Where("room_id = ? AND id = ?", roomID, id).Scopes(scopes...).First(movie).Error
+	return movie, HandleNotFound(err, "room or movie")
 }
 
 func DeleteMovieByID(roomID, id string) error {
@@ -37,7 +58,7 @@ func DeleteMoviesByID(roomID string, ids []string) error {
 	})
 }
 
-func LoadAndDeleteMovieByID(roomID, id string, columns ...clause.Column) (*model.Movie, error) {
+func LoadAndDeleteMovieByID(roomID, id string, columns []clause.Column) (*model.Movie, error) {
 	movie := &model.Movie{}
 	err := db.Unscoped().Clauses(clause.Returning{Columns: columns}).Where("room_id = ? AND id = ?", roomID, id).Delete(movie).Error
 	return movie, HandleNotFound(err, "room or movie")

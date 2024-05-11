@@ -20,7 +20,7 @@ var (
 	ErrEmptyIds = errors.New("empty ids")
 )
 
-type PushMovieReq model.BaseMovie
+type PushMovieReq model.MovieBase
 
 func (p *PushMovieReq) Decode(ctx *gin.Context) error {
 	return json.NewDecoder(ctx.Request.Body).Decode(p)
@@ -90,6 +90,15 @@ func (i *IdCanEmptyReq) Validate() error {
 	return nil
 }
 
+type SetRoomCurrentMovieReq struct {
+	IdCanEmptyReq
+	SubPath string `json:"subPath"`
+}
+
+func (s *SetRoomCurrentMovieReq) Decode(ctx *gin.Context) error {
+	return json.NewDecoder(ctx.Request.Body).Decode(s)
+}
+
 type EditMovieReq struct {
 	IdReq
 	PushMovieReq
@@ -145,16 +154,29 @@ func (s *SwapMovieReq) Validate() error {
 	return nil
 }
 
-type MovieResp struct {
+type MoviePath struct {
+	Name string `json:"name"`
+	ID   string `json:"id"`
+}
+
+type MoviesResp struct {
+	Paths   []*MoviePath `json:"paths"`
+	Movies  []*Movie     `json:"movies"`
+	Total   int64        `json:"total"`
+	Dynamic bool         `json:"dynamic"`
+}
+
+type Movie struct {
 	Id        string          `json:"id"`
 	CreatedAt int64           `json:"createAt"`
-	Base      model.BaseMovie `json:"base"`
+	Base      model.MovieBase `json:"base"`
 	Creator   string          `json:"creator"`
 	CreatorId string          `json:"creatorId"`
+	SubPath   string          `json:"subPath"`
 }
 
 type CurrentMovieResp struct {
-	Status   op.Status  `json:"status"`
-	Movie    *MovieResp `json:"movie"`
-	ExpireId uint64     `json:"expireId"`
+	Status   op.Status `json:"status"`
+	Movie    *Movie    `json:"movie"`
+	ExpireId uint64    `json:"expireId"`
 }

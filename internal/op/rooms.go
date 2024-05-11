@@ -67,9 +67,7 @@ func LoadOrInitRoom(room *model.Room) (*RoomEntry, error) {
 		Room:    *room,
 		version: crc32.ChecksumIEEE(room.HashedPassword),
 		current: newCurrent(),
-		movies: movies{
-			roomID: room.ID,
-		},
+		movies:  &movies{roomID: room.ID},
 	}, time.Duration(settings.RoomTTL.Get())*time.Hour)
 	return i, nil
 }

@@ -284,7 +284,16 @@ func getParentMoviePath(room *op.Room, id string) ([]*model.MoviePath, error) {
 	return paths, nil
 }
 
-func listVendorDynamicMovie(ctx context.Context, user *op.User, room *op.Room, movie *dbModel.Movie, subPath string, page, max int) (*model.MoviesResp, error) {
+func listVendorDynamicMovie(ctx context.Context, reqUser *op.User, room *op.Room, movie *dbModel.Movie, subPath string, page, max int) (*model.MoviesResp, error) {
+	// if reqUser.ID != movie.CreatorID {
+	// 	return nil, fmt.Errorf("list vendor dynamic folder error: %w", dbModel.ErrNoPermission)
+	// }
+	creatorE, err := op.LoadOrInitUserByID(movie.CreatorID)
+	if err != nil {
+		return nil, err
+	}
+	user := creatorE.Value()
+
 	paths, err := getParentMoviePath(room, movie.ID)
 	if err != nil {
 		return nil, fmt.Errorf("get parent movie path error: %w", err)

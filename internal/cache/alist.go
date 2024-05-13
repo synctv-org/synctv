@@ -184,10 +184,15 @@ func NewAlistMovieCacheInitFunc(movie *model.Movie, subPath string) func(ctx con
 			return nil, err
 		}
 		if movie.IsFolder {
-			truePath, err = url.JoinPath(truePath, subPath)
+			newPath, err := url.JoinPath(truePath, subPath)
 			if err != nil {
 				return nil, err
 			}
+			// check new path is in parent path
+			if !strings.HasPrefix(newPath, truePath) {
+				return nil, errors.New("sub path is not in parent path")
+			}
+			truePath = newPath
 		}
 		aucd, err := userCache.LoadOrStore(ctx, serverID)
 		if err != nil {

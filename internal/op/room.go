@@ -81,8 +81,18 @@ func (r *Room) CheckVersion(version uint32) bool {
 }
 
 func (r *Room) UpdateMovie(movieId string, movie *model.MovieBase) error {
-	if r.current.current.Movie.ID == movieId {
-		return errors.New("cannot update current movie")
+	cid := r.current.current.Movie.ID
+	if cid != "" {
+		if cid == movieId {
+			return errors.New("cannot update current movie")
+		}
+		ok, err := r.IsParentOf(cid, movieId)
+		if err != nil {
+			return fmt.Errorf("check parent failed: %w", err)
+		}
+		if ok {
+			return errors.New("cannot update current movie's parent")
+		}
 	}
 	return r.movies.Update(movieId, movie)
 }
@@ -329,9 +339,26 @@ func (r *Room) SetPassword(password string) error {
 	return db.SetRoomHashedPassword(r.ID, hashedPassword)
 }
 
+func (r *Room) IsParentOf(movieID, parentID string) (bool, error) {
+	return r.movies.IsParentOf(movieID, parentID)
+}
+
 func (r *Room) DeleteMovieByID(id string) error {
-	if r.current.current.Movie.ID == id {
-		return errors.New("cannot delete current movie")
+	if id == "" {
+		return errors.New("movie id is nil")
+	}
+	cid := r.current.current.Movie.ID
+	if cid != "" {
+		if cid == id {
+			return errors.New("cannot delete current movie")
+		}
+		ok, err := r.IsParentOf(cid, id)
+		if err != nil {
+			return fmt.Errorf("check parent failed: %w", err)
+		}
+		if ok {
+			return errors.New("cannot delete current movie's parent")
+		}
 	}
 	return r.movies.DeleteMovieByID(id)
 }
@@ -342,6 +369,13 @@ func (r *Room) DeleteMoviesByID(ids []string) error {
 		for _, id := range ids {
 			if id == cid {
 				return errors.New("cannot delete current movie")
+			}
+			ok, err := r.IsParentOf(cid, id)
+			if err != nil {
+				return fmt.Errorf("check parent failed: %w", err)
+			}
+			if ok {
+				return errors.New("cannot delete current movie's parent")
 			}
 		}
 	}

@@ -196,3 +196,18 @@ func (m *movies) GetMoviesWithPage(page, pageSize int, parentID string) ([]*mode
 	}
 	return movies, count, nil
 }
+
+// IsParentOf check if parentID is the parent of id
+func (m *movies) IsParentOf(parentID, id string) (bool, error) {
+	mv, err := m.GetMovieByID(id)
+	if err != nil {
+		return false, err
+	}
+	if mv.ParentID == "" {
+		return false, nil
+	}
+	if mv.ParentID == model.EmptyNullString(parentID) {
+		return true, nil
+	}
+	return m.IsParentOf(string(mv.ParentID), id)
+}

@@ -23,7 +23,7 @@ type VendorFSListResp[T any] struct {
 func GenDefaultPaths(path string, skipEmpty bool, paths ...*Path) []*Path {
 	path = strings.TrimRight(path, "/")
 	for _, v := range strings.Split(path, `/`) {
-		if skipEmpty && v == "" {
+		if v == "" && skipEmpty {
 			continue
 		}
 		if l := len(paths); l != 0 {

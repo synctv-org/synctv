@@ -1,7 +1,6 @@
 package op
 
 import (
-	"database/sql"
 	"errors"
 	"hash/crc32"
 	"sync/atomic"
@@ -107,7 +106,7 @@ func (u *User) CreateRoom(name, password string, conf ...db.CreateRoomConfig) (*
 	return CreateRoom(name, password, maxCount, append(conf, db.WithCreator(&u.User))...)
 }
 
-func (u *User) NewMovie(movie *model.BaseMovie) (*model.Movie, error) {
+func (u *User) NewMovie(movie *model.MovieBase) (*model.Movie, error) {
 	if movie == nil {
 		return nil, errors.New("movie is nil")
 	}
@@ -122,12 +121,12 @@ func (u *User) NewMovie(movie *model.BaseMovie) (*model.Movie, error) {
 		}
 	}
 	return &model.Movie{
-		Base:      *movie,
+		MovieBase: *movie,
 		CreatorID: u.ID,
 	}, nil
 }
 
-func (u *User) AddRoomMovie(room *Room, movie *model.BaseMovie) (*model.Movie, error) {
+func (u *User) AddRoomMovie(room *Room, movie *model.MovieBase) (*model.Movie, error) {
 	if !u.HasRoomPermission(room, model.PermissionAddMovie) {
 		return nil, model.ErrNoPermission
 	}
@@ -148,7 +147,7 @@ func (u *User) AddRoomMovie(room *Room, movie *model.BaseMovie) (*model.Movie, e
 	})
 }
 
-func (u *User) NewMovies(movies []*model.BaseMovie) ([]*model.Movie, error) {
+func (u *User) NewMovies(movies []*model.MovieBase) ([]*model.Movie, error) {
 	var ms = make([]*model.Movie, len(movies))
 	for i, m := range movies {
 		movie, err := u.NewMovie(m)
@@ -160,7 +159,7 @@ func (u *User) NewMovies(movies []*model.BaseMovie) ([]*model.Movie, error) {
 	return ms, nil
 }
 
-func (u *User) AddRoomMovies(room *Room, movies []*model.BaseMovie) ([]*model.Movie, error) {
+func (u *User) AddRoomMovies(room *Room, movies []*model.MovieBase) ([]*model.Movie, error) {
 	if !u.HasRoomPermission(room, model.PermissionAddMovie) {
 		return nil, model.ErrNoPermission
 	}
@@ -308,7 +307,7 @@ func (u *User) SetUsername(username string) error {
 	return nil
 }
 
-func (u *User) UpdateRoomMovie(room *Room, movieID string, movie *model.BaseMovie) error {
+func (u *User) UpdateRoomMovie(room *Room, movieID string, movie *model.MovieBase) error {
 	if !u.HasRoomPermission(room, model.PermissionEditMovie) {
 		return model.ErrNoPermission
 	}
@@ -389,6 +388,23 @@ func (u *User) ClearRoomMovies(room *Room) error {
 	})
 }
 
+func (u *User) ClearRoomMoviesByParentID(room *Room, parentID string) error {
+	if !u.HasRoomPermission(room, model.PermissionDeleteMovie) {
+		return model.ErrNoPermission
+	}
+	err := room.ClearMoviesByParentID(parentID)
+	if err != nil {
+		return err
+	}
+	return room.Broadcast(&pb.ElementMessage{
+		Type: pb.ElementMessageType_MOVIES_CHANGED,
+		MoviesChanged: &pb.Sender{
+			Username: u.Username,
+			Userid:   u.ID,
+		},
+	})
+}
+
 func (u *User) SwapRoomMoviePositions(room *Room, id1, id2 string) error {
 	if !u.HasRoomPermission(room, model.PermissionEditMovie) {
 		return model.ErrNoPermission
@@ -406,11 +422,11 @@ func (u *User) SwapRoomMoviePositions(room *Room, id1, id2 string) error {
 	})
 }
 
-func (u *User) SetRoomCurrentMovie(room *Room, movieID string, play bool) error {
+func (u *User) SetRoomCurrentMovie(room *Room, movieID string, subPath string, play bool) error {
 	if !u.HasRoomPermission(room, model.PermissionSetCurrentMovie) {
 		return model.ErrNoPermission
 	}
-	err := room.SetCurrentMovie(movieID, play)
+	err := room.SetCurrentMovie(movieID, subPath, play)
 	if err != nil {
 		return err
 	}
@@ -444,10 +460,7 @@ func (u *User) BindEmail(e string) error {
 	if err != nil {
 		return err
 	}
-	u.Email = sql.NullString{
-		String: e,
-		Valid:  true,
-	}
+	u.Email = model.EmptyNullString(e)
 	return nil
 }
 
@@ -456,40 +469,40 @@ func (u *User) UnbindEmail() error {
 	if err != nil {
 		return err
 	}
-	u.Email = sql.NullString{}
+	u.Email = ""
 	return nil
 }
 
 var ErrEmailUnbound = errors.New("email unbound")
 
 func (u *User) SendTestEmail() error {
-	if u.Email.String == "" {
+	if u.Email == "" {
 		return ErrEmailUnbound
 	}
 
-	return email.SendTestEmail(u.Username, u.Email.String)
+	return email.SendTestEmail(u.Username, u.Email.String())
 }
 
 func (u *User) SendRetrievePasswordCaptchaEmail(host string) error {
-	if u.Email.String == "" {
+	if u.Email == "" {
 		return ErrEmailUnbound
 	}
 
-	return email.SendRetrievePasswordCaptchaEmail(u.ID, u.Email.String, host)
+	return email.SendRetrievePasswordCaptchaEmail(u.ID, u.Email.String(), host)
 }
 
 func (u *User) VerifyRetrievePasswordCaptchaEmail(e, captcha string) (bool, error) {
-	if u.Email.String != e {
+	if u.Email.String() != e {
 		return false, errors.New("email has changed, please resend the captcha email")
 	}
 	return email.VerifyRetrievePasswordCaptchaEmail(u.ID, e, captcha)
 }
 
-func (u *User) GetRoomMoviesWithPage(room *Room, page, pageSize int) ([]*Movie, int) {
-	if u.HasRoomPermission(room, model.PermissionGetMovieList) {
-		return room.GetMoviesWithPage(page, pageSize, "")
+func (u *User) GetRoomMoviesWithPage(room *Room, page, pageSize int, parentID string) ([]*model.Movie, int64, error) {
+	if !u.HasRoomPermission(room, model.PermissionGetMovieList) {
+		return nil, 0, model.ErrNoPermission
 	}
-	return room.GetMoviesWithPage(page, pageSize, u.ID)
+	return room.GetMoviesWithPage(page, pageSize, parentID)
 }
 
 func (u *User) SetRoomCurrentSeekRate(room *Room, seek, rate, timeDiff float64) (*Status, error) {

@@ -50,9 +50,9 @@ func BilibiliSharedMpdCacheInitFunc(ctx context.Context, movie *model.Movie, arg
 	} else {
 		cookies = vendorInfo.Cookies
 	}
-	cli := vendor.LoadBilibiliClient(movie.Base.VendorInfo.Backend)
+	cli := vendor.LoadBilibiliClient(movie.MovieBase.VendorInfo.Backend)
 	var m, hevcM *mpd.MPD
-	biliInfo := movie.Base.VendorInfo.Bilibili
+	biliInfo := movie.MovieBase.VendorInfo.Bilibili
 	switch {
 	case biliInfo.Epid != 0:
 		resp, err := cli.GetDashPGCURL(ctx, &bilibili.GetDashPGCURLReq{
@@ -177,9 +177,9 @@ func BilibiliNoSharedMovieCacheInitFunc(ctx context.Context, movie *model.Movie,
 	} else {
 		cookies = vendorInfo.Cookies
 	}
-	cli := vendor.LoadBilibiliClient(movie.Base.VendorInfo.Backend)
+	cli := vendor.LoadBilibiliClient(movie.MovieBase.VendorInfo.Backend)
 	var u string
-	biliInfo := movie.Base.VendorInfo.Bilibili
+	biliInfo := movie.MovieBase.VendorInfo.Bilibili
 	switch {
 	case biliInfo.Epid != 0:
 		resp, err := cli.GetPGCURL(ctx, &bilibili.GetPGCURLReq{
@@ -239,7 +239,7 @@ func BilibiliSubtitleCacheInitFunc(ctx context.Context, movie *model.Movie, args
 		return nil, errors.New("no bilibili user cache data")
 	}
 
-	biliInfo := movie.Base.VendorInfo.Bilibili
+	biliInfo := movie.MovieBase.VendorInfo.Bilibili
 	if biliInfo.Bvid == "" || biliInfo.Cid == 0 {
 		return nil, errors.New("bvid or cid is empty")
 	}
@@ -255,7 +255,7 @@ func BilibiliSubtitleCacheInitFunc(ctx context.Context, movie *model.Movie, args
 		cookies = vendorInfo.Cookies
 	}
 
-	cli := vendor.LoadBilibiliClient(movie.Base.VendorInfo.Backend)
+	cli := vendor.LoadBilibiliClient(movie.MovieBase.VendorInfo.Backend)
 	resp, err := cli.GetSubtitles(ctx, &bilibili.GetSubtitlesReq{
 		Cookies: utils.HttpCookieToMap(cookies),
 		Bvid:    biliInfo.Bvid,
@@ -348,9 +348,9 @@ func genBilibiliLiveM3U8ListFile(urls []*bilibili.LiveStream) []byte {
 }
 
 func BilibiliLiveCacheInitFunc(ctx context.Context, movie *model.Movie, args ...struct{}) ([]byte, error) {
-	cli := vendor.LoadBilibiliClient(movie.Base.VendorInfo.Backend)
+	cli := vendor.LoadBilibiliClient(movie.MovieBase.VendorInfo.Backend)
 	resp, err := cli.GetLiveStreams(ctx, &bilibili.GetLiveStreamsReq{
-		Cid: movie.Base.VendorInfo.Bilibili.Cid,
+		Cid: movie.MovieBase.VendorInfo.Bilibili.Cid,
 		Hls: true,
 	})
 	if err != nil {

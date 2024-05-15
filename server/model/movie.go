@@ -2,6 +2,8 @@ package model
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	json "github.com/json-iterator/go"
@@ -20,7 +22,7 @@ var (
 	ErrEmptyIds = errors.New("empty ids")
 )
 
-type PushMovieReq model.BaseMovie
+type PushMovieReq model.MovieBase
 
 func (p *PushMovieReq) Decode(ctx *gin.Context) error {
 	return json.NewDecoder(ctx.Request.Body).Decode(p)
@@ -90,6 +92,15 @@ func (i *IdCanEmptyReq) Validate() error {
 	return nil
 }
 
+type SetRoomCurrentMovieReq struct {
+	IdCanEmptyReq
+	SubPath string `json:"subPath"`
+}
+
+func (s *SetRoomCurrentMovieReq) Decode(ctx *gin.Context) error {
+	return json.NewDecoder(ctx.Request.Body).Decode(s)
+}
+
 type EditMovieReq struct {
 	IdReq
 	PushMovieReq
@@ -145,16 +156,72 @@ func (s *SwapMovieReq) Validate() error {
 	return nil
 }
 
-type MovieResp struct {
+func GenDefaultSubPaths(path string, skipEmpty bool, paths ...*MoviePath) []*MoviePath {
+	if len(paths) == 0 {
+		return nil
+	}
+	id := paths[len(paths)-1].ID
+	path = strings.TrimRight(path, "/")
+	for _, v := range strings.Split(path, `/`) {
+		if v == "" && skipEmpty {
+			continue
+		}
+		if l := len(paths); l != 0 {
+			paths = append(paths, &MoviePath{
+				Name:    v,
+				ID:      id,
+				SubPath: fmt.Sprintf("%s/%s", strings.TrimRight(paths[l-1].SubPath, "/"), v),
+			})
+		} else {
+			paths = append(paths, &MoviePath{
+				Name:    v,
+				ID:      id,
+				SubPath: v,
+			})
+		}
+	}
+	return paths
+}
+
+type MoviePath struct {
+	Name    string `json:"name"`
+	ID      string `json:"id"`
+	SubPath string `json:"subPath"`
+}
+
+type MoviesResp struct {
+	Paths   []*MoviePath `json:"paths"`
+	Movies  []*Movie     `json:"movies"`
+	Total   int64        `json:"total"`
+	Dynamic bool         `json:"dynamic"`
+}
+
+type Movie struct {
 	Id        string          `json:"id"`
 	CreatedAt int64           `json:"createAt"`
-	Base      model.BaseMovie `json:"base"`
+	Base      model.MovieBase `json:"base"`
 	Creator   string          `json:"creator"`
 	CreatorId string          `json:"creatorId"`
+	SubPath   string          `json:"subPath"`
 }
 
 type CurrentMovieResp struct {
-	Status   op.Status  `json:"status"`
-	Movie    *MovieResp `json:"movie"`
-	ExpireId uint64     `json:"expireId"`
+	Status   op.Status `json:"status"`
+	Movie    *Movie    `json:"movie"`
+	ExpireId uint64    `json:"expireId"`
+}
+
+type ClearMoviesReq struct {
+	ParentId string `json:"parentId"`
+}
+
+func (c *ClearMoviesReq) Decode(ctx *gin.Context) error {
+	return json.NewDecoder(ctx.Request.Body).Decode(c)
+}
+
+func (c *ClearMoviesReq) Validate() error {
+	if c.ParentId != "" && len(c.ParentId) != 32 {
+		return fmt.Errorf("parent id length must be empty or 32")
+	}
+	return nil
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path"
 	"strings"
 	"time"
 
@@ -80,8 +81,8 @@ func AlistAuthorizationCacheWithConfigInitFunc(ctx context.Context, v *model.Ali
 
 type AlistMovieCache = refreshcache.RefreshCache[*AlistMovieCacheData, *AlistMovieCacheFuncArgs]
 
-func NewAlistMovieCache(movie *model.Movie) *AlistMovieCache {
-	return refreshcache.NewRefreshCache(NewAlistMovieCacheInitFunc(movie), time.Minute*14)
+func NewAlistMovieCache(movie *model.Movie, subPath string) *AlistMovieCache {
+	return refreshcache.NewRefreshCache(NewAlistMovieCacheInitFunc(movie, subPath), time.Minute*14)
 }
 
 type AlistProvider = string
@@ -161,7 +162,7 @@ type AlistMovieCacheFuncArgs struct {
 	UserAgent string
 }
 
-func NewAlistMovieCacheInitFunc(movie *model.Movie) func(ctx context.Context, args ...*AlistMovieCacheFuncArgs) (*AlistMovieCacheData, error) {
+func NewAlistMovieCacheInitFunc(movie *model.Movie, subPath string) func(ctx context.Context, args ...*AlistMovieCacheFuncArgs) (*AlistMovieCacheData, error) {
 	return func(ctx context.Context, args ...*AlistMovieCacheFuncArgs) (*AlistMovieCacheData, error) {
 		if len(args) == 0 {
 			return nil, errors.New("need alist user cache")
@@ -170,14 +171,25 @@ func NewAlistMovieCacheInitFunc(movie *model.Movie) func(ctx context.Context, ar
 		if userCache == nil {
 			return nil, errors.New("need alist user cache")
 		}
+		if movie.IsFolder && subPath == "" {
+			return nil, errors.New("sub path is empty")
+		}
 		var (
 			serverID string
 			err      error
 			truePath string
 		)
-		serverID, truePath, err = model.GetAlistServerIdFromPath(movie.Base.VendorInfo.Alist.Path)
+		serverID, truePath, err = movie.MovieBase.VendorInfo.Alist.ServerIDAndFilePath()
 		if err != nil {
 			return nil, err
+		}
+		if movie.IsFolder {
+			newPath := path.Join(truePath, subPath)
+			// check new path is in parent path
+			if !strings.HasPrefix(newPath, truePath) {
+				return nil, errors.New("sub path is not in parent path")
+			}
+			truePath = newPath
 		}
 		aucd, err := userCache.LoadOrStore(ctx, serverID)
 		if err != nil {
@@ -186,12 +198,12 @@ func NewAlistMovieCacheInitFunc(movie *model.Movie) func(ctx context.Context, ar
 		if aucd.Host == "" {
 			return nil, errors.New("not bind alist vendor")
 		}
-		cli := vendor.LoadAlistClient(movie.Base.VendorInfo.Backend)
+		cli := vendor.LoadAlistClient(movie.MovieBase.VendorInfo.Backend)
 		fg, err := cli.FsGet(ctx, &alist.FsGetReq{
 			Host:      aucd.Host,
 			Token:     aucd.Token,
 			Path:      truePath,
-			Password:  movie.Base.VendorInfo.Alist.Password,
+			Password:  movie.MovieBase.VendorInfo.Alist.Password,
 			UserAgent: args[0].UserAgent,
 		})
 		if err != nil {
@@ -214,7 +226,7 @@ func NewAlistMovieCacheInitFunc(movie *model.Movie) func(ctx context.Context, ar
 					Host:      aucd.Host,
 					Token:     aucd.Token,
 					Path:      prefix + related.Name,
-					Password:  movie.Base.VendorInfo.Alist.Password,
+					Password:  movie.MovieBase.VendorInfo.Alist.Password,
 					UserAgent: args[0].UserAgent,
 				})
 				if err != nil {
@@ -248,7 +260,7 @@ func NewAlistMovieCacheInitFunc(movie *model.Movie) func(ctx context.Context, ar
 				Host:     aucd.Host,
 				Token:    aucd.Token,
 				Path:     truePath,
-				Password: movie.Base.VendorInfo.Alist.Password,
+				Password: movie.MovieBase.VendorInfo.Alist.Password,
 				Method:   "video_preview",
 			})
 			if err != nil {

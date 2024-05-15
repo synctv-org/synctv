@@ -23,7 +23,7 @@ type Room struct {
 	current  *current
 	initOnce utils.Once
 	hub      *Hub
-	movies   movies
+	movies   *movies
 	members  rwmap.RWMap[string, *model.RoomMember]
 }
 
@@ -80,9 +80,19 @@ func (r *Room) CheckVersion(version uint32) bool {
 	return atomic.LoadUint32(&r.version) == version
 }
 
-func (r *Room) UpdateMovie(movieId string, movie *model.BaseMovie) error {
-	if r.current.current.MovieID == movieId {
-		return errors.New("cannot update current movie")
+func (r *Room) UpdateMovie(movieId string, movie *model.MovieBase) error {
+	cid := r.current.current.Movie.ID
+	if cid != "" {
+		if cid == movieId {
+			return errors.New("cannot update current movie")
+		}
+		ok, err := r.IsParentOf(cid, movieId)
+		if err != nil {
+			return fmt.Errorf("check parent failed: %w", err)
+		}
+		if ok {
+			return errors.New("cannot update current movie's parent")
+		}
 	}
 	return r.movies.Update(movieId, movie)
 }
@@ -329,22 +339,46 @@ func (r *Room) SetPassword(password string) error {
 	return db.SetRoomHashedPassword(r.ID, hashedPassword)
 }
 
-func (r *Room) GetMoviesCount() int {
-	return r.movies.Len()
+func (r *Room) IsParentOf(movieID, parentID string) (bool, error) {
+	if parentID == "" {
+		return true, nil
+	}
+	return r.movies.IsParentOf(movieID, parentID)
 }
 
 func (r *Room) DeleteMovieByID(id string) error {
-	if r.current.current.MovieID == id {
-		return errors.New("cannot delete current movie")
+	if id == "" {
+		return errors.New("movie id is nil")
+	}
+	cid := r.current.current.Movie.ID
+	if cid != "" {
+		if cid == id {
+			return errors.New("cannot delete current movie")
+		}
+		ok, err := r.IsParentOf(cid, id)
+		if err != nil {
+			return fmt.Errorf("check parent failed: %w", err)
+		}
+		if ok {
+			return errors.New("cannot delete current movie's parent")
+		}
 	}
 	return r.movies.DeleteMovieByID(id)
 }
 
 func (r *Room) DeleteMoviesByID(ids []string) error {
-	if r.current.current.MovieID != "" {
+	cid := r.current.current.Movie.ID
+	if cid != "" {
 		for _, id := range ids {
-			if id == r.current.current.MovieID {
+			if id == cid {
 				return errors.New("cannot delete current movie")
+			}
+			ok, err := r.IsParentOf(cid, id)
+			if err != nil {
+				return fmt.Errorf("check parent failed: %w", err)
+			}
+			if ok {
+				return errors.New("cannot delete current movie's parent")
 			}
 		}
 	}
@@ -352,8 +386,21 @@ func (r *Room) DeleteMoviesByID(ids []string) error {
 }
 
 func (r *Room) ClearMovies() error {
-	_ = r.SetCurrentMovie("", false)
-	return r.movies.Clear()
+	return r.ClearMoviesByParentID("")
+}
+
+func (r *Room) ClearMoviesByParentID(parentID string) error {
+	cid := r.current.current.Movie.ID
+	if cid != "" {
+		ok, err := r.IsParentOf(cid, parentID)
+		if err != nil {
+			return fmt.Errorf("check parent failed: %w", err)
+		}
+		if ok {
+			return errors.New("cannot delete current movie's parent")
+		}
+	}
+	return r.movies.DeleteMovieByParentID(parentID)
 }
 
 func (r *Room) GetMovieByID(id string) (*Movie, error) {
@@ -365,57 +412,62 @@ func (r *Room) Current() *Current {
 	return &c
 }
 
-func (r *Room) CurrentMovieID() string {
-	return r.current.current.MovieID
+func (r *Room) CurrentMovie() CurrentMovie {
+	return r.current.current.Movie
 }
 
 var ErrNoCurrentMovie = errors.New("no current movie")
 
-func (r *Room) CurrentMovie() (*Movie, error) {
-	if r.current.current.MovieID == "" {
+func (r *Room) LoadCurrentMovie() (*Movie, error) {
+	id := r.current.current.Movie.ID
+	if id == "" {
 		return nil, ErrNoCurrentMovie
 	}
-	return r.GetMovieByID(r.current.current.MovieID)
+	return r.GetMovieByID(id)
 }
 
 func (r *Room) CheckCurrentExpired(expireId uint64) (bool, error) {
-	m, err := r.CurrentMovie()
+	m, err := r.LoadCurrentMovie()
 	if err != nil {
 		return false, err
 	}
 	return m.CheckExpired(expireId), nil
 }
 
-func (r *Room) SetCurrentMovie(movieID string, play bool) error {
-	currentMovie, err := r.CurrentMovie()
+func (r *Room) SetCurrentMovie(movieID string, subPath string, play bool) error {
+	currentMovie, err := r.LoadCurrentMovie()
 	if err != nil {
 		if err != ErrNoCurrentMovie {
 			return err
 		}
 	} else {
-		err = currentMovie.ClearCache()
-		if err != nil {
-			return fmt.Errorf("clear cache failed: %w", err)
-		}
+		_ = currentMovie.ClearCache()
 	}
 	if movieID == "" {
-		r.current.SetMovie("", false, play)
+		r.current.SetMovie(CurrentMovie{}, false)
 		return nil
 	}
 	m, err := r.GetMovieByID(movieID)
 	if err != nil {
 		return err
 	}
-	r.current.SetMovie(m.ID, m.Base.Live, play)
-	return nil
+	if m.IsFolder && !m.IsDynamicFolder() {
+		return errors.New("cannot set static folder as current movie")
+	}
+	m.subPath = subPath
+	r.current.SetMovie(CurrentMovie{
+		ID:     m.ID,
+		IsLive: m.Live,
+	}, play)
+	return m.ClearCache()
 }
 
 func (r *Room) SwapMoviePositions(id1, id2 string) error {
 	return r.movies.SwapMoviePositions(id1, id2)
 }
 
-func (r *Room) GetMoviesWithPage(page, pageSize int, creator string) ([]*Movie, int) {
-	return r.movies.GetMoviesWithPage(page, pageSize, creator)
+func (r *Room) GetMoviesWithPage(page, pageSize int, parentID string) ([]*model.Movie, int64, error) {
+	return r.movies.GetMoviesWithPage(page, pageSize, parentID)
 }
 
 func (r *Room) NewClient(user *User, conn *websocket.Conn) (*Client, error) {

@@ -66,10 +66,7 @@ func WithRegisteredByProvider(b bool) CreateUserConfig {
 
 func WithEmail(email string) CreateUserConfig {
 	return func(u *model.User) {
-		u.Email = sql.NullString{
-			String: email,
-			Valid:  true,
-		}
+		u.Email = model.EmptyNullString(email)
 	}
 }
 
@@ -441,7 +438,7 @@ func UnbindEmail(uid string) error {
 		if err := tx.Where("id = ?", uid).First(&user).Error; err != nil {
 			return HandleNotFound(err, "user")
 		}
-		if user.Email.String == "" {
+		if user.Email == "" {
 			return errors.New("user has no email")
 		}
 		if user.RegisteredByEmail {

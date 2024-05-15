@@ -64,14 +64,18 @@ func LoadAndDeleteMovieByID(roomID, id string, columns []clause.Column) (*model.
 	return movie, HandleNotFound(err, "room or movie")
 }
 
-func DeleteMoviesByRoomID(roomID string) error {
+func DeleteMoviesByRoomID(roomID string, scopes ...func(*gorm.DB) *gorm.DB) error {
 	return db.Transaction(func(tx *gorm.DB) error {
-		err := tx.Where("room_id = ?", roomID).Delete(&model.Movie{}).Error
+		err := tx.Where("room_id = ?", roomID).Scopes(scopes...).Delete(&model.Movie{}).Error
 		if err != nil {
 			return HandleNotFound(err, "room")
 		}
 		return nil
 	})
+}
+
+func DeleteMoviesByRoomIDAndParentID(roomID string, parentID string) error {
+	return DeleteMoviesByRoomID(roomID, WithParentMovieID(parentID))
 }
 
 func LoadAndDeleteMoviesByRoomID(roomID string, columns ...clause.Column) ([]*model.Movie, error) {

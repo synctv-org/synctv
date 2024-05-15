@@ -615,7 +615,13 @@ func ClearMovies(ctx *gin.Context) {
 	room := ctx.MustGet("room").(*op.RoomEntry).Value()
 	user := ctx.MustGet("user").(*op.UserEntry).Value()
 
-	if err := user.ClearRoomMovies(room); err != nil {
+	var req model.ClearMoviesReq
+	if err := model.Decode(ctx, &req); err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	if err := user.ClearRoomMoviesByParentID(room, req.ParentId); err != nil {
 		if errors.Is(err, dbModel.ErrNoPermission) {
 			ctx.AbortWithStatusJSON(
 				http.StatusForbidden,

@@ -388,6 +388,23 @@ func (u *User) ClearRoomMovies(room *Room) error {
 	})
 }
 
+func (u *User) ClearRoomMoviesByParentID(room *Room, parentID string) error {
+	if !u.HasRoomPermission(room, model.PermissionDeleteMovie) {
+		return model.ErrNoPermission
+	}
+	err := room.ClearMoviesByParentID(parentID)
+	if err != nil {
+		return err
+	}
+	return room.Broadcast(&pb.ElementMessage{
+		Type: pb.ElementMessageType_MOVIES_CHANGED,
+		MoviesChanged: &pb.Sender{
+			Username: u.Username,
+			Userid:   u.ID,
+		},
+	})
+}
+
 func (u *User) SwapRoomMoviePositions(room *Room, id1, id2 string) error {
 	if !u.HasRoomPermission(room, model.PermissionEditMovie) {
 		return model.ErrNoPermission

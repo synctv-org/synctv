@@ -340,6 +340,9 @@ func (r *Room) SetPassword(password string) error {
 }
 
 func (r *Room) IsParentOf(movieID, parentID string) (bool, error) {
+	if parentID == "" {
+		return true, nil
+	}
 	return r.movies.IsParentOf(movieID, parentID)
 }
 
@@ -383,8 +386,21 @@ func (r *Room) DeleteMoviesByID(ids []string) error {
 }
 
 func (r *Room) ClearMovies() error {
-	_ = r.SetCurrentMovie("", "", false)
-	return r.movies.Clear()
+	return r.ClearMoviesByParentID("")
+}
+
+func (r *Room) ClearMoviesByParentID(parentID string) error {
+	cid := r.current.current.Movie.ID
+	if cid != "" {
+		ok, err := r.IsParentOf(cid, parentID)
+		if err != nil {
+			return fmt.Errorf("check parent failed: %w", err)
+		}
+		if ok {
+			return errors.New("cannot delete current movie's parent")
+		}
+	}
+	return r.movies.DeleteMovieByParentID(parentID)
 }
 
 func (r *Room) GetMovieByID(id string) (*Movie, error) {

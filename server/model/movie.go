@@ -210,3 +210,18 @@ type CurrentMovieResp struct {
 	Movie    *Movie    `json:"movie"`
 	ExpireId uint64    `json:"expireId"`
 }
+
+type ClearMoviesReq struct {
+	ParentId string `json:"parentId"`
+}
+
+func (c *ClearMoviesReq) Decode(ctx *gin.Context) error {
+	return json.NewDecoder(ctx.Request.Body).Decode(c)
+}
+
+func (c *ClearMoviesReq) Validate() error {
+	if c.ParentId != "" && len(c.ParentId) != 32 {
+		return fmt.Errorf("parent id length must be empty or 32")
+	}
+	return nil
+}

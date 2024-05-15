@@ -99,21 +99,20 @@ func (m *movies) Update(movieId string, movie *model.MovieBase) error {
 }
 
 func (m *movies) Clear() error {
-	err := db.DeleteMoviesByRoomID(m.roomID)
-	if err != nil {
-		return err
-	}
-	return m.Close()
+	return m.DeleteMovieByParentID("")
 }
 
 func (m *movies) Close() error {
-	m.cache.Range(func(key string, value *Movie) bool {
-		mm, ok := m.cache.LoadAndDelete(key)
-		if ok {
-			_ = mm.Close()
-		}
-		return true
-	})
+	m.DeleteMovieAndChiledCache("")
+	return nil
+}
+
+func (m *movies) DeleteMovieByParentID(parentID string) error {
+	err := db.DeleteMoviesByRoomIDAndParentID(m.roomID, parentID)
+	if err != nil {
+		return err
+	}
+	m.DeleteMovieAndChiledCache("")
 	return nil
 }
 

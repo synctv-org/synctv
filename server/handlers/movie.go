@@ -12,6 +12,7 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -309,10 +310,7 @@ func listVendorDynamicMovie(ctx context.Context, reqUser *op.User, room *op.Room
 		if err != nil {
 			return nil, fmt.Errorf("load alist server id error: %w", err)
 		}
-		newPath, err := url.JoinPath(truePath, subPath)
-		if err != nil {
-			return nil, fmt.Errorf("join path error: %w", err)
-		}
+		newPath := path.Join(truePath, subPath)
 		// check new path is in parent path
 		if !strings.HasPrefix(newPath, truePath) {
 			return nil, fmt.Errorf("sub path is not in parent path")

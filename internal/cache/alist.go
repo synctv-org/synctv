@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
+	"path"
 	"strings"
 	"time"
 
@@ -184,10 +184,7 @@ func NewAlistMovieCacheInitFunc(movie *model.Movie, subPath string) func(ctx con
 			return nil, err
 		}
 		if movie.IsFolder {
-			newPath, err := url.JoinPath(truePath, subPath)
-			if err != nil {
-				return nil, err
-			}
+			newPath := path.Join(truePath, subPath)
 			// check new path is in parent path
 			if !strings.HasPrefix(newPath, truePath) {
 				return nil, errors.New("sub path is not in parent path")

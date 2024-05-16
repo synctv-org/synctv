@@ -21,6 +21,19 @@ type Movie struct {
 	Children  []*Movie `gorm:"foreignKey:ParentID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE" json:"-"`
 }
 
+func (m *Movie) Clone() *Movie {
+	return &Movie{
+		ID:        m.ID,
+		CreatedAt: m.CreatedAt,
+		UpdatedAt: m.UpdatedAt,
+		Position:  m.Position,
+		RoomID:    m.RoomID,
+		CreatorID: m.CreatorID,
+		MovieBase: *m.MovieBase.Clone(),
+		Children:  m.Children,
+	}
+}
+
 func (m *Movie) BeforeCreate(tx *gorm.DB) error {
 	if m.ID == "" {
 		m.ID = utils.SortUUID()
@@ -45,19 +58,61 @@ func (m *Movie) BeforeSave(tx *gorm.DB) (err error) {
 	return
 }
 
+type MoreSource struct {
+	Name string `json:"name"`
+	Type string `json:"type"`
+	Url  string `json:"url"`
+}
+
 type MovieBase struct {
-	Url        string               `gorm:"type:varchar(8192)" json:"url"`
-	MoreSource map[string]string    `gorm:"serializer:fastjson;type:text" json:"moreSource,omitempty"`
-	Name       string               `gorm:"not null;type:varchar(256)" json:"name"`
-	Live       bool                 `json:"live"`
-	Proxy      bool                 `json:"proxy"`
-	RtmpSource bool                 `json:"rtmpSource"`
-	Type       string               `json:"type"`
-	Headers    map[string]string    `gorm:"serializer:fastjson;type:text" json:"headers,omitempty"`
-	Subtitles  map[string]*Subtitle `gorm:"serializer:fastjson;type:text" json:"subtitles,omitempty"`
-	VendorInfo VendorInfo           `gorm:"embedded;embeddedPrefix:vendor_info_" json:"vendorInfo,omitempty"`
-	IsFolder   bool                 `json:"isFolder"`
-	ParentID   EmptyNullString      `gorm:"type:char(32)" json:"parentId"`
+	Url         string               `gorm:"type:varchar(8192)" json:"url"`
+	MoreSources []*MoreSource        `gorm:"serializer:fastjson;type:text" json:"moreSources,omitempty"`
+	Name        string               `gorm:"not null;type:varchar(256)" json:"name"`
+	Live        bool                 `json:"live"`
+	Proxy       bool                 `json:"proxy"`
+	RtmpSource  bool                 `json:"rtmpSource"`
+	Type        string               `json:"type"`
+	Headers     map[string]string    `gorm:"serializer:fastjson;type:text" json:"headers,omitempty"`
+	Subtitles   map[string]*Subtitle `gorm:"serializer:fastjson;type:text" json:"subtitles,omitempty"`
+	VendorInfo  VendorInfo           `gorm:"embedded;embeddedPrefix:vendor_info_" json:"vendorInfo,omitempty"`
+	IsFolder    bool                 `json:"isFolder"`
+	ParentID    EmptyNullString      `gorm:"type:char(32)" json:"parentId"`
+}
+
+func (m *MovieBase) Clone() *MovieBase {
+	mss := make([]*MoreSource, len(m.MoreSources))
+	for i, ms := range m.MoreSources {
+		mss[i] = &MoreSource{
+			Name: ms.Name,
+			Type: ms.Type,
+			Url:  ms.Url,
+		}
+	}
+	hds := make(map[string]string, len(m.Headers))
+	for k, v := range m.Headers {
+		hds[k] = v
+	}
+	sbs := make(map[string]*Subtitle, len(m.Subtitles))
+	for k, v := range m.Subtitles {
+		sbs[k] = &Subtitle{
+			URL:  v.URL,
+			Type: v.Type,
+		}
+	}
+	return &MovieBase{
+		Url:         m.Url,
+		MoreSources: mss,
+		Name:        m.Name,
+		Live:        m.Live,
+		Proxy:       m.Proxy,
+		RtmpSource:  m.RtmpSource,
+		Type:        m.Type,
+		Headers:     hds,
+		Subtitles:   sbs,
+		VendorInfo:  m.VendorInfo,
+		IsFolder:    m.IsFolder,
+		ParentID:    m.ParentID,
+	}
 }
 
 func (m *MovieBase) IsDynamicFolder() bool {

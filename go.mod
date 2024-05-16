@@ -12,17 +12,16 @@ require (
 	github.com/gin-gonic/gin v1.10.0
 	github.com/glebarez/sqlite v1.11.0
 	github.com/go-kratos/aegis v0.2.0
-	github.com/go-kratos/kratos/contrib/registry/consul/v2 v2.0.0-20240504101732-d0d5761f9ca8
-	github.com/go-kratos/kratos/contrib/registry/etcd/v2 v2.0.0-20240504101732-d0d5761f9ca8
+	github.com/go-kratos/kratos/contrib/registry/consul/v2 v2.0.0-20240516020449-fbac5fa25e7a
+	github.com/go-kratos/kratos/contrib/registry/etcd/v2 v2.0.0-20240516020449-fbac5fa25e7a
 	github.com/go-kratos/kratos/v2 v2.7.3
-	github.com/go-resty/resty/v2 v2.13.0
 	github.com/golang-jwt/jwt/v5 v5.2.1
 	github.com/google/go-github/v56 v56.0.0
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.1
-	github.com/hashicorp/consul/api v1.28.2
+	github.com/hashicorp/consul/api v1.28.3
 	github.com/hashicorp/go-hclog v1.6.3
-	github.com/hashicorp/go-plugin v1.6.0
+	github.com/hashicorp/go-plugin v1.6.1
 	github.com/joho/godotenv v1.5.1
 	github.com/json-iterator/go v1.1.12
 	github.com/maruel/natural v1.1.1
@@ -46,7 +45,7 @@ require (
 	golang.org/x/crypto v0.23.0
 	golang.org/x/exp v0.0.0-20240506185415-9bf2ced13842
 	golang.org/x/oauth2 v0.20.0
-	google.golang.org/grpc v1.63.2
+	google.golang.org/grpc v1.64.0
 	google.golang.org/protobuf v1.34.1
 	gopkg.in/yaml.v3 v3.0.1
 	gorm.io/driver/mysql v1.5.6
@@ -69,7 +68,7 @@ require (
 	github.com/coreos/go-semver v0.3.1 // indirect
 	github.com/coreos/go-systemd/v22 v22.5.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
-	github.com/fatih/color v1.16.0 // indirect
+	github.com/fatih/color v1.17.0 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.3 // indirect
 	github.com/gin-contrib/sse v0.1.0 // indirect
 	github.com/glebarez/go-sqlite v1.22.0 // indirect
@@ -84,9 +83,10 @@ require (
 	github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/google/go-querystring v1.1.0 // indirect
-	github.com/google/pprof v0.0.0-20240507183855-6f11f98ebb1c // indirect
+	github.com/google/pprof v0.0.0-20240509144519-723abb6459b7 // indirect
 	github.com/google/wire v0.6.0 // indirect
 	github.com/gorilla/mux v1.8.1 // indirect
+	github.com/hashicorp/consul/proto-public v0.6.1 // indirect
 	github.com/hashicorp/errwrap v1.1.0 // indirect
 	github.com/hashicorp/go-cleanhttp v0.5.2 // indirect
 	github.com/hashicorp/go-immutable-radix v1.3.1 // indirect
@@ -121,7 +121,7 @@ require (
 	github.com/refraction-networking/utls v1.6.6 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
-	github.com/tetratelabs/wazero v1.7.1 // indirect
+	github.com/tetratelabs/wazero v1.7.2 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/ugorji/go/codec v1.2.12 // indirect
 	go.etcd.io/etcd/api/v3 v3.5.13 // indirect
@@ -137,10 +137,10 @@ require (
 	golang.org/x/sys v0.20.0 // indirect
 	golang.org/x/text v0.15.0 // indirect
 	golang.org/x/tools v0.21.0 // indirect
-	google.golang.org/genproto/googleapis/api v0.0.0-20240506185236-b8a5c65736ae // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20240506185236-b8a5c65736ae // indirect
+	google.golang.org/genproto/googleapis/api v0.0.0-20240515191416-fc5f0ca64291 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20240515191416-fc5f0ca64291 // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
-	modernc.org/libc v1.50.5 // indirect
+	modernc.org/libc v1.50.6 // indirect
 	modernc.org/mathutil v1.6.0 // indirect
 	modernc.org/memory v1.8.0 // indirect
 	modernc.org/sqlite v1.29.9 // indirect

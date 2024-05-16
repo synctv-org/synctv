@@ -5,16 +5,17 @@ import (
 	"errors"
 	"fmt"
 	"hash/crc32"
+	"net/http"
 	"net/url"
 	"sync/atomic"
 	"time"
 
-	"github.com/go-resty/resty/v2"
 	"github.com/synctv-org/synctv/internal/cache"
 	"github.com/synctv-org/synctv/internal/conf"
 	"github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/settings"
 	"github.com/synctv-org/synctv/utils"
+	"github.com/zijiren233/go-uhc"
 	"github.com/zijiren233/livelib/av"
 	"github.com/zijiren233/livelib/container/flv"
 	"github.com/zijiren233/livelib/protocol/hls"
@@ -195,20 +196,26 @@ func (m *Movie) initChannel() error {
 					if c.Closed() {
 						return
 					}
-					r := resty.New().R()
-					for k, v := range m.Movie.MovieBase.Headers {
-						r.SetHeader(k, v)
-					}
-					// r.SetHeader("User-Agent", UserAgent)
-					resp, err := r.Get(m.Movie.MovieBase.Url)
+					req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, m.Movie.MovieBase.Url, nil)
 					if err != nil {
 						time.Sleep(time.Second)
 						continue
 					}
-					if err := c.PushStart(flv.NewReader(resp.RawBody())); err != nil {
+					for k, v := range m.Movie.MovieBase.Headers {
+						req.Header.Set(k, v)
+					}
+					if req.Header.Get("User-Agent") == "" {
+						req.Header.Set("User-Agent", utils.UA)
+					}
+					resp, err := uhc.Do(req)
+					if err != nil {
+						time.Sleep(time.Second)
+						continue
+					}
+					if err := c.PushStart(flv.NewReader(resp.Body)); err != nil {
 						time.Sleep(time.Second)
 					}
-					resp.RawBody().Close()
+					resp.Body.Close()
 				}
 			}()
 		default:

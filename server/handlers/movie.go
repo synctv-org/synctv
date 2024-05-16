@@ -104,22 +104,21 @@ func genMovieInfo(
 			return nil, errors.New("movie is static folder, can't get movie info")
 		}
 	}
-	var movie = *opMovie.Movie
+	var movie = opMovie.Movie.Clone()
 	if movie.MovieBase.VendorInfo.Vendor != "" {
 		vendorMovie, err := genVendorMovie(ctx, user, opMovie, userAgent, userToken)
 		if err != nil {
 			return nil, err
 		}
-		movie = *vendorMovie
+		movie = vendorMovie
 	} else if movie.MovieBase.RtmpSource || movie.MovieBase.Live && movie.MovieBase.Proxy {
-		switch movie.MovieBase.Type {
-		case "m3u8":
-			movie.MovieBase.Url = fmt.Sprintf("/api/movie/live/hls/list/%s.m3u8?token=%s", movie.ID, userToken)
-		case "flv":
-			movie.MovieBase.Url = fmt.Sprintf("/api/movie/live/flv/%s.flv?token=%s", movie.ID, userToken)
-		default:
-			return nil, errors.New("not support live movie type")
-		}
+		movie.MovieBase.Url = fmt.Sprintf("/api/movie/live/hls/list/%s.m3u8?token=%s", movie.ID, userToken)
+		movie.MovieBase.Type = "m3u8"
+		movie.MoreSources = append(movie.MoreSources, &dbModel.MoreSource{
+			Name: "flv",
+			Url:  fmt.Sprintf("/api/movie/live/flv/%s.flv?token=%s", movie.ID, userToken),
+			Type: "flv",
+		})
 		movie.MovieBase.Headers = nil
 	} else if movie.MovieBase.Proxy {
 		movie.MovieBase.Url = fmt.Sprintf("/api/movie/proxy/%s/%s?token=%s", movie.RoomID, movie.ID, userToken)
@@ -127,6 +126,11 @@ func genMovieInfo(
 	}
 	if movie.MovieBase.Type == "" && movie.MovieBase.Url != "" {
 		movie.MovieBase.Type = utils.GetUrlExtension(movie.MovieBase.Url)
+	}
+	for _, v := range movie.MoreSources {
+		if v.Type == "" {
+			v.Type = utils.GetUrlExtension(v.Url)
+		}
 	}
 	resp := &model.Movie{
 		Id:        movie.ID,
@@ -1385,8 +1389,12 @@ func genVendorMovie(ctx context.Context, user *op.User, opMovie *op.Movie, userA
 			} else {
 				movie.MovieBase.Url = fmt.Sprintf("/api/movie/proxy/%s/%s?token=%s", movie.RoomID, movie.ID, userToken)
 				movie.MovieBase.Type = "mpd"
-				movie.MovieBase.MoreSource = map[string]string{
-					"hevc": fmt.Sprintf("/api/movie/proxy/%s/%s?token=%s&t=hevc", movie.RoomID, movie.ID, userToken),
+				movie.MovieBase.MoreSources = []*dbModel.MoreSource{
+					{
+						Name: "hevc",
+						Type: "mpd",
+						Url:  fmt.Sprintf("/api/movie/proxy/%s/%s?token=%s&t=hevc", movie.RoomID, movie.ID, userToken),
+					},
 				}
 			}
 			srt, err := bmc.Subtitle.Get(ctx, user.BilibiliCache())
@@ -1505,10 +1513,12 @@ func genVendorMovie(ctx context.Context, user *op.User, opMovie *op.Movie, userA
 				}
 			}
 			for _, s := range data.Sources[1:] {
-				if movie.MovieBase.MoreSource == nil {
-					movie.MovieBase.MoreSource = make(map[string]string, len(data.Sources)-1)
-				}
-				movie.MovieBase.MoreSource[s.Name] = s.URL
+				movie.MovieBase.MoreSources = append(movie.MovieBase.MoreSources,
+					&dbModel.MoreSource{
+						Name: s.Name,
+						Url:  s.URL,
+					},
+				)
 
 				for _, subt := range s.Subtitles {
 					if movie.MovieBase.Subtitles == nil {

@@ -38,7 +38,7 @@ require (
 	github.com/zijiren233/gencontainer v0.0.0-20240507135401-7a9c8355bb2c
 	github.com/zijiren233/go-colorable v0.0.0-20230930131441-997304c961cb
 	github.com/zijiren233/go-uhc v0.2.4
-	github.com/zijiren233/livelib v0.3.1
+	github.com/zijiren233/livelib v0.3.2
 	github.com/zijiren233/stream v0.5.2
 	github.com/zijiren233/yaml-comment v0.2.2
 	go.etcd.io/etcd/client/v3 v3.5.13

@@ -141,7 +141,7 @@ func createDialector(dbConf conf.DatabaseConfig) (dialector gorm.Dialector, err 
 
 func newDBLogger() logger.Interface {
 	var logLevel logger.LogLevel
-	if flags.Dev {
+	if flags.Global.Dev {
 		logLevel = logger.Info
 	} else {
 		logLevel = logger.Warn
@@ -152,7 +152,7 @@ func newDBLogger() logger.Interface {
 			SlowThreshold:             time.Second,
 			LogLevel:                  logLevel,
 			IgnoreRecordNotFoundError: true,
-			ParameterizedQueries:      !flags.Dev && version.Version != "dev",
+			ParameterizedQueries:      !flags.Global.Dev && version.Version != "dev",
 			Colorful:                  utils.ForceColor(),
 		},
 	)

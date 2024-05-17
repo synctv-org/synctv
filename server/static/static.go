@@ -20,7 +20,7 @@ func Init(e *gin.Engine) {
 
 	web := e.Group("/web")
 
-	if flags.WebPath == "" {
+	if flags.Server.WebPath == "" {
 		err := SiglePageAppFS(web, public.Public, true)
 		if err != nil {
 			log.Fatalf("failed to init fs router: %v", err)
@@ -38,7 +38,7 @@ func Init(e *gin.Engine) {
 		// 	}
 		// })
 	} else {
-		err := SiglePageAppFS(web, os.DirFS(flags.WebPath), false)
+		err := SiglePageAppFS(web, os.DirFS(flags.Server.WebPath), false)
 		if err != nil {
 			log.Fatalf("failed to init fs router: %v", err)
 		}

@@ -27,7 +27,7 @@ var SelfUpdateCmd = &cobra.Command{
 }
 
 func SelfUpdate(cmd *cobra.Command, args []string) error {
-	v, err := version.NewVersionInfo(version.WithBaseURL(flags.GitHubBaseURL))
+	v, err := version.NewVersionInfo(version.WithBaseURL(flags.Global.GitHubBaseURL))
 	if err != nil {
 		log.Errorf("get version info error: %v", err)
 		return err

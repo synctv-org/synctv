@@ -19,13 +19,13 @@ func InitDefaultConfig(ctx context.Context) error {
 }
 
 func InitConfig(ctx context.Context) (err error) {
-	if flags.SkipConfig && flags.SkipEnv {
+	if flags.Server.SkipConfig && flags.Server.SkipEnvConfig {
 		log.Fatal("skip config and skip env at the same time")
 		return errors.New("skip config and skip env at the same time")
 	}
 	conf.Conf = conf.DefaultConfig()
-	if !flags.SkipConfig {
-		configFile, err := utils.OptFilePath(filepath.Join(flags.DataDir, "config.yaml"))
+	if !flags.Server.SkipConfig {
+		configFile, err := utils.OptFilePath(filepath.Join(flags.Global.DataDir, "config.yaml"))
 		if err != nil {
 			log.Fatalf("config file path error: %v", err)
 		}
@@ -40,7 +40,7 @@ func InitConfig(ctx context.Context) (err error) {
 			log.Info("restore config success")
 		}
 	}
-	if !flags.SkipEnv {
+	if !flags.Server.SkipEnvConfig {
 		prefix := "SYNCTV_"
 		if flags.EnvNoPrefix {
 			prefix = ""

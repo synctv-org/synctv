@@ -156,7 +156,7 @@ func (v *VersionInfo) NeedUpdate(ctx context.Context) (bool, error) {
 }
 
 func (v *VersionInfo) SelfUpdate(ctx context.Context) (err error) {
-	if flags.Dev {
+	if flags.Global.Dev {
 		log.Info("self update: dev mode, update to latest dev version")
 	} else if v.Current() != "dev" {
 		latest, err := v.Latest(ctx)
@@ -182,7 +182,7 @@ func (v *VersionInfo) SelfUpdate(ctx context.Context) (err error) {
 	}
 
 	var url string
-	if flags.Dev {
+	if flags.Global.Dev {
 		url, err = v.DevBinaryURL(ctx)
 	} else {
 		url, err = v.LatestBinaryURL(ctx)

@@ -300,7 +300,7 @@ func getLocalIPs() []net.IP {
 
 func OptFilePath(filePath string) (string, error) {
 	if !filepath.IsAbs(filePath) {
-		return filepath.Abs(filepath.Join(flags.DataDir, filePath))
+		return filepath.Abs(filepath.Join(flags.Global.DataDir, filePath))
 	}
 	return filePath, nil
 }
@@ -360,7 +360,7 @@ var (
 
 func ForceColor() bool {
 	needColorOnce.Do(func() {
-		if flags.DisableLogColor {
+		if flags.Server.DisableLogColor {
 			needColor = false
 			return
 		}

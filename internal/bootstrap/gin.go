@@ -9,7 +9,7 @@ import (
 )
 
 func InitGinMode(ctx context.Context) error {
-	if flags.Dev {
+	if flags.Global.Dev {
 		gin.SetMode(gin.DebugMode)
 	} else {
 		gin.SetMode(gin.ReleaseMode)

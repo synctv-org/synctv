@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
+	"github.com/caarlos0/env/v9"
 	"github.com/go-kratos/kratos/v2/log"
 	"github.com/joho/godotenv"
 	"github.com/mitchellh/go-homedir"
@@ -24,27 +26,61 @@ var RootCmd = &cobra.Command{
 	Short: "synctv",
 	Long:  `synctv https://github.com/synctv-org/synctv`,
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
-		s, err := utils.GetEnvFiles(flags.DataDir)
+		prefix := flags.ENV_PREFIX
+		if !flags.SkipEnvFlag {
+			s, ok := os.LookupEnv("ENV_NO_PREFIX")
+			if ok {
+				if strings.ToLower(s) == "true" {
+					flags.EnvNoPrefix = true
+				}
+			}
+			if flags.EnvNoPrefix {
+				prefix = ""
+				log.Info("load flags from env without prefix")
+			} else {
+				log.Infof("load flags from env with prefix: %s", prefix)
+			}
+		}
+		if !flags.SkipEnvFlag {
+			dataDir, ok := os.LookupEnv(prefix + "DATA_DIR")
+			if ok {
+				flags.Global.DataDir = dataDir
+			}
+			dev, ok := os.LookupEnv(prefix + "DEV")
+			if ok {
+				if strings.ToLower(dev) == "true" {
+					flags.Global.Dev = true
+				}
+			}
+		}
+
+		envFiles, err := utils.GetEnvFiles(flags.Global.DataDir)
 		if err != nil {
 			logrus.Warnf("get env files error: %v", err)
 		}
-		if flags.Dev {
-			ss, err := utils.GetEnvFiles(".")
+		if flags.Global.Dev {
+			moreEnvFiles, err := utils.GetEnvFiles(".")
 			if err != nil {
 				logrus.Warnf("get env files error: %v", err)
 			}
-			s = append(s, ss...)
+			envFiles = append(envFiles, moreEnvFiles...)
 		}
-		if len(s) != 0 {
-			if flags.EnvFileOverload {
-				log.Infof("overload env from: %v", s)
-				err = godotenv.Overload(s...)
-			} else {
-				log.Infof("load env from: %v", s)
-				err = godotenv.Load(s...)
-			}
+		if len(envFiles) != 0 {
+			log.Infof("load env from: %v", envFiles)
+			err = godotenv.Load(envFiles...)
 			if err != nil {
 				logrus.Fatalf("load env error: %v", err)
+			}
+		}
+
+		if !flags.SkipEnvFlag {
+			err := env.ParseWithOptions(&flags.Global, env.Options{Prefix: prefix})
+			if err != nil {
+				logrus.Fatalf("parse env error: %v", err)
+			}
+			err = env.ParseWithOptions(&flags.Server, env.Options{Prefix: prefix})
+			if err != nil {
+				logrus.Fatalf("parse env error: %v", err)
 			}
 		}
 	},
@@ -58,19 +94,17 @@ func Execute() {
 }
 
 func init() {
-	RootCmd.PersistentFlags().BoolVar(&flags.Dev, "dev", version.Version == "dev", "start with dev mode")
-	RootCmd.PersistentFlags().BoolVar(&flags.LogStd, "log-std", true, "log to std")
+	RootCmd.PersistentFlags().BoolVar(&flags.Global.Dev, "dev", version.Version == "dev", "start with dev mode")
+	RootCmd.PersistentFlags().BoolVar(&flags.Global.LogStd, "log-std", true, "log to std")
 	RootCmd.PersistentFlags().BoolVar(&flags.EnvNoPrefix, "env-no-prefix", false, "env no SYNCTV_ prefix")
-	RootCmd.PersistentFlags().BoolVar(&flags.SkipConfig, "skip-config", false, "skip config")
-	RootCmd.PersistentFlags().BoolVar(&flags.SkipEnv, "skip-env", false, "skip env")
-	RootCmd.PersistentFlags().BoolVar(&flags.EnvFileOverload, "env-file-overload", false, "env file overload")
-	RootCmd.PersistentFlags().StringVar(&flags.GitHubBaseURL, "github-base-url", "https://api.github.com/", "github api base url")
+	RootCmd.PersistentFlags().BoolVar(&flags.SkipEnvFlag, "skip-env-flag", true, "skip env flag")
+	RootCmd.PersistentFlags().StringVar(&flags.Global.GitHubBaseURL, "github-base-url", "https://api.github.com/", "github api base url")
 	home, err := homedir.Dir()
 	if err != nil {
 		home = "~"
 	}
-	RootCmd.PersistentFlags().StringVar(&flags.DataDir, "data-dir", filepath.Join(home, ".synctv"), "data dir")
-	RootCmd.PersistentFlags().BoolVar(&flags.ForceAutoMigrate, "force-auto-migrate", version.Version == "dev", "force auto migrate")
+	RootCmd.PersistentFlags().StringVar(&flags.Global.DataDir, "data-dir", filepath.Join(home, ".synctv"), "data dir")
+	RootCmd.PersistentFlags().BoolVar(&flags.Global.ForceAutoMigrate, "force-auto-migrate", version.Version == "dev", "force auto migrate")
 }
 
 func init() {

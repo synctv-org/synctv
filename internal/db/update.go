@@ -92,7 +92,7 @@ func UpgradeDatabase() error {
 		return err
 	}
 	currentVersion := setting.Value
-	if flags.ForceAutoMigrate || currentVersion != CurrentVersion {
+	if flags.Global.ForceAutoMigrate || currentVersion != CurrentVersion {
 		err = autoMigrate(models...)
 		if err != nil {
 			log.Fatalf("failed to auto migrate: %s", err.Error())

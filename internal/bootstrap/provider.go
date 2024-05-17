@@ -60,7 +60,7 @@ var (
 func InitProvider(ctx context.Context) (err error) {
 	logOur := log.StandardLogger().Writer()
 	logLevle := hclog.Info
-	if flags.Dev {
+	if flags.Global.Dev {
 		logLevle = hclog.Debug
 	}
 	for _, op := range conf.Conf.Oauth2Plugins {

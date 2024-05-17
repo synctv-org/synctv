@@ -35,7 +35,7 @@ var ServerCmd = &cobra.Command{
 			bootstrap.InitVendorBackend,
 			bootstrap.InitSetting,
 		)
-		if !flags.DisableUpdateCheck {
+		if !flags.Server.DisableUpdateCheck {
 			boot.Add(bootstrap.InitCheckUpdate)
 		}
 		return boot.Run()
@@ -159,8 +159,10 @@ func Server(cmd *cobra.Command, args []string) {
 
 func init() {
 	RootCmd.AddCommand(ServerCmd)
-	ServerCmd.PersistentFlags().BoolVar(&flags.DisableUpdateCheck, "disable-update-check", false, "disable update check")
-	ServerCmd.PersistentFlags().BoolVar(&flags.DisableWeb, "disable-web", false, "disable web")
-	ServerCmd.PersistentFlags().BoolVar(&flags.DisableLogColor, "disable-log-color", false, "disable log color")
-	ServerCmd.PersistentFlags().StringVar(&flags.WebPath, "web-path", "", "if not set, use embed web")
+	ServerCmd.PersistentFlags().BoolVar(&flags.Server.DisableUpdateCheck, "disable-update-check", false, "disable update check")
+	ServerCmd.PersistentFlags().BoolVar(&flags.Server.DisableWeb, "disable-web", false, "disable web")
+	ServerCmd.PersistentFlags().BoolVar(&flags.Server.DisableLogColor, "disable-log-color", false, "disable log color")
+	ServerCmd.PersistentFlags().StringVar(&flags.Server.WebPath, "web-path", "", "if not set, use embed web")
+	ServerCmd.PersistentFlags().BoolVar(&flags.Server.SkipConfig, "skip-config", false, "skip config")
+	ServerCmd.PersistentFlags().BoolVar(&flags.Server.SkipEnvConfig, "skip-env-config", false, "skip env config")
 }

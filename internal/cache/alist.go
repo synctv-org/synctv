@@ -221,38 +221,43 @@ func NewAlistMovieCacheInitFunc(movie *model.Movie, subPath string) func(ctx con
 
 		prefix := strings.TrimSuffix(truePath, fg.Name)
 		for _, related := range fg.Related {
-			if related.Type == 4 {
-				resp, err := cli.FsGet(ctx, &alist.FsGetReq{
-					Host:      aucd.Host,
-					Token:     aucd.Token,
-					Path:      prefix + related.Name,
-					Password:  movie.MovieBase.VendorInfo.Alist.Password,
-					UserAgent: args[0].UserAgent,
-				})
-				if err != nil {
-					return nil, err
-				}
-				cache.Subtitles = append(cache.Subtitles, &AlistSubtitle{
-					Name: related.Name,
-					URL:  resp.RawUrl,
-					Type: utils.GetFileExtension(resp.Name),
-					Cache: refreshcache.NewRefreshCache(func(ctx context.Context, args ...struct{}) ([]byte, error) {
-						r, err := http.NewRequestWithContext(ctx, http.MethodGet, resp.RawUrl, nil)
-						if err != nil {
-							return nil, err
-						}
-						resp, err := uhc.Do(r)
-						if err != nil {
-							return nil, err
-						}
-						defer resp.Body.Close()
-						if resp.StatusCode != http.StatusOK {
-							return nil, fmt.Errorf("status code: %d", resp.StatusCode)
-						}
-						return io.ReadAll(resp.Body)
-					}, -1),
-				})
+			if related.Type != 4 {
+				continue
 			}
+			// 弹幕文件
+			if utils.GetFileExtension(related.Name) == "xml" {
+				continue
+			}
+			resp, err := cli.FsGet(ctx, &alist.FsGetReq{
+				Host:      aucd.Host,
+				Token:     aucd.Token,
+				Path:      prefix + related.Name,
+				Password:  movie.MovieBase.VendorInfo.Alist.Password,
+				UserAgent: args[0].UserAgent,
+			})
+			if err != nil {
+				return nil, err
+			}
+			cache.Subtitles = append(cache.Subtitles, &AlistSubtitle{
+				Name: related.Name,
+				URL:  resp.RawUrl,
+				Type: utils.GetFileExtension(resp.Name),
+				Cache: refreshcache.NewRefreshCache(func(ctx context.Context, args ...struct{}) ([]byte, error) {
+					r, err := http.NewRequestWithContext(ctx, http.MethodGet, resp.RawUrl, nil)
+					if err != nil {
+						return nil, err
+					}
+					resp, err := uhc.Do(r)
+					if err != nil {
+						return nil, err
+					}
+					defer resp.Body.Close()
+					if resp.StatusCode != http.StatusOK {
+						return nil, fmt.Errorf("status code: %d", resp.StatusCode)
+					}
+					return io.ReadAll(resp.Body)
+				}, -1),
+			})
 		}
 
 		if fg.Provider == AlistProviderAli {

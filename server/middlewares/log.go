@@ -2,6 +2,7 @@ package middlewares
 
 import (
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -42,7 +43,18 @@ func NewLog(l *logrus.Logger) gin.HandlerFunc {
 
 		param.Path = path
 
-		c.MustGet("log").(*logrus.Entry).Info(formatter(param))
+		logColor(c.MustGet("log").(*logrus.Entry), param)
+	}
+}
+
+func logColor(logger *logrus.Entry, p gin.LogFormatterParams) {
+	str := formatter(p)
+	code := p.StatusCode
+	switch {
+	case code >= http.StatusBadRequest && code < http.StatusInternalServerError:
+		logger.Error(str)
+	default:
+		logger.Info(str)
 	}
 }
 

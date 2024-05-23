@@ -783,6 +783,10 @@ func ProxyMovie(ctx *gin.Context) {
 // }
 
 func proxyURL(ctx *gin.Context, u string, headers map[string]string) error {
+	if utils.GetUrlExtension(u) == "m3u8" {
+		ctx.Redirect(http.StatusFound, u)
+		return nil
+	}
 	if !settings.AllowProxyToLocal.Get() {
 		if l, err := utils.ParseURLIsLocalIP(u); err != nil {
 			return fmt.Errorf("check url is local ip error: %w", err)
@@ -1280,7 +1284,7 @@ func proxyVendorMovie(ctx *gin.Context, movie *op.Movie) {
 				ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("source out of range"))
 				return
 			}
-			id, err := strconv.Atoi(ctx.Query("id"))
+			id, err := strconv.Atoi(ctx.Query("source"))
 			if err != nil {
 				log.Errorf("proxy vendor movie error: %v", err)
 				ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))

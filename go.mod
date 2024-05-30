@@ -41,7 +41,7 @@ require (
 	github.com/zijiren233/livelib v0.3.2
 	github.com/zijiren233/stream v0.5.2
 	github.com/zijiren233/yaml-comment v0.2.2
-	go.etcd.io/etcd/client/v3 v3.5.13
+	go.etcd.io/etcd/client/v3 v3.5.14
 	golang.org/x/crypto v0.23.0
 	golang.org/x/exp v0.0.0-20240506185415-9bf2ced13842
 	golang.org/x/oauth2 v0.20.0
@@ -124,8 +124,8 @@ require (
 	github.com/tetratelabs/wazero v1.7.2 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/ugorji/go/codec v1.2.12 // indirect
-	go.etcd.io/etcd/api/v3 v3.5.13 // indirect
-	go.etcd.io/etcd/client/pkg/v3 v3.5.13 // indirect
+	go.etcd.io/etcd/api/v3 v3.5.14 // indirect
+	go.etcd.io/etcd/client/pkg/v3 v3.5.14 // indirect
 	go.uber.org/mock v0.4.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.27.0 // indirect

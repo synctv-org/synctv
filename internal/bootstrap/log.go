@@ -28,7 +28,7 @@ func setLog(l *logrus.Logger) {
 }
 
 var logCallerIgnoreFuncs = map[string]struct{}{
-	"github.com/synctv-org/synctv/server/middlewares.Init.NewLog.func1": {},
+	"github.com/synctv-org/synctv/server/middlewares.logColor": {},
 }
 
 func InitLog(ctx context.Context) (err error) {

@@ -246,23 +246,7 @@ func (r *Room) LoadOrCreateRoomMember(userID string) (*model.RoomMember, error) 
 	if err != nil {
 		return nil, err
 	}
-	if r.IsCreator(userID) {
-		member.Role = model.RoomMemberRoleCreator
-		member.Permissions = model.AllPermissions
-		member.AdminPermissions = model.AllAdminPermissions
-		member.Status = model.RoomMemberStatusActive
-	} else if r.IsGuest(userID) {
-		member.Role = model.RoomMemberRoleMember
-		member.Permissions = model.NoPermission
-		member.AdminPermissions = model.NoAdminPermission
-		if member.Status.IsBanned() {
-			member.Status = model.RoomMemberStatusActive
-		}
-	} else if member.Role.IsAdmin() {
-		member.Permissions = model.AllPermissions
-	}
-	member, _ = r.members.LoadOrStore(userID, member)
-	return member, nil
+	return r.storeMember(userID, member), nil
 }
 
 func (r *Room) LoadRoomMember(userID string) (*model.RoomMember, error) {
@@ -277,6 +261,10 @@ func (r *Room) LoadRoomMember(userID string) (*model.RoomMember, error) {
 	if err != nil {
 		return nil, fmt.Errorf("get room member failed: %w", err)
 	}
+	return r.storeMember(userID, member), nil
+}
+
+func (r *Room) storeMember(userID string, member *model.RoomMember) *model.RoomMember {
 	if r.IsCreator(userID) {
 		member.Role = model.RoomMemberRoleCreator
 		member.Permissions = model.AllPermissions
@@ -284,7 +272,7 @@ func (r *Room) LoadRoomMember(userID string) (*model.RoomMember, error) {
 		member.Status = model.RoomMemberStatusActive
 	} else if r.IsGuest(userID) {
 		member.Role = model.RoomMemberRoleMember
-		member.Permissions = model.NoPermission
+		member.Permissions = r.Settings.GuestPermissions
 		member.AdminPermissions = model.NoAdminPermission
 		if member.Status.IsBanned() {
 			member.Status = model.RoomMemberStatusActive
@@ -293,7 +281,7 @@ func (r *Room) LoadRoomMember(userID string) (*model.RoomMember, error) {
 		member.Permissions = model.AllPermissions
 	}
 	member, _ = r.members.LoadOrStore(userID, member)
-	return member, nil
+	return member
 }
 
 func (r *Room) LoadRoomMemberPermission(userID string) (model.RoomMemberPermission, error) {
@@ -541,7 +529,7 @@ func (r *Room) SetMemberPermissions(userID string, permissions model.RoomMemberP
 		return errors.New("you are creator, cannot set permissions")
 	}
 	if r.IsGuest(userID) {
-		return errors.New("cannot set permissions to guest")
+		return errors.New("please set the permissions for the guest user in the room settings.")
 	}
 	defer r.members.Delete(userID)
 	return db.SetMemberPermissions(r.ID, userID, permissions)
@@ -549,7 +537,7 @@ func (r *Room) SetMemberPermissions(userID string, permissions model.RoomMemberP
 
 func (r *Room) AddMemberPermissions(userID string, permissions model.RoomMemberPermission) error {
 	if r.IsGuest(userID) {
-		return errors.New("cannot add permissions to guest")
+		return errors.New("please set the permissions for the guest user in the room settings.")
 	}
 	if r.IsAdmin(userID) {
 		return errors.New("cannot add permissions to admin")
@@ -559,6 +547,9 @@ func (r *Room) AddMemberPermissions(userID string, permissions model.RoomMemberP
 }
 
 func (r *Room) RemoveMemberPermissions(userID string, permissions model.RoomMemberPermission) error {
+	if r.IsGuest(userID) {
+		return errors.New("please set the permissions for the guest user in the room settings.")
+	}
 	if r.IsAdmin(userID) {
 		return errors.New("cannot remove permissions from admin")
 	}
@@ -579,7 +570,7 @@ func (r *Room) BanMember(userID string) error {
 		return errors.New("you are creator, cannot ban")
 	}
 	if r.IsGuest(userID) {
-		return errors.New("cannot ban guest")
+		return errors.New("please set whether to disable guest users in the room settings")
 	}
 	defer func() {
 		r.members.Delete(userID)
@@ -591,6 +582,9 @@ func (r *Room) BanMember(userID string) error {
 func (r *Room) UnbanMember(userID string) error {
 	if r.IsCreator(userID) {
 		return errors.New("you are creator, cannot unban")
+	}
+	if r.IsGuest(userID) {
+		return errors.New("please set whether to enable guest users in the room settings")
 	}
 	defer r.members.Delete(userID)
 	return db.RoomUnbanMember(r.ID, userID)

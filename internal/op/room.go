@@ -429,7 +429,11 @@ func (r *Room) SetCurrentMovie(movieID string, subPath string, play bool) error 
 			return err
 		}
 	} else {
-		_ = currentMovie.ClearCache()
+		if currentMovie.Proxy {
+			_ = currentMovie.Clone()
+		} else {
+			_ = currentMovie.ClearCache()
+		}
 	}
 	if movieID == "" {
 		r.current.SetMovie(CurrentMovie{}, false)

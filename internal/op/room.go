@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 
 	"github.com/gorilla/websocket"
+	"github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/settings"
@@ -430,9 +431,12 @@ func (r *Room) SetCurrentMovie(movieID string, subPath string, play bool) error 
 		}
 	} else {
 		if currentMovie.Proxy {
-			_ = currentMovie.Clone()
+			err = currentMovie.Close()
 		} else {
-			_ = currentMovie.ClearCache()
+			err = currentMovie.ClearCache()
+		}
+		if err != nil {
+			logrus.Errorf("clear current movie cache failed: %v", err)
 		}
 	}
 	if movieID == "" {

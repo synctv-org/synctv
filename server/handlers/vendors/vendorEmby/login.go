@@ -36,8 +36,8 @@ func (r *LoginReq) Validate() error {
 		return errors.New("host is invalid")
 	}
 	r.Host = strings.TrimRight(url.String(), "/")
-	if r.Username == "" || r.Password == "" {
-		return errors.New("username and password is required")
+	if r.Username == "" {
+		return errors.New("username is required")
 	}
 	return nil
 }

@@ -98,17 +98,15 @@ function setDefault() {
 }
 
 function addTags() {
-    local new_tags="$1"
-    [[ -n "${new_tags}" ]] && tags="${tags} ${new_tags}"
+    [[ -n "${1}" ]] && TAGS="${TAGS} ${1}"
 }
 
 function addLDFLAGS() {
-    local new_ldflags="$1"
-    [[ -n "${new_ldflags}" ]] && ldflags="${ldflags} ${new_ldflags}"
+    [[ -n "${1}" ]] && LDFLAGS="${LDFLAGS} ${1}"
 }
 
 function addBuildArgs() {
-    [[ -n "${1}" ]] && build_args="${build_args} ${1}"
+    [[ -n "${1}" ]] && BUILD_ARGS="${BUILD_ARGS} ${1}"
 }
 
 function fixArgs() {

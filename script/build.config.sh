@@ -27,9 +27,9 @@ function printDepHelp() {
 }
 
 function printDepEnvHelp() {
-    echo -e "${COLOR_GREEN}VERSION${COLOR_RESET} (default: dev)"
-    echo -e "${COLOR_GREEN}WEB_VERSION${COLOR_RESET} set web dependency version (default: VERSION)"
-    echo -e "${COLOR_GREEN}SKIP_INIT_WEB${COLOR_RESET}"
+    echo -e "${COLOR_LIGHT_GREEN}VERSION${COLOR_RESET} (default: dev)"
+    echo -e "${COLOR_LIGHT_GREEN}WEB_VERSION${COLOR_RESET} set web dependency version (default: VERSION)"
+    echo -e "${COLOR_LIGHT_GREEN}SKIP_INIT_WEB${COLOR_RESET}"
 }
 
 function initDepPlatforms() {
@@ -49,7 +49,7 @@ function initDep() {
     setDefault "web_version" "${version}"
     setDefault "skip_init_web" ""
 
-    echo -e "${COLOR_BLUE}version:${COLOR_RESET} ${COLOR_GREEN}${version}${COLOR_RESET}"
+    echo -e "${COLOR_BLUE}version:${COLOR_RESET} ${COLOR_CYAN}${version}${COLOR_RESET}"
 
     addLDFLAGS "-X 'github.com/synctv-org/synctv/internal/version.Version=${version}'"
     setDefault "web_version" "${version}"

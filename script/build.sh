@@ -1,10 +1,17 @@
 #!/bin/bash
 set -e
 
+# 使用更丰富的颜色定义
 readonly COLOR_RED='\033[0;31m'
 readonly COLOR_GREEN='\033[0;32m'
 readonly COLOR_YELLOW='\033[0;33m'
 readonly COLOR_BLUE='\033[0;34m'
+readonly COLOR_PURPLE='\033[0;35m'
+readonly COLOR_CYAN='\033[0;36m'
+readonly COLOR_LIGHT_GRAY='\033[0;37m'
+readonly COLOR_DARK_GRAY='\033[1;30m'
+readonly COLOR_LIGHT_RED='\033[1;31m'
+readonly COLOR_LIGHT_GREEN='\033[1;32m'
 readonly COLOR_RESET='\033[0m'
 
 readonly DEFAULT_SOURCE_DIR="$(pwd)"
@@ -26,31 +33,31 @@ readonly GOHOSTPLATFORM="${GOHOSTOS}/${GOHOSTARCH}"
 
 function printBuildConfigHelp() {
     echo -e "${COLOR_YELLOW}you can customize build config${COLOR_RESET} (default: ${DEFAULT_BUILD_CONFIG})"
-    echo -e "${COLOR_GREEN}parseDepArgs${COLOR_RESET} parse dep args"
-    echo -e "${COLOR_GREEN}printDepHelp${COLOR_RESET} print dep help"
-    echo -e "${COLOR_GREEN}printDepEnvHelp${COLOR_RESET} print dep env help"
-    echo -e "${COLOR_GREEN}initDepPlatforms${COLOR_RESET} init dep platforms"
-    echo -e "${COLOR_GREEN}initDep${COLOR_RESET} init dep"
+    echo -e "${COLOR_LIGHT_GREEN}parseDepArgs${COLOR_RESET} parse dep args"
+    echo -e "${COLOR_LIGHT_GREEN}printDepHelp${COLOR_RESET} print dep help"
+    echo -e "${COLOR_LIGHT_GREEN}printDepEnvHelp${COLOR_RESET} print dep env help"
+    echo -e "${COLOR_LIGHT_GREEN}initDepPlatforms${COLOR_RESET} init dep platforms"
+    echo -e "${COLOR_LIGHT_GREEN}initDep${COLOR_RESET} init dep"
 }
 
 function printEnvHelp() {
-    echo -e "${COLOR_GREEN}SOURCE_DIR${COLOR_RESET} set source dir (default: ${DEFAULT_SOURCE_DIR})"
-    echo -e "${COLOR_GREEN}RESULT_DIR${COLOR_RESET} set build result dir (default: ${DEFAULT_RESULT_DIR})"
-    echo -e "${COLOR_GREEN}BUILD_CONFIG${COLOR_RESET} set build config (default: ${DEFAULT_BUILD_CONFIG})"
-    echo -e "${COLOR_GREEN}BIN_NAME${COLOR_RESET} set bin name (default: ${source_dir} basename)"
-    echo -e "${COLOR_GREEN}PLATFORM${COLOR_RESET} set platform (default: host platform, support: all, linux, linux/arm*, ...)"
-    echo -e "${COLOR_GREEN}DISABLE_MICRO${COLOR_RESET} set will not build micro"
-    echo -e "${COLOR_GREEN}CGO_ENABLED${COLOR_RESET} set cgo enabled (default: ${DEFAULT_CGO_ENABLED})"
-    echo -e "${COLOR_GREEN}HOST_CC${COLOR_RESET} set host cc (default: ${DEFAULT_CC})"
-    echo -e "${COLOR_GREEN}HOST_CXX${COLOR_RESET} set host cxx (default: ${DEFAULT_CXX})"
-    echo -e "${COLOR_GREEN}FORCE_CC${COLOR_RESET} set force gcc"
-    echo -e "${COLOR_GREEN}FORCE_CXX${COLOR_RESET} set force g++"
-    echo -e "${COLOR_GREEN}*_ALLOWED_PLATFORM${COLOR_RESET} set allowed platform (example: LINUX_ALLOWED_PLATFORM=\"linux/amd64\")"
-    echo -e "${COLOR_GREEN}CGO_*_ALLOWED_PLATFORM${COLOR_RESET} set cgo allowed platform (example: CGO_LINUX_ALLOWED_PLATFORM=\"linux/amd64\")"
-    echo -e "${COLOR_GREEN}GH_PROXY${COLOR_RESET} set github proxy releases mirror (example: https://mirror.ghproxy.com/)"
+    echo -e "${COLOR_CYAN}SOURCE_DIR${COLOR_RESET} set source dir (default: ${DEFAULT_SOURCE_DIR})"
+    echo -e "${COLOR_CYAN}RESULT_DIR${COLOR_RESET} set build result dir (default: ${DEFAULT_RESULT_DIR})"
+    echo -e "${COLOR_CYAN}BUILD_CONFIG${COLOR_RESET} set build config (default: ${DEFAULT_BUILD_CONFIG})"
+    echo -e "${COLOR_CYAN}BIN_NAME${COLOR_RESET} set bin name (default: ${source_dir} basename)"
+    echo -e "${COLOR_CYAN}PLATFORM${COLOR_RESET} set platform (default: host platform, support: all, linux, linux/arm*, ...)"
+    echo -e "${COLOR_CYAN}DISABLE_MICRO${COLOR_RESET} set will not build micro"
+    echo -e "${COLOR_CYAN}CGO_ENABLED${COLOR_RESET} set cgo enabled (default: ${DEFAULT_CGO_ENABLED})"
+    echo -e "${COLOR_CYAN}HOST_CC${COLOR_RESET} set host cc (default: ${DEFAULT_CC})"
+    echo -e "${COLOR_CYAN}HOST_CXX${COLOR_RESET} set host cxx (default: ${DEFAULT_CXX})"
+    echo -e "${COLOR_CYAN}FORCE_CC${COLOR_RESET} set force gcc"
+    echo -e "${COLOR_CYAN}FORCE_CXX${COLOR_RESET} set force g++"
+    echo -e "${COLOR_CYAN}*_ALLOWED_PLATFORM${COLOR_RESET} set allowed platform (example: LINUX_ALLOWED_PLATFORM=\"linux/amd64\")"
+    echo -e "${COLOR_CYAN}CGO_*_ALLOWED_PLATFORM${COLOR_RESET} set cgo allowed platform (example: CGO_LINUX_ALLOWED_PLATFORM=\"linux/amd64\")"
+    echo -e "${COLOR_CYAN}GH_PROXY${COLOR_RESET} set github proxy releases mirror (example: https://mirror.ghproxy.com/)"
 
     if declare -f printDepEnvHelp >/dev/null; then
-        echo -e "${COLOR_YELLOW}$(getSeparator)${COLOR_RESET}"
+        echo -e "${COLOR_LIGHT_GRAY}$(getSeparator)${COLOR_RESET}"
         echo -e "Dep Env:"
         printDepEnvHelp
     fi
@@ -73,16 +80,16 @@ function printHelp() {
     echo -e "${COLOR_BLUE}--host-cc=${COLOR_RESET} host cc (default: ${DEFAULT_CC})"
     echo -e "${COLOR_BLUE}--host-cxx=${COLOR_RESET} host cxx (default: ${DEFAULT_CXX})"
 
-    echo -e "${COLOR_YELLOW}$(getSeparator)${COLOR_RESET}"
+    echo -e "${COLOR_DARK_GRAY}$(getSeparator)${COLOR_RESET}"
     printBuildConfigHelp
 
     if declare -f printDepHelp >/dev/null; then
-        echo -e "${COLOR_YELLOW}$(getSeparator)${COLOR_RESET}"
+        echo -e "${COLOR_PURPLE}$(getSeparator)${COLOR_RESET}"
         echo -e "Dep Help:"
         printDepHelp
     fi
 
-    echo -e "${COLOR_YELLOW}$(getSeparator)${COLOR_RESET}"
+    echo -e "${COLOR_LIGHT_GRAY}$(getSeparator)${COLOR_RESET}"
     echo -e "Env Help:"
     printEnvHelp
 }
@@ -146,7 +153,7 @@ function downloadAndUnzip() {
 
     mkdir -p "${file}"
     file="$(cd "${file}" && pwd)"
-    echo -e "${COLOR_BLUE}download ${COLOR_GREEN}\"${url}\"${COLOR_BLUE} to ${COLOR_GREEN}\"${file}\"${COLOR_RESET}"
+    echo -e "${COLOR_BLUE}download ${COLOR_CYAN}\"${url}\"${COLOR_BLUE} to ${COLOR_GREEN}\"${file}\"${COLOR_RESET}"
     rm -rf "${file}"/*
 
     local start_time=$(date +%s)
@@ -359,7 +366,7 @@ function initCGODeps() {
             if [[ "${goos}" == "${GOHOSTOS}" ]] && [[ "${goarch}" == "${GOHOSTARCH}" ]]; then
                 initHostCGODeps "$@"
             else
-                echo -e "${COLOR_RED}${goos}/${goarch} not support for cgo${COLOR_RESET}"
+                echo -e "${COLOR_LIGHT_RED}${goos}/${goarch} not support for cgo${COLOR_RESET}"
                 return 1
             fi
             ;;
@@ -603,7 +610,7 @@ function buildTarget() {
         "GOARCH=${goarch}"
     )
 
-    echo -e "${COLOR_YELLOW}$(getSeparator)${COLOR_RESET}"
+    echo -e "${COLOR_LIGHT_GRAY}$(getSeparator)${COLOR_RESET}"
 
     buildTargetWithMicro "" "${build_env[@]}"
 
@@ -710,10 +717,10 @@ function buildTargetWithMicro() {
         build_env+=("CXX=${cgo_deps["CXX"]}")
     fi
 
-    echo -e "${COLOR_BLUE}building ${goos}/${goarch}${micro:+/${micro}}${COLOR_RESET}"
+    echo -e "${COLOR_PURPLE}building ${goos}/${goarch}${micro:+/${micro}}${COLOR_RESET}"
     echo "${build_env[@]}"
     env "${build_env[@]}" go build -tags "${tags}" -ldflags "${ldflags}" -trimpath ${build_args} ${build_mode} -o "${target_file}" "${source_dir}"
-    echo -e "${COLOR_GREEN}build ${goos}/${goarch}${micro:+ ${micro}} success${COLOR_RESET}"
+    echo -e "${COLOR_LIGHT_GREEN}build ${goos}/${goarch}${micro:+ ${micro}} success${COLOR_RESET}"
 }
 
 function expandPlatforms() {

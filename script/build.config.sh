@@ -1,6 +1,6 @@
 function parseDepArgs() {
-    for i in "$@"; do
-        case ${i,,} in
+    while [[ $# -gt 0 ]]; do
+        case "${1}" in
         --version=*)
             VERSION="${i#*=}"
             shift

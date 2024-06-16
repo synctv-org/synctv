@@ -59,8 +59,8 @@ function printEnvHelp() {
     echo -e "  ${COLOR_CYAN}HOST_CXX${COLOR_RESET}                  - Set the host C++ compiler (default: ${DEFAULT_CXX})."
     echo -e "  ${COLOR_CYAN}FORCE_CC${COLOR_RESET}                   - Force the use of a specific C compiler."
     echo -e "  ${COLOR_CYAN}FORCE_CXX${COLOR_RESET}                  - Force the use of a specific C++ compiler."
-    echo -e "  ${COLOR_CYAN}*_ALLOWED_PLATFORM${COLOR_RESET}        - Set allowed platforms for a specific OS (e.g., LINUX_ALLOWED_PLATFORM=\"linux/amd64\")."
-    echo -e "  ${COLOR_CYAN}CGO_*_ALLOWED_PLATFORM${COLOR_RESET}     - Set allowed platforms for CGO for a specific OS (e.g., CGO_LINUX_ALLOWED_PLATFORM=\"linux/amd64\")."
+    echo -e "  ${COLOR_CYAN}CGO_FLAGS${COLOR_RESET}                  - Set CGO flags (default: ${DEFAULT_CGO_FLAGS})."
+    echo -e "  ${COLOR_CYAN}CGO_LDFLAGS${COLOR_RESET}                 - Set CGO linker flags (default: ${DEFAULT_CGO_LDFLAGS})."
     echo -e "  ${COLOR_CYAN}GH_PROXY${COLOR_RESET}                   - Set the GitHub proxy mirror (e.g., https://mirror.ghproxy.com/)."
 
     if declare -f printDepEnvHelp >/dev/null; then
@@ -83,15 +83,15 @@ function printHelp() {
     echo -e "  ${COLOR_BLUE}--more-go-cmd-args='<args>'${COLOR_RESET}     - Pass additional arguments to the 'go build' command."
     echo -e "  ${COLOR_BLUE}--disable-micro${COLOR_RESET}                - Disable building micro architecture variants."
     echo -e "  ${COLOR_BLUE}--ldflags='<flags>'${COLOR_RESET}            - Set linker flags (default: \"${DEFAULT_LDFLAGS}\")."
-    echo -e "  ${COLOR_BLUE}--platforms=<platforms>${COLOR_RESET}         - Specify target platform(s) (default: host platform, supports: all, linux, linux/arm*, ...)."
+    echo -e "  ${COLOR_BLUE}-p=<platforms>, --platforms=<platforms>${COLOR_RESET} - Specify target platform(s) (default: host platform, supports: all, linux, linux/arm*, ...)."
     echo -e "  ${COLOR_BLUE}--result-dir=<dir>${COLOR_RESET}               - Specify the build result directory (default: ${DEFAULT_RESULT_DIR})."
     echo -e "  ${COLOR_BLUE}--tags='<tags>'${COLOR_RESET}                - Set build tags."
-    echo -e "  ${COLOR_BLUE}--show-all-targets${COLOR_RESET}             - Display all supported target platforms."
+    echo -e "  ${COLOR_BLUE}--show-all-platforms${COLOR_RESET}             - Display all supported target platforms."
     echo -e "  ${COLOR_BLUE}--github-proxy-mirror=<url>${COLOR_RESET}      - Use a GitHub proxy mirror (e.g., https://mirror.ghproxy.com/)."
     echo -e "  ${COLOR_BLUE}--force-gcc=<path>${COLOR_RESET}              - Force the use of a specific C compiler."
     echo -e "  ${COLOR_BLUE}--force-g++=<path>${COLOR_RESET}              - Force the use of a specific C++ compiler."
-    echo -e "  ${COLOR_BLUE}--host-cc=<path>${COLOR_RESET}                - Specify the host C compiler (default: ${DEFAULT_CC})."
-    echo -e "  ${COLOR_BLUE}--host-cxx=<path>${COLOR_RESET}               - Specify the host C++ compiler (default: ${DEFAULT_CXX})."
+    echo -e "  ${COLOR_BLUE}--host-gcc=<path>${COLOR_RESET}                - Specify the host C compiler (default: ${DEFAULT_CC})."
+    echo -e "  ${COLOR_BLUE}--host-g++=<path>${COLOR_RESET}               - Specify the host C++ compiler (default: ${DEFAULT_CXX})."
 
     if declare -f printDepHelp >/dev/null; then
         echo -e "${COLOR_PURPLE}$(getSeparator)${COLOR_RESET}"
@@ -160,6 +160,8 @@ function fixArgs() {
     setDefault "LDFLAGS" "${DEFAULT_LDFLAGS}"
     setDefault "BUILD_ARGS" ""
     setDefault "CGO_DEPS_VERSION" "${DEFAULT_CGO_DEPS_VERSION}"
+    setDefault "CGO_FLAGS" "${DEFAULT_CGO_FLAGS}"
+    setDefault "CGO_LDFLAGS" "${DEFAULT_CGO_LDFLAGS}"
 }
 
 # Checks if CGO is enabled.
@@ -217,85 +219,6 @@ function downloadAndUnzip() {
 
 # --- Platform Management ---
 
-declare -A allowed_platforms
-allowed_platforms=(
-    ["linux"]="linux/386,linux/amd64,linux/arm,linux/arm64,linux/loong64,linux/mips,linux/mips64,linux/mips64le,linux/mipsle,linux/ppc64,linux/ppc64le,linux/riscv64,linux/s390x"
-    ["darwin"]="darwin/amd64,darwin/arm64"
-    ["windows"]="windows/386,windows/amd64,windows/arm,windows/arm64"
-)
-
-declare -A cgo_allowed_platforms
-cgo_allowed_platforms=(
-    ["linux"]="linux/386,linux/amd64,linux/arm,linux/arm64,linux/loong64,linux/mips,linux/mips64,linux/mips64le,linux/mipsle,linux/ppc64le,linux/riscv64,linux/s390x"
-    ["windows"]="windows/386,windows/amd64"
-)
-
-# Adds platforms to the allowed platforms list.
-# Arguments:
-#   $1: Comma-separated list of platforms to add.
-function addToAllowedPlatforms() {
-    local platforms="$1"
-    local platform=""
-    for platform in ${platform//,/ }; do
-        local os="${platform%%/*}"
-        if [[ -z "${allowed_platforms[${os}]}" ]]; then
-            allowed_platforms[${os}]="${platform}"
-        else
-            allowed_platforms[${os}]="${allowed_platforms[${os}]},${platform}"
-        fi
-    done
-}
-
-# Adds platforms to the CGO allowed platforms list.
-# Arguments:
-#   $1: Comma-separated list of platforms to add.
-function addToCGOAllowedPlatforms() {
-    local platforms="$1"
-    local platform=""
-    for platform in ${platforms//,/ }; do
-        local os="${platform%%/*}"
-        if [[ -z "${cgo_allowed_platforms[${os}]}" ]]; then
-            cgo_allowed_platforms[${os}]="${platform}"
-        else
-            cgo_allowed_platforms[${os}]="${cgo_allowed_platforms[${os}]},${platform}"
-        fi
-    done
-}
-
-# Removes platforms from the allowed platforms list.
-# Arguments:
-#   $1: Comma-separated list of platforms to remove.
-function deleteFromAllowedPlatforms() {
-    local platforms="$1"
-    local platform=""
-    for platform in ${platforms//,/ }; do
-        local os="${platform%%/*}"
-        if [[ -n "${allowed_platforms[${os}]}" ]]; then
-            allowed_platforms[${os}]=$(echo "${allowed_platforms[${os}]}" | sed "s|${platform}$||g" | sed "s|${platform},||g")
-        fi
-    done
-}
-
-# Removes platforms from the CGO allowed platforms list.
-# Arguments:
-#   $1: Comma-separated list of platforms to remove.
-function deleteFromCGOAllowedPlatforms() {
-    local platforms="$1"
-    local platform=""
-    for platform in ${platforms//,/ }; do
-        local os="${platform%%/*}"
-        if [[ -n "${cgo_allowed_platforms[${os}]}" ]]; then
-            cgo_allowed_platforms[${os}]=$(echo "${cgo_allowed_platforms[${os}]}" | sed "s|${platform}$||g" | sed "s|${platform},||g")
-        fi
-    done
-}
-
-# Initializes the host platforms.
-function initHostPlatforms() {
-    addToAllowedPlatforms "${GOHOSTOS}/${GOHOSTARCH}"
-    addToCGOAllowedPlatforms "${GOHOSTOS}/${GOHOSTARCH}"
-}
-
 # Removes duplicate platforms from a comma-separated list.
 # Arguments:
 #   $1: Comma-separated list of platforms.
@@ -309,32 +232,51 @@ function removeDuplicatePlatforms() {
     echo "${all_platforms}"
 }
 
+# Adds platforms to the allowed platforms list.
+# Arguments:
+#   $1: Comma-separated list of platforms to add.
+function addToAllowedPlatforms() {
+    [[ -z "$ALLOWED_PLATFORMS" ]] && ALLOWED_PLATFORMS="$1" || ALLOWED_PLATFORMS=$(removeDuplicatePlatforms "$ALLOWED_PLATFORMS,$1")
+}
+
+# Adds platforms to the CGO allowed platforms list.
+# Arguments:
+#   $1: Comma-separated list of platforms to add.
+function addToCGOAllowedPlatforms() {
+    [[ -z "$CGO_ALLOWED_PLATFORMS" ]] && CGO_ALLOWED_PLATFORMS="$1" || CGO_ALLOWED_PLATFORMS=$(removeDuplicatePlatforms "$CGO_ALLOWED_PLATFORMS,$1")
+}
+
+# Removes platforms from the allowed platforms list.
+# Arguments:
+#   $1: Comma-separated list of platforms to remove.
+function deleteFromAllowedPlatforms() {
+    ALLOWED_PLATFORMS=$(echo "${ALLOWED_PLATFORMS}" | sed "s|${1}$||g" | sed "s|${1},||g")
+}
+
+# Removes platforms from the CGO allowed platforms list.
+# Arguments:
+#   $1: Comma-separated list of platforms to remove.
+function deleteFromCGOAllowedPlatforms() {
+    CGO_ALLOWED_PLATFORMS=$(echo "${CGO_ALLOWED_PLATFORMS}" | sed "s|${1}$||g" | sed "s|${1},||g")
+}
+
+addToAllowedPlatforms "linux/386,linux/amd64,linux/arm,linux/arm64,linux/loong64,linux/mips,linux/mips64,linux/mips64le,linux/mipsle,linux/ppc64,linux/ppc64le,linux/riscv64,linux/s390x"
+addToAllowedPlatforms "darwin/amd64,darwin/arm64"
+addToAllowedPlatforms "windows/386,windows/amd64,windows/arm,windows/arm64"
+
+addToCGOAllowedPlatforms "linux/386,linux/amd64,linux/arm,linux/arm64,linux/loong64,linux/mips,linux/mips64,linux/mips64le,linux/mipsle,linux/ppc64le,linux/riscv64,linux/s390x"
+addToCGOAllowedPlatforms "windows/386,windows/amd64"
+
+addToAllowedPlatforms "${GOHOSTOS}/${GOHOSTARCH}"
+addToCGOAllowedPlatforms "${GOHOSTOS}/${GOHOSTARCH}"
+
 # Initializes the platforms based on environment variables and allowed platforms.
 function initPlatforms() {
     setDefault "CGO_ENABLED" "${DEFAULT_CGO_ENABLED}"
 
-    unset -v CURRENT_ALLOWED_PLATFORM
+    unset -v CURRENT_ALLOWED_PLATFORMS
 
-    ALLOWED_PLATFORM=""
-    CGO_ALLOWED_PLATFORM=""
-    for os in "${!allowed_platforms[@]}"; do
-        ALLOWED_PLATFORM="${ALLOWED_PLATFORM},${allowed_platforms[${os}]}"
-        if [[ -n "${cgo_allowed_platforms[${os}]}" ]]; then
-            CGO_ALLOWED_PLATFORM="${CGO_ALLOWED_PLATFORM},${cgo_allowed_platforms[${os}]}"
-        fi
-    done
-
-    ALLOWED_PLATFORM=$(removeDuplicatePlatforms "${ALLOWED_PLATFORM}")
-    CGO_ALLOWED_PLATFORM=$(removeDuplicatePlatforms "${CGO_ALLOWED_PLATFORM}")
-
-    isCGOEnabled && CURRENT_ALLOWED_PLATFORM="${CGO_ALLOWED_PLATFORM}" || CURRENT_ALLOWED_PLATFORM="${ALLOWED_PLATFORM}"
-
-    for os in "${!allowed_platforms[@]}"; do
-        local var="${os^^}_ALLOWED_PLATFORM"
-        local cgo_var="CGO_${var}"
-        eval "CURRENT_${var}=\"${!var}\""
-        eval "CURRENT_${cgo_var}=\"${!cgo_var}\""
-    done
+    isCGOEnabled && CURRENT_ALLOWED_PLATFORMS="${CGO_ALLOWED_PLATFORMS}" || CURRENT_ALLOWED_PLATFORMS="${ALLOWED_PLATFORMS}"
 
     if declare -f initDepPlatforms >/dev/null; then
         initDepPlatforms
@@ -344,14 +286,14 @@ function initPlatforms() {
 # Checks if a platform is allowed.
 # Arguments:
 #   $1: Target platform to check.
-#   $2: Optional. List of allowed platforms. If not provided, CURRENT_ALLOWED_PLATFORM is used.
+#   $2: Optional. List of allowed platforms. If not provided, CURRENT_ALLOWED_PLATFORMS is used.
 # Returns:
 #   0: Platform is allowed.
 #   1: Platform is not allowed.
 #   2: Platform is not allowed for CGO.
 function checkPlatform() {
     local target_platform="$1"
-    local current_allowed_platform="${2:-${CURRENT_ALLOWED_PLATFORM}}"
+    local current_allowed_platform="${2:-${CURRENT_ALLOWED_PLATFORMS}}"
 
     if [[ "${current_allowed_platform}" =~ (^|,)${target_platform}($|,) ]]; then
         return 0
@@ -371,9 +313,7 @@ function checkPlatform() {
 #   2: At least one platform is not allowed for CGO.
 #   3: Error checking platforms.
 function checkPlatforms() {
-    local platforms="$1"
-
-    for platform in ${platforms//,/ }; do
+    for platform in ${1//,/ }; do
         case $(
             checkPlatform "${platform}"
             echo $?
@@ -400,14 +340,13 @@ function checkPlatforms() {
 
 # --- CGO Dependencies ---
 
-declare -A cgo_deps
-cgo_deps=(
-    ["CC"]=""
-    ["CXX"]=""
-    ["MORE_CGO_CFLAGS"]=""
-    ["MORE_CGO_CXXFLAGS"]=""
-    ["MORE_CGO_LDFLAGS"]=""
-)
+function resetCGO() {
+    CC=""
+    CXX=""
+    MORE_CGO_CFLAGS=""
+    MORE_CGO_CXXFLAGS=""
+    MORE_CGO_LDFLAGS=""
+}
 
 # Initializes CGO dependencies based on the target operating system and architecture.
 # Arguments:
@@ -418,13 +357,14 @@ cgo_deps=(
 #   0: CGO dependencies initialized successfully.
 #   1: Error initializing CGO dependencies.
 function initCGODeps() {
+    resetCGO
     local goos="$1"
     local goarch="$2"
     local micro="$3"
 
     if [[ -n "${FORCE_CC}" ]] && [[ -n "${FORCE_CXX}" ]]; then
-        cgo_deps["CC"]="${FORCE_CC}"
-        cgo_deps["CXX"]="${FORCE_CXX}"
+        CC="${FORCE_CC}"
+        CXX="${FORCE_CXX}"
         return 0
     elif [[ -n "${FORCE_CC}" ]] || [[ -n "${FORCE_CXX}" ]]; then
         echo -e "${COLOR_RED}Both FORCE_CC and FORCE_CXX must be set at the same time.${COLOR_RESET}"
@@ -463,26 +403,26 @@ function initCGODeps() {
     esac
 
     local cc_command cc_options
-    read -r cc_command cc_options <<<"${cgo_deps["CC"]}"
+    read -r cc_command cc_options <<<"${CC}"
     cc_command="$(command -v "${cc_command}")"
     if [[ "${cc_command}" != /* ]]; then
-        cgo_deps["CC"]="$(cd "$(dirname "${cc_command}")" && pwd)/$(basename "${cc_command}")"
-        [[ -n "${cc_options}" ]] && cgo_deps["CC"]="${cgo_deps["CC"]} ${cc_options}"
+        CC="$(cd "$(dirname "${cc_command}")" && pwd)/$(basename "${cc_command}")"
+        [[ -n "${cc_options}" ]] && CC="${CC} ${cc_options}"
     fi
 
     local cxx_command cxx_options
-    read -r cxx_command cxx_options <<<"${cgo_deps["CXX"]}"
+    read -r cxx_command cxx_options <<<"${CXX}"
     cxx_command="$(command -v "${cxx_command}")"
     if [[ "${cxx_command}" != /* ]]; then
-        cgo_deps["CXX"]="$(cd "$(dirname "${cxx_command}")" && pwd)/$(basename "${cxx_command}")"
-        [[ -n "${cxx_options}" ]] && cgo_deps["CXX"]="${cgo_deps["CXX"]} ${cxx_options}"
+        CXX="$(cd "$(dirname "${cxx_command}")" && pwd)/$(basename "${cxx_command}")"
+        [[ -n "${cxx_options}" ]] && CXX="${CXX} ${cxx_options}"
     fi
 }
 
 # Initializes CGO dependencies for the host platform.
 function initHostCGODeps() {
-    cgo_deps["CC"]="${HOST_CC}"
-    cgo_deps["CXX"]="${HOST_CXX}"
+    CC="${HOST_CC}"
+    CXX="${HOST_CXX}"
 }
 
 # Initializes default CGO dependencies based on the target operating system, architecture, and micro architecture.
@@ -599,8 +539,8 @@ function initLinuxCGO() {
     local arch_prefix="$1"
     local abi="$2"
     local micro="$3"
-    local cc_var="CC_LINUX_${arch_prefix^^}${abi^^}${micro^^}"
-    local cxx_var="CXX_LINUX_${arch_prefix^^}${abi^^}${micro^^}"
+    local cc_var=$(echo "CC_LINUX_${arch_prefix}${abi}${micro}" | awk '{print tolower($0)}')
+    local cxx_var=$(echo "CXX_LINUX_${arch_prefix}${abi}${micro}" | awk '{print tolower($0)}')
 
     if [[ -z "${!cc_var}" ]] && [[ -z "${!cxx_var}" ]]; then
         local cross_compiler_name="${arch_prefix}-linux-musl${abi}${micro}-cross"
@@ -623,8 +563,8 @@ function initLinuxCGO() {
         return 1
     fi
 
-    cgo_deps["CC"]="${!cc_var} -static --static"
-    cgo_deps["CXX"]="${!cxx_var} -static --static"
+    CC="${!cc_var} -static --static"
+    CXX="${!cxx_var} -static --static"
     return 0
 }
 
@@ -633,8 +573,8 @@ function initLinuxCGO() {
 #   $1: Architecture prefix (e.g., "i686", "x86_64").
 function initWindowsCGO() {
     local arch_prefix="$1"
-    local cc_var="CC_WINDOWS_${arch_prefix^^}"
-    local cxx_var="CXX_WINDOWS_${arch_prefix^^}"
+    local cc_var=$(echo "CC_WINDOWS_${arch_prefix}" | awk '{print tolower($0)}')
+    local cxx_var=$(echo "CXX_WINDOWS_${arch_prefix}" | awk '{print tolower($0)}')
 
     if [[ -z "${!cc_var}" ]] && [[ -z "${!cxx_var}" ]]; then
         local cross_compiler_name="${arch_prefix}-w64-mingw32-cross"
@@ -657,8 +597,8 @@ function initWindowsCGO() {
         return 1
     fi
 
-    cgo_deps["CC"]="${!cc_var} -static --static"
-    cgo_deps["CXX"]="${!cxx_var} -static --static"
+    CC="${!cc_var} -static --static"
+    CXX="${!cxx_var} -static --static"
     return 0
 }
 
@@ -714,7 +654,6 @@ function buildTarget() {
     supportPIE "${platform}" && build_mode="-buildmode=pie"
 
     local build_env=(
-        "CGO_ENABLED=${CGO_ENABLED}"
         "GOOS=${goos}"
         "GOARCH=${goarch}"
     )
@@ -788,6 +727,8 @@ function buildTargetWithMicro() {
     local target_file="${RESULT_DIR}/${BIN_NAME}-${goos}-${goarch}${micro:+"-$micro"}${ext}"
     local default_target_file="${RESULT_DIR}/${BIN_NAME}-${goos}-${goarch}${ext}"
 
+    isCGOEnabled && build_env+=("CGO_ENABLED=1") || build_env+=("CGO_ENABLED=0")
+
     # Set micro architecture specific environment variables.
     case "${goarch}" in
     "386")
@@ -825,11 +766,11 @@ function buildTargetWithMicro() {
 
     # Set CGO specific environment variables.
     if isCGOEnabled; then
-        build_env+=("CGO_CFLAGS=${DEFAULT_CGO_FLAGS} ${cgo_deps["MORE_CGO_CFLAGS"]}")
-        build_env+=("CGO_CXXFLAGS=${DEFAULT_CGO_FLAGS} ${cgo_deps["MORE_CGO_CXXFLAGS"]}")
-        build_env+=("CGO_LDFLAGS=${DEFAULT_CGO_LDFLAGS} ${cgo_deps["MORE_CGO_LDFLAGS"]}")
-        build_env+=("CC=${cgo_deps["CC"]}")
-        build_env+=("CXX=${cgo_deps["CXX"]}")
+        build_env+=("CGO_CFLAGS=${CGO_FLAGS}${MORE_CGO_CFLAGS:+ ${MORE_CGO_CFLAGS}}")
+        build_env+=("CGO_CXXFLAGS=${CGO_FLAGS}${MORE_CGO_CXXFLAGS:+ ${MORE_CGO_CXXFLAGS}}")
+        build_env+=("CGO_LDFLAGS=${CGO_LDFLAGS}${MORE_CGO_LDFLAGS:+ ${MORE_CGO_LDFLAGS}}")
+        build_env+=("CC=${CC}")
+        build_env+=("CXX=${CXX}")
     fi
 
     echo -e "${COLOR_PURPLE}Building ${goos}/${goarch}${micro:+/${micro}}...${COLOR_RESET}"
@@ -855,11 +796,11 @@ function expandPlatforms() {
     local platform=""
     for platform in ${platforms//,/ }; do
         if [[ "${platform}" == "all" ]]; then
-            echo "${CURRENT_ALLOWED_PLATFORM}"
+            echo "${CURRENT_ALLOWED_PLATFORMS}"
             return 0
         elif [[ "${platform}" == *\** ]]; then
             local tmp_var=""
-            for tmp_var in ${CURRENT_ALLOWED_PLATFORM//,/ }; do
+            for tmp_var in ${CURRENT_ALLOWED_PLATFORMS//,/ }; do
                 [[ "${tmp_var}" == ${platform} ]] && expanded_platforms="${expanded_platforms} ${tmp_var}"
             done
         elif [[ "${platform}" != */* ]]; then
@@ -914,7 +855,6 @@ function loadBuildConfig() {
 # --- Main Script ---
 
 loadBuildConfig
-initHostPlatforms
 
 # Parse command-line arguments.
 while [[ $# -gt 0 ]]; do
@@ -942,7 +882,7 @@ while [[ $# -gt 0 ]]; do
     --ldflags=*)
         addLDFLAGS "${1#*=}"
         ;;
-    --platforms=*)
+    -p=* | --platforms=*)
         PLATFORMS="${1#*=}"
         ;;
     --result-dir=*)
@@ -951,9 +891,9 @@ while [[ $# -gt 0 ]]; do
     --tags=*)
         addTags "${1#*=}"
         ;;
-    --show-all-targets)
+    --show-all-platforms)
         initPlatforms
-        echo "${CURRENT_ALLOWED_PLATFORM}"
+        echo "${CURRENT_ALLOWED_PLATFORMS}"
         exit 0
         ;;
     --github-proxy-mirror=*)
@@ -965,10 +905,10 @@ while [[ $# -gt 0 ]]; do
     --force-g++=*)
         FORCE_CXX="${1#*=}"
         ;;
-    --host-cc=*)
+    --host-gcc=*)
         HOST_CC="${1#*=}"
         ;;
-    --host-cxx=*)
+    --host-g++=*)
         HOST_CXX="${1#*=}"
         ;;
     *)

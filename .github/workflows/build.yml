@@ -26,7 +26,7 @@ jobs:
           declare -a arr=()
           OIFS="$IFS"
           IFS=$'\n,'
-          for line in $(BUILD_CONFIG=script/build.config.sh bash script/build.sh --show-all-targets); do
+          for line in $(BUILD_CONFIG=script/build.config.sh bash script/build.sh --show-all-platforms); do
             arr+=("$line")
           done
           IFS="$OIFS"

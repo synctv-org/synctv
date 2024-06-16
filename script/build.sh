@@ -1,7 +1,6 @@
 #!/bin/bash
 set -e
 
-# 使用更丰富的颜色定义
 readonly COLOR_RED='\033[0;31m'
 readonly COLOR_GREEN='\033[0;32m'
 readonly COLOR_YELLOW='\033[0;33m'
@@ -65,6 +64,7 @@ function printEnvHelp() {
 
 function printHelp() {
     echo -e "${COLOR_BLUE}-h, --help${COLOR_RESET} get help"
+    echo -e "${COLOR_BLUE}-eh, --env-help${COLOR_RESET} get environment help"
     echo -e "${COLOR_BLUE}--disable-cgo${COLOR_RESET} disable cgo"
     echo -e "${COLOR_BLUE}--source-dir=${COLOR_RESET} set source dir (default: ${DEFAULT_SOURCE_DIR})"
     echo -e "${COLOR_BLUE}--more-go-cmd-args=${COLOR_RESET} more go cmd args"
@@ -80,18 +80,14 @@ function printHelp() {
     echo -e "${COLOR_BLUE}--host-cc=${COLOR_RESET} host cc (default: ${DEFAULT_CC})"
     echo -e "${COLOR_BLUE}--host-cxx=${COLOR_RESET} host cxx (default: ${DEFAULT_CXX})"
 
-    echo -e "${COLOR_DARK_GRAY}$(getSeparator)${COLOR_RESET}"
-    printBuildConfigHelp
-
     if declare -f printDepHelp >/dev/null; then
         echo -e "${COLOR_PURPLE}$(getSeparator)${COLOR_RESET}"
         echo -e "Dep Help:"
         printDepHelp
     fi
 
-    echo -e "${COLOR_LIGHT_GRAY}$(getSeparator)${COLOR_RESET}"
-    echo -e "Env Help:"
-    printEnvHelp
+    echo -e "${COLOR_DARK_GRAY}$(getSeparator)${COLOR_RESET}"
+    printBuildConfigHelp
 }
 
 function setDefault() {
@@ -116,34 +112,34 @@ function addBuildArgs() {
 }
 
 function fixArgs() {
-    setDefault "source_dir" "${DEFAULT_SOURCE_DIR}"
-    source_dir="$(cd "${source_dir}" && pwd)"
-    setDefault "bin_name" "$(basename "${source_dir}")"
-    setDefault "result_dir" "${DEFAULT_RESULT_DIR}"
-    mkdir -p "${result_dir}"
-    result_dir="$(cd "${result_dir}" && pwd)"
+    setDefault "SOURCE_DIR" "${DEFAULT_SOURCE_DIR}"
+    source_dir="$(cd "${SOURCE_DIR}" && pwd)"
+    setDefault "BIN_NAME" "$(basename "${SOURCE_DIR}")"
+    setDefault "RESULT_DIR" "${DEFAULT_RESULT_DIR}"
+    mkdir -p "${RESULT_DIR}"
+    result_dir="$(cd "${RESULT_DIR}" && pwd)"
     echo -e "${COLOR_BLUE}build source dir: ${COLOR_GREEN}${source_dir}${COLOR_RESET}"
     echo -e "${COLOR_BLUE}build result dir: ${COLOR_GREEN}${result_dir}${COLOR_RESET}"
 
-    setDefault "cgo_cross_compiler_dir" "$DEFAULT_CGO_CROSS_COMPILER_DIR"
-    mkdir -p "${cgo_cross_compiler_dir}"
-    cgo_cross_compiler_dir="$(cd "${cgo_cross_compiler_dir}" && pwd)"
+    setDefault "CGO_CROSS_COMPILER_DIR" "$DEFAULT_CGO_CROSS_COMPILER_DIR"
+    mkdir -p "${CGO_CROSS_COMPILER_DIR}"
+    cgo_cross_compiler_dir="$(cd "${CGO_CROSS_COMPILER_DIR}" && pwd)"
 
-    setDefault "platforms" "${GOHOSTPLATFORM}"
-    setDefault "disable_micro" ""
-    setDefault "host_cc" "${DEFAULT_CC}"
-    setDefault "host_cxx" "${DEFAULT_CXX}"
-    setDefault "force_cc" ""
-    setDefault "force_cxx" ""
-    setDefault "gh_proxy" ""
-    setDefault "tags" ""
-    setDefault "ldflags" "${DEFAULT_LDFLAGS}"
-    setDefault "build_args" ""
-    setDefault "cgo_deps_version" "${DEFAULT_CGO_DEPS_VERSION}"
+    setDefault "PLATFORMS" "${GOHOSTPLATFORM}"
+    setDefault "DISABLE_MICRO" ""
+    setDefault "HOST_CC" "${DEFAULT_CC}"
+    setDefault "HOST_CXX" "${DEFAULT_CXX}"
+    setDefault "FORCE_CC" ""
+    setDefault "FORCE_CXX" ""
+    setDefault "GH_PROXY" ""
+    setDefault "TAGS" ""
+    setDefault "LDFLAGS" "${DEFAULT_LDFLAGS}"
+    setDefault "BUILD_ARGS" ""
+    setDefault "CGO_DEPS_VERSION" "${DEFAULT_CGO_DEPS_VERSION}"
 }
 
 function isCGOEnabled() {
-    [[ "${cgo_enabled}" == "1" ]]
+    [[ "${CGO_ENABLED}" == "1" ]]
 }
 
 function downloadAndUnzip() {
@@ -261,7 +257,7 @@ function removeDuplicatePlatforms() {
 }
 
 function initPlatforms() {
-    setDefault "cgo_enabled" "${DEFAULT_CGO_ENABLED}"
+    setDefault "CGO_ENABLED" "${DEFAULT_CGO_ENABLED}"
 
     unset -v CURRENT_ALLOWED_PLATFORM
 
@@ -342,11 +338,11 @@ function initCGODeps() {
     local goarch="$2"
     local micro="$3"
 
-    if [[ -n "${force_cc}" ]] && [[ -n "${force_cxx}" ]]; then
-        cgo_deps["CC"]="${force_cc}"
-        cgo_deps["CXX"]="${force_cxx}"
+    if [[ -n "${FORCE_CC}" ]] && [[ -n "${FORCE_CXX}" ]]; then
+        cgo_deps["CC"]="${FORCE_CC}"
+        cgo_deps["CXX"]="${FORCE_CXX}"
         return
-    elif [[ -n "${force_cc}" ]] || [[ -n "${force_cxx}" ]]; then
+    elif [[ -n "${FORCE_CC}" ]] || [[ -n "${FORCE_CXX}" ]]; then
         echo -e "${COLOR_RED}FORCE_CC and FORCE_CXX must be set at the same time${COLOR_RESET}"
         return 1
     fi
@@ -400,8 +396,8 @@ function initCGODeps() {
 }
 
 function initHostCGODeps() {
-    cgo_deps["CC"]="${host_cc}"
-    cgo_deps["CXX"]="${host_cxx}"
+    cgo_deps["CC"]="${HOST_CC}"
+    cgo_deps["CXX"]="${HOST_CXX}"
 }
 
 function initDefaultCGODeps() {
@@ -411,7 +407,6 @@ function initDefaultCGODeps() {
     local unamespacer="${GOHOSTOS}-${GOHOSTARCH}"
     [[ "${GOHOSTARCH}" == "arm" ]] && unamespacer="${GOHOSTOS}-arm32v7"
 
-    # 根据不同的目标平台和架构初始化 CGO 依赖项
     case "${goos}" in
     "linux")
         case "${micro}" in
@@ -523,7 +518,7 @@ function initLinuxCGO() {
             eval "${cc_var}=\"${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-linux-musl${abi}${micro}-gcc\""
             eval "${cxx_var}=\"${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-linux-musl${abi}${micro}-g++\""
         else
-            downloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${cgo_deps_version}/${cross_compiler_name}-${unamespacer}.tgz" \
+            downloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/${cross_compiler_name}-${unamespacer}.tgz" \
                 "${cgo_cross_compiler_dir}/${cross_compiler_name}"
             eval "${cc_var}=\"${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-linux-musl${abi}${micro}-gcc\""
             eval "${cxx_var}=\"${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-linux-musl${abi}${micro}-g++\""
@@ -553,7 +548,7 @@ function initWindowsCGO() {
             eval "${cc_var}=\"${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-w64-mingw32-gcc\""
             eval "${cxx_var}=\"${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-w64-mingw32-g++\""
         else
-            downloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${cgo_deps_version}/${cross_compiler_name}-${unamespacer}.tgz" \
+            downloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/${cross_compiler_name}-${unamespacer}.tgz" \
                 "${cgo_cross_compiler_dir}/${cross_compiler_name}"
             eval "${cc_var}=\"${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-w64-mingw32-gcc\""
             eval "${cxx_var}=\"${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-w64-mingw32-g++\""
@@ -592,7 +587,6 @@ function getSeparator() {
     echo $separator
 }
 
-# 构建目标平台
 function buildTarget() {
     local platform="$1"
     local target_name="$2"
@@ -605,7 +599,7 @@ function buildTarget() {
     supportPIE "${platform}" && build_mode="-buildmode=pie"
 
     local build_env=(
-        "CGO_ENABLED=${cgo_enabled}"
+        "CGO_ENABLED=${CGO_ENABLED}"
         "GOOS=${goos}"
         "GOARCH=${goarch}"
     )
@@ -614,7 +608,7 @@ function buildTarget() {
 
     buildTargetWithMicro "" "${build_env[@]}"
 
-    if [ -n "${disable_micro}" ]; then
+    if [ -n "${DISABLE_MICRO}" ]; then
         return
     fi
 
@@ -664,7 +658,6 @@ function buildTarget() {
     esac
 }
 
-# 构建特定微架构的目标平台
 function buildTargetWithMicro() {
     local micro="$1"
     local build_env=("${@:2}")
@@ -719,7 +712,7 @@ function buildTargetWithMicro() {
 
     echo -e "${COLOR_PURPLE}building ${goos}/${goarch}${micro:+/${micro}}${COLOR_RESET}"
     echo "${build_env[@]}"
-    env "${build_env[@]}" go build -tags "${tags}" -ldflags "${ldflags}" -trimpath ${build_args} ${build_mode} -o "${target_file}" "${source_dir}"
+    env "${build_env[@]}" go build -tags "${TAGS}" -ldflags "${LDFLAGS}" -trimpath ${BUILD_ARGS} ${build_mode} -o "${target_file}" "${source_dir}"
     echo -e "${COLOR_LIGHT_GREEN}build ${goos}/${goarch}${micro:+ ${micro}} success${COLOR_RESET}"
 }
 
@@ -754,7 +747,7 @@ function autoBuild() {
     fi
 
     for platform in ${platforms//,/ }; do
-        buildTarget "${platform}" "${bin_name}"
+        buildTarget "${platform}" "${BIN_NAME}"
     done
 }
 
@@ -781,12 +774,16 @@ for i in "$@"; do
         printHelp
         exit 0
         ;;
+    -eh | --env-help)
+        printEnvHelp
+        exit 0
+        ;;
     --disable-cgo)
-        cgo_enabled="0"
+        CGO_ENABLED="0"
         shift
         ;;
     --source-dir=*)
-        source_dir="${i#*=}"
+        SOURCE_DIR="${i#*=}"
         shift
         ;;
     --more-go-cmd-args=*)
@@ -794,7 +791,7 @@ for i in "$@"; do
         shift
         ;;
     --disable-micro)
-        disable_micro="true"
+        DISABLE_MICRO="true"
         shift
         ;;
     --ldflags=*)
@@ -802,11 +799,11 @@ for i in "$@"; do
         shift
         ;;
     --platforms=*)
-        platforms="${i#*=}"
+        PLATFORMS="${i#*=}"
         shift
         ;;
     --result-dir=*)
-        result_dir="${i#*=}"
+        RESULT_DIR="${i#*=}"
         shift
         ;;
     --tags=*)
@@ -819,23 +816,23 @@ for i in "$@"; do
         exit 0
         ;;
     --github-proxy-mirror=*)
-        gh_proxy="${i#*=}"
+        GH_PROXY="${i#*=}"
         shift
         ;;
     --force-gcc=*)
-        force_cc="${i#*=}"
+        FORCE_CC="${i#*=}"
         shift
         ;;
     --force-g++=*)
-        force_cxx="${i#*=}"
+        FORCE_CXX="${i#*=}"
         shift
         ;;
     --host-cc=*)
-        host_cc="${i#*=}"
+        HOST_CC="${i#*=}"
         shift
         ;;
     --host-cxx=*)
-        host_cxx="${i#*=}"
+        HOST_CXX="${i#*=}"
         shift
         ;;
     *)
@@ -851,4 +848,4 @@ done
 
 fixArgs
 initPlatforms
-autoBuild "${platforms}"
+autoBuild "${PLATFORMS}"

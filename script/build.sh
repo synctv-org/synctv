@@ -104,8 +104,7 @@ function addLDFLAGS() {
 }
 
 function addBuildArgs() {
-    local new_build_args="$1"
-    [[ -n "${new_build_args}" ]] && build_args="${build_args} ${new_build_args}"
+    [[ -n "${1}" ]] && build_args="${build_args} ${1}"
 }
 
 function fixArgs() {
@@ -751,81 +750,6 @@ function autoBuild() {
     done
 }
 
-function parseArgs() {
-    if declare -f parseDepArgs >/dev/null; then
-        set -- $(parseDepArgs "$@")
-    fi
-    while [[ $# -gt 0 ]]; do
-        case "${1}" in
-        -h | --help)
-            printHelp
-            exit 0
-            ;;
-        --disable-cgo)
-            cgo_enabled="0"
-            shift
-            ;;
-        --source-dir=*)
-            source_dir="${1#*=}"
-            shift
-            ;;
-        --more-go-cmd-args=*)
-            addBuildArgs "${1#*=}"
-            shift
-            ;;
-        --disable-micro)
-            disable_micro="true"
-            shift
-            ;;
-        --ldflags=*)
-            addLDFLAGS "${1#*=}"
-            shift
-            ;;
-        --platforms=*)
-            platforms="${1#*=}"
-            shift
-            ;;
-        --result-dir=*)
-            result_dir="${1#*=}"
-            shift
-            ;;
-        --tags=*)
-            addTags "${1#*=}"
-            shift
-            ;;
-        --show-all-targets)
-            initPlatforms
-            echo "${CURRENT_ALLOWED_PLATFORM}"
-            exit 0
-            ;;
-        --github-proxy-mirror=*)
-            gh_proxy="${1#*=}"
-            shift
-            ;;
-        --force-gcc=*)
-            force_cc="${1#*=}"
-            shift
-            ;;
-        --force-g++=*)
-            force_cxx="${1#*=}"
-            shift
-            ;;
-        --host-cc=*)
-            host_cc="${1#*=}"
-            shift
-            ;;
-        --host-cxx=*)
-            host_cxx="${1#*=}"
-            shift
-            ;;
-        *)
-            echo -e "${COLOR_RED}Invalid option: ${1}${COLOR_RESET}"
-            return 1
-            ;;
-        esac
-    done
-}
-
 function loadedBuildConfig() {
     if [[ -n "${load_build_config}" ]]; then
         return 0
@@ -840,9 +764,87 @@ function loadBuildConfig() {
     fi
 }
 
+function checkArgs() {
+    if [[ $# -gt 0 ]]; then
+        echo -e "${COLOR_RED}Invalid option: $*${COLOR_RESET}"
+        exit 1
+    fi
+}
+
 loadBuildConfig
 initHostPlatforms
-parseArgs "$@"
+
+for i in "$@"; do
+    case ${i,,} in
+    -h | --help)
+        printHelp
+        exit 0
+        ;;
+    --disable-cgo)
+        cgo_enabled="0"
+        shift
+        ;;
+    --source-dir=*)
+        source_dir="${i#*=}"
+        shift
+        ;;
+    --more-go-cmd-args=*)
+        addBuildArgs "${i#*=}"
+        shift
+        ;;
+    --disable-micro)
+        disable_micro="true"
+        shift
+        ;;
+    --ldflags=*)
+        addLDFLAGS "${i#*=}"
+        shift
+        ;;
+    --platforms=*)
+        platforms="${i#*=}"
+        shift
+        ;;
+    --result-dir=*)
+        result_dir="${i#*=}"
+        shift
+        ;;
+    --tags=*)
+        addTags "${i#*=}"
+        shift
+        ;;
+    --show-all-targets)
+        initPlatforms
+        echo "${CURRENT_ALLOWED_PLATFORM}"
+        exit 0
+        ;;
+    --github-proxy-mirror=*)
+        gh_proxy="${i#*=}"
+        shift
+        ;;
+    --force-gcc=*)
+        force_cc="${i#*=}"
+        shift
+        ;;
+    --force-g++=*)
+        force_cxx="${i#*=}"
+        shift
+        ;;
+    --host-cc=*)
+        host_cc="${i#*=}"
+        shift
+        ;;
+    --host-cxx=*)
+        host_cxx="${i#*=}"
+        shift
+        ;;
+    esac
+done
+
+if declare -f parseDepArgs >/dev/null; then
+    set -- $(parseDepArgs "$@")
+fi
+
+checkArgs "$@"
 fixArgs
 initPlatforms
 autoBuild "${platforms}"

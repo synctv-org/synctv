@@ -1,9 +1,8 @@
 function parseDepArgs() {
-    while [[ $# -gt 0 ]]; do
-        case "${1}" in
-        # dep
+    for i in "$@"; do
+        case ${i,,} in
         --version=*)
-            version="${1#*=}"
+            version="${i#*=}"
             shift
             ;;
         --skip-init-web)
@@ -11,11 +10,8 @@ function parseDepArgs() {
             shift
             ;;
         --web-version=*)
-            web_version="${1#*=}"
+            web_version="${i#*=}"
             shift
-            ;;
-        *)
-            break
             ;;
         esac
     done

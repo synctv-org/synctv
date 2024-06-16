@@ -162,7 +162,7 @@ func (m *Movie) initChannel() (*rtmps.Channel, error) {
 		}
 		err := c.InitHlsPlayer(hls.WithGenTsNameFunc(genTsName))
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("init rtmp hls player error: %v", err)
 		}
 		return c, nil
 	case m.Movie.MovieBase.Live && m.Movie.MovieBase.Proxy:
@@ -178,7 +178,7 @@ func (m *Movie) initChannel() (*rtmps.Channel, error) {
 			}
 			err = c.InitHlsPlayer(hls.WithGenTsNameFunc(genTsName))
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("init rtmp hls player error: %v", err)
 			}
 			go func() {
 				for {
@@ -187,11 +187,13 @@ func (m *Movie) initChannel() (*rtmps.Channel, error) {
 					}
 					cli := core.NewConnClient()
 					if err = cli.Start(m.Movie.MovieBase.Url, av.PLAY); err != nil {
+						log.Errorf("push live error: %v", err)
 						cli.Close()
 						time.Sleep(time.Second)
 						continue
 					}
 					if err := c.PushStart(rtmpProto.NewReader(cli)); err != nil {
+						log.Errorf("push live error: %v", err)
 						cli.Close()
 						time.Sleep(time.Second)
 					}
@@ -205,7 +207,7 @@ func (m *Movie) initChannel() (*rtmps.Channel, error) {
 			}
 			err := c.InitHlsPlayer(hls.WithGenTsNameFunc(genTsName))
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("init http hls player error: %v", err)
 			}
 			go func() {
 				for {
@@ -227,14 +229,15 @@ func (m *Movie) initChannel() (*rtmps.Channel, error) {
 					resp, err := uhc.Do(req)
 					if err != nil {
 						log.Errorf("get live error: %v", err)
+						resp.Body.Close()
 						time.Sleep(time.Second)
 						continue
 					}
 					if err := c.PushStart(flv.NewReader(resp.Body)); err != nil {
 						log.Errorf("push live error: %v", err)
+						resp.Body.Close()
 						time.Sleep(time.Second)
 					}
-					resp.Body.Close()
 				}
 			}()
 			return c, nil

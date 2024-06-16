@@ -833,9 +833,15 @@ function buildTargetWithMicro() {
     fi
 
     echo -e "${COLOR_PURPLE}Building ${goos}/${goarch}${micro:+/${micro}}...${COLOR_RESET}"
-    echo -e "${COLOR_BLUE}Run command:\n${COLOR_LIGHT_GRAY}$(for var in "${build_env[@]}"; do key=$(echo "${var}" | cut -d= -f1); value=$(echo "${var}" | cut -d= -f2-); echo "export ${key}='${value}'"; done)\n${COLOR_CYAN}go build -tags \"${TAGS}\" -ldflags \"${LDFLAGS}\" -trimpath ${BUILD_ARGS} ${build_mode} -o \"${target_file}\" \"${source_dir}\"${COLOR_RESET}"
+    echo -e "${COLOR_BLUE}Run command:\n${COLOR_LIGHT_GRAY}$(for var in "${build_env[@]}"; do
+        key=$(echo "${var}" | cut -d= -f1)
+        value=$(echo "${var}" | cut -d= -f2-)
+        echo "export ${key}='${value}'"
+    done)\n${COLOR_CYAN}go build -tags \"${TAGS}\" -ldflags \"${LDFLAGS}\" -trimpath ${BUILD_ARGS} ${build_mode} -o \"${target_file}\" \"${source_dir}\"${COLOR_RESET}"
+    local start_time=$(date +%s)
     env "${build_env[@]}" go build -tags "${TAGS}" -ldflags "${LDFLAGS}" -trimpath ${BUILD_ARGS} ${build_mode} -o "${target_file}" "${source_dir}"
-    echo -e "${COLOR_LIGHT_GREEN}Build successful: ${goos}/${goarch}${micro:+ ${micro}}${COLOR_RESET}"
+    local end_time=$(date +%s)
+    echo -e "${COLOR_LIGHT_GREEN}Build successful: ${goos}/${goarch}${micro:+ ${micro}}  (took $((end_time - start_time))s)${COLOR_RESET}"
 }
 
 # Expands platform patterns (e.g., "linux/*") to a list of supported platforms.
@@ -871,14 +877,19 @@ function expandPlatforms() {
 function autoBuild() {
     local platforms=$(expandPlatforms "$1")
     checkPlatforms "${platforms}" || return 1
-
+    local start_time=$(date +%s)
     if declare -f initDep >/dev/null; then
         initDep
     fi
-
+    local build_num=0
     for platform in ${platforms//,/ }; do
         buildTarget "${platform}"
+        build_num=$((build_num + 1))
     done
+    local end_time=$(date +%s)
+    if [[ "${build_num}" -gt 1 ]]; then
+        echo -e "${COLOR_YELLOW}Total took $((end_time - start_time))s${COLOR_RESET}"
+    fi
 }
 
 # Checks if the build configuration file has been loaded.

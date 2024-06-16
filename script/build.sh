@@ -848,7 +848,7 @@ function loadedBuildConfig() {
 # Loads the build configuration file if it exists.
 function loadBuildConfig() {
     if [[ -f "${BUILD_CONFIG:=$DEFAULT_BUILD_CONFIG}" ]]; then
-        source "$BUILD_CONFIG"
+        source $BUILD_CONFIG
         load_build_config="true"
     fi
 }

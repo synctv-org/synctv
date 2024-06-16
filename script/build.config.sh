@@ -2,7 +2,7 @@ function parseDepArgs() {
     while [[ $# -gt 0 ]]; do
         case "${1}" in
         --version=*)
-            VERSION="${i#*=}"
+            VERSION="${1#*=}"
             shift
             ;;
         --skip-init-web)
@@ -10,11 +10,11 @@ function parseDepArgs() {
             shift
             ;;
         --web-version=*)
-            WEB_VERSION="${i#*=}"
+            WEB_VERSION="${1#*=}"
             shift
             ;;
         --web-repo=*)
-            WEB_REPO="${i#*=}"
+            WEB_REPO="${1#*=}"
             shift
             ;;
         *)
@@ -48,8 +48,8 @@ function initDepPlatforms() {
 function initDep() {
     setDefault "VERSION" "dev"
     VERSION="$(echo "$VERSION" | sed 's/ //g' | sed 's/"//g' | sed 's/\n//g')"
-    if [[ "${VERSION}" != "dev" ]] && [[ ! "${VERSION}" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-beta.*|-rc.*|-alpha.*)?$ ]]; then
-        echo "version format error: ${VERSION}"
+    if [[ "${VERSION}" != "dev" ]] && [[ ! "${VERSION}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-beta.*|-rc.*|-alpha.*)?$ ]]; then
+        echo -e "${COLOR_LIGHT_RED}Version format error: ${VERSION}${COLOR_RESET}"
         return 1
     fi
     setDefault "WEB_VERSION" "${VERSION}"

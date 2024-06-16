@@ -59,7 +59,7 @@ function initDep() {
     setDefault "WEB_REPO" "${repo_owner}/synctv-web"
     setDefault "SKIP_INIT_WEB" ""
 
-    echo -e "${COLOR_LIGHT_BLUE}version:${COLOR_RESET} ${COLOR_LIGHT_CYAN}${VERSION}${COLOR_RESET}"
+    echo -e "${COLOR_LIGHT_BLUE}Version:${COLOR_RESET} ${COLOR_LIGHT_CYAN}${VERSION}${COLOR_RESET}"
 
     addLDFLAGS "-X 'github.com/synctv-org/synctv/internal/version.Version=${VERSION}'"
     setDefault "WEB_VERSION" "${VERSION}"

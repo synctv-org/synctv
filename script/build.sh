@@ -52,6 +52,7 @@ function printEnvHelp() {
     echo -e "  ${COLOR_LIGHT_CYAN}RESULT_DIR${COLOR_RESET}                - Set the build result directory (default: ${DEFAULT_RESULT_DIR})."
     echo -e "  ${COLOR_LIGHT_CYAN}BUILD_CONFIG${COLOR_RESET}              - Set the build configuration file (default: ${DEFAULT_BUILD_CONFIG})."
     echo -e "  ${COLOR_LIGHT_CYAN}BIN_NAME${COLOR_RESET}                  - Set the binary name (default: source directory basename)."
+    echo -e "  ${COLOR_LIGHT_CYAN}BIN_NAME_NO_SUFFIX${COLOR_RESET}        - Do not append the architecture suffix to the binary name."
     echo -e "  ${COLOR_LIGHT_CYAN}PLATFORM${COLOR_RESET}                  - Set the target platform(s) (default: host platform, supports: all, linux, linux/arm*, ...)."
     echo -e "  ${COLOR_LIGHT_CYAN}DISABLE_MICRO${COLOR_RESET}              - Disable building micro variants."
     echo -e "  ${COLOR_LIGHT_CYAN}CGO_ENABLED${COLOR_RESET}                - Enable or disable CGO (default: ${DEFAULT_CGO_ENABLED})."
@@ -80,6 +81,8 @@ function printHelp() {
     echo -e "  ${COLOR_LIGHT_BLUE}-eh, --env-help${COLOR_RESET}                 - Display help information about environment variables."
     echo -e "  ${COLOR_LIGHT_BLUE}--disable-cgo${COLOR_RESET}                  - Disable CGO support."
     echo -e "  ${COLOR_LIGHT_BLUE}--source-dir=<dir>${COLOR_RESET}               - Specify the source directory (default: ${DEFAULT_SOURCE_DIR})."
+    echo -e "  ${COLOR_LIGHT_BLUE}--bin-name=<name>${COLOR_RESET}               - Specify the binary name (default: source directory basename)."
+    echo -e "  ${COLOR_LIGHT_BLUE}--bin-name-no-suffix${COLOR_RESET}            - Do not append the architecture suffix to the binary name."
     echo -e "  ${COLOR_LIGHT_BLUE}--more-go-cmd-args='<args>'${COLOR_RESET}     - Pass additional arguments to the 'go build' command."
     echo -e "  ${COLOR_LIGHT_BLUE}--disable-micro${COLOR_RESET}                - Disable building micro architecture variants."
     echo -e "  ${COLOR_LIGHT_BLUE}--ldflags='<flags>'${COLOR_RESET}            - Set linker flags (default: \"${DEFAULT_LDFLAGS}\")."
@@ -139,6 +142,7 @@ function fixArgs() {
     setDefault "SOURCE_DIR" "${DEFAULT_SOURCE_DIR}"
     source_dir="$(cd "${SOURCE_DIR}" && pwd)"
     setDefault "BIN_NAME" "$(basename "${SOURCE_DIR}")"
+    setDefault "BIN_NAME_NO_SUFFIX" ""
     setDefault "RESULT_DIR" "${DEFAULT_RESULT_DIR}"
     mkdir -p "${RESULT_DIR}"
     RESULT_DIR="$(cd "${RESULT_DIR}" && pwd)"
@@ -720,8 +724,9 @@ function buildTargetWithMicro() {
     local goarch="${platform#*/}"
     local ext=""
     [[ "${goos}" == "windows" ]] && ext=".exe"
-    local target_file="${RESULT_DIR}/${BIN_NAME}-${goos}-${goarch}${micro:+"-$micro"}${ext}"
-    local default_target_file="${RESULT_DIR}/${BIN_NAME}-${goos}-${goarch}${ext}"
+    local target_file="${RESULT_DIR}/${BIN_NAME}"
+    [ -z "$BIN_NAME_NO_SUFFIX" ] && target_file="${target_file}-${goos}-${goarch}${micro:+"-$micro"}" || true
+    target_file="${target_file}${ext}"
 
     isCGOEnabled && build_env+=("CGO_ENABLED=1") || build_env+=("CGO_ENABLED=0")
 
@@ -868,6 +873,12 @@ while [[ $# -gt 0 ]]; do
         ;;
     --source-dir=*)
         SOURCE_DIR="${1#*=}"
+        ;;
+    --bin-name=*)
+        BIN_NAME="${1#*=}"
+        ;;
+    --bin-name-no-suffix)
+        BIN_NAME_NO_SUFFIX="true"
         ;;
     --more-go-cmd-args=*)
         addBuildArgs "${1#*=}"

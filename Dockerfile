@@ -14,7 +14,8 @@ COPY ./ ./
 
 RUN apk add --no-cache bash curl git go g++
 
-RUN bash script/build.sh --disable-micro --version=${VERSION} \
+RUN bash script/build.sh --version=${VERSION} \
+    ---disable-micro -bin-name-no-suffix \
     --force-gcc='gcc -static' --force-g++='g++ -static' \
     --more-go-cmd-args='-a -v'
 

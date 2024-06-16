@@ -141,9 +141,9 @@ function fixArgs() {
     setDefault "BIN_NAME" "$(basename "${SOURCE_DIR}")"
     setDefault "RESULT_DIR" "${DEFAULT_RESULT_DIR}"
     mkdir -p "${RESULT_DIR}"
-    result_dir="$(cd "${RESULT_DIR}" && pwd)"
+    RESULT_DIR="$(cd "${RESULT_DIR}" && pwd)"
     echo -e "${COLOR_BLUE}Source directory: ${COLOR_GREEN}${source_dir}${COLOR_RESET}"
-    echo -e "${COLOR_BLUE}Build result directory: ${COLOR_GREEN}${result_dir}${COLOR_RESET}"
+    echo -e "${COLOR_BLUE}Build result directory: ${COLOR_GREEN}${RESULT_DIR}${COLOR_RESET}"
 
     setDefault "CGO_CROSS_COMPILER_DIR" "$DEFAULT_CGO_CROSS_COMPILER_DIR"
     mkdir -p "${CGO_CROSS_COMPILER_DIR}"
@@ -706,12 +706,10 @@ function getSeparator() {
 #   $2: Target name (e.g., binary name).
 function buildTarget() {
     local platform="$1"
-    local target_name="$2"
     local goos="${platform%/*}"
     local goarch="${platform#*/}"
     local ext=""
     [[ "${goos}" == "windows" ]] && ext=".exe"
-    local target_file="${result_dir}/${target_name}-${goos}-${goarch}${ext}"
     local build_mode=""
     supportPIE "${platform}" && build_mode="-buildmode=pie"
 
@@ -787,8 +785,8 @@ function buildTargetWithMicro() {
     local goarch="${platform#*/}"
     local ext=""
     [[ "${goos}" == "windows" ]] && ext=".exe"
-    local target_file="${result_dir}/${bin_name}-${goos}-${goarch}${micro:+"-$micro"}${ext}"
-    local default_target_file="${result_dir}/${bin_name}-${goos}-${goarch}${ext}"
+    local target_file="${RESULT_DIR}/${BIN_NAME}-${goos}-${goarch}${micro:+"-$micro"}${ext}"
+    local default_target_file="${RESULT_DIR}/${BIN_NAME}-${goos}-${goarch}${ext}"
 
     # Set micro architecture specific environment variables.
     case "${goarch}" in
@@ -835,7 +833,7 @@ function buildTargetWithMicro() {
     fi
 
     echo -e "${COLOR_PURPLE}Building ${goos}/${goarch}${micro:+/${micro}}...${COLOR_RESET}"
-    echo "${build_env[@]}"
+    echo -e "${COLOR_BLUE}Run command:\n${COLOR_LIGHT_GRAY}$(for var in "${build_env[@]}"; do key=$(echo "${var}" | cut -d= -f1); value=$(echo "${var}" | cut -d= -f2-); echo "export ${key}='${value}'"; done)\n${COLOR_CYAN}go build -tags \"${TAGS}\" -ldflags \"${LDFLAGS}\" -trimpath ${BUILD_ARGS} ${build_mode} -o \"${target_file}\" \"${source_dir}\"${COLOR_RESET}"
     env "${build_env[@]}" go build -tags "${TAGS}" -ldflags "${LDFLAGS}" -trimpath ${BUILD_ARGS} ${build_mode} -o "${target_file}" "${source_dir}"
     echo -e "${COLOR_LIGHT_GREEN}Build successful: ${goos}/${goarch}${micro:+ ${micro}}${COLOR_RESET}"
 }
@@ -879,7 +877,7 @@ function autoBuild() {
     fi
 
     for platform in ${platforms//,/ }; do
-        buildTarget "${platform}" "${BIN_NAME}"
+        buildTarget "${platform}"
     done
 }
 

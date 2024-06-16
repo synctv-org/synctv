@@ -1,17 +1,17 @@
 #!/bin/bash
 set -e
 
-# Color definitions
-readonly COLOR_RED='\033[0;31m'
-readonly COLOR_GREEN='\033[0;32m'
-readonly COLOR_YELLOW='\033[0;33m'
-readonly COLOR_BLUE='\033[0;34m'
-readonly COLOR_PURPLE='\033[0;35m'
-readonly COLOR_CYAN='\033[0;36m'
-readonly COLOR_LIGHT_GRAY='\033[0;37m'
-readonly COLOR_DARK_GRAY='\033[1;30m'
+# Light Color definitions
 readonly COLOR_LIGHT_RED='\033[1;31m'
 readonly COLOR_LIGHT_GREEN='\033[1;32m'
+readonly COLOR_LIGHT_YELLOW='\033[1;33m'
+readonly COLOR_LIGHT_BLUE='\033[1;34m'
+readonly COLOR_LIGHT_MAGENTA='\033[1;35m'
+readonly COLOR_LIGHT_CYAN='\033[1;36m'
+readonly COLOR_LIGHT_GRAY='\033[0;37m'
+readonly COLOR_DARK_GRAY='\033[1;30m'
+readonly COLOR_WHITE='\033[1;37m'
+readonly COLOR_LIGHT_ORANGE='\033[1;91m'
 readonly COLOR_RESET='\033[0m'
 
 # Default values
@@ -37,7 +37,7 @@ readonly GOHOSTPLATFORM="${GOHOSTOS}/${GOHOSTARCH}"
 
 # Prints help information about build configuration.
 function printBuildConfigHelp() {
-    echo -e "${COLOR_YELLOW}You can customize the build configuration using the following functions (defined in ${DEFAULT_BUILD_CONFIG}):${COLOR_RESET}"
+    echo -e "${COLOR_LIGHT_ORANGE}You can customize the build configuration using the following functions (defined in ${DEFAULT_BUILD_CONFIG}):${COLOR_RESET}"
     echo -e "  ${COLOR_LIGHT_GREEN}parseDepArgs${COLOR_RESET}  - Parse dependency arguments."
     echo -e "  ${COLOR_LIGHT_GREEN}printDepHelp${COLOR_RESET}   - Print dependency help information."
     echo -e "  ${COLOR_LIGHT_GREEN}printDepEnvHelp${COLOR_RESET} - Print dependency environment variable help."
@@ -47,55 +47,55 @@ function printBuildConfigHelp() {
 
 # Prints help information about environment variables.
 function printEnvHelp() {
-    echo -e "${COLOR_CYAN}Environment Variables:${COLOR_RESET}"
-    echo -e "  ${COLOR_CYAN}SOURCE_DIR${COLOR_RESET}                - Set the source directory (default: ${DEFAULT_SOURCE_DIR})."
-    echo -e "  ${COLOR_CYAN}RESULT_DIR${COLOR_RESET}                - Set the build result directory (default: ${DEFAULT_RESULT_DIR})."
-    echo -e "  ${COLOR_CYAN}BUILD_CONFIG${COLOR_RESET}              - Set the build configuration file (default: ${DEFAULT_BUILD_CONFIG})."
-    echo -e "  ${COLOR_CYAN}BIN_NAME${COLOR_RESET}                  - Set the binary name (default: source directory basename)."
-    echo -e "  ${COLOR_CYAN}PLATFORM${COLOR_RESET}                  - Set the target platform(s) (default: host platform, supports: all, linux, linux/arm*, ...)."
-    echo -e "  ${COLOR_CYAN}DISABLE_MICRO${COLOR_RESET}              - Disable building micro variants."
-    echo -e "  ${COLOR_CYAN}CGO_ENABLED${COLOR_RESET}                - Enable or disable CGO (default: ${DEFAULT_CGO_ENABLED})."
-    echo -e "  ${COLOR_CYAN}HOST_CC${COLOR_RESET}                   - Set the host C compiler (default: ${DEFAULT_CC})."
-    echo -e "  ${COLOR_CYAN}HOST_CXX${COLOR_RESET}                  - Set the host C++ compiler (default: ${DEFAULT_CXX})."
-    echo -e "  ${COLOR_CYAN}FORCE_CC${COLOR_RESET}                   - Force the use of a specific C compiler."
-    echo -e "  ${COLOR_CYAN}FORCE_CXX${COLOR_RESET}                  - Force the use of a specific C++ compiler."
-    echo -e "  ${COLOR_CYAN}CGO_FLAGS${COLOR_RESET}                  - Set CGO flags (default: ${DEFAULT_CGO_FLAGS})."
-    echo -e "  ${COLOR_CYAN}CGO_LDFLAGS${COLOR_RESET}                 - Set CGO linker flags (default: ${DEFAULT_CGO_LDFLAGS})."
-    echo -e "  ${COLOR_CYAN}GH_PROXY${COLOR_RESET}                   - Set the GitHub proxy mirror (e.g., https://mirror.ghproxy.com/)."
+    echo -e "${COLOR_LIGHT_YELLOW}Environment Variables:${COLOR_RESET}"
+    echo -e "  ${COLOR_LIGHT_CYAN}SOURCE_DIR${COLOR_RESET}                - Set the source directory (default: ${DEFAULT_SOURCE_DIR})."
+    echo -e "  ${COLOR_LIGHT_CYAN}RESULT_DIR${COLOR_RESET}                - Set the build result directory (default: ${DEFAULT_RESULT_DIR})."
+    echo -e "  ${COLOR_LIGHT_CYAN}BUILD_CONFIG${COLOR_RESET}              - Set the build configuration file (default: ${DEFAULT_BUILD_CONFIG})."
+    echo -e "  ${COLOR_LIGHT_CYAN}BIN_NAME${COLOR_RESET}                  - Set the binary name (default: source directory basename)."
+    echo -e "  ${COLOR_LIGHT_CYAN}PLATFORM${COLOR_RESET}                  - Set the target platform(s) (default: host platform, supports: all, linux, linux/arm*, ...)."
+    echo -e "  ${COLOR_LIGHT_CYAN}DISABLE_MICRO${COLOR_RESET}              - Disable building micro variants."
+    echo -e "  ${COLOR_LIGHT_CYAN}CGO_ENABLED${COLOR_RESET}                - Enable or disable CGO (default: ${DEFAULT_CGO_ENABLED})."
+    echo -e "  ${COLOR_LIGHT_CYAN}HOST_CC${COLOR_RESET}                   - Set the host C compiler (default: ${DEFAULT_CC})."
+    echo -e "  ${COLOR_LIGHT_CYAN}HOST_CXX${COLOR_RESET}                  - Set the host C++ compiler (default: ${DEFAULT_CXX})."
+    echo -e "  ${COLOR_LIGHT_CYAN}FORCE_CC${COLOR_RESET}                   - Force the use of a specific C compiler."
+    echo -e "  ${COLOR_LIGHT_CYAN}FORCE_CXX${COLOR_RESET}                  - Force the use of a specific C++ compiler."
+    echo -e "  ${COLOR_LIGHT_CYAN}CGO_FLAGS${COLOR_RESET}                  - Set CGO flags (default: ${DEFAULT_CGO_FLAGS})."
+    echo -e "  ${COLOR_LIGHT_CYAN}CGO_LDFLAGS${COLOR_RESET}                 - Set CGO linker flags (default: ${DEFAULT_CGO_LDFLAGS})."
+    echo -e "  ${COLOR_LIGHT_CYAN}GH_PROXY${COLOR_RESET}                   - Set the GitHub proxy mirror (e.g., https://mirror.ghproxy.com/)."
 
     if declare -f printDepEnvHelp >/dev/null; then
         echo -e "${COLOR_LIGHT_GRAY}$(getSeparator)${COLOR_RESET}"
-        echo -e "${COLOR_CYAN}Dependency Environment Variables:${COLOR_RESET}"
+        echo -e "${COLOR_LIGHT_ORANGE}Dependency Environment Variables:${COLOR_RESET}"
         printDepEnvHelp
     fi
 }
 
 # Prints help information about command-line arguments.
 function printHelp() {
-    echo -e "${COLOR_BLUE}Usage:${COLOR_RESET}"
+    echo -e "${COLOR_LIGHT_GREEN}Usage:${COLOR_RESET}"
     echo -e "  $(basename "$0") [options]"
     echo -e ""
-    echo -e "${COLOR_BLUE}Options:${COLOR_RESET}"
-    echo -e "  ${COLOR_BLUE}-h, --help${COLOR_RESET}                    - Display this help message."
-    echo -e "  ${COLOR_BLUE}-eh, --env-help${COLOR_RESET}                 - Display help information about environment variables."
-    echo -e "  ${COLOR_BLUE}--disable-cgo${COLOR_RESET}                  - Disable CGO support."
-    echo -e "  ${COLOR_BLUE}--source-dir=<dir>${COLOR_RESET}               - Specify the source directory (default: ${DEFAULT_SOURCE_DIR})."
-    echo -e "  ${COLOR_BLUE}--more-go-cmd-args='<args>'${COLOR_RESET}     - Pass additional arguments to the 'go build' command."
-    echo -e "  ${COLOR_BLUE}--disable-micro${COLOR_RESET}                - Disable building micro architecture variants."
-    echo -e "  ${COLOR_BLUE}--ldflags='<flags>'${COLOR_RESET}            - Set linker flags (default: \"${DEFAULT_LDFLAGS}\")."
-    echo -e "  ${COLOR_BLUE}-p=<platforms>, --platforms=<platforms>${COLOR_RESET} - Specify target platform(s) (default: host platform, supports: all, linux, linux/arm*, ...)."
-    echo -e "  ${COLOR_BLUE}--result-dir=<dir>${COLOR_RESET}               - Specify the build result directory (default: ${DEFAULT_RESULT_DIR})."
-    echo -e "  ${COLOR_BLUE}--tags='<tags>'${COLOR_RESET}                - Set build tags."
-    echo -e "  ${COLOR_BLUE}--show-all-platforms${COLOR_RESET}             - Display all supported target platforms."
-    echo -e "  ${COLOR_BLUE}--github-proxy-mirror=<url>${COLOR_RESET}      - Use a GitHub proxy mirror (e.g., https://mirror.ghproxy.com/)."
-    echo -e "  ${COLOR_BLUE}--force-gcc=<path>${COLOR_RESET}              - Force the use of a specific C compiler."
-    echo -e "  ${COLOR_BLUE}--force-g++=<path>${COLOR_RESET}              - Force the use of a specific C++ compiler."
-    echo -e "  ${COLOR_BLUE}--host-gcc=<path>${COLOR_RESET}                - Specify the host C compiler (default: ${DEFAULT_CC})."
-    echo -e "  ${COLOR_BLUE}--host-g++=<path>${COLOR_RESET}               - Specify the host C++ compiler (default: ${DEFAULT_CXX})."
+    echo -e "${COLOR_LIGHT_RED}Options:${COLOR_RESET}"
+    echo -e "  ${COLOR_LIGHT_BLUE}-h, --help${COLOR_RESET}                    - Display this help message."
+    echo -e "  ${COLOR_LIGHT_BLUE}-eh, --env-help${COLOR_RESET}                 - Display help information about environment variables."
+    echo -e "  ${COLOR_LIGHT_BLUE}--disable-cgo${COLOR_RESET}                  - Disable CGO support."
+    echo -e "  ${COLOR_LIGHT_BLUE}--source-dir=<dir>${COLOR_RESET}               - Specify the source directory (default: ${DEFAULT_SOURCE_DIR})."
+    echo -e "  ${COLOR_LIGHT_BLUE}--more-go-cmd-args='<args>'${COLOR_RESET}     - Pass additional arguments to the 'go build' command."
+    echo -e "  ${COLOR_LIGHT_BLUE}--disable-micro${COLOR_RESET}                - Disable building micro architecture variants."
+    echo -e "  ${COLOR_LIGHT_BLUE}--ldflags='<flags>'${COLOR_RESET}            - Set linker flags (default: \"${DEFAULT_LDFLAGS}\")."
+    echo -e "  ${COLOR_LIGHT_BLUE}-p=<platforms>, --platforms=<platforms>${COLOR_RESET} - Specify target platform(s) (default: host platform, supports: all, linux, linux/arm*, ...)."
+    echo -e "  ${COLOR_LIGHT_BLUE}--result-dir=<dir>${COLOR_RESET}               - Specify the build result directory (default: ${DEFAULT_RESULT_DIR})."
+    echo -e "  ${COLOR_LIGHT_BLUE}--tags='<tags>'${COLOR_RESET}                - Set build tags."
+    echo -e "  ${COLOR_LIGHT_BLUE}--show-all-platforms${COLOR_RESET}             - Display all supported target platforms."
+    echo -e "  ${COLOR_LIGHT_BLUE}--github-proxy-mirror=<url>${COLOR_RESET}      - Use a GitHub proxy mirror (e.g., https://mirror.ghproxy.com/)."
+    echo -e "  ${COLOR_LIGHT_BLUE}--force-gcc=<path>${COLOR_RESET}              - Force the use of a specific C compiler."
+    echo -e "  ${COLOR_LIGHT_BLUE}--force-g++=<path>${COLOR_RESET}              - Force the use of a specific C++ compiler."
+    echo -e "  ${COLOR_LIGHT_BLUE}--host-gcc=<path>${COLOR_RESET}                - Specify the host C compiler (default: ${DEFAULT_CC})."
+    echo -e "  ${COLOR_LIGHT_BLUE}--host-g++=<path>${COLOR_RESET}               - Specify the host C++ compiler (default: ${DEFAULT_CXX})."
 
     if declare -f printDepHelp >/dev/null; then
-        echo -e "${COLOR_PURPLE}$(getSeparator)${COLOR_RESET}"
-        echo -e "${COLOR_PURPLE}Dependency Options:${COLOR_RESET}"
+        echo -e "${COLOR_LIGHT_MAGENTA}$(getSeparator)${COLOR_RESET}"
+        echo -e "${COLOR_LIGHT_MAGENTA}Dependency Options:${COLOR_RESET}"
         printDepHelp
     fi
 
@@ -142,8 +142,8 @@ function fixArgs() {
     setDefault "RESULT_DIR" "${DEFAULT_RESULT_DIR}"
     mkdir -p "${RESULT_DIR}"
     RESULT_DIR="$(cd "${RESULT_DIR}" && pwd)"
-    echo -e "${COLOR_BLUE}Source directory: ${COLOR_GREEN}${source_dir}${COLOR_RESET}"
-    echo -e "${COLOR_BLUE}Build result directory: ${COLOR_GREEN}${RESULT_DIR}${COLOR_RESET}"
+    echo -e "${COLOR_LIGHT_BLUE}Source directory: ${COLOR_LIGHT_GREEN}${source_dir}${COLOR_RESET}"
+    echo -e "${COLOR_LIGHT_BLUE}Build result directory: ${COLOR_LIGHT_GREEN}${RESULT_DIR}${COLOR_RESET}"
 
     setDefault "CGO_CROSS_COMPILER_DIR" "$DEFAULT_CGO_CROSS_COMPILER_DIR"
     mkdir -p "${CGO_CROSS_COMPILER_DIR}"
@@ -184,7 +184,7 @@ function downloadAndUnzip() {
 
     mkdir -p "${file}"
     file="$(cd "${file}" && pwd)"
-    echo -e "${COLOR_BLUE}Downloading ${COLOR_CYAN}\"${url}\"${COLOR_BLUE} to ${COLOR_GREEN}\"${file}\"${COLOR_RESET}"
+    echo -e "${COLOR_LIGHT_BLUE}Downloading ${COLOR_LIGHT_CYAN}\"${url}\"${COLOR_LIGHT_BLUE} to ${COLOR_LIGHT_GREEN}\"${file}\"${COLOR_RESET}"
     rm -rf "${file}"/*
 
     local start_time=$(date +%s)
@@ -208,13 +208,13 @@ function downloadAndUnzip() {
         rm -f "${file}/tmp.zip"
         ;;
     *)
-        echo -e "${COLOR_RED}Unsupported compression type: ${type}${COLOR_RESET}"
+        echo -e "${COLOR_LIGHT_RED}Unsupported compression type: ${type}${COLOR_RESET}"
         return 1
         ;;
     esac
 
     local end_time=$(date +%s)
-    echo -e "${COLOR_GREEN}Download and extraction successful (took $((end_time - start_time))s)${COLOR_RESET}"
+    echo -e "${COLOR_LIGHT_GREEN}Download and extraction successful (took $((end_time - start_time))s)${COLOR_RESET}"
 }
 
 # --- Platform Management ---
@@ -322,15 +322,15 @@ function checkPlatforms() {
             continue
             ;;
         1)
-            echo -e "${COLOR_RED}Platform not supported: ${platform}${COLOR_RESET}"
+            echo -e "${COLOR_LIGHT_RED}Platform not supported: ${platform}${COLOR_RESET}"
             return 1
             ;;
         2)
-            echo -e "${COLOR_RED}Platform not supported for CGO: ${platform}${COLOR_RESET}"
+            echo -e "${COLOR_LIGHT_RED}Platform not supported for CGO: ${platform}${COLOR_RESET}"
             return 2
             ;;
         *)
-            echo -e "${COLOR_RED}Error checking platform: ${platform}${COLOR_RESET}"
+            echo -e "${COLOR_LIGHT_RED}Error checking platform: ${platform}${COLOR_RESET}"
             return 3
             ;;
         esac
@@ -367,12 +367,12 @@ function initCGODeps() {
         CXX="${FORCE_CXX}"
         return 0
     elif [[ -n "${FORCE_CC}" ]] || [[ -n "${FORCE_CXX}" ]]; then
-        echo -e "${COLOR_RED}Both FORCE_CC and FORCE_CXX must be set at the same time.${COLOR_RESET}"
+        echo -e "${COLOR_LIGHT_RED}Both FORCE_CC and FORCE_CXX must be set at the same time.${COLOR_RESET}"
         return 1
     fi
 
     if ! isCGOEnabled; then
-        echo -e "${COLOR_RED}Try init CGO, but CGO is not enabled.${COLOR_RESET}"
+        echo -e "${COLOR_LIGHT_RED}Try init CGO, but CGO is not enabled.${COLOR_RESET}"
         return 1
     fi
 
@@ -386,7 +386,7 @@ function initCGODeps() {
             if [[ "${goos}" == "${GOHOSTOS}" ]] && [[ "${goarch}" == "${GOHOSTARCH}" ]]; then
                 initHostCGODeps "$@"
             else
-                echo -e "${COLOR_LIGHT_RED}CGO is not supported for ${goos}/${goarch}.${COLOR_RESET}"
+                echo -e "${COLOR_LIGHT_ORANGE}CGO is not supported for ${goos}/${goarch}.${COLOR_RESET}"
                 return 1
             fi
             ;;
@@ -396,7 +396,7 @@ function initCGODeps() {
         if [[ "${goos}" == "${GOHOSTOS}" ]] && [[ "${goarch}" == "${GOHOSTARCH}" ]]; then
             initHostCGODeps "$@"
         else
-            echo -e "${COLOR_RED}CGO is not supported for ${goos}/${goarch}.${COLOR_RESET}"
+            echo -e "${COLOR_LIGHT_RED}CGO is not supported for ${goos}/${goarch}.${COLOR_RESET}"
             return 1
         fi
         ;;
@@ -495,7 +495,7 @@ function initDefaultCGODeps() {
             if [[ "${goos}" == "${GOHOSTOS}" ]] && [[ "${goarch}" == "${GOHOSTARCH}" ]]; then
                 initHostCGODeps "$@"
             else
-                echo -e "${COLOR_RED}CGO is not supported for ${goos}/${goarch}.${COLOR_RESET}"
+                echo -e "${COLOR_LIGHT_RED}CGO is not supported for ${goos}/${goarch}.${COLOR_RESET}"
                 return 1
             fi
             ;;
@@ -513,7 +513,7 @@ function initDefaultCGODeps() {
             if [[ "${goos}" == "${GOHOSTOS}" ]] && [[ "${goarch}" == "${GOHOSTARCH}" ]]; then
                 initHostCGODeps "$@"
             else
-                echo -e "${COLOR_RED}CGO is not supported for ${goos}/${goarch}.${COLOR_RESET}"
+                echo -e "${COLOR_LIGHT_RED}CGO is not supported for ${goos}/${goarch}.${COLOR_RESET}"
                 return 1
             fi
             ;;
@@ -523,7 +523,7 @@ function initDefaultCGODeps() {
         if [[ "${goos}" == "${GOHOSTOS}" ]] && [[ "${goarch}" == "${GOHOSTARCH}" ]]; then
             initHostCGODeps "$@"
         else
-            echo -e "${COLOR_RED}CGO is not supported for ${goos}/${goarch}.${COLOR_RESET}"
+            echo -e "${COLOR_LIGHT_RED}CGO is not supported for ${goos}/${goarch}.${COLOR_RESET}"
             return 1
         fi
         ;;
@@ -559,7 +559,7 @@ function initLinuxCGO() {
             eval "${cxx_var}=\"${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-linux-musl${abi}${micro}-g++\""
         fi
     elif [[ -z "${!cc_var}" ]] || [[ -z "${!cxx_var}" ]]; then
-        echo -e "${COLOR_RED}Both ${cc_var} and ${cxx_var} must be set.${COLOR_RESET}"
+        echo -e "${COLOR_LIGHT_RED}Both ${cc_var} and ${cxx_var} must be set.${COLOR_RESET}"
         return 1
     fi
 
@@ -593,7 +593,7 @@ function initWindowsCGO() {
             eval "${cxx_var}=\"${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-w64-mingw32-g++\""
         fi
     elif [[ -z "${!cc_var}" ]] || [[ -z "${!cxx_var}" ]]; then
-        echo -e "${COLOR_RED}Both ${cc_var} and ${cxx_var} must be set.${COLOR_RESET}"
+        echo -e "${COLOR_LIGHT_RED}Both ${cc_var} and ${cxx_var} must be set.${COLOR_RESET}"
         return 1
     fi
 
@@ -773,12 +773,12 @@ function buildTargetWithMicro() {
         build_env+=("CXX=${CXX}")
     fi
 
-    echo -e "${COLOR_PURPLE}Building ${goos}/${goarch}${micro:+/${micro}}...${COLOR_RESET}"
-    echo -e "${COLOR_BLUE}Run command:\n${COLOR_LIGHT_GRAY}$(for var in "${build_env[@]}"; do
+    echo -e "${COLOR_LIGHT_MAGENTA}Building ${goos}/${goarch}${micro:+/${micro}}...${COLOR_RESET}"
+    echo -e "${COLOR_LIGHT_BLUE}Run command:\n${COLOR_WHITE}$(for var in "${build_env[@]}"; do
         key=$(echo "${var}" | cut -d= -f1)
         value=$(echo "${var}" | cut -d= -f2-)
         echo "export ${key}='${value}'"
-    done)\n${COLOR_CYAN}go build -tags \"${TAGS}\" -ldflags \"${LDFLAGS}\" -trimpath ${BUILD_ARGS} ${build_mode} -o \"${target_file}\" \"${source_dir}\"${COLOR_RESET}"
+    done)\n${COLOR_LIGHT_CYAN}go build -tags \"${TAGS}\" -ldflags \"${LDFLAGS}\" -trimpath ${BUILD_ARGS} ${build_mode} -o \"${target_file}\" \"${source_dir}\"${COLOR_RESET}"
     local start_time=$(date +%s)
     env "${build_env[@]}" go build -tags "${TAGS}" -ldflags "${LDFLAGS}" -trimpath ${BUILD_ARGS} ${build_mode} -o "${target_file}" "${source_dir}"
     local end_time=$(date +%s)
@@ -829,7 +829,7 @@ function autoBuild() {
     done
     local end_time=$(date +%s)
     if [[ "${build_num}" -gt 1 ]]; then
-        echo -e "${COLOR_YELLOW}Total took $((end_time - start_time))s${COLOR_RESET}"
+        echo -e "${COLOR_LIGHT_YELLOW}Total took $((end_time - start_time))s${COLOR_RESET}"
     fi
 }
 
@@ -916,7 +916,7 @@ while [[ $# -gt 0 ]]; do
             shift
             continue
         fi
-        echo -e "${COLOR_RED}Invalid option: $1${COLOR_RESET}"
+        echo -e "${COLOR_LIGHT_RED}Invalid option: $1${COLOR_RESET}"
         exit 1
         ;;
     esac

@@ -25,10 +25,10 @@ function parseDepArgs() {
 }
 
 function printDepHelp() {
-    echo -e "  ${COLOR_YELLOW}--version=<version>${COLOR_RESET}      - Set the build version (default: 'dev')."
-    echo -e "  ${COLOR_YELLOW}--web-version=<version>${COLOR_RESET}   - Set the web dependency version (default: same as build version)."
-    echo -e "  ${COLOR_YELLOW}--web-repo=<repo>${COLOR_RESET}        - Set the web repository (default: '<owner>/synctv-web')."
-    echo -e "  ${COLOR_YELLOW}--skip-init-web${COLOR_RESET}           - Skip initializing the web dependency."
+    echo -e "  ${COLOR_LIGHT_YELLOW}--version=<version>${COLOR_RESET}      - Set the build version (default: 'dev')."
+    echo -e "  ${COLOR_LIGHT_YELLOW}--web-version=<version>${COLOR_RESET}   - Set the web dependency version (default: same as build version)."
+    echo -e "  ${COLOR_LIGHT_YELLOW}--web-repo=<repo>${COLOR_RESET}        - Set the web repository (default: '<owner>/synctv-web')."
+    echo -e "  ${COLOR_LIGHT_YELLOW}--skip-init-web${COLOR_RESET}           - Skip initializing the web dependency."
 }
 
 function printDepEnvHelp() {
@@ -59,7 +59,7 @@ function initDep() {
     setDefault "WEB_REPO" "${repo_owner}/synctv-web"
     setDefault "SKIP_INIT_WEB" ""
 
-    echo -e "${COLOR_BLUE}version:${COLOR_RESET} ${COLOR_CYAN}${VERSION}${COLOR_RESET}"
+    echo -e "${COLOR_LIGHT_BLUE}version:${COLOR_RESET} ${COLOR_LIGHT_CYAN}${VERSION}${COLOR_RESET}"
 
     addLDFLAGS "-X 'github.com/synctv-org/synctv/internal/version.Version=${VERSION}'"
     setDefault "WEB_VERSION" "${VERSION}"

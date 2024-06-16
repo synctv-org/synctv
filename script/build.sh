@@ -764,13 +764,6 @@ function loadBuildConfig() {
     fi
 }
 
-function checkArgs() {
-    if [[ $# -gt 0 ]]; then
-        echo -e "${COLOR_RED}Invalid option: $*${COLOR_RESET}"
-        exit 1
-    fi
-}
-
 loadBuildConfig
 initHostPlatforms
 
@@ -837,14 +830,17 @@ for i in "$@"; do
         host_cxx="${i#*=}"
         shift
         ;;
+    *)
+        if declare -f parseDepArgs >/dev/null && parseDepArgs "$i"; then
+            shift
+            continue
+        fi
+        echo -e "${COLOR_RED}Invalid option: $i${COLOR_RESET}"
+        exit 1
+        ;;
     esac
 done
 
-if declare -f parseDepArgs >/dev/null; then
-    set -- $(parseDepArgs "$@")
-fi
-
-checkArgs "$@"
 fixArgs
 initPlatforms
 autoBuild "${platforms}"

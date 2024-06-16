@@ -13,10 +13,11 @@ function parseDepArgs() {
             web_version="${i#*=}"
             shift
             ;;
+        *)
+            return 1
+            ;;
         esac
     done
-
-    echo "$@"
 }
 
 function printDepHelp() {

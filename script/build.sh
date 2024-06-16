@@ -1,1555 +1,848 @@
 #!/bin/bash
-
 set -e
 
-DEFAULT_SOURCE_DIR="$(pwd)"
-DEFAULT_RESULT_DIR="$(pwd)/build"
+readonly COLOR_RED='\033[0;31m'
+readonly COLOR_GREEN='\033[0;32m'
+readonly COLOR_YELLOW='\033[0;33m'
+readonly COLOR_BLUE='\033[0;34m'
+readonly COLOR_RESET='\033[0m'
 
-DEFAULT_CGO_ENABLED="1"
-DEFAULT_CC="gcc"
-DEFAULT_CXX="g++"
-DEFAULT_CGO_CROSS_COMPILER_DIR="$(pwd)/cross"
-DEFAULT_CGO_FLAGS="-O2 -g0 -pipe"
+readonly DEFAULT_SOURCE_DIR="$(pwd)"
+readonly DEFAULT_RESULT_DIR="${DEFAULT_SOURCE_DIR}/build"
+readonly DEFAULT_BUILD_CONFIG="${DEFAULT_SOURCE_DIR}/build.config.sh"
+readonly DEFAULT_CGO_ENABLED="1"
+readonly DEFAULT_CC="gcc"
+readonly DEFAULT_CXX="g++"
+readonly DEFAULT_CGO_CROSS_COMPILER_DIR="${DEFAULT_SOURCE_DIR}/cross"
+readonly DEFAULT_CGO_FLAGS="-O2 -g0 -pipe"
+readonly DEFAULT_CGO_LDFLAGS="-s"
+readonly DEFAULT_LDFLAGS="-s -w"
+readonly DEFAULT_CGO_DEPS_VERSION="v0.4.6"
 
-GOHOSTOS="$(go env GOHOSTOS)"
-GOHOSTARCH="$(go env GOHOSTARCH)"
-GOHOSTPLATFORM="$GOHOSTOS/$GOHOSTARCH"
+readonly GOHOSTOS="$(go env GOHOSTOS)"
+readonly GOHOSTARCH="$(go env GOHOSTARCH)"
+readonly GOHOSTPLATFORM="${GOHOSTOS}/${GOHOSTARCH}"
 
-DEFAULT_CGO_DEPS_VERSION="v0.4.6"
-
-function EnvHelp() {
-    echo "SOURCE_DIR set source dir (default: $DEFAULT_SOURCE_DIR)"
-    echo "RESULT_DIR set build result dir (default: $DEFAULT_RESULT_DIR)"
-    echo "BIN_NAME set bin name (default: $DEFAULT_BIN_NAME)"
-    echo "PLATFORM set platform (default: host platform, support: all, linux, linux/arm*, ...)"
-    echo "DISABLE_MICRO set will not build micro"
-    echo "CGO_ENABLED set cgo enabled (default: $DEFAULT_CGO_ENABLED)"
-    echo "HOST_CC set host cc (default: $DEFAULT_CC)"
-    echo "HOST_CXX set host cxx (default: $DEFAULT_CXX)"
-    echo "FORCE_CC set force gcc"
-    echo "FORCE_CXX set force g++"
-    echo "DISABLE_FIND_AR set will dont find ar with gcc"
-    echo "FORCE_AR set force ar"
-    echo "*_ALLOWED_PLATFORM set allowed platform (example: LINUX_ALLOWED_PLATFORM=\"linux/amd64\")"
-    echo "CGO_*_ALLOWED_PLATFORM set cgo allowed platform (example: CGO_LINUX_ALLOWED_PLATFORM=\"linux/amd64\")"
-    echo "GH_PROXY set github proxy releases mirror (example: https://mirror.ghproxy.com/)"
-    echo "----"
-    echo "Dep Env:"
-    echo "VERSION (default: dev)"
-    echo "WEB_VERSION set web dependency version (default: VERSION)"
-    echo "SKIP_INIT_WEB"
-    echo "CGO_CROSS_COMPILER_DIR set cgo compiler dir (default: $DEFAULT_CGO_CROSS_COMPILER_DIR)"
+function printBuildConfigHelp() {
+    echo -e "${COLOR_YELLOW}you can customize build config${COLOR_RESET} (default: ${DEFAULT_BUILD_CONFIG})"
+    echo -e "${COLOR_GREEN}parseDepArgs${COLOR_RESET} parse dep args"
+    echo -e "${COLOR_GREEN}printDepHelp${COLOR_RESET} print dep help"
+    echo -e "${COLOR_GREEN}printDepEnvHelp${COLOR_RESET} print dep env help"
+    echo -e "${COLOR_GREEN}initDepPlatforms${COLOR_RESET} init dep platforms"
+    echo -e "${COLOR_GREEN}initDep${COLOR_RESET} init dep"
 }
 
-function DepHelp() {
-    echo "-v set build version (default: dev)"
-    echo "-w init web version (default: VERSION)"
-    echo "-s skip init web"
+function printEnvHelp() {
+    echo -e "${COLOR_GREEN}SOURCE_DIR${COLOR_RESET} set source dir (default: ${DEFAULT_SOURCE_DIR})"
+    echo -e "${COLOR_GREEN}RESULT_DIR${COLOR_RESET} set build result dir (default: ${DEFAULT_RESULT_DIR})"
+    echo -e "${COLOR_GREEN}BUILD_CONFIG${COLOR_RESET} set build config (default: ${DEFAULT_BUILD_CONFIG})"
+    echo -e "${COLOR_GREEN}BIN_NAME${COLOR_RESET} set bin name (default: ${source_dir} basename)"
+    echo -e "${COLOR_GREEN}PLATFORM${COLOR_RESET} set platform (default: host platform, support: all, linux, linux/arm*, ...)"
+    echo -e "${COLOR_GREEN}DISABLE_MICRO${COLOR_RESET} set will not build micro"
+    echo -e "${COLOR_GREEN}CGO_ENABLED${COLOR_RESET} set cgo enabled (default: ${DEFAULT_CGO_ENABLED})"
+    echo -e "${COLOR_GREEN}HOST_CC${COLOR_RESET} set host cc (default: ${DEFAULT_CC})"
+    echo -e "${COLOR_GREEN}HOST_CXX${COLOR_RESET} set host cxx (default: ${DEFAULT_CXX})"
+    echo -e "${COLOR_GREEN}FORCE_CC${COLOR_RESET} set force gcc"
+    echo -e "${COLOR_GREEN}FORCE_CXX${COLOR_RESET} set force g++"
+    echo -e "${COLOR_GREEN}*_ALLOWED_PLATFORM${COLOR_RESET} set allowed platform (example: LINUX_ALLOWED_PLATFORM=\"linux/amd64\")"
+    echo -e "${COLOR_GREEN}CGO_*_ALLOWED_PLATFORM${COLOR_RESET} set cgo allowed platform (example: CGO_LINUX_ALLOWED_PLATFORM=\"linux/amd64\")"
+    echo -e "${COLOR_GREEN}GH_PROXY${COLOR_RESET} set github proxy releases mirror (example: https://mirror.ghproxy.com/)"
+
+    if declare -f printDepEnvHelp >/dev/null; then
+        echo -e "${COLOR_YELLOW}$(getSeparator)${COLOR_RESET}"
+        echo -e "Dep Env:"
+        printDepEnvHelp
+    fi
 }
 
-function Help() {
-    echo "-h get help"
-    echo "-C disable cgo"
-    echo "-S set source dir (default: $DEFAULT_SOURCE_DIR)"
-    echo "-m more go cmd args"
-    echo "-M disable build micro"
-    echo "-l set ldflags (default: \"$LDFLAGS\")"
-    echo "-p set platform (default: host platform, support: all, linux, linux/arm*, ...)"
-    echo "-d set build result dir (default: $DEFAULT_RESULT_DIR)"
-    echo "-T set tags"
-    echo "-t show all targets"
-    echo "-g use github proxy mirror"
-    echo "-f set force gcc"
-    echo "-F set force g++"
-    echo "-c host cc (default: $DEFAULT_CC)"
-    echo "-X host cxx (default: $DEFAULT_CXX)"
-    echo "----"
-    echo "Dep Help:"
-    DepHelp
-    echo "----"
-    echo "Env Help:"
-    EnvHelp
-}
+function printHelp() {
+    echo -e "${COLOR_BLUE}-h, --help${COLOR_RESET} get help"
+    echo -e "${COLOR_BLUE}--disable-cgo${COLOR_RESET} disable cgo"
+    echo -e "${COLOR_BLUE}--source-dir=${COLOR_RESET} set source dir (default: ${DEFAULT_SOURCE_DIR})"
+    echo -e "${COLOR_BLUE}--more-go-cmd-args=${COLOR_RESET} more go cmd args"
+    echo -e "${COLOR_BLUE}--disable-micro${COLOR_RESET} disable build micro"
+    echo -e "${COLOR_BLUE}--ldflags=${COLOR_RESET} set ldflags (default: \"${DEFAULT_LDFLAGS}\")"
+    echo -e "${COLOR_BLUE}--platforms=${COLOR_RESET} set platforms (default: host platform, support: all, linux, linux/arm*, ...)"
+    echo -e "${COLOR_BLUE}--result-dir=${COLOR_RESET} set build result dir (default: ${DEFAULT_RESULT_DIR})"
+    echo -e "${COLOR_BLUE}--tags=${COLOR_RESET} set tags"
+    echo -e "${COLOR_BLUE}--show-all-targets${COLOR_RESET} show all targets"
+    echo -e "${COLOR_BLUE}--github-proxy-mirror=${COLOR_RESET} use github proxy mirror"
+    echo -e "${COLOR_BLUE}--force-gcc=${COLOR_RESET} set force gcc"
+    echo -e "${COLOR_BLUE}--force-g++=${COLOR_RESET} set force g++"
+    echo -e "${COLOR_BLUE}--host-cc=${COLOR_RESET} host cc (default: ${DEFAULT_CC})"
+    echo -e "${COLOR_BLUE}--host-cxx=${COLOR_RESET} host cxx (default: ${DEFAULT_CXX})"
 
-function Init() {
-    SHOW_TARGETS=""
+    echo -e "${COLOR_YELLOW}$(getSeparator)${COLOR_RESET}"
+    printBuildConfigHelp
 
-    SetDefault "CGO_ENABLED" "$DEFAULT_CGO_ENABLED"
-    if [ "$(CGOENABLED)" ]; then
-        CGO_ENABLED="1"
-    else
-        CGO_ENABLED="0"
+    if declare -f printDepHelp >/dev/null; then
+        echo -e "${COLOR_YELLOW}$(getSeparator)${COLOR_RESET}"
+        echo -e "Dep Help:"
+        printDepHelp
     fi
 
-    SetDefault "SOURCE_DIR" "$DEFAULT_SOURCE_DIR"
-    DEFAULT_BIN_NAME="$(basename "$(cd $SOURCE_DIR && pwd)")"
-    SetDefault "RESULT_DIR" "$DEFAULT_RESULT_DIR"
-    SetDefault "CGO_CROSS_COMPILER_DIR" "$DEFAULT_CGO_CROSS_COMPILER_DIR"
-    SetDefault "CGO_FLAGS" "$DEFAULT_CGO_FLAGS"
-    SetDefault "CGO_LDFLAGS" "-s"
-    SetDefault "CGO_DEPS_VERSION" "$DEFAULT_CGO_DEPS_VERSION"
-    SetDefault "LDFLAGS" "-s -w"
-    SetDefault "HOST_CC" "$DEFAULT_CC"
-    SetDefault "HOST_CXX" "$DEFAULT_CXX"
-
-    OIFS="$IFS"
-    IFS=$'\n\t, '
-    # 已经编译完成的列表，防止重复编译
-    declare -a COMPILED_LIST=()
+    echo -e "${COLOR_YELLOW}$(getSeparator)${COLOR_RESET}"
+    echo -e "Env Help:"
+    printEnvHelp
 }
 
-function ParseArgs() {
-    while getopts "hCsS:v:w:l:p:d:T:tgm:Mc:x:f:F:" arg; do
-        case $arg in
-        h)
-            Help
-            exit 0
-            ;;
-        C)
-            CGO_ENABLED="0"
-            ;;
-        S)
-            SOURCE_DIR="$OPTARG"
-            ;;
-        l)
-            AddLDFLAGS "$OPTARG"
-            ;;
-        p)
-            PLATFORM="$OPTARG"
-            ;;
-        d)
-            RESULT_DIR="$OPTARG"
-            ;;
-        T)
-            AddTags "$OPTARG"
-            ;;
-        t)
-            SHOW_TARGETS=1
-            ;;
-        g)
-            GH_PROXY="https://mirror.ghproxy.com/"
-            ;;
-        m)
-            AddBuildArgs "$OPTARG"
-            ;;
-        M)
-            DISABLE_MICRO="true"
-            ;;
-        c)
-            HOST_CC="$OPTARG"
-            ;;
-        x)
-            HOST_CXX="$OPTARG"
-            ;;
-        f)
-            FORCE_CC="$OPTARG"
-            ;;
-        F)
-            FORCE_CXX="$OPTARG"
-            ;;
-        # ----
-        # dep
-        v)
-            VERSION="$OPTARG"
-            ;;
-        s)
-            SKIP_INIT_WEB="true"
-            ;;
-        w)
-            WEB_VERSION="$OPTARG"
-            ;;
-        # ----
-        ?)
-            echo "unkonw argument"
-            return 1
-            ;;
-        esac
+function setDefault() {
+    local var_name="$1"
+    local default_value="$2"
+    [[ -z "${!var_name}" ]] && eval "${var_name}=\"${default_value}\""
+    return 0
+}
+
+function addTags() {
+    local new_tags="$1"
+    [[ -n "${new_tags}" ]] && tags="${tags} ${new_tags}"
+}
+
+function addLDFLAGS() {
+    local new_ldflags="$1"
+    [[ -n "${new_ldflags}" ]] && ldflags="${ldflags} ${new_ldflags}"
+}
+
+function addBuildArgs() {
+    local new_build_args="$1"
+    [[ -n "${new_build_args}" ]] && build_args="${build_args} ${new_build_args}"
+}
+
+function fixArgs() {
+    setDefault "source_dir" "${DEFAULT_SOURCE_DIR}"
+    source_dir="$(cd "${source_dir}" && pwd)"
+    setDefault "bin_name" "$(basename "${source_dir}")"
+    setDefault "result_dir" "${DEFAULT_RESULT_DIR}"
+    mkdir -p "${result_dir}"
+    result_dir="$(cd "${result_dir}" && pwd)"
+    echo -e "${COLOR_BLUE}build source dir: ${COLOR_GREEN}${source_dir}${COLOR_RESET}"
+    echo -e "${COLOR_BLUE}build result dir: ${COLOR_GREEN}${result_dir}${COLOR_RESET}"
+
+    setDefault "cgo_cross_compiler_dir" "$DEFAULT_CGO_CROSS_COMPILER_DIR"
+    mkdir -p "${cgo_cross_compiler_dir}"
+    cgo_cross_compiler_dir="$(cd "${cgo_cross_compiler_dir}" && pwd)"
+
+    setDefault "platforms" "${GOHOSTPLATFORM}"
+    setDefault "disable_micro" ""
+    setDefault "host_cc" "${DEFAULT_CC}"
+    setDefault "host_cxx" "${DEFAULT_CXX}"
+    setDefault "force_cc" ""
+    setDefault "force_cxx" ""
+    setDefault "gh_proxy" ""
+    setDefault "tags" ""
+    setDefault "ldflags" "${DEFAULT_LDFLAGS}"
+    setDefault "build_args" ""
+    setDefault "cgo_deps_version" "${DEFAULT_CGO_DEPS_VERSION}"
+}
+
+function isCGOEnabled() {
+    [[ "${cgo_enabled}" == "1" ]]
+}
+
+function downloadAndUnzip() {
+    local url="$1"
+    local file="$2"
+    local type="${3:-$(echo "${url}" | sed 's/.*\.//g')}"
+
+    mkdir -p "${file}"
+    file="$(cd "${file}" && pwd)"
+    echo -e "${COLOR_BLUE}download ${COLOR_GREEN}\"${url}\"${COLOR_BLUE} to ${COLOR_GREEN}\"${file}\"${COLOR_RESET}"
+    rm -rf "${file}"/*
+
+    local start_time=$(date +%s)
+
+    case "${type}" in
+    "tgz" | "gz")
+        curl -sL "${url}" | tar -xf - -C "${file}" --strip-components 1 -z
+        ;;
+    "bz2")
+        curl -sL "${url}" | tar -xf - -C "${file}" --strip-components 1 -j
+        ;;
+    "xz")
+        curl -sL "${url}" | tar -xf - -C "${file}" --strip-components 1 -J
+        ;;
+    "lzma")
+        curl -sL "${url}" | tar -xf - -C "${file}" --strip-components 1 --lzma
+        ;;
+    "zip")
+        curl -sL "${url}" -o "${file}/tmp.zip"
+        unzip -o "${file}/tmp.zip" -d "${file}" -q
+        rm -f "${file}/tmp.zip"
+        ;;
+    *)
+        echo -e "${COLOR_RED}compress type: ${type} not support${COLOR_RESET}"
+        return 1
+        ;;
+    esac
+
+    local end_time=$(date +%s)
+    echo -e "${COLOR_GREEN}download and unzip success: $((end_time - start_time))s${COLOR_RESET}"
+}
+
+declare -A allowed_platforms
+allowed_platforms=(
+    ["linux"]="linux/386,linux/amd64,linux/arm,linux/arm64,linux/loong64,linux/mips,linux/mips64,linux/mips64le,linux/mipsle,linux/ppc64,linux/ppc64le,linux/riscv64,linux/s390x"
+    ["darwin"]="darwin/amd64,darwin/arm64"
+    ["windows"]="windows/386,windows/amd64,windows/arm,windows/arm64"
+)
+
+declare -A cgo_allowed_platforms
+cgo_allowed_platforms=(
+    ["linux"]="linux/386,linux/amd64,linux/arm,linux/arm64,linux/loong64,linux/mips,linux/mips64,linux/mips64le,linux/mipsle,linux/ppc64le,linux/riscv64,linux/s390x"
+    ["windows"]="windows/386,windows/amd64"
+)
+
+function addToAllowedPlatforms() {
+    local platforms="$1"
+    local platform=""
+    for platform in ${platform//,/ }; do
+        local os="${platform%%/*}"
+        if [[ -z "${allowed_platforms[${os}]}" ]]; then
+            allowed_platforms[${os}]="${platform}"
+        else
+            allowed_platforms[${os}]="${allowed_platforms[${os}]},${platform}"
+        fi
+    done
+}
+
+function addToCGOAllowedPlatforms() {
+    local platforms="$1"
+    local platform=""
+    for platform in ${platforms//,/ }; do
+        local os="${platform%%/*}"
+        if [[ -z "${cgo_allowed_platforms[${os}]}" ]]; then
+            cgo_allowed_platforms[${os}]="${platform}"
+        else
+            cgo_allowed_platforms[${os}]="${cgo_allowed_platforms[${os}]},${platform}"
+        fi
+    done
+}
+
+function deleteFromAllowedPlatforms() {
+    local platforms="$1"
+    local platform=""
+    for platform in ${platforms//,/ }; do
+        local os="${platform%%/*}"
+        if [[ -n "${allowed_platforms[${os}]}" ]]; then
+            allowed_platforms[${os}]=$(echo "${allowed_platforms[${os}]}" | sed "s|${platform}$||g" | sed "s|${platform},||g")
+        fi
+    done
+}
+
+function deleteFromCGOAllowedPlatforms() {
+    local platforms="$1"
+    local platform=""
+    for platform in ${platform//,/ }; do
+        local os="${platform%%/*}"
+        if [[ -n "${cgo_allowed_platforms[${os}]}" ]]; then
+            cgo_allowed_platforms[${os}]=$(echo "${cgo_allowed_platforms[${os}]}" | sed "s|${platform}$||g" | sed "s|${platform},||g")
+        fi
+    done
+}
+
+function initHostPlatforms() {
+    addToAllowedPlatforms "${GOHOSTOS}/${GOHOSTARCH}"
+    addToCGOAllowedPlatforms "${GOHOSTOS}/${GOHOSTARCH}"
+}
+
+function removeDuplicatePlatforms() {
+    local all_platforms="$1"
+    all_platforms="$(echo "${all_platforms}" | tr ',' '\n' | sort | uniq | paste -s -d ',' -)"
+    all_platforms="${all_platforms#,}"
+    all_platforms="${all_platforms%,}"
+    echo "${all_platforms}"
+}
+
+function initPlatforms() {
+    setDefault "cgo_enabled" "${DEFAULT_CGO_ENABLED}"
+
+    unset -v CURRENT_ALLOWED_PLATFORM
+
+    ALLOWED_PLATFORM=""
+    CGO_ALLOWED_PLATFORM=""
+    for os in "${!allowed_platforms[@]}"; do
+        ALLOWED_PLATFORM="${ALLOWED_PLATFORM},${allowed_platforms[${os}]}"
+        if [[ -n "${cgo_allowed_platforms[${os}]}" ]]; then
+            CGO_ALLOWED_PLATFORM="${CGO_ALLOWED_PLATFORM},${cgo_allowed_platforms[${os}]}"
+        fi
     done
 
-    if [ "$SHOW_TARGETS" ]; then
-        InitPlatforms
-        echo "$CURRENT_ALLOWED_PLATFORM"
-        exit 0
+    ALLOWED_PLATFORM=$(removeDuplicatePlatforms "${ALLOWED_PLATFORM}")
+    CGO_ALLOWED_PLATFORM=$(removeDuplicatePlatforms "${CGO_ALLOWED_PLATFORM}")
+
+    isCGOEnabled && CURRENT_ALLOWED_PLATFORM="${CGO_ALLOWED_PLATFORM}" || CURRENT_ALLOWED_PLATFORM="${ALLOWED_PLATFORM}"
+
+    for os in "${!allowed_platforms[@]}"; do
+        local var="${os^^}_ALLOWED_PLATFORM"
+        local cgo_var="CGO_${var}"
+        eval "CURRENT_${var}=\"${!var}\""
+        eval "CURRENT_${cgo_var}=\"${!cgo_var}\""
+    done
+
+    if declare -f initDepPlatforms >/dev/null; then
+        initDepPlatforms
     fi
 }
 
-function SetDefault() {
-    if [ ! "$1" ]; then
-        return 1
-    fi
-    if [ ! "${!1}" ]; then
-        eval "$1=\"$2\""
-    fi
-}
+function checkPlatform() {
+    local target_platform="$1"
+    local current_allowed_platform="${2:-${CURRENT_ALLOWED_PLATFORM}}"
 
-function FixArgs() {
-    SOURCE_DIR="$(cd "$SOURCE_DIR" && pwd)"
-    SetDefault "BIN_NAME" "$(basename "$(cd $SOURCE_DIR && pwd)")"
-    mkdir -p "$RESULT_DIR"
-    RESULT_DIR="$(cd "$RESULT_DIR" && pwd)"
-    echo "build source dir: $SOURCE_DIR"
-    echo "build result dir: $RESULT_DIR"
-
-    mkdir -p "$CGO_CROSS_COMPILER_DIR"
-    CGO_CROSS_COMPILER_DIR="$(cd "$CGO_CROSS_COMPILER_DIR" && pwd)"
-
-    CGO_CFLAGS="$CGO_FLAGS"
-    CGO_CXXFLAGS="$CGO_FLAGS"
-}
-
-function CGOENABLED() {
-    if [ ! "$CGO_ENABLED" ] || [ "$CGO_ENABLED" == "1" ]; then
+    if [[ "${current_allowed_platform}" =~ (^|,)${target_platform}($|,) ]]; then
+        echo "0"
+    elif isCGOEnabled && [[ "${ALLOWED_PLATFORM}" =~ (^|,)${target_platform}($|,) ]]; then
+        echo "2"
+    else
         echo "1"
     fi
 }
 
-function DownloadAndUnzip() {
-    url="$1"
-    file="$2"
-    type="$3"
-    if [ -z "$type" ]; then
-        type="$(echo "$url" | sed 's/.*\.//g')"
-    fi
+function checkPlatforms() {
+    local platforms="$1"
 
-    mkdir -p "$file"
-    file="$(cd "$file" && pwd)"
-    echo "download \"$url\" to \"$file\""
-    rm -rf "$file"/*
-
-    start_time=$(date +%s)
-
-    # gzip/bzip2/xz/lzma/zip
-    if [ ! "$type" ] || [ "$type" == "tgz" ] || [ "$type" == "gz" ]; then
-        curl -sL "$url" | tar -xf - -C "$file" --strip-components 1 -z
-    elif [ "$type" == "bz2" ]; then
-        curl -sL "$url" | tar -xf - -C "$file" --strip-components 1 -j
-    elif [ "$type" == "xz" ]; then
-        curl -sL "$url" | tar -xf - -C "$file" --strip-components 1 -J
-    elif [ "$type" == "lzma" ]; then
-        curl -sL "$url" | tar -xf - -C "$file" --strip-components 1 --lzma
-    elif [ "$type" == "zip" ]; then
-        rm -rf "$file/tmp.zip"
-        curl -sL "$url" -o "$file/tmp.zip"
-        unzip -o "$file/tmp.zip" -d "$file" -q
-        rm -f "$file/tmp.zip"
-    else
-        echo "compress type: $type not support"
-        return 1
-    fi
-
-    end_time=$(date +%s)
-    echo "download and unzip success: $((end_time - start_time))s"
-}
-
-# https://go.dev/doc/install/source#environment
-# go tool dist list
-# $GOOS/$GOARCH
-# aix/ppc64
-# android/386
-# android/amd64
-# android/arm
-# android/arm64
-# darwin/amd64
-# darwin/arm64
-# dragonfly/amd64
-# freebsd/386
-# freebsd/amd64
-# freebsd/arm
-# freebsd/arm64
-# freebsd/riscv64
-# illumos/amd64
-# ios/amd64
-# ios/arm64
-# js/wasm
-# linux/386
-# linux/amd64
-# linux/arm
-# linux/arm64
-# linux/loong64
-# linux/mips
-# linux/mips64
-# linux/mips64le
-# linux/mipsle
-# linux/ppc64
-# linux/ppc64le
-# linux/riscv64
-# linux/s390x
-# netbsd/386
-# netbsd/amd64
-# netbsd/arm
-# netbsd/arm64
-# openbsd/386
-# openbsd/amd64
-# openbsd/arm
-# openbsd/arm64
-# plan9/386
-# plan9/amd64
-# plan9/arm
-# solaris/amd64
-# wasip1/wasm
-# windows/386
-# windows/amd64
-# windows/arm
-# windows/arm64
-
-function InitPlatforms() {
-    for var in $(compgen -v | grep "^CURRENT_.*_ALLOWED_PLATFORM$"); do
-        unset "$var"
-    done
-
-    if [ -z "${LINUX_ALLOWED_PLATFORM+x}" ]; then
-        LINUX_ALLOWED_PLATFORM="linux/386,linux/amd64,linux/arm,linux/arm64,linux/loong64,linux/mips,linux/mips64,linux/mips64le,linux/mipsle,linux/ppc64,linux/ppc64le,linux/riscv64,linux/s390x"
-    fi
-    if [ -z "${DARWIN_ALLOWED_PLATFORM+x}" ]; then
-        DARWIN_ALLOWED_PLATFORM="darwin/amd64,darwin/arm64"
-    fi
-    if [ -z "${WINDOWS_ALLOWED_PLATFORM+x}" ]; then
-        WINDOWS_ALLOWED_PLATFORM="windows/386,windows/amd64,windows/arm,windows/arm64"
-    fi
-    # if [ -z "${ANDROID_ALLOWED_PLATFORM+x}" ]; then
-    #     ANDROID_ALLOWED_PLATFORM="android/arm64"
-    # fi
-    # if [ -z "${OPENBSD_ALLOWED_PLATFORM+x}" ]; then
-    #     OPENBSD_ALLOWED_PLATFORM="openbsd/amd64,openbsd/arm64"
-    # fi
-    # if [ -z "${FREEBSD_ALLOWED_PLATFORM+x}" ]; then
-    #     FREEBSD_ALLOWED_PLATFORM="freebsd/386,freebsd/amd64,freebsd/arm,freebsd/arm64"
-    # fi
-    if [ -z "${ALLOWED_PLATFORM+x}" ]; then
-        HOST_ALLOWED_PLATFORM_ENV_NAME="$(echo "${GOHOSTOS}" | tr '[:lower:]' '[:upper:]')_ALLOWED_PLATFORM"
-        if [ "$(CheckPlatform "${GOHOSTPLATFORM}" "${!HOST_ALLOWED_PLATFORM_ENV_NAME}")" != "0" ]; then
-            if [ ! "${!HOST_ALLOWED_PLATFORM_ENV_NAME}" ]; then
-                eval "$HOST_ALLOWED_PLATFORM_ENV_NAME=\"${GOHOSTPLATFORM}\""
-            else
-                eval "$HOST_ALLOWED_PLATFORM_ENV_NAME=\"${!HOST_ALLOWED_PLATFORM_ENV_NAME},${GOHOSTPLATFORM}\""
-            fi
-        fi
-
-        for var in $(compgen -v | grep "_ALLOWED_PLATFORM$" | grep -v "^CGO_"); do
-            if [ ! "$ALLOWED_PLATFORM" ]; then
-                ALLOWED_PLATFORM="${!var}"
-            else
-                ALLOWED_PLATFORM="$ALLOWED_PLATFORM,${!var}"
-            fi
-        done
-    fi
-
-    if [ -z "${CGO_LINUX_ALLOWED_PLATFORM+x}" ]; then
-        CGO_LINUX_ALLOWED_PLATFORM="linux/386,linux/amd64,linux/arm,linux/arm64,linux/loong64,linux/mips,linux/mips64,linux/mips64le,linux/mipsle,linux/ppc64le,linux/riscv64,linux/s390x"
-    fi
-    if [ -z "${CGO_DARWIN_ALLOWED_PLATFORM+x}" ]; then
-        CGO_DARWIN_ALLOWED_PLATFORM=""
-    fi
-    if [ -z "${CGO_WINDOWS_ALLOWED_PLATFORM+x}" ]; then
-        CGO_WINDOWS_ALLOWED_PLATFORM="windows/386,windows/amd64"
-    fi
-    if [ -z "${CGO_ALLOWED_PLATFORM+x}" ]; then
-        CGO_HOST_ALLOWED_PLATFORM_ENV_NAME="CGO_$(echo "${GOHOSTOS}" | tr '[:lower:]' '[:upper:]')_ALLOWED_PLATFORM"
-        if [ "$(CheckPlatform "${GOHOSTPLATFORM}" "${!CGO_HOST_ALLOWED_PLATFORM_ENV_NAME}")" != "0" ]; then
-            if [ ! "${!CGO_HOST_ALLOWED_PLATFORM_ENV_NAME}" ]; then
-                eval "$CGO_HOST_ALLOWED_PLATFORM_ENV_NAME=\"${GOHOSTPLATFORM}\""
-            else
-                eval "$CGO_HOST_ALLOWED_PLATFORM_ENV_NAME=\"${!CGO_HOST_ALLOWED_PLATFORM_ENV_NAME},${GOHOSTPLATFORM}\""
-            fi
-        fi
-
-        for var in $(compgen -v | grep "^CGO_.*_ALLOWED_PLATFORM$"); do
-            if [ ! "$CGO_ALLOWED_PLATFORM" ]; then
-                CGO_ALLOWED_PLATFORM="${!var}"
-            else
-                CGO_ALLOWED_PLATFORM="$CGO_ALLOWED_PLATFORM,${!var}"
-            fi
-        done
-    fi
-
-    # remove double comma
-    ALLOWED_PLATFORM="$(echo "$ALLOWED_PLATFORM" | sed 's/,,*/,/g')"
-    CGO_ALLOWED_PLATFORM="$(echo "$CGO_ALLOWED_PLATFORM" | sed 's/,,*/,/g')"
-
-    if [ "$(CGOENABLED)" ]; then
-        CURRENT_ALLOWED_PLATFORM="$CGO_ALLOWED_PLATFORM"
-        for var in $(compgen -v | grep "CGO_.*_ALLOWED_PLATFORM$"); do
-            eval "CURRENT_${var#CGO_}=\"${!var}\""
-        done
-    else
-        CURRENT_ALLOWED_PLATFORM="$ALLOWED_PLATFORM"
-        for var in $(compgen -v | grep ".*_ALLOWED_PLATFORM$" | grep -v "^CGO_"); do
-            eval "CURRENT_${var}=\"${!var}\""
-        done
-    fi
-
-    # for var in $(compgen -v | grep "^CURRENT_.*_ALLOWED_PLATFORM$"); do
-    #     echo "${var}: ${!var}"
-    # done
-    # exit 0
-}
-
-function CheckPlatform() {
-    if [ ! "$1" ]; then
-        return 1
-    fi
-    if [ "$2" ]; then
-        current_allowed_platform="$2"
-    else
-        current_allowed_platform="$CURRENT_ALLOWED_PLATFORM"
-    fi
-    for p in $current_allowed_platform; do
-        if [ "$p" == "$1" ]; then
-            echo "0"
-            return
-        fi
-    done
-    if [ "$(CGOENABLED)" ]; then
-        for p in $ALLOWED_PLATFORM; do
-            if [ "$p" == "$1" ]; then
-                echo "2"
-                return
-            fi
-        done
-    fi
-    echo "1"
-    return
-}
-
-function CheckAllPlatform() {
-    if [ "$1" ]; then
-        for platform in $1; do
-            if [ "$platform" == "all" ]; then
-                continue
-            elif [[ $platform == *\** ]]; then
-                continue
-            elif [[ $platform != */* ]]; then
-                continue
-            fi
-
-            case $(CheckPlatform "$platform") in
-            "0")
-                return
-                ;;
-            "1")
-                echo "platform: $1 not support"
-                return 1
-                ;;
-            "2")
-                echo "platform: $1 not support for cgo"
-                return 2
-                ;;
-            *)
-                echo "check platform error"
-                return 3
-                ;;
-            esac
-        done
-    fi
-}
-
-function InitCGODeps() {
-    CC=""
-    CXX=""
-    MORE_CGO_CFLAGS=""
-    MORE_CGO_CXXFLAGS=""
-    MORE_CGO_LDFLAGS=""
-
-    if [ "$FORCE_CC" ] && [ ! "$FORCE_CXX" ]; then
-        echo "FORCE_CC and FORCE_CXX must be set at the same time"
-        return 1
-    elif [ ! "$FORCE_CC" ] && [ "$FORCE_CXX" ]; then
-        echo "FORCE_CC and FORCE_CXX must be set at the same time"
-        return 1
-    elif [ "$FORCE_CC" ] && [ "$FORCE_CXX" ]; then
-        CC="$FORCE_CC"
-        CXX="$FORCE_CXX"
-        return
-    fi
-
-    if [ ! "$(CGOENABLED)" ]; then
-        InitHostCGODeps $@
-        return
-    fi
-
-    GOOS="$1"
-    GOARCH="$2"
-    MICRO="$3"
-
-    case "$GOHOSTOS" in
-    "linux" | "darwin")
-        case "$GOHOSTARCH" in
-        "amd64" | "arm64" | "arm" | "ppc64le" | "riscv64" | "s390x")
-            InitDefaultCGODeps $@
+    for platform in ${platforms//,/ }; do
+        case $(checkPlatform "${platform}") in
+        0)
+            return 0
+            ;;
+        1)
+            echo -e "${COLOR_RED}platform: ${platform} not support${COLOR_RESET}"
+            return 1
+            ;;
+        2)
+            echo -e "${COLOR_RED}platform: ${platform} not support for cgo${COLOR_RESET}"
+            return 2
             ;;
         *)
-            if [ "$GOOS" == "$GOHOSTOS" ] && [ "$GOARCH" == "$GOHOSTARCH" ]; then
-                InitHostCGODeps $@
+            echo -e "${COLOR_RED}check platform error: ${platform}${COLOR_RESET}"
+            return 3
+            ;;
+        esac
+    done
+}
+
+declare -A cgo_deps
+cgo_deps=(
+    ["CC"]=""
+    ["CXX"]=""
+    ["MORE_CGO_CFLAGS"]=""
+    ["MORE_CGO_CXXFLAGS"]=""
+    ["MORE_CGO_LDFLAGS"]=""
+)
+
+function initCGODeps() {
+    local goos="$1"
+    local goarch="$2"
+    local micro="$3"
+
+    if [[ -n "${force_cc}" ]] && [[ -n "${force_cxx}" ]]; then
+        cgo_deps["CC"]="${force_cc}"
+        cgo_deps["CXX"]="${force_cxx}"
+        return
+    elif [[ -n "${force_cc}" ]] || [[ -n "${force_cxx}" ]]; then
+        echo -e "${COLOR_RED}FORCE_CC and FORCE_CXX must be set at the same time${COLOR_RESET}"
+        return 1
+    fi
+
+    if ! isCGOEnabled; then
+        echo -e "${COLOR_RED}try use cgo, but cgo not enabled${COLOR_RESET}"
+        return 1
+    fi
+
+    case "${GOHOSTOS}" in
+    "linux" | "darwin")
+        case "${GOHOSTARCH}" in
+        "amd64" | "arm64" | "arm" | "ppc64le" | "riscv64" | "s390x")
+            initDefaultCGODeps "$@"
+            ;;
+        *)
+            if [[ "${goos}" == "${GOHOSTOS}" ]] && [[ "${goarch}" == "${GOHOSTARCH}" ]]; then
+                initHostCGODeps "$@"
             else
-                echo "$GOOS/$GOARCH not support for cgo"
+                echo -e "${COLOR_RED}${goos}/${goarch} not support for cgo${COLOR_RESET}"
                 return 1
             fi
             ;;
         esac
         ;;
     *)
-        if [ "$GOOS" == "$GOHOSTOS" ] && [ "$GOARCH" == "$GOHOSTARCH" ]; then
-            InitHostCGODeps $@
+        if [[ "${goos}" == "${GOHOSTOS}" ]] && [[ "${goarch}" == "${GOHOSTARCH}" ]]; then
+            initHostCGODeps "$@"
         else
-            echo "$GOOS/$GOARCH not support for cgo"
+            echo -e "${COLOR_RED}${goos}/${goarch} not support for cgo${COLOR_RESET}"
             return 1
         fi
         ;;
     esac
 
-    read -r CC_COMMAND arCC_OPTIONSgs <<<"$CC"
-    CC_COMMAND="$(command -v ${CC_COMMAND})"
-    if [[ "$CC_COMMAND" != /* ]]; then
-        CC="$(cd "$(dirname "$CC_COMMAND")" && pwd)/$(basename "$CC_COMMAND")"
-        if [ "$CC_OPTIONS" ]; then
-            CC="$CC $CC_OPTIONS"
-        fi
+    local cc_command cc_options
+    read -r cc_command cc_options <<<"${cgo_deps["CC"]}"
+    cc_command="$(command -v "${cc_command}")"
+    if [[ "${cc_command}" != /* ]]; then
+        cgo_deps["CC"]="$(cd "$(dirname "${cc_command}")" && pwd)/$(basename "${cc_command}")"
+        [[ -n "${cc_options}" ]] && cgo_deps["CC"]="${cgo_deps["CC"]} ${cc_options}"
     fi
 
-    read -r CXX_COMMAND CXX_OPTIONS <<<"$CXX"
-    CXX_COMMAND="$(command -v ${CXX_COMMAND})"
-    if [[ "$CXX_COMMAND" != /* ]]; then
-        CXX="$(cd "$(dirname "$CXX_COMMAND")" && pwd)/$(basename "$CXX_COMMAND")"
-        if [ "$CXX_OPTIONS" ]; then
-            CXX="$CXX $CXX_OPTIONS"
-        fi
+    local cxx_command cxx_options
+    read -r cxx_command cxx_options <<<"${cgo_deps["CXX"]}"
+    cxx_command="$(command -v "${cxx_command}")"
+    if [[ "${cxx_command}" != /* ]]; then
+        cgo_deps["CXX"]="$(cd "$(dirname "${cxx_command}")" && pwd)/$(basename "${cxx_command}")"
+        [[ -n "${cxx_options}" ]] && cgo_deps["CXX"]="${cgo_deps["CXX"]} ${cxx_options}"
     fi
 }
 
-function InitHostCGODeps() {
-    # GOOS="$1"
-    # GOARCH="$2"
-    # MICRO="$3"
-
-    CC="$HOST_CC"
-    CXX="$HOST_CXX"
+function initHostCGODeps() {
+    cgo_deps["CC"]="${host_cc}"
+    cgo_deps["CXX"]="${host_cxx}"
 }
 
-function InitDefaultCGODeps() {
-    case "$GOHOSTARCH" in
-    "arm")
-        unamespacer="$GOHOSTOS-arm32v7"
-        ;;
-    *)
-        unamespacer="$GOHOSTOS-$GOHOSTARCH"
-        ;;
-    esac
-    GOOS="$1"
-    GOARCH="$2"
-    MICRO="$3"
-    case "$GOOS" in
+function initDefaultCGODeps() {
+    local goos="$1"
+    local goarch="$2"
+    local micro="$3"
+    local unamespacer="${GOHOSTOS}-${GOHOSTARCH}"
+    [[ "${GOHOSTARCH}" == "arm" ]] && unamespacer="${GOHOSTOS}-arm32v7"
+
+    # 根据不同的目标平台和架构初始化 CGO 依赖项
+    case "${goos}" in
     "linux")
-        case "$GOARCH" in
-        "386")
-            # Micro: sse2 softfloat or empty (not use)
-            # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/i686-linux-musl-cross-${unamespacer}.tgz
-            if [ ! "$CC_LINUX_386" ] && [ ! "$CXX_LINUX_386" ]; then
-                if command -v i686-linux-musl-gcc >/dev/null 2>&1 &&
-                    command -v i686-linux-musl-g++ >/dev/null 2>&1; then
-                    CC_LINUX_386="i686-linux-musl-gcc"
-                    CXX_LINUX_386="i686-linux-musl-g++"
-                elif [ -x "$CGO_CROSS_COMPILER_DIR/i686-linux-musl-cross/bin/i686-linux-musl-gcc" ] &&
-                    [ -x "$CGO_CROSS_COMPILER_DIR/i686-linux-musl-cross/bin/i686-linux-musl-g++" ]; then
-                    CC_LINUX_386="$CGO_CROSS_COMPILER_DIR/i686-linux-musl-cross/bin/i686-linux-musl-gcc"
-                    CXX_LINUX_386="$CGO_CROSS_COMPILER_DIR/i686-linux-musl-cross/bin/i686-linux-musl-g++"
-                else
-                    DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/i686-linux-musl-cross-${unamespacer}.tgz" \
-                        "$CGO_CROSS_COMPILER_DIR/i686-linux-musl-cross"
-                    CC_LINUX_386="$CGO_CROSS_COMPILER_DIR/i686-linux-musl-cross/bin/i686-linux-musl-gcc"
-                    CXX_LINUX_386="$CGO_CROSS_COMPILER_DIR/i686-linux-musl-cross/bin/i686-linux-musl-g++"
-                fi
-            elif [ ! "$CC_LINUX_386" ] || [ ! "$CXX_LINUX_386" ]; then
-                echo "CC_LINUX_386 or CXX_LINUX_386 not found"
-                return 1
-            fi
-
-            CC="$CC_LINUX_386 -static --static"
-            CXX="$CXX_LINUX_386 -static --static"
+        case "${micro}" in
+        "hardfloat")
+            micro="hf"
             ;;
-        "arm64")
-            # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/aarch64-linux-musl-cross-${unamespacer}.tgz
-            if [ ! "$CC_LINUX_ARM64" ] && [ ! "$CXX_LINUX_ARM64" ]; then
-                if command -v aarch64-linux-musl-gcc >/dev/null 2>&1 &&
-                    command -v aarch64-linux-musl-g++ >/dev/null 2>&1; then
-                    CC_LINUX_ARM64="aarch64-linux-musl-gcc"
-                    CXX_LINUX_ARM64="aarch64-linux-musl-g++"
-                elif [ -x "$CGO_CROSS_COMPILER_DIR/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc" ] &&
-                    [ -x "$CGO_CROSS_COMPILER_DIR/aarch64-linux-musl-cross/bin/aarch64-linux-musl-g++" ]; then
-                    CC_LINUX_ARM64="$CGO_CROSS_COMPILER_DIR/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc"
-                    CXX_LINUX_ARM64="$CGO_CROSS_COMPILER_DIR/aarch64-linux-musl-cross/bin/aarch64-linux-musl-g++"
-                else
-                    DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/aarch64-linux-musl-cross-${unamespacer}.tgz" \
-                        "$CGO_CROSS_COMPILER_DIR/aarch64-linux-musl-cross"
-                    CC_LINUX_ARM64="$CGO_CROSS_COMPILER_DIR/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc"
-                    CXX_LINUX_ARM64="$CGO_CROSS_COMPILER_DIR/aarch64-linux-musl-cross/bin/aarch64-linux-musl-g++"
-                fi
-            elif [ ! "$CC_LINUX_ARM64" ] || [ ! "$CXX_LINUX_ARM64" ]; then
-                echo "CC_LINUX_ARM64 or CXX_LINUX_ARM64 not found"
-                return 1
-            fi
-
-            CC="$CC_LINUX_ARM64 -static --static"
-            CXX="$CXX_LINUX_ARM64 -static --static"
+        "softfloat")
+            micro="sf"
+            ;;
+        esac
+        case "${goarch}" in
+        "386")
+            initLinuxCGO "i686" ""
             ;;
         "amd64")
-            # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/x86_64-linux-musl-cross-${unamespacer}.tgz
-            if [ ! "$CC_LINUX_AMD64" ] && [ ! "$CXX_LINUX_AMD64" ]; then
-                if command -v x86_64-linux-musl-gcc >/dev/null 2>&1 &&
-                    command -v x86_64-linux-musl-g++ >/dev/null 2>&1; then
-                    CC_LINUX_AMD64="x86_64-linux-musl-gcc"
-                    CXX_LINUX_AMD64="x86_64-linux-musl-g++"
-                elif [ -x "$CGO_CROSS_COMPILER_DIR/x86_64-linux-musl-cross/bin/x86_64-linux-musl-gcc" ] &&
-                    [ -x "$CGO_CROSS_COMPILER_DIR/x86_64-linux-musl-cross/bin/x86_64-linux-musl-g++" ]; then
-                    CC_LINUX_AMD64="$CGO_CROSS_COMPILER_DIR/x86_64-linux-musl-cross/bin/x86_64-linux-musl-gcc"
-                    CXX_LINUX_AMD64="$CGO_CROSS_COMPILER_DIR/x86_64-linux-musl-cross/bin/x86_64-linux-musl-g++"
-                else
-                    DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/x86_64-linux-musl-cross-${unamespacer}.tgz" \
-                        "$CGO_CROSS_COMPILER_DIR/x86_64-linux-musl-cross"
-                    CC_LINUX_AMD64="$CGO_CROSS_COMPILER_DIR/x86_64-linux-musl-cross/bin/x86_64-linux-musl-gcc"
-                    CXX_LINUX_AMD64="$CGO_CROSS_COMPILER_DIR/x86_64-linux-musl-cross/bin/x86_64-linux-musl-g++"
-                fi
-            elif [ ! "$CC_LINUX_AMD64" ] || [ ! "$CXX_LINUX_AMD64" ]; then
-                echo "CC_LINUX_AMD64 or CXX_LINUX_AMD64 not found"
-                return 1
-            fi
-
-            CC="$CC_LINUX_AMD64 -static --static"
-            CXX="$CXX_LINUX_AMD64 -static --static"
+            initLinuxCGO "x86_64" ""
             ;;
         "arm")
-            # MICRO: 5,6,7 or empty
-            if [ ! "$MICRO" ] || [ "$MICRO" == "6" ]; then
-                # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/armv6-linux-musleabihf-cross-${unamespacer}.tgz
-                if [ ! "$CC_LINUX_ARMV6" ] && [ ! "$CXX_LINUX_ARMV6" ]; then
-                    if command -v armv6-linux-musleabihf-gcc >/dev/null 2>&1 &&
-                        command -v armv6-linux-musleabihf-g++ >/dev/null 2>&1; then
-                        CC_LINUX_ARMV6="armv6-linux-musleabihf-gcc"
-                        CXX_LINUX_ARMV6="armv6-linux-musleabihf-g++"
-                    elif [ -x "$CGO_CROSS_COMPILER_DIR/armv6-linux-musleabihf-cross/bin/armv6-linux-musleabihf-gcc" ] &&
-                        [ -x "$CGO_CROSS_COMPILER_DIR/armv6-linux-musleabihf-cross/bin/armv6-linux-musleabihf-g++" ]; then
-                        CC_LINUX_ARMV6="$CGO_CROSS_COMPILER_DIR/armv6-linux-musleabihf-cross/bin/armv6-linux-musleabihf-gcc"
-                        CXX_LINUX_ARMV6="$CGO_CROSS_COMPILER_DIR/armv6-linux-musleabihf-cross/bin/armv6-linux-musleabihf-g++"
-                    else
-                        DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/armv6-linux-musleabihf-cross-${unamespacer}.tgz" \
-                            "$CGO_CROSS_COMPILER_DIR/armv6-linux-musleabihf-cross"
-                        CC_LINUX_ARMV6="$CGO_CROSS_COMPILER_DIR/armv6-linux-musleabihf-cross/bin/armv6-linux-musleabihf-gcc"
-                        CXX_LINUX_ARMV6="$CGO_CROSS_COMPILER_DIR/armv6-linux-musleabihf-cross/bin/armv6-linux-musleabihf-g++"
-                    fi
-                elif [ ! "$CC_LINUX_ARMV6" ] || [ ! "$CXX_LINUX_ARMV6" ]; then
-                    echo "CC_LINUX_ARMV6 or CXX_LINUX_ARMV6 not found"
-                    return 1
-                fi
-
-                CC="$CC_LINUX_ARMV6 -static --static"
-                CXX="$CXX_LINUX_ARMV6 -static --static"
-            elif [ "$MICRO" == "7" ]; then
-                # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/armv7-linux-musleabihf-cross-${unamespacer}.tgz
-                if [ ! "$CC_LINUX_ARMV7" ] && [ ! "$CXX_LINUX_ARMV7" ]; then
-                    if command -v armv7-linux-musleabihf-gcc >/dev/null 2>&1 &&
-                        command -v armv7-linux-musleabihf-g++ >/dev/null 2>&1; then
-                        CC_LINUX_ARMV7="armv7-linux-musleabihf-gcc"
-                        CXX_LINUX_ARMV7="armv7-linux-musleabihf-g++"
-                    elif [ -x "$CGO_CROSS_COMPILER_DIR/armv7-linux-musleabihf-cross/bin/armv7-linux-musleabihf-gcc" ] &&
-                        [ -x "$CGO_CROSS_COMPILER_DIR/armv7-linux-musleabihf-cross/bin/armv7-linux-musleabihf-g++" ]; then
-                        CC_LINUX_ARMV7="$CGO_CROSS_COMPILER_DIR/armv7-linux-musleabihf-cross/bin/armv7-linux-musleabihf-gcc"
-                        CXX_LINUX_ARMV7="$CGO_CROSS_COMPILER_DIR/armv7-linux-musleabihf-cross/bin/armv7-linux-musleabihf-g++"
-                    else
-                        DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/armv7-linux-musleabihf-cross-${unamespacer}.tgz" \
-                            "$CGO_CROSS_COMPILER_DIR/armv7-linux-musleabihf-cross"
-                        CC_LINUX_ARMV7="$CGO_CROSS_COMPILER_DIR/armv7-linux-musleabihf-cross/bin/armv7-linux-musleabihf-gcc"
-                        CXX_LINUX_ARMV7="$CGO_CROSS_COMPILER_DIR/armv7-linux-musleabihf-cross/bin/armv7-linux-musleabihf-g++"
-                    fi
-                elif [ ! "$CC_LINUX_ARMV7" ] || [ ! "$CXX_LINUX_ARMV7" ]; then
-                    echo "CC_LINUX_ARMV7 or CXX_LINUX_ARMV7 not found"
-                    return 1
-                fi
-
-                CC="$CC_LINUX_ARMV7 -static --static"
-                CXX="$CXX_LINUX_ARMV7 -static --static"
-            elif [ "$MICRO" == "5" ]; then
-                # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/armv5-linux-musleabi-cross-${unamespacer}.tgz
-                if [ ! "$CC_LINUX_ARMV5" ] && [ ! "$CXX_LINUX_ARMV5" ]; then
-                    if command -v armv5-linux-musleabi-gcc >/dev/null 2>&1 &&
-                        command -v armv5-linux-musleabi-g++ >/dev/null 2>&1; then
-                        CC_LINUX_ARMV5="armv5-linux-musleabi-gcc"
-                        CXX_LINUX_ARMV5="armv5-linux-musleabi-g++"
-                    elif [ -x "$CGO_CROSS_COMPILER_DIR/armv5-linux-musleabi-cross/bin/armv5-linux-musleabi-gcc" ] &&
-                        [ -x "$CGO_CROSS_COMPILER_DIR/armv5-linux-musleabi-cross/bin/armv5-linux-musleabi-g++" ]; then
-                        CC_LINUX_ARMV5="$CGO_CROSS_COMPILER_DIR/armv5-linux-musleabi-cross/bin/armv5-linux-musleabi-gcc"
-                        CXX_LINUX_ARMV5="$CGO_CROSS_COMPILER_DIR/armv5-linux-musleabi-cross/bin/armv5-linux-musleabi-g++"
-                    else
-                        DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/armv5-linux-musleabi-cross-${unamespacer}.tgz" \
-                            "$CGO_CROSS_COMPILER_DIR/armv5-linux-musleabi-cross"
-                        CC_LINUX_ARMV5="$CGO_CROSS_COMPILER_DIR/armv5-linux-musleabi-cross/bin/armv5-linux-musleabi-gcc"
-                        CXX_LINUX_ARMV5="$CGO_CROSS_COMPILER_DIR/armv5-linux-musleabi-cross/bin/armv5-linux-musleabi-g++"
-                    fi
-                elif [ ! "$CC_LINUX_ARMV5" ] || [ ! "$CXX_LINUX_ARMV5" ]; then
-                    echo "CC_LINUX_ARMV5 or CXX_LINUX_ARMV5 not found"
-                    return 1
-                fi
-
-                CC="$CC_LINUX_ARMV5 -static --static"
-                CXX="$CXX_LINUX_ARMV5 -static --static"
-            else
-                echo "MICRO: $MICRO not support"
-                return 1
-            fi
-
+            [[ "${micro}" == "5" ]] && initLinuxCGO "armv5" "eabi" || initLinuxCGO "armv${micro}" "eabihf"
+            ;;
+        "arm64")
+            initLinuxCGO "aarch64" ""
             ;;
         "mips")
-            # MICRO: hardfloat softfloat or empty
-            if [ ! "$MICRO" ] || [ "$MICRO" == "hardfloat" ]; then
-                # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/mips-linux-musl-cross-${unamespacer}.tgz
-                if [ ! "$CC_LINUX_MIPS" ] && [ ! "$CXX_LINUX_MIPS" ]; then
-                    if command -v mips-linux-musl-gcc >/dev/null 2>&1 &&
-                        command -v mips-linux-musl-g++ >/dev/null 2>&1; then
-                        CC_LINUX_MIPS="mips-linux-musl-gcc"
-                        CXX_LINUX_MIPS="mips-linux-musl-g++"
-                    elif [ -x "$CGO_CROSS_COMPILER_DIR/mips-linux-musl-cross/bin/mips-linux-musl-gcc" ] &&
-                        [ -x "$CGO_CROSS_COMPILER_DIR/mips-linux-musl-cross/bin/mips-linux-musl-g++" ]; then
-                        CC_LINUX_MIPS="$CGO_CROSS_COMPILER_DIR/mips-linux-musl-cross/bin/mips-linux-musl-gcc"
-                        CXX_LINUX_MIPS="$CGO_CROSS_COMPILER_DIR/mips-linux-musl-cross/bin/mips-linux-musl-g++"
-                    else
-                        DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/mips-linux-musl-cross-${unamespacer}.tgz" \
-                            "$CGO_CROSS_COMPILER_DIR/mips-linux-musl-cross"
-                        CC_LINUX_MIPS="$CGO_CROSS_COMPILER_DIR/mips-linux-musl-cross/bin/mips-linux-musl-gcc"
-                        CXX_LINUX_MIPS="$CGO_CROSS_COMPILER_DIR/mips-linux-musl-cross/bin/mips-linux-musl-g++"
-                    fi
-                elif [ ! "$CC_LINUX_MIPS" ] || [ ! "$CXX_LINUX_MIPS" ]; then
-                    echo "CC_LINUX_MIPS or CXX_LINUX_MIPS not found"
-                    return 1
-                fi
-
-                CC="$CC_LINUX_MIPS -static --static"
-                CXX="$CXX_LINUX_MIPS -static --static"
-            elif [ "$MICRO" == "softfloat" ]; then
-                # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/mips-linux-muslsf-cross-${unamespacer}.tgz
-                if [ ! "$CC_LINUX_MIPS_SOFTFLOAT" ] && [ ! "$CXX_LINUX_MIPS_SOFTFLOAT" ]; then
-                    if command -v mips-linux-muslsf-gcc >/dev/null 2>&1 &&
-                        command -v mips-linux-muslsf-g++ >/dev/null 2>&1; then
-                        CC_LINUX_MIPS_SOFTFLOAT="mips-linux-muslsf-gcc"
-                        CXX_LINUX_MIPS_SOFTFLOAT="mips-linux-muslsf-g++"
-                    elif [ -x "$CGO_CROSS_COMPILER_DIR/mips-linux-muslsf-cross/bin/mips-linux-muslsf-gcc" ] &&
-                        [ -x "$CGO_CROSS_COMPILER_DIR/mips-linux-muslsf-cross/bin/mips-linux-muslsf-g++" ]; then
-                        CC_LINUX_MIPS_SOFTFLOAT="$CGO_CROSS_COMPILER_DIR/mips-linux-muslsf-cross/bin/mips-linux-muslsf-gcc"
-                        CXX_LINUX_MIPS_SOFTFLOAT="$CGO_CROSS_COMPILER_DIR/mips-linux-muslsf-cross/bin/mips-linux-muslsf-g++"
-                    else
-                        DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/mips-linux-muslsf-cross-${unamespacer}.tgz" \
-                            "$CGO_CROSS_COMPILER_DIR/mips-linux-muslsf-cross"
-                        CC_LINUX_MIPS_SOFTFLOAT="$CGO_CROSS_COMPILER_DIR/mips-linux-muslsf-cross/bin/mips-linux-muslsf-gcc"
-                        CXX_LINUX_MIPS_SOFTFLOAT="$CGO_CROSS_COMPILER_DIR/mips-linux-muslsf-cross/bin/mips-linux-muslsf-g++"
-                    fi
-                elif [ ! "$CC_LINUX_MIPS_SOFTFLOAT" ] || [ ! "$CXX_LINUX_MIPS_SOFTFLOAT" ]; then
-                    echo "CC_LINUX_MIPS_SOFTFLOAT or CXX_LINUX_MIPS_SOFTFLOAT not found"
-                    return 1
-                fi
-
-                CC="$CC_LINUX_MIPS_SOFTFLOAT -static --static"
-                CXX="$CXX_LINUX_MIPS_SOFTFLOAT -static --static"
-            else
-                echo "MICRO: $MICRO not support"
-                return 1
-            fi
+            [[ "${micro}" == "hf" ]] && micro="" || micro="sf"
+            initLinuxCGO "mips" "" "${micro}"
             ;;
         "mipsle")
-            # MICRO: hardfloat softfloat or empty
-            if [ ! "$MICRO" ] || [ "$MICRO" == "hardfloat" ]; then
-                # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/mipsel-linux-musl-cross-${unamespacer}.tgz
-                if [ ! "$CC_LINUX_MIPSLE" ] && [ ! "$CXX_LINUX_MIPSLE" ]; then
-                    if command -v mipsel-linux-musl-gcc >/dev/null 2>&1 &&
-                        command -v mipsel-linux-musl-g++ >/dev/null 2>&1; then
-                        CC_LINUX_MIPSLE="mipsel-linux-musl-gcc"
-                        CXX_LINUX_MIPSLE="mipsel-linux-musl-g++"
-                    elif [ -x "$CGO_CROSS_COMPILER_DIR/mipsel-linux-musl-cross/bin/mipsel-linux-musl-gcc" ] &&
-                        [ -x "$CGO_CROSS_COMPILER_DIR/mipsel-linux-musl-cross/bin/mipsel-linux-musl-g++" ]; then
-                        CC_LINUX_MIPSLE="$CGO_CROSS_COMPILER_DIR/mipsel-linux-musl-cross/bin/mipsel-linux-musl-gcc"
-                        CXX_LINUX_MIPSLE="$CGO_CROSS_COMPILER_DIR/mipsel-linux-musl-cross/bin/mipsel-linux-musl-g++"
-                    else
-                        DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/mipsel-linux-musl-cross-${unamespacer}.tgz" \
-                            "$CGO_CROSS_COMPILER_DIR/mipsel-linux-musl-cross"
-                        CC_LINUX_MIPSLE="$CGO_CROSS_COMPILER_DIR/mipsel-linux-musl-cross/bin/mipsel-linux-musl-gcc"
-                        CXX_LINUX_MIPSLE="$CGO_CROSS_COMPILER_DIR/mipsel-linux-musl-cross/bin/mipsel-linux-musl-g++"
-                    fi
-                elif [ ! "$CC_LINUX_MIPSLE" ] || [ ! "$CXX_LINUX_MIPSLE" ]; then
-                    echo "CC_LINUX_MIPSLE or CXX_LINUX_MIPSLE not found"
-                    return 1
-                fi
-
-                CC="$CC_LINUX_MIPSLE -static --static"
-                CXX="$CXX_LINUX_MIPSLE -static --static"
-            elif [ "$MICRO" == "softfloat" ]; then
-                # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/mipsel-linux-muslsf-cross-${unamespacer}.tgz
-                if [ ! "$CC_LINUX_MIPSLE_SOFTFLOAT" ] && [ ! "$CXX_LINUX_MIPSLE_SOFTFLOAT" ]; then
-                    if command -v mipsel-linux-muslsf-gcc >/dev/null 2>&1 &&
-                        command -v mipsel-linux-muslsf-g++ >/dev/null 2>&1; then
-                        CC_LINUX_MIPSLE_SOFTFLOAT="mipsel-linux-muslsf-gcc"
-                        CXX_LINUX_MIPSLE_SOFTFLOAT="mipsel-linux-muslsf-g++"
-                    elif [ -x "$CGO_CROSS_COMPILER_DIR/mipsel-linux-muslsf-cross/bin/mipsel-linux-muslsf-gcc" ] &&
-                        [ -x "$CGO_CROSS_COMPILER_DIR/mipsel-linux-muslsf-cross/bin/mipsel-linux-muslsf-g++" ]; then
-                        CC_LINUX_MIPSLE_SOFTFLOAT="$CGO_CROSS_COMPILER_DIR/mipsel-linux-muslsf-cross/bin/mipsel-linux-muslsf-gcc"
-                        CXX_LINUX_MIPSLE_SOFTFLOAT="$CGO_CROSS_COMPILER_DIR/mipsel-linux-muslsf-cross/bin/mipsel-linux-muslsf-g++"
-                    else
-                        DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/mipsel-linux-muslsf-cross-${unamespacer}.tgz" \
-                            "$CGO_CROSS_COMPILER_DIR/mipsel-linux-muslsf-cross"
-                        CC_LINUX_MIPSLE_SOFTFLOAT="$CGO_CROSS_COMPILER_DIR/mipsel-linux-muslsf-cross/bin/mipsel-linux-muslsf-gcc"
-                        CXX_LINUX_MIPSLE_SOFTFLOAT="$CGO_CROSS_COMPILER_DIR/mipsel-linux-muslsf-cross/bin/mipsel-linux-muslsf-g++"
-                    fi
-                elif [ ! "$CC_LINUX_MIPSLE_SOFTFLOAT" ] || [ ! "$CXX_LINUX_MIPSLE_SOFTFLOAT" ]; then
-                    echo "CC_LINUX_MIPSLE_SOFTFLOAT or CXX_LINUX_MIPSLE_SOFTFLOAT not found"
-                    return 1
-                fi
-
-                CC="$CC_LINUX_MIPSLE_SOFTFLOAT -static --static"
-                CXX="$CXX_LINUX_MIPSLE_SOFTFLOAT -static --static"
-            else
-                echo "MICRO: $MICRO not support"
-                return 1
-            fi
+            [[ "${micro}" == "hf" ]] && micro="" || micro="sf"
+            initLinuxCGO "mipsel" "" "${micro}"
             ;;
         "mips64")
-            # MICRO: hardfloat softfloat or empty
-            if [ ! "$MICRO" ] || [ "$MICRO" == "hardfloat" ]; then
-                # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/mips64-linux-musl-cross-${unamespacer}.tgz
-                if [ ! "$CC_LINUX_MIPS64" ] && [ ! "$CXX_LINUX_MIPS64" ]; then
-                    if command -v mips64-linux-musl-gcc >/dev/null 2>&1 &&
-                        command -v mips64-linux-musl-g++ >/dev/null 2>&1; then
-                        CC_LINUX_MIPS64="mips64-linux-musl-gcc"
-                        CXX_LINUX_MIPS64="mips64-linux-musl-g++"
-                    elif [ -x "$CGO_CROSS_COMPILER_DIR/mips64-linux-musl-cross/bin/mips64-linux-musl-gcc" ] &&
-                        [ -x "$CGO_CROSS_COMPILER_DIR/mips64-linux-musl-cross/bin/mips64-linux-musl-g++" ]; then
-                        CC_LINUX_MIPS64="$CGO_CROSS_COMPILER_DIR/mips64-linux-musl-cross/bin/mips64-linux-musl-gcc"
-                        CXX_LINUX_MIPS64="$CGO_CROSS_COMPILER_DIR/mips64-linux-musl-cross/bin/mips64-linux-musl-g++"
-                    else
-                        DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/mips64-linux-musl-cross-${unamespacer}.tgz" \
-                            "$CGO_CROSS_COMPILER_DIR/mips64-linux-musl-cross"
-                        CC_LINUX_MIPS64="$CGO_CROSS_COMPILER_DIR/mips64-linux-musl-cross/bin/mips64-linux-musl-gcc"
-                        CXX_LINUX_MIPS64="$CGO_CROSS_COMPILER_DIR/mips64-linux-musl-cross/bin/mips64-linux-musl-g++"
-                    fi
-                elif [ ! "$CC_LINUX_MIPS64" ] || [ ! "$CXX_LINUX_MIPS64" ]; then
-                    echo "CC_LINUX_MIPS64 or CXX_LINUX_MIPS64 not found"
-                    return 1
-                fi
-
-                CC="$CC_LINUX_MIPS64 -static --static"
-                CXX="$CXX_LINUX_MIPS64 -static --static"
-            elif [ "$MICRO" == "softfloat" ]; then
-                # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/mips64-linux-muslsf-cross-${unamespacer}.tgz
-                if [ ! "$CC_LINUX_MIPS64_SOFTFLOAT" ] && [ ! "$CXX_LINUX_MIPS64_SOFTFLOAT" ]; then
-                    if command -v mips64-linux-muslsf-gcc >/dev/null 2>&1 &&
-                        command -v mips64-linux-muslsf-g++ >/dev/null 2>&1; then
-                        CC_LINUX_MIPS64_SOFTFLOAT="mips64-linux-muslsf-gcc"
-                        CXX_LINUX_MIPS64_SOFTFLOAT="mips64-linux-muslsf-g++"
-                    elif [ -x "$CGO_CROSS_COMPILER_DIR/mips64-linux-muslsf-cross/bin/mips64-linux-muslsf-gcc" ] &&
-                        [ -x "$CGO_CROSS_COMPILER_DIR/mips64-linux-muslsf-cross/bin/mips64-linux-muslsf-g++" ]; then
-                        CC_LINUX_MIPS64_SOFTFLOAT="$CGO_CROSS_COMPILER_DIR/mips64-linux-muslsf-cross/bin/mips64-linux-muslsf-gcc"
-                        CXX_LINUX_MIPS64_SOFTFLOAT="$CGO_CROSS_COMPILER_DIR/mips64-linux-muslsf-cross/bin/mips64-linux-muslsf-g++"
-                    else
-                        DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/mips64-linux-muslsf-cross-${unamespacer}.tgz" \
-                            "$CGO_CROSS_COMPILER_DIR/mips64-linux-muslsf-cross"
-                        CC_LINUX_MIPS64_SOFTFLOAT="$CGO_CROSS_COMPILER_DIR/mips64-linux-muslsf-cross/bin/mips64-linux-muslsf-gcc"
-                        CXX_LINUX_MIPS64_SOFTFLOAT="$CGO_CROSS_COMPILER_DIR/mips64-linux-muslsf-cross/bin/mips64-linux-muslsf-g++"
-                    fi
-                elif [ ! "$CC_LINUX_MIPS64_SOFTFLOAT" ] || [ ! "$CXX_LINUX_MIPS64_SOFTFLOAT" ]; then
-                    echo "CC_LINUX_MIPS64_SOFTFLOAT or CXX_LINUX_MIPS64_SOFTFLOAT not found"
-                    return 1
-                fi
-
-                CC="$CC_LINUX_MIPS64_SOFTFLOAT -static --static"
-                CXX="$CXX_LINUX_MIPS64_SOFTFLOAT -static --static"
-            else
-                echo "MICRO: $MICRO not support"
-                return 1
-            fi
+            [[ "${micro}" == "hf" ]] && micro="" || micro="sf"
+            initLinuxCGO "mips64" "" "${micro}"
             ;;
         "mips64le")
-            # MICRO: hardfloat softfloat or empty
-            if [ ! "$MICRO" ] || [ "$MICRO" == "hardfloat" ]; then
-                # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/mips64el-linux-musl-cross-${unamespacer}.tgz
-                if [ ! "$CC_LINUX_MIPS64LE" ] && [ ! "$CXX_LINUX_MIPS64LE" ]; then
-                    if command -v mips64el-linux-musl-gcc >/dev/null 2>&1 &&
-                        command -v mips64el-linux-musl-g++ >/dev/null 2>&1; then
-                        CC_LINUX_MIPS64LE="mips64el-linux-musl-gcc"
-                        CXX_LINUX_MIPS64LE="mips64el-linux-musl-g++"
-                    elif [ -x "$CGO_CROSS_COMPILER_DIR/mips64el-linux-musl-cross/bin/mips64el-linux-musl-gcc" ] &&
-                        [ -x "$CGO_CROSS_COMPILER_DIR/mips64el-linux-musl-cross/bin/mips64el-linux-musl-g++" ]; then
-                        CC_LINUX_MIPS64LE="$CGO_CROSS_COMPILER_DIR/mips64el-linux-musl-cross/bin/mips64el-linux-musl-gcc"
-                        CXX_LINUX_MIPS64LE="$CGO_CROSS_COMPILER_DIR/mips64el-linux-musl-cross/bin/mips64el-linux-musl-g++"
-                    else
-                        DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/mips64el-linux-musl-cross-${unamespacer}.tgz" \
-                            "$CGO_CROSS_COMPILER_DIR/mips64el-linux-musl-cross"
-                        CC_LINUX_MIPS64LE="$CGO_CROSS_COMPILER_DIR/mips64el-linux-musl-cross/bin/mips64el-linux-musl-gcc"
-                        CXX_LINUX_MIPS64LE="$CGO_CROSS_COMPILER_DIR/mips64el-linux-musl-cross/bin/mips64el-linux-musl-g++"
-                    fi
-                elif [ ! "$CC_LINUX_MIPS64LE" ] || [ ! "$CXX_LINUX_MIPS64LE" ]; then
-                    echo "CC_LINUX_MIPS64LE or CXX_LINUX_MIPS64LE not found"
-                    return 1
-                fi
-
-                CC="$CC_LINUX_MIPS64LE -static --static"
-                CXX="$CXX_LINUX_MIPS64LE -static --static"
-            elif [ "$MICRO" == "softfloat" ]; then
-                # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/mips64el-linux-muslsf-cross-${unamespacer}.tgz
-                if [ ! "$CC_LINUX_MIPS64LE_SOFTFLOAT" ] && [ ! "$CXX_LINUX_MIPS64LE_SOFTFLOAT" ]; then
-                    if command -v mips64el-linux-muslsf-gcc >/dev/null 2>&1 &&
-                        command -v mips64el-linux-muslsf-g++ >/dev/null 2>&1; then
-                        CC_LINUX_MIPS64LE_SOFTFLOAT="mips64el-linux-muslsf-gcc"
-                        CXX_LINUX_MIPS64LE_SOFTFLOAT="mips64el-linux-muslsf-g++"
-                    elif [ -x "$CGO_CROSS_COMPILER_DIR/mips64el-linux-muslsf-cross/bin/mips64el-linux-muslsf-gcc" ] &&
-                        [ -x "$CGO_CROSS_COMPILER_DIR/mips64el-linux-muslsf-cross/bin/mips64el-linux-muslsf-g++" ]; then
-                        CC_LINUX_MIPS64LE_SOFTFLOAT="$CGO_CROSS_COMPILER_DIR/mips64el-linux-muslsf-cross/bin/mips64el-linux-muslsf-gcc"
-                        CXX_LINUX_MIPS64LE_SOFTFLOAT="$CGO_CROSS_COMPILER_DIR/mips64el-linux-muslsf-cross/bin/mips64el-linux-muslsf-g++"
-                    else
-                        DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/mips64el-linux-muslsf-cross-${unamespacer}.tgz" \
-                            "$CGO_CROSS_COMPILER_DIR/mips64el-linux-muslsf-cross"
-                        CC_LINUX_MIPS64LE_SOFTFLOAT="$CGO_CROSS_COMPILER_DIR/mips64el-linux-muslsf-cross/bin/mips64el-linux-muslsf-gcc"
-                        CXX_LINUX_MIPS64LE_SOFTFLOAT="$CGO_CROSS_COMPILER_DIR/mips64el-linux-muslsf-cross/bin/mips64el-linux-muslsf-g++"
-                    fi
-                elif [ ! "$CC_LINUX_MIPS64LE_SOFTFLOAT" ] || [ ! "$CXX_LINUX_MIPS64LE_SOFTFLOAT" ]; then
-                    echo "CC_LINUX_MIPS64LE_SOFTFLOAT or CXX_LINUX_MIPS64LE_SOFTFLOAT not found"
-                    return 1
-                fi
-
-                CC="$CC_LINUX_MIPS64LE_SOFTFLOAT -static --static"
-                CXX="$CXX_LINUX_MIPS64LE_SOFTFLOAT -static --static"
-            else
-                echo "MICRO: $MICRO not support"
-                return 1
-            fi
+            [[ "${micro}" == "hf" ]] && micro="" || micro="sf"
+            initLinuxCGO "mips64el" "" "${micro}"
             ;;
         "ppc64")
-            # MICRO: power8 power9 or empty (not use)
-            # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/powerpc64-linux-musl-cross-${unamespacer}.tgz
-            if [ ! "$CC_LINUX_PPC64" ] && [ ! "$CXX_LINUX_PPC64" ]; then
-                if command -v powerpc64-linux-musl-gcc >/dev/null 2>&1 &&
-                    command -v powerpc64-linux-musl-g++ >/dev/null 2>&1; then
-                    CC_LINUX_PPC64="powerpc64-linux-musl-gcc"
-                    CXX_LINUX_PPC64="powerpc64-linux-musl-g++"
-                elif [ -x "$CGO_CROSS_COMPILER_DIR/powerpc64-linux-musl-cross/bin/powerpc64-linux-musl-gcc" ] &&
-                    [ -x "$CGO_CROSS_COMPILER_DIR/powerpc64-linux-musl-cross/bin/powerpc64-linux-musl-g++" ]; then
-                    CC_LINUX_PPC64="$CGO_CROSS_COMPILER_DIR/powerpc64-linux-musl-cross/bin/powerpc64-linux-musl-gcc"
-                    CXX_LINUX_PPC64="$CGO_CROSS_COMPILER_DIR/powerpc64-linux-musl-cross/bin/powerpc64-linux-musl-g++"
-                else
-                    DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/powerpc64-linux-musl-cross-${unamespacer}.tgz" \
-                        "$CGO_CROSS_COMPILER_DIR/powerpc64-linux-musl-cross"
-                    CC_LINUX_PPC64="$CGO_CROSS_COMPILER_DIR/powerpc64-linux-musl-cross/bin/powerpc64-linux-musl-gcc"
-                    CXX_LINUX_PPC64="$CGO_CROSS_COMPILER_DIR/powerpc64-linux-musl-cross/bin/powerpc64-linux-musl-g++"
-                fi
-            elif [ ! "$CC_LINUX_PPC64" ] || [ ! "$CXX_LINUX_PPC64" ]; then
-                echo "CC_LINUX_PPC64 or CXX_LINUX_PPC64 not found"
-                return 1
-            fi
-
-            CC="$CC_LINUX_PPC64 -static --static"
-            CXX="$CXX_LINUX_PPC64 -static --static"
+            initLinuxCGO "powerpc64" ""
             ;;
         "ppc64le")
-            # MICRO: power8 power9 or empty (not use)
-            # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/powerpc64le-linux-musl-cross-${unamespacer}.tgz
-            if [ ! "$CC_LINUX_PPC64LE" ] && [ ! "$CXX_LINUX_PPC64LE" ]; then
-                if command -v powerpc64le-linux-musl-gcc >/dev/null 2>&1 &&
-                    command -v powerpc64le-linux-musl-g++ >/dev/null 2>&1; then
-                    CC_LINUX_PPC64LE="powerpc64le-linux-musl-gcc"
-                    CXX_LINUX_PPC64LE="powerpc64le-linux-musl-g++"
-                elif [ -x "$CGO_CROSS_COMPILER_DIR/powerpc64le-linux-musl-cross/bin/powerpc64le-linux-musl-gcc" ] &&
-                    [ -x "$CGO_CROSS_COMPILER_DIR/powerpc64le-linux-musl-cross/bin/powerpc64le-linux-musl-g++" ]; then
-                    CC_LINUX_PPC64LE="$CGO_CROSS_COMPILER_DIR/powerpc64le-linux-musl-cross/bin/powerpc64le-linux-musl-gcc"
-                    CXX_LINUX_PPC64LE="$CGO_CROSS_COMPILER_DIR/powerpc64le-linux-musl-cross/bin/powerpc64le-linux-musl-g++"
-                else
-                    DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/powerpc64le-linux-musl-cross-${unamespacer}.tgz" \
-                        "$CGO_CROSS_COMPILER_DIR/powerpc64le-linux-musl-cross"
-                    CC_LINUX_PPC64LE="$CGO_CROSS_COMPILER_DIR/powerpc64le-linux-musl-cross/bin/powerpc64le-linux-musl-gcc"
-                    CXX_LINUX_PPC64LE="$CGO_CROSS_COMPILER_DIR/powerpc64le-linux-musl-cross/bin/powerpc64le-linux-musl-g++"
-                fi
-            elif [ ! "$CC_LINUX_PPC64LE" ] || [ ! "$CXX_LINUX_PPC64LE" ]; then
-                echo "CC_LINUX_PPC64LE or CXX_LINUX_PPC64LE not found"
-                return 1
-            fi
-
-            CC="$CC_LINUX_PPC64LE -static --static"
-            CXX="$CXX_LINUX_PPC64LE -static --static"
+            initLinuxCGO "powerpc64le" ""
             ;;
         "riscv64")
-            # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/riscv64-linux-musl-cross-${unamespacer}.tgz
-            if [ ! "$CC_LINUX_RISCV64" ] && [ ! "$CXX_LINUX_RISCV64" ]; then
-                if command -v riscv64-linux-musl-gcc >/dev/null 2>&1 &&
-                    command -v riscv64-linux-musl-g++ >/dev/null 2>&1; then
-                    CC_LINUX_RISCV64="riscv64-linux-musl-gcc"
-                    CXX_LINUX_RISCV64="riscv64-linux-musl-g++"
-                elif [ -x "$CGO_CROSS_COMPILER_DIR/riscv64-linux-musl-cross/bin/riscv64-linux-musl-gcc" ] &&
-                    [ -x "$CGO_CROSS_COMPILER_DIR/riscv64-linux-musl-cross/bin/riscv64-linux-musl-g++" ]; then
-                    CC_LINUX_RISCV64="$CGO_CROSS_COMPILER_DIR/riscv64-linux-musl-cross/bin/riscv64-linux-musl-gcc"
-                    CXX_LINUX_RISCV64="$CGO_CROSS_COMPILER_DIR/riscv64-linux-musl-cross/bin/riscv64-linux-musl-g++"
-                else
-                    DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/riscv64-linux-musl-cross-${unamespacer}.tgz" \
-                        "$CGO_CROSS_COMPILER_DIR/riscv64-linux-musl-cross"
-                    CC_LINUX_RISCV64="$CGO_CROSS_COMPILER_DIR/riscv64-linux-musl-cross/bin/riscv64-linux-musl-gcc"
-                    CXX_LINUX_RISCV64="$CGO_CROSS_COMPILER_DIR/riscv64-linux-musl-cross/bin/riscv64-linux-musl-g++"
-                fi
-            elif [ ! "$CC_LINUX_RISCV64" ] || [ ! "$CXX_LINUX_RISCV64" ]; then
-                echo "CC_LINUX_RISCV64 or CXX_LINUX_RISCV64 not found"
-                return 1
-            fi
-
-            CC="$CC_LINUX_RISCV64 -static --static"
-            CXX="$CXX_LINUX_RISCV64 -static --static"
+            initLinuxCGO "riscv64" ""
             ;;
         "s390x")
-            # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/s390x-linux-musl-cross-${unamespacer}.tgz
-            if [ ! "$CC_LINUX_S390X" ] && [ ! "$CXX_LINUX_S390X" ]; then
-                if command -v s390x-linux-musl-gcc >/dev/null 2>&1 &&
-                    command -v s390x-linux-musl-g++ >/dev/null 2>&1; then
-                    CC_LINUX_S390X="s390x-linux-musl-gcc"
-                    CXX_LINUX_S390X="s390x-linux-musl-g++"
-                elif [ -x "$CGO_CROSS_COMPILER_DIR/s390x-linux-musl-cross/bin/s390x-linux-musl-gcc" ] &&
-                    [ -x "$CGO_CROSS_COMPILER_DIR/s390x-linux-musl-cross/bin/s390x-linux-musl-g++" ]; then
-                    CC_LINUX_S390X="$CGO_CROSS_COMPILER_DIR/s390x-linux-musl-cross/bin/s390x-linux-musl-gcc"
-                    CXX_LINUX_S390X="$CGO_CROSS_COMPILER_DIR/s390x-linux-musl-cross/bin/s390x-linux-musl-g++"
-                else
-                    DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/s390x-linux-musl-cross-${unamespacer}.tgz" \
-                        "$CGO_CROSS_COMPILER_DIR/s390x-linux-musl-cross"
-                    CC_LINUX_S390X="$CGO_CROSS_COMPILER_DIR/s390x-linux-musl-cross/bin/s390x-linux-musl-gcc"
-                    CXX_LINUX_S390X="$CGO_CROSS_COMPILER_DIR/s390x-linux-musl-cross/bin/s390x-linux-musl-g++"
-                fi
-            elif [ ! "$CC_LINUX_S390X" ] || [ ! "$CXX_LINUX_S390X" ]; then
-                echo "CC_LINUX_S390X or CXX_LINUX_S390X not found"
-                return 1
-            fi
-
-            CC="$CC_LINUX_S390X -static --static"
-            CXX="$CXX_LINUX_S390X -static --static"
+            initLinuxCGO "s390x" ""
             ;;
         "loong64")
-            # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/loongarch64-linux-musl-cross-${unamespacer}.tgz
-            if [ ! "$CC_LINUX_LOONG64" ] && [ ! "$CXX_LINUX_LOONG64" ]; then
-                if command -v loongarch64-linux-musl-gcc >/dev/null 2>&1 &&
-                    command -v loongarch64-linux-musl-g++ >/dev/null 2>&1; then
-                    CC_LINUX_LOONG64="loongarch64-linux-musl-gcc"
-                    CXX_LINUX_LOONG64="loongarch64-linux-musl-g++"
-                elif [ -x "$CGO_CROSS_COMPILER_DIR/loongarch64-linux-musl-cross/bin/loongarch64-linux-musl-gcc" ] &&
-                    [ -x "$CGO_CROSS_COMPILER_DIR/loongarch64-linux-musl-cross/bin/loongarch64-linux-musl-g++" ]; then
-                    CC_LINUX_LOONG64="$CGO_CROSS_COMPILER_DIR/loongarch64-linux-musl-cross/bin/loongarch64-linux-musl-gcc"
-                    CXX_LINUX_LOONG64="$CGO_CROSS_COMPILER_DIR/loongarch64-linux-musl-cross/bin/loongarch64-linux-musl-g++"
-                else
-                    DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/loongarch64-linux-musl-cross-${unamespacer}.tgz" \
-                        "$CGO_CROSS_COMPILER_DIR/loongarch64-linux-musl-cross"
-                    CC_LINUX_LOONG64="$CGO_CROSS_COMPILER_DIR/loongarch64-linux-musl-cross/bin/loongarch64-linux-musl-gcc"
-                    CXX_LINUX_LOONG64="$CGO_CROSS_COMPILER_DIR/loongarch64-linux-musl-cross/bin/loongarch64-linux-musl-g++"
-                fi
-            elif [ ! "$CC_LINUX_LOONG64" ] || [ ! "$CXX_LINUX_LOONG64" ]; then
-                echo "CC_LINUX_LOONG64 or CXX_LINUX_LOONG64 not found"
-                return 1
-            fi
-
-            CC="$CC_LINUX_LOONG64 -static --static"
-            CXX="$CXX_LINUX_LOONG64 -static --static"
+            initLinuxCGO "loongarch64" ""
             ;;
         *)
-            if [ "$GOOS" == "$GOHOSTOS" ] && [ "$GOARCH" == "$GOHOSTARCH" ]; then
-                InitHostCGODeps "$@"
+            if [[ "${goos}" == "${GOHOSTOS}" ]] && [[ "${goarch}" == "${GOHOSTARCH}" ]]; then
+                initHostCGODeps "$@"
             else
-                echo "$GOOS/$GOARCH not support for cgo"
+                echo -e "${COLOR_RED}${goos}/${goarch} not support for cgo${COLOR_RESET}"
                 return 1
             fi
             ;;
         esac
         ;;
     "windows")
-        case "$GOARCH" in
+        case "${goarch}" in
         "386")
-            # Micro: sse2 softfloat or empty (not use)
-            # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/i686-w64-mingw32-cross-${unamespacer}.tgz
-            if [ ! "$CC_WINDOWS_386" ] && [ ! "$CXX_WINDOWS_386" ]; then
-                if command -v i686-w64-mingw32-gcc >/dev/null 2>&1 &&
-                    command -v i686-w64-mingw32-g++ >/dev/null 2>&1; then
-                    CC_WINDOWS_386="i686-w64-mingw32-gcc"
-                    CXX_WINDOWS_386="i686-w64-mingw32-g++"
-                elif [ -x "$CGO_CROSS_COMPILER_DIR/i686-w64-mingw32-cross/bin/i686-w64-mingw32-gcc" ] &&
-                    [ -x "$CGO_CROSS_COMPILER_DIR/i686-w64-mingw32-cross/bin/i686-w64-mingw32-g++" ]; then
-                    CC_WINDOWS_386="$CGO_CROSS_COMPILER_DIR/i686-w64-mingw32-cross/bin/i686-w64-mingw32-gcc"
-                    CXX_WINDOWS_386="$CGO_CROSS_COMPILER_DIR/i686-w64-mingw32-cross/bin/i686-w64-mingw32-g++"
-                else
-                    DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/i686-w64-mingw32-cross-${unamespacer}.tgz" \
-                        "$CGO_CROSS_COMPILER_DIR/i686-w64-mingw32-cross"
-                    CC_WINDOWS_386="$CGO_CROSS_COMPILER_DIR/i686-w64-mingw32-cross/bin/i686-w64-mingw32-gcc"
-                    CXX_WINDOWS_386="$CGO_CROSS_COMPILER_DIR/i686-w64-mingw32-cross/bin/i686-w64-mingw32-g++"
-                fi
-            elif [ ! "$CC_WINDOWS_386" ] || [ ! "$CXX_WINDOWS_386" ]; then
-                echo "CC_WINDOWS_386 or CXX_WINDOWS_386 not found"
-                return 1
-            fi
-
-            CC="$CC_WINDOWS_386 -static --static"
-            CXX="$CXX_WINDOWS_386 -static --static"
+            initWindowsCGO "i686"
             ;;
         "amd64")
-            # https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/x86_64-w64-mingw32-cross-${unamespacer}.tgz
-            if [ ! "$CC_WINDOWS_AMD64" ] && [ ! "$CXX_WINDOWS_AMD64" ]; then
-                if command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1 &&
-                    command -v x86_64-w64-mingw32-g++ >/dev/null 2>&1; then
-                    CC_WINDOWS_AMD64="x86_64-w64-mingw32-gcc"
-                    CXX_WINDOWS_AMD64="x86_64-w64-mingw32-g++"
-                elif [ -x "$CGO_CROSS_COMPILER_DIR/x86_64-w64-mingw32-cross/bin/x86_64-w64-mingw32-gcc" ] &&
-                    [ -x "$CGO_CROSS_COMPILER_DIR/x86_64-w64-mingw32-cross/bin/x86_64-w64-mingw32-g++" ]; then
-                    CC_WINDOWS_AMD64="$CGO_CROSS_COMPILER_DIR/x86_64-w64-mingw32-cross/bin/x86_64-w64-mingw32-gcc"
-                    CXX_WINDOWS_AMD64="$CGO_CROSS_COMPILER_DIR/x86_64-w64-mingw32-cross/bin/x86_64-w64-mingw32-g++"
-                else
-                    DownloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/x86_64-w64-mingw32-cross-${unamespacer}.tgz" \
-                        "$CGO_CROSS_COMPILER_DIR/x86_64-w64-mingw32-cross"
-                    CC_WINDOWS_AMD64="$CGO_CROSS_COMPILER_DIR/x86_64-w64-mingw32-cross/bin/x86_64-w64-mingw32-gcc"
-                    CXX_WINDOWS_AMD64="$CGO_CROSS_COMPILER_DIR/x86_64-w64-mingw32-cross/bin/x86_64-w64-mingw32-g++"
-                fi
-            elif [ ! "$CC_WINDOWS_AMD64" ] || [ ! "$CXX_WINDOWS_AMD64" ]; then
-                echo "CC_WINDOWS_AMD64 or CXX_WINDOWS_AMD64 not found"
-                return 1
-            fi
-
-            CC="$CC_WINDOWS_AMD64 -static --static"
-            CXX="$CXX_WINDOWS_AMD64 -static --static"
+            initWindowsCGO "x86_64"
             ;;
         *)
-            if [ "$GOOS" == "$GOHOSTOS" ] && [ "$GOARCH" == "$GOHOSTARCH" ]; then
-                InitHostCGODeps "$@"
+            if [[ "${goos}" == "${GOHOSTOS}" ]] && [[ "${goarch}" == "${GOHOSTARCH}" ]]; then
+                initHostCGODeps "$@"
             else
-                echo "$GOOS/$GOARCH not support for cgo"
+                echo -e "${COLOR_RED}${goos}/${goarch} not support for cgo${COLOR_RESET}"
                 return 1
             fi
             ;;
         esac
         ;;
     *)
-        if [ "$GOOS" == "$GOHOSTOS" ] && [ "$GOARCH" == "$GOHOSTARCH" ]; then
-            InitHostCGODeps "$@"
+        if [[ "${goos}" == "${GOHOSTOS}" ]] && [[ "${goarch}" == "${GOHOSTARCH}" ]]; then
+            initHostCGODeps "$@"
         else
-            echo "$GOOS/$GOARCH not support for cgo"
+            echo -e "${COLOR_RED}${goos}/${goarch} not support for cgo${COLOR_RESET}"
             return 1
         fi
         ;;
     esac
 }
 
-function FindARPath() {
-    if [ "$FORCE_AR" ]; then
-        echo "$FORCE_AR"
-    elif [ "$DISABLE_FIND_AR" ]; then
-        echo ""
-    elif [ "$CC" ]; then
-        find "$(dirname $(which $CC))" -name '*-ar' -o -name '*-ar-*' -o -name 'ar' 2>/dev/null | head -n 1
-    elif [ "$CXX" ]; then
-        find "$(dirname $(which $CXX))" -name '*-ar' -o -name '*-ar-*' -o -name 'ar' 2>/dev/null | head -n 1
-    else
-        echo ""
+function initLinuxCGO() {
+    local arch_prefix="$1"
+    local abi="$2"
+    local micro="$3"
+    local cc_var="CC_LINUX_${arch_prefix^^}${abi^^}${micro^^}"
+    local cxx_var="CXX_LINUX_${arch_prefix^^}${abi^^}${micro^^}"
+
+    if [[ -z "${!cc_var}" ]] && [[ -z "${!cxx_var}" ]]; then
+        local cross_compiler_name="${arch_prefix}-linux-musl${abi}${micro}-cross"
+        if command -v "${arch_prefix}-linux-musl${abi}${micro}-gcc" >/dev/null 2>&1 &&
+            command -v "${arch_prefix}-linux-musl${abi}${micro}-g++" >/dev/null 2>&1; then
+            eval "${cc_var}=\"${arch_prefix}-linux-musl${abi}${micro}-gcc\""
+            eval "${cxx_var}=\"${arch_prefix}-linux-musl${abi}${micro}-g++\""
+        elif [[ -x "${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-linux-musl${abi}${micro}-gcc" ]] &&
+            [[ -x "${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-linux-musl${abi}${micro}-g++" ]]; then
+            eval "${cc_var}=\"${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-linux-musl${abi}${micro}-gcc\""
+            eval "${cxx_var}=\"${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-linux-musl${abi}${micro}-g++\""
+        else
+            downloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${cgo_deps_version}/${cross_compiler_name}-${unamespacer}.tgz" \
+                "${cgo_cross_compiler_dir}/${cross_compiler_name}"
+            eval "${cc_var}=\"${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-linux-musl${abi}${micro}-gcc\""
+            eval "${cxx_var}=\"${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-linux-musl${abi}${micro}-g++\""
+        fi
+    elif [[ -z "${!cc_var}" ]] || [[ -z "${!cxx_var}" ]]; then
+        echo -e "${COLOR_RED}${cc_var} or ${cxx_var} not found${COLOR_RESET}"
+        return 1
     fi
+
+    cgo_deps["CC"]="${!cc_var} -static --static"
+    cgo_deps["CXX"]="${!cxx_var} -static --static"
 }
 
-function SupportPie() {
-    if [[ "$1" != "linux/mips"* ]] &&
-        [ "$1" != "linux/ppc64" ] &&
-        [[ "$1" != "openbsd"* ]] &&
-        [[ "$1" != "freebsd"* ]] &&
-        [[ "$1" != "netbsd"* ]]; then
-        echo "1"
+function initWindowsCGO() {
+    local arch_prefix="$1"
+    local cc_var="CC_WINDOWS_${arch_prefix^^}"
+    local cxx_var="CXX_WINDOWS_${arch_prefix^^}"
+
+    if [[ -z "${!cc_var}" ]] && [[ -z "${!cxx_var}" ]]; then
+        local cross_compiler_name="${arch_prefix}-w64-mingw32-cross"
+        if command -v "${arch_prefix}-w64-mingw32-gcc" >/dev/null 2>&1 &&
+            command -v "${arch_prefix}-w64-mingw32-g++" >/dev/null 2>&1; then
+            eval "${cc_var}=\"${arch_prefix}-w64-mingw32-gcc\""
+            eval "${cxx_var}=\"${arch_prefix}-w64-mingw32-g++\""
+        elif [[ -x "${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-w64-mingw32-gcc" ]] &&
+            [[ -x "${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-w64-mingw32-g++" ]]; then
+            eval "${cc_var}=\"${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-w64-mingw32-gcc\""
+            eval "${cxx_var}=\"${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-w64-mingw32-g++\""
+        else
+            downloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${cgo_deps_version}/${cross_compiler_name}-${unamespacer}.tgz" \
+                "${cgo_cross_compiler_dir}/${cross_compiler_name}"
+            eval "${cc_var}=\"${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-w64-mingw32-gcc\""
+            eval "${cxx_var}=\"${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-w64-mingw32-g++\""
+        fi
+    elif [[ -z "${!cc_var}" ]] || [[ -z "${!cxx_var}" ]]; then
+        echo -e "${COLOR_RED}${cc_var} or ${cxx_var} not found${COLOR_RESET}"
+        return 1
     fi
+
+    cgo_deps["CC"]="${!cc_var} -static --static"
+    cgo_deps["CXX"]="${!cxx_var} -static --static"
 }
 
-function Build() {
-    platform="$1"
-    target_name="$2"
+function supportPIE() {
+    local platform="$1"
+    [ ! $(isCGOEnabled) ] &&
+        [[ "${platform}" != "linux/386" ]] &&
+        [[ "${platform}" != "linux/arm" ]] &&
+        [[ "${platform}" != "linux/loong64" ]] &&
+        [[ "${platform}" != "linux/riscv64" ]] &&
+        [[ "${platform}" != "linux/s390x" ]] ||
+        return 1
+    [[ "${platform}" != "linux/mips"* ]] &&
+        [[ "${platform}" != "linux/ppc64" ]] &&
+        [[ "${platform}" != "openbsd"* ]] &&
+        [[ "${platform}" != "freebsd"* ]] &&
+        [[ "${platform}" != "netbsd"* ]]
+}
 
-    GOOS=${platform%/*}
-    GOARCH=${platform#*/}
+function getSeparator() {
+    local width=$(tput cols || 20)
+    local separator=""
+    for ((i = 0; i < width; i++)); do
+        separator+="-"
+    done
+    echo $separator
+}
 
-    # 使用COMPILED_LIST防重复编译
-    # if [ -v "$COMPILED_LIST[\"$GOOS$GOARCH\"]" ]; then
-    #     echo "skip $platform"
-    #     return
-    # else
-    #     echo "build $platform"
-    #     COMPILED_LIST["$GOOS$GOARCH"]="1"
-    # fi
+# 构建目标平台
+function buildTarget() {
+    local platform="$1"
+    local target_name="$2"
+    local goos="${platform%/*}"
+    local goarch="${platform#*/}"
+    local ext=""
+    [[ "${goos}" == "windows" ]] && ext=".exe"
+    local target_file="${result_dir}/${target_name}-${goos}-${goarch}${ext}"
+    local build_mode=""
+    supportPIE "${platform}" && build_mode="-buildmode=pie"
 
-    if [ "$GOOS" == "windows" ]; then
-        EXT=".exe"
-    else
-        EXT=""
+    local build_env=(
+        "CGO_ENABLED=${cgo_enabled}"
+        "GOOS=${goos}"
+        "GOARCH=${goarch}"
+    )
+
+    echo -e "${COLOR_YELLOW}$(getSeparator)${COLOR_RESET}"
+
+    buildTargetWithMicro "" "${build_env[@]}"
+
+    if [ -n "${disable_micro}" ]; then
+        return
     fi
 
-    if [ "$target_name" ]; then
-        TARGET_NAME="$target_name"
-    else
-        TARGET_NAME="$BIN_NAME-$GOOS-$GOARCH"
+    case "${goarch}" in
+    "386")
+        echo
+        buildTargetWithMicro "sse2" "${build_env[@]}"
+        echo
+        buildTargetWithMicro "softfloat" "${build_env[@]}"
+        ;;
+    "arm")
+        echo
+        buildTargetWithMicro "5" "${build_env[@]}"
+        echo
+        buildTargetWithMicro "6" "${build_env[@]}"
+        echo
+        buildTargetWithMicro "7" "${build_env[@]}"
+        ;;
+    "amd64")
+        echo
+        buildTargetWithMicro "v1" "${build_env[@]}"
+        echo
+        buildTargetWithMicro "v2" "${build_env[@]}"
+        echo
+        buildTargetWithMicro "v3" "${build_env[@]}"
+        echo
+        buildTargetWithMicro "v4" "${build_env[@]}"
+        ;;
+    "mips" | "mipsle" | "mips64" | "mips64le")
+        echo
+        buildTargetWithMicro "hardfloat" "${build_env[@]}"
+        echo
+        buildTargetWithMicro "softfloat" "${build_env[@]}"
+        ;;
+    "ppc64" | "ppc64le")
+        echo
+        buildTargetWithMicro "power8" "${build_env[@]}"
+        echo
+        buildTargetWithMicro "power9" "${build_env[@]}"
+        ;;
+    "wasm")
+        echo
+        buildTargetWithMicro "satconv" "${build_env[@]}"
+        echo
+        buildTargetWithMicro "signext" "${build_env[@]}"
+        ;;
+    esac
+}
+
+# 构建特定微架构的目标平台
+function buildTargetWithMicro() {
+    local micro="$1"
+    local build_env=("${@:2}")
+    local goos="${platform%/*}"
+    local goarch="${platform#*/}"
+    local ext=""
+    [[ "${goos}" == "windows" ]] && ext=".exe"
+    local target_file="${result_dir}/${bin_name}-${goos}-${goarch}${micro:+"-$micro"}${ext}"
+    local default_target_file="${result_dir}/${bin_name}-${goos}-${goarch}${ext}"
+
+    case "${goarch}" in
+    "386")
+        build_env+=("GO386=${micro}")
+        isCGOEnabled && initCGODeps "${goos}" "${goarch}" "${micro}"
+        ;;
+    "arm")
+        build_env+=("GOARM=${micro}")
+        isCGOEnabled && initCGODeps "${goos}" "${goarch}" "${micro:-6}"
+        ;;
+    "amd64")
+        build_env+=("GOAMD64=${micro}")
+        isCGOEnabled && initCGODeps "${goos}" "${goarch}" "${micro}"
+        ;;
+    "mips" | "mipsle")
+        build_env+=("GOMIPS=${micro}")
+        isCGOEnabled && initCGODeps "${goos}" "${goarch}" "${micro:-hardfloat}"
+        ;;
+    "mips64" | "mips64le")
+        build_env+=("GOMIPS64=${micro}")
+        isCGOEnabled && initCGODeps "${goos}" "${goarch}" "${micro:-hardfloat}"
+        ;;
+    "ppc64" | "ppc64le")
+        build_env+=("GOPPC64=${micro}")
+        isCGOEnabled && initCGODeps "${goos}" "${goarch}" "${micro}"
+        ;;
+    "wasm")
+        build_env+=("GOWASM=${micro}")
+        isCGOEnabled && initCGODeps "${goos}" "${goarch}" "${micro}"
+        ;;
+    *)
+        isCGOEnabled && initCGODeps "${goos}" "${goarch}" "${micro}"
+        ;;
+    esac
+
+    if isCGOEnabled; then
+        build_env+=("CGO_CFLAGS=${DEFAULT_CGO_FLAGS} ${cgo_deps["MORE_CGO_CFLAGS"]}")
+        build_env+=("CGO_CXXFLAGS=${DEFAULT_CGO_FLAGS} ${cgo_deps["MORE_CGO_CXXFLAGS"]}")
+        build_env+=("CGO_LDFLAGS=${DEFAULT_CGO_LDFLAGS} ${cgo_deps["MORE_CGO_LDFLAGS"]}")
+        build_env+=("CC=${cgo_deps["CC"]}")
+        build_env+=("CXX=${cgo_deps["CXX"]}")
     fi
 
-    TARGET_FILE="$RESULT_DIR/$TARGET_NAME"
+    echo -e "${COLOR_BLUE}building ${goos}/${goarch}${micro:+/${micro}}${COLOR_RESET}"
+    echo "${build_env[@]}"
+    env "${build_env[@]}" go build -tags "${tags}" -ldflags "${ldflags}" -trimpath ${build_args} ${build_mode} -o "${target_file}" "${source_dir}"
+    echo -e "${COLOR_GREEN}build ${goos}/${goarch}${micro:+ ${micro}} success${COLOR_RESET}"
+}
 
-    TMP_BUILD_ARGS="-tags \"$TAGS\" -ldflags \"$LDFLAGS\" -trimpath $BUILD_ARGS"
+function expandPlatforms() {
+    local platforms="$1"
+    local expanded_platforms=""
+    local platform=""
+    for platform in ${platforms//,/ }; do
+        if [[ "${platform}" == "all" ]]; then
+            echo "${CURRENT_ALLOWED_PLATFORM}"
+            return
+        elif [[ "${platform}" == *\** ]]; then
+            local tmp_var=""
+            for tmp_var in ${CURRENT_ALLOWED_PLATFORM//,/ }; do
+                [[ "${tmp_var}" == ${platform} ]] && expanded_platforms="${expanded_platforms} ${tmp_var}"
+            done
+        elif [[ "${platform}" != */* ]]; then
+            expanded_platforms="${expanded_platforms} $(expandPlatforms "${platform}/*")"
+        else
+            expanded_platforms="${expanded_platforms} ${platform}"
+        fi
+    done
+    removeDuplicatePlatforms "${expanded_platforms}"
+}
 
-    if [ "$(SupportPie "$platform")" ]; then
-        TMP_BUILD_ARGS="-buildmode pie $TMP_BUILD_ARGS"
+function autoBuild() {
+    local platforms=$(expandPlatforms "$1")
+    checkPlatforms "${platforms}"
+
+    if declare -f initDep >/dev/null; then
+        initDep
     fi
 
-    BUILD_ENV="CGO_ENABLED=$CGO_ENABLED \
-        GOOS=$GOOS \
-        GOARCH=$GOARCH"
+    for platform in ${platforms//,/ }; do
+        buildTarget "${platform}" "${bin_name}"
+    done
+}
 
-    if [ "$DISABLE_MICRO" ]; then
-        echo "building $GOOS/$GOARCH"
-        InitCGODeps "$GOOS" "$GOARCH"
-        BUILD_ENV="$BUILD_ENV \
-            CC=\"$CC\" CXX=\"$CXX\" AR=\"$(FindARPath)\" \
-            CGO_CFLAGS=\"$CGO_CFLAGS $MORE_CGO_CFLAGS\" \
-            CGO_CXXFLAGS=\"$CGO_CXXFLAGS $MORE_CGO_CXXFLAGS\" \
-            CGO_LDFLAGS=\"$CGO_LDFLAGS $MORE_CGO_LDFLAGS\" \
-            GO386=sse2 \
-            GOARM=6 \
-            GOAMD64=v1 \
-            GOMIPS=hardfloat GOMIPS64=hardfloat \
-            GOPPC64=power8 \
-            GOWASM="
-        echo $BUILD_ENV \
-            go build $TMP_BUILD_ARGS -o \"$TARGET_FILE$EXT\" \"$SOURCE_DIR\"
-        eval $BUILD_ENV \
-            go build $TMP_BUILD_ARGS -o \"$TARGET_FILE$EXT\" \"$SOURCE_DIR\"
-        echo "build $GOOS/$GOARCH success"
-    else
-        # https://go.dev/doc/install/source#environment
-        case "$GOARCH" in
-        "386")
-            # default sse2
-            echo "building $GOOS/$GOARCH sse2"
-            InitCGODeps "$GOOS" "$GOARCH"
-            BUILD_ENV="$BUILD_ENV \
-                CC=\"$CC\" CXX=\"$CXX\" AR=\"$(FindARPath)\" \
-                CGO_CFLAGS=\"$CGO_CFLAGS $MORE_CGO_CFLAGS\" \
-                CGO_CXXFLAGS=\"$CGO_CXXFLAGS $MORE_CGO_CXXFLAGS\" \
-                CGO_LDFLAGS=\"$CGO_LDFLAGS $MORE_CGO_LDFLAGS\""
-            echo $BUILD_ENV \
-                GO386=sse2 \
-                go build $TMP_BUILD_ARGS -o \"$TARGET_FILE-sse2$EXT\" \"$SOURCE_DIR\"
-            eval $BUILD_ENV \
-                GO386=sse2 \
-                go build $TMP_BUILD_ARGS -o \"$TARGET_FILE-sse2$EXT\" \"$SOURCE_DIR\"
-            echo "build $GOOS/$GOARCH success"
-
-            cp "$TARGET_FILE-sse2$EXT" "$TARGET_FILE$EXT"
-            echo "copy $GOOS/$GOARCH sse2 to $GOOS/$GOARCH success"
-
-            echo "building $GOOS/$GOARCH softfloat"
-            echo $BUILD_ENV \
-                GO386=softfloat \
-                go build $TMP_BUILD_ARGS -o \"$TARGET_FILE-softfloat$EXT\" \"$SOURCE_DIR\"
-            eval $BUILD_ENV \
-                GO386=softfloat \
-                go build $TMP_BUILD_ARGS -o \"$TARGET_FILE-softfloat$EXT\" \"$SOURCE_DIR\"
-            echo "build $GOOS/$GOARCH success"
+function parseArgs() {
+    if declare -f parseDepArgs >/dev/null; then
+        set -- $(parseDepArgs "$@")
+    fi
+    while [[ $# -gt 0 ]]; do
+        case "${1}" in
+        -h | --help)
+            printHelp
+            exit 0
             ;;
-        "arm")
-            # default 6
-            # https://go.dev/wiki/GoArm
-            echo "building $GOOS/$GOARCH 5"
-            InitCGODeps "$GOOS" "$GOARCH" "5"
-            TMP_BUILD_ENV="$BUILD_ENV \
-                CC=\"$CC\" CXX=\"$CXX\" AR=\"$(FindARPath)\" \
-                CGO_CFLAGS=\"$CGO_CFLAGS $MORE_CGO_CFLAGS\" \
-                CGO_CXXFLAGS=\"$CGO_CXXFLAGS $MORE_CGO_CXXFLAGS\" \
-                CGO_LDFLAGS=\"$CGO_LDFLAGS $MORE_CGO_LDFLAGS\" \
-                GOARM=5"
-            echo $TMP_BUILD_ENV \
-                go build $TMP_BUILD_ARGS -o \"$TARGET_FILE-5$EXT\" \"$SOURCE_DIR\"
-            eval $TMP_BUILD_ENV \
-                go build $TMP_BUILD_ARGS -o \"$TARGET_FILE-5$EXT\" \"$SOURCE_DIR\"
-            echo "build $GOOS/$GOARCH 5 success"
-
-            echo "building $GOOS/$GOARCH 6"
-            InitCGODeps "$GOOS" "$GOARCH" "6"
-            TMP_BUILD_ENV="$BUILD_ENV \
-                CC=\"$CC\" CXX=\"$CXX\" AR=\"$(FindARPath)\" \
-                CGO_CFLAGS=\"$CGO_CFLAGS $MORE_CGO_CFLAGS\" \
-                CGO_CXXFLAGS=\"$CGO_CXXFLAGS $MORE_CGO_CXXFLAGS\" \
-                CGO_LDFLAGS=\"$CGO_LDFLAGS $MORE_CGO_LDFLAGS\" \
-                GOARM=6"
-            echo $TMP_BUILD_ENV \
-                go build $TMP_BUILD_ARGS -o \"$TARGET_FILE-6$EXT\" \"$SOURCE_DIR\"
-            eval $TMP_BUILD_ENV \
-                go build $TMP_BUILD_ARGS -o \"$TARGET_FILE-6$EXT\" \"$SOURCE_DIR\"
-            echo "build $GOOS/$GOARCH 6 success"
-
-            cp "$TARGET_FILE-6$EXT" "$TARGET_FILE$EXT"
-            echo "copy $GOOS/$GOARCH 6 to $GOOS/$GOARCH success"
-
-            echo "building $GOOS/$GOARCH 7"
-            InitCGODeps "$GOOS" "$GOARCH" "7"
-            TMP_BUILD_ENV="$BUILD_ENV \
-                CC=\"$CC\" CXX=\"$CXX\" AR=\"$(FindARPath)\" \
-                CGO_CFLAGS=\"$CGO_CFLAGS $MORE_CGO_CFLAGS\" \
-                CGO_CXXFLAGS=\"$CGO_CXXFLAGS $MORE_CGO_CXXFLAGS\" \
-                CGO_LDFLAGS=\"$CGO_LDFLAGS $MORE_CGO_LDFLAGS\" \
-                GOARM=7"
-            echo $TMP_BUILD_ENV \
-                go build $TMP_BUILD_ARGS -o \"$TARGET_FILE-7$EXT\" \"$SOURCE_DIR\"
-            eval $TMP_BUILD_ENV \
-                go build $TMP_BUILD_ARGS -o \"$TARGET_FILE-7$EXT\" \"$SOURCE_DIR\"
-            echo "build $GOOS/$GOARCH success"
+        --disable-cgo)
+            cgo_enabled="0"
+            shift
             ;;
-        "amd64")
-            # default v1
-            # https://go.dev/wiki/MinimumRequirements#amd64
-            echo "building $GOOS/$GOARCH v1"
-            InitCGODeps "$GOOS" "$GOARCH"
-            BUILD_ENV="$BUILD_ENV \
-                CC=\"$CC\" CXX=\"$CXX\" AR=\"$(FindARPath)\" \
-                CGO_CFLAGS=\"$CGO_CFLAGS $MORE_CGO_CFLAGS\" \
-                CGO_CXXFLAGS=\"$CGO_CXXFLAGS $MORE_CGO_CXXFLAGS\" \
-                CGO_LDFLAGS=\"$CGO_LDFLAGS $MORE_CGO_LDFLAGS\""
-            echo $BUILD_ENV \
-                GOAMD64=v1 \
-                go build $TMP_BUILD_ARGS -o \"$TARGET_FILE-v1$EXT\" \"$SOURCE_DIR\"
-            eval $BUILD_ENV \
-                GOAMD64=v1 \
-                go build $TMP_BUILD_ARGS -o \"$TARGET_FILE-v1$EXT\" \"$SOURCE_DIR\"
-            echo "build $GOOS/$GOARCH success"
-
-            cp "$TARGET_FILE-v1$EXT" "$TARGET_FILE$EXT"
-            echo "copy $GOOS/$GOARCH v1 to $GOOS/$GOARCH success"
-
-            echo "building $GOOS/$GOARCH v2"
-            echo $BUILD_ENV \
-                GOAMD64=v2 \
-                go build $TMP_BUILD_ARGS -o \"$TARGET_FILE-v2$EXT\" \"$SOURCE_DIR\"
-            eval $BUILD_ENV \
-                GOAMD64=v2 \
-                go build $TMP_BUILD_ARGS -o \"$TARGET_FILE-v2$EXT\" \"$SOURCE_DIR\"
-            echo "build $GOOS/$GOARCH v2 success"
-
-            echo "building $GOOS/$GOARCH v3"
-            echo $BUILD_ENV \
-                GOAMD64=v3 \
-                go build $TMP_BUILD_ARGS -o \"$TARGET_FILE-v3$EXT\" \"$SOURCE_DIR\"
-            eval $BUILD_ENV \
-                GOAMD64=v3 \
-                go build $TMP_BUILD_ARGS -o \"$TARGET_FILE-v3$EXT\" \"$SOURCE_DIR\"
-            echo "build $GOOS/$GOARCH v3 success"
-
-            echo "building $GOOS/$GOARCH v4"
-            echo $BUILD_ENV \
-                GOAMD64=v4 \
-                go build $TMP_BUILD_ARGS -o \"$TARGET_FILE-v4$EXT\" \"$SOURCE_DIR\"
-            eval $BUILD_ENV \
-                GOAMD64=v4 \
-                go build $TMP_BUILD_ARGS -o \"$TARGET_FILE-v4$EXT\" \"$SOURCE_DIR\"
-            echo "build $GOOS/$GOARCH v4 success"
+        --source-dir=*)
+            source_dir="${1#*=}"
+            shift
             ;;
-        "mips" | "mipsle" | "mips64" | "mips64le")
-            # default hardfloat
-            echo "building $GOOS/$GOARCH hardfloat"
-            InitCGODeps "$GOOS" "$GOARCH" "hardfloat"
-            TMP_BUILD_ENV="$BUILD_ENV \
-                CC=\"$CC\" CXX=\"$CXX\" AR=\"$(FindARPath)\" \
-                CGO_CFLAGS=\"$CGO_CFLAGS $MORE_CGO_CFLAGS\" \
-                CGO_CXXFLAGS=\"$CGO_CXXFLAGS $MORE_CGO_CXXFLAGS\" \
-                CGO_LDFLAGS=\"$CGO_LDFLAGS $MORE_CGO_LDFLAGS\" \
-                GOMIPS=hardfloat GOMIPS64=hardfloat"
-            echo $TMP_BUILD_ENV \
-                go build $TMP_BUILD_ARGS -o \"$TARGET_FILE-hardfloat$EXT\" \"$SOURCE_DIR\"
-            eval $TMP_BUILD_ENV \
-                go build $TMP_BUILD_ARGS -o \"$TARGET_FILE-hardfloat$EXT\" \"$SOURCE_DIR\"
-            echo "build $GOOS/$GOARCH success"
-
-            cp "$TARGET_FILE-hardfloat$EXT" "$TARGET_FILE$EXT"
-            echo "copy $GOOS/$GOARCH hardfloat to $GOOS/$GOARCH success"
-
-            echo "building $GOOS/$GOARCH softfloat"
-            InitCGODeps "$GOOS" "$GOARCH" "softfloat"
-            TMP_BUILD_ENV="$BUILD_ENV \
-                CC=\"$CC\" CXX=\"$CXX\" AR=\"$(FindARPath)\" \
-                CGO_CFLAGS=\"$CGO_CFLAGS $MORE_CGO_CFLAGS\" \
-                CGO_CXXFLAGS=\"$CGO_CXXFLAGS $MORE_CGO_CXXFLAGS\" \
-                CGO_LDFLAGS=\"$CGO_LDFLAGS $MORE_CGO_LDFLAGS\" \
-                GOMIPS=softfloat GOMIPS64=softfloat"
-            echo $TMP_BUILD_ENV \
-                go build $TMP_BUILD_ARGS -o \"$TARGET_FILE-softfloat$EXT\" \"$SOURCE_DIR\"
-            eval $TMP_BUILD_ENV \
-                go build $TMP_BUILD_ARGS -o \"$TARGET_FILE-softfloat$EXT\" \"$SOURCE_DIR\"
-            echo "build $GOOS/$GOARCH softfloat success"
+        --more-go-cmd-args=*)
+            addBuildArgs "${1#*=}"
+            shift
             ;;
-        "ppc64" | "ppc64le")
-            # default power8
-            echo "building $GOOS/$GOARCH power8"
-            InitCGODeps "$GOOS" "$GOARCH" "power8"
-            BUILD_ENV="$BUILD_ENV \
-                CC=\"$CC\" CXX=\"$CXX\" AR=\"$(FindARPath)\" \
-                CGO_CFLAGS=\"$CGO_CFLAGS $MORE_CGO_CFLAGS\" \
-                CGO_CXXFLAGS=\"$CGO_CXXFLAGS $MORE_CGO_CXXFLAGS\" \
-                CGO_LDFLAGS=\"$CGO_LDFLAGS $MORE_CGO_LDFLAGS\""
-            echo $BUILD_ENV \
-                GOPPC64=power8 \
-                go build $TMP_BUILD_ARGS -o \"$TARGET_FILE-power8$EXT\" \"$SOURCE_DIR\"
-            eval $BUILD_ENV \
-                GOPPC64=power8 \
-                go build $TMP_BUILD_ARGS -o \"$TARGET_FILE-power8$EXT\" \"$SOURCE_DIR\"
-            echo "build $GOOS/$GOARCH success"
-
-            cp "$TARGET_FILE-power8$EXT" "$TARGET_FILE$EXT"
-            echo "copy $GOOS/$GOARCH power8 to $GOOS/$GOARCH success"
-
-            echo "building $GOOS/$GOARCH power9"
-            echo $BUILD_ENV \
-                GOPPC64=power9 \
-                go build $TMP_BUILD_ARGS -o \"$TARGET_FILE-power9$EXT\" \"$SOURCE_DIR\"
-            eval $BUILD_ENV \
-                GOPPC64=power9 \
-                go build $TMP_BUILD_ARGS -o \"$TARGET_FILE-power9$EXT\" \"$SOURCE_DIR\"
-            echo "build $GOOS/$GOARCH power9 success"
+        --disable-micro)
+            disable_micro="true"
+            shift
             ;;
-        "wasm")
-            # no default
-            echo "building $GOOS/$GOARCH"
-            echo $BUILD_ENV \
-                GOWASM= \
-                go build $TMP_BUILD_ARGS -o \"$TARGET_FILE$EXT\" \"$SOURCE_DIR\"
-            eval $BUILD_ENV \
-                GOWASM= \
-                go build $TMP_BUILD_ARGS -o \"$TARGET_FILE$EXT\" \"$SOURCE_DIR\"
-            echo "build $GOOS/$GOARCH success"
-
-            echo "building $GOOS/$GOARCH satconv"
-            echo $BUILD_ENV \
-                GOWASM=satconv \
-                go build $TMP_BUILD_ARGS -o \"$TARGET_FILE-satconv$EXT\" \"$SOURCE_DIR\"
-            eval $BUILD_ENV \
-                GOWASM=satconv \
-                go build $TMP_BUILD_ARGS -o \"$TARGET_FILE-satconv$EXT\" \"$SOURCE_DIR\"
-            echo "build $GOOS/$GOARCH satconv success"
-
-            echo "building $GOOS/$GOARCH signext"
-            echo $BUILD_ENV \
-                GOWASM=signext \
-                go build $TMP_BUILD_ARGS -o \"$TARGET_FILE-signext$EXT\" \"$SOURCE_DIR\"
-            eval $BUILD_ENV \
-                GOWASM=signext \
-                go build $TMP_BUILD_ARGS -o \"$TARGET_FILE-signext$EXT\" \"$SOURCE_DIR\"
-            echo "build $GOOS/$GOARCH signext success"
+        --ldflags=*)
+            addLDFLAGS "${1#*=}"
+            shift
+            ;;
+        --platforms=*)
+            platforms="${1#*=}"
+            shift
+            ;;
+        --result-dir=*)
+            result_dir="${1#*=}"
+            shift
+            ;;
+        --tags=*)
+            addTags "${1#*=}"
+            shift
+            ;;
+        --show-all-targets)
+            initPlatforms
+            echo "${CURRENT_ALLOWED_PLATFORM}"
+            exit 0
+            ;;
+        --github-proxy-mirror=*)
+            gh_proxy="${1#*=}"
+            shift
+            ;;
+        --force-gcc=*)
+            force_cc="${1#*=}"
+            shift
+            ;;
+        --force-g++=*)
+            force_cxx="${1#*=}"
+            shift
+            ;;
+        --host-cc=*)
+            host_cc="${1#*=}"
+            shift
+            ;;
+        --host-cxx=*)
+            host_cxx="${1#*=}"
+            shift
             ;;
         *)
-            echo "building $GOOS/$GOARCH"
-            InitCGODeps "$GOOS" "$GOARCH"
-            BUILD_ENV="$BUILD_ENV \
-                CC=\"$CC\" CXX=\"$CXX\" AR=\"$(FindARPath)\" \
-                CGO_CFLAGS=\"$CGO_CFLAGS $MORE_CGO_CFLAGS\" \
-                CGO_CXXFLAGS=\"$CGO_CXXFLAGS $MORE_CGO_CXXFLAGS\" \
-                CGO_LDFLAGS=\"$CGO_LDFLAGS $MORE_CGO_LDFLAGS\""
-            echo $BUILD_ENV \
-                go build $TMP_BUILD_ARGS -o \"$TARGET_FILE$EXT\" \"$SOURCE_DIR\"
-            eval $BUILD_ENV \
-                go build $TMP_BUILD_ARGS -o \"$TARGET_FILE$EXT\" \"$SOURCE_DIR\"
-            echo "build $GOOS/$GOARCH success"
+            echo -e "${COLOR_RED}Invalid option: ${1}${COLOR_RESET}"
+            return 1
             ;;
         esac
+    done
+}
+
+function loadedBuildConfig() {
+    if [[ -n "${load_build_config}" ]]; then
+        return 0
+    fi
+    return 1
+}
+
+function loadBuildConfig() {
+    if [[ -f "${BUILD_CONFIG:=$DEFAULT_BUILD_CONFIG}" ]]; then
+        source "$BUILD_CONFIG"
+        load_build_config="true"
     fi
 }
 
-function AutoBuild() {
-    if [ ! "$1" ]; then
-        Build "$GOHOSTPLATFORM" "$BIN_NAME"
-    else
-        local platform
-        for platform in $1; do
-            if [ "$platform" == "all" ]; then
-                if [ "$CURRENT_ALLOWED_PLATFORM" ]; then
-                    AutoBuild "$CURRENT_ALLOWED_PLATFORM"
-                fi
-            elif [[ $platform == *\** ]]; then
-                local var
-                for var in $CURRENT_ALLOWED_PLATFORM; do
-                    if [[ $var == $platform ]]; then
-                        AutoBuild "$var"
-                    fi
-                done
-            elif [[ $platform != */* ]]; then
-                AutoBuild "$platform/*"
-            else
-                Build "$platform"
-            fi
-        done
-    fi
-}
-
-function AddTags() {
-    if [ ! "$1" ]; then
-        return
-    fi
-    if [ ! "$TAGS" ]; then
-        TAGS="$1"
-    else
-        TAGS="$TAGS $1"
-    fi
-}
-
-function AddLDFLAGS() {
-    if [ ! "$1" ]; then
-        return
-    fi
-    if [ ! "$LDFLAGS" ]; then
-        LDFLAGS="$1"
-    else
-        LDFLAGS="$LDFLAGS $1"
-    fi
-}
-
-function AddBuildArgs() {
-    if [ ! "$1" ]; then
-        return
-    fi
-    if [ ! "$BUILD_ARGS" ]; then
-        BUILD_ARGS="$1"
-    else
-        BUILD_ARGS="$BUILD_ARGS $1"
-    fi
-
-}
-
-function InitDep() {
-    SetDefault "VERSION" "dev"
-    VERSION="$(echo "$VERSION" | sed 's/ //g' | sed 's/"//g' | sed 's/\n//g')"
-
-    # Comply with golang version rules
-    function CheckVersionFormat() {
-        if [ "$1" == "dev" ] || [ "$(echo "$1" | grep -oE "^v?[0-9]+\.[0-9]+\.[0-9]+(\-beta.*|\-rc.*|\-alpha.*)?$")" ]; then
-            return
-        else
-            echo "version format error: $1"
-            return 1
-        fi
-    }
-    CheckVersionFormat "$VERSION"
-
-    AddLDFLAGS "-X 'github.com/synctv-org/synctv/internal/version.Version=$VERSION'"
-    if [ ! "$SKIP_INIT_WEB" ]; then
-        SetDefault "WEB_VERSION" "$VERSION"
-    fi
-    AddLDFLAGS "-X 'github.com/synctv-org/synctv/internal/version.WebVersion=$WEB_VERSION'"
-    set +e
-    GIT_COMMIT="$(git log --pretty=format:"%h" -1)"
-    if [ $? -ne 0 ]; then
-        GIT_COMMIT="unknown"
-    fi
-    set -e
-    AddLDFLAGS "-X 'github.com/synctv-org/synctv/internal/version.GitCommit=$GIT_COMMIT'"
-
-    if [ "$SKIP_INIT_WEB" ]; then
-        echo "skip init web"
-    elif [ ! "$WEB_VERSION" ]; then
-        echo "web version not found"
-    else
-        DownloadAndUnzip "https://github.com/synctv-org/synctv-web/releases/download/${WEB_VERSION}/dist.tar.gz" "$SOURCE_DIR/public/dist"
-    fi
-
-    AddTags "jsoniter"
-}
-
-Init
-ParseArgs "$@"
-FixArgs
-InitPlatforms
-CheckAllPlatform "$PLATFORM"
-InitDep
-AutoBuild "$PLATFORM"
+loadBuildConfig
+initHostPlatforms
+parseArgs "$@"
+fixArgs
+initPlatforms
+autoBuild "${platforms}"

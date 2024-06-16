@@ -6,15 +6,17 @@ ARG SKIP_INIT_WEB
 
 ENV SKIP_INIT_WEB=${SKIP_INIT_WEB}
 
+ENV BUILD_CONFIG=script/build.config.sh
+
 WORKDIR /synctv
 
 COPY ./ ./
 
 RUN apk add --no-cache bash curl git go g++
 
-RUN bash script/build.sh -Mv ${VERSION} \
-    -f 'gcc -static' -F 'g++ -static' \
-    -m '-a -v'
+RUN bash script/build.sh --disable-micro --version=${VERSION} \
+    --force-gcc='gcc -static' --force-g++='g++ -static' \
+    --more-go-cmd-args='-a -v'
 
 FROM alpine:latest
 

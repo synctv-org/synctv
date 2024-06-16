@@ -19,7 +19,7 @@ jobs:
           declare -a arr=()
           OIFS="$IFS"
           IFS=$'\n,'
-          for line in $(script/build.sh -t); do
+          for line in $(BUILD_CONFIG=script/build.config.sh bash script/build.sh --show-all-targets); do
             arr+=("$line")
           done
           IFS="$OIFS"
@@ -45,7 +45,7 @@ jobs:
 
       - name: Build
         run: |
-          bash script/build.sh -v dev -p "${{ matrix.target }}" -m '-a -v -x'
+          BUILD_CONFIG=script/build.config.sh bash script/build.sh --version=dev --platforms="${{ matrix.target }}" --more-go-cmd-args='-a -v -x'
 
       - name: Release
         uses: softprops/action-gh-release@v2

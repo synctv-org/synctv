@@ -64,7 +64,7 @@ function printEnvHelp() {
     echo -e "  ${COLOR_LIGHT_CYAN}GH_PROXY${COLOR_RESET}                   - Set the GitHub proxy mirror (e.g., https://mirror.ghproxy.com/)."
 
     if declare -f printDepEnvHelp >/dev/null; then
-        echo -e "${COLOR_LIGHT_GRAY}$(getSeparator)${COLOR_RESET}"
+        echo -e "${COLOR_LIGHT_GRAY}$(printSeparator)${COLOR_RESET}"
         echo -e "${COLOR_LIGHT_ORANGE}Dependency Environment Variables:${COLOR_RESET}"
         printDepEnvHelp
     fi
@@ -94,12 +94,12 @@ function printHelp() {
     echo -e "  ${COLOR_LIGHT_BLUE}--host-g++=<path>${COLOR_RESET}               - Specify the host C++ compiler (default: ${DEFAULT_CXX})."
 
     if declare -f printDepHelp >/dev/null; then
-        echo -e "${COLOR_LIGHT_MAGENTA}$(getSeparator)${COLOR_RESET}"
+        echo -e "${COLOR_LIGHT_MAGENTA}$(printSeparator)${COLOR_RESET}"
         echo -e "${COLOR_LIGHT_MAGENTA}Dependency Options:${COLOR_RESET}"
         printDepHelp
     fi
 
-    echo -e "${COLOR_DARK_GRAY}$(getSeparator)${COLOR_RESET}"
+    echo -e "${COLOR_DARK_GRAY}$(printSeparator)${COLOR_RESET}"
     printBuildConfigHelp
 }
 
@@ -629,13 +629,9 @@ function supportPIE() {
 # Gets a separator line based on the terminal width.
 # Returns:
 #   A string of "-" characters with the length of the terminal width.
-function getSeparator() {
+function printSeparator() {
     local width=$(tput cols 2>/dev/null || echo $DEFAULT_TTY_WIDTH)
-    local separator=""
-    for ((i = 0; i < width; i++)); do
-        separator+="-"
-    done
-    echo $separator
+    printf '%*s\n' "$width" '' | tr ' ' -
 }
 
 # --- Build Functions ---
@@ -658,7 +654,7 @@ function buildTarget() {
         "GOARCH=${goarch}"
     )
 
-    echo -e "${COLOR_LIGHT_GRAY}$(getSeparator)${COLOR_RESET}"
+    echo -e "${COLOR_LIGHT_GRAY}$(printSeparator)${COLOR_RESET}"
 
     buildTargetWithMicro "" "${build_env[@]}"
 

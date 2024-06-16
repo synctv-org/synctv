@@ -18,6 +18,7 @@ readonly DEFAULT_CGO_FLAGS="-O2 -g0 -pipe"
 readonly DEFAULT_CGO_LDFLAGS="-s"
 readonly DEFAULT_LDFLAGS="-s -w"
 readonly DEFAULT_CGO_DEPS_VERSION="v0.4.6"
+readonly DEFAULT_TTY_WIDTH="40"
 
 readonly GOHOSTOS="$(go env GOHOSTOS)"
 readonly GOHOSTARCH="$(go env GOHOSTARCH)"
@@ -576,7 +577,7 @@ function supportPIE() {
 }
 
 function getSeparator() {
-    local width=$(tput cols || 20)
+    local width=$(tput cols 2>/dev/null || echo $DEFAULT_TTY_WIDTH)
     local separator=""
     for ((i = 0; i < width; i++)); do
         separator+="-"

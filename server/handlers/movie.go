@@ -934,7 +934,11 @@ func JoinFlvLive(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(err))
 		return
 	}
-	_ = w.SendPacket()
+	err = w.SendPacket()
+	if err != nil {
+		log.Errorf("join flv live error: %v", err)
+		return
+	}
 }
 
 func JoinHlsLive(ctx *gin.Context) {

@@ -385,8 +385,8 @@ github.com/zijiren233/go-colorable v0.0.0-20230930131441-997304c961cb h1:0DyOxf/
 github.com/zijiren233/go-colorable v0.0.0-20230930131441-997304c961cb/go.mod h1:6TCzjDiQ8+5gWZiwsC3pnA5M0vUy2jV2Y7ciHJh729g=
 github.com/zijiren233/go-uhc v0.2.4 h1:CrdLbnDXcqNaifiVBVbtMYwMGm9h4POwPfpBgKjyAPc=
 github.com/zijiren233/go-uhc v0.2.4/go.mod h1:3c/6Vu2LoUFlyrKWkZgNEGCd04OjbehTIIkzg5KW4EE=
-github.com/zijiren233/livelib v0.3.2 h1:+wTQ4s2j3uN52svutGAAiB/fUoEvSDTNCT9iHbQBXzA=
-github.com/zijiren233/livelib v0.3.2/go.mod h1:vEjPSCaZ9RAen2efc1lmjCoFV/3zpPtjVV5ngS2q/nE=
+github.com/zijiren233/livelib v0.3.3 h1:0hbOK9RJzdduOp2GE4MWi/pqHy7ifxGQeZh4x9zxXGo=
+github.com/zijiren233/livelib v0.3.3/go.mod h1:vEjPSCaZ9RAen2efc1lmjCoFV/3zpPtjVV5ngS2q/nE=
 github.com/zijiren233/stream v0.5.2 h1:K8xPvXtETH7qo9P99xdvi7q0MXALfxb1XBtzpz/Zn0A=
 github.com/zijiren233/stream v0.5.2/go.mod h1:iIrOm3qgIepQFmptD/HDY+YzamSSzQOtPjpVcK7FCOw=
 github.com/zijiren233/yaml-comment v0.2.2 h1:5ghs8huXFVb/kWCi66P+xbXq0GnOE2XVCnhaWd7mTs8=

@@ -13,6 +13,10 @@ function parseDepArgs() {
             web_version="${i#*=}"
             shift
             ;;
+        --web-repo=*)
+            web_repo="${i#*=}"
+            shift
+            ;;
         *)
             return 1
             ;;
@@ -23,12 +27,14 @@ function parseDepArgs() {
 function printDepHelp() {
     echo -e "${COLOR_YELLOW}--version=${COLOR_RESET} set build version (default: dev)"
     echo -e "${COLOR_YELLOW}--web-version=${COLOR_RESET} set web dependency version (default: VERSION)"
+    echo -e "${COLOR_YELLOW}--web-repo=${COLOR_RESET} set web repository (default: $(repoOwner)/synctv-web)"
     echo -e "${COLOR_YELLOW}--skip-init-web${COLOR_RESET}"
 }
 
 function printDepEnvHelp() {
     echo -e "${COLOR_LIGHT_GREEN}VERSION${COLOR_RESET} (default: dev)"
     echo -e "${COLOR_LIGHT_GREEN}WEB_VERSION${COLOR_RESET} set web dependency version (default: VERSION)"
+    echo -e "${COLOR_LIGHT_GREEN}WEB_REPO${COLOR_RESET} set web repository (default: $(repoOwner)/synctv-web)"
     echo -e "${COLOR_LIGHT_GREEN}SKIP_INIT_WEB${COLOR_RESET}"
 }
 
@@ -39,6 +45,10 @@ function initDepPlatforms() {
     fi
 }
 
+function repoOwner() {
+    git config user.name 2>/dev/null || echo "synctv-org"
+}
+
 function initDep() {
     setDefault "version" "dev"
     version="$(echo "$version" | sed 's/ //g' | sed 's/"//g' | sed 's/\n//g')"
@@ -47,6 +57,7 @@ function initDep() {
         return 1
     fi
     setDefault "web_version" "${version}"
+    setDefault "web_repo" "$(repoOwner)/synctv-web"
     setDefault "skip_init_web" ""
 
     echo -e "${COLOR_BLUE}version:${COLOR_RESET} ${COLOR_CYAN}${version}${COLOR_RESET}"
@@ -60,7 +71,7 @@ function initDep() {
     addLDFLAGS "-X 'github.com/synctv-org/synctv/internal/version.GitCommit=${git_commit}'"
 
     if [[ -z "${skip_init_web}" ]] && [[ -n "${web_version}" ]]; then
-        downloadAndUnzip "https://github.com/synctv-org/synctv-web/releases/download/${web_version}/dist.tar.gz" "${source_dir}/public/dist"
+        downloadAndUnzip "https://github.com/${web_repo}/releases/download/${web_version}/dist.tar.gz" "${source_dir}/public/dist"
     fi
 
     addTags "jsoniter"

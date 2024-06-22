@@ -509,17 +509,20 @@ func (r *Room) SetSettings(settings *model.RoomSettings) error {
 	if err != nil {
 		return err
 	}
-	r.Settings = settings
-	if settings.DisableGuest {
-		return r.KickUser(db.GuestUserID)
-	}
-	return nil
+	return r.afterUpdateSettings(settings)
 }
 
 func (r *Room) UpdateSettings(settings map[string]any) error {
 	rs, err := db.UpdateRoomSettings(r.ID, settings)
 	if err != nil {
 		return err
+	}
+	return r.afterUpdateSettings(rs)
+}
+
+func (r *Room) afterUpdateSettings(rs *model.RoomSettings) error {
+	if r.Settings.GuestPermissions != rs.GuestPermissions {
+		r.members.Delete(db.GuestUserID)
 	}
 	r.Settings = rs
 	if rs.DisableGuest {

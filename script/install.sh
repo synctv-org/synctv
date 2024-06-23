@@ -10,8 +10,9 @@ function Help() {
     echo "-h: help"
     echo "-v: install version (default: latest)"
     echo "-p: github proxy (default: https://mirror.ghproxy.com/)"
-    echo "-a: microarchitecture (no default value)"
-    echo "  example: -a v2"
+    echo "-m: micro architecture (no default value)"
+    echo "  example: -m v2"
+    echo "  example: -m 6"
 }
 
 function Init() {
@@ -28,7 +29,7 @@ function Init() {
 }
 
 function ParseArgs() {
-    while getopts "hv:p:" arg; do
+    while getopts "hv:p:m:" arg; do
         case $arg in
         h)
             Help
@@ -40,7 +41,7 @@ function ParseArgs() {
         p)
             GH_PROXY="$OPTARG"
             ;;
-        a)
+        m)
             Microarchitecture="$OPTARG"
             ;;
         ?)

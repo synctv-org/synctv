@@ -143,9 +143,13 @@ function InitDownloadTools() {
 function Download() {
     case "$download_tool" in
     curl)
-        curl -L "$1" -o "$2" --progress-bar
+        status_code=$(curl -L "$1" -o "$2" --progress-bar -w "%{http_code}\n")
         if [ $? -ne 0 ]; then
             echo "download $1 failed"
+            exit 1
+        fi
+        if [ "$status_code" != "200" ]; then
+            echo "download $1 failed, status code: $status_code"
             exit 1
         fi
         ;;

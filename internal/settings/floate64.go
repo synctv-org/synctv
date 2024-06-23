@@ -24,9 +24,9 @@ type Float64Setting interface {
 var _ Float64Setting = (*Float64)(nil)
 
 type Float64 struct {
+	value uint64
 	setting
 	defaultValue          float64
-	value                 uint64
 	validator             func(float64) error
 	beforeInit, beforeSet func(Float64Setting, float64) (float64, error)
 	afterInit, afterSet   func(Float64Setting, float64)

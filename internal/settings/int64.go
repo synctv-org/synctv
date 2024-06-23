@@ -23,9 +23,9 @@ type Int64Setting interface {
 var _ Int64Setting = (*Int64)(nil)
 
 type Int64 struct {
+	value int64
 	setting
 	defaultValue          int64
-	value                 int64
 	validator             func(int64) error
 	beforeInit, beforeSet func(Int64Setting, int64) (int64, error)
 	afterInit, afterSet   func(Int64Setting, int64)

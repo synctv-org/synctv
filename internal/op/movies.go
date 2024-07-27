@@ -2,6 +2,7 @@ package op
 
 import (
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/synctv-org/synctv/internal/db"
@@ -197,7 +198,38 @@ func (m *movies) GetMoviesWithPage(page, pageSize int, parentID string) ([]*mode
 }
 
 // IsParentOf check if parentID is the parent of id
-func (m *movies) IsParentOf(parentID, id string) (bool, error) {
+func (m *movies) IsParentOf(id, parentID string) (bool, error) {
+	if parentID == "" {
+		return id != "", nil
+	}
+	mv, err := m.GetMovieByID(parentID)
+	if err != nil {
+		return false, fmt.Errorf("get parent movie failed: %v", err)
+	}
+	if !mv.IsFolder {
+		return false, nil
+	}
+	return m.isParentOf(id, parentID, true)
+}
+
+func (m *movies) IsParentFolder(id, parentID string) (bool, error) {
+	if parentID == "" {
+		return id != "", nil
+	}
+	mv, err := m.GetMovieByID(parentID)
+	if err != nil {
+		return false, fmt.Errorf("get parent movie failed: %v", err)
+	}
+	firstCheck := true
+	if mv.IsFolder {
+		firstCheck = false
+	} else {
+		parentID = mv.ParentID.String()
+	}
+	return m.isParentOf(id, parentID, firstCheck)
+}
+
+func (m *movies) isParentOf(id, parentID string, firstCheck bool) (bool, error) {
 	mv, err := m.GetMovieByID(id)
 	if err != nil {
 		return false, err
@@ -206,7 +238,7 @@ func (m *movies) IsParentOf(parentID, id string) (bool, error) {
 		return false, nil
 	}
 	if mv.ParentID == model.EmptyNullString(parentID) {
-		return true, nil
+		return !firstCheck, nil
 	}
-	return m.IsParentOf(string(mv.ParentID), id)
+	return m.isParentOf(string(mv.ParentID), parentID, false)
 }

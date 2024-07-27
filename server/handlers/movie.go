@@ -846,12 +846,19 @@ func JoinLive(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(err))
 		return
 	}
-	if m.Movie.MovieBase.RtmpSource && !conf.Conf.Server.Rtmp.Enable {
-		log.Error("join live error: rtmp is not enabled")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("rtmp is not enabled"))
+	if !m.Movie.MovieBase.Live {
+		log.Error("join hls live error: live is not enabled")
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("live is not enabled"))
 		return
-	} else if m.Movie.MovieBase.Live && !settings.LiveProxy.Get() {
-		log.Error("join live error: live proxy is not enabled")
+	}
+	if m.Movie.MovieBase.RtmpSource {
+		if !conf.Conf.Server.Rtmp.Enable {
+			log.Error("join hls live error: rtmp is not enabled")
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("rtmp is not enabled"))
+			return
+		}
+	} else if !settings.LiveProxy.Get() {
+		log.Error("join hls live error: live proxy is not enabled")
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("live proxy is not enabled"))
 		return
 	}
@@ -905,17 +912,19 @@ func JoinFlvLive(ctx *gin.Context) {
 	room := ctx.MustGet("room").(*op.RoomEntry).Value()
 	movieId := strings.TrimSuffix(strings.Trim(ctx.Param("movieId"), "/"), ".flv")
 	m, err := room.GetMovieByID(movieId)
-	if err != nil {
-		log.Errorf("join flv live error: %v", err)
-		ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(err))
+	if !m.Movie.MovieBase.Live {
+		log.Error("join hls live error: live is not enabled")
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("live is not enabled"))
 		return
 	}
-	if m.Movie.MovieBase.RtmpSource && !conf.Conf.Server.Rtmp.Enable {
-		log.Error("join flv live error: rtmp is not enabled")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("rtmp is not enabled"))
-		return
-	} else if m.Movie.MovieBase.Live && !settings.LiveProxy.Get() {
-		log.Error("join flv live error: live proxy is not enabled")
+	if m.Movie.MovieBase.RtmpSource {
+		if !conf.Conf.Server.Rtmp.Enable {
+			log.Error("join hls live error: rtmp is not enabled")
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("rtmp is not enabled"))
+			return
+		}
+	} else if !settings.LiveProxy.Get() {
+		log.Error("join hls live error: live proxy is not enabled")
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("live proxy is not enabled"))
 		return
 	}
@@ -954,11 +963,18 @@ func JoinHlsLive(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(err))
 		return
 	}
-	if m.Movie.MovieBase.RtmpSource && !conf.Conf.Server.Rtmp.Enable {
-		log.Error("join hls live error: rtmp is not enabled")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("rtmp is not enabled"))
+	if !m.Movie.MovieBase.Live {
+		log.Error("join hls live error: live is not enabled")
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("live is not enabled"))
 		return
-	} else if m.Movie.MovieBase.Live && !settings.LiveProxy.Get() {
+	}
+	if m.Movie.MovieBase.RtmpSource {
+		if !conf.Conf.Server.Rtmp.Enable {
+			log.Error("join hls live error: rtmp is not enabled")
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("rtmp is not enabled"))
+			return
+		}
+	} else if !settings.LiveProxy.Get() {
 		log.Error("join hls live error: live proxy is not enabled")
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("live proxy is not enabled"))
 		return
@@ -1004,12 +1020,19 @@ func ServeHlsLive(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(err))
 		return
 	}
-	if m.Movie.MovieBase.RtmpSource && !conf.Conf.Server.Rtmp.Enable {
-		log.Error("serve hls live error: rtmp is not enabled")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("rtmp is not enabled"))
+	if !m.Movie.MovieBase.Live {
+		log.Error("join hls live error: live is not enabled")
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("live is not enabled"))
 		return
-	} else if m.Movie.MovieBase.Live && !settings.LiveProxy.Get() {
-		log.Error("serve hls live error: live proxy is not enabled")
+	}
+	if m.Movie.MovieBase.RtmpSource {
+		if !conf.Conf.Server.Rtmp.Enable {
+			log.Error("join hls live error: rtmp is not enabled")
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("rtmp is not enabled"))
+			return
+		}
+	} else if !settings.LiveProxy.Get() {
+		log.Error("join hls live error: live proxy is not enabled")
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("live proxy is not enabled"))
 		return
 	}

@@ -802,12 +802,12 @@ function expandPlatforms() {
         elif [[ "${platform}" == *\** ]]; then
             local tmp_var=""
             for tmp_var in ${CURRENT_ALLOWED_PLATFORMS//,/ }; do
-                [[ "${tmp_var}" == ${platform} ]] && expanded_platforms="${expanded_platforms} ${tmp_var}"
+                [[ "${tmp_var}" == ${platform} ]] && expanded_platforms="${expanded_platforms},${tmp_var}"
             done
         elif [[ "${platform}" != */* ]]; then
-            expanded_platforms="${expanded_platforms} $(expandPlatforms "${platform}/*")"
+            expanded_platforms="${expanded_platforms},$(expandPlatforms "${platform}/*")"
         else
-            expanded_platforms="${expanded_platforms} ${platform}"
+            expanded_platforms="${expanded_platforms},${platform}"
         fi
     done
     removeDuplicatePlatforms "${expanded_platforms}"
@@ -901,6 +901,11 @@ while [[ $# -gt 0 ]]; do
     --show-all-platforms)
         initPlatforms
         echo "${CURRENT_ALLOWED_PLATFORMS}"
+        exit 0
+        ;;
+    --show-all-platforms=*)
+        initPlatforms
+        echo "$(expandPlatforms "${1#*=}")"
         exit 0
         ;;
     --github-proxy-mirror=*)

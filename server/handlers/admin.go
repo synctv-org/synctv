@@ -371,6 +371,12 @@ func BanUser(ctx *gin.Context) {
 		return
 	}
 
+	if req.ID == user.ID {
+		log.Error("cannot ban self")
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("cannot ban self"))
+		return
+	}
+
 	u, err := op.LoadOrInitUserByID(req.ID)
 	if err != nil {
 		log.WithError(err).Error("load or init user by id error")
@@ -656,23 +662,25 @@ func BanRoom(ctx *gin.Context) {
 		return
 	}
 
-	creator, err := db.GetUserByID(r.CreatorID)
-	if err != nil {
-		log.WithError(err).Error("get user by id error")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
-		return
-	}
+	if r.CreatorID != user.ID {
+		creator, err := db.GetUserByID(r.CreatorID)
+		if err != nil {
+			log.WithError(err).Error("get user by id error")
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+			return
+		}
 
-	if creator.IsRoot() {
-		log.Error("cannot ban root")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("cannot ban root"))
-		return
-	}
+		if creator.IsRoot() {
+			log.Error("cannot ban root")
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("cannot ban root"))
+			return
+		}
 
-	if creator.IsAdmin() && !user.IsRoot() {
-		log.Error("cannot ban admin")
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("cannot ban admin"))
-		return
+		if creator.IsAdmin() && !user.IsRoot() {
+			log.Error("cannot ban admin")
+			ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("cannot ban admin"))
+			return
+		}
 	}
 
 	err = op.SetRoomStatusByID(req.Id, dbModel.RoomStatusBanned)
@@ -761,6 +769,12 @@ func DeleteUser(ctx *gin.Context) {
 		return
 	}
 
+	if u.Value().ID == user.ID {
+		log.Error("cannot delete yourself")
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("cannot delete yourself"))
+		return
+	}
+
 	if u.Value().IsRoot() {
 		log.Error("cannot delete root")
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("cannot delete root"))
@@ -799,24 +813,26 @@ func AdminDeleteRoom(ctx *gin.Context) {
 		return
 	}
 
-	u, err := op.LoadOrInitUserByID(r.CreatorID)
-	if err != nil {
-		log.WithError(err).Error("get user by id error")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
-		return
-	}
-	creator := u.Value()
+	if r.CreatorID != user.ID {
+		u, err := op.LoadOrInitUserByID(r.CreatorID)
+		if err != nil {
+			log.WithError(err).Error("get user by id error")
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+			return
+		}
+		creator := u.Value()
 
-	if creator.IsRoot() {
-		log.Error("cannot delete root's room")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("cannot delete root's room"))
-		return
-	}
+		if creator.IsRoot() {
+			log.Error("cannot delete root's room")
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("cannot delete root's room"))
+			return
+		}
 
-	if creator.IsAdmin() && !user.IsRoot() {
-		log.Error("cannot delete admin's room")
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("cannot delete admin's room"))
-		return
+		if creator.IsAdmin() && !user.IsRoot() {
+			log.Error("cannot delete admin's room")
+			ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("cannot delete admin's room"))
+			return
+		}
 	}
 
 	if err := op.DeleteRoomByID(req.Id); err != nil {
@@ -845,16 +861,18 @@ func AdminUserPassword(ctx *gin.Context) {
 		return
 	}
 
-	if u.Value().IsRoot() {
-		log.Error("cannot change root password")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("cannot change root password"))
-		return
-	}
+	if u.Value().ID != user.ID {
+		if u.Value().IsRoot() {
+			log.Error("cannot change root password")
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("cannot change root password"))
+			return
+		}
 
-	if u.Value().IsAdmin() && !user.IsRoot() {
-		log.Error("cannot change admin password")
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("cannot change admin password"))
-		return
+		if u.Value().IsAdmin() && !user.IsRoot() {
+			log.Error("cannot change admin password")
+			ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("cannot change admin password"))
+			return
+		}
 	}
 
 	if err := u.Value().SetPassword(req.Password); err != nil {
@@ -883,16 +901,18 @@ func AdminUsername(ctx *gin.Context) {
 		return
 	}
 
-	if u.Value().IsRoot() {
-		log.Error("cannot change root username")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("cannot change root username"))
-		return
-	}
+	if u.Value().ID != user.ID {
+		if u.Value().IsRoot() {
+			log.Error("cannot change root username")
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("cannot change root username"))
+			return
+		}
 
-	if u.Value().IsAdmin() && !user.IsRoot() {
-		log.Error("cannot change admin username")
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("cannot change admin username"))
-		return
+		if u.Value().IsAdmin() && !user.IsRoot() {
+			log.Error("cannot change admin username")
+			ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("cannot change admin username"))
+			return
+		}
 	}
 
 	if err := u.Value().SetUsername(req.Username); err != nil {
@@ -921,23 +941,25 @@ func AdminRoomPassword(ctx *gin.Context) {
 		return
 	}
 
-	creator, err := op.LoadOrInitUserByID(r.Value().CreatorID)
-	if err != nil {
-		log.WithError(err).Error("load or init user by id error")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("room creator not found"))
-		return
-	}
+	if r.Value().CreatorID != user.ID {
+		creator, err := op.LoadOrInitUserByID(r.Value().CreatorID)
+		if err != nil {
+			log.WithError(err).Error("load or init user by id error")
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("room creator not found"))
+			return
+		}
 
-	if creator.Value().IsRoot() {
-		log.Error("cannot change root room password")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("cannot change root room password"))
-		return
-	}
+		if creator.Value().IsRoot() {
+			log.Error("cannot change root room password")
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("cannot change root room password"))
+			return
+		}
 
-	if creator.Value().IsAdmin() && !user.IsRoot() {
-		log.Error("cannot change admin room password")
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("cannot change admin room password"))
-		return
+		if creator.Value().IsAdmin() && !user.IsRoot() {
+			log.Error("cannot change admin room password")
+			ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("cannot change admin room password"))
+			return
+		}
 	}
 
 	if err := r.Value().SetPassword(req.Password); err != nil {

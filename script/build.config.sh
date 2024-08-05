@@ -39,15 +39,13 @@ function printDepEnvHelp() {
 }
 
 function initDepPlatforms() {
-    if ! isCGOEnabled; then
-        deleteFromAllowedPlatforms "linux/mips,linux/mips64,linux/mips64le,linux/mipsle,linux/ppc64"
-        deleteFromAllowedPlatforms "windows/386,windows/arm"
-    fi
+    return 0
 }
 
 function initDep() {
     setDefault "VERSION" "dev"
     VERSION="$(echo "$VERSION" | sed 's/ //g' | sed 's/"//g' | sed 's/\n//g')"
+    echo -e "${COLOR_LIGHT_BLUE}Version:${COLOR_RESET} ${COLOR_LIGHT_CYAN}${VERSION}${COLOR_RESET}"
     if [[ "${VERSION}" != "dev" ]] && [[ ! "${VERSION}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-beta.*|-rc.*|-alpha.*)?$ ]]; then
         echo -e "${COLOR_LIGHT_RED}Version format error: ${VERSION}${COLOR_RESET}"
         return 1
@@ -59,8 +57,6 @@ function initDep() {
     setDefault "WEB_REPO" "${repo_owner}/synctv-web"
     setDefault "SKIP_INIT_WEB" ""
 
-    echo -e "${COLOR_LIGHT_BLUE}Version:${COLOR_RESET} ${COLOR_LIGHT_CYAN}${VERSION}${COLOR_RESET}"
-
     addLDFLAGS "-X 'github.com/synctv-org/synctv/internal/version.Version=${VERSION}'"
     setDefault "WEB_VERSION" "${VERSION}"
     addLDFLAGS "-X 'github.com/synctv-org/synctv/internal/version.WebVersion=${WEB_VERSION}'"
@@ -70,6 +66,8 @@ function initDep() {
     addLDFLAGS "-X 'github.com/synctv-org/synctv/internal/version.GitCommit=${git_commit}'"
 
     if [[ -z "${SKIP_INIT_WEB}" ]] && [[ -n "${WEB_VERSION}" ]]; then
+        echo -e "${COLOR_LIGHT_BLUE}Web repository:${COLOR_RESET} ${COLOR_LIGHT_CYAN}${WEB_REPO}${COLOR_RESET}"
+        echo -e "${COLOR_LIGHT_BLUE}Web version:${COLOR_RESET} ${COLOR_LIGHT_CYAN}${WEB_VERSION}${COLOR_RESET}"
         downloadAndUnzip "https://github.com/${WEB_REPO}/releases/download/${WEB_VERSION}/dist.tar.gz" "${source_dir}/public/dist"
     fi
 

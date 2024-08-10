@@ -24,7 +24,8 @@ readonly DEFAULT_CXX="g++"
 readonly DEFAULT_CGO_CROSS_COMPILER_DIR="${DEFAULT_SOURCE_DIR}/cross"
 readonly DEFAULT_CGO_FLAGS="-O2 -g0 -pipe"
 readonly DEFAULT_CGO_LDFLAGS="-s"
-readonly DEFAULT_LDFLAGS="-s -w"
+readonly DEFAULT_LDFLAGS="-s -w -linkmode auto"
+readonly DEFAULT_EXT_LDFLAGS="-static"
 readonly DEFAULT_CGO_DEPS_VERSION="v0.4.6"
 readonly DEFAULT_TTY_WIDTH="40"
 
@@ -86,6 +87,7 @@ function printHelp() {
     echo -e "  ${COLOR_LIGHT_BLUE}--more-go-cmd-args='<args>'${COLOR_RESET}     - Pass additional arguments to the 'go build' command."
     echo -e "  ${COLOR_LIGHT_BLUE}--disable-micro${COLOR_RESET}                - Disable building micro architecture variants."
     echo -e "  ${COLOR_LIGHT_BLUE}--ldflags='<flags>'${COLOR_RESET}            - Set linker flags (default: \"${DEFAULT_LDFLAGS}\")."
+    echo -e "  ${COLOR_LIGHT_BLUE}--ext-ldflags='<flags>'${COLOR_RESET}          - Set external linker flags (default: \"${DEFAULT_EXT_LDFLAGS}\")."
     echo -e "  ${COLOR_LIGHT_BLUE}-p=<platforms>, --platforms=<platforms>${COLOR_RESET} - Specify target platform(s) (default: host platform, supports: all, linux, linux/arm*, ...)."
     echo -e "  ${COLOR_LIGHT_BLUE}--result-dir=<dir>${COLOR_RESET}               - Specify the build result directory (default: ${DEFAULT_RESULT_DIR})."
     echo -e "  ${COLOR_LIGHT_BLUE}--tags='<tags>'${COLOR_RESET}                - Set build tags."
@@ -130,6 +132,10 @@ function addLDFLAGS() {
     [[ -n "${1}" ]] && LDFLAGS="${LDFLAGS} ${1}" || true
 }
 
+function addExtLDFLAGS() {
+    [[ -n "${1}" ]] && EXT_LDFLAGS="${EXT_LDFLAGS} ${1}" || true
+}
+
 # Appends build arguments to the BUILD_ARGS variable.
 # Arguments:
 #   $1: Build arguments to append.
@@ -162,6 +168,7 @@ function fixArgs() {
     setDefault "GH_PROXY" ""
     setDefault "TAGS" ""
     setDefault "LDFLAGS" "${DEFAULT_LDFLAGS}"
+    setDefault "EXT_LDFLAGS" "${DEFAULT_EXT_LDFLAGS}"
     setDefault "BUILD_ARGS" ""
     setDefault "CGO_DEPS_VERSION" "${DEFAULT_CGO_DEPS_VERSION}"
     setDefault "CGO_FLAGS" "${DEFAULT_CGO_FLAGS}"
@@ -774,9 +781,9 @@ function buildTargetWithMicro() {
         key=$(echo "${var}" | cut -d= -f1)
         value=$(echo "${var}" | cut -d= -f2-)
         echo "export ${key}='${value}'"
-    done)\n${COLOR_LIGHT_CYAN}go build -tags \"${TAGS}\" -ldflags \"${LDFLAGS}\" -trimpath ${BUILD_ARGS} ${build_mode} -o \"${target_file}\" \"${source_dir}\"${COLOR_RESET}"
+    done)\n${COLOR_LIGHT_CYAN}go build -buildmode=exe -tags \"${TAGS}\" -ldflags \"${LDFLAGS}${EXT_LDFLAGS:+ -extldflags '$EXT_LDFLAGS'}\" -trimpath ${BUILD_ARGS} ${build_mode} -o \"${target_file}\" \"${source_dir}\"${COLOR_RESET}"
     local start_time=$(date +%s)
-    env "${build_env[@]}" go build -tags "${TAGS}" -ldflags "${LDFLAGS}" -trimpath ${BUILD_ARGS} ${build_mode} -o "${target_file}" "${source_dir}"
+    env "${build_env[@]}" go build -buildmode=exe -tags "${TAGS}" -ldflags "${LDFLAGS}${EXT_LDFLAGS:+ -extldflags '$EXT_LDFLAGS'}" -trimpath ${BUILD_ARGS} ${build_mode} -o "${target_file}" "${source_dir}"
     local end_time=$(date +%s)
     echo -e "${COLOR_LIGHT_GREEN}Build successful: ${goos}/${goarch}${micro:+ ${micro}}  (took $((end_time - start_time))s)${COLOR_RESET}"
 }
@@ -883,6 +890,9 @@ while [[ $# -gt 0 ]]; do
         ;;
     --ldflags=*)
         addLDFLAGS "${1#*=}"
+        ;;
+    --ext-ldflags=*)
+        addExtLDFLAGS "${1#*=}"
         ;;
     -p=* | --platforms=*)
         PLATFORMS="${1#*=}"

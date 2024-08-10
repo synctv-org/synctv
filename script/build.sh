@@ -686,6 +686,8 @@ function buildTarget() {
         buildTargetWithMicro "power8" "${build_env[@]}"
         echo
         buildTargetWithMicro "power9" "${build_env[@]}"
+        echo
+        buildTargetWithMicro "power10" "${build_env[@]}"
         ;;
     "wasm")
         echo

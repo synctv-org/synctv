@@ -257,17 +257,23 @@ function deleteAllowedPlatforms() {
     ALLOWED_PLATFORMS=$(echo "${ALLOWED_PLATFORMS}" | sed "s|${1}$||g" | sed "s|${1},||g")
 }
 
+# Clears the allowed platforms list.
+function clearAllowedPlatforms() {
+    ALLOWED_PLATFORMS=""
+}
+
 # Initializes the platforms based on environment variables and allowed platforms.
 # go tool dist list
 function initPlatforms() {
     setDefault "CGO_ENABLED" "${DEFAULT_CGO_ENABLED}"
 
-    addAllowedPlatforms "linux/386,linux/amd64,linux/arm,linux/arm64,linux/loong64,linux/mips,linux/mips64,linux/mips64le,linux/mipsle,linux/ppc64le,linux/riscv64,linux/s390x"
-    addAllowedPlatforms "darwin/amd64,darwin/arm64"
-    addAllowedPlatforms "windows/386,windows/amd64,windows/arm64"
-    addAllowedPlatforms "freebsd/386,freebsd/amd64,freebsd/arm,freebsd/arm64"
-    addAllowedPlatforms "netbsd/amd64"
-    addAllowedPlatforms "openbsd/amd64,openbsd/arm64"
+    local distList="$(go tool dist list)"
+    addAllowedPlatforms "$(echo "$distList" | grep windows)"
+    addAllowedPlatforms "$(echo "$distList" | grep linux)"
+    addAllowedPlatforms "$(echo "$distList" | grep darwin)"
+    addAllowedPlatforms "$(echo "$distList" | grep netbsd)"
+    addAllowedPlatforms "$(echo "$distList" | grep freebsd)"
+    addAllowedPlatforms "$(echo "$distList" | grep openbsd)"
 
     addAllowedPlatforms "${GOHOSTOS}/${GOHOSTARCH}"
 

@@ -808,7 +808,20 @@ func proxyURL(ctx *gin.Context, u string, headers map[string]string) error {
 	if req.Header.Get("User-Agent") == "" {
 		req.Header.Set("User-Agent", utils.UA)
 	}
-	resp, err := uhc.Do(req)
+	cli := uhc.NewClient()
+	cli.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		req.Header.Del("Referer")
+		for k, v := range headers {
+			req.Header.Set(k, v)
+		}
+		req.Header.Set("Range", ctx.GetHeader("Range"))
+		req.Header.Set("Accept-Encoding", ctx.GetHeader("Accept-Encoding"))
+		if req.Header.Get("User-Agent") == "" {
+			req.Header.Set("User-Agent", utils.UA)
+		}
+		return nil
+	}
+	resp, err := cli.Do(req)
 	if err != nil {
 		return fmt.Errorf("request url error: %w", err)
 	}

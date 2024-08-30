@@ -1235,6 +1235,11 @@ func proxyVendorMovie(ctx *gin.Context, movie *op.Movie) {
 			case "":
 				ctx.Data(http.StatusOK, "audio/mpegurl", data.Ali.M3U8ListFile)
 				return
+			case "raw":
+				err := proxyURL(ctx, data.URL, nil)
+				if err != nil {
+					log.Errorf("proxy vendor movie error: %v", err)
+				}
 			case "subtitle":
 				idS := ctx.Query("id")
 				if idS == "" {
@@ -1472,6 +1477,18 @@ func genVendorMovie(ctx context.Context, user *op.User, opMovie *op.Movie, userA
 		case cache.AlistProviderAli:
 			movie.MovieBase.Url = fmt.Sprintf("/api/movie/proxy/%s/%s?token=%s", movie.RoomID, movie.ID, userToken)
 			movie.MovieBase.Type = "m3u8"
+
+			rawUrl := data.URL
+			if movie.MovieBase.Proxy {
+				rawUrl = fmt.Sprintf("/api/movie/proxy/%s/%s?t=raw&token=%s", movie.RoomID, movie.ID, userToken)
+			}
+			movie.MovieBase.MoreSources = []*dbModel.MoreSource{
+				{
+					Name: "raw",
+					Type: utils.GetUrlExtension(data.URL),
+					Url:  rawUrl,
+				},
+			}
 
 			for i, subt := range data.Subtitles {
 				if movie.MovieBase.Subtitles == nil {

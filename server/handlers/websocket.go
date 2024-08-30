@@ -66,6 +66,13 @@ func NewWSMessageHandler(u *op.User, r *op.Room, l *logrus.Entry) func(c *websoc
 			client.Close()
 			l.Info("ws: disconnected")
 		}()
+		if err := client.Send(&pb.ElementMessage{
+			Type:          pb.ElementMessageType_PEOPLE_CHANGED,
+			PeopleChanged: r.PeopleNum(),
+		}); err != nil {
+			l.Errorf("ws: send people changed error: %v", err)
+			return err
+		}
 		go handleReaderMessage(client, l)
 		return handleWriterMessage(client, l)
 	}

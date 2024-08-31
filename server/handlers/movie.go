@@ -1491,15 +1491,15 @@ func genVendorMovie(ctx context.Context, user *op.User, opMovie *op.Movie, userA
 			movie.MovieBase.Url = fmt.Sprintf("/api/movie/proxy/%s/%s?token=%s", movie.RoomID, movie.ID, userToken)
 			movie.MovieBase.Type = "m3u8"
 
-			rawUrl := data.URL
+			rawStreamUrl := data.URL
 			if movie.MovieBase.Proxy {
-				rawUrl = fmt.Sprintf("/api/movie/proxy/%s/%s?t=raw&token=%s", movie.RoomID, movie.ID, userToken)
+				rawStreamUrl = fmt.Sprintf("/api/movie/proxy/%s/%s?t=raw&token=%s", movie.RoomID, movie.ID, userToken)
 			}
 			movie.MovieBase.MoreSources = []*dbModel.MoreSource{
 				{
 					Name: "raw",
-					Type: utils.GetUrlExtension(data.URL),
-					Url:  rawUrl,
+					Type: utils.GetUrlExtension(movie.MovieBase.VendorInfo.Alist.Path),
+					Url:  rawStreamUrl,
 				},
 			}
 

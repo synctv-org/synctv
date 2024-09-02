@@ -546,16 +546,15 @@ function initDefaultCGODeps() {
         esac
         ;;
     "android")
-        if [[ "${GOHOSTOS}" == "windows" ]] && [[ "${GOHOSTARCH}" != "amd64" ]]; then
-            echo -e "${COLOR_LIGHT_RED}CGO is disabled for android/${goarch}${micro:+"/$micro"}.${COLOR_RESET}"
-            return 1
-        elif [[ "${GOHOSTOS}" == "linux" ]] && [[ "${GOHOSTARCH}" != "amd64" ]]; then
-            echo -e "${COLOR_LIGHT_RED}CGO is disabled for android/${goarch}${micro:+"/$micro"}.${COLOR_RESET}"
-            return 1
-        elif [[ "${GOHOSTOS}" != "darwin" ]]; then
-            echo -e "${COLOR_LIGHT_RED}CGO is disabled for android/${goarch}${micro:+"/$micro"}.${COLOR_RESET}"
-            return 1
-        fi
+        case "${GOHOSTOS}" in
+        "windows" | "linux")
+            [[ "${GOHOSTARCH}" != "amd64" ]] && echo -e "${COLOR_LIGHT_RED}CGO is disabled for android/${goarch}${micro:+"/$micro"}.${COLOR_RESET}" && return 1
+            ;;
+        "darwin") ;;
+        *)
+            echo -e "${COLOR_LIGHT_RED}CGO is disabled for android/${goarch}${micro:+"/$micro"}.${COLOR_RESET}" && return 1
+            ;;
+        esac
         initAndroidNDK "${goarch}" "${micro}"
         ;;
     *)

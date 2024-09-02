@@ -25,9 +25,10 @@ readonly DEFAULT_CGO_CROSS_COMPILER_DIR="${DEFAULT_SOURCE_DIR}/cross"
 readonly DEFAULT_CGO_FLAGS="-O2 -g0 -pipe"
 readonly DEFAULT_CGO_LDFLAGS="-s"
 readonly DEFAULT_LDFLAGS="-s -w -linkmode auto"
-readonly DEFAULT_EXT_LDFLAGS="-static"
-readonly DEFAULT_CGO_DEPS_VERSION="v0.4.6"
+readonly DEFAULT_EXT_LDFLAGS=""
+readonly DEFAULT_CGO_DEPS_VERSION="v0.5.0"
 readonly DEFAULT_TTY_WIDTH="40"
+readonly DEFAULT_NDK_VERSION="r27"
 
 # Go environment variables
 readonly GOHOSTOS="$(go env GOHOSTOS)"
@@ -64,6 +65,7 @@ function printEnvHelp() {
     echo -e "  ${COLOR_LIGHT_CYAN}CGO_FLAGS${COLOR_RESET}                  - Set CGO flags (default: ${DEFAULT_CGO_FLAGS})."
     echo -e "  ${COLOR_LIGHT_CYAN}CGO_LDFLAGS${COLOR_RESET}                 - Set CGO linker flags (default: ${DEFAULT_CGO_LDFLAGS})."
     echo -e "  ${COLOR_LIGHT_CYAN}GH_PROXY${COLOR_RESET}                   - Set the GitHub proxy mirror (e.g., https://mirror.ghproxy.com/)."
+    echo -e "  ${COLOR_LIGHT_CYAN}NDK_VERSION${COLOR_RESET}                - Set the Android NDK version (default: ${DEFAULT_NDK_VERSION})."
 
     if declare -f printDepEnvHelp >/dev/null; then
         echo -e "${COLOR_LIGHT_GRAY}$(printSeparator)${COLOR_RESET}"
@@ -97,6 +99,7 @@ function printHelp() {
     echo -e "  ${COLOR_LIGHT_BLUE}--force-g++=<path>${COLOR_RESET}              - Force the use of a specific C++ compiler."
     echo -e "  ${COLOR_LIGHT_BLUE}--host-gcc=<path>${COLOR_RESET}                - Specify the host C compiler (default: ${DEFAULT_CC})."
     echo -e "  ${COLOR_LIGHT_BLUE}--host-g++=<path>${COLOR_RESET}               - Specify the host C++ compiler (default: ${DEFAULT_CXX})."
+    echo -e "  ${COLOR_LIGHT_BLUE}--ndk-version=<version>${COLOR_RESET}            - Specify the Android NDK version (default: ${DEFAULT_NDK_VERSION})."
 
     if declare -f printDepHelp >/dev/null; then
         echo -e "${COLOR_LIGHT_MAGENTA}$(printSeparator)${COLOR_RESET}"
@@ -173,6 +176,7 @@ function fixArgs() {
     setDefault "CGO_DEPS_VERSION" "${DEFAULT_CGO_DEPS_VERSION}"
     setDefault "CGO_FLAGS" "${DEFAULT_CGO_FLAGS}"
     setDefault "CGO_LDFLAGS" "${DEFAULT_CGO_LDFLAGS}"
+    setDefault "NDK_VERSION" "${DEFAULT_NDK_VERSION}"
 }
 
 # Checks if CGO is enabled.
@@ -215,7 +219,7 @@ function downloadAndUnzip() {
         ;;
     "zip")
         curl -sL "${url}" -o "${file}/tmp.zip"
-        unzip -o "${file}/tmp.zip" -d "${file}" -q
+        unzip -q -o "${file}/tmp.zip" -d "${file}"
         rm -f "${file}/tmp.zip"
         ;;
     *)
@@ -274,6 +278,7 @@ function initPlatforms() {
     addAllowedPlatforms "$(echo "$distList" | grep netbsd)"
     addAllowedPlatforms "$(echo "$distList" | grep freebsd)"
     addAllowedPlatforms "$(echo "$distList" | grep openbsd)"
+    addAllowedPlatforms "$(echo "$distList" | grep android)"
 
     addAllowedPlatforms "${GOHOSTOS}/${GOHOSTARCH}"
 
@@ -367,31 +372,7 @@ function initCGODeps() {
         return 1
     fi
 
-    case "${GOHOSTOS}" in
-    "linux" | "darwin")
-        case "${GOHOSTARCH}" in
-        "amd64" | "arm64" | "arm" | "ppc64le" | "riscv64" | "s390x")
-            initDefaultCGODeps "$@"
-            ;;
-        *)
-            if [[ "${goos}" == "${GOHOSTOS}" ]] && [[ "${goarch}" == "${GOHOSTARCH}" ]]; then
-                initHostCGODeps "$@"
-            else
-                echo -e "${COLOR_LIGHT_YELLOW}CGO is disabled for ${goos}/${goarch}${micro:+"/$micro"}."
-                return 1
-            fi
-            ;;
-        esac
-        ;;
-    *)
-        if [[ "${goos}" == "${GOHOSTOS}" ]] && [[ "${goarch}" == "${GOHOSTARCH}" ]]; then
-            initHostCGODeps "$@"
-        else
-            echo -e "${COLOR_LIGHT_YELLOW}CGO is disabled for ${goos}/${goarch}${micro:+"/$micro"}."
-            return 1
-        fi
-        ;;
-    esac
+    initDefaultCGODeps "$@"
 
     local cc_command cc_options
     read -r cc_command cc_options <<<"${CC}"
@@ -430,6 +411,32 @@ function initDefaultCGODeps() {
 
     case "${goos}" in
     "linux")
+        case "${GOHOSTOS}" in
+        "linux" | "darwin") ;;
+        *)
+            if [[ "${goos}" == "${GOHOSTOS}" ]] && [[ "${goarch}" == "${GOHOSTARCH}" ]]; then
+                initHostCGODeps "$@"
+                return 0
+            else
+                echo -e "${COLOR_LIGHT_YELLOW}CGO is disabled for ${goos}/${goarch}${micro:+"/$micro"}."
+                return 1
+            fi
+            ;;
+        esac
+
+        case "${GOHOSTARCH}" in
+        "amd64" | "arm64" | "arm" | "ppc64le" | "riscv64" | "s390x") ;;
+        *)
+            if [[ "${goos}" == "${GOHOSTOS}" ]] && [[ "${goarch}" == "${GOHOSTARCH}" ]]; then
+                initHostCGODeps "$@"
+                return 0
+            else
+                echo -e "${COLOR_LIGHT_YELLOW}CGO is disabled for ${goos}/${goarch}${micro:+"/$micro"}."
+                return 1
+            fi
+            ;;
+        esac
+
         case "${micro}" in
         "hardfloat")
             micro="hf"
@@ -495,6 +502,32 @@ function initDefaultCGODeps() {
         esac
         ;;
     "windows")
+        case "${GOHOSTOS}" in
+        "linux" | "darwin") ;;
+        *)
+            if [[ "${goos}" == "${GOHOSTOS}" ]] && [[ "${goarch}" == "${GOHOSTARCH}" ]]; then
+                initHostCGODeps "$@"
+                return 0
+            else
+                echo -e "${COLOR_LIGHT_YELLOW}CGO is disabled for ${goos}/${goarch}${micro:+"/$micro"}."
+                return 1
+            fi
+            ;;
+        esac
+
+        case "${GOHOSTARCH}" in
+        "amd64" | "arm64" | "arm" | "ppc64le" | "riscv64" | "s390x") ;;
+        *)
+            if [[ "${goos}" == "${GOHOSTOS}" ]] && [[ "${goarch}" == "${GOHOSTARCH}" ]]; then
+                initHostCGODeps "$@"
+                return 0
+            else
+                echo -e "${COLOR_LIGHT_YELLOW}CGO is disabled for ${goos}/${goarch}${micro:+"/$micro"}."
+                return 1
+            fi
+            ;;
+        esac
+
         case "${goarch}" in
         "386")
             initWindowsCGO "i686"
@@ -511,6 +544,19 @@ function initDefaultCGODeps() {
             fi
             ;;
         esac
+        ;;
+    "android")
+        if [[ "${GOHOSTOS}" == "windows" ]] && [[ "${GOHOSTARCH}" != "amd64" ]]; then
+            echo -e "${COLOR_LIGHT_RED}CGO is disabled for android/${goarch}${micro:+"/$micro"}.${COLOR_RESET}"
+            return 1
+        elif [[ "${GOHOSTOS}" == "linux" ]] && [[ "${GOHOSTARCH}" != "amd64" ]]; then
+            echo -e "${COLOR_LIGHT_RED}CGO is disabled for android/${goarch}${micro:+"/$micro"}.${COLOR_RESET}"
+            return 1
+        elif [[ "${GOHOSTOS}" != "darwin" ]]; then
+            echo -e "${COLOR_LIGHT_RED}CGO is disabled for android/${goarch}${micro:+"/$micro"}.${COLOR_RESET}"
+            return 1
+        fi
+        initAndroidNDK "${goarch}" "${micro}"
         ;;
     *)
         if [[ "${goos}" == "${GOHOSTOS}" ]] && [[ "${goarch}" == "${GOHOSTARCH}" ]]; then
@@ -593,6 +639,57 @@ function initWindowsCGO() {
     CC="${!cc_var} -static --static"
     CXX="${!cxx_var} -static --static"
     return 0
+}
+
+# Initializes CGO dependencies for Android NDK.
+# Arguments:
+#   $1: Target architecture (GOARCH).
+function initAndroidNDK() {
+    local goarch="$1"
+
+    local ndk_dir="${cgo_cross_compiler_dir}/android-ndk-${GOHOSTOS}-${NDK_VERSION}"
+    local clang_base_dir="${ndk_dir}/toolchains/llvm/prebuilt/${GOHOSTOS}-x86_64/bin"
+    local clang_prefix="$(getAndroidClang "${goarch}")"
+    local cc="${clang_base_dir}/${clang_prefix}-clang"
+    local cxx="${clang_base_dir}/${clang_prefix}-clang++"
+
+    if [[ ! -d "${ndk_dir}" ]]; then
+        local ndk_url="https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-${GOHOSTOS}.zip"
+        downloadAndUnzip "${ndk_url}" "${ndk_dir}" "zip"
+        mv "$ndk_dir/android-ndk-${NDK_VERSION}/"* "$ndk_dir"
+        rmdir "$ndk_dir/android-ndk-${NDK_VERSION}"
+    fi
+
+    if [[ ! -x "${cc}" ]] || [[ ! -x "${cxx}" ]]; then
+        echo -e "${COLOR_LIGHT_RED}Android NDK not found or invalid. Please check the NDK_VERSION environment variable.${COLOR_RESET}"
+        return 2
+    fi
+
+    CC="${cc}"
+    CXX="${cxx}"
+}
+
+# Gets the Clang host prefix for Android NDK.
+# Arguments:
+#   $1: Target architecture (GOARCH).
+# Returns:
+#   The Clang host prefix.
+function getAndroidClang() {
+    local API="${API:-24}"
+    case ${1} in
+    arm)
+        echo "armv7a-linux-androideabi${API}"
+        ;;
+    arm64)
+        echo "aarch64-linux-android${API}"
+        ;;
+    386)
+        echo "i686-linux-android${API}"
+        ;;
+    amd64)
+        echo "x86_64-linux-android${API}"
+        ;;
+    esac
 }
 
 # Checks if a platform supports Position Independent Executables (PIE).
@@ -933,6 +1030,9 @@ while [[ $# -gt 0 ]]; do
         ;;
     --host-g++=*)
         HOST_CXX="${1#*=}"
+        ;;
+    --ndk-version=*)
+        NDK_VERSION="${1#*=}"
         ;;
     *)
         if declare -f parseDepArgs >/dev/null && parseDepArgs "$1"; then

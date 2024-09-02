@@ -47,6 +47,7 @@ function initDepPlatforms() {
     addAllowedPlatforms "freebsd/386,freebsd/amd64,freebsd/arm,freebsd/arm64"
     addAllowedPlatforms "netbsd/amd64"
     addAllowedPlatforms "openbsd/amd64,openbsd/arm64"
+    addAllowedPlatforms "android/386,android/amd64,android/arm,android/arm64"
 
     addAllowedPlatforms "${GOHOSTOS}/${GOHOSTARCH}"
 }

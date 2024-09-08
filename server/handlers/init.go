@@ -240,8 +240,6 @@ func initMovie(movie *gin.RouterGroup, needAuthMovie *gin.RouterGroup) {
 
 		needAuthLive.POST("/publishKey", NewPublishKey)
 
-		// needAuthLive.GET("/join/:movieId", JoinLive)
-
 		needAuthLive.GET("/flv/:movieId", JoinFlvLive)
 
 		needAuthLive.GET("/hls/list/:movieId", JoinHlsLive)

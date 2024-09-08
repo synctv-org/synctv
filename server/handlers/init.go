@@ -39,10 +39,6 @@ func Init(e *gin.Engine) {
 
 	needAuthUserApi := api.Group("", middlewares.AuthUserMiddleware)
 
-	needAuthRoomApi := api.Group("", middlewares.AuthRoomMiddleware)
-
-	needAuthRoomWithoutGuestApi := api.Group("", middlewares.AuthRoomWithoutGuestMiddleware)
-
 	{
 		public := api.Group("/public")
 
@@ -60,18 +56,18 @@ func Init(e *gin.Engine) {
 
 	{
 		room := api.Group("/room")
-		needAuthUser := needAuthUserApi.Group("/room")
-		needAuthRoom := needAuthRoomApi.Group("/room")
-		needAuthRoomWithoutGuest := needAuthRoomWithoutGuestApi.Group("/room")
+		needAuthRoom := api.Group("/room/:roomId", middlewares.AuthRoomMiddleware)
+		needAuthUser := api.Group("/room/:roomId", middlewares.AuthUserMiddleware)
+		needAuthRoomWithoutGuest := api.Group("/room/:roomId", middlewares.AuthRoomWithoutGuestMiddleware)
 
 		initRoom(room, needAuthUser, needAuthRoom, needAuthRoomWithoutGuest)
-	}
 
-	{
-		movie := api.Group("/movie")
-		needAuthMovie := needAuthRoomApi.Group("/movie")
+		{
+			movie := room.Group("/movie")
+			needAuthMovie := needAuthRoom.Group("/movie")
 
-		initMovie(movie, needAuthMovie)
+			initMovie(movie, needAuthMovie)
+		}
 	}
 
 	{
@@ -164,8 +160,6 @@ func initAdmin(admin *gin.RouterGroup, root *gin.RouterGroup) {
 }
 
 func initRoom(room *gin.RouterGroup, needAuthUser *gin.RouterGroup, needAuthRoom *gin.RouterGroup, needAuthWithoutGuestRoom *gin.RouterGroup) {
-	room.GET("/ws", NewWebSocketHandler(utils.NewWebSocketServer()))
-
 	room.GET("/check", CheckRoom)
 
 	room.GET("/hot", RoomHotList)
@@ -179,6 +173,8 @@ func initRoom(room *gin.RouterGroup, needAuthUser *gin.RouterGroup, needAuthRoom
 	needAuthUser.POST("/login", LoginRoom)
 
 	needAuthRoom.GET("/me", RoomMe)
+
+	needAuthRoom.GET("/ws", NewWebSocketHandler(utils.NewWebSocketServer()))
 
 	needAuthWithoutGuestRoom.GET("/settings", RoomPiblicSettings)
 
@@ -235,9 +231,9 @@ func initMovie(movie *gin.RouterGroup, needAuthMovie *gin.RouterGroup) {
 
 	needAuthMovie.POST("/clear", ClearMovies)
 
-	needAuthMovie.HEAD("/proxy/:roomId/:movieId", ProxyMovie)
+	needAuthMovie.HEAD("/proxy/:movieId", ProxyMovie)
 
-	needAuthMovie.GET("/proxy/:roomId/:movieId", ProxyMovie)
+	needAuthMovie.GET("/proxy/:movieId", ProxyMovie)
 
 	{
 		needAuthLive := needAuthMovie.Group("/live")
@@ -250,7 +246,7 @@ func initMovie(movie *gin.RouterGroup, needAuthMovie *gin.RouterGroup) {
 
 		needAuthLive.GET("/hls/list/:movieId", JoinHlsLive)
 
-		needAuthLive.GET("/hls/data/:roomId/:movieId/:dataId", ServeHlsLive)
+		needAuthLive.GET("/hls/data/:movieId/:dataId", ServeHlsLive)
 	}
 }
 

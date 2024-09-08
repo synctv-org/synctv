@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -14,8 +13,6 @@ import (
 	dbModel "github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
 	pb "github.com/synctv-org/synctv/proto/message"
-	"github.com/synctv-org/synctv/server/middlewares"
-	"github.com/synctv-org/synctv/server/model"
 	"github.com/synctv-org/synctv/utils"
 	"google.golang.org/protobuf/proto"
 )
@@ -24,23 +21,11 @@ const maxInterval = 10
 
 func NewWebSocketHandler(wss *utils.WebSocket) gin.HandlerFunc {
 	return func(ctx *gin.Context) {
-		token := ctx.GetHeader("Sec-WebSocket-Protocol")
-		userE, roomE, err := middlewares.AuthRoom(token)
-		if err != nil {
-			ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
-			return
-		}
-		user := userE.Value()
-		room := roomE.Value()
-		entry := log.WithFields(log.Fields{
-			"rid": room.ID,
-			"rnm": room.Name,
-			"uid": user.ID,
-			"unm": user.Username,
-			"uro": user.Role.String(),
-		})
-
-		_ = wss.Server(ctx.Writer, ctx.Request, []string{token}, NewWSMessageHandler(user, room, entry))
+		token := ctx.MustGet("token").(string)
+		room := ctx.MustGet("room").(*op.RoomEntry).Value()
+		user := ctx.MustGet("user").(*op.UserEntry).Value()
+		log := ctx.MustGet("log").(*logrus.Entry)
+		_ = wss.Server(ctx.Writer, ctx.Request, []string{token}, NewWSMessageHandler(user, room, log))
 	}
 }
 

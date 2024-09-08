@@ -11,8 +11,6 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/internal/conf"
-	"github.com/synctv-org/synctv/internal/db"
-	dbModel "github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/server/model"
 	"github.com/zijiren233/gencontainer/synccache"
@@ -30,26 +28,6 @@ type AuthClaims struct {
 	jwt.RegisteredClaims
 }
 
-type AuthRoomClaims struct {
-	AuthClaims
-	RoomId      string `json:"r"`
-	RoomVersion uint32 `json:"rv"`
-}
-
-func authRoom(Authorization string) (*AuthRoomClaims, error) {
-	t, err := jwt.ParseWithClaims(strings.TrimPrefix(Authorization, `Bearer `), &AuthRoomClaims{}, func(token *jwt.Token) (any, error) {
-		return stream.StringToBytes(conf.Conf.Jwt.Secret), nil
-	})
-	if err != nil {
-		return nil, ErrAuthFailed
-	}
-	claims, ok := t.Claims.(*AuthRoomClaims)
-	if !ok || !t.Valid {
-		return nil, ErrAuthFailed
-	}
-	return claims, nil
-}
-
 func authUser(Authorization string) (*AuthClaims, error) {
 	t, err := jwt.ParseWithClaims(strings.TrimPrefix(Authorization, `Bearer `), &AuthClaims{}, func(token *jwt.Token) (any, error) {
 		return stream.StringToBytes(conf.Conf.Jwt.Secret), nil
@@ -64,14 +42,14 @@ func authUser(Authorization string) (*AuthClaims, error) {
 	return claims, nil
 }
 
-func AuthRoom(Authorization string) (*op.UserEntry, *op.RoomEntry, error) {
-	claims, err := authRoom(Authorization)
-	if err != nil {
-		return nil, nil, err
+func AuthRoom(Authorization, roomId string) (*op.UserEntry, *op.RoomEntry, error) {
+	if len(roomId) != 32 {
+		return nil, nil, ErrAuthFailed
 	}
 
-	if len(claims.RoomId) != 32 {
-		return nil, nil, ErrAuthFailed
+	claims, err := authUser(Authorization)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	if len(claims.UserId) != 32 {
@@ -88,17 +66,31 @@ func AuthRoom(Authorization string) (*op.UserEntry, *op.RoomEntry, error) {
 		return nil, nil, ErrAuthExpired
 	}
 
-	roomE, err := op.LoadOrInitRoomByID(claims.RoomId)
+	if user.IsBanned() {
+		return nil, nil, fmt.Errorf("user is banned")
+	}
+	if user.IsPending() {
+		return nil, nil, fmt.Errorf("user is pending, need admin to approve")
+	}
+
+	roomE, err := op.LoadOrInitRoomByID(roomId)
 	if err != nil {
 		return nil, nil, err
 	}
 	room := roomE.Value()
 
-	if !room.CheckVersion(claims.RoomVersion) {
-		return nil, nil, ErrAuthExpired
+	if !room.NeedPassword() && room.IsGuest(user.ID) {
+		return nil, nil, fmt.Errorf("guests are not allowed to join rooms that require a password")
 	}
 
-	rus, err := room.LoadOrCreateMemberStatus(user.ID)
+	if room.IsBanned() {
+		return nil, nil, fmt.Errorf("room is banned")
+	}
+	if room.IsPending() {
+		return nil, nil, fmt.Errorf("room is pending, need admin to approve")
+	}
+
+	rus, err := room.LoadMemberStatus(user.ID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -136,6 +128,13 @@ func AuthUser(Authorization string) (*op.UserEntry, error) {
 		return nil, ErrAuthExpired
 	}
 
+	if user.IsBanned() {
+		return nil, errors.New("user is banned")
+	}
+	if user.IsPending() {
+		return nil, errors.New("user is pending, need admin to approve")
+	}
+
 	return userE, nil
 }
 
@@ -164,58 +163,6 @@ func NewAuthUserToken(user *op.User) (string, error) {
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(stream.StringToBytes(conf.Conf.Jwt.Secret))
 }
 
-func NewAuthRoomToken(user *op.User, room *op.Room) (string, error) {
-	if user.IsBanned() {
-		return "", errors.New("user banned")
-	}
-	if user.IsPending() {
-		return "", errors.New("user is pending, need admin to approve")
-	}
-
-	if room.IsBanned() {
-		return "", errors.New("room banned")
-	}
-	if room.IsPending() {
-		return "", errors.New("room is pending, need admin to approve")
-	}
-
-	member, err := room.LoadOrCreateRoomMember(user.ID)
-	if err != nil {
-		if errors.Is(err, db.ErrNotFound("")) {
-			return "", fmt.Errorf("this room was disabled join new user")
-		}
-		return "", fmt.Errorf("load room member failed: %w", err)
-	}
-	switch member.Status {
-	case dbModel.RoomMemberStatusBanned:
-		return "", fmt.Errorf("user is banned")
-	case dbModel.RoomMemberStatusPending:
-		return "", fmt.Errorf("user is pending, need admin to approve")
-	default:
-		if member.Status.IsNotActive() {
-			return "", fmt.Errorf("user is not active")
-		}
-	}
-
-	t, err := time.ParseDuration(conf.Conf.Jwt.Expire)
-	if err != nil {
-		return "", fmt.Errorf("parse jwt expire failed: %w", err)
-	}
-	claims := &AuthRoomClaims{
-		AuthClaims: AuthClaims{
-			UserId:      user.ID,
-			UserVersion: user.Version(),
-			RegisteredClaims: jwt.RegisteredClaims{
-				NotBefore: jwt.NewNumericDate(time.Now()),
-				ExpiresAt: jwt.NewNumericDate(time.Now().Add(t)),
-			},
-		},
-		RoomId:      room.ID,
-		RoomVersion: room.Version(),
-	}
-	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(stream.StringToBytes(conf.Conf.Jwt.Secret))
-}
-
 func AuthUserMiddleware(ctx *gin.Context) {
 	token, err := GetAuthorizationTokenFromContext(ctx)
 	if err != nil {
@@ -228,14 +175,6 @@ func AuthUserMiddleware(ctx *gin.Context) {
 		return
 	}
 	user := userE.Value()
-	if user.IsBanned() {
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("user banned"))
-		return
-	}
-	if user.IsPending() {
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("user is pending, need admin to approve"))
-		return
-	}
 
 	ctx.Set("user", userE)
 	log := ctx.MustGet("log").(*logrus.Entry)
@@ -253,31 +192,18 @@ func AuthRoomMiddleware(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
 		return
 	}
-	userE, roomE, err := AuthRoom(token)
+	roomId, err := GetRoomIdFromContext(ctx)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
 		return
 	}
-
+	userE, roomE, err := AuthRoom(token, roomId)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
+		return
+	}
 	user := userE.Value()
-	if user.IsBanned() {
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("user banned"))
-		return
-	}
-	if user.IsPending() {
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("user is pending, need admin to approve"))
-		return
-	}
-
 	room := roomE.Value()
-	if room.IsBanned() {
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("room banned"))
-		return
-	}
-	if room.IsPending() {
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("room is pending, need admin to approve"))
-		return
-	}
 
 	ctx.Set("user", userE)
 	ctx.Set("room", roomE)
@@ -361,16 +287,37 @@ func AuthRootMiddleware(ctx *gin.Context) {
 	}
 }
 
-func GetAuthorizationTokenFromContext(ctx *gin.Context) (string, error) {
-	Authorization := ctx.GetHeader("Authorization")
+func GetAuthorizationTokenFromContext(ctx *gin.Context) (Authorization string, err error) {
+	Authorization = ctx.GetHeader("Authorization")
+	defer func() {
+		if err != nil && Authorization != "" {
+			ctx.Set("token", Authorization)
+		}
+	}()
 	if Authorization != "" {
-		ctx.Set("token", Authorization)
 		return Authorization, nil
+	}
+	if ctx.IsWebsocket() {
+		Authorization = ctx.GetHeader("Sec-WebSocket-Protocol")
+		if Authorization != "" {
+			return Authorization, nil
+		}
 	}
 	Authorization = ctx.Query("token")
 	if Authorization != "" {
-		ctx.Set("token", Authorization)
 		return Authorization, nil
 	}
 	return "", errors.New("token is empty")
+}
+
+func GetRoomIdFromContext(ctx *gin.Context) (string, error) {
+	roomID := ctx.Param("roomId")
+	if len(roomID) == 32 {
+		return roomID, nil
+	}
+	roomID = ctx.Query("roomId")
+	if len(roomID) == 32 {
+		return roomID, nil
+	}
+	return "", errors.New("room id length is not 32")
 }

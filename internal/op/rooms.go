@@ -3,7 +3,6 @@ package op
 import (
 	"errors"
 	"fmt"
-	"hash/crc32"
 	"time"
 
 	"github.com/synctv-org/synctv/internal/db"
@@ -65,7 +64,6 @@ func LoadOrInitRoom(room *model.Room) (*RoomEntry, error) {
 
 	i, _ := roomCache.LoadOrStore(room.ID, &Room{
 		Room:    *room,
-		version: crc32.ChecksumIEEE(room.HashedPassword),
 		current: newCurrent(),
 		movies:  &movies{roomID: room.ID},
 	}, time.Duration(settings.RoomTTL.Get())*time.Hour)

@@ -3,8 +3,6 @@ package op
 import (
 	"errors"
 	"fmt"
-	"hash/crc32"
-	"sync/atomic"
 
 	"github.com/gorilla/websocket"
 	"github.com/sirupsen/logrus"
@@ -20,7 +18,6 @@ import (
 
 type Room struct {
 	model.Room
-	version  uint32
 	current  *current
 	initOnce utils.Once
 	hub      *Hub
@@ -71,14 +68,6 @@ func (r *Room) close() {
 		r.hub.Close()
 		r.movies.Close()
 	}
-}
-
-func (r *Room) Version() uint32 {
-	return atomic.LoadUint32(&r.version)
-}
-
-func (r *Room) CheckVersion(version uint32) bool {
-	return atomic.LoadUint32(&r.version) == version
 }
 
 func (r *Room) UpdateMovie(movieId string, movie *model.MovieBase) error {
@@ -313,7 +302,6 @@ func (r *Room) SetPassword(password string) error {
 		if err != nil {
 			return err
 		}
-		atomic.StoreUint32(&r.version, crc32.ChecksumIEEE(hashedPassword))
 	}
 	r.HashedPassword = hashedPassword
 	return db.SetRoomHashedPassword(r.ID, hashedPassword)

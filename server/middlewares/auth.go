@@ -12,6 +12,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/internal/conf"
 	"github.com/synctv-org/synctv/internal/op"
+	"github.com/synctv-org/synctv/internal/settings"
 	"github.com/synctv-org/synctv/server/model"
 	"github.com/zijiren233/gencontainer/synccache"
 	"github.com/zijiren233/stream"
@@ -47,31 +48,49 @@ func AuthRoom(Authorization, roomId string) (*op.UserEntry, *op.RoomEntry, error
 		return nil, nil, ErrAuthFailed
 	}
 
-	claims, err := authUser(Authorization)
-	if err != nil {
-		return nil, nil, err
-	}
+	var (
+		userE *op.UserEntry
+		err   error
+	)
+	if Authorization != "" {
+		claims, err := authUser(Authorization)
+		if err != nil {
+			return nil, nil, err
+		}
 
-	if len(claims.UserId) != 32 {
-		return nil, nil, ErrAuthFailed
-	}
+		if len(claims.UserId) != 32 {
+			return nil, nil, ErrAuthFailed
+		}
 
-	userE, err := op.LoadOrInitUserByID(claims.UserId)
-	if err != nil {
-		return nil, nil, err
+		userE, err = op.LoadOrInitUserByID(claims.UserId)
+		if err != nil {
+			return nil, nil, err
+		}
+		user := userE.Value()
+
+		if user.IsGuest() {
+			return nil, nil, fmt.Errorf("guests are not allowed to join rooms by token")
+		}
+
+		if !user.CheckVersion(claims.UserVersion) {
+			return nil, nil, ErrAuthExpired
+		}
+		if user.IsBanned() {
+			return nil, nil, fmt.Errorf("user is banned")
+		}
+		if user.IsPending() {
+			return nil, nil, fmt.Errorf("user is pending, need admin to approve")
+		}
+	} else {
+		if !settings.EnableGuest.Get() {
+			return nil, nil, fmt.Errorf("guests is disabled")
+		}
+		userE, err = op.LoadOrInitGuestUser()
+		if err != nil {
+			return nil, nil, err
+		}
 	}
 	user := userE.Value()
-
-	if !user.CheckVersion(claims.UserVersion) {
-		return nil, nil, ErrAuthExpired
-	}
-
-	if user.IsBanned() {
-		return nil, nil, fmt.Errorf("user is banned")
-	}
-	if user.IsPending() {
-		return nil, nil, fmt.Errorf("user is pending, need admin to approve")
-	}
 
 	roomE, err := op.LoadOrInitRoomByID(roomId)
 	if err != nil {
@@ -79,8 +98,13 @@ func AuthRoom(Authorization, roomId string) (*op.UserEntry, *op.RoomEntry, error
 	}
 	room := roomE.Value()
 
-	if !room.NeedPassword() && room.IsGuest(user.ID) {
-		return nil, nil, fmt.Errorf("guests are not allowed to join rooms that require a password")
+	if room.IsGuest(user.ID) {
+		if room.Settings.DisableGuest {
+			return nil, nil, fmt.Errorf("guests are not allowed to join rooms")
+		}
+		if !room.NeedPassword() {
+			return nil, nil, fmt.Errorf("guests are not allowed to join rooms that require a password")
+		}
 	}
 
 	if room.IsBanned() {
@@ -164,9 +188,9 @@ func NewAuthUserToken(user *op.User) (string, error) {
 }
 
 func AuthUserMiddleware(ctx *gin.Context) {
-	token, err := GetAuthorizationTokenFromContext(ctx)
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
+	token := GetAuthorizationTokenFromContext(ctx)
+	if token == "" {
+		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorStringResp("token is empty"))
 		return
 	}
 	userE, err := AuthUser(token)
@@ -187,17 +211,12 @@ func AuthUserMiddleware(ctx *gin.Context) {
 }
 
 func AuthRoomMiddleware(ctx *gin.Context) {
-	token, err := GetAuthorizationTokenFromContext(ctx)
-	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
-		return
-	}
 	roomId, err := GetRoomIdFromContext(ctx)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
 		return
 	}
-	userE, roomE, err := AuthRoom(token, roomId)
+	userE, roomE, err := AuthRoom(GetAuthorizationTokenFromContext(ctx), roomId)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
 		return
@@ -287,27 +306,25 @@ func AuthRootMiddleware(ctx *gin.Context) {
 	}
 }
 
-func GetAuthorizationTokenFromContext(ctx *gin.Context) (Authorization string, err error) {
+func GetAuthorizationTokenFromContext(ctx *gin.Context) (Authorization string) {
 	Authorization = ctx.GetHeader("Authorization")
 	defer func() {
-		if err != nil && Authorization != "" {
-			ctx.Set("token", Authorization)
-		}
+		ctx.Set("token", Authorization)
 	}()
 	if Authorization != "" {
-		return Authorization, nil
+		return Authorization
 	}
 	if ctx.IsWebsocket() {
 		Authorization = ctx.GetHeader("Sec-WebSocket-Protocol")
 		if Authorization != "" {
-			return Authorization, nil
+			return Authorization
 		}
 	}
 	Authorization = ctx.Query("token")
 	if Authorization != "" {
-		return Authorization, nil
+		return Authorization
 	}
-	return "", errors.New("token is empty")
+	return ""
 }
 
 func GetRoomIdFromContext(ctx *gin.Context) (string, error) {

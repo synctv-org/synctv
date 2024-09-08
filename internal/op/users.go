@@ -175,3 +175,7 @@ func GetUserName(userID string) string {
 	}
 	return u.Value().Username
 }
+
+func LoadOrInitGuestUser() (*UserEntry, error) {
+	return LoadOrInitUserByID(db.GuestUserID)
+}

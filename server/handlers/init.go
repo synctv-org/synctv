@@ -56,8 +56,8 @@ func Init(e *gin.Engine) {
 
 	{
 		room := api.Group("/room")
+		needAuthUser := api.Group("/room", middlewares.AuthUserMiddleware)
 		needAuthRoom := api.Group("/room/:roomId", middlewares.AuthRoomMiddleware)
-		needAuthUser := api.Group("/room/:roomId", middlewares.AuthUserMiddleware)
 		needAuthRoomWithoutGuest := api.Group("/room/:roomId", middlewares.AuthRoomWithoutGuestMiddleware)
 
 		initRoom(room, needAuthUser, needAuthRoom, needAuthRoomWithoutGuest)

@@ -540,12 +540,18 @@ func (r *Room) ResetMemberPermissions(userID string) error {
 	return r.SetMemberPermissions(userID, r.Settings.UserDefaultPermissions)
 }
 
+func (r *Room) SetGuestPermissions(permissions model.RoomMemberPermission) error {
+	return r.UpdateSettings(map[string]any{
+		"guest_permissions": permissions,
+	})
+}
+
 func (r *Room) SetMemberPermissions(userID string, permissions model.RoomMemberPermission) error {
 	if r.IsCreator(userID) {
 		return errors.New("you are creator, cannot set permissions")
 	}
 	if r.IsGuest(userID) {
-		return errors.New("please set the permissions for the guest user in the room settings.")
+		return r.SetGuestPermissions(permissions)
 	}
 	defer r.members.Delete(userID)
 	return db.SetMemberPermissions(r.ID, userID, permissions)
@@ -553,7 +559,7 @@ func (r *Room) SetMemberPermissions(userID string, permissions model.RoomMemberP
 
 func (r *Room) AddMemberPermissions(userID string, permissions model.RoomMemberPermission) error {
 	if r.IsGuest(userID) {
-		return errors.New("please set the permissions for the guest user in the room settings.")
+		return r.SetGuestPermissions(r.Settings.GuestPermissions.Add(permissions))
 	}
 	if r.IsAdmin(userID) {
 		return errors.New("cannot add permissions to admin")
@@ -564,7 +570,7 @@ func (r *Room) AddMemberPermissions(userID string, permissions model.RoomMemberP
 
 func (r *Room) RemoveMemberPermissions(userID string, permissions model.RoomMemberPermission) error {
 	if r.IsGuest(userID) {
-		return errors.New("please set the permissions for the guest user in the room settings.")
+		return r.SetGuestPermissions(r.Settings.GuestPermissions.Remove(permissions))
 	}
 	if r.IsAdmin(userID) {
 		return errors.New("cannot remove permissions from admin")

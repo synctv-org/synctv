@@ -313,6 +313,10 @@ func AdminGetRoomMembers(ctx *gin.Context) {
 func genRoomMemberListResp(us []*dbModel.User, room *op.Room) []*model.RoomMembersResp {
 	resp := make([]*model.RoomMembersResp, len(us))
 	for i, v := range us {
+		permissions := v.RoomMembers[0].Permissions
+		if room.IsGuest(v.ID) {
+			permissions = room.Settings.GuestPermissions
+		}
 		resp[i] = &model.RoomMembersResp{
 			UserID:           v.ID,
 			Username:         v.Username,
@@ -321,7 +325,7 @@ func genRoomMemberListResp(us []*dbModel.User, room *op.Room) []*model.RoomMembe
 			Role:             v.RoomMembers[0].Role,
 			Status:           v.RoomMembers[0].Status,
 			RoomID:           v.RoomMembers[0].RoomID,
-			Permissions:      v.RoomMembers[0].Permissions,
+			Permissions:      permissions,
 			AdminPermissions: v.RoomMembers[0].AdminPermissions,
 		}
 	}

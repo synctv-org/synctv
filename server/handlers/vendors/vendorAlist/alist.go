@@ -39,6 +39,10 @@ func NewAlistVendorService(room *op.Room, movie *op.Movie) (*alistVendorService,
 	}, nil
 }
 
+func (s *alistVendorService) Client() alist.AlistHTTPServer {
+	return vendor.LoadAlistClient(s.movie.VendorInfo.Backend)
+}
+
 func (s *alistVendorService) ListDynamicMovie(ctx context.Context, reqUser *op.User, subPath string, page, max int) (*model.MoviesResp, error) {
 	if reqUser.ID != s.movie.CreatorID {
 		return nil, fmt.Errorf("list vendor dynamic folder error: %w", dbModel.ErrNoPermission)
@@ -67,8 +71,7 @@ func (s *alistVendorService) ListDynamicMovie(ctx context.Context, reqUser *op.U
 		}
 		return nil, err
 	}
-	var cli = vendor.LoadAlistClient(s.movie.VendorInfo.Backend)
-	data, err := cli.FsList(ctx, &alist.FsListReq{
+	data, err := s.Client().FsList(ctx, &alist.FsListReq{
 		Token:    aucd.Token,
 		Password: s.movie.VendorInfo.Alist.Password,
 		Path:     truePath,
@@ -261,7 +264,6 @@ func (s *alistVendorService) GenMovieInfo(ctx context.Context, user *op.User, us
 }
 
 func (s *alistVendorService) GenProxyMovieInfo(ctx context.Context, user *op.User, userAgent, userToken string) (*dbModel.Movie, error) {
-
 	movie := s.movie.Clone()
 	var err error
 

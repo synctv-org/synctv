@@ -13,9 +13,11 @@ import (
 	"github.com/synctv-org/synctv/internal/cache"
 	dbModel "github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
+	"github.com/synctv-org/synctv/internal/vendor"
 	"github.com/synctv-org/synctv/server/model"
 	"github.com/synctv-org/synctv/utils"
 	"github.com/synctv-org/synctv/utils/proxy"
+	"github.com/synctv-org/vendors/api/bilibili"
 	"github.com/zijiren233/stream"
 	"golang.org/x/exp/maps"
 )
@@ -33,6 +35,10 @@ func NewBilibiliVendorService(room *op.Room, movie *op.Movie) (*bilibiliVendorSe
 		room:  room,
 		movie: movie,
 	}, nil
+}
+
+func (s *bilibiliVendorService) Client() bilibili.BilibiliHTTPServer {
+	return vendor.LoadBilibiliClient(s.movie.VendorInfo.Backend)
 }
 
 func (s *bilibiliVendorService) ListDynamicMovie(ctx context.Context, reqUser *op.User, subPath string, page, max int) (*model.MoviesResp, error) {

@@ -2,9 +2,7 @@ name: build
 
 on:
   push:
-    branches: ["main"]
   pull_request:
-    branches: ["main"]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -52,4 +50,8 @@ jobs:
 
       - name: Build
         run: |
-          BUILD_CONFIG=script/build.config.sh bash script/build.sh --skip-init-web --platforms="${{ matrix.target }}" --more-go-cmd-args='-a -v -x'
+          sudo BUILD_CONFIG=script/build.config.sh bash \
+            script/build.sh \
+            --skip-init-web \
+            --platforms="${{ matrix.target }}" \
+            --more-go-cmd-args='-a -v -x'

@@ -206,8 +206,8 @@ function downloadAndUnzip() {
     local file="$2"
     local type="${3:-$(echo "${url}" | sed 's/.*\.//g')}"
 
-    mkdir -p "${file}"
-    file="$(cd "${file}" && pwd)"
+    mkdir -p "${file}" || return $?
+    file="$(cd "${file}" && pwd)" || return $?
     echo -e "${COLOR_LIGHT_BLUE}Downloading ${COLOR_LIGHT_CYAN}\"${url}\"${COLOR_LIGHT_BLUE} to ${COLOR_LIGHT_CYAN}\"${file}\"${COLOR_RESET}"
     rm -rf "${file}"/*
 
@@ -614,8 +614,9 @@ function initOsxCGO() {
                     cxx="/usr/local/osxcross/bin/oa64-clang++"
                     EXTRA_PATH="/usr/local/osxcross/bin"
                 else
-                    downloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/osxcross/releases/download/v0.1.1/osxcross-14-5-linux-amd64-gnu-ubuntu-18.04.tar.gz" \
-                        "/usr/local/osxcross"
+                    local ubuntu_version=$(lsb_release -rs 2>/dev/null || echo "18.04")
+                    downloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/osxcross/releases/download/v0.1.1/osxcross-14-5-linux-amd64-gnu-ubuntu-${ubuntu_version}.tar.gz" \
+                        "/usr/local/osxcross" || return 2
                     cc="/usr/local/osxcross/bin/oa64-clang"
                     cxx="/usr/local/osxcross/bin/oa64-clang++"
                     EXTRA_PATH="/usr/local/osxcross/bin"
@@ -666,7 +667,7 @@ function initLinuxCGO() {
             cxx="${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-linux-musl${abi}${micro}-g++"
         else
             downloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/${cross_compiler_name}-${unamespacer}.tgz" \
-                "${cgo_cross_compiler_dir}/${cross_compiler_name}"
+                "${cgo_cross_compiler_dir}/${cross_compiler_name}" || return 2
             cc="${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-linux-musl${abi}${micro}-gcc"
             cxx="${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-linux-musl${abi}${micro}-g++"
         fi
@@ -701,7 +702,7 @@ function initWindowsCGO() {
             cxx="${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-w64-mingw32-g++"
         else
             downloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/${cross_compiler_name}-${unamespacer}.tgz" \
-                "${cgo_cross_compiler_dir}/${cross_compiler_name}"
+                "${cgo_cross_compiler_dir}/${cross_compiler_name}" || return 2
             cc="${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-w64-mingw32-gcc"
             cxx="${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-w64-mingw32-g++"
         fi
@@ -728,9 +729,9 @@ function initAndroidNDK() {
 
     if [[ ! -d "${ndk_dir}" ]]; then
         local ndk_url="https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-${GOHOSTOS}.zip"
-        downloadAndUnzip "${ndk_url}" "${ndk_dir}" "zip"
+        downloadAndUnzip "${ndk_url}" "${ndk_dir}" "zip" || return 2
         mv "$ndk_dir/android-ndk-${NDK_VERSION}/"* "$ndk_dir"
-        rmdir "$ndk_dir/android-ndk-${NDK_VERSION}"
+        rmdir "$ndk_dir/android-ndk-${NDK_VERSION}" || return 2
     fi
 
     if [[ ! -x "${cc}" ]] || [[ ! -x "${cxx}" ]]; then

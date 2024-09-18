@@ -60,7 +60,7 @@ function printEnvHelp() {
     echo -e "  ${COLOR_LIGHT_CYAN}BIN_NAME${COLOR_RESET}                  - Set the binary name (default: source directory basename)."
     echo -e "  ${COLOR_LIGHT_CYAN}BIN_NAME_NO_SUFFIX${COLOR_RESET}        - Do not append the architecture suffix to the binary name."
     echo -e "  ${COLOR_LIGHT_CYAN}PLATFORM${COLOR_RESET}                  - Set the target platform(s) (default: host platform, supports: all, linux, linux/arm*, ...)."
-    echo -e "  ${COLOR_LIGHT_CYAN}DISABLE_MICRO${COLOR_RESET}              - Disable building micro variants."
+    echo -e "  ${COLOR_LIGHT_CYAN}ENABLE_MICRO${COLOR_RESET}              - Enable building micro variants."
     echo -e "  ${COLOR_LIGHT_CYAN}CGO_ENABLED${COLOR_RESET}                - Enable or disable CGO (default: ${DEFAULT_CGO_ENABLED})."
     echo -e "  ${COLOR_LIGHT_CYAN}FORCE_CGO${COLOR_RESET}                   - Force the use of CGO (default: ${DEFAULT_FORCE_CGO})."
     echo -e "  ${COLOR_LIGHT_CYAN}HOST_CC${COLOR_RESET}                   - Set the host C compiler (default: ${DEFAULT_CC})."
@@ -94,7 +94,7 @@ function printHelp() {
     echo -e "  ${COLOR_LIGHT_BLUE}--bin-name=<name>${COLOR_RESET}               - Specify the binary name (default: source directory basename)."
     echo -e "  ${COLOR_LIGHT_BLUE}--bin-name-no-suffix${COLOR_RESET}            - Do not append the architecture suffix to the binary name."
     echo -e "  ${COLOR_LIGHT_BLUE}--more-go-cmd-args='<args>'${COLOR_RESET}     - Pass additional arguments to the 'go build' command."
-    echo -e "  ${COLOR_LIGHT_BLUE}--disable-micro${COLOR_RESET}                - Disable building micro architecture variants."
+    echo -e "  ${COLOR_LIGHT_BLUE}--enable-micro${COLOR_RESET}                - Enable building micro architecture variants."
     echo -e "  ${COLOR_LIGHT_BLUE}--ldflags='<flags>'${COLOR_RESET}            - Set linker flags (default: \"${DEFAULT_LDFLAGS}\")."
     echo -e "  ${COLOR_LIGHT_BLUE}--ext-ldflags='<flags>'${COLOR_RESET}          - Set external linker flags (default: \"${DEFAULT_EXT_LDFLAGS}\")."
     echo -e "  ${COLOR_LIGHT_BLUE}-p=<platforms>, --platforms=<platforms>${COLOR_RESET} - Specify target platform(s) (default: host platform, supports: all, linux, linux/arm*, ...)."
@@ -171,7 +171,7 @@ function fixArgs() {
 
     setDefault "PLATFORMS" "${GOHOSTPLATFORM}"
     setDefault "BUILD_MODE" "${DEFAULT_BUILD_MODE}"
-    setDefault "DISABLE_MICRO" ""
+    setDefault "ENABLE_MICRO" ""
     setDefault "FORCE_CGO" "${DEFAULT_FORCE_CGO}"
     setDefault "HOST_CC" "${DEFAULT_CC}"
     setDefault "HOST_CXX" "${DEFAULT_CXX}"
@@ -794,7 +794,7 @@ function buildTarget() {
 
     buildTargetWithMicro "${goos}" "${goarch}" ""
 
-    if [ -n "${DISABLE_MICRO}" ]; then
+    if [ -z "${ENABLE_MICRO}" ]; then
         return 0
     fi
 
@@ -917,7 +917,7 @@ function buildTargetWithMicro() {
         [ -z "$micro" ] && micro="6"
         ;;
     "arm64")
-        build_env+=("GOARM=${micro}")
+        build_env+=("GOARM64=${micro}")
         [ -z "$micro" ] && micro="v8.0"
         ;;
     "amd64")
@@ -1085,8 +1085,8 @@ while [[ $# -gt 0 ]]; do
     --more-go-cmd-args=*)
         addBuildArgs "${1#*=}"
         ;;
-    --disable-micro)
-        DISABLE_MICRO="true"
+    --enable-micro)
+        ENABLE_MICRO="true"
         ;;
     --ldflags=*)
         addLDFLAGS "${1#*=}"

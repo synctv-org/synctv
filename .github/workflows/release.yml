@@ -51,7 +51,12 @@ jobs:
 
       - name: Build
         run: |
-          BUILD_CONFIG=script/build.config.sh bash script/build.sh  --version="v${{ steps.get_version.outputs.VERSION }}" --platforms="${{ matrix.target }}" --more-go-cmd-args='-a -v'
+          sudo BUILD_CONFIG=script/build.config.sh bash \
+            script/build.sh \
+            --enable-micro \
+            --version="v${{ steps.get_version.outputs.VERSION }}" \
+            --platforms="${{ matrix.target }}" \
+            --more-go-cmd-args='-a -v'
 
       - name: Release
         uses: softprops/action-gh-release@v2

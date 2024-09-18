@@ -18,7 +18,9 @@ readonly COLOR_RESET='\033[0m'
 readonly DEFAULT_SOURCE_DIR="$(pwd)"
 readonly DEFAULT_RESULT_DIR="${DEFAULT_SOURCE_DIR}/build"
 readonly DEFAULT_BUILD_CONFIG="${DEFAULT_SOURCE_DIR}/build.config.sh"
+readonly DEFAULT_BUILD_MODE="default"
 readonly DEFAULT_CGO_ENABLED="1"
+readonly DEFAULT_FORCE_CGO="0"
 readonly DEFAULT_CC="gcc"
 readonly DEFAULT_CXX="g++"
 readonly DEFAULT_CGO_CROSS_COMPILER_DIR="${DEFAULT_SOURCE_DIR}/cross"
@@ -26,7 +28,7 @@ readonly DEFAULT_CGO_FLAGS="-O2 -g0 -pipe"
 readonly DEFAULT_CGO_LDFLAGS="-s"
 readonly DEFAULT_LDFLAGS="-s -w -linkmode auto"
 readonly DEFAULT_EXT_LDFLAGS=""
-readonly DEFAULT_CGO_DEPS_VERSION="v0.5.0"
+readonly DEFAULT_CGO_DEPS_VERSION="v0.5.1"
 readonly DEFAULT_TTY_WIDTH="40"
 readonly DEFAULT_NDK_VERSION="r27"
 
@@ -34,6 +36,7 @@ readonly DEFAULT_NDK_VERSION="r27"
 readonly GOHOSTOS="$(go env GOHOSTOS)"
 readonly GOHOSTARCH="$(go env GOHOSTARCH)"
 readonly GOHOSTPLATFORM="${GOHOSTOS}/${GOHOSTARCH}"
+readonly GOVERSION="$(go env GOVERSION)" # e.g go1.23.1
 
 # --- Function Declarations ---
 
@@ -53,11 +56,13 @@ function printEnvHelp() {
     echo -e "  ${COLOR_LIGHT_CYAN}SOURCE_DIR${COLOR_RESET}                - Set the source directory (default: ${DEFAULT_SOURCE_DIR})."
     echo -e "  ${COLOR_LIGHT_CYAN}RESULT_DIR${COLOR_RESET}                - Set the build result directory (default: ${DEFAULT_RESULT_DIR})."
     echo -e "  ${COLOR_LIGHT_CYAN}BUILD_CONFIG${COLOR_RESET}              - Set the build configuration file (default: ${DEFAULT_BUILD_CONFIG})."
+    echo -e "  ${COLOR_LIGHT_CYAN}BUILD_MODE${COLOR_RESET}                - Set the build mode (default: ${DEFAULT_BUILD_MODE})."
     echo -e "  ${COLOR_LIGHT_CYAN}BIN_NAME${COLOR_RESET}                  - Set the binary name (default: source directory basename)."
     echo -e "  ${COLOR_LIGHT_CYAN}BIN_NAME_NO_SUFFIX${COLOR_RESET}        - Do not append the architecture suffix to the binary name."
     echo -e "  ${COLOR_LIGHT_CYAN}PLATFORM${COLOR_RESET}                  - Set the target platform(s) (default: host platform, supports: all, linux, linux/arm*, ...)."
     echo -e "  ${COLOR_LIGHT_CYAN}DISABLE_MICRO${COLOR_RESET}              - Disable building micro variants."
     echo -e "  ${COLOR_LIGHT_CYAN}CGO_ENABLED${COLOR_RESET}                - Enable or disable CGO (default: ${DEFAULT_CGO_ENABLED})."
+    echo -e "  ${COLOR_LIGHT_CYAN}FORCE_CGO${COLOR_RESET}                   - Force the use of CGO (default: ${DEFAULT_FORCE_CGO})."
     echo -e "  ${COLOR_LIGHT_CYAN}HOST_CC${COLOR_RESET}                   - Set the host C compiler (default: ${DEFAULT_CC})."
     echo -e "  ${COLOR_LIGHT_CYAN}HOST_CXX${COLOR_RESET}                  - Set the host C++ compiler (default: ${DEFAULT_CXX})."
     echo -e "  ${COLOR_LIGHT_CYAN}FORCE_CC${COLOR_RESET}                   - Force the use of a specific C compiler."
@@ -83,6 +88,8 @@ function printHelp() {
     echo -e "  ${COLOR_LIGHT_BLUE}-h, --help${COLOR_RESET}                    - Display this help message."
     echo -e "  ${COLOR_LIGHT_BLUE}-eh, --env-help${COLOR_RESET}                 - Display help information about environment variables."
     echo -e "  ${COLOR_LIGHT_BLUE}--disable-cgo${COLOR_RESET}                  - Disable CGO support."
+    echo -e "  ${COLOR_LIGHT_BLUE}--force-cgo${COLOR_RESET}                   - Force the use of CGO."
+    echo -e "  ${COLOR_LIGHT_BLUE}--build-mode=<mode>${COLOR_RESET}            - Set the build mode (default: ${DEFAULT_BUILD_MODE})."
     echo -e "  ${COLOR_LIGHT_BLUE}--source-dir=<dir>${COLOR_RESET}               - Specify the source directory (default: ${DEFAULT_SOURCE_DIR})."
     echo -e "  ${COLOR_LIGHT_BLUE}--bin-name=<name>${COLOR_RESET}               - Specify the binary name (default: source directory basename)."
     echo -e "  ${COLOR_LIGHT_BLUE}--bin-name-no-suffix${COLOR_RESET}            - Do not append the architecture suffix to the binary name."
@@ -163,7 +170,9 @@ function fixArgs() {
     cgo_cross_compiler_dir="$(cd "${CGO_CROSS_COMPILER_DIR}" && pwd)"
 
     setDefault "PLATFORMS" "${GOHOSTPLATFORM}"
+    setDefault "BUILD_MODE" "${DEFAULT_BUILD_MODE}"
     setDefault "DISABLE_MICRO" ""
+    setDefault "FORCE_CGO" "${DEFAULT_FORCE_CGO}"
     setDefault "HOST_CC" "${DEFAULT_CC}"
     setDefault "HOST_CXX" "${DEFAULT_CXX}"
     setDefault "FORCE_CC" ""
@@ -272,13 +281,11 @@ function initPlatforms() {
     setDefault "CGO_ENABLED" "${DEFAULT_CGO_ENABLED}"
 
     local distList="$(go tool dist list)"
-    addAllowedPlatforms "$(echo "$distList" | grep windows)"
+    addAllowedPlatforms "$(echo "$distList" | grep windows | grep -v arm)"
     addAllowedPlatforms "$(echo "$distList" | grep linux)"
-    addAllowedPlatforms "$(echo "$distList" | grep darwin)"
-    addAllowedPlatforms "$(echo "$distList" | grep netbsd)"
-    addAllowedPlatforms "$(echo "$distList" | grep freebsd)"
-    addAllowedPlatforms "$(echo "$distList" | grep openbsd)"
     addAllowedPlatforms "$(echo "$distList" | grep android)"
+    addAllowedPlatforms "$(echo "$distList" | grep darwin)"
+    addAllowedPlatforms "$(echo "$distList" | grep ios)"
 
     addAllowedPlatforms "${GOHOSTOS}/${GOHOSTARCH}"
 
@@ -341,6 +348,8 @@ function resetCGO() {
     MORE_CGO_CFLAGS=""
     MORE_CGO_CXXFLAGS=""
     MORE_CGO_LDFLAGS=""
+
+    EXTRA_PATH=""
 }
 
 # Initializes CGO dependencies based on the target operating system and architecture.
@@ -367,28 +376,23 @@ function initCGODeps() {
         return 2
     fi
 
-    if ! isCGOEnabled; then
-        echo -e "${COLOR_LIGHT_RED}CGO is globally disabled.${COLOR_RESET}"
-        return 1
-    fi
+    initDefaultCGODeps "$@" || return $?
 
-    initDefaultCGODeps "$@"
+    PATH=${EXTRA_PATH:+$EXTRA_PATH:}$PATH absCCCXX
 
+    return 0
+}
+
+function absCCCXX() {
     local cc_command cc_options
     read -r cc_command cc_options <<<"${CC}"
-    cc_command="$(command -v "${cc_command}")"
-    if [[ "${cc_command}" != /* ]]; then
-        CC="$(cd "$(dirname "${cc_command}")" && pwd)/$(basename "${cc_command}")"
-        [[ -n "${cc_options}" ]] && CC="${CC} ${cc_options}"
-    fi
+    CC="$(command -v "${cc_command}")"
+    [[ -n "${cc_options}" ]] && CC="${CC} ${cc_options}"
 
     local cxx_command cxx_options
     read -r cxx_command cxx_options <<<"${CXX}"
-    cxx_command="$(command -v "${cxx_command}")"
-    if [[ "${cxx_command}" != /* ]]; then
-        CXX="$(cd "$(dirname "${cxx_command}")" && pwd)/$(basename "${cxx_command}")"
-        [[ -n "${cxx_options}" ]] && CXX="${CXX} ${cxx_options}"
-    fi
+    CXX="$(command -v "${cxx_command}")"
+    [[ -n "${cxx_options}" ]] && CXX="${CXX} ${cxx_options}"
 }
 
 # Initializes CGO dependencies for the host platform.
@@ -447,32 +451,36 @@ function initDefaultCGODeps() {
         esac
         case "${goarch}" in
         "386")
-            initLinuxCGO "i686" ""
+            initLinuxCGO "i686" "" || return $?
             ;;
         "amd64")
-            initLinuxCGO "x86_64" ""
+            initLinuxCGO "x86_64" "" || return $?
             ;;
         "arm")
-            [[ "${micro}" == "5" ]] && initLinuxCGO "armv5" "eabi" || initLinuxCGO "armv${micro}" "eabihf"
+            if [[ "${micro}" == "5" ]]; then
+                initLinuxCGO "armv5" "eabi" || return $?
+            else
+                initLinuxCGO "armv${micro}" "eabihf" || return $?
+            fi
             ;;
         "arm64")
-            initLinuxCGO "aarch64" ""
+            initLinuxCGO "aarch64" "" || return $?
             ;;
         "mips")
             [[ "${micro}" == "hf" ]] && micro="" || micro="sf"
-            initLinuxCGO "mips" "" "${micro}"
+            initLinuxCGO "mips" "" "${micro}" || return $?
             ;;
         "mipsle")
             [[ "${micro}" == "hf" ]] && micro="" || micro="sf"
-            initLinuxCGO "mipsel" "" "${micro}"
+            initLinuxCGO "mipsel" "" "${micro}" || return $?
             ;;
         "mips64")
             [[ "${micro}" == "hf" ]] && micro="" || micro="sf"
-            initLinuxCGO "mips64" "" "${micro}"
+            initLinuxCGO "mips64" "" "${micro}" || return $?
             ;;
         "mips64le")
             [[ "${micro}" == "hf" ]] && micro="" || micro="sf"
-            initLinuxCGO "mips64el" "" "${micro}"
+            initLinuxCGO "mips64el" "" "${micro}" || return $?
             ;;
         "ppc64")
             # initLinuxCGO "powerpc64" ""
@@ -480,20 +488,20 @@ function initDefaultCGODeps() {
             return 1
             ;;
         "ppc64le")
-            initLinuxCGO "powerpc64le" ""
+            initLinuxCGO "powerpc64le" "" || return $?
             ;;
         "riscv64")
-            initLinuxCGO "riscv64" ""
+            initLinuxCGO "riscv64" "" || return $?
             ;;
         "s390x")
-            initLinuxCGO "s390x" ""
+            initLinuxCGO "s390x" "" || return $?
             ;;
         "loong64")
-            initLinuxCGO "loongarch64" ""
+            initLinuxCGO "loongarch64" "" || return $?
             ;;
         *)
             if [[ "${goos}" == "${GOHOSTOS}" ]] && [[ "${goarch}" == "${GOHOSTARCH}" ]]; then
-                initHostCGODeps "$@"
+                initHostCGODeps "$@" || return $?
             else
                 echo -e "${COLOR_LIGHT_YELLOW}CGO is disabled for ${goos}/${goarch}${micro:+"/$micro"}."
                 return 1
@@ -506,7 +514,7 @@ function initDefaultCGODeps() {
         "linux" | "darwin") ;;
         *)
             if [[ "${goos}" == "${GOHOSTOS}" ]] && [[ "${goarch}" == "${GOHOSTARCH}" ]]; then
-                initHostCGODeps "$@"
+                initHostCGODeps "$@" || return $?
                 return 0
             else
                 echo -e "${COLOR_LIGHT_YELLOW}CGO is disabled for ${goos}/${goarch}${micro:+"/$micro"}."
@@ -519,7 +527,7 @@ function initDefaultCGODeps() {
         "amd64" | "arm64" | "arm" | "ppc64le" | "riscv64" | "s390x") ;;
         *)
             if [[ "${goos}" == "${GOHOSTOS}" ]] && [[ "${goarch}" == "${GOHOSTARCH}" ]]; then
-                initHostCGODeps "$@"
+                initHostCGODeps "$@" || return $?
                 return 0
             else
                 echo -e "${COLOR_LIGHT_YELLOW}CGO is disabled for ${goos}/${goarch}${micro:+"/$micro"}."
@@ -530,14 +538,14 @@ function initDefaultCGODeps() {
 
         case "${goarch}" in
         "386")
-            initWindowsCGO "i686"
+            initWindowsCGO "i686" || return $?
             ;;
         "amd64")
-            initWindowsCGO "x86_64"
+            initWindowsCGO "x86_64" || return $?
             ;;
         *)
             if [[ "${goos}" == "${GOHOSTOS}" ]] && [[ "${goarch}" == "${GOHOSTARCH}" ]]; then
-                initHostCGODeps "$@"
+                initHostCGODeps "$@" || return $?
             else
                 echo -e "${COLOR_LIGHT_YELLOW}CGO is disabled for ${goos}/${goarch}${micro:+"/$micro"}."
                 return 1
@@ -555,15 +563,79 @@ function initDefaultCGODeps() {
             echo -e "${COLOR_LIGHT_RED}CGO is disabled for android/${goarch}${micro:+"/$micro"}.${COLOR_RESET}" && return 1
             ;;
         esac
-        initAndroidNDK "${goarch}" "${micro}"
+        initAndroidNDK "${goarch}" "${micro}" || return $?
+        ;;
+    "darwin" | "ios")
+        case "${GOHOSTOS}" in
+        "darwin")
+            CC="clang"
+            CXX="clang++"
+            ;;
+        "linux")
+            initOsxCGO "${goarch}" "${micro}" || return $?
+            ;;
+        *)
+            echo -e "${COLOR_LIGHT_YELLOW}CGO is disabled for ${goos}/${goarch}${micro:+"/$micro"}."
+            return 1
+            ;;
+        esac
         ;;
     *)
         if [[ "${goos}" == "${GOHOSTOS}" ]] && [[ "${goarch}" == "${GOHOSTARCH}" ]]; then
-            initHostCGODeps "$@"
+            initHostCGODeps "$@" || return $?
         else
             echo -e "${COLOR_LIGHT_YELLOW}CGO is disabled for ${goos}/${goarch}${micro:+"/$micro"}."
             return 1
         fi
+        ;;
+    esac
+}
+
+function initOsxCGO() {
+    local goarch="$1"
+    case "${GOHOSTOS}" in
+    "darwin")
+        CC="clang"
+        CXX="clang++"
+        ;;
+    "linux")
+        case "${GOHOSTARCH}" in
+        "amd64")
+            local cc_var=$(echo "CC_OSX_${goarch}" | awk '{print tolower($0)}')
+            local cxx_var=$(echo "CXX_OSX_${goarch}" | awk '{print tolower($0)}')
+            local cc=${!cc_var}
+            local cxx=${!cxx_var}
+            if [[ -z "${cc}" ]] && [[ -z "${cxx}" ]]; then
+                if command -v oa64-clang >/dev/null 2>&1 && command -v oa64-clang++ >/dev/null 2>&1; then
+                    cc="oa64-clang"
+                    cxx="oa64-clang++"
+                elif [[ -x "/usr/local/osxcross/bin/oa64-clang" ]] && [[ -x "/usr/local/osxcross/bin/oa64-clang++" ]]; then
+                    cc="/usr/local/osxcross/bin/oa64-clang"
+                    cxx="/usr/local/osxcross/bin/oa64-clang++"
+                    EXTRA_PATH="/usr/local/osxcross/bin"
+                else
+                    downloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/osxcross/releases/download/v0.1.1/osxcross-14-5-linux-amd64-gnu-ubuntu-18.04.tar.gz" \
+                        "/usr/local/osxcross"
+                    cc="/usr/local/osxcross/bin/oa64-clang"
+                    cxx="/usr/local/osxcross/bin/oa64-clang++"
+                    EXTRA_PATH="/usr/local/osxcross/bin"
+                fi
+            elif [[ -z "${cc}" ]] || [[ -z "${cxx}" ]]; then
+                echo -e "${COLOR_LIGHT_RED}Both ${cc_var} and ${cxx_var} must be set.${COLOR_RESET}"
+                return 2
+            fi
+            CC="${cc}"
+            CXX="${cxx}"
+            ;;
+        *)
+            echo -e "${COLOR_LIGHT_YELLOW}CGO is disabled for ${goos}/${goarch}."
+            return 1
+            ;;
+        esac
+        ;;
+    *)
+        echo -e "${COLOR_LIGHT_YELLOW}CGO is disabled for ${goos}/${goarch}."
+        return 1
         ;;
     esac
 }
@@ -579,31 +651,32 @@ function initLinuxCGO() {
     local micro="$3"
     local cc_var=$(echo "CC_LINUX_${arch_prefix}${abi}${micro}" | awk '{print tolower($0)}')
     local cxx_var=$(echo "CXX_LINUX_${arch_prefix}${abi}${micro}" | awk '{print tolower($0)}')
+    local cc=${!cc_var}
+    local cxx=${!cxx_var}
 
-    if [[ -z "${!cc_var}" ]] && [[ -z "${!cxx_var}" ]]; then
+    if [[ -z "${cc}" ]] && [[ -z "${cxx}" ]]; then
         local cross_compiler_name="${arch_prefix}-linux-musl${abi}${micro}-cross"
         if command -v "${arch_prefix}-linux-musl${abi}${micro}-gcc" >/dev/null 2>&1 &&
             command -v "${arch_prefix}-linux-musl${abi}${micro}-g++" >/dev/null 2>&1; then
-            eval "${cc_var}=\"${arch_prefix}-linux-musl${abi}${micro}-gcc\""
-            eval "${cxx_var}=\"${arch_prefix}-linux-musl${abi}${micro}-g++\""
+            cc="${arch_prefix}-linux-musl${abi}${micro}-gcc"
+            cxx="${arch_prefix}-linux-musl${abi}${micro}-g++"
         elif [[ -x "${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-linux-musl${abi}${micro}-gcc" ]] &&
             [[ -x "${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-linux-musl${abi}${micro}-g++" ]]; then
-            eval "${cc_var}=\"${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-linux-musl${abi}${micro}-gcc\""
-            eval "${cxx_var}=\"${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-linux-musl${abi}${micro}-g++\""
+            cc="${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-linux-musl${abi}${micro}-gcc"
+            cxx="${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-linux-musl${abi}${micro}-g++"
         else
             downloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/${cross_compiler_name}-${unamespacer}.tgz" \
                 "${cgo_cross_compiler_dir}/${cross_compiler_name}"
-            eval "${cc_var}=\"${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-linux-musl${abi}${micro}-gcc\""
-            eval "${cxx_var}=\"${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-linux-musl${abi}${micro}-g++\""
+            cc="${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-linux-musl${abi}${micro}-gcc"
+            cxx="${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-linux-musl${abi}${micro}-g++"
         fi
-    elif [[ -z "${!cc_var}" ]] || [[ -z "${!cxx_var}" ]]; then
+    elif [[ -z "${cc}" ]] || [[ -z "${cxx}" ]]; then
         echo -e "${COLOR_LIGHT_RED}Both ${cc_var} and ${cxx_var} must be set.${COLOR_RESET}"
         return 2
     fi
 
-    CC="${!cc_var} -static --static"
-    CXX="${!cxx_var} -static --static"
-    return 0
+    CC="${cc} -static --static"
+    CXX="${cxx} -static --static"
 }
 
 # Initializes CGO dependencies for Windows.
@@ -613,31 +686,32 @@ function initWindowsCGO() {
     local arch_prefix="$1"
     local cc_var=$(echo "CC_WINDOWS_${arch_prefix}" | awk '{print tolower($0)}')
     local cxx_var=$(echo "CXX_WINDOWS_${arch_prefix}" | awk '{print tolower($0)}')
+    local cc=${!cc_var}
+    local cxx=${!cxx_var}
 
-    if [[ -z "${!cc_var}" ]] && [[ -z "${!cxx_var}" ]]; then
+    if [[ -z "${cc}" ]] && [[ -z "${cxx}" ]]; then
         local cross_compiler_name="${arch_prefix}-w64-mingw32-cross"
         if command -v "${arch_prefix}-w64-mingw32-gcc" >/dev/null 2>&1 &&
             command -v "${arch_prefix}-w64-mingw32-g++" >/dev/null 2>&1; then
-            eval "${cc_var}=\"${arch_prefix}-w64-mingw32-gcc\""
-            eval "${cxx_var}=\"${arch_prefix}-w64-mingw32-g++\""
+            cc="${arch_prefix}-w64-mingw32-gcc"
+            cxx="${arch_prefix}-w64-mingw32-g++"
         elif [[ -x "${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-w64-mingw32-gcc" ]] &&
             [[ -x "${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-w64-mingw32-g++" ]]; then
-            eval "${cc_var}=\"${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-w64-mingw32-gcc\""
-            eval "${cxx_var}=\"${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-w64-mingw32-g++\""
+            cc="${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-w64-mingw32-gcc"
+            cxx="${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-w64-mingw32-g++"
         else
             downloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/${cross_compiler_name}-${unamespacer}.tgz" \
                 "${cgo_cross_compiler_dir}/${cross_compiler_name}"
-            eval "${cc_var}=\"${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-w64-mingw32-gcc\""
-            eval "${cxx_var}=\"${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-w64-mingw32-g++\""
+            cc="${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-w64-mingw32-gcc"
+            cxx="${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-w64-mingw32-g++"
         fi
-    elif [[ -z "${!cc_var}" ]] || [[ -z "${!cxx_var}" ]]; then
+    elif [[ -z "${cc}" ]] || [[ -z "${cxx}" ]]; then
         echo -e "${COLOR_LIGHT_RED}Both ${cc_var} and ${cxx_var} must be set.${COLOR_RESET}"
         return 2
     fi
 
-    CC="${!cc_var} -static --static"
-    CXX="${!cxx_var} -static --static"
-    return 0
+    CC="${cc} -static --static"
+    CXX="${cxx} -static --static"
 }
 
 # Initializes CGO dependencies for Android NDK.
@@ -691,34 +765,6 @@ function getAndroidClang() {
     esac
 }
 
-# Checks if a platform supports Position Independent Executables (PIE).
-# Arguments:
-#   $1: Target platform.
-# Returns:
-#   0: Platform supports PIE.
-#   1: Platform does not support PIE.
-function supportPIE() {
-    local platform="$1"
-    [[ "${platform}" != "linux/386" ]] &&
-        [[ "${platform}" != "linux/arm" ]] &&
-        [[ "${platform}" != "linux/ppc64" ]] &&
-        [[ "${platform}" != "freebsd"* ]] &&
-        [[ "${platform}" != "netbsd"* ]] &&
-        [[ "${platform}" != "openbsd"* ]] &&
-        [[ "${platform}" != "linux/loong64" ]] &&
-        [[ "${platform}" != "linux/riscv64" ]] &&
-        [[ "${platform}" != "linux/s390x" ]]
-}
-
-function supportCgoPIE() {
-    local platform="$1"
-    [[ "${platform}" != "linux/mips"* ]] &&
-        [[ "${platform}" != "linux/ppc64" ]] &&
-        [[ "${platform}" != "openbsd"* ]] &&
-        [[ "${platform}" != "freebsd"* ]] &&
-        [[ "${platform}" != "netbsd"* ]]
-}
-
 # --- Utility Functions ---
 
 # Gets a separator line based on the terminal width.
@@ -736,23 +782,16 @@ function printSeparator() {
 #   $1: Target platform (e.g., "linux/amd64").
 #   $2: Target name (e.g., binary name).
 # Ref:
-# https://go.dev/wiki/MinimumRequirements
+# https://go.dev/wiki/MinimumRequirements#microarchitecture-support
 # https://go.dev/doc/install/source#environment
 function buildTarget() {
     local platform="$1"
     local goos="${platform%/*}"
     local goarch="${platform#*/}"
-    local ext=""
-    [[ "${goos}" == "windows" ]] && ext=".exe"
-
-    local build_env=(
-        "GOOS=${goos}"
-        "GOARCH=${goarch}"
-    )
 
     echo -e "${COLOR_LIGHT_GRAY}$(printSeparator)${COLOR_RESET}"
 
-    buildTargetWithMicro "" "${build_env[@]}"
+    buildTargetWithMicro "${goos}" "${goarch}" ""
 
     if [ -n "${DISABLE_MICRO}" ]; then
         return 0
@@ -762,75 +801,123 @@ function buildTarget() {
     case "${goarch}" in
     "386")
         echo
-        buildTargetWithMicro "sse2" "${build_env[@]}"
+        buildTargetWithMicro "${goos}" "${goarch}" "sse2"
         echo
-        buildTargetWithMicro "softfloat" "${build_env[@]}"
+        buildTargetWithMicro "${goos}" "${goarch}" "softfloat"
         ;;
     "arm")
-        echo
-        buildTargetWithMicro "5" "${build_env[@]}"
-        echo
-        buildTargetWithMicro "6" "${build_env[@]}"
-        echo
-        buildTargetWithMicro "7" "${build_env[@]}"
+        for v in {5..7}; do
+            echo
+            buildTargetWithMicro "${goos}" "${goarch}" "$v"
+        done
+        ;;
+    "arm64")
+        if [[ ! "${GOVERSION#go}" > "1.23" ]]; then
+            return 0
+        fi
+        for major in 8 9; do
+            for minor in $(seq 0 $((major == 8 ? 9 : 5))); do
+                echo
+                buildTargetWithMicro "${goos}" "${goarch}" "v${major}.${minor}"
+                echo
+                buildTargetWithMicro "${goos}" "${goarch}" "v${major}.${minor},lse"
+                echo
+                buildTargetWithMicro "${goos}" "${goarch}" "v${major}.${minor},crypto"
+            done
+        done
         ;;
     "amd64")
-        echo
-        buildTargetWithMicro "v1" "${build_env[@]}"
-        echo
-        buildTargetWithMicro "v2" "${build_env[@]}"
-        echo
-        buildTargetWithMicro "v3" "${build_env[@]}"
-        echo
-        buildTargetWithMicro "v4" "${build_env[@]}"
+        if [[ ! "${GOVERSION#go}" > "1.18" ]]; then
+            return 0
+        fi
+        for v in {1..4}; do
+            echo
+            buildTargetWithMicro "${goos}" "${goarch}" "v$v"
+        done
         ;;
     "mips" | "mipsle" | "mips64" | "mips64le")
         echo
-        buildTargetWithMicro "hardfloat" "${build_env[@]}"
+        buildTargetWithMicro "${goos}" "${goarch}" "hardfloat"
         echo
-        buildTargetWithMicro "softfloat" "${build_env[@]}"
+        buildTargetWithMicro "${goos}" "${goarch}" "softfloat"
         ;;
     "ppc64" | "ppc64le")
-        echo
-        buildTargetWithMicro "power8" "${build_env[@]}"
-        echo
-        buildTargetWithMicro "power9" "${build_env[@]}"
-        echo
-        buildTargetWithMicro "power10" "${build_env[@]}"
+        for version in 8 9 10; do
+            echo
+            buildTargetWithMicro "${goos}" "${goarch}" "power${version}"
+        done
         ;;
     "wasm")
         echo
-        buildTargetWithMicro "satconv" "${build_env[@]}"
+        buildTargetWithMicro "${goos}" "${goarch}" "satconv"
         echo
-        buildTargetWithMicro "signext" "${build_env[@]}"
+        buildTargetWithMicro "${goos}" "${goarch}" "signext"
         ;;
     esac
 }
 
+# Gets the extension based on the build mode and operating system.
+# Arguments:
+#   $1: Operating system (e.g., "linux", "windows", "darwin", "ios").
+#   $2: Build mode (e.g., "archive", "shared", "default").
+# Returns:
+#   The extension string.
+function extension() {
+    local goos="$1"
+    local buildmode="$2"
+    if [ "$buildmode" == "archive" ] || [ "$buildmode" == "c-archive" ]; then
+        if [ "$goos" == "windows" ]; then
+            echo ".lib"
+        else
+            echo ".a"
+        fi
+    elif [ "$buildmode" == "shared" ] || [ "$buildmode" == "c-shared" ]; then
+        if [ "$goos" == "windows" ]; then
+            echo ".dll"
+        elif [ "$goos" == "darwin" ] || [ "$goos" == "ios" ]; then
+            echo ".dylib"
+        else
+            echo ".so"
+        fi
+    else
+        if [ "$goos" == "windows" ]; then
+            echo ".exe"
+        fi
+    fi
+}
+
 # Builds a target for a specific platform, micro architecture variant, and build environment.
 # Arguments:
-#   $1: Micro architecture variant (e.g., "sse2", "softfloat").
-#   $2: Array of build environment variables.
+#   $1: GOOS
+#   $2: GOARCH
+#   $3: Micro architecture variant (e.g., "sse2", "softfloat"). Ref: https://go.dev/wiki/MinimumRequirements#microarchitecture-support
 function buildTargetWithMicro() {
-    local micro="$1"
-    local build_env=("${@:2}")
-    local goos="${platform%/*}"
-    local goarch="${platform#*/}"
-    local ext=""
-    [[ "${goos}" == "windows" ]] && ext=".exe"
+    local goos="$1"
+    local goarch="$2"
+    local micro="$3"
+    local build_env=(
+        "GOOS=${goos}"
+        "GOARCH=${goarch}"
+    )
+    local buildmode=$BUILD_MODE
+    local ext=$(extension "${goos}" "${buildmode}")
     local target_file="${RESULT_DIR}/${BIN_NAME}"
-    [ -z "$BIN_NAME_NO_SUFFIX" ] && target_file="${target_file}-${goos}-${goarch}${micro:+"-$micro"}" || true
+    [ -z "$BIN_NAME_NO_SUFFIX" ] && target_file="${target_file}-${goos}-${goarch}${micro:+"-${micro//[.,]/-}"}" || true
     target_file="${target_file}${ext}"
-    local build_mode=""
 
     # Set micro architecture specific environment variables.
     case "${goarch}" in
     "386")
         build_env+=("GO386=${micro}")
+        [ -z "$micro" ] && micro="sse2"
         ;;
     "arm")
         build_env+=("GOARM=${micro}")
         [ -z "$micro" ] && micro="6"
+        ;;
+    "arm64")
+        build_env+=("GOARM=${micro}")
+        [ -z "$micro" ] && micro="v8.0"
         ;;
     "amd64")
         build_env+=("GOAMD64=${micro}")
@@ -853,39 +940,51 @@ function buildTargetWithMicro() {
 
     echo -e "${COLOR_LIGHT_MAGENTA}Building ${goos}/${goarch}${micro:+/${micro}}...${COLOR_RESET}"
 
-    if initCGODeps "${goos}" "${goarch}" "${micro}"; then
-        code=0
-    else
-        code=$?
-    fi
+    if isCGOEnabled; then
+        if initCGODeps "${goos}" "${goarch}" "${micro}"; then
+            code=0
+        else
+            code=$?
+        fi
 
-    case "$code" in
-    0)
-        build_env+=("CGO_ENABLED=1")
-        build_env+=("CC=${CC}")
-        build_env+=("CXX=${CXX}")
-        build_env+=("CGO_CFLAGS=${CGO_FLAGS}${MORE_CGO_CFLAGS:+ ${MORE_CGO_CFLAGS}}")
-        build_env+=("CGO_CXXFLAGS=${CGO_FLAGS}${MORE_CGO_CXXFLAGS:+ ${MORE_CGO_CXXFLAGS}}")
-        build_env+=("CGO_LDFLAGS=${CGO_LDFLAGS}${MORE_CGO_LDFLAGS:+ ${MORE_CGO_LDFLAGS}}")
-        supportCgoPIE "${platform}" && build_mode="-buildmode=pie"
-        ;;
-    1)
+        build_env+=("PATH=${EXTRA_PATH:+$EXTRA_PATH:}$PATH")
+
+        case "$code" in
+        0)
+            build_env+=("CGO_ENABLED=1")
+            build_env+=("CC=${CC}")
+            build_env+=("CXX=${CXX}")
+            build_env+=("CGO_CFLAGS=${CGO_FLAGS}${MORE_CGO_CFLAGS:+ ${MORE_CGO_CFLAGS}}")
+            build_env+=("CGO_CXXFLAGS=${CGO_FLAGS}${MORE_CGO_CXXFLAGS:+ ${MORE_CGO_CXXFLAGS}}")
+            build_env+=("CGO_LDFLAGS=${CGO_LDFLAGS}${MORE_CGO_LDFLAGS:+ ${MORE_CGO_LDFLAGS}}")
+            ;;
+        1)
+            if [[ "${FORCE_CGO}" == "1" ]]; then
+                echo -e "${COLOR_LIGHT_RED}Error initializing CGO dependencies.${COLOR_RESET}"
+                return 1
+            fi
+            build_env+=("CGO_ENABLED=0")
+            ;;
+        *)
+            echo -e "${COLOR_LIGHT_RED}Error initializing CGO dependencies.${COLOR_RESET}"
+            return 1
+            ;;
+        esac
+    else
+        if [[ "${FORCE_CGO}" == "1" ]]; then
+            echo -e "${COLOR_LIGHT_RED}Error initializing CGO dependencies.${COLOR_RESET}"
+            return 1
+        fi
         build_env+=("CGO_ENABLED=0")
-        supportPIE "${platform}" && build_mode="-buildmode=pie"
-        ;;
-    *)
-        echo -e "${COLOR_LIGHT_RED}Error initializing CGO dependencies.${COLOR_RESET}"
-        return 1
-        ;;
-    esac
+    fi
 
     echo -e "${COLOR_LIGHT_BLUE}Run command:\n${COLOR_WHITE}$(for var in "${build_env[@]}"; do
         key=$(echo "${var}" | cut -d= -f1)
         value=$(echo "${var}" | cut -d= -f2-)
         echo "export ${key}='${value}'"
-    done)\n${COLOR_LIGHT_CYAN}go build -buildmode=exe -tags \"${TAGS}\" -ldflags \"${LDFLAGS}${EXT_LDFLAGS:+ -extldflags '$EXT_LDFLAGS'}\" -trimpath ${BUILD_ARGS} ${build_mode} -o \"${target_file}\" \"${source_dir}\"${COLOR_RESET}"
+    done)\n${COLOR_LIGHT_CYAN}go build -buildmode=$buildmode -trimpath ${BUILD_ARGS} -tags \"${TAGS}\" -ldflags \"${LDFLAGS}${EXT_LDFLAGS:+ -extldflags '$EXT_LDFLAGS'}\" -o \"${target_file}\" \"${source_dir}\"${COLOR_RESET}"
     local start_time=$(date +%s)
-    env "${build_env[@]}" go build -buildmode=exe -tags "${TAGS}" -ldflags "${LDFLAGS}${EXT_LDFLAGS:+ -extldflags '$EXT_LDFLAGS'}" -trimpath ${BUILD_ARGS} ${build_mode} -o "${target_file}" "${source_dir}"
+    env "${build_env[@]}" go build -buildmode=$buildmode -trimpath ${BUILD_ARGS} -tags "${TAGS}" -ldflags "${LDFLAGS}${EXT_LDFLAGS:+ -extldflags '$EXT_LDFLAGS'}" -o "${target_file}" "${source_dir}"
     local end_time=$(date +%s)
     echo -e "${COLOR_LIGHT_GREEN}Build successful: ${goos}/${goarch}${micro:+ ${micro}}  (took $((end_time - start_time))s)${COLOR_RESET}"
 }
@@ -898,13 +997,11 @@ function buildTargetWithMicro() {
 function expandPlatforms() {
     local platforms="$1"
     local expanded_platforms=""
-    local platform=""
     for platform in ${platforms//,/ }; do
         if [[ "${platform}" == "all" ]]; then
             echo "${ALLOWED_PLATFORMS}"
             return 0
         elif [[ "${platform}" == *\** ]]; then
-            local tmp_var=""
             for tmp_var in ${ALLOWED_PLATFORMS//,/ }; do
                 [[ "${tmp_var}" == ${platform} ]] && expanded_platforms="${expanded_platforms},${tmp_var}"
             done

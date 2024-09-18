@@ -166,9 +166,6 @@ function fixArgs() {
     echo -e "${COLOR_LIGHT_BLUE}Build result directory: ${COLOR_LIGHT_GREEN}${RESULT_DIR}${COLOR_RESET}"
 
     setDefault "CGO_CROSS_COMPILER_DIR" "$DEFAULT_CGO_CROSS_COMPILER_DIR"
-    mkdir -p "${CGO_CROSS_COMPILER_DIR}"
-    cgo_cross_compiler_dir="$(cd "${CGO_CROSS_COMPILER_DIR}" && pwd)"
-
     setDefault "PLATFORMS" "${GOHOSTPLATFORM}"
     setDefault "BUILD_MODE" "${DEFAULT_BUILD_MODE}"
     setDefault "ENABLE_MICRO" ""
@@ -208,28 +205,30 @@ function downloadAndUnzip() {
 
     mkdir -p "${file}" || return $?
     file="$(cd "${file}" && pwd)" || return $?
+    if [ "$(ls -A "${file}")" ]; then
+        rm -rf "${file}"/* || return $?
+    fi
     echo -e "${COLOR_LIGHT_BLUE}Downloading ${COLOR_LIGHT_CYAN}\"${url}\"${COLOR_LIGHT_BLUE} to ${COLOR_LIGHT_CYAN}\"${file}\"${COLOR_RESET}"
-    rm -rf "${file}"/*
 
     local start_time=$(date +%s)
 
     case "${type}" in
     "tgz" | "gz")
-        curl -sL "${url}" | tar -xf - -C "${file}" --strip-components 1 -z
+        curl -sL "${url}" | tar -xf - -C "${file}" --strip-components 1 -z || return $?
         ;;
     "bz2")
-        curl -sL "${url}" | tar -xf - -C "${file}" --strip-components 1 -j
+        curl -sL "${url}" | tar -xf - -C "${file}" --strip-components 1 -j || return $?
         ;;
     "xz")
-        curl -sL "${url}" | tar -xf - -C "${file}" --strip-components 1 -J
+        curl -sL "${url}" | tar -xf - -C "${file}" --strip-components 1 -J || return $?
         ;;
     "lzma")
-        curl -sL "${url}" | tar -xf - -C "${file}" --strip-components 1 --lzma
+        curl -sL "${url}" | tar -xf - -C "${file}" --strip-components 1 --lzma || return $?
         ;;
     "zip")
-        curl -sL "${url}" -o "${file}/tmp.zip"
-        unzip -q -o "${file}/tmp.zip" -d "${file}"
-        rm -f "${file}/tmp.zip"
+        curl -sL "${url}" -o "${file}/tmp.zip" || return $?
+        unzip -q -o "${file}/tmp.zip" -d "${file}" || return $?
+        rm -f "${file}/tmp.zip" || return $?
         ;;
     *)
         echo -e "${COLOR_LIGHT_RED}Unsupported compression type: ${type}${COLOR_RESET}"
@@ -661,15 +660,15 @@ function initLinuxCGO() {
             command -v "${arch_prefix}-linux-musl${abi}${micro}-g++" >/dev/null 2>&1; then
             cc="${arch_prefix}-linux-musl${abi}${micro}-gcc"
             cxx="${arch_prefix}-linux-musl${abi}${micro}-g++"
-        elif [[ -x "${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-linux-musl${abi}${micro}-gcc" ]] &&
-            [[ -x "${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-linux-musl${abi}${micro}-g++" ]]; then
-            cc="${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-linux-musl${abi}${micro}-gcc"
-            cxx="${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-linux-musl${abi}${micro}-g++"
+        elif [[ -x "${CGO_CROSS_COMPILER_DIR}/${cross_compiler_name}/bin/${arch_prefix}-linux-musl${abi}${micro}-gcc" ]] &&
+            [[ -x "${CGO_CROSS_COMPILER_DIR}/${cross_compiler_name}/bin/${arch_prefix}-linux-musl${abi}${micro}-g++" ]]; then
+            cc="${CGO_CROSS_COMPILER_DIR}/${cross_compiler_name}/bin/${arch_prefix}-linux-musl${abi}${micro}-gcc"
+            cxx="${CGO_CROSS_COMPILER_DIR}/${cross_compiler_name}/bin/${arch_prefix}-linux-musl${abi}${micro}-g++"
         else
             downloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/${cross_compiler_name}-${unamespacer}.tgz" \
-                "${cgo_cross_compiler_dir}/${cross_compiler_name}" || return 2
-            cc="${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-linux-musl${abi}${micro}-gcc"
-            cxx="${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-linux-musl${abi}${micro}-g++"
+                "${CGO_CROSS_COMPILER_DIR}/${cross_compiler_name}" || return 2
+            cc="${CGO_CROSS_COMPILER_DIR}/${cross_compiler_name}/bin/${arch_prefix}-linux-musl${abi}${micro}-gcc"
+            cxx="${CGO_CROSS_COMPILER_DIR}/${cross_compiler_name}/bin/${arch_prefix}-linux-musl${abi}${micro}-g++"
         fi
     elif [[ -z "${cc}" ]] || [[ -z "${cxx}" ]]; then
         echo -e "${COLOR_LIGHT_RED}Both ${cc_var} and ${cxx_var} must be set.${COLOR_RESET}"
@@ -696,15 +695,15 @@ function initWindowsCGO() {
             command -v "${arch_prefix}-w64-mingw32-g++" >/dev/null 2>&1; then
             cc="${arch_prefix}-w64-mingw32-gcc"
             cxx="${arch_prefix}-w64-mingw32-g++"
-        elif [[ -x "${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-w64-mingw32-gcc" ]] &&
-            [[ -x "${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-w64-mingw32-g++" ]]; then
-            cc="${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-w64-mingw32-gcc"
-            cxx="${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-w64-mingw32-g++"
+        elif [[ -x "${CGO_CROSS_COMPILER_DIR}/${cross_compiler_name}/bin/${arch_prefix}-w64-mingw32-gcc" ]] &&
+            [[ -x "${CGO_CROSS_COMPILER_DIR}/${cross_compiler_name}/bin/${arch_prefix}-w64-mingw32-g++" ]]; then
+            cc="${CGO_CROSS_COMPILER_DIR}/${cross_compiler_name}/bin/${arch_prefix}-w64-mingw32-gcc"
+            cxx="${CGO_CROSS_COMPILER_DIR}/${cross_compiler_name}/bin/${arch_prefix}-w64-mingw32-g++"
         else
             downloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/${cross_compiler_name}-${unamespacer}.tgz" \
-                "${cgo_cross_compiler_dir}/${cross_compiler_name}" || return 2
-            cc="${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-w64-mingw32-gcc"
-            cxx="${cgo_cross_compiler_dir}/${cross_compiler_name}/bin/${arch_prefix}-w64-mingw32-g++"
+                "${CGO_CROSS_COMPILER_DIR}/${cross_compiler_name}" || return 2
+            cc="${CGO_CROSS_COMPILER_DIR}/${cross_compiler_name}/bin/${arch_prefix}-w64-mingw32-gcc"
+            cxx="${CGO_CROSS_COMPILER_DIR}/${cross_compiler_name}/bin/${arch_prefix}-w64-mingw32-g++"
         fi
     elif [[ -z "${cc}" ]] || [[ -z "${cxx}" ]]; then
         echo -e "${COLOR_LIGHT_RED}Both ${cc_var} and ${cxx_var} must be set.${COLOR_RESET}"
@@ -721,7 +720,7 @@ function initWindowsCGO() {
 function initAndroidNDK() {
     local goarch="$1"
 
-    local ndk_dir="${cgo_cross_compiler_dir}/android-ndk-${GOHOSTOS}-${NDK_VERSION}"
+    local ndk_dir="${CGO_CROSS_COMPILER_DIR}/android-ndk-${GOHOSTOS}-${NDK_VERSION}"
     local clang_base_dir="${ndk_dir}/toolchains/llvm/prebuilt/${GOHOSTOS}-x86_64/bin"
     local clang_prefix="$(getAndroidClang "${goarch}")"
     local cc="${clang_base_dir}/${clang_prefix}-clang"

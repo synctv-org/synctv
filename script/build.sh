@@ -206,8 +206,8 @@ function downloadAndUnzip() {
     local file="$2"
     local type="${3:-$(echo "${url}" | sed 's/.*\.//g')}"
 
-    mkdir -p "${file}"
-    file="$(cd "${file}" && pwd)"
+    mkdir -p "${file}" || return $?
+    file="$(cd "${file}" && pwd)" || return $?
     echo -e "${COLOR_LIGHT_BLUE}Downloading ${COLOR_LIGHT_CYAN}\"${url}\"${COLOR_LIGHT_BLUE} to ${COLOR_LIGHT_CYAN}\"${file}\"${COLOR_RESET}"
     rm -rf "${file}"/*
 

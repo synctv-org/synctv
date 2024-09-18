@@ -614,7 +614,8 @@ function initOsxCGO() {
                     cxx="/usr/local/osxcross/bin/oa64-clang++"
                     EXTRA_PATH="/usr/local/osxcross/bin"
                 else
-                    downloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/osxcross/releases/download/v0.1.1/osxcross-14-5-linux-amd64-gnu-ubuntu-18.04.tar.gz" \
+                    local ubuntu_version=$(lsb_release -rs 2>/dev/null || echo "18.04")
+                    downloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/osxcross/releases/download/v0.1.1/osxcross-14-5-linux-amd64-gnu-ubuntu-${ubuntu_version}.tar.gz" \
                         "/usr/local/osxcross" || return 2
                     cc="/usr/local/osxcross/bin/oa64-clang"
                     cxx="/usr/local/osxcross/bin/oa64-clang++"

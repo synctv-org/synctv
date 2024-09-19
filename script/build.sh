@@ -608,17 +608,21 @@ function initOsxCGO() {
                 if command -v oa64-clang >/dev/null 2>&1 && command -v oa64-clang++ >/dev/null 2>&1; then
                     cc="oa64-clang"
                     cxx="oa64-clang++"
-                elif [[ -x "/usr/local/osxcross/bin/oa64-clang" ]] && [[ -x "/usr/local/osxcross/bin/oa64-clang++" ]]; then
+                elif [[ -x "${CGO_CROSS_COMPILER_DIR}/osxcross/bin/oa64-clang" ]] && [[ -x "${CGO_CROSS_COMPILER_DIR}/osxcross/bin/oa64-clang++" ]]; then
                     cc="/usr/local/osxcross/bin/oa64-clang"
                     cxx="/usr/local/osxcross/bin/oa64-clang++"
-                    EXTRA_PATH="/usr/local/osxcross/bin"
+                    EXTRA_PATH="${CGO_CROSS_COMPILER_DIR}/osxcross/bin"
                 else
                     local ubuntu_version=$(lsb_release -rs 2>/dev/null || echo "18.04")
+                    if [[ "$ubuntu_version" != *"."* ]]; then
+                        ubuntu_version="18.04"
+                    fi
                     downloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/osxcross/releases/download/v0.1.1/osxcross-14-5-linux-amd64-gnu-ubuntu-${ubuntu_version}.tar.gz" \
-                        "/usr/local/osxcross" || return 2
-                    cc="/usr/local/osxcross/bin/oa64-clang"
-                    cxx="/usr/local/osxcross/bin/oa64-clang++"
-                    EXTRA_PATH="/usr/local/osxcross/bin"
+                        "${CGO_CROSS_COMPILER_DIR}/osxcross" || return 2
+                    cc="${CGO_CROSS_COMPILER_DIR}/osxcross/bin/oa64-clang"
+                    cxx="${CGO_CROSS_COMPILER_DIR}/osxcross/bin/oa64-clang++"
+                    EXTRA_PATH="${CGO_CROSS_COMPILER_DIR}/osxcross/bin"
+                    patchelf --set-rpath "${CGO_CROSS_COMPILER_DIR}/osxcross/lib" ${CGO_CROSS_COMPILER_DIR}/osxcross/bin/x86_64-apple-darwin*-ld || return 2
                 fi
             elif [[ -z "${cc}" ]] || [[ -z "${cxx}" ]]; then
                 echo -e "${COLOR_LIGHT_RED}Both ${cc_var} and ${cxx_var} must be set.${COLOR_RESET}"

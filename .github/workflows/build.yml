@@ -50,7 +50,7 @@ jobs:
 
       - name: Build
         run: |
-          sudo BUILD_CONFIG=script/build.config.sh bash \
+          BUILD_CONFIG=script/build.config.sh bash \
             script/build.sh \
             --enable-micro \
             --skip-init-web \

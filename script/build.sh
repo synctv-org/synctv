@@ -377,7 +377,7 @@ function initCGODeps() {
 
     initDefaultCGODeps "$@" || return $?
 
-    PATH=${EXTRA_PATH:+$EXTRA_PATH:}$PATH absCCCXX || return ?
+    PATH=${EXTRA_PATH:+$EXTRA_PATH:}$PATH absCCCXX || return $?
 
     return 0
 }

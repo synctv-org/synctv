@@ -609,8 +609,8 @@ function initOsxCGO() {
                     cc="oa64-clang"
                     cxx="oa64-clang++"
                 elif [[ -x "${CGO_CROSS_COMPILER_DIR}/osxcross/bin/oa64-clang" ]] && [[ -x "${CGO_CROSS_COMPILER_DIR}/osxcross/bin/oa64-clang++" ]]; then
-                    cc="/usr/local/osxcross/bin/oa64-clang"
-                    cxx="/usr/local/osxcross/bin/oa64-clang++"
+                    cc="${CGO_CROSS_COMPILER_DIR}/osxcross/bin/oa64-clang"
+                    cxx="${CGO_CROSS_COMPILER_DIR}/osxcross/bin/oa64-clang++"
                     EXTRA_PATH="${CGO_CROSS_COMPILER_DIR}/osxcross/bin"
                 else
                     local ubuntu_version=$(lsb_release -rs 2>/dev/null || echo "18.04")

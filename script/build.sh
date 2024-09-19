@@ -392,6 +392,8 @@ function absCCCXX() {
     read -r cxx_command cxx_options <<<"${CXX}"
     CXX="$(command -v "${cxx_command}")" || return 2
     [[ -n "${cxx_options}" ]] && CXX="${CXX} ${cxx_options}"
+
+    return 0
 }
 
 # Initializes CGO dependencies for the host platform.

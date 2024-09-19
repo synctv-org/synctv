@@ -377,7 +377,7 @@ function initCGODeps() {
 
     initDefaultCGODeps "$@" || return $?
 
-    PATH=${EXTRA_PATH:+$EXTRA_PATH:}$PATH absCCCXX
+    PATH=${EXTRA_PATH:+$EXTRA_PATH:}$PATH absCCCXX || return ?
 
     return 0
 }
@@ -385,12 +385,12 @@ function initCGODeps() {
 function absCCCXX() {
     local cc_command cc_options
     read -r cc_command cc_options <<<"${CC}"
-    CC="$(command -v "${cc_command}")"
+    CC="$(command -v "${cc_command}")" || return 2
     [[ -n "${cc_options}" ]] && CC="${CC} ${cc_options}"
 
     local cxx_command cxx_options
     read -r cxx_command cxx_options <<<"${CXX}"
-    CXX="$(command -v "${cxx_command}")"
+    CXX="$(command -v "${cxx_command}")" || return 2
     [[ -n "${cxx_options}" ]] && CXX="${CXX} ${cxx_options}"
 }
 
@@ -612,6 +612,8 @@ function initOsxCGO() {
                     cc="${CGO_CROSS_COMPILER_DIR}/osxcross/bin/oa64-clang"
                     cxx="${CGO_CROSS_COMPILER_DIR}/osxcross/bin/oa64-clang++"
                     EXTRA_PATH="${CGO_CROSS_COMPILER_DIR}/osxcross/bin"
+                    patchelf --set-rpath "${CGO_CROSS_COMPILER_DIR}/osxcross/lib" \
+                        ${CGO_CROSS_COMPILER_DIR}/osxcross/bin/x86_64-apple-darwin*-ld || return 2
                 else
                     local ubuntu_version=$(lsb_release -rs 2>/dev/null || echo "18.04")
                     if [[ "$ubuntu_version" != *"."* ]]; then
@@ -622,7 +624,8 @@ function initOsxCGO() {
                     cc="${CGO_CROSS_COMPILER_DIR}/osxcross/bin/oa64-clang"
                     cxx="${CGO_CROSS_COMPILER_DIR}/osxcross/bin/oa64-clang++"
                     EXTRA_PATH="${CGO_CROSS_COMPILER_DIR}/osxcross/bin"
-                    patchelf --set-rpath "${CGO_CROSS_COMPILER_DIR}/osxcross/lib" ${CGO_CROSS_COMPILER_DIR}/osxcross/bin/x86_64-apple-darwin*-ld || return 2
+                    patchelf --set-rpath "${CGO_CROSS_COMPILER_DIR}/osxcross/lib" \
+                        ${CGO_CROSS_COMPILER_DIR}/osxcross/bin/x86_64-apple-darwin*-ld || return 2
                 fi
             elif [[ -z "${cc}" ]] || [[ -z "${cxx}" ]]; then
                 echo -e "${COLOR_LIGHT_RED}Both ${cc_var} and ${cxx_var} must be set.${COLOR_RESET}"

@@ -1078,6 +1078,9 @@ while [[ $# -gt 0 ]]; do
         printEnvHelp
         exit 0
         ;;
+    --build-mode=*)
+        BUILD_MODE="${1#*=}"
+        ;;
     --disable-cgo)
         CGO_ENABLED="0"
         ;;

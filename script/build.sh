@@ -425,7 +425,7 @@ function initDefaultCGODeps() {
                 initHostCGODeps "$@"
                 return 0
             else
-                echo -e "${COLOR_LIGHT_YELLOW}CGO is disabled for ${goos}/${goarch}${micro:+"/$micro"}."
+                echo -e "${COLOR_LIGHT_YELLOW}CGO is disabled for ${goos}/${goarch}${micro:+"/$micro"}.${COLOR_RESET}"
                 return 1
             fi
             ;;
@@ -438,7 +438,7 @@ function initDefaultCGODeps() {
                 initHostCGODeps "$@"
                 return 0
             else
-                echo -e "${COLOR_LIGHT_YELLOW}CGO is disabled for ${goos}/${goarch}${micro:+"/$micro"}."
+                echo -e "${COLOR_LIGHT_YELLOW}CGO is disabled for ${goos}/${goarch}${micro:+"/$micro"}.${COLOR_RESET}"
                 return 1
             fi
             ;;
@@ -487,7 +487,7 @@ function initDefaultCGODeps() {
             ;;
         "ppc64")
             # initLinuxCGO "powerpc64" ""
-            echo -e "${COLOR_LIGHT_YELLOW}CGO is disabled for ${goos}/${goarch}${micro:+"/$micro"}."
+            echo -e "${COLOR_LIGHT_YELLOW}CGO is disabled for ${goos}/${goarch}${micro:+"/$micro"}.${COLOR_RESET}"
             return 1
             ;;
         "ppc64le")
@@ -506,7 +506,7 @@ function initDefaultCGODeps() {
             if [[ "${goos}" == "${GOHOSTOS}" ]] && [[ "${goarch}" == "${GOHOSTARCH}" ]]; then
                 initHostCGODeps "$@" || return $?
             else
-                echo -e "${COLOR_LIGHT_YELLOW}CGO is disabled for ${goos}/${goarch}${micro:+"/$micro"}."
+                echo -e "${COLOR_LIGHT_YELLOW}CGO is disabled for ${goos}/${goarch}${micro:+"/$micro"}.${COLOR_RESET}"
                 return 1
             fi
             ;;
@@ -520,7 +520,7 @@ function initDefaultCGODeps() {
                 initHostCGODeps "$@" || return $?
                 return 0
             else
-                echo -e "${COLOR_LIGHT_YELLOW}CGO is disabled for ${goos}/${goarch}${micro:+"/$micro"}."
+                echo -e "${COLOR_LIGHT_YELLOW}CGO is disabled for ${goos}/${goarch}${micro:+"/$micro"}.${COLOR_RESET}"
                 return 1
             fi
             ;;
@@ -533,7 +533,7 @@ function initDefaultCGODeps() {
                 initHostCGODeps "$@" || return $?
                 return 0
             else
-                echo -e "${COLOR_LIGHT_YELLOW}CGO is disabled for ${goos}/${goarch}${micro:+"/$micro"}."
+                echo -e "${COLOR_LIGHT_YELLOW}CGO is disabled for ${goos}/${goarch}${micro:+"/$micro"}.${COLOR_RESET}"
                 return 1
             fi
             ;;
@@ -550,7 +550,7 @@ function initDefaultCGODeps() {
             if [[ "${goos}" == "${GOHOSTOS}" ]] && [[ "${goarch}" == "${GOHOSTARCH}" ]]; then
                 initHostCGODeps "$@" || return $?
             else
-                echo -e "${COLOR_LIGHT_YELLOW}CGO is disabled for ${goos}/${goarch}${micro:+"/$micro"}."
+                echo -e "${COLOR_LIGHT_YELLOW}CGO is disabled for ${goos}/${goarch}${micro:+"/$micro"}.${COLOR_RESET}"
                 return 1
             fi
             ;;
@@ -568,28 +568,95 @@ function initDefaultCGODeps() {
         esac
         initAndroidNDK "${goarch}" "${micro}" || return $?
         ;;
-    "darwin" | "ios")
-        case "${GOHOSTOS}" in
-        "darwin")
-            CC="clang"
-            CXX="clang++"
-            ;;
-        "linux")
-            initOsxCGO "${goarch}" "${micro}" || return $?
-            ;;
-        *)
-            echo -e "${COLOR_LIGHT_YELLOW}CGO is disabled for ${goos}/${goarch}${micro:+"/$micro"}."
-            return 1
-            ;;
-        esac
+    "darwin")
+        initOsxCGO "${goarch}" "${micro}" || return $?
+        ;;
+    "ios")
+        initAppleCGO "${goarch}" "${micro}" || return $?
         ;;
     *)
         if [[ "${goos}" == "${GOHOSTOS}" ]] && [[ "${goarch}" == "${GOHOSTARCH}" ]]; then
             initHostCGODeps "$@" || return $?
         else
-            echo -e "${COLOR_LIGHT_YELLOW}CGO is disabled for ${goos}/${goarch}${micro:+"/$micro"}."
+            echo -e "${COLOR_LIGHT_YELLOW}CGO is disabled for ${goos}/${goarch}${micro:+"/$micro"}.${COLOR_RESET}"
             return 1
         fi
+        ;;
+    esac
+}
+
+function initAppleCGO() {
+    local goarch="$1"
+    case "${GOHOSTOS}" in
+    "darwin")
+        case "${goarch}" in
+        "amd64")
+            local sdk_path
+            sdk_path=$(xcrun -sdk iphonesimulator --show-sdk-path)
+            [ $? -ne 0 ] && echo -e "${COLOR_LIGHT_RED}Failed to get iOS simulator SDK path.${COLOR_RESET}" && return 1
+            CC="clang -arch x86_64 -miphonesimulator-version-min=4.2 -isysroot ${sdk_path}"
+            CXX="clang++ -arch x86_64 -miphonesimulator-version-min=4.2 -isysroot ${sdk_path}"
+            ;;
+        "arm64")
+            local sdk_path
+            sdk_path=$(xcrun -sdk iphoneos --show-sdk-path)
+            [ $? -ne 0 ] && echo -e "${COLOR_LIGHT_RED}Failed to get iOS SDK path.${COLOR_RESET}" && return 1
+            CC="clang -arch arm64 -miphoneos-version-min=4.2 -isysroot ${sdk_path}"
+            CXX="clang++ -arch arm64 -miphoneos-version-min=4.2 -isysroot ${sdk_path}"
+            ;;
+        *)
+            echo -e "${COLOR_LIGHT_YELLOW}Unknown ios architecture: ${goarch}${COLOR_RESET}"
+            return 2
+            ;;
+        esac
+        ;;
+    "linux")
+        # FIXME: use ios sdk
+        case "${GOHOSTARCH}" in
+        "amd64")
+            local cc_var=$(echo "CC_OSX_${goarch}" | awk '{print tolower($0)}')
+            local cxx_var=$(echo "CXX_OSX_${goarch}" | awk '{print tolower($0)}')
+            local cc=${!cc_var}
+            local cxx=${!cxx_var}
+            if [[ -z "${cc}" ]] && [[ -z "${cxx}" ]]; then
+                if command -v oa64-clang >/dev/null 2>&1 && command -v oa64-clang++ >/dev/null 2>&1; then
+                    cc="oa64-clang"
+                    cxx="oa64-clang++"
+                elif [[ -x "${CROSS_COMPILER_DIR}/osxcross/bin/oa64-clang" ]] && [[ -x "${CROSS_COMPILER_DIR}/osxcross/bin/oa64-clang++" ]]; then
+                    cc="${CROSS_COMPILER_DIR}/osxcross/bin/oa64-clang"
+                    cxx="${CROSS_COMPILER_DIR}/osxcross/bin/oa64-clang++"
+                    EXTRA_PATH="${CROSS_COMPILER_DIR}/osxcross/bin"
+                    patchelf --set-rpath "${CROSS_COMPILER_DIR}/osxcross/lib" \
+                        ${CROSS_COMPILER_DIR}/osxcross/bin/x86_64-apple-darwin*-ld || return 2
+                else
+                    local ubuntu_version=$(lsb_release -rs 2>/dev/null || echo "18.04")
+                    if [[ "$ubuntu_version" != *"."* ]]; then
+                        ubuntu_version="18.04"
+                    fi
+                    downloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/osxcross/releases/download/v0.1.1/osxcross-14-5-linux-amd64-gnu-ubuntu-${ubuntu_version}.tar.gz" \
+                        "${CROSS_COMPILER_DIR}/osxcross" || return 2
+                    cc="${CROSS_COMPILER_DIR}/osxcross/bin/oa64-clang"
+                    cxx="${CROSS_COMPILER_DIR}/osxcross/bin/oa64-clang++"
+                    EXTRA_PATH="${CROSS_COMPILER_DIR}/osxcross/bin"
+                    patchelf --set-rpath "${CROSS_COMPILER_DIR}/osxcross/lib" \
+                        ${CROSS_COMPILER_DIR}/osxcross/bin/x86_64-apple-darwin*-ld || return 2
+                fi
+            elif [[ -z "${cc}" ]] || [[ -z "${cxx}" ]]; then
+                echo -e "${COLOR_LIGHT_RED}Both ${cc_var} and ${cxx_var} must be set.${COLOR_RESET}"
+                return 2
+            fi
+            CC="${cc}"
+            CXX="${cxx}"
+            ;;
+        *)
+            echo -e "${COLOR_LIGHT_YELLOW}Cross compiler not supported for ${GOHOSTOS}/${GOHOSTARCH}.${COLOR_RESET}"
+            return 2
+            ;;
+        esac
+        ;;
+    *)
+        echo -e "${COLOR_LIGHT_YELLOW}Cross compiler not supported for ${GOHOSTOS}/${GOHOSTARCH}.${COLOR_RESET}"
+        return 2
         ;;
     esac
 }
@@ -598,8 +665,26 @@ function initOsxCGO() {
     local goarch="$1"
     case "${GOHOSTOS}" in
     "darwin")
-        CC="clang"
-        CXX="clang++"
+        case "${goarch}" in
+        "amd64")
+            local sdk_path
+            sdk_path=$(xcrun -sdk macosx --show-sdk-path)
+            [ $? -ne 0 ] && echo -e "${COLOR_LIGHT_RED}Failed to get macOS SDK path.${COLOR_RESET}" && return 1
+            CC="clang -arch x86_64 -mmacosx-version-min=10.11 -isysroot ${sdk_path}"
+            CXX="clang++ -arch x86_64 -mmacosx-version-min=10.11 -isysroot ${sdk_path}"
+            ;;
+        "arm64")
+            local sdk_path
+            sdk_path=$(xcrun -sdk macosx --show-sdk-path)
+            [ $? -ne 0 ] && echo -e "${COLOR_LIGHT_RED}Failed to get macOS SDK path.${COLOR_RESET}" && return 1
+            CC="clang -arch arm64 -mmacosx-version-min=10.11 -isysroot ${sdk_path}"
+            CXX="clang++ -arch arm64 -mmacosx-version-min=10.11 -isysroot ${sdk_path}"
+            ;;
+        *)
+            echo -e "${COLOR_LIGHT_YELLOW}Unknown darwin architecture: ${goarch}${COLOR_RESET}"
+            return 2
+            ;;
+        esac
         ;;
     "linux")
         case "${GOHOSTARCH}" in
@@ -639,14 +724,14 @@ function initOsxCGO() {
             CXX="${cxx}"
             ;;
         *)
-            echo -e "${COLOR_LIGHT_YELLOW}CGO is disabled for ${goos}/${goarch}."
-            return 1
+            echo -e "${COLOR_LIGHT_YELLOW}Cross compiler not supported for ${GOHOSTOS}/${GOHOSTARCH}.${COLOR_RESET}"
+            return 2
             ;;
         esac
         ;;
     *)
-        echo -e "${COLOR_LIGHT_YELLOW}CGO is disabled for ${goos}/${goarch}."
-        return 1
+        echo -e "${COLOR_LIGHT_YELLOW}Cross compiler not supported for ${GOHOSTOS}/${GOHOSTARCH}.${COLOR_RESET}"
+        return 2
         ;;
     esac
 }
@@ -989,10 +1074,10 @@ function buildTargetWithMicro() {
         build_env+=("CGO_ENABLED=0")
     fi
 
-    echo -e "${COLOR_LIGHT_BLUE}Run command:\n${COLOR_WHITE}$(for var in "${build_env[@]}"; do
+    echo -e "${COLOR_LIGHT_BLUE}Run command:${COLOR_RESET}\n$(for var in "${build_env[@]}"; do
         key=$(echo "${var}" | cut -d= -f1)
         value=$(echo "${var}" | cut -d= -f2-)
-        echo "export ${key}='${value}'"
+        echo -e "${COLOR_LIGHT_GREEN}export${COLOR_RESET} ${COLOR_WHITE}${key}='${value}'${COLOR_RESET}"
     done)\n${COLOR_LIGHT_CYAN}go build -buildmode=$buildmode -trimpath ${BUILD_ARGS} -tags \"${TAGS}\" -ldflags \"${LDFLAGS}${EXT_LDFLAGS:+ -extldflags '$EXT_LDFLAGS'}\" -o \"${target_file}\" \"${source_dir}\"${COLOR_RESET}"
     local start_time=$(date +%s)
     env "${build_env[@]}" go build -buildmode=$buildmode -trimpath ${BUILD_ARGS} -tags "${TAGS}" -ldflags "${LDFLAGS}${EXT_LDFLAGS:+ -extldflags '$EXT_LDFLAGS'}" -o "${target_file}" "${source_dir}"
@@ -1031,6 +1116,10 @@ function expandPlatforms() {
 function autoBuild() {
     local platforms=$(expandPlatforms "$1")
     checkPlatforms "${platforms}" || return 1
+    [ -z "${platforms}" ] &&
+        echo -e "${COLOR_LIGHT_RED}No platforms specified.${COLOR_RESET}" &&
+        echo -e "${COLOR_LIGHT_RED}Supported platforms:${COLOR_RESET} ${COLOR_LIGHT_CYAN}${ALLOWED_PLATFORMS}${COLOR_RESET}" &&
+        return 1
     local start_time=$(date +%s)
     if declare -f initDep >/dev/null; then
         initDep

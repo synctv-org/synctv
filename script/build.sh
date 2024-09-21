@@ -23,7 +23,7 @@ readonly DEFAULT_CGO_ENABLED="1"
 readonly DEFAULT_FORCE_CGO="0"
 readonly DEFAULT_CC="gcc"
 readonly DEFAULT_CXX="g++"
-readonly DEFAULT_CGO_CROSS_COMPILER_DIR="${DEFAULT_SOURCE_DIR}/cross"
+readonly DEFAULT_CROSS_COMPILER_DIR="$(dirname $(mktemp -u))/cross"
 readonly DEFAULT_CGO_FLAGS="-O2 -g0 -pipe"
 readonly DEFAULT_CGO_LDFLAGS="-s"
 readonly DEFAULT_LDFLAGS="-s -w -linkmode auto"
@@ -43,34 +43,35 @@ readonly GOVERSION="$(go env GOVERSION)" # e.g go1.23.1
 # Prints help information about build configuration.
 function printBuildConfigHelp() {
     echo -e "${COLOR_LIGHT_ORANGE}You can customize the build configuration using the following functions (defined in ${DEFAULT_BUILD_CONFIG}):${COLOR_RESET}"
-    echo -e "  ${COLOR_LIGHT_GREEN}parseDepArgs${COLOR_RESET}  - Parse dependency arguments."
-    echo -e "  ${COLOR_LIGHT_GREEN}printDepHelp${COLOR_RESET}   - Print dependency help information."
-    echo -e "  ${COLOR_LIGHT_GREEN}printDepEnvHelp${COLOR_RESET} - Print dependency environment variable help."
-    echo -e "  ${COLOR_LIGHT_GREEN}initDepPlatforms${COLOR_RESET} - Initialize dependency platforms."
-    echo -e "  ${COLOR_LIGHT_GREEN}initDep${COLOR_RESET}        - Initialize dependencies."
+    echo -e "  ${COLOR_LIGHT_GREEN}initDep${COLOR_RESET}          - Initialize dependencies"
+    echo -e "  ${COLOR_LIGHT_GREEN}initDepPlatforms${COLOR_RESET} - Initialize dependency platforms"
+    echo -e "  ${COLOR_LIGHT_GREEN}parseDepArgs${COLOR_RESET}     - Parse dependency arguments"
+    echo -e "  ${COLOR_LIGHT_GREEN}printDepEnvHelp${COLOR_RESET}  - Print dependency environment variable help"
+    echo -e "  ${COLOR_LIGHT_GREEN}printDepHelp${COLOR_RESET}     - Print dependency help information"
 }
 
 # Prints help information about environment variables.
 function printEnvHelp() {
     echo -e "${COLOR_LIGHT_YELLOW}Environment Variables:${COLOR_RESET}"
-    echo -e "  ${COLOR_LIGHT_CYAN}SOURCE_DIR${COLOR_RESET}                - Set the source directory (default: ${DEFAULT_SOURCE_DIR})."
-    echo -e "  ${COLOR_LIGHT_CYAN}RESULT_DIR${COLOR_RESET}                - Set the build result directory (default: ${DEFAULT_RESULT_DIR})."
-    echo -e "  ${COLOR_LIGHT_CYAN}BUILD_CONFIG${COLOR_RESET}              - Set the build configuration file (default: ${DEFAULT_BUILD_CONFIG})."
-    echo -e "  ${COLOR_LIGHT_CYAN}BUILD_MODE${COLOR_RESET}                - Set the build mode (default: ${DEFAULT_BUILD_MODE})."
-    echo -e "  ${COLOR_LIGHT_CYAN}BIN_NAME${COLOR_RESET}                  - Set the binary name (default: source directory basename)."
-    echo -e "  ${COLOR_LIGHT_CYAN}BIN_NAME_NO_SUFFIX${COLOR_RESET}        - Do not append the architecture suffix to the binary name."
-    echo -e "  ${COLOR_LIGHT_CYAN}PLATFORM${COLOR_RESET}                  - Set the target platform(s) (default: host platform, supports: all, linux, linux/arm*, ...)."
-    echo -e "  ${COLOR_LIGHT_CYAN}ENABLE_MICRO${COLOR_RESET}              - Enable building micro variants."
-    echo -e "  ${COLOR_LIGHT_CYAN}CGO_ENABLED${COLOR_RESET}                - Enable or disable CGO (default: ${DEFAULT_CGO_ENABLED})."
-    echo -e "  ${COLOR_LIGHT_CYAN}FORCE_CGO${COLOR_RESET}                   - Force the use of CGO (default: ${DEFAULT_FORCE_CGO})."
-    echo -e "  ${COLOR_LIGHT_CYAN}HOST_CC${COLOR_RESET}                   - Set the host C compiler (default: ${DEFAULT_CC})."
-    echo -e "  ${COLOR_LIGHT_CYAN}HOST_CXX${COLOR_RESET}                  - Set the host C++ compiler (default: ${DEFAULT_CXX})."
-    echo -e "  ${COLOR_LIGHT_CYAN}FORCE_CC${COLOR_RESET}                   - Force the use of a specific C compiler."
-    echo -e "  ${COLOR_LIGHT_CYAN}FORCE_CXX${COLOR_RESET}                  - Force the use of a specific C++ compiler."
-    echo -e "  ${COLOR_LIGHT_CYAN}CGO_FLAGS${COLOR_RESET}                  - Set CGO flags (default: ${DEFAULT_CGO_FLAGS})."
-    echo -e "  ${COLOR_LIGHT_CYAN}CGO_LDFLAGS${COLOR_RESET}                 - Set CGO linker flags (default: ${DEFAULT_CGO_LDFLAGS})."
-    echo -e "  ${COLOR_LIGHT_CYAN}GH_PROXY${COLOR_RESET}                   - Set the GitHub proxy mirror (e.g., https://mirror.ghproxy.com/)."
-    echo -e "  ${COLOR_LIGHT_CYAN}NDK_VERSION${COLOR_RESET}                - Set the Android NDK version (default: ${DEFAULT_NDK_VERSION})."
+    echo -e "  ${COLOR_LIGHT_CYAN}BIN_NAME${COLOR_RESET}           - Set the binary name (default: source directory basename)"
+    echo -e "  ${COLOR_LIGHT_CYAN}BIN_NAME_NO_SUFFIX${COLOR_RESET} - Do not append the architecture suffix to the binary name"
+    echo -e "  ${COLOR_LIGHT_CYAN}BUILD_CONFIG${COLOR_RESET}       - Set the build configuration file (default: ${DEFAULT_BUILD_CONFIG})"
+    echo -e "  ${COLOR_LIGHT_CYAN}BUILD_MODE${COLOR_RESET}         - Set the build mode (default: ${DEFAULT_BUILD_MODE})"
+    echo -e "  ${COLOR_LIGHT_CYAN}CGO_ENABLED${COLOR_RESET}        - Enable or disable CGO (default: ${DEFAULT_CGO_ENABLED})"
+    echo -e "  ${COLOR_LIGHT_CYAN}CGO_FLAGS${COLOR_RESET}          - Set CGO flags (default: ${DEFAULT_CGO_FLAGS})"
+    echo -e "  ${COLOR_LIGHT_CYAN}CGO_LDFLAGS${COLOR_RESET}        - Set CGO linker flags (default: ${DEFAULT_CGO_LDFLAGS})"
+    echo -e "  ${COLOR_LIGHT_CYAN}CROSS_COMPILER_DIR${COLOR_RESET} - Set the cross compiler directory (default: ${DEFAULT_CROSS_COMPILER_DIR})"
+    echo -e "  ${COLOR_LIGHT_CYAN}ENABLE_MICRO${COLOR_RESET}       - Enable building micro variants"
+    echo -e "  ${COLOR_LIGHT_CYAN}FORCE_CC${COLOR_RESET}           - Force the use of a specific C compiler"
+    echo -e "  ${COLOR_LIGHT_CYAN}FORCE_CGO${COLOR_RESET}          - Force the use of CGO (default: ${DEFAULT_FORCE_CGO})"
+    echo -e "  ${COLOR_LIGHT_CYAN}FORCE_CXX${COLOR_RESET}          - Force the use of a specific C++ compiler"
+    echo -e "  ${COLOR_LIGHT_CYAN}GH_PROXY${COLOR_RESET}           - Set the GitHub proxy mirror (e.g., https://mirror.ghproxy.com/)"
+    echo -e "  ${COLOR_LIGHT_CYAN}HOST_CC${COLOR_RESET}            - Set the host C compiler (default: ${DEFAULT_CC})"
+    echo -e "  ${COLOR_LIGHT_CYAN}HOST_CXX${COLOR_RESET}           - Set the host C++ compiler (default: ${DEFAULT_CXX})"
+    echo -e "  ${COLOR_LIGHT_CYAN}NDK_VERSION${COLOR_RESET}        - Set the Android NDK version (default: ${DEFAULT_NDK_VERSION})"
+    echo -e "  ${COLOR_LIGHT_CYAN}PLATFORM${COLOR_RESET}           - Set the target platform(s) (default: host platform, supports: all, linux, linux/arm*, ...)"
+    echo -e "  ${COLOR_LIGHT_CYAN}RESULT_DIR${COLOR_RESET}         - Set the build result directory (default: ${DEFAULT_RESULT_DIR})"
+    echo -e "  ${COLOR_LIGHT_CYAN}SOURCE_DIR${COLOR_RESET}         - Set the source directory (default: ${DEFAULT_SOURCE_DIR})"
 
     if declare -f printDepEnvHelp >/dev/null; then
         echo -e "${COLOR_LIGHT_GRAY}$(printSeparator)${COLOR_RESET}"
@@ -85,28 +86,29 @@ function printHelp() {
     echo -e "  $(basename "$0") [options]"
     echo -e ""
     echo -e "${COLOR_LIGHT_RED}Options:${COLOR_RESET}"
-    echo -e "  ${COLOR_LIGHT_BLUE}-h, --help${COLOR_RESET}                    - Display this help message."
-    echo -e "  ${COLOR_LIGHT_BLUE}-eh, --env-help${COLOR_RESET}                 - Display help information about environment variables."
-    echo -e "  ${COLOR_LIGHT_BLUE}--disable-cgo${COLOR_RESET}                  - Disable CGO support."
-    echo -e "  ${COLOR_LIGHT_BLUE}--force-cgo${COLOR_RESET}                   - Force the use of CGO."
-    echo -e "  ${COLOR_LIGHT_BLUE}--build-mode=<mode>${COLOR_RESET}            - Set the build mode (default: ${DEFAULT_BUILD_MODE})."
-    echo -e "  ${COLOR_LIGHT_BLUE}--source-dir=<dir>${COLOR_RESET}               - Specify the source directory (default: ${DEFAULT_SOURCE_DIR})."
-    echo -e "  ${COLOR_LIGHT_BLUE}--bin-name=<name>${COLOR_RESET}               - Specify the binary name (default: source directory basename)."
-    echo -e "  ${COLOR_LIGHT_BLUE}--bin-name-no-suffix${COLOR_RESET}            - Do not append the architecture suffix to the binary name."
-    echo -e "  ${COLOR_LIGHT_BLUE}--more-go-cmd-args='<args>'${COLOR_RESET}     - Pass additional arguments to the 'go build' command."
-    echo -e "  ${COLOR_LIGHT_BLUE}--enable-micro${COLOR_RESET}                - Enable building micro architecture variants."
-    echo -e "  ${COLOR_LIGHT_BLUE}--ldflags='<flags>'${COLOR_RESET}            - Set linker flags (default: \"${DEFAULT_LDFLAGS}\")."
-    echo -e "  ${COLOR_LIGHT_BLUE}--ext-ldflags='<flags>'${COLOR_RESET}          - Set external linker flags (default: \"${DEFAULT_EXT_LDFLAGS}\")."
-    echo -e "  ${COLOR_LIGHT_BLUE}-p=<platforms>, --platforms=<platforms>${COLOR_RESET} - Specify target platform(s) (default: host platform, supports: all, linux, linux/arm*, ...)."
-    echo -e "  ${COLOR_LIGHT_BLUE}--result-dir=<dir>${COLOR_RESET}               - Specify the build result directory (default: ${DEFAULT_RESULT_DIR})."
-    echo -e "  ${COLOR_LIGHT_BLUE}--tags='<tags>'${COLOR_RESET}                - Set build tags."
-    echo -e "  ${COLOR_LIGHT_BLUE}--show-all-platforms${COLOR_RESET}             - Display all supported target platforms."
-    echo -e "  ${COLOR_LIGHT_BLUE}--github-proxy-mirror=<url>${COLOR_RESET}      - Use a GitHub proxy mirror (e.g., https://mirror.ghproxy.com/)."
-    echo -e "  ${COLOR_LIGHT_BLUE}--force-gcc=<path>${COLOR_RESET}              - Force the use of a specific C compiler."
-    echo -e "  ${COLOR_LIGHT_BLUE}--force-g++=<path>${COLOR_RESET}              - Force the use of a specific C++ compiler."
-    echo -e "  ${COLOR_LIGHT_BLUE}--host-gcc=<path>${COLOR_RESET}                - Specify the host C compiler (default: ${DEFAULT_CC})."
-    echo -e "  ${COLOR_LIGHT_BLUE}--host-g++=<path>${COLOR_RESET}               - Specify the host C++ compiler (default: ${DEFAULT_CXX})."
-    echo -e "  ${COLOR_LIGHT_BLUE}--ndk-version=<version>${COLOR_RESET}            - Specify the Android NDK version (default: ${DEFAULT_NDK_VERSION})."
+    echo -e "  ${COLOR_LIGHT_BLUE}--bin-name=<name>${COLOR_RESET}              - Specify the binary name (default: source directory basename)"
+    echo -e "  ${COLOR_LIGHT_BLUE}--bin-name-no-suffix${COLOR_RESET}           - Do not append the architecture suffix to the binary name"
+    echo -e "  ${COLOR_LIGHT_BLUE}--build-mode=<mode>${COLOR_RESET}            - Set the build mode (default: ${DEFAULT_BUILD_MODE})"
+    echo -e "  ${COLOR_LIGHT_BLUE}--cross-compiler-dir=<dir>${COLOR_RESET}     - Specify the cross compiler directory (default: ${DEFAULT_CROSS_COMPILER_DIR})"
+    echo -e "  ${COLOR_LIGHT_BLUE}--disable-cgo${COLOR_RESET}                  - Disable CGO support"
+    echo -e "  ${COLOR_LIGHT_BLUE}-eh, --env-help${COLOR_RESET}                - Display help information about environment variables"
+    echo -e "  ${COLOR_LIGHT_BLUE}--enable-micro${COLOR_RESET}                 - Enable building micro architecture variants"
+    echo -e "  ${COLOR_LIGHT_BLUE}--ext-ldflags='<flags>'${COLOR_RESET}        - Set external linker flags (default: \"${DEFAULT_EXT_LDFLAGS}\")"
+    echo -e "  ${COLOR_LIGHT_BLUE}--force-cgo${COLOR_RESET}                    - Force the use of CGO"
+    echo -e "  ${COLOR_LIGHT_BLUE}--force-gcc=<path>${COLOR_RESET}             - Force the use of a specific C compiler"
+    echo -e "  ${COLOR_LIGHT_BLUE}--force-g++=<path>${COLOR_RESET}             - Force the use of a specific C++ compiler"
+    echo -e "  ${COLOR_LIGHT_BLUE}--github-proxy-mirror=<url>${COLOR_RESET}    - Use a GitHub proxy mirror (e.g., https://mirror.ghproxy.com/)"
+    echo -e "  ${COLOR_LIGHT_BLUE}-h, --help${COLOR_RESET}                     - Display this help message"
+    echo -e "  ${COLOR_LIGHT_BLUE}--host-gcc=<path>${COLOR_RESET}              - Specify the host C compiler (default: ${DEFAULT_CC})"
+    echo -e "  ${COLOR_LIGHT_BLUE}--host-g++=<path>${COLOR_RESET}              - Specify the host C++ compiler (default: ${DEFAULT_CXX})"
+    echo -e "  ${COLOR_LIGHT_BLUE}--ldflags='<flags>'${COLOR_RESET}            - Set linker flags (default: \"${DEFAULT_LDFLAGS}\")"
+    echo -e "  ${COLOR_LIGHT_BLUE}--more-go-cmd-args='<args>'${COLOR_RESET}    - Pass additional arguments to the 'go build' command"
+    echo -e "  ${COLOR_LIGHT_BLUE}--ndk-version=<version>${COLOR_RESET}        - Specify the Android NDK version (default: ${DEFAULT_NDK_VERSION})"
+    echo -e "  ${COLOR_LIGHT_BLUE}-p=<platforms>, --platforms=<platforms>${COLOR_RESET} - Specify target platform(s) (default: host platform, supports: all, linux, linux/arm*, ...)"
+    echo -e "  ${COLOR_LIGHT_BLUE}--result-dir=<dir>${COLOR_RESET}             - Specify the build result directory (default: ${DEFAULT_RESULT_DIR})"
+    echo -e "  ${COLOR_LIGHT_BLUE}--show-all-platforms${COLOR_RESET}           - Display all supported target platforms"
+    echo -e "  ${COLOR_LIGHT_BLUE}--source-dir=<dir>${COLOR_RESET}             - Specify the source directory (default: ${DEFAULT_SOURCE_DIR})"
+    echo -e "  ${COLOR_LIGHT_BLUE}--tags='<tags>'${COLOR_RESET}                - Set build tags"
 
     if declare -f printDepHelp >/dev/null; then
         echo -e "${COLOR_LIGHT_MAGENTA}$(printSeparator)${COLOR_RESET}"
@@ -165,7 +167,7 @@ function fixArgs() {
     echo -e "${COLOR_LIGHT_BLUE}Source directory: ${COLOR_LIGHT_GREEN}${source_dir}${COLOR_RESET}"
     echo -e "${COLOR_LIGHT_BLUE}Build result directory: ${COLOR_LIGHT_GREEN}${RESULT_DIR}${COLOR_RESET}"
 
-    setDefault "CGO_CROSS_COMPILER_DIR" "$DEFAULT_CGO_CROSS_COMPILER_DIR"
+    setDefault "CROSS_COMPILER_DIR" "$DEFAULT_CROSS_COMPILER_DIR"
     setDefault "PLATFORMS" "${GOHOSTPLATFORM}"
     setDefault "BUILD_MODE" "${DEFAULT_BUILD_MODE}"
     setDefault "ENABLE_MICRO" ""
@@ -610,24 +612,24 @@ function initOsxCGO() {
                 if command -v oa64-clang >/dev/null 2>&1 && command -v oa64-clang++ >/dev/null 2>&1; then
                     cc="oa64-clang"
                     cxx="oa64-clang++"
-                elif [[ -x "${CGO_CROSS_COMPILER_DIR}/osxcross/bin/oa64-clang" ]] && [[ -x "${CGO_CROSS_COMPILER_DIR}/osxcross/bin/oa64-clang++" ]]; then
-                    cc="${CGO_CROSS_COMPILER_DIR}/osxcross/bin/oa64-clang"
-                    cxx="${CGO_CROSS_COMPILER_DIR}/osxcross/bin/oa64-clang++"
-                    EXTRA_PATH="${CGO_CROSS_COMPILER_DIR}/osxcross/bin"
-                    patchelf --set-rpath "${CGO_CROSS_COMPILER_DIR}/osxcross/lib" \
-                        ${CGO_CROSS_COMPILER_DIR}/osxcross/bin/x86_64-apple-darwin*-ld || return 2
+                elif [[ -x "${CROSS_COMPILER_DIR}/osxcross/bin/oa64-clang" ]] && [[ -x "${CROSS_COMPILER_DIR}/osxcross/bin/oa64-clang++" ]]; then
+                    cc="${CROSS_COMPILER_DIR}/osxcross/bin/oa64-clang"
+                    cxx="${CROSS_COMPILER_DIR}/osxcross/bin/oa64-clang++"
+                    EXTRA_PATH="${CROSS_COMPILER_DIR}/osxcross/bin"
+                    patchelf --set-rpath "${CROSS_COMPILER_DIR}/osxcross/lib" \
+                        ${CROSS_COMPILER_DIR}/osxcross/bin/x86_64-apple-darwin*-ld || return 2
                 else
                     local ubuntu_version=$(lsb_release -rs 2>/dev/null || echo "18.04")
                     if [[ "$ubuntu_version" != *"."* ]]; then
                         ubuntu_version="18.04"
                     fi
                     downloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/osxcross/releases/download/v0.1.1/osxcross-14-5-linux-amd64-gnu-ubuntu-${ubuntu_version}.tar.gz" \
-                        "${CGO_CROSS_COMPILER_DIR}/osxcross" || return 2
-                    cc="${CGO_CROSS_COMPILER_DIR}/osxcross/bin/oa64-clang"
-                    cxx="${CGO_CROSS_COMPILER_DIR}/osxcross/bin/oa64-clang++"
-                    EXTRA_PATH="${CGO_CROSS_COMPILER_DIR}/osxcross/bin"
-                    patchelf --set-rpath "${CGO_CROSS_COMPILER_DIR}/osxcross/lib" \
-                        ${CGO_CROSS_COMPILER_DIR}/osxcross/bin/x86_64-apple-darwin*-ld || return 2
+                        "${CROSS_COMPILER_DIR}/osxcross" || return 2
+                    cc="${CROSS_COMPILER_DIR}/osxcross/bin/oa64-clang"
+                    cxx="${CROSS_COMPILER_DIR}/osxcross/bin/oa64-clang++"
+                    EXTRA_PATH="${CROSS_COMPILER_DIR}/osxcross/bin"
+                    patchelf --set-rpath "${CROSS_COMPILER_DIR}/osxcross/lib" \
+                        ${CROSS_COMPILER_DIR}/osxcross/bin/x86_64-apple-darwin*-ld || return 2
                 fi
             elif [[ -z "${cc}" ]] || [[ -z "${cxx}" ]]; then
                 echo -e "${COLOR_LIGHT_RED}Both ${cc_var} and ${cxx_var} must be set.${COLOR_RESET}"
@@ -669,15 +671,15 @@ function initLinuxCGO() {
             command -v "${arch_prefix}-linux-musl${abi}${micro}-g++" >/dev/null 2>&1; then
             cc="${arch_prefix}-linux-musl${abi}${micro}-gcc"
             cxx="${arch_prefix}-linux-musl${abi}${micro}-g++"
-        elif [[ -x "${CGO_CROSS_COMPILER_DIR}/${cross_compiler_name}/bin/${arch_prefix}-linux-musl${abi}${micro}-gcc" ]] &&
-            [[ -x "${CGO_CROSS_COMPILER_DIR}/${cross_compiler_name}/bin/${arch_prefix}-linux-musl${abi}${micro}-g++" ]]; then
-            cc="${CGO_CROSS_COMPILER_DIR}/${cross_compiler_name}/bin/${arch_prefix}-linux-musl${abi}${micro}-gcc"
-            cxx="${CGO_CROSS_COMPILER_DIR}/${cross_compiler_name}/bin/${arch_prefix}-linux-musl${abi}${micro}-g++"
+        elif [[ -x "${CROSS_COMPILER_DIR}/${cross_compiler_name}/bin/${arch_prefix}-linux-musl${abi}${micro}-gcc" ]] &&
+            [[ -x "${CROSS_COMPILER_DIR}/${cross_compiler_name}/bin/${arch_prefix}-linux-musl${abi}${micro}-g++" ]]; then
+            cc="${CROSS_COMPILER_DIR}/${cross_compiler_name}/bin/${arch_prefix}-linux-musl${abi}${micro}-gcc"
+            cxx="${CROSS_COMPILER_DIR}/${cross_compiler_name}/bin/${arch_prefix}-linux-musl${abi}${micro}-g++"
         else
             downloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/${cross_compiler_name}-${unamespacer}.tgz" \
-                "${CGO_CROSS_COMPILER_DIR}/${cross_compiler_name}" || return 2
-            cc="${CGO_CROSS_COMPILER_DIR}/${cross_compiler_name}/bin/${arch_prefix}-linux-musl${abi}${micro}-gcc"
-            cxx="${CGO_CROSS_COMPILER_DIR}/${cross_compiler_name}/bin/${arch_prefix}-linux-musl${abi}${micro}-g++"
+                "${CROSS_COMPILER_DIR}/${cross_compiler_name}" || return 2
+            cc="${CROSS_COMPILER_DIR}/${cross_compiler_name}/bin/${arch_prefix}-linux-musl${abi}${micro}-gcc"
+            cxx="${CROSS_COMPILER_DIR}/${cross_compiler_name}/bin/${arch_prefix}-linux-musl${abi}${micro}-g++"
         fi
     elif [[ -z "${cc}" ]] || [[ -z "${cxx}" ]]; then
         echo -e "${COLOR_LIGHT_RED}Both ${cc_var} and ${cxx_var} must be set.${COLOR_RESET}"
@@ -704,15 +706,15 @@ function initWindowsCGO() {
             command -v "${arch_prefix}-w64-mingw32-g++" >/dev/null 2>&1; then
             cc="${arch_prefix}-w64-mingw32-gcc"
             cxx="${arch_prefix}-w64-mingw32-g++"
-        elif [[ -x "${CGO_CROSS_COMPILER_DIR}/${cross_compiler_name}/bin/${arch_prefix}-w64-mingw32-gcc" ]] &&
-            [[ -x "${CGO_CROSS_COMPILER_DIR}/${cross_compiler_name}/bin/${arch_prefix}-w64-mingw32-g++" ]]; then
-            cc="${CGO_CROSS_COMPILER_DIR}/${cross_compiler_name}/bin/${arch_prefix}-w64-mingw32-gcc"
-            cxx="${CGO_CROSS_COMPILER_DIR}/${cross_compiler_name}/bin/${arch_prefix}-w64-mingw32-g++"
+        elif [[ -x "${CROSS_COMPILER_DIR}/${cross_compiler_name}/bin/${arch_prefix}-w64-mingw32-gcc" ]] &&
+            [[ -x "${CROSS_COMPILER_DIR}/${cross_compiler_name}/bin/${arch_prefix}-w64-mingw32-g++" ]]; then
+            cc="${CROSS_COMPILER_DIR}/${cross_compiler_name}/bin/${arch_prefix}-w64-mingw32-gcc"
+            cxx="${CROSS_COMPILER_DIR}/${cross_compiler_name}/bin/${arch_prefix}-w64-mingw32-g++"
         else
             downloadAndUnzip "${GH_PROXY}https://github.com/zijiren233/musl-cross-make/releases/download/${CGO_DEPS_VERSION}/${cross_compiler_name}-${unamespacer}.tgz" \
-                "${CGO_CROSS_COMPILER_DIR}/${cross_compiler_name}" || return 2
-            cc="${CGO_CROSS_COMPILER_DIR}/${cross_compiler_name}/bin/${arch_prefix}-w64-mingw32-gcc"
-            cxx="${CGO_CROSS_COMPILER_DIR}/${cross_compiler_name}/bin/${arch_prefix}-w64-mingw32-g++"
+                "${CROSS_COMPILER_DIR}/${cross_compiler_name}" || return 2
+            cc="${CROSS_COMPILER_DIR}/${cross_compiler_name}/bin/${arch_prefix}-w64-mingw32-gcc"
+            cxx="${CROSS_COMPILER_DIR}/${cross_compiler_name}/bin/${arch_prefix}-w64-mingw32-g++"
         fi
     elif [[ -z "${cc}" ]] || [[ -z "${cxx}" ]]; then
         echo -e "${COLOR_LIGHT_RED}Both ${cc_var} and ${cxx_var} must be set.${COLOR_RESET}"
@@ -729,7 +731,7 @@ function initWindowsCGO() {
 function initAndroidNDK() {
     local goarch="$1"
 
-    local ndk_dir="${CGO_CROSS_COMPILER_DIR}/android-ndk-${GOHOSTOS}-${NDK_VERSION}"
+    local ndk_dir="${CROSS_COMPILER_DIR}/android-ndk-${GOHOSTOS}-${NDK_VERSION}"
     local clang_base_dir="${ndk_dir}/toolchains/llvm/prebuilt/${GOHOSTOS}-x86_64/bin"
     local clang_prefix="$(getAndroidClang "${goarch}")"
     local cc="${clang_base_dir}/${clang_prefix}-clang"
@@ -1126,6 +1128,9 @@ while [[ $# -gt 0 ]]; do
         ;;
     --github-proxy-mirror=*)
         GH_PROXY="${1#*=}"
+        ;;
+    --cross-compiler-dir=*)
+        CROSS_COMPILER_DIR="${1#*=}"
         ;;
     --force-gcc=*)
         FORCE_CC="${1#*=}"

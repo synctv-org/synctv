@@ -25,17 +25,17 @@ function parseDepArgs() {
 }
 
 function printDepHelp() {
-    echo -e "  ${COLOR_LIGHT_YELLOW}--version=<version>${COLOR_RESET}      - Set the build version (default: 'dev')."
-    echo -e "  ${COLOR_LIGHT_YELLOW}--web-version=<version>${COLOR_RESET}   - Set the web dependency version (default: same as build version)."
-    echo -e "  ${COLOR_LIGHT_YELLOW}--web-repo=<repo>${COLOR_RESET}        - Set the web repository (default: '<owner>/synctv-web')."
-    echo -e "  ${COLOR_LIGHT_YELLOW}--skip-init-web${COLOR_RESET}           - Skip initializing the web dependency."
+    echo -e "  ${COLOR_LIGHT_YELLOW}--version=<version>${COLOR_RESET}     - Set the build version (default: 'dev')"
+    echo -e "  ${COLOR_LIGHT_YELLOW}--web-version=<version>${COLOR_RESET} - Set the web dependency version (default: same as build version)"
+    echo -e "  ${COLOR_LIGHT_YELLOW}--web-repo=<repo>${COLOR_RESET}       - Set the web repository (default: '<owner>/synctv-web')"
+    echo -e "  ${COLOR_LIGHT_YELLOW}--skip-init-web${COLOR_RESET}         - Skip initializing the web dependency"
 }
 
 function printDepEnvHelp() {
-    echo -e "  ${COLOR_LIGHT_GREEN}VERSION${COLOR_RESET}         - Set the build version (default: 'dev')."
-    echo -e "  ${COLOR_LIGHT_GREEN}WEB_VERSION${COLOR_RESET}      - Set the web dependency version (default: same as build version)."
-    echo -e "  ${COLOR_LIGHT_GREEN}WEB_REPO${COLOR_RESET}       - Set the web repository (default: '<owner>/synctv-web')."
-    echo -e "  ${COLOR_LIGHT_GREEN}SKIP_INIT_WEB${COLOR_RESET}    - Skip initializing the web dependency (set to any non-empty value to enable)."
+    echo -e "  ${COLOR_LIGHT_GREEN}VERSION${COLOR_RESET}      - Set the build version (default: 'dev')"
+    echo -e "  ${COLOR_LIGHT_GREEN}WEB_VERSION${COLOR_RESET}  - Set the web dependency version (default: same as build version)"
+    echo -e "  ${COLOR_LIGHT_GREEN}WEB_REPO${COLOR_RESET}     - Set the web repository (default: '<owner>/synctv-web')"
+    echo -e "  ${COLOR_LIGHT_GREEN}SKIP_INIT_WEB${COLOR_RESET} - Skip initializing the web dependency (set to any non-empty value to enable)"
 }
 
 function initDepPlatforms() {

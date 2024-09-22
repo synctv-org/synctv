@@ -286,7 +286,7 @@ function initPlatforms() {
     addAllowedPlatforms "$(echo "$distList" | grep linux)"
     addAllowedPlatforms "$(echo "$distList" | grep android)"
     addAllowedPlatforms "$(echo "$distList" | grep darwin)"
-    addAllowedPlatforms "$(echo "$distList" | grep ios)"
+    addAllowedPlatforms "$(echo "$distList" | grep ios) $(echo "$distList" | grep ios | sed 's/$/-sim/')"
 
     addAllowedPlatforms "${GOHOSTOS}/${GOHOSTARCH}"
 
@@ -572,7 +572,7 @@ function initDefaultCGODeps() {
         initOsxCGO "${goarch}" "${micro}" || return $?
         ;;
     "ios")
-        initAppleCGO "${goarch}" "${micro}" || return $?
+        initIosCGO "${goarch}" "${micro}" || return $?
         ;;
     *)
         if [[ "${goos}" == "${GOHOSTOS}" ]] && [[ "${goarch}" == "${GOHOSTARCH}" ]]; then
@@ -585,17 +585,24 @@ function initDefaultCGODeps() {
     esac
 }
 
-function initAppleCGO() {
+function initIosCGO() {
     local goarch="$1"
     case "${GOHOSTOS}" in
     "darwin")
         case "${goarch}" in
-        "amd64")
+        "amd64" | "amd64-sim"*)
             local sdk_path
             sdk_path=$(xcrun -sdk iphonesimulator --show-sdk-path)
             [ $? -ne 0 ] && echo -e "${COLOR_LIGHT_RED}Failed to get iOS simulator SDK path.${COLOR_RESET}" && return 1
             CC="clang -arch x86_64 -miphonesimulator-version-min=4.2 -isysroot ${sdk_path}"
             CXX="clang++ -arch x86_64 -miphonesimulator-version-min=4.2 -isysroot ${sdk_path}"
+            ;;
+        "arm64-sim"*)
+            local sdk_path
+            sdk_path=$(xcrun -sdk iphonesimulator --show-sdk-path)
+            [ $? -ne 0 ] && echo -e "${COLOR_LIGHT_RED}Failed to get iOS simulator SDK path.${COLOR_RESET}" && return 1
+            CC="clang -arch arm64 -miphonesimulator-version-min=4.2 -isysroot ${sdk_path}"
+            CXX="clang++ -arch arm64 -miphonesimulator-version-min=4.2 -isysroot ${sdk_path}"
             ;;
         "arm64")
             local sdk_path
@@ -989,7 +996,8 @@ function extension() {
 #   $3: Micro architecture variant (e.g., "sse2", "softfloat"). Ref: https://go.dev/wiki/MinimumRequirements#microarchitecture-support
 function buildTargetWithMicro() {
     local goos="$1"
-    local goarch="$2"
+    local _goarch="$2"
+    local goarch="${_goarch%%-*}"
     local micro="$3"
     local build_env=(
         "GOOS=${goos}"
@@ -998,7 +1006,7 @@ function buildTargetWithMicro() {
     local buildmode=$BUILD_MODE
     local ext=$(extension "${goos}" "${buildmode}")
     local target_file="${RESULT_DIR}/${BIN_NAME}"
-    [ -z "$BIN_NAME_NO_SUFFIX" ] && target_file="${target_file}-${goos}-${goarch}${micro:+"-${micro//[.,]/-}"}" || true
+    [ -z "$BIN_NAME_NO_SUFFIX" ] && target_file="${target_file}-${goos}-${_goarch}${micro:+"-${micro//[.,]/-}"}" || true
     target_file="${target_file}${ext}"
 
     # Set micro architecture specific environment variables.
@@ -1037,7 +1045,7 @@ function buildTargetWithMicro() {
     echo -e "${COLOR_LIGHT_MAGENTA}Building ${goos}/${goarch}${micro:+/${micro}}...${COLOR_RESET}"
 
     if isCGOEnabled; then
-        if initCGODeps "${goos}" "${goarch}" "${micro}"; then
+        if initCGODeps "${goos}" "${_goarch}" "${micro}"; then
             code=0
         else
             code=$?

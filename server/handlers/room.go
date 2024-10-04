@@ -34,7 +34,7 @@ func RoomMe(ctx *gin.Context) {
 	room := ctx.MustGet("room").(*op.RoomEntry).Value()
 	log := ctx.MustGet("log").(*logrus.Entry)
 
-	rur, err := room.LoadOrCreateRoomMember(user.ID)
+	rur, err := room.LoadOrCreateMember(user.ID)
 	if err != nil {
 		log.Errorf("room me failed: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
@@ -45,6 +45,7 @@ func RoomMe(ctx *gin.Context) {
 		UserID:           user.ID,
 		RoomID:           room.ID,
 		JoinAt:           rur.CreatedAt.UnixMilli(),
+		Status:           rur.Status,
 		Role:             rur.Role,
 		Permissions:      rur.Permissions,
 		AdminPermissions: rur.AdminPermissions,
@@ -258,76 +259,23 @@ func CheckRoom(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
-	r, err := db.GetRoomByID(roomId)
+
+	roomE, err := op.LoadOrInitRoomByID(roomId)
 	if err != nil {
 		log.Errorf("check room failed: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(err))
 		return
 	}
-
-	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
-		"peopleNum":    op.PeopleNum(r.ID),
-		"needPassword": r.NeedPassword(),
-		"creator":      op.GetUserName(r.CreatorID),
-		"status":       r.Status,
-		"name":         r.Name,
-	}))
-}
-
-func GuestJoinRoom(ctx *gin.Context) {
-	log := ctx.MustGet("log").(*logrus.Entry)
-
-	req := model.LoginRoomReq{}
-	if err := model.Decode(ctx, &req); err != nil {
-		log.Errorf("guest join room failed: %v", err)
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
-		return
-	}
-
-	userE, err := op.LoadOrInitUserByID(db.GuestUserID)
-	if err != nil {
-		log.Errorf("guest join room failed: %v", err)
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
-		return
-	}
-	user := userE.Value()
-
-	roomE, err := op.LoadOrInitRoomByID(req.RoomId)
-	if err != nil {
-		log.Errorf("guest join room failed: %v", err)
-		if err == op.ErrRoomBanned || err == op.ErrRoomPending {
-			ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(err))
-			return
-		}
-		ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(err))
-		return
-	}
 	room := roomE.Value()
 
-	if !room.NeedPassword() {
-		log.Warn("guests are not allowed to join rooms that require a password")
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("guests are not allowed to join rooms that require a password"))
-		return
-	}
-
-	_, err = room.LoadOrCreateRoomMember(user.ID)
-	if err != nil {
-		if errors.Is(err, db.ErrNotFound("")) {
-			log.Warn("guest join room failed: room was disabled join new user")
-			ctx.AbortWithStatusJSON(
-				http.StatusForbidden,
-				model.NewApiErrorResp(
-					fmt.Errorf("this room was disabled join new user"),
-				),
-			)
-			return
-		}
-		log.Errorf("guest join room failed: %v", err)
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
-		return
-	}
-
-	ctx.Status(http.StatusNoContent)
+	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
+		"peopleNum":    op.PeopleNum(room.ID),
+		"needPassword": room.NeedPassword(),
+		"creatorId":    room.CreatorID,
+		"creator":      op.GetUserName(room.CreatorID),
+		"name":         room.Name,
+		"enableGuest":  settings.EnableGuest.Get() && !room.Settings.DisableGuest && !room.NeedPassword(),
+	}))
 }
 
 func LoginRoom(ctx *gin.Context) {
@@ -353,13 +301,23 @@ func LoginRoom(ctx *gin.Context) {
 	}
 	room := roomE.Value()
 
+	if member, err := room.LoadMember(user.ID); err == nil {
+		ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
+			"status":           member.Status,
+			"role":             member.Role,
+			"permissions":      member.Permissions,
+			"adminPermissions": member.AdminPermissions,
+		}))
+		return
+	}
+
 	if !user.IsAdmin() && !user.IsRoomAdmin(room) && !room.CheckPassword(req.Password) {
 		log.Warn("login room failed: password error")
 		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("password error"))
 		return
 	}
 
-	_, err = room.LoadOrCreateRoomMember(user.ID)
+	member, err := room.LoadOrCreateMember(user.ID)
 	if err != nil {
 		if errors.Is(err, db.ErrNotFound("")) {
 			log.Warn("login room failed: room was disabled join new user")
@@ -376,7 +334,12 @@ func LoginRoom(ctx *gin.Context) {
 		return
 	}
 
-	ctx.Status(http.StatusNoContent)
+	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
+		"status":           member.Status,
+		"role":             member.Role,
+		"permissions":      member.Permissions,
+		"adminPermissions": member.AdminPermissions,
+	}))
 }
 
 func DeleteRoom(ctx *gin.Context) {

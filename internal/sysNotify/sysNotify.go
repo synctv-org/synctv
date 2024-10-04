@@ -114,8 +114,8 @@ func (sn *SysNotify) waitCbk() {
 				runTask(tq)
 			}
 		}
-		log.Info("task: all done")
 	}
+	log.Info("task: all done")
 }
 
 func (sn *SysNotify) WaitCbk() {

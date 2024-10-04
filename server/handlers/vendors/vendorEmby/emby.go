@@ -231,13 +231,14 @@ func (s *embyVendorService) GenMovieInfo(ctx context.Context, user *op.User, use
 			}
 		}
 
-		rawPath, err := url.JoinPath("/api/room", movie.RoomID, "/movie/proxy", movie.ID)
+		rawPath, err := url.JoinPath("/api/room/movie/proxy", movie.ID)
 		if err != nil {
 			return nil, err
 		}
 		rawQuery := url.Values{}
 		rawQuery.Set("source", strconv.Itoa(si))
 		rawQuery.Set("token", userToken)
+		rawQuery.Set("roomId", movie.RoomID)
 		u := url.URL{
 			Path:     rawPath,
 			RawQuery: rawQuery.Encode(),
@@ -257,6 +258,7 @@ func (s *embyVendorService) GenMovieInfo(ctx context.Context, user *op.User, use
 			rawQuery.Set("source", strconv.Itoa(si))
 			rawQuery.Set("id", strconv.Itoa(sbi))
 			rawQuery.Set("token", userToken)
+			rawQuery.Set("roomId", movie.RoomID)
 			u := url.URL{
 				Path:     rawPath,
 				RawQuery: rawQuery.Encode(),

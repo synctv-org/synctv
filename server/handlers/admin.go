@@ -25,7 +25,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func EditAdminSettings(ctx *gin.Context) {
+func AdminEditSettings(ctx *gin.Context) {
 	// user := ctx.MustGet("user").(*op.UserEntry)
 	log := ctx.MustGet("log").(*logrus.Entry)
 
@@ -103,7 +103,7 @@ func AdminSettings(ctx *gin.Context) {
 
 }
 
-func Users(ctx *gin.Context) {
+func AdminGetUsers(ctx *gin.Context) {
 	// user := ctx.MustGet("user").(*op.UserEntry)
 	log := ctx.MustGet("log").(*logrus.Entry)
 
@@ -153,7 +153,7 @@ func Users(ctx *gin.Context) {
 		}
 	}
 
-	total, err := db.GetAllUserCount(scopes...)
+	total, err := db.GetUserCount(scopes...)
 	if err != nil {
 		log.WithError(err).Error("get all user count error")
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
@@ -180,7 +180,7 @@ func Users(ctx *gin.Context) {
 		return
 	}
 
-	list, err := db.GetAllUsers(append(scopes, db.Paginate(page, pageSize))...)
+	list, err := db.GetUsers(append(scopes, db.Paginate(page, pageSize))...)
 	if err != nil {
 		log.WithError(err).Error("get all users error")
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
@@ -268,7 +268,7 @@ func AdminGetRoomMembers(ctx *gin.Context) {
 		db.WhereRoomID(room.ID),
 	))
 
-	total, err := db.GetAllUserCount(scopes...)
+	total, err := db.GetUserCount(scopes...)
 	if err != nil {
 		log.Errorf("get room users failed: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
@@ -295,7 +295,7 @@ func AdminGetRoomMembers(ctx *gin.Context) {
 		return
 	}
 
-	list, err := db.GetAllUsers(append(scopes, db.Paginate(page, pageSize))...)
+	list, err := db.GetUsers(append(scopes, db.Paginate(page, pageSize))...)
 	if err != nil {
 		log.Errorf("get room users failed: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
@@ -330,7 +330,7 @@ func genRoomMemberListResp(us []*dbModel.User, room *op.Room) []*model.RoomMembe
 	return resp
 }
 
-func ApprovePendingUser(ctx *gin.Context) {
+func AdminApprovePendingUser(ctx *gin.Context) {
 	log := ctx.MustGet("log").(*logrus.Entry)
 
 	req := model.UserIDReq{}
@@ -363,7 +363,7 @@ func ApprovePendingUser(ctx *gin.Context) {
 	ctx.Status(http.StatusNoContent)
 }
 
-func BanUser(ctx *gin.Context) {
+func AdminBanUser(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*op.UserEntry).Value()
 	log := ctx.MustGet("log").(*logrus.Entry)
 
@@ -408,7 +408,7 @@ func BanUser(ctx *gin.Context) {
 	ctx.Status(http.StatusNoContent)
 }
 
-func UnBanUser(ctx *gin.Context) {
+func AdminUnBanUser(ctx *gin.Context) {
 	// user := ctx.MustGet("user").(*op.UserEntry)
 	log := ctx.MustGet("log").(*logrus.Entry)
 
@@ -441,7 +441,7 @@ func UnBanUser(ctx *gin.Context) {
 	ctx.Status(http.StatusNoContent)
 }
 
-func Rooms(ctx *gin.Context) {
+func AdminGetRooms(ctx *gin.Context) {
 	// user := ctx.MustGet("user").(*op.UserEntry)
 	log := ctx.MustGet("log").(*logrus.Entry)
 
@@ -531,7 +531,7 @@ func Rooms(ctx *gin.Context) {
 	}))
 }
 
-func GetUserRooms(ctx *gin.Context) {
+func AdminGetUserRooms(ctx *gin.Context) {
 	log := ctx.MustGet("log").(*logrus.Entry)
 
 	id := ctx.Query("id")
@@ -613,7 +613,92 @@ func GetUserRooms(ctx *gin.Context) {
 	}))
 }
 
-func ApprovePendingRoom(ctx *gin.Context) {
+func AdminGetUserJoinedRooms(ctx *gin.Context) {
+	log := ctx.MustGet("log").(*logrus.Entry)
+
+	id := ctx.Query("id")
+	if len(id) != 32 {
+		log.Error("user id error")
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("user id error"))
+		return
+	}
+
+	page, pageSize, err := utils.GetPageAndMax(ctx)
+	if err != nil {
+		log.Errorf("failed to get page and max: %v", err)
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	scopes := []func(db *gorm.DB) *gorm.DB{
+		func(db *gorm.DB) *gorm.DB {
+			return db.
+				InnerJoins("JOIN room_members ON rooms.id = room_members.room_id").
+				Where("room_members.user_id = ? AND rooms.creator_id != ?", id, id)
+		},
+	}
+
+	switch ctx.DefaultQuery("status", "active") {
+	case "active":
+		scopes = append(scopes, db.WhereStatus(dbModel.RoomStatusActive))
+	case "pending":
+		scopes = append(scopes, db.WhereStatus(dbModel.RoomStatusPending))
+	case "banned":
+		scopes = append(scopes, db.WhereStatus(dbModel.RoomStatusBanned))
+	}
+
+	if keyword := ctx.Query("keyword"); keyword != "" {
+		switch ctx.DefaultQuery("search", "all") {
+		case "all":
+			scopes = append(scopes, db.WhereRoomNameLikeOrIDLike(keyword, keyword))
+		case "name":
+			scopes = append(scopes, db.WhereRoomNameLike(keyword))
+		case "id":
+			scopes = append(scopes, db.WhereIDLike(keyword))
+		}
+	}
+
+	total, err := db.GetAllRoomsCount(scopes...)
+	if err != nil {
+		log.Errorf("failed to get all rooms count: %v", err)
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
+
+	var desc = ctx.DefaultQuery("order", "desc") == "desc"
+	switch ctx.DefaultQuery("sort", "name") {
+	case "createdAt":
+		if desc {
+			scopes = append(scopes, db.OrderByCreatedAtDesc)
+		} else {
+			scopes = append(scopes, db.OrderByCreatedAtAsc)
+		}
+	case "name":
+		if desc {
+			scopes = append(scopes, db.OrderByDesc("name"))
+		} else {
+			scopes = append(scopes, db.OrderByAsc("name"))
+		}
+	default:
+		log.Errorf("not support sort")
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support sort"))
+		return
+	}
+
+	list, err := genRoomListResp(append(scopes, db.Paginate(page, pageSize))...)
+	if err != nil {
+		log.Errorf("failed to get all rooms: %v", err)
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
+
+	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
+		"total": total,
+		"list":  list,
+	}))
+}
+
+func AdminApprovePendingRoom(ctx *gin.Context) {
 	log := ctx.MustGet("log").(*logrus.Entry)
 
 	req := model.RoomIDReq{}
@@ -645,7 +730,7 @@ func ApprovePendingRoom(ctx *gin.Context) {
 	ctx.Status(http.StatusNoContent)
 }
 
-func BanRoom(ctx *gin.Context) {
+func AdminBanRoom(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*op.UserEntry).Value()
 	log := ctx.MustGet("log").(*logrus.Entry)
 
@@ -693,7 +778,7 @@ func BanRoom(ctx *gin.Context) {
 	ctx.Status(http.StatusNoContent)
 }
 
-func UnBanRoom(ctx *gin.Context) {
+func AdminUnBanRoom(ctx *gin.Context) {
 	// user := ctx.MustGet("user").(*op.UserEntry)
 	log := ctx.MustGet("log").(*logrus.Entry)
 
@@ -726,7 +811,7 @@ func UnBanRoom(ctx *gin.Context) {
 	ctx.Status(http.StatusNoContent)
 }
 
-func AddUser(ctx *gin.Context) {
+func AdminAddUser(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*op.UserEntry).Value()
 	log := ctx.MustGet("log").(*logrus.Entry)
 
@@ -752,7 +837,7 @@ func AddUser(ctx *gin.Context) {
 	ctx.Status(http.StatusNoContent)
 }
 
-func DeleteUser(ctx *gin.Context) {
+func AdminDeleteUser(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*op.UserEntry).Value()
 	log := ctx.MustGet("log").(*logrus.Entry)
 
@@ -1142,7 +1227,7 @@ func AdminDisableVendorBackends(ctx *gin.Context) {
 	ctx.Status(http.StatusNoContent)
 }
 
-func SendTestEmail(ctx *gin.Context) {
+func AdminSendTestEmail(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*op.UserEntry).Value()
 	log := ctx.MustGet("log").(*logrus.Entry)
 

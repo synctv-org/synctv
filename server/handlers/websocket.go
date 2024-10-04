@@ -21,11 +21,15 @@ const maxInterval = 10
 
 func NewWebSocketHandler(wss *utils.WebSocket) gin.HandlerFunc {
 	return func(ctx *gin.Context) {
+		subprotocols := []string{}
 		token := ctx.MustGet("token").(string)
+		if token != "" {
+			subprotocols = append(subprotocols, token)
+		}
 		room := ctx.MustGet("room").(*op.RoomEntry).Value()
 		user := ctx.MustGet("user").(*op.UserEntry).Value()
 		log := ctx.MustGet("log").(*logrus.Entry)
-		_ = wss.Server(ctx.Writer, ctx.Request, []string{token}, NewWSMessageHandler(user, room, log))
+		_ = wss.Server(ctx.Writer, ctx.Request, subprotocols, NewWSMessageHandler(user, room, log))
 	}
 }
 

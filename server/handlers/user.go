@@ -171,6 +171,108 @@ func UserRooms(ctx *gin.Context) {
 	}))
 }
 
+func UserJoinedRooms(ctx *gin.Context) {
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
+	log := ctx.MustGet("log").(*logrus.Entry)
+
+	page, pageSize, err := utils.GetPageAndMax(ctx)
+	if err != nil {
+		log.Errorf("failed to get page and max: %v", err)
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	scopes := []func(db *gorm.DB) *gorm.DB{
+		func(db *gorm.DB) *gorm.DB {
+			return db.
+				InnerJoins("JOIN room_members ON rooms.id = room_members.room_id").
+				Where("room_members.user_id = ? AND rooms.creator_id != ?", user.ID, user.ID)
+		},
+		db.WhereStatus(dbModel.RoomStatusActive),
+	}
+
+	if keyword := ctx.Query("keyword"); keyword != "" {
+		switch ctx.DefaultQuery("search", "all") {
+		case "all":
+			scopes = append(scopes, db.WhereRoomNameLikeOrIDLike(keyword, keyword))
+		case "name":
+			scopes = append(scopes, db.WhereRoomNameLike(keyword))
+		case "id":
+			scopes = append(scopes, db.WhereIDLike(keyword))
+		}
+	}
+
+	total, err := db.GetAllRoomsCount(scopes...)
+	if err != nil {
+		log.Errorf("failed to get all rooms count: %v", err)
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
+
+	var desc = ctx.DefaultQuery("order", "desc") == "desc"
+	switch ctx.DefaultQuery("sort", "name") {
+	case "createdAt":
+		if desc {
+			scopes = append(scopes, db.OrderByCreatedAtDesc)
+		} else {
+			scopes = append(scopes, db.OrderByCreatedAtAsc)
+		}
+	case "name":
+		if desc {
+			scopes = append(scopes, db.OrderByDesc("name"))
+		} else {
+			scopes = append(scopes, db.OrderByAsc("name"))
+		}
+	default:
+		log.Errorf("not support sort")
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support sort"))
+		return
+	}
+
+	list, err := genRoomListResp(append(scopes, db.Paginate(page, pageSize))...)
+	if err != nil {
+		log.Errorf("failed to get all rooms: %v", err)
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
+
+	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
+		"total": total,
+		"list":  list,
+	}))
+}
+
+func UserCheckJoinedRoom(ctx *gin.Context) {
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
+	log := ctx.MustGet("log").(*logrus.Entry)
+
+	id := ctx.Query("id")
+	if len(id) != 32 {
+		log.Errorf("id is invalid")
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("id is invalid"))
+		return
+	}
+
+	roomE, err := op.LoadOrInitRoomByID(id)
+	if err != nil {
+		log.Errorf("login room failed: %v", err)
+		ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(err))
+		return
+	}
+	room := roomE.Value()
+
+	status, err := room.LoadMemberStatus(user.ID)
+	if err != nil {
+		log.Errorf("get room member status failed: %v", err)
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
+
+	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
+		"joined": status != dbModel.RoomMemberStatusNotJoined,
+	}))
+}
+
 func SetUsername(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*op.UserEntry).Value()
 	log := ctx.MustGet("log").(*logrus.Entry)

@@ -180,7 +180,7 @@ func (s *bilibiliVendorService) GenMovieInfo(ctx context.Context, user *op.User,
 
 	bmc := s.movie.BilibiliCache()
 	if movie.MovieBase.Live {
-		movie.MovieBase.Url = fmt.Sprintf("/api/room/%s/movie/proxy/%s?token=%s", movie.RoomID, movie.ID, userToken)
+		movie.MovieBase.Url = fmt.Sprintf("/api/room/movie/proxy/%s?token=%s&roomId=%s", movie.ID, userToken, movie.RoomID)
 		movie.MovieBase.Type = "m3u8"
 		return movie, nil
 	}
@@ -210,7 +210,7 @@ func (s *bilibiliVendorService) GenMovieInfo(ctx context.Context, user *op.User,
 			movie.MovieBase.Subtitles = make(map[string]*dbModel.Subtitle, len(srt))
 		}
 		movie.MovieBase.Subtitles[k] = &dbModel.Subtitle{
-			URL:  fmt.Sprintf("/api/room/%s/movie/proxy/%s?t=subtitle&n=%s&token=%s", movie.RoomID, movie.ID, k, userToken),
+			URL:  fmt.Sprintf("/api/room/movie/proxy/%s?t=subtitle&n=%s&token=%s&roomId=%s", movie.ID, k, userToken, movie.RoomID),
 			Type: "srt",
 		}
 	}
@@ -226,18 +226,18 @@ func (s *bilibiliVendorService) GenProxyMovieInfo(ctx context.Context, user *op.
 
 	bmc := s.movie.BilibiliCache()
 	if movie.MovieBase.Live {
-		movie.MovieBase.Url = fmt.Sprintf("/api/room/%s/movie/proxy/%s?token=%s", movie.RoomID, movie.ID, userToken)
+		movie.MovieBase.Url = fmt.Sprintf("/api/room/movie/proxy/%s?token=%s&roomId=%s", movie.ID, userToken, movie.RoomID)
 		movie.MovieBase.Type = "m3u8"
 		return movie, nil
 	}
 
-	movie.MovieBase.Url = fmt.Sprintf("/api/room/%s/movie/proxy/%s?token=%s", movie.RoomID, movie.ID, userToken)
+	movie.MovieBase.Url = fmt.Sprintf("/api/room/movie/proxy/%s?token=%s&roomId=%s", movie.ID, userToken, movie.RoomID)
 	movie.MovieBase.Type = "mpd"
 	movie.MovieBase.MoreSources = []*dbModel.MoreSource{
 		{
 			Name: "hevc",
 			Type: "mpd",
-			Url:  fmt.Sprintf("/api/room/%s/movie/proxy/%s?token=%s&t=hevc", movie.RoomID, movie.ID, userToken),
+			Url:  fmt.Sprintf("/api/room/movie/proxy/%s?token=%s&t=hevc&roomId=%s", movie.ID, userToken, movie.RoomID),
 		},
 	}
 	srt, err := bmc.Subtitle.Get(ctx, user.BilibiliCache())
@@ -249,7 +249,7 @@ func (s *bilibiliVendorService) GenProxyMovieInfo(ctx context.Context, user *op.
 			movie.MovieBase.Subtitles = make(map[string]*dbModel.Subtitle, len(srt))
 		}
 		movie.MovieBase.Subtitles[k] = &dbModel.Subtitle{
-			URL:  fmt.Sprintf("/api/room/%s/movie/proxy/%s?t=subtitle&n=%s&token=%s", movie.RoomID, movie.ID, k, userToken),
+			URL:  fmt.Sprintf("/api/room/movie/proxy/%s?t=subtitle&n=%s&token=%s&roomId=%s", movie.ID, k, userToken, movie.RoomID),
 			Type: "srt",
 		}
 	}

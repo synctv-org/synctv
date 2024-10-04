@@ -94,7 +94,7 @@ func (r *Room) UserRole(userID string) (model.RoomMemberRole, error) {
 	if r.IsCreator(userID) {
 		return model.RoomMemberRoleCreator, nil
 	}
-	rur, err := r.LoadRoomMember(userID)
+	rur, err := r.LoadMember(userID)
 	if err != nil {
 		return model.RoomMemberRoleUnknown, err
 	}
@@ -123,7 +123,7 @@ func (r *Room) HasPermission(userID string, permission model.RoomMemberPermissio
 		return true
 	}
 
-	rur, err := r.LoadOrCreateRoomMember(userID)
+	rur, err := r.LoadOrCreateMember(userID)
 	if err != nil {
 		return false
 	}
@@ -151,7 +151,7 @@ func (r *Room) HasAdminPermission(userID string, permission model.RoomAdminPermi
 		return true
 	}
 
-	rur, err := r.LoadOrCreateRoomMember(userID)
+	rur, err := r.LoadOrCreateMember(userID)
 	if err != nil {
 		return false
 	}
@@ -163,9 +163,9 @@ func (r *Room) LoadOrCreateMemberStatus(userID string) (model.RoomMemberStatus, 
 	if r.IsCreator(userID) {
 		return model.RoomMemberStatusActive, nil
 	}
-	rur, err := r.LoadOrCreateRoomMember(userID)
+	rur, err := r.LoadOrCreateMember(userID)
 	if err != nil {
-		return model.RoomMemberStatusUnknown, err
+		return model.RoomMemberStatusNotJoined, err
 	}
 	return rur.Status, nil
 }
@@ -174,16 +174,19 @@ func (r *Room) LoadMemberStatus(userID string) (model.RoomMemberStatus, error) {
 	if r.IsCreator(userID) {
 		return model.RoomMemberStatusActive, nil
 	}
-	rur, err := r.LoadRoomMember(userID)
+	rur, err := r.LoadMember(userID)
 	if err != nil {
-		return model.RoomMemberStatusUnknown, err
+		if errors.Is(err, db.ErrNotFound("room or user")) {
+			return model.RoomMemberStatusNotJoined, nil
+		}
+		return model.RoomMemberStatusNotJoined, err
 	}
 	return rur.Status, nil
 }
 
-func (r *Room) LoadOrCreateRoomMember(userID string) (*model.RoomMember, error) {
+func (r *Room) LoadOrCreateMember(userID string) (*model.RoomMember, error) {
 	if r.Settings.DisableJoinNewUser {
-		return r.LoadRoomMember(userID)
+		return r.LoadMember(userID)
 	}
 	if r.IsGuest(userID) && (r.Settings.DisableGuest || !settings.EnableGuest.Get()) {
 		return nil, errors.New("guest is disabled")
@@ -230,7 +233,7 @@ func (r *Room) LoadOrCreateRoomMember(userID string) (*model.RoomMember, error) 
 	return r.storeMember(userID, member), nil
 }
 
-func (r *Room) LoadRoomMember(userID string) (*model.RoomMember, error) {
+func (r *Room) LoadMember(userID string) (*model.RoomMember, error) {
 	if r.IsGuest(userID) && (r.Settings.DisableGuest || !settings.EnableGuest.Get()) {
 		return nil, errors.New("guest is disabled")
 	}
@@ -269,7 +272,7 @@ func (r *Room) LoadRoomMemberPermission(userID string) (model.RoomMemberPermissi
 	if r.IsCreator(userID) {
 		return model.AllPermissions, nil
 	}
-	member, err := r.LoadRoomMember(userID)
+	member, err := r.LoadMember(userID)
 	if err != nil {
 		return model.NoPermission, err
 	}
@@ -280,7 +283,7 @@ func (r *Room) LoadRoomAdminPermission(userID string) (model.RoomAdminPermission
 	if r.IsCreator(userID) {
 		return model.AllAdminPermissions, nil
 	}
-	member, err := r.LoadRoomMember(userID)
+	member, err := r.LoadMember(userID)
 	if err != nil {
 		return model.NoAdminPermission, err
 	}
@@ -611,7 +614,7 @@ func (r *Room) SetAdminPermissions(userID string, permissions model.RoomAdminPer
 	if r.IsGuest(userID) {
 		return errors.New("cannot set admin permissions to guest")
 	}
-	if member, err := r.LoadRoomMember(userID); err != nil {
+	if member, err := r.LoadMember(userID); err != nil {
 		return err
 	} else if !member.Role.IsAdmin() {
 		return errors.New("not admin")
@@ -627,7 +630,7 @@ func (r *Room) AddAdminPermissions(userID string, permissions model.RoomAdminPer
 	if r.IsGuest(userID) {
 		return errors.New("cannot add admin permissions to guest")
 	}
-	if member, err := r.LoadRoomMember(userID); err != nil {
+	if member, err := r.LoadMember(userID); err != nil {
 		return err
 	} else if !member.Role.IsAdmin() {
 		return errors.New("not admin")
@@ -643,7 +646,7 @@ func (r *Room) RemoveAdminPermissions(userID string, permissions model.RoomAdmin
 	if r.IsGuest(userID) {
 		return errors.New("cannot remove admin permissions from guest")
 	}
-	if member, err := r.LoadRoomMember(userID); err != nil {
+	if member, err := r.LoadMember(userID); err != nil {
 		return err
 	} else if !member.Role.IsAdmin() {
 		return errors.New("not admin")

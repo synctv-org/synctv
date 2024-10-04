@@ -66,7 +66,7 @@ func RoomMembers(ctx *gin.Context) {
 		db.WhereRoomID(room.ID),
 	))
 
-	total, err := db.GetAllUserCount(scopes...)
+	total, err := db.GetUserCount(scopes...)
 	if err != nil {
 		log.Errorf("get room users failed: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
@@ -93,7 +93,7 @@ func RoomMembers(ctx *gin.Context) {
 		return
 	}
 
-	list, err := db.GetAllUsers(append(scopes, db.Paginate(page, pageSize))...)
+	list, err := db.GetUsers(append(scopes, db.Paginate(page, pageSize))...)
 	if err != nil {
 		log.Errorf("get room users failed: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
@@ -162,13 +162,13 @@ func RoomAdminMembers(ctx *gin.Context) {
 	}
 	scopes = append(scopes, func(db *gorm.DB) *gorm.DB {
 		return db.
-			InnerJoins("JOIN room_members ON users.id = room_members.user_id").
+			Joins("JOIN room_members ON users.id = room_members.user_id").
 			Where("room_members.room_id = ?", room.ID)
 	}, db.PreloadRoomMembers(
 		db.WhereRoomID(room.ID),
 	))
 
-	total, err := db.GetAllUserCount(scopes...)
+	total, err := db.GetUserCount(scopes...)
 	if err != nil {
 		log.Errorf("get room users failed: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
@@ -195,7 +195,7 @@ func RoomAdminMembers(ctx *gin.Context) {
 		return
 	}
 
-	list, err := db.GetAllUsers(append(scopes, db.Paginate(page, pageSize))...)
+	list, err := db.GetUsers(append(scopes, db.Paginate(page, pageSize))...)
 	if err != nil {
 		log.Errorf("get room users failed: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))

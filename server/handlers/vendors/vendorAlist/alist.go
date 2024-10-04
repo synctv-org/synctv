@@ -216,7 +216,7 @@ func (s *alistVendorService) GenMovieInfo(ctx context.Context, user *op.User, us
 
 	switch data.Provider {
 	case cache.AlistProviderAli:
-		movie.MovieBase.Url = fmt.Sprintf("/api/room/%s/movie/proxy/%s?token=%s", movie.RoomID, movie.ID, userToken)
+		movie.MovieBase.Url = fmt.Sprintf("/api/room/movie/proxy/%s?token=%s&roomId=%s", movie.ID, userToken, movie.RoomID)
 		movie.MovieBase.Type = "m3u8"
 
 		rawStreamUrl := data.URL
@@ -233,7 +233,7 @@ func (s *alistVendorService) GenMovieInfo(ctx context.Context, user *op.User, us
 				movie.MovieBase.Subtitles = make(map[string]*dbModel.Subtitle, len(data.Subtitles))
 			}
 			movie.MovieBase.Subtitles[subt.Name] = &dbModel.Subtitle{
-				URL:  fmt.Sprintf("/api/room/%s/movie/proxy/%s?t=subtitle&id=%d&token=%s", movie.RoomID, movie.ID, i, userToken),
+				URL:  fmt.Sprintf("/api/room/movie/proxy/%s?t=subtitle&id=%d&token=%s&roomId=%s", movie.ID, i, userToken, movie.RoomID),
 				Type: subt.Type,
 			}
 		}
@@ -292,10 +292,10 @@ func (s *alistVendorService) GenProxyMovieInfo(ctx context.Context, user *op.Use
 
 	switch data.Provider {
 	case cache.AlistProviderAli:
-		movie.MovieBase.Url = fmt.Sprintf("/api/room/%s/movie/proxy/%s?token=%s", movie.RoomID, movie.ID, userToken)
+		movie.MovieBase.Url = fmt.Sprintf("/api/room/movie/proxy/%s?token=%s&roomId=%s", movie.ID, userToken, movie.RoomID)
 		movie.MovieBase.Type = "m3u8"
 
-		rawStreamUrl := fmt.Sprintf("/api/room/%s/movie/proxy/%s?t=raw&token=%s", movie.RoomID, movie.ID, userToken)
+		rawStreamUrl := fmt.Sprintf("/api/room/movie/proxy/%s?t=raw&token=%s&roomId=%s", movie.ID, userToken, movie.RoomID)
 		movie.MovieBase.MoreSources = []*dbModel.MoreSource{
 			{
 				Name: "raw",
@@ -309,19 +309,19 @@ func (s *alistVendorService) GenProxyMovieInfo(ctx context.Context, user *op.Use
 				movie.MovieBase.Subtitles = make(map[string]*dbModel.Subtitle, len(data.Subtitles))
 			}
 			movie.MovieBase.Subtitles[subt.Name] = &dbModel.Subtitle{
-				URL:  fmt.Sprintf("/api/room/%s/movie/proxy/%s?t=subtitle&id=%d&token=%s", movie.RoomID, movie.ID, i, userToken),
+				URL:  fmt.Sprintf("/api/room/movie/proxy/%s?t=subtitle&id=%d&token=%s&roomId=%s", movie.ID, i, userToken, movie.RoomID),
 				Type: subt.Type,
 			}
 		}
 
 	case cache.AlistProvider115:
-		movie.MovieBase.Url = fmt.Sprintf("/api/room/%s/movie/proxy/%s?token=%s", movie.RoomID, movie.ID, userToken)
+		movie.MovieBase.Url = fmt.Sprintf("/api/room/movie/proxy/%s?token=%s&roomId=%s", movie.ID, userToken, movie.RoomID)
 		movie.MovieBase.Type = utils.GetUrlExtension(data.URL)
 
 		// TODO: proxy subtitle
 
 	default:
-		movie.MovieBase.Url = fmt.Sprintf("/api/room/%s/movie/proxy/%s?token=%s", movie.RoomID, movie.ID, userToken)
+		movie.MovieBase.Url = fmt.Sprintf("/api/room/movie/proxy/%s?token=%s&roomId=%s", movie.ID, userToken, movie.RoomID)
 		movie.MovieBase.Type = utils.GetUrlExtension(data.URL)
 	}
 

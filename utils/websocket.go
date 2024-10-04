@@ -32,7 +32,11 @@ func NewWebSocketServer(conf ...WebSocketConfig) *WebSocket {
 }
 
 func (ws *WebSocket) Server(w http.ResponseWriter, r *http.Request, Subprotocols []string, handler func(c *websocket.Conn) error) error {
-	wsc, err := ws.NewWebSocketClient(w, r, nil, WithSubprotocols(Subprotocols))
+	conf := []UpgraderConf{}
+	if len(Subprotocols) > 0 {
+		conf = append(conf, WithSubprotocols(Subprotocols))
+	}
+	wsc, err := ws.NewWebSocketClient(w, r, nil, conf...)
 	if err != nil {
 		return err
 	}

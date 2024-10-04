@@ -407,13 +407,13 @@ func SetUsernameByID(userID string, username string) error {
 	return HandleNotFound(err, "user")
 }
 
-func GetAllUserCount(scopes ...func(*gorm.DB) *gorm.DB) (int64, error) {
+func GetUserCount(scopes ...func(*gorm.DB) *gorm.DB) (int64, error) {
 	var count int64
 	err := db.Model(&model.User{}).Scopes(scopes...).Count(&count).Error
 	return count, err
 }
 
-func GetAllUsers(scopes ...func(*gorm.DB) *gorm.DB) ([]*model.User, error) {
+func GetUsers(scopes ...func(*gorm.DB) *gorm.DB) ([]*model.User, error) {
 	var users []*model.User
 	err := db.Scopes(scopes...).Find(&users).Error
 	return users, err
@@ -446,4 +446,12 @@ func UnbindEmail(uid string) error {
 		}
 		return tx.Model(&model.User{}).Where("id = ?", uid).Update("email", sql.NullString{}).Error
 	})
+}
+
+func WithPreloadUser(scopes ...func(*gorm.DB) *gorm.DB) func(*gorm.DB) *gorm.DB {
+	return func(db *gorm.DB) *gorm.DB {
+		return db.Preload("User", func(db *gorm.DB) *gorm.DB {
+			return db.Scopes(scopes...)
+		})
+	}
 }

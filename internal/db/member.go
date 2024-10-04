@@ -139,3 +139,22 @@ func RoomSetMember(roomID, userID string, permissions model.RoomMemberPermission
 		"admin_permissions": model.NoAdminPermission,
 	}).Error
 }
+
+func GetRoomMembers(roomID string, scopes ...func(*gorm.DB) *gorm.DB) ([]*model.RoomMember, error) {
+	var members []*model.RoomMember
+	err := db.
+		Where("room_id = ?", roomID).
+		Scopes(scopes...).
+		Find(&members).Error
+	return members, err
+}
+
+func GetRoomMembersCount(roomID string, scopes ...func(*gorm.DB) *gorm.DB) (int64, error) {
+	var count int64
+	err := db.
+		Model(&model.RoomMember{}).
+		Where("room_id = ?", roomID).
+		Scopes(scopes...).
+		Count(&count).Error
+	return count, err
+}

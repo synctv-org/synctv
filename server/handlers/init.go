@@ -57,8 +57,8 @@ func Init(e *gin.Engine) {
 	{
 		room := api.Group("/room")
 		needAuthUser := api.Group("/room", middlewares.AuthUserMiddleware)
-		needAuthRoom := api.Group("/room/:roomId", middlewares.AuthRoomMiddleware)
-		needAuthRoomWithoutGuest := api.Group("/room/:roomId", middlewares.AuthRoomWithoutGuestMiddleware)
+		needAuthRoom := api.Group("/room", middlewares.AuthRoomMiddleware)
+		needAuthRoomWithoutGuest := api.Group("/room", middlewares.AuthRoomWithoutGuestMiddleware)
 
 		initRoom(room, needAuthUser, needAuthRoom, needAuthRoomWithoutGuest)
 
@@ -90,9 +90,9 @@ func initAdmin(admin *gin.RouterGroup, root *gin.RouterGroup) {
 
 		admin.GET("/settings/:group", AdminSettings)
 
-		admin.POST("/settings", EditAdminSettings)
+		admin.POST("/settings", AdminEditSettings)
 
-		admin.POST("/email/test", SendTestEmail)
+		admin.POST("/email/test", AdminSendTestEmail)
 
 		admin.GET("/vendors", AdminGetVendorBackends)
 
@@ -111,25 +111,25 @@ func initAdmin(admin *gin.RouterGroup, root *gin.RouterGroup) {
 		{
 			user := admin.Group("/user")
 
-			user.POST("/add", AddUser)
+			user.POST("/add", AdminAddUser)
 
-			user.POST("/delete", DeleteUser)
+			user.POST("/delete", AdminDeleteUser)
 
 			user.POST("/password", AdminUserPassword)
 
 			user.POST("/username", AdminUsername)
 
 			// 查找用户
-			user.GET("/list", Users)
+			user.GET("/list", AdminGetUsers)
 
-			user.POST("/approve", ApprovePendingUser)
+			user.POST("/approve", AdminApprovePendingUser)
 
-			user.POST("/ban", BanUser)
+			user.POST("/ban", AdminBanUser)
 
-			user.POST("/unban", UnBanUser)
+			user.POST("/unban", AdminUnBanUser)
 
 			// 查找某个用户的房间
-			user.GET("/rooms", GetUserRooms)
+			user.GET("/rooms", AdminGetUserRooms)
 		}
 
 		{
@@ -138,13 +138,13 @@ func initAdmin(admin *gin.RouterGroup, root *gin.RouterGroup) {
 			room.POST("/password", AdminRoomPassword)
 
 			// 查找房间
-			room.GET("/list", Rooms)
+			room.GET("/list", AdminGetRooms)
 
-			room.POST("/approve", ApprovePendingRoom)
+			room.POST("/approve", AdminApprovePendingRoom)
 
-			room.POST("/ban", BanRoom)
+			room.POST("/ban", AdminBanRoom)
 
-			room.POST("/unban", UnBanRoom)
+			room.POST("/unban", AdminUnBanRoom)
 
 			room.POST("/delete", AdminDeleteRoom)
 
@@ -153,9 +153,9 @@ func initAdmin(admin *gin.RouterGroup, root *gin.RouterGroup) {
 	}
 
 	{
-		root.POST("/admin/add", AddAdmin)
+		root.POST("/admin/add", RootAddAdmin)
 
-		root.POST("/admin/delete", DeleteAdmin)
+		root.POST("/admin/delete", RootDeleteAdmin)
 	}
 }
 
@@ -165,8 +165,6 @@ func initRoom(room *gin.RouterGroup, needAuthUser *gin.RouterGroup, needAuthRoom
 	room.GET("/hot", RoomHotList)
 
 	room.GET("/list", RoomList)
-
-	room.POST("/guest", GuestJoinRoom)
 
 	needAuthUser.POST("/create", CreateRoom)
 
@@ -244,7 +242,7 @@ func initMovie(movie *gin.RouterGroup, needAuthMovie *gin.RouterGroup) {
 
 		needAuthLive.GET("/hls/list/:movieId", JoinHlsLive)
 
-		needAuthLive.GET("/hls/data/:movieId/:dataId", ServeHlsLive)
+		movie.GET("/hls/data/:roomId/:movieId/:dataId", ServeHlsLive)
 	}
 }
 
@@ -284,9 +282,11 @@ func initUser(user *gin.RouterGroup, needAuthUser *gin.RouterGroup) {
 	needAuthUser.POST("/unbind/email", UserUnbindEmail)
 
 	{
-		room := needAuthUser.Group("/room")
+		needAuthRoom := needAuthUser.Group("/room")
 
-		room.POST("/delete", UserDeleteRoom)
+		needAuthRoom.POST("/delete", UserDeleteRoom)
+
+		needAuthRoom.GET("/joined", UserCheckJoinedRoom)
 	}
 }
 

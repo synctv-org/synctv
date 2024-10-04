@@ -11,11 +11,19 @@ import (
 	"github.com/zijiren233/gencontainer/synccache"
 )
 
-var roomCache *synccache.SyncCache[string, *Room]
+var (
+	roomCache             *synccache.SyncCache[string, *Room]
+	ErrRoomPending        = errors.New("room pending, please wait for admin to approve")
+	ErrRoomBanned         = errors.New("room banned")
+	ErrRoomCreatorBanned  = errors.New("room creator banned")
+	ErrRoomCreatorPending = errors.New("room creator pending, please wait for admin to approve")
+	ErrRoomNotFound       = errors.New("room not found")
+	ErrInvalidRoomID      = errors.New("room id is not 32 bit")
+)
 
 type RoomEntry = synccache.Entry[*Room]
 
-func RangeRoomCache(f func(key string, value *synccache.Entry[*Room]) bool) {
+func RangeRoomCache(f func(key string, value *RoomEntry) bool) {
 	roomCache.Range(f)
 }
 
@@ -27,24 +35,18 @@ func CreateRoom(name, password string, maxCount int64, conf ...db.CreateRoomConf
 	return LoadOrInitRoom(r)
 }
 
-var (
-	ErrRoomPending          = errors.New("room pending, please wait for admin to approve")
-	ErrRoomBanned           = errors.New("room banned")
-	ErrRoomCreatorBanned    = errors.New("room creator banned")
-	ErrorRoomCreatorPending = errors.New("room creator pending, please wait for admin to approve")
-)
-
 func checkRoomCreatorStatus(creatorID string) error {
 	e, err := LoadOrInitUserByID(creatorID)
 	if err != nil {
 		return fmt.Errorf("load room creator error: %w", err)
 	}
 
-	if e.Value().IsBanned() {
+	user := e.Value()
+	if user.IsBanned() {
 		return ErrRoomCreatorBanned
 	}
-	if e.Value().IsPending() {
-		return ErrorRoomCreatorPending
+	if user.IsPending() {
+		return ErrRoomCreatorPending
 	}
 	return nil
 }
@@ -57,8 +59,7 @@ func LoadOrInitRoom(room *model.Room) (*RoomEntry, error) {
 		return nil, ErrRoomPending
 	}
 
-	err := checkRoomCreatorStatus(room.CreatorID)
-	if err != nil {
+	if err := checkRoomCreatorStatus(room.CreatorID); err != nil {
 		return nil, err
 	}
 
@@ -71,16 +72,14 @@ func LoadOrInitRoom(room *model.Room) (*RoomEntry, error) {
 }
 
 func DeleteRoomByID(roomID string) error {
-	err := db.DeleteRoomByID(roomID)
-	if err != nil {
+	if err := db.DeleteRoomByID(roomID); err != nil {
 		return err
 	}
 	return CloseRoomById(roomID)
 }
 
 func CompareAndDeleteRoom(room *RoomEntry) error {
-	err := db.DeleteRoomByID(room.Value().ID)
-	if err != nil {
+	if err := db.DeleteRoomByID(room.Value().ID); err != nil {
 		return err
 	}
 	CompareAndCloseRoom(room)
@@ -88,8 +87,7 @@ func CompareAndDeleteRoom(room *RoomEntry) error {
 }
 
 func CloseRoomById(roomID string) error {
-	r, loaded := roomCache.LoadAndDelete(roomID)
-	if loaded {
+	if r, loaded := roomCache.LoadAndDelete(roomID); loaded {
 		r.Value().close()
 	}
 	return nil
@@ -106,12 +104,11 @@ func CompareAndCloseRoom(room *RoomEntry) bool {
 func LoadRoomByID(id string) (*RoomEntry, error) {
 	r2, loaded := roomCache.Load(id)
 	if !loaded {
-		return nil, errors.New("room not found")
+		return nil, ErrRoomNotFound
 	}
 
-	err := checkRoomCreatorStatus(r2.Value().CreatorID)
-	if err != nil {
-		if errors.Is(err, ErrRoomCreatorBanned) || errors.Is(err, ErrorRoomCreatorPending) {
+	if err := checkRoomCreatorStatus(r2.Value().CreatorID); err != nil {
+		if errors.Is(err, ErrRoomCreatorBanned) || errors.Is(err, ErrRoomCreatorPending) {
 			CompareAndCloseRoom(r2)
 		}
 		return nil, err
@@ -123,13 +120,12 @@ func LoadRoomByID(id string) (*RoomEntry, error) {
 
 func LoadOrInitRoomByID(id string) (*RoomEntry, error) {
 	if len(id) != 32 {
-		return nil, errors.New("room id is not 32 bit")
+		return nil, ErrInvalidRoomID
 	}
-	i, loaded := roomCache.Load(id)
-	if loaded {
-		err := checkRoomCreatorStatus(i.Value().CreatorID)
-		if err != nil {
-			if errors.Is(err, ErrRoomCreatorBanned) || errors.Is(err, ErrorRoomCreatorPending) {
+
+	if i, loaded := roomCache.Load(id); loaded {
+		if err := checkRoomCreatorStatus(i.Value().CreatorID); err != nil {
+			if errors.Is(err, ErrRoomCreatorBanned) || errors.Is(err, ErrRoomCreatorPending) {
 				CompareAndCloseRoom(i)
 			}
 			return nil, err
@@ -137,6 +133,7 @@ func LoadOrInitRoomByID(id string) (*RoomEntry, error) {
 		i.SetExpiration(time.Now().Add(time.Duration(settings.RoomTTL.Get()) * time.Hour))
 		return i, nil
 	}
+
 	room, err := db.GetRoomByID(id)
 	if err != nil {
 		return nil, err
@@ -150,20 +147,17 @@ func LoadOrInitRoomByID(id string) (*RoomEntry, error) {
 }
 
 func PeopleNum(roomID string) int64 {
-	r, loaded := roomCache.Load(roomID)
-	if loaded {
+	if r, loaded := roomCache.Load(roomID); loaded {
 		return r.Value().PeopleNum()
 	}
 	return 0
 }
 
 func SetRoomStatusByID(roomID string, status model.RoomStatus) error {
-	err := db.SetRoomStatus(roomID, status)
-	if err != nil {
+	if err := db.SetRoomStatus(roomID, status); err != nil {
 		return err
 	}
-	switch status {
-	case model.RoomStatusBanned, model.RoomStatusPending:
+	if status == model.RoomStatusBanned || status == model.RoomStatusPending {
 		roomCache.Delete(roomID)
 	}
 	return nil

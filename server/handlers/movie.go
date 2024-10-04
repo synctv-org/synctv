@@ -64,16 +64,16 @@ func genMovieInfo(
 			return nil, err
 		}
 	} else if movie.MovieBase.RtmpSource || movie.MovieBase.Live && movie.MovieBase.Proxy {
-		movie.MovieBase.Url = fmt.Sprintf("/api/room/%s/movie/live/hls/list/%s.m3u8?token=%s", opMovie.RoomID, movie.ID, userToken)
+		movie.MovieBase.Url = fmt.Sprintf("/api/room/movie/live/hls/list/%s.m3u8?token=%s&roomId=%s", movie.ID, userToken, opMovie.RoomID)
 		movie.MovieBase.Type = "m3u8"
 		movie.MoreSources = append(movie.MoreSources, &dbModel.MoreSource{
 			Name: "flv",
-			Url:  fmt.Sprintf("/api/room/%s/movie/live/flv/%s.flv?token=%s", opMovie.RoomID, movie.ID, userToken),
+			Url:  fmt.Sprintf("/api/room/movie/live/flv/%s.flv?token=%s&roomId=%s", movie.ID, userToken, opMovie.RoomID),
 			Type: "flv",
 		})
 		movie.MovieBase.Headers = nil
 	} else if movie.MovieBase.Proxy {
-		movie.MovieBase.Url = fmt.Sprintf("/api/room/%s/movie/proxy/%s?token=%s", movie.RoomID, movie.ID, userToken)
+		movie.MovieBase.Url = fmt.Sprintf("/api/room/movie/proxy/%s?token=%s&roomId=%s", movie.ID, userToken, opMovie.RoomID)
 		movie.MovieBase.Headers = nil
 	}
 	if movie.MovieBase.Type == "" && movie.MovieBase.Url != "" {
@@ -676,7 +676,6 @@ func JoinFlvLive(ctx *gin.Context) {
 
 func JoinHlsLive(ctx *gin.Context) {
 	log := ctx.MustGet("log").(*logrus.Entry)
-	token := ctx.MustGet("token").(string)
 
 	ctx.Header("Cache-Control", "no-store")
 	room := ctx.MustGet("room").(*op.RoomEntry).Value()
@@ -715,7 +714,7 @@ func JoinHlsLive(ctx *gin.Context) {
 		if settings.TsDisguisedAsPng.Get() {
 			ext = "png"
 		}
-		return fmt.Sprintf("/api/room/%s/movie/live/hls/data/%s/%s.%s?token=%s", room.ID, movieId, tsName, ext, token)
+		return fmt.Sprintf("/api/room/movie/live/hls/data/%s/%s/%s.%s", room.ID, movieId, tsName, ext)
 	})
 	if err != nil {
 		log.Errorf("join hls live error: %v", err)
@@ -727,10 +726,16 @@ func JoinHlsLive(ctx *gin.Context) {
 
 func ServeHlsLive(ctx *gin.Context) {
 	log := ctx.MustGet("log").(*logrus.Entry)
-	room := ctx.MustGet("room").(*op.RoomEntry).Value()
-	// user := ctx.MustGet("user").(*op.UserEntry).Value()
+	roomId := ctx.Param("roomId")
+	roomE, err := op.LoadRoomByID(roomId)
+	if err != nil {
+		log.Errorf("serve hls live error: %v", err)
+		ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(err))
+		return
+	}
+	room := roomE.Value()
 
-	ctx.Header("Cache-Control", "no-store")
+	ctx.Header("Cache-Control", "public, max-age=30, s-maxage=90")
 
 	movieId := ctx.Param("movieId")
 	m, err := room.GetMovieByID(movieId)

@@ -33,99 +33,117 @@ func authUser(Authorization string) (*AuthClaims, error) {
 	t, err := jwt.ParseWithClaims(strings.TrimPrefix(Authorization, `Bearer `), &AuthClaims{}, func(token *jwt.Token) (any, error) {
 		return stream.StringToBytes(conf.Conf.Jwt.Secret), nil
 	})
-	if err != nil {
+	if err != nil || !t.Valid {
 		return nil, ErrAuthFailed
 	}
 	claims, ok := t.Claims.(*AuthClaims)
-	if !ok || !t.Valid {
+	if !ok {
 		return nil, ErrAuthFailed
 	}
 	return claims, nil
 }
 
-func AuthRoom(Authorization, roomId string) (*op.UserEntry, *op.RoomEntry, error) {
+func AuthRoom(authorization, roomId string) (*op.UserEntry, *op.RoomEntry, error) {
 	if len(roomId) != 32 {
 		return nil, nil, ErrAuthFailed
 	}
 
-	var (
-		userE *op.UserEntry
-		err   error
-	)
-	if Authorization != "" {
-		claims, err := authUser(Authorization)
-		if err != nil {
-			return nil, nil, err
-		}
+	var userE *op.UserEntry
+	var err error
 
-		if len(claims.UserId) != 32 {
-			return nil, nil, ErrAuthFailed
-		}
-
-		userE, err = op.LoadOrInitUserByID(claims.UserId)
-		if err != nil {
-			return nil, nil, err
-		}
-		user := userE.Value()
-
-		if user.IsGuest() {
-			return nil, nil, fmt.Errorf("guests are not allowed to join rooms by token")
-		}
-
-		if !user.CheckVersion(claims.UserVersion) {
-			return nil, nil, ErrAuthExpired
-		}
-		if user.IsBanned() {
-			return nil, nil, fmt.Errorf("user is banned")
-		}
-		if user.IsPending() {
-			return nil, nil, fmt.Errorf("user is pending, need admin to approve")
-		}
+	if authorization != "" {
+		userE, err = authenticateUser(authorization)
 	} else {
-		if !settings.EnableGuest.Get() {
-			return nil, nil, fmt.Errorf("guests is disabled")
-		}
-		userE, err = op.LoadOrInitGuestUser()
-		if err != nil {
-			return nil, nil, err
-		}
+		userE, err = authenticateGuest()
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+
+	user := userE.Value()
+	roomE, err := authenticateRoomAccess(roomId, user)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return userE, roomE, nil
+}
+
+func authenticateUser(Authorization string) (*op.UserEntry, error) {
+	claims, err := authUser(Authorization)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(claims.UserId) != 32 {
+		return nil, ErrAuthFailed
+	}
+
+	userE, err := op.LoadOrInitUserByID(claims.UserId)
+	if err != nil {
+		return nil, err
 	}
 	user := userE.Value()
 
+	if user.IsGuest() {
+		return nil, fmt.Errorf("guests are not allowed to join rooms by token")
+	}
+
+	if !user.CheckVersion(claims.UserVersion) {
+		return nil, ErrAuthExpired
+	}
+	if user.IsBanned() {
+		return nil, fmt.Errorf("user is banned")
+	}
+	if user.IsPending() {
+		return nil, fmt.Errorf("user is pending, need admin to approve")
+	}
+
+	return userE, nil
+}
+
+func authenticateGuest() (*op.UserEntry, error) {
+	if !settings.EnableGuest.Get() {
+		return nil, fmt.Errorf("guests is disabled")
+	}
+	return op.LoadOrInitGuestUser()
+}
+
+func authenticateRoomAccess(roomId string, user *op.User) (*op.RoomEntry, error) {
 	roomE, err := op.LoadOrInitRoomByID(roomId)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	room := roomE.Value()
 
 	if room.IsGuest(user.ID) {
 		if room.Settings.DisableGuest {
-			return nil, nil, fmt.Errorf("guests are not allowed to join rooms")
+			return nil, fmt.Errorf("guests are not allowed to join rooms")
 		}
-		if !room.NeedPassword() {
-			return nil, nil, fmt.Errorf("guests are not allowed to join rooms that require a password")
+		if room.NeedPassword() {
+			return nil, fmt.Errorf("guests are not allowed to join rooms that require a password")
 		}
 	}
 
 	if room.IsBanned() {
-		return nil, nil, fmt.Errorf("room is banned")
+		return nil, fmt.Errorf("room is banned")
 	}
 	if room.IsPending() {
-		return nil, nil, fmt.Errorf("room is pending, need admin to approve")
+		return nil, fmt.Errorf("room is pending, need admin to approve")
 	}
 
 	rus, err := room.LoadMemberStatus(user.ID)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if !rus.IsActive() {
 		if rus.IsPending() {
-			return nil, nil, fmt.Errorf("user is pending, need admin to approve")
+			return nil, fmt.Errorf("user is pending, need admin to approve")
 		}
-		return nil, nil, fmt.Errorf("user is banned")
+		return nil, fmt.Errorf("user is banned")
 	}
 
-	return userE, roomE, nil
+	return roomE, nil
 }
 
 func AuthUser(Authorization string) (*op.UserEntry, error) {
@@ -306,35 +324,48 @@ func AuthRootMiddleware(ctx *gin.Context) {
 	}
 }
 
-func GetAuthorizationTokenFromContext(ctx *gin.Context) (Authorization string) {
-	Authorization = ctx.GetHeader("Authorization")
-	defer func() {
-		ctx.Set("token", Authorization)
-	}()
-	if Authorization != "" {
-		return Authorization
+func GetAuthorizationTokenFromContext(ctx *gin.Context) string {
+	if token := ctx.GetHeader("Authorization"); token != "" {
+		ctx.Set("token", token)
+		return token
 	}
+
 	if ctx.IsWebsocket() {
-		Authorization = ctx.GetHeader("Sec-WebSocket-Protocol")
-		if Authorization != "" {
-			return Authorization
+		if token := ctx.GetHeader("Sec-WebSocket-Protocol"); token != "" {
+			ctx.Set("token", token)
+			return token
 		}
 	}
-	Authorization = ctx.Query("token")
-	if Authorization != "" {
-		return Authorization
+
+	if token := ctx.Query("token"); token != "" {
+		ctx.Set("token", token)
+		return token
 	}
+
+	ctx.Set("token", "")
 	return ""
 }
 
 func GetRoomIdFromContext(ctx *gin.Context) (string, error) {
-	roomID := ctx.Param("roomId")
-	if len(roomID) == 32 {
-		return roomID, nil
+	sources := []func() string{
+		func() string { return ctx.GetHeader("X-Room-Id") },
+		func() string { return ctx.Query("roomId") },
+		func() string { return ctx.Param("roomId") },
 	}
-	roomID = ctx.Query("roomId")
-	if len(roomID) == 32 {
-		return roomID, nil
+
+	for _, source := range sources {
+		roomId := source()
+		if roomId == "" {
+			continue
+		}
+		if len(roomId) == 32 {
+			ctx.Set("roomId", roomId)
+			return roomId, nil
+		}
+		ctx.Set("roomId", "")
+		return "", errors.New("room id length is not 32")
 	}
-	return "", errors.New("room id length is not 32")
+
+	ctx.Set("roomId", "")
+	return "", errors.New("room id is empty")
 }

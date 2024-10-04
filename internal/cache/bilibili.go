@@ -91,7 +91,7 @@ func BilibiliSharedMpdCacheInitFunc(ctx context.Context, movie *model.Movie, arg
 	default:
 		return nil, errors.New("bvid and epid are empty")
 	}
-	m.BaseURL = append(m.BaseURL, fmt.Sprintf("/api/movie/proxy/%s/", movie.RoomID))
+	m.BaseURL = append(m.BaseURL, "/api/room/movie/proxy/")
 	id := 0
 	movies := []string{}
 	for _, p := range m.Periods {
@@ -99,7 +99,7 @@ func BilibiliSharedMpdCacheInitFunc(ctx context.Context, movie *model.Movie, arg
 			for _, r := range as.Representations {
 				for i := range r.BaseURL {
 					movies = append(movies, r.BaseURL[i])
-					r.BaseURL[i] = fmt.Sprintf("%s?id=%d", movie.ID, id)
+					r.BaseURL[i] = fmt.Sprintf("%s?id=%d&roomId=%s", movie.ID, id, movie.RoomID)
 					id++
 				}
 			}
@@ -110,7 +110,7 @@ func BilibiliSharedMpdCacheInitFunc(ctx context.Context, movie *model.Movie, arg
 			for _, r := range as.Representations {
 				for i := range r.BaseURL {
 					movies = append(movies, r.BaseURL[i])
-					r.BaseURL[i] = fmt.Sprintf("%s?id=%d&t=hevc", movie.ID, id)
+					r.BaseURL[i] = fmt.Sprintf("%s?id=%d&roomId=%s&t=hevc", movie.ID, id, movie.RoomID)
 					id++
 				}
 			}

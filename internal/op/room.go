@@ -673,3 +673,7 @@ func (r *Room) SetMember(userID string, permissions model.RoomMemberPermission) 
 	defer r.members.Delete(userID)
 	return db.RoomSetMember(r.ID, userID, permissions)
 }
+
+func (r *Room) EnabledGuest() bool {
+	return !r.Settings.DisableGuest && settings.EnableGuest.Get() && !r.NeedPassword()
+}

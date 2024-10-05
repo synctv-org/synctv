@@ -274,7 +274,7 @@ func CheckRoom(ctx *gin.Context) {
 		"creatorId":    room.CreatorID,
 		"creator":      op.GetUserName(room.CreatorID),
 		"name":         room.Name,
-		"enableGuest":  settings.EnableGuest.Get() && !room.Settings.DisableGuest && !room.NeedPassword(),
+		"enabledGuest": room.EnabledGuest(),
 	}))
 }
 

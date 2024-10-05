@@ -11,6 +11,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/internal/conf"
+	dbModel "github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/internal/settings"
 	"github.com/synctv-org/synctv/server/model"
@@ -146,15 +147,22 @@ func validateRoomAccess(room *op.Room, user *op.User) error {
 		return fmt.Errorf("room is pending, need admin to approve")
 	}
 
-	rus, err := room.LoadMemberStatus(user.ID)
+	var status dbModel.RoomMemberStatus
+	var err error
+	if room.NeedPassword() {
+		status, err = room.LoadMemberStatus(user.ID)
+	} else {
+		status, err = room.LoadOrCreateMemberStatus(user.ID)
+	}
 	if err != nil {
 		return err
 	}
-	if !rus.IsActive() {
-		if rus.IsPending() {
-			return fmt.Errorf("user is pending, need admin to approve")
-		}
+
+	if status.IsBanned() {
 		return fmt.Errorf("user is banned")
+	}
+	if status.IsPending() {
+		return fmt.Errorf("user is pending, need admin to approve")
 	}
 
 	return nil

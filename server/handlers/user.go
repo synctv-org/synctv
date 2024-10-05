@@ -270,6 +270,7 @@ func UserCheckJoinedRoom(ctx *gin.Context) {
 
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
 		"joined": status != dbModel.RoomMemberStatusNotJoined,
+		"status": status,
 	}))
 }
 

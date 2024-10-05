@@ -11,9 +11,7 @@ import (
 	"github.com/zijiren233/gencontainer/rwmap"
 )
 
-var (
-	sysNotify SysNotify
-)
+var sysNotify SysNotify
 
 func Init() {
 	sysNotify.Init()

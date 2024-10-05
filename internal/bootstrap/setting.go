@@ -60,9 +60,7 @@ func initAndFixSettings(ss []settings.Setting) error {
 	if err != nil {
 		return err
 	}
-	var (
-		setting *model.Setting
-	)
+	var setting *model.Setting
 	list := new(maxHeap)
 	for _, s := range ss {
 		heap.Push(list, maxHeapItem{

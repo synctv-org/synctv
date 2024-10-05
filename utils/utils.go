@@ -286,7 +286,6 @@ func getLocalIPs() []net.IP {
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
 		return localIPs
-
 	}
 
 	for _, addr := range addrs {

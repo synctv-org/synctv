@@ -39,7 +39,7 @@ func InitLog(ctx context.Context) (err error) {
 		if err != nil {
 			logrus.Fatalf("log: log file path error: %v", err)
 		}
-		var l = &lumberjack.Logger{
+		l := &lumberjack.Logger{
 			Filename:   conf.Conf.Log.FilePath,
 			MaxSize:    conf.Conf.Log.MaxSize,
 			MaxBackups: conf.Conf.Log.MaxBackups,

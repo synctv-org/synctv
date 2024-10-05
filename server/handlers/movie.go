@@ -53,7 +53,7 @@ func genMovieInfo(
 			return nil, errors.New("movie is static folder, can't get movie info")
 		}
 	}
-	var movie = opMovie.Movie.Clone()
+	movie := opMovie.Movie.Clone()
 	if movie.MovieBase.VendorInfo.Vendor != "" {
 		vendor, err := vendors.NewVendorService(room, opMovie)
 		if err != nil {

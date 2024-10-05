@@ -10,9 +10,7 @@ import (
 	"google.golang.org/grpc/connectivity"
 )
 
-var (
-	ErrInvalidID = errors.New("invalid id")
-)
+var ErrInvalidID = errors.New("invalid id")
 
 type AdminSettingsReq map[string]any
 

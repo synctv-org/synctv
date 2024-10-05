@@ -148,7 +148,7 @@ func (u *User) AddRoomMovie(room *Room, movie *model.MovieBase) (*model.Movie, e
 }
 
 func (u *User) NewMovies(movies []*model.MovieBase) ([]*model.Movie, error) {
-	var ms = make([]*model.Movie, len(movies))
+	ms := make([]*model.Movie, len(movies))
 	for i, m := range movies {
 		movie, err := u.NewMovie(m)
 		if err != nil {

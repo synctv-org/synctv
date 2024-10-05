@@ -63,8 +63,6 @@ var (
 	TsDisguisedAsPng = NewBoolSetting("ts_disguised_as_png", true, model.SettingGroupRtmp)
 )
 
-var (
-	DatabaseVersion = NewStringSetting("database_version", db.CurrentVersion, model.SettingGroupDatabase, WithBeforeSetString(func(ss StringSetting, s string) (string, error) {
-		return "", errors.New("not support change database version")
-	}))
-)
+var DatabaseVersion = NewStringSetting("database_version", db.CurrentVersion, model.SettingGroupDatabase, WithBeforeSetString(func(ss StringSetting, s string) (string, error) {
+	return "", errors.New("not support change database version")
+}))

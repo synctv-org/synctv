@@ -324,8 +324,7 @@ func translateBilibiliSubtitleToSrt(ctx context.Context, url string) ([]byte, er
 	return convertToSRT(&srt), nil
 }
 
-type BilibiliLiveCache struct {
-}
+type BilibiliLiveCache struct{}
 
 func NewBilibiliLiveCacheInitFunc(movie *model.Movie) func(ctx context.Context, args ...struct{}) ([]byte, error) {
 	return func(ctx context.Context, args ...struct{}) ([]byte, error) {

@@ -75,10 +75,8 @@ func (h *Hub) serve() error {
 				clients.lock.RLock()
 				defer clients.lock.RUnlock()
 				for c := range clients.m {
-					if utils.In(message.ignoreId, c.u.ID) {
-						continue
-					}
-					if utils.In(message.ignoreClient, c) {
+					if utils.In(message.ignoreId, c.u.ID) ||
+						utils.In(message.ignoreClient, c) {
 						continue
 					}
 					if err := c.Send(message.data); err != nil {
@@ -136,9 +134,7 @@ func (h *Hub) Closed() bool {
 	return atomic.LoadUint32(&h.closed) == 1
 }
 
-var (
-	ErrAlreadyClosed = fmt.Errorf("already closed")
-)
+var ErrAlreadyClosed = fmt.Errorf("already closed")
 
 func (h *Hub) Close() error {
 	if !atomic.CompareAndSwapUint32(&h.closed, 0, 1) {
@@ -146,7 +142,9 @@ func (h *Hub) Close() error {
 	}
 	close(h.exit)
 	h.clients.Range(func(id string, clients *clients) bool {
-		h.clients.Delete(id)
+		h.clients.CompareAndDelete(id, clients)
+		clients.lock.Lock()
+		defer clients.lock.Unlock()
 		for c := range clients.m {
 			delete(clients.m, c)
 			c.Close()
@@ -188,6 +186,10 @@ func (h *Hub) RegClient(cli *Client) error {
 	c, _ := h.clients.LoadOrStore(cli.u.ID, &clients{})
 	c.lock.Lock()
 	defer c.lock.Unlock()
+	newC, loaded := h.clients.Load(cli.u.ID)
+	if !loaded || c != newC {
+		return h.RegClient(cli)
+	}
 	if c.m == nil {
 		c.m = make(map[*Client]struct{})
 	} else if _, ok := c.m[cli]; ok {

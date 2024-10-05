@@ -100,7 +100,6 @@ func AdminSettings(ctx *gin.Context) {
 
 		ctx.JSON(http.StatusOK, model.NewApiDataResp(resp))
 	}
-
 }
 
 func AdminGetUsers(ctx *gin.Context) {
@@ -160,7 +159,7 @@ func AdminGetUsers(ctx *gin.Context) {
 		return
 	}
 
-	var desc = ctx.DefaultQuery("order", "desc") == "desc"
+	desc := ctx.DefaultQuery("order", "desc") == "desc"
 	switch ctx.DefaultQuery("sort", "name") {
 	case "createdAt":
 		if desc {
@@ -275,7 +274,7 @@ func AdminGetRoomMembers(ctx *gin.Context) {
 		return
 	}
 
-	var desc = ctx.DefaultQuery("order", "desc") == "desc"
+	desc := ctx.DefaultQuery("order", "desc") == "desc"
 	switch ctx.DefaultQuery("sort", "name") {
 	case "join":
 		if desc {
@@ -498,7 +497,7 @@ func AdminGetRooms(ctx *gin.Context) {
 		return
 	}
 
-	var desc = ctx.DefaultQuery("order", "desc") == "desc"
+	desc := ctx.DefaultQuery("order", "desc") == "desc"
 	switch ctx.DefaultQuery("sort", "name") {
 	case "createdAt":
 		if desc {
@@ -579,7 +578,7 @@ func AdminGetUserRooms(ctx *gin.Context) {
 		return
 	}
 
-	var desc = ctx.DefaultQuery("order", "desc") == "desc"
+	desc := ctx.DefaultQuery("order", "desc") == "desc"
 	switch ctx.DefaultQuery("sort", "name") {
 	case "createdAt":
 		if desc {
@@ -665,7 +664,7 @@ func AdminGetUserJoinedRooms(ctx *gin.Context) {
 		return
 	}
 
-	var desc = ctx.DefaultQuery("order", "desc") == "desc"
+	desc := ctx.DefaultQuery("order", "desc") == "desc"
 	switch ctx.DefaultQuery("sort", "name") {
 	case "createdAt":
 		if desc {

@@ -62,7 +62,6 @@ func InitCheckUpdate(ctx context.Context) error {
 					log.Errorf("check update error: %v", err)
 				}
 			}()
-
 		}
 	}()
 

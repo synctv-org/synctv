@@ -66,7 +66,8 @@ func NewProviderPlugin(name string, arg []string, Logger hclog.Logger) *plugin.C
 		Plugins:         pluginMap,
 		Cmd:             exec.Command(name, arg...),
 		AllowedProtocols: []plugin.Protocol{
-			plugin.ProtocolGRPC},
+			plugin.ProtocolGRPC,
+		},
 		Logger: Logger,
 	})
 }

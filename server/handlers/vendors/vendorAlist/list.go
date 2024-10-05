@@ -134,7 +134,7 @@ AlistFSListResp:
 		return
 	}
 
-	var cli = vendor.LoadAlistClient(ctx.Query("backend"))
+	cli := vendor.LoadAlistClient(ctx.Query("backend"))
 	data, err := cli.FsList(ctx, &alist.FsListReq{
 		Token:    aucd.Token,
 		Password: req.Password,

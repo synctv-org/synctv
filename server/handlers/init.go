@@ -16,22 +16,20 @@ import (
 	"github.com/synctv-org/synctv/utils"
 )
 
-var (
-	HOST = settings.NewStringSetting(
-		"host",
-		"",
-		model.SettingGroupServer,
-		settings.WithValidatorString(func(s string) error {
-			if s == "" {
-				return nil
-			}
-			if !strings.HasPrefix(s, "http://") && !strings.HasPrefix(s, "https://") {
-				return errors.New("host must start with http:// or https://")
-			}
-			_, err := url.Parse(s)
-			return err
-		}),
-	)
+var HOST = settings.NewStringSetting(
+	"host",
+	"",
+	model.SettingGroupServer,
+	settings.WithValidatorString(func(s string) error {
+		if s == "" {
+			return nil
+		}
+		if !strings.HasPrefix(s, "http://") && !strings.HasPrefix(s, "https://") {
+			return errors.New("host must start with http:// or https://")
+		}
+		_, err := url.Parse(s)
+		return err
+	}),
 )
 
 func Init(e *gin.Engine) {

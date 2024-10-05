@@ -40,7 +40,7 @@ func Parse(ctx *gin.Context) {
 		return
 	}
 
-	var cli = vendor.LoadBilibiliClient(ctx.Query("backend"))
+	cli := vendor.LoadBilibiliClient(ctx.Query("backend"))
 
 	resp, err := cli.Match(ctx, &bilibili.MatchReq{
 		Url: req.URL,

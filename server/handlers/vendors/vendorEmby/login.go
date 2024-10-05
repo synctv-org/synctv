@@ -81,7 +81,6 @@ func Login(ctx *gin.Context) {
 		Backend:    backend,
 		EmbyUserID: data.UserId,
 	})
-
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return

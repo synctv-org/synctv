@@ -138,7 +138,7 @@ func UserRooms(ctx *gin.Context) {
 		return
 	}
 
-	var desc = ctx.DefaultQuery("order", "desc") == "desc"
+	desc := ctx.DefaultQuery("order", "desc") == "desc"
 	switch ctx.DefaultQuery("sort", "name") {
 	case "createdAt":
 		if desc {
@@ -209,7 +209,7 @@ func UserJoinedRooms(ctx *gin.Context) {
 		return
 	}
 
-	var desc = ctx.DefaultQuery("order", "desc") == "desc"
+	desc := ctx.DefaultQuery("order", "desc") == "desc"
 	switch ctx.DefaultQuery("sort", "name") {
 	case "createdAt":
 		if desc {

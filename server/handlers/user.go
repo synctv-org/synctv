@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"math/rand"
 	"net/http"
 	"net/url"
@@ -20,6 +21,7 @@ import (
 	"github.com/synctv-org/synctv/server/middlewares"
 	"github.com/synctv-org/synctv/server/model"
 	"github.com/synctv-org/synctv/utils"
+	"github.com/zijiren233/gencontainer/synccache"
 	"golang.org/x/exp/slices"
 	"gorm.io/gorm"
 )
@@ -46,9 +48,23 @@ func LoginUser(ctx *gin.Context) {
 		return
 	}
 
-	user, err := op.LoadOrInitUserByUsername(req.Username)
+	var user *synccache.Entry[*op.User]
+	var err error
+	if req.Username != "" {
+		user, err = op.LoadOrInitUserByUsername(req.Username)
+	} else if req.Email != "" {
+		user, err = op.LoadOrInitUserByEmail(req.Email)
+	} else {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("username or email is required"))
+		return
+	}
+
 	if err != nil {
 		log.Errorf("failed to load user: %v", err)
+		if errors.Is(err, db.ErrNotFound("user")) {
+			ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(err))
+			return
+		}
 		if err == op.ErrUserBanned || err == op.ErrUserPending {
 			ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(err))
 			return
@@ -762,7 +778,7 @@ func UserSignupPassword(ctx *gin.Context) {
 		return
 	}
 
-	var req model.LoginUserReq
+	var req model.UserSignupPasswordReq
 	if err := model.Decode(ctx, &req); err != nil {
 		log.Errorf("failed to decode request: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))

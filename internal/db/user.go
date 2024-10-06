@@ -76,6 +76,18 @@ func WithRegisteredByEmail(b bool) CreateUserConfig {
 	}
 }
 
+func WithEnableAutoAddUsernameSuffix() CreateUserConfig {
+	return func(u *model.User) {
+		u.EnableAutoAddUsernameSuffix()
+	}
+}
+
+func WithDisableAutoAddUsernameSuffix() CreateUserConfig {
+	return func(u *model.User) {
+		u.DisableAutoAddUsernameSuffix()
+	}
+}
+
 func CreateUserWithHashedPassword(username string, hashedPassword []byte, conf ...CreateUserConfig) (*model.User, error) {
 	if username == "" {
 		return nil, errors.New("username cannot be empty")
@@ -153,7 +165,11 @@ func CreateOrLoadUserWithProvider(username, password string, p provider.OAuth2Pr
 	var user model.User
 	if err := db.Where("id = (?)", db.Table("user_providers").Where("provider = ? AND provider_user_id = ?", p, puid).Select("user_id")).First(&user).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return CreateUser(username, password, append(conf, WithSetProvider(p, puid), WithRegisteredByProvider(true))...)
+			return CreateUser(username, password, append(conf,
+				WithSetProvider(p, puid),
+				WithRegisteredByProvider(true),
+				WithEnableAutoAddUsernameSuffix(),
+			)...)
 		} else {
 			return nil, err
 		}
@@ -169,7 +185,11 @@ func CreateOrLoadUserWithEmail(username, password, email string, conf ...CreateU
 	var user model.User
 	if err := db.Where("email = ?", email).First(&user).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return CreateUser(username, password, append(conf, WithEmail(email), WithRegisteredByEmail(true))...)
+			return CreateUser(username, password, append(conf,
+				WithEmail(email),
+				WithRegisteredByEmail(true),
+				WithEnableAutoAddUsernameSuffix(),
+			)...)
 		} else {
 			return nil, err
 		}
@@ -181,7 +201,11 @@ func CreateUserWithEmail(username, password, email string, conf ...CreateUserCon
 	if email == "" {
 		return nil, errors.New("email cannot be empty")
 	}
-	return CreateUser(username, password, append(conf, WithEmail(email), WithRegisteredByEmail(true))...)
+	return CreateUser(username, password, append(conf,
+		WithEmail(email),
+		WithRegisteredByEmail(true),
+		WithEnableAutoAddUsernameSuffix(),
+	)...)
 }
 
 func GetUserByProvider(p provider.OAuth2Provider, puid string) (*model.User, error) {

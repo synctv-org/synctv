@@ -37,8 +37,31 @@ type ProviderGroupSetting struct {
 var Oauth2EnabledCache = refreshcache.NewRefreshCache[[]provider.OAuth2Provider](func(context.Context, ...any) ([]provider.OAuth2Provider, error) {
 	ps := providers.EnabledProvider()
 	r := make([]provider.OAuth2Provider, 0, ps.Len())
-	providers.EnabledProvider().Range(func(p provider.OAuth2Provider, value struct{}) bool {
+	ps.Range(func(p provider.OAuth2Provider, value struct{}) bool {
 		r = append(r, p)
+		return true
+	})
+	slices.SortStableFunc(r, func(a, b provider.OAuth2Provider) int {
+		if a == b {
+			return 0
+		} else if natural.Less(a, b) {
+			return -1
+		} else {
+			return 1
+		}
+	})
+	return r, nil
+}, 0)
+
+var Oauth2SignupEnabledCache = refreshcache.NewRefreshCache[[]provider.OAuth2Provider](func(ctx context.Context, _ ...any) ([]provider.OAuth2Provider, error) {
+	ps := providers.EnabledProvider()
+	r := make([]provider.OAuth2Provider, 0, ps.Len())
+	ps.Range(func(p provider.OAuth2Provider, value struct{}) bool {
+		group := model.SettingGroup(fmt.Sprintf("%s_%s", model.SettingGroupOauth2, p))
+		groupSettings := ProviderGroupSettings[group]
+		if groupSettings.Enabled.Get() && !groupSettings.DisableUserSignup.Get() {
+			r = append(r, p)
+		}
 		return true
 	})
 	slices.SortStableFunc(r, func(a, b provider.OAuth2Provider) int {

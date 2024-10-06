@@ -247,6 +247,8 @@ func initMovie(movie *gin.RouterGroup, needAuthMovie *gin.RouterGroup) {
 func initUser(user *gin.RouterGroup, needAuthUser *gin.RouterGroup) {
 	user.POST("/login", LoginUser)
 
+	user.POST("/signup", UserSignupPassword)
+
 	user.GET("/signup/email/captcha", GetUserSignupEmailStep1Captcha)
 
 	user.POST("/signup/email/captcha", SendUserSignupEmailCaptcha)

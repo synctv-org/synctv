@@ -46,7 +46,7 @@ func LoginUser(ctx *gin.Context) {
 		return
 	}
 
-	user, err := op.LoadUserByUsername(req.Username)
+	user, err := op.LoadOrInitUserByUsername(req.Username)
 	if err != nil {
 		log.Errorf("failed to load user: %v", err)
 		if err == op.ErrUserBanned || err == op.ErrUserPending {
@@ -487,8 +487,13 @@ func GetUserSignupEmailStep1Captcha(ctx *gin.Context) {
 func SendUserSignupEmailCaptcha(ctx *gin.Context) {
 	log := ctx.MustGet("log").(*logrus.Entry)
 
-	if settings.DisableUserSignup.Get() || email.DisableUserSignup.Get() {
+	if settings.DisableUserSignup.Get() {
+		log.Errorf("user signup disabled")
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("user signup disabled"))
+		return
+	} else if email.DisableUserSignup.Get() {
+		log.Errorf("email signup disabled")
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("email signup disabled"))
 		return
 	}
 
@@ -545,9 +550,13 @@ func SendUserSignupEmailCaptcha(ctx *gin.Context) {
 func UserSignupEmail(ctx *gin.Context) {
 	log := ctx.MustGet("log").(*logrus.Entry)
 
-	if settings.DisableUserSignup.Get() || email.DisableUserSignup.Get() {
+	if settings.DisableUserSignup.Get() {
 		log.Errorf("user signup disabled")
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("user signup disabled"))
+		return
+	} else if email.DisableUserSignup.Get() {
+		log.Errorf("email signup disabled")
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("email signup disabled"))
 		return
 	}
 
@@ -735,4 +744,49 @@ func UserDeleteRoom(ctx *gin.Context) {
 	}
 
 	ctx.Status(http.StatusNoContent)
+}
+
+func UserSignupPassword(ctx *gin.Context) {
+	log := ctx.MustGet("log").(*logrus.Entry)
+
+	if settings.DisableUserSignup.Get() {
+		log.Errorf("user signup disabled")
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("user signup disabled"))
+		return
+	} else if !settings.EnablePasswordSignup.Get() {
+		log.Errorf("password signup disabled")
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("password signup disabled"))
+		return
+	}
+
+	var req model.LoginUserReq
+	if err := model.Decode(ctx, &req); err != nil {
+		log.Errorf("failed to decode request: %v", err)
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	var user *op.UserEntry
+	var err error
+	if settings.SignupNeedReview.Get() || settings.PasswordSignupNeedReview.Get() {
+		user, err = op.CreateUser(req.Username, req.Password, db.WithRole(dbModel.RolePending))
+	} else {
+		user, err = op.CreateUser(req.Username, req.Password)
+	}
+	if err != nil {
+		log.Errorf("failed to create user: %v", err)
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	token, err := middlewares.NewAuthUserToken(user.Value())
+	if err != nil {
+		log.Errorf("failed to generate token: %v", err)
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
+		"token": token,
+	}))
 }

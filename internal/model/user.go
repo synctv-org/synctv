@@ -55,6 +55,16 @@ type User struct {
 	BilibiliVendor       *BilibiliVendor `gorm:"foreignKey:UserID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 	AlistVendor          []*AlistVendor  `gorm:"foreignKey:UserID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 	EmbyVendor           []*EmbyVendor   `gorm:"foreignKey:UserID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
+
+	autoAddUsernameSuffix bool
+}
+
+func (u *User) EnableAutoAddUsernameSuffix() {
+	u.autoAddUsernameSuffix = true
+}
+
+func (u *User) DisableAutoAddUsernameSuffix() {
+	u.autoAddUsernameSuffix = false
 }
 
 func (u *User) CheckPassword(password string) bool {
@@ -62,10 +72,12 @@ func (u *User) CheckPassword(password string) bool {
 }
 
 func (u *User) BeforeCreate(tx *gorm.DB) error {
-	var existingUser User
-	err := tx.Where("username = ?", u.Username).First(&existingUser).Error
-	if err == nil {
-		u.Username = fmt.Sprintf("%s#%d", u.Username, rand.Intn(9999))
+	if u.autoAddUsernameSuffix {
+		var existingUser User
+		err := tx.Select("username").Where("username = ?", u.Username).First(&existingUser).Error
+		if err == nil {
+			u.Username = fmt.Sprintf("%s#%d", u.Username, rand.Intn(9999))
+		}
 	}
 	if u.ID == "" {
 		u.ID = utils.SortUUID()

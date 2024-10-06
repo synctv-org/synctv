@@ -42,10 +42,12 @@ func init() {
 }
 
 var (
-	DisableUserSignup = NewBoolSetting("disable_user_signup", false, model.SettingGroupUser)
-	SignupNeedReview  = NewBoolSetting("signup_need_review", false, model.SettingGroupUser)
-	UserMaxRoomCount  = NewInt64Setting("user_max_room_count", 3, model.SettingGroupUser)
-	EnableGuest       = NewBoolSetting("enable_guest", true, model.SettingGroupUser)
+	DisableUserSignup        = NewBoolSetting("disable_user_signup", false, model.SettingGroupUser)
+	SignupNeedReview         = NewBoolSetting("signup_need_review", false, model.SettingGroupUser)
+	EnablePasswordSignup     = NewBoolSetting("enable_password_signup", false, model.SettingGroupUser)
+	PasswordSignupNeedReview = NewBoolSetting("password_signup_need_review", false, model.SettingGroupUser)
+	UserMaxRoomCount         = NewInt64Setting("user_max_room_count", 3, model.SettingGroupUser)
+	EnableGuest              = NewBoolSetting("enable_guest", true, model.SettingGroupUser)
 )
 
 var (

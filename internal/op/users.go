@@ -52,7 +52,7 @@ func LoadOrInitUserByEmail(email string) (*UserEntry, error) {
 	return LoadOrInitUser(u)
 }
 
-func LoadUserByUsername(username string) (*UserEntry, error) {
+func LoadOrInitUserByUsername(username string) (*UserEntry, error) {
 	u, err := db.GetUserByUsername(username)
 	if err != nil {
 		return nil, err

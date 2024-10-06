@@ -88,6 +88,11 @@ func RoomUnbanMember(roomID, userID string) error {
 	return HandleNotFound(err, "room or user")
 }
 
+func DeleteRoomMember(roomID, userID string) error {
+	err := db.Where("room_id = ? AND user_id = ?", roomID, userID).Delete(&model.RoomMember{}).Error
+	return HandleNotFound(err, "room or user")
+}
+
 func SetMemberPermissions(roomID string, userID string, permission model.RoomMemberPermission) error {
 	err := db.Model(&model.RoomMember{}).Where("room_id = ? AND user_id = ?", roomID, userID).Update("permissions", permission).Error
 	return HandleNotFound(err, "room or user")

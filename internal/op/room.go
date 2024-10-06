@@ -603,6 +603,14 @@ func (r *Room) UnbanMember(userID string) error {
 	return db.RoomUnbanMember(r.ID, userID)
 }
 
+func (r *Room) DeleteMember(userID string) error {
+	if r.IsCreator(userID) {
+		return errors.New("you are creator, cannot delete")
+	}
+	defer r.members.Delete(userID)
+	return db.DeleteRoomMember(r.ID, userID)
+}
+
 func (r *Room) ResetAdminPermissions(userID string) error {
 	return r.SetAdminPermissions(userID, model.DefaultAdminPermissions)
 }

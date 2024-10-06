@@ -542,6 +542,13 @@ func (u *User) UnbanRoomMember(room *Room, userID string) error {
 	return room.UnbanMember(userID)
 }
 
+func (u *User) DeleteRoomMember(room *Room, userID string) error {
+	if !u.HasRoomAdminPermission(room, model.PermissionApprovePendingMember) {
+		return model.ErrNoPermission
+	}
+	return room.DeleteMember(userID)
+}
+
 func (u *User) SetMemberPermissions(room *Room, userID string, permissions model.RoomMemberPermission) error {
 	if !u.HasRoomAdminPermission(room, model.PermissionSetUserPermission) {
 		return model.ErrNoPermission

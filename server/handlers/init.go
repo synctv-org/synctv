@@ -192,6 +192,8 @@ func initRoom(room *gin.RouterGroup, needAuthUser *gin.RouterGroup, needAuthRoom
 
 		needAuthRoomAdmin.POST("/members/approve", RoomAdminApproveMember)
 
+		needAuthRoomAdmin.POST("/members/delete", RoomAdminDeleteMember)
+
 		needAuthRoomAdmin.POST("/members/ban", RoomAdminBanMember)
 
 		needAuthRoomAdmin.POST("/members/unban", RoomAdminUnbanMember)

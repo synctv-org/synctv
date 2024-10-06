@@ -230,6 +230,28 @@ func RoomAdminApproveMember(ctx *gin.Context) {
 	ctx.Status(http.StatusNoContent)
 }
 
+func RoomAdminDeleteMember(ctx *gin.Context) {
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
+	room := ctx.MustGet("room").(*op.RoomEntry).Value()
+	log := ctx.MustGet("log").(*logrus.Entry)
+
+	var req model.RoomApproveMemberReq
+	if err := model.Decode(ctx, &req); err != nil {
+		log.Errorf("decode room delete user req failed: %v", err)
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	err := user.DeleteRoomMember(room, req.ID)
+	if err != nil {
+		log.Errorf("delete room user failed: %v", err)
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
+
+	ctx.Status(http.StatusNoContent)
+}
+
 func RoomAdminBanMember(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*op.UserEntry).Value()
 	room := ctx.MustGet("room").(*op.RoomEntry).Value()

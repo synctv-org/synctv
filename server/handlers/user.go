@@ -246,9 +246,9 @@ func UserCheckJoinedRoom(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*op.UserEntry).Value()
 	log := ctx.MustGet("log").(*logrus.Entry)
 
-	id := ctx.Query("id")
-	if len(id) != 32 {
-		log.Errorf("id is invalid")
+	id, err := middlewares.GetRoomIdFromContext(ctx)
+	if err != nil {
+		log.Errorf("failed to get room id: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("id is invalid"))
 		return
 	}

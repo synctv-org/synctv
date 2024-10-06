@@ -168,13 +168,19 @@ func initRoom(room *gin.RouterGroup, needAuthUser *gin.RouterGroup, needAuthRoom
 
 	needAuthUser.POST("/login", LoginRoom)
 
+	needAuthUser.GET("/joined", UserCheckJoinedRoom)
+
 	needAuthRoom.GET("/me", RoomMe)
+
+	needAuthRoom.GET("/info", RoomInfo)
 
 	needAuthRoom.GET("/ws", NewWebSocketHandler(utils.NewWebSocketServer()))
 
 	needAuthWithoutGuestRoom.GET("/settings", RoomPiblicSettings)
 
 	needAuthWithoutGuestRoom.GET("/members", RoomMembers)
+
+	needAuthWithoutGuestRoom.POST("/pwd/check", CheckRoomPassword)
 
 	{
 		needAuthRoomAdmin := needAuthRoom.Group("/admin", middlewares.AuthRoomAdminMiddleware)

@@ -138,3 +138,15 @@ func (s *SetRoomSettingReq) Decode(ctx *gin.Context) error {
 func (s *SetRoomSettingReq) Validate() error {
 	return nil
 }
+
+type CheckRoomPasswordReq struct {
+	Password string `json:"password"`
+}
+
+func (c *CheckRoomPasswordReq) Decode(ctx *gin.Context) error {
+	return json.NewDecoder(ctx.Request.Body).Decode(c)
+}
+
+func (c *CheckRoomPasswordReq) Validate() error {
+	return nil
+}

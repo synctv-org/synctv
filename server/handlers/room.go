@@ -34,7 +34,7 @@ func RoomMe(ctx *gin.Context) {
 	room := ctx.MustGet("room").(*op.RoomEntry).Value()
 	log := ctx.MustGet("log").(*logrus.Entry)
 
-	rur, err := room.LoadOrCreateMember(user.ID)
+	member, err := room.LoadMember(user.ID)
 	if err != nil {
 		log.Errorf("room me failed: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
@@ -44,11 +44,44 @@ func RoomMe(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(&model.RoomMeResp{
 		UserID:           user.ID,
 		RoomID:           room.ID,
-		JoinAt:           rur.CreatedAt.UnixMilli(),
-		Status:           rur.Status,
-		Role:             rur.Role,
-		Permissions:      rur.Permissions,
-		AdminPermissions: rur.AdminPermissions,
+		JoinAt:           member.CreatedAt.UnixMilli(),
+		Status:           member.Status,
+		Role:             member.Role,
+		Permissions:      member.Permissions,
+		AdminPermissions: member.AdminPermissions,
+	}))
+}
+
+func RoomInfo(ctx *gin.Context) {
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
+	room := ctx.MustGet("room").(*op.RoomEntry).Value()
+	log := ctx.MustGet("log").(*logrus.Entry)
+
+	member, err := room.LoadMember(user.ID)
+	if err != nil {
+		log.Errorf("room me failed: %v", err)
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
+
+	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
+		"id":           room.ID,
+		"name":         room.Name,
+		"needPassword": room.NeedPassword(),
+		"creator":      op.GetUserName(room.CreatorID),
+		"createdAt":    room.CreatedAt.UnixMilli(),
+		"status":       room.Status,
+		"enabledGuest": room.EnabledGuest(),
+
+		"member": gin.H{
+			"id":               user.ID,
+			"username":         user.Username,
+			"joinAt":           member.CreatedAt.UnixMilli(),
+			"status":           member.Status,
+			"role":             member.Role,
+			"permissions":      member.Permissions,
+			"adminPermissions": member.AdminPermissions,
+		},
 	}))
 }
 
@@ -330,6 +363,14 @@ func LoginRoom(ctx *gin.Context) {
 	room := roomE.Value()
 
 	if member, err := room.LoadMember(user.ID); err == nil {
+		if member.Status == dbModel.RoomMemberStatusPending {
+			ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("status is pending, need admin to approve"))
+			return
+		}
+		if member.Status == dbModel.RoomMemberStatusBanned {
+			ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("status is banned"))
+			return
+		}
 		ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
 			"status":           member.Status,
 			"role":             member.Role,
@@ -362,11 +403,36 @@ func LoginRoom(ctx *gin.Context) {
 		return
 	}
 
+	if member.Status == dbModel.RoomMemberStatusPending {
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("status is pending, need admin to approve"))
+		return
+	}
+	if member.Status == dbModel.RoomMemberStatusBanned {
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("status is banned"))
+		return
+	}
+
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
 		"status":           member.Status,
 		"role":             member.Role,
 		"permissions":      member.Permissions,
 		"adminPermissions": member.AdminPermissions,
+	}))
+}
+
+func CheckRoomPassword(ctx *gin.Context) {
+	room := ctx.MustGet("room").(*op.RoomEntry).Value()
+	log := ctx.MustGet("log").(*logrus.Entry)
+
+	req := model.CheckRoomPasswordReq{}
+	if err := model.Decode(ctx, &req); err != nil {
+		log.Errorf("check room password failed: %v", err)
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
+		"valid": room.CheckPassword(req.Password),
 	}))
 }
 

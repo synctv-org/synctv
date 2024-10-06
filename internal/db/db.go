@@ -121,6 +121,14 @@ func OrderByUsersCreatedAtDesc(db *gorm.DB) *gorm.DB {
 	return db.Order("users.created_at desc")
 }
 
+func OrderByRoomCreatedAtAsc(db *gorm.DB) *gorm.DB {
+	return db.Order("rooms.created_at asc")
+}
+
+func OrderByRoomCreatedAtDesc(db *gorm.DB) *gorm.DB {
+	return db.Order("rooms.created_at desc")
+}
+
 func OrderByIDAsc(db *gorm.DB) *gorm.DB {
 	return db.Order("id asc")
 }

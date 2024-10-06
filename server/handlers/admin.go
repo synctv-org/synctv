@@ -632,8 +632,12 @@ func AdminGetUserJoinedRooms(ctx *gin.Context) {
 	scopes := []func(db *gorm.DB) *gorm.DB{
 		func(db *gorm.DB) *gorm.DB {
 			return db.
-				InnerJoins("JOIN room_members ON rooms.id = room_members.room_id").
-				Where("room_members.user_id = ? AND rooms.creator_id != ?", id, id)
+				InnerJoins("JOIN room_members ON rooms.id = room_members.room_id AND room_members.user_id = ? AND rooms.creator_id != ?", id, id)
+		},
+		func(db *gorm.DB) *gorm.DB {
+			return db.Preload("RoomMembers", func(db *gorm.DB) *gorm.DB {
+				return db.Where("user_id = ?", id)
+			})
 		},
 	}
 
@@ -668,15 +672,15 @@ func AdminGetUserJoinedRooms(ctx *gin.Context) {
 	switch ctx.DefaultQuery("sort", "name") {
 	case "createdAt":
 		if desc {
-			scopes = append(scopes, db.OrderByCreatedAtDesc)
+			scopes = append(scopes, db.OrderByRoomCreatedAtDesc)
 		} else {
-			scopes = append(scopes, db.OrderByCreatedAtAsc)
+			scopes = append(scopes, db.OrderByRoomCreatedAtAsc)
 		}
 	case "name":
 		if desc {
-			scopes = append(scopes, db.OrderByDesc("name"))
+			scopes = append(scopes, db.OrderByDesc("rooms.name"))
 		} else {
-			scopes = append(scopes, db.OrderByAsc("name"))
+			scopes = append(scopes, db.OrderByAsc("rooms.name"))
 		}
 	default:
 		log.Errorf("not support sort")
@@ -684,7 +688,7 @@ func AdminGetUserJoinedRooms(ctx *gin.Context) {
 		return
 	}
 
-	list, err := genRoomListResp(append(scopes, db.Paginate(page, pageSize))...)
+	list, err := genJoinedRoomListResp(append(scopes, db.Paginate(page, pageSize))...)
 	if err != nil {
 		log.Errorf("failed to get all rooms: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))

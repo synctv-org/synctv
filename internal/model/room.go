@@ -31,16 +31,16 @@ func (r RoomStatus) String() string {
 }
 
 type Room struct {
-	ID                 string `gorm:"primaryKey;type:char(32)" json:"id"`
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
-	Status             RoomStatus    `gorm:"not null;default:2"`
-	Name               string        `gorm:"not null;uniqueIndex;type:varchar(32)"`
-	Settings           *RoomSettings `gorm:"foreignKey:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE" json:"settings"`
-	CreatorID          string        `gorm:"index;type:char(32)"`
-	HashedPassword     []byte
-	GroupUserRelations []*RoomMember `gorm:"foreignKey:RoomID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
-	Movies             []*Movie      `gorm:"foreignKey:RoomID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
+	ID             string `gorm:"primaryKey;type:char(32)" json:"id"`
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	Status         RoomStatus    `gorm:"not null;default:2"`
+	Name           string        `gorm:"not null;uniqueIndex;type:varchar(32)"`
+	Settings       *RoomSettings `gorm:"foreignKey:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE" json:"settings"`
+	CreatorID      string        `gorm:"index;type:char(32)"`
+	HashedPassword []byte
+	RoomMembers    []*RoomMember `gorm:"foreignKey:RoomID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
+	Movies         []*Movie      `gorm:"foreignKey:RoomID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 }
 
 func (r *Room) BeforeCreate(tx *gorm.DB) error {

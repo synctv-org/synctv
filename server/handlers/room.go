@@ -251,6 +251,34 @@ func genRoomListResp(scopes ...func(db *gorm.DB) *gorm.DB) ([]*model.RoomListRes
 	return resp, nil
 }
 
+func genJoinedRoomListResp(scopes ...func(db *gorm.DB) *gorm.DB) ([]*model.JoinedRoomResp, error) {
+	rs, err := db.GetAllRooms(scopes...)
+	if err != nil {
+		return nil, err
+	}
+	resp := make([]*model.JoinedRoomResp, len(rs))
+	for i, r := range rs {
+		if len(r.RoomMembers) == 0 {
+			return nil, fmt.Errorf("room %s load member failed", r.ID)
+		}
+		resp[i] = &model.JoinedRoomResp{
+			RoomListResp: model.RoomListResp{
+				RoomId:       r.ID,
+				RoomName:     r.Name,
+				PeopleNum:    op.PeopleNum(r.ID),
+				NeedPassword: len(r.HashedPassword) != 0,
+				CreatorID:    r.CreatorID,
+				Creator:      op.GetUserName(r.CreatorID),
+				CreatedAt:    r.CreatedAt.UnixMilli(),
+				Status:       r.Status,
+			},
+			MemberStatus: r.RoomMembers[0].Status,
+			MemberRole:   r.RoomMembers[0].Role,
+		}
+	}
+	return resp, nil
+}
+
 func CheckRoom(ctx *gin.Context) {
 	log := ctx.MustGet("log").(*logrus.Entry)
 	roomId, err := middlewares.GetRoomIdFromContext(ctx)

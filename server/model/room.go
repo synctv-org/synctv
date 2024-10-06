@@ -8,6 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/synctv-org/synctv/internal/model"
+	dbModel "github.com/synctv-org/synctv/internal/model"
 )
 
 var (
@@ -66,6 +67,12 @@ type RoomListResp struct {
 	Creator      string           `json:"creator"`
 	CreatedAt    int64            `json:"createdAt"`
 	Status       model.RoomStatus `json:"status"`
+}
+
+type JoinedRoomResp struct {
+	RoomListResp
+	MemberStatus dbModel.RoomMemberStatus `json:"memberStatus"`
+	MemberRole   dbModel.RoomMemberRole   `json:"memberRole"`
 }
 
 type LoginRoomReq struct {

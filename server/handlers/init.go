@@ -267,6 +267,8 @@ func initUser(user *gin.RouterGroup, needAuthUser *gin.RouterGroup) {
 
 	needAuthUser.GET("/rooms", UserRooms)
 
+	needAuthUser.GET("/rooms/joined", UserJoinedRooms)
+
 	needAuthUser.POST("/username", SetUsername)
 
 	needAuthUser.POST("/password", SetUserPassword)

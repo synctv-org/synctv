@@ -21,7 +21,7 @@ func WithSetting(setting *model.RoomSettings) CreateRoomConfig {
 func WithCreator(creator *model.User) CreateRoomConfig {
 	return func(r *model.Room) {
 		r.CreatorID = creator.ID
-		r.GroupUserRelations = []*model.RoomMember{
+		r.RoomMembers = []*model.RoomMember{
 			{
 				UserID:           creator.ID,
 				Status:           model.RoomMemberStatusActive,
@@ -35,7 +35,7 @@ func WithCreator(creator *model.User) CreateRoomConfig {
 
 func WithRelations(relations []*model.RoomMember) CreateRoomConfig {
 	return func(r *model.Room) {
-		r.GroupUserRelations = append(r.GroupUserRelations, relations...)
+		r.RoomMembers = append(r.RoomMembers, relations...)
 	}
 }
 

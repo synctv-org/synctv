@@ -43,15 +43,14 @@ func (s *alistVendorService) Client() alist.AlistHTTPServer {
 	return vendor.LoadAlistClient(s.movie.VendorInfo.Backend)
 }
 
-func (s *alistVendorService) ListDynamicMovie(ctx context.Context, reqUser *op.User, subPath string, page, max int) (*model.MoviesResp, error) {
+func (s *alistVendorService) ListDynamicMovie(ctx context.Context, reqUser *op.User, subPath string, page, max int) (*model.MovieList, error) {
 	if reqUser.ID != s.movie.CreatorID {
 		return nil, fmt.Errorf("list vendor dynamic folder error: %w", dbModel.ErrNoPermission)
 	}
 	user := reqUser
 
-	resp := &model.MoviesResp{
-		Paths:   []*model.MoviePath{},
-		Dynamic: true,
+	resp := &model.MovieList{
+		Paths: []*model.MoviePath{},
 	}
 
 	serverID, truePath, err := s.movie.VendorInfo.Alist.ServerIDAndFilePath()
@@ -106,7 +105,7 @@ func (s *alistVendorService) ListDynamicMovie(ctx context.Context, reqUser *op.U
 			},
 		}
 	}
-	resp.Paths = model.GenDefaultSubPaths(subPath, true, resp.Paths...)
+	resp.Paths = model.GenDefaultSubPaths(s.movie.ID, subPath, true)
 	return resp, nil
 }
 
@@ -170,16 +169,14 @@ func (s *alistVendorService) ProxyMovie(ctx *gin.Context) {
 		fallthrough
 	default:
 		if !s.movie.Movie.MovieBase.Proxy {
-			log.Errorf("proxy vendor movie error: %v", "not support movie proxy")
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support movie proxy"))
+			log.Errorf("proxy vendor movie error: %v", "proxy is not enabled")
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("proxy is not enabled"))
 			return
-		} else {
-			err = proxy.ProxyURL(ctx, data.URL, nil)
-			if err != nil {
-				log.Errorf("proxy vendor movie error: %v", err)
-			}
 		}
-
+		err = proxy.ProxyURL(ctx, data.URL, nil)
+		if err != nil {
+			log.Errorf("proxy vendor movie error: %v", err)
+		}
 	}
 }
 

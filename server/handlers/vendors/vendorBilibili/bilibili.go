@@ -41,7 +41,7 @@ func (s *bilibiliVendorService) Client() bilibili.BilibiliHTTPServer {
 	return vendor.LoadBilibiliClient(s.movie.VendorInfo.Backend)
 }
 
-func (s *bilibiliVendorService) ListDynamicMovie(ctx context.Context, reqUser *op.User, subPath string, page, max int) (*model.MoviesResp, error) {
+func (s *bilibiliVendorService) ListDynamicMovie(ctx context.Context, reqUser *op.User, subPath string, page, max int) (*model.MovieList, error) {
 	return nil, fmt.Errorf("bilibili vendor not support list dynamic movie")
 }
 
@@ -68,8 +68,8 @@ func (s *bilibiliVendorService) ProxyMovie(ctx *gin.Context) {
 	switch t {
 	case "", "hevc":
 		if !s.movie.Movie.MovieBase.Proxy {
-			log.Errorf("proxy vendor movie error: %v", "not support movie proxy")
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support movie proxy"))
+			log.Errorf("proxy vendor movie error: %v", "proxy is not enabled")
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("proxy is not enabled"))
 			return
 		}
 		u, err := op.LoadOrInitUserByID(s.movie.Movie.CreatorID)

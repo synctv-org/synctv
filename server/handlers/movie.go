@@ -199,9 +199,11 @@ func Movies(ctx *gin.Context) {
 	}
 
 	resp := &model.MoviesResp{
-		Total:  total,
-		Movies: make([]*model.Movie, len(m)),
-		Paths:  paths,
+		MovieList: &model.MovieList{
+			Total:  total,
+			Movies: make([]*model.Movie, len(m)),
+			Paths:  paths,
+		},
 	}
 
 	for i, v := range m {
@@ -259,12 +261,15 @@ func listVendorDynamicMovie(ctx context.Context, reqUser *op.User, room *op.Room
 	if err != nil {
 		return nil, err
 	}
-	resp, err := vendor.ListDynamicMovie(ctx, reqUser, subPath, page, max)
+	dynamic, err := vendor.ListDynamicMovie(ctx, reqUser, subPath, page, max)
 	if err != nil {
 		return nil, err
 	}
-	resp.Dynamic = true
-	resp.Paths = append(paths, resp.Paths...)
+	dynamic.Paths = append(paths, dynamic.Paths...)
+	resp := &model.MoviesResp{
+		MovieList: dynamic,
+		Dynamic:   true,
+	}
 	return resp, nil
 }
 
@@ -566,8 +571,13 @@ func ProxyMovie(ctx *gin.Context) {
 		return
 	}
 
-	if !m.Movie.MovieBase.Proxy || m.Movie.MovieBase.Live || m.Movie.MovieBase.RtmpSource {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support movie proxy"))
+	if !m.Movie.MovieBase.Proxy {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("proxy is not enabled"))
+		return
+	}
+
+	if m.Movie.MovieBase.Live || m.Movie.MovieBase.RtmpSource {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("this movie is live or rtmp source, not support use this method proxy"))
 		return
 	}
 

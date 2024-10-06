@@ -41,15 +41,14 @@ func (s *embyVendorService) Client() emby.EmbyHTTPServer {
 	return vendor.LoadEmbyClient(s.movie.VendorInfo.Backend)
 }
 
-func (s *embyVendorService) ListDynamicMovie(ctx context.Context, reqUser *op.User, subPath string, page, max int) (*model.MoviesResp, error) {
+func (s *embyVendorService) ListDynamicMovie(ctx context.Context, reqUser *op.User, subPath string, page, max int) (*model.MovieList, error) {
 	if reqUser.ID != s.movie.CreatorID {
 		return nil, fmt.Errorf("list vendor dynamic folder error: %w", dbModel.ErrNoPermission)
 	}
 	user := reqUser
 
-	resp := &model.MoviesResp{
-		Paths:   []*model.MoviePath{},
-		Dynamic: true,
+	resp := &model.MovieList{
+		Paths: []*model.MoviePath{},
 	}
 
 	serverID, truePath, err := s.movie.VendorInfo.Emby.ServerIDAndFilePath()
@@ -110,8 +109,8 @@ func (s *embyVendorService) ProxyMovie(ctx *gin.Context) {
 	switch t {
 	case "":
 		if !s.movie.Movie.MovieBase.Proxy {
-			log.Errorf("proxy vendor movie error: %v", "not support movie proxy")
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("not support movie proxy"))
+			log.Errorf("proxy vendor movie error: %v", "proxy is not enabled")
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("proxy is not enabled"))
 			return
 		}
 		u, err := op.LoadOrInitUserByID(s.movie.Movie.CreatorID)
@@ -221,6 +220,54 @@ func (s *embyVendorService) GenMovieInfo(ctx context.Context, user *op.User, use
 		return nil, err
 	}
 
+	if len(data.Sources) == 0 {
+		return nil, errors.New("no source")
+	}
+	movie.MovieBase.Url = data.Sources[0].URL
+	for _, s := range data.Sources[0].Subtitles {
+		if movie.MovieBase.Subtitles == nil {
+			movie.MovieBase.Subtitles = make(map[string]*dbModel.Subtitle, len(data.Sources[0].Subtitles))
+		}
+		movie.MovieBase.Subtitles[s.Name] = &dbModel.Subtitle{
+			URL:  s.URL,
+			Type: s.Type,
+		}
+	}
+	for _, s := range data.Sources[1:] {
+		movie.MovieBase.MoreSources = append(movie.MovieBase.MoreSources,
+			&dbModel.MoreSource{
+				Name: s.Name,
+				Url:  s.URL,
+			},
+		)
+
+		for _, subt := range s.Subtitles {
+			if movie.MovieBase.Subtitles == nil {
+				movie.MovieBase.Subtitles = make(map[string]*dbModel.Subtitle, len(s.Subtitles))
+			}
+			movie.MovieBase.Subtitles[subt.Name] = &dbModel.Subtitle{
+				URL:  subt.URL,
+				Type: subt.Type,
+			}
+		}
+	}
+
+	return movie, nil
+}
+
+func (s *embyVendorService) GenProxyMovieInfo(ctx context.Context, user *op.User, userAgent, userToken string) (*dbModel.Movie, error) {
+	movie := s.movie.Clone()
+	var err error
+
+	u, err := op.LoadOrInitUserByID(movie.CreatorID)
+	if err != nil {
+		return nil, err
+	}
+	data, err := s.movie.EmbyCache().Get(ctx, u.Value().EmbyCache())
+	if err != nil {
+		return nil, err
+	}
+
 	for si, es := range data.Sources {
 		if len(es.URL) == 0 {
 			if si != len(data.Sources)-1 {
@@ -266,54 +313,6 @@ func (s *embyVendorService) GenMovieInfo(ctx context.Context, user *op.User, use
 			movie.MovieBase.Subtitles[s.Name] = &dbModel.Subtitle{
 				URL:  u.String(),
 				Type: s.Type,
-			}
-		}
-	}
-
-	return movie, nil
-}
-
-func (s *embyVendorService) GenProxyMovieInfo(ctx context.Context, user *op.User, userAgent, userToken string) (*dbModel.Movie, error) {
-	movie := s.movie.Clone()
-	var err error
-
-	u, err := op.LoadOrInitUserByID(movie.CreatorID)
-	if err != nil {
-		return nil, err
-	}
-	data, err := s.movie.EmbyCache().Get(ctx, u.Value().EmbyCache())
-	if err != nil {
-		return nil, err
-	}
-
-	if len(data.Sources) == 0 {
-		return nil, errors.New("no source")
-	}
-	movie.MovieBase.Url = data.Sources[0].URL
-	for _, s := range data.Sources[0].Subtitles {
-		if movie.MovieBase.Subtitles == nil {
-			movie.MovieBase.Subtitles = make(map[string]*dbModel.Subtitle, len(data.Sources[0].Subtitles))
-		}
-		movie.MovieBase.Subtitles[s.Name] = &dbModel.Subtitle{
-			URL:  s.URL,
-			Type: s.Type,
-		}
-	}
-	for _, s := range data.Sources[1:] {
-		movie.MovieBase.MoreSources = append(movie.MovieBase.MoreSources,
-			&dbModel.MoreSource{
-				Name: s.Name,
-				Url:  s.URL,
-			},
-		)
-
-		for _, subt := range s.Subtitles {
-			if movie.MovieBase.Subtitles == nil {
-				movie.MovieBase.Subtitles = make(map[string]*dbModel.Subtitle, len(s.Subtitles))
-			}
-			movie.MovieBase.Subtitles[subt.Name] = &dbModel.Subtitle{
-				URL:  subt.URL,
-				Type: subt.Type,
 			}
 		}
 	}

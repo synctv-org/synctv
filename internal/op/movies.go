@@ -92,8 +92,8 @@ func (m *movies) Update(movieId string, movie *model.MovieBase) error {
 	if err != nil {
 		return err
 	}
-	mm, ok := m.cache.LoadOrStore(mv.ID, &Movie{Movie: mv})
-	if ok {
+	mm, loaded := m.cache.LoadAndDelete(mv.ID)
+	if loaded {
 		_ = mm.Close()
 	}
 	return nil
@@ -173,8 +173,7 @@ func (m *movies) GetMovieByID(id string) (*Movie, error) {
 	if err != nil {
 		return nil, err
 	}
-	mo := &Movie{Movie: mv}
-	mm, _ = m.cache.LoadOrStore(mv.ID, mo)
+	mm, _ = m.cache.LoadOrStore(mv.ID, &Movie{Movie: mv})
 	return mm, nil
 }
 

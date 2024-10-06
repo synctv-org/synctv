@@ -14,7 +14,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/sirupsen/logrus"
+	log "github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/internal/conf"
 	dbModel "github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
@@ -84,6 +84,11 @@ func genMovieInfo(
 			v.Type = utils.GetUrlExtension(v.Url)
 		}
 	}
+	for _, v := range movie.Subtitles {
+		if v.Type == "" {
+			v.Type = utils.GetUrlExtension(v.URL)
+		}
+	}
 	resp := &model.Movie{
 		Id:        movie.ID,
 		CreatedAt: movie.CreatedAt.UnixMilli(),
@@ -121,7 +126,7 @@ func genCurrentRespWithCurrent(ctx context.Context, room *op.Room, user *op.User
 func CurrentMovie(ctx *gin.Context) {
 	room := ctx.MustGet("room").(*op.RoomEntry).Value()
 	user := ctx.MustGet("user").(*op.UserEntry).Value()
-	log := ctx.MustGet("log").(*logrus.Entry)
+	log := ctx.MustGet("log").(*log.Entry)
 
 	currentResp, err := genCurrentRespWithCurrent(ctx, room, user, ctx.GetHeader("User-Agent"), ctx.MustGet("token").(string))
 	if err != nil {
@@ -136,7 +141,7 @@ func CurrentMovie(ctx *gin.Context) {
 func Movies(ctx *gin.Context) {
 	room := ctx.MustGet("room").(*op.RoomEntry).Value()
 	user := ctx.MustGet("user").(*op.UserEntry).Value()
-	log := ctx.MustGet("log").(*logrus.Entry)
+	log := ctx.MustGet("log").(*log.Entry)
 
 	if !user.HasRoomPermission(room, dbModel.PermissionGetMovieList) {
 		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(dbModel.ErrNoPermission))
@@ -266,7 +271,7 @@ func listVendorDynamicMovie(ctx context.Context, reqUser *op.User, room *op.Room
 func PushMovie(ctx *gin.Context) {
 	room := ctx.MustGet("room").(*op.RoomEntry).Value()
 	user := ctx.MustGet("user").(*op.UserEntry).Value()
-	log := ctx.MustGet("log").(*logrus.Entry)
+	log := ctx.MustGet("log").(*log.Entry)
 
 	req := model.PushMovieReq{}
 	if err := model.Decode(ctx, &req); err != nil {
@@ -297,7 +302,7 @@ func PushMovie(ctx *gin.Context) {
 func PushMovies(ctx *gin.Context) {
 	room := ctx.MustGet("room").(*op.RoomEntry).Value()
 	user := ctx.MustGet("user").(*op.UserEntry).Value()
-	log := ctx.MustGet("log").(*logrus.Entry)
+	log := ctx.MustGet("log").(*log.Entry)
 
 	req := model.PushMoviesReq{}
 	if err := model.Decode(ctx, &req); err != nil {
@@ -331,7 +336,7 @@ func PushMovies(ctx *gin.Context) {
 }
 
 func NewPublishKey(ctx *gin.Context) {
-	log := ctx.MustGet("log").(*logrus.Entry)
+	log := ctx.MustGet("log").(*log.Entry)
 
 	if !conf.Conf.Server.Rtmp.Enable {
 		log.Errorf("rtmp is not enabled")
@@ -397,7 +402,7 @@ func NewPublishKey(ctx *gin.Context) {
 func EditMovie(ctx *gin.Context) {
 	room := ctx.MustGet("room").(*op.RoomEntry).Value()
 	user := ctx.MustGet("user").(*op.UserEntry).Value()
-	log := ctx.MustGet("log").(*logrus.Entry)
+	log := ctx.MustGet("log").(*log.Entry)
 
 	req := model.EditMovieReq{}
 	if err := model.Decode(ctx, &req); err != nil {
@@ -427,7 +432,7 @@ func EditMovie(ctx *gin.Context) {
 func DelMovie(ctx *gin.Context) {
 	room := ctx.MustGet("room").(*op.RoomEntry).Value()
 	user := ctx.MustGet("user").(*op.UserEntry).Value()
-	log := ctx.MustGet("log").(*logrus.Entry)
+	log := ctx.MustGet("log").(*log.Entry)
 
 	req := model.IdsReq{}
 	if err := model.Decode(ctx, &req); err != nil {
@@ -503,7 +508,7 @@ func SwapMovie(ctx *gin.Context) {
 func ChangeCurrentMovie(ctx *gin.Context) {
 	room := ctx.MustGet("room").(*op.RoomEntry).Value()
 	user := ctx.MustGet("user").(*op.UserEntry).Value()
-	log := ctx.MustGet("log").(*logrus.Entry)
+	log := ctx.MustGet("log").(*log.Entry)
 
 	req := model.SetRoomCurrentMovieReq{}
 	err := model.Decode(ctx, &req)
@@ -532,7 +537,7 @@ func ChangeCurrentMovie(ctx *gin.Context) {
 }
 
 func ProxyMovie(ctx *gin.Context) {
-	log := ctx.MustGet("log").(*logrus.Entry)
+	log := ctx.MustGet("log").(*log.Entry)
 
 	if !settings.MovieProxy.Get() {
 		log.Errorf("movie proxy is not enabled")
@@ -625,7 +630,7 @@ func (e FormatErrNotSupportFileType) Error() string {
 }
 
 func JoinFlvLive(ctx *gin.Context) {
-	log := ctx.MustGet("log").(*logrus.Entry)
+	log := ctx.MustGet("log").(*log.Entry)
 
 	ctx.Header("Cache-Control", "no-store")
 	room := ctx.MustGet("room").(*op.RoomEntry).Value()
@@ -675,7 +680,7 @@ func JoinFlvLive(ctx *gin.Context) {
 }
 
 func JoinHlsLive(ctx *gin.Context) {
-	log := ctx.MustGet("log").(*logrus.Entry)
+	log := ctx.MustGet("log").(*log.Entry)
 
 	ctx.Header("Cache-Control", "no-store")
 	room := ctx.MustGet("room").(*op.RoomEntry).Value()
@@ -725,7 +730,7 @@ func JoinHlsLive(ctx *gin.Context) {
 }
 
 func ServeHlsLive(ctx *gin.Context) {
-	log := ctx.MustGet("log").(*logrus.Entry)
+	log := ctx.MustGet("log").(*log.Entry)
 	roomId := ctx.Param("roomId")
 	roomE, err := op.LoadRoomByID(roomId)
 	if err != nil {

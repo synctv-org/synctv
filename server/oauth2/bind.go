@@ -10,7 +10,6 @@ import (
 	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/internal/provider"
 	"github.com/synctv-org/synctv/internal/provider/providers"
-	"github.com/synctv-org/synctv/server/middlewares"
 	"github.com/synctv-org/synctv/server/model"
 	"github.com/synctv-org/synctv/utils"
 )
@@ -91,15 +90,7 @@ func newBindFunc(userID, redirect string) stateHandler {
 			return
 		}
 
-		token, err := middlewares.NewAuthUserToken(user.Value())
-		if err != nil {
-			log.Errorf("failed to generate token: %v", err)
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
-			return
-		}
-
 		ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
-			"token":    token,
 			"redirect": redirect,
 		}))
 	}

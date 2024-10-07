@@ -228,15 +228,21 @@ func NewAuthUserToken(user *op.User) (string, error) {
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(stream.StringToBytes(conf.Conf.Jwt.Secret))
 }
 
+var (
+	ErrUserBanned  = errors.New("user banned")
+	ErrUserPending = errors.New("user is pending, need admin to approve")
+	ErrUserGuest   = errors.New("user is guest, cannot login")
+)
+
 func validateNewAuthUserToken(user *op.User) error {
 	if user.IsBanned() {
-		return errors.New("user banned")
+		return ErrUserBanned
 	}
 	if user.IsPending() {
-		return errors.New("user is pending, need admin to approve")
+		return ErrUserPending
 	}
 	if user.IsGuest() {
-		return errors.New("user is guest, cannot login")
+		return ErrUserGuest
 	}
 	return nil
 }

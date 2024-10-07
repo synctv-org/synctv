@@ -79,8 +79,22 @@ func LoginUser(ctx *gin.Context) {
 		return
 	}
 
-	token, err := middlewares.NewAuthUserToken(user.Value())
+	handleUserToken(ctx, user.Value())
+}
+
+func handleUserToken(ctx *gin.Context, user *op.User) {
+	log := ctx.MustGet("log").(*logrus.Entry)
+
+	token, err := middlewares.NewAuthUserToken(user)
 	if err != nil {
+		if errors.Is(err, middlewares.ErrUserBanned) ||
+			errors.Is(err, middlewares.ErrUserPending) {
+			ctx.AbortWithStatusJSON(http.StatusOK, model.NewApiDataResp(gin.H{
+				"message": err.Error(),
+				"role":    user.Role,
+			}))
+			return
+		}
 		log.Errorf("failed to generate token: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
@@ -88,6 +102,7 @@ func LoginUser(ctx *gin.Context) {
 
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
 		"token": token,
+		"role":  user.Role,
 	}))
 }
 
@@ -332,16 +347,7 @@ func SetUserPassword(ctx *gin.Context) {
 		return
 	}
 
-	token, err := middlewares.NewAuthUserToken(user)
-	if err != nil {
-		log.Errorf("failed to generate token: %v", err)
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
-		return
-	}
-
-	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
-		"token": token,
-	}))
+	handleUserToken(ctx, user)
 }
 
 func UserBindProviders(ctx *gin.Context) {
@@ -610,16 +616,7 @@ func UserSignupEmail(ctx *gin.Context) {
 		return
 	}
 
-	token, err := middlewares.NewAuthUserToken(user.Value())
-	if err != nil {
-		log.Errorf("failed to generate token: %v", err)
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
-		return
-	}
-
-	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
-		"token": token,
-	}))
+	handleUserToken(ctx, user.Value())
 }
 
 func GetUserRetrievePasswordEmailStep1Captcha(ctx *gin.Context) {
@@ -719,16 +716,7 @@ func UserRetrievePasswordEmail(ctx *gin.Context) {
 		return
 	}
 
-	token, err := middlewares.NewAuthUserToken(user)
-	if err != nil {
-		log.Errorf("failed to generate token: %v", err)
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
-		return
-	}
-
-	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
-		"token": token,
-	}))
+	handleUserToken(ctx, user)
 }
 
 func UserDeleteRoom(ctx *gin.Context) {
@@ -798,14 +786,5 @@ func UserSignupPassword(ctx *gin.Context) {
 		return
 	}
 
-	token, err := middlewares.NewAuthUserToken(user.Value())
-	if err != nil {
-		log.Errorf("failed to generate token: %v", err)
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
-		return
-	}
-
-	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
-		"token": token,
-	}))
+	handleUserToken(ctx, user.Value())
 }

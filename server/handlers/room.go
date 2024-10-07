@@ -363,14 +363,6 @@ func LoginRoom(ctx *gin.Context) {
 	room := roomE.Value()
 
 	if member, err := room.LoadMember(user.ID); err == nil {
-		if member.Status == dbModel.RoomMemberStatusPending {
-			ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("status is pending, need admin to approve"))
-			return
-		}
-		if member.Status == dbModel.RoomMemberStatusBanned {
-			ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("status is banned"))
-			return
-		}
 		ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
 			"status":           member.Status,
 			"role":             member.Role,
@@ -400,15 +392,6 @@ func LoginRoom(ctx *gin.Context) {
 		}
 		log.Errorf("login room failed: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
-		return
-	}
-
-	if member.Status == dbModel.RoomMemberStatusPending {
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("status is pending, need admin to approve"))
-		return
-	}
-	if member.Status == dbModel.RoomMemberStatusBanned {
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("status is banned"))
 		return
 	}
 

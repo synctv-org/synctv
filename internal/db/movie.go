@@ -11,9 +11,7 @@ func CreateMovie(movie *model.Movie) error {
 }
 
 func CreateMovies(movies []*model.Movie) error {
-	return db.Transaction(func(tx *gorm.DB) error {
-		return tx.Create(movies).Error
-	})
+	return db.CreateInBatches(movies, 100).Error
 }
 
 func WithParentMovieID(parentMovieID string) func(*gorm.DB) *gorm.DB {
@@ -26,7 +24,7 @@ func WithParentMovieID(parentMovieID string) func(*gorm.DB) *gorm.DB {
 }
 
 func GetMoviesByRoomID(roomID string, scopes ...func(*gorm.DB) *gorm.DB) ([]*model.Movie, error) {
-	movies := []*model.Movie{}
+	var movies []*model.Movie
 	err := db.Where("room_id = ?", roomID).Order("position ASC").Scopes(scopes...).Find(&movies).Error
 	return movies, err
 }
@@ -38,40 +36,30 @@ func GetMoviesCountByRoomID(roomID string, scopes ...func(*gorm.DB) *gorm.DB) (i
 }
 
 func GetMovieByID(roomID, id string, scopes ...func(*gorm.DB) *gorm.DB) (*model.Movie, error) {
-	movie := &model.Movie{}
-	err := db.Where("room_id = ? AND id = ?", roomID, id).Scopes(scopes...).First(movie).Error
-	return movie, HandleNotFound(err, "room or movie")
+	var movie model.Movie
+	err := db.Where("room_id = ? AND id = ?", roomID, id).Scopes(scopes...).First(&movie).Error
+	return &movie, HandleNotFound(err, "room or movie")
 }
 
 func DeleteMovieByID(roomID, id string) error {
-	err := db.Unscoped().Where("room_id = ? AND id = ?", roomID, id).Delete(&model.Movie{}).Error
-	return HandleNotFound(err, "room or movie")
+	result := db.Unscoped().Where("room_id = ? AND id = ?", roomID, id).Delete(&model.Movie{})
+	return HandleUpdateResult(result, "movie")
 }
 
 func DeleteMoviesByID(roomID string, ids []string) error {
-	return db.Transaction(func(tx *gorm.DB) error {
-		err := tx.Unscoped().Where("room_id = ? AND id IN ?", roomID, ids).Delete(&model.Movie{}).Error
-		if err != nil {
-			return HandleNotFound(err, "room or movie")
-		}
-		return nil
-	})
+	result := db.Unscoped().Where("room_id = ? AND id IN ?", roomID, ids).Delete(&model.Movie{})
+	return HandleUpdateResult(result, "movie")
 }
 
 func LoadAndDeleteMovieByID(roomID, id string, columns []clause.Column) (*model.Movie, error) {
-	movie := &model.Movie{}
-	err := db.Unscoped().Clauses(clause.Returning{Columns: columns}).Where("room_id = ? AND id = ?", roomID, id).Delete(movie).Error
-	return movie, HandleNotFound(err, "room or movie")
+	var movie model.Movie
+	err := db.Unscoped().Clauses(clause.Returning{Columns: columns}).Where("room_id = ? AND id = ?", roomID, id).Delete(&movie).Error
+	return &movie, HandleNotFound(err, "room or movie")
 }
 
 func DeleteMoviesByRoomID(roomID string, scopes ...func(*gorm.DB) *gorm.DB) error {
-	return db.Transaction(func(tx *gorm.DB) error {
-		err := tx.Where("room_id = ?", roomID).Scopes(scopes...).Delete(&model.Movie{}).Error
-		if err != nil {
-			return HandleNotFound(err, "room")
-		}
-		return nil
-	})
+	result := db.Where("room_id = ?", roomID).Scopes(scopes...).Delete(&model.Movie{})
+	return HandleUpdateResult(result, "movie")
 }
 
 func DeleteMoviesByRoomIDAndParentID(roomID string, parentID string) error {
@@ -79,41 +67,40 @@ func DeleteMoviesByRoomIDAndParentID(roomID string, parentID string) error {
 }
 
 func LoadAndDeleteMoviesByRoomID(roomID string, columns ...clause.Column) ([]*model.Movie, error) {
-	movies := []*model.Movie{}
-	err := db.Transaction(func(tx *gorm.DB) error {
-		err := tx.Unscoped().Clauses(clause.Returning{Columns: columns}).Where("room_id = ?", roomID).Delete(&movies).Error
-		return HandleNotFound(err, "room")
-	})
-	return movies, err
+	var movies []*model.Movie
+	err := db.Unscoped().Clauses(clause.Returning{Columns: columns}).Where("room_id = ?", roomID).Delete(&movies).Error
+	return movies, HandleNotFound(err, "room")
 }
 
 func UpdateMovie(movie *model.Movie, columns ...clause.Column) error {
-	err := db.Model(movie).Clauses(clause.Returning{Columns: columns}).Where("room_id = ? AND id = ?", movie.RoomID, movie.ID).Updates(movie).Error
-	return HandleNotFound(err, "room or movie")
+	result := db.Model(movie).Clauses(clause.Returning{Columns: columns}).Where("room_id = ? AND id = ?", movie.RoomID, movie.ID).Updates(movie)
+	return HandleUpdateResult(result, "movie")
 }
 
 func SaveMovie(movie *model.Movie, columns ...clause.Column) error {
-	err := db.Model(movie).Clauses(clause.Returning{Columns: columns}).Where("room_id = ? AND id = ?", movie.RoomID, movie.ID).Omit("created_at").Save(movie).Error
-	return HandleNotFound(err, "room or movie")
+	result := db.Model(movie).Clauses(clause.Returning{Columns: columns}).Where("room_id = ? AND id = ?", movie.RoomID, movie.ID).Omit("created_at").Save(movie)
+	return HandleUpdateResult(result, "movie")
 }
 
-func SwapMoviePositions(roomID, movie1ID, movie2ID string) (err error) {
-	return Transactional(func(tx *gorm.DB) error {
-		movie1 := &model.Movie{}
-		movie2 := &model.Movie{}
-		err = tx.Where("room_id = ? AND id = ?", roomID, movie1ID).First(movie1).Error
-		if err != nil {
+func SwapMoviePositions(roomID, movie1ID, movie2ID string) error {
+	return db.Transaction(func(tx *gorm.DB) error {
+		var movie1, movie2 model.Movie
+		if err := tx.Where("room_id = ? AND id = ?", roomID, movie1ID).First(&movie1).Error; err != nil {
 			return HandleNotFound(err, "movie1")
 		}
-		err = tx.Where("room_id = ? AND id = ?", roomID, movie2ID).First(movie2).Error
-		if err != nil {
+		if err := tx.Where("room_id = ? AND id = ?", roomID, movie2ID).First(&movie2).Error; err != nil {
 			return HandleNotFound(err, "movie2")
 		}
+
 		movie1.Position, movie2.Position = movie2.Position, movie1.Position
-		err = tx.Omit("created_at").Save(movie1).Error
-		if err != nil {
+
+		if err := tx.Model(&movie1).Update("position", movie1.Position).Error; err != nil {
 			return err
 		}
-		return tx.Omit("created_at").Save(movie2).Error
+		if err := tx.Model(&movie2).Update("position", movie2.Position).Error; err != nil {
+			return err
+		}
+
+		return nil
 	})
 }

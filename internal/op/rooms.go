@@ -138,7 +138,7 @@ func LoadOrInitRoomByID(id string) (*RoomEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	settings, err := db.GetOrCreateRoomSettings(room.ID)
+	settings, err := db.CreateOrLoadRoomSettings(room.ID)
 	if err != nil {
 		return nil, err
 	}

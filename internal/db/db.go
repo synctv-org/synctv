@@ -355,3 +355,14 @@ func Transactional(txFunc func(*gorm.DB) error) (err error) {
 	err = txFunc(tx)
 	return
 }
+
+// Helper function to handle update results
+func HandleUpdateResult(result *gorm.DB, entityName string) error {
+	if result.Error != nil {
+		return HandleNotFound(result.Error, entityName)
+	}
+	if result.RowsAffected == 0 {
+		return ErrNotFound(entityName)
+	}
+	return nil
+}

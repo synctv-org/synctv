@@ -172,34 +172,13 @@ func handleElementMsg(cli *op.Client, msg *pb.ElementMessage) error {
 		return err
 	case pb.ElementMessageType_PLAY,
 		pb.ElementMessageType_PAUSE,
+		pb.ElementMessageType_CHANGE_SEEK,
 		pb.ElementMessageType_CHANGE_RATE:
 		status, err := cli.SetStatus(msg.ChangeMovieStatusReq.Playing, msg.ChangeMovieStatusReq.Seek, msg.ChangeMovieStatusReq.Rate, timeDiff)
 		if err != nil {
 			return cli.Send(&pb.ElementMessage{
 				Type:  pb.ElementMessageType_ERROR,
 				Error: fmt.Sprintf("set status error: %v", err),
-			})
-		}
-		return cli.Broadcast(&pb.ElementMessage{
-			Type: msg.Type,
-			MovieStatusChanged: &pb.MovieStatusChanged{
-				Sender: &pb.Sender{
-					Username: cli.User().Username,
-					Userid:   cli.User().ID,
-				},
-				Status: &pb.MovieStatus{
-					Playing: status.Playing,
-					Seek:    status.Seek,
-					Rate:    status.Rate,
-				},
-			},
-		}, op.WithIgnoreClient(cli))
-	case pb.ElementMessageType_CHANGE_SEEK:
-		status, err := cli.SetSeekRate(msg.ChangeMovieStatusReq.Seek, msg.ChangeMovieStatusReq.Rate, timeDiff)
-		if err != nil {
-			return cli.Send(&pb.ElementMessage{
-				Type:  pb.ElementMessageType_ERROR,
-				Error: fmt.Sprintf("set seek rate error: %v", err),
 			})
 		}
 		return cli.Broadcast(&pb.ElementMessage{

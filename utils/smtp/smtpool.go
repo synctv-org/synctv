@@ -162,13 +162,13 @@ func (p *SmtpPool) Close() {
 	p.clients = nil
 }
 
-func (p *SmtpPool) SendEmail(to []string, subject, body string) error {
+func (p *SmtpPool) SendEmail(to []string, subject, body string, opts ...FormatMailOption) error {
 	cli, err := p.Get()
 	if err != nil {
 		return err
 	}
 	defer p.Put(cli)
-	return SendEmail(cli, p.c.From, to, subject, body)
+	return SendEmail(cli, p.c.From, to, subject, body, opts...)
 }
 
 func (p *SmtpPool) SetFrom(from string) {

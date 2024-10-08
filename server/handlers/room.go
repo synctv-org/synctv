@@ -330,11 +330,12 @@ func CheckRoom(ctx *gin.Context) {
 	room := roomE.Value()
 
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
+		"name":         room.Name,
+		"status":       room.Status,
 		"peopleNum":    op.PeopleNum(room.ID),
 		"needPassword": room.NeedPassword(),
 		"creatorId":    room.CreatorID,
 		"creator":      op.GetUserName(room.CreatorID),
-		"name":         room.Name,
 		"enabledGuest": room.EnabledGuest(),
 	}))
 }

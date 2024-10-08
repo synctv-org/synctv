@@ -11,6 +11,7 @@ import (
 	"github.com/synctv-org/synctv/utils"
 	_ "github.com/synctv-org/synctv/utils/fastJSONSerializer"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 var (
@@ -365,4 +366,10 @@ func HandleUpdateResult(result *gorm.DB, entityName string) error {
 		return ErrNotFound(entityName)
 	}
 	return nil
+}
+
+func OnConflictDoNothing() *gorm.DB {
+	return db.Clauses(clause.OnConflict{
+		DoNothing: true,
+	})
 }

@@ -107,7 +107,7 @@ func GetRoomByID(id string) (*model.Room, error) {
 
 func CreateOrLoadRoomSettings(roomID string) (*model.RoomSettings, error) {
 	var rs model.RoomSettings
-	err := db.Where(model.RoomSettings{ID: roomID}).Attrs(model.DefaultRoomSettings()).FirstOrCreate(&rs).Error
+	err := OnConflictDoNothing().Where(model.RoomSettings{ID: roomID}).Attrs(model.DefaultRoomSettings()).FirstOrCreate(&rs).Error
 	return &rs, HandleNotFound(err, "room")
 }
 

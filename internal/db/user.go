@@ -116,7 +116,7 @@ func CreateOrLoadUserWithProvider(username, password string, p provider.OAuth2Pr
 		c(user)
 	}
 	user.EnableAutoAddUsernameSuffix()
-	err = db.Joins("JOIN user_providers ON users.id = user_providers.user_id").
+	err = OnConflictDoNothing().Joins("JOIN user_providers ON users.id = user_providers.user_id").
 		Where("user_providers.provider = ? AND user_providers.provider_user_id = ?", p, puid).
 		FirstOrCreate(user).Error
 	if err != nil {

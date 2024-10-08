@@ -58,7 +58,7 @@ func GetSettingItemValue(name string) (string, error) {
 }
 
 func FirstOrCreateSettingItemValue(s *model.Setting) error {
-	return db.Where("name = ?", s.Name).FirstOrCreate(s, model.Setting{
+	return OnConflictDoNothing().Where("name = ?", s.Name).FirstOrCreate(s, model.Setting{
 		Value: s.Value,
 		Type:  s.Type,
 		Group: s.Group,

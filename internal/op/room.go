@@ -53,10 +53,14 @@ func (r *Room) Broadcast(data Message, conf ...BroadcastConf) error {
 }
 
 func (r *Room) SendToUser(user *User, data Message) error {
+	return r.SendToUserWithId(user.ID, data)
+}
+
+func (r *Room) SendToUserWithId(userID string, data Message) error {
 	if r.hub == nil {
 		return nil
 	}
-	return r.hub.SendToUser(user.ID, data)
+	return r.hub.SendToUser(userID, data)
 }
 
 func (r *Room) GetChannel(channelName string) (*rtmps.Channel, error) {
@@ -607,7 +611,10 @@ func (r *Room) DeleteMember(userID string) error {
 	if r.IsCreator(userID) {
 		return errors.New("you are creator, cannot delete")
 	}
-	defer r.members.Delete(userID)
+	defer func() {
+		r.members.Delete(userID)
+		_ = r.KickUser(userID)
+	}()
 	return db.DeleteRoomMember(r.ID, userID)
 }
 

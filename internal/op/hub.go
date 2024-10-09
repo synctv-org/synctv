@@ -105,9 +105,11 @@ func (h *Hub) ping() {
 		case <-ticker.C:
 			current = h.PeopleNum()
 			if current != pre {
-				if err := h.Broadcast(&pb.ElementMessage{
-					Type:          pb.ElementMessageType_PEOPLE_CHANGED,
-					PeopleChanged: current,
+				if err := h.Broadcast(&pb.Message{
+					Type: pb.MessageType_VIEWER_COUNT,
+					Payload: &pb.Message_ViewerCount{
+						ViewerCount: current,
+					},
 				}); err != nil {
 					continue
 				}

@@ -47,15 +47,15 @@ func (c *Client) SendChatMessage(message string) error {
 	if !c.u.HasRoomPermission(c.r, model.PermissionSendChatMessage) {
 		return model.ErrNoPermission
 	}
-	return c.Broadcast(&pb.ElementMessage{
-		Type: pb.ElementMessageType_CHAT_MESSAGE,
-		Time: time.Now().UnixMilli(),
-		ChatResp: &pb.ChatResp{
-			Message: message,
-			Sender: &pb.Sender{
-				Userid:   c.u.ID,
-				Username: c.u.Username,
-			},
+	return c.Broadcast(&pb.Message{
+		Type:      pb.MessageType_CHAT,
+		Timestamp: time.Now().UnixMilli(),
+		Sender: &pb.Sender{
+			UserId:   c.u.ID,
+			Username: c.u.Username,
+		},
+		Payload: &pb.Message_ChatContent{
+			ChatContent: message,
 		},
 	})
 }
@@ -95,10 +95,23 @@ func (c *Client) NextReader() (int, io.Reader, error) {
 	return c.conn.NextReader()
 }
 
-func (c *Client) SetSeekRate(seek float64, rate float64, timeDiff float64) (*Status, error) {
-	return c.u.SetRoomCurrentSeekRate(c.r, seek, rate, timeDiff)
-}
-
-func (c *Client) SetStatus(playing bool, seek float64, rate float64, timeDiff float64) (*Status, error) {
-	return c.u.SetRoomCurrentStatus(c.r, playing, seek, rate, timeDiff)
+func (c *Client) SetStatus(playing bool, seek float64, rate float64, timeDiff float64) error {
+	status, err := c.u.SetRoomCurrentStatus(c.r, playing, seek, rate, timeDiff)
+	if err != nil {
+		return err
+	}
+	return c.Broadcast(&pb.Message{
+		Type: pb.MessageType_STATUS,
+		Sender: &pb.Sender{
+			Username: c.User().Username,
+			UserId:   c.User().ID,
+		},
+		Payload: &pb.Message_PlaybackStatus{
+			PlaybackStatus: &pb.Status{
+				IsPlaying:    status.IsPlaying,
+				CurrentTime:  status.CurrentTime,
+				PlaybackRate: status.PlaybackRate,
+			},
+		},
+	}, WithIgnoreClient(c))
 }

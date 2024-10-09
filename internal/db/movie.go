@@ -42,34 +42,22 @@ func GetMovieByID(roomID, id string, scopes ...func(*gorm.DB) *gorm.DB) (*model.
 }
 
 func DeleteMovieByID(roomID, id string) error {
-	result := db.Unscoped().Where("room_id = ? AND id = ?", roomID, id).Delete(&model.Movie{})
-	return HandleUpdateResult(result, "movie")
+	err := db.Unscoped().Where("room_id = ? AND id = ?", roomID, id).Delete(&model.Movie{}).Error
+	return HandleNotFound(err, "room")
 }
 
 func DeleteMoviesByID(roomID string, ids []string) error {
-	result := db.Unscoped().Where("room_id = ? AND id IN ?", roomID, ids).Delete(&model.Movie{})
-	return HandleUpdateResult(result, "movie")
-}
-
-func LoadAndDeleteMovieByID(roomID, id string, columns []clause.Column) (*model.Movie, error) {
-	var movie model.Movie
-	err := db.Unscoped().Clauses(clause.Returning{Columns: columns}).Where("room_id = ? AND id = ?", roomID, id).Delete(&movie).Error
-	return &movie, HandleNotFound(err, "room or movie")
+	err := db.Unscoped().Where("room_id = ? AND id IN ?", roomID, ids).Delete(&model.Movie{}).Error
+	return HandleNotFound(err, "room")
 }
 
 func DeleteMoviesByRoomID(roomID string, scopes ...func(*gorm.DB) *gorm.DB) error {
-	result := db.Where("room_id = ?", roomID).Scopes(scopes...).Delete(&model.Movie{})
-	return HandleUpdateResult(result, "movie")
+	err := db.Where("room_id = ?", roomID).Scopes(scopes...).Delete(&model.Movie{}).Error
+	return HandleNotFound(err, "room")
 }
 
-func DeleteMoviesByRoomIDAndParentID(roomID string, parentID string) error {
+func DeleteMoviesByRoomIDAndParentID(roomID, parentID string) error {
 	return DeleteMoviesByRoomID(roomID, WithParentMovieID(parentID))
-}
-
-func LoadAndDeleteMoviesByRoomID(roomID string, columns ...clause.Column) ([]*model.Movie, error) {
-	var movies []*model.Movie
-	err := db.Unscoped().Clauses(clause.Returning{Columns: columns}).Where("room_id = ?", roomID).Delete(&movies).Error
-	return movies, HandleNotFound(err, "room")
 }
 
 func UpdateMovie(movie *model.Movie, columns ...clause.Column) error {
@@ -94,13 +82,11 @@ func SwapMoviePositions(roomID, movie1ID, movie2ID string) error {
 
 		movie1.Position, movie2.Position = movie2.Position, movie1.Position
 
-		if err := tx.Model(&movie1).Update("position", movie1.Position).Error; err != nil {
+		result1 := tx.Model(&movie1).Where("room_id = ? AND id = ?", roomID, movie1ID).Update("position", movie1.Position)
+		if err := HandleUpdateResult(result1, "movie1"); err != nil {
 			return err
 		}
-		if err := tx.Model(&movie2).Update("position", movie2.Position).Error; err != nil {
-			return err
-		}
-
-		return nil
+		result2 := tx.Model(&movie2).Where("room_id = ? AND id = ?", roomID, movie2ID).Update("position", movie2.Position)
+		return HandleUpdateResult(result2, "movie2")
 	})
 }

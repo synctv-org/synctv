@@ -15,10 +15,12 @@ import (
 	"github.com/synctv-org/synctv/utils"
 	"github.com/synctv-org/vendors/api/emby"
 	"github.com/zijiren233/gencontainer/refreshcache"
+	"github.com/zijiren233/gencontainer/refreshcache0"
+	"github.com/zijiren233/gencontainer/refreshcache1"
 	"github.com/zijiren233/go-uhc"
 )
 
-type EmbyUserCache = MapCache[*EmbyUserCacheData, struct{}]
+type EmbyUserCache = MapCache0[*EmbyUserCacheData]
 
 type EmbyUserCacheData struct {
 	Host     string
@@ -29,7 +31,7 @@ type EmbyUserCacheData struct {
 }
 
 func NewEmbyUserCache(userID string) *EmbyUserCache {
-	return newMapCache(func(ctx context.Context, key string, args ...struct{}) (*EmbyUserCacheData, error) {
+	return newMapCache0(func(ctx context.Context, key string) (*EmbyUserCacheData, error) {
 		return EmbyAuthorizationCacheWithUserIDInitFunc(userID, key)
 	}, -1)
 }
@@ -62,7 +64,7 @@ type EmbySource struct {
 		URL   string
 		Type  string
 		Name  string
-		Cache *refreshcache.RefreshCache[[]byte, struct{}]
+		Cache *refreshcache0.RefreshCache[[]byte]
 	}
 }
 
@@ -71,20 +73,20 @@ type EmbyMovieCacheData struct {
 	TranscodeSessionID string
 }
 
-type EmbyMovieCache = refreshcache.RefreshCache[*EmbyMovieCacheData, *EmbyUserCache]
+type EmbyMovieCache = refreshcache1.RefreshCache[*EmbyMovieCacheData, *EmbyUserCache]
 
 func NewEmbyMovieCache(movie *model.Movie, subPath string) *EmbyMovieCache {
-	cache := refreshcache.NewRefreshCache(NewEmbyMovieCacheInitFunc(movie, subPath), 0)
+	cache := refreshcache1.NewRefreshCache(NewEmbyMovieCacheInitFunc(movie, subPath), 0)
 	cache.SetClearFunc(NewEmbyMovieClearCacheFunc(movie, subPath))
 	return cache
 }
 
-func NewEmbyMovieClearCacheFunc(movie *model.Movie, subPath string) func(ctx context.Context, args ...*EmbyUserCache) error {
-	return func(ctx context.Context, args ...*MapCache[*EmbyUserCacheData, struct{}]) error {
+func NewEmbyMovieClearCacheFunc(movie *model.Movie, subPath string) func(ctx context.Context, args *EmbyUserCache) error {
+	return func(ctx context.Context, args *EmbyUserCache) error {
 		if !movie.MovieBase.VendorInfo.Emby.Transcode {
 			return nil
 		}
-		if len(args) == 0 {
+		if args == nil {
 			return errors.New("need emby user cache")
 		}
 
@@ -98,7 +100,7 @@ func NewEmbyMovieClearCacheFunc(movie *model.Movie, subPath string) func(ctx con
 			return nil
 		}
 
-		aucd, err := args[0].LoadOrStore(ctx, serverID)
+		aucd, err := args.LoadOrStore(ctx, serverID)
 		if err != nil {
 			return err
 		}
@@ -118,9 +120,9 @@ func NewEmbyMovieClearCacheFunc(movie *model.Movie, subPath string) func(ctx con
 	}
 }
 
-func NewEmbyMovieCacheInitFunc(movie *model.Movie, subPath string) func(ctx context.Context, args ...*EmbyUserCache) (*EmbyMovieCacheData, error) {
-	return func(ctx context.Context, args ...*EmbyUserCache) (*EmbyMovieCacheData, error) {
-		if len(args) == 0 {
+func NewEmbyMovieCacheInitFunc(movie *model.Movie, subPath string) func(ctx context.Context, args *EmbyUserCache) (*EmbyMovieCacheData, error) {
+	return func(ctx context.Context, args *EmbyUserCache) (*EmbyMovieCacheData, error) {
+		if args == nil {
 			return nil, errors.New("need emby user cache")
 		}
 		if movie.IsFolder && subPath == "" {
@@ -139,7 +141,7 @@ func NewEmbyMovieCacheInitFunc(movie *model.Movie, subPath string) func(ctx cont
 			truePath = subPath
 		}
 
-		aucd, err := args[0].LoadOrStore(ctx, serverID)
+		aucd, err := args.LoadOrStore(ctx, serverID)
 		if err != nil {
 			return nil, err
 		}
@@ -213,12 +215,12 @@ func NewEmbyMovieCacheInitFunc(movie *model.Movie, subPath string) func(ctx cont
 						URL   string
 						Type  string
 						Name  string
-						Cache *refreshcache.RefreshCache[[]byte, struct{}]
+						Cache *refreshcache0.RefreshCache[[]byte]
 					}{
 						URL:   url,
 						Type:  subtutleType,
 						Name:  name,
-						Cache: refreshcache.NewRefreshCache(newEmbySubtitleCacheInitFunc(url), 0),
+						Cache: refreshcache0.NewRefreshCache(newEmbySubtitleCacheInitFunc(url), 0),
 					})
 				}
 			}
@@ -227,8 +229,8 @@ func NewEmbyMovieCacheInitFunc(movie *model.Movie, subPath string) func(ctx cont
 	}
 }
 
-func newEmbySubtitleCacheInitFunc(url string) func(ctx context.Context, args ...struct{}) ([]byte, error) {
-	return func(ctx context.Context, args ...struct{}) ([]byte, error) {
+func newEmbySubtitleCacheInitFunc(url string) func(ctx context.Context) ([]byte, error) {
+	return func(ctx context.Context) ([]byte, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
 			return nil, err

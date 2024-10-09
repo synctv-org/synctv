@@ -18,7 +18,7 @@ import (
 	"github.com/synctv-org/synctv/server/middlewares"
 	"github.com/synctv-org/synctv/server/model"
 	"github.com/synctv-org/synctv/utils"
-	"github.com/zijiren233/gencontainer/refreshcache"
+	"github.com/zijiren233/gencontainer/refreshcache0"
 	"github.com/zijiren233/gencontainer/synccache"
 	"gorm.io/gorm"
 )
@@ -119,7 +119,7 @@ func CreateRoom(ctx *gin.Context) {
 	}))
 }
 
-var roomHotCache = refreshcache.NewRefreshCache(func(context.Context, ...any) ([]*model.RoomListResp, error) {
+var roomHotCache = refreshcache0.NewRefreshCache[[]*model.RoomListResp](func(context.Context) ([]*model.RoomListResp, error) {
 	rooms := make([]*model.RoomListResp, 0)
 	op.RangeRoomCache(func(key string, value *synccache.Entry[*op.Room]) bool {
 		v := value.Value()

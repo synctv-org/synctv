@@ -16,7 +16,8 @@ import (
 	"github.com/synctv-org/synctv/internal/vendor"
 	"github.com/synctv-org/synctv/utils"
 	"github.com/synctv-org/vendors/api/alist"
-	"github.com/zijiren233/gencontainer/refreshcache"
+	"github.com/zijiren233/gencontainer/refreshcache0"
+	"github.com/zijiren233/gencontainer/refreshcache1"
 	"github.com/zijiren233/go-uhc"
 )
 
@@ -79,10 +80,10 @@ func AlistAuthorizationCacheWithConfigInitFunc(ctx context.Context, v *model.Ali
 	}
 }
 
-type AlistMovieCache = refreshcache.RefreshCache[*AlistMovieCacheData, *AlistMovieCacheFuncArgs]
+type AlistMovieCache = refreshcache1.RefreshCache[*AlistMovieCacheData, *AlistMovieCacheFuncArgs]
 
 func NewAlistMovieCache(movie *model.Movie, subPath string) *AlistMovieCache {
-	return refreshcache.NewRefreshCache(NewAlistMovieCacheInitFunc(movie, subPath), time.Minute*14)
+	return refreshcache1.NewRefreshCache(NewAlistMovieCacheInitFunc(movie, subPath), time.Minute*14)
 }
 
 type AlistProvider = string
@@ -110,7 +111,7 @@ type AlistAliCache struct {
 	M3U8ListFile []byte
 }
 
-type SubtitleDataCache = refreshcache.RefreshCache[[]byte, struct{}]
+type SubtitleDataCache = refreshcache0.RefreshCache[[]byte]
 
 func newAliSubtitles(list []*alist.FsOtherResp_VideoPreviewPlayInfo_LiveTranscodingSubtitleTaskList) []*AlistSubtitle {
 	caches := make([]*AlistSubtitle, len(list))
@@ -120,7 +121,7 @@ func newAliSubtitles(list []*alist.FsOtherResp_VideoPreviewPlayInfo_LiveTranscod
 		}
 		url := v.Url
 		caches[i] = &AlistSubtitle{
-			Cache: refreshcache.NewRefreshCache(func(ctx context.Context, args ...struct{}) ([]byte, error) {
+			Cache: refreshcache0.NewRefreshCache(func(ctx context.Context) ([]byte, error) {
 				r, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 				if err != nil {
 					return nil, err
@@ -162,12 +163,12 @@ type AlistMovieCacheFuncArgs struct {
 	UserAgent string
 }
 
-func NewAlistMovieCacheInitFunc(movie *model.Movie, subPath string) func(ctx context.Context, args ...*AlistMovieCacheFuncArgs) (*AlistMovieCacheData, error) {
-	return func(ctx context.Context, args ...*AlistMovieCacheFuncArgs) (*AlistMovieCacheData, error) {
-		if len(args) == 0 {
+func NewAlistMovieCacheInitFunc(movie *model.Movie, subPath string) func(ctx context.Context, args *AlistMovieCacheFuncArgs) (*AlistMovieCacheData, error) {
+	return func(ctx context.Context, args *AlistMovieCacheFuncArgs) (*AlistMovieCacheData, error) {
+		if args == nil {
 			return nil, errors.New("need alist user cache")
 		}
-		userCache := args[0].UserCache
+		userCache := args.UserCache
 		if userCache == nil {
 			return nil, errors.New("need alist user cache")
 		}
@@ -204,7 +205,7 @@ func NewAlistMovieCacheInitFunc(movie *model.Movie, subPath string) func(ctx con
 			Token:     aucd.Token,
 			Path:      truePath,
 			Password:  movie.MovieBase.VendorInfo.Alist.Password,
-			UserAgent: args[0].UserAgent,
+			UserAgent: args.UserAgent,
 		})
 		if err != nil {
 			return nil, err
@@ -233,7 +234,7 @@ func NewAlistMovieCacheInitFunc(movie *model.Movie, subPath string) func(ctx con
 				Token:     aucd.Token,
 				Path:      prefix + related.Name,
 				Password:  movie.MovieBase.VendorInfo.Alist.Password,
-				UserAgent: args[0].UserAgent,
+				UserAgent: args.UserAgent,
 			})
 			if err != nil {
 				return nil, err
@@ -242,7 +243,7 @@ func NewAlistMovieCacheInitFunc(movie *model.Movie, subPath string) func(ctx con
 				Name: related.Name,
 				URL:  resp.RawUrl,
 				Type: utils.GetFileExtension(resp.Name),
-				Cache: refreshcache.NewRefreshCache(func(ctx context.Context, args ...struct{}) ([]byte, error) {
+				Cache: refreshcache0.NewRefreshCache(func(ctx context.Context) ([]byte, error) {
 					r, err := http.NewRequestWithContext(ctx, http.MethodGet, resp.RawUrl, nil)
 					if err != nil {
 						return nil, err

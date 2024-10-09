@@ -103,8 +103,12 @@ func (m *movies) Clear() error {
 	return m.DeleteMovieByParentID("")
 }
 
+func (m *movies) ClearCache() {
+	m.cache.Clear()
+}
+
 func (m *movies) Close() error {
-	m.DeleteMovieAndChiledCache("")
+	m.ClearCache()
 	return nil
 }
 
@@ -113,7 +117,7 @@ func (m *movies) DeleteMovieByParentID(parentID string) error {
 	if err != nil {
 		return err
 	}
-	m.DeleteMovieAndChiledCache("")
+	m.DeleteMovieAndChiledCache(parentID)
 	return nil
 }
 
@@ -131,6 +135,10 @@ func (m *movies) DeleteMovieAndChiledCache(id ...string) {
 	for _, id := range id {
 		idm[model.EmptyNullString(id)] = struct{}{}
 	}
+	if _, ok := idm[model.EmptyNullString("")]; ok {
+		m.ClearCache()
+		return
+	}
 	m.deleteMovieAndChiledCache(idm)
 }
 
@@ -140,9 +148,8 @@ func (m *movies) deleteMovieAndChiledCache(ids map[model.EmptyNullString]struct{
 		if _, ok := ids[value.ParentID]; ok {
 			if value.IsFolder {
 				next[model.EmptyNullString(value.ID)] = struct{}{}
-			} else {
-				m.cache.Delete(key)
 			}
+			m.cache.Delete(key)
 			value.Close()
 		}
 		return true

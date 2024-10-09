@@ -20,7 +20,7 @@ import (
 	"github.com/synctv-org/synctv/internal/provider/providers"
 	"github.com/synctv-org/synctv/internal/settings"
 	"github.com/synctv-org/synctv/utils"
-	"github.com/zijiren233/gencontainer/refreshcache"
+	"github.com/zijiren233/gencontainer/refreshcache0"
 )
 
 var ProviderGroupSettings = make(map[model.SettingGroup]*ProviderGroupSetting)
@@ -34,7 +34,7 @@ type ProviderGroupSetting struct {
 	SignupNeedReview  settings.BoolSetting
 }
 
-var Oauth2EnabledCache = refreshcache.NewRefreshCache[[]provider.OAuth2Provider](func(context.Context, ...any) ([]provider.OAuth2Provider, error) {
+var Oauth2EnabledCache = refreshcache0.NewRefreshCache[[]provider.OAuth2Provider](func(context.Context) ([]provider.OAuth2Provider, error) {
 	ps := providers.EnabledProvider()
 	r := make([]provider.OAuth2Provider, 0, ps.Len())
 	ps.Range(func(p provider.OAuth2Provider, value struct{}) bool {
@@ -53,7 +53,7 @@ var Oauth2EnabledCache = refreshcache.NewRefreshCache[[]provider.OAuth2Provider]
 	return r, nil
 }, 0)
 
-var Oauth2SignupEnabledCache = refreshcache.NewRefreshCache[[]provider.OAuth2Provider](func(ctx context.Context, _ ...any) ([]provider.OAuth2Provider, error) {
+var Oauth2SignupEnabledCache = refreshcache0.NewRefreshCache[[]provider.OAuth2Provider](func(ctx context.Context) ([]provider.OAuth2Provider, error) {
 	ps := providers.EnabledProvider()
 	r := make([]provider.OAuth2Provider, 0, ps.Len())
 	ps.Range(func(p provider.OAuth2Provider, value struct{}) bool {

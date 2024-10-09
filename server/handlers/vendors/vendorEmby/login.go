@@ -86,7 +86,7 @@ func Login(ctx *gin.Context) {
 		return
 	}
 
-	_, err = user.EmbyCache().StoreOrRefreshWithDynamicFunc(ctx, data.ServerId, func(ctx context.Context, key string, args ...struct{}) (*cache.EmbyUserCacheData, error) {
+	_, err = user.EmbyCache().StoreOrRefreshWithDynamicFunc(ctx, data.ServerId, func(ctx context.Context, key string) (*cache.EmbyUserCacheData, error) {
 		return &cache.EmbyUserCacheData{
 			Host:     req.Host,
 			ServerID: key,

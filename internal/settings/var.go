@@ -12,8 +12,13 @@ var (
 	RoomMustNeedPwd      BoolSetting
 	RoomMustNoNeedPwd    BoolSetting
 	CreateRoomNeedReview = NewBoolSetting("create_room_need_review", false, model.SettingGroupRoom)
-	// 48 hours
-	RoomTTL = NewInt64Setting("room_ttl", 48, model.SettingGroupRoom)
+	// default 48 hours
+	RoomTTL = NewInt64Setting("room_ttl", 48, model.SettingGroupRoom, WithBeforeSetInt64(func(is Int64Setting, i int64) (int64, error) {
+		if i < 1 {
+			return 0, errors.New("room ttl must be greater than 0")
+		}
+		return i, nil
+	}))
 )
 
 func init() {

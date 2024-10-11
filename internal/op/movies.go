@@ -104,7 +104,11 @@ func (m *movies) Clear() error {
 }
 
 func (m *movies) ClearCache() {
-	m.cache.Clear()
+	m.cache.Range(func(key string, value *Movie) bool {
+		m.cache.CompareAndDelete(key, value)
+		value.Close()
+		return true
+	})
 }
 
 func (m *movies) Close() error {
@@ -149,7 +153,7 @@ func (m *movies) deleteMovieAndChiledCache(ids map[model.EmptyNullString]struct{
 			if value.IsFolder {
 				next[model.EmptyNullString(value.ID)] = struct{}{}
 			}
-			m.cache.Delete(key)
+			m.cache.CompareAndDelete(key, value)
 			value.Close()
 		}
 		return true

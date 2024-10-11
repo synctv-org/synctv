@@ -30,14 +30,14 @@ message Status {
 
 message Message {
   MessageType type = 1;
-  int64 timestamp = 2;
+  sfixed64 timestamp = 2;
   optional Sender sender = 3;
 
   oneof payload {
     string error_message = 4;
     string chat_content = 5;
     Status playback_status = 6;
-    uint64 expiration_id = 7;
+    fixed64 expiration_id = 7;
     int64 viewer_count = 8;
   }
 }

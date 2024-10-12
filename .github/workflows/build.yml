@@ -66,7 +66,7 @@ jobs:
             --enable-micro \
             --skip-init-web \
             --platforms="${{ matrix.target }}" \
-            --more-go-cmd-args='-a -v -x'
+            --more-go-cmd-args='-a -v'
 
       - name: Get artifact name
         id: get_artifact_name

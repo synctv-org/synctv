@@ -61,7 +61,7 @@ jobs:
             --enable-micro \
             --version=dev \
             --platforms="${{ matrix.target }}" \
-            --more-go-cmd-args='-a -v -x'
+            --more-go-cmd-args='-a -v'
 
       - name: Release
         uses: softprops/action-gh-release@v2

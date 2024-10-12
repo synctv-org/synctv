@@ -148,6 +148,8 @@ func newAuthFunc(redirect string) stateHandler {
 	return func(ctx *gin.Context, pi provider.ProviderInterface, code string) {
 		log := ctx.MustGet("log").(*logrus.Entry)
 
+		ctx.Header("X-OAuth2-Type", CallbackTypeAuth)
+
 		ui, err := pi.GetUserInfo(ctx, code)
 		if err != nil {
 			log.Errorf("failed to get user info: %v", err)
@@ -184,6 +186,7 @@ func newAuthFunc(redirect string) stateHandler {
 			if errors.Is(err, middlewares.ErrUserBanned) ||
 				errors.Is(err, middlewares.ErrUserPending) {
 				ctx.AbortWithStatusJSON(http.StatusOK, model.NewApiDataResp(gin.H{
+					"type":    CallbackTypeAuth,
 					"message": err.Error(),
 					"role":    user.Role,
 				}))

@@ -69,6 +69,8 @@ func newBindFunc(userID, redirect string) stateHandler {
 	return func(ctx *gin.Context, pi provider.ProviderInterface, code string) {
 		log := ctx.MustGet("log").(*logrus.Entry)
 
+		ctx.Header("X-OAuth2-Type", CallbackTypeBind)
+
 		ui, err := pi.GetUserInfo(ctx, code)
 		if err != nil {
 			log.Errorf("failed to get user info: %v", err)

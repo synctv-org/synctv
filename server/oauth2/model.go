@@ -1,6 +1,6 @@
 package auth
 
-type CallbackType string
+type CallbackType = string
 
 const (
 	CallbackTypeAuth CallbackType = "auth"

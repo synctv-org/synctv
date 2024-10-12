@@ -788,3 +788,29 @@ func UserSignupPassword(ctx *gin.Context) {
 
 	handleUserToken(ctx, user.Value())
 }
+
+func UserExitRoom(ctx *gin.Context) {
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
+	log := ctx.MustGet("log").(*logrus.Entry)
+
+	var req model.IdReq
+	if err := model.Decode(ctx, &req); err != nil {
+		log.Errorf("failed to decode request: %v", err)
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	roomE, err := op.LoadOrInitRoomByID(req.Id)
+	if err == nil {
+		err = roomE.Value().DeleteMember(user.ID)
+	} else {
+		err = db.DeleteRoomMember(req.Id, user.ID)
+	}
+	if err != nil {
+		log.Errorf("failed to delete room member: %v", err)
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
+
+	ctx.Status(http.StatusNoContent)
+}

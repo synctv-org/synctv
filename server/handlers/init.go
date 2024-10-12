@@ -296,6 +296,8 @@ func initUser(user *gin.RouterGroup, needAuthUser *gin.RouterGroup) {
 
 		needAuthRoom.POST("/delete", UserDeleteRoom)
 
+		needAuthRoom.POST("/exit", UserExitRoom)
+
 		needAuthRoom.GET("/joined", UserCheckJoinedRoom)
 	}
 }

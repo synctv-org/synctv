@@ -1,4 +1,4 @@
-FROM alpine:latest as builder
+FROM golang:1.23-alpine as builder
 
 ARG VERSION=dev
 
@@ -12,7 +12,7 @@ WORKDIR /synctv
 
 COPY ./ ./
 
-RUN apk add --no-cache bash curl git go g++
+RUN apk add --no-cache bash curl git g++
 
 RUN bash script/build.sh --version=${VERSION} \
     --bin-name-no-suffix \

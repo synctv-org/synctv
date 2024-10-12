@@ -91,6 +91,7 @@ func newBindFunc(userID, redirect string) stateHandler {
 		}
 
 		ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
+			"type":     CallbackTypeBind,
 			"redirect": redirect,
 		}))
 	}

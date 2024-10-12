@@ -201,6 +201,7 @@ func newAuthFunc(redirect string) stateHandler {
 			}
 		} else if ctx.Request.Method == http.MethodPost {
 			ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
+				"type":     CallbackTypeAuth,
 				"role":     user.Role,
 				"token":    token,
 				"redirect": redirect,

@@ -14,6 +14,7 @@ import (
 type Client struct {
 	u       *User
 	r       *Room
+	h       *Hub
 	c       chan Message
 	wg      sync.WaitGroup
 	conn    *websocket.Conn
@@ -21,10 +22,11 @@ type Client struct {
 	closed  uint32
 }
 
-func newClient(user *User, room *Room, conn *websocket.Conn) *Client {
+func newClient(user *User, room *Room, h *Hub, conn *websocket.Conn) *Client {
 	return &Client{
 		r:       room,
 		u:       user,
+		h:       h,
 		c:       make(chan Message, 128),
 		conn:    conn,
 		timeOut: 10 * time.Second,
@@ -40,7 +42,7 @@ func (c *Client) Room() *Room {
 }
 
 func (c *Client) Broadcast(msg Message, conf ...BroadcastConf) error {
-	return c.r.hub.Broadcast(msg, conf...)
+	return c.h.Broadcast(msg, conf...)
 }
 
 func (c *Client) SendChatMessage(message string) error {

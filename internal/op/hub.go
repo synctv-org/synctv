@@ -103,7 +103,7 @@ func (h *Hub) ping() {
 	for {
 		select {
 		case <-ticker.C:
-			current = h.PeopleNum()
+			current = h.ClientNum()
 			if current != pre {
 				if err := h.Broadcast(&pb.Message{
 					Type: pb.MessageType_VIEWER_COUNT,
@@ -224,7 +224,7 @@ func (h *Hub) UnRegClient(cli *Client) error {
 	return nil
 }
 
-func (h *Hub) PeopleNum() int64 {
+func (h *Hub) ClientNum() int64 {
 	return h.clients.Len()
 }
 

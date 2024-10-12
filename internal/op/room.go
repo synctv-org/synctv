@@ -3,13 +3,13 @@ package op
 import (
 	"errors"
 	"fmt"
+	"sync/atomic"
 
 	"github.com/gorilla/websocket"
 	"github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/settings"
-	"github.com/synctv-org/synctv/utils"
 	"github.com/zijiren233/gencontainer/rwmap"
 	rtmps "github.com/zijiren233/livelib/server"
 	"github.com/zijiren233/stream"
@@ -18,38 +18,47 @@ import (
 
 type Room struct {
 	model.Room
-	current  *current
-	initOnce utils.Once
-	hub      *Hub
-	movies   *movies
-	members  rwmap.RWMap[string, *model.RoomMember]
+	current *current
+	hub     atomic.Pointer[Hub]
+	movies  *movies
+	members rwmap.RWMap[string, *model.RoomMember]
 }
 
-func (r *Room) lazyInitHub() {
-	r.initOnce.Do(func() {
-		r.hub = newHub(r.ID)
-	})
+func (r *Room) lazyInitHub() *Hub {
+	h := r.hub.Load()
+	if h == nil {
+		h = newHub(r.ID)
+		if !r.hub.CompareAndSwap(nil, h) {
+			h.Close()
+			return r.lazyInitHub()
+		}
+	}
+	return h
 }
 
-func (r *Room) PeopleNum() int64 {
-	if r.hub == nil {
+func (r *Room) hubIsNotInited() bool {
+	return r.hub.Load() == nil
+}
+
+func (r *Room) ViewerCount() int64 {
+	if r.hubIsNotInited() {
 		return 0
 	}
-	return r.hub.PeopleNum()
+	return r.lazyInitHub().ClientNum()
 }
 
 func (r *Room) KickUser(userID string) error {
-	if r.hub == nil {
+	if r.hubIsNotInited() {
 		return nil
 	}
-	return r.hub.KickUser(userID)
+	return r.lazyInitHub().KickUser(userID)
 }
 
 func (r *Room) Broadcast(data Message, conf ...BroadcastConf) error {
-	if r.hub == nil {
+	if r.hubIsNotInited() {
 		return nil
 	}
-	return r.hub.Broadcast(data, conf...)
+	return r.lazyInitHub().Broadcast(data, conf...)
 }
 
 func (r *Room) SendToUser(user *User, data Message) error {
@@ -57,10 +66,10 @@ func (r *Room) SendToUser(user *User, data Message) error {
 }
 
 func (r *Room) SendToUserWithId(userID string, data Message) error {
-	if r.hub == nil {
+	if r.hubIsNotInited() {
 		return nil
 	}
-	return r.hub.SendToUser(userID, data)
+	return r.lazyInitHub().SendToUser(userID, data)
 }
 
 func (r *Room) GetChannel(channelName string) (*rtmps.Channel, error) {
@@ -68,10 +77,13 @@ func (r *Room) GetChannel(channelName string) (*rtmps.Channel, error) {
 }
 
 func (r *Room) close() {
-	if r.initOnce.Done() {
-		r.hub.Close()
-		r.movies.Close()
+	if h := r.hub.Load(); h != nil {
+		if r.hub.CompareAndSwap(h, nil) {
+			h.Close()
+		}
 	}
+	r.movies.Close()
+	r.members.Clear()
 }
 
 func (r *Room) UpdateMovie(movieId string, movie *model.MovieBase) error {
@@ -467,9 +479,9 @@ func (r *Room) GetMoviesWithPage(page, pageSize int, parentID string) ([]*model.
 }
 
 func (r *Room) NewClient(user *User, conn *websocket.Conn) (*Client, error) {
-	r.lazyInitHub()
-	cli := newClient(user, r, conn)
-	err := r.hub.RegClient(cli)
+	h := r.lazyInitHub()
+	cli := newClient(user, r, h, conn)
+	err := h.RegClient(cli)
 	if err != nil {
 		return nil, err
 	}
@@ -477,23 +489,19 @@ func (r *Room) NewClient(user *User, conn *websocket.Conn) (*Client, error) {
 }
 
 func (r *Room) RegClient(cli *Client) error {
-	r.lazyInitHub()
-	return r.hub.RegClient(cli)
+	return r.lazyInitHub().RegClient(cli)
 }
 
 func (r *Room) UnregisterClient(cli *Client) error {
-	r.lazyInitHub()
-	return r.hub.UnRegClient(cli)
+	return r.lazyInitHub().UnRegClient(cli)
 }
 
 func (r *Room) UserIsOnline(userID string) bool {
-	r.lazyInitHub()
-	return r.hub.IsOnline(userID)
+	return r.lazyInitHub().IsOnline(userID)
 }
 
 func (r *Room) UserOnlineCount(userID string) int {
-	r.lazyInitHub()
-	return r.hub.OnlineCount(userID)
+	return r.lazyInitHub().OnlineCount(userID)
 }
 
 func (r *Room) SetCurrentStatus(playing bool, seek float64, rate float64, timeDiff float64) *Status {
@@ -691,4 +699,15 @@ func (r *Room) SetMember(userID string, permissions model.RoomMemberPermission) 
 
 func (r *Room) EnabledGuest() bool {
 	return !r.Settings.DisableGuest && settings.EnableGuest.Get() && !r.NeedPassword()
+}
+
+func (r *Room) SetStatus(status model.RoomStatus) error {
+	if err := db.SetRoomStatus(r.ID, status); err != nil {
+		return err
+	}
+	r.Status = status
+	if status == model.RoomStatusBanned || status == model.RoomStatusPending {
+		r.close()
+	}
+	return nil
 }

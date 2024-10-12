@@ -159,7 +159,7 @@ func validateRoomAccess(room *op.Room, user *op.User) error {
 	}
 
 	if status.IsBanned() {
-		return fmt.Errorf("user is banned")
+		return fmt.Errorf("user is banned from room")
 	}
 	if status.IsPending() {
 		return fmt.Errorf("user is pending, need admin to approve")

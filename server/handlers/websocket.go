@@ -81,7 +81,7 @@ func sendViewerCount(client *op.Client, r *op.Room) error {
 	return client.Send(&pb.Message{
 		Type: pb.MessageType_VIEWER_COUNT,
 		Payload: &pb.Message_ViewerCount{
-			ViewerCount: r.PeopleNum(),
+			ViewerCount: r.ViewerCount(),
 		},
 	})
 }

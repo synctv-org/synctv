@@ -17,8 +17,8 @@ var (
 	ErrRoomBanned         = errors.New("room banned")
 	ErrRoomCreatorBanned  = errors.New("room creator banned")
 	ErrRoomCreatorPending = errors.New("room creator pending, please wait for admin to approve")
-	ErrRoomNotFound       = errors.New("room not found")
 	ErrInvalidRoomID      = errors.New("room id is not 32 bit")
+	ErrRoomNotInCache     = errors.New("room is not in cache")
 )
 
 type RoomEntry = synccache.Entry[*Room]
@@ -52,13 +52,6 @@ func checkRoomCreatorStatus(creatorID string) error {
 }
 
 func LoadOrInitRoom(room *model.Room) (*RoomEntry, error) {
-	switch room.Status {
-	case model.RoomStatusBanned:
-		return nil, ErrRoomBanned
-	case model.RoomStatusPending:
-		return nil, ErrRoomPending
-	}
-
 	if err := checkRoomCreatorStatus(room.CreatorID); err != nil {
 		return nil, err
 	}
@@ -78,6 +71,20 @@ func DeleteRoomByID(roomID string) error {
 	return CloseRoomById(roomID)
 }
 
+func DeleteRoom(room *Room) error {
+	if err := db.DeleteRoomByID(room.ID); err != nil {
+		return err
+	}
+	return CloseRoom(room)
+}
+
+func DeleteRoomWithRoomEntry(roomE *RoomEntry) error {
+	if err := db.DeleteRoomByID(roomE.Value().ID); err != nil {
+		return err
+	}
+	return CloseRoomWithRoomEntry(roomE)
+}
+
 func CompareAndDeleteRoom(room *RoomEntry) error {
 	if err := db.DeleteRoomByID(room.Value().ID); err != nil {
 		return err
@@ -93,6 +100,18 @@ func CloseRoomById(roomID string) error {
 	return nil
 }
 
+func CloseRoomWithRoomEntry(roomE *synccache.Entry[*Room]) error {
+	roomCache.CompareAndDelete(roomE.Value().ID, roomE)
+	roomE.Value().close()
+	return nil
+}
+
+func CloseRoom(room *Room) error {
+	roomCache.CompareValueAndDelete(room.ID, room)
+	room.close()
+	return nil
+}
+
 func CompareAndCloseRoom(room *RoomEntry) bool {
 	if roomCache.CompareAndDelete(room.Value().ID, room) {
 		room.Value().close()
@@ -104,7 +123,7 @@ func CompareAndCloseRoom(room *RoomEntry) bool {
 func LoadRoomByID(id string) (*RoomEntry, error) {
 	r2, loaded := roomCache.Load(id)
 	if !loaded {
-		return nil, ErrRoomNotFound
+		return nil, ErrRoomNotInCache
 	}
 
 	if err := checkRoomCreatorStatus(r2.Value().CreatorID); err != nil {
@@ -146,19 +165,17 @@ func LoadOrInitRoomByID(id string) (*RoomEntry, error) {
 	return LoadOrInitRoom(room)
 }
 
-func PeopleNum(roomID string) int64 {
+func ViewerCount(roomID string) int64 {
 	if r, loaded := roomCache.Load(roomID); loaded {
-		return r.Value().PeopleNum()
+		return r.Value().ViewerCount()
 	}
 	return 0
 }
 
 func SetRoomStatusByID(roomID string, status model.RoomStatus) error {
-	if err := db.SetRoomStatus(roomID, status); err != nil {
+	room, err := LoadOrInitRoomByID(roomID)
+	if err != nil {
 		return err
 	}
-	if status == model.RoomStatusBanned || status == model.RoomStatusPending {
-		roomCache.Delete(roomID)
-	}
-	return nil
+	return room.Value().SetStatus(status)
 }

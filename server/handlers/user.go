@@ -730,12 +730,14 @@ func UserDeleteRoom(ctx *gin.Context) {
 		return
 	}
 
-	room, err := db.GetRoomByID(req.Id)
+	roomE, err := op.LoadOrInitRoomByID(req.Id)
 	if err != nil {
 		log.Errorf("failed to get room: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
+
+	room := roomE.Value()
 
 	if room.CreatorID != user.ID {
 		log.Errorf("not creator")
@@ -743,7 +745,7 @@ func UserDeleteRoom(ctx *gin.Context) {
 		return
 	}
 
-	err = op.DeleteRoomByID(room.ID)
+	err = op.DeleteRoomWithRoomEntry(roomE)
 	if err != nil {
 		log.Errorf("failed to delete room: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
@@ -801,11 +803,15 @@ func UserExitRoom(ctx *gin.Context) {
 	}
 
 	roomE, err := op.LoadOrInitRoomByID(req.Id)
-	if err == nil {
-		err = roomE.Value().DeleteMember(user.ID)
-	} else {
-		err = db.DeleteRoomMember(req.Id, user.ID)
+	if err != nil {
+		log.Errorf("failed to get room: %v", err)
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
 	}
+
+	room := roomE.Value()
+
+	err = room.DeleteMember(user.ID)
 	if err != nil {
 		log.Errorf("failed to delete room member: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))

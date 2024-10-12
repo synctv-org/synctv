@@ -116,6 +116,7 @@ func CreateRoom(ctx *gin.Context) {
 
 	ctx.JSON(http.StatusCreated, model.NewApiDataResp(gin.H{
 		"roomId": room.Value().ID,
+		"status": room.Value().Status,
 	}))
 }
 
@@ -123,11 +124,11 @@ var roomHotCache = refreshcache0.NewRefreshCache[[]*model.RoomListResp](func(con
 	rooms := make([]*model.RoomListResp, 0)
 	op.RangeRoomCache(func(key string, value *synccache.Entry[*op.Room]) bool {
 		v := value.Value()
-		if !v.Settings.Hidden {
+		if !v.Settings.Hidden && v.IsActive() {
 			rooms = append(rooms, &model.RoomListResp{
 				RoomId:       v.ID,
 				RoomName:     v.Name,
-				PeopleNum:    v.PeopleNum(),
+				PeopleNum:    v.ViewerCount(),
 				NeedPassword: v.NeedPassword(),
 				Creator:      op.GetUserName(v.CreatorID),
 				CreatedAt:    v.CreatedAt.UnixMilli(),
@@ -273,7 +274,7 @@ func genRoomListResp(scopes ...func(db *gorm.DB) *gorm.DB) ([]*model.RoomListRes
 		resp[i] = &model.RoomListResp{
 			RoomId:       r.ID,
 			RoomName:     r.Name,
-			PeopleNum:    op.PeopleNum(r.ID),
+			PeopleNum:    op.ViewerCount(r.ID),
 			NeedPassword: len(r.HashedPassword) != 0,
 			CreatorID:    r.CreatorID,
 			Creator:      op.GetUserName(r.CreatorID),
@@ -298,7 +299,7 @@ func genJoinedRoomListResp(scopes ...func(db *gorm.DB) *gorm.DB) ([]*model.Joine
 			RoomListResp: model.RoomListResp{
 				RoomId:       r.ID,
 				RoomName:     r.Name,
-				PeopleNum:    op.PeopleNum(r.ID),
+				PeopleNum:    op.ViewerCount(r.ID),
 				NeedPassword: len(r.HashedPassword) != 0,
 				CreatorID:    r.CreatorID,
 				Creator:      op.GetUserName(r.CreatorID),
@@ -332,7 +333,7 @@ func CheckRoom(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
 		"name":         room.Name,
 		"status":       room.Status,
-		"peopleNum":    op.PeopleNum(room.ID),
+		"peopleNum":    op.ViewerCount(room.ID),
 		"needPassword": room.NeedPassword(),
 		"creatorId":    room.CreatorID,
 		"creator":      op.GetUserName(room.CreatorID),

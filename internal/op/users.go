@@ -16,8 +16,8 @@ var userCache *synccache.SyncCache[string, *User]
 type UserEntry = synccache.Entry[*User]
 
 var (
-	ErrUserBanned  = errors.New("user banned")
-	ErrUserPending = errors.New("user pending, please wait for admin to approve")
+	ErrUserBanned  = errors.New("user account has been banned")
+	ErrUserPending = errors.New("user account is pending approval, please wait for administrator review")
 )
 
 func LoadOrInitUser(u *model.User) (*UserEntry, error) {

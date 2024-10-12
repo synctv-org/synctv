@@ -584,7 +584,7 @@ func (r *Room) RemoveMemberPermissions(userID string, permissions model.RoomMemb
 
 func (r *Room) ApprovePendingMember(userID string) error {
 	if r.IsCreator(userID) {
-		return errors.New("you are creator, cannot approve")
+		return errors.New("creator cannot be approved as a pending member")
 	}
 	defer r.members.Delete(userID)
 	return db.RoomApprovePendingMember(r.ID, userID)
@@ -592,7 +592,7 @@ func (r *Room) ApprovePendingMember(userID string) error {
 
 func (r *Room) BanMember(userID string) error {
 	if r.IsCreator(userID) {
-		return errors.New("you are creator, cannot ban")
+		return errors.New("creator cannot be banned")
 	}
 	if r.IsGuest(userID) {
 		return errors.New("please set whether to disable guest users in the room settings")
@@ -606,7 +606,7 @@ func (r *Room) BanMember(userID string) error {
 
 func (r *Room) UnbanMember(userID string) error {
 	if r.IsCreator(userID) {
-		return errors.New("you are creator, cannot unban")
+		return errors.New("creator cannot be unbanned")
 	}
 	if r.IsGuest(userID) {
 		return errors.New("please set whether to enable guest users in the room settings")
@@ -617,7 +617,7 @@ func (r *Room) UnbanMember(userID string) error {
 
 func (r *Room) DeleteMember(userID string) error {
 	if r.IsCreator(userID) {
-		return errors.New("you are creator, cannot delete")
+		return errors.New("creator cannot be deleted")
 	}
 	defer func() {
 		r.members.Delete(userID)
@@ -632,7 +632,7 @@ func (r *Room) ResetAdminPermissions(userID string) error {
 
 func (r *Room) SetAdminPermissions(userID string, permissions model.RoomAdminPermission) error {
 	if r.IsCreator(userID) {
-		return errors.New("you are creator, cannot set admin permissions")
+		return errors.New("creator cannot set admin permissions")
 	}
 	if r.IsGuest(userID) {
 		return errors.New("cannot set admin permissions to guest")
@@ -648,7 +648,7 @@ func (r *Room) SetAdminPermissions(userID string, permissions model.RoomAdminPer
 
 func (r *Room) AddAdminPermissions(userID string, permissions model.RoomAdminPermission) error {
 	if r.IsCreator(userID) {
-		return errors.New("you are creator, cannot add admin permissions")
+		return errors.New("creator cannot add admin permissions")
 	}
 	if r.IsGuest(userID) {
 		return errors.New("cannot add admin permissions to guest")
@@ -664,7 +664,7 @@ func (r *Room) AddAdminPermissions(userID string, permissions model.RoomAdminPer
 
 func (r *Room) RemoveAdminPermissions(userID string, permissions model.RoomAdminPermission) error {
 	if r.IsCreator(userID) {
-		return errors.New("you are creator, cannot remove admin permissions")
+		return errors.New("creator cannot remove admin permissions")
 	}
 	if r.IsGuest(userID) {
 		return errors.New("cannot remove admin permissions from guest")
@@ -680,7 +680,7 @@ func (r *Room) RemoveAdminPermissions(userID string, permissions model.RoomAdmin
 
 func (r *Room) SetAdmin(userID string, permissions model.RoomAdminPermission) error {
 	if r.IsCreator(userID) {
-		return errors.New("you are creator, cannot set admin")
+		return errors.New("creator cannot set admin")
 	}
 	if r.IsGuest(userID) {
 		return errors.New("cannot set guest as admin")
@@ -691,7 +691,7 @@ func (r *Room) SetAdmin(userID string, permissions model.RoomAdminPermission) er
 
 func (r *Room) SetMember(userID string, permissions model.RoomMemberPermission) error {
 	if r.IsCreator(userID) {
-		return errors.New("you are creator, cannot set member")
+		return errors.New("creator cannot set member")
 	}
 	defer r.members.Delete(userID)
 	return db.RoomSetMember(r.ID, userID, permissions)

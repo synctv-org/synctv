@@ -2,7 +2,6 @@ package middlewares
 
 import (
 	"errors"
-	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -20,8 +19,20 @@ import (
 )
 
 var (
-	ErrAuthFailed  = errors.New("auth failed")
-	ErrAuthExpired = errors.New("auth expired")
+	ErrAuthFailed         = errors.New("authentication failed")
+	ErrAuthExpired        = errors.New("authentication token expired")
+	ErrUserBanned         = errors.New("user account has been banned")
+	ErrUserPending        = errors.New("user account is pending approval")
+	ErrUserGuest          = errors.New("guests are not allowed to perform this action")
+	ErrRoomBanned         = errors.New("room has been banned")
+	ErrRoomPending        = errors.New("room is pending approval")
+	ErrUserBannedFromRoom = errors.New("user has been banned from this room")
+	ErrInvalidRoomID      = errors.New("invalid room ID")
+	ErrEmptyToken         = errors.New("authentication token is empty")
+	ErrNotRoomAdmin       = errors.New("user is not a room administrator")
+	ErrNotRoomCreator     = errors.New("user is not the room creator")
+	ErrNotAdmin           = errors.New("user is not an administrator")
+	ErrNotRoot            = errors.New("user is not a root user")
 )
 
 type AuthClaims struct {
@@ -46,7 +57,7 @@ func authUser(authorization string) (*AuthClaims, error) {
 
 func AuthRoom(authorization, roomId string) (*op.UserEntry, *op.RoomEntry, error) {
 	if len(roomId) != 32 {
-		return nil, nil, ErrAuthFailed
+		return nil, nil, ErrInvalidRoomID
 	}
 
 	userE, err := authenticateUserOrGuest(authorization)
@@ -95,23 +106,23 @@ func authenticateUser(Authorization string) (*op.UserEntry, error) {
 
 func authenticateGuest() (*op.UserEntry, error) {
 	if !settings.EnableGuest.Get() {
-		return nil, fmt.Errorf("guests are disabled")
+		return nil, ErrUserGuest
 	}
 	return op.LoadOrInitGuestUser()
 }
 
 func validateUser(user *op.User, userVersion uint32) error {
 	if user.IsGuest() {
-		return fmt.Errorf("guests are not allowed to join rooms by token")
+		return ErrUserGuest
 	}
 	if !user.CheckVersion(userVersion) {
 		return ErrAuthExpired
 	}
 	if user.IsBanned() {
-		return fmt.Errorf("user is banned")
+		return ErrUserBanned
 	}
 	if user.IsPending() {
-		return fmt.Errorf("user is pending, need admin to approve")
+		return ErrUserPending
 	}
 	return nil
 }
@@ -133,18 +144,18 @@ func authenticateRoomAccess(roomId string, user *op.User) (*op.RoomEntry, error)
 func validateRoomAccess(room *op.Room, user *op.User) error {
 	if room.IsGuest(user.ID) {
 		if room.Settings.DisableGuest {
-			return fmt.Errorf("guests are not allowed to join rooms")
+			return ErrUserGuest
 		}
 		if room.NeedPassword() {
-			return fmt.Errorf("guests are not allowed to join rooms that require a password")
+			return ErrUserGuest
 		}
 	}
 
 	if room.IsBanned() {
-		return fmt.Errorf("room is banned")
+		return ErrRoomBanned
 	}
 	if room.IsPending() {
-		return fmt.Errorf("room is pending, need admin to approve")
+		return ErrRoomPending
 	}
 
 	var status dbModel.RoomMemberStatus
@@ -159,10 +170,10 @@ func validateRoomAccess(room *op.Room, user *op.User) error {
 	}
 
 	if status.IsBanned() {
-		return fmt.Errorf("user is banned from room")
+		return ErrUserBannedFromRoom
 	}
 	if status.IsPending() {
-		return fmt.Errorf("user is pending, need admin to approve")
+		return ErrUserPending
 	}
 
 	return nil
@@ -193,16 +204,16 @@ func AuthUser(authorization string) (*op.UserEntry, error) {
 
 func validateAuthUser(user *op.User, userVersion uint32) error {
 	if user.IsGuest() {
-		return errors.New("user is guest, cannot login")
+		return ErrUserGuest
 	}
 	if !user.CheckVersion(userVersion) {
 		return ErrAuthExpired
 	}
 	if user.IsBanned() {
-		return errors.New("user is banned")
+		return ErrUserBanned
 	}
 	if user.IsPending() {
-		return errors.New("user is pending, need admin to approve")
+		return ErrUserPending
 	}
 	return nil
 }
@@ -228,12 +239,6 @@ func NewAuthUserToken(user *op.User) (string, error) {
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(stream.StringToBytes(conf.Conf.Jwt.Secret))
 }
 
-var (
-	ErrUserBanned  = errors.New("user banned")
-	ErrUserPending = errors.New("user is pending, need admin to approve")
-	ErrUserGuest   = errors.New("user is guest, cannot login")
-)
-
 func validateNewAuthUserToken(user *op.User) error {
 	if user.IsBanned() {
 		return ErrUserBanned
@@ -250,7 +255,7 @@ func validateNewAuthUserToken(user *op.User) error {
 func AuthUserMiddleware(ctx *gin.Context) {
 	token := GetAuthorizationTokenFromContext(ctx)
 	if token == "" {
-		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorStringResp("token is empty"))
+		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(ErrEmptyToken))
 		return
 	}
 	userE, err := AuthUser(token)
@@ -291,7 +296,7 @@ func AuthRoomWithoutGuestMiddleware(ctx *gin.Context) {
 
 	user := ctx.MustGet("user").(*synccache.Entry[*op.User]).Value()
 	if user.IsGuest() {
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("guest has no permission"))
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(ErrUserGuest))
 		return
 	}
 }
@@ -306,7 +311,7 @@ func AuthRoomAdminMiddleware(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*synccache.Entry[*op.User]).Value()
 
 	if !user.IsRoomAdmin(room) {
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("user has no permission"))
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(ErrNotRoomAdmin))
 		return
 	}
 }
@@ -321,7 +326,7 @@ func AuthRoomCreatorMiddleware(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*synccache.Entry[*op.User]).Value()
 
 	if room.CreatorID != user.ID {
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("user is not creator"))
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(ErrNotRoomCreator))
 		return
 	}
 }
@@ -334,7 +339,7 @@ func AuthAdminMiddleware(ctx *gin.Context) {
 
 	userE := ctx.MustGet("user").(*synccache.Entry[*op.User])
 	if !userE.Value().IsAdmin() {
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("user is not admin"))
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(ErrNotAdmin))
 		return
 	}
 }
@@ -347,7 +352,7 @@ func AuthRootMiddleware(ctx *gin.Context) {
 
 	userE := ctx.MustGet("user").(*synccache.Entry[*op.User])
 	if !userE.Value().IsRoot() {
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("user is not root"))
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(ErrNotRoot))
 		return
 	}
 }
@@ -392,11 +397,11 @@ func GetRoomIdFromContext(ctx *gin.Context) (string, error) {
 			return roomId, nil
 		}
 		ctx.Set("roomId", "")
-		return "", errors.New("room id length is not 32")
+		return "", ErrInvalidRoomID
 	}
 
 	ctx.Set("roomId", "")
-	return "", errors.New("room id is empty")
+	return "", ErrInvalidRoomID
 }
 
 func setLogFields(ctx *gin.Context, user *op.User, room *op.Room) {

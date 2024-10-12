@@ -13,12 +13,10 @@ import (
 
 var (
 	roomCache             *synccache.SyncCache[string, *Room]
-	ErrRoomPending        = errors.New("room pending, please wait for admin to approve")
-	ErrRoomBanned         = errors.New("room banned")
-	ErrRoomCreatorBanned  = errors.New("room creator banned")
-	ErrRoomCreatorPending = errors.New("room creator pending, please wait for admin to approve")
-	ErrInvalidRoomID      = errors.New("room id is not 32 bit")
-	ErrRoomNotInCache     = errors.New("room is not in cache")
+	ErrRoomCreatorBanned  = errors.New("room creator is banned")
+	ErrRoomCreatorPending = errors.New("room creator is pending approval, please wait for admin to review")
+	ErrInvalidRoomID      = errors.New("invalid room ID: must be 32 characters long")
+	ErrRoomNotInCache     = errors.New("room not found in cache")
 )
 
 type RoomEntry = synccache.Entry[*Room]

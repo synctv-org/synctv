@@ -61,7 +61,7 @@ func (c *CreateRoomReq) Validate() error {
 type RoomListResp struct {
 	RoomId       string           `json:"roomId"`
 	RoomName     string           `json:"roomName"`
-	PeopleNum    int64            `json:"peopleNum"`
+	ViewerCount  int64            `json:"viewerCount"`
 	NeedPassword bool             `json:"needPassword"`
 	CreatorID    string           `json:"creatorId"`
 	Creator      string           `json:"creator"`
@@ -149,4 +149,14 @@ func (c *CheckRoomPasswordReq) Decode(ctx *gin.Context) error {
 
 func (c *CheckRoomPasswordReq) Validate() error {
 	return nil
+}
+
+type CheckRoomResp struct {
+	Name         string           `json:"name"`
+	Status       model.RoomStatus `json:"status"`
+	CreatorID    string           `json:"creatorId"`
+	Creator      string           `json:"creator"`
+	NeedPassword bool             `json:"needPassword"`
+	ViewerCount  int64            `json:"viewerCount"`
+	EnabledGuest bool             `json:"enabledGuest"`
 }

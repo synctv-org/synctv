@@ -69,6 +69,7 @@ func RoomInfo(ctx *gin.Context) {
 		"name":         room.Name,
 		"needPassword": room.NeedPassword(),
 		"creator":      op.GetUserName(room.CreatorID),
+		"creatorId":    room.CreatorID,
 		"createdAt":    room.CreatedAt.UnixMilli(),
 		"status":       room.Status,
 		"enabledGuest": room.EnabledGuest(),
@@ -128,9 +129,10 @@ var roomHotCache = refreshcache0.NewRefreshCache[[]*model.RoomListResp](func(con
 			rooms = append(rooms, &model.RoomListResp{
 				RoomId:       v.ID,
 				RoomName:     v.Name,
-				PeopleNum:    v.ViewerCount(),
+				ViewerCount:  v.ViewerCount(),
 				NeedPassword: v.NeedPassword(),
 				Creator:      op.GetUserName(v.CreatorID),
+				CreatorID:    v.CreatorID,
 				CreatedAt:    v.CreatedAt.UnixMilli(),
 			})
 		}
@@ -138,7 +140,7 @@ var roomHotCache = refreshcache0.NewRefreshCache[[]*model.RoomListResp](func(con
 	})
 
 	slices.SortStableFunc(rooms, func(a, b *model.RoomListResp) int {
-		if a.PeopleNum == b.PeopleNum {
+		if a.ViewerCount == b.ViewerCount {
 			if a.RoomName == b.RoomName {
 				return 0
 			}
@@ -147,7 +149,7 @@ var roomHotCache = refreshcache0.NewRefreshCache[[]*model.RoomListResp](func(con
 			} else {
 				return 1
 			}
-		} else if a.PeopleNum > b.PeopleNum {
+		} else if a.ViewerCount > b.ViewerCount {
 			return -1
 		} else {
 			return 1
@@ -274,7 +276,7 @@ func genRoomListResp(scopes ...func(db *gorm.DB) *gorm.DB) ([]*model.RoomListRes
 		resp[i] = &model.RoomListResp{
 			RoomId:       r.ID,
 			RoomName:     r.Name,
-			PeopleNum:    op.ViewerCount(r.ID),
+			ViewerCount:  op.ViewerCount(r.ID),
 			NeedPassword: len(r.HashedPassword) != 0,
 			CreatorID:    r.CreatorID,
 			Creator:      op.GetUserName(r.CreatorID),
@@ -299,7 +301,7 @@ func genJoinedRoomListResp(scopes ...func(db *gorm.DB) *gorm.DB) ([]*model.Joine
 			RoomListResp: model.RoomListResp{
 				RoomId:       r.ID,
 				RoomName:     r.Name,
-				PeopleNum:    op.ViewerCount(r.ID),
+				ViewerCount:  op.ViewerCount(r.ID),
 				NeedPassword: len(r.HashedPassword) != 0,
 				CreatorID:    r.CreatorID,
 				Creator:      op.GetUserName(r.CreatorID),
@@ -330,14 +332,14 @@ func CheckRoom(ctx *gin.Context) {
 	}
 	room := roomE.Value()
 
-	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
-		"name":         room.Name,
-		"status":       room.Status,
-		"peopleNum":    op.ViewerCount(room.ID),
-		"needPassword": room.NeedPassword(),
-		"creatorId":    room.CreatorID,
-		"creator":      op.GetUserName(room.CreatorID),
-		"enabledGuest": room.EnabledGuest(),
+	ctx.JSON(http.StatusOK, model.NewApiDataResp(&model.CheckRoomResp{
+		Name:         room.Name,
+		Status:       room.Status,
+		CreatorID:    room.CreatorID,
+		Creator:      op.GetUserName(room.CreatorID),
+		NeedPassword: room.NeedPassword(),
+		ViewerCount:  op.ViewerCount(room.ID),
+		EnabledGuest: room.EnabledGuest(),
 	}))
 }
 
@@ -355,14 +357,22 @@ func LoginRoom(ctx *gin.Context) {
 	roomE, err := op.LoadOrInitRoomByID(req.RoomId)
 	if err != nil {
 		log.Errorf("login room failed: %v", err)
-		if err == op.ErrRoomBanned || err == op.ErrRoomPending {
-			ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(err))
-			return
-		}
-		ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 		return
 	}
 	room := roomE.Value()
+
+	if room.IsBanned() {
+		log.Warn("login room failed: room is banned")
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("room is banned"))
+		return
+	}
+
+	if room.IsPending() {
+		log.Warn("login room failed: room is pending, please wait for admin to approve")
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorStringResp("room is pending, please wait for admin to approve"))
+		return
+	}
 
 	if member, err := room.LoadMember(user.ID); err == nil {
 		ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{

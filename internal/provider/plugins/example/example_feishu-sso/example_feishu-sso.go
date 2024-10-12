@@ -4,9 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
-
 	"net/http"
+	"os"
 
 	plugin "github.com/hashicorp/go-plugin"
 	"github.com/synctv-org/synctv/internal/provider"
@@ -53,7 +52,7 @@ func (p *FeishuSSOProvider) Init(c provider.Oauth2Option) {
 }
 
 func (p *FeishuSSOProvider) Provider() provider.OAuth2Provider {
-	return "feishu-sso" //插件名
+	return "feishu-sso" // 插件名
 }
 
 func (p *FeishuSSOProvider) NewAuthURL(ctx context.Context, state string) (string, error) {
@@ -101,7 +100,7 @@ type FeishuSSOUserInfo struct {
 
 func main() {
 	args := os.Args
-	var pluginMap = map[string]plugin.Plugin{
+	pluginMap := map[string]plugin.Plugin{
 		"Provider": &plugins.ProviderPlugin{Impl: newFeishuSSOProvider(args[1])},
 	}
 	plugin.Serve(&plugin.ServeConfig{

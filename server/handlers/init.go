@@ -16,32 +16,26 @@ import (
 	"github.com/synctv-org/synctv/utils"
 )
 
-var (
-	HOST = settings.NewStringSetting(
-		"host",
-		"",
-		model.SettingGroupServer,
-		settings.WithValidatorString(func(s string) error {
-			if s == "" {
-				return nil
-			}
-			if !strings.HasPrefix(s, "http://") && !strings.HasPrefix(s, "https://") {
-				return errors.New("host must start with http:// or https://")
-			}
-			_, err := url.Parse(s)
-			return err
-		}),
-	)
+var HOST = settings.NewStringSetting(
+	"host",
+	"",
+	model.SettingGroupServer,
+	settings.WithValidatorString(func(s string) error {
+		if s == "" {
+			return nil
+		}
+		if !strings.HasPrefix(s, "http://") && !strings.HasPrefix(s, "https://") {
+			return errors.New("host must start with http:// or https://")
+		}
+		_, err := url.Parse(s)
+		return err
+	}),
 )
 
 func Init(e *gin.Engine) {
 	api := e.Group("/api")
 
 	needAuthUserApi := api.Group("", middlewares.AuthUserMiddleware)
-
-	needAuthRoomApi := api.Group("", middlewares.AuthRoomMiddleware)
-
-	needAuthRoomWithoutGuestApi := api.Group("", middlewares.AuthRoomWithoutGuestMiddleware)
 
 	{
 		public := api.Group("/public")
@@ -60,18 +54,18 @@ func Init(e *gin.Engine) {
 
 	{
 		room := api.Group("/room")
-		needAuthUser := needAuthUserApi.Group("/room")
-		needAuthRoom := needAuthRoomApi.Group("/room")
-		needAuthRoomWithoutGuest := needAuthRoomWithoutGuestApi.Group("/room")
+		needAuthUser := api.Group("/room", middlewares.AuthUserMiddleware)
+		needAuthRoom := api.Group("/room", middlewares.AuthRoomMiddleware)
+		needAuthRoomWithoutGuest := api.Group("/room", middlewares.AuthRoomWithoutGuestMiddleware)
 
 		initRoom(room, needAuthUser, needAuthRoom, needAuthRoomWithoutGuest)
-	}
 
-	{
-		movie := api.Group("/movie")
-		needAuthMovie := needAuthRoomApi.Group("/movie")
+		{
+			movie := room.Group("/movie")
+			needAuthMovie := needAuthRoom.Group("/movie")
 
-		initMovie(movie, needAuthMovie)
+			initMovie(movie, needAuthMovie)
+		}
 	}
 
 	{
@@ -94,9 +88,9 @@ func initAdmin(admin *gin.RouterGroup, root *gin.RouterGroup) {
 
 		admin.GET("/settings/:group", AdminSettings)
 
-		admin.POST("/settings", EditAdminSettings)
+		admin.POST("/settings", AdminEditSettings)
 
-		admin.POST("/email/test", SendTestEmail)
+		admin.POST("/email/test", AdminSendTestEmail)
 
 		admin.GET("/vendors", AdminGetVendorBackends)
 
@@ -115,25 +109,25 @@ func initAdmin(admin *gin.RouterGroup, root *gin.RouterGroup) {
 		{
 			user := admin.Group("/user")
 
-			user.POST("/add", AddUser)
+			user.POST("/add", AdminAddUser)
 
-			user.POST("/delete", DeleteUser)
+			user.POST("/delete", AdminDeleteUser)
 
 			user.POST("/password", AdminUserPassword)
 
 			user.POST("/username", AdminUsername)
 
 			// 查找用户
-			user.GET("/list", Users)
+			user.GET("/list", AdminGetUsers)
 
-			user.POST("/approve", ApprovePendingUser)
+			user.POST("/approve", AdminApprovePendingUser)
 
-			user.POST("/ban", BanUser)
+			user.POST("/ban", AdminBanUser)
 
-			user.POST("/unban", UnBanUser)
+			user.POST("/unban", AdminUnBanUser)
 
 			// 查找某个用户的房间
-			user.GET("/rooms", GetUserRooms)
+			user.GET("/rooms", AdminGetUserRooms)
 		}
 
 		{
@@ -142,13 +136,13 @@ func initAdmin(admin *gin.RouterGroup, root *gin.RouterGroup) {
 			room.POST("/password", AdminRoomPassword)
 
 			// 查找房间
-			room.GET("/list", Rooms)
+			room.GET("/list", AdminGetRooms)
 
-			room.POST("/approve", ApprovePendingRoom)
+			room.POST("/approve", AdminApprovePendingRoom)
 
-			room.POST("/ban", BanRoom)
+			room.POST("/ban", AdminBanRoom)
 
-			room.POST("/unban", UnBanRoom)
+			room.POST("/unban", AdminUnBanRoom)
 
 			room.POST("/delete", AdminDeleteRoom)
 
@@ -157,32 +151,36 @@ func initAdmin(admin *gin.RouterGroup, root *gin.RouterGroup) {
 	}
 
 	{
-		root.POST("/admin/add", AddAdmin)
+		root.POST("/admin/add", RootAddAdmin)
 
-		root.POST("/admin/delete", DeleteAdmin)
+		root.POST("/admin/delete", RootDeleteAdmin)
 	}
 }
 
 func initRoom(room *gin.RouterGroup, needAuthUser *gin.RouterGroup, needAuthRoom *gin.RouterGroup, needAuthWithoutGuestRoom *gin.RouterGroup) {
-	room.GET("/ws", NewWebSocketHandler(utils.NewWebSocketServer()))
-
 	room.GET("/check", CheckRoom)
 
 	room.GET("/hot", RoomHotList)
 
 	room.GET("/list", RoomList)
 
-	room.POST("/guest", GuestJoinRoom)
-
 	needAuthUser.POST("/create", CreateRoom)
 
 	needAuthUser.POST("/login", LoginRoom)
 
+	needAuthUser.GET("/joined", UserCheckJoinedRoom)
+
 	needAuthRoom.GET("/me", RoomMe)
+
+	needAuthRoom.GET("/info", RoomInfo)
+
+	needAuthRoom.GET("/ws", NewWebSocketHandler(utils.NewWebSocketServer()))
 
 	needAuthWithoutGuestRoom.GET("/settings", RoomPiblicSettings)
 
 	needAuthWithoutGuestRoom.GET("/members", RoomMembers)
+
+	needAuthWithoutGuestRoom.POST("/pwd/check", CheckRoomPassword)
 
 	{
 		needAuthRoomAdmin := needAuthRoom.Group("/admin", middlewares.AuthRoomAdminMiddleware)
@@ -199,6 +197,8 @@ func initRoom(room *gin.RouterGroup, needAuthUser *gin.RouterGroup, needAuthRoom
 		needAuthRoomAdmin.GET("/members", RoomAdminMembers)
 
 		needAuthRoomAdmin.POST("/members/approve", RoomAdminApproveMember)
+
+		needAuthRoomAdmin.POST("/members/delete", RoomAdminDeleteMember)
 
 		needAuthRoomAdmin.POST("/members/ban", RoomAdminBanMember)
 
@@ -235,27 +235,27 @@ func initMovie(movie *gin.RouterGroup, needAuthMovie *gin.RouterGroup) {
 
 	needAuthMovie.POST("/clear", ClearMovies)
 
-	needAuthMovie.HEAD("/proxy/:roomId/:movieId", ProxyMovie)
+	needAuthMovie.HEAD("/proxy/:movieId", ProxyMovie)
 
-	needAuthMovie.GET("/proxy/:roomId/:movieId", ProxyMovie)
+	needAuthMovie.GET("/proxy/:movieId", ProxyMovie)
 
 	{
 		needAuthLive := needAuthMovie.Group("/live")
 
 		needAuthLive.POST("/publishKey", NewPublishKey)
 
-		// needAuthLive.GET("/join/:movieId", JoinLive)
-
 		needAuthLive.GET("/flv/:movieId", JoinFlvLive)
 
 		needAuthLive.GET("/hls/list/:movieId", JoinHlsLive)
 
-		needAuthLive.GET("/hls/data/:roomId/:movieId/:dataId", ServeHlsLive)
+		movie.GET("/hls/data/:roomId/:movieId/:dataId", ServeHlsLive)
 	}
 }
 
 func initUser(user *gin.RouterGroup, needAuthUser *gin.RouterGroup) {
 	user.POST("/login", LoginUser)
+
+	user.POST("/signup", UserSignupPassword)
 
 	user.GET("/signup/email/captcha", GetUserSignupEmailStep1Captcha)
 
@@ -275,6 +275,8 @@ func initUser(user *gin.RouterGroup, needAuthUser *gin.RouterGroup) {
 
 	needAuthUser.GET("/rooms", UserRooms)
 
+	needAuthUser.GET("/rooms/joined", UserJoinedRooms)
+
 	needAuthUser.POST("/username", SetUsername)
 
 	needAuthUser.POST("/password", SetUserPassword)
@@ -290,9 +292,11 @@ func initUser(user *gin.RouterGroup, needAuthUser *gin.RouterGroup) {
 	needAuthUser.POST("/unbind/email", UserUnbindEmail)
 
 	{
-		room := needAuthUser.Group("/room")
+		needAuthRoom := needAuthUser.Group("/room")
 
-		room.POST("/delete", UserDeleteRoom)
+		needAuthRoom.POST("/delete", UserDeleteRoom)
+
+		needAuthRoom.GET("/joined", UserCheckJoinedRoom)
 	}
 }
 

@@ -152,7 +152,7 @@ EmbyFSListResp:
 		},
 	}
 	for _, p := range data.Paths {
-		var n = p.Name
+		n := p.Name
 		if p.Path == "1" {
 			n = aucd.Host
 		}

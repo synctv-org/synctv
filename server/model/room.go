@@ -8,6 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/synctv-org/synctv/internal/model"
+	dbModel "github.com/synctv-org/synctv/internal/model"
 )
 
 var (
@@ -66,6 +67,12 @@ type RoomListResp struct {
 	Creator      string           `json:"creator"`
 	CreatedAt    int64            `json:"createdAt"`
 	Status       model.RoomStatus `json:"status"`
+}
+
+type JoinedRoomResp struct {
+	RoomListResp
+	MemberStatus dbModel.RoomMemberStatus `json:"memberStatus"`
+	MemberRole   dbModel.RoomMemberRole   `json:"memberRole"`
 }
 
 type LoginRoomReq struct {
@@ -129,5 +136,17 @@ func (s *SetRoomSettingReq) Decode(ctx *gin.Context) error {
 }
 
 func (s *SetRoomSettingReq) Validate() error {
+	return nil
+}
+
+type CheckRoomPasswordReq struct {
+	Password string `json:"password"`
+}
+
+func (c *CheckRoomPasswordReq) Decode(ctx *gin.Context) error {
+	return json.NewDecoder(ctx.Request.Body).Decode(c)
+}
+
+func (c *CheckRoomPasswordReq) Validate() error {
 	return nil
 }

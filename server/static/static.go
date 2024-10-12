@@ -52,7 +52,6 @@ func Init(e *gin.Engine) {
 		// 	}
 		// })
 	}
-
 }
 
 func newFSHandler(fileSys fs.FS) func(ctx *gin.Context) {

@@ -11,9 +11,7 @@ import (
 	"github.com/zijiren233/gencontainer/rwmap"
 )
 
-var (
-	sysNotify SysNotify
-)
+var sysNotify SysNotify
 
 func Init() {
 	sysNotify.Init()
@@ -114,8 +112,8 @@ func (sn *SysNotify) waitCbk() {
 				runTask(tq)
 			}
 		}
-		log.Info("task: all done")
 	}
+	log.Info("task: all done")
 }
 
 func (sn *SysNotify) WaitCbk() {

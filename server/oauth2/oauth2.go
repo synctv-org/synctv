@@ -18,7 +18,23 @@ func OAuth2EnabledApi(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}
+
 	ctx.JSON(200, gin.H{
 		"enabled": data,
+	})
+}
+
+func OAuth2SignupEnabledApi(ctx *gin.Context) {
+	log := ctx.MustGet("log").(*logrus.Entry)
+
+	oauth2SignupEnabled, err := bootstrap.Oauth2SignupEnabledCache.Get(ctx)
+	if err != nil {
+		log.Errorf("failed to get oauth2 signup enabled: %v", err)
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
+
+	ctx.JSON(200, gin.H{
+		"signupEnabled": oauth2SignupEnabled,
 	})
 }

@@ -50,7 +50,7 @@ func (p *AuthingProvider) Init(c provider.Oauth2Option) {
 }
 
 func (p *AuthingProvider) Provider() provider.OAuth2Provider {
-	return "authing" //插件名
+	return "authing" // 插件名
 }
 
 func (p *AuthingProvider) NewAuthURL(ctx context.Context, state string) (string, error) {
@@ -90,7 +90,7 @@ type AuthingUserInfo struct {
 
 func main() {
 	args := os.Args
-	var pluginMap = map[string]plugin.Plugin{
+	pluginMap := map[string]plugin.Plugin{
 		"Provider": &plugins.ProviderPlugin{Impl: newAuthingProvider(args[1])},
 	}
 	plugin.Serve(&plugin.ServeConfig{

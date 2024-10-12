@@ -7,12 +7,12 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-func (em *ElementMessage) MessageType() int {
+func (em *Message) MessageType() int {
 	return websocket.BinaryMessage
 }
 
-func (em *ElementMessage) Encode(w io.Writer) error {
-	b, err := proto.Marshal((*ElementMessage)(em))
+func (em *Message) Encode(w io.Writer) error {
+	b, err := proto.Marshal((*Message)(em))
 	if err != nil {
 		return err
 	}

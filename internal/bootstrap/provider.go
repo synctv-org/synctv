@@ -20,12 +20,10 @@ import (
 	"github.com/synctv-org/synctv/internal/provider/providers"
 	"github.com/synctv-org/synctv/internal/settings"
 	"github.com/synctv-org/synctv/utils"
-	"github.com/zijiren233/gencontainer/refreshcache"
+	"github.com/zijiren233/gencontainer/refreshcache0"
 )
 
-var (
-	ProviderGroupSettings = make(map[model.SettingGroup]*ProviderGroupSetting)
-)
+var ProviderGroupSettings = make(map[model.SettingGroup]*ProviderGroupSetting)
 
 type ProviderGroupSetting struct {
 	Enabled           settings.BoolSetting
@@ -36,26 +34,47 @@ type ProviderGroupSetting struct {
 	SignupNeedReview  settings.BoolSetting
 }
 
-var (
-	Oauth2EnabledCache = refreshcache.NewRefreshCache[[]provider.OAuth2Provider](func(context.Context, ...any) ([]provider.OAuth2Provider, error) {
-		ps := providers.EnabledProvider()
-		r := make([]provider.OAuth2Provider, 0, ps.Len())
-		providers.EnabledProvider().Range(func(p provider.OAuth2Provider, value struct{}) bool {
+var Oauth2EnabledCache = refreshcache0.NewRefreshCache[[]provider.OAuth2Provider](func(context.Context) ([]provider.OAuth2Provider, error) {
+	ps := providers.EnabledProvider()
+	r := make([]provider.OAuth2Provider, 0, ps.Len())
+	ps.Range(func(p provider.OAuth2Provider, value struct{}) bool {
+		r = append(r, p)
+		return true
+	})
+	slices.SortStableFunc(r, func(a, b provider.OAuth2Provider) int {
+		if a == b {
+			return 0
+		} else if natural.Less(a, b) {
+			return -1
+		} else {
+			return 1
+		}
+	})
+	return r, nil
+}, 0)
+
+var Oauth2SignupEnabledCache = refreshcache0.NewRefreshCache[[]provider.OAuth2Provider](func(ctx context.Context) ([]provider.OAuth2Provider, error) {
+	ps := providers.EnabledProvider()
+	r := make([]provider.OAuth2Provider, 0, ps.Len())
+	ps.Range(func(p provider.OAuth2Provider, value struct{}) bool {
+		group := model.SettingGroup(fmt.Sprintf("%s_%s", model.SettingGroupOauth2, p))
+		groupSettings := ProviderGroupSettings[group]
+		if groupSettings.Enabled.Get() && !groupSettings.DisableUserSignup.Get() {
 			r = append(r, p)
-			return true
-		})
-		slices.SortStableFunc(r, func(a, b provider.OAuth2Provider) int {
-			if a == b {
-				return 0
-			} else if natural.Less(a, b) {
-				return -1
-			} else {
-				return 1
-			}
-		})
-		return r, nil
-	}, 0)
-)
+		}
+		return true
+	})
+	slices.SortStableFunc(r, func(a, b provider.OAuth2Provider) int {
+		if a == b {
+			return 0
+		} else if natural.Less(a, b) {
+			return -1
+		} else {
+			return 1
+		}
+	})
+	return r, nil
+}, 0)
 
 func InitProvider(ctx context.Context) (err error) {
 	logOur := log.StandardLogger().Writer()
@@ -70,7 +89,7 @@ func InitProvider(ctx context.Context) (err error) {
 			return err
 		}
 		log.Infof("load oauth2 plugin: %s", op.PluginFile)
-		err := os.MkdirAll(filepath.Dir(op.PluginFile), 0755)
+		err := os.MkdirAll(filepath.Dir(op.PluginFile), 0o755)
 		if err != nil {
 			log.Fatalf("create plugin dir: %s failed: %s", filepath.Dir(op.PluginFile), err)
 			return err

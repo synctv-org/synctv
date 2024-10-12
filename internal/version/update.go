@@ -21,7 +21,7 @@ func SelfUpdate(ctx context.Context, url string) error {
 	log.Debugf("self update: current executable file: %s", currentExecFile)
 
 	tmp := filepath.Join(os.TempDir(), "synctv-server", fmt.Sprintf("self-update-%d", now))
-	if err := os.MkdirAll(tmp, 0755); err != nil {
+	if err := os.MkdirAll(tmp, 0o755); err != nil {
 		log.Errorf("self update: mkdir %s error: %v", tmp, err)
 		return err
 	}
@@ -39,7 +39,7 @@ func SelfUpdate(ctx context.Context, url string) error {
 	}
 	log.Infof("self update: download success: %s", file)
 
-	if err := os.Chmod(file, 0755); err != nil {
+	if err := os.Chmod(file, 0o755); err != nil {
 		log.Errorf("self update: chmod %s error: %v", file, err)
 		return err
 	}

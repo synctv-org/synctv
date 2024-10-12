@@ -1,6 +1,6 @@
 module github.com/synctv-org/synctv
 
-go 1.22
+go 1.22.0
 
 require (
 	github.com/Boostport/mjml-go v0.14.6
@@ -35,15 +35,15 @@ require (
 	github.com/synctv-org/vendors v0.3.3
 	github.com/ulule/limiter/v3 v3.11.2
 	github.com/zencoder/go-dash/v3 v3.0.3
-	github.com/zijiren233/gencontainer v0.0.0-20240812032827-a8435ce091a6
+	github.com/zijiren233/gencontainer v0.0.0-20241008162312-0d000427d9f5
 	github.com/zijiren233/go-colorable v0.0.0-20230930131441-997304c961cb
 	github.com/zijiren233/go-uhc v0.2.5
 	github.com/zijiren233/livelib v0.3.3
 	github.com/zijiren233/stream v0.5.2
 	github.com/zijiren233/yaml-comment v0.2.2
 	go.etcd.io/etcd/client/v3 v3.5.15
-	golang.org/x/crypto v0.26.0
-	golang.org/x/exp v0.0.0-20240823005443-9b4947da3948
+	golang.org/x/crypto v0.28.0
+	golang.org/x/exp v0.0.0-20241004190924-225e2abe05e6
 	golang.org/x/oauth2 v0.22.0
 	google.golang.org/grpc v1.66.0
 	google.golang.org/protobuf v1.34.2
@@ -130,12 +130,12 @@ require (
 	go.uber.org/zap v1.27.0 // indirect
 	golang.org/x/arch v0.9.0 // indirect
 	golang.org/x/image v0.19.0 // indirect
-	golang.org/x/mod v0.20.0 // indirect
-	golang.org/x/net v0.28.0 // indirect
+	golang.org/x/mod v0.21.0 // indirect
+	golang.org/x/net v0.30.0 // indirect
 	golang.org/x/sync v0.8.0 // indirect
-	golang.org/x/sys v0.24.0 // indirect
-	golang.org/x/text v0.17.0 // indirect
-	golang.org/x/tools v0.24.0 // indirect
+	golang.org/x/sys v0.26.0 // indirect
+	golang.org/x/text v0.19.0 // indirect
+	golang.org/x/tools v0.26.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20240827150818-7e3bb234dfed // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20240827150818-7e3bb234dfed // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect

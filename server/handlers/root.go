@@ -9,7 +9,7 @@ import (
 	"github.com/synctv-org/synctv/server/model"
 )
 
-func AddAdmin(ctx *gin.Context) {
+func RootAddAdmin(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*op.UserEntry).Value()
 	log := ctx.MustGet("log").(*logrus.Entry)
 
@@ -46,7 +46,7 @@ func AddAdmin(ctx *gin.Context) {
 	ctx.Status(http.StatusNoContent)
 }
 
-func DeleteAdmin(ctx *gin.Context) {
+func RootDeleteAdmin(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*op.UserEntry)
 	log := ctx.MustGet("log").(*logrus.Entry)
 

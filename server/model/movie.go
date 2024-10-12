@@ -156,11 +156,7 @@ func (s *SwapMovieReq) Validate() error {
 	return nil
 }
 
-func GenDefaultSubPaths(path string, skipEmpty bool, paths ...*MoviePath) []*MoviePath {
-	if len(paths) == 0 {
-		return nil
-	}
-	id := paths[len(paths)-1].ID
+func GenDefaultSubPaths(id, path string, skipEmpty bool, paths ...*MoviePath) []*MoviePath {
 	path = strings.TrimRight(path, "/")
 	for _, v := range strings.Split(path, `/`) {
 		if v == "" && skipEmpty {
@@ -189,11 +185,15 @@ type MoviePath struct {
 	SubPath string `json:"subPath"`
 }
 
+type MovieList struct {
+	Paths  []*MoviePath `json:"paths"`
+	Movies []*Movie     `json:"movies"`
+	Total  int64        `json:"total"`
+}
+
 type MoviesResp struct {
-	Paths   []*MoviePath `json:"paths"`
-	Movies  []*Movie     `json:"movies"`
-	Total   int64        `json:"total"`
-	Dynamic bool         `json:"dynamic"`
+	*MovieList
+	Dynamic bool `json:"dynamic"`
 }
 
 type Movie struct {

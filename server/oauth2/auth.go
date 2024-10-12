@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -161,14 +162,14 @@ func newAuthFunc(redirect string) stateHandler {
 			return
 		}
 
-		var user *op.UserEntry
+		var userE *op.UserEntry
 		if settings.DisableUserSignup.Get() || pgs.DisableUserSignup.Get() {
-			user, err = op.GetUserByProvider(pi.Provider(), ui.ProviderUserID)
+			userE, err = op.GetUserByProvider(pi.Provider(), ui.ProviderUserID)
 		} else {
 			if settings.SignupNeedReview.Get() || pgs.SignupNeedReview.Get() {
-				user, err = op.CreateOrLoadUserWithProvider(ui.Username, utils.RandString(16), pi.Provider(), ui.ProviderUserID, db.WithRole(dbModel.RolePending))
+				userE, err = op.CreateOrLoadUserWithProvider(ui.Username, utils.RandString(16), pi.Provider(), ui.ProviderUserID, db.WithRole(dbModel.RolePending))
 			} else {
-				user, err = op.CreateOrLoadUserWithProvider(ui.Username, utils.RandString(16), pi.Provider(), ui.ProviderUserID)
+				userE, err = op.CreateOrLoadUserWithProvider(ui.Username, utils.RandString(16), pi.Provider(), ui.ProviderUserID)
 			}
 		}
 		if err != nil {
@@ -176,9 +177,18 @@ func newAuthFunc(redirect string) stateHandler {
 			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 			return
 		}
+		user := userE.Value()
 
-		token, err := middlewares.NewAuthUserToken(user.Value())
+		token, err := middlewares.NewAuthUserToken(user)
 		if err != nil {
+			if errors.Is(err, middlewares.ErrUserBanned) ||
+				errors.Is(err, middlewares.ErrUserPending) {
+				ctx.AbortWithStatusJSON(http.StatusOK, model.NewApiDataResp(gin.H{
+					"message": err.Error(),
+					"role":    user.Role,
+				}))
+				return
+			}
 			log.Errorf("failed to generate token: %v", err)
 			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
 			return
@@ -191,6 +201,7 @@ func newAuthFunc(redirect string) stateHandler {
 			}
 		} else if ctx.Request.Method == http.MethodPost {
 			ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
+				"role":     user.Role,
 				"token":    token,
 				"redirect": redirect,
 			}))

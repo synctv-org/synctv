@@ -11,6 +11,7 @@ import (
 	"github.com/synctv-org/synctv/utils"
 	_ "github.com/synctv-org/synctv/utils/fastJSONSerializer"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 var (
@@ -119,6 +120,14 @@ func OrderByCreatedAtDesc(db *gorm.DB) *gorm.DB {
 
 func OrderByUsersCreatedAtDesc(db *gorm.DB) *gorm.DB {
 	return db.Order("users.created_at desc")
+}
+
+func OrderByRoomCreatedAtAsc(db *gorm.DB) *gorm.DB {
+	return db.Order("rooms.created_at asc")
+}
+
+func OrderByRoomCreatedAtDesc(db *gorm.DB) *gorm.DB {
+	return db.Order("rooms.created_at desc")
 }
 
 func OrderByIDAsc(db *gorm.DB) *gorm.DB {
@@ -346,4 +355,21 @@ func Transactional(txFunc func(*gorm.DB) error) (err error) {
 	}()
 	err = txFunc(tx)
 	return
+}
+
+// Helper function to handle update results
+func HandleUpdateResult(result *gorm.DB, entityName string) error {
+	if result.Error != nil {
+		return HandleNotFound(result.Error, entityName)
+	}
+	if result.RowsAffected == 0 {
+		return ErrNotFound(entityName)
+	}
+	return nil
+}
+
+func OnConflictDoNothing() *gorm.DB {
+	return db.Clauses(clause.OnConflict{
+		DoNothing: true,
+	})
 }

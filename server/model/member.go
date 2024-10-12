@@ -18,9 +18,11 @@ type RoomMembersResp struct {
 	AdminPermissions dbModel.RoomAdminPermission  `json:"adminPermissions"`
 }
 
-type RoomApproveMemberReq = UserIDReq
-type RoomBanMemberReq = UserIDReq
-type RoomUnbanMemberReq = UserIDReq
+type (
+	RoomApproveMemberReq = UserIDReq
+	RoomBanMemberReq     = UserIDReq
+	RoomUnbanMemberReq   = UserIDReq
+)
 
 type RoomSetMemberPermissionsReq struct {
 	UserIDReq
@@ -36,6 +38,7 @@ type RoomMeResp struct {
 	RoomID           string                       `json:"roomId"`
 	JoinAt           int64                        `json:"joinAt"`
 	Role             dbModel.RoomMemberRole       `json:"role"`
+	Status           dbModel.RoomMemberStatus     `json:"status"`
 	Permissions      dbModel.RoomMemberPermission `json:"permissions"`
 	AdminPermissions dbModel.RoomAdminPermission  `json:"adminPermissions"`
 }

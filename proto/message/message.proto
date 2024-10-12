@@ -3,58 +3,41 @@ option go_package = ".;pb";
 
 package proto;
 
-enum ElementMessageType {
+enum MessageType {
   UNKNOWN = 0;
   ERROR = 1;
-  CHAT_MESSAGE = 2;
-  PLAY = 3;
-  PAUSE = 4;
-  CHECK_STATUS = 5;
-  TOO_FAST = 6;
-  TOO_SLOW = 7;
-  CHANGE_RATE = 8;
-  CHANGE_SEEK = 9;
-  CURRENT_CHANGED = 10;
-  MOVIES_CHANGED = 11;
-  PEOPLE_CHANGED = 12;
-  SYNC_MOVIE_STATUS = 13;
-  CURRENT_EXPIRED = 14;
-  CHECK_EXPIRED = 15;
-}
-
-message ChatResp {
-  Sender sender = 1;
-  string message = 2;
+  CHAT = 2;
+  STATUS = 3;
+  CHECK_STATUS = 4;
+  EXPIRED = 5;
+  CURRENT = 6;
+  MOVIES = 7;
+  VIEWER_COUNT = 8;
+  SYNC = 9;
+  MY_STATUS = 10;
 }
 
 message Sender {
-  string username = 1;
-  string userid = 2;
+  string user_id = 1;
+  string username = 2;
 }
 
-message MovieStatus {
-  bool playing = 1;
-  double seek = 2;
-  double rate = 3;
+message Status {
+  bool is_playing = 1;
+  double current_time = 2;
+  double playback_rate = 3;
 }
 
-message MovieStatusChanged {
-  Sender sender = 1;
-  MovieStatus status = 2;
-}
+message Message {
+  MessageType type = 1;
+  sfixed64 timestamp = 2;
+  optional Sender sender = 3;
 
-message ElementMessage {
-  ElementMessageType type = 1;
-  int64 time = 2;
-  string error = 3;
-  string chatReq = 4;
-  ChatResp chatResp = 5;
-  MovieStatus changeMovieStatusReq = 6;
-  MovieStatusChanged movieStatusChanged = 7;
-  double changeSeekReq = 8;
-  MovieStatus checkStatusReq = 9;
-  uint64 expireId = 10;
-  int64 peopleChanged = 11;
-  Sender moviesChanged = 12;
-  Sender currentChanged = 13;
+  oneof payload {
+    string error_message = 4;
+    string chat_content = 5;
+    Status playback_status = 6;
+    fixed64 expiration_id = 7;
+    int64 viewer_count = 8;
+  }
 }

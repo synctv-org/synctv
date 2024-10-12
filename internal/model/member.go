@@ -9,7 +9,7 @@ import (
 type RoomMemberStatus uint8
 
 const (
-	RoomMemberStatusUnknown RoomMemberStatus = iota
+	RoomMemberStatusNotJoined RoomMemberStatus = iota
 	RoomMemberStatusBanned
 	RoomMemberStatusPending
 	RoomMemberStatusActive

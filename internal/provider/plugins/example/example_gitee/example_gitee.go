@@ -90,7 +90,7 @@ type giteeUserInfo struct {
 }
 
 func main() {
-	var pluginMap = map[string]plugin.Plugin{
+	pluginMap := map[string]plugin.Plugin{
 		"Provider": &plugins.ProviderPlugin{Impl: newGiteeProvider()},
 	}
 	plugin.Serve(&plugin.ServeConfig{

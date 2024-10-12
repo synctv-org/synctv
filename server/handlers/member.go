@@ -66,14 +66,14 @@ func RoomMembers(ctx *gin.Context) {
 		db.WhereRoomID(room.ID),
 	))
 
-	total, err := db.GetAllUserCount(scopes...)
+	total, err := db.GetUserCount(scopes...)
 	if err != nil {
 		log.Errorf("get room users failed: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}
 
-	var desc = ctx.DefaultQuery("order", "desc") == "desc"
+	desc := ctx.DefaultQuery("order", "desc") == "desc"
 	switch ctx.DefaultQuery("sort", "name") {
 	case "join":
 		if desc {
@@ -93,7 +93,7 @@ func RoomMembers(ctx *gin.Context) {
 		return
 	}
 
-	list, err := db.GetAllUsers(append(scopes, db.Paginate(page, pageSize))...)
+	list, err := db.GetUsers(append(scopes, db.Paginate(page, pageSize))...)
 	if err != nil {
 		log.Errorf("get room users failed: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
@@ -162,20 +162,20 @@ func RoomAdminMembers(ctx *gin.Context) {
 	}
 	scopes = append(scopes, func(db *gorm.DB) *gorm.DB {
 		return db.
-			InnerJoins("JOIN room_members ON users.id = room_members.user_id").
+			Joins("JOIN room_members ON users.id = room_members.user_id").
 			Where("room_members.room_id = ?", room.ID)
 	}, db.PreloadRoomMembers(
 		db.WhereRoomID(room.ID),
 	))
 
-	total, err := db.GetAllUserCount(scopes...)
+	total, err := db.GetUserCount(scopes...)
 	if err != nil {
 		log.Errorf("get room users failed: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}
 
-	var desc = ctx.DefaultQuery("order", "desc") == "desc"
+	desc := ctx.DefaultQuery("order", "desc") == "desc"
 	switch ctx.DefaultQuery("sort", "name") {
 	case "join":
 		if desc {
@@ -195,7 +195,7 @@ func RoomAdminMembers(ctx *gin.Context) {
 		return
 	}
 
-	list, err := db.GetAllUsers(append(scopes, db.Paginate(page, pageSize))...)
+	list, err := db.GetUsers(append(scopes, db.Paginate(page, pageSize))...)
 	if err != nil {
 		log.Errorf("get room users failed: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
@@ -223,6 +223,28 @@ func RoomAdminApproveMember(ctx *gin.Context) {
 	err := user.ApproveRoomPendingMember(room, req.ID)
 	if err != nil {
 		log.Errorf("approve room user failed: %v", err)
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		return
+	}
+
+	ctx.Status(http.StatusNoContent)
+}
+
+func RoomAdminDeleteMember(ctx *gin.Context) {
+	user := ctx.MustGet("user").(*op.UserEntry).Value()
+	room := ctx.MustGet("room").(*op.RoomEntry).Value()
+	log := ctx.MustGet("log").(*logrus.Entry)
+
+	var req model.RoomApproveMemberReq
+	if err := model.Decode(ctx, &req); err != nil {
+		log.Errorf("decode room delete user req failed: %v", err)
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		return
+	}
+
+	err := user.DeleteRoomMember(room, req.ID)
+	if err != nil {
+		log.Errorf("delete room user failed: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 		return
 	}

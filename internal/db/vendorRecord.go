@@ -23,13 +23,15 @@ func CreateOrSaveBilibiliVendor(vendorInfo *model.BilibiliVendor) (*model.Bilibi
 		}).Error, gorm.ErrRecordNotFound) {
 			return tx.Create(&vendorInfo).Error
 		} else {
-			return tx.Omit("created_at").Save(&vendorInfo).Error
+			result := tx.Omit("created_at").Save(&vendorInfo)
+			return HandleUpdateResult(result, "vendor")
 		}
 	})
 }
 
 func DeleteBilibiliVendor(userID string) error {
-	return db.Where("user_id = ?", userID).Delete(&model.BilibiliVendor{}).Error
+	result := db.Where("user_id = ?", userID).Delete(&model.BilibiliVendor{})
+	return HandleUpdateResult(result, "vendor")
 }
 
 func GetAlistVendors(userID string, scopes ...func(*gorm.DB) *gorm.DB) ([]*model.AlistVendor, error) {
@@ -61,13 +63,15 @@ func CreateOrSaveAlistVendor(vendorInfo *model.AlistVendor) (*model.AlistVendor,
 		}).Error, gorm.ErrRecordNotFound) {
 			return tx.Create(&vendorInfo).Error
 		} else {
-			return tx.Omit("created_at").Save(&vendorInfo).Error
+			result := tx.Omit("created_at").Save(&vendorInfo)
+			return HandleUpdateResult(result, "vendor")
 		}
 	})
 }
 
 func DeleteAlistVendor(userID, serverID string) error {
-	return db.Where("user_id = ? AND server_id = ?", userID, serverID).Delete(&model.AlistVendor{}).Error
+	result := db.Where("user_id = ? AND server_id = ?", userID, serverID).Delete(&model.AlistVendor{})
+	return HandleUpdateResult(result, "vendor")
 }
 
 func GetEmbyVendors(userID string, scopes ...func(*gorm.DB) *gorm.DB) ([]*model.EmbyVendor, error) {
@@ -105,11 +109,13 @@ func CreateOrSaveEmbyVendor(vendorInfo *model.EmbyVendor) (*model.EmbyVendor, er
 		}).Error, gorm.ErrRecordNotFound) {
 			return tx.Create(&vendorInfo).Error
 		} else {
-			return tx.Omit("created_at").Save(&vendorInfo).Error
+			result := tx.Omit("created_at").Save(&vendorInfo)
+			return HandleUpdateResult(result, "vendor")
 		}
 	})
 }
 
 func DeleteEmbyVendor(userID, serverID string) error {
-	return db.Where("user_id = ? AND server_id = ?", userID, serverID).Delete(&model.EmbyVendor{}).Error
+	result := db.Where("user_id = ? AND server_id = ?", userID, serverID).Delete(&model.EmbyVendor{})
+	return HandleUpdateResult(result, "vendor")
 }

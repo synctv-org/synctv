@@ -138,17 +138,17 @@ func (u *User) AddRoomMovie(room *Room, movie *model.MovieBase) (*model.Movie, e
 	if err != nil {
 		return nil, err
 	}
-	return m, room.Broadcast(&pb.ElementMessage{
-		Type: pb.ElementMessageType_MOVIES_CHANGED,
-		MoviesChanged: &pb.Sender{
+	return m, room.Broadcast(&pb.Message{
+		Type: pb.MessageType_MOVIES,
+		Sender: &pb.Sender{
 			Username: u.Username,
-			Userid:   u.ID,
+			UserId:   u.ID,
 		},
 	})
 }
 
 func (u *User) NewMovies(movies []*model.MovieBase) ([]*model.Movie, error) {
-	var ms = make([]*model.Movie, len(movies))
+	ms := make([]*model.Movie, len(movies))
 	for i, m := range movies {
 		movie, err := u.NewMovie(m)
 		if err != nil {
@@ -171,11 +171,11 @@ func (u *User) AddRoomMovies(room *Room, movies []*model.MovieBase) ([]*model.Mo
 	if err != nil {
 		return nil, err
 	}
-	return m, room.Broadcast(&pb.ElementMessage{
-		Type: pb.ElementMessageType_MOVIES_CHANGED,
-		MoviesChanged: &pb.Sender{
+	return m, room.Broadcast(&pb.Message{
+		Type: pb.MessageType_MOVIES,
+		Sender: &pb.Sender{
 			Username: u.Username,
-			Userid:   u.ID,
+			UserId:   u.ID,
 		},
 	})
 }
@@ -315,11 +315,11 @@ func (u *User) UpdateRoomMovie(room *Room, movieID string, movie *model.MovieBas
 	if err != nil {
 		return err
 	}
-	return room.Broadcast(&pb.ElementMessage{
-		Type: pb.ElementMessageType_MOVIES_CHANGED,
-		MoviesChanged: &pb.Sender{
+	return room.Broadcast(&pb.Message{
+		Type: pb.MessageType_MOVIES,
+		Sender: &pb.Sender{
 			Username: u.Username,
-			Userid:   u.ID,
+			UserId:   u.ID,
 		},
 	})
 }
@@ -362,11 +362,11 @@ func (u *User) DeleteRoomMoviesByID(room *Room, movieIDs []string) error {
 	if err := room.DeleteMoviesByID(movieIDs); err != nil {
 		return err
 	}
-	return room.Broadcast(&pb.ElementMessage{
-		Type: pb.ElementMessageType_MOVIES_CHANGED,
-		MoviesChanged: &pb.Sender{
+	return room.Broadcast(&pb.Message{
+		Type: pb.MessageType_MOVIES,
+		Sender: &pb.Sender{
 			Username: u.Username,
-			Userid:   u.ID,
+			UserId:   u.ID,
 		},
 	})
 }
@@ -379,11 +379,11 @@ func (u *User) ClearRoomMovies(room *Room) error {
 	if err != nil {
 		return err
 	}
-	return room.Broadcast(&pb.ElementMessage{
-		Type: pb.ElementMessageType_MOVIES_CHANGED,
-		MoviesChanged: &pb.Sender{
+	return room.Broadcast(&pb.Message{
+		Type: pb.MessageType_MOVIES,
+		Sender: &pb.Sender{
 			Username: u.Username,
-			Userid:   u.ID,
+			UserId:   u.ID,
 		},
 	})
 }
@@ -396,11 +396,11 @@ func (u *User) ClearRoomMoviesByParentID(room *Room, parentID string) error {
 	if err != nil {
 		return err
 	}
-	return room.Broadcast(&pb.ElementMessage{
-		Type: pb.ElementMessageType_MOVIES_CHANGED,
-		MoviesChanged: &pb.Sender{
+	return room.Broadcast(&pb.Message{
+		Type: pb.MessageType_MOVIES,
+		Sender: &pb.Sender{
 			Username: u.Username,
-			Userid:   u.ID,
+			UserId:   u.ID,
 		},
 	})
 }
@@ -413,11 +413,11 @@ func (u *User) SwapRoomMoviePositions(room *Room, id1, id2 string) error {
 	if err != nil {
 		return err
 	}
-	return room.Broadcast(&pb.ElementMessage{
-		Type: pb.ElementMessageType_MOVIES_CHANGED,
-		MoviesChanged: &pb.Sender{
+	return room.Broadcast(&pb.Message{
+		Type: pb.MessageType_MOVIES,
+		Sender: &pb.Sender{
 			Username: u.Username,
-			Userid:   u.ID,
+			UserId:   u.ID,
 		},
 	})
 }
@@ -430,11 +430,11 @@ func (u *User) SetRoomCurrentMovie(room *Room, movieID string, subPath string, p
 	if err != nil {
 		return err
 	}
-	return room.Broadcast(&pb.ElementMessage{
-		Type: pb.ElementMessageType_CURRENT_CHANGED,
-		CurrentChanged: &pb.Sender{
+	return room.Broadcast(&pb.Message{
+		Type: pb.MessageType_CURRENT,
+		Sender: &pb.Sender{
 			Username: u.Username,
-			Userid:   u.ID,
+			UserId:   u.ID,
 		},
 	})
 }
@@ -505,13 +505,6 @@ func (u *User) GetRoomMoviesWithPage(room *Room, page, pageSize int, parentID st
 	return room.GetMoviesWithPage(page, pageSize, parentID)
 }
 
-func (u *User) SetRoomCurrentSeekRate(room *Room, seek, rate, timeDiff float64) (*Status, error) {
-	if !u.HasRoomPermission(room, model.PermissionSetCurrentStatus) {
-		return nil, model.ErrNoPermission
-	}
-	return room.SetCurrentSeekRate(seek, rate, timeDiff), nil
-}
-
 func (u *User) SetRoomCurrentStatus(room *Room, playing bool, seek, rate, timeDiff float64) (*Status, error) {
 	if !u.HasRoomPermission(room, model.PermissionSetCurrentStatus) {
 		return nil, model.ErrNoPermission
@@ -542,6 +535,13 @@ func (u *User) UnbanRoomMember(room *Room, userID string) error {
 	return room.UnbanMember(userID)
 }
 
+func (u *User) DeleteRoomMember(room *Room, userID string) error {
+	if !u.HasRoomAdminPermission(room, model.PermissionApprovePendingMember) {
+		return model.ErrNoPermission
+	}
+	return room.DeleteMember(userID)
+}
+
 func (u *User) SetMemberPermissions(room *Room, userID string, permissions model.RoomMemberPermission) error {
 	if !u.HasRoomAdminPermission(room, model.PermissionSetUserPermission) {
 		return model.ErrNoPermission
@@ -549,7 +549,17 @@ func (u *User) SetMemberPermissions(room *Room, userID string, permissions model
 	if room.IsAdmin(userID) && !u.IsRoomCreator(room) {
 		return errors.New("cannot set admin permissions")
 	}
-	return room.SetMemberPermissions(userID, permissions)
+	err := room.SetMemberPermissions(userID, permissions)
+	if err != nil {
+		return err
+	}
+	return room.SendToUserWithId(userID, &pb.Message{
+		Type: pb.MessageType_MY_STATUS,
+		Sender: &pb.Sender{
+			Username: u.Username,
+			UserId:   u.ID,
+		},
+	})
 }
 
 func (u *User) AddMemberPermissions(room *Room, userID string, permissions model.RoomMemberPermission) error {
@@ -559,7 +569,17 @@ func (u *User) AddMemberPermissions(room *Room, userID string, permissions model
 	if room.IsAdmin(userID) && !u.IsRoomCreator(room) {
 		return errors.New("cannot add admin permissions")
 	}
-	return room.AddMemberPermissions(userID, permissions)
+	err := room.AddMemberPermissions(userID, permissions)
+	if err != nil {
+		return err
+	}
+	return room.SendToUserWithId(userID, &pb.Message{
+		Type: pb.MessageType_MY_STATUS,
+		Sender: &pb.Sender{
+			Username: u.Username,
+			UserId:   u.ID,
+		},
+	})
 }
 
 func (u *User) RemoveMemberPermissions(room *Room, userID string, permissions model.RoomMemberPermission) error {
@@ -569,7 +589,17 @@ func (u *User) RemoveMemberPermissions(room *Room, userID string, permissions mo
 	if room.IsAdmin(userID) && !u.IsRoomCreator(room) {
 		return errors.New("cannot remove admin permissions")
 	}
-	return room.RemoveMemberPermissions(userID, permissions)
+	err := room.RemoveMemberPermissions(userID, permissions)
+	if err != nil {
+		return err
+	}
+	return room.SendToUserWithId(userID, &pb.Message{
+		Type: pb.MessageType_MY_STATUS,
+		Sender: &pb.Sender{
+			Username: u.Username,
+			UserId:   u.ID,
+		},
+	})
 }
 
 func (u *User) ResetMemberPermissions(room *Room, userID string) error {
@@ -579,7 +609,17 @@ func (u *User) ResetMemberPermissions(room *Room, userID string) error {
 	if room.IsAdmin(userID) && !u.IsRoomCreator(room) {
 		return errors.New("cannot reset admin permissions")
 	}
-	return room.ResetMemberPermissions(userID)
+	err := room.ResetMemberPermissions(userID)
+	if err != nil {
+		return err
+	}
+	return room.SendToUserWithId(userID, &pb.Message{
+		Type: pb.MessageType_MY_STATUS,
+		Sender: &pb.Sender{
+			Username: u.Username,
+			UserId:   u.ID,
+		},
+	})
 }
 
 func (u *User) ApproveRoomPendingMember(room *Room, userID string) error {
@@ -593,40 +633,100 @@ func (u *User) SetRoomAdmin(room *Room, userID string, permissions model.RoomAdm
 	if !u.IsRoomCreator(room) {
 		return model.ErrNoPermission
 	}
-	return room.SetAdmin(userID, permissions)
+	err := room.SetAdmin(userID, permissions)
+	if err != nil {
+		return err
+	}
+	return room.SendToUserWithId(userID, &pb.Message{
+		Type: pb.MessageType_MY_STATUS,
+		Sender: &pb.Sender{
+			Username: u.Username,
+			UserId:   u.ID,
+		},
+	})
 }
 
 func (u *User) SetRoomMember(room *Room, userID string, permissions model.RoomMemberPermission) error {
 	if !u.IsRoomCreator(room) {
 		return model.ErrNoPermission
 	}
-	return room.SetMember(userID, permissions)
+	err := room.SetMember(userID, permissions)
+	if err != nil {
+		return err
+	}
+	return room.SendToUserWithId(userID, &pb.Message{
+		Type: pb.MessageType_MY_STATUS,
+		Sender: &pb.Sender{
+			Username: u.Username,
+			UserId:   u.ID,
+		},
+	})
 }
 
 func (u *User) SetRoomAdminPermissions(room *Room, userID string, permissions model.RoomAdminPermission) error {
 	if !u.IsRoomCreator(room) {
 		return model.ErrNoPermission
 	}
-	return room.SetAdminPermissions(userID, permissions)
+	err := room.SetAdminPermissions(userID, permissions)
+	if err != nil {
+		return err
+	}
+	return room.SendToUserWithId(userID, &pb.Message{
+		Type: pb.MessageType_MY_STATUS,
+		Sender: &pb.Sender{
+			Username: u.Username,
+			UserId:   u.ID,
+		},
+	})
 }
 
 func (u *User) AddRoomAdminPermissions(room *Room, userID string, permissions model.RoomAdminPermission) error {
 	if !u.IsRoomCreator(room) {
 		return model.ErrNoPermission
 	}
-	return room.AddAdminPermissions(userID, permissions)
+	err := room.AddAdminPermissions(userID, permissions)
+	if err != nil {
+		return err
+	}
+	return room.SendToUserWithId(userID, &pb.Message{
+		Type: pb.MessageType_MY_STATUS,
+		Sender: &pb.Sender{
+			Username: u.Username,
+			UserId:   u.ID,
+		},
+	})
 }
 
 func (u *User) RemoveRoomAdminPermissions(room *Room, userID string, permissions model.RoomAdminPermission) error {
 	if !u.IsRoomCreator(room) {
 		return model.ErrNoPermission
 	}
-	return room.RemoveAdminPermissions(userID, permissions)
+	err := room.RemoveAdminPermissions(userID, permissions)
+	if err != nil {
+		return err
+	}
+	return room.SendToUserWithId(userID, &pb.Message{
+		Type: pb.MessageType_MY_STATUS,
+		Sender: &pb.Sender{
+			Username: u.Username,
+			UserId:   u.ID,
+		},
+	})
 }
 
 func (u *User) ResetRoomAdminPermissions(room *Room, userID string) error {
 	if !u.IsRoomCreator(room) {
 		return model.ErrNoPermission
 	}
-	return room.ResetAdminPermissions(userID)
+	err := room.ResetAdminPermissions(userID)
+	if err != nil {
+		return err
+	}
+	return room.SendToUserWithId(userID, &pb.Message{
+		Type: pb.MessageType_MY_STATUS,
+		Sender: &pb.Sender{
+			Username: u.Username,
+			UserId:   u.ID,
+		},
+	})
 }

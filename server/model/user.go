@@ -37,6 +37,7 @@ func (s *SetUserPasswordReq) Validate() error {
 
 type LoginUserReq struct {
 	Username string `json:"username"`
+	Email    string `json:"email"`
 	Password string `json:"password"`
 }
 
@@ -45,12 +46,27 @@ func (l *LoginUserReq) Decode(ctx *gin.Context) error {
 }
 
 func (l *LoginUserReq) Validate() error {
-	if l.Username == "" {
-		return errors.New("username is empty")
-	} else if len(l.Username) > 32 {
-		return ErrUsernameTooLong
-	} else if !alnumPrintHanReg.MatchString(l.Username) {
-		return ErrUsernameHasInvalidChar
+	if l.Username != "" && l.Email != "" {
+		return errors.New("only one of username or email should be provided")
+	}
+
+	if l.Username == "" && l.Email == "" {
+		return errors.New("either username or email is required")
+	}
+
+	if l.Username != "" {
+		if len(l.Username) > 32 {
+			return ErrUsernameTooLong
+		}
+		if !alnumPrintHanReg.MatchString(l.Username) {
+			return ErrUsernameHasInvalidChar
+		}
+	}
+
+	if l.Email != "" {
+		if !emailReg.MatchString(l.Email) {
+			return errors.New("invalid email format")
+		}
 	}
 
 	if l.Password == "" {
@@ -58,6 +74,37 @@ func (l *LoginUserReq) Validate() error {
 	} else if len(l.Password) > 32 {
 		return ErrPasswordTooLong
 	} else if !alnumPrintReg.MatchString(l.Password) {
+		return ErrPasswordHasInvalidChar
+	}
+	return nil
+}
+
+type UserSignupPasswordReq struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+func (u *UserSignupPasswordReq) Decode(ctx *gin.Context) error {
+	return json.NewDecoder(ctx.Request.Body).Decode(u)
+}
+
+func (u *UserSignupPasswordReq) Validate() error {
+	if u.Username == "" {
+		return errors.New("username is empty")
+	}
+	if len(u.Username) > 32 {
+		return ErrUsernameTooLong
+	}
+	if !alnumPrintHanReg.MatchString(u.Username) {
+		return ErrUsernameHasInvalidChar
+	}
+	if u.Password == "" {
+		return FormatEmptyPasswordError("user")
+	}
+	if len(u.Password) > 32 {
+		return ErrPasswordTooLong
+	}
+	if !alnumPrintReg.MatchString(u.Password) {
 		return ErrPasswordHasInvalidChar
 	}
 	return nil

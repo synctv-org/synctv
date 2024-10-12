@@ -52,20 +52,8 @@ func LoadOrInitUserByEmail(email string) (*UserEntry, error) {
 	return LoadOrInitUser(u)
 }
 
-func LoadUserByUsername(username string) (*UserEntry, error) {
+func LoadOrInitUserByUsername(username string) (*UserEntry, error) {
 	u, err := db.GetUserByUsername(username)
-	if err != nil {
-		return nil, err
-	}
-
-	return LoadOrInitUser(u)
-}
-
-func CreateOrLoadUser(username string, password string, conf ...db.CreateUserConfig) (*UserEntry, error) {
-	if username == "" {
-		return nil, errors.New("username cannot be empty")
-	}
-	u, err := db.CreateOrLoadUser(username, password, conf...)
 	if err != nil {
 		return nil, err
 	}
@@ -87,15 +75,6 @@ func CreateUser(username string, password string, conf ...db.CreateUserConfig) (
 
 func CreateOrLoadUserWithProvider(username, password string, p provider.OAuth2Provider, pid string, conf ...db.CreateUserConfig) (*UserEntry, error) {
 	u, err := db.CreateOrLoadUserWithProvider(username, password, p, pid, conf...)
-	if err != nil {
-		return nil, err
-	}
-
-	return LoadOrInitUser(u)
-}
-
-func CreateOrLoadUserWithEmail(username, password, email string, conf ...db.CreateUserConfig) (*UserEntry, error) {
-	u, err := db.CreateOrLoadUserWithEmail(username, password, email, conf...)
 	if err != nil {
 		return nil, err
 	}
@@ -174,4 +153,8 @@ func GetUserName(userID string) string {
 		return ""
 	}
 	return u.Value().Username
+}
+
+func LoadOrInitGuestUser() (*UserEntry, error) {
+	return LoadOrInitUserByID(db.GuestUserID)
 }

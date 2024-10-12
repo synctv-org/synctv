@@ -2,6 +2,7 @@ package db
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/synctv-org/synctv/internal/model"
 	"github.com/zijiren233/stream"
@@ -21,7 +22,7 @@ func WithSetting(setting *model.RoomSettings) CreateRoomConfig {
 func WithCreator(creator *model.User) CreateRoomConfig {
 	return func(r *model.Room) {
 		r.CreatorID = creator.ID
-		r.GroupUserRelations = []*model.RoomMember{
+		r.RoomMembers = []*model.RoomMember{
 			{
 				UserID:           creator.ID,
 				Status:           model.RoomMemberStatusActive,
@@ -35,7 +36,7 @@ func WithCreator(creator *model.User) CreateRoomConfig {
 
 func WithRelations(relations []*model.RoomMember) CreateRoomConfig {
 	return func(r *model.Room) {
-		r.GroupUserRelations = append(r.GroupUserRelations, relations...)
+		r.RoomMembers = append(r.RoomMembers, relations...)
 	}
 }
 
@@ -64,89 +65,90 @@ func CreateRoom(name, password string, maxCount int64, conf ...CreateRoomConfig)
 		c(r)
 	}
 	if password != "" {
-		var err error
-		r.HashedPassword, err = bcrypt.GenerateFromPassword(stream.StringToBytes(password), bcrypt.DefaultCost)
+		hashedPassword, err := bcrypt.GenerateFromPassword(stream.StringToBytes(password), bcrypt.DefaultCost)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to hash password: %w", err)
 		}
+		r.HashedPassword = hashedPassword
 	}
 
-	return r, Transactional(func(tx *gorm.DB) error {
-		if maxCount != 0 {
+	err := Transactional(func(tx *gorm.DB) error {
+		if maxCount > 0 {
 			var count int64
-			tx.Model(&model.Room{}).Where("creator_id = ?", r.CreatorID).Count(&count)
+			if err := tx.Model(&model.Room{}).Where("creator_id = ?", r.CreatorID).Count(&count).Error; err != nil {
+				return fmt.Errorf("failed to count rooms: %w", err)
+			}
 			if count >= maxCount {
-				return errors.New("room count is over limit")
+				return errors.New("room count exceeds limit")
 			}
 		}
-		err := tx.Create(r).Error
-		if err != nil {
+		if err := tx.Create(r).Error; err != nil {
 			if errors.Is(err, gorm.ErrDuplicatedKey) {
 				return errors.New("room already exists")
 			}
-			return err
+			return fmt.Errorf("failed to create room: %w", err)
 		}
 		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	return r, nil
 }
 
 func GetRoomByID(id string) (*model.Room, error) {
 	if len(id) != 32 {
 		return nil, errors.New("room id is not 32 bit")
 	}
-	r := &model.Room{}
-	err := db.
-		Where("id = ?", id).
-		First(r).Error
-	return r, HandleNotFound(err, "room")
+	var r model.Room
+	err := db.Where("id = ?", id).First(&r).Error
+	return &r, HandleNotFound(err, "room")
 }
 
-func GetOrCreateRoomSettings(roomID string) (*model.RoomSettings, error) {
-	rs := &model.RoomSettings{}
-	err := db.Where(&model.RoomSettings{ID: roomID}).Attrs(model.DefaultRoomSettings()).FirstOrCreate(rs).Error
-	return rs, err
+func CreateOrLoadRoomSettings(roomID string) (*model.RoomSettings, error) {
+	var rs model.RoomSettings
+	err := OnConflictDoNothing().Where(model.RoomSettings{ID: roomID}).Attrs(model.DefaultRoomSettings()).FirstOrCreate(&rs).Error
+	return &rs, HandleNotFound(err, "room")
 }
 
 func SaveRoomSettings(roomID string, settings *model.RoomSettings) error {
 	settings.ID = roomID
-	err := db.Save(settings).Error
-	return HandleNotFound(err, "room")
+	return HandleNotFound(db.Save(settings).Error, "room settings")
 }
 
 func UpdateRoomSettings(roomID string, settings map[string]interface{}) (*model.RoomSettings, error) {
-	rs := &model.RoomSettings{
-		ID: roomID,
-	}
-	err := db.Model(rs).
+	var rs model.RoomSettings
+	err := db.Model(&model.RoomSettings{ID: roomID}).
 		Clauses(clause.Returning{}).
-		Updates(settings).Error
-	return rs, HandleNotFound(err, "room")
+		Updates(settings).
+		First(&rs).Error
+	return &rs, HandleNotFound(err, "room settings")
 }
 
 func DeleteRoomByID(roomID string) error {
-	err := db.Unscoped().Select(clause.Associations).Delete(&model.Room{ID: roomID}).Error
-	return HandleNotFound(err, "room")
+	result := db.Unscoped().Select(clause.Associations).Delete(&model.Room{ID: roomID})
+	return HandleUpdateResult(result, "room")
 }
 
 func SetRoomPassword(roomID, password string) error {
 	var hashedPassword []byte
+	var err error
 	if password != "" {
-		var err error
 		hashedPassword, err = bcrypt.GenerateFromPassword(stream.StringToBytes(password), bcrypt.DefaultCost)
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to hash password: %w", err)
 		}
 	}
 	return SetRoomHashedPassword(roomID, hashedPassword)
 }
 
 func SetRoomHashedPassword(roomID string, hashedPassword []byte) error {
-	err := db.Model(&model.Room{}).Where("id = ?", roomID).Update("hashed_password", hashedPassword).Error
-	return HandleNotFound(err, "room")
+	result := db.Model(&model.Room{}).Where("id = ?", roomID).Update("hashed_password", hashedPassword)
+	return HandleUpdateResult(result, "room")
 }
 
 func GetAllRooms(scopes ...func(*gorm.DB) *gorm.DB) ([]*model.Room, error) {
-	rooms := []*model.Room{}
+	var rooms []*model.Room
 	err := db.Scopes(scopes...).Find(&rooms).Error
 	return rooms, err
 }
@@ -158,22 +160,23 @@ func GetAllRoomsCount(scopes ...func(*gorm.DB) *gorm.DB) (int64, error) {
 }
 
 func GetAllRoomsAndCreator(scopes ...func(*gorm.DB) *gorm.DB) ([]*model.Room, error) {
-	rooms := []*model.Room{}
+	var rooms []*model.Room
 	err := db.Preload("Creator").Scopes(scopes...).Find(&rooms).Error
 	return rooms, err
 }
 
 func GetAllRoomsByUserID(userID string) ([]*model.Room, error) {
-	rooms := []*model.Room{}
+	var rooms []*model.Room
 	err := db.Where("creator_id = ?", userID).Find(&rooms).Error
 	return rooms, err
 }
 
 func SetRoomStatus(roomID string, status model.RoomStatus) error {
-	err := db.Model(&model.Room{}).Where("id = ?", roomID).Update("status", status).Error
-	return HandleNotFound(err, "room")
+	result := db.Model(&model.Room{}).Where("id = ?", roomID).Update("status", status)
+	return HandleUpdateResult(result, "room")
 }
 
 func SetRoomStatusByCreator(userID string, status model.RoomStatus) error {
-	return db.Model(&model.Room{}).Where("creator_id = ?", userID).Update("status", status).Error
+	result := db.Model(&model.Room{}).Where("creator_id = ?", userID).Update("status", status)
+	return HandleUpdateResult(result, "room")
 }

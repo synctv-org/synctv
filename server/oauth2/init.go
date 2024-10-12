@@ -13,6 +13,8 @@ func Init(e *gin.Engine) {
 
 		oauth2.GET("/enabled", OAuth2EnabledApi)
 
+		oauth2.GET("/enabled/signup", OAuth2SignupEnabledApi)
+
 		oauth2.GET("/login/:type", OAuth2)
 
 		oauth2.POST("/login/:type", OAuth2Api)

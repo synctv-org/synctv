@@ -18,7 +18,7 @@ type Movie struct {
 	RoomID    string    `gorm:"not null;index;type:char(32)" json:"-"`
 	CreatorID string    `gorm:"index;type:char(32)" json:"creatorId"`
 	MovieBase `gorm:"embedded;embeddedPrefix:base_" json:"base"`
-	Children  []*Movie `gorm:"foreignKey:ParentID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE" json:"-"`
+	Childrens []*Movie `gorm:"foreignKey:ParentID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE" json:"-"`
 }
 
 func (m *Movie) Clone() *Movie {
@@ -30,7 +30,7 @@ func (m *Movie) Clone() *Movie {
 		RoomID:    m.RoomID,
 		CreatorID: m.CreatorID,
 		MovieBase: *m.MovieBase.Clone(),
-		Children:  m.Children,
+		Childrens: m.Childrens,
 	}
 }
 

@@ -57,8 +57,13 @@ jobs:
             --platforms="${{ matrix.target }}" \
             --more-go-cmd-args='-a -v -x'
 
+      - name: Get artifact name
+        id: get_artifact_name
+        run: |
+          echo "ARTIFACT_NAME=$(echo ${{ matrix.target }} | tr '/' '-')" >> $GITHUB_OUTPUT
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.target }}
+          name: ${{ steps.get_artifact_name.outputs.ARTIFACT_NAME }}
           path: build/*

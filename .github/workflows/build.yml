@@ -6,7 +6,7 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   get_all_targets:
@@ -56,3 +56,9 @@ jobs:
             --skip-init-web \
             --platforms="${{ matrix.target }}" \
             --more-go-cmd-args='-a -v -x'
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: build/*

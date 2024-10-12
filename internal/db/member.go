@@ -51,7 +51,7 @@ func FirstOrCreateRoomMemberRelation(roomID, userID string, conf ...CreateRoomMe
 func GetRoomMember(roomID, userID string) (*model.RoomMember, error) {
 	roomMemberRelation := &model.RoomMember{}
 	err := db.Where("room_id = ? AND user_id = ?", roomID, userID).First(roomMemberRelation).Error
-	return roomMemberRelation, HandleNotFound(err, "room or user")
+	return roomMemberRelation, HandleNotFound(err, "room or member")
 }
 
 func RoomApprovePendingMember(roomID, userID string) error {
@@ -66,32 +66,40 @@ func RoomBanMember(roomID, userID string) error {
 	result := db.Model(&model.RoomMember{}).
 		Where("room_id = ? AND user_id = ?", roomID, userID).
 		Update("status", model.RoomMemberStatusBanned)
-	return HandleUpdateResult(result, "room or user")
+	return HandleUpdateResult(result, "room or member")
 }
 
 func RoomUnbanMember(roomID, userID string) error {
 	result := db.Model(&model.RoomMember{}).Where("room_id = ? AND user_id = ?", roomID, userID).Update("status", model.RoomMemberStatusActive)
-	return HandleUpdateResult(result, "room or user")
+	return HandleUpdateResult(result, "room or member")
 }
 
 func DeleteRoomMember(roomID, userID string) error {
-	result := db.Where("room_id = ? AND user_id = ?", roomID, userID).Delete(&model.RoomMember{})
-	return HandleUpdateResult(result, "room or user")
+	result := db.
+		Where("NOT EXISTS (?)",
+			db.Table("rooms").
+				Select("1").
+				Where("rooms.id = room_members.room_id AND rooms.creator_id = room_members.user_id"),
+		).
+		Where("room_id = ? AND user_id = ?", roomID, userID).
+		Delete(&model.RoomMember{})
+
+	return HandleUpdateResult(result, "room or member")
 }
 
 func SetMemberPermissions(roomID string, userID string, permission model.RoomMemberPermission) error {
 	result := db.Model(&model.RoomMember{}).Where("room_id = ? AND user_id = ?", roomID, userID).Update("permissions", permission)
-	return HandleUpdateResult(result, "room or user")
+	return HandleUpdateResult(result, "room or member")
 }
 
 func AddMemberPermissions(roomID string, userID string, permission model.RoomMemberPermission) error {
 	result := db.Model(&model.RoomMember{}).Where("room_id = ? AND user_id = ?", roomID, userID).Update("permissions", db.Raw("permissions | ?", permission))
-	return HandleUpdateResult(result, "room or user")
+	return HandleUpdateResult(result, "room or member")
 }
 
 func RemoveMemberPermissions(roomID string, userID string, permission model.RoomMemberPermission) error {
 	result := db.Model(&model.RoomMember{}).Where("room_id = ? AND user_id = ?", roomID, userID).Update("permissions", db.Raw("permissions & ?", ^permission))
-	return HandleUpdateResult(result, "room or user")
+	return HandleUpdateResult(result, "room or member")
 }
 
 // func GetAllRoomMembersRelationCount(roomID string, scopes ...func(*gorm.DB) *gorm.DB) (int64, error) {
@@ -102,17 +110,17 @@ func RemoveMemberPermissions(roomID string, userID string, permission model.Room
 
 func RoomSetAdminPermissions(roomID, userID string, permissions model.RoomAdminPermission) error {
 	result := db.Model(&model.RoomMember{}).Where("room_id = ? AND user_id = ?", roomID, userID).Update("admin_permissions", permissions)
-	return HandleUpdateResult(result, "room or user")
+	return HandleUpdateResult(result, "room or member")
 }
 
 func RoomAddAdminPermissions(roomID, userID string, permissions model.RoomAdminPermission) error {
 	result := db.Model(&model.RoomMember{}).Where("room_id = ? AND user_id = ?", roomID, userID).Update("admin_permissions", db.Raw("admin_permissions | ?", permissions))
-	return HandleUpdateResult(result, "room or user")
+	return HandleUpdateResult(result, "room or member")
 }
 
 func RoomRemoveAdminPermissions(roomID, userID string, permissions model.RoomAdminPermission) error {
 	result := db.Model(&model.RoomMember{}).Where("room_id = ? AND user_id = ?", roomID, userID).Update("admin_permissions", db.Raw("admin_permissions & ?", ^permissions))
-	return HandleUpdateResult(result, "room or user")
+	return HandleUpdateResult(result, "room or member")
 }
 
 func RoomSetAdmin(roomID, userID string, permissions model.RoomAdminPermission) error {
@@ -121,7 +129,7 @@ func RoomSetAdmin(roomID, userID string, permissions model.RoomAdminPermission) 
 		"permissions":       model.AllPermissions,
 		"admin_permissions": permissions,
 	})
-	return HandleUpdateResult(result, "room or user")
+	return HandleUpdateResult(result, "room or member")
 }
 
 func RoomSetMember(roomID, userID string, permissions model.RoomMemberPermission) error {
@@ -130,7 +138,7 @@ func RoomSetMember(roomID, userID string, permissions model.RoomMemberPermission
 		"permissions":       permissions,
 		"admin_permissions": model.NoAdminPermission,
 	})
-	return HandleUpdateResult(result, "room or user")
+	return HandleUpdateResult(result, "room or member")
 }
 
 func GetRoomMembers(roomID string, scopes ...func(*gorm.DB) *gorm.DB) ([]*model.RoomMember, error) {

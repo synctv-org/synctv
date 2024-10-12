@@ -142,6 +142,7 @@ type RoomMember struct {
 	UpdatedAt        time.Time
 	UserID           string           `gorm:"primarykey;type:char(32)"`
 	RoomID           string           `gorm:"primarykey;type:char(32)"`
+	Room             *Room            `gorm:"foreignKey:RoomID;references:ID"`
 	Status           RoomMemberStatus `gorm:"not null;default:2"`
 	Role             RoomMemberRole   `gorm:"not null;default:1"`
 	Permissions      RoomMemberPermission

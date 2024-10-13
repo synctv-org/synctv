@@ -125,7 +125,7 @@ var roomHotCache = refreshcache0.NewRefreshCache[[]*model.RoomListResp](func(con
 	rooms := make([]*model.RoomListResp, 0)
 	op.RangeRoomCache(func(key string, value *synccache.Entry[*op.Room]) bool {
 		v := value.Value()
-		if !v.Settings.Hidden && v.IsActive() {
+		if !v.Settings.Hidden && v.IsActive() && !v.HubIsNotInited() {
 			rooms = append(rooms, &model.RoomListResp{
 				RoomId:       v.ID,
 				RoomName:     v.Name,

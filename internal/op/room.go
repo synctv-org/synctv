@@ -36,26 +36,26 @@ func (r *Room) lazyInitHub() *Hub {
 	return h
 }
 
-func (r *Room) hubIsNotInited() bool {
+func (r *Room) HubIsNotInited() bool {
 	return r.hub.Load() == nil
 }
 
 func (r *Room) ViewerCount() int64 {
-	if r.hubIsNotInited() {
+	if r.HubIsNotInited() {
 		return 0
 	}
 	return r.lazyInitHub().ClientNum()
 }
 
 func (r *Room) KickUser(userID string) error {
-	if r.hubIsNotInited() {
+	if r.HubIsNotInited() {
 		return nil
 	}
 	return r.lazyInitHub().KickUser(userID)
 }
 
 func (r *Room) Broadcast(data Message, conf ...BroadcastConf) error {
-	if r.hubIsNotInited() {
+	if r.HubIsNotInited() {
 		return nil
 	}
 	return r.lazyInitHub().Broadcast(data, conf...)
@@ -66,7 +66,7 @@ func (r *Room) SendToUser(user *User, data Message) error {
 }
 
 func (r *Room) SendToUserWithId(userID string, data Message) error {
-	if r.hubIsNotInited() {
+	if r.HubIsNotInited() {
 		return nil
 	}
 	return r.lazyInitHub().SendToUser(userID, data)

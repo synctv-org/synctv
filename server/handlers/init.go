@@ -240,6 +240,7 @@ func initMovie(movie *gin.RouterGroup, needAuthMovie *gin.RouterGroup) {
 	needAuthMovie.GET("/proxy/:movieId", ProxyMovie)
 
 	{
+		live := movie.Group("/live")
 		needAuthLive := needAuthMovie.Group("/live")
 
 		needAuthLive.POST("/publishKey", NewPublishKey)
@@ -248,7 +249,7 @@ func initMovie(movie *gin.RouterGroup, needAuthMovie *gin.RouterGroup) {
 
 		needAuthLive.GET("/hls/list/:movieId", JoinHlsLive)
 
-		movie.GET("/hls/data/:roomId/:movieId/:dataId", ServeHlsLive)
+		live.GET("/hls/data/:roomId/:movieId/:dataId", ServeHlsLive)
 	}
 }
 

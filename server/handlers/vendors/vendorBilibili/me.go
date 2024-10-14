@@ -20,7 +20,7 @@ func Me(ctx *gin.Context) {
 
 	bucd, err := user.BilibiliCache().Get(ctx)
 	if err != nil {
-		if errors.Is(err, db.ErrNotFound("vendor")) {
+		if errors.Is(err, db.ErrNotFound(db.ErrVendorNotFound)) {
 			ctx.JSON(http.StatusOK, model.NewApiDataResp(&BilibiliMeResp{
 				IsLogin: false,
 			}))

@@ -7,10 +7,14 @@ import (
 	"gorm.io/gorm"
 )
 
+const (
+	ErrVendorNotFound = "vendor"
+)
+
 func GetBilibiliVendor(userID string) (*model.BilibiliVendor, error) {
 	var vendor model.BilibiliVendor
 	err := db.Where("user_id = ?", userID).First(&vendor).Error
-	return &vendor, HandleNotFound(err, "vendor")
+	return &vendor, HandleNotFound(err, ErrVendorNotFound)
 }
 
 func CreateOrSaveBilibiliVendor(vendorInfo *model.BilibiliVendor) (*model.BilibiliVendor, error) {
@@ -24,14 +28,14 @@ func CreateOrSaveBilibiliVendor(vendorInfo *model.BilibiliVendor) (*model.Bilibi
 			return tx.Create(&vendorInfo).Error
 		} else {
 			result := tx.Omit("created_at").Save(&vendorInfo)
-			return HandleUpdateResult(result, "vendor")
+			return HandleUpdateResult(result, ErrVendorNotFound)
 		}
 	})
 }
 
 func DeleteBilibiliVendor(userID string) error {
 	result := db.Where("user_id = ?", userID).Delete(&model.BilibiliVendor{})
-	return HandleUpdateResult(result, "vendor")
+	return HandleUpdateResult(result, ErrVendorNotFound)
 }
 
 func GetAlistVendors(userID string, scopes ...func(*gorm.DB) *gorm.DB) ([]*model.AlistVendor, error) {
@@ -49,7 +53,7 @@ func GetAlistVendorsCount(userID string, scopes ...func(*gorm.DB) *gorm.DB) (int
 func GetAlistVendor(userID, serverID string) (*model.AlistVendor, error) {
 	var vendor model.AlistVendor
 	err := db.Where("user_id = ? AND server_id = ?", userID, serverID).First(&vendor).Error
-	return &vendor, HandleNotFound(err, "vendor")
+	return &vendor, HandleNotFound(err, ErrVendorNotFound)
 }
 
 func CreateOrSaveAlistVendor(vendorInfo *model.AlistVendor) (*model.AlistVendor, error) {
@@ -64,14 +68,14 @@ func CreateOrSaveAlistVendor(vendorInfo *model.AlistVendor) (*model.AlistVendor,
 			return tx.Create(&vendorInfo).Error
 		} else {
 			result := tx.Omit("created_at").Save(&vendorInfo)
-			return HandleUpdateResult(result, "vendor")
+			return HandleUpdateResult(result, ErrVendorNotFound)
 		}
 	})
 }
 
 func DeleteAlistVendor(userID, serverID string) error {
 	result := db.Where("user_id = ? AND server_id = ?", userID, serverID).Delete(&model.AlistVendor{})
-	return HandleUpdateResult(result, "vendor")
+	return HandleUpdateResult(result, ErrVendorNotFound)
 }
 
 func GetEmbyVendors(userID string, scopes ...func(*gorm.DB) *gorm.DB) ([]*model.EmbyVendor, error) {
@@ -89,13 +93,13 @@ func GetEmbyVendorsCount(userID string, scopes ...func(*gorm.DB) *gorm.DB) (int6
 func GetEmbyVendor(userID, serverID string) (*model.EmbyVendor, error) {
 	var vendor model.EmbyVendor
 	err := db.Where("user_id = ? AND server_id = ?", userID, serverID).First(&vendor).Error
-	return &vendor, HandleNotFound(err, "vendor")
+	return &vendor, HandleNotFound(err, ErrVendorNotFound)
 }
 
 func GetEmbyFirstVendor(userID string) (*model.EmbyVendor, error) {
 	var vendor model.EmbyVendor
 	err := db.Where("user_id = ?", userID).First(&vendor).Error
-	return &vendor, HandleNotFound(err, "vendor")
+	return &vendor, HandleNotFound(err, ErrVendorNotFound)
 }
 
 func CreateOrSaveEmbyVendor(vendorInfo *model.EmbyVendor) (*model.EmbyVendor, error) {
@@ -110,12 +114,12 @@ func CreateOrSaveEmbyVendor(vendorInfo *model.EmbyVendor) (*model.EmbyVendor, er
 			return tx.Create(&vendorInfo).Error
 		} else {
 			result := tx.Omit("created_at").Save(&vendorInfo)
-			return HandleUpdateResult(result, "vendor")
+			return HandleUpdateResult(result, ErrVendorNotFound)
 		}
 	})
 }
 
 func DeleteEmbyVendor(userID, serverID string) error {
 	result := db.Where("user_id = ? AND server_id = ?", userID, serverID).Delete(&model.EmbyVendor{})
-	return HandleUpdateResult(result, "vendor")
+	return HandleUpdateResult(result, ErrVendorNotFound)
 }

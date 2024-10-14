@@ -54,7 +54,7 @@ func Parse(ctx *gin.Context) {
 	var cookies []*http.Cookie
 	bucd, err := user.BilibiliCache().Get(ctx)
 	if err != nil {
-		if !errors.Is(err, db.ErrNotFound("vendor")) {
+		if !errors.Is(err, db.ErrNotFound(db.ErrVendorNotFound)) {
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 			return
 		}

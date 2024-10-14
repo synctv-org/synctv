@@ -72,7 +72,7 @@ func List(ctx *gin.Context) {
 
 		ev, err := db.GetAlistVendors(user.ID, append(socpes, db.Paginate(page, size))...)
 		if err != nil {
-			if errors.Is(err, db.ErrNotFound("vendor")) {
+			if errors.Is(err, db.ErrNotFound(db.ErrVendorNotFound)) {
 				ctx.JSON(http.StatusBadRequest, model.NewApiErrorStringResp("alist server not found"))
 				return
 			}
@@ -125,7 +125,7 @@ AlistFSListResp:
 
 	aucd, err := user.AlistCache().LoadOrStore(ctx, serverID)
 	if err != nil {
-		if errors.Is(err, db.ErrNotFound("vendor")) {
+		if errors.Is(err, db.ErrNotFound(db.ErrVendorNotFound)) {
 			ctx.JSON(http.StatusBadRequest, model.NewApiErrorStringResp("alist server not found"))
 			return
 		}

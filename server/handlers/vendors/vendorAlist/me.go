@@ -26,7 +26,7 @@ func Me(ctx *gin.Context) {
 
 	aucd, err := user.AlistCache().LoadOrStore(ctx, serverID)
 	if err != nil {
-		if errors.Is(err, db.ErrNotFound("vendor")) {
+		if errors.Is(err, db.ErrNotFound(db.ErrVendorNotFound)) {
 			ctx.JSON(http.StatusBadRequest, model.NewApiErrorStringResp("alist server not found"))
 			return
 		}
@@ -59,7 +59,7 @@ func Binds(ctx *gin.Context) {
 
 	ev, err := db.GetAlistVendors(user.ID)
 	if err != nil {
-		if errors.Is(err, db.ErrNotFound("vendor")) {
+		if errors.Is(err, db.ErrNotFound(db.ErrVendorNotFound)) {
 			ctx.JSON(http.StatusOK, model.NewApiDataResp(&AlistMeResp{
 				IsLogin: false,
 			}))

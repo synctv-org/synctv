@@ -46,7 +46,7 @@ func BilibiliSharedMpdCacheInitFunc(ctx context.Context, movie *model.Movie, arg
 	var cookies []*http.Cookie
 	vendorInfo, err := args.Get(ctx)
 	if err != nil {
-		if !errors.Is(err, db.ErrNotFound("vendor")) {
+		if !errors.Is(err, db.ErrNotFound(db.ErrVendorNotFound)) {
 			return nil, err
 		}
 	} else {
@@ -173,7 +173,7 @@ func BilibiliNoSharedMovieCacheInitFunc(ctx context.Context, movie *model.Movie,
 	var cookies []*http.Cookie
 	vendorInfo, err := args[0].Get(ctx)
 	if err != nil {
-		if !errors.Is(err, db.ErrNotFound("vendor")) {
+		if !errors.Is(err, db.ErrNotFound(db.ErrVendorNotFound)) {
 			return "", err
 		}
 	} else {
@@ -250,7 +250,7 @@ func BilibiliSubtitleCacheInitFunc(ctx context.Context, movie *model.Movie, args
 	var cookies []*http.Cookie
 	vendorInfo, err := args.Get(ctx)
 	if err != nil {
-		if errors.Is(err, db.ErrNotFound("vendor")) {
+		if errors.Is(err, db.ErrNotFound(db.ErrVendorNotFound)) {
 			return nil, nil
 		}
 	} else {

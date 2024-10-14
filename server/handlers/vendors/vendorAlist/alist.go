@@ -65,7 +65,7 @@ func (s *alistVendorService) ListDynamicMovie(ctx context.Context, reqUser *op.U
 	truePath = newPath
 	aucd, err := user.AlistCache().LoadOrStore(ctx, serverID)
 	if err != nil {
-		if errors.Is(err, db.ErrNotFound("vendor")) {
+		if errors.Is(err, db.ErrNotFound(db.ErrVendorNotFound)) {
 			return nil, errors.New("alist server not found")
 		}
 		return nil, err

@@ -45,7 +45,7 @@ func EmbyAuthorizationCacheWithUserIDInitFunc(userID, serverID string) (*EmbyUse
 		return nil, err
 	}
 	if v.ApiKey == "" || v.Host == "" {
-		return nil, db.ErrNotFound("vendor")
+		return nil, db.ErrNotFound(db.ErrVendorNotFound)
 	}
 	return &EmbyUserCacheData{
 		Host:     v.Host,

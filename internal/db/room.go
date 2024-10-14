@@ -11,6 +11,10 @@ import (
 	"gorm.io/gorm/clause"
 )
 
+const (
+	ErrRoomNotFound = "room"
+)
+
 type CreateRoomConfig func(r *model.Room)
 
 func WithSetting(setting *model.RoomSettings) CreateRoomConfig {
@@ -102,13 +106,13 @@ func GetRoomByID(id string) (*model.Room, error) {
 	}
 	var r model.Room
 	err := db.Where("id = ?", id).First(&r).Error
-	return &r, HandleNotFound(err, "room")
+	return &r, HandleNotFound(err, ErrRoomNotFound)
 }
 
 func CreateOrLoadRoomSettings(roomID string) (*model.RoomSettings, error) {
 	var rs model.RoomSettings
 	err := OnConflictDoNothing().Where(model.RoomSettings{ID: roomID}).Attrs(model.DefaultRoomSettings()).FirstOrCreate(&rs).Error
-	return &rs, HandleNotFound(err, "room")
+	return &rs, err
 }
 
 func SaveRoomSettings(roomID string, settings *model.RoomSettings) error {
@@ -127,7 +131,7 @@ func UpdateRoomSettings(roomID string, settings map[string]interface{}) (*model.
 
 func DeleteRoomByID(roomID string) error {
 	result := db.Unscoped().Select(clause.Associations).Delete(&model.Room{ID: roomID})
-	return HandleUpdateResult(result, "room")
+	return HandleUpdateResult(result, ErrRoomNotFound)
 }
 
 func SetRoomPassword(roomID, password string) error {
@@ -144,7 +148,7 @@ func SetRoomPassword(roomID, password string) error {
 
 func SetRoomHashedPassword(roomID string, hashedPassword []byte) error {
 	result := db.Model(&model.Room{}).Where("id = ?", roomID).Update("hashed_password", hashedPassword)
-	return HandleUpdateResult(result, "room")
+	return HandleUpdateResult(result, ErrRoomNotFound)
 }
 
 func GetAllRooms(scopes ...func(*gorm.DB) *gorm.DB) ([]*model.Room, error) {
@@ -173,10 +177,10 @@ func GetAllRoomsByUserID(userID string) ([]*model.Room, error) {
 
 func SetRoomStatus(roomID string, status model.RoomStatus) error {
 	result := db.Model(&model.Room{}).Where("id = ?", roomID).Update("status", status)
-	return HandleUpdateResult(result, "room")
+	return HandleUpdateResult(result, ErrRoomNotFound)
 }
 
 func SetRoomStatusByCreator(userID string, status model.RoomStatus) error {
 	result := db.Model(&model.Room{}).Where("creator_id = ?", userID).Update("status", status)
-	return HandleUpdateResult(result, "room")
+	return HandleUpdateResult(result, ErrRoomNotFound)
 }

@@ -192,7 +192,7 @@ func (r *Room) LoadMemberStatus(userID string) (model.RoomMemberStatus, error) {
 	}
 	rur, err := r.LoadMember(userID)
 	if err != nil {
-		if errors.Is(err, db.ErrNotFound("room or user")) {
+		if errors.Is(err, db.ErrNotFound(db.ErrRoomMemberNotFound)) {
 			return model.RoomMemberStatusNotJoined, nil
 		}
 		return model.RoomMemberStatusNotJoined, err

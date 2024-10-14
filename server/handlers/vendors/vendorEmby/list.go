@@ -73,7 +73,7 @@ func List(ctx *gin.Context) {
 
 		ev, err := db.GetEmbyVendors(user.ID, append(socpes, db.Paginate(page, size))...)
 		if err != nil {
-			if errors.Is(err, db.ErrNotFound("vendor")) {
+			if errors.Is(err, db.ErrNotFound(db.ErrVendorNotFound)) {
 				ctx.JSON(http.StatusBadRequest, model.NewApiErrorStringResp("emby server not found"))
 				return
 			}
@@ -123,7 +123,7 @@ EmbyFSListResp:
 
 	aucd, err := user.EmbyCache().LoadOrStore(ctx, serverID)
 	if err != nil {
-		if errors.Is(err, db.ErrNotFound("vendor")) {
+		if errors.Is(err, db.ErrNotFound(db.ErrVendorNotFound)) {
 			ctx.JSON(http.StatusBadRequest, model.NewApiErrorStringResp("emby server not found"))
 			return
 		}

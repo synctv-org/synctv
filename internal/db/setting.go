@@ -5,6 +5,10 @@ import (
 	"gorm.io/gorm/clause"
 )
 
+const (
+	ErrSettingNotFound = "setting"
+)
+
 func GetSettingItems() ([]*model.Setting, error) {
 	var items []*model.Setting
 	return items, db.Find(&items).Error
@@ -35,17 +39,17 @@ func SaveSettingItem(item *model.Setting) error {
 	result := db.Clauses(clause.OnConflict{
 		UpdateAll: true,
 	}).Create(item)
-	return HandleUpdateResult(result, "setting")
+	return HandleUpdateResult(result, ErrSettingNotFound)
 }
 
 func DeleteSettingItem(item *model.Setting) error {
 	result := db.Where("name = ?", item.Name).Delete(&model.Setting{})
-	return HandleUpdateResult(result, "setting")
+	return HandleUpdateResult(result, ErrSettingNotFound)
 }
 
 func DeleteSettingItemByName(name string) error {
 	result := db.Where("name = ?", name).Delete(&model.Setting{})
-	return HandleUpdateResult(result, "setting")
+	return HandleUpdateResult(result, ErrSettingNotFound)
 }
 
 func GetSettingItemValue(name string) (string, error) {
@@ -67,5 +71,5 @@ func FirstOrCreateSettingItemValue(s *model.Setting) error {
 
 func UpdateSettingItemValue(name, value string) error {
 	result := db.Model(&model.Setting{}).Where("name = ?", name).Update("value", value)
-	return HandleUpdateResult(result, "setting")
+	return HandleUpdateResult(result, ErrSettingNotFound)
 }

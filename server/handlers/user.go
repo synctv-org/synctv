@@ -61,7 +61,7 @@ func LoginUser(ctx *gin.Context) {
 
 	if err != nil {
 		log.Errorf("failed to load user: %v", err)
-		if errors.Is(err, db.ErrNotFound("user")) {
+		if errors.Is(err, db.ErrNotFound(db.ErrUserNotFound)) {
 			ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewApiErrorResp(err))
 			return
 		}

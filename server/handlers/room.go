@@ -392,7 +392,7 @@ func LoginRoom(ctx *gin.Context) {
 
 	member, err := room.LoadOrCreateMember(user.ID)
 	if err != nil {
-		if errors.Is(err, db.ErrNotFound("")) {
+		if errors.Is(err, db.ErrNotFound(db.ErrRoomMemberNotFound)) {
 			log.Warn("login room failed: room was disabled join new user")
 			ctx.AbortWithStatusJSON(
 				http.StatusForbidden,

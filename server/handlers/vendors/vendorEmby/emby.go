@@ -60,7 +60,7 @@ func (s *embyVendorService) ListDynamicMovie(ctx context.Context, reqUser *op.Us
 	}
 	aucd, err := user.EmbyCache().LoadOrStore(ctx, serverID)
 	if err != nil {
-		if errors.Is(err, db.ErrNotFound("vendor")) {
+		if errors.Is(err, db.ErrNotFound(db.ErrVendorNotFound)) {
 			return nil, errors.New("emby server not found")
 		}
 		return nil, err

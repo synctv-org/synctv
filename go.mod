@@ -14,7 +14,7 @@ require (
 	github.com/go-kratos/aegis v0.2.0
 	github.com/go-kratos/kratos/contrib/registry/consul/v2 v2.0.0-20241011140022-7cd86eb077dc
 	github.com/go-kratos/kratos/contrib/registry/etcd/v2 v2.0.0-20241011140022-7cd86eb077dc
-	github.com/go-kratos/kratos/v2 v2.8.0
+	github.com/go-kratos/kratos/v2 v2.8.1
 	github.com/golang-jwt/jwt/v5 v5.2.1
 	github.com/google/go-github/v56 v56.0.0
 	github.com/google/uuid v1.6.0

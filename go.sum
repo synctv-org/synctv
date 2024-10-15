@@ -94,8 +94,8 @@ github.com/go-kratos/kratos/contrib/registry/consul/v2 v2.0.0-20241011140022-7cd
 github.com/go-kratos/kratos/contrib/registry/consul/v2 v2.0.0-20241011140022-7cd86eb077dc/go.mod h1:BZo2KqTvrK8qGEmGV4gWeAb+1Hb7M+HBnTMb8Yfz32I=
 github.com/go-kratos/kratos/contrib/registry/etcd/v2 v2.0.0-20241011140022-7cd86eb077dc h1:CUnBWpZc8ud+U/cINR6BTdSnL92KbmxgfQDXOgDF0Q4=
 github.com/go-kratos/kratos/contrib/registry/etcd/v2 v2.0.0-20241011140022-7cd86eb077dc/go.mod h1:d0M1jBW2C/ftSdpvrsOjHos18NQwsrn9dZ0gRD/3PQs=
-github.com/go-kratos/kratos/v2 v2.8.0 h1:qr27WRTRrI3o4jzJzNKf4XVVoMYIqnQD+4ws1C46yhM=
-github.com/go-kratos/kratos/v2 v2.8.0/go.mod h1:+Vfe3FzF0d+BfMdajA11jT0rAyJWublRE/seZQNZVxE=
+github.com/go-kratos/kratos/v2 v2.8.1 h1:nK+NRp8C+wQk7tr55K9Er7nBjmBLYGbnyNz7UIy37qw=
+github.com/go-kratos/kratos/v2 v2.8.1/go.mod h1:+Vfe3FzF0d+BfMdajA11jT0rAyJWublRE/seZQNZVxE=
 github.com/go-logfmt/logfmt v0.3.0/go.mod h1:Qt1PoO58o5twSAckw1HlFXLmHsOX5/0LbT9GBnD5lWE=
 github.com/go-logfmt/logfmt v0.4.0/go.mod h1:3RMwSq7FuexP4Kalkev3ejPJsZTpXXBr9+V4qmtdjCk=
 github.com/go-logr/logr v1.4.2 h1:6pFjapn8bFcIbiKo3XT4j/BhANplGihG6tvd+8rYgrY=

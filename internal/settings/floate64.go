@@ -86,10 +86,6 @@ func newFloat64(name string, value float64, group model.SettingGroup, options ..
 	return f
 }
 
-func (f *Float64) SetInitPriority(priority int) {
-	f.initPriority = priority
-}
-
 func (f *Float64) SetBeforeInit(beforeInit func(Float64Setting, float64) (float64, error)) {
 	f.beforeInit = beforeInit
 }
@@ -122,6 +118,10 @@ func (f *Float64) Stringify(value float64) string {
 }
 
 func (f *Float64) Init(value string) error {
+	if f.Inited() {
+		return ErrSettingAlreadyInited
+	}
+
 	v, err := f.Parse(value)
 	if err != nil {
 		return err
@@ -139,6 +139,8 @@ func (f *Float64) Init(value string) error {
 	if f.afterInit != nil {
 		f.afterInit(f, v)
 	}
+
+	f.inited = true
 
 	return nil
 }
@@ -239,9 +241,10 @@ func CoverFloat64Setting(k string, v float64, g model.SettingGroup, options ...F
 	f := newFloat64(k, v, g, options...)
 	Settings[k] = f
 	if GroupSettings[g] == nil {
-		GroupSettings[g] = make(map[string]Setting)
+		GroupSettings[g] = make(map[model.SettingGroup]Setting)
 	}
 	GroupSettings[g][k] = f
+	pushNeedInit(f)
 	return f
 }
 

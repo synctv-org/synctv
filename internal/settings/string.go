@@ -85,10 +85,6 @@ func newString(name string, value string, group model.SettingGroup, options ...S
 	return s
 }
 
-func (s *String) SetInitPriority(priority int) {
-	s.initPriority = priority
-}
-
 func (s *String) SetBeforeInit(beforeInit func(StringSetting, string) (string, error)) {
 	s.beforeInit = beforeInit
 }
@@ -117,6 +113,10 @@ func (s *String) Stringify(value string) string {
 }
 
 func (s *String) Init(value string) error {
+	if s.Inited() {
+		return ErrSettingAlreadyInited
+	}
+
 	v, err := s.Parse(value)
 	if err != nil {
 		return err
@@ -134,6 +134,8 @@ func (s *String) Init(value string) error {
 	if s.afterInit != nil {
 		s.afterInit(s, v)
 	}
+
+	s.inited = true
 
 	return nil
 }
@@ -238,9 +240,10 @@ func CoverStringSetting(k string, v string, g model.SettingGroup, options ...Str
 	s := newString(k, v, g, options...)
 	Settings[k] = s
 	if GroupSettings[g] == nil {
-		GroupSettings[g] = make(map[string]Setting)
+		GroupSettings[g] = make(map[model.SettingGroup]Setting)
 	}
 	GroupSettings[g][k] = s
+	pushNeedInit(s)
 	return s
 }
 

@@ -78,10 +78,6 @@ func newBool(name string, value bool, group model.SettingGroup, options ...BoolS
 	return b
 }
 
-func (b *Bool) SetInitPriority(priority int) {
-	b.initPriority = priority
-}
-
 func (b *Bool) SetBeforeInit(beforeInit func(BoolSetting, bool) (bool, error)) {
 	b.beforeInit = beforeInit
 }
@@ -111,6 +107,10 @@ func (b *Bool) Get() bool {
 }
 
 func (b *Bool) Init(value string) error {
+	if b.Inited() {
+		return ErrSettingAlreadyInited
+	}
+
 	v, err := b.Parse(value)
 	if err != nil {
 		return err
@@ -128,6 +128,8 @@ func (b *Bool) Init(value string) error {
 	if b.afterInit != nil {
 		b.afterInit(b, v)
 	}
+
+	b.inited = true
 
 	return nil
 }
@@ -221,9 +223,10 @@ func CoverBoolSetting(k string, v bool, g model.SettingGroup, options ...BoolSet
 	b := newBool(k, v, g, options...)
 	Settings[k] = b
 	if GroupSettings[g] == nil {
-		GroupSettings[g] = make(map[string]Setting)
+		GroupSettings[g] = make(map[model.SettingGroup]Setting)
 	}
 	GroupSettings[g][k] = b
+	pushNeedInit(b)
 	return b
 }
 

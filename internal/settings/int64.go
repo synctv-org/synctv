@@ -85,10 +85,6 @@ func newInt64(name string, value int64, group model.SettingGroup, options ...Int
 	return i
 }
 
-func (i *Int64) SetInitPriority(priority int) {
-	i.initPriority = priority
-}
-
 func (i *Int64) SetBeforeInit(beforeInit func(Int64Setting, int64) (int64, error)) {
 	i.beforeInit = beforeInit
 }
@@ -121,6 +117,10 @@ func (i *Int64) Stringify(value int64) string {
 }
 
 func (i *Int64) Init(value string) error {
+	if i.Inited() {
+		return ErrSettingAlreadyInited
+	}
+
 	v, err := i.Parse(value)
 	if err != nil {
 		return err
@@ -138,6 +138,8 @@ func (i *Int64) Init(value string) error {
 	if i.afterInit != nil {
 		i.afterInit(i, v)
 	}
+
+	i.inited = true
 
 	return nil
 }
@@ -238,9 +240,10 @@ func CoverInt64Setting(k string, v int64, g model.SettingGroup, options ...Int64
 	i := newInt64(k, v, g, options...)
 	Settings[k] = i
 	if GroupSettings[g] == nil {
-		GroupSettings[g] = make(map[string]Setting)
+		GroupSettings[g] = make(map[model.SettingGroup]Setting)
 	}
 	GroupSettings[g][k] = i
+	pushNeedInit(i)
 	return i
 }
 

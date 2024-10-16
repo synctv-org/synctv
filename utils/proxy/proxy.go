@@ -39,18 +39,20 @@ func ProxyURL(ctx *gin.Context, u string, headers map[string]string) error {
 	if req.Header.Get("User-Agent") == "" {
 		req.Header.Set("User-Agent", utils.UA)
 	}
-	cli := uhc.NewClient()
-	cli.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		req.Header.Del("Referer")
-		for k, v := range headers {
-			req.Header.Set(k, v)
-		}
-		req.Header.Set("Range", ctx.GetHeader("Range"))
-		req.Header.Set("Accept-Encoding", ctx.GetHeader("Accept-Encoding"))
-		if req.Header.Get("User-Agent") == "" {
-			req.Header.Set("User-Agent", utils.UA)
-		}
-		return nil
+	cli := http.Client{
+		Transport: uhc.DefaultTransport,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			req.Header.Del("Referer")
+			for k, v := range headers {
+				req.Header.Set(k, v)
+			}
+			req.Header.Set("Range", ctx.GetHeader("Range"))
+			req.Header.Set("Accept-Encoding", ctx.GetHeader("Accept-Encoding"))
+			if req.Header.Get("User-Agent") == "" {
+				req.Header.Set("User-Agent", utils.UA)
+			}
+			return nil
+		},
 	}
 	resp, err := cli.Do(req)
 	if err != nil {
@@ -63,9 +65,42 @@ func ProxyURL(ctx *gin.Context, u string, headers map[string]string) error {
 	ctx.Header("Content-Length", resp.Header.Get("Content-Length"))
 	ctx.Header("Content-Range", resp.Header.Get("Content-Range"))
 	ctx.Header("Content-Type", resp.Header.Get("Content-Type"))
-	_, err = io.Copy(ctx.Writer, resp.Body)
+	_, err = copyBuffer(ctx.Writer, resp.Body)
 	if err != nil && err != io.EOF {
 		return fmt.Errorf("copy response body error: %w", err)
 	}
 	return nil
+}
+
+func copyBuffer(dst io.Writer, src io.Reader) (written int64, err error) {
+	buf := getBuffer()
+	defer putBuffer(buf)
+	for {
+		nr, er := src.Read(*buf)
+		if nr > 0 {
+			nw, ew := dst.Write((*buf)[0:nr])
+			if nw < 0 || nr < nw {
+				nw = 0
+				if ew == nil {
+					ew = errors.New("invalid write result")
+				}
+			}
+			written += int64(nw)
+			if ew != nil {
+				err = ew
+				break
+			}
+			if nr != nw {
+				err = io.ErrShortWrite
+				break
+			}
+		}
+		if er != nil {
+			if er != io.EOF {
+				err = er
+			}
+			break
+		}
+	}
+	return written, err
 }

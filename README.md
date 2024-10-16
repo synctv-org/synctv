@@ -32,6 +32,7 @@ English | [中文](./README-CN.md)
 # What is SyncTV?
 
 SyncTV is a program that allows you to watch movies and live broadcasts together remotely. It provides features such as synchronized viewing, live streaming, and chat. With SyncTV, you can watch videos and live broadcasts with friends and family, no matter where they are.
+
 SyncTV's synchronized viewing feature ensures that everyone watching the video is at the same point. This means that you can pause, fast forward, rewind, change playback speed, and other operations, and everyone else will be synchronized to the same point.
 
 # Features

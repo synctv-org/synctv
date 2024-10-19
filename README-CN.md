@@ -113,6 +113,7 @@ https://docs.synctv.wiki
 - [LucasYuYu](https://github.com/LucasYuYu) ¥ 18.88
 - [爱发电用户_5vDc](https://afdian.com/u/48fa38ce0e0211ef944d5254001e7c00) ¥ 228
 - masha
+- [T-rabbit](https://github.com/T-rabbit) ¥ 5
 
 # 贡献者
 

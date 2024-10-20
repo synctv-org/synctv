@@ -28,7 +28,7 @@ readonly DEFAULT_CGO_FLAGS="-O2 -g0 -pipe"
 readonly DEFAULT_CGO_LDFLAGS="-s"
 readonly DEFAULT_LDFLAGS="-s -w -linkmode auto"
 readonly DEFAULT_EXT_LDFLAGS=""
-readonly DEFAULT_CGO_DEPS_VERSION="v0.5.1"
+readonly DEFAULT_CGO_DEPS_VERSION="v0.5.2"
 readonly DEFAULT_TTY_WIDTH="40"
 readonly DEFAULT_NDK_VERSION="r27"
 

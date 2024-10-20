@@ -1,17 +1,20 @@
 package proxy
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/synctv-org/synctv/internal/settings"
+	cache "github.com/synctv-org/synctv/proxy"
 	"github.com/synctv-org/synctv/utils"
 	"github.com/zijiren233/go-uhc"
 )
+
+var memoryCache = cache.NewMemoryCache()
 
 func ProxyURL(ctx *gin.Context, u string, headers map[string]string) error {
 	if utils.GetUrlExtension(u) == "m3u8" {
@@ -24,20 +27,6 @@ func ProxyURL(ctx *gin.Context, u string, headers map[string]string) error {
 		} else if l {
 			return errors.New("not allow proxy to local")
 		}
-	}
-	ctx2, cf := context.WithCancel(ctx)
-	defer cf()
-	req, err := http.NewRequestWithContext(ctx2, http.MethodGet, u, nil)
-	if err != nil {
-		return fmt.Errorf("new request error: %w", err)
-	}
-	for k, v := range headers {
-		req.Header.Set(k, v)
-	}
-	req.Header.Set("Range", ctx.GetHeader("Range"))
-	req.Header.Set("Accept-Encoding", ctx.GetHeader("Accept-Encoding"))
-	if req.Header.Get("User-Agent") == "" {
-		req.Header.Set("User-Agent", utils.UA)
 	}
 	cli := http.Client{
 		Transport: uhc.DefaultTransport,
@@ -54,21 +43,12 @@ func ProxyURL(ctx *gin.Context, u string, headers map[string]string) error {
 			return nil
 		},
 	}
-	resp, err := cli.Do(req)
+	s, err := cache.NewHttpReadSeekCloser(u, cache.WithClient(&cli), cache.WithHeadMethod(http.MethodGet))
 	if err != nil {
-		return fmt.Errorf("request url error: %w", err)
+		return fmt.Errorf("create http read seek closer error: %w", err)
 	}
-	defer resp.Body.Close()
-	ctx.Status(resp.StatusCode)
-	ctx.Header("Accept-Ranges", resp.Header.Get("Accept-Ranges"))
-	ctx.Header("Cache-Control", resp.Header.Get("Cache-Control"))
-	ctx.Header("Content-Length", resp.Header.Get("Content-Length"))
-	ctx.Header("Content-Range", resp.Header.Get("Content-Range"))
-	ctx.Header("Content-Type", resp.Header.Get("Content-Type"))
-	_, err = copyBuffer(ctx.Writer, resp.Body)
-	if err != nil && err != io.EOF {
-		return fmt.Errorf("copy response body error: %w", err)
-	}
+	defer s.Close()
+	http.ServeContent(ctx.Writer, ctx.Request, "", time.Now(), cache.NewCachedReadSeeker(u, 16*1024, s, memoryCache))
 	return nil
 }
 

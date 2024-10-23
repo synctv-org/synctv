@@ -70,7 +70,7 @@ func ProxyURL(ctx *gin.Context, u string, headers map[string]string) error {
 }
 
 func AuthProxyURL(ctx *gin.Context, u, t string, headers map[string]string, token, roomId, movieId string) error {
-	if strings.HasPrefix(t, "m3u") || strings.HasPrefix(u, "m3u") {
+	if strings.HasPrefix(t, "m3u") || strings.HasPrefix(utils.GetUrlExtension(u), "m3u") {
 		return ProxyM3u8(ctx, u, headers, true, token, roomId, movieId)
 	}
 	return ProxyURL(ctx, u, headers)

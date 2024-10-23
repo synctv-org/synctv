@@ -18,9 +18,9 @@ import (
 	dbModel "github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/internal/vendor"
+	"github.com/synctv-org/synctv/server/handlers/proxy"
 	"github.com/synctv-org/synctv/server/model"
 	"github.com/synctv-org/synctv/utils"
-	"github.com/synctv-org/synctv/utils/proxy"
 	"github.com/synctv-org/vendors/api/alist"
 )
 
@@ -134,7 +134,7 @@ func (s *alistVendorService) ProxyMovie(ctx *gin.Context) {
 			ctx.Data(http.StatusOK, "audio/mpegurl", data.Ali.M3U8ListFile)
 			return
 		case "raw":
-			err := proxy.ProxyURL(ctx, data.URL, nil)
+			err := proxy.AuthProxyURL(ctx, data.URL, s.movie.MovieBase.Type, nil, ctx.GetString("token"), s.movie.RoomID, s.movie.ID)
 			if err != nil {
 				log.Errorf("proxy vendor movie error: %v", err)
 			}
@@ -173,7 +173,7 @@ func (s *alistVendorService) ProxyMovie(ctx *gin.Context) {
 			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("proxy is not enabled"))
 			return
 		}
-		err = proxy.ProxyURL(ctx, data.URL, nil)
+		err = proxy.AuthProxyURL(ctx, data.URL, s.movie.MovieBase.Type, nil, ctx.GetString("token"), s.movie.RoomID, s.movie.ID)
 		if err != nil {
 			log.Errorf("proxy vendor movie error: %v", err)
 		}

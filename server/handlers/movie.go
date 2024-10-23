@@ -8,30 +8,24 @@ import (
 	"image"
 	"image/color"
 	"image/png"
-	"io"
 	"math/rand"
 	"net/http"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/golang-jwt/jwt/v5"
 	log "github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/internal/conf"
 	dbModel "github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/internal/rtmp"
 	"github.com/synctv-org/synctv/internal/settings"
+	"github.com/synctv-org/synctv/server/handlers/proxy"
 	"github.com/synctv-org/synctv/server/handlers/vendors"
 	"github.com/synctv-org/synctv/server/model"
 	"github.com/synctv-org/synctv/utils"
-	"github.com/synctv-org/synctv/utils/m3u8"
-	"github.com/synctv-org/synctv/utils/proxy"
-	"github.com/zijiren233/go-uhc"
 	"github.com/zijiren233/livelib/protocol/hls"
 	"github.com/zijiren233/livelib/protocol/httpflv"
-	"github.com/zijiren233/stream"
 )
 
 func GetPageItems[T any](ctx *gin.Context, items []T) ([]T, error) {
@@ -606,90 +600,12 @@ func ProxyMovie(ctx *gin.Context) {
 		// TODO: cache mpd file
 		fallthrough
 	default:
-		if strings.HasPrefix(m.Movie.MovieBase.Type, "m3u") || utils.IsM3u8Url(m.Movie.MovieBase.Url) {
-			err = proxyM3u8(ctx, m.Movie.MovieBase.Url, m.Movie.MovieBase.Headers, true, ctx.GetString("token"), room.ID, m.ID)
-			if err != nil {
-				log.Errorf("proxy movie error: %v", err)
-			}
-			return
-		}
-		err = proxy.ProxyURL(ctx, m.Movie.MovieBase.Url, m.Movie.MovieBase.Headers)
+		err = proxy.AuthProxyURL(ctx, m.Movie.MovieBase.Url, m.Movie.MovieBase.Type, m.Movie.MovieBase.Headers, ctx.GetString("token"), room.ID, m.ID)
 		if err != nil {
 			log.Errorf("proxy movie error: %v", err)
 			return
 		}
 	}
-}
-
-type m3u8TargetClaims struct {
-	RoomId    string `json:"r"`
-	MovieId   string `json:"m"`
-	TargetUrl string `json:"t"`
-	jwt.RegisteredClaims
-}
-
-func authM3u8Target(token string) (*m3u8TargetClaims, error) {
-	t, err := jwt.ParseWithClaims(token, &m3u8TargetClaims{}, func(token *jwt.Token) (any, error) {
-		return stream.StringToBytes(conf.Conf.Jwt.Secret), nil
-	})
-	if err != nil || !t.Valid {
-		return nil, ErrAuthFailed
-	}
-	claims, ok := t.Claims.(*m3u8TargetClaims)
-	if !ok {
-		return nil, ErrAuthFailed
-	}
-	return claims, nil
-}
-
-func newM3u8TargetToken(targetUrl, roomId, movieId string) (string, error) {
-	claims := &m3u8TargetClaims{
-		RoomId:    roomId,
-		MovieId:   movieId,
-		TargetUrl: targetUrl,
-		RegisteredClaims: jwt.RegisteredClaims{
-			NotBefore: jwt.NewNumericDate(time.Now()),
-		},
-	}
-	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(stream.StringToBytes(conf.Conf.Jwt.Secret))
-}
-
-func proxyM3u8(ctx *gin.Context, u string, headers map[string]string, isM3u8File bool, token, roomId, movieId string) error {
-	if !isM3u8File {
-		return proxy.ProxyURL(ctx, u, headers)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-	if err != nil {
-		return fmt.Errorf("new request error: %w", err)
-	}
-	for k, v := range headers {
-		req.Header.Set(k, v)
-	}
-	if req.Header.Get("User-Agent") == "" {
-		req.Header.Set("User-Agent", utils.UA)
-	}
-	resp, err := uhc.Do(req)
-	if err != nil {
-		return fmt.Errorf("do request error: %w", err)
-	}
-	defer resp.Body.Close()
-	b, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("read response body error: %w", err)
-	}
-	m3u8Str, err := m3u8.ReplaceM3u8SegmentsWithBaseUrl(stream.BytesToString(b), u, func(segmentUrl string) (string, error) {
-		targetToken, err := newM3u8TargetToken(segmentUrl, roomId, movieId)
-		if err != nil {
-			return "", err
-		}
-		return fmt.Sprintf("/api/room/movie/proxy/%s/m3u8/%s?token=%s&roomId=%s", movieId, targetToken, token, roomId), nil
-	})
-	if err != nil {
-		return fmt.Errorf("replace m3u8 segments with base url error: %w", err)
-	}
-	ctx.Data(http.StatusOK, hls.M3U8ContentType, stream.StringToBytes(m3u8Str))
-	return nil
 }
 
 func ServeM3u8(ctx *gin.Context) {
@@ -728,7 +644,7 @@ func ServeM3u8(ctx *gin.Context) {
 	}
 
 	targetToken := ctx.Param("targetToken")
-	claims, err := authM3u8Target(targetToken)
+	claims, err := proxy.GetM3u8Target(targetToken)
 	if err != nil {
 		log.Errorf("auth m3u8 error: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
@@ -738,7 +654,7 @@ func ServeM3u8(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("invalid token"))
 		return
 	}
-	err = proxyM3u8(ctx, claims.TargetUrl, m.Movie.MovieBase.Headers, utils.IsM3u8Url(claims.TargetUrl), ctx.GetString("token"), room.ID, m.ID)
+	err = proxy.ProxyM3u8(ctx, claims.TargetUrl, m.Movie.MovieBase.Headers, utils.IsM3u8Url(claims.TargetUrl), ctx.GetString("token"), room.ID, m.ID)
 	if err != nil {
 		log.Errorf("proxy m3u8 error: %v", err)
 	}
@@ -869,7 +785,7 @@ func JoinHlsLive(ctx *gin.Context) {
 	}
 
 	if utils.IsM3u8Url(m.Movie.MovieBase.Url) {
-		_ = proxyM3u8(ctx, m.Movie.MovieBase.Url, m.Movie.MovieBase.Headers, true, ctx.GetString("token"), room.ID, m.ID)
+		_ = proxy.ProxyM3u8(ctx, m.Movie.MovieBase.Url, m.Movie.MovieBase.Headers, true, ctx.GetString("token"), room.ID, m.ID)
 		return
 	}
 	channel, err := m.Channel()

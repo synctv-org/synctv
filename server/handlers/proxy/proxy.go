@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/synctv-org/synctv/internal/settings"
@@ -68,35 +69,9 @@ func ProxyURL(ctx *gin.Context, u string, headers map[string]string) error {
 	return nil
 }
 
-func copyBuffer(dst io.Writer, src io.Reader) (written int64, err error) {
-	buf := getBuffer()
-	defer putBuffer(buf)
-	for {
-		nr, er := src.Read(*buf)
-		if nr > 0 {
-			nw, ew := dst.Write((*buf)[0:nr])
-			if nw < 0 || nr < nw {
-				nw = 0
-				if ew == nil {
-					ew = errors.New("invalid write result")
-				}
-			}
-			written += int64(nw)
-			if ew != nil {
-				err = ew
-				break
-			}
-			if nr != nw {
-				err = io.ErrShortWrite
-				break
-			}
-		}
-		if er != nil {
-			if er != io.EOF {
-				err = er
-			}
-			break
-		}
+func AuthProxyURL(ctx *gin.Context, u, t string, headers map[string]string, token, roomId, movieId string) error {
+	if strings.HasPrefix(t, "m3u") || strings.HasPrefix(u, "m3u") {
+		return ProxyM3u8(ctx, u, headers, true, token, roomId, movieId)
 	}
-	return written, err
+	return ProxyURL(ctx, u, headers)
 }

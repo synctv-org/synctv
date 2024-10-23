@@ -16,9 +16,9 @@ import (
 	dbModel "github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/internal/vendor"
+	"github.com/synctv-org/synctv/server/handlers/proxy"
 	"github.com/synctv-org/synctv/server/model"
 	"github.com/synctv-org/synctv/utils"
-	"github.com/synctv-org/synctv/utils/proxy"
 	"github.com/synctv-org/vendors/api/emby"
 )
 
@@ -151,7 +151,7 @@ func (s *embyVendorService) ProxyMovie(ctx *gin.Context) {
 			ctx.Redirect(http.StatusFound, embyC.Sources[source].URL)
 			return
 		}
-		err = proxy.ProxyURL(ctx, embyC.Sources[source].URL, nil)
+		err = proxy.AuthProxyURL(ctx, embyC.Sources[source].URL, "", nil, ctx.GetString("token"), s.movie.RoomID, s.movie.ID)
 		if err != nil {
 			log.Errorf("proxy vendor movie error: %v", err)
 		}

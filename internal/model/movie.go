@@ -79,6 +79,10 @@ type MovieBase struct {
 	ParentID    EmptyNullString      `gorm:"type:char(32)" json:"parentId"`
 }
 
+func (m *MovieBase) IsM3u8() bool {
+	return strings.HasPrefix(m.Type, "m3u") || utils.IsM3u8Url(m.Url)
+}
+
 func (m *MovieBase) Clone() *MovieBase {
 	mss := make([]*MoreSource, len(m.MoreSources))
 	for i, ms := range m.MoreSources {

@@ -31,8 +31,12 @@ func ProxyURL(ctx *gin.Context, u string, headers map[string]string) error {
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	req.Header.Set("Range", ctx.GetHeader("Range"))
-	req.Header.Set("Accept-Encoding", ctx.GetHeader("Accept-Encoding"))
+	if r := ctx.GetHeader("Range"); r != "" {
+		req.Header.Set("Range", r)
+	}
+	if r := ctx.GetHeader("Accept-Encoding"); r != "" {
+		req.Header.Set("Accept-Encoding", r)
+	}
 	if req.Header.Get("User-Agent") == "" {
 		req.Header.Set("User-Agent", utils.UA)
 	}
@@ -43,8 +47,12 @@ func ProxyURL(ctx *gin.Context, u string, headers map[string]string) error {
 			for k, v := range headers {
 				req.Header.Set(k, v)
 			}
-			req.Header.Set("Range", ctx.GetHeader("Range"))
-			req.Header.Set("Accept-Encoding", ctx.GetHeader("Accept-Encoding"))
+			if r := ctx.GetHeader("Range"); r != "" {
+				req.Header.Set("Range", r)
+			}
+			if r := ctx.GetHeader("Accept-Encoding"); r != "" {
+				req.Header.Set("Accept-Encoding", r)
+			}
 			if req.Header.Get("User-Agent") == "" {
 				req.Header.Set("User-Agent", utils.UA)
 			}
@@ -70,7 +78,7 @@ func ProxyURL(ctx *gin.Context, u string, headers map[string]string) error {
 }
 
 func AuthProxyURL(ctx *gin.Context, u, t string, headers map[string]string, token, roomId, movieId string) error {
-	if strings.HasPrefix(t, "m3u") || strings.HasPrefix(utils.GetUrlExtension(u), "m3u") {
+	if strings.HasPrefix(t, "m3u") || utils.IsM3u8Url(u) {
 		return ProxyM3u8(ctx, u, headers, true, token, roomId, movieId)
 	}
 	return ProxyURL(ctx, u, headers)

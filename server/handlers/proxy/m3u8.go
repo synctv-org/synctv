@@ -18,9 +18,10 @@ import (
 )
 
 type m3u8TargetClaims struct {
-	RoomId    string `json:"r"`
-	MovieId   string `json:"m"`
-	TargetUrl string `json:"t"`
+	RoomId     string `json:"r"`
+	MovieId    string `json:"m"`
+	TargetUrl  string `json:"t"`
+	IsM3u8File bool   `json:"f"`
 	jwt.RegisteredClaims
 }
 
@@ -38,11 +39,12 @@ func GetM3u8Target(token string) (*m3u8TargetClaims, error) {
 	return claims, nil
 }
 
-func NewM3u8TargetToken(targetUrl, roomId, movieId string) (string, error) {
+func NewM3u8TargetToken(targetUrl, roomId, movieId string, isM3u8File bool) (string, error) {
 	claims := &m3u8TargetClaims{
-		RoomId:    roomId,
-		MovieId:   movieId,
-		TargetUrl: targetUrl,
+		RoomId:     roomId,
+		MovieId:    movieId,
+		TargetUrl:  targetUrl,
+		IsM3u8File: isM3u8File,
 		RegisteredClaims: jwt.RegisteredClaims{
 			NotBefore: jwt.NewNumericDate(time.Now()),
 		},
@@ -74,8 +76,19 @@ func ProxyM3u8(ctx *gin.Context, u string, headers map[string]string, isM3u8File
 	if err != nil {
 		return fmt.Errorf("read response body error: %w", err)
 	}
+	hasM3u8File := false
+	err = m3u8.RangeM3u8SegmentsWithBaseUrl(stream.BytesToString(b), u, func(segmentUrl string) (bool, error) {
+		if utils.IsM3u8Url(segmentUrl) {
+			hasM3u8File = true
+			return false, nil
+		}
+		return true, nil
+	})
+	if err != nil {
+		return fmt.Errorf("range m3u8 segments with base url error: %w", err)
+	}
 	m3u8Str, err := m3u8.ReplaceM3u8SegmentsWithBaseUrl(stream.BytesToString(b), u, func(segmentUrl string) (string, error) {
-		targetToken, err := NewM3u8TargetToken(segmentUrl, roomId, movieId)
+		targetToken, err := NewM3u8TargetToken(segmentUrl, roomId, movieId, hasM3u8File)
 		if err != nil {
 			return "", err
 		}

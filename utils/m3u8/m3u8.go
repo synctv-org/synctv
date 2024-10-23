@@ -9,9 +9,9 @@ import (
 
 func GetM3u8AllSegments(m3u8Str string, baseUrl string) ([]string, error) {
 	var segments []string
-	err := RangeM3u8SegmentsWithBaseUrl(m3u8Str, baseUrl, func(segmentUrl string) error {
+	err := RangeM3u8SegmentsWithBaseUrl(m3u8Str, baseUrl, func(segmentUrl string) (bool, error) {
 		segments = append(segments, segmentUrl)
-		return nil
+		return true, nil
 	})
 	if err != nil {
 		return nil, err
@@ -19,13 +19,15 @@ func GetM3u8AllSegments(m3u8Str string, baseUrl string) ([]string, error) {
 	return segments, nil
 }
 
-func RangeM3u8Segments(m3u8Str string, callback func(segmentUrl string) error) error {
+func RangeM3u8Segments(m3u8Str string, callback func(segmentUrl string) (bool, error)) error {
 	scanner := bufio.NewScanner(strings.NewReader(m3u8Str))
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line != "" && !strings.HasPrefix(line, "#") {
-			if err := callback(line); err != nil {
+			if ok, err := callback(line); err != nil {
 				return err
+			} else if !ok {
+				break
 			}
 		}
 	}
@@ -35,16 +37,16 @@ func RangeM3u8Segments(m3u8Str string, callback func(segmentUrl string) error) e
 	return nil
 }
 
-func RangeM3u8SegmentsWithBaseUrl(m3u8Str string, baseUrl string, callback func(segmentUrl string) error) error {
+func RangeM3u8SegmentsWithBaseUrl(m3u8Str string, baseUrl string, callback func(segmentUrl string) (bool, error)) error {
 	baseUrlParsed, err := url.Parse(baseUrl)
 	if err != nil {
 		return fmt.Errorf("parse base url error: %w", err)
 	}
-	return RangeM3u8Segments(m3u8Str, func(segmentUrl string) error {
+	return RangeM3u8Segments(m3u8Str, func(segmentUrl string) (bool, error) {
 		if !strings.HasPrefix(segmentUrl, "http://") && !strings.HasPrefix(segmentUrl, "https://") {
 			segmentUrlParsed, err := url.Parse(segmentUrl)
 			if err != nil {
-				return fmt.Errorf("parse segment url error: %w", err)
+				return false, fmt.Errorf("parse segment url error: %w", err)
 			}
 			segmentUrl = baseUrlParsed.ResolveReference(segmentUrlParsed).String()
 		}

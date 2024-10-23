@@ -654,7 +654,7 @@ func ServeM3u8(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("invalid token"))
 		return
 	}
-	err = proxy.ProxyM3u8(ctx, claims.TargetUrl, m.Movie.MovieBase.Headers, utils.IsM3u8Url(claims.TargetUrl), ctx.GetString("token"), room.ID, m.ID)
+	err = proxy.ProxyM3u8(ctx, claims.TargetUrl, m.Movie.MovieBase.Headers, claims.IsM3u8File, ctx.GetString("token"), room.ID, m.ID)
 	if err != nil {
 		log.Errorf("proxy m3u8 error: %v", err)
 	}

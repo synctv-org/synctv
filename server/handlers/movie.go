@@ -72,7 +72,7 @@ func genMovieInfo(
 		if err != nil {
 			return nil, err
 		}
-	} else if movie.MovieBase.RtmpSource || movie.MovieBase.Live && movie.MovieBase.Proxy {
+	} else if movie.MovieBase.RtmpSource {
 		movie.MovieBase.Url = fmt.Sprintf("/api/room/movie/live/hls/list/%s.m3u8?token=%s&roomId=%s", movie.ID, userToken, opMovie.RoomID)
 		movie.MovieBase.Type = "m3u8"
 		movie.MoreSources = append(movie.MoreSources, &dbModel.MoreSource{
@@ -80,6 +80,17 @@ func genMovieInfo(
 			Url:  fmt.Sprintf("/api/room/movie/live/flv/%s.flv?token=%s&roomId=%s", movie.ID, userToken, opMovie.RoomID),
 			Type: "flv",
 		})
+		movie.MovieBase.Headers = nil
+	} else if movie.MovieBase.Live && movie.MovieBase.Proxy {
+		if !utils.IsM3u8Url(movie.MovieBase.Url) {
+			movie.MoreSources = append(movie.MoreSources, &dbModel.MoreSource{
+				Name: "flv",
+				Url:  fmt.Sprintf("/api/room/movie/live/flv/%s.flv?token=%s&roomId=%s", movie.ID, userToken, opMovie.RoomID),
+				Type: "flv",
+			})
+		}
+		movie.MovieBase.Url = fmt.Sprintf("/api/room/movie/live/hls/list/%s.m3u8?token=%s&roomId=%s", movie.ID, userToken, opMovie.RoomID)
+		movie.MovieBase.Type = "m3u8"
 		movie.MovieBase.Headers = nil
 	} else if movie.MovieBase.Proxy {
 		movie.MovieBase.Url = fmt.Sprintf("/api/room/movie/proxy/%s?token=%s&roomId=%s", movie.ID, userToken, opMovie.RoomID)
@@ -595,7 +606,7 @@ func ProxyMovie(ctx *gin.Context) {
 		// TODO: cache mpd file
 		fallthrough
 	default:
-		if strings.HasPrefix(m.Movie.MovieBase.Type, "m3u") || isM3u8Url(m.Movie.MovieBase.Url) {
+		if strings.HasPrefix(m.Movie.MovieBase.Type, "m3u") || utils.IsM3u8Url(m.Movie.MovieBase.Url) {
 			err = proxyM3u8(ctx, m.Movie.MovieBase.Url, m.Movie.MovieBase.Headers, true, ctx.GetString("token"), room.ID, m.ID)
 			if err != nil {
 				log.Errorf("proxy movie error: %v", err)
@@ -608,10 +619,6 @@ func ProxyMovie(ctx *gin.Context) {
 			return
 		}
 	}
-}
-
-func isM3u8Url(u string) bool {
-	return strings.HasPrefix(utils.GetUrlExtension(u), "m3u")
 }
 
 type m3u8TargetClaims struct {
@@ -710,13 +717,13 @@ func ServeM3u8(ctx *gin.Context) {
 		return
 	}
 
-	if !m.Movie.MovieBase.Proxy {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("proxy is not enabled"))
+	if m.Movie.MovieBase.RtmpSource {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("this movie is rtmp source, not support use this method proxy"))
 		return
 	}
 
-	if m.Movie.MovieBase.Live || m.Movie.MovieBase.RtmpSource {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("this movie is live or rtmp source, not support use this method proxy"))
+	if !m.Movie.MovieBase.Proxy {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("proxy is not enabled"))
 		return
 	}
 
@@ -731,7 +738,7 @@ func ServeM3u8(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("invalid token"))
 		return
 	}
-	err = proxyM3u8(ctx, claims.TargetUrl, m.Movie.MovieBase.Headers, isM3u8Url(claims.TargetUrl), ctx.GetString("token"), room.ID, m.ID)
+	err = proxyM3u8(ctx, claims.TargetUrl, m.Movie.MovieBase.Headers, utils.IsM3u8Url(claims.TargetUrl), ctx.GetString("token"), room.ID, m.ID)
 	if err != nil {
 		log.Errorf("proxy m3u8 error: %v", err)
 	}
@@ -858,6 +865,11 @@ func JoinHlsLive(ctx *gin.Context) {
 	} else if !settings.LiveProxy.Get() {
 		log.Error("join hls live error: live proxy is not enabled")
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("live proxy is not enabled"))
+		return
+	}
+
+	if utils.IsM3u8Url(m.Movie.MovieBase.Url) {
+		_ = proxyM3u8(ctx, m.Movie.MovieBase.Url, m.Movie.MovieBase.Headers, true, ctx.GetString("token"), room.ID, m.ID)
 		return
 	}
 	channel, err := m.Channel()

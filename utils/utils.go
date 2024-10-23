@@ -352,6 +352,10 @@ func GetUrlExtension(u string) string {
 	return GetFileExtension(p.Path)
 }
 
+func IsM3u8Url(u string) bool {
+	return strings.HasPrefix(GetUrlExtension(u), "m3u")
+}
+
 var (
 	needColor     bool
 	needColorOnce sync.Once

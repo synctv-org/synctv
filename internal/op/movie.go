@@ -201,6 +201,9 @@ func (m *Movie) initChannel() (*rtmps.Channel, error) {
 			}()
 			return c, nil
 		case "http", "https":
+			if utils.IsM3u8Url(m.Movie.MovieBase.Url) {
+				return nil, errors.New("m3u8 url not support")
+			}
 			c, init := m.compareAndSwapInitChannel()
 			if !init {
 				return c, nil

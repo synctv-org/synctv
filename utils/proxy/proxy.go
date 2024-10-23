@@ -14,10 +14,6 @@ import (
 )
 
 func ProxyURL(ctx *gin.Context, u string, headers map[string]string) error {
-	if utils.GetUrlExtension(u) == "m3u8" {
-		ctx.Redirect(http.StatusFound, u)
-		return nil
-	}
 	if !settings.AllowProxyToLocal.Get() {
 		if l, err := utils.ParseURLIsLocalIP(u); err != nil {
 			return fmt.Errorf("check url is local ip error: %w", err)

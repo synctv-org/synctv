@@ -239,6 +239,8 @@ func initMovie(movie *gin.RouterGroup, needAuthMovie *gin.RouterGroup) {
 
 	needAuthMovie.GET("/proxy/:movieId", ProxyMovie)
 
+	needAuthMovie.GET("/proxy/:movieId/m3u8/:targetToken", ServeM3u8)
+
 	{
 		live := movie.Group("/live")
 		needAuthLive := needAuthMovie.Group("/live")

@@ -114,6 +114,7 @@ synctv server --data-dir ./
 - [爱发电用户_5vDc](https://afdian.com/u/48fa38ce0e0211ef944d5254001e7c00) ¥ 228
 - masha
 - [T-rabbit](https://github.com/T-rabbit) ¥ 5
+- 矿神SPK源 ¥ 100
 
 # Contributors
 

@@ -349,7 +349,11 @@ func GetUrlExtension(u string) string {
 	if err != nil {
 		return ""
 	}
-	return GetFileExtension(p.Path)
+	ext := GetFileExtension(p.Path)
+	if ext != "" {
+		return ext
+	}
+	return GetFileExtension(p.RawQuery)
 }
 
 func IsM3u8Url(u string) bool {

@@ -245,7 +245,7 @@ func (m *Movie) initChannel() (*rtmps.Channel, error) {
 			}()
 			return c, nil
 		default:
-			return nil, errors.New("unsupported scheme")
+			return nil, fmt.Errorf("unsupported scheme: %s", u.Scheme)
 		}
 	default:
 		return nil, errors.New("this movie not support channel")
@@ -285,16 +285,13 @@ func (movie *Movie) Validate() error {
 		case "rtmp":
 		case "http", "https":
 		default:
-			return errors.New("unsupported scheme")
+			return fmt.Errorf("unsupported scheme: %s", u.Scheme)
 		}
 	case !m.Live && m.RtmpSource:
 		return errors.New("rtmp source can't be true when movie is not live")
 	case !m.Live && m.Proxy:
 		if !settings.MovieProxy.Get() {
 			return errors.New("movie proxy is not enabled")
-		}
-		if m.VendorInfo.Vendor != "" {
-			return nil
 		}
 		u, err := url.Parse(m.Url)
 		if err != nil {
@@ -304,17 +301,15 @@ func (movie *Movie) Validate() error {
 			return errors.New("local ip is not allowed")
 		}
 		if u.Scheme != "http" && u.Scheme != "https" {
-			return errors.New("unsupported scheme")
+			return fmt.Errorf("unsupported scheme: %s", u.Scheme)
 		}
 	case !m.Live && !m.Proxy, m.Live && !m.Proxy && !m.RtmpSource:
-		if m.VendorInfo.Vendor == "" {
-			u, err := url.Parse(m.Url)
-			if err != nil {
-				return err
-			}
-			if u.Scheme != "http" && u.Scheme != "https" {
-				return errors.New("unsupported scheme")
-			}
+		u, err := url.Parse(m.Url)
+		if err != nil {
+			return err
+		}
+		if u.Scheme != "http" && u.Scheme != "https" && u.Scheme != "magnet" {
+			return fmt.Errorf("unsupported scheme: %s", u.Scheme)
 		}
 	default:
 		return errors.New("unknown error")

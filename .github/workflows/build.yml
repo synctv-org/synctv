@@ -13,36 +13,28 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  get_all_targets:
+  get-targets:
     name: Get all targets
     runs-on: ubuntu-latest
     outputs:
-      TARGETS: ${{ steps.get_all_targets.outputs.TARGETS }}
+      targets: ${{ steps.get-targets.outputs.targets }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Get all targets
-        id: get_all_targets
-        run: |
-          declare -a arr=()
-          OIFS="$IFS"
-          IFS=$'\n,'
-          for line in $(BUILD_CONFIG=script/build.config.sh bash script/build.sh --show-all-platforms); do
-            arr+=("$line")
-          done
-          IFS="$OIFS"
-          printf -v json '"%s",' "${arr[@]}"
-          json="[${json%,}]"
-          echo "TARGETS=$json" >> $GITHUB_OUTPUT
+      - name: Get targets
+        id: get-targets
+        uses: zijiren233/go-build-action@v1
+        with:
+          show-all-targets: true
 
-  build:
+  build-targets:
     name: Build
     runs-on: ubuntu-latest
-    needs: get_all_targets
+    needs: get-targets
     strategy:
       matrix:
-        target: ${{ fromJson(needs.get_all_targets.outputs.TARGETS) }}
+        target: ${{ fromJson(needs.get-targets.outputs.targets) }}
     steps:
       - name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@main
@@ -63,14 +55,12 @@ jobs:
         with:
           go-version: "1.23"
 
-      - name: Build
-        run: |
-          BUILD_CONFIG=script/build.config.sh bash \
-            script/build.sh \
-            --enable-micro \
-            --skip-init-web \
-            --platforms="${{ matrix.target }}" \
-            --more-go-cmd-args='-a -v'
+      - name: Build targets
+        uses: zijiren233/go-build-action@v1
+        with:
+          targets: ${{ matrix.target }}
+          enable-micro: true
+          config-args: --skip-init-web
 
       - name: Get artifact name
         id: get_artifact_name

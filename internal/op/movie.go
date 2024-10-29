@@ -254,22 +254,21 @@ func (m *Movie) initChannel() (*rtmps.Channel, error) {
 
 func (movie *Movie) Validate() error {
 	m := movie.Movie.MovieBase
+	switch {
+	case m.RtmpSource && m.Proxy:
+		return errors.New("rtmp source and proxy can't be true at the same time")
+	case m.Live && m.RtmpSource && !conf.Conf.Server.Rtmp.Enable:
+		return errors.New("rtmp is not enabled")
+	case !m.Live && m.RtmpSource:
+		return errors.New("rtmp source can't be true when movie is not live")
+	}
 	if m.VendorInfo.Vendor != "" {
-		err := movie.validateVendorMovie()
-		if err != nil {
-			return err
-		}
+		return movie.validateVendorMovie()
 	}
 	if movie.IsFolder {
 		return nil
 	}
 	switch {
-	case m.RtmpSource && m.Proxy:
-		return errors.New("rtmp source and proxy can't be true at the same time")
-	case m.Live && m.RtmpSource:
-		if !conf.Conf.Server.Rtmp.Enable {
-			return errors.New("rtmp is not enabled")
-		}
 	case m.Live && m.Proxy:
 		if !settings.LiveProxy.Get() {
 			return errors.New("live proxy is not enabled")
@@ -287,8 +286,6 @@ func (movie *Movie) Validate() error {
 		default:
 			return fmt.Errorf("unsupported scheme: %s", u.Scheme)
 		}
-	case !m.Live && m.RtmpSource:
-		return errors.New("rtmp source can't be true when movie is not live")
 	case !m.Live && m.Proxy:
 		if !settings.MovieProxy.Get() {
 			return errors.New("movie proxy is not enabled")

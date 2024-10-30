@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/synctv-org/synctv/internal/conf"
+	"github.com/synctv-org/synctv/server/model"
 	"github.com/synctv-org/synctv/utils"
 	"github.com/synctv-org/synctv/utils/m3u8"
 	"github.com/zijiren233/go-uhc"
@@ -52,6 +53,8 @@ func NewM3u8TargetToken(targetUrl, roomId, movieId string, isM3u8File bool) (str
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(stream.StringToBytes(conf.Conf.Jwt.Secret))
 }
 
+const maxM3u8FileSize = 3 * 1024 * 1024 //
+
 func ProxyM3u8(ctx *gin.Context, u string, headers map[string]string, isM3u8File bool, token, roomId, movieId string) error {
 	if !isM3u8File {
 		return ProxyURL(ctx, u, headers)
@@ -59,6 +62,11 @@ func ProxyM3u8(ctx *gin.Context, u string, headers map[string]string, isM3u8File
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest,
+			model.NewApiErrorStringResp(
+				fmt.Sprintf("new request error: %v", err),
+			),
+		)
 		return fmt.Errorf("new request error: %w", err)
 	}
 	for k, v := range headers {
@@ -69,11 +77,32 @@ func ProxyM3u8(ctx *gin.Context, u string, headers map[string]string, isM3u8File
 	}
 	resp, err := uhc.Do(req)
 	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest,
+			model.NewApiErrorStringResp(
+				fmt.Sprintf("do request error: %v", err),
+			),
+		)
 		return fmt.Errorf("do request error: %w", err)
 	}
 	defer resp.Body.Close()
-	b, err := io.ReadAll(resp.Body)
+	// if contentType := resp.Header.Get("Content-Type"); !strings.HasPrefix(contentType, "application/vnd.apple.mpegurl") {
+	// 	return fmt.Errorf("m3u8 file is not a valid m3u8 file, content type: %s", contentType)
+	// }
+	if resp.ContentLength > maxM3u8FileSize {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest,
+			model.NewApiErrorStringResp(
+				fmt.Sprintf("m3u8 file is too large: %d, max: %d (3MB)", resp.ContentLength, maxM3u8FileSize),
+			),
+		)
+		return fmt.Errorf("m3u8 file is too large: %d, max: %d (3MB)", resp.ContentLength, maxM3u8FileSize)
+	}
+	b, err := io.ReadAll(io.LimitReader(resp.Body, maxM3u8FileSize))
 	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest,
+			model.NewApiErrorStringResp(
+				fmt.Sprintf("read response body error: %v", err),
+			),
+		)
 		return fmt.Errorf("read response body error: %w", err)
 	}
 	hasM3u8File := false
@@ -85,6 +114,11 @@ func ProxyM3u8(ctx *gin.Context, u string, headers map[string]string, isM3u8File
 		return true, nil
 	})
 	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest,
+			model.NewApiErrorStringResp(
+				fmt.Sprintf("range m3u8 segments with base url error: %v", err),
+			),
+		)
 		return fmt.Errorf("range m3u8 segments with base url error: %w", err)
 	}
 	m3u8Str, err := m3u8.ReplaceM3u8SegmentsWithBaseUrl(stream.BytesToString(b), u, func(segmentUrl string) (string, error) {
@@ -95,6 +129,11 @@ func ProxyM3u8(ctx *gin.Context, u string, headers map[string]string, isM3u8File
 		return fmt.Sprintf("/api/room/movie/proxy/%s/m3u8/%s?token=%s&roomId=%s", movieId, targetToken, token, roomId), nil
 	})
 	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest,
+			model.NewApiErrorStringResp(
+				fmt.Sprintf("replace m3u8 segments with base url error: %v", err),
+			),
+		)
 		return fmt.Errorf("replace m3u8 segments with base url error: %w", err)
 	}
 	ctx.Data(http.StatusOK, hls.M3U8ContentType, stream.StringToBytes(m3u8Str))

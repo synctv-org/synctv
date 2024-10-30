@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/synctv-org/synctv/internal/settings"
+	"github.com/synctv-org/synctv/server/model"
 	"github.com/synctv-org/synctv/utils"
 	"github.com/zijiren233/go-uhc"
 )
@@ -17,8 +18,18 @@ import (
 func ProxyURL(ctx *gin.Context, u string, headers map[string]string) error {
 	if !settings.AllowProxyToLocal.Get() {
 		if l, err := utils.ParseURLIsLocalIP(u); err != nil {
+			ctx.AbortWithStatusJSON(http.StatusBadRequest,
+				model.NewApiErrorStringResp(
+					fmt.Sprintf("check url is local ip error: %v", err),
+				),
+			)
 			return fmt.Errorf("check url is local ip error: %w", err)
 		} else if l {
+			ctx.AbortWithStatusJSON(http.StatusBadRequest,
+				model.NewApiErrorStringResp(
+					"not allow proxy to local",
+				),
+			)
 			return errors.New("not allow proxy to local")
 		}
 	}
@@ -26,6 +37,11 @@ func ProxyURL(ctx *gin.Context, u string, headers map[string]string) error {
 	defer cf()
 	req, err := http.NewRequestWithContext(ctx2, http.MethodGet, u, nil)
 	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest,
+			model.NewApiErrorStringResp(
+				fmt.Sprintf("new request error: %v", err),
+			),
+		)
 		return fmt.Errorf("new request error: %w", err)
 	}
 	for k, v := range headers {
@@ -61,6 +77,11 @@ func ProxyURL(ctx *gin.Context, u string, headers map[string]string) error {
 	}
 	resp, err := cli.Do(req)
 	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest,
+			model.NewApiErrorStringResp(
+				fmt.Sprintf("request url error: %v", err),
+			),
+		)
 		return fmt.Errorf("request url error: %w", err)
 	}
 	defer resp.Body.Close()
@@ -72,12 +93,17 @@ func ProxyURL(ctx *gin.Context, u string, headers map[string]string) error {
 	ctx.Header("Content-Type", resp.Header.Get("Content-Type"))
 	_, err = copyBuffer(ctx.Writer, resp.Body)
 	if err != nil && err != io.EOF {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest,
+			model.NewApiErrorStringResp(
+				fmt.Sprintf("copy response body error: %v", err),
+			),
+		)
 		return fmt.Errorf("copy response body error: %w", err)
 	}
 	return nil
 }
 
-func AuthProxyURL(ctx *gin.Context, u, t string, headers map[string]string, token, roomId, movieId string) error {
+func AutoProxyURL(ctx *gin.Context, u, t string, headers map[string]string, token, roomId, movieId string) error {
 	if strings.HasPrefix(t, "m3u") || utils.IsM3u8Url(u) {
 		return ProxyM3u8(ctx, u, headers, true, token, roomId, movieId)
 	}

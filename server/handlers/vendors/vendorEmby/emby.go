@@ -151,7 +151,7 @@ func (s *embyVendorService) ProxyMovie(ctx *gin.Context) {
 			ctx.Redirect(http.StatusFound, embyC.Sources[source].URL)
 			return
 		}
-		err = proxy.AuthProxyURL(ctx, embyC.Sources[source].URL, "", nil, ctx.GetString("token"), s.movie.RoomID, s.movie.ID)
+		err = proxy.AutoProxyURL(ctx, embyC.Sources[source].URL, "", nil, ctx.GetString("token"), s.movie.RoomID, s.movie.ID)
 		if err != nil {
 			log.Errorf("proxy vendor movie error: %v", err)
 		}

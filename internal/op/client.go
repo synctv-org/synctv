@@ -16,8 +16,8 @@ type Client struct {
 	r       *Room
 	h       *Hub
 	c       chan Message
-	wg      sync.WaitGroup
 	conn    *websocket.Conn
+	wg      sync.WaitGroup
 	timeOut time.Duration
 	closed  uint32
 }

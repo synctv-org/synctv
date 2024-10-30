@@ -29,10 +29,10 @@ func newCurrent() *current {
 }
 
 type Status struct {
+	lastUpdate   time.Time `json:"-"`
 	CurrentTime  float64   `json:"currentTime"`
 	PlaybackRate float64   `json:"playbackRate"`
 	IsPlaying    bool      `json:"isPlaying"`
-	lastUpdate   time.Time `json:"-"`
 }
 
 func newStatus() Status {

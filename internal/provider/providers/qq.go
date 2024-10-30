@@ -128,7 +128,6 @@ type qqProviderMe struct {
 }
 
 type qqUserInfo struct {
-	Ret          int    `json:"ret"`
 	Msg          string `json:"msg"`
 	Nickname     string `json:"nickname"`
 	Figureurl    string `json:"figureurl"`
@@ -137,6 +136,7 @@ type qqUserInfo struct {
 	FigureurlQq1 string `json:"figureurl_qq_1"`
 	FigureurlQq2 string `json:"figureurl_qq_2"`
 	Gender       string `json:"gender"`
+	Ret          int    `json:"ret"`
 }
 
 func init() {

@@ -14,11 +14,11 @@ type Movie struct {
 	ID        string    `gorm:"primaryKey;type:char(32)" json:"id"`
 	CreatedAt time.Time `json:"-"`
 	UpdatedAt time.Time `json:"-"`
-	Position  uint      `gorm:"not null" json:"-"`
 	RoomID    string    `gorm:"not null;index;type:char(32)" json:"-"`
 	CreatorID string    `gorm:"index;type:char(32)" json:"creatorId"`
+	Childrens []*Movie  `gorm:"foreignKey:ParentID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE" json:"-"`
 	MovieBase `gorm:"embedded;embeddedPrefix:base_" json:"base"`
-	Childrens []*Movie `gorm:"foreignKey:ParentID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE" json:"-"`
+	Position  uint `gorm:"not null" json:"-"`
 }
 
 func (m *Movie) Clone() *Movie {
@@ -65,18 +65,18 @@ type MoreSource struct {
 }
 
 type MovieBase struct {
+	VendorInfo  VendorInfo           `gorm:"embedded;embeddedPrefix:vendor_info_" json:"vendorInfo,omitempty"`
+	Headers     map[string]string    `gorm:"serializer:fastjson;type:text" json:"headers,omitempty"`
+	Subtitles   map[string]*Subtitle `gorm:"serializer:fastjson;type:text" json:"subtitles,omitempty"`
 	Url         string               `gorm:"type:varchar(8192)" json:"url"`
-	MoreSources []*MoreSource        `gorm:"serializer:fastjson;type:text" json:"moreSources,omitempty"`
 	Name        string               `gorm:"not null;type:varchar(256)" json:"name"`
+	Type        string               `json:"type"`
+	ParentID    EmptyNullString      `gorm:"type:char(32)" json:"parentId"`
+	MoreSources []*MoreSource        `gorm:"serializer:fastjson;type:text" json:"moreSources,omitempty"`
 	Live        bool                 `json:"live"`
 	Proxy       bool                 `json:"proxy"`
 	RtmpSource  bool                 `json:"rtmpSource"`
-	Type        string               `json:"type"`
-	Headers     map[string]string    `gorm:"serializer:fastjson;type:text" json:"headers,omitempty"`
-	Subtitles   map[string]*Subtitle `gorm:"serializer:fastjson;type:text" json:"subtitles,omitempty"`
-	VendorInfo  VendorInfo           `gorm:"embedded;embeddedPrefix:vendor_info_" json:"vendorInfo,omitempty"`
 	IsFolder    bool                 `json:"isFolder"`
-	ParentID    EmptyNullString      `gorm:"type:char(32)" json:"parentId"`
 }
 
 func (m *MovieBase) IsM3u8() bool {
@@ -168,11 +168,11 @@ const (
 )
 
 type VendorInfo struct {
-	Vendor   VendorName             `gorm:"type:varchar(32)" json:"vendor"`
-	Backend  string                 `gorm:"type:varchar(64)" json:"backend"`
 	Bilibili *BilibiliStreamingInfo `gorm:"embedded;embeddedPrefix:bilibili_" json:"bilibili,omitempty"`
 	Alist    *AlistStreamingInfo    `gorm:"embedded;embeddedPrefix:alist_" json:"alist,omitempty"`
 	Emby     *EmbyStreamingInfo     `gorm:"embedded;embeddedPrefix:emby_" json:"emby,omitempty"`
+	Vendor   VendorName             `gorm:"type:varchar(32)" json:"vendor"`
+	Backend  string                 `gorm:"type:varchar(64)" json:"backend"`
 }
 
 type BilibiliStreamingInfo struct {

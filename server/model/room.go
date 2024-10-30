@@ -7,7 +7,6 @@ import (
 	json "github.com/json-iterator/go"
 
 	"github.com/gin-gonic/gin"
-	"github.com/synctv-org/synctv/internal/model"
 	dbModel "github.com/synctv-org/synctv/internal/model"
 )
 
@@ -59,14 +58,14 @@ func (c *CreateRoomReq) Validate() error {
 }
 
 type RoomListResp struct {
-	RoomId       string           `json:"roomId"`
-	RoomName     string           `json:"roomName"`
-	ViewerCount  int64            `json:"viewerCount"`
-	NeedPassword bool             `json:"needPassword"`
-	CreatorID    string           `json:"creatorId"`
-	Creator      string           `json:"creator"`
-	CreatedAt    int64            `json:"createdAt"`
-	Status       model.RoomStatus `json:"status"`
+	RoomId       string             `json:"roomId"`
+	RoomName     string             `json:"roomName"`
+	CreatorID    string             `json:"creatorId"`
+	Creator      string             `json:"creator"`
+	ViewerCount  int64              `json:"viewerCount"`
+	CreatedAt    int64              `json:"createdAt"`
+	NeedPassword bool               `json:"needPassword"`
+	Status       dbModel.RoomStatus `json:"status"`
 }
 
 type JoinedRoomResp struct {
@@ -152,11 +151,11 @@ func (c *CheckRoomPasswordReq) Validate() error {
 }
 
 type CheckRoomResp struct {
-	Name         string           `json:"name"`
-	Status       model.RoomStatus `json:"status"`
-	CreatorID    string           `json:"creatorId"`
-	Creator      string           `json:"creator"`
-	NeedPassword bool             `json:"needPassword"`
-	ViewerCount  int64            `json:"viewerCount"`
-	EnabledGuest bool             `json:"enabledGuest"`
+	Name         string             `json:"name"`
+	CreatorID    string             `json:"creatorId"`
+	Creator      string             `json:"creator"`
+	ViewerCount  int64              `json:"viewerCount"`
+	Status       dbModel.RoomStatus `json:"status"`
+	NeedPassword bool               `json:"needPassword"`
+	EnabledGuest bool               `json:"enabledGuest"`
 }

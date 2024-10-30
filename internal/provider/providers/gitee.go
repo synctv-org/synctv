@@ -75,8 +75,8 @@ func (p *GiteeProvider) GetUserInfo(ctx context.Context, code string) (*provider
 }
 
 type giteeUserInfo struct {
-	ID    uint64 `json:"id"`
 	Login string `json:"login"`
+	ID    uint64 `json:"id"`
 }
 
 func init() {

@@ -12,11 +12,11 @@ import (
 
 type SmtpConfig struct {
 	Host     string
-	Port     uint32
 	Protocol string
 	Username string
 	Password string
 	From     string
+	Port     uint32
 }
 
 func validateSmtpConfig(c *SmtpConfig) error {
@@ -71,11 +71,11 @@ func newSmtpClient(c *SmtpConfig) (*smtp.Client, error) {
 var ErrSmtpPoolClosed = fmt.Errorf("smtp pool is closed")
 
 type SmtpPool struct {
-	mu      sync.Mutex
-	clients []*smtp.Client
 	c       *SmtpConfig
+	clients []*smtp.Client
 	max     int
 	active  int
+	mu      sync.Mutex
 	closed  bool
 }
 

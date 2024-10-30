@@ -23,11 +23,13 @@ type BoolSetting interface {
 var _ BoolSetting = (*Bool)(nil)
 
 type Bool struct {
-	value uint32
+	beforeInit func(BoolSetting, bool) (bool, error)
+	beforeSet  func(BoolSetting, bool) (bool, error)
+	afterInit  func(BoolSetting, bool)
+	afterSet   func(BoolSetting, bool)
 	setting
-	defaultValue          bool
-	beforeInit, beforeSet func(BoolSetting, bool) (bool, error)
-	afterInit, afterSet   func(BoolSetting, bool)
+	value        uint32
+	defaultValue bool
 }
 
 type BoolSettingOption func(*Bool)

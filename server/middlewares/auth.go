@@ -36,9 +36,9 @@ var (
 )
 
 type AuthClaims struct {
+	jwt.RegisteredClaims
 	UserId      string `json:"u"`
 	UserVersion uint32 `json:"uv"`
-	jwt.RegisteredClaims
 }
 
 func authUser(authorization string) (*AuthClaims, error) {

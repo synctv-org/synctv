@@ -27,8 +27,8 @@ func WaitCbk() {
 
 type SysNotify struct {
 	c         chan os.Signal
-	once      sync.Once
 	taskGroup rwmap.RWMap[NotifyType, *taskQueue]
+	once      sync.Once
 }
 
 type NotifyType int
@@ -39,14 +39,14 @@ const (
 )
 
 type taskQueue struct {
-	notifyTaskLock  sync.Mutex
 	notifyTaskQueue *pqueue.PQueue[*sysNotifyTask]
+	notifyTaskLock  sync.Mutex
 }
 
 type sysNotifyTask struct {
 	Task       func() error
-	NotifyType NotifyType
 	Name       string
+	NotifyType NotifyType
 }
 
 func NewSysNotifyTask(name string, NotifyType NotifyType, task func() error) *sysNotifyTask {

@@ -13,16 +13,13 @@ import (
 )
 
 type publicSettings struct {
-	PasswordDisableSignup bool `json:"passwordDisableSignup"`
-
+	EmailWhitelist        []string `json:"emailWhitelist,omitempty"`
+	PasswordDisableSignup bool     `json:"passwordDisableSignup"`
 	EmailEnable           bool     `json:"emailEnable"`
 	EmailDisableSignup    bool     `json:"emailDisableSignup"`
 	EmailWhitelistEnabled bool     `json:"emailWhitelistEnabled"`
-	EmailWhitelist        []string `json:"emailWhitelist,omitempty"`
-
-	Oauth2DisableSignup bool `json:"oauth2DisableSignup"`
-
-	GuestEnable bool `json:"guestEnable"`
+	Oauth2DisableSignup   bool     `json:"oauth2DisableSignup"`
+	GuestEnable           bool     `json:"guestEnable"`
 }
 
 func Settings(ctx *gin.Context) {

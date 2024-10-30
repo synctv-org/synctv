@@ -113,9 +113,9 @@ func (u *UserSignupPasswordReq) Validate() error {
 type UserInfoResp struct {
 	ID        string       `json:"id"`
 	Username  string       `json:"username"`
-	Role      dbModel.Role `json:"role"`
-	CreatedAt int64        `json:"createdAt"`
 	Email     string       `json:"email"`
+	CreatedAt int64        `json:"createdAt"`
+	Role      dbModel.Role `json:"role"`
 }
 
 type SetUsernameReq struct {

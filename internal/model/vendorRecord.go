@@ -11,9 +11,9 @@ import (
 type BilibiliVendor struct {
 	CreatedAt time.Time
 	UpdatedAt time.Time
+	Cookies   map[string]string `gorm:"not null;serializer:fastjson;type:text"`
 	UserID    string            `gorm:"primaryKey;type:char(32)"`
 	Backend   string            `gorm:"type:varchar(64)"`
-	Cookies   map[string]string `gorm:"not null;serializer:fastjson;type:text"`
 }
 
 func (b *BilibiliVendor) BeforeSave(tx *gorm.DB) error {

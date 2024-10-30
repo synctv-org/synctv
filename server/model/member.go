@@ -9,13 +9,13 @@ import (
 type RoomMembersResp struct {
 	UserID           string                       `json:"userId"`
 	Username         string                       `json:"username"`
+	RoomID           string                       `json:"roomId"`
 	JoinAt           int64                        `json:"joinAt"`
 	OnlineCount      int                          `json:"onlineCount"`
-	Role             dbModel.RoomMemberRole       `json:"role"`
-	Status           dbModel.RoomMemberStatus     `json:"status"`
-	RoomID           string                       `json:"roomId"`
 	Permissions      dbModel.RoomMemberPermission `json:"permissions"`
 	AdminPermissions dbModel.RoomAdminPermission  `json:"adminPermissions"`
+	Role             dbModel.RoomMemberRole       `json:"role"`
+	Status           dbModel.RoomMemberStatus     `json:"status"`
 }
 
 type (

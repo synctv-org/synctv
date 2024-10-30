@@ -15,19 +15,18 @@ import (
 )
 
 type clients struct {
-	lock sync.RWMutex
 	m    map[*Client]struct{}
+	lock sync.RWMutex
 }
 
 type Hub struct {
-	id        string
-	clients   rwmap.RWMap[string, *clients]
 	broadcast chan *broadcastMessage
 	exit      chan struct{}
-	closed    uint32
+	clients   rwmap.RWMap[string, *clients]
+	id        string
 	wg        sync.WaitGroup
-
-	once utils.Once
+	once      utils.Once
+	closed    uint32
 }
 
 type broadcastMessage struct {

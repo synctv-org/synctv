@@ -10,8 +10,8 @@ import (
 )
 
 type VendorMeResp[T any] struct {
-	IsLogin bool `json:"isLogin"`
 	Info    T    `json:"info,omitempty"`
+	IsLogin bool `json:"isLogin"`
 }
 
 type VendorFSListResp[T any] struct {

@@ -28,9 +28,11 @@ type BilibiliMpdCache struct {
 	Urls    []string
 }
 
-type BilibiliSubtitleCache map[string]*struct {
-	Url string
+type BilibiliSubtitleCache map[string]*BilibiliSubtitleCacheItem
+
+type BilibiliSubtitleCacheItem struct {
 	Srt *refreshcache0.RefreshCache[[]byte]
+	Url string
 }
 
 func NewBilibiliSharedMpdCacheInitFunc(movie *model.Movie) func(ctx context.Context, args *BilibiliUserCache) (*BilibiliMpdCache, error) {
@@ -213,21 +215,21 @@ func BilibiliNoSharedMovieCacheInitFunc(ctx context.Context, movie *model.Movie,
 }
 
 type bilibiliSubtitleResp struct {
-	FontSize        float64 `json:"font_size"`
-	FontColor       string  `json:"font_color"`
-	BackgroundAlpha float64 `json:"background_alpha"`
-	BackgroundColor string  `json:"background_color"`
-	Stroke          string  `json:"Stroke"`
-	Type            string  `json:"type"`
-	Lang            string  `json:"lang"`
-	Version         string  `json:"version"`
+	FontColor       string `json:"font_color"`
+	BackgroundColor string `json:"background_color"`
+	Stroke          string `json:"Stroke"`
+	Type            string `json:"type"`
+	Lang            string `json:"lang"`
+	Version         string `json:"version"`
 	Body            []struct {
+		Content  string  `json:"content"`
 		From     float64 `json:"from"`
 		To       float64 `json:"to"`
 		Sid      int     `json:"sid"`
 		Location int     `json:"location"`
-		Content  string  `json:"content"`
 	} `json:"body"`
+	FontSize        float64 `json:"font_size"`
+	BackgroundAlpha float64 `json:"background_alpha"`
 }
 
 func NewBilibiliSubtitleCacheInitFunc(movie *model.Movie) func(ctx context.Context, args *BilibiliUserCache) (BilibiliSubtitleCache, error) {
@@ -268,10 +270,7 @@ func BilibiliSubtitleCacheInitFunc(ctx context.Context, movie *model.Movie, args
 	}
 	subtitleCache := make(BilibiliSubtitleCache, len(resp.Subtitles))
 	for k, v := range resp.Subtitles {
-		subtitleCache[k] = &struct {
-			Url string
-			Srt *refreshcache0.RefreshCache[[]byte]
-		}{
+		subtitleCache[k] = &BilibiliSubtitleCacheItem{
 			Url: v,
 			Srt: refreshcache0.NewRefreshCache[[]byte](func(ctx context.Context) ([]byte, error) {
 				return translateBilibiliSubtitleToSrt(ctx, v)
@@ -379,8 +378,8 @@ func NewBilibiliMovieCache(movie *model.Movie) *BilibiliMovieCache {
 type BilibiliUserCache = refreshcache.RefreshCache[*BilibiliUserCacheData, struct{}]
 
 type BilibiliUserCacheData struct {
-	Cookies []*http.Cookie
 	Backend string
+	Cookies []*http.Cookie
 }
 
 func NewBilibiliUserCache(userID string) *BilibiliUserCache {

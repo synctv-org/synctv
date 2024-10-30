@@ -94,17 +94,17 @@ const (
 )
 
 type AlistSubtitle struct {
+	Cache *SubtitleDataCache
 	Name  string
 	URL   string
 	Type  string
-	Cache *SubtitleDataCache
 }
 
 type AlistMovieCacheData struct {
-	URL       string
-	Subtitles []*AlistSubtitle
-	Provider  string
 	Ali       *AlistAliCache
+	URL       string
+	Provider  string
+	Subtitles []*AlistSubtitle
 }
 
 type AlistAliCache struct {

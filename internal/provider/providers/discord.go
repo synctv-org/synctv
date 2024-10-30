@@ -2,7 +2,6 @@ package providers
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 
 	json "github.com/json-iterator/go"
@@ -54,7 +53,7 @@ func (p *DiscordProvider) GetUserInfo(ctx context.Context, code string) (*provid
 		return nil, err
 	}
 	client := p.config.Client(ctx, tk)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("https://discord.com/api/v10/oauth2/@me"), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://discord.com/api/v10/oauth2/@me", nil)
 	if err != nil {
 		return nil, err
 	}

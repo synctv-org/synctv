@@ -5,7 +5,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	json "github.com/json-iterator/go"
-	"github.com/synctv-org/synctv/internal/model"
 	dbModel "github.com/synctv-org/synctv/internal/model"
 	"google.golang.org/grpc/connectivity"
 )
@@ -134,7 +133,7 @@ type GetVendorBackendResp struct {
 	Status connectivity.State     `json:"status"`
 }
 
-type AddVendorBackendReq model.VendorBackend
+type AddVendorBackendReq dbModel.VendorBackend
 
 func (avbr *AddVendorBackendReq) Validate() error {
 	if avbr.UsedBy.AlistBackendName != "" {

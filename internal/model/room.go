@@ -34,13 +34,13 @@ type Room struct {
 	ID             string `gorm:"primaryKey;type:char(32)" json:"id"`
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
-	Status         RoomStatus    `gorm:"not null;default:2"`
-	Name           string        `gorm:"not null;uniqueIndex;type:varchar(32)"`
 	Settings       *RoomSettings `gorm:"foreignKey:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE" json:"settings"`
+	Name           string        `gorm:"not null;uniqueIndex;type:varchar(32)"`
 	CreatorID      string        `gorm:"index;type:char(32)"`
 	HashedPassword []byte
 	RoomMembers    []*RoomMember `gorm:"foreignKey:RoomID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 	Movies         []*Movie      `gorm:"foreignKey:RoomID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
+	Status         RoomStatus    `gorm:"not null;default:2"`
 }
 
 func (r *Room) BeforeCreate(tx *gorm.DB) error {
@@ -71,22 +71,21 @@ func (r *Room) IsActive() bool {
 }
 
 type RoomSettings struct {
-	ID                     string               `gorm:"primaryKey;type:char(32)" json:"-"`
 	UpdatedAt              time.Time            `gorm:"autoUpdateTime" json:"-"`
-	Hidden                 bool                 `gorm:"default:false" json:"hidden"`
-	DisableJoinNewUser     bool                 `gorm:"default:false" json:"disable_join_new_user"`
-	JoinNeedReview         bool                 `gorm:"default:false" json:"join_need_review"`
+	ID                     string               `gorm:"primaryKey;type:char(32)" json:"-"`
 	UserDefaultPermissions RoomMemberPermission `json:"user_default_permissions"`
-	DisableGuest           bool                 `gorm:"default:false" json:"disable_guest"`
 	GuestPermissions       RoomMemberPermission `json:"guest_permissions"`
-
-	CanGetMovieList     bool `gorm:"default:true" json:"can_get_movie_list"`
-	CanAddMovie         bool `gorm:"default:true" json:"can_add_movie"`
-	CanDeleteMovie      bool `gorm:"default:true" json:"can_delete_movie"`
-	CanEditMovie        bool `gorm:"default:true" json:"can_edit_movie"`
-	CanSetCurrentMovie  bool `gorm:"default:true" json:"can_set_current_movie"`
-	CanSetCurrentStatus bool `gorm:"default:true" json:"can_set_current_status"`
-	CanSendChatMessage  bool `gorm:"default:true" json:"can_send_chat_message"`
+	DisableGuest           bool                 `gorm:"default:false" json:"disable_guest"`
+	JoinNeedReview         bool                 `gorm:"default:false" json:"join_need_review"`
+	DisableJoinNewUser     bool                 `gorm:"default:false" json:"disable_join_new_user"`
+	Hidden                 bool                 `gorm:"default:false" json:"hidden"`
+	CanGetMovieList        bool                 `gorm:"default:true" json:"can_get_movie_list"`
+	CanAddMovie            bool                 `gorm:"default:true" json:"can_add_movie"`
+	CanDeleteMovie         bool                 `gorm:"default:true" json:"can_delete_movie"`
+	CanEditMovie           bool                 `gorm:"default:true" json:"can_edit_movie"`
+	CanSetCurrentMovie     bool                 `gorm:"default:true" json:"can_set_current_movie"`
+	CanSetCurrentStatus    bool                 `gorm:"default:true" json:"can_set_current_status"`
+	CanSendChatMessage     bool                 `gorm:"default:true" json:"can_send_chat_message"`
 }
 
 func DefaultRoomSettings() *RoomSettings {

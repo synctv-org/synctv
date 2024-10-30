@@ -58,19 +58,21 @@ func EmbyAuthorizationCacheWithUserIDInitFunc(userID, serverID string) (*EmbyUse
 
 type EmbySource struct {
 	URL         string
-	IsTranscode bool
 	Name        string
-	Subtitles   []struct {
-		URL   string
-		Type  string
-		Name  string
-		Cache *refreshcache0.RefreshCache[[]byte]
-	}
+	Subtitles   []*EmbySubtitleCache
+	IsTranscode bool
+}
+
+type EmbySubtitleCache struct {
+	Cache *refreshcache0.RefreshCache[[]byte]
+	URL   string
+	Type  string
+	Name  string
 }
 
 type EmbyMovieCacheData struct {
-	Sources            []EmbySource
 	TranscodeSessionID string
+	Sources            []EmbySource
 }
 
 type EmbyMovieCache = refreshcache1.RefreshCache[*EmbyMovieCacheData, *EmbyUserCache]
@@ -211,12 +213,7 @@ func NewEmbyMovieCacheInitFunc(movie *model.Movie, subPath string) func(ctx cont
 							name = msi.DisplayLanguage
 						}
 					}
-					resp.Sources[i].Subtitles = append(resp.Sources[i].Subtitles, struct {
-						URL   string
-						Type  string
-						Name  string
-						Cache *refreshcache0.RefreshCache[[]byte]
-					}{
+					resp.Sources[i].Subtitles = append(resp.Sources[i].Subtitles, &EmbySubtitleCache{
 						URL:   url,
 						Type:  subtutleType,
 						Name:  name,

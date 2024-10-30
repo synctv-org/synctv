@@ -17,11 +17,11 @@ import (
 )
 
 type Room struct {
-	model.Room
 	current *current
 	hub     atomic.Pointer[Hub]
 	movies  *movies
 	members rwmap.RWMap[string, *model.RoomMember]
+	model.Room
 }
 
 func (r *Room) lazyInitHub() *Hub {

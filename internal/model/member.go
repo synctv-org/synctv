@@ -140,13 +140,13 @@ func (p RoomAdminPermission) Remove(permission RoomAdminPermission) RoomAdminPer
 type RoomMember struct {
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
-	UserID           string           `gorm:"primarykey;type:char(32)"`
-	RoomID           string           `gorm:"primarykey;type:char(32)"`
-	Room             *Room            `gorm:"foreignKey:RoomID;references:ID"`
-	Status           RoomMemberStatus `gorm:"not null;default:2"`
-	Role             RoomMemberRole   `gorm:"not null;default:1"`
+	Room             *Room  `gorm:"foreignKey:RoomID;references:ID"`
+	UserID           string `gorm:"primarykey;type:char(32)"`
+	RoomID           string `gorm:"primarykey;type:char(32)"`
 	Permissions      RoomMemberPermission
 	AdminPermissions RoomAdminPermission
+	Status           RoomMemberStatus `gorm:"not null;default:2"`
+	Role             RoomMemberRole   `gorm:"not null;default:1"`
 }
 
 var ErrNoPermission = errors.New("no permission")

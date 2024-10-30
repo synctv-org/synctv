@@ -24,12 +24,14 @@ type Float64Setting interface {
 var _ Float64Setting = (*Float64)(nil)
 
 type Float64 struct {
-	value uint64
+	validator  func(float64) error
+	beforeInit func(Float64Setting, float64) (float64, error)
+	beforeSet  func(Float64Setting, float64) (float64, error)
+	afterInit  func(Float64Setting, float64)
+	afterSet   func(Float64Setting, float64)
 	setting
-	defaultValue          float64
-	validator             func(float64) error
-	beforeInit, beforeSet func(Float64Setting, float64) (float64, error)
-	afterInit, afterSet   func(Float64Setting, float64)
+	value        uint64
+	defaultValue float64
 }
 
 type Float64SettingOption func(*Float64)

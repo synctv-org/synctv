@@ -198,16 +198,16 @@ type MoviesResp struct {
 
 type Movie struct {
 	Id        string          `json:"id"`
-	CreatedAt int64           `json:"createAt"`
-	Base      model.MovieBase `json:"base"`
 	Creator   string          `json:"creator"`
 	CreatorId string          `json:"creatorId"`
 	SubPath   string          `json:"subPath"`
+	Base      model.MovieBase `json:"base"`
+	CreatedAt int64           `json:"createAt"`
 }
 
 type CurrentMovieResp struct {
-	Status   op.Status `json:"status"`
 	Movie    *Movie    `json:"movie"`
+	Status   op.Status `json:"status"`
 	ExpireId uint64    `json:"expireId"`
 }
 

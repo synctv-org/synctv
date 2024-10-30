@@ -14,8 +14,8 @@ var ErrSettingAlreadyInited = errors.New("setting already inited")
 var _ heap.Interface[maxHeapItem] = (*maxHeap)(nil)
 
 type maxHeapItem struct {
-	priority int
 	Setting
+	priority int
 }
 
 type maxHeap struct {

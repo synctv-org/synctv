@@ -12,10 +12,10 @@ import (
 type MapRefreshFunc0[T any] func(ctx context.Context, key string) (T, error)
 
 type MapCache0[T any] struct {
-	lock        sync.RWMutex
 	cache       map[string]*refreshcache0.RefreshCache[T]
 	refreshFunc MapRefreshFunc0[T]
 	maxAge      time.Duration
+	lock        sync.RWMutex
 }
 
 func newMapCache0[T any](refreshFunc MapRefreshFunc0[T], maxAge time.Duration) *MapCache0[T] {

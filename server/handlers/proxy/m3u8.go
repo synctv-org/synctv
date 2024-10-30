@@ -18,11 +18,11 @@ import (
 )
 
 type m3u8TargetClaims struct {
+	jwt.RegisteredClaims
 	RoomId     string `json:"r"`
 	MovieId    string `json:"m"`
 	TargetUrl  string `json:"t"`
 	IsM3u8File bool   `json:"f"`
-	jwt.RegisteredClaims
 }
 
 func GetM3u8Target(token string) (*m3u8TargetClaims, error) {

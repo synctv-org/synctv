@@ -17,11 +17,11 @@ import (
 )
 
 type User struct {
-	model.User
-	version       uint32
 	alistCache    atomic.Pointer[cache.AlistUserCache]
 	bilibiliCache atomic.Pointer[cache.BilibiliUserCache]
 	embyCache     atomic.Pointer[cache.EmbyUserCache]
+	model.User
+	version uint32
 }
 
 func (u *User) AlistCache() *cache.AlistUserCache {

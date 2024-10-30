@@ -23,15 +23,14 @@ type Etcd struct {
 }
 
 type Backend struct {
+	Consul    Consul `gorm:"embedded;embeddedPrefix:consul_" json:"consul"`
+	Etcd      Etcd   `gorm:"embedded;embeddedPrefix:etcd_" json:"etcd"`
 	Endpoint  string `gorm:"primaryKey;type:varchar(512)" json:"endpoint"`
 	Comment   string `gorm:"type:text" json:"comment"`
-	Tls       bool   `gorm:"default:false" json:"tls"`
 	JwtSecret string `gorm:"type:varchar(256)" json:"jwtSecret"`
 	CustomCA  string `gorm:"type:text" json:"customCA"`
 	TimeOut   string `gorm:"default:10s" json:"timeOut"`
-
-	Consul Consul `gorm:"embedded;embeddedPrefix:consul_" json:"consul"`
-	Etcd   Etcd   `gorm:"embedded;embeddedPrefix:etcd_" json:"etcd"`
+	Tls       bool   `gorm:"default:false" json:"tls"`
 }
 
 func (b *Backend) Validate() error {
@@ -52,18 +51,18 @@ func (b *Backend) Validate() error {
 type VendorBackend struct {
 	CreatedAt time.Time
 	UpdatedAt time.Time
-	Backend   Backend       `gorm:"embedded;embeddedPrefix:backend_" json:"backend"`
 	UsedBy    BackendUsedBy `gorm:"embedded;embeddedPrefix:used_by_" json:"usedBy"`
+	Backend   Backend       `gorm:"embedded;embeddedPrefix:backend_" json:"backend"`
 }
 
 type BackendUsedBy struct {
+	BilibiliBackendName string `gorm:"type:varchar(64)" json:"bilibiliBackendName"`
+	AlistBackendName    string `gorm:"type:varchar(64)" json:"alistBackendName"`
+	EmbyBackendName     string `gorm:"type:varchar(64)" json:"embyBackendName"`
 	Enabled             bool   `gorm:"default:false" json:"enabled"`
 	Bilibili            bool   `gorm:"default:false" json:"bilibili"`
-	BilibiliBackendName string `gorm:"type:varchar(64)" json:"bilibiliBackendName"`
 	Alist               bool   `gorm:"default:false" json:"alist"`
-	AlistBackendName    string `gorm:"type:varchar(64)" json:"alistBackendName"`
 	Emby                bool   `gorm:"default:false" json:"emby"`
-	EmbyBackendName     string `gorm:"type:varchar(64)" json:"embyBackendName"`
 }
 
 func (v *VendorBackend) BeforeSave(tx *gorm.DB) error {

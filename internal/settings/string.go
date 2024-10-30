@@ -22,13 +22,15 @@ type StringSetting interface {
 var _ StringSetting = (*String)(nil)
 
 type String struct {
+	validator    func(string) error
+	beforeInit   func(StringSetting, string) (string, error)
+	beforeSet    func(StringSetting, string) (string, error)
+	afterInit    func(StringSetting, string)
+	afterSet     func(StringSetting, string)
+	defaultValue string
+	value        string
 	setting
-	defaultValue          string
-	lock                  sync.RWMutex
-	value                 string
-	validator             func(string) error
-	beforeInit, beforeSet func(StringSetting, string) (string, error)
-	afterInit, afterSet   func(StringSetting, string)
+	lock sync.RWMutex
 }
 
 type StringSettingOption func(*String)

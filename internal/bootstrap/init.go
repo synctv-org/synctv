@@ -19,8 +19,8 @@ func WithTask(f ...BootstrapFunc) BootstrapConf {
 }
 
 type Bootstrap struct {
-	task []BootstrapFunc
 	ctx  context.Context
+	task []BootstrapFunc
 }
 
 func New(conf ...BootstrapConf) *Bootstrap {

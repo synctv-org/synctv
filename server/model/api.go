@@ -13,9 +13,9 @@ var (
 )
 
 type ApiResp struct {
-	Time  int64  `json:"time"`
-	Error string `json:"error,omitempty"`
 	Data  any    `json:"data,omitempty"`
+	Error string `json:"error,omitempty"`
+	Time  int64  `json:"time"`
 }
 
 func (ar *ApiResp) SetError(err error) {

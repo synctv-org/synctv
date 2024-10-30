@@ -11,8 +11,8 @@ import (
 )
 
 type dbVersion struct {
-	NextVersion string
 	Upgrade     func(*gorm.DB) error
+	NextVersion string
 }
 
 const CurrentVersion = "0.0.10"

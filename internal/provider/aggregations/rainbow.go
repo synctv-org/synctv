@@ -102,11 +102,11 @@ func (p *rainbowGenericProvider) NewAuthURL(ctx context.Context, state string) (
 }
 
 type rainbowNewAuthURLResp struct {
-	Code    int    `json:"code"`
-	ErrCode int    `json:"errcode"`
 	Msg     string `json:"msg"`
 	Type    string `json:"type"`
 	URL     string `json:"url"`
+	Code    int    `json:"code"`
+	ErrCode int    `json:"errcode"`
 }
 
 func (p *rainbowGenericProvider) GetUserInfo(ctx context.Context, code string) (*provider.UserInfo, error) {
@@ -150,12 +150,12 @@ func (p *rainbowGenericProvider) GetUserInfo(ctx context.Context, code string) (
 }
 
 type rainbowUserInfo struct {
-	Code      int    `json:"code"`
-	ErrCode   int    `json:"errcode"`
 	Msg       string `json:"msg"`
 	Type      string `json:"type"`
 	SocialUID string `json:"social_uid"`
 	Nickname  string `json:"nickname"`
+	Code      int    `json:"code"`
+	ErrCode   int    `json:"errcode"`
 }
 
 func (r *Rainbow) ExtractProvider(p provider.OAuth2Provider) (provider.ProviderInterface, error) {

@@ -18,7 +18,7 @@ RUN curl -sL \
     --version=${VERSION} \
     --bin-name-no-suffix \
     --force-gcc='gcc -static --static' \
-    --force-g++='g++ -static --static'
+    --force-gxx='g++ -static --static'
 
 FROM alpine:latest
 

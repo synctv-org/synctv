@@ -38,6 +38,7 @@ require (
 	github.com/zijiren233/gencontainer v0.0.0-20241028165332-af5906dd24c9
 	github.com/zijiren233/go-colorable v0.0.0-20230930131441-997304c961cb
 	github.com/zijiren233/go-uhc v0.2.6
+	github.com/zijiren233/ksync v0.2.0
 	github.com/zijiren233/livelib v0.3.3
 	github.com/zijiren233/stream v0.5.2
 	github.com/zijiren233/yaml-comment v0.2.2

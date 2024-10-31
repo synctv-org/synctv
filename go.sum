@@ -386,6 +386,8 @@ github.com/zijiren233/go-colorable v0.0.0-20230930131441-997304c961cb h1:0DyOxf/
 github.com/zijiren233/go-colorable v0.0.0-20230930131441-997304c961cb/go.mod h1:6TCzjDiQ8+5gWZiwsC3pnA5M0vUy2jV2Y7ciHJh729g=
 github.com/zijiren233/go-uhc v0.2.6 h1:7VG21KWa/o6jpOAqG08x9FUX4+Rj8GJRbhIpOuk4sxs=
 github.com/zijiren233/go-uhc v0.2.6/go.mod h1:4thRoKeIFjYBa1bB+/fVzL9IjxlXA8V8gnnQDVRfILI=
+github.com/zijiren233/ksync v0.2.0 h1:OyXVXbVQYFEVfWM13NApt4LMHbLQ3HTs4oYcLmqL6NE=
+github.com/zijiren233/ksync v0.2.0/go.mod h1:YNvvoErcbtF86Xn18J8QJ14jKOXinxFVOzyp4hn8FKw=
 github.com/zijiren233/livelib v0.3.3 h1:0hbOK9RJzdduOp2GE4MWi/pqHy7ifxGQeZh4x9zxXGo=
 github.com/zijiren233/livelib v0.3.3/go.mod h1:vEjPSCaZ9RAen2efc1lmjCoFV/3zpPtjVV5ngS2q/nE=
 github.com/zijiren233/stream v0.5.2 h1:K8xPvXtETH7qo9P99xdvi7q0MXALfxb1XBtzpz/Zn0A=

@@ -33,6 +33,12 @@ func ProxyURL(ctx *gin.Context, u string, headers map[string]string) error {
 			return errors.New("not allow proxy to local")
 		}
 	}
+	if r := ctx.GetHeader("Range"); r != "" {
+		rsc := NewHttpReadSeekCloser(u, WithHeadersMap(headers))
+		defer rsc.Close()
+		NewSliceCacheProxy(u, 1024*512, rsc, defaultCache).ServeHTTP(ctx.Writer, ctx.Request)
+		return nil
+	}
 	ctx2, cf := context.WithCancel(ctx)
 	defer cf()
 	req, err := http.NewRequestWithContext(ctx2, http.MethodGet, u, nil)

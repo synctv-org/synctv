@@ -19,7 +19,6 @@ import (
 	"github.com/synctv-org/synctv/internal/provider/plugins"
 	"github.com/synctv-org/synctv/internal/provider/providers"
 	"github.com/synctv-org/synctv/internal/settings"
-	"github.com/synctv-org/synctv/utils"
 	"github.com/zijiren233/gencontainer/refreshcache0"
 )
 
@@ -83,11 +82,6 @@ func InitProvider(ctx context.Context) (err error) {
 		logLevle = hclog.Debug
 	}
 	for _, op := range conf.Conf.Oauth2Plugins {
-		op.PluginFile, err = utils.OptFilePath(op.PluginFile)
-		if err != nil {
-			log.Fatalf("oauth2 plugin file path error: %v", err)
-			return err
-		}
 		log.Infof("load oauth2 plugin: %s", op.PluginFile)
 		err := os.MkdirAll(filepath.Dir(op.PluginFile), 0o755)
 		if err != nil {

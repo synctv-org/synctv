@@ -7,13 +7,36 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/gin-gonic/gin"
+	log "github.com/sirupsen/logrus"
+	"github.com/synctv-org/synctv/internal/conf"
 	"github.com/synctv-org/synctv/internal/settings"
 	"github.com/synctv-org/synctv/server/model"
 	"github.com/synctv-org/synctv/utils"
 	"github.com/zijiren233/go-uhc"
 )
+
+var (
+	defaultCache  Cache = NewMemoryCache()
+	fileCacheOnce sync.Once
+	fileCache     Cache
+)
+
+func getCache() Cache {
+	fileCacheOnce.Do(func() {
+		if conf.Conf.Server.ProxyCachePath == "" {
+			return
+		}
+		log.Infof("proxy cache path: %s", conf.Conf.Server.ProxyCachePath)
+		fileCache = NewFileCache(conf.Conf.Server.ProxyCachePath)
+	})
+	if fileCache != nil {
+		return fileCache
+	}
+	return defaultCache
+}
 
 func ProxyURL(ctx *gin.Context, u string, headers map[string]string, cache bool) error {
 	if !settings.AllowProxyToLocal.Get() {
@@ -34,15 +57,16 @@ func ProxyURL(ctx *gin.Context, u string, headers map[string]string, cache bool)
 		}
 	}
 
-	if cache {
+	if cache && settings.ProxyCacheEnable.Get() {
 		rsc := NewHttpReadSeekCloser(u,
 			WithHeadersMap(headers),
 			WithNotSupportRange(ctx.GetHeader("Range") == ""),
 		)
 		defer rsc.Close()
-		NewSliceCacheProxy(u, 1024*512, rsc, defaultCache).ServeHTTP(ctx.Writer, ctx.Request)
-		return nil
+		return NewSliceCacheProxy(u, 1024*512, rsc, getCache()).
+			Proxy(ctx.Writer, ctx.Request)
 	}
+
 	ctx2, cf := context.WithCancel(ctx)
 	defer cf()
 	req, err := http.NewRequestWithContext(ctx2, http.MethodGet, u, nil)

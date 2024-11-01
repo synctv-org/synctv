@@ -3,6 +3,7 @@ package bootstrap
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 
 	"github.com/caarlos0/env/v9"
@@ -53,6 +54,33 @@ func InitConfig(ctx context.Context) (err error) {
 			log.Fatalf("load config from env error: %v", err)
 		}
 		log.Info("load config success from env")
+	}
+	return optConfigPath(conf.Conf)
+}
+
+func optConfigPath(conf *conf.Config) error {
+	var err error
+	conf.Server.ProxyCachePath, err = utils.OptFilePath(conf.Server.ProxyCachePath)
+	if err != nil {
+		return fmt.Errorf("get proxy cache path error: %w", err)
+	}
+	conf.Server.Http.CertPath, err = utils.OptFilePath(conf.Server.Http.CertPath)
+	if err != nil {
+		return fmt.Errorf("get http cert path error: %w", err)
+	}
+	conf.Server.Http.KeyPath, err = utils.OptFilePath(conf.Server.Http.KeyPath)
+	if err != nil {
+		return fmt.Errorf("get http key path error: %w", err)
+	}
+	conf.Log.FilePath, err = utils.OptFilePath(conf.Log.FilePath)
+	if err != nil {
+		return fmt.Errorf("get log file path error: %w", err)
+	}
+	for _, op := range conf.Oauth2Plugins {
+		op.PluginFile, err = utils.OptFilePath(op.PluginFile)
+		if err != nil {
+			return fmt.Errorf("get oauth2 plugin file path error: %w", err)
+		}
 	}
 	return nil
 }

@@ -298,6 +298,9 @@ func getLocalIPs() []net.IP {
 }
 
 func OptFilePath(filePath string) (string, error) {
+	if filePath == "" {
+		return "", nil
+	}
 	if !filepath.IsAbs(filePath) {
 		return filepath.Abs(filepath.Join(flags.Global.DataDir, filePath))
 	}

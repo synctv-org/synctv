@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/synctv-org/synctv/utils"
 )
 
 var (
@@ -33,6 +35,7 @@ type HttpReadSeekCloser struct {
 	contentLength         int64
 	length                int64
 	currentRespMaxOffset  int64
+	notSupportRange       bool
 }
 
 type HttpReadSeekerConf func(h *HttpReadSeekCloser)
@@ -131,7 +134,7 @@ func NewHttpReadSeekCloser(url string, conf ...HttpReadSeekerConf) *HttpReadSeek
 		contentLength: -1,
 		method:        http.MethodGet,
 		headMethod:    http.MethodHead,
-		length:        64 * 1024, // Default length
+		length:        1024 * 1024 * 16,
 		headers:       make(http.Header),
 		ctx:           context.Background(),
 		client:        http.DefaultClient,
@@ -225,7 +228,22 @@ func (h *HttpReadSeekCloser) FetchNextChunk() error {
 		return fmt.Errorf("do request: %w", err)
 	}
 
-	if resp.StatusCode != http.StatusPartialContent && resp.StatusCode != http.StatusOK {
+	if resp.StatusCode == http.StatusOK {
+		if h.contentLength < 0 {
+			h.contentLength = resp.ContentLength
+			resp.Body.Close()
+			return h.FetchNextChunk()
+		}
+		if h.offset > 0 {
+			resp.Body.Close()
+			return fmt.Errorf("not support range")
+		}
+		h.notSupportRange = true
+		h.currentRespMaxOffset = h.contentLength - 1
+		return nil
+	}
+
+	if resp.StatusCode != http.StatusPartialContent {
 		resp.Body.Close()
 		return fmt.Errorf("status code: %d", resp.StatusCode)
 	}
@@ -235,19 +253,13 @@ func (h *HttpReadSeekCloser) FetchNextChunk() error {
 		return fmt.Errorf("check response: %w", err)
 	}
 
-	switch resp.StatusCode {
-	case http.StatusPartialContent:
-		contentTotalLength, err := ParseContentRangeTotalLength(resp.Header.Get("Content-Range"))
-		if err == nil && contentTotalLength > 0 {
-			h.contentLength = contentTotalLength
-		}
-		_, end, err := ParseContentRangeStartAndEnd(resp.Header.Get("Content-Range"))
-		if err == nil {
-			h.currentRespMaxOffset = end
-		}
-	case http.StatusOK:
-		h.contentLength = resp.ContentLength
-		h.currentRespMaxOffset = h.contentLength - 1
+	contentTotalLength, err := ParseContentRangeTotalLength(resp.Header.Get("Content-Range"))
+	if err == nil && contentTotalLength > 0 {
+		h.contentLength = contentTotalLength
+	}
+	_, end, err := ParseContentRangeStartAndEnd(resp.Header.Get("Content-Range"))
+	if err == nil && end != -1 {
+		h.currentRespMaxOffset = end
 	}
 
 	h.contentType = resp.Header.Get("Content-Type")
@@ -267,6 +279,8 @@ func (h *HttpReadSeekCloser) createRequest() (*http.Request, error) {
 		end = h.contentLength - 1
 	}
 
+	h.currentRespMaxOffset = end
+
 	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", h.offset, end))
 	return req, nil
 }
@@ -277,6 +291,10 @@ func (h *HttpReadSeekCloser) createRequestWithoutRange() (*http.Request, error) 
 		return nil, err
 	}
 	req.Header = h.headers.Clone()
+	req.Header.Del("Range")
+	if req.Header.Get("User-Agent") == "" {
+		req.Header.Set("User-Agent", utils.UA)
+	}
 	return req, nil
 }
 
@@ -337,6 +355,9 @@ func (h *HttpReadSeekCloser) Seek(offset int64, whence int) (int64, error) {
 }
 
 func (h *HttpReadSeekCloser) calculateNewOffset(offset int64, whence int) (int64, error) {
+	if offset != 0 && h.notSupportRange {
+		return 0, fmt.Errorf("not support range")
+	}
 	switch whence {
 	case io.SeekStart:
 		return offset, nil
@@ -366,6 +387,10 @@ func (h *HttpReadSeekCloser) fetchContentLength() error {
 		return err
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("status code: %d", resp.StatusCode)
+	}
 
 	if err := h.checkResponse(resp); err != nil {
 		return err
@@ -435,17 +460,15 @@ func ParseContentRangeStartAndEnd(contentRange string) (int64, int64, error) {
 		return 0, 0, fmt.Errorf("invalid content range start: %w", err)
 	}
 
-	end, err := strconv.ParseInt(strings.TrimSpace(rangeParts[1]), 10, 64)
-	if err != nil {
-		return 0, 0, fmt.Errorf("invalid content range end: %w", err)
-	}
-
-	if start < 0 || end < 0 {
-		return 0, 0, fmt.Errorf("negative content range bounds: start=%d, end=%d", start, end)
-	}
-
-	if start > end {
-		return 0, 0, fmt.Errorf("invalid content range bounds: start=%d > end=%d", start, end)
+	rangeParts[1] = strings.TrimSpace(rangeParts[1])
+	var end int64
+	if rangeParts[1] == "" || rangeParts[1] == "*" {
+		end = -1
+	} else {
+		end, err = strconv.ParseInt(rangeParts[1], 10, 64)
+		if err != nil {
+			return 0, 0, fmt.Errorf("invalid content range end: %w", err)
+		}
 	}
 
 	return start, end, nil

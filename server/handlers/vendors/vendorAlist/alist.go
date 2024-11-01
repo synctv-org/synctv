@@ -134,7 +134,7 @@ func (s *alistVendorService) ProxyMovie(ctx *gin.Context) {
 			ctx.Data(http.StatusOK, "audio/mpegurl", data.Ali.M3U8ListFile)
 			return
 		case "raw":
-			err := proxy.AutoProxyURL(ctx, data.URL, s.movie.MovieBase.Type, nil, ctx.GetString("token"), s.movie.RoomID, s.movie.ID)
+			err := proxy.AutoProxyURL(ctx, data.URL, s.movie.MovieBase.Type, nil, true, ctx.GetString("token"), s.movie.RoomID, s.movie.ID)
 			if err != nil {
 				log.Errorf("proxy vendor movie error: %v", err)
 			}
@@ -173,7 +173,7 @@ func (s *alistVendorService) ProxyMovie(ctx *gin.Context) {
 			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("proxy is not enabled"))
 			return
 		}
-		err = proxy.AutoProxyURL(ctx, data.URL, s.movie.MovieBase.Type, nil, ctx.GetString("token"), s.movie.RoomID, s.movie.ID)
+		err = proxy.AutoProxyURL(ctx, data.URL, s.movie.MovieBase.Type, nil, true, ctx.GetString("token"), s.movie.RoomID, s.movie.ID)
 		if err != nil {
 			log.Errorf("proxy vendor movie error: %v", err)
 		}

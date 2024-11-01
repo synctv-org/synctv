@@ -28,20 +28,20 @@ func ParseByteRange(r string) (*ByteRange, error) {
 	}
 
 	if !strings.HasPrefix(r, "bytes=") {
-		return nil, fmt.Errorf("invalid range prefix: %s", r)
+		return nil, fmt.Errorf("range header must start with 'bytes=', got: %s", r)
 	}
 
 	r = strings.TrimPrefix(r, "bytes=")
 	parts := strings.Split(r, "-")
 	if len(parts) != 2 {
-		return nil, fmt.Errorf("invalid range format: %s", r)
+		return nil, fmt.Errorf("range header must contain exactly one hyphen (-) separator, got: %s", r)
 	}
 
 	parts[0] = strings.TrimSpace(parts[0])
 	parts[1] = strings.TrimSpace(parts[1])
 
 	if parts[0] == "" && parts[1] == "" {
-		return nil, fmt.Errorf("empty range values")
+		return nil, fmt.Errorf("range header cannot have empty start and end values: %s", r)
 	}
 
 	var start, end int64 = 0, -1
@@ -50,23 +50,23 @@ func ParseByteRange(r string) (*ByteRange, error) {
 	if parts[0] != "" {
 		start, err = strconv.ParseInt(parts[0], 10, 64)
 		if err != nil {
-			return nil, fmt.Errorf("invalid range start: %s", parts[0])
+			return nil, fmt.Errorf("failed to parse range start value '%s': %v", parts[0], err)
 		}
 		if start < 0 {
-			return nil, fmt.Errorf("negative range start: %d", start)
+			return nil, fmt.Errorf("range start value must be non-negative, got: %d", start)
 		}
 	}
 
 	if parts[1] != "" {
 		end, err = strconv.ParseInt(parts[1], 10, 64)
 		if err != nil {
-			return nil, fmt.Errorf("invalid range end: %s", parts[1])
+			return nil, fmt.Errorf("failed to parse range end value '%s': %v", parts[1], err)
 		}
 		if end < 0 {
-			return nil, fmt.Errorf("negative range end: %d", end)
+			return nil, fmt.Errorf("range end value must be non-negative, got: %d", end)
 		}
 		if start > end {
-			return nil, fmt.Errorf("invalid range: start (%d) greater than end (%d)", start, end)
+			return nil, fmt.Errorf("range start value (%d) cannot be greater than end value (%d)", start, end)
 		}
 	}
 
@@ -81,9 +81,6 @@ type CacheMetadata struct {
 }
 
 func (m *CacheMetadata) MarshalBinary() ([]byte, error) {
-	if m == nil {
-		return nil, fmt.Errorf("nil metadata")
-	}
 	return json.Marshal(m)
 }
 
@@ -95,47 +92,43 @@ type CacheItem struct {
 
 // WriteTo implements io.WriterTo to serialize the cache item
 func (i *CacheItem) WriteTo(w io.Writer) (int64, error) {
-	if i == nil {
-		return 0, fmt.Errorf("nil cache item")
+	if w == nil {
+		return 0, fmt.Errorf("cannot write to nil io.Writer")
 	}
 
 	if i.Metadata == nil {
-		return 0, fmt.Errorf("nil metadata")
-	}
-
-	if w == nil {
-		return 0, fmt.Errorf("nil writer")
+		return 0, fmt.Errorf("CacheItem contains nil Metadata")
 	}
 
 	metadata, err := i.Metadata.MarshalBinary()
 	if err != nil {
-		return 0, fmt.Errorf("marshal metadata: %w", err)
+		return 0, fmt.Errorf("failed to marshal metadata: %w", err)
 	}
 
 	var written int64
 
 	// Write metadata length and metadata
 	if err := binary.Write(w, binary.BigEndian, int64(len(metadata))); err != nil {
-		return written, fmt.Errorf("write metadata length: %w", err)
+		return written, fmt.Errorf("failed to write metadata length: %w", err)
 	}
 	written += 8
 
 	n, err := w.Write(metadata)
 	written += int64(n)
 	if err != nil {
-		return written, fmt.Errorf("write metadata: %w", err)
+		return written, fmt.Errorf("failed to write metadata bytes: %w", err)
 	}
 
 	// Write data length and data
 	if err := binary.Write(w, binary.BigEndian, int64(len(i.Data))); err != nil {
-		return written, fmt.Errorf("write data length: %w", err)
+		return written, fmt.Errorf("failed to write data length: %w", err)
 	}
 	written += 8
 
 	n, err = w.Write(i.Data)
 	written += int64(n)
 	if err != nil {
-		return written, fmt.Errorf("write data: %w", err)
+		return written, fmt.Errorf("failed to write data bytes: %w", err)
 	}
 
 	return written, nil
@@ -143,12 +136,8 @@ func (i *CacheItem) WriteTo(w io.Writer) (int64, error) {
 
 // ReadFrom implements io.ReaderFrom to deserialize the cache item
 func (i *CacheItem) ReadFrom(r io.Reader) (int64, error) {
-	if i == nil {
-		return 0, fmt.Errorf("nil cache item")
-	}
-
 	if r == nil {
-		return 0, fmt.Errorf("nil reader")
+		return 0, fmt.Errorf("cannot read from nil io.Reader")
 	}
 
 	var read int64
@@ -156,42 +145,42 @@ func (i *CacheItem) ReadFrom(r io.Reader) (int64, error) {
 	// Read metadata length and metadata
 	var metadataLen int64
 	if err := binary.Read(r, binary.BigEndian, &metadataLen); err != nil {
-		return read, fmt.Errorf("read metadata length: %w", err)
+		return read, fmt.Errorf("failed to read metadata length: %w", err)
 	}
 	read += 8
 
 	if metadataLen <= 0 {
-		return read, fmt.Errorf("invalid metadata length: %d", metadataLen)
+		return read, fmt.Errorf("metadata length must be positive, got: %d", metadataLen)
 	}
 
 	metadata := make([]byte, metadataLen)
 	n, err := io.ReadFull(r, metadata)
 	read += int64(n)
 	if err != nil {
-		return read, fmt.Errorf("read metadata: %w", err)
+		return read, fmt.Errorf("failed to read metadata bytes: %w", err)
 	}
 
 	i.Metadata = new(CacheMetadata)
 	if err := json.Unmarshal(metadata, i.Metadata); err != nil {
-		return read, fmt.Errorf("unmarshal metadata: %w", err)
+		return read, fmt.Errorf("failed to unmarshal metadata: %w", err)
 	}
 
 	// Read data length and data
 	var dataLen int64
 	if err := binary.Read(r, binary.BigEndian, &dataLen); err != nil {
-		return read, fmt.Errorf("read data length: %w", err)
+		return read, fmt.Errorf("failed to read data length: %w", err)
 	}
 	read += 8
 
 	if dataLen < 0 {
-		return read, fmt.Errorf("invalid data length: %d", dataLen)
+		return read, fmt.Errorf("data length cannot be negative, got: %d", dataLen)
 	}
 
 	i.Data = make([]byte, dataLen)
 	n, err = io.ReadFull(r, i.Data)
 	read += int64(n)
 	if err != nil {
-		return read, fmt.Errorf("read data: %w", err)
+		return read, fmt.Errorf("failed to read data bytes: %w", err)
 	}
 
 	return read, nil
@@ -219,7 +208,7 @@ func NewMemoryCache() *MemoryCache {
 
 func (c *MemoryCache) Get(key string) (*CacheItem, bool, error) {
 	if key == "" {
-		return nil, false, fmt.Errorf("empty key")
+		return nil, false, fmt.Errorf("cache key cannot be empty")
 	}
 
 	c.mu.RLock()
@@ -233,10 +222,10 @@ func (c *MemoryCache) Get(key string) (*CacheItem, bool, error) {
 
 func (c *MemoryCache) Set(key string, data *CacheItem) error {
 	if key == "" {
-		return fmt.Errorf("empty key")
+		return fmt.Errorf("cache key cannot be empty")
 	}
 	if data == nil {
-		return fmt.Errorf("nil cache item")
+		return fmt.Errorf("cannot cache nil CacheItem")
 	}
 
 	c.mu.Lock()
@@ -327,28 +316,27 @@ func (c *SliceCacheProxy) fmtContentLength(start, end, total int64) string {
 func (c *SliceCacheProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	byteRange, err := ParseByteRange(r.Header.Get("Range"))
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(w, fmt.Sprintf("Failed to parse Range header: %v", err), http.StatusBadRequest)
 		return
 	}
 
 	alignedOffset := c.alignedOffset(byteRange.Start)
 	cacheItem, err := c.getCacheItem(alignedOffset)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("Failed to get cache item: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	c.setResponseHeaders(w, byteRange, cacheItem)
+	c.setResponseHeaders(w, byteRange, cacheItem, r.Header.Get("Range") != "")
 	if err := c.writeResponse(w, byteRange, alignedOffset, cacheItem); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		fmt.Printf("Failed to write response: %v\n", err)
+		fmt.Printf("Failed to write response: %v\n", err)
+		fmt.Printf("Failed to write response: %v\n", err)
 		return
 	}
 }
 
-func (c *SliceCacheProxy) setResponseHeaders(w http.ResponseWriter, byteRange *ByteRange, cacheItem *CacheItem) {
-	contentRange := c.fmtContentRange(byteRange.Start, byteRange.End, cacheItem.Metadata.ContentTotalLength)
-	w.Header().Set("Content-Type", cacheItem.Metadata.ContentType)
-
+func (c *SliceCacheProxy) setResponseHeaders(w http.ResponseWriter, byteRange *ByteRange, cacheItem *CacheItem, hasRange bool) {
 	// Copy headers excluding special ones
 	for k, v := range cacheItem.Metadata.Headers {
 		switch k {
@@ -359,21 +347,21 @@ func (c *SliceCacheProxy) setResponseHeaders(w http.ResponseWriter, byteRange *B
 		}
 	}
 
-	w.Header().Set("Accept-Ranges", "bytes")
 	w.Header().Set("Content-Length", c.fmtContentLength(byteRange.Start, byteRange.End, cacheItem.Metadata.ContentTotalLength))
-	w.Header().Set("Content-Range", contentRange)
-
-	w.WriteHeader(http.StatusPartialContent)
+	w.Header().Set("Content-Type", cacheItem.Metadata.ContentType)
+	if hasRange {
+		w.Header().Set("Accept-Ranges", "bytes")
+		w.Header().Set("Content-Range", c.fmtContentRange(byteRange.Start, byteRange.End, cacheItem.Metadata.ContentTotalLength))
+		w.WriteHeader(http.StatusPartialContent)
+	} else {
+		w.WriteHeader(http.StatusOK)
+	}
 }
 
 func (c *SliceCacheProxy) writeResponse(w http.ResponseWriter, byteRange *ByteRange, alignedOffset int64, cacheItem *CacheItem) error {
-	if w == nil || byteRange == nil || cacheItem == nil {
-		return fmt.Errorf("nil parameters")
-	}
-
 	sliceOffset := byteRange.Start - alignedOffset
 	if sliceOffset < 0 {
-		return fmt.Errorf("negative slice offset")
+		return fmt.Errorf("slice offset cannot be negative, got: %d", sliceOffset)
 	}
 
 	remainingLength := c.contentLength(byteRange.Start, byteRange.End, cacheItem.Metadata.ContentTotalLength)
@@ -389,7 +377,7 @@ func (c *SliceCacheProxy) writeResponse(w http.ResponseWriter, byteRange *ByteRa
 		}
 		if n > 0 {
 			if _, err := w.Write(cacheItem.Data[sliceOffset : sliceOffset+n]); err != nil {
-				return fmt.Errorf("write initial slice: %w", err)
+				return fmt.Errorf("failed to write initial data slice: %w", err)
 			}
 			remainingLength -= n
 		}
@@ -400,7 +388,7 @@ func (c *SliceCacheProxy) writeResponse(w http.ResponseWriter, byteRange *ByteRa
 	for remainingLength > 0 {
 		cacheItem, err := c.getCacheItem(currentOffset)
 		if err != nil {
-			return fmt.Errorf("get cache item: %w", err)
+			return fmt.Errorf("failed to get cache item at offset %d: %w", currentOffset, err)
 		}
 
 		n := int64(len(cacheItem.Data))
@@ -409,7 +397,7 @@ func (c *SliceCacheProxy) writeResponse(w http.ResponseWriter, byteRange *ByteRa
 		}
 		if n > 0 {
 			if _, err := w.Write(cacheItem.Data[:n]); err != nil {
-				return fmt.Errorf("write slice: %w", err)
+				return fmt.Errorf("failed to write data slice at offset %d: %w", currentOffset, err)
 			}
 			remainingLength -= n
 		}
@@ -421,7 +409,7 @@ func (c *SliceCacheProxy) writeResponse(w http.ResponseWriter, byteRange *ByteRa
 
 func (c *SliceCacheProxy) getCacheItem(alignedOffset int64) (*CacheItem, error) {
 	if alignedOffset < 0 {
-		return nil, fmt.Errorf("negative offset")
+		return nil, fmt.Errorf("cache item offset cannot be negative, got: %d", alignedOffset)
 	}
 
 	cacheKey := c.cacheKey(alignedOffset)
@@ -431,7 +419,7 @@ func (c *SliceCacheProxy) getCacheItem(alignedOffset int64) (*CacheItem, error) 
 	// Try to get from cache first
 	slice, ok, err := c.cache.Get(cacheKey)
 	if err != nil {
-		return nil, fmt.Errorf("get from cache: %w", err)
+		return nil, fmt.Errorf("failed to get item from cache: %w", err)
 	}
 	if ok {
 		return slice, nil
@@ -440,12 +428,12 @@ func (c *SliceCacheProxy) getCacheItem(alignedOffset int64) (*CacheItem, error) 
 	// Fetch from source if not in cache
 	slice, err = c.fetchFromSource(alignedOffset)
 	if err != nil {
-		return nil, fmt.Errorf("fetch from source: %w", err)
+		return nil, fmt.Errorf("failed to fetch item from source: %w", err)
 	}
 
 	// Store in cache
 	if err = c.cache.Set(cacheKey, slice); err != nil {
-		return nil, fmt.Errorf("set cache: %w", err)
+		return nil, fmt.Errorf("failed to store item in cache: %w", err)
 	}
 
 	return slice, nil
@@ -453,16 +441,16 @@ func (c *SliceCacheProxy) getCacheItem(alignedOffset int64) (*CacheItem, error) 
 
 func (c *SliceCacheProxy) fetchFromSource(offset int64) (*CacheItem, error) {
 	if offset < 0 {
-		return nil, fmt.Errorf("negative offset")
+		return nil, fmt.Errorf("source offset cannot be negative, got: %d", offset)
 	}
 	if _, err := c.r.Seek(offset, io.SeekStart); err != nil {
-		return nil, fmt.Errorf("seek source: %w", err)
+		return nil, fmt.Errorf("failed to seek to offset %d in source: %w", offset, err)
 	}
 
 	buf := make([]byte, c.sliceSize)
 	n, err := io.ReadFull(c.r, buf)
 	if err != nil && err != io.ErrUnexpectedEOF {
-		return nil, fmt.Errorf("read source: %w", err)
+		return nil, fmt.Errorf("failed to read %d bytes from source at offset %d: %w", c.sliceSize, offset, err)
 	}
 
 	var headers http.Header
@@ -474,12 +462,12 @@ func (c *SliceCacheProxy) fetchFromSource(offset int64) (*CacheItem, error) {
 
 	contentTotalLength, err := c.r.ContentTotalLength()
 	if err != nil {
-		return nil, fmt.Errorf("get content total length: %w", err)
+		return nil, fmt.Errorf("failed to get content total length from source: %w", err)
 	}
 
 	contentType, err := c.r.ContentType()
 	if err != nil {
-		return nil, fmt.Errorf("get content type: %w", err)
+		return nil, fmt.Errorf("failed to get content type from source: %w", err)
 	}
 
 	return &CacheItem{

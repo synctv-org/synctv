@@ -15,7 +15,7 @@ import (
 	"github.com/zijiren233/go-uhc"
 )
 
-func ProxyURL(ctx *gin.Context, u string, headers map[string]string) error {
+func ProxyURL(ctx *gin.Context, u string, headers map[string]string, cache bool) error {
 	if !settings.AllowProxyToLocal.Get() {
 		if l, err := utils.ParseURLIsLocalIP(u); err != nil {
 			ctx.AbortWithStatusJSON(http.StatusBadRequest,
@@ -33,8 +33,12 @@ func ProxyURL(ctx *gin.Context, u string, headers map[string]string) error {
 			return errors.New("not allow proxy to local")
 		}
 	}
-	if r := ctx.GetHeader("Range"); r != "" {
-		rsc := NewHttpReadSeekCloser(u, WithHeadersMap(headers))
+
+	if cache {
+		rsc := NewHttpReadSeekCloser(u,
+			WithHeadersMap(headers),
+			WithNotSupportRange(ctx.GetHeader("Range") == ""),
+		)
 		defer rsc.Close()
 		NewSliceCacheProxy(u, 1024*512, rsc, defaultCache).ServeHTTP(ctx.Writer, ctx.Request)
 		return nil
@@ -109,9 +113,9 @@ func ProxyURL(ctx *gin.Context, u string, headers map[string]string) error {
 	return nil
 }
 
-func AutoProxyURL(ctx *gin.Context, u, t string, headers map[string]string, token, roomId, movieId string) error {
+func AutoProxyURL(ctx *gin.Context, u, t string, headers map[string]string, cache bool, token, roomId, movieId string) error {
 	if strings.HasPrefix(t, "m3u") || utils.IsM3u8Url(u) {
-		return ProxyM3u8(ctx, u, headers, true, token, roomId, movieId)
+		return ProxyM3u8(ctx, u, headers, cache, true, token, roomId, movieId)
 	}
-	return ProxyURL(ctx, u, headers)
+	return ProxyURL(ctx, u, headers, cache)
 }

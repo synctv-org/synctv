@@ -55,9 +55,10 @@ func NewM3u8TargetToken(targetUrl, roomId, movieId string, isM3u8File bool) (str
 
 const maxM3u8FileSize = 3 * 1024 * 1024 //
 
-func ProxyM3u8(ctx *gin.Context, u string, headers map[string]string, isM3u8File bool, token, roomId, movieId string) error {
+// only cache non-m3u8 files
+func ProxyM3u8(ctx *gin.Context, u string, headers map[string]string, cache bool, isM3u8File bool, token, roomId, movieId string) error {
 	if !isM3u8File {
-		return ProxyURL(ctx, u, headers)
+		return ProxyURL(ctx, u, headers, cache)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)

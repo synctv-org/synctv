@@ -78,7 +78,7 @@ type EmbyMovieCacheData struct {
 type EmbyMovieCache = refreshcache1.RefreshCache[*EmbyMovieCacheData, *EmbyUserCache]
 
 func NewEmbyMovieCache(movie *model.Movie, subPath string) *EmbyMovieCache {
-	cache := refreshcache1.NewRefreshCache(NewEmbyMovieCacheInitFunc(movie, subPath), 0)
+	cache := refreshcache1.NewRefreshCache(NewEmbyMovieCacheInitFunc(movie, subPath), -1)
 	cache.SetClearFunc(NewEmbyMovieClearCacheFunc(movie, subPath))
 	return cache
 }
@@ -217,7 +217,7 @@ func NewEmbyMovieCacheInitFunc(movie *model.Movie, subPath string) func(ctx cont
 						URL:   url,
 						Type:  subtutleType,
 						Name:  name,
-						Cache: refreshcache0.NewRefreshCache(newEmbySubtitleCacheInitFunc(url), 0),
+						Cache: refreshcache0.NewRefreshCache(newEmbySubtitleCacheInitFunc(url), -1),
 					})
 				}
 			}

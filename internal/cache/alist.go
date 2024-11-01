@@ -135,7 +135,7 @@ func newAliSubtitles(list []*alist.FsOtherResp_VideoPreviewPlayInfo_LiveTranscod
 					return nil, fmt.Errorf("status code: %d", resp.StatusCode)
 				}
 				return io.ReadAll(resp.Body)
-			}, 0),
+			}, -1),
 			Name: v.Language,
 			URL:  v.Url,
 			Type: utils.GetFileExtension(v.Url),

@@ -380,8 +380,8 @@ github.com/yuin/goldmark v1.2.1/go.mod h1:3hX8gzYuyVAZsxl0MRgGTJEmQBFcNTphYh9dec
 github.com/yuin/goldmark v1.4.13/go.mod h1:6yULJ656Px+3vBD8DxQVa3kxgyrAnzto9xy5taEt/CY=
 github.com/zencoder/go-dash/v3 v3.0.3 h1:xqwGJ2fJCSArwONGx6sY26Z1lxQ7zTURoxdRjCpuodM=
 github.com/zencoder/go-dash/v3 v3.0.3/go.mod h1:30R5bKy1aUYY45yesjtZ9l8trNc2TwNqbS17WVQmCzk=
-github.com/zijiren233/gencontainer v0.0.0-20241028165332-af5906dd24c9 h1:CbBpXy3eFGY5+pmTOUp7EyE4Uq9LvyY9vbvROUyl2zs=
-github.com/zijiren233/gencontainer v0.0.0-20241028165332-af5906dd24c9/go.mod h1:bt31/uEP7Eq5qEEW+I/9AzCsueDohCwXLwy/rnLpNPY=
+github.com/zijiren233/gencontainer v0.0.0-20241030052007-1f7025eb92f5 h1:/3MxA7C04j+3npN+uQw8EV5lcH4vhDWcLHLG+EaBp2Y=
+github.com/zijiren233/gencontainer v0.0.0-20241030052007-1f7025eb92f5/go.mod h1:bt31/uEP7Eq5qEEW+I/9AzCsueDohCwXLwy/rnLpNPY=
 github.com/zijiren233/go-colorable v0.0.0-20230930131441-997304c961cb h1:0DyOxf/TbbGodHhOVHNoPk+7v/YBJACs22gKpKlatWw=
 github.com/zijiren233/go-colorable v0.0.0-20230930131441-997304c961cb/go.mod h1:6TCzjDiQ8+5gWZiwsC3pnA5M0vUy2jV2Y7ciHJh729g=
 github.com/zijiren233/go-uhc v0.2.6 h1:7VG21KWa/o6jpOAqG08x9FUX4+Rj8GJRbhIpOuk4sxs=

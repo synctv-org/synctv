@@ -370,7 +370,7 @@ func NewBilibiliMovieCache(movie *model.Movie) *BilibiliMovieCache {
 	return &BilibiliMovieCache{
 		NoSharedMovie: newMapCache(NewBilibiliNoSharedMovieCacheInitFunc(movie), time.Minute*60),
 		SharedMpd:     refreshcache1.NewRefreshCache(NewBilibiliSharedMpdCacheInitFunc(movie), time.Minute*60),
-		Subtitle:      refreshcache1.NewRefreshCache(NewBilibiliSubtitleCacheInitFunc(movie), 0),
+		Subtitle:      refreshcache1.NewRefreshCache(NewBilibiliSubtitleCacheInitFunc(movie), -1),
 		Live:          refreshcache0.NewRefreshCache(NewBilibiliLiveCacheInitFunc(movie), time.Minute*55),
 	}
 }
@@ -386,7 +386,7 @@ func NewBilibiliUserCache(userID string) *BilibiliUserCache {
 	f := BilibiliAuthorizationCacheWithUserIDInitFunc(userID)
 	return refreshcache.NewRefreshCache(func(ctx context.Context, args ...struct{}) (*BilibiliUserCacheData, error) {
 		return f(ctx)
-	}, 0)
+	}, -1)
 }
 
 func BilibiliAuthorizationCacheWithUserIDInitFunc(userID string) func(ctx context.Context, args ...struct{}) (*BilibiliUserCacheData, error) {

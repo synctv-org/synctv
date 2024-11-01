@@ -4,6 +4,7 @@ type ServerConfig struct {
 	Http           HttpServerConfig `yaml:"http"`
 	Rtmp           RtmpServerConfig `yaml:"rtmp"`
 	ProxyCachePath string           `yaml:"proxy_cache_path" env:"SERVER_PROXY_CACHE_PATH"`
+	ProxyCacheSize string           `yaml:"proxy_cache_size" env:"SERVER_PROXY_CACHE_SIZE"`
 }
 
 type HttpServerConfig struct {

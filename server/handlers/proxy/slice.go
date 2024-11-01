@@ -44,8 +44,8 @@ func NewSliceCacheProxy(key string, sliceSize int64, r Proxy, cache Cache) *Slic
 	}
 }
 
-func (c *SliceCacheProxy) cacheKey(offset int64) string {
-	key := fmt.Sprintf("%s-%d-%d", c.key, offset, c.sliceSize)
+func cacheKey(key string, offset int64, sliceSize int64) string {
+	key = fmt.Sprintf("%s-%d-%d", key, offset, sliceSize)
 	hash := sha256.Sum256([]byte(key))
 	return hex.EncodeToString(hash[:])
 }
@@ -194,7 +194,7 @@ func (c *SliceCacheProxy) getCacheItem(alignedOffset int64) (*CacheItem, error) 
 		return nil, fmt.Errorf("cache item offset cannot be negative, got: %d", alignedOffset)
 	}
 
-	cacheKey := c.cacheKey(alignedOffset)
+	cacheKey := cacheKey(c.key, alignedOffset, c.sliceSize)
 	mu.Lock(cacheKey)
 	defer mu.Unlock(cacheKey)
 

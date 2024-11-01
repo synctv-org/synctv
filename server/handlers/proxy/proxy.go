@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -19,18 +20,56 @@ import (
 )
 
 var (
-	defaultCache  Cache = NewMemoryCache()
+	defaultCache  *MemoryCache
 	fileCacheOnce sync.Once
 	fileCache     Cache
 )
 
+// MB GB KB
+func parseProxyCacheSize(sizeStr string) (int64, error) {
+	if sizeStr == "" {
+		return 0, nil
+	}
+	sizeStr = strings.ToLower(sizeStr)
+	sizeStr = strings.TrimSpace(sizeStr)
+
+	var multiplier int64 = 1024 * 1024 // Default MB
+
+	if strings.HasSuffix(sizeStr, "gb") {
+		multiplier = 1024 * 1024 * 1024
+		sizeStr = strings.TrimSuffix(sizeStr, "gb")
+	} else if strings.HasSuffix(sizeStr, "mb") {
+		multiplier = 1024 * 1024
+		sizeStr = strings.TrimSuffix(sizeStr, "mb")
+	} else if strings.HasSuffix(sizeStr, "kb") {
+		multiplier = 1024
+		sizeStr = strings.TrimSuffix(sizeStr, "kb")
+	}
+
+	size, err := strconv.ParseInt(strings.TrimSpace(sizeStr), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid size format: %w", err)
+	}
+
+	return size * multiplier, nil
+}
+
 func getCache() Cache {
 	fileCacheOnce.Do(func() {
+		size, err := parseProxyCacheSize(conf.Conf.Server.ProxyCacheSize)
+		if err != nil {
+			log.Fatalf("parse proxy cache size error: %v", err)
+		}
+		if size == 0 {
+			size = 1024 * 1024 * 1024
+		}
 		if conf.Conf.Server.ProxyCachePath == "" {
+			log.Infof("proxy cache path is empty, use memory cache, size: %d", size)
+			defaultCache = NewMemoryCache(0, WithMaxSizeBytes(size))
 			return
 		}
-		log.Infof("proxy cache path: %s", conf.Conf.Server.ProxyCachePath)
-		fileCache = NewFileCache(conf.Conf.Server.ProxyCachePath)
+		log.Infof("proxy cache path: %s, size: %d", conf.Conf.Server.ProxyCachePath, size)
+		fileCache = NewFileCache(conf.Conf.Server.ProxyCachePath, WithFileCacheMaxSizeBytes(size))
 	})
 	if fileCache != nil {
 		return fileCache

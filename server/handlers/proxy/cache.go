@@ -7,9 +7,13 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	json "github.com/json-iterator/go"
+	"github.com/zijiren233/gencontainer/dllist"
 	"github.com/zijiren233/ksync"
 )
 
@@ -21,7 +25,7 @@ type Cache interface {
 
 // CacheMetadata stores metadata about a cached response
 type CacheMetadata struct {
-	Headers            http.Header `json:"headers"` // Excludes content-type, content-range, content-length
+	Headers            http.Header `json:"headers"`
 	ContentType        string      `json:"content_type"`
 	ContentTotalLength int64       `json:"content_total_length"`
 }
@@ -53,7 +57,7 @@ func (i *CacheItem) WriteTo(w io.Writer) (int64, error) {
 
 	var written int64
 
-	// Write metadata length and metadata
+	// Write metadata length and content
 	if err := binary.Write(w, binary.BigEndian, int64(len(metadata))); err != nil {
 		return written, fmt.Errorf("failed to write metadata length: %w", err)
 	}
@@ -65,7 +69,7 @@ func (i *CacheItem) WriteTo(w io.Writer) (int64, error) {
 		return written, fmt.Errorf("failed to write metadata bytes: %w", err)
 	}
 
-	// Write data length and data
+	// Write data length and content
 	if err := binary.Write(w, binary.BigEndian, int64(len(i.Data))); err != nil {
 		return written, fmt.Errorf("failed to write data length: %w", err)
 	}
@@ -88,7 +92,7 @@ func (i *CacheItem) ReadFrom(r io.Reader) (int64, error) {
 
 	var read int64
 
-	// Read metadata length and metadata
+	// Read metadata length and content
 	var metadataLen int64
 	if err := binary.Read(r, binary.BigEndian, &metadataLen); err != nil {
 		return read, fmt.Errorf("failed to read metadata length: %w", err)
@@ -111,7 +115,7 @@ func (i *CacheItem) ReadFrom(r io.Reader) (int64, error) {
 		return read, fmt.Errorf("failed to unmarshal metadata: %w", err)
 	}
 
-	// Read data length and data
+	// Read data length and content
 	var dataLen int64
 	if err := binary.Read(r, binary.BigEndian, &dataLen); err != nil {
 		return read, fmt.Errorf("failed to read data length: %w", err)
@@ -132,16 +136,40 @@ func (i *CacheItem) ReadFrom(r io.Reader) (int64, error) {
 	return read, nil
 }
 
-// MemoryCache implements an in-memory Cache with thread-safe operations
+// MemoryCache implements an in-memory Cache with LRU eviction
 type MemoryCache struct {
-	m  map[string]*CacheItem
-	mu sync.RWMutex
+	m            map[string]*dllist.Element[*cacheEntry]
+	lruList      *dllist.Dllist[*cacheEntry]
+	capacity     int
+	maxSizeBytes int64
+	currentSize  int64
+	mu           sync.RWMutex
 }
 
-func NewMemoryCache() *MemoryCache {
-	return &MemoryCache{
-		m: make(map[string]*CacheItem),
+type MemoryCacheOption func(*MemoryCache)
+
+func WithMaxSizeBytes(size int64) MemoryCacheOption {
+	return func(c *MemoryCache) {
+		c.maxSizeBytes = size
 	}
+}
+
+type cacheEntry struct {
+	item *CacheItem
+	key  string
+	size int64
+}
+
+func NewMemoryCache(capacity int, opts ...MemoryCacheOption) *MemoryCache {
+	mc := &MemoryCache{
+		m:        make(map[string]*dllist.Element[*cacheEntry]),
+		lruList:  dllist.New[*cacheEntry](),
+		capacity: capacity,
+	}
+	for _, opt := range opts {
+		opt(mc)
+	}
+	return mc
 }
 
 func (c *MemoryCache) Get(key string) (*CacheItem, bool, error) {
@@ -150,11 +178,19 @@ func (c *MemoryCache) Get(key string) (*CacheItem, bool, error) {
 	}
 
 	c.mu.RLock()
-	defer c.mu.RUnlock()
-	item, ok := c.m[key]
-	if !ok {
+	element, exists := c.m[key]
+	if !exists {
+		c.mu.RUnlock()
 		return nil, false, nil
 	}
+
+	// Upgrade to write lock for moving element
+	c.mu.RUnlock()
+	c.mu.Lock()
+	c.lruList.MoveToFront(element)
+	item := element.Value.item
+	c.mu.Unlock()
+
 	return item, true, nil
 }
 
@@ -166,19 +202,192 @@ func (c *MemoryCache) Set(key string, data *CacheItem) error {
 		return fmt.Errorf("cannot cache nil CacheItem")
 	}
 
+	// Calculate size of new item
+	newSize := int64(len(data.Data))
+	if data.Metadata != nil {
+		metadataBytes, err := data.Metadata.MarshalBinary()
+		if err == nil {
+			newSize += int64(len(metadataBytes))
+		}
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.m[key] = data
+
+	// Update existing entry if present
+	if element, ok := c.m[key]; ok {
+		c.currentSize -= element.Value.size
+		c.currentSize += newSize
+		c.lruList.MoveToFront(element)
+		element.Value.item = data
+		element.Value.size = newSize
+		return nil
+	}
+
+	// Evict entries if needed
+	for c.lruList.Len() > 0 &&
+		((c.capacity > 0 && c.lruList.Len() >= c.capacity) ||
+			(c.maxSizeBytes > 0 && c.currentSize+newSize > c.maxSizeBytes)) {
+
+		if back := c.lruList.Back(); back != nil {
+			entry := back.Value
+			c.currentSize -= entry.size
+			delete(c.m, entry.key)
+			c.lruList.Remove(back)
+		}
+	}
+
+	// Add new entry
+	newEntry := &cacheEntry{key: key, item: data, size: newSize}
+	element := c.lruList.PushFront(newEntry)
+	c.m[key] = element
+	c.currentSize += newSize
 	return nil
 }
 
 type FileCache struct {
-	mu       *ksync.Krwmutex
-	filePath string
+	mu           *ksync.Krwmutex
+	filePath     string
+	maxSizeBytes int64
+	currentSize  atomic.Int64
+	lastCleanup  atomic.Int64
+	maxAge       time.Duration
+	cleanMu      sync.Mutex
 }
 
-func NewFileCache(filePath string) *FileCache {
-	return &FileCache{filePath: filePath, mu: ksync.DefaultKrwmutex()}
+type FileCacheOption func(*FileCache)
+
+func WithFileCacheMaxSizeBytes(size int64) FileCacheOption {
+	return func(c *FileCache) {
+		c.maxSizeBytes = size
+	}
+}
+
+func WithFileCacheMaxAge(age time.Duration) FileCacheOption {
+	return func(c *FileCache) {
+		if age > 0 {
+			c.maxAge = age
+		}
+	}
+}
+
+func NewFileCache(filePath string, opts ...FileCacheOption) *FileCache {
+	fc := &FileCache{
+		filePath: filePath,
+		mu:       ksync.DefaultKrwmutex(),
+		maxAge:   24 * time.Hour, // Default 1 day
+	}
+
+	for _, opt := range opts {
+		opt(fc)
+	}
+
+	go fc.periodicCleanup()
+	return fc
+}
+
+func (c *FileCache) periodicCleanup() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		c.cleanup()
+	}
+}
+
+func (c *FileCache) cleanup() {
+	maxSize := c.maxSizeBytes
+	if maxSize <= 0 {
+		return
+	}
+
+	// Avoid frequent cleanups
+	now := time.Now().Unix()
+	if now-c.lastCleanup.Load() < 300 {
+		return
+	}
+
+	c.cleanMu.Lock()
+	defer c.cleanMu.Unlock()
+
+	// Double check after acquiring lock
+	if now-c.lastCleanup.Load() < 300 {
+		return
+	}
+
+	entries, err := os.ReadDir(c.filePath)
+	if err != nil {
+		return
+	}
+
+	type fileInfo struct {
+		modTime time.Time
+		path    string
+		size    int64
+	}
+
+	var files []fileInfo
+	var totalSize int64
+	cutoffTime := time.Now().Add(-c.maxAge)
+
+	// Collect file information and remove expired files
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+
+		subdir := filepath.Join(c.filePath, entry.Name())
+		subEntries, err := os.ReadDir(subdir)
+		if err != nil {
+			continue
+		}
+
+		for _, subEntry := range subEntries {
+			info, err := subEntry.Info()
+			if err != nil {
+				continue
+			}
+
+			fullPath := filepath.Join(subdir, subEntry.Name())
+
+			// Remove expired files
+			if info.ModTime().Before(cutoffTime) {
+				os.Remove(fullPath)
+				continue
+			}
+
+			files = append(files, fileInfo{
+				path:    fullPath,
+				size:    info.Size(),
+				modTime: info.ModTime(),
+			})
+			totalSize += info.Size()
+		}
+	}
+
+	// If under size limit, just update size and return
+	if totalSize <= maxSize {
+		c.currentSize.Store(totalSize)
+		c.lastCleanup.Store(now)
+		return
+	}
+
+	// Sort by modification time (oldest first) and remove until under limit
+	sort.Slice(files, func(i, j int) bool {
+		return files[i].modTime.Before(files[j].modTime)
+	})
+
+	for _, file := range files {
+		if totalSize <= maxSize {
+			break
+		}
+		if err := os.Remove(file.path); err == nil {
+			totalSize -= file.size
+		}
+	}
+
+	c.currentSize.Store(totalSize)
+	c.lastCleanup.Store(now)
 }
 
 func (c *FileCache) Get(key string) (*CacheItem, bool, error) {
@@ -186,7 +395,8 @@ func (c *FileCache) Get(key string) (*CacheItem, bool, error) {
 		return nil, false, fmt.Errorf("cache key cannot be empty")
 	}
 
-	filePath := filepath.Join(c.filePath, key)
+	prefix := string(key[0])
+	filePath := filepath.Join(c.filePath, prefix, key)
 
 	c.mu.RLock(key)
 	defer c.mu.RUnlock(key)
@@ -199,6 +409,14 @@ func (c *FileCache) Get(key string) (*CacheItem, bool, error) {
 		return nil, false, fmt.Errorf("failed to open cache file: %w", err)
 	}
 	defer file.Close()
+
+	// Check if file is expired
+	if info, err := file.Stat(); err == nil {
+		if time.Since(info.ModTime()) > c.maxAge {
+			os.Remove(filePath)
+			return nil, false, nil
+		}
+	}
 
 	item := &CacheItem{}
 	if _, err := item.ReadFrom(file); err != nil {
@@ -216,14 +434,31 @@ func (c *FileCache) Set(key string, data *CacheItem) error {
 		return fmt.Errorf("cannot cache nil CacheItem")
 	}
 
+	// Check and cleanup if needed
+	maxSize := c.maxSizeBytes
+	if maxSize > 0 {
+		newSize := int64(len(data.Data))
+		if data.Metadata != nil {
+			if metadataBytes, err := data.Metadata.MarshalBinary(); err == nil {
+				newSize += int64(len(metadataBytes))
+			}
+		}
+		if c.currentSize.Load()+newSize > maxSize {
+			c.cleanup()
+		}
+	}
+
+	prefix := string(key[0])
+	dirPath := filepath.Join(c.filePath, prefix)
+	filePath := filepath.Join(dirPath, key)
+
 	c.mu.Lock(key)
 	defer c.mu.Unlock(key)
 
-	if err := os.MkdirAll(c.filePath, 0o755); err != nil {
+	if err := os.MkdirAll(dirPath, 0o755); err != nil {
 		return fmt.Errorf("failed to create cache directory: %w", err)
 	}
 
-	filePath := filepath.Join(c.filePath, key)
 	file, err := os.OpenFile(filePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
 	if err != nil {
 		return fmt.Errorf("failed to create cache file: %w", err)
@@ -232,6 +467,10 @@ func (c *FileCache) Set(key string, data *CacheItem) error {
 
 	if _, err := data.WriteTo(file); err != nil {
 		return fmt.Errorf("failed to write cache item: %w", err)
+	}
+
+	if info, err := file.Stat(); err == nil {
+		c.currentSize.Add(info.Size())
 	}
 
 	return nil

@@ -125,6 +125,11 @@ func (s *embyVendorService) ProxyMovie(ctx *gin.Context) {
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
 			return
 		}
+		if len(embyC.Sources) == 0 {
+			log.Errorf("proxy vendor movie error: %v", "no source")
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("no source"))
+			return
+		}
 		source, err := strconv.Atoi(ctx.Query("source"))
 		if err != nil {
 			log.Errorf("proxy vendor movie error: %v", err)
@@ -136,22 +141,11 @@ func (s *embyVendorService) ProxyMovie(ctx *gin.Context) {
 			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("source out of range"))
 			return
 		}
-		id, err := strconv.Atoi(ctx.Query("source"))
-		if err != nil {
-			log.Errorf("proxy vendor movie error: %v", err)
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
-			return
-		}
-		if id >= len(embyC.Sources[source].URL) {
-			log.Errorf("proxy vendor movie error: %v", "id out of range")
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("id out of range"))
-			return
-		}
 		if embyC.Sources[source].IsTranscode {
 			ctx.Redirect(http.StatusFound, embyC.Sources[source].URL)
 			return
 		}
-		err = proxy.AutoProxyURL(ctx, embyC.Sources[source].URL, "", nil, ctx.GetString("token"), s.movie.RoomID, s.movie.ID)
+		err = proxy.AutoProxyURL(ctx, embyC.Sources[source].URL, "", nil, true, ctx.GetString("token"), s.movie.RoomID, s.movie.ID)
 		if err != nil {
 			log.Errorf("proxy vendor movie error: %v", err)
 		}

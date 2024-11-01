@@ -6,16 +6,78 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/gin-gonic/gin"
+	log "github.com/sirupsen/logrus"
+	"github.com/synctv-org/synctv/internal/conf"
 	"github.com/synctv-org/synctv/internal/settings"
 	"github.com/synctv-org/synctv/server/model"
 	"github.com/synctv-org/synctv/utils"
 	"github.com/zijiren233/go-uhc"
 )
 
-func ProxyURL(ctx *gin.Context, u string, headers map[string]string) error {
+var (
+	defaultCache  *MemoryCache
+	fileCacheOnce sync.Once
+	fileCache     Cache
+)
+
+// MB GB KB
+func parseProxyCacheSize(sizeStr string) (int64, error) {
+	if sizeStr == "" {
+		return 0, nil
+	}
+	sizeStr = strings.ToLower(sizeStr)
+	sizeStr = strings.TrimSpace(sizeStr)
+
+	var multiplier int64 = 1024 * 1024 // Default MB
+
+	if strings.HasSuffix(sizeStr, "gb") {
+		multiplier = 1024 * 1024 * 1024
+		sizeStr = strings.TrimSuffix(sizeStr, "gb")
+	} else if strings.HasSuffix(sizeStr, "mb") {
+		multiplier = 1024 * 1024
+		sizeStr = strings.TrimSuffix(sizeStr, "mb")
+	} else if strings.HasSuffix(sizeStr, "kb") {
+		multiplier = 1024
+		sizeStr = strings.TrimSuffix(sizeStr, "kb")
+	}
+
+	size, err := strconv.ParseInt(strings.TrimSpace(sizeStr), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid size format: %w", err)
+	}
+
+	return size * multiplier, nil
+}
+
+func getCache() Cache {
+	fileCacheOnce.Do(func() {
+		size, err := parseProxyCacheSize(conf.Conf.Server.ProxyCacheSize)
+		if err != nil {
+			log.Fatalf("parse proxy cache size error: %v", err)
+		}
+		if size == 0 {
+			size = 1024 * 1024 * 1024
+		}
+		if conf.Conf.Server.ProxyCachePath == "" {
+			log.Infof("proxy cache path is empty, use memory cache, size: %d", size)
+			defaultCache = NewMemoryCache(0, WithMaxSizeBytes(size))
+			return
+		}
+		log.Infof("proxy cache path: %s, size: %d", conf.Conf.Server.ProxyCachePath, size)
+		fileCache = NewFileCache(conf.Conf.Server.ProxyCachePath, WithFileCacheMaxSizeBytes(size))
+	})
+	if fileCache != nil {
+		return fileCache
+	}
+	return defaultCache
+}
+
+func ProxyURL(ctx *gin.Context, u string, headers map[string]string, cache bool) error {
 	if !settings.AllowProxyToLocal.Get() {
 		if l, err := utils.ParseURLIsLocalIP(u); err != nil {
 			ctx.AbortWithStatusJSON(http.StatusBadRequest,
@@ -33,6 +95,17 @@ func ProxyURL(ctx *gin.Context, u string, headers map[string]string) error {
 			return errors.New("not allow proxy to local")
 		}
 	}
+
+	if cache && settings.ProxyCacheEnable.Get() {
+		rsc := NewHttpReadSeekCloser(u,
+			WithHeadersMap(headers),
+			WithNotSupportRange(ctx.GetHeader("Range") == ""),
+		)
+		defer rsc.Close()
+		return NewSliceCacheProxy(u, 1024*512, rsc, getCache()).
+			Proxy(ctx.Writer, ctx.Request)
+	}
+
 	ctx2, cf := context.WithCancel(ctx)
 	defer cf()
 	req, err := http.NewRequestWithContext(ctx2, http.MethodGet, u, nil)
@@ -103,9 +176,9 @@ func ProxyURL(ctx *gin.Context, u string, headers map[string]string) error {
 	return nil
 }
 
-func AutoProxyURL(ctx *gin.Context, u, t string, headers map[string]string, token, roomId, movieId string) error {
+func AutoProxyURL(ctx *gin.Context, u, t string, headers map[string]string, cache bool, token, roomId, movieId string) error {
 	if strings.HasPrefix(t, "m3u") || utils.IsM3u8Url(u) {
-		return ProxyM3u8(ctx, u, headers, true, token, roomId, movieId)
+		return ProxyM3u8(ctx, u, headers, cache, true, token, roomId, movieId)
 	}
-	return ProxyURL(ctx, u, headers)
+	return ProxyURL(ctx, u, headers, cache)
 }

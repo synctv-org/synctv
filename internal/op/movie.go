@@ -269,6 +269,8 @@ func (movie *Movie) Validate() error {
 		return nil
 	}
 	switch {
+	case m.Live && m.RtmpSource:
+		return nil
 	case m.Live && m.Proxy:
 		if !settings.LiveProxy.Get() {
 			return errors.New("live proxy is not enabled")
@@ -309,7 +311,7 @@ func (movie *Movie) Validate() error {
 			return fmt.Errorf("unsupported scheme: %s", u.Scheme)
 		}
 	default:
-		return errors.New("unknown error")
+		return errors.New("validate movie error: unknown error")
 	}
 	return nil
 }

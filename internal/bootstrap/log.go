@@ -35,10 +35,6 @@ func InitLog(ctx context.Context) (err error) {
 	setLog(logrus.StandardLogger())
 	forceColor := utils.ForceColor()
 	if conf.Conf.Log.Enable {
-		conf.Conf.Log.FilePath, err = utils.OptFilePath(conf.Conf.Log.FilePath)
-		if err != nil {
-			logrus.Fatalf("log: log file path error: %v", err)
-		}
 		l := &lumberjack.Logger{
 			Filename:   conf.Conf.Log.FilePath,
 			MaxSize:    conf.Conf.Log.MaxSize,

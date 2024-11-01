@@ -59,6 +59,7 @@ var (
 	MovieProxy        = NewBoolSetting("movie_proxy", true, model.SettingGroupProxy)
 	LiveProxy         = NewBoolSetting("live_proxy", true, model.SettingGroupProxy)
 	AllowProxyToLocal = NewBoolSetting("allow_proxy_to_local", false, model.SettingGroupProxy)
+	ProxyCacheEnable  = NewBoolSetting("proxy_cache_enable", false, model.SettingGroupProxy)
 )
 
 var (

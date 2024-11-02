@@ -18,13 +18,8 @@ var mu = ksync.DefaultKmutex()
 // Proxy defines the interface for proxy implementations
 type Proxy interface {
 	io.ReadSeeker
-	AcceptRanges() bool
 	ContentTotalLength() (int64, error)
 	ContentType() (string, error)
-}
-
-type SetContentTotalLength interface {
-	SetContentTotalLength(int64)
 }
 
 // Headers defines the interface for accessing response headers
@@ -114,37 +109,21 @@ func (c *SliceCacheProxy) Proxy(w http.ResponseWriter, r *http.Request) error {
 		return fmt.Errorf("failed to parse Range header: %w", err)
 	}
 
-	isRangeRequest := r.Header.Get("Range") != ""
-
-	if isRangeRequest {
-		// avoid the request exceeding the total length of the file due to the large slice size
-		if st, ok := c.r.(SetContentTotalLength); ok {
-			cacheItem, ok, err := c.cache.GetAnyWithPrefix(cachePrefix(c.key, c.sliceSize))
-			if err != nil {
-				http.Error(w, fmt.Sprintf("Failed to get cache item: %v", err), http.StatusInternalServerError)
-				return fmt.Errorf("failed to get cache item: %w", err)
-			}
-			if ok {
-				st.SetContentTotalLength(cacheItem.Metadata.ContentTotalLength)
-			}
-		}
-	}
-
 	alignedOffset := alignedOffset(byteRange.Start, c.sliceSize)
-	cacheItem, err := c.getCacheItem(alignedOffset)
+	cacheItem, cached, err := c.getCacheItem(alignedOffset)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to get cache item: %v", err), http.StatusInternalServerError)
 		return fmt.Errorf("failed to get cache item: %w", err)
 	}
 
-	c.setResponseHeaders(w, byteRange, cacheItem, isRangeRequest)
+	c.setResponseHeaders(w, byteRange, cacheItem, cached, r.Header.Get("Range") != "")
 	if err := c.writeResponse(w, byteRange, alignedOffset, cacheItem); err != nil {
 		return fmt.Errorf("failed to write response: %w", err)
 	}
 	return nil
 }
 
-func (c *SliceCacheProxy) setResponseHeaders(w http.ResponseWriter, byteRange *ByteRange, cacheItem *CacheItem, isRangeRequest bool) {
+func (c *SliceCacheProxy) setResponseHeaders(w http.ResponseWriter, byteRange *ByteRange, cacheItem *CacheItem, cached bool, isRangeRequest bool) {
 	// Copy headers excluding special ones
 	for k, v := range cacheItem.Metadata.Headers {
 		switch k {
@@ -155,11 +134,12 @@ func (c *SliceCacheProxy) setResponseHeaders(w http.ResponseWriter, byteRange *B
 		}
 	}
 
-	if !cacheItem.Metadata.NotSupportRange {
-		w.Header().Set("Accept-Ranges", "bytes")
+	if cached {
+		w.Header().Set("Cache-Status", "HIT")
 	} else {
-		w.Header().Set("Accept-Ranges", "none")
+		w.Header().Set("Cache-Status", "MISS")
 	}
+	w.Header().Set("Accept-Ranges", "bytes")
 	w.Header().Set("Content-Length", fmtContentLength(byteRange.Start, byteRange.End, cacheItem.Metadata.ContentTotalLength))
 	w.Header().Set("Content-Type", cacheItem.Metadata.ContentType)
 	if isRangeRequest {
@@ -198,7 +178,7 @@ func (c *SliceCacheProxy) writeResponse(w http.ResponseWriter, byteRange *ByteRa
 	// Write subsequent slices
 	currentOffset := alignedOffset + c.sliceSize
 	for remainingLength > 0 {
-		cacheItem, err := c.getCacheItem(currentOffset)
+		cacheItem, _, err := c.getCacheItem(currentOffset)
 		if err != nil {
 			return fmt.Errorf("failed to get cache item at offset %d: %w", currentOffset, err)
 		}
@@ -219,9 +199,9 @@ func (c *SliceCacheProxy) writeResponse(w http.ResponseWriter, byteRange *ByteRa
 	return nil
 }
 
-func (c *SliceCacheProxy) getCacheItem(alignedOffset int64) (*CacheItem, error) {
+func (c *SliceCacheProxy) getCacheItem(alignedOffset int64) (*CacheItem, bool, error) {
 	if alignedOffset < 0 {
-		return nil, fmt.Errorf("cache item offset cannot be negative, got: %d", alignedOffset)
+		return nil, false, fmt.Errorf("cache item offset cannot be negative, got: %d", alignedOffset)
 	}
 
 	cacheKey := cacheKey(c.key, alignedOffset, c.sliceSize)
@@ -231,24 +211,24 @@ func (c *SliceCacheProxy) getCacheItem(alignedOffset int64) (*CacheItem, error) 
 	// Try to get from cache first
 	slice, ok, err := c.cache.Get(cacheKey)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get item from cache: %w", err)
+		return nil, false, fmt.Errorf("failed to get item from cache: %w", err)
 	}
 	if ok {
-		return slice, nil
+		return slice, true, nil
 	}
 
 	// Fetch from source if not in cache
 	slice, err = c.fetchFromSource(alignedOffset)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch item from source: %w", err)
+		return nil, false, fmt.Errorf("failed to fetch item from source: %w", err)
 	}
 
 	// Store in cache
 	if err = c.cache.Set(cacheKey, slice); err != nil {
-		return nil, fmt.Errorf("failed to store item in cache: %w", err)
+		return nil, false, fmt.Errorf("failed to store item in cache: %w", err)
 	}
 
-	return slice, nil
+	return slice, false, nil
 }
 
 func (c *SliceCacheProxy) contentTotalLength() (int64, error) {
@@ -311,7 +291,6 @@ func (c *SliceCacheProxy) fetchFromSource(offset int64) (*CacheItem, error) {
 			Headers:            headers,
 			ContentTotalLength: total,
 			ContentType:        contentType,
-			NotSupportRange:    !c.r.AcceptRanges(),
 		},
 		Data: buf[:n],
 	}, nil

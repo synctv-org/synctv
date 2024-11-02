@@ -22,8 +22,8 @@ type clients struct {
 type Hub struct {
 	broadcast chan *broadcastMessage
 	exit      chan struct{}
-	clients   rwmap.RWMap[string, *clients]
 	id        string
+	clients   rwmap.RWMap[string, *clients]
 	wg        sync.WaitGroup
 	once      utils.Once
 	closed    uint32

@@ -32,9 +32,11 @@ type HttpReadSeekCloser struct {
 	allowedStatusCodes    []int
 	offset                int64
 	contentTotalLength    int64
-	length                int64
+	perLength             int64
 	currentRespMaxOffset  int64
 	notSupportRange       bool
+	// if the server does not support range requests, the seek method will be unusable
+	notSupportSeekWhenNotSupportRange bool
 }
 
 type HttpReadSeekerConf func(h *HttpReadSeekCloser)
@@ -119,17 +121,24 @@ func NotAllowedStatusCodes(codes ...int) HttpReadSeekerConf {
 	}
 }
 
-func WithLength(length int64) HttpReadSeekerConf {
+// sets the per length of the request
+func WithPerLength(length int64) HttpReadSeekerConf {
 	return func(h *HttpReadSeekCloser) {
 		if length > 0 {
-			h.length = length
+			h.perLength = length
 		}
 	}
 }
 
-func WithNotSupportRange(notSupportRange bool) HttpReadSeekerConf {
+func WithForceNotSupportRange(notSupportRange bool) HttpReadSeekerConf {
 	return func(h *HttpReadSeekCloser) {
 		h.notSupportRange = notSupportRange
+	}
+}
+
+func WithNotSupportSeekWhenNotSupportRange(notSupportSeekWhenNotSupportRange bool) HttpReadSeekerConf {
+	return func(h *HttpReadSeekCloser) {
+		h.notSupportSeekWhenNotSupportRange = notSupportSeekWhenNotSupportRange
 	}
 }
 
@@ -139,7 +148,7 @@ func NewHttpReadSeekCloser(url string, conf ...HttpReadSeekerConf) *HttpReadSeek
 		contentTotalLength: -1,
 		method:             http.MethodGet,
 		headMethod:         http.MethodHead,
-		length:             1024 * 1024 * 16,
+		perLength:          1024 * 1024 * 16,
 		headers:            make(http.Header),
 		client:             http.DefaultClient,
 	}
@@ -171,8 +180,8 @@ func (h *HttpReadSeekCloser) fix() *HttpReadSeekCloser {
 	if len(h.notAllowedStatusCodes) == 0 {
 		h.notAllowedStatusCodes = []int{http.StatusNotFound}
 	}
-	if h.length <= 0 {
-		h.length = 64 * 1024
+	if h.perLength <= 0 {
+		h.perLength = 1024 * 1024
 	}
 	if h.headers == nil {
 		h.headers = make(http.Header)
@@ -229,22 +238,36 @@ func (h *HttpReadSeekCloser) FetchNextChunk() error {
 
 	resp, err := h.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("failed to execute HTTP request: %w", err)
+		return fmt.Errorf("failed to execute request: %w", err)
 	}
 
 	h.contentType = resp.Header.Get("Content-Type")
 
 	if resp.StatusCode == http.StatusOK {
-		// if the maximum offset of the current response is less than the content length minus one, it means that the server does not support range requests
-		if h.currentRespMaxOffset < resp.ContentLength-1 || h.notSupportRange {
-			// if the offset is not 0, it means that the seek method is incorrectly used
-			if h.offset != 0 {
-				resp.Body.Close()
-				return fmt.Errorf("server does not support range requests, cannot seek to non-zero offset")
-			}
+		if ar := resp.Header.Get("Accept-Ranges"); ar == "" || ar == "none" {
 			h.notSupportRange = true
+		}
+
+		// if the maximum offset of the current response is less than the content length minus one, it means that the server does not support range requests
+		if h.currentRespMaxOffset < resp.ContentLength-1 {
+			h.notSupportRange = true
+		}
+
+		if h.notSupportRange {
 			h.contentTotalLength = resp.ContentLength
 			h.currentRespMaxOffset = h.contentTotalLength - 1
+
+			// If offset > 0, read and discard bytes until reaching the desired offset
+			if h.offset > 0 {
+				if _, err := io.CopyN(io.Discard, resp.Body, h.offset); err != nil {
+					resp.Body.Close()
+					if err == io.EOF {
+						return io.EOF
+					}
+					return fmt.Errorf("failed to discard bytes: %w", err)
+				}
+			}
+
 			h.currentResp = resp
 			return nil
 		}
@@ -254,12 +277,22 @@ func (h *HttpReadSeekCloser) FetchNextChunk() error {
 			resp.Body.Close()
 			return h.FetchNextChunk()
 		}
-		// if the offset is greater than 0, it means that the seek method is incorrectly used
-		if h.offset > 0 {
+
+		if h.contentTotalLength != resp.ContentLength {
 			resp.Body.Close()
-			return fmt.Errorf("server does not support range requests, cannot seek to offset %d", h.offset)
+			return fmt.Errorf("content length mismatch: %d != %d", h.contentTotalLength, resp.ContentLength)
 		}
+
 		h.notSupportRange = true
+		if h.offset > 0 {
+			if _, err := io.CopyN(io.Discard, resp.Body, h.offset); err != nil {
+				resp.Body.Close()
+				if err == io.EOF {
+					return io.EOF
+				}
+				return fmt.Errorf("failed to discard bytes: %w", err)
+			}
+		}
 		h.currentRespMaxOffset = h.contentTotalLength - 1
 		h.currentResp = resp
 		return nil
@@ -267,7 +300,7 @@ func (h *HttpReadSeekCloser) FetchNextChunk() error {
 
 	if resp.StatusCode != http.StatusPartialContent {
 		resp.Body.Close()
-		return fmt.Errorf("unexpected HTTP status code: %d (expected 206 Partial Content)", resp.StatusCode)
+		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 
 	if err := h.checkResponse(resp); err != nil {
@@ -301,7 +334,7 @@ func (h *HttpReadSeekCloser) createRequest() (*http.Request, error) {
 		return nil, err
 	}
 
-	end := h.offset + h.length - 1
+	end := h.offset + h.perLength - 1
 	if h.contentTotalLength > 0 && end > h.contentTotalLength-1 {
 		end = h.contentTotalLength - 1
 	}
@@ -315,7 +348,7 @@ func (h *HttpReadSeekCloser) createRequest() (*http.Request, error) {
 func (h *HttpReadSeekCloser) createRequestWithoutRange() (*http.Request, error) {
 	req, err := http.NewRequestWithContext(h.ctx, h.method, h.url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create HTTP request: %w", err)
+		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header = h.headers.Clone()
 	req.Header.Del("Range")
@@ -351,13 +384,13 @@ func (h *HttpReadSeekCloser) checkContentType(ct string) error {
 func (h *HttpReadSeekCloser) checkStatusCode(code int) error {
 	if len(h.allowedStatusCodes) != 0 {
 		if slices.Index(h.allowedStatusCodes, code) == -1 {
-			return fmt.Errorf("HTTP status code %d is not in the list of allowed status codes: %v", code, h.allowedStatusCodes)
+			return fmt.Errorf("status code %d is not in the list of allowed status codes: %v", code, h.allowedStatusCodes)
 		}
 		return nil
 	}
 	if len(h.notAllowedStatusCodes) != 0 {
 		if slices.Index(h.notAllowedStatusCodes, code) != -1 {
-			return fmt.Errorf("HTTP status code %d is in the list of not allowed status codes: %v", code, h.notAllowedStatusCodes)
+			return fmt.Errorf("status code %d is in the list of not allowed status codes: %v", code, h.notAllowedStatusCodes)
 		}
 	}
 	return nil
@@ -366,15 +399,20 @@ func (h *HttpReadSeekCloser) checkStatusCode(code int) error {
 func (h *HttpReadSeekCloser) Seek(offset int64, whence int) (int64, error) {
 	newOffset, err := h.calculateNewOffset(offset, whence)
 	if err != nil {
+		h.closeCurrentResp()
 		return 0, fmt.Errorf("failed to calculate new offset: %w", err)
 	}
 
 	if newOffset < 0 {
+		h.closeCurrentResp()
 		return 0, fmt.Errorf("cannot seek to negative offset: %d", newOffset)
 	}
 
 	if newOffset != h.offset {
 		h.closeCurrentResp()
+		if h.notSupportRange && h.notSupportSeekWhenNotSupportRange {
+			return 0, fmt.Errorf("seek is not supported when not support range")
+		}
 		h.offset = newOffset
 	}
 
@@ -384,14 +422,8 @@ func (h *HttpReadSeekCloser) Seek(offset int64, whence int) (int64, error) {
 func (h *HttpReadSeekCloser) calculateNewOffset(offset int64, whence int) (int64, error) {
 	switch whence {
 	case io.SeekStart:
-		if h.notSupportRange && offset != 0 && offset != h.offset {
-			return 0, fmt.Errorf("server does not support range requests, cannot seek to non-zero offset")
-		}
 		return offset, nil
 	case io.SeekCurrent:
-		if h.notSupportRange && offset != 0 {
-			return 0, fmt.Errorf("server does not support range requests, cannot seek to non-zero offset")
-		}
 		return h.offset + offset, nil
 	case io.SeekEnd:
 		if h.contentTotalLength < 0 {
@@ -399,13 +431,9 @@ func (h *HttpReadSeekCloser) calculateNewOffset(offset int64, whence int) (int64
 				return 0, fmt.Errorf("failed to fetch content length: %w", err)
 			}
 		}
-		newOffset := h.contentTotalLength - offset
-		if h.notSupportRange && newOffset != h.offset {
-			return 0, fmt.Errorf("server does not support range requests, cannot seek to non-zero offset")
-		}
-		return newOffset, nil
+		return h.contentTotalLength - offset, nil
 	default:
-		return 0, fmt.Errorf("invalid seek whence value: %d (must be 0, 1, or 2)", whence)
+		return 0, fmt.Errorf("invalid seek whence value: %d", whence)
 	}
 }
 
@@ -461,6 +489,10 @@ func (h *HttpReadSeekCloser) ContentType() (string, error) {
 		return h.contentType, nil
 	}
 	return "", fmt.Errorf("content type is not available - no successful response received yet")
+}
+
+func (h *HttpReadSeekCloser) AcceptRanges() bool {
+	return !h.notSupportRange
 }
 
 func (h *HttpReadSeekCloser) ContentTotalLength() (int64, error) {

@@ -130,7 +130,6 @@ func ProxyURL(ctx *gin.Context, u string, headers map[string]string, opts ...Pro
 		rsc := NewHttpReadSeekCloser(u,
 			WithContext(c),
 			WithHeadersMap(headers),
-			WithNotSupportRange(ctx.GetHeader("Range") == ""),
 		)
 		defer rsc.Close()
 		if o.CacheKey == "" {

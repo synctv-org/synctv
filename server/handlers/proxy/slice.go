@@ -18,6 +18,7 @@ var mu = ksync.DefaultKmutex()
 // Proxy defines the interface for proxy implementations
 type Proxy interface {
 	io.ReadSeeker
+	AcceptRanges() bool
 	ContentTotalLength() (int64, error)
 	ContentType() (string, error)
 }
@@ -133,7 +134,7 @@ func (c *SliceCacheProxy) Proxy(w http.ResponseWriter, r *http.Request) error {
 	cacheItem, err := c.getCacheItem(alignedOffset)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to get cache item: %v", err), http.StatusInternalServerError)
-		return err
+		return fmt.Errorf("failed to get cache item: %w", err)
 	}
 
 	c.setResponseHeaders(w, byteRange, cacheItem, isRangeRequest)
@@ -154,10 +155,14 @@ func (c *SliceCacheProxy) setResponseHeaders(w http.ResponseWriter, byteRange *B
 		}
 	}
 
+	if !cacheItem.Metadata.NotSupportRange {
+		w.Header().Set("Accept-Ranges", "bytes")
+	} else {
+		w.Header().Set("Accept-Ranges", "none")
+	}
 	w.Header().Set("Content-Length", fmtContentLength(byteRange.Start, byteRange.End, cacheItem.Metadata.ContentTotalLength))
 	w.Header().Set("Content-Type", cacheItem.Metadata.ContentType)
 	if isRangeRequest {
-		w.Header().Set("Accept-Ranges", "bytes")
 		w.Header().Set("Content-Range", fmtContentRange(byteRange.Start, byteRange.End, cacheItem.Metadata.ContentTotalLength))
 		w.WriteHeader(http.StatusPartialContent)
 	} else {
@@ -246,6 +251,17 @@ func (c *SliceCacheProxy) getCacheItem(alignedOffset int64) (*CacheItem, error) 
 	return slice, nil
 }
 
+func (c *SliceCacheProxy) contentTotalLength() (int64, error) {
+	total, err := c.r.ContentTotalLength()
+	if err != nil {
+		return -1, fmt.Errorf("failed to get content total length from source: %w", err)
+	}
+	if total == -1 {
+		return -1, fmt.Errorf("source does not support range requests")
+	}
+	return total, nil
+}
+
 func (c *SliceCacheProxy) fetchFromSource(offset int64) (*CacheItem, error) {
 	if offset < 0 {
 		return nil, fmt.Errorf("source offset cannot be negative, got: %d", offset)
@@ -254,10 +270,33 @@ func (c *SliceCacheProxy) fetchFromSource(offset int64) (*CacheItem, error) {
 		return nil, fmt.Errorf("failed to seek to offset %d in source: %w", offset, err)
 	}
 
+	var total int64 = -1
+
 	buf := make([]byte, c.sliceSize)
 	n, err := io.ReadFull(c.r, buf)
-	if err != nil && err != io.ErrUnexpectedEOF {
-		return nil, fmt.Errorf("failed to read %d bytes from source at offset %d: %w", c.sliceSize, offset, err)
+	if err != nil {
+		if err != io.ErrUnexpectedEOF {
+			return nil, fmt.Errorf("failed to read %d bytes from source at offset %d: %w", c.sliceSize, offset, err)
+		}
+		total, err = c.contentTotalLength()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get content total length from source: %w", err)
+		}
+		if total != offset+int64(n) {
+			return nil, fmt.Errorf("source content total length mismatch, got: %d, expected: %d", total, offset+int64(n))
+		}
+	}
+
+	if total == -1 {
+		total, err = c.contentTotalLength()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get content total length from source: %w", err)
+		}
+	}
+
+	contentType, err := c.r.ContentType()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get content type from source: %w", err)
 	}
 
 	var headers http.Header
@@ -267,21 +306,12 @@ func (c *SliceCacheProxy) fetchFromSource(offset int64) (*CacheItem, error) {
 		headers = make(http.Header)
 	}
 
-	contentTotalLength, err := c.r.ContentTotalLength()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get content total length from source: %w", err)
-	}
-
-	contentType, err := c.r.ContentType()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get content type from source: %w", err)
-	}
-
 	return &CacheItem{
 		Metadata: &CacheMetadata{
 			Headers:            headers,
-			ContentTotalLength: contentTotalLength,
+			ContentTotalLength: total,
 			ContentType:        contentType,
+			NotSupportRange:    !c.r.AcceptRanges(),
 		},
 		Data: buf[:n],
 	}, nil
@@ -303,6 +333,10 @@ func ParseByteRange(r string) (*ByteRange, error) {
 
 	if !strings.HasPrefix(r, "bytes=") {
 		return nil, fmt.Errorf("range header must start with 'bytes=', got: %s", r)
+	}
+
+	if strings.Contains(r, ",") {
+		return nil, fmt.Errorf("not support multi-range, got: %s", r)
 	}
 
 	r = strings.TrimPrefix(r, "bytes=")

@@ -26,9 +26,10 @@ type Cache interface {
 
 // CacheMetadata stores metadata about a cached response
 type CacheMetadata struct {
-	Headers            http.Header `json:"headers"`
-	ContentType        string      `json:"content_type"`
-	ContentTotalLength int64       `json:"content_total_length"`
+	Headers            http.Header `json:"headers,omitempty"`
+	ContentType        string      `json:"content_type,omitempty"`
+	ContentTotalLength int64       `json:"content_total_length,omitempty"`
+	NotSupportRange    bool        `json:"not_support_range,omitempty"`
 }
 
 func (m *CacheMetadata) MarshalBinary() ([]byte, error) {

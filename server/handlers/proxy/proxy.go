@@ -165,15 +165,8 @@ func ProxyURL(ctx *gin.Context, u string, headers map[string]string, opts ...Pro
 	cli := http.Client{
 		Transport: uhc.DefaultTransport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			req.Header.Del("Referer")
 			for k, v := range headers {
 				req.Header.Set(k, v)
-			}
-			if r := ctx.GetHeader("Range"); r != "" {
-				req.Header.Set("Range", r)
-			}
-			if r := ctx.GetHeader("Accept-Encoding"); r != "" {
-				req.Header.Set("Accept-Encoding", r)
 			}
 			if req.Header.Get("User-Agent") == "" {
 				req.Header.Set("User-Agent", utils.UA)

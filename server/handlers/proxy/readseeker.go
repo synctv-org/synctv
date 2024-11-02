@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/synctv-org/synctv/utils"
+	"github.com/zijiren233/go-uhc"
 )
 
 var (
@@ -131,7 +132,6 @@ func NewHttpReadSeekCloser(url string, conf ...HttpReadSeekerConf) *HttpReadSeek
 		headMethod:         http.MethodHead,
 		perLength:          1024 * 1024 * 16,
 		headers:            make(http.Header),
-		client:             http.DefaultClient,
 	}
 
 	for _, c := range conf {
@@ -155,14 +155,25 @@ func (h *HttpReadSeekCloser) fix() *HttpReadSeekCloser {
 	if h.ctx == nil {
 		h.ctx = context.Background()
 	}
-	if h.client == nil {
-		h.client = http.DefaultClient
-	}
 	if h.perLength <= 0 {
 		h.perLength = 1024 * 1024
 	}
 	if h.headers == nil {
 		h.headers = make(http.Header)
+	}
+	if h.client == nil {
+		h.client = &http.Client{
+			Transport: uhc.DefaultTransport,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				for k, v := range h.headers {
+					req.Header[k] = v
+				}
+				if req.Header.Get("User-Agent") == "" {
+					req.Header.Set("User-Agent", utils.UA)
+				}
+				return nil
+			},
+		}
 	}
 	return h
 }
@@ -242,7 +253,10 @@ func (h *HttpReadSeekCloser) FetchNextChunk() error {
 
 	h.contentType = resp.Header.Get("Content-Type")
 
-	if resp.StatusCode == http.StatusOK {
+	if resp.StatusCode == http.StatusOK &&
+		resp.Header.Get("Accept-Ranges") != "bytes" &&
+		resp.Header.Get("Content-Range") == "" {
+
 		if h.offset > 0 {
 			if h.notSupportSeekWhenNotSupportRange {
 				return fmt.Errorf("not support seek when not support range")

@@ -600,7 +600,15 @@ func ProxyMovie(ctx *gin.Context) {
 		// TODO: cache mpd file
 		fallthrough
 	default:
-		err = proxy.AutoProxyURL(ctx, m.Movie.MovieBase.Url, m.Movie.MovieBase.Type, m.Movie.MovieBase.Headers, true, ctx.GetString("token"), room.ID, m.ID)
+		err = proxy.AutoProxyURL(ctx,
+			m.Movie.MovieBase.Url,
+			m.Movie.MovieBase.Type,
+			m.Movie.MovieBase.Headers,
+			ctx.GetString("token"),
+			room.ID,
+			m.ID,
+			proxy.WithProxyURLCache(true),
+		)
 		if err != nil {
 			log.Errorf("proxy movie error: %v", err)
 			return
@@ -654,7 +662,15 @@ func ServeM3u8(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("invalid token"))
 		return
 	}
-	err = proxy.ProxyM3u8(ctx, claims.TargetUrl, m.Movie.MovieBase.Headers, true, claims.IsM3u8File, ctx.GetString("token"), room.ID, m.ID)
+	err = proxy.ProxyM3u8(ctx,
+		claims.TargetUrl,
+		m.Movie.MovieBase.Headers,
+		claims.IsM3u8File,
+		ctx.GetString("token"),
+		room.ID,
+		m.ID,
+		proxy.WithProxyURLCache(true),
+	)
 	if err != nil {
 		log.Errorf("proxy m3u8 error: %v", err)
 	}
@@ -785,7 +801,15 @@ func JoinHlsLive(ctx *gin.Context) {
 	}
 
 	if utils.IsM3u8Url(m.Movie.MovieBase.Url) {
-		err = proxy.ProxyM3u8(ctx, m.Movie.MovieBase.Url, m.Movie.MovieBase.Headers, true, true, ctx.GetString("token"), room.ID, m.ID)
+		err = proxy.ProxyM3u8(ctx,
+			m.Movie.MovieBase.Url,
+			m.Movie.MovieBase.Headers,
+			true,
+			ctx.GetString("token"),
+			room.ID,
+			m.ID,
+			proxy.WithProxyURLCache(true),
+		)
 		if err != nil {
 			log.Errorf("proxy m3u8 hls live error: %v", err)
 		}

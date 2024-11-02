@@ -77,7 +77,35 @@ func getCache() Cache {
 	return defaultCache
 }
 
-func ProxyURL(ctx *gin.Context, u string, headers map[string]string, cache bool) error {
+type ProxyURLOptions struct {
+	CacheKey string
+	Cache    bool
+}
+
+type ProxyURLOption func(o *ProxyURLOptions)
+
+func WithProxyURLCache(cache bool) ProxyURLOption {
+	return func(o *ProxyURLOptions) {
+		o.Cache = cache
+	}
+}
+
+func WithProxyURLCacheKey(key string) ProxyURLOption {
+	return func(o *ProxyURLOptions) {
+		o.CacheKey = key
+	}
+}
+
+func NewProxyURLOptions(opts ...ProxyURLOption) *ProxyURLOptions {
+	o := &ProxyURLOptions{}
+	for _, opt := range opts {
+		opt(o)
+	}
+	return o
+}
+
+func ProxyURL(ctx *gin.Context, u string, headers map[string]string, opts ...ProxyURLOption) error {
+	o := NewProxyURLOptions(opts...)
 	if !settings.AllowProxyToLocal.Get() {
 		if l, err := utils.ParseURLIsLocalIP(u); err != nil {
 			ctx.AbortWithStatusJSON(http.StatusBadRequest,
@@ -96,7 +124,7 @@ func ProxyURL(ctx *gin.Context, u string, headers map[string]string, cache bool)
 		}
 	}
 
-	if cache && settings.ProxyCacheEnable.Get() {
+	if o.Cache && settings.ProxyCacheEnable.Get() {
 		c, cancel := context.WithCancel(ctx)
 		defer cancel()
 		rsc := NewHttpReadSeekCloser(u,
@@ -105,7 +133,10 @@ func ProxyURL(ctx *gin.Context, u string, headers map[string]string, cache bool)
 			WithNotSupportRange(ctx.GetHeader("Range") == ""),
 		)
 		defer rsc.Close()
-		return NewSliceCacheProxy(u, 1024*512, rsc, getCache()).
+		if o.CacheKey == "" {
+			o.CacheKey = u
+		}
+		return NewSliceCacheProxy(o.CacheKey, 1024*512, rsc, getCache()).
 			Proxy(ctx.Writer, ctx.Request)
 	}
 
@@ -179,9 +210,9 @@ func ProxyURL(ctx *gin.Context, u string, headers map[string]string, cache bool)
 	return nil
 }
 
-func AutoProxyURL(ctx *gin.Context, u, t string, headers map[string]string, cache bool, token, roomId, movieId string) error {
+func AutoProxyURL(ctx *gin.Context, u, t string, headers map[string]string, token, roomId, movieId string, opts ...ProxyURLOption) error {
 	if strings.HasPrefix(t, "m3u") || utils.IsM3u8Url(u) {
-		return ProxyM3u8(ctx, u, headers, cache, true, token, roomId, movieId)
+		return ProxyM3u8(ctx, u, headers, true, token, roomId, movieId, opts...)
 	}
-	return ProxyURL(ctx, u, headers, cache)
+	return ProxyURL(ctx, u, headers, opts...)
 }

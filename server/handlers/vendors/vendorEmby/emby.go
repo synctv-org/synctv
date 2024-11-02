@@ -145,7 +145,27 @@ func (s *embyVendorService) ProxyMovie(ctx *gin.Context) {
 			ctx.Redirect(http.StatusFound, embyC.Sources[source].URL)
 			return
 		}
-		err = proxy.AutoProxyURL(ctx, embyC.Sources[source].URL, "", nil, true, ctx.GetString("token"), s.movie.RoomID, s.movie.ID)
+		// ignore DeviceId, PlaySessionId as cache key
+		sourceCacheKey, err := url.Parse(embyC.Sources[source].URL)
+		if err != nil {
+			log.Errorf("proxy vendor movie error: %v", err)
+			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+			return
+		}
+		query := sourceCacheKey.Query()
+		query.Del("DeviceId")
+		query.Del("PlaySessionId")
+		sourceCacheKey.RawQuery = query.Encode()
+		err = proxy.AutoProxyURL(ctx,
+			embyC.Sources[source].URL,
+			"",
+			nil,
+			ctx.GetString("token"),
+			s.movie.RoomID,
+			s.movie.ID,
+			proxy.WithProxyURLCache(true),
+			proxy.WithProxyURLCacheKey(sourceCacheKey.String()),
+		)
 		if err != nil {
 			log.Errorf("proxy vendor movie error: %v", err)
 		}

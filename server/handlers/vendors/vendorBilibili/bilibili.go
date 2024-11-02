@@ -127,7 +127,11 @@ func (s *bilibiliVendorService) ProxyMovie(ctx *gin.Context) {
 			headers["Referer"] = "https://www.bilibili.com"
 			headers["User-Agent"] = utils.UA
 		}
-		err = proxy.ProxyURL(ctx, mpdC.Urls[streamId], headers, true)
+		err = proxy.ProxyURL(ctx,
+			mpdC.Urls[streamId],
+			headers,
+			proxy.WithProxyURLCache(true),
+		)
 		if err != nil {
 			log.Errorf("proxy vendor movie [%s] error: %v", mpdC.Urls[streamId], err)
 		}

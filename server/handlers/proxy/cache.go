@@ -20,6 +20,7 @@ import (
 // Cache defines the interface for cache implementations
 type Cache interface {
 	Get(key string) (*CacheItem, bool, error)
+	GetAnyWithPrefix(prefix string) (*CacheItem, bool, error)
 	Set(key string, data *CacheItem) error
 }
 
@@ -136,10 +137,24 @@ func (i *CacheItem) ReadFrom(r io.Reader) (int64, error) {
 	return read, nil
 }
 
+// TrieNode represents a node in the prefix tree
+type TrieNode struct {
+	children map[rune]*TrieNode
+	key      string
+	isEnd    bool
+}
+
+func NewTrieNode() *TrieNode {
+	return &TrieNode{
+		children: make(map[rune]*TrieNode),
+	}
+}
+
 // MemoryCache implements an in-memory Cache with LRU eviction
 type MemoryCache struct {
 	m            map[string]*dllist.Element[*cacheEntry]
 	lruList      *dllist.Dllist[*cacheEntry]
+	prefixTrie   *TrieNode
 	capacity     int
 	maxSizeBytes int64
 	currentSize  int64
@@ -162,9 +177,10 @@ type cacheEntry struct {
 
 func NewMemoryCache(capacity int, opts ...MemoryCacheOption) *MemoryCache {
 	mc := &MemoryCache{
-		m:        make(map[string]*dllist.Element[*cacheEntry]),
-		lruList:  dllist.New[*cacheEntry](),
-		capacity: capacity,
+		m:          make(map[string]*dllist.Element[*cacheEntry]),
+		lruList:    dllist.New[*cacheEntry](),
+		capacity:   capacity,
+		prefixTrie: NewTrieNode(),
 	}
 	for _, opt := range opts {
 		opt(mc)
@@ -192,6 +208,47 @@ func (c *MemoryCache) Get(key string) (*CacheItem, bool, error) {
 	c.mu.Unlock()
 
 	return item, true, nil
+}
+
+func (c *MemoryCache) GetAnyWithPrefix(prefix string) (*CacheItem, bool, error) {
+	if prefix == "" {
+		return nil, false, fmt.Errorf("prefix cannot be empty")
+	}
+
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	// Find matching key in prefix tree
+	node := c.prefixTrie
+	for _, ch := range prefix {
+		if next, ok := node.children[ch]; ok {
+			node = next
+		} else {
+			return nil, false, nil
+		}
+	}
+
+	// DFS to find first complete key
+	var findKey func(*TrieNode) string
+	findKey = func(n *TrieNode) string {
+		if n.isEnd {
+			return n.key
+		}
+		for _, child := range n.children {
+			if key := findKey(child); key != "" {
+				return key
+			}
+		}
+		return ""
+	}
+
+	if key := findKey(node); key != "" {
+		if element, ok := c.m[key]; ok {
+			return element.Value.item, true, nil
+		}
+	}
+
+	return nil, false, nil
 }
 
 func (c *MemoryCache) Set(key string, data *CacheItem) error {
@@ -234,6 +291,14 @@ func (c *MemoryCache) Set(key string, data *CacheItem) error {
 			c.currentSize -= entry.size
 			delete(c.m, entry.key)
 			c.lruList.Remove(back)
+
+			// Remove from prefix tree
+			node := c.prefixTrie
+			for _, ch := range entry.key {
+				node = node.children[ch]
+			}
+			node.isEnd = false
+			node.key = ""
 		}
 	}
 
@@ -242,11 +307,26 @@ func (c *MemoryCache) Set(key string, data *CacheItem) error {
 	element := c.lruList.PushFront(newEntry)
 	c.m[key] = element
 	c.currentSize += newSize
+
+	// Add to prefix tree
+	node := c.prefixTrie
+	for _, ch := range key {
+		if next, ok := node.children[ch]; ok {
+			node = next
+		} else {
+			node.children[ch] = NewTrieNode()
+			node = node.children[ch]
+		}
+	}
+	node.isEnd = true
+	node.key = key
+
 	return nil
 }
 
 type FileCache struct {
 	mu           *ksync.Krwmutex
+	memCache     *MemoryCache
 	filePath     string
 	maxSizeBytes int64
 	currentSize  atomic.Int64
@@ -276,6 +356,8 @@ func NewFileCache(filePath string, opts ...FileCacheOption) *FileCache {
 		filePath: filePath,
 		mu:       ksync.DefaultKrwmutex(),
 		maxAge:   24 * time.Hour, // Default 1 day
+		// Initialize memory cache with 1000 items capacity
+		memCache: NewMemoryCache(1000, WithMaxSizeBytes(100*1024*1024)), // 100MB memory cache
 	}
 
 	for _, opt := range opts {
@@ -395,6 +477,11 @@ func (c *FileCache) Get(key string) (*CacheItem, bool, error) {
 		return nil, false, fmt.Errorf("cache key cannot be empty")
 	}
 
+	// Try memory cache first
+	if item, found, err := c.memCache.Get(key); err == nil && found {
+		return item, true, nil
+	}
+
 	prefix := string(key[0])
 	filePath := filepath.Join(c.filePath, prefix, key)
 
@@ -423,7 +510,48 @@ func (c *FileCache) Get(key string) (*CacheItem, bool, error) {
 		return nil, false, fmt.Errorf("failed to read cache item: %w", err)
 	}
 
+	// Store in memory cache
+	c.memCache.Set(key, item)
+
 	return item, true, nil
+}
+
+func (c *FileCache) GetAnyWithPrefix(prefix string) (*CacheItem, bool, error) {
+	if prefix == "" {
+		return nil, false, fmt.Errorf("prefix cannot be empty")
+	}
+
+	// Try memory cache first
+	if item, found, err := c.memCache.GetAnyWithPrefix(prefix); err == nil && found {
+		return item, true, nil
+	}
+
+	prefixDir := string(prefix[0])
+	dirPath := filepath.Join(c.filePath, prefixDir)
+
+	entries, err := os.ReadDir(dirPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("failed to read directory: %w", err)
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+
+		name := entry.Name()
+		if len(name) >= len(prefix) && name[:len(prefix)] == prefix {
+			item, found, err := c.Get(name)
+			if err == nil && found {
+				return item, true, nil
+			}
+		}
+	}
+
+	return nil, false, nil
 }
 
 func (c *FileCache) Set(key string, data *CacheItem) error {
@@ -432,6 +560,11 @@ func (c *FileCache) Set(key string, data *CacheItem) error {
 	}
 	if data == nil {
 		return fmt.Errorf("cannot cache nil CacheItem")
+	}
+
+	// Store in memory cache first
+	if err := c.memCache.Set(key, data); err != nil {
+		return err
 	}
 
 	// Check and cleanup if needed

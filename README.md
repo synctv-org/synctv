@@ -47,13 +47,12 @@ SyncTV's synchronized viewing feature ensures that everyone watching the video i
   - [x] Videos proxy
   - [x] Live proxy
   - [x] Proxy cache
-- [x] Parse
-  - [x] Parse video
-    - [x] Alist
-    - [x] Bilibili
-    - [x] Emby
-  - [x] Parse live
-    - [x] Bilibili
+- [x] Parse video
+  - [x] Alist
+  - [x] Bilibili
+  - [x] Emby
+- [x] Parse live
+  - [x] Bilibili
 
 ---
 

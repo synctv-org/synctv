@@ -25,10 +25,14 @@ var (
 	fileCache     Cache
 )
 
+const (
+	defaultCacheSize = 1024 * 1024 * 1024 // 1GB
+)
+
 // MB GB KB
 func parseProxyCacheSize(sizeStr string) (int64, error) {
 	if sizeStr == "" {
-		return 0, nil
+		return defaultCacheSize, nil
 	}
 	sizeStr = strings.ToLower(sizeStr)
 	sizeStr = strings.TrimSpace(sizeStr)
@@ -61,7 +65,7 @@ func getCache() Cache {
 			log.Fatalf("parse proxy cache size error: %v", err)
 		}
 		if size == 0 {
-			size = 1024 * 1024 * 1024
+			size = defaultCacheSize
 		}
 		if conf.Conf.Server.ProxyCachePath == "" {
 			log.Infof("proxy cache path is empty, use memory cache, size: %d", size)

@@ -3,8 +3,8 @@ package conf
 type ServerConfig struct {
 	Http           HttpServerConfig `yaml:"http"`
 	Rtmp           RtmpServerConfig `yaml:"rtmp"`
-	ProxyCachePath string           `yaml:"proxy_cache_path" env:"SERVER_PROXY_CACHE_PATH"`
-	ProxyCacheSize string           `yaml:"proxy_cache_size" env:"SERVER_PROXY_CACHE_SIZE"`
+	ProxyCachePath string           `yaml:"proxy_cache_path" env:"SERVER_PROXY_CACHE_PATH" hc:"proxy cache path storage path, empty means use memory cache"`
+	ProxyCacheSize string           `yaml:"proxy_cache_size" env:"SERVER_PROXY_CACHE_SIZE" hc:"proxy cache max size, example: 1MB 1GB, default 1GB"`
 }
 
 type HttpServerConfig struct {

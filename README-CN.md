@@ -46,18 +46,20 @@ SyncTV 的同步观影功能确保所有观看视频的人都在同一点上。�
 - [x] 代理
   - [x] 视频代理
   - [x] 直播代理
+  - [x] 代理缓存
 - [x] 解析
   - [x] 视频解析
     - [x] Alist
     - [x] Bilibili
     - [x] Emby
-  - [ ] 直播解析
+  - [x] 直播解析
+    - [x] 哔哩哔哩
 
 ---
 
 # 演示站点
 
-https://demo.synctv.wiki
+[https://demo.synctv.wiki](https://demo.synctv.wiki)
 
 ---
 
@@ -105,7 +107,7 @@ synctv server --data-dir ./
 
 # 文档
 
-https://docs.synctv.wiki
+[https://docs.synctv.wiki](https://docs.synctv.wiki)
 
 # 特别赞助商
 

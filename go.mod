@@ -1,6 +1,7 @@
 module github.com/synctv-org/synctv
 
 go 1.22.0
+toolchain go1.22.9
 
 require (
 	github.com/Boostport/mjml-go v0.15.0
@@ -46,7 +47,7 @@ require (
 	golang.org/x/crypto v0.28.0
 	golang.org/x/exp v0.0.0-20241009180824-f66d83c29e7c
 	golang.org/x/oauth2 v0.23.0
-	google.golang.org/grpc v1.67.1
+	google.golang.org/grpc v1.68.0
 	google.golang.org/protobuf v1.35.1
 	gopkg.in/yaml.v3 v3.0.1
 	gorm.io/driver/mysql v1.5.7

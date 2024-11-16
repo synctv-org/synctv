@@ -14,20 +14,20 @@ import (
 	"github.com/synctv-org/synctv/utils"
 )
 
-func BindApi(ctx *gin.Context) {
+func BindAPI(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*op.UserEntry).Value()
 	log := ctx.MustGet("log").(*logrus.Entry)
 
-	pi, err := providers.GetProvider(provider.OAuth2Provider(ctx.Param("type")))
+	pi, err := providers.GetProvider(ctx.Param("type"))
 	if err != nil {
 		log.Errorf("failed to get provider: %v", err)
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 	}
 
 	meta := model.OAuth2Req{}
 	if err := model.Decode(ctx, &meta); err != nil {
 		log.Errorf("failed to decode request: %v", err)
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 		return
 	}
 
@@ -35,30 +35,30 @@ func BindApi(ctx *gin.Context) {
 	url, err := pi.NewAuthURL(ctx, state)
 	if err != nil {
 		log.Errorf("failed to get auth url: %v", err)
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 		return
 	}
 	states.Store(state, newBindFunc(user.ID, meta.Redirect), time.Minute*5)
-	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
+	ctx.JSON(http.StatusOK, model.NewAPIDataResp(gin.H{
 		"url": url,
 	}))
 }
 
-func UnBindApi(ctx *gin.Context) {
+func UnBindAPI(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*op.UserEntry).Value()
 	log := ctx.MustGet("log").(*logrus.Entry)
 
-	pi, err := providers.GetProvider(provider.OAuth2Provider(ctx.Param("type")))
+	pi, err := providers.GetProvider(ctx.Param("type"))
 	if err != nil {
 		log.Errorf("failed to get provider: %v", err)
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 		return
 	}
 
 	err = db.UnBindProvider(user.ID, pi.Provider())
 	if err != nil {
 		log.Errorf("failed to unbind provider: %v", err)
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 		return
 	}
 
@@ -66,7 +66,7 @@ func UnBindApi(ctx *gin.Context) {
 }
 
 func newBindFunc(userID, redirect string) stateHandler {
-	return func(ctx *gin.Context, pi provider.ProviderInterface, code string) {
+	return func(ctx *gin.Context, pi provider.Interface, code string) {
 		log := ctx.MustGet("log").(*logrus.Entry)
 
 		ctx.Header("X-OAuth2-Type", CallbackTypeBind)
@@ -74,25 +74,25 @@ func newBindFunc(userID, redirect string) stateHandler {
 		ui, err := pi.GetUserInfo(ctx, code)
 		if err != nil {
 			log.Errorf("failed to get user info: %v", err)
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 			return
 		}
 
 		user, err := op.LoadOrInitUserByID(userID)
 		if err != nil {
 			log.Errorf("failed to load user: %v", err)
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 			return
 		}
 
 		err = user.Value().BindProvider(pi.Provider(), ui.ProviderUserID)
 		if err != nil {
 			log.Errorf("failed to bind provider: %v", err)
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 			return
 		}
 
-		ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
+		ctx.JSON(http.StatusOK, model.NewAPIDataResp(gin.H{
 			"type":     CallbackTypeBind,
 			"redirect": redirect,
 		}))

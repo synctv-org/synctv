@@ -5,7 +5,7 @@ import (
 	"time"
 
 	log "github.com/sirupsen/logrus"
-	sysnotify "github.com/synctv-org/synctv/internal/sysNotify"
+	sysnotify "github.com/synctv-org/synctv/internal/sysnotify"
 	"github.com/synctv-org/synctv/internal/version"
 )
 
@@ -29,14 +29,12 @@ func InitCheckUpdate(ctx context.Context) error {
 		need, latest, url, err = check(ctx, v)
 		if err != nil {
 			log.Errorf("check update error: %v", err)
-		} else {
-			if need {
-				log.Infof("new version (%s) available: %s", latest, url)
-				log.Infof("run '%s self-update' to auto update", execFile)
-			}
+		} else if need {
+			log.Infof("new version (%s) available: %s", latest, url)
+			log.Infof("run '%s self-update' to auto update", execFile)
 		}
 
-		sysnotify.RegisterSysNotifyTask(0, sysnotify.NewSysNotifyTask(
+		err = sysnotify.RegisterSysNotifyTask(0, sysnotify.NewSysNotifyTask(
 			"check-update",
 			sysnotify.NotifyTypeEXIT,
 			func() error {
@@ -47,6 +45,9 @@ func InitCheckUpdate(ctx context.Context) error {
 				return nil
 			},
 		))
+		if err != nil {
+			log.Errorf("register sys notify task error: %v", err)
+		}
 
 		t := time.NewTicker(time.Hour * 6)
 		defer t.Stop()
@@ -68,7 +69,7 @@ func InitCheckUpdate(ctx context.Context) error {
 	return nil
 }
 
-func check(ctx context.Context, v *version.VersionInfo) (need bool, latest string, url string, err error) {
+func check(ctx context.Context, v *version.Info) (need bool, latest string, url string, err error) {
 	l, err := v.CheckLatest(ctx)
 	if err != nil {
 		return false, "", "", err

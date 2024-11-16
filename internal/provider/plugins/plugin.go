@@ -9,17 +9,20 @@ import (
 	"github.com/hashicorp/go-plugin"
 	"github.com/synctv-org/synctv/internal/provider"
 	"github.com/synctv-org/synctv/internal/provider/providers"
-	sysnotify "github.com/synctv-org/synctv/internal/sysNotify"
+	sysnotify "github.com/synctv-org/synctv/internal/sysnotify"
 	providerpb "github.com/synctv-org/synctv/proto/provider"
 	"google.golang.org/grpc"
 )
 
-func InitProviderPlugins(name string, arg []string, Logger hclog.Logger) error {
-	client := NewProviderPlugin(name, arg, Logger)
-	sysnotify.RegisterSysNotifyTask(0, sysnotify.NewSysNotifyTask("plugin", sysnotify.NotifyTypeEXIT, func() error {
+func InitProviderPlugins(name string, arg []string, logger hclog.Logger) error {
+	client := NewProviderPlugin(name, arg, logger)
+	err := sysnotify.RegisterSysNotifyTask(0, sysnotify.NewSysNotifyTask("plugin", sysnotify.NotifyTypeEXIT, func() error {
 		client.Kill()
 		return nil
 	}))
+	if err != nil {
+		return err
+	}
 	c, err := client.Client()
 	if err != nil {
 		return err
@@ -28,7 +31,7 @@ func InitProviderPlugins(name string, arg []string, Logger hclog.Logger) error {
 	if err != nil {
 		return err
 	}
-	provider, ok := i.(provider.ProviderInterface)
+	provider, ok := i.(provider.Interface)
 	if !ok {
 		return fmt.Errorf("%s not implement ProviderInterface", name)
 	}
@@ -48,7 +51,7 @@ var pluginMap = map[string]plugin.Plugin{
 
 type ProviderPlugin struct {
 	plugin.Plugin
-	Impl provider.ProviderInterface
+	Impl provider.Interface
 }
 
 func (p *ProviderPlugin) GRPCServer(broker *plugin.GRPCBroker, s *grpc.Server) error {
@@ -60,7 +63,7 @@ func (p *ProviderPlugin) GRPCClient(ctx context.Context, broker *plugin.GRPCBrok
 	return &GRPCClient{client: providerpb.NewOauth2PluginClient(c)}, nil
 }
 
-func NewProviderPlugin(name string, arg []string, Logger hclog.Logger) *plugin.Client {
+func NewProviderPlugin(name string, arg []string, logger hclog.Logger) *plugin.Client {
 	return plugin.NewClient(&plugin.ClientConfig{
 		HandshakeConfig: HandshakeConfig,
 		Plugins:         pluginMap,
@@ -68,6 +71,6 @@ func NewProviderPlugin(name string, arg []string, Logger hclog.Logger) *plugin.C
 		AllowedProtocols: []plugin.Protocol{
 			plugin.ProtocolGRPC,
 		},
-		Logger: Logger,
+		Logger: logger,
 	})
 }

@@ -2,7 +2,6 @@ package providers
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 
 	json "github.com/json-iterator/go"
@@ -15,7 +14,7 @@ type BaiduProvider struct {
 	config oauth2.Config
 }
 
-func newBaiduProvider() provider.ProviderInterface {
+func newBaiduProvider() provider.Interface {
 	return &BaiduProvider{
 		config: oauth2.Config{
 			Scopes: []string{"basic"},
@@ -55,7 +54,7 @@ func (p *BaiduProvider) GetUserInfo(ctx context.Context, code string) (*provider
 		return nil, err
 	}
 	client := p.config.Client(ctx, tk)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("https://openapi.baidu.com/rest/2.0/passport/users/getLoggedInUser?access_token=%s", tk.AccessToken), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://openapi.baidu.com/rest/2.0/passport/users/getLoggedInUser?access_token="+tk.AccessToken, nil)
 	if err != nil {
 		return nil, err
 	}

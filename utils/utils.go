@@ -4,7 +4,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/url"
@@ -30,15 +30,15 @@ func init() {
 
 var (
 	letters              = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
-	noRedirectHttpClient = &http.Client{
+	noRedirectHTTPClient = &http.Client{
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
 	}
 )
 
-func NoRedirectHttpClient() *http.Client {
-	return noRedirectHttpClient
+func NoRedirectHTTPClient() *http.Client {
+	return noRedirectHTTPClient
 }
 
 const (
@@ -48,7 +48,7 @@ const (
 func RandString(n int) string {
 	b := make([]rune, n)
 	for i := range b {
-		b[i] = letters[rand.Intn(len(letters))]
+		b[i] = letters[rand.IntN(len(letters))]
 	}
 	return string(b)
 }
@@ -56,7 +56,7 @@ func RandString(n int) string {
 func RandBytes(n int) []byte {
 	b := make([]byte, n)
 	for i := range b {
-		b[i] = byte(rand.Intn(256))
+		b[i] = byte(rand.IntN(256))
 	}
 	return b
 }
@@ -131,71 +131,93 @@ func CompVersion(v1, v2 string) (int, error) {
 	if v1 == v2 {
 		return VersionEqual, nil
 	}
-	sub1 := strings.Split(v1, "-")
-	sub2 := strings.Split(v2, "-")
-	v1s, err := SplitVersion(strings.TrimLeft(sub1[0], "v"))
+
+	// Split version strings into base version and pre-release parts
+	v1Parts := strings.Split(v1, "-")
+	v2Parts := strings.Split(v2, "-")
+
+	// Compare base versions
+	v1Base, err := SplitVersion(strings.TrimLeft(v1Parts[0], "v"))
 	if err != nil {
 		return VersionEqual, err
 	}
-	v2s, err := SplitVersion(strings.TrimLeft(sub2[0], "v"))
+	v2Base, err := SplitVersion(strings.TrimLeft(v2Parts[0], "v"))
 	if err != nil {
 		return VersionEqual, err
 	}
-	if len(v1s) != len(v2s) {
+
+	// Base version lengths must match
+	if len(v1Base) != len(v2Base) {
 		return VersionEqual, fmt.Errorf("invalid version: %s, %s", v1, v2)
 	}
-	for i := 0; i < len(v1s) && i < len(v2s); i++ {
-		if v1s[i] > v2s[i] {
+
+	// Compare base version numbers
+	for i := 0; i < len(v1Base); i++ {
+		if v1Base[i] > v2Base[i] {
 			return VersionGreater, nil
-		} else if v1s[i] < v2s[i] {
+		}
+		if v1Base[i] < v2Base[i] {
 			return VersionLess, nil
 		}
 	}
-	sub1 = sub1[1:]
-	sub2 = sub2[1:]
-	if len(sub1) == 0 && len(sub2) != 0 {
+
+	// If base versions are equal, compare pre-release parts
+	v1PreRelease := v1Parts[1:]
+	v2PreRelease := v2Parts[1:]
+
+	// No pre-release is greater than any pre-release version
+	if len(v1PreRelease) == 0 && len(v2PreRelease) != 0 {
 		return VersionGreater, nil
-	} else if len(sub1) != 0 && len(sub2) == 0 {
+	}
+	if len(v1PreRelease) != 0 && len(v2PreRelease) == 0 {
 		return VersionLess, nil
 	}
-	switch {
-	case strings.HasPrefix(sub1[0], "beta"):
-		switch {
-		case strings.HasPrefix(sub2[0], "beta"):
-			return CompVersion(sub1[0], sub2[0])
-		case strings.HasPrefix(sub2[0], "alpha"):
-			return VersionGreater, nil
-		case strings.HasPrefix(sub2[0], "rc"):
-			return VersionGreater, nil
-		}
-	case strings.HasPrefix(sub1[0], "alpha"):
-		switch {
-		case strings.HasPrefix(sub2[0], "beta"):
-			return VersionLess, nil
-		case strings.HasPrefix(sub2[0], "alpha"):
-			return CompVersion(sub1[0], sub2[0])
-		case strings.HasPrefix(sub2[0], "rc"):
-			return VersionGreater, nil
-		}
-	case strings.HasPrefix(sub1[0], "rc"):
-		switch {
-		case strings.HasPrefix(sub2[0], "beta"):
-			return VersionLess, nil
-		case strings.HasPrefix(sub2[0], "alpha"):
-			return VersionLess, nil
-		case strings.HasPrefix(sub2[0], "rc"):
-			return CompVersion(sub1[0], sub2[0])
-		}
+	if len(v1PreRelease) == 0 && len(v2PreRelease) == 0 {
+		return VersionEqual, nil
 	}
-	if len(sub1) == 2 && len(sub2) == 2 {
-		return CompVersion(sub1[1], sub2[1])
+
+	// Pre-release version precedence
+	preReleaseWeight := map[string]int{
+		"alpha": 0,
+		"beta":  1,
+		"rc":    2,
 	}
+
+	v1Type := getPreReleaseType(v1PreRelease[0])
+	v2Type := getPreReleaseType(v2PreRelease[0])
+
+	if v1Type != v2Type {
+		if preReleaseWeight[v1Type] > preReleaseWeight[v2Type] {
+			return VersionGreater, nil
+		}
+		return VersionLess, nil
+	}
+
+	// Same pre-release type, compare their versions
+	if len(v1PreRelease) == 2 && len(v2PreRelease) == 2 {
+		return CompVersion(v1PreRelease[1], v2PreRelease[1])
+	}
+
 	return VersionEqual, fmt.Errorf("invalid version: %s, %s", v1, v2)
 }
 
+func getPreReleaseType(s string) string {
+	switch {
+	case strings.HasPrefix(s, "alpha"):
+		return "alpha"
+	case strings.HasPrefix(s, "beta"):
+		return "beta"
+	case strings.HasPrefix(s, "rc"):
+		return "rc"
+	default:
+		return ""
+	}
+}
+
 func SplitVersion(v string) ([]int, error) {
-	var vs []int
-	for _, s := range strings.Split(v, ".") {
+	split := strings.Split(v, ".")
+	vs := make([]int, 0, len(split))
+	for _, s := range split {
 		i, err := strconv.Atoi(s)
 		if err != nil {
 			return nil, err
@@ -321,7 +343,7 @@ func SortUUIDWithUUID(src uuid.UUID) string {
 	return stream.BytesToString(dst)
 }
 
-func HttpCookieToMap(c []*http.Cookie) map[string]string {
+func HTTPCookieToMap(c []*http.Cookie) map[string]string {
 	m := make(map[string]string, len(c))
 	for _, v := range c {
 		m[v.Name] = v.Value
@@ -329,8 +351,8 @@ func HttpCookieToMap(c []*http.Cookie) map[string]string {
 	return m
 }
 
-func MapToHttpCookie(m map[string]string) []*http.Cookie {
-	var c []*http.Cookie
+func MapToHTTPCookie(m map[string]string) []*http.Cookie {
+	c := make([]*http.Cookie, 0, len(m))
 	for k, v := range m {
 		c = append(c, &http.Cookie{
 			Name:  k,
@@ -344,7 +366,7 @@ func GetFileExtension(f string) string {
 	return strings.TrimLeft(filepath.Ext(f), ".")
 }
 
-func GetUrlExtension(u string) string {
+func GetURLExtension(u string) string {
 	if u == "" {
 		return ""
 	}
@@ -360,7 +382,7 @@ func GetUrlExtension(u string) string {
 }
 
 func IsM3u8Url(u string) bool {
-	return strings.HasPrefix(GetUrlExtension(u), "m3u")
+	return strings.HasPrefix(GetURLExtension(u), "m3u")
 }
 
 var (
@@ -379,8 +401,8 @@ func ForceColor() bool {
 	return needColor
 }
 
-func GetPageAndMax(ctx *gin.Context) (page int, max int, err error) {
-	max, err = strconv.Atoi(ctx.DefaultQuery("max", "10"))
+func GetPageAndMax(ctx *gin.Context) (page int, _max int, err error) {
+	_max, err = strconv.Atoi(ctx.DefaultQuery("max", "10"))
 	if err != nil {
 		return 0, 0, errors.New("max must be a number")
 	}
@@ -391,10 +413,10 @@ func GetPageAndMax(ctx *gin.Context) (page int, max int, err error) {
 	if page <= 0 {
 		page = 1
 	}
-	if max <= 0 {
-		max = 10
-	} else if max > 100 {
-		max = 100
+	if _max <= 0 {
+		_max = 10
+	} else if _max > 100 {
+		_max = 100
 	}
 	return
 }

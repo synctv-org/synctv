@@ -82,8 +82,8 @@ func (m *movies) GetChannel(id string) (*rtmps.Channel, error) {
 	return movie.Channel()
 }
 
-func (m *movies) Update(movieId string, movie *model.MovieBase) error {
-	mv, err := db.GetMovieByID(m.roomID, movieId)
+func (m *movies) Update(movieID string, movie *model.MovieBase) error {
+	mv, err := db.GetMovieByID(m.roomID, movieID)
 	if err != nil {
 		return err
 	}
@@ -214,7 +214,7 @@ func (m *movies) IsParentOf(id, parentID string) (bool, error) {
 	}
 	mv, err := m.GetMovieByID(parentID)
 	if err != nil {
-		return false, fmt.Errorf("get parent movie failed: %v", err)
+		return false, fmt.Errorf("get parent movie failed: %w", err)
 	}
 	if !mv.IsFolder {
 		return false, nil
@@ -228,7 +228,7 @@ func (m *movies) IsParentFolder(id, parentID string) (bool, error) {
 	}
 	mv, err := m.GetMovieByID(parentID)
 	if err != nil {
-		return false, fmt.Errorf("get parent movie failed: %v", err)
+		return false, fmt.Errorf("get parent movie failed: %w", err)
 	}
 	firstCheck := true
 	if mv.IsFolder {

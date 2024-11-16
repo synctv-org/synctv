@@ -7,9 +7,9 @@ import (
 	"strings"
 )
 
-func GetM3u8AllSegments(m3u8Str string, baseUrl string) ([]string, error) {
+func GetM3u8AllSegments(m3u8Str string, baseURL string) ([]string, error) {
 	var segments []string
-	err := RangeM3u8SegmentsWithBaseUrl(m3u8Str, baseUrl, func(segmentUrl string) (bool, error) {
+	err := RangeM3u8SegmentsWithBaseURL(m3u8Str, baseURL, func(segmentUrl string) (bool, error) {
 		segments = append(segments, segmentUrl)
 		return true, nil
 	})
@@ -37,24 +37,24 @@ func RangeM3u8Segments(m3u8Str string, callback func(segmentUrl string) (bool, e
 	return nil
 }
 
-func RangeM3u8SegmentsWithBaseUrl(m3u8Str string, baseUrl string, callback func(segmentUrl string) (bool, error)) error {
-	baseUrlParsed, err := url.Parse(baseUrl)
+func RangeM3u8SegmentsWithBaseURL(m3u8Str string, baseURL string, callback func(segmentURL string) (bool, error)) error {
+	baseURLParsed, err := url.Parse(baseURL)
 	if err != nil {
 		return fmt.Errorf("parse base url error: %w", err)
 	}
-	return RangeM3u8Segments(m3u8Str, func(segmentUrl string) (bool, error) {
-		if !strings.HasPrefix(segmentUrl, "http://") && !strings.HasPrefix(segmentUrl, "https://") {
-			segmentUrlParsed, err := url.Parse(segmentUrl)
+	return RangeM3u8Segments(m3u8Str, func(segmentURL string) (bool, error) {
+		if !strings.HasPrefix(segmentURL, "http://") && !strings.HasPrefix(segmentURL, "https://") {
+			segmentURLParsed, err := url.Parse(segmentURL)
 			if err != nil {
 				return false, fmt.Errorf("parse segment url error: %w", err)
 			}
-			segmentUrl = baseUrlParsed.ResolveReference(segmentUrlParsed).String()
+			segmentURL = baseURLParsed.ResolveReference(segmentURLParsed).String()
 		}
-		return callback(segmentUrl)
+		return callback(segmentURL)
 	})
 }
 
-func ReplaceM3u8Segments(m3u8Str string, callback func(segmentUrl string) (string, error)) (string, error) {
+func ReplaceM3u8Segments(m3u8Str string, callback func(segmentURL string) (string, error)) (string, error) {
 	var result strings.Builder
 	scanner := bufio.NewScanner(strings.NewReader(m3u8Str))
 	for scanner.Scan() {
@@ -76,19 +76,19 @@ func ReplaceM3u8Segments(m3u8Str string, callback func(segmentUrl string) (strin
 	return result.String(), nil
 }
 
-func ReplaceM3u8SegmentsWithBaseUrl(m3u8Str string, baseUrl string, callback func(segmentUrl string) (string, error)) (string, error) {
-	baseUrlParsed, err := url.Parse(baseUrl)
+func ReplaceM3u8SegmentsWithBaseURL(m3u8Str string, baseURL string, callback func(segmentURL string) (string, error)) (string, error) {
+	baseURLParsed, err := url.Parse(baseURL)
 	if err != nil {
 		return "", fmt.Errorf("parse base url error: %w", err)
 	}
-	return ReplaceM3u8Segments(m3u8Str, func(segmentUrl string) (string, error) {
-		if !strings.HasPrefix(segmentUrl, "http://") && !strings.HasPrefix(segmentUrl, "https://") {
-			segmentUrlParsed, err := url.Parse(segmentUrl)
+	return ReplaceM3u8Segments(m3u8Str, func(segmentURL string) (string, error) {
+		if !strings.HasPrefix(segmentURL, "http://") && !strings.HasPrefix(segmentURL, "https://") {
+			segmentURLParsed, err := url.Parse(segmentURL)
 			if err != nil {
 				return "", fmt.Errorf("parse segment url error: %w", err)
 			}
-			segmentUrl = baseUrlParsed.ResolveReference(segmentUrlParsed).String()
+			segmentURL = baseURLParsed.ResolveReference(segmentURLParsed).String()
 		}
-		return callback(segmentUrl)
+		return callback(segmentURL)
 	})
 }

@@ -17,7 +17,7 @@ func Init() {
 	sysNotify.Init()
 }
 
-func RegisterSysNotifyTask(priority int, task *sysNotifyTask) error {
+func RegisterSysNotifyTask(priority int, task *Task) error {
 	return sysNotify.RegisterSysNotifyTask(priority, task)
 }
 
@@ -39,20 +39,20 @@ const (
 )
 
 type taskQueue struct {
-	notifyTaskQueue *pqueue.PQueue[*sysNotifyTask]
+	notifyTaskQueue *pqueue.PQueue[*Task]
 	notifyTaskLock  sync.Mutex
 }
 
-type sysNotifyTask struct {
+type Task struct {
 	Task       func() error
 	Name       string
 	NotifyType NotifyType
 }
 
-func NewSysNotifyTask(name string, NotifyType NotifyType, task func() error) *sysNotifyTask {
-	return &sysNotifyTask{
+func NewSysNotifyTask(name string, notifyType NotifyType, task func() error) *Task {
+	return &Task{
 		Name:       name,
-		NotifyType: NotifyType,
+		NotifyType: notifyType,
 		Task:       task,
 	}
 }
@@ -77,7 +77,7 @@ func runTask(tq *taskQueue) {
 	}
 }
 
-func (sn *SysNotify) RegisterSysNotifyTask(priority int, task *sysNotifyTask) error {
+func (sn *SysNotify) RegisterSysNotifyTask(priority int, task *Task) error {
 	if task == nil || task.Task == nil {
 		return errors.New("task is nil")
 	}
@@ -85,7 +85,7 @@ func (sn *SysNotify) RegisterSysNotifyTask(priority int, task *sysNotifyTask) er
 		panic("task notify type is 0")
 	}
 	tasks, _ := sn.taskGroup.LoadOrStore(task.NotifyType, &taskQueue{
-		notifyTaskQueue: pqueue.NewMinPriorityQueue[*sysNotifyTask](),
+		notifyTaskQueue: pqueue.NewMinPriorityQueue[*Task](),
 	})
 	tasks.notifyTaskLock.Lock()
 	defer tasks.notifyTaskLock.Unlock()

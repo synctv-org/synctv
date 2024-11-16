@@ -11,5 +11,5 @@ var (
 )
 
 const (
-	ENV_PREFIX = "SYNCTV_"
+	EnvPrefix = "SYNCTV_"
 )

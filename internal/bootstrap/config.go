@@ -64,11 +64,11 @@ func optConfigPath(conf *conf.Config) error {
 	if err != nil {
 		return fmt.Errorf("get proxy cache path error: %w", err)
 	}
-	conf.Server.Http.CertPath, err = utils.OptFilePath(conf.Server.Http.CertPath)
+	conf.Server.HTTP.CertPath, err = utils.OptFilePath(conf.Server.HTTP.CertPath)
 	if err != nil {
 		return fmt.Errorf("get http cert path error: %w", err)
 	}
-	conf.Server.Http.KeyPath, err = utils.OptFilePath(conf.Server.Http.KeyPath)
+	conf.Server.HTTP.KeyPath, err = utils.OptFilePath(conf.Server.HTTP.KeyPath)
 	if err != nil {
 		return fmt.Errorf("get http key path error: %w", err)
 	}

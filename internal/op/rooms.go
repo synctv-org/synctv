@@ -66,7 +66,7 @@ func DeleteRoomByID(roomID string) error {
 	if err := db.DeleteRoomByID(roomID); err != nil {
 		return err
 	}
-	return CloseRoomById(roomID)
+	return CloseRoomByID(roomID)
 }
 
 func DeleteRoom(room *Room) error {
@@ -91,7 +91,7 @@ func CompareAndDeleteRoom(room *RoomEntry) error {
 	return nil
 }
 
-func CloseRoomById(roomID string) error {
+func CloseRoomByID(roomID string) error {
 	if r, loaded := roomCache.LoadAndDelete(roomID); loaded {
 		r.Value().close()
 	}

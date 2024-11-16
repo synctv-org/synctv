@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"fmt"
+
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"github.com/synctv-org/synctv/cmd/flags"
@@ -30,7 +32,7 @@ func SelfUpdate(cmd *cobra.Command, args []string) error {
 	v, err := version.NewVersionInfo(version.WithBaseURL(flags.Global.GitHubBaseURL))
 	if err != nil {
 		log.Errorf("get version info error: %v", err)
-		return err
+		return fmt.Errorf("get version info error: %w", err)
 	}
 	return v.SelfUpdate(cmd.Context())
 }

@@ -13,19 +13,19 @@ import (
 
 var s *rtmps.Server
 
-type RtmpClaims struct {
+type Claims struct {
 	MovieID string `json:"m"`
 	jwt.RegisteredClaims
 }
 
-func AuthRtmpPublish(Authorization string) (movieID string, err error) {
-	t, err := jwt.ParseWithClaims(strings.TrimPrefix(Authorization, `Bearer `), &RtmpClaims{}, func(token *jwt.Token) (any, error) {
+func AuthRtmpPublish(authorization string) (movieID string, err error) {
+	t, err := jwt.ParseWithClaims(strings.TrimPrefix(authorization, `Bearer `), &Claims{}, func(token *jwt.Token) (any, error) {
 		return stream.StringToBytes(conf.Conf.Jwt.Secret), nil
 	})
 	if err != nil {
 		return "", errors.New("auth failed")
 	}
-	claims, ok := t.Claims.(*RtmpClaims)
+	claims, ok := t.Claims.(*Claims)
 	if !ok {
 		return "", errors.New("auth failed")
 	}
@@ -33,7 +33,7 @@ func AuthRtmpPublish(Authorization string) (movieID string, err error) {
 }
 
 func NewRtmpAuthorization(movieID string) (string, error) {
-	claims := &RtmpClaims{
+	claims := &Claims{
 		MovieID: movieID,
 		RegisteredClaims: jwt.RegisteredClaims{
 			NotBefore: jwt.NewNumericDate(time.Now()),
@@ -46,6 +46,6 @@ func Init(rs *rtmps.Server) {
 	s = rs
 }
 
-func RtmpServer() *rtmps.Server {
+func Server() *rtmps.Server {
 	return s
 }

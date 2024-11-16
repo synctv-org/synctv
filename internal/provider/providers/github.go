@@ -15,7 +15,7 @@ type GithubProvider struct {
 	config oauth2.Config
 }
 
-func newGithubProvider() provider.ProviderInterface {
+func newGithubProvider() provider.Interface {
 	return &GithubProvider{
 		config: oauth2.Config{
 			Scopes:   []string{"user"},

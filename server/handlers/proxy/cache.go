@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -44,11 +45,11 @@ type CacheItem struct {
 // WriteTo implements io.WriterTo to serialize the cache item
 func (i *CacheItem) WriteTo(w io.Writer) (int64, error) {
 	if w == nil {
-		return 0, fmt.Errorf("cannot write to nil io.Writer")
+		return 0, errors.New("cannot write to nil io.Writer")
 	}
 
 	if i.Metadata == nil {
-		return 0, fmt.Errorf("CacheItem contains nil Metadata")
+		return 0, errors.New("CacheItem contains nil Metadata")
 	}
 
 	metadata, err := i.Metadata.MarshalBinary()
@@ -88,7 +89,7 @@ func (i *CacheItem) WriteTo(w io.Writer) (int64, error) {
 // ReadFrom implements io.ReaderFrom to deserialize the cache item
 func (i *CacheItem) ReadFrom(r io.Reader) (int64, error) {
 	if r == nil {
-		return 0, fmt.Errorf("cannot read from nil io.Reader")
+		return 0, errors.New("cannot read from nil io.Reader")
 	}
 
 	var read int64
@@ -190,7 +191,7 @@ func NewMemoryCache(capacity int, opts ...MemoryCacheOption) *MemoryCache {
 
 func (c *MemoryCache) Get(key string) (*CacheItem, bool, error) {
 	if key == "" {
-		return nil, false, fmt.Errorf("cache key cannot be empty")
+		return nil, false, errors.New("cache key cannot be empty")
 	}
 
 	c.mu.RLock()
@@ -212,7 +213,7 @@ func (c *MemoryCache) Get(key string) (*CacheItem, bool, error) {
 
 func (c *MemoryCache) GetAnyWithPrefix(prefix string) (*CacheItem, bool, error) {
 	if prefix == "" {
-		return nil, false, fmt.Errorf("prefix cannot be empty")
+		return nil, false, errors.New("prefix cannot be empty")
 	}
 
 	c.mu.RLock()
@@ -253,10 +254,10 @@ func (c *MemoryCache) GetAnyWithPrefix(prefix string) (*CacheItem, bool, error) 
 
 func (c *MemoryCache) Set(key string, data *CacheItem) error {
 	if key == "" {
-		return fmt.Errorf("cache key cannot be empty")
+		return errors.New("cache key cannot be empty")
 	}
 	if data == nil {
-		return fmt.Errorf("cannot cache nil CacheItem")
+		return errors.New("cannot cache nil CacheItem")
 	}
 
 	// Calculate size of new item
@@ -285,7 +286,6 @@ func (c *MemoryCache) Set(key string, data *CacheItem) error {
 	for c.lruList.Len() > 0 &&
 		((c.capacity > 0 && c.lruList.Len() >= c.capacity) ||
 			(c.maxSizeBytes > 0 && c.currentSize+newSize > c.maxSizeBytes)) {
-
 		if back := c.lruList.Back(); back != nil {
 			entry := back.Value
 			c.currentSize -= entry.size
@@ -474,7 +474,7 @@ func (c *FileCache) cleanup() {
 
 func (c *FileCache) Get(key string) (*CacheItem, bool, error) {
 	if key == "" {
-		return nil, false, fmt.Errorf("cache key cannot be empty")
+		return nil, false, errors.New("cache key cannot be empty")
 	}
 
 	// Try memory cache first
@@ -511,14 +511,17 @@ func (c *FileCache) Get(key string) (*CacheItem, bool, error) {
 	}
 
 	// Store in memory cache
-	c.memCache.Set(key, item)
+	err = c.memCache.Set(key, item)
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to set cache item: %w", err)
+	}
 
 	return item, true, nil
 }
 
 func (c *FileCache) GetAnyWithPrefix(prefix string) (*CacheItem, bool, error) {
 	if prefix == "" {
-		return nil, false, fmt.Errorf("prefix cannot be empty")
+		return nil, false, errors.New("prefix cannot be empty")
 	}
 
 	// Try memory cache first
@@ -556,10 +559,10 @@ func (c *FileCache) GetAnyWithPrefix(prefix string) (*CacheItem, bool, error) {
 
 func (c *FileCache) Set(key string, data *CacheItem) error {
 	if key == "" {
-		return fmt.Errorf("cache key cannot be empty")
+		return errors.New("cache key cannot be empty")
 	}
 	if data == nil {
-		return fmt.Errorf("cannot cache nil CacheItem")
+		return errors.New("cannot cache nil CacheItem")
 	}
 
 	// Store in memory cache first

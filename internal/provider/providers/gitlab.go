@@ -13,7 +13,7 @@ type GitlabProvider struct {
 	config oauth2.Config
 }
 
-func newGitlabProvider() provider.ProviderInterface {
+func newGitlabProvider() provider.Interface {
 	return &GitlabProvider{
 		config: oauth2.Config{
 			Scopes:   []string{"read_user"},
@@ -59,7 +59,7 @@ func (g *GitlabProvider) GetUserInfo(ctx context.Context, code string) (*provide
 		return nil, err
 	}
 	defer resp.Body.Close()
-	return nil, FormatErrNotImplemented("gitlab")
+	return nil, FormatNotImplementedError("gitlab")
 }
 
 func init() {

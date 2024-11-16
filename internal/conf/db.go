@@ -8,21 +8,22 @@ const (
 	DatabaseTypePostgres DatabaseType = "postgres"
 )
 
+//nolint:tagliatelle
 type DatabaseConfig struct {
-	Type     DatabaseType `yaml:"type" lc:"default: sqlite3" hc:"support sqlite3, mysql, postgres" env:"DATABASE_TYPE"`
-	Host     string       `yaml:"host" hc:"when type is not sqlite3, and port is 0, it will use unix socket file" env:"DATABASE_HOST"`
-	Port     uint16       `yaml:"port" env:"DATABASE_PORT"`
-	User     string       `yaml:"user" env:"DATABASE_USER"`
-	Password string       `yaml:"password" env:"DATABASE_PASSWORD"`
-	Name     string       `yaml:"name" lc:"default: synctv" hc:"when type is sqlite3, it will use sqlite db file or memory" env:"DATABASE_NAME"`
-	SslMode  string       `yaml:"ssl_mode" env:"DATABASE_SSL_MODE" hc:"mysql: true, false, skip-verify, preferred, <name> postgres: disable, require, verify-ca, verify-full"`
+	Type     DatabaseType `env:"DATABASE_TYPE"     hc:"support sqlite3, mysql, postgres"                                                                      lc:"default: sqlite3" yaml:"type"`
+	Host     string       `env:"DATABASE_HOST"     hc:"when type is not sqlite3, and port is 0, it will use unix socket file"                                 yaml:"host"`
+	Port     uint16       `env:"DATABASE_PORT"     yaml:"port"`
+	User     string       `env:"DATABASE_USER"     yaml:"user"`
+	Password string       `env:"DATABASE_PASSWORD" yaml:"password"`
+	Name     string       `env:"DATABASE_NAME"     hc:"when type is sqlite3, it will use sqlite db file or memory"                                            lc:"default: synctv"  yaml:"name"`
+	SslMode  string       `env:"DATABASE_SSL_MODE" hc:"mysql: true, false, skip-verify, preferred, <name> postgres: disable, require, verify-ca, verify-full" yaml:"ssl_mode"`
 
-	CustomDSN string `yaml:"custom_dsn" hc:"when not empty, it will ignore other config" env:"DATABASE_CUSTOM_DSN"`
+	CustomDSN string `env:"DATABASE_CUSTOM_DSN" hc:"when not empty, it will ignore other config" yaml:"custom_dsn"`
 
-	MaxIdleConns    int    `yaml:"max_idle_conns" hc:"sqlite3 does not support setting connection parameters"  env:"DATABASE_MAX_IDLE_CONNS"`
-	MaxOpenConns    int    `yaml:"max_open_conns" env:"DATABASE_MAX_OPEN_CONNS"`
-	ConnMaxLifetime string `yaml:"conn_max_lifetime" env:"DATABASE_CONN_MAX_LIFETIME"`
-	ConnMaxIdleTime string `yaml:"conn_max_idle_time" env:"DATABASE_CONN_MAX_IDLE_TIME"`
+	MaxIdleConns    int    `env:"DATABASE_MAX_IDLE_CONNS"     hc:"sqlite3 does not support setting connection parameters" yaml:"max_idle_conns"`
+	MaxOpenConns    int    `env:"DATABASE_MAX_OPEN_CONNS"     yaml:"max_open_conns"`
+	ConnMaxLifetime string `env:"DATABASE_CONN_MAX_LIFETIME"  yaml:"conn_max_lifetime"`
+	ConnMaxIdleTime string `env:"DATABASE_CONN_MAX_IDLE_TIME" yaml:"conn_max_idle_time"`
 }
 
 func DefaultDatabaseConfig() DatabaseConfig {

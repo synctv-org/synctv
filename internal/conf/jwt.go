@@ -5,8 +5,8 @@ import (
 )
 
 type JwtConfig struct {
-	Secret string `yaml:"secret" env:"JWT_SECRET"`
-	Expire string `yaml:"expire" env:"JWT_EXPIRE"`
+	Secret string `env:"JWT_SECRET" yaml:"secret"`
+	Expire string `env:"JWT_EXPIRE" yaml:"expire"`
 }
 
 func DefaultJwtConfig() JwtConfig {

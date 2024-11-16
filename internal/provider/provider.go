@@ -22,7 +22,7 @@ type Provider interface {
 	Provider() OAuth2Provider
 }
 
-type ProviderInterface interface {
+type Interface interface {
 	Provider
 	NewAuthURL(context.Context, string) (string, error)
 	GetUserInfo(context.Context, string) (*UserInfo, error)

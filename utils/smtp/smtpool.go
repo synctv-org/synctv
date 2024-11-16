@@ -1,6 +1,7 @@
 package smtp
 
 import (
+	"errors"
 	"fmt"
 	"runtime"
 	"strings"
@@ -10,7 +11,7 @@ import (
 	smtp "github.com/emersion/go-smtp"
 )
 
-type SmtpConfig struct {
+type Config struct {
 	Host     string
 	Protocol string
 	Username string
@@ -19,29 +20,29 @@ type SmtpConfig struct {
 	Port     uint32
 }
 
-func validateSmtpConfig(c *SmtpConfig) error {
+func validateSMTPConfig(c *Config) error {
 	if c == nil {
-		return fmt.Errorf("smtp config is nil")
+		return errors.New("smtp config is nil")
 	}
 	if c.Host == "" {
-		return fmt.Errorf("smtp host is empty")
+		return errors.New("smtp host is empty")
 	}
 	if c.Port == 0 {
-		return fmt.Errorf("smtp port is empty")
+		return errors.New("smtp port is empty")
 	}
 	if c.Username == "" {
-		return fmt.Errorf("smtp username is empty")
+		return errors.New("smtp username is empty")
 	}
 	if c.Password == "" {
-		return fmt.Errorf("smtp password is empty")
+		return errors.New("smtp password is empty")
 	}
 	if c.From == "" {
-		return fmt.Errorf("smtp from is empty")
+		return errors.New("smtp from is empty")
 	}
 	return nil
 }
 
-func newSmtpClient(c *SmtpConfig) (*smtp.Client, error) {
+func newSMTPClient(c *Config) (*smtp.Client, error) {
 	var (
 		cli *smtp.Client
 		err error
@@ -68,34 +69,34 @@ func newSmtpClient(c *SmtpConfig) (*smtp.Client, error) {
 	return cli, nil
 }
 
-var ErrSmtpPoolClosed = fmt.Errorf("smtp pool is closed")
+var ErrSMTPPoolClosed = errors.New("smtp pool is closed")
 
-type SmtpPool struct {
-	c       *SmtpConfig
+type Pool struct {
+	c       *Config
 	clients []*smtp.Client
-	max     int
+	poolCap int
 	active  int
 	mu      sync.Mutex
 	closed  bool
 }
 
-func NewSmtpPool(c *SmtpConfig, max int) (*SmtpPool, error) {
-	err := validateSmtpConfig(c)
+func NewSMTPPool(c *Config, poolCap int) (*Pool, error) {
+	err := validateSMTPConfig(c)
 	if err != nil {
 		return nil, err
 	}
-	return &SmtpPool{
-		clients: make([]*smtp.Client, 0, max),
+	return &Pool{
+		clients: make([]*smtp.Client, 0, poolCap),
 		c:       c,
-		max:     max,
+		poolCap: poolCap,
 	}, nil
 }
 
-func (p *SmtpPool) Get() (*smtp.Client, error) {
+func (p *Pool) Get() (*smtp.Client, error) {
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
-		return nil, ErrSmtpPoolClosed
+		return nil, ErrSMTPPoolClosed
 	}
 
 	if len(p.clients) > 0 {
@@ -113,13 +114,13 @@ func (p *SmtpPool) Get() (*smtp.Client, error) {
 		return cli, nil
 	}
 
-	if p.active >= p.max {
+	if p.active >= p.poolCap {
 		p.mu.Unlock()
 		runtime.Gosched()
 		return p.Get()
 	}
 
-	cli, err := newSmtpClient(p.c)
+	cli, err := newSMTPClient(p.c)
 	if err != nil {
 		p.mu.Unlock()
 		return nil, err
@@ -130,7 +131,7 @@ func (p *SmtpPool) Get() (*smtp.Client, error) {
 	return cli, nil
 }
 
-func (p *SmtpPool) Put(cli *smtp.Client) {
+func (p *Pool) Put(cli *smtp.Client) {
 	if cli == nil {
 		return
 	}
@@ -150,7 +151,7 @@ func (p *SmtpPool) Put(cli *smtp.Client) {
 	p.clients = append(p.clients, cli)
 }
 
-func (p *SmtpPool) Close() {
+func (p *Pool) Close() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -162,7 +163,7 @@ func (p *SmtpPool) Close() {
 	p.clients = nil
 }
 
-func (p *SmtpPool) SendEmail(to []string, subject, body string, opts ...FormatMailOption) error {
+func (p *Pool) SendEmail(to []string, subject, body string, opts ...FormatMailOption) error {
 	cli, err := p.Get()
 	if err != nil {
 		return err
@@ -171,7 +172,7 @@ func (p *SmtpPool) SendEmail(to []string, subject, body string, opts ...FormatMa
 	return SendEmail(cli, p.c.From, to, subject, body, opts...)
 }
 
-func (p *SmtpPool) SetFrom(from string) {
+func (p *Pool) SetFrom(from string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 

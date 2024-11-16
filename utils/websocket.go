@@ -31,10 +31,10 @@ func NewWebSocketServer(conf ...WebSocketConfig) *WebSocket {
 	return ws
 }
 
-func (ws *WebSocket) Server(w http.ResponseWriter, r *http.Request, Subprotocols []string, handler func(c *websocket.Conn) error) error {
+func (ws *WebSocket) Server(w http.ResponseWriter, r *http.Request, subprotocols []string, handler func(c *websocket.Conn) error) error {
 	conf := []UpgraderConf{}
-	if len(Subprotocols) > 0 {
-		conf = append(conf, WithSubprotocols(Subprotocols))
+	if len(subprotocols) > 0 {
+		conf = append(conf, WithSubprotocols(subprotocols))
 	}
 	wsc, err := ws.NewWebSocketClient(w, r, nil, conf...)
 	if err != nil {
@@ -46,9 +46,9 @@ func (ws *WebSocket) Server(w http.ResponseWriter, r *http.Request, Subprotocols
 
 type UpgraderConf func(*websocket.Upgrader)
 
-func WithSubprotocols(Subprotocols []string) UpgraderConf {
+func WithSubprotocols(subprotocols []string) UpgraderConf {
 	return func(ug *websocket.Upgrader) {
-		ug.Subprotocols = Subprotocols
+		ug.Subprotocols = subprotocols
 	}
 }
 

@@ -16,7 +16,7 @@ type QQProvider struct {
 	config oauth2.Config
 }
 
-func newQQProvider() provider.ProviderInterface {
+func newQQProvider() provider.Interface {
 	return &QQProvider{
 		config: oauth2.Config{
 			Scopes: []string{"get_user_info"},
@@ -122,11 +122,13 @@ func (p *QQProvider) GetUserInfo(ctx context.Context, code string) (*provider.Us
 	}, nil
 }
 
+//nolint:tagliatelle
 type qqProviderMe struct {
 	ClientID string `json:"client_id"`
 	Openid   string `json:"openid"`
 }
 
+//nolint:tagliatelle
 type qqUserInfo struct {
 	Msg          string `json:"msg"`
 	Nickname     string `json:"nickname"`

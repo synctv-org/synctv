@@ -25,10 +25,10 @@ import (
 func OAuth2(ctx *gin.Context) {
 	log := ctx.MustGet("log").(*logrus.Entry)
 
-	pi, err := providers.GetProvider(provider.OAuth2Provider(ctx.Param("type")))
+	pi, err := providers.GetProvider(ctx.Param("type"))
 	if err != nil {
 		log.Errorf("failed to get provider: %v", err)
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 		return
 	}
 
@@ -36,7 +36,7 @@ func OAuth2(ctx *gin.Context) {
 	url, err := pi.NewAuthURL(ctx, state)
 	if err != nil {
 		log.Errorf("failed to get auth url: %v", err)
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 		return
 	}
 	states.Store(state, newAuthFunc(ctx.Query("redirect")), time.Minute*5)
@@ -54,13 +54,13 @@ func OAuth2Api(ctx *gin.Context) {
 	pi, err := providers.GetProvider(ctx.Param("type"))
 	if err != nil {
 		log.Errorf("failed to get provider: %v", err)
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 	}
 
 	meta := model.OAuth2Req{}
 	if err := model.Decode(ctx, &meta); err != nil {
 		log.Errorf("failed to decode request: %v", err)
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 		return
 	}
 
@@ -68,11 +68,11 @@ func OAuth2Api(ctx *gin.Context) {
 	url, err := pi.NewAuthURL(ctx, state)
 	if err != nil {
 		log.Errorf("failed to get auth url: %v", err)
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 		return
 	}
 	states.Store(state, newAuthFunc(meta.Redirect), time.Minute*5)
-	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
+	ctx.JSON(http.StatusOK, model.NewAPIDataResp(gin.H{
 		"url": url,
 	}))
 }
@@ -85,21 +85,21 @@ func OAuth2Callback(ctx *gin.Context) {
 	code := ctx.Query("code")
 	if code == "" {
 		log.Errorf("invalid oauth2 code")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("invalid oauth2 code"))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("invalid oauth2 code"))
 		return
 	}
 
-	pi, err := providers.GetProvider(provider.OAuth2Provider(ctx.Param("type")))
+	pi, err := providers.GetProvider(ctx.Param("type"))
 	if err != nil {
 		log.Errorf("failed to get provider: %v", err)
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 		return
 	}
 
 	meta, loaded := states.LoadAndDelete(ctx.Query("state"))
 	if !loaded {
 		log.Errorf("invalid oauth2 state")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("invalid oauth2 state"))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("invalid oauth2 state"))
 		return
 	}
 
@@ -107,32 +107,32 @@ func OAuth2Callback(ctx *gin.Context) {
 		meta.Value()(ctx, pi, code)
 	} else {
 		log.Errorf("invalid oauth2 handler")
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorStringResp("invalid oauth2 handler"))
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorStringResp("invalid oauth2 handler"))
 	}
 }
 
 // POST
 // /oauth2/callback/:type
-func OAuth2CallbackApi(ctx *gin.Context) {
+func OAuth2CallbackAPI(ctx *gin.Context) {
 	log := ctx.MustGet("log").(*logrus.Entry)
 
 	req := model.OAuth2CallbackReq{}
 	if err := req.Decode(ctx); err != nil {
 		log.Errorf("failed to decode request: %v", err)
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 		return
 	}
 
-	pi, err := providers.GetProvider(provider.OAuth2Provider(ctx.Param("type")))
+	pi, err := providers.GetProvider(ctx.Param("type"))
 	if err != nil {
 		log.Errorf("failed to get provider: %v", err)
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 	}
 
 	meta, loaded := states.LoadAndDelete(req.State)
 	if !loaded {
 		log.Errorf("invalid oauth2 state")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("invalid oauth2 state"))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("invalid oauth2 state"))
 		return
 	}
 
@@ -140,12 +140,12 @@ func OAuth2CallbackApi(ctx *gin.Context) {
 		meta.Value()(ctx, pi, req.Code)
 	} else {
 		log.Errorf("invalid oauth2 handler")
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorStringResp("invalid oauth2 handler"))
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorStringResp("invalid oauth2 handler"))
 	}
 }
 
 func newAuthFunc(redirect string) stateHandler {
-	return func(ctx *gin.Context, pi provider.ProviderInterface, code string) {
+	return func(ctx *gin.Context, pi provider.Interface, code string) {
 		log := ctx.MustGet("log").(*logrus.Entry)
 
 		ctx.Header("X-OAuth2-Type", CallbackTypeAuth)
@@ -153,14 +153,14 @@ func newAuthFunc(redirect string) stateHandler {
 		ui, err := pi.GetUserInfo(ctx, code)
 		if err != nil {
 			log.Errorf("failed to get user info: %v", err)
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 			return
 		}
 
-		pgs, loaded := bootstrap.ProviderGroupSettings[dbModel.SettingGroup(fmt.Sprintf("%s_%s", dbModel.SettingGroupOauth2, pi.Provider()))]
+		pgs, loaded := bootstrap.ProviderGroupSettings[fmt.Sprintf("%s_%s", dbModel.SettingGroupOauth2, pi.Provider())]
 		if !loaded {
 			log.Errorf("invalid oauth2 provider")
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("invalid oauth2 provider"))
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("invalid oauth2 provider"))
 			return
 		}
 
@@ -176,7 +176,7 @@ func newAuthFunc(redirect string) stateHandler {
 		}
 		if err != nil {
 			log.Errorf("failed to create or load user: %v", err)
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 			return
 		}
 		user := userE.Value()
@@ -185,7 +185,7 @@ func newAuthFunc(redirect string) stateHandler {
 		if err != nil {
 			if errors.Is(err, middlewares.ErrUserBanned) ||
 				errors.Is(err, middlewares.ErrUserPending) {
-				ctx.AbortWithStatusJSON(http.StatusOK, model.NewApiDataResp(gin.H{
+				ctx.AbortWithStatusJSON(http.StatusOK, model.NewAPIDataResp(gin.H{
 					"type":    CallbackTypeAuth,
 					"message": err.Error(),
 					"role":    user.Role,
@@ -193,17 +193,18 @@ func newAuthFunc(redirect string) stateHandler {
 				return
 			}
 			log.Errorf("failed to generate token: %v", err)
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 			return
 		}
 
-		if ctx.Request.Method == http.MethodGet {
+		switch ctx.Request.Method {
+		case http.MethodGet:
 			err = RenderToken(ctx, redirect, token)
 			if err != nil {
 				log.Errorf("failed to render token: %v", err)
 			}
-		} else if ctx.Request.Method == http.MethodPost {
-			ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
+		case http.MethodPost:
+			ctx.JSON(http.StatusOK, model.NewAPIDataResp(gin.H{
 				"type":     CallbackTypeAuth,
 				"role":     user.Role,
 				"token":    token,

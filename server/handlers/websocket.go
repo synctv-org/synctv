@@ -64,7 +64,11 @@ func NewWSMessageHandler(u *op.User, r *op.Room, l *log.Entry) func(c *websocket
 			return err
 		}
 
-		go handleReaderMessage(client, l)
+		go func() {
+			if err := handleReaderMessage(client, l); err != nil {
+				l.Errorf("ws: handle reader message error: %v", err)
+			}
+		}()
 		return handleWriterMessage(client, l)
 	}
 }
@@ -235,14 +239,14 @@ func handleSyncMessage(cli *op.Client) error {
 	})
 }
 
-func handleExpiredMessage(cli *op.Client, expirationId uint64) error {
+func handleExpiredMessage(cli *op.Client, expirationID uint64) error {
 	current := cli.Room().Current()
-	if expirationId != 0 && current.Movie.ID != "" {
+	if expirationID != 0 && current.Movie.ID != "" {
 		currentMovie, err := cli.Room().GetMovieByID(current.Movie.ID)
 		if err != nil {
 			return sendErrorMessage(cli, fmt.Sprintf("get movie by id error: %v", err))
 		}
-		if currentMovie.CheckExpired(expirationId) {
+		if currentMovie.CheckExpired(expirationID) {
 			return cli.Send(&pb.Message{
 				Type: pb.MessageType_EXPIRED,
 			})

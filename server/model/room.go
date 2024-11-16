@@ -2,7 +2,6 @@ package model
 
 import (
 	"errors"
-	"fmt"
 
 	json "github.com/json-iterator/go"
 
@@ -22,7 +21,7 @@ var (
 type FormatEmptyPasswordError string
 
 func (f FormatEmptyPasswordError) Error() string {
-	return fmt.Sprintf("%s password empty", string(f))
+	return string(f) + " password empty"
 }
 
 type CreateRoomReq struct {
@@ -58,7 +57,7 @@ func (c *CreateRoomReq) Validate() error {
 }
 
 type RoomListResp struct {
-	RoomId       string             `json:"roomId"`
+	RoomID       string             `json:"roomId"`
 	RoomName     string             `json:"roomName"`
 	CreatorID    string             `json:"creatorId"`
 	Creator      string             `json:"creator"`
@@ -75,7 +74,7 @@ type JoinedRoomResp struct {
 }
 
 type LoginRoomReq struct {
-	RoomId   string `json:"roomId"`
+	RoomID   string `json:"roomId"`
 	Password string `json:"password"`
 }
 
@@ -84,9 +83,9 @@ func (l *LoginRoomReq) Decode(ctx *gin.Context) error {
 }
 
 func (l *LoginRoomReq) Validate() error {
-	if l.RoomId == "" {
+	if l.RoomID == "" {
 		return ErrEmptyRoomName
-	} else if len(l.RoomId) != 32 {
+	} else if len(l.RoomID) != 32 {
 		return errors.New("invalid room id")
 	}
 
@@ -113,7 +112,7 @@ func (s *SetRoomPasswordReq) Validate() error {
 }
 
 type RoomIDReq struct {
-	Id string `json:"id"`
+	ID string `json:"id"`
 }
 
 func (r *RoomIDReq) Decode(ctx *gin.Context) error {
@@ -121,7 +120,7 @@ func (r *RoomIDReq) Decode(ctx *gin.Context) error {
 }
 
 func (r *RoomIDReq) Validate() error {
-	if len(r.Id) != 32 {
+	if len(r.ID) != 32 {
 		return ErrEmptyRoomName
 	}
 

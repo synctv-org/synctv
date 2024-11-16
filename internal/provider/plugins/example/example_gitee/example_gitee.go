@@ -24,7 +24,7 @@ type GiteeProvider struct {
 	config oauth2.Config
 }
 
-func newGiteeProvider() provider.ProviderInterface {
+func newGiteeProvider() provider.Interface {
 	return &GiteeProvider{
 		config: oauth2.Config{
 			Scopes: []string{"user_info"},

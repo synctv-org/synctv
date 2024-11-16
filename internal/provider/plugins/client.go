@@ -9,7 +9,7 @@ import (
 
 type GRPCClient struct{ client providerpb.Oauth2PluginClient }
 
-var _ provider.ProviderInterface = (*GRPCClient)(nil)
+var _ provider.Interface = (*GRPCClient)(nil)
 
 func (c *GRPCClient) Init(o provider.Oauth2Option) {
 	opt := providerpb.InitReq{
@@ -17,7 +17,7 @@ func (c *GRPCClient) Init(o provider.Oauth2Option) {
 		ClientSecret: o.ClientSecret,
 		RedirectUrl:  o.RedirectURL,
 	}
-	c.client.Init(context.Background(), &opt)
+	_, _ = c.client.Init(context.Background(), &opt)
 }
 
 func (c *GRPCClient) Provider() provider.OAuth2Provider {
@@ -25,7 +25,7 @@ func (c *GRPCClient) Provider() provider.OAuth2Provider {
 	if err != nil {
 		return ""
 	}
-	return provider.OAuth2Provider(resp.Name)
+	return resp.Name
 }
 
 func (c *GRPCClient) NewAuthURL(ctx context.Context, state string) (string, error) {

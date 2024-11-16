@@ -7,6 +7,5 @@ import (
 )
 
 func InitOp(ctx context.Context) error {
-	op.Init(4096)
-	return nil
+	return op.Init(4096)
 }

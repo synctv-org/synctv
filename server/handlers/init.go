@@ -9,9 +9,9 @@ import (
 	"github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/settings"
 	"github.com/synctv-org/synctv/server/handlers/vendors"
-	"github.com/synctv-org/synctv/server/handlers/vendors/vendorAlist"
-	"github.com/synctv-org/synctv/server/handlers/vendors/vendorBilibili"
-	"github.com/synctv-org/synctv/server/handlers/vendors/vendorEmby"
+	"github.com/synctv-org/synctv/server/handlers/vendors/vendoralist"
+	"github.com/synctv-org/synctv/server/handlers/vendors/vendorbilibili"
+	"github.com/synctv-org/synctv/server/handlers/vendors/vendoremby"
 	"github.com/synctv-org/synctv/server/middlewares"
 	"github.com/synctv-org/synctv/utils"
 )
@@ -35,7 +35,7 @@ var HOST = settings.NewStringSetting(
 func Init(e *gin.Engine) {
 	api := e.Group("/api")
 
-	needAuthUserApi := api.Group("", middlewares.AuthUserMiddleware)
+	needAuthUserAPI := api.Group("", middlewares.AuthUserMiddleware)
 
 	{
 		public := api.Group("/public")
@@ -70,13 +70,13 @@ func Init(e *gin.Engine) {
 
 	{
 		user := api.Group("/user")
-		needAuthUser := needAuthUserApi.Group("/user")
+		needAuthUser := needAuthUserAPI.Group("/user")
 
 		initUser(user, needAuthUser)
 	}
 
 	{
-		vendor := needAuthUserApi.Group("/vendor")
+		vendor := needAuthUserAPI.Group("/vendor")
 
 		initVendor(vendor)
 	}
@@ -313,48 +313,48 @@ func initVendor(vendor *gin.RouterGroup) {
 
 		login := bilibili.Group("/login")
 
-		login.GET("/qr", vendorBilibili.NewQRCode)
+		login.GET("/qr", vendorbilibili.NewQRCode)
 
-		login.POST("/qr", vendorBilibili.LoginWithQR)
+		login.POST("/qr", vendorbilibili.LoginWithQR)
 
-		login.GET("/captcha", vendorBilibili.NewCaptcha)
+		login.GET("/captcha", vendorbilibili.NewCaptcha)
 
-		login.POST("/sms/send", vendorBilibili.NewSMS)
+		login.POST("/sms/send", vendorbilibili.NewSMS)
 
-		login.POST("/sms/login", vendorBilibili.LoginWithSMS)
+		login.POST("/sms/login", vendorbilibili.LoginWithSMS)
 
-		bilibili.POST("/parse", vendorBilibili.Parse)
+		bilibili.POST("/parse", vendorbilibili.Parse)
 
-		bilibili.GET("/me", vendorBilibili.Me)
+		bilibili.GET("/me", vendorbilibili.Me)
 
-		bilibili.POST("/logout", vendorBilibili.Logout)
+		bilibili.POST("/logout", vendorbilibili.Logout)
 	}
 
 	{
 		alist := vendor.Group("/alist")
 
-		alist.POST("/login", vendorAlist.Login)
+		alist.POST("/login", vendoralist.Login)
 
-		alist.POST("/logout", vendorAlist.Logout)
+		alist.POST("/logout", vendoralist.Logout)
 
-		alist.POST("/list", vendorAlist.List)
+		alist.POST("/list", vendoralist.List)
 
-		alist.GET("/me", vendorAlist.Me)
+		alist.GET("/me", vendoralist.Me)
 
-		alist.GET("/binds", vendorAlist.Binds)
+		alist.GET("/binds", vendoralist.Binds)
 	}
 
 	{
 		emby := vendor.Group("/emby")
 
-		emby.POST("/login", vendorEmby.Login)
+		emby.POST("/login", vendoremby.Login)
 
-		emby.POST("/logout", vendorEmby.Logout)
+		emby.POST("/logout", vendoremby.Logout)
 
-		emby.POST("/list", vendorEmby.List)
+		emby.POST("/list", vendoremby.List)
 
-		emby.GET("/me", vendorEmby.Me)
+		emby.GET("/me", vendoremby.Me)
 
-		emby.GET("/binds", vendorEmby.Binds)
+		emby.GET("/binds", vendoremby.Binds)
 	}
 }

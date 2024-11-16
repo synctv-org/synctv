@@ -68,7 +68,7 @@ var (
 	// default use http header host
 	CustomPublishHost = NewStringSetting("custom_publish_host", "", model.SettingGroupRtmp)
 	// disguise the .ts file as a .png file
-	TsDisguisedAsPng = NewBoolSetting("ts_disguised_as_png", true, model.SettingGroupRtmp)
+	TSDisguisedAsPng = NewBoolSetting("ts_disguised_as_png", true, model.SettingGroupRtmp)
 )
 
 var DatabaseVersion = NewStringSetting("database_version", db.CurrentVersion, model.SettingGroupDatabase, WithBeforeSetString(func(ss StringSetting, s string) (string, error) {

@@ -315,7 +315,7 @@ func DeleteVendorBackends(ctx context.Context, endpoints []string) error {
 
 	m := maps.Clone(LoadConns())
 
-	var beforeConn = make([]*grpc.ClientConn, len(endpoints))
+	beforeConn := make([]*grpc.ClientConn, len(endpoints))
 	for i, endpoint := range endpoints {
 		if conn, ok := m[endpoint]; !ok {
 			return fmt.Errorf("endpoint not found: %s", endpoint)
@@ -555,14 +555,14 @@ func NewGrpcConn(ctx context.Context, conf *model.Backend) (*grpc.ClientConn, er
 		con *grpc.ClientConn
 		err error
 	)
-	if conf.Tls {
+	if conf.TLS {
 		var rootCAs *x509.CertPool
 		rootCAs, err = x509.SystemCertPool()
 		if err != nil {
 			return nil, err
 		}
-		if conf.CustomCA != "" {
-			rootCAs.AppendCertsFromPEM([]byte(conf.CustomCA))
+		if conf.CustomCa != "" {
+			rootCAs.AppendCertsFromPEM([]byte(conf.CustomCa))
 		}
 		opts = append(opts, ggrpc.WithTLSConfig(&tls.Config{
 			RootCAs: rootCAs,
@@ -616,13 +616,13 @@ func NewHttpClientConn(ctx context.Context, conf *model.Backend) (*http.Client, 
 		opts = append(opts, http.WithTimeout(time.Second*10))
 	}
 
-	if conf.Tls {
+	if conf.TLS {
 		rootCAs, err := x509.SystemCertPool()
 		if err != nil {
 			return nil, err
 		}
-		if conf.CustomCA != "" {
-			b, err := os.ReadFile(conf.CustomCA)
+		if conf.CustomCa != "" {
+			b, err := os.ReadFile(conf.CustomCa)
 			if err != nil {
 				return nil, err
 			}

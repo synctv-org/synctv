@@ -81,46 +81,46 @@ func getCache() Cache {
 	return defaultCache
 }
 
-type ProxyURLOptions struct {
+type Options struct {
 	CacheKey string
 	Cache    bool
 }
 
-type ProxyURLOption func(o *ProxyURLOptions)
+type Option func(o *Options)
 
-func WithProxyURLCache(cache bool) ProxyURLOption {
-	return func(o *ProxyURLOptions) {
+func WithProxyURLCache(cache bool) Option {
+	return func(o *Options) {
 		o.Cache = cache
 	}
 }
 
-func WithProxyURLCacheKey(key string) ProxyURLOption {
-	return func(o *ProxyURLOptions) {
+func WithProxyURLCacheKey(key string) Option {
+	return func(o *Options) {
 		o.CacheKey = key
 	}
 }
 
-func NewProxyURLOptions(opts ...ProxyURLOption) *ProxyURLOptions {
-	o := &ProxyURLOptions{}
+func NewProxyURLOptions(opts ...Option) *Options {
+	o := &Options{}
 	for _, opt := range opts {
 		opt(o)
 	}
 	return o
 }
 
-func ProxyURL(ctx *gin.Context, u string, headers map[string]string, opts ...ProxyURLOption) error {
+func URL(ctx *gin.Context, u string, headers map[string]string, opts ...Option) error {
 	o := NewProxyURLOptions(opts...)
 	if !settings.AllowProxyToLocal.Get() {
 		if l, err := utils.ParseURLIsLocalIP(u); err != nil {
 			ctx.AbortWithStatusJSON(http.StatusBadRequest,
-				model.NewApiErrorStringResp(
+				model.NewAPIErrorStringResp(
 					fmt.Sprintf("check url is local ip error: %v", err),
 				),
 			)
 			return fmt.Errorf("check url is local ip error: %w", err)
 		} else if l {
 			ctx.AbortWithStatusJSON(http.StatusBadRequest,
-				model.NewApiErrorStringResp(
+				model.NewAPIErrorStringResp(
 					"not allow proxy to local",
 				),
 			)
@@ -131,7 +131,7 @@ func ProxyURL(ctx *gin.Context, u string, headers map[string]string, opts ...Pro
 	if o.Cache && settings.ProxyCacheEnable.Get() {
 		c, cancel := context.WithCancel(ctx)
 		defer cancel()
-		rsc := NewHttpReadSeekCloser(u,
+		rsc := NewHTTPReadSeekCloser(u,
 			WithContext(c),
 			WithHeadersMap(headers),
 		)
@@ -148,7 +148,7 @@ func ProxyURL(ctx *gin.Context, u string, headers map[string]string, opts ...Pro
 	req, err := http.NewRequestWithContext(ctx2, http.MethodGet, u, nil)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest,
-			model.NewApiErrorStringResp(
+			model.NewAPIErrorStringResp(
 				fmt.Sprintf("new request error: %v", err),
 			),
 		)
@@ -181,7 +181,7 @@ func ProxyURL(ctx *gin.Context, u string, headers map[string]string, opts ...Pro
 	resp, err := cli.Do(req)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest,
-			model.NewApiErrorStringResp(
+			model.NewAPIErrorStringResp(
 				fmt.Sprintf("request url error: %v", err),
 			),
 		)
@@ -195,9 +195,9 @@ func ProxyURL(ctx *gin.Context, u string, headers map[string]string, opts ...Pro
 	ctx.Header("Content-Range", resp.Header.Get("Content-Range"))
 	ctx.Header("Content-Type", resp.Header.Get("Content-Type"))
 	_, err = copyBuffer(ctx.Writer, resp.Body)
-	if err != nil && err != io.EOF {
+	if err != nil && !errors.Is(err, io.EOF) {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest,
-			model.NewApiErrorStringResp(
+			model.NewAPIErrorStringResp(
 				fmt.Sprintf("copy response body error: %v", err),
 			),
 		)
@@ -206,9 +206,9 @@ func ProxyURL(ctx *gin.Context, u string, headers map[string]string, opts ...Pro
 	return nil
 }
 
-func AutoProxyURL(ctx *gin.Context, u, t string, headers map[string]string, token, roomId, movieId string, opts ...ProxyURLOption) error {
+func AutoProxyURL(ctx *gin.Context, u, t string, headers map[string]string, token, roomID, movieID string, opts ...Option) error {
 	if strings.HasPrefix(t, "m3u") || utils.IsM3u8Url(u) {
-		return ProxyM3u8(ctx, u, headers, true, token, roomId, movieId, opts...)
+		return M3u8(ctx, u, headers, true, token, roomID, movieID, opts...)
 	}
-	return ProxyURL(ctx, u, headers, opts...)
+	return URL(ctx, u, headers, opts...)
 }

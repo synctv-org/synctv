@@ -9,9 +9,9 @@ import (
 	dbModel "github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/internal/vendor"
-	"github.com/synctv-org/synctv/server/handlers/vendors/vendorAlist"
-	"github.com/synctv-org/synctv/server/handlers/vendors/vendorBilibili"
-	"github.com/synctv-org/synctv/server/handlers/vendors/vendorEmby"
+	"github.com/synctv-org/synctv/server/handlers/vendors/vendoralist"
+	"github.com/synctv-org/synctv/server/handlers/vendors/vendorbilibili"
+	"github.com/synctv-org/synctv/server/handlers/vendors/vendoremby"
 	"github.com/synctv-org/synctv/server/model"
 	"golang.org/x/exp/maps"
 )
@@ -26,14 +26,14 @@ func Backends(ctx *gin.Context) {
 	case dbModel.VendorEmby:
 		backends = maps.Keys(vendor.LoadClients().EmbyClients())
 	default:
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("invalid vendor name"))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("invalid vendor name"))
 		return
 	}
-	ctx.JSON(http.StatusOK, model.NewApiDataResp(backends))
+	ctx.JSON(http.StatusOK, model.NewAPIDataResp(backends))
 }
 
 type VendorService interface {
-	ListDynamicMovie(ctx context.Context, reqUser *op.User, subPath string, page, max int) (*model.MovieList, error)
+	ListDynamicMovie(ctx context.Context, reqUser *op.User, subPath string, page, _max int) (*model.MovieList, error)
 	ProxyMovie(ctx *gin.Context)
 	GenMovieInfo(ctx context.Context, reqUser *op.User, userAgent, userToken string) (*dbModel.Movie, error)
 }
@@ -41,11 +41,11 @@ type VendorService interface {
 func NewVendorService(room *op.Room, movie *op.Movie) (VendorService, error) {
 	switch movie.VendorInfo.Vendor {
 	case dbModel.VendorBilibili:
-		return vendorBilibili.NewBilibiliVendorService(room, movie)
+		return vendorbilibili.NewBilibiliVendorService(room, movie)
 	case dbModel.VendorAlist:
-		return vendorAlist.NewAlistVendorService(room, movie)
+		return vendoralist.NewAlistVendorService(room, movie)
 	case dbModel.VendorEmby:
-		return vendorEmby.NewEmbyVendorService(room, movie)
+		return vendoremby.NewEmbyVendorService(room, movie)
 	default:
 		return nil, fmt.Errorf("vendor %s not support", movie.VendorInfo.Vendor)
 	}

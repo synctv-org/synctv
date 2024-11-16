@@ -32,7 +32,7 @@ type FeishuSSOProvider struct {
 	ssoid  string
 }
 
-func newFeishuSSOProvider(ssoid string) provider.ProviderInterface {
+func newFeishuSSOProvider(ssoid string) provider.Interface {
 	return &FeishuSSOProvider{
 		config: oauth2.Config{
 			Scopes: []string{"profile"},

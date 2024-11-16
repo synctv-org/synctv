@@ -13,7 +13,7 @@ import (
 
 var _ provider.AggregationProviderInterface = (*Rainbow)(nil)
 
-const DefaultRainbowApi = "https://u.cccyun.cc"
+const DefaultRainbowAPI = "https://u.cccyun.cc"
 
 type Rainbow struct {
 	api string
@@ -43,7 +43,7 @@ type rainbowGenericProvider struct {
 	conf   provider.Oauth2Option
 }
 
-func (r *Rainbow) newGenericProvider(t string) provider.ProviderInterface {
+func (r *Rainbow) newGenericProvider(t string) provider.Interface {
 	return &rainbowGenericProvider{
 		parent: r,
 		t:      t,
@@ -149,6 +149,7 @@ func (p *rainbowGenericProvider) GetUserInfo(ctx context.Context, code string) (
 	}, nil
 }
 
+//nolint:tagliatelle
 type rainbowUserInfo struct {
 	Msg       string `json:"msg"`
 	Type      string `json:"type"`
@@ -158,7 +159,7 @@ type rainbowUserInfo struct {
 	ErrCode   int    `json:"errcode"`
 }
 
-func (r *Rainbow) ExtractProvider(p provider.OAuth2Provider) (provider.ProviderInterface, error) {
+func (r *Rainbow) ExtractProvider(p provider.OAuth2Provider) (provider.Interface, error) {
 	switch p {
 	case "qq", "wx", "alipay", "baidu", "microsoft":
 		return r.newGenericProvider(p), nil

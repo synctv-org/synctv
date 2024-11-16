@@ -9,20 +9,22 @@ import (
 	"github.com/synctv-org/synctv/internal/db"
 )
 
+var ErrMissingUserID = errors.New("missing user id")
+
 var AddCmd = &cobra.Command{
 	Use:   "add",
 	Short: "add admin by user id",
 	Long:  `add admin by user id`,
-	PreRunE: func(cmd *cobra.Command, args []string) error {
+	PreRunE: func(cmd *cobra.Command, _ []string) error {
 		return bootstrap.New(bootstrap.WithContext(cmd.Context())).Add(
 			bootstrap.InitDiscardLog,
 			bootstrap.InitConfig,
 			bootstrap.InitDatabase,
 		).Run()
 	},
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		if len(args) == 0 {
-			return errors.New("missing user id")
+			return ErrMissingUserID
 		}
 		u, err := db.GetUserByID(args[0])
 		if err != nil {

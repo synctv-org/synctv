@@ -10,7 +10,7 @@ import (
 )
 
 var (
-	ErrEmptyUserId            = errors.New("empty user id")
+	ErrEmptyUserID            = errors.New("empty user id")
 	ErrEmptyUsername          = errors.New("empty username")
 	ErrUsernameTooLong        = errors.New("username too long")
 	ErrUsernameHasInvalidChar = errors.New("username has invalid char")
@@ -153,18 +153,18 @@ func (u *UserIDReq) Validate() error {
 }
 
 type UserBindProviderResp map[provider.OAuth2Provider]struct {
-	ProviderUserID string `json:"providerUserID"`
+	ProviderUserID string `json:"providerUserId"`
 	CreatedAt      int64  `json:"createdAt"`
 }
 
 type GetUserBindEmailStep1CaptchaResp struct {
-	CaptchaID     string `json:"captchaID"`
+	CaptchaID     string `json:"captchaId"`
 	CaptchaBase64 string `json:"captchaBase64"`
 }
 
 type UserSendBindEmailCaptchaReq struct {
 	Email     string `json:"email"`
-	CaptchaID string `json:"captchaID"`
+	CaptchaID string `json:"captchaId"`
 	Answer    string `json:"answer"`
 }
 

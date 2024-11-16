@@ -1,4 +1,4 @@
-package vendorAlist
+package vendoralist
 
 import (
 	"errors"
@@ -45,13 +45,13 @@ func List(ctx *gin.Context) {
 
 	req := ListReq{}
 	if err := model.Decode(ctx, &req); err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 		return
 	}
 
 	page, size, err := utils.GetPageAndMax(ctx)
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 		return
 	}
 
@@ -62,21 +62,21 @@ func List(ctx *gin.Context) {
 
 		total, err := db.GetAlistVendorsCount(user.ID, socpes...)
 		if err != nil {
-			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 			return
 		}
 		if total == 0 {
-			ctx.JSON(http.StatusBadRequest, model.NewApiErrorStringResp("alist server not found"))
+			ctx.JSON(http.StatusBadRequest, model.NewAPIErrorStringResp("alist server not found"))
 			return
 		}
 
 		ev, err := db.GetAlistVendors(user.ID, append(socpes, db.Paginate(page, size))...)
 		if err != nil {
-			if errors.Is(err, db.ErrNotFound(db.ErrVendorNotFound)) {
-				ctx.JSON(http.StatusBadRequest, model.NewApiErrorStringResp("alist server not found"))
+			if errors.Is(err, db.NotFoundError(db.ErrVendorNotFound)) {
+				ctx.JSON(http.StatusBadRequest, model.NewAPIErrorStringResp("alist server not found"))
 				return
 			}
-			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 			return
 		}
 
@@ -105,7 +105,7 @@ func List(ctx *gin.Context) {
 			})
 		}
 
-		ctx.JSON(http.StatusOK, model.NewApiDataResp(resp))
+		ctx.JSON(http.StatusOK, model.NewAPIDataResp(resp))
 
 		return
 	}
@@ -113,9 +113,9 @@ func List(ctx *gin.Context) {
 AlistFSListResp:
 
 	var serverID string
-	serverID, req.Path, err = dbModel.GetAlistServerIdFromPath(req.Path)
+	serverID, req.Path, err = dbModel.GetAlistServerIDFromPath(req.Path)
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 		return
 	}
 
@@ -125,12 +125,12 @@ AlistFSListResp:
 
 	aucd, err := user.AlistCache().LoadOrStore(ctx, serverID)
 	if err != nil {
-		if errors.Is(err, db.ErrNotFound(db.ErrVendorNotFound)) {
-			ctx.JSON(http.StatusBadRequest, model.NewApiErrorStringResp("alist server not found"))
+		if errors.Is(err, db.NotFoundError(db.ErrVendorNotFound)) {
+			ctx.JSON(http.StatusBadRequest, model.NewAPIErrorStringResp("alist server not found"))
 			return
 		}
 
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 		return
 	}
 
@@ -145,7 +145,7 @@ AlistFSListResp:
 		PerPage:  uint64(size),
 	})
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 		return
 	}
 
@@ -174,5 +174,5 @@ AlistFSListResp:
 		})
 	}
 
-	ctx.JSON(http.StatusOK, model.NewApiDataResp(&resp))
+	ctx.JSON(http.StatusOK, model.NewAPIDataResp(&resp))
 }

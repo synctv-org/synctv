@@ -11,9 +11,9 @@ func Init(e *gin.Engine) {
 		needAuthOauth2 := oauth2.Group("")
 		needAuthOauth2.Use(middlewares.AuthUserMiddleware)
 
-		oauth2.GET("/enabled", OAuth2EnabledApi)
+		oauth2.GET("/enabled", OAuth2EnabledAPI)
 
-		oauth2.GET("/enabled/signup", OAuth2SignupEnabledApi)
+		oauth2.GET("/enabled/signup", OAuth2SignupEnabledAPI)
 
 		oauth2.GET("/login/:type", OAuth2)
 
@@ -21,10 +21,10 @@ func Init(e *gin.Engine) {
 
 		oauth2.GET("/callback/:type", OAuth2Callback)
 
-		oauth2.POST("/callback/:type", OAuth2CallbackApi)
+		oauth2.POST("/callback/:type", OAuth2CallbackAPI)
 
-		needAuthOauth2.POST("/bind/:type", BindApi)
+		needAuthOauth2.POST("/bind/:type", BindAPI)
 
-		needAuthOauth2.POST("/unbind/:type", UnBindApi)
+		needAuthOauth2.POST("/unbind/:type", UnBindAPI)
 	}
 }

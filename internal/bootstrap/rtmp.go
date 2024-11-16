@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	log "github.com/sirupsen/logrus"
@@ -17,8 +18,8 @@ func InitRtmp(ctx context.Context) error {
 	return nil
 }
 
-func auth(ReqAppName, ReqChannelName string, IsPublisher bool) (*rtmps.Channel, error) {
-	roomE, err := op.LoadOrInitRoomByID(ReqAppName)
+func auth(reqAppName, reqChannelName string, isPublisher bool) (*rtmps.Channel, error) {
+	roomE, err := op.LoadOrInitRoomByID(reqAppName)
 	if err != nil {
 		log.Errorf("rtmp: get room by id error: %v", err)
 		return nil, err
@@ -29,11 +30,11 @@ func auth(ReqAppName, ReqChannelName string, IsPublisher bool) (*rtmps.Channel, 
 		return nil, err
 	}
 
-	if IsPublisher {
-		return handlePublisher(ReqAppName, ReqChannelName, room)
+	if isPublisher {
+		return handlePublisher(reqAppName, reqChannelName, room)
 	}
 
-	return handlePlayer(ReqAppName, ReqChannelName, room)
+	return handlePlayer(reqAppName, reqChannelName, room)
 }
 
 func validateRoom(room *op.Room) error {
@@ -46,21 +47,21 @@ func validateRoom(room *op.Room) error {
 	return nil
 }
 
-func handlePublisher(ReqAppName, ReqChannelName string, room *op.Room) (*rtmps.Channel, error) {
-	channelName, err := rtmp.AuthRtmpPublish(ReqChannelName)
+func handlePublisher(reqAppName, reqChannelName string, room *op.Room) (*rtmps.Channel, error) {
+	channelName, err := rtmp.AuthRtmpPublish(reqChannelName)
 	if err != nil {
-		log.Errorf("rtmp: publish auth to %s error: %v", ReqAppName, err)
+		log.Errorf("rtmp: publish auth to %s error: %v", reqAppName, err)
 		return nil, err
 	}
-	log.Infof("rtmp: publisher login success: %s/%s", ReqAppName, channelName)
+	log.Infof("rtmp: publisher login success: %s/%s", reqAppName, channelName)
 	return room.GetChannel(channelName)
 }
 
-func handlePlayer(ReqAppName, ReqChannelName string, room *op.Room) (*rtmps.Channel, error) {
+func handlePlayer(reqAppName, reqChannelName string, room *op.Room) (*rtmps.Channel, error) {
 	if !settings.RtmpPlayer.Get() {
-		err := fmt.Errorf("rtmp player is not enabled")
-		log.Warnf("rtmp: dial to %s/%s error: %s", ReqAppName, ReqChannelName, err)
+		err := errors.New("rtmp player is not enabled")
+		log.Warnf("rtmp: dial to %s/%s error: %s", reqAppName, reqChannelName, err)
 		return nil, err
 	}
-	return room.GetChannel(ReqChannelName)
+	return room.GetChannel(reqChannelName)
 }

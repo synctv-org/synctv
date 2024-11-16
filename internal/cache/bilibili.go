@@ -25,14 +25,14 @@ import (
 type BilibiliMpdCache struct {
 	Mpd     *mpd.MPD
 	HevcMpd *mpd.MPD
-	Urls    []string
+	URLs    []string
 }
 
 type BilibiliSubtitleCache map[string]*BilibiliSubtitleCacheItem
 
 type BilibiliSubtitleCacheItem struct {
 	Srt *refreshcache0.RefreshCache[[]byte]
-	Url string
+	URL string
 }
 
 func NewBilibiliSharedMpdCacheInitFunc(movie *model.Movie) func(ctx context.Context, args *BilibiliUserCache) (*BilibiliMpdCache, error) {
@@ -45,86 +45,114 @@ func BilibiliSharedMpdCacheInitFunc(ctx context.Context, movie *model.Movie, arg
 	if args == nil {
 		return nil, errors.New("no bilibili user cache data")
 	}
-	var cookies []*http.Cookie
+
+	cookies, err := getBilibiliCookies(ctx, args)
+	if err != nil {
+		return nil, err
+	}
+
+	cli := vendor.LoadBilibiliClient(movie.MovieBase.VendorInfo.Backend)
+	m, hevcM, err := getBilibiliMpd(ctx, cli, movie.MovieBase.VendorInfo.Bilibili, cookies)
+	if err != nil {
+		return nil, err
+	}
+
+	m.BaseURL = append(m.BaseURL, "/api/room/movie/proxy/")
+	movies := processMpdUrls(m, hevcM, movie.ID, movie.RoomID)
+
+	return &BilibiliMpdCache{
+		URLs:    movies,
+		Mpd:     m,
+		HevcMpd: hevcM,
+	}, nil
+}
+
+func getBilibiliCookies(ctx context.Context, args *BilibiliUserCache) ([]*http.Cookie, error) {
 	vendorInfo, err := args.Get(ctx)
 	if err != nil {
-		if !errors.Is(err, db.ErrNotFound(db.ErrVendorNotFound)) {
+		if !errors.Is(err, db.NotFoundError(db.ErrVendorNotFound)) {
 			return nil, err
 		}
-	} else {
-		cookies = vendorInfo.Cookies
+		return nil, nil
 	}
-	cli := vendor.LoadBilibiliClient(movie.MovieBase.VendorInfo.Backend)
-	var m, hevcM *mpd.MPD
-	biliInfo := movie.MovieBase.VendorInfo.Bilibili
+	return vendorInfo.Cookies, nil
+}
+
+func getBilibiliMpd(ctx context.Context, cli bilibili.BilibiliHTTPServer, biliInfo *model.BilibiliStreamingInfo, cookies []*http.Cookie) (*mpd.MPD, *mpd.MPD, error) {
+	cookiesMap := utils.HTTPCookieToMap(cookies)
+
 	switch {
 	case biliInfo.Epid != 0:
 		resp, err := cli.GetDashPGCURL(ctx, &bilibili.GetDashPGCURLReq{
-			Cookies: utils.HttpCookieToMap(cookies),
+			Cookies: cookiesMap,
 			Epid:    biliInfo.Epid,
 		})
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		m, err = mpd.ReadFromString(resp.Mpd)
-		if err != nil {
-			return nil, err
-		}
-		hevcM, err = mpd.ReadFromString(resp.HevcMpd)
-		if err != nil {
-			return nil, err
-		}
+		return parseMpdResponse(resp.Mpd, resp.HevcMpd)
 
 	case biliInfo.Bvid != "":
 		resp, err := cli.GetDashVideoURL(ctx, &bilibili.GetDashVideoURLReq{
-			Cookies: utils.HttpCookieToMap(cookies),
+			Cookies: cookiesMap,
 			Bvid:    biliInfo.Bvid,
 			Cid:     biliInfo.Cid,
 		})
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		m, err = mpd.ReadFromString(resp.Mpd)
-		if err != nil {
-			return nil, err
-		}
-		hevcM, err = mpd.ReadFromString(resp.HevcMpd)
-		if err != nil {
-			return nil, err
-		}
+		return parseMpdResponse(resp.Mpd, resp.HevcMpd)
+
 	default:
-		return nil, errors.New("bvid and epid are empty")
+		return nil, nil, errors.New("bvid and epid are empty")
 	}
-	m.BaseURL = append(m.BaseURL, "/api/room/movie/proxy/")
-	id := 0
+}
+
+func parseMpdResponse(mpdStr, hevcMpdStr string) (*mpd.MPD, *mpd.MPD, error) {
+	m, err := mpd.ReadFromString(mpdStr)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	hevcM, err := mpd.ReadFromString(hevcMpdStr)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return m, hevcM, nil
+}
+
+func processMpdUrls(m, hevcM *mpd.MPD, movieID, roomID string) []string {
 	movies := []string{}
+	id := 0
+
+	// Process regular MPD
 	for _, p := range m.Periods {
 		for _, as := range p.AdaptationSets {
 			for _, r := range as.Representations {
 				for i := range r.BaseURL {
 					movies = append(movies, r.BaseURL[i])
-					r.BaseURL[i] = fmt.Sprintf("%s?id=%d&roomId=%s", movie.ID, id, movie.RoomID)
+					r.BaseURL[i] = fmt.Sprintf("%s?id=%d&roomId=%s", movieID, id, roomID)
 					id++
 				}
 			}
 		}
 	}
+
+	// Process HEVC MPD
 	for _, p := range hevcM.Periods {
 		for _, as := range p.AdaptationSets {
 			for _, r := range as.Representations {
 				for i := range r.BaseURL {
 					movies = append(movies, r.BaseURL[i])
-					r.BaseURL[i] = fmt.Sprintf("%s?id=%d&roomId=%s&t=hevc", movie.ID, id, movie.RoomID)
+					r.BaseURL[i] = fmt.Sprintf("%s?id=%d&roomId=%s&t=hevc", movieID, id, roomID)
 					id++
 				}
 			}
 		}
 	}
-	return &BilibiliMpdCache{
-		Urls:    movies,
-		Mpd:     m,
-		HevcMpd: hevcM,
-	}, nil
+
+	return movies
 }
 
 func BilibiliMpdToString(mpdRaw *mpd.MPD, token string) (string, error) {
@@ -175,7 +203,7 @@ func BilibiliNoSharedMovieCacheInitFunc(ctx context.Context, movie *model.Movie,
 	var cookies []*http.Cookie
 	vendorInfo, err := args[0].Get(ctx)
 	if err != nil {
-		if !errors.Is(err, db.ErrNotFound(db.ErrVendorNotFound)) {
+		if !errors.Is(err, db.NotFoundError(db.ErrVendorNotFound)) {
 			return "", err
 		}
 	} else {
@@ -187,7 +215,7 @@ func BilibiliNoSharedMovieCacheInitFunc(ctx context.Context, movie *model.Movie,
 	switch {
 	case biliInfo.Epid != 0:
 		resp, err := cli.GetPGCURL(ctx, &bilibili.GetPGCURLReq{
-			Cookies: utils.HttpCookieToMap(cookies),
+			Cookies: utils.HTTPCookieToMap(cookies),
 			Epid:    biliInfo.Epid,
 		})
 		if err != nil {
@@ -197,7 +225,7 @@ func BilibiliNoSharedMovieCacheInitFunc(ctx context.Context, movie *model.Movie,
 
 	case biliInfo.Bvid != "":
 		resp, err := cli.GetVideoURL(ctx, &bilibili.GetVideoURLReq{
-			Cookies: utils.HttpCookieToMap(cookies),
+			Cookies: utils.HTTPCookieToMap(cookies),
 			Bvid:    biliInfo.Bvid,
 			Cid:     biliInfo.Cid,
 		})
@@ -208,12 +236,12 @@ func BilibiliNoSharedMovieCacheInitFunc(ctx context.Context, movie *model.Movie,
 
 	default:
 		return "", errors.New("bvid and epid are empty")
-
 	}
 
 	return u, nil
 }
 
+//nolint:tagliatelle
 type bilibiliSubtitleResp struct {
 	FontColor       string `json:"font_color"`
 	BackgroundColor string `json:"background_color"`
@@ -252,16 +280,16 @@ func BilibiliSubtitleCacheInitFunc(ctx context.Context, movie *model.Movie, args
 	var cookies []*http.Cookie
 	vendorInfo, err := args.Get(ctx)
 	if err != nil {
-		if errors.Is(err, db.ErrNotFound(db.ErrVendorNotFound)) {
-			return nil, nil
+		if errors.Is(err, db.NotFoundError(db.ErrVendorNotFound)) {
+			return make(BilibiliSubtitleCache), nil
 		}
-	} else {
-		cookies = vendorInfo.Cookies
+		return nil, err
 	}
+	cookies = vendorInfo.Cookies
 
 	cli := vendor.LoadBilibiliClient(movie.MovieBase.VendorInfo.Backend)
 	resp, err := cli.GetSubtitles(ctx, &bilibili.GetSubtitlesReq{
-		Cookies: utils.HttpCookieToMap(cookies),
+		Cookies: utils.HTTPCookieToMap(cookies),
 		Bvid:    biliInfo.Bvid,
 		Cid:     biliInfo.Cid,
 	})
@@ -271,7 +299,7 @@ func BilibiliSubtitleCacheInitFunc(ctx context.Context, movie *model.Movie, args
 	subtitleCache := make(BilibiliSubtitleCache, len(resp.Subtitles))
 	for k, v := range resp.Subtitles {
 		subtitleCache[k] = &BilibiliSubtitleCacheItem{
-			Url: v,
+			URL: v,
 			Srt: refreshcache0.NewRefreshCache[[]byte](func(ctx context.Context) ([]byte, error) {
 				return translateBilibiliSubtitleToSrt(ctx, v)
 			}, 0),
@@ -306,7 +334,7 @@ func formatTime(seconds float64) string {
 }
 
 func translateBilibiliSubtitleToSrt(ctx context.Context, url string) ([]byte, error) {
-	r, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("https:%s", url), nil)
+	r, err := http.NewRequestWithContext(ctx, http.MethodGet, "https:"+url, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -396,7 +424,7 @@ func BilibiliAuthorizationCacheWithUserIDInitFunc(userID string) func(ctx contex
 			return nil, err
 		}
 		return &BilibiliUserCacheData{
-			Cookies: utils.MapToHttpCookie(v.Cookies),
+			Cookies: utils.MapToHTTPCookie(v.Cookies),
 			Backend: v.Backend,
 		}, nil
 	}

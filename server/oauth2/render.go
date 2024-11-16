@@ -19,7 +19,7 @@ var (
 	states           *synccache.SyncCache[string, stateHandler]
 )
 
-type stateHandler func(ctx *gin.Context, pi provider.ProviderInterface, code string)
+type stateHandler func(ctx *gin.Context, pi provider.Interface, code string)
 
 func RenderRedirect(ctx *gin.Context, url string) error {
 	ctx.Header("Content-Type", "text/html; charset=utf-8")

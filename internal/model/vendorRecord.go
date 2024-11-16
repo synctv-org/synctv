@@ -5,6 +5,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/synctv-org/synctv/utils"
+	"github.com/zijiren233/stream"
 	"gorm.io/gorm"
 )
 
@@ -35,7 +36,7 @@ func (b *BilibiliVendor) AfterSave(tx *gorm.DB) error {
 		if err != nil {
 			return err
 		}
-		b.Cookies[k] = string(value)
+		b.Cookies[k] = stream.BytesToString(value)
 	}
 	return nil
 }
@@ -78,21 +79,21 @@ func (a *AlistVendor) BeforeSave(tx *gorm.DB) error {
 
 func (a *AlistVendor) AfterSave(tx *gorm.DB) error {
 	key := utils.GenCryptoKey(a.UserID)
-	if v, err := utils.DecryptoFromBase64(a.Host, key); err != nil {
+	host, err := utils.DecryptoFromBase64(a.Host, key)
+	if err != nil {
 		return err
-	} else {
-		a.Host = string(v)
 	}
-	if v, err := utils.DecryptoFromBase64(a.Username, key); err != nil {
+	a.Host = stream.BytesToString(host)
+	username, err := utils.DecryptoFromBase64(a.Username, key)
+	if err != nil {
 		return err
-	} else {
-		a.Username = string(v)
 	}
-	if v, err := utils.Decrypto(a.HashedPassword, key); err != nil {
+	a.Username = stream.BytesToString(username)
+	hashedPassword, err := utils.Decrypto(a.HashedPassword, key)
+	if err != nil {
 		return err
-	} else {
-		a.HashedPassword = v
 	}
+	a.HashedPassword = hashedPassword
 	return nil
 }
 
@@ -107,17 +108,17 @@ type EmbyVendor struct {
 	Backend    string `gorm:"type:varchar(64)"`
 	ServerID   string `gorm:"primaryKey;type:char(32)"`
 	Host       string `gorm:"not null;type:varchar(256)"`
-	ApiKey     string `gorm:"not null;type:varchar(256)"`
+	APIKey     string `gorm:"not null;type:varchar(256)"`
 	EmbyUserID string `gorm:"type:varchar(32)"`
 }
 
 func (e *EmbyVendor) BeforeSave(tx *gorm.DB) error {
 	key := utils.GenCryptoKey(e.ServerID)
 	var err error
-	if e.Host, err = utils.CryptoToBase64([]byte(e.Host), key); err != nil {
+	if e.Host, err = utils.CryptoToBase64(stream.StringToBytes(e.Host), key); err != nil {
 		return err
 	}
-	if e.ApiKey, err = utils.CryptoToBase64([]byte(e.ApiKey), key); err != nil {
+	if e.APIKey, err = utils.CryptoToBase64(stream.StringToBytes(e.APIKey), key); err != nil {
 		return err
 	}
 	return nil
@@ -125,16 +126,16 @@ func (e *EmbyVendor) BeforeSave(tx *gorm.DB) error {
 
 func (e *EmbyVendor) AfterSave(tx *gorm.DB) error {
 	key := utils.GenCryptoKey(e.ServerID)
-	if v, err := utils.DecryptoFromBase64(e.Host, key); err != nil {
+	host, err := utils.DecryptoFromBase64(e.Host, key)
+	if err != nil {
 		return err
-	} else {
-		e.Host = string(v)
 	}
-	if v, err := utils.DecryptoFromBase64(e.ApiKey, key); err != nil {
+	e.Host = stream.BytesToString(host)
+	apiKey, err := utils.DecryptoFromBase64(e.APIKey, key)
+	if err != nil {
 		return err
-	} else {
-		e.ApiKey = string(v)
 	}
+	e.APIKey = stream.BytesToString(apiKey)
 	return nil
 }
 

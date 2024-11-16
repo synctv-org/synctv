@@ -1,5 +1,6 @@
 package conf
 
+//nolint:tagliatelle
 type Oauth2Plugins []struct {
 	PluginFile string   `yaml:"plugin_file"`
 	Args       []string `yaml:"args"`

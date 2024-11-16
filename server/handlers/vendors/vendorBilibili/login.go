@@ -1,4 +1,4 @@
-package vendorBilibili
+package vendorbilibili
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	json "github.com/json-iterator/go"
+	log "github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/internal/cache"
 	"github.com/synctv-org/synctv/internal/db"
 	dbModel "github.com/synctv-org/synctv/internal/model"
@@ -20,10 +21,10 @@ import (
 func NewQRCode(ctx *gin.Context) {
 	r, err := vendor.LoadBilibiliClient("").NewQRCode(ctx, &bilibili.Empty{})
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 		return
 	}
-	ctx.JSON(http.StatusOK, model.NewApiDataResp(r))
+	ctx.JSON(http.StatusOK, model.NewAPIDataResp(r))
 }
 
 type QRCodeLoginReq struct {
@@ -46,7 +47,7 @@ func LoginWithQR(ctx *gin.Context) {
 
 	req := QRCodeLoginReq{}
 	if err := model.Decode(ctx, &req); err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 		return
 	}
 
@@ -55,23 +56,23 @@ func LoginWithQR(ctx *gin.Context) {
 		Key: req.Key,
 	})
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 		return
 	}
 
 	switch resp.Status {
 	case bilibili.QRCodeStatus_EXPIRED:
-		ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
+		ctx.JSON(http.StatusOK, model.NewAPIDataResp(gin.H{
 			"status": "expired",
 		}))
 		return
 	case bilibili.QRCodeStatus_SCANNED:
-		ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
+		ctx.JSON(http.StatusOK, model.NewAPIDataResp(gin.H{
 			"status": "scanned",
 		}))
 		return
 	case bilibili.QRCodeStatus_NOTSCANNED:
-		ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
+		ctx.JSON(http.StatusOK, model.NewAPIDataResp(gin.H{
 			"status": "notScanned",
 		}))
 		return
@@ -82,24 +83,24 @@ func LoginWithQR(ctx *gin.Context) {
 			Backend: backend,
 		})
 		if err != nil {
-			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 			return
 		}
 		_, err = user.BilibiliCache().Data().Refresh(ctx, func(ctx context.Context, args ...struct{}) (*cache.BilibiliUserCacheData, error) {
 			return &cache.BilibiliUserCacheData{
 				Backend: backend,
-				Cookies: utils.MapToHttpCookie(resp.Cookies),
+				Cookies: utils.MapToHTTPCookie(resp.Cookies),
 			}, nil
 		})
 		if err != nil {
-			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 			return
 		}
-		ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
+		ctx.JSON(http.StatusOK, model.NewAPIDataResp(gin.H{
 			"status": "success",
 		}))
 	default:
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorStringResp("unknown status"))
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorStringResp("unknown status"))
 		return
 	}
 }
@@ -107,16 +108,16 @@ func LoginWithQR(ctx *gin.Context) {
 func NewCaptcha(ctx *gin.Context) {
 	r, err := vendor.LoadBilibiliClient("").NewCaptcha(ctx, &bilibili.Empty{})
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 		return
 	}
-	ctx.JSON(http.StatusOK, model.NewApiDataResp(r))
+	ctx.JSON(http.StatusOK, model.NewAPIDataResp(r))
 }
 
 type SMSReq struct {
 	Token     string `json:"token"`
 	Challenge string `json:"challenge"`
-	Validate_ string `json:"validate"`
+	V         string `json:"validate"`
 	Telephone string `json:"telephone"`
 }
 
@@ -127,7 +128,7 @@ func (r *SMSReq) Validate() error {
 	if r.Challenge == "" {
 		return errors.New("challenge is empty")
 	}
-	if r.Validate_ == "" {
+	if r.V == "" {
 		return errors.New("validate is empty")
 	}
 	if r.Telephone == "" {
@@ -143,7 +144,7 @@ func (r *SMSReq) Decode(ctx *gin.Context) error {
 func NewSMS(ctx *gin.Context) {
 	var req SMSReq
 	if err := model.Decode(ctx, &req); err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 		return
 	}
 
@@ -151,13 +152,13 @@ func NewSMS(ctx *gin.Context) {
 		Phone:     req.Telephone,
 		Token:     req.Token,
 		Challenge: req.Challenge,
-		Validate:  req.Validate_,
+		Validate:  req.V,
 	})
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 		return
 	}
-	ctx.JSON(http.StatusOK, model.NewApiDataResp(gin.H{
+	ctx.JSON(http.StatusOK, model.NewAPIDataResp(gin.H{
 		"captchaKey": r.CaptchaKey,
 	}))
 }
@@ -190,7 +191,7 @@ func LoginWithSMS(ctx *gin.Context) {
 
 	var req SMSLoginReq
 	if err := model.Decode(ctx, &req); err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 		return
 	}
 
@@ -201,7 +202,7 @@ func LoginWithSMS(ctx *gin.Context) {
 		Code:       req.Code,
 	})
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 		return
 	}
 	_, err = db.CreateOrSaveBilibiliVendor(&dbModel.BilibiliVendor{
@@ -210,29 +211,33 @@ func LoginWithSMS(ctx *gin.Context) {
 		Cookies: c.Cookies,
 	})
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 		return
 	}
 	_, err = user.BilibiliCache().Data().Refresh(ctx, func(ctx context.Context, args ...struct{}) (*cache.BilibiliUserCacheData, error) {
 		return &cache.BilibiliUserCacheData{
 			Backend: backend,
-			Cookies: utils.MapToHttpCookie(c.Cookies),
+			Cookies: utils.MapToHTTPCookie(c.Cookies),
 		}, nil
 	})
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 		return
 	}
 	ctx.Status(http.StatusNoContent)
 }
 
 func Logout(ctx *gin.Context) {
+	log := ctx.MustGet("log").(*log.Entry)
 	user := ctx.MustGet("user").(*op.UserEntry).Value()
 	err := db.DeleteBilibiliVendor(user.ID)
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 		return
 	}
-	user.BilibiliCache().Clear(ctx)
+	err = user.BilibiliCache().Clear(ctx)
+	if err != nil {
+		log.Errorf("clear bilibili cache: %v", err)
+	}
 	ctx.Status(http.StatusNoContent)
 }

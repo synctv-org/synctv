@@ -28,7 +28,4 @@ func Init(e *gin.Engine) {
 		}
 		e.Use(NewLimiter(d, conf.Conf.RateLimit.Limit, options...))
 	}
-	if conf.Conf.Server.Http.Quic && conf.Conf.Server.Http.CertPath != "" && conf.Conf.Server.Http.KeyPath != "" {
-		e.Use(NewQuic())
-	}
 }

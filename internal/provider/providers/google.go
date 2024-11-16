@@ -14,7 +14,7 @@ type GoogleProvider struct {
 	config oauth2.Config
 }
 
-func newGoogleProvider() provider.ProviderInterface {
+func newGoogleProvider() provider.Interface {
 	return &GoogleProvider{
 		config: oauth2.Config{
 			Scopes:   []string{"profile"},

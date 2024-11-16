@@ -12,7 +12,7 @@ func (em *Message) MessageType() int {
 }
 
 func (em *Message) Encode(w io.Writer) error {
-	b, err := proto.Marshal((*Message)(em))
+	b, err := proto.Marshal(em)
 	if err != nil {
 		return err
 	}

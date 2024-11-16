@@ -2,7 +2,7 @@ package model
 
 import (
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"time"
 
 	"github.com/synctv-org/synctv/utils"
@@ -75,7 +75,7 @@ func (u *User) BeforeCreate(tx *gorm.DB) error {
 		var existingUser User
 		err := tx.Select("username").Where("username = ?", u.Username).First(&existingUser).Error
 		if err == nil {
-			u.Username = fmt.Sprintf("%s#%d", u.Username, rand.Intn(9999))
+			u.Username = fmt.Sprintf("%s#%d", u.Username, rand.IntN(9999))
 		}
 	}
 	if u.ID == "" {

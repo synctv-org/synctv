@@ -28,10 +28,10 @@ func Settings(ctx *gin.Context) {
 	oauth2SignupEnabled, err := bootstrap.Oauth2SignupEnabledCache.Get(ctx)
 	if err != nil {
 		log.Errorf("failed to get oauth2 signup enabled: %v", err)
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 		return
 	}
-	ctx.JSON(200, model.NewApiDataResp(
+	ctx.JSON(200, model.NewAPIDataResp(
 		&publicSettings{
 			PasswordDisableSignup: settings.DisableUserSignup.Get() || !settings.EnablePasswordSignup.Get(),
 

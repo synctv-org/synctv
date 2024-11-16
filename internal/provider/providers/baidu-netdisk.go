@@ -16,7 +16,7 @@ type BaiduNetDiskProvider struct {
 	config oauth2.Config
 }
 
-func newBaiduNetDiskProvider() provider.ProviderInterface {
+func newBaiduNetDiskProvider() provider.Interface {
 	return &BaiduNetDiskProvider{
 		config: oauth2.Config{
 			Scopes: []string{"basic", "netdisk"},
@@ -56,7 +56,7 @@ func (p *BaiduNetDiskProvider) GetUserInfo(ctx context.Context, code string) (*p
 		return nil, err
 	}
 	client := p.config.Client(ctx, tk)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("https://pan.baidu.com/rest/2.0/xpan/nas?method=uinfo&access_token=%s", tk.AccessToken), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://pan.baidu.com/rest/2.0/xpan/nas?method=uinfo&access_token="+tk.AccessToken, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -79,6 +79,7 @@ func (p *BaiduNetDiskProvider) GetUserInfo(ctx context.Context, code string) (*p
 	}, nil
 }
 
+//nolint:tagliatelle
 type baiduNetDiskProviderUserInfo struct {
 	BaiduName string `json:"baidu_name"`
 	Errmsg    string `json:"errmsg"`

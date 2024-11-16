@@ -12,7 +12,7 @@ import (
 
 	"github.com/Boostport/mjml-go"
 	log "github.com/sirupsen/logrus"
-	email_template "github.com/synctv-org/synctv/internal/email/template"
+	"github.com/synctv-org/synctv/internal/email/emailtemplate"
 	"github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/settings"
 	"github.com/synctv-org/synctv/utils"
@@ -67,7 +67,7 @@ var (
 func init() {
 	body, err := mjml.ToHTML(
 		context.Background(),
-		stream.BytesToString(email_template.TestMjml),
+		stream.BytesToString(emailtemplate.TestMjml),
 		mjml.WithMinify(true),
 	)
 	if err != nil {
@@ -81,7 +81,7 @@ func init() {
 
 	body, err = mjml.ToHTML(
 		context.Background(),
-		stream.BytesToString(email_template.CaptchaMjml),
+		stream.BytesToString(emailtemplate.CaptchaMjml),
 		mjml.WithMinify(true),
 	)
 	if err != nil {
@@ -95,7 +95,7 @@ func init() {
 
 	body, err = mjml.ToHTML(
 		context.Background(),
-		stream.BytesToString(email_template.RetrievePasswordMjml),
+		stream.BytesToString(emailtemplate.RetrievePasswordMjml),
 		mjml.WithMinify(true),
 	)
 	if err != nil {
@@ -122,7 +122,7 @@ type captchaPayload struct {
 type retrievePasswordPayload struct {
 	Captcha string
 	Host    string
-	Url     string
+	URL     string
 
 	Year int
 }
@@ -240,7 +240,7 @@ func SendSignupCaptchaEmail(email string) error {
 	}
 
 	entry, loaded := emailCaptcha.LoadOrStore(
-		fmt.Sprintf("signup:%s", email),
+		"signup:"+email,
 		utils.RandString(6),
 		time.Minute*5,
 	)
@@ -278,7 +278,7 @@ func VerifySignupCaptchaEmail(email, captcha string) (bool, error) {
 	}
 
 	if emailCaptcha.CompareValueAndDelete(
-		fmt.Sprintf("signup:%s", email),
+		"signup:"+email,
 		captcha,
 	) {
 		return true, nil
@@ -335,7 +335,7 @@ func SendRetrievePasswordCaptchaEmail(userID, email, host string) error {
 	err = retrievePasswordTemplate.Execute(out, retrievePasswordPayload{
 		Captcha: entry.Value(),
 		Host:    host,
-		Url:     u.String(),
+		URL:     u.String(),
 		Year:    time.Now().Year(),
 	})
 	if err != nil {

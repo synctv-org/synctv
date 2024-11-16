@@ -13,7 +13,7 @@ type DiscordProvider struct {
 	config oauth2.Config
 }
 
-func newDiscordProvider() provider.ProviderInterface {
+func newDiscordProvider() provider.Interface {
 	return &DiscordProvider{
 		config: oauth2.Config{
 			Scopes: []string{"identify"},
@@ -69,13 +69,13 @@ func (p *DiscordProvider) GetUserInfo(ctx context.Context, code string) (*provid
 	}
 	return &provider.UserInfo{
 		Username:       ui.Data.Name,
-		ProviderUserID: ui.Data.Id,
+		ProviderUserID: ui.Data.ID,
 	}, nil
 }
 
 type discordUserInfo struct {
 	Data struct {
-		Id   string `json:"id"`
+		ID   string `json:"id"`
 		Name string `json:"username"`
 	} `json:"user"`
 }

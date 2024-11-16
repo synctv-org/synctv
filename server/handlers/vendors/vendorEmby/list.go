@@ -1,4 +1,4 @@
-package vendorEmby
+package vendoremby
 
 import (
 	"errors"
@@ -42,19 +42,19 @@ func List(ctx *gin.Context) {
 
 	req := ListReq{}
 	if err := model.Decode(ctx, &req); err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 		return
 	}
 
 	page, size, err := utils.GetPageAndMax(ctx)
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 		return
 	}
 
 	if req.Path == "" {
 		if req.Keywords != "" {
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorStringResp("keywords is not supported when not choose server (server id is empty)"))
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("keywords is not supported when not choose server (server id is empty)"))
 			return
 		}
 		socpes := [](func(*gorm.DB) *gorm.DB){
@@ -63,21 +63,21 @@ func List(ctx *gin.Context) {
 
 		total, err := db.GetEmbyVendorsCount(user.ID, socpes...)
 		if err != nil {
-			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 			return
 		}
 		if total == 0 {
-			ctx.JSON(http.StatusBadRequest, model.NewApiErrorStringResp("emby server not found"))
+			ctx.JSON(http.StatusBadRequest, model.NewAPIErrorStringResp("emby server not found"))
 			return
 		}
 
 		ev, err := db.GetEmbyVendors(user.ID, append(socpes, db.Paginate(page, size))...)
 		if err != nil {
-			if errors.Is(err, db.ErrNotFound(db.ErrVendorNotFound)) {
-				ctx.JSON(http.StatusBadRequest, model.NewApiErrorStringResp("emby server not found"))
+			if errors.Is(err, db.NotFoundError(db.ErrVendorNotFound)) {
+				ctx.JSON(http.StatusBadRequest, model.NewAPIErrorStringResp("emby server not found"))
 				return
 			}
-			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 			return
 		}
 
@@ -107,7 +107,7 @@ func List(ctx *gin.Context) {
 			})
 		}
 
-		ctx.JSON(http.StatusOK, model.NewApiDataResp(resp))
+		ctx.JSON(http.StatusOK, model.NewAPIDataResp(resp))
 
 		return
 	}
@@ -115,19 +115,19 @@ func List(ctx *gin.Context) {
 EmbyFSListResp:
 
 	var serverID string
-	serverID, req.Path, err = dbModel.GetEmbyServerIdFromPath(req.Path)
+	serverID, req.Path, err = dbModel.GetEmbyServerIDFromPath(req.Path)
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 		return
 	}
 
 	aucd, err := user.EmbyCache().LoadOrStore(ctx, serverID)
 	if err != nil {
-		if errors.Is(err, db.ErrNotFound(db.ErrVendorNotFound)) {
-			ctx.JSON(http.StatusBadRequest, model.NewApiErrorStringResp("emby server not found"))
+		if errors.Is(err, db.NotFoundError(db.ErrVendorNotFound)) {
+			ctx.JSON(http.StatusBadRequest, model.NewAPIErrorStringResp("emby server not found"))
 			return
 		}
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 		return
 	}
 
@@ -135,14 +135,14 @@ EmbyFSListResp:
 	data, err := cli.FsList(ctx, &emby.FsListReq{
 		Host:       aucd.Host,
 		Path:       req.Path,
-		Token:      aucd.ApiKey,
+		Token:      aucd.APIKey,
 		UserId:     aucd.UserID,
 		Limit:      uint64(size),
 		StartIndex: uint64((page - 1) * size),
 		SearchTerm: req.Keywords,
 	})
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(fmt.Errorf("emby fs list error: %w", err)))
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(fmt.Errorf("emby fs list error: %w", err)))
 		return
 	}
 
@@ -173,5 +173,5 @@ EmbyFSListResp:
 	}
 
 	resp.Total = data.Total
-	ctx.JSON(http.StatusOK, model.NewApiDataResp(resp))
+	ctx.JSON(http.StatusOK, model.NewAPIDataResp(resp))
 }

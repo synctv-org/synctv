@@ -1,4 +1,4 @@
-package vendorEmby
+package vendoremby
 
 import (
 	"context"
@@ -51,7 +51,7 @@ func Login(ctx *gin.Context) {
 
 	req := LoginReq{}
 	if err := model.Decode(ctx, &req); err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 		return
 	}
 
@@ -64,12 +64,12 @@ func Login(ctx *gin.Context) {
 		Password: req.Password,
 	})
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 		return
 	}
 
 	if data.ServerId == "" {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorStringResp("serverID is empty"))
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorStringResp("serverID is empty"))
 		return
 	}
 
@@ -77,12 +77,12 @@ func Login(ctx *gin.Context) {
 		UserID:     user.ID,
 		ServerID:   data.ServerId,
 		Host:       req.Host,
-		ApiKey:     data.Token,
+		APIKey:     data.Token,
 		Backend:    backend,
 		EmbyUserID: data.UserId,
 	})
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 		return
 	}
 
@@ -90,13 +90,13 @@ func Login(ctx *gin.Context) {
 		return &cache.EmbyUserCacheData{
 			Host:     req.Host,
 			ServerID: key,
-			ApiKey:   data.Token,
+			APIKey:   data.Token,
 			Backend:  backend,
 			UserID:   data.UserId,
 		}, nil
 	})
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 		return
 	}
 
@@ -108,13 +108,13 @@ func Logout(ctx *gin.Context) {
 
 	var req model.ServerIDReq
 	if err := model.Decode(ctx, &req); err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 		return
 	}
 
 	err := db.DeleteEmbyVendor(user.ID, req.ServerID)
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 		return
 	}
 
@@ -128,11 +128,11 @@ func Logout(ctx *gin.Context) {
 }
 
 func logoutEmby(eucd *cache.EmbyUserCacheData) {
-	if eucd == nil || eucd.ApiKey == "" {
+	if eucd == nil || eucd.APIKey == "" {
 		return
 	}
 	_, _ = vendor.LoadEmbyClient(eucd.Backend).Logout(context.Background(), &emby.LogoutReq{
 		Host:  eucd.Host,
-		Token: eucd.ApiKey,
+		Token: eucd.APIKey,
 	})
 }

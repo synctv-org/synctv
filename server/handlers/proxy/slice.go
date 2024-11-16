@@ -3,6 +3,7 @@ package proxy
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -237,7 +238,7 @@ func (c *SliceCacheProxy) contentTotalLength() (int64, error) {
 		return -1, fmt.Errorf("failed to get content total length from source: %w", err)
 	}
 	if total == -1 {
-		return -1, fmt.Errorf("source does not support range requests")
+		return -1, errors.New("source does not support range requests")
 	}
 	return total, nil
 }
@@ -255,7 +256,7 @@ func (c *SliceCacheProxy) fetchFromSource(offset int64) (*CacheItem, error) {
 	buf := make([]byte, c.sliceSize)
 	n, err := io.ReadFull(c.r, buf)
 	if err != nil {
-		if err != io.ErrUnexpectedEOF {
+		if !errors.Is(err, io.ErrUnexpectedEOF) {
 			return nil, fmt.Errorf("failed to read %d bytes from source at offset %d: %w", c.sliceSize, offset, err)
 		}
 		total, err = c.contentTotalLength()
@@ -263,7 +264,7 @@ func (c *SliceCacheProxy) fetchFromSource(offset int64) (*CacheItem, error) {
 			return nil, fmt.Errorf("failed to get content total length from source: %w", err)
 		}
 		if total != offset+int64(n) {
-			return nil, fmt.Errorf("source content total length mismatch, got: %d, expected: %d", total, offset+int64(n))
+			return nil, fmt.Errorf("source content total length mismatch, got: %d, expected: %d, %w", total, offset+int64(n), err)
 		}
 	}
 
@@ -337,7 +338,7 @@ func ParseByteRange(r string) (*ByteRange, error) {
 	if parts[0] != "" {
 		start, err = strconv.ParseInt(parts[0], 10, 64)
 		if err != nil {
-			return nil, fmt.Errorf("failed to parse range start value '%s': %v", parts[0], err)
+			return nil, fmt.Errorf("failed to parse range start value '%s': %w", parts[0], err)
 		}
 		if start < 0 {
 			return nil, fmt.Errorf("range start value must be non-negative, got: %d", start)
@@ -347,7 +348,7 @@ func ParseByteRange(r string) (*ByteRange, error) {
 	if parts[1] != "" {
 		end, err = strconv.ParseInt(parts[1], 10, 64)
 		if err != nil {
-			return nil, fmt.Errorf("failed to parse range end value '%s': %v", parts[1], err)
+			return nil, fmt.Errorf("failed to parse range end value '%s': %w", parts[1], err)
 		}
 		if end < 0 {
 			return nil, fmt.Errorf("range end value must be non-negative, got: %d", end)

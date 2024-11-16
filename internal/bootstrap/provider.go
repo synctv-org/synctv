@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -45,9 +46,8 @@ var Oauth2EnabledCache = refreshcache0.NewRefreshCache[[]provider.OAuth2Provider
 			return 0
 		} else if natural.Less(a, b) {
 			return -1
-		} else {
-			return 1
 		}
+		return 1
 	})
 	return r, nil
 }, 0)
@@ -56,7 +56,7 @@ var Oauth2SignupEnabledCache = refreshcache0.NewRefreshCache[[]provider.OAuth2Pr
 	ps := providers.EnabledProvider()
 	r := make([]provider.OAuth2Provider, 0, ps.Len())
 	ps.Range(func(p provider.OAuth2Provider, value struct{}) bool {
-		group := model.SettingGroup(fmt.Sprintf("%s_%s", model.SettingGroupOauth2, p))
+		group := fmt.Sprintf("%s_%s", model.SettingGroupOauth2, p)
 		groupSettings := ProviderGroupSettings[group]
 		if groupSettings.Enabled.Get() && !groupSettings.DisableUserSignup.Get() {
 			r = append(r, p)
@@ -68,9 +68,8 @@ var Oauth2SignupEnabledCache = refreshcache0.NewRefreshCache[[]provider.OAuth2Pr
 			return 0
 		} else if natural.Less(a, b) {
 			return -1
-		} else {
-			return 1
 		}
+		return 1
 	})
 	return r, nil
 }, 0)
@@ -111,35 +110,31 @@ func InitProvider(ctx context.Context) (err error) {
 }
 
 func InitProviderSetting(pi provider.Provider) {
-	group := model.SettingGroup(fmt.Sprintf("%s_%s", model.SettingGroupOauth2, pi.Provider()))
+	group := fmt.Sprintf("%s_%s", model.SettingGroupOauth2, pi.Provider())
 	groupSettings := &ProviderGroupSetting{}
 	ProviderGroupSettings[group] = groupSettings
 
-	groupSettings.Enabled = settings.NewBoolSetting(fmt.Sprintf("%s_enabled", group), false, group,
+	groupSettings.Enabled = settings.NewBoolSetting(group+"_enabled", false, group,
 		settings.WithBeforeInitBool(func(bs settings.BoolSetting, b bool) (bool, error) {
-			defer Oauth2EnabledCache.Refresh(context.Background())
+			defer func() { _, _ = Oauth2EnabledCache.Refresh(context.Background()) }()
 			if b {
 				return b, providers.EnableProvider(pi.Provider())
-			} else {
-				providers.DisableProvider(pi.Provider())
-				return b, nil
 			}
+			return b, providers.DisableProvider(pi.Provider())
 		}),
 		settings.WithInitPriorityBool(1),
 		settings.WithBeforeSetBool(func(bs settings.BoolSetting, b bool) (bool, error) {
-			defer Oauth2EnabledCache.Refresh(context.Background())
+			defer func() { _, _ = Oauth2EnabledCache.Refresh(context.Background()) }()
 			if b {
 				return b, providers.EnableProvider(pi.Provider())
-			} else {
-				providers.DisableProvider(pi.Provider())
-				return b, nil
 			}
+			return b, providers.DisableProvider(pi.Provider())
 		}),
 	)
 
 	opt := provider.Oauth2Option{}
 
-	groupSettings.ClientID = settings.NewStringSetting(fmt.Sprintf("%s_client_id", group), opt.ClientID, group,
+	groupSettings.ClientID = settings.NewStringSetting(group+"_client_id", opt.ClientID, group,
 		settings.WithBeforeInitString(func(ss settings.StringSetting, s string) (string, error) {
 			opt.ClientID = s
 			pi.Init(opt)
@@ -152,7 +147,7 @@ func InitProviderSetting(pi provider.Provider) {
 			return s, nil
 		}))
 
-	groupSettings.ClientSecret = settings.NewStringSetting(fmt.Sprintf("%s_client_secret", group), opt.ClientSecret, group,
+	groupSettings.ClientSecret = settings.NewStringSetting(group+"_client_secret", opt.ClientSecret, group,
 		settings.WithBeforeInitString(func(ss settings.StringSetting, s string) (string, error) {
 			opt.ClientSecret = s
 			pi.Init(opt)
@@ -165,7 +160,7 @@ func InitProviderSetting(pi provider.Provider) {
 			return s, nil
 		}))
 
-	groupSettings.RedirectURL = settings.NewStringSetting(fmt.Sprintf("%s_redirect_url", group), opt.RedirectURL, group,
+	groupSettings.RedirectURL = settings.NewStringSetting(group+"_redirect_url", opt.RedirectURL, group,
 		settings.WithBeforeInitString(func(ss settings.StringSetting, s string) (string, error) {
 			opt.RedirectURL = s
 			pi.Init(opt)
@@ -178,31 +173,29 @@ func InitProviderSetting(pi provider.Provider) {
 			return s, nil
 		}))
 
-	groupSettings.DisableUserSignup = settings.NewBoolSetting(fmt.Sprintf("%s_disable_user_signup", group), false, group)
+	groupSettings.DisableUserSignup = settings.NewBoolSetting(group+"_disable_user_signup", false, group)
 
-	groupSettings.SignupNeedReview = settings.NewBoolSetting(fmt.Sprintf("%s_signup_need_review", group), false, group)
+	groupSettings.SignupNeedReview = settings.NewBoolSetting(group+"_signup_need_review", false, group)
 }
 
 func InitAggregationProviderSetting(pi provider.Provider) {
-	group := model.SettingGroup(fmt.Sprintf("%s_%s", model.SettingGroupOauth2, pi.Provider()))
+	group := fmt.Sprintf("%s_%s", model.SettingGroupOauth2, pi.Provider())
 	groupSettings := &ProviderGroupSetting{}
 	ProviderGroupSettings[group] = groupSettings
 
-	groupSettings.Enabled = settings.LoadOrNewBoolSetting(fmt.Sprintf("%s_enabled", group), false, group,
+	groupSettings.Enabled = settings.LoadOrNewBoolSetting(group+"_enabled", false, group,
 		settings.WithBeforeSetBool(func(bs settings.BoolSetting, b bool) (bool, error) {
-			defer Oauth2EnabledCache.Refresh(context.Background())
+			defer func() { _, _ = Oauth2EnabledCache.Refresh(context.Background()) }()
 			if b {
 				return b, providers.EnableProvider(pi.Provider())
-			} else {
-				providers.DisableProvider(pi.Provider())
-				return b, nil
 			}
+			return b, providers.DisableProvider(pi.Provider())
 		}),
 	)
 
 	opt := provider.Oauth2Option{}
 
-	groupSettings.ClientID = settings.LoadOrNewStringSetting(fmt.Sprintf("%s_client_id", group), opt.ClientID, group)
+	groupSettings.ClientID = settings.LoadOrNewStringSetting(group+"_client_id", opt.ClientID, group)
 	opt.ClientID = groupSettings.ClientID.Get()
 	groupSettings.ClientID.SetBeforeSet(func(ss settings.StringSetting, s string) (string, error) {
 		opt.ClientID = s
@@ -210,7 +203,7 @@ func InitAggregationProviderSetting(pi provider.Provider) {
 		return s, nil
 	})
 
-	groupSettings.ClientSecret = settings.LoadOrNewStringSetting(fmt.Sprintf("%s_client_secret", group), opt.ClientSecret, group)
+	groupSettings.ClientSecret = settings.LoadOrNewStringSetting(group+"_client_secret", opt.ClientSecret, group)
 	opt.ClientSecret = groupSettings.ClientSecret.Get()
 	groupSettings.ClientSecret.SetBeforeSet(func(ss settings.StringSetting, s string) (string, error) {
 		opt.ClientSecret = s
@@ -218,7 +211,7 @@ func InitAggregationProviderSetting(pi provider.Provider) {
 		return s, nil
 	})
 
-	groupSettings.RedirectURL = settings.LoadOrNewStringSetting(fmt.Sprintf("%s_redirect_url", group), opt.RedirectURL, group)
+	groupSettings.RedirectURL = settings.LoadOrNewStringSetting(group+"_redirect_url", opt.RedirectURL, group)
 	opt.RedirectURL = groupSettings.RedirectURL.Get()
 	groupSettings.RedirectURL.SetBeforeSet(func(ss settings.StringSetting, s string) (string, error) {
 		opt.RedirectURL = s
@@ -228,17 +221,17 @@ func InitAggregationProviderSetting(pi provider.Provider) {
 
 	pi.Init(opt)
 
-	groupSettings.DisableUserSignup = settings.LoadOrNewBoolSetting(fmt.Sprintf("%s_disable_user_signup", group), false, group)
+	groupSettings.DisableUserSignup = settings.LoadOrNewBoolSetting(group+"_disable_user_signup", false, group)
 
-	groupSettings.SignupNeedReview = settings.LoadOrNewBoolSetting(fmt.Sprintf("%s_signup_need_review", group), false, group)
+	groupSettings.SignupNeedReview = settings.LoadOrNewBoolSetting(group+"_signup_need_review", false, group)
 }
 
 func InitAggregationSetting(pi provider.AggregationProviderInterface) {
-	group := model.SettingGroup(fmt.Sprintf("%s_%s", model.SettingGroupOauth2, pi.Provider()))
+	group := fmt.Sprintf("%s_%s", model.SettingGroupOauth2, pi.Provider())
 
 	switch pi := pi.(type) {
 	case *aggregations.Rainbow:
-		settings.NewStringSetting(fmt.Sprintf("%s_api", group), aggregations.DefaultRainbowApi, group,
+		settings.NewStringSetting(group+"_api", aggregations.DefaultRainbowAPI, group,
 			settings.WithBeforeInitString(func(ss settings.StringSetting, s string) (string, error) {
 				pi.SetAPI(s)
 				return s, nil
@@ -252,7 +245,7 @@ func InitAggregationSetting(pi provider.AggregationProviderInterface) {
 		)
 	}
 
-	list := settings.NewStringSetting(fmt.Sprintf("%s_enabled_list", group), "", group,
+	list := settings.NewStringSetting(group+"_enabled_list", "", group,
 		settings.WithBeforeInitString(func(ss settings.StringSetting, s string) (string, error) {
 			return s, nil
 		}),
@@ -271,7 +264,7 @@ func InitAggregationSetting(pi provider.AggregationProviderInterface) {
 		}),
 	)
 
-	settings.NewBoolSetting(fmt.Sprintf("%s_enabled", group), false, group,
+	settings.NewBoolSetting(group+"_enabled", false, group,
 		settings.WithBeforeInitBool(func(bs settings.BoolSetting, b bool) (bool, error) {
 			if b {
 				s := list.Get()
@@ -303,7 +296,7 @@ func InitAggregationSetting(pi provider.AggregationProviderInterface) {
 		}),
 		settings.WithBeforeSetBool(func(bs settings.BoolSetting, b bool) (bool, error) {
 			if len(list.Get()) == 0 {
-				return b, fmt.Errorf("enabled provider list is empty")
+				return b, errors.New("enabled provider list is empty")
 			}
 			return b, nil
 		}),

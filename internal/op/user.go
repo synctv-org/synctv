@@ -553,7 +553,7 @@ func (u *User) SetMemberPermissions(room *Room, userID string, permissions model
 	if err != nil {
 		return err
 	}
-	return room.SendToUserWithId(userID, &pb.Message{
+	return room.SendToUserWithID(userID, &pb.Message{
 		Type: pb.MessageType_MY_STATUS,
 		Sender: &pb.Sender{
 			Username: u.Username,
@@ -573,7 +573,7 @@ func (u *User) AddMemberPermissions(room *Room, userID string, permissions model
 	if err != nil {
 		return err
 	}
-	return room.SendToUserWithId(userID, &pb.Message{
+	return room.SendToUserWithID(userID, &pb.Message{
 		Type: pb.MessageType_MY_STATUS,
 		Sender: &pb.Sender{
 			Username: u.Username,
@@ -593,7 +593,7 @@ func (u *User) RemoveMemberPermissions(room *Room, userID string, permissions mo
 	if err != nil {
 		return err
 	}
-	return room.SendToUserWithId(userID, &pb.Message{
+	return room.SendToUserWithID(userID, &pb.Message{
 		Type: pb.MessageType_MY_STATUS,
 		Sender: &pb.Sender{
 			Username: u.Username,
@@ -613,7 +613,7 @@ func (u *User) ResetMemberPermissions(room *Room, userID string) error {
 	if err != nil {
 		return err
 	}
-	return room.SendToUserWithId(userID, &pb.Message{
+	return room.SendToUserWithID(userID, &pb.Message{
 		Type: pb.MessageType_MY_STATUS,
 		Sender: &pb.Sender{
 			Username: u.Username,
@@ -637,7 +637,7 @@ func (u *User) SetRoomAdmin(room *Room, userID string, permissions model.RoomAdm
 	if err != nil {
 		return err
 	}
-	return room.SendToUserWithId(userID, &pb.Message{
+	return room.SendToUserWithID(userID, &pb.Message{
 		Type: pb.MessageType_MY_STATUS,
 		Sender: &pb.Sender{
 			Username: u.Username,
@@ -654,7 +654,7 @@ func (u *User) SetRoomMember(room *Room, userID string, permissions model.RoomMe
 	if err != nil {
 		return err
 	}
-	return room.SendToUserWithId(userID, &pb.Message{
+	return room.SendToUserWithID(userID, &pb.Message{
 		Type: pb.MessageType_MY_STATUS,
 		Sender: &pb.Sender{
 			Username: u.Username,
@@ -671,7 +671,7 @@ func (u *User) SetRoomAdminPermissions(room *Room, userID string, permissions mo
 	if err != nil {
 		return err
 	}
-	return room.SendToUserWithId(userID, &pb.Message{
+	return room.SendToUserWithID(userID, &pb.Message{
 		Type: pb.MessageType_MY_STATUS,
 		Sender: &pb.Sender{
 			Username: u.Username,
@@ -688,7 +688,7 @@ func (u *User) AddRoomAdminPermissions(room *Room, userID string, permissions mo
 	if err != nil {
 		return err
 	}
-	return room.SendToUserWithId(userID, &pb.Message{
+	return room.SendToUserWithID(userID, &pb.Message{
 		Type: pb.MessageType_MY_STATUS,
 		Sender: &pb.Sender{
 			Username: u.Username,
@@ -705,7 +705,7 @@ func (u *User) RemoveRoomAdminPermissions(room *Room, userID string, permissions
 	if err != nil {
 		return err
 	}
-	return room.SendToUserWithId(userID, &pb.Message{
+	return room.SendToUserWithID(userID, &pb.Message{
 		Type: pb.MessageType_MY_STATUS,
 		Sender: &pb.Sender{
 			Username: u.Username,
@@ -722,7 +722,7 @@ func (u *User) ResetRoomAdminPermissions(room *Room, userID string) error {
 	if err != nil {
 		return err
 	}
-	return room.SendToUserWithId(userID, &pb.Message{
+	return room.SendToUserWithID(userID, &pb.Message{
 		Type: pb.MessageType_MY_STATUS,
 		Sender: &pb.Sender{
 			Username: u.Username,

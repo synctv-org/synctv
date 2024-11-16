@@ -2,13 +2,14 @@ package db
 
 import (
 	"errors"
-	"fmt"
 	"strings"
 
 	log "github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/internal/conf"
 	"github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/utils"
+
+	// import fastjson serializer
 	_ "github.com/synctv-org/synctv/utils/fastJSONSerializer"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -179,7 +180,7 @@ func WhereCreatorID(creatorID string) func(db *gorm.DB) *gorm.DB {
 // column cannot be a user parameter
 func WhereEqual(column string, value interface{}) func(db *gorm.DB) *gorm.DB {
 	return func(db *gorm.DB) *gorm.DB {
-		return db.Where(fmt.Sprintf("%s = ?", column), value)
+		return db.Where("? = ?", column, value)
 	}
 }
 
@@ -188,9 +189,9 @@ func WhereLike(column string, value string) func(db *gorm.DB) *gorm.DB {
 	return func(db *gorm.DB) *gorm.DB {
 		switch dbType {
 		case conf.DatabaseTypePostgres:
-			return db.Where(fmt.Sprintf("%s ILIKE ?", column), utils.LIKE(value))
+			return db.Where("? ILIKE ?", column, utils.LIKE(value))
 		default:
-			return db.Where(fmt.Sprintf("%s LIKE ?", column), utils.LIKE(value))
+			return db.Where("? LIKE ?", column, utils.LIKE(value))
 		}
 	}
 }
@@ -331,15 +332,15 @@ func WhereRoomMemberRole(role model.RoomMemberRole) func(db *gorm.DB) *gorm.DB {
 	}
 }
 
-type ErrNotFound string
+type NotFoundError string
 
-func (e ErrNotFound) Error() string {
-	return fmt.Sprintf("%s not found", string(e))
+func (e NotFoundError) Error() string {
+	return string(e) + " not found"
 }
 
 func HandleNotFound(err error, errMsg ...string) error {
 	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
-		return ErrNotFound(strings.Join(errMsg, " "))
+		return NotFoundError(strings.Join(errMsg, " "))
 	}
 	return err
 }
@@ -363,7 +364,7 @@ func HandleUpdateResult(result *gorm.DB, entityName string) error {
 		return HandleNotFound(result.Error, entityName)
 	}
 	if result.RowsAffected == 0 {
-		return ErrNotFound(entityName)
+		return NotFoundError(entityName)
 	}
 	return nil
 }

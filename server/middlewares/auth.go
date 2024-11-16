@@ -37,7 +37,7 @@ var (
 
 type AuthClaims struct {
 	jwt.RegisteredClaims
-	UserId      string `json:"u"`
+	UserID      string `json:"u"`
 	UserVersion uint32 `json:"uv"`
 }
 
@@ -55,8 +55,8 @@ func authUser(authorization string) (*AuthClaims, error) {
 	return claims, nil
 }
 
-func AuthRoom(authorization, roomId string) (*op.UserEntry, *op.RoomEntry, error) {
-	if len(roomId) != 32 {
+func AuthRoom(authorization, roomID string) (*op.UserEntry, *op.RoomEntry, error) {
+	if len(roomID) != 32 {
 		return nil, nil, ErrInvalidRoomID
 	}
 
@@ -66,7 +66,7 @@ func AuthRoom(authorization, roomId string) (*op.UserEntry, *op.RoomEntry, error
 	}
 
 	user := userE.Value()
-	roomE, err := authenticateRoomAccess(roomId, user)
+	roomE, err := authenticateRoomAccess(roomID, user)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -81,17 +81,17 @@ func authenticateUserOrGuest(authorization string) (*op.UserEntry, error) {
 	return authenticateGuest()
 }
 
-func authenticateUser(Authorization string) (*op.UserEntry, error) {
-	claims, err := authUser(Authorization)
+func authenticateUser(authorization string) (*op.UserEntry, error) {
+	claims, err := authUser(authorization)
 	if err != nil {
 		return nil, err
 	}
 
-	if len(claims.UserId) != 32 {
+	if len(claims.UserID) != 32 {
 		return nil, ErrAuthFailed
 	}
 
-	userE, err := op.LoadOrInitUserByID(claims.UserId)
+	userE, err := op.LoadOrInitUserByID(claims.UserID)
 	if err != nil {
 		return nil, err
 	}
@@ -127,8 +127,8 @@ func validateUser(user *op.User, userVersion uint32) error {
 	return nil
 }
 
-func authenticateRoomAccess(roomId string, user *op.User) (*op.RoomEntry, error) {
-	roomE, err := op.LoadOrInitRoomByID(roomId)
+func authenticateRoomAccess(roomID string, user *op.User) (*op.RoomEntry, error) {
+	roomE, err := op.LoadOrInitRoomByID(roomID)
 	if err != nil {
 		return nil, err
 	}
@@ -185,11 +185,11 @@ func AuthUser(authorization string) (*op.UserEntry, error) {
 		return nil, err
 	}
 
-	if len(claims.UserId) != 32 {
+	if len(claims.UserID) != 32 {
 		return nil, ErrAuthFailed
 	}
 
-	userE, err := op.LoadOrInitUserByID(claims.UserId)
+	userE, err := op.LoadOrInitUserByID(claims.UserID)
 	if err != nil {
 		return nil, err
 	}
@@ -229,7 +229,7 @@ func NewAuthUserToken(user *op.User) (string, error) {
 	}
 
 	claims := &AuthClaims{
-		UserId:      user.ID,
+		UserID:      user.ID,
 		UserVersion: user.Version(),
 		RegisteredClaims: jwt.RegisteredClaims{
 			NotBefore: jwt.NewNumericDate(time.Now()),
@@ -255,12 +255,12 @@ func validateNewAuthUserToken(user *op.User) error {
 func AuthUserMiddleware(ctx *gin.Context) {
 	token := GetAuthorizationTokenFromContext(ctx)
 	if token == "" {
-		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(ErrEmptyToken))
+		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewAPIErrorResp(ErrEmptyToken))
 		return
 	}
 	userE, err := AuthUser(token)
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewAPIErrorResp(err))
 		return
 	}
 	user := userE.Value()
@@ -270,14 +270,14 @@ func AuthUserMiddleware(ctx *gin.Context) {
 }
 
 func AuthRoomMiddleware(ctx *gin.Context) {
-	roomId, err := GetRoomIdFromContext(ctx)
+	roomID, err := GetRoomIDFromContext(ctx)
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewAPIErrorResp(err))
 		return
 	}
-	userE, roomE, err := AuthRoom(GetAuthorizationTokenFromContext(ctx), roomId)
+	userE, roomE, err := AuthRoom(GetAuthorizationTokenFromContext(ctx), roomID)
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewAPIErrorResp(err))
 		return
 	}
 	user := userE.Value()
@@ -296,7 +296,7 @@ func AuthRoomWithoutGuestMiddleware(ctx *gin.Context) {
 
 	user := ctx.MustGet("user").(*synccache.Entry[*op.User]).Value()
 	if user.IsGuest() {
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(ErrUserGuest))
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewAPIErrorResp(ErrUserGuest))
 		return
 	}
 }
@@ -311,7 +311,7 @@ func AuthRoomAdminMiddleware(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*synccache.Entry[*op.User]).Value()
 
 	if !user.IsRoomAdmin(room) {
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(ErrNotRoomAdmin))
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewAPIErrorResp(ErrNotRoomAdmin))
 		return
 	}
 }
@@ -326,7 +326,7 @@ func AuthRoomCreatorMiddleware(ctx *gin.Context) {
 	user := ctx.MustGet("user").(*synccache.Entry[*op.User]).Value()
 
 	if room.CreatorID != user.ID {
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(ErrNotRoomCreator))
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewAPIErrorResp(ErrNotRoomCreator))
 		return
 	}
 }
@@ -339,7 +339,7 @@ func AuthAdminMiddleware(ctx *gin.Context) {
 
 	userE := ctx.MustGet("user").(*synccache.Entry[*op.User])
 	if !userE.Value().IsAdmin() {
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(ErrNotAdmin))
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewAPIErrorResp(ErrNotAdmin))
 		return
 	}
 }
@@ -352,7 +352,7 @@ func AuthRootMiddleware(ctx *gin.Context) {
 
 	userE := ctx.MustGet("user").(*synccache.Entry[*op.User])
 	if !userE.Value().IsRoot() {
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewApiErrorResp(ErrNotRoot))
+		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewAPIErrorResp(ErrNotRoot))
 		return
 	}
 }
@@ -380,7 +380,7 @@ func GetAuthorizationTokenFromContext(ctx *gin.Context) string {
 	return ""
 }
 
-func GetRoomIdFromContext(ctx *gin.Context) (string, error) {
+func GetRoomIDFromContext(ctx *gin.Context) (string, error) {
 	sources := []func() string{
 		func() string { return ctx.GetHeader("X-Room-Id") },
 		func() string { return ctx.Query("roomId") },
@@ -388,13 +388,13 @@ func GetRoomIdFromContext(ctx *gin.Context) (string, error) {
 	}
 
 	for _, source := range sources {
-		roomId := source()
-		if roomId == "" {
+		roomID := source()
+		if roomID == "" {
 			continue
 		}
-		if len(roomId) == 32 {
-			ctx.Set("roomId", roomId)
-			return roomId, nil
+		if len(roomID) == 32 {
+			ctx.Set("roomId", roomID)
+			return roomID, nil
 		}
 		ctx.Set("roomId", "")
 		return "", ErrInvalidRoomID

@@ -62,10 +62,10 @@ func (r *Room) Broadcast(data Message, conf ...BroadcastConf) error {
 }
 
 func (r *Room) SendToUser(user *User, data Message) error {
-	return r.SendToUserWithId(user.ID, data)
+	return r.SendToUserWithID(user.ID, data)
 }
 
-func (r *Room) SendToUserWithId(userID string, data Message) error {
+func (r *Room) SendToUserWithID(userID string, data Message) error {
 	if r.HubIsNotInited() {
 		return nil
 	}
@@ -86,12 +86,12 @@ func (r *Room) close() {
 	r.members.Clear()
 }
 
-func (r *Room) UpdateMovie(movieId string, movie *model.MovieBase) error {
-	err := r.checkCanModifyMovie(movieId)
+func (r *Room) UpdateMovie(movieID string, movie *model.MovieBase) error {
+	err := r.checkCanModifyMovie(movieID)
 	if err != nil {
 		return err
 	}
-	return r.movies.Update(movieId, movie)
+	return r.movies.Update(movieID, movie)
 }
 
 func (r *Room) AddMovie(m *model.Movie) error {
@@ -192,7 +192,7 @@ func (r *Room) LoadMemberStatus(userID string) (model.RoomMemberStatus, error) {
 	}
 	rur, err := r.LoadMember(userID)
 	if err != nil {
-		if errors.Is(err, db.ErrNotFound(db.ErrRoomMemberNotFound)) {
+		if errors.Is(err, db.NotFoundError(db.ErrRoomMemberNotFound)) {
 			return model.RoomMemberStatusNotJoined, nil
 		}
 		return model.RoomMemberStatusNotJoined, err
@@ -427,18 +427,18 @@ func (r *Room) LoadCurrentMovie() (*Movie, error) {
 	return r.GetMovieByID(id)
 }
 
-func (r *Room) CheckCurrentExpired(expireId uint64) (bool, error) {
+func (r *Room) CheckCurrentExpired(expireID uint64) (bool, error) {
 	m, err := r.LoadCurrentMovie()
 	if err != nil {
 		return false, err
 	}
-	return m.CheckExpired(expireId), nil
+	return m.CheckExpired(expireID), nil
 }
 
 func (r *Room) SetCurrentMovie(movieID string, subPath string, play bool) error {
 	currentMovie, err := r.LoadCurrentMovie()
 	if err != nil {
-		if err != ErrNoCurrentMovie {
+		if !errors.Is(err, ErrNoCurrentMovie) {
 			return err
 		}
 	} else {

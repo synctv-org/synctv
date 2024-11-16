@@ -14,7 +14,7 @@ type XiaomiProvider struct {
 	config oauth2.Config
 }
 
-func newXiaomiProvider() provider.ProviderInterface {
+func newXiaomiProvider() provider.Interface {
 	return &XiaomiProvider{
 		config: oauth2.Config{
 			Scopes: []string{"profile"},
@@ -70,13 +70,13 @@ func (p *XiaomiProvider) GetUserInfo(ctx context.Context, code string) (*provide
 	}
 	return &provider.UserInfo{
 		Username:       ui.Data.Name,
-		ProviderUserID: ui.Data.UnionId,
+		ProviderUserID: ui.Data.UnionID,
 	}, nil
 }
 
 type xiaomiUserInfo struct {
 	Data struct {
-		UnionId string `json:"unionId"`
+		UnionID string `json:"unionId"`
 		Name    string `json:"miliaoNick"`
 	} `json:"data"`
 }

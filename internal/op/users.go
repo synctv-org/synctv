@@ -120,10 +120,10 @@ func DeleteUserByID(id string) error {
 	if err != nil {
 		return err
 	}
-	return CloseUserById(id)
+	return CloseUserByID(id)
 }
 
-func CloseUserById(id string) error {
+func CloseUserByID(id string) error {
 	userCache.Delete(id)
 	roomCache.Range(func(key string, value *synccache.Entry[*Room]) bool {
 		if value.Value().CreatorID == id {

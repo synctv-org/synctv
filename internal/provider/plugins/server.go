@@ -9,7 +9,7 @@ import (
 
 type GRPCServer struct {
 	providerpb.UnimplementedOauth2PluginServer
-	Impl provider.ProviderInterface
+	Impl provider.Interface
 }
 
 func (s *GRPCServer) Init(ctx context.Context, req *providerpb.InitReq) (*providerpb.Enpty, error) {
@@ -23,7 +23,7 @@ func (s *GRPCServer) Init(ctx context.Context, req *providerpb.InitReq) (*provid
 }
 
 func (s *GRPCServer) Provider(ctx context.Context, req *providerpb.Enpty) (*providerpb.ProviderResp, error) {
-	return &providerpb.ProviderResp{Name: string(s.Impl.Provider())}, nil
+	return &providerpb.ProviderResp{Name: s.Impl.Provider()}, nil
 }
 
 func (s *GRPCServer) NewAuthURL(ctx context.Context, req *providerpb.NewAuthURLReq) (*providerpb.NewAuthURLResp, error) {

@@ -13,13 +13,13 @@ import (
 )
 
 var (
-	ErrUrlTooLong  = errors.New("url too long")
+	ErrURLTooLong  = errors.New("url too long")
 	ErrEmptyName   = errors.New("empty name")
 	ErrTypeTooLong = errors.New("type too long")
 
-	ErrId = errors.New("id length must be 32")
+	ErrID = errors.New("id length must be 32")
 
-	ErrEmptyIds = errors.New("empty ids")
+	ErrEmptyIDs = errors.New("empty ids")
 )
 
 type PushMovieReq model.MovieBase
@@ -29,8 +29,8 @@ func (p *PushMovieReq) Decode(ctx *gin.Context) error {
 }
 
 func (p *PushMovieReq) Validate() error {
-	if len(p.Url) > 8192 {
-		return ErrUrlTooLong
+	if len(p.URL) > 8192 {
+		return ErrURLTooLong
 	}
 
 	if p.Name == "" {
@@ -62,38 +62,38 @@ func (p *PushMoviesReq) Validate() error {
 	return nil
 }
 
-type IdReq struct {
-	Id string `json:"id"`
+type IDReq struct {
+	ID string `json:"id"`
 }
 
-func (i *IdReq) Decode(ctx *gin.Context) error {
+func (i *IDReq) Decode(ctx *gin.Context) error {
 	return json.NewDecoder(ctx.Request.Body).Decode(i)
 }
 
-func (i *IdReq) Validate() error {
-	if len(i.Id) != 32 {
-		return ErrId
+func (i *IDReq) Validate() error {
+	if len(i.ID) != 32 {
+		return ErrID
 	}
 	return nil
 }
 
-type IdCanEmptyReq struct {
-	Id string `json:"id"`
+type IDCanEmptyReq struct {
+	ID string `json:"id"`
 }
 
-func (i *IdCanEmptyReq) Decode(ctx *gin.Context) error {
+func (i *IDCanEmptyReq) Decode(ctx *gin.Context) error {
 	return json.NewDecoder(ctx.Request.Body).Decode(i)
 }
 
-func (i *IdCanEmptyReq) Validate() error {
-	if len(i.Id) != 32 && i.Id != "" {
-		return ErrId
+func (i *IDCanEmptyReq) Validate() error {
+	if len(i.ID) != 32 && i.ID != "" {
+		return ErrID
 	}
 	return nil
 }
 
 type SetRoomCurrentMovieReq struct {
-	IdCanEmptyReq
+	IDCanEmptyReq
 	SubPath string `json:"subPath"`
 }
 
@@ -102,7 +102,7 @@ func (s *SetRoomCurrentMovieReq) Decode(ctx *gin.Context) error {
 }
 
 type EditMovieReq struct {
-	IdReq
+	IDReq
 	PushMovieReq
 }
 
@@ -111,7 +111,7 @@ func (e *EditMovieReq) Decode(ctx *gin.Context) error {
 }
 
 func (e *EditMovieReq) Validate() error {
-	if err := e.IdReq.Validate(); err != nil {
+	if err := e.IDReq.Validate(); err != nil {
 		return err
 	}
 	if err := e.PushMovieReq.Validate(); err != nil {
@@ -120,29 +120,29 @@ func (e *EditMovieReq) Validate() error {
 	return nil
 }
 
-type IdsReq struct {
-	Ids []string `json:"ids"`
+type IDsReq struct {
+	IDs []string `json:"ids"`
 }
 
-func (i *IdsReq) Decode(ctx *gin.Context) error {
+func (i *IDsReq) Decode(ctx *gin.Context) error {
 	return json.NewDecoder(ctx.Request.Body).Decode(i)
 }
 
-func (i *IdsReq) Validate() error {
-	if len(i.Ids) == 0 {
-		return ErrEmptyIds
+func (i *IDsReq) Validate() error {
+	if len(i.IDs) == 0 {
+		return ErrEmptyIDs
 	}
-	for _, v := range i.Ids {
+	for _, v := range i.IDs {
 		if len(v) != 32 {
-			return ErrId
+			return ErrID
 		}
 	}
 	return nil
 }
 
 type SwapMovieReq struct {
-	Id1 string `json:"id1"`
-	Id2 string `json:"id2"`
+	ID1 string `json:"id1"`
+	ID2 string `json:"id2"`
 }
 
 func (s *SwapMovieReq) Decode(ctx *gin.Context) error {
@@ -150,8 +150,8 @@ func (s *SwapMovieReq) Decode(ctx *gin.Context) error {
 }
 
 func (s *SwapMovieReq) Validate() error {
-	if len(s.Id1) != 32 || len(s.Id2) != 32 {
-		return ErrId
+	if len(s.ID1) != 32 || len(s.ID2) != 32 {
+		return ErrID
 	}
 	return nil
 }
@@ -197,9 +197,9 @@ type MoviesResp struct {
 }
 
 type Movie struct {
-	Id        string          `json:"id"`
+	ID        string          `json:"id"`
 	Creator   string          `json:"creator"`
-	CreatorId string          `json:"creatorId"`
+	CreatorID string          `json:"creatorId"`
 	SubPath   string          `json:"subPath"`
 	Base      model.MovieBase `json:"base"`
 	CreatedAt int64           `json:"createAt"`
@@ -208,11 +208,11 @@ type Movie struct {
 type CurrentMovieResp struct {
 	Movie    *Movie    `json:"movie"`
 	Status   op.Status `json:"status"`
-	ExpireId uint64    `json:"expireId"`
+	ExpireID uint64    `json:"expireId"`
 }
 
 type ClearMoviesReq struct {
-	ParentId string `json:"parentId"`
+	ParentID string `json:"parentId"`
 }
 
 func (c *ClearMoviesReq) Decode(ctx *gin.Context) error {
@@ -220,8 +220,8 @@ func (c *ClearMoviesReq) Decode(ctx *gin.Context) error {
 }
 
 func (c *ClearMoviesReq) Validate() error {
-	if c.ParentId != "" && len(c.ParentId) != 32 {
-		return fmt.Errorf("parent id length must be empty or 32")
+	if c.ParentID != "" && len(c.ParentID) != 32 {
+		return errors.New("parent id length must be empty or 32")
 	}
 	return nil
 }

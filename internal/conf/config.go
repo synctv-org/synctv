@@ -4,6 +4,7 @@ import (
 	"github.com/synctv-org/synctv/utils"
 )
 
+//nolint:tagliatelle
 type Config struct {
 	// Log
 	Log LogConfig `yaml:"log"`

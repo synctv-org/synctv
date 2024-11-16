@@ -14,7 +14,7 @@ type MicrosoftProvider struct {
 	config oauth2.Config
 }
 
-func newMicrosoftProvider() provider.ProviderInterface {
+func newMicrosoftProvider() provider.Interface {
 	return &MicrosoftProvider{
 		config: oauth2.Config{
 			Scopes:   []string{"user.read"},

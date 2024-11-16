@@ -1,4 +1,4 @@
-package vendorAlist
+package vendoralist
 
 import (
 	"errors"
@@ -19,18 +19,17 @@ func Me(ctx *gin.Context) {
 
 	serverID := ctx.Query("serverID")
 	if serverID == "" {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(errors.New("serverID is required")))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(errors.New("serverID is required")))
 		return
-
 	}
 
 	aucd, err := user.AlistCache().LoadOrStore(ctx, serverID)
 	if err != nil {
-		if errors.Is(err, db.ErrNotFound(db.ErrVendorNotFound)) {
-			ctx.JSON(http.StatusBadRequest, model.NewApiErrorStringResp("alist server not found"))
+		if errors.Is(err, db.NotFoundError(db.ErrVendorNotFound)) {
+			ctx.JSON(http.StatusBadRequest, model.NewAPIErrorStringResp("alist server not found"))
 			return
 		}
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 		return
 	}
 
@@ -39,18 +38,18 @@ func Me(ctx *gin.Context) {
 		Token: aucd.Token,
 	})
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 		return
 	}
 
-	ctx.JSON(http.StatusOK, model.NewApiDataResp(&AlistMeResp{
+	ctx.JSON(http.StatusOK, model.NewAPIDataResp(&AlistMeResp{
 		IsLogin: true,
 		Info:    resp,
 	}))
 }
 
 type AlistBindsResp []*struct {
-	ServerID string `json:"serverID"`
+	ServerID string `json:"serverId"`
 	Host     string `json:"host"`
 }
 
@@ -59,26 +58,26 @@ func Binds(ctx *gin.Context) {
 
 	ev, err := db.GetAlistVendors(user.ID)
 	if err != nil {
-		if errors.Is(err, db.ErrNotFound(db.ErrVendorNotFound)) {
-			ctx.JSON(http.StatusOK, model.NewApiDataResp(&AlistMeResp{
+		if errors.Is(err, db.NotFoundError(db.ErrVendorNotFound)) {
+			ctx.JSON(http.StatusOK, model.NewAPIDataResp(&AlistMeResp{
 				IsLogin: false,
 			}))
 			return
 		}
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 		return
 	}
 
-	var resp AlistBindsResp = make(AlistBindsResp, len(ev))
+	resp := make(AlistBindsResp, len(ev))
 	for i, v := range ev {
 		resp[i] = &struct {
-			ServerID string "json:\"serverID\""
-			Host     string "json:\"host\""
+			ServerID string `json:"serverId"`
+			Host     string `json:"host"`
 		}{
 			ServerID: v.ServerID,
 			Host:     v.Host,
 		}
 	}
 
-	ctx.JSON(http.StatusOK, model.NewApiDataResp(resp))
+	ctx.JSON(http.StatusOK, model.NewAPIDataResp(resp))
 }

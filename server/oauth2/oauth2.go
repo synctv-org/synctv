@@ -9,13 +9,13 @@ import (
 	"github.com/synctv-org/synctv/server/model"
 )
 
-func OAuth2EnabledApi(ctx *gin.Context) {
+func OAuth2EnabledAPI(ctx *gin.Context) {
 	log := ctx.MustGet("log").(*logrus.Entry)
 
 	data, err := bootstrap.Oauth2EnabledCache.Get(ctx)
 	if err != nil {
 		log.Errorf("failed to get oauth2 enabled: %v", err)
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 		return
 	}
 
@@ -24,13 +24,13 @@ func OAuth2EnabledApi(ctx *gin.Context) {
 	})
 }
 
-func OAuth2SignupEnabledApi(ctx *gin.Context) {
+func OAuth2SignupEnabledAPI(ctx *gin.Context) {
 	log := ctx.MustGet("log").(*logrus.Entry)
 
 	oauth2SignupEnabled, err := bootstrap.Oauth2SignupEnabledCache.Get(ctx)
 	if err != nil {
 		log.Errorf("failed to get oauth2 signup enabled: %v", err)
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 		return
 	}
 

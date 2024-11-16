@@ -1,4 +1,4 @@
-package vendorBilibili
+package vendorbilibili
 
 import (
 	"errors"
@@ -20,30 +20,30 @@ func Me(ctx *gin.Context) {
 
 	bucd, err := user.BilibiliCache().Get(ctx)
 	if err != nil {
-		if errors.Is(err, db.ErrNotFound(db.ErrVendorNotFound)) {
-			ctx.JSON(http.StatusOK, model.NewApiDataResp(&BilibiliMeResp{
+		if errors.Is(err, db.NotFoundError(db.ErrVendorNotFound)) {
+			ctx.JSON(http.StatusOK, model.NewAPIDataResp(&BilibiliMeResp{
 				IsLogin: false,
 			}))
 			return
 		}
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 		return
 	}
 	if len(bucd.Cookies) == 0 {
-		ctx.JSON(http.StatusOK, model.NewApiDataResp(&BilibiliMeResp{
+		ctx.JSON(http.StatusOK, model.NewAPIDataResp(&BilibiliMeResp{
 			IsLogin: false,
 		}))
 		return
 	}
 	resp, err := vendor.LoadBilibiliClient(bucd.Backend).UserInfo(ctx, &bilibili.UserInfoReq{
-		Cookies: utils.HttpCookieToMap(bucd.Cookies),
+		Cookies: utils.HTTPCookieToMap(bucd.Cookies),
 	})
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 		return
 	}
 
-	ctx.JSON(http.StatusOK, model.NewApiDataResp(&BilibiliMeResp{
+	ctx.JSON(http.StatusOK, model.NewAPIDataResp(&BilibiliMeResp{
 		IsLogin: resp.IsLogin,
 		Info:    resp,
 	}))

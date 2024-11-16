@@ -5,32 +5,33 @@ import (
 	"time"
 
 	"github.com/synctv-org/synctv/utils"
+	"github.com/zijiren233/stream"
 	"gorm.io/gorm"
 )
 
 type Consul struct {
-	ServiceName string `gorm:"type:varchar(64)" json:"serviceName"`
+	ServiceName string `gorm:"type:varchar(64)"  json:"serviceName"`
 	Token       string `gorm:"type:varchar(256)" json:"token"`
-	PathPrefix  string `gorm:"type:varchar(64)" json:"pathPrefix"`
-	Namespace   string `gorm:"type:varchar(64)" json:"namespace"`
-	Partition   string `gorm:"type:varchar(64)" json:"partition"`
+	PathPrefix  string `gorm:"type:varchar(64)"  json:"pathPrefix"`
+	Namespace   string `gorm:"type:varchar(64)"  json:"namespace"`
+	Partition   string `gorm:"type:varchar(64)"  json:"partition"`
 }
 
 type Etcd struct {
-	ServiceName string `gorm:"type:varchar(64)" json:"serviceName"`
-	Username    string `gorm:"type:varchar(64)" json:"username"`
+	ServiceName string `gorm:"type:varchar(64)"  json:"serviceName"`
+	Username    string `gorm:"type:varchar(64)"  json:"username"`
 	Password    string `gorm:"type:varchar(256)" json:"password"`
 }
 
 type Backend struct {
 	Consul    Consul `gorm:"embedded;embeddedPrefix:consul_" json:"consul"`
-	Etcd      Etcd   `gorm:"embedded;embeddedPrefix:etcd_" json:"etcd"`
-	Endpoint  string `gorm:"primaryKey;type:varchar(512)" json:"endpoint"`
-	Comment   string `gorm:"type:text" json:"comment"`
-	JwtSecret string `gorm:"type:varchar(256)" json:"jwtSecret"`
-	CustomCA  string `gorm:"type:text" json:"customCA"`
-	TimeOut   string `gorm:"default:10s" json:"timeOut"`
-	Tls       bool   `gorm:"default:false" json:"tls"`
+	Etcd      Etcd   `gorm:"embedded;embeddedPrefix:etcd_"   json:"etcd"`
+	Endpoint  string `gorm:"primaryKey;type:varchar(512)"    json:"endpoint"`
+	Comment   string `gorm:"type:text"                       json:"comment"`
+	JwtSecret string `gorm:"type:varchar(256)"               json:"jwtSecret"`
+	CustomCa  string `gorm:"type:text"                       json:"customCa"`
+	TimeOut   string `gorm:"default:10s"                     json:"timeOut"`
+	TLS       bool   `gorm:"default:false"                   json:"tls"`
 }
 
 func (b *Backend) Validate() error {
@@ -59,10 +60,10 @@ type BackendUsedBy struct {
 	BilibiliBackendName string `gorm:"type:varchar(64)" json:"bilibiliBackendName"`
 	AlistBackendName    string `gorm:"type:varchar(64)" json:"alistBackendName"`
 	EmbyBackendName     string `gorm:"type:varchar(64)" json:"embyBackendName"`
-	Enabled             bool   `gorm:"default:false" json:"enabled"`
-	Bilibili            bool   `gorm:"default:false" json:"bilibili"`
-	Alist               bool   `gorm:"default:false" json:"alist"`
-	Emby                bool   `gorm:"default:false" json:"emby"`
+	Enabled             bool   `gorm:"default:false"    json:"enabled"`
+	Bilibili            bool   `gorm:"default:false"    json:"bilibili"`
+	Alist               bool   `gorm:"default:false"    json:"alist"`
+	Emby                bool   `gorm:"default:false"    json:"emby"`
 }
 
 func (v *VendorBackend) BeforeSave(tx *gorm.DB) error {
@@ -83,8 +84,8 @@ func (v *VendorBackend) BeforeSave(tx *gorm.DB) error {
 			return err
 		}
 	}
-	if v.Backend.CustomCA != "" {
-		if v.Backend.CustomCA, err = utils.CryptoToBase64([]byte(v.Backend.CustomCA), key); err != nil {
+	if v.Backend.CustomCa != "" {
+		if v.Backend.CustomCa, err = utils.CryptoToBase64([]byte(v.Backend.CustomCa), key); err != nil {
 			return err
 		}
 	}
@@ -93,37 +94,33 @@ func (v *VendorBackend) BeforeSave(tx *gorm.DB) error {
 
 func (v *VendorBackend) AfterSave(tx *gorm.DB) error {
 	key := utils.GenCryptoKey(v.Backend.Endpoint)
-	var (
-		err  error
-		data []byte
-	)
 	if v.Backend.JwtSecret != "" {
-		if data, err = utils.DecryptoFromBase64(v.Backend.JwtSecret, key); err != nil {
+		jwtSecret, err := utils.DecryptoFromBase64(v.Backend.JwtSecret, key)
+		if err != nil {
 			return err
-		} else {
-			v.Backend.JwtSecret = string(data)
 		}
+		v.Backend.JwtSecret = stream.BytesToString(jwtSecret)
 	}
 	if v.Backend.Consul.Token != "" {
-		if data, err = utils.DecryptoFromBase64(v.Backend.Consul.Token, key); err != nil {
+		token, err := utils.DecryptoFromBase64(v.Backend.Consul.Token, key)
+		if err != nil {
 			return err
-		} else {
-			v.Backend.Consul.Token = string(data)
 		}
+		v.Backend.Consul.Token = stream.BytesToString(token)
 	}
 	if v.Backend.Etcd.Password != "" {
-		if data, err = utils.DecryptoFromBase64(v.Backend.Etcd.Password, key); err != nil {
+		password, err := utils.DecryptoFromBase64(v.Backend.Etcd.Password, key)
+		if err != nil {
 			return err
-		} else {
-			v.Backend.Etcd.Password = string(data)
 		}
+		v.Backend.Etcd.Password = stream.BytesToString(password)
 	}
-	if v.Backend.CustomCA != "" {
-		if data, err = utils.DecryptoFromBase64(v.Backend.CustomCA, key); err != nil {
+	if v.Backend.CustomCa != "" {
+		customCa, err := utils.DecryptoFromBase64(v.Backend.CustomCa, key)
+		if err != nil {
 			return err
-		} else {
-			v.Backend.CustomCA = string(data)
 		}
+		v.Backend.CustomCa = stream.BytesToString(customCa)
 	}
 	return nil
 }

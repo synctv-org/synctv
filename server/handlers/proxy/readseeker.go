@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,11 +15,11 @@ import (
 )
 
 var (
-	_ io.ReadSeekCloser = (*HttpReadSeekCloser)(nil)
-	_ Proxy             = (*HttpReadSeekCloser)(nil)
+	_ io.ReadSeekCloser = (*HTTPReadSeekCloser)(nil)
+	_ Proxy             = (*HTTPReadSeekCloser)(nil)
 )
 
-type HttpReadSeekCloser struct {
+type HTTPReadSeekCloser struct {
 	ctx                               context.Context
 	headHeaders                       http.Header
 	currentResp                       *http.Response
@@ -37,66 +38,66 @@ type HttpReadSeekCloser struct {
 	notSupportSeekWhenNotSupportRange bool
 }
 
-type HttpReadSeekerConf func(h *HttpReadSeekCloser)
+type HTTPReadSeekerConf func(h *HTTPReadSeekCloser)
 
-func WithHeaders(headers http.Header) HttpReadSeekerConf {
-	return func(h *HttpReadSeekCloser) {
+func WithHeaders(headers http.Header) HTTPReadSeekerConf {
+	return func(h *HTTPReadSeekCloser) {
 		if headers != nil {
 			h.headers = headers.Clone()
 		}
 	}
 }
 
-func WithHeadersMap(headers map[string]string) HttpReadSeekerConf {
-	return func(h *HttpReadSeekCloser) {
+func WithHeadersMap(headers map[string]string) HTTPReadSeekerConf {
+	return func(h *HTTPReadSeekCloser) {
 		for k, v := range headers {
 			h.headers.Set(k, v)
 		}
 	}
 }
 
-func WithClient(client *http.Client) HttpReadSeekerConf {
-	return func(h *HttpReadSeekCloser) {
+func WithClient(client *http.Client) HTTPReadSeekerConf {
+	return func(h *HTTPReadSeekCloser) {
 		if client != nil {
 			h.client = client
 		}
 	}
 }
 
-func WithMethod(method string) HttpReadSeekerConf {
-	return func(h *HttpReadSeekCloser) {
+func WithMethod(method string) HTTPReadSeekerConf {
+	return func(h *HTTPReadSeekCloser) {
 		if method != "" {
 			h.method = method
 		}
 	}
 }
 
-func WithHeadMethod(method string) HttpReadSeekerConf {
-	return func(h *HttpReadSeekCloser) {
+func WithHeadMethod(method string) HTTPReadSeekerConf {
+	return func(h *HTTPReadSeekCloser) {
 		if method != "" {
 			h.headMethod = method
 		}
 	}
 }
 
-func WithContext(ctx context.Context) HttpReadSeekerConf {
-	return func(h *HttpReadSeekCloser) {
+func WithContext(ctx context.Context) HTTPReadSeekerConf {
+	return func(h *HTTPReadSeekCloser) {
 		if ctx != nil {
 			h.ctx = ctx
 		}
 	}
 }
 
-func WithContentTotalLength(contentTotalLength int64) HttpReadSeekerConf {
-	return func(h *HttpReadSeekCloser) {
+func WithContentTotalLength(contentTotalLength int64) HTTPReadSeekerConf {
+	return func(h *HTTPReadSeekCloser) {
 		if contentTotalLength >= 0 {
 			h.contentTotalLength = contentTotalLength
 		}
 	}
 }
 
-func AllowedContentTypes(types ...string) HttpReadSeekerConf {
-	return func(h *HttpReadSeekCloser) {
+func AllowedContentTypes(types ...string) HTTPReadSeekerConf {
+	return func(h *HTTPReadSeekCloser) {
 		if len(types) > 0 {
 			h.allowedContentTypes = slices.Clone(types)
 		}
@@ -104,28 +105,28 @@ func AllowedContentTypes(types ...string) HttpReadSeekerConf {
 }
 
 // sets the per length of the request
-func WithPerLength(length int64) HttpReadSeekerConf {
-	return func(h *HttpReadSeekCloser) {
+func WithPerLength(length int64) HTTPReadSeekerConf {
+	return func(h *HTTPReadSeekCloser) {
 		if length > 0 {
 			h.perLength = length
 		}
 	}
 }
 
-func WithForceNotSupportRange(notSupportRange bool) HttpReadSeekerConf {
-	return func(h *HttpReadSeekCloser) {
+func WithForceNotSupportRange(notSupportRange bool) HTTPReadSeekerConf {
+	return func(h *HTTPReadSeekCloser) {
 		h.notSupportRange = notSupportRange
 	}
 }
 
-func WithNotSupportSeekWhenNotSupportRange(notSupportSeekWhenNotSupportRange bool) HttpReadSeekerConf {
-	return func(h *HttpReadSeekCloser) {
+func WithNotSupportSeekWhenNotSupportRange(notSupportSeekWhenNotSupportRange bool) HTTPReadSeekerConf {
+	return func(h *HTTPReadSeekCloser) {
 		h.notSupportSeekWhenNotSupportRange = notSupportSeekWhenNotSupportRange
 	}
 }
 
-func NewHttpReadSeekCloser(url string, conf ...HttpReadSeekerConf) *HttpReadSeekCloser {
-	rs := &HttpReadSeekCloser{
+func NewHTTPReadSeekCloser(url string, conf ...HTTPReadSeekerConf) *HTTPReadSeekCloser {
+	rs := &HTTPReadSeekCloser{
 		url:                url,
 		contentTotalLength: -1,
 		method:             http.MethodGet,
@@ -145,7 +146,7 @@ func NewHttpReadSeekCloser(url string, conf ...HttpReadSeekerConf) *HttpReadSeek
 	return rs
 }
 
-func (h *HttpReadSeekCloser) fix() *HttpReadSeekCloser {
+func (h *HTTPReadSeekCloser) fix() *HTTPReadSeekCloser {
 	if h.method == "" {
 		h.method = http.MethodGet
 	}
@@ -178,11 +179,11 @@ func (h *HttpReadSeekCloser) fix() *HttpReadSeekCloser {
 	return h
 }
 
-func (h *HttpReadSeekCloser) Read(p []byte) (n int, err error) {
+func (h *HTTPReadSeekCloser) Read(p []byte) (n int, err error) {
 	for n < len(p) {
 		if h.currentResp == nil || h.offset > h.currentRespMaxOffset {
 			if err := h.FetchNextChunk(); err != nil {
-				if err == io.EOF {
+				if errors.Is(err, io.EOF) {
 					return n, io.EOF
 				}
 				return 0, fmt.Errorf("failed to fetch next chunk: %w", err)
@@ -213,7 +214,7 @@ func (h *HttpReadSeekCloser) Read(p []byte) (n int, err error) {
 	return n, nil
 }
 
-func (h *HttpReadSeekCloser) FetchNextChunk() error {
+func (h *HTTPReadSeekCloser) FetchNextChunk() error {
 	h.closeCurrentResp()
 
 	if h.contentTotalLength > 0 && h.offset >= h.contentTotalLength {
@@ -256,10 +257,9 @@ func (h *HttpReadSeekCloser) FetchNextChunk() error {
 	if resp.StatusCode == http.StatusOK &&
 		resp.Header.Get("Accept-Ranges") != "bytes" &&
 		resp.Header.Get("Content-Range") == "" {
-
 		if h.offset > 0 {
 			if h.notSupportSeekWhenNotSupportRange {
-				return fmt.Errorf("not support seek when not support range")
+				return errors.New("not support seek when not support range")
 			}
 			if _, err := io.CopyN(io.Discard, resp.Body, h.offset); err != nil {
 				resp.Body.Close()
@@ -292,7 +292,7 @@ func (h *HttpReadSeekCloser) FetchNextChunk() error {
 	return nil
 }
 
-func (h *HttpReadSeekCloser) createRequest() (*http.Request, error) {
+func (h *HTTPReadSeekCloser) createRequest() (*http.Request, error) {
 	if h.notSupportRange {
 		if h.contentTotalLength != -1 {
 			h.currentRespMaxOffset = h.contentTotalLength - 1
@@ -316,7 +316,7 @@ func (h *HttpReadSeekCloser) createRequest() (*http.Request, error) {
 	return req, nil
 }
 
-func (h *HttpReadSeekCloser) createRequestWithoutRange() (*http.Request, error) {
+func (h *HTTPReadSeekCloser) createRequestWithoutRange() (*http.Request, error) {
 	req, err := http.NewRequestWithContext(h.ctx, h.method, h.url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
@@ -329,14 +329,14 @@ func (h *HttpReadSeekCloser) createRequestWithoutRange() (*http.Request, error) 
 	return req, nil
 }
 
-func (h *HttpReadSeekCloser) closeCurrentResp() {
+func (h *HTTPReadSeekCloser) closeCurrentResp() {
 	if h.currentResp != nil {
 		h.currentResp.Body.Close()
 		h.currentResp = nil
 	}
 }
 
-func (h *HttpReadSeekCloser) checkContentType(ct string) error {
+func (h *HTTPReadSeekCloser) checkContentType(ct string) error {
 	if len(h.allowedContentTypes) != 0 {
 		if ct == "" || slices.Index(h.allowedContentTypes, ct) == -1 {
 			return fmt.Errorf("content type '%s' is not in the list of allowed content types: %v", ct, h.allowedContentTypes)
@@ -345,7 +345,7 @@ func (h *HttpReadSeekCloser) checkContentType(ct string) error {
 	return nil
 }
 
-func (h *HttpReadSeekCloser) Seek(offset int64, whence int) (int64, error) {
+func (h *HTTPReadSeekCloser) Seek(offset int64, whence int) (int64, error) {
 	newOffset, err := h.calculateNewOffset(offset, whence)
 	if err != nil {
 		h.closeCurrentResp()
@@ -360,7 +360,7 @@ func (h *HttpReadSeekCloser) Seek(offset int64, whence int) (int64, error) {
 	if newOffset != h.offset {
 		h.closeCurrentResp()
 		if h.notSupportRange && h.notSupportSeekWhenNotSupportRange {
-			return 0, fmt.Errorf("seek is not supported when not support range")
+			return 0, errors.New("seek is not supported when not support range")
 		}
 		h.offset = newOffset
 	}
@@ -368,7 +368,7 @@ func (h *HttpReadSeekCloser) Seek(offset int64, whence int) (int64, error) {
 	return h.offset, nil
 }
 
-func (h *HttpReadSeekCloser) calculateNewOffset(offset int64, whence int) (int64, error) {
+func (h *HTTPReadSeekCloser) calculateNewOffset(offset int64, whence int) (int64, error) {
 	switch whence {
 	case io.SeekStart:
 		return offset, nil
@@ -386,7 +386,7 @@ func (h *HttpReadSeekCloser) calculateNewOffset(offset int64, whence int) (int64
 	}
 }
 
-func (h *HttpReadSeekCloser) fetchContentLength() error {
+func (h *HTTPReadSeekCloser) fetchContentLength() error {
 	req, err := h.createRequestWithoutRange()
 	if err != nil {
 		return err
@@ -418,38 +418,38 @@ func (h *HttpReadSeekCloser) fetchContentLength() error {
 	return nil
 }
 
-func (h *HttpReadSeekCloser) Close() error {
+func (h *HTTPReadSeekCloser) Close() error {
 	if h.currentResp != nil {
 		return h.currentResp.Body.Close()
 	}
 	return nil
 }
 
-func (h *HttpReadSeekCloser) Offset() int64 {
+func (h *HTTPReadSeekCloser) Offset() int64 {
 	return h.offset
 }
 
-func (h *HttpReadSeekCloser) ContentLength() int64 {
+func (h *HTTPReadSeekCloser) ContentLength() int64 {
 	return h.contentTotalLength
 }
 
-func (h *HttpReadSeekCloser) ContentType() (string, error) {
+func (h *HTTPReadSeekCloser) ContentType() (string, error) {
 	if h.contentType != "" {
 		return h.contentType, nil
 	}
-	return "", fmt.Errorf("content type is not available - no successful response received yet")
+	return "", errors.New("content type is not available - no successful response received yet")
 }
 
-func (h *HttpReadSeekCloser) ContentTotalLength() (int64, error) {
+func (h *HTTPReadSeekCloser) ContentTotalLength() (int64, error) {
 	if h.contentTotalLength > 0 {
 		return h.contentTotalLength, nil
 	}
-	return 0, fmt.Errorf("content total length is not available - no successful response received yet")
+	return 0, errors.New("content total length is not available - no successful response received yet")
 }
 
 func ParseContentRangeStartAndEnd(contentRange string) (int64, int64, error) {
 	if contentRange == "" {
-		return 0, 0, fmt.Errorf("Content-Range header is empty")
+		return 0, 0, errors.New("Content-Range header is empty")
 	}
 
 	if !strings.HasPrefix(contentRange, "bytes ") {
@@ -488,7 +488,7 @@ func ParseContentRangeStartAndEnd(contentRange string) (int64, int64, error) {
 // ParseContentRangeTotalLength parses a Content-Range header value and returns the total length
 func ParseContentRangeTotalLength(contentRange string) (int64, error) {
 	if contentRange == "" {
-		return 0, fmt.Errorf("Content-Range header is empty")
+		return 0, errors.New("Content-Range header is empty")
 	}
 
 	if !strings.HasPrefix(contentRange, "bytes ") {

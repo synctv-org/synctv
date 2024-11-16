@@ -31,13 +31,13 @@ type AuthingProvider struct {
 	config oauth2.Config
 }
 
-func newAuthingProvider(AuthUrl string) provider.ProviderInterface {
+func newAuthingProvider(authURL string) provider.Interface {
 	return &AuthingProvider{
 		config: oauth2.Config{
 			Scopes: []string{"profile"},
 			Endpoint: oauth2.Endpoint{
-				AuthURL:  fmt.Sprintf("https://%s.authing.cn/oauth/auth", AuthUrl),  // 授权码（authorization_code）获取接口
-				TokenURL: fmt.Sprintf("https://%s.authing.cn/oauth/token", AuthUrl), // Token端点
+				AuthURL:  fmt.Sprintf("https://%s.authing.cn/oauth/auth", authURL),  // 授权码（authorization_code）获取接口
+				TokenURL: fmt.Sprintf("https://%s.authing.cn/oauth/token", authURL), // Token端点
 			},
 		},
 	}
@@ -79,12 +79,12 @@ func (p *AuthingProvider) GetUserInfo(ctx context.Context, code string) (*provid
 	}
 	return &provider.UserInfo{
 		Username:       ui.Name,
-		ProviderUserID: ui.UnionId,
+		ProviderUserID: ui.UnionID,
 	}, nil
 }
 
 type AuthingUserInfo struct {
-	UnionId string `json:"sub"`  // Authing用户ID
+	UnionID string `json:"sub"`  // Authing用户ID
 	Name    string `json:"name"` // Authing用户名
 }
 

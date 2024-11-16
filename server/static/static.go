@@ -3,7 +3,6 @@ package static
 import (
 	"io/fs"
 	"net/http"
-	"net/url"
 	"os"
 	"strings"
 
@@ -101,24 +100,24 @@ func SiglePageAppFS(r *gin.RouterGroup, fileSys fs.FS, cacheStat bool) error {
 	return nil
 }
 
-func initFSRouter(e *gin.RouterGroup, f fs.ReadDirFS, path string) error {
-	dirs, err := f.ReadDir(path)
-	if err != nil {
-		return err
-	}
-	for _, dir := range dirs {
-		u, err := url.JoinPath(path, dir.Name())
-		if err != nil {
-			return err
-		}
-		if dir.IsDir() {
-			err = initFSRouter(e, f, u)
-			if err != nil {
-				return err
-			}
-		} else {
-			e.StaticFileFS(u, u, http.FS(f))
-		}
-	}
-	return nil
-}
+// func initFSRouter(e *gin.RouterGroup, f fs.ReadDirFS, path string) error {
+// 	dirs, err := f.ReadDir(path)
+// 	if err != nil {
+// 		return err
+// 	}
+// 	for _, dir := range dirs {
+// 		u, err := url.JoinPath(path, dir.Name())
+// 		if err != nil {
+// 			return err
+// 		}
+// 		if dir.IsDir() {
+// 			err = initFSRouter(e, f, u)
+// 			if err != nil {
+// 				return err
+// 			}
+// 		} else {
+// 			e.StaticFileFS(u, u, http.FS(f))
+// 		}
+// 	}
+// 	return nil
+// }

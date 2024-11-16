@@ -2,7 +2,6 @@ package op
 
 import (
 	"errors"
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -32,7 +31,7 @@ type Hub struct {
 type broadcastMessage struct {
 	data         Message
 	ignoreClient []*Client
-	ignoreId     []string
+	ignoreID     []string
 }
 
 type BroadcastConf func(*broadcastMessage)
@@ -43,9 +42,9 @@ func WithIgnoreClient(cli ...*Client) BroadcastConf {
 	}
 }
 
-func WithIgnoreId(id ...string) BroadcastConf {
+func WithIgnoreID(id ...string) BroadcastConf {
 	return func(bm *broadcastMessage) {
-		bm.ignoreId = id
+		bm.ignoreID = id
 	}
 }
 
@@ -65,7 +64,7 @@ func (h *Hub) Start() error {
 	return nil
 }
 
-func (h *Hub) serve() error {
+func (h *Hub) serve() {
 	for {
 		select {
 		case message := <-h.broadcast:
@@ -74,7 +73,7 @@ func (h *Hub) serve() error {
 				clients.lock.RLock()
 				defer clients.lock.RUnlock()
 				for c := range clients.m {
-					if utils.In(message.ignoreId, c.u.ID) ||
+					if utils.In(message.ignoreID, c.u.ID) ||
 						utils.In(message.ignoreClient, c) {
 						continue
 					}
@@ -87,7 +86,7 @@ func (h *Hub) serve() error {
 			})
 		case <-h.exit:
 			log.Debugf("hub: %s, closed", h.id)
-			return nil
+			return
 		}
 	}
 }
@@ -96,7 +95,7 @@ func (h *Hub) ping() {
 	ticker := time.NewTicker(time.Second * 5)
 	defer ticker.Stop()
 	var (
-		pre     int64 = 0
+		pre     int64
 		current int64
 	)
 	for {
@@ -135,7 +134,7 @@ func (h *Hub) Closed() bool {
 	return atomic.LoadUint32(&h.closed) == 1
 }
 
-var ErrAlreadyClosed = fmt.Errorf("already closed")
+var ErrAlreadyClosed = errors.New("already closed")
 
 func (h *Hub) Close() error {
 	if !atomic.CompareAndSwapUint32(&h.closed, 0, 1) {

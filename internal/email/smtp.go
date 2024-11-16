@@ -1,7 +1,7 @@
 package email
 
 import (
-	"fmt"
+	"errors"
 	"strings"
 	"sync"
 
@@ -11,7 +11,7 @@ import (
 )
 
 var (
-	smtpPool      *smtp.SmtpPool
+	smtpPool      *smtp.Pool
 	configChanged bool
 	lock          sync.Mutex
 )
@@ -34,10 +34,10 @@ var (
 		model.SettingGroupEmail,
 		settings.WithValidatorInt64(func(i int64) error {
 			if i <= 0 {
-				return fmt.Errorf("smtp port must be greater than 0")
+				return errors.New("smtp port must be greater than 0")
 			}
 			if i > 65535 {
-				return fmt.Errorf("smtp port must be less than 65535")
+				return errors.New("smtp port must be less than 65535")
 			}
 			return nil
 		}),
@@ -57,7 +57,7 @@ var (
 			case "tcp", "tls", "ssl", "":
 				return nil
 			default:
-				return fmt.Errorf("smtp protocol must be tcp, tls or ssl")
+				return errors.New("smtp protocol must be tcp, tls or ssl")
 			}
 		}),
 		settings.WithAfterSetString(func(ss settings.StringSetting, s string) {
@@ -105,10 +105,10 @@ var (
 		model.SettingGroupEmail,
 		settings.WithValidatorInt64(func(i int64) error {
 			if i <= 0 {
-				return fmt.Errorf("smtp pool size must be greater than 0")
+				return errors.New("smtp pool size must be greater than 0")
 			}
 			if i > 100 {
-				return fmt.Errorf("smtp pool size must be less than 100")
+				return errors.New("smtp pool size must be less than 100")
 			}
 			return nil
 		}),
@@ -120,8 +120,8 @@ var (
 	)
 )
 
-func newSmtpConfig() *smtp.SmtpConfig {
-	return &smtp.SmtpConfig{
+func newSmtpConfig() *smtp.Config {
+	return &smtp.Config{
 		Host:     smtpHost.Get(),
 		Port:     uint32(smtpPort.Get()),
 		Protocol: smtpProtocol.Get(),
@@ -131,11 +131,11 @@ func newSmtpConfig() *smtp.SmtpConfig {
 	}
 }
 
-func newSmtpPool() (*smtp.SmtpPool, error) {
-	return smtp.NewSmtpPool(newSmtpConfig(), int(smtpPoolSize.Get()))
+func newSmtpPool() (*smtp.Pool, error) {
+	return smtp.NewSMTPPool(newSmtpConfig(), int(smtpPoolSize.Get()))
 }
 
-func getSmtpPool() (*smtp.SmtpPool, error) {
+func getSmtpPool() (*smtp.Pool, error) {
 	lock.Lock()
 	defer lock.Unlock()
 

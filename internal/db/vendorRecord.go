@@ -26,10 +26,9 @@ func CreateOrSaveBilibiliVendor(vendorInfo *model.BilibiliVendor) (*model.Bilibi
 			UserID: vendorInfo.UserID,
 		}).Error, gorm.ErrRecordNotFound) {
 			return tx.Create(&vendorInfo).Error
-		} else {
-			result := tx.Omit("created_at").Save(&vendorInfo)
-			return HandleUpdateResult(result, ErrVendorNotFound)
 		}
+		result := tx.Omit("created_at").Save(&vendorInfo)
+		return HandleUpdateResult(result, ErrVendorNotFound)
 	})
 }
 
@@ -66,10 +65,9 @@ func CreateOrSaveAlistVendor(vendorInfo *model.AlistVendor) (*model.AlistVendor,
 			ServerID: vendorInfo.ServerID,
 		}).Error, gorm.ErrRecordNotFound) {
 			return tx.Create(&vendorInfo).Error
-		} else {
-			result := tx.Omit("created_at").Save(&vendorInfo)
-			return HandleUpdateResult(result, ErrVendorNotFound)
 		}
+		result := tx.Omit("created_at").Save(&vendorInfo)
+		return HandleUpdateResult(result, ErrVendorNotFound)
 	})
 }
 
@@ -112,10 +110,9 @@ func CreateOrSaveEmbyVendor(vendorInfo *model.EmbyVendor) (*model.EmbyVendor, er
 			ServerID: vendorInfo.ServerID,
 		}).Error, gorm.ErrRecordNotFound) {
 			return tx.Create(&vendorInfo).Error
-		} else {
-			result := tx.Omit("created_at").Save(&vendorInfo)
-			return HandleUpdateResult(result, ErrVendorNotFound)
 		}
+		result := tx.Omit("created_at").Save(&vendorInfo)
+		return HandleUpdateResult(result, ErrVendorNotFound)
 	})
 }
 

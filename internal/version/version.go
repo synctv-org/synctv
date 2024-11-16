@@ -21,8 +21,8 @@ const (
 )
 
 var (
-	Version    string = "dev"
-	WebVersion string = "dev"
+	Version    = "dev"
+	WebVersion = "dev"
 	GitCommit  string
 	_          = settings.NewStringSetting("version", "placeholder string", model.SettingGroupServer, settings.WithBeforeInitString(func(ss settings.StringSetting, s string) (string, error) {
 		return Version, nil
@@ -31,7 +31,7 @@ var (
 	}))
 )
 
-type VersionInfo struct {
+type Info struct {
 	current string
 	latest  *github.RepositoryRelease
 	dev     *github.RepositoryRelease
@@ -40,16 +40,16 @@ type VersionInfo struct {
 	baseURL string
 }
 
-func WithBaseURL(baseURL string) VersionInfoConf {
-	return func(v *VersionInfo) {
+func WithBaseURL(baseURL string) InfoConf {
+	return func(v *Info) {
 		v.baseURL = baseURL
 	}
 }
 
-type VersionInfoConf func(*VersionInfo)
+type InfoConf func(*Info)
 
-func NewVersionInfo(conf ...VersionInfoConf) (*VersionInfo, error) {
-	v := &VersionInfo{
+func NewVersionInfo(conf ...InfoConf) (*Info, error) {
+	v := &Info{
 		current: Version,
 	}
 	for _, c := range conf {
@@ -58,7 +58,7 @@ func NewVersionInfo(conf ...VersionInfoConf) (*VersionInfo, error) {
 	return v, v.fix()
 }
 
-func (v *VersionInfo) fix() (err error) {
+func (v *Info) fix() (err error) {
 	if v.baseURL == "" {
 		v.baseURL = "https://api.github.com/"
 	}
@@ -66,7 +66,7 @@ func (v *VersionInfo) fix() (err error) {
 	return err
 }
 
-func (v *VersionInfo) initLatest(ctx context.Context) (err error) {
+func (v *Info) initLatest(ctx context.Context) (err error) {
 	if v.latest != nil {
 		return nil
 	}
@@ -74,7 +74,7 @@ func (v *VersionInfo) initLatest(ctx context.Context) (err error) {
 	return
 }
 
-func (v *VersionInfo) initDev(ctx context.Context) (err error) {
+func (v *Info) initDev(ctx context.Context) (err error) {
 	if v.dev != nil {
 		return nil
 	}
@@ -82,18 +82,18 @@ func (v *VersionInfo) initDev(ctx context.Context) (err error) {
 	return
 }
 
-func (v *VersionInfo) Current() string {
+func (v *Info) Current() string {
 	return v.current
 }
 
-func (v *VersionInfo) Latest(ctx context.Context) (string, error) {
+func (v *Info) Latest(ctx context.Context) (string, error) {
 	if err := v.initLatest(ctx); err != nil {
 		return "", err
 	}
 	return v.latest.GetTagName(), nil
 }
 
-func (v *VersionInfo) CheckLatest(ctx context.Context) (string, error) {
+func (v *Info) CheckLatest(ctx context.Context) (string, error) {
 	release, _, err := v.c.Repositories.GetLatestRelease(ctx, owner, repo)
 	if err != nil {
 		return "", err
@@ -102,14 +102,14 @@ func (v *VersionInfo) CheckLatest(ctx context.Context) (string, error) {
 	return release.GetTagName(), nil
 }
 
-func (v *VersionInfo) LatestBinaryURL(ctx context.Context) (string, error) {
+func (v *Info) LatestBinaryURL(ctx context.Context) (string, error) {
 	if err := v.initLatest(ctx); err != nil {
 		return "", err
 	}
 	return getBinaryURL(v.latest)
 }
 
-func (v *VersionInfo) DevBinaryURL(ctx context.Context) (string, error) {
+func (v *Info) DevBinaryURL(ctx context.Context) (string, error) {
 	if err := v.initDev(ctx); err != nil {
 		return "", err
 	}
@@ -128,7 +128,7 @@ func getBinaryURL(repo *github.RepositoryRelease) (string, error) {
 
 // NeedUpdate return true if current version is less than latest version
 // if current version is dev, always return false
-func (v *VersionInfo) NeedUpdate(ctx context.Context) (bool, error) {
+func (v *Info) NeedUpdate(ctx context.Context) (bool, error) {
 	if v.Current() == "dev" {
 		return false, nil
 	}
@@ -155,7 +155,7 @@ func (v *VersionInfo) NeedUpdate(ctx context.Context) (bool, error) {
 	return false, nil
 }
 
-func (v *VersionInfo) SelfUpdate(ctx context.Context) (err error) {
+func (v *Info) SelfUpdate(ctx context.Context) (err error) {
 	if flags.Global.Dev {
 		log.Info("self update: dev mode, update to latest dev version")
 	} else if v.Current() != "dev" {

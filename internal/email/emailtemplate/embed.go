@@ -1,4 +1,4 @@
-package email_template
+package emailtemplate
 
 import _ "embed"
 

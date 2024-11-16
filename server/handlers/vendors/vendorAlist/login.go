@@ -1,4 +1,4 @@
-package vendorAlist
+package vendoralist
 
 import (
 	"context"
@@ -11,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	json "github.com/json-iterator/go"
+	"github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/internal/cache"
 	"github.com/synctv-org/synctv/internal/db"
 	dbModel "github.com/synctv-org/synctv/internal/model"
@@ -52,7 +53,7 @@ func Login(ctx *gin.Context) {
 
 	req := LoginReq{}
 	if err := model.Decode(ctx, &req); err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 		return
 	}
 
@@ -71,7 +72,7 @@ func Login(ctx *gin.Context) {
 		Backend:        backend,
 	})
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 		return
 	}
 
@@ -84,7 +85,7 @@ func Login(ctx *gin.Context) {
 		HashedPassword: []byte(req.HashedPassword),
 	})
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 		return
 	}
 
@@ -92,7 +93,7 @@ func Login(ctx *gin.Context) {
 		return data, nil
 	})
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 		return
 	}
 
@@ -100,22 +101,26 @@ func Login(ctx *gin.Context) {
 }
 
 func Logout(ctx *gin.Context) {
+	log := ctx.MustGet("log").(*logrus.Entry)
 	user := ctx.MustGet("user").(*op.UserEntry).Value()
 
 	var req model.ServerIDReq
 	if err := model.Decode(ctx, &req); err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 		return
 	}
 
 	err := db.DeleteAlistVendor(user.ID, req.ServerID)
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 		return
 	}
 
 	if rc, ok := user.AlistCache().LoadCache(req.ServerID); ok {
-		rc.Clear(ctx)
+		err = rc.Clear(ctx)
+		if err != nil {
+			log.Errorf("clear alist cache error: %v", err)
+		}
 	}
 
 	ctx.Status(http.StatusNoContent)

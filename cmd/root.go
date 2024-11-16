@@ -26,7 +26,7 @@ var RootCmd = &cobra.Command{
 	Short: "synctv",
 	Long:  `synctv https://github.com/synctv-org/synctv`,
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
-		prefix := flags.ENV_PREFIX
+		prefix := flags.EnvPrefix
 		if !flags.SkipEnvFlag {
 			s, ok := os.LookupEnv("ENV_NO_PREFIX")
 			if ok {

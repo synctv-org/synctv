@@ -1,8 +1,7 @@
-package vendorBilibili
+package vendorbilibili
 
 import (
 	"errors"
-	"fmt"
 	"net/http"
 	"strconv"
 
@@ -36,7 +35,7 @@ func Parse(ctx *gin.Context) {
 
 	req := ParseReq{}
 	if err := model.Decode(ctx, &req); err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 		return
 	}
 
@@ -46,7 +45,7 @@ func Parse(ctx *gin.Context) {
 		Url: req.URL,
 	})
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 		return
 	}
 
@@ -54,8 +53,8 @@ func Parse(ctx *gin.Context) {
 	var cookies []*http.Cookie
 	bucd, err := user.BilibiliCache().Get(ctx)
 	if err != nil {
-		if !errors.Is(err, db.ErrNotFound(db.ErrVendorNotFound)) {
-			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+		if !errors.Is(err, db.NotFoundError(db.ErrVendorNotFound)) {
+			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 			return
 		}
 	} else {
@@ -65,65 +64,65 @@ func Parse(ctx *gin.Context) {
 	switch resp.Type {
 	case "bv":
 		resp, err := cli.ParseVideoPage(ctx, &bilibili.ParseVideoPageReq{
-			Cookies:  utils.HttpCookieToMap(cookies),
+			Cookies:  utils.HTTPCookieToMap(cookies),
 			Bvid:     resp.Id,
 			Sections: ctx.DefaultQuery("sections", "false") == "true",
 		})
 		if err != nil {
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 			return
 		}
-		ctx.JSON(http.StatusOK, model.NewApiDataResp(resp))
+		ctx.JSON(http.StatusOK, model.NewAPIDataResp(resp))
 	case "av":
 		aid, err := strconv.ParseUint(resp.Id, 10, 64)
 		if err != nil {
-			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 			return
 		}
 		resp, err := cli.ParseVideoPage(ctx, &bilibili.ParseVideoPageReq{
-			Cookies:  utils.HttpCookieToMap(cookies),
+			Cookies:  utils.HTTPCookieToMap(cookies),
 			Aid:      aid,
 			Sections: ctx.DefaultQuery("sections", "false") == "true",
 		})
 		if err != nil {
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 			return
 		}
-		ctx.JSON(http.StatusOK, model.NewApiDataResp(resp))
+		ctx.JSON(http.StatusOK, model.NewAPIDataResp(resp))
 	case "ep":
 		epid, err := strconv.ParseUint(resp.Id, 10, 64)
 		if err != nil {
-			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 			return
 		}
 		resp, err := cli.ParsePGCPage(ctx, &bilibili.ParsePGCPageReq{
-			Cookies: utils.HttpCookieToMap(cookies),
+			Cookies: utils.HTTPCookieToMap(cookies),
 			Epid:    epid,
 		})
 		if err != nil {
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 			return
 		}
-		ctx.JSON(http.StatusOK, model.NewApiDataResp(resp))
+		ctx.JSON(http.StatusOK, model.NewAPIDataResp(resp))
 	case "ss":
 		ssid, err := strconv.ParseUint(resp.Id, 10, 64)
 		if err != nil {
-			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 			return
 		}
 		resp, err := cli.ParsePGCPage(ctx, &bilibili.ParsePGCPageReq{
-			Cookies: utils.HttpCookieToMap(cookies),
+			Cookies: utils.HTTPCookieToMap(cookies),
 			Ssid:    ssid,
 		})
 		if err != nil {
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 			return
 		}
-		ctx.JSON(http.StatusOK, model.NewApiDataResp(resp))
+		ctx.JSON(http.StatusOK, model.NewAPIDataResp(resp))
 	case "live":
 		roomid, err := strconv.ParseUint(resp.Id, 10, 64)
 		if err != nil {
-			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorResp(err))
+			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 			return
 		}
 		resp, err := cli.ParseLivePage(ctx, &bilibili.ParseLivePageReq{
@@ -131,12 +130,12 @@ func Parse(ctx *gin.Context) {
 			RoomID: roomid,
 		})
 		if err != nil {
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewApiErrorResp(err))
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 			return
 		}
-		ctx.JSON(http.StatusOK, model.NewApiDataResp(resp))
+		ctx.JSON(http.StatusOK, model.NewAPIDataResp(resp))
 	default:
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewApiErrorStringResp(fmt.Sprintf("unknown match type %s", resp.Type)))
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorStringResp("unknown match type "+resp.Type))
 		return
 	}
 }

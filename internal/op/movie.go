@@ -38,7 +38,7 @@ func (m *Movie) SubPath() string {
 	return m.subPath
 }
 
-func (m *Movie) ExpireId() uint64 {
+func (m *Movie) ExpireID() uint64 {
 	if m.IsFolder {
 		return 0
 	}
@@ -54,7 +54,7 @@ func (m *Movie) ExpireId() uint64 {
 	return uint64(crc32.ChecksumIEEE([]byte(m.Movie.ID)))
 }
 
-func (m *Movie) CheckExpired(expireId uint64) bool {
+func (m *Movie) CheckExpired(expireID uint64) bool {
 	if m.IsFolder {
 		return false
 	}
@@ -62,12 +62,12 @@ func (m *Movie) CheckExpired(expireId uint64) bool {
 	case m.Movie.MovieBase.VendorInfo.Vendor == model.VendorAlist:
 		amcd, _ := m.AlistCache().Raw()
 		if amcd != nil && amcd.Ali != nil {
-			return time.Now().UnixNano()-int64(expireId) > m.AlistCache().MaxAge()
+			return time.Now().UnixNano()-int64(expireID) > m.AlistCache().MaxAge()
 		}
 	case m.Movie.MovieBase.Live && m.Movie.MovieBase.VendorInfo.Vendor == model.VendorBilibili:
-		return time.Now().UnixNano()-int64(expireId) > m.BilibiliCache().Live.MaxAge()
+		return time.Now().UnixNano()-int64(expireID) > m.BilibiliCache().Live.MaxAge()
 	}
-	return expireId != m.ExpireId()
+	return expireID != m.ExpireID()
 }
 
 func (m *Movie) ClearCache() error {
@@ -137,7 +137,7 @@ func (m *Movie) Channel() (*rtmps.Channel, error) {
 	return c, nil
 }
 
-func genTsName() string {
+func genTSName() string {
 	return utils.SortUUID()
 }
 
@@ -154,184 +154,229 @@ func (m *Movie) compareAndSwapInitChannel() (*rtmps.Channel, bool) {
 }
 
 func (m *Movie) initChannel() (*rtmps.Channel, error) {
-	switch {
-	case m.Movie.MovieBase.Live && m.Movie.MovieBase.RtmpSource:
-		c, init := m.compareAndSwapInitChannel()
-		if !init {
-			return c, nil
-		}
-		err := c.InitHlsPlayer(hls.WithGenTsNameFunc(genTsName))
-		if err != nil {
-			return nil, fmt.Errorf("init rtmp hls player error: %v", err)
-		}
-		return c, nil
-	case m.Movie.MovieBase.Live && m.Movie.MovieBase.Proxy:
-		u, err := url.Parse(m.Movie.MovieBase.Url)
-		if err != nil {
-			return nil, err
-		}
-		switch u.Scheme {
-		case "rtmp":
-			c, init := m.compareAndSwapInitChannel()
-			if !init {
-				return c, nil
-			}
-			err = c.InitHlsPlayer(hls.WithGenTsNameFunc(genTsName))
-			if err != nil {
-				return nil, fmt.Errorf("init rtmp hls player error: %v", err)
-			}
-			go func() {
-				for {
-					if c.Closed() {
-						return
-					}
-					cli := core.NewConnClient()
-					if err = cli.Start(m.Movie.MovieBase.Url, av.PLAY); err != nil {
-						log.Errorf("push live error: %v", err)
-						cli.Close()
-						time.Sleep(time.Second)
-						continue
-					}
-					if err := c.PushStart(rtmpProto.NewReader(cli)); err != nil {
-						log.Errorf("push live error: %v", err)
-						cli.Close()
-						time.Sleep(time.Second)
-					}
-				}
-			}()
-			return c, nil
-		case "http", "https":
-			if utils.IsM3u8Url(m.Movie.MovieBase.Url) {
-				return nil, errors.New("m3u8 url not support")
-			}
-			c, init := m.compareAndSwapInitChannel()
-			if !init {
-				return c, nil
-			}
-			err := c.InitHlsPlayer(hls.WithGenTsNameFunc(genTsName))
-			if err != nil {
-				return nil, fmt.Errorf("init http hls player error: %v", err)
-			}
-			go func() {
-				for {
-					if c.Closed() {
-						return
-					}
-					req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, m.Movie.MovieBase.Url, nil)
-					if err != nil {
-						log.Errorf("get live error: %v", err)
-						time.Sleep(time.Second)
-						continue
-					}
-					for k, v := range m.Movie.MovieBase.Headers {
-						req.Header.Set(k, v)
-					}
-					if req.Header.Get("User-Agent") == "" {
-						req.Header.Set("User-Agent", utils.UA)
-					}
-					resp, err := uhc.Do(req)
-					if err != nil {
-						log.Errorf("get live error: %v", err)
-						resp.Body.Close()
-						time.Sleep(time.Second)
-						continue
-					}
-					if err := c.PushStart(flv.NewReader(resp.Body)); err != nil {
-						log.Errorf("push live error: %v", err)
-						resp.Body.Close()
-						time.Sleep(time.Second)
-					}
-				}
-			}()
-			return c, nil
-		default:
-			return nil, fmt.Errorf("unsupported scheme: %s", u.Scheme)
-		}
-	default:
+	if !m.Movie.MovieBase.Live || (!m.Movie.MovieBase.RtmpSource && !m.Movie.MovieBase.Proxy) {
 		return nil, errors.New("this movie not support channel")
+	}
+
+	if m.Movie.MovieBase.RtmpSource {
+		return m.initRtmpSourceChannel()
+	}
+
+	// Handle proxy case
+	u, err := url.Parse(m.Movie.MovieBase.URL)
+	if err != nil {
+		return nil, err
+	}
+
+	switch u.Scheme {
+	case "rtmp":
+		return m.initRtmpProxyChannel()
+	case "http", "https":
+		return m.initHTTPProxyChannel()
+	default:
+		return nil, fmt.Errorf("unsupported scheme: %s", u.Scheme)
 	}
 }
 
-func (movie *Movie) Validate() error {
-	m := movie.Movie.MovieBase
+func (m *Movie) initRtmpSourceChannel() (*rtmps.Channel, error) {
+	c, init := m.compareAndSwapInitChannel()
+	if !init {
+		return c, nil
+	}
+	err := c.InitHlsPlayer(hls.WithGenTsNameFunc(genTSName))
+	if err != nil {
+		return nil, fmt.Errorf("init rtmp hls player error: %w", err)
+	}
+	return c, nil
+}
+
+func (m *Movie) initRtmpProxyChannel() (*rtmps.Channel, error) {
+	c, init := m.compareAndSwapInitChannel()
+	if !init {
+		return c, nil
+	}
+	err := c.InitHlsPlayer(hls.WithGenTsNameFunc(genTSName))
+	if err != nil {
+		return nil, fmt.Errorf("init rtmp hls player error: %w", err)
+	}
+
+	go m.handleRtmpProxy(c)
+	return c, nil
+}
+
+func (m *Movie) handleRtmpProxy(c *rtmps.Channel) {
+	for {
+		if c.Closed() {
+			return
+		}
+		cli := core.NewConnClient()
+		if err := cli.Start(m.Movie.MovieBase.URL, av.PLAY); err != nil {
+			log.Errorf("push live error: %v", err)
+			cli.Close()
+			time.Sleep(time.Second)
+			continue
+		}
+		if err := c.PushStart(rtmpProto.NewReader(cli)); err != nil {
+			log.Errorf("push live error: %v", err)
+			cli.Close()
+			time.Sleep(time.Second)
+		}
+	}
+}
+
+func (m *Movie) initHTTPProxyChannel() (*rtmps.Channel, error) {
+	if utils.IsM3u8Url(m.Movie.MovieBase.URL) {
+		return nil, errors.New("m3u8 url not support")
+	}
+
+	c, init := m.compareAndSwapInitChannel()
+	if !init {
+		return c, nil
+	}
+	err := c.InitHlsPlayer(hls.WithGenTsNameFunc(genTSName))
+	if err != nil {
+		return nil, fmt.Errorf("init http hls player error: %w", err)
+	}
+
+	go m.handleHTTPProxy(c)
+	return c, nil
+}
+
+func (m *Movie) handleHTTPProxy(c *rtmps.Channel) {
+	for {
+		if c.Closed() {
+			return
+		}
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, m.Movie.MovieBase.URL, nil)
+		if err != nil {
+			log.Errorf("get live error: %v", err)
+			time.Sleep(time.Second)
+			continue
+		}
+		for k, v := range m.Movie.MovieBase.Headers {
+			req.Header.Set(k, v)
+		}
+		if req.Header.Get("User-Agent") == "" {
+			req.Header.Set("User-Agent", utils.UA)
+		}
+		resp, err := uhc.Do(req)
+		if err != nil {
+			log.Errorf("get live error: %v", err)
+			resp.Body.Close()
+			time.Sleep(time.Second)
+			continue
+		}
+		if err := c.PushStart(flv.NewReader(resp.Body)); err != nil {
+			log.Errorf("push live error: %v", err)
+			resp.Body.Close()
+			time.Sleep(time.Second)
+		}
+	}
+}
+
+func (m *Movie) Validate() error {
+	// First check vendor info
+	if m.VendorInfo.Vendor != "" {
+		return m.validateVendorMovie()
+	}
+
+	// Check folder
+	if m.IsFolder {
+		return nil
+	}
+
+	// Validate RTMP source settings
+	if err := m.validateRTMPSource(); err != nil {
+		return err
+	}
+
+	// Validate URL and proxy settings
+	return m.validateURLAndProxy()
+}
+
+func (m *Movie) validateRTMPSource() error {
 	switch {
 	case m.RtmpSource && m.Proxy:
 		return errors.New("rtmp source and proxy can't be true at the same time")
-	case m.Live && m.RtmpSource && !conf.Conf.Server.Rtmp.Enable:
+	case m.Live && m.RtmpSource && !conf.Conf.Server.RTMP.Enable:
 		return errors.New("rtmp is not enabled")
 	case !m.Live && m.RtmpSource:
 		return errors.New("rtmp source can't be true when movie is not live")
 	}
-	if m.VendorInfo.Vendor != "" {
-		return movie.validateVendorMovie()
+	return nil
+}
+
+func (m *Movie) validateURLAndProxy() error {
+	u, err := url.Parse(m.URL)
+	if err != nil {
+		return err
 	}
-	if movie.IsFolder {
-		return nil
-	}
+
 	switch {
 	case m.Live && m.RtmpSource:
 		return nil
 	case m.Live && m.Proxy:
-		if !settings.LiveProxy.Get() {
-			return errors.New("live proxy is not enabled")
-		}
-		u, err := url.Parse(m.Url)
-		if err != nil {
-			return err
-		}
-		if !settings.AllowProxyToLocal.Get() && utils.IsLocalIP(u.Host) {
-			return errors.New("local ip is not allowed")
-		}
-		switch u.Scheme {
-		case "rtmp":
-		case "http", "https":
-		default:
-			return fmt.Errorf("unsupported scheme: %s", u.Scheme)
-		}
+		return m.validateLiveProxy(u)
 	case !m.Live && m.Proxy:
-		if !settings.MovieProxy.Get() {
-			return errors.New("movie proxy is not enabled")
-		}
-		u, err := url.Parse(m.Url)
-		if err != nil {
-			return err
-		}
-		if !settings.AllowProxyToLocal.Get() && utils.IsLocalIP(u.Host) {
-			return errors.New("local ip is not allowed")
-		}
-		if u.Scheme != "http" && u.Scheme != "https" {
-			return fmt.Errorf("unsupported scheme: %s", u.Scheme)
-		}
+		return m.validateMovieProxy(u)
 	case !m.Live && !m.Proxy, m.Live && !m.Proxy && !m.RtmpSource:
-		u, err := url.Parse(m.Url)
-		if err != nil {
-			return err
-		}
-		if u.Scheme != "http" && u.Scheme != "https" && u.Scheme != "magnet" {
-			return fmt.Errorf("unsupported scheme: %s", u.Scheme)
-		}
+		return m.validateDirectURL(u)
 	default:
 		return errors.New("validate movie error: unknown error")
+	}
+}
+
+func (m *Movie) validateLiveProxy(u *url.URL) error {
+	if !settings.LiveProxy.Get() {
+		return errors.New("live proxy is not enabled")
+	}
+	if !settings.AllowProxyToLocal.Get() && utils.IsLocalIP(u.Host) {
+		return errors.New("local ip is not allowed")
+	}
+	switch u.Scheme {
+	case "rtmp", "http", "https":
+		return nil
+	default:
+		return fmt.Errorf("unsupported scheme: %s", u.Scheme)
+	}
+}
+
+func (m *Movie) validateMovieProxy(u *url.URL) error {
+	if !settings.MovieProxy.Get() {
+		return errors.New("movie proxy is not enabled")
+	}
+	if !settings.AllowProxyToLocal.Get() && utils.IsLocalIP(u.Host) {
+		return errors.New("local ip is not allowed")
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("unsupported scheme: %s", u.Scheme)
 	}
 	return nil
 }
 
-func (movie *Movie) validateVendorMovie() error {
-	switch movie.Movie.MovieBase.VendorInfo.Vendor {
+func (m *Movie) validateDirectURL(u *url.URL) error {
+	if u.Scheme != "http" && u.Scheme != "https" && u.Scheme != "magnet" {
+		return fmt.Errorf("unsupported scheme: %s", u.Scheme)
+	}
+	return nil
+}
+
+func (m *Movie) validateVendorMovie() error {
+	switch m.Movie.MovieBase.VendorInfo.Vendor {
 	case model.VendorBilibili:
-		if movie.IsFolder {
+		if m.IsFolder {
 			return errors.New("bilibili folder not support")
 		}
-		return movie.Movie.MovieBase.VendorInfo.Bilibili.Validate()
+		return m.Movie.MovieBase.VendorInfo.Bilibili.Validate()
 
 	case model.VendorAlist:
-		return movie.Movie.MovieBase.VendorInfo.Alist.Validate()
+		return m.Movie.MovieBase.VendorInfo.Alist.Validate()
 
 	case model.VendorEmby:
-		return movie.Movie.MovieBase.VendorInfo.Emby.Validate()
+		return m.Movie.MovieBase.VendorInfo.Emby.Validate()
 
 	default:
-		return fmt.Errorf("vendor not implement validate")
+		return errors.New("vendor not implement validate")
 	}
 }
 

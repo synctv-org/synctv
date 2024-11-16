@@ -4,15 +4,15 @@ import (
 	"context"
 )
 
-type BootstrapConf func(*Bootstrap)
+type Conf func(*Bootstrap)
 
-func WithContext(ctx context.Context) BootstrapConf {
+func WithContext(ctx context.Context) Conf {
 	return func(b *Bootstrap) {
 		b.ctx = ctx
 	}
 }
 
-func WithTask(f ...BootstrapFunc) BootstrapConf {
+func WithTask(f ...Func) Conf {
 	return func(b *Bootstrap) {
 		b.task = append(b.task, f...)
 	}
@@ -20,10 +20,10 @@ func WithTask(f ...BootstrapFunc) BootstrapConf {
 
 type Bootstrap struct {
 	ctx  context.Context
-	task []BootstrapFunc
+	task []Func
 }
 
-func New(conf ...BootstrapConf) *Bootstrap {
+func New(conf ...Conf) *Bootstrap {
 	b := &Bootstrap{}
 	for _, c := range conf {
 		c(b)
@@ -31,9 +31,9 @@ func New(conf ...BootstrapConf) *Bootstrap {
 	return b
 }
 
-type BootstrapFunc func(context.Context) error
+type Func func(context.Context) error
 
-func (b *Bootstrap) Add(f ...BootstrapFunc) *Bootstrap {
+func (b *Bootstrap) Add(f ...Func) *Bootstrap {
 	b.task = append(b.task, f...)
 	return b
 }

@@ -9,7 +9,7 @@ import (
 	"github.com/hashicorp/go-plugin"
 	"github.com/synctv-org/synctv/internal/provider"
 	"github.com/synctv-org/synctv/internal/provider/providers"
-	sysnotify "github.com/synctv-org/synctv/internal/sysnotify"
+	"github.com/synctv-org/synctv/internal/sysnotify"
 	providerpb "github.com/synctv-org/synctv/proto/provider"
 	"google.golang.org/grpc"
 )

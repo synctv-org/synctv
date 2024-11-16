@@ -124,6 +124,8 @@ func (c *SliceCacheProxy) Proxy(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
+const cacheStatusHeader = "X-Cache-Status"
+
 func (c *SliceCacheProxy) setResponseHeaders(w http.ResponseWriter, byteRange *ByteRange, cacheItem *CacheItem, cached bool, isRangeRequest bool) {
 	// Copy headers excluding special ones
 	for k, v := range cacheItem.Metadata.Headers {
@@ -136,9 +138,9 @@ func (c *SliceCacheProxy) setResponseHeaders(w http.ResponseWriter, byteRange *B
 	}
 
 	if cached {
-		w.Header().Set("Cache-Status", "HIT")
+		w.Header().Set(cacheStatusHeader, "HIT")
 	} else {
-		w.Header().Set("Cache-Status", "MISS")
+		w.Header().Set(cacheStatusHeader, "MISS")
 	}
 	w.Header().Set("Accept-Ranges", "bytes")
 	w.Header().Set("Content-Length", fmtContentLength(byteRange.Start, byteRange.End, cacheItem.Metadata.ContentTotalLength))

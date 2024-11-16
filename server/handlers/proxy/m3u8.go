@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/synctv-org/synctv/cmd/flags"
 	"github.com/synctv-org/synctv/internal/conf"
 	"github.com/synctv-org/synctv/server/model"
 	"github.com/synctv-org/synctv/utils"
@@ -59,6 +60,9 @@ const maxM3u8FileSize = 3 * 1024 * 1024 //
 func M3u8(ctx *gin.Context, u string, headers map[string]string, isM3u8File bool, token, roomID, movieID string, opts ...Option) error {
 	if !isM3u8File {
 		return URL(ctx, u, headers, opts...)
+	}
+	if flags.Global.Dev {
+		ctx.Header(proxyURLHeader, u)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)

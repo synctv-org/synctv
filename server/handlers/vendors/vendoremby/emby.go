@@ -313,8 +313,18 @@ func (s *EmbyVendorService) GenProxyMovieInfo(ctx context.Context, user *op.User
 			Path:     rawPath,
 			RawQuery: rawQuery.Encode(),
 		}
-		movie.MovieBase.URL = u.String()
-		movie.MovieBase.Type = utils.GetURLExtension(es.URL)
+
+		if si == 0 {
+			movie.MovieBase.URL = u.String()
+			movie.MovieBase.Type = utils.GetURLExtension(es.URL)
+		} else {
+			movie.MovieBase.MoreSources = append(movie.MovieBase.MoreSources,
+				&dbModel.MoreSource{
+					Name: es.Name,
+					URL:  u.String(),
+				},
+			)
+		}
 
 		if len(es.Subtitles) == 0 {
 			continue

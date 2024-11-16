@@ -12,6 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	log "github.com/sirupsen/logrus"
+	"github.com/synctv-org/synctv/cmd/flags"
 	"github.com/synctv-org/synctv/internal/conf"
 	"github.com/synctv-org/synctv/internal/settings"
 	"github.com/synctv-org/synctv/server/model"
@@ -108,9 +109,15 @@ func NewProxyURLOptions(opts ...Option) *Options {
 	return o
 }
 
-const sliceSize = 1024 * 1024
+const (
+	sliceSize      = 1024 * 1024 * 2
+	proxyURLHeader = "X-Proxy-URL"
+)
 
 func URL(ctx *gin.Context, u string, headers map[string]string, opts ...Option) error {
+	if flags.Global.Dev {
+		ctx.Header(proxyURLHeader, u)
+	}
 	o := NewProxyURLOptions(opts...)
 	if !settings.AllowProxyToLocal.Get() {
 		if l, err := utils.ParseURLIsLocalIP(u); err != nil {
@@ -136,7 +143,7 @@ func URL(ctx *gin.Context, u string, headers map[string]string, opts ...Option) 
 		rsc := NewHTTPReadSeekCloser(u,
 			WithContext(c),
 			WithHeadersMap(headers),
-			WithPerLength(sliceSize*2),
+			WithPerLength(sliceSize*3),
 		)
 		defer rsc.Close()
 		if o.CacheKey == "" {

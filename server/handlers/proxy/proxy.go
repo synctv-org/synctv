@@ -108,6 +108,8 @@ func NewProxyURLOptions(opts ...Option) *Options {
 	return o
 }
 
+const sliceSize = 1024 * 1024
+
 func URL(ctx *gin.Context, u string, headers map[string]string, opts ...Option) error {
 	o := NewProxyURLOptions(opts...)
 	if !settings.AllowProxyToLocal.Get() {
@@ -134,12 +136,13 @@ func URL(ctx *gin.Context, u string, headers map[string]string, opts ...Option) 
 		rsc := NewHTTPReadSeekCloser(u,
 			WithContext(c),
 			WithHeadersMap(headers),
+			WithPerLength(sliceSize*2),
 		)
 		defer rsc.Close()
 		if o.CacheKey == "" {
 			o.CacheKey = u
 		}
-		return NewSliceCacheProxy(o.CacheKey, 1024*512, rsc, getCache()).
+		return NewSliceCacheProxy(o.CacheKey, sliceSize, rsc, getCache()).
 			Proxy(ctx.Writer, ctx.Request)
 	}
 

@@ -1,35 +1,13 @@
 package handlers
 
 import (
-	"errors"
-	"net/url"
-	"strings"
-
 	"github.com/gin-gonic/gin"
-	"github.com/synctv-org/synctv/internal/model"
-	"github.com/synctv-org/synctv/internal/settings"
 	"github.com/synctv-org/synctv/server/handlers/vendors"
 	"github.com/synctv-org/synctv/server/handlers/vendors/vendoralist"
 	"github.com/synctv-org/synctv/server/handlers/vendors/vendorbilibili"
 	"github.com/synctv-org/synctv/server/handlers/vendors/vendoremby"
 	"github.com/synctv-org/synctv/server/middlewares"
 	"github.com/synctv-org/synctv/utils"
-)
-
-var HOST = settings.NewStringSetting(
-	"host",
-	"",
-	model.SettingGroupServer,
-	settings.WithValidatorString(func(s string) error {
-		if s == "" {
-			return nil
-		}
-		if !strings.HasPrefix(s, "http://") && !strings.HasPrefix(s, "https://") {
-			return errors.New("host must start with http:// or https://")
-		}
-		_, err := url.Parse(s)
-		return err
-	}),
 )
 
 func Init(e *gin.Engine) {

@@ -672,7 +672,7 @@ func SendUserRetrievePasswordEmailCaptcha(ctx *gin.Context) {
 		return
 	}
 
-	host := HOST.Get()
+	host := settings.HOST.Get()
 	if host == "" {
 		host = (&url.URL{
 			Scheme: "http",

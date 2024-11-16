@@ -405,7 +405,7 @@ func NewPublishKey(ctx *gin.Context) {
 
 	host := settings.CustomPublishHost.Get()
 	if host == "" {
-		host = HOST.Get()
+		host = settings.HOST.Get()
 	}
 	if host == "" {
 		host = ctx.Request.Host

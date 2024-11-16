@@ -2,6 +2,8 @@ package settings
 
 import (
 	"errors"
+	"net/url"
+	"strings"
 
 	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/model"
@@ -74,3 +76,19 @@ var (
 var DatabaseVersion = NewStringSetting("database_version", db.CurrentVersion, model.SettingGroupDatabase, WithBeforeSetString(func(ss StringSetting, s string) (string, error) {
 	return "", errors.New("not support change database version")
 }))
+
+var HOST = NewStringSetting(
+	"host",
+	"",
+	model.SettingGroupServer,
+	WithValidatorString(func(s string) error {
+		if s == "" {
+			return nil
+		}
+		if !strings.HasPrefix(s, "http://") && !strings.HasPrefix(s, "https://") {
+			return errors.New("host must start with http:// or https://")
+		}
+		_, err := url.Parse(s)
+		return err
+	}),
+)

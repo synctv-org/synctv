@@ -18,6 +18,7 @@ type BoolSetting interface {
 	Stringify(bool) string
 	SetBeforeInit(func(BoolSetting, bool) (bool, error))
 	SetBeforeSet(func(BoolSetting, bool) (bool, error))
+	SetAfterGet(func(BoolSetting, bool) bool)
 }
 
 var _ BoolSetting = (*Bool)(nil)
@@ -27,8 +28,9 @@ type Bool struct {
 	beforeSet  func(BoolSetting, bool) (bool, error)
 	afterInit  func(BoolSetting, bool)
 	afterSet   func(BoolSetting, bool)
+	afterGet   func(BoolSetting, bool) bool
 	setting
-	value        uint32
+	value        atomic.Bool
 	defaultValue bool
 }
 
@@ -64,6 +66,12 @@ func WithAfterSetBool(afterSet func(BoolSetting, bool)) BoolSettingOption {
 	}
 }
 
+func WithAfterGetBool(afterGet func(BoolSetting, bool) bool) BoolSettingOption {
+	return func(s *Bool) {
+		s.SetAfterGet(afterGet)
+	}
+}
+
 func newBool(name string, value bool, group model.SettingGroup, options ...BoolSettingOption) *Bool {
 	b := &Bool{
 		setting: setting{
@@ -96,16 +104,20 @@ func (b *Bool) SetAfterSet(afterSet func(BoolSetting, bool)) {
 	b.afterSet = afterSet
 }
 
+func (b *Bool) SetAfterGet(afterGet func(BoolSetting, bool) bool) {
+	b.afterGet = afterGet
+}
+
 func (b *Bool) set(value bool) {
-	if value {
-		atomic.StoreUint32(&b.value, 1)
-	} else {
-		atomic.StoreUint32(&b.value, 0)
-	}
+	b.value.Store(value)
 }
 
 func (b *Bool) Get() bool {
-	return atomic.LoadUint32(&b.value) == 1
+	v := b.value.Load()
+	if b.afterGet != nil {
+		v = b.afterGet(b, v)
+	}
+	return v
 }
 
 func (b *Bool) Init(value string) error {

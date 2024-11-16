@@ -19,6 +19,7 @@ type Float64Setting interface {
 	Stringify(float64) string
 	SetBeforeInit(func(Float64Setting, float64) (float64, error))
 	SetBeforeSet(func(Float64Setting, float64) (float64, error))
+	SetAfterGet(func(Float64Setting, float64) float64)
 }
 
 var _ Float64Setting = (*Float64)(nil)
@@ -29,6 +30,7 @@ type Float64 struct {
 	beforeSet  func(Float64Setting, float64) (float64, error)
 	afterInit  func(Float64Setting, float64)
 	afterSet   func(Float64Setting, float64)
+	afterGet   func(Float64Setting, float64) float64
 	setting
 	value        uint64
 	defaultValue float64
@@ -72,6 +74,12 @@ func WithAfterSetFloat64(afterSet func(Float64Setting, float64)) Float64SettingO
 	}
 }
 
+func WithAfterGetFloat64(afterGet func(Float64Setting, float64) float64) Float64SettingOption {
+	return func(s *Float64) {
+		s.SetAfterGet(afterGet)
+	}
+}
+
 func newFloat64(name string, value float64, group model.SettingGroup, options ...Float64SettingOption) *Float64 {
 	f := &Float64{
 		setting: setting{
@@ -102,6 +110,10 @@ func (f *Float64) SetAfterInit(afterInit func(Float64Setting, float64)) {
 
 func (f *Float64) SetAfterSet(afterSet func(Float64Setting, float64)) {
 	f.afterSet = afterSet
+}
+
+func (f *Float64) SetAfterGet(afterGet func(Float64Setting, float64) float64) {
+	f.afterGet = afterGet
 }
 
 func (f *Float64) Parse(value string) (float64, error) {
@@ -224,7 +236,11 @@ func (f *Float64) Set(v float64) (err error) {
 }
 
 func (f *Float64) Get() float64 {
-	return math.Float64frombits(atomic.LoadUint64(&f.value))
+	v := math.Float64frombits(atomic.LoadUint64(&f.value))
+	if f.afterGet != nil {
+		v = f.afterGet(f, v)
+	}
+	return v
 }
 
 func (f *Float64) Interface() any {

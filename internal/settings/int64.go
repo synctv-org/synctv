@@ -18,6 +18,7 @@ type Int64Setting interface {
 	Stringify(int64) string
 	SetBeforeInit(func(Int64Setting, int64) (int64, error))
 	SetBeforeSet(func(Int64Setting, int64) (int64, error))
+	SetAfterGet(func(Int64Setting, int64) int64)
 }
 
 var _ Int64Setting = (*Int64)(nil)
@@ -28,6 +29,7 @@ type Int64 struct {
 	beforeSet  func(Int64Setting, int64) (int64, error)
 	afterInit  func(Int64Setting, int64)
 	afterSet   func(Int64Setting, int64)
+	afterGet   func(Int64Setting, int64) int64
 	setting
 	value        int64
 	defaultValue int64
@@ -71,6 +73,12 @@ func WithAfterSetInt64(afterSet func(Int64Setting, int64)) Int64SettingOption {
 	}
 }
 
+func WithAfterGetInt64(afterGet func(Int64Setting, int64) int64) Int64SettingOption {
+	return func(s *Int64) {
+		s.SetAfterGet(afterGet)
+	}
+}
+
 func newInt64(name string, value int64, group model.SettingGroup, options ...Int64SettingOption) *Int64 {
 	i := &Int64{
 		setting: setting{
@@ -101,6 +109,10 @@ func (i *Int64) SetAfterInit(afterInit func(Int64Setting, int64)) {
 
 func (i *Int64) SetAfterSet(afterSet func(Int64Setting, int64)) {
 	i.afterSet = afterSet
+}
+
+func (i *Int64) SetAfterGet(afterGet func(Int64Setting, int64) int64) {
+	i.afterGet = afterGet
 }
 
 func (i *Int64) Parse(value string) (int64, error) {
@@ -223,7 +235,11 @@ func (i *Int64) Set(v int64) (err error) {
 }
 
 func (i *Int64) Get() int64 {
-	return atomic.LoadInt64(&i.value)
+	v := atomic.LoadInt64(&i.value)
+	if i.afterGet != nil {
+		v = i.afterGet(i, v)
+	}
+	return v
 }
 
 func (i *Int64) Interface() any {

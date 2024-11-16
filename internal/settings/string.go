@@ -17,6 +17,7 @@ type StringSetting interface {
 	Stringify(string) string
 	SetBeforeInit(func(StringSetting, string) (string, error))
 	SetBeforeSet(func(StringSetting, string) (string, error))
+	SetAfterGet(func(StringSetting, string) string)
 }
 
 var _ StringSetting = (*String)(nil)
@@ -27,6 +28,7 @@ type String struct {
 	beforeSet    func(StringSetting, string) (string, error)
 	afterInit    func(StringSetting, string)
 	afterSet     func(StringSetting, string)
+	afterGet     func(StringSetting, string) string
 	defaultValue string
 	value        string
 	setting
@@ -71,6 +73,12 @@ func WithAfterSetString(afterSet func(StringSetting, string)) StringSettingOptio
 	}
 }
 
+func WithAfterGetString(afterGet func(StringSetting, string) string) StringSettingOption {
+	return func(s *String) {
+		s.SetAfterGet(afterGet)
+	}
+}
+
 func newString(name string, value string, group model.SettingGroup, options ...StringSettingOption) *String {
 	s := &String{
 		setting: setting{
@@ -101,6 +109,10 @@ func (s *String) SetAfterInit(afterInit func(StringSetting, string)) {
 
 func (s *String) SetAfterSet(afterSet func(StringSetting, string)) {
 	s.afterSet = afterSet
+}
+
+func (s *String) SetAfterGet(afterGet func(StringSetting, string) string) {
+	s.afterGet = afterGet
 }
 
 func (s *String) Parse(value string) (string, error) {
@@ -223,7 +235,11 @@ func (s *String) Set(v string) (err error) {
 func (s *String) Get() string {
 	s.lock.RLock()
 	defer s.lock.RUnlock()
-	return s.value
+	v := s.value
+	if s.afterGet != nil {
+		v = s.afterGet(s, v)
+	}
+	return v
 }
 
 func (s *String) Interface() any {

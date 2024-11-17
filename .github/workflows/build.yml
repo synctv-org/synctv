@@ -50,7 +50,7 @@ jobs:
         uses: zijiren233/go-build-action@v1
         with:
           targets: ${{ matrix.target }}
-          enable-micro: ${{ !endsWith(matrix.target, '-arm64') }}
+          enable-micro: ${{ !endsWith(matrix.target, '/arm64') }}
           config-args: --skip-init-web
 
       - name: Get artifact name

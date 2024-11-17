@@ -52,7 +52,7 @@ jobs:
         uses: zijiren233/go-build-action@v1
         with:
           targets: ${{ matrix.target }}
-          enable-micro: true
+          enable-micro: ${{ !endsWith(matrix.target, '-arm64') }}
 
       - name: Release
         uses: softprops/action-gh-release@v2

@@ -58,7 +58,7 @@ jobs:
         uses: zijiren233/go-build-action@v1
         with:
           targets: ${{ matrix.target }}
-          enable-micro: true
+          enable-micro: ${{ !endsWith(matrix.target, '-arm64') }}
           config-args: --version="v${{ steps.get_version.outputs.VERSION }}"
 
       - name: Release

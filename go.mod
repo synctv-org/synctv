@@ -4,6 +4,8 @@ go 1.22.7
 
 toolchain go1.23.3
 
+replace github.com/synctv-org/vendors => ./vendors
+
 require (
 	github.com/Boostport/mjml-go v0.15.0
 	github.com/caarlos0/env/v9 v9.0.0

@@ -1,0 +1,3 @@
+[submodule "vendors"]
+	path = vendors
+	url = https://github.com/synctv-org/vendors

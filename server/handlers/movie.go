@@ -634,13 +634,6 @@ func ServeM3u8(ctx *gin.Context) {
 		return
 	}
 
-	if m.Movie.MovieBase.VendorInfo.Vendor != "" {
-		err := errors.New("vendor is not supported")
-		log.Errorf("get vendor service error: %v", err)
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
-		return
-	}
-
 	if m.Movie.MovieBase.RtmpSource {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("this movie is rtmp source, not support use this method proxy"))
 		return

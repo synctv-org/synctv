@@ -266,7 +266,7 @@ func (c *SliceCacheProxy) fetchFromSource(offset int64) (*CacheItem, error) {
 			return nil, fmt.Errorf("failed to get content total length from source: %w", err)
 		}
 		if total != offset+int64(n) {
-			return nil, fmt.Errorf("source content total length mismatch, got: %d, expected: %d, %w", total, offset+int64(n), err)
+			return nil, fmt.Errorf("source content total length mismatch, got: %d, expected: %d, %w", total, offset+int64(n), io.ErrUnexpectedEOF)
 		}
 	}
 

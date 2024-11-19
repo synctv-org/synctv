@@ -46,7 +46,7 @@ func (m *Movie) ExpireID() uint64 {
 	case m.Movie.MovieBase.VendorInfo.Vendor == model.VendorAlist:
 		amcd, _ := m.AlistCache().Raw()
 		if amcd != nil && amcd.Ali != nil {
-			return uint64(m.AlistCache().Last())
+			return uint64(amcd.Ali.Last())
 		}
 	case m.Movie.MovieBase.Live && m.Movie.MovieBase.VendorInfo.Vendor == model.VendorBilibili:
 		return uint64(m.BilibiliCache().Live.Last())
@@ -62,7 +62,7 @@ func (m *Movie) CheckExpired(expireID uint64) bool {
 	case m.Movie.MovieBase.VendorInfo.Vendor == model.VendorAlist:
 		amcd, _ := m.AlistCache().Raw()
 		if amcd != nil && amcd.Ali != nil {
-			return time.Now().UnixNano()-int64(expireID) > m.AlistCache().MaxAge()
+			return time.Now().UnixNano()-int64(amcd.Ali.Last()) > amcd.Ali.MaxAge()
 		}
 	case m.Movie.MovieBase.Live && m.Movie.MovieBase.VendorInfo.Vendor == model.VendorBilibili:
 		return time.Now().UnixNano()-int64(expireID) > m.BilibiliCache().Live.MaxAge()

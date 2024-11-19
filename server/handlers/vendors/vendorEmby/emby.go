@@ -322,6 +322,7 @@ func (s *EmbyVendorService) GenProxyMovieInfo(ctx context.Context, user *op.User
 				&dbModel.MoreSource{
 					Name: es.Name,
 					URL:  u.String(),
+					Type: utils.GetURLExtension(es.URL),
 				},
 			)
 		}

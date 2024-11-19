@@ -82,7 +82,7 @@ func AlistAuthorizationCacheWithConfigInitFunc(ctx context.Context, v *model.Ali
 type AlistMovieCache = refreshcache1.RefreshCache[*AlistMovieCacheData, *AlistMovieCacheFuncArgs]
 
 func NewAlistMovieCache(movie *model.Movie, subPath string) *AlistMovieCache {
-	return refreshcache1.NewRefreshCache(NewAlistMovieCacheInitFunc(movie, subPath), time.Minute*14)
+	return refreshcache1.NewRefreshCache(NewAlistMovieCacheInitFunc(movie, subPath), -1)
 }
 
 type AlistProvider = string
@@ -100,17 +100,21 @@ type AlistSubtitle struct {
 }
 
 type AlistMovieCacheData struct {
-	Ali       *AlistAliCache
+	Ali       *refreshcache0.RefreshCache[*AlistAliCache]
 	URL       string
 	Provider  string
 	Subtitles []*AlistSubtitle
 }
 
 type AlistAliCache struct {
+	URL          string
 	M3U8ListFile []byte
+	Subtitles    []*AlistSubtitle
 }
 
 type SubtitleDataCache = refreshcache0.RefreshCache[[]byte]
+
+const subtitleMaxLength = 15 * 1024 * 1024
 
 func newAliSubtitles(list []*alist.FsOtherResp_VideoPreviewPlayInfo_LiveTranscodingSubtitleTaskList) []*AlistSubtitle {
 	caches := make([]*AlistSubtitle, len(list))
@@ -133,7 +137,10 @@ func newAliSubtitles(list []*alist.FsOtherResp_VideoPreviewPlayInfo_LiveTranscod
 				if resp.StatusCode != http.StatusOK {
 					return nil, fmt.Errorf("status code: %d", resp.StatusCode)
 				}
-				return io.ReadAll(resp.Body)
+				if resp.ContentLength > subtitleMaxLength {
+					return nil, fmt.Errorf("subtitle too large, got: %d, max: %d", resp.ContentLength, subtitleMaxLength)
+				}
+				return io.ReadAll(io.LimitReader(resp.Body, subtitleMaxLength))
 			}, -1),
 			Name: v.Language,
 			URL:  v.Url,
@@ -201,9 +208,7 @@ func NewAlistMovieCacheInitFunc(movie *model.Movie, subPath string) func(ctx con
 		}
 
 		if fg.Provider == AlistProviderAli {
-			if err := processAliProvider(ctx, cli, aucd, truePath, movie.MovieBase.VendorInfo.Alist.Password, cache); err != nil {
-				return nil, err
-			}
+			processAliProvider(ctx, fg.RawUrl, cli, aucd, truePath, movie.MovieBase.VendorInfo.Alist.Password, cache)
 		}
 
 		return cache, nil
@@ -291,24 +296,44 @@ func fetchSubtitleContent(ctx context.Context, url string) ([]byte, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("status code: %d", resp.StatusCode)
 	}
-	return io.ReadAll(resp.Body)
+	if resp.ContentLength > subtitleMaxLength {
+		return nil, fmt.Errorf("subtitle too large, got: %d, max: %d", resp.ContentLength, subtitleMaxLength)
+	}
+	return io.ReadAll(io.LimitReader(resp.Body, subtitleMaxLength))
 }
 
-func processAliProvider(ctx context.Context, cli alist.AlistHTTPServer, aucd *AlistUserCacheData, truePath, password string, cache *AlistMovieCacheData) error {
-	fo, err := cli.FsOther(ctx, &alist.FsOtherReq{
-		Host:     aucd.Host,
-		Token:    aucd.Token,
-		Path:     truePath,
-		Password: password,
-		Method:   "video_preview",
-	})
-	if err != nil {
-		return err
-	}
-
-	cache.Ali = &AlistAliCache{
-		M3U8ListFile: genAliM3U8ListFile(fo.VideoPreviewPlayInfo.LiveTranscodingTaskList),
-	}
-	cache.Subtitles = append(cache.Subtitles, newAliSubtitles(fo.VideoPreviewPlayInfo.LiveTranscodingSubtitleTaskList)...)
-	return nil
+func processAliProvider(_ context.Context, firstURL string, cli alist.AlistHTTPServer, aucd *AlistUserCacheData, truePath, password string, cache *AlistMovieCacheData) {
+	cache.Ali = refreshcache0.NewRefreshCache(func(ctx context.Context) (*AlistAliCache, error) {
+		var url string
+		if firstURL != "" {
+			url = firstURL
+			firstURL = ""
+		} else {
+			u, err := cli.FsGet(ctx, &alist.FsGetReq{
+				Host:     aucd.Host,
+				Token:    aucd.Token,
+				Path:     truePath,
+				Password: password,
+			})
+			if err != nil {
+				return nil, err
+			}
+			url = u.RawUrl
+		}
+		fo, err := cli.FsOther(ctx, &alist.FsOtherReq{
+			Host:     aucd.Host,
+			Token:    aucd.Token,
+			Path:     truePath,
+			Password: password,
+			Method:   "video_preview",
+		})
+		if err != nil {
+			return nil, err
+		}
+		return &AlistAliCache{
+			URL:          url,
+			M3U8ListFile: genAliM3U8ListFile(fo.VideoPreviewPlayInfo.LiveTranscodingTaskList),
+			Subtitles:    newAliSubtitles(fo.VideoPreviewPlayInfo.LiveTranscodingSubtitleTaskList),
+		}, nil
+	}, 14*time.Minute)
 }

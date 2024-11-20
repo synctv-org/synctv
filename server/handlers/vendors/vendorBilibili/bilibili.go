@@ -42,7 +42,7 @@ func (s *BilibiliVendorService) Client() bilibili.BilibiliHTTPServer {
 	return vendor.LoadBilibiliClient(s.movie.VendorInfo.Backend)
 }
 
-func (s *BilibiliVendorService) ListDynamicMovie(ctx context.Context, reqUser *op.User, subPath string, page, _max int) (*model.MovieList, error) {
+func (s *BilibiliVendorService) ListDynamicMovie(ctx context.Context, reqUser *op.User, subPath string, keyword string, page, _max int) (*model.MovieList, error) {
 	return nil, errors.New("bilibili vendor not support list dynamic movie")
 }
 

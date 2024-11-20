@@ -498,11 +498,11 @@ func (u *User) VerifyRetrievePasswordCaptchaEmail(e, captcha string) (bool, erro
 	return email.VerifyRetrievePasswordCaptchaEmail(u.ID, e, captcha)
 }
 
-func (u *User) GetRoomMoviesWithPage(room *Room, page, pageSize int, parentID string) ([]*model.Movie, int64, error) {
+func (u *User) GetRoomMoviesWithPage(room *Room, keyword string, page, pageSize int, parentID string) ([]*model.Movie, int64, error) {
 	if !u.HasRoomPermission(room, model.PermissionGetMovieList) {
 		return nil, 0, model.ErrNoPermission
 	}
-	return room.GetMoviesWithPage(page, pageSize, parentID)
+	return room.GetMoviesWithPage(keyword, page, pageSize, parentID)
 }
 
 func (u *User) SetRoomCurrentStatus(room *Room, playing bool, seek, rate, timeDiff float64) (*Status, error) {

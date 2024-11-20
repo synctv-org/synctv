@@ -33,7 +33,7 @@ func Backends(ctx *gin.Context) {
 }
 
 type VendorService interface {
-	ListDynamicMovie(ctx context.Context, reqUser *op.User, subPath string, page, _max int) (*model.MovieList, error)
+	ListDynamicMovie(ctx context.Context, reqUser *op.User, subPath string, keyword string, page, _max int) (*model.MovieList, error)
 	ProxyMovie(ctx *gin.Context)
 	GenMovieInfo(ctx context.Context, reqUser *op.User, userAgent, userToken string) (*dbModel.Movie, error)
 }

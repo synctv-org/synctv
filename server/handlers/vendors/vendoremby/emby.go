@@ -41,7 +41,7 @@ func (s *EmbyVendorService) Client() emby.EmbyHTTPServer {
 	return vendor.LoadEmbyClient(s.movie.VendorInfo.Backend)
 }
 
-func (s *EmbyVendorService) ListDynamicMovie(ctx context.Context, reqUser *op.User, subPath string, page, _max int) (*model.MovieList, error) {
+func (s *EmbyVendorService) ListDynamicMovie(ctx context.Context, reqUser *op.User, subPath string, keyword string, page, _max int) (*model.MovieList, error) {
 	if reqUser.ID != s.movie.CreatorID {
 		return nil, fmt.Errorf("list vendor dynamic folder error: %w", dbModel.ErrNoPermission)
 	}
@@ -72,6 +72,7 @@ func (s *EmbyVendorService) ListDynamicMovie(ctx context.Context, reqUser *op.Us
 		UserId:     aucd.UserID,
 		Limit:      uint64(_max),
 		StartIndex: uint64((page - 1) * _max),
+		SearchTerm: keyword,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("emby fs list error: %w", err)

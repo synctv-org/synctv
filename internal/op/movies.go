@@ -192,9 +192,12 @@ func (m *movies) SwapMoviePositions(id1, id2 string) error {
 	return db.SwapMoviePositions(m.roomID, id1, id2)
 }
 
-func (m *movies) GetMoviesWithPage(page, pageSize int, parentID string) ([]*model.Movie, int64, error) {
+func (m *movies) GetMoviesWithPage(keyword string, page, pageSize int, parentID string) ([]*model.Movie, int64, error) {
 	scopes := []func(*gorm.DB) *gorm.DB{
 		db.WithParentMovieID(parentID),
+	}
+	if keyword != "" {
+		scopes = append(scopes, db.WhereMovieNameLikeOrURLLike(keyword, keyword))
 	}
 	count, err := db.GetMoviesCountByRoomID(m.roomID, append(scopes, db.Paginate(page, pageSize))...)
 	if err != nil {

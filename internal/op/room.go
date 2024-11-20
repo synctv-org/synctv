@@ -474,8 +474,8 @@ func (r *Room) SwapMoviePositions(id1, id2 string) error {
 	return r.movies.SwapMoviePositions(id1, id2)
 }
 
-func (r *Room) GetMoviesWithPage(page, pageSize int, parentID string) ([]*model.Movie, int64, error) {
-	return r.movies.GetMoviesWithPage(page, pageSize, parentID)
+func (r *Room) GetMoviesWithPage(keyword string, page, pageSize int, parentID string) ([]*model.Movie, int64, error) {
+	return r.movies.GetMoviesWithPage(keyword, page, pageSize, parentID)
 }
 
 func (r *Room) NewClient(user *User, conn *websocket.Conn) (*Client, error) {

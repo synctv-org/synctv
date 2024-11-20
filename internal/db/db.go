@@ -196,6 +196,17 @@ func WhereLike(column string, value string) func(db *gorm.DB) *gorm.DB {
 	}
 }
 
+func WhereMovieNameLikeOrURLLike(name, url string) func(db *gorm.DB) *gorm.DB {
+	return func(db *gorm.DB) *gorm.DB {
+		switch dbType {
+		case conf.DatabaseTypePostgres:
+			return db.Where("base_name ILIKE ? OR base_url ILIKE ?", utils.LIKE(name), utils.LIKE(url))
+		default:
+			return db.Where("base_name LIKE ? OR base_url LIKE ?", utils.LIKE(name), utils.LIKE(url))
+		}
+	}
+}
+
 func WhereRoomNameLikeOrCreatorInOrIDLike(name string, ids []string, id string) func(db *gorm.DB) *gorm.DB {
 	return func(db *gorm.DB) *gorm.DB {
 		switch dbType {

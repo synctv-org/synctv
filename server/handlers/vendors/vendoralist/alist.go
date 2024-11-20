@@ -43,7 +43,7 @@ func (s *AlistVendorService) Client() alist.AlistHTTPServer {
 	return vendor.LoadAlistClient(s.movie.VendorInfo.Backend)
 }
 
-func (s *AlistVendorService) ListDynamicMovie(ctx context.Context, reqUser *op.User, subPath string, page, _max int) (*model.MovieList, error) {
+func (s *AlistVendorService) ListDynamicMovie(ctx context.Context, reqUser *op.User, subPath string, keyword string, page, _max int) (*model.MovieList, error) {
 	if reqUser.ID != s.movie.CreatorID {
 		return nil, fmt.Errorf("list vendor dynamic folder error: %w", dbModel.ErrNoPermission)
 	}

@@ -11,6 +11,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -187,7 +188,7 @@ func Movies(ctx *gin.Context) {
 			return
 		}
 		if mv.IsDynamicFolder() {
-			resp, err := listVendorDynamicMovie(ctx, user, room, mv, ctx.Query("subPath"), page, _max)
+			resp, err := listVendorDynamicMovie(ctx, user, room, mv, ctx.Query("subPath"), ctx.Query("keyword"), page, _max)
 			if err != nil {
 				log.Errorf("vendor dynamic movie list error: %v", err)
 				ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
@@ -198,7 +199,7 @@ func Movies(ctx *gin.Context) {
 		}
 	}
 
-	m, total, err := user.GetRoomMoviesWithPage(room, page, _max, id)
+	m, total, err := user.GetRoomMoviesWithPage(room, ctx.Query("keyword"), page, _max, id)
 	if err != nil {
 		log.Errorf("get room movies with page error: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
@@ -239,15 +240,7 @@ func Movies(ctx *gin.Context) {
 }
 
 func getParentMoviePath(room *op.Room, id string) ([]*model.MoviePath, error) {
-	paths := []*model.MoviePath{
-		{
-			Name: "Home",
-			ID:   "",
-		},
-	}
-	if id == "" {
-		return paths, nil
-	}
+	paths := []*model.MoviePath{}
 	for id != "" {
 		p, err := room.GetMovieByID(id)
 		if err != nil {
@@ -259,10 +252,15 @@ func getParentMoviePath(room *op.Room, id string) ([]*model.MoviePath, error) {
 		})
 		id = p.ParentID.String()
 	}
+	paths = append(paths, &model.MoviePath{
+		Name: "Home",
+		ID:   "",
+	})
+	slices.Reverse(paths)
 	return paths, nil
 }
 
-func listVendorDynamicMovie(ctx context.Context, reqUser *op.User, room *op.Room, movie *op.Movie, subPath string, page, _max int) (*model.MoviesResp, error) {
+func listVendorDynamicMovie(ctx context.Context, reqUser *op.User, room *op.Room, movie *op.Movie, subPath string, keyword string, page, _max int) (*model.MoviesResp, error) {
 	if reqUser.ID != movie.CreatorID {
 		return nil, fmt.Errorf("list vendor dynamic folder error: %w", dbModel.ErrNoPermission)
 	}
@@ -275,7 +273,7 @@ func listVendorDynamicMovie(ctx context.Context, reqUser *op.User, room *op.Room
 	if err != nil {
 		return nil, err
 	}
-	dynamic, err := vendor.ListDynamicMovie(ctx, reqUser, subPath, page, _max)
+	dynamic, err := vendor.ListDynamicMovie(ctx, reqUser, subPath, keyword, page, _max)
 	if err != nil {
 		return nil, err
 	}

@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"runtime"
+	"runtime/debug"
 
 	"github.com/spf13/cobra"
 	"github.com/synctv-org/synctv/internal/version"
@@ -20,6 +21,11 @@ var VersionCmd = &cobra.Command{
 		fmt.Printf("- os/arch: %s\n", runtime.GOARCH)
 		fmt.Printf("- go/version: %s\n", runtime.Version())
 		fmt.Printf("- go/compiler: %s\n", runtime.Compiler)
+		fmt.Printf("- go/numcpu: %d\n", runtime.NumCPU())
+		info, ok := debug.ReadBuildInfo()
+		if ok {
+			fmt.Printf("- go/buildsettings: %v\n", info.Settings)
+		}
 	},
 }
 

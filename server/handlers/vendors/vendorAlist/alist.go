@@ -70,7 +70,50 @@ func (s *AlistVendorService) ListDynamicMovie(ctx context.Context, reqUser *op.U
 		}
 		return nil, err
 	}
-	data, err := s.Client().FsList(ctx, &alist.FsListReq{
+	cli := s.Client()
+	if keyword != "" {
+		data, err := cli.FsSearch(ctx, &alist.FsSearchReq{
+			Token:    aucd.Token,
+			Password: s.movie.VendorInfo.Alist.Password,
+			Parent:   truePath,
+			Host:     aucd.Host,
+			Page:     uint64(page),
+			PerPage:  uint64(_max),
+			Keywords: keyword,
+		})
+		if err != nil {
+			return nil, err
+		}
+		resp.Total = int64(data.Total)
+		resp.Movies = make([]*model.Movie, len(data.Content))
+		for i, flr := range data.Content {
+			resp.Movies[i] = &model.Movie{
+				ID:        s.movie.ID,
+				CreatedAt: s.movie.CreatedAt.UnixMilli(),
+				Creator:   op.GetUserName(s.movie.CreatorID),
+				CreatorID: s.movie.CreatorID,
+				SubPath:   "/" + strings.Trim(fmt.Sprintf("%s/%s", subPath, flr.Name), "/"),
+				Base: dbModel.MovieBase{
+					Name:     flr.Name,
+					IsFolder: flr.IsDir,
+					ParentID: dbModel.EmptyNullString(s.movie.ID),
+					VendorInfo: dbModel.VendorInfo{
+						Vendor:  dbModel.VendorAlist,
+						Backend: s.movie.VendorInfo.Backend,
+						Alist: &dbModel.AlistStreamingInfo{
+							Path: dbModel.FormatAlistPath(serverID,
+								"/"+strings.Trim(fmt.Sprintf("%s/%s", truePath, flr.Name), "/"),
+							),
+						},
+					},
+				},
+			}
+		}
+		resp.Paths = model.GenDefaultSubPaths(s.movie.ID, subPath, true)
+		return resp, nil
+	}
+
+	data, err := cli.FsList(ctx, &alist.FsListReq{
 		Token:    aucd.Token,
 		Password: s.movie.VendorInfo.Alist.Password,
 		Path:     truePath,

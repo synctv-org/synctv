@@ -21,6 +21,7 @@ import (
 type ListReq struct {
 	Path     string `json:"path"`
 	Password string `json:"password"`
+	Keyword  string `json:"keyword"`
 	Refresh  bool   `json:"refresh"`
 }
 
@@ -34,8 +35,7 @@ func (r *ListReq) Decode(ctx *gin.Context) error {
 
 type AlistFileItem struct {
 	*model.Item
-	Size     uint64 `json:"size"`
-	Modified uint64 `json:"modified"`
+	Size uint64 `json:"size"`
 }
 
 type AlistFSListResp = model.VendorFSListResp[*AlistFileItem]
@@ -135,6 +135,49 @@ AlistFSListResp:
 	}
 
 	cli := vendor.LoadAlistClient(ctx.Query("backend"))
+	if req.Keyword != "" {
+		data, err := cli.FsSearch(ctx, &alist.FsSearchReq{
+			Token:    aucd.Token,
+			Password: req.Password,
+			Parent:   req.Path,
+			Keywords: req.Keyword,
+			Host:     aucd.Host,
+			Page:     uint64(page),
+			PerPage:  uint64(size),
+		})
+		if err != nil {
+			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
+			return
+		}
+
+		req.Path = strings.Trim(req.Path, "/")
+		resp := AlistFSListResp{
+			Total: data.Total,
+			Paths: model.GenDefaultPaths(req.Path, true,
+				&model.Path{
+					Name: "",
+					Path: "",
+				},
+				&model.Path{
+					Name: aucd.Host,
+					Path: aucd.ServerID + "/",
+				}),
+		}
+		for _, flr := range data.Content {
+			resp.Items = append(resp.Items, &AlistFileItem{
+				Item: &model.Item{
+					Name:  flr.Name,
+					Path:  fmt.Sprintf("%s/%s", aucd.ServerID, strings.Trim(fmt.Sprintf("%s/%s", req.Path, flr.Name), "/")),
+					IsDir: flr.IsDir,
+				},
+				Size: flr.Size,
+			})
+		}
+
+		ctx.JSON(http.StatusOK, model.NewAPIDataResp(&resp))
+		return
+	}
+
 	data, err := cli.FsList(ctx, &alist.FsListReq{
 		Token:    aucd.Token,
 		Password: req.Password,
@@ -169,8 +212,7 @@ AlistFSListResp:
 				Path:  fmt.Sprintf("%s/%s", aucd.ServerID, strings.Trim(fmt.Sprintf("%s/%s", req.Path, flr.Name), "/")),
 				IsDir: flr.IsDir,
 			},
-			Size:     flr.Size,
-			Modified: flr.Modified,
+			Size: flr.Size,
 		})
 	}
 

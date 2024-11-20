@@ -18,8 +18,8 @@ import (
 )
 
 type ListReq struct {
-	Path     string `json:"path"`
-	Keywords string `json:"keywords"`
+	Path    string `json:"path"`
+	Keyword string `json:"keyword"`
 }
 
 func (r *ListReq) Validate() (err error) {
@@ -53,7 +53,7 @@ func List(ctx *gin.Context) {
 	}
 
 	if req.Path == "" {
-		if req.Keywords != "" {
+		if req.Keyword != "" {
 			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("keywords is not supported when not choose server (server id is empty)"))
 			return
 		}
@@ -139,7 +139,7 @@ EmbyFSListResp:
 		UserId:     aucd.UserID,
 		Limit:      uint64(size),
 		StartIndex: uint64((page - 1) * size),
-		SearchTerm: req.Keywords,
+		SearchTerm: req.Keyword,
 	})
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(fmt.Errorf("emby fs list error: %w", err)))

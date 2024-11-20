@@ -39,9 +39,12 @@ jobs:
 
       - name: Build targets
         uses: zijiren233/go-build-action@v1
+        env:
+          ARM_SUBMICRO_DISABLED: true
+          ARM64_MICRO_DISABLED: true
         with:
           targets: ${{ matrix.target }}
-          enable-micro: ${{ !endsWith(matrix.target, '/arm64') }}
+          enable-micro: true
 
       - name: Release
         uses: softprops/action-gh-release@v2

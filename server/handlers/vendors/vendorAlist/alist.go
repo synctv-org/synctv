@@ -87,12 +87,13 @@ func (s *AlistVendorService) ListDynamicMovie(ctx context.Context, reqUser *op.U
 		resp.Total = int64(data.Total)
 		resp.Movies = make([]*model.Movie, len(data.Content))
 		for i, flr := range data.Content {
+			fileSubPath := strings.TrimPrefix(strings.Trim(flr.Parent, "/"), truePath)
 			resp.Movies[i] = &model.Movie{
 				ID:        s.movie.ID,
 				CreatedAt: s.movie.CreatedAt.UnixMilli(),
 				Creator:   op.GetUserName(s.movie.CreatorID),
 				CreatorID: s.movie.CreatorID,
-				SubPath:   "/" + strings.Trim(fmt.Sprintf("%s/%s", subPath, flr.Name), "/"),
+				SubPath:   "/" + strings.Trim(fmt.Sprintf("%s/%s", fileSubPath, flr.Name), "/"),
 				Base: dbModel.MovieBase{
 					Name:     flr.Name,
 					IsFolder: flr.IsDir,
@@ -102,7 +103,7 @@ func (s *AlistVendorService) ListDynamicMovie(ctx context.Context, reqUser *op.U
 						Backend: s.movie.VendorInfo.Backend,
 						Alist: &dbModel.AlistStreamingInfo{
 							Path: dbModel.FormatAlistPath(serverID,
-								"/"+strings.Trim(fmt.Sprintf("%s/%s", truePath, flr.Name), "/"),
+								"/"+strings.Trim(fmt.Sprintf("%s/%s", flr.Parent, flr.Name), "/"),
 							),
 						},
 					},

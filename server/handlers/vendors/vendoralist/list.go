@@ -167,7 +167,7 @@ AlistFSListResp:
 			resp.Items = append(resp.Items, &AlistFileItem{
 				Item: &model.Item{
 					Name:  flr.Name,
-					Path:  fmt.Sprintf("%s/%s", aucd.ServerID, strings.Trim(fmt.Sprintf("%s/%s", req.Path, flr.Name), "/")),
+					Path:  fmt.Sprintf("%s/%s", aucd.ServerID, strings.Trim(fmt.Sprintf("%s/%s", flr.Parent, flr.Name), "/")),
 					IsDir: flr.IsDir,
 				},
 				Size: flr.Size,

@@ -62,7 +62,6 @@ func (s *AlistVendorService) ListDynamicMovie(ctx context.Context, reqUser *op.U
 	if !strings.HasPrefix(newPath, truePath) {
 		return nil, errors.New("sub path is not in parent path")
 	}
-	truePath = newPath
 	aucd, err := user.AlistCache().LoadOrStore(ctx, serverID)
 	if err != nil {
 		if errors.Is(err, db.NotFoundError(db.ErrVendorNotFound)) {
@@ -75,7 +74,7 @@ func (s *AlistVendorService) ListDynamicMovie(ctx context.Context, reqUser *op.U
 		data, err := cli.FsSearch(ctx, &alist.FsSearchReq{
 			Token:    aucd.Token,
 			Password: s.movie.VendorInfo.Alist.Password,
-			Parent:   truePath,
+			Parent:   newPath,
 			Host:     aucd.Host,
 			Page:     uint64(page),
 			PerPage:  uint64(_max),
@@ -117,7 +116,7 @@ func (s *AlistVendorService) ListDynamicMovie(ctx context.Context, reqUser *op.U
 	data, err := cli.FsList(ctx, &alist.FsListReq{
 		Token:    aucd.Token,
 		Password: s.movie.VendorInfo.Alist.Password,
-		Path:     truePath,
+		Path:     newPath,
 		Host:     aucd.Host,
 		Refresh:  false,
 		Page:     uint64(page),
@@ -144,7 +143,7 @@ func (s *AlistVendorService) ListDynamicMovie(ctx context.Context, reqUser *op.U
 					Backend: s.movie.VendorInfo.Backend,
 					Alist: &dbModel.AlistStreamingInfo{
 						Path: dbModel.FormatAlistPath(serverID,
-							"/"+strings.Trim(fmt.Sprintf("%s/%s", truePath, flr.Name), "/"),
+							"/"+strings.Trim(fmt.Sprintf("%s/%s", newPath, flr.Name), "/"),
 						),
 					},
 				},

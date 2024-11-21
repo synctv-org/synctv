@@ -53,7 +53,7 @@ require (
 	google.golang.org/protobuf v1.35.2
 	gopkg.in/yaml.v3 v3.0.1
 	gorm.io/driver/mysql v1.5.7
-	gorm.io/driver/postgres v1.5.9
+	gorm.io/driver/postgres v1.5.10
 	gorm.io/driver/sqlite v1.5.6
 	gorm.io/gorm v1.25.12
 )
@@ -73,7 +73,7 @@ require (
 	github.com/coreos/go-systemd/v22 v22.5.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/fatih/color v1.18.0 // indirect
-	github.com/gabriel-vasile/mimetype v1.4.6 // indirect
+	github.com/gabriel-vasile/mimetype v1.4.7 // indirect
 	github.com/gin-contrib/sse v0.1.0 // indirect
 	github.com/glebarez/go-sqlite v1.22.0 // indirect
 	github.com/go-playground/form/v4 v4.2.1 // indirect
@@ -136,7 +136,7 @@ require (
 	google.golang.org/genproto/googleapis/api v0.0.0-20241118233622-e639e219e697 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20241118233622-e639e219e697 // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
-	modernc.org/libc v1.61.0 // indirect
+	modernc.org/libc v1.61.2 // indirect
 	modernc.org/mathutil v1.6.0 // indirect
 	modernc.org/memory v1.8.0 // indirect
 	modernc.org/sqlite v1.34.1 // indirect

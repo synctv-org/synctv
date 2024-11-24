@@ -10,6 +10,7 @@ import (
 	"image/png"
 	"math/rand/v2"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -403,7 +404,13 @@ func NewPublishKey(ctx *gin.Context) {
 
 	host := settings.CustomPublishHost.Get()
 	if host == "" {
-		host = settings.HOST.Get()
+		u, err := url.Parse(settings.HOST.Get())
+		if err != nil {
+			log.Errorf("new publish key error: %v", err)
+			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
+			return
+		}
+		host = u.Host
 	}
 	if host == "" {
 		host = ctx.Request.Host

@@ -39,9 +39,6 @@ func (m *Movie) SubPath() string {
 }
 
 func (m *Movie) ExpireID() uint64 {
-	if m.IsFolder {
-		return 0
-	}
 	switch {
 	case m.Movie.MovieBase.VendorInfo.Vendor == model.VendorAlist:
 		amcd, _ := m.AlistCache().Raw()

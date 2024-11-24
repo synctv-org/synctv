@@ -52,9 +52,6 @@ func (m *Movie) ExpireID() uint64 {
 }
 
 func (m *Movie) CheckExpired(expireID uint64) bool {
-	if m.IsFolder {
-		return false
-	}
 	switch {
 	case m.Movie.MovieBase.VendorInfo.Vendor == model.VendorAlist:
 		amcd, _ := m.AlistCache().Raw()

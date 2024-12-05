@@ -3,16 +3,30 @@ package middlewares
 import (
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
 )
 
+var fieldsPool = sync.Pool{
+	New: func() interface{} {
+		return make(logrus.Fields, 6)
+	},
+}
+
 func NewLog(l *logrus.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		fields := fieldsPool.Get().(logrus.Fields)
+		defer func() {
+			clear(fields)
+			fieldsPool.Put(fields)
+		}()
+
 		entry := &logrus.Entry{
 			Logger: l,
+			Data:   fields,
 		}
 		c.Set("log", entry)
 
@@ -77,4 +91,16 @@ func formatter(param gin.LogFormatterParams) string {
 		param.Path,
 		param.ErrorMessage,
 	)
+}
+
+func GetLogger(c *gin.Context) *logrus.Entry {
+	if log, ok := c.Get("log"); ok {
+		return log.(*logrus.Entry)
+	}
+	entry := &logrus.Entry{
+		Logger: logrus.StandardLogger(),
+		Data:   fieldsPool.Get().(logrus.Fields),
+	}
+	c.Set("log", entry)
+	return entry
 }

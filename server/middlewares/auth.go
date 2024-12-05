@@ -406,16 +406,6 @@ func GetRoomIDFromContext(ctx *gin.Context) (string, error) {
 
 func setLogFields(ctx *gin.Context, user *op.User, room *op.Room) {
 	log := ctx.MustGet("log").(*logrus.Entry)
-	if log.Data == nil {
-		l := 5
-		if user != nil {
-			l += 3
-		}
-		if room != nil {
-			l += 2
-		}
-		log.Data = make(logrus.Fields, l)
-	}
 	if user != nil {
 		log.Data["uid"] = user.ID
 		log.Data["unm"] = user.Username

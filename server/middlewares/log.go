@@ -11,9 +11,10 @@ import (
 
 func NewLog(l *logrus.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		c.Set("log", &logrus.Entry{
+		entry := &logrus.Entry{
 			Logger: l,
-		})
+		}
+		c.Set("log", entry)
 
 		start := time.Now()
 		path := c.Request.URL.Path
@@ -27,8 +28,7 @@ func NewLog(l *logrus.Logger) gin.HandlerFunc {
 		}
 
 		// Stop timer
-		param.TimeStamp = time.Now()
-		param.Latency = param.TimeStamp.Sub(start)
+		param.Latency = time.Since(start)
 
 		param.ClientIP = c.ClientIP()
 		param.Method = c.Request.Method
@@ -43,7 +43,7 @@ func NewLog(l *logrus.Logger) gin.HandlerFunc {
 
 		param.Path = path
 
-		logColor(c.MustGet("log").(*logrus.Entry), param)
+		logColor(entry, param)
 	}
 }
 
@@ -58,7 +58,7 @@ func logColor(logger *logrus.Entry, p gin.LogFormatterParams) {
 	}
 }
 
-var formatter = func(param gin.LogFormatterParams) string {
+func formatter(param gin.LogFormatterParams) string {
 	var statusColor, methodColor, resetColor string
 	if param.IsOutputColor() {
 		statusColor = param.StatusCodeColor()
@@ -69,8 +69,7 @@ var formatter = func(param gin.LogFormatterParams) string {
 	if param.Latency > time.Minute {
 		param.Latency = param.Latency.Truncate(time.Second)
 	}
-	return fmt.Sprintf("[GIN] %v |%s %3d %s| %13v | %15s |%s %-7s %s %#v\n%s",
-		param.TimeStamp.Format("2006/01/02 - 15:04:05"),
+	return fmt.Sprintf("[GIN] |%s %3d %s| %13v | %15s |%s %-7s %s %#v\n%s",
 		statusColor, param.StatusCode, resetColor,
 		param.Latency,
 		param.ClientIP,

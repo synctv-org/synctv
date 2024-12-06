@@ -79,7 +79,7 @@ func InitLog(ctx context.Context) (err error) {
 			DisableColors:    !forceColor,
 			ForceQuote:       flags.Global.Dev,
 			DisableQuote:     !flags.Global.Dev,
-			DisableSorting:   true,
+			DisableSorting:   false,
 			FullTimestamp:    true,
 			TimestampFormat:  time.DateTime,
 			QuoteEmptyFields: true,

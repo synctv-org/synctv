@@ -126,8 +126,8 @@ func Parse(ctx *gin.Context) {
 			return
 		}
 		resp, err := cli.ParseLivePage(ctx, &bilibili.ParseLivePageReq{
-			// Cookies: utils.HttpCookieToMap(cookies), // maybe no need login
-			RoomID: roomid,
+			Cookies: utils.HTTPCookieToMap(cookies),
+			RoomID:  roomid,
 		})
 		if err != nil {
 			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))

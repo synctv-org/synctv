@@ -68,7 +68,7 @@ jobs:
       - name: Get artifact name
         id: get_artifact_name
         run: |
-          echo "ARTIFACT_NAME=$(echo ${{ matrix.target }} | tr '/' '-')" >> $GITHUB_OUTPUT
+          echo "ARTIFACT_NAME=$(echo ${{ matrix.target }} | tr ':' '-' | tr '/' '-')" >> $GITHUB_OUTPUT
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

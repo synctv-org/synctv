@@ -41,13 +41,9 @@ function printDepEnvHelp() {
 function initDepTargets() {
     clearAllowedTargets
 
-    addAllowedTargets "linux/386,linux/amd64,linux/arm,linux/arm64,linux/loong64,linux/mips,linux/mips64,linux/mips64le,linux/mipsle,linux/ppc64le,linux/riscv64,linux/s390x"
+    addAllowedTargets "linux/386,linux/amd64,linux/arm,linux/arm64,linux/loong64,linux/ppc64le,linux/riscv64,linux/s390x"
     addAllowedTargets "darwin/amd64,darwin/arm64"
-    addAllowedTargets "windows/386,windows/amd64,windows/arm64"
-    addAllowedTargets "freebsd/386,freebsd/amd64,freebsd/arm,freebsd/arm64"
-    addAllowedTargets "netbsd/amd64"
-    addAllowedTargets "openbsd/amd64,openbsd/arm64"
-    addAllowedTargets "android/386,android/amd64,android/arm,android/arm64"
+    addAllowedTargets "windows/386,windows/amd64"
 
     addAllowedTargets "${GOHOSTOS}/${GOHOSTARCH}"
 }

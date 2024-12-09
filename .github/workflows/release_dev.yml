@@ -24,6 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: get-targets
     strategy:
+      fail-fast: false
       matrix:
         target: ${{ fromJson(needs.get-targets.outputs.targets) }}
     steps:

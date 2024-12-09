@@ -13,29 +13,40 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  get-targets:
-    name: Get all targets
-    runs-on: ubuntu-latest
-    outputs:
-      targets: ${{ steps.get-targets.outputs.targets }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Get targets
-        id: get-targets
-        uses: zijiren233/go-build-action@v1
-        with:
-          show-all-targets: true
-
   build-targets:
     name: Build
     runs-on: ubuntu-latest
-    needs: get-targets
     strategy:
       fail-fast: false
       matrix:
-        target: ${{ fromJson(needs.get-targets.outputs.targets) }}
+        target:
+          - linux/386
+          - linux/amd64
+          - linux/arm
+          - linux/arm64
+          - linux/loong64
+          - linux/ppc64le
+          - linux/riscv64
+          - linux/s390x
+          - darwin/amd64
+          - darwin/arm64
+          - windows/386
+          - windows/amd64
+          - windows/arm
+          - windows/arm64
+          - freebsd/386
+          - freebsd/amd64
+          - freebsd/arm
+          - freebsd/arm64
+          - freebsd/riscv64
+          - openbsd/386
+          - openbsd/amd64
+          - openbsd/arm
+          - openbsd/arm64
+          - netbsd/386
+          - netbsd/amd64
+          - netbsd/arm
+          - netbsd/arm64
     steps:
       - name: Checkout
         uses: actions/checkout@v4

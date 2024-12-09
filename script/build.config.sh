@@ -38,16 +38,6 @@ function printDepEnvHelp() {
     echo -e "  ${COLOR_LIGHT_GREEN}SKIP_INIT_WEB${COLOR_RESET} - Skip initializing the web dependency (set to any non-empty value to enable)"
 }
 
-function initDepTargets() {
-    clearAllowedTargets
-
-    addAllowedTargets "linux/386,linux/amd64,linux/arm,linux/arm64,linux/loong64,linux/ppc64le,linux/riscv64,linux/s390x"
-    addAllowedTargets "darwin/amd64,darwin/arm64"
-    addAllowedTargets "windows/386,windows/amd64"
-
-    addAllowedTargets "${GOHOSTOS}/${GOHOSTARCH}"
-}
-
 function initDep() {
     setDefault "VERSION" "dev"
     VERSION="$(echo "$VERSION" | sed 's/ //g' | sed 's/"//g' | sed 's/\n//g')"

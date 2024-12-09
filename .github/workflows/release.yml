@@ -6,29 +6,37 @@ on:
       - "v*"
 
 jobs:
-  get-targets:
-    name: Get all targets
-    runs-on: ubuntu-latest
-    outputs:
-      targets: ${{ steps.get-targets.outputs.targets }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Get targets
-        id: get-targets
-        uses: zijiren233/go-build-action@v1
-        with:
-          show-all-targets: true
-
   release:
     name: Release
-    needs: get-targets
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        target: ${{ fromJson(needs.get-targets.outputs.targets) }}
+        target:
+          - linux/386
+          - linux/amd64
+          - linux/arm
+          - linux/arm64
+          - linux/loong64
+          - linux/ppc64le
+          - linux/riscv64
+          - linux/s390x
+          - linux/mips:cgo
+          - linux/mips64:cgo
+          - linux/mips64le:cgo
+          - linux/mipsle:cgo
+          - darwin/amd64
+          - darwin/arm64
+          - windows/386
+          - windows/amd64
+          - windows/arm64
+          - freebsd/386
+          - freebsd/amd64
+          - freebsd/arm
+          - freebsd/arm64
+          - openbsd/amd64
+          - openbsd/arm64
+          - netbsd/amd64
     steps:
       - name: Checkout
         uses: actions/checkout@v4

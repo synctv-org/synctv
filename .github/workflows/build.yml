@@ -28,25 +28,22 @@ jobs:
           - linux/ppc64le
           - linux/riscv64
           - linux/s390x
+          - linux/mips:cgo
+          - linux/mips64:cgo
+          - linux/mips64le:cgo
+          - linux/mipsle:cgo
           - darwin/amd64
           - darwin/arm64
           - windows/386
           - windows/amd64
-          - windows/arm
           - windows/arm64
           - freebsd/386
           - freebsd/amd64
           - freebsd/arm
           - freebsd/arm64
-          - freebsd/riscv64
-          - openbsd/386
           - openbsd/amd64
-          - openbsd/arm
           - openbsd/arm64
-          - netbsd/386
           - netbsd/amd64
-          - netbsd/arm
-          - netbsd/arm64
     steps:
       - name: Checkout
         uses: actions/checkout@v4

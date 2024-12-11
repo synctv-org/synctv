@@ -19,31 +19,55 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target:
-          - linux/386
-          - linux/amd64
-          - linux/arm
-          - linux/arm64
-          - linux/loong64
-          - linux/ppc64le
-          - linux/riscv64
-          - linux/s390x
-          - linux/mips:cgo
-          - linux/mips64:cgo
-          - linux/mips64le:cgo
-          - linux/mipsle:cgo
-          - darwin/amd64
-          - darwin/arm64
-          - windows/386
-          - windows/amd64
-          - windows/arm64
-          - freebsd/386
-          - freebsd/amd64
-          - freebsd/arm
-          - freebsd/arm64
-          - openbsd/amd64
-          - openbsd/arm64
-          - netbsd/amd64
+        targets:
+          - Target: linux/386
+            CGO: false
+          - Target: linux/amd64
+            CGO: false
+          - Target: linux/arm
+            CGO: false
+          - Target: linux/arm64
+            CGO: false
+          - Target: linux/loong64
+            CGO: false
+          - Target: linux/ppc64le
+            CGO: false
+          - Target: linux/riscv64
+            CGO: false
+          - Target: linux/s390x
+            CGO: false
+          - Target: linux/mips
+            CGO: true
+          - Target: linux/mips64
+            CGO: true
+          - Target: linux/mips64le
+            CGO: true
+          - Target: linux/mipsle
+            CGO: true
+          - Target: darwin/amd64
+            CGO: false
+          - Target: darwin/arm64
+            CGO: false
+          - Target: windows/386
+            CGO: false
+          - Target: windows/amd64
+            CGO: false
+          - Target: windows/arm64
+            CGO: false
+          - Target: freebsd/386
+            CGO: false
+          - Target: freebsd/amd64
+            CGO: false
+          - Target: freebsd/arm
+            CGO: false
+          - Target: freebsd/arm64
+            CGO: false
+          - Target: openbsd/amd64
+            CGO: false
+          - Target: openbsd/arm64
+            CGO: false
+          - Target: netbsd/amd64
+            CGO: false
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -61,14 +85,15 @@ jobs:
           SUBMICRO_ARM_DISABLED: true
           MICRO_ARM64_DISABLED: true
         with:
-          targets: ${{ matrix.target }}
+          targets: ${{ matrix.targets.Target }}
+          cgo-enabled: ${{ matrix.targets.CGO }}
           enable-micro: true
           config-args: --skip-init-web
 
       - name: Get artifact name
         id: get_artifact_name
         run: |
-          echo "ARTIFACT_NAME=$(echo ${{ matrix.target }} | tr ':' '-' | tr '/' '-')" >> $GITHUB_OUTPUT
+          echo "ARTIFACT_NAME=$(echo ${{ matrix.targets.Target }} | tr ':' '-' | tr '/' '-')" >> $GITHUB_OUTPUT
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

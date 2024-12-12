@@ -166,12 +166,6 @@ func InitProviderSetting(pi provider.Provider) {
 			pi.Init(opt)
 			return s, nil
 		}),
-		settings.WithAfterGetString(func(ss settings.StringSetting, s string) string {
-			if s == "" && settings.HOST.Get() != "" {
-				return fmt.Sprintf("%s/web/oauth2/callback/%s", settings.HOST.Get(), pi.Provider())
-			}
-			return s
-		}),
 		settings.WithInitPriorityString(1),
 		settings.WithBeforeSetString(func(ss settings.StringSetting, s string) (string, error) {
 			opt.RedirectURL = s

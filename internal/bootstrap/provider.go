@@ -182,6 +182,10 @@ func InitProviderSetting(pi provider.Provider) {
 	groupSettings.DisableUserSignup = settings.NewBoolSetting(group+"_disable_user_signup", false, group)
 
 	groupSettings.SignupNeedReview = settings.NewBoolSetting(group+"_signup_need_review", false, group)
+
+	if registerSetting, ok := pi.(provider.ProviderRegistSetting); ok {
+		registerSetting.RegistSetting(group)
+	}
 }
 
 func InitAggregationProviderSetting(pi provider.Provider) {

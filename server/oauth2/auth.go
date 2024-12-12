@@ -157,6 +157,17 @@ func newAuthFunc(redirect string) stateHandler {
 			return
 		}
 
+		if ui.ProviderUserID == "" {
+			log.Errorf("invalid oauth2 provider user id")
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("invalid oauth2 provider user id"))
+			return
+		}
+		if ui.Username == "" {
+			log.Errorf("invalid oauth2 username")
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("invalid oauth2 username"))
+			return
+		}
+
 		pgs, loaded := bootstrap.ProviderGroupSettings[fmt.Sprintf("%s_%s", dbModel.SettingGroupOauth2, pi.Provider())]
 		if !loaded {
 			log.Errorf("invalid oauth2 provider")

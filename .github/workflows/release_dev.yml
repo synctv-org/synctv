@@ -12,21 +12,13 @@ jobs:
       matrix:
         targets:
           - Target: linux/386
-            CGO: false
           - Target: linux/amd64
-            CGO: false
           - Target: linux/arm
-            CGO: false
           - Target: linux/arm64
-            CGO: false
           - Target: linux/loong64
-            CGO: false
           - Target: linux/ppc64le
-            CGO: false
           - Target: linux/riscv64
-            CGO: false
           - Target: linux/s390x
-            CGO: false
           - Target: linux/mips
             CGO: true
           - Target: linux/mips64
@@ -36,29 +28,17 @@ jobs:
           - Target: linux/mipsle
             CGO: true
           - Target: darwin/amd64
-            CGO: false
           - Target: darwin/arm64
-            CGO: false
           - Target: windows/386
-            CGO: false
           - Target: windows/amd64
-            CGO: false
           - Target: windows/arm64
-            CGO: false
           - Target: freebsd/386
-            CGO: false
           - Target: freebsd/amd64
-            CGO: false
           - Target: freebsd/arm
-            CGO: false
           - Target: freebsd/arm64
-            CGO: false
           - Target: openbsd/amd64
-            CGO: false
           - Target: openbsd/arm64
-            CGO: false
           - Target: netbsd/amd64
-            CGO: false
     steps:
       - name: Checkout
         uses: actions/checkout@v4

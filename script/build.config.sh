@@ -64,7 +64,7 @@ function initDep() {
     if [[ -z "${SKIP_INIT_WEB}" ]] && [[ -n "${WEB_VERSION}" ]]; then
         echo -e "${COLOR_LIGHT_BLUE}Web repository:${COLOR_RESET} ${COLOR_LIGHT_CYAN}${WEB_REPO}${COLOR_RESET}"
         echo -e "${COLOR_LIGHT_BLUE}Web version:${COLOR_RESET} ${COLOR_LIGHT_CYAN}${WEB_VERSION}${COLOR_RESET}"
-        downloadAndUnzip "https://github.com/${WEB_REPO}/releases/download/${WEB_VERSION}/dist.tar.gz" "${source_dir}/public/dist"
+        downloadAndUnzip "https://github.com/${WEB_REPO}/releases/download/${WEB_VERSION}/dist.tar.gz" "${SOURCE_DIR}/public/dist"
     fi
 
     addTags "jsoniter"

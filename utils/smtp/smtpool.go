@@ -1,14 +1,13 @@
 package smtp
 
 import (
+	"crypto/tls"
 	"errors"
 	"fmt"
+	"gopkg.in/gomail.v2"
 	"runtime"
 	"strings"
 	"sync"
-
-	"github.com/emersion/go-sasl"
-	smtp "github.com/emersion/go-smtp"
 )
 
 type Config struct {
@@ -42,38 +41,11 @@ func validateSMTPConfig(c *Config) error {
 	return nil
 }
 
-func newSMTPClient(c *Config) (*smtp.Client, error) {
-	var (
-		cli *smtp.Client
-		err error
-	)
-
-	switch strings.ToUpper(c.Protocol) {
-	case "TLS": // 587
-		cli, err = smtp.DialStartTLS(fmt.Sprintf("%s:%d", c.Host, c.Port), nil)
-	case "SSL": // 465
-		cli, err = smtp.DialTLS(fmt.Sprintf("%s:%d", c.Host, c.Port), nil)
-	default:
-		cli, err = smtp.Dial(fmt.Sprintf("%s:%d", c.Host, c.Port))
-	}
-	if err != nil {
-		return nil, fmt.Errorf("dial smtp server failed: %w", err)
-	}
-
-	err = cli.Auth(sasl.NewLoginClient(c.Username, c.Password))
-	if err != nil {
-		cli.Close()
-		return nil, fmt.Errorf("auth failed: %w", err)
-	}
-
-	return cli, nil
-}
-
 var ErrSMTPPoolClosed = errors.New("smtp pool is closed")
 
 type Pool struct {
 	c       *Config
-	clients []*smtp.Client
+	senders []*gomail.Dialer
 	poolCap int
 	active  int
 	mu      sync.Mutex
@@ -86,95 +58,108 @@ func NewSMTPPool(c *Config, poolCap int) (*Pool, error) {
 		return nil, err
 	}
 	return &Pool{
-		clients: make([]*smtp.Client, 0, poolCap),
+		senders: make([]*gomail.Dialer, 0, poolCap),
 		c:       c,
 		poolCap: poolCap,
 	}, nil
 }
 
-func (p *Pool) Get() (*smtp.Client, error) {
+func newDialer(c *Config) *gomail.Dialer {
+	d := gomail.NewDialer(c.Host, int(c.Port), c.Username, c.Password)
+
+	switch strings.ToUpper(c.Protocol) {
+	case "TLS": // 587
+		d.TLSConfig = &tls.Config{
+			ServerName: c.Host,
+		}
+	case "SSL": // 465
+		d.SSL = true
+		d.TLSConfig = &tls.Config{
+			ServerName: c.Host,
+		}
+	case "TCP": // PlainText
+		d.SSL = false
+		d.TLSConfig = nil
+	default:
+		d.TLSConfig = &tls.Config{
+			ServerName: c.Host,
+		}
+	}
+
+	return d
+}
+
+func (p *Pool) Get() (*gomail.Dialer, error) {
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
 		return nil, ErrSMTPPoolClosed
 	}
-
-	if len(p.clients) > 0 {
-		cli := p.clients[len(p.clients)-1]
-		p.clients = p.clients[:len(p.clients)-1]
+	if len(p.senders) > 0 {
+		dialer := p.senders[len(p.senders)-1]
+		p.senders = p.senders[:len(p.senders)-1]
 		p.active++
 		p.mu.Unlock()
-		if cli.Noop() != nil {
-			cli.Close()
-			p.mu.Lock()
-			p.active--
-			p.mu.Unlock()
-			return p.Get()
-		}
-		return cli, nil
+		return dialer, nil
 	}
-
 	if p.active >= p.poolCap {
 		p.mu.Unlock()
 		runtime.Gosched()
 		return p.Get()
 	}
-
-	cli, err := newSMTPClient(p.c)
-	if err != nil {
-		p.mu.Unlock()
-		return nil, err
-	}
-
+	dialer := newDialer(p.c)
 	p.active++
 	p.mu.Unlock()
-	return cli, nil
+	return dialer, nil
 }
 
-func (p *Pool) Put(cli *smtp.Client) {
-	if cli == nil {
+func (p *Pool) Put(dialer *gomail.Dialer) {
+	if dialer == nil {
 		return
 	}
-
-	noopErr := cli.Noop()
-
 	p.mu.Lock()
 	defer p.mu.Unlock()
-
 	p.active--
-
-	if p.closed || noopErr != nil {
-		cli.Close()
+	if p.closed {
 		return
 	}
-
-	p.clients = append(p.clients, cli)
+	p.senders = append(p.senders, dialer)
 }
 
 func (p *Pool) Close() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-
 	p.closed = true
-
-	for _, cli := range p.clients {
-		cli.Close()
-	}
-	p.clients = nil
+	p.senders = nil
 }
 
-func (p *Pool) SendEmail(to []string, subject, body string, opts ...FormatMailOption) error {
-	cli, err := p.Get()
+func (p *Pool) SendEmail(to []string, subject, body string, opts ...func(*gomail.Message)) error {
+	dialer, err := p.Get()
 	if err != nil {
 		return err
 	}
-	defer p.Put(cli)
-	return SendEmail(cli, p.c.From, to, subject, body, opts...)
+	defer p.Put(dialer)
+
+	m := gomail.NewMessage()
+	m.SetHeader("From", p.c.From)
+	m.SetHeader("To", to...)
+	m.SetHeader("Subject", subject)
+	m.SetBody("text/html", body)
+
+	for _, opt := range opts {
+		if opt != nil {
+			opt(m)
+		}
+	}
+
+	if err := dialer.DialAndSend(m); err != nil {
+		return fmt.Errorf("failed to send email: %w", err)
+	}
+	return nil
 }
 
 func (p *Pool) SetFrom(from string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-
 	p.c.From = from
 }

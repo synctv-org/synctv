@@ -126,23 +126,28 @@ func writeMessage(c *op.Client, v op.Message) error {
 	return nil
 }
 
+func leaveWebRTC(c *op.Client) {
+	if c.RTCJoined() {
+		c.SetRTCJoined(false)
+		c.SetRTCJoined(false)
+		_ = c.Broadcast(&pb.Message{
+			Type: pb.MessageType_WEBRTC_LEAVE,
+			Sender: &pb.Sender{
+				Username: c.User().Username,
+				UserId:   c.User().ID,
+			},
+			Payload: &pb.Message_WebrtcData{
+				WebrtcData: &pb.WebRTCData{
+					From: fmt.Sprintf("%s:%s", c.User().ID, c.ConnID()),
+				},
+			},
+		})
+	}
+}
+
 func handleReaderMessage(c *op.Client, l *log.Entry) error {
 	defer func() {
-		if c.RTCJoined() {
-			c.SetRTCJoined(false)
-			_ = c.Broadcast(&pb.Message{
-				Type: pb.MessageType_WEBRTC_LEAVE,
-				Sender: &pb.Sender{
-					Username: c.User().Username,
-					UserId:   c.User().ID,
-				},
-				Payload: &pb.Message_WebrtcData{
-					WebrtcData: &pb.WebRTCData{
-						From: fmt.Sprintf("%s:%s", c.User().ID, c.ConnID()),
-					},
-				},
-			})
-		}
+		leaveWebRTC(c)
 		c.Close()
 		if r := recover(); r != nil {
 			l.Errorf("ws: panic: %v", r)
@@ -221,6 +226,7 @@ func handleElementMsg(cli *op.Client, msg *pb.Message) error {
 
 func handleWebRTCOffer(cli *op.Client, data *pb.WebRTCData) error {
 	if !cli.User().HasRoomWebRTCPermission(cli.Room()) {
+		leaveWebRTC(cli)
 		return sendErrorMessage(cli, "no permission to send webrtc offer")
 	}
 
@@ -249,6 +255,7 @@ func handleWebRTCOffer(cli *op.Client, data *pb.WebRTCData) error {
 
 func handleWebRTCAnswer(cli *op.Client, data *pb.WebRTCData) error {
 	if !cli.User().HasRoomWebRTCPermission(cli.Room()) {
+		leaveWebRTC(cli)
 		return sendErrorMessage(cli, "no permission to send webrtc answer")
 	}
 
@@ -277,6 +284,7 @@ func handleWebRTCAnswer(cli *op.Client, data *pb.WebRTCData) error {
 
 func handleWebRTCIceCandidate(cli *op.Client, data *pb.WebRTCData) error {
 	if !cli.User().HasRoomWebRTCPermission(cli.Room()) {
+		leaveWebRTC(cli)
 		return sendErrorMessage(cli, "no permission to send webrtc ice candidate")
 	}
 
@@ -305,6 +313,7 @@ func handleWebRTCIceCandidate(cli *op.Client, data *pb.WebRTCData) error {
 
 func handleWebRTCJoin(cli *op.Client) error {
 	if !cli.User().HasRoomWebRTCPermission(cli.Room()) {
+		leaveWebRTC(cli)
 		return sendErrorMessage(cli, "no permission to join webrtc")
 	}
 
@@ -325,6 +334,7 @@ func handleWebRTCJoin(cli *op.Client) error {
 
 func handleWebRTCLeave(cli *op.Client) error {
 	if !cli.User().HasRoomWebRTCPermission(cli.Room()) {
+		leaveWebRTC(cli)
 		return sendErrorMessage(cli, "no permission to leave webrtc")
 	}
 

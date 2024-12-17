@@ -72,6 +72,13 @@ func (r *Room) SendToUserWithID(userID string, data Message) error {
 	return r.lazyInitHub().SendToUser(userID, data)
 }
 
+func (r *Room) SendToConnID(userID, connID string, data Message) error {
+	if r.HubIsNotInited() {
+		return nil
+	}
+	return r.lazyInitHub().SendToConnID(userID, connID, data)
+}
+
 func (r *Room) GetChannel(channelName string) (*rtmps.Channel, error) {
 	return r.movies.GetChannel(channelName)
 }

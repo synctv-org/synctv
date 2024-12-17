@@ -54,10 +54,13 @@ const (
 	PermissionSetCurrentMovie
 	PermissionSetCurrentStatus
 	PermissionSendChatMessage
+	PermissionWebRTC
 
 	AllPermissions     RoomMemberPermission = math.MaxUint32
 	NoPermission       RoomMemberPermission = 0
-	DefaultPermissions RoomMemberPermission = PermissionGetMovieList | PermissionSendChatMessage
+	DefaultPermissions RoomMemberPermission = PermissionGetMovieList |
+		PermissionSendChatMessage |
+		PermissionWebRTC
 )
 
 func (p RoomMemberPermission) Has(permission RoomMemberPermission) bool {

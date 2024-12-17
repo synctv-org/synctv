@@ -6,24 +6,28 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/synctv-org/synctv/internal/model"
 	pb "github.com/synctv-org/synctv/proto/message"
 )
 
 type Client struct {
-	u       *User
-	r       *Room
-	h       *Hub
-	c       chan Message
-	conn    *websocket.Conn
-	wg      sync.WaitGroup
-	timeOut time.Duration
-	closed  uint32
+	u         *User
+	r         *Room
+	h         *Hub
+	c         chan Message
+	conn      *websocket.Conn
+	connID    string
+	wg        sync.WaitGroup
+	timeOut   time.Duration
+	closed    uint32
+	rtcJoined atomic.Bool
 }
 
 func newClient(user *User, room *Room, h *Hub, conn *websocket.Conn) *Client {
 	return &Client{
+		connID:  uuid.New().String(),
 		r:       room,
 		u:       user,
 		h:       h,
@@ -31,6 +35,18 @@ func newClient(user *User, room *Room, h *Hub, conn *websocket.Conn) *Client {
 		conn:    conn,
 		timeOut: 10 * time.Second,
 	}
+}
+
+func (c *Client) ConnID() string {
+	return c.connID
+}
+
+func (c *Client) RTCJoined() bool {
+	return c.rtcJoined.Load()
+}
+
+func (c *Client) SetRTCJoined(joined bool) {
+	c.rtcJoined.Store(joined)
 }
 
 func (c *Client) User() *User {
@@ -115,5 +131,5 @@ func (c *Client) SetStatus(playing bool, seek float64, rate float64, timeDiff fl
 				PlaybackRate: status.PlaybackRate,
 			},
 		},
-	}, WithIgnoreClient(c))
+	}, WithIgnoreConnID(c.ConnID()))
 }

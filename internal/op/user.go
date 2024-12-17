@@ -225,6 +225,10 @@ func (u *User) IsRoomCreator(room *Room) bool {
 	return room.IsCreator(u.ID)
 }
 
+func (u *User) HasRoomWebRTCPermission(room *Room) bool {
+	return u.HasRoomPermission(room, model.PermissionWebRTC)
+}
+
 func (u *User) DeleteRoom(room *RoomEntry) error {
 	if !u.HasRoomAdminPermission(room.Value(), model.PermissionDeleteRoom) {
 		return model.ErrNoPermission

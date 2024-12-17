@@ -14,7 +14,7 @@ import (
 )
 
 type clients struct {
-	m    map[*Client]struct{}
+	m    map[string]*Client
 	lock sync.RWMutex
 }
 
@@ -30,21 +30,28 @@ type Hub struct {
 
 type broadcastMessage struct {
 	data         Message
-	ignoreClient []*Client
-	ignoreID     []string
+	ignoreConnID []string
+	ignoreUserID []string
+	rtcJoined    bool
 }
 
 type BroadcastConf func(*broadcastMessage)
 
-func WithIgnoreClient(cli ...*Client) BroadcastConf {
+func WithRTCJoined() BroadcastConf {
 	return func(bm *broadcastMessage) {
-		bm.ignoreClient = cli
+		bm.rtcJoined = true
+	}
+}
+
+func WithIgnoreConnID(connID ...string) BroadcastConf {
+	return func(bm *broadcastMessage) {
+		bm.ignoreConnID = connID
 	}
 }
 
 func WithIgnoreID(id ...string) BroadcastConf {
 	return func(bm *broadcastMessage) {
-		bm.ignoreID = id
+		bm.ignoreUserID = id
 	}
 }
 
@@ -72,9 +79,12 @@ func (h *Hub) serve() {
 			h.clients.Range(func(id string, clients *clients) bool {
 				clients.lock.RLock()
 				defer clients.lock.RUnlock()
-				for c := range clients.m {
-					if utils.In(message.ignoreID, c.u.ID) ||
-						utils.In(message.ignoreClient, c) {
+				for _, c := range clients.m {
+					if utils.In(message.ignoreUserID, c.u.ID) ||
+						utils.In(message.ignoreConnID, c.ConnID()) {
+						continue
+					}
+					if message.rtcJoined && !c.RTCJoined() {
 						continue
 					}
 					if err := c.Send(message.data); err != nil {
@@ -145,8 +155,8 @@ func (h *Hub) Close() error {
 		h.clients.CompareAndDelete(id, clients)
 		clients.lock.Lock()
 		defer clients.lock.Unlock()
-		for c := range clients.m {
-			delete(clients.m, c)
+		for id, c := range clients.m {
+			delete(clients.m, id)
 			c.Close()
 		}
 		return true
@@ -191,11 +201,11 @@ func (h *Hub) RegClient(cli *Client) error {
 		return h.RegClient(cli)
 	}
 	if c.m == nil {
-		c.m = make(map[*Client]struct{})
-	} else if _, ok := c.m[cli]; ok {
+		c.m = make(map[string]*Client)
+	} else if _, ok := c.m[cli.ConnID()]; ok {
 		return errors.New("client already exists")
 	}
-	c.m[cli] = struct{}{}
+	c.m[cli.ConnID()] = cli
 	return nil
 }
 
@@ -212,10 +222,10 @@ func (h *Hub) UnRegClient(cli *Client) error {
 	}
 	c.lock.Lock()
 	defer c.lock.Unlock()
-	if _, ok := c.m[cli]; !ok {
+	if _, ok := c.m[cli.ConnID()]; !ok {
 		return errors.New("client not found")
 	}
-	delete(c.m, cli)
+	delete(c.m, cli.ConnID())
 	if len(c.m) == 0 {
 		h.clients.CompareAndDelete(cli.u.ID, c)
 	}
@@ -236,12 +246,29 @@ func (h *Hub) SendToUser(userID string, data Message) (err error) {
 	}
 	cli.lock.RLock()
 	defer cli.lock.RUnlock()
-	for c := range cli.m {
+	for _, c := range cli.m {
 		if err = c.Send(data); err != nil {
 			c.Close()
 		}
 	}
 	return
+}
+
+func (h *Hub) SendToConnID(userID, connID string, data Message) error {
+	cli, ok := h.GetClientByConnID(userID, connID)
+	if !ok {
+		return nil
+	}
+	return cli.Send(data)
+}
+
+func (h *Hub) GetClientByConnID(userID, connID string) (*Client, bool) {
+	c, ok := h.clients.Load(userID)
+	if !ok {
+		return nil, false
+	}
+	client, ok := c.m[connID]
+	return client, ok
 }
 
 func (h *Hub) IsOnline(userID string) bool {
@@ -272,7 +299,7 @@ func (h *Hub) KickUser(userID string) error {
 	}
 	cli.lock.RLock()
 	defer cli.lock.RUnlock()
-	for c := range cli.m {
+	for _, c := range cli.m {
 		c.Close()
 	}
 	return nil

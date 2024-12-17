@@ -15,6 +15,11 @@ enum MessageType {
   VIEWER_COUNT = 8;
   SYNC = 9;
   MY_STATUS = 10;
+  WEBRTC_OFFER = 11;
+  WEBRTC_ANSWER = 12;
+  WEBRTC_ICE_CANDIDATE = 13;
+  WEBRTC_JOIN = 14;
+  WEBRTC_LEAVE = 15;
 }
 
 message Sender {
@@ -28,6 +33,12 @@ message Status {
   double playback_rate = 3;
 }
 
+message WebRTCData {
+  string data = 1;
+  string to = 2;
+  string from = 3;
+}
+
 message Message {
   MessageType type = 1;
   sfixed64 timestamp = 2;
@@ -39,5 +50,6 @@ message Message {
     Status playback_status = 6;
     fixed64 expiration_id = 7;
     int64 viewer_count = 8;
+    WebRTCData webrtc_data = 9;
   }
 }

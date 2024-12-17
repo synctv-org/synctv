@@ -38,6 +38,14 @@ func NewWebSocketHandler(wss *utils.WebSocket) gin.HandlerFunc {
 	}
 }
 
+func isNormalCloseError(err error) bool {
+	var we *websocket.CloseError
+	if !errors.As(err, &we) {
+		return false
+	}
+	return we.Code == websocket.CloseNormalClosure
+}
+
 func NewWSMessageHandler(u *op.User, r *op.Room, l *log.Entry) func(c *websocket.Conn) error {
 	return func(c *websocket.Conn) error {
 		client, err := r.NewClient(u, c)
@@ -67,6 +75,9 @@ func NewWSMessageHandler(u *op.User, r *op.Room, l *log.Entry) func(c *websocket
 
 		go func() {
 			if err := handleReaderMessage(client, l); err != nil {
+				if isNormalCloseError(err) {
+					return
+				}
 				l.Errorf("ws: handle reader message error: %v", err)
 			}
 		}()
@@ -117,6 +128,21 @@ func writeMessage(c *op.Client, v op.Message) error {
 
 func handleReaderMessage(c *op.Client, l *log.Entry) error {
 	defer func() {
+		if c.RTCJoined() {
+			c.SetRTCJoined(false)
+			_ = c.Broadcast(&pb.Message{
+				Type: pb.MessageType_WEBRTC_LEAVE,
+				Sender: &pb.Sender{
+					Username: c.User().Username,
+					UserId:   c.User().ID,
+				},
+				Payload: &pb.Message_WebrtcData{
+					WebrtcData: &pb.WebRTCData{
+						From: fmt.Sprintf("%s:%s", c.User().ID, c.ConnID()),
+					},
+				},
+			})
+		}
 		c.Close()
 		if r := recover(); r != nil {
 			l.Errorf("ws: panic: %v", r)
@@ -126,6 +152,9 @@ func handleReaderMessage(c *op.Client, l *log.Entry) error {
 	for {
 		msg, err := readMessage(c)
 		if err != nil {
+			if isNormalCloseError(err) {
+				return nil
+			}
 			l.Errorf("ws: read message error: %v", err)
 			return err
 		}

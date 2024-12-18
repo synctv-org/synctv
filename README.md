@@ -53,6 +53,10 @@ SyncTV's synchronized viewing feature ensures that everyone watching the video i
   - [x] Emby
 - [x] Parse live
   - [x] Bilibili
+- [x] WebRTC online call
+  - [x] Audio
+  - [ ] Video
+  - [ ] Screen
 
 ---
 

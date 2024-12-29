@@ -1,10 +1,6 @@
 FROM golang:1.23-alpine AS builder
 
-ARG VERSION=dev
-
-ARG SKIP_INIT_WEB
-
-ENV SKIP_INIT_WEB=${SKIP_INIT_WEB}
+ARG VERSION
 
 WORKDIR /synctv
 
@@ -16,9 +12,7 @@ RUN curl -sL \
     https://raw.githubusercontent.com/zijiren233/go-build-action/refs/tags/v1/build.sh | \
     bash -s -- \
     --version=${VERSION} \
-    --bin-name-no-suffix \
-    --force-gcc='gcc -static --static' \
-    --force-gxx='g++ -static --static'
+    --bin-name-no-suffix
 
 FROM alpine:latest
 

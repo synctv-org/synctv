@@ -166,12 +166,6 @@ func InitProviderSetting(pi provider.Provider) {
 			pi.Init(opt)
 			return s, nil
 		}),
-		settings.WithAfterGetString(func(ss settings.StringSetting, s string) string {
-			if s == "" && settings.HOST.Get() != "" {
-				return fmt.Sprintf("%s/web/oauth2/callback/%s", settings.HOST.Get(), pi.Provider())
-			}
-			return s
-		}),
 		settings.WithInitPriorityString(1),
 		settings.WithBeforeSetString(func(ss settings.StringSetting, s string) (string, error) {
 			opt.RedirectURL = s
@@ -182,6 +176,10 @@ func InitProviderSetting(pi provider.Provider) {
 	groupSettings.DisableUserSignup = settings.NewBoolSetting(group+"_disable_user_signup", false, group)
 
 	groupSettings.SignupNeedReview = settings.NewBoolSetting(group+"_signup_need_review", false, group)
+
+	if registerSetting, ok := pi.(provider.ProviderRegistSetting); ok {
+		registerSetting.RegistSetting(group)
+	}
 }
 
 func InitAggregationProviderSetting(pi provider.Provider) {

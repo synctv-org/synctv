@@ -22,6 +22,10 @@ type Provider interface {
 	Provider() OAuth2Provider
 }
 
+type ProviderRegistSetting interface {
+	RegistSetting(group string)
+}
+
 type Interface interface {
 	Provider
 	NewAuthURL(context.Context, string) (string, error)

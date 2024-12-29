@@ -78,6 +78,17 @@ func newBindFunc(userID, redirect string) stateHandler {
 			return
 		}
 
+		if ui.ProviderUserID == "" {
+			log.Errorf("invalid oauth2 provider user id")
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("invalid oauth2 provider user id"))
+			return
+		}
+		if ui.Username == "" {
+			log.Errorf("invalid oauth2 username")
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("invalid oauth2 username"))
+			return
+		}
+
 		user, err := op.LoadOrInitUserByID(userID)
 		if err != nil {
 			log.Errorf("failed to load user: %v", err)

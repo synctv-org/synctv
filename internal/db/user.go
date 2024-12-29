@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"github.com/synctv-org/synctv/internal/model"
-	"github.com/synctv-org/synctv/internal/provider"
 	"github.com/synctv-org/synctv/utils"
 	"github.com/zijiren233/stream"
 	"golang.org/x/crypto/bcrypt"
@@ -95,7 +94,7 @@ func CreateUser(username string, password string, conf ...CreateUserConfig) (*mo
 	return CreateUserWithHashedPassword(username, hashedPassword, conf...)
 }
 
-func CreateOrLoadUserWithProvider(username, password string, p provider.OAuth2Provider, puid string, conf ...CreateUserConfig) (*model.User, error) {
+func CreateOrLoadUserWithProvider(username, password string, p string, puid string, conf ...CreateUserConfig) (*model.User, error) {
 	if puid == "" {
 		return nil, errors.New("provider user id cannot be empty")
 	}
@@ -139,7 +138,7 @@ func CreateUserWithEmail(username, password, email string, conf ...CreateUserCon
 	)...)
 }
 
-func GetUserByProvider(p provider.OAuth2Provider, puid string) (*model.User, error) {
+func GetUserByProvider(p string, puid string) (*model.User, error) {
 	var user model.User
 	err := db.Joins("JOIN user_providers ON users.id = user_providers.user_id").
 		Where("user_providers.provider = ? AND user_providers.provider_user_id = ?", p, puid).
@@ -153,7 +152,7 @@ func GetUserByEmail(email string) (*model.User, error) {
 	return &user, HandleNotFound(err, ErrUserNotFound)
 }
 
-func GetProviderUserID(p provider.OAuth2Provider, puid string) (string, error) {
+func GetProviderUserID(p string, puid string) (string, error) {
 	var userID string
 	err := db.Model(&model.UserProvider{}).
 		Where("provider = ? AND provider_user_id = ?", p, puid).
@@ -162,7 +161,7 @@ func GetProviderUserID(p provider.OAuth2Provider, puid string) (string, error) {
 	return userID, HandleNotFound(err, ErrUserNotFound)
 }
 
-func BindProvider(uid string, p provider.OAuth2Provider, puid string) error {
+func BindProvider(uid string, p string, puid string) error {
 	err := db.Create(&model.UserProvider{
 		UserID:         uid,
 		Provider:       p,
@@ -177,7 +176,7 @@ func BindProvider(uid string, p provider.OAuth2Provider, puid string) error {
 	return nil
 }
 
-func UnBindProvider(uid string, p provider.OAuth2Provider) error {
+func UnBindProvider(uid string, p string) error {
 	return Transactional(func(tx *gorm.DB) error {
 		var user model.User
 		if err := tx.Preload("UserProviders").Where("id = ?", uid).First(&user).Error; err != nil {

@@ -21,10 +21,9 @@ const (
 )
 
 var (
-	Version    = "dev"
-	WebVersion = "dev"
-	GitCommit  string
-	_          = settings.NewStringSetting("version", "placeholder string", model.SettingGroupServer, settings.WithBeforeInitString(func(ss settings.StringSetting, s string) (string, error) {
+	Version   = "dev"
+	GitCommit string
+	_         = settings.NewStringSetting("version", "placeholder string", model.SettingGroupServer, settings.WithBeforeInitString(func(ss settings.StringSetting, s string) (string, error) {
 		return Version, nil
 	}), settings.WithBeforeSetString(func(ss settings.StringSetting, s string) (string, error) {
 		return "", errors.New("version can not be set")

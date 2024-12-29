@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -37,6 +38,14 @@ func NewWebSocketHandler(wss *utils.WebSocket) gin.HandlerFunc {
 	}
 }
 
+func isNormalCloseError(err error) bool {
+	var we *websocket.CloseError
+	if !errors.As(err, &we) {
+		return false
+	}
+	return we.Code == websocket.CloseNormalClosure
+}
+
 func NewWSMessageHandler(u *op.User, r *op.Room, l *log.Entry) func(c *websocket.Conn) error {
 	return func(c *websocket.Conn) error {
 		client, err := r.NewClient(u, c)
@@ -66,6 +75,9 @@ func NewWSMessageHandler(u *op.User, r *op.Room, l *log.Entry) func(c *websocket
 
 		go func() {
 			if err := handleReaderMessage(client, l); err != nil {
+				if isNormalCloseError(err) {
+					return
+				}
 				l.Errorf("ws: handle reader message error: %v", err)
 			}
 		}()
@@ -114,8 +126,28 @@ func writeMessage(c *op.Client, v op.Message) error {
 	return nil
 }
 
+func leaveWebRTC(c *op.Client) {
+	if c.RTCJoined() {
+		c.SetRTCJoined(false)
+		c.SetRTCJoined(false)
+		_ = c.Broadcast(&pb.Message{
+			Type: pb.MessageType_WEBRTC_LEAVE,
+			Sender: &pb.Sender{
+				Username: c.User().Username,
+				UserId:   c.User().ID,
+			},
+			Payload: &pb.Message_WebrtcData{
+				WebrtcData: &pb.WebRTCData{
+					From: fmt.Sprintf("%s:%s", c.User().ID, c.ConnID()),
+				},
+			},
+		})
+	}
+}
+
 func handleReaderMessage(c *op.Client, l *log.Entry) error {
 	defer func() {
+		leaveWebRTC(c)
 		c.Close()
 		if r := recover(); r != nil {
 			l.Errorf("ws: panic: %v", r)
@@ -125,6 +157,9 @@ func handleReaderMessage(c *op.Client, l *log.Entry) error {
 	for {
 		msg, err := readMessage(c)
 		if err != nil {
+			if isNormalCloseError(err) {
+				return nil
+			}
 			l.Errorf("ws: read message error: %v", err)
 			return err
 		}
@@ -174,9 +209,148 @@ func handleElementMsg(cli *op.Client, msg *pb.Message) error {
 		return handleExpiredMessage(cli, msg.GetExpirationId())
 	case pb.MessageType_CHECK_STATUS:
 		return handleCheckStatusMessage(cli, msg, timeDiff)
+	case pb.MessageType_WEBRTC_OFFER:
+		return handleWebRTCOffer(cli, msg.GetWebrtcData())
+	case pb.MessageType_WEBRTC_ANSWER:
+		return handleWebRTCAnswer(cli, msg.GetWebrtcData())
+	case pb.MessageType_WEBRTC_ICE_CANDIDATE:
+		return handleWebRTCIceCandidate(cli, msg.GetWebrtcData())
+	case pb.MessageType_WEBRTC_JOIN:
+		return handleWebRTCJoin(cli)
+	case pb.MessageType_WEBRTC_LEAVE:
+		return handleWebRTCLeave(cli)
 	default:
 		return sendErrorMessage(cli, fmt.Sprintf("unknown message type: %v", msg.Type))
 	}
+}
+
+func handleWebRTCOffer(cli *op.Client, data *pb.WebRTCData) error {
+	if !cli.User().HasRoomWebRTCPermission(cli.Room()) {
+		leaveWebRTC(cli)
+		return sendErrorMessage(cli, "no permission to send webrtc offer")
+	}
+
+	if data == nil {
+		return sendErrorMessage(cli, "webrtc data is nil")
+	}
+
+	sp := strings.Split(data.To, ":")
+	if len(sp) != 2 {
+		return sendErrorMessage(cli, "target user id is invalid")
+	}
+
+	data.From = fmt.Sprintf("%s:%s", cli.User().ID, cli.ConnID())
+
+	return cli.Room().SendToConnID(sp[0], sp[1], &pb.Message{
+		Type: pb.MessageType_WEBRTC_OFFER,
+		Sender: &pb.Sender{
+			UserId:   cli.User().ID,
+			Username: cli.User().Username,
+		},
+		Payload: &pb.Message_WebrtcData{
+			WebrtcData: data,
+		},
+	})
+}
+
+func handleWebRTCAnswer(cli *op.Client, data *pb.WebRTCData) error {
+	if !cli.User().HasRoomWebRTCPermission(cli.Room()) {
+		leaveWebRTC(cli)
+		return sendErrorMessage(cli, "no permission to send webrtc answer")
+	}
+
+	if data == nil {
+		return sendErrorMessage(cli, "webrtc data is nil")
+	}
+
+	sp := strings.Split(data.To, ":")
+	if len(sp) != 2 {
+		return sendErrorMessage(cli, "target user id is invalid")
+	}
+
+	data.From = fmt.Sprintf("%s:%s", cli.User().ID, cli.ConnID())
+
+	return cli.Room().SendToConnID(sp[0], sp[1], &pb.Message{
+		Type: pb.MessageType_WEBRTC_ANSWER,
+		Sender: &pb.Sender{
+			UserId:   cli.User().ID,
+			Username: cli.User().Username,
+		},
+		Payload: &pb.Message_WebrtcData{
+			WebrtcData: data,
+		},
+	})
+}
+
+func handleWebRTCIceCandidate(cli *op.Client, data *pb.WebRTCData) error {
+	if !cli.User().HasRoomWebRTCPermission(cli.Room()) {
+		leaveWebRTC(cli)
+		return sendErrorMessage(cli, "no permission to send webrtc ice candidate")
+	}
+
+	if data == nil {
+		return sendErrorMessage(cli, "webrtc data is nil")
+	}
+
+	sp := strings.Split(data.To, ":")
+	if len(sp) != 2 {
+		return sendErrorMessage(cli, "target user id is invalid")
+	}
+
+	data.From = fmt.Sprintf("%s:%s", cli.User().ID, cli.ConnID())
+
+	return cli.Room().SendToConnID(sp[0], sp[1], &pb.Message{
+		Type: pb.MessageType_WEBRTC_ICE_CANDIDATE,
+		Sender: &pb.Sender{
+			UserId:   cli.User().ID,
+			Username: cli.User().Username,
+		},
+		Payload: &pb.Message_WebrtcData{
+			WebrtcData: data,
+		},
+	})
+}
+
+func handleWebRTCJoin(cli *op.Client) error {
+	if !cli.User().HasRoomWebRTCPermission(cli.Room()) {
+		leaveWebRTC(cli)
+		return sendErrorMessage(cli, "no permission to join webrtc")
+	}
+
+	cli.SetRTCJoined(true)
+	return cli.Broadcast(&pb.Message{
+		Type: pb.MessageType_WEBRTC_JOIN,
+		Sender: &pb.Sender{
+			UserId:   cli.User().ID,
+			Username: cli.User().Username,
+		},
+		Payload: &pb.Message_WebrtcData{
+			WebrtcData: &pb.WebRTCData{
+				From: fmt.Sprintf("%s:%s", cli.User().ID, cli.ConnID()),
+			},
+		},
+	}, op.WithIgnoreConnID(cli.ConnID()), op.WithRTCJoined())
+}
+
+func handleWebRTCLeave(cli *op.Client) error {
+	if !cli.User().HasRoomWebRTCPermission(cli.Room()) {
+		leaveWebRTC(cli)
+		return sendErrorMessage(cli, "no permission to leave webrtc")
+	}
+
+	cli.SetRTCJoined(false)
+	return cli.Broadcast(&pb.Message{
+		Type: pb.MessageType_WEBRTC_LEAVE,
+		Sender: &pb.Sender{
+			UserId:   cli.User().ID,
+			Username: cli.User().Username,
+		},
+		Payload: &pb.Message_WebrtcData{
+			WebrtcData: &pb.WebRTCData{
+				From: fmt.Sprintf("%s:%s", cli.User().ID, cli.ConnID()),
+			},
+		},
+	}, op.WithIgnoreConnID(cli.ConnID()), op.WithRTCJoined())
 }
 
 func calculateTimeDiff(timestamp int64) float64 {

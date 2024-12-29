@@ -2,46 +2,140 @@ name: release
 
 on:
   push:
+    branches:
+      - "**"
     tags:
-      - "v*"
+      - "v*.*.*"
+  pull_request:
 
 jobs:
-  get-targets:
-    name: Get all targets
+  release-web:
+    name: Release Web
     runs-on: ubuntu-latest
     outputs:
-      targets: ${{ steps.get-targets.outputs.targets }}
+      version: ${{ steps.release_meta.outputs.VERSION }}
+      prerelease: ${{ steps.release_meta.outputs.PRERELEASE }}
+      release_name: ${{ steps.release_meta.outputs.RELEASE_NAME }}
+      tag_name: ${{ steps.release_meta.outputs.TAG_NAME }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Get targets
-        id: get-targets
-        uses: zijiren233/go-build-action@v1
+      - uses: actions/checkout@v4
         with:
-          show-all-targets: true
+          submodules: true
+
+      - name: Use Node.js 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18.x
+
+      - name: Build
+        working-directory: synctv-web
+        run: |
+          npm install
+          npm run build
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: synctv-web
+          path: synctv-web/dist
+
+      - name: Create dist.zip
+        working-directory: synctv-web
+        run: zip -r dist.zip dist
+
+      - name: Create dist.tar.gz
+        working-directory: synctv-web
+        run: tar -zcvf dist.tar.gz dist
+
+      - name: Get release meta
+        if: ${{ startsWith(github.ref, 'refs/tags/') }}
+        id: release_meta
+        run: |
+          version=${GITHUB_REF/refs\/tags\/v/}
+          prerelease=$(echo ${version} | grep -E 'rc|beta|alpha')
+          release_name="Version ${version}"
+          if [ -n "${prerelease}" ]; then
+            release_name="${release_name} (Prerelease)"
+          fi
+          tag_name="v${version}"
+
+          echo ::set-output name=VERSION::${version}
+          echo ::set-output name=PRERELEASE::${prerelease}
+          echo ::set-output name=RELEASE_NAME::${release_name}
+          echo ::set-output name=TAG_NAME::${tag_name}
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        if: ${{ startsWith(github.ref, 'refs/tags/') }}
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          draft: false
+          prerelease: ${{ steps.release_meta.outputs.PRERELEASE }}
+          append_body: false
+          fail_on_unmatched_files: true
+          name: ${{ steps.release_meta.outputs.RELEASE_NAME }}
+          tag_name: ${{ steps.release_meta.outputs.TAG_NAME }}
+          files: |
+            dist.zip
+            dist.tar.gz
 
   release:
     name: Release
-    needs: get-targets
     runs-on: ubuntu-latest
+    needs: release-web
     strategy:
+      fail-fast: false
       matrix:
-        target: ${{ fromJson(needs.get-targets.outputs.targets) }}
+        targets:
+          - Target: linux/386
+          - Target: linux/amd64
+          - Target: linux/arm
+          - Target: linux/arm64
+          - Target: linux/loong64
+          - Target: linux/ppc64le
+          - Target: linux/riscv64
+          - Target: linux/s390x
+          - Target: linux/mips
+            CGO: true
+          - Target: linux/mips64
+            CGO: true
+          - Target: linux/mips64le
+            CGO: true
+          - Target: linux/mipsle
+            CGO: true
+          - Target: darwin/amd64
+          - Target: darwin/arm64
+          - Target: windows/386
+          - Target: windows/amd64
+          - Target: windows/arm64
+          - Target: freebsd/386
+          - Target: freebsd/amd64
+          - Target: freebsd/arm
+          - Target: freebsd/arm64
+          - Target: openbsd/amd64
+          - Target: openbsd/arm64
+          - Target: netbsd/amd64
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           submodules: true
 
+      - name: Download Web
+        uses: actions/download-artifact@v4
+        with:
+          name: synctv-web
+          path: synctv-web/dist
+
+      - name: Move to public
+        run: |
+          rm -rf public/dist/*
+          cp -r synctv-web/dist/* public/dist/
+
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version: "1.23"
-
-      - name: Get version
-        id: get_version
-        run: echo "VERSION=${GITHUB_REF/refs\/tags\/v/}" >> $GITHUB_OUTPUT
 
       - name: Build targets
         uses: zijiren233/go-build-action@v1
@@ -49,19 +143,96 @@ jobs:
           SUBMICRO_ARM_DISABLED: true
           MICRO_ARM64_DISABLED: true
         with:
-          targets: ${{ matrix.target }}
+          targets: ${{ matrix.targets.Target }}
+          cgo-enabled: ${{ matrix.targets.CGO }}
           enable-micro: true
-          config-args: --version="v${{ steps.get_version.outputs.VERSION }}"
+          config-args: --version="${{ github.ref.outputs.jobs.release-web.outputs.tag_name }}"
 
       - name: Release
         uses: softprops/action-gh-release@v2
+        if: ${{ startsWith(github.ref, 'refs/tags/') }}
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           draft: false
-          prerelease: ${{ contains(steps.get_version.outputs.VERSION, 'rc') || contains(steps.get_version.outputs.VERSION, 'beta') || contains(steps.get_version.outputs.VERSION, 'alpha') }}
+          prerelease: ${{ github.ref.outputs.jobs.release-web.outputs.prerelease }}
           append_body: false
           fail_on_unmatched_files: true
-          name: "Version ${{ steps.get_version.outputs.VERSION }}"
-          tag_name: "v${{ steps.get_version.outputs.VERSION }}"
+          name: ${{ github.ref.outputs.jobs.release-web.outputs.release_name }}
+          tag_name: ${{ github.ref.outputs.jobs.release-web.outputs.tag_name }}
           files: |
             build/*
+
+  release-docker:
+    name: Release Docker
+    runs-on: ubuntu-latest
+    needs: release-web
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Download Web
+        uses: actions/download-artifact@v4
+        with:
+          name: synctv-web
+          path: synctv-web/dist
+
+      - name: Move to public
+        run: |
+          rm -rf public/dist/*
+          cp -r synctv-web/dist/* public/dist/
+
+      - name: Has DockerHub
+        id: has_docker_hub
+        run: |
+          echo ::set-output name=HAS_DOCKER_HUB::${{ secrets.DOCKERHUB_USERNAME != '' }}
+          echo ::set-output name=DOCKERHUB_REPO::${{ secrets.DOCKERHUB_USERNAME != '' && format('{0}/{1}', secrets.DOCKERHUB_USERNAME, 'synctv') || '' }}
+
+      - name: Login to GitHub Container Registry
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
+        if: ${{ github.event_name != 'pull_request' && steps.has_docker_hub.outputs.HAS_DOCKER_HUB }}
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ steps.has_docker_hub.outputs.DOCKERHUB_REPO }}
+            ghcr.io/${{ github.repository }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=sha
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        id: docker_build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          build-args: VERSION=${{ github.ref.outputs.jobs.release-web.outputs.tag_name }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/amd64,linux/arm64

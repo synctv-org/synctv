@@ -32,7 +32,7 @@ var (
 		model.SettingGroupEmail,
 		settings.WithAfterSetBool(func(bs settings.BoolSetting, b bool) {
 			if !b {
-				closeSmtpPool()
+				closeMailer()
 			}
 		}),
 	)
@@ -140,7 +140,7 @@ func SendBindCaptchaEmail(userID, userEmail string) error {
 		return errors.New("email is empty")
 	}
 
-	pool, err := getSmtpPool()
+	m, err := getMailer()
 	if err != nil {
 		return err
 	}
@@ -163,7 +163,7 @@ func SendBindCaptchaEmail(userID, userEmail string) error {
 		return err
 	}
 
-	return pool.SendEmail(
+	return m.SendEmail(
 		[]string{userEmail},
 		"SyncTV Verification Code",
 		out.String(),
@@ -204,7 +204,7 @@ func SendTestEmail(username, email string) error {
 		return errors.New("email is empty")
 	}
 
-	pool, err := getSmtpPool()
+	m, err := getMailer()
 	if err != nil {
 		return err
 	}
@@ -218,7 +218,7 @@ func SendTestEmail(username, email string) error {
 		return err
 	}
 
-	return pool.SendEmail(
+	return m.SendEmail(
 		[]string{email},
 		"SyncTV Test Email",
 		out.String(),
@@ -234,7 +234,7 @@ func SendSignupCaptchaEmail(email string) error {
 		return errors.New("email is empty")
 	}
 
-	pool, err := getSmtpPool()
+	pool, err := getMailer()
 	if err != nil {
 		return err
 	}
@@ -312,7 +312,7 @@ func SendRetrievePasswordCaptchaEmail(userID, email, host string) error {
 	}
 	u.Path = `web/auth/reset`
 
-	pool, err := getSmtpPool()
+	pool, err := getMailer()
 	if err != nil {
 		return err
 	}

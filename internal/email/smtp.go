@@ -11,7 +11,7 @@ import (
 )
 
 var (
-	smtpPool      *smtp.Pool
+	mailer        *smtp.Mailer
 	configChanged bool
 	lock          sync.Mutex
 )
@@ -94,28 +94,9 @@ var (
 			lock.Lock()
 			defer lock.Unlock()
 
-			if smtpPool != nil {
-				smtpPool.SetFrom(s)
+			if mailer != nil {
+				mailer.SetFrom(s)
 			}
-		}),
-	)
-	smtpPoolSize = settings.NewInt64Setting(
-		"smtp_pool_size",
-		10,
-		model.SettingGroupEmail,
-		settings.WithValidatorInt64(func(i int64) error {
-			if i <= 0 {
-				return errors.New("smtp pool size must be greater than 0")
-			}
-			if i > 100 {
-				return errors.New("smtp pool size must be less than 100")
-			}
-			return nil
-		}),
-		settings.WithAfterSetInt64(func(ss settings.Int64Setting, i int64) {
-			lock.Lock()
-			defer lock.Unlock()
-			configChanged = true
 		}),
 	)
 )
@@ -131,39 +112,32 @@ func newSmtpConfig() *smtp.Config {
 	}
 }
 
-func newSmtpPool() (*smtp.Pool, error) {
-	return smtp.NewSMTPPool(newSmtpConfig(), int(smtpPoolSize.Get()))
+func newMailer() (*smtp.Mailer, error) {
+	return smtp.NewMailer(newSmtpConfig())
 }
 
-func getSmtpPool() (*smtp.Pool, error) {
+func getMailer() (*smtp.Mailer, error) {
 	lock.Lock()
 	defer lock.Unlock()
 
 	if configChanged {
 		configChanged = false
-		if smtpPool != nil {
-			smtpPool.Close()
-			smtpPool = nil
-		}
+		mailer = nil
 	}
 
-	if smtpPool == nil {
-		pool, err := newSmtpPool()
+	if mailer == nil {
+		m, err := newMailer()
 		if err != nil {
 			return nil, err
 		}
-		smtpPool = pool
+		mailer = m
 	}
 
-	return smtpPool, nil
+	return mailer, nil
 }
 
-func closeSmtpPool() {
+func closeMailer() {
 	lock.Lock()
 	defer lock.Unlock()
-
-	if smtpPool != nil {
-		smtpPool.Close()
-		smtpPool = nil
-	}
+	mailer = nil
 }

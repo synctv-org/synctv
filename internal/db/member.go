@@ -48,7 +48,7 @@ func FirstOrCreateRoomMemberRelation(roomID, userID string, conf ...CreateRoomMe
 	for _, c := range conf {
 		c(d)
 	}
-	err := OnConflictDoNothing().Where("room_id = ? AND user_id = ?", roomID, userID).Attrs(d).FirstOrCreate(roomMemberRelation).Error
+	err := db.Where("room_id = ? AND user_id = ?", roomID, userID).Attrs(d).FirstOrCreate(roomMemberRelation).Error
 	return roomMemberRelation, err
 }
 

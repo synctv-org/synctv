@@ -52,12 +52,17 @@ jobs:
         id: release_meta
         run: |
           version=${GITHUB_REF/refs\/tags\/v/}
+          echo "version: ${version}"
           prerelease=$(echo ${version} | grep -E 'rc|beta|alpha')
           release_name="Version ${version}"
           if [ -n "${prerelease}" ]; then
+            prerelease=true
             release_name="${release_name} (Prerelease)"
           fi
           tag_name="v${version}"
+          echo "prerelease: ${prerelease}"
+          echo "release_name: ${release_name}"
+          echo "tag_name: ${tag_name}"
 
           echo ::set-output name=VERSION::${version}
           echo ::set-output name=PRERELEASE::${prerelease}

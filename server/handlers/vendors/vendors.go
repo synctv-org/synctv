@@ -38,6 +38,10 @@ type VendorService interface {
 	GenMovieInfo(ctx context.Context, reqUser *op.User, userAgent, userToken string) (*dbModel.Movie, error)
 }
 
+type VendorDanmuService interface {
+	StreamDanmu(ctx context.Context, handler func(danmu string) error) error
+}
+
 func NewVendorService(room *op.Room, movie *op.Movie) (VendorService, error) {
 	switch movie.VendorInfo.Vendor {
 	case dbModel.VendorBilibili:

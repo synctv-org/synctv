@@ -214,6 +214,8 @@ func (s *BilibiliVendorService) GenMovieInfo(ctx context.Context, user *op.User,
 	if movie.MovieBase.Live {
 		movie.MovieBase.URL = fmt.Sprintf("/api/room/movie/proxy/%s?token=%s&roomId=%s", movie.ID, userToken, movie.RoomID)
 		movie.MovieBase.Type = "m3u8"
+
+		movie.MovieBase.StreamDanmu = fmt.Sprintf("/api/room/movie/danmu/%s?token=%s&roomId=%s", movie.ID, userToken, movie.RoomID)
 		return movie, nil
 	}
 
@@ -260,6 +262,8 @@ func (s *BilibiliVendorService) GenProxyMovieInfo(ctx context.Context, user *op.
 	if movie.MovieBase.Live {
 		movie.MovieBase.URL = fmt.Sprintf("/api/room/movie/proxy/%s?token=%s&roomId=%s", movie.ID, userToken, movie.RoomID)
 		movie.MovieBase.Type = "m3u8"
+
+		movie.MovieBase.StreamDanmu = fmt.Sprintf("/api/room/movie/danmu/%s?token=%s&roomId=%s", movie.ID, userToken, movie.RoomID)
 		return movie, nil
 	}
 

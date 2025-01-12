@@ -231,6 +231,8 @@ func initMovie(movie *gin.RouterGroup, needAuthMovie *gin.RouterGroup) {
 
 		live.GET("/hls/data/:roomId/:movieId/:dataId", ServeHlsLive)
 	}
+
+	needAuthMovie.GET("/danmu/:movieId", StreamDanmu)
 }
 
 func initUser(user *gin.RouterGroup, needAuthUser *gin.RouterGroup) {

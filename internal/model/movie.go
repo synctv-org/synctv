@@ -74,6 +74,8 @@ type MovieBase struct {
 	Type        string               `json:"type"`
 	ParentID    EmptyNullString      `gorm:"type:char(32)"                        json:"parentId"`
 	MoreSources []*MoreSource        `gorm:"serializer:fastjson;type:text"        json:"moreSources,omitempty"`
+	Danmu       string               `gorm:"type:varchar(8192)"                   json:"danmu"`
+	StreamDanmu string               `gorm:"type:varchar(8192)"                   json:"streamDanmu"`
 	Live        bool                 `json:"live"`
 	Proxy       bool                 `json:"proxy"`
 	RtmpSource  bool                 `json:"rtmpSource"`

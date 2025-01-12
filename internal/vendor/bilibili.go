@@ -19,9 +19,7 @@ func LoadBilibiliClient(name string) BilibiliInterface {
 	return bilibiliLocalClient
 }
 
-var (
-	bilibiliLocalClient BilibiliInterface
-)
+var bilibiliLocalClient BilibiliInterface
 
 func init() {
 	bilibiliLocalClient = bilibiliService.NewBilibiliService(nil)
@@ -48,6 +46,10 @@ func newGrpcBilibili(client bilibili.BilibiliClient) BilibiliInterface {
 	return &grpcBilibili{
 		client: client,
 	}
+}
+
+func (g *grpcBilibili) GetLiveDanmuInfo(ctx context.Context, in *bilibili.GetLiveDanmuInfoReq) (*bilibili.GetLiveDanmuInfoResp, error) {
+	return g.client.GetLiveDanmuInfo(ctx, in)
 }
 
 func (g *grpcBilibili) NewQRCode(ctx context.Context, in *bilibili.Empty) (*bilibili.NewQRCodeResp, error) {

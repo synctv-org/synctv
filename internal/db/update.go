@@ -101,10 +101,11 @@ func UpgradeDatabase() error {
 		return err
 	}
 	currentVersion := setting.Value
+	log.Infof("current database version: %s", currentVersion)
 	if flags.Global.ForceAutoMigrate || currentVersion != CurrentVersion {
 		err = autoMigrate(models...)
 		if err != nil {
-			log.Fatalf("failed to auto migrate: %s", err.Error())
+			log.Fatalf("failed to auto migrate database: %s", err.Error())
 		}
 	}
 	for currentVersion != "" {

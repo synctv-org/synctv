@@ -146,7 +146,7 @@ jobs:
           targets: ${{ matrix.targets.Target }}
           cgo-enabled: ${{ matrix.targets.CGO }}
           enable-micro: true
-          config-args: --version="${{ github.ref.outputs.jobs.release-web.outputs.tag_name }}"
+          config-args: --version="${{ needs.release-web.outputs.tag_name }}"
 
       - name: Release
         uses: softprops/action-gh-release@v2
@@ -154,11 +154,11 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           draft: false
-          prerelease: ${{ github.ref.outputs.jobs.release-web.outputs.prerelease }}
+          prerelease: ${{ needs.release-web.outputs.prerelease }}
           append_body: false
           fail_on_unmatched_files: true
-          name: ${{ github.ref.outputs.jobs.release-web.outputs.release_name }}
-          tag_name: ${{ github.ref.outputs.jobs.release-web.outputs.tag_name }}
+          name: ${{ needs.release-web.outputs.release_name }}
+          tag_name: ${{ needs.release-web.outputs.tag_name }}
           files: |
             build/*
 
@@ -231,7 +231,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          build-args: VERSION=${{ github.ref.outputs.jobs.release-web.outputs.tag_name }}
+          build-args: VERSION=${{ needs.release-web.outputs.tag_name }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

@@ -53,7 +53,7 @@ jobs:
         run: |
           version=${GITHUB_REF/refs\/tags\/v/}
           echo "version: ${version}"
-          prerelease=$(echo ${version} | grep -E 'rc|beta|alpha')
+          prerelease=$(echo ${version} | grep -E 'rc|beta|alpha' || true)
           release_name="Version ${version}"
           echo "release_name: ${release_name}"
           if [ -n "${prerelease}" ]; then

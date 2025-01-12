@@ -160,7 +160,7 @@ jobs:
           name: ${{ github.ref.outputs.jobs.release-web.outputs.release_name }}
           tag_name: ${{ github.ref.outputs.jobs.release-web.outputs.tag_name }}
           files: |
-            build/*
+            synctv-web/build/*
 
   release-docker:
     name: Release Docker

@@ -143,7 +143,6 @@ func (p RoomAdminPermission) Remove(permission RoomAdminPermission) RoomAdminPer
 type RoomMember struct {
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
-	Room             *Room  `gorm:"foreignKey:RoomID;references:ID"`
 	UserID           string `gorm:"primarykey;type:char(32)"`
 	RoomID           string `gorm:"primarykey;type:char(32)"`
 	Permissions      RoomMemberPermission

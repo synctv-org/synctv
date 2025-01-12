@@ -77,7 +77,7 @@ jobs:
           name: ${{ steps.release_meta.outputs.RELEASE_NAME }}
           tag_name: ${{ steps.release_meta.outputs.TAG_NAME }}
           files: |
-            dist.tar.gz
+            synctv-web/dist.tar.gz
 
   release:
     name: Release
@@ -160,7 +160,7 @@ jobs:
           name: ${{ github.ref.outputs.jobs.release-web.outputs.release_name }}
           tag_name: ${{ github.ref.outputs.jobs.release-web.outputs.tag_name }}
           files: |
-            synctv-web/build/*
+            build/*
 
   release-docker:
     name: Release Docker

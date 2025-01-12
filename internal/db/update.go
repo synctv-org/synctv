@@ -76,6 +76,9 @@ var dbVersions = map[string]dbVersion{
 		NextVersion: "0.0.10",
 	},
 	"0.0.10": {
+		NextVersion: "0.0.11",
+	},
+	"0.0.11": {
 		NextVersion: "",
 	},
 }

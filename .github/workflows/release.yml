@@ -39,10 +39,6 @@ jobs:
           name: synctv-web
           path: synctv-web/dist
 
-      - name: Create dist.zip
-        working-directory: synctv-web
-        run: zip -r dist.zip dist
-
       - name: Create dist.tar.gz
         working-directory: synctv-web
         run: tar -zcvf dist.tar.gz dist
@@ -81,7 +77,6 @@ jobs:
           name: ${{ steps.release_meta.outputs.RELEASE_NAME }}
           tag_name: ${{ steps.release_meta.outputs.TAG_NAME }}
           files: |
-            dist.zip
             dist.tar.gz
 
   release:

@@ -11,7 +11,7 @@ on:
 jobs:
   release-web:
     name: Release Web
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.release_meta.outputs.VERSION }}
       prerelease: ${{ steps.release_meta.outputs.PRERELEASE }}
@@ -81,7 +81,7 @@ jobs:
 
   release:
     name: Release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: release-web
     strategy:
       fail-fast: false
@@ -164,8 +164,17 @@ jobs:
 
   release-docker:
     name: Release Docker
-    runs-on: ubuntu-latest
     needs: release-web
+    outputs:
+      tags: ${{ steps.meta.outputs.tags }}
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runs-on: ubuntu-24.04
+          - arch: arm64
+            runs-on: ubuntu-24.04-arm64
+    runs-on: ${{ matrix.runs-on }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -189,20 +198,8 @@ jobs:
           echo ::set-output name=HAS_DOCKER_HUB::${{ secrets.DOCKERHUB_USERNAME != '' }}
           echo ::set-output name=DOCKERHUB_REPO::${{ secrets.DOCKERHUB_USERNAME != '' && format('{0}/{1}', secrets.DOCKERHUB_USERNAME, 'synctv') || '' }}
 
-      - name: Login to GitHub Container Registry
-        if: ${{ github.event_name != 'pull_request' }}
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Login to DockerHub
-        uses: docker/login-action@v3
-        if: ${{ github.event_name != 'pull_request' && steps.has_docker_hub.outputs.HAS_DOCKER_HUB }}
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Extract metadata (tags, labels) for Docker
         id: meta
@@ -220,19 +217,69 @@ jobs:
             type=semver,pattern={{major}}
             type=sha
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build and push
-        id: docker_build
+      - name: Build for ${{ matrix.arch }}
         uses: docker/build-push-action@v6
         with:
           context: .
           build-args: VERSION=${{ needs.release-web.outputs.tag_name }}
-          push: true
+          push: false
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/${{ matrix.arch }}
+          outputs: type=docker,dest=/tmp/docker-${{ matrix.arch }}.tar
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-${{ matrix.arch }}
+          path: /tmp/docker-${{ matrix.arch }}.tar
+
+  release-docker-push:
+    name: Push Docker Images
+    needs: release-docker
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Has DockerHub
+        id: has_docker_hub
+        run: |
+          echo ::set-output name=HAS_DOCKER_HUB::${{ secrets.DOCKERHUB_USERNAME != '' }}
+          echo ::set-output name=DOCKERHUB_REPO::${{ secrets.DOCKERHUB_USERNAME != '' && format('{0}/{1}', secrets.DOCKERHUB_USERNAME, 'synctv') || '' }}
+
+      - name: Login to GitHub Container Registry
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
+        if: ${{ github.event_name != 'pull_request' && steps.has_docker_hub.outputs.HAS_DOCKER_HUB }}
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Download amd64 image
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-amd64
+          path: /tmp
+
+      - name: Download arm64 image
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-arm64
+          path: /tmp
+
+      - name: Load images
+        run: |
+          docker load --input /tmp/docker-amd64.tar
+          docker load --input /tmp/docker-arm64.tar
+
+      - name: Create manifest and push
+        run: |
+          docker manifest create ${{ needs.release-docker.outputs.tags }} \
+            --amend $(docker images --filter "platform=linux/amd64" --format "{{.Repository}}:{{.Tag}}") \
+            --amend $(docker images --filter "platform=linux/arm64" --format "{{.Repository}}:{{.Tag}}")
+          docker manifest push ${{ needs.release-docker.outputs.tags }}

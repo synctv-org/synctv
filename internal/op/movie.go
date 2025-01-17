@@ -38,30 +38,39 @@ func (m *Movie) SubPath() string {
 	return m.subPath
 }
 
-func (m *Movie) ExpireID() uint64 {
+func (m *Movie) ExpireID(ctx context.Context) (uint64, error) {
 	switch {
 	case m.Movie.MovieBase.VendorInfo.Vendor == model.VendorAlist:
 		amcd, _ := m.AlistCache().Raw()
 		if amcd != nil && amcd.Ali != nil {
-			return uint64(amcd.Ali.Last())
+			return uint64(amcd.Ali.Last()), nil
 		}
 	case m.Movie.MovieBase.Live && m.Movie.MovieBase.VendorInfo.Vendor == model.VendorBilibili:
-		return uint64(m.BilibiliCache().Live.Last())
+		liveCache := m.BilibiliCache().Live
+		_, err := liveCache.Get(ctx)
+		if err != nil {
+			return 0, err
+		}
+		return uint64(liveCache.Last()), nil
 	}
-	return uint64(crc32.ChecksumIEEE([]byte(m.Movie.ID)))
+	return uint64(crc32.ChecksumIEEE([]byte(m.Movie.ID))), nil
 }
 
-func (m *Movie) CheckExpired(expireID uint64) bool {
+func (m *Movie) CheckExpired(ctx context.Context, expireID uint64) (bool, error) {
 	switch {
 	case m.Movie.MovieBase.VendorInfo.Vendor == model.VendorAlist:
 		amcd, _ := m.AlistCache().Raw()
 		if amcd != nil && amcd.Ali != nil {
-			return time.Now().UnixNano()-int64(amcd.Ali.Last()) > amcd.Ali.MaxAge()
+			return time.Now().UnixNano()-int64(amcd.Ali.Last()) > amcd.Ali.MaxAge(), nil
 		}
 	case m.Movie.MovieBase.Live && m.Movie.MovieBase.VendorInfo.Vendor == model.VendorBilibili:
-		return time.Now().UnixNano()-int64(expireID) > m.BilibiliCache().Live.MaxAge()
+		return time.Now().UnixNano()-int64(expireID) > m.BilibiliCache().Live.MaxAge(), nil
 	}
-	return expireID != m.ExpireID()
+	id, err := m.ExpireID(ctx)
+	if err != nil {
+		return false, err
+	}
+	return expireID != id, nil
 }
 
 func (m *Movie) ClearCache() error {

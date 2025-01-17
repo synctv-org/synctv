@@ -1,6 +1,7 @@
 package op
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync/atomic"
@@ -434,12 +435,12 @@ func (r *Room) LoadCurrentMovie() (*Movie, error) {
 	return r.GetMovieByID(id)
 }
 
-func (r *Room) CheckCurrentExpired(expireID uint64) (bool, error) {
+func (r *Room) CheckCurrentExpired(ctx context.Context, expireID uint64) (bool, error) {
 	m, err := r.LoadCurrentMovie()
 	if err != nil {
 		return false, err
 	}
-	return m.CheckExpired(expireID), nil
+	return m.CheckExpired(ctx, expireID)
 }
 
 func (r *Room) SetCurrentMovie(movieID string, subPath string, play bool) error {

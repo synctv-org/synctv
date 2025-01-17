@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -420,7 +421,13 @@ func handleExpiredMessage(cli *op.Client, expirationID uint64) error {
 		if err != nil {
 			return sendErrorMessage(cli, fmt.Sprintf("get movie by id error: %v", err))
 		}
-		if currentMovie.CheckExpired(expirationID) {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+		defer cancel()
+		expired, err := currentMovie.CheckExpired(ctx, expirationID)
+		if err != nil {
+			return sendErrorMessage(cli, fmt.Sprintf("check expired error: %v", err))
+		}
+		if expired {
 			return cli.Send(&pb.Message{
 				Type: pb.MessageType_EXPIRED,
 			})

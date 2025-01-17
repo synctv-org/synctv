@@ -131,10 +131,14 @@ func genCurrentRespWithCurrent(ctx context.Context, room *op.Room, user *op.User
 	if err != nil {
 		return nil, fmt.Errorf("gen current movie info error: %w", err)
 	}
+	expireID, err := opMovie.ExpireID(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("get expire id error: %w", err)
+	}
 	resp := &model.CurrentMovieResp{
 		Status:   current.UpdateStatus(),
 		Movie:    mr,
-		ExpireID: opMovie.ExpireID(),
+		ExpireID: expireID,
 	}
 	return resp, nil
 }

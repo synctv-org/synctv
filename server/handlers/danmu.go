@@ -51,7 +51,6 @@ func StreamDanmu(ctx *gin.Context) {
 	})
 	if err != nil {
 		log.Errorf("stream danmu error: %v", err)
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
-		return
+		ctx.SSEvent("error", err.Error())
 	}
 }

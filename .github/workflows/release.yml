@@ -8,10 +8,14 @@ on:
       - "v*.*.*"
   pull_request:
 
+env:
+  DOCKERHUB_REPO: ${{ secrets.DOCKERHUB_USERNAME != '' && format('{0}/{1}', secrets.DOCKERHUB_USERNAME, 'synctv') || '' }}
+  GHCR_REPO: ghcr.io/${{ github.repository }}
+
 jobs:
   release-web:
     name: Release Web
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.release_meta.outputs.VERSION }}
       prerelease: ${{ steps.release_meta.outputs.PRERELEASE }}
@@ -81,7 +85,7 @@ jobs:
 
   release:
     name: Release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: release-web
     strategy:
       fail-fast: false
@@ -162,11 +166,32 @@ jobs:
           files: |
             build/*
 
-  release-docker:
+  build-docker:
     name: Release Docker
-    runs-on: ubuntu-latest
     needs: release-web
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+          - arch: arm64
+            runs-on: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runs-on || 'ubuntu-24.04' }}
     steps:
+      - name: Login to GitHub Container Registry
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
+        if: ${{ github.event_name != 'pull_request' && env.DOCKERHUB_REPO }}
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -183,12 +208,47 @@ jobs:
           rm -rf public/dist/*
           cp -r synctv-web/dist/* public/dist/
 
-      - name: Has DockerHub
-        id: has_docker_hub
-        run: |
-          echo ::set-output name=HAS_DOCKER_HUB::${{ secrets.DOCKERHUB_USERNAME != '' }}
-          echo ::set-output name=DOCKERHUB_REPO::${{ secrets.DOCKERHUB_USERNAME != '' && format('{0}/{1}', secrets.DOCKERHUB_USERNAME, 'synctv') || '' }}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ env.DOCKERHUB_REPO }}
+            ${{ env.GHCR_REPO }}
+
+      - name: Build for ${{ matrix.arch }}
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          build-args: VERSION=${{ needs.release-web.outputs.tag_name }}
+          push: false
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/${{ matrix.arch }}
+          outputs: type=image,"name=${{ env.DOCKERHUB_REPO }},${{ env.GHCR_REPO }}",push-by-digest=true,name-canonical=true,push=true
+
+      - name: Export digest
+        run: |
+          mkdir -p ${{ runner.temp }}/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "${{ runner.temp }}/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  release-docker:
+    name: Push Docker Images
+    needs: build-docker
+    runs-on: ubuntu-24.04
+    steps:
       - name: Login to GitHub Container Registry
         if: ${{ github.event_name != 'pull_request' }}
         uses: docker/login-action@v3
@@ -199,18 +259,28 @@ jobs:
 
       - name: Login to DockerHub
         uses: docker/login-action@v3
-        if: ${{ github.event_name != 'pull_request' && steps.has_docker_hub.outputs.HAS_DOCKER_HUB }}
+        if: ${{ github.event_name != 'pull_request' && env.DOCKERHUB_REPO }}
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Extract metadata (tags, labels) for Docker
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: |
-            ${{ steps.has_docker_hub.outputs.DOCKERHUB_REPO }}
-            ghcr.io/${{ github.repository }}
+            ${{ env.DOCKERHUB_REPO }}
+            ${{ env.GHCR_REPO }}
           tags: |
             type=ref,event=branch
             type=ref,event=pr
@@ -220,19 +290,15 @@ jobs:
             type=semver,pattern={{major}}
             type=sha
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+      - name: Create manifest list and push
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.DOCKERHUB_REPO }}@sha256:%s ' *)
+          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.GHCR_REPO }}@sha256:%s ' *)
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build and push
-        id: docker_build
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          build-args: VERSION=${{ needs.release-web.outputs.tag_name }}
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          platforms: linux/amd64,linux/arm64
+      - name: Inspect image
+        run: |
+          docker buildx imagetools inspect ${{ env.DOCKERHUB_REPO }}:${{ steps.meta.outputs.version }}
+          docker buildx imagetools inspect ${{ env.GHCR_REPO }}:${{ steps.meta.outputs.version }}

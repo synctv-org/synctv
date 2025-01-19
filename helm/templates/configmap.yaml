@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.synctv.envConfigName }}
+data:
+  DATABASE_TYPE: postgres
+  DATABASE_HOST: synctv-postgresql
+  DATABASE_PORT: "5432"
+  DATABASE_USER: postgres
+  DATABASE_PASSWORD: synctv
+  DATABASE_NAME: postgres

@@ -25,7 +25,7 @@ spec:
               topologyKey: kubernetes.io/hostname
       containers:
         - name: synctv
-          image: {{ .Values.synctv.image.repository }}:{{ .Values.synctv.image.tag }}
+          image: {{ .Values.synctv.image.repository }}:{{ .Values.synctv.image.tag | default .Chart.AppVersion }}
           imagePullPolicy: {{ .Values.synctv.image.pullPolicy }}
           ports:
             - containerPort: 8080

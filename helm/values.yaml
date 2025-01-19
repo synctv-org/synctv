@@ -2,7 +2,7 @@
 synctv:
   image:
     repository: synctvorg/synctv
-    tag: latest
+    tag: ""
     pullPolicy: IfNotPresent
   envConfigName: synctv-env
   storage:

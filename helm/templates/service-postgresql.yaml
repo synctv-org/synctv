@@ -1,0 +1,14 @@
+{{- if .Values.postgresql.enabled -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: synctv-postgresql
+  labels:
+    app: synctv-postgresql
+spec:
+  ports:
+    - port: {{ .Values.postgresql.service.port }}
+      targetPort: {{ .Values.postgresql.service.port }}
+  selector:
+    app: synctv-postgresql
+{{- end }}

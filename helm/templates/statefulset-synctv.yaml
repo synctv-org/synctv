@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: synctv
+  labels:
+    app: synctv
+spec:
+  selector:
+    matchLabels:
+      app: synctv
+  template:
+    metadata:
+      labels:
+        app: synctv
+    spec:
+      affinity:
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: app
+                    operator: In
+                    values:
+                      - synctv-postgresql
+              topologyKey: kubernetes.io/hostname
+      containers:
+        - name: synctv
+          image: {{ .Values.synctv.image.repository }}:{{ .Values.synctv.image.tag | default .Chart.AppVersion }}
+          imagePullPolicy: {{ .Values.synctv.image.pullPolicy }}
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: {{ .Values.synctv.envConfigName }}
+          volumeMounts:
+            - name: synctv-storage
+              mountPath: /root/.synctv
+  volumeClaimTemplates:
+    - metadata:
+        name: synctv-storage
+      spec:
+        {{- with .Values.synctv.storage.storageClass }}
+        storageClassName: {{ . }}
+        {{- end }}
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: {{ .Values.synctv.storage.size }}

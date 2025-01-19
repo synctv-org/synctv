@@ -1,0 +1,29 @@
+# Default values for synctv.
+synctv:
+  image:
+    repository: synctvorg/synctv
+    tag: ""
+    pullPolicy: IfNotPresent
+  envConfigName: synctv-env
+  storage:
+    size: 1Gi
+    storageClass: ""
+
+postgresql:
+  enabled: true
+  replicaCount: 1
+  service:
+    port: 5432
+  image:
+    repository: pgvector/pgvector
+    tag: pg16
+    pullPolicy: IfNotPresent
+  password: synctv
+  storage:
+    size: 1Gi
+    storageClass: ""
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations: {}

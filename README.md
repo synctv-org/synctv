@@ -92,9 +92,9 @@ docker run -d --name synctv -v /opt/synctv:/root/.synctv -p 8080:8080 synctvorg/
 
 [docker-compose.yml](./script/docker-compose.yml)
 
-### Helm
+## Helm
 
-#### Helm Install
+### Helm Install
 
 ```bash
 helm repo add synctv https://docs.synctv.wiki/helm-charts
@@ -108,7 +108,7 @@ helm upgrade --install synctv synctv/synctv \
   --set 'ingress.hosts[0].secretName=<yourdomain-secretName>'
 ```
 
-#### Helm Upgrade
+### Helm Upgrade
 
 ```bash
 helm upgrade --install synctv synctv/synctv \
@@ -118,7 +118,7 @@ helm upgrade --install synctv synctv/synctv \
 
 > More Helm Values:[helm-values](helm-values.md)
 
-#### Helm Uninstall
+### Helm Uninstall
 
 ```bash
 helm uninstall -n synctv synctv

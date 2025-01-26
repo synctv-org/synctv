@@ -15,7 +15,7 @@ var UnbanCmd = &cobra.Command{
 	Long:  "unban user with user id",
 	PreRunE: func(cmd *cobra.Command, args []string) error {
 		return bootstrap.New(bootstrap.WithContext(cmd.Context())).Add(
-			bootstrap.InitDiscardLog,
+			bootstrap.InitStdLog,
 			bootstrap.InitConfig,
 			bootstrap.InitDatabase,
 		).Run()

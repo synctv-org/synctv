@@ -15,7 +15,7 @@ var RemoveCmd = &cobra.Command{
 	Long:  `remove admin`,
 	PreRunE: func(cmd *cobra.Command, args []string) error {
 		return bootstrap.New(bootstrap.WithContext(cmd.Context())).Add(
-			bootstrap.InitDiscardLog,
+			bootstrap.InitStdLog,
 			bootstrap.InitConfig,
 			bootstrap.InitDatabase,
 		).Run()

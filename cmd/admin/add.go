@@ -17,7 +17,7 @@ var AddCmd = &cobra.Command{
 	Long:  `add admin by user id`,
 	PreRunE: func(cmd *cobra.Command, _ []string) error {
 		return bootstrap.New(bootstrap.WithContext(cmd.Context())).Add(
-			bootstrap.InitDiscardLog,
+			bootstrap.InitStdLog,
 			bootstrap.InitConfig,
 			bootstrap.InitDatabase,
 		).Run()

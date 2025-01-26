@@ -101,9 +101,3 @@ func InitStdLog(ctx context.Context) error {
 	setLog(logrus.StandardLogger())
 	return nil
 }
-
-func InitDiscardLog(ctx context.Context) error {
-	logrus.StandardLogger().SetOutput(io.Discard)
-	log.SetOutput(io.Discard)
-	return nil
-}

@@ -567,12 +567,6 @@ func ChangeCurrentMovie(ctx *gin.Context) {
 func ProxyMovie(ctx *gin.Context) {
 	log := ctx.MustGet("log").(*log.Entry)
 
-	if !settings.MovieProxy.Get() {
-		log.Errorf("movie proxy is not enabled")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("movie proxy is not enabled"))
-		return
-	}
-
 	room := ctx.MustGet("room").(*op.RoomEntry).Value()
 	// user := ctx.MustGet("user").(*op.UserEntry).Value()
 
@@ -594,8 +588,14 @@ func ProxyMovie(ctx *gin.Context) {
 		return
 	}
 
-	if !m.Movie.MovieBase.Proxy {
+	if !settings.MovieProxy.Get() {
+		log.Errorf("proxy is not enabled")
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("proxy is not enabled"))
+		return
+	}
+
+	if !m.Movie.MovieBase.Proxy {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("movie is not proxy"))
 		return
 	}
 
@@ -649,7 +649,7 @@ func ServeM3u8(ctx *gin.Context) {
 	}
 
 	if !m.Movie.MovieBase.Proxy {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("proxy is not enabled"))
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("movie is not proxy"))
 		return
 	}
 

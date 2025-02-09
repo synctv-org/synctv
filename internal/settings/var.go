@@ -92,3 +92,9 @@ var HOST = NewStringSetting(
 		return err
 	}),
 )
+
+var P2PZone = NewStringSetting(
+	"p2p_zone",
+	"hk",
+	model.SettingGroupServer,
+)

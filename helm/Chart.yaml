@@ -4,5 +4,5 @@ description: A Helm chart for deploying Synctv application with PostgreSQL State
 
 type: application
 
-appVersion: 0.9.4
-version: 0.9.4
+appVersion: 0.9.5
+version: 0.9.5

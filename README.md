@@ -147,6 +147,9 @@ synctv server --data-dir ./
 # Special sponsors
 
 - [亚洲云](https://www.asiayun.com) supports the server for the [demo](https://demo.synctv.wiki) site.
+- [SwarmCloud](https://swarmcloud.net/) ¥ 200 and provides video P2P acceleration.
+  - When the server network bandwidth is insufficient, you can consider using P2P video acceleration technology.
+  - If you want to use P2P video acceleration technology for free, you can view the documentation [P2P video acceleration](https://docs.synctv.wiki/#/p2p).
 - [LucasYuYu](https://github.com/LucasYuYu) ¥ 18.88
 - [爱发电用户_5vDc](https://afdian.com/u/48fa38ce0e0211ef944d5254001e7c00) ¥ 228
 - masha

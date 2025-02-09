@@ -147,6 +147,9 @@ synctv server --data-dir ./
 # 特别赞助商
 
 - [亚洲云](https://www.asiayun.com) 为[演示站](https://demo.synctv.wiki)点提供服务器支持。
+- [SwarmCloud](https://www.cdnbye.com/cn/) ¥ 200 并提供视频P2P加速。
+  - 当服务器网络带宽不足时，可以考虑使用P2P视频加速技术。
+  - 如果你想免费使用P2P视频加速技术，可以查看文档[P2P视频加速](https://docs.synctv.wiki/#/zh-cn/p2p)。
 - [LucasYuYu](https://github.com/LucasYuYu) ¥ 18.88
 - [爱发电用户_5vDc](https://afdian.com/u/48fa38ce0e0211ef944d5254001e7c00) ¥ 228
 - masha

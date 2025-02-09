@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -422,17 +423,15 @@ func GetPageAndMax(ctx *gin.Context) (page int, _max int, err error) {
 }
 
 func TruncateByRune(s string, length int) string {
-	if len(s) <= length {
-		return s
-	}
 	total := 0
-	for _, v := range s {
-		total += len(string(v))
-		if total > length {
-			return s[:total-len(string(v))]
+	for _, r := range s {
+		runeLen := utf8.RuneLen(r)
+		if runeLen == -1 || total+runeLen > length {
+			return s[:total]
 		}
+		total += runeLen
 	}
-	panic("truncate by rune error")
+	return s[:total]
 }
 
 func GetEnvFiles(root string) ([]string, error) {

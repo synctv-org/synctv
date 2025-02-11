@@ -15,7 +15,7 @@ type dbVersion struct {
 	NextVersion string
 }
 
-const CurrentVersion = "0.0.12"
+const CurrentVersion = "0.0.13"
 
 var models = []any{
 	new(model.Setting),
@@ -82,6 +82,9 @@ var dbVersions = map[string]dbVersion{
 		NextVersion: "0.0.12",
 	},
 	"0.0.12": {
+		NextVersion: "0.0.13",
+	},
+	"0.0.13": {
 		NextVersion: "",
 	},
 }

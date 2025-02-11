@@ -26,16 +26,16 @@ import (
 )
 
 type Movie struct {
+	room *Room
 	*model.Movie
 	channel       atomic.Pointer[rtmps.Channel]
 	alistCache    atomic.Pointer[cache.AlistMovieCache]
 	bilibiliCache atomic.Pointer[cache.BilibiliMovieCache]
 	embyCache     atomic.Pointer[cache.EmbyMovieCache]
-	subPath       string
 }
 
 func (m *Movie) SubPath() string {
-	return m.subPath
+	return m.room.CurrentSubPath()
 }
 
 func (m *Movie) ExpireID(ctx context.Context) (uint64, error) {
@@ -99,7 +99,7 @@ func (m *Movie) ClearCache() error {
 func (m *Movie) AlistCache() *cache.AlistMovieCache {
 	c := m.alistCache.Load()
 	if c == nil {
-		c = cache.NewAlistMovieCache(m.Movie, m.subPath)
+		c = cache.NewAlistMovieCache(m.Movie, m.SubPath())
 		if !m.alistCache.CompareAndSwap(nil, c) {
 			return m.AlistCache()
 		}
@@ -121,7 +121,7 @@ func (m *Movie) BilibiliCache() *cache.BilibiliMovieCache {
 func (m *Movie) EmbyCache() *cache.EmbyMovieCache {
 	c := m.embyCache.Load()
 	if c == nil {
-		c = cache.NewEmbyMovieCache(m.Movie, m.subPath)
+		c = cache.NewEmbyMovieCache(m.Movie, m.SubPath())
 		if !m.embyCache.CompareAndSwap(nil, c) {
 			return m.EmbyCache()
 		}

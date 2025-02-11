@@ -14,12 +14,14 @@ import (
 
 type movies struct {
 	roomID string
+	room   *Room
 	cache  rwmap.RWMap[string, *Movie]
 }
 
 func (m *movies) AddMovie(mo *model.Movie) error {
 	mo.Position = uint(time.Now().UnixMilli())
 	movie := &Movie{
+		room:  m.room,
 		Movie: mo,
 	}
 
@@ -45,6 +47,7 @@ func (m *movies) AddMovies(mos []*model.Movie) error {
 	for _, mo := range mos {
 		mo.Position = uint(time.Now().UnixMilli())
 		movie := &Movie{
+			room:  m.room,
 			Movie: mo,
 		}
 
@@ -184,7 +187,10 @@ func (m *movies) GetMovieByID(id string) (*Movie, error) {
 	if err != nil {
 		return nil, err
 	}
-	mm, _ = m.cache.LoadOrStore(mv.ID, &Movie{Movie: mv})
+	mm, _ = m.cache.LoadOrStore(mv.ID, &Movie{
+		room:  m.room,
+		Movie: mv,
+	})
 	return mm, nil
 }
 

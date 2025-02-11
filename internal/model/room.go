@@ -41,6 +41,7 @@ type Room struct {
 	RoomMembers    []*RoomMember `gorm:"foreignKey:RoomID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 	Movies         []*Movie      `gorm:"foreignKey:RoomID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 	Status         RoomStatus    `gorm:"not null;default:2"`
+	Current        *Current      `gorm:"serializer:fastjson"`
 }
 
 func (r *Room) BeforeCreate(tx *gorm.DB) error {

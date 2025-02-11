@@ -54,11 +54,14 @@ func LoadOrInitRoom(room *model.Room) (*RoomEntry, error) {
 		return nil, err
 	}
 
-	i, _ := roomCache.LoadOrStore(room.ID, &Room{
+	r := &Room{
 		Room:    *room,
-		current: newCurrent(),
+		current: newCurrent(room.ID, room.Current),
 		movies:  &movies{roomID: room.ID},
-	}, time.Duration(settings.RoomTTL.Get())*time.Hour)
+	}
+	r.movies.room = r
+
+	i, _ := roomCache.LoadOrStore(room.ID, r, time.Duration(settings.RoomTTL.Get())*time.Hour)
 	return i, nil
 }
 

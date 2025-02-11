@@ -8,7 +8,6 @@ import (
 	"github.com/gin-gonic/gin"
 	json "github.com/json-iterator/go"
 	"github.com/synctv-org/synctv/internal/model"
-	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/utils"
 )
 
@@ -206,9 +205,9 @@ type Movie struct {
 }
 
 type CurrentMovieResp struct {
-	Movie    *Movie    `json:"movie"`
-	Status   op.Status `json:"status"`
-	ExpireID uint64    `json:"expireId"`
+	Movie    *Movie       `json:"movie"`
+	Status   model.Status `json:"status"`
+	ExpireID uint64       `json:"expireId"`
 }
 
 type ClearMoviesReq struct {

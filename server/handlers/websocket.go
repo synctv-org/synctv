@@ -11,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 	log "github.com/sirupsen/logrus"
+	"github.com/synctv-org/synctv/internal/model"
 	dbModel "github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
 	pb "github.com/synctv-org/synctv/proto/message"
@@ -449,7 +450,7 @@ func handleCheckStatusMessage(cli *op.Client, msg *pb.Message, timeDiff float64)
 	return nil
 }
 
-func needsSync(clientStatus *pb.Status, serverStatus op.Status, timeDiff float64) bool {
+func needsSync(clientStatus *pb.Status, serverStatus model.Status, timeDiff float64) bool {
 	if clientStatus.IsPlaying != serverStatus.IsPlaying ||
 		clientStatus.PlaybackRate != serverStatus.PlaybackRate ||
 		serverStatus.CurrentTime+maxInterval < clientStatus.CurrentTime+timeDiff ||
@@ -468,7 +469,7 @@ func sendErrorMessage(c *op.Client, errorMsg string) error {
 	})
 }
 
-func sendSyncStatus(cli *op.Client, status *op.Status) error {
+func sendSyncStatus(cli *op.Client, status *model.Status) error {
 	return cli.Send(&pb.Message{
 		Type: pb.MessageType_CHECK_STATUS,
 		Payload: &pb.Message_PlaybackStatus{

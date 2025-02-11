@@ -184,3 +184,14 @@ func SetRoomStatusByCreator(userID string, status model.RoomStatus) error {
 	result := db.Model(&model.Room{}).Where("creator_id = ?", userID).Update("status", status)
 	return HandleUpdateResult(result, ErrRoomNotFound)
 }
+
+func SetRoomCurrent(roomID string, current *model.Current) error {
+	r := &model.Room{
+		Current: current,
+	}
+	result := db.Model(r).
+		Where("id = ?", roomID).
+		Select("Current").
+		Updates(r)
+	return HandleUpdateResult(result, ErrRoomNotFound)
+}

@@ -509,7 +509,7 @@ func (u *User) GetRoomMoviesWithPage(room *Room, keyword string, page, pageSize 
 	return room.GetMoviesWithPage(keyword, page, pageSize, parentID)
 }
 
-func (u *User) SetRoomCurrentStatus(room *Room, playing bool, seek, rate, timeDiff float64) (*Status, error) {
+func (u *User) SetRoomCurrentStatus(room *Room, playing bool, seek, rate, timeDiff float64) (*model.Status, error) {
 	if !u.HasRoomPermission(room, model.PermissionSetCurrentStatus) {
 		return nil, model.ErrNoPermission
 	}

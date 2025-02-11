@@ -416,12 +416,12 @@ func (r *Room) GetMovieByID(id string) (*Movie, error) {
 	return r.movies.GetMovieByID(id)
 }
 
-func (r *Room) Current() *Current {
+func (r *Room) Current() *model.Current {
 	c := r.current.Current()
 	return &c
 }
 
-func (r *Room) CurrentMovie() CurrentMovie {
+func (r *Room) CurrentMovie() model.CurrentMovie {
 	return r.current.current.Movie
 }
 
@@ -460,7 +460,7 @@ func (r *Room) SetCurrentMovie(movieID string, subPath string, play bool) error 
 		}
 	}
 	if movieID == "" {
-		r.current.SetMovie(CurrentMovie{}, false)
+		r.current.SetMovie(model.CurrentMovie{}, false)
 		return nil
 	}
 	m, err := r.GetMovieByID(movieID)
@@ -470,12 +470,20 @@ func (r *Room) SetCurrentMovie(movieID string, subPath string, play bool) error 
 	if m.IsFolder && !m.IsDynamicFolder() {
 		return errors.New("cannot set static folder as current movie")
 	}
-	m.subPath = subPath
-	r.current.SetMovie(CurrentMovie{
-		ID:     m.ID,
-		IsLive: m.Live,
+	r.current.SetMovie(model.CurrentMovie{
+		ID:      m.ID,
+		IsLive:  m.Live,
+		SubPath: subPath,
 	}, play)
 	return m.ClearCache()
+}
+
+func (r *Room) CurrentSubPath() string {
+	fmt.Println("CurrentSubPath", r.current)
+	fmt.Println("CurrentSubPath", r.current)
+	fmt.Println("CurrentSubPath", r.current)
+	fmt.Println("CurrentSubPath", r.current)
+	return r.current.SubPath()
 }
 
 func (r *Room) SwapMoviePositions(id1, id2 string) error {
@@ -512,11 +520,11 @@ func (r *Room) UserOnlineCount(userID string) int {
 	return r.lazyInitHub().OnlineCount(userID)
 }
 
-func (r *Room) SetCurrentStatus(playing bool, seek float64, rate float64, timeDiff float64) *Status {
+func (r *Room) SetCurrentStatus(playing bool, seek float64, rate float64, timeDiff float64) *model.Status {
 	return r.current.SetStatus(playing, seek, rate, timeDiff)
 }
 
-func (r *Room) SetCurrentSeekRate(seek float64, rate float64, timeDiff float64) *Status {
+func (r *Room) SetCurrentSeekRate(seek float64, rate float64, timeDiff float64) *model.Status {
 	return r.current.SetSeekRate(seek, rate, timeDiff)
 }
 

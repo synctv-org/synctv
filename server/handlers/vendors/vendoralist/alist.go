@@ -371,10 +371,18 @@ func (s *AlistVendorService) GenMovieInfo(ctx context.Context, user *op.User, us
 		movie.MovieBase.Type = "m3u8"
 
 		rawStreamURL := data.URL
+
+		subPath := s.movie.SubPath()
+		var rawType string
+		if subPath == "" {
+			rawType = utils.GetURLExtension(movie.MovieBase.VendorInfo.Alist.Path)
+		} else {
+			rawType = utils.GetURLExtension(subPath)
+		}
 		movie.MovieBase.MoreSources = []*dbModel.MoreSource{
 			{
 				Name: "raw",
-				Type: utils.GetURLExtension(movie.MovieBase.VendorInfo.Alist.Path),
+				Type: rawType,
 				URL:  rawStreamURL,
 			},
 		}

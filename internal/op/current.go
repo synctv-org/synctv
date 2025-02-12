@@ -35,10 +35,10 @@ func (c *current) Current() model.Current {
 	return c.current
 }
 
-func (c *current) SubPath() string {
+func (c *current) CurrentMovie() model.CurrentMovie {
 	c.lock.RLock()
 	defer c.lock.RUnlock()
-	return c.current.Movie.SubPath
+	return c.current.Movie
 }
 
 func (c *current) SetMovie(movie model.CurrentMovie, play bool) {

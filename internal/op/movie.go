@@ -35,7 +35,7 @@ type Movie struct {
 }
 
 func (m *Movie) SubPath() string {
-	return m.room.CurrentSubPath()
+	return m.room.SubPath(m.ID)
 }
 
 func (m *Movie) ExpireID(ctx context.Context) (uint64, error) {

@@ -478,12 +478,12 @@ func (r *Room) SetCurrentMovie(movieID string, subPath string, play bool) error 
 	return m.ClearCache()
 }
 
-func (r *Room) CurrentSubPath() string {
-	fmt.Println("CurrentSubPath", r.current)
-	fmt.Println("CurrentSubPath", r.current)
-	fmt.Println("CurrentSubPath", r.current)
-	fmt.Println("CurrentSubPath", r.current)
-	return r.current.SubPath()
+func (r *Room) SubPath(id string) string {
+	m := r.current.CurrentMovie()
+	if m.ID == id {
+		return m.SubPath
+	}
+	return ""
 }
 
 func (r *Room) SwapMoviePositions(id1, id2 string) error {

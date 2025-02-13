@@ -2,10 +2,12 @@ package cache
 
 import (
 	"bytes"
+	"compress/flate"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"time"
@@ -353,8 +355,6 @@ func translateBilibiliSubtitleToSrt(ctx context.Context, url string) ([]byte, er
 	return convertToSRT(&srt), nil
 }
 
-type BilibiliLiveCache struct{}
-
 func NewBilibiliLiveCacheInitFunc(movie *model.Movie) func(ctx context.Context) ([]byte, error) {
 	return func(ctx context.Context) ([]byte, error) {
 		return BilibiliLiveCacheInitFunc(ctx, movie)
@@ -387,11 +387,41 @@ func BilibiliLiveCacheInitFunc(ctx context.Context, movie *model.Movie) ([]byte,
 	return genBilibiliLiveM3U8ListFile(resp.LiveStreams), nil
 }
 
+func NewBilibiliDanmuCacheInitFunc(movie *model.Movie) func(ctx context.Context) ([]byte, error) {
+	return func(ctx context.Context) ([]byte, error) {
+		return BilibiliDanmuCacheInitFunc(ctx, movie)
+	}
+}
+
+func BilibiliDanmuCacheInitFunc(ctx context.Context, movie *model.Movie) ([]byte, error) {
+	u := fmt.Sprintf("https://comment.bilibili.com/%d.xml", movie.VendorInfo.Bilibili.Cid)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("status code: %d", resp.StatusCode)
+	}
+	gz := flate.NewReader(resp.Body)
+	defer gz.Close()
+	data, err := io.ReadAll(gz)
+	if err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
 type BilibiliMovieCache struct {
 	NoSharedMovie *MapCache[string, *BilibiliUserCache]
 	SharedMpd     *refreshcache1.RefreshCache[*BilibiliMpdCache, *BilibiliUserCache]
 	Subtitle      *refreshcache1.RefreshCache[BilibiliSubtitleCache, *BilibiliUserCache]
 	Live          *refreshcache0.RefreshCache[[]byte]
+	Danmu         *refreshcache0.RefreshCache[[]byte]
 }
 
 func NewBilibiliMovieCache(movie *model.Movie) *BilibiliMovieCache {
@@ -400,6 +430,7 @@ func NewBilibiliMovieCache(movie *model.Movie) *BilibiliMovieCache {
 		SharedMpd:     refreshcache1.NewRefreshCache(NewBilibiliSharedMpdCacheInitFunc(movie), time.Minute*55),
 		Subtitle:      refreshcache1.NewRefreshCache(NewBilibiliSubtitleCacheInitFunc(movie), -1),
 		Live:          refreshcache0.NewRefreshCache(NewBilibiliLiveCacheInitFunc(movie), time.Minute*55),
+		Danmu:         refreshcache0.NewRefreshCache(NewBilibiliDanmuCacheInitFunc(movie), -1),
 	}
 }
 

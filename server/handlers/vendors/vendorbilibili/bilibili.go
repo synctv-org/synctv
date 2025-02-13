@@ -60,7 +60,19 @@ func (s *BilibiliVendorService) ProxyMovie(ctx *gin.Context) {
 		s.handleVideoProxy(ctx, log, t)
 	case "subtitle":
 		s.handleSubtitleProxy(ctx, log)
+	case "danmu":
+		s.handleDanmuProxy(ctx, log)
 	}
+}
+
+func (s *BilibiliVendorService) handleDanmuProxy(ctx *gin.Context, log *logrus.Entry) {
+	danmu, err := s.movie.BilibiliCache().Danmu.Get(ctx)
+	if err != nil {
+		log.Errorf("proxy vendor movie error: %v", err)
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
+		return
+	}
+	ctx.Data(http.StatusOK, "application/xml", danmu)
 }
 
 func (s *BilibiliVendorService) handleLiveProxy(ctx *gin.Context, log *logrus.Entry) {
@@ -219,6 +231,8 @@ func (s *BilibiliVendorService) GenMovieInfo(ctx context.Context, user *op.User,
 		return movie, nil
 	}
 
+	movie.Danmu = fmt.Sprintf("/api/room/movie/proxy/%s?token=%s&t=danmu&roomId=%s", movie.ID, userToken, movie.RoomID)
+
 	var str string
 	if movie.MovieBase.VendorInfo.Bilibili.Shared {
 		var u *op.UserEntry
@@ -266,6 +280,8 @@ func (s *BilibiliVendorService) GenProxyMovieInfo(ctx context.Context, user *op.
 		movie.MovieBase.StreamDanmu = fmt.Sprintf("/api/room/movie/danmu/%s?token=%s&roomId=%s", movie.ID, userToken, movie.RoomID)
 		return movie, nil
 	}
+
+	movie.Danmu = fmt.Sprintf("/api/room/movie/proxy/%s?token=%s&t=danmu&roomId=%s", movie.ID, userToken, movie.RoomID)
 
 	movie.MovieBase.URL = fmt.Sprintf("/api/room/movie/proxy/%s?token=%s&roomId=%s", movie.ID, userToken, movie.RoomID)
 	movie.MovieBase.Type = "mpd"

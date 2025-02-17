@@ -77,7 +77,7 @@ You can download the latest binary from [release page](https://github.com/synctv
 You can use the script to install and run SyncTV.
 
 ```bash
-sudo -v ; curl -fsSL https://raw.gitmirror.com/synctv-org/synctv/main/script/install.sh | sudo bash -s -- -v latest
+sudo -v ; curl -fsSL https://raw.githubusercontent.com/synctv-org/synctv/main/script/install.sh | sudo bash -s -- -v latest
 ```
 
 ## Docker

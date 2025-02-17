@@ -77,7 +77,7 @@ SyncTV 的同步观影功能确保所有观看视频的人都在同一点上。�
 您可以使用该脚本来安装和运行 SyncTV。
 
 ```bash
-sudo -v ; curl -fsSL https://raw.gitmirror.com/synctv-org/synctv/main/script/install.sh | sudo bash -s -- -v latest
+sudo -v ; curl -fsSL https://raw.githubusercontent.com/synctv-org/synctv/main/script/install.sh | sudo bash -s -- -v latest
 ```
 
 ## Docker

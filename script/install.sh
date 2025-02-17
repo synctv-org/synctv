@@ -9,7 +9,7 @@ function Help() {
     echo "Usage: sudo -v ; curl -fsSL https://raw.githubusercontent.com/synctv-org/synctv/main/script/install.sh | sudo bash -s -- -v latest"
     echo "-h: help"
     echo "-v: install version (default: latest)"
-    echo "-p: github proxy (default: https://mirror.ghproxy.com/)"
+    echo "-p: github proxy (default: https://ghfast.top/)"
     echo "-m: micro architecture (no default value)"
     echo "  example: -m v2"
     echo "  example: -m 6"
@@ -22,7 +22,7 @@ function Init() {
         exit
     fi
     VERSION="latest"
-    GH_PROXY="https://mirror.ghproxy.com/"
+    GH_PROXY="https://ghfast.top/"
     InitOS
     InitArch
     InitDownloadTools

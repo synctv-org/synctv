@@ -69,13 +69,13 @@ type MovieBase struct {
 	VendorInfo  VendorInfo           `gorm:"embedded;embeddedPrefix:vendor_info_" json:"vendorInfo,omitempty"`
 	Headers     map[string]string    `gorm:"serializer:fastjson;type:text"        json:"headers,omitempty"`
 	Subtitles   map[string]*Subtitle `gorm:"serializer:fastjson;type:text"        json:"subtitles,omitempty"`
-	URL         string               `gorm:"type:varchar(8192)"                   json:"url"`
-	Name        string               `gorm:"not null;type:varchar(256)"           json:"name"`
+	URL         string               `gorm:"type:text"                   json:"url"`
+	Name        string               `gorm:"not null;type:text"           json:"name"`
 	Type        string               `json:"type"`
 	ParentID    EmptyNullString      `gorm:"type:char(32)"                        json:"parentId"`
 	MoreSources []*MoreSource        `gorm:"serializer:fastjson;type:text"        json:"moreSources,omitempty"`
-	Danmu       string               `gorm:"type:varchar(8192)"                   json:"danmu"`
-	StreamDanmu string               `gorm:"type:varchar(8192)"                   json:"streamDanmu"`
+	Danmu       string               `gorm:"type:text"                   json:"danmu"`
+	StreamDanmu string               `gorm:"type:text"                   json:"streamDanmu"`
 	Live        bool                 `json:"live"`
 	Proxy       bool                 `json:"proxy"`
 	RtmpSource  bool                 `json:"rtmpSource"`
@@ -208,8 +208,8 @@ func (b *BilibiliStreamingInfo) Validate() error {
 
 type AlistStreamingInfo struct {
 	// {/}serverId/Path
-	Path     string `gorm:"type:varchar(4096)" json:"path,omitempty"`
-	Password string `gorm:"type:varchar(256)"  json:"password,omitempty"`
+	Path     string `gorm:"type:text" json:"path,omitempty"`
+	Password string `gorm:"type:varchar(64)"  json:"password,omitempty"`
 }
 
 func GetAlistServerIDFromPath(path string) (serverID string, filePath string, err error) {

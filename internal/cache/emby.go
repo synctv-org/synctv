@@ -210,7 +210,7 @@ func getPlaybackInfo(ctx context.Context, aucd *EmbyUserCacheData, truePath stri
 func processMediaSource(v *emby.MediaSourceInfo, movie *model.Movie, aucd *EmbyUserCacheData, truePath string, u *url.URL) (*EmbySource, error) {
 	source := &EmbySource{Name: v.Name}
 
-	if movie.MovieBase.VendorInfo.Emby.Transcode && v.TranscodingUrl != "" {
+	if v.TranscodingUrl != "" {
 		source.URL = fmt.Sprintf("%s/emby%s", aucd.Host, v.TranscodingUrl)
 		source.IsTranscode = true
 	} else if v.DirectPlayUrl != "" {

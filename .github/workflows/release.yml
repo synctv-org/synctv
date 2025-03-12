@@ -227,7 +227,7 @@ jobs:
           build-args: VERSION=${{ needs.release-web.outputs.tag_name }}
           labels: ${{ steps.meta.outputs.labels }}
           platforms: linux/${{ matrix.arch }}
-          outputs: type=image,"name=${{ env.DOCKERHUB_REPO }},${{ env.GHCR_REPO }}",name-canonical=true,push-by-digest=${{ github.event_name != 'pull_request' }},push=${{ github.event_name != 'pull_request' }}
+          outputs: type=image,"name=${{ env.GHCR_REPO }}${{ env.DOCKERHUB_REPO && format(',{0}', env.DOCKERHUB_REPO) }}",name-canonical=true,push-by-digest=${{ github.event_name != 'pull_request' }},push=${{ github.event_name != 'pull_request' }}
 
       - name: Export digest
         run: |

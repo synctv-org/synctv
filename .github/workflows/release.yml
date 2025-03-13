@@ -9,8 +9,10 @@ on:
   pull_request:
 
 env:
-  DOCKERHUB_REPO: ${{ secrets.DOCKERHUB_USERNAME != '' && format('{0}/{1}', secrets.DOCKERHUB_USERNAME, 'synctv') || '' }}
+  DOCKERHUB_REPO: ${{ secrets.DOCKERHUB_REPO != '' && secrets.DOCKERHUB_REPO || secrets.DOCKERHUB_USERNAME != '' && format('{0}/{1}', secrets.DOCKERHUB_USERNAME, 'synctv') || '' }}
   GHCR_REPO: ghcr.io/${{ github.repository }}
+  ALIYUN_REGISTRY: ${{ secrets.ALIYUN_REGISTRY }}
+  ALIYUN_REPO: ${{ secrets.ALIYUN_REPO != '' && secrets.ALIYUN_REPO || secrets.ALIYUN_USERNAME != '' && format('{0}/{1}/{2}', secrets.ALIYUN_REGISTRY, secrets.ALIYUN_USERNAME, 'synctv') || '' }}
 
 jobs:
   release-web:
@@ -192,6 +194,14 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Login to Aliyun Registry
+        uses: docker/login-action@v3
+        if: ${{ github.event_name != 'pull_request' && env.ALIYUN_REGISTRY }}
+        with:
+          registry: ${{ env.ALIYUN_REGISTRY }}
+          username: ${{ secrets.ALIYUN_USERNAME }}
+          password: ${{ secrets.ALIYUN_PASSWORD }}
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -216,8 +226,9 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: |
-            ${{ env.DOCKERHUB_REPO }}
             ${{ env.GHCR_REPO }}
+            ${{ env.DOCKERHUB_REPO }}
+            ${{ env.ALIYUN_REPO }}
 
       - name: Build for ${{ matrix.arch }}
         id: build
@@ -227,7 +238,7 @@ jobs:
           build-args: VERSION=${{ needs.release-web.outputs.tag_name }}
           labels: ${{ steps.meta.outputs.labels }}
           platforms: linux/${{ matrix.arch }}
-          outputs: type=image,"name=${{ env.GHCR_REPO }}${{ env.DOCKERHUB_REPO && format(',{0}', env.DOCKERHUB_REPO) }}",name-canonical=true,push-by-digest=${{ github.event_name != 'pull_request' }},push=${{ github.event_name != 'pull_request' }}
+          outputs: type=image,"name=${{ env.GHCR_REPO }}${{ env.DOCKERHUB_REPO && format(',{0}', env.DOCKERHUB_REPO) }}${{ env.ALIYUN_REPO && format(',{0}', env.ALIYUN_REPO) }}",name-canonical=true,push-by-digest=${{ github.event_name != 'pull_request' }},push=${{ github.event_name != 'pull_request' }}
 
       - name: Export digest
         run: |
@@ -263,6 +274,14 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Login to Aliyun Registry
+        uses: docker/login-action@v3
+        if: ${{ github.event_name != 'pull_request' && env.ALIYUN_REGISTRY }}
+        with:
+          registry: ${{ env.ALIYUN_REGISTRY }}
+          username: ${{ secrets.ALIYUN_USERNAME }}
+          password: ${{ secrets.ALIYUN_PASSWORD }}
+
       - name: Download digests
         uses: actions/download-artifact@v4
         with:
@@ -278,8 +297,9 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: |
-            ${{ env.DOCKERHUB_REPO }}
             ${{ env.GHCR_REPO }}
+            ${{ env.DOCKERHUB_REPO }}
+            ${{ env.ALIYUN_REPO }}
           tags: |
             type=ref,event=branch
             type=ref,event=pr
@@ -293,11 +313,8 @@ jobs:
         working-directory: ${{ runner.temp }}/digests
         run: |
           docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
-            $(printf '${{ env.DOCKERHUB_REPO }}@sha256:%s ' *)
-          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
             $(printf '${{ env.GHCR_REPO }}@sha256:%s ' *)
 
       - name: Inspect image
         run: |
-          docker buildx imagetools inspect ${{ env.DOCKERHUB_REPO }}:${{ steps.meta.outputs.version }}
           docker buildx imagetools inspect ${{ env.GHCR_REPO }}:${{ steps.meta.outputs.version }}

@@ -145,9 +145,6 @@ jobs:
 
       - name: Build targets
         uses: zijiren233/go-build-action@v1
-        env:
-          SUBMICRO_ARM_DISABLED: true
-          MICRO_ARM64_DISABLED: true
         with:
           targets: ${{ matrix.targets.Target }}
           cgo-enabled: ${{ matrix.targets.CGO }}

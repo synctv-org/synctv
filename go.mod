@@ -118,7 +118,7 @@ require (
 	github.com/refraction-networking/utls v1.6.7 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/spf13/pflag v1.0.6 // indirect
-	github.com/tetratelabs/wazero v1.9.1-0.20250306160848-26d5f5eb4bd0 // indirect
+	github.com/tetratelabs/wazero v1.9.0 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/ugorji/go/codec v1.2.12 // indirect
 	go.etcd.io/etcd/api/v3 v3.5.19 // indirect
@@ -139,3 +139,5 @@ require (
 	modernc.org/memory v1.8.2 // indirect
 	modernc.org/sqlite v1.36.1 // indirect
 )
+
+replace github.com/tetratelabs/wazero => github.com/tetratelabs/wazero v1.8.1

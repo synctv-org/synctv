@@ -180,7 +180,7 @@ jobs:
     runs-on: ${{ matrix.runs-on || 'ubuntu-24.04' }}
     steps:
       - name: Login to GitHub Container Registry
-        if: ${{ github.event_name != 'pull_request' }}
+        if: ${{ github.event_name != 'pull_request' && github.actor != 'dependabot[bot]' }}
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -189,14 +189,14 @@ jobs:
 
       - name: Login to DockerHub
         uses: docker/login-action@v3
-        if: ${{ github.event_name != 'pull_request' && env.DOCKERHUB_REPO }}
+        if: ${{ github.event_name != 'pull_request' && github.actor != 'dependabot[bot]' && env.DOCKERHUB_REPO }}
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Login to Aliyun Registry
         uses: docker/login-action@v3
-        if: ${{ github.event_name != 'pull_request' && env.ALIYUN_REGISTRY }}
+        if: ${{ github.event_name != 'pull_request' && github.actor != 'dependabot[bot]' && env.ALIYUN_REGISTRY }}
         with:
           registry: ${{ env.ALIYUN_REGISTRY }}
           username: ${{ secrets.ALIYUN_USERNAME }}
@@ -238,7 +238,7 @@ jobs:
           build-args: VERSION=${{ needs.release-web.outputs.tag_name }}
           labels: ${{ steps.meta.outputs.labels }}
           platforms: linux/${{ matrix.arch }}
-          outputs: type=image,"name=${{ env.GHCR_REPO }}${{ env.DOCKERHUB_REPO && format(',{0}', env.DOCKERHUB_REPO) }}${{ env.ALIYUN_REPO && format(',{0}', env.ALIYUN_REPO) }}",name-canonical=true,push-by-digest=${{ github.event_name != 'pull_request' }},push=${{ github.event_name != 'pull_request' }}
+          outputs: type=image,"name=${{ env.GHCR_REPO }}${{ env.DOCKERHUB_REPO && format(',{0}', env.DOCKERHUB_REPO) }}${{ env.ALIYUN_REPO && format(',{0}', env.ALIYUN_REPO) }}",name-canonical=true,push-by-digest=${{ github.event_name != 'pull_request' && github.actor != 'dependabot[bot]' }},push=${{ github.event_name != 'pull_request' && github.actor != 'dependabot[bot]' }}
 
       - name: Export digest
         run: |
@@ -258,7 +258,7 @@ jobs:
     name: Push Docker Images
     needs: build-docker
     runs-on: ubuntu-24.04
-    if: ${{ github.event_name != 'pull_request' }}
+    if: ${{ github.event_name != 'pull_request' && github.actor != 'dependabot[bot]' }}
     steps:
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
@@ -269,14 +269,14 @@ jobs:
 
       - name: Login to DockerHub
         uses: docker/login-action@v3
-        if: ${{ github.event_name != 'pull_request' && env.DOCKERHUB_REPO }}
+        if: ${{ env.DOCKERHUB_REPO }}
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Login to Aliyun Registry
         uses: docker/login-action@v3
-        if: ${{ github.event_name != 'pull_request' && env.ALIYUN_REGISTRY }}
+        if: ${{ env.ALIYUN_REGISTRY }}
         with:
           registry: ${{ env.ALIYUN_REGISTRY }}
           username: ${{ secrets.ALIYUN_USERNAME }}

@@ -312,8 +312,11 @@ jobs:
       - name: Create manifest list and push
         working-directory: ${{ runner.temp }}/digests
         run: |
-          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
-            $(printf '${{ env.GHCR_REPO }}@sha256:%s ' *)
+          for TAG in $DOCKER_METADATA_OUTPUT_TAGS; do
+            docker buildx imagetools create -t $TAG \
+              $(printf '${{ env.GHCR_REPO }}@sha256:%s ' *)
+            sleep 5
+          done
 
       - name: Inspect image
         run: |

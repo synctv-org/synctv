@@ -43,7 +43,7 @@ type User struct {
 	CreatedAt             time.Time
 	UpdatedAt             time.Time
 	Username              string          `gorm:"not null;uniqueIndex;type:varchar(32)"`
-	Email                 EmptyNullString `gorm:"type:varchar(64);uniqueIndex"`
+	Email                 EmptyNullString `gorm:"type:varchar(64);uniqueIndex:,where:email IS NOT NULL"`
 	HashedPassword        []byte          `gorm:"not null"`
 	BilibiliVendor        *BilibiliVendor `gorm:"foreignKey:UserID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 	Movies                []*Movie        `gorm:"foreignKey:CreatorID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL"`

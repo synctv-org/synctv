@@ -11,14 +11,18 @@ const (
 )
 
 var sharedBufferPool = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		buffer := make([]byte, DefaultBufferSize)
 		return &buffer
 	},
 }
 
 func getBuffer() *[]byte {
-	return sharedBufferPool.Get().(*[]byte)
+	buf, ok := sharedBufferPool.Get().(*[]byte)
+	if !ok {
+		panic("sharedBufferPool.Get() returned a non-[]byte value")
+	}
+	return buf
 }
 
 func putBuffer(buffer *[]byte) {

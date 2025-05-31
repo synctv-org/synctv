@@ -20,15 +20,15 @@ var SelfUpdateCmd = &cobra.Command{
 	Use:   "self-update",
 	Short: "self-update",
 	Long:  SelfUpdateLong,
-	PreRunE: func(cmd *cobra.Command, args []string) error {
-		return bootstrap.New(bootstrap.WithContext(cmd.Context())).Add(
+	PreRunE: func(cmd *cobra.Command, _ []string) error {
+		return bootstrap.New().Add(
 			bootstrap.InitStdLog,
-		).Run()
+		).Run(cmd.Context())
 	},
 	RunE: SelfUpdate,
 }
 
-func SelfUpdate(cmd *cobra.Command, args []string) error {
+func SelfUpdate(cmd *cobra.Command, _ []string) error {
 	v, err := version.NewVersionInfo(version.WithBaseURL(flags.Global.GitHubBaseURL))
 	if err != nil {
 		log.Errorf("get version info error: %v", err)

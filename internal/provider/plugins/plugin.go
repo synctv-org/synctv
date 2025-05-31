@@ -16,10 +16,13 @@ import (
 
 func InitProviderPlugins(name string, arg []string, logger hclog.Logger) error {
 	client := NewProviderPlugin(name, arg, logger)
-	err := sysnotify.RegisterSysNotifyTask(0, sysnotify.NewSysNotifyTask("plugin", sysnotify.NotifyTypeEXIT, func() error {
-		client.Kill()
-		return nil
-	}))
+	err := sysnotify.RegisterSysNotifyTask(
+		0,
+		sysnotify.NewSysNotifyTask("plugin", sysnotify.NotifyTypeEXIT, func() error {
+			client.Kill()
+			return nil
+		}),
+	)
 	if err != nil {
 		return err
 	}
@@ -54,12 +57,16 @@ type ProviderPlugin struct {
 	Impl provider.Interface
 }
 
-func (p *ProviderPlugin) GRPCServer(broker *plugin.GRPCBroker, s *grpc.Server) error {
+func (p *ProviderPlugin) GRPCServer(_ *plugin.GRPCBroker, s *grpc.Server) error {
 	providerpb.RegisterOauth2PluginServer(s, &GRPCServer{Impl: p.Impl})
 	return nil
 }
 
-func (p *ProviderPlugin) GRPCClient(ctx context.Context, broker *plugin.GRPCBroker, c *grpc.ClientConn) (interface{}, error) {
+func (p *ProviderPlugin) GRPCClient(
+	_ context.Context,
+	_ *plugin.GRPCBroker,
+	c *grpc.ClientConn,
+) (any, error) {
 	return &GRPCClient{client: providerpb.NewOauth2PluginClient(c)}, nil
 }
 

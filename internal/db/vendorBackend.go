@@ -18,7 +18,9 @@ func CreateVendorBackend(backend *model.VendorBackend) error {
 }
 
 func updateVendorBackendEnabled(endpoint string, enabled bool) error {
-	result := db.Model(&model.VendorBackend{}).Where("backend_endpoint = ?", endpoint).Update("enabled", enabled)
+	result := db.Model(&model.VendorBackend{}).
+		Where("backend_endpoint = ?", endpoint).
+		Update("enabled", enabled)
 	return HandleUpdateResult(result, "vendor backend")
 }
 
@@ -27,7 +29,9 @@ func EnableVendorBackend(endpoint string) error {
 }
 
 func EnableVendorBackends(endpoints []string) error {
-	result := db.Model(&model.VendorBackend{}).Where("backend_endpoint IN ?", endpoints).Update("enabled", true)
+	result := db.Model(&model.VendorBackend{}).
+		Where("backend_endpoint IN ?", endpoints).
+		Update("enabled", true)
 	return HandleUpdateResult(result, "vendor backends")
 }
 
@@ -36,7 +40,9 @@ func DisableVendorBackend(endpoint string) error {
 }
 
 func DisableVendorBackends(endpoints []string) error {
-	result := db.Model(&model.VendorBackend{}).Where("backend_endpoint IN ?", endpoints).Update("enabled", false)
+	result := db.Model(&model.VendorBackend{}).
+		Where("backend_endpoint IN ?", endpoints).
+		Update("enabled", false)
 	return HandleUpdateResult(result, "vendor backends")
 }
 
@@ -59,7 +65,9 @@ func GetVendorBackend(endpoint string) (*model.VendorBackend, error) {
 func CreateOrSaveVendorBackend(backend *model.VendorBackend) (*model.VendorBackend, error) {
 	return backend, Transactional(func(tx *gorm.DB) error {
 		var existingBackend model.VendorBackend
-		err := tx.Where("backend_endpoint = ?", backend.Backend.Endpoint).First(&existingBackend).Error
+		err := tx.Where("backend_endpoint = ?", backend.Backend.Endpoint).
+			First(&existingBackend).
+			Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return tx.Create(backend).Error
 		} else if err != nil {

@@ -11,14 +11,14 @@ import (
 
 type Int64Setting interface {
 	Setting
-	Set(int64) error
+	Set(v int64) error
 	Get() int64
 	Default() int64
-	Parse(string) (int64, error)
-	Stringify(int64) string
-	SetBeforeInit(func(Int64Setting, int64) (int64, error))
-	SetBeforeSet(func(Int64Setting, int64) (int64, error))
-	SetAfterGet(func(Int64Setting, int64) int64)
+	Parse(value string) (int64, error)
+	Stringify(value int64) string
+	SetBeforeInit(beforeInit func(Int64Setting, int64) (int64, error))
+	SetBeforeSet(beforeSet func(Int64Setting, int64) (int64, error))
+	SetAfterGet(afterGet func(Int64Setting, int64) int64)
 }
 
 var _ Int64Setting = (*Int64)(nil)
@@ -79,7 +79,12 @@ func WithAfterGetInt64(afterGet func(Int64Setting, int64) int64) Int64SettingOpt
 	}
 }
 
-func newInt64(name string, value int64, group model.SettingGroup, options ...Int64SettingOption) *Int64 {
+func newInt64(
+	name string,
+	value int64,
+	group model.SettingGroup,
+	options ...Int64SettingOption,
+) *Int64 {
 	i := &Int64{
 		setting: setting{
 			name:        name,
@@ -246,7 +251,12 @@ func (i *Int64) Interface() any {
 	return i.Get()
 }
 
-func NewInt64Setting(k string, v int64, g model.SettingGroup, options ...Int64SettingOption) Int64Setting {
+func NewInt64Setting(
+	k string,
+	v int64,
+	g model.SettingGroup,
+	options ...Int64SettingOption,
+) Int64Setting {
 	_, loaded := Settings[k]
 	if loaded {
 		panic(fmt.Sprintf("setting %s already exists", k))
@@ -254,7 +264,12 @@ func NewInt64Setting(k string, v int64, g model.SettingGroup, options ...Int64Se
 	return CoverInt64Setting(k, v, g, options...)
 }
 
-func CoverInt64Setting(k string, v int64, g model.SettingGroup, options ...Int64SettingOption) Int64Setting {
+func CoverInt64Setting(
+	k string,
+	v int64,
+	g model.SettingGroup,
+	options ...Int64SettingOption,
+) Int64Setting {
 	i := newInt64(k, v, g, options...)
 	Settings[k] = i
 	if GroupSettings[g] == nil {
@@ -274,7 +289,12 @@ func LoadInt64Setting(k string) (Int64Setting, bool) {
 	return i, ok
 }
 
-func LoadOrNewInt64Setting(k string, v int64, g model.SettingGroup, options ...Int64SettingOption) Int64Setting {
+func LoadOrNewInt64Setting(
+	k string,
+	v int64,
+	g model.SettingGroup,
+	options ...Int64SettingOption,
+) Int64Setting {
 	s, ok := LoadInt64Setting(k)
 	if ok {
 		return s

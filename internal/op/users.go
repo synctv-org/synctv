@@ -17,7 +17,9 @@ type UserEntry = synccache.Entry[*User]
 
 var (
 	ErrUserBanned  = errors.New("user account has been banned")
-	ErrUserPending = errors.New("user account is pending approval, please wait for administrator review")
+	ErrUserPending = errors.New(
+		"user account is pending approval, please wait for administrator review",
+	)
 )
 
 func LoadOrInitUser(u *model.User) (*UserEntry, error) {
@@ -61,7 +63,7 @@ func LoadOrInitUserByUsername(username string) (*UserEntry, error) {
 	return LoadOrInitUser(u)
 }
 
-func CreateUser(username string, password string, conf ...db.CreateUserConfig) (*UserEntry, error) {
+func CreateUser(username, password string, conf ...db.CreateUserConfig) (*UserEntry, error) {
 	if username == "" {
 		return nil, errors.New("username cannot be empty")
 	}
@@ -73,7 +75,12 @@ func CreateUser(username string, password string, conf ...db.CreateUserConfig) (
 	return LoadOrInitUser(u)
 }
 
-func CreateOrLoadUserWithProvider(username, password string, p provider.OAuth2Provider, pid string, conf ...db.CreateUserConfig) (*UserEntry, error) {
+func CreateOrLoadUserWithProvider(
+	username, password string,
+	p provider.OAuth2Provider,
+	pid string,
+	conf ...db.CreateUserConfig,
+) (*UserEntry, error) {
 	u, err := db.CreateOrLoadUserWithProvider(username, password, p, pid, conf...)
 	if err != nil {
 		return nil, err
@@ -82,7 +89,10 @@ func CreateOrLoadUserWithProvider(username, password string, p provider.OAuth2Pr
 	return LoadOrInitUser(u)
 }
 
-func CreateUserWithEmail(username, password, email string, conf ...db.CreateUserConfig) (*UserEntry, error) {
+func CreateUserWithEmail(
+	username, password, email string,
+	conf ...db.CreateUserConfig,
+) (*UserEntry, error) {
 	u, err := db.CreateUserWithEmail(username, password, email, conf...)
 	if err != nil {
 		return nil, err
@@ -125,7 +135,7 @@ func DeleteUserByID(id string) error {
 
 func CloseUserByID(id string) error {
 	userCache.Delete(id)
-	roomCache.Range(func(key string, value *synccache.Entry[*Room]) bool {
+	roomCache.Range(func(_ string, value *synccache.Entry[*Room]) bool {
 		if value.Value().CreatorID == id {
 			CompareAndCloseRoom(value)
 		}
@@ -138,7 +148,7 @@ func CompareAndCloseUser(user *UserEntry) error {
 	if !userCache.CompareAndDelete(user.Value().ID, user) {
 		return nil
 	}
-	roomCache.Range(func(key string, value *synccache.Entry[*Room]) bool {
+	roomCache.Range(func(_ string, value *synccache.Entry[*Room]) bool {
 		if value.Value().CreatorID == user.Value().ID {
 			CompareAndCloseRoom(value)
 		}

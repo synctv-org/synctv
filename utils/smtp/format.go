@@ -45,7 +45,7 @@ func WithContentTransferEncoding(contentTransferEncoding string) FormatMailOptio
 	}
 }
 
-func FormatMail(from string, to []string, subject string, body string, opts ...FormatMailOption) string {
+func FormatMail(from string, to []string, subject, body string, opts ...FormatMailOption) string {
 	c := &FormatMailConfig{
 		date:                    time.Now().Format(time.RFC1123Z),
 		mimeVersion:             "1.0",
@@ -57,14 +57,14 @@ func FormatMail(from string, to []string, subject string, body string, opts ...F
 	}
 	buf := bytes.NewBuffer(nil)
 
-	buf.WriteString(fmt.Sprintf("From: %s\r\n", from))
-	buf.WriteString(fmt.Sprintf("To: %s\r\n", strings.Join(to, ", ")))
-	buf.WriteString(fmt.Sprintf("Subject: %s\r\n", mime.QEncoding.Encode("UTF-8", subject)))
-	buf.WriteString(fmt.Sprintf("Date: %s\r\n", c.date))
-	buf.WriteString(fmt.Sprintf("MIME-Version: %s\r\n", c.mimeVersion))
-	buf.WriteString(fmt.Sprintf("Content-Type: %s\r\n", c.contentType))
+	fmt.Fprintf(buf, "From: %s\r\n", from)
+	fmt.Fprintf(buf, "To: %s\r\n", strings.Join(to, ", "))
+	fmt.Fprintf(buf, "Subject: %s\r\n", mime.QEncoding.Encode("UTF-8", subject))
+	fmt.Fprintf(buf, "Date: %s\r\n", c.date)
+	fmt.Fprintf(buf, "MIME-Version: %s\r\n", c.mimeVersion)
+	fmt.Fprintf(buf, "Content-Type: %s\r\n", c.contentType)
 	if c.contentTransferEncoding != "" {
-		buf.WriteString(fmt.Sprintf("Content-Transfer-Encoding: %s\r\n", c.contentTransferEncoding))
+		fmt.Fprintf(buf, "Content-Transfer-Encoding: %s\r\n", c.contentTransferEncoding)
 	}
 
 	buf.WriteString("\r\n")
@@ -86,7 +86,13 @@ func FormatMail(from string, to []string, subject string, body string, opts ...F
 	return buf.String()
 }
 
-func SendEmail(cli *smtp.Client, from string, to []string, subject, body string, opts ...FormatMailOption) error {
+func SendEmail(
+	cli *smtp.Client,
+	from string,
+	to []string,
+	subject, body string,
+	opts ...FormatMailOption,
+) error {
 	return cli.SendMail(
 		from,
 		to,

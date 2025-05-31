@@ -31,7 +31,7 @@ var logCallerIgnoreFuncs = map[string]struct{}{
 	"github.com/synctv-org/synctv/server/middlewares.logColor": {},
 }
 
-func InitLog(ctx context.Context) (err error) {
+func InitLog(_ context.Context) (err error) {
 	setLog(logrus.StandardLogger())
 	forceColor := utils.ForceColor()
 	if conf.Conf.Log.Enable {
@@ -63,7 +63,7 @@ func InitLog(ctx context.Context) (err error) {
 	case "json":
 		logrus.SetFormatter(&logrus.JSONFormatter{
 			TimestampFormat: time.DateTime,
-			CallerPrettyfier: func(f *runtime.Frame) (function string, file string) {
+			CallerPrettyfier: func(f *runtime.Frame) (function, file string) {
 				if _, ok := logCallerIgnoreFuncs[f.Function]; ok {
 					return "", ""
 				}
@@ -83,7 +83,7 @@ func InitLog(ctx context.Context) (err error) {
 			FullTimestamp:    true,
 			TimestampFormat:  time.DateTime,
 			QuoteEmptyFields: true,
-			CallerPrettyfier: func(f *runtime.Frame) (function string, file string) {
+			CallerPrettyfier: func(f *runtime.Frame) (function, file string) {
 				if _, ok := logCallerIgnoreFuncs[f.Function]; ok {
 					return "", ""
 				}
@@ -95,7 +95,7 @@ func InitLog(ctx context.Context) (err error) {
 	return nil
 }
 
-func InitStdLog(ctx context.Context) error {
+func InitStdLog(_ context.Context) error {
 	logrus.StandardLogger().SetOutput(os.Stdout)
 	log.SetOutput(os.Stdout)
 	setLog(logrus.StandardLogger())

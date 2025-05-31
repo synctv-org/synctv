@@ -60,7 +60,11 @@ func WithSettingHidden(hidden bool) CreateRoomConfig {
 }
 
 // if maxCount is 0, it will be ignored
-func CreateRoom(name, password string, maxCount int64, conf ...CreateRoomConfig) (*model.Room, error) {
+func CreateRoom(
+	name, password string,
+	maxCount int64,
+	conf ...CreateRoomConfig,
+) (*model.Room, error) {
 	r := &model.Room{
 		Name:     name,
 		Settings: model.DefaultRoomSettings(),
@@ -69,7 +73,10 @@ func CreateRoom(name, password string, maxCount int64, conf ...CreateRoomConfig)
 		c(r)
 	}
 	if password != "" {
-		hashedPassword, err := bcrypt.GenerateFromPassword(stream.StringToBytes(password), bcrypt.DefaultCost)
+		hashedPassword, err := bcrypt.GenerateFromPassword(
+			stream.StringToBytes(password),
+			bcrypt.DefaultCost,
+		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to hash password: %w", err)
 		}
@@ -111,7 +118,10 @@ func GetRoomByID(id string) (*model.Room, error) {
 
 func CreateOrLoadRoomSettings(roomID string) (*model.RoomSettings, error) {
 	var rs model.RoomSettings
-	err := db.Where(model.RoomSettings{ID: roomID}).Attrs(model.DefaultRoomSettings()).FirstOrCreate(&rs).Error
+	err := db.Where(model.RoomSettings{ID: roomID}).
+		Attrs(model.DefaultRoomSettings()).
+		FirstOrCreate(&rs).
+		Error
 	return &rs, err
 }
 
@@ -120,7 +130,7 @@ func SaveRoomSettings(roomID string, settings *model.RoomSettings) error {
 	return HandleNotFound(db.Save(settings).Error, "room settings")
 }
 
-func UpdateRoomSettings(roomID string, settings map[string]interface{}) (*model.RoomSettings, error) {
+func UpdateRoomSettings(roomID string, settings map[string]any) (*model.RoomSettings, error) {
 	var rs model.RoomSettings
 	err := db.Model(&model.RoomSettings{ID: roomID}).
 		Clauses(clause.Returning{}).
@@ -138,7 +148,10 @@ func SetRoomPassword(roomID, password string) error {
 	var hashedPassword []byte
 	var err error
 	if password != "" {
-		hashedPassword, err = bcrypt.GenerateFromPassword(stream.StringToBytes(password), bcrypt.DefaultCost)
+		hashedPassword, err = bcrypt.GenerateFromPassword(
+			stream.StringToBytes(password),
+			bcrypt.DefaultCost,
+		)
 		if err != nil {
 			return fmt.Errorf("failed to hash password: %w", err)
 		}
@@ -147,7 +160,9 @@ func SetRoomPassword(roomID, password string) error {
 }
 
 func SetRoomHashedPassword(roomID string, hashedPassword []byte) error {
-	result := db.Model(&model.Room{}).Where("id = ?", roomID).Update("hashed_password", hashedPassword)
+	result := db.Model(&model.Room{}).
+		Where("id = ?", roomID).
+		Update("hashed_password", hashedPassword)
 	return HandleUpdateResult(result, ErrRoomNotFound)
 }
 

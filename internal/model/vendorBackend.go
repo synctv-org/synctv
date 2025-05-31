@@ -66,7 +66,7 @@ type BackendUsedBy struct {
 	Emby                bool   `gorm:"default:false"    json:"emby"`
 }
 
-func (v *VendorBackend) BeforeSave(tx *gorm.DB) error {
+func (v *VendorBackend) BeforeSave(_ *gorm.DB) error {
 	key := utils.GenCryptoKey(v.Backend.Endpoint)
 	var err error
 	if v.Backend.JwtSecret != "" {
@@ -92,7 +92,7 @@ func (v *VendorBackend) BeforeSave(tx *gorm.DB) error {
 	return nil
 }
 
-func (v *VendorBackend) AfterSave(tx *gorm.DB) error {
+func (v *VendorBackend) AfterSave(_ *gorm.DB) error {
 	key := utils.GenCryptoKey(v.Backend.Endpoint)
 	if v.Backend.JwtSecret != "" {
 		jwtSecret, err := utils.DecryptoFromBase64(v.Backend.JwtSecret, key)

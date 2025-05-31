@@ -32,7 +32,7 @@ func (p *casdoorProvider) Init(opt provider.Oauth2Option) {
 	p.config.RedirectURL = opt.RedirectURL
 }
 
-func (p *casdoorProvider) NewAuthURL(ctx context.Context, state string) (string, error) {
+func (p *casdoorProvider) NewAuthURL(_ context.Context, state string) (string, error) {
 	return p.config.AuthCodeURL(state, oauth2.AccessTypeOnline), nil
 }
 
@@ -44,7 +44,10 @@ func (p *casdoorProvider) RefreshToken(ctx context.Context, token string) (*oaut
 	return p.config.TokenSource(ctx, &oauth2.Token{RefreshToken: token}).Token()
 }
 
-func (p *casdoorProvider) GetUserInfo(ctx context.Context, code string) (*provider.UserInfo, error) {
+func (p *casdoorProvider) GetUserInfo(
+	ctx context.Context,
+	code string,
+) (*provider.UserInfo, error) {
 	tk, err := p.GetToken(ctx, code)
 	if err != nil {
 		return nil, err
@@ -85,21 +88,21 @@ type casdoorUserInfo struct {
 func (p *casdoorProvider) RegistSetting(group string) {
 	settings.NewStringSetting(
 		group+"_endpoint", "", group,
-		settings.WithAfterInitString(func(ss settings.StringSetting, s string) {
+		settings.WithAfterInitString(func(_ settings.StringSetting, s string) {
 			p.endpoint = s
 			p.config.Endpoint = oauth2.Endpoint{
 				AuthURL:  s + "/login/oauth/authorize",
 				TokenURL: s + "/api/login/oauth/access_token",
 			}
 		}),
-		settings.WithBeforeSetString(func(ss settings.StringSetting, s string) (string, error) {
+		settings.WithBeforeSetString(func(_ settings.StringSetting, s string) (string, error) {
 			u, err := url.Parse(s)
 			if err != nil {
 				return "", err
 			}
 			return fmt.Sprintf("%s://%s", u.Scheme, u.Host), nil
 		}),
-		settings.WithAfterSetString(func(ss settings.StringSetting, s string) {
+		settings.WithAfterSetString(func(_ settings.StringSetting, s string) {
 			p.endpoint = s
 			p.config.Endpoint = oauth2.Endpoint{
 				AuthURL:  s + "/login/oauth/authorize",

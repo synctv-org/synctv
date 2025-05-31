@@ -49,7 +49,11 @@ func WithDisableAutoAddUsernameSuffix() CreateUserConfig {
 	}
 }
 
-func CreateUserWithHashedPassword(username string, hashedPassword []byte, conf ...CreateUserConfig) (*model.User, error) {
+func CreateUserWithHashedPassword(
+	username string,
+	hashedPassword []byte,
+	conf ...CreateUserConfig,
+) (*model.User, error) {
 	if username == "" {
 		return nil, errors.New("username cannot be empty")
 	}
@@ -80,25 +84,34 @@ func CreateUserWithHashedPassword(username string, hashedPassword []byte, conf .
 	return u, nil
 }
 
-func CreateUser(username string, password string, conf ...CreateUserConfig) (*model.User, error) {
+func CreateUser(username, password string, conf ...CreateUserConfig) (*model.User, error) {
 	if username == "" {
 		return nil, errors.New("username cannot be empty")
 	}
 	if password == "" {
 		return nil, errors.New("password cannot be empty")
 	}
-	hashedPassword, err := bcrypt.GenerateFromPassword(stream.StringToBytes(password), bcrypt.DefaultCost)
+	hashedPassword, err := bcrypt.GenerateFromPassword(
+		stream.StringToBytes(password),
+		bcrypt.DefaultCost,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to hash password: %w", err)
 	}
 	return CreateUserWithHashedPassword(username, hashedPassword, conf...)
 }
 
-func CreateOrLoadUserWithProvider(username, password string, p string, puid string, conf ...CreateUserConfig) (*model.User, error) {
+func CreateOrLoadUserWithProvider(
+	username, password, p, puid string,
+	conf ...CreateUserConfig,
+) (*model.User, error) {
 	if puid == "" {
 		return nil, errors.New("provider user id cannot be empty")
 	}
-	hashedPassword, err := bcrypt.GenerateFromPassword(stream.StringToBytes(password), bcrypt.DefaultCost)
+	hashedPassword, err := bcrypt.GenerateFromPassword(
+		stream.StringToBytes(password),
+		bcrypt.DefaultCost,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to hash password: %w", err)
 	}
@@ -128,7 +141,10 @@ func CreateOrLoadUserWithProvider(username, password string, p string, puid stri
 	return user, nil
 }
 
-func CreateUserWithEmail(username, password, email string, conf ...CreateUserConfig) (*model.User, error) {
+func CreateUserWithEmail(
+	username, password, email string,
+	conf ...CreateUserConfig,
+) (*model.User, error) {
 	if email == "" {
 		return nil, errors.New("email cannot be empty")
 	}
@@ -138,7 +154,7 @@ func CreateUserWithEmail(username, password, email string, conf ...CreateUserCon
 	)...)
 }
 
-func GetUserByProvider(p string, puid string) (*model.User, error) {
+func GetUserByProvider(p, puid string) (*model.User, error) {
 	var user model.User
 	err := db.Joins("JOIN user_providers ON users.id = user_providers.user_id").
 		Where("user_providers.provider = ? AND user_providers.provider_user_id = ?", p, puid).
@@ -152,7 +168,7 @@ func GetUserByEmail(email string) (*model.User, error) {
 	return &user, HandleNotFound(err, ErrUserNotFound)
 }
 
-func GetProviderUserID(p string, puid string) (string, error) {
+func GetProviderUserID(p, puid string) (string, error) {
 	var userID string
 	err := db.Model(&model.UserProvider{}).
 		Where("provider = ? AND provider_user_id = ?", p, puid).
@@ -161,7 +177,7 @@ func GetProviderUserID(p string, puid string) (string, error) {
 	return userID, HandleNotFound(err, ErrUserNotFound)
 }
 
-func BindProvider(uid string, p string, puid string) error {
+func BindProvider(uid, p, puid string) error {
 	err := db.Create(&model.UserProvider{
 		UserID:         uid,
 		Provider:       p,
@@ -176,7 +192,7 @@ func BindProvider(uid string, p string, puid string) error {
 	return nil
 }
 
-func UnBindProvider(uid string, p string) error {
+func UnBindProvider(uid, p string) error {
 	return Transactional(func(tx *gorm.DB) error {
 		var user model.User
 		if err := tx.Preload("UserProviders").Where("id = ?", uid).First(&user).Error; err != nil {
@@ -190,8 +206,10 @@ func UnBindProvider(uid string, p string) error {
 	})
 }
 
-func BindEmail(id string, email string) error {
-	result := db.Model(&model.User{}).Where("id = ?", id).Update("email", model.EmptyNullString(email))
+func BindEmail(id, email string) error {
+	result := db.Model(&model.User{}).
+		Where("id = ?", id).
+		Update("email", model.EmptyNullString(email))
 	return HandleUpdateResult(result, ErrUserNotFound)
 }
 
@@ -207,7 +225,9 @@ func UnbindEmail(uid string) error {
 		if user.Email.String() == "" {
 			return nil
 		}
-		result := tx.Model(&model.User{}).Where("id = ?", uid).Update("email", model.EmptyNullString(""))
+		result := tx.Model(&model.User{}).
+			Where("id = ?", uid).
+			Update("email", model.EmptyNullString(""))
 		return HandleUpdateResult(result, ErrUserNotFound)
 	})
 }
@@ -227,18 +247,31 @@ func GetUserByUsername(username string) (*model.User, error) {
 	return &user, HandleNotFound(err, ErrUserNotFound)
 }
 
-func GetUserByUsernameLike(username string, scopes ...func(*gorm.DB) *gorm.DB) ([]*model.User, error) {
+func GetUserByUsernameLike(
+	username string,
+	scopes ...func(*gorm.DB) *gorm.DB,
+) ([]*model.User, error) {
 	var users []*model.User
-	err := db.Where("username LIKE ?", fmt.Sprintf("%%%s%%", username)).Scopes(scopes...).Find(&users).Error
+	err := db.Where("username LIKE ?", fmt.Sprintf("%%%s%%", username)).
+		Scopes(scopes...).
+		Find(&users).
+		Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to get users by username like: %w", err)
 	}
 	return users, nil
 }
 
-func GerUsersIDByUsernameLike(username string, scopes ...func(*gorm.DB) *gorm.DB) ([]string, error) {
+func GerUsersIDByUsernameLike(
+	username string,
+	scopes ...func(*gorm.DB) *gorm.DB,
+) ([]string, error) {
 	var ids []string
-	err := db.Model(&model.User{}).Where("username LIKE ?", fmt.Sprintf("%%%s%%", username)).Scopes(scopes...).Pluck("id", &ids).Error
+	err := db.Model(&model.User{}).
+		Where("username LIKE ?", fmt.Sprintf("%%%s%%", username)).
+		Scopes(scopes...).
+		Pluck("id", &ids).
+		Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to get user IDs by username like: %w", err)
 	}
@@ -247,16 +280,26 @@ func GerUsersIDByUsernameLike(username string, scopes ...func(*gorm.DB) *gorm.DB
 
 func GerUsersIDByIDLike(id string, scopes ...func(*gorm.DB) *gorm.DB) ([]string, error) {
 	var ids []string
-	err := db.Model(&model.User{}).Where("id LIKE ?", utils.LIKE(id)).Scopes(scopes...).Pluck("id", &ids).Error
+	err := db.Model(&model.User{}).
+		Where("id LIKE ?", utils.LIKE(id)).
+		Scopes(scopes...).
+		Pluck("id", &ids).
+		Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to get user IDs by ID like: %w", err)
 	}
 	return ids, nil
 }
 
-func GetUserByIDOrUsernameLike(idOrUsername string, scopes ...func(*gorm.DB) *gorm.DB) ([]*model.User, error) {
+func GetUserByIDOrUsernameLike(
+	idOrUsername string,
+	scopes ...func(*gorm.DB) *gorm.DB,
+) ([]*model.User, error) {
 	var users []*model.User
-	err := db.Where("id = ? OR username LIKE ?", idOrUsername, fmt.Sprintf("%%%s%%", idOrUsername)).Scopes(scopes...).Find(&users).Error
+	err := db.Where("id = ? OR username LIKE ?", idOrUsername, fmt.Sprintf("%%%s%%", idOrUsername)).
+		Scopes(scopes...).
+		Find(&users).
+		Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to get users by ID or username like: %w", err)
 	}
@@ -400,7 +443,7 @@ func SetUserRoleByID(userID string) error {
 	return HandleUpdateResult(result, ErrUserNotFound)
 }
 
-func SetUsernameByID(userID string, username string) error {
+func SetUsernameByID(userID, username string) error {
 	result := db.Model(&model.User{}).Where("id = ?", userID).Update("username", username)
 	return HandleUpdateResult(result, ErrUserNotFound)
 }

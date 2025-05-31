@@ -18,16 +18,16 @@ type Oauth2Option struct {
 }
 
 type Provider interface {
-	Init(Oauth2Option)
+	Init(opt Oauth2Option)
 	Provider() OAuth2Provider
 }
 
-type ProviderRegistSetting interface {
+type RegistSetting interface {
 	RegistSetting(group string)
 }
 
 type Interface interface {
 	Provider
-	NewAuthURL(context.Context, string) (string, error)
-	GetUserInfo(context.Context, string) (*UserInfo, error)
+	NewAuthURL(ctx context.Context, state string) (string, error)
+	GetUserInfo(ctx context.Context, code string) (*UserInfo, error)
 }

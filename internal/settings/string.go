@@ -10,14 +10,14 @@ import (
 
 type StringSetting interface {
 	Setting
-	Set(string) error
+	Set(v string) error
 	Get() string
 	Default() string
-	Parse(string) (string, error)
-	Stringify(string) string
-	SetBeforeInit(func(StringSetting, string) (string, error))
-	SetBeforeSet(func(StringSetting, string) (string, error))
-	SetAfterGet(func(StringSetting, string) string)
+	Parse(value string) (string, error)
+	Stringify(value string) string
+	SetBeforeInit(beforeInit func(StringSetting, string) (string, error))
+	SetBeforeSet(beforeSet func(StringSetting, string) (string, error))
+	SetAfterGet(afterGet func(StringSetting, string) string)
 }
 
 var _ StringSetting = (*String)(nil)
@@ -49,13 +49,17 @@ func WithValidatorString(validator func(string) error) StringSettingOption {
 	}
 }
 
-func WithBeforeInitString(beforeInit func(StringSetting, string) (string, error)) StringSettingOption {
+func WithBeforeInitString(
+	beforeInit func(StringSetting, string) (string, error),
+) StringSettingOption {
 	return func(s *String) {
 		s.SetBeforeInit(beforeInit)
 	}
 }
 
-func WithBeforeSetString(beforeSet func(StringSetting, string) (string, error)) StringSettingOption {
+func WithBeforeSetString(
+	beforeSet func(StringSetting, string) (string, error),
+) StringSettingOption {
 	return func(s *String) {
 		s.SetBeforeSet(beforeSet)
 	}
@@ -79,7 +83,11 @@ func WithAfterGetString(afterGet func(StringSetting, string) string) StringSetti
 	}
 }
 
-func newString(name string, value string, group model.SettingGroup, options ...StringSettingOption) *String {
+func newString(
+	name, value string,
+	group model.SettingGroup,
+	options ...StringSettingOption,
+) *String {
 	s := &String{
 		setting: setting{
 			name:        name,
@@ -246,7 +254,11 @@ func (s *String) Interface() any {
 	return s.Get()
 }
 
-func NewStringSetting(k string, v string, g model.SettingGroup, options ...StringSettingOption) StringSetting {
+func NewStringSetting(
+	k, v string,
+	g model.SettingGroup,
+	options ...StringSettingOption,
+) StringSetting {
 	_, loaded := Settings[k]
 	if loaded {
 		panic(fmt.Sprintf("setting %s already exists", k))
@@ -254,7 +266,11 @@ func NewStringSetting(k string, v string, g model.SettingGroup, options ...Strin
 	return CoverStringSetting(k, v, g, options...)
 }
 
-func CoverStringSetting(k string, v string, g model.SettingGroup, options ...StringSettingOption) StringSetting {
+func CoverStringSetting(
+	k, v string,
+	g model.SettingGroup,
+	options ...StringSettingOption,
+) StringSetting {
 	s := newString(k, v, g, options...)
 	Settings[k] = s
 	if GroupSettings[g] == nil {
@@ -274,7 +290,11 @@ func LoadStringSetting(k string) (StringSetting, bool) {
 	return ss, ok
 }
 
-func LoadOrNewStringSetting(k string, v string, g model.SettingGroup, options ...StringSettingOption) StringSetting {
+func LoadOrNewStringSetting(
+	k, v string,
+	g model.SettingGroup,
+	options ...StringSettingOption,
+) StringSetting {
 	s, ok := LoadStringSetting(k)
 	if ok {
 		return s

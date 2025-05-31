@@ -38,14 +38,15 @@ func (m *Movie) SubPath() string {
 	return m.room.SubPath(m.ID)
 }
 
+//nolint:gosec
 func (m *Movie) ExpireID(ctx context.Context) (uint64, error) {
 	switch {
-	case m.Movie.MovieBase.VendorInfo.Vendor == model.VendorAlist:
+	case m.VendorInfo.Vendor == model.VendorAlist:
 		amcd, _ := m.AlistCache().Raw()
 		if amcd != nil && amcd.Ali != nil {
 			return uint64(amcd.Ali.Last()), nil
 		}
-	case m.Movie.MovieBase.Live && m.Movie.MovieBase.VendorInfo.Vendor == model.VendorBilibili:
+	case m.Live && m.VendorInfo.Vendor == model.VendorBilibili:
 		liveCache := m.BilibiliCache().Live
 		_, err := liveCache.Get(ctx)
 		if err != nil {
@@ -53,17 +54,18 @@ func (m *Movie) ExpireID(ctx context.Context) (uint64, error) {
 		}
 		return uint64(liveCache.Last()), nil
 	}
-	return uint64(crc32.ChecksumIEEE([]byte(m.Movie.ID))), nil
+	return uint64(crc32.ChecksumIEEE([]byte(m.ID))), nil
 }
 
+//nolint:gosec
 func (m *Movie) CheckExpired(ctx context.Context, expireID uint64) (bool, error) {
 	switch {
-	case m.Movie.MovieBase.VendorInfo.Vendor == model.VendorAlist:
+	case m.VendorInfo.Vendor == model.VendorAlist:
 		amcd, _ := m.AlistCache().Raw()
 		if amcd != nil && amcd.Ali != nil {
-			return time.Now().UnixNano()-int64(amcd.Ali.Last()) > amcd.Ali.MaxAge(), nil
+			return time.Now().UnixNano()-amcd.Ali.Last() > amcd.Ali.MaxAge(), nil
 		}
-	case m.Movie.MovieBase.Live && m.Movie.MovieBase.VendorInfo.Vendor == model.VendorBilibili:
+	case m.Live && m.VendorInfo.Vendor == model.VendorBilibili:
 		return time.Now().UnixNano()-int64(expireID) > m.BilibiliCache().Live.MaxAge(), nil
 	}
 	id, err := m.ExpireID(ctx)
@@ -157,16 +159,16 @@ func (m *Movie) compareAndSwapInitChannel() (*rtmps.Channel, bool) {
 }
 
 func (m *Movie) initChannel() (*rtmps.Channel, error) {
-	if !m.Movie.MovieBase.Live || (!m.Movie.MovieBase.RtmpSource && !m.Movie.MovieBase.Proxy) {
+	if !m.Live || (!m.RtmpSource && !m.Proxy) {
 		return nil, errors.New("this movie not support channel")
 	}
 
-	if m.Movie.MovieBase.RtmpSource {
+	if m.RtmpSource {
 		return m.initRtmpSourceChannel()
 	}
 
 	// Handle proxy case
-	u, err := url.Parse(m.Movie.MovieBase.URL)
+	u, err := url.Parse(m.URL)
 	if err != nil {
 		return nil, err
 	}
@@ -213,7 +215,7 @@ func (m *Movie) handleRtmpProxy(c *rtmps.Channel) {
 			return
 		}
 		cli := core.NewConnClient()
-		if err := cli.Start(m.Movie.MovieBase.URL, av.PLAY); err != nil {
+		if err := cli.Start(m.URL, av.PLAY); err != nil {
 			log.Errorf("push live error: %v", err)
 			cli.Close()
 			time.Sleep(time.Second)
@@ -228,7 +230,7 @@ func (m *Movie) handleRtmpProxy(c *rtmps.Channel) {
 }
 
 func (m *Movie) initHTTPProxyChannel() (*rtmps.Channel, error) {
-	if utils.IsM3u8Url(m.Movie.MovieBase.URL) {
+	if utils.IsM3u8Url(m.URL) {
 		return nil, errors.New("m3u8 url not support")
 	}
 
@@ -250,13 +252,13 @@ func (m *Movie) handleHTTPProxy(c *rtmps.Channel) {
 		if c.Closed() {
 			return
 		}
-		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, m.Movie.MovieBase.URL, nil)
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, m.URL, nil)
 		if err != nil {
 			log.Errorf("get live error: %v", err)
 			time.Sleep(time.Second)
 			continue
 		}
-		for k, v := range m.Movie.MovieBase.Headers {
+		for k, v := range m.Headers {
 			req.Header.Set(k, v)
 		}
 		if req.Header.Get("User-Agent") == "" {
@@ -365,18 +367,18 @@ func (m *Movie) validateDirectURL(u *url.URL) error {
 }
 
 func (m *Movie) validateVendorMovie() error {
-	switch m.Movie.MovieBase.VendorInfo.Vendor {
+	switch m.VendorInfo.Vendor {
 	case model.VendorBilibili:
 		if m.IsFolder {
 			return errors.New("bilibili folder not support")
 		}
-		return m.Movie.MovieBase.VendorInfo.Bilibili.Validate()
+		return m.VendorInfo.Bilibili.Validate()
 
 	case model.VendorAlist:
-		return m.Movie.MovieBase.VendorInfo.Alist.Validate()
+		return m.VendorInfo.Alist.Validate()
 
 	case model.VendorEmby:
-		return m.Movie.MovieBase.VendorInfo.Emby.Validate()
+		return m.VendorInfo.Emby.Validate()
 
 	default:
 		return errors.New("vendor not implement validate")

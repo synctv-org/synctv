@@ -39,7 +39,7 @@ func (r Role) String() string {
 }
 
 type User struct {
-	ID                    string `gorm:"primaryKey;type:char(32)" json:"id"`
+	ID                    string `gorm:"primaryKey;type:char(32)"                                           json:"id"`
 	CreatedAt             time.Time
 	UpdatedAt             time.Time
 	Username              string          `gorm:"not null;uniqueIndex;type:varchar(32)"`

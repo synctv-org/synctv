@@ -8,7 +8,7 @@ import (
 	"github.com/synctv-org/synctv/utils"
 )
 
-func InitGinMode(ctx context.Context) error {
+func InitGinMode(_ context.Context) error {
 	if flags.Global.Dev {
 		gin.SetMode(gin.DebugMode)
 	} else {

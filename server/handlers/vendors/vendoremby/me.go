@@ -6,8 +6,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/synctv-org/synctv/internal/db"
-	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/internal/vendor"
+	"github.com/synctv-org/synctv/server/middlewares"
 	"github.com/synctv-org/synctv/server/model"
 	"github.com/synctv-org/vendors/api/emby"
 )
@@ -15,11 +15,14 @@ import (
 type EmbyMeResp = model.VendorMeResp[*emby.SystemInfoResp]
 
 func Me(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.UserEntry).Value()
+	user := middlewares.GetUserEntry(ctx).Value()
 
 	serverID := ctx.Query("serverID")
 	if serverID == "" {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(errors.New("serverID is required")))
+		ctx.AbortWithStatusJSON(
+			http.StatusBadRequest,
+			model.NewAPIErrorResp(errors.New("serverID is required")),
+		)
 		return
 	}
 
@@ -54,7 +57,7 @@ type EmbyBindsResp []*struct {
 }
 
 func Binds(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.UserEntry).Value()
+	user := middlewares.GetUserEntry(ctx).Value()
 
 	ev, err := db.GetEmbyVendors(user.ID)
 	if err != nil {

@@ -1,7 +1,6 @@
 package version_test
 
 import (
-	"context"
 	"testing"
 
 	"github.com/synctv-org/synctv/internal/version"
@@ -12,7 +11,7 @@ func TestCheckLatest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := v.CheckLatest(context.Background())
+	s, err := v.CheckLatest(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -24,7 +23,7 @@ func TestLatestBinaryURL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := v.LatestBinaryURL(context.Background())
+	s, err := v.LatestBinaryURL(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}

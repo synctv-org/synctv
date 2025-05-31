@@ -7,18 +7,27 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
+	"github.com/synctv-org/synctv/server/model"
 )
 
 var fieldsPool = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		return make(logrus.Fields, 6)
 	},
 }
 
 func NewLog(l *logrus.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		fields := fieldsPool.Get().(logrus.Fields)
+		fields, ok := fieldsPool.Get().(logrus.Fields)
+		if !ok {
+			c.JSON(
+				http.StatusInternalServerError,
+				model.NewAPIErrorResp(errors.New("invalid fields type")),
+			)
+			return
+		}
 		defer func() {
 			clear(fields)
 			fieldsPool.Put(fields)
@@ -95,11 +104,19 @@ func formatter(param gin.LogFormatterParams) string {
 
 func GetLogger(c *gin.Context) *logrus.Entry {
 	if log, ok := c.Get("log"); ok {
-		return log.(*logrus.Entry)
+		entry, ok := log.(*logrus.Entry)
+		if !ok {
+			panic("invalid log type")
+		}
+		return entry
+	}
+	fields, ok := fieldsPool.Get().(logrus.Fields)
+	if !ok {
+		panic("invalid fields type")
 	}
 	entry := &logrus.Entry{
 		Logger: logrus.StandardLogger(),
-		Data:   fieldsPool.Get().(logrus.Fields),
+		Data:   fields,
 	}
 	c.Set("log", entry)
 	return entry

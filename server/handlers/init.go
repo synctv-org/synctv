@@ -60,7 +60,7 @@ func Init(e *gin.Engine) {
 	}
 }
 
-func initAdmin(admin *gin.RouterGroup, root *gin.RouterGroup) {
+func initAdmin(admin, root *gin.RouterGroup) {
 	{
 		admin.GET("/settings", AdminSettings)
 
@@ -135,7 +135,7 @@ func initAdmin(admin *gin.RouterGroup, root *gin.RouterGroup) {
 	}
 }
 
-func initRoom(room *gin.RouterGroup, needAuthUser *gin.RouterGroup, needAuthRoom *gin.RouterGroup, needAuthWithoutGuestRoom *gin.RouterGroup) {
+func initRoom(room, needAuthUser, needAuthRoom, needAuthWithoutGuestRoom *gin.RouterGroup) {
 	room.GET("/check", CheckRoom)
 
 	room.GET("/hot", RoomHotList)
@@ -192,7 +192,7 @@ func initRoom(room *gin.RouterGroup, needAuthUser *gin.RouterGroup, needAuthRoom
 	}
 }
 
-func initMovie(movie *gin.RouterGroup, needAuthMovie *gin.RouterGroup) {
+func initMovie(movie, needAuthMovie *gin.RouterGroup) {
 	// needAuthMovie.GET("/list", MovieList)
 
 	needAuthMovie.GET("/current", CurrentMovie)
@@ -235,7 +235,7 @@ func initMovie(movie *gin.RouterGroup, needAuthMovie *gin.RouterGroup) {
 	needAuthMovie.GET("/danmu/:movieId", StreamDanmu)
 }
 
-func initUser(user *gin.RouterGroup, needAuthUser *gin.RouterGroup) {
+func initUser(user, needAuthUser *gin.RouterGroup) {
 	user.POST("/login", LoginUser)
 
 	user.POST("/signup", UserSignupPassword)

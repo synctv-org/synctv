@@ -18,6 +18,7 @@ type movies struct {
 	cache  rwmap.RWMap[string, *Movie]
 }
 
+//nolint:gosec
 func (m *movies) AddMovie(mo *model.Movie) error {
 	mo.Position = uint(time.Now().UnixMilli())
 	movie := &Movie{
@@ -42,6 +43,7 @@ func (m *movies) AddMovie(mo *model.Movie) error {
 	return nil
 }
 
+//nolint:gosec
 func (m *movies) AddMovies(mos []*model.Movie) error {
 	inited := make([]*Movie, 0, len(mos))
 	for _, mo := range mos {
@@ -65,7 +67,7 @@ func (m *movies) AddMovies(mos []*model.Movie) error {
 	}
 
 	for _, mo := range inited {
-		old, ok := m.cache.Swap(mo.Movie.ID, mo)
+		old, ok := m.cache.Swap(mo.ID, mo)
 		if ok {
 			_ = old.Close()
 		}
@@ -198,14 +200,20 @@ func (m *movies) SwapMoviePositions(id1, id2 string) error {
 	return db.SwapMoviePositions(m.roomID, id1, id2)
 }
 
-func (m *movies) GetMoviesWithPage(keyword string, page, pageSize int, parentID string) ([]*model.Movie, int64, error) {
+func (m *movies) GetMoviesWithPage(
+	keyword string,
+	page, pageSize int,
+	parentID string,
+) ([]*model.Movie, int64, error) {
 	scopes := []func(*gorm.DB) *gorm.DB{
 		db.WithParentMovieID(parentID),
 	}
 	if keyword != "" {
 		scopes = append(scopes, db.WhereMovieNameLikeOrURLLike(keyword, keyword))
 	}
-	count, err := db.GetMoviesCountByRoomID(m.roomID, append(scopes, db.Paginate(page, pageSize))...)
+	count, err := db.GetMoviesCountByRoomID(
+		m.roomID,
+		append(scopes, db.Paginate(page, pageSize))...)
 	if err != nil {
 		return nil, 0, err
 	}

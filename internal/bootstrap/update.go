@@ -69,7 +69,7 @@ func InitCheckUpdate(ctx context.Context) error {
 	return nil
 }
 
-func check(ctx context.Context, v *version.Info) (need bool, latest string, url string, err error) {
+func check(ctx context.Context, v *version.Info) (need bool, latest, url string, err error) {
 	l, err := v.CheckLatest(ctx)
 	if err != nil {
 		return false, "", "", err

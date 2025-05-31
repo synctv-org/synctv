@@ -8,7 +8,7 @@ import (
 	"github.com/synctv-org/synctv/internal/settings"
 )
 
-func InitSetting(ctx context.Context) error {
+func InitSetting(_ context.Context) error {
 	return initAndFixSettings()
 }
 

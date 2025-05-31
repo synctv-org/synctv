@@ -7,7 +7,6 @@ import (
 
 	jsoniter "github.com/json-iterator/go"
 	"github.com/zijiren233/stream"
-
 	"gorm.io/gorm/schema"
 )
 
@@ -15,7 +14,12 @@ var json = jsoniter.ConfigCompatibleWithStandardLibrary
 
 type JSONSerializer struct{}
 
-func (*JSONSerializer) Scan(ctx context.Context, field *schema.Field, dst reflect.Value, dbValue any) (err error) {
+func (*JSONSerializer) Scan(
+	ctx context.Context,
+	field *schema.Field,
+	dst reflect.Value,
+	dbValue any,
+) (err error) {
 	fieldValue := reflect.New(field.FieldType)
 
 	if dbValue != nil {
@@ -41,7 +45,12 @@ func (*JSONSerializer) Scan(ctx context.Context, field *schema.Field, dst reflec
 	return
 }
 
-func (*JSONSerializer) Value(ctx context.Context, field *schema.Field, dst reflect.Value, fieldValue any) (any, error) {
+func (*JSONSerializer) Value(
+	_ context.Context,
+	_ *schema.Field,
+	_ reflect.Value,
+	fieldValue any,
+) (any, error) {
 	return json.Marshal(fieldValue)
 }
 

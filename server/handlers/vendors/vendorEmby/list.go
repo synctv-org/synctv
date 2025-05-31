@@ -9,8 +9,8 @@ import (
 	json "github.com/json-iterator/go"
 	"github.com/synctv-org/synctv/internal/db"
 	dbModel "github.com/synctv-org/synctv/internal/model"
-	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/internal/vendor"
+	"github.com/synctv-org/synctv/server/middlewares"
 	"github.com/synctv-org/synctv/server/model"
 	"github.com/synctv-org/synctv/utils"
 	"github.com/synctv-org/vendors/api/emby"
@@ -37,8 +37,9 @@ type EmbyFileItem struct {
 
 type EmbyFSListResp = model.VendorFSListResp[*EmbyFileItem]
 
+//nolint:gosec
 func List(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.UserEntry).Value()
+	user := middlewares.GetUserEntry(ctx).Value()
 
 	req := ListReq{}
 	if err := model.Decode(ctx, &req); err != nil {
@@ -54,7 +55,12 @@ func List(ctx *gin.Context) {
 
 	if req.Path == "" {
 		if req.Keyword != "" {
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("keywords is not supported when not choose server (server id is empty)"))
+			ctx.AbortWithStatusJSON(
+				http.StatusBadRequest,
+				model.NewAPIErrorStringResp(
+					"keywords is not supported when not choose server (server id is empty)",
+				),
+			)
 			return
 		}
 		socpes := [](func(*gorm.DB) *gorm.DB){
@@ -74,7 +80,10 @@ func List(ctx *gin.Context) {
 		ev, err := db.GetEmbyVendors(user.ID, append(socpes, db.Paginate(page, size))...)
 		if err != nil {
 			if errors.Is(err, db.NotFoundError(db.ErrVendorNotFound)) {
-				ctx.JSON(http.StatusBadRequest, model.NewAPIErrorStringResp("emby server not found"))
+				ctx.JSON(
+					http.StatusBadRequest,
+					model.NewAPIErrorStringResp("emby server not found"),
+				)
 				return
 			}
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
@@ -142,36 +151,39 @@ EmbyFSListResp:
 		SearchTerm: req.Keyword,
 	})
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(fmt.Errorf("emby fs list error: %w", err)))
+		ctx.AbortWithStatusJSON(
+			http.StatusInternalServerError,
+			model.NewAPIErrorResp(fmt.Errorf("emby fs list error: %w", err)),
+		)
 		return
 	}
 
-	var resp EmbyFSListResp = EmbyFSListResp{
+	resp := EmbyFSListResp{
 		Paths: []*model.Path{
 			{},
 		},
 	}
-	for _, p := range data.Paths {
-		n := p.Name
-		if p.Path == "1" {
+	for _, p := range data.GetPaths() {
+		n := p.GetName()
+		if p.GetPath() == "1" {
 			n = aucd.Host
 		}
 		resp.Paths = append(resp.Paths, &model.Path{
 			Name: n,
-			Path: fmt.Sprintf("%s/%s", aucd.ServerID, p.Path),
+			Path: fmt.Sprintf("%s/%s", aucd.ServerID, p.GetPath()),
 		})
 	}
-	for _, i := range data.Items {
+	for _, i := range data.GetItems() {
 		resp.Items = append(resp.Items, &EmbyFileItem{
 			Item: &model.Item{
-				Name:  i.Name,
-				Path:  fmt.Sprintf("%s/%s", aucd.ServerID, i.Id),
-				IsDir: i.IsFolder,
+				Name:  i.GetName(),
+				Path:  fmt.Sprintf("%s/%s", aucd.ServerID, i.GetId()),
+				IsDir: i.GetIsFolder(),
 			},
-			Type: i.Type,
+			Type: i.GetType(),
 		})
 	}
 
-	resp.Total = data.Total
+	resp.Total = data.GetTotal()
 	ctx.JSON(http.StatusOK, model.NewAPIDataResp(resp))
 }

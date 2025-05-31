@@ -4,13 +4,13 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/internal/bootstrap"
+	"github.com/synctv-org/synctv/server/middlewares"
 	"github.com/synctv-org/synctv/server/model"
 )
 
 func OAuth2EnabledAPI(ctx *gin.Context) {
-	log := ctx.MustGet("log").(*logrus.Entry)
+	log := middlewares.GetLogger(ctx)
 
 	data, err := bootstrap.Oauth2EnabledCache.Get(ctx)
 	if err != nil {
@@ -25,7 +25,7 @@ func OAuth2EnabledAPI(ctx *gin.Context) {
 }
 
 func OAuth2SignupEnabledAPI(ctx *gin.Context) {
-	log := ctx.MustGet("log").(*logrus.Entry)
+	log := middlewares.GetLogger(ctx)
 
 	oauth2SignupEnabled, err := bootstrap.Oauth2SignupEnabledCache.Get(ctx)
 	if err != nil {

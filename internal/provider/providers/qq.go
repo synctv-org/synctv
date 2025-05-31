@@ -38,7 +38,7 @@ func (p *QQProvider) Provider() provider.OAuth2Provider {
 	return "qq"
 }
 
-func (p *QQProvider) NewAuthURL(ctx context.Context, state string) (string, error) {
+func (p *QQProvider) NewAuthURL(_ context.Context, state string) (string, error) {
 	return p.config.AuthCodeURL(state, oauth2.AccessTypeOnline), nil
 }
 
@@ -50,7 +50,12 @@ func (p *QQProvider) GetToken(ctx context.Context, code string) (*oauth2.Token, 
 	params.Set("client_id", p.config.ClientID)
 	params.Set("client_secret", p.config.ClientSecret)
 	params.Set("fmt", "json")
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s?%s", p.config.Endpoint.TokenURL, params.Encode()), nil)
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodGet,
+		fmt.Sprintf("%s?%s", p.config.Endpoint.TokenURL, params.Encode()),
+		nil,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -70,7 +75,12 @@ func (p *QQProvider) RefreshToken(ctx context.Context, tk string) (*oauth2.Token
 	params.Set("client_id", p.config.ClientID)
 	params.Set("client_secret", p.config.ClientSecret)
 	params.Set("fmt", "json")
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s?%s", p.config.Endpoint.TokenURL, params.Encode()), nil)
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodGet,
+		fmt.Sprintf("%s?%s", p.config.Endpoint.TokenURL, params.Encode()),
+		nil,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -88,7 +98,12 @@ func (p *QQProvider) GetUserInfo(ctx context.Context, code string) (*provider.Us
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("https://graph.qq.com/oauth2.0/me?access_token=%s&fmt=json", tk.AccessToken), nil)
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodGet,
+		fmt.Sprintf("https://graph.qq.com/oauth2.0/me?access_token=%s&fmt=json", tk.AccessToken),
+		nil,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -102,7 +117,17 @@ func (p *QQProvider) GetUserInfo(ctx context.Context, code string) (*provider.Us
 	if err != nil {
 		return nil, err
 	}
-	req, err = http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("https://graph.qq.com/user/get_user_info?access_token=%s&oauth_consumer_key=%s&openid=%s&fmt=json", tk.AccessToken, p.config.ClientID, ume.Openid), nil)
+	req, err = http.NewRequestWithContext(
+		ctx,
+		http.MethodGet,
+		fmt.Sprintf(
+			"https://graph.qq.com/user/get_user_info?access_token=%s&oauth_consumer_key=%s&openid=%s&fmt=json",
+			tk.AccessToken,
+			p.config.ClientID,
+			ume.Openid,
+		),
+		nil,
+	)
 	if err != nil {
 		return nil, err
 	}

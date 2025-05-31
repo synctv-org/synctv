@@ -32,7 +32,7 @@ func (p *logtoProvider) Init(opt provider.Oauth2Option) {
 	p.config.RedirectURL = opt.RedirectURL
 }
 
-func (p *logtoProvider) NewAuthURL(ctx context.Context, state string) (string, error) {
+func (p *logtoProvider) NewAuthURL(_ context.Context, state string) (string, error) {
 	return p.config.AuthCodeURL(state, oauth2.AccessTypeOnline), nil
 }
 
@@ -86,21 +86,21 @@ type logtoUserInfo struct {
 func (p *logtoProvider) RegistSetting(group string) {
 	settings.NewStringSetting(
 		group+"_endpoint", "", group,
-		settings.WithAfterInitString(func(ss settings.StringSetting, s string) {
+		settings.WithAfterInitString(func(_ settings.StringSetting, s string) {
 			p.endpoint = s
 			p.config.Endpoint = oauth2.Endpoint{
 				AuthURL:  s + "/oidc/auth",
 				TokenURL: s + "/oidc/token",
 			}
 		}),
-		settings.WithBeforeSetString(func(ss settings.StringSetting, s string) (string, error) {
+		settings.WithBeforeSetString(func(_ settings.StringSetting, s string) (string, error) {
 			u, err := url.Parse(s)
 			if err != nil {
 				return "", err
 			}
 			return fmt.Sprintf("%s://%s", u.Scheme, u.Host), nil
 		}),
-		settings.WithAfterSetString(func(ss settings.StringSetting, s string) {
+		settings.WithAfterSetString(func(_ settings.StringSetting, s string) {
 			p.endpoint = s
 			p.config.Endpoint = oauth2.Endpoint{
 				AuthURL:  s + "/oidc/auth",

@@ -12,30 +12,39 @@ type GRPCServer struct {
 	Impl provider.Interface
 }
 
-func (s *GRPCServer) Init(ctx context.Context, req *providerpb.InitReq) (*providerpb.Enpty, error) {
+func (s *GRPCServer) Init(_ context.Context, req *providerpb.InitReq) (*providerpb.Enpty, error) {
 	opt := provider.Oauth2Option{
-		ClientID:     req.ClientId,
-		ClientSecret: req.ClientSecret,
-		RedirectURL:  req.RedirectUrl,
+		ClientID:     req.GetClientId(),
+		ClientSecret: req.GetClientSecret(),
+		RedirectURL:  req.GetRedirectUrl(),
 	}
 	s.Impl.Init(opt)
 	return &providerpb.Enpty{}, nil
 }
 
-func (s *GRPCServer) Provider(ctx context.Context, req *providerpb.Enpty) (*providerpb.ProviderResp, error) {
+func (s *GRPCServer) Provider(
+	_ context.Context,
+	_ *providerpb.Enpty,
+) (*providerpb.ProviderResp, error) {
 	return &providerpb.ProviderResp{Name: s.Impl.Provider()}, nil
 }
 
-func (s *GRPCServer) NewAuthURL(ctx context.Context, req *providerpb.NewAuthURLReq) (*providerpb.NewAuthURLResp, error) {
-	s2, err := s.Impl.NewAuthURL(ctx, req.State)
+func (s *GRPCServer) NewAuthURL(
+	ctx context.Context,
+	req *providerpb.NewAuthURLReq,
+) (*providerpb.NewAuthURLResp, error) {
+	s2, err := s.Impl.NewAuthURL(ctx, req.GetState())
 	if err != nil {
 		return nil, err
 	}
 	return &providerpb.NewAuthURLResp{Url: s2}, nil
 }
 
-func (s *GRPCServer) GetUserInfo(ctx context.Context, req *providerpb.GetUserInfoReq) (*providerpb.GetUserInfoResp, error) {
-	userInfo, err := s.Impl.GetUserInfo(ctx, req.Code)
+func (s *GRPCServer) GetUserInfo(
+	ctx context.Context,
+	req *providerpb.GetUserInfoReq,
+) (*providerpb.GetUserInfoResp, error) {
+	userInfo, err := s.Impl.GetUserInfo(ctx, req.GetCode())
 	if err != nil {
 		return nil, err
 	}

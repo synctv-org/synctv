@@ -6,7 +6,7 @@ import (
 	sysnotify "github.com/synctv-org/synctv/internal/sysnotify"
 )
 
-func InitSysNotify(ctx context.Context) error {
+func InitSysNotify(_ context.Context) error {
 	sysnotify.Init()
 	return nil
 }

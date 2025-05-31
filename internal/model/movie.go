@@ -13,12 +13,12 @@ import (
 
 type Movie struct {
 	ID        string    `gorm:"primaryKey;type:char(32)"                                         json:"id"`
-	CreatedAt time.Time `json:"-"`
-	UpdatedAt time.Time `json:"-"`
+	CreatedAt time.Time `                                                                        json:"-"`
+	UpdatedAt time.Time `                                                                        json:"-"`
 	RoomID    string    `gorm:"not null;index;type:char(32)"                                     json:"-"`
 	CreatorID string    `gorm:"index;type:char(32)"                                              json:"creatorId"`
 	Childrens []*Movie  `gorm:"foreignKey:ParentID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE" json:"-"`
-	MovieBase `gorm:"embedded;embeddedPrefix:base_"                                    json:"base"`
+	MovieBase `gorm:"embedded;embeddedPrefix:base_" json:"base"`
 	Position  uint `gorm:"not null"                                                         json:"-"`
 }
 
@@ -35,17 +35,17 @@ func (m *Movie) Clone() *Movie {
 	}
 }
 
-func (m *Movie) BeforeCreate(tx *gorm.DB) error {
+func (m *Movie) BeforeCreate(_ *gorm.DB) error {
 	if m.ID == "" {
 		m.ID = utils.SortUUID()
 	}
 	return nil
 }
 
-func (m *Movie) BeforeSave(tx *gorm.DB) (err error) {
+func (m *Movie) BeforeSave(tx *gorm.DB) error {
 	if m.ParentID != "" {
 		mv := &Movie{}
-		err = tx.Where("id = ?", m.ParentID).First(mv).Error
+		err := tx.Where("id = ?", m.ParentID).First(mv).Error
 		if err != nil {
 			return fmt.Errorf("load parent movie failed: %w", err)
 		}
@@ -56,7 +56,7 @@ func (m *Movie) BeforeSave(tx *gorm.DB) (err error) {
 			return errors.New("parent is a dynamic folder, cannot add child")
 		}
 	}
-	return
+	return nil
 }
 
 type MoreSource struct {
@@ -69,17 +69,17 @@ type MovieBase struct {
 	VendorInfo  VendorInfo           `gorm:"embedded;embeddedPrefix:vendor_info_" json:"vendorInfo,omitempty"`
 	Headers     map[string]string    `gorm:"serializer:fastjson;type:text"        json:"headers,omitempty"`
 	Subtitles   map[string]*Subtitle `gorm:"serializer:fastjson;type:text"        json:"subtitles,omitempty"`
-	URL         string               `gorm:"type:text"                   json:"url"`
-	Name        string               `gorm:"not null;type:text"           json:"name"`
-	Type        string               `json:"type"`
+	URL         string               `gorm:"type:text"                            json:"url"`
+	Name        string               `gorm:"not null;type:text"                   json:"name"`
+	Type        string               `                                            json:"type"`
 	ParentID    EmptyNullString      `gorm:"type:char(32)"                        json:"parentId"`
 	MoreSources []*MoreSource        `gorm:"serializer:fastjson;type:text"        json:"moreSources,omitempty"`
-	Danmu       string               `gorm:"type:text"                   json:"danmu"`
-	StreamDanmu string               `gorm:"type:text"                   json:"streamDanmu"`
-	Live        bool                 `json:"live"`
-	Proxy       bool                 `json:"proxy"`
-	RtmpSource  bool                 `json:"rtmpSource"`
-	IsFolder    bool                 `json:"isFolder"`
+	Danmu       string               `gorm:"type:text"                            json:"danmu"`
+	StreamDanmu string               `gorm:"type:text"                            json:"streamDanmu"`
+	Live        bool                 `                                            json:"live"`
+	Proxy       bool                 `                                            json:"proxy"`
+	RtmpSource  bool                 `                                            json:"rtmpSource"`
+	IsFolder    bool                 `                                            json:"isFolder"`
 }
 
 func (m *MovieBase) IsM3u8() bool {
@@ -208,11 +208,11 @@ func (b *BilibiliStreamingInfo) Validate() error {
 
 type AlistStreamingInfo struct {
 	// {/}serverId/Path
-	Path     string `gorm:"type:text" json:"path,omitempty"`
-	Password string `gorm:"type:varchar(64)"  json:"password,omitempty"`
+	Path     string `gorm:"type:text"        json:"path,omitempty"`
+	Password string `gorm:"type:varchar(64)" json:"password,omitempty"`
 }
 
-func GetAlistServerIDFromPath(path string) (serverID string, filePath string, err error) {
+func GetAlistServerIDFromPath(path string) (serverID, filePath string, err error) {
 	before, after, found := strings.Cut(strings.TrimLeft(path, "/"), "/")
 	if !found {
 		return "", path, errors.New("path is invalid")
@@ -249,7 +249,7 @@ func (a *AlistStreamingInfo) Validate() error {
 	return nil
 }
 
-func (a *AlistStreamingInfo) BeforeSave(tx *gorm.DB) error {
+func (a *AlistStreamingInfo) BeforeSave(_ *gorm.DB) error {
 	if a.Password != "" {
 		s, err := utils.CryptoToBase64([]byte(a.Password), utils.GenCryptoKey(a.Path))
 		if err != nil {
@@ -260,7 +260,7 @@ func (a *AlistStreamingInfo) BeforeSave(tx *gorm.DB) error {
 	return nil
 }
 
-func (a *AlistStreamingInfo) AfterSave(tx *gorm.DB) error {
+func (a *AlistStreamingInfo) AfterSave(_ *gorm.DB) error {
 	if a.Password != "" {
 		b, err := utils.DecryptoFromBase64(a.Password, utils.GenCryptoKey(a.Path))
 		if err != nil {
@@ -277,11 +277,11 @@ func (a *AlistStreamingInfo) AfterFind(tx *gorm.DB) error {
 
 type EmbyStreamingInfo struct {
 	// {/}serverId/ItemId
-	Path      string `gorm:"type:varchar(52)"    json:"path,omitempty"`
-	Transcode bool   `json:"transcode,omitempty"`
+	Path      string `gorm:"type:varchar(52)" json:"path,omitempty"`
+	Transcode bool   `                        json:"transcode,omitempty"`
 }
 
-func GetEmbyServerIDFromPath(path string) (serverID string, filePath string, err error) {
+func GetEmbyServerIDFromPath(path string) (serverID, filePath string, err error) {
 	if s := strings.Split(strings.TrimLeft(path, "/"), "/"); len(s) == 2 {
 		return s[0], s[1], nil
 	}

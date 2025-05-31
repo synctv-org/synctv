@@ -2,8 +2,8 @@ package setting
 
 import (
 	"errors"
-	"fmt"
 
+	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"github.com/synctv-org/synctv/internal/bootstrap"
 	"github.com/synctv-org/synctv/internal/settings"
@@ -13,15 +13,15 @@ var SetCmd = &cobra.Command{
 	Use:   "set",
 	Short: "set setting",
 	Long:  `set setting`,
-	PreRunE: func(cmd *cobra.Command, args []string) error {
-		return bootstrap.New(bootstrap.WithContext(cmd.Context())).Add(
+	PreRunE: func(cmd *cobra.Command, _ []string) error {
+		return bootstrap.New().Add(
 			bootstrap.InitStdLog,
 			bootstrap.InitConfig,
 			bootstrap.InitDatabase,
 			bootstrap.InitSetting,
-		).Run()
+		).Run(cmd.Context())
 	},
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		if len(args) != 2 {
 			return errors.New("args length must be 2")
 		}
@@ -31,9 +31,9 @@ var SetCmd = &cobra.Command{
 		}
 		err := s.SetString(args[1])
 		if err != nil {
-			fmt.Printf("set setting %s error: %v\n", args[0], err)
+			log.Errorf("set setting %s error: %v\n", args[0], err)
 		}
-		fmt.Printf("set setting success:\n%s: %v\n", args[0], s.Interface())
+		log.Infof("set setting success:\n%s: %v\n", args[0], s.Interface())
 		return nil
 	},
 }

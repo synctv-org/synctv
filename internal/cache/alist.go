@@ -31,12 +31,18 @@ type AlistUserCacheData struct {
 }
 
 func NewAlistUserCache(userID string) *AlistUserCache {
-	return newMapCache[*AlistUserCacheData, struct{}](func(ctx context.Context, key string, args ...struct{}) (*AlistUserCacheData, error) {
-		return AlistAuthorizationCacheWithUserIDInitFunc(ctx, userID, key)
-	}, -1)
+	return newMapCache(
+		func(ctx context.Context, key string, _ ...struct{}) (*AlistUserCacheData, error) {
+			return AlistAuthorizationCacheWithUserIDInitFunc(ctx, userID, key)
+		},
+		-1,
+	)
 }
 
-func AlistAuthorizationCacheWithUserIDInitFunc(ctx context.Context, userID, serverID string) (*AlistUserCacheData, error) {
+func AlistAuthorizationCacheWithUserIDInitFunc(
+	ctx context.Context,
+	userID, serverID string,
+) (*AlistUserCacheData, error) {
 	v, err := db.GetAlistVendor(userID, serverID)
 	if err != nil {
 		return nil, err
@@ -44,7 +50,10 @@ func AlistAuthorizationCacheWithUserIDInitFunc(ctx context.Context, userID, serv
 	return AlistAuthorizationCacheWithConfigInitFunc(ctx, v)
 }
 
-func AlistAuthorizationCacheWithConfigInitFunc(ctx context.Context, v *model.AlistVendor) (*AlistUserCacheData, error) {
+func AlistAuthorizationCacheWithConfigInitFunc(
+	ctx context.Context,
+	v *model.AlistVendor,
+) (*AlistUserCacheData, error) {
 	cli := vendor.LoadAlistClient(v.Backend)
 	model.GenAlistServerID(v)
 
@@ -74,7 +83,7 @@ func AlistAuthorizationCacheWithConfigInitFunc(ctx context.Context, v *model.Ali
 	return &AlistUserCacheData{
 		Host:     v.Host,
 		ServerID: v.ServerID,
-		Token:    resp.Token,
+		Token:    resp.GetToken(),
 		Backend:  v.Backend,
 	}, nil
 }
@@ -116,13 +125,15 @@ type SubtitleDataCache = refreshcache0.RefreshCache[[]byte]
 
 const subtitleMaxLength = 15 * 1024 * 1024
 
-func newAliSubtitles(list []*alist.FsOtherResp_VideoPreviewPlayInfo_LiveTranscodingSubtitleTaskList) []*AlistSubtitle {
+func newAliSubtitles(
+	list []*alist.FsOtherResp_VideoPreviewPlayInfo_LiveTranscodingSubtitleTaskList,
+) []*AlistSubtitle {
 	caches := make([]*AlistSubtitle, len(list))
 	for i, v := range list {
-		if v.Status != "finished" {
+		if v.GetStatus() != "finished" {
 			return nil
 		}
-		url := v.Url
+		url := v.GetUrl()
 		caches[i] = &AlistSubtitle{
 			Cache: refreshcache0.NewRefreshCache(func(ctx context.Context) ([]byte, error) {
 				r, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -138,28 +149,41 @@ func newAliSubtitles(list []*alist.FsOtherResp_VideoPreviewPlayInfo_LiveTranscod
 					return nil, fmt.Errorf("status code: %d", resp.StatusCode)
 				}
 				if resp.ContentLength > subtitleMaxLength {
-					return nil, fmt.Errorf("subtitle too large, got: %d, max: %d", resp.ContentLength, subtitleMaxLength)
+					return nil, fmt.Errorf(
+						"subtitle too large, got: %d, max: %d",
+						resp.ContentLength,
+						subtitleMaxLength,
+					)
 				}
 				return io.ReadAll(io.LimitReader(resp.Body, subtitleMaxLength))
 			}, -1),
-			Name: v.Language,
-			URL:  v.Url,
-			Type: utils.GetFileExtension(v.Url),
+			Name: v.GetLanguage(),
+			URL:  v.GetUrl(),
+			Type: utils.GetFileExtension(v.GetUrl()),
 		}
 	}
 	return caches
 }
 
-func genAliM3U8ListFile(urls []*alist.FsOtherResp_VideoPreviewPlayInfo_LiveTranscodingTaskList) []byte {
+func genAliM3U8ListFile(
+	urls []*alist.FsOtherResp_VideoPreviewPlayInfo_LiveTranscodingTaskList,
+) []byte {
 	buf := bytes.NewBuffer(nil)
 	buf.WriteString("#EXTM3U\n")
 	buf.WriteString("#EXT-X-VERSION:3\n")
 	for _, v := range urls {
-		if v.Status != "finished" {
+		if v.GetStatus() != "finished" {
 			return nil
 		}
-		buf.WriteString(fmt.Sprintf("#EXT-X-STREAM-INF:BANDWIDTH=%d,RESOLUTION=%dx%d,NAME=\"%d\"\n", v.TemplateWidth*v.TemplateHeight, v.TemplateWidth, v.TemplateHeight, v.TemplateWidth))
-		buf.WriteString(v.Url + "\n")
+		fmt.Fprintf(
+			buf,
+			"#EXT-X-STREAM-INF:BANDWIDTH=%d,RESOLUTION=%dx%d,NAME=\"%d\"\n",
+			v.GetTemplateWidth()*v.GetTemplateHeight(),
+			v.GetTemplateWidth(),
+			v.GetTemplateHeight(),
+			v.GetTemplateWidth(),
+		)
+		buf.WriteString(v.GetUrl() + "\n")
 	}
 	return buf.Bytes()
 }
@@ -169,7 +193,10 @@ type AlistMovieCacheFuncArgs struct {
 	UserAgent string
 }
 
-func NewAlistMovieCacheInitFunc(movie *model.Movie, subPath string) func(ctx context.Context, args *AlistMovieCacheFuncArgs) (*AlistMovieCacheData, error) {
+func NewAlistMovieCacheInitFunc(
+	movie *model.Movie,
+	subPath string,
+) func(ctx context.Context, args *AlistMovieCacheFuncArgs) (*AlistMovieCacheData, error) {
 	return func(ctx context.Context, args *AlistMovieCacheFuncArgs) (*AlistMovieCacheData, error) {
 		if err := validateArgs(args, movie, subPath); err != nil {
 			return nil, err
@@ -188,27 +215,42 @@ func NewAlistMovieCacheInitFunc(movie *model.Movie, subPath string) func(ctx con
 			return nil, errors.New("not bind alist vendor")
 		}
 
-		cli := vendor.LoadAlistClient(movie.MovieBase.VendorInfo.Backend)
-		fg, err := getFsGet(ctx, cli, aucd, truePath, movie.MovieBase.VendorInfo.Alist.Password, args.UserAgent)
+		cli := vendor.LoadAlistClient(movie.VendorInfo.Backend)
+		fg, err := getFsGet(
+			ctx,
+			cli,
+			aucd,
+			truePath,
+			movie.VendorInfo.Alist.Password,
+			args.UserAgent,
+		)
 		if err != nil {
 			return nil, err
 		}
 
-		if fg.IsDir {
+		if fg.GetIsDir() {
 			return nil, fmt.Errorf("path is dir: %s", truePath)
 		}
 
 		cache := &AlistMovieCacheData{
-			URL:      fg.RawUrl,
-			Provider: fg.Provider,
+			URL:      fg.GetRawUrl(),
+			Provider: fg.GetProvider(),
 		}
 
-		if err := processSubtitles(ctx, cli, aucd, fg, truePath, movie.MovieBase.VendorInfo.Alist.Password, args.UserAgent, cache); err != nil {
+		if err := processSubtitles(ctx, cli, aucd, fg, truePath, movie.VendorInfo.Alist.Password, args.UserAgent, cache); err != nil {
 			return nil, err
 		}
 
-		if fg.Provider == AlistProviderAli {
-			processAliProvider(ctx, fg.RawUrl, cli, aucd, truePath, movie.MovieBase.VendorInfo.Alist.Password, cache)
+		if fg.GetProvider() == AlistProviderAli {
+			processAliProvider(
+				ctx,
+				fg.GetRawUrl(),
+				cli,
+				aucd,
+				truePath,
+				movie.VendorInfo.Alist.Password,
+				cache,
+			)
 		}
 
 		return cache, nil
@@ -229,7 +271,7 @@ func validateArgs(args *AlistMovieCacheFuncArgs, movie *model.Movie, subPath str
 }
 
 func getServerIDAndPath(movie *model.Movie, subPath string) (string, string, error) {
-	serverID, truePath, err := movie.MovieBase.VendorInfo.Alist.ServerIDAndFilePath()
+	serverID, truePath, err := movie.VendorInfo.Alist.ServerIDAndFilePath()
 	if err != nil {
 		return "", "", err
 	}
@@ -245,7 +287,12 @@ func getServerIDAndPath(movie *model.Movie, subPath string) (string, string, err
 	return serverID, truePath, nil
 }
 
-func getFsGet(ctx context.Context, cli alist.AlistHTTPServer, aucd *AlistUserCacheData, truePath, password, userAgent string) (*alist.FsGetResp, error) {
+func getFsGet(
+	ctx context.Context,
+	cli alist.AlistHTTPServer,
+	aucd *AlistUserCacheData,
+	truePath, password, userAgent string,
+) (*alist.FsGetResp, error) {
 	return cli.FsGet(ctx, &alist.FsGetReq{
 		Host:      aucd.Host,
 		Token:     aucd.Token,
@@ -255,27 +302,34 @@ func getFsGet(ctx context.Context, cli alist.AlistHTTPServer, aucd *AlistUserCac
 	})
 }
 
-func processSubtitles(ctx context.Context, cli alist.AlistHTTPServer, aucd *AlistUserCacheData, fg *alist.FsGetResp, truePath, password, userAgent string, cache *AlistMovieCacheData) error {
-	prefix := strings.TrimSuffix(truePath, fg.Name)
-	for _, related := range fg.Related {
-		if related.Type != 4 {
+func processSubtitles(
+	ctx context.Context,
+	cli alist.AlistHTTPServer,
+	aucd *AlistUserCacheData,
+	fg *alist.FsGetResp,
+	truePath, password, userAgent string,
+	cache *AlistMovieCacheData,
+) error {
+	prefix := strings.TrimSuffix(truePath, fg.GetName())
+	for _, related := range fg.GetRelated() {
+		if related.GetType() != 4 {
 			continue
 		}
-		if utils.GetFileExtension(related.Name) == "xml" {
+		if utils.GetFileExtension(related.GetName()) == "xml" {
 			continue
 		}
 
-		resp, err := getFsGet(ctx, cli, aucd, prefix+related.Name, password, userAgent)
+		resp, err := getFsGet(ctx, cli, aucd, prefix+related.GetName(), password, userAgent)
 		if err != nil {
 			return err
 		}
 
 		subtitle := &AlistSubtitle{
-			Name: related.Name,
-			URL:  resp.RawUrl,
-			Type: utils.GetFileExtension(resp.Name),
+			Name: related.GetName(),
+			URL:  resp.GetRawUrl(),
+			Type: utils.GetFileExtension(resp.GetName()),
 			Cache: refreshcache0.NewRefreshCache(func(ctx context.Context) ([]byte, error) {
-				return fetchSubtitleContent(ctx, resp.RawUrl)
+				return fetchSubtitleContent(ctx, resp.GetRawUrl())
 			}, -1),
 		}
 		cache.Subtitles = append(cache.Subtitles, subtitle)
@@ -297,12 +351,23 @@ func fetchSubtitleContent(ctx context.Context, url string) ([]byte, error) {
 		return nil, fmt.Errorf("status code: %d", resp.StatusCode)
 	}
 	if resp.ContentLength > subtitleMaxLength {
-		return nil, fmt.Errorf("subtitle too large, got: %d, max: %d", resp.ContentLength, subtitleMaxLength)
+		return nil, fmt.Errorf(
+			"subtitle too large, got: %d, max: %d",
+			resp.ContentLength,
+			subtitleMaxLength,
+		)
 	}
 	return io.ReadAll(io.LimitReader(resp.Body, subtitleMaxLength))
 }
 
-func processAliProvider(_ context.Context, firstURL string, cli alist.AlistHTTPServer, aucd *AlistUserCacheData, truePath, password string, cache *AlistMovieCacheData) {
+func processAliProvider(
+	_ context.Context,
+	firstURL string,
+	cli alist.AlistHTTPServer,
+	aucd *AlistUserCacheData,
+	truePath, password string,
+	cache *AlistMovieCacheData,
+) {
 	cache.Ali = refreshcache0.NewRefreshCache(func(ctx context.Context) (*AlistAliCache, error) {
 		var url string
 		if firstURL != "" {
@@ -318,7 +383,7 @@ func processAliProvider(_ context.Context, firstURL string, cli alist.AlistHTTPS
 			if err != nil {
 				return nil, err
 			}
-			url = u.RawUrl
+			url = u.GetRawUrl()
 		}
 		fo, err := cli.FsOther(ctx, &alist.FsOtherReq{
 			Host:     aucd.Host,
@@ -331,9 +396,13 @@ func processAliProvider(_ context.Context, firstURL string, cli alist.AlistHTTPS
 			return nil, err
 		}
 		return &AlistAliCache{
-			URL:          url,
-			M3U8ListFile: genAliM3U8ListFile(fo.VideoPreviewPlayInfo.LiveTranscodingTaskList),
-			Subtitles:    newAliSubtitles(fo.VideoPreviewPlayInfo.LiveTranscodingSubtitleTaskList),
+			URL: url,
+			M3U8ListFile: genAliM3U8ListFile(
+				fo.GetVideoPreviewPlayInfo().GetLiveTranscodingTaskList(),
+			),
+			Subtitles: newAliSubtitles(
+				fo.GetVideoPreviewPlayInfo().GetLiveTranscodingSubtitleTaskList(),
+			),
 		}, nil
 	}, 14*time.Minute)
 }

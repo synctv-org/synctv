@@ -22,6 +22,6 @@ func (pm *PingMessage) String() string {
 	return "Ping"
 }
 
-func (pm *PingMessage) Encode(w io.Writer) error {
+func (pm *PingMessage) Encode(_ io.Writer) error {
 	return nil
 }

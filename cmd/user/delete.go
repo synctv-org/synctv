@@ -2,8 +2,8 @@ package user
 
 import (
 	"errors"
-	"fmt"
 
+	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"github.com/synctv-org/synctv/internal/bootstrap"
 	"github.com/synctv-org/synctv/internal/db"
@@ -13,23 +13,23 @@ var DeleteCmd = &cobra.Command{
 	Use:   "delete",
 	Short: "delete",
 	Long:  `delete user`,
-	PreRunE: func(cmd *cobra.Command, args []string) error {
-		return bootstrap.New(bootstrap.WithContext(cmd.Context())).Add(
+	PreRunE: func(cmd *cobra.Command, _ []string) error {
+		return bootstrap.New().Add(
 			bootstrap.InitStdLog,
 			bootstrap.InitConfig,
 			bootstrap.InitDatabase,
-		).Run()
+		).Run(cmd.Context())
 	},
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		if len(args) == 0 {
 			return errors.New("missing user id")
 		}
 		u, err := db.LoadAndDeleteUserByID(args[0])
 		if err != nil {
-			fmt.Printf("delete user failed: %s\n", err)
+			log.Errorf("delete user failed: %s\n", err)
 			return nil
 		}
-		fmt.Printf("delete user success: %s\n", u.Username)
+		log.Infof("delete user success: %s\n", u.Username)
 		return nil
 	},
 }

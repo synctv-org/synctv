@@ -56,7 +56,7 @@ func pushNeedInit(s Setting) {
 		panic("push need init failed, setting is nil")
 	}
 	for i, item := range needInit.items {
-		if item.Setting.Name() == s.Name() {
+		if item.Name() == s.Name() {
 			heap.Remove(needInit, i)
 			break
 		}
@@ -87,17 +87,18 @@ type Setting interface {
 	Name() string
 	Type() model.SettingType
 	Group() model.SettingGroup
-	Init(string) error
+	Init(value string) error
 	Inited() bool
-	SetInitPriority(int)
+	SetInitPriority(priority int)
 	InitPriority() int
 	String() string
-	SetString(string) error
+	SetString(value string) error
 	DefaultString() string
 	DefaultInterface() any
 	Interface() any
 }
 
+//nolint:errcheck
 func SetValue(name string, value any) error {
 	s, ok := Settings[name]
 	if !ok {

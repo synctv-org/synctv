@@ -19,9 +19,13 @@ type Claims struct {
 }
 
 func AuthRtmpPublish(authorization string) (movieID string, err error) {
-	t, err := jwt.ParseWithClaims(strings.TrimPrefix(authorization, `Bearer `), &Claims{}, func(token *jwt.Token) (any, error) {
-		return stream.StringToBytes(conf.Conf.Jwt.Secret), nil
-	})
+	t, err := jwt.ParseWithClaims(
+		strings.TrimPrefix(authorization, `Bearer `),
+		&Claims{},
+		func(_ *jwt.Token) (any, error) {
+			return stream.StringToBytes(conf.Conf.Jwt.Secret), nil
+		},
+	)
 	if err != nil {
 		return "", errors.New("auth failed")
 	}
@@ -39,7 +43,8 @@ func NewRtmpAuthorization(movieID string) (string, error) {
 			NotBefore: jwt.NewNumericDate(time.Now()),
 		},
 	}
-	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(stream.StringToBytes(conf.Conf.Jwt.Secret))
+	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).
+		SignedString(stream.StringToBytes(conf.Conf.Jwt.Secret))
 }
 
 func Init(rs *rtmps.Server) {

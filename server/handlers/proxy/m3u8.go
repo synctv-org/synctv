@@ -28,7 +28,7 @@ type M3u8TargetClaims struct {
 }
 
 func GetM3u8Target(token string) (*M3u8TargetClaims, error) {
-	t, err := jwt.ParseWithClaims(token, &M3u8TargetClaims{}, func(token *jwt.Token) (any, error) {
+	t, err := jwt.ParseWithClaims(token, &M3u8TargetClaims{}, func(_ *jwt.Token) (any, error) {
 		return stream.StringToBytes(conf.Conf.Jwt.Secret), nil
 	})
 	if err != nil || !t.Valid {
@@ -51,20 +51,25 @@ func NewM3u8TargetToken(targetURL, roomID, movieID string, isM3u8File bool) (str
 			NotBefore: jwt.NewNumericDate(time.Now()),
 		},
 	}
-	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(stream.StringToBytes(conf.Conf.Jwt.Secret))
+	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).
+		SignedString(stream.StringToBytes(conf.Conf.Jwt.Secret))
 }
 
 const maxM3u8FileSize = 3 * 1024 * 1024 //
 
-func M3u8Data(ctx *gin.Context, data []byte, baseURL string, token, roomID, movieID string) error {
+func M3u8Data(ctx *gin.Context, data []byte, baseURL, token, roomID, movieID string) error {
 	hasM3u8File := false
-	err := m3u8.RangeM3u8SegmentsWithBaseURL(stream.BytesToString(data), baseURL, func(segmentUrl string) (bool, error) {
-		if utils.IsM3u8Url(segmentUrl) {
-			hasM3u8File = true
-			return false, nil
-		}
-		return true, nil
-	})
+	err := m3u8.RangeM3u8SegmentsWithBaseURL(
+		stream.BytesToString(data),
+		baseURL,
+		func(segmentUrl string) (bool, error) {
+			if utils.IsM3u8Url(segmentUrl) {
+				hasM3u8File = true
+				return false, nil
+			}
+			return true, nil
+		},
+	)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest,
 			model.NewAPIErrorStringResp(
@@ -73,13 +78,23 @@ func M3u8Data(ctx *gin.Context, data []byte, baseURL string, token, roomID, movi
 		)
 		return fmt.Errorf("range m3u8 segments with base url error: %w", err)
 	}
-	m3u8Str, err := m3u8.ReplaceM3u8SegmentsWithBaseURL(stream.BytesToString(data), baseURL, func(segmentUrl string) (string, error) {
-		targetToken, err := NewM3u8TargetToken(segmentUrl, roomID, movieID, hasM3u8File)
-		if err != nil {
-			return "", err
-		}
-		return fmt.Sprintf("/api/room/movie/proxy/%s/m3u8/%s?token=%s&roomId=%s", movieID, targetToken, token, roomID), nil
-	})
+	m3u8Str, err := m3u8.ReplaceM3u8SegmentsWithBaseURL(
+		stream.BytesToString(data),
+		baseURL,
+		func(segmentUrl string) (string, error) {
+			targetToken, err := NewM3u8TargetToken(segmentUrl, roomID, movieID, hasM3u8File)
+			if err != nil {
+				return "", err
+			}
+			return fmt.Sprintf(
+				"/api/room/movie/proxy/%s/m3u8/%s?token=%s&roomId=%s",
+				movieID,
+				targetToken,
+				token,
+				roomID,
+			), nil
+		},
+	)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest,
 			model.NewAPIErrorStringResp(
@@ -93,7 +108,14 @@ func M3u8Data(ctx *gin.Context, data []byte, baseURL string, token, roomID, movi
 }
 
 // only cache non-m3u8 files
-func M3u8(ctx *gin.Context, u string, headers map[string]string, isM3u8File bool, token, roomID, movieID string, opts ...Option) error {
+func M3u8(
+	ctx *gin.Context,
+	u string,
+	headers map[string]string,
+	isM3u8File bool,
+	token, roomID, movieID string,
+	opts ...Option,
+) error {
 	if !isM3u8File {
 		return URL(ctx, u, headers, opts...)
 	}
@@ -126,16 +148,25 @@ func M3u8(ctx *gin.Context, u string, headers map[string]string, isM3u8File bool
 		return fmt.Errorf("do request error: %w", err)
 	}
 	defer resp.Body.Close()
-	// if contentType := resp.Header.Get("Content-Type"); !strings.HasPrefix(contentType, "application/vnd.apple.mpegurl") {
+	// if contentType := resp.Header.Get("Content-Type"); !strings.HasPrefix(contentType,
+	// "application/vnd.apple.mpegurl") {
 	// 	return fmt.Errorf("m3u8 file is not a valid m3u8 file, content type: %s", contentType)
 	// }
 	if resp.ContentLength > maxM3u8FileSize {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest,
 			model.NewAPIErrorStringResp(
-				fmt.Sprintf("m3u8 file is too large: %d, max: %d (3MB)", resp.ContentLength, maxM3u8FileSize),
+				fmt.Sprintf(
+					"m3u8 file is too large: %d, max: %d (3MB)",
+					resp.ContentLength,
+					maxM3u8FileSize,
+				),
 			),
 		)
-		return fmt.Errorf("m3u8 file is too large: %d, max: %d (3MB)", resp.ContentLength, maxM3u8FileSize)
+		return fmt.Errorf(
+			"m3u8 file is too large: %d, max: %d (3MB)",
+			resp.ContentLength,
+			maxM3u8FileSize,
+		)
 	}
 	b, err := io.ReadAll(io.LimitReader(resp.Body, maxM3u8FileSize))
 	if err != nil {

@@ -8,7 +8,6 @@ import (
 	"github.com/synctv-org/synctv/internal/conf"
 	"github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/utils"
-
 	// import fastjson serializer
 	_ "github.com/synctv-org/synctv/utils/fastJSONSerializer"
 	"gorm.io/gorm"
@@ -57,7 +56,12 @@ func initGuestUser() error {
 	if err == nil || !errors.Is(err, gorm.ErrRecordNotFound) {
 		return err
 	}
-	u, err := CreateUser("guest", utils.RandString(32), WithRole(model.RoleUser), WithID(GuestUserID))
+	u, err := CreateUser(
+		"guest",
+		utils.RandString(32),
+		WithRole(model.RoleUser),
+		WithID(GuestUserID),
+	)
 	log.Infof("init guest user:\nid: %s\nusername: %s", u.ID, u.Username)
 	return err
 }
@@ -177,14 +181,14 @@ func WhereCreatorID(creatorID string) func(db *gorm.DB) *gorm.DB {
 }
 
 // column cannot be a user parameter
-func WhereEqual(column string, value interface{}) func(db *gorm.DB) *gorm.DB {
+func WhereEqual(column string, value any) func(db *gorm.DB) *gorm.DB {
 	return func(db *gorm.DB) *gorm.DB {
 		return db.Where("? = ?", column, value)
 	}
 }
 
 // column cannot be a user parameter
-func WhereLike(column string, value string) func(db *gorm.DB) *gorm.DB {
+func WhereLike(column, value string) func(db *gorm.DB) *gorm.DB {
 	return func(db *gorm.DB) *gorm.DB {
 		switch dbType {
 		case conf.DatabaseTypePostgres:
@@ -199,36 +203,72 @@ func WhereMovieNameLikeOrURLLike(name, url string) func(db *gorm.DB) *gorm.DB {
 	return func(db *gorm.DB) *gorm.DB {
 		switch dbType {
 		case conf.DatabaseTypePostgres:
-			return db.Where("base_name ILIKE ? OR base_url ILIKE ?", utils.LIKE(name), utils.LIKE(url))
+			return db.Where(
+				"base_name ILIKE ? OR base_url ILIKE ?",
+				utils.LIKE(name),
+				utils.LIKE(url),
+			)
 		default:
-			return db.Where("base_name LIKE ? OR base_url LIKE ?", utils.LIKE(name), utils.LIKE(url))
+			return db.Where(
+				"base_name LIKE ? OR base_url LIKE ?",
+				utils.LIKE(name),
+				utils.LIKE(url),
+			)
 		}
 	}
 }
 
-func WhereRoomNameLikeOrCreatorInOrIDLike(name string, ids []string, id string) func(db *gorm.DB) *gorm.DB {
+func WhereRoomNameLikeOrCreatorInOrIDLike(
+	name string,
+	ids []string,
+	id string,
+) func(db *gorm.DB) *gorm.DB {
 	return func(db *gorm.DB) *gorm.DB {
 		switch dbType {
 		case conf.DatabaseTypePostgres:
-			return db.Where("name ILIKE ? OR creator_id IN ? OR id ILIKE ?", utils.LIKE(name), ids, id)
+			return db.Where(
+				"name ILIKE ? OR creator_id IN ? OR id ILIKE ?",
+				utils.LIKE(name),
+				ids,
+				id,
+			)
 		default:
-			return db.Where("name LIKE ? OR creator_id IN ? OR id LIKE ?", utils.LIKE(name), ids, id)
+			return db.Where(
+				"name LIKE ? OR creator_id IN ? OR id LIKE ?",
+				utils.LIKE(name),
+				ids,
+				id,
+			)
 		}
 	}
 }
 
-func WhereRoomNameLikeOrCreatorInOrRoomsIDLike(name string, ids []string, id string) func(db *gorm.DB) *gorm.DB {
+func WhereRoomNameLikeOrCreatorInOrRoomsIDLike(
+	name string,
+	ids []string,
+	id string,
+) func(db *gorm.DB) *gorm.DB {
 	return func(db *gorm.DB) *gorm.DB {
 		switch dbType {
 		case conf.DatabaseTypePostgres:
-			return db.Where("name ILIKE ? OR creator_id IN ? OR rooms.id ILIKE ?", utils.LIKE(name), ids, id)
+			return db.Where(
+				"name ILIKE ? OR creator_id IN ? OR rooms.id ILIKE ?",
+				utils.LIKE(name),
+				ids,
+				id,
+			)
 		default:
-			return db.Where("name LIKE ? OR creator_id IN ? OR rooms.id LIKE ?", utils.LIKE(name), ids, id)
+			return db.Where(
+				"name LIKE ? OR creator_id IN ? OR rooms.id LIKE ?",
+				utils.LIKE(name),
+				ids,
+				id,
+			)
 		}
 	}
 }
 
-func WhereRoomNameLikeOrIDLike(name string, id string) func(db *gorm.DB) *gorm.DB {
+func WhereRoomNameLikeOrIDLike(name, id string) func(db *gorm.DB) *gorm.DB {
 	return func(db *gorm.DB) *gorm.DB {
 		switch dbType {
 		case conf.DatabaseTypePostgres:

@@ -20,7 +20,7 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-func InitDatabase(ctx context.Context) (err error) {
+func InitDatabase(_ context.Context) (err error) {
 	dialector, err := createDialector(conf.Conf.Database)
 	if err != nil {
 		log.Fatalf("failed to create dialector: %s", err.Error())
@@ -42,9 +42,12 @@ func InitDatabase(ctx context.Context) (err error) {
 	if err != nil {
 		log.Fatalf("failed to get sqlDB: %s", err.Error())
 	}
-	err = sysnotify.RegisterSysNotifyTask(0, sysnotify.NewSysNotifyTask("database", sysnotify.NotifyTypeEXIT, func() error {
-		return sqlDB.Close()
-	}))
+	err = sysnotify.RegisterSysNotifyTask(
+		0,
+		sysnotify.NewSysNotifyTask("database", sysnotify.NotifyTypeEXIT, func() error {
+			return sqlDB.Close()
+		}),
+	)
 	if err != nil {
 		log.Fatalf("failed to register sysnotify task: %s", err.Error())
 	}
@@ -58,10 +61,12 @@ func createDialector(dbConf conf.DatabaseConfig) (dialector gorm.Dialector, err 
 	var dsn string
 	switch dbConf.Type {
 	case conf.DatabaseTypeMysql:
-		if dbConf.CustomDSN != "" {
+		switch {
+		case dbConf.CustomDSN != "":
 			dsn = dbConf.CustomDSN
-		} else if dbConf.Port == 0 {
-			dsn = fmt.Sprintf("%s:%s@unix(%s)/%s?charset=utf8mb4&parseTime=True&loc=Local&interpolateParams=true&tls=%s",
+		case dbConf.Port == 0:
+			dsn = fmt.Sprintf(
+				"%s:%s@unix(%s)/%s?charset=utf8mb4&parseTime=True&loc=Local&interpolateParams=true&tls=%s",
 				dbConf.User,
 				dbConf.Password,
 				dbConf.Host,
@@ -69,8 +74,9 @@ func createDialector(dbConf conf.DatabaseConfig) (dialector gorm.Dialector, err 
 				dbConf.SslMode,
 			)
 			log.Infof("mysql database: %s", dbConf.Host)
-		} else {
-			dsn = fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=utf8mb4&parseTime=True&loc=Local&interpolateParams=true&tls=%s",
+		default:
+			dsn = fmt.Sprintf(
+				"%s:%s@tcp(%s:%d)/%s?charset=utf8mb4&parseTime=True&loc=Local&interpolateParams=true&tls=%s",
 				dbConf.User,
 				dbConf.Password,
 				dbConf.Host,
@@ -89,12 +95,13 @@ func createDialector(dbConf conf.DatabaseConfig) (dialector gorm.Dialector, err 
 			SkipInitializeWithVersion: false,
 		})
 	case conf.DatabaseTypeSqlite3:
-		if dbConf.CustomDSN != "" {
+		switch {
+		case dbConf.CustomDSN != "":
 			dsn = dbConf.CustomDSN
-		} else if dbConf.Name == "memory" || strings.HasPrefix(dbConf.Name, ":memory:") {
+		case dbConf.Name == "memory" || strings.HasPrefix(dbConf.Name, ":memory:"):
 			dsn = "file::memory:?cache=shared&_journal_mode=WAL&_vacuum=incremental&_pragma=foreign_keys(1)"
 			log.Infof("sqlite3 database memory")
-		} else {
+		default:
 			if !strings.HasSuffix(dbConf.Name, ".db") {
 				dbConf.Name += ".db"
 			}
@@ -107,9 +114,10 @@ func createDialector(dbConf conf.DatabaseConfig) (dialector gorm.Dialector, err 
 		}
 		dialector = openSqlite(dsn)
 	case conf.DatabaseTypePostgres:
-		if dbConf.CustomDSN != "" {
+		switch {
+		case dbConf.CustomDSN != "":
 			dsn = dbConf.CustomDSN
-		} else if dbConf.Port == 0 {
+		case dbConf.Port == 0:
 			dsn = fmt.Sprintf("host=%s user=%s password=%s dbname=%s sslmode=%s",
 				dbConf.Host,
 				dbConf.User,
@@ -118,7 +126,7 @@ func createDialector(dbConf conf.DatabaseConfig) (dialector gorm.Dialector, err 
 				dbConf.SslMode,
 			)
 			log.Infof("postgres database: %s", dbConf.Host)
-		} else {
+		default:
 			dsn = fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
 				dbConf.Host,
 				dbConf.Port,
@@ -136,7 +144,7 @@ func createDialector(dbConf conf.DatabaseConfig) (dialector gorm.Dialector, err 
 	default:
 		log.Fatalf("unknown database type: %s", dbConf.Type)
 	}
-	return
+	return dialector, err
 }
 
 func newDBLogger() logger.Interface {

@@ -10,8 +10,8 @@ import (
 	json "github.com/json-iterator/go"
 	"github.com/synctv-org/synctv/internal/db"
 	dbModel "github.com/synctv-org/synctv/internal/model"
-	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/internal/vendor"
+	"github.com/synctv-org/synctv/server/middlewares"
 	"github.com/synctv-org/synctv/server/model"
 	"github.com/synctv-org/synctv/utils"
 	"github.com/synctv-org/vendors/api/alist"
@@ -40,8 +40,9 @@ type AlistFileItem struct {
 
 type AlistFSListResp = model.VendorFSListResp[*AlistFileItem]
 
+//nolint:gosec
 func List(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.UserEntry).Value()
+	user := middlewares.GetUserEntry(ctx).Value()
 
 	req := ListReq{}
 	if err := model.Decode(ctx, &req); err != nil {
@@ -73,7 +74,10 @@ func List(ctx *gin.Context) {
 		ev, err := db.GetAlistVendors(user.ID, append(socpes, db.Paginate(page, size))...)
 		if err != nil {
 			if errors.Is(err, db.NotFoundError(db.ErrVendorNotFound)) {
-				ctx.JSON(http.StatusBadRequest, model.NewAPIErrorStringResp("alist server not found"))
+				ctx.JSON(
+					http.StatusBadRequest,
+					model.NewAPIErrorStringResp("alist server not found"),
+				)
 				return
 			}
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
@@ -152,7 +156,7 @@ AlistFSListResp:
 
 		req.Path = strings.Trim(req.Path, "/")
 		resp := AlistFSListResp{
-			Total: data.Total,
+			Total: data.GetTotal(),
 			Paths: model.GenDefaultPaths(req.Path, true,
 				&model.Path{
 					Name: "",
@@ -163,14 +167,18 @@ AlistFSListResp:
 					Path: aucd.ServerID + "/",
 				}),
 		}
-		for _, flr := range data.Content {
+		for _, flr := range data.GetContent() {
 			resp.Items = append(resp.Items, &AlistFileItem{
 				Item: &model.Item{
-					Name:  flr.Name,
-					Path:  fmt.Sprintf("%s/%s", aucd.ServerID, strings.Trim(fmt.Sprintf("%s/%s", flr.Parent, flr.Name), "/")),
-					IsDir: flr.IsDir,
+					Name: flr.GetName(),
+					Path: fmt.Sprintf(
+						"%s/%s",
+						aucd.ServerID,
+						strings.Trim(fmt.Sprintf("%s/%s", flr.GetParent(), flr.GetName()), "/"),
+					),
+					IsDir: flr.GetIsDir(),
 				},
-				Size: flr.Size,
+				Size: flr.GetSize(),
 			})
 		}
 
@@ -194,7 +202,7 @@ AlistFSListResp:
 
 	req.Path = strings.Trim(req.Path, "/")
 	resp := AlistFSListResp{
-		Total: data.Total,
+		Total: data.GetTotal(),
 		Paths: model.GenDefaultPaths(req.Path, true,
 			&model.Path{
 				Name: "",
@@ -205,14 +213,18 @@ AlistFSListResp:
 				Path: aucd.ServerID + "/",
 			}),
 	}
-	for _, flr := range data.Content {
+	for _, flr := range data.GetContent() {
 		resp.Items = append(resp.Items, &AlistFileItem{
 			Item: &model.Item{
-				Name:  flr.Name,
-				Path:  fmt.Sprintf("%s/%s", aucd.ServerID, strings.Trim(fmt.Sprintf("%s/%s", req.Path, flr.Name), "/")),
-				IsDir: flr.IsDir,
+				Name: flr.GetName(),
+				Path: fmt.Sprintf(
+					"%s/%s",
+					aucd.ServerID,
+					strings.Trim(fmt.Sprintf("%s/%s", req.Path, flr.GetName()), "/"),
+				),
+				IsDir: flr.GetIsDir(),
 			},
-			Size: flr.Size,
+			Size: flr.GetSize(),
 		})
 	}
 

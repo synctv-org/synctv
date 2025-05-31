@@ -4,18 +4,17 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/internal/db"
 	dbModel "github.com/synctv-org/synctv/internal/model"
-	"github.com/synctv-org/synctv/internal/op"
+	"github.com/synctv-org/synctv/server/middlewares"
 	"github.com/synctv-org/synctv/server/model"
 	"github.com/synctv-org/synctv/utils"
 	"gorm.io/gorm"
 )
 
 func RoomMembers(ctx *gin.Context) {
-	room := ctx.MustGet("room").(*op.RoomEntry).Value()
-	log := ctx.MustGet("log").(*logrus.Entry)
+	room := middlewares.GetRoomEntry(ctx).Value()
+	log := middlewares.GetLogger(ctx)
 
 	page, pageSize, err := utils.GetPageAndMax(ctx)
 	if err != nil {
@@ -89,7 +88,10 @@ func RoomMembers(ctx *gin.Context) {
 		}
 	default:
 		log.Errorf("get room users failed: not support sort")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("not support sort"))
+		ctx.AbortWithStatusJSON(
+			http.StatusBadRequest,
+			model.NewAPIErrorStringResp("not support sort"),
+		)
 		return
 	}
 
@@ -107,8 +109,8 @@ func RoomMembers(ctx *gin.Context) {
 }
 
 func RoomAdminMembers(ctx *gin.Context) {
-	room := ctx.MustGet("room").(*op.RoomEntry).Value()
-	log := ctx.MustGet("log").(*logrus.Entry)
+	room := middlewares.GetRoomEntry(ctx).Value()
+	log := middlewares.GetLogger(ctx)
 
 	page, pageSize, err := utils.GetPageAndMax(ctx)
 	if err != nil {
@@ -191,7 +193,10 @@ func RoomAdminMembers(ctx *gin.Context) {
 		}
 	default:
 		log.Errorf("get room users failed: not support sort")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("not support sort"))
+		ctx.AbortWithStatusJSON(
+			http.StatusBadRequest,
+			model.NewAPIErrorStringResp("not support sort"),
+		)
 		return
 	}
 
@@ -209,9 +214,9 @@ func RoomAdminMembers(ctx *gin.Context) {
 }
 
 func RoomAdminApproveMember(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.UserEntry).Value()
-	room := ctx.MustGet("room").(*op.RoomEntry).Value()
-	log := ctx.MustGet("log").(*logrus.Entry)
+	user := middlewares.GetUserEntry(ctx).Value()
+	room := middlewares.GetRoomEntry(ctx).Value()
+	log := middlewares.GetLogger(ctx)
 
 	var req model.RoomApproveMemberReq
 	if err := model.Decode(ctx, &req); err != nil {
@@ -231,9 +236,9 @@ func RoomAdminApproveMember(ctx *gin.Context) {
 }
 
 func RoomAdminDeleteMember(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.UserEntry).Value()
-	room := ctx.MustGet("room").(*op.RoomEntry).Value()
-	log := ctx.MustGet("log").(*logrus.Entry)
+	user := middlewares.GetUserEntry(ctx).Value()
+	room := middlewares.GetRoomEntry(ctx).Value()
+	log := middlewares.GetLogger(ctx)
 
 	var req model.RoomApproveMemberReq
 	if err := model.Decode(ctx, &req); err != nil {
@@ -253,9 +258,9 @@ func RoomAdminDeleteMember(ctx *gin.Context) {
 }
 
 func RoomAdminBanMember(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.UserEntry).Value()
-	room := ctx.MustGet("room").(*op.RoomEntry).Value()
-	log := ctx.MustGet("log").(*logrus.Entry)
+	user := middlewares.GetUserEntry(ctx).Value()
+	room := middlewares.GetRoomEntry(ctx).Value()
+	log := middlewares.GetLogger(ctx)
 
 	var req model.RoomBanMemberReq
 	if err := model.Decode(ctx, &req); err != nil {
@@ -275,9 +280,9 @@ func RoomAdminBanMember(ctx *gin.Context) {
 }
 
 func RoomAdminUnbanMember(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.UserEntry).Value()
-	room := ctx.MustGet("room").(*op.RoomEntry).Value()
-	log := ctx.MustGet("log").(*logrus.Entry)
+	user := middlewares.GetUserEntry(ctx).Value()
+	room := middlewares.GetRoomEntry(ctx).Value()
+	log := middlewares.GetLogger(ctx)
 
 	var req model.RoomUnbanMemberReq
 	if err := model.Decode(ctx, &req); err != nil {
@@ -297,9 +302,9 @@ func RoomAdminUnbanMember(ctx *gin.Context) {
 }
 
 func RoomSetMemberPermissions(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.UserEntry).Value()
-	room := ctx.MustGet("room").(*op.RoomEntry).Value()
-	log := ctx.MustGet("log").(*logrus.Entry)
+	user := middlewares.GetUserEntry(ctx).Value()
+	room := middlewares.GetRoomEntry(ctx).Value()
+	log := middlewares.GetLogger(ctx)
 
 	var req model.RoomSetMemberPermissionsReq
 	if err := model.Decode(ctx, &req); err != nil {
@@ -319,9 +324,9 @@ func RoomSetMemberPermissions(ctx *gin.Context) {
 }
 
 func RoomSetAdmin(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.UserEntry).Value()
-	room := ctx.MustGet("room").(*op.RoomEntry).Value()
-	log := ctx.MustGet("log").(*logrus.Entry)
+	user := middlewares.GetUserEntry(ctx).Value()
+	room := middlewares.GetRoomEntry(ctx).Value()
+	log := middlewares.GetLogger(ctx)
 
 	var req model.RoomSetAdminReq
 	if err := model.Decode(ctx, &req); err != nil {
@@ -341,9 +346,9 @@ func RoomSetAdmin(ctx *gin.Context) {
 }
 
 func RoomSetMember(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.UserEntry).Value()
-	room := ctx.MustGet("room").(*op.RoomEntry).Value()
-	log := ctx.MustGet("log").(*logrus.Entry)
+	user := middlewares.GetUserEntry(ctx).Value()
+	room := middlewares.GetRoomEntry(ctx).Value()
+	log := middlewares.GetLogger(ctx)
 
 	var req model.RoomSetMemberReq
 	if err := model.Decode(ctx, &req); err != nil {
@@ -363,9 +368,9 @@ func RoomSetMember(ctx *gin.Context) {
 }
 
 func RoomSetAdminPermissions(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.UserEntry).Value()
-	room := ctx.MustGet("room").(*op.RoomEntry).Value()
-	log := ctx.MustGet("log").(*logrus.Entry)
+	user := middlewares.GetUserEntry(ctx).Value()
+	room := middlewares.GetRoomEntry(ctx).Value()
+	log := middlewares.GetLogger(ctx)
 
 	var req model.RoomSetAdminPermissionsReq
 	if err := model.Decode(ctx, &req); err != nil {

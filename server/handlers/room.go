@@ -10,7 +10,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/maruel/natural"
-	"github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/internal/db"
 	dbModel "github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
@@ -30,9 +29,9 @@ var (
 )
 
 func RoomMe(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.UserEntry).Value()
-	room := ctx.MustGet("room").(*op.RoomEntry).Value()
-	log := ctx.MustGet("log").(*logrus.Entry)
+	user := middlewares.GetUserEntry(ctx).Value()
+	room := middlewares.GetRoomEntry(ctx).Value()
+	log := middlewares.GetLogger(ctx)
 
 	member, err := room.LoadMember(user.ID)
 	if err != nil {
@@ -53,9 +52,9 @@ func RoomMe(ctx *gin.Context) {
 }
 
 func RoomInfo(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.UserEntry).Value()
-	room := ctx.MustGet("room").(*op.RoomEntry).Value()
-	log := ctx.MustGet("log").(*logrus.Entry)
+	user := middlewares.GetUserEntry(ctx).Value()
+	room := middlewares.GetRoomEntry(ctx).Value()
+	log := middlewares.GetLogger(ctx)
 
 	member, err := room.LoadMember(user.ID)
 	if err != nil {
@@ -87,17 +86,20 @@ func RoomInfo(ctx *gin.Context) {
 }
 
 func RoomPiblicSettings(ctx *gin.Context) {
-	room := ctx.MustGet("room").(*op.RoomEntry).Value()
+	room := middlewares.GetRoomEntry(ctx).Value()
 	ctx.JSON(http.StatusOK, model.NewAPIDataResp(room.Settings))
 }
 
 func CreateRoom(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.UserEntry).Value()
-	log := ctx.MustGet("log").(*logrus.Entry)
+	user := middlewares.GetUserEntry(ctx).Value()
+	log := middlewares.GetLogger(ctx)
 
 	if settings.DisableCreateRoom.Get() && !user.IsAdmin() {
 		log.Error("create room is disabled")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("create room is disabled"))
+		ctx.AbortWithStatusJSON(
+			http.StatusBadRequest,
+			model.NewAPIErrorStringResp("create room is disabled"),
+		)
 		return
 	}
 
@@ -108,7 +110,11 @@ func CreateRoom(ctx *gin.Context) {
 		return
 	}
 
-	room, err := user.CreateRoom(req.RoomName, req.Password, db.WithSettingHidden(req.Settings.Hidden))
+	room, err := user.CreateRoom(
+		req.RoomName,
+		req.Password,
+		db.WithSettingHidden(req.Settings.Hidden),
+	)
 	if err != nil {
 		log.Errorf("create room failed: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
@@ -121,44 +127,47 @@ func CreateRoom(ctx *gin.Context) {
 	}))
 }
 
-var roomHotCache = refreshcache0.NewRefreshCache[[]*model.RoomListResp](func(context.Context) ([]*model.RoomListResp, error) {
-	rooms := make([]*model.RoomListResp, 0)
-	op.RangeRoomCache(func(key string, value *synccache.Entry[*op.Room]) bool {
-		v := value.Value()
-		if !v.Settings.Hidden && v.IsActive() && !v.HubIsNotInited() {
-			rooms = append(rooms, &model.RoomListResp{
-				RoomID:       v.ID,
-				RoomName:     v.Name,
-				ViewerCount:  v.ViewerCount(),
-				NeedPassword: v.NeedPassword(),
-				Creator:      op.GetUserName(v.CreatorID),
-				CreatorID:    v.CreatorID,
-				CreatedAt:    v.CreatedAt.UnixMilli(),
-			})
-		}
-		return true
-	})
-
-	slices.SortStableFunc(rooms, func(a, b *model.RoomListResp) int {
-		if a.ViewerCount == b.ViewerCount {
-			if a.RoomName == b.RoomName {
-				return 0
+var roomHotCache = refreshcache0.NewRefreshCache(
+	func(context.Context) ([]*model.RoomListResp, error) {
+		rooms := make([]*model.RoomListResp, 0)
+		op.RangeRoomCache(func(_ string, value *synccache.Entry[*op.Room]) bool {
+			v := value.Value()
+			if !v.Settings.Hidden && v.IsActive() && !v.HubIsNotInited() {
+				rooms = append(rooms, &model.RoomListResp{
+					RoomID:       v.ID,
+					RoomName:     v.Name,
+					ViewerCount:  v.ViewerCount(),
+					NeedPassword: v.NeedPassword(),
+					Creator:      op.GetUserName(v.CreatorID),
+					CreatorID:    v.CreatorID,
+					CreatedAt:    v.CreatedAt.UnixMilli(),
+				})
 			}
-			if natural.Less(a.RoomName, b.RoomName) {
+			return true
+		})
+
+		slices.SortStableFunc(rooms, func(a, b *model.RoomListResp) int {
+			if a.ViewerCount == b.ViewerCount {
+				if a.RoomName == b.RoomName {
+					return 0
+				}
+				if natural.Less(a.RoomName, b.RoomName) {
+					return -1
+				}
+				return 1
+			} else if a.ViewerCount > b.ViewerCount {
 				return -1
 			}
 			return 1
-		} else if a.ViewerCount > b.ViewerCount {
-			return -1
-		}
-		return 1
-	})
+		})
 
-	return rooms, nil
-}, time.Second*3)
+		return rooms, nil
+	},
+	time.Second*3,
+)
 
 func RoomHotList(ctx *gin.Context) {
-	log := ctx.MustGet("log").(*logrus.Entry)
+	log := middlewares.GetLogger(ctx)
 
 	page, pageSize, err := utils.GetPageAndMax(ctx)
 	if err != nil {
@@ -181,7 +190,7 @@ func RoomHotList(ctx *gin.Context) {
 }
 
 func RoomList(ctx *gin.Context) {
-	log := ctx.MustGet("log").(*logrus.Entry)
+	log := middlewares.GetLogger(ctx)
 
 	page, pageSize, err := utils.GetPageAndMax(ctx)
 	if err != nil {
@@ -208,7 +217,10 @@ func RoomList(ctx *gin.Context) {
 				ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 				return
 			}
-			scopes = append(scopes, db.WhereRoomNameLikeOrCreatorInOrRoomsIDLike(keyword, ids, keyword))
+			scopes = append(
+				scopes,
+				db.WhereRoomNameLikeOrCreatorInOrRoomsIDLike(keyword, ids, keyword),
+			)
 		case "name":
 			scopes = append(scopes, db.WhereRoomNameLike(keyword))
 		case "creator":
@@ -247,7 +259,10 @@ func RoomList(ctx *gin.Context) {
 		}
 	default:
 		log.Errorf("get room list failed: not support sort")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("not support sort"))
+		ctx.AbortWithStatusJSON(
+			http.StatusBadRequest,
+			model.NewAPIErrorStringResp("not support sort"),
+		)
 		return
 	}
 
@@ -314,7 +329,7 @@ func genJoinedRoomListResp(scopes ...func(db *gorm.DB) *gorm.DB) ([]*model.Joine
 }
 
 func CheckRoom(ctx *gin.Context) {
-	log := ctx.MustGet("log").(*logrus.Entry)
+	log := middlewares.GetLogger(ctx)
 	roomID, err := middlewares.GetRoomIDFromContext(ctx)
 	if err != nil {
 		log.Errorf("check room failed: %v", err)
@@ -342,8 +357,8 @@ func CheckRoom(ctx *gin.Context) {
 }
 
 func LoginRoom(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.UserEntry).Value()
-	log := ctx.MustGet("log").(*logrus.Entry)
+	user := middlewares.GetUserEntry(ctx).Value()
+	log := middlewares.GetLogger(ctx)
 
 	req := model.LoginRoomReq{}
 	if err := model.Decode(ctx, &req); err != nil {
@@ -368,7 +383,10 @@ func LoginRoom(ctx *gin.Context) {
 
 	if room.IsPending() {
 		log.Warn("login room failed: room is pending, please wait for admin to approve")
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewAPIErrorStringResp("room is pending, please wait for admin to approve"))
+		ctx.AbortWithStatusJSON(
+			http.StatusForbidden,
+			model.NewAPIErrorStringResp("room is pending, please wait for admin to approve"),
+		)
 		return
 	}
 
@@ -414,8 +432,8 @@ func LoginRoom(ctx *gin.Context) {
 }
 
 func CheckRoomPassword(ctx *gin.Context) {
-	room := ctx.MustGet("room").(*op.RoomEntry).Value()
-	log := ctx.MustGet("log").(*logrus.Entry)
+	room := middlewares.GetRoomEntry(ctx).Value()
+	log := middlewares.GetLogger(ctx)
 
 	req := model.CheckRoomPasswordReq{}
 	if err := model.Decode(ctx, &req); err != nil {
@@ -430,9 +448,9 @@ func CheckRoomPassword(ctx *gin.Context) {
 }
 
 func DeleteRoom(ctx *gin.Context) {
-	room := ctx.MustGet("room").(*op.RoomEntry)
-	user := ctx.MustGet("user").(*op.UserEntry).Value()
-	log := ctx.MustGet("log").(*logrus.Entry)
+	room := middlewares.GetRoomEntry(ctx)
+	user := middlewares.GetUserEntry(ctx).Value()
+	log := middlewares.GetLogger(ctx)
 
 	if err := user.DeleteRoom(room); err != nil {
 		log.Errorf("delete room failed: %v", err)
@@ -453,9 +471,9 @@ func DeleteRoom(ctx *gin.Context) {
 }
 
 func SetRoomPassword(ctx *gin.Context) {
-	room := ctx.MustGet("room").(*op.RoomEntry).Value()
-	user := ctx.MustGet("user").(*op.UserEntry).Value()
-	log := ctx.MustGet("log").(*logrus.Entry)
+	room := middlewares.GetRoomEntry(ctx).Value()
+	user := middlewares.GetUserEntry(ctx).Value()
+	log := middlewares.GetLogger(ctx)
 
 	req := model.SetRoomPasswordReq{}
 	if err := model.Decode(ctx, &req); err != nil {
@@ -483,16 +501,16 @@ func SetRoomPassword(ctx *gin.Context) {
 }
 
 func RoomSetting(ctx *gin.Context) {
-	room := ctx.MustGet("room").(*op.RoomEntry).Value()
-	// user := ctx.MustGet("user").(*op.UserEntry)
+	room := middlewares.GetRoomEntry(ctx).Value()
+	// user := middlewares.GetUserEntry(ctx)
 
 	ctx.JSON(http.StatusOK, model.NewAPIDataResp(room.Settings))
 }
 
 func SetRoomSetting(ctx *gin.Context) {
-	room := ctx.MustGet("room").(*op.RoomEntry).Value()
-	user := ctx.MustGet("user").(*op.UserEntry).Value()
-	log := ctx.MustGet("log").(*logrus.Entry)
+	room := middlewares.GetRoomEntry(ctx).Value()
+	user := middlewares.GetUserEntry(ctx).Value()
+	log := middlewares.GetLogger(ctx)
 
 	req := model.SetRoomSettingReq{}
 	if err := model.Decode(ctx, &req); err != nil {

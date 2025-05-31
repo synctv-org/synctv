@@ -9,43 +9,60 @@ import (
 	"io"
 )
 
-func Crypto(v []byte, key []byte) ([]byte, error) {
+func Crypto(v, key []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, err
 	}
 
-	ciphertext := make([]byte, aes.BlockSize+len(v))
-	iv := ciphertext[:aes.BlockSize]
-	if _, err := io.ReadFull(rand.Reader, iv); err != nil {
+	// Use GCM as an AEAD mode instead of CFB
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
 		return nil, err
 	}
 
-	stream := cipher.NewCFBEncrypter(block, iv)
-	stream.XORKeyStream(ciphertext[aes.BlockSize:], v)
+	// Create a nonce for this encryption
+	nonce := make([]byte, aead.NonceSize())
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return nil, err
+	}
 
+	// Encrypt and authenticate the plaintext
+	ciphertext := aead.Seal(nonce, nonce, v, nil)
 	return ciphertext, nil
 }
 
-func Decrypto(v []byte, key []byte) ([]byte, error) {
+func Decrypto(v, key []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, err
 	}
 
-	if len(v) < aes.BlockSize {
+	// Use GCM as an AEAD mode instead of CFB
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+
+	// Check if the ciphertext is at least as long as the nonce
+	nonceSize := aead.NonceSize()
+	if len(v) < nonceSize {
 		return nil, errors.New("ciphertext too short")
 	}
-	iv := v[:aes.BlockSize]
-	v = v[aes.BlockSize:]
 
-	stream := cipher.NewCFBDecrypter(block, iv)
-	stream.XORKeyStream(v, v)
+	// Extract the nonce from the ciphertext
+	nonce, ciphertext := v[:nonceSize], v[nonceSize:]
 
-	return v, nil
+	// Decrypt and verify the ciphertext
+	plaintext, err := aead.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return plaintext, nil
 }
 
-func CryptoToBase64(v []byte, key []byte) (string, error) {
+func CryptoToBase64(v, key []byte) (string, error) {
 	ciphertext, err := Crypto(v, key)
 	if err != nil {
 		return "", err
@@ -63,7 +80,7 @@ func DecryptoFromBase64(v string, key []byte) ([]byte, error) {
 
 func GenCryptoKey(base string) []byte {
 	key := make([]byte, 32)
-	for i := 0; i < len(base); i++ {
+	for i := range len(base) {
 		key[i%32] ^= base[i]
 	}
 	return key
@@ -71,7 +88,7 @@ func GenCryptoKey(base string) []byte {
 
 func GenCryptoKeyWithBytes(base []byte) []byte {
 	key := make([]byte, 32)
-	for i := 0; i < len(base); i++ {
+	for i := range base {
 		key[i%32] ^= base[i]
 	}
 	return key

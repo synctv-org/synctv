@@ -40,13 +40,14 @@ func parseProxyCacheSize(sizeStr string) (int64, error) {
 
 	var multiplier int64 = 1024 * 1024 // Default MB
 
-	if strings.HasSuffix(sizeStr, "gb") {
+	switch {
+	case strings.HasSuffix(sizeStr, "gb"):
 		multiplier = 1024 * 1024 * 1024
 		sizeStr = strings.TrimSuffix(sizeStr, "gb")
-	} else if strings.HasSuffix(sizeStr, "mb") {
+	case strings.HasSuffix(sizeStr, "mb"):
 		multiplier = 1024 * 1024
 		sizeStr = strings.TrimSuffix(sizeStr, "mb")
-	} else if strings.HasSuffix(sizeStr, "kb") {
+	case strings.HasSuffix(sizeStr, "kb"):
 		multiplier = 1024
 		sizeStr = strings.TrimSuffix(sizeStr, "kb")
 	}
@@ -178,7 +179,7 @@ func URL(ctx *gin.Context, u string, headers map[string]string, opts ...Option) 
 	}
 	cli := http.Client{
 		Transport: uhc.DefaultTransport,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		CheckRedirect: func(req *http.Request, _ []*http.Request) error {
 			for k, v := range headers {
 				req.Header.Set(k, v)
 			}
@@ -216,7 +217,13 @@ func URL(ctx *gin.Context, u string, headers map[string]string, opts ...Option) 
 	return nil
 }
 
-func AutoProxyURL(ctx *gin.Context, u, t string, headers map[string]string, token, roomID, movieID string, opts ...Option) error {
+func AutoProxyURL(
+	ctx *gin.Context,
+	u, t string,
+	headers map[string]string,
+	token, roomID, movieID string,
+	opts ...Option,
+) error {
 	if strings.HasPrefix(t, "m3u") || utils.IsM3u8Url(u) {
 		return M3u8(ctx, u, headers, true, token, roomID, movieID, opts...)
 	}

@@ -37,7 +37,10 @@ func DeleteBilibiliVendor(userID string) error {
 	return HandleUpdateResult(result, ErrVendorNotFound)
 }
 
-func GetAlistVendors(userID string, scopes ...func(*gorm.DB) *gorm.DB) ([]*model.AlistVendor, error) {
+func GetAlistVendors(
+	userID string,
+	scopes ...func(*gorm.DB) *gorm.DB,
+) ([]*model.AlistVendor, error) {
 	var vendors []*model.AlistVendor
 	err := db.Scopes(scopes...).Where("user_id = ?", userID).Find(&vendors).Error
 	return vendors, err
@@ -45,7 +48,11 @@ func GetAlistVendors(userID string, scopes ...func(*gorm.DB) *gorm.DB) ([]*model
 
 func GetAlistVendorsCount(userID string, scopes ...func(*gorm.DB) *gorm.DB) (int64, error) {
 	var count int64
-	err := db.Scopes(scopes...).Where("user_id = ?", userID).Model(&model.AlistVendor{}).Count(&count).Error
+	err := db.Scopes(scopes...).
+		Where("user_id = ?", userID).
+		Model(&model.AlistVendor{}).
+		Count(&count).
+		Error
 	return count, err
 }
 
@@ -72,7 +79,8 @@ func CreateOrSaveAlistVendor(vendorInfo *model.AlistVendor) (*model.AlistVendor,
 }
 
 func DeleteAlistVendor(userID, serverID string) error {
-	result := db.Where("user_id = ? AND server_id = ?", userID, serverID).Delete(&model.AlistVendor{})
+	result := db.Where("user_id = ? AND server_id = ?", userID, serverID).
+		Delete(&model.AlistVendor{})
 	return HandleUpdateResult(result, ErrVendorNotFound)
 }
 
@@ -84,7 +92,11 @@ func GetEmbyVendors(userID string, scopes ...func(*gorm.DB) *gorm.DB) ([]*model.
 
 func GetEmbyVendorsCount(userID string, scopes ...func(*gorm.DB) *gorm.DB) (int64, error) {
 	var count int64
-	err := db.Scopes(scopes...).Where("user_id = ?", userID).Model(&model.EmbyVendor{}).Count(&count).Error
+	err := db.Scopes(scopes...).
+		Where("user_id = ?", userID).
+		Model(&model.EmbyVendor{}).
+		Count(&count).
+		Error
 	return count, err
 }
 
@@ -117,6 +129,7 @@ func CreateOrSaveEmbyVendor(vendorInfo *model.EmbyVendor) (*model.EmbyVendor, er
 }
 
 func DeleteEmbyVendor(userID, serverID string) error {
-	result := db.Where("user_id = ? AND server_id = ?", userID, serverID).Delete(&model.EmbyVendor{})
+	result := db.Where("user_id = ? AND server_id = ?", userID, serverID).
+		Delete(&model.EmbyVendor{})
 	return HandleUpdateResult(result, ErrVendorNotFound)
 }

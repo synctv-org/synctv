@@ -24,7 +24,10 @@ func Init(e *gin.Engine) {
 			limiter.WithTrustForwardHeader(conf.Conf.RateLimit.TrustForwardHeader),
 		}
 		if conf.Conf.RateLimit.TrustedClientIPHeader != "" {
-			options = append(options, limiter.WithClientIPHeader(conf.Conf.RateLimit.TrustedClientIPHeader))
+			options = append(
+				options,
+				limiter.WithClientIPHeader(conf.Conf.RateLimit.TrustedClientIPHeader),
+			)
 		}
 		e.Use(NewLimiter(d, conf.Conf.RateLimit.Limit, options...))
 	}

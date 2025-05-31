@@ -14,9 +14,11 @@ import (
 var (
 	roomCache             *synccache.SyncCache[string, *Room]
 	ErrRoomCreatorBanned  = errors.New("room creator is banned")
-	ErrRoomCreatorPending = errors.New("room creator is pending approval, please wait for admin to review")
-	ErrInvalidRoomID      = errors.New("invalid room ID: must be 32 characters long")
-	ErrRoomNotInCache     = errors.New("room not found in cache")
+	ErrRoomCreatorPending = errors.New(
+		"room creator is pending approval, please wait for admin to review",
+	)
+	ErrInvalidRoomID  = errors.New("invalid room ID: must be 32 characters long")
+	ErrRoomNotInCache = errors.New("room not found in cache")
 )
 
 type RoomEntry = synccache.Entry[*Room]
@@ -25,7 +27,11 @@ func RangeRoomCache(f func(key string, value *RoomEntry) bool) {
 	roomCache.Range(f)
 }
 
-func CreateRoom(name, password string, maxCount int64, conf ...db.CreateRoomConfig) (*RoomEntry, error) {
+func CreateRoom(
+	name, password string,
+	maxCount int64,
+	conf ...db.CreateRoomConfig,
+) (*RoomEntry, error) {
 	r, err := db.CreateRoom(name, password, maxCount, conf...)
 	if err != nil {
 		return nil, err

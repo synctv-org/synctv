@@ -35,7 +35,7 @@ func (p *DiscordProvider) Provider() provider.OAuth2Provider {
 	return "discord"
 }
 
-func (p *DiscordProvider) NewAuthURL(ctx context.Context, state string) (string, error) {
+func (p *DiscordProvider) NewAuthURL(_ context.Context, state string) (string, error) {
 	return p.config.AuthCodeURL(state, oauth2.AccessTypeOnline), nil
 }
 
@@ -47,13 +47,21 @@ func (p *DiscordProvider) RefreshToken(ctx context.Context, tk string) (*oauth2.
 	return p.config.TokenSource(ctx, &oauth2.Token{RefreshToken: tk}).Token()
 }
 
-func (p *DiscordProvider) GetUserInfo(ctx context.Context, code string) (*provider.UserInfo, error) {
+func (p *DiscordProvider) GetUserInfo(
+	ctx context.Context,
+	code string,
+) (*provider.UserInfo, error) {
 	tk, err := p.config.Exchange(ctx, code)
 	if err != nil {
 		return nil, err
 	}
 	client := p.config.Client(ctx, tk)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://discord.com/api/v10/oauth2/@me", nil)
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodGet,
+		"https://discord.com/api/v10/oauth2/@me",
+		nil,
+	)
 	if err != nil {
 		return nil, err
 	}

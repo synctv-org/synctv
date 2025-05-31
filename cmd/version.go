@@ -9,11 +9,12 @@ import (
 	"github.com/synctv-org/synctv/internal/version"
 )
 
+//nolint:forbidigo
 var VersionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print the version number of Sync TV Server",
 	Long:  `All software has versions. This is Sync TV Server's`,
-	Run: func(cmd *cobra.Command, args []string) {
+	Run: func(_ *cobra.Command, _ []string) {
 		fmt.Printf("synctv %s\n", version.Version)
 		fmt.Printf("- git/commit: %s\n", version.GitCommit)
 		fmt.Printf("- os/platform: %s\n", runtime.GOOS)

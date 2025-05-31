@@ -11,14 +11,14 @@ import (
 
 type BoolSetting interface {
 	Setting
-	Set(bool) error
+	Set(v bool) error
 	Get() bool
 	Default() bool
-	Parse(string) (bool, error)
-	Stringify(bool) string
-	SetBeforeInit(func(BoolSetting, bool) (bool, error))
-	SetBeforeSet(func(BoolSetting, bool) (bool, error))
-	SetAfterGet(func(BoolSetting, bool) bool)
+	Parse(value string) (bool, error)
+	Stringify(value bool) string
+	SetBeforeInit(beforeInit func(BoolSetting, bool) (bool, error))
+	SetBeforeSet(beforeSet func(BoolSetting, bool) (bool, error))
+	SetAfterGet(afterGet func(BoolSetting, bool) bool)
 }
 
 var _ BoolSetting = (*Bool)(nil)
@@ -72,7 +72,12 @@ func WithAfterGetBool(afterGet func(BoolSetting, bool) bool) BoolSettingOption {
 	}
 }
 
-func newBool(name string, value bool, group model.SettingGroup, options ...BoolSettingOption) *Bool {
+func newBool(
+	name string,
+	value bool,
+	group model.SettingGroup,
+	options ...BoolSettingOption,
+) *Bool {
 	b := &Bool{
 		setting: setting{
 			name:        name,
@@ -225,7 +230,12 @@ func (b *Bool) Interface() any {
 	return b.Get()
 }
 
-func NewBoolSetting(k string, v bool, g model.SettingGroup, options ...BoolSettingOption) BoolSetting {
+func NewBoolSetting(
+	k string,
+	v bool,
+	g model.SettingGroup,
+	options ...BoolSettingOption,
+) BoolSetting {
 	_, loaded := Settings[k]
 	if loaded {
 		panic(fmt.Sprintf("setting %s already exists", k))
@@ -233,7 +243,12 @@ func NewBoolSetting(k string, v bool, g model.SettingGroup, options ...BoolSetti
 	return CoverBoolSetting(k, v, g, options...)
 }
 
-func CoverBoolSetting(k string, v bool, g model.SettingGroup, options ...BoolSettingOption) BoolSetting {
+func CoverBoolSetting(
+	k string,
+	v bool,
+	g model.SettingGroup,
+	options ...BoolSettingOption,
+) BoolSetting {
 	b := newBool(k, v, g, options...)
 	Settings[k] = b
 	if GroupSettings[g] == nil {
@@ -253,7 +268,12 @@ func LoadBoolSetting(k string) (BoolSetting, bool) {
 	return b, ok
 }
 
-func LoadOrNewBoolSetting(k string, v bool, g model.SettingGroup, options ...BoolSettingOption) BoolSetting {
+func LoadOrNewBoolSetting(
+	k string,
+	v bool,
+	g model.SettingGroup,
+	options ...BoolSettingOption,
+) BoolSetting {
 	if s, ok := LoadBoolSetting(k); ok {
 		return s
 	}

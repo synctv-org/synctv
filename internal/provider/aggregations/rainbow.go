@@ -109,7 +109,10 @@ type rainbowNewAuthURLResp struct {
 	ErrCode int    `json:"errcode"`
 }
 
-func (p *rainbowGenericProvider) GetUserInfo(ctx context.Context, code string) (*provider.UserInfo, error) {
+func (p *rainbowGenericProvider) GetUserInfo(
+	ctx context.Context,
+	code string,
+) (*provider.UserInfo, error) {
 	result, err := url.JoinPath(p.parent.api, "/connect.php")
 	if err != nil {
 		return nil, err

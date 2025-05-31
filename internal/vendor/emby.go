@@ -4,10 +4,9 @@ import (
 	"context"
 	"errors"
 
-	"google.golang.org/grpc"
-
 	"github.com/synctv-org/vendors/api/emby"
 	embyService "github.com/synctv-org/vendors/service/emby"
+	"google.golang.org/grpc"
 )
 
 type EmbyInterface = emby.EmbyHTTPServer
@@ -19,9 +18,7 @@ func LoadEmbyClient(name string) EmbyInterface {
 	return embyLocalClient
 }
 
-var (
-	embyLocalClient EmbyInterface
-)
+var embyLocalClient EmbyInterface
 
 func init() {
 	embyLocalClient = embyService.NewEmbyService(nil)
@@ -59,11 +56,17 @@ func (e *grpcEmby) GetItem(ctx context.Context, req *emby.GetItemReq) (*emby.Ite
 	return e.client.GetItem(ctx, req)
 }
 
-func (e *grpcEmby) GetItems(ctx context.Context, req *emby.GetItemsReq) (*emby.GetItemsResp, error) {
+func (e *grpcEmby) GetItems(
+	ctx context.Context,
+	req *emby.GetItemsReq,
+) (*emby.GetItemsResp, error) {
 	return e.client.GetItems(ctx, req)
 }
 
-func (e *grpcEmby) GetSystemInfo(ctx context.Context, req *emby.SystemInfoReq) (*emby.SystemInfoResp, error) {
+func (e *grpcEmby) GetSystemInfo(
+	ctx context.Context,
+	req *emby.SystemInfoReq,
+) (*emby.SystemInfoResp, error) {
 	return e.client.GetSystemInfo(ctx, req)
 }
 
@@ -79,10 +82,16 @@ func (e *grpcEmby) Me(ctx context.Context, req *emby.MeReq) (*emby.MeResp, error
 	return e.client.Me(ctx, req)
 }
 
-func (e *grpcEmby) PlaybackInfo(ctx context.Context, req *emby.PlaybackInfoReq) (*emby.PlaybackInfoResp, error) {
+func (e *grpcEmby) PlaybackInfo(
+	ctx context.Context,
+	req *emby.PlaybackInfoReq,
+) (*emby.PlaybackInfoResp, error) {
 	return e.client.PlaybackInfo(ctx, req)
 }
 
-func (e *grpcEmby) DeleteActiveEncodeings(ctx context.Context, req *emby.DeleteActiveEncodeingsReq) (*emby.Empty, error) {
+func (e *grpcEmby) DeleteActiveEncodeings(
+	ctx context.Context,
+	req *emby.DeleteActiveEncodeingsReq,
+) (*emby.Empty, error) {
 	return e.client.DeleteActiveEncodeings(ctx, req)
 }

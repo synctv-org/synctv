@@ -6,7 +6,6 @@ import (
 	"sync"
 
 	log "github.com/sirupsen/logrus"
-
 	"github.com/zijiren233/gencontainer/pqueue"
 	"github.com/zijiren233/gencontainer/rwmap"
 )

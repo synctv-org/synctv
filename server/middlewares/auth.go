@@ -8,7 +8,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/internal/conf"
 	dbModel "github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
@@ -42,9 +41,13 @@ type AuthClaims struct {
 }
 
 func authUser(authorization string) (*AuthClaims, error) {
-	t, err := jwt.ParseWithClaims(strings.TrimPrefix(authorization, `Bearer `), &AuthClaims{}, func(token *jwt.Token) (any, error) {
-		return stream.StringToBytes(conf.Conf.Jwt.Secret), nil
-	})
+	t, err := jwt.ParseWithClaims(
+		strings.TrimPrefix(authorization, `Bearer `),
+		&AuthClaims{},
+		func(_ *jwt.Token) (any, error) {
+			return stream.StringToBytes(conf.Conf.Jwt.Secret), nil
+		},
+	)
 	if err != nil || !t.Valid {
 		return nil, ErrAuthFailed
 	}
@@ -236,7 +239,8 @@ func NewAuthUserToken(user *op.User) (string, error) {
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(t)),
 		},
 	}
-	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(stream.StringToBytes(conf.Conf.Jwt.Secret))
+	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).
+		SignedString(stream.StringToBytes(conf.Conf.Jwt.Secret))
 }
 
 func validateNewAuthUserToken(user *op.User) error {
@@ -294,7 +298,15 @@ func AuthRoomWithoutGuestMiddleware(ctx *gin.Context) {
 		return
 	}
 
-	user := ctx.MustGet("user").(*synccache.Entry[*op.User]).Value()
+	userEntry, ok := ctx.MustGet("user").(*synccache.Entry[*op.User])
+	if !ok {
+		ctx.JSON(
+			http.StatusInternalServerError,
+			model.NewAPIErrorResp(errors.New("invalid user type")),
+		)
+		return
+	}
+	user := userEntry.Value()
 	if user.IsGuest() {
 		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewAPIErrorResp(ErrUserGuest))
 		return
@@ -307,8 +319,24 @@ func AuthRoomAdminMiddleware(ctx *gin.Context) {
 		return
 	}
 
-	room := ctx.MustGet("room").(*synccache.Entry[*op.Room]).Value()
-	user := ctx.MustGet("user").(*synccache.Entry[*op.User]).Value()
+	roomEntry, ok := ctx.MustGet("room").(*synccache.Entry[*op.Room])
+	if !ok {
+		ctx.JSON(
+			http.StatusInternalServerError,
+			model.NewAPIErrorResp(errors.New("invalid room type")),
+		)
+		return
+	}
+	room := roomEntry.Value()
+	userEntry, ok := ctx.MustGet("user").(*synccache.Entry[*op.User])
+	if !ok {
+		ctx.JSON(
+			http.StatusInternalServerError,
+			model.NewAPIErrorResp(errors.New("invalid user type")),
+		)
+		return
+	}
+	user := userEntry.Value()
 
 	if !user.IsRoomAdmin(room) {
 		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewAPIErrorResp(ErrNotRoomAdmin))
@@ -322,8 +350,24 @@ func AuthRoomCreatorMiddleware(ctx *gin.Context) {
 		return
 	}
 
-	room := ctx.MustGet("room").(*synccache.Entry[*op.Room]).Value()
-	user := ctx.MustGet("user").(*synccache.Entry[*op.User]).Value()
+	roomEntry, ok := ctx.MustGet("room").(*synccache.Entry[*op.Room])
+	if !ok {
+		ctx.JSON(
+			http.StatusInternalServerError,
+			model.NewAPIErrorResp(errors.New("invalid room type")),
+		)
+		return
+	}
+	room := roomEntry.Value()
+	userEntry, ok := ctx.MustGet("user").(*synccache.Entry[*op.User])
+	if !ok {
+		ctx.JSON(
+			http.StatusInternalServerError,
+			model.NewAPIErrorResp(errors.New("invalid user type")),
+		)
+		return
+	}
+	user := userEntry.Value()
 
 	if room.CreatorID != user.ID {
 		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewAPIErrorResp(ErrNotRoomCreator))
@@ -337,8 +381,16 @@ func AuthAdminMiddleware(ctx *gin.Context) {
 		return
 	}
 
-	userE := ctx.MustGet("user").(*synccache.Entry[*op.User])
-	if !userE.Value().IsAdmin() {
+	userEntry, ok := ctx.MustGet("user").(*synccache.Entry[*op.User])
+	if !ok {
+		ctx.JSON(
+			http.StatusInternalServerError,
+			model.NewAPIErrorResp(errors.New("invalid user type")),
+		)
+		return
+	}
+	user := userEntry.Value()
+	if !user.IsAdmin() {
 		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewAPIErrorResp(ErrNotAdmin))
 		return
 	}
@@ -350,8 +402,16 @@ func AuthRootMiddleware(ctx *gin.Context) {
 		return
 	}
 
-	userE := ctx.MustGet("user").(*synccache.Entry[*op.User])
-	if !userE.Value().IsRoot() {
+	userEntry, ok := ctx.MustGet("user").(*synccache.Entry[*op.User])
+	if !ok {
+		ctx.JSON(
+			http.StatusInternalServerError,
+			model.NewAPIErrorResp(errors.New("invalid user type")),
+		)
+		return
+	}
+	user := userEntry.Value()
+	if !user.IsRoot() {
 		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewAPIErrorResp(ErrNotRoot))
 		return
 	}
@@ -405,7 +465,7 @@ func GetRoomIDFromContext(ctx *gin.Context) (string, error) {
 }
 
 func setLogFields(ctx *gin.Context, user *op.User, room *op.Room) {
-	log := ctx.MustGet("log").(*logrus.Entry)
+	log := GetLogger(ctx)
 	if user != nil {
 		log.Data["uid"] = user.ID
 		log.Data["unm"] = user.Username
@@ -415,4 +475,32 @@ func setLogFields(ctx *gin.Context, user *op.User, room *op.Room) {
 		log.Data["rid"] = room.ID
 		log.Data["rnm"] = room.Name
 	}
+}
+
+func GetUserEntry(ctx *gin.Context) *op.UserEntry {
+	userEntry, ok := ctx.MustGet("user").(*synccache.Entry[*op.User])
+	if !ok {
+		panic("invalid user type")
+	}
+	return userEntry
+}
+
+func GetRoomEntry(ctx *gin.Context) *op.RoomEntry {
+	roomEntry, ok := ctx.MustGet("room").(*synccache.Entry[*op.Room])
+	if !ok {
+		panic("invalid room type")
+	}
+	return roomEntry
+}
+
+func GetToken(ctx *gin.Context) string {
+	token, ok := ctx.Get("token")
+	if !ok {
+		return ""
+	}
+	t, ok := token.(string)
+	if !ok {
+		panic("invalid token type")
+	}
+	return t
 }

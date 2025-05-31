@@ -30,19 +30,21 @@ type AddUserReq struct {
 }
 
 func (aur *AddUserReq) Validate() error {
-	if aur.Username == "" {
+	switch {
+	case aur.Username == "":
 		return errors.New("username is empty")
-	} else if len(aur.Username) > 32 {
+	case len(aur.Username) > 32:
 		return ErrUsernameTooLong
-	} else if !alnumPrintHanReg.MatchString(aur.Username) {
+	case !alnumPrintHanReg.MatchString(aur.Username):
 		return ErrUsernameHasInvalidChar
 	}
 
-	if aur.Password == "" {
+	switch {
+	case aur.Password == "":
 		return FormatEmptyPasswordError("user")
-	} else if len(aur.Password) > 32 {
+	case len(aur.Password) > 32:
 		return ErrPasswordTooLong
-	} else if !alnumPrintReg.MatchString(aur.Password) {
+	case !alnumPrintReg.MatchString(aur.Password):
 		return ErrPasswordHasInvalidChar
 	}
 
@@ -63,11 +65,12 @@ func (aur *AdminUserPasswordReq) Validate() error {
 		return ErrInvalidID
 	}
 
-	if aur.Password == "" {
+	switch {
+	case aur.Password == "":
 		return FormatEmptyPasswordError("user")
-	} else if len(aur.Password) > 32 {
+	case len(aur.Password) > 32:
 		return ErrPasswordTooLong
-	} else if !alnumPrintReg.MatchString(aur.Password) {
+	case !alnumPrintReg.MatchString(aur.Password):
 		return ErrPasswordHasInvalidChar
 	}
 
@@ -88,11 +91,12 @@ func (aur *AdminUsernameReq) Validate() error {
 		return ErrInvalidID
 	}
 
-	if aur.Username == "" {
+	switch {
+	case aur.Username == "":
 		return errors.New("username is empty")
-	} else if len(aur.Username) > 32 {
+	case len(aur.Username) > 32:
 		return ErrUsernameTooLong
-	} else if !alnumPrintHanReg.MatchString(aur.Username) {
+	case !alnumPrintHanReg.MatchString(aur.Username):
 		return ErrUsernameHasInvalidChar
 	}
 
@@ -113,11 +117,12 @@ func (aur *AdminRoomPasswordReq) Validate() error {
 		return ErrInvalidID
 	}
 
-	if aur.Password == "" {
+	switch {
+	case aur.Password == "":
 		return FormatEmptyPasswordError("room")
-	} else if len(aur.Password) > 32 {
+	case len(aur.Password) > 32:
 		return ErrPasswordTooLong
-	} else if !alnumPrintReg.MatchString(aur.Password) {
+	case !alnumPrintReg.MatchString(aur.Password):
 		return ErrPasswordHasInvalidChar
 	}
 

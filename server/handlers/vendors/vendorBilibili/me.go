@@ -6,8 +6,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/synctv-org/synctv/internal/db"
-	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/internal/vendor"
+	"github.com/synctv-org/synctv/server/middlewares"
 	"github.com/synctv-org/synctv/server/model"
 	"github.com/synctv-org/synctv/utils"
 	"github.com/synctv-org/vendors/api/bilibili"
@@ -16,7 +16,7 @@ import (
 type BilibiliMeResp = model.VendorMeResp[*bilibili.UserInfoResp]
 
 func Me(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.UserEntry).Value()
+	user := middlewares.GetUserEntry(ctx).Value()
 
 	bucd, err := user.BilibiliCache().Get(ctx)
 	if err != nil {
@@ -44,7 +44,7 @@ func Me(ctx *gin.Context) {
 	}
 
 	ctx.JSON(http.StatusOK, model.NewAPIDataResp(&BilibiliMeResp{
-		IsLogin: resp.IsLogin,
+		IsLogin: resp.GetIsLogin(),
 		Info:    resp,
 	}))
 }

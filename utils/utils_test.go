@@ -49,7 +49,10 @@ func TestGetPageItems(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := utils.GetPageItems(tt.args.items, tt.args.page, tt.args.pageSize); !reflect.DeepEqual(got, tt.want) {
+			if got := utils.GetPageItems(tt.args.items, tt.args.page, tt.args.pageSize); !reflect.DeepEqual(
+				got,
+				tt.want,
+			) {
 				t.Errorf("GetPageItems() = %v, want %v", got, tt.want)
 			}
 		})

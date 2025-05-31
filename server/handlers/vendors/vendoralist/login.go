@@ -11,11 +11,10 @@ import (
 
 	"github.com/gin-gonic/gin"
 	json "github.com/json-iterator/go"
-	"github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/internal/cache"
 	"github.com/synctv-org/synctv/internal/db"
 	dbModel "github.com/synctv-org/synctv/internal/model"
-	"github.com/synctv-org/synctv/internal/op"
+	"github.com/synctv-org/synctv/server/middlewares"
 	"github.com/synctv-org/synctv/server/model"
 )
 
@@ -49,7 +48,7 @@ func (r *LoginReq) Decode(ctx *gin.Context) error {
 }
 
 func Login(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.UserEntry).Value()
+	user := middlewares.GetUserEntry(ctx).Value()
 
 	req := LoginReq{}
 	if err := model.Decode(ctx, &req); err != nil {
@@ -89,9 +88,10 @@ func Login(ctx *gin.Context) {
 		return
 	}
 
-	_, err = user.AlistCache().StoreOrRefreshWithDynamicFunc(ctx, data.ServerID, func(ctx context.Context, key string, args ...struct{}) (*cache.AlistUserCacheData, error) {
-		return data, nil
-	})
+	_, err = user.AlistCache().
+		StoreOrRefreshWithDynamicFunc(ctx, data.ServerID, func(_ context.Context, _ string, _ ...struct{}) (*cache.AlistUserCacheData, error) {
+			return data, nil
+		})
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 		return
@@ -101,8 +101,8 @@ func Login(ctx *gin.Context) {
 }
 
 func Logout(ctx *gin.Context) {
-	log := ctx.MustGet("log").(*logrus.Entry)
-	user := ctx.MustGet("user").(*op.UserEntry).Value()
+	log := middlewares.GetLogger(ctx)
+	user := middlewares.GetUserEntry(ctx).Value()
 
 	var req model.ServerIDReq
 	if err := model.Decode(ctx, &req); err != nil {

@@ -3,9 +3,8 @@ package model
 import (
 	"errors"
 
-	json "github.com/json-iterator/go"
-
 	"github.com/gin-gonic/gin"
+	json "github.com/json-iterator/go"
 	dbModel "github.com/synctv-org/synctv/internal/model"
 )
 
@@ -37,18 +36,20 @@ func (c *CreateRoomReq) Decode(ctx *gin.Context) error {
 }
 
 func (c *CreateRoomReq) Validate() error {
-	if c.RoomName == "" {
+	switch {
+	case c.RoomName == "":
 		return ErrEmptyRoomName
-	} else if len(c.RoomName) > 32 {
+	case len(c.RoomName) > 32:
 		return ErrRoomNameTooLong
-	} else if !alnumPrintHanReg.MatchString(c.RoomName) {
+	case !alnumPrintHanReg.MatchString(c.RoomName):
 		return ErrRoomNameHasInvalidChar
 	}
 
 	if c.Password != "" {
-		if len(c.Password) > 32 {
+		switch {
+		case len(c.Password) > 32:
 			return ErrPasswordTooLong
-		} else if !alnumPrintReg.MatchString(c.Password) {
+		case !alnumPrintReg.MatchString(c.Password):
 			return ErrPasswordHasInvalidChar
 		}
 	}

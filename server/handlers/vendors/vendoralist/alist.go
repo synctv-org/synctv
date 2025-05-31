@@ -19,6 +19,7 @@ import (
 	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/internal/vendor"
 	"github.com/synctv-org/synctv/server/handlers/proxy"
+	"github.com/synctv-org/synctv/server/middlewares"
 	"github.com/synctv-org/synctv/server/model"
 	"github.com/synctv-org/synctv/utils"
 	"github.com/synctv-org/vendors/api/alist"
@@ -31,7 +32,7 @@ type AlistVendorService struct {
 
 func NewAlistVendorService(room *op.Room, movie *op.Movie) (*AlistVendorService, error) {
 	if movie.VendorInfo.Vendor != dbModel.VendorAlist {
-		return nil, fmt.Errorf("alist vendor not support vendor %s", movie.MovieBase.VendorInfo.Vendor)
+		return nil, fmt.Errorf("alist vendor not support vendor %s", movie.VendorInfo.Vendor)
 	}
 	return &AlistVendorService{
 		room:  room,
@@ -43,7 +44,13 @@ func (s *AlistVendorService) Client() alist.AlistHTTPServer {
 	return vendor.LoadAlistClient(s.movie.VendorInfo.Backend)
 }
 
-func (s *AlistVendorService) ListDynamicMovie(ctx context.Context, reqUser *op.User, subPath string, keyword string, page, _max int) (*model.MovieList, error) {
+//nolint:gosec
+func (s *AlistVendorService) ListDynamicMovie(
+	ctx context.Context,
+	reqUser *op.User,
+	subPath, keyword string,
+	page, _max int,
+) (*model.MovieList, error) {
 	if reqUser.ID != s.movie.CreatorID {
 		return nil, fmt.Errorf("list vendor dynamic folder error: %w", dbModel.ErrNoPermission)
 	}
@@ -83,26 +90,33 @@ func (s *AlistVendorService) ListDynamicMovie(ctx context.Context, reqUser *op.U
 		if err != nil {
 			return nil, err
 		}
-		resp.Total = int64(data.Total)
-		resp.Movies = make([]*model.Movie, len(data.Content))
-		for i, flr := range data.Content {
-			fileSubPath := strings.TrimPrefix(strings.Trim(flr.Parent, "/"), truePath)
+		resp.Total = int64(data.GetTotal())
+		resp.Movies = make([]*model.Movie, len(data.GetContent()))
+		for i, flr := range data.GetContent() {
+			fileSubPath := strings.TrimPrefix(strings.Trim(flr.GetParent(), "/"), truePath)
 			resp.Movies[i] = &model.Movie{
 				ID:        s.movie.ID,
 				CreatedAt: s.movie.CreatedAt.UnixMilli(),
 				Creator:   op.GetUserName(s.movie.CreatorID),
 				CreatorID: s.movie.CreatorID,
-				SubPath:   "/" + strings.Trim(fmt.Sprintf("%s/%s", fileSubPath, flr.Name), "/"),
+				SubPath: "/" + strings.Trim(
+					fmt.Sprintf("%s/%s", fileSubPath, flr.GetName()),
+					"/",
+				),
 				Base: dbModel.MovieBase{
-					Name:     flr.Name,
-					IsFolder: flr.IsDir,
+					Name:     flr.GetName(),
+					IsFolder: flr.GetIsDir(),
 					ParentID: dbModel.EmptyNullString(s.movie.ID),
 					VendorInfo: dbModel.VendorInfo{
 						Vendor:  dbModel.VendorAlist,
 						Backend: s.movie.VendorInfo.Backend,
 						Alist: &dbModel.AlistStreamingInfo{
-							Path: dbModel.FormatAlistPath(serverID,
-								"/"+strings.Trim(fmt.Sprintf("%s/%s", flr.Parent, flr.Name), "/"),
+							Path: dbModel.FormatAlistPath(
+								serverID,
+								"/"+strings.Trim(
+									fmt.Sprintf("%s/%s", flr.GetParent(), flr.GetName()),
+									"/",
+								),
 							),
 						},
 					},
@@ -125,25 +139,25 @@ func (s *AlistVendorService) ListDynamicMovie(ctx context.Context, reqUser *op.U
 	if err != nil {
 		return nil, err
 	}
-	resp.Total = int64(data.Total)
-	resp.Movies = make([]*model.Movie, len(data.Content))
-	for i, flr := range data.Content {
+	resp.Total = int64(data.GetTotal())
+	resp.Movies = make([]*model.Movie, len(data.GetContent()))
+	for i, flr := range data.GetContent() {
 		resp.Movies[i] = &model.Movie{
 			ID:        s.movie.ID,
 			CreatedAt: s.movie.CreatedAt.UnixMilli(),
 			Creator:   op.GetUserName(s.movie.CreatorID),
 			CreatorID: s.movie.CreatorID,
-			SubPath:   "/" + strings.Trim(fmt.Sprintf("%s/%s", subPath, flr.Name), "/"),
+			SubPath:   "/" + strings.Trim(fmt.Sprintf("%s/%s", subPath, flr.GetName()), "/"),
 			Base: dbModel.MovieBase{
-				Name:     flr.Name,
-				IsFolder: flr.IsDir,
+				Name:     flr.GetName(),
+				IsFolder: flr.GetIsDir(),
 				ParentID: dbModel.EmptyNullString(s.movie.ID),
 				VendorInfo: dbModel.VendorInfo{
 					Vendor:  dbModel.VendorAlist,
 					Backend: s.movie.VendorInfo.Backend,
 					Alist: &dbModel.AlistStreamingInfo{
 						Path: dbModel.FormatAlistPath(serverID,
-							"/"+strings.Trim(fmt.Sprintf("%s/%s", newPath, flr.Name), "/"),
+							"/"+strings.Trim(fmt.Sprintf("%s/%s", newPath, flr.GetName()), "/"),
 						),
 					},
 				},
@@ -155,7 +169,7 @@ func (s *AlistVendorService) ListDynamicMovie(ctx context.Context, reqUser *op.U
 }
 
 func (s *AlistVendorService) ProxyMovie(ctx *gin.Context) {
-	log := ctx.MustGet("log").(*logrus.Entry)
+	log := middlewares.GetLogger(ctx)
 
 	// Get cache data
 	data, err := s.getCacheData(ctx)
@@ -177,7 +191,7 @@ func (s *AlistVendorService) ProxyMovie(ctx *gin.Context) {
 }
 
 func (s *AlistVendorService) getCacheData(ctx *gin.Context) (*cache.AlistMovieCacheData, error) {
-	u, err := op.LoadOrInitUserByID(s.movie.Movie.CreatorID)
+	u, err := op.LoadOrInitUserByID(s.movie.CreatorID)
 	if err != nil {
 		return nil, err
 	}
@@ -193,7 +207,11 @@ func (s *AlistVendorService) getCacheData(ctx *gin.Context) (*cache.AlistMovieCa
 	return data, nil
 }
 
-func (s *AlistVendorService) handleAliProvider(ctx *gin.Context, log *logrus.Entry, data *cache.AlistMovieCacheData) {
+func (s *AlistVendorService) handleAliProvider(
+	ctx *gin.Context,
+	log *logrus.Entry,
+	data *cache.AlistMovieCacheData,
+) {
 	t := ctx.Query("t")
 	switch t {
 	case "":
@@ -203,8 +221,15 @@ func (s *AlistVendorService) handleAliProvider(ctx *gin.Context, log *logrus.Ent
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 			return
 		}
-		if s.movie.Movie.MovieBase.Proxy {
-			err := proxy.M3u8Data(ctx, b.M3U8ListFile, "", ctx.GetString("token"), s.movie.RoomID, s.movie.ID)
+		if s.movie.Proxy {
+			err := proxy.M3u8Data(
+				ctx,
+				b.M3U8ListFile,
+				"",
+				ctx.GetString("token"),
+				s.movie.RoomID,
+				s.movie.ID,
+			)
 			if err != nil {
 				log.Errorf("proxy vendor movie error: %v", err)
 			}
@@ -218,7 +243,7 @@ func (s *AlistVendorService) handleAliProvider(ctx *gin.Context, log *logrus.Ent
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 			return
 		}
-		if s.movie.Movie.MovieBase.Proxy {
+		if s.movie.Proxy {
 			s.proxyURL(ctx, log, b.URL)
 		} else {
 			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("proxy is not enabled"))
@@ -229,14 +254,21 @@ func (s *AlistVendorService) handleAliProvider(ctx *gin.Context, log *logrus.Ent
 	}
 }
 
-func (s *AlistVendorService) handleDefaultProvider(ctx *gin.Context, log *logrus.Entry, data *cache.AlistMovieCacheData) {
+func (s *AlistVendorService) handleDefaultProvider(
+	ctx *gin.Context,
+	log *logrus.Entry,
+	data *cache.AlistMovieCacheData,
+) {
 	t := ctx.Query("t")
 	switch t {
 	case "subtitle":
 		idS := ctx.Query("id")
 		if idS == "" {
 			log.Errorf("proxy vendor movie error: %v", "id is empty")
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("id is empty"))
+			ctx.AbortWithStatusJSON(
+				http.StatusBadRequest,
+				model.NewAPIErrorStringResp("id is empty"),
+			)
 			return
 		}
 
@@ -249,7 +281,10 @@ func (s *AlistVendorService) handleDefaultProvider(ctx *gin.Context, log *logrus
 
 		if id >= len(data.Subtitles) {
 			log.Errorf("proxy vendor movie error: %v", "id out of range")
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("id out of range"))
+			ctx.AbortWithStatusJSON(
+				http.StatusBadRequest,
+				model.NewAPIErrorStringResp("id out of range"),
+			)
 			return
 		}
 
@@ -263,9 +298,12 @@ func (s *AlistVendorService) handleDefaultProvider(ctx *gin.Context, log *logrus
 
 		http.ServeContent(ctx.Writer, ctx.Request, subtitle.Name, time.Now(), bytes.NewReader(b))
 	default:
-		if !s.movie.Movie.MovieBase.Proxy {
+		if !s.movie.Proxy {
 			log.Errorf("proxy vendor movie error: %v", "proxy is not enabled")
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("proxy is not enabled"))
+			ctx.AbortWithStatusJSON(
+				http.StatusBadRequest,
+				model.NewAPIErrorStringResp("proxy is not enabled"),
+			)
 			return
 		}
 		s.proxyURL(ctx, log, data.URL)
@@ -275,7 +313,7 @@ func (s *AlistVendorService) handleDefaultProvider(ctx *gin.Context, log *logrus
 func (s *AlistVendorService) proxyURL(ctx *gin.Context, log *logrus.Entry, url string) {
 	err := proxy.AutoProxyURL(ctx,
 		url,
-		s.movie.MovieBase.Type,
+		s.movie.Type,
 		nil,
 		ctx.GetString("token"),
 		s.movie.RoomID,
@@ -287,7 +325,11 @@ func (s *AlistVendorService) proxyURL(ctx *gin.Context, log *logrus.Entry, url s
 	}
 }
 
-func (s *AlistVendorService) handleAliSubtitle(ctx *gin.Context, log *logrus.Entry, data *cache.AlistMovieCacheData) {
+func (s *AlistVendorService) handleAliSubtitle(
+	ctx *gin.Context,
+	log *logrus.Entry,
+	data *cache.AlistMovieCacheData,
+) {
 	idS := ctx.Query("id")
 	if idS == "" {
 		log.Errorf("proxy vendor movie error: %v", "id is empty")
@@ -310,13 +352,17 @@ func (s *AlistVendorService) handleAliSubtitle(ctx *gin.Context, log *logrus.Ent
 	}
 
 	var subtitle *cache.AlistSubtitle
-	if id < len(data.Subtitles) {
+	switch {
+	case id < len(data.Subtitles):
 		subtitle = data.Subtitles[id]
-	} else if id < len(data.Subtitles)+len(ali.Subtitles) {
+	case id < len(data.Subtitles)+len(ali.Subtitles):
 		subtitle = ali.Subtitles[id-len(data.Subtitles)]
-	} else {
+	default:
 		log.Errorf("proxy vendor movie error: %v", "id out of range")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("id out of range"))
+		ctx.AbortWithStatusJSON(
+			http.StatusBadRequest,
+			model.NewAPIErrorStringResp("id out of range"),
+		)
 		return
 	}
 
@@ -330,7 +376,11 @@ func (s *AlistVendorService) handleAliSubtitle(ctx *gin.Context, log *logrus.Ent
 	http.ServeContent(ctx.Writer, ctx.Request, subtitle.Name, time.Now(), bytes.NewReader(b))
 }
 
-func (s *AlistVendorService) GenMovieInfo(ctx context.Context, user *op.User, userAgent, userToken string) (*dbModel.Movie, error) {
+func (s *AlistVendorService) GenMovieInfo(
+	ctx context.Context,
+	user *op.User,
+	userAgent, userToken string,
+) (*dbModel.Movie, error) {
 	if s.movie.Proxy {
 		return s.GenProxyMovieInfo(ctx, user, userAgent, userToken)
 	}
@@ -352,11 +402,17 @@ func (s *AlistVendorService) GenMovieInfo(ctx context.Context, user *op.User, us
 	}
 
 	for i, subt := range data.Subtitles {
-		if movie.MovieBase.Subtitles == nil {
-			movie.MovieBase.Subtitles = make(map[string]*dbModel.Subtitle, len(data.Subtitles))
+		if movie.Subtitles == nil {
+			movie.Subtitles = make(map[string]*dbModel.Subtitle, len(data.Subtitles))
 		}
-		movie.MovieBase.Subtitles[subt.Name] = &dbModel.Subtitle{
-			URL:  fmt.Sprintf("/api/room/movie/proxy/%s?t=subtitle&id=%d&token=%s&roomId=%s", movie.ID, i, userToken, movie.RoomID),
+		movie.Subtitles[subt.Name] = &dbModel.Subtitle{
+			URL: fmt.Sprintf(
+				"/api/room/movie/proxy/%s?t=subtitle&id=%d&token=%s&roomId=%s",
+				movie.ID,
+				i,
+				userToken,
+				movie.RoomID,
+			),
 			Type: subt.Type,
 		}
 	}
@@ -367,19 +423,24 @@ func (s *AlistVendorService) GenMovieInfo(ctx context.Context, user *op.User, us
 		if err != nil {
 			return nil, err
 		}
-		movie.MovieBase.URL = fmt.Sprintf("/api/room/movie/proxy/%s?token=%s&roomId=%s", movie.ID, userToken, movie.RoomID)
-		movie.MovieBase.Type = "m3u8"
+		movie.URL = fmt.Sprintf(
+			"/api/room/movie/proxy/%s?token=%s&roomId=%s",
+			movie.ID,
+			userToken,
+			movie.RoomID,
+		)
+		movie.Type = "m3u8"
 
 		rawStreamURL := data.URL
 
 		subPath := s.movie.SubPath()
 		var rawType string
 		if subPath == "" {
-			rawType = utils.GetURLExtension(movie.MovieBase.VendorInfo.Alist.Path)
+			rawType = utils.GetURLExtension(movie.VendorInfo.Alist.Path)
 		} else {
 			rawType = utils.GetURLExtension(subPath)
 		}
-		movie.MovieBase.MoreSources = []*dbModel.MoreSource{
+		movie.MoreSources = []*dbModel.MoreSource{
 			{
 				Name: "raw",
 				Type: rawType,
@@ -388,11 +449,17 @@ func (s *AlistVendorService) GenMovieInfo(ctx context.Context, user *op.User, us
 		}
 
 		for i, subt := range ali.Subtitles {
-			if movie.MovieBase.Subtitles == nil {
-				movie.MovieBase.Subtitles = make(map[string]*dbModel.Subtitle, len(data.Subtitles))
+			if movie.Subtitles == nil {
+				movie.Subtitles = make(map[string]*dbModel.Subtitle, len(data.Subtitles))
 			}
-			movie.MovieBase.Subtitles[subt.Name] = &dbModel.Subtitle{
-				URL:  fmt.Sprintf("/api/room/movie/proxy/%s?t=subtitle&id=%d&token=%s&roomId=%s", movie.ID, len(data.Subtitles)+i, userToken, movie.RoomID),
+			movie.Subtitles[subt.Name] = &dbModel.Subtitle{
+				URL: fmt.Sprintf(
+					"/api/room/movie/proxy/%s?t=subtitle&id=%d&token=%s&roomId=%s",
+					movie.ID,
+					len(data.Subtitles)+i,
+					userToken,
+					movie.RoomID,
+				),
 				Type: subt.Type,
 			}
 		}
@@ -405,24 +472,28 @@ func (s *AlistVendorService) GenMovieInfo(ctx context.Context, user *op.User, us
 		if err != nil {
 			return nil, fmt.Errorf("refresh 115 movie cache error: %w", err)
 		}
-		movie.MovieBase.URL = data.URL
-		movie.MovieBase.Subtitles = make(map[string]*dbModel.Subtitle, len(data.Subtitles))
+		movie.URL = data.URL
+		movie.Subtitles = make(map[string]*dbModel.Subtitle, len(data.Subtitles))
 		for _, subt := range data.Subtitles {
-			movie.MovieBase.Subtitles[subt.Name] = &dbModel.Subtitle{
+			movie.Subtitles[subt.Name] = &dbModel.Subtitle{
 				URL:  subt.URL,
 				Type: subt.Type,
 			}
 		}
 
 	default:
-		movie.MovieBase.URL = data.URL
+		movie.URL = data.URL
 	}
 
-	movie.MovieBase.VendorInfo.Alist.Password = ""
+	movie.VendorInfo.Alist.Password = ""
 	return movie, nil
 }
 
-func (s *AlistVendorService) GenProxyMovieInfo(ctx context.Context, user *op.User, userAgent, userToken string) (*dbModel.Movie, error) {
+func (s *AlistVendorService) GenProxyMovieInfo(
+	ctx context.Context,
+	_ *op.User,
+	_, userToken string,
+) (*dbModel.Movie, error) {
 	movie := s.movie.Clone()
 	var err error
 
@@ -440,11 +511,17 @@ func (s *AlistVendorService) GenProxyMovieInfo(ctx context.Context, user *op.Use
 	}
 
 	for i, subt := range data.Subtitles {
-		if movie.MovieBase.Subtitles == nil {
-			movie.MovieBase.Subtitles = make(map[string]*dbModel.Subtitle, len(data.Subtitles))
+		if movie.Subtitles == nil {
+			movie.Subtitles = make(map[string]*dbModel.Subtitle, len(data.Subtitles))
 		}
-		movie.MovieBase.Subtitles[subt.Name] = &dbModel.Subtitle{
-			URL:  fmt.Sprintf("/api/room/movie/proxy/%s?t=subtitle&id=%d&token=%s&roomId=%s", movie.ID, i, userToken, movie.RoomID),
+		movie.Subtitles[subt.Name] = &dbModel.Subtitle{
+			URL: fmt.Sprintf(
+				"/api/room/movie/proxy/%s?t=subtitle&id=%d&token=%s&roomId=%s",
+				movie.ID,
+				i,
+				userToken,
+				movie.RoomID,
+			),
 			Type: subt.Type,
 		}
 	}
@@ -455,39 +532,65 @@ func (s *AlistVendorService) GenProxyMovieInfo(ctx context.Context, user *op.Use
 		if err != nil {
 			return nil, err
 		}
-		movie.MovieBase.URL = fmt.Sprintf("/api/room/movie/proxy/%s?token=%s&roomId=%s", movie.ID, userToken, movie.RoomID)
-		movie.MovieBase.Type = "m3u8"
+		movie.URL = fmt.Sprintf(
+			"/api/room/movie/proxy/%s?token=%s&roomId=%s",
+			movie.ID,
+			userToken,
+			movie.RoomID,
+		)
+		movie.Type = "m3u8"
 
-		rawStreamURL := fmt.Sprintf("/api/room/movie/proxy/%s?t=raw&token=%s&roomId=%s", movie.ID, userToken, movie.RoomID)
-		movie.MovieBase.MoreSources = []*dbModel.MoreSource{
+		rawStreamURL := fmt.Sprintf(
+			"/api/room/movie/proxy/%s?t=raw&token=%s&roomId=%s",
+			movie.ID,
+			userToken,
+			movie.RoomID,
+		)
+		movie.MoreSources = []*dbModel.MoreSource{
 			{
 				Name: "raw",
-				Type: utils.GetURLExtension(movie.MovieBase.VendorInfo.Alist.Path),
+				Type: utils.GetURLExtension(movie.VendorInfo.Alist.Path),
 				URL:  rawStreamURL,
 			},
 		}
 
 		for i, subt := range ali.Subtitles {
-			if movie.MovieBase.Subtitles == nil {
-				movie.MovieBase.Subtitles = make(map[string]*dbModel.Subtitle, len(data.Subtitles))
+			if movie.Subtitles == nil {
+				movie.Subtitles = make(map[string]*dbModel.Subtitle, len(data.Subtitles))
 			}
-			movie.MovieBase.Subtitles[subt.Name] = &dbModel.Subtitle{
-				URL:  fmt.Sprintf("/api/room/movie/proxy/%s?t=subtitle&id=%d&token=%s&roomId=%s", movie.ID, len(data.Subtitles)+i, userToken, movie.RoomID),
+			movie.Subtitles[subt.Name] = &dbModel.Subtitle{
+				URL: fmt.Sprintf(
+					"/api/room/movie/proxy/%s?t=subtitle&id=%d&token=%s&roomId=%s",
+					movie.ID,
+					len(data.Subtitles)+i,
+					userToken,
+					movie.RoomID,
+				),
 				Type: subt.Type,
 			}
 		}
 
 	case cache.AlistProvider115:
-		movie.MovieBase.URL = fmt.Sprintf("/api/room/movie/proxy/%s?token=%s&roomId=%s", movie.ID, userToken, movie.RoomID)
-		movie.MovieBase.Type = utils.GetURLExtension(data.URL)
+		movie.URL = fmt.Sprintf(
+			"/api/room/movie/proxy/%s?token=%s&roomId=%s",
+			movie.ID,
+			userToken,
+			movie.RoomID,
+		)
+		movie.Type = utils.GetURLExtension(data.URL)
 
 		// TODO: proxy subtitle
 
 	default:
-		movie.MovieBase.URL = fmt.Sprintf("/api/room/movie/proxy/%s?token=%s&roomId=%s", movie.ID, userToken, movie.RoomID)
-		movie.MovieBase.Type = utils.GetURLExtension(data.URL)
+		movie.URL = fmt.Sprintf(
+			"/api/room/movie/proxy/%s?token=%s&roomId=%s",
+			movie.ID,
+			userToken,
+			movie.RoomID,
+		)
+		movie.Type = utils.GetURLExtension(data.URL)
 	}
 
-	movie.MovieBase.VendorInfo.Alist.Password = ""
+	movie.VendorInfo.Alist.Password = ""
 	return movie, nil
 }

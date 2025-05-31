@@ -12,9 +12,9 @@ import (
 	"github.com/gorilla/websocket"
 	log "github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/internal/model"
-	dbModel "github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
 	pb "github.com/synctv-org/synctv/proto/message"
+	"github.com/synctv-org/synctv/server/middlewares"
 	"github.com/synctv-org/synctv/utils"
 	"google.golang.org/protobuf/proto"
 )
@@ -26,10 +26,10 @@ const (
 
 func NewWebSocketHandler(wss *utils.WebSocket) gin.HandlerFunc {
 	return func(ctx *gin.Context) {
-		token := ctx.MustGet("token").(string)
-		room := ctx.MustGet("room").(*op.RoomEntry).Value()
-		user := ctx.MustGet("user").(*op.UserEntry).Value()
-		log := ctx.MustGet("log").(*log.Entry)
+		token := middlewares.GetToken(ctx)
+		room := middlewares.GetRoomEntry(ctx).Value()
+		user := middlewares.GetUserEntry(ctx).Value()
+		log := middlewares.GetLogger(ctx)
 
 		subprotocols := []string{}
 		if token != "" {
@@ -198,9 +198,9 @@ func readMessage(c *op.Client) (*pb.Message, error) {
 }
 
 func handleElementMsg(cli *op.Client, msg *pb.Message) error {
-	timeDiff := calculateTimeDiff(msg.Timestamp)
+	timeDiff := calculateTimeDiff(msg.GetTimestamp())
 
-	switch msg.Type {
+	switch msg.GetType() {
 	case pb.MessageType_CHAT:
 		return handleChatMessage(cli, msg.GetChatContent())
 	case pb.MessageType_STATUS:
@@ -222,7 +222,7 @@ func handleElementMsg(cli *op.Client, msg *pb.Message) error {
 	case pb.MessageType_WEBRTC_LEAVE:
 		return handleWebRTCLeave(cli)
 	default:
-		return sendErrorMessage(cli, fmt.Sprintf("unknown message type: %v", msg.Type))
+		return sendErrorMessage(cli, fmt.Sprintf("unknown message type: %v", msg.GetType()))
 	}
 }
 
@@ -236,7 +236,7 @@ func handleWebRTCOffer(cli *op.Client, data *pb.WebRTCData) error {
 		return sendErrorMessage(cli, "webrtc data is nil")
 	}
 
-	sp := strings.Split(data.To, ":")
+	sp := strings.Split(data.GetTo(), ":")
 	if len(sp) != 2 {
 		return sendErrorMessage(cli, "target user id is invalid")
 	}
@@ -265,7 +265,7 @@ func handleWebRTCAnswer(cli *op.Client, data *pb.WebRTCData) error {
 		return sendErrorMessage(cli, "webrtc data is nil")
 	}
 
-	sp := strings.Split(data.To, ":")
+	sp := strings.Split(data.GetTo(), ":")
 	if len(sp) != 2 {
 		return sendErrorMessage(cli, "target user id is invalid")
 	}
@@ -294,7 +294,7 @@ func handleWebRTCIceCandidate(cli *op.Client, data *pb.WebRTCData) error {
 		return sendErrorMessage(cli, "webrtc data is nil")
 	}
 
-	sp := strings.Split(data.To, ":")
+	sp := strings.Split(data.GetTo(), ":")
 	if len(sp) != 2 {
 		return sendErrorMessage(cli, "target user id is invalid")
 	}
@@ -377,7 +377,7 @@ func handleChatMessage(cli *op.Client, message string) error {
 		return sendErrorMessage(cli, "message too long")
 	}
 	err := cli.SendChatMessage(message)
-	if err != nil && errors.Is(err, dbModel.ErrNoPermission) {
+	if err != nil && errors.Is(err, model.ErrNoPermission) {
 		return sendErrorMessage(cli, fmt.Sprintf("send chat message error: %v", err))
 	}
 	return err
@@ -451,10 +451,10 @@ func handleCheckStatusMessage(cli *op.Client, msg *pb.Message, timeDiff float64)
 }
 
 func needsSync(clientStatus *pb.Status, serverStatus model.Status, timeDiff float64) bool {
-	if clientStatus.IsPlaying != serverStatus.IsPlaying ||
-		clientStatus.PlaybackRate != serverStatus.PlaybackRate ||
-		serverStatus.CurrentTime+maxInterval < clientStatus.CurrentTime+timeDiff ||
-		serverStatus.CurrentTime-maxInterval > clientStatus.CurrentTime+timeDiff {
+	if clientStatus.GetIsPlaying() != serverStatus.IsPlaying ||
+		clientStatus.GetPlaybackRate() != serverStatus.PlaybackRate ||
+		serverStatus.CurrentTime+maxInterval < clientStatus.GetCurrentTime()+timeDiff ||
+		serverStatus.CurrentTime-maxInterval > clientStatus.GetCurrentTime()+timeDiff {
 		return true
 	}
 	return false

@@ -141,7 +141,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.23"
+          go-version-file: "go.mod"
 
       - name: Build targets
         uses: zijiren233/go-build-action@v1

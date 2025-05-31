@@ -12,7 +12,7 @@ import (
 	rtmps "github.com/zijiren233/livelib/server"
 )
 
-func InitRtmp(ctx context.Context) error {
+func InitRtmp(_ context.Context) error {
 	s := rtmps.NewRtmpServer(auth)
 	rtmp.Init(s)
 	return nil

@@ -14,9 +14,11 @@ import (
 )
 
 // Linux/Mac/Windows:
-// CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build ./internal/provider/plugins/example/example_authing/example_authing.go
-// CGO_ENABLED=0 GOOS=dawin GOARCH=amd64 go build ./internal/provider/plugins/example/example_authing/example_authing.go
-// CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build ./internal/provider/plugins/example/example_authing/example_authing.go
+// CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build
+// ./internal/provider/plugins/example/example_authing/example_authing.go CGO_ENABLED=0 GOOS=dawin
+// GOARCH=amd64 go build ./internal/provider/plugins/example/example_authing/example_authing.go
+// CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build
+// ./internal/provider/plugins/example/example_authing/example_authing.go
 //
 // mv gitee {data-dir}/plugins/oauth2/authing
 //
@@ -36,7 +38,10 @@ func newAuthingProvider(authURL string) provider.Interface {
 		config: oauth2.Config{
 			Scopes: []string{"profile"},
 			Endpoint: oauth2.Endpoint{
-				AuthURL:  fmt.Sprintf("https://%s.authing.cn/oauth/auth", authURL),  // 授权码（authorization_code）获取接口
+				AuthURL: fmt.Sprintf(
+					"https://%s.authing.cn/oauth/auth",
+					authURL,
+				), // 授权码（authorization_code）获取接口
 				TokenURL: fmt.Sprintf("https://%s.authing.cn/oauth/token", authURL), // Token端点
 			},
 		},
@@ -53,17 +58,25 @@ func (p *AuthingProvider) Provider() provider.OAuth2Provider {
 	return "authing" // 插件名
 }
 
-func (p *AuthingProvider) NewAuthURL(ctx context.Context, state string) (string, error) {
+func (p *AuthingProvider) NewAuthURL(_ context.Context, state string) (string, error) {
 	return p.config.AuthCodeURL(state, oauth2.AccessTypeOnline), nil
 }
 
-func (p *AuthingProvider) GetUserInfo(ctx context.Context, code string) (*provider.UserInfo, error) {
+func (p *AuthingProvider) GetUserInfo(
+	ctx context.Context,
+	code string,
+) (*provider.UserInfo, error) {
 	tk, err := p.config.Exchange(ctx, code)
 	if err != nil {
 		return nil, err
 	}
 	client := p.config.Client(ctx, tk)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://core.authing.cn/oauth/me", nil) // 身份端点
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodGet,
+		"https://core.authing.cn/oauth/me",
+		nil,
+	) // 身份端点
 	if err != nil {
 		return nil, err
 	}

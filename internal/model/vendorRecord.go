@@ -17,7 +17,7 @@ type BilibiliVendor struct {
 	Backend   string            `gorm:"type:varchar(64)"`
 }
 
-func (b *BilibiliVendor) BeforeSave(tx *gorm.DB) error {
+func (b *BilibiliVendor) BeforeSave(_ *gorm.DB) error {
 	key := []byte(b.UserID)
 	for k, v := range b.Cookies {
 		value, err := utils.CryptoToBase64([]byte(v), key)
@@ -29,7 +29,7 @@ func (b *BilibiliVendor) BeforeSave(tx *gorm.DB) error {
 	return nil
 }
 
-func (b *BilibiliVendor) AfterSave(tx *gorm.DB) error {
+func (b *BilibiliVendor) AfterSave(_ *gorm.DB) error {
 	key := []byte(b.UserID)
 	for k, v := range b.Cookies {
 		value, err := utils.DecryptoFromBase64(v, key)
@@ -62,7 +62,7 @@ func GenAlistServerID(a *AlistVendor) {
 	}
 }
 
-func (a *AlistVendor) BeforeSave(tx *gorm.DB) error {
+func (a *AlistVendor) BeforeSave(_ *gorm.DB) error {
 	key := utils.GenCryptoKey(a.UserID)
 	var err error
 	if a.Host, err = utils.CryptoToBase64([]byte(a.Host), key); err != nil {
@@ -77,7 +77,7 @@ func (a *AlistVendor) BeforeSave(tx *gorm.DB) error {
 	return nil
 }
 
-func (a *AlistVendor) AfterSave(tx *gorm.DB) error {
+func (a *AlistVendor) AfterSave(_ *gorm.DB) error {
 	key := utils.GenCryptoKey(a.UserID)
 	host, err := utils.DecryptoFromBase64(a.Host, key)
 	if err != nil {
@@ -112,7 +112,7 @@ type EmbyVendor struct {
 	EmbyUserID string `gorm:"type:varchar(32)"`
 }
 
-func (e *EmbyVendor) BeforeSave(tx *gorm.DB) error {
+func (e *EmbyVendor) BeforeSave(_ *gorm.DB) error {
 	key := utils.GenCryptoKey(e.ServerID)
 	var err error
 	if e.Host, err = utils.CryptoToBase64(stream.StringToBytes(e.Host), key); err != nil {
@@ -124,7 +124,7 @@ func (e *EmbyVendor) BeforeSave(tx *gorm.DB) error {
 	return nil
 }
 
-func (e *EmbyVendor) AfterSave(tx *gorm.DB) error {
+func (e *EmbyVendor) AfterSave(_ *gorm.DB) error {
 	key := utils.GenCryptoKey(e.ServerID)
 	host, err := utils.DecryptoFromBase64(e.Host, key)
 	if err != nil {

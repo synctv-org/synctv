@@ -36,7 +36,7 @@ func (p *XiaomiProvider) Provider() provider.OAuth2Provider {
 	return "xiaomi"
 }
 
-func (p *XiaomiProvider) NewAuthURL(ctx context.Context, state string) (string, error) {
+func (p *XiaomiProvider) NewAuthURL(_ context.Context, state string) (string, error) {
 	return p.config.AuthCodeURL(state, oauth2.AccessTypeOnline), nil
 }
 
@@ -54,7 +54,16 @@ func (p *XiaomiProvider) GetUserInfo(ctx context.Context, code string) (*provide
 		return nil, err
 	}
 	client := p.config.Client(ctx, tk)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("https://open.account.xiaomi.com/user/profile?clientId=%s&token=%s", p.config.ClientID, tk.AccessToken), nil)
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodGet,
+		fmt.Sprintf(
+			"https://open.account.xiaomi.com/user/profile?clientId=%s&token=%s",
+			p.config.ClientID,
+			tk.AccessToken,
+		),
+		nil,
+	)
 	if err != nil {
 		return nil, err
 	}

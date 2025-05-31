@@ -19,6 +19,7 @@ var (
 	_ Proxy             = (*HTTPReadSeekCloser)(nil)
 )
 
+//nolint:containedctx
 type HTTPReadSeekCloser struct {
 	ctx                               context.Context
 	headHeaders                       http.Header
@@ -119,7 +120,9 @@ func WithForceNotSupportRange(notSupportRange bool) HTTPReadSeekerConf {
 	}
 }
 
-func WithNotSupportSeekWhenNotSupportRange(notSupportSeekWhenNotSupportRange bool) HTTPReadSeekerConf {
+func WithNotSupportSeekWhenNotSupportRange(
+	notSupportSeekWhenNotSupportRange bool,
+) HTTPReadSeekerConf {
 	return func(h *HTTPReadSeekCloser) {
 		h.notSupportSeekWhenNotSupportRange = notSupportSeekWhenNotSupportRange
 	}
@@ -165,7 +168,7 @@ func (h *HTTPReadSeekCloser) fix() *HTTPReadSeekCloser {
 	if h.client == nil {
 		h.client = &http.Client{
 			Transport: uhc.DefaultTransport,
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			CheckRedirect: func(req *http.Request, _ []*http.Request) error {
 				for k, v := range h.headers {
 					req.Header[k] = v
 				}
@@ -244,7 +247,11 @@ func (h *HTTPReadSeekCloser) FetchNextChunk() error {
 			h.contentTotalLength = contentTotalLength
 		}
 		resp.Body.Close()
-		return fmt.Errorf("requested range not satisfiable, content total length: %d, offset: %d", h.contentTotalLength, h.offset)
+		return fmt.Errorf(
+			"requested range not satisfiable, content total length: %d, offset: %d",
+			h.contentTotalLength,
+			h.offset,
+		)
 	}
 
 	if err := h.checkContentType(resp.Header.Get("Content-Type")); err != nil {
@@ -339,7 +346,11 @@ func (h *HTTPReadSeekCloser) closeCurrentResp() {
 func (h *HTTPReadSeekCloser) checkContentType(ct string) error {
 	if len(h.allowedContentTypes) != 0 {
 		if ct == "" || slices.Index(h.allowedContentTypes, ct) == -1 {
-			return fmt.Errorf("content type '%s' is not in the list of allowed content types: %v", ct, h.allowedContentTypes)
+			return fmt.Errorf(
+				"content type '%s' is not in the list of allowed content types: %v",
+				ct,
+				h.allowedContentTypes,
+			)
 		}
 	}
 	return nil
@@ -444,7 +455,9 @@ func (h *HTTPReadSeekCloser) ContentTotalLength() (int64, error) {
 	if h.contentTotalLength > 0 {
 		return h.contentTotalLength, nil
 	}
-	return 0, errors.New("content total length is not available - no successful response received yet")
+	return 0, errors.New(
+		"content total length is not available - no successful response received yet",
+	)
 }
 
 func ParseContentRangeStartAndEnd(contentRange string) (int64, int64, error) {
@@ -453,17 +466,26 @@ func ParseContentRangeStartAndEnd(contentRange string) (int64, int64, error) {
 	}
 
 	if !strings.HasPrefix(contentRange, "bytes ") {
-		return 0, 0, fmt.Errorf("invalid Content-Range header format (expected 'bytes ' prefix): %s", contentRange)
+		return 0, 0, fmt.Errorf(
+			"invalid Content-Range header format (expected 'bytes ' prefix): %s",
+			contentRange,
+		)
 	}
 
 	parts := strings.Split(strings.TrimPrefix(contentRange, "bytes "), "/")
 	if len(parts) != 2 {
-		return 0, 0, fmt.Errorf("invalid Content-Range header format (expected 2 parts separated by '/'): %s", contentRange)
+		return 0, 0, fmt.Errorf(
+			"invalid Content-Range header format (expected 2 parts separated by '/'): %s",
+			contentRange,
+		)
 	}
 
 	rangeParts := strings.Split(strings.TrimSpace(parts[0]), "-")
 	if len(rangeParts) != 2 {
-		return 0, 0, fmt.Errorf("invalid Content-Range range format (expected start-end): %s", contentRange)
+		return 0, 0, fmt.Errorf(
+			"invalid Content-Range range format (expected start-end): %s",
+			contentRange,
+		)
 	}
 
 	start, err := strconv.ParseInt(strings.TrimSpace(rangeParts[0]), 10, 64)
@@ -492,12 +514,18 @@ func ParseContentRangeTotalLength(contentRange string) (int64, error) {
 	}
 
 	if !strings.HasPrefix(contentRange, "bytes ") {
-		return 0, fmt.Errorf("invalid Content-Range header format (expected 'bytes ' prefix): %s", contentRange)
+		return 0, fmt.Errorf(
+			"invalid Content-Range header format (expected 'bytes ' prefix): %s",
+			contentRange,
+		)
 	}
 
 	parts := strings.Split(strings.TrimPrefix(contentRange, "bytes "), "/")
 	if len(parts) != 2 {
-		return 0, fmt.Errorf("invalid Content-Range header format (expected 2 parts separated by '/'): %s", contentRange)
+		return 0, fmt.Errorf(
+			"invalid Content-Range header format (expected 2 parts separated by '/'): %s",
+			contentRange,
+		)
 	}
 
 	if parts[1] == "" || parts[1] == "*" {

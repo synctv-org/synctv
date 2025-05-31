@@ -33,7 +33,7 @@ func (g *GoogleProvider) Provider() provider.OAuth2Provider {
 	return "google"
 }
 
-func (g *GoogleProvider) NewAuthURL(ctx context.Context, state string) (string, error) {
+func (g *GoogleProvider) NewAuthURL(_ context.Context, state string) (string, error) {
 	return g.config.AuthCodeURL(state, oauth2.AccessTypeOnline), nil
 }
 
@@ -51,7 +51,12 @@ func (g *GoogleProvider) GetUserInfo(ctx context.Context, code string) (*provide
 		return nil, err
 	}
 	client := g.config.Client(ctx, tk)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://www.googleapis.com/oauth2/v2/userinfo", nil)
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodGet,
+		"https://www.googleapis.com/oauth2/v2/userinfo",
+		nil,
+	)
 	if err != nil {
 		return nil, err
 	}

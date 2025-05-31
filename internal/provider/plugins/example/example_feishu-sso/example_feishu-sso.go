@@ -14,9 +14,12 @@ import (
 )
 
 // Linux/Mac/Windows:
-// CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build ./internal/provider/plugins/example/example_feishu-sso/example_feishu-sso.go
-// CGO_ENABLED=0 GOOS=dawin GOARCH=amd64 go build ./internal/provider/plugins/example/example_feishu-sso/example_feishu-sso.go
-// CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build ./internal/provider/plugins/example/example_feishu-sso/example_feishu-sso.go
+// CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build
+// ./internal/provider/plugins/example/example_feishu-sso/example_feishu-sso.go CGO_ENABLED=0
+// GOOS=dawin GOARCH=amd64 go build
+// ./internal/provider/plugins/example/example_feishu-sso/example_feishu-sso.go CGO_ENABLED=0
+// GOOS=windows GOARCH=amd64 go build
+// ./internal/provider/plugins/example/example_feishu-sso/example_feishu-sso.go
 //
 // mv gitee {data-dir}/plugins/oauth2/feishu-sso
 //
@@ -37,8 +40,14 @@ func newFeishuSSOProvider(ssoid string) provider.Interface {
 		config: oauth2.Config{
 			Scopes: []string{"profile"},
 			Endpoint: oauth2.Endpoint{
-				AuthURL:  fmt.Sprintf("https://anycross.feishu.cn/sso/%s/oauth2/auth", ssoid),  // 授权码（authorization_code）获取接口
-				TokenURL: fmt.Sprintf("https://anycross.feishu.cn/sso/%s/oauth2/token", ssoid), // 获取访问令牌（access_token）
+				AuthURL: fmt.Sprintf(
+					"https://anycross.feishu.cn/sso/%s/oauth2/auth",
+					ssoid,
+				), // 授权码（authorization_code）获取接口
+				TokenURL: fmt.Sprintf(
+					"https://anycross.feishu.cn/sso/%s/oauth2/token",
+					ssoid,
+				), // 获取访问令牌（access_token）
 			},
 		},
 		ssoid: ssoid,
@@ -55,7 +64,7 @@ func (p *FeishuSSOProvider) Provider() provider.OAuth2Provider {
 	return "feishu-sso" // 插件名
 }
 
-func (p *FeishuSSOProvider) NewAuthURL(ctx context.Context, state string) (string, error) {
+func (p *FeishuSSOProvider) NewAuthURL(_ context.Context, state string) (string, error) {
 	return p.config.AuthCodeURL(state, oauth2.AccessTypeOnline), nil
 }
 
@@ -67,13 +76,21 @@ func (p *FeishuSSOProvider) RefreshToken(ctx context.Context, tk string) (*oauth
 	return p.config.TokenSource(ctx, &oauth2.Token{RefreshToken: tk}).Token()
 }
 
-func (p *FeishuSSOProvider) GetUserInfo(ctx context.Context, code string) (*provider.UserInfo, error) {
+func (p *FeishuSSOProvider) GetUserInfo(
+	ctx context.Context,
+	code string,
+) (*provider.UserInfo, error) {
 	tk, err := p.GetToken(ctx, code)
 	if err != nil {
 		return nil, err
 	}
 	client := p.config.Client(ctx, tk)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("https://anycross.feishu.cn/sso/%s/oauth2/userinfo", p.ssoid), nil) // 身份端点
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodGet,
+		fmt.Sprintf("https://anycross.feishu.cn/sso/%s/oauth2/userinfo", p.ssoid),
+		nil,
+	) // 身份端点
 	if err != nil {
 		return nil, err
 	}

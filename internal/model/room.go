@@ -31,10 +31,10 @@ func (r RoomStatus) String() string {
 }
 
 type Room struct {
-	ID             string `gorm:"primaryKey;type:char(32)" json:"id"`
+	ID             string `gorm:"primaryKey;type:char(32)"                                       json:"id"`
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
-	Settings       *RoomSettings `gorm:"foreignKey:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE" json:"settings"`
+	Settings       *RoomSettings `gorm:"foreignKey:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"     json:"settings"`
 	Name           string        `gorm:"not null;uniqueIndex;type:varchar(32)"`
 	CreatorID      string        `gorm:"index;type:char(32)"`
 	HashedPassword []byte
@@ -44,7 +44,7 @@ type Room struct {
 	Current        *Current      `gorm:"serializer:fastjson"`
 }
 
-func (r *Room) BeforeCreate(tx *gorm.DB) error {
+func (r *Room) BeforeCreate(_ *gorm.DB) error {
 	if r.ID == "" {
 		r.ID = utils.SortUUID()
 	}
@@ -56,7 +56,8 @@ func (r *Room) NeedPassword() bool {
 }
 
 func (r *Room) CheckPassword(password string) bool {
-	return !r.NeedPassword() || bcrypt.CompareHashAndPassword(r.HashedPassword, stream.StringToBytes(password)) == nil
+	return !r.NeedPassword() ||
+		bcrypt.CompareHashAndPassword(r.HashedPassword, stream.StringToBytes(password)) == nil
 }
 
 func (r *Room) IsBanned() bool {
@@ -75,8 +76,8 @@ func (r *Room) IsActive() bool {
 type RoomSettings struct {
 	UpdatedAt              time.Time            `gorm:"autoUpdateTime"           json:"-"`
 	ID                     string               `gorm:"primaryKey;type:char(32)" json:"-"`
-	UserDefaultPermissions RoomMemberPermission `json:"user_default_permissions"`
-	GuestPermissions       RoomMemberPermission `json:"guest_permissions"`
+	UserDefaultPermissions RoomMemberPermission `                                json:"user_default_permissions"`
+	GuestPermissions       RoomMemberPermission `                                json:"guest_permissions"`
 	DisableGuest           bool                 `gorm:"default:false"            json:"disable_guest"`
 	JoinNeedReview         bool                 `gorm:"default:false"            json:"join_need_review"`
 	DisableJoinNewUser     bool                 `gorm:"default:false"            json:"disable_join_new_user"`

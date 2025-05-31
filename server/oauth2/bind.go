@@ -5,18 +5,19 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/internal/provider"
 	"github.com/synctv-org/synctv/internal/provider/providers"
+	"github.com/synctv-org/synctv/server/middlewares"
 	"github.com/synctv-org/synctv/server/model"
 	"github.com/synctv-org/synctv/utils"
 )
 
 func BindAPI(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.UserEntry).Value()
-	log := ctx.MustGet("log").(*logrus.Entry)
+	user := middlewares.GetUserEntry(ctx).Value()
+
+	log := middlewares.GetLogger(ctx)
 
 	pi, err := providers.GetProvider(ctx.Param("type"))
 	if err != nil {
@@ -45,8 +46,8 @@ func BindAPI(ctx *gin.Context) {
 }
 
 func UnBindAPI(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.UserEntry).Value()
-	log := ctx.MustGet("log").(*logrus.Entry)
+	user := middlewares.GetUserEntry(ctx).Value()
+	log := middlewares.GetLogger(ctx)
 
 	pi, err := providers.GetProvider(ctx.Param("type"))
 	if err != nil {
@@ -67,7 +68,7 @@ func UnBindAPI(ctx *gin.Context) {
 
 func newBindFunc(userID, redirect string) stateHandler {
 	return func(ctx *gin.Context, pi provider.Interface, code string) {
-		log := ctx.MustGet("log").(*logrus.Entry)
+		log := middlewares.GetLogger(ctx)
 
 		ctx.Header("X-OAuth2-Type", CallbackTypeBind)
 
@@ -80,12 +81,18 @@ func newBindFunc(userID, redirect string) stateHandler {
 
 		if ui.ProviderUserID == "" {
 			log.Errorf("invalid oauth2 provider user id")
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("invalid oauth2 provider user id"))
+			ctx.AbortWithStatusJSON(
+				http.StatusBadRequest,
+				model.NewAPIErrorStringResp("invalid oauth2 provider user id"),
+			)
 			return
 		}
 		if ui.Username == "" {
 			log.Errorf("invalid oauth2 username")
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("invalid oauth2 username"))
+			ctx.AbortWithStatusJSON(
+				http.StatusBadRequest,
+				model.NewAPIErrorStringResp("invalid oauth2 username"),
+			)
 			return
 		}
 

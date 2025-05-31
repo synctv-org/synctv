@@ -273,19 +273,20 @@ func (r *Room) LoadMember(userID string) (*model.RoomMember, error) {
 }
 
 func (r *Room) storeMember(userID string, member *model.RoomMember) *model.RoomMember {
-	if r.IsCreator(userID) {
+	switch {
+	case r.IsCreator(userID):
 		member.Role = model.RoomMemberRoleCreator
 		member.Permissions = model.AllPermissions
 		member.AdminPermissions = model.AllAdminPermissions
 		member.Status = model.RoomMemberStatusActive
-	} else if r.IsGuest(userID) {
+	case r.IsGuest(userID):
 		member.Role = model.RoomMemberRoleMember
 		member.Permissions = r.Settings.GuestPermissions
 		member.AdminPermissions = model.NoAdminPermission
 		if member.Status.IsBanned() {
 			member.Status = model.RoomMemberStatusActive
 		}
-	} else if member.Role.IsAdmin() {
+	case member.Role.IsAdmin():
 		member.Permissions = model.AllPermissions
 	}
 	member, _ = r.members.LoadOrStore(userID, member)
@@ -325,7 +326,10 @@ func (r *Room) SetPassword(password string) error {
 	var hashedPassword []byte
 	if password != "" {
 		var err error
-		hashedPassword, err = bcrypt.GenerateFromPassword(stream.StringToBytes(password), bcrypt.DefaultCost)
+		hashedPassword, err = bcrypt.GenerateFromPassword(
+			stream.StringToBytes(password),
+			bcrypt.DefaultCost,
+		)
 		if err != nil {
 			return err
 		}
@@ -443,7 +447,7 @@ func (r *Room) CheckCurrentExpired(ctx context.Context, expireID uint64) (bool, 
 	return m.CheckExpired(ctx, expireID)
 }
 
-func (r *Room) SetCurrentMovie(movieID string, subPath string, play bool) error {
+func (r *Room) SetCurrentMovie(movieID, subPath string, play bool) error {
 	currentMovie, err := r.LoadCurrentMovie()
 	if err != nil {
 		if !errors.Is(err, ErrNoCurrentMovie) {
@@ -490,7 +494,11 @@ func (r *Room) SwapMoviePositions(id1, id2 string) error {
 	return r.movies.SwapMoviePositions(id1, id2)
 }
 
-func (r *Room) GetMoviesWithPage(keyword string, page, pageSize int, parentID string) ([]*model.Movie, int64, error) {
+func (r *Room) GetMoviesWithPage(
+	keyword string,
+	page, pageSize int,
+	parentID string,
+) ([]*model.Movie, int64, error) {
 	return r.movies.GetMoviesWithPage(keyword, page, pageSize, parentID)
 }
 
@@ -520,11 +528,11 @@ func (r *Room) UserOnlineCount(userID string) int {
 	return r.lazyInitHub().OnlineCount(userID)
 }
 
-func (r *Room) SetCurrentStatus(playing bool, seek float64, rate float64, timeDiff float64) *model.Status {
+func (r *Room) SetCurrentStatus(playing bool, seek, rate, timeDiff float64) *model.Status {
 	return r.current.SetStatus(playing, seek, rate, timeDiff)
 }
 
-func (r *Room) SetCurrentSeekRate(seek float64, rate float64, timeDiff float64) *model.Status {
+func (r *Room) SetCurrentSeekRate(seek, rate, timeDiff float64) *model.Status {
 	return r.current.SetSeekRate(seek, rate, timeDiff)
 }
 
@@ -587,7 +595,10 @@ func (r *Room) AddMemberPermissions(userID string, permissions model.RoomMemberP
 	return db.AddMemberPermissions(r.ID, userID, permissions)
 }
 
-func (r *Room) RemoveMemberPermissions(userID string, permissions model.RoomMemberPermission) error {
+func (r *Room) RemoveMemberPermissions(
+	userID string,
+	permissions model.RoomMemberPermission,
+) error {
 	if r.IsGuest(userID) {
 		return r.SetGuestPermissions(r.Settings.GuestPermissions.Remove(permissions))
 	}
@@ -675,7 +686,7 @@ func (r *Room) AddAdminPermissions(userID string, permissions model.RoomAdminPer
 		return errors.New("not admin")
 	}
 	defer r.members.Delete(userID)
-	return db.RoomSetAdminPermissions(r.ID, userID, permissions)
+	return db.RoomAddAdminPermissions(r.ID, userID, permissions)
 }
 
 func (r *Room) RemoveAdminPermissions(userID string, permissions model.RoomAdminPermission) error {
@@ -691,7 +702,7 @@ func (r *Room) RemoveAdminPermissions(userID string, permissions model.RoomAdmin
 		return errors.New("not admin")
 	}
 	defer r.members.Delete(userID)
-	return db.RoomSetAdminPermissions(r.ID, userID, 0)
+	return db.RoomRemoveAdminPermissions(r.ID, userID, permissions)
 }
 
 func (r *Room) SetAdmin(userID string, permissions model.RoomAdminPermission) error {

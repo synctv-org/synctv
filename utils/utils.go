@@ -32,7 +32,7 @@ func init() {
 var (
 	letters              = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
 	noRedirectHTTPClient = &http.Client{
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
 	}
@@ -153,7 +153,7 @@ func CompVersion(v1, v2 string) (int, error) {
 	}
 
 	// Compare base version numbers
-	for i := 0; i < len(v1Base); i++ {
+	for i := range v1Base {
 		if v1Base[i] > v2Base[i] {
 			return VersionGreater, nil
 		}
@@ -235,20 +235,22 @@ type Once struct {
 
 func (o *Once) Done() (doned bool) {
 	done := atomic.LoadUint32(&o.done)
-	if done == 1 {
+	switch done {
+	case 1:
 		return true
-	} else if done == 2 {
+	case 2:
 		return false
 	}
 
 	o.m.Lock()
 	defer o.m.Unlock()
-	if o.done == 0 {
+	switch o.done {
+	case 0:
 		doned = false
 		atomic.StoreUint32(&o.done, 2)
-	} else if o.done == 1 {
+	case 1:
 		doned = true
-	} else {
+	default:
 		doned = false
 	}
 	return
@@ -402,7 +404,7 @@ func ForceColor() bool {
 	return needColor
 }
 
-func GetPageAndMax(ctx *gin.Context) (page int, _max int, err error) {
+func GetPageAndMax(ctx *gin.Context) (page, _max int, err error) {
 	_max, err = strconv.Atoi(ctx.DefaultQuery("max", "10"))
 	if err != nil {
 		return 0, 0, errors.New("max must be a number")

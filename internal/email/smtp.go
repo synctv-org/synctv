@@ -21,7 +21,7 @@ var (
 		"smtp_host",
 		"",
 		model.SettingGroupEmail,
-		settings.WithAfterSetString(func(ss settings.StringSetting, s string) {
+		settings.WithAfterSetString(func(_ settings.StringSetting, _ string) {
 			lock.Lock()
 			defer lock.Unlock()
 			configChanged = true
@@ -41,7 +41,7 @@ var (
 			}
 			return nil
 		}),
-		settings.WithAfterSetInt64(func(ss settings.Int64Setting, i int64) {
+		settings.WithAfterSetInt64(func(_ settings.Int64Setting, _ int64) {
 			lock.Lock()
 			defer lock.Unlock()
 			configChanged = true
@@ -60,7 +60,7 @@ var (
 				return errors.New("smtp protocol must be tcp, tls or ssl")
 			}
 		}),
-		settings.WithAfterSetString(func(ss settings.StringSetting, s string) {
+		settings.WithAfterSetString(func(_ settings.StringSetting, _ string) {
 			lock.Lock()
 			defer lock.Unlock()
 			configChanged = true
@@ -70,7 +70,7 @@ var (
 		"smtp_username",
 		"",
 		model.SettingGroupEmail,
-		settings.WithAfterSetString(func(ss settings.StringSetting, s string) {
+		settings.WithAfterSetString(func(_ settings.StringSetting, _ string) {
 			lock.Lock()
 			defer lock.Unlock()
 			configChanged = true
@@ -80,7 +80,7 @@ var (
 		"smtp_password",
 		"",
 		model.SettingGroupEmail,
-		settings.WithAfterSetString(func(ss settings.StringSetting, s string) {
+		settings.WithAfterSetString(func(_ settings.StringSetting, _ string) {
 			lock.Lock()
 			defer lock.Unlock()
 			configChanged = true
@@ -90,7 +90,7 @@ var (
 		"smtp_from",
 		"",
 		model.SettingGroupEmail,
-		settings.WithAfterSetString(func(ss settings.StringSetting, s string) {
+		settings.WithAfterSetString(func(_ settings.StringSetting, s string) {
 			lock.Lock()
 			defer lock.Unlock()
 
@@ -112,7 +112,7 @@ var (
 			}
 			return nil
 		}),
-		settings.WithAfterSetInt64(func(ss settings.Int64Setting, i int64) {
+		settings.WithAfterSetInt64(func(_ settings.Int64Setting, _ int64) {
 			lock.Lock()
 			defer lock.Unlock()
 			configChanged = true
@@ -120,7 +120,8 @@ var (
 	)
 )
 
-func newSmtpConfig() *smtp.Config {
+//nolint:gosec
+func newSMTPConfig() *smtp.Config {
 	return &smtp.Config{
 		Host:     smtpHost.Get(),
 		Port:     uint32(smtpPort.Get()),
@@ -131,11 +132,11 @@ func newSmtpConfig() *smtp.Config {
 	}
 }
 
-func newSmtpPool() (*smtp.Pool, error) {
-	return smtp.NewSMTPPool(newSmtpConfig(), int(smtpPoolSize.Get()))
+func newSMTPPool() (*smtp.Pool, error) {
+	return smtp.NewSMTPPool(newSMTPConfig(), int(smtpPoolSize.Get()))
 }
 
-func getSmtpPool() (*smtp.Pool, error) {
+func getSMTPPool() (*smtp.Pool, error) {
 	lock.Lock()
 	defer lock.Unlock()
 
@@ -148,7 +149,7 @@ func getSmtpPool() (*smtp.Pool, error) {
 	}
 
 	if smtpPool == nil {
-		pool, err := newSmtpPool()
+		pool, err := newSMTPPool()
 		if err != nil {
 			return nil, err
 		}
@@ -158,7 +159,7 @@ func getSmtpPool() (*smtp.Pool, error) {
 	return smtpPool, nil
 }
 
-func closeSmtpPool() {
+func closeSMTPPool() {
 	lock.Lock()
 	defer lock.Unlock()
 

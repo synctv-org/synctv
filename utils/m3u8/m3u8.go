@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-func GetM3u8AllSegments(m3u8Str string, baseURL string) ([]string, error) {
+func GetM3u8AllSegments(m3u8Str, baseURL string) ([]string, error) {
 	var segments []string
 	err := RangeM3u8SegmentsWithBaseURL(m3u8Str, baseURL, func(segmentUrl string) (bool, error) {
 		segments = append(segments, segmentUrl)
@@ -37,7 +37,10 @@ func RangeM3u8Segments(m3u8Str string, callback func(segmentUrl string) (bool, e
 	return nil
 }
 
-func RangeM3u8SegmentsWithBaseURL(m3u8Str string, baseURL string, callback func(segmentURL string) (bool, error)) error {
+func RangeM3u8SegmentsWithBaseURL(
+	m3u8Str, baseURL string,
+	callback func(segmentURL string) (bool, error),
+) error {
 	baseURLParsed, err := url.Parse(baseURL)
 	if err != nil {
 		return fmt.Errorf("parse base url error: %w", err)
@@ -54,7 +57,10 @@ func RangeM3u8SegmentsWithBaseURL(m3u8Str string, baseURL string, callback func(
 	})
 }
 
-func ReplaceM3u8Segments(m3u8Str string, callback func(segmentURL string) (string, error)) (string, error) {
+func ReplaceM3u8Segments(
+	m3u8Str string,
+	callback func(segmentURL string) (string, error),
+) (string, error) {
 	var result strings.Builder
 	scanner := bufio.NewScanner(strings.NewReader(m3u8Str))
 	for scanner.Scan() {
@@ -76,7 +82,10 @@ func ReplaceM3u8Segments(m3u8Str string, callback func(segmentURL string) (strin
 	return result.String(), nil
 }
 
-func ReplaceM3u8SegmentsWithBaseURL(m3u8Str string, baseURL string, callback func(segmentURL string) (string, error)) (string, error) {
+func ReplaceM3u8SegmentsWithBaseURL(
+	m3u8Str, baseURL string,
+	callback func(segmentURL string) (string, error),
+) (string, error) {
 	baseURLParsed, err := url.Parse(baseURL)
 	if err != nil {
 		return "", fmt.Errorf("parse base url error: %w", err)

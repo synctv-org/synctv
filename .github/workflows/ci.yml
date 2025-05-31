@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  push:
+    branches:
+      - "**"
+    tags:
+      - "v*.*.*"
+    paths-ignore:
+      - "**/*.md"
+      - "**/*.yaml"
+  pull_request:
+    branches:
+      - "**"
+    paths-ignore:
+      - "**/*.md"
+      - "**/*.yaml"
+
+jobs:
+  golangci-lint:
+    name: Lint
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: "go.mod"
+
+      - name: Go test
+        run: |
+          go test -v -timeout 30s -count=1 ./...
+
+      - name: Run Linter
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: latest
+          args: --color always
+
+      - name: Run Fix Linter
+        uses: golangci/golangci-lint-action@v8
+        if: ${{ failure() }}
+        with:
+          install-mode: none
+          args: --fix --color always
+
+      - name: Auto Fix Diff Content
+        if: ${{ failure() }}
+        run: |
+          git diff --color=always
+          exit 1

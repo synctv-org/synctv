@@ -14,15 +14,15 @@ var ShowCmd = &cobra.Command{
 	Use:   "show",
 	Short: "show setting",
 	Long:  `show setting`,
-	PreRunE: func(cmd *cobra.Command, args []string) error {
-		return bootstrap.New(bootstrap.WithContext(cmd.Context())).Add(
+	PreRunE: func(cmd *cobra.Command, _ []string) error {
+		return bootstrap.New().Add(
 			bootstrap.InitStdLog,
 			bootstrap.InitConfig,
 			bootstrap.InitDatabase,
 			bootstrap.InitSetting,
-		).Run()
+		).Run(cmd.Context())
 	},
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, _ []string) error {
 		m := make(map[model.SettingGroup]map[string]any)
 		for g, s := range settings.GroupSettings {
 			if _, ok := m[g]; !ok {

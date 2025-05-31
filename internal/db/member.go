@@ -23,19 +23,26 @@ func WithRoomMemberRole(role model.RoomMemberRole) CreateRoomMemberRelationConfi
 	}
 }
 
-func WithRoomMemberPermissions(permissions model.RoomMemberPermission) CreateRoomMemberRelationConfig {
+func WithRoomMemberPermissions(
+	permissions model.RoomMemberPermission,
+) CreateRoomMemberRelationConfig {
 	return func(r *model.RoomMember) {
 		r.Permissions = permissions
 	}
 }
 
-func WithRoomMemberAdminPermissions(permissions model.RoomAdminPermission) CreateRoomMemberRelationConfig {
+func WithRoomMemberAdminPermissions(
+	permissions model.RoomAdminPermission,
+) CreateRoomMemberRelationConfig {
 	return func(r *model.RoomMember) {
 		r.AdminPermissions = permissions
 	}
 }
 
-func FirstOrCreateRoomMemberRelation(roomID, userID string, conf ...CreateRoomMemberRelationConfig) (*model.RoomMember, error) {
+func FirstOrCreateRoomMemberRelation(
+	roomID, userID string,
+	conf ...CreateRoomMemberRelationConfig,
+) (*model.RoomMember, error) {
 	roomMemberRelation := &model.RoomMember{}
 	d := &model.RoomMember{
 		RoomID:           roomID,
@@ -48,7 +55,10 @@ func FirstOrCreateRoomMemberRelation(roomID, userID string, conf ...CreateRoomMe
 	for _, c := range conf {
 		c(d)
 	}
-	err := db.Where("room_id = ? AND user_id = ?", roomID, userID).Attrs(d).FirstOrCreate(roomMemberRelation).Error
+	err := db.Where("room_id = ? AND user_id = ?", roomID, userID).
+		Attrs(d).
+		FirstOrCreate(roomMemberRelation).
+		Error
 	return roomMemberRelation, err
 }
 
@@ -74,7 +84,9 @@ func RoomBanMember(roomID, userID string) error {
 }
 
 func RoomUnbanMember(roomID, userID string) error {
-	result := db.Model(&model.RoomMember{}).Where("room_id = ? AND user_id = ?", roomID, userID).Update("status", model.RoomMemberStatusActive)
+	result := db.Model(&model.RoomMember{}).
+		Where("room_id = ? AND user_id = ?", roomID, userID).
+		Update("status", model.RoomMemberStatusActive)
 	return HandleUpdateResult(result, ErrRoomMemberNotFound)
 }
 
@@ -91,57 +103,78 @@ func DeleteRoomMember(roomID, userID string) error {
 	return HandleUpdateResult(result, ErrRoomMemberNotFound)
 }
 
-func SetMemberPermissions(roomID string, userID string, permission model.RoomMemberPermission) error {
-	result := db.Model(&model.RoomMember{}).Where("room_id = ? AND user_id = ?", roomID, userID).Update("permissions", permission)
+func SetMemberPermissions(roomID, userID string, permission model.RoomMemberPermission) error {
+	result := db.Model(&model.RoomMember{}).
+		Where("room_id = ? AND user_id = ?", roomID, userID).
+		Update("permissions", permission)
 	return HandleUpdateResult(result, ErrRoomMemberNotFound)
 }
 
-func AddMemberPermissions(roomID string, userID string, permission model.RoomMemberPermission) error {
-	result := db.Model(&model.RoomMember{}).Where("room_id = ? AND user_id = ?", roomID, userID).Update("permissions", db.Raw("permissions | ?", permission))
+func AddMemberPermissions(roomID, userID string, permission model.RoomMemberPermission) error {
+	result := db.Model(&model.RoomMember{}).
+		Where("room_id = ? AND user_id = ?", roomID, userID).
+		Update("permissions", db.Raw("permissions | ?", permission))
 	return HandleUpdateResult(result, ErrRoomMemberNotFound)
 }
 
-func RemoveMemberPermissions(roomID string, userID string, permission model.RoomMemberPermission) error {
-	result := db.Model(&model.RoomMember{}).Where("room_id = ? AND user_id = ?", roomID, userID).Update("permissions", db.Raw("permissions & ?", ^permission))
+func RemoveMemberPermissions(roomID, userID string, permission model.RoomMemberPermission) error {
+	result := db.Model(&model.RoomMember{}).
+		Where("room_id = ? AND user_id = ?", roomID, userID).
+		Update("permissions", db.Raw("permissions & ?", ^permission))
 	return HandleUpdateResult(result, ErrRoomMemberNotFound)
 }
 
-// func GetAllRoomMembersRelationCount(roomID string, scopes ...func(*gorm.DB) *gorm.DB) (int64, error) {
+// func GetAllRoomMembersRelationCount(roomID string, scopes ...func(*gorm.DB) *gorm.DB) (int64,
+// error) {
 // 	var count int64
-// 	err := db.Model(&model.RoomMember{}).Where("room_id = ?", roomID).Scopes(scopes...).Count(&count).Error
+// 	err := db.Model(&model.RoomMember{}).Where("room_id = ?",
+// roomID).Scopes(scopes...).Count(&count).Error
 // 	return count, err
 // }
 
 func RoomSetAdminPermissions(roomID, userID string, permissions model.RoomAdminPermission) error {
-	result := db.Model(&model.RoomMember{}).Where("room_id = ? AND user_id = ?", roomID, userID).Update("admin_permissions", permissions)
+	result := db.Model(&model.RoomMember{}).
+		Where("room_id = ? AND user_id = ?", roomID, userID).
+		Update("admin_permissions", permissions)
 	return HandleUpdateResult(result, ErrRoomMemberNotFound)
 }
 
 func RoomAddAdminPermissions(roomID, userID string, permissions model.RoomAdminPermission) error {
-	result := db.Model(&model.RoomMember{}).Where("room_id = ? AND user_id = ?", roomID, userID).Update("admin_permissions", db.Raw("admin_permissions | ?", permissions))
+	result := db.Model(&model.RoomMember{}).
+		Where("room_id = ? AND user_id = ?", roomID, userID).
+		Update("admin_permissions", db.Raw("admin_permissions | ?", permissions))
 	return HandleUpdateResult(result, ErrRoomMemberNotFound)
 }
 
-func RoomRemoveAdminPermissions(roomID, userID string, permissions model.RoomAdminPermission) error {
-	result := db.Model(&model.RoomMember{}).Where("room_id = ? AND user_id = ?", roomID, userID).Update("admin_permissions", db.Raw("admin_permissions & ?", ^permissions))
+func RoomRemoveAdminPermissions(
+	roomID, userID string,
+	permissions model.RoomAdminPermission,
+) error {
+	result := db.Model(&model.RoomMember{}).
+		Where("room_id = ? AND user_id = ?", roomID, userID).
+		Update("admin_permissions", db.Raw("admin_permissions & ?", ^permissions))
 	return HandleUpdateResult(result, ErrRoomMemberNotFound)
 }
 
 func RoomSetAdmin(roomID, userID string, permissions model.RoomAdminPermission) error {
-	result := db.Model(&model.RoomMember{}).Where("room_id = ? AND user_id = ?", roomID, userID).Updates(map[string]interface{}{
-		"role":              model.RoomMemberRoleAdmin,
-		"permissions":       model.AllPermissions,
-		"admin_permissions": permissions,
-	})
+	result := db.Model(&model.RoomMember{}).
+		Where("room_id = ? AND user_id = ?", roomID, userID).
+		Updates(map[string]any{
+			"role":              model.RoomMemberRoleAdmin,
+			"permissions":       model.AllPermissions,
+			"admin_permissions": permissions,
+		})
 	return HandleUpdateResult(result, ErrRoomMemberNotFound)
 }
 
 func RoomSetMember(roomID, userID string, permissions model.RoomMemberPermission) error {
-	result := db.Model(&model.RoomMember{}).Where("room_id = ? AND user_id = ?", roomID, userID).Updates(map[string]interface{}{
-		"role":              model.RoomMemberRoleMember,
-		"permissions":       permissions,
-		"admin_permissions": model.NoAdminPermission,
-	})
+	result := db.Model(&model.RoomMember{}).
+		Where("room_id = ? AND user_id = ?", roomID, userID).
+		Updates(map[string]any{
+			"role":              model.RoomMemberRoleMember,
+			"permissions":       permissions,
+			"admin_permissions": model.NoAdminPermission,
+		})
 	return HandleUpdateResult(result, ErrRoomMemberNotFound)
 }
 

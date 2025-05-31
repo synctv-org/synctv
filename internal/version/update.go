@@ -56,7 +56,12 @@ func SelfUpdate(ctx context.Context, url string) error {
 		if err != nil {
 			log.Warnf("self update: rollback: %s -> %s", oldName, currentExecFile)
 			if err := os.Rename(oldName, currentExecFile); err != nil {
-				log.Errorf("self update: rollback: rename %s -> %s error: %v", oldName, currentExecFile, err)
+				log.Errorf(
+					"self update: rollback: rename %s -> %s error: %v",
+					oldName,
+					currentExecFile,
+					err,
+				)
 			}
 		} else {
 			log.Debugf("self update: remove old executable file: %s", oldName)

@@ -8,7 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/andybalholm/brotli"
@@ -23,11 +25,11 @@ import (
 type command uint32
 
 const (
-	CMD_HEARTBEAT       command = 2
-	CMD_HEARTBEAT_REPLY command = 3
-	CMD_NORMAL          command = 5
-	CMD_AUTH            command = 7
-	CMD_AUTH_REPLY      command = 8
+	CmdHeartbeat      command = 2
+	CmdHeartbeatReply command = 3
+	CmdNormal         command = 5
+	CmdAuth           command = 7
+	CmdAuthReply      command = 8
 )
 
 type header struct {
@@ -53,6 +55,7 @@ func (h *header) Unmarshal(data []byte) error {
 	return binary.Read(bytes.NewReader(data), binary.BigEndian, h)
 }
 
+//nolint:gosec
 func newHeader(size uint32, command command, sequence uint32) header {
 	h := header{
 		TotalSize: uint32(headerLen) + size,
@@ -61,7 +64,7 @@ func newHeader(size uint32, command command, sequence uint32) header {
 		Sequence:  sequence,
 	}
 	switch command {
-	case CMD_HEARTBEAT, CMD_AUTH:
+	case CmdHeartbeat, CmdAuth:
 		h.Version = 1
 	}
 	return h
@@ -86,12 +89,13 @@ func newVerifyHello(roomID uint64, key string) *verifyHello {
 	}
 }
 
+//nolint:gosec
 func writeVerifyHello(conn *websocket.Conn, hello *verifyHello) error {
 	msg, err := json.Marshal(hello)
 	if err != nil {
 		return err
 	}
-	header := newHeader(uint32(len(msg)), CMD_AUTH, 1)
+	header := newHeader(uint32(len(msg)), CmdAuth, 1)
 	headerBytes, err := header.Marshal()
 	if err != nil {
 		return err
@@ -100,7 +104,7 @@ func writeVerifyHello(conn *websocket.Conn, hello *verifyHello) error {
 }
 
 func writeHeartbeat(conn *websocket.Conn, sequence uint32) error {
-	header := newHeader(0, CMD_HEARTBEAT, sequence)
+	header := newHeader(0, CmdHeartbeat, sequence)
 	headerBytes, err := header.Marshal()
 	if err != nil {
 		return err
@@ -112,24 +116,27 @@ type replyCmd struct {
 	Cmd string `json:"cmd"`
 }
 
-func (v *BilibiliVendorService) StreamDanmu(ctx context.Context, handler func(danmu string) error) error {
+func (v *BilibiliVendorService) StreamDanmu(
+	ctx context.Context,
+	handler func(danmu string) error,
+) error {
 	resp, err := vendor.LoadBilibiliClient("").GetLiveDanmuInfo(ctx, &bilibili.GetLiveDanmuInfoReq{
 		RoomID: v.movie.VendorInfo.Bilibili.Cid,
 	})
 	if err != nil {
 		return err
 	}
-	if len(resp.HostList) == 0 {
+	if len(resp.GetHostList()) == 0 {
 		return errors.New("no host list")
 	}
-	wssHost := resp.HostList[0].Host
-	wssPort := resp.HostList[0].WssPort
+	wssHost := resp.GetHostList()[0].GetHost()
+	wssPort := resp.GetHostList()[0].GetWssPort()
 
-	conn, _, err := websocket.
+	conn, wsresp, err := websocket.
 		DefaultDialer.
 		DialContext(
 			ctx,
-			fmt.Sprintf("wss://%s:%d/sub", wssHost, wssPort),
+			fmt.Sprintf("wss://%s/sub", net.JoinHostPort(wssHost, strconv.Itoa(int(wssPort)))),
 			http.Header{
 				"User-Agent": []string{utils.UA},
 				"Origin":     []string{"https://live.bilibili.com"},
@@ -139,12 +146,13 @@ func (v *BilibiliVendorService) StreamDanmu(ctx context.Context, handler func(da
 		return err
 	}
 	defer conn.Close()
+	defer wsresp.Body.Close()
 
 	err = writeVerifyHello(
 		conn,
 		newVerifyHello(
 			v.movie.VendorInfo.Bilibili.Cid,
-			resp.Token,
+			resp.GetToken(),
 		),
 	)
 	if err != nil {
@@ -189,8 +197,9 @@ func (v *BilibiliVendorService) StreamDanmu(ctx context.Context, handler func(da
 				return err
 			}
 			switch header.Command {
-			case CMD_HEARTBEAT_REPLY:
+			case CmdHeartbeatReply:
 				continue
+			default:
 			}
 			data := message[headerLen:]
 			switch header.Version {
@@ -230,7 +239,7 @@ func (v *BilibiliVendorService) StreamDanmu(ctx context.Context, handler func(da
 				if !ok {
 					return errors.New("content is not string")
 				}
-				handler(content)
+				_ = handler(content)
 			case "DM_INTERACTION":
 			}
 		}

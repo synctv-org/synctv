@@ -32,7 +32,7 @@ func (g *GitlabProvider) Provider() provider.OAuth2Provider {
 	return "gitlab"
 }
 
-func (g *GitlabProvider) NewAuthURL(ctx context.Context, state string) (string, error) {
+func (g *GitlabProvider) NewAuthURL(_ context.Context, state string) (string, error) {
 	return g.config.AuthCodeURL(state, oauth2.AccessTypeOnline), nil
 }
 
@@ -50,7 +50,12 @@ func (g *GitlabProvider) GetUserInfo(ctx context.Context, code string) (*provide
 		return nil, err
 	}
 	client := g.config.Client(ctx, tk)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://gitlab.com/api/v4/user", nil)
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodGet,
+		"https://gitlab.com/api/v4/user",
+		nil,
+	)
 	if err != nil {
 		return nil, err
 	}

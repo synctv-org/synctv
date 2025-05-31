@@ -36,7 +36,7 @@ func (p *BaiduProvider) Provider() provider.OAuth2Provider {
 	return "baidu"
 }
 
-func (p *BaiduProvider) NewAuthURL(ctx context.Context, state string) (string, error) {
+func (p *BaiduProvider) NewAuthURL(_ context.Context, state string) (string, error) {
 	return p.config.AuthCodeURL(state, oauth2.AccessTypeOnline), nil
 }
 
@@ -54,7 +54,12 @@ func (p *BaiduProvider) GetUserInfo(ctx context.Context, code string) (*provider
 		return nil, err
 	}
 	client := p.config.Client(ctx, tk)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://openapi.baidu.com/rest/2.0/passport/users/getLoggedInUser?access_token="+tk.AccessToken, nil)
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodGet,
+		"https://openapi.baidu.com/rest/2.0/passport/users/getLoggedInUser?access_token="+tk.AccessToken,
+		nil,
+	)
 	if err != nil {
 		return nil, err
 	}

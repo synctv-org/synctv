@@ -23,11 +23,17 @@ const (
 var (
 	Version   = "dev"
 	GitCommit string
-	_         = settings.NewStringSetting("version", "placeholder string", model.SettingGroupServer, settings.WithBeforeInitString(func(ss settings.StringSetting, s string) (string, error) {
-		return Version, nil
-	}), settings.WithBeforeSetString(func(ss settings.StringSetting, s string) (string, error) {
-		return "", errors.New("version can not be set")
-	}))
+	_         = settings.NewStringSetting(
+		"version",
+		"placeholder string",
+		model.SettingGroupServer,
+		settings.WithBeforeInitString(func(_ settings.StringSetting, _ string) (string, error) {
+			return Version, nil
+		}),
+		settings.WithBeforeSetString(func(_ settings.StringSetting, _ string) (string, error) {
+			return "", errors.New("version can not be set")
+		}),
+	)
 )
 
 type Info struct {
@@ -155,9 +161,10 @@ func (v *Info) NeedUpdate(ctx context.Context) (bool, error) {
 }
 
 func (v *Info) SelfUpdate(ctx context.Context) (err error) {
-	if flags.Global.Dev {
+	switch {
+	case flags.Global.Dev:
 		log.Info("self update: dev mode, update to latest dev version")
-	} else if v.Current() != "dev" {
+	case v.Current() != "dev":
 		latest, err := v.Latest(ctx)
 		if err != nil {
 			return err
@@ -171,12 +178,20 @@ func (v *Info) SelfUpdate(ctx context.Context) (err error) {
 			log.Infof("self update: current version is latest: %s", v.Current())
 			return nil
 		case utils.VersionLess:
-			log.Infof("self update: current version is less than latest: %s -> %s", v.Current(), latest)
+			log.Infof(
+				"self update: current version is less than latest: %s -> %s",
+				v.Current(),
+				latest,
+			)
 		case utils.VersionGreater:
-			log.Infof("self update: current version is greater than latest: %s ? %s", v.Current(), latest)
+			log.Infof(
+				"self update: current version is greater than latest: %s ? %s",
+				v.Current(),
+				latest,
+			)
 			return nil
 		}
-	} else {
+	default:
 		log.Info("self update: current version is dev, force update")
 	}
 

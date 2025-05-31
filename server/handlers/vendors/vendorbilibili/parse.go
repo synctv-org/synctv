@@ -8,8 +8,8 @@ import (
 	"github.com/gin-gonic/gin"
 	json "github.com/json-iterator/go"
 	"github.com/synctv-org/synctv/internal/db"
-	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/internal/vendor"
+	"github.com/synctv-org/synctv/server/middlewares"
 	"github.com/synctv-org/synctv/server/model"
 	"github.com/synctv-org/synctv/utils"
 	"github.com/synctv-org/vendors/api/bilibili"
@@ -31,7 +31,7 @@ func (r *ParseReq) Decode(ctx *gin.Context) error {
 }
 
 func Parse(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.UserEntry).Value()
+	user := middlewares.GetUserEntry(ctx).Value()
 
 	req := ParseReq{}
 	if err := model.Decode(ctx, &req); err != nil {
@@ -61,11 +61,11 @@ func Parse(ctx *gin.Context) {
 		cookies = bucd.Cookies
 	}
 
-	switch resp.Type {
+	switch resp.GetType() {
 	case "bv":
 		resp, err := cli.ParseVideoPage(ctx, &bilibili.ParseVideoPageReq{
 			Cookies:  utils.HTTPCookieToMap(cookies),
-			Bvid:     resp.Id,
+			Bvid:     resp.GetId(),
 			Sections: ctx.DefaultQuery("sections", "false") == "true",
 		})
 		if err != nil {
@@ -74,7 +74,7 @@ func Parse(ctx *gin.Context) {
 		}
 		ctx.JSON(http.StatusOK, model.NewAPIDataResp(resp))
 	case "av":
-		aid, err := strconv.ParseUint(resp.Id, 10, 64)
+		aid, err := strconv.ParseUint(resp.GetId(), 10, 64)
 		if err != nil {
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 			return
@@ -90,7 +90,7 @@ func Parse(ctx *gin.Context) {
 		}
 		ctx.JSON(http.StatusOK, model.NewAPIDataResp(resp))
 	case "ep":
-		epid, err := strconv.ParseUint(resp.Id, 10, 64)
+		epid, err := strconv.ParseUint(resp.GetId(), 10, 64)
 		if err != nil {
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 			return
@@ -105,7 +105,7 @@ func Parse(ctx *gin.Context) {
 		}
 		ctx.JSON(http.StatusOK, model.NewAPIDataResp(resp))
 	case "ss":
-		ssid, err := strconv.ParseUint(resp.Id, 10, 64)
+		ssid, err := strconv.ParseUint(resp.GetId(), 10, 64)
 		if err != nil {
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 			return
@@ -120,7 +120,7 @@ func Parse(ctx *gin.Context) {
 		}
 		ctx.JSON(http.StatusOK, model.NewAPIDataResp(resp))
 	case "live":
-		roomid, err := strconv.ParseUint(resp.Id, 10, 64)
+		roomid, err := strconv.ParseUint(resp.GetId(), 10, 64)
 		if err != nil {
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 			return
@@ -135,7 +135,10 @@ func Parse(ctx *gin.Context) {
 		}
 		ctx.JSON(http.StatusOK, model.NewAPIDataResp(resp))
 	default:
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorStringResp("unknown match type "+resp.Type))
+		ctx.AbortWithStatusJSON(
+			http.StatusInternalServerError,
+			model.NewAPIErrorStringResp("unknown match type "+resp.GetType()),
+		)
 		return
 	}
 }

@@ -7,5 +7,8 @@ import (
 var Captcha *base64Captcha.Captcha
 
 func init() {
-	Captcha = base64Captcha.NewCaptcha(base64Captcha.DefaultDriverDigit, base64Captcha.DefaultMemStore)
+	Captcha = base64Captcha.NewCaptcha(
+		base64Captcha.DefaultDriverDigit,
+		base64Captcha.DefaultMemStore,
+	)
 }

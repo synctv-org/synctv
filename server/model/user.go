@@ -25,11 +25,12 @@ func (s *SetUserPasswordReq) Decode(ctx *gin.Context) error {
 }
 
 func (s *SetUserPasswordReq) Validate() error {
-	if s.Password == "" {
+	switch {
+	case s.Password == "":
 		return FormatEmptyPasswordError("user")
-	} else if len(s.Password) > 32 {
+	case len(s.Password) > 32:
 		return ErrPasswordTooLong
-	} else if !alnumPrintReg.MatchString(s.Password) {
+	case !alnumPrintReg.MatchString(s.Password):
 		return ErrPasswordHasInvalidChar
 	}
 	return nil
@@ -69,11 +70,12 @@ func (l *LoginUserReq) Validate() error {
 		}
 	}
 
-	if l.Password == "" {
+	switch {
+	case l.Password == "":
 		return FormatEmptyPasswordError("user")
-	} else if len(l.Password) > 32 {
+	case len(l.Password) > 32:
 		return ErrPasswordTooLong
-	} else if !alnumPrintReg.MatchString(l.Password) {
+	case !alnumPrintReg.MatchString(l.Password):
 		return ErrPasswordHasInvalidChar
 	}
 	return nil
@@ -98,13 +100,12 @@ func (u *UserSignupPasswordReq) Validate() error {
 	if !alnumPrintHanReg.MatchString(u.Username) {
 		return ErrUsernameHasInvalidChar
 	}
-	if u.Password == "" {
+	switch {
+	case u.Password == "":
 		return FormatEmptyPasswordError("user")
-	}
-	if len(u.Password) > 32 {
+	case len(u.Password) > 32:
 		return ErrPasswordTooLong
-	}
-	if !alnumPrintReg.MatchString(u.Password) {
+	case !alnumPrintReg.MatchString(u.Password):
 		return ErrPasswordHasInvalidChar
 	}
 	return nil
@@ -123,11 +124,12 @@ type SetUsernameReq struct {
 }
 
 func (s *SetUsernameReq) Validate() error {
-	if s.Username == "" {
+	switch {
+	case s.Username == "":
 		return errors.New("username is empty")
-	} else if len(s.Username) > 32 {
+	case len(s.Username) > 32:
 		return ErrUsernameTooLong
-	} else if !alnumPrintHanReg.MatchString(s.Username) {
+	case !alnumPrintHanReg.MatchString(s.Username):
 		return ErrUsernameHasInvalidChar
 	}
 	return nil
@@ -178,11 +180,12 @@ var (
 )
 
 func (u *UserSendBindEmailCaptchaReq) Validate() error {
-	if u.Email == "" {
+	switch {
+	case u.Email == "":
 		return errors.New("email is empty")
-	} else if len(u.Email) > 128 {
+	case len(u.Email) > 128:
 		return ErrEmailTooLong
-	} else if !emailReg.MatchString(u.Email) {
+	case !emailReg.MatchString(u.Email):
 		return ErrInvalidEmail
 	}
 	if u.CaptchaID == "" {
@@ -204,11 +207,12 @@ func (u *UserBindEmailReq) Decode(ctx *gin.Context) error {
 }
 
 func (u *UserBindEmailReq) Validate() error {
-	if u.Email == "" {
+	switch {
+	case u.Email == "":
 		return errors.New("email is empty")
-	} else if len(u.Email) > 128 {
+	case len(u.Email) > 128:
 		return ErrEmailTooLong
-	} else if !emailReg.MatchString(u.Email) {
+	case !emailReg.MatchString(u.Email):
 		return ErrInvalidEmail
 	}
 	if u.Captcha == "" {
@@ -232,11 +236,12 @@ func (u *UserSignupEmailReq) Validate() error {
 	if err := u.UserBindEmailReq.Validate(); err != nil {
 		return err
 	}
-	if u.Password == "" {
+	switch {
+	case u.Password == "":
 		return FormatEmptyPasswordError("user")
-	} else if len(u.Password) > 32 {
+	case len(u.Password) > 32:
 		return ErrPasswordTooLong
-	} else if !alnumPrintReg.MatchString(u.Password) {
+	case !alnumPrintReg.MatchString(u.Password):
 		return ErrPasswordHasInvalidChar
 	}
 	return nil

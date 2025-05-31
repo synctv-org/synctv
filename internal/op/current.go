@@ -3,6 +3,7 @@ package op
 import (
 	"sync"
 
+	log "github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/model"
 )
@@ -44,7 +45,11 @@ func (c *current) CurrentMovie() model.CurrentMovie {
 func (c *current) SetMovie(movie model.CurrentMovie, play bool) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
-	defer db.SetRoomCurrent(c.roomID, &c.current)
+	defer func() {
+		if err := db.SetRoomCurrent(c.roomID, &c.current); err != nil {
+			log.Errorf("set room current failed: %v", err)
+		}
+	}()
 
 	c.current.Movie = movie
 	c.current.SetSeek(0, 0)
@@ -61,7 +66,11 @@ func (c *current) Status() model.Status {
 func (c *current) SetStatus(playing bool, seek, rate, timeDiff float64) *model.Status {
 	c.lock.Lock()
 	defer c.lock.Unlock()
-	defer db.SetRoomCurrent(c.roomID, &c.current)
+	defer func() {
+		if err := db.SetRoomCurrent(c.roomID, &c.current); err != nil {
+			log.Errorf("set room current failed: %v", err)
+		}
+	}()
 
 	s := c.current.SetStatus(playing, seek, rate, timeDiff)
 	return &s
@@ -70,7 +79,11 @@ func (c *current) SetStatus(playing bool, seek, rate, timeDiff float64) *model.S
 func (c *current) SetSeekRate(seek, rate, timeDiff float64) *model.Status {
 	c.lock.Lock()
 	defer c.lock.Unlock()
-	defer db.SetRoomCurrent(c.roomID, &c.current)
+	defer func() {
+		if err := db.SetRoomCurrent(c.roomID, &c.current); err != nil {
+			log.Errorf("set room current failed: %v", err)
+		}
+	}()
 
 	s := c.current.SetSeekRate(seek, rate, timeDiff)
 	return &s

@@ -4,10 +4,9 @@ import (
 	"context"
 	"errors"
 
-	"google.golang.org/grpc"
-
 	"github.com/synctv-org/vendors/api/alist"
 	alistService "github.com/synctv-org/vendors/service/alist"
+	"google.golang.org/grpc"
 )
 
 type AlistInterface = alist.AlistHTTPServer
@@ -19,9 +18,7 @@ func LoadAlistClient(name string) AlistInterface {
 	return alistLocalClient
 }
 
-var (
-	alistLocalClient AlistInterface
-)
+var alistLocalClient AlistInterface
 
 func init() {
 	alistLocalClient = alistService.NewAlistService(nil)
@@ -59,7 +56,10 @@ func (a *grpcAlist) FsList(ctx context.Context, req *alist.FsListReq) (*alist.Fs
 	return a.client.FsList(ctx, req)
 }
 
-func (a *grpcAlist) FsOther(ctx context.Context, req *alist.FsOtherReq) (*alist.FsOtherResp, error) {
+func (a *grpcAlist) FsOther(
+	ctx context.Context,
+	req *alist.FsOtherReq,
+) (*alist.FsOtherResp, error) {
 	return a.client.FsOther(ctx, req)
 }
 
@@ -71,6 +71,9 @@ func (a *grpcAlist) Me(ctx context.Context, req *alist.MeReq) (*alist.MeResp, er
 	return a.client.Me(ctx, req)
 }
 
-func (a *grpcAlist) FsSearch(ctx context.Context, req *alist.FsSearchReq) (*alist.FsSearchResp, error) {
+func (a *grpcAlist) FsSearch(
+	ctx context.Context,
+	req *alist.FsSearchReq,
+) (*alist.FsSearchResp, error) {
 	return a.client.FsSearch(ctx, req)
 }

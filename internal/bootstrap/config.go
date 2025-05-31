@@ -8,18 +8,17 @@ import (
 
 	"github.com/caarlos0/env/v9"
 	log "github.com/sirupsen/logrus"
-
 	"github.com/synctv-org/synctv/cmd/flags"
 	"github.com/synctv-org/synctv/internal/conf"
 	"github.com/synctv-org/synctv/utils"
 )
 
-func InitDefaultConfig(ctx context.Context) error {
+func InitDefaultConfig(_ context.Context) error {
 	conf.Conf = conf.DefaultConfig()
 	return nil
 }
 
-func InitConfig(ctx context.Context) (err error) {
+func InitConfig(_ context.Context) (err error) {
 	if flags.Server.SkipConfig && flags.Server.SkipEnvConfig {
 		log.Fatal("skip config and skip env at the same time")
 		return errors.New("skip config and skip env at the same time")

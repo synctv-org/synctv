@@ -25,7 +25,7 @@ var RootCmd = &cobra.Command{
 	Use:   "synctv",
 	Short: "synctv",
 	Long:  `synctv https://github.com/synctv-org/synctv`,
-	PersistentPreRun: func(cmd *cobra.Command, args []string) {
+	PersistentPreRun: func(_ *cobra.Command, _ []string) {
 		prefix := flags.EnvPrefix
 		if !flags.SkipEnvFlag {
 			s, ok := os.LookupEnv("ENV_NO_PREFIX")
@@ -94,17 +94,22 @@ func Execute() {
 }
 
 func init() {
-	RootCmd.PersistentFlags().BoolVar(&flags.Global.Dev, "dev", version.Version == "dev", "start with dev mode")
+	RootCmd.PersistentFlags().
+		BoolVar(&flags.Global.Dev, "dev", version.Version == "dev", "start with dev mode")
 	RootCmd.PersistentFlags().BoolVar(&flags.Global.LogStd, "log-std", true, "log to std")
-	RootCmd.PersistentFlags().BoolVar(&flags.EnvNoPrefix, "env-no-prefix", false, "env no SYNCTV_ prefix")
+	RootCmd.PersistentFlags().
+		BoolVar(&flags.EnvNoPrefix, "env-no-prefix", false, "env no SYNCTV_ prefix")
 	RootCmd.PersistentFlags().BoolVar(&flags.SkipEnvFlag, "skip-env-flag", true, "skip env flag")
-	RootCmd.PersistentFlags().StringVar(&flags.Global.GitHubBaseURL, "github-base-url", "https://api.github.com/", "github api base url")
+	RootCmd.PersistentFlags().
+		StringVar(&flags.Global.GitHubBaseURL, "github-base-url", "https://api.github.com/", "github api base url")
 	home, err := homedir.Dir()
 	if err != nil {
 		home = "~"
 	}
-	RootCmd.PersistentFlags().StringVar(&flags.Global.DataDir, "data-dir", filepath.Join(home, ".synctv"), "data dir")
-	RootCmd.PersistentFlags().BoolVar(&flags.Global.ForceAutoMigrate, "force-auto-migrate", version.Version == "dev", "force auto migrate")
+	RootCmd.PersistentFlags().
+		StringVar(&flags.Global.DataDir, "data-dir", filepath.Join(home, ".synctv"), "data dir")
+	RootCmd.PersistentFlags().
+		BoolVar(&flags.Global.ForceAutoMigrate, "force-auto-migrate", version.Version == "dev", "force auto migrate")
 }
 
 func init() {

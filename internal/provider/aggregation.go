@@ -1,12 +1,15 @@
 package provider
 
 type AggregationProviderInterface interface {
-	ExtractProvider(OAuth2Provider) (Interface, error)
+	ExtractProvider(provider OAuth2Provider) (Interface, error)
 	Provider() OAuth2Provider
 	Providers() []OAuth2Provider
 }
 
-func ExtractProviders(p AggregationProviderInterface, providers ...OAuth2Provider) ([]Interface, error) {
+func ExtractProviders(
+	p AggregationProviderInterface,
+	providers ...OAuth2Provider,
+) ([]Interface, error) {
 	if len(providers) == 0 {
 		providers = p.Providers()
 	}

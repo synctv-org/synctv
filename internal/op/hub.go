@@ -76,7 +76,7 @@ func (h *Hub) serve() {
 		select {
 		case message := <-h.broadcast:
 			h.devMessage(message.data)
-			h.clients.Range(func(id string, clients *clients) bool {
+			h.clients.Range(func(_ string, clients *clients) bool {
 				clients.lock.RLock()
 				defer clients.lock.RUnlock()
 				for _, c := range clients.m {
@@ -137,6 +137,7 @@ func (h *Hub) devMessage(msg Message) {
 	switch msg.MessageType() {
 	case websocket.BinaryMessage:
 		log.Debugf("hub: %s, broadcast:\nmessage: %+v", h.id, msg.String())
+	default:
 	}
 }
 

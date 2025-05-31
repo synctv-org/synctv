@@ -22,8 +22,8 @@ var ServerCmd = &cobra.Command{
 	Use:   "server",
 	Short: "Start synctv-server",
 	Long:  `Start synctv-server`,
-	PreRunE: func(cmd *cobra.Command, args []string) error {
-		boot := bootstrap.New(bootstrap.WithContext(cmd.Context())).Add(
+	PreRunE: func(cmd *cobra.Command, _ []string) error {
+		boot := bootstrap.New().Add(
 			bootstrap.InitSysNotify,
 			bootstrap.InitConfig,
 			bootstrap.InitGinMode,
@@ -38,13 +38,16 @@ var ServerCmd = &cobra.Command{
 		if !flags.Server.DisableUpdateCheck {
 			boot.Add(bootstrap.InitCheckUpdate)
 		}
-		return boot.Run()
+		return boot.Run(cmd.Context())
 	},
 	Run: Server,
 }
 
-func setupAddresses() (tcpHTTPAddr *net.TCPAddr, tcpRTMPAddr *net.TCPAddr, err error) {
-	tcpHTTPAddr, err = net.ResolveTCPAddr("tcp", fmt.Sprintf("%s:%d", conf.Conf.Server.HTTP.Listen, conf.Conf.Server.HTTP.Port))
+func setupAddresses() (tcpHTTPAddr, tcpRTMPAddr *net.TCPAddr, err error) {
+	tcpHTTPAddr, err = net.ResolveTCPAddr(
+		"tcp",
+		fmt.Sprintf("%s:%d", conf.Conf.Server.HTTP.Listen, conf.Conf.Server.HTTP.Port),
+	)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -57,7 +60,10 @@ func setupAddresses() (tcpHTTPAddr *net.TCPAddr, tcpRTMPAddr *net.TCPAddr, err e
 		conf.Conf.Server.RTMP.Port = conf.Conf.Server.HTTP.Port
 	}
 
-	tcpRTMPAddr, err = net.ResolveTCPAddr("tcp", fmt.Sprintf("%s:%d", conf.Conf.Server.RTMP.Listen, conf.Conf.Server.RTMP.Port))
+	tcpRTMPAddr, err = net.ResolveTCPAddr(
+		"tcp",
+		fmt.Sprintf("%s:%d", conf.Conf.Server.RTMP.Listen, conf.Conf.Server.RTMP.Port),
+	)
 	return
 }
 
@@ -66,7 +72,11 @@ func startHTTPServer(e *gin.Engine, listener net.Listener) {
 	case conf.Conf.Server.HTTP.CertPath != "" && conf.Conf.Server.HTTP.KeyPath != "":
 		go func() {
 			srv := http.Server{Handler: e.Handler(), ReadHeaderTimeout: 3 * time.Second}
-			err := srv.ServeTLS(listener, conf.Conf.Server.HTTP.CertPath, conf.Conf.Server.HTTP.KeyPath)
+			err := srv.ServeTLS(
+				listener,
+				conf.Conf.Server.HTTP.CertPath,
+				conf.Conf.Server.HTTP.KeyPath,
+			)
 			if err != nil {
 				log.Panicf("http server error: %v", err)
 			}
@@ -84,7 +94,7 @@ func startHTTPServer(e *gin.Engine, listener net.Listener) {
 	}
 }
 
-func Server(cmd *cobra.Command, args []string) {
+func Server(_ *cobra.Command, _ []string) {
 	tcpHTTPAddr, tcpRTMPAddr, err := setupAddresses()
 	if err != nil {
 		log.Panic(err)
@@ -161,10 +171,16 @@ func Server(cmd *cobra.Command, args []string) {
 
 func init() {
 	RootCmd.AddCommand(ServerCmd)
-	ServerCmd.PersistentFlags().BoolVar(&flags.Server.DisableUpdateCheck, "disable-update-check", false, "disable update check")
-	ServerCmd.PersistentFlags().BoolVar(&flags.Server.DisableWeb, "disable-web", false, "disable web")
-	ServerCmd.PersistentFlags().BoolVar(&flags.Server.DisableLogColor, "disable-log-color", false, "disable log color")
-	ServerCmd.PersistentFlags().StringVar(&flags.Server.WebPath, "web-path", "", "if not set, use embed web")
-	ServerCmd.PersistentFlags().BoolVar(&flags.Server.SkipConfig, "skip-config", false, "skip config")
-	ServerCmd.PersistentFlags().BoolVar(&flags.Server.SkipEnvConfig, "skip-env-config", false, "skip env config")
+	ServerCmd.PersistentFlags().
+		BoolVar(&flags.Server.DisableUpdateCheck, "disable-update-check", false, "disable update check")
+	ServerCmd.PersistentFlags().
+		BoolVar(&flags.Server.DisableWeb, "disable-web", false, "disable web")
+	ServerCmd.PersistentFlags().
+		BoolVar(&flags.Server.DisableLogColor, "disable-log-color", false, "disable log color")
+	ServerCmd.PersistentFlags().
+		StringVar(&flags.Server.WebPath, "web-path", "", "if not set, use embed web")
+	ServerCmd.PersistentFlags().
+		BoolVar(&flags.Server.SkipConfig, "skip-config", false, "skip config")
+	ServerCmd.PersistentFlags().
+		BoolVar(&flags.Server.SkipEnvConfig, "skip-env-config", false, "skip env config")
 }

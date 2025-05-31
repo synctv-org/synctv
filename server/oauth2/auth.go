@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/internal/bootstrap"
 	"github.com/synctv-org/synctv/internal/db"
 	dbModel "github.com/synctv-org/synctv/internal/model"
@@ -23,7 +22,7 @@ import (
 // GET
 // /oauth2/login/:type
 func OAuth2(ctx *gin.Context) {
-	log := ctx.MustGet("log").(*logrus.Entry)
+	log := middlewares.GetLogger(ctx)
 
 	pi, err := providers.GetProvider(ctx.Param("type"))
 	if err != nil {
@@ -49,7 +48,7 @@ func OAuth2(ctx *gin.Context) {
 
 // POST
 func OAuth2Api(ctx *gin.Context) {
-	log := ctx.MustGet("log").(*logrus.Entry)
+	log := middlewares.GetLogger(ctx)
 
 	pi, err := providers.GetProvider(ctx.Param("type"))
 	if err != nil {
@@ -80,12 +79,15 @@ func OAuth2Api(ctx *gin.Context) {
 // GET
 // /oauth2/callback/:type
 func OAuth2Callback(ctx *gin.Context) {
-	log := ctx.MustGet("log").(*logrus.Entry)
+	log := middlewares.GetLogger(ctx)
 
 	code := ctx.Query("code")
 	if code == "" {
 		log.Errorf("invalid oauth2 code")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("invalid oauth2 code"))
+		ctx.AbortWithStatusJSON(
+			http.StatusBadRequest,
+			model.NewAPIErrorStringResp("invalid oauth2 code"),
+		)
 		return
 	}
 
@@ -99,7 +101,10 @@ func OAuth2Callback(ctx *gin.Context) {
 	meta, loaded := states.LoadAndDelete(ctx.Query("state"))
 	if !loaded {
 		log.Errorf("invalid oauth2 state")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("invalid oauth2 state"))
+		ctx.AbortWithStatusJSON(
+			http.StatusBadRequest,
+			model.NewAPIErrorStringResp("invalid oauth2 state"),
+		)
 		return
 	}
 
@@ -114,7 +119,7 @@ func OAuth2Callback(ctx *gin.Context) {
 // POST
 // /oauth2/callback/:type
 func OAuth2CallbackAPI(ctx *gin.Context) {
-	log := ctx.MustGet("log").(*logrus.Entry)
+	log := middlewares.GetLogger(ctx)
 
 	req := model.OAuth2CallbackReq{}
 	if err := req.Decode(ctx); err != nil {
@@ -132,7 +137,10 @@ func OAuth2CallbackAPI(ctx *gin.Context) {
 	meta, loaded := states.LoadAndDelete(req.State)
 	if !loaded {
 		log.Errorf("invalid oauth2 state")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("invalid oauth2 state"))
+		ctx.AbortWithStatusJSON(
+			http.StatusBadRequest,
+			model.NewAPIErrorStringResp("invalid oauth2 state"),
+		)
 		return
 	}
 
@@ -146,7 +154,7 @@ func OAuth2CallbackAPI(ctx *gin.Context) {
 
 func newAuthFunc(redirect string) stateHandler {
 	return func(ctx *gin.Context, pi provider.Interface, code string) {
-		log := ctx.MustGet("log").(*logrus.Entry)
+		log := middlewares.GetLogger(ctx)
 
 		ctx.Header("X-OAuth2-Type", CallbackTypeAuth)
 
@@ -159,19 +167,28 @@ func newAuthFunc(redirect string) stateHandler {
 
 		if ui.ProviderUserID == "" {
 			log.Errorf("invalid oauth2 provider user id")
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("invalid oauth2 provider user id"))
+			ctx.AbortWithStatusJSON(
+				http.StatusBadRequest,
+				model.NewAPIErrorStringResp("invalid oauth2 provider user id"),
+			)
 			return
 		}
 		if ui.Username == "" {
 			log.Errorf("invalid oauth2 username")
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("invalid oauth2 username"))
+			ctx.AbortWithStatusJSON(
+				http.StatusBadRequest,
+				model.NewAPIErrorStringResp("invalid oauth2 username"),
+			)
 			return
 		}
 
 		pgs, loaded := bootstrap.ProviderGroupSettings[fmt.Sprintf("%s_%s", dbModel.SettingGroupOauth2, pi.Provider())]
 		if !loaded {
 			log.Errorf("invalid oauth2 provider")
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("invalid oauth2 provider"))
+			ctx.AbortWithStatusJSON(
+				http.StatusBadRequest,
+				model.NewAPIErrorStringResp("invalid oauth2 provider"),
+			)
 			return
 		}
 

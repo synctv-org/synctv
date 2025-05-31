@@ -5,11 +5,11 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/internal/captcha"
 	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/email"
@@ -22,12 +22,11 @@ import (
 	"github.com/synctv-org/synctv/server/model"
 	"github.com/synctv-org/synctv/utils"
 	"github.com/zijiren233/gencontainer/synccache"
-	"golang.org/x/exp/slices"
 	"gorm.io/gorm"
 )
 
 func Me(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.UserEntry).Value()
+	user := middlewares.GetUserEntry(ctx).Value()
 
 	ctx.JSON(http.StatusOK, model.NewAPIDataResp(&model.UserInfoResp{
 		ID:        user.ID,
@@ -39,7 +38,7 @@ func Me(ctx *gin.Context) {
 }
 
 func LoginUser(ctx *gin.Context) {
-	log := ctx.MustGet("log").(*logrus.Entry)
+	log := middlewares.GetLogger(ctx)
 
 	req := model.LoginUserReq{}
 	if err := model.Decode(ctx, &req); err != nil {
@@ -50,12 +49,16 @@ func LoginUser(ctx *gin.Context) {
 
 	var user *synccache.Entry[*op.User]
 	var err error
-	if req.Username != "" {
+	switch {
+	case req.Username != "":
 		user, err = op.LoadOrInitUserByUsername(req.Username)
-	} else if req.Email != "" {
+	case req.Email != "":
 		user, err = op.LoadOrInitUserByEmail(req.Email)
-	} else {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("username or email is required"))
+	default:
+		ctx.AbortWithStatusJSON(
+			http.StatusBadRequest,
+			model.NewAPIErrorStringResp("username or email is required"),
+		)
 		return
 	}
 
@@ -75,7 +78,10 @@ func LoginUser(ctx *gin.Context) {
 
 	if ok := user.Value().CheckPassword(req.Password); !ok {
 		log.Errorf("password incorrect")
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewAPIErrorStringResp("password incorrect"))
+		ctx.AbortWithStatusJSON(
+			http.StatusForbidden,
+			model.NewAPIErrorStringResp("password incorrect"),
+		)
 		return
 	}
 
@@ -83,7 +89,7 @@ func LoginUser(ctx *gin.Context) {
 }
 
 func handleUserToken(ctx *gin.Context, user *op.User) {
-	log := ctx.MustGet("log").(*logrus.Entry)
+	log := middlewares.GetLogger(ctx)
 
 	token, err := middlewares.NewAuthUserToken(user)
 	if err != nil {
@@ -107,8 +113,8 @@ func handleUserToken(ctx *gin.Context, user *op.User) {
 }
 
 func LogoutUser(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.UserEntry)
-	log := ctx.MustGet("log").(*logrus.Entry)
+	user := middlewares.GetUserEntry(ctx)
+	log := middlewares.GetLogger(ctx)
 
 	err := op.CompareAndDeleteUser(user)
 	if err != nil {
@@ -121,8 +127,8 @@ func LogoutUser(ctx *gin.Context) {
 }
 
 func UserRooms(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.UserEntry).Value()
-	log := ctx.MustGet("log").(*logrus.Entry)
+	user := middlewares.GetUserEntry(ctx).Value()
+	log := middlewares.GetLogger(ctx)
 
 	page, pageSize, err := utils.GetPageAndMax(ctx)
 	if err != nil {
@@ -185,7 +191,10 @@ func UserRooms(ctx *gin.Context) {
 		}
 	default:
 		log.Errorf("not support sort")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("not support sort"))
+		ctx.AbortWithStatusJSON(
+			http.StatusBadRequest,
+			model.NewAPIErrorStringResp("not support sort"),
+		)
 		return
 	}
 
@@ -203,8 +212,8 @@ func UserRooms(ctx *gin.Context) {
 }
 
 func UserJoinedRooms(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.UserEntry).Value()
-	log := ctx.MustGet("log").(*logrus.Entry)
+	user := middlewares.GetUserEntry(ctx).Value()
+	log := middlewares.GetLogger(ctx)
 
 	page, pageSize, err := utils.GetPageAndMax(ctx)
 	if err != nil {
@@ -216,7 +225,11 @@ func UserJoinedRooms(ctx *gin.Context) {
 	scopes := []func(db *gorm.DB) *gorm.DB{
 		func(db *gorm.DB) *gorm.DB {
 			return db.
-				InnerJoins("JOIN room_members ON rooms.id = room_members.room_id AND room_members.user_id = ? AND rooms.creator_id != ?", user.ID, user.ID)
+				InnerJoins(
+					"JOIN room_members ON rooms.id = room_members.room_id AND room_members.user_id = ? AND rooms.creator_id != ?",
+					user.ID,
+					user.ID,
+				)
 		},
 		func(db *gorm.DB) *gorm.DB {
 			return db.Preload("RoomMembers", func(db *gorm.DB) *gorm.DB {
@@ -259,7 +272,10 @@ func UserJoinedRooms(ctx *gin.Context) {
 		}
 	default:
 		log.Errorf("not support sort")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("not support sort"))
+		ctx.AbortWithStatusJSON(
+			http.StatusBadRequest,
+			model.NewAPIErrorStringResp("not support sort"),
+		)
 		return
 	}
 
@@ -277,8 +293,8 @@ func UserJoinedRooms(ctx *gin.Context) {
 }
 
 func UserCheckJoinedRoom(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.UserEntry).Value()
-	log := ctx.MustGet("log").(*logrus.Entry)
+	user := middlewares.GetUserEntry(ctx).Value()
+	log := middlewares.GetLogger(ctx)
 
 	id, err := middlewares.GetRoomIDFromContext(ctx)
 	if err != nil {
@@ -318,8 +334,8 @@ func UserCheckJoinedRoom(ctx *gin.Context) {
 }
 
 func SetUsername(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.UserEntry).Value()
-	log := ctx.MustGet("log").(*logrus.Entry)
+	user := middlewares.GetUserEntry(ctx).Value()
+	log := middlewares.GetLogger(ctx)
 
 	var req model.SetUsernameReq
 	if err := model.Decode(ctx, &req); err != nil {
@@ -339,8 +355,8 @@ func SetUsername(ctx *gin.Context) {
 }
 
 func SetUserPassword(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.UserEntry).Value()
-	log := ctx.MustGet("log").(*logrus.Entry)
+	user := middlewares.GetUserEntry(ctx).Value()
+	log := middlewares.GetLogger(ctx)
 
 	var req model.SetUserPasswordReq
 	if err := model.Decode(ctx, &req); err != nil {
@@ -360,8 +376,8 @@ func SetUserPassword(ctx *gin.Context) {
 }
 
 func UserBindProviders(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.UserEntry).Value()
-	log := ctx.MustGet("log").(*logrus.Entry)
+	user := middlewares.GetUserEntry(ctx).Value()
+	log := middlewares.GetLogger(ctx)
 
 	up, err := db.GetBindProviders(user.ID)
 	if err != nil {
@@ -386,7 +402,7 @@ func UserBindProviders(ctx *gin.Context) {
 		}
 	}
 
-	m.Range(func(p provider.OAuth2Provider, pi struct{}) bool {
+	m.Range(func(p provider.OAuth2Provider, _ struct{}) bool {
 		if _, ok := resp[p]; !ok {
 			resp[p] = struct {
 				ProviderUserID string `json:"providerUserId"`
@@ -403,8 +419,8 @@ func UserBindProviders(ctx *gin.Context) {
 }
 
 func GetUserBindEmailStep1Captcha(ctx *gin.Context) {
-	// user := ctx.MustGet("user").(*op.UserEntry).Value()
-	log := ctx.MustGet("log").(*logrus.Entry)
+	// user := middlewares.GetUserEntry(ctx).Value()
+	log := middlewares.GetLogger(ctx)
 
 	id, data, _, err := captcha.Captcha.Generate()
 	if err != nil {
@@ -420,8 +436,8 @@ func GetUserBindEmailStep1Captcha(ctx *gin.Context) {
 }
 
 func SendUserBindEmailCaptcha(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.UserEntry).Value()
-	log := ctx.MustGet("log").(*logrus.Entry)
+	user := middlewares.GetUserEntry(ctx).Value()
+	log := middlewares.GetLogger(ctx)
 
 	req := model.UserSendBindEmailCaptchaReq{}
 	if err := model.Decode(ctx, &req); err != nil {
@@ -436,19 +452,28 @@ func SendUserBindEmailCaptcha(ctx *gin.Context) {
 		true,
 	) {
 		log.Errorf("captcha verify failed")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("captcha verify failed"))
+		ctx.AbortWithStatusJSON(
+			http.StatusBadRequest,
+			model.NewAPIErrorStringResp("captcha verify failed"),
+		)
 		return
 	}
 
 	if user.Email.String() == req.Email {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("this email same as current email"))
+		ctx.AbortWithStatusJSON(
+			http.StatusBadRequest,
+			model.NewAPIErrorStringResp("this email same as current email"),
+		)
 		return
 	}
 
 	_, err := op.LoadOrInitUserByEmail(req.Email)
 	if err == nil {
 		log.Errorf("email already bind")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("email already bind"))
+		ctx.AbortWithStatusJSON(
+			http.StatusBadRequest,
+			model.NewAPIErrorStringResp("email already bind"),
+		)
 		return
 	}
 
@@ -462,8 +487,8 @@ func SendUserBindEmailCaptcha(ctx *gin.Context) {
 }
 
 func UserBindEmail(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.UserEntry).Value()
-	log := ctx.MustGet("log").(*logrus.Entry)
+	user := middlewares.GetUserEntry(ctx).Value()
+	log := middlewares.GetLogger(ctx)
 
 	req := model.UserBindEmailReq{}
 	if err := model.Decode(ctx, &req); err != nil {
@@ -474,7 +499,10 @@ func UserBindEmail(ctx *gin.Context) {
 
 	if ok, err := user.VerifyBindCaptchaEmail(req.Email, req.Captcha); err != nil || !ok {
 		log.Errorf("email captcha verify failed")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("email captcha verify failed"))
+		ctx.AbortWithStatusJSON(
+			http.StatusBadRequest,
+			model.NewAPIErrorStringResp("email captcha verify failed"),
+		)
 		return
 	}
 
@@ -489,8 +517,8 @@ func UserBindEmail(ctx *gin.Context) {
 }
 
 func UserUnbindEmail(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.UserEntry).Value()
-	log := ctx.MustGet("log").(*logrus.Entry)
+	user := middlewares.GetUserEntry(ctx).Value()
+	log := middlewares.GetLogger(ctx)
 
 	err := user.UnbindEmail()
 	if err != nil {
@@ -503,7 +531,7 @@ func UserUnbindEmail(ctx *gin.Context) {
 }
 
 func GetUserSignupEmailStep1Captcha(ctx *gin.Context) {
-	log := ctx.MustGet("log").(*logrus.Entry)
+	log := middlewares.GetLogger(ctx)
 
 	id, data, _, err := captcha.Captcha.Generate()
 	if err != nil {
@@ -519,11 +547,14 @@ func GetUserSignupEmailStep1Captcha(ctx *gin.Context) {
 }
 
 func SendUserSignupEmailCaptcha(ctx *gin.Context) {
-	log := ctx.MustGet("log").(*logrus.Entry)
+	log := middlewares.GetLogger(ctx)
 
 	if settings.DisableUserSignup.Get() {
 		log.Errorf("user signup disabled")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("user signup disabled"))
+		ctx.AbortWithStatusJSON(
+			http.StatusBadRequest,
+			model.NewAPIErrorStringResp("user signup disabled"),
+		)
 		return
 	} else if email.DisableUserSignup.Get() {
 		log.Errorf("email signup disabled")
@@ -544,7 +575,10 @@ func SendUserSignupEmailCaptcha(ctx *gin.Context) {
 		true,
 	) {
 		log.Errorf("captcha verify failed")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("captcha verify failed"))
+		ctx.AbortWithStatusJSON(
+			http.StatusBadRequest,
+			model.NewAPIErrorStringResp("captcha verify failed"),
+		)
 		return
 	}
 
@@ -552,7 +586,10 @@ func SendUserSignupEmailCaptcha(ctx *gin.Context) {
 		_, after, found := strings.Cut(req.Email, "@")
 		if !found {
 			log.Errorf("email format error")
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("email format error"))
+			ctx.AbortWithStatusJSON(
+				http.StatusBadRequest,
+				model.NewAPIErrorStringResp("email format error"),
+			)
 			return
 		}
 		if !slices.Contains(
@@ -560,7 +597,10 @@ func SendUserSignupEmailCaptcha(ctx *gin.Context) {
 			after,
 		) {
 			log.Errorf("email(%s) sub(%s) not in white list", req.Email, after)
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("email not in white list"))
+			ctx.AbortWithStatusJSON(
+				http.StatusBadRequest,
+				model.NewAPIErrorStringResp("email not in white list"),
+			)
 			return
 		}
 	}
@@ -568,7 +608,10 @@ func SendUserSignupEmailCaptcha(ctx *gin.Context) {
 	_, err := op.LoadOrInitUserByEmail(req.Email)
 	if err == nil {
 		log.Errorf("email already exists")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("email already exists"))
+		ctx.AbortWithStatusJSON(
+			http.StatusBadRequest,
+			model.NewAPIErrorStringResp("email already exists"),
+		)
 		return
 	}
 
@@ -582,11 +625,14 @@ func SendUserSignupEmailCaptcha(ctx *gin.Context) {
 }
 
 func UserSignupEmail(ctx *gin.Context) {
-	log := ctx.MustGet("log").(*logrus.Entry)
+	log := middlewares.GetLogger(ctx)
 
 	if settings.DisableUserSignup.Get() {
 		log.Errorf("user signup disabled")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("user signup disabled"))
+		ctx.AbortWithStatusJSON(
+			http.StatusBadRequest,
+			model.NewAPIErrorStringResp("user signup disabled"),
+		)
 		return
 	} else if email.DisableUserSignup.Get() {
 		log.Errorf("email signup disabled")
@@ -609,13 +655,21 @@ func UserSignupEmail(ctx *gin.Context) {
 	}
 	if !ok {
 		log.Errorf("email captcha verify failed")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("email captcha verify failed"))
+		ctx.AbortWithStatusJSON(
+			http.StatusBadRequest,
+			model.NewAPIErrorStringResp("email captcha verify failed"),
+		)
 		return
 	}
 
 	var user *op.UserEntry
 	if settings.SignupNeedReview.Get() || email.SignupNeedReview.Get() {
-		user, err = op.CreateUserWithEmail(req.Email, req.Password, req.Email, db.WithRole(dbModel.RolePending))
+		user, err = op.CreateUserWithEmail(
+			req.Email,
+			req.Password,
+			req.Email,
+			db.WithRole(dbModel.RolePending),
+		)
 	} else {
 		user, err = op.CreateUserWithEmail(req.Email, req.Password, req.Email)
 	}
@@ -629,7 +683,7 @@ func UserSignupEmail(ctx *gin.Context) {
 }
 
 func GetUserRetrievePasswordEmailStep1Captcha(ctx *gin.Context) {
-	log := ctx.MustGet("log").(*logrus.Entry)
+	log := middlewares.GetLogger(ctx)
 
 	id, data, _, err := captcha.Captcha.Generate()
 	if err != nil {
@@ -645,7 +699,7 @@ func GetUserRetrievePasswordEmailStep1Captcha(ctx *gin.Context) {
 }
 
 func SendUserRetrievePasswordEmailCaptcha(ctx *gin.Context) {
-	log := ctx.MustGet("log").(*logrus.Entry)
+	log := middlewares.GetLogger(ctx)
 
 	req := model.SendUserRetrievePasswordEmailCaptchaReq{}
 	if err := model.Decode(ctx, &req); err != nil {
@@ -660,7 +714,10 @@ func SendUserRetrievePasswordEmailCaptcha(ctx *gin.Context) {
 		true,
 	) {
 		log.Errorf("captcha verify failed")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("captcha verify failed"))
+		ctx.AbortWithStatusJSON(
+			http.StatusBadRequest,
+			model.NewAPIErrorStringResp("captcha verify failed"),
+		)
 		return
 	}
 
@@ -681,7 +738,10 @@ func SendUserRetrievePasswordEmailCaptcha(ctx *gin.Context) {
 	}
 	if host == "" {
 		log.Error("failed to get host on send retrieve password email")
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorStringResp("failed to get host"))
+		ctx.AbortWithStatusJSON(
+			http.StatusInternalServerError,
+			model.NewAPIErrorStringResp("failed to get host"),
+		)
 		return
 	}
 
@@ -695,7 +755,7 @@ func SendUserRetrievePasswordEmailCaptcha(ctx *gin.Context) {
 }
 
 func UserRetrievePasswordEmail(ctx *gin.Context) {
-	log := ctx.MustGet("log").(*logrus.Entry)
+	log := middlewares.GetLogger(ctx)
 
 	req := model.UserRetrievePasswordEmailReq{}
 	if err := model.Decode(ctx, &req); err != nil {
@@ -712,9 +772,13 @@ func UserRetrievePasswordEmail(ctx *gin.Context) {
 	}
 	user := userE.Value()
 
-	if ok, err := user.VerifyRetrievePasswordCaptchaEmail(req.Email, req.Captcha); err != nil || !ok {
+	if ok, err := user.VerifyRetrievePasswordCaptchaEmail(req.Email, req.Captcha); err != nil ||
+		!ok {
 		log.Errorf("email captcha verify failed")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("email captcha verify failed"))
+		ctx.AbortWithStatusJSON(
+			http.StatusBadRequest,
+			model.NewAPIErrorStringResp("email captcha verify failed"),
+		)
 		return
 	}
 
@@ -729,8 +793,8 @@ func UserRetrievePasswordEmail(ctx *gin.Context) {
 }
 
 func UserDeleteRoom(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.UserEntry).Value()
-	log := ctx.MustGet("log").(*logrus.Entry)
+	user := middlewares.GetUserEntry(ctx).Value()
+	log := middlewares.GetLogger(ctx)
 
 	var req model.IDReq
 	if err := model.Decode(ctx, &req); err != nil {
@@ -765,11 +829,14 @@ func UserDeleteRoom(ctx *gin.Context) {
 }
 
 func UserSignupPassword(ctx *gin.Context) {
-	log := ctx.MustGet("log").(*logrus.Entry)
+	log := middlewares.GetLogger(ctx)
 
 	if settings.DisableUserSignup.Get() {
 		log.Errorf("user signup disabled")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("user signup disabled"))
+		ctx.AbortWithStatusJSON(
+			http.StatusBadRequest,
+			model.NewAPIErrorStringResp("user signup disabled"),
+		)
 		return
 	} else if !settings.EnablePasswordSignup.Get() {
 		log.Errorf("password signup disabled")
@@ -801,8 +868,8 @@ func UserSignupPassword(ctx *gin.Context) {
 }
 
 func UserExitRoom(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.UserEntry).Value()
-	log := ctx.MustGet("log").(*logrus.Entry)
+	user := middlewares.GetUserEntry(ctx).Value()
+	log := middlewares.GetLogger(ctx)
 
 	var req model.IDReq
 	if err := model.Decode(ctx, &req); err != nil {

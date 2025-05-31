@@ -46,14 +46,9 @@ func NewSliceCacheProxy(key string, sliceSize int64, r Proxy, cache Cache) *Slic
 	}
 }
 
-func cacheKey(key string, offset int64, sliceSize int64) string {
+func cacheKey(key string, offset, sliceSize int64) string {
 	hash := sha256.Sum256(stream.StringToBytes(key))
 	return fmt.Sprintf("%s-%d-%d", hex.EncodeToString(hash[:]), sliceSize, offset)
-}
-
-func cachePrefix(key string, sliceSize int64) string {
-	hash := sha256.Sum256(stream.StringToBytes(key))
-	return fmt.Sprintf("%s-%d", hex.EncodeToString(hash[:]), sliceSize)
 }
 
 func alignedOffset(offset, sliceSize int64) int64 {
@@ -113,7 +108,11 @@ func (c *SliceCacheProxy) Proxy(w http.ResponseWriter, r *http.Request) error {
 	alignedOffset := alignedOffset(byteRange.Start, c.sliceSize)
 	cacheItem, cached, err := c.getCacheItem(alignedOffset)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to get cache item: %v", err), http.StatusInternalServerError)
+		http.Error(
+			w,
+			fmt.Sprintf("Failed to get cache item: %v", err),
+			http.StatusInternalServerError,
+		)
 		return fmt.Errorf("failed to get cache item: %w", err)
 	}
 
@@ -126,7 +125,12 @@ func (c *SliceCacheProxy) Proxy(w http.ResponseWriter, r *http.Request) error {
 
 const cacheStatusHeader = "X-Cache-Status"
 
-func (c *SliceCacheProxy) setResponseHeaders(w http.ResponseWriter, byteRange *ByteRange, cacheItem *CacheItem, cached bool, isRangeRequest bool) {
+func (c *SliceCacheProxy) setResponseHeaders(
+	w http.ResponseWriter,
+	byteRange *ByteRange,
+	cacheItem *CacheItem,
+	cached, isRangeRequest bool,
+) {
 	// Copy headers excluding special ones
 	for k, v := range cacheItem.Metadata.Headers {
 		switch k {
@@ -143,23 +147,34 @@ func (c *SliceCacheProxy) setResponseHeaders(w http.ResponseWriter, byteRange *B
 		w.Header().Set(cacheStatusHeader, "MISS")
 	}
 	w.Header().Set("Accept-Ranges", "bytes")
-	w.Header().Set("Content-Length", fmtContentLength(byteRange.Start, byteRange.End, cacheItem.Metadata.ContentTotalLength))
+	w.Header().
+		Set("Content-Length", fmtContentLength(byteRange.Start, byteRange.End, cacheItem.Metadata.ContentTotalLength))
 	w.Header().Set("Content-Type", cacheItem.Metadata.ContentType)
 	if isRangeRequest {
-		w.Header().Set("Content-Range", fmtContentRange(byteRange.Start, byteRange.End, cacheItem.Metadata.ContentTotalLength))
+		w.Header().
+			Set("Content-Range", fmtContentRange(byteRange.Start, byteRange.End, cacheItem.Metadata.ContentTotalLength))
 		w.WriteHeader(http.StatusPartialContent)
 	} else {
 		w.WriteHeader(http.StatusOK)
 	}
 }
 
-func (c *SliceCacheProxy) writeResponse(w http.ResponseWriter, byteRange *ByteRange, alignedOffset int64, cacheItem *CacheItem) error {
+func (c *SliceCacheProxy) writeResponse(
+	w http.ResponseWriter,
+	byteRange *ByteRange,
+	alignedOffset int64,
+	cacheItem *CacheItem,
+) error {
 	sliceOffset := byteRange.Start - alignedOffset
 	if sliceOffset < 0 {
 		return fmt.Errorf("slice offset cannot be negative, got: %d", sliceOffset)
 	}
 
-	remainingLength := contentLength(byteRange.Start, byteRange.End, cacheItem.Metadata.ContentTotalLength)
+	remainingLength := contentLength(
+		byteRange.Start,
+		byteRange.End,
+		cacheItem.Metadata.ContentTotalLength,
+	)
 	if remainingLength == 0 {
 		return nil
 	}
@@ -204,7 +219,10 @@ func (c *SliceCacheProxy) writeResponse(w http.ResponseWriter, byteRange *ByteRa
 
 func (c *SliceCacheProxy) getCacheItem(alignedOffset int64) (*CacheItem, bool, error) {
 	if alignedOffset < 0 {
-		return nil, false, fmt.Errorf("cache item offset cannot be negative, got: %d", alignedOffset)
+		return nil, false, fmt.Errorf(
+			"cache item offset cannot be negative, got: %d",
+			alignedOffset,
+		)
 	}
 
 	cacheKey := cacheKey(c.key, alignedOffset, c.sliceSize)
@@ -259,14 +277,24 @@ func (c *SliceCacheProxy) fetchFromSource(offset int64) (*CacheItem, error) {
 	n, err := io.ReadFull(c.r, buf)
 	if err != nil {
 		if !errors.Is(err, io.ErrUnexpectedEOF) {
-			return nil, fmt.Errorf("failed to read %d bytes from source at offset %d: %w", c.sliceSize, offset, err)
+			return nil, fmt.Errorf(
+				"failed to read %d bytes from source at offset %d: %w",
+				c.sliceSize,
+				offset,
+				err,
+			)
 		}
 		total, err = c.contentTotalLength()
 		if err != nil {
 			return nil, fmt.Errorf("failed to get content total length from source: %w", err)
 		}
 		if total != offset+int64(n) {
-			return nil, fmt.Errorf("source content total length mismatch, got: %d, expected: %d, %w", total, offset+int64(n), io.ErrUnexpectedEOF)
+			return nil, fmt.Errorf(
+				"source content total length mismatch, got: %d, expected: %d, %w",
+				total,
+				offset+int64(n),
+				io.ErrUnexpectedEOF,
+			)
 		}
 	}
 
@@ -324,7 +352,10 @@ func ParseByteRange(r string) (*ByteRange, error) {
 	r = strings.TrimPrefix(r, "bytes=")
 	parts := strings.Split(r, "-")
 	if len(parts) != 2 {
-		return nil, fmt.Errorf("range header must contain exactly one hyphen (-) separator, got: %s", r)
+		return nil, fmt.Errorf(
+			"range header must contain exactly one hyphen (-) separator, got: %s",
+			r,
+		)
 	}
 
 	parts[0] = strings.TrimSpace(parts[0])
@@ -356,7 +387,11 @@ func ParseByteRange(r string) (*ByteRange, error) {
 			return nil, fmt.Errorf("range end value must be non-negative, got: %d", end)
 		}
 		if start > end {
-			return nil, fmt.Errorf("range start value (%d) cannot be greater than end value (%d)", start, end)
+			return nil, fmt.Errorf(
+				"range start value (%d) cannot be greater than end value (%d)",
+				start,
+				end,
+			)
 		}
 	}
 

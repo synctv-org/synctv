@@ -39,9 +39,12 @@ var dbVersions = map[string]dbVersion{
 		NextVersion: "0.0.3",
 		Upgrade: func(db *gorm.DB) error {
 			// alist and emby movies path are changed, so we need to delete them
-			_ = db.Exec("DELETE FROM movies WHERE base_vendor_info_vendor IN ('alist', 'emby')").Error
+			_ = db.Exec(
+				"DELETE FROM movies WHERE base_vendor_info_vendor IN ('alist', 'emby')",
+			).Error
 			_ = db.Migrator().DropTable("alist_vendors", "emby_vendors")
-			// delete all vendors, because we are going to change the more vendor table, e.g. bilibili_vendors
+			// delete all vendors, because we are going to change the more vendor table, e.g.
+			// bilibili_vendors
 			_ = db.Migrator().DropTable("streaming_vendor_infos")
 			return autoMigrate(
 				new(model.AlistVendor),

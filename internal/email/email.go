@@ -22,7 +22,9 @@ import (
 
 var (
 	ErrEmailNotEnabled                                      = errors.New("email is not enabled")
-	emailCaptcha       *synccache.SyncCache[string, string] = synccache.NewSyncCache[string, string](time.Minute * 5)
+	emailCaptcha       *synccache.SyncCache[string, string] = synccache.NewSyncCache[string, string](
+		time.Minute * 5,
+	)
 )
 
 var (
@@ -30,9 +32,9 @@ var (
 		"enable_email",
 		false,
 		model.SettingGroupEmail,
-		settings.WithAfterSetBool(func(bs settings.BoolSetting, b bool) {
+		settings.WithAfterSetBool(func(_ settings.BoolSetting, b bool) {
 			if !b {
-				closeSmtpPool()
+				closeSMTPPool()
 			}
 		}),
 	)
@@ -140,7 +142,7 @@ func SendBindCaptchaEmail(userID, userEmail string) error {
 		return errors.New("email is empty")
 	}
 
-	pool, err := getSmtpPool()
+	pool, err := getSMTPPool()
 	if err != nil {
 		return err
 	}
@@ -204,7 +206,7 @@ func SendTestEmail(username, email string) error {
 		return errors.New("email is empty")
 	}
 
-	pool, err := getSmtpPool()
+	pool, err := getSMTPPool()
 	if err != nil {
 		return err
 	}
@@ -234,7 +236,7 @@ func SendSignupCaptchaEmail(email string) error {
 		return errors.New("email is empty")
 	}
 
-	pool, err := getSmtpPool()
+	pool, err := getSMTPPool()
 	if err != nil {
 		return err
 	}
@@ -312,7 +314,7 @@ func SendRetrievePasswordCaptchaEmail(userID, email, host string) error {
 	}
 	u.Path = `web/auth/reset`
 
-	pool, err := getSmtpPool()
+	pool, err := getSMTPPool()
 	if err != nil {
 		return err
 	}

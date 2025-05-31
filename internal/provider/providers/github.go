@@ -34,7 +34,7 @@ func (p *GithubProvider) Provider() provider.OAuth2Provider {
 	return "github"
 }
 
-func (p *GithubProvider) NewAuthURL(ctx context.Context, state string) (string, error) {
+func (p *GithubProvider) NewAuthURL(_ context.Context, state string) (string, error) {
 	return p.config.AuthCodeURL(state, oauth2.AccessTypeOnline), nil
 }
 

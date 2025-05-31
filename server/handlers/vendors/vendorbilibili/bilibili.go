@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"strconv"
 	"time"
@@ -16,11 +17,11 @@ import (
 	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/internal/vendor"
 	"github.com/synctv-org/synctv/server/handlers/proxy"
+	"github.com/synctv-org/synctv/server/middlewares"
 	"github.com/synctv-org/synctv/server/model"
 	"github.com/synctv-org/synctv/utils"
 	"github.com/synctv-org/vendors/api/bilibili"
 	"github.com/zijiren233/stream"
-	"golang.org/x/exp/maps"
 )
 
 type BilibiliVendorService struct {
@@ -30,7 +31,7 @@ type BilibiliVendorService struct {
 
 func NewBilibiliVendorService(room *op.Room, movie *op.Movie) (*BilibiliVendorService, error) {
 	if movie.VendorInfo.Vendor != dbModel.VendorBilibili {
-		return nil, fmt.Errorf("bilibili vendor not support vendor %s", movie.MovieBase.VendorInfo.Vendor)
+		return nil, fmt.Errorf("bilibili vendor not support vendor %s", movie.VendorInfo.Vendor)
 	}
 	return &BilibiliVendorService{
 		room:  room,
@@ -42,14 +43,19 @@ func (s *BilibiliVendorService) Client() bilibili.BilibiliHTTPServer {
 	return vendor.LoadBilibiliClient(s.movie.VendorInfo.Backend)
 }
 
-func (s *BilibiliVendorService) ListDynamicMovie(ctx context.Context, reqUser *op.User, subPath string, keyword string, page, _max int) (*model.MovieList, error) {
+func (s *BilibiliVendorService) ListDynamicMovie(
+	_ context.Context,
+	_ *op.User,
+	_, _ string,
+	_, _ int,
+) (*model.MovieList, error) {
 	return nil, errors.New("bilibili vendor not support list dynamic movie")
 }
 
 func (s *BilibiliVendorService) ProxyMovie(ctx *gin.Context) {
-	log := ctx.MustGet("log").(*logrus.Entry)
+	log := middlewares.GetLogger(ctx)
 
-	if s.movie.MovieBase.Live {
+	if s.movie.Live {
 		s.handleLiveProxy(ctx, log)
 		return
 	}
@@ -84,20 +90,26 @@ func (s *BilibiliVendorService) handleLiveProxy(ctx *gin.Context, log *logrus.En
 	}
 	if len(data) == 0 {
 		log.Error("proxy vendor movie error: live data is empty")
-		ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewAPIErrorStringResp("live data is empty"))
+		ctx.AbortWithStatusJSON(
+			http.StatusNotFound,
+			model.NewAPIErrorStringResp("live data is empty"),
+		)
 		return
 	}
 	ctx.Data(http.StatusOK, "application/vnd.apple.mpegurl", data)
 }
 
 func (s *BilibiliVendorService) handleVideoProxy(ctx *gin.Context, log *logrus.Entry, t string) {
-	if !s.movie.Movie.MovieBase.Proxy {
+	if !s.movie.Proxy {
 		log.Errorf("proxy vendor movie error: %v", "proxy is not enabled")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("proxy is not enabled"))
+		ctx.AbortWithStatusJSON(
+			http.StatusBadRequest,
+			model.NewAPIErrorStringResp("proxy is not enabled"),
+		)
 		return
 	}
 
-	u, err := op.LoadOrInitUserByID(s.movie.Movie.CreatorID)
+	u, err := op.LoadOrInitUserByID(s.movie.CreatorID)
 	if err != nil {
 		log.Errorf("proxy vendor movie error: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
@@ -120,13 +132,18 @@ func (s *BilibiliVendorService) handleVideoProxy(ctx *gin.Context, log *logrus.E
 	s.handleStreamProxy(ctx, log, id, mpdC)
 }
 
-func (s *BilibiliVendorService) handleMpdProxy(ctx *gin.Context, log *logrus.Entry, t string, mpdC *cache.BilibiliMpdCache) {
+func (s *BilibiliVendorService) handleMpdProxy(
+	ctx *gin.Context,
+	log *logrus.Entry,
+	t string,
+	mpdC *cache.BilibiliMpdCache,
+) {
 	var mpd string
 	var err error
 	if t == "hevc" {
-		mpd, err = cache.BilibiliMpdToString(mpdC.HevcMpd, ctx.MustGet("token").(string))
+		mpd, err = cache.BilibiliMpdToString(mpdC.HevcMpd, middlewares.GetToken(ctx))
 	} else {
-		mpd, err = cache.BilibiliMpdToString(mpdC.Mpd, ctx.MustGet("token").(string))
+		mpd, err = cache.BilibiliMpdToString(mpdC.Mpd, middlewares.GetToken(ctx))
 	}
 	if err != nil {
 		log.Errorf("proxy vendor movie error: %v", err)
@@ -136,7 +153,12 @@ func (s *BilibiliVendorService) handleMpdProxy(ctx *gin.Context, log *logrus.Ent
 	ctx.Data(http.StatusOK, "application/dash+xml", stream.StringToBytes(mpd))
 }
 
-func (s *BilibiliVendorService) handleStreamProxy(ctx *gin.Context, log *logrus.Entry, id string, mpdC *cache.BilibiliMpdCache) {
+func (s *BilibiliVendorService) handleStreamProxy(
+	ctx *gin.Context,
+	log *logrus.Entry,
+	id string,
+	mpdC *cache.BilibiliMpdCache,
+) {
 	streamID, err := strconv.Atoi(id)
 	if err != nil {
 		log.Errorf("proxy vendor movie error: %v", err)
@@ -145,7 +167,10 @@ func (s *BilibiliVendorService) handleStreamProxy(ctx *gin.Context, log *logrus.
 	}
 	if streamID >= len(mpdC.URLs) {
 		log.Errorf("proxy vendor movie error: %v", "stream id out of range")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("stream id out of range"))
+		ctx.AbortWithStatusJSON(
+			http.StatusBadRequest,
+			model.NewAPIErrorStringResp("stream id out of range"),
+		)
 		return
 	}
 
@@ -161,7 +186,7 @@ func (s *BilibiliVendorService) handleStreamProxy(ctx *gin.Context, log *logrus.
 }
 
 func (s *BilibiliVendorService) getProxyHeaders() map[string]string {
-	headers := maps.Clone(s.movie.Movie.MovieBase.Headers)
+	headers := maps.Clone(s.movie.Headers)
 	if headers == nil {
 		headers = map[string]string{
 			"Referer":    "https://www.bilibili.com",
@@ -182,7 +207,7 @@ func (s *BilibiliVendorService) handleSubtitleProxy(ctx *gin.Context, log *logru
 		return
 	}
 
-	u, err := op.LoadOrInitUserByID(s.movie.Movie.CreatorID)
+	u, err := op.LoadOrInitUserByID(s.movie.CreatorID)
 	if err != nil {
 		log.Errorf("proxy vendor movie error: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
@@ -211,7 +236,11 @@ func (s *BilibiliVendorService) handleSubtitleProxy(ctx *gin.Context, log *logru
 	ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewAPIErrorStringResp("subtitle not found"))
 }
 
-func (s *BilibiliVendorService) GenMovieInfo(ctx context.Context, user *op.User, userAgent, userToken string) (*dbModel.Movie, error) {
+func (s *BilibiliVendorService) GenMovieInfo(
+	ctx context.Context,
+	user *op.User,
+	userAgent, userToken string,
+) (*dbModel.Movie, error) {
 	if s.movie.Proxy {
 		return s.GenProxyMovieInfo(ctx, user, userAgent, userToken)
 	}
@@ -223,49 +252,78 @@ func (s *BilibiliVendorService) GenMovieInfo(ctx context.Context, user *op.User,
 	}
 
 	bmc := s.movie.BilibiliCache()
-	if movie.MovieBase.Live {
-		movie.MovieBase.URL = fmt.Sprintf("/api/room/movie/proxy/%s?token=%s&roomId=%s", movie.ID, userToken, movie.RoomID)
-		movie.MovieBase.Type = "m3u8"
+	if movie.Live {
+		movie.URL = fmt.Sprintf(
+			"/api/room/movie/proxy/%s?token=%s&roomId=%s",
+			movie.ID,
+			userToken,
+			movie.RoomID,
+		)
+		movie.Type = "m3u8"
 
-		movie.MovieBase.StreamDanmu = fmt.Sprintf("/api/room/movie/danmu/%s?token=%s&roomId=%s", movie.ID, userToken, movie.RoomID)
+		movie.StreamDanmu = fmt.Sprintf(
+			"/api/room/movie/danmu/%s?token=%s&roomId=%s",
+			movie.ID,
+			userToken,
+			movie.RoomID,
+		)
 		return movie, nil
 	}
 
-	movie.Danmu = fmt.Sprintf("/api/room/movie/proxy/%s?token=%s&t=danmu&roomId=%s", movie.ID, userToken, movie.RoomID)
+	movie.Danmu = fmt.Sprintf(
+		"/api/room/movie/proxy/%s?token=%s&t=danmu&roomId=%s",
+		movie.ID,
+		userToken,
+		movie.RoomID,
+	)
 
 	var str string
-	if movie.MovieBase.VendorInfo.Bilibili.Shared {
+	if movie.VendorInfo.Bilibili.Shared {
 		var u *op.UserEntry
 		u, err = op.LoadOrInitUserByID(movie.CreatorID)
 		if err != nil {
 			return nil, err
 		}
-		str, err = s.movie.BilibiliCache().NoSharedMovie.LoadOrStore(ctx, movie.CreatorID, u.Value().BilibiliCache())
+		str, err = s.movie.BilibiliCache().NoSharedMovie.LoadOrStore(
+			ctx,
+			movie.CreatorID,
+			u.Value().BilibiliCache(),
+		)
 	} else {
 		str, err = s.movie.BilibiliCache().NoSharedMovie.LoadOrStore(ctx, user.ID, user.BilibiliCache())
 	}
 	if err != nil {
 		return nil, err
 	}
-	movie.MovieBase.URL = str
+	movie.URL = str
 
 	srt, err := bmc.Subtitle.Get(ctx, user.BilibiliCache())
 	if err != nil {
 		return nil, err
 	}
 	for k := range srt {
-		if movie.MovieBase.Subtitles == nil {
-			movie.MovieBase.Subtitles = make(map[string]*dbModel.Subtitle, len(srt))
+		if movie.Subtitles == nil {
+			movie.Subtitles = make(map[string]*dbModel.Subtitle, len(srt))
 		}
-		movie.MovieBase.Subtitles[k] = &dbModel.Subtitle{
-			URL:  fmt.Sprintf("/api/room/movie/proxy/%s?t=subtitle&n=%s&token=%s&roomId=%s", movie.ID, k, userToken, movie.RoomID),
+		movie.Subtitles[k] = &dbModel.Subtitle{
+			URL: fmt.Sprintf(
+				"/api/room/movie/proxy/%s?t=subtitle&n=%s&token=%s&roomId=%s",
+				movie.ID,
+				k,
+				userToken,
+				movie.RoomID,
+			),
 			Type: "srt",
 		}
 	}
 	return movie, nil
 }
 
-func (s *BilibiliVendorService) GenProxyMovieInfo(ctx context.Context, user *op.User, userAgent, userToken string) (*dbModel.Movie, error) {
+func (s *BilibiliVendorService) GenProxyMovieInfo(
+	ctx context.Context,
+	user *op.User,
+	_, userToken string,
+) (*dbModel.Movie, error) {
 	movie := s.movie.Clone()
 	var err error
 	if movie.IsFolder {
@@ -273,23 +331,48 @@ func (s *BilibiliVendorService) GenProxyMovieInfo(ctx context.Context, user *op.
 	}
 
 	bmc := s.movie.BilibiliCache()
-	if movie.MovieBase.Live {
-		movie.MovieBase.URL = fmt.Sprintf("/api/room/movie/proxy/%s?token=%s&roomId=%s", movie.ID, userToken, movie.RoomID)
-		movie.MovieBase.Type = "m3u8"
+	if movie.Live {
+		movie.URL = fmt.Sprintf(
+			"/api/room/movie/proxy/%s?token=%s&roomId=%s",
+			movie.ID,
+			userToken,
+			movie.RoomID,
+		)
+		movie.Type = "m3u8"
 
-		movie.MovieBase.StreamDanmu = fmt.Sprintf("/api/room/movie/danmu/%s?token=%s&roomId=%s", movie.ID, userToken, movie.RoomID)
+		movie.StreamDanmu = fmt.Sprintf(
+			"/api/room/movie/danmu/%s?token=%s&roomId=%s",
+			movie.ID,
+			userToken,
+			movie.RoomID,
+		)
 		return movie, nil
 	}
 
-	movie.Danmu = fmt.Sprintf("/api/room/movie/proxy/%s?token=%s&t=danmu&roomId=%s", movie.ID, userToken, movie.RoomID)
+	movie.Danmu = fmt.Sprintf(
+		"/api/room/movie/proxy/%s?token=%s&t=danmu&roomId=%s",
+		movie.ID,
+		userToken,
+		movie.RoomID,
+	)
 
-	movie.MovieBase.URL = fmt.Sprintf("/api/room/movie/proxy/%s?token=%s&roomId=%s", movie.ID, userToken, movie.RoomID)
-	movie.MovieBase.Type = "mpd"
-	movie.MovieBase.MoreSources = []*dbModel.MoreSource{
+	movie.URL = fmt.Sprintf(
+		"/api/room/movie/proxy/%s?token=%s&roomId=%s",
+		movie.ID,
+		userToken,
+		movie.RoomID,
+	)
+	movie.Type = "mpd"
+	movie.MoreSources = []*dbModel.MoreSource{
 		{
 			Name: "hevc",
 			Type: "mpd",
-			URL:  fmt.Sprintf("/api/room/movie/proxy/%s?token=%s&t=hevc&roomId=%s", movie.ID, userToken, movie.RoomID),
+			URL: fmt.Sprintf(
+				"/api/room/movie/proxy/%s?token=%s&t=hevc&roomId=%s",
+				movie.ID,
+				userToken,
+				movie.RoomID,
+			),
 		},
 	}
 	srt, err := bmc.Subtitle.Get(ctx, user.BilibiliCache())
@@ -297,11 +380,17 @@ func (s *BilibiliVendorService) GenProxyMovieInfo(ctx context.Context, user *op.
 		return nil, err
 	}
 	for k := range srt {
-		if movie.MovieBase.Subtitles == nil {
-			movie.MovieBase.Subtitles = make(map[string]*dbModel.Subtitle, len(srt))
+		if movie.Subtitles == nil {
+			movie.Subtitles = make(map[string]*dbModel.Subtitle, len(srt))
 		}
-		movie.MovieBase.Subtitles[k] = &dbModel.Subtitle{
-			URL:  fmt.Sprintf("/api/room/movie/proxy/%s?t=subtitle&n=%s&token=%s&roomId=%s", movie.ID, k, userToken, movie.RoomID),
+		movie.Subtitles[k] = &dbModel.Subtitle{
+			URL: fmt.Sprintf(
+				"/api/room/movie/proxy/%s?t=subtitle&n=%s&token=%s&roomId=%s",
+				movie.ID,
+				k,
+				userToken,
+				movie.RoomID,
+			),
 			Type: "srt",
 		}
 	}

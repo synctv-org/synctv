@@ -68,7 +68,7 @@ func newFSHandler(fileSys fs.FS) func(ctx *gin.Context) {
 
 func newStatCachedFSHandler(fileSys fs.FS) (func(ctx *gin.Context), error) {
 	cache := make(map[string]struct{})
-	err := fs.WalkDir(fileSys, ".", func(path string, d fs.DirEntry, err error) error {
+	err := fs.WalkDir(fileSys, ".", func(path string, _ fs.DirEntry, _ error) error {
 		cache[`/`+path] = struct{}{}
 		return nil
 	})

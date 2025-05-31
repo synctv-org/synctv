@@ -4,14 +4,14 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/internal/op"
+	"github.com/synctv-org/synctv/server/middlewares"
 	"github.com/synctv-org/synctv/server/model"
 )
 
 func RootAddAdmin(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.UserEntry).Value()
-	log := ctx.MustGet("log").(*logrus.Entry)
+	user := middlewares.GetUserEntry(ctx).Value()
+	log := middlewares.GetLogger(ctx)
 
 	req := model.IDReq{}
 	if err := model.Decode(ctx, &req); err != nil {
@@ -22,18 +22,27 @@ func RootAddAdmin(ctx *gin.Context) {
 
 	if req.ID == user.ID {
 		log.Errorf("cannot add yourself")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("cannot add yourself"))
+		ctx.AbortWithStatusJSON(
+			http.StatusBadRequest,
+			model.NewAPIErrorStringResp("cannot add yourself"),
+		)
 		return
 	}
 	u, err := op.LoadOrInitUserByID(req.ID)
 	if err != nil {
 		log.Errorf("failed to load user: %v", err)
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorStringResp("user not found"))
+		ctx.AbortWithStatusJSON(
+			http.StatusInternalServerError,
+			model.NewAPIErrorStringResp("user not found"),
+		)
 		return
 	}
 	if u.Value().IsAdmin() {
 		log.Errorf("user is already admin")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("user is already admin"))
+		ctx.AbortWithStatusJSON(
+			http.StatusBadRequest,
+			model.NewAPIErrorStringResp("user is already admin"),
+		)
 		return
 	}
 
@@ -47,8 +56,8 @@ func RootAddAdmin(ctx *gin.Context) {
 }
 
 func RootDeleteAdmin(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.UserEntry)
-	log := ctx.MustGet("log").(*logrus.Entry)
+	user := middlewares.GetUserEntry(ctx)
+	log := middlewares.GetLogger(ctx)
 
 	req := model.IDReq{}
 	if err := model.Decode(ctx, &req); err != nil {
@@ -59,18 +68,27 @@ func RootDeleteAdmin(ctx *gin.Context) {
 
 	if req.ID == user.Value().ID {
 		log.Errorf("cannot remove yourself")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("cannot remove yourself"))
+		ctx.AbortWithStatusJSON(
+			http.StatusBadRequest,
+			model.NewAPIErrorStringResp("cannot remove yourself"),
+		)
 		return
 	}
 	u, err := op.LoadOrInitUserByID(req.ID)
 	if err != nil {
 		log.Errorf("failed to load user: %v", err)
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorStringResp("user not found"))
+		ctx.AbortWithStatusJSON(
+			http.StatusInternalServerError,
+			model.NewAPIErrorStringResp("user not found"),
+		)
 		return
 	}
 	if u.Value().IsRoot() {
 		log.Errorf("cannot remove root")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("cannot remove root"))
+		ctx.AbortWithStatusJSON(
+			http.StatusBadRequest,
+			model.NewAPIErrorStringResp("cannot remove root"),
+		)
 		return
 	}
 

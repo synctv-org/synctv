@@ -38,7 +38,7 @@ func (p *BaiduNetDiskProvider) Provider() provider.OAuth2Provider {
 	return "baidu-netdisk"
 }
 
-func (p *BaiduNetDiskProvider) NewAuthURL(ctx context.Context, state string) (string, error) {
+func (p *BaiduNetDiskProvider) NewAuthURL(_ context.Context, state string) (string, error) {
 	return p.config.AuthCodeURL(state, oauth2.AccessTypeOnline), nil
 }
 
@@ -50,13 +50,21 @@ func (p *BaiduNetDiskProvider) RefreshToken(ctx context.Context, tk string) (*oa
 	return p.config.TokenSource(ctx, &oauth2.Token{RefreshToken: tk}).Token()
 }
 
-func (p *BaiduNetDiskProvider) GetUserInfo(ctx context.Context, code string) (*provider.UserInfo, error) {
+func (p *BaiduNetDiskProvider) GetUserInfo(
+	ctx context.Context,
+	code string,
+) (*provider.UserInfo, error) {
 	tk, err := p.GetToken(ctx, code)
 	if err != nil {
 		return nil, err
 	}
 	client := p.config.Client(ctx, tk)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://pan.baidu.com/rest/2.0/xpan/nas?method=uinfo&access_token="+tk.AccessToken, nil)
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodGet,
+		"https://pan.baidu.com/rest/2.0/xpan/nas?method=uinfo&access_token="+tk.AccessToken,
+		nil,
+	)
 	if err != nil {
 		return nil, err
 	}

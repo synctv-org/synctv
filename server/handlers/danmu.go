@@ -5,17 +5,16 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	log "github.com/sirupsen/logrus"
-	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/server/handlers/vendors"
+	"github.com/synctv-org/synctv/server/middlewares"
 	"github.com/synctv-org/synctv/server/model"
 )
 
 func StreamDanmu(ctx *gin.Context) {
-	log := ctx.MustGet("log").(*log.Entry)
+	log := middlewares.GetLogger(ctx)
 
-	room := ctx.MustGet("room").(*op.RoomEntry).Value()
-	// user := ctx.MustGet("user").(*op.UserEntry).Value()
+	room := middlewares.GetRoomEntry(ctx).Value()
+	// user := middlewares.GetUserEntry(ctx).Value()
 
 	m, err := room.GetMovieByID(ctx.Param("movieId"))
 	if err != nil {
@@ -34,7 +33,10 @@ func StreamDanmu(ctx *gin.Context) {
 	danmu, ok := v.(vendors.VendorDanmuService)
 	if !ok {
 		log.Errorf("vendor %s not support danmu", m.VendorInfo.Vendor)
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("vendor not support danmu"))
+		ctx.AbortWithStatusJSON(
+			http.StatusBadRequest,
+			model.NewAPIErrorStringResp("vendor not support danmu"),
+		)
 		return
 	}
 

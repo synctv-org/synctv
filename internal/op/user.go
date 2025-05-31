@@ -72,7 +72,10 @@ func (u *User) SetPassword(password string) error {
 	if u.CheckPassword(password) {
 		return errors.New("password is the same")
 	}
-	hashedPassword, err := bcrypt.GenerateFromPassword(stream.StringToBytes(password), bcrypt.DefaultCost)
+	hashedPassword, err := bcrypt.GenerateFromPassword(
+		stream.StringToBytes(password),
+		bcrypt.DefaultCost,
+	)
 	if err != nil {
 		return err
 	}
@@ -335,7 +338,7 @@ func (u *User) SetRoomSettings(room *Room, setting *model.RoomSettings) error {
 	return room.SetSettings(setting)
 }
 
-func (u *User) UpdateRoomSettings(room *Room, settings map[string]interface{}) error {
+func (u *User) UpdateRoomSettings(room *Room, settings map[string]any) error {
 	if !u.HasRoomAdminPermission(room, model.PermissionSetRoomSettings) {
 		return model.ErrNoPermission
 	}
@@ -347,7 +350,7 @@ func (u *User) DeleteRoomMovieByID(room *Room, movieID string) error {
 	if err != nil {
 		return err
 	}
-	if m.Movie.CreatorID != u.ID && !u.HasRoomPermission(room, model.PermissionDeleteMovie) {
+	if m.CreatorID != u.ID && !u.HasRoomPermission(room, model.PermissionDeleteMovie) {
 		return model.ErrNoPermission
 	}
 	return room.DeleteMovieByID(movieID)
@@ -359,7 +362,7 @@ func (u *User) DeleteRoomMoviesByID(room *Room, movieIDs []string) error {
 		if err != nil {
 			return err
 		}
-		if m.Movie.CreatorID != u.ID && !u.HasRoomPermission(room, model.PermissionDeleteMovie) {
+		if m.CreatorID != u.ID && !u.HasRoomPermission(room, model.PermissionDeleteMovie) {
 			return model.ErrNoPermission
 		}
 	}
@@ -426,7 +429,7 @@ func (u *User) SwapRoomMoviePositions(room *Room, id1, id2 string) error {
 	})
 }
 
-func (u *User) SetRoomCurrentMovie(room *Room, movieID string, subPath string, play bool) error {
+func (u *User) SetRoomCurrentMovie(room *Room, movieID, subPath string, play bool) error {
 	if !u.HasRoomPermission(room, model.PermissionSetCurrentMovie) {
 		return model.ErrNoPermission
 	}
@@ -502,14 +505,23 @@ func (u *User) VerifyRetrievePasswordCaptchaEmail(e, captcha string) (bool, erro
 	return email.VerifyRetrievePasswordCaptchaEmail(u.ID, e, captcha)
 }
 
-func (u *User) GetRoomMoviesWithPage(room *Room, keyword string, page, pageSize int, parentID string) ([]*model.Movie, int64, error) {
+func (u *User) GetRoomMoviesWithPage(
+	room *Room,
+	keyword string,
+	page, pageSize int,
+	parentID string,
+) ([]*model.Movie, int64, error) {
 	if !u.HasRoomPermission(room, model.PermissionGetMovieList) {
 		return nil, 0, model.ErrNoPermission
 	}
 	return room.GetMoviesWithPage(keyword, page, pageSize, parentID)
 }
 
-func (u *User) SetRoomCurrentStatus(room *Room, playing bool, seek, rate, timeDiff float64) (*model.Status, error) {
+func (u *User) SetRoomCurrentStatus(
+	room *Room,
+	playing bool,
+	seek, rate, timeDiff float64,
+) (*model.Status, error) {
 	if !u.HasRoomPermission(room, model.PermissionSetCurrentStatus) {
 		return nil, model.ErrNoPermission
 	}
@@ -546,7 +558,11 @@ func (u *User) DeleteRoomMember(room *Room, userID string) error {
 	return room.DeleteMember(userID)
 }
 
-func (u *User) SetMemberPermissions(room *Room, userID string, permissions model.RoomMemberPermission) error {
+func (u *User) SetMemberPermissions(
+	room *Room,
+	userID string,
+	permissions model.RoomMemberPermission,
+) error {
 	if !u.HasRoomAdminPermission(room, model.PermissionSetUserPermission) {
 		return model.ErrNoPermission
 	}
@@ -566,7 +582,11 @@ func (u *User) SetMemberPermissions(room *Room, userID string, permissions model
 	})
 }
 
-func (u *User) AddMemberPermissions(room *Room, userID string, permissions model.RoomMemberPermission) error {
+func (u *User) AddMemberPermissions(
+	room *Room,
+	userID string,
+	permissions model.RoomMemberPermission,
+) error {
 	if !u.HasRoomAdminPermission(room, model.PermissionSetUserPermission) {
 		return model.ErrNoPermission
 	}
@@ -586,7 +606,11 @@ func (u *User) AddMemberPermissions(room *Room, userID string, permissions model
 	})
 }
 
-func (u *User) RemoveMemberPermissions(room *Room, userID string, permissions model.RoomMemberPermission) error {
+func (u *User) RemoveMemberPermissions(
+	room *Room,
+	userID string,
+	permissions model.RoomMemberPermission,
+) error {
 	if !u.HasRoomAdminPermission(room, model.PermissionSetUserPermission) {
 		return model.ErrNoPermission
 	}
@@ -633,7 +657,11 @@ func (u *User) ApproveRoomPendingMember(room *Room, userID string) error {
 	return room.ApprovePendingMember(userID)
 }
 
-func (u *User) SetRoomAdmin(room *Room, userID string, permissions model.RoomAdminPermission) error {
+func (u *User) SetRoomAdmin(
+	room *Room,
+	userID string,
+	permissions model.RoomAdminPermission,
+) error {
 	if !u.IsRoomCreator(room) {
 		return model.ErrNoPermission
 	}
@@ -650,7 +678,11 @@ func (u *User) SetRoomAdmin(room *Room, userID string, permissions model.RoomAdm
 	})
 }
 
-func (u *User) SetRoomMember(room *Room, userID string, permissions model.RoomMemberPermission) error {
+func (u *User) SetRoomMember(
+	room *Room,
+	userID string,
+	permissions model.RoomMemberPermission,
+) error {
 	if !u.IsRoomCreator(room) {
 		return model.ErrNoPermission
 	}
@@ -667,7 +699,11 @@ func (u *User) SetRoomMember(room *Room, userID string, permissions model.RoomMe
 	})
 }
 
-func (u *User) SetRoomAdminPermissions(room *Room, userID string, permissions model.RoomAdminPermission) error {
+func (u *User) SetRoomAdminPermissions(
+	room *Room,
+	userID string,
+	permissions model.RoomAdminPermission,
+) error {
 	if !u.IsRoomCreator(room) {
 		return model.ErrNoPermission
 	}
@@ -684,7 +720,11 @@ func (u *User) SetRoomAdminPermissions(room *Room, userID string, permissions mo
 	})
 }
 
-func (u *User) AddRoomAdminPermissions(room *Room, userID string, permissions model.RoomAdminPermission) error {
+func (u *User) AddRoomAdminPermissions(
+	room *Room,
+	userID string,
+	permissions model.RoomAdminPermission,
+) error {
 	if !u.IsRoomCreator(room) {
 		return model.ErrNoPermission
 	}
@@ -701,7 +741,11 @@ func (u *User) AddRoomAdminPermissions(room *Room, userID string, permissions mo
 	})
 }
 
-func (u *User) RemoveRoomAdminPermissions(room *Room, userID string, permissions model.RoomAdminPermission) error {
+func (u *User) RemoveRoomAdminPermissions(
+	room *Room,
+	userID string,
+	permissions model.RoomAdminPermission,
+) error {
 	if !u.IsRoomCreator(room) {
 		return model.ErrNoPermission
 	}

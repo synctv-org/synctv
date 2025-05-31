@@ -42,7 +42,7 @@ func init() {
 
 type Backends struct {
 	conns   map[string]*BackendConn
-	clients *VendorClients
+	clients *Clients
 }
 
 var (
@@ -50,19 +50,15 @@ var (
 	lock     sync.Mutex
 )
 
-func LoadClients() *VendorClients {
+func LoadClients() *Clients {
 	return backends.Load().clients
 }
 
-func storeBackends(conns map[string]*BackendConn, clients *VendorClients) {
+func storeBackends(conns map[string]*BackendConn, clients *Clients) {
 	backends.Store(&Backends{
 		conns:   conns,
 		clients: clients,
 	})
-}
-
-func loadBackends() *Backends {
-	return backends.Load()
 }
 
 func LoadConns() map[string]*BackendConn {
@@ -86,7 +82,7 @@ func Init(ctx context.Context) error {
 	return nil
 }
 
-func EnableVendorBackend(ctx context.Context, endpoint string) (err error) {
+func EnableVendorBackend(_ context.Context, endpoint string) (err error) {
 	if !lock.TryLock() {
 		return errors.New("vendor backend is updating")
 	}
@@ -121,7 +117,7 @@ func EnableVendorBackend(ctx context.Context, endpoint string) (err error) {
 	return nil
 }
 
-func EnableVendorBackends(ctx context.Context, endpoints []string) (err error) {
+func EnableVendorBackends(_ context.Context, endpoints []string) (err error) {
 	if !lock.TryLock() {
 		return errors.New("vendor backend is updating")
 	}
@@ -164,7 +160,7 @@ func EnableVendorBackends(ctx context.Context, endpoints []string) (err error) {
 	return nil
 }
 
-func DisableVendorBackend(ctx context.Context, endpoint string) (err error) {
+func DisableVendorBackend(_ context.Context, endpoint string) (err error) {
 	if !lock.TryLock() {
 		return errors.New("vendor backend is updating")
 	}
@@ -199,7 +195,7 @@ func DisableVendorBackend(ctx context.Context, endpoint string) (err error) {
 	return nil
 }
 
-func DisableVendorBackends(ctx context.Context, endpoints []string) (err error) {
+func DisableVendorBackends(_ context.Context, endpoints []string) (err error) {
 	if !lock.TryLock() {
 		return errors.New("vendor backend is updating")
 	}
@@ -278,7 +274,7 @@ func AddVendorBackend(ctx context.Context, backend *model.VendorBackend) error {
 	return nil
 }
 
-func DeleteVendorBackend(ctx context.Context, endpoint string) error {
+func DeleteVendorBackend(_ context.Context, endpoint string) error {
 	if !lock.TryLock() {
 		return errors.New("vendor backend is updating")
 	}
@@ -309,7 +305,7 @@ func DeleteVendorBackend(ctx context.Context, endpoint string) error {
 	return nil
 }
 
-func DeleteVendorBackends(ctx context.Context, endpoints []string) error {
+func DeleteVendorBackends(_ context.Context, endpoints []string) error {
 	if !lock.TryLock() {
 		return errors.New("vendor backend is updating")
 	}
@@ -319,11 +315,11 @@ func DeleteVendorBackends(ctx context.Context, endpoints []string) error {
 
 	beforeConn := make([]*grpc.ClientConn, len(endpoints))
 	for i, endpoint := range endpoints {
-		if conn, ok := m[endpoint]; !ok {
+		conn, ok := m[endpoint]
+		if !ok {
 			return fmt.Errorf("endpoint not found: %s", endpoint)
-		} else {
-			beforeConn[i] = conn.Conn
 		}
+		beforeConn[i] = conn.Conn
 		delete(m, endpoint)
 	}
 
@@ -388,25 +384,28 @@ type BackendConn struct {
 	Info *model.VendorBackend
 }
 
-type VendorClients struct {
+type Clients struct {
 	bilibili map[string]BilibiliInterface
 	alist    map[string]AlistInterface
 	emby     map[string]EmbyInterface
 }
 
-func (b *VendorClients) BilibiliClients() map[string]BilibiliInterface {
+func (b *Clients) BilibiliClients() map[string]BilibiliInterface {
 	return b.bilibili
 }
 
-func (b *VendorClients) AlistClients() map[string]AlistInterface {
+func (b *Clients) AlistClients() map[string]AlistInterface {
 	return b.alist
 }
 
-func (b *VendorClients) EmbyClients() map[string]EmbyInterface {
+func (b *Clients) EmbyClients() map[string]EmbyInterface {
 	return b.emby
 }
 
-func newBackendConn(ctx context.Context, conf *model.VendorBackend) (conns *BackendConn, err error) {
+func newBackendConn(
+	ctx context.Context,
+	conf *model.VendorBackend,
+) (conns *BackendConn, err error) {
 	cc, err := NewGrpcConn(ctx, &conf.Backend)
 	if err != nil {
 		return conns, err
@@ -417,7 +416,10 @@ func newBackendConn(ctx context.Context, conf *model.VendorBackend) (conns *Back
 	}, nil
 }
 
-func newBackendConns(ctx context.Context, conf []*model.VendorBackend) (conns map[string]*BackendConn, err error) {
+func newBackendConns(
+	ctx context.Context,
+	conf []*model.VendorBackend,
+) (conns map[string]*BackendConn, err error) {
 	conns = make(map[string]*BackendConn, len(conf))
 	defer func() {
 		if err != nil {
@@ -441,8 +443,8 @@ func newBackendConns(ctx context.Context, conf []*model.VendorBackend) (conns ma
 	return conns, nil
 }
 
-func newVendorClients(conns map[string]*BackendConn) (*VendorClients, error) {
-	clients := &VendorClients{
+func newVendorClients(conns map[string]*BackendConn) (*Clients, error) {
+	clients := &Clients{
 		bilibili: make(map[string]BilibiliInterface),
 		alist:    make(map[string]AlistInterface),
 		emby:     make(map[string]EmbyInterface),
@@ -453,7 +455,10 @@ func newVendorClients(conns map[string]*BackendConn) (*VendorClients, error) {
 		}
 		if conn.Info.UsedBy.Bilibili {
 			if _, ok := clients.bilibili[conn.Info.UsedBy.BilibiliBackendName]; ok {
-				return nil, fmt.Errorf("duplicate bilibili backend name: %s", conn.Info.UsedBy.BilibiliBackendName)
+				return nil, fmt.Errorf(
+					"duplicate bilibili backend name: %s",
+					conn.Info.UsedBy.BilibiliBackendName,
+				)
 			}
 			cli, err := NewBilibiliGrpcClient(conn.Conn)
 			if err != nil {
@@ -463,7 +468,10 @@ func newVendorClients(conns map[string]*BackendConn) (*VendorClients, error) {
 		}
 		if conn.Info.UsedBy.Alist {
 			if _, ok := clients.alist[conn.Info.UsedBy.AlistBackendName]; ok {
-				return nil, fmt.Errorf("duplicate alist backend name: %s", conn.Info.UsedBy.AlistBackendName)
+				return nil, fmt.Errorf(
+					"duplicate alist backend name: %s",
+					conn.Info.UsedBy.AlistBackendName,
+				)
 			}
 			cli, err := NewAlistGrpcClient(conn.Conn)
 			if err != nil {
@@ -473,7 +481,10 @@ func newVendorClients(conns map[string]*BackendConn) (*VendorClients, error) {
 		}
 		if conn.Info.UsedBy.Emby {
 			if _, ok := clients.emby[conn.Info.UsedBy.EmbyBackendName]; ok {
-				return nil, fmt.Errorf("duplicate emby backend name: %s", conn.Info.UsedBy.EmbyBackendName)
+				return nil, fmt.Errorf(
+					"duplicate emby backend name: %s",
+					conn.Info.UsedBy.EmbyBackendName,
+				)
 			}
 			cli, err := NewEmbyGrpcClient(conn.Conn)
 			if err != nil {
@@ -501,16 +512,20 @@ func NewGrpcConn(ctx context.Context, conf *model.Backend) (*grpc.ClientConn, er
 			conf.Endpoint += ":80"
 		}
 	}
-	middlewares := []middleware.Middleware{kcircuitbreaker.Client(kcircuitbreaker.WithCircuitBreaker(func() circuitbreaker.CircuitBreaker {
-		return sre.NewBreaker(
-			sre.WithRequest(25),
-			sre.WithWindow(time.Second*15),
-		)
-	}))}
+	middlewares := []middleware.Middleware{
+		kcircuitbreaker.Client(
+			kcircuitbreaker.WithCircuitBreaker(func() circuitbreaker.CircuitBreaker {
+				return sre.NewBreaker(
+					sre.WithRequest(25),
+					sre.WithWindow(time.Second*15),
+				)
+			}),
+		),
+	}
 
 	if conf.JwtSecret != "" {
 		key := []byte(conf.JwtSecret)
-		middlewares = append(middlewares, jwt.Client(func(token *jwtv5.Token) (interface{}, error) {
+		middlewares = append(middlewares, jwt.Client(func(_ *jwtv5.Token) (any, error) {
 			return key, nil
 		}, jwt.WithSigningMethod(jwtv5.SigningMethodHS256)))
 	}
@@ -528,7 +543,8 @@ func NewGrpcConn(ctx context.Context, conf *model.Backend) (*grpc.ClientConn, er
 		opts = append(opts, ggrpc.WithTimeout(timeout))
 	}
 
-	if conf.Consul.ServiceName != "" {
+	switch {
+	case conf.Consul.ServiceName != "":
 		c := api.DefaultConfig()
 		c.Address = conf.Endpoint
 		c.Token = conf.Consul.Token
@@ -539,12 +555,12 @@ func NewGrpcConn(ctx context.Context, conf *model.Backend) (*grpc.ClientConn, er
 		if err != nil {
 			return nil, err
 		}
-		endpoint := fmt.Sprintf("discovery:///%s", conf.Consul.ServiceName)
+		endpoint := "discovery:///" + conf.Consul.ServiceName
 		dis := consul.New(client)
 		opts = append(opts, ggrpc.WithEndpoint(endpoint), ggrpc.WithDiscovery(dis))
 		log.Infof("new grpc client with consul: %s", conf.Endpoint)
-	} else if conf.Etcd.ServiceName != "" {
-		endpoint := fmt.Sprintf("discovery:///%s", conf.Etcd.ServiceName)
+	case conf.Etcd.ServiceName != "":
+		endpoint := "discovery:///" + conf.Etcd.ServiceName
 		cli, err := clientv3.New(clientv3.Config{
 			Endpoints: []string{conf.Endpoint},
 			Username:  conf.Etcd.Username,
@@ -556,7 +572,7 @@ func NewGrpcConn(ctx context.Context, conf *model.Backend) (*grpc.ClientConn, er
 		dis := etcd.New(cli)
 		opts = append(opts, ggrpc.WithEndpoint(endpoint), ggrpc.WithDiscovery(dis))
 		log.Infof("new grpc client with etcd: %v", conf.Endpoint)
-	} else {
+	default:
 		opts = append(opts, ggrpc.WithEndpoint(conf.Endpoint))
 		log.Infof("new grpc client with endpoint: %s", conf.Endpoint)
 	}
@@ -572,7 +588,8 @@ func NewGrpcConn(ctx context.Context, conf *model.Backend) (*grpc.ClientConn, er
 			rootCAs.AppendCertsFromPEM([]byte(conf.CustomCa))
 		}
 		opts = append(opts, ggrpc.WithTLSConfig(&tls.Config{
-			RootCAs: rootCAs,
+			RootCAs:    rootCAs,
+			MinVersion: tls.VersionTLS12,
 		}))
 
 		con, err = ggrpc.Dial(
@@ -591,7 +608,7 @@ func NewGrpcConn(ctx context.Context, conf *model.Backend) (*grpc.ClientConn, er
 	return con, nil
 }
 
-func NewHttpClientConn(ctx context.Context, conf *model.Backend) (*http.Client, error) {
+func NewHTTPClientConn(ctx context.Context, conf *model.Backend) (*http.Client, error) {
 	if err := conf.Validate(); err != nil {
 		return nil, err
 	}
@@ -606,16 +623,20 @@ func NewHttpClientConn(ctx context.Context, conf *model.Backend) (*http.Client, 
 			conf.Endpoint += ":80"
 		}
 	}
-	middlewares := []middleware.Middleware{kcircuitbreaker.Client(kcircuitbreaker.WithCircuitBreaker(func() circuitbreaker.CircuitBreaker {
-		return sre.NewBreaker(
-			sre.WithRequest(25),
-			sre.WithWindow(time.Second*15),
-		)
-	}))}
+	middlewares := []middleware.Middleware{
+		kcircuitbreaker.Client(
+			kcircuitbreaker.WithCircuitBreaker(func() circuitbreaker.CircuitBreaker {
+				return sre.NewBreaker(
+					sre.WithRequest(25),
+					sre.WithWindow(time.Second*15),
+				)
+			}),
+		),
+	}
 
 	if conf.JwtSecret != "" {
 		key := []byte(conf.JwtSecret)
-		middlewares = append(middlewares, jwt.Client(func(token *jwtv5.Token) (interface{}, error) {
+		middlewares = append(middlewares, jwt.Client(func(_ *jwtv5.Token) (any, error) {
 			return key, nil
 		}, jwt.WithSigningMethod(jwtv5.SigningMethodHS256)))
 	}
@@ -647,11 +668,13 @@ func NewHttpClientConn(ctx context.Context, conf *model.Backend) (*http.Client, 
 			rootCAs.AppendCertsFromPEM(b)
 		}
 		opts = append(opts, http.WithTLSConfig(&tls.Config{
-			RootCAs: rootCAs,
+			RootCAs:    rootCAs,
+			MinVersion: tls.VersionTLS12,
 		}))
 	}
 
-	if conf.Consul.ServiceName != "" {
+	switch {
+	case conf.Consul.ServiceName != "":
 		c := api.DefaultConfig()
 		c.Address = conf.Endpoint
 		c.Token = conf.Consul.Token
@@ -662,12 +685,12 @@ func NewHttpClientConn(ctx context.Context, conf *model.Backend) (*http.Client, 
 		if err != nil {
 			return nil, err
 		}
-		endpoint := fmt.Sprintf("discovery:///%s", conf.Consul.ServiceName)
+		endpoint := "discovery:///" + conf.Consul.ServiceName
 		dis := consul.New(client)
 		opts = append(opts, http.WithEndpoint(endpoint), http.WithDiscovery(dis))
 		log.Infof("new http client with consul: %s", conf.Endpoint)
-	} else if conf.Etcd.ServiceName != "" {
-		endpoint := fmt.Sprintf("discovery:///%s", conf.Etcd.ServiceName)
+	case conf.Etcd.ServiceName != "":
+		endpoint := "discovery:///" + conf.Etcd.ServiceName
 		cli, err := clientv3.New(clientv3.Config{
 			Endpoints: []string{conf.Endpoint},
 			Username:  conf.Etcd.Username,
@@ -679,7 +702,7 @@ func NewHttpClientConn(ctx context.Context, conf *model.Backend) (*http.Client, 
 		dis := etcd.New(cli)
 		opts = append(opts, http.WithEndpoint(endpoint), http.WithDiscovery(dis))
 		log.Infof("new http client with etcd: %v", conf.Endpoint)
-	} else {
+	default:
 		opts = append(opts, http.WithEndpoint(conf.Endpoint))
 		log.Infof("new http client with endpoint: %s", conf.Endpoint)
 	}

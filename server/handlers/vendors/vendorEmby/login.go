@@ -12,8 +12,8 @@ import (
 	"github.com/synctv-org/synctv/internal/cache"
 	"github.com/synctv-org/synctv/internal/db"
 	dbModel "github.com/synctv-org/synctv/internal/model"
-	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/internal/vendor"
+	"github.com/synctv-org/synctv/server/middlewares"
 	"github.com/synctv-org/synctv/server/model"
 	"github.com/synctv-org/vendors/api/emby"
 )
@@ -47,7 +47,7 @@ func (r *LoginReq) Decode(ctx *gin.Context) error {
 }
 
 func Login(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.UserEntry).Value()
+	user := middlewares.GetUserEntry(ctx).Value()
 
 	req := LoginReq{}
 	if err := model.Decode(ctx, &req); err != nil {
@@ -68,33 +68,37 @@ func Login(ctx *gin.Context) {
 		return
 	}
 
-	if data.ServerId == "" {
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorStringResp("serverID is empty"))
+	if data.GetServerId() == "" {
+		ctx.AbortWithStatusJSON(
+			http.StatusInternalServerError,
+			model.NewAPIErrorStringResp("serverID is empty"),
+		)
 		return
 	}
 
 	_, err = db.CreateOrSaveEmbyVendor(&dbModel.EmbyVendor{
 		UserID:     user.ID,
-		ServerID:   data.ServerId,
+		ServerID:   data.GetServerId(),
 		Host:       req.Host,
-		APIKey:     data.Token,
+		APIKey:     data.GetToken(),
 		Backend:    backend,
-		EmbyUserID: data.UserId,
+		EmbyUserID: data.GetUserId(),
 	})
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 		return
 	}
 
-	_, err = user.EmbyCache().StoreOrRefreshWithDynamicFunc(ctx, data.ServerId, func(ctx context.Context, key string) (*cache.EmbyUserCacheData, error) {
-		return &cache.EmbyUserCacheData{
-			Host:     req.Host,
-			ServerID: key,
-			APIKey:   data.Token,
-			Backend:  backend,
-			UserID:   data.UserId,
-		}, nil
-	})
+	_, err = user.EmbyCache().
+		StoreOrRefreshWithDynamicFunc(ctx, data.GetServerId(), func(_ context.Context, key string) (*cache.EmbyUserCacheData, error) {
+			return &cache.EmbyUserCacheData{
+				Host:     req.Host,
+				ServerID: key,
+				APIKey:   data.GetToken(),
+				Backend:  backend,
+				UserID:   data.GetUserId(),
+			}, nil
+		})
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 		return
@@ -104,7 +108,7 @@ func Login(ctx *gin.Context) {
 }
 
 func Logout(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.UserEntry).Value()
+	user := middlewares.GetUserEntry(ctx).Value()
 
 	var req model.ServerIDReq
 	if err := model.Decode(ctx, &req); err != nil {

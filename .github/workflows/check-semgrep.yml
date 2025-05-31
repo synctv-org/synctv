@@ -1,0 +1,33 @@
+name: Check-Semgrep
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  schedule:
+    - cron: 0 0 * * *
+  push:
+    branches:
+      - "**"
+    tags:
+      - "v*.*.*"
+    paths-ignore:
+      - "**/*.md"
+      - "**/*.yaml"
+  pull_request:
+    branches:
+      - "**"
+    paths-ignore:
+      - "**/*.md"
+      - "**/*.yaml"
+
+jobs:
+  semgrep:
+    name: Scan
+    runs-on: ubuntu-24.04
+    container:
+      image: semgrep/semgrep:latest
+    continue-on-error: true
+    if: (github.actor != 'dependabot[bot]')
+    steps:
+      - uses: actions/checkout@v4
+      - run: semgrep ci

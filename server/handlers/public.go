@@ -5,10 +5,10 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	log "github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/internal/bootstrap"
 	"github.com/synctv-org/synctv/internal/email"
 	"github.com/synctv-org/synctv/internal/settings"
+	"github.com/synctv-org/synctv/server/middlewares"
 	"github.com/synctv-org/synctv/server/model"
 )
 
@@ -24,7 +24,7 @@ type publicSettings struct {
 }
 
 func Settings(ctx *gin.Context) {
-	log := ctx.MustGet("log").(*log.Entry)
+	log := middlewares.GetLogger(ctx)
 
 	oauth2SignupEnabled, err := bootstrap.Oauth2SignupEnabledCache.Get(ctx)
 	if err != nil {
@@ -34,10 +34,12 @@ func Settings(ctx *gin.Context) {
 	}
 	ctx.JSON(200, model.NewAPIDataResp(
 		&publicSettings{
-			PasswordDisableSignup: settings.DisableUserSignup.Get() || !settings.EnablePasswordSignup.Get(),
+			PasswordDisableSignup: settings.DisableUserSignup.Get() ||
+				!settings.EnablePasswordSignup.Get(),
 
-			EmailEnable:           email.EnableEmail.Get(),
-			EmailDisableSignup:    settings.DisableUserSignup.Get() || email.DisableUserSignup.Get(),
+			EmailEnable: email.EnableEmail.Get(),
+			EmailDisableSignup: settings.DisableUserSignup.Get() ||
+				email.DisableUserSignup.Get(),
 			EmailWhitelistEnabled: email.EmailSignupWhiteListEnable.Get(),
 			EmailWhitelist:        strings.Split(email.EmailSignupWhiteList.Get(), ","),
 

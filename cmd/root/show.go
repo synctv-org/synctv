@@ -1,8 +1,7 @@
 package root
 
 import (
-	"fmt"
-
+	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"github.com/synctv-org/synctv/internal/bootstrap"
 	"github.com/synctv-org/synctv/internal/db"
@@ -12,17 +11,17 @@ var ShowCmd = &cobra.Command{
 	Use:   "show",
 	Short: "show root",
 	Long:  `show root`,
-	PreRunE: func(cmd *cobra.Command, args []string) error {
-		return bootstrap.New(bootstrap.WithContext(cmd.Context())).Add(
+	PreRunE: func(cmd *cobra.Command, _ []string) error {
+		return bootstrap.New().Add(
 			bootstrap.InitStdLog,
 			bootstrap.InitConfig,
 			bootstrap.InitDatabase,
-		).Run()
+		).Run(cmd.Context())
 	},
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, _ []string) error {
 		roots := db.GetRoots()
 		for _, root := range roots {
-			fmt.Printf("id: %s\tusername: %s\n", root.ID, root.Username)
+			log.Infof("id: %s\tusername: %s\n", root.ID, root.Username)
 		}
 		return nil
 	},

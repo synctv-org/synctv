@@ -31,7 +31,12 @@ func NewWebSocketServer(conf ...WebSocketConfig) *WebSocket {
 	return ws
 }
 
-func (ws *WebSocket) Server(w http.ResponseWriter, r *http.Request, subprotocols []string, handler func(c *websocket.Conn) error) error {
+func (ws *WebSocket) Server(
+	w http.ResponseWriter,
+	r *http.Request,
+	subprotocols []string,
+	handler func(c *websocket.Conn) error,
+) error {
 	conf := []UpgraderConf{}
 	if len(subprotocols) > 0 {
 		conf = append(conf, WithSubprotocols(subprotocols))
@@ -57,7 +62,7 @@ func (ws *WebSocket) newUpgrader(conf ...UpgraderConf) *websocket.Upgrader {
 		HandshakeTimeout: time.Second * 30,
 		ReadBufferSize:   1024,
 		WriteBufferSize:  1024,
-		CheckOrigin: func(r *http.Request) bool {
+		CheckOrigin: func(_ *http.Request) bool {
 			return true
 		},
 	}
@@ -67,7 +72,12 @@ func (ws *WebSocket) newUpgrader(conf ...UpgraderConf) *websocket.Upgrader {
 	return ug
 }
 
-func (ws *WebSocket) NewWebSocketClient(w http.ResponseWriter, r *http.Request, responseHeader http.Header, conf ...UpgraderConf) (*websocket.Conn, error) {
+func (ws *WebSocket) NewWebSocketClient(
+	w http.ResponseWriter,
+	r *http.Request,
+	responseHeader http.Header,
+	conf ...UpgraderConf,
+) (*websocket.Conn, error) {
 	conn, err := ws.newUpgrader(conf...).Upgrade(w, r, responseHeader)
 	if err != nil {
 		return nil, err

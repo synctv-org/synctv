@@ -32,7 +32,7 @@ type EmbyUserCacheData struct {
 }
 
 func NewEmbyUserCache(userID string) *EmbyUserCache {
-	return newMapCache0(func(ctx context.Context, key string) (*EmbyUserCacheData, error) {
+	return newMapCache0(func(_ context.Context, key string) (*EmbyUserCacheData, error) {
 		return EmbyAuthorizationCacheWithUserIDInitFunc(userID, key)
 	}, -1)
 }
@@ -84,16 +84,19 @@ func NewEmbyMovieCache(movie *model.Movie, subPath string) *EmbyMovieCache {
 	return cache
 }
 
-func NewEmbyMovieClearCacheFunc(movie *model.Movie, subPath string) func(ctx context.Context, args *EmbyUserCache) error {
+func NewEmbyMovieClearCacheFunc(
+	movie *model.Movie,
+	_ string,
+) func(ctx context.Context, args *EmbyUserCache) error {
 	return func(ctx context.Context, args *EmbyUserCache) error {
-		if !movie.MovieBase.VendorInfo.Emby.Transcode {
+		if !movie.VendorInfo.Emby.Transcode {
 			return nil
 		}
 		if args == nil {
 			return errors.New("need emby user cache")
 		}
 
-		serverID, err := movie.MovieBase.VendorInfo.Emby.ServerID()
+		serverID, err := movie.VendorInfo.Emby.ServerID()
 		if err != nil {
 			return err
 		}
@@ -123,7 +126,10 @@ func NewEmbyMovieClearCacheFunc(movie *model.Movie, subPath string) func(ctx con
 	}
 }
 
-func NewEmbyMovieCacheInitFunc(movie *model.Movie, subPath string) func(ctx context.Context, args *EmbyUserCache) (*EmbyMovieCacheData, error) {
+func NewEmbyMovieCacheInitFunc(
+	movie *model.Movie,
+	subPath string,
+) func(ctx context.Context, args *EmbyUserCache) (*EmbyMovieCacheData, error) {
 	return func(ctx context.Context, args *EmbyUserCache) (*EmbyMovieCacheData, error) {
 		if err := validateEmbyArgs(args, movie, subPath); err != nil {
 			return nil, err
@@ -148,8 +154,8 @@ func NewEmbyMovieCacheInitFunc(movie *model.Movie, subPath string) func(ctx cont
 		}
 
 		resp := &EmbyMovieCacheData{
-			Sources:            make([]EmbySource, len(data.MediaSourceInfo)),
-			TranscodeSessionID: data.PlaySessionID,
+			Sources:            make([]EmbySource, len(data.GetMediaSourceInfo())),
+			TranscodeSessionID: data.GetPlaySessionID(),
 		}
 
 		u, err := url.Parse(aucd.Host)
@@ -157,7 +163,7 @@ func NewEmbyMovieCacheInitFunc(movie *model.Movie, subPath string) func(ctx cont
 			return nil, err
 		}
 
-		for i, v := range data.MediaSourceInfo {
+		for i, v := range data.GetMediaSourceInfo() {
 			source, err := processMediaSource(v, movie, aucd, truePath, u)
 			if err != nil {
 				return nil, err
@@ -183,7 +189,7 @@ func validateEmbyArgs(args *EmbyUserCache, movie *model.Movie, subPath string) e
 }
 
 func getEmbyServerIDAndPath(movie *model.Movie, subPath string) (string, string, error) {
-	serverID, truePath, err := movie.MovieBase.VendorInfo.Emby.ServerIDAndFilePath()
+	serverID, truePath, err := movie.VendorInfo.Emby.ServerIDAndFilePath()
 	if err != nil {
 		return "", "", err
 	}
@@ -193,7 +199,11 @@ func getEmbyServerIDAndPath(movie *model.Movie, subPath string) (string, string,
 	return serverID, truePath, nil
 }
 
-func getPlaybackInfo(ctx context.Context, aucd *EmbyUserCacheData, truePath string) (*emby.PlaybackInfoResp, error) {
+func getPlaybackInfo(
+	ctx context.Context,
+	aucd *EmbyUserCacheData,
+	truePath string,
+) (*emby.PlaybackInfoResp, error) {
 	cli := vendor.LoadEmbyClient(aucd.Backend)
 	data, err := cli.PlaybackInfo(ctx, &emby.PlaybackInfoReq{
 		Host:   aucd.Host,
@@ -207,20 +217,27 @@ func getPlaybackInfo(ctx context.Context, aucd *EmbyUserCacheData, truePath stri
 	return data, nil
 }
 
-func processMediaSource(v *emby.MediaSourceInfo, movie *model.Movie, aucd *EmbyUserCacheData, truePath string, u *url.URL) (*EmbySource, error) {
-	source := &EmbySource{Name: v.Name}
+func processMediaSource(
+	v *emby.MediaSourceInfo,
+	_ *model.Movie,
+	aucd *EmbyUserCacheData,
+	truePath string,
+	u *url.URL,
+) (*EmbySource, error) {
+	source := &EmbySource{Name: v.GetName()}
 
-	if v.TranscodingUrl != "" {
-		source.URL = fmt.Sprintf("%s/emby%s", aucd.Host, v.TranscodingUrl)
+	switch {
+	case v.GetTranscodingUrl() != "":
+		source.URL = fmt.Sprintf("%s/emby%s", aucd.Host, v.GetTranscodingUrl())
 		source.IsTranscode = true
-	} else if v.DirectPlayUrl != "" {
-		source.URL = fmt.Sprintf("%s/emby%s", aucd.Host, v.DirectPlayUrl)
+	case v.GetDirectPlayUrl() != "":
+		source.URL = fmt.Sprintf("%s/emby%s", aucd.Host, v.GetDirectPlayUrl())
 		source.IsTranscode = false
-	} else {
-		if v.Container == "" {
+	default:
+		if v.GetContainer() == "" {
 			return nil, nil
 		}
-		result, err := url.JoinPath("emby", "Videos", truePath, "stream."+v.Container)
+		result, err := url.JoinPath("emby", "Videos", truePath, "stream."+v.GetContainer())
 		if err != nil {
 			return nil, err
 		}
@@ -228,7 +245,7 @@ func processMediaSource(v *emby.MediaSourceInfo, movie *model.Movie, aucd *EmbyU
 		query := url.Values{}
 		query.Set("api_key", aucd.APIKey)
 		query.Set("Static", "true")
-		query.Set("MediaSourceId", v.Id)
+		query.Set("MediaSourceId", v.GetId())
 		u.RawQuery = query.Encode()
 		source.URL = u.String()
 	}
@@ -236,15 +253,27 @@ func processMediaSource(v *emby.MediaSourceInfo, movie *model.Movie, aucd *EmbyU
 	return source, nil
 }
 
-func processEmbySubtitles(v *emby.MediaSourceInfo, truePath string, u *url.URL) []*EmbySubtitleCache {
-	subtitles := make([]*EmbySubtitleCache, 0, len(v.MediaStreamInfo))
-	for _, msi := range v.MediaStreamInfo {
-		if msi.Type != "Subtitle" {
+func processEmbySubtitles(
+	v *emby.MediaSourceInfo,
+	truePath string,
+	u *url.URL,
+) []*EmbySubtitleCache {
+	subtitles := make([]*EmbySubtitleCache, 0, len(v.GetMediaStreamInfo()))
+	for _, msi := range v.GetMediaStreamInfo() {
+		if msi.GetType() != "Subtitle" {
 			continue
 		}
 
 		subtutleType := "srt"
-		result, err := url.JoinPath("emby", "Videos", truePath, v.Id, "Subtitles", strconv.Itoa(int(msi.Index)), "Stream."+subtutleType)
+		result, err := url.JoinPath(
+			"emby",
+			"Videos",
+			truePath,
+			v.GetId(),
+			"Subtitles",
+			strconv.FormatUint(msi.GetIndex(), 10),
+			"Stream."+subtutleType,
+		)
 		if err != nil {
 			continue
 		}
@@ -252,12 +281,12 @@ func processEmbySubtitles(v *emby.MediaSourceInfo, truePath string, u *url.URL) 
 		u.RawQuery = ""
 		url := u.String()
 
-		name := msi.DisplayTitle
+		name := msi.GetDisplayTitle()
 		if name == "" {
-			if msi.Title != "" {
-				name = msi.Title
+			if msi.GetTitle() != "" {
+				name = msi.GetTitle()
 			} else {
-				name = msi.DisplayLanguage
+				name = msi.GetDisplayLanguage()
 			}
 		}
 

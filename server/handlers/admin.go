@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -11,23 +12,22 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/maruel/natural"
-	"github.com/sirupsen/logrus"
 	"github.com/synctv-org/synctv/internal/db"
 	"github.com/synctv-org/synctv/internal/email"
 	dbModel "github.com/synctv-org/synctv/internal/model"
 	"github.com/synctv-org/synctv/internal/op"
 	"github.com/synctv-org/synctv/internal/settings"
 	"github.com/synctv-org/synctv/internal/vendor"
+	"github.com/synctv-org/synctv/server/middlewares"
 	"github.com/synctv-org/synctv/server/model"
 	"github.com/synctv-org/synctv/utils"
-	"golang.org/x/exp/maps"
 	"google.golang.org/grpc/connectivity"
 	"gorm.io/gorm"
 )
 
 func AdminEditSettings(ctx *gin.Context) {
-	// user := ctx.MustGet("user").(*op.UserEntry)
-	log := ctx.MustGet("log").(*logrus.Entry)
+	// user := middlewares.GetUserEntry(ctx)
+	log := middlewares.GetLogger(ctx)
 
 	req := model.AdminSettingsReq{}
 	if err := model.Decode(ctx, &req); err != nil {
@@ -48,8 +48,8 @@ func AdminEditSettings(ctx *gin.Context) {
 }
 
 func AdminSettings(ctx *gin.Context) {
-	// user := ctx.MustGet("user").(*op.UserEntry)
-	log := ctx.MustGet("log").(*logrus.Entry)
+	// user := middlewares.GetUserEntry(ctx)
+	log := middlewares.GetLogger(ctx)
 
 	group := ctx.Param("group")
 	switch group {
@@ -88,7 +88,10 @@ func AdminSettings(ctx *gin.Context) {
 		s, ok := settings.GroupSettings[group]
 		if !ok {
 			log.Error("group not found")
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("group not found"))
+			ctx.AbortWithStatusJSON(
+				http.StatusBadRequest,
+				model.NewAPIErrorStringResp("group not found"),
+			)
 			return
 		}
 		data := make(map[string]any, len(s))
@@ -103,8 +106,8 @@ func AdminSettings(ctx *gin.Context) {
 }
 
 func AdminGetUsers(ctx *gin.Context) {
-	// user := ctx.MustGet("user").(*op.UserEntry)
-	log := ctx.MustGet("log").(*logrus.Entry)
+	// user := middlewares.GetUserEntry(ctx)
+	log := middlewares.GetLogger(ctx)
 
 	page, pageSize, err := utils.GetPageAndMax(ctx)
 	if err != nil {
@@ -175,7 +178,10 @@ func AdminGetUsers(ctx *gin.Context) {
 		}
 	default:
 		log.Error("not support sort")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("not support sort"))
+		ctx.AbortWithStatusJSON(
+			http.StatusBadRequest,
+			model.NewAPIErrorStringResp("not support sort"),
+		)
 		return
 	}
 
@@ -206,8 +212,8 @@ func genUserListResp(us []*dbModel.User) []*model.UserInfoResp {
 }
 
 func AdminGetRoomMembers(ctx *gin.Context) {
-	room := ctx.MustGet("room").(*op.RoomEntry).Value()
-	log := ctx.MustGet("log").(*logrus.Entry)
+	room := middlewares.GetRoomEntry(ctx).Value()
+	log := middlewares.GetLogger(ctx)
 
 	page, pageSize, err := utils.GetPageAndMax(ctx)
 	if err != nil {
@@ -290,7 +296,10 @@ func AdminGetRoomMembers(ctx *gin.Context) {
 		}
 	default:
 		log.Errorf("get room users failed: not support sort")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("not support sort"))
+		ctx.AbortWithStatusJSON(
+			http.StatusBadRequest,
+			model.NewAPIErrorStringResp("not support sort"),
+		)
 		return
 	}
 
@@ -330,7 +339,7 @@ func genRoomMemberListResp(us []*dbModel.User, room *op.Room) []*model.RoomMembe
 }
 
 func AdminApprovePendingUser(ctx *gin.Context) {
-	log := ctx.MustGet("log").(*logrus.Entry)
+	log := middlewares.GetLogger(ctx)
 
 	req := model.UserIDReq{}
 	if err := model.Decode(ctx, &req); err != nil {
@@ -348,7 +357,10 @@ func AdminApprovePendingUser(ctx *gin.Context) {
 
 	if !user.IsPending() {
 		log.Error("user is not pending")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("user is not pending"))
+		ctx.AbortWithStatusJSON(
+			http.StatusBadRequest,
+			model.NewAPIErrorStringResp("user is not pending"),
+		)
 		return
 	}
 
@@ -363,8 +375,8 @@ func AdminApprovePendingUser(ctx *gin.Context) {
 }
 
 func AdminBanUser(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.UserEntry).Value()
-	log := ctx.MustGet("log").(*logrus.Entry)
+	user := middlewares.GetUserEntry(ctx).Value()
+	log := middlewares.GetLogger(ctx)
 
 	req := model.UserIDReq{}
 	if err := model.Decode(ctx, &req); err != nil {
@@ -374,7 +386,10 @@ func AdminBanUser(ctx *gin.Context) {
 
 	if req.ID == user.ID {
 		log.Error("cannot ban self")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("cannot ban self"))
+		ctx.AbortWithStatusJSON(
+			http.StatusBadRequest,
+			model.NewAPIErrorStringResp("cannot ban self"),
+		)
 		return
 	}
 
@@ -387,13 +402,19 @@ func AdminBanUser(ctx *gin.Context) {
 
 	if u.Value().IsRoot() {
 		log.Error("cannot ban root")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("cannot ban root"))
+		ctx.AbortWithStatusJSON(
+			http.StatusBadRequest,
+			model.NewAPIErrorStringResp("cannot ban root"),
+		)
 		return
 	}
 
 	if u.Value().IsAdmin() && !user.IsRoot() {
 		log.Error("cannot ban admin")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("cannot ban admin"))
+		ctx.AbortWithStatusJSON(
+			http.StatusBadRequest,
+			model.NewAPIErrorStringResp("cannot ban admin"),
+		)
 		return
 	}
 
@@ -408,8 +429,8 @@ func AdminBanUser(ctx *gin.Context) {
 }
 
 func AdminUnBanUser(ctx *gin.Context) {
-	// user := ctx.MustGet("user").(*op.UserEntry)
-	log := ctx.MustGet("log").(*logrus.Entry)
+	// user := middlewares.GetUserEntry(ctx)
+	log := middlewares.GetLogger(ctx)
 
 	req := model.UserIDReq{}
 	if err := model.Decode(ctx, &req); err != nil {
@@ -426,7 +447,10 @@ func AdminUnBanUser(ctx *gin.Context) {
 
 	if !u.Value().IsBanned() {
 		log.Error("user is not banned")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("user is not banned"))
+		ctx.AbortWithStatusJSON(
+			http.StatusBadRequest,
+			model.NewAPIErrorStringResp("user is not banned"),
+		)
 		return
 	}
 
@@ -441,8 +465,8 @@ func AdminUnBanUser(ctx *gin.Context) {
 }
 
 func AdminGetRooms(ctx *gin.Context) {
-	// user := ctx.MustGet("user").(*op.UserEntry)
-	log := ctx.MustGet("log").(*logrus.Entry)
+	// user := middlewares.GetUserEntry(ctx)
+	log := middlewares.GetLogger(ctx)
 
 	page, pageSize, err := utils.GetPageAndMax(ctx)
 	if err != nil {
@@ -513,7 +537,10 @@ func AdminGetRooms(ctx *gin.Context) {
 		}
 	default:
 		log.Error("not support sort")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("not support sort"))
+		ctx.AbortWithStatusJSON(
+			http.StatusBadRequest,
+			model.NewAPIErrorStringResp("not support sort"),
+		)
 		return
 	}
 
@@ -531,7 +558,7 @@ func AdminGetRooms(ctx *gin.Context) {
 }
 
 func AdminGetUserRooms(ctx *gin.Context) {
-	log := ctx.MustGet("log").(*logrus.Entry)
+	log := middlewares.GetLogger(ctx)
 
 	id := ctx.Query("id")
 	if len(id) != 32 {
@@ -594,7 +621,10 @@ func AdminGetUserRooms(ctx *gin.Context) {
 		}
 	default:
 		log.Error("not support sort")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("not support sort"))
+		ctx.AbortWithStatusJSON(
+			http.StatusBadRequest,
+			model.NewAPIErrorStringResp("not support sort"),
+		)
 		return
 	}
 
@@ -612,7 +642,7 @@ func AdminGetUserRooms(ctx *gin.Context) {
 }
 
 func AdminGetUserJoinedRooms(ctx *gin.Context) {
-	log := ctx.MustGet("log").(*logrus.Entry)
+	log := middlewares.GetLogger(ctx)
 
 	id := ctx.Query("id")
 	if len(id) != 32 {
@@ -631,7 +661,11 @@ func AdminGetUserJoinedRooms(ctx *gin.Context) {
 	scopes := []func(db *gorm.DB) *gorm.DB{
 		func(db *gorm.DB) *gorm.DB {
 			return db.
-				InnerJoins("JOIN room_members ON rooms.id = room_members.room_id AND room_members.user_id = ? AND rooms.creator_id != ?", id, id)
+				InnerJoins(
+					"JOIN room_members ON rooms.id = room_members.room_id AND room_members.user_id = ? AND rooms.creator_id != ?",
+					id,
+					id,
+				)
 		},
 		func(db *gorm.DB) *gorm.DB {
 			return db.Preload("RoomMembers", func(db *gorm.DB) *gorm.DB {
@@ -683,7 +717,10 @@ func AdminGetUserJoinedRooms(ctx *gin.Context) {
 		}
 	default:
 		log.Errorf("not support sort")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("not support sort"))
+		ctx.AbortWithStatusJSON(
+			http.StatusBadRequest,
+			model.NewAPIErrorStringResp("not support sort"),
+		)
 		return
 	}
 
@@ -701,7 +738,7 @@ func AdminGetUserJoinedRooms(ctx *gin.Context) {
 }
 
 func AdminApprovePendingRoom(ctx *gin.Context) {
-	log := ctx.MustGet("log").(*logrus.Entry)
+	log := middlewares.GetLogger(ctx)
 
 	req := model.RoomIDReq{}
 	if err := model.Decode(ctx, &req); err != nil {
@@ -720,7 +757,10 @@ func AdminApprovePendingRoom(ctx *gin.Context) {
 
 	if !room.IsPending() {
 		log.Error("room is not pending")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("room is not pending"))
+		ctx.AbortWithStatusJSON(
+			http.StatusBadRequest,
+			model.NewAPIErrorStringResp("room is not pending"),
+		)
 		return
 	}
 
@@ -735,8 +775,8 @@ func AdminApprovePendingRoom(ctx *gin.Context) {
 }
 
 func AdminBanRoom(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.UserEntry).Value()
-	log := ctx.MustGet("log").(*logrus.Entry)
+	user := middlewares.GetUserEntry(ctx).Value()
+	log := middlewares.GetLogger(ctx)
 
 	req := model.RoomIDReq{}
 	if err := model.Decode(ctx, &req); err != nil {
@@ -764,13 +804,19 @@ func AdminBanRoom(ctx *gin.Context) {
 
 		if creator.IsRoot() {
 			log.Error("cannot ban root")
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("cannot ban root"))
+			ctx.AbortWithStatusJSON(
+				http.StatusBadRequest,
+				model.NewAPIErrorStringResp("cannot ban root"),
+			)
 			return
 		}
 
 		if creator.IsAdmin() && !user.IsRoot() {
 			log.Error("cannot ban admin")
-			ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewAPIErrorStringResp("cannot ban admin"))
+			ctx.AbortWithStatusJSON(
+				http.StatusForbidden,
+				model.NewAPIErrorStringResp("cannot ban admin"),
+			)
 			return
 		}
 	}
@@ -786,8 +832,8 @@ func AdminBanRoom(ctx *gin.Context) {
 }
 
 func AdminUnBanRoom(ctx *gin.Context) {
-	// user := ctx.MustGet("user").(*op.UserEntry)
-	log := ctx.MustGet("log").(*logrus.Entry)
+	// user := middlewares.GetUserEntry(ctx)
+	log := middlewares.GetLogger(ctx)
 
 	req := model.RoomIDReq{}
 	if err := model.Decode(ctx, &req); err != nil {
@@ -806,7 +852,10 @@ func AdminUnBanRoom(ctx *gin.Context) {
 
 	if !room.IsBanned() {
 		log.Error("room is not banned")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("room is not banned"))
+		ctx.AbortWithStatusJSON(
+			http.StatusBadRequest,
+			model.NewAPIErrorStringResp("room is not banned"),
+		)
 		return
 	}
 
@@ -821,8 +870,8 @@ func AdminUnBanRoom(ctx *gin.Context) {
 }
 
 func AdminAddUser(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.UserEntry).Value()
-	log := ctx.MustGet("log").(*logrus.Entry)
+	user := middlewares.GetUserEntry(ctx).Value()
+	log := middlewares.GetLogger(ctx)
 
 	req := model.AddUserReq{}
 	if err := model.Decode(ctx, &req); err != nil {
@@ -832,7 +881,10 @@ func AdminAddUser(ctx *gin.Context) {
 
 	if req.Role == dbModel.RoleRoot && !user.IsRoot() {
 		log.Error("cannot add root user")
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewAPIErrorStringResp("you cannot add root user"))
+		ctx.AbortWithStatusJSON(
+			http.StatusForbidden,
+			model.NewAPIErrorStringResp("you cannot add root user"),
+		)
 		return
 	}
 
@@ -847,8 +899,8 @@ func AdminAddUser(ctx *gin.Context) {
 }
 
 func AdminDeleteUser(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.UserEntry).Value()
-	log := ctx.MustGet("log").(*logrus.Entry)
+	user := middlewares.GetUserEntry(ctx).Value()
+	log := middlewares.GetLogger(ctx)
 
 	req := model.UserIDReq{}
 	if err := model.Decode(ctx, &req); err != nil {
@@ -865,19 +917,28 @@ func AdminDeleteUser(ctx *gin.Context) {
 
 	if u.Value().ID == user.ID {
 		log.Error("cannot delete yourself")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("cannot delete yourself"))
+		ctx.AbortWithStatusJSON(
+			http.StatusBadRequest,
+			model.NewAPIErrorStringResp("cannot delete yourself"),
+		)
 		return
 	}
 
 	if u.Value().IsRoot() {
 		log.Error("cannot delete root")
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("cannot delete root"))
+		ctx.AbortWithStatusJSON(
+			http.StatusBadRequest,
+			model.NewAPIErrorStringResp("cannot delete root"),
+		)
 		return
 	}
 
 	if u.Value().IsAdmin() && !user.IsRoot() {
 		log.Error("cannot delete admin")
-		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewAPIErrorStringResp("cannot delete admin"))
+		ctx.AbortWithStatusJSON(
+			http.StatusForbidden,
+			model.NewAPIErrorStringResp("cannot delete admin"),
+		)
 		return
 	}
 
@@ -891,8 +952,8 @@ func AdminDeleteUser(ctx *gin.Context) {
 }
 
 func AdminDeleteRoom(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.UserEntry).Value()
-	log := ctx.MustGet("log").(*logrus.Entry)
+	user := middlewares.GetUserEntry(ctx).Value()
+	log := middlewares.GetLogger(ctx)
 
 	req := model.RoomIDReq{}
 	if err := model.Decode(ctx, &req); err != nil {
@@ -920,13 +981,19 @@ func AdminDeleteRoom(ctx *gin.Context) {
 
 		if creator.IsRoot() {
 			log.Error("cannot delete root's room")
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("cannot delete root's room"))
+			ctx.AbortWithStatusJSON(
+				http.StatusBadRequest,
+				model.NewAPIErrorStringResp("cannot delete root's room"),
+			)
 			return
 		}
 
 		if creator.IsAdmin() && !user.IsRoot() {
 			log.Error("cannot delete admin's room")
-			ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewAPIErrorStringResp("cannot delete admin's room"))
+			ctx.AbortWithStatusJSON(
+				http.StatusForbidden,
+				model.NewAPIErrorStringResp("cannot delete admin's room"),
+			)
 			return
 		}
 	}
@@ -941,8 +1008,8 @@ func AdminDeleteRoom(ctx *gin.Context) {
 }
 
 func AdminUserPassword(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.UserEntry).Value()
-	log := ctx.MustGet("log").(*logrus.Entry)
+	user := middlewares.GetUserEntry(ctx).Value()
+	log := middlewares.GetLogger(ctx)
 
 	req := model.AdminUserPasswordReq{}
 	if err := model.Decode(ctx, &req); err != nil {
@@ -953,27 +1020,39 @@ func AdminUserPassword(ctx *gin.Context) {
 	u, err := op.LoadOrInitUserByID(req.ID)
 	if err != nil {
 		log.Errorf("load or init user by id error: %v", err)
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("user not found"))
+		ctx.AbortWithStatusJSON(
+			http.StatusBadRequest,
+			model.NewAPIErrorStringResp("user not found"),
+		)
 		return
 	}
 
 	if u.Value().ID != user.ID {
 		if u.Value().IsRoot() {
 			log.Error("cannot change root password")
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("cannot change root password"))
+			ctx.AbortWithStatusJSON(
+				http.StatusBadRequest,
+				model.NewAPIErrorStringResp("cannot change root password"),
+			)
 			return
 		}
 
 		if u.Value().IsAdmin() && !user.IsRoot() {
 			log.Error("cannot change admin password")
-			ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewAPIErrorStringResp("cannot change admin password"))
+			ctx.AbortWithStatusJSON(
+				http.StatusForbidden,
+				model.NewAPIErrorStringResp("cannot change admin password"),
+			)
 			return
 		}
 	}
 
 	if err := u.Value().SetPassword(req.Password); err != nil {
 		log.Errorf("set password error: %v", err)
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorStringResp(err.Error()))
+		ctx.AbortWithStatusJSON(
+			http.StatusInternalServerError,
+			model.NewAPIErrorStringResp(err.Error()),
+		)
 		return
 	}
 
@@ -981,8 +1060,8 @@ func AdminUserPassword(ctx *gin.Context) {
 }
 
 func AdminUsername(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.UserEntry).Value()
-	log := ctx.MustGet("log").(*logrus.Entry)
+	user := middlewares.GetUserEntry(ctx).Value()
+	log := middlewares.GetLogger(ctx)
 
 	req := model.AdminUsernameReq{}
 	if err := model.Decode(ctx, &req); err != nil {
@@ -993,27 +1072,39 @@ func AdminUsername(ctx *gin.Context) {
 	u, err := op.LoadOrInitUserByID(req.ID)
 	if err != nil {
 		log.Errorf("load or init user by id error: %v", err)
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("user not found"))
+		ctx.AbortWithStatusJSON(
+			http.StatusBadRequest,
+			model.NewAPIErrorStringResp("user not found"),
+		)
 		return
 	}
 
 	if u.Value().ID != user.ID {
 		if u.Value().IsRoot() {
 			log.Error("cannot change root username")
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("cannot change root username"))
+			ctx.AbortWithStatusJSON(
+				http.StatusBadRequest,
+				model.NewAPIErrorStringResp("cannot change root username"),
+			)
 			return
 		}
 
 		if u.Value().IsAdmin() && !user.IsRoot() {
 			log.Error("cannot change admin username")
-			ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewAPIErrorStringResp("cannot change admin username"))
+			ctx.AbortWithStatusJSON(
+				http.StatusForbidden,
+				model.NewAPIErrorStringResp("cannot change admin username"),
+			)
 			return
 		}
 	}
 
 	if err := u.Value().SetUsername(req.Username); err != nil {
 		log.Errorf("set username error: %v", err)
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorStringResp(err.Error()))
+		ctx.AbortWithStatusJSON(
+			http.StatusInternalServerError,
+			model.NewAPIErrorStringResp(err.Error()),
+		)
 		return
 	}
 
@@ -1021,8 +1112,8 @@ func AdminUsername(ctx *gin.Context) {
 }
 
 func AdminRoomPassword(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.UserEntry).Value()
-	log := ctx.MustGet("log").(*logrus.Entry)
+	user := middlewares.GetUserEntry(ctx).Value()
+	log := middlewares.GetLogger(ctx)
 
 	req := model.AdminRoomPasswordReq{}
 	if err := model.Decode(ctx, &req); err != nil {
@@ -1033,7 +1124,10 @@ func AdminRoomPassword(ctx *gin.Context) {
 	roomE, err := op.LoadOrInitRoomByID(req.ID)
 	if err != nil {
 		log.Errorf("load or init room by id error: %v", err)
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("room not found"))
+		ctx.AbortWithStatusJSON(
+			http.StatusBadRequest,
+			model.NewAPIErrorStringResp("room not found"),
+		)
 		return
 	}
 
@@ -1043,26 +1137,38 @@ func AdminRoomPassword(ctx *gin.Context) {
 		creator, err := op.LoadOrInitUserByID(room.CreatorID)
 		if err != nil {
 			log.Errorf("load or init user by id error: %v", err)
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("room creator not found"))
+			ctx.AbortWithStatusJSON(
+				http.StatusBadRequest,
+				model.NewAPIErrorStringResp("room creator not found"),
+			)
 			return
 		}
 
 		if creator.Value().IsRoot() {
 			log.Error("cannot change root room password")
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("cannot change root room password"))
+			ctx.AbortWithStatusJSON(
+				http.StatusBadRequest,
+				model.NewAPIErrorStringResp("cannot change root room password"),
+			)
 			return
 		}
 
 		if creator.Value().IsAdmin() && !user.IsRoot() {
 			log.Error("cannot change admin room password")
-			ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewAPIErrorStringResp("cannot change admin room password"))
+			ctx.AbortWithStatusJSON(
+				http.StatusForbidden,
+				model.NewAPIErrorStringResp("cannot change admin room password"),
+			)
 			return
 		}
 	}
 
 	if err := room.SetPassword(req.Password); err != nil {
 		log.Errorf("set password error: %v", err)
-		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorStringResp(err.Error()))
+		ctx.AbortWithStatusJSON(
+			http.StatusInternalServerError,
+			model.NewAPIErrorStringResp(err.Error()),
+		)
 		return
 	}
 
@@ -1070,8 +1176,8 @@ func AdminRoomPassword(ctx *gin.Context) {
 }
 
 func AdminGetVendorBackends(ctx *gin.Context) {
-	// user := ctx.MustGet("user").(*op.UserEntry)
-	log := ctx.MustGet("log").(*logrus.Entry)
+	// user := middlewares.GetUserEntry(ctx)
+	log := middlewares.GetLogger(ctx)
 
 	conns := vendor.LoadConns()
 	page, size, err := utils.GetPageAndMax(ctx)
@@ -1080,7 +1186,7 @@ func AdminGetVendorBackends(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 		return
 	}
-	s := maps.Keys(conns)
+	s := slices.Collect(maps.Keys(conns))
 	l := len(s)
 	var resp []*model.GetVendorBackendResp
 	if (page-1)*size <= l {
@@ -1113,8 +1219,8 @@ func AdminGetVendorBackends(ctx *gin.Context) {
 }
 
 func AdminAddVendorBackend(ctx *gin.Context) {
-	// user := ctx.MustGet("user").(*op.UserEntry)
-	log := ctx.MustGet("log").(*logrus.Entry)
+	// user := middlewares.GetUserEntry(ctx)
+	log := middlewares.GetLogger(ctx)
 
 	var req model.AddVendorBackendReq
 	if err := model.Decode(ctx, &req); err != nil {
@@ -1132,8 +1238,8 @@ func AdminAddVendorBackend(ctx *gin.Context) {
 }
 
 func AdminDeleteVendorBackends(ctx *gin.Context) {
-	// user := ctx.MustGet("user").(*op.UserEntry)
-	log := ctx.MustGet("log").(*logrus.Entry)
+	// user := middlewares.GetUserEntry(ctx)
+	log := middlewares.GetLogger(ctx)
 
 	var req model.VendorBackendEndpointsReq
 	if err := model.Decode(ctx, &req); err != nil {
@@ -1151,8 +1257,8 @@ func AdminDeleteVendorBackends(ctx *gin.Context) {
 }
 
 func AdminUpdateVendorBackends(ctx *gin.Context) {
-	// user := ctx.MustGet("user").(*op.UserEntry)
-	log := ctx.MustGet("log").(*logrus.Entry)
+	// user := middlewares.GetUserEntry(ctx)
+	log := middlewares.GetLogger(ctx)
 
 	var req model.AddVendorBackendReq
 	if err := model.Decode(ctx, &req); err != nil {
@@ -1170,8 +1276,8 @@ func AdminUpdateVendorBackends(ctx *gin.Context) {
 }
 
 func AdminReconnectVendorBackends(ctx *gin.Context) {
-	// user := ctx.MustGet("user").(*op.UserEntry)
-	log := ctx.MustGet("log").(*logrus.Entry)
+	// user := middlewares.GetUserEntry(ctx)
+	log := middlewares.GetLogger(ctx)
 
 	var req model.VendorBackendEndpointsReq
 	if err := model.Decode(ctx, &req); err != nil {
@@ -1202,8 +1308,8 @@ func AdminReconnectVendorBackends(ctx *gin.Context) {
 }
 
 func AdminEnableVendorBackends(ctx *gin.Context) {
-	// user := ctx.MustGet("user").(*op.UserEntry)
-	log := ctx.MustGet("log").(*logrus.Entry)
+	// user := middlewares.GetUserEntry(ctx)
+	log := middlewares.GetLogger(ctx)
 
 	var req model.VendorBackendEndpointsReq
 	if err := model.Decode(ctx, &req); err != nil {
@@ -1221,8 +1327,8 @@ func AdminEnableVendorBackends(ctx *gin.Context) {
 }
 
 func AdminDisableVendorBackends(ctx *gin.Context) {
-	// user := ctx.MustGet("user").(*op.UserEntry)
-	log := ctx.MustGet("log").(*logrus.Entry)
+	// user := middlewares.GetUserEntry(ctx)
+	log := middlewares.GetLogger(ctx)
 
 	var req model.VendorBackendEndpointsReq
 	if err := model.Decode(ctx, &req); err != nil {
@@ -1240,8 +1346,8 @@ func AdminDisableVendorBackends(ctx *gin.Context) {
 }
 
 func AdminSendTestEmail(ctx *gin.Context) {
-	user := ctx.MustGet("user").(*op.UserEntry).Value()
-	log := ctx.MustGet("log").(*logrus.Entry)
+	user := middlewares.GetUserEntry(ctx).Value()
+	log := middlewares.GetLogger(ctx)
 
 	var req model.SendTestEmailReq
 	if err := model.Decode(ctx, &req); err != nil {

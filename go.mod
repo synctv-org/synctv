@@ -1,6 +1,6 @@
 module github.com/synctv-org/synctv
 
-go 1.24
+go 1.24.4
 
 replace github.com/synctv-org/vendors => ./vendors
 
@@ -42,7 +42,7 @@ require (
 	github.com/zijiren233/go-colorable v0.0.0-20230930131441-997304c961cb
 	github.com/zijiren233/go-uhc v0.2.6
 	github.com/zijiren233/ksync v0.2.0
-	github.com/zijiren233/livelib v0.3.3
+	github.com/zijiren233/livelib v0.3.6
 	github.com/zijiren233/stream v0.5.3
 	github.com/zijiren233/yaml-comment v0.2.2
 	go.etcd.io/etcd/client/v3 v3.6.1
@@ -77,7 +77,7 @@ require (
 	github.com/go-playground/locales v0.14.1 // indirect
 	github.com/go-playground/universal-translator v0.18.1 // indirect
 	github.com/go-playground/validator/v10 v10.26.0 // indirect
-	github.com/go-sql-driver/mysql v1.9.2 // indirect
+	github.com/go-sql-driver/mysql v1.9.3 // indirect
 	github.com/goccy/go-json v0.10.5 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0 // indirect
@@ -137,7 +137,7 @@ require (
 	modernc.org/libc v1.65.10 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
-	modernc.org/sqlite v1.37.1 // indirect
+	modernc.org/sqlite v1.38.0 // indirect
 )
 
 replace github.com/tetratelabs/wazero => github.com/tetratelabs/wazero v1.8.1

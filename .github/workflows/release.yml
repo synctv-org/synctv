@@ -94,13 +94,21 @@ jobs:
       matrix:
         targets:
           - Target: linux/386
+            CGO: true
           - Target: linux/amd64
+            CGO: true
           - Target: linux/arm
+            CGO: true
           - Target: linux/arm64
+            CGO: true
           - Target: linux/loong64
+            CGO: true
           - Target: linux/ppc64le
+            CGO: true
           - Target: linux/riscv64
+            CGO: true
           - Target: linux/s390x
+            CGO: true
           - Target: linux/mips
             CGO: true
           - Target: linux/mips64
@@ -110,9 +118,13 @@ jobs:
           - Target: linux/mipsle
             CGO: true
           - Target: darwin/amd64
+            CGO: true
           - Target: darwin/arm64
+            CGO: true
           - Target: windows/386
+            CGO: true
           - Target: windows/amd64
+            CGO: true
           - Target: windows/arm64
           - Target: freebsd/386
           - Target: freebsd/amd64

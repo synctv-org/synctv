@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"text/template"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -373,12 +374,13 @@ func handleChatMessage(cli *op.Client, message string) error {
 	if message == "" {
 		return sendErrorMessage(cli, "message is empty")
 	}
-	if len(message) > MaxChatMessageLength {
+	sanitizedMessage := template.HTMLEscapeString(message)
+	if len(sanitizedMessage) > MaxChatMessageLength {
 		return sendErrorMessage(cli, "message too long")
 	}
-	err := cli.SendChatMessage(message)
+	err := cli.SendChatMessage(sanitizedMessage)
 	if err != nil && errors.Is(err, model.ErrNoPermission) {
-		return sendErrorMessage(cli, fmt.Sprintf("send chat message error: %v", err))
+		return sendErrorMessage(cli, "failed to send message due to permission issue")
 	}
 	return err
 }

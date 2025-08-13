@@ -1,7 +1,7 @@
 version: "2"
 
 run:
-  go: "1.24"
+  go: "1.25.0"
   relative-path-mode: gomod
   modules-download-mode: readonly
 

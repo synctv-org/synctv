@@ -1,3 +1,13 @@
+FROM node:18-alpine AS web-builder
+
+WORKDIR /synctv-web
+
+COPY ./synctv-web/ ./
+
+RUN npm ci || npm install
+
+RUN npm run build
+
 FROM golang:1.25-alpine AS builder
 
 ARG VERSION
@@ -7,6 +17,8 @@ WORKDIR /synctv
 COPY ./ ./
 
 RUN apk add --no-cache bash curl git g++
+
+COPY --from=web-builder /synctv-web/dist/ /synctv/public/dist/
 
 RUN curl -sL \
     https://raw.githubusercontent.com/zijiren233/go-build-action/refs/tags/v1/build.sh | \

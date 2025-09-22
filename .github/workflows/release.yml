@@ -126,13 +126,10 @@ jobs:
           - Target: windows/amd64
             CGO: true
           - Target: windows/arm64
-          - Target: freebsd/386
           - Target: freebsd/amd64
-          - Target: freebsd/arm
           - Target: freebsd/arm64
           - Target: openbsd/amd64
           - Target: openbsd/arm64
-          - Target: netbsd/amd64
     steps:
       - name: Checkout
         uses: actions/checkout@v4

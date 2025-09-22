@@ -145,5 +145,3 @@ require (
 	modernc.org/memory v1.11.0 // indirect
 	modernc.org/sqlite v1.39.0 // indirect
 )
-
-replace github.com/tetratelabs/wazero => github.com/tetratelabs/wazero v1.8.1

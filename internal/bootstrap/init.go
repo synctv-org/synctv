@@ -21,6 +21,7 @@ func New(conf ...Conf) *Bootstrap {
 	for _, c := range conf {
 		c(b)
 	}
+
 	return b
 }
 
@@ -37,5 +38,6 @@ func (b *Bootstrap) Run(ctx context.Context) error {
 			return err
 		}
 	}
+
 	return nil
 }

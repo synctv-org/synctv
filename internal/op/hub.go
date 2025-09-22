@@ -68,6 +68,7 @@ func (h *Hub) Start() error {
 		go h.serve()
 		go h.ping()
 	})
+
 	return nil
 }
 
@@ -79,14 +80,17 @@ func (h *Hub) serve() {
 			h.clients.Range(func(_ string, clients *clients) bool {
 				clients.lock.RLock()
 				defer clients.lock.RUnlock()
+
 				for _, c := range clients.m {
 					if utils.In(message.ignoreUserID, c.u.ID) ||
 						utils.In(message.ignoreConnID, c.ConnID()) {
 						continue
 					}
+
 					if message.rtcJoined && !c.RTCJoined() {
 						continue
 					}
+
 					if err := c.Send(message.data); err != nil {
 						c.Close()
 					}
@@ -104,6 +108,7 @@ func (h *Hub) serve() {
 func (h *Hub) ping() {
 	ticker := time.NewTicker(time.Second * 5)
 	defer ticker.Stop()
+
 	var (
 		pre     int64
 		current int64
@@ -121,6 +126,7 @@ func (h *Hub) ping() {
 				}); err != nil {
 					continue
 				}
+
 				pre = current
 			} else {
 				if err := h.Broadcast(&PingMessage{}); err != nil {
@@ -151,33 +157,42 @@ func (h *Hub) Close() error {
 	if !atomic.CompareAndSwapUint32(&h.closed, 0, 1) {
 		return ErrAlreadyClosed
 	}
+
 	close(h.exit)
 	h.clients.Range(func(id string, clients *clients) bool {
 		h.clients.CompareAndDelete(id, clients)
+
 		clients.lock.Lock()
 		defer clients.lock.Unlock()
+
 		for id, c := range clients.m {
 			delete(clients.m, id)
 			c.Close()
 		}
+
 		return true
 	})
 	h.wg.Wait()
 	close(h.broadcast)
+
 	return nil
 }
 
 func (h *Hub) Broadcast(data Message, conf ...BroadcastConf) error {
 	h.wg.Add(1)
 	defer h.wg.Done()
+
 	if h.Closed() {
 		return ErrAlreadyClosed
 	}
+
 	h.once.Done()
+
 	msg := &broadcastMessage{data: data}
 	for _, c := range conf {
 		c(msg)
 	}
+
 	select {
 	case h.broadcast <- msg:
 		return nil
@@ -190,23 +205,30 @@ func (h *Hub) RegClient(cli *Client) error {
 	if h.Closed() {
 		return ErrAlreadyClosed
 	}
+
 	err := h.Start()
 	if err != nil {
 		return err
 	}
+
 	c, _ := h.clients.LoadOrStore(cli.u.ID, &clients{})
+
 	c.lock.Lock()
 	defer c.lock.Unlock()
+
 	newC, loaded := h.clients.Load(cli.u.ID)
 	if !loaded || c != newC {
 		return h.RegClient(cli)
 	}
+
 	if c.m == nil {
 		c.m = make(map[string]*Client)
 	} else if _, ok := c.m[cli.ConnID()]; ok {
 		return errors.New("client already exists")
 	}
+
 	c.m[cli.ConnID()] = cli
+
 	return nil
 }
 
@@ -214,22 +236,29 @@ func (h *Hub) UnRegClient(cli *Client) error {
 	if h.Closed() {
 		return ErrAlreadyClosed
 	}
+
 	if cli == nil {
 		return errors.New("user is nil")
 	}
+
 	c, loaded := h.clients.Load(cli.u.ID)
 	if !loaded {
 		return errors.New("client not found")
 	}
+
 	c.lock.Lock()
 	defer c.lock.Unlock()
+
 	if _, ok := c.m[cli.ConnID()]; !ok {
 		return errors.New("client not found")
 	}
+
 	delete(c.m, cli.ConnID())
+
 	if len(c.m) == 0 {
 		h.clients.CompareAndDelete(cli.u.ID, c)
 	}
+
 	return nil
 }
 
@@ -241,18 +270,22 @@ func (h *Hub) SendToUser(userID string, data Message) (err error) {
 	if h.Closed() {
 		return ErrAlreadyClosed
 	}
+
 	cli, ok := h.clients.Load(userID)
 	if !ok {
 		return nil
 	}
+
 	cli.lock.RLock()
 	defer cli.lock.RUnlock()
+
 	for _, c := range cli.m {
 		if err = c.Send(data); err != nil {
 			c.Close()
 		}
 	}
-	return
+
+	return err
 }
 
 func (h *Hub) SendToConnID(userID, connID string, data Message) error {
@@ -260,6 +293,7 @@ func (h *Hub) SendToConnID(userID, connID string, data Message) error {
 	if !ok {
 		return nil
 	}
+
 	return cli.Send(data)
 }
 
@@ -268,7 +302,9 @@ func (h *Hub) GetClientByConnID(userID, connID string) (*Client, bool) {
 	if !ok {
 		return nil, false
 	}
+
 	client, ok := c.m[connID]
+
 	return client, ok
 }
 
@@ -282,11 +318,14 @@ func (h *Hub) OnlineCount(userID string) int {
 	if !ok {
 		return 0
 	}
+
 	c.lock.RLock()
 	defer c.lock.RUnlock()
+
 	if len(c.m) == 0 {
 		h.clients.CompareAndDelete(userID, c)
 	}
+
 	return len(c.m)
 }
 
@@ -294,14 +333,18 @@ func (h *Hub) KickUser(userID string) error {
 	if h.Closed() {
 		return ErrAlreadyClosed
 	}
+
 	cli, ok := h.clients.Load(userID)
 	if !ok {
 		return nil
 	}
+
 	cli.lock.RLock()
 	defer cli.lock.RUnlock()
+
 	for _, c := range cli.m {
 		c.Close()
 	}
+
 	return nil
 }

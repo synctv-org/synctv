@@ -9,7 +9,6 @@ import (
 	"github.com/synctv-org/synctv/internal/version"
 )
 
-//nolint:forbidigo
 var VersionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print the version number of Sync TV Server",

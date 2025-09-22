@@ -29,10 +29,12 @@ func AuthRtmpPublish(authorization string) (movieID string, err error) {
 	if err != nil {
 		return "", errors.New("auth failed")
 	}
+
 	claims, ok := t.Claims.(*Claims)
 	if !ok {
 		return "", errors.New("auth failed")
 	}
+
 	return claims.MovieID, nil
 }
 
@@ -43,6 +45,7 @@ func NewRtmpAuthorization(movieID string) (string, error) {
 			NotBefore: jwt.NewNumericDate(time.Now()),
 		},
 	}
+
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).
 		SignedString(stream.StringToBytes(conf.Conf.Jwt.Secret))
 }

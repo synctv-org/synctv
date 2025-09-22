@@ -100,6 +100,7 @@ func CreateRoom(ctx *gin.Context) {
 			http.StatusBadRequest,
 			model.NewAPIErrorStringResp("create room is disabled"),
 		)
+
 		return
 	}
 
@@ -217,6 +218,7 @@ func RoomList(ctx *gin.Context) {
 				ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 				return
 			}
+
 			scopes = append(
 				scopes,
 				db.WhereRoomNameLikeOrCreatorInOrRoomsIDLike(keyword, ids, keyword),
@@ -230,6 +232,7 @@ func RoomList(ctx *gin.Context) {
 				ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 				return
 			}
+
 			scopes = append(scopes, db.WhereCreatorIDIn(ids))
 		case "id":
 			scopes = append(scopes, db.WhereRoomsIDLike(keyword))
@@ -263,6 +266,7 @@ func RoomList(ctx *gin.Context) {
 			http.StatusBadRequest,
 			model.NewAPIErrorStringResp("not support sort"),
 		)
+
 		return
 	}
 
@@ -284,6 +288,7 @@ func genRoomListResp(scopes ...func(db *gorm.DB) *gorm.DB) ([]*model.RoomListRes
 	if err != nil {
 		return nil, err
 	}
+
 	resp := make([]*model.RoomListResp, len(rs))
 	for i, r := range rs {
 		resp[i] = &model.RoomListResp{
@@ -297,6 +302,7 @@ func genRoomListResp(scopes ...func(db *gorm.DB) *gorm.DB) ([]*model.RoomListRes
 			Status:       r.Status,
 		}
 	}
+
 	return resp, nil
 }
 
@@ -305,11 +311,13 @@ func genJoinedRoomListResp(scopes ...func(db *gorm.DB) *gorm.DB) ([]*model.Joine
 	if err != nil {
 		return nil, err
 	}
+
 	resp := make([]*model.JoinedRoomResp, len(rs))
 	for i, r := range rs {
 		if len(r.RoomMembers) == 0 {
 			return nil, fmt.Errorf("room %s load member failed", r.ID)
 		}
+
 		resp[i] = &model.JoinedRoomResp{
 			RoomListResp: model.RoomListResp{
 				RoomID:       r.ID,
@@ -325,11 +333,13 @@ func genJoinedRoomListResp(scopes ...func(db *gorm.DB) *gorm.DB) ([]*model.Joine
 			MemberRole:   r.RoomMembers[0].Role,
 		}
 	}
+
 	return resp, nil
 }
 
 func CheckRoom(ctx *gin.Context) {
 	log := middlewares.GetLogger(ctx)
+
 	roomID, err := middlewares.GetRoomIDFromContext(ctx)
 	if err != nil {
 		log.Errorf("check room failed: %v", err)
@@ -343,6 +353,7 @@ func CheckRoom(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewAPIErrorResp(err))
 		return
 	}
+
 	room := roomE.Value()
 
 	ctx.JSON(http.StatusOK, model.NewAPIDataResp(&model.CheckRoomResp{
@@ -373,6 +384,7 @@ func LoginRoom(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 		return
 	}
+
 	room := roomE.Value()
 
 	if room.IsBanned() {
@@ -387,6 +399,7 @@ func LoginRoom(ctx *gin.Context) {
 			http.StatusForbidden,
 			model.NewAPIErrorStringResp("room is pending, please wait for admin to approve"),
 		)
+
 		return
 	}
 
@@ -397,6 +410,7 @@ func LoginRoom(ctx *gin.Context) {
 			"permissions":      member.Permissions,
 			"adminPermissions": member.AdminPermissions,
 		}))
+
 		return
 	}
 
@@ -416,10 +430,13 @@ func LoginRoom(ctx *gin.Context) {
 					errors.New("this room was disabled join new user"),
 				),
 			)
+
 			return
 		}
+
 		log.Errorf("login room failed: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
+
 		return
 	}
 
@@ -454,6 +471,7 @@ func DeleteRoom(ctx *gin.Context) {
 
 	if err := user.DeleteRoom(room); err != nil {
 		log.Errorf("delete room failed: %v", err)
+
 		if errors.Is(err, dbModel.ErrNoPermission) {
 			ctx.AbortWithStatusJSON(
 				http.StatusForbidden,
@@ -461,9 +479,12 @@ func DeleteRoom(ctx *gin.Context) {
 					fmt.Errorf("delete room failed: %w", err),
 				),
 			)
+
 			return
 		}
+
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
+
 		return
 	}
 
@@ -484,6 +505,7 @@ func SetRoomPassword(ctx *gin.Context) {
 
 	if err := user.SetRoomPassword(room, req.Password); err != nil {
 		log.Errorf("set room password failed: %v", err)
+
 		if errors.Is(err, dbModel.ErrNoPermission) {
 			ctx.AbortWithStatusJSON(
 				http.StatusForbidden,
@@ -491,9 +513,12 @@ func SetRoomPassword(ctx *gin.Context) {
 					fmt.Errorf("set room password failed: %w", err),
 				),
 			)
+
 			return
 		}
+
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
+
 		return
 	}
 
@@ -521,6 +546,7 @@ func SetRoomSetting(ctx *gin.Context) {
 
 	if err := user.UpdateRoomSettings(room, req); err != nil {
 		log.Errorf("set room setting failed: %v", err)
+
 		if errors.Is(err, dbModel.ErrNoPermission) {
 			ctx.AbortWithStatusJSON(
 				http.StatusForbidden,
@@ -528,9 +554,12 @@ func SetRoomSetting(ctx *gin.Context) {
 					fmt.Errorf("set room setting failed: %w", err),
 				),
 			)
+
 			return
 		}
+
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
+
 		return
 	}
 

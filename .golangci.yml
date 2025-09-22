@@ -1,7 +1,7 @@
 version: "2"
 
 run:
-  go: "1.25.0"
+  go: "1.24"
   relative-path-mode: gomod
   modules-download-mode: readonly
 
@@ -69,6 +69,7 @@ linters:
     - usetesting
     - wastedassign
     - whitespace
+    - wsl_v5
   exclusions:
     generated: lax
     presets:
@@ -81,6 +82,13 @@ linters:
       - builtin$
       - examples$
   settings:
+    revive:
+      rules:
+        - name: var-naming
+          arguments:
+            - []
+            - []
+            - [{ skipPackageNameChecks: true }]
     copyloopvar:
       check-alias: true
     cyclop:
@@ -88,6 +96,8 @@ linters:
     errcheck:
       check-type-assertions: true
     forbidigo:
+      forbid:
+        - pattern: ^print(ln)?$
       analyze-types: true
     prealloc:
       for-loops: true
@@ -95,6 +105,7 @@ linters:
       dot-import-whitelist: []
       http-status-code-whitelist: []
     usestdlibvars:
+      time-date-month: true
       time-month: true
       time-layout: true
       crypto-hash: true
@@ -107,6 +118,9 @@ linters:
     gosec:
       excludes:
         - G404
+    wsl_v5:
+      allow-whole-block: true
+      branch-max-lines: 4
 
 formatters:
   enable:
@@ -129,5 +143,3 @@ formatters:
           replacement: "a[b:]"
     gofumpt:
       extra-rules: true
-    golines:
-      shorten-comments: true

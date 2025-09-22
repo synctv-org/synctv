@@ -55,7 +55,9 @@ func (p *DiscordProvider) GetUserInfo(
 	if err != nil {
 		return nil, err
 	}
+
 	client := p.config.Client(ctx, tk)
+
 	req, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodGet,
@@ -65,16 +67,20 @@ func (p *DiscordProvider) GetUserInfo(
 	if err != nil {
 		return nil, err
 	}
+
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+
 	ui := discordUserInfo{}
+
 	err = json.NewDecoder(resp.Body).Decode(&ui)
 	if err != nil {
 		return nil, err
 	}
+
 	return &provider.UserInfo{
 		Username:       ui.Data.Name,
 		ProviderUserID: ui.Data.ID,

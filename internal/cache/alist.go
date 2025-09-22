@@ -47,6 +47,7 @@ func AlistAuthorizationCacheWithUserIDInitFunc(
 	if err != nil {
 		return nil, err
 	}
+
 	return AlistAuthorizationCacheWithConfigInitFunc(ctx, v)
 }
 
@@ -64,12 +65,14 @@ func AlistAuthorizationCacheWithConfigInitFunc(
 		if err != nil {
 			return nil, err
 		}
+
 		return &AlistUserCacheData{
 			Host:     v.Host,
 			ServerID: v.ServerID,
 			Backend:  v.Backend,
 		}, nil
 	}
+
 	resp, err := cli.Login(ctx, &alist.LoginReq{
 		Host:     v.Host,
 		Username: v.Username,
@@ -133,6 +136,7 @@ func newAliSubtitles(
 		if v.GetStatus() != "finished" {
 			return nil
 		}
+
 		url := v.GetUrl()
 		caches[i] = &AlistSubtitle{
 			Cache: refreshcache0.NewRefreshCache(func(ctx context.Context) ([]byte, error) {
@@ -140,14 +144,17 @@ func newAliSubtitles(
 				if err != nil {
 					return nil, err
 				}
+
 				resp, err := uhc.Do(r)
 				if err != nil {
 					return nil, err
 				}
 				defer resp.Body.Close()
+
 				if resp.StatusCode != http.StatusOK {
 					return nil, fmt.Errorf("status code: %d", resp.StatusCode)
 				}
+
 				if resp.ContentLength > subtitleMaxLength {
 					return nil, fmt.Errorf(
 						"subtitle too large, got: %d, max: %d",
@@ -155,6 +162,7 @@ func newAliSubtitles(
 						subtitleMaxLength,
 					)
 				}
+
 				return io.ReadAll(io.LimitReader(resp.Body, subtitleMaxLength))
 			}, -1),
 			Name: v.GetLanguage(),
@@ -162,6 +170,7 @@ func newAliSubtitles(
 			Type: utils.GetFileExtension(v.GetUrl()),
 		}
 	}
+
 	return caches
 }
 
@@ -171,10 +180,12 @@ func genAliM3U8ListFile(
 	buf := bytes.NewBuffer(nil)
 	buf.WriteString("#EXTM3U\n")
 	buf.WriteString("#EXT-X-VERSION:3\n")
+
 	for _, v := range urls {
 		if v.GetStatus() != "finished" {
 			return nil
 		}
+
 		fmt.Fprintf(
 			buf,
 			"#EXT-X-STREAM-INF:BANDWIDTH=%d,RESOLUTION=%dx%d,NAME=\"%d\"\n",
@@ -185,6 +196,7 @@ func genAliM3U8ListFile(
 		)
 		buf.WriteString(v.GetUrl() + "\n")
 	}
+
 	return buf.Bytes()
 }
 
@@ -211,11 +223,13 @@ func NewAlistMovieCacheInitFunc(
 		if err != nil {
 			return nil, err
 		}
+
 		if aucd.Host == "" {
 			return nil, errors.New("not bind alist vendor")
 		}
 
 		cli := vendor.LoadAlistClient(movie.VendorInfo.Backend)
+
 		fg, err := getFsGet(
 			ctx,
 			cli,
@@ -261,12 +275,15 @@ func validateArgs(args *AlistMovieCacheFuncArgs, movie *model.Movie, subPath str
 	if args == nil {
 		return errors.New("need alist user cache")
 	}
+
 	if args.UserCache == nil {
 		return errors.New("need alist user cache")
 	}
+
 	if movie.IsFolder && subPath == "" {
 		return errors.New("sub path is empty")
 	}
+
 	return nil
 }
 
@@ -281,6 +298,7 @@ func getServerIDAndPath(movie *model.Movie, subPath string) (string, string, err
 		if !strings.HasPrefix(newPath, truePath) {
 			return "", "", errors.New("sub path is not in parent path")
 		}
+
 		truePath = newPath
 	}
 
@@ -315,6 +333,7 @@ func processSubtitles(
 		if related.GetType() != 4 {
 			continue
 		}
+
 		if utils.GetFileExtension(related.GetName()) == "xml" {
 			continue
 		}
@@ -334,6 +353,7 @@ func processSubtitles(
 		}
 		cache.Subtitles = append(cache.Subtitles, subtitle)
 	}
+
 	return nil
 }
 
@@ -342,14 +362,17 @@ func fetchSubtitleContent(ctx context.Context, url string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	resp, err := uhc.Do(r)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("status code: %d", resp.StatusCode)
 	}
+
 	if resp.ContentLength > subtitleMaxLength {
 		return nil, fmt.Errorf(
 			"subtitle too large, got: %d, max: %d",
@@ -357,6 +380,7 @@ func fetchSubtitleContent(ctx context.Context, url string) ([]byte, error) {
 			subtitleMaxLength,
 		)
 	}
+
 	return io.ReadAll(io.LimitReader(resp.Body, subtitleMaxLength))
 }
 
@@ -383,8 +407,10 @@ func processAliProvider(
 			if err != nil {
 				return nil, err
 			}
+
 			url = u.GetRawUrl()
 		}
+
 		fo, err := cli.FsOther(ctx, &alist.FsOtherReq{
 			Host:     aucd.Host,
 			Token:    aucd.Token,
@@ -395,6 +421,7 @@ func processAliProvider(
 		if err != nil {
 			return nil, err
 		}
+
 		return &AlistAliCache{
 			URL: url,
 			M3U8ListFile: genAliM3U8ListFile(

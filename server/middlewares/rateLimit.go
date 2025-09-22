@@ -16,6 +16,7 @@ func NewLimiter(period time.Duration, limit int64, options ...limiter.Option) gi
 		Period: period,
 		Limit:  limit,
 	}, options...)
+
 	return mgin.NewMiddleware(limiter, mgin.WithLimitReachedHandler(func(c *gin.Context) {
 		c.JSON(http.StatusTooManyRequests, model.NewAPIErrorStringResp("too many requests"))
 	}))

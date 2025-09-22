@@ -100,6 +100,7 @@ func newString(
 	for _, option := range options {
 		option(s)
 	}
+
 	return s
 }
 
@@ -208,6 +209,7 @@ func (s *String) SetString(value string) error {
 func (s *String) set(value string) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
+
 	s.value = value
 }
 
@@ -237,16 +239,18 @@ func (s *String) Set(v string) (err error) {
 		s.afterSet(s, v)
 	}
 
-	return
+	return err
 }
 
 func (s *String) Get() string {
 	s.lock.RLock()
 	defer s.lock.RUnlock()
+
 	v := s.value
 	if s.afterGet != nil {
 		v = s.afterGet(s, v)
 	}
+
 	return v
 }
 
@@ -263,6 +267,7 @@ func NewStringSetting(
 	if loaded {
 		panic(fmt.Sprintf("setting %s already exists", k))
 	}
+
 	return CoverStringSetting(k, v, g, options...)
 }
 
@@ -273,11 +278,14 @@ func CoverStringSetting(
 ) StringSetting {
 	s := newString(k, v, g, options...)
 	Settings[k] = s
+
 	if GroupSettings[g] == nil {
 		GroupSettings[g] = make(map[model.SettingGroup]Setting)
 	}
+
 	GroupSettings[g][k] = s
 	pushNeedInit(s)
+
 	return s
 }
 
@@ -286,7 +294,9 @@ func LoadStringSetting(k string) (StringSetting, bool) {
 	if !ok {
 		return nil, false
 	}
+
 	ss, ok := s.(StringSetting)
+
 	return ss, ok
 }
 
@@ -299,5 +309,6 @@ func LoadOrNewStringSetting(
 	if ok {
 		return s
 	}
+
 	return NewStringSetting(k, v, g, options...)
 }

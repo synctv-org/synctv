@@ -49,7 +49,9 @@ func (g *GitlabProvider) GetUserInfo(ctx context.Context, code string) (*provide
 	if err != nil {
 		return nil, err
 	}
+
 	client := g.config.Client(ctx, tk)
+
 	req, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodGet,
@@ -59,11 +61,13 @@ func (g *GitlabProvider) GetUserInfo(ctx context.Context, code string) (*provide
 	if err != nil {
 		return nil, err
 	}
+
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+
 	return nil, FormatNotImplementedError("gitlab")
 }
 

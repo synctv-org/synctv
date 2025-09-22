@@ -59,16 +59,19 @@ func fmtContentRange(start, end, total int64) string {
 	if total == -1 && end == -1 {
 		return "bytes */*"
 	}
+
 	totalStr := "*"
 	if total >= 0 {
 		totalStr = strconv.FormatInt(total, 10)
 	}
+
 	if end == -1 {
 		if total >= 0 {
 			end = total - 1
 		}
 		return fmt.Sprintf("bytes %d-%d/%s", start, end, totalStr)
 	}
+
 	return fmt.Sprintf("bytes %d-%d/%s", start, end, totalStr)
 }
 
@@ -76,12 +79,15 @@ func contentLength(start, end, total int64) int64 {
 	if total == -1 && end == -1 {
 		return -1
 	}
+
 	if end == -1 {
 		return total - start
 	}
+
 	if end >= total && total != -1 {
 		return total - start
 	}
+
 	return end - start + 1
 }
 
@@ -90,6 +96,7 @@ func fmtContentLength(start, end, total int64) string {
 	if length == -1 {
 		return ""
 	}
+
 	return strconv.FormatInt(length, 10)
 }
 
@@ -106,6 +113,7 @@ func (c *SliceCacheProxy) Proxy(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	alignedOffset := alignedOffset(byteRange.Start, c.sliceSize)
+
 	cacheItem, cached, err := c.getCacheItem(alignedOffset)
 	if err != nil {
 		http.Error(
@@ -113,13 +121,16 @@ func (c *SliceCacheProxy) Proxy(w http.ResponseWriter, r *http.Request) error {
 			fmt.Sprintf("Failed to get cache item: %v", err),
 			http.StatusInternalServerError,
 		)
+
 		return fmt.Errorf("failed to get cache item: %w", err)
 	}
 
 	c.setResponseHeaders(w, byteRange, cacheItem, cached, r.Header.Get("Range") != "")
+
 	if err := c.writeResponse(w, byteRange, alignedOffset, cacheItem); err != nil {
 		return fmt.Errorf("failed to write response: %w", err)
 	}
+
 	return nil
 }
 
@@ -146,10 +157,12 @@ func (c *SliceCacheProxy) setResponseHeaders(
 	} else {
 		w.Header().Set(cacheStatusHeader, "MISS")
 	}
+
 	w.Header().Set("Accept-Ranges", "bytes")
 	w.Header().
 		Set("Content-Length", fmtContentLength(byteRange.Start, byteRange.End, cacheItem.Metadata.ContentTotalLength))
 	w.Header().Set("Content-Type", cacheItem.Metadata.ContentType)
+
 	if isRangeRequest {
 		w.Header().
 			Set("Content-Range", fmtContentRange(byteRange.Start, byteRange.End, cacheItem.Metadata.ContentTotalLength))
@@ -185,10 +198,12 @@ func (c *SliceCacheProxy) writeResponse(
 		if n > remainingLength {
 			n = remainingLength
 		}
+
 		if n > 0 {
 			if _, err := w.Write(cacheItem.Data[sliceOffset : sliceOffset+n]); err != nil {
 				return fmt.Errorf("failed to write initial data slice: %w", err)
 			}
+
 			remainingLength -= n
 		}
 	}
@@ -205,12 +220,15 @@ func (c *SliceCacheProxy) writeResponse(
 		if n > remainingLength {
 			n = remainingLength
 		}
+
 		if n > 0 {
 			if _, err := w.Write(cacheItem.Data[:n]); err != nil {
 				return fmt.Errorf("failed to write data slice at offset %d: %w", currentOffset, err)
 			}
+
 			remainingLength -= n
 		}
+
 		currentOffset += c.sliceSize
 	}
 
@@ -226,6 +244,7 @@ func (c *SliceCacheProxy) getCacheItem(alignedOffset int64) (*CacheItem, bool, e
 	}
 
 	cacheKey := cacheKey(c.key, alignedOffset, c.sliceSize)
+
 	mu.Lock(cacheKey)
 	defer mu.Unlock(cacheKey)
 
@@ -234,6 +253,7 @@ func (c *SliceCacheProxy) getCacheItem(alignedOffset int64) (*CacheItem, bool, e
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to get item from cache: %w", err)
 	}
+
 	if ok {
 		return slice, true, nil
 	}
@@ -257,9 +277,11 @@ func (c *SliceCacheProxy) contentTotalLength() (int64, error) {
 	if err != nil {
 		return -1, fmt.Errorf("failed to get content total length from source: %w", err)
 	}
+
 	if total == -1 {
 		return -1, errors.New("source does not support range requests")
 	}
+
 	return total, nil
 }
 
@@ -267,6 +289,7 @@ func (c *SliceCacheProxy) fetchFromSource(offset int64) (*CacheItem, error) {
 	if offset < 0 {
 		return nil, fmt.Errorf("source offset cannot be negative, got: %d", offset)
 	}
+
 	if _, err := c.r.Seek(offset, io.SeekStart); err != nil {
 		return nil, fmt.Errorf("failed to seek to offset %d in source: %w", offset, err)
 	}
@@ -274,6 +297,7 @@ func (c *SliceCacheProxy) fetchFromSource(offset int64) (*CacheItem, error) {
 	var total int64 = -1
 
 	buf := make([]byte, c.sliceSize)
+
 	n, err := io.ReadFull(c.r, buf)
 	if err != nil {
 		if !errors.Is(err, io.ErrUnexpectedEOF) {
@@ -284,10 +308,12 @@ func (c *SliceCacheProxy) fetchFromSource(offset int64) (*CacheItem, error) {
 				err,
 			)
 		}
+
 		total, err = c.contentTotalLength()
 		if err != nil {
 			return nil, fmt.Errorf("failed to get content total length from source: %w", err)
 		}
+
 		if total != offset+int64(n) {
 			return nil, fmt.Errorf(
 				"source content total length mismatch, got: %d, expected: %d, %w",
@@ -350,6 +376,7 @@ func ParseByteRange(r string) (*ByteRange, error) {
 	}
 
 	r = strings.TrimPrefix(r, "bytes=")
+
 	parts := strings.Split(r, "-")
 	if len(parts) != 2 {
 		return nil, fmt.Errorf(
@@ -365,14 +392,17 @@ func ParseByteRange(r string) (*ByteRange, error) {
 		return nil, fmt.Errorf("range header cannot have empty start and end values: %s", r)
 	}
 
-	var start, end int64 = 0, -1
-	var err error
+	var (
+		start, end int64 = 0, -1
+		err        error
+	)
 
 	if parts[0] != "" {
 		start, err = strconv.ParseInt(parts[0], 10, 64)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse range start value '%s': %w", parts[0], err)
 		}
+
 		if start < 0 {
 			return nil, fmt.Errorf("range start value must be non-negative, got: %d", start)
 		}
@@ -383,9 +413,11 @@ func ParseByteRange(r string) (*ByteRange, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse range end value '%s': %w", parts[1], err)
 		}
+
 		if end < 0 {
 			return nil, fmt.Errorf("range end value must be non-negative, got: %d", end)
 		}
+
 		if start > end {
 			return nil, fmt.Errorf(
 				"range start value (%d) cannot be greater than end value (%d)",

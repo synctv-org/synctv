@@ -33,6 +33,7 @@ func (s *SetUserPasswordReq) Validate() error {
 	case !alnumPrintReg.MatchString(s.Password):
 		return ErrPasswordHasInvalidChar
 	}
+
 	return nil
 }
 
@@ -59,6 +60,7 @@ func (l *LoginUserReq) Validate() error {
 		if len(l.Username) > 32 {
 			return ErrUsernameTooLong
 		}
+
 		if !alnumPrintHanReg.MatchString(l.Username) {
 			return ErrUsernameHasInvalidChar
 		}
@@ -78,6 +80,7 @@ func (l *LoginUserReq) Validate() error {
 	case !alnumPrintReg.MatchString(l.Password):
 		return ErrPasswordHasInvalidChar
 	}
+
 	return nil
 }
 
@@ -94,12 +97,15 @@ func (u *UserSignupPasswordReq) Validate() error {
 	if u.Username == "" {
 		return errors.New("username is empty")
 	}
+
 	if len(u.Username) > 32 {
 		return ErrUsernameTooLong
 	}
+
 	if !alnumPrintHanReg.MatchString(u.Username) {
 		return ErrUsernameHasInvalidChar
 	}
+
 	switch {
 	case u.Password == "":
 		return FormatEmptyPasswordError("user")
@@ -108,6 +114,7 @@ func (u *UserSignupPasswordReq) Validate() error {
 	case !alnumPrintReg.MatchString(u.Password):
 		return ErrPasswordHasInvalidChar
 	}
+
 	return nil
 }
 
@@ -132,6 +139,7 @@ func (s *SetUsernameReq) Validate() error {
 	case !alnumPrintHanReg.MatchString(s.Username):
 		return ErrUsernameHasInvalidChar
 	}
+
 	return nil
 }
 
@@ -188,12 +196,15 @@ func (u *UserSendBindEmailCaptchaReq) Validate() error {
 	case !emailReg.MatchString(u.Email):
 		return ErrInvalidEmail
 	}
+
 	if u.CaptchaID == "" {
 		return errors.New("captcha id is empty")
 	}
+
 	if u.Answer == "" {
 		return errors.New("answer is empty")
 	}
+
 	return nil
 }
 
@@ -215,9 +226,11 @@ func (u *UserBindEmailReq) Validate() error {
 	case !emailReg.MatchString(u.Email):
 		return ErrInvalidEmail
 	}
+
 	if u.Captcha == "" {
 		return errors.New("captcha is empty")
 	}
+
 	return nil
 }
 
@@ -236,6 +249,7 @@ func (u *UserSignupEmailReq) Validate() error {
 	if err := u.UserBindEmailReq.Validate(); err != nil {
 		return err
 	}
+
 	switch {
 	case u.Password == "":
 		return FormatEmptyPasswordError("user")
@@ -244,6 +258,7 @@ func (u *UserSignupEmailReq) Validate() error {
 	case !alnumPrintReg.MatchString(u.Password):
 		return ErrPasswordHasInvalidChar
 	}
+
 	return nil
 }
 

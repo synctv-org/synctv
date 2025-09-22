@@ -34,6 +34,7 @@ func SelfUpdate(cmd *cobra.Command, _ []string) error {
 		log.Errorf("get version info error: %v", err)
 		return fmt.Errorf("get version info error: %w", err)
 	}
+
 	return v.SelfUpdate(cmd.Context())
 }
 

@@ -34,6 +34,7 @@ func (r *Room) lazyInitHub() *Hub {
 			return r.lazyInitHub()
 		}
 	}
+
 	return h
 }
 
@@ -90,6 +91,7 @@ func (r *Room) close() {
 			h.Close()
 		}
 	}
+
 	r.movies.Close()
 	r.members.Clear()
 }
@@ -99,6 +101,7 @@ func (r *Room) UpdateMovie(movieID string, movie *model.MovieBase) error {
 	if err != nil {
 		return err
 	}
+
 	return r.movies.Update(movieID, movie)
 }
 
@@ -118,10 +121,12 @@ func (r *Room) UserRole(userID string) (model.RoomMemberRole, error) {
 	if r.IsCreator(userID) {
 		return model.RoomMemberRoleCreator, nil
 	}
+
 	rur, err := r.LoadMember(userID)
 	if err != nil {
 		return model.RoomMemberRoleUnknown, err
 	}
+
 	return rur.Role, nil
 }
 
@@ -131,6 +136,7 @@ func (r *Room) IsAdmin(userID string) bool {
 	if err != nil {
 		return false
 	}
+
 	return role.IsAdmin()
 }
 
@@ -187,10 +193,12 @@ func (r *Room) LoadOrCreateMemberStatus(userID string) (model.RoomMemberStatus, 
 	if r.IsCreator(userID) {
 		return model.RoomMemberStatusActive, nil
 	}
+
 	rur, err := r.LoadOrCreateMember(userID)
 	if err != nil {
 		return model.RoomMemberStatusNotJoined, err
 	}
+
 	return rur.Status, nil
 }
 
@@ -198,6 +206,7 @@ func (r *Room) LoadMemberStatus(userID string) (model.RoomMemberStatus, error) {
 	if r.IsCreator(userID) {
 		return model.RoomMemberStatusActive, nil
 	}
+
 	rur, err := r.LoadMember(userID)
 	if err != nil {
 		if errors.Is(err, db.NotFoundError(db.ErrRoomMemberNotFound)) {
@@ -205,6 +214,7 @@ func (r *Room) LoadMemberStatus(userID string) (model.RoomMemberStatus, error) {
 		}
 		return model.RoomMemberStatusNotJoined, err
 	}
+
 	return rur.Status, nil
 }
 
@@ -212,13 +222,16 @@ func (r *Room) LoadOrCreateMember(userID string) (*model.RoomMember, error) {
 	if r.Settings.DisableJoinNewUser {
 		return r.LoadMember(userID)
 	}
+
 	if r.IsGuest(userID) && (r.Settings.DisableGuest || !settings.EnableGuest.Get()) {
 		return nil, errors.New("guest is disabled")
 	}
+
 	member, ok := r.members.Load(userID)
 	if ok {
 		return member, nil
 	}
+
 	var conf []db.CreateRoomMemberRelationConfig
 	if r.IsCreator(userID) {
 		conf = append(
@@ -244,16 +257,19 @@ func (r *Room) LoadOrCreateMember(userID string) (*model.RoomMember, error) {
 				db.WithRoomMemberAdminPermissions(model.NoAdminPermission),
 			)
 		}
+
 		if r.Settings.JoinNeedReview {
 			conf = append(conf, db.WithRoomMemberStatus(model.RoomMemberStatusPending))
 		} else {
 			conf = append(conf, db.WithRoomMemberStatus(model.RoomMemberStatusActive))
 		}
 	}
+
 	member, err := db.FirstOrCreateRoomMemberRelation(r.ID, userID, conf...)
 	if err != nil {
 		return nil, err
 	}
+
 	return r.storeMember(userID, member), nil
 }
 
@@ -261,14 +277,17 @@ func (r *Room) LoadMember(userID string) (*model.RoomMember, error) {
 	if r.IsGuest(userID) && (r.Settings.DisableGuest || !settings.EnableGuest.Get()) {
 		return nil, errors.New("guest is disabled")
 	}
+
 	member, ok := r.members.Load(userID)
 	if ok {
 		return member, nil
 	}
+
 	member, err := db.GetRoomMember(r.ID, userID)
 	if err != nil {
 		return nil, fmt.Errorf("get room member failed: %w", err)
 	}
+
 	return r.storeMember(userID, member), nil
 }
 
@@ -282,6 +301,7 @@ func (r *Room) storeMember(userID string, member *model.RoomMember) *model.RoomM
 	case r.IsGuest(userID):
 		member.Role = model.RoomMemberRoleMember
 		member.Permissions = r.Settings.GuestPermissions
+
 		member.AdminPermissions = model.NoAdminPermission
 		if member.Status.IsBanned() {
 			member.Status = model.RoomMemberStatusActive
@@ -289,7 +309,9 @@ func (r *Room) storeMember(userID string, member *model.RoomMember) *model.RoomM
 	case member.Role.IsAdmin():
 		member.Permissions = model.AllPermissions
 	}
+
 	member, _ = r.members.LoadOrStore(userID, member)
+
 	return member
 }
 
@@ -297,10 +319,12 @@ func (r *Room) LoadRoomMemberPermission(userID string) (model.RoomMemberPermissi
 	if r.IsCreator(userID) {
 		return model.AllPermissions, nil
 	}
+
 	member, err := r.LoadMember(userID)
 	if err != nil {
 		return model.NoPermission, err
 	}
+
 	return member.Permissions, nil
 }
 
@@ -308,10 +332,12 @@ func (r *Room) LoadRoomAdminPermission(userID string) (model.RoomAdminPermission
 	if r.IsCreator(userID) {
 		return model.AllAdminPermissions, nil
 	}
+
 	member, err := r.LoadMember(userID)
 	if err != nil {
 		return model.NoAdminPermission, err
 	}
+
 	return member.AdminPermissions, nil
 }
 
@@ -323,9 +349,11 @@ func (r *Room) SetPassword(password string) error {
 	if r.CheckPassword(password) && r.NeedPassword() {
 		return errors.New("password is the same")
 	}
+
 	var hashedPassword []byte
 	if password != "" {
 		var err error
+
 		hashedPassword, err = bcrypt.GenerateFromPassword(
 			stream.StringToBytes(password),
 			bcrypt.DefaultCost,
@@ -334,7 +362,9 @@ func (r *Room) SetPassword(password string) error {
 			return err
 		}
 	}
+
 	r.HashedPassword = hashedPassword
+
 	return db.SetRoomHashedPassword(r.ID, hashedPassword)
 }
 
@@ -345,19 +375,23 @@ func (r *Room) checkCanModifyMovie(id string) error {
 		}
 		return nil
 	}
+
 	cid := r.current.current.Movie.ID
 	if cid != "" {
 		if cid == id {
 			return errors.New("cannot modify current movie")
 		}
+
 		ok, err := r.movies.IsParentFolder(cid, id)
 		if err != nil {
 			return fmt.Errorf("check parent failed: %w", err)
 		}
+
 		if ok {
 			return errors.New("cannot modify current movie's parent")
 		}
 	}
+
 	return nil
 }
 
@@ -365,6 +399,7 @@ func (r *Room) checkCanModifyMovies(ids []string) error {
 	if len(ids) == 0 {
 		return errors.New("ids is nil")
 	}
+
 	cid := r.current.current.Movie.ID
 	for _, id := range ids {
 		if id == "" {
@@ -372,19 +407,23 @@ func (r *Room) checkCanModifyMovies(ids []string) error {
 				return errors.New("cannot modify current movie")
 			}
 		}
+
 		if cid != "" {
 			if id == cid {
 				return errors.New("cannot modify current movie")
 			}
+
 			ok, err := r.movies.IsParentFolder(cid, id)
 			if err != nil {
 				return fmt.Errorf("check parent failed: %w", err)
 			}
+
 			if ok {
 				return errors.New("cannot modify current movie's parent")
 			}
 		}
 	}
+
 	return nil
 }
 
@@ -393,6 +432,7 @@ func (r *Room) DeleteMovieByID(id string) error {
 	if err != nil {
 		return err
 	}
+
 	return r.movies.DeleteMovieByID(id)
 }
 
@@ -401,6 +441,7 @@ func (r *Room) DeleteMoviesByID(ids []string) error {
 	if err != nil {
 		return err
 	}
+
 	return r.movies.DeleteMoviesByID(ids)
 }
 
@@ -413,6 +454,7 @@ func (r *Room) ClearMoviesByParentID(parentID string) error {
 	if err != nil {
 		return err
 	}
+
 	return r.movies.DeleteMovieByParentID(parentID)
 }
 
@@ -436,6 +478,7 @@ func (r *Room) LoadCurrentMovie() (*Movie, error) {
 	if id == "" {
 		return nil, ErrNoCurrentMovie
 	}
+
 	return r.GetMovieByID(id)
 }
 
@@ -444,6 +487,7 @@ func (r *Room) CheckCurrentExpired(ctx context.Context, expireID uint64) (bool, 
 	if err != nil {
 		return false, err
 	}
+
 	return m.CheckExpired(ctx, expireID)
 }
 
@@ -459,26 +503,32 @@ func (r *Room) SetCurrentMovie(movieID, subPath string, play bool) error {
 		} else {
 			err = currentMovie.ClearCache()
 		}
+
 		if err != nil {
 			logrus.Errorf("clear current movie cache failed: %v", err)
 		}
 	}
+
 	if movieID == "" {
 		r.current.SetMovie(model.CurrentMovie{}, false)
 		return nil
 	}
+
 	m, err := r.GetMovieByID(movieID)
 	if err != nil {
 		return err
 	}
+
 	if m.IsFolder && !m.IsDynamicFolder() {
 		return errors.New("cannot set static folder as current movie")
 	}
+
 	r.current.SetMovie(model.CurrentMovie{
 		ID:      m.ID,
 		IsLive:  m.Live,
 		SubPath: subPath,
 	}, play)
+
 	return m.ClearCache()
 }
 
@@ -487,6 +537,7 @@ func (r *Room) SubPath(id string) string {
 	if m.ID == id {
 		return m.SubPath
 	}
+
 	return ""
 }
 
@@ -505,10 +556,12 @@ func (r *Room) GetMoviesWithPage(
 func (r *Room) NewClient(user *User, conn *websocket.Conn) (*Client, error) {
 	h := r.lazyInitHub()
 	cli := newClient(user, r, h, conn)
+
 	err := h.RegClient(cli)
 	if err != nil {
 		return nil, err
 	}
+
 	return cli, nil
 }
 
@@ -541,6 +594,7 @@ func (r *Room) SetSettings(settings *model.RoomSettings) error {
 	if err != nil {
 		return err
 	}
+
 	return r.afterUpdateSettings(settings)
 }
 
@@ -549,6 +603,7 @@ func (r *Room) UpdateSettings(settings map[string]any) error {
 	if err != nil {
 		return err
 	}
+
 	return r.afterUpdateSettings(rs)
 }
 
@@ -556,10 +611,12 @@ func (r *Room) afterUpdateSettings(rs *model.RoomSettings) error {
 	if r.Settings.GuestPermissions != rs.GuestPermissions {
 		r.members.Delete(db.GuestUserID)
 	}
+
 	r.Settings = rs
 	if rs.DisableGuest {
 		return r.KickUser(db.GuestUserID)
 	}
+
 	return nil
 }
 
@@ -577,10 +634,12 @@ func (r *Room) SetMemberPermissions(userID string, permissions model.RoomMemberP
 	if r.IsCreator(userID) {
 		return errors.New("you are creator, cannot set permissions")
 	}
+
 	if r.IsGuest(userID) {
 		return r.SetGuestPermissions(permissions)
 	}
 	defer r.members.Delete(userID)
+
 	return db.SetMemberPermissions(r.ID, userID, permissions)
 }
 
@@ -588,10 +647,12 @@ func (r *Room) AddMemberPermissions(userID string, permissions model.RoomMemberP
 	if r.IsGuest(userID) {
 		return r.SetGuestPermissions(r.Settings.GuestPermissions.Add(permissions))
 	}
+
 	if r.IsAdmin(userID) {
 		return errors.New("cannot add permissions to admin")
 	}
 	defer r.members.Delete(userID)
+
 	return db.AddMemberPermissions(r.ID, userID, permissions)
 }
 
@@ -602,10 +663,12 @@ func (r *Room) RemoveMemberPermissions(
 	if r.IsGuest(userID) {
 		return r.SetGuestPermissions(r.Settings.GuestPermissions.Remove(permissions))
 	}
+
 	if r.IsAdmin(userID) {
 		return errors.New("cannot remove permissions from admin")
 	}
 	defer r.members.Delete(userID)
+
 	return db.RemoveMemberPermissions(r.ID, userID, permissions)
 }
 
@@ -614,6 +677,7 @@ func (r *Room) ApprovePendingMember(userID string) error {
 		return errors.New("creator cannot be approved as a pending member")
 	}
 	defer r.members.Delete(userID)
+
 	return db.RoomApprovePendingMember(r.ID, userID)
 }
 
@@ -621,6 +685,7 @@ func (r *Room) BanMember(userID string) error {
 	if r.IsCreator(userID) {
 		return errors.New("creator cannot be banned")
 	}
+
 	if r.IsGuest(userID) {
 		return errors.New("please set whether to disable guest users in the room settings")
 	}
@@ -628,6 +693,7 @@ func (r *Room) BanMember(userID string) error {
 		r.members.Delete(userID)
 		_ = r.KickUser(userID)
 	}()
+
 	return db.RoomBanMember(r.ID, userID)
 }
 
@@ -635,10 +701,12 @@ func (r *Room) UnbanMember(userID string) error {
 	if r.IsCreator(userID) {
 		return errors.New("creator cannot be unbanned")
 	}
+
 	if r.IsGuest(userID) {
 		return errors.New("please set whether to enable guest users in the room settings")
 	}
 	defer r.members.Delete(userID)
+
 	return db.RoomUnbanMember(r.ID, userID)
 }
 
@@ -650,6 +718,7 @@ func (r *Room) DeleteMember(userID string) error {
 		r.members.Delete(userID)
 		_ = r.KickUser(userID)
 	}()
+
 	return db.DeleteRoomMember(r.ID, userID)
 }
 
@@ -661,15 +730,18 @@ func (r *Room) SetAdminPermissions(userID string, permissions model.RoomAdminPer
 	if r.IsCreator(userID) {
 		return errors.New("creator cannot set admin permissions")
 	}
+
 	if r.IsGuest(userID) {
 		return errors.New("cannot set admin permissions to guest")
 	}
+
 	if member, err := r.LoadMember(userID); err != nil {
 		return err
 	} else if !member.Role.IsAdmin() {
 		return errors.New("not admin")
 	}
 	defer r.members.Delete(userID)
+
 	return db.RoomSetAdminPermissions(r.ID, userID, permissions)
 }
 
@@ -677,15 +749,18 @@ func (r *Room) AddAdminPermissions(userID string, permissions model.RoomAdminPer
 	if r.IsCreator(userID) {
 		return errors.New("creator cannot add admin permissions")
 	}
+
 	if r.IsGuest(userID) {
 		return errors.New("cannot add admin permissions to guest")
 	}
+
 	if member, err := r.LoadMember(userID); err != nil {
 		return err
 	} else if !member.Role.IsAdmin() {
 		return errors.New("not admin")
 	}
 	defer r.members.Delete(userID)
+
 	return db.RoomAddAdminPermissions(r.ID, userID, permissions)
 }
 
@@ -693,15 +768,18 @@ func (r *Room) RemoveAdminPermissions(userID string, permissions model.RoomAdmin
 	if r.IsCreator(userID) {
 		return errors.New("creator cannot remove admin permissions")
 	}
+
 	if r.IsGuest(userID) {
 		return errors.New("cannot remove admin permissions from guest")
 	}
+
 	if member, err := r.LoadMember(userID); err != nil {
 		return err
 	} else if !member.Role.IsAdmin() {
 		return errors.New("not admin")
 	}
 	defer r.members.Delete(userID)
+
 	return db.RoomRemoveAdminPermissions(r.ID, userID, permissions)
 }
 
@@ -709,10 +787,12 @@ func (r *Room) SetAdmin(userID string, permissions model.RoomAdminPermission) er
 	if r.IsCreator(userID) {
 		return errors.New("creator cannot set admin")
 	}
+
 	if r.IsGuest(userID) {
 		return errors.New("cannot set guest as admin")
 	}
 	defer r.members.Delete(userID)
+
 	return db.RoomSetAdmin(r.ID, userID, permissions)
 }
 
@@ -721,6 +801,7 @@ func (r *Room) SetMember(userID string, permissions model.RoomMemberPermission) 
 		return errors.New("creator cannot set member")
 	}
 	defer r.members.Delete(userID)
+
 	return db.RoomSetMember(r.ID, userID, permissions)
 }
 
@@ -732,9 +813,11 @@ func (r *Room) SetStatus(status model.RoomStatus) error {
 	if err := db.SetRoomStatus(r.ID, status); err != nil {
 		return err
 	}
+
 	r.Status = status
 	if status == model.RoomStatusBanned || status == model.RoomStatusPending {
 		r.close()
 	}
+
 	return nil
 }

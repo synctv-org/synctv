@@ -34,10 +34,12 @@ func GetM3u8Target(token string) (*M3u8TargetClaims, error) {
 	if err != nil || !t.Valid {
 		return nil, errors.New("auth failed")
 	}
+
 	claims, ok := t.Claims.(*M3u8TargetClaims)
 	if !ok {
 		return nil, errors.New("auth failed")
 	}
+
 	return claims, nil
 }
 
@@ -51,6 +53,7 @@ func NewM3u8TargetToken(targetURL, roomID, movieID string, isM3u8File bool) (str
 			NotBefore: jwt.NewNumericDate(time.Now()),
 		},
 	}
+
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).
 		SignedString(stream.StringToBytes(conf.Conf.Jwt.Secret))
 }
@@ -59,6 +62,7 @@ const maxM3u8FileSize = 3 * 1024 * 1024 //
 
 func M3u8Data(ctx *gin.Context, data []byte, baseURL, token, roomID, movieID string) error {
 	hasM3u8File := false
+
 	err := m3u8.RangeM3u8SegmentsWithBaseURL(
 		stream.BytesToString(data),
 		baseURL,
@@ -67,6 +71,7 @@ func M3u8Data(ctx *gin.Context, data []byte, baseURL, token, roomID, movieID str
 				hasM3u8File = true
 				return false, nil
 			}
+
 			return true, nil
 		},
 	)
@@ -76,8 +81,10 @@ func M3u8Data(ctx *gin.Context, data []byte, baseURL, token, roomID, movieID str
 				fmt.Sprintf("range m3u8 segments with base url error: %v", err),
 			),
 		)
+
 		return fmt.Errorf("range m3u8 segments with base url error: %w", err)
 	}
+
 	m3u8Str, err := m3u8.ReplaceM3u8SegmentsWithBaseURL(
 		stream.BytesToString(data),
 		baseURL,
@@ -86,6 +93,7 @@ func M3u8Data(ctx *gin.Context, data []byte, baseURL, token, roomID, movieID str
 			if err != nil {
 				return "", err
 			}
+
 			return fmt.Sprintf(
 				"/api/room/movie/proxy/%s/m3u8/%s?token=%s&roomId=%s",
 				movieID,
@@ -101,9 +109,12 @@ func M3u8Data(ctx *gin.Context, data []byte, baseURL, token, roomID, movieID str
 				fmt.Sprintf("replace m3u8 segments with base url error: %v", err),
 			),
 		)
+
 		return fmt.Errorf("replace m3u8 segments with base url error: %w", err)
 	}
+
 	ctx.Data(http.StatusOK, hls.M3U8ContentType, stream.StringToBytes(m3u8Str))
+
 	return nil
 }
 
@@ -119,6 +130,7 @@ func M3u8(
 	if !isM3u8File {
 		return URL(ctx, u, headers, opts...)
 	}
+
 	if flags.Global.Dev {
 		ctx.Header(proxyURLHeader, u)
 	}
@@ -130,14 +142,18 @@ func M3u8(
 				fmt.Sprintf("new request error: %v", err),
 			),
 		)
+
 		return fmt.Errorf("new request error: %w", err)
 	}
+
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
+
 	if req.Header.Get("User-Agent") == "" {
 		req.Header.Set("User-Agent", utils.UA)
 	}
+
 	resp, err := uhc.Do(req)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest,
@@ -145,6 +161,7 @@ func M3u8(
 				fmt.Sprintf("do request error: %v", err),
 			),
 		)
+
 		return fmt.Errorf("do request error: %w", err)
 	}
 	defer resp.Body.Close()
@@ -162,12 +179,14 @@ func M3u8(
 				),
 			),
 		)
+
 		return fmt.Errorf(
 			"m3u8 file is too large: %d, max: %d (3MB)",
 			resp.ContentLength,
 			maxM3u8FileSize,
 		)
 	}
+
 	b, err := io.ReadAll(io.LimitReader(resp.Body, maxM3u8FileSize))
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest,
@@ -175,7 +194,9 @@ func M3u8(
 				fmt.Sprintf("read response body error: %v", err),
 			),
 		)
+
 		return fmt.Errorf("read response body error: %w", err)
 	}
+
 	return M3u8Data(ctx, b, u, token, roomID, movieID)
 }

@@ -32,12 +32,14 @@ func OAuth2(ctx *gin.Context) {
 	}
 
 	state := utils.RandString(16)
+
 	url, err := pi.NewAuthURL(ctx, state)
 	if err != nil {
 		log.Errorf("failed to get auth url: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 		return
 	}
+
 	states.Store(state, newAuthFunc(ctx.Query("redirect")), time.Minute*5)
 
 	err = RenderRedirect(ctx, url)
@@ -64,12 +66,14 @@ func OAuth2Api(ctx *gin.Context) {
 	}
 
 	state := utils.RandString(16)
+
 	url, err := pi.NewAuthURL(ctx, state)
 	if err != nil {
 		log.Errorf("failed to get auth url: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 		return
 	}
+
 	states.Store(state, newAuthFunc(meta.Redirect), time.Minute*5)
 	ctx.JSON(http.StatusOK, model.NewAPIDataResp(gin.H{
 		"url": url,
@@ -88,6 +92,7 @@ func OAuth2Callback(ctx *gin.Context) {
 			http.StatusBadRequest,
 			model.NewAPIErrorStringResp("invalid oauth2 code"),
 		)
+
 		return
 	}
 
@@ -105,6 +110,7 @@ func OAuth2Callback(ctx *gin.Context) {
 			http.StatusBadRequest,
 			model.NewAPIErrorStringResp("invalid oauth2 state"),
 		)
+
 		return
 	}
 
@@ -141,6 +147,7 @@ func OAuth2CallbackAPI(ctx *gin.Context) {
 			http.StatusBadRequest,
 			model.NewAPIErrorStringResp("invalid oauth2 state"),
 		)
+
 		return
 	}
 
@@ -171,14 +178,17 @@ func newAuthFunc(redirect string) stateHandler {
 				http.StatusBadRequest,
 				model.NewAPIErrorStringResp("invalid oauth2 provider user id"),
 			)
+
 			return
 		}
+
 		if ui.Username == "" {
 			log.Errorf("invalid oauth2 username")
 			ctx.AbortWithStatusJSON(
 				http.StatusBadRequest,
 				model.NewAPIErrorStringResp("invalid oauth2 username"),
 			)
+
 			return
 		}
 
@@ -189,6 +199,7 @@ func newAuthFunc(redirect string) stateHandler {
 				http.StatusBadRequest,
 				model.NewAPIErrorStringResp("invalid oauth2 provider"),
 			)
+
 			return
 		}
 
@@ -202,11 +213,13 @@ func newAuthFunc(redirect string) stateHandler {
 				userE, err = op.CreateOrLoadUserWithProvider(ui.Username, utils.RandString(16), pi.Provider(), ui.ProviderUserID)
 			}
 		}
+
 		if err != nil {
 			log.Errorf("failed to create or load user: %v", err)
 			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 			return
 		}
+
 		user := userE.Value()
 
 		token, err := middlewares.NewAuthUserToken(user)
@@ -218,10 +231,13 @@ func newAuthFunc(redirect string) stateHandler {
 					"message": err.Error(),
 					"role":    user.Role,
 				}))
+
 				return
 			}
+
 			log.Errorf("failed to generate token: %v", err)
 			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
+
 			return
 		}
 

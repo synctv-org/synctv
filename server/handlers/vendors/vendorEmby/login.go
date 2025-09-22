@@ -28,17 +28,21 @@ func (r *LoginReq) Validate() error {
 	if r.Host == "" {
 		return errors.New("host is required")
 	}
+
 	url, err := url.Parse(r.Host)
 	if err != nil {
 		return err
 	}
+
 	if url.Scheme != "http" && url.Scheme != "https" {
 		return errors.New("host is invalid")
 	}
+
 	r.Host = strings.TrimRight(url.String(), "/")
 	if r.Username == "" {
 		return errors.New("username is required")
 	}
+
 	return nil
 }
 
@@ -73,6 +77,7 @@ func Login(ctx *gin.Context) {
 			http.StatusInternalServerError,
 			model.NewAPIErrorStringResp("serverID is empty"),
 		)
+
 		return
 	}
 
@@ -135,6 +140,7 @@ func logoutEmby(eucd *cache.EmbyUserCacheData) {
 	if eucd == nil || eucd.APIKey == "" {
 		return
 	}
+
 	_, _ = vendor.LoadEmbyClient(eucd.Backend).Logout(context.Background(), &emby.LogoutReq{
 		Host:  eucd.Host,
 		Token: eucd.APIKey,

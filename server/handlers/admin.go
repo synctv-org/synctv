@@ -55,17 +55,20 @@ func AdminSettings(ctx *gin.Context) {
 	switch group {
 	case "oauth2":
 		const groupPrefix = dbModel.SettingGroupOauth2
+
 		settingGroups := make(map[string]map[string]settings.Setting)
 		for sg, v := range settings.GroupSettings {
 			if strings.HasPrefix(sg, groupPrefix) {
 				settingGroups[sg] = v
 			}
 		}
+
 		resp := make(model.AdminSettingsResp, len(settingGroups))
 		for k, v := range settingGroups {
 			if resp[k] == nil {
 				resp[k] = make(gin.H, len(v))
 			}
+
 			for k2, s := range v {
 				resp[k][k2] = s.Interface()
 			}
@@ -78,6 +81,7 @@ func AdminSettings(ctx *gin.Context) {
 			if resp[sg] == nil {
 				resp[sg] = make(gin.H, len(v))
 			}
+
 			for _, s2 := range v {
 				resp[sg][s2.Name()] = s2.Interface()
 			}
@@ -92,8 +96,10 @@ func AdminSettings(ctx *gin.Context) {
 				http.StatusBadRequest,
 				model.NewAPIErrorStringResp("group not found"),
 			)
+
 			return
 		}
+
 		data := make(map[string]any, len(s))
 		for _, v := range s {
 			data[v.Name()] = v.Interface()
@@ -141,6 +147,7 @@ func AdminGetUsers(ctx *gin.Context) {
 				ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 				return
 			}
+
 			scopes = append(scopes, db.WhereUsernameLikeOrIDIn(keyword, ids))
 		case "name":
 			scopes = append(scopes, db.WhereUsernameLike(keyword))
@@ -151,6 +158,7 @@ func AdminGetUsers(ctx *gin.Context) {
 				ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 				return
 			}
+
 			scopes = append(scopes, db.WhereIDIn(ids))
 		}
 	}
@@ -182,6 +190,7 @@ func AdminGetUsers(ctx *gin.Context) {
 			http.StatusBadRequest,
 			model.NewAPIErrorStringResp("not support sort"),
 		)
+
 		return
 	}
 
@@ -208,6 +217,7 @@ func genUserListResp(us []*dbModel.User) []*model.UserInfoResp {
 			CreatedAt: v.CreatedAt.UnixMilli(),
 		}
 	}
+
 	return resp
 }
 
@@ -252,6 +262,7 @@ func AdminGetRoomMembers(ctx *gin.Context) {
 				ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 				return
 			}
+
 			scopes = append(scopes, db.WhereUsernameLikeOrIDIn(keyword, ids))
 		case "name":
 			scopes = append(scopes, db.WhereUsernameLike(keyword))
@@ -262,9 +273,11 @@ func AdminGetRoomMembers(ctx *gin.Context) {
 				ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 				return
 			}
+
 			scopes = append(scopes, db.WhereIDIn(ids))
 		}
 	}
+
 	scopes = append(scopes, func(db *gorm.DB) *gorm.DB {
 		return db.
 			InnerJoins("JOIN room_members ON users.id = room_members.user_id").
@@ -300,6 +313,7 @@ func AdminGetRoomMembers(ctx *gin.Context) {
 			http.StatusBadRequest,
 			model.NewAPIErrorStringResp("not support sort"),
 		)
+
 		return
 	}
 
@@ -323,6 +337,7 @@ func genRoomMemberListResp(us []*dbModel.User, room *op.Room) []*model.RoomMembe
 		if room.IsGuest(v.ID) {
 			permissions = room.Settings.GuestPermissions
 		}
+
 		resp[i] = &model.RoomMembersResp{
 			UserID:           v.ID,
 			Username:         v.Username,
@@ -335,6 +350,7 @@ func genRoomMemberListResp(us []*dbModel.User, room *op.Room) []*model.RoomMembe
 			AdminPermissions: v.RoomMembers[0].AdminPermissions,
 		}
 	}
+
 	return resp
 }
 
@@ -353,6 +369,7 @@ func AdminApprovePendingUser(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 		return
 	}
+
 	user := userE.Value()
 
 	if !user.IsPending() {
@@ -361,6 +378,7 @@ func AdminApprovePendingUser(ctx *gin.Context) {
 			http.StatusBadRequest,
 			model.NewAPIErrorStringResp("user is not pending"),
 		)
+
 		return
 	}
 
@@ -390,6 +408,7 @@ func AdminBanUser(ctx *gin.Context) {
 			http.StatusBadRequest,
 			model.NewAPIErrorStringResp("cannot ban self"),
 		)
+
 		return
 	}
 
@@ -406,6 +425,7 @@ func AdminBanUser(ctx *gin.Context) {
 			http.StatusBadRequest,
 			model.NewAPIErrorStringResp("cannot ban root"),
 		)
+
 		return
 	}
 
@@ -415,6 +435,7 @@ func AdminBanUser(ctx *gin.Context) {
 			http.StatusBadRequest,
 			model.NewAPIErrorStringResp("cannot ban admin"),
 		)
+
 		return
 	}
 
@@ -451,6 +472,7 @@ func AdminUnBanUser(ctx *gin.Context) {
 			http.StatusBadRequest,
 			model.NewAPIErrorStringResp("user is not banned"),
 		)
+
 		return
 	}
 
@@ -496,6 +518,7 @@ func AdminGetRooms(ctx *gin.Context) {
 				ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 				return
 			}
+
 			scopes = append(scopes, db.WhereRoomNameLikeOrCreatorInOrIDLike(keyword, ids, keyword))
 		case "name":
 			scopes = append(scopes, db.WhereRoomNameLike(keyword))
@@ -506,6 +529,7 @@ func AdminGetRooms(ctx *gin.Context) {
 				ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 				return
 			}
+
 			scopes = append(scopes, db.WhereCreatorIDIn(ids))
 		case "creatorId":
 			scopes = append(scopes, db.WhereCreatorID(keyword))
@@ -541,6 +565,7 @@ func AdminGetRooms(ctx *gin.Context) {
 			http.StatusBadRequest,
 			model.NewAPIErrorStringResp("not support sort"),
 		)
+
 		return
 	}
 
@@ -566,6 +591,7 @@ func AdminGetUserRooms(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("user id error"))
 		return
 	}
+
 	page, pageSize, err := utils.GetPageAndMax(ctx)
 	if err != nil {
 		log.Errorf("get page and max error: %v", err)
@@ -625,6 +651,7 @@ func AdminGetUserRooms(ctx *gin.Context) {
 			http.StatusBadRequest,
 			model.NewAPIErrorStringResp("not support sort"),
 		)
+
 		return
 	}
 
@@ -721,6 +748,7 @@ func AdminGetUserJoinedRooms(ctx *gin.Context) {
 			http.StatusBadRequest,
 			model.NewAPIErrorStringResp("not support sort"),
 		)
+
 		return
 	}
 
@@ -761,6 +789,7 @@ func AdminApprovePendingRoom(ctx *gin.Context) {
 			http.StatusBadRequest,
 			model.NewAPIErrorStringResp("room is not pending"),
 		)
+
 		return
 	}
 
@@ -800,6 +829,7 @@ func AdminBanRoom(ctx *gin.Context) {
 			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 			return
 		}
+
 		creator := creatorE.Value()
 
 		if creator.IsRoot() {
@@ -808,6 +838,7 @@ func AdminBanRoom(ctx *gin.Context) {
 				http.StatusBadRequest,
 				model.NewAPIErrorStringResp("cannot ban root"),
 			)
+
 			return
 		}
 
@@ -817,6 +848,7 @@ func AdminBanRoom(ctx *gin.Context) {
 				http.StatusForbidden,
 				model.NewAPIErrorStringResp("cannot ban admin"),
 			)
+
 			return
 		}
 	}
@@ -856,6 +888,7 @@ func AdminUnBanRoom(ctx *gin.Context) {
 			http.StatusBadRequest,
 			model.NewAPIErrorStringResp("room is not banned"),
 		)
+
 		return
 	}
 
@@ -885,6 +918,7 @@ func AdminAddUser(ctx *gin.Context) {
 			http.StatusForbidden,
 			model.NewAPIErrorStringResp("you cannot add root user"),
 		)
+
 		return
 	}
 
@@ -921,6 +955,7 @@ func AdminDeleteUser(ctx *gin.Context) {
 			http.StatusBadRequest,
 			model.NewAPIErrorStringResp("cannot delete yourself"),
 		)
+
 		return
 	}
 
@@ -930,6 +965,7 @@ func AdminDeleteUser(ctx *gin.Context) {
 			http.StatusBadRequest,
 			model.NewAPIErrorStringResp("cannot delete root"),
 		)
+
 		return
 	}
 
@@ -939,6 +975,7 @@ func AdminDeleteUser(ctx *gin.Context) {
 			http.StatusForbidden,
 			model.NewAPIErrorStringResp("cannot delete admin"),
 		)
+
 		return
 	}
 
@@ -977,6 +1014,7 @@ func AdminDeleteRoom(ctx *gin.Context) {
 			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 			return
 		}
+
 		creator := u.Value()
 
 		if creator.IsRoot() {
@@ -985,6 +1023,7 @@ func AdminDeleteRoom(ctx *gin.Context) {
 				http.StatusBadRequest,
 				model.NewAPIErrorStringResp("cannot delete root's room"),
 			)
+
 			return
 		}
 
@@ -994,6 +1033,7 @@ func AdminDeleteRoom(ctx *gin.Context) {
 				http.StatusForbidden,
 				model.NewAPIErrorStringResp("cannot delete admin's room"),
 			)
+
 			return
 		}
 	}
@@ -1024,6 +1064,7 @@ func AdminUserPassword(ctx *gin.Context) {
 			http.StatusBadRequest,
 			model.NewAPIErrorStringResp("user not found"),
 		)
+
 		return
 	}
 
@@ -1034,6 +1075,7 @@ func AdminUserPassword(ctx *gin.Context) {
 				http.StatusBadRequest,
 				model.NewAPIErrorStringResp("cannot change root password"),
 			)
+
 			return
 		}
 
@@ -1043,6 +1085,7 @@ func AdminUserPassword(ctx *gin.Context) {
 				http.StatusForbidden,
 				model.NewAPIErrorStringResp("cannot change admin password"),
 			)
+
 			return
 		}
 	}
@@ -1053,6 +1096,7 @@ func AdminUserPassword(ctx *gin.Context) {
 			http.StatusInternalServerError,
 			model.NewAPIErrorStringResp(err.Error()),
 		)
+
 		return
 	}
 
@@ -1076,6 +1120,7 @@ func AdminUsername(ctx *gin.Context) {
 			http.StatusBadRequest,
 			model.NewAPIErrorStringResp("user not found"),
 		)
+
 		return
 	}
 
@@ -1086,6 +1131,7 @@ func AdminUsername(ctx *gin.Context) {
 				http.StatusBadRequest,
 				model.NewAPIErrorStringResp("cannot change root username"),
 			)
+
 			return
 		}
 
@@ -1095,6 +1141,7 @@ func AdminUsername(ctx *gin.Context) {
 				http.StatusForbidden,
 				model.NewAPIErrorStringResp("cannot change admin username"),
 			)
+
 			return
 		}
 	}
@@ -1105,6 +1152,7 @@ func AdminUsername(ctx *gin.Context) {
 			http.StatusInternalServerError,
 			model.NewAPIErrorStringResp(err.Error()),
 		)
+
 		return
 	}
 
@@ -1128,6 +1176,7 @@ func AdminRoomPassword(ctx *gin.Context) {
 			http.StatusBadRequest,
 			model.NewAPIErrorStringResp("room not found"),
 		)
+
 		return
 	}
 
@@ -1141,6 +1190,7 @@ func AdminRoomPassword(ctx *gin.Context) {
 				http.StatusBadRequest,
 				model.NewAPIErrorStringResp("room creator not found"),
 			)
+
 			return
 		}
 
@@ -1150,6 +1200,7 @@ func AdminRoomPassword(ctx *gin.Context) {
 				http.StatusBadRequest,
 				model.NewAPIErrorStringResp("cannot change root room password"),
 			)
+
 			return
 		}
 
@@ -1159,6 +1210,7 @@ func AdminRoomPassword(ctx *gin.Context) {
 				http.StatusForbidden,
 				model.NewAPIErrorStringResp("cannot change admin room password"),
 			)
+
 			return
 		}
 	}
@@ -1169,6 +1221,7 @@ func AdminRoomPassword(ctx *gin.Context) {
 			http.StatusInternalServerError,
 			model.NewAPIErrorStringResp(err.Error()),
 		)
+
 		return
 	}
 
@@ -1180,29 +1233,35 @@ func AdminGetVendorBackends(ctx *gin.Context) {
 	log := middlewares.GetLogger(ctx)
 
 	conns := vendor.LoadConns()
+
 	page, size, err := utils.GetPageAndMax(ctx)
 	if err != nil {
 		log.Errorf("get page and max error: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 		return
 	}
+
 	s := slices.Collect(maps.Keys(conns))
 	l := len(s)
+
 	var resp []*model.GetVendorBackendResp
 	if (page-1)*size <= l {
 		slices.SortStableFunc(s, func(a, b string) int {
 			if a == b {
 				return 0
 			}
+
 			if natural.Less(a, b) {
 				return -1
 			}
+
 			return 1
 		})
 
 		if l > size {
 			l = size
 		}
+
 		resp = make([]*model.GetVendorBackendResp, 0, l)
 		for _, v := range s[(page-1)*size : (page-1)*size+l] {
 			resp = append(resp, &model.GetVendorBackendResp{
@@ -1291,9 +1350,11 @@ func AdminReconnectVendorBackends(ctx *gin.Context) {
 			if s := c.Conn.GetState(); s != connectivity.Ready {
 				c.Conn.Connect()
 				c.Conn.ResetConnectBackoff()
+
 				if len(req.Endpoints) == 1 {
 					ctx2, cf := context.WithTimeout(ctx, time.Second*5)
 					defer cf()
+
 					c.Conn.WaitForStateChange(ctx2, s)
 				}
 			}
@@ -1358,11 +1419,13 @@ func AdminSendTestEmail(ctx *gin.Context) {
 	if req.Email == "" {
 		if err := user.SendTestEmail(); err != nil {
 			log.Errorf("failed to send test email: %v", err)
+
 			if errors.Is(err, op.ErrEmailUnbound) {
 				ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 			} else {
 				ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 			}
+
 			return
 		}
 	} else {

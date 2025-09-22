@@ -51,10 +51,12 @@ func authUser(authorization string) (*AuthClaims, error) {
 	if err != nil || !t.Valid {
 		return nil, ErrAuthFailed
 	}
+
 	claims, ok := t.Claims.(*AuthClaims)
 	if !ok {
 		return nil, ErrAuthFailed
 	}
+
 	return claims, nil
 }
 
@@ -69,6 +71,7 @@ func AuthRoom(authorization, roomID string) (*op.UserEntry, *op.RoomEntry, error
 	}
 
 	user := userE.Value()
+
 	roomE, err := authenticateRoomAccess(roomID, user)
 	if err != nil {
 		return nil, nil, err
@@ -98,6 +101,7 @@ func authenticateUser(authorization string) (*op.UserEntry, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	user := userE.Value()
 
 	if err := validateUser(user, claims.UserVersion); err != nil {
@@ -118,15 +122,19 @@ func validateUser(user *op.User, userVersion uint32) error {
 	if user.IsGuest() {
 		return ErrUserGuest
 	}
+
 	if !user.CheckVersion(userVersion) {
 		return ErrAuthExpired
 	}
+
 	if user.IsBanned() {
 		return ErrUserBanned
 	}
+
 	if user.IsPending() {
 		return ErrUserPending
 	}
+
 	return nil
 }
 
@@ -135,6 +143,7 @@ func authenticateRoomAccess(roomID string, user *op.User) (*op.RoomEntry, error)
 	if err != nil {
 		return nil, err
 	}
+
 	room := roomE.Value()
 
 	if err := validateRoomAccess(room, user); err != nil {
@@ -149,6 +158,7 @@ func validateRoomAccess(room *op.Room, user *op.User) error {
 		if room.Settings.DisableGuest {
 			return ErrUserGuest
 		}
+
 		if room.NeedPassword() {
 			return ErrUserGuest
 		}
@@ -157,17 +167,22 @@ func validateRoomAccess(room *op.Room, user *op.User) error {
 	if room.IsBanned() {
 		return ErrRoomBanned
 	}
+
 	if room.IsPending() {
 		return ErrRoomPending
 	}
 
-	var status dbModel.RoomMemberStatus
-	var err error
+	var (
+		status dbModel.RoomMemberStatus
+		err    error
+	)
+
 	if room.NeedPassword() {
 		status, err = room.LoadMemberStatus(user.ID)
 	} else {
 		status, err = room.LoadOrCreateMemberStatus(user.ID)
 	}
+
 	if err != nil {
 		return err
 	}
@@ -175,6 +190,7 @@ func validateRoomAccess(room *op.Room, user *op.User) error {
 	if status.IsBanned() {
 		return ErrUserBannedFromRoom
 	}
+
 	if status.IsPending() {
 		return ErrUserPending
 	}
@@ -196,6 +212,7 @@ func AuthUser(authorization string) (*op.UserEntry, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	user := userE.Value()
 
 	if err := validateAuthUser(user, claims.UserVersion); err != nil {
@@ -209,15 +226,19 @@ func validateAuthUser(user *op.User, userVersion uint32) error {
 	if user.IsGuest() {
 		return ErrUserGuest
 	}
+
 	if !user.CheckVersion(userVersion) {
 		return ErrAuthExpired
 	}
+
 	if user.IsBanned() {
 		return ErrUserBanned
 	}
+
 	if user.IsPending() {
 		return ErrUserPending
 	}
+
 	return nil
 }
 
@@ -239,6 +260,7 @@ func NewAuthUserToken(user *op.User) (string, error) {
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(t)),
 		},
 	}
+
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).
 		SignedString(stream.StringToBytes(conf.Conf.Jwt.Secret))
 }
@@ -247,12 +269,15 @@ func validateNewAuthUserToken(user *op.User) error {
 	if user.IsBanned() {
 		return ErrUserBanned
 	}
+
 	if user.IsPending() {
 		return ErrUserPending
 	}
+
 	if user.IsGuest() {
 		return ErrUserGuest
 	}
+
 	return nil
 }
 
@@ -262,11 +287,13 @@ func AuthUserMiddleware(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewAPIErrorResp(ErrEmptyToken))
 		return
 	}
+
 	userE, err := AuthUser(token)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewAPIErrorResp(err))
 		return
 	}
+
 	user := userE.Value()
 
 	ctx.Set("user", userE)
@@ -279,11 +306,13 @@ func AuthRoomMiddleware(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewAPIErrorResp(err))
 		return
 	}
+
 	userE, roomE, err := AuthRoom(GetAuthorizationTokenFromContext(ctx), roomID)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusUnauthorized, model.NewAPIErrorResp(err))
 		return
 	}
+
 	user := userE.Value()
 	room := roomE.Value()
 
@@ -294,6 +323,7 @@ func AuthRoomMiddleware(ctx *gin.Context) {
 
 func AuthRoomWithoutGuestMiddleware(ctx *gin.Context) {
 	AuthRoomMiddleware(ctx)
+
 	if ctx.IsAborted() {
 		return
 	}
@@ -304,8 +334,10 @@ func AuthRoomWithoutGuestMiddleware(ctx *gin.Context) {
 			http.StatusInternalServerError,
 			model.NewAPIErrorResp(errors.New("invalid user type")),
 		)
+
 		return
 	}
+
 	user := userEntry.Value()
 	if user.IsGuest() {
 		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewAPIErrorResp(ErrUserGuest))
@@ -315,6 +347,7 @@ func AuthRoomWithoutGuestMiddleware(ctx *gin.Context) {
 
 func AuthRoomAdminMiddleware(ctx *gin.Context) {
 	AuthRoomMiddleware(ctx)
+
 	if ctx.IsAborted() {
 		return
 	}
@@ -325,17 +358,22 @@ func AuthRoomAdminMiddleware(ctx *gin.Context) {
 			http.StatusInternalServerError,
 			model.NewAPIErrorResp(errors.New("invalid room type")),
 		)
+
 		return
 	}
+
 	room := roomEntry.Value()
+
 	userEntry, ok := ctx.MustGet("user").(*synccache.Entry[*op.User])
 	if !ok {
 		ctx.JSON(
 			http.StatusInternalServerError,
 			model.NewAPIErrorResp(errors.New("invalid user type")),
 		)
+
 		return
 	}
+
 	user := userEntry.Value()
 
 	if !user.IsRoomAdmin(room) {
@@ -346,6 +384,7 @@ func AuthRoomAdminMiddleware(ctx *gin.Context) {
 
 func AuthRoomCreatorMiddleware(ctx *gin.Context) {
 	AuthRoomMiddleware(ctx)
+
 	if ctx.IsAborted() {
 		return
 	}
@@ -356,17 +395,22 @@ func AuthRoomCreatorMiddleware(ctx *gin.Context) {
 			http.StatusInternalServerError,
 			model.NewAPIErrorResp(errors.New("invalid room type")),
 		)
+
 		return
 	}
+
 	room := roomEntry.Value()
+
 	userEntry, ok := ctx.MustGet("user").(*synccache.Entry[*op.User])
 	if !ok {
 		ctx.JSON(
 			http.StatusInternalServerError,
 			model.NewAPIErrorResp(errors.New("invalid user type")),
 		)
+
 		return
 	}
+
 	user := userEntry.Value()
 
 	if room.CreatorID != user.ID {
@@ -377,6 +421,7 @@ func AuthRoomCreatorMiddleware(ctx *gin.Context) {
 
 func AuthAdminMiddleware(ctx *gin.Context) {
 	AuthUserMiddleware(ctx)
+
 	if ctx.IsAborted() {
 		return
 	}
@@ -387,8 +432,10 @@ func AuthAdminMiddleware(ctx *gin.Context) {
 			http.StatusInternalServerError,
 			model.NewAPIErrorResp(errors.New("invalid user type")),
 		)
+
 		return
 	}
+
 	user := userEntry.Value()
 	if !user.IsAdmin() {
 		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewAPIErrorResp(ErrNotAdmin))
@@ -398,6 +445,7 @@ func AuthAdminMiddleware(ctx *gin.Context) {
 
 func AuthRootMiddleware(ctx *gin.Context) {
 	AuthUserMiddleware(ctx)
+
 	if ctx.IsAborted() {
 		return
 	}
@@ -408,8 +456,10 @@ func AuthRootMiddleware(ctx *gin.Context) {
 			http.StatusInternalServerError,
 			model.NewAPIErrorResp(errors.New("invalid user type")),
 		)
+
 		return
 	}
+
 	user := userEntry.Value()
 	if !user.IsRoot() {
 		ctx.AbortWithStatusJSON(http.StatusForbidden, model.NewAPIErrorResp(ErrNotRoot))
@@ -437,6 +487,7 @@ func GetAuthorizationTokenFromContext(ctx *gin.Context) string {
 	}
 
 	ctx.Set("token", "")
+
 	return ""
 }
 
@@ -452,15 +503,19 @@ func GetRoomIDFromContext(ctx *gin.Context) (string, error) {
 		if roomID == "" {
 			continue
 		}
+
 		if len(roomID) == 32 {
 			ctx.Set("roomId", roomID)
 			return roomID, nil
 		}
+
 		ctx.Set("roomId", "")
+
 		return "", ErrInvalidRoomID
 	}
 
 	ctx.Set("roomId", "")
+
 	return "", ErrInvalidRoomID
 }
 
@@ -471,6 +526,7 @@ func setLogFields(ctx *gin.Context, user *op.User, room *op.Room) {
 		log.Data["unm"] = user.Username
 		log.Data["uro"] = user.Role.String()
 	}
+
 	if room != nil {
 		log.Data["rid"] = room.ID
 		log.Data["rnm"] = room.Name
@@ -482,6 +538,7 @@ func GetUserEntry(ctx *gin.Context) *op.UserEntry {
 	if !ok {
 		panic("invalid user type")
 	}
+
 	return userEntry
 }
 
@@ -490,6 +547,7 @@ func GetRoomEntry(ctx *gin.Context) *op.RoomEntry {
 	if !ok {
 		panic("invalid room type")
 	}
+
 	return roomEntry
 }
 
@@ -498,9 +556,11 @@ func GetToken(ctx *gin.Context) string {
 	if !ok {
 		return ""
 	}
+
 	t, ok := token.(string)
 	if !ok {
 		panic("invalid token type")
 	}
+
 	return t
 }

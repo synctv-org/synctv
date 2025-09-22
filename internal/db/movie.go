@@ -29,26 +29,31 @@ func WithParentMovieID(parentMovieID string) func(*gorm.DB) *gorm.DB {
 
 func GetMoviesByRoomID(roomID string, scopes ...func(*gorm.DB) *gorm.DB) ([]*model.Movie, error) {
 	var movies []*model.Movie
+
 	err := db.Where("room_id = ?", roomID).
 		Order("position ASC").
 		Scopes(scopes...).
 		Find(&movies).
 		Error
+
 	return movies, err
 }
 
 func GetMoviesCountByRoomID(roomID string, scopes ...func(*gorm.DB) *gorm.DB) (int64, error) {
 	var count int64
+
 	err := db.Model(&model.Movie{}).
 		Where("room_id = ?", roomID).
 		Scopes(scopes...).
 		Count(&count).
 		Error
+
 	return count, err
 }
 
 func GetMovieByID(roomID, id string, scopes ...func(*gorm.DB) *gorm.DB) (*model.Movie, error) {
 	var movie model.Movie
+
 	err := db.Where("room_id = ? AND id = ?", roomID, id).Scopes(scopes...).First(&movie).Error
 	return &movie, HandleNotFound(err, ErrRoomOrMovieNotFound)
 }
@@ -77,6 +82,7 @@ func UpdateMovie(movie *model.Movie, columns ...clause.Column) error {
 		Clauses(clause.Returning{Columns: columns}).
 		Where("room_id = ? AND id = ?", movie.RoomID, movie.ID).
 		Updates(movie)
+
 	return HandleUpdateResult(result, ErrRoomOrMovieNotFound)
 }
 
@@ -86,6 +92,7 @@ func SaveMovie(movie *model.Movie, columns ...clause.Column) error {
 		Where("room_id = ? AND id = ?", movie.RoomID, movie.ID).
 		Omit("created_at").
 		Save(movie)
+
 	return HandleUpdateResult(result, ErrRoomOrMovieNotFound)
 }
 
@@ -95,6 +102,7 @@ func SwapMoviePositions(roomID, movie1ID, movie2ID string) error {
 		if err := tx.Where("room_id = ? AND id = ?", roomID, movie1ID).First(&movie1).Error; err != nil {
 			return HandleNotFound(err, ErrRoomOrMovieNotFound)
 		}
+
 		if err := tx.Where("room_id = ? AND id = ?", roomID, movie2ID).First(&movie2).Error; err != nil {
 			return HandleNotFound(err, ErrRoomOrMovieNotFound)
 		}
@@ -107,9 +115,11 @@ func SwapMoviePositions(roomID, movie1ID, movie2ID string) error {
 		if err := HandleUpdateResult(result1, ErrRoomOrMovieNotFound); err != nil {
 			return err
 		}
+
 		result2 := tx.Model(&movie2).
 			Where("room_id = ? AND id = ?", roomID, movie2ID).
 			Update("position", movie2.Position)
+
 		return HandleUpdateResult(result2, ErrRoomOrMovieNotFound)
 	})
 }

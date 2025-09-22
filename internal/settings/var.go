@@ -39,6 +39,7 @@ func init() {
 					"room_must_need_pwd and room_must_no_need_pwd can't be true at the same time",
 				)
 			}
+
 			return b, nil
 		}),
 	)
@@ -52,6 +53,7 @@ func init() {
 					"room_must_need_pwd and room_must_no_need_pwd can't be true at the same time",
 				)
 			}
+
 			return b, nil
 		}),
 	)

@@ -60,6 +60,7 @@ func NewVersionInfo(conf ...InfoConf) (*Info, error) {
 	for _, c := range conf {
 		c(v)
 	}
+
 	return v, v.fix()
 }
 
@@ -67,7 +68,9 @@ func (v *Info) fix() (err error) {
 	if v.baseURL == "" {
 		v.baseURL = "https://api.github.com/"
 	}
+
 	v.c, err = github.NewClient(nil).WithEnterpriseURLs(v.baseURL, "")
+
 	return err
 }
 
@@ -75,16 +78,20 @@ func (v *Info) initLatest(ctx context.Context) (err error) {
 	if v.latest != nil {
 		return nil
 	}
+
 	v.latest, _, err = v.c.Repositories.GetLatestRelease(ctx, owner, repo)
-	return
+
+	return err
 }
 
 func (v *Info) initDev(ctx context.Context) (err error) {
 	if v.dev != nil {
 		return nil
 	}
+
 	v.dev, _, err = v.c.Repositories.GetReleaseByTag(ctx, owner, repo, "dev")
-	return
+
+	return err
 }
 
 func (v *Info) Current() string {
@@ -103,7 +110,9 @@ func (v *Info) CheckLatest(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
+
 	v.latest = release
+
 	return release.GetTagName(), nil
 }
 
@@ -128,6 +137,7 @@ func getBinaryURL(repo *github.RepositoryRelease) (string, error) {
 			return a.GetBrowserDownloadURL(), nil
 		}
 	}
+
 	return "", errors.New("no binary found")
 }
 
@@ -169,10 +179,12 @@ func (v *Info) SelfUpdate(ctx context.Context) (err error) {
 		if err != nil {
 			return err
 		}
+
 		comp, err := utils.CompVersion(v.Current(), latest)
 		if err != nil {
 			return err
 		}
+
 		switch comp {
 		case utils.VersionEqual:
 			log.Infof("self update: current version is latest: %s", v.Current())
@@ -189,6 +201,7 @@ func (v *Info) SelfUpdate(ctx context.Context) (err error) {
 				v.Current(),
 				latest,
 			)
+
 			return nil
 		}
 	default:
@@ -201,6 +214,7 @@ func (v *Info) SelfUpdate(ctx context.Context) (err error) {
 	} else {
 		url, err = v.LatestBinaryURL(ctx)
 	}
+
 	if err != nil {
 		return err
 	}

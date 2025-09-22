@@ -45,17 +45,21 @@ func (m *Movie) BeforeCreate(_ *gorm.DB) error {
 func (m *Movie) BeforeSave(tx *gorm.DB) error {
 	if m.ParentID != "" {
 		mv := &Movie{}
+
 		err := tx.Where("id = ?", m.ParentID).First(mv).Error
 		if err != nil {
 			return fmt.Errorf("load parent movie failed: %w", err)
 		}
+
 		if !mv.IsFolder {
 			return errors.New("parent is not a folder")
 		}
+
 		if mv.IsDynamicFolder() {
 			return errors.New("parent is a dynamic folder, cannot add child")
 		}
 	}
+
 	return nil
 }
 
@@ -95,10 +99,12 @@ func (m *MovieBase) Clone() *MovieBase {
 			URL:  ms.URL,
 		}
 	}
+
 	hds := make(map[string]string, len(m.Headers))
 	for k, v := range m.Headers {
 		hds[k] = v
 	}
+
 	sbs := make(map[string]*Subtitle, len(m.Subtitles))
 	for k, v := range m.Subtitles {
 		sbs[k] = &Subtitle{
@@ -106,6 +112,7 @@ func (m *MovieBase) Clone() *MovieBase {
 			Type: v.Type,
 		}
 	}
+
 	return &MovieBase{
 		URL:         m.URL,
 		MoreSources: mss,
@@ -138,6 +145,7 @@ func (ns *EmptyNullString) Scan(value any) error {
 		*ns = ""
 		return nil
 	}
+
 	switch v := value.(type) {
 	case []byte:
 		*ns = EmptyNullString(v)
@@ -146,6 +154,7 @@ func (ns *EmptyNullString) Scan(value any) error {
 	default:
 		return fmt.Errorf("unsupported type: %T", v)
 	}
+
 	return nil
 }
 
@@ -217,6 +226,7 @@ func GetAlistServerIDFromPath(path string) (serverID, filePath string, err error
 	if !found {
 		return "", path, errors.New("path is invalid")
 	}
+
 	return before, after, nil
 }
 
@@ -255,8 +265,10 @@ func (a *AlistStreamingInfo) BeforeSave(_ *gorm.DB) error {
 		if err != nil {
 			return err
 		}
+
 		a.Password = s
 	}
+
 	return nil
 }
 
@@ -266,8 +278,10 @@ func (a *AlistStreamingInfo) AfterSave(_ *gorm.DB) error {
 		if err != nil {
 			return err
 		}
+
 		a.Password = string(b)
 	}
+
 	return nil
 }
 

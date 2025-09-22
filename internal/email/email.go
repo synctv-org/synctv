@@ -75,10 +75,12 @@ func init() {
 	if err != nil {
 		log.Fatalf("mjml test template error: %v", err)
 	}
+
 	t, err := template.New("").Parse(body)
 	if err != nil {
 		log.Fatalf("parse test template error: %v", err)
 	}
+
 	testTemplate = t
 
 	body, err = mjml.ToHTML(
@@ -89,10 +91,12 @@ func init() {
 	if err != nil {
 		log.Fatalf("mjml captcha template error: %v", err)
 	}
+
 	t, err = template.New("").Parse(body)
 	if err != nil {
 		log.Fatalf("parse captcha template error: %v", err)
 	}
+
 	captchaTemplate = t
 
 	body, err = mjml.ToHTML(
@@ -103,10 +107,12 @@ func init() {
 	if err != nil {
 		log.Fatalf("mjml retrieve password template error: %v", err)
 	}
+
 	t, err = template.New("").Parse(body)
 	if err != nil {
 		log.Fatalf("parse retrieve password template error: %v", err)
 	}
+
 	retrievePasswordTemplate = t
 }
 
@@ -157,6 +163,7 @@ func SendBindCaptchaEmail(userID, userEmail string) error {
 	}
 
 	out := bytes.NewBuffer(nil)
+
 	err = captchaTemplate.Execute(out, captchaPayload{
 		Captcha: entry.Value(),
 		Year:    time.Now().Year(),
@@ -212,6 +219,7 @@ func SendTestEmail(username, email string) error {
 	}
 
 	out := bytes.NewBuffer(nil)
+
 	err = testTemplate.Execute(out, testPayload{
 		Username: username,
 		Year:     time.Now().Year(),
@@ -251,6 +259,7 @@ func SendSignupCaptchaEmail(email string) error {
 	}
 
 	out := bytes.NewBuffer(nil)
+
 	err = captchaTemplate.Execute(out, captchaPayload{
 		Captcha: entry.Value(),
 		Year:    time.Now().Year(),
@@ -297,12 +306,15 @@ func SendRetrievePasswordCaptchaEmail(userID, email, host string) error {
 	if userID == "" {
 		return errors.New("user id is empty")
 	}
+
 	if email == "" {
 		return errors.New("email is empty")
 	}
+
 	if host == "" {
 		return errors.New("host is empty")
 	}
+
 	if !strings.HasPrefix(host, "http://") && !strings.HasPrefix(host, "https://") {
 		log.Errorf("host: %s must start with http:// or https://", host)
 		return errors.New("get host error")
@@ -312,6 +324,7 @@ func SendRetrievePasswordCaptchaEmail(userID, email, host string) error {
 	if err != nil {
 		return err
 	}
+
 	u.Path = `web/auth/reset`
 
 	pool, err := getSMTPPool()
@@ -334,6 +347,7 @@ func SendRetrievePasswordCaptchaEmail(userID, email, host string) error {
 	u.RawQuery = q.Encode()
 
 	out := bytes.NewBuffer(nil)
+
 	err = retrievePasswordTemplate.Execute(out, retrievePasswordPayload{
 		Captcha: entry.Value(),
 		Host:    host,

@@ -19,6 +19,7 @@ func (s *GRPCServer) Init(_ context.Context, req *providerpb.InitReq) (*provider
 		RedirectURL:  req.GetRedirectUrl(),
 	}
 	s.Impl.Init(opt)
+
 	return &providerpb.Enpty{}, nil
 }
 
@@ -37,6 +38,7 @@ func (s *GRPCServer) NewAuthURL(
 	if err != nil {
 		return nil, err
 	}
+
 	return &providerpb.NewAuthURLResp{Url: s2}, nil
 }
 
@@ -48,9 +50,11 @@ func (s *GRPCServer) GetUserInfo(
 	if err != nil {
 		return nil, err
 	}
+
 	resp := &providerpb.GetUserInfoResp{
 		Username:       userInfo.Username,
 		ProviderUserId: userInfo.ProviderUserID,
 	}
+
 	return resp, nil
 }

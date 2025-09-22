@@ -23,6 +23,7 @@ func Me(ctx *gin.Context) {
 			http.StatusBadRequest,
 			model.NewAPIErrorResp(errors.New("serverID is required")),
 		)
+
 		return
 	}
 
@@ -32,7 +33,9 @@ func Me(ctx *gin.Context) {
 			ctx.JSON(http.StatusBadRequest, model.NewAPIErrorStringResp("emby server not found"))
 			return
 		}
+
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
+
 		return
 	}
 
@@ -67,7 +70,9 @@ func Binds(ctx *gin.Context) {
 			}))
 			return
 		}
+
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
+
 		return
 	}
 

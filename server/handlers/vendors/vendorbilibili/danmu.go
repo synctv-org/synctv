@@ -44,10 +44,12 @@ var headerLen = binary.Size(header{})
 
 func (h *header) Marshal() ([]byte, error) {
 	buf := bytes.NewBuffer(make([]byte, 0, headerLen))
+
 	err := binary.Write(buf, binary.BigEndian, h)
 	if err != nil {
 		return nil, err
 	}
+
 	return buf.Bytes(), nil
 }
 
@@ -67,6 +69,7 @@ func newHeader(size uint32, command command, sequence uint32) header {
 	case CmdHeartbeat, CmdAuth:
 		h.Version = 1
 	}
+
 	return h
 }
 
@@ -95,20 +98,25 @@ func writeVerifyHello(conn *websocket.Conn, hello *verifyHello) error {
 	if err != nil {
 		return err
 	}
+
 	header := newHeader(uint32(len(msg)), CmdAuth, 1)
+
 	headerBytes, err := header.Marshal()
 	if err != nil {
 		return err
 	}
+
 	return conn.WriteMessage(websocket.BinaryMessage, append(headerBytes, msg...))
 }
 
 func writeHeartbeat(conn *websocket.Conn, sequence uint32) error {
 	header := newHeader(0, CmdHeartbeat, sequence)
+
 	headerBytes, err := header.Marshal()
 	if err != nil {
 		return err
 	}
+
 	return conn.WriteMessage(websocket.BinaryMessage, headerBytes)
 }
 
@@ -126,9 +134,11 @@ func (v *BilibiliVendorService) StreamDanmu(
 	if err != nil {
 		return err
 	}
+
 	if len(resp.GetHostList()) == 0 {
 		return errors.New("no host list")
 	}
+
 	wssHost := resp.GetHostList()[0].GetHost()
 	wssPort := resp.GetHostList()[0].GetWssPort()
 
@@ -167,6 +177,7 @@ func (v *BilibiliVendorService) StreamDanmu(
 	go func() {
 		ticker := time.NewTicker(time.Second * 20)
 		defer ticker.Stop()
+
 		sequence := uint32(1)
 		for {
 			select {
@@ -174,6 +185,7 @@ func (v *BilibiliVendorService) StreamDanmu(
 				return
 			case <-ticker.C:
 				sequence++
+
 				err = writeHeartbeat(conn, sequence)
 				if err != nil {
 					log.Errorf("write heartbeat error: %v", err)
@@ -191,16 +203,20 @@ func (v *BilibiliVendorService) StreamDanmu(
 			if err != nil {
 				return err
 			}
+
 			header := header{}
+
 			err = header.Unmarshal(message[:headerLen])
 			if err != nil {
 				return err
 			}
+
 			switch header.Command {
 			case CmdHeartbeatReply:
 				continue
 			default:
 			}
+
 			data := message[headerLen:]
 			switch header.Version {
 			case 2:
@@ -210,6 +226,7 @@ func (v *BilibiliVendorService) StreamDanmu(
 					return err
 				}
 				defer zlibReader.Close()
+
 				data, err = io.ReadAll(zlibReader)
 				if err != nil {
 					return err
@@ -217,28 +234,36 @@ func (v *BilibiliVendorService) StreamDanmu(
 			case 3:
 				// brotli
 				brotliReader := brotli.NewReader(bytes.NewReader(data))
+
 				data, err = io.ReadAll(brotliReader)
 				if err != nil {
 					return err
 				}
+
 				data = data[headerLen:]
 			}
+
 			reply := replyCmd{}
+
 			err = json.Unmarshal(data, &reply)
 			if err != nil {
 				return err
 			}
+
 			switch reply.Cmd {
 			case "DANMU_MSG":
 				danmu := danmuMsg{}
+
 				err = json.Unmarshal(data, &danmu)
 				if err != nil {
 					return err
 				}
+
 				content, ok := danmu.Info[1].(string)
 				if !ok {
 					return errors.New("content is not string")
 				}
+
 				_ = handler(content)
 			case "DM_INTERACTION":
 			}

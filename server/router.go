@@ -13,6 +13,7 @@ func Init(e *gin.Engine) {
 	middlewares.Init(e)
 	auth.Init(e)
 	handlers.Init(e)
+
 	if !flags.Server.DisableWeb {
 		static.Init(e)
 	}
@@ -21,5 +22,5 @@ func Init(e *gin.Engine) {
 func NewAndInit() (e *gin.Engine) {
 	e = gin.New()
 	Init(e)
-	return
+	return e
 }

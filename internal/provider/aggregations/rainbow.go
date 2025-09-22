@@ -68,10 +68,12 @@ func (p *rainbowGenericProvider) NewAuthURL(ctx context.Context, state string) (
 	if err != nil {
 		return "", err
 	}
+
 	u, err := url.Parse(result)
 	if err != nil {
 		return "", err
 	}
+
 	query := url.Values{}
 	query.Set("act", "login")
 	query.Set("appid", p.conf.ClientID)
@@ -85,19 +87,24 @@ func (p *rainbowGenericProvider) NewAuthURL(ctx context.Context, state string) (
 	if err != nil {
 		return "", err
 	}
+
 	resp, err := uhc.Do(req)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
+
 	data := rainbowNewAuthURLResp{}
+
 	err = json.NewDecoder(resp.Body).Decode(&data)
 	if err != nil {
 		return "", err
 	}
+
 	if data.Code != 0 {
 		return "", fmt.Errorf("error code: %d, msg: %s", data.ErrCode, data.Msg)
 	}
+
 	return data.URL, nil
 }
 
@@ -117,10 +124,12 @@ func (p *rainbowGenericProvider) GetUserInfo(
 	if err != nil {
 		return nil, err
 	}
+
 	u, err := url.Parse(result)
 	if err != nil {
 		return nil, err
 	}
+
 	query := url.Values{}
 	query.Set("act", "callback")
 	query.Set("appid", p.conf.ClientID)
@@ -133,19 +142,24 @@ func (p *rainbowGenericProvider) GetUserInfo(
 	if err != nil {
 		return nil, err
 	}
+
 	resp, err := uhc.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+
 	data := rainbowUserInfo{}
+
 	err = json.NewDecoder(resp.Body).Decode(&data)
 	if err != nil {
 		return nil, err
 	}
+
 	if data.Code != 0 {
 		return nil, fmt.Errorf("error code: %d, msg: %s", data.ErrCode, data.Msg)
 	}
+
 	return &provider.UserInfo{
 		Username:       data.Nickname,
 		ProviderUserID: data.SocialUID,

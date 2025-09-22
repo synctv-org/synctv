@@ -11,10 +11,12 @@ func TestCheckLatest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	s, err := v.CheckLatest(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	t.Log(s)
 }
 
@@ -23,9 +25,11 @@ func TestLatestBinaryURL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	s, err := v.LatestBinaryURL(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	t.Log(s)
 }

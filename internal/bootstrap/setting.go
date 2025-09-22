@@ -21,6 +21,7 @@ func initAndFixSettings() error {
 	if err != nil {
 		return err
 	}
+
 	var setting *model.Setting
 
 	for {
@@ -38,11 +39,13 @@ func initAndFixSettings() error {
 				Type:  b.Type(),
 				Group: b.Group(),
 			}
+
 			err := db.FirstOrCreateSettingItemValue(setting)
 			if err != nil {
 				return err
 			}
 		}
+
 		err = b.Init(setting.Value)
 		if err != nil {
 			// auto fix

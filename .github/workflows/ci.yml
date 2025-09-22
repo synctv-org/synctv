@@ -41,14 +41,14 @@ jobs:
         uses: golangci/golangci-lint-action@v8
         with:
           version: latest
-          args: --color always
+          args: --color=always
 
       - name: Run Fix Linter
         uses: golangci/golangci-lint-action@v8
         if: ${{ failure() }}
         with:
           install-mode: none
-          args: --fix --color always
+          args: --fix --color=always
 
       - name: Auto Fix Diff Content
         if: ${{ failure() }}

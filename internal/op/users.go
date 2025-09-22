@@ -27,6 +27,7 @@ func LoadOrInitUser(u *model.User) (*UserEntry, error) {
 		User:    *u,
 		version: crc32.ChecksumIEEE(u.HashedPassword),
 	}, time.Hour)
+
 	return i, nil
 }
 
@@ -67,6 +68,7 @@ func CreateUser(username, password string, conf ...db.CreateUserConfig) (*UserEn
 	if username == "" {
 		return nil, errors.New("username cannot be empty")
 	}
+
 	u, err := db.CreateUser(username, password, conf...)
 	if err != nil {
 		return nil, err
@@ -115,10 +117,12 @@ func CompareAndDeleteUser(user *UserEntry) error {
 	if id == db.GuestUserID {
 		return errors.New("cannot delete guest user")
 	}
+
 	err := db.DeleteUserByID(id)
 	if err != nil {
 		return err
 	}
+
 	return CompareAndCloseUser(user)
 }
 
@@ -126,10 +130,12 @@ func DeleteUserByID(id string) error {
 	if id == db.GuestUserID {
 		return errors.New("cannot delete guest user")
 	}
+
 	err := db.DeleteUserByID(id)
 	if err != nil {
 		return err
 	}
+
 	return CloseUserByID(id)
 }
 
@@ -141,6 +147,7 @@ func CloseUserByID(id string) error {
 		}
 		return true
 	})
+
 	return nil
 }
 
@@ -148,12 +155,14 @@ func CompareAndCloseUser(user *UserEntry) error {
 	if !userCache.CompareAndDelete(user.Value().ID, user) {
 		return nil
 	}
+
 	roomCache.Range(func(_ string, value *synccache.Entry[*Room]) bool {
 		if value.Value().CreatorID == user.Value().ID {
 			CompareAndCloseRoom(value)
 		}
 		return true
 	})
+
 	return nil
 }
 
@@ -162,6 +171,7 @@ func GetUserName(userID string) string {
 	if err != nil {
 		return ""
 	}
+
 	return u.Value().Username
 }
 

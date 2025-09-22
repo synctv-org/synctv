@@ -26,6 +26,7 @@ func GenDefaultPaths(path string, skipEmpty bool, paths ...*Path) []*Path {
 		if v == "" && skipEmpty {
 			continue
 		}
+
 		if l := len(paths); l != 0 {
 			paths = append(paths, &Path{
 				Name: v,
@@ -38,6 +39,7 @@ func GenDefaultPaths(path string, skipEmpty bool, paths ...*Path) []*Path {
 			})
 		}
 	}
+
 	return paths
 }
 

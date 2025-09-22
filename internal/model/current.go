@@ -33,10 +33,13 @@ func (c *Current) UpdateStatus() Status {
 		c.Status.LastUpdate = time.Now()
 		return c.Status
 	}
+
 	if c.Status.IsPlaying {
 		c.Status.CurrentTime += time.Since(c.Status.LastUpdate).Seconds() * c.Status.PlaybackRate
 	}
+
 	c.Status.LastUpdate = time.Now()
+
 	return c.Status
 }
 
@@ -45,6 +48,7 @@ func (c *Current) setLiveStatus() Status {
 	c.Status.PlaybackRate = 1.0
 	c.Status.CurrentTime = 0
 	c.Status.LastUpdate = time.Now()
+
 	return c.Status
 }
 
@@ -52,14 +56,18 @@ func (c *Current) SetStatus(playing bool, seek, rate, timeDiff float64) Status {
 	if c.Movie.IsLive {
 		return c.setLiveStatus()
 	}
+
 	c.Status.IsPlaying = playing
+
 	c.Status.PlaybackRate = rate
 	if playing {
 		c.Status.CurrentTime = seek + (timeDiff * rate)
 	} else {
 		c.Status.CurrentTime = seek
 	}
+
 	c.Status.LastUpdate = time.Now()
+
 	return c.Status
 }
 
@@ -67,13 +75,16 @@ func (c *Current) SetSeekRate(seek, rate, timeDiff float64) Status {
 	if c.Movie.IsLive {
 		return c.setLiveStatus()
 	}
+
 	if c.Status.IsPlaying {
 		c.Status.CurrentTime = seek + (timeDiff * rate)
 	} else {
 		c.Status.CurrentTime = seek
 	}
+
 	c.Status.PlaybackRate = rate
 	c.Status.LastUpdate = time.Now()
+
 	return c.Status
 }
 
@@ -81,11 +92,14 @@ func (c *Current) SetSeek(seek, timeDiff float64) Status {
 	if c.Movie.IsLive {
 		return c.setLiveStatus()
 	}
+
 	if c.Status.IsPlaying {
 		c.Status.CurrentTime = seek + (timeDiff * c.Status.PlaybackRate)
 	} else {
 		c.Status.CurrentTime = seek
 	}
+
 	c.Status.LastUpdate = time.Now()
+
 	return c.Status
 }

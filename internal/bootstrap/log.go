@@ -33,6 +33,7 @@ var logCallerIgnoreFuncs = map[string]struct{}{
 
 func InitLog(_ context.Context) (err error) {
 	setLog(logrus.StandardLogger())
+
 	forceColor := utils.ForceColor()
 	if conf.Conf.Log.Enable {
 		l := &lumberjack.Logger{
@@ -45,12 +46,14 @@ func InitLog(_ context.Context) (err error) {
 		if err := l.Rotate(); err != nil {
 			logrus.Fatalf("log: rotate log file error: %v", err)
 		}
+
 		var w io.Writer
 		if forceColor {
 			w = colorable.NewNonColorableWriter(l)
 		} else {
 			w = l
 		}
+
 		if flags.Global.Dev || flags.Global.LogStd {
 			logrus.SetOutput(io.MultiWriter(os.Stdout, w))
 			logrus.Infof("log: enable log to stdout and file: %s", conf.Conf.Log.FilePath)
@@ -59,6 +62,7 @@ func InitLog(_ context.Context) (err error) {
 			logrus.Infof("log: disable log to stdout, only log to file: %s", conf.Conf.Log.FilePath)
 		}
 	}
+
 	switch conf.Conf.Log.LogFormat {
 	case "json":
 		logrus.SetFormatter(&logrus.JSONFormatter{
@@ -74,6 +78,7 @@ func InitLog(_ context.Context) (err error) {
 		if conf.Conf.Log.LogFormat != "text" {
 			logrus.Warnf("unknown log format: %s, use default: text", conf.Conf.Log.LogFormat)
 		}
+
 		logrus.SetFormatter(&logrus.TextFormatter{
 			ForceColors:      forceColor,
 			DisableColors:    !forceColor,
@@ -91,7 +96,9 @@ func InitLog(_ context.Context) (err error) {
 			},
 		})
 	}
+
 	log.SetOutput(logrus.StandardLogger().Writer())
+
 	return nil
 }
 

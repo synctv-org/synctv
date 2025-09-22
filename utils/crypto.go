@@ -29,6 +29,7 @@ func Crypto(v, key []byte) ([]byte, error) {
 
 	// Encrypt and authenticate the plaintext
 	ciphertext := aead.Seal(nonce, nonce, v, nil)
+
 	return ciphertext, nil
 }
 
@@ -67,6 +68,7 @@ func CryptoToBase64(v, key []byte) (string, error) {
 	if err != nil {
 		return "", err
 	}
+
 	return base64.StdEncoding.EncodeToString(ciphertext), nil
 }
 
@@ -75,6 +77,7 @@ func DecryptoFromBase64(v string, key []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	return Decrypto(ciphertext, key)
 }
 
@@ -83,6 +86,7 @@ func GenCryptoKey(base string) []byte {
 	for i := range len(base) {
 		key[i%32] ^= base[i]
 	}
+
 	return key
 }
 
@@ -91,5 +95,6 @@ func GenCryptoKeyWithBytes(base []byte) []byte {
 	for i := range base {
 		key[i%32] ^= base[i]
 	}
+
 	return key
 }

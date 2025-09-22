@@ -14,6 +14,7 @@ func InitGinMode(_ context.Context) error {
 	} else {
 		gin.SetMode(gin.ReleaseMode)
 	}
+
 	if utils.ForceColor() {
 		gin.ForceConsoleColor()
 	} else {

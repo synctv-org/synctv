@@ -24,8 +24,10 @@ func (b *BilibiliVendor) BeforeSave(_ *gorm.DB) error {
 		if err != nil {
 			return err
 		}
+
 		b.Cookies[k] = value
 	}
+
 	return nil
 }
 
@@ -36,8 +38,10 @@ func (b *BilibiliVendor) AfterSave(_ *gorm.DB) error {
 		if err != nil {
 			return err
 		}
+
 		b.Cookies[k] = stream.BytesToString(value)
 	}
+
 	return nil
 }
 
@@ -64,36 +68,47 @@ func GenAlistServerID(a *AlistVendor) {
 
 func (a *AlistVendor) BeforeSave(_ *gorm.DB) error {
 	key := utils.GenCryptoKey(a.UserID)
+
 	var err error
 	if a.Host, err = utils.CryptoToBase64([]byte(a.Host), key); err != nil {
 		return err
 	}
+
 	if a.Username, err = utils.CryptoToBase64([]byte(a.Username), key); err != nil {
 		return err
 	}
+
 	if a.HashedPassword, err = utils.Crypto(a.HashedPassword, key); err != nil {
 		return err
 	}
+
 	return nil
 }
 
 func (a *AlistVendor) AfterSave(_ *gorm.DB) error {
 	key := utils.GenCryptoKey(a.UserID)
+
 	host, err := utils.DecryptoFromBase64(a.Host, key)
 	if err != nil {
 		return err
 	}
+
 	a.Host = stream.BytesToString(host)
+
 	username, err := utils.DecryptoFromBase64(a.Username, key)
 	if err != nil {
 		return err
 	}
+
 	a.Username = stream.BytesToString(username)
+
 	hashedPassword, err := utils.Decrypto(a.HashedPassword, key)
 	if err != nil {
 		return err
 	}
+
 	a.HashedPassword = hashedPassword
+
 	return nil
 }
 
@@ -114,28 +129,36 @@ type EmbyVendor struct {
 
 func (e *EmbyVendor) BeforeSave(_ *gorm.DB) error {
 	key := utils.GenCryptoKey(e.ServerID)
+
 	var err error
 	if e.Host, err = utils.CryptoToBase64(stream.StringToBytes(e.Host), key); err != nil {
 		return err
 	}
+
 	if e.APIKey, err = utils.CryptoToBase64(stream.StringToBytes(e.APIKey), key); err != nil {
 		return err
 	}
+
 	return nil
 }
 
 func (e *EmbyVendor) AfterSave(_ *gorm.DB) error {
 	key := utils.GenCryptoKey(e.ServerID)
+
 	host, err := utils.DecryptoFromBase64(e.Host, key)
 	if err != nil {
 		return err
 	}
+
 	e.Host = stream.BytesToString(host)
+
 	apiKey, err := utils.DecryptoFromBase64(e.APIKey, key)
 	if err != nil {
 		return err
 	}
+
 	e.APIKey = stream.BytesToString(apiKey)
+
 	return nil
 }
 

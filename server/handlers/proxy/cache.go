@@ -63,9 +63,11 @@ func (i *CacheItem) WriteTo(w io.Writer) (int64, error) {
 	if err := binary.Write(w, binary.BigEndian, int64(len(metadata))); err != nil {
 		return written, fmt.Errorf("failed to write metadata length: %w", err)
 	}
+
 	written += 8
 
 	n, err := w.Write(metadata)
+
 	written += int64(n)
 	if err != nil {
 		return written, fmt.Errorf("failed to write metadata bytes: %w", err)
@@ -75,9 +77,11 @@ func (i *CacheItem) WriteTo(w io.Writer) (int64, error) {
 	if err := binary.Write(w, binary.BigEndian, int64(len(i.Data))); err != nil {
 		return written, fmt.Errorf("failed to write data length: %w", err)
 	}
+
 	written += 8
 
 	n, err = w.Write(i.Data)
+
 	written += int64(n)
 	if err != nil {
 		return written, fmt.Errorf("failed to write data bytes: %w", err)
@@ -99,6 +103,7 @@ func (i *CacheItem) ReadFrom(r io.Reader) (int64, error) {
 	if err := binary.Read(r, binary.BigEndian, &metadataLen); err != nil {
 		return read, fmt.Errorf("failed to read metadata length: %w", err)
 	}
+
 	read += 8
 
 	if metadataLen <= 0 {
@@ -107,6 +112,7 @@ func (i *CacheItem) ReadFrom(r io.Reader) (int64, error) {
 
 	metadata := make([]byte, metadataLen)
 	n, err := io.ReadFull(r, metadata)
+
 	read += int64(n)
 	if err != nil {
 		return read, fmt.Errorf("failed to read metadata bytes: %w", err)
@@ -122,6 +128,7 @@ func (i *CacheItem) ReadFrom(r io.Reader) (int64, error) {
 	if err := binary.Read(r, binary.BigEndian, &dataLen); err != nil {
 		return read, fmt.Errorf("failed to read data length: %w", err)
 	}
+
 	read += 8
 
 	if dataLen < 0 {
@@ -130,6 +137,7 @@ func (i *CacheItem) ReadFrom(r io.Reader) (int64, error) {
 
 	i.Data = make([]byte, dataLen)
 	n, err = io.ReadFull(r, i.Data)
+
 	read += int64(n)
 	if err != nil {
 		return read, fmt.Errorf("failed to read data bytes: %w", err)
@@ -186,6 +194,7 @@ func NewMemoryCache(capacity int, opts ...MemoryCacheOption) *MemoryCache {
 	for _, opt := range opts {
 		opt(mc)
 	}
+
 	return mc
 }
 
@@ -195,6 +204,7 @@ func (c *MemoryCache) Get(key string) (*CacheItem, bool, error) {
 	}
 
 	c.mu.RLock()
+
 	element, exists := c.m[key]
 	if !exists {
 		c.mu.RUnlock()
@@ -206,6 +216,7 @@ func (c *MemoryCache) Get(key string) (*CacheItem, bool, error) {
 	c.mu.Lock()
 	c.lruList.MoveToFront(element)
 	item := element.Value.item
+
 	c.mu.Unlock()
 
 	return item, true, nil
@@ -231,15 +242,18 @@ func (c *MemoryCache) GetAnyWithPrefix(prefix string) (*CacheItem, bool, error) 
 
 	// DFS to find first complete key
 	var findKey func(*TrieNode) string
+
 	findKey = func(n *TrieNode) string {
 		if n.isEnd {
 			return n.key
 		}
+
 		for _, child := range n.children {
 			if key := findKey(child); key != "" {
 				return key
 			}
 		}
+
 		return ""
 	}
 
@@ -256,6 +270,7 @@ func (c *MemoryCache) Set(key string, data *CacheItem) error {
 	if key == "" {
 		return errors.New("cache key cannot be empty")
 	}
+
 	if data == nil {
 		return errors.New("cannot cache nil CacheItem")
 	}
@@ -279,6 +294,7 @@ func (c *MemoryCache) Set(key string, data *CacheItem) error {
 		c.lruList.MoveToFront(element)
 		element.Value.item = data
 		element.Value.size = newSize
+
 		return nil
 	}
 
@@ -297,6 +313,7 @@ func (c *MemoryCache) Set(key string, data *CacheItem) error {
 			for _, ch := range entry.key {
 				node = node.children[ch]
 			}
+
 			node.isEnd = false
 			node.key = ""
 		}
@@ -318,6 +335,7 @@ func (c *MemoryCache) Set(key string, data *CacheItem) error {
 			node = node.children[ch]
 		}
 	}
+
 	node.isEnd = true
 	node.key = key
 
@@ -365,6 +383,7 @@ func NewFileCache(filePath string, opts ...FileCacheOption) *FileCache {
 	}
 
 	go fc.periodicCleanup()
+
 	return fc
 }
 
@@ -408,8 +427,11 @@ func (c *FileCache) cleanup() {
 		size    int64
 	}
 
-	var files []fileInfo
-	var totalSize int64
+	var (
+		files     []fileInfo
+		totalSize int64
+	)
+
 	cutoffTime := time.Now().Add(-c.maxAge)
 
 	// Collect file information and remove expired files
@@ -419,6 +441,7 @@ func (c *FileCache) cleanup() {
 		}
 
 		subdir := filepath.Join(c.filePath, entry.Name())
+
 		subEntries, err := os.ReadDir(subdir)
 		if err != nil {
 			continue
@@ -463,6 +486,7 @@ func (c *FileCache) cleanup() {
 		if totalSize <= maxSize {
 			break
 		}
+
 		if err := os.Remove(file.path); err == nil {
 			totalSize -= file.size
 		}
@@ -561,6 +585,7 @@ func (c *FileCache) Set(key string, data *CacheItem) error {
 	if key == "" {
 		return errors.New("cache key cannot be empty")
 	}
+
 	if data == nil {
 		return errors.New("cannot cache nil CacheItem")
 	}
@@ -579,6 +604,7 @@ func (c *FileCache) Set(key string, data *CacheItem) error {
 				newSize += int64(len(metadataBytes))
 			}
 		}
+
 		if c.currentSize.Load()+newSize > maxSize {
 			c.cleanup()
 		}

@@ -109,6 +109,7 @@ func (s *SetRoomPasswordReq) Validate() error {
 			return ErrPasswordHasInvalidChar
 		}
 	}
+
 	return nil
 }
 

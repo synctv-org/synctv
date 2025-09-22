@@ -38,14 +38,17 @@ func (b *Backend) Validate() error {
 	if b.Endpoint == "" {
 		return errors.New("new http client failed, endpoint is empty")
 	}
+
 	if b.Consul.ServiceName != "" && b.Etcd.ServiceName != "" {
 		return errors.New("new grpc client failed, consul and etcd can't be used at the same time")
 	}
+
 	if b.TimeOut != "" {
 		if _, err := time.ParseDuration(b.TimeOut); err != nil {
 			return err
 		}
 	}
+
 	return nil
 }
 
@@ -68,27 +71,32 @@ type BackendUsedBy struct {
 
 func (v *VendorBackend) BeforeSave(_ *gorm.DB) error {
 	key := utils.GenCryptoKey(v.Backend.Endpoint)
+
 	var err error
 	if v.Backend.JwtSecret != "" {
 		if v.Backend.JwtSecret, err = utils.CryptoToBase64([]byte(v.Backend.JwtSecret), key); err != nil {
 			return err
 		}
 	}
+
 	if v.Backend.Consul.Token != "" {
 		if v.Backend.Consul.Token, err = utils.CryptoToBase64([]byte(v.Backend.Consul.Token), key); err != nil {
 			return err
 		}
 	}
+
 	if v.Backend.Etcd.Password != "" {
 		if v.Backend.Etcd.Password, err = utils.CryptoToBase64([]byte(v.Backend.Etcd.Password), key); err != nil {
 			return err
 		}
 	}
+
 	if v.Backend.CustomCa != "" {
 		if v.Backend.CustomCa, err = utils.CryptoToBase64([]byte(v.Backend.CustomCa), key); err != nil {
 			return err
 		}
 	}
+
 	return nil
 }
 
@@ -99,29 +107,37 @@ func (v *VendorBackend) AfterSave(_ *gorm.DB) error {
 		if err != nil {
 			return err
 		}
+
 		v.Backend.JwtSecret = stream.BytesToString(jwtSecret)
 	}
+
 	if v.Backend.Consul.Token != "" {
 		token, err := utils.DecryptoFromBase64(v.Backend.Consul.Token, key)
 		if err != nil {
 			return err
 		}
+
 		v.Backend.Consul.Token = stream.BytesToString(token)
 	}
+
 	if v.Backend.Etcd.Password != "" {
 		password, err := utils.DecryptoFromBase64(v.Backend.Etcd.Password, key)
 		if err != nil {
 			return err
 		}
+
 		v.Backend.Etcd.Password = stream.BytesToString(password)
 	}
+
 	if v.Backend.CustomCa != "" {
 		customCa, err := utils.DecryptoFromBase64(v.Backend.CustomCa, key)
 		if err != nil {
 			return err
 		}
+
 		v.Backend.CustomCa = stream.BytesToString(customCa)
 	}
+
 	return nil
 }
 

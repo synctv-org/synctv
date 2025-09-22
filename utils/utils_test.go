@@ -14,6 +14,7 @@ func TestGetPageItems(t *testing.T) {
 		page     int
 		pageSize int
 	}
+
 	tests := []struct {
 		name string
 		args args
@@ -69,6 +70,7 @@ func FuzzCompVersion(f *testing.F) {
 	f.Add("v0.3.1", "v0.3.1-alpha.2")
 	f.Fuzz(func(t *testing.T, a, b string) {
 		t.Logf("a: %s, b: %s", a, b)
+
 		_, err := utils.CompVersion(a, b)
 		if err != nil {
 			t.Errorf("CompVersion error = %v", err)
@@ -118,15 +120,19 @@ func TestTruncateByRune(t *testing.T) {
 	if !strings.EqualFold(utils.TruncateByRune(name, 6), "abcd") {
 		t.Errorf("TruncateByRune() = %v, want %v", utils.TruncateByRune(name, 6), "abcd")
 	}
+
 	if !strings.EqualFold(utils.TruncateByRune(name, 7), "abcd测") {
 		t.Errorf("TruncateByRune() = %v, want %v", utils.TruncateByRune(name, 7), "abcd测")
 	}
+
 	if !strings.EqualFold(utils.TruncateByRune(name, 8), "abcd测") {
 		t.Errorf("TruncateByRune() = %v, want %v", utils.TruncateByRune(name, 8), "abcd测")
 	}
+
 	if !strings.EqualFold(utils.TruncateByRune(name, 9), "abcd测") {
 		t.Errorf("TruncateByRune() = %v, want %v", utils.TruncateByRune(name, 9), "abcd测")
 	}
+
 	if !strings.EqualFold(utils.TruncateByRune(name, 10), "abcd测试") {
 		t.Errorf("TruncateByRune() = %v, want %v", utils.TruncateByRune(name, 10), "abcd测试")
 	}

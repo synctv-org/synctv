@@ -65,6 +65,7 @@ func (c *Client) SendChatMessage(message string) error {
 	if !c.u.HasRoomPermission(c.r, model.PermissionSendChatMessage) {
 		return model.ErrNoPermission
 	}
+
 	return c.Broadcast(&pb.Message{
 		Type:      pb.MessageType_CHAT,
 		Timestamp: time.Now().UnixMilli(),
@@ -81,10 +82,13 @@ func (c *Client) SendChatMessage(message string) error {
 func (c *Client) Send(msg Message) error {
 	c.wg.Add(1)
 	defer c.wg.Done()
+
 	if c.Closed() {
 		return ErrAlreadyClosed
 	}
+
 	c.c <- msg
+
 	return nil
 }
 
@@ -92,8 +96,10 @@ func (c *Client) Close() error {
 	if !atomic.CompareAndSwapUint32(&c.closed, 0, 1) {
 		return ErrAlreadyClosed
 	}
+
 	c.wg.Wait()
 	close(c.c)
+
 	return nil
 }
 
@@ -118,6 +124,7 @@ func (c *Client) SetStatus(playing bool, seek, rate, timeDiff float64) error {
 	if err != nil {
 		return err
 	}
+
 	return c.Broadcast(&pb.Message{
 		Type: pb.MessageType_STATUS,
 		Sender: &pb.Sender{

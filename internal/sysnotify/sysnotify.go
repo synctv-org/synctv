@@ -59,6 +59,7 @@ func NewSysNotifyTask(name string, notifyType NotifyType, task func() error) *Ta
 func runTask(tq *taskQueue) {
 	tq.notifyTaskLock.Lock()
 	defer tq.notifyTaskLock.Unlock()
+
 	for tq.notifyTaskQueue.Len() > 0 {
 		_, task := tq.notifyTaskQueue.Pop()
 		func() {
@@ -67,10 +68,13 @@ func runTask(tq *taskQueue) {
 					log.Errorf("task: %s panic has returned: %v", task.Name, err)
 				}
 			}()
+
 			log.Infof("task: %s running", task.Name)
+
 			if err := task.Task(); err != nil {
 				log.Errorf("task: %s an error occurred: %v", task.Name, err)
 			}
+
 			log.Infof("task: %s done", task.Name)
 		}()
 	}
@@ -80,22 +84,29 @@ func (sn *SysNotify) RegisterSysNotifyTask(priority int, task *Task) error {
 	if task == nil || task.Task == nil {
 		return errors.New("task is nil")
 	}
+
 	if task.NotifyType == 0 {
 		panic("task notify type is 0")
 	}
+
 	tasks, _ := sn.taskGroup.LoadOrStore(task.NotifyType, &taskQueue{
 		notifyTaskQueue: pqueue.NewMinPriorityQueue[*Task](),
 	})
+
 	tasks.notifyTaskLock.Lock()
 	defer tasks.notifyTaskLock.Unlock()
+
 	tasks.notifyTaskQueue.Push(priority, task)
+
 	return nil
 }
 
 func (sn *SysNotify) waitCbk() {
 	log.Info("wait sys notify")
+
 	for s := range sn.c {
 		log.Infof("receive sys notify: %v", s)
+
 		switch parseSysNotifyType(s) {
 		case NotifyTypeEXIT:
 			tq, ok := sn.taskGroup.Load(NotifyTypeEXIT)
@@ -103,6 +114,7 @@ func (sn *SysNotify) waitCbk() {
 				log.Info("task: NotifyTypeEXIT running...")
 				runTask(tq)
 			}
+
 			return
 		case NotifyTypeRELOAD:
 			tq, ok := sn.taskGroup.Load(NotifyTypeRELOAD)
@@ -112,6 +124,7 @@ func (sn *SysNotify) waitCbk() {
 			}
 		}
 	}
+
 	log.Info("task: all done")
 }
 

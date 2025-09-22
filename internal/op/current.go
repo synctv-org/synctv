@@ -23,6 +23,7 @@ func newCurrent(roomID string, c *model.Current) *current {
 			},
 		}
 	}
+
 	return &current{
 		roomID:  roomID,
 		current: *c,
@@ -32,7 +33,9 @@ func newCurrent(roomID string, c *model.Current) *current {
 func (c *current) Current() model.Current {
 	c.lock.RLock()
 	defer c.lock.RUnlock()
+
 	c.current.UpdateStatus()
+
 	return c.current
 }
 
@@ -59,7 +62,9 @@ func (c *current) SetMovie(movie model.CurrentMovie, play bool) {
 func (c *current) Status() model.Status {
 	c.lock.RLock()
 	defer c.lock.RUnlock()
+
 	c.current.UpdateStatus()
+
 	return c.current.Status
 }
 
@@ -73,6 +78,7 @@ func (c *current) SetStatus(playing bool, seek, rate, timeDiff float64) *model.S
 	}()
 
 	s := c.current.SetStatus(playing, seek, rate, timeDiff)
+
 	return &s
 }
 
@@ -86,5 +92,6 @@ func (c *current) SetSeekRate(seek, rate, timeDiff float64) *model.Status {
 	}()
 
 	s := c.current.SetSeekRate(seek, rate, timeDiff)
+
 	return &s
 }

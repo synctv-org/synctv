@@ -73,14 +73,17 @@ func (u *User) CheckPassword(password string) bool {
 func (u *User) BeforeCreate(tx *gorm.DB) error {
 	if u.autoAddUsernameSuffix {
 		var existingUser User
+
 		err := tx.Select("username").Where("username = ?", u.Username).First(&existingUser).Error
 		if err == nil {
 			u.Username = fmt.Sprintf("%s#%d", u.Username, rand.IntN(9999))
 		}
 	}
+
 	if u.ID == "" {
 		u.ID = utils.SortUUID()
 	}
+
 	return nil
 }
 

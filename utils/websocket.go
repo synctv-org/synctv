@@ -28,6 +28,7 @@ func NewWebSocketServer(conf ...WebSocketConfig) *WebSocket {
 	for _, wsc := range conf {
 		wsc(ws)
 	}
+
 	return ws
 }
 
@@ -41,11 +42,13 @@ func (ws *WebSocket) Server(
 	if len(subprotocols) > 0 {
 		conf = append(conf, WithSubprotocols(subprotocols))
 	}
+
 	wsc, err := ws.NewWebSocketClient(w, r, nil, conf...)
 	if err != nil {
 		return err
 	}
 	defer wsc.Close()
+
 	return handler(wsc)
 }
 
@@ -69,6 +72,7 @@ func (ws *WebSocket) newUpgrader(conf ...UpgraderConf) *websocket.Upgrader {
 	for _, uc := range conf {
 		uc(ug)
 	}
+
 	return ug
 }
 
@@ -82,5 +86,6 @@ func (ws *WebSocket) NewWebSocketClient(
 	if err != nil {
 		return nil, err
 	}
+
 	return conn, nil
 }

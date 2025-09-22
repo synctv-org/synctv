@@ -44,6 +44,7 @@ func RoomMembers(ctx *gin.Context) {
 				ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 				return
 			}
+
 			scopes = append(scopes, db.WhereUsernameLikeOrIDIn(keyword, ids))
 		case "name":
 			scopes = append(scopes, db.WhereUsernameLike(keyword))
@@ -54,9 +55,11 @@ func RoomMembers(ctx *gin.Context) {
 				ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 				return
 			}
+
 			scopes = append(scopes, db.WhereIDIn(ids))
 		}
 	}
+
 	scopes = append(scopes, func(db *gorm.DB) *gorm.DB {
 		return db.
 			InnerJoins("JOIN room_members ON users.id = room_members.user_id").
@@ -92,6 +95,7 @@ func RoomMembers(ctx *gin.Context) {
 			http.StatusBadRequest,
 			model.NewAPIErrorStringResp("not support sort"),
 		)
+
 		return
 	}
 
@@ -149,6 +153,7 @@ func RoomAdminMembers(ctx *gin.Context) {
 				ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 				return
 			}
+
 			scopes = append(scopes, db.WhereUsernameLikeOrIDIn(keyword, ids))
 		case "name":
 			scopes = append(scopes, db.WhereUsernameLike(keyword))
@@ -159,9 +164,11 @@ func RoomAdminMembers(ctx *gin.Context) {
 				ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 				return
 			}
+
 			scopes = append(scopes, db.WhereIDIn(ids))
 		}
 	}
+
 	scopes = append(scopes, func(db *gorm.DB) *gorm.DB {
 		return db.
 			Joins("JOIN room_members ON users.id = room_members.user_id").
@@ -197,6 +204,7 @@ func RoomAdminMembers(ctx *gin.Context) {
 			http.StatusBadRequest,
 			model.NewAPIErrorStringResp("not support sort"),
 		)
+
 		return
 	}
 

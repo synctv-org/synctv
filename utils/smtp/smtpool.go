@@ -24,21 +24,27 @@ func validateSMTPConfig(c *Config) error {
 	if c == nil {
 		return errors.New("smtp config is nil")
 	}
+
 	if c.Host == "" {
 		return errors.New("smtp host is empty")
 	}
+
 	if c.Port == 0 {
 		return errors.New("smtp port is empty")
 	}
+
 	if c.Username == "" {
 		return errors.New("smtp username is empty")
 	}
+
 	if c.Password == "" {
 		return errors.New("smtp password is empty")
 	}
+
 	if c.From == "" {
 		return errors.New("smtp from is empty")
 	}
+
 	return nil
 }
 
@@ -56,6 +62,7 @@ func newSMTPClient(c *Config) (*smtp.Client, error) {
 	default:
 		cli, err = smtp.Dial(fmt.Sprintf("%s:%d", c.Host, c.Port))
 	}
+
 	if err != nil {
 		return nil, fmt.Errorf("dial smtp server failed: %w", err)
 	}
@@ -85,6 +92,7 @@ func NewSMTPPool(c *Config, poolCap int) (*Pool, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	return &Pool{
 		clients: make([]*smtp.Client, 0, poolCap),
 		c:       c,
@@ -94,6 +102,7 @@ func NewSMTPPool(c *Config, poolCap int) (*Pool, error) {
 
 func (p *Pool) Get() (*smtp.Client, error) {
 	p.mu.Lock()
+
 	if p.closed {
 		p.mu.Unlock()
 		return nil, ErrSMTPPoolClosed
@@ -104,13 +113,16 @@ func (p *Pool) Get() (*smtp.Client, error) {
 		p.clients = p.clients[:len(p.clients)-1]
 		p.active++
 		p.mu.Unlock()
+
 		if cli.Noop() != nil {
 			cli.Close()
 			p.mu.Lock()
 			p.active--
 			p.mu.Unlock()
+
 			return p.Get()
 		}
+
 		return cli, nil
 	}
 
@@ -128,6 +140,7 @@ func (p *Pool) Get() (*smtp.Client, error) {
 
 	p.active++
 	p.mu.Unlock()
+
 	return cli, nil
 }
 
@@ -160,6 +173,7 @@ func (p *Pool) Close() {
 	for _, cli := range p.clients {
 		cli.Close()
 	}
+
 	p.clients = nil
 }
 
@@ -169,6 +183,7 @@ func (p *Pool) SendEmail(to []string, subject, body string, opts ...FormatMailOp
 		return err
 	}
 	defer p.Put(cli)
+
 	return SendEmail(cli, p.c.From, to, subject, body, opts...)
 }
 

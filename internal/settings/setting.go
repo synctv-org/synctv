@@ -55,12 +55,14 @@ func pushNeedInit(s Setting) {
 	if s == nil {
 		panic("push need init failed, setting is nil")
 	}
+
 	for i, item := range needInit.items {
 		if item.Name() == s.Name() {
 			heap.Remove(needInit, i)
 			break
 		}
 	}
+
 	heap.Push(needInit, maxHeapItem{
 		priority: s.InitPriority(),
 		Setting:  s,
@@ -74,12 +76,15 @@ func hasNeedInit() bool {
 func PopNeedInit() (Setting, bool) {
 	for hasNeedInit() {
 		item := heap.Pop(needInit)
+
 		s := item.Setting
 		if s.Inited() {
 			continue
 		}
+
 		return s, true
 	}
+
 	return nil, false
 }
 
@@ -104,6 +109,7 @@ func SetValue(name string, value any) error {
 	if !ok {
 		return fmt.Errorf("setting %s not found", name)
 	}
+
 	switch s.Type() {
 	case model.SettingTypeBool:
 		return s.(BoolSetting).Set(json.Wrap(value).ToBool())
@@ -114,6 +120,7 @@ func SetValue(name string, value any) error {
 	case model.SettingTypeString:
 		return s.(StringSetting).Set(json.Wrap(value).ToString())
 	}
+
 	return s.SetString(json.Wrap(value).ToString())
 }
 

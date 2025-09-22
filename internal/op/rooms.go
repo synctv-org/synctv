@@ -36,6 +36,7 @@ func CreateRoom(
 	if err != nil {
 		return nil, err
 	}
+
 	return LoadOrInitRoom(r)
 }
 
@@ -49,9 +50,11 @@ func checkRoomCreatorStatus(creatorID string) error {
 	if user.IsBanned() {
 		return ErrRoomCreatorBanned
 	}
+
 	if user.IsPending() {
 		return ErrRoomCreatorPending
 	}
+
 	return nil
 }
 
@@ -68,6 +71,7 @@ func LoadOrInitRoom(room *model.Room) (*RoomEntry, error) {
 	r.movies.room = r
 
 	i, _ := roomCache.LoadOrStore(room.ID, r, time.Duration(settings.RoomTTL.Get())*time.Hour)
+
 	return i, nil
 }
 
@@ -96,7 +100,9 @@ func CompareAndDeleteRoom(room *RoomEntry) error {
 	if err := db.DeleteRoomByID(room.Value().ID); err != nil {
 		return err
 	}
+
 	CompareAndCloseRoom(room)
+
 	return nil
 }
 
@@ -124,6 +130,7 @@ func CompareAndCloseRoom(room *RoomEntry) bool {
 		room.Value().close()
 		return true
 	}
+
 	return false
 }
 
@@ -141,6 +148,7 @@ func LoadRoomByID(id string) (*RoomEntry, error) {
 	}
 
 	r2.SetExpiration(time.Now().Add(time.Duration(settings.RoomTTL.Get()) * time.Hour))
+
 	return r2, nil
 }
 
@@ -156,7 +164,9 @@ func LoadOrInitRoomByID(id string) (*RoomEntry, error) {
 			}
 			return nil, err
 		}
+
 		i.SetExpiration(time.Now().Add(time.Duration(settings.RoomTTL.Get()) * time.Hour))
+
 		return i, nil
 	}
 
@@ -164,11 +174,14 @@ func LoadOrInitRoomByID(id string) (*RoomEntry, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	settings, err := db.CreateOrLoadRoomSettings(room.ID)
 	if err != nil {
 		return nil, err
 	}
+
 	room.Settings = settings
+
 	return LoadOrInitRoom(room)
 }
 
@@ -184,5 +197,6 @@ func SetRoomStatusByID(roomID string, status model.RoomStatus) error {
 	if err != nil {
 		return err
 	}
+
 	return room.Value().SetStatus(status)
 }

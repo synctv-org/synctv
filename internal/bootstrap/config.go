@@ -23,64 +23,79 @@ func InitConfig(_ context.Context) (err error) {
 		log.Fatal("skip config and skip env at the same time")
 		return errors.New("skip config and skip env at the same time")
 	}
+
 	conf.Conf = conf.DefaultConfig()
 	if !flags.Server.SkipConfig {
 		configFile, err := utils.OptFilePath(filepath.Join(flags.Global.DataDir, "config.yaml"))
 		if err != nil {
 			log.Fatalf("config file path error: %v", err)
 		}
+
 		err = confFromConfig(configFile, conf.Conf)
 		if err != nil {
 			log.Fatalf("load config from file error: %v", err)
 		}
+
 		log.Infof("load config success from file: %s", configFile)
+
 		if err = restoreConfig(configFile, conf.Conf); err != nil {
 			log.Warnf("restore config error: %v", err)
 		} else {
 			log.Info("restore config success")
 		}
 	}
+
 	if !flags.Server.SkipEnvConfig {
 		prefix := "SYNCTV_"
 		if flags.EnvNoPrefix {
 			prefix = ""
+
 			log.Info("load config from env without prefix")
 		} else {
 			log.Infof("load config from env with prefix: %s", prefix)
 		}
+
 		err := confFromEnv(prefix, conf.Conf)
 		if err != nil {
 			log.Fatalf("load config from env error: %v", err)
 		}
+
 		log.Info("load config success from env")
 	}
+
 	return optConfigPath(conf.Conf)
 }
 
 func optConfigPath(conf *conf.Config) error {
 	var err error
+
 	conf.Server.ProxyCachePath, err = utils.OptFilePath(conf.Server.ProxyCachePath)
 	if err != nil {
 		return fmt.Errorf("get proxy cache path error: %w", err)
 	}
+
 	conf.Server.HTTP.CertPath, err = utils.OptFilePath(conf.Server.HTTP.CertPath)
 	if err != nil {
 		return fmt.Errorf("get http cert path error: %w", err)
 	}
+
 	conf.Server.HTTP.KeyPath, err = utils.OptFilePath(conf.Server.HTTP.KeyPath)
 	if err != nil {
 		return fmt.Errorf("get http key path error: %w", err)
 	}
+
 	conf.Log.FilePath, err = utils.OptFilePath(conf.Log.FilePath)
 	if err != nil {
 		return fmt.Errorf("get log file path error: %w", err)
 	}
+
 	for _, op := range conf.Oauth2Plugins {
 		op.PluginFile, err = utils.OptFilePath(op.PluginFile)
 		if err != nil {
 			return fmt.Errorf("get oauth2 plugin file path error: %w", err)
 		}
 	}
+
 	return nil
 }
 
@@ -88,8 +103,10 @@ func confFromConfig(filePath string, conf *conf.Config) error {
 	if filePath == "" {
 		return errors.New("config file path is empty")
 	}
+
 	if !utils.Exists(filePath) {
 		log.Infof("config file not exists, create new config file: %s", filePath)
+
 		err := conf.Save(filePath)
 		if err != nil {
 			return err
@@ -100,6 +117,7 @@ func confFromConfig(filePath string, conf *conf.Config) error {
 			return err
 		}
 	}
+
 	return nil
 }
 

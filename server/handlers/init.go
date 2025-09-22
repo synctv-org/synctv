@@ -24,6 +24,7 @@ func Init(e *gin.Engine) {
 	{
 		admin := api.Group("/admin")
 		root := api.Group("/admin")
+
 		admin.Use(middlewares.AuthAdminMiddleware)
 		root.Use(middlewares.AuthRootMiddleware)
 
@@ -194,7 +195,6 @@ func initRoom(room, needAuthUser, needAuthRoom, needAuthWithoutGuestRoom *gin.Ro
 
 func initMovie(movie, needAuthMovie *gin.RouterGroup) {
 	// needAuthMovie.GET("/list", MovieList)
-
 	needAuthMovie.GET("/current", CurrentMovie)
 
 	needAuthMovie.GET("/movies", Movies)

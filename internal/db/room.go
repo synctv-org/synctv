@@ -55,6 +55,7 @@ func WithSettingHidden(hidden bool) CreateRoomConfig {
 		if r.Settings == nil {
 			r.Settings = model.DefaultRoomSettings()
 		}
+
 		r.Settings.Hidden = hidden
 	}
 }
@@ -72,6 +73,7 @@ func CreateRoom(
 	for _, c := range conf {
 		c(r)
 	}
+
 	if password != "" {
 		hashedPassword, err := bcrypt.GenerateFromPassword(
 			stream.StringToBytes(password),
@@ -80,6 +82,7 @@ func CreateRoom(
 		if err != nil {
 			return nil, fmt.Errorf("failed to hash password: %w", err)
 		}
+
 		r.HashedPassword = hashedPassword
 	}
 
@@ -89,21 +92,25 @@ func CreateRoom(
 			if err := tx.Model(&model.Room{}).Where("creator_id = ?", r.CreatorID).Count(&count).Error; err != nil {
 				return fmt.Errorf("failed to count rooms: %w", err)
 			}
+
 			if count >= maxCount {
 				return errors.New("room count exceeds limit")
 			}
 		}
+
 		if err := tx.Create(r).Error; err != nil {
 			if errors.Is(err, gorm.ErrDuplicatedKey) {
 				return errors.New("room already exists")
 			}
 			return fmt.Errorf("failed to create room: %w", err)
 		}
+
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
+
 	return r, nil
 }
 
@@ -111,17 +118,22 @@ func GetRoomByID(id string) (*model.Room, error) {
 	if len(id) != 32 {
 		return nil, errors.New("room id is not 32 bit")
 	}
+
 	var r model.Room
+
 	err := db.Where("id = ?", id).First(&r).Error
+
 	return &r, HandleNotFound(err, ErrRoomNotFound)
 }
 
 func CreateOrLoadRoomSettings(roomID string) (*model.RoomSettings, error) {
 	var rs model.RoomSettings
+
 	err := db.Where(model.RoomSettings{ID: roomID}).
 		Attrs(model.DefaultRoomSettings()).
 		FirstOrCreate(&rs).
 		Error
+
 	return &rs, err
 }
 
@@ -132,10 +144,12 @@ func SaveRoomSettings(roomID string, settings *model.RoomSettings) error {
 
 func UpdateRoomSettings(roomID string, settings map[string]any) (*model.RoomSettings, error) {
 	var rs model.RoomSettings
+
 	err := db.Model(&model.RoomSettings{ID: roomID}).
 		Clauses(clause.Returning{}).
 		Updates(settings).
 		First(&rs).Error
+
 	return &rs, HandleNotFound(err, "room settings")
 }
 
@@ -145,8 +159,11 @@ func DeleteRoomByID(roomID string) error {
 }
 
 func SetRoomPassword(roomID, password string) error {
-	var hashedPassword []byte
-	var err error
+	var (
+		hashedPassword []byte
+		err            error
+	)
+
 	if password != "" {
 		hashedPassword, err = bcrypt.GenerateFromPassword(
 			stream.StringToBytes(password),
@@ -156,6 +173,7 @@ func SetRoomPassword(roomID, password string) error {
 			return fmt.Errorf("failed to hash password: %w", err)
 		}
 	}
+
 	return SetRoomHashedPassword(roomID, hashedPassword)
 }
 
@@ -168,24 +186,28 @@ func SetRoomHashedPassword(roomID string, hashedPassword []byte) error {
 
 func GetAllRooms(scopes ...func(*gorm.DB) *gorm.DB) ([]*model.Room, error) {
 	var rooms []*model.Room
+
 	err := db.Scopes(scopes...).Find(&rooms).Error
 	return rooms, err
 }
 
 func GetAllRoomsCount(scopes ...func(*gorm.DB) *gorm.DB) (int64, error) {
 	var count int64
+
 	err := db.Model(&model.Room{}).Scopes(scopes...).Count(&count).Error
 	return count, err
 }
 
 func GetAllRoomsAndCreator(scopes ...func(*gorm.DB) *gorm.DB) ([]*model.Room, error) {
 	var rooms []*model.Room
+
 	err := db.Preload("Creator").Scopes(scopes...).Find(&rooms).Error
 	return rooms, err
 }
 
 func GetAllRoomsByUserID(userID string) ([]*model.Room, error) {
 	var rooms []*model.Room
+
 	err := db.Where("creator_id = ?", userID).Find(&rooms).Error
 	return rooms, err
 }
@@ -208,5 +230,6 @@ func SetRoomCurrent(roomID string, current *model.Current) error {
 		Where("id = ?", roomID).
 		Select("Current").
 		Updates(r)
+
 	return HandleUpdateResult(result, ErrRoomNotFound)
 }

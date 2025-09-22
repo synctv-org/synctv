@@ -142,6 +142,7 @@ func getSMTPPool() (*smtp.Pool, error) {
 
 	if configChanged {
 		configChanged = false
+
 		if smtpPool != nil {
 			smtpPool.Close()
 			smtpPool = nil
@@ -153,6 +154,7 @@ func getSMTPPool() (*smtp.Pool, error) {
 		if err != nil {
 			return nil, err
 		}
+
 		smtpPool = pool
 	}
 

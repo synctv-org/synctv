@@ -13,13 +13,16 @@ func ExtractProviders(
 	if len(providers) == 0 {
 		providers = p.Providers()
 	}
+
 	pi := make([]Interface, len(providers))
 	for i, provider := range providers {
 		pi2, err := p.ExtractProvider(provider)
 		if err != nil {
 			return nil, err
 		}
+
 		pi[i] = pi2
 	}
+
 	return pi, nil
 }

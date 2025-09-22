@@ -44,6 +44,7 @@ func FirstOrCreateRoomMemberRelation(
 	conf ...CreateRoomMemberRelationConfig,
 ) (*model.RoomMember, error) {
 	roomMemberRelation := &model.RoomMember{}
+
 	d := &model.RoomMember{
 		RoomID:           roomID,
 		UserID:           userID,
@@ -55,10 +56,12 @@ func FirstOrCreateRoomMemberRelation(
 	for _, c := range conf {
 		c(d)
 	}
+
 	err := db.Where("room_id = ? AND user_id = ?", roomID, userID).
 		Attrs(d).
 		FirstOrCreate(roomMemberRelation).
 		Error
+
 	return roomMemberRelation, err
 }
 
@@ -164,6 +167,7 @@ func RoomSetAdmin(roomID, userID string, permissions model.RoomAdminPermission) 
 			"permissions":       model.AllPermissions,
 			"admin_permissions": permissions,
 		})
+
 	return HandleUpdateResult(result, ErrRoomMemberNotFound)
 }
 
@@ -175,24 +179,29 @@ func RoomSetMember(roomID, userID string, permissions model.RoomMemberPermission
 			"permissions":       permissions,
 			"admin_permissions": model.NoAdminPermission,
 		})
+
 	return HandleUpdateResult(result, ErrRoomMemberNotFound)
 }
 
 func GetRoomMembers(roomID string, scopes ...func(*gorm.DB) *gorm.DB) ([]*model.RoomMember, error) {
 	var members []*model.RoomMember
+
 	err := db.
 		Where("room_id = ?", roomID).
 		Scopes(scopes...).
 		Find(&members).Error
+
 	return members, err
 }
 
 func GetRoomMembersCount(roomID string, scopes ...func(*gorm.DB) *gorm.DB) (int64, error) {
 	var count int64
+
 	err := db.
 		Model(&model.RoomMember{}).
 		Where("room_id = ?", roomID).
 		Scopes(scopes...).
 		Count(&count).Error
+
 	return count, err
 }

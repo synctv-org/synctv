@@ -56,6 +56,7 @@ func setupAddresses() (tcpHTTPAddr, tcpRTMPAddr *net.TCPAddr, err error) {
 	if conf.Conf.Server.RTMP.Listen == "" {
 		conf.Conf.Server.RTMP.Listen = conf.Conf.Server.HTTP.Listen
 	}
+
 	if conf.Conf.Server.RTMP.Port == 0 {
 		conf.Conf.Server.RTMP.Port = conf.Conf.Server.HTTP.Port
 	}
@@ -64,7 +65,8 @@ func setupAddresses() (tcpHTTPAddr, tcpRTMPAddr *net.TCPAddr, err error) {
 		"tcp",
 		fmt.Sprintf("%s:%d", conf.Conf.Server.RTMP.Listen, conf.Conf.Server.RTMP.Port),
 	)
-	return
+
+	return tcpHTTPAddr, tcpRTMPAddr, err
 }
 
 func startHTTPServer(e *gin.Engine, listener net.Listener) {
@@ -72,6 +74,7 @@ func startHTTPServer(e *gin.Engine, listener net.Listener) {
 	case conf.Conf.Server.HTTP.CertPath != "" && conf.Conf.Server.HTTP.KeyPath != "":
 		go func() {
 			srv := http.Server{Handler: e.Handler(), ReadHeaderTimeout: 3 * time.Second}
+
 			err := srv.ServeTLS(
 				listener,
 				conf.Conf.Server.HTTP.CertPath,
@@ -84,6 +87,7 @@ func startHTTPServer(e *gin.Engine, listener net.Listener) {
 	case conf.Conf.Server.HTTP.CertPath == "" && conf.Conf.Server.HTTP.KeyPath == "":
 		go func() {
 			srv := http.Server{Handler: e.Handler(), ReadHeaderTimeout: 3 * time.Second}
+
 			err := srv.Serve(listener)
 			if err != nil {
 				log.Panicf("http server error: %v", err)
@@ -121,6 +125,7 @@ func Server(_ *cobra.Command, _ []string) {
 			} else {
 				httpListener = muxer.Match(cmux.HTTP1Fast())
 			}
+
 			startHTTPServer(e, httpListener)
 
 			// Setup RTMP
@@ -145,6 +150,7 @@ func Server(_ *cobra.Command, _ []string) {
 			if err != nil {
 				log.Fatal(err)
 			}
+
 			go func() {
 				err := rtmp.Server().Serve(rtmpListener)
 				if err != nil {
@@ -160,6 +166,7 @@ func Server(_ *cobra.Command, _ []string) {
 	if conf.Conf.Server.RTMP.Enable {
 		log.Infof("rtmp run on tcp://%s:%d", tcpRTMPAddr.IP, tcpRTMPAddr.Port)
 	}
+
 	if conf.Conf.Server.HTTP.CertPath != "" && conf.Conf.Server.HTTP.KeyPath != "" {
 		log.Infof("website run on https://%s:%d", tcpHTTPAddr.IP, tcpHTTPAddr.Port)
 	} else {

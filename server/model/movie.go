@@ -58,6 +58,7 @@ func (p *PushMoviesReq) Validate() error {
 			return err
 		}
 	}
+
 	return nil
 }
 
@@ -113,9 +114,11 @@ func (e *EditMovieReq) Validate() error {
 	if err := e.IDReq.Validate(); err != nil {
 		return err
 	}
+
 	if err := e.PushMovieReq.Validate(); err != nil {
 		return err
 	}
+
 	return nil
 }
 
@@ -131,11 +134,13 @@ func (i *IDsReq) Validate() error {
 	if len(i.IDs) == 0 {
 		return ErrEmptyIDs
 	}
+
 	for _, v := range i.IDs {
 		if len(v) != 32 {
 			return ErrID
 		}
 	}
+
 	return nil
 }
 
@@ -161,6 +166,7 @@ func GenDefaultSubPaths(id, path string, skipEmpty bool, paths ...*MoviePath) []
 		if v == "" && skipEmpty {
 			continue
 		}
+
 		if l := len(paths); l != 0 {
 			paths = append(paths, &MoviePath{
 				Name:    v,
@@ -175,6 +181,7 @@ func GenDefaultSubPaths(id, path string, skipEmpty bool, paths ...*MoviePath) []
 			})
 		}
 	}
+
 	return paths
 }
 

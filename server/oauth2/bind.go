@@ -33,12 +33,14 @@ func BindAPI(ctx *gin.Context) {
 	}
 
 	state := utils.RandString(16)
+
 	url, err := pi.NewAuthURL(ctx, state)
 	if err != nil {
 		log.Errorf("failed to get auth url: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 		return
 	}
+
 	states.Store(state, newBindFunc(user.ID, meta.Redirect), time.Minute*5)
 	ctx.JSON(http.StatusOK, model.NewAPIDataResp(gin.H{
 		"url": url,
@@ -85,14 +87,17 @@ func newBindFunc(userID, redirect string) stateHandler {
 				http.StatusBadRequest,
 				model.NewAPIErrorStringResp("invalid oauth2 provider user id"),
 			)
+
 			return
 		}
+
 		if ui.Username == "" {
 			log.Errorf("invalid oauth2 username")
 			ctx.AbortWithStatusJSON(
 				http.StatusBadRequest,
 				model.NewAPIErrorStringResp("invalid oauth2 username"),
 			)
+
 			return
 		}
 

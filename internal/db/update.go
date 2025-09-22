@@ -96,49 +96,60 @@ func UpgradeDatabase() error {
 	if !db.Migrator().HasTable(&model.Setting{}) {
 		return autoMigrate(models...)
 	}
+
 	setting := model.Setting{
 		Name:  "database_version",
 		Type:  model.SettingTypeString,
 		Group: model.SettingGroupDatabase,
 		Value: CurrentVersion,
 	}
+
 	err := FirstOrCreateSettingItemValue(&setting)
 	if err != nil {
 		return err
 	}
+
 	currentVersion := setting.Value
 	log.Infof("current database version: %s", currentVersion)
+
 	if flags.Global.ForceAutoMigrate || currentVersion != CurrentVersion {
 		err = autoMigrate(models...)
 		if err != nil {
 			log.Fatalf("failed to auto migrate database: %s", err.Error())
 		}
 	}
+
 	for currentVersion != "" {
 		version, ok := dbVersions[currentVersion]
 		if !ok {
 			break
 		}
+
 		if version.NextVersion != "" {
 			log.Infof("Upgrading database to version %s", version.NextVersion)
+
 			if version.Upgrade != nil {
 				err := version.Upgrade(db)
 				if err != nil {
 					return err
 				}
 			}
+
 			err := UpdateSettingItemValue("database_version", version.NextVersion)
 			if err != nil {
 				return err
 			}
 		}
+
 		currentVersion = version.NextVersion
 	}
+
 	return nil
 }
 
 func autoMigrate(dst ...any) error {
 	log.Info("migrating database...")
+
 	switch conf.Conf.Database.Type {
 	case conf.DatabaseTypeMysql:
 		if err := db.Exec("SET FOREIGN_KEY_CHECKS = 0").Error; err != nil {
@@ -150,6 +161,7 @@ func autoMigrate(dst ...any) error {
 				log.Fatalf("failed to set foreign key checks: %s", err.Error())
 			}
 		}()
+
 		return db.Set("gorm:table_options", "ENGINE=InnoDB CHARSET=utf8mb4").AutoMigrate(dst...)
 	case conf.DatabaseTypeSqlite3:
 		if err := db.Exec("PRAGMA foreign_keys = OFF").Error; err != nil {
@@ -161,6 +173,7 @@ func autoMigrate(dst ...any) error {
 				log.Fatalf("failed to set foreign key checks: %s", err.Error())
 			}
 		}()
+
 		return db.AutoMigrate(dst...)
 	case conf.DatabaseTypePostgres:
 		if err := db.Exec("SET CONSTRAINTS ALL DEFERRED").Error; err != nil {
@@ -172,6 +185,7 @@ func autoMigrate(dst ...any) error {
 				log.Fatalf("failed to set foreign key checks: %s", err.Error())
 			}
 		}()
+
 		return db.AutoMigrate(dst...)
 	default:
 		return fmt.Errorf("unknown database type: %s", conf.Conf.Database.Type)

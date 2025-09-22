@@ -41,13 +41,16 @@ func EmbyAuthorizationCacheWithUserIDInitFunc(userID, serverID string) (*EmbyUse
 	if serverID == "" {
 		return nil, errors.New("serverID is required")
 	}
+
 	v, err := db.GetEmbyVendor(userID, serverID)
 	if err != nil {
 		return nil, err
 	}
+
 	if v.APIKey == "" || v.Host == "" {
 		return nil, db.NotFoundError(db.ErrVendorNotFound)
 	}
+
 	return &EmbyUserCacheData{
 		Host:     v.Host,
 		ServerID: v.ServerID,
@@ -92,6 +95,7 @@ func NewEmbyMovieClearCacheFunc(
 		if !movie.VendorInfo.Emby.Transcode {
 			return nil
 		}
+
 		if args == nil {
 			return errors.New("need emby user cache")
 		}
@@ -110,10 +114,13 @@ func NewEmbyMovieClearCacheFunc(
 		if err != nil {
 			return err
 		}
+
 		if aucd.Host == "" || aucd.APIKey == "" {
 			return errors.New("not bind emby vendor")
 		}
+
 		cli := vendor.LoadEmbyClient(aucd.Backend)
+
 		_, err = cli.DeleteActiveEncodeings(ctx, &emby.DeleteActiveEncodeingsReq{
 			Host:          aucd.Host,
 			Token:         aucd.APIKey,
@@ -122,6 +129,7 @@ func NewEmbyMovieClearCacheFunc(
 		if err != nil {
 			log.Errorf("delete active encodeings: %v", err)
 		}
+
 		return nil
 	}
 }
@@ -144,6 +152,7 @@ func NewEmbyMovieCacheInitFunc(
 		if err != nil {
 			return nil, err
 		}
+
 		if aucd.Host == "" || aucd.APIKey == "" {
 			return nil, errors.New("not bind emby vendor")
 		}
@@ -168,6 +177,7 @@ func NewEmbyMovieCacheInitFunc(
 			if err != nil {
 				return nil, err
 			}
+
 			if source != nil {
 				resp.Sources[i] = *source
 				resp.Sources[i].Subtitles = processEmbySubtitles(v, truePath, u)
@@ -182,9 +192,11 @@ func validateEmbyArgs(args *EmbyUserCache, movie *model.Movie, subPath string) e
 	if args == nil {
 		return errors.New("need emby user cache")
 	}
+
 	if movie.IsFolder && subPath == "" {
 		return errors.New("sub path is empty")
 	}
+
 	return nil
 }
 
@@ -193,9 +205,11 @@ func getEmbyServerIDAndPath(movie *model.Movie, subPath string) (string, string,
 	if err != nil {
 		return "", "", err
 	}
+
 	if movie.IsFolder {
 		truePath = subPath
 	}
+
 	return serverID, truePath, nil
 }
 
@@ -205,6 +219,7 @@ func getPlaybackInfo(
 	truePath string,
 ) (*emby.PlaybackInfoResp, error) {
 	cli := vendor.LoadEmbyClient(aucd.Backend)
+
 	data, err := cli.PlaybackInfo(ctx, &emby.PlaybackInfoReq{
 		Host:   aucd.Host,
 		Token:  aucd.APIKey,
@@ -214,6 +229,7 @@ func getPlaybackInfo(
 	if err != nil {
 		return nil, fmt.Errorf("playback info: %w", err)
 	}
+
 	return data, nil
 }
 
@@ -237,10 +253,12 @@ func processMediaSource(
 		if v.GetContainer() == "" {
 			return nil, nil
 		}
+
 		result, err := url.JoinPath("emby", "Videos", truePath, "stream."+v.GetContainer())
 		if err != nil {
 			return nil, err
 		}
+
 		u.Path = result
 		query := url.Values{}
 		query.Set("api_key", aucd.APIKey)
@@ -265,6 +283,7 @@ func processEmbySubtitles(
 		}
 
 		subtutleType := "srt"
+
 		result, err := url.JoinPath(
 			"emby",
 			"Videos",
@@ -277,6 +296,7 @@ func processEmbySubtitles(
 		if err != nil {
 			continue
 		}
+
 		u.Path = result
 		u.RawQuery = ""
 		url := u.String()
@@ -297,6 +317,7 @@ func processEmbySubtitles(
 			Cache: refreshcache0.NewRefreshCache(newEmbySubtitleCacheInitFunc(url), -1),
 		})
 	}
+
 	return subtitles
 }
 
@@ -306,16 +327,20 @@ func newEmbySubtitleCacheInitFunc(url string) func(ctx context.Context) ([]byte,
 		if err != nil {
 			return nil, err
 		}
+
 		req.Header.Set("User-Agent", utils.UA)
 		req.Header.Set("Referer", req.URL.Host)
+
 		resp, err := uhc.Do(req)
 		if err != nil {
 			return nil, err
 		}
 		defer resp.Body.Close()
+
 		if resp.StatusCode != http.StatusOK {
 			return nil, errors.New("bad status code")
 		}
+
 		return io.ReadAll(resp.Body)
 	}
 }

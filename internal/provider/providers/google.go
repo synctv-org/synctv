@@ -50,7 +50,9 @@ func (g *GoogleProvider) GetUserInfo(ctx context.Context, code string) (*provide
 	if err != nil {
 		return nil, err
 	}
+
 	client := g.config.Client(ctx, tk)
+
 	req, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodGet,
@@ -60,16 +62,20 @@ func (g *GoogleProvider) GetUserInfo(ctx context.Context, code string) (*provide
 	if err != nil {
 		return nil, err
 	}
+
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+
 	ui := googleUserInfo{}
+
 	err = json.NewDecoder(resp.Body).Decode(&ui)
 	if err != nil {
 		return nil, err
 	}
+
 	return &provider.UserInfo{
 		Username:       ui.Name,
 		ProviderUserID: ui.ID,

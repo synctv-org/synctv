@@ -40,6 +40,7 @@ func (m *movies) AddMovie(mo *model.Movie) error {
 	if ok {
 		_ = old.Close()
 	}
+
 	return nil
 }
 
@@ -80,10 +81,12 @@ func (m *movies) GetChannel(id string) (*rtmps.Channel, error) {
 	if id == "" {
 		return nil, errors.New("channel name is nil")
 	}
+
 	movie, err := m.GetMovieByID(id)
 	if err != nil {
 		return nil, err
 	}
+
 	return movie.Channel()
 }
 
@@ -92,15 +95,19 @@ func (m *movies) Update(movieID string, movie *model.MovieBase) error {
 	if err != nil {
 		return err
 	}
+
 	mv.MovieBase = *movie
+
 	err = db.SaveMovie(mv)
 	if err != nil {
 		return err
 	}
+
 	mm, loaded := m.cache.LoadAndDelete(mv.ID)
 	if loaded {
 		_ = mm.Close()
 	}
+
 	return nil
 }
 
@@ -126,7 +133,9 @@ func (m *movies) DeleteMovieByParentID(parentID string) error {
 	if err != nil {
 		return err
 	}
+
 	m.DeleteMovieAndChiledCache(parentID)
+
 	return nil
 }
 
@@ -135,7 +144,9 @@ func (m *movies) DeleteMovieByID(id string) error {
 	if err != nil {
 		return err
 	}
+
 	m.DeleteMovieAndChiledCache(id)
+
 	return nil
 }
 
@@ -144,10 +155,12 @@ func (m *movies) DeleteMovieAndChiledCache(id ...string) {
 	for _, id := range id {
 		idm[model.EmptyNullString(id)] = struct{}{}
 	}
+
 	if _, ok := idm[model.EmptyNullString("")]; ok {
 		m.ClearCache()
 		return
 	}
+
 	m.deleteMovieAndChiledCache(idm)
 }
 
@@ -158,11 +171,14 @@ func (m *movies) deleteMovieAndChiledCache(ids map[model.EmptyNullString]struct{
 			if value.IsFolder {
 				next[model.EmptyNullString(value.ID)] = struct{}{}
 			}
+
 			m.cache.CompareAndDelete(key, value)
 			value.Close()
 		}
+
 		return true
 	})
+
 	if len(next) > 0 {
 		m.deleteMovieAndChiledCache(next)
 	}
@@ -173,7 +189,9 @@ func (m *movies) DeleteMoviesByID(ids []string) error {
 	if err != nil {
 		return err
 	}
+
 	m.DeleteMovieAndChiledCache(ids...)
+
 	return nil
 }
 
@@ -181,18 +199,22 @@ func (m *movies) GetMovieByID(id string) (*Movie, error) {
 	if id == "" {
 		return nil, errors.New("movie id is nil")
 	}
+
 	mm, ok := m.cache.Load(id)
 	if ok {
 		return mm, nil
 	}
+
 	mv, err := db.GetMovieByID(m.roomID, id)
 	if err != nil {
 		return nil, err
 	}
+
 	mm, _ = m.cache.LoadOrStore(mv.ID, &Movie{
 		room:  m.room,
 		Movie: mv,
 	})
+
 	return mm, nil
 }
 
@@ -211,16 +233,19 @@ func (m *movies) GetMoviesWithPage(
 	if keyword != "" {
 		scopes = append(scopes, db.WhereMovieNameLikeOrURLLike(keyword, keyword))
 	}
+
 	count, err := db.GetMoviesCountByRoomID(
 		m.roomID,
 		append(scopes, db.Paginate(page, pageSize))...)
 	if err != nil {
 		return nil, 0, err
 	}
+
 	movies, err := db.GetMoviesByRoomID(m.roomID, scopes...)
 	if err != nil {
 		return nil, 0, err
 	}
+
 	return movies, count, nil
 }
 
@@ -229,13 +254,16 @@ func (m *movies) IsParentOf(id, parentID string) (bool, error) {
 	if parentID == "" {
 		return id != "", nil
 	}
+
 	mv, err := m.GetMovieByID(parentID)
 	if err != nil {
 		return false, fmt.Errorf("get parent movie failed: %w", err)
 	}
+
 	if !mv.IsFolder {
 		return false, nil
 	}
+
 	return m.isParentOf(id, parentID, true)
 }
 
@@ -243,16 +271,19 @@ func (m *movies) IsParentFolder(id, parentID string) (bool, error) {
 	if parentID == "" {
 		return id != "", nil
 	}
+
 	mv, err := m.GetMovieByID(parentID)
 	if err != nil {
 		return false, fmt.Errorf("get parent movie failed: %w", err)
 	}
+
 	firstCheck := true
 	if mv.IsFolder {
 		firstCheck = false
 	} else {
 		parentID = mv.ParentID.String()
 	}
+
 	return m.isParentOf(id, parentID, firstCheck)
 }
 
@@ -261,11 +292,14 @@ func (m *movies) isParentOf(id, parentID string, firstCheck bool) (bool, error) 
 	if err != nil {
 		return false, err
 	}
+
 	if mv.ParentID == "" {
 		return false, nil
 	}
+
 	if mv.ParentID == model.EmptyNullString(parentID) {
 		return !firstCheck, nil
 	}
+
 	return m.isParentOf(string(mv.ParentID), parentID, false)
 }

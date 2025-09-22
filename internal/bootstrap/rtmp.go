@@ -24,6 +24,7 @@ func auth(reqAppName, reqChannelName string, isPublisher bool) (*rtmps.Channel, 
 		log.Errorf("rtmp: get room by id error: %v", err)
 		return nil, err
 	}
+
 	room := roomE.Value()
 
 	if err := validateRoom(room); err != nil {
@@ -41,9 +42,11 @@ func validateRoom(room *op.Room) error {
 	if room.IsBanned() {
 		return fmt.Errorf("rtmp: room %s is banned", room.ID)
 	}
+
 	if room.IsPending() {
 		return fmt.Errorf("rtmp: room %s is pending, need admin approval", room.ID)
 	}
+
 	return nil
 }
 
@@ -53,7 +56,9 @@ func handlePublisher(reqAppName, reqChannelName string, room *op.Room) (*rtmps.C
 		log.Errorf("rtmp: publish auth to %s error: %v", reqAppName, err)
 		return nil, err
 	}
+
 	log.Infof("rtmp: publisher login success: %s/%s", reqAppName, channelName)
+
 	return room.GetChannel(channelName)
 }
 
@@ -63,5 +68,6 @@ func handlePlayer(reqAppName, reqChannelName string, room *op.Room) (*rtmps.Chan
 		log.Warnf("rtmp: dial to %s/%s error: %s", reqAppName, reqChannelName, err)
 		return nil, err
 	}
+
 	return room.GetChannel(reqChannelName)
 }

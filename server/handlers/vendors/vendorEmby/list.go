@@ -61,8 +61,10 @@ func List(ctx *gin.Context) {
 					"keywords is not supported when not choose server (server id is empty)",
 				),
 			)
+
 			return
 		}
+
 		socpes := [](func(*gorm.DB) *gorm.DB){
 			db.OrderByCreatedAtAsc,
 		}
@@ -72,6 +74,7 @@ func List(ctx *gin.Context) {
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 			return
 		}
+
 		if total == 0 {
 			ctx.JSON(http.StatusBadRequest, model.NewAPIErrorStringResp("emby server not found"))
 			return
@@ -84,9 +87,12 @@ func List(ctx *gin.Context) {
 					http.StatusBadRequest,
 					model.NewAPIErrorStringResp("emby server not found"),
 				)
+
 				return
 			}
+
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
+
 			return
 		}
 
@@ -124,6 +130,7 @@ func List(ctx *gin.Context) {
 EmbyFSListResp:
 
 	var serverID string
+
 	serverID, req.Path, err = dbModel.GetEmbyServerIDFromPath(req.Path)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
@@ -136,11 +143,14 @@ EmbyFSListResp:
 			ctx.JSON(http.StatusBadRequest, model.NewAPIErrorStringResp("emby server not found"))
 			return
 		}
+
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
+
 		return
 	}
 
 	cli := vendor.LoadEmbyClient(ctx.Query("backend"))
+
 	data, err := cli.FsList(ctx, &emby.FsListReq{
 		Host:       aucd.Host,
 		Path:       req.Path,
@@ -155,6 +165,7 @@ EmbyFSListResp:
 			http.StatusInternalServerError,
 			model.NewAPIErrorResp(fmt.Errorf("emby fs list error: %w", err)),
 		)
+
 		return
 	}
 
@@ -168,11 +179,13 @@ EmbyFSListResp:
 		if p.GetPath() == "1" {
 			n = aucd.Host
 		}
+
 		resp.Paths = append(resp.Paths, &model.Path{
 			Name: n,
 			Path: fmt.Sprintf("%s/%s", aucd.ServerID, p.GetPath()),
 		})
 	}
+
 	for _, i := range data.GetItems() {
 		resp.Items = append(resp.Items, &EmbyFileItem{
 			Item: &model.Item{

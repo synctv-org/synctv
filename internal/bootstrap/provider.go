@@ -82,17 +82,21 @@ var Oauth2SignupEnabledCache = refreshcache0.NewRefreshCache(
 
 func InitProvider(_ context.Context) (err error) {
 	logOur := log.StandardLogger().Writer()
+
 	logLevle := hclog.Info
 	if flags.Global.Dev {
 		logLevle = hclog.Debug
 	}
+
 	for _, op := range conf.Conf.Oauth2Plugins {
 		log.Infof("load oauth2 plugin: %s", op.PluginFile)
+
 		err := os.MkdirAll(filepath.Dir(op.PluginFile), 0o755)
 		if err != nil {
 			log.Fatalf("create plugin dir: %s failed: %s", filepath.Dir(op.PluginFile), err)
 			return err
 		}
+
 		err = plugins.InitProviderPlugins(op.PluginFile, op.Args, hclog.New(&hclog.LoggerOptions{
 			Name:   op.PluginFile,
 			Level:  logLevle,
@@ -112,6 +116,7 @@ func InitProvider(_ context.Context) (err error) {
 	for _, api := range aggregations.AllAggregation() {
 		InitAggregationSetting(api)
 	}
+
 	return nil
 }
 
@@ -123,17 +128,21 @@ func InitProviderSetting(pi provider.Provider) {
 	groupSettings.Enabled = settings.NewBoolSetting(group+"_enabled", false, group,
 		settings.WithBeforeInitBool(func(_ settings.BoolSetting, b bool) (bool, error) {
 			defer func() { _, _ = Oauth2EnabledCache.Refresh(context.Background()) }()
+
 			if b {
 				return b, providers.EnableProvider(pi.Provider())
 			}
+
 			return b, providers.DisableProvider(pi.Provider())
 		}),
 		settings.WithInitPriorityBool(1),
 		settings.WithBeforeSetBool(func(_ settings.BoolSetting, b bool) (bool, error) {
 			defer func() { _, _ = Oauth2EnabledCache.Refresh(context.Background()) }()
+
 			if b {
 				return b, providers.EnableProvider(pi.Provider())
 			}
+
 			return b, providers.DisableProvider(pi.Provider())
 		}),
 	)
@@ -212,9 +221,11 @@ func InitAggregationProviderSetting(pi provider.Provider) {
 	groupSettings.Enabled = settings.LoadOrNewBoolSetting(group+"_enabled", false, group,
 		settings.WithBeforeSetBool(func(_ settings.BoolSetting, b bool) (bool, error) {
 			defer func() { _, _ = Oauth2EnabledCache.Refresh(context.Background()) }()
+
 			if b {
 				return b, providers.EnableProvider(pi.Provider())
 			}
+
 			return b, providers.DisableProvider(pi.Provider())
 		}),
 	)
@@ -305,12 +316,14 @@ func InitAggregationSetting(pi provider.AggregationProviderInterface) {
 			if s == "" {
 				return s, nil
 			}
+
 			list := strings.Split(s, ",")
 			for _, p := range list {
 				if slices.Index(pi.Providers(), p) == -1 {
 					return s, fmt.Errorf("provider %s not found", p)
 				}
 			}
+
 			return s, nil
 		}),
 	)
@@ -325,8 +338,10 @@ func InitAggregationSetting(pi provider.AggregationProviderInterface) {
 						pi.Provider(),
 					)
 				}
+
 				all := pi.Providers()
 				list := strings.Split(s, ",")
+
 				enabled := make([]provider.OAuth2Provider, 0, len(list))
 				for _, p := range list {
 					if slices.Index(all, p) != -1 {
@@ -343,13 +358,16 @@ func InitAggregationSetting(pi provider.AggregationProviderInterface) {
 						pi.Provider(),
 						err,
 					)
+
 					return b, nil
 				}
+
 				for _, pi2 := range pi2 {
 					providers.RegisterProvider(pi2)
 					InitAggregationProviderSetting(pi2)
 				}
 			}
+
 			return b, nil
 		}),
 		settings.WithBeforeSetBool(func(_ settings.BoolSetting, b bool) (bool, error) {

@@ -32,7 +32,9 @@ func NewEmbyGrpcClient(conn *grpc.ClientConn) (EmbyInterface, error) {
 	if conn == nil {
 		return nil, errors.New("grpc client conn is nil")
 	}
+
 	conn.GetState()
+
 	return newGrpcEmby(emby.NewEmbyClient(conn)), nil
 }
 

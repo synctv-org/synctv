@@ -49,25 +49,32 @@ func (p *logtoProvider) GetUserInfo(ctx context.Context, code string) (*provider
 	if err != nil {
 		return nil, err
 	}
+
 	client := p.config.Client(ctx, tk)
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.endpoint+"/oidc/me", nil)
 	if err != nil {
 		return nil, err
 	}
+
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+
 	var ui logtoUserInfo
+
 	err = json.NewDecoder(resp.Body).Decode(&ui)
 	if err != nil {
 		return nil, err
 	}
+
 	un := ui.Username
 	if un == "" {
 		un = ui.Name
 	}
+
 	return &provider.UserInfo{
 		ProviderUserID: ui.Sub,
 		Username:       un,
@@ -98,6 +105,7 @@ func (p *logtoProvider) RegistSetting(group string) {
 			if err != nil {
 				return "", err
 			}
+
 			return fmt.Sprintf("%s://%s", u.Scheme, u.Host), nil
 		}),
 		settings.WithAfterSetString(func(_ settings.StringSetting, s string) {

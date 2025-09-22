@@ -89,7 +89,9 @@ func newBool(
 	for _, option := range options {
 		option(b)
 	}
+
 	b.set(value)
+
 	return b
 }
 
@@ -122,6 +124,7 @@ func (b *Bool) Get() bool {
 	if b.afterGet != nil {
 		v = b.afterGet(b, v)
 	}
+
 	return v
 }
 
@@ -223,7 +226,7 @@ func (b *Bool) Set(v bool) (err error) {
 		b.afterSet(b, v)
 	}
 
-	return
+	return err
 }
 
 func (b *Bool) Interface() any {
@@ -240,6 +243,7 @@ func NewBoolSetting(
 	if loaded {
 		panic(fmt.Sprintf("setting %s already exists", k))
 	}
+
 	return CoverBoolSetting(k, v, g, options...)
 }
 
@@ -251,11 +255,14 @@ func CoverBoolSetting(
 ) BoolSetting {
 	b := newBool(k, v, g, options...)
 	Settings[k] = b
+
 	if GroupSettings[g] == nil {
 		GroupSettings[g] = make(map[model.SettingGroup]Setting)
 	}
+
 	GroupSettings[g][k] = b
 	pushNeedInit(b)
+
 	return b
 }
 
@@ -264,7 +271,9 @@ func LoadBoolSetting(k string) (BoolSetting, bool) {
 	if !ok {
 		return nil, false
 	}
+
 	b, ok := s.(BoolSetting)
+
 	return b, ok
 }
 

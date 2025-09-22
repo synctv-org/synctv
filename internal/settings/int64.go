@@ -97,6 +97,7 @@ func newInt64(
 	for _, option := range options {
 		option(i)
 	}
+
 	return i
 }
 
@@ -125,9 +126,11 @@ func (i *Int64) Parse(value string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
+
 	if i.validator != nil {
 		return v, i.validator(v)
 	}
+
 	return v, nil
 }
 
@@ -236,7 +239,7 @@ func (i *Int64) Set(v int64) (err error) {
 		i.afterSet(i, v)
 	}
 
-	return
+	return err
 }
 
 func (i *Int64) Get() int64 {
@@ -244,6 +247,7 @@ func (i *Int64) Get() int64 {
 	if i.afterGet != nil {
 		v = i.afterGet(i, v)
 	}
+
 	return v
 }
 
@@ -261,6 +265,7 @@ func NewInt64Setting(
 	if loaded {
 		panic(fmt.Sprintf("setting %s already exists", k))
 	}
+
 	return CoverInt64Setting(k, v, g, options...)
 }
 
@@ -272,11 +277,14 @@ func CoverInt64Setting(
 ) Int64Setting {
 	i := newInt64(k, v, g, options...)
 	Settings[k] = i
+
 	if GroupSettings[g] == nil {
 		GroupSettings[g] = make(map[model.SettingGroup]Setting)
 	}
+
 	GroupSettings[g][k] = i
 	pushNeedInit(i)
+
 	return i
 }
 
@@ -285,7 +293,9 @@ func LoadInt64Setting(k string) (Int64Setting, bool) {
 	if !ok {
 		return nil, false
 	}
+
 	i, ok := s.(Int64Setting)
+
 	return i, ok
 }
 
@@ -299,5 +309,6 @@ func LoadOrNewInt64Setting(
 	if ok {
 		return s
 	}
+
 	return CoverInt64Setting(k, v, g, options...)
 }

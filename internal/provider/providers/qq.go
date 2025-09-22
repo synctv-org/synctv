@@ -52,6 +52,7 @@ func (p *QQProvider) GetToken(ctx context.Context, code string) (*oauth2.Token, 
 	params.Set("client_id", p.config.ClientID)
 	params.Set("client_secret", p.config.ClientSecret)
 	params.Set("fmt", "json")
+
 	req, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodGet,
@@ -61,18 +62,19 @@ func (p *QQProvider) GetToken(ctx context.Context, code string) (*oauth2.Token, 
 	if err != nil {
 		return nil, err
 	}
+
 	resp, err := uhc.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	
+
 	// 使用自定义的qqToken结构体解析QQ的响应
 	qqTk := &qqToken{}
 	if err := json.NewDecoder(resp.Body).Decode(qqTk); err != nil {
 		return nil, err
 	}
-	
+
 	// 转换为标准的oauth2.Token
 	return qqTk.toOAuth2Token()
 }
@@ -84,6 +86,7 @@ func (p *QQProvider) RefreshToken(ctx context.Context, tk string) (*oauth2.Token
 	params.Set("client_id", p.config.ClientID)
 	params.Set("client_secret", p.config.ClientSecret)
 	params.Set("fmt", "json")
+
 	req, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodGet,
@@ -93,18 +96,19 @@ func (p *QQProvider) RefreshToken(ctx context.Context, tk string) (*oauth2.Token
 	if err != nil {
 		return nil, err
 	}
+
 	resp, err := uhc.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	
+
 	// 使用自定义的qqToken结构体解析QQ的响应
 	qqTk := &qqToken{}
 	if err := json.NewDecoder(resp.Body).Decode(qqTk); err != nil {
 		return nil, err
 	}
-	
+
 	// 转换为标准的oauth2.Token
 	return qqTk.toOAuth2Token()
 }
@@ -114,6 +118,7 @@ func (p *QQProvider) GetUserInfo(ctx context.Context, code string) (*provider.Us
 	if err != nil {
 		return nil, err
 	}
+
 	req, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodGet,
@@ -123,16 +128,20 @@ func (p *QQProvider) GetUserInfo(ctx context.Context, code string) (*provider.Us
 	if err != nil {
 		return nil, err
 	}
+
 	resp, err := uhc.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+
 	ume := qqProviderMe{}
+
 	err = json.NewDecoder(resp.Body).Decode(&ume)
 	if err != nil {
 		return nil, err
 	}
+
 	req, err = http.NewRequestWithContext(
 		ctx,
 		http.MethodGet,
@@ -147,16 +156,20 @@ func (p *QQProvider) GetUserInfo(ctx context.Context, code string) (*provider.Us
 	if err != nil {
 		return nil, err
 	}
+
 	resp2, err := uhc.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp2.Body.Close()
+
 	ui := qqUserInfo{}
+
 	err = json.NewDecoder(resp2.Body).Decode(&ui)
 	if err != nil {
 		return nil, err
 	}
+
 	return &provider.UserInfo{
 		Username:       ui.Nickname,
 		ProviderUserID: ume.Openid,
@@ -166,7 +179,7 @@ func (p *QQProvider) GetUserInfo(ctx context.Context, code string) (*provider.Us
 //nolint:tagliatelle
 type qqToken struct {
 	AccessToken  string `json:"access_token"`
-	ExpiresIn    string `json:"expires_in"`    // QQ返回字符串格式
+	ExpiresIn    string `json:"expires_in"` // QQ返回字符串格式
 	RefreshToken string `json:"refresh_token"`
 }
 
@@ -176,7 +189,7 @@ func (qt *qqToken) toOAuth2Token() (*oauth2.Token, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse expires_in: %w", err)
 	}
-	
+
 	return &oauth2.Token{
 		AccessToken:  qt.AccessToken,
 		RefreshToken: qt.RefreshToken,

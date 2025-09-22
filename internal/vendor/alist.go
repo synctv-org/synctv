@@ -32,7 +32,9 @@ func NewAlistGrpcClient(conn *grpc.ClientConn) (AlistInterface, error) {
 	if conn == nil {
 		return nil, errors.New("grpc client conn is nil")
 	}
+
 	conn.GetState()
+
 	return newGrpcAlist(alist.NewAlistClient(conn)), nil
 }
 

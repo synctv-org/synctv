@@ -11,8 +11,10 @@ func Decode(ctx *gin.Context, decoder Decoder) error {
 	if err := decoder.Decode(ctx); err != nil {
 		return err
 	}
+
 	if err := decoder.Validate(); err != nil {
 		return err
 	}
+
 	return nil
 }

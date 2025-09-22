@@ -31,8 +31,10 @@ func Backends(ctx *gin.Context) {
 			http.StatusBadRequest,
 			model.NewAPIErrorStringResp("invalid vendor name"),
 		)
+
 		return
 	}
+
 	ctx.JSON(http.StatusOK, model.NewAPIDataResp(backends))
 }
 

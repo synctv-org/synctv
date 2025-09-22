@@ -48,12 +48,15 @@ func (m *Movie) ExpireID(ctx context.Context) (uint64, error) {
 		}
 	case m.Live && m.VendorInfo.Vendor == model.VendorBilibili:
 		liveCache := m.BilibiliCache().Live
+
 		_, err := liveCache.Get(ctx)
 		if err != nil {
 			return 0, err
 		}
+
 		return uint64(liveCache.Last()), nil
 	}
+
 	return uint64(crc32.ChecksumIEEE([]byte(m.ID))), nil
 }
 
@@ -68,10 +71,12 @@ func (m *Movie) CheckExpired(ctx context.Context, expireID uint64) (bool, error)
 	case m.Live && m.VendorInfo.Vendor == model.VendorBilibili:
 		return time.Now().UnixNano()-int64(expireID) > m.BilibiliCache().Live.MaxAge(), nil
 	}
+
 	id, err := m.ExpireID(ctx)
 	if err != nil {
 		return false, err
 	}
+
 	return expireID != id, nil
 }
 
@@ -89,6 +94,7 @@ func (m *Movie) ClearCache() error {
 		if err != nil {
 			return err
 		}
+
 		err = emc.Clear(context.Background(), u.Value().EmbyCache())
 		if err != nil {
 			return err
@@ -106,6 +112,7 @@ func (m *Movie) AlistCache() *cache.AlistMovieCache {
 			return m.AlistCache()
 		}
 	}
+
 	return c
 }
 
@@ -117,6 +124,7 @@ func (m *Movie) BilibiliCache() *cache.BilibiliMovieCache {
 			return m.BilibiliCache()
 		}
 	}
+
 	return c
 }
 
@@ -128,6 +136,7 @@ func (m *Movie) EmbyCache() *cache.EmbyMovieCache {
 			return m.EmbyCache()
 		}
 	}
+
 	return c
 }
 
@@ -135,10 +144,12 @@ func (m *Movie) Channel() (*rtmps.Channel, error) {
 	if m.IsFolder {
 		return nil, errors.New("this is a folder")
 	}
+
 	c, err := m.initChannel()
 	if err != nil {
 		return nil, err
 	}
+
 	return c, nil
 }
 
@@ -153,8 +164,10 @@ func (m *Movie) compareAndSwapInitChannel() (*rtmps.Channel, bool) {
 		if !m.channel.CompareAndSwap(nil, c) {
 			return m.compareAndSwapInitChannel()
 		}
+
 		return c, true
 	}
+
 	return c, false
 }
 
@@ -188,10 +201,12 @@ func (m *Movie) initRtmpSourceChannel() (*rtmps.Channel, error) {
 	if !init {
 		return c, nil
 	}
+
 	err := c.InitHlsPlayer(hls.WithGenTsNameFunc(genTSName))
 	if err != nil {
 		return nil, fmt.Errorf("init rtmp hls player error: %w", err)
 	}
+
 	return c, nil
 }
 
@@ -200,12 +215,14 @@ func (m *Movie) initRtmpProxyChannel() (*rtmps.Channel, error) {
 	if !init {
 		return c, nil
 	}
+
 	err := c.InitHlsPlayer(hls.WithGenTsNameFunc(genTSName))
 	if err != nil {
 		return nil, fmt.Errorf("init rtmp hls player error: %w", err)
 	}
 
 	go m.handleRtmpProxy(c)
+
 	return c, nil
 }
 
@@ -214,6 +231,7 @@ func (m *Movie) handleRtmpProxy(c *rtmps.Channel) {
 		if c.Closed() {
 			return
 		}
+
 		cli := core.NewConnClient()
 		if err := cli.Start(m.URL, av.PLAY); err != nil {
 			log.Errorf("push live error: %v", err)
@@ -221,6 +239,7 @@ func (m *Movie) handleRtmpProxy(c *rtmps.Channel) {
 			time.Sleep(time.Second)
 			continue
 		}
+
 		if err := c.PushStart(rtmpProto.NewReader(cli)); err != nil {
 			log.Errorf("push live error: %v", err)
 			cli.Close()
@@ -238,12 +257,14 @@ func (m *Movie) initHTTPProxyChannel() (*rtmps.Channel, error) {
 	if !init {
 		return c, nil
 	}
+
 	err := c.InitHlsPlayer(hls.WithGenTsNameFunc(genTSName))
 	if err != nil {
 		return nil, fmt.Errorf("init http hls player error: %w", err)
 	}
 
 	go m.handleHTTPProxy(c)
+
 	return c, nil
 }
 
@@ -252,18 +273,22 @@ func (m *Movie) handleHTTPProxy(c *rtmps.Channel) {
 		if c.Closed() {
 			return
 		}
+
 		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, m.URL, nil)
 		if err != nil {
 			log.Errorf("get live error: %v", err)
 			time.Sleep(time.Second)
 			continue
 		}
+
 		for k, v := range m.Headers {
 			req.Header.Set(k, v)
 		}
+
 		if req.Header.Get("User-Agent") == "" {
 			req.Header.Set("User-Agent", utils.UA)
 		}
+
 		resp, err := uhc.Do(req)
 		if err != nil {
 			log.Errorf("get live error: %v", err)
@@ -271,6 +296,7 @@ func (m *Movie) handleHTTPProxy(c *rtmps.Channel) {
 			time.Sleep(time.Second)
 			continue
 		}
+
 		if err := c.PushStart(flv.NewReader(resp.Body)); err != nil {
 			log.Errorf("push live error: %v", err)
 			resp.Body.Close()
@@ -308,6 +334,7 @@ func (m *Movie) validateRTMPSource() error {
 	case !m.Live && m.RtmpSource:
 		return errors.New("rtmp source can't be true when movie is not live")
 	}
+
 	return nil
 }
 
@@ -335,9 +362,11 @@ func (m *Movie) validateLiveProxy(u *url.URL) error {
 	if !settings.LiveProxy.Get() {
 		return errors.New("live proxy is not enabled")
 	}
+
 	if !settings.AllowProxyToLocal.Get() && utils.IsLocalIP(u.Host) {
 		return errors.New("local ip is not allowed")
 	}
+
 	switch u.Scheme {
 	case "rtmp", "http", "https":
 		return nil
@@ -350,12 +379,15 @@ func (m *Movie) validateMovieProxy(u *url.URL) error {
 	if !settings.MovieProxy.Get() {
 		return errors.New("movie proxy is not enabled")
 	}
+
 	if !settings.AllowProxyToLocal.Get() && utils.IsLocalIP(u.Host) {
 		return errors.New("local ip is not allowed")
 	}
+
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return fmt.Errorf("unsupported scheme: %s", u.Scheme)
 	}
+
 	return nil
 }
 
@@ -389,6 +421,7 @@ func (m *Movie) Terminate() error {
 	if m.IsFolder {
 		return nil
 	}
+
 	c := m.channel.Swap(nil)
 	if c != nil {
 		err := c.Close()
@@ -396,6 +429,7 @@ func (m *Movie) Terminate() error {
 			return err
 		}
 	}
+
 	return nil
 }
 
@@ -404,9 +438,11 @@ func (m *Movie) Close() error {
 	if err != nil {
 		return err
 	}
+
 	err = m.ClearCache()
 	if err != nil {
 		return err
 	}
+
 	return nil
 }

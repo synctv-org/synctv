@@ -58,7 +58,9 @@ func (p *BaiduNetDiskProvider) GetUserInfo(
 	if err != nil {
 		return nil, err
 	}
+
 	client := p.config.Client(ctx, tk)
+
 	req, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodGet,
@@ -68,19 +70,24 @@ func (p *BaiduNetDiskProvider) GetUserInfo(
 	if err != nil {
 		return nil, err
 	}
+
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+
 	ui := baiduNetDiskProviderUserInfo{}
+
 	err = json.NewDecoder(resp.Body).Decode(&ui)
 	if err != nil {
 		return nil, err
 	}
+
 	if ui.Errno != 0 {
 		return nil, fmt.Errorf("baidu oauth2 get user info error: %s", ui.Errmsg)
 	}
+
 	return &provider.UserInfo{
 		Username:       ui.BaiduName,
 		ProviderUserID: strconv.FormatUint(ui.Uk, 10),

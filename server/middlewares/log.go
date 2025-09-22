@@ -26,8 +26,10 @@ func NewLog(l *logrus.Logger) gin.HandlerFunc {
 				http.StatusInternalServerError,
 				model.NewAPIErrorResp(errors.New("invalid fields type")),
 			)
+
 			return
 		}
+
 		defer func() {
 			clear(fields)
 			fieldsPool.Put(fields)
@@ -72,6 +74,7 @@ func NewLog(l *logrus.Logger) gin.HandlerFunc {
 
 func logColor(logger *logrus.Entry, p gin.LogFormatterParams) {
 	str := formatter(p)
+
 	code := p.StatusCode
 	switch {
 	case code >= http.StatusBadRequest && code < http.StatusInternalServerError:
@@ -92,6 +95,7 @@ func formatter(param gin.LogFormatterParams) string {
 	if param.Latency > time.Minute {
 		param.Latency = param.Latency.Truncate(time.Second)
 	}
+
 	return fmt.Sprintf("[GIN] |%s %3d %s| %13v | %15s |%s %-7s %s %#v\n%s",
 		statusColor, param.StatusCode, resetColor,
 		param.Latency,
@@ -108,16 +112,20 @@ func GetLogger(c *gin.Context) *logrus.Entry {
 		if !ok {
 			panic("invalid log type")
 		}
+
 		return entry
 	}
+
 	fields, ok := fieldsPool.Get().(logrus.Fields)
 	if !ok {
 		panic("invalid fields type")
 	}
+
 	entry := &logrus.Entry{
 		Logger: logrus.StandardLogger(),
 		Data:   fields,
 	}
 	c.Set("log", entry)
+
 	return entry
 }

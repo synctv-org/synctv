@@ -50,21 +50,25 @@ func genMovieInfo(
 	if opMovie == nil || opMovie.ID == "" {
 		return &model.Movie{}, nil
 	}
+
 	if opMovie.IsFolder {
 		if !opMovie.IsDynamicFolder() {
 			return nil, errors.New("movie is static folder, can't get movie info")
 		}
 	}
+
 	movie := opMovie.Clone()
 	if movie.Type == "" && movie.URL != "" {
 		movie.Type = utils.GetURLExtension(movie.URL)
 	}
+
 	switch {
 	case movie.VendorInfo.Vendor != "":
 		vendor, err := vendors.NewVendorService(room, opMovie)
 		if err != nil {
 			return nil, err
 		}
+
 		movie, err = vendor.GenMovieInfo(ctx, user, userAgent, userToken)
 		if err != nil {
 			return nil, err
@@ -101,6 +105,7 @@ func genMovieInfo(
 				Type: "flv",
 			})
 		}
+
 		movie.URL = fmt.Sprintf(
 			"/api/room/movie/live/hls/list/%s.m3u8?token=%s&roomId=%s",
 			movie.ID,
@@ -118,19 +123,23 @@ func genMovieInfo(
 		)
 		movie.Headers = nil
 	}
+
 	if movie.Type == "" && movie.URL != "" {
 		movie.Type = utils.GetURLExtension(movie.URL)
 	}
+
 	for _, v := range movie.MoreSources {
 		if v.Type == "" {
 			v.Type = utils.GetURLExtension(v.URL)
 		}
 	}
+
 	for _, v := range movie.Subtitles {
 		if v.Type == "" {
 			v.Type = utils.GetURLExtension(v.URL)
 		}
 	}
+
 	resp := &model.Movie{
 		ID:        movie.ID,
 		CreatedAt: movie.CreatedAt.UnixMilli(),
@@ -139,6 +148,7 @@ func genMovieInfo(
 		CreatorID: movie.CreatorID,
 		SubPath:   opMovie.SubPath(),
 	}
+
 	return resp, nil
 }
 
@@ -154,23 +164,28 @@ func genCurrentRespWithCurrent(
 			Movie: &model.Movie{},
 		}, nil
 	}
+
 	opMovie, err := room.GetMovieByID(current.Movie.ID)
 	if err != nil {
 		return nil, fmt.Errorf("get current movie error: %w", err)
 	}
+
 	mr, err := genMovieInfo(ctx, room, user, opMovie, userAgent, userToken)
 	if err != nil {
 		return nil, fmt.Errorf("gen current movie info error: %w", err)
 	}
+
 	expireID, err := opMovie.ExpireID(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("get expire id error: %w", err)
 	}
+
 	resp := &model.CurrentMovieResp{
 		Status:   current.UpdateStatus(),
 		Movie:    mr,
 		ExpireID: expireID,
 	}
+
 	return resp, nil
 }
 
@@ -205,6 +220,7 @@ func Movies(ctx *gin.Context) {
 			http.StatusForbidden,
 			model.NewAPIErrorResp(dbModel.ErrNoPermission),
 		)
+
 		return
 	}
 
@@ -214,6 +230,7 @@ func Movies(ctx *gin.Context) {
 			http.StatusBadRequest,
 			model.NewAPIErrorStringResp("id length must be 0 or 32"),
 		)
+
 		return
 	}
 
@@ -231,13 +248,16 @@ func Movies(ctx *gin.Context) {
 			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 			return
 		}
+
 		if !mv.IsFolder {
 			ctx.AbortWithStatusJSON(
 				http.StatusBadRequest,
 				model.NewAPIErrorStringResp("parent id is not folder"),
 			)
+
 			return
 		}
+
 		if mv.IsDynamicFolder() {
 			resp, err := listVendorDynamicMovie(
 				ctx,
@@ -254,7 +274,9 @@ func Movies(ctx *gin.Context) {
 				ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 				return
 			}
+
 			ctx.JSON(http.StatusOK, model.NewAPIDataResp(resp))
+
 			return
 		}
 	}
@@ -306,17 +328,20 @@ func getParentMoviePath(room *op.Room, id string) ([]*model.MoviePath, error) {
 		if err != nil {
 			return nil, fmt.Errorf("get movie by id error: %w", err)
 		}
+
 		paths = append(paths, &model.MoviePath{
 			Name: p.Name,
 			ID:   p.ID,
 		})
 		id = p.ParentID.String()
 	}
+
 	paths = append(paths, &model.MoviePath{
 		Name: "Home",
 		ID:   "",
 	})
 	slices.Reverse(paths)
+
 	return paths, nil
 }
 
@@ -336,19 +361,23 @@ func listVendorDynamicMovie(
 	if err != nil {
 		return nil, fmt.Errorf("get parent movie path error: %w", err)
 	}
+
 	vendor, err := vendors.NewVendorService(room, movie)
 	if err != nil {
 		return nil, err
 	}
+
 	dynamic, err := vendor.ListDynamicMovie(ctx, reqUser, subPath, keyword, page, _max)
 	if err != nil {
 		return nil, err
 	}
+
 	dynamic.Paths = append(paths, dynamic.Paths...)
 	resp := &model.MoviesResp{
 		MovieList: dynamic,
 		Dynamic:   true,
 	}
+
 	return resp, nil
 }
 
@@ -367,6 +396,7 @@ func PushMovie(ctx *gin.Context) {
 	m, err := user.AddRoomMovie(room, (*dbModel.MovieBase)(&req))
 	if err != nil {
 		log.Errorf("push movie error: %v", err)
+
 		if errors.Is(err, dbModel.ErrNoPermission) {
 			ctx.AbortWithStatusJSON(
 				http.StatusForbidden,
@@ -374,9 +404,12 @@ func PushMovie(ctx *gin.Context) {
 					fmt.Errorf("push movie error: %w", err),
 				),
 			)
+
 			return
 		}
+
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
+
 		return
 	}
 
@@ -403,6 +436,7 @@ func PushMovies(ctx *gin.Context) {
 	m, err := user.AddRoomMovies(room, ms)
 	if err != nil {
 		log.Errorf("push movies error: %v", err)
+
 		if errors.Is(err, dbModel.ErrNoPermission) {
 			ctx.AbortWithStatusJSON(
 				http.StatusForbidden,
@@ -410,9 +444,12 @@ func PushMovies(ctx *gin.Context) {
 					fmt.Errorf("push movies error: %w", err),
 				),
 			)
+
 			return
 		}
+
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
+
 		return
 	}
 
@@ -428,6 +465,7 @@ func NewPublishKey(ctx *gin.Context) {
 			http.StatusBadRequest,
 			model.NewAPIErrorStringResp("rtmp is not enabled"),
 		)
+
 		return
 	}
 
@@ -440,6 +478,7 @@ func NewPublishKey(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 		return
 	}
+
 	movie, err := room.GetMovieByID(req.ID)
 	if err != nil {
 		log.Errorf("new publish key error: %v", err)
@@ -455,6 +494,7 @@ func NewPublishKey(ctx *gin.Context) {
 				fmt.Errorf("new publish key error: %w", dbModel.ErrNoPermission),
 			),
 		)
+
 		return
 	}
 
@@ -464,6 +504,7 @@ func NewPublishKey(ctx *gin.Context) {
 			http.StatusBadRequest,
 			model.NewAPIErrorStringResp("only live movie can get publish key"),
 		)
+
 		return
 	}
 
@@ -482,8 +523,10 @@ func NewPublishKey(ctx *gin.Context) {
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 			return
 		}
+
 		host = u.Host
 	}
+
 	if host == "" {
 		host = ctx.Request.Host
 	}
@@ -509,6 +552,7 @@ func EditMovie(ctx *gin.Context) {
 
 	if err := user.UpdateRoomMovie(room, req.ID, (*dbModel.MovieBase)(&req.PushMovieReq)); err != nil {
 		log.Errorf("edit movie error: %v", err)
+
 		if errors.Is(err, dbModel.ErrNoPermission) {
 			ctx.AbortWithStatusJSON(
 				http.StatusForbidden,
@@ -516,9 +560,12 @@ func EditMovie(ctx *gin.Context) {
 					fmt.Errorf("edit movie error: %w", err),
 				),
 			)
+
 			return
 		}
+
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
+
 		return
 	}
 
@@ -540,6 +587,7 @@ func DelMovie(ctx *gin.Context) {
 	err := user.DeleteRoomMoviesByID(room, req.IDs)
 	if err != nil {
 		log.Errorf("del movie error: %v", err)
+
 		if errors.Is(err, dbModel.ErrNoPermission) {
 			ctx.AbortWithStatusJSON(
 				http.StatusForbidden,
@@ -547,9 +595,12 @@ func DelMovie(ctx *gin.Context) {
 					fmt.Errorf("del movie error: %w", err),
 				),
 			)
+
 			return
 		}
+
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
+
 		return
 	}
 
@@ -574,9 +625,12 @@ func ClearMovies(ctx *gin.Context) {
 					fmt.Errorf("clear movies error: %w", err),
 				),
 			)
+
 			return
 		}
+
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
+
 		return
 	}
 
@@ -607,6 +661,7 @@ func ChangeCurrentMovie(ctx *gin.Context) {
 	log := middlewares.GetLogger(ctx)
 
 	req := model.SetRoomCurrentMovieReq{}
+
 	err := model.Decode(ctx, &req)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
@@ -616,6 +671,7 @@ func ChangeCurrentMovie(ctx *gin.Context) {
 	err = user.SetRoomCurrentMovie(room, req.ID, req.SubPath, true)
 	if err != nil {
 		log.Errorf("change current movie error: %v", err)
+
 		if errors.Is(err, dbModel.ErrNoPermission) {
 			ctx.AbortWithStatusJSON(
 				http.StatusForbidden,
@@ -623,9 +679,12 @@ func ChangeCurrentMovie(ctx *gin.Context) {
 					fmt.Errorf("change current movie error: %w", err),
 				),
 			)
+
 			return
 		}
+
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
+
 		return
 	}
 
@@ -652,7 +711,9 @@ func ProxyMovie(ctx *gin.Context) {
 			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 			return
 		}
+
 		vendor.ProxyMovie(ctx)
+
 		return
 	}
 
@@ -662,6 +723,7 @@ func ProxyMovie(ctx *gin.Context) {
 			http.StatusBadRequest,
 			model.NewAPIErrorStringResp("proxy is not enabled"),
 		)
+
 		return
 	}
 
@@ -670,6 +732,7 @@ func ProxyMovie(ctx *gin.Context) {
 			http.StatusBadRequest,
 			model.NewAPIErrorStringResp("movie is not proxy"),
 		)
+
 		return
 	}
 
@@ -680,6 +743,7 @@ func ProxyMovie(ctx *gin.Context) {
 				"this movie is live or rtmp source, not support use this method proxy",
 			),
 		)
+
 		return
 	}
 
@@ -713,6 +777,7 @@ func ServeM3u8(ctx *gin.Context) {
 			http.StatusBadRequest,
 			model.NewAPIErrorStringResp("movie proxy is not enabled"),
 		)
+
 		return
 	}
 
@@ -732,6 +797,7 @@ func ServeM3u8(ctx *gin.Context) {
 				"this movie is rtmp source, not support use this method proxy",
 			),
 		)
+
 		return
 	}
 
@@ -740,20 +806,24 @@ func ServeM3u8(ctx *gin.Context) {
 			http.StatusBadRequest,
 			model.NewAPIErrorStringResp("movie is not proxy"),
 		)
+
 		return
 	}
 
 	targetToken := ctx.Param("targetToken")
+
 	claims, err := proxy.GetM3u8Target(targetToken)
 	if err != nil {
 		log.Errorf("auth m3u8 error: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 		return
 	}
+
 	if claims.RoomID != room.ID || claims.MovieID != m.ID {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("invalid token"))
 		return
 	}
+
 	err = proxy.M3u8(ctx,
 		claims.TargetURL,
 		m.Headers,
@@ -819,20 +889,24 @@ func JoinFlvLive(ctx *gin.Context) {
 	ctx.Header("Cache-Control", "no-store")
 	room := middlewares.GetRoomEntry(ctx).Value()
 	movieID := strings.TrimSuffix(strings.Trim(ctx.Param("movieId"), "/"), ".flv")
+
 	m, err := room.GetMovieByID(movieID)
 	if err != nil {
 		log.Errorf("join flv live error: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewAPIErrorResp(err))
 		return
 	}
+
 	if !m.Live {
 		log.Error("join hls live error: live is not enabled")
 		ctx.AbortWithStatusJSON(
 			http.StatusBadRequest,
 			model.NewAPIErrorStringResp("live is not enabled"),
 		)
+
 		return
 	}
+
 	if m.RtmpSource {
 		if !conf.Conf.Server.RTMP.Enable {
 			log.Error("join hls live error: rtmp is not enabled")
@@ -840,6 +914,7 @@ func JoinFlvLive(ctx *gin.Context) {
 				http.StatusBadRequest,
 				model.NewAPIErrorStringResp("rtmp is not enabled"),
 			)
+
 			return
 		}
 	} else if !settings.LiveProxy.Get() {
@@ -847,6 +922,7 @@ func JoinFlvLive(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("live proxy is not enabled"))
 		return
 	}
+
 	channel, err := m.Channel()
 	if err != nil {
 		log.Errorf("join flv live error: %v", err)
@@ -856,12 +932,14 @@ func JoinFlvLive(ctx *gin.Context) {
 
 	w := httpflv.NewHttpFLVWriter(ctx.Writer)
 	defer w.Close()
+
 	err = channel.AddPlayer(w)
 	if err != nil {
 		log.Errorf("join flv live error: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewAPIErrorResp(err))
 		return
 	}
+
 	err = w.SendPacket(ctx.Request.Context())
 	if err != nil {
 		log.Errorf("join flv live error: %v", err)
@@ -875,20 +953,24 @@ func JoinHlsLive(ctx *gin.Context) {
 	ctx.Header("Cache-Control", "no-store")
 	room := middlewares.GetRoomEntry(ctx).Value()
 	movieID := strings.TrimSuffix(strings.Trim(ctx.Param("movieId"), "/"), ".m3u8")
+
 	m, err := room.GetMovieByID(movieID)
 	if err != nil {
 		log.Errorf("join hls live error: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewAPIErrorResp(err))
 		return
 	}
+
 	if !m.Live {
 		log.Error("join hls live error: live is not enabled")
 		ctx.AbortWithStatusJSON(
 			http.StatusBadRequest,
 			model.NewAPIErrorStringResp("live is not enabled"),
 		)
+
 		return
 	}
+
 	if m.RtmpSource {
 		if !conf.Conf.Server.RTMP.Enable {
 			log.Error("join hls live error: rtmp is not enabled")
@@ -896,6 +978,7 @@ func JoinHlsLive(ctx *gin.Context) {
 				http.StatusBadRequest,
 				model.NewAPIErrorStringResp("rtmp is not enabled"),
 			)
+
 			return
 		}
 	} else if !settings.LiveProxy.Get() {
@@ -917,8 +1000,10 @@ func JoinHlsLive(ctx *gin.Context) {
 		if err != nil {
 			log.Errorf("proxy m3u8 hls live error: %v", err)
 		}
+
 		return
 	}
+
 	channel, err := m.Channel()
 	if err != nil {
 		log.Errorf("join hls live error: %v", err)
@@ -931,6 +1016,7 @@ func JoinHlsLive(ctx *gin.Context) {
 		if settings.TSDisguisedAsPng.Get() {
 			ext = "png"
 		}
+
 		return fmt.Sprintf(
 			"/api/room/movie/live/hls/data/%s/%s/%s.%s",
 			room.ID,
@@ -944,6 +1030,7 @@ func JoinHlsLive(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewAPIErrorResp(err))
 		return
 	}
+
 	ctx.Data(http.StatusOK, hls.M3U8ContentType, b)
 }
 
@@ -951,31 +1038,37 @@ func JoinHlsLive(ctx *gin.Context) {
 func ServeHlsLive(ctx *gin.Context) {
 	log := middlewares.GetLogger(ctx)
 	roomID := ctx.Param("roomId")
+
 	roomE, err := op.LoadRoomByID(roomID)
 	if err != nil {
 		log.Errorf("serve hls live error: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewAPIErrorResp(err))
 		return
 	}
+
 	room := roomE.Value()
 
 	ctx.Header("Cache-Control", "public, max-age=30, s-maxage=90")
 
 	movieID := ctx.Param("movieId")
+
 	m, err := room.GetMovieByID(movieID)
 	if err != nil {
 		log.Errorf("serve hls live error: %v", err)
 		ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewAPIErrorResp(err))
 		return
 	}
+
 	if !m.Live {
 		log.Error("join hls live error: live is not enabled")
 		ctx.AbortWithStatusJSON(
 			http.StatusBadRequest,
 			model.NewAPIErrorStringResp("live is not enabled"),
 		)
+
 		return
 	}
+
 	if m.RtmpSource {
 		if !conf.Conf.Server.RTMP.Enable {
 			log.Error("join hls live error: rtmp is not enabled")
@@ -983,6 +1076,7 @@ func ServeHlsLive(ctx *gin.Context) {
 				http.StatusBadRequest,
 				model.NewAPIErrorStringResp("rtmp is not enabled"),
 			)
+
 			return
 		}
 	} else if !settings.LiveProxy.Get() {
@@ -990,6 +1084,7 @@ func ServeHlsLive(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorStringResp("live proxy is not enabled"))
 		return
 	}
+
 	channel, err := m.Channel()
 	if err != nil {
 		log.Errorf("serve hls live error: %v", err)
@@ -1006,14 +1101,17 @@ func ServeHlsLive(ctx *gin.Context) {
 				http.StatusNotFound,
 				model.NewAPIErrorResp(FormatNotSupportFileTypeError(fileExt)),
 			)
+
 			return
 		}
+
 		b, err := channel.GetTsFile(strings.TrimSuffix(dataID, fileExt))
 		if err != nil {
 			log.Errorf("serve hls live error: %v", err)
 			ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewAPIErrorResp(err))
 			return
 		}
+
 		ctx.Header("Cache-Control", "public, max-age=90")
 		ctx.Data(http.StatusOK, hls.TSContentType, b)
 	case ".png":
@@ -1023,24 +1121,31 @@ func ServeHlsLive(ctx *gin.Context) {
 				http.StatusNotFound,
 				model.NewAPIErrorResp(FormatNotSupportFileTypeError(fileExt)),
 			)
+
 			return
 		}
+
 		b, err := channel.GetTsFile(strings.TrimSuffix(dataID, fileExt))
 		if err != nil {
 			log.Errorf("serve hls live error: %v", err)
 			ctx.AbortWithStatusJSON(http.StatusNotFound, model.NewAPIErrorResp(err))
 			return
 		}
+
 		ctx.Header("Cache-Control", "public, max-age=90")
+
 		img := image.NewGray(image.Rect(0, 0, 1, 1))
 		img.Set(1, 1, color.Gray{uint8(rand.IntN(255))})
+
 		cache := bytes.NewBuffer(make([]byte, 0, 71))
+
 		err = png.Encode(cache, img)
 		if err != nil {
 			log.Errorf("serve hls live error: %v", err)
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 			return
 		}
+
 		ctx.Data(http.StatusOK, "image/png", append(cache.Bytes(), b...))
 	default:
 		ctx.Header("Cache-Control", "no-store")

@@ -157,12 +157,15 @@ func (r *RoomMember) HasPermission(permission RoomMemberPermission) bool {
 	if r.Role.IsAdmin() {
 		return true
 	}
+
 	if !r.Role.IsMember() {
 		return false
 	}
+
 	if r.Status != RoomMemberStatusActive {
 		return false
 	}
+
 	return r.Permissions.Has(permission)
 }
 
@@ -170,11 +173,14 @@ func (r *RoomMember) HasAdminPermission(permission RoomAdminPermission) bool {
 	if r.Role.IsCreator() {
 		return true
 	}
+
 	if !r.Role.IsAdmin() {
 		return false
 	}
+
 	if r.Status != RoomMemberStatusActive {
 		return false
 	}
+
 	return r.AdminPermissions.Has(permission)
 }

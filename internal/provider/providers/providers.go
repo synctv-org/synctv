@@ -15,7 +15,9 @@ func InitProvider(p provider.OAuth2Provider, c provider.Oauth2Option) (provider.
 	if !ok {
 		return nil, FormatNotImplementedError(p)
 	}
+
 	pi.Init(c)
+
 	return pi, nil
 }
 
@@ -30,10 +32,12 @@ func GetProvider(p provider.OAuth2Provider) (provider.Interface, error) {
 	if !ok {
 		return nil, FormatNotImplementedError(p)
 	}
+
 	pi, ok := allProviders.Load(p)
 	if !ok {
 		return nil, FormatNotImplementedError(p)
 	}
+
 	return pi, nil
 }
 
@@ -43,6 +47,7 @@ func AllProvider() map[provider.OAuth2Provider]provider.Interface {
 		m[key] = value
 		return true
 	})
+
 	return m
 }
 
@@ -55,7 +60,9 @@ func EnableProvider(p provider.OAuth2Provider) error {
 	if !ok {
 		return FormatNotImplementedError(p)
 	}
+
 	enabledProviders.Store(p, struct{}{})
+
 	return nil
 }
 
@@ -64,7 +71,9 @@ func DisableProvider(p provider.OAuth2Provider) error {
 	if !ok {
 		return FormatNotImplementedError(p)
 	}
+
 	enabledProviders.Delete(p)
+
 	return nil
 }
 

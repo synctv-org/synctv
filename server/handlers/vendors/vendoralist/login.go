@@ -29,17 +29,21 @@ func (r *LoginReq) Validate() error {
 	if r.Host == "" {
 		return errors.New("host is required")
 	}
+
 	url, err := url.Parse(r.Host)
 	if err != nil {
 		return err
 	}
+
 	if url.Scheme != "http" && url.Scheme != "https" {
 		return errors.New("host is invalid")
 	}
+
 	r.Host = strings.TrimRight(url.String(), "/")
 	if r.Password != "" && r.HashedPassword != "" {
 		return errors.New("password and hashedPassword can't be both set")
 	}
+
 	return nil
 }
 

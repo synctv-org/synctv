@@ -153,18 +153,23 @@ func (h *HTTPReadSeekCloser) fix() *HTTPReadSeekCloser {
 	if h.method == "" {
 		h.method = http.MethodGet
 	}
+
 	if h.headMethod == "" {
 		h.headMethod = http.MethodHead
 	}
+
 	if h.ctx == nil {
 		h.ctx = context.Background()
 	}
+
 	if h.perLength <= 0 {
 		h.perLength = 1024 * 1024
 	}
+
 	if h.headers == nil {
 		h.headers = make(http.Header)
 	}
+
 	if h.client == nil {
 		h.client = &http.Client{
 			Transport: uhc.DefaultTransport,
@@ -172,13 +177,16 @@ func (h *HTTPReadSeekCloser) fix() *HTTPReadSeekCloser {
 				for k, v := range h.headers {
 					req.Header[k] = v
 				}
+
 				if req.Header.Get("User-Agent") == "" {
 					req.Header.Set("User-Agent", utils.UA)
 				}
+
 				return nil
 			},
 		}
 	}
+
 	return h
 }
 
@@ -201,11 +209,14 @@ func (h *HTTPReadSeekCloser) Read(p []byte) (n int, err error) {
 
 		if err == io.EOF {
 			h.closeCurrentResp()
+
 			if n < len(p) {
 				continue
 			}
+
 			break
 		}
+
 		if err != nil {
 			if n > 0 {
 				return n, nil
@@ -246,7 +257,9 @@ func (h *HTTPReadSeekCloser) FetchNextChunk() error {
 		if err == nil && contentTotalLength > 0 {
 			h.contentTotalLength = contentTotalLength
 		}
+
 		resp.Body.Close()
+
 		return fmt.Errorf(
 			"requested range not satisfiable, content total length: %d, offset: %d",
 			h.contentTotalLength,
@@ -268,6 +281,7 @@ func (h *HTTPReadSeekCloser) FetchNextChunk() error {
 			if h.notSupportSeekWhenNotSupportRange {
 				return errors.New("not support seek when not support range")
 			}
+
 			if _, err := io.CopyN(io.Discard, resp.Body, h.offset); err != nil {
 				resp.Body.Close()
 				return fmt.Errorf("failed to discard bytes: %w", err)
@@ -278,6 +292,7 @@ func (h *HTTPReadSeekCloser) FetchNextChunk() error {
 		h.contentTotalLength = resp.ContentLength
 		h.currentRespMaxOffset = h.contentTotalLength - 1
 		h.currentResp = resp
+
 		return nil
 	}
 
@@ -285,17 +300,20 @@ func (h *HTTPReadSeekCloser) FetchNextChunk() error {
 	if err == nil && contentTotalLength > 0 {
 		h.contentTotalLength = contentTotalLength
 	}
+
 	start, end, err := ParseContentRangeStartAndEnd(resp.Header.Get("Content-Range"))
 	if err == nil {
 		if end != -1 {
 			h.currentRespMaxOffset = end
 		}
+
 		if h.offset != start {
 			return fmt.Errorf("offset mismatch, expected: %d, got: %d", start, h.offset)
 		}
 	}
 
 	h.currentResp = resp
+
 	return nil
 }
 
@@ -320,6 +338,7 @@ func (h *HTTPReadSeekCloser) createRequest() (*http.Request, error) {
 	h.currentRespMaxOffset = end
 
 	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", h.offset, end))
+
 	return req, nil
 }
 
@@ -328,11 +347,14 @@ func (h *HTTPReadSeekCloser) createRequestWithoutRange() (*http.Request, error) 
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
+
 	req.Header = h.headers.Clone()
 	req.Header.Del("Range")
+
 	if req.Header.Get("User-Agent") == "" {
 		req.Header.Set("User-Agent", utils.UA)
 	}
+
 	return req, nil
 }
 
@@ -353,6 +375,7 @@ func (h *HTTPReadSeekCloser) checkContentType(ct string) error {
 			)
 		}
 	}
+
 	return nil
 }
 
@@ -370,9 +393,11 @@ func (h *HTTPReadSeekCloser) Seek(offset int64, whence int) (int64, error) {
 
 	if newOffset != h.offset {
 		h.closeCurrentResp()
+
 		if h.notSupportRange && h.notSupportSeekWhenNotSupportRange {
 			return 0, errors.New("seek is not supported when not support range")
 		}
+
 		h.offset = newOffset
 	}
 
@@ -391,6 +416,7 @@ func (h *HTTPReadSeekCloser) calculateNewOffset(offset int64, whence int) (int64
 				return 0, fmt.Errorf("failed to fetch content length: %w", err)
 			}
 		}
+
 		return h.contentTotalLength - offset, nil
 	default:
 		return 0, fmt.Errorf("invalid seek whence value: %d", whence)
@@ -402,6 +428,7 @@ func (h *HTTPReadSeekCloser) fetchContentLength() error {
 	if err != nil {
 		return err
 	}
+
 	req.Method = h.headMethod
 
 	resp, err := h.client.Do(req)
@@ -426,6 +453,7 @@ func (h *HTTPReadSeekCloser) fetchContentLength() error {
 
 	h.contentTotalLength = resp.ContentLength
 	h.headHeaders = resp.Header.Clone()
+
 	return nil
 }
 
@@ -455,6 +483,7 @@ func (h *HTTPReadSeekCloser) ContentTotalLength() (int64, error) {
 	if h.contentTotalLength > 0 {
 		return h.contentTotalLength, nil
 	}
+
 	return 0, errors.New(
 		"content total length is not available - no successful response received yet",
 	)
@@ -494,6 +523,7 @@ func ParseContentRangeStartAndEnd(contentRange string) (int64, int64, error) {
 	}
 
 	rangeParts[1] = strings.TrimSpace(rangeParts[1])
+
 	var end int64
 	if rangeParts[1] == "" || rangeParts[1] == "*" {
 		end = -1

@@ -51,21 +51,27 @@ func (p *GithubProvider) GetUserInfo(ctx context.Context, code string) (*provide
 	if err != nil {
 		return nil, err
 	}
+
 	client := p.config.Client(ctx, tk)
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/user", nil)
 	if err != nil {
 		return nil, err
 	}
+
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+
 	ui := githubUserInfo{}
+
 	err = json.NewDecoder(resp.Body).Decode(&ui)
 	if err != nil {
 		return nil, err
 	}
+
 	return &provider.UserInfo{
 		Username:       ui.Login,
 		ProviderUserID: strconv.FormatUint(ui.ID, 10),

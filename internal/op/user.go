@@ -32,6 +32,7 @@ func (u *User) AlistCache() *cache.AlistUserCache {
 			return u.AlistCache()
 		}
 	}
+
 	return c
 }
 
@@ -43,6 +44,7 @@ func (u *User) BilibiliCache() *cache.BilibiliUserCache {
 			return u.BilibiliCache()
 		}
 	}
+
 	return c
 }
 
@@ -54,6 +56,7 @@ func (u *User) EmbyCache() *cache.EmbyUserCache {
 			return u.EmbyCache()
 		}
 	}
+
 	return c
 }
 
@@ -69,9 +72,11 @@ func (u *User) SetPassword(password string) error {
 	if u.IsGuest() {
 		return errors.New("guest cannot set password")
 	}
+
 	if u.CheckPassword(password) {
 		return errors.New("password is the same")
 	}
+
 	hashedPassword, err := bcrypt.GenerateFromPassword(
 		stream.StringToBytes(password),
 		bcrypt.DefaultCost,
@@ -79,8 +84,10 @@ func (u *User) SetPassword(password string) error {
 	if err != nil {
 		return err
 	}
+
 	atomic.StoreUint32(&u.version, crc32.ChecksumIEEE(hashedPassword))
 	u.HashedPassword = hashedPassword
+
 	return db.SetUserHashedPassword(u.ID, hashedPassword)
 }
 
@@ -91,9 +98,11 @@ func (u *User) CreateRoom(name, password string, conf ...db.CreateRoomConfig) (*
 		if password == "" && settings.RoomMustNeedPwd.Get() {
 			return nil, errors.New("room must need password")
 		}
+
 		if password != "" && settings.RoomMustNoNeedPwd.Get() {
 			return nil, errors.New("room must no need password")
 		}
+
 		if settings.CreateRoomNeedReview.Get() {
 			conf = append(conf, db.WithStatus(model.RoomStatusPending))
 		} else {
@@ -113,6 +122,7 @@ func (u *User) NewMovie(movie *model.MovieBase) (*model.Movie, error) {
 	if movie == nil {
 		return nil, errors.New("movie is nil")
 	}
+
 	switch movie.VendorInfo.Vendor {
 	case model.VendorBilibili:
 		if movie.VendorInfo.Bilibili == nil {
@@ -123,6 +133,7 @@ func (u *User) NewMovie(movie *model.MovieBase) (*model.Movie, error) {
 			return nil, errors.New("alist payload is nil")
 		}
 	}
+
 	return &model.Movie{
 		MovieBase: *movie,
 		CreatorID: u.ID,
@@ -133,14 +144,17 @@ func (u *User) AddRoomMovie(room *Room, movie *model.MovieBase) (*model.Movie, e
 	if !u.HasRoomPermission(room, model.PermissionAddMovie) {
 		return nil, model.ErrNoPermission
 	}
+
 	m, err := u.NewMovie(movie)
 	if err != nil {
 		return nil, err
 	}
+
 	err = room.AddMovie(m)
 	if err != nil {
 		return nil, err
 	}
+
 	return m, room.Broadcast(&pb.Message{
 		Type: pb.MessageType_MOVIES,
 		Sender: &pb.Sender{
@@ -157,8 +171,10 @@ func (u *User) NewMovies(movies []*model.MovieBase) ([]*model.Movie, error) {
 		if err != nil {
 			return nil, err
 		}
+
 		ms[i] = movie
 	}
+
 	return ms, nil
 }
 
@@ -166,14 +182,17 @@ func (u *User) AddRoomMovies(room *Room, movies []*model.MovieBase) ([]*model.Mo
 	if !u.HasRoomPermission(room, model.PermissionAddMovie) {
 		return nil, model.ErrNoPermission
 	}
+
 	m, err := u.NewMovies(movies)
 	if err != nil {
 		return nil, err
 	}
+
 	err = room.AddMovies(m)
 	if err != nil {
 		return nil, err
 	}
+
 	return m, room.Broadcast(&pb.Message{
 		Type: pb.MessageType_MOVIES,
 		Sender: &pb.Sender{
@@ -214,9 +233,11 @@ func (u *User) HasRoomAdminPermission(room *Room, permission model.RoomAdminPerm
 	if u.IsAdmin() {
 		return true
 	}
+
 	if u.IsGuest() {
 		return false
 	}
+
 	return room.HasAdminPermission(u.ID, permission)
 }
 
@@ -243,14 +264,17 @@ func (u *User) SetRoomPassword(room *Room, password string) error {
 	if !u.HasRoomAdminPermission(room, model.PermissionSetRoomPassword) {
 		return model.ErrNoPermission
 	}
+
 	if !u.IsAdmin() {
 		if password == "" && settings.RoomMustNeedPwd.Get() {
 			return errors.New("room must need password")
 		}
+
 		if password != "" && settings.RoomMustNoNeedPwd.Get() {
 			return errors.New("room must no need password")
 		}
 	}
+
 	return room.SetPassword(password)
 }
 
@@ -258,10 +282,13 @@ func (u *User) SetUserRole() error {
 	if u.IsGuest() {
 		return errors.New("cannot set guest role")
 	}
+
 	if err := db.SetUserRoleByID(u.ID); err != nil {
 		return err
 	}
+
 	u.Role = model.RoleUser
+
 	return nil
 }
 
@@ -269,10 +296,13 @@ func (u *User) SetAdminRole() error {
 	if u.IsGuest() {
 		return errors.New("guest cannot be admin")
 	}
+
 	if err := db.SetAdminRoleByID(u.ID); err != nil {
 		return err
 	}
+
 	u.Role = model.RoleAdmin
+
 	return nil
 }
 
@@ -280,10 +310,13 @@ func (u *User) SetRootRole() error {
 	if u.IsGuest() {
 		return errors.New("guest cannot be root")
 	}
+
 	if err := db.SetRootRoleByID(u.ID); err != nil {
 		return err
 	}
+
 	u.Role = model.RoleRoot
+
 	return nil
 }
 
@@ -291,10 +324,13 @@ func (u *User) Ban() error {
 	if u.IsGuest() {
 		return errors.New("guest cannot be banned")
 	}
+
 	if err := db.BanUserByID(u.ID); err != nil {
 		return err
 	}
+
 	u.Role = model.RoleBanned
+
 	return nil
 }
 
@@ -302,7 +338,9 @@ func (u *User) Unban() error {
 	if err := db.UnbanUserByID(u.ID); err != nil {
 		return err
 	}
+
 	u.Role = model.RoleUser
+
 	return nil
 }
 
@@ -310,7 +348,9 @@ func (u *User) SetUsername(username string) error {
 	if err := db.SetUsernameByID(u.ID, username); err != nil {
 		return err
 	}
+
 	u.Username = username
+
 	return nil
 }
 
@@ -318,10 +358,12 @@ func (u *User) UpdateRoomMovie(room *Room, movieID string, movie *model.MovieBas
 	if !u.HasRoomPermission(room, model.PermissionEditMovie) {
 		return model.ErrNoPermission
 	}
+
 	err := room.UpdateMovie(movieID, movie)
 	if err != nil {
 		return err
 	}
+
 	return room.Broadcast(&pb.Message{
 		Type: pb.MessageType_MOVIES,
 		Sender: &pb.Sender{
@@ -350,9 +392,11 @@ func (u *User) DeleteRoomMovieByID(room *Room, movieID string) error {
 	if err != nil {
 		return err
 	}
+
 	if m.CreatorID != u.ID && !u.HasRoomPermission(room, model.PermissionDeleteMovie) {
 		return model.ErrNoPermission
 	}
+
 	return room.DeleteMovieByID(movieID)
 }
 
@@ -362,13 +406,16 @@ func (u *User) DeleteRoomMoviesByID(room *Room, movieIDs []string) error {
 		if err != nil {
 			return err
 		}
+
 		if m.CreatorID != u.ID && !u.HasRoomPermission(room, model.PermissionDeleteMovie) {
 			return model.ErrNoPermission
 		}
 	}
+
 	if err := room.DeleteMoviesByID(movieIDs); err != nil {
 		return err
 	}
+
 	return room.Broadcast(&pb.Message{
 		Type: pb.MessageType_MOVIES,
 		Sender: &pb.Sender{
@@ -382,10 +429,12 @@ func (u *User) ClearRoomMovies(room *Room) error {
 	if !u.HasRoomPermission(room, model.PermissionDeleteMovie) {
 		return model.ErrNoPermission
 	}
+
 	err := room.ClearMovies()
 	if err != nil {
 		return err
 	}
+
 	return room.Broadcast(&pb.Message{
 		Type: pb.MessageType_MOVIES,
 		Sender: &pb.Sender{
@@ -399,10 +448,12 @@ func (u *User) ClearRoomMoviesByParentID(room *Room, parentID string) error {
 	if !u.HasRoomPermission(room, model.PermissionDeleteMovie) {
 		return model.ErrNoPermission
 	}
+
 	err := room.ClearMoviesByParentID(parentID)
 	if err != nil {
 		return err
 	}
+
 	return room.Broadcast(&pb.Message{
 		Type: pb.MessageType_MOVIES,
 		Sender: &pb.Sender{
@@ -416,10 +467,12 @@ func (u *User) SwapRoomMoviePositions(room *Room, id1, id2 string) error {
 	if !u.HasRoomPermission(room, model.PermissionEditMovie) {
 		return model.ErrNoPermission
 	}
+
 	err := room.SwapMoviePositions(id1, id2)
 	if err != nil {
 		return err
 	}
+
 	return room.Broadcast(&pb.Message{
 		Type: pb.MessageType_MOVIES,
 		Sender: &pb.Sender{
@@ -433,10 +486,12 @@ func (u *User) SetRoomCurrentMovie(room *Room, movieID, subPath string, play boo
 	if !u.HasRoomPermission(room, model.PermissionSetCurrentMovie) {
 		return model.ErrNoPermission
 	}
+
 	err := room.SetCurrentMovie(movieID, subPath, play)
 	if err != nil {
 		return err
 	}
+
 	return room.Broadcast(&pb.Message{
 		Type: pb.MessageType_CURRENT,
 		Sender: &pb.Sender{
@@ -451,6 +506,7 @@ func (u *User) BindProvider(p provider.OAuth2Provider, pid string) error {
 	if err != nil {
 		return err
 	}
+
 	return nil
 }
 
@@ -467,7 +523,9 @@ func (u *User) BindEmail(e string) error {
 	if err != nil {
 		return err
 	}
+
 	u.Email = model.EmptyNullString(e)
+
 	return nil
 }
 
@@ -476,7 +534,9 @@ func (u *User) UnbindEmail() error {
 	if err != nil {
 		return err
 	}
+
 	u.Email = ""
+
 	return nil
 }
 
@@ -532,12 +592,15 @@ func (u *User) BanRoomMember(room *Room, userID string) error {
 	if !u.HasRoomAdminPermission(room, model.PermissionBanRoomMember) {
 		return model.ErrNoPermission
 	}
+
 	if u.ID == userID {
 		return errors.New("cannot ban yourself")
 	}
+
 	if room.IsAdmin(userID) && !u.IsRoomCreator(room) {
 		return errors.New("cannot ban admin")
 	}
+
 	return room.BanMember(userID)
 }
 
@@ -545,9 +608,11 @@ func (u *User) UnbanRoomMember(room *Room, userID string) error {
 	if !u.HasRoomAdminPermission(room, model.PermissionBanRoomMember) {
 		return model.ErrNoPermission
 	}
+
 	if u.ID == userID {
 		return errors.New("cannot unban yourself")
 	}
+
 	return room.UnbanMember(userID)
 }
 
@@ -566,13 +631,16 @@ func (u *User) SetMemberPermissions(
 	if !u.HasRoomAdminPermission(room, model.PermissionSetUserPermission) {
 		return model.ErrNoPermission
 	}
+
 	if room.IsAdmin(userID) && !u.IsRoomCreator(room) {
 		return errors.New("cannot set admin permissions")
 	}
+
 	err := room.SetMemberPermissions(userID, permissions)
 	if err != nil {
 		return err
 	}
+
 	return room.SendToUserWithID(userID, &pb.Message{
 		Type: pb.MessageType_MY_STATUS,
 		Sender: &pb.Sender{
@@ -590,13 +658,16 @@ func (u *User) AddMemberPermissions(
 	if !u.HasRoomAdminPermission(room, model.PermissionSetUserPermission) {
 		return model.ErrNoPermission
 	}
+
 	if room.IsAdmin(userID) && !u.IsRoomCreator(room) {
 		return errors.New("cannot add admin permissions")
 	}
+
 	err := room.AddMemberPermissions(userID, permissions)
 	if err != nil {
 		return err
 	}
+
 	return room.SendToUserWithID(userID, &pb.Message{
 		Type: pb.MessageType_MY_STATUS,
 		Sender: &pb.Sender{
@@ -614,13 +685,16 @@ func (u *User) RemoveMemberPermissions(
 	if !u.HasRoomAdminPermission(room, model.PermissionSetUserPermission) {
 		return model.ErrNoPermission
 	}
+
 	if room.IsAdmin(userID) && !u.IsRoomCreator(room) {
 		return errors.New("cannot remove admin permissions")
 	}
+
 	err := room.RemoveMemberPermissions(userID, permissions)
 	if err != nil {
 		return err
 	}
+
 	return room.SendToUserWithID(userID, &pb.Message{
 		Type: pb.MessageType_MY_STATUS,
 		Sender: &pb.Sender{
@@ -634,13 +708,16 @@ func (u *User) ResetMemberPermissions(room *Room, userID string) error {
 	if !u.HasRoomAdminPermission(room, model.PermissionSetUserPermission) {
 		return model.ErrNoPermission
 	}
+
 	if room.IsAdmin(userID) && !u.IsRoomCreator(room) {
 		return errors.New("cannot reset admin permissions")
 	}
+
 	err := room.ResetMemberPermissions(userID)
 	if err != nil {
 		return err
 	}
+
 	return room.SendToUserWithID(userID, &pb.Message{
 		Type: pb.MessageType_MY_STATUS,
 		Sender: &pb.Sender{
@@ -665,10 +742,12 @@ func (u *User) SetRoomAdmin(
 	if !u.IsRoomCreator(room) {
 		return model.ErrNoPermission
 	}
+
 	err := room.SetAdmin(userID, permissions)
 	if err != nil {
 		return err
 	}
+
 	return room.SendToUserWithID(userID, &pb.Message{
 		Type: pb.MessageType_MY_STATUS,
 		Sender: &pb.Sender{
@@ -686,10 +765,12 @@ func (u *User) SetRoomMember(
 	if !u.IsRoomCreator(room) {
 		return model.ErrNoPermission
 	}
+
 	err := room.SetMember(userID, permissions)
 	if err != nil {
 		return err
 	}
+
 	return room.SendToUserWithID(userID, &pb.Message{
 		Type: pb.MessageType_MY_STATUS,
 		Sender: &pb.Sender{
@@ -707,10 +788,12 @@ func (u *User) SetRoomAdminPermissions(
 	if !u.IsRoomCreator(room) {
 		return model.ErrNoPermission
 	}
+
 	err := room.SetAdminPermissions(userID, permissions)
 	if err != nil {
 		return err
 	}
+
 	return room.SendToUserWithID(userID, &pb.Message{
 		Type: pb.MessageType_MY_STATUS,
 		Sender: &pb.Sender{
@@ -728,10 +811,12 @@ func (u *User) AddRoomAdminPermissions(
 	if !u.IsRoomCreator(room) {
 		return model.ErrNoPermission
 	}
+
 	err := room.AddAdminPermissions(userID, permissions)
 	if err != nil {
 		return err
 	}
+
 	return room.SendToUserWithID(userID, &pb.Message{
 		Type: pb.MessageType_MY_STATUS,
 		Sender: &pb.Sender{
@@ -749,10 +834,12 @@ func (u *User) RemoveRoomAdminPermissions(
 	if !u.IsRoomCreator(room) {
 		return model.ErrNoPermission
 	}
+
 	err := room.RemoveAdminPermissions(userID, permissions)
 	if err != nil {
 		return err
 	}
+
 	return room.SendToUserWithID(userID, &pb.Message{
 		Type: pb.MessageType_MY_STATUS,
 		Sender: &pb.Sender{
@@ -766,10 +853,12 @@ func (u *User) ResetRoomAdminPermissions(room *Room, userID string) error {
 	if !u.IsRoomCreator(room) {
 		return model.ErrNoPermission
 	}
+
 	err := room.ResetAdminPermissions(userID)
 	if err != nil {
 		return err
 	}
+
 	return room.SendToUserWithID(userID, &pb.Message{
 		Type: pb.MessageType_MY_STATUS,
 		Sender: &pb.Sender{

@@ -25,6 +25,7 @@ func (c *GRPCClient) Provider() provider.OAuth2Provider {
 	if err != nil {
 		return ""
 	}
+
 	return resp.GetName()
 }
 
@@ -33,6 +34,7 @@ func (c *GRPCClient) NewAuthURL(ctx context.Context, state string) (string, erro
 	if err != nil {
 		return "", err
 	}
+
 	return resp.GetUrl(), nil
 }
 
@@ -43,6 +45,7 @@ func (c *GRPCClient) GetUserInfo(ctx context.Context, code string) (*provider.Us
 	if err != nil {
 		return nil, err
 	}
+
 	return &provider.UserInfo{
 		Username:       resp.GetUsername(),
 		ProviderUserID: resp.GetProviderUserId(),

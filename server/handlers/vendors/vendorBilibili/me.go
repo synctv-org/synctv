@@ -26,15 +26,19 @@ func Me(ctx *gin.Context) {
 			}))
 			return
 		}
+
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
+
 		return
 	}
+
 	if len(bucd.Cookies) == 0 {
 		ctx.JSON(http.StatusOK, model.NewAPIDataResp(&BilibiliMeResp{
 			IsLogin: false,
 		}))
 		return
 	}
+
 	resp, err := vendor.LoadBilibiliClient(bucd.Backend).UserInfo(ctx, &bilibili.UserInfoReq{
 		Cookies: utils.HTTPCookieToMap(bucd.Cookies),
 	})

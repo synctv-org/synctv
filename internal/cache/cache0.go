@@ -28,6 +28,7 @@ func newMapCache0[T any](refreshFunc MapRefreshFunc0[T], maxAge time.Duration) *
 func (b *MapCache0[T]) Clear() {
 	b.lock.Lock()
 	defer b.lock.Unlock()
+
 	b.clear()
 }
 
@@ -38,50 +39,61 @@ func (b *MapCache0[T]) clear() {
 func (b *MapCache0[T]) Delete(key string) {
 	b.lock.Lock()
 	defer b.lock.Unlock()
+
 	delete(b.cache, key)
 }
 
 func (b *MapCache0[T]) LoadOrStore(ctx context.Context, key string) (T, error) {
 	b.lock.RLock()
+
 	c, loaded := b.cache[key]
 	if loaded {
 		b.lock.RUnlock()
 		return c.Get(ctx)
 	}
+
 	b.lock.RUnlock()
 	b.lock.Lock()
+
 	c, loaded = b.cache[key]
 	if loaded {
 		b.lock.Unlock()
 		return c.Get(ctx)
 	}
+
 	c = refreshcache0.NewRefreshCache(func(ctx context.Context) (T, error) {
 		return b.refreshFunc(ctx, key)
 	}, b.maxAge)
 	b.cache[key] = c
 	b.lock.Unlock()
+
 	return c.Get(ctx)
 }
 
 func (b *MapCache0[T]) StoreOrRefresh(ctx context.Context, key string) (T, error) {
 	b.lock.RLock()
+
 	c, ok := b.cache[key]
 	if ok {
 		b.lock.RUnlock()
 		return c.Refresh(ctx)
 	}
+
 	b.lock.RUnlock()
 	b.lock.Lock()
+
 	c, ok = b.cache[key]
 	if ok {
 		b.lock.Unlock()
 		return c.Refresh(ctx)
 	}
+
 	c = refreshcache0.NewRefreshCache(func(ctx context.Context) (T, error) {
 		return b.refreshFunc(ctx, key)
 	}, b.maxAge)
 	b.cache[key] = c
 	b.lock.Unlock()
+
 	return c.Refresh(ctx)
 }
 
@@ -94,23 +106,28 @@ func (b *MapCache0[T]) LoadCache(key string) (*refreshcache0.RefreshCache[T], bo
 
 func (b *MapCache0[T]) LoadOrNewCache(key string) *refreshcache0.RefreshCache[T] {
 	b.lock.RLock()
+
 	c, ok := b.cache[key]
 	if ok {
 		b.lock.RUnlock()
 		return c
 	}
+
 	b.lock.RUnlock()
 	b.lock.Lock()
+
 	c, ok = b.cache[key]
 	if ok {
 		b.lock.Unlock()
 		return c
 	}
+
 	c = refreshcache0.NewRefreshCache(func(ctx context.Context) (T, error) {
 		return b.refreshFunc(ctx, key)
 	}, b.maxAge)
 	b.cache[key] = c
 	b.lock.Unlock()
+
 	return c
 }
 
@@ -120,6 +137,7 @@ func (b *MapCache0[T]) LoadOrStoreWithDynamicFunc(
 	refreshFunc MapRefreshFunc0[T],
 ) (T, error) {
 	b.lock.RLock()
+
 	c, loaded := b.cache[key]
 	if loaded {
 		b.lock.RUnlock()
@@ -127,8 +145,10 @@ func (b *MapCache0[T]) LoadOrStoreWithDynamicFunc(
 			return refreshFunc(ctx, key)
 		})
 	}
+
 	b.lock.RUnlock()
 	b.lock.Lock()
+
 	c, loaded = b.cache[key]
 	if loaded {
 		b.lock.Unlock()
@@ -136,11 +156,13 @@ func (b *MapCache0[T]) LoadOrStoreWithDynamicFunc(
 			return refreshFunc(ctx, key)
 		})
 	}
+
 	c = refreshcache0.NewRefreshCache(func(ctx context.Context) (T, error) {
 		return b.refreshFunc(ctx, key)
 	}, b.maxAge)
 	b.cache[key] = c
 	b.lock.Unlock()
+
 	return c.Data().Get(ctx, func(ctx context.Context) (T, error) {
 		return refreshFunc(ctx, key)
 	})
@@ -152,6 +174,7 @@ func (b *MapCache0[T]) StoreOrRefreshWithDynamicFunc(
 	refreshFunc MapRefreshFunc0[T],
 ) (T, error) {
 	b.lock.RLock()
+
 	c, ok := b.cache[key]
 	if ok {
 		b.lock.RUnlock()
@@ -159,8 +182,10 @@ func (b *MapCache0[T]) StoreOrRefreshWithDynamicFunc(
 			return refreshFunc(ctx, key)
 		})
 	}
+
 	b.lock.RUnlock()
 	b.lock.Lock()
+
 	c, ok = b.cache[key]
 	if ok {
 		b.lock.Unlock()
@@ -168,11 +193,13 @@ func (b *MapCache0[T]) StoreOrRefreshWithDynamicFunc(
 			return refreshFunc(ctx, key)
 		})
 	}
+
 	c = refreshcache0.NewRefreshCache(func(ctx context.Context) (T, error) {
 		return b.refreshFunc(ctx, key)
 	}, b.maxAge)
 	b.cache[key] = c
 	b.lock.Unlock()
+
 	return c.Data().Refresh(ctx, func(ctx context.Context) (T, error) {
 		return refreshFunc(ctx, key)
 	})

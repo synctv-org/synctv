@@ -46,6 +46,7 @@ func isNormalCloseError(err error) bool {
 	if !errors.As(err, &we) {
 		return false
 	}
+
 	return we.Code == websocket.CloseNormalClosure
 }
 
@@ -54,17 +55,20 @@ func NewWSMessageHandler(u *op.User, r *op.Room, l *log.Entry) func(c *websocket
 		client, err := r.NewClient(u, c)
 		if err != nil {
 			l.Errorf("ws: register client error: %v", err)
+
 			wc, err2 := c.NextWriter(websocket.BinaryMessage)
 			if err2 != nil {
 				return err2
 			}
 			defer wc.Close()
+
 			em := pb.Message{
 				Type: pb.MessageType_ERROR,
 				Payload: &pb.Message_ErrorMessage{
 					ErrorMessage: fmt.Sprintf("register client error: %v", err),
 				},
 			}
+
 			return em.Encode(wc)
 		}
 
@@ -81,9 +85,11 @@ func NewWSMessageHandler(u *op.User, r *op.Room, l *log.Entry) func(c *websocket
 				if isNormalCloseError(err) {
 					return
 				}
+
 				l.Errorf("ws: handle reader message error: %v", err)
 			}
 		}()
+
 		return handleWriterMessage(client, l)
 	}
 }
@@ -92,6 +98,7 @@ func handleClientDisconnection(r *op.Room, client *op.Client, l *log.Entry) {
 	if err := r.UnregisterClient(client); err != nil {
 		l.Errorf("ws: unregister client error: %v", err)
 	}
+
 	client.Close()
 	l.Info("ws: disconnected")
 }
@@ -112,6 +119,7 @@ func handleWriterMessage(c *op.Client, l *log.Entry) error {
 			return err
 		}
 	}
+
 	return nil
 }
 
@@ -152,6 +160,7 @@ func handleReaderMessage(c *op.Client, l *log.Entry) error {
 	defer func() {
 		leaveWebRTC(c)
 		c.Close()
+
 		if r := recover(); r != nil {
 			l.Errorf("ws: panic: %v", r)
 		}
@@ -163,11 +172,14 @@ func handleReaderMessage(c *op.Client, l *log.Entry) error {
 			if isNormalCloseError(err) {
 				return nil
 			}
+
 			l.Errorf("ws: read message error: %v", err)
+
 			return err
 		}
 
 		l.Debugf("ws: receive message: %v", msg.String())
+
 		if err = handleElementMsg(c, msg); err != nil {
 			l.Errorf("ws: handle message error: %v", err)
 			return err
@@ -321,6 +333,7 @@ func handleWebRTCJoin(cli *op.Client) error {
 	}
 
 	cli.SetRTCJoined(true)
+
 	return cli.Broadcast(&pb.Message{
 		Type: pb.MessageType_WEBRTC_JOIN,
 		Sender: &pb.Sender{
@@ -342,6 +355,7 @@ func handleWebRTCLeave(cli *op.Client) error {
 	}
 
 	cli.SetRTCJoined(false)
+
 	return cli.Broadcast(&pb.Message{
 		Type: pb.MessageType_WEBRTC_LEAVE,
 		Sender: &pb.Sender{
@@ -360,13 +374,16 @@ func calculateTimeDiff(timestamp int64) float64 {
 	if timestamp == 0 {
 		return 0.0
 	}
+
 	timeDiff := time.Since(time.UnixMilli(timestamp)).Seconds()
 	if timeDiff < 0 {
 		return 0
 	}
+
 	if timeDiff > 1.5 {
 		return 1.5
 	}
+
 	return timeDiff
 }
 
@@ -374,14 +391,17 @@ func handleChatMessage(cli *op.Client, message string) error {
 	if message == "" {
 		return sendErrorMessage(cli, "message is empty")
 	}
+
 	sanitizedMessage := template.HTMLEscapeString(message)
 	if len(sanitizedMessage) > MaxChatMessageLength {
 		return sendErrorMessage(cli, "message too long")
 	}
+
 	err := cli.SendChatMessage(sanitizedMessage)
 	if err != nil && errors.Is(err, model.ErrNoPermission) {
 		return sendErrorMessage(cli, "failed to send message due to permission issue")
 	}
+
 	return err
 }
 
@@ -390,6 +410,7 @@ func handleStatusMessage(cli *op.Client, msg *pb.Message, timeDiff float64) erro
 	if playbackStatus == nil {
 		return sendErrorMessage(cli, "playback status is nil")
 	}
+
 	err := cli.SetStatus(
 		playbackStatus.GetIsPlaying(),
 		playbackStatus.GetCurrentTime(),
@@ -399,11 +420,13 @@ func handleStatusMessage(cli *op.Client, msg *pb.Message, timeDiff float64) erro
 	if err != nil {
 		return sendErrorMessage(cli, fmt.Sprintf("set status error: %v", err))
 	}
+
 	return nil
 }
 
 func handleSyncMessage(cli *op.Client) error {
 	status := cli.Room().Current().Status
+
 	return cli.Send(&pb.Message{
 		Type:      pb.MessageType_SYNC,
 		Timestamp: time.Now().UnixMilli(),
@@ -424,31 +447,38 @@ func handleExpiredMessage(cli *op.Client, expirationID uint64) error {
 		if err != nil {
 			return sendErrorMessage(cli, fmt.Sprintf("get movie by id error: %v", err))
 		}
+
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
 		defer cancel()
+
 		expired, err := currentMovie.CheckExpired(ctx, expirationID)
 		if err != nil {
 			return sendErrorMessage(cli, fmt.Sprintf("check expired error: %v", err))
 		}
+
 		if expired {
 			return cli.Send(&pb.Message{
 				Type: pb.MessageType_EXPIRED,
 			})
 		}
 	}
+
 	return nil
 }
 
 func handleCheckStatusMessage(cli *op.Client, msg *pb.Message, timeDiff float64) error {
 	current := cli.Room().Current()
 	status := current.Status
+
 	cliStatus := msg.GetPlaybackStatus()
 	if cliStatus == nil {
 		return sendErrorMessage(cli, "playback status is nil")
 	}
+
 	if needsSync(cliStatus, status, timeDiff) {
 		return sendSyncStatus(cli, &status)
 	}
+
 	return nil
 }
 
@@ -459,6 +489,7 @@ func needsSync(clientStatus *pb.Status, serverStatus model.Status, timeDiff floa
 		serverStatus.CurrentTime-maxInterval > clientStatus.GetCurrentTime()+timeDiff {
 		return true
 	}
+
 	return false
 }
 

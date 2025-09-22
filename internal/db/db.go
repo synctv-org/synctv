@@ -21,25 +21,31 @@ var (
 func Init(d *gorm.DB, t conf.DatabaseType) error {
 	db = d
 	dbType = t
+
 	err := UpgradeDatabase()
 	if err != nil {
 		return err
 	}
+
 	err = initGuestUser()
 	if err != nil {
 		return err
 	}
+
 	return initRootUser()
 }
 
 func initRootUser() error {
 	user := model.User{}
+
 	err := db.Where("role = ?", model.RoleRoot).First(&user).Error
 	if err == nil || !errors.Is(err, gorm.ErrRecordNotFound) {
 		return err
 	}
+
 	u, err := CreateUser("root", "root", WithRole(model.RoleRoot))
 	log.Infof("init root user:\nid: %s\nusername: %s\npassword: %s", u.ID, u.Username, "root")
+
 	return err
 }
 
@@ -52,10 +58,12 @@ func initGuestUser() error {
 	user := model.User{
 		ID: GuestUserID,
 	}
+
 	err := db.First(&user).Error
 	if err == nil || !errors.Is(err, gorm.ErrRecordNotFound) {
 		return err
 	}
+
 	u, err := CreateUser(
 		"guest",
 		utils.RandString(32),
@@ -63,6 +71,7 @@ func initGuestUser() error {
 		WithID(GuestUserID),
 	)
 	log.Infof("init guest user:\nid: %s\nusername: %s", u.ID, u.Username)
+
 	return err
 }
 
@@ -72,11 +81,13 @@ func DB() *gorm.DB {
 
 func Close() {
 	log.Info("closing db")
+
 	sqlDB, err := db.DB()
 	if err != nil {
 		log.Errorf("failed to get db: %s", err.Error())
 		return
 	}
+
 	err = sqlDB.Close()
 	if err != nil {
 		log.Errorf("failed to close db: %s", err.Error())
@@ -89,11 +100,13 @@ func Paginate(page, pageSize int) func(db *gorm.DB) *gorm.DB {
 		if page <= 0 {
 			page = 1
 		}
+
 		if pageSize <= 0 {
 			pageSize = 10
 		}
 
 		offset := (page - 1) * pageSize
+
 		return db.Offset(offset).Limit(pageSize)
 	}
 }
@@ -404,8 +417,10 @@ func Transactional(txFunc func(*gorm.DB) error) (err error) {
 			tx.Commit()
 		}
 	}()
+
 	err = txFunc(tx)
-	return
+
+	return err
 }
 
 // Helper function to handle update results
@@ -413,8 +428,10 @@ func HandleUpdateResult(result *gorm.DB, entityName string) error {
 	if result.Error != nil {
 		return HandleNotFound(result.Error, entityName)
 	}
+
 	if result.RowsAffected == 0 {
 		return NotFoundError(entityName)
 	}
+
 	return nil
 }

@@ -102,10 +102,12 @@ func init() {
 	RootCmd.PersistentFlags().BoolVar(&flags.SkipEnvFlag, "skip-env-flag", true, "skip env flag")
 	RootCmd.PersistentFlags().
 		StringVar(&flags.Global.GitHubBaseURL, "github-base-url", "https://api.github.com/", "github api base url")
+
 	home, err := homedir.Dir()
 	if err != nil {
 		home = "~"
 	}
+
 	RootCmd.PersistentFlags().
 		StringVar(&flags.Global.DataDir, "data-dir", filepath.Join(home, ".synctv"), "data dir")
 	RootCmd.PersistentFlags().

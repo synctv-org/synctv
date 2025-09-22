@@ -37,6 +37,7 @@ func StreamDanmu(ctx *gin.Context) {
 			http.StatusBadRequest,
 			model.NewAPIErrorStringResp("vendor not support danmu"),
 		)
+
 		return
 	}
 
@@ -45,10 +46,13 @@ func StreamDanmu(ctx *gin.Context) {
 
 	err = danmu.StreamDanmu(c, func(danmu string) error {
 		ctx.SSEvent("danmu", danmu)
+
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+
 		ctx.Writer.Flush()
+
 		return nil
 	})
 	if err != nil {

@@ -32,6 +32,7 @@ func Settings(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 		return
 	}
+
 	ctx.JSON(200, model.NewAPIDataResp(
 		&publicSettings{
 			PasswordDisableSignup: settings.DisableUserSignup.Get() ||

@@ -101,7 +101,9 @@ func newFloat64(
 	for _, option := range options {
 		option(f)
 	}
+
 	f.set(value)
+
 	return f
 }
 
@@ -130,9 +132,11 @@ func (f *Float64) Parse(value string) (float64, error) {
 	if err != nil {
 		return 0, err
 	}
+
 	if f.validator != nil {
 		return v, f.validator(v)
 	}
+
 	return v, nil
 }
 
@@ -241,7 +245,7 @@ func (f *Float64) Set(v float64) (err error) {
 		f.afterSet(f, v)
 	}
 
-	return
+	return err
 }
 
 func (f *Float64) Get() float64 {
@@ -249,6 +253,7 @@ func (f *Float64) Get() float64 {
 	if f.afterGet != nil {
 		v = f.afterGet(f, v)
 	}
+
 	return v
 }
 
@@ -266,6 +271,7 @@ func NewFloat64Setting(
 	if loaded {
 		panic(fmt.Sprintf("setting %s already exists", k))
 	}
+
 	return CoverFloat64Setting(k, v, g, options...)
 }
 
@@ -277,11 +283,14 @@ func CoverFloat64Setting(
 ) Float64Setting {
 	f := newFloat64(k, v, g, options...)
 	Settings[k] = f
+
 	if GroupSettings[g] == nil {
 		GroupSettings[g] = make(map[model.SettingGroup]Setting)
 	}
+
 	GroupSettings[g][k] = f
 	pushNeedInit(f)
+
 	return f
 }
 
@@ -290,7 +299,9 @@ func LoadFloat64Setting(k string) (Float64Setting, bool) {
 	if !ok {
 		return nil, false
 	}
+
 	f, ok := s.(Float64Setting)
+
 	return f, ok
 }
 
@@ -304,5 +315,6 @@ func LoadOrNewFloat64Setting(
 	if ok {
 		return s
 	}
+
 	return CoverFloat64Setting(k, v, g, options...)
 }

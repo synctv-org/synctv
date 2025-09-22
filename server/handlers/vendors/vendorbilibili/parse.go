@@ -51,6 +51,7 @@ func Parse(ctx *gin.Context) {
 
 	// can be no login
 	var cookies []*http.Cookie
+
 	bucd, err := user.BilibiliCache().Get(ctx)
 	if err != nil {
 		if !errors.Is(err, db.NotFoundError(db.ErrVendorNotFound)) {
@@ -72,6 +73,7 @@ func Parse(ctx *gin.Context) {
 			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 			return
 		}
+
 		ctx.JSON(http.StatusOK, model.NewAPIDataResp(resp))
 	case "av":
 		aid, err := strconv.ParseUint(resp.GetId(), 10, 64)
@@ -79,6 +81,7 @@ func Parse(ctx *gin.Context) {
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 			return
 		}
+
 		resp, err := cli.ParseVideoPage(ctx, &bilibili.ParseVideoPageReq{
 			Cookies:  utils.HTTPCookieToMap(cookies),
 			Aid:      aid,
@@ -88,6 +91,7 @@ func Parse(ctx *gin.Context) {
 			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 			return
 		}
+
 		ctx.JSON(http.StatusOK, model.NewAPIDataResp(resp))
 	case "ep":
 		epid, err := strconv.ParseUint(resp.GetId(), 10, 64)
@@ -95,6 +99,7 @@ func Parse(ctx *gin.Context) {
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 			return
 		}
+
 		resp, err := cli.ParsePGCPage(ctx, &bilibili.ParsePGCPageReq{
 			Cookies: utils.HTTPCookieToMap(cookies),
 			Epid:    epid,
@@ -103,6 +108,7 @@ func Parse(ctx *gin.Context) {
 			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 			return
 		}
+
 		ctx.JSON(http.StatusOK, model.NewAPIDataResp(resp))
 	case "ss":
 		ssid, err := strconv.ParseUint(resp.GetId(), 10, 64)
@@ -110,6 +116,7 @@ func Parse(ctx *gin.Context) {
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 			return
 		}
+
 		resp, err := cli.ParsePGCPage(ctx, &bilibili.ParsePGCPageReq{
 			Cookies: utils.HTTPCookieToMap(cookies),
 			Ssid:    ssid,
@@ -118,6 +125,7 @@ func Parse(ctx *gin.Context) {
 			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 			return
 		}
+
 		ctx.JSON(http.StatusOK, model.NewAPIDataResp(resp))
 	case "live":
 		roomid, err := strconv.ParseUint(resp.GetId(), 10, 64)
@@ -125,6 +133,7 @@ func Parse(ctx *gin.Context) {
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 			return
 		}
+
 		resp, err := cli.ParseLivePage(ctx, &bilibili.ParseLivePageReq{
 			Cookies: utils.HTTPCookieToMap(cookies),
 			RoomID:  roomid,
@@ -133,12 +142,14 @@ func Parse(ctx *gin.Context) {
 			ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
 			return
 		}
+
 		ctx.JSON(http.StatusOK, model.NewAPIDataResp(resp))
 	default:
 		ctx.AbortWithStatusJSON(
 			http.StatusInternalServerError,
 			model.NewAPIErrorStringResp("unknown match type "+resp.GetType()),
 		)
+
 		return
 	}
 }

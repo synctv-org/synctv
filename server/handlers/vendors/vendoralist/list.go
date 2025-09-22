@@ -66,6 +66,7 @@ func List(ctx *gin.Context) {
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
 			return
 		}
+
 		if total == 0 {
 			ctx.JSON(http.StatusBadRequest, model.NewAPIErrorStringResp("alist server not found"))
 			return
@@ -78,9 +79,12 @@ func List(ctx *gin.Context) {
 					http.StatusBadRequest,
 					model.NewAPIErrorStringResp("alist server not found"),
 				)
+
 				return
 			}
+
 			ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
+
 			return
 		}
 
@@ -117,6 +121,7 @@ func List(ctx *gin.Context) {
 AlistFSListResp:
 
 	var serverID string
+
 	serverID, req.Path, err = dbModel.GetAlistServerIDFromPath(req.Path)
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, model.NewAPIErrorResp(err))
@@ -135,6 +140,7 @@ AlistFSListResp:
 		}
 
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, model.NewAPIErrorResp(err))
+
 		return
 	}
 
@@ -155,6 +161,7 @@ AlistFSListResp:
 		}
 
 		req.Path = strings.Trim(req.Path, "/")
+
 		resp := AlistFSListResp{
 			Total: data.GetTotal(),
 			Paths: model.GenDefaultPaths(req.Path, true,
@@ -183,6 +190,7 @@ AlistFSListResp:
 		}
 
 		ctx.JSON(http.StatusOK, model.NewAPIDataResp(&resp))
+
 		return
 	}
 
@@ -201,6 +209,7 @@ AlistFSListResp:
 	}
 
 	req.Path = strings.Trim(req.Path, "/")
+
 	resp := AlistFSListResp{
 		Total: data.GetTotal(),
 		Paths: model.GenDefaultPaths(req.Path, true,

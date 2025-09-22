@@ -26,6 +26,7 @@ func InitCheckUpdate(ctx context.Context) error {
 			latest string
 			url    string
 		)
+
 		need, latest, url, err = check(ctx, v)
 		if err != nil {
 			log.Errorf("check update error: %v", err)
@@ -42,6 +43,7 @@ func InitCheckUpdate(ctx context.Context) error {
 					log.Infof("new version (%s) available: %s", latest, url)
 					log.Infof("run '%s self-update' to auto update", execFile)
 				}
+
 				return nil
 			},
 		))
@@ -51,6 +53,7 @@ func InitCheckUpdate(ctx context.Context) error {
 
 		t := time.NewTicker(time.Hour * 6)
 		defer t.Stop()
+
 		for range t.C {
 			func() {
 				defer func() {
@@ -58,6 +61,7 @@ func InitCheckUpdate(ctx context.Context) error {
 						log.Errorf("check update panic: %v", err)
 					}
 				}()
+
 				need, latest, url, err = check(ctx, v)
 				if err != nil {
 					log.Errorf("check update error: %v", err)
@@ -74,18 +78,23 @@ func check(ctx context.Context, v *version.Info) (need bool, latest, url string,
 	if err != nil {
 		return false, "", "", err
 	}
+
 	latest = l
+
 	b, err := v.NeedUpdate(ctx)
 	if err != nil {
 		return false, "", "", err
 	}
+
 	need = b
 	if b {
 		u, err := v.LatestBinaryURL(ctx)
 		if err != nil {
 			return false, "", "", err
 		}
+
 		url = u
 	}
+
 	return need, latest, url, nil
 }

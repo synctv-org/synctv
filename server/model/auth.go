@@ -21,9 +21,11 @@ func (o *OAuth2CallbackReq) Validate() error {
 	if o.Code == "" {
 		return ErrInvalidOAuth2Code
 	}
+
 	if o.State == "" {
 		return ErrInvalidOAuth2State
 	}
+
 	return nil
 }
 

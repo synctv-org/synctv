@@ -26,8 +26,10 @@ func RootAddAdmin(ctx *gin.Context) {
 			http.StatusBadRequest,
 			model.NewAPIErrorStringResp("cannot add yourself"),
 		)
+
 		return
 	}
+
 	u, err := op.LoadOrInitUserByID(req.ID)
 	if err != nil {
 		log.Errorf("failed to load user: %v", err)
@@ -35,14 +37,17 @@ func RootAddAdmin(ctx *gin.Context) {
 			http.StatusInternalServerError,
 			model.NewAPIErrorStringResp("user not found"),
 		)
+
 		return
 	}
+
 	if u.Value().IsAdmin() {
 		log.Errorf("user is already admin")
 		ctx.AbortWithStatusJSON(
 			http.StatusBadRequest,
 			model.NewAPIErrorStringResp("user is already admin"),
 		)
+
 		return
 	}
 
@@ -72,8 +77,10 @@ func RootDeleteAdmin(ctx *gin.Context) {
 			http.StatusBadRequest,
 			model.NewAPIErrorStringResp("cannot remove yourself"),
 		)
+
 		return
 	}
+
 	u, err := op.LoadOrInitUserByID(req.ID)
 	if err != nil {
 		log.Errorf("failed to load user: %v", err)
@@ -81,14 +88,17 @@ func RootDeleteAdmin(ctx *gin.Context) {
 			http.StatusInternalServerError,
 			model.NewAPIErrorStringResp("user not found"),
 		)
+
 		return
 	}
+
 	if u.Value().IsRoot() {
 		log.Errorf("cannot remove root")
 		ctx.AbortWithStatusJSON(
 			http.StatusBadRequest,
 			model.NewAPIErrorStringResp("cannot remove root"),
 		)
+
 		return
 	}
 

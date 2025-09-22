@@ -55,6 +55,7 @@ func FormatMail(from string, to []string, subject, body string, opts ...FormatMa
 	for _, opt := range opts {
 		opt(c)
 	}
+
 	buf := bytes.NewBuffer(nil)
 
 	fmt.Fprintf(buf, "From: %s\r\n", from)
@@ -63,6 +64,7 @@ func FormatMail(from string, to []string, subject, body string, opts ...FormatMa
 	fmt.Fprintf(buf, "Date: %s\r\n", c.date)
 	fmt.Fprintf(buf, "MIME-Version: %s\r\n", c.mimeVersion)
 	fmt.Fprintf(buf, "Content-Type: %s\r\n", c.contentType)
+
 	if c.contentTransferEncoding != "" {
 		fmt.Fprintf(buf, "Content-Transfer-Encoding: %s\r\n", c.contentTransferEncoding)
 	}
@@ -77,6 +79,7 @@ func FormatMail(from string, to []string, subject, body string, opts ...FormatMa
 			if end > len(encodedBody) {
 				end = len(encodedBody)
 			}
+
 			buf.WriteString(encodedBody[i:end] + "\r\n")
 		}
 	case "":

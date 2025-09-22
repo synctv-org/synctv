@@ -16,6 +16,7 @@ import (
 
 func InitProviderPlugins(name string, arg []string, logger hclog.Logger) error {
 	client := NewProviderPlugin(name, arg, logger)
+
 	err := sysnotify.RegisterSysNotifyTask(
 		0,
 		sysnotify.NewSysNotifyTask("plugin", sysnotify.NotifyTypeEXIT, func() error {
@@ -26,19 +27,24 @@ func InitProviderPlugins(name string, arg []string, logger hclog.Logger) error {
 	if err != nil {
 		return err
 	}
+
 	c, err := client.Client()
 	if err != nil {
 		return err
 	}
+
 	i, err := c.Dispense("Provider")
 	if err != nil {
 		return err
 	}
+
 	provider, ok := i.(provider.Interface)
 	if !ok {
 		return fmt.Errorf("%s not implement ProviderInterface", name)
 	}
+
 	providers.RegisterProvider(provider)
+
 	return nil
 }
 
@@ -74,7 +80,7 @@ func NewProviderPlugin(name string, arg []string, logger hclog.Logger) *plugin.C
 	return plugin.NewClient(&plugin.ClientConfig{
 		HandshakeConfig: HandshakeConfig,
 		Plugins:         pluginMap,
-		Cmd:             exec.Command(name, arg...),
+		Cmd:             exec.CommandContext(context.Background(), name, arg...),
 		AllowedProtocols: []plugin.Protocol{
 			plugin.ProtocolGRPC,
 		},

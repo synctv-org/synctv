@@ -56,18 +56,21 @@ func Init(e *gin.Engine) {
 func newFSHandler(fileSys fs.FS) func(ctx *gin.Context) {
 	return func(ctx *gin.Context) {
 		fp := strings.Trim(ctx.Param("filepath"), "/")
+
 		f, err := fileSys.Open(fp)
 		if err != nil {
 			fp = ""
 		} else {
 			f.Close()
 		}
+
 		ctx.FileFromFS(fp, http.FS(fileSys))
 	}
 }
 
 func newStatCachedFSHandler(fileSys fs.FS) (func(ctx *gin.Context), error) {
 	cache := make(map[string]struct{})
+
 	err := fs.WalkDir(fileSys, ".", func(path string, _ fs.DirEntry, _ error) error {
 		cache[`/`+path] = struct{}{}
 		return nil
@@ -75,11 +78,13 @@ func newStatCachedFSHandler(fileSys fs.FS) (func(ctx *gin.Context), error) {
 	if err != nil {
 		return nil, err
 	}
+
 	return func(ctx *gin.Context) {
 		fp := ctx.Param("filepath")
 		if _, ok := cache[fp]; !ok {
 			fp = ""
 		}
+
 		ctx.FileFromFS(fp, http.FS(fileSys))
 	}, nil
 }
@@ -88,6 +93,7 @@ func SiglePageAppFS(r *gin.RouterGroup, fileSys fs.FS, cacheStat bool) error {
 	var h func(ctx *gin.Context)
 	if cacheStat {
 		var err error
+
 		h, err = newStatCachedFSHandler(fileSys)
 		if err != nil {
 			return err
@@ -95,8 +101,10 @@ func SiglePageAppFS(r *gin.RouterGroup, fileSys fs.FS, cacheStat bool) error {
 	} else {
 		h = newFSHandler(fileSys)
 	}
+
 	r.GET("/*filepath", h)
 	r.HEAD("/*filepath", h)
+
 	return nil
 }
 

@@ -9,6 +9,7 @@ import (
 
 func GetAllVendorBackend() ([]*model.VendorBackend, error) {
 	var backends []*model.VendorBackend
+
 	err := db.Find(&backends).Error
 	return backends, HandleNotFound(err, "backends")
 }
@@ -58,6 +59,7 @@ func DeleteVendorBackends(endpoints []string) error {
 
 func GetVendorBackend(endpoint string) (*model.VendorBackend, error) {
 	var backend model.VendorBackend
+
 	err := db.Where("backend_endpoint = ?", endpoint).First(&backend).Error
 	return &backend, HandleNotFound(err, "backend")
 }
@@ -65,6 +67,7 @@ func GetVendorBackend(endpoint string) (*model.VendorBackend, error) {
 func CreateOrSaveVendorBackend(backend *model.VendorBackend) (*model.VendorBackend, error) {
 	return backend, Transactional(func(tx *gorm.DB) error {
 		var existingBackend model.VendorBackend
+
 		err := tx.Where("backend_endpoint = ?", backend.Backend.Endpoint).
 			First(&existingBackend).
 			Error
@@ -73,7 +76,9 @@ func CreateOrSaveVendorBackend(backend *model.VendorBackend) (*model.VendorBacke
 		} else if err != nil {
 			return err
 		}
+
 		result := tx.Model(&existingBackend).Omit("created_at").Updates(backend)
+
 		return HandleUpdateResult(result, "vendor backend")
 	})
 }

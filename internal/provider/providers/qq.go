@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
+	"time"
 
 	json "github.com/json-iterator/go"
 	"github.com/synctv-org/synctv/internal/provider"
@@ -64,8 +66,15 @@ func (p *QQProvider) GetToken(ctx context.Context, code string) (*oauth2.Token, 
 		return nil, err
 	}
 	defer resp.Body.Close()
-	tk := &oauth2.Token{}
-	return tk, json.NewDecoder(resp.Body).Decode(tk)
+	
+	// 使用自定义的qqToken结构体解析QQ的响应
+	qqTk := &qqToken{}
+	if err := json.NewDecoder(resp.Body).Decode(qqTk); err != nil {
+		return nil, err
+	}
+	
+	// 转换为标准的oauth2.Token
+	return qqTk.toOAuth2Token()
 }
 
 func (p *QQProvider) RefreshToken(ctx context.Context, tk string) (*oauth2.Token, error) {
@@ -89,8 +98,15 @@ func (p *QQProvider) RefreshToken(ctx context.Context, tk string) (*oauth2.Token
 		return nil, err
 	}
 	defer resp.Body.Close()
-	newTk := &oauth2.Token{}
-	return newTk, json.NewDecoder(resp.Body).Decode(newTk)
+	
+	// 使用自定义的qqToken结构体解析QQ的响应
+	qqTk := &qqToken{}
+	if err := json.NewDecoder(resp.Body).Decode(qqTk); err != nil {
+		return nil, err
+	}
+	
+	// 转换为标准的oauth2.Token
+	return qqTk.toOAuth2Token()
 }
 
 func (p *QQProvider) GetUserInfo(ctx context.Context, code string) (*provider.UserInfo, error) {
@@ -144,6 +160,27 @@ func (p *QQProvider) GetUserInfo(ctx context.Context, code string) (*provider.Us
 	return &provider.UserInfo{
 		Username:       ui.Nickname,
 		ProviderUserID: ume.Openid,
+	}, nil
+}
+
+//nolint:tagliatelle
+type qqToken struct {
+	AccessToken  string `json:"access_token"`
+	ExpiresIn    string `json:"expires_in"`    // QQ返回字符串格式
+	RefreshToken string `json:"refresh_token"`
+}
+
+// toOAuth2Token 将QQ的token格式转换为标准oauth2.Token
+func (qt *qqToken) toOAuth2Token() (*oauth2.Token, error) {
+	expiresIn, err := strconv.ParseInt(qt.ExpiresIn, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse expires_in: %w", err)
+	}
+	
+	return &oauth2.Token{
+		AccessToken:  qt.AccessToken,
+		RefreshToken: qt.RefreshToken,
+		Expiry:       time.Now().Add(time.Duration(expiresIn) * time.Second),
 	}, nil
 }
 

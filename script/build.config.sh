@@ -1,4 +1,4 @@
-function parseDepArgs() {
+function parse_dep_args() {
     while [[ $# -gt 0 ]]; do
         case "${1}" in
         --version=*)
@@ -12,18 +12,18 @@ function parseDepArgs() {
     done
 }
 
-function printDepHelp() {
+function print_dep_help() {
     echo -e "  ${COLOR_LIGHT_YELLOW}--version=<version>${COLOR_RESET}     - Set the build version (default: 'dev')"
 }
 
-function printDepEnvHelp() {
+function print_dep_env_help() {
     echo -e "  ${COLOR_LIGHT_GREEN}VERSION${COLOR_RESET}      - Set the build version (default: 'dev')"
 }
 
-function initDep() {
+function init_dep() {
     local git_commit
     git_commit="$(git rev-parse --short HEAD)" || git_commit="dev"
-    setDefault "VERSION" "${git_commit}"
+    set_default "VERSION" "${git_commit}"
 
     # replace space, newline, and double quote
     VERSION="$(echo "$VERSION" | sed 's/ //g' | sed 's/"//g' | sed 's/\n//g')"
@@ -33,7 +33,7 @@ function initDep() {
         return 1
     fi
 
-    addLDFLAGS "-X 'github.com/synctv-org/synctv/internal/version.Version=${VERSION}'"
-    addLDFLAGS "-X 'github.com/synctv-org/synctv/internal/version.GitCommit=${git_commit}'"
-    addTags "jsoniter"
+    add_ldflags "-X 'github.com/synctv-org/synctv/internal/version.Version=${VERSION}'"
+    add_ldflags "-X 'github.com/synctv-org/synctv/internal/version.GitCommit=${git_commit}'"
+    add_tags "jsoniter"
 }

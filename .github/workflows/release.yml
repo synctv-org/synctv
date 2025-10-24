@@ -127,7 +127,11 @@ jobs:
             CGO: true
           - Target: windows/arm64
           - Target: freebsd/amd64
+            CGO: true
           - Target: freebsd/arm64
+            CGO: true
+          - Target: freebsd/riscv64
+            CGO: true
           - Target: openbsd/amd64
           - Target: openbsd/arm64
     steps:
@@ -233,7 +237,6 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          build-args: VERSION=${{ needs.release-web.outputs.tag_name }}
           labels: ${{ steps.meta.outputs.labels }}
           platforms: linux/${{ matrix.arch }}
           outputs: type=image,"name=${{ env.GHCR_REPO }}${{ env.DOCKERHUB_REPO && format(',{0}', env.DOCKERHUB_REPO) }}${{ env.ALIYUN_REPO && format(',{0}', env.ALIYUN_REPO) }}",name-canonical=true,push-by-digest=${{ github.event_name != 'pull_request' && github.actor != 'dependabot[bot]' }},push=${{ github.event_name != 'pull_request' && github.actor != 'dependabot[bot]' }}

@@ -23,6 +23,7 @@ function print_dep_env_help() {
 function init_dep() {
     local git_commit
     git_commit="$(git rev-parse --short HEAD)" || git_commit="dev"
+    echo -e "${COLOR_LIGHT_BLUE}Commit:${COLOR_RESET} ${COLOR_LIGHT_CYAN}${git_commit}${COLOR_RESET}"
     set_default "VERSION" "${git_commit}"
 
     # replace space, newline, and double quote

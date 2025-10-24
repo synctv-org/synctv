@@ -21,7 +21,7 @@ RUN apk add --no-cache bash curl git g++
 COPY --from=web-builder /synctv-web/dist/ /synctv/public/dist/
 
 RUN curl -sL \
-    https://raw.githubusercontent.com/zijiren233/go-build-action/refs/tags/v1/build.sh | \
+    https://raw.githubusercontent.com/zijiren233/go-build-action/refs/tags/v1/cross.sh | \
     bash -s -- \
     --version=${VERSION} \
     --use-default-cc-cxx \

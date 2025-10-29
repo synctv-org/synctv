@@ -23,7 +23,7 @@ COPY --from=web-builder /synctv-web/dist/ /synctv/public/dist/
 RUN go install github.com/zijiren233/go-cross@v1
 
 RUN go-cross \
-    -version=${VERSION} \
+    --version=${VERSION} \
     -use-default-cc-cxx \
     -bin-name-no-suffix
 

@@ -24,7 +24,7 @@ jobs:
       release_name: ${{ steps.release_meta.outputs.RELEASE_NAME }}
       tag_name: ${{ steps.release_meta.outputs.TAG_NAME }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: true
 
@@ -136,7 +136,7 @@ jobs:
           - Target: openbsd/arm64
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           submodules: true
 
@@ -216,7 +216,7 @@ jobs:
           password: ${{ secrets.ALIYUN_PASSWORD }}
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           submodules: true
 

@@ -141,7 +141,7 @@ jobs:
           submodules: true
 
       - name: Download Web
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v6
         with:
           name: synctv-web
           path: synctv-web/dist
@@ -284,7 +284,7 @@ jobs:
           password: ${{ secrets.ALIYUN_PASSWORD }}
 
       - name: Download digests
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v6
         with:
           path: ${{ runner.temp }}/digests
           pattern: digests-*

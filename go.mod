@@ -27,7 +27,7 @@ require (
 	github.com/hashicorp/go-plugin v1.7.0
 	github.com/joho/godotenv v1.5.1
 	github.com/json-iterator/go v1.1.12
-	github.com/maruel/natural v1.1.1
+	github.com/maruel/natural v1.2.1
 	github.com/mitchellh/go-homedir v1.1.0
 	github.com/mojocn/base64Captcha v1.3.8
 	github.com/natefinch/lumberjack v2.0.0+incompatible

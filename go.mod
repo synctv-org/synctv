@@ -47,7 +47,7 @@ require (
 	github.com/zijiren233/yaml-comment v0.2.2
 	go.etcd.io/etcd/client/v3 v3.6.5
 	golang.org/x/crypto v0.43.0
-	golang.org/x/oauth2 v0.32.0
+	golang.org/x/oauth2 v0.33.0
 	google.golang.org/grpc v1.76.0
 	google.golang.org/protobuf v1.36.10
 	gopkg.in/yaml.v3 v3.0.1

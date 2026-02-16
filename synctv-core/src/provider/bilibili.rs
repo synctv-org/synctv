@@ -457,6 +457,54 @@ impl MediaProvider for BilibiliProvider {
         }
     }
 
+    async fn validate_source_config(
+        &self,
+        _ctx: &ProviderContext<'_>,
+        source_config: &Value,
+    ) -> Result<(), ProviderError> {
+        // Validate that source_config parses to a known variant
+        let config = BilibiliSourceConfig::try_from(source_config)?;
+
+        match &config {
+            BilibiliSourceConfig::Video { bvid, aid, cid, .. } => {
+                // Must have at least one of bvid or aid
+                let has_bvid = bvid.as_ref().is_some_and(|s| !s.is_empty());
+                let has_aid = aid.is_some_and(|a| a > 0);
+                if !has_bvid && !has_aid {
+                    return Err(ProviderError::InvalidConfig(
+                        "Bilibili video requires either bvid or aid".to_string(),
+                    ));
+                }
+                if *cid == 0 {
+                    return Err(ProviderError::InvalidConfig(
+                        "Bilibili video cid must be non-zero".to_string(),
+                    ));
+                }
+            }
+            BilibiliSourceConfig::Pgc { epid, cid, .. } => {
+                if *epid == 0 {
+                    return Err(ProviderError::InvalidConfig(
+                        "Bilibili PGC epid must be non-zero".to_string(),
+                    ));
+                }
+                if *cid == 0 {
+                    return Err(ProviderError::InvalidConfig(
+                        "Bilibili PGC cid must be non-zero".to_string(),
+                    ));
+                }
+            }
+            BilibiliSourceConfig::Live { room_id, .. } => {
+                if *room_id == 0 {
+                    return Err(ProviderError::InvalidConfig(
+                        "Bilibili live room_id must be non-zero".to_string(),
+                    ));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     fn cache_key(&self, _ctx: &ProviderContext<'_>, source_config: &Value) -> String {
         // Hash only video identifiers, not the full config (which contains cookies)
         if let Ok(config) = BilibiliSourceConfig::try_from(source_config) {
@@ -557,5 +605,138 @@ fn proto_dash_to_manifest(
         min_buffer_time: dash.min_buffer_time,
         video_streams,
         audio_streams,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn validate_bilibili(config: Value) -> Result<(), ProviderError> {
+        // Replicate the validation logic without needing a full provider instance
+        let config = BilibiliSourceConfig::try_from(&config)?;
+
+        match &config {
+            BilibiliSourceConfig::Video { bvid, aid, cid, .. } => {
+                let has_bvid = bvid.as_ref().is_some_and(|s| !s.is_empty());
+                let has_aid = aid.is_some_and(|a| a > 0);
+                if !has_bvid && !has_aid {
+                    return Err(ProviderError::InvalidConfig(
+                        "Bilibili video requires either bvid or aid".to_string(),
+                    ));
+                }
+                if *cid == 0 {
+                    return Err(ProviderError::InvalidConfig(
+                        "Bilibili video cid must be non-zero".to_string(),
+                    ));
+                }
+            }
+            BilibiliSourceConfig::Pgc { epid, cid, .. } => {
+                if *epid == 0 {
+                    return Err(ProviderError::InvalidConfig(
+                        "Bilibili PGC epid must be non-zero".to_string(),
+                    ));
+                }
+                if *cid == 0 {
+                    return Err(ProviderError::InvalidConfig(
+                        "Bilibili PGC cid must be non-zero".to_string(),
+                    ));
+                }
+            }
+            BilibiliSourceConfig::Live { room_id, .. } => {
+                if *room_id == 0 {
+                    return Err(ProviderError::InvalidConfig(
+                        "Bilibili live room_id must be non-zero".to_string(),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_valid_video_config_with_bvid() {
+        let config = json!({
+            "type": "video",
+            "bvid": "BV1xx411c7mD",
+            "cid": 12345
+        });
+        assert!(validate_bilibili(config).is_ok());
+    }
+
+    #[test]
+    fn test_valid_video_config_with_aid() {
+        let config = json!({
+            "type": "video",
+            "aid": 12345,
+            "cid": 67890
+        });
+        assert!(validate_bilibili(config).is_ok());
+    }
+
+    #[test]
+    fn test_video_config_missing_bvid_and_aid() {
+        let config = json!({
+            "type": "video",
+            "cid": 12345
+        });
+        assert!(validate_bilibili(config).is_err());
+    }
+
+    #[test]
+    fn test_video_config_zero_cid() {
+        let config = json!({
+            "type": "video",
+            "bvid": "BV1xx411c7mD",
+            "cid": 0
+        });
+        assert!(validate_bilibili(config).is_err());
+    }
+
+    #[test]
+    fn test_valid_pgc_config() {
+        let config = json!({
+            "type": "pgc",
+            "epid": 12345,
+            "cid": 67890
+        });
+        assert!(validate_bilibili(config).is_ok());
+    }
+
+    #[test]
+    fn test_pgc_config_zero_epid() {
+        let config = json!({
+            "type": "pgc",
+            "epid": 0,
+            "cid": 67890
+        });
+        assert!(validate_bilibili(config).is_err());
+    }
+
+    #[test]
+    fn test_valid_live_config() {
+        let config = json!({
+            "type": "live",
+            "room_id": 12345
+        });
+        assert!(validate_bilibili(config).is_ok());
+    }
+
+    #[test]
+    fn test_live_config_zero_room_id() {
+        let config = json!({
+            "type": "live",
+            "room_id": 0
+        });
+        assert!(validate_bilibili(config).is_err());
+    }
+
+    #[test]
+    fn test_invalid_type() {
+        let config = json!({
+            "type": "unknown_type",
+            "cid": 12345
+        });
+        assert!(validate_bilibili(config).is_err());
     }
 }

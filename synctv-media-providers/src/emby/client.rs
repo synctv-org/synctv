@@ -4,9 +4,7 @@ use std::num::NonZeroU32;
 use std::sync::LazyLock;
 use std::time::Duration;
 
-use governor::{Quota, RateLimiter};
-use governor::clock::DefaultClock;
-use governor::state::{InMemoryState, NotKeyed};
+use governor::{DefaultKeyedRateLimiter, Quota, RateLimiter};
 use reqwest::{Client, header::{HeaderMap, HeaderValue, CONTENT_TYPE}};
 use serde_json::{json, Value};
 
@@ -14,18 +12,17 @@ use super::error::{EmbyError, check_response, json_with_limit};
 use super::types::{AuthResponse, Item, UserInfo, ItemsResponse, SystemInfo, FsListResponse, PathInfo, PlaybackInfoResponse, default_device_profile};
 use crate::error::with_retry;
 
-/// Default Emby API rate limit: 5 requests per second.
+/// Default Emby API rate limit: 5 requests per second per host.
 const DEFAULT_RATE_LIMIT_PER_SECOND: u32 = 5;
 
-type EmbyRateLimiter = RateLimiter<NotKeyed, InMemoryState, DefaultClock>;
-
-/// Shared rate limiter for all Emby requests.
-/// Global so the token bucket is not reset when a new `EmbyClient` is created per-request.
-static SHARED_RATE_LIMITER: LazyLock<std::sync::Arc<EmbyRateLimiter>> = LazyLock::new(|| {
+/// Per-host rate limiter for Emby/Jellyfin requests.
+/// Each Emby/Jellyfin server gets its own independent rate limit bucket so that
+/// requests to one server don't throttle requests to another.
+static PER_HOST_RATE_LIMITER: LazyLock<std::sync::Arc<DefaultKeyedRateLimiter<String>>> = LazyLock::new(|| {
     let quota = Quota::per_second(
         NonZeroU32::new(DEFAULT_RATE_LIMIT_PER_SECOND).expect("rate limit must be > 0"),
     );
-    std::sync::Arc::new(RateLimiter::direct(quota))
+    std::sync::Arc::new(RateLimiter::keyed(quota))
 });
 
 /// URL-encode a string for safe use in query parameters
@@ -69,11 +66,10 @@ pub struct EmbyClient {
     user_id: Option<String>,
     client: Client,
     api_prefix: Option<String>,
-    rate_limiter: std::sync::Arc<EmbyRateLimiter>,
 }
 
 impl EmbyClient {
-    /// Create a new Emby client (reuses shared connection pool and rate limiter)
+    /// Create a new Emby client (reuses shared connection pool and per-host rate limiter)
     pub fn new(host: impl Into<String>) -> Result<Self, EmbyError> {
         Ok(Self {
             host: host.into(),
@@ -81,11 +77,10 @@ impl EmbyClient {
             user_id: None,
             client: SHARED_CLIENT.clone(),
             api_prefix: None,
-            rate_limiter: SHARED_RATE_LIMITER.clone(),
         })
     }
 
-    /// Create a new Emby client with credentials (reuses shared connection pool and rate limiter)
+    /// Create a new Emby client with credentials (reuses shared connection pool and per-host rate limiter)
     pub fn with_credentials(
         host: impl Into<String>,
         token: impl Into<String>,
@@ -97,14 +92,13 @@ impl EmbyClient {
             user_id: Some(user_id.into()),
             client: SHARED_CLIENT.clone(),
             api_prefix: None,
-            rate_limiter: SHARED_RATE_LIMITER.clone(),
         })
     }
 
-    /// Wait for the rate limiter before making an API call.
-    /// This prevents concurrent users from overwhelming the upstream Emby server.
+    /// Wait for the per-host rate limiter before making an API call.
+    /// Each Emby/Jellyfin server host gets its own independent rate limit bucket.
     async fn wait_for_rate_limit(&self) {
-        self.rate_limiter.until_ready().await;
+        PER_HOST_RATE_LIMITER.until_key_ready(&self.host).await;
     }
 
     /// Set a custom API prefix (e.g., "/emby" or "/jellyfin").
@@ -518,8 +512,116 @@ impl EmbyClient {
         Ok(())
     }
 
+    /// Report playback start to Emby server
+    pub async fn report_playback_start(
+        &self,
+        item_id: &str,
+        play_session_id: &str,
+        media_source_id: Option<&str>,
+        position_ticks: i64,
+    ) -> Result<(), EmbyError> {
+        validate_item_id(item_id)?;
+        self.wait_for_rate_limit().await;
+        let prefix = self.get_api_prefix();
+        let url = format!("{}{}/Sessions/Playing", self.host, prefix);
+
+        let mut body = json!({
+            "ItemId": item_id,
+            "PlaySessionId": play_session_id,
+            "PositionTicks": position_ticks,
+        });
+
+        if let Some(source_id) = media_source_id {
+            body["MediaSourceId"] = json!(source_id);
+        }
+
+        let resp = self.client
+            .post(&url)
+            .headers(self.build_headers()?)
+            .json(&body)
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            tracing::warn!(status = %resp.status(), "Emby report_playback_start request failed");
+        }
+
+        Ok(())
+    }
+
+    /// Report playback stop to Emby server
+    pub async fn report_playback_stop(
+        &self,
+        item_id: &str,
+        play_session_id: &str,
+        position_ticks: i64,
+    ) -> Result<(), EmbyError> {
+        validate_item_id(item_id)?;
+        self.wait_for_rate_limit().await;
+        let prefix = self.get_api_prefix();
+        let url = format!("{}{}/Sessions/Playing/Stopped", self.host, prefix);
+
+        let body = json!({
+            "ItemId": item_id,
+            "PlaySessionId": play_session_id,
+            "PositionTicks": position_ticks,
+        });
+
+        let resp = self.client
+            .post(&url)
+            .headers(self.build_headers()?)
+            .json(&body)
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            tracing::warn!(status = %resp.status(), "Emby report_playback_stop request failed");
+        }
+
+        Ok(())
+    }
+
+    /// Report playback progress to Emby server
+    pub async fn report_playback_progress(
+        &self,
+        item_id: &str,
+        play_session_id: &str,
+        media_source_id: Option<&str>,
+        position_ticks: i64,
+        is_paused: bool,
+    ) -> Result<(), EmbyError> {
+        validate_item_id(item_id)?;
+        self.wait_for_rate_limit().await;
+        let prefix = self.get_api_prefix();
+        let url = format!("{}{}/Sessions/Playing/Progress", self.host, prefix);
+
+        let mut body = json!({
+            "ItemId": item_id,
+            "PlaySessionId": play_session_id,
+            "PositionTicks": position_ticks,
+            "IsPaused": is_paused,
+        });
+
+        if let Some(source_id) = media_source_id {
+            body["MediaSourceId"] = json!(source_id);
+        }
+
+        let resp = self.client
+            .post(&url)
+            .headers(self.build_headers()?)
+            .json(&body)
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            tracing::warn!(status = %resp.status(), "Emby report_playback_progress request failed");
+        }
+
+        Ok(())
+    }
+
     /// Get host URL
-    #[must_use] 
+    #[must_use]
     pub fn host(&self) -> &str {
         &self.host
     }

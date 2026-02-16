@@ -130,13 +130,17 @@ pub struct NodeRegistry {
     /// Short-lived cache for get_all_nodes() to avoid hammering Redis on every
     /// health check / load balancer query. TTL of 5 seconds.
     nodes_cache: moka::future::Cache<(), Vec<NodeInfo>>,
+    /// Redis key prefix for cluster node keys (e.g. "synctv:cluster:nodes")
+    key_prefix: String,
 }
 
 impl NodeRegistry {
     /// Create a new node registry
     ///
     /// If Redis URL is None, operates in local-only mode (useful for single-node deployments).
-    pub fn new(redis_url: Option<String>, node_id: String, heartbeat_timeout_secs: i64) -> Result<Self> {
+    /// The `key_prefix` is prepended to cluster node keys in Redis (e.g. `"synctv:"` produces
+    /// keys like `synctv:cluster:nodes:<node_id>`). Pass an empty string to use unprefixed keys.
+    pub fn new(redis_url: Option<String>, node_id: String, heartbeat_timeout_secs: i64, key_prefix: &str) -> Result<Self> {
         let redis_client = if let Some(url) = redis_url {
             Some(
                 redis::Client::open(url)
@@ -161,6 +165,7 @@ impl NodeRegistry {
             current_epoch: Arc::new(AtomicU64::new(1)),
             circuit_breaker: create_redis_circuit_breaker(),
             nodes_cache,
+            key_prefix: format!("{}cluster:nodes", key_prefix),
         })
     }
 
@@ -284,7 +289,7 @@ impl NodeRegistry {
         if let Some(ref client) = self.redis_client {
             let mut conn = self.get_conn_with_breaker(client).await?;
 
-            let key = Self::node_key(&self.node_id);
+            let key = self.node_key(&self.node_id);
             let local_epoch = self.current_epoch.load(Ordering::SeqCst);
             let ttl = self.heartbeat_timeout_secs * 2;
 
@@ -388,7 +393,7 @@ impl NodeRegistry {
         if let Some(ref client) = self.redis_client {
             let mut conn = self.get_conn_with_breaker(client).await?;
 
-            let key = Self::node_key(&self.node_id);
+            let key = self.node_key(&self.node_id);
             let current_epoch = self.current_epoch.load(Ordering::SeqCst);
             let now = Utc::now();
             let now_rfc3339 = now.to_rfc3339();
@@ -497,7 +502,7 @@ impl NodeRegistry {
         if let Some(ref client) = self.redis_client {
             let mut conn = self.get_conn_with_breaker(client).await?;
 
-            let key = Self::node_key(&self.node_id);
+            let key = self.node_key(&self.node_id);
             let current_epoch = self.current_epoch.load(Ordering::SeqCst);
 
             // Atomic Lua script: only delete if existing epoch <= our epoch
@@ -562,7 +567,7 @@ impl NodeRegistry {
         if let Some(ref client) = self.redis_client {
             let mut conn = self.get_conn_with_breaker(client).await?;
 
-            let key = Self::node_key(&node_info.node_id);
+            let key = self.node_key(&node_info.node_id);
             let value = serde_json::to_string(&node_info)
                 .map_err(|e| Error::Serialization(format!("Failed to serialize node info: {e}")))?;
             let ttl = self.heartbeat_timeout_secs * 2;
@@ -626,7 +631,7 @@ impl NodeRegistry {
         if let Some(ref client) = self.redis_client {
             let mut conn = self.get_conn_with_breaker(client).await?;
 
-            let key = Self::node_key(node_id);
+            let key = self.node_key(node_id);
             let now = Utc::now().to_rfc3339();
             let ttl = self.heartbeat_timeout_secs * 2;
 
@@ -680,7 +685,7 @@ impl NodeRegistry {
         if let Some(ref client) = self.redis_client {
             let mut conn = self.get_conn_with_breaker(client).await?;
 
-            let key = Self::node_key(node_id);
+            let key = self.node_key(node_id);
 
             // Use epoch validation if provided, otherwise just delete
             if let Some(epoch) = expected_epoch {
@@ -769,7 +774,7 @@ impl NodeRegistry {
 
             // Use SCAN instead of KEYS for better performance on large datasets
             // SCAN is non-blocking and returns results incrementally
-            let pattern = format!("{}:*", Self::KEY_PREFIX);
+            let pattern = format!("{}:*", self.key_prefix);
             let mut keys = Vec::new();
             let mut cursor: u64 = 0;
 
@@ -861,7 +866,7 @@ impl NodeRegistry {
         if let Some(ref client) = self.redis_client {
             let mut conn = self.get_conn_with_breaker(client).await?;
 
-            let key = Self::node_key(node_id);
+            let key = self.node_key(node_id);
             let op_result: std::result::Result<Option<String>, Error> = timeout(
                 Duration::from_secs(REDIS_TIMEOUT_SECS),
                 redis::cmd("GET")
@@ -919,11 +924,8 @@ impl NodeRegistry {
         }
     }
 
-    /// Redis key prefix for nodes
-    const KEY_PREFIX: &'static str = "synctv:cluster:nodes";
-
-    fn node_key(node_id: &str) -> String {
-        format!("{}:{}", Self::KEY_PREFIX, node_id)
+    fn node_key(&self, node_id: &str) -> String {
+        format!("{}:{}", self.key_prefix, node_id)
     }
 }
 
@@ -1010,7 +1012,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_node_registry_local_mode() {
-        let registry = NodeRegistry::new(None, "test_node".to_string(), 30).unwrap();
+        let registry = NodeRegistry::new(None, "test_node".to_string(), 30, "synctv:").unwrap();
 
         // Get fencing token
         let token = registry.current_fencing_token();
@@ -1063,7 +1065,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_merge_dns_peers_inserts_new() {
-        let registry = NodeRegistry::new(None, "self".to_string(), 30).unwrap();
+        let registry = NodeRegistry::new(None, "self".to_string(), 30, "synctv:").unwrap();
 
         let peer = NodeInfo::new(
             "dns-peer-1".to_string(),
@@ -1080,7 +1082,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_merge_dns_peers_does_not_overwrite_existing() {
-        let registry = NodeRegistry::new(None, "self".to_string(), 30).unwrap();
+        let registry = NodeRegistry::new(None, "self".to_string(), 30, "synctv:").unwrap();
 
         // Register a node via normal path (with richer metadata)
         registry

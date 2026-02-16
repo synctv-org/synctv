@@ -607,5 +607,35 @@ impl EmbyInterface for GrpcEmbyClient {
             .map_err(|e| EmbyError::Network(format!("gRPC error: {e}")))?;
         Ok(response.into_inner())
     }
+
+    async fn report_playback_start(&self, request: synctv_media_providers::grpc::emby::ReportPlaybackStartReq)
+        -> Result<synctv_media_providers::grpc::emby::Empty, EmbyError>
+    {
+        use synctv_media_providers::grpc::emby::emby_client::EmbyClient;
+        let mut client = EmbyClient::new(self.channel.clone());
+        let response = client.report_playback_start(tonic::Request::new(request)).await
+            .map_err(|e| EmbyError::Network(format!("gRPC error: {e}")))?;
+        Ok(response.into_inner())
+    }
+
+    async fn report_playback_stop(&self, request: synctv_media_providers::grpc::emby::ReportPlaybackStopReq)
+        -> Result<synctv_media_providers::grpc::emby::Empty, EmbyError>
+    {
+        use synctv_media_providers::grpc::emby::emby_client::EmbyClient;
+        let mut client = EmbyClient::new(self.channel.clone());
+        let response = client.report_playback_stop(tonic::Request::new(request)).await
+            .map_err(|e| EmbyError::Network(format!("gRPC error: {e}")))?;
+        Ok(response.into_inner())
+    }
+
+    async fn report_playback_progress(&self, request: synctv_media_providers::grpc::emby::ReportPlaybackProgressReq)
+        -> Result<synctv_media_providers::grpc::emby::Empty, EmbyError>
+    {
+        use synctv_media_providers::grpc::emby::emby_client::EmbyClient;
+        let mut client = EmbyClient::new(self.channel.clone());
+        let response = client.report_playback_progress(tonic::Request::new(request)).await
+            .map_err(|e| EmbyError::Network(format!("gRPC error: {e}")))?;
+        Ok(response.into_inner())
+    }
 }
 

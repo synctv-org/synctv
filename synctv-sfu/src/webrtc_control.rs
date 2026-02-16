@@ -42,6 +42,7 @@ use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType};
+use webrtc::rtp_transceiver::RTCPFeedback;
 use webrtc::rtp_transceiver::rtp_sender::RTCRtpSender;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_local::{TrackLocal, TrackLocalWriter};
@@ -80,6 +81,16 @@ impl PeerConnection {
         // Create media engine with standard codecs
         let mut media_engine = MediaEngine::default();
 
+        // RTCP feedback parameters for video codecs: enable PLI, NACK, REMB,
+        // and transport-cc so that browsers/clients can report packet loss
+        // and bandwidth estimates back to the SFU.
+        let video_rtcp_feedback = vec![
+            RTCPFeedback { typ: "nack".to_string(), parameter: "".to_string() },
+            RTCPFeedback { typ: "nack".to_string(), parameter: "pli".to_string() },
+            RTCPFeedback { typ: "goog-remb".to_string(), parameter: "".to_string() },
+            RTCPFeedback { typ: "transport-cc".to_string(), parameter: "".to_string() },
+        ];
+
         // Register VP8 video codec
         media_engine.register_codec(
             RTCRtpCodecParameters {
@@ -88,7 +99,7 @@ impl PeerConnection {
                     clock_rate: 90000,
                     channels: 0,
                     sdp_fmtp_line: "".to_string(),
-                    rtcp_feedback: vec![],
+                    rtcp_feedback: video_rtcp_feedback.clone(),
                 },
                 payload_type: 96,
                 ..Default::default()
@@ -104,7 +115,7 @@ impl PeerConnection {
                     clock_rate: 90000,
                     channels: 0,
                     sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f".to_string(),
-                    rtcp_feedback: vec![],
+                    rtcp_feedback: video_rtcp_feedback,
                 },
                 payload_type: 102,
                 ..Default::default()
@@ -112,7 +123,7 @@ impl PeerConnection {
             RTPCodecType::Video,
         )?;
 
-        // Register Opus audio codec
+        // Register Opus audio codec (transport-cc for audio bandwidth estimation)
         media_engine.register_codec(
             RTCRtpCodecParameters {
                 capability: RTCRtpCodecCapability {
@@ -120,7 +131,9 @@ impl PeerConnection {
                     clock_rate: 48000,
                     channels: 2,
                     sdp_fmtp_line: "minptime=10;useinbandfec=1".to_string(),
-                    rtcp_feedback: vec![],
+                    rtcp_feedback: vec![
+                        RTCPFeedback { typ: "transport-cc".to_string(), parameter: "".to_string() },
+                    ],
                 },
                 payload_type: 111,
                 ..Default::default()
@@ -310,14 +323,26 @@ impl PeerConnection {
         kind: TrackKind,
         codec: &str,
     ) -> Result<Arc<TrackLocalStaticRTP>> {
-        // Create local track
+        // Create local track with RTCP feedback matching the codec registration
+        let rtcp_feedback = if kind == TrackKind::Audio {
+            vec![
+                RTCPFeedback { typ: "transport-cc".to_string(), parameter: "".to_string() },
+            ]
+        } else {
+            vec![
+                RTCPFeedback { typ: "nack".to_string(), parameter: "".to_string() },
+                RTCPFeedback { typ: "nack".to_string(), parameter: "pli".to_string() },
+                RTCPFeedback { typ: "goog-remb".to_string(), parameter: "".to_string() },
+                RTCPFeedback { typ: "transport-cc".to_string(), parameter: "".to_string() },
+            ]
+        };
         let local_track = Arc::new(TrackLocalStaticRTP::new(
             RTCRtpCodecCapability {
                 mime_type: codec.to_string(),
                 clock_rate: if kind == TrackKind::Audio { 48000 } else { 90000 },
                 channels: if kind == TrackKind::Audio { 2 } else { 0 },
                 sdp_fmtp_line: String::new(),
-                rtcp_feedback: vec![],
+                rtcp_feedback,
             },
             track_id.as_str().to_string(),
             format!("stream-{}", self.peer_id.as_str()),
@@ -347,6 +372,10 @@ impl PeerConnection {
     }
 
     /// Start subscriber output task (reads from peer's packet channel and writes to WebRTC)
+    ///
+    /// Routes each forwarded packet to the correct outbound track by matching
+    /// `source_track_id`. This ensures audio packets go to audio tracks and
+    /// video packets go to video tracks.
     pub async fn start_subscriber_output(&self, peer: Arc<SfuPeer>) -> Result<()> {
         // Take packet receiver from peer (can only be called once)
         let mut packet_rx = peer
@@ -375,21 +404,44 @@ impl PeerConnection {
                     packet = packet_rx.recv() => {
                         match packet {
                             Some(forwarded_packet) => {
-                                // Write raw packet bytes to appropriate outbound track
-                                // The outbound track is selected based on the subscription
                                 let tracks = outbound_tracks.read().await;
 
-                                // For simplicity, write to all outbound tracks
-                                // In production, this should respect subscriptions
-                                for (track_id, (_sender, local_track)) in tracks.iter() {
-                                    // Use write() instead of write_rtp() since we have raw bytes
-                                    if let Err(e) = local_track.write(&forwarded_packet.data).await {
-                                        warn!(
+                                // Route packet to the matching outbound track by source_track_id.
+                                // If the packet has a source_track_id, write only to that track.
+                                // This prevents audio packets from being written to video tracks
+                                // and vice versa.
+                                if let Some(ref source_id) = forwarded_packet.source_track_id {
+                                    if let Some((_sender, local_track)) = tracks.get(source_id) {
+                                        if let Err(e) = local_track.write(&forwarded_packet.data).await {
+                                            warn!(
+                                                peer_id = %peer_id,
+                                                track_id = %source_id,
+                                                error = %e,
+                                                "Failed to write RTP packet to matched track"
+                                            );
+                                        }
+                                    } else {
+                                        // No matching outbound track for this source.
+                                        // This can happen transiently during track setup/teardown.
+                                        debug!(
                                             peer_id = %peer_id,
-                                            track_id = %track_id,
-                                            error = %e,
-                                            "Failed to write RTP packet"
+                                            source_track_id = %source_id,
+                                            "No outbound track for source, dropping packet"
                                         );
+                                    }
+                                } else {
+                                    // Legacy fallback: no source_track_id on packet.
+                                    // Write to all tracks (preserves old behavior for any
+                                    // code paths that haven't been updated yet).
+                                    for (track_id, (_sender, local_track)) in tracks.iter() {
+                                        if let Err(e) = local_track.write(&forwarded_packet.data).await {
+                                            warn!(
+                                                peer_id = %peer_id,
+                                                track_id = %track_id,
+                                                error = %e,
+                                                "Failed to write RTP packet"
+                                            );
+                                        }
                                     }
                                 }
                             }

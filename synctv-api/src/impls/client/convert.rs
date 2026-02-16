@@ -89,6 +89,9 @@ pub fn media_to_proto(media: &synctv_core::models::Media) -> crate::proto::clien
         Vec::new()
     };
 
+    // Strip credentials from source_config before sending to clients
+    let sanitized_config = synctv_core::provider::strip_source_config_credentials(&media.source_config);
+
     crate::proto::client::Media {
         id: media.id.as_str().to_string(),
         room_id: media.room_id.as_str().to_string(),
@@ -99,7 +102,7 @@ pub fn media_to_proto(media: &synctv_core::models::Media) -> crate::proto::clien
         added_at: media.added_at.timestamp(),
         added_by: media.creator_id.as_ref().map_or(String::new(), |id| id.as_str().to_string()),
         provider_instance_name: media.provider_instance_name.clone().unwrap_or_default(),
-        source_config: serde_json::to_vec(&media.source_config).unwrap_or_default(),
+        source_config: serde_json::to_vec(&sanitized_config).unwrap_or_default(),
     }
 }
 

@@ -51,7 +51,8 @@ pub async fn logout(
         .unwrap_or("");
 
     let refresh_token = body.and_then(|b| b.0.refresh_token);
-    let response = state.client_api.logout(access_token, refresh_token.as_deref()).await;
+    let response = state.client_api.logout(access_token, refresh_token.as_deref()).await
+        .map_err(super::error::map_api_error)?;
     Ok(Json(response))
 }
 

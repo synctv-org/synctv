@@ -7,8 +7,14 @@
 use redis::AsyncCommands;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
-use crate::{models::UserId, Error, Result};
+use crate::{cache::CacheInvalidationService, models::UserId, Error, Result};
+
+/// L1 (in-memory) cache TTL in minutes.
+/// Matches UserCache/RoomCache defaults so stale entries are bounded even
+/// without cross-replica invalidation.
+const L1_TTL_MINUTES: u64 = 5;
 
 /// Username cache service with L1 (Moka) + L2 (Redis) strategy
 #[derive(Clone)]
@@ -17,6 +23,8 @@ pub struct UsernameCache {
     memory_cache: Arc<moka::future::Cache<UserId, String>>,
     key_prefix: String,
     ttl_seconds: u64,
+    /// Optional invalidation service for cross-replica cache sync
+    invalidation_service: Option<Arc<CacheInvalidationService>>,
 }
 
 impl UsernameCache {
@@ -27,7 +35,7 @@ impl UsernameCache {
     /// * `key_prefix` - Redis key prefix (e.g., "synctv:username:")
     /// * `memory_cache_size` - Maximum number of entries in memory cache
     /// * `ttl_seconds` - Cache TTL in Redis (0 = no expiration)
-    #[must_use] 
+    #[must_use]
     pub fn new(
         redis_conn: Option<redis::aio::ConnectionManager>,
         key_prefix: String,
@@ -35,8 +43,10 @@ impl UsernameCache {
         ttl_seconds: u64,
     ) -> Self {
         // Use moka for production-grade LRU cache with automatic eviction
+        // Add TTL to L1 so stale entries are bounded even without cross-replica invalidation
         let memory_cache = Arc::new(
             moka::future::CacheBuilder::new(memory_cache_size as u64)
+                .time_to_live(Duration::from_secs(L1_TTL_MINUTES * 60))
                 .build()
         );
 
@@ -45,7 +55,15 @@ impl UsernameCache {
             memory_cache,
             key_prefix,
             ttl_seconds,
+            invalidation_service: None,
         }
+    }
+
+    /// Set the cache invalidation service for cross-replica sync
+    #[must_use]
+    pub fn with_invalidation_service(mut self, service: Arc<CacheInvalidationService>) -> Self {
+        self.invalidation_service = Some(service);
+        self
     }
 
     /// Get username for a user ID
@@ -86,6 +104,8 @@ impl UsernameCache {
     /// Set username for a user ID
     ///
     /// Updates both memory cache and Redis cache.
+    /// If a `CacheInvalidationService` is configured, broadcasts the invalidation
+    /// to other replicas so they evict stale L1 entries.
     pub async fn set(&self, user_id: &UserId, username: &str) -> Result<()> {
         // Update memory cache
         self.memory_cache.insert(user_id.clone(), username.to_string()).await;
@@ -114,6 +134,17 @@ impl UsernameCache {
                 ttl_seconds = self.ttl_seconds,
                 "Username cached"
             );
+        }
+
+        // Broadcast invalidation to other replicas (best effort)
+        if let Some(ref service) = self.invalidation_service {
+            if let Err(e) = service.invalidate_username(user_id).await {
+                tracing::warn!(
+                    error = %e,
+                    user_id = %user_id.as_str(),
+                    "Failed to broadcast username cache invalidation to other replicas"
+                );
+            }
         }
 
         Ok(())
@@ -177,6 +208,9 @@ impl UsernameCache {
     /// L1 is invalidated first so this replica immediately stops serving stale
     /// data, then L2 is cleared so other replicas don't re-populate from stale
     /// Redis data. This is consistent with `UserCache` and `RoomCache`.
+    ///
+    /// If a `CacheInvalidationService` is configured, broadcasts the invalidation
+    /// to other replicas so they evict stale L1 entries.
     pub async fn invalidate(&self, user_id: &UserId) -> Result<()> {
         // Remove from memory cache (L1) FIRST so this replica stops serving stale data immediately
         self.memory_cache.invalidate(user_id).await;
@@ -185,6 +219,17 @@ impl UsernameCache {
         if self.redis_conn.is_some() {
             let key = format!("{}{}", self.key_prefix, user_id.as_str());
             self.delete_from_redis_with_retry(&key, 3).await?;
+        }
+
+        // Broadcast invalidation to other replicas (best effort)
+        if let Some(ref service) = self.invalidation_service {
+            if let Err(e) = service.invalidate_username(user_id).await {
+                tracing::warn!(
+                    error = %e,
+                    user_id = %user_id.as_str(),
+                    "Failed to broadcast username cache invalidation to other replicas"
+                );
+            }
         }
 
         tracing::debug!(user_id = %user_id.as_str(), "Username cache invalidated (L1 then L2)");
@@ -293,6 +338,7 @@ impl std::fmt::Debug for UsernameCache {
         f.debug_struct("UsernameCache")
             .field("redis_enabled", &self.redis_conn.is_some())
             .field("ttl_seconds", &self.ttl_seconds)
+            .field("invalidation_enabled", &self.invalidation_service.is_some())
             .finish()
     }
 }

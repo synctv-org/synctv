@@ -897,6 +897,7 @@ async fn test_node_discovery_three_nodes() {
         Some(redis.redis_url.clone()),
         "node_a".to_string(),
         30,
+        "synctv:",
     )
     .expect("Failed to create registry A");
 
@@ -904,6 +905,7 @@ async fn test_node_discovery_three_nodes() {
         Some(redis.redis_url.clone()),
         "node_b".to_string(),
         30,
+        "synctv:",
     )
     .expect("Failed to create registry B");
 
@@ -911,6 +913,7 @@ async fn test_node_discovery_three_nodes() {
         Some(redis.redis_url.clone()),
         "node_c".to_string(),
         30,
+        "synctv:",
     )
     .expect("Failed to create registry C");
 
@@ -1017,6 +1020,7 @@ async fn test_node_epoch_fencing() {
         Some(redis.redis_url.clone()),
         "fencing_node".to_string(),
         30,
+        "synctv:",
     )
     .expect("Failed to create registry");
 
@@ -1091,9 +1095,9 @@ async fn test_leader_election_single_leader() {
         renew_interval_secs: 1,
     };
 
-    let elector_a = LeaderElector::with_config(conn_a, "node_a".to_string(), config_a);
-    let elector_b = LeaderElector::with_config(conn_b, "node_b".to_string(), config_b);
-    let elector_c = LeaderElector::with_config(conn_c, "node_c".to_string(), config_c);
+    let elector_a = LeaderElector::with_config(conn_a, "node_a".to_string(), config_a, "synctv:");
+    let elector_b = LeaderElector::with_config(conn_b, "node_b".to_string(), config_b, "synctv:");
+    let elector_c = LeaderElector::with_config(conn_c, "node_c".to_string(), config_c, "synctv:");
 
     let cancel_a = CancellationToken::new();
     let cancel_b = CancellationToken::new();
@@ -1353,15 +1357,19 @@ async fn test_room_hub_connection_manager_state_consistency() {
     // Register connections via ConnectionManager
     conn_manager
         .register(conn_id_1.clone(), user1.clone())
+        .await
         .expect("register user1");
     conn_manager
         .join_room(&conn_id_1, room_id.clone())
+        .await
         .expect("join room user1");
     conn_manager
         .register(conn_id_2.clone(), user2.clone())
+        .await
         .expect("register user2");
     conn_manager
         .join_room(&conn_id_2, room_id.clone())
+        .await
         .expect("join room user2");
 
     // Verify initial state
@@ -1373,7 +1381,7 @@ async fn test_room_hub_connection_manager_state_consistency() {
 
     // Simulate user1 disconnect: unsubscribe from hub + unregister from connection manager
     manager.unsubscribe(&conn_id_1);
-    conn_manager.unregister(&conn_id_1);
+    conn_manager.unregister(&conn_id_1).await;
 
     // Verify partial state
     let hub_metrics = manager.metrics();
@@ -1387,7 +1395,7 @@ async fn test_room_hub_connection_manager_state_consistency() {
 
     // Simulate user2 disconnect
     manager.unsubscribe(&conn_id_2);
-    conn_manager.unregister(&conn_id_2);
+    conn_manager.unregister(&conn_id_2).await;
 
     // Verify clean state
     let hub_metrics = manager.metrics();

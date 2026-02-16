@@ -83,12 +83,16 @@ impl ChatRepository {
     }
 
     /// Get a specific message by ID
+    ///
+    /// Scans only recent partitions (last 90 days) to avoid full partition scan.
+    /// This matches the default retention period for chat messages.
     pub async fn get_by_id(&self, message_id: &str) -> Result<Option<ChatMessage>> {
         let msg = sqlx::query_as::<_, ChatMessage>(
             r"
             SELECT id, room_id, user_id, content, created_at
             FROM chat_messages
             WHERE id = $1
+              AND created_at >= NOW() - INTERVAL '90 days'
             ",
         )
         .bind(message_id)
@@ -99,14 +103,19 @@ impl ChatRepository {
     }
 
     /// Delete a message (physical delete)
-    pub async fn delete(&self, message_id: &str) -> Result<bool> {
+    ///
+    /// Requires `created_at` to enable partition pruning. Without it, PostgreSQL
+    /// would scan all partitions to find the row.
+    pub async fn delete(&self, message_id: &str, created_at: DateTime<Utc>) -> Result<bool> {
         let result = sqlx::query(
             r"
             DELETE FROM chat_messages
             WHERE id = $1
+              AND created_at = $2
             ",
         )
         .bind(message_id)
+        .bind(created_at)
         .execute(&self.pool)
         .await?;
 
@@ -135,8 +144,8 @@ impl ChatRepository {
             r"
             DELETE FROM chat_messages
             WHERE room_id = $1
-            AND id NOT IN (
-                SELECT id FROM chat_messages
+            AND (id, created_at) NOT IN (
+                SELECT id, created_at FROM chat_messages
                 WHERE room_id = $1
                 ORDER BY created_at DESC
                 LIMIT $2
@@ -172,9 +181,9 @@ impl ChatRepository {
         let result = sqlx::query(
             r"
             DELETE FROM chat_messages
-            WHERE id IN (
-                SELECT id FROM (
-                    SELECT id, room_id,
+            WHERE (id, created_at) IN (
+                SELECT id, created_at FROM (
+                    SELECT id, created_at, room_id,
                            ROW_NUMBER() OVER (PARTITION BY room_id ORDER BY created_at DESC) as rn
                     FROM chat_messages
                     WHERE room_id IN (

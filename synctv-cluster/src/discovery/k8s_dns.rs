@@ -4,8 +4,12 @@
 //! Pattern: `{service-name}.{namespace}.svc.cluster.local`
 //!
 //! Each resolved IP corresponds to a pod backing the headless service.
-//! Combined with a known gRPC/HTTP port, this yields routable peer addresses
-//! without requiring Redis for discovery.
+//! Combined with a known gRPC/HTTP port, this yields routable peer addresses.
+//!
+//! **Important**: DNS discovery supplements but does not replace Redis. Full cluster
+//! functionality (health monitoring, load balancing, pub/sub) still requires Redis.
+//! DNS provides faster detection of newly-scaled pods; Redis provides the
+//! NodeRegistry, HealthMonitor, and LoadBalancer infrastructure.
 
 use std::collections::HashMap;
 use std::sync::Arc;

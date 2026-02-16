@@ -14,10 +14,11 @@
 use super::registry::HEARTBEAT_INTERVAL_SECS;
 use super::registry_trait::StreamRegistryTrait;
 use synctv_xiu::streamhub::{
-    define::BroadcastEventReceiver,
+    define::{BroadcastEventReceiver, StreamHubEvent, StreamHubEventSender},
     stream::StreamIdentifier,
 };
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::time::{interval, sleep, Duration};
 use tracing::{debug, error, info, trace, warn};
 use dashmap::DashMap;
@@ -34,15 +35,31 @@ pub struct PublisherManager {
     /// Active publishers (`stream_key` -> `media_id`)
     /// Live streaming is media-level, not room-level
     active_publishers: Arc<DashMap<String, String>>,
+    /// Sender for StreamHub events -- used to trigger unpublish on heartbeat failure
+    /// so that subscribers are notified immediately instead of waiting for Redis TTL expiry.
+    hub_event_sender: StreamHubEventSender,
+    /// Counter for broadcast lag events (for monitoring)
+    lag_event_count: AtomicU64,
 }
 
 impl PublisherManager {
-    pub fn new(registry: Arc<dyn StreamRegistryTrait>, local_node_id: String) -> Self {
+    pub fn new(
+        registry: Arc<dyn StreamRegistryTrait>,
+        local_node_id: String,
+        hub_event_sender: StreamHubEventSender,
+    ) -> Self {
         Self {
             registry,
             local_node_id,
             active_publishers: Arc::new(DashMap::new()),
+            hub_event_sender,
+            lag_event_count: AtomicU64::new(0),
         }
+    }
+
+    /// Returns the number of broadcast lag events observed since startup.
+    pub fn lag_event_count(&self) -> u64 {
+        self.lag_event_count.load(Ordering::Relaxed)
     }
 
     /// Start listening to `StreamHub` broadcast events
@@ -64,13 +81,13 @@ impl PublisherManager {
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    self.lag_event_count.fetch_add(1, Ordering::Relaxed);
                     warn!(
                         "Publisher manager lagged behind by {n} broadcast events; \
                          some publish/unpublish events may have been missed. \
-                         Active publishers may be stale."
+                         Reconciling active publishers with registry."
                     );
-                    // Continue processing -- stale state will be corrected by
-                    // heartbeat failures or next publish/unpublish event.
+                    self.reconcile_with_registry().await;
                     continue;
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => {
@@ -179,6 +196,76 @@ impl PublisherManager {
         Ok(())
     }
 
+    /// Reconcile `active_publishers` with the registry after a broadcast lag event.
+    ///
+    /// When the broadcast channel lags, we may have missed `UnPublish` events,
+    /// leaving stale entries in `active_publishers`. This method queries the
+    /// registry for each locally-tracked publisher and removes entries that no
+    /// longer exist or have been taken over by another node.
+    async fn reconcile_with_registry(&self) {
+        let snapshot: Vec<String> = self
+            .active_publishers
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect();
+
+        if snapshot.is_empty() {
+            debug!("No active publishers to reconcile after lag event");
+            return;
+        }
+
+        info!(
+            "Reconciling {} active publishers with registry after lag event",
+            snapshot.len()
+        );
+
+        let mut removed = 0u32;
+        for publisher_key in &snapshot {
+            if let Some((room_id, media_id)) = publisher_key.split_once(':') {
+                match self.registry.get_publisher(room_id, media_id).await {
+                    Ok(Some(info)) if info.node_id == self.local_node_id => {
+                        // Publisher still registered to us -- keep it
+                        trace!(
+                            "Reconcile: publisher room={} media={} still active on this node",
+                            room_id, media_id
+                        );
+                    }
+                    Ok(Some(info)) => {
+                        // Publisher was taken over by another node -- remove locally
+                        warn!(
+                            "Reconcile: publisher room={} media={} moved to node {}; removing local entry",
+                            room_id, media_id, info.node_id
+                        );
+                        self.active_publishers.remove(publisher_key);
+                        removed += 1;
+                    }
+                    Ok(None) => {
+                        // Publisher no longer exists in registry -- remove locally
+                        warn!(
+                            "Reconcile: publisher room={} media={} no longer in registry; removing local entry",
+                            room_id, media_id
+                        );
+                        self.active_publishers.remove(publisher_key);
+                        removed += 1;
+                    }
+                    Err(e) => {
+                        // Registry query failed -- keep the entry and let heartbeat handle it
+                        error!(
+                            "Reconcile: failed to query registry for room={} media={}: {}",
+                            room_id, media_id, e
+                        );
+                    }
+                }
+            }
+        }
+
+        info!(
+            "Reconciliation complete: removed {} stale entries, {} active publishers remaining",
+            removed,
+            self.active_publishers.len()
+        );
+    }
+
     /// Force re-registration of all tracked active publishers in Redis.
     ///
     /// Called after StreamHub restart to ensure Redis state is consistent
@@ -279,6 +366,44 @@ impl PublisherManager {
 
                     if success {
                         trace!("Heartbeat refreshed for room {} / media {}", room_id, media_id);
+                    } else {
+                        // All heartbeat retries exhausted -- proactively clean up
+                        // to avoid zombie streams (stale routing for up to TTL expiry).
+                        error!(
+                            "Heartbeat permanently failed for room {} / media {}. \
+                             Triggering stream cleanup.",
+                            room_id, media_id
+                        );
+
+                        // 1. Remove from local tracking
+                        self.active_publishers.remove(publisher_key);
+
+                        // 2. Unregister from Redis immediately (don't wait for TTL)
+                        if let Err(e) = self.registry.unregister_publisher(room_id, media_id).await {
+                            warn!(
+                                "Failed to unregister publisher from Redis for room {} / media {}: {}",
+                                room_id, media_id, e
+                            );
+                        }
+
+                        // 3. Send UnPublish to StreamHub so subscribers are notified
+                        let identifier = StreamIdentifier::Rtmp {
+                            app_name: room_id.to_string(),
+                            stream_name: media_id.to_string(),
+                        };
+                        if let Err(e) = self.hub_event_sender.send(StreamHubEvent::UnPublish {
+                            identifier: identifier.clone(),
+                        }).await {
+                            error!(
+                                "Failed to send UnPublish event for {:?}: {}",
+                                identifier, e
+                            );
+                        } else {
+                            info!(
+                                "Sent UnPublish event for room {} / media {} after heartbeat failure",
+                                room_id, media_id
+                            );
+                        }
                     }
                 }
             }
@@ -298,22 +423,29 @@ mod tests {
     use super::*;
     use super::super::MockStreamRegistry;
 
+    /// Create a test `PublisherManager` with a dummy `StreamHubEventSender`.
+    /// Returns the manager and the corresponding receiver so tests can inspect
+    /// events sent on heartbeat failure.
+    fn test_manager(registry: Arc<dyn StreamRegistryTrait>, node_id: &str)
+        -> (PublisherManager, synctv_xiu::streamhub::define::StreamHubEventReceiver)
+    {
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        (PublisherManager::new(registry, node_id.to_string(), tx), rx)
+    }
+
     #[tokio::test]
     async fn test_publisher_manager_creation() {
         let registry = Arc::new(MockStreamRegistry::new());
-        let local_node_id = "test-node-1".to_string();
 
-        let manager = PublisherManager::new(registry, local_node_id);
+        let (manager, _rx) = test_manager(registry, "test-node-1");
         assert_eq!(manager.local_node_id, "test-node-1");
         assert!(manager.active_publishers.is_empty());
     }
 
     #[tokio::test]
     async fn test_active_publishers_map() {
-        let (_event_sender, _) = tokio::sync::mpsc::channel::<synctv_xiu::streamhub::define::StreamHubEvent>(64);
-
         let registry = Arc::new(MockStreamRegistry::new());
-        let manager = PublisherManager::new(registry, "test-node".to_string());
+        let (manager, _rx) = test_manager(registry, "test-node");
 
         // Verify active publishers map is empty
         assert!(manager.active_publishers.is_empty());
@@ -323,7 +455,7 @@ mod tests {
     #[tokio::test]
     async fn test_handle_publish_success() {
         let registry = Arc::new(MockStreamRegistry::new());
-        let manager = PublisherManager::new(registry, "test-node-1".to_string());
+        let (manager, _rx) = test_manager(registry, "test-node-1");
 
         let identifier = StreamIdentifier::Rtmp {
             app_name: "room123".to_string(),
@@ -341,7 +473,7 @@ mod tests {
     #[tokio::test]
     async fn test_handle_unpublish_success() {
         let registry = Arc::new(MockStreamRegistry::new());
-        let manager = PublisherManager::new(registry, "test-node-1".to_string());
+        let (manager, _rx) = test_manager(registry, "test-node-1");
 
         // First, register a publisher
         let identifier = StreamIdentifier::Rtmp {
@@ -361,7 +493,7 @@ mod tests {
     #[tokio::test]
     async fn test_handle_publish_tracks_any_stream() {
         let registry = Arc::new(MockStreamRegistry::new());
-        let manager = PublisherManager::new(registry, "test-node-1".to_string());
+        let (manager, _rx) = test_manager(registry, "test-node-1");
 
         let identifier = StreamIdentifier::Rtmp {
             app_name: "room123".to_string(),
@@ -374,5 +506,80 @@ mod tests {
 
         // Verify tracking uses composite key
         assert!(manager.active_publishers.contains_key("room123:media456"));
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_removes_stale_entries() {
+        // Registry has room1:media1 on our node, but NOT room2:media2
+        let registry = Arc::new(MockStreamRegistry::new());
+        registry.try_register_publisher("room1", "media1", "test-node", "").await.unwrap();
+
+        let (manager, _rx) = test_manager(registry, "test-node");
+
+        // Simulate local tracking of two publishers
+        manager.active_publishers.insert("room1:media1".to_string(), "room1:media1".to_string());
+        manager.active_publishers.insert("room2:media2".to_string(), "room2:media2".to_string());
+        assert_eq!(manager.active_publishers.len(), 2);
+
+        // Reconcile should remove room2:media2 (not in registry)
+        manager.reconcile_with_registry().await;
+
+        assert_eq!(manager.active_publishers.len(), 1);
+        assert!(manager.active_publishers.contains_key("room1:media1"));
+        assert!(!manager.active_publishers.contains_key("room2:media2"));
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_removes_entries_moved_to_other_node() {
+        // Registry has room1:media1 but on a DIFFERENT node
+        let registry = Arc::new(MockStreamRegistry::new());
+        registry.try_register_publisher("room1", "media1", "other-node", "").await.unwrap();
+
+        let (manager, _rx) = test_manager(registry, "test-node");
+
+        // Local tracking thinks we own it
+        manager.active_publishers.insert("room1:media1".to_string(), "room1:media1".to_string());
+        assert_eq!(manager.active_publishers.len(), 1);
+
+        // Reconcile should remove it (owned by other-node)
+        manager.reconcile_with_registry().await;
+
+        assert!(manager.active_publishers.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_keeps_valid_entries() {
+        // Registry has both publishers on our node
+        let registry = Arc::new(MockStreamRegistry::new());
+        registry.try_register_publisher("room1", "media1", "test-node", "").await.unwrap();
+        registry.try_register_publisher("room2", "media2", "test-node", "").await.unwrap();
+
+        let (manager, _rx) = test_manager(registry, "test-node");
+
+        manager.active_publishers.insert("room1:media1".to_string(), "room1:media1".to_string());
+        manager.active_publishers.insert("room2:media2".to_string(), "room2:media2".to_string());
+
+        manager.reconcile_with_registry().await;
+
+        // Both should still be present
+        assert_eq!(manager.active_publishers.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_with_empty_map() {
+        let registry = Arc::new(MockStreamRegistry::new());
+        let (manager, _rx) = test_manager(registry, "test-node");
+
+        // Should not panic with empty active_publishers
+        manager.reconcile_with_registry().await;
+        assert!(manager.active_publishers.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_lag_event_count() {
+        let registry = Arc::new(MockStreamRegistry::new());
+        let (manager, _rx) = test_manager(registry, "test-node");
+
+        assert_eq!(manager.lag_event_count(), 0);
     }
 }

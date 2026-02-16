@@ -13,7 +13,7 @@
 //! 3. If the holder crashes, the lease expires and another pod acquires it
 //! 4. Uses optimistic concurrency (resourceVersion) to prevent split-brain
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -44,6 +44,12 @@ pub struct K8sLeaderElector {
     lease_duration_secs: i32,
     /// How often to attempt renewal in seconds
     renew_interval_secs: u64,
+    /// Monotonically increasing epoch (fencing token) incremented on each
+    /// leadership acquisition. Used for split-brain protection.
+    leader_epoch: Arc<AtomicU64>,
+    /// Timestamp at which leadership was lost. Used to enforce a grace period
+    /// before re-acquisition attempts.
+    leadership_lost_at: Arc<parking_lot::Mutex<Option<tokio::time::Instant>>>,
 }
 
 /// Configuration for K8s lease-based leader election.
@@ -90,12 +96,22 @@ impl K8sLeaderElector {
             identity,
             lease_duration_secs: config.lease_duration_secs,
             renew_interval_secs: config.renew_interval_secs,
+            leader_epoch: Arc::new(AtomicU64::new(0)),
+            leadership_lost_at: Arc::new(parking_lot::Mutex::new(None)),
         })
     }
 
     /// Returns `true` if this instance is currently the leader.
     pub fn is_leader(&self) -> bool {
         self.is_leader.load(Ordering::Acquire)
+    }
+
+    /// Returns the current leader epoch (fencing token).
+    ///
+    /// The epoch is monotonically increasing and increments each time this pod
+    /// acquires leadership. Returns 0 if this pod has never been leader.
+    pub fn leader_epoch(&self) -> u64 {
+        self.leader_epoch.load(Ordering::Acquire)
     }
 
     /// Start the leader election loop.
@@ -182,6 +198,14 @@ impl K8sLeaderElector {
             // We hold the lease, renew it
             self.renew_lease(leases, &lease).await;
         } else if lease_expired {
+            // Grace period: don't try to re-acquire immediately after losing leadership
+            if self.in_grace_period() {
+                debug!(
+                    identity = %self.identity,
+                    "In grace period after leadership loss, deferring acquisition"
+                );
+                return;
+            }
             // Lease expired, try to take it
             info!(
                 identity = %self.identity,
@@ -206,8 +230,7 @@ impl K8sLeaderElector {
 
         match leases.create(&PostParams::default(), &lease).await {
             Ok(_) => {
-                info!(identity = %self.identity, "Created lease, became leader");
-                self.set_leader(true);
+                self.gain_leadership();
             }
             Err(kube::Error::Api(err)) if err.code == 409 => {
                 // Conflict - another pod created it first
@@ -298,8 +321,7 @@ impl K8sLeaderElector {
             .await
         {
             Ok(_) => {
-                info!(identity = %self.identity, "Acquired expired lease, became leader");
-                self.set_leader(true);
+                self.gain_leadership();
             }
             Err(kube::Error::Api(err)) if err.code == 409 => {
                 debug!(identity = %self.identity, "Lease acquisition conflict");
@@ -364,6 +386,30 @@ impl K8sLeaderElector {
         let was_leader = self.is_leader.swap(leader, Ordering::AcqRel);
         if was_leader && !leader {
             info!(identity = %self.identity, "Lost K8s lease leadership");
+            *self.leadership_lost_at.lock() = Some(tokio::time::Instant::now());
+        }
+    }
+
+    /// Record leadership gain: increment epoch and clear grace period.
+    fn gain_leadership(&self) {
+        let epoch = self.leader_epoch.fetch_add(1, Ordering::AcqRel) + 1;
+        *self.leadership_lost_at.lock() = None;
+        info!(
+            identity = %self.identity,
+            epoch = epoch,
+            "Gained K8s lease leadership"
+        );
+        self.is_leader.store(true, Ordering::Release);
+    }
+
+    /// Returns `true` if we recently lost leadership and should wait before
+    /// attempting to re-acquire.
+    fn in_grace_period(&self) -> bool {
+        let guard = self.leadership_lost_at.lock();
+        if let Some(lost_at) = *guard {
+            lost_at.elapsed() < Duration::from_secs(self.renew_interval_secs)
+        } else {
+            false
         }
     }
 }

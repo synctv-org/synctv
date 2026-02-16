@@ -10,6 +10,7 @@ pub mod client_service;
 pub mod interceptors;
 pub mod notification_service;
 pub mod oauth2_service;
+pub mod rate_limit_layer;
 
 // Provider gRPC services (local implementations)
 // Provider-specific gRPC services are registered from provider instances
@@ -164,15 +165,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
      .with_redis_conn(redis_conn.clone())
      .with_rate_limiter(rate_limiter.clone()));
 
-    // Create transport-level rate limit interceptor with tiered limits per service.
-    // Each service gets its own tier matching HTTP rate limits to prevent attackers
-    // from bypassing HTTP rate limits via the gRPC API.
-    let grpc_rate_limiter = interceptors::GrpcRateLimitInterceptor::new(
-        rate_limiter.clone(),
-        interceptors::GrpcRateLimitTier::Read, // default tier, overridden per service below
-        60,  // 60 second window
-    );
-
+    let rate_limiter_for_layer = rate_limiter.clone();
     let client_service = ClientServiceImpl::from_config(ClientServiceConfig {
         user_service: user_service_clone,
         room_service: room_service_clone,
@@ -225,12 +218,23 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
     // 2. Password invalidation check (tokens issued before password change)
     // It runs before tonic routes and interceptors, so public endpoints (no Authorization header)
     // pass through without security checks.
+    let user_service_for_blacklist =
+        Arc::try_unwrap(user_service.clone()).unwrap_or_else(|arc| (*arc).clone());
     let blacklist_layer = blacklist_layer::BlacklistCheckLayer::new(
         token_blacklist_service.clone(),
         jwt_service,
+        user_service_for_blacklist,
+    );
+    // Distributed rate limiting layer: uses Redis when available (shared across
+    // replicas), falls back to in-memory governor when Redis is unavailable.
+    // Determines tier per-request from the gRPC service path.
+    let distributed_rate_limit_layer = rate_limit_layer::GrpcRateLimitLayer::new(
+        rate_limiter_for_layer,
+        60,  // 60 second window
     );
     let mut server_builder = Server::builder()
-        .layer(blacklist_layer);
+        .layer(blacklist_layer)
+        .layer(distributed_rate_limit_layer);
 
     // Note: gRPC reflection is disabled - proto definitions are in synctv-proto crate
     // To enable reflection in the future, we would need to re-export descriptor from synctv-proto
@@ -241,16 +245,10 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
     let room_interceptor1 = auth_interceptor.clone();
     let room_interceptor2 = auth_interceptor.clone();
 
-    // Assign appropriate rate limit tiers per service (aligned with HTTP middleware)
-    let rl_auth = grpc_rate_limiter.with_tier(interceptors::GrpcRateLimitTier::Auth);
-    let rl_user = grpc_rate_limiter.with_tier(interceptors::GrpcRateLimitTier::Write);
-    let rl_room = grpc_rate_limiter.with_tier(interceptors::GrpcRateLimitTier::Write);
-    let rl_media = grpc_rate_limiter.with_tier(interceptors::GrpcRateLimitTier::Media);
-    let rl_public = grpc_rate_limiter.with_tier(interceptors::GrpcRateLimitTier::Read);
-    let rl_email = grpc_rate_limiter.with_tier(interceptors::GrpcRateLimitTier::Email);
-    let rl_admin = grpc_rate_limiter.with_tier(interceptors::GrpcRateLimitTier::Admin);
+    // Rate limiting is handled by the distributed_rate_limit_layer applied at the
+    // server level (above). Per-service interceptors only handle auth concerns.
 
-    // Build router - register all client services with rate limiting + auth interceptors
+    // Build router - register all client services with auth interceptors
     let client_service_clone1 = client_service.clone();
     let client_service_clone2 = client_service.clone();
     let client_service_clone3 = client_service.clone();
@@ -258,66 +256,41 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
     let client_service_clone5 = client_service.clone();
 
     let mut router = server_builder
-        // AuthService - rate limited (public: register, login, refresh_token)
-        .add_service(AuthServiceServer::with_interceptor(
-            client_service,
-            move |req| rl_auth.check(req),
-        ))
-        // UserService - rate limited + JWT authentication (inject UserContext)
+        // AuthService (public: register, login, refresh_token)
+        .add_service(AuthServiceServer::new(client_service))
+        // UserService - JWT authentication (inject UserContext)
         .add_service(UserServiceServer::with_interceptor(
             client_service_clone1,
-            move |req| {
-                let req = rl_user.check(req)?;
-                user_interceptor.inject_user(req)
-            },
+            move |req| user_interceptor.inject_user(req),
         ))
-        // RoomService - rate limited + JWT + room_id (inject RoomContext)
+        // RoomService - JWT + room_id (inject RoomContext)
         .add_service(RoomServiceServer::with_interceptor(
             client_service_clone2,
-            move |req| {
-                let req = rl_room.check(req)?;
-                room_interceptor1.inject_room(req)
-            },
+            move |req| room_interceptor1.inject_room(req),
         ))
-        // MediaService - rate limited + JWT + room_id (inject RoomContext)
+        // MediaService - JWT + room_id (inject RoomContext)
         .add_service(MediaServiceServer::with_interceptor(
             client_service_clone3,
-            move |req| {
-                let req = rl_media.check(req)?;
-                room_interceptor2.inject_room(req)
-            },
+            move |req| room_interceptor2.inject_room(req),
         ))
-        // PublicService - rate limited (public room discovery)
-        .add_service(PublicServiceServer::with_interceptor(
-            client_service_clone4,
-            move |req| rl_public.check(req),
-        ))
-        // EmailService - rate limited (send codes, confirm with token)
-        .add_service(EmailServiceServer::with_interceptor(
-            client_service_clone5,
-            move |req| rl_email.check(req),
-        ))
-        // AdminService - rate limited + JWT authentication (inject UserContext)
+        // PublicService (public room discovery)
+        .add_service(PublicServiceServer::new(client_service_clone4))
+        // EmailService (send codes, confirm with token)
+        .add_service(EmailServiceServer::new(client_service_clone5))
+        // AdminService - JWT authentication (inject UserContext)
         .add_service(AdminServiceServer::with_interceptor(
             admin_service,
-            move |req| {
-                let req = rl_admin.check(req)?;
-                admin_interceptor.inject_user(req)
-            },
+            move |req| admin_interceptor.inject_user(req),
         ));
 
     // Register NotificationService if notification_service is configured
     if let Some(notif_svc) = notification_service {
         let notification_interceptor = auth_interceptor.clone();
-        let rl_notif = grpc_rate_limiter.with_tier(interceptors::GrpcRateLimitTier::Read);
         let notification_api = Arc::new(crate::impls::NotificationApiImpl::new(notif_svc));
         let notif_impl = NotificationServiceImpl::new(notification_api);
         router = router.add_service(NotificationServiceServer::with_interceptor(
             notif_impl,
-            move |req| {
-                let req = rl_notif.check(req)?;
-                notification_interceptor.inject_user(req)
-            },
+            move |req| notification_interceptor.inject_user(req),
         ));
         tracing::info!("NotificationService gRPC registered");
     }
@@ -326,7 +299,6 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
     if let Some(oauth2_svc) = oauth2_service {
         use synctv_proto::client::o_auth2_service_server::OAuth2ServiceServer;
         let oauth2_interceptor = auth_interceptor.clone();
-        let rl_oauth2 = grpc_rate_limiter.with_tier(interceptors::GrpcRateLimitTier::Auth);
         let oauth2_api = Arc::new(crate::impls::OAuth2ApiImpl::new(
             oauth2_svc,
             user_service.clone(),
@@ -337,10 +309,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         // clients should use the HTTP API instead, which supports unauthenticated access
         router = router.add_service(OAuth2ServiceServer::with_interceptor(
             oauth2_impl,
-            move |req| {
-                let req = rl_oauth2.check(req)?;
-                oauth2_interceptor.inject_user(req)
-            },
+            move |req| oauth2_interceptor.inject_user(req),
         ));
         tracing::info!("OAuth2Service gRPC registered");
     }
@@ -419,30 +388,18 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         let provider_interceptor1 = auth_interceptor.clone();
         let provider_interceptor2 = auth_interceptor.clone();
         let provider_interceptor3 = auth_interceptor.clone();
-        let rl_provider1 = grpc_rate_limiter.with_tier(interceptors::GrpcRateLimitTier::Read);
-        let rl_provider2 = grpc_rate_limiter.with_tier(interceptors::GrpcRateLimitTier::Read);
-        let rl_provider3 = grpc_rate_limiter.with_tier(interceptors::GrpcRateLimitTier::Read);
 
         router = router.add_service(AlistProviderServiceServer::with_interceptor(
             providers::alist::AlistProviderGrpcService::new(app_state.clone()),
-            move |req| {
-                let req = rl_provider1.check(req)?;
-                provider_interceptor1.inject_user(req)
-            },
+            move |req| provider_interceptor1.inject_user(req),
         ));
         router = router.add_service(BilibiliProviderServiceServer::with_interceptor(
             providers::bilibili::BilibiliProviderGrpcService::new(app_state.clone()),
-            move |req| {
-                let req = rl_provider2.check(req)?;
-                provider_interceptor2.inject_user(req)
-            },
+            move |req| provider_interceptor2.inject_user(req),
         ));
         router = router.add_service(EmbyProviderServiceServer::with_interceptor(
             providers::emby::EmbyProviderGrpcService::new(app_state),
-            move |req| {
-                let req = rl_provider3.check(req)?;
-                provider_interceptor3.inject_user(req)
-            },
+            move |req| provider_interceptor3.inject_user(req),
         ));
     }
 
@@ -470,7 +427,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
             } else {
                 Some(config.redis.url.clone())
             };
-            match synctv_cluster::discovery::NodeRegistry::new(redis_url, cluster_node_id.clone(), 30) {
+            match synctv_cluster::discovery::NodeRegistry::new(redis_url, cluster_node_id.clone(), 30, &config.redis.key_prefix) {
                 Ok(fallback_registry) => {
                     let cluster_server = synctv_cluster::grpc::ClusterServer::new(
                         std::sync::Arc::new(fallback_registry),

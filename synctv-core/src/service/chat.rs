@@ -181,7 +181,7 @@ impl ChatService {
                 .await?;
         }
 
-        self.chat_repository.delete(message_id).await
+        self.chat_repository.delete(message_id, message.created_at).await
     }
 
     /// Send a danmaku message (not persisted, real-time only)

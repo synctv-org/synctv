@@ -5,6 +5,10 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
+[features]
+default = ["k8s"]
+k8s = ["kube", "k8s-openapi"]
+
 [dependencies]
 # Internal
 synctv-core.workspace = true
@@ -25,8 +29,9 @@ prost-types.workspace = true
 redis.workspace = true
 
 # Kubernetes (in-cluster leader election & service discovery)
-kube.workspace = true
-k8s-openapi.workspace = true
+# Optional: only needed for k8s_dns discovery and k8s_lease leader election
+kube = { workspace = true, optional = true }
+k8s-openapi = { workspace = true, optional = true }
 
 # Caching
 dashmap.workspace = true

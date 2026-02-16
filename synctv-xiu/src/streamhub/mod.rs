@@ -628,13 +628,40 @@ impl StreamsHub {
             client_event_sender: client_producer,
         }
     }
-    pub async fn run(&mut self) {
-        self.event_loop().await;
-        // H-3: If we reach here, all event senders were dropped — the hub is broken.
-        tracing::error!(
-            "StreamHub event_loop exited: all event senders dropped. \
-             The streaming infrastructure is no longer functional."
-        );
+    /// Run the event loop, returning the exit reason.
+    ///
+    /// - `Ok(())` -- all event senders were dropped (normal shutdown).
+    /// - `Err(msg)` -- the event loop panicked; `msg` describes the panic.
+    ///
+    /// The caller (supervision loop in `server.rs`) uses this to decide
+    /// whether to restart with backoff or shut down.
+    pub async fn run(&mut self) -> Result<(), String> {
+        use std::panic::AssertUnwindSafe;
+        use futures::FutureExt;
+
+        match AssertUnwindSafe(self.event_loop()).catch_unwind().await {
+            Ok(()) => {
+                tracing::error!(
+                    "StreamHub event_loop exited: all event senders dropped."
+                );
+                Ok(())
+            }
+            Err(panic_payload) => {
+                let msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                    (*s).to_string()
+                } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "unknown panic".to_string()
+                };
+                tracing::error!(
+                    "StreamHub event_loop panicked: {}. \
+                     The streaming infrastructure is no longer functional.",
+                    msg
+                );
+                Err(msg)
+            }
+        }
     }
 
     pub fn get_hub_event_sender(&mut self) -> StreamHubEventSender {

@@ -249,7 +249,7 @@ pub enum GrpcRateLimitTier {
 
 impl GrpcRateLimitTier {
     /// Maximum requests per window for this tier
-    const fn max_requests(self) -> u32 {
+    pub(crate) const fn max_requests(self) -> u32 {
         match self {
             Self::Auth => 5,
             Self::Email => 5,
@@ -261,7 +261,7 @@ impl GrpcRateLimitTier {
     }
 
     /// Rate limit key suffix for bucketing per tier
-    const fn key_suffix(self) -> &'static str {
+    pub(crate) const fn key_suffix(self) -> &'static str {
         match self {
             Self::Auth => "auth",
             Self::Email => "email",

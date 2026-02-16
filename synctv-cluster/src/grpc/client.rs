@@ -576,7 +576,7 @@ mod tests {
     async fn test_cluster_client_no_remote_nodes() {
         // Create a local-only node registry (no Redis)
         let registry = Arc::new(
-            NodeRegistry::new(None, "self_node".to_string(), 30).unwrap(),
+            NodeRegistry::new(None, "self_node".to_string(), 30, "synctv:").unwrap(),
         );
         // Register only ourselves
         registry

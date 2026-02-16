@@ -9,6 +9,13 @@ license.workspace = true
 name = "synctv"
 path = "src/main.rs"
 
+[features]
+default = ["k8s"]
+# Enable Kubernetes support (K8s DNS discovery, K8s Lease leader election).
+# Disable to reduce binary size for non-K8s deployments:
+#   cargo build --no-default-features
+k8s = ["synctv-cluster/k8s"]
+
 [lints]
 workspace = true
 
@@ -17,7 +24,7 @@ workspace = true
 synctv-core.workspace = true
 synctv-api.workspace = true
 synctv-livestream.workspace = true
-synctv-cluster.workspace = true
+synctv-cluster = { workspace = true, default-features = false }
 synctv-sfu.workspace = true
 
 # Async

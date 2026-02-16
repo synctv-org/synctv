@@ -126,6 +126,13 @@ pub struct ForwardablePacket {
 
     /// When packet was received
     pub received_at: Instant,
+
+    /// Source track ID (identifies which published track this packet came from).
+    /// Used by the subscriber output to route packets to the correct outbound track.
+    pub source_track_id: Option<crate::types::TrackId>,
+
+    /// Track kind (audio/video) for fast filtering without needing codec lookup
+    pub kind: Option<TrackKind>,
 }
 
 /// Media track in the SFU
@@ -229,6 +236,7 @@ impl MediaTrack {
         let track = Arc::clone(&self.remote_track);
         let stats = Arc::clone(&self.stats);
         let track_id = self.id.clone();
+        let track_kind = self.kind;
         let quality_layer = Arc::clone(&self.active_quality_layer);
         let cancel_token = self.cancel_token.clone();
 
@@ -274,6 +282,8 @@ impl MediaTrack {
                                     timestamp: rtp_packet.header.timestamp,
                                     quality_layer: *quality_layer.read(),
                                     received_at: Instant::now(),
+                                    source_track_id: Some(track_id.clone()),
+                                    kind: Some(track_kind),
                                 };
 
                                 // Forward packet to subscribers (drop on overflow to prevent OOM)

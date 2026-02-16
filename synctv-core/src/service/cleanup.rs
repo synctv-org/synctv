@@ -27,6 +27,8 @@ pub struct CleanupConfig {
     pub expired_token_retention_days: u32,
     /// Days to retain read notifications before deletion (0 = never purge)
     pub notification_retention_days: u32,
+    /// Days to retain any notification (read or unread) before deletion (0 = never purge)
+    pub notification_max_retention_days: u32,
     /// Maximum chat messages to keep per room (0 = unlimited)
     pub chat_max_messages_per_room: i32,
 }
@@ -39,6 +41,7 @@ impl Default for CleanupConfig {
             media_soft_delete_retention_days: 30,
             expired_token_retention_days: 7,
             notification_retention_days: 30,
+            notification_max_retention_days: 90,
             chat_max_messages_per_room: 0, // unlimited by default
         }
     }
@@ -137,12 +140,25 @@ impl CleanupService {
         if self.config.notification_retention_days > 0 {
             match self.delete_old_notifications().await {
                 Ok(count) => {
-                    result.notifications_deleted = count;
+                    result.notifications_deleted += count;
                     if count > 0 {
-                        info!(count, "Deleted old notifications");
+                        info!(count, "Deleted old read notifications");
                     }
                 }
-                Err(e) => warn!(error = %e, "Failed to delete old notifications"),
+                Err(e) => warn!(error = %e, "Failed to delete old read notifications"),
+            }
+        }
+
+        // 5b. Delete all notifications (including unread) past max retention
+        if self.config.notification_max_retention_days > 0 {
+            match self.delete_expired_notifications().await {
+                Ok(count) => {
+                    result.notifications_deleted += count;
+                    if count > 0 {
+                        info!(count, "Deleted expired notifications (past max retention)");
+                    }
+                }
+                Err(e) => warn!(error = %e, "Failed to delete expired notifications"),
             }
         }
 
@@ -247,6 +263,26 @@ impl CleanupService {
         .execute(&self.pool)
         .await
         .internal_with_err("Failed to delete old notifications")?;
+
+        Ok(result.rows_affected())
+    }
+
+    /// Delete all notifications (including unread) older than the max retention period
+    ///
+    /// This prevents unbounded growth from unread notifications that are never
+    /// acknowledged by users.
+    async fn delete_expired_notifications(&self) -> Result<u64> {
+        let days = self.config.notification_max_retention_days as i32;
+        let result = sqlx::query(
+            r"
+            DELETE FROM notifications
+            WHERE created_at < CURRENT_TIMESTAMP - ($1 || ' days')::INTERVAL
+            ",
+        )
+        .bind(days)
+        .execute(&self.pool)
+        .await
+        .internal_with_err("Failed to delete expired notifications")?;
 
         Ok(result.rows_affected())
     }
@@ -357,6 +393,7 @@ mod tests {
         assert_eq!(config.media_soft_delete_retention_days, 30);
         assert_eq!(config.expired_token_retention_days, 7);
         assert_eq!(config.notification_retention_days, 30);
+        assert_eq!(config.notification_max_retention_days, 90);
         assert_eq!(config.chat_max_messages_per_room, 0);
     }
 
@@ -379,6 +416,7 @@ mod tests {
             media_soft_delete_retention_days: 14,
             expired_token_retention_days: 3,
             notification_retention_days: 14,
+            notification_max_retention_days: 60,
             chat_max_messages_per_room: 1000,
         };
         assert_eq!(config.soft_delete_retention_days, 30);
@@ -386,6 +424,7 @@ mod tests {
         assert_eq!(config.media_soft_delete_retention_days, 14);
         assert_eq!(config.expired_token_retention_days, 3);
         assert_eq!(config.notification_retention_days, 14);
+        assert_eq!(config.notification_max_retention_days, 60);
         assert_eq!(config.chat_max_messages_per_room, 1000);
     }
 
@@ -397,10 +436,12 @@ mod tests {
             media_soft_delete_retention_days: 0,
             expired_token_retention_days: 0,
             notification_retention_days: 0,
+            notification_max_retention_days: 0,
             chat_max_messages_per_room: 0,
         };
         // All zero means all cleanup is disabled
         assert_eq!(config.soft_delete_retention_days, 0);
+        assert_eq!(config.notification_max_retention_days, 0);
         assert_eq!(config.chat_max_messages_per_room, 0);
     }
 

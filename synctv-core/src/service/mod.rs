@@ -33,7 +33,7 @@ pub mod optimistic_retry;
 pub mod turn_server;
 pub mod ws_ticket;
 
-pub use auth::{hash_password, verify_password, JwtService, TokenType, Claims};
+pub use auth::{hash_password, verify_password, JwtService, TokenType, Claims, BruteForceProtection};
 pub use chat::ChatService;
 pub use email_token::{EmailTokenService, EmailTokenType};
 pub use oauth2::{OAuth2Service, OAuth2State, OAuth2UserInfo};
@@ -71,5 +71,5 @@ pub use distributed_lock::{DistributedLock, LockGuard};
 pub use email::{EmailService, EmailConfig};
 pub use email_templates::{EmailTemplateManager, EmailTemplateType};
 pub use optimistic_retry::retry_with_optimistic_lock;
-pub use turn_server::{StunServer, StunServerConfig};
+pub use turn_server::{StunServer, StunServerConfig, resolve_external_ip, validate_external_addr};
 pub use ws_ticket::{WsTicketService, WsTicketData};

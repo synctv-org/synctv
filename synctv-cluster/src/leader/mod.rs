@@ -9,15 +9,16 @@
 //!   `coordination.k8s.io/v1` Lease resource via in-cluster kube client.
 //!   Preferred for Kubernetes deployments as it integrates with RBAC
 //!   and doesn't require Redis for leader election.
+//!   Requires the `k8s` feature flag.
 //!
 //! # Usage
 //!
 //! ```ignore
 //! // Redis-based (any deployment):
-//! let elector = LeaderElector::new(redis_conn, node_id);
+//! let elector = LeaderElector::new(redis_conn, node_id, "synctv:");
 //! elector.start(cancel_token.clone());
 //!
-//! // K8s Lease-based (K8s only):
+//! // K8s Lease-based (K8s only, requires "k8s" feature):
 //! let elector = K8sLeaderElector::new(pod_name, namespace, config).await?;
 //! elector.start(cancel_token.clone());
 //!
@@ -26,7 +27,9 @@
 //! }
 //! ```
 
+#[cfg(feature = "k8s")]
 pub mod k8s_lease;
+#[cfg(feature = "k8s")]
 pub use k8s_lease::{K8sLeaderElector, K8sLeaderElectorConfig};
 
 /// Unified leader elector that supports both Redis and K8s modes.
@@ -37,7 +40,8 @@ pub use k8s_lease::{K8sLeaderElector, K8sLeaderElectorConfig};
 pub enum AnyLeaderElector {
     /// Redis-based leader election (works in any deployment)
     Redis(LeaderElector),
-    /// Kubernetes Lease-based leader election (K8s only)
+    /// Kubernetes Lease-based leader election (K8s only, requires `k8s` feature)
+    #[cfg(feature = "k8s")]
     K8s(K8sLeaderElector),
 }
 
@@ -46,12 +50,28 @@ impl AnyLeaderElector {
     pub fn is_leader(&self) -> bool {
         match self {
             AnyLeaderElector::Redis(e) => e.is_leader(),
+            #[cfg(feature = "k8s")]
             AnyLeaderElector::K8s(e) => e.is_leader(),
+        }
+    }
+
+    /// Returns the current leader epoch (fencing token).
+    ///
+    /// The epoch is monotonically increasing and changes each time this node
+    /// acquires leadership. Callers should capture the epoch before starting a
+    /// singleton task and re-check it after to detect leadership loss.
+    ///
+    /// Returns 0 if this node has never been leader.
+    pub fn leader_epoch(&self) -> u64 {
+        match self {
+            AnyLeaderElector::Redis(e) => e.leader_epoch(),
+            #[cfg(feature = "k8s")]
+            AnyLeaderElector::K8s(e) => e.leader_epoch(),
         }
     }
 }
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -60,14 +80,25 @@ use tracing::{debug, info, warn};
 
 use synctv_core::service::DistributedLock;
 
-/// Redis key prefix for leader election lock.
-const LEADER_LOCK_KEY: &str = "leader_election";
+/// Default Redis key for leader election lock (used when no prefix is configured).
+const DEFAULT_LEADER_LOCK_KEY: &str = "leader_election";
 
 /// Leader election using Redis distributed locks.
 ///
 /// Only one replica at a time holds the lock and is considered the leader.
 /// The leader performs singleton tasks like database migrations and
 /// periodic cleanup (expired token cleanup, audit log pruning).
+///
+/// ## Split-brain protection
+///
+/// Each leadership acquisition increments a monotonic epoch (fencing token).
+/// Callers can use [`leader_epoch()`](Self::leader_epoch) to validate that
+/// leadership has not changed between the start and end of a singleton task.
+///
+/// On any Redis operation failure, `is_leader` is set to `false` immediately
+/// (no waiting for the next tick). After losing leadership, a grace period
+/// equal to `renew_interval_secs` is enforced before attempting re-acquisition
+/// to prevent rapid flip-flopping during transient network issues.
 #[derive(Clone)]
 pub struct LeaderElector {
     /// Whether this instance is currently the leader
@@ -82,6 +113,14 @@ pub struct LeaderElector {
     renew_interval_secs: u64,
     /// Current lock value (used for renewal and release)
     lock_value: Arc<parking_lot::Mutex<Option<String>>>,
+    /// Redis key used for the leader election lock (includes configured prefix)
+    lock_key: String,
+    /// Monotonically increasing epoch (fencing token) incremented on each
+    /// leadership acquisition. Used for split-brain protection.
+    leader_epoch: Arc<AtomicU64>,
+    /// Timestamp (Instant) at which leadership was lost. Used to enforce a
+    /// grace period before re-acquisition attempts.
+    leadership_lost_at: Arc<parking_lot::Mutex<Option<tokio::time::Instant>>>,
 }
 
 /// Configuration for leader election.
@@ -103,18 +142,26 @@ impl Default for LeaderElectorConfig {
 
 impl LeaderElector {
     /// Create a new leader elector with default configuration.
+    ///
+    /// The `key_prefix` is prepended to the leader election lock key in Redis
+    /// (e.g. `"synctv:"` produces the lock key `synctv:leader_election`).
+    /// Pass an empty string to use the unprefixed default key.
     pub fn new(
         redis_conn: redis::aio::ConnectionManager,
         identity: String,
+        key_prefix: &str,
     ) -> Self {
-        Self::with_config(redis_conn, identity, LeaderElectorConfig::default())
+        Self::with_config(redis_conn, identity, LeaderElectorConfig::default(), key_prefix)
     }
 
     /// Create a new leader elector with custom configuration.
+    ///
+    /// The `key_prefix` is prepended to the leader election lock key in Redis.
     pub fn with_config(
         redis_conn: redis::aio::ConnectionManager,
         identity: String,
         config: LeaderElectorConfig,
+        key_prefix: &str,
     ) -> Self {
         assert!(
             config.renew_interval_secs < config.lease_duration_secs,
@@ -130,12 +177,27 @@ impl LeaderElector {
             lease_duration_secs: config.lease_duration_secs,
             renew_interval_secs: config.renew_interval_secs,
             lock_value: Arc::new(parking_lot::Mutex::new(None)),
+            lock_key: format!("{}{}", key_prefix, DEFAULT_LEADER_LOCK_KEY),
+            leader_epoch: Arc::new(AtomicU64::new(0)),
+            leadership_lost_at: Arc::new(parking_lot::Mutex::new(None)),
         }
     }
 
     /// Returns `true` if this instance is currently the leader.
     pub fn is_leader(&self) -> bool {
         self.is_leader.load(Ordering::Acquire)
+    }
+
+    /// Returns the current leader epoch (fencing token).
+    ///
+    /// The epoch is monotonically increasing and increments each time this node
+    /// acquires leadership. Callers should capture the epoch before starting a
+    /// singleton task and compare it afterwards to detect if leadership was lost
+    /// and re-acquired during the task.
+    ///
+    /// Returns 0 if this node has never been leader.
+    pub fn leader_epoch(&self) -> u64 {
+        self.leader_epoch.load(Ordering::Acquire)
     }
 
     /// Start the leader election loop.
@@ -182,7 +244,7 @@ impl LeaderElector {
 
         if let Some(ref value) = current_value {
             // We think we're the leader; try to extend the lock.
-            match self.lock.extend(LEADER_LOCK_KEY, value, self.lease_duration_secs).await {
+            match self.lock.extend(&self.lock_key, value, self.lease_duration_secs).await {
                 Ok(true) => {
                     debug!(identity = %self.identity, "Leader lease renewed");
                     // Still the leader
@@ -190,10 +252,7 @@ impl LeaderElector {
                 Ok(false) => {
                     // Lock expired or was taken by someone else
                     warn!(identity = %self.identity, "Leader lease renewal failed (lock lost)");
-                    self.set_leader(false);
-                    *self.lock_value.lock() = None;
-                    // Immediately try to re-acquire
-                    self.try_acquire().await;
+                    self.lose_leadership();
                 }
                 Err(e) => {
                     warn!(
@@ -201,24 +260,57 @@ impl LeaderElector {
                         error = %e,
                         "Leader lease renewal failed (Redis error)"
                     );
-                    // Conservatively assume we lost leadership on error,
+                    // Immediately assume we lost leadership on error,
                     // because we can't confirm the lock still exists.
-                    self.set_leader(false);
-                    *self.lock_value.lock() = None;
+                    self.lose_leadership();
                 }
             }
         } else {
-            // Not currently the leader; try to acquire.
+            // Not currently the leader; check grace period before attempting re-acquire.
+            if self.in_grace_period() {
+                debug!(
+                    identity = %self.identity,
+                    "In grace period after leadership loss, deferring acquisition"
+                );
+                return;
+            }
             self.try_acquire().await;
+        }
+    }
+
+    /// Immediately mark this node as no longer the leader, clear the lock
+    /// value, and record the time of loss for grace period enforcement.
+    fn lose_leadership(&self) {
+        self.set_leader(false);
+        *self.lock_value.lock() = None;
+        *self.leadership_lost_at.lock() = Some(tokio::time::Instant::now());
+    }
+
+    /// Returns `true` if we recently lost leadership and should wait before
+    /// attempting to re-acquire. The grace period equals `renew_interval_secs`
+    /// to avoid rapid flip-flopping during transient Redis issues.
+    fn in_grace_period(&self) -> bool {
+        let guard = self.leadership_lost_at.lock();
+        if let Some(lost_at) = *guard {
+            lost_at.elapsed() < Duration::from_secs(self.renew_interval_secs)
+        } else {
+            false
         }
     }
 
     /// Try to acquire the leadership lock.
     async fn try_acquire(&self) {
-        match self.lock.acquire(LEADER_LOCK_KEY, self.lease_duration_secs).await {
+        match self.lock.acquire(&self.lock_key, self.lease_duration_secs).await {
             Ok(Some(value)) => {
-                info!(identity = %self.identity, "Became leader");
+                let epoch = self.leader_epoch.fetch_add(1, Ordering::AcqRel) + 1;
+                info!(
+                    identity = %self.identity,
+                    epoch = epoch,
+                    "Became leader"
+                );
                 *self.lock_value.lock() = Some(value);
+                // Clear grace period since we successfully acquired
+                *self.leadership_lost_at.lock() = None;
                 self.set_leader(true);
             }
             Ok(None) => {
@@ -241,7 +333,7 @@ impl LeaderElector {
         let value = self.lock_value.lock().take();
         if let Some(value) = value {
             info!(identity = %self.identity, "Resigning leadership");
-            if let Err(e) = self.lock.release(LEADER_LOCK_KEY, &value).await {
+            if let Err(e) = self.lock.release(&self.lock_key, &value).await {
                 warn!(
                     identity = %self.identity,
                     error = %e,

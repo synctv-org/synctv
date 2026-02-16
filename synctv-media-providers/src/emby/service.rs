@@ -7,7 +7,8 @@ use super::{client::EmbyClient, EmbyError};
 use crate::grpc::emby::{
     DeleteActiveEncodingsReq, Empty, FsListReq, FsListResp, GetItemReq, GetItemsReq,
     GetItemsResp, Item, LoginReq, LoginResp, LogoutReq, MeReq, MeResp,
-    PlaybackInfoReq, PlaybackInfoResp, SystemInfoReq, SystemInfoResp,
+    PlaybackInfoReq, PlaybackInfoResp, ReportPlaybackStartReq, ReportPlaybackStopReq,
+    ReportPlaybackProgressReq, SystemInfoReq, SystemInfoResp,
 };
 use async_trait::async_trait;
 
@@ -33,6 +34,12 @@ pub trait EmbyInterface: Send + Sync {
     async fn playback_info(&self, request: PlaybackInfoReq) -> Result<PlaybackInfoResp, EmbyError>;
 
     async fn delete_active_encodings(&self, request: DeleteActiveEncodingsReq) -> Result<Empty, EmbyError>;
+
+    async fn report_playback_start(&self, request: ReportPlaybackStartReq) -> Result<Empty, EmbyError>;
+
+    async fn report_playback_stop(&self, request: ReportPlaybackStopReq) -> Result<Empty, EmbyError>;
+
+    async fn report_playback_progress(&self, request: ReportPlaybackProgressReq) -> Result<Empty, EmbyError>;
 }
 
 /// Emby service implementation
@@ -178,6 +185,49 @@ impl EmbyInterface for EmbyService {
     async fn delete_active_encodings(&self, request: DeleteActiveEncodingsReq) -> Result<Empty, EmbyError> {
         let client = EmbyClient::with_credentials(&request.host, &request.token, String::new())?;
         client.delete_active_encodings(&request.play_session_id).await?;
+        Ok(Empty {})
+    }
+
+    async fn report_playback_start(&self, request: ReportPlaybackStartReq) -> Result<Empty, EmbyError> {
+        let client = EmbyClient::with_credentials(&request.host, &request.token, String::new())?;
+        let media_source_id = if request.media_source_id.is_empty() {
+            None
+        } else {
+            Some(request.media_source_id.as_str())
+        };
+        client.report_playback_start(
+            &request.item_id,
+            &request.play_session_id,
+            media_source_id,
+            request.position_ticks,
+        ).await?;
+        Ok(Empty {})
+    }
+
+    async fn report_playback_stop(&self, request: ReportPlaybackStopReq) -> Result<Empty, EmbyError> {
+        let client = EmbyClient::with_credentials(&request.host, &request.token, String::new())?;
+        client.report_playback_stop(
+            &request.item_id,
+            &request.play_session_id,
+            request.position_ticks,
+        ).await?;
+        Ok(Empty {})
+    }
+
+    async fn report_playback_progress(&self, request: ReportPlaybackProgressReq) -> Result<Empty, EmbyError> {
+        let client = EmbyClient::with_credentials(&request.host, &request.token, String::new())?;
+        let media_source_id = if request.media_source_id.is_empty() {
+            None
+        } else {
+            Some(request.media_source_id.as_str())
+        };
+        client.report_playback_progress(
+            &request.item_id,
+            &request.play_session_id,
+            media_source_id,
+            request.position_ticks,
+            request.is_paused,
+        ).await?;
         Ok(Empty {})
     }
 }

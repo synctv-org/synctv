@@ -1,4 +1,5 @@
 use dashmap::DashMap;
+use redis::AsyncCommands;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -88,6 +89,11 @@ impl Default for ConnectionLimits {
     }
 }
 
+/// TTL for distributed connection counters in Redis (seconds).
+/// Acts as a crash-safety mechanism: if a node crashes without decrementing,
+/// the counter will expire after this duration.
+const DISTRIBUTED_COUNTER_TTL_SECONDS: i64 = 300; // 5 minutes
+
 /// Connection manager for tracking active gRPC streaming connections
 #[derive(Clone)]
 pub struct ConnectionManager {
@@ -113,6 +119,14 @@ pub struct ConnectionManager {
 
     /// Broadcast channel for disconnect signals
     disconnect_tx: Arc<broadcast::Sender<DisconnectSignal>>,
+
+    /// Optional Redis connection for distributed connection counting.
+    /// When present, per-user and per-room limits are enforced across all replicas.
+    /// When absent, limits are per-node only (fallback).
+    redis_conn: Option<redis::aio::ConnectionManager>,
+
+    /// Key prefix for Redis keys (e.g., "synctv:")
+    redis_key_prefix: String,
 }
 
 impl ConnectionManager {
@@ -129,7 +143,20 @@ impl ConnectionManager {
             total_connections_ever: Arc::new(AtomicU64::new(0)),
             total_messages: Arc::new(AtomicU64::new(0)),
             disconnect_tx: Arc::new(disconnect_tx),
+            redis_conn: None,
+            redis_key_prefix: String::new(),
         }
+    }
+
+    /// Enable distributed connection counting via Redis.
+    ///
+    /// When Redis is configured, per-user and per-room connection limits are
+    /// enforced across all replicas. Without Redis, limits are per-node only.
+    #[must_use]
+    pub fn with_redis(mut self, conn: redis::aio::ConnectionManager, key_prefix: &str) -> Self {
+        self.redis_conn = Some(conn);
+        self.redis_key_prefix = key_prefix.to_string();
+        self
     }
 
     /// Subscribe to disconnect signals
@@ -216,8 +243,11 @@ impl ConnectionManager {
 
     /// Register a new connection
     ///
-    /// Returns Ok(()) if connection is allowed, or Err with reason if rejected
-    pub fn register(&self, connection_id: String, user_id: UserId) -> Result<(), String> {
+    /// Returns Ok(()) if connection is allowed, or Err with reason if rejected.
+    ///
+    /// When Redis is configured, enforces per-user limits across all replicas.
+    /// Falls back to per-node limits if Redis is unavailable.
+    pub async fn register(&self, connection_id: String, user_id: UserId) -> Result<(), String> {
         // Atomically reserve a slot in the total connection count.
         // fetch_add returns the previous value; if it was already at the limit,
         // roll back and reject.
@@ -230,7 +260,32 @@ impl ConnectionManager {
             ));
         }
 
-        // Atomically check per-user limit and add connection ID.
+        // Check distributed per-user limit via Redis (if configured).
+        // On Redis failure, fall back to local-only check.
+        let redis_user_incremented = if let Some(ref conn) = self.redis_conn {
+            let redis_key = format!("{}connections:user:{}", self.redis_key_prefix, user_id.as_str());
+            match self.redis_incr_and_check(&redis_key, self.limits.max_per_user).await {
+                Ok(true) => true,  // Allowed, counter incremented
+                Ok(false) => {
+                    // Distributed limit exceeded -- roll back
+                    self.total_connections.fetch_sub(1, Ordering::AcqRel);
+                    let _ = self.redis_decr(conn, &redis_key).await;
+                    return Err(format!(
+                        "Too many connections for this user across all replicas (max {})",
+                        self.limits.max_per_user
+                    ));
+                }
+                Err(e) => {
+                    // Redis error -- fall back to local-only check
+                    warn!("Distributed user connection check failed, using local fallback: {e}");
+                    false
+                }
+            }
+        } else {
+            false
+        };
+
+        // Atomically check per-user limit locally and add connection ID.
         // Holding the entry ref-mut prevents concurrent registrations for the same
         // user from both passing the limit check.
         {
@@ -238,6 +293,13 @@ impl ConnectionManager {
             if user_entry.len() >= self.limits.max_per_user {
                 // Roll back the total connection reservation
                 self.total_connections.fetch_sub(1, Ordering::AcqRel);
+                // Roll back Redis counter if we incremented it
+                if redis_user_incremented {
+                    if let Some(ref conn) = self.redis_conn {
+                        let redis_key = format!("{}connections:user:{}", self.redis_key_prefix, user_id.as_str());
+                        let _ = self.redis_decr(conn, &redis_key).await;
+                    }
+                }
                 return Err(format!(
                     "Too many connections for this user (max {})",
                     self.limits.max_per_user
@@ -270,22 +332,21 @@ impl ConnectionManager {
 
     /// Associate a connection with a room
     ///
-    /// **Production Enhancement (#24)**: Enforces per-room connection limits to prevent
-    /// resource exhaustion. If a room has reached `max_per_room` connections, new joins
-    /// are rejected with a clear error message.
+    /// Enforces per-room connection limits to prevent resource exhaustion.
+    /// When Redis is configured, limits are enforced across all replicas.
     ///
     /// If the connection is already in a different room, it is removed from
     /// the old room first (preventing a double-join / leaked entry).
-    pub fn join_room(&self, connection_id: &str, room_id: RoomId) -> Result<(), String> {
+    pub async fn join_room(&self, connection_id: &str, room_id: RoomId) -> Result<(), String> {
         // Check if connection already belongs to a room and remove it from the old
         // room's entry before adding to the new one (prevent double-join).
-        {
-            let old_room_id: Option<RoomId> = self
+        let old_room_id: Option<RoomId> = {
+            let old = self
                 .connections
                 .get(connection_id)
                 .and_then(|c| c.room_id.clone());
 
-            if let Some(ref old_room) = old_room_id {
+            if let Some(ref old_room) = old {
                 if old_room == &room_id {
                     // Already in the target room -- nothing to do
                     return Ok(());
@@ -299,13 +360,50 @@ impl ConnectionManager {
                     }
                 }
             }
+            old
+        };
+
+        // Decrement old room's distributed counter if we left a room
+        if let Some(ref old_room) = old_room_id {
+            if let Some(ref conn) = self.redis_conn {
+                let old_key = format!("{}connections:room:{}", self.redis_key_prefix, old_room.as_str());
+                let _ = self.redis_decr(conn, &old_key).await;
+            }
         }
 
-        // Atomically check per-room limit and add connection.
+        // Check distributed per-room limit via Redis (if configured).
+        let redis_room_incremented = if let Some(ref _conn) = self.redis_conn {
+            let redis_key = format!("{}connections:room:{}", self.redis_key_prefix, room_id.as_str());
+            match self.redis_incr_and_check(&redis_key, self.limits.max_per_room).await {
+                Ok(true) => true,
+                Ok(false) => {
+                    let _ = self.redis_decr(_conn, &redis_key).await;
+                    return Err(format!(
+                        "Room at capacity across all replicas ({} connections)",
+                        self.limits.max_per_room
+                    ));
+                }
+                Err(e) => {
+                    warn!("Distributed room connection check failed, using local fallback: {e}");
+                    false
+                }
+            }
+        } else {
+            false
+        };
+
+        // Atomically check per-room limit locally and add connection.
         // Holding the entry ref-mut prevents concurrent joins from exceeding the limit.
         {
             let mut room_entry = self.room_connections.entry(room_id.clone()).or_default();
             if room_entry.len() >= self.limits.max_per_room {
+                // Roll back Redis counter
+                if redis_room_incremented {
+                    if let Some(ref conn) = self.redis_conn {
+                        let redis_key = format!("{}connections:room:{}", self.redis_key_prefix, room_id.as_str());
+                        let _ = self.redis_decr(conn, &redis_key).await;
+                    }
+                }
                 return Err(format!(
                     "Room at capacity ({} connections)",
                     self.limits.max_per_room
@@ -320,9 +418,16 @@ impl ConnectionManager {
             conn.room_id = Some(room_id.clone());
             conn.last_activity = Instant::now();
         } else {
-            // Connection disappeared — roll back the room_connections entry
+            // Connection disappeared -- roll back the room_connections entry
             if let Some(mut room_conns) = self.room_connections.get_mut(&room_id) {
                 room_conns.retain(|id| id != connection_id);
+            }
+            // Roll back Redis counter
+            if redis_room_incremented {
+                if let Some(ref conn) = self.redis_conn {
+                    let redis_key = format!("{}connections:room:{}", self.redis_key_prefix, room_id.as_str());
+                    let _ = self.redis_decr(conn, &redis_key).await;
+                }
             }
             return Err("Connection not found".to_string());
         }
@@ -350,7 +455,9 @@ impl ConnectionManager {
     }
 
     /// Unregister a connection
-    pub fn unregister(&self, connection_id: &str) {
+    ///
+    /// Decrements both local and distributed (Redis) connection counters.
+    pub async fn unregister(&self, connection_id: &str) {
         if let Some((_, conn_info)) = self.connections.remove(connection_id) {
             // Decrement the atomic total connection count
             self.total_connections.fetch_sub(1, Ordering::AcqRel);
@@ -372,6 +479,17 @@ impl ConnectionManager {
                         drop(room_conns);
                         self.room_connections.remove(room_id);
                     }
+                }
+            }
+
+            // Decrement distributed Redis counters (best-effort)
+            if let Some(ref conn) = self.redis_conn {
+                let user_key = format!("{}connections:user:{}", self.redis_key_prefix, conn_info.user_id.as_str());
+                let _ = self.redis_decr(conn, &user_key).await;
+
+                if let Some(ref room_id) = conn_info.room_id {
+                    let room_key = format!("{}connections:room:{}", self.redis_key_prefix, room_id.as_str());
+                    let _ = self.redis_decr(conn, &room_key).await;
                 }
             }
 
@@ -599,13 +717,45 @@ impl ConnectionManager {
                             );
                             for conn_id in &stale {
                                 manager.disconnect_connection(conn_id);
-                                manager.unregister(conn_id);
+                                manager.unregister(conn_id).await;
                             }
                         }
                     }
                 }
             }
         })
+    }
+
+    /// Atomically increment a Redis counter and check if the new value exceeds the limit.
+    ///
+    /// Returns `Ok(true)` if the counter was incremented and is within the limit,
+    /// `Ok(false)` if the limit was exceeded (counter was still incremented and must be rolled back),
+    /// or `Err` on Redis failure.
+    async fn redis_incr_and_check(&self, key: &str, max: usize) -> Result<bool, String> {
+        let Some(ref conn) = self.redis_conn else {
+            return Err("Redis not configured".to_string());
+        };
+        let mut conn = conn.clone();
+
+        // INCR returns the new value after increment
+        let count: i64 = conn.incr(key, 1i64).await.map_err(|e| format!("Redis INCR failed: {e}"))?;
+
+        // Set TTL as crash-safety: if this node crashes without DECR, the counter
+        // will auto-expire after DISTRIBUTED_COUNTER_TTL_SECONDS.
+        let _: Result<(), _> = conn.expire(key, DISTRIBUTED_COUNTER_TTL_SECONDS).await;
+
+        Ok(count <= max as i64)
+    }
+
+    /// Decrement a Redis counter (best-effort, errors are logged but not propagated).
+    async fn redis_decr(&self, conn: &redis::aio::ConnectionManager, key: &str) -> Result<(), String> {
+        let mut conn = conn.clone();
+        let count: i64 = conn.decr(key, 1i64).await.map_err(|e| format!("Redis DECR failed: {e}"))?;
+        // Prevent counter from going negative (shouldn't happen, but defensive)
+        if count < 0 {
+            let _: Result<(), _> = conn.set::<_, _, ()>(key, 0i64).await;
+        }
+        Ok(())
     }
 }
 
@@ -629,19 +779,19 @@ pub struct ConnectionMetrics {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_register_connection() {
+    #[tokio::test]
+    async fn test_register_connection() {
         let manager = ConnectionManager::default();
         let user_id = UserId::from_string("user1".to_string());
 
-        let result = manager.register("conn1".to_string(), user_id.clone());
+        let result = manager.register("conn1".to_string(), user_id.clone()).await;
         assert!(result.is_ok());
         assert_eq!(manager.connection_count(), 1);
         assert_eq!(manager.user_connection_count(&user_id), 1);
     }
 
-    #[test]
-    fn test_per_user_limit() {
+    #[tokio::test]
+    async fn test_per_user_limit() {
         let limits = ConnectionLimits {
             max_per_user: 2,
             ..Default::default()
@@ -652,28 +802,31 @@ mod tests {
         // First two should succeed
         assert!(manager
             .register("conn1".to_string(), user_id.clone())
+            .await
             .is_ok());
         assert!(manager
             .register("conn2".to_string(), user_id.clone())
+            .await
             .is_ok());
 
         // Third should fail
-        let result = manager.register("conn3".to_string(), user_id.clone());
+        let result = manager.register("conn3".to_string(), user_id.clone()).await;
         assert!(result.is_err());
         assert_eq!(manager.connection_count(), 2);
     }
 
-    #[test]
-    fn test_join_room() {
+    #[tokio::test]
+    async fn test_join_room() {
         let manager = ConnectionManager::default();
         let user_id = UserId::from_string("user1".to_string());
         let room_id = RoomId::from_string("room1".to_string());
 
         manager
             .register("conn1".to_string(), user_id.clone())
+            .await
             .unwrap();
 
-        let result = manager.join_room("conn1", room_id.clone());
+        let result = manager.join_room("conn1", room_id.clone()).await;
         assert!(result.is_ok());
         assert_eq!(manager.room_connection_count(&room_id), 1);
 
@@ -681,8 +834,8 @@ mod tests {
         assert_eq!(conn.room_id.as_ref().unwrap().as_str(), "room1");
     }
 
-    #[test]
-    fn test_per_room_limit() {
+    #[tokio::test]
+    async fn test_per_room_limit() {
         let limits = ConnectionLimits {
             max_per_room: 2,
             ..Default::default()
@@ -695,24 +848,24 @@ mod tests {
         let user2 = UserId::from_string("user2".to_string());
         let user3 = UserId::from_string("user3".to_string());
 
-        manager.register("conn1".to_string(), user1).unwrap();
-        manager.register("conn2".to_string(), user2).unwrap();
-        manager.register("conn3".to_string(), user3).unwrap();
+        manager.register("conn1".to_string(), user1).await.unwrap();
+        manager.register("conn2".to_string(), user2).await.unwrap();
+        manager.register("conn3".to_string(), user3).await.unwrap();
 
-        assert!(manager.join_room("conn1", room_id.clone()).is_ok());
-        assert!(manager.join_room("conn2", room_id.clone()).is_ok());
+        assert!(manager.join_room("conn1", room_id.clone()).await.is_ok());
+        assert!(manager.join_room("conn2", room_id.clone()).await.is_ok());
 
         // Third should fail
-        let result = manager.join_room("conn3", room_id.clone());
+        let result = manager.join_room("conn3", room_id.clone()).await;
         assert!(result.is_err());
     }
 
-    #[test]
-    fn test_record_message() {
+    #[tokio::test]
+    async fn test_record_message() {
         let manager = ConnectionManager::default();
         let user_id = UserId::from_string("user1".to_string());
 
-        manager.register("conn1".to_string(), user_id).unwrap();
+        manager.register("conn1".to_string(), user_id).await.unwrap();
 
         manager.record_message("conn1");
         manager.record_message("conn1");
@@ -722,36 +875,37 @@ mod tests {
         assert_eq!(manager.total_messages(), 2);
     }
 
-    #[test]
-    fn test_unregister() {
+    #[tokio::test]
+    async fn test_unregister() {
         let manager = ConnectionManager::default();
         let user_id = UserId::from_string("user1".to_string());
         let room_id = RoomId::from_string("room1".to_string());
 
         manager
             .register("conn1".to_string(), user_id.clone())
+            .await
             .unwrap();
-        manager.join_room("conn1", room_id.clone()).unwrap();
+        manager.join_room("conn1", room_id.clone()).await.unwrap();
 
         assert_eq!(manager.connection_count(), 1);
         assert_eq!(manager.user_connection_count(&user_id), 1);
         assert_eq!(manager.room_connection_count(&room_id), 1);
 
-        manager.unregister("conn1");
+        manager.unregister("conn1").await;
 
         assert_eq!(manager.connection_count(), 0);
         assert_eq!(manager.user_connection_count(&user_id), 0);
         assert_eq!(manager.room_connection_count(&room_id), 0);
     }
 
-    #[test]
-    fn test_metrics() {
+    #[tokio::test]
+    async fn test_metrics() {
         let manager = ConnectionManager::default();
         let user1 = UserId::from_string("user1".to_string());
         let user2 = UserId::from_string("user2".to_string());
 
-        manager.register("conn1".to_string(), user1).unwrap();
-        manager.register("conn2".to_string(), user2).unwrap();
+        manager.register("conn1".to_string(), user1).await.unwrap();
+        manager.register("conn2".to_string(), user2).await.unwrap();
 
         manager.record_message("conn1");
         manager.record_message("conn2");
@@ -772,7 +926,7 @@ mod tests {
         let manager = ConnectionManager::new(limits);
         let user_id = UserId::from_string("user1".to_string());
 
-        manager.register("conn1".to_string(), user_id).unwrap();
+        manager.register("conn1".to_string(), user_id).await.unwrap();
 
         // Wait for idle timeout
         tokio::time::sleep(Duration::from_millis(150)).await;

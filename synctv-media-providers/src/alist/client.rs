@@ -6,9 +6,7 @@ use std::num::NonZeroU32;
 use std::sync::LazyLock;
 use std::time::Duration;
 
-use governor::{Quota, RateLimiter};
-use governor::clock::DefaultClock;
-use governor::state::{InMemoryState, NotKeyed};
+use governor::{DefaultKeyedRateLimiter, Quota, RateLimiter};
 use reqwest::{Client, header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE, ORIGIN, REFERER, USER_AGENT}};
 use serde_json::json;
 
@@ -16,18 +14,17 @@ use super::error::{AlistError, check_response, json_with_limit};
 use super::types::{AlistResp, LoginData, HttpFsGetResp, HttpFsListResp, HttpFsOtherResp, HttpMeResp, HttpFsSearchResp};
 use crate::error::with_retry;
 
-/// Default Alist API rate limit: 5 requests per second.
+/// Default Alist API rate limit: 5 requests per second per host.
 const DEFAULT_RATE_LIMIT_PER_SECOND: u32 = 5;
 
-type AlistRateLimiter = RateLimiter<NotKeyed, InMemoryState, DefaultClock>;
-
-/// Shared rate limiter for all Alist requests.
-/// Global so the token bucket is not reset when a new `AlistClient` is created per-request.
-static SHARED_RATE_LIMITER: LazyLock<std::sync::Arc<AlistRateLimiter>> = LazyLock::new(|| {
+/// Per-host rate limiter for Alist requests.
+/// Each Alist server gets its own independent rate limit bucket so that
+/// requests to one server don't throttle requests to another.
+static PER_HOST_RATE_LIMITER: LazyLock<std::sync::Arc<DefaultKeyedRateLimiter<String>>> = LazyLock::new(|| {
     let quota = Quota::per_second(
         NonZeroU32::new(DEFAULT_RATE_LIMIT_PER_SECOND).expect("rate limit must be > 0"),
     );
-    std::sync::Arc::new(RateLimiter::direct(quota))
+    std::sync::Arc::new(RateLimiter::keyed(quota))
 });
 
 /// Validate that a path does not contain traversal components (`..`).
@@ -66,34 +63,31 @@ pub struct AlistClient {
     host: String,
     token: Option<String>,
     client: Client,
-    rate_limiter: std::sync::Arc<AlistRateLimiter>,
 }
 
 impl AlistClient {
-    /// Create a new Alist client (reuses shared connection pool and rate limiter)
+    /// Create a new Alist client (reuses shared connection pool and per-host rate limiter)
     pub fn new(host: impl Into<String>) -> Result<Self, AlistError> {
         Ok(Self {
             host: host.into(),
             token: None,
             client: SHARED_CLIENT.clone(),
-            rate_limiter: SHARED_RATE_LIMITER.clone(),
         })
     }
 
-    /// Create a new Alist client with token (reuses shared connection pool and rate limiter)
+    /// Create a new Alist client with token (reuses shared connection pool and per-host rate limiter)
     pub fn with_token(host: impl Into<String>, token: impl Into<String>) -> Result<Self, AlistError> {
         Ok(Self {
             host: host.into(),
             token: Some(token.into()),
             client: SHARED_CLIENT.clone(),
-            rate_limiter: SHARED_RATE_LIMITER.clone(),
         })
     }
 
-    /// Wait for the rate limiter before making an API call.
-    /// This prevents concurrent users from overwhelming the upstream Alist server.
+    /// Wait for the per-host rate limiter before making an API call.
+    /// Each Alist server host gets its own independent rate limit bucket.
     async fn wait_for_rate_limit(&self) {
-        self.rate_limiter.until_ready().await;
+        PER_HOST_RATE_LIMITER.until_key_ready(&self.host).await;
     }
 
     /// Set authentication token

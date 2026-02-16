@@ -5,7 +5,8 @@
 use super::emby::{
     emby_server::Emby, DeleteActiveEncodingsReq, Empty, FsListReq, FsListResp, GetItemReq,
     GetItemsReq, GetItemsResp, Item, LoginReq, LoginResp, LogoutReq, MeReq, MeResp,
-    PlaybackInfoReq, PlaybackInfoResp, SystemInfoReq, SystemInfoResp,
+    PlaybackInfoReq, PlaybackInfoResp, ReportPlaybackStartReq, ReportPlaybackStopReq,
+    ReportPlaybackProgressReq, SystemInfoReq, SystemInfoResp,
 };
 use super::validation::validate_host_with_dns;
 use crate::emby::{EmbyInterface, EmbyService as EmbyServiceImpl};
@@ -142,6 +143,39 @@ impl Emby for EmbyService {
         validate_host_with_dns(&req.host).await?;
         let resp = self.service.delete_active_encodings(req).await
             .map_err(|e| map_emby_error("delete_active_encodings", e))?;
+        Ok(Response::new(resp))
+    }
+
+    async fn report_playback_start(
+        &self,
+        request: Request<ReportPlaybackStartReq>,
+    ) -> Result<Response<Empty>, Status> {
+        let req = request.into_inner();
+        validate_host_with_dns(&req.host).await?;
+        let resp = self.service.report_playback_start(req).await
+            .map_err(|e| map_emby_error("report_playback_start", e))?;
+        Ok(Response::new(resp))
+    }
+
+    async fn report_playback_stop(
+        &self,
+        request: Request<ReportPlaybackStopReq>,
+    ) -> Result<Response<Empty>, Status> {
+        let req = request.into_inner();
+        validate_host_with_dns(&req.host).await?;
+        let resp = self.service.report_playback_stop(req).await
+            .map_err(|e| map_emby_error("report_playback_stop", e))?;
+        Ok(Response::new(resp))
+    }
+
+    async fn report_playback_progress(
+        &self,
+        request: Request<ReportPlaybackProgressReq>,
+    ) -> Result<Response<Empty>, Status> {
+        let req = request.into_inner();
+        validate_host_with_dns(&req.host).await?;
+        let resp = self.service.report_playback_progress(req).await
+            .map_err(|e| map_emby_error("report_playback_progress", e))?;
         Ok(Response::new(resp))
     }
 }

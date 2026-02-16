@@ -207,6 +207,17 @@ impl KeyBuilder {
         format!("{}:token:blacklist:user:{}", self.prefix, user_id)
     }
 
+    // ==================== Brute-Force Protection ====================
+
+    /// Failed login attempt counter per username
+    ///
+    /// Type: String + TTL (15 minutes)
+    /// Value: counter (INCR operation)
+    #[must_use]
+    pub fn login_attempts(&self, username: &str) -> String {
+        format!("{}:auth:login_attempts:{}", self.prefix, username)
+    }
+
     // ==================== WebSocket Ticket ====================
 
     /// WebSocket ticket (one-time use)

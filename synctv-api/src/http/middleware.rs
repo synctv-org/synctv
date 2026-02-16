@@ -770,4 +770,126 @@ mod tests {
         let cloned = cat;
         assert!(matches!(cloned, RateLimitCategory::Auth));
     }
+
+    // === Security Parity: HTTP middleware checks ===
+    //
+    // The HTTP AuthUser extractor performs three security checks in order:
+    // 1. Token blacklist check (reject revoked tokens)
+    // 2. Password invalidation check (reject tokens issued before password change)
+    // 3. Banned/deleted user check (reject banned or soft-deleted users)
+    //
+    // These checks mirror the gRPC BlacklistCheckLayer to ensure consistent
+    // security enforcement across both transport layers.
+    //
+    // Full integration tests require AppState with real services; the tests
+    // below verify the structural aspects that can be tested in isolation.
+
+    #[test]
+    fn test_auth_user_requires_authorization_header() {
+        // AuthUser extraction requires an Authorization header.
+        // Without it, from_request_parts returns an error.
+        // This is tested indirectly -- the extractor reads from Parts.headers.
+        // We verify that the header name constant matches expectations.
+        assert_eq!(
+            axum::http::header::AUTHORIZATION.as_str(),
+            "authorization"
+        );
+    }
+
+    #[test]
+    fn test_security_headers_comprehensive() {
+        // Verify that the security headers middleware defines all required
+        // static header names (compiled lazily). Accessing them forces
+        // validation at test time.
+        let _ = X_FRAME_OPTIONS.clone();
+        let _ = X_CONTENT_TYPE_OPTIONS.clone();
+        let _ = X_XSS_PROTECTION.clone();
+        let _ = CONTENT_SECURITY_POLICY.clone();
+        let _ = REFERRER_POLICY.clone();
+        let _ = PERMISSIONS_POLICY.clone();
+        let _ = PRAGMA.clone();
+    }
+
+    #[tokio::test]
+    async fn test_security_headers_frame_ancestors_none() {
+        // Verify CSP includes frame-ancestors 'none' to prevent clickjacking
+        // (parity with X-Frame-Options: DENY)
+        let app = axum::Router::new()
+            .route(
+                "/test",
+                axum::routing::get(|| async { "ok" }),
+            )
+            .layer(axum::middleware::from_fn(security_headers_middleware));
+
+        let request = Request::builder()
+            .uri("/test")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        let csp = response
+            .headers()
+            .get("Content-Security-Policy")
+            .unwrap()
+            .to_str()
+            .unwrap();
+
+        assert!(
+            csp.contains("frame-ancestors 'none'"),
+            "CSP must include frame-ancestors 'none' for clickjacking protection"
+        );
+        assert!(
+            csp.contains("base-uri 'none'"),
+            "CSP must include base-uri 'none' to prevent base tag injection"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_security_headers_no_store_cache_control() {
+        // Verify that API responses include no-store to prevent caching of
+        // sensitive authentication data
+        let app = axum::Router::new()
+            .route(
+                "/api/test",
+                axum::routing::get(|| async { "sensitive data" }),
+            )
+            .layer(axum::middleware::from_fn(security_headers_middleware));
+
+        let request = Request::builder()
+            .uri("/api/test")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        let cache_control = response
+            .headers()
+            .get("Cache-Control")
+            .unwrap()
+            .to_str()
+            .unwrap();
+
+        assert!(cache_control.contains("no-store"));
+        assert!(cache_control.contains("proxy-revalidate"));
+    }
+
+    // === HSTS Edge Cases ===
+
+    #[test]
+    fn test_hsts_header_large_max_age() {
+        // 2 years is a common production value
+        let header = hsts_header(63072000, true, true);
+        assert!(header.starts_with("max-age=63072000"));
+        assert!(header.contains("includeSubDomains"));
+        assert!(header.contains("preload"));
+    }
+
+    #[test]
+    fn test_hsts_header_min_max_age_for_preload() {
+        // HSTS preload list requires max-age >= 31536000 (1 year)
+        let header = hsts_header(31536000, true, true);
+        assert_eq!(
+            header,
+            "max-age=31536000; includeSubDomains; preload"
+        );
+    }
 }

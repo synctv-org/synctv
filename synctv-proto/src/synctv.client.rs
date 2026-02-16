@@ -805,7 +805,7 @@ pub struct GetPlaybackStateResponse {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ClientMessage {
-    #[prost(oneof = "client_message::Message", tags = "1, 2, 3, 4, 5, 6, 7")]
+    #[prost(oneof = "client_message::Message", tags = "1, 2, 3, 4, 5, 6, 7, 8")]
     pub message: ::core::option::Option<client_message::Message>,
 }
 /// Nested message and enum types in `ClientMessage`.
@@ -828,6 +828,9 @@ pub mod client_message {
         WebrtcJoin(super::WebRtcJoin),
         #[prost(message, tag = "7")]
         WebrtcLeave(super::WebRtcLeave),
+        /// SFU migration: client responds to server's migration offer
+        #[prost(message, tag = "8")]
+        SfuMigrationAnswer(super::SfuMigrationAnswer),
     }
 }
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -835,7 +838,7 @@ pub mod client_message {
 pub struct ServerMessage {
     #[prost(
         oneof = "server_message::Message",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21"
     )]
     pub message: ::core::option::Option<server_message::Message>,
 }
@@ -883,6 +886,11 @@ pub mod server_message {
         WebrtcJoin(super::WebRtcJoin),
         #[prost(message, tag = "19")]
         WebrtcLeave(super::WebRtcLeave),
+        /// SFU migration: server requests existing P2P peer to renegotiate via SFU
+        #[prost(message, tag = "20")]
+        SfuMigrationOffer(super::SfuMigrationOffer),
+        #[prost(message, tag = "21")]
+        SfuMigrationStatus(super::SfuMigrationStatus),
     }
 }
 /// Note: room_id extracted from x-room-id metadata in MessageStream context
@@ -1469,6 +1477,51 @@ pub struct WebRtcLeave {
     #[prost(string, tag = "2")]
     pub conn_id: ::prost::alloc::string::String,
 }
+/// Server -> Client: SFU migration offer for an existing P2P peer
+/// The server creates a server-side PeerConnection and sends an SDP offer
+/// so the client can renegotiate its media routing through the SFU.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SfuMigrationOffer {
+    /// Unique ID for this migration batch
+    #[prost(string, tag = "1")]
+    pub migration_id: ::prost::alloc::string::String,
+    /// SDP offer (JSON string)
+    #[prost(string, tag = "2")]
+    pub data: ::prost::alloc::string::String,
+}
+/// Client -> Server: SFU migration answer from peer
+/// The client responds with an SDP answer to complete the renegotiation.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SfuMigrationAnswer {
+    /// Must match the migration_id from the offer
+    #[prost(string, tag = "1")]
+    pub migration_id: ::prost::alloc::string::String,
+    /// SDP answer (JSON string)
+    #[prost(string, tag = "2")]
+    pub data: ::prost::alloc::string::String,
+}
+/// Server -> Client: Broadcast migration status to all peers in the room
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SfuMigrationStatus {
+    /// Migration batch ID
+    #[prost(string, tag = "1")]
+    pub migration_id: ::prost::alloc::string::String,
+    /// Current migration state
+    #[prost(enumeration = "SfuMigrationState", tag = "2")]
+    pub state: i32,
+    /// Total peers being migrated
+    #[prost(int32, tag = "3")]
+    pub total_peers: i32,
+    /// Peers that completed migration
+    #[prost(int32, tag = "4")]
+    pub completed_peers: i32,
+    /// Peers that failed migration
+    #[prost(int32, tag = "5")]
+    pub failed_peers: i32,
+}
 /// ICE Servers Configuration
 /// Server sends this to client upon request or connection
 /// Contains STUN/TURN server URLs for NAT traversal
@@ -1742,6 +1795,43 @@ impl ItemType {
             "ITEM_TYPE_FOLDER" => Some(Self::Folder),
             "ITEM_TYPE_LIVE" => Some(Self::Live),
             "ITEM_TYPE_FILE" => Some(Self::File),
+            _ => None,
+        }
+    }
+}
+/// Migration state for status updates
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum SfuMigrationState {
+    Unspecified = 0,
+    /// Migration has begun
+    Started = 1,
+    /// All peers migrated successfully
+    Completed = 2,
+    /// Migration failed for one or more peers
+    Failed = 3,
+}
+impl SfuMigrationState {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "SFU_MIGRATION_STATE_UNSPECIFIED",
+            Self::Started => "SFU_MIGRATION_STATE_STARTED",
+            Self::Completed => "SFU_MIGRATION_STATE_COMPLETED",
+            Self::Failed => "SFU_MIGRATION_STATE_FAILED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "SFU_MIGRATION_STATE_UNSPECIFIED" => Some(Self::Unspecified),
+            "SFU_MIGRATION_STATE_STARTED" => Some(Self::Started),
+            "SFU_MIGRATION_STATE_COMPLETED" => Some(Self::Completed),
+            "SFU_MIGRATION_STATE_FAILED" => Some(Self::Failed),
             _ => None,
         }
     }

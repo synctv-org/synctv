@@ -244,4 +244,21 @@ impl NotificationRepository {
         Ok(result.rows_affected())
     }
 
+    /// Delete all notifications older than the specified number of days,
+    /// regardless of read status. Prevents unbounded table growth from
+    /// unread notifications that are never acknowledged.
+    pub async fn delete_older_than(&self, days: i32) -> Result<u64> {
+        let result = sqlx::query(
+            r"
+            DELETE FROM notifications
+            WHERE created_at < CURRENT_TIMESTAMP - ($1 || ' days')::INTERVAL
+            ",
+        )
+        .bind(days)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected())
+    }
+
 }

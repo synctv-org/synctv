@@ -696,6 +696,22 @@ pub mod stream {
     });
 }
 
+/// StreamHub infrastructure metrics
+pub mod streamhub {
+    use super::{register_counter_vec_with_registry, CounterVec, REGISTRY};
+
+    /// Total number of StreamHub event loop restarts, labeled by exit reason.
+    /// Reasons: "panic" (event_loop panicked), "channel_closed" (all senders dropped).
+    pub static STREAMHUB_RESTARTS_TOTAL: std::sync::LazyLock<CounterVec> = std::sync::LazyLock::new(|| {
+        register_counter_vec_with_registry!(
+            "streamhub_restarts_total",
+            "Total number of StreamHub event loop restarts",
+            &["reason"],
+            REGISTRY.clone()
+        ).expect("Failed to register STREAMHUB_RESTARTS_TOTAL")
+    });
+}
+
 /// Livestream metrics
 pub mod livestream {
     use super::{register_counter_vec_with_registry, register_histogram_vec_with_registry, register_int_gauge_with_registry, CounterVec, HistogramVec, REGISTRY, IntGauge};

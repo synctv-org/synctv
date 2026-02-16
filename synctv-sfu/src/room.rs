@@ -20,12 +20,16 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
-/// Room mode - P2P or SFU
+/// Room mode - P2P, Migrating, or SFU
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RoomMode {
     /// Peer-to-peer mode (< threshold peers)
     P2P,
-    /// SFU mode (>= threshold peers)
+    /// Transitional state while existing P2P peers are being migrated to SFU.
+    /// The room enters this state when the peer threshold is reached.
+    /// During migration, both P2P and SFU media paths may be active.
+    Migrating,
+    /// SFU mode (>= threshold peers, all peers migrated)
     SFU,
 }
 
@@ -468,9 +472,9 @@ impl SfuRoom {
                     room_id = %self.id,
                     peer_count,
                     threshold,
-                    "Switching from P2P to SFU mode"
+                    "Switching from P2P to Migrating mode (threshold reached)"
                 );
-                *mode = RoomMode::SFU;
+                *mode = RoomMode::Migrating;
 
                 // Update statistics
                 let mut stats = self.stats.write().await;
@@ -478,8 +482,27 @@ impl SfuRoom {
                 drop(stats);
                 drop(mode);
 
-                // Start forwarding all published tracks
+                // Start forwarding all published tracks.
+                // During migration, both P2P and SFU paths may be active.
+                // The API layer handles sending migration offers to existing peers.
                 self.switch_to_sfu().await?;
+            }
+            RoomMode::Migrating if peer_count < p2p_threshold => {
+                // Migration was in progress but peers left, drop back to P2P
+                info!(
+                    room_id = %self.id,
+                    peer_count,
+                    p2p_threshold,
+                    "Switching from Migrating to P2P mode (peers left during migration)"
+                );
+                *mode = RoomMode::P2P;
+
+                let mut stats = self.stats.write().await;
+                stats.mode_switches += 1;
+                drop(stats);
+                drop(mode);
+
+                self.switch_to_p2p().await?;
             }
             RoomMode::SFU if peer_count < p2p_threshold => {
                 info!(
@@ -502,6 +525,22 @@ impl SfuRoom {
             _ => {}
         }
 
+        Ok(())
+    }
+
+    /// Mark the room as fully migrated to SFU mode.
+    ///
+    /// Called by the API layer after all existing P2P peers have completed
+    /// migration (or timed out). Transitions from `Migrating` to `SFU`.
+    pub async fn complete_migration(&self) -> Result<()> {
+        let mut mode = self.mode.write().await;
+        if *mode == RoomMode::Migrating {
+            info!(
+                room_id = %self.id,
+                "Migration complete, switching to SFU mode"
+            );
+            *mode = RoomMode::SFU;
+        }
         Ok(())
     }
 

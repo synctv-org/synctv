@@ -216,7 +216,12 @@ cluster:
   # Normal events are dropped with a warning when full.
   publish_channel_capacity: 10000
   # Discovery mode: "redis" (default) or "k8s_dns" (requires HEADLESS_SERVICE_NAME
-  # and POD_NAMESPACE env vars)
+  # and POD_NAMESPACE env vars).
+  #
+  # IMPORTANT: "k8s_dns" mode still requires Redis for health monitoring, load
+  # balancing, and cluster pub/sub. DNS only supplements peer discovery by detecting
+  # new pods faster. Without Redis, k8s_dns provides DNS resolution only -- no
+  # NodeRegistry, HealthMonitor, or LoadBalancer will be created.
   discovery_mode: "redis"
 
 # ============================================================================

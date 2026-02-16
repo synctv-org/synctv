@@ -624,6 +624,8 @@ message ClientMessage {
         WebRTCIceCandidate webrtc_ice_candidate = 5;
         WebRTCJoin webrtc_join = 6;
         WebRTCLeave webrtc_leave = 7;
+        // SFU migration: client responds to server's migration offer
+        SfuMigrationAnswer sfu_migration_answer = 8;
     }
 }
 
@@ -649,8 +651,12 @@ message ServerMessage {
         WebRTCIceCandidate webrtc_ice_candidate = 17;
         WebRTCJoin webrtc_join = 18;
         WebRTCLeave webrtc_leave = 19;
+        // SFU migration: server requests existing P2P peer to renegotiate via SFU
+        SfuMigrationOffer sfu_migration_offer = 20;
+        SfuMigrationStatus sfu_migration_status = 21;
     }
 }
+
 
 // Note: room_id extracted from x-room-id metadata in MessageStream context
 // If position is set, client may display this as a danmaku (bullet comment)
@@ -1010,6 +1016,42 @@ message WebRTCJoin {
 message WebRTCLeave {
     string user_id = 1;     // Leaver's user ID
     string conn_id = 2;     // Leaver's connection ID
+}
+
+// ==================== SFU Migration Messages ====================
+// When the room crosses the SFU threshold, the server sends migration offers
+// to existing P2P peers so they transition to SFU-routed media.
+
+// Migration state for status updates
+enum SfuMigrationState {
+    SFU_MIGRATION_STATE_UNSPECIFIED = 0;
+    SFU_MIGRATION_STATE_STARTED = 1;     // Migration has begun
+    SFU_MIGRATION_STATE_COMPLETED = 2;   // All peers migrated successfully
+    SFU_MIGRATION_STATE_FAILED = 3;      // Migration failed for one or more peers
+}
+
+// Server -> Client: SFU migration offer for an existing P2P peer
+// The server creates a server-side PeerConnection and sends an SDP offer
+// so the client can renegotiate its media routing through the SFU.
+message SfuMigrationOffer {
+    string migration_id = 1;   // Unique ID for this migration batch
+    string data = 2;           // SDP offer (JSON string)
+}
+
+// Client -> Server: SFU migration answer from peer
+// The client responds with an SDP answer to complete the renegotiation.
+message SfuMigrationAnswer {
+    string migration_id = 1;   // Must match the migration_id from the offer
+    string data = 2;           // SDP answer (JSON string)
+}
+
+// Server -> Client: Broadcast migration status to all peers in the room
+message SfuMigrationStatus {
+    string migration_id = 1;            // Migration batch ID
+    SfuMigrationState state = 2;        // Current migration state
+    int32 total_peers = 3;              // Total peers being migrated
+    int32 completed_peers = 4;          // Peers that completed migration
+    int32 failed_peers = 5;             // Peers that failed migration
 }
 
 // ICE Servers Configuration

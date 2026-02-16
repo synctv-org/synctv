@@ -124,6 +124,48 @@ impl MediaProvider for AlistProvider {
         "alist"
     }
 
+    async fn validate_source_config(
+        &self,
+        _ctx: &ProviderContext<'_>,
+        source_config: &Value,
+    ) -> Result<(), ProviderError> {
+        let config = AlistSourceConfig::try_from(source_config)?;
+
+        // Validate host URL format
+        if config.host.is_empty() {
+            return Err(ProviderError::InvalidConfig(
+                "Alist host must not be empty".to_string(),
+            ));
+        }
+        if !config.host.starts_with("http://") && !config.host.starts_with("https://") {
+            return Err(ProviderError::InvalidConfig(format!(
+                "Alist host must start with http:// or https://, got: {}",
+                config.host
+            )));
+        }
+
+        // Validate path is not empty and doesn't contain path traversal
+        if config.path.is_empty() {
+            return Err(ProviderError::InvalidConfig(
+                "Alist path must not be empty".to_string(),
+            ));
+        }
+        if config.path.contains("..") {
+            return Err(ProviderError::InvalidConfig(
+                "Alist path must not contain path traversal (..)".to_string(),
+            ));
+        }
+
+        // Validate token is non-empty
+        if config.token.is_empty() {
+            return Err(ProviderError::InvalidConfig(
+                "Alist token must not be empty".to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+
     async fn generate_playback(
         &self,
         _ctx: &ProviderContext<'_>,
@@ -568,5 +610,97 @@ mod tests {
         assert_eq!(AlistProvider::detect_format("video.mkv"), "mkv");
         assert_eq!(AlistProvider::detect_format("video.m3u8"), "hls");
         assert_eq!(AlistProvider::detect_format("video.unknown"), "video");
+    }
+
+    fn validate_alist(config: Value) -> Result<(), ProviderError> {
+        let config = AlistSourceConfig::try_from(&config)?;
+
+        if config.host.is_empty() {
+            return Err(ProviderError::InvalidConfig(
+                "Alist host must not be empty".to_string(),
+            ));
+        }
+        if !config.host.starts_with("http://") && !config.host.starts_with("https://") {
+            return Err(ProviderError::InvalidConfig(format!(
+                "Alist host must start with http:// or https://, got: {}",
+                config.host
+            )));
+        }
+        if config.path.is_empty() {
+            return Err(ProviderError::InvalidConfig(
+                "Alist path must not be empty".to_string(),
+            ));
+        }
+        if config.path.contains("..") {
+            return Err(ProviderError::InvalidConfig(
+                "Alist path must not contain path traversal (..)".to_string(),
+            ));
+        }
+        if config.token.is_empty() {
+            return Err(ProviderError::InvalidConfig(
+                "Alist token must not be empty".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_valid_alist_config() {
+        let config = json!({
+            "host": "https://alist.example.com",
+            "token": "my-token",
+            "path": "/media/movies/test.mp4"
+        });
+        assert!(validate_alist(config).is_ok());
+    }
+
+    #[test]
+    fn test_alist_config_missing_host() {
+        let config = json!({
+            "host": "",
+            "token": "my-token",
+            "path": "/media/movies"
+        });
+        assert!(validate_alist(config).is_err());
+    }
+
+    #[test]
+    fn test_alist_config_invalid_host_scheme() {
+        let config = json!({
+            "host": "ftp://alist.example.com",
+            "token": "my-token",
+            "path": "/media/movies"
+        });
+        assert!(validate_alist(config).is_err());
+    }
+
+    #[test]
+    fn test_alist_config_path_traversal() {
+        let config = json!({
+            "host": "https://alist.example.com",
+            "token": "my-token",
+            "path": "/media/../../../etc/passwd"
+        });
+        assert!(validate_alist(config).is_err());
+    }
+
+    #[test]
+    fn test_alist_config_empty_token() {
+        let config = json!({
+            "host": "https://alist.example.com",
+            "token": "",
+            "path": "/media/movies"
+        });
+        assert!(validate_alist(config).is_err());
+    }
+
+    #[test]
+    fn test_alist_config_empty_path() {
+        let config = json!({
+            "host": "https://alist.example.com",
+            "token": "my-token",
+            "path": ""
+        });
+        assert!(validate_alist(config).is_err());
     }
 }

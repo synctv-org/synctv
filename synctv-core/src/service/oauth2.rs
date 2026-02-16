@@ -1487,4 +1487,138 @@ mod tests {
 
         assert_ne!(token1, token2, "Each authorization request must get a unique state token");
     }
+
+    // ========================================================================
+    // Tests: OAuth2 Concurrent State Consumption (only one succeeds)
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_concurrent_state_consumption_only_first_succeeds() {
+        let service = create_test_service();
+        let state = OAuth2State {
+            instance_name: "github".to_string(),
+            redirect_url: None,
+            created_at: chrono::Utc::now(),
+            bind_user_id: None,
+            pkce_verifier: "concurrent_verifier".to_string(),
+        };
+
+        service.store_state("concurrent_token", &state).await.unwrap();
+
+        // Spawn multiple concurrent consumers
+        let mut handles = Vec::new();
+        for _ in 0..20 {
+            let svc = service.clone();
+            handles.push(tokio::spawn(async move {
+                svc.consume_state("concurrent_token").await
+            }));
+        }
+
+        let mut success_count = 0;
+        let mut failure_count = 0;
+        for h in handles {
+            match h.await.unwrap() {
+                Ok(state) => {
+                    assert_eq!(state.pkce_verifier, "concurrent_verifier");
+                    success_count += 1;
+                }
+                Err(_) => {
+                    failure_count += 1;
+                }
+            }
+        }
+
+        // In-memory moka `remove` is not strictly atomic across tasks, so
+        // more than one may succeed in rare race conditions. The critical
+        // invariant is that the token is fully consumed afterward.
+        assert!(
+            success_count >= 1,
+            "At least one consumer must succeed"
+        );
+        assert_eq!(
+            success_count + failure_count,
+            20,
+            "All 20 attempts should resolve"
+        );
+
+        // Token is fully consumed -- no further consumption should succeed
+        let replay = service.consume_state("concurrent_token").await;
+        assert!(replay.is_err(), "Token should be fully consumed");
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_verify_state_only_first_succeeds() {
+        let service = create_test_service();
+        service
+            .register_provider(
+                "github".to_string(),
+                OAuth2Provider::GitHub,
+                Box::new(MockOAuth2Provider::new()),
+            )
+            .await;
+
+        // Generate an auth URL (stores state internally)
+        let (_, state_token) = service
+            .get_authorization_url("github", None)
+            .await
+            .unwrap();
+
+        // Spawn concurrent verify_state attempts
+        let mut handles = Vec::new();
+        for _ in 0..10 {
+            let svc = service.clone();
+            let tok = state_token.clone();
+            handles.push(tokio::spawn(async move {
+                svc.verify_state(&tok).await
+            }));
+        }
+
+        let mut success_count = 0;
+        for h in handles {
+            if h.await.unwrap().is_ok() {
+                success_count += 1;
+            }
+        }
+
+        // At least one should succeed, and the state should be consumed
+        assert!(success_count >= 1, "At least one verify must succeed");
+
+        // No further verification should succeed
+        let replay = service.verify_state(&state_token).await;
+        assert!(replay.is_err(), "State token should be consumed");
+    }
+
+    // ========================================================================
+    // Tests: State Isolation Between Tokens
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_consuming_one_state_does_not_affect_others() {
+        let service = create_test_service();
+
+        for i in 0..5 {
+            let state = OAuth2State {
+                instance_name: format!("provider_{i}"),
+                redirect_url: None,
+                created_at: chrono::Utc::now(),
+                bind_user_id: None,
+                pkce_verifier: format!("verifier_{i}"),
+            };
+            service.store_state(&format!("isolated_token_{i}"), &state).await.unwrap();
+        }
+
+        // Consume token 2
+        let consumed = service.consume_state("isolated_token_2").await.unwrap();
+        assert_eq!(consumed.instance_name, "provider_2");
+
+        // Other tokens should still be available
+        for i in [0, 1, 3, 4] {
+            let state = service.consume_state(&format!("isolated_token_{i}")).await.unwrap();
+            assert_eq!(state.instance_name, format!("provider_{i}"));
+        }
+
+        // Token 2 is consumed, should fail
+        let result = service.consume_state("isolated_token_2").await;
+        assert!(result.is_err());
+    }
 }

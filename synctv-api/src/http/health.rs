@@ -60,6 +60,8 @@ pub struct HealthDetails {
     pub database: String,
     pub redis: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub cluster: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
 }
 
@@ -118,6 +120,18 @@ pub async fn readiness_check(State(state): State<AppState>) -> impl IntoResponse
         }
     };
 
+    // Check cluster health (only when cluster mode is active)
+    let cluster_status = match check_cluster_health(&state) {
+        Some(Ok(())) => Some("healthy".to_string()),
+        Some(Err(e)) => {
+            error_messages.push(format!("Cluster: {e}"));
+            is_healthy = false;
+            warn!("Cluster health check failed: {}", e);
+            Some("unhealthy".to_string())
+        }
+        None => None, // No cluster manager, single-node mode
+    };
+
     let status_code = if is_healthy {
         StatusCode::OK
     } else {
@@ -129,6 +143,7 @@ pub async fn readiness_check(State(state): State<AppState>) -> impl IntoResponse
         details: Some(HealthDetails {
             database: db_status,
             redis: redis_status,
+            cluster: cluster_status,
             message: if error_messages.is_empty() {
                 None
             } else {
@@ -151,6 +166,28 @@ async fn check_database_health(state: &AppState) -> Result<(), String> {
             Err(format!("Database connection failed: {e}"))
         }
     }
+}
+
+/// Check cluster health by verifying the ClusterManager is operational.
+///
+/// Returns `None` if no cluster manager is configured (single-node mode).
+/// Returns `Some(Ok(()))` if the cluster manager is healthy.
+/// Returns `Some(Err(...))` if the cluster manager reports issues.
+fn check_cluster_health(state: &AppState) -> Option<Result<(), String>> {
+    let cm = state.cluster_manager.as_ref()?;
+    let metrics = cm.metrics();
+
+    // Verify node has a valid ID (non-empty)
+    if metrics.node_id.is_empty() {
+        return Some(Err("Cluster node ID is empty".to_string()));
+    }
+
+    // If Redis pub/sub should be enabled but isn't, the node can't sync with the cluster
+    if !metrics.redis_enabled && state.redis_publish_tx.is_some() {
+        return Some(Err("Cluster Redis pub/sub is not connected".to_string()));
+    }
+
+    Some(Ok(()))
 }
 
 /// Check Redis connectivity by sending a PING command
@@ -204,6 +241,7 @@ mod tests {
             details: Some(HealthDetails {
                 database: "healthy".to_string(),
                 redis: "healthy".to_string(),
+                cluster: None,
                 message: None,
             }),
         };
@@ -213,7 +251,23 @@ mod tests {
         let details = back.details.unwrap();
         assert_eq!(details.database, "healthy");
         assert_eq!(details.redis, "healthy");
+        assert!(details.cluster.is_none());
         assert!(details.message.is_none());
+    }
+
+    #[test]
+    fn test_health_response_with_cluster_status() {
+        let response = HealthResponse {
+            status: "healthy".to_string(),
+            details: Some(HealthDetails {
+                database: "healthy".to_string(),
+                redis: "healthy".to_string(),
+                cluster: Some("healthy".to_string()),
+                message: None,
+            }),
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"cluster\":\"healthy\""));
     }
 
     #[test]
@@ -223,6 +277,7 @@ mod tests {
             details: Some(HealthDetails {
                 database: "unhealthy".to_string(),
                 redis: "healthy".to_string(),
+                cluster: None,
                 message: Some("Database: connection refused".to_string()),
             }),
         };
@@ -237,11 +292,13 @@ mod tests {
             details: Some(HealthDetails {
                 database: "healthy".to_string(),
                 redis: "healthy".to_string(),
+                cluster: None,
                 message: None,
             }),
         };
         let json = serde_json::to_string(&response).unwrap();
         assert!(!json.contains("message"));
+        assert!(!json.contains("cluster"));
     }
 
     #[test]

@@ -265,7 +265,7 @@ impl LivestreamServer {
                 });
 
                 info!("Starting StreamHub event loop...");
-                streams_hub.run().await;
+                let run_result = streams_hub.run().await;
 
                 // Hub exited -- stop the RTMP server and forwarder for this cycle
                 rtmp_session_token.cancel();
@@ -273,9 +273,20 @@ impl LivestreamServer {
                 forwarder_handle.abort();
 
                 restart_count += 1;
+
+                // Record restart metrics with exit reason
+                let reason = match &run_result {
+                    Ok(()) => "channel_closed",
+                    Err(_) => "panic",
+                };
+                synctv_core::metrics::streamhub::STREAMHUB_RESTARTS_TOTAL
+                    .with_label_values(&[reason])
+                    .inc();
+
                 warn!(
                     restart_count,
                     max_restarts = MAX_RESTARTS,
+                    reason,
                     "StreamHub event loop exited unexpectedly, cleaning up local state before restart..."
                 );
 
@@ -385,6 +396,7 @@ impl LivestreamServer {
         let publisher_manager = Arc::new(PublisherManager::new(
             self.publisher_registry.clone(),
             self.config.node_id,
+            event_sender.clone(),
         ));
         let publisher_manager_handle = tokio::spawn({
             let pm = Arc::clone(&publisher_manager);

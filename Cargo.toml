@@ -118,6 +118,7 @@ jsonwebtoken = { version = "10.3", features = ["aws_lc_rs"] }
 oauth2 = "5.0"
 aes-gcm = "0.10"
 ammonia = "4.1"
+sha1 = "0.10"
 sha2 = "0.10"
 md-5 = "0.10"
 hmac = "0.12"
@@ -253,7 +254,7 @@ criterion = { version = "0.8", features = ["html_reports"] }
 synctv-proto = { path = "synctv-proto" }
 synctv-core = { path = "synctv-core" }
 synctv-api = { path = "synctv-api" }
-synctv-cluster = { path = "synctv-cluster" }
+synctv-cluster = { path = "synctv-cluster", default-features = false }
 synctv-media-providers = { path = "synctv-media-providers" }
 synctv-proxy = { path = "synctv-proxy" }
 synctv-livestream = { path = "synctv-livestream" }

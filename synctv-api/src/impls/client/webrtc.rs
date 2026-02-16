@@ -42,9 +42,8 @@ impl ClientApiImpl {
             });
         }
 
-        // 2 & 3. Dynamic settings (external STUN + TURN servers)
+        // 2. Dynamic external STUN servers
         if let Some(registry) = &self.settings_registry {
-            // External STUN servers
             if let Ok(stun_list) = registry.external_stun_servers.get() {
                 for url in &stun_list.0 {
                     servers.push(IceServer {
@@ -55,19 +54,35 @@ impl ClientApiImpl {
                     });
                 }
             }
+        }
 
-            // TURN servers
+        // 3. TURN servers
+        if !webrtc_config.turn_shared_secret.is_empty()
+            && !webrtc_config.turn_server_urls.is_empty()
+        {
+            // Generate time-limited HMAC-SHA1 credentials (coturn compatible)
+            let cred = synctv_core::service::turn_server::generate_turn_credentials(
+                &webrtc_config.turn_shared_secret,
+                user_id.as_str(),
+                webrtc_config.turn_credential_ttl_seconds,
+            );
+            servers.push(IceServer {
+                urls: webrtc_config.turn_server_urls.clone(),
+                username: Some(cred.username),
+                credential: Some(cred.password),
+                expiry_time: cred.expiry_timestamp as i64,
+            });
+        } else if let Some(registry) = &self.settings_registry {
+            // Fallback: static TURN credentials from dynamic settings
             if let Ok(turn_list) = registry.turn_servers.get() {
-                // Calculate expiry time: current timestamp + TTL
                 let expiry_time = if webrtc_config.turn_credential_ttl_seconds > 0 {
                     let now = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
                         .as_secs();
-                    // Convert to i64 with saturation (proto uses int64)
                     (now.saturating_add(webrtc_config.turn_credential_ttl_seconds)) as i64
                 } else {
-                    0 // TTL of 0 means credentials never expire
+                    0
                 };
 
                 for ts in &turn_list.0 {

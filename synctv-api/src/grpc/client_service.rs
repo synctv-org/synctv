@@ -305,7 +305,8 @@ impl UserService for ClientServiceImpl {
             .get("x-refresh-token")
             .and_then(|v| v.to_str().ok());
 
-        let response = self.client_api.logout(access_token, refresh_token).await;
+        let response = self.client_api.logout(access_token, refresh_token).await
+            .map_err(impls_err_to_status)?;
         Ok(Response::new(response))
     }
 

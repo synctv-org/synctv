@@ -582,10 +582,26 @@ impl ClientApiImpl {
                     HashMap::new(),
                 )
             } else {
+                // Strip credential headers before exposing to client
+                let safe_headers: HashMap<String, String> = result
+                    .playback_infos
+                    .get("dash")
+                    .map(|pi| {
+                        pi.headers.iter()
+                            .filter(|(k, _)| {
+                                let lower = k.to_lowercase();
+                                !lower.contains("token") && !lower.contains("authorization")
+                                    && !lower.contains("cookie") && !lower.contains("api_key")
+                                    && !lower.contains("x-emby")
+                            })
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 (
                     format!("/api/providers/{}/proxy/{room_id}/{media_id}/mpd?direct=1", media.source_provider),
                     "mpd".to_string(),
-                    result.playback_infos.get("dash").map(|pi| pi.headers.clone()).unwrap_or_default(),
+                    safe_headers,
                 )
             };
 
@@ -622,7 +638,17 @@ impl ClientApiImpl {
                     HashMap::new(),
                 )
             } else {
-                (first_url, info.format.clone(), info.headers.clone())
+                // Strip credential headers before exposing to client
+                let safe_headers: HashMap<String, String> = info.headers.iter()
+                    .filter(|(k, _)| {
+                        let lower = k.to_lowercase();
+                        !lower.contains("token") && !lower.contains("authorization")
+                            && !lower.contains("cookie") && !lower.contains("api_key")
+                            && !lower.contains("x-emby")
+                    })
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                (first_url, info.format.clone(), safe_headers)
             }
         } else {
             (String::new(), "unknown".to_string(), HashMap::new())

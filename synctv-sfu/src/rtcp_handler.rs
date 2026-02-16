@@ -24,6 +24,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::rtp_transceiver::rtp_receiver::RTCRtpReceiver;
+use webrtc::stats::StatsReportType;
 
 /// Statistics polling interval
 const STATS_POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -124,7 +125,13 @@ impl RtcpHandler {
         Ok(handle)
     }
 
-    /// Poll statistics from RTCRtpReceivers and update monitors
+    /// Poll statistics from RTCRtpReceivers and update monitors.
+    ///
+    /// Parses the `StatsReport` returned by `RTCPeerConnection::get_stats()` to
+    /// extract real network measurements:
+    /// - `RemoteInboundRTP` reports provide RTT and packet loss from RTCP receiver reports
+    /// - `InboundRTP` reports provide packets received and bytes received
+    /// - `CandidatePair` reports provide ICE-level RTT and bandwidth estimates
     async fn poll_and_update_stats(
         peer_id: &PeerId,
         pc: &RTCPeerConnection,
@@ -133,42 +140,76 @@ impl RtcpHandler {
         peer: &SfuPeer,
         last_stats: &Arc<parking_lot::Mutex<Option<StatsSnapshot>>>,
     ) -> Result<()> {
-        // Get statistics from peer connection
         let stats_report = pc.get_stats().await;
 
-        // Extract aggregate statistics from the reports
-        // The webrtc crate returns StatsReport with a reports field
         let mut total_packets_received: u64 = 0;
         let mut total_packets_lost: u64 = 0;
         let mut total_bytes_received: u64 = 0;
-        let mut total_rtt_ms: u64 = 0;
+        let mut total_rtt_sum: f64 = 0.0;
         let mut rtt_count: u32 = 0;
 
-        // Parse stats report - the webrtc crate's get_stats() returns simpler stats
-        // For now, use estimated values from peer stats since the webrtc crate
-        // doesn't provide detailed per-report parsing in the current API
-        let current_peer_stats = peer.get_stats();
-        total_packets_received = current_peer_stats.packets_received;
-        total_packets_lost = current_peer_stats.packet_loss_count;
-        total_bytes_received = current_peer_stats.bytes_received;
-
-        // Use the reports field if available
-        for (report_id, _report_type) in &stats_report.reports {
-            // Extract RTT if available (simplified)
-            if report_id.contains("inbound") {
-                // Stats reports may not have direct RTT, so we'll estimate from reports
-                debug!(peer_id = %peer_id, report_id = %report_id, "Processing stats report");
+        // Parse each report by matching on the StatsReportType enum variants
+        for (_report_id, report) in &stats_report.reports {
+            match report {
+                // RemoteInboundRTP contains RTT and packet loss from RTCP receiver reports
+                StatsReportType::RemoteInboundRTP(remote_inbound) => {
+                    if let Some(rtt) = remote_inbound.round_trip_time {
+                        // RTT is in seconds, convert to milliseconds
+                        total_rtt_sum += rtt * 1000.0;
+                        rtt_count += 1;
+                    }
+                    // Accumulate packet loss (may be negative in webrtc-rs, clamp to 0)
+                    if remote_inbound.packets_lost > 0 {
+                        total_packets_lost += remote_inbound.packets_lost as u64;
+                    }
+                    debug!(
+                        peer_id = %peer_id,
+                        rtt = ?remote_inbound.round_trip_time,
+                        packets_lost = remote_inbound.packets_lost,
+                        fraction_lost = remote_inbound.fraction_lost,
+                        "Parsed RemoteInboundRTP stats"
+                    );
+                }
+                // InboundRTP provides local receive counters
+                StatsReportType::InboundRTP(inbound) => {
+                    total_packets_received += inbound.packets_received;
+                    total_bytes_received += inbound.bytes_received;
+                    debug!(
+                        peer_id = %peer_id,
+                        packets_received = inbound.packets_received,
+                        bytes_received = inbound.bytes_received,
+                        nack_count = inbound.nack_count,
+                        pli_count = ?inbound.pli_count,
+                        fir_count = ?inbound.fir_count,
+                        "Parsed InboundRTP stats"
+                    );
+                }
+                // CandidatePair provides ICE-level RTT as a fallback and bandwidth
+                StatsReportType::CandidatePair(pair) => {
+                    // Use ICE candidate pair RTT as fallback when no RTCP RTT is available
+                    if rtt_count == 0 && pair.current_round_trip_time > 0.0 {
+                        total_rtt_sum += pair.current_round_trip_time * 1000.0;
+                        rtt_count += 1;
+                    }
+                    debug!(
+                        peer_id = %peer_id,
+                        ice_rtt = pair.current_round_trip_time,
+                        available_outgoing_bitrate = pair.available_outgoing_bitrate,
+                        "Parsed CandidatePair stats"
+                    );
+                }
+                _ => {}
             }
         }
 
-        // Calculate average RTT and update network monitor
+        // Update RTT in network monitor from actual RTCP measurements
         if rtt_count > 0 {
-            let avg_rtt_ms = (total_rtt_ms / u64::from(rtt_count)) as u32;
+            let avg_rtt_ms = (total_rtt_sum / f64::from(rtt_count)) as u32;
             network_monitor.update_rtt(peer_id, avg_rtt_ms);
-            debug!(peer_id = %peer_id, rtt_ms = avg_rtt_ms, "Updated RTT from stats");
+            debug!(peer_id = %peer_id, rtt_ms = avg_rtt_ms, "Updated RTT from RTCP stats");
         }
 
-        // Calculate bandwidth from delta
+        // Calculate bandwidth from byte count deltas
         let now = Instant::now();
         let current_snapshot = StatsSnapshot {
             timestamp: now,
@@ -191,20 +232,21 @@ impl RtcpHandler {
             peer.get_bandwidth()
         };
 
-        // Update peer stats
+        // Build peer stats from actual parsed values
+        let existing_stats = peer.get_stats();
         let peer_stats = PeerStats {
             packets_received: total_packets_received,
             bytes_received: total_bytes_received,
-            packets_sent: peer.get_stats().packets_sent,
-            bytes_sent: peer.get_stats().bytes_sent,
+            packets_sent: existing_stats.packets_sent,
+            bytes_sent: existing_stats.bytes_sent,
             packet_loss_count: total_packets_lost,
             bandwidth_kbps,
         };
 
-        // Update network quality monitor
+        // Feed real measurements to network quality monitor
         network_monitor.update_peer_stats(peer_id, &peer_stats, bandwidth_kbps);
 
-        // Store current snapshot for next delta
+        // Store current snapshot for next delta calculation
         *last_stats.lock() = Some(current_snapshot);
 
         Ok(())

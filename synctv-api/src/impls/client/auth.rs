@@ -67,13 +67,38 @@ impl ClientApiImpl {
 
     /// Logout: blacklist both the access token and refresh token server-side.
     ///
-    /// Best-effort: logs failures but always returns success. This ensures
-    /// consistent behavior between HTTP and gRPC transports -- a failed
-    /// blacklist just means the old token remains valid until expiry.
-    pub async fn logout(&self, access_token: &str, refresh_token: Option<&str>) -> crate::proto::client::LogoutResponse {
-        if let Err(e) = self.user_service.logout(access_token, refresh_token).await {
-            tracing::warn!(error = %e, "Failed to blacklist token during logout");
+    /// Fail-fast: returns an error if token revocation fails (e.g. Redis is
+    /// down). This prevents the user from believing they are logged out while
+    /// their tokens remain valid -- a security concern on shared/public devices.
+    ///
+    /// Retries up to 3 times with exponential backoff before giving up.
+    pub async fn logout(&self, access_token: &str, refresh_token: Option<&str>) -> Result<crate::proto::client::LogoutResponse, ApiError> {
+        const MAX_RETRIES: u32 = 3;
+        let mut last_err = None;
+
+        for attempt in 0..MAX_RETRIES {
+            match self.user_service.logout(access_token, refresh_token).await {
+                Ok(()) => return Ok(crate::proto::client::LogoutResponse { success: true }),
+                Err(e) => {
+                    tracing::warn!(
+                        attempt = attempt + 1,
+                        max_retries = MAX_RETRIES,
+                        error = %e,
+                        "Logout token revocation failed, retrying"
+                    );
+                    last_err = Some(e);
+                    if attempt + 1 < MAX_RETRIES {
+                        let backoff = tokio::time::Duration::from_millis(100 * 2u64.pow(attempt));
+                        tokio::time::sleep(backoff).await;
+                    }
+                }
+            }
         }
-        crate::proto::client::LogoutResponse { success: true }
+
+        let err = last_err.unwrap();
+        tracing::error!(error = %err, "Logout failed after {MAX_RETRIES} attempts: token revocation unsuccessful");
+        Err(ApiError::Internal(
+            "Logout failed: could not revoke token. Please try again later.".to_string(),
+        ))
     }
 }

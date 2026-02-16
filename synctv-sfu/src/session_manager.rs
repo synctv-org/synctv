@@ -41,6 +41,33 @@ pub enum SfuSignalingEvent {
         peer_id: String,
         sdp: String,
     },
+    /// SFU migration offer for an existing P2P peer
+    MigrationOffer {
+        migration_id: String,
+        sdp: String,
+    },
+}
+
+/// Migration state for a single peer
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeerMigrationState {
+    /// Server-side PeerConnection created, offer sent to client
+    Migrating,
+    /// Client answered, ICE completed, media flowing through SFU
+    Completed,
+    /// Migration failed (timeout or error), peer remains in P2P mode
+    Failed,
+}
+
+/// Result of initiating migration for a single peer
+#[derive(Debug)]
+pub struct PeerMigrationResult {
+    /// Connection ID of the peer
+    pub conn_id: String,
+    /// SDP offer JSON to send to the peer
+    pub sdp_offer: String,
+    /// Signaling event receiver for ICE candidates etc.
+    pub event_rx: mpsc::UnboundedReceiver<SfuSignalingEvent>,
 }
 
 /// Per-session state for an SFU peer connection
@@ -335,6 +362,197 @@ impl SfuSessionManager {
     /// Get the number of active SFU sessions
     pub fn session_count(&self) -> usize {
         self.sessions.len()
+    }
+
+    /// Create an SFU session for an existing P2P peer during migration.
+    ///
+    /// Unlike `create_session`, this creates a server-side `PeerConnection` and
+    /// generates an SDP offer (rather than waiting for the client to send one).
+    /// The client will respond with an SDP answer via `SfuMigrationAnswer`.
+    ///
+    /// Returns the SDP offer and a signaling event receiver, or an error if
+    /// session creation fails.
+    pub async fn create_migration_session(
+        &self,
+        room_id: &str,
+        peer_id: &str,
+        conn_id: &str,
+    ) -> Result<PeerMigrationResult> {
+        let sfu_room_id = RoomId::from(room_id);
+        let sfu_peer_id = PeerId::from(peer_id);
+
+        // Get or create the SFU room
+        let room = self
+            .sfu_manager
+            .get_or_create_room(sfu_room_id.clone())
+            .await?;
+
+        // Register the peer with the room
+        let sfu_peer = room
+            .add_peer(sfu_peer_id.clone(), self.sfu_manager.config().max_peers_per_room)
+            .await?;
+
+        // Get ICE servers
+        let ice_servers = self.ice_manager.get_servers().await;
+
+        // Create server-side PeerConnection
+        let pc = PeerConnection::new(
+            sfu_peer_id.clone(),
+            sfu_room_id.clone(),
+            ice_servers,
+        )
+        .await?;
+        let pc = Arc::new(pc);
+
+        // Create signaling event channel
+        let (event_tx, event_rx) = mpsc::unbounded_channel();
+
+        // Set up callbacks with room integration
+        let room_for_track = Arc::clone(&room);
+        let peer_id_for_track = sfu_peer_id.clone();
+        let room_id_for_track = sfu_room_id.clone();
+        let event_tx_for_ice = event_tx.clone();
+        let peer_id_str = peer_id.to_string();
+
+        // on_track: register incoming tracks with the SFU room
+        pc.pc.on_track(Box::new(
+            move |remote_track: Arc<webrtc::track::track_remote::TrackRemote>,
+                  rtp_receiver: Arc<webrtc::rtp_transceiver::rtp_receiver::RTCRtpReceiver>,
+                  _transceiver: Arc<webrtc::rtp_transceiver::RTCRtpTransceiver>| {
+                let room = Arc::clone(&room_for_track);
+                let peer_id = peer_id_for_track.clone();
+                let room_id = room_id_for_track.clone();
+                Box::pin(async move {
+                    let track_id = TrackId::from(remote_track.id());
+                    let kind = TrackKind::from(remote_track.kind());
+
+                    info!(
+                        peer_id = %peer_id,
+                        room_id = %room_id,
+                        track_id = %track_id,
+                        kind = ?kind,
+                        "SFU migration: Received track from migrating peer"
+                    );
+
+                    let media_track = Arc::new(MediaTrack::new(
+                        track_id.clone(),
+                        peer_id.clone(),
+                        remote_track,
+                        rtp_receiver,
+                    ));
+
+                    if let Err(e) = room
+                        .add_published_track(&peer_id, track_id.clone(), media_track)
+                        .await
+                    {
+                        error!(
+                            peer_id = %peer_id,
+                            track_id = %track_id,
+                            error = %e,
+                            "SFU migration: Failed to register track with room"
+                        );
+                    }
+                })
+            },
+        ));
+
+        // on_ice_candidate: send candidates back through the signaling channel
+        pc.pc.on_ice_candidate(Box::new(move |candidate: Option<RTCIceCandidate>| {
+            let event_tx = event_tx_for_ice.clone();
+            let peer_id = peer_id_str.clone();
+            Box::pin(async move {
+                if let Some(candidate) = candidate {
+                    let candidate_json = match candidate.to_json() {
+                        Ok(init) => match serde_json::to_string(&init) {
+                            Ok(json) => json,
+                            Err(e) => {
+                                warn!(error = %e, "Failed to serialize ICE candidate");
+                                return;
+                            }
+                        },
+                        Err(e) => {
+                            warn!(error = %e, "Failed to convert ICE candidate to JSON");
+                            return;
+                        }
+                    };
+
+                    debug!(
+                        peer_id = %peer_id,
+                        "SFU migration: Sending ICE candidate to signaling channel"
+                    );
+
+                    if event_tx
+                        .send(SfuSignalingEvent::IceCandidate {
+                            peer_id: peer_id.clone(),
+                            candidate_json,
+                        })
+                        .is_err()
+                    {
+                        debug!(peer_id = %peer_id, "SFU migration: Signaling event channel closed");
+                    }
+                }
+            })
+        }));
+
+        // Set up connection state monitoring
+        let network_monitor = room.network_monitor().clone();
+        pc.setup_callbacks(network_monitor).await?;
+
+        // Create SDP offer from the server side
+        let offer = pc.create_offer().await?;
+        let offer_json = serde_json::to_string(&offer)
+            .map_err(|e| anyhow!("Failed to serialize SDP offer: {}", e))?;
+
+        // Store session
+        self.sessions.insert(
+            conn_id.to_string(),
+            SfuSession {
+                pc: Arc::clone(&pc),
+                room: Arc::clone(&room),
+            },
+        );
+
+        // Start subscriber output for this peer
+        pc.start_subscriber_output(sfu_peer).await?;
+
+        info!(
+            room_id = %room_id,
+            peer_id = %peer_id,
+            conn_id = %conn_id,
+            "SFU migration session created, offer generated"
+        );
+
+        Ok(PeerMigrationResult {
+            conn_id: conn_id.to_string(),
+            sdp_offer: offer_json,
+            event_rx,
+        })
+    }
+
+    /// Handle an SDP answer from a migrating peer
+    pub async fn handle_migration_answer(
+        &self,
+        conn_id: &str,
+        sdp_json: &str,
+    ) -> Result<()> {
+        let session = self
+            .sessions
+            .get(conn_id)
+            .ok_or_else(|| anyhow!("No SFU session for connection: {}", conn_id))?;
+
+        // Parse the SDP answer
+        let answer: RTCSessionDescription = serde_json::from_str(sdp_json)
+            .map_err(|e| anyhow!("Invalid SDP answer JSON: {}", e))?;
+
+        // Set remote description (completes the signaling handshake)
+        session.pc.handle_answer(answer).await?;
+
+        info!(
+            conn_id = %conn_id,
+            "SFU migration: answer processed, ICE negotiation in progress"
+        );
+
+        Ok(())
     }
 }
 

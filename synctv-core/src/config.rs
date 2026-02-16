@@ -452,6 +452,15 @@ pub struct WebRTCConfig {
     pub stun_external_addr: String,
 
     // TURN Configuration
+    /// TURN shared secret for generating time-limited HMAC-SHA1 credentials.
+    /// When set, the server generates ephemeral credentials compatible with
+    /// coturn's `use-auth-secret` mode (RFC 5389 long-term credentials).
+    /// If empty, TURN credentials are taken from the dynamic settings registry as-is.
+    pub turn_shared_secret: String,
+    /// TURN server URLs to include in ICE server responses when `turn_shared_secret`
+    /// is set. Example: `["turn:turn.example.com:3478", "turns:turn.example.com:5349"]`
+    /// Ignored when `turn_shared_secret` is empty.
+    pub turn_server_urls: Vec<String>,
     /// TURN credential time-to-live in seconds.
     /// After this duration, clients must refresh their ICE servers.
     /// Default: 86400 (24 hours). Set to 0 for credentials that never expire.
@@ -521,6 +530,9 @@ impl Default for WebRTCConfig {
             stun_host: "0.0.0.0".to_string(),
             stun_external_addr: String::new(),
 
+            // TURN shared secret (empty = disabled, use static settings)
+            turn_shared_secret: String::new(),
+            turn_server_urls: Vec::new(),
             // TURN credentials expire after 24 hours by default
             turn_credential_ttl_seconds: 86400,
 
@@ -948,7 +960,11 @@ pub struct ClusterChannelConfig {
     /// Discovery mode for cluster node registration.
     /// - "redis": Use Redis-based node registry (default, works everywhere)
     /// - "k8s_dns": Use Kubernetes headless service DNS for peer discovery
-    ///   (requires HEADLESS_SERVICE_NAME and POD_NAMESPACE env vars)
+    ///   (requires HEADLESS_SERVICE_NAME and POD_NAMESPACE env vars).
+    ///   NOTE: K8s DNS mode still requires Redis for health monitoring, load
+    ///   balancing, and cluster pub/sub. DNS only supplements peer discovery
+    ///   (faster detection of new pods). Without Redis, k8s_dns mode provides
+    ///   DNS resolution only -- no NodeRegistry, HealthMonitor, or LoadBalancer.
     pub discovery_mode: String,
 
     /// Leader election mode for singleton operations.

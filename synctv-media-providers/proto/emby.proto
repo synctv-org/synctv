@@ -13,6 +13,9 @@ service Emby {
   rpc Logout(LogoutReq) returns (Empty);
   rpc PlaybackInfo(PlaybackInfoReq) returns (PlaybackInfoResp);
   rpc DeleteActiveEncodings(DeleteActiveEncodingsReq) returns (Empty);
+  rpc ReportPlaybackStart(ReportPlaybackStartReq) returns (Empty);
+  rpc ReportPlaybackStop(ReportPlaybackStopReq) returns (Empty);
+  rpc ReportPlaybackProgress(ReportPlaybackProgressReq) returns (Empty);
 }
 
 message LoginReq {
@@ -190,4 +193,31 @@ message DeleteActiveEncodingsReq {
   string host = 1;
   string token = 2;
   string playSessionId = 3;
+}
+
+message ReportPlaybackStartReq {
+  string host = 1;
+  string token = 2;
+  string itemId = 3;
+  string playSessionId = 4;
+  string mediaSourceId = 5;
+  int64 positionTicks = 6;
+}
+
+message ReportPlaybackStopReq {
+  string host = 1;
+  string token = 2;
+  string itemId = 3;
+  string playSessionId = 4;
+  int64 positionTicks = 5;
+}
+
+message ReportPlaybackProgressReq {
+  string host = 1;
+  string token = 2;
+  string itemId = 3;
+  string playSessionId = 4;
+  string mediaSourceId = 5;
+  int64 positionTicks = 6;
+  bool isPaused = 7;
 }

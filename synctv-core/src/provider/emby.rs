@@ -107,6 +107,50 @@ impl MediaProvider for EmbyProvider {
         "emby"
     }
 
+    async fn validate_source_config(
+        &self,
+        _ctx: &ProviderContext<'_>,
+        source_config: &Value,
+    ) -> Result<(), ProviderError> {
+        let config = EmbySourceConfig::try_from(source_config)?;
+
+        // Validate host URL format
+        if config.host.is_empty() {
+            return Err(ProviderError::InvalidConfig(
+                "Emby host must not be empty".to_string(),
+            ));
+        }
+        if !config.host.starts_with("http://") && !config.host.starts_with("https://") {
+            return Err(ProviderError::InvalidConfig(format!(
+                "Emby host must start with http:// or https://, got: {}",
+                config.host
+            )));
+        }
+
+        // Validate item_id is non-empty
+        if config.item_id.is_empty() {
+            return Err(ProviderError::InvalidConfig(
+                "Emby item_id must not be empty".to_string(),
+            ));
+        }
+
+        // Validate token (API key) is non-empty
+        if config.token.is_empty() {
+            return Err(ProviderError::InvalidConfig(
+                "Emby token (API key) must not be empty".to_string(),
+            ));
+        }
+
+        // Validate user_id is non-empty
+        if config.user_id.is_empty() {
+            return Err(ProviderError::InvalidConfig(
+                "Emby user_id must not be empty".to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+
     async fn generate_playback(
         &self,
         _ctx: &ProviderContext<'_>,
@@ -154,10 +198,25 @@ impl MediaProvider for EmbyProvider {
 
         let playback_info = client.playback_info(playback_request).await?;
 
+        // Store play_session_id in metadata for lifecycle hooks
+        metadata.insert(
+            "emby_play_session_id".to_string(),
+            json!(playback_info.play_session_id),
+        );
+
         let mut playback_infos = HashMap::new();
 
         // Emby session-based URLs: default to 30 minutes
         let emby_expires_at = Some(Utc::now().timestamp() + 30 * 60);
+
+        // Auth headers for Emby: use X-Emby-Token header instead of
+        // embedding api_key in query strings to avoid credential exposure
+        // in URLs (which end up in logs, browser history, Referer headers).
+        let emby_auth_headers = {
+            let mut h = HashMap::new();
+            h.insert("X-Emby-Token".to_string(), config.token.clone());
+            h
+        };
 
         // Process media sources
         for (idx, source) in playback_info.media_source_info.iter().enumerate() {
@@ -167,7 +226,7 @@ impl MediaProvider for EmbyProvider {
                 source.name.clone()
             };
 
-            // Get direct stream URL (no transcoding)
+            // Get direct stream URL (no transcoding) -- no credentials in URL
             let direct_url = if !source.direct_play_url.is_empty() {
                 format!(
                     "{}{}",
@@ -175,31 +234,28 @@ impl MediaProvider for EmbyProvider {
                     source.direct_play_url
                 )
             } else if !source.path.is_empty() {
-                // Build direct play URL
                 format!(
-                    "{}/Items/{}/Download?api_key={}",
+                    "{}/Items/{}/Download",
                     config.host.trim_end_matches('/'),
-                    config.item_id,
-                    config.token
+                    config.item_id
                 )
             } else {
                 continue;
             };
 
-            // Extract subtitles
+            // Extract subtitles -- no credentials in subtitle URLs
             let subtitles: Vec<SubtitleTrack> = source
                 .media_stream_info
                 .iter()
                 .filter(|stream| stream.r#type == "Subtitle")
                 .map(|stream| {
                     let subtitle_url = format!(
-                        "{}/Videos/{}/{}/Subtitles/{}/Stream.{}?api_key={}",
+                        "{}/Videos/{}/{}/Subtitles/{}/Stream.{}",
                         config.host.trim_end_matches('/'),
                         config.item_id,
                         source.id,
                         stream.index,
                         stream.codec.to_lowercase(),
-                        config.token
                     );
 
                     SubtitleTrack {
@@ -231,7 +287,7 @@ impl MediaProvider for EmbyProvider {
                 PlaybackInfo {
                     urls: vec![direct_url],
                     format,
-                    headers: HashMap::new(),
+                    headers: emby_auth_headers.clone(),
                     subtitles,
                     expires_at: emby_expires_at,
                 },
@@ -287,6 +343,107 @@ impl MediaProvider for EmbyProvider {
 
     fn as_dynamic_folder(&self) -> Option<&dyn DynamicFolder> {
         Some(self)
+    }
+
+    async fn on_playback_start(
+        &self,
+        _ctx: &ProviderContext<'_>,
+        session_id: &str,
+        source_config: &Value,
+    ) -> Result<(), ProviderError> {
+        let config = EmbySourceConfig::try_from(source_config)?;
+        let client = self
+            .get_client(config.provider_instance_name.as_deref())
+            .await;
+
+        let req = synctv_media_providers::grpc::emby::ReportPlaybackStartReq {
+            host: config.host,
+            token: config.token,
+            item_id: config.item_id,
+            play_session_id: session_id.to_string(),
+            media_source_id: String::new(),
+            position_ticks: 0,
+        };
+
+        if let Err(e) = client.report_playback_start(req).await {
+            tracing::warn!(error = %e, "Failed to report Emby playback start");
+        }
+
+        Ok(())
+    }
+
+    async fn on_playback_stop(
+        &self,
+        _ctx: &ProviderContext<'_>,
+        session_id: &str,
+        source_config: &Value,
+        position: f64,
+    ) -> Result<(), ProviderError> {
+        let config = EmbySourceConfig::try_from(source_config)?;
+        let client = self
+            .get_client(config.provider_instance_name.as_deref())
+            .await;
+
+        // Convert seconds to Emby ticks (1 tick = 100 nanoseconds = 10^-7 seconds)
+        let position_ticks = (position * 10_000_000.0) as i64;
+
+        // Report playback stopped
+        let stop_req = synctv_media_providers::grpc::emby::ReportPlaybackStopReq {
+            host: config.host.clone(),
+            token: config.token.clone(),
+            item_id: config.item_id.clone(),
+            play_session_id: session_id.to_string(),
+            position_ticks,
+        };
+
+        if let Err(e) = client.report_playback_stop(stop_req).await {
+            tracing::warn!(error = %e, "Failed to report Emby playback stop");
+        }
+
+        // Also clean up active encodings
+        let delete_req = synctv_media_providers::grpc::emby::DeleteActiveEncodingsReq {
+            host: config.host,
+            token: config.token,
+            play_session_id: session_id.to_string(),
+        };
+
+        if let Err(e) = client.delete_active_encodings(delete_req).await {
+            tracing::warn!(error = %e, "Failed to delete Emby active encodings");
+        }
+
+        Ok(())
+    }
+
+    async fn on_playback_progress(
+        &self,
+        _ctx: &ProviderContext<'_>,
+        session_id: &str,
+        source_config: &Value,
+        position: f64,
+    ) -> Result<(), ProviderError> {
+        let config = EmbySourceConfig::try_from(source_config)?;
+        let client = self
+            .get_client(config.provider_instance_name.as_deref())
+            .await;
+
+        // Convert seconds to Emby ticks (1 tick = 100 nanoseconds = 10^-7 seconds)
+        let position_ticks = (position * 10_000_000.0) as i64;
+
+        let req = synctv_media_providers::grpc::emby::ReportPlaybackProgressReq {
+            host: config.host,
+            token: config.token,
+            item_id: config.item_id,
+            play_session_id: session_id.to_string(),
+            media_source_id: String::new(),
+            position_ticks,
+            is_paused: false,
+        };
+
+        if let Err(e) = client.report_playback_progress(req).await {
+            tracing::warn!(error = %e, "Failed to report Emby playback progress");
+        }
+
+        Ok(())
     }
 }
 
@@ -510,5 +667,116 @@ impl DynamicFolder for EmbyProvider {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn validate_emby(config: Value) -> Result<(), ProviderError> {
+        let config = EmbySourceConfig::try_from(&config)?;
+
+        if config.host.is_empty() {
+            return Err(ProviderError::InvalidConfig(
+                "Emby host must not be empty".to_string(),
+            ));
+        }
+        if !config.host.starts_with("http://") && !config.host.starts_with("https://") {
+            return Err(ProviderError::InvalidConfig(format!(
+                "Emby host must start with http:// or https://, got: {}",
+                config.host
+            )));
+        }
+        if config.item_id.is_empty() {
+            return Err(ProviderError::InvalidConfig(
+                "Emby item_id must not be empty".to_string(),
+            ));
+        }
+        if config.token.is_empty() {
+            return Err(ProviderError::InvalidConfig(
+                "Emby token (API key) must not be empty".to_string(),
+            ));
+        }
+        if config.user_id.is_empty() {
+            return Err(ProviderError::InvalidConfig(
+                "Emby user_id must not be empty".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_valid_emby_config() {
+        let config = json!({
+            "host": "https://emby.example.com",
+            "token": "my-api-key",
+            "user_id": "abc123",
+            "item_id": "item-456"
+        });
+        assert!(validate_emby(config).is_ok());
+    }
+
+    #[test]
+    fn test_emby_config_empty_host() {
+        let config = json!({
+            "host": "",
+            "token": "my-api-key",
+            "user_id": "abc123",
+            "item_id": "item-456"
+        });
+        assert!(validate_emby(config).is_err());
+    }
+
+    #[test]
+    fn test_emby_config_invalid_host_scheme() {
+        let config = json!({
+            "host": "ftp://emby.example.com",
+            "token": "my-api-key",
+            "user_id": "abc123",
+            "item_id": "item-456"
+        });
+        assert!(validate_emby(config).is_err());
+    }
+
+    #[test]
+    fn test_emby_config_empty_item_id() {
+        let config = json!({
+            "host": "https://emby.example.com",
+            "token": "my-api-key",
+            "user_id": "abc123",
+            "item_id": ""
+        });
+        assert!(validate_emby(config).is_err());
+    }
+
+    #[test]
+    fn test_emby_config_empty_token() {
+        let config = json!({
+            "host": "https://emby.example.com",
+            "token": "",
+            "user_id": "abc123",
+            "item_id": "item-456"
+        });
+        assert!(validate_emby(config).is_err());
+    }
+
+    #[test]
+    fn test_emby_config_empty_user_id() {
+        let config = json!({
+            "host": "https://emby.example.com",
+            "token": "my-api-key",
+            "user_id": "",
+            "item_id": "item-456"
+        });
+        assert!(validate_emby(config).is_err());
+    }
+
+    #[test]
+    fn test_emby_config_missing_required_fields() {
+        let config = json!({
+            "host": "https://emby.example.com"
+        });
+        assert!(validate_emby(config).is_err());
     }
 }

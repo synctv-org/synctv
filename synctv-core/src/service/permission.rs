@@ -119,7 +119,7 @@ impl PermissionService {
 
                         match msg {
                             InvalidationMessage::UserPermission { room_id, user_id } => {
-                                let cache_key = format!("{room_id}:{user_id}");
+                                let cache_key = format!("perm:room:{room_id}:user:{user_id}");
                                 cache.invalidate(&cache_key).await;
                                 tracing::debug!(
                                     room_id = %room_id,
@@ -128,7 +128,7 @@ impl PermissionService {
                                 );
                             }
                             InvalidationMessage::RoomPermission { room_id } => {
-                                let prefix = format!("{room_id}:");
+                                let prefix = format!("perm:room:{room_id}:user:");
                                 let _ = cache.invalidate_entries_if(move |key, _| key.starts_with(&prefix));
                                 tracing::debug!(
                                     room_id = %room_id,

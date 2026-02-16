@@ -10,7 +10,7 @@ use crate::{
     models::{User, UserId, SignupMethod},
     models::oauth2_client::OAuth2Provider,
     repository::{UserRepository, UserOAuthProviderRepository},
-    service::auth::{hash_password, verify_password, JwtService, TokenType},
+    service::auth::{hash_password, verify_password, JwtService, TokenType, BruteForceProtection},
     service::TokenBlacklistService,
     Error, Result,
 };
@@ -26,6 +26,8 @@ pub struct UserService {
     cache_invalidation: Option<Arc<CacheInvalidationService>>,
     /// Password complexity configuration from config file
     password_complexity: PasswordComplexityConfig,
+    /// Optional brute-force protection for login attempts
+    brute_force: Option<BruteForceProtection>,
 }
 
 impl std::fmt::Debug for UserService {
@@ -52,12 +54,18 @@ impl UserService {
             username_cache,
             cache_invalidation: None,
             password_complexity,
+            brute_force: None,
         }
     }
 
     /// Set the cache invalidation service for cross-replica user cache sync
     pub fn set_cache_invalidation(&mut self, service: Arc<CacheInvalidationService>) {
         self.cache_invalidation = Some(service);
+    }
+
+    /// Set the brute-force protection service for per-account login rate limiting
+    pub fn set_brute_force_protection(&mut self, service: BruteForceProtection) {
+        self.brute_force = Some(service);
     }
 
     /// Register a new user
@@ -138,11 +146,21 @@ impl UserService {
     ///
     /// Timing-safe: always performs password verification regardless of user existence
     /// to prevent username enumeration via response time analysis.
+    ///
+    /// Includes per-account brute-force protection: after repeated failures, accounts
+    /// are temporarily locked with exponential backoff (1min / 5min / 15min).
     pub async fn login(
         &self,
         username: String,
         password: String,
     ) -> Result<(User, String, String)> {
+        // Check brute-force lockout before expensive Argon2 verification.
+        // This applies to all usernames (existing or not) to prevent
+        // distributed attacks while also saving CPU on locked accounts.
+        if let Some(ref bf) = self.brute_force {
+            bf.check_allowed(&username).await?;
+        }
+
         // Get user by username
         let maybe_user = self
             .repository
@@ -166,7 +184,15 @@ impl UserService {
         // After constant-time verification, check all failure conditions
         let user = match user {
             Some(u) if is_valid => u,
-            _ => return Err(Error::Authentication("Invalid username or password".to_string())),
+            _ => {
+                // Record failed attempt for brute-force tracking
+                if let Some(ref bf) = self.brute_force {
+                    if let Err(e) = bf.record_failure(&username).await {
+                        tracing::warn!(error = %e, "Failed to record login failure for brute-force tracking");
+                    }
+                }
+                return Err(Error::Authentication("Invalid username or password".to_string()));
+            }
         };
 
         // Check if user is banned, pending, or soft-deleted (generic message to prevent enumeration)
@@ -174,7 +200,20 @@ impl UserService {
             || user.status == crate::models::UserStatus::Pending
             || user.deleted_at.is_some()
         {
+            // Record failure (account is locked/deleted but attacker shouldn't know)
+            if let Some(ref bf) = self.brute_force {
+                if let Err(e) = bf.record_failure(&username).await {
+                    tracing::warn!(error = %e, "Failed to record login failure for brute-force tracking");
+                }
+            }
             return Err(Error::Authentication("Invalid username or password".to_string()));
+        }
+
+        // Successful login: reset brute-force counter
+        if let Some(ref bf) = self.brute_force {
+            if let Err(e) = bf.reset(&username).await {
+                tracing::warn!(error = %e, "Failed to reset brute-force counter after successful login");
+            }
         }
 
         // Generate JWT tokens (role will be fetched from DB on each request)
@@ -221,22 +260,42 @@ impl UserService {
     /// Refresh access token
     ///
     /// **Production Enhancement (#32)**: Implements refresh token rotation to prevent
-    /// stolen token reuse. After verifying the old refresh token and issuing new tokens,
-    /// the old refresh token is blacklisted for its remaining lifetime. This ensures:
+    /// stolen token reuse. The old refresh token is atomically consumed (blacklisted)
+    /// using SET NX before issuing new tokens. This ensures:
     /// - A stolen refresh token can only be used once
     /// - Legitimate users get new tokens on each refresh
-    /// - Replay attacks are prevented
+    /// - Replay attacks are prevented even in multi-replica deployments
     pub async fn refresh_token(&self, refresh_token: String) -> Result<(String, String)> {
         // Verify refresh token
         let claims = self.jwt_service.verify_refresh_token(&refresh_token)?;
+        let user_id = UserId::from_string(claims.sub);
 
-        // Check if the refresh token has been individually blacklisted (e.g. via logout)
-        if self.blacklist_service.is_blacklisted(&refresh_token).await? {
-            return Err(Error::Authentication("Token has been revoked".to_string()));
+        // Atomically consume the refresh token: blacklist it if not already blacklisted.
+        // This prevents the TOCTOU race where two replicas could both accept the same
+        // old refresh token between separate is_blacklisted + blacklist_token calls.
+        let now = chrono::Utc::now().timestamp();
+        let old_token_ttl = claims.exp - now;
+        let consumed = self.blacklist_service.try_consume_refresh_token(&refresh_token, old_token_ttl).await;
+        match consumed {
+            Ok(true) => {
+                // Successfully consumed -- this is the first (and only) use
+            }
+            Ok(false) => {
+                // Token was already consumed or blacklisted -- reject as replay
+                return Err(Error::Authentication("Token has been revoked".to_string()));
+            }
+            Err(e) => {
+                // Redis error during consumption -- fail closed to prevent replay
+                tracing::error!(
+                    user_id = %user_id.as_str(),
+                    error = %e,
+                    "Refresh token consumption failed (fail closed)"
+                );
+                return Err(Error::Authentication("Token has been revoked".to_string()));
+            }
         }
 
         // Get user to ensure they still exist and are active
-        let user_id = UserId::from_string(claims.sub);
         let user = self
             .repository
             .get_by_id(&user_id)
@@ -262,23 +321,6 @@ impl UserService {
         let new_refresh_token = self
             .jwt_service
             .sign_token(&user.id, TokenType::Refresh)?;
-
-        // **Token Rotation (#32)**: Blacklist the old refresh token to prevent reuse.
-        // This protects against stolen token replay attacks. The TTL is set to the
-        // token's remaining lifetime so it expires naturally alongside the token.
-        let now = chrono::Utc::now().timestamp();
-        let old_token_ttl = claims.exp - now;
-        if old_token_ttl > 0 {
-            // Best-effort blacklisting: if Redis is down, we still issue new tokens
-            // (availability over perfect security). The token will expire naturally.
-            if let Err(e) = self.blacklist_service.blacklist_token(&refresh_token, old_token_ttl).await {
-                tracing::warn!(
-                    user_id = %user_id.as_str(),
-                    error = %e,
-                    "Failed to blacklist old refresh token during rotation (token will expire naturally)"
-                );
-            }
-        }
 
         Ok((new_access_token, new_refresh_token))
     }
@@ -961,4 +1003,183 @@ mod tests {
 
     // ========== Integration Tests ==========
 
+    // ========== Token Blacklist Integration ==========
+
+    #[tokio::test]
+    async fn test_is_token_blacklisted_delegates_to_blacklist_service() {
+        let service = create_test_service();
+
+        let token = "test_blacklist_check_token";
+
+        // Not blacklisted initially
+        assert!(!service.is_token_blacklisted(token).await.unwrap());
+
+        // Blacklist it via the underlying service
+        service.blacklist_service.blacklist_token(token, 3600).await.unwrap();
+
+        // Should now be blacklisted via UserService wrapper
+        assert!(service.is_token_blacklisted(token).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_is_token_invalidated_by_password_change_delegates() {
+        let service = create_test_service();
+        let user_id = UserId::from_string("pwd_change_delegate_user".to_string());
+
+        let now = chrono::Utc::now().timestamp();
+
+        // Not invalidated initially
+        assert!(
+            !service
+                .is_token_invalidated_by_password_change(&user_id, now - 100)
+                .await
+                .unwrap()
+        );
+
+        // Simulate invalidation via blacklist service (as set_password would do)
+        service
+            .blacklist_service
+            .invalidate_user_tokens(&user_id, 30 * 24 * 60 * 60)
+            .await
+            .unwrap();
+
+        // Old token should now be invalidated
+        assert!(
+            service
+                .is_token_invalidated_by_password_change(&user_id, now - 100)
+                .await
+                .unwrap()
+        );
+
+        // Token issued after invalidation should be accepted
+        let future_iat = chrono::Utc::now().timestamp() + 10;
+        assert!(
+            !service
+                .is_token_invalidated_by_password_change(&user_id, future_iat)
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_invalidate_all_tokens_sets_user_invalidation() {
+        let service = create_test_service();
+        let user_id = UserId::from_string("invalidate_all_user".to_string());
+
+        let now = chrono::Utc::now().timestamp();
+
+        // No invalidation before calling
+        assert!(
+            !service
+                .is_token_invalidated_by_password_change(&user_id, now - 10)
+                .await
+                .unwrap()
+        );
+
+        // Invalidate all tokens for user
+        service.invalidate_all_tokens(&user_id, 3600).await.unwrap();
+
+        // Old tokens should be rejected
+        assert!(
+            service
+                .is_token_invalidated_by_password_change(&user_id, now - 10)
+                .await
+                .unwrap()
+        );
+    }
+
+    // ========== Refresh Token Rotation via UserService ==========
+
+    #[tokio::test]
+    async fn test_refresh_token_rotation_blacklists_old_token() {
+        // Create a UserService with a functional JWT + blacklist (no DB needed for this test)
+        let service = create_test_service();
+
+        let user_id = UserId::from_string("rotation_user".to_string());
+
+        // Sign a refresh token
+        let refresh_token = service
+            .jwt_service
+            .sign_token(&user_id, TokenType::Refresh)
+            .unwrap();
+
+        // The old refresh token should NOT be blacklisted before rotation
+        assert!(!service.is_token_blacklisted(&refresh_token).await.unwrap());
+
+        // Simulate what refresh_token() does: consume the old refresh token
+        let claims = service.jwt_service.verify_refresh_token(&refresh_token).unwrap();
+        let now = chrono::Utc::now().timestamp();
+        let old_token_ttl = claims.exp - now;
+
+        let consumed = service
+            .blacklist_service
+            .try_consume_refresh_token(&refresh_token, old_token_ttl)
+            .await
+            .unwrap();
+        assert!(consumed, "First consumption should succeed");
+
+        // Now the old token should be blacklisted
+        assert!(service.is_token_blacklisted(&refresh_token).await.unwrap());
+
+        // Second attempt to consume should fail (replay detection)
+        let consumed_again = service
+            .blacklist_service
+            .try_consume_refresh_token(&refresh_token, old_token_ttl)
+            .await
+            .unwrap();
+        assert!(!consumed_again, "Replay should be detected");
+    }
+
+    // ========== Password Change Token Flow ==========
+
+    #[tokio::test]
+    async fn test_password_change_flow_invalidates_tokens() {
+        // This tests the token invalidation logic that set_password performs,
+        // without needing a real database connection.
+        let service = create_test_service();
+        let user_id = UserId::from_string("set_password_user".to_string());
+
+        // Simulate a token issued 5 seconds ago (before the password change).
+        // We use an explicit iat in the past to avoid same-second timing issues,
+        // since the comparison is strict `<` (iat < password_changed_at).
+        let old_token_iat = chrono::Utc::now().timestamp() - 5;
+
+        // Token should be valid before password change
+        assert!(
+            !service
+                .is_token_invalidated_by_password_change(&user_id, old_token_iat)
+                .await
+                .unwrap()
+        );
+
+        // Simulate the invalidation that set_password would do
+        const THIRTY_DAYS: i64 = 30 * 24 * 60 * 60;
+        service
+            .blacklist_service
+            .invalidate_user_tokens(&user_id, THIRTY_DAYS)
+            .await
+            .unwrap();
+
+        // The pre-change token (iat 5s ago) should now be rejected
+        // because old_token_iat < password_changed_at (which is "now")
+        assert!(
+            service
+                .is_token_invalidated_by_password_change(&user_id, old_token_iat)
+                .await
+                .unwrap()
+        );
+
+        // A newly issued token (iat >= password_changed_at) should be accepted
+        let new_token = service
+            .jwt_service
+            .sign_token(&user_id, TokenType::Access)
+            .unwrap();
+        let new_claims = service.jwt_service.verify_access_token(&new_token).unwrap();
+        assert!(
+            !service
+                .is_token_invalidated_by_password_change(&user_id, new_claims.iat)
+                .await
+                .unwrap()
+        );
+    }
 }

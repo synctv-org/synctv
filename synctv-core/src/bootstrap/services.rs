@@ -197,9 +197,17 @@ pub async fn init_services(
     );
     info!("User and room caches initialized");
 
+    // Initialize brute-force protection (uses Redis for distributed tracking, in-memory fallback)
+    let brute_force = crate::service::BruteForceProtection::new(
+        redis_conn.clone(),
+        config.redis.key_prefix.clone(),
+    );
+    info!("Brute-force protection initialized (redis={})", redis_conn.is_some());
+
     // Initialize UserService
     let mut user_service = UserService::new(pool.clone(), jwt_service.clone(), token_blacklist.clone(), username_cache.clone(), config.password_complexity.clone());
     user_service.set_cache_invalidation(cache_invalidation.clone());
+    user_service.set_brute_force_protection(brute_force);
     info!("UserService initialized");
 
     // Initialize RoomService
@@ -414,9 +422,19 @@ async fn init_oauth2_service(
 
     // 2. Create OAuth2 provider repository and service
     let oauth2_repo = UserOAuthProviderRepository::new(pool.clone());
+    let is_cluster_mode = !config.server.cluster_secret.is_empty();
     let oauth2_service = if let Some(conn) = redis_conn {
         info!("OAuth2 service using Redis for state storage (multi-replica safe)");
         OAuth2Service::with_redis(oauth2_repo, conn)
+    } else if is_cluster_mode {
+        // In cluster mode without Redis, OAuth2 state storage falls back to in-memory,
+        // which breaks the authorization flow: the callback request may hit a different
+        // replica than the one that generated the auth URL, causing state lookup to fail.
+        return Err(anyhow::anyhow!(
+            "OAuth2 requires Redis in multi-replica deployments. \
+             A cluster_secret is configured (indicating cluster mode) but Redis is not available. \
+             Either configure Redis or remove cluster_secret for single-node mode."
+        ));
     } else {
         OAuth2Service::new(oauth2_repo)
     };

@@ -406,7 +406,7 @@ impl SfuManager {
             // Count room modes
             let mode = *room.mode.read().await;
             match mode {
-                RoomMode::SFU => stats.sfu_mode_rooms += 1,
+                RoomMode::SFU | RoomMode::Migrating => stats.sfu_mode_rooms += 1,
                 RoomMode::P2P => stats.p2p_mode_rooms += 1,
             }
         }
@@ -472,7 +472,7 @@ impl SfuManager {
 
                 // Start or stop track forwarding to match the new mode
                 match mode {
-                    RoomMode::SFU => room.switch_to_sfu().await?,
+                    RoomMode::SFU | RoomMode::Migrating => room.switch_to_sfu().await?,
                     RoomMode::P2P => room.switch_to_p2p().await?,
                 }
             }

@@ -312,6 +312,54 @@ pub struct DeleteActiveEncodingsReq {
     #[prost(string, tag = "3")]
     pub play_session_id: ::prost::alloc::string::String,
 }
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ReportPlaybackStartReq {
+    #[prost(string, tag = "1")]
+    pub host: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub token: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub item_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "4")]
+    pub play_session_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "5")]
+    pub media_source_id: ::prost::alloc::string::String,
+    #[prost(int64, tag = "6")]
+    pub position_ticks: i64,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ReportPlaybackStopReq {
+    #[prost(string, tag = "1")]
+    pub host: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub token: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub item_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "4")]
+    pub play_session_id: ::prost::alloc::string::String,
+    #[prost(int64, tag = "5")]
+    pub position_ticks: i64,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ReportPlaybackProgressReq {
+    #[prost(string, tag = "1")]
+    pub host: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub token: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub item_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "4")]
+    pub play_session_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "5")]
+    pub media_source_id: ::prost::alloc::string::String,
+    #[prost(int64, tag = "6")]
+    pub position_ticks: i64,
+    #[prost(bool, tag = "7")]
+    pub is_paused: bool,
+}
 /// Generated client implementations.
 pub mod emby_client {
     #![allow(
@@ -596,6 +644,73 @@ pub mod emby_client {
                 );
             self.inner.unary(req, path, codec).await
         }
+        pub async fn report_playback_start(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ReportPlaybackStartReq>,
+        ) -> std::result::Result<tonic::Response<super::Empty>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.media.emby.Emby/ReportPlaybackStart",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("synctv.media.emby.Emby", "ReportPlaybackStart"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn report_playback_stop(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ReportPlaybackStopReq>,
+        ) -> std::result::Result<tonic::Response<super::Empty>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.media.emby.Emby/ReportPlaybackStop",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("synctv.media.emby.Emby", "ReportPlaybackStop"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn report_playback_progress(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ReportPlaybackProgressReq>,
+        ) -> std::result::Result<tonic::Response<super::Empty>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.media.emby.Emby/ReportPlaybackProgress",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("synctv.media.emby.Emby", "ReportPlaybackProgress"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
     }
 }
 /// Generated server implementations.
@@ -649,6 +764,18 @@ pub mod emby_server {
         async fn delete_active_encodings(
             &self,
             request: tonic::Request<super::DeleteActiveEncodingsReq>,
+        ) -> std::result::Result<tonic::Response<super::Empty>, tonic::Status>;
+        async fn report_playback_start(
+            &self,
+            request: tonic::Request<super::ReportPlaybackStartReq>,
+        ) -> std::result::Result<tonic::Response<super::Empty>, tonic::Status>;
+        async fn report_playback_stop(
+            &self,
+            request: tonic::Request<super::ReportPlaybackStopReq>,
+        ) -> std::result::Result<tonic::Response<super::Empty>, tonic::Status>;
+        async fn report_playback_progress(
+            &self,
+            request: tonic::Request<super::ReportPlaybackProgressReq>,
         ) -> std::result::Result<tonic::Response<super::Empty>, tonic::Status>;
     }
     #[derive(Debug)]
@@ -1101,6 +1228,141 @@ pub mod emby_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = DeleteActiveEncodingsSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.media.emby.Emby/ReportPlaybackStart" => {
+                    #[allow(non_camel_case_types)]
+                    struct ReportPlaybackStartSvc<T: Emby>(pub Arc<T>);
+                    impl<
+                        T: Emby,
+                    > tonic::server::UnaryService<super::ReportPlaybackStartReq>
+                    for ReportPlaybackStartSvc<T> {
+                        type Response = super::Empty;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::ReportPlaybackStartReq>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as Emby>::report_playback_start(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ReportPlaybackStartSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.media.emby.Emby/ReportPlaybackStop" => {
+                    #[allow(non_camel_case_types)]
+                    struct ReportPlaybackStopSvc<T: Emby>(pub Arc<T>);
+                    impl<
+                        T: Emby,
+                    > tonic::server::UnaryService<super::ReportPlaybackStopReq>
+                    for ReportPlaybackStopSvc<T> {
+                        type Response = super::Empty;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::ReportPlaybackStopReq>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as Emby>::report_playback_stop(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ReportPlaybackStopSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.media.emby.Emby/ReportPlaybackProgress" => {
+                    #[allow(non_camel_case_types)]
+                    struct ReportPlaybackProgressSvc<T: Emby>(pub Arc<T>);
+                    impl<
+                        T: Emby,
+                    > tonic::server::UnaryService<super::ReportPlaybackProgressReq>
+                    for ReportPlaybackProgressSvc<T> {
+                        type Response = super::Empty;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::ReportPlaybackProgressReq>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as Emby>::report_playback_progress(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ReportPlaybackProgressSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

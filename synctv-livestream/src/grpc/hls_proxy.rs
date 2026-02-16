@@ -7,6 +7,8 @@
 
 use bytes::Bytes;
 use moka::future::Cache;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tonic::Request;
 use tracing::debug;
@@ -34,6 +36,10 @@ pub struct HlsProxyClient {
     cluster_secret: Option<String>,
     /// Pooled gRPC connections to publisher nodes
     connection_pool: GrpcConnectionPool,
+    /// Cache hit counter for monitoring
+    cache_hits: Arc<AtomicU64>,
+    /// Cache miss counter for monitoring
+    cache_misses: Arc<AtomicU64>,
 }
 
 impl HlsProxyClient {
@@ -57,6 +63,8 @@ impl HlsProxyClient {
             segment_cache,
             cluster_secret,
             connection_pool: GrpcConnectionPool::with_defaults(),
+            cache_hits: Arc::new(AtomicU64::new(0)),
+            cache_misses: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -113,6 +121,7 @@ impl HlsProxyClient {
 
         // Check local cache first
         if let Some(cached) = self.segment_cache.get(&cache_key).await {
+            self.cache_hits.fetch_add(1, Ordering::Relaxed);
             debug!(
                 room_id = room_id,
                 segment_name = segment_name,
@@ -120,6 +129,8 @@ impl HlsProxyClient {
             );
             return Ok(Some(cached));
         }
+
+        self.cache_misses.fetch_add(1, Ordering::Relaxed);
 
         // Cache miss — fetch from publisher node
         let mut client = self.connect(grpc_address).await?;
@@ -144,6 +155,29 @@ impl HlsProxyClient {
             Ok(Some(data))
         } else {
             Ok(None)
+        }
+    }
+
+    /// Returns the number of segment cache hits since startup.
+    pub fn cache_hits(&self) -> u64 {
+        self.cache_hits.load(Ordering::Relaxed)
+    }
+
+    /// Returns the number of segment cache misses since startup.
+    pub fn cache_misses(&self) -> u64 {
+        self.cache_misses.load(Ordering::Relaxed)
+    }
+
+    /// Returns the cache hit rate as a percentage (0.0 - 100.0).
+    /// Returns 0.0 if no requests have been made.
+    pub fn cache_hit_rate(&self) -> f64 {
+        let hits = self.cache_hits.load(Ordering::Relaxed);
+        let misses = self.cache_misses.load(Ordering::Relaxed);
+        let total = hits + misses;
+        if total == 0 {
+            0.0
+        } else {
+            (hits as f64 / total as f64) * 100.0
         }
     }
 
@@ -210,5 +244,13 @@ mod tests {
         // Verify cache miss for different key
         let missing = client.segment_cache.get("nonexistent").await;
         assert!(missing.is_none());
+    }
+
+    #[test]
+    fn test_cache_metrics_initial() {
+        let client = HlsProxyClient::with_defaults(None);
+        assert_eq!(client.cache_hits(), 0);
+        assert_eq!(client.cache_misses(), 0);
+        assert_eq!(client.cache_hit_rate(), 0.0);
     }
 }

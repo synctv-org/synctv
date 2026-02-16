@@ -47,7 +47,7 @@ pub use packet_pacer::{CongestionController, PacketPacer};
 pub use peer::{SfuPeer, PeerStats};
 pub use room::{SfuRoom, RoomMode, RoomStats};
 pub use rtcp_handler::RtcpHandler;
-pub use session_manager::{SfuSessionManager, SfuSignalingEvent};
+pub use session_manager::{SfuSessionManager, SfuSignalingEvent, PeerMigrationResult, PeerMigrationState};
 pub use track::{MediaTrack, QualityLayer, TrackKind};
 pub use types::{PeerId, RoomId, TrackId};
 pub use webrtc_control::{IceManager, IceServerConfig, PeerConnection};

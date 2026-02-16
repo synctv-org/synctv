@@ -14,8 +14,12 @@ use synctv_core::{
     Config,
 };
 use synctv_cluster::sync::{ConnectionManager, ConnectionLimits, ClusterManager, ClusterConfig};
-use synctv_cluster::discovery::{NodeRegistry, HealthMonitor, LoadBalancer, LoadBalancingStrategy, K8sDnsDiscovery};
-use synctv_cluster::leader::{LeaderElector, K8sLeaderElector, K8sLeaderElectorConfig};
+use synctv_cluster::discovery::{NodeRegistry, HealthMonitor, LoadBalancer, LoadBalancingStrategy};
+#[cfg(feature = "k8s")]
+use synctv_cluster::discovery::K8sDnsDiscovery;
+use synctv_cluster::leader::LeaderElector;
+#[cfg(feature = "k8s")]
+use synctv_cluster::leader::{K8sLeaderElector, K8sLeaderElectorConfig};
 
 use server::{SyncTvServer, Services};
 
@@ -86,7 +90,7 @@ async fn init_cluster_components(
     let node_id = cm.node_id().to_string();
     let heartbeat_timeout_secs: i64 = 30;
 
-    let registry = match NodeRegistry::new(Some(redis_url.to_string()), node_id.clone(), heartbeat_timeout_secs) {
+    let registry = match NodeRegistry::new(Some(redis_url.to_string()), node_id.clone(), heartbeat_timeout_secs, &config.redis.key_prefix) {
         Ok(r) => Arc::new(r),
         Err(e) => {
             warn!("Failed to create NodeRegistry: {}", e);
@@ -152,6 +156,7 @@ async fn init_cluster_discovery(
     let discovery_mode = config.cluster.discovery_mode.as_str();
 
     match discovery_mode {
+        #[cfg(feature = "k8s")]
         "k8s_dns" => {
             info!("Using K8s DNS discovery mode");
             match K8sDnsDiscovery::from_env(config.server.grpc_port, config.server.http_port) {
@@ -196,8 +201,15 @@ async fn init_cluster_discovery(
 
                         (nr, hm, lb, Some(dns_refresh_handle))
                     } else {
-                        // K8s DNS mode without Redis: discovery works, but no health monitoring or LB
-                        info!("K8s DNS discovery active without Redis (no health monitor or load balancer)");
+                        // K8s DNS mode without Redis: DNS resolution works, but there is no
+                        // NodeRegistry, HealthMonitor, or LoadBalancer. Cluster coordination
+                        // (pub/sub, heartbeats, load balancing) requires Redis even in k8s_dns mode.
+                        warn!(
+                            "K8s DNS discovery is active but Redis is not configured. \
+                             DNS will resolve peers, but cluster health monitoring, load balancing, \
+                             and pub/sub are DISABLED. To enable full cluster functionality, \
+                             configure a Redis URL. See: https://docs.synctv.dev/deployment/k8s"
+                        );
                         (None, None, None, Some(dns_refresh_handle))
                     }
                 }
@@ -207,6 +219,14 @@ async fn init_cluster_discovery(
                     (None, None, None, None)
                 }
             }
+        }
+        #[cfg(not(feature = "k8s"))]
+        "k8s_dns" => {
+            error!(
+                "K8s DNS discovery mode requires the 'k8s' feature. \
+                 Rebuild with: cargo build --features k8s"
+            );
+            (None, None, None, None)
         }
         _ => {
             // Default: Redis-based discovery
@@ -344,13 +364,43 @@ async fn init_webrtc(
     let stun_server = if config.webrtc.enable_builtin_stun {
         info!("Starting built-in STUN server (turn-rs)...");
         let bind_addr = format!("{}:{}", config.webrtc.stun_host, config.webrtc.stun_port);
-        let external_addr = if config.webrtc.stun_external_addr.is_empty() {
-            // Fall back to advertise_host:stun_port so other nodes/clients
-            // get a routable address instead of 0.0.0.0.
-            format!("{}:{}", config.advertise_host(), config.webrtc.stun_port)
-        } else {
+
+        // Resolve external address with auto-detection fallback chain:
+        // 1. Explicit config (stun_external_addr)
+        // 2. advertise_host config / POD_IP
+        // 3. Cloud metadata (AWS/GCP/Azure)
+        let external_addr = if !config.webrtc.stun_external_addr.is_empty() {
             config.webrtc.stun_external_addr.clone()
+        } else {
+            let advertise = config.advertise_host();
+            // Check if advertise_host resolved to something usable
+            let candidate = format!("{advertise}:{}", config.webrtc.stun_port);
+            if synctv_core::service::validate_external_addr(&candidate).is_ok() {
+                candidate
+            } else {
+                // Try auto-detecting from cloud metadata
+                info!("advertise_host '{}' is not a routable external IP, attempting cloud metadata detection...", advertise);
+                match synctv_core::service::resolve_external_ip().await {
+                    Some(ip) => format!("{ip}:{}", config.webrtc.stun_port),
+                    None => {
+                        warn!(
+                            "Could not auto-detect external IP for STUN server. \
+                             Falling back to '{}'. Set SYNCTV_WEBRTC_STUN_EXTERNAL_ADDR \
+                             or STUN_EXTERNAL_IP to a public IP for NAT traversal to work.",
+                            candidate
+                        );
+                        candidate
+                    }
+                }
+            }
         };
+
+        // Validate the final external address
+        if let Err(e) = synctv_core::service::validate_external_addr(&external_addr) {
+            warn!("{}", e);
+            warn!("STUN server will start but NAT traversal may not work correctly");
+        }
+
         let stun_config = synctv_core::service::StunServerConfig {
             bind_addr,
             external_addr,
@@ -494,6 +544,14 @@ async fn main() -> Result<()> {
     let _chat_partition_task = chat_partition_manager.start_auto_management(24, partition_cancel.clone());
     info!("Chat message partition management started (check interval: 24 hours)");
 
+    // Start periodic data cleanup (soft-deleted records, expired tokens, old notifications)
+    let cleanup_service = synctv_core::service::CleanupService::new(
+        pool.clone(),
+        synctv_core::service::CleanupConfig::default(),
+    );
+    let _cleanup_task = cleanup_service.start_periodic(24, partition_cancel.clone());
+    info!("Periodic data cleanup started (interval: 24 hours)");
+
     // 5.5. Initialize leader election for singleton operations.
     // Only one replica at a time becomes the leader and runs singleton tasks
     // (database migrations are already gated by DistributedLock; leader election
@@ -502,6 +560,7 @@ async fn main() -> Result<()> {
     let leader_elector = {
         let leader_mode = config.cluster.leader_election_mode.as_str();
         match leader_mode {
+            #[cfg(feature = "k8s")]
             "k8s_lease" => {
                 info!("Using K8s Lease-based leader election");
                 // Get pod identity and namespace from environment
@@ -529,6 +588,14 @@ async fn main() -> Result<()> {
                     }
                 }
             }
+            #[cfg(not(feature = "k8s"))]
+            "k8s_lease" => {
+                error!(
+                    "K8s Lease-based leader election requires the 'k8s' feature. \
+                     Rebuild with: cargo build --features k8s"
+                );
+                None
+            }
             _ => {
                 // Default: Redis-based leader election
                 if leader_mode != "redis" {
@@ -539,7 +606,7 @@ async fn main() -> Result<()> {
                 }
 
                 if let Some(ref conn) = synctv_services.redis_conn {
-                    let elector = LeaderElector::new(conn.clone(), node_id.clone());
+                    let elector = LeaderElector::new(conn.clone(), node_id.clone(), &config.redis.key_prefix);
                     let _leader_handle = elector.start(leader_cancel.clone());
                     info!("Redis-based leader election started (node_id={})", node_id);
                     Some(synctv_cluster::leader::AnyLeaderElector::Redis(elector))

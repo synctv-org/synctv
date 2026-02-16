@@ -58,3 +58,38 @@ pub fn parse_source_config<T: serde::de::DeserializeOwned>(
     })
 }
 
+/// Credential field names that must never be included in API responses.
+///
+/// These fields are stripped from `source_config` before serialization to
+/// clients, preventing exposure of API keys, tokens, passwords, and cookies.
+const CREDENTIAL_FIELDS: &[&str] = &[
+    "token",
+    "api_key",
+    "password",
+    "cookies",
+    "secret",
+    "access_token",
+];
+
+/// Strip credential fields from a `source_config` value before sending to clients.
+///
+/// Returns a sanitized copy with sensitive fields replaced by `"[REDACTED]"`.
+/// Non-object values are returned unchanged.
+#[must_use]
+pub fn strip_source_config_credentials(source_config: &serde_json::Value) -> serde_json::Value {
+    match source_config {
+        serde_json::Value::Object(map) => {
+            let mut sanitized = serde_json::Map::with_capacity(map.len());
+            for (key, value) in map {
+                if CREDENTIAL_FIELDS.contains(&key.as_str()) {
+                    sanitized.insert(key.clone(), serde_json::Value::String("[REDACTED]".to_string()));
+                } else {
+                    sanitized.insert(key.clone(), value.clone());
+                }
+            }
+            serde_json::Value::Object(sanitized)
+        }
+        other => other.clone(),
+    }
+}
+

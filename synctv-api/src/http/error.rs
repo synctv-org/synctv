@@ -205,25 +205,226 @@ impl From<crate::impls::ApiError> for AppError {
     }
 }
 
-/// Map impls-layer error strings to appropriate HTTP status codes.
+/// Map a typed `ApiError` to an HTTP `AppError`.
 ///
-/// Uses the shared `classify_error` function from the impls module for
-/// consistent error classification across HTTP and gRPC transports.
-///
-/// This is the client-facing equivalent of `admin_err_to_app_error` in admin.rs.
-pub fn impls_err_to_app_error(err: crate::impls::ApiError) -> AppError {
-    AppError::from(err)
-}
-
-/// Map a typed `ApiError` to an HTTP `AppError` without string-based classification.
-///
-/// This provides guaranteed-correct status code mapping for callers that
-/// propagate `synctv_core::Error` through the `ApiError` type.
-pub fn api_err_to_app_error(err: crate::impls::ApiError) -> AppError {
-    AppError::from(err)
-}
-
-/// Convenience alias for mapping ApiError to AppError (used in OAuth2 handlers)
+/// Uses the `From<ApiError> for AppError` impl for guaranteed-correct
+/// status code mapping (no keyword-based heuristics).
 pub fn map_api_error(err: crate::impls::ApiError) -> AppError {
     AppError::from(err)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ========== AppError construction ==========
+
+    #[test]
+    fn test_bad_request() {
+        let err = AppError::bad_request("invalid field");
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+        assert_eq!(err.message, "invalid field");
+    }
+
+    #[test]
+    fn test_unauthorized() {
+        let err = AppError::unauthorized("not logged in");
+        assert_eq!(err.status, StatusCode::UNAUTHORIZED);
+        assert_eq!(err.message, "not logged in");
+    }
+
+    #[test]
+    fn test_forbidden() {
+        let err = AppError::forbidden("no access");
+        assert_eq!(err.status, StatusCode::FORBIDDEN);
+        assert_eq!(err.message, "no access");
+    }
+
+    #[test]
+    fn test_not_found() {
+        let err = AppError::not_found("room not found");
+        assert_eq!(err.status, StatusCode::NOT_FOUND);
+        assert_eq!(err.message, "room not found");
+    }
+
+    #[test]
+    fn test_conflict() {
+        let err = AppError::conflict("already exists");
+        assert_eq!(err.status, StatusCode::CONFLICT);
+        assert_eq!(err.message, "already exists");
+    }
+
+    #[test]
+    fn test_internal_server_error() {
+        let err = AppError::internal_server_error("boom");
+        assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(err.message, "boom");
+    }
+
+    #[test]
+    fn test_internal_alias() {
+        let err = AppError::internal("oops");
+        assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(err.message, "oops");
+    }
+
+    // ========== Common user-facing errors ==========
+
+    #[test]
+    fn test_invalid_credentials() {
+        let err = AppError::invalid_credentials();
+        assert_eq!(err.status, StatusCode::UNAUTHORIZED);
+        assert!(err.message.contains("Invalid username or password"));
+    }
+
+    #[test]
+    fn test_session_expired() {
+        let err = AppError::session_expired();
+        assert_eq!(err.status, StatusCode::UNAUTHORIZED);
+        assert!(err.message.contains("expired"));
+    }
+
+    #[test]
+    fn test_token_invalid() {
+        let err = AppError::token_invalid();
+        assert_eq!(err.status, StatusCode::UNAUTHORIZED);
+        assert!(err.message.contains("Invalid"));
+    }
+
+    #[test]
+    fn test_permission_denied() {
+        let err = AppError::permission_denied();
+        assert_eq!(err.status, StatusCode::FORBIDDEN);
+        assert!(err.message.contains("permission"));
+    }
+
+    #[test]
+    fn test_resource_not_found() {
+        let err = AppError::resource_not_found("Room");
+        assert_eq!(err.status, StatusCode::NOT_FOUND);
+        assert_eq!(err.message, "Room not found");
+    }
+
+    #[test]
+    fn test_validation_failed() {
+        let err = AppError::validation_failed("email", "must contain @");
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+        assert!(err.message.contains("email"));
+        assert!(err.message.contains("must contain @"));
+    }
+
+    #[test]
+    fn test_rate_limited() {
+        let err = AppError::rate_limited(60);
+        assert_eq!(err.status, StatusCode::TOO_MANY_REQUESTS);
+        assert!(err.message.contains("60 seconds"));
+    }
+
+    #[test]
+    fn test_service_unavailable() {
+        let err = AppError::service_unavailable();
+        assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(err.message.contains("temporarily unavailable"));
+    }
+
+    // ========== Display trait ==========
+
+    #[test]
+    fn test_display() {
+        let err = AppError::bad_request("test error");
+        let display = err.to_string();
+        assert!(display.contains("400"));
+        assert!(display.contains("test error"));
+    }
+
+    // ========== IntoResponse ==========
+
+    #[test]
+    fn test_into_response_status_code() {
+        use axum::response::IntoResponse;
+
+        let err = AppError::not_found("missing");
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn test_into_response_bad_request() {
+        use axum::response::IntoResponse;
+
+        let err = AppError::bad_request("invalid");
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // ========== From<synctv_core::Error> ==========
+
+    #[test]
+    fn test_from_core_not_found() {
+        let core_err = synctv_core::Error::NotFound("room".to_string());
+        let app_err = AppError::from(core_err);
+        assert_eq!(app_err.status, StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn test_from_core_already_exists() {
+        let core_err = synctv_core::Error::AlreadyExists("user".to_string());
+        let app_err = AppError::from(core_err);
+        assert_eq!(app_err.status, StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn test_from_core_authentication() {
+        let core_err = synctv_core::Error::Authentication("bad token".to_string());
+        let app_err = AppError::from(core_err);
+        assert_eq!(app_err.status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn test_from_core_authorization() {
+        let core_err = synctv_core::Error::Authorization("denied".to_string());
+        let app_err = AppError::from(core_err);
+        assert_eq!(app_err.status, StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn test_from_core_invalid_input() {
+        let core_err = synctv_core::Error::InvalidInput("bad field".to_string());
+        let app_err = AppError::from(core_err);
+        assert_eq!(app_err.status, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn test_from_core_rate_limited() {
+        let core_err = synctv_core::Error::RateLimited("too fast".to_string());
+        let app_err = AppError::from(core_err);
+        assert_eq!(app_err.status, StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[test]
+    fn test_from_core_internal() {
+        let core_err = synctv_core::Error::Internal("something broke".to_string());
+        let app_err = AppError::from(core_err);
+        assert_eq!(app_err.status, StatusCode::INTERNAL_SERVER_ERROR);
+        // Internal error messages should NOT leak to the client
+        assert_eq!(app_err.message, "Internal server error");
+    }
+
+    #[test]
+    fn test_from_core_optimistic_lock() {
+        let core_err = synctv_core::Error::OptimisticLockConflict;
+        let app_err = AppError::from(core_err);
+        assert_eq!(app_err.status, StatusCode::CONFLICT);
+    }
+
+    // ========== From<serde_json::Error> ==========
+
+    #[test]
+    fn test_from_serde_json_error() {
+        let json_err = serde_json::from_str::<serde_json::Value>("invalid json {{{").unwrap_err();
+        let app_err = AppError::from(json_err);
+        assert_eq!(app_err.status, StatusCode::BAD_REQUEST);
+        // Should not leak serde error details
+        assert_eq!(app_err.message, "Invalid request data format");
+    }
 }

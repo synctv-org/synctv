@@ -431,3 +431,265 @@ impl SettingsRegistry {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ========== TurnServerList ==========
+
+    #[test]
+    fn test_turn_server_list_new_is_empty() {
+        let list = TurnServerList::new();
+        assert!(list.0.is_empty());
+    }
+
+    #[test]
+    fn test_turn_server_list_default_is_empty() {
+        let list = TurnServerList::default();
+        assert!(list.0.is_empty());
+    }
+
+    #[test]
+    fn test_turn_server_list_display_empty() {
+        let list = TurnServerList::new();
+        assert_eq!(list.to_string(), "[]");
+    }
+
+    #[test]
+    fn test_turn_server_list_display_with_servers() {
+        let list = TurnServerList(vec![TurnServer {
+            urls: vec!["turn:turn.example.com:3478".to_string()],
+            username: Some("user".to_string()),
+            credential: Some("pass".to_string()),
+        }]);
+        let json = list.to_string();
+        let parsed: Vec<serde_json::Value> = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0]["urls"][0], "turn:turn.example.com:3478");
+        assert_eq!(parsed[0]["username"], "user");
+        assert_eq!(parsed[0]["credential"], "pass");
+    }
+
+    #[test]
+    fn test_turn_server_list_from_str_empty_string() {
+        let list: TurnServerList = "".parse().unwrap();
+        assert!(list.0.is_empty());
+    }
+
+    #[test]
+    fn test_turn_server_list_from_str_valid_json() {
+        let json = r#"[{"urls":["turn:turn.example.com:3478"],"username":"u","credential":"p"}]"#;
+        let list: TurnServerList = json.parse().unwrap();
+        assert_eq!(list.0.len(), 1);
+        assert_eq!(list.0[0].urls[0], "turn:turn.example.com:3478");
+        assert_eq!(list.0[0].username, Some("u".to_string()));
+        assert_eq!(list.0[0].credential, Some("p".to_string()));
+    }
+
+    #[test]
+    fn test_turn_server_list_from_str_invalid_json() {
+        let result = "not valid json".parse::<TurnServerList>();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_turn_server_list_roundtrip() {
+        let original = TurnServerList(vec![
+            TurnServer {
+                urls: vec!["turn:a.com:3478".to_string(), "turn:b.com:3478".to_string()],
+                username: Some("user1".to_string()),
+                credential: None,
+            },
+            TurnServer {
+                urls: vec!["turn:c.com:3478".to_string()],
+                username: None,
+                credential: None,
+            },
+        ]);
+        let serialized = original.to_string();
+        let deserialized: TurnServerList = serialized.parse().unwrap();
+        assert_eq!(original, deserialized);
+    }
+
+    #[test]
+    fn test_turn_server_without_optional_fields() {
+        let json = r#"[{"urls":["turn:example.com:3478"]}]"#;
+        let list: TurnServerList = json.parse().unwrap();
+        assert_eq!(list.0.len(), 1);
+        assert_eq!(list.0[0].username, None);
+        assert_eq!(list.0[0].credential, None);
+    }
+
+    // ========== StunServerList ==========
+
+    #[test]
+    fn test_stun_server_list_new_has_defaults() {
+        let list = StunServerList::new();
+        assert_eq!(list.0.len(), 2);
+        assert!(list.0[0].contains("stun.l.google.com"));
+        assert!(list.0[1].contains("stun1.l.google.com"));
+    }
+
+    #[test]
+    fn test_stun_server_list_default_has_defaults() {
+        let list = StunServerList::default();
+        assert_eq!(list.0.len(), 2);
+    }
+
+    #[test]
+    fn test_stun_server_list_display() {
+        let list = StunServerList(vec!["stun:example.com:19302".to_string()]);
+        let json = list.to_string();
+        let parsed: Vec<String> = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, vec!["stun:example.com:19302"]);
+    }
+
+    #[test]
+    fn test_stun_server_list_from_str_empty_string() {
+        let list: StunServerList = "".parse().unwrap();
+        assert!(list.0.is_empty());
+    }
+
+    #[test]
+    fn test_stun_server_list_from_str_valid_json() {
+        let json = r#"["stun:a.com:19302","stun:b.com:19302"]"#;
+        let list: StunServerList = json.parse().unwrap();
+        assert_eq!(list.0.len(), 2);
+        assert_eq!(list.0[0], "stun:a.com:19302");
+    }
+
+    #[test]
+    fn test_stun_server_list_from_str_invalid_json() {
+        let result = "not json".parse::<StunServerList>();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_stun_server_list_roundtrip() {
+        let original = StunServerList(vec![
+            "stun:a.com:19302".to_string(),
+            "stun:b.com:19302".to_string(),
+        ]);
+        let serialized = original.to_string();
+        let deserialized: StunServerList = serialized.parse().unwrap();
+        assert_eq!(original, deserialized);
+    }
+
+    // ========== PublicSettings ==========
+
+    #[test]
+    fn test_public_settings_defaults() {
+        let defaults = PublicSettings::defaults();
+        assert!(defaults.signup_enabled);
+        assert!(defaults.allow_room_creation);
+        assert_eq!(defaults.max_rooms_per_user, 10);
+        assert_eq!(defaults.max_members_per_room, 100);
+        assert!(!defaults.disable_create_room);
+        assert!(!defaults.create_room_need_review);
+        assert_eq!(defaults.room_ttl, 172800);
+        assert!(!defaults.room_must_need_pwd);
+        assert!(!defaults.room_must_no_need_pwd);
+        assert!(!defaults.signup_need_review);
+        assert!(defaults.enable_password_signup);
+        assert!(defaults.enable_guest);
+        assert!(defaults.movie_proxy);
+        assert!(defaults.live_proxy);
+        assert!(defaults.ts_disguised_as_png);
+        assert!(defaults.custom_publish_host.is_empty());
+        assert!(!defaults.email_whitelist_enabled);
+    }
+
+    #[test]
+    fn test_public_settings_serialization_roundtrip() {
+        // Use non-empty custom_publish_host so skip_serializing_if doesn't omit it
+        let mut settings = PublicSettings::defaults();
+        settings.custom_publish_host = "rtmp://live.example.com".to_string();
+        let json = serde_json::to_string(&settings).unwrap();
+        let deserialized: PublicSettings = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.signup_enabled, settings.signup_enabled);
+        assert_eq!(deserialized.max_rooms_per_user, settings.max_rooms_per_user);
+        assert_eq!(deserialized.room_ttl, settings.room_ttl);
+        assert_eq!(deserialized.custom_publish_host, "rtmp://live.example.com");
+    }
+
+    #[test]
+    fn test_public_settings_skips_empty_custom_publish_host() {
+        let defaults = PublicSettings::defaults();
+        let json = serde_json::to_string(&defaults).unwrap();
+        // custom_publish_host is empty, should be omitted via skip_serializing_if
+        assert!(!json.contains("custom_publish_host"));
+    }
+
+    #[test]
+    fn test_public_settings_includes_nonempty_custom_publish_host() {
+        let mut settings = PublicSettings::defaults();
+        settings.custom_publish_host = "rtmp://live.example.com".to_string();
+        let json = serde_json::to_string(&settings).unwrap();
+        assert!(json.contains("custom_publish_host"));
+        assert!(json.contains("rtmp://live.example.com"));
+    }
+
+    // ========== TurnServer serialization ==========
+
+    #[test]
+    fn test_turn_server_serde_with_all_fields() {
+        let server = TurnServer {
+            urls: vec!["turn:a.com:3478".to_string()],
+            username: Some("u".to_string()),
+            credential: Some("c".to_string()),
+        };
+        let json = serde_json::to_string(&server).unwrap();
+        let back: TurnServer = serde_json::from_str(&json).unwrap();
+        assert_eq!(server, back);
+    }
+
+    #[test]
+    fn test_turn_server_serde_without_optional_fields() {
+        let server = TurnServer {
+            urls: vec!["turn:a.com:3478".to_string()],
+            username: None,
+            credential: None,
+        };
+        let json = serde_json::to_string(&server).unwrap();
+        // None fields should be skipped
+        assert!(!json.contains("username"));
+        assert!(!json.contains("credential"));
+        let back: TurnServer = serde_json::from_str(&json).unwrap();
+        assert_eq!(server, back);
+    }
+
+    #[test]
+    fn test_turn_server_list_multiple_servers() {
+        let list = TurnServerList(vec![
+            TurnServer {
+                urls: vec!["turn:a.com:3478".to_string()],
+                username: Some("u1".to_string()),
+                credential: Some("c1".to_string()),
+            },
+            TurnServer {
+                urls: vec!["turn:b.com:3478".to_string()],
+                username: Some("u2".to_string()),
+                credential: Some("c2".to_string()),
+            },
+        ]);
+        let s = list.to_string();
+        let back: TurnServerList = s.parse().unwrap();
+        assert_eq!(back.0.len(), 2);
+        assert_eq!(back.0[0].username, Some("u1".to_string()));
+        assert_eq!(back.0[1].username, Some("u2".to_string()));
+    }
+
+    // ========== StunServerList edge cases ==========
+
+    #[test]
+    fn test_stun_server_list_display_empty() {
+        let list = StunServerList(vec![]);
+        assert_eq!(list.to_string(), "[]");
+    }
+
+    #[test]
+    fn test_stun_server_list_from_str_empty_array() {
+        let list: StunServerList = "[]".parse().unwrap();
+        assert!(list.0.is_empty());
+    }
+}

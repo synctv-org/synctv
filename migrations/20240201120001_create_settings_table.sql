@@ -12,9 +12,6 @@ CREATE TABLE IF NOT EXISTS settings (
 
 CREATE INDEX idx_settings_group ON settings(group_name);
 
--- Index for faster group lookups
-CREATE INDEX IF NOT EXISTS idx_settings_group_name ON settings(group_name);
-
 -- Trigger to update updated_at timestamp
 CREATE OR REPLACE FUNCTION update_settings_updated_at()
 RETURNS TRIGGER AS $$

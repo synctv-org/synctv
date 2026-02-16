@@ -11,6 +11,7 @@ use governor::state::{InMemoryState, NotKeyed};
 use regex::Regex;
 use reqwest::Client;
 use serde::Deserialize;
+use md5::{Md5, Digest};
 
 use super::error::{BilibiliError, check_response, json_with_limit};
 use super::types::{self as types, VideoInfo, Quality, PlayUrlInfo, DurlItem, AnimeInfo};
@@ -54,6 +55,113 @@ static SHARED_RATE_LIMITER: LazyLock<std::sync::Arc<BilibiliRateLimiter>> = Lazy
     std::sync::Arc::new(RateLimiter::direct(quota))
 });
 
+// ============================================================================
+// WBI Signing
+// ============================================================================
+
+/// Predefined character-index table for generating the WBI mixin key.
+/// This table is derived from Bilibili's frontend JavaScript and maps
+/// positions in the concatenated `img_key + sub_key` string to positions
+/// in the resulting mixin key.
+const MIXIN_KEY_ENC_TAB: [u8; 64] = [
+    46, 47, 18,  2, 53,  8, 23, 32, 15, 50, 10, 31, 58,  3, 45, 35,
+    27, 43,  5, 49, 33,  9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13,
+    37, 48,  7, 16, 24, 55, 40, 61, 26, 17,  0,  1, 60, 51, 30,  4,
+    22, 25, 54, 21, 56, 59,  6, 63, 57, 62, 11, 36, 20, 34, 44, 52,
+];
+
+/// Cached WBI keys with expiration timestamp.
+struct WbiKeys {
+    mixin_key: String,
+    expires_at: std::time::Instant,
+}
+
+/// Global WBI key cache. Keys are refreshed when expired.
+static WBI_KEY_CACHE: LazyLock<tokio::sync::RwLock<Option<WbiKeys>>> =
+    LazyLock::new(|| tokio::sync::RwLock::new(None));
+
+/// WBI key cache TTL (refresh keys every 30 minutes).
+const WBI_KEY_TTL: Duration = Duration::from_secs(30 * 60);
+
+/// Generate the mixin key from `img_key` and `sub_key` using the encoding table.
+///
+/// 1. Concatenate `img_key + sub_key` (should be 64 chars if both are 32 chars).
+/// 2. For each index in `MIXIN_KEY_ENC_TAB`, pick the character at that position.
+/// 3. Take the first 32 characters of the result.
+fn gen_mixin_key(img_key: &str, sub_key: &str) -> String {
+    let combined: Vec<u8> = format!("{img_key}{sub_key}").into_bytes();
+    if combined.is_empty() {
+        return String::new();
+    }
+    MIXIN_KEY_ENC_TAB
+        .iter()
+        .filter_map(|&idx| combined.get(idx as usize).copied())
+        .take(32)
+        .map(|b| b as char)
+        .collect()
+}
+
+/// Extract the key portion from a WBI image URL.
+///
+/// The URL looks like `https://i0.hdslb.com/bfs/wbi/<key>.png`.
+/// We extract the filename stem (without extension).
+fn extract_key_from_url(url: &str) -> Option<String> {
+    url.rsplit('/')
+        .next()
+        .and_then(|filename| filename.rsplit_once('.'))
+        .map(|(stem, _ext)| stem.to_string())
+}
+
+/// Sign query parameters using Bilibili's WBI algorithm.
+///
+/// 1. Add `wts` (current Unix timestamp) to params.
+/// 2. Sort params by key lexicographically.
+/// 3. Filter values: remove characters `!'()*` from each value.
+/// 4. URL-encode and concatenate as `key=value&key=value...`.
+/// 5. Append the `mixin_key`.
+/// 6. Compute MD5 hash → `w_rid`.
+/// 7. Return the signed query string with `w_rid` and `wts` appended.
+fn wbi_sign(params: &[(&str, String)], mixin_key: &str) -> Vec<(String, String)> {
+    let wts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        .to_string();
+
+    // Collect all params plus wts
+    let mut all_params: Vec<(String, String)> = params
+        .iter()
+        .map(|(k, v)| ((*k).to_string(), v.clone()))
+        .collect();
+    all_params.push(("wts".to_string(), wts));
+
+    // Sort by key
+    all_params.sort_by(|a, b| a.0.cmp(&b.0));
+
+    // Filter special characters from values: remove !'()*
+    for param in &mut all_params {
+        param.1 = param.1.chars().filter(|c| !"!'()*".contains(*c)).collect();
+    }
+
+    // Build query string for hashing
+    let query_str: String = all_params
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join("&");
+
+    // Compute MD5 hash of query_string + mixin_key
+    let to_hash = format!("{query_str}{mixin_key}");
+    let mut hasher = Md5::new();
+    hasher.update(to_hash.as_bytes());
+    let w_rid = format!("{:x}", hasher.finalize());
+
+    // Add w_rid to the params
+    all_params.push(("w_rid".to_string(), w_rid));
+
+    all_params
+}
+
 /// Bilibili HTTP Client
 pub struct BilibiliClient {
     client: Client,
@@ -84,6 +192,61 @@ impl BilibiliClient {
     /// This prevents concurrent users from triggering IP bans.
     async fn wait_for_rate_limit(&self) {
         self.rate_limiter.until_ready().await;
+    }
+
+    /// Get the WBI mixin key, fetching and caching it if necessary.
+    ///
+    /// The mixin key is derived from `img_key` and `sub_key` obtained from
+    /// the Bilibili nav API. It is cached globally for `WBI_KEY_TTL` to
+    /// avoid excessive API calls.
+    async fn get_wbi_mixin_key(&self) -> Result<String, BilibiliError> {
+        // Fast path: check cache
+        {
+            let cache = WBI_KEY_CACHE.read().await;
+            if let Some(ref keys) = *cache {
+                if std::time::Instant::now() < keys.expires_at {
+                    return Ok(keys.mixin_key.clone());
+                }
+            }
+        }
+
+        // Slow path: fetch from API
+        self.wait_for_rate_limit().await;
+        let url = "https://api.bilibili.com/x/web-interface/nav";
+        let req = self.add_cookies(self.client.get(url).header("Referer", REFERER));
+        let resp = check_response(req.send().await?)?;
+        let json: types::NavResp = json_with_limit(resp).await?;
+
+        if json.code != 0 {
+            return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
+        }
+
+        let wbi_img = json.data.wbi_img.ok_or_else(|| {
+            BilibiliError::Parse("Missing wbi_img in nav response".to_string())
+        })?;
+
+        let img_key = extract_key_from_url(&wbi_img.img_url).ok_or_else(|| {
+            BilibiliError::Parse(format!("Cannot extract img_key from URL: {}", wbi_img.img_url))
+        })?;
+        let sub_key = extract_key_from_url(&wbi_img.sub_url).ok_or_else(|| {
+            BilibiliError::Parse(format!("Cannot extract sub_key from URL: {}", wbi_img.sub_url))
+        })?;
+
+        let mixin_key = gen_mixin_key(&img_key, &sub_key);
+        if mixin_key.is_empty() {
+            return Err(BilibiliError::Parse("Generated empty mixin key".to_string()));
+        }
+
+        // Update cache
+        {
+            let mut cache = WBI_KEY_CACHE.write().await;
+            *cache = Some(WbiKeys {
+                mixin_key: mixin_key.clone(),
+                expires_at: std::time::Instant::now() + WBI_KEY_TTL,
+            });
+        }
+
+        Ok(mixin_key)
     }
 
     /// Build a sanitized cookie header string from stored cookies.
@@ -179,7 +342,7 @@ impl BilibiliClient {
         let resp = req.send().await?;
         let status = resp.status();
         if status.is_client_error() || status.is_server_error() {
-            return Err(BilibiliError::Http { status, url: resp.url().to_string() });
+            return Err(BilibiliError::Http { status, url: resp.url().to_string(), retry_after_secs: None });
         }
 
         // Extract ALL relevant cookies (SESSDATA, bili_jct, DedeUserID, DedeUserID__ckMd5)
@@ -389,7 +552,7 @@ impl BilibiliClient {
         let resp = req.send().await?;
         let status = resp.status();
         if status.is_client_error() || status.is_server_error() {
-            return Err(BilibiliError::Http { status, url: resp.url().to_string() });
+            return Err(BilibiliError::Http { status, url: resp.url().to_string(), retry_after_secs: None });
         }
 
         // Extract cookies from headers BEFORE consuming body.
@@ -476,7 +639,7 @@ impl BilibiliClient {
             return Ok(response.url().to_string());
         }
 
-        Err(BilibiliError::Http { status, url: response.url().to_string() })
+        Err(BilibiliError::Http { status, url: response.url().to_string(), retry_after_secs: None })
     }
 
     /// Get video information by BVID
@@ -528,322 +691,452 @@ impl BilibiliClient {
         cid: u64,
         quality: Quality,
     ) -> Result<PlayUrlInfo, BilibiliError> {
-        self.wait_for_rate_limit().await;
+        let client = self.client.clone();
+        let cookie_header = self.build_cookie_header();
+        let bvid = bvid.to_string();
         let cid_str = cid.to_string();
         let qn_str = quality.to_qn().to_string();
-        let req = self.client.get("https://api.bilibili.com/x/player/playurl")
-            .query(&[("bvid", bvid), ("cid", &cid_str), ("qn", &qn_str)]);
-        let req = self.add_cookies(req);
-        let response = check_response(req.send().await?)?;
-        let json: serde_json::Value = json_with_limit(response).await?;
 
-        if json["code"].as_i64() != Some(0) {
-            return Err(BilibiliError::Api {
-                    code: json["code"].as_i64().unwrap_or(0),
-                    message: json["message"].as_str().unwrap_or("Unknown error").to_string(),
-                });
-        }
+        with_retry(|| {
+            let client = client.clone();
+            let cookie_header = cookie_header.clone();
+            let bvid = bvid.clone();
+            let cid_str = cid_str.clone();
+            let qn_str = qn_str.clone();
+            async move {
+                let mut req = client.get("https://api.bilibili.com/x/player/playurl")
+                    .query(&[("bvid", bvid.as_str()), ("cid", &cid_str), ("qn", &qn_str)]);
+                if let Some(ref cookies) = cookie_header {
+                    req = req.header("Cookie", cookies.as_str());
+                }
+                let response = check_response(req.send().await?)?;
+                let json: serde_json::Value = json_with_limit(response).await?;
 
-        let durl = json["data"]["durl"].as_array()
-            .ok_or_else(|| BilibiliError::Parse("Missing durl array".to_string()))?
-            .iter()
-            .filter_map(|item| {
-                Some(DurlItem {
-                    url: item["url"].as_str()?.to_string(),
-                    size: item["size"].as_u64().unwrap_or(0),
-                })
-            })
-            .collect();
+                if json["code"].as_i64() != Some(0) {
+                    return Err(BilibiliError::Api {
+                        code: json["code"].as_i64().unwrap_or(0),
+                        message: json["message"].as_str().unwrap_or("Unknown error").to_string(),
+                    });
+                }
 
-        Ok(PlayUrlInfo { durl })
+                let durl = json["data"]["durl"].as_array()
+                    .ok_or_else(|| BilibiliError::Parse("Missing durl array".to_string()))?
+                    .iter()
+                    .filter_map(|item| {
+                        Some(DurlItem {
+                            url: item["url"].as_str()?.to_string(),
+                            size: item["size"].as_u64().unwrap_or(0),
+                        })
+                    })
+                    .collect();
+
+                Ok(PlayUrlInfo { durl })
+            }
+        }).await
     }
 
     /// Get anime information by EPID
     pub async fn get_anime_info(&self, epid: &str) -> Result<AnimeInfo, BilibiliError> {
-        self.wait_for_rate_limit().await;
-        let req = self.client.get("https://api.bilibili.com/pgc/view/web/season")
-            .query(&[("ep_id", epid)]);
-        let req = self.add_cookies(req);
-        let response = check_response(req.send().await?)?;
-        let json: serde_json::Value = json_with_limit(response).await?;
+        let client = self.client.clone();
+        let cookie_header = self.build_cookie_header();
+        let epid = epid.to_string();
 
-        if json["code"].as_i64() != Some(0) {
-            return Err(BilibiliError::Api {
-                    code: json["code"].as_i64().unwrap_or(0),
-                    message: json["message"].as_str().unwrap_or("Unknown error").to_string(),
-                });
-        }
+        with_retry(|| {
+            let client = client.clone();
+            let cookie_header = cookie_header.clone();
+            let epid = epid.clone();
+            async move {
+                let mut req = client.get("https://api.bilibili.com/pgc/view/web/season")
+                    .query(&[("ep_id", epid.as_str())]);
+                if let Some(ref cookies) = cookie_header {
+                    req = req.header("Cookie", cookies.as_str());
+                }
+                let response = check_response(req.send().await?)?;
+                let json: serde_json::Value = json_with_limit(response).await?;
 
-        let data = &json["result"];
+                if json["code"].as_i64() != Some(0) {
+                    return Err(BilibiliError::Api {
+                        code: json["code"].as_i64().unwrap_or(0),
+                        message: json["message"].as_str().unwrap_or("Unknown error").to_string(),
+                    });
+                }
 
-        // Safely access first episode (array may be empty or missing)
-        let first_episode = data["episodes"].as_array().and_then(|arr| arr.first());
+                let data = &json["result"];
+                let first_episode = data["episodes"].as_array().and_then(|arr| arr.first());
 
-        Ok(AnimeInfo {
-            season_id: data["season_id"].as_u64().unwrap_or(0),
-            ep_id: first_episode.and_then(|ep| ep["ep_id"].as_u64()).unwrap_or(0),
-            cid: first_episode.and_then(|ep| ep["cid"].as_u64()).unwrap_or(0),
-            title: data["title"].as_str().unwrap_or("").to_string(),
-            cover: data["cover"].as_str().unwrap_or("").to_string(),
-        })
+                Ok(AnimeInfo {
+                    season_id: data["season_id"].as_u64().unwrap_or(0),
+                    ep_id: first_episode.and_then(|ep| ep["ep_id"].as_u64()).unwrap_or(0),
+                    cid: first_episode.and_then(|ep| ep["cid"].as_u64()).unwrap_or(0),
+                    title: data["title"].as_str().unwrap_or("").to_string(),
+                    cover: data["cover"].as_str().unwrap_or("").to_string(),
+                })
+            }
+        }).await
     }
 
     /// Parse video page to get video information
     pub async fn parse_video_page(&self, aid: u64, bvid: &str) -> Result<VideoPageInfo, BilibiliError> {
-        self.wait_for_rate_limit().await;
-        let mut req = self.client.get("https://api.bilibili.com/x/web-interface/view");
-        if bvid.is_empty() {
-            req = req.query(&[("aid", &aid.to_string())]);
-        } else {
-            req = req.query(&[("bvid", &bvid.to_string())]);
-        }
+        let client = self.client.clone();
+        let cookie_header = self.build_cookie_header();
+        let bvid = bvid.to_string();
 
-        let req = self.add_cookies(req.header("Referer", REFERER));
-        let resp = check_response(req.send().await?)?;
-        let json: types::VideoPageInfoResp = json_with_limit(resp).await?;
+        with_retry(|| {
+            let client = client.clone();
+            let cookie_header = cookie_header.clone();
+            let bvid = bvid.clone();
+            async move {
+                let mut req = client.get("https://api.bilibili.com/x/web-interface/view");
+                if bvid.is_empty() {
+                    req = req.query(&[("aid", &aid.to_string())]);
+                } else {
+                    req = req.query(&[("bvid", &bvid)]);
+                }
+                req = req.header("Referer", REFERER);
+                if let Some(ref cookies) = cookie_header {
+                    req = req.header("Cookie", cookies.as_str());
+                }
+                let resp = check_response(req.send().await?)?;
+                let json: types::VideoPageInfoResp = json_with_limit(resp).await?;
 
-        if json.code != 0 {
-            return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
-        }
+                if json.code != 0 {
+                    return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
+                }
 
-        let data = json.data;
-        let title = data.title;
-        let owner_name = data.owner.name;
+                let data = json.data;
+                let title = data.title;
+                let owner_name = data.owner.name;
 
-        let mut video_infos = Vec::new();
-        for page in data.pages {
-            video_infos.push(VideoInfoItem {
-                bvid: data.bvid.clone(),
-                cid: page.cid,
-                epid: 0,
-                name: page.part,
-                cover_image: data.pic.clone(),
-                live: false,
-            });
-        }
+                let mut video_infos = Vec::new();
+                for page in data.pages {
+                    video_infos.push(VideoInfoItem {
+                        bvid: data.bvid.clone(),
+                        cid: page.cid,
+                        epid: 0,
+                        name: page.part,
+                        cover_image: data.pic.clone(),
+                        live: false,
+                    });
+                }
 
-        Ok(VideoPageInfo {
-            title,
-            actors: vec![owner_name],
-            video_infos,
-        })
+                Ok(VideoPageInfo {
+                    title,
+                    actors: vec![owner_name],
+                    video_infos,
+                })
+            }
+        }).await
     }
 
     /// Get video playback URL (normal video, not DASH)
     pub async fn get_video_url(&self, aid: u64, bvid: &str, cid: u64, quality: Option<u32>) -> Result<VideoUrlInfo, BilibiliError> {
-        self.wait_for_rate_limit().await;
+        let client = self.client.clone();
+        let cookie_header = self.build_cookie_header();
+        let bvid = bvid.to_string();
         let qn = quality.unwrap_or(80); // Default to 1080P
         let cid_str = cid.to_string();
         let qn_str = qn.to_string();
-        let mut req = self.client.get("https://api.bilibili.com/x/player/playurl");
-        if bvid.is_empty() {
-            req = req.query(&[("aid", &aid.to_string()), ("cid", &cid_str), ("qn", &qn_str)]);
-        } else {
-            req = req.query(&[("bvid", &bvid.to_string()), ("cid", &cid_str), ("qn", &qn_str)]);
-        }
 
-        let req = self.add_cookies(req.header("Referer", REFERER));
-        let resp = check_response(req.send().await?)?;
-        let json: types::VideoUrlResp = json_with_limit(resp).await?;
+        with_retry(|| {
+            let client = client.clone();
+            let cookie_header = cookie_header.clone();
+            let bvid = bvid.clone();
+            let cid_str = cid_str.clone();
+            let qn_str = qn_str.clone();
+            async move {
+                let mut req = client.get("https://api.bilibili.com/x/player/playurl");
+                if bvid.is_empty() {
+                    req = req.query(&[("aid", &aid.to_string()), ("cid", &cid_str), ("qn", &qn_str)]);
+                } else {
+                    req = req.query(&[("bvid", &bvid), ("cid", &cid_str), ("qn", &qn_str)]);
+                }
+                req = req.header("Referer", REFERER);
+                if let Some(ref cookies) = cookie_header {
+                    req = req.header("Cookie", cookies.as_str());
+                }
+                let resp = check_response(req.send().await?)?;
+                let json: types::VideoUrlResp = json_with_limit(resp).await?;
 
-        if json.code != 0 {
-            return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
-        }
+                if json.code != 0 {
+                    return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
+                }
 
-        let data = json.data;
-        let accept_quality: Vec<u32> = data.accept_quality.iter().map(|&q| q as u32).collect();
-        let accept_description = data.accept_description;
-        let current_quality = data.quality as u32;
-        let url = data.durl.first()
-            .map(|d| d.url.clone())
-            .unwrap_or_default();
+                let data = json.data;
+                let accept_quality: Vec<u32> = data.accept_quality.iter().map(|&q| q as u32).collect();
+                let accept_description = data.accept_description;
+                let current_quality = data.quality as u32;
+                let url = data.durl.first()
+                    .map(|d| d.url.clone())
+                    .unwrap_or_default();
 
-        Ok(VideoUrlInfo {
-            accept_quality,
-            accept_description,
-            current_quality,
-            url,
-        })
+                Ok(VideoUrlInfo {
+                    accept_quality,
+                    accept_description,
+                    current_quality,
+                    url,
+                })
+            }
+        }).await
     }
 
-    /// Get DASH video URL - returns structured DASH data for upper layer to generate MPD
+    /// Get DASH video URL - returns structured DASH data for upper layer to generate MPD.
+    ///
+    /// This endpoint (`/x/player/wbi/playurl`) requires WBI parameter signing.
+    /// Query parameters are signed with the WBI mixin key before sending.
     pub async fn get_dash_video_url(&self, aid: u64, bvid: &str, cid: u64) -> Result<(DashData, DashData), BilibiliError> {
-        self.wait_for_rate_limit().await;
-        let cid_str = cid.to_string();
-        let mut req = self.client.get("https://api.bilibili.com/x/player/wbi/playurl");
-        if bvid.is_empty() {
-            req = req.query(&[("aid", &aid.to_string()), ("cid", &cid_str), ("fnval", &"4048".to_string())]);
-        } else {
-            req = req.query(&[("bvid", &bvid.to_string()), ("cid", &cid_str), ("fnval", &"4048".to_string())]);
-        }
+        // Obtain the WBI mixin key (cached, refreshed on expiry)
+        let mixin_key = self.get_wbi_mixin_key().await?;
+        let client = self.client.clone();
+        let cookie_header = self.build_cookie_header();
+        let bvid = bvid.to_string();
 
-        let req = self.add_cookies(req.header("Referer", REFERER));
-        let resp = check_response(req.send().await?)?;
-        let json: types::DashVideoResp = json_with_limit(resp).await?;
+        with_retry(|| {
+            let client = client.clone();
+            let cookie_header = cookie_header.clone();
+            let mixin_key = mixin_key.clone();
+            let bvid = bvid.clone();
+            async move {
+                // Build query parameters
+                let mut params: Vec<(&str, String)> = vec![
+                    ("cid", cid.to_string()),
+                    ("fnval", "4048".to_string()),
+                ];
+                if bvid.is_empty() {
+                    params.push(("aid", aid.to_string()));
+                } else {
+                    params.push(("bvid", bvid.clone()));
+                }
 
-        if json.code != 0 {
-            return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
-        }
+                // Sign parameters with WBI (re-signs on each retry for fresh wts)
+                let signed_params = wbi_sign(&params, &mixin_key);
 
-        // Parse DASH data into structured format
-        let dash_info = json.data.dash;
-        let (regular_dash, hevc_dash) = parse_dash_info(&dash_info, &json.data.support_formats)?;
+                let mut req = client.get("https://api.bilibili.com/x/player/wbi/playurl");
+                req = req.query(&signed_params);
+                req = req.header("Referer", REFERER);
+                if let Some(ref cookies) = cookie_header {
+                    req = req.header("Cookie", cookies.as_str());
+                }
+                let resp = check_response(req.send().await?)?;
+                let json: types::DashVideoResp = json_with_limit(resp).await?;
 
-        Ok((regular_dash, hevc_dash))
+                if json.code != 0 {
+                    return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
+                }
+
+                // Parse DASH data into structured format
+                let dash_info = json.data.dash;
+                let (regular_dash, hevc_dash) = parse_dash_info(&dash_info, &json.data.support_formats)?;
+
+                Ok((regular_dash, hevc_dash))
+            }
+        }).await
     }
 
     /// Get subtitles for a video
     pub async fn get_subtitles(&self, aid: u64, bvid: &str, cid: u64) -> Result<HashMap<String, String>, BilibiliError> {
-        self.wait_for_rate_limit().await;
+        let client = self.client.clone();
+        let cookie_header = self.build_cookie_header();
+        let bvid = bvid.to_string();
         let cid_str = cid.to_string();
-        let mut req = self.client.get("https://api.bilibili.com/x/player/v2");
-        if bvid.is_empty() {
-            req = req.query(&[("aid", &aid.to_string()), ("cid", &cid_str)]);
-        } else {
-            req = req.query(&[("bvid", &bvid.to_string()), ("cid", &cid_str)]);
-        }
 
-        let req = self.add_cookies(req.header("Referer", REFERER));
-        let resp = check_response(req.send().await?)?;
-        let json: types::PlayerV2InfoResp = json_with_limit(resp).await?;
+        with_retry(|| {
+            let client = client.clone();
+            let cookie_header = cookie_header.clone();
+            let bvid = bvid.clone();
+            let cid_str = cid_str.clone();
+            async move {
+                let mut req = client.get("https://api.bilibili.com/x/player/v2");
+                if bvid.is_empty() {
+                    req = req.query(&[("aid", &aid.to_string()), ("cid", &cid_str)]);
+                } else {
+                    req = req.query(&[("bvid", &bvid), ("cid", &cid_str)]);
+                }
+                req = req.header("Referer", REFERER);
+                if let Some(ref cookies) = cookie_header {
+                    req = req.header("Cookie", cookies.as_str());
+                }
+                let resp = check_response(req.send().await?)?;
+                let json: types::PlayerV2InfoResp = json_with_limit(resp).await?;
 
-        if json.code != 0 {
-            return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
-        }
+                if json.code != 0 {
+                    return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
+                }
 
-        let mut subtitles = HashMap::new();
-        for sub in json.data.subtitle.subtitles {
-            let name = sub.lan_doc;
-            let url = if sub.subtitle_url.starts_with("http") {
-                sub.subtitle_url
-            } else {
-                format!("https:{}", sub.subtitle_url)
-            };
-            if !name.is_empty() && !url.is_empty() {
-                subtitles.insert(name, url);
+                let mut subtitles = HashMap::new();
+                for sub in json.data.subtitle.subtitles {
+                    let name = sub.lan_doc;
+                    let url = if sub.subtitle_url.starts_with("http") {
+                        sub.subtitle_url
+                    } else {
+                        format!("https:{}", sub.subtitle_url)
+                    };
+                    if !name.is_empty() && !url.is_empty() {
+                        subtitles.insert(name, url);
+                    }
+                }
+
+                Ok(subtitles)
             }
-        }
-
-        Ok(subtitles)
+        }).await
     }
 
     /// Get user information
     pub async fn user_info(&self) -> Result<UserInfo, BilibiliError> {
-        self.wait_for_rate_limit().await;
-        let url = "https://api.bilibili.com/x/web-interface/nav";
-        let req = self.add_cookies(self.client.get(url).header("Referer", REFERER));
-        let resp = check_response(req.send().await?)?;
-        let json: types::NavResp = json_with_limit(resp).await?;
+        let client = self.client.clone();
+        let cookie_header = self.build_cookie_header();
 
-        if json.code != 0 {
-            return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
-        }
+        with_retry(|| {
+            let client = client.clone();
+            let cookie_header = cookie_header.clone();
+            async move {
+                let mut req = client.get("https://api.bilibili.com/x/web-interface/nav")
+                    .header("Referer", REFERER);
+                if let Some(ref cookies) = cookie_header {
+                    req = req.header("Cookie", cookies.as_str());
+                }
+                let resp = check_response(req.send().await?)?;
+                let json: types::NavResp = json_with_limit(resp).await?;
 
-        let data = json.data;
-        Ok(UserInfo {
-            is_login: data.is_login,
-            username: data.uname,
-            face: data.face,
-            is_vip: data.vip_status == 1,
-        })
+                if json.code != 0 {
+                    return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
+                }
+
+                let data = json.data;
+                Ok(UserInfo {
+                    is_login: data.is_login,
+                    username: data.uname,
+                    face: data.face,
+                    is_vip: data.vip_status == 1,
+                })
+            }
+        }).await
     }
 
     /// Parse PGC (anime/bangumi) page
     pub async fn parse_pgc_page(&self, epid: u64, ssid: u64) -> Result<VideoPageInfo, BilibiliError> {
-        self.wait_for_rate_limit().await;
-        let mut req = self.client.get("https://api.bilibili.com/pgc/view/web/season");
-        if epid != 0 {
-            req = req.query(&[("ep_id", epid)]);
-        } else {
-            req = req.query(&[("season_id", ssid)]);
-        }
+        let client = self.client.clone();
+        let cookie_header = self.build_cookie_header();
 
-        let req = self.add_cookies(req.header("Referer", REFERER));
-        let resp = check_response(req.send().await?)?;
-        let json: types::SeasonInfoResp = json_with_limit(resp).await?;
+        with_retry(|| {
+            let client = client.clone();
+            let cookie_header = cookie_header.clone();
+            async move {
+                let mut req = client.get("https://api.bilibili.com/pgc/view/web/season");
+                if epid != 0 {
+                    req = req.query(&[("ep_id", epid)]);
+                } else {
+                    req = req.query(&[("season_id", ssid)]);
+                }
+                req = req.header("Referer", REFERER);
+                if let Some(ref cookies) = cookie_header {
+                    req = req.header("Cookie", cookies.as_str());
+                }
+                let resp = check_response(req.send().await?)?;
+                let json: types::SeasonInfoResp = json_with_limit(resp).await?;
 
-        if json.code != 0 {
-            return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
-        }
+                if json.code != 0 {
+                    return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
+                }
 
-        let result = json.result;
-        let title = result.title;
-        let actors_str = result.actors;
-        let actors = if actors_str.is_empty() {
-            vec![]
-        } else {
-            vec![actors_str]
-        };
+                let result = json.result;
+                let title = result.title;
+                let actors_str = result.actors;
+                let actors = if actors_str.is_empty() {
+                    vec![]
+                } else {
+                    vec![actors_str]
+                };
 
-        let mut video_infos = Vec::new();
-        for ep in result.episodes {
-            video_infos.push(VideoInfoItem {
-                bvid: ep.bvid,
-                cid: ep.cid,
-                epid: ep.ep_id,
-                name: if ep.long_title.is_empty() { ep.title } else { ep.long_title },
-                cover_image: ep.cover,
-                live: false,
-            });
-        }
+                let mut video_infos = Vec::new();
+                for ep in result.episodes {
+                    video_infos.push(VideoInfoItem {
+                        bvid: ep.bvid,
+                        cid: ep.cid,
+                        epid: ep.ep_id,
+                        name: if ep.long_title.is_empty() { ep.title } else { ep.long_title },
+                        cover_image: ep.cover,
+                        live: false,
+                    });
+                }
 
-        Ok(VideoPageInfo {
-            title,
-            actors,
-            video_infos,
-        })
+                Ok(VideoPageInfo {
+                    title,
+                    actors,
+                    video_infos,
+                })
+            }
+        }).await
     }
 
     /// Get PGC playback URL
     pub async fn get_pgc_url(&self, epid: u64, cid: u64, quality: Option<u32>) -> Result<VideoUrlInfo, BilibiliError> {
-        self.wait_for_rate_limit().await;
+        let client = self.client.clone();
+        let cookie_header = self.build_cookie_header();
         let qn = quality.unwrap_or(80);
-        let req = self.client.get("https://api.bilibili.com/pgc/player/web/playurl")
-            .query(&[("ep_id", epid), ("cid", cid), ("qn", qn as u64)]);
 
-        let req = self.add_cookies(req.header("Referer", REFERER));
-        let resp = check_response(req.send().await?)?;
-        let json: types::PgcUrlResp = json_with_limit(resp).await?;
+        with_retry(|| {
+            let client = client.clone();
+            let cookie_header = cookie_header.clone();
+            async move {
+                let mut req = client.get("https://api.bilibili.com/pgc/player/web/playurl")
+                    .query(&[("ep_id", epid), ("cid", cid), ("qn", qn as u64)]);
+                req = req.header("Referer", REFERER);
+                if let Some(ref cookies) = cookie_header {
+                    req = req.header("Cookie", cookies.as_str());
+                }
+                let resp = check_response(req.send().await?)?;
+                let json: types::PgcUrlResp = json_with_limit(resp).await?;
 
-        if json.code != 0 {
-            return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
-        }
+                if json.code != 0 {
+                    return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
+                }
 
-        let result = json.result;
-        let accept_quality: Vec<u32> = result.accept_quality.iter().map(|&q| q as u32).collect();
-        let accept_description = result.accept_description;
-        let current_quality = result.quality as u32;
-        let url = result.durl.first()
-            .map(|d| d.url.clone())
-            .unwrap_or_default();
+                let result = json.result;
+                let accept_quality: Vec<u32> = result.accept_quality.iter().map(|&q| q as u32).collect();
+                let accept_description = result.accept_description;
+                let current_quality = result.quality as u32;
+                let url = result.durl.first()
+                    .map(|d| d.url.clone())
+                    .unwrap_or_default();
 
-        Ok(VideoUrlInfo {
-            accept_quality,
-            accept_description,
-            current_quality,
-            url,
-        })
+                Ok(VideoUrlInfo {
+                    accept_quality,
+                    accept_description,
+                    current_quality,
+                    url,
+                })
+            }
+        }).await
     }
 
     /// Get DASH PGC URL - returns structured DASH data for upper layer to generate MPD
     pub async fn get_dash_pgc_url(&self, epid: u64, cid: u64) -> Result<(DashData, DashData), BilibiliError> {
-        self.wait_for_rate_limit().await;
-        let req = self.client.get("https://api.bilibili.com/pgc/player/web/playurl")
-            .query(&[("ep_id", epid), ("cid", cid), ("fnval", 4048u64)]);
+        let client = self.client.clone();
+        let cookie_header = self.build_cookie_header();
 
-        let req = self.add_cookies(req.header("Referer", REFERER));
-        let resp = check_response(req.send().await?)?;
-        let json: types::DashPgcResp = json_with_limit(resp).await?;
+        with_retry(|| {
+            let client = client.clone();
+            let cookie_header = cookie_header.clone();
+            async move {
+                let mut req = client.get("https://api.bilibili.com/pgc/player/web/playurl")
+                    .query(&[("ep_id", epid), ("cid", cid), ("fnval", 4048u64)]);
+                req = req.header("Referer", REFERER);
+                if let Some(ref cookies) = cookie_header {
+                    req = req.header("Cookie", cookies.as_str());
+                }
+                let resp = check_response(req.send().await?)?;
+                let json: types::DashPgcResp = json_with_limit(resp).await?;
 
-        if json.code != 0 {
-            return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
-        }
+                if json.code != 0 {
+                    return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
+                }
 
-        // Parse DASH data into structured format
-        let dash_info = json.result.dash;
-        let (regular_dash, hevc_dash) = parse_dash_info(&dash_info, &json.result.support_formats)?;
+                let dash_info = json.result.dash;
+                let (regular_dash, hevc_dash) = parse_dash_info(&dash_info, &json.result.support_formats)?;
 
-        Ok((regular_dash, hevc_dash))
+                Ok((regular_dash, hevc_dash))
+            }
+        }).await
     }
 
     /// Match URL to extract video type and ID
@@ -881,139 +1174,160 @@ impl BilibiliClient {
 
     /// Parse live page
     pub async fn parse_live_page(&self, room_id: u64) -> Result<VideoPageInfo, BilibiliError> {
-        self.wait_for_rate_limit().await;
-        let req = self.client.get("https://api.live.bilibili.com/room/v1/Room/get_info")
-            .query(&[("room_id", room_id)]);
+        let client = self.client.clone();
+        let cookie_header = self.build_cookie_header();
 
-        let req = self.add_cookies(req.header("Referer", REFERER));
-        let resp = check_response(req.send().await?)?;
-        let json: types::ParseLivePageResp = json_with_limit(resp).await?;
+        with_retry(|| {
+            let client = client.clone();
+            let cookie_header = cookie_header.clone();
+            async move {
+                let mut req = client.get("https://api.live.bilibili.com/room/v1/Room/get_info")
+                    .query(&[("room_id", room_id)]);
+                req = req.header("Referer", REFERER);
+                if let Some(ref cookies) = cookie_header {
+                    req = req.header("Cookie", cookies.as_str());
+                }
+                let resp = check_response(req.send().await?)?;
+                let json: types::ParseLivePageResp = json_with_limit(resp).await?;
 
-        if json.code != 0 {
-            return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
-        }
+                if json.code != 0 {
+                    return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
+                }
 
-        let data = json.data;
-        let title = data.title.clone();
+                let data = json.data;
+                let title = data.title.clone();
+                let uname = String::new();
 
-        // Note: This API doesn't return uname directly, need to call get_live_master_info separately
-        let uname = String::new();
+                let video_info = VideoInfoItem {
+                    bvid: String::new(),
+                    cid: room_id,
+                    epid: 0,
+                    name: title.clone(),
+                    cover_image: data.user_cover,
+                    live: true,
+                };
 
-        let video_info = VideoInfoItem {
-            bvid: String::new(),
-            cid: room_id,
-            epid: 0,
-            name: title.clone(),
-            cover_image: data.user_cover,
-            live: true,
-        };
-
-        Ok(VideoPageInfo {
-            title,
-            actors: vec![uname],
-            video_infos: vec![video_info],
-        })
+                Ok(VideoPageInfo {
+                    title,
+                    actors: vec![uname],
+                    video_infos: vec![video_info],
+                })
+            }
+        }).await
     }
 
     /// Get live streams
     pub async fn get_live_streams(&self, room_id: u64, _hls: bool) -> Result<Vec<LiveStream>, BilibiliError> {
-        self.wait_for_rate_limit().await;
-        // Note: `hls` parameter is currently unused; the API always requests both protocols (0,1).
-        let req = self.client.get("https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo")
-            .query(&[
-                ("room_id", &room_id.to_string() as &str),
-                ("protocol", "0,1"),
-                ("format", "0,1,2"),
-                ("codec", "0,1"),
-                ("qn", "10000"),
-                ("platform", "web"),
-                ("ptype", "8"),
-            ]);
+        let client = self.client.clone();
+        let cookie_header = self.build_cookie_header();
+        let room_id_str = room_id.to_string();
 
-        let req = self.add_cookies(req.header("Referer", REFERER));
-        let resp = check_response(req.send().await?)?;
-        let json: serde_json::Value = json_with_limit(resp).await?;
+        // Note: `_hls` parameter is currently unused; the API always requests both protocols (0,1).
+        with_retry(|| {
+            let client = client.clone();
+            let cookie_header = cookie_header.clone();
+            let room_id_str = room_id_str.clone();
+            async move {
+                let mut req = client.get("https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo")
+                    .query(&[
+                        ("room_id", room_id_str.as_str()),
+                        ("protocol", "0,1"),
+                        ("format", "0,1,2"),
+                        ("codec", "0,1"),
+                        ("qn", "10000"),
+                        ("platform", "web"),
+                        ("ptype", "8"),
+                    ]);
+                req = req.header("Referer", REFERER);
+                if let Some(ref cookies) = cookie_header {
+                    req = req.header("Cookie", cookies.as_str());
+                }
+                let resp = check_response(req.send().await?)?;
+                let json: types::RoomPlayInfoResp = json_with_limit(resp).await?;
 
-        if json["code"].as_i64() != Some(0) {
-            return Err(BilibiliError::Api {
-                    code: json["code"].as_i64().unwrap_or(0),
-                    message: json["message"].as_str().unwrap_or("Unknown error").to_string(),
-                });
-        }
+                if json.code != 0 {
+                    return Err(BilibiliError::Api {
+                        code: json.code as i64,
+                        message: json.message,
+                    });
+                }
 
-        let mut streams = Vec::new();
+                let mut streams = Vec::new();
 
-        if let Some(stream_list) = json["data"]["playurl_info"]["playurl"]["stream"].as_array() {
-            for stream in stream_list {
-                if let Some(format_list) = stream["format"].as_array() {
-                    for format in format_list {
-                        if let Some(codec_list) = format["codec"].as_array() {
-                            for codec in codec_list {
-                                let quality = codec["current_qn"].as_u64().unwrap_or(0) as u32;
-                                let desc = codec["accept_qn"].as_array()
-                                    .and_then(|arr| arr.first())
-                                    .and_then(serde_json::Value::as_u64).map_or_else(|| "Unknown".to_string(), |q| format!("{q}P"));
+                let stream_list = json.data.playurl_info
+                    .as_ref()
+                    .and_then(|info| info.playurl.as_ref())
+                    .map(|playurl| &playurl.stream[..])
+                    .unwrap_or_default();
 
-                                let urls: Vec<String> = codec["url_info"].as_array()
-                                    .map(|arr| {
-                                        arr.iter()
-                                            .filter_map(|item| {
-                                                let host = item["host"].as_str()?;
-                                                let path = codec["base_url"].as_str()?;
-                                                let extra = item["extra"].as_str().unwrap_or("");
-                                                Some(format!("{host}{path}{extra}"))
-                                            })
-                                            .collect()
-                                    })
-                                    .unwrap_or_default();
+                for stream in stream_list {
+                    for format in &stream.format {
+                        for codec in &format.codec {
+                            let quality = codec.current_qn as u32;
+                            let desc = codec.accept_qn.first()
+                                .map_or_else(|| "Unknown".to_string(), |q| format!("{q}P"));
 
-                                if !urls.is_empty() {
-                                    streams.push(LiveStream {
-                                        quality,
-                                        urls,
-                                        desc,
-                                    });
-                                }
+                            let urls: Vec<String> = codec.url_info.iter()
+                                .filter(|info| !info.host.is_empty())
+                                .map(|info| format!("{}{}{}", info.host, codec.base_url, info.extra))
+                                .collect();
+
+                            if !urls.is_empty() {
+                                streams.push(LiveStream {
+                                    quality,
+                                    urls,
+                                    desc,
+                                });
                             }
                         }
                     }
                 }
-            }
-        }
 
-        Ok(streams)
+                Ok(streams)
+            }
+        }).await
     }
 
     /// Get live danmaku server info
     pub async fn get_live_danmu_info(&self, room_id: u64) -> Result<LiveDanmuInfo, BilibiliError> {
-        self.wait_for_rate_limit().await;
-        let req = self.client.get("https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo")
-            .query(&[("id", room_id)]);
+        let client = self.client.clone();
+        let cookie_header = self.build_cookie_header();
 
-        let req = self.add_cookies(req.header("Referer", REFERER));
-        let resp = check_response(req.send().await?)?;
-        let json: types::GetLiveDanmuInfoResp = json_with_limit(resp).await?;
+        with_retry(|| {
+            let client = client.clone();
+            let cookie_header = cookie_header.clone();
+            async move {
+                let mut req = client.get("https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo")
+                    .query(&[("id", room_id)]);
+                req = req.header("Referer", REFERER);
+                if let Some(ref cookies) = cookie_header {
+                    req = req.header("Cookie", cookies.as_str());
+                }
+                let resp = check_response(req.send().await?)?;
+                let json: types::GetLiveDanmuInfoResp = json_with_limit(resp).await?;
 
-        if json.code != 0 {
-            return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
-        }
+                if json.code != 0 {
+                    return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
+                }
 
-        let data = json.data;
-        let token = data.token;
-        let host_list: Vec<DanmuHost> = data.host_list
-            .into_iter()
-            .map(|h| DanmuHost {
-                host: h.host,
-                port: h.port,
-                wss_port: h.wss_port,
-                ws_port: h.ws_port,
-            })
-            .collect();
+                let data = json.data;
+                let token = data.token;
+                let host_list: Vec<DanmuHost> = data.host_list
+                    .into_iter()
+                    .map(|h| DanmuHost {
+                        host: h.host,
+                        port: h.port,
+                        wss_port: h.wss_port,
+                        ws_port: h.ws_port,
+                    })
+                    .collect();
 
-        Ok(LiveDanmuInfo {
-            token,
-            host_list,
-        })
+                Ok(LiveDanmuInfo {
+                    token,
+                    host_list,
+                })
+            }
+        }).await
     }
 }
 
@@ -1530,5 +1844,169 @@ mod tests {
         let resp: types::QrcodeResp = serde_json::from_str(json).unwrap();
         assert_eq!(resp.data.qrcode_key, "abc123");
         assert_eq!(resp.ttl, 180);
+    }
+
+    // === WBI Signing Tests ===
+
+    #[test]
+    fn test_extract_key_from_url() {
+        assert_eq!(
+            extract_key_from_url("https://i0.hdslb.com/bfs/wbi/7cd084941338484aae1ad9425b84077c.png"),
+            Some("7cd084941338484aae1ad9425b84077c".to_string())
+        );
+        assert_eq!(
+            extract_key_from_url("https://i0.hdslb.com/bfs/wbi/4932caff0ff746eab6f01bf08b70ac45.png"),
+            Some("4932caff0ff746eab6f01bf08b70ac45".to_string())
+        );
+        assert_eq!(extract_key_from_url(""), None);
+        assert_eq!(extract_key_from_url("no-slash"), None);
+    }
+
+    #[test]
+    fn test_gen_mixin_key() {
+        // Use known img_key and sub_key values to test the mixin key generation.
+        let img_key = "7cd084941338484aae1ad9425b84077c";
+        let sub_key = "4932caff0ff746eab6f01bf08b70ac45";
+        let mixin = gen_mixin_key(img_key, sub_key);
+        // The mixin key should be exactly 32 characters
+        assert_eq!(mixin.len(), 32);
+        // Verify the key is deterministic
+        assert_eq!(mixin, gen_mixin_key(img_key, sub_key));
+        // Verify first few characters from the known encoding table:
+        // MIXIN_KEY_ENC_TAB[0] = 46 → combined[46] (sub_key[14] = 'f')
+        let combined = format!("{img_key}{sub_key}");
+        let combined_bytes: Vec<u8> = combined.bytes().collect();
+        assert_eq!(mixin.as_bytes()[0], combined_bytes[46]);
+    }
+
+    #[test]
+    fn test_gen_mixin_key_empty() {
+        let mixin = gen_mixin_key("", "");
+        assert!(mixin.is_empty());
+    }
+
+    #[test]
+    fn test_wbi_sign_produces_w_rid_and_wts() {
+        let params = vec![
+            ("bvid", "BV1xx411c7XZ".to_string()),
+            ("cid", "12345".to_string()),
+            ("fnval", "4048".to_string()),
+        ];
+        let mixin_key = "ea1db124af3c7062474693fa704f4ff8";
+        let signed = wbi_sign(&params, mixin_key);
+
+        // Should contain w_rid and wts in addition to original params
+        let keys: Vec<&str> = signed.iter().map(|(k, _)| k.as_str()).collect();
+        assert!(keys.contains(&"w_rid"), "signed params should contain w_rid");
+        assert!(keys.contains(&"wts"), "signed params should contain wts");
+        assert!(keys.contains(&"bvid"), "signed params should contain bvid");
+        assert!(keys.contains(&"cid"), "signed params should contain cid");
+        assert!(keys.contains(&"fnval"), "signed params should contain fnval");
+
+        // w_rid should be a 32-char hex MD5 hash
+        let w_rid = signed.iter().find(|(k, _)| k == "w_rid").map(|(_, v)| v.as_str()).expect("w_rid missing");
+        assert_eq!(w_rid.len(), 32);
+        assert!(w_rid.chars().all(|c| c.is_ascii_hexdigit()), "w_rid should be hex");
+    }
+
+    #[test]
+    fn test_wbi_sign_filters_special_chars() {
+        let params = vec![
+            ("key", "hello!'()*world".to_string()),
+        ];
+        let mixin_key = "testkey12345678901234567890123456";
+        let signed = wbi_sign(&params, mixin_key);
+
+        // The value should have !'()* removed
+        let val = signed.iter().find(|(k, _)| k == "key").map(|(_, v)| v.as_str()).expect("key missing");
+        assert_eq!(val, "helloworld");
+    }
+
+    #[test]
+    fn test_wbi_sign_sorted_params() {
+        let params = vec![
+            ("z_param", "z".to_string()),
+            ("a_param", "a".to_string()),
+            ("m_param", "m".to_string()),
+        ];
+        let mixin_key = "testkey12345678901234567890123456";
+        let signed = wbi_sign(&params, mixin_key);
+
+        // Params before w_rid should be sorted alphabetically
+        let keys_before_wrid: Vec<&str> = signed.iter()
+            .filter(|(k, _)| k != "w_rid")
+            .map(|(k, _)| k.as_str())
+            .collect();
+        // a_param, m_param, wts, z_param (alphabetically sorted)
+        let mut sorted = keys_before_wrid.clone();
+        sorted.sort();
+        assert_eq!(keys_before_wrid, sorted, "params should be sorted alphabetically");
+    }
+
+    #[test]
+    fn test_wbi_sign_deterministic_for_same_timestamp() {
+        // The same params + mixin_key should produce consistent signing
+        // (modulo the wts which depends on system time)
+        let params = vec![
+            ("bvid", "BV1test".to_string()),
+            ("cid", "999".to_string()),
+        ];
+        let mixin_key = "ea1db124af3c7062474693fa704f4ff8";
+        let signed1 = wbi_sign(&params, mixin_key);
+        let signed2 = wbi_sign(&params, mixin_key);
+
+        // The wts values should be very close (same second)
+        let wts1 = signed1.iter().find(|(k, _)| k == "wts").map(|(_, v)| v.clone()).expect("wts missing");
+        let wts2 = signed2.iter().find(|(k, _)| k == "wts").map(|(_, v)| v.clone()).expect("wts missing");
+        // They should be the same if run within the same second
+        assert_eq!(wts1, wts2, "wts should be same within the same second");
+
+        // If wts is the same, w_rid must be the same too
+        let w_rid1 = signed1.iter().find(|(k, _)| k == "w_rid").map(|(_, v)| v.clone()).expect("w_rid missing");
+        let w_rid2 = signed2.iter().find(|(k, _)| k == "w_rid").map(|(_, v)| v.clone()).expect("w_rid missing");
+        assert_eq!(w_rid1, w_rid2, "w_rid should be deterministic for same inputs");
+    }
+
+    #[test]
+    fn test_nav_resp_with_wbi_img_deserialize() {
+        let json = r#"{
+            "data": {
+                "isLogin": true,
+                "uname": "TestUser",
+                "face": "https://example.com/face.jpg",
+                "vipStatus": 1,
+                "mid": 12345,
+                "wbi_img": {
+                    "img_url": "https://i0.hdslb.com/bfs/wbi/7cd084941338484aae1ad9425b84077c.png",
+                    "sub_url": "https://i0.hdslb.com/bfs/wbi/4932caff0ff746eab6f01bf08b70ac45.png"
+                }
+            },
+            "message": "0",
+            "code": 0,
+            "ttl": 1
+        }"#;
+        let resp: types::NavResp = serde_json::from_str(json).unwrap();
+        assert!(resp.data.wbi_img.is_some());
+        let wbi_img = resp.data.wbi_img.unwrap();
+        assert!(wbi_img.img_url.contains("7cd084941338484aae1ad9425b84077c"));
+        assert!(wbi_img.sub_url.contains("4932caff0ff746eab6f01bf08b70ac45"));
+    }
+
+    #[test]
+    fn test_nav_resp_without_wbi_img_deserialize() {
+        let json = r#"{
+            "data": {
+                "isLogin": false,
+                "uname": "",
+                "face": "",
+                "vipStatus": 0,
+                "mid": 0
+            },
+            "message": "0",
+            "code": 0,
+            "ttl": 1
+        }"#;
+        let resp: types::NavResp = serde_json::from_str(json).unwrap();
+        assert!(resp.data.wbi_img.is_none());
     }
 }

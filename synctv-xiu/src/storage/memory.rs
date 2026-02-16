@@ -11,8 +11,14 @@
 // - Configurable max memory and max key limits prevent OOM
 // - When limits are reached, oldest entries are evicted (LRU-like by write time)
 //
-// Eviction uses a BTreeMap index keyed by (Instant, key) for O(log N) oldest lookup
-// instead of scanning all entries.
+// Concurrency:
+// - Uses `parking_lot::RwLock` so multiple readers proceed in parallel while
+//   writers (write/delete/eviction) get exclusive access.  This eliminates the
+//   previous `tokio::sync::Mutex` bottleneck where every read blocked behind
+//   writes.
+//
+// Eviction uses a BTreeMap index keyed by sequence number for O(log N) oldest
+// lookup instead of scanning all entries.
 
 use super::HlsStorage;
 use async_trait::async_trait;
@@ -21,7 +27,6 @@ use std::collections::BTreeMap;
 use std::io::{Error, ErrorKind, Result};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
-use tokio::sync::Mutex;
 
 /// Default max memory: 512 MB
 const DEFAULT_MAX_MEMORY_BYTES: usize = 512 * 1024 * 1024;
@@ -44,11 +49,11 @@ struct Entry {
 
 /// In-memory storage backend with configurable memory limits.
 ///
-/// Internally uses a `Mutex` to protect the data map and time-ordered index
-/// so that eviction is consistent and O(log N).
+/// Uses `parking_lot::RwLock` for concurrent reads (lock-free relative to each
+/// other) while writers get exclusive access for consistent eviction.
 #[derive(Clone)]
 pub struct MemoryStorage {
-    inner: std::sync::Arc<Mutex<MemoryStorageInner>>,
+    inner: std::sync::Arc<parking_lot::RwLock<MemoryStorageInner>>,
     max_memory_bytes: usize,
     max_keys: usize,
 }
@@ -142,7 +147,7 @@ impl MemoryStorage {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            inner: std::sync::Arc::new(Mutex::new(MemoryStorageInner::new())),
+            inner: std::sync::Arc::new(parking_lot::RwLock::new(MemoryStorageInner::new())),
             max_memory_bytes: DEFAULT_MAX_MEMORY_BYTES,
             max_keys: DEFAULT_MAX_KEYS,
         }
@@ -156,7 +161,7 @@ impl MemoryStorage {
     #[must_use]
     pub fn with_limits(max_memory_bytes: usize, max_keys: usize) -> Self {
         Self {
-            inner: std::sync::Arc::new(Mutex::new(MemoryStorageInner::new())),
+            inner: std::sync::Arc::new(parking_lot::RwLock::new(MemoryStorageInner::new())),
             max_memory_bytes,
             max_keys,
         }
@@ -166,7 +171,7 @@ impl MemoryStorage {
     #[must_use]
     pub fn unlimited() -> Self {
         Self {
-            inner: std::sync::Arc::new(Mutex::new(MemoryStorageInner::new())),
+            inner: std::sync::Arc::new(parking_lot::RwLock::new(MemoryStorageInner::new())),
             max_memory_bytes: 0,
             max_keys: 0,
         }
@@ -174,17 +179,17 @@ impl MemoryStorage {
 
     /// Get current memory usage in bytes
     pub async fn memory_usage(&self) -> usize {
-        self.inner.lock().await.total_bytes
+        self.inner.read().total_bytes
     }
 
     /// Get number of stored keys
     pub async fn key_count(&self) -> usize {
-        self.inner.lock().await.data.len()
+        self.inner.read().data.len()
     }
 
     /// Clear all data (for testing/cleanup)
     pub async fn clear(&self) {
-        let mut inner = self.inner.lock().await;
+        let mut inner = self.inner.write();
         inner.data.clear();
         inner.time_index.clear();
         inner.total_bytes = 0;
@@ -213,7 +218,7 @@ impl HlsStorage for MemoryStorage {
             ));
         }
 
-        let mut inner = self.inner.lock().await;
+        let mut inner = self.inner.write();
 
         // If key already exists, remove the old entry first
         inner.remove(key);
@@ -233,7 +238,7 @@ impl HlsStorage for MemoryStorage {
     }
 
     async fn read(&self, key: &str) -> Result<Bytes> {
-        let inner = self.inner.lock().await;
+        let inner = self.inner.read();
         if let Some(entry) = inner.data.get(key) {
             tracing::trace!("Read from memory: {} ({} bytes)", key, entry.data.len());
             Ok(entry.data.clone())
@@ -247,7 +252,7 @@ impl HlsStorage for MemoryStorage {
     }
 
     async fn delete(&self, key: &str) -> Result<()> {
-        let mut inner = self.inner.lock().await;
+        let mut inner = self.inner.write();
         if inner.remove(key) {
             tracing::trace!("Deleted from memory: {}", key);
         }
@@ -255,12 +260,12 @@ impl HlsStorage for MemoryStorage {
     }
 
     async fn exists(&self, key: &str) -> Result<bool> {
-        let inner = self.inner.lock().await;
+        let inner = self.inner.read();
         Ok(inner.data.contains_key(key))
     }
 
     async fn cleanup(&self, older_than: Duration) -> Result<usize> {
-        let mut inner = self.inner.lock().await;
+        let mut inner = self.inner.write();
         let cutoff = std::time::Instant::now()
             .checked_sub(older_than)
             .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "older_than duration is too large"))?;

@@ -15,7 +15,12 @@ pub enum ProviderClientError {
     Network(String),
 
     #[error("HTTP error {status} for {url}")]
-    Http { status: reqwest::StatusCode, url: String },
+    Http {
+        status: reqwest::StatusCode,
+        url: String,
+        /// Retry-After header value in seconds (from HTTP 429 responses).
+        retry_after_secs: Option<u64>,
+    },
 
     #[error("API error (code {code}): {message}")]
     Api { code: i64, message: String },
@@ -59,12 +64,24 @@ pub async fn json_with_limit<T: serde::de::DeserializeOwned>(
 }
 
 /// Check HTTP response status before processing body.
+///
+/// For HTTP 429 responses, the `Retry-After` header is parsed and stored
+/// in the error so that callers can respect the server's backoff hint.
 pub fn check_response(resp: reqwest::Response) -> Result<reqwest::Response, ProviderClientError> {
     let status = resp.status();
     if status.is_client_error() || status.is_server_error() {
+        let retry_after_secs = if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            resp.headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse::<u64>().ok())
+        } else {
+            None
+        };
         return Err(ProviderClientError::Http {
             status,
             url: resp.url().to_string(),
+            retry_after_secs,
         });
     }
     Ok(resp)
@@ -91,13 +108,16 @@ impl From<reqwest::header::InvalidHeaderValue> for ProviderClientError {
 impl ProviderClientError {
     /// Whether this error is transient and the request should be retried.
     ///
-    /// Network errors and server errors (5xx) are retryable.
-    /// Client errors (4xx), parse errors, and auth errors are not.
+    /// Network errors, server errors (5xx), and HTTP 429 (Too Many Requests)
+    /// are retryable. Other client errors (4xx), parse errors, and auth errors
+    /// are not.
     #[must_use]
     pub fn is_retryable(&self) -> bool {
         match self {
             Self::Network(_) => true,
-            Self::Http { status, .. } => status.is_server_error(),
+            Self::Http { status, .. } => {
+                status.is_server_error() || *status == reqwest::StatusCode::TOO_MANY_REQUESTS
+            }
             _ => false,
         }
     }
@@ -144,6 +164,7 @@ mod tests {
         let err = ProviderClientError::Http {
             status: reqwest::StatusCode::NOT_FOUND,
             url: "https://example.com/api".to_string(),
+            retry_after_secs: None,
         };
         assert_eq!(err.to_string(), "HTTP error 404 Not Found for https://example.com/api");
     }
@@ -193,5 +214,69 @@ mod tests {
     #[test]
     fn test_max_response_size() {
         assert_eq!(MAX_RESPONSE_SIZE, 16 * 1024 * 1024);
+    }
+
+    // === Retryable error tests ===
+
+    #[test]
+    fn test_is_retryable_network() {
+        let err = ProviderClientError::Network("timeout".to_string());
+        assert!(err.is_retryable());
+    }
+
+    #[test]
+    fn test_is_retryable_server_error() {
+        let err = ProviderClientError::Http {
+            status: reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            url: "https://example.com".to_string(),
+            retry_after_secs: None,
+        };
+        assert!(err.is_retryable());
+    }
+
+    #[test]
+    fn test_is_retryable_429_too_many_requests() {
+        let err = ProviderClientError::Http {
+            status: reqwest::StatusCode::TOO_MANY_REQUESTS,
+            url: "https://api.bilibili.com/x/player/wbi/playurl".to_string(),
+            retry_after_secs: Some(5),
+        };
+        assert!(err.is_retryable(), "HTTP 429 should be retryable");
+        // Verify retry_after_secs is captured
+        if let ProviderClientError::Http { retry_after_secs, .. } = &err {
+            assert_eq!(*retry_after_secs, Some(5));
+        }
+    }
+
+    #[test]
+    fn test_is_not_retryable_404() {
+        let err = ProviderClientError::Http {
+            status: reqwest::StatusCode::NOT_FOUND,
+            url: "https://example.com".to_string(),
+            retry_after_secs: None,
+        };
+        assert!(!err.is_retryable());
+    }
+
+    #[test]
+    fn test_is_not_retryable_403() {
+        let err = ProviderClientError::Http {
+            status: reqwest::StatusCode::FORBIDDEN,
+            url: "https://example.com".to_string(),
+            retry_after_secs: None,
+        };
+        assert!(!err.is_retryable());
+    }
+
+    #[test]
+    fn test_is_not_retryable_parse() {
+        let err = ProviderClientError::Parse("bad json".to_string());
+        assert!(!err.is_retryable());
+    }
+
+    #[test]
+    fn test_is_not_retryable_auth() {
+        let err = ProviderClientError::Auth("expired".to_string());
+        assert!(!err.is_retryable());
     }
 }

@@ -44,7 +44,7 @@ pub async fn refresh_token(
         .client_api
         .refresh_token(req)
         .await
-        .map_err(super::error::impls_err_to_app_error)?;
+        .map_err(super::error::map_api_error)?;
 
     Ok(Json(response))
 }
@@ -136,7 +136,7 @@ mod tests {
     // Verify that auth handlers use the correct error mapping:
     // - register: maps errors via bad_request (400)
     // - login: maps errors via unauthorized (401)
-    // - refresh_token: maps errors via impls_err_to_app_error (typed classification)
+    // - refresh_token: maps errors via map_api_error (typed classification)
 
     #[test]
     fn test_app_error_bad_request_status() {

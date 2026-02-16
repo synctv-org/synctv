@@ -128,9 +128,10 @@ pub type FrameDataSender = mpsc::Sender<FrameData>;
 pub type FrameDataReceiver = mpsc::Receiver<FrameData>;
 
 /// Default capacity for frame data channels.
-/// Limits memory usage while allowing enough buffer for normal operation.
-/// When full, new packets are dropped (non-blocking behavior).
-pub const FRAME_DATA_CHANNEL_CAPACITY: usize = 256;
+/// Must be large enough to absorb bursts (keyframe + B-frames) without
+/// dropping. 4096 frames ≈ ~160 s at 25 fps, keeping memory bounded while
+/// avoiding silent frame loss under load.
+pub const FRAME_DATA_CHANNEL_CAPACITY: usize = 4096;
 
 //used to transfer rtp packet data,it includles the following directions:
 // rtsp(publisher)->stream hub->rtsp(subscriber)

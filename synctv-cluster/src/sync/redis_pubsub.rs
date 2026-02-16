@@ -441,6 +441,20 @@ impl RedisPubSub {
             // First connection: snapshot the current stream tips for active rooms
             // and the admin stream so we can catch up from these points if the
             // connection drops later.
+            //
+            // IMPORTANT: This snapshot is taken AFTER PubSub subscription is
+            // established (above), which means any events written to the stream
+            // after this point will ALSO be delivered via PubSub. On reconnect,
+            // catch-up reads from the snapshotted cursor may re-deliver events
+            // that were already processed via PubSub. The MessageDeduplicator
+            // handles this overlap, filtering out duplicate events.
+            //
+            // The alternative (snapshotting before subscription) would create a
+            // gap: events written between snapshot and subscription start would
+            // be missed by both PubSub (not yet subscribed) and catch-up (cursor
+            // already past them). The current order (subscribe first, then
+            // snapshot) is correct because duplicates are safe (deduped) while
+            // gaps are not.
             let mut streams_to_snapshot: Vec<String> = active_rooms
                 .iter()
                 .map(|rid| room_stream_key(rid.as_str()))
@@ -636,10 +650,39 @@ impl RedisPubSub {
                                         pubsub.subscribe(&channel),
                                     ).await {
                                         Ok(Ok(())) => {
-                                            debug!(
-                                                room_id = %room_id_str,
-                                                "Dynamically subscribed to room channel"
-                                            );
+                                            // Snapshot the stream cursor AFTER subscribing
+                                            // to the PubSub channel. This ensures that on
+                                            // reconnect, catch-up reads start from a known
+                                            // position rather than "0" (which would replay
+                                            // the entire stream history). The deduplicator
+                                            // handles any overlap between live PubSub
+                                            // delivery and the snapshotted cursor.
+                                            let sk = room_stream_key(&room_id_str);
+                                            match self.get_latest_stream_id_for(&sk).await {
+                                                Ok(Some(id)) => {
+                                                    debug!(
+                                                        room_id = %room_id_str,
+                                                        stream_id = %id,
+                                                        "Dynamically subscribed to room channel, cursor snapshotted"
+                                                    );
+                                                    stream_cursors.insert(sk, id);
+                                                }
+                                                Ok(None) => {
+                                                    debug!(
+                                                        room_id = %room_id_str,
+                                                        "Dynamically subscribed to room channel (empty stream)"
+                                                    );
+                                                    stream_cursors.insert(sk, "0".to_string());
+                                                }
+                                                Err(e) => {
+                                                    warn!(
+                                                        error = %e,
+                                                        room_id = %room_id_str,
+                                                        "Dynamically subscribed but failed to snapshot cursor, using '0'"
+                                                    );
+                                                    stream_cursors.insert(sk, "0".to_string());
+                                                }
+                                            }
                                         }
                                         Ok(Err(e)) => {
                                             warn!(

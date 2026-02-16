@@ -24,35 +24,35 @@ pub struct SessionError {
 #[derive(Debug, thiserror::Error)]
 pub enum SessionErrorValue {
     #[error("amf0 write error: {0}")]
-    Amf0WriteError(#[source] Amf0WriteError),
+    Amf0WriteError(#[from] Amf0WriteError),
     #[error("bytes write error: {0}")]
-    BytesWriteError(#[source] BytesWriteError),
+    BytesWriteError(#[from] BytesWriteError),
     #[error("unpack error: {0}")]
-    UnPackError(#[source] UnpackError),
+    UnPackError(#[from] UnpackError),
 
     #[error("message error: {0}")]
-    MessageError(#[source] MessageError),
+    MessageError(#[from] MessageError),
     #[error("control message error: {0}")]
-    ControlMessagesError(#[source] ControlMessagesError),
+    ControlMessagesError(#[from] ControlMessagesError),
     #[error("net connection error: {0}")]
-    NetConnectionError(#[source] NetConnectionError),
+    NetConnectionError(#[from] NetConnectionError),
     #[error("net stream error: {0}")]
-    NetStreamError(#[source] NetStreamError),
+    NetStreamError(#[from] NetStreamError),
 
     #[error("event messages error: {0}")]
-    EventMessagesError(#[source] EventMessagesError),
+    EventMessagesError(#[from] EventMessagesError),
     #[error("net io error: {0}")]
-    BytesIOError(#[source] BytesIOError),
+    BytesIOError(#[from] BytesIOError),
     #[error("pack error: {0}")]
-    PackError(#[source] PackError),
+    PackError(#[from] PackError),
     #[error("handshake error: {0}")]
-    HandshakeError(#[source] HandshakeError),
+    HandshakeError(#[from] HandshakeError),
     #[error("cache error name: {0}")]
-    CacheError(#[source] CacheError),
+    CacheError(#[from] CacheError),
     #[error("tokio: oneshot receiver err: {0}")]
-    RecvError(#[source] RecvError),
+    RecvError(#[from] RecvError),
     #[error("streamhub channel err: {0}")]
-    ChannelError(#[source] StreamHubError),
+    ChannelError(#[from] StreamHubError),
 
     #[error("amf0 count not correct error")]
     Amf0ValueCountNotCorrect,
@@ -84,114 +84,90 @@ pub enum SessionErrorValue {
     Timeout,
 }
 
+// Manual From impls for SessionError (wraps inner error type -> SessionErrorValue -> SessionError).
+// The #[from] on SessionErrorValue handles InnerError -> SessionErrorValue automatically,
+// but we still need these impls to convert InnerError -> SessionError directly.
+
 impl From<Amf0WriteError> for SessionError {
     fn from(error: Amf0WriteError) -> Self {
-        Self {
-            value: SessionErrorValue::Amf0WriteError(error),
-        }
+        Self { value: error.into() }
     }
 }
 
 impl From<BytesWriteError> for SessionError {
     fn from(error: BytesWriteError) -> Self {
-        Self {
-            value: SessionErrorValue::BytesWriteError(error),
-        }
+        Self { value: error.into() }
     }
 }
 
 impl From<UnpackError> for SessionError {
     fn from(error: UnpackError) -> Self {
-        Self {
-            value: SessionErrorValue::UnPackError(error),
-        }
+        Self { value: error.into() }
     }
 }
 
 impl From<MessageError> for SessionError {
     fn from(error: MessageError) -> Self {
-        Self {
-            value: SessionErrorValue::MessageError(error),
-        }
+        Self { value: error.into() }
     }
 }
 
 impl From<ControlMessagesError> for SessionError {
     fn from(error: ControlMessagesError) -> Self {
-        Self {
-            value: SessionErrorValue::ControlMessagesError(error),
-        }
+        Self { value: error.into() }
     }
 }
 
 impl From<NetConnectionError> for SessionError {
     fn from(error: NetConnectionError) -> Self {
-        Self {
-            value: SessionErrorValue::NetConnectionError(error),
-        }
+        Self { value: error.into() }
     }
 }
 
 impl From<NetStreamError> for SessionError {
     fn from(error: NetStreamError) -> Self {
-        Self {
-            value: SessionErrorValue::NetStreamError(error),
-        }
+        Self { value: error.into() }
     }
 }
 
 impl From<EventMessagesError> for SessionError {
     fn from(error: EventMessagesError) -> Self {
-        Self {
-            value: SessionErrorValue::EventMessagesError(error),
-        }
+        Self { value: error.into() }
     }
 }
 
 impl From<BytesIOError> for SessionError {
     fn from(error: BytesIOError) -> Self {
-        Self {
-            value: SessionErrorValue::BytesIOError(error),
-        }
+        Self { value: error.into() }
     }
 }
 
 impl From<PackError> for SessionError {
     fn from(error: PackError) -> Self {
-        Self {
-            value: SessionErrorValue::PackError(error),
-        }
+        Self { value: error.into() }
     }
 }
 
 impl From<HandshakeError> for SessionError {
     fn from(error: HandshakeError) -> Self {
-        Self {
-            value: SessionErrorValue::HandshakeError(error),
-        }
+        Self { value: error.into() }
     }
 }
 
 impl From<CacheError> for SessionError {
     fn from(error: CacheError) -> Self {
-        Self {
-            value: SessionErrorValue::CacheError(error),
-        }
+        Self { value: error.into() }
     }
 }
 
 impl From<RecvError> for SessionError {
     fn from(error: RecvError) -> Self {
-        Self {
-            value: SessionErrorValue::RecvError(error),
-        }
+        Self { value: error.into() }
     }
 }
 
 impl From<StreamHubError> for SessionError {
     fn from(error: StreamHubError) -> Self {
-        Self {
-            value: SessionErrorValue::ChannelError(error),
-        }
+        Self { value: error.into() }
     }
 }

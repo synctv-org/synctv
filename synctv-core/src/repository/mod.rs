@@ -21,7 +21,7 @@ pub use playback::RoomPlaybackStateRepository;
 pub use playlist::PlaylistRepository;
 pub use provider_instance::{ProviderInstanceRepository, UserProviderCredentialRepository};
 pub use query_builder::WhereClauseBuilder;
-pub use room::RoomRepository;
+pub use room::{RoomRepository, JoinRoomContext};
 pub use room_member::RoomMemberRepository;
 pub use room_settings::RoomSettingsRepository;
 pub use settings::SettingsRepository;

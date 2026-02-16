@@ -105,6 +105,22 @@ impl GrpcConnectionPool {
         }
     }
 
+    /// Spawn a background task that calls `evict_stale` every `interval`.
+    ///
+    /// The task runs until the returned `JoinHandle` is aborted or the process
+    /// exits. Typical usage: call once at startup with a 5-minute interval.
+    pub fn spawn_cleanup_task(&self, interval: Duration) -> tokio::task::JoinHandle<()> {
+        let pool = self.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(interval);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tick.tick().await;
+                pool.evict_stale();
+            }
+        })
+    }
+
     /// Number of connections currently in the pool.
     pub fn len(&self) -> usize {
         self.connections.len()

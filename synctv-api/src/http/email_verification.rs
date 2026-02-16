@@ -65,7 +65,7 @@ pub async fn send_verification_email(
     let result = email_api
         .send_verification_email(&req.email)
         .await
-        .map_err(crate::http::error::impls_err_to_app_error)?;
+        .map_err(crate::http::error::map_api_error)?;
 
     Ok(Json(SendVerificationEmailResponse {
         message: result.message,
@@ -85,7 +85,7 @@ pub async fn confirm_email(
     let result = email_api
         .confirm_email(&req.email, &req.token)
         .await
-        .map_err(crate::http::error::impls_err_to_app_error)?;
+        .map_err(crate::http::error::map_api_error)?;
 
     Ok(Json(ConfirmEmailResponse {
         message: result.message,
@@ -106,7 +106,7 @@ pub async fn request_password_reset(
     let result = email_api
         .request_password_reset(&req.email)
         .await
-        .map_err(crate::http::error::impls_err_to_app_error)?;
+        .map_err(crate::http::error::map_api_error)?;
 
     Ok(Json(RequestPasswordResetResponse {
         message: result.message,
@@ -126,7 +126,7 @@ pub async fn confirm_password_reset(
     let result = email_api
         .confirm_password_reset(&req.email, &req.token, &req.new_password)
         .await
-        .map_err(crate::http::error::impls_err_to_app_error)?;
+        .map_err(crate::http::error::map_api_error)?;
 
     Ok(Json(ConfirmPasswordResetResponse {
         message: result.message,

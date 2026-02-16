@@ -451,8 +451,15 @@ impl ClientApiImpl {
         use synctv_core::provider::ProviderContext;
 
         let rid = RoomId::from_string(room_id.to_string());
+        let uid = UserId::from_string(user_id.to_string());
         let mid = synctv_core::models::MediaId::from_string(req.media_id);
         let media_id = mid.as_str();
+
+        // Check VIEW_PLAYLIST permission before exposing playback URLs
+        self.room_service
+            .check_permission(&rid, &uid, synctv_core::models::PermissionBits::VIEW_PLAYLIST)
+            .await
+            .map_err(ApiError::from)?;
 
         // 1. Get media from playlist
         let playlist = self

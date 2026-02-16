@@ -195,6 +195,9 @@ impl ClientServiceImpl {
     ///
     /// Blacklist checking is handled by [`BlacklistCheckLayer`] at the transport
     /// level, so no duplicate check is needed here.
+    ///
+    /// Additionally checks that the user is not banned or deleted, mirroring the
+    /// HTTP `AuthUser` extractor defense-in-depth check.
     #[allow(clippy::result_large_err)]
     async fn get_user_id(&self, request: &Request<impl std::fmt::Debug>) -> Result<UserId, Status> {
         let user_context = request
@@ -202,7 +205,21 @@ impl ClientServiceImpl {
             .get::<super::interceptors::UserContext>()
             .ok_or_else(|| Status::unauthenticated("Authentication required"))?;
 
-        Ok(UserId::from_string(user_context.user_id.clone()))
+        let user_id = UserId::from_string(user_context.user_id.clone());
+
+        // Defense-in-depth: reject banned/deleted users even if they hold a
+        // valid JWT issued before the ban. This matches the HTTP AuthUser check.
+        let user = self
+            .user_service
+            .get_user(&user_id)
+            .await
+            .map_err(|_| Status::unauthenticated("User not found"))?;
+
+        if user.is_deleted() || user.status.is_banned() {
+            return Err(Status::unauthenticated("Authentication failed"));
+        }
+
+        Ok(user_id)
     }
 
     /// Extract `RoomContext` (injected by `inject_room` interceptor)

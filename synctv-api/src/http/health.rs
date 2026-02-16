@@ -174,3 +174,90 @@ pub async fn prometheus_metrics() -> impl IntoResponse {
         metrics::gather_metrics(),
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::response::IntoResponse;
+    use http_body_util::BodyExt;
+
+    #[tokio::test]
+    async fn test_liveness_check_returns_ok() {
+        let response = liveness_check().await.into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_liveness_check_response_body() {
+        let response = liveness_check().await.into_response();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let health: HealthResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(health.status, "ok");
+        assert!(health.details.is_none());
+    }
+
+    #[test]
+    fn test_health_response_serialization() {
+        let response = HealthResponse {
+            status: "healthy".to_string(),
+            details: Some(HealthDetails {
+                database: "healthy".to_string(),
+                redis: "healthy".to_string(),
+                message: None,
+            }),
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        let back: HealthResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.status, "healthy");
+        let details = back.details.unwrap();
+        assert_eq!(details.database, "healthy");
+        assert_eq!(details.redis, "healthy");
+        assert!(details.message.is_none());
+    }
+
+    #[test]
+    fn test_health_response_with_error_message() {
+        let response = HealthResponse {
+            status: "unhealthy".to_string(),
+            details: Some(HealthDetails {
+                database: "unhealthy".to_string(),
+                redis: "healthy".to_string(),
+                message: Some("Database: connection refused".to_string()),
+            }),
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("Database: connection refused"));
+    }
+
+    #[test]
+    fn test_health_response_skips_none_message() {
+        let response = HealthResponse {
+            status: "healthy".to_string(),
+            details: Some(HealthDetails {
+                database: "healthy".to_string(),
+                redis: "healthy".to_string(),
+                message: None,
+            }),
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(!json.contains("message"));
+    }
+
+    #[test]
+    fn test_health_response_skips_none_details() {
+        let response = HealthResponse {
+            status: "ok".to_string(),
+            details: None,
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(!json.contains("details"));
+    }
+
+    #[test]
+    fn test_health_response_deserialization_without_optional_fields() {
+        let json = r#"{"status":"ok"}"#;
+        let response: HealthResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(response.status, "ok");
+        assert!(response.details.is_none());
+    }
+}

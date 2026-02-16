@@ -50,6 +50,10 @@ pub struct PullStreamManager {
     /// Shared gRPC connection pool for reusing HTTP/2 channels to publisher nodes.
     /// Shared across all `PullStream`/`GrpcStreamPuller` instances managed by this manager.
     connection_pool: GrpcConnectionPool,
+    /// Handle for the background gRPC connection pool cleanup task.
+    /// Kept alive for the lifetime of the manager; dropped (aborted) when the
+    /// manager is dropped.
+    _pool_cleanup_handle: tokio::task::JoinHandle<()>,
 }
 
 impl PullStreamManager {
@@ -85,6 +89,9 @@ impl PullStreamManager {
         cleanup_check_interval_secs: u64,
         idle_timeout_secs: u64,
     ) -> Self {
+        let connection_pool = GrpcConnectionPool::with_defaults();
+        // Evict stale gRPC connections every 5 minutes in the background
+        let cleanup_handle = connection_pool.spawn_cleanup_task(Duration::from_secs(300));
         Self {
             pool: StreamPool::new(
                 Duration::from_secs(cleanup_check_interval_secs),
@@ -94,7 +101,8 @@ impl PullStreamManager {
             local_node_id,
             stream_hub_event_sender,
             grpc_port: DEFAULT_GRPC_PORT,
-            connection_pool: GrpcConnectionPool::with_defaults(),
+            connection_pool,
+            _pool_cleanup_handle: cleanup_handle,
         }
     }
 

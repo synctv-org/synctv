@@ -227,81 +227,81 @@ mod error_responses {
 }
 
 // ============================================================================
-// Module: Error classification (impls_err_to_app_error)
+// Module: Error classification (map_api_error)
 // ============================================================================
 
 mod error_classification {
-    use synctv_api::http::error::impls_err_to_app_error;
+    use synctv_api::http::error::map_api_error;
     use synctv_api::impls::ApiError;
     use axum::http::StatusCode;
 
     #[test]
     fn test_not_found_error_maps_to_404() {
-        let err = impls_err_to_app_error(ApiError::NotFound("User not found".into()));
+        let err = map_api_error(ApiError::NotFound("User not found".into()));
         assert_eq!(err.status, StatusCode::NOT_FOUND);
     }
 
     #[test]
     fn test_unauthenticated_error_maps_to_401() {
-        let err = impls_err_to_app_error(ApiError::Authentication("Unauthenticated".into()));
+        let err = map_api_error(ApiError::Authentication("Unauthenticated".into()));
         assert_eq!(err.status, StatusCode::UNAUTHORIZED);
     }
 
     #[test]
     fn test_permission_denied_maps_to_403() {
-        let err = impls_err_to_app_error(ApiError::Authorization("Permission denied".into()));
+        let err = map_api_error(ApiError::Authorization("Permission denied".into()));
         assert_eq!(err.status, StatusCode::FORBIDDEN);
     }
 
     #[test]
     fn test_already_exists_maps_to_409() {
-        let err = impls_err_to_app_error(ApiError::AlreadyExists("User already exists".into()));
+        let err = map_api_error(ApiError::AlreadyExists("User already exists".into()));
         assert_eq!(err.status, StatusCode::CONFLICT);
     }
 
     #[test]
     fn test_invalid_argument_maps_to_400() {
-        let err = impls_err_to_app_error(ApiError::InvalidInput("Password too short".into()));
+        let err = map_api_error(ApiError::InvalidInput("Password too short".into()));
         assert_eq!(err.status, StatusCode::BAD_REQUEST);
     }
 
     #[test]
     fn test_internal_error_maps_to_500() {
-        let err = impls_err_to_app_error(ApiError::Internal("Something went wrong".into()));
+        let err = map_api_error(ApiError::Internal("Something went wrong".into()));
         assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     #[test]
     fn test_not_found_message_preserved() {
-        let err = impls_err_to_app_error(ApiError::NotFound("room abc123".into()));
+        let err = map_api_error(ApiError::NotFound("room abc123".into()));
         assert_eq!(err.status, StatusCode::NOT_FOUND);
         assert!(err.message.contains("room abc123"));
     }
 
     #[test]
     fn test_authentication_message_preserved() {
-        let err = impls_err_to_app_error(ApiError::Authentication("token expired".into()));
+        let err = map_api_error(ApiError::Authentication("token expired".into()));
         assert_eq!(err.status, StatusCode::UNAUTHORIZED);
         assert!(err.message.contains("token expired"));
     }
 
     #[test]
     fn test_authorization_message_preserved() {
-        let err = impls_err_to_app_error(ApiError::Authorization("forbidden".into()));
+        let err = map_api_error(ApiError::Authorization("forbidden".into()));
         assert_eq!(err.status, StatusCode::FORBIDDEN);
         assert!(err.message.contains("forbidden"));
     }
 
     #[test]
     fn test_already_exists_message_preserved() {
-        let err = impls_err_to_app_error(ApiError::AlreadyExists("username taken".into()));
+        let err = map_api_error(ApiError::AlreadyExists("username taken".into()));
         assert_eq!(err.status, StatusCode::CONFLICT);
         assert!(err.message.contains("username taken"));
     }
 
     #[test]
     fn test_invalid_input_message_preserved() {
-        let err = impls_err_to_app_error(ApiError::InvalidInput("bad email format".into()));
+        let err = map_api_error(ApiError::InvalidInput("bad email format".into()));
         assert_eq!(err.status, StatusCode::BAD_REQUEST);
         assert!(err.message.contains("bad email format"));
     }
@@ -309,7 +309,7 @@ mod error_classification {
     #[test]
     fn test_internal_error_message_is_generic() {
         // Internal errors should NOT leak the original message to clients
-        let err = impls_err_to_app_error(ApiError::Internal("Database connection pool exhausted".into()));
+        let err = map_api_error(ApiError::Internal("Database connection pool exhausted".into()));
         assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(err.message, "Internal error");
     }
@@ -318,7 +318,7 @@ mod error_classification {
     fn test_from_core_error_not_found() {
         let core_err = synctv_core::Error::NotFound("room 123".into());
         let api_err = ApiError::from(core_err);
-        let app_err = impls_err_to_app_error(api_err);
+        let app_err = map_api_error(api_err);
         assert_eq!(app_err.status, StatusCode::NOT_FOUND);
     }
 
@@ -326,7 +326,7 @@ mod error_classification {
     fn test_from_core_error_authentication() {
         let core_err = synctv_core::Error::Authentication("expired".into());
         let api_err = ApiError::from(core_err);
-        let app_err = impls_err_to_app_error(api_err);
+        let app_err = map_api_error(api_err);
         assert_eq!(app_err.status, StatusCode::UNAUTHORIZED);
     }
 
@@ -334,7 +334,7 @@ mod error_classification {
     fn test_from_core_error_authorization() {
         let core_err = synctv_core::Error::Authorization("denied".into());
         let api_err = ApiError::from(core_err);
-        let app_err = impls_err_to_app_error(api_err);
+        let app_err = map_api_error(api_err);
         assert_eq!(app_err.status, StatusCode::FORBIDDEN);
     }
 }

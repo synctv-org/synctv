@@ -176,8 +176,13 @@ impl CustomHlsRemuxer {
                         Ok(event) => event,
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                             tracing::warn!(
-                                "HLS remuxer lagged behind by {n} broadcast events; some publish/unpublish events may have been missed"
+                                "HLS remuxer lagged behind by {n} broadcast events; re-subscribing to avoid permanent stream loss"
                             );
+                            // Re-subscribe to get a fresh receiver that is
+                            // caught up with the broadcast tail. Without this,
+                            // any Publish events in the skipped window would be
+                            // permanently missed.
+                            self.client_event_consumer = self.client_event_consumer.resubscribe();
                             continue;
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => {

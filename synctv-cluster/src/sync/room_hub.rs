@@ -108,14 +108,19 @@ impl RoomMessageHub {
             consecutive_drops: Arc::new(AtomicU32::new(0)),
         };
 
-        // Check if this room is newly activated (first subscriber)
-        let is_new_room = !self.rooms.contains_key(&room_id);
-
-        // Add to room subscribers
-        self.rooms
-            .entry(room_id.clone())
-            .or_default()
-            .push(subscriber);
+        // Atomically check-and-insert using DashMap's entry API.
+        // This avoids the TOCTOU race between `contains_key` + `entry().or_default()`
+        // where two concurrent subscribes could both see the room as new.
+        let is_new_room = match self.rooms.entry(room_id.clone()) {
+            dashmap::mapref::entry::Entry::Occupied(mut entry) => {
+                entry.get_mut().push(subscriber);
+                false
+            }
+            dashmap::mapref::entry::Entry::Vacant(entry) => {
+                entry.insert(vec![subscriber]);
+                true
+            }
+        };
 
         // Track connection for cleanup
         self.connections
@@ -141,17 +146,29 @@ impl RoomMessageHub {
         if let Some((_, (room_id, user_id))) = self.connections.remove(connection_id) {
             let mut room_deactivated = false;
 
-            // Remove from room subscribers
+            // Atomically remove subscriber and clean up empty room using
+            // DashMap's `remove_if` to avoid the TOCTOU race between checking
+            // `is_empty()`, dropping the guard, and calling `remove()`. A
+            // concurrent `subscribe` could insert a new subscriber between
+            // the guard drop and the remove, causing the new subscriber to
+            // be silently lost.
+            //
+            // We first retain to remove the target subscriber, then use
+            // `remove_if` which holds the shard lock while checking emptiness
+            // and removing the entry atomically.
             if let Some(mut subscribers) = self.rooms.get_mut(&room_id) {
                 subscribers.retain(|sub| sub.connection_id != connection_id);
+                // We must drop the RefMut before calling remove_if, since both
+                // acquire the same shard lock and would deadlock.
+                drop(subscribers);
+            }
 
-                // Remove room entry if no more subscribers
-                if subscribers.is_empty() {
-                    drop(subscribers); // Drop the RefMut before removing
-                    self.rooms.remove(&room_id);
-                    room_deactivated = true;
-                    debug!(room_id = %room_id.as_str(), "Room has no more subscribers, removed");
-                }
+            // Atomically remove the room entry only if it's still empty.
+            // If a concurrent subscribe added a new subscriber between the
+            // retain and this call, the entry won't be empty and won't be removed.
+            if self.rooms.remove_if(&room_id, |_, subscribers| subscribers.is_empty()).is_some() {
+                room_deactivated = true;
+                debug!(room_id = %room_id.as_str(), "Room has no more subscribers, removed");
             }
 
             // Emit lifecycle event if the last subscriber left

@@ -34,6 +34,7 @@ regex.workspace = true
 url.workspace = true
 subtle.workspace = true
 sha2.workspace = true
+md-5.workspace = true
 
 # Logging
 tracing.workspace = true

@@ -158,6 +158,17 @@ impl StreamMessageHandler {
             self.user_id.clone(),
         ) {
             tracing::warn!("Failed to register connection: {}", e);
+            return Err(e);
+        }
+
+        // Associate connection with the room (enforces per-room connection limit)
+        if let Err(e) = self.connection_manager.join_room(
+            &self.connection_id,
+            self.room_id.clone(),
+        ) {
+            // Roll back the registration since we can't join the room
+            self.connection_manager.unregister(&self.connection_id);
+            return Err(e);
         }
 
         // Subscribe to cluster events
@@ -461,15 +472,31 @@ impl StreamMessageHandler {
     /// Start the message handling loop
     ///
     /// This method:
-    /// 1. Subscribes to cluster events and forwards them to the client
-    /// 2. Spawns a task to handle incoming client messages
-    /// 3. Returns a sender that the caller should use to send `ClientMessages` to this handler
+    /// 1. Registers the connection and joins the room (enforcing connection limits)
+    /// 2. Subscribes to cluster events and forwards them to the client
+    /// 3. Spawns a task to handle incoming client messages
+    /// 4. Returns a sender that the caller should use to send `ClientMessages` to this handler
     ///
-    /// Returns a sender that the caller should use to send `ClientMessages`
-    #[must_use]
+    /// Returns a sender that the caller should use to send `ClientMessages`,
+    /// or an error if connection limits are exceeded.
     pub fn start(
         &self,
-    ) -> tokio::sync::mpsc::Sender<ClientMessage> {
+    ) -> Result<tokio::sync::mpsc::Sender<ClientMessage>, String> {
+        // Register connection with connection manager
+        self.connection_manager.register(
+            self.connection_id.clone(),
+            self.user_id.clone(),
+        )?;
+
+        // Associate connection with the room (enforces per-room connection limit)
+        if let Err(e) = self.connection_manager.join_room(
+            &self.connection_id,
+            self.room_id.clone(),
+        ) {
+            self.connection_manager.unregister(&self.connection_id);
+            return Err(e);
+        }
+
         // Use bounded channel to prevent memory exhaustion from fast clients
         let (tx, mut rx) = tokio::sync::mpsc::channel::<ClientMessage>(256);
 
@@ -501,7 +528,7 @@ impl StreamMessageHandler {
             }
         });
 
-        tx
+        Ok(tx)
     }
 
     /// Handle incoming client message with all validations

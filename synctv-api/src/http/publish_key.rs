@@ -52,7 +52,7 @@ pub async fn generate_publish_key(
         .client_api
         .create_publish_key(&user_id_str, &room_id, req)
         .await
-        .map_err(crate::http::error::impls_err_to_app_error)?;
+        .map_err(crate::http::error::map_api_error)?;
 
     Ok(Json(resp))
 }

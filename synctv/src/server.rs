@@ -368,6 +368,7 @@ impl SyncTvServer {
                 audit_service: services.audit_service,
                 node_registry: services.node_registry,
                 token_blacklist_service: services.token_blacklist,
+                redis_conn: services.redis_conn,
                 shutdown_rx: Some(shutdown_rx),
             };
             if let Err(e) = synctv_api::grpc::serve(grpc_config).await {

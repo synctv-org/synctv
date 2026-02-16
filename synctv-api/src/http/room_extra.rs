@@ -24,7 +24,7 @@ pub async fn kick_member(
             },
         )
         .await
-        .map_err(crate::http::error::impls_err_to_app_error)?;
+        .map_err(crate::http::error::map_api_error)?;
     Ok(Json(resp))
 }
 
@@ -70,7 +70,7 @@ pub async fn set_member_permissions(
             },
         )
         .await
-        .map_err(crate::http::error::impls_err_to_app_error)?;
+        .map_err(crate::http::error::map_api_error)?;
     Ok(Json(resp))
 }
 
@@ -86,7 +86,7 @@ pub async fn ban_member(
         .client_api
         .ban_member(auth.user_id.as_str(), &room_id, req)
         .await
-        .map_err(crate::http::error::impls_err_to_app_error)?;
+        .map_err(crate::http::error::map_api_error)?;
 
     Ok(Json(resp))
 }
@@ -107,7 +107,7 @@ pub async fn unban_member(
             },
         )
         .await
-        .map_err(crate::http::error::impls_err_to_app_error)?;
+        .map_err(crate::http::error::map_api_error)?;
 
     Ok(Json(resp))
 }

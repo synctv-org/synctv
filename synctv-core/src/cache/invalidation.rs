@@ -58,7 +58,7 @@ pub enum InvalidationMessage {
 ///
 /// Uses Redis Streams instead of Pub/Sub for reliable message delivery:
 /// - Messages are persisted and won't be lost
-/// - Consumer groups allow multiple replicas to process messages
+/// - Each node uses its own consumer group for broadcast semantics
 /// - Automatic message acknowledgment and retry on failure
 pub struct CacheInvalidationService {
     /// Redis client for streams
@@ -98,7 +98,7 @@ impl CacheInvalidationService {
     #[must_use]
     pub fn new(redis_client: Option<Client>, node_id: String, stream_key: String) -> Self {
         let (local_sender, _) = broadcast::channel(1024);
-        let consumer_group = "cache-invalidation-group".to_string();
+        let consumer_group = format!("cache-invalidation-{node_id}");
 
         Self {
             redis_client,

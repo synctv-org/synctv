@@ -1,10 +1,19 @@
 use sqlx::{PgPool, Row, FromRow};
 
 use crate::{
-    models::{Room, RoomId, RoomStatus, UserId, RoomListQuery, PageParams},
+    models::{Room, RoomId, RoomStatus, RoomSettings, UserId, RoomListQuery, PageParams, MemberStatus},
     Result,
 };
 use super::query_builder::{WhereClauseBuilder, escape_ilike};
+
+/// Pre-fetched context for the join-room flow, retrieved in a single DB round-trip.
+#[derive(Debug)]
+pub struct JoinRoomContext {
+    pub room: Room,
+    pub is_banned: bool,
+    pub settings: RoomSettings,
+    pub password_hash: Option<String>,
+}
 
 /// Room repository for database operations
 #[derive(Clone)]
@@ -444,6 +453,66 @@ impl RoomRepository {
         .await?;
 
         Ok(room)
+    }
+
+    /// Fetch all data needed by the join-room flow in a single query.
+    ///
+    /// Combines three lookups that were previously sequential:
+    ///   1. `rooms` row (by id, not soft-deleted)
+    ///   2. Ban check (`room_members` where status = Banned)
+    ///   3. Room settings + password hash (`room_settings`)
+    ///
+    /// Returns `None` if the room does not exist or is soft-deleted.
+    pub async fn get_join_context(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+    ) -> Result<Option<JoinRoomContext>> {
+        let row = sqlx::query(
+            r"
+            SELECT
+                r.id, r.name, r.description, r.created_by, r.status, r.is_banned,
+                r.created_at, r.updated_at, r.deleted_at,
+                EXISTS(
+                    SELECT 1 FROM room_members rm
+                    WHERE rm.room_id = r.id AND rm.user_id = $2 AND rm.status = $3
+                ) AS user_is_banned,
+                rs_settings.value  AS settings_json,
+                rs_password.value  AS password_hash
+            FROM rooms r
+            LEFT JOIN room_settings rs_settings
+                ON rs_settings.room_id = r.id AND rs_settings.key = '_settings'
+            LEFT JOIN room_settings rs_password
+                ON rs_password.room_id = r.id AND rs_password.key = 'password'
+            WHERE r.id = $1 AND r.deleted_at IS NULL
+            "
+        )
+        .bind(room_id.as_str())
+        .bind(user_id.as_str())
+        .bind(MemberStatus::Banned)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        let Some(row) = row else { return Ok(None) };
+
+        let room = Room::from_row(&row)?;
+        let is_banned: bool = row.try_get("user_is_banned")?;
+
+        // Deserialize settings from JSON, falling back to defaults
+        let settings: RoomSettings = match row.try_get::<Option<String>, _>("settings_json")? {
+            Some(json) => serde_json::from_str(&json)
+                .map_err(|e| crate::Error::Internal(format!("Failed to deserialize room settings: {e}")))?,
+            None => RoomSettings::default(),
+        };
+
+        let password_hash: Option<String> = row.try_get("password_hash")?;
+
+        Ok(Some(JoinRoomContext {
+            room,
+            is_banned,
+            settings,
+            password_hash,
+        }))
     }
 
 }

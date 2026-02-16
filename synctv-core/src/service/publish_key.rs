@@ -204,3 +204,270 @@ impl PublishKeyService {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::service::auth::JwtService;
+
+    fn create_jwt_service() -> JwtService {
+        JwtService::new("test-secret-key-for-publish-key-tests").unwrap()
+    }
+
+    fn create_publish_key_service() -> PublishKeyService {
+        let jwt = create_jwt_service();
+        PublishKeyService::new(jwt, 24)
+    }
+
+    fn create_publish_key_service_with_ttl(ttl_hours: i64) -> PublishKeyService {
+        let jwt = create_jwt_service();
+        PublishKeyService::new(jwt, ttl_hours)
+    }
+
+    // ========== Construction ==========
+
+    #[test]
+    fn test_publish_key_service_new() {
+        let service = create_publish_key_service();
+        let debug = format!("{:?}", service);
+        assert!(debug.contains("token_ttl_hours"));
+        assert!(debug.contains("24"));
+    }
+
+    #[test]
+    fn test_publish_key_service_with_default_ttl() {
+        let jwt = create_jwt_service();
+        let service = PublishKeyService::with_default_ttl(jwt);
+        let debug = format!("{:?}", service);
+        assert!(debug.contains("24"));
+    }
+
+    // ========== Generate Publish Key ==========
+
+    #[tokio::test]
+    async fn test_generate_publish_key_returns_valid_token() {
+        let service = create_publish_key_service();
+        let room_id = RoomId::new();
+        let media_id = MediaId::new();
+        let user_id = UserId::new();
+
+        let key = service
+            .generate_publish_key(room_id.clone(), media_id.clone(), user_id.clone())
+            .await
+            .unwrap();
+
+        assert!(!key.token.is_empty());
+        assert_eq!(key.room_id, room_id.as_str());
+        assert_eq!(key.media_id, media_id.as_str());
+        assert_eq!(key.user_id, user_id.as_str());
+        assert!(key.expires_at > 0);
+    }
+
+    #[tokio::test]
+    async fn test_generate_publish_key_expiration_matches_ttl() {
+        let service = create_publish_key_service_with_ttl(2);
+        let room_id = RoomId::new();
+        let media_id = MediaId::new();
+        let user_id = UserId::new();
+
+        let key = service
+            .generate_publish_key(room_id, media_id, user_id)
+            .await
+            .unwrap();
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        // Expiration should be approximately 2 hours from now
+        let expected_exp = now + (2 * 3600);
+        let diff = (key.expires_at - expected_exp).abs();
+        assert!(diff < 5, "Expiration time is off by more than 5 seconds: diff={diff}");
+    }
+
+    // ========== Validate Publish Key ==========
+
+    #[tokio::test]
+    async fn test_validate_publish_key_valid_token() {
+        let service = create_publish_key_service();
+        let room_id = RoomId::new();
+        let media_id = MediaId::new();
+        let user_id = UserId::new();
+
+        let key = service
+            .generate_publish_key(room_id.clone(), media_id.clone(), user_id.clone())
+            .await
+            .unwrap();
+
+        let claims = service.validate_publish_key(&key.token).await.unwrap();
+
+        assert_eq!(claims.room_id, room_id.as_str());
+        assert_eq!(claims.media_id, media_id.as_str());
+        assert_eq!(claims.user_id, user_id.as_str());
+        assert!(claims.perm_start_live);
+    }
+
+    #[tokio::test]
+    async fn test_validate_publish_key_invalid_token() {
+        let service = create_publish_key_service();
+        let result = service.validate_publish_key("invalid.token.here").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_validate_publish_key_wrong_secret() {
+        let service1 = create_publish_key_service();
+        let service2 = PublishKeyService::new(
+            JwtService::new("different-secret-key-for-tests-abcdef").unwrap(),
+            24,
+        );
+
+        let room_id = RoomId::new();
+        let media_id = MediaId::new();
+        let user_id = UserId::new();
+
+        let key = service1
+            .generate_publish_key(room_id, media_id, user_id)
+            .await
+            .unwrap();
+
+        let result = service2.validate_publish_key(&key.token).await;
+        assert!(result.is_err());
+    }
+
+    // ========== Verify Publish Key For Stream ==========
+
+    #[tokio::test]
+    async fn test_verify_publish_key_for_stream_matching() {
+        let service = create_publish_key_service();
+        let room_id = RoomId::new();
+        let media_id = MediaId::new();
+        let user_id = UserId::new();
+
+        let key = service
+            .generate_publish_key(room_id.clone(), media_id.clone(), user_id.clone())
+            .await
+            .unwrap();
+
+        let returned_user_id = service
+            .verify_publish_key_for_stream(&key.token, &room_id, &media_id)
+            .await
+            .unwrap();
+
+        assert_eq!(returned_user_id, user_id);
+    }
+
+    #[tokio::test]
+    async fn test_verify_publish_key_for_stream_wrong_room() {
+        let service = create_publish_key_service();
+        let room_id = RoomId::new();
+        let media_id = MediaId::new();
+        let user_id = UserId::new();
+        let wrong_room_id = RoomId::new();
+
+        let key = service
+            .generate_publish_key(room_id, media_id.clone(), user_id)
+            .await
+            .unwrap();
+
+        let result = service
+            .verify_publish_key_for_stream(&key.token, &wrong_room_id, &media_id)
+            .await;
+        assert!(result.is_err());
+        if let Err(Error::Authorization(msg)) = result {
+            assert!(msg.contains("room mismatch"));
+        } else {
+            panic!("Expected Authorization error with room mismatch");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_verify_publish_key_for_stream_wrong_media() {
+        let service = create_publish_key_service();
+        let room_id = RoomId::new();
+        let media_id = MediaId::new();
+        let user_id = UserId::new();
+        let wrong_media_id = MediaId::new();
+
+        let key = service
+            .generate_publish_key(room_id.clone(), media_id, user_id)
+            .await
+            .unwrap();
+
+        let result = service
+            .verify_publish_key_for_stream(&key.token, &room_id, &wrong_media_id)
+            .await;
+        assert!(result.is_err());
+        if let Err(Error::Authorization(msg)) = result {
+            assert!(msg.contains("media mismatch"));
+        } else {
+            panic!("Expected Authorization error with media mismatch");
+        }
+    }
+
+    // ========== PublishClaims and PublishKey structs ==========
+
+    #[test]
+    fn test_publish_claims_serialization() {
+        let claims = PublishClaims {
+            room_id: "room123".to_string(),
+            media_id: "media456".to_string(),
+            user_id: "user789".to_string(),
+            perm_start_live: true,
+            iat: 1000,
+            exp: 2000,
+            jti: "unique-id".to_string(),
+        };
+
+        let json = serde_json::to_string(&claims).unwrap();
+        let back: PublishClaims = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(back.room_id, "room123");
+        assert_eq!(back.media_id, "media456");
+        assert_eq!(back.user_id, "user789");
+        assert!(back.perm_start_live);
+        assert_eq!(back.iat, 1000);
+        assert_eq!(back.exp, 2000);
+        assert_eq!(back.jti, "unique-id");
+    }
+
+    #[test]
+    fn test_publish_key_serialization() {
+        let key = PublishKey {
+            token: "jwt.token.here".to_string(),
+            room_id: "room1".to_string(),
+            media_id: "media1".to_string(),
+            user_id: "user1".to_string(),
+            expires_at: 9999,
+        };
+
+        let json = serde_json::to_string(&key).unwrap();
+        let back: PublishKey = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(back.token, "jwt.token.here");
+        assert_eq!(back.room_id, "room1");
+        assert_eq!(back.expires_at, 9999);
+    }
+
+    // ========== Unique JTI per token ==========
+
+    #[tokio::test]
+    async fn test_generate_publish_key_unique_jti() {
+        let service = create_publish_key_service();
+        let room_id = RoomId::new();
+        let media_id = MediaId::new();
+        let user_id = UserId::new();
+
+        let key1 = service
+            .generate_publish_key(room_id.clone(), media_id.clone(), user_id.clone())
+            .await
+            .unwrap();
+        let key2 = service
+            .generate_publish_key(room_id, media_id, user_id)
+            .await
+            .unwrap();
+
+        // Tokens should be different (different JTI)
+        assert_ne!(key1.token, key2.token);
+    }
+}

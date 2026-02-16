@@ -58,7 +58,7 @@ pub struct BilibiliService {
 }
 
 impl BilibiliService {
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             service: BilibiliServiceImpl::new(),

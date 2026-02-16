@@ -272,26 +272,49 @@ impl Drop for PullStream {
         }
 
         // Send UnPublish to StreamHub so the local stream entry is removed.
-        // Best-effort: if the channel is full or closed, we log and move on.
+        // Use try_send first for the fast path; if the channel is full, spawn
+        // an async task that awaits `.send()` so the event is not silently lost.
         let stream_name = format!("{}/{}", self.room_id, self.media_id);
         let identifier = StreamIdentifier::Rtmp {
             app_name: "live".to_string(),
             stream_name,
         };
-        if let Err(e) = self
+        let room_id = self.room_id.clone();
+        let media_id = self.media_id.clone();
+        match self
             .stream_hub_event_sender
             .try_send(StreamHubEvent::UnPublish { identifier })
         {
-            warn!(
-                "PullStream drop: failed to send UnPublish for {}/{}: {}",
-                self.room_id, self.media_id, e
-            );
+            Ok(()) => {
+                debug!(
+                    "PullStream drop: sent UnPublish for {}/{}",
+                    room_id, media_id
+                );
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Full(event)) => {
+                // Channel full -- spawn a task that awaits capacity so the
+                // UnPublish is not silently dropped.
+                let sender = self.stream_hub_event_sender.clone();
+                warn!(
+                    "PullStream drop: channel full, spawning async UnPublish for {}/{}",
+                    room_id, media_id
+                );
+                tokio::spawn(async move {
+                    if let Err(e) = sender.send(event).await {
+                        warn!(
+                            "PullStream drop: async UnPublish failed for {}/{}: {}",
+                            room_id, media_id, e
+                        );
+                    }
+                });
+            }
+            Err(e) => {
+                warn!(
+                    "PullStream drop: failed to send UnPublish for {}/{}: {}",
+                    room_id, media_id, e
+                );
+            }
         }
-
-        debug!(
-            "PullStream dropped for {}/{}",
-            self.room_id, self.media_id
-        );
         // StreamLifecycle's Drop will abort the task handle
     }
 }

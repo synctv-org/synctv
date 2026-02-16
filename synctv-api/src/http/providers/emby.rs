@@ -1,18 +1,17 @@
 //! Emby Provider HTTP Routes
 
 use axum::{
-    extract::{Path, Query, State},
-    http::{HeaderMap, StatusCode},
+    extract::{Query, State},
+    http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
 };
 use serde_json::json;
 
-use crate::http::{AppState, error::AppResult, middleware::AuthUser, provider_common::{InstanceQuery, error_response, parse_provider_error, resolve_provider_playback_url}};
+use crate::http::{AppState, middleware::AuthUser, provider_common::{InstanceQuery, error_response, parse_provider_error}};
 
 use crate::impls::providers::get_provider_binds;
-use synctv_core::models::{MediaId, RoomId};
 
 /// Build Emby HTTP routes
 pub fn emby_routes() -> Router<AppState> {
@@ -31,53 +30,10 @@ pub fn emby_routes() -> Router<AppState> {
 }
 
 // ------------------------------------------------------------------
-// Proxy handlers
+// Proxy handlers (generated via macro to avoid duplication with alist)
 // ------------------------------------------------------------------
 
-/// GET /`proxy/:room_id/:media_id` - Proxy Emby video stream
-async fn proxy_stream(
-    auth: AuthUser,
-    Path((room_id, media_id)): Path<(String, String)>,
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> AppResult<axum::response::Response> {
-    let room_id = RoomId::from_string(room_id);
-    let media_id = MediaId::from_string(media_id);
-
-    let (url, provider_headers) =
-        resolve_provider_playback_url(&auth, &room_id, &media_id, &state, state.emby_provider.as_ref()).await?;
-
-    tracing::debug!("Proxying Emby media: {}", url);
-
-    let cfg = synctv_proxy::ProxyConfig {
-        url: &url,
-        provider_headers: &provider_headers,
-        client_headers: &headers,
-    };
-
-    synctv_proxy::proxy_fetch_and_forward(cfg)
-        .await
-        .map_err(Into::into)
-}
-
-/// GET /`proxy/:room_id/:media_id/m3u8` - Proxy Emby M3U8
-async fn proxy_m3u8(
-    auth: AuthUser,
-    Path((room_id, media_id)): Path<(String, String)>,
-    State(state): State<AppState>,
-) -> AppResult<axum::response::Response> {
-    let room_id_parsed = RoomId::from_string(room_id.clone());
-    let media_id_parsed = MediaId::from_string(media_id.clone());
-
-    let (url, provider_headers) =
-        resolve_provider_playback_url(&auth, &room_id_parsed, &media_id_parsed, &state, state.emby_provider.as_ref()).await?;
-
-    let proxy_base = format!("/api/providers/emby/proxy/{room_id}/{media_id}");
-
-    synctv_proxy::proxy_m3u8_and_rewrite(&url, &provider_headers, &proxy_base)
-        .await
-        .map_err(Into::into)
-}
+super::provider_proxy_handlers!(emby_provider, "Emby", "/api/providers/emby/proxy");
 
 // ------------------------------------------------------------------
 // Existing provider API handlers

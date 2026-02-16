@@ -20,6 +20,12 @@ CREATE INDEX idx_rooms_deleted_at ON rooms(deleted_at) WHERE deleted_at IS NOT N
 CREATE INDEX idx_rooms_name ON rooms USING gin(to_tsvector('english', name));
 CREATE INDEX idx_rooms_description ON rooms USING gin(to_tsvector('english', description));
 
+-- pg_trgm GIN indexes for ILIKE pattern matching (the tsvector indexes above
+-- only support full-text search @@, not ILIKE/LIKE queries used in room search)
+-- NOTE: pg_trgm extension is created in 20240101000001_create_users_table.sql
+CREATE INDEX idx_rooms_name_trgm ON rooms USING gin (name gin_trgm_ops) WHERE deleted_at IS NULL;
+CREATE INDEX idx_rooms_description_trgm ON rooms USING gin (description gin_trgm_ops) WHERE deleted_at IS NULL;
+
 -- Performance optimization indexes
 CREATE INDEX idx_rooms_status_created_at ON rooms(status, created_at DESC) WHERE deleted_at IS NULL AND is_banned = FALSE;
 CREATE INDEX idx_rooms_creator_status ON rooms(created_by, status, created_at DESC) WHERE deleted_at IS NULL;

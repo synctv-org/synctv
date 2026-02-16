@@ -43,6 +43,14 @@ impl ClientApiImpl {
         let rid = RoomId::from_string(room_id.to_string());
         let target_uid = UserId::from_string(req.user_id.clone());
 
+        // Check that the caller has GRANT_PERMISSION before any mutation.
+        // This prevents privilege escalation by users who lack the permission
+        // but happen to have an admin/creator role.
+        self.room_service
+            .check_permission(&rid, &uid, synctv_core::models::PermissionBits::GRANT_PERMISSION)
+            .await
+            .map_err(ApiError::from)?;
+
         // Handle role update if provided (non-zero = specified)
         if req.role != synctv_proto::common::RoomMemberRole::Unspecified as i32 {
             let new_role = proto_role_to_room_role(req.role)?;

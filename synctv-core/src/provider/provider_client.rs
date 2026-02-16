@@ -262,7 +262,7 @@ impl From<synctv_media_providers::ProviderClientError> for ProviderError {
             ProviderClientError::InvalidConfig(msg) => Self::InvalidConfig(msg),
             ProviderClientError::InvalidHeader(msg) => Self::ParseError(msg),
             ProviderClientError::NotImplemented(msg) => Self::ApiError(format!("Not implemented: {msg}")),
-            ProviderClientError::Http { status, url } => Self::ApiError(format!("HTTP {status} for {url}")),
+            ProviderClientError::Http { status, url, .. } => Self::ApiError(format!("HTTP {status} for {url}")),
             ProviderClientError::ResponseTooLarge { size } => Self::ApiError(format!("Response too large ({size} bytes)")),
         }
     }

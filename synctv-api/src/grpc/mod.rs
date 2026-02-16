@@ -81,6 +81,8 @@ pub struct GrpcServerConfig<'a> {
     pub audit_service: Arc<synctv_core::service::AuditService>,
     pub node_registry: Option<Arc<synctv_cluster::discovery::NodeRegistry>>,
     pub token_blacklist_service: synctv_core::service::TokenBlacklistService,
+    /// Shared Redis connection for playback caching
+    pub redis_conn: Option<redis::aio::ConnectionManager>,
     pub shutdown_rx: Option<tokio::sync::watch::Receiver<bool>>,
 }
 
@@ -113,6 +115,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         audit_service,
         node_registry,
         token_blacklist_service,
+        redis_conn,
         shutdown_rx,
     } = grpc_config;
     let addr = config.grpc_address().parse()?;
@@ -158,6 +161,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         providers_manager_for_client.clone(),
         settings_registry.clone(),
     ).with_redis_publish_tx(redis_publish_tx.clone())
+     .with_redis_conn(redis_conn.clone())
      .with_rate_limiter(rate_limiter.clone()));
 
     // Create transport-level rate limit interceptor with tiered limits per service.
@@ -390,14 +394,15 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
                 None, // No live_streaming_infrastructure for provider gRPC
                 None, // No providers_manager for provider gRPC
                 None, // No settings_registry for provider gRPC
-            ).with_redis_publish_tx(redis_publish_tx.clone())),
+            ).with_redis_publish_tx(redis_publish_tx.clone())
+             .with_redis_conn(redis_conn.clone())),
             admin_api: None,
             notification_api: None,
             oauth2_api: None, // OAuth2 not used in provider gRPC
             bilibili_api: Arc::new(crate::impls::BilibiliApiImpl::new(bilibili_provider.clone())),
             alist_api: Arc::new(crate::impls::AlistApiImpl::new(alist_provider.clone())),
             emby_api: Arc::new(crate::impls::EmbyApiImpl::new(emby_provider.clone())),
-            redis_conn: None, // gRPC path does not use playback caching (yet)
+            redis_conn: redis_conn.clone(),
             token_blacklist_service: token_blacklist_service.clone(),
         });
 

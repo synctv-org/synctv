@@ -52,7 +52,7 @@ pub async fn create_room(
         .await
         .map_err(|e| {
             tracing::error!(user_id = %auth.user_id, error = %e, "Failed to create room");
-            super::error::impls_err_to_app_error(e)
+            super::error::map_api_error(e)
         })?;
 
     let room_id = response.room.as_ref().map_or("unknown", |r| r.id.as_str());
@@ -70,7 +70,7 @@ pub async fn get_room(
         .client_api
         .get_room(&auth.user_id.to_string(), &room_id)
         .await
-        .map_err(super::error::impls_err_to_app_error)?;
+        .map_err(super::error::map_api_error)?;
 
     Ok(Json(response))
 }
@@ -86,7 +86,7 @@ pub async fn join_room(
         .client_api
         .join_room(&auth.user_id.to_string(), &room_id, req)
         .await
-        .map_err(super::error::impls_err_to_app_error)?;
+        .map_err(super::error::map_api_error)?;
 
     Ok(Json(response))
 }
@@ -101,7 +101,7 @@ pub async fn leave_room(
         .client_api
         .leave_room(&auth.user_id.to_string(), &room_id)
         .await
-        .map_err(super::error::impls_err_to_app_error)?;
+        .map_err(super::error::map_api_error)?;
 
     Ok(Json(response))
 }
@@ -121,7 +121,7 @@ pub async fn delete_room(
         .await
         .map_err(|e| {
             tracing::error!(user_id = %auth.user_id, room_id = %room_id, error = %e, "Failed to delete room");
-            super::error::impls_err_to_app_error(e)
+            super::error::map_api_error(e)
         })?;
 
     tracing::info!(user_id = %auth.user_id, room_id = %room_id, "Room deleted successfully");
@@ -141,7 +141,7 @@ pub async fn add_media(
         .client_api
         .add_media(&auth.user_id.to_string(), &room_id, req)
         .await
-        .map_err(super::error::impls_err_to_app_error)?;
+        .map_err(super::error::map_api_error)?;
 
     Ok(Json(response))
 }
@@ -157,7 +157,7 @@ pub async fn remove_media(
         .client_api
         .remove_media(&auth.user_id.to_string(), &room_id, proto_req)
         .await
-        .map_err(super::error::impls_err_to_app_error)?;
+        .map_err(super::error::map_api_error)?;
 
     Ok(Json(response))
 }
@@ -176,7 +176,7 @@ pub async fn remove_media_batch(
         .await
         .map_err(|e| {
             tracing::error!(user_id = %auth.user_id, room_id = %room_id, error = %e, "Failed to remove media batch");
-            super::error::impls_err_to_app_error(e)
+            super::error::map_api_error(e)
         })?;
 
     Ok(Json(response))
@@ -196,7 +196,7 @@ pub async fn reorder_media_batch(
         .await
         .map_err(|e| {
             tracing::error!(user_id = %auth.user_id, room_id = %room_id, error = %e, "Failed to reorder media batch");
-            super::error::impls_err_to_app_error(e)
+            super::error::map_api_error(e)
         })?;
 
     Ok(Json(response))
@@ -212,7 +212,7 @@ pub async fn get_playlist(
         .client_api
         .get_playlist(&auth.user_id.to_string(), &room_id)
         .await
-        .map_err(super::error::impls_err_to_app_error)?;
+        .map_err(super::error::map_api_error)?;
 
     Ok(Json(response))
 }
@@ -228,7 +228,7 @@ pub async fn swap_media_items(
         .client_api
         .swap_media(&auth.user_id.to_string(), &room_id, req)
         .await
-        .map_err(super::error::impls_err_to_app_error)?;
+        .map_err(super::error::map_api_error)?;
 
     Ok(Json(response))
 }
@@ -246,7 +246,7 @@ pub async fn play(
         .client_api
         .play(&auth.user_id.to_string(), &room_id, proto_req)
         .await
-        .map_err(super::error::impls_err_to_app_error)?;
+        .map_err(super::error::map_api_error)?;
 
     Ok(Json(response))
 }
@@ -261,7 +261,7 @@ pub async fn pause(
         .client_api
         .pause(&auth.user_id.to_string(), &room_id)
         .await
-        .map_err(super::error::impls_err_to_app_error)?;
+        .map_err(super::error::map_api_error)?;
 
     Ok(Json(response))
 }
@@ -277,7 +277,7 @@ pub async fn seek(
         .client_api
         .seek(&auth.user_id.to_string(), &room_id, req)
         .await
-        .map_err(super::error::impls_err_to_app_error)?;
+        .map_err(super::error::map_api_error)?;
 
     Ok(Json(response))
 }
@@ -292,7 +292,7 @@ pub async fn get_playback_state(
         .client_api
         .get_playback_state(&auth.user_id.to_string(), &room_id, GetPlaybackStateRequest {})
         .await
-        .map_err(super::error::impls_err_to_app_error)?;
+        .map_err(super::error::map_api_error)?;
 
     Ok(Json(response))
 }
@@ -309,7 +309,7 @@ pub async fn get_room_members(
         .client_api
         .get_room_members(&auth.user_id.to_string(), &room_id)
         .await
-        .map_err(super::error::impls_err_to_app_error)?;
+        .map_err(super::error::map_api_error)?;
 
     Ok(Json(response))
 }
@@ -326,7 +326,7 @@ pub async fn check_room(
         .client_api
         .check_room(req)
         .await
-        .map_err(super::error::impls_err_to_app_error)?;
+        .map_err(super::error::map_api_error)?;
 
     Ok(Json(response))
 }
@@ -349,7 +349,7 @@ pub async fn list_rooms(
         .client_api
         .list_rooms(proto_req)
         .await
-        .map_err(super::error::impls_err_to_app_error)?;
+        .map_err(super::error::map_api_error)?;
 
     Ok(Json(response))
 }
@@ -367,7 +367,7 @@ pub async fn set_room_password(
         .client_api
         .set_room_password(&auth.user_id.to_string(), &room_id, req)
         .await
-        .map_err(super::error::impls_err_to_app_error)?;
+        .map_err(super::error::map_api_error)?;
 
     Ok(Json(response))
 }
@@ -386,7 +386,7 @@ pub async fn check_password(
         .client_api
         .check_room_password(&room_id, req, &client_ip)
         .await
-        .map_err(super::error::impls_err_to_app_error)?;
+        .map_err(super::error::map_api_error)?;
 
     Ok(Json(response))
 }
@@ -401,7 +401,7 @@ pub async fn get_room_settings(
         .client_api
         .get_room_settings(&auth.user_id.to_string(), &room_id)
         .await
-        .map_err(super::error::impls_err_to_app_error)?;
+        .map_err(super::error::map_api_error)?;
 
     Ok(Json(response))
 }
@@ -417,7 +417,7 @@ pub async fn push_media_batch(
         .client_api
         .add_media_batch(&auth.user_id.to_string(), &room_id, req)
         .await
-        .map_err(super::error::impls_err_to_app_error)?;
+        .map_err(super::error::map_api_error)?;
 
     Ok(Json(response))
 }
@@ -434,7 +434,7 @@ pub async fn edit_media(
         .client_api
         .edit_media(&auth.user_id.to_string(), &room_id, req)
         .await
-        .map_err(super::error::impls_err_to_app_error)?;
+        .map_err(super::error::map_api_error)?;
 
     Ok(Json(response))
 }
@@ -449,7 +449,7 @@ pub async fn clear_playlist(
         .client_api
         .clear_playlist(&auth.user_id.to_string(), &room_id)
         .await
-        .map_err(super::error::impls_err_to_app_error)?;
+        .map_err(super::error::map_api_error)?;
 
     Ok(Json(response))
 }
@@ -465,7 +465,7 @@ pub async fn get_movie_info(
         .client_api
         .get_movie_info(auth.user_id.as_str(), &room_id, req)
         .await
-        .map_err(super::error::impls_err_to_app_error)?;
+        .map_err(super::error::map_api_error)?;
 
     Ok(Json(resp))
 }
@@ -494,7 +494,7 @@ pub async fn list_or_get_rooms(
         .client_api
         .list_rooms(request)
         .await
-        .map_err(super::error::impls_err_to_app_error)?;
+        .map_err(super::error::map_api_error)?;
 
     Ok(Json(response))
 }
@@ -514,7 +514,7 @@ pub async fn update_room_settings(
         .client_api
         .update_room_settings(&auth.user_id.to_string(), &room_id, req)
         .await
-        .map_err(super::error::impls_err_to_app_error)?;
+        .map_err(super::error::map_api_error)?;
 
     Ok(Json(response))
 }
@@ -554,13 +554,13 @@ pub async fn update_playback(
             "playing" => {
                 let response = state.client_api
                     .play(&user_id, &room_id, PlayRequest {})
-                    .await.map_err(super::error::impls_err_to_app_error)?;
+                    .await.map_err(super::error::map_api_error)?;
                 return Ok(Json(GetPlaybackStateResponse { playback_state: response.playback_state }));
             }
             "paused" => {
                 let response = state.client_api
                     .pause(&user_id, &room_id)
-                    .await.map_err(super::error::impls_err_to_app_error)?;
+                    .await.map_err(super::error::map_api_error)?;
                 return Ok(Json(GetPlaybackStateResponse { playback_state: response.playback_state }));
             }
             _ => return Err(super::AppError::bad_request("Invalid state value, use 'playing' or 'paused'")),
@@ -571,7 +571,7 @@ pub async fn update_playback(
     if let Some(position) = req.position {
         let response = state.client_api
             .seek(&user_id, &room_id, SeekRequest { current_time: position })
-            .await.map_err(super::error::impls_err_to_app_error)?;
+            .await.map_err(super::error::map_api_error)?;
         return Ok(Json(GetPlaybackStateResponse { playback_state: response.playback_state }));
     }
 
@@ -580,7 +580,7 @@ pub async fn update_playback(
         use crate::proto::client::SetPlaybackSpeedRequest;
         let response = state.client_api
             .set_playback_speed(&user_id, &room_id, SetPlaybackSpeedRequest { speed })
-            .await.map_err(super::error::impls_err_to_app_error)?;
+            .await.map_err(super::error::map_api_error)?;
         return Ok(Json(GetPlaybackStateResponse { playback_state: response.playback_state }));
     }
 
@@ -592,11 +592,11 @@ pub async fn update_playback(
                 playlist_id: String::new(),
                 media_id,
             })
-            .await.map_err(super::error::impls_err_to_app_error)?;
+            .await.map_err(super::error::map_api_error)?;
         // Return current playback state after media switch
         let pb = state.client_api
             .get_playback_state(&user_id, &room_id, GetPlaybackStateRequest {})
-            .await.map_err(super::error::impls_err_to_app_error)?;
+            .await.map_err(super::error::map_api_error)?;
         return Ok(Json(pb));
     }
 
@@ -640,7 +640,7 @@ pub async fn update_media_batch(
         let response = state.client_api
             .reorder_media_batch(&user_id, &room_id, proto_req)
             .await
-            .map_err(super::error::impls_err_to_app_error)?;
+            .map_err(super::error::map_api_error)?;
 
         return Ok(Json(BatchOperationResponse { success: response.success }));
     }
@@ -650,7 +650,7 @@ pub async fn update_media_batch(
         let response = state.client_api
             .swap_media(&user_id, &room_id, swap_req)
             .await
-            .map_err(super::error::impls_err_to_app_error)?;
+            .map_err(super::error::map_api_error)?;
 
         return Ok(Json(BatchOperationResponse { success: response.success }));
     }
@@ -673,7 +673,7 @@ pub async fn reset_room_settings(
         .client_api
         .reset_room_settings(&auth.user_id.to_string(), &room_id)
         .await
-        .map_err(super::error::impls_err_to_app_error)?;
+        .map_err(super::error::map_api_error)?;
 
     Ok(Json(response))
 }
@@ -696,7 +696,7 @@ pub async fn get_chat_history(
         .client_api
         .get_chat_history(&auth.user_id.to_string(), &room_id, req)
         .await
-        .map_err(super::error::impls_err_to_app_error)?;
+        .map_err(super::error::map_api_error)?;
 
     Ok(Json(response))
 }
@@ -715,7 +715,7 @@ pub async fn create_playlist(
         .client_api
         .create_playlist(&auth.user_id.to_string(), &room_id, req)
         .await
-        .map_err(super::error::impls_err_to_app_error)?;
+        .map_err(super::error::map_api_error)?;
 
     Ok(Json(response))
 }
@@ -733,7 +733,7 @@ pub async fn update_playlist(
         .client_api
         .update_playlist(&auth.user_id.to_string(), &room_id, req)
         .await
-        .map_err(super::error::impls_err_to_app_error)?;
+        .map_err(super::error::map_api_error)?;
 
     Ok(Json(response))
 }
@@ -750,7 +750,7 @@ pub async fn delete_playlist(
         .client_api
         .delete_playlist(&auth.user_id.to_string(), &room_id, req)
         .await
-        .map_err(super::error::impls_err_to_app_error)?;
+        .map_err(super::error::map_api_error)?;
 
     Ok(Json(response))
 }
@@ -769,7 +769,7 @@ pub async fn list_playlists(
         .client_api
         .list_playlists(&auth.user_id.to_string(), &room_id, req)
         .await
-        .map_err(super::error::impls_err_to_app_error)?;
+        .map_err(super::error::map_api_error)?;
 
     Ok(Json(response))
 }
@@ -788,7 +788,7 @@ pub async fn set_current_media(
         .client_api
         .set_current_media(&auth.user_id.to_string(), &room_id, req)
         .await
-        .map_err(super::error::impls_err_to_app_error)?;
+        .map_err(super::error::map_api_error)?;
 
     Ok(Json(response))
 }
@@ -805,7 +805,7 @@ pub async fn set_playback_speed(
         .client_api
         .set_playback_speed(&auth.user_id.to_string(), &room_id, req)
         .await
-        .map_err(super::error::impls_err_to_app_error)?;
+        .map_err(super::error::map_api_error)?;
 
     Ok(Json(response))
 }
@@ -824,7 +824,7 @@ pub async fn get_hot_rooms(
         .client_api
         .get_hot_rooms(req)
         .await
-        .map_err(super::error::impls_err_to_app_error)?;
+        .map_err(super::error::map_api_error)?;
 
     Ok(Json(response))
 }

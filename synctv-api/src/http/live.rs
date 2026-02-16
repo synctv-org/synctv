@@ -459,7 +459,7 @@ async fn handle_stream_info(
         .map_err(AppError::unauthorized)?;
 
     let resp = state.client_api.get_stream_info(user_id.as_str(), &room_id, &media_id).await
-        .map_err(crate::http::error::impls_err_to_app_error)?;
+        .map_err(crate::http::error::map_api_error)?;
 
     Ok(Json(resp))
 }
@@ -485,7 +485,7 @@ async fn handle_room_streams(
         .map_err(AppError::unauthorized)?;
 
     let resp = state.client_api.list_room_streams(user_id.as_str(), &room_id).await
-        .map_err(crate::http::error::impls_err_to_app_error)?;
+        .map_err(crate::http::error::map_api_error)?;
 
     Ok(Json(resp))
 }

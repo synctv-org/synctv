@@ -482,4 +482,75 @@ pub struct NavData {
     #[serde(rename = "vipStatus")]
     pub vip_status: u32,
     pub mid: u64,
+    #[serde(default)]
+    pub wbi_img: Option<WbiImg>,
+}
+
+/// WBI image URLs from nav API, used for WBI parameter signing
+#[derive(Debug, Clone, Deserialize)]
+pub struct WbiImg {
+    pub img_url: String,
+    pub sub_url: String,
+}
+
+// ============================================================================
+// Live Room Play Info (getRoomPlayInfo v2) Response Types
+// ============================================================================
+
+/// Top-level response from `xlive/web-room/v2/index/getRoomPlayInfo`
+#[derive(Debug, Clone, Deserialize)]
+pub struct RoomPlayInfoResp {
+    pub code: i32,
+    pub message: String,
+    pub data: RoomPlayInfoData,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RoomPlayInfoData {
+    #[serde(default)]
+    pub playurl_info: Option<PlayUrlInfoWrapper>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PlayUrlInfoWrapper {
+    #[serde(default)]
+    pub playurl: Option<PlayUrlContainer>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PlayUrlContainer {
+    #[serde(default)]
+    pub stream: Vec<StreamEntry>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct StreamEntry {
+    #[serde(default)]
+    pub format: Vec<FormatEntry>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct FormatEntry {
+    #[serde(default)]
+    pub codec: Vec<CodecEntry>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CodecEntry {
+    #[serde(default)]
+    pub current_qn: u64,
+    #[serde(default)]
+    pub accept_qn: Vec<u64>,
+    #[serde(default)]
+    pub base_url: String,
+    #[serde(default)]
+    pub url_info: Vec<UrlInfoEntry>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UrlInfoEntry {
+    #[serde(default)]
+    pub host: String,
+    #[serde(default)]
+    pub extra: String,
 }

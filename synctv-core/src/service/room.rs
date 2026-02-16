@@ -319,6 +319,14 @@ impl RoomService {
     }
 
     /// Join a room
+    ///
+    /// Optimized: fetches room, ban-status, settings, and password hash in a
+    /// single JOIN query via `RoomRepository::get_join_context`, reducing the
+    /// number of sequential DB round-trips from 4+ to 1.
+    ///
+    /// When a distributed lock is configured (multi-replica mode), a per-room+user
+    /// lock prevents the TOCTOU race where concurrent requests could both pass
+    /// validation checks and then conflict on the add_member step.
     pub async fn join_room(
         &self,
         room_id: RoomId,
@@ -332,10 +340,12 @@ impl RoomService {
             "User attempting to join room"
         );
 
-        // Get room
-        let room = self
+        // Verify password before acquiring the lock (CPU-intensive bcrypt work).
+        // This reduces lock hold time and avoids blocking concurrent joins.
+        // We fetch the join context for validation first.
+        let ctx = self
             .room_repo
-            .get_by_id(&room_id)
+            .get_join_context(&room_id, &user_id)
             .await?
             .ok_or_else(|| {
                 tracing::warn!(room_id = %room_id, user_id = %user_id, "Room not found");
@@ -343,43 +353,88 @@ impl RoomService {
             })?;
 
         // Check if room is active
-        if room.status != RoomStatus::Active {
-            tracing::warn!(room_id = %room_id, user_id = %user_id, status = ?room.status, "Attempted to join inactive room");
+        if ctx.room.status != RoomStatus::Active {
+            tracing::warn!(room_id = %room_id, user_id = %user_id, status = ?ctx.room.status, "Attempted to join inactive room");
             return Err(Error::InvalidInput("Room is closed".to_string()));
         }
 
         // Check if user is banned from this room
-        if self.member_service.is_banned(&room_id, &user_id).await? {
+        if ctx.is_banned {
             tracing::warn!(room_id = %room_id, user_id = %user_id, "Banned user attempted to join room");
             return Err(Error::Authorization("You are banned from this room".to_string()));
         }
 
-        // Check password if required
-        let room_settings = self.room_settings_repo.get(&room_id).await?;
-        if room_settings.require_password.0 {
-            let password_hash = self.room_settings_repo.get_password_hash(&room_id).await?;
-
-            match password_hash {
-                Some(hash) => {
+        // Check password if required (CPU-intensive bcrypt, done before lock)
+        if ctx.settings.require_password.0 {
+            match ctx.password_hash {
+                Some(ref hash) => {
                     let provided_password = password.ok_or_else(|| {
                         tracing::warn!(room_id = %room_id, user_id = %user_id, "Password required but not provided");
                         Error::Authorization("Password required".to_string())
                     })?;
 
-                    if !verify_password(&provided_password, &hash).await? {
+                    if !verify_password(&provided_password, hash).await? {
                         tracing::warn!(room_id = %room_id, user_id = %user_id, "Invalid password provided");
                         return Err(Error::Authorization("Invalid password".to_string()));
                     }
                     tracing::debug!(room_id = %room_id, user_id = %user_id, "Password verified successfully");
                 }
                 None => {
-                    // Room requires password but none is configured — reject join
+                    // Room requires password but none is configured -- reject join
                     tracing::warn!(room_id = %room_id, "Room requires password but none is set");
                     return Err(Error::Authorization("Invalid password".to_string()));
                 }
             }
         }
 
+        // Use distributed lock to make the check-then-add-member atomic.
+        // This prevents the TOCTOU race where two concurrent join requests
+        // for the same user both pass validation and then both attempt to
+        // add the member, or where the room state changes between validation
+        // and the add_member call.
+        if let Some(ref lock) = self.distributed_lock {
+            let lock_key = format!("join_room:{}:{}", room_id.as_str(), user_id.as_str());
+            return lock.with_lock(&lock_key, 10, || {
+                let room_id = room_id.clone();
+                let user_id = user_id.clone();
+                let room = ctx.room.clone();
+                async move {
+                    // Re-validate state under lock to catch changes that occurred
+                    // between the initial check and lock acquisition
+                    let fresh_ctx = self
+                        .room_repo
+                        .get_join_context(&room_id, &user_id)
+                        .await?
+                        .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
+
+                    if fresh_ctx.room.status != RoomStatus::Active {
+                        return Err(Error::InvalidInput("Room is closed".to_string()));
+                    }
+                    if fresh_ctx.is_banned {
+                        return Err(Error::Authorization("You are banned from this room".to_string()));
+                    }
+
+                    self.do_join_room(room, room_id, user_id).await
+                }
+            }).await;
+        }
+
+        // Single-replica path: no distributed lock, rely on DB-level constraints
+        let room = ctx.room;
+        self.do_join_room(room, room_id, user_id).await
+    }
+
+    /// Internal join implementation: adds member, lists members, notifies.
+    ///
+    /// Called after all validation (room active, not banned, password checked).
+    /// When used with a distributed lock, the lock ensures atomicity of the
+    /// re-validation + add_member sequence.
+    async fn do_join_room(
+        &self,
+        room: Room,
+        room_id: RoomId,
+        user_id: UserId,
+    ) -> Result<(Room, RoomMember, Vec<crate::models::RoomMemberWithUser>)> {
         // Add member (will check if already member and max members)
         let created_member = self.member_service.add_member(room_id.clone(), user_id.clone(), RoomRole::Member).await?;
 
@@ -1011,12 +1066,11 @@ impl RoomService {
     }
 
     /// Clear all media from room's root playlist
-    pub async fn clear_playlist(&self, room_id: RoomId, user_id: UserId) -> Result<i64> {
-        // Check permission
-        self.permission_service
-            .check_permission(&room_id, &user_id, PermissionBits::DELETE_MOVIE_ANY)
-            .await?;
-
+    ///
+    /// Permission check is handled by the API layer (CLEAR_PLAYLIST).
+    /// This method no longer performs its own permission check to avoid
+    /// inconsistency with the API layer's CLEAR_PLAYLIST check.
+    pub async fn clear_playlist(&self, room_id: RoomId, _user_id: UserId) -> Result<i64> {
         let root_playlist = self.playlist_service.get_root_playlist(&room_id).await?;
 
         // Delete all media in playlist directly (single query, no N+1)

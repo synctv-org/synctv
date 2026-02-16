@@ -263,7 +263,7 @@ fn test_playlist_model() {
     let root = Playlist {
         id: PlaylistId::new(),
         room_id: RoomId::new(),
-        creator_id: UserId::new(),
+        creator_id: Some(UserId::new()),
         name: String::new(),
         parent_id: None,
         position: 0,
@@ -280,7 +280,7 @@ fn test_playlist_model() {
     let folder = Playlist {
         id: PlaylistId::new(),
         room_id: RoomId::new(),
-        creator_id: UserId::new(),
+        creator_id: Some(UserId::new()),
         name: "My Folder".to_string(),
         parent_id: Some(root.id.clone()),
         position: 0,
@@ -297,7 +297,7 @@ fn test_playlist_model() {
     let dynamic = Playlist {
         id: PlaylistId::new(),
         room_id: RoomId::new(),
-        creator_id: UserId::new(),
+        creator_id: Some(UserId::new()),
         name: "Alist Folder".to_string(),
         parent_id: Some(root.id.clone()),
         position: 1,
@@ -551,7 +551,7 @@ async fn test_e2e_playlist_hierarchy() {
     let root = Playlist {
         id: PlaylistId::new(),
         room_id: room_id.clone(),
-        creator_id: creator_id.clone(),
+        creator_id: Some(creator_id.clone()),
         name: String::new(),
         parent_id: None,
         position: 0,
@@ -569,7 +569,7 @@ async fn test_e2e_playlist_hierarchy() {
     let static_folder = Playlist {
         id: PlaylistId::new(),
         room_id: room_id.clone(),
-        creator_id: creator_id.clone(),
+        creator_id: Some(creator_id.clone()),
         name: "Movies".to_string(),
         parent_id: Some(root.id.clone()),
         position: 0,
@@ -588,7 +588,7 @@ async fn test_e2e_playlist_hierarchy() {
     let dynamic_folder = Playlist {
         id: PlaylistId::new(),
         room_id: room_id.clone(),
-        creator_id: creator_id.clone(),
+        creator_id: Some(creator_id.clone()),
         name: "Alist Movies".to_string(),
         parent_id: Some(root.id.clone()),
         position: 1,

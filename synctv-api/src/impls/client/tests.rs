@@ -290,7 +290,7 @@ fn make_test_media() -> synctv_core::models::Media {
         id: MediaId::from_string("media1".to_string()),
         playlist_id: PlaylistId::from_string("pl1".to_string()),
         room_id: RoomId::from_string("room1".to_string()),
-        creator_id: UserId::from_string("user1".to_string()),
+        creator_id: Some(UserId::from_string("user1".to_string())),
         name: "Test Video".to_string(),
         position: 3,
         source_provider: "bilibili".to_string(),
@@ -392,19 +392,19 @@ fn test_network_stats_to_proto_none_action() {
     assert_eq!(proto.jitter_ms, 5);
     assert_eq!(proto.available_bandwidth_kbps, 5000);
     assert_eq!(proto.quality_score, 4);
-    assert_eq!(proto.quality_action, "none");
+    assert_eq!(proto.quality_action, i32::from(crate::proto::client::QualityAction::None));
 }
 
 #[test]
 fn test_network_stats_to_proto_all_actions() {
     let actions = [
-        (synctv_sfu::QualityAction::None, "none"),
-        (synctv_sfu::QualityAction::ReduceQuality, "reduce_quality"),
-        (synctv_sfu::QualityAction::ReduceFramerate, "reduce_framerate"),
-        (synctv_sfu::QualityAction::AudioOnly, "audio_only"),
+        (synctv_sfu::QualityAction::None, crate::proto::client::QualityAction::None),
+        (synctv_sfu::QualityAction::ReduceQuality, crate::proto::client::QualityAction::ReduceQuality),
+        (synctv_sfu::QualityAction::ReduceFramerate, crate::proto::client::QualityAction::ReduceFramerate),
+        (synctv_sfu::QualityAction::AudioOnly, crate::proto::client::QualityAction::AudioOnly),
     ];
 
-    for (action, expected_str) in actions {
+    for (action, expected) in actions {
         let stats = synctv_sfu::NetworkStats {
             rtt_ms: 0,
             packet_loss_rate: 0.0,
@@ -414,7 +414,7 @@ fn test_network_stats_to_proto_all_actions() {
             quality_action: action,
         };
         let proto = network_stats_to_proto("p".to_string(), stats);
-        assert_eq!(proto.quality_action, expected_str);
+        assert_eq!(proto.quality_action, i32::from(expected));
     }
 }
 
@@ -425,7 +425,7 @@ fn test_playlist_to_proto() {
     let playlist = synctv_core::models::Playlist {
         id: PlaylistId::from_string("pl1".to_string()),
         room_id: RoomId::from_string("room1".to_string()),
-        creator_id: UserId::from_string("user1".to_string()),
+        creator_id: Some(UserId::from_string("user1".to_string())),
         name: "My Playlist".to_string(),
         parent_id: None,
         position: 0,
@@ -452,7 +452,7 @@ fn test_playlist_to_proto_dynamic() {
     let playlist = synctv_core::models::Playlist {
         id: PlaylistId::from_string("pl2".to_string()),
         room_id: RoomId::from_string("room1".to_string()),
-        creator_id: UserId::from_string("user1".to_string()),
+        creator_id: Some(UserId::from_string("user1".to_string())),
         name: "Bilibili Folder".to_string(),
         parent_id: Some(PlaylistId::from_string("pl1".to_string())),
         position: 1,

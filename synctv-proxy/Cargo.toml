@@ -18,3 +18,5 @@ anyhow.workspace = true
 tokio = { workspace = true, features = ["time"] }
 tracing.workspace = true
 synctv-core.workspace = true
+governor.workspace = true
+nonzero_ext.workspace = true

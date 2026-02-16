@@ -23,6 +23,7 @@ pub async fn init_database(config: &Config) -> Result<PgPool> {
         .min_connections(config.database.min_connections)
         .acquire_timeout(Duration::from_secs(config.database.connect_timeout_seconds))
         .idle_timeout(Duration::from_secs(config.database.idle_timeout_seconds))
+        .max_lifetime(Duration::from_secs(config.database.max_lifetime_seconds))
         .connect(database_url)
         .await
         .map_err(|e| {

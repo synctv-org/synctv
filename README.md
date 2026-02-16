@@ -18,6 +18,7 @@ A production-grade real-time synchronized video watching platform built in Rust.
 - **synctv-livestream**: Live streaming service (RTMP/HLS/FLV)
 - **synctv-cluster**: Cluster coordination library
 - **synctv-xiu**: Consolidated streaming library (RTMP/HLS/HTTP-FLV protocols)
+- **synctv-sfu**: WebRTC SFU forwarding plane *(experimental -- infrastructure only, not production-ready)*
 
 ## Quick Start
 

@@ -97,7 +97,7 @@ pub fn media_to_proto(media: &synctv_core::models::Media) -> crate::proto::clien
         metadata: metadata_bytes,
         position: media.position,
         added_at: media.added_at.timestamp(),
-        added_by: media.creator_id.as_str().to_string(),
+        added_by: media.creator_id.as_ref().map_or(String::new(), |id| id.as_str().to_string()),
         provider_instance_name: media.provider_instance_name.clone().unwrap_or_default(),
         source_config: serde_json::to_vec(&media.source_config).unwrap_or_default(),
     }
@@ -155,10 +155,10 @@ pub fn network_stats_to_proto(
     ns: synctv_sfu::NetworkStats,
 ) -> crate::proto::client::PeerNetworkQuality {
     let quality_action = match ns.quality_action {
-        synctv_sfu::QualityAction::None => "none",
-        synctv_sfu::QualityAction::ReduceQuality => "reduce_quality",
-        synctv_sfu::QualityAction::ReduceFramerate => "reduce_framerate",
-        synctv_sfu::QualityAction::AudioOnly => "audio_only",
+        synctv_sfu::QualityAction::None => crate::proto::client::QualityAction::None.into(),
+        synctv_sfu::QualityAction::ReduceQuality => crate::proto::client::QualityAction::ReduceQuality.into(),
+        synctv_sfu::QualityAction::ReduceFramerate => crate::proto::client::QualityAction::ReduceFramerate.into(),
+        synctv_sfu::QualityAction::AudioOnly => crate::proto::client::QualityAction::AudioOnly.into(),
     };
     crate::proto::client::PeerNetworkQuality {
         peer_id,
@@ -167,6 +167,6 @@ pub fn network_stats_to_proto(
         jitter_ms: ns.jitter_ms,
         available_bandwidth_kbps: ns.available_bandwidth_kbps,
         quality_score: u32::from(ns.quality_score),
-        quality_action: quality_action.to_string(),
+        quality_action,
     }
 }

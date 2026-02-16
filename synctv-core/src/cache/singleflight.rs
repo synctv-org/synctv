@@ -254,4 +254,142 @@ mod tests {
             .await;
         assert_eq!(result.unwrap(), 42);
     }
+
+    /// Stress test: 100 concurrent tasks on same key - thundering herd protection
+    #[tokio::test]
+    async fn test_singleflight_thundering_herd_100_tasks() {
+        let sf: SingleFlight<String, i32, String> = SingleFlight::new();
+        let counter = Arc::new(AtomicU32::new(0));
+
+        let mut handles = vec![];
+        for _ in 0..100 {
+            let sf = sf.clone();
+            let counter = counter.clone();
+            handles.push(tokio::spawn(async move {
+                sf.do_work("hot_key".to_string(), async move {
+                    sleep(Duration::from_millis(20)).await;
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    Ok(999)
+                })
+                .await
+            }));
+        }
+
+        for handle in handles {
+            let result = handle.await.unwrap().unwrap();
+            assert_eq!(result, 999);
+        }
+
+        // The function should have been called only once (or very few times
+        // if the library retries on leader failure)
+        let actual = counter.load(Ordering::SeqCst);
+        assert!(actual <= 3, "Expected at most 3 executions (leader + retries), got {actual}");
+    }
+
+    /// Stress test: multiple keys concurrently
+    #[tokio::test]
+    async fn test_singleflight_multiple_keys_concurrent_stress() {
+        let sf: SingleFlight<String, i32, String> = SingleFlight::new();
+        let counter = Arc::new(AtomicU32::new(0));
+
+        let mut handles = vec![];
+        // 10 keys, 10 tasks each = 100 total tasks
+        for key_idx in 0..10 {
+            for _ in 0..10 {
+                let sf = sf.clone();
+                let counter = counter.clone();
+                let key = format!("key_{key_idx}");
+                handles.push(tokio::spawn(async move {
+                    sf.do_work(key, async move {
+                        sleep(Duration::from_millis(10)).await;
+                        counter.fetch_add(1, Ordering::SeqCst);
+                        Ok(key_idx)
+                    })
+                    .await
+                }));
+            }
+        }
+
+        for handle in handles {
+            let result = handle.await.unwrap();
+            assert!(result.is_ok());
+        }
+
+        // Each key should execute only once (or a small number of retries)
+        let actual = counter.load(Ordering::SeqCst);
+        assert!(
+            actual <= 30,
+            "Expected at most ~30 executions (10 keys * ~3 max), got {actual}"
+        );
+        // But must be at least 10 (one per key)
+        assert!(
+            actual >= 10,
+            "Expected at least 10 executions (one per key), got {actual}"
+        );
+    }
+
+    /// Test: error from one key doesn't affect other keys
+    #[tokio::test]
+    async fn test_singleflight_error_isolation() {
+        let sf: SingleFlight<String, i32, String> = SingleFlight::new();
+
+        let mut handles = vec![];
+
+        // Key "fail" always errors
+        for _ in 0..5 {
+            let sf = sf.clone();
+            handles.push(tokio::spawn(async move {
+                sf.do_work("fail".to_string(), async {
+                    sleep(Duration::from_millis(5)).await;
+                    Err("always fails".to_string())
+                })
+                .await
+            }));
+        }
+
+        // Key "success" always succeeds
+        for _ in 0..5 {
+            let sf = sf.clone();
+            handles.push(tokio::spawn(async move {
+                sf.do_work("success".to_string(), async {
+                    sleep(Duration::from_millis(5)).await;
+                    Ok(42)
+                })
+                .await
+            }));
+        }
+
+        let mut fail_count = 0;
+        let mut success_count = 0;
+
+        for handle in handles {
+            match handle.await.unwrap() {
+                Ok(v) => {
+                    assert_eq!(v, 42);
+                    success_count += 1;
+                }
+                Err(_) => fail_count += 1,
+            }
+        }
+
+        assert_eq!(success_count, 5);
+        assert_eq!(fail_count, 5);
+    }
+
+    /// Test: clone shares the same underlying group
+    #[test]
+    fn test_singleflight_clone_shares_state() {
+        let sf1: SingleFlight<String, i32, String> = SingleFlight::new();
+        let sf2 = sf1.clone();
+        // Both clones share the same Arc<Group>
+        assert!(Arc::ptr_eq(&sf1.group, &sf2.group));
+    }
+
+    /// Test: Default trait produces a new instance
+    #[test]
+    fn test_singleflight_default() {
+        let sf: SingleFlight<String, i32, String> = SingleFlight::default();
+        // Just verify it was created successfully
+        assert!(Arc::strong_count(&sf.group) >= 1);
+    }
 }

@@ -114,10 +114,12 @@ impl CacheManager {
                                 debug!("All L1 caches cleared (cross-replica)");
                             }
                             // Permission messages are handled by PermissionService;
-                            // PlaybackState messages are handled by PlaybackService
+                            // PlaybackState messages are handled by PlaybackService;
+                            // RoomSettings messages are handled by RoomSettingsService
                             InvalidationMessage::UserPermission { .. }
                             | InvalidationMessage::RoomPermission { .. }
-                            | InvalidationMessage::PlaybackState { .. } => {}
+                            | InvalidationMessage::PlaybackState { .. }
+                            | InvalidationMessage::RoomSettings { .. } => {}
                         }
                     }
                     Err(broadcast::error::RecvError::Closed) => {

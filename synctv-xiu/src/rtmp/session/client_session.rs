@@ -366,6 +366,11 @@ impl ClientSession {
                 self.on_error()?;
             }
             "onStatus" => {
+                if others.is_empty() {
+                    return Err(SessionError {
+                        value: SessionErrorValue::Amf0ValueCountNotCorrect,
+                    });
+                }
                 match others.remove(0) {
                     Amf0ValueType::Object(obj) => self.on_status(&obj).await?,
                     _ => {
@@ -538,8 +543,18 @@ impl ClientSession {
     }
 
     pub fn on_set_chunk_size(&mut self, chunk_size: &mut u32) -> Result<(), SessionError> {
+        // Clamp chunk size to valid RTMP range [128, 65536] to prevent issues
+        // from malformed or malicious server responses (e.g. chunk_size=0).
+        let clamped = (*chunk_size).clamp(128, 65536);
+        if clamped != *chunk_size {
+            tracing::warn!(
+                "Server sent out-of-range chunk_size={}, clamping to {}",
+                chunk_size,
+                clamped
+            );
+        }
         self.unpacketizer
-            .update_max_chunk_size(*chunk_size as usize);
+            .update_max_chunk_size(clamped as usize);
         Ok(())
     }
 

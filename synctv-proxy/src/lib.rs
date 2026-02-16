@@ -7,6 +7,7 @@ pub mod mpd;
 
 use std::collections::HashMap;
 use std::net::IpAddr;
+use std::num::NonZeroU32;
 use std::sync::LazyLock;
 use std::time::Duration;
 
@@ -15,6 +16,8 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
+use governor::{clock::Clock, DefaultKeyedRateLimiter, Quota, RateLimiter as GovernorRateLimiter};
+use nonzero_ext::nonzero;
 
 /// Maximum response body size for proxied media (256 MB).
 const MAX_PROXY_BODY_SIZE: usize = 256 * 1024 * 1024;
@@ -57,6 +60,50 @@ static PROXY_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
             panic!("Failed to build shared proxy HTTP client: {e}")
         })
 });
+
+// ------------------------------------------------------------------
+// Proxy rate limiting
+// ------------------------------------------------------------------
+
+/// Maximum proxy stream requests per IP: 60 per minute.
+const PROXY_RATE_LIMIT_PER_MIN: u32 = 60;
+
+/// Rate limit window in seconds.
+const PROXY_RATE_LIMIT_WINDOW_SECS: u64 = 60;
+
+/// In-memory rate limiter for proxy endpoints, keyed by caller-provided string
+/// (typically the client IP address). Uses the GCRA algorithm via `governor`.
+static PROXY_RATE_LIMITER: LazyLock<DefaultKeyedRateLimiter<String>> = LazyLock::new(|| {
+    let period = Duration::from_secs(PROXY_RATE_LIMIT_WINDOW_SECS)
+        .checked_div(PROXY_RATE_LIMIT_PER_MIN)
+        .unwrap_or(Duration::from_millis(1));
+    let quota = Quota::with_period(period)
+        .expect("non-zero period")
+        .allow_burst(
+            NonZeroU32::new(PROXY_RATE_LIMIT_PER_MIN).unwrap_or(nonzero!(1u32)),
+        );
+    GovernorRateLimiter::keyed(quota)
+});
+
+/// Check the proxy rate limit for `key` (typically a client IP).
+///
+/// Returns `Ok(())` if the request is allowed, or an error `Response` with
+/// `429 Too Many Requests` if the rate limit is exceeded.
+pub fn check_proxy_rate_limit(key: &str) -> Result<(), Response> {
+    match PROXY_RATE_LIMITER.check_key(&key.to_string()) {
+        Ok(_) => Ok(()),
+        Err(not_until) => {
+            let wait = not_until
+                .wait_time_from(governor::clock::DefaultClock::default().now());
+            let retry_after = wait.as_secs().max(1);
+            Err(Response::builder()
+                .status(StatusCode::TOO_MANY_REQUESTS)
+                .header("Retry-After", retry_after.to_string())
+                .body(Body::from("Rate limit exceeded for proxy endpoint"))
+                .expect("valid response"))
+        }
+    }
+}
 
 /// Configuration for a single proxy fetch.
 pub struct ProxyConfig<'a> {
@@ -281,9 +328,21 @@ pub async fn proxy_m3u8_and_rewrite(
 }
 
 /// Preflight handler suitable for `OPTIONS` routes.
+///
+/// Returns CORS headers as defense-in-depth. The global `CorsLayer` middleware
+/// handles standard preflight requests before they reach routes, but this
+/// ensures correct headers if the middleware is bypassed or misconfigured.
 #[allow(clippy::unused_async)]
 pub async fn proxy_options_preflight() -> impl IntoResponse {
-    StatusCode::NO_CONTENT
+    (
+        StatusCode::NO_CONTENT,
+        [
+            ("Access-Control-Allow-Origin", "*"),
+            ("Access-Control-Allow-Methods", "GET, OPTIONS"),
+            ("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, Range"),
+            ("Access-Control-Max-Age", "86400"),
+        ],
+    )
 }
 
 // ------------------------------------------------------------------
@@ -401,17 +460,49 @@ pub fn percent_encode(input: &str) -> String {
 // Manual redirect following with DNS validation
 // ------------------------------------------------------------------
 
+/// Headers that should be preserved across redirect hops.
+///
+/// Provider headers (Referer, User-Agent) and client passthrough headers
+/// (Range, Accept) are re-applied on each redirect to avoid breaking
+/// providers that require them on the final CDN request.
+const REDIRECT_PRESERVE_HEADERS: &[&str] = &[
+    "referer",
+    "user-agent",
+    "range",
+    "accept",
+    "accept-language",
+    "if-none-match",
+    "if-modified-since",
+];
+
 /// Send a request via the proxy client, manually following redirects with
 /// full async DNS validation on every hop.
 ///
 /// Automatic redirects are disabled on `PROXY_CLIENT`, so 3xx responses
 /// are handled here. Each redirect target gets both static URL validation
 /// and async DNS resolution checks to prevent DNS-rebinding SSRF.
+///
+/// Headers matching [`REDIRECT_PRESERVE_HEADERS`] are captured from the
+/// initial request and re-applied on every redirect hop so that provider
+/// and client headers are not lost.
 async fn send_with_redirect_validation(
     request: reqwest::RequestBuilder,
 ) -> Result<reqwest::Response, anyhow::Error> {
-    let mut response = request
-        .send()
+    // Build the request to capture headers before sending.
+    let built = request
+        .build()
+        .map_err(|e| anyhow::anyhow!("Failed to build proxy request: {e}"))?;
+
+    // Snapshot headers to preserve across redirects.
+    let preserved: Vec<(reqwest::header::HeaderName, reqwest::header::HeaderValue)> = built
+        .headers()
+        .iter()
+        .filter(|(name, _)| REDIRECT_PRESERVE_HEADERS.contains(&name.as_str()))
+        .map(|(n, v)| (n.clone(), v.clone()))
+        .collect();
+
+    let mut response = PROXY_CLIENT
+        .execute(built)
         .await
         .map_err(|e| anyhow::anyhow!("Proxy request failed: {e}"))?;
 
@@ -433,8 +524,12 @@ async fn send_with_redirect_validation(
         // Full validation: static checks + async DNS resolution
         validate_proxy_url(&location).await?;
 
-        response = PROXY_CLIENT
-            .get(&location)
+        let mut redirect_req = PROXY_CLIENT.get(&location);
+        for (name, value) in &preserved {
+            redirect_req = redirect_req.header(name.clone(), value.clone());
+        }
+
+        response = redirect_req
             .send()
             .await
             .map_err(|e| anyhow::anyhow!("Redirect request failed: {e}"))?;
@@ -540,4 +635,170 @@ fn validate_proxy_url_static(raw: &str) -> Result<(), anyhow::Error> {
 /// IPv6 unique-local addresses.
 fn is_private_ip(ip: IpAddr) -> bool {
     synctv_core::validation::is_private_ip(&ip)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::StatusCode;
+
+    // ------------------------------------------------------------------
+    // P-01: CORS preflight returns proper headers
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_options_preflight_returns_cors_headers() {
+        let response = proxy_options_preflight().await.into_response();
+
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+        let headers = response.headers();
+        assert_eq!(
+            headers.get("Access-Control-Allow-Origin").map(|v| v.to_str().unwrap_or("")),
+            Some("*"),
+            "OPTIONS preflight must include Access-Control-Allow-Origin"
+        );
+        assert!(
+            headers.get("Access-Control-Allow-Methods").is_some(),
+            "OPTIONS preflight must include Access-Control-Allow-Methods"
+        );
+        assert!(
+            headers.get("Access-Control-Allow-Headers").is_some(),
+            "OPTIONS preflight must include Access-Control-Allow-Headers"
+        );
+        assert!(
+            headers.get("Access-Control-Max-Age").is_some(),
+            "OPTIONS preflight should include Access-Control-Max-Age for caching"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // P-02: Proxy rate limiting
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_rate_limiter_allows_burst() {
+        let key = "test-ip-burst";
+        // Should allow up to PROXY_RATE_LIMIT_PER_MIN requests in a burst
+        for i in 0..PROXY_RATE_LIMIT_PER_MIN {
+            assert!(
+                check_proxy_rate_limit(key).is_ok(),
+                "Request {i} within burst should be allowed"
+            );
+        }
+    }
+
+    #[test]
+    fn test_rate_limiter_rejects_over_limit() {
+        let key = "test-ip-over-limit";
+        // Exhaust the burst
+        for _ in 0..PROXY_RATE_LIMIT_PER_MIN {
+            let _ = check_proxy_rate_limit(key);
+        }
+        // Next request should be rejected
+        let result = check_proxy_rate_limit(key);
+        assert!(result.is_err(), "Request over burst limit should be rejected");
+
+        let response = result.unwrap_err();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(
+            response.headers().get("Retry-After").is_some(),
+            "429 response must include Retry-After header"
+        );
+    }
+
+    #[test]
+    fn test_rate_limiter_independent_keys() {
+        let key_a = "test-ip-a-independent";
+        let key_b = "test-ip-b-independent";
+
+        // Exhaust key_a
+        for _ in 0..PROXY_RATE_LIMIT_PER_MIN {
+            let _ = check_proxy_rate_limit(key_a);
+        }
+        assert!(check_proxy_rate_limit(key_a).is_err());
+
+        // key_b should still be allowed
+        assert!(
+            check_proxy_rate_limit(key_b).is_ok(),
+            "Different keys should have independent rate limits"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // P-06: Redirect header preservation list
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_redirect_preserve_headers_includes_critical_headers() {
+        // Verify that provider-critical and client-critical headers are preserved
+        assert!(
+            REDIRECT_PRESERVE_HEADERS.contains(&"referer"),
+            "Referer must be preserved across redirects for provider auth"
+        );
+        assert!(
+            REDIRECT_PRESERVE_HEADERS.contains(&"user-agent"),
+            "User-Agent must be preserved across redirects for provider auth"
+        );
+        assert!(
+            REDIRECT_PRESERVE_HEADERS.contains(&"range"),
+            "Range must be preserved across redirects for partial content"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // Existing helpers
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_make_absolute_already_absolute() {
+        assert_eq!(
+            make_absolute("https://cdn.example.com/seg1.ts", None),
+            "https://cdn.example.com/seg1.ts"
+        );
+    }
+
+    #[test]
+    fn test_make_absolute_relative() {
+        let base = url::Url::parse("https://cdn.example.com/path/master.m3u8").unwrap();
+        assert_eq!(
+            make_absolute("seg1.ts", Some(&base)),
+            "https://cdn.example.com/path/seg1.ts"
+        );
+    }
+
+    #[test]
+    fn test_rewrite_m3u8_basic() {
+        let m3u8 = "#EXTM3U\n#EXT-X-VERSION:3\nseg1.ts\nseg2.ts\n";
+        let rewritten = rewrite_m3u8(
+            m3u8,
+            "https://cdn.example.com/path/master.m3u8",
+            "/proxy/stream",
+        );
+        assert!(rewritten.contains("/proxy/stream?url="));
+        assert!(rewritten.contains("cdn%2Eexample%2Ecom"));
+    }
+
+    #[test]
+    fn test_validate_proxy_url_static_blocks_localhost() {
+        assert!(validate_proxy_url_static("http://localhost/foo").is_err());
+    }
+
+    #[test]
+    fn test_validate_proxy_url_static_blocks_private_ip() {
+        assert!(validate_proxy_url_static("http://192.168.1.1/foo").is_err());
+        assert!(validate_proxy_url_static("http://10.0.0.1/foo").is_err());
+        assert!(validate_proxy_url_static("http://127.0.0.1/foo").is_err());
+    }
+
+    #[test]
+    fn test_validate_proxy_url_static_allows_public() {
+        assert!(validate_proxy_url_static("https://cdn.bilibili.com/v1.m4s").is_ok());
+    }
+
+    #[test]
+    fn test_validate_proxy_url_static_blocks_non_http() {
+        assert!(validate_proxy_url_static("ftp://example.com/file").is_err());
+        assert!(validate_proxy_url_static("file:///etc/passwd").is_err());
+    }
 }

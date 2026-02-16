@@ -57,7 +57,7 @@ pub struct Media {
     pub id: MediaId,
     pub playlist_id: PlaylistId,
     pub room_id: RoomId,
-    pub creator_id: UserId,
+    pub creator_id: Option<UserId>,
     pub name: String,
     pub position: i32,
     /// Provider type name (e.g., "bilibili", "alist", "emby", "`direct_url`")
@@ -78,7 +78,7 @@ pub struct Media {
 pub struct FromProviderParams {
     pub playlist_id: PlaylistId,
     pub room_id: RoomId,
-    pub creator_id: UserId,
+    pub creator_id: Option<UserId>,
     pub name: String,
     pub source_config: JsonValue,
     pub provider_name: String,
@@ -106,7 +106,7 @@ impl Media {
     pub fn from_provider(
         playlist_id: PlaylistId,
         room_id: RoomId,
-        creator_id: UserId,
+        creator_id: Option<UserId>,
         name: String,
         source_config: JsonValue,
         provider_name: &str,
@@ -203,7 +203,7 @@ impl Media {
     pub fn from_direct_multimode(
         playlist_id: PlaylistId,
         room_id: RoomId,
-        creator_id: UserId,
+        creator_id: Option<UserId>,
         name: String,
         playback_infos: std::collections::HashMap<String, PlaybackInfo>,
         default_mode: String,
@@ -238,7 +238,7 @@ impl Media {
     pub fn from_direct_single_mode(
         playlist_id: PlaylistId,
         room_id: RoomId,
-        creator_id: UserId,
+        creator_id: Option<UserId>,
         name: String,
         mode_name: &str,
         playback_info: PlaybackInfo,

@@ -1,6 +1,13 @@
 // Bilibili Provider Client API
 //
 // This is the client-facing gRPC API for Bilibili provider
+//
+// SECURITY: This service transmits Bilibili session cookies as plaintext
+// map<string,string> fields. These cookies grant full access to the user's
+// Bilibili account. Deployments MUST:
+//   - Use TLS for all connections to this service.
+//   - Never log request/response payloads containing cookie fields.
+//   - Treat cookie fields as sensitive credentials in observability pipelines.
 
 syntax = "proto3";
 
@@ -38,7 +45,7 @@ service BilibiliProviderService {
 // Parse video URL request
 message ParseRequest {
   string url = 1;
-  map<string, string> cookies = 2;
+  map<string, string> cookies = 2; // SENSITIVE: Session cookies - do not log
   string instance_name = 3; // Optional provider instance name
 }
 
@@ -79,7 +86,7 @@ message CheckQRRequest {
 // QR status response
 message QRStatusResponse {
   int32 status = 1; // 0=success, 1=expired, 2=not_scanned, 3=scanned_not_confirmed
-  map<string, string> cookies = 2;
+  map<string, string> cookies = 2; // SENSITIVE: Session cookies - do not log
 }
 
 // Get captcha request
@@ -118,12 +125,12 @@ message LoginSMSRequest {
 
 // Login with SMS response
 message LoginSMSResponse {
-  map<string, string> cookies = 1;
+  map<string, string> cookies = 1; // SENSITIVE: Session cookies - do not log
 }
 
 // User info request
 message UserInfoRequest {
-  map<string, string> cookies = 1;
+  map<string, string> cookies = 1; // SENSITIVE: Session cookies - do not log
   string instance_name = 2; // Optional provider instance name
 }
 

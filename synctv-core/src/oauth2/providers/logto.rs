@@ -140,3 +140,209 @@ pub fn logto_factory(config: &serde_json::Value) -> Result<Box<dyn Provider>, Er
         &config.endpoint,
     )?))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ==================== Provider Creation ====================
+
+    #[test]
+    fn test_create_provider_valid_config() {
+        let provider = LogtoProvider::create(
+            "logto_client_id".to_string(),
+            "logto_secret".to_string(),
+            "https://example.com/callback".to_string(),
+            "https://logto.example.com",
+        );
+        assert!(provider.is_ok());
+    }
+
+    #[test]
+    fn test_create_provider_endpoint_trailing_slash_trimmed() {
+        let provider = LogtoProvider::create(
+            "id".to_string(),
+            "secret".to_string(),
+            "https://example.com/cb".to_string(),
+            "https://logto.example.com/",
+        )
+        .unwrap();
+        // The endpoint should have trailing slash trimmed
+        assert_eq!(provider.endpoint, "https://logto.example.com");
+    }
+
+    #[test]
+    fn test_create_provider_invalid_redirect_url() {
+        let result = LogtoProvider::create(
+            "id".to_string(),
+            "secret".to_string(),
+            "not a valid url".to_string(),
+            "https://logto.example.com",
+        );
+        assert!(result.is_err());
+        match result {
+            Err(Error::InvalidInput(msg)) => assert!(msg.contains("redirect URL")),
+            Ok(_) => panic!("Expected error but got Ok"),
+            Err(e) => panic!("Expected InvalidInput error, got: {e}"),
+        }
+    }
+
+    #[test]
+    fn test_create_provider_invalid_endpoint() {
+        let result = LogtoProvider::create(
+            "id".to_string(),
+            "secret".to_string(),
+            "https://example.com/cb".to_string(),
+            "not a valid endpoint",
+        );
+        // Invalid endpoint should fail when constructing auth/token URLs
+        assert!(result.is_err());
+        assert!(matches!(result.err(), Some(Error::InvalidInput(_))));
+    }
+
+    // ==================== Provider Type ====================
+
+    #[test]
+    fn test_provider_type() {
+        let provider = LogtoProvider::create(
+            "id".to_string(),
+            "secret".to_string(),
+            "https://example.com/cb".to_string(),
+            "https://logto.example.com",
+        )
+        .unwrap();
+        assert_eq!(provider.provider_type(), "logto");
+    }
+
+    // ==================== Auth URL Generation ====================
+
+    #[tokio::test]
+    async fn test_new_auth_url_contains_required_params() {
+        let provider = LogtoProvider::create(
+            "logto_test_id".to_string(),
+            "test_secret".to_string(),
+            "https://example.com/callback".to_string(),
+            "https://auth.logto.io",
+        )
+        .unwrap();
+
+        let state = "logto_state_xyz";
+        let (auth_url, pkce_verifier) = provider.new_auth_url(state).await.unwrap();
+
+        // Auth URL should use the custom endpoint's OIDC auth path
+        assert!(auth_url.starts_with("https://auth.logto.io/oidc/auth"));
+        // Auth URL should contain client_id
+        assert!(auth_url.contains("client_id=logto_test_id"));
+        // Auth URL should contain state
+        assert!(auth_url.contains(&format!("state={state}")));
+        // Auth URL should contain redirect_uri
+        assert!(auth_url.contains("redirect_uri="));
+        // Auth URL should contain PKCE code_challenge
+        assert!(auth_url.contains("code_challenge="));
+        assert!(auth_url.contains("code_challenge_method=S256"));
+        // PKCE verifier should be non-empty
+        assert!(!pkce_verifier.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_new_auth_url_with_trailing_slash_endpoint() {
+        let provider = LogtoProvider::create(
+            "id".to_string(),
+            "secret".to_string(),
+            "https://example.com/cb".to_string(),
+            "https://logto.example.com/",
+        )
+        .unwrap();
+
+        let (auth_url, _) = provider.new_auth_url("state").await.unwrap();
+        // Should not have double slashes
+        assert!(auth_url.starts_with("https://logto.example.com/oidc/auth"));
+        assert!(!auth_url.contains("//oidc"));
+    }
+
+    // ==================== Factory Function ====================
+
+    #[test]
+    fn test_factory_valid_config() {
+        let config = serde_json::json!({
+            "client_id": "logto_id",
+            "client_secret": "logto_secret",
+            "redirect_url": "https://example.com/oauth/logto/callback",
+            "endpoint": "https://logto.example.com"
+        });
+        let provider = logto_factory(&config);
+        assert!(provider.is_ok());
+        assert_eq!(provider.unwrap().provider_type(), "logto");
+    }
+
+    #[test]
+    fn test_factory_missing_endpoint() {
+        let config = serde_json::json!({
+            "client_id": "id",
+            "client_secret": "secret",
+            "redirect_url": "https://example.com/cb"
+        });
+        let result = logto_factory(&config);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_factory_missing_fields() {
+        // Missing client_id
+        let config = serde_json::json!({
+            "client_secret": "secret",
+            "redirect_url": "https://example.com/cb",
+            "endpoint": "https://logto.example.com"
+        });
+        assert!(logto_factory(&config).is_err());
+
+        // Missing client_secret
+        let config = serde_json::json!({
+            "client_id": "id",
+            "redirect_url": "https://example.com/cb",
+            "endpoint": "https://logto.example.com"
+        });
+        assert!(logto_factory(&config).is_err());
+    }
+
+    #[test]
+    fn test_factory_empty_json() {
+        let config = serde_json::json!({});
+        let result = logto_factory(&config);
+        assert!(result.is_err());
+        assert!(matches!(result.err(), Some(Error::InvalidInput(_))));
+    }
+
+    // ==================== Config Deserialization ====================
+
+    #[test]
+    fn test_logto_config_deserialize() {
+        let json = serde_json::json!({
+            "client_id": "logto_abc",
+            "client_secret": "logto_def",
+            "redirect_url": "https://example.com/cb",
+            "endpoint": "https://logto.example.com"
+        });
+        let config: LogtoConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(config.client_id, "logto_abc");
+        assert_eq!(config.client_secret, "logto_def");
+        assert_eq!(config.redirect_url, "https://example.com/cb");
+        assert_eq!(config.endpoint, "https://logto.example.com");
+    }
+
+    #[test]
+    fn test_logto_config_serialize_roundtrip() {
+        let config = LogtoConfig {
+            client_id: "id".to_string(),
+            client_secret: "secret".to_string(),
+            redirect_url: "https://example.com/cb".to_string(),
+            endpoint: "https://logto.example.com".to_string(),
+        };
+        let json = serde_json::to_value(&config).unwrap();
+        let deserialized: LogtoConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(deserialized.client_id, config.client_id);
+        assert_eq!(deserialized.client_secret, config.client_secret);
+        assert_eq!(deserialized.redirect_url, config.redirect_url);
+        assert_eq!(deserialized.endpoint, config.endpoint);
+    }
+}

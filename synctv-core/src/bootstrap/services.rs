@@ -7,7 +7,7 @@ use tracing::{error, info, warn};
 
 use crate::{
     cache::{
-        CacheInvalidationService, CacheManager, KeyBuilder,
+        CacheInvalidationService, CacheManager,
         RoomCache, UserCache, UsernameCache,
     },
     repository::{UserOAuthProviderRepository, ProviderInstanceRepository, UserProviderCredentialRepository, SettingsRepository, NotificationRepository},
@@ -73,9 +73,15 @@ pub struct Services {
 }
 
 /// Initialize all core services
+///
+/// The caller must supply a pre-built `CacheInvalidationService` so that the
+/// same instance (with the correct cluster node ID) is shared across every
+/// component.  The caller is also responsible for calling `.start()` on it
+/// after this function returns, so there is exactly one Redis subscriber.
 pub async fn init_services(
     pool: PgPool,
     config: &Config,
+    cache_invalidation: Arc<CacheInvalidationService>,
 ) -> Result<Services, anyhow::Error> {
     info!("Initializing services...");
 
@@ -111,7 +117,6 @@ pub async fn init_services(
     info!("Username cache initialized");
 
     // Initialize user and room L1/L2 caches
-    let key_builder = KeyBuilder::new(&config.redis.key_prefix);
     let user_cache = Arc::new(
         UserCache::new(
             redis_conn.clone(),
@@ -132,15 +137,6 @@ pub async fn init_services(
     );
     info!("User and room caches initialized");
 
-    // Initialize cache invalidation service for cross-replica sync
-    let node_id = uuid::Uuid::new_v4().to_string();
-    let cache_invalidation = Arc::new(CacheInvalidationService::new(
-        redis_client.clone(),
-        node_id,
-        key_builder.cache_invalidation_stream(),
-    ));
-    info!("Cache invalidation service created");
-
     // Initialize UserService
     let mut user_service = UserService::new(pool.clone(), jwt_service.clone(), token_blacklist.clone(), username_cache.clone());
     user_service.set_cache_invalidation(cache_invalidation.clone());
@@ -157,14 +153,6 @@ pub async fn init_services(
         .with_username_cache(Arc::new(username_cache.clone()));
     cache_manager.start_invalidation_listener(&cache_invalidation);
     info!("CacheManager initialized with invalidation listener");
-
-    // Start the Redis pub/sub subscriber for cache invalidation
-    if let Err(e) = cache_invalidation.start().await {
-        warn!("Failed to start cache invalidation subscriber: {e}");
-        warn!("Cross-replica cache invalidation will not work");
-    } else {
-        info!("Cache invalidation subscriber started");
-    }
 
     // Initialize ProviderInstanceRepository
     let provider_instance_repo = Arc::new(ProviderInstanceRepository::new(pool.clone()));
@@ -382,7 +370,7 @@ async fn init_oauth2_service(
         // Add redirect_url to config (merge it in)
         // Use configured scheme (http/https) to support reverse proxy TLS termination
         let scheme = &config.oauth2.redirect_scheme;
-        let redirect_url = format!("{}://{}/api/oauth2/{}/callback", scheme, config.server.host, instance_name);
+        let redirect_url = format!("{}://{}/api/oauth2/{}/callback", scheme, config.advertise_host(), instance_name);
         if let Some(mapping) = full_config.as_object_mut() {
             mapping.insert(
                 "redirect_url".to_string(),
@@ -393,15 +381,12 @@ async fn init_oauth2_service(
         // Use factory to create provider with full config
         match crate::oauth2::create_provider(&provider_type, &full_config).await {
             Ok(provider) => {
-                let provider_enum = match provider_type.as_str() {
-                    "github" => crate::models::oauth2_client::OAuth2Provider::GitHub,
-                    "google" => crate::models::oauth2_client::OAuth2Provider::Google,
-                    "logto" => crate::models::oauth2_client::OAuth2Provider::Logto,
-                    "oidc" => crate::models::oauth2_client::OAuth2Provider::Oidc,
-                    unknown => {
+                let provider_enum = match crate::models::oauth2_client::OAuth2Provider::from_str_name(&provider_type) {
+                    Some(p) => p,
+                    None => {
                         warn!(
                             "Skipping unknown OAuth2 provider type '{}' for instance '{}'",
-                            unknown, instance_name
+                            provider_type, instance_name
                         );
                         continue;
                     }

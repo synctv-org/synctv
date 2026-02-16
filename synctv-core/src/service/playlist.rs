@@ -80,8 +80,8 @@ impl PlaylistService {
         if name.is_empty() {
             return Err(Error::InvalidInput("Playlist name cannot be empty".to_string()));
         }
-        if name.len() > 200 {
-            return Err(Error::InvalidInput("Playlist name cannot exceed 200 bytes".to_string()));
+        if name.chars().count() > 200 {
+            return Err(Error::InvalidInput("Playlist name cannot exceed 200 characters".to_string()));
         }
 
         // Check permission
@@ -131,7 +131,7 @@ impl PlaylistService {
         let playlist = Playlist {
             id: crate::models::PlaylistId::new(),
             room_id: room_id.clone(),
-            creator_id: user_id,
+            creator_id: Some(user_id),
             name: name.to_string(),
             parent_id: request.parent_id,
             position,
@@ -205,8 +205,8 @@ impl PlaylistService {
             if name.is_empty() {
                 return Err(Error::InvalidInput("Playlist name cannot be empty".to_string()));
             }
-            if name.len() > 200 {
-                return Err(Error::InvalidInput("Playlist name cannot exceed 200 bytes".to_string()));
+            if name.chars().count() > 200 {
+                return Err(Error::InvalidInput("Playlist name cannot exceed 200 characters".to_string()));
             }
             playlist.name = name;
         }
@@ -392,9 +392,16 @@ mod tests {
 
     #[test]
     fn test_playlist_name_unicode_length() {
-        // Unicode characters may take multiple bytes
+        // Unicode characters may take multiple bytes but validation uses char count.
+        // "\u{4f60}\u{597d}" = "你好" (2 chars, 6 bytes per repetition)
         let name = "\u{4f60}\u{597d}".repeat(50);
-        assert!(name.len() > 200);
+        // 100 chars, 300 bytes: within the 200-character limit
+        assert_eq!(name.chars().count(), 100);
+        assert!(name.len() > 200); // byte count is larger
+
+        // 201 chars exceeds the limit
+        let name_too_long = "\u{4f60}".repeat(201);
+        assert_eq!(name_too_long.chars().count(), 201);
     }
 
     // ========== Playlist Model Tests ==========
@@ -404,7 +411,7 @@ mod tests {
         let playlist = Playlist {
             id: PlaylistId::new(),
             room_id: RoomId::new(),
-            creator_id: UserId::new(),
+            creator_id: Some(UserId::new()),
             name: String::new(),
             parent_id: None,
             position: 0,
@@ -425,7 +432,7 @@ mod tests {
         let playlist = Playlist {
             id: PlaylistId::new(),
             room_id: RoomId::new(),
-            creator_id: UserId::new(),
+            creator_id: Some(UserId::new()),
             name: "Not Root".to_string(),
             parent_id: None,
             position: 0,
@@ -444,7 +451,7 @@ mod tests {
         let playlist = Playlist {
             id: PlaylistId::new(),
             room_id: RoomId::new(),
-            creator_id: UserId::new(),
+            creator_id: Some(UserId::new()),
             name: String::new(),
             parent_id: Some(PlaylistId::new()),
             position: 0,
@@ -463,7 +470,7 @@ mod tests {
         let playlist = Playlist {
             id: PlaylistId::new(),
             room_id: RoomId::new(),
-            creator_id: UserId::new(),
+            creator_id: Some(UserId::new()),
             name: "Alist Folder".to_string(),
             parent_id: None,
             position: 0,
@@ -484,7 +491,7 @@ mod tests {
         let playlist = Playlist {
             id: PlaylistId::new(),
             room_id: RoomId::new(),
-            creator_id: UserId::new(),
+            creator_id: Some(UserId::new()),
             name: "Static Folder".to_string(),
             parent_id: None,
             position: 0,

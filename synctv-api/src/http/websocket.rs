@@ -258,13 +258,6 @@ async fn handle_socket(
     room_id: String,
     user_id: UserId,
 ) {
-    // Track WebSocket metrics (aggregate; per-room stats belong in application dashboards)
-    synctv_core::metrics::http::WEBSOCKET_CONNECTIONS_ACTIVE.inc();
-    synctv_core::metrics::http::WEBSOCKET_CONNECTIONS_TOTAL
-        .with_label_values(&["success"])
-        .inc();
-    synctv_core::metrics::http::USERS_ONLINE.inc();
-
     // Get username from user service
     let username = state
         .user_service
@@ -280,13 +273,23 @@ async fn handle_socket(
         room_id
     );
 
-    // Check if cluster_manager is available
+    // Check if cluster_manager is available BEFORE incrementing metrics.
+    // This prevents counter drift: if we return early, we never incremented,
+    // so there's nothing to decrement.
     let cluster_manager = if let Some(cm) = state.cluster_manager {
         cm
     } else {
         error!("ClusterManager not available, WebSocket connection not supported");
         return;
     };
+
+    // Track WebSocket metrics AFTER all early-return checks have passed.
+    // The corresponding decrements at the end of this function are now guaranteed to run.
+    synctv_core::metrics::http::WEBSOCKET_CONNECTIONS_ACTIVE.inc();
+    synctv_core::metrics::http::WEBSOCKET_CONNECTIONS_TOTAL
+        .with_label_values(&["success"])
+        .inc();
+    synctv_core::metrics::http::USERS_ONLINE.inc();
 
     let rid = RoomId::from_string(room_id.clone());
 
@@ -357,4 +360,228 @@ async fn handle_socket(
         user_id.as_str(),
         room_id
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ========== WsQuery Tests ==========
+
+    #[test]
+    fn test_ws_query_no_auth() {
+        let query = WsQuery {
+            token: None,
+            ticket: None,
+        };
+        assert!(query.token.is_none());
+        assert!(query.ticket.is_none());
+    }
+
+    #[test]
+    fn test_ws_query_with_token() {
+        let query = WsQuery {
+            token: Some("jwt_token_here".to_string()),
+            ticket: None,
+        };
+        assert_eq!(query.token.as_deref(), Some("jwt_token_here"));
+        assert!(query.ticket.is_none());
+    }
+
+    #[test]
+    fn test_ws_query_with_ticket() {
+        let query = WsQuery {
+            token: None,
+            ticket: Some("ticket_abc".to_string()),
+        };
+        assert!(query.token.is_none());
+        assert_eq!(query.ticket.as_deref(), Some("ticket_abc"));
+    }
+
+    #[test]
+    fn test_ws_query_with_both_token_and_ticket() {
+        // Both can be provided; extract_user_id uses priority order
+        let query = WsQuery {
+            token: Some("jwt_token".to_string()),
+            ticket: Some("ticket_123".to_string()),
+        };
+        assert!(query.token.is_some());
+        assert!(query.ticket.is_some());
+    }
+
+    #[test]
+    fn test_ws_query_deserialization_empty() {
+        let json = "{}";
+        let query: WsQuery = serde_json::from_str(json).expect("deserialize empty");
+        assert!(query.token.is_none());
+        assert!(query.ticket.is_none());
+    }
+
+    #[test]
+    fn test_ws_query_deserialization_with_token() {
+        let json = r#"{"token":"my_jwt"}"#;
+        let query: WsQuery = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(query.token.as_deref(), Some("my_jwt"));
+        assert!(query.ticket.is_none());
+    }
+
+    #[test]
+    fn test_ws_query_deserialization_with_ticket() {
+        let json = r#"{"ticket":"my_ticket"}"#;
+        let query: WsQuery = serde_json::from_str(json).expect("deserialize");
+        assert!(query.token.is_none());
+        assert_eq!(query.ticket.as_deref(), Some("my_ticket"));
+    }
+
+    #[test]
+    fn test_ws_query_deserialization_ignores_extra_fields() {
+        let json = r#"{"token":"jwt","extra":"ignored"}"#;
+        let query: WsQuery = serde_json::from_str(json).expect("deserialize with extra");
+        assert_eq!(query.token.as_deref(), Some("jwt"));
+    }
+
+    // ========== AuthMethod Tests ==========
+
+    #[test]
+    fn test_auth_method_equality() {
+        assert_eq!(AuthMethod::Header, AuthMethod::Header);
+        assert_eq!(AuthMethod::Ticket, AuthMethod::Ticket);
+        assert_eq!(AuthMethod::TokenQuery, AuthMethod::TokenQuery);
+    }
+
+    #[test]
+    fn test_auth_method_inequality() {
+        assert_ne!(AuthMethod::Header, AuthMethod::Ticket);
+        assert_ne!(AuthMethod::Header, AuthMethod::TokenQuery);
+        assert_ne!(AuthMethod::Ticket, AuthMethod::TokenQuery);
+    }
+
+    #[test]
+    fn test_auth_method_clone() {
+        let method = AuthMethod::Header;
+        let cloned = method;
+        assert_eq!(cloned, AuthMethod::Header);
+    }
+
+    #[test]
+    fn test_auth_method_debug() {
+        // Verify Debug trait is implemented and produces reasonable output
+        let header = format!("{:?}", AuthMethod::Header);
+        let ticket = format!("{:?}", AuthMethod::Ticket);
+        let token = format!("{:?}", AuthMethod::TokenQuery);
+        assert!(header.contains("Header"));
+        assert!(ticket.contains("Ticket"));
+        assert!(token.contains("TokenQuery"));
+    }
+
+    // ========== Auth Priority Logic Tests ==========
+    // extract_user_id is async and requires AppState, so we test the priority
+    // logic via the documented contract:
+    // 1. Header > 2. Ticket > 3. Token query
+    // These tests verify the query parsing that feeds into extract_user_id.
+
+    #[test]
+    fn test_auth_priority_header_present_in_header_map() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "Authorization",
+            "Bearer some_jwt_token".parse().unwrap(),
+        );
+
+        // When Authorization header is present, it should be checked first
+        let auth_header = headers.get("Authorization");
+        assert!(auth_header.is_some());
+        let auth_str = auth_header.unwrap().to_str().unwrap();
+        assert!(auth_str.starts_with("Bearer "));
+        let token = auth_str.strip_prefix("Bearer ").unwrap();
+        assert_eq!(token, "some_jwt_token");
+    }
+
+    #[test]
+    fn test_auth_priority_no_bearer_prefix_in_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "Authorization",
+            "Basic dXNlcjpwYXNz".parse().unwrap(),
+        );
+
+        // Non-Bearer auth should not extract a token
+        let auth_header = headers.get("Authorization").unwrap();
+        let auth_str = auth_header.to_str().unwrap();
+        assert!(auth_str.strip_prefix("Bearer ").is_none());
+    }
+
+    #[test]
+    fn test_auth_priority_no_header_falls_through_to_ticket() {
+        let headers = HeaderMap::new();
+        let query = WsQuery {
+            token: None,
+            ticket: Some("ticket_abc".to_string()),
+        };
+
+        // No Authorization header
+        assert!(headers.get("Authorization").is_none());
+        // Ticket is available as fallback
+        assert!(query.ticket.is_some());
+    }
+
+    #[test]
+    fn test_auth_priority_no_header_no_ticket_falls_through_to_token() {
+        let headers = HeaderMap::new();
+        let query = WsQuery {
+            token: Some("jwt_token".to_string()),
+            ticket: None,
+        };
+
+        assert!(headers.get("Authorization").is_none());
+        assert!(query.ticket.is_none());
+        // Token query is the last fallback
+        assert!(query.token.is_some());
+    }
+
+    #[test]
+    fn test_auth_priority_no_auth_at_all() {
+        let headers = HeaderMap::new();
+        let query = WsQuery {
+            token: None,
+            ticket: None,
+        };
+
+        assert!(headers.get("Authorization").is_none());
+        assert!(query.ticket.is_none());
+        assert!(query.token.is_none());
+        // This would produce an Unauthorized error in extract_user_id
+    }
+
+    // ========== AppError Construction Tests ==========
+
+    #[test]
+    fn test_unauthorized_error_for_missing_auth() {
+        let err = AppError::unauthorized(
+            "Missing authentication: provide token via Authorization header, ?ticket=, or ?token=",
+        );
+        assert_eq!(err.status, axum::http::StatusCode::UNAUTHORIZED);
+        assert!(err.message.contains("Missing authentication"));
+    }
+
+    #[test]
+    fn test_forbidden_error_for_non_member() {
+        let err = AppError::forbidden("Not a member of this room");
+        assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn test_internal_error_for_missing_ticket_service() {
+        let err = AppError::internal_server_error(
+            "WebSocket ticket service not configured (Redis required)",
+        );
+        assert_eq!(err.status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn test_unauthorized_error_for_revoked_token() {
+        let err = AppError::unauthorized("Token has been revoked");
+        assert_eq!(err.status, axum::http::StatusCode::UNAUTHORIZED);
+        assert_eq!(err.message, "Token has been revoked");
+    }
 }

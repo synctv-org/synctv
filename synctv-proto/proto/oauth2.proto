@@ -180,8 +180,9 @@ message LinkedProvider {
     // Username from the OAuth2 provider
     string provider_username = 2;
 
-    // When the provider was linked
-    string linked_at = 3;
+    // When the provider was linked (Unix timestamp, seconds)
+    // NOTE: Changed from string to int64 for consistency with all other timestamp fields.
+    int64 linked_at = 3;
 }
 
 // ==================== User Info ====================
@@ -205,6 +206,7 @@ message OAuth2UserInfo {
     // Account status
     synctv.common.UserStatus status = 6;
 
-    // When the account was created
-    string created_at = 7;
+    // When the account was created (Unix timestamp, seconds)
+    // NOTE: Changed from string to int64 for consistency with all other timestamp fields.
+    int64 created_at = 7;
 }

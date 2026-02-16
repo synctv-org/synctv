@@ -5,6 +5,7 @@
 pub struct LoginRequest {
     #[prost(string, tag = "1")]
     pub host: ::prost::alloc::string::String,
+    /// SECURITY: Plaintext credential - requires TLS in transit, do not log
     #[prost(string, tag = "2")]
     pub api_key: ::prost::alloc::string::String,
     /// Optional provider instance name

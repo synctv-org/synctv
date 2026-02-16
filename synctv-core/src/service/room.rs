@@ -290,7 +290,7 @@ impl RoomService {
         let root_playlist = Playlist {
             id: PlaylistId::new(),
             room_id: created_room.id.clone(),
-            creator_id: created_by.clone(),
+            creator_id: Some(created_by.clone()),
             name: String::new(),
             parent_id: None,
             position: 0,

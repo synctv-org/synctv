@@ -764,7 +764,7 @@ pub async fn list_playlists(
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> AppResult<Json<ListPlaylistsResponse>> {
     let parent_id = params.get("parent_id").cloned().unwrap_or_default();
-    let req = crate::proto::client::ListPlaylistsRequest { parent_id };
+    let req = crate::proto::client::ListPlaylistsRequest { parent_id, page: 0, page_size: 0 };
     let response = state
         .client_api
         .list_playlists(&auth.user_id.to_string(), &room_id, req)

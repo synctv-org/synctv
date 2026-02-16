@@ -127,3 +127,199 @@ pub fn github_factory(config: &serde_json::Value) -> Result<Box<dyn Provider>, E
         config.redirect_url,
     )?))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ==================== Provider Creation ====================
+
+    #[test]
+    fn test_create_provider_valid_config() {
+        let provider = GitHubProvider::create(
+            "my_client_id".to_string(),
+            "my_secret".to_string(),
+            "https://example.com/callback".to_string(),
+        );
+        assert!(provider.is_ok());
+    }
+
+    #[test]
+    fn test_create_provider_invalid_redirect_url() {
+        let result = GitHubProvider::create(
+            "my_client_id".to_string(),
+            "my_secret".to_string(),
+            "not a valid url".to_string(),
+        );
+        assert!(result.is_err());
+        match result {
+            Err(Error::InvalidInput(msg)) => assert!(msg.contains("redirect URL")),
+            Ok(_) => panic!("Expected error but got Ok"),
+            Err(e) => panic!("Expected InvalidInput error, got: {e}"),
+        }
+    }
+
+    #[test]
+    fn test_create_provider_empty_redirect_url() {
+        let result = GitHubProvider::create(
+            "id".to_string(),
+            "secret".to_string(),
+            String::new(),
+        );
+        assert!(result.is_err());
+        assert!(matches!(result.err(), Some(Error::InvalidInput(_))));
+    }
+
+    // ==================== Provider Type ====================
+
+    #[test]
+    fn test_provider_type() {
+        let provider = GitHubProvider::create(
+            "id".to_string(),
+            "secret".to_string(),
+            "https://example.com/cb".to_string(),
+        )
+        .unwrap();
+        assert_eq!(provider.provider_type(), "github");
+    }
+
+    // ==================== Auth URL Generation ====================
+
+    #[tokio::test]
+    async fn test_new_auth_url_contains_required_params() {
+        let provider = GitHubProvider::create(
+            "test_client_id".to_string(),
+            "test_secret".to_string(),
+            "https://example.com/callback".to_string(),
+        )
+        .unwrap();
+
+        let state = "random_state_value";
+        let (auth_url, pkce_verifier) = provider.new_auth_url(state).await.unwrap();
+
+        // Auth URL should contain the GitHub authorize endpoint
+        assert!(auth_url.starts_with("https://github.com/login/oauth/authorize"));
+        // Auth URL should contain client_id
+        assert!(auth_url.contains("client_id=test_client_id"));
+        // Auth URL should contain state
+        assert!(auth_url.contains(&format!("state={state}")));
+        // Auth URL should contain redirect_uri (URL-encoded)
+        assert!(auth_url.contains("redirect_uri="));
+        // Auth URL should contain PKCE code_challenge
+        assert!(auth_url.contains("code_challenge="));
+        assert!(auth_url.contains("code_challenge_method=S256"));
+        // PKCE verifier should be non-empty
+        assert!(!pkce_verifier.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_new_auth_url_different_states_produce_different_urls() {
+        let provider = GitHubProvider::create(
+            "id".to_string(),
+            "secret".to_string(),
+            "https://example.com/cb".to_string(),
+        )
+        .unwrap();
+
+        let (url1, verifier1) = provider.new_auth_url("state1").await.unwrap();
+        let (url2, verifier2) = provider.new_auth_url("state2").await.unwrap();
+
+        // Different states should produce different URLs
+        assert_ne!(url1, url2);
+        // Each call generates a new random PKCE verifier
+        assert_ne!(verifier1, verifier2);
+    }
+
+    // ==================== Factory Function ====================
+
+    #[test]
+    fn test_factory_valid_config() {
+        let config = serde_json::json!({
+            "client_id": "gh_id",
+            "client_secret": "gh_secret",
+            "redirect_url": "https://example.com/oauth/github/callback"
+        });
+        let provider = github_factory(&config);
+        assert!(provider.is_ok());
+        assert_eq!(provider.unwrap().provider_type(), "github");
+    }
+
+    #[test]
+    fn test_factory_missing_client_id() {
+        let config = serde_json::json!({
+            "client_secret": "secret",
+            "redirect_url": "https://example.com/cb"
+        });
+        let result = github_factory(&config);
+        assert!(result.is_err());
+        assert!(matches!(result.err(), Some(Error::InvalidInput(_))));
+    }
+
+    #[test]
+    fn test_factory_missing_client_secret() {
+        let config = serde_json::json!({
+            "client_id": "id",
+            "redirect_url": "https://example.com/cb"
+        });
+        let result = github_factory(&config);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_factory_missing_redirect_url() {
+        let config = serde_json::json!({
+            "client_id": "id",
+            "client_secret": "secret"
+        });
+        let result = github_factory(&config);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_factory_empty_json() {
+        let config = serde_json::json!({});
+        let result = github_factory(&config);
+        assert!(result.is_err());
+        assert!(matches!(result.err(), Some(Error::InvalidInput(_))));
+    }
+
+    #[test]
+    fn test_factory_invalid_redirect_url() {
+        let config = serde_json::json!({
+            "client_id": "id",
+            "client_secret": "secret",
+            "redirect_url": "://invalid"
+        });
+        let result = github_factory(&config);
+        assert!(result.is_err());
+    }
+
+    // ==================== Config Deserialization ====================
+
+    #[test]
+    fn test_github_config_deserialize() {
+        let json = serde_json::json!({
+            "client_id": "abc123",
+            "client_secret": "def456",
+            "redirect_url": "https://example.com/cb"
+        });
+        let config: GitHubConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(config.client_id, "abc123");
+        assert_eq!(config.client_secret, "def456");
+        assert_eq!(config.redirect_url, "https://example.com/cb");
+    }
+
+    #[test]
+    fn test_github_config_serialize_roundtrip() {
+        let config = GitHubConfig {
+            client_id: "id".to_string(),
+            client_secret: "secret".to_string(),
+            redirect_url: "https://example.com/cb".to_string(),
+        };
+        let json = serde_json::to_value(&config).unwrap();
+        let deserialized: GitHubConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(deserialized.client_id, config.client_id);
+        assert_eq!(deserialized.client_secret, config.client_secret);
+        assert_eq!(deserialized.redirect_url, config.redirect_url);
+    }
+}

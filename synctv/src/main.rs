@@ -425,8 +425,32 @@ async fn main() -> Result<()> {
     let _audit_task = audit_manager.start_auto_management(24, partition_cancel.clone());
     info!("Audit log partition management started");
 
+    // 4.7. Initialize CacheInvalidationService early (before init_services)
+    // This is the single source of truth for cache invalidation across the entire
+    // application. It uses the cluster node_id so invalidation messages are
+    // correctly attributed to this replica.
+    let redis_client_for_cache = if config.redis.url.is_empty() {
+        None
+    } else {
+        redis::Client::open(config.redis.url.clone()).ok()
+    };
+    let key_builder = synctv_core::cache::KeyBuilder::from_config(&config);
+    let cache_invalidation_service = Arc::new(
+        synctv_core::cache::CacheInvalidationService::new(
+            redis_client_for_cache,
+            node_id.clone(),
+            key_builder.cache_invalidation_stream(),
+        ),
+    );
+
     // 5. Initialize services (needed for settings_registry)
-    let mut synctv_services = init_services(pool.clone(), &config).await?;
+    let mut synctv_services = init_services(pool.clone(), &config, cache_invalidation_service.clone()).await?;
+
+    // Start the cache invalidation Redis subscriber (exactly once, after all
+    // components have registered their invalidation callbacks via init_services).
+    if let Err(e) = cache_invalidation_service.start().await {
+        warn!("Failed to start cache invalidation listener: {}", e);
+    }
 
     // 4.6. Initialize chat message partitions with dynamic granularity
     info!("Initializing chat message partitions...");
@@ -481,24 +505,6 @@ async fn main() -> Result<()> {
         max_total = config.connection_limits.max_total,
         "Connection manager initialized with configurable limits"
     );
-
-    // 7. Initialize CacheInvalidationService early so ClusterManager can use it
-    let redis_client_for_cache = if config.redis.url.is_empty() {
-        None
-    } else {
-        redis::Client::open(config.redis.url.clone()).ok()
-    };
-    let key_builder = synctv_core::cache::KeyBuilder::from_config(&config);
-    let cache_invalidation_service = Arc::new(
-        synctv_core::cache::CacheInvalidationService::new(
-            redis_client_for_cache,
-            node_id.clone(),
-            key_builder.cache_invalidation_stream(),
-        ),
-    );
-    if let Err(e) = cache_invalidation_service.start().await {
-        warn!("Failed to start cache invalidation listener: {}", e);
-    }
 
     // Initialize ClusterManager (unified cluster management)
     // Extract permission service for cross-replica cache invalidation
@@ -558,16 +564,6 @@ async fn main() -> Result<()> {
             cluster_manager: cm.clone(),
         }));
         info!("PlaybackService wired with cluster broadcaster");
-    }
-
-    // Wire CacheInvalidationService into PlaybackService and RoomService.
-    // Must run before any code clones synctv_services.room_service.
-    {
-        let room_svc = Arc::get_mut(&mut synctv_services.room_service)
-            .ok_or_else(|| anyhow::anyhow!("BUG: room_service Arc has multiple owners during initialization"))?;
-        room_svc.set_playback_cache_invalidation(cache_invalidation_service.clone());
-        room_svc.set_cache_invalidation(cache_invalidation_service.clone());
-        info!("CacheInvalidationService wired into PlaybackService and RoomService");
     }
 
     // 7.5. Initialize cluster discovery infrastructure

@@ -145,7 +145,7 @@ impl MediaService {
         let media = Media::from_provider(
             request.playlist_id.clone(),
             room_id.clone(),
-            user_id.clone(),
+            Some(user_id.clone()),
             request.name.clone(),
             request.source_config.clone(),
             provider.name(),  // Provider type name (e.g., "bilibili")
@@ -245,7 +245,7 @@ impl MediaService {
             let media = Media::from_provider(
                 item.playlist_id,
                 room_id.clone(),
-                user_id.clone(),
+                Some(user_id.clone()),
                 item.name,
                 item.source_config,
                 provider.name(),  // Provider type name
@@ -290,7 +290,7 @@ impl MediaService {
         }
 
         // Check permission: EDIT_MOVIE_SELF if user owns the media, EDIT_MOVIE_ANY otherwise
-        let required_permission = if media.creator_id == user_id {
+        let required_permission = if media.creator_id.as_ref() == Some(&user_id) {
             PermissionBits::EDIT_MOVIE_SELF
         } else {
             PermissionBits::EDIT_MOVIE_ANY
@@ -338,7 +338,7 @@ impl MediaService {
         }
 
         // Check permission: DELETE_MOVIE_SELF if user owns the media, DELETE_MOVIE_ANY otherwise
-        let required_permission = if media.creator_id == user_id {
+        let required_permission = if media.creator_id.as_ref() == Some(&user_id) {
             PermissionBits::DELETE_MOVIE_SELF
         } else {
             PermissionBits::DELETE_MOVIE_ANY
@@ -451,7 +451,7 @@ impl MediaService {
             if media.room_id != room_id {
                 return Err(Error::Authorization("Media does not belong to this room".to_string()));
             }
-            if media.creator_id != user_id {
+            if media.creator_id.as_ref() != Some(&user_id) {
                 all_owned_by_user = false;
             }
         }

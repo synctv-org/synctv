@@ -9,6 +9,7 @@
 use crate::{
     relay::registry_trait::StreamRegistryTrait,
     error::StreamResult,
+    grpc::GrpcConnectionPool,
     livestream::pull_stream::PullStream,
     livestream::managed_stream::{ManagedStream, StreamPool},
 };
@@ -46,6 +47,9 @@ pub struct PullStreamManager {
     stream_hub_event_sender: StreamHubEventSender,
     /// gRPC port used when extracting address from node_id (fallback)
     grpc_port: u16,
+    /// Shared gRPC connection pool for reusing HTTP/2 channels to publisher nodes.
+    /// Shared across all `PullStream`/`GrpcStreamPuller` instances managed by this manager.
+    connection_pool: GrpcConnectionPool,
 }
 
 impl PullStreamManager {
@@ -90,6 +94,7 @@ impl PullStreamManager {
             local_node_id,
             stream_hub_event_sender,
             grpc_port: DEFAULT_GRPC_PORT,
+            connection_pool: GrpcConnectionPool::with_defaults(),
         }
     }
 
@@ -166,7 +171,7 @@ impl PullStreamManager {
         };
 
         let pull_stream = Arc::new(
-            PullStream::new(
+            PullStream::with_pool(
                 room_id.to_string(),
                 media_id.to_string(),
                 publisher_address,
@@ -174,6 +179,7 @@ impl PullStreamManager {
                 Arc::clone(&self.registry),
                 self.stream_hub_event_sender.clone(),
                 epoch,
+                self.connection_pool.clone(),
             )
         );
 

@@ -134,6 +134,7 @@ pub struct DatabaseConfig {
     pub min_connections: u32,
     pub connect_timeout_seconds: u64,
     pub idle_timeout_seconds: u64,
+    pub max_lifetime_seconds: u64,
 }
 
 impl std::fmt::Debug for DatabaseConfig {
@@ -161,6 +162,7 @@ impl std::fmt::Debug for DatabaseConfig {
             .field("min_connections", &self.min_connections)
             .field("connect_timeout_seconds", &self.connect_timeout_seconds)
             .field("idle_timeout_seconds", &self.idle_timeout_seconds)
+            .field("max_lifetime_seconds", &self.max_lifetime_seconds)
             .finish()
     }
 }
@@ -173,6 +175,7 @@ impl Default for DatabaseConfig {
             min_connections: 5,
             connect_timeout_seconds: 10,
             idle_timeout_seconds: 600,
+            max_lifetime_seconds: 1800, // 30 minutes
         }
     }
 }

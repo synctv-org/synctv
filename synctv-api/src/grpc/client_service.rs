@@ -1097,3 +1097,127 @@ impl EmailService for ClientServiceImpl {
         }))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ==================== Error Mapping ====================
+
+    #[test]
+    fn test_impls_err_to_status_not_found() {
+        let err = crate::impls::ApiError::NotFound("room not found".to_string());
+        let status = impls_err_to_status(err);
+        assert_eq!(status.code(), tonic::Code::NotFound);
+        assert!(status.message().contains("not found"));
+    }
+
+    #[test]
+    fn test_impls_err_to_status_unauthenticated() {
+        let err = crate::impls::ApiError::Authentication("invalid token".to_string());
+        let status = impls_err_to_status(err);
+        assert_eq!(status.code(), tonic::Code::Unauthenticated);
+    }
+
+    #[test]
+    fn test_impls_err_to_status_permission_denied() {
+        let err = crate::impls::ApiError::Authorization("forbidden".to_string());
+        let status = impls_err_to_status(err);
+        assert_eq!(status.code(), tonic::Code::PermissionDenied);
+    }
+
+    #[test]
+    fn test_impls_err_to_status_already_exists() {
+        let err = crate::impls::ApiError::AlreadyExists("user exists".to_string());
+        let status = impls_err_to_status(err);
+        assert_eq!(status.code(), tonic::Code::AlreadyExists);
+    }
+
+    #[test]
+    fn test_impls_err_to_status_invalid_argument() {
+        let err = crate::impls::ApiError::InvalidInput("bad input".to_string());
+        let status = impls_err_to_status(err);
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[test]
+    fn test_impls_err_to_status_internal_hides_details() {
+        let err = crate::impls::ApiError::Internal("secret DB password=abc123".to_string());
+        let status = impls_err_to_status(err);
+        assert_eq!(status.code(), tonic::Code::Internal);
+        // Internal errors should NOT leak implementation details
+        assert_eq!(status.message(), "Internal error");
+        assert!(!status.message().contains("password"));
+        assert!(!status.message().contains("secret"));
+    }
+
+    #[test]
+    fn test_impls_err_to_status_all_variants() {
+        let variants: Vec<(crate::impls::ApiError, tonic::Code)> = vec![
+            (crate::impls::ApiError::NotFound("x".into()), tonic::Code::NotFound),
+            (crate::impls::ApiError::Authentication("x".into()), tonic::Code::Unauthenticated),
+            (crate::impls::ApiError::Authorization("x".into()), tonic::Code::PermissionDenied),
+            (crate::impls::ApiError::AlreadyExists("x".into()), tonic::Code::AlreadyExists),
+            (crate::impls::ApiError::InvalidInput("x".into()), tonic::Code::InvalidArgument),
+            (crate::impls::ApiError::Internal("x".into()), tonic::Code::Internal),
+        ];
+        for (err, expected_code) in variants {
+            let status = impls_err_to_status(err);
+            assert_eq!(status.code(), expected_code);
+        }
+    }
+
+    // ==================== GrpcMessageSender ====================
+
+    #[test]
+    fn test_grpc_message_sender_send_success() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<ServerMessage>(10);
+        let sender = GrpcMessageSender::new(tx);
+
+        let msg = ServerMessage::default();
+        let result = MessageSender::send(&sender, msg);
+        assert!(result.is_ok());
+
+        // Verify message was received
+        let received = rx.try_recv();
+        assert!(received.is_ok());
+    }
+
+    #[test]
+    fn test_grpc_message_sender_channel_closed() {
+        let (tx, rx) = tokio::sync::mpsc::channel::<ServerMessage>(10);
+        let sender = GrpcMessageSender::new(tx);
+        drop(rx); // Close receiver
+
+        let msg = ServerMessage::default();
+        let result = MessageSender::send(&sender, msg);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("disconnected"));
+    }
+
+    #[test]
+    fn test_grpc_message_sender_channel_full() {
+        // Create a channel with capacity 1
+        let (tx, _rx) = tokio::sync::mpsc::channel::<ServerMessage>(1);
+        let sender = GrpcMessageSender::new(tx);
+
+        // Fill the channel
+        let msg1 = ServerMessage::default();
+        assert!(MessageSender::send(&sender, msg1).is_ok());
+
+        // Second send should fail (channel full)
+        let msg2 = ServerMessage::default();
+        let result = MessageSender::send(&sender, msg2);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("full"));
+    }
+
+    // ==================== Constants ====================
+
+    #[test]
+    fn test_message_stream_buffer_size_reasonable() {
+        // Buffer should be at least 10 and at most 1000
+        assert!(MESSAGE_STREAM_BUFFER_SIZE >= 10);
+        assert!(MESSAGE_STREAM_BUFFER_SIZE <= 1000);
+    }
+}

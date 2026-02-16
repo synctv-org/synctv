@@ -1,8 +1,12 @@
 //! Emby/Jellyfin HTTP Client
 
+use std::num::NonZeroU32;
 use std::sync::LazyLock;
 use std::time::Duration;
 
+use governor::{Quota, RateLimiter};
+use governor::clock::DefaultClock;
+use governor::state::{InMemoryState, NotKeyed};
 use reqwest::{Client, header::{HeaderMap, HeaderValue, CONTENT_TYPE}};
 use serde_json::{json, Value};
 
@@ -10,9 +14,38 @@ use super::error::{EmbyError, check_response, json_with_limit};
 use super::types::{AuthResponse, Item, UserInfo, ItemsResponse, SystemInfo, FsListResponse, PathInfo, PlaybackInfoResponse, default_device_profile};
 use crate::error::with_retry;
 
+/// Default Emby API rate limit: 5 requests per second.
+const DEFAULT_RATE_LIMIT_PER_SECOND: u32 = 5;
+
+type EmbyRateLimiter = RateLimiter<NotKeyed, InMemoryState, DefaultClock>;
+
+/// Shared rate limiter for all Emby requests.
+/// Global so the token bucket is not reset when a new `EmbyClient` is created per-request.
+static SHARED_RATE_LIMITER: LazyLock<std::sync::Arc<EmbyRateLimiter>> = LazyLock::new(|| {
+    let quota = Quota::per_second(
+        NonZeroU32::new(DEFAULT_RATE_LIMIT_PER_SECOND).expect("rate limit must be > 0"),
+    );
+    std::sync::Arc::new(RateLimiter::direct(quota))
+});
+
 /// URL-encode a string for safe use in query parameters
 fn url_encode(s: &str) -> String {
     url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
+}
+
+/// Validate that an item ID does not contain path traversal or injection characters.
+/// Emby/Jellyfin item IDs are typically numeric or alphanumeric UUIDs.
+/// Rejects IDs containing `..`, `/`, `\`, or null bytes.
+fn validate_item_id(id: &str) -> Result<(), EmbyError> {
+    if id.is_empty() {
+        return Err(EmbyError::InvalidConfig("Item ID must not be empty".to_string()));
+    }
+    if id.contains("..") || id.contains('/') || id.contains('\\') || id.contains('\0') {
+        return Err(EmbyError::InvalidConfig(
+            "Item ID contains invalid characters (path traversal not allowed)".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// Shared HTTP client for all Emby requests (connection pooling)
@@ -36,10 +69,11 @@ pub struct EmbyClient {
     user_id: Option<String>,
     client: Client,
     api_prefix: Option<String>,
+    rate_limiter: std::sync::Arc<EmbyRateLimiter>,
 }
 
 impl EmbyClient {
-    /// Create a new Emby client (reuses shared connection pool)
+    /// Create a new Emby client (reuses shared connection pool and rate limiter)
     pub fn new(host: impl Into<String>) -> Result<Self, EmbyError> {
         Ok(Self {
             host: host.into(),
@@ -47,10 +81,11 @@ impl EmbyClient {
             user_id: None,
             client: SHARED_CLIENT.clone(),
             api_prefix: None,
+            rate_limiter: SHARED_RATE_LIMITER.clone(),
         })
     }
 
-    /// Create a new Emby client with credentials (reuses shared connection pool)
+    /// Create a new Emby client with credentials (reuses shared connection pool and rate limiter)
     pub fn with_credentials(
         host: impl Into<String>,
         token: impl Into<String>,
@@ -62,7 +97,14 @@ impl EmbyClient {
             user_id: Some(user_id.into()),
             client: SHARED_CLIENT.clone(),
             api_prefix: None,
+            rate_limiter: SHARED_RATE_LIMITER.clone(),
         })
+    }
+
+    /// Wait for the rate limiter before making an API call.
+    /// This prevents concurrent users from overwhelming the upstream Emby server.
+    async fn wait_for_rate_limit(&self) {
+        self.rate_limiter.until_ready().await;
     }
 
     /// Set a custom API prefix (e.g., "/emby" or "/jellyfin").
@@ -79,12 +121,18 @@ impl EmbyClient {
 
     /// Get API prefix (/emby or /jellyfin).
     /// Uses the explicitly set prefix if available, otherwise auto-detects
-    /// based on whether the host URL contains "jellyfin".
+    /// based on whether the host URL's hostname contains "jellyfin".
     fn get_api_prefix(&self) -> &str {
         if let Some(ref prefix) = self.api_prefix {
             return prefix;
         }
-        if self.host.contains("jellyfin") {
+        // Parse the host URL and check only the hostname component to avoid
+        // false matches from "jellyfin" appearing in paths or query strings.
+        let is_jellyfin = url::Url::parse(&self.host)
+            .ok()
+            .and_then(|u| u.host_str().map(String::from))
+            .is_some_and(|host| host.contains("jellyfin"));
+        if is_jellyfin {
             "/jellyfin"
         } else {
             "/emby"
@@ -105,6 +153,7 @@ impl EmbyClient {
 
     /// Login to Emby/Jellyfin server
     pub async fn login(&mut self, username: &str, password: &str) -> Result<(String, String), EmbyError> {
+        self.wait_for_rate_limit().await;
         let prefix = self.get_api_prefix();
         let url = format!("{}{}/Users/authenticatebyname", self.host, prefix);
 
@@ -135,6 +184,8 @@ impl EmbyClient {
 
     /// Get item information
     pub async fn get_item(&self, item_id: &str) -> Result<Item, EmbyError> {
+        validate_item_id(item_id)?;
+        self.wait_for_rate_limit().await;
         let prefix = self.get_api_prefix();
         let url = format!("{}{}/Users/{}/Items?Ids={}",
             self.host,
@@ -173,6 +224,7 @@ impl EmbyClient {
 
     /// Get current user information
     pub async fn me(&self) -> Result<UserInfo, EmbyError> {
+        self.wait_for_rate_limit().await;
         let user_id = self
             .user_id
             .as_ref()
@@ -207,6 +259,10 @@ impl EmbyClient {
         parent_id: Option<&str>,
         search_term: Option<&str>,
     ) -> Result<ItemsResponse, EmbyError> {
+        if let Some(pid) = parent_id {
+            validate_item_id(pid)?;
+        }
+        self.wait_for_rate_limit().await;
         let user_id = self
             .user_id
             .as_ref()
@@ -249,6 +305,7 @@ impl EmbyClient {
 
     /// Get system information
     pub async fn get_system_info(&self) -> Result<SystemInfo, EmbyError> {
+        self.wait_for_rate_limit().await;
         let prefix = self.get_api_prefix();
         let url = format!("{}{}/System/Info", self.host, prefix);
         let headers = self.build_headers()?;
@@ -280,6 +337,10 @@ impl EmbyClient {
         limit: u64,
         search_term: Option<&str>,
     ) -> Result<FsListResponse, EmbyError> {
+        if let Some(p) = path {
+            validate_item_id(p)?;
+        }
+        self.wait_for_rate_limit().await;
         let user_id = self
             .user_id
             .as_ref()
@@ -357,6 +418,7 @@ impl EmbyClient {
 
     /// Logout
     pub async fn logout(&self) -> Result<(), EmbyError> {
+        self.wait_for_rate_limit().await;
         let prefix = self.get_api_prefix();
         let url = format!("{}{}/Sessions/Logout", self.host, prefix);
 
@@ -382,6 +444,8 @@ impl EmbyClient {
         subtitle_stream_index: Option<i32>,
         max_streaming_bitrate: Option<i64>,
     ) -> Result<PlaybackInfoResponse, EmbyError> {
+        validate_item_id(item_id)?;
+        self.wait_for_rate_limit().await;
         let user_id = self
             .user_id
             .as_ref()
@@ -433,6 +497,8 @@ impl EmbyClient {
 
     /// Delete active encodings
     pub async fn delete_active_encodings(&self, play_session_id: &str) -> Result<(), EmbyError> {
+        validate_item_id(play_session_id)?;
+        self.wait_for_rate_limit().await;
         let prefix = self.get_api_prefix();
         let url = format!(
             "{}{}/Videos/ActiveEncodings?PlaySessionId={}",
@@ -712,5 +778,47 @@ mod tests {
         assert!(proto.is_administrator);
         assert!(!proto.is_hidden);
         assert!(proto.enable_all_folders);
+    }
+
+    // === Item ID Validation Tests ===
+
+    #[test]
+    fn test_validate_item_id_normal() {
+        assert!(validate_item_id("12345").is_ok());
+        assert!(validate_item_id("abc-def-ghi").is_ok());
+        assert!(validate_item_id("a1b2c3d4e5f6").is_ok());
+    }
+
+    #[test]
+    fn test_validate_item_id_rejects_traversal() {
+        assert!(validate_item_id("../etc/passwd").is_err());
+        assert!(validate_item_id("..").is_err());
+        assert!(validate_item_id("foo/bar").is_err());
+        assert!(validate_item_id("foo\\bar").is_err());
+    }
+
+    #[test]
+    fn test_validate_item_id_rejects_empty() {
+        assert!(validate_item_id("").is_err());
+    }
+
+    #[test]
+    fn test_validate_item_id_rejects_null_bytes() {
+        assert!(validate_item_id("abc\0def").is_err());
+    }
+
+    // === API Prefix Detection Tests ===
+
+    #[test]
+    fn test_api_prefix_no_false_positive_on_path() {
+        // "jellyfin" in path should NOT trigger jellyfin prefix
+        let client = EmbyClient::new("https://media.example.com/jellyfin").unwrap();
+        assert_eq!(client.get_api_prefix(), "/emby");
+    }
+
+    #[test]
+    fn test_api_prefix_hostname_detection() {
+        let client = EmbyClient::new("https://jellyfin.home.local:8096").unwrap();
+        assert_eq!(client.get_api_prefix(), "/jellyfin");
     }
 }

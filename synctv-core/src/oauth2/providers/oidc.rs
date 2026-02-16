@@ -328,3 +328,364 @@ pub fn oidc_factory(config: &serde_json::Value) -> Result<Box<dyn Provider>, Err
 
     Ok(Box::new(provider))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ==================== Provider Creation (Issuer-Only / Discovery Mode) ====================
+
+    #[test]
+    fn test_create_provider_issuer_only() {
+        let provider = OidcProvider::create(
+            "oidc_client_id".to_string(),
+            "oidc_secret".to_string(),
+            "https://example.com/callback".to_string(),
+            "https://issuer.example.com",
+        );
+        assert!(provider.is_ok());
+    }
+
+    #[test]
+    fn test_create_provider_issuer_trailing_slash_trimmed() {
+        let provider = OidcProvider::create(
+            "id".to_string(),
+            "secret".to_string(),
+            "https://example.com/cb".to_string(),
+            "https://issuer.example.com/",
+        )
+        .unwrap();
+        assert_eq!(provider.init_config.issuer, "https://issuer.example.com");
+    }
+
+    // ==================== Provider Creation (Static Endpoints) ====================
+
+    #[test]
+    fn test_create_with_endpoints_all_specified() {
+        let provider = OidcProvider::create_with_endpoints(
+            "id".to_string(),
+            "secret".to_string(),
+            "https://example.com/cb".to_string(),
+            "https://issuer.example.com",
+            Some("https://issuer.example.com/authorize".to_string()),
+            Some("https://issuer.example.com/token".to_string()),
+            Some("https://issuer.example.com/userinfo".to_string()),
+        );
+        assert!(provider.is_ok());
+        let p = provider.unwrap();
+        let endpoints = p.init_config.static_endpoints.as_ref().unwrap();
+        assert_eq!(endpoints.auth_url, "https://issuer.example.com/authorize");
+        assert_eq!(endpoints.token_url, "https://issuer.example.com/token");
+        assert_eq!(
+            endpoints.userinfo_url.as_deref(),
+            Some("https://issuer.example.com/userinfo")
+        );
+    }
+
+    #[test]
+    fn test_create_with_endpoints_defaults_from_issuer() {
+        let provider = OidcProvider::create_with_endpoints(
+            "id".to_string(),
+            "secret".to_string(),
+            "https://example.com/cb".to_string(),
+            "https://issuer.example.com/",
+            None, // Should default to {issuer}/authorize
+            None, // Should default to {issuer}/token
+            None, // No userinfo
+        )
+        .unwrap();
+        let endpoints = provider.init_config.static_endpoints.as_ref().unwrap();
+        // Issuer trailing slash is trimmed, so defaults use trimmed version
+        assert_eq!(endpoints.auth_url, "https://issuer.example.com/authorize");
+        assert_eq!(endpoints.token_url, "https://issuer.example.com/token");
+        assert!(endpoints.userinfo_url.is_none());
+    }
+
+    // ==================== Provider Type ====================
+
+    #[test]
+    fn test_provider_type() {
+        let provider = OidcProvider::create(
+            "id".to_string(),
+            "secret".to_string(),
+            "https://example.com/cb".to_string(),
+            "https://issuer.example.com",
+        )
+        .unwrap();
+        assert_eq!(provider.provider_type(), "oidc");
+    }
+
+    // ==================== Auth URL Generation (Static Endpoints) ====================
+
+    #[tokio::test]
+    async fn test_new_auth_url_with_static_endpoints() {
+        let provider = OidcProvider::create_with_endpoints(
+            "oidc_test_id".to_string(),
+            "secret".to_string(),
+            "https://example.com/callback".to_string(),
+            "https://issuer.example.com",
+            Some("https://issuer.example.com/authorize".to_string()),
+            Some("https://issuer.example.com/token".to_string()),
+            Some("https://issuer.example.com/userinfo".to_string()),
+        )
+        .unwrap();
+
+        let state = "oidc_state_123";
+        let (auth_url, pkce_verifier) = provider.new_auth_url(state).await.unwrap();
+
+        // Auth URL should use the custom auth endpoint
+        assert!(auth_url.starts_with("https://issuer.example.com/authorize"));
+        // Should contain client_id
+        assert!(auth_url.contains("client_id=oidc_test_id"));
+        // Should contain state
+        assert!(auth_url.contains(&format!("state={state}")));
+        // Should contain redirect_uri
+        assert!(auth_url.contains("redirect_uri="));
+        // Should contain PKCE
+        assert!(auth_url.contains("code_challenge="));
+        assert!(auth_url.contains("code_challenge_method=S256"));
+        // PKCE verifier should be non-empty
+        assert!(!pkce_verifier.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_new_auth_url_different_states() {
+        let provider = OidcProvider::create_with_endpoints(
+            "id".to_string(),
+            "secret".to_string(),
+            "https://example.com/cb".to_string(),
+            "https://issuer.example.com",
+            Some("https://issuer.example.com/authorize".to_string()),
+            Some("https://issuer.example.com/token".to_string()),
+            None,
+        )
+        .unwrap();
+
+        let (url1, v1) = provider.new_auth_url("state_a").await.unwrap();
+        let (url2, v2) = provider.new_auth_url("state_b").await.unwrap();
+
+        assert_ne!(url1, url2);
+        assert_ne!(v1, v2);
+    }
+
+    // ==================== Factory Function ====================
+
+    #[test]
+    fn test_factory_with_issuer_only() {
+        let config = serde_json::json!({
+            "client_id": "oidc_id",
+            "client_secret": "oidc_secret",
+            "redirect_url": "https://example.com/oauth/oidc/callback",
+            "issuer": "https://issuer.example.com"
+        });
+        let provider = oidc_factory(&config);
+        assert!(provider.is_ok());
+        assert_eq!(provider.unwrap().provider_type(), "oidc");
+    }
+
+    #[test]
+    fn test_factory_with_custom_endpoints() {
+        let config = serde_json::json!({
+            "client_id": "oidc_id",
+            "client_secret": "oidc_secret",
+            "redirect_url": "https://example.com/cb",
+            "issuer": "https://issuer.example.com",
+            "auth_url": "https://issuer.example.com/custom/authorize",
+            "token_url": "https://issuer.example.com/custom/token",
+            "userinfo_url": "https://issuer.example.com/custom/userinfo"
+        });
+        let provider = oidc_factory(&config);
+        assert!(provider.is_ok());
+    }
+
+    #[test]
+    fn test_factory_with_partial_endpoints() {
+        // Providing only auth_url should trigger create_with_endpoints path
+        let config = serde_json::json!({
+            "client_id": "id",
+            "client_secret": "secret",
+            "redirect_url": "https://example.com/cb",
+            "issuer": "https://issuer.example.com",
+            "auth_url": "https://issuer.example.com/auth"
+        });
+        let provider = oidc_factory(&config);
+        assert!(provider.is_ok());
+    }
+
+    #[test]
+    fn test_factory_missing_fields() {
+        // Missing client_id
+        let config = serde_json::json!({
+            "client_secret": "secret",
+            "redirect_url": "https://example.com/cb",
+            "issuer": "https://issuer.example.com"
+        });
+        assert!(oidc_factory(&config).is_err());
+
+        // Missing client_secret
+        let config = serde_json::json!({
+            "client_id": "id",
+            "redirect_url": "https://example.com/cb",
+            "issuer": "https://issuer.example.com"
+        });
+        assert!(oidc_factory(&config).is_err());
+
+        // Missing redirect_url
+        let config = serde_json::json!({
+            "client_id": "id",
+            "client_secret": "secret",
+            "issuer": "https://issuer.example.com"
+        });
+        assert!(oidc_factory(&config).is_err());
+    }
+
+    #[test]
+    fn test_factory_empty_json() {
+        let config = serde_json::json!({});
+        let result = oidc_factory(&config);
+        assert!(result.is_err());
+        assert!(matches!(result.err(), Some(Error::InvalidInput(_))));
+    }
+
+    #[test]
+    fn test_factory_default_empty_issuer() {
+        // issuer defaults to "" via #[serde(default)]
+        let config = serde_json::json!({
+            "client_id": "id",
+            "client_secret": "secret",
+            "redirect_url": "https://example.com/cb"
+        });
+        // Should succeed in creation (issuer-only mode, discovery will fail at runtime)
+        let result = oidc_factory(&config);
+        assert!(result.is_ok());
+    }
+
+    // ==================== Config Deserialization ====================
+
+    #[test]
+    fn test_oidc_config_deserialize_full() {
+        let json = serde_json::json!({
+            "client_id": "oidc_abc",
+            "client_secret": "oidc_def",
+            "redirect_url": "https://example.com/cb",
+            "issuer": "https://issuer.example.com",
+            "auth_url": "https://issuer.example.com/auth",
+            "token_url": "https://issuer.example.com/token",
+            "userinfo_url": "https://issuer.example.com/userinfo"
+        });
+        let config: OidcConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(config.client_id, "oidc_abc");
+        assert_eq!(config.client_secret, "oidc_def");
+        assert_eq!(config.redirect_url, "https://example.com/cb");
+        assert_eq!(config.issuer, "https://issuer.example.com");
+        assert_eq!(
+            config.auth_url.as_deref(),
+            Some("https://issuer.example.com/auth")
+        );
+        assert_eq!(
+            config.token_url.as_deref(),
+            Some("https://issuer.example.com/token")
+        );
+        assert_eq!(
+            config.userinfo_url.as_deref(),
+            Some("https://issuer.example.com/userinfo")
+        );
+    }
+
+    #[test]
+    fn test_oidc_config_deserialize_minimal() {
+        let json = serde_json::json!({
+            "client_id": "id",
+            "client_secret": "secret",
+            "redirect_url": "https://example.com/cb"
+        });
+        let config: OidcConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(config.issuer, ""); // Default
+        assert!(config.auth_url.is_none());
+        assert!(config.token_url.is_none());
+        assert!(config.userinfo_url.is_none());
+    }
+
+    #[test]
+    fn test_oidc_config_serialize_skips_none_urls() {
+        let config = OidcConfig {
+            client_id: "id".to_string(),
+            client_secret: "secret".to_string(),
+            redirect_url: "https://example.com/cb".to_string(),
+            issuer: "https://issuer.example.com".to_string(),
+            auth_url: None,
+            token_url: None,
+            userinfo_url: None,
+        };
+        let json = serde_json::to_value(&config).unwrap();
+        // Optional fields with skip_serializing_if should not appear
+        assert!(json.get("auth_url").is_none());
+        assert!(json.get("token_url").is_none());
+        assert!(json.get("userinfo_url").is_none());
+    }
+
+    #[test]
+    fn test_oidc_config_roundtrip() {
+        let config = OidcConfig {
+            client_id: "id".to_string(),
+            client_secret: "secret".to_string(),
+            redirect_url: "https://example.com/cb".to_string(),
+            issuer: "https://issuer.example.com".to_string(),
+            auth_url: Some("https://issuer.example.com/auth".to_string()),
+            token_url: Some("https://issuer.example.com/token".to_string()),
+            userinfo_url: Some("https://issuer.example.com/userinfo".to_string()),
+        };
+        let json = serde_json::to_value(&config).unwrap();
+        let deserialized: OidcConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(deserialized.client_id, config.client_id);
+        assert_eq!(deserialized.issuer, config.issuer);
+        assert_eq!(deserialized.auth_url, config.auth_url);
+        assert_eq!(deserialized.token_url, config.token_url);
+        assert_eq!(deserialized.userinfo_url, config.userinfo_url);
+    }
+
+    // ==================== Lazy Resolution ====================
+
+    #[tokio::test]
+    async fn test_get_resolved_static_endpoints_succeeds() {
+        // With static endpoints, get_resolved should succeed without network
+        let provider = OidcProvider::create_with_endpoints(
+            "id".to_string(),
+            "secret".to_string(),
+            "https://example.com/cb".to_string(),
+            "https://issuer.example.com",
+            Some("https://issuer.example.com/authorize".to_string()),
+            Some("https://issuer.example.com/token".to_string()),
+            Some("https://issuer.example.com/userinfo".to_string()),
+        )
+        .unwrap();
+
+        let resolved = provider.get_resolved().await;
+        assert!(resolved.is_ok());
+        let r = resolved.unwrap();
+        assert_eq!(
+            r.userinfo_url.as_deref(),
+            Some("https://issuer.example.com/userinfo")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_resolved_caches_result() {
+        // Calling get_resolved twice with static endpoints should return the same ref
+        let provider = OidcProvider::create_with_endpoints(
+            "id".to_string(),
+            "secret".to_string(),
+            "https://example.com/cb".to_string(),
+            "https://issuer.example.com",
+            Some("https://issuer.example.com/authorize".to_string()),
+            Some("https://issuer.example.com/token".to_string()),
+            None,
+        )
+        .unwrap();
+
+        let r1 = provider.get_resolved().await.unwrap();
+        let r2 = provider.get_resolved().await.unwrap();
+        // Same pointer (OnceCell caches the result)
+        assert!(std::ptr::eq(r1, r2));
+    }
+}

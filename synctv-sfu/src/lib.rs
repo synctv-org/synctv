@@ -1,40 +1,35 @@
 //! `SyncTV` SFU (Selective Forwarding Unit)
 //!
-//! This module implements a WebRTC SFU for handling large rooms (10+ participants).
-//! The SFU receives media streams from all participants and selectively forwards
-//! them to other participants, reducing client-side bandwidth requirements.
+//! # Experimental -- Infrastructure Only
+//!
+//! **This crate is not production-ready.** The forwarding plane (RTP packet
+//! routing, simulcast, bandwidth estimation) is implemented, but the control
+//! plane (peer connection management, SDP signaling, ICE, subscriber output
+//! path) is missing. See `synctv-sfu/README.md` for a detailed status report.
 //!
 //! ## Architecture
 //!
-//! - **`SfuRoom`**: Manages a single room with multiple peers
-//! - **`SfuPeer`**: Represents a single participant in an SFU room
-//! - **`MediaTrack`**: Represents an audio or video track
-//! - **`QualityLayer`**: Simulcast quality selection (high/medium/low)
+//! - **[`SfuRoom`]**: Manages a single room with multiple peers
+//! - **[`SfuPeer`]**: Represents a single participant in an SFU room
+//! - **[`MediaTrack`]**: Represents an audio or video track
+//! - **[`QualityLayer`]**: Simulcast quality selection (high/medium/low)
 //!
-//! ## Features
+//! ## Implemented Features
 //!
-//! - Selective forwarding of media streams
+//! - Selective forwarding of RTP media streams
 //! - Simulcast support (multiple quality layers)
-//! - Automatic mode switching (P2P ↔ SFU based on room size)
+//! - Automatic mode switching (P2P / SFU based on room size)
 //! - Bandwidth estimation and adaptive quality
 //! - Per-peer subscription management
+//! - Network quality monitoring with adaptive actions
 //!
-//! ## Usage
+//! ## Not Yet Implemented
 //!
-//! ```rust,ignore
-//! use synctv_sfu::{SfuManager, SfuConfig};
-//!
-//! let config = SfuConfig {
-//!     sfu_threshold: 5,
-//!     max_sfu_rooms: 10,
-//!     max_peers_per_room: 20,
-//!     enable_simulcast: true,
-//! };
-//!
-//! let manager = SfuManager::new(config);
-//! let room = manager.create_room("room_id").await?;
-//! let peer = room.add_peer("user_id", peer_connection).await?;
-//! ```
+//! - `RTCPeerConnection` lifecycle management
+//! - SDP offer/answer signaling
+//! - ICE candidate handling
+//! - Subscriber output path (forwarded packets to outbound WebRTC tracks)
+//! - Integration with synctv-api signaling endpoints
 
 mod config;
 mod manager;

@@ -75,9 +75,9 @@ pub struct ProviderInstance {
     /// Whether this instance is enabled
     #[prost(bool, tag = "8")]
     pub enabled: bool,
-    /// connected, disconnected, error
-    #[prost(string, tag = "9")]
-    pub status: ::prost::alloc::string::String,
+    /// Connection status
+    #[prost(enumeration = "ProviderInstanceStatus", tag = "9")]
+    pub status: i32,
     #[prost(int64, tag = "10")]
     pub created_at: i64,
     #[prost(int64, tag = "11")]
@@ -276,11 +276,13 @@ pub struct DisableProviderInstanceResponse {
     #[prost(message, optional, tag = "1")]
     pub instance: ::core::option::Option<ProviderInstance>,
 }
+/// SECURITY: password is transmitted as plaintext. TLS MUST be used.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CreateUserRequest {
     #[prost(string, tag = "1")]
     pub username: ::prost::alloc::string::String,
+    /// SECURITY: Plaintext credential - requires TLS in transit
     #[prost(string, tag = "2")]
     pub password: ::prost::alloc::string::String,
     #[prost(string, tag = "3")]
@@ -344,19 +346,31 @@ pub struct GetUserResponse {
     #[prost(message, optional, tag = "1")]
     pub user: ::core::option::Option<AdminUser>,
 }
+/// SECURITY: Admin password reset is a privileged operation. The reason field
+/// provides an audit trail for compliance. force_logout invalidates existing sessions.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UpdateUserPasswordRequest {
     #[prost(string, tag = "1")]
     pub user_id: ::prost::alloc::string::String,
+    /// SECURITY: Plaintext credential - requires TLS in transit
     #[prost(string, tag = "2")]
     pub new_password: ::prost::alloc::string::String,
+    /// Audit trail: why the password was reset (e.g., "user request", "security incident")
+    #[prost(string, tag = "3")]
+    pub reason: ::prost::alloc::string::String,
+    /// If true, invalidate all existing sessions for this user
+    #[prost(bool, tag = "4")]
+    pub force_logout: bool,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UpdateUserPasswordResponse {
     #[prost(bool, tag = "1")]
     pub success: bool,
+    /// Number of sessions invalidated (when force_logout=true)
+    #[prost(int32, tag = "2")]
+    pub sessions_invalidated: i32,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -419,12 +433,21 @@ pub struct UnbanUserResponse {
 pub struct GetUserRoomsRequest {
     #[prost(string, tag = "1")]
     pub user_id: ::prost::alloc::string::String,
+    /// Page number (default 1)
+    #[prost(int32, tag = "2")]
+    pub page: i32,
+    /// Items per page (default 50)
+    #[prost(int32, tag = "3")]
+    pub page_size: i32,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetUserRoomsResponse {
     #[prost(message, repeated, tag = "1")]
     pub rooms: ::prost::alloc::vec::Vec<AdminRoom>,
+    /// Total number of rooms for this user
+    #[prost(int32, tag = "2")]
+    pub total: i32,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -523,7 +546,7 @@ pub struct ResetRoomSettingsResponse {
 pub struct UpdateRoomPasswordRequest {
     #[prost(string, tag = "1")]
     pub room_id: ::prost::alloc::string::String,
-    /// Empty to remove password
+    /// Empty to remove password. SECURITY: Plaintext - requires TLS.
     #[prost(string, tag = "2")]
     pub new_password: ::prost::alloc::string::String,
 }
@@ -705,6 +728,40 @@ pub struct KickStreamRequest {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct KickStreamResponse {}
+/// Connection status for a media provider instance
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ProviderInstanceStatus {
+    Unspecified = 0,
+    Connected = 1,
+    Disconnected = 2,
+    Error = 3,
+}
+impl ProviderInstanceStatus {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "PROVIDER_INSTANCE_STATUS_UNSPECIFIED",
+            Self::Connected => "PROVIDER_INSTANCE_STATUS_CONNECTED",
+            Self::Disconnected => "PROVIDER_INSTANCE_STATUS_DISCONNECTED",
+            Self::Error => "PROVIDER_INSTANCE_STATUS_ERROR",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "PROVIDER_INSTANCE_STATUS_UNSPECIFIED" => Some(Self::Unspecified),
+            "PROVIDER_INSTANCE_STATUS_CONNECTED" => Some(Self::Connected),
+            "PROVIDER_INSTANCE_STATUS_DISCONNECTED" => Some(Self::Disconnected),
+            "PROVIDER_INSTANCE_STATUS_ERROR" => Some(Self::Error),
+            _ => None,
+        }
+    }
+}
 /// Generated client implementations.
 pub mod admin_service_client {
     #![allow(
@@ -717,6 +774,10 @@ pub mod admin_service_client {
     use tonic::codegen::*;
     use tonic::codegen::http::Uri;
     /// Admin API for SyncTV - Requires admin or root permissions
+    ///
+    /// SECURITY: Several RPCs (CreateUser, UpdateUserPassword) transmit passwords as
+    /// plaintext. Deployments MUST use TLS. UpdateUserPassword operations should be
+    /// logged for audit compliance.
     #[derive(Debug, Clone)]
     pub struct AdminServiceClient<T> {
         inner: tonic::client::Grpc<T>,
@@ -2082,6 +2143,10 @@ pub mod admin_service_server {
         >;
     }
     /// Admin API for SyncTV - Requires admin or root permissions
+    ///
+    /// SECURITY: Several RPCs (CreateUser, UpdateUserPassword) transmit passwords as
+    /// plaintext. Deployments MUST use TLS. UpdateUserPassword operations should be
+    /// logged for audit compliance.
     #[derive(Debug)]
     pub struct AdminServiceServer<T> {
         inner: Arc<T>,

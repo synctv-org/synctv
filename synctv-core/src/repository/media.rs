@@ -52,7 +52,7 @@ impl MediaRepository {
         .bind(media.id.as_str())
         .bind(media.playlist_id.as_str())
         .bind(media.room_id.as_str())
-        .bind(media.creator_id.as_str())
+        .bind(media.creator_id.as_ref().map(|id| id.as_str()))
         .bind(&media.name)
         .bind(media.position)
         .bind(media.source_provider.as_str())
@@ -118,7 +118,7 @@ impl MediaRepository {
                 .bind(item.id.as_str())
                 .bind(item.playlist_id.as_str())
                 .bind(item.room_id.as_str())
-                .bind(item.creator_id.as_str())
+                .bind(item.creator_id.as_ref().map(|id| id.as_str()))
                 .bind(&item.name)
                 .bind(item.position)
                 .bind(item.source_provider.as_str())
@@ -410,6 +410,9 @@ impl MediaRepository {
     }
 
     /// Bulk reorder media items using a provided transaction
+    ///
+    /// Sorts updates by media_id before acquiring FOR UPDATE locks to prevent
+    /// deadlocks when concurrent transactions lock the same rows in different order.
     pub async fn reorder_batch_with_tx(
         &self,
         updates: &[(MediaId, i32)],
@@ -419,8 +422,13 @@ impl MediaRepository {
             return Ok(());
         }
 
+        // Sort by media_id to ensure consistent lock ordering across concurrent transactions.
+        // Without this, two transactions locking [A, B] and [B, A] can deadlock.
+        let mut sorted_updates: Vec<_> = updates.to_vec();
+        sorted_updates.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
+
         // Lock all affected rows first to prevent concurrent modification
-        for (media_id, _) in updates {
+        for (media_id, _) in &sorted_updates {
             sqlx::query("SELECT id FROM media WHERE id = $1 AND deleted_at IS NULL FOR UPDATE")
                 .bind(media_id.as_str())
                 .fetch_optional(&mut **tx)
@@ -428,7 +436,7 @@ impl MediaRepository {
         }
 
         // Now update positions within the lock scope
-        for (media_id, new_position) in updates {
+        for (media_id, new_position) in &sorted_updates {
             sqlx::query("UPDATE media SET position = $2 WHERE id = $1 AND deleted_at IS NULL")
                 .bind(media_id.as_str())
                 .bind(new_position)

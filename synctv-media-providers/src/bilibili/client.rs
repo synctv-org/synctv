@@ -437,9 +437,15 @@ impl BilibiliClient {
     }
 
     /// Check if URL is a short link (b23.tv)
-    #[must_use] 
+    ///
+    /// Uses proper URL host parsing to avoid false positives from URLs like
+    /// `evil.com/b23.tv` or `b23.tv.evil.com`.
+    #[must_use]
     pub fn is_short_link(url: &str) -> bool {
-        url.contains("b23.tv")
+        url::Url::parse(url)
+            .ok()
+            .and_then(|u| u.host_str().map(String::from))
+            .is_some_and(|host| host == "b23.tv" || host.ends_with(".b23.tv"))
     }
 
     /// Resolve short link to full URL.
@@ -1356,6 +1362,9 @@ mod tests {
         assert!(BilibiliClient::is_short_link("https://b23.tv/episode/12345"));
         assert!(!BilibiliClient::is_short_link("https://www.bilibili.com/video/BV123"));
         assert!(!BilibiliClient::is_short_link(""));
+        // These must NOT match: "b23.tv" appearing in path or as subdomain of another host
+        assert!(!BilibiliClient::is_short_link("https://evil.com/b23.tv/abc"));
+        assert!(!BilibiliClient::is_short_link("https://b23.tv.evil.com/abc"));
     }
 
     // === URL Matching Tests ===

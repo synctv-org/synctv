@@ -129,6 +129,9 @@ mod tests {
     fn test_notification_type_display() {
         assert_eq!(NotificationType::RoomInvitation.to_string(), "room_invitation");
         assert_eq!(NotificationType::SystemAnnouncement.to_string(), "system_announcement");
+        assert_eq!(NotificationType::RoomEvent.to_string(), "room_event");
+        assert_eq!(NotificationType::PasswordReset.to_string(), "password_reset");
+        assert_eq!(NotificationType::EmailVerification.to_string(), "email_verification");
     }
 
     #[test]
@@ -141,5 +144,108 @@ mod tests {
             "system_announcement".parse::<NotificationType>().unwrap(),
             NotificationType::SystemAnnouncement
         );
+        assert_eq!(
+            "room_event".parse::<NotificationType>().unwrap(),
+            NotificationType::RoomEvent
+        );
+        assert_eq!(
+            "password_reset".parse::<NotificationType>().unwrap(),
+            NotificationType::PasswordReset
+        );
+        assert_eq!(
+            "email_verification".parse::<NotificationType>().unwrap(),
+            NotificationType::EmailVerification
+        );
+    }
+
+    #[test]
+    fn test_notification_type_from_str_invalid() {
+        let result = "invalid_type".parse::<NotificationType>();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Invalid notification type"));
+    }
+
+    #[test]
+    fn test_notification_type_roundtrip() {
+        let types = vec![
+            NotificationType::RoomInvitation,
+            NotificationType::SystemAnnouncement,
+            NotificationType::RoomEvent,
+            NotificationType::PasswordReset,
+            NotificationType::EmailVerification,
+        ];
+        for nt in types {
+            let s = nt.to_string();
+            let parsed: NotificationType = s.parse().unwrap();
+            assert_eq!(parsed, nt);
+        }
+    }
+
+    #[test]
+    fn test_notification_type_serde_roundtrip() {
+        let nt = NotificationType::RoomInvitation;
+        let json = serde_json::to_string(&nt).unwrap();
+        assert_eq!(json, "\"room_invitation\"");
+        let deserialized: NotificationType = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized, nt);
+    }
+
+    #[test]
+    fn test_create_notification_request_deserialize() {
+        let json = serde_json::json!({
+            "user_id": "user_123",
+            "notification_type": "room_invitation",
+            "title": "You have been invited",
+            "content": "Join room ABC"
+        });
+        let req: CreateNotificationRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.user_id.as_str(), "user_123");
+        assert_eq!(req.notification_type, NotificationType::RoomInvitation);
+        assert_eq!(req.title, "You have been invited");
+        assert_eq!(req.content, "Join room ABC");
+        // data should default to empty object
+        assert_eq!(req.data, serde_json::json!({}));
+    }
+
+    #[test]
+    fn test_create_notification_request_with_data() {
+        let json = serde_json::json!({
+            "user_id": "user_456",
+            "notification_type": "system_announcement",
+            "title": "Maintenance",
+            "content": "System will be down",
+            "data": {"severity": "high", "eta_minutes": 30}
+        });
+        let req: CreateNotificationRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.data["severity"], "high");
+        assert_eq!(req.data["eta_minutes"], 30);
+    }
+
+    #[test]
+    fn test_mark_as_read_request_deserialize() {
+        let json = serde_json::json!({
+            "notification_ids": [
+                "550e8400-e29b-41d4-a716-446655440000",
+                "6ba7b810-9dad-11d1-80b4-00c04fd430c8"
+            ]
+        });
+        let req: MarkAsReadRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.notification_ids.len(), 2);
+    }
+
+    #[test]
+    fn test_mark_all_as_read_request_no_before() {
+        let json = serde_json::json!({});
+        let req: MarkAllAsReadRequest = serde_json::from_value(json).unwrap();
+        assert!(req.before.is_none());
+    }
+
+    #[test]
+    fn test_mark_all_as_read_request_with_before() {
+        let json = serde_json::json!({
+            "before": "2025-01-01T00:00:00Z"
+        });
+        let req: MarkAllAsReadRequest = serde_json::from_value(json).unwrap();
+        assert!(req.before.is_some());
     }
 }

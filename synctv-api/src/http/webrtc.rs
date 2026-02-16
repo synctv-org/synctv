@@ -76,6 +76,7 @@ mod tests {
             urls: vec!["stun:stun.example.com:3478".to_string()],
             username: None,
             credential: None,
+            expiry_time: 0,
         };
 
         let json = serde_json::to_string(&server).expect("IceServer should serialize");
@@ -88,6 +89,7 @@ mod tests {
             urls: vec!["turn:turn.example.com:3478".to_string()],
             username: Some("1234567890:user123".to_string()),
             credential: Some("secret123".to_string()),
+            expiry_time: 0,
         };
 
         let json = serde_json::to_string(&server).expect("IceServer should serialize");

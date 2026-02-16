@@ -46,6 +46,10 @@ pub enum InvalidationMessage {
     BloomFilterUpdate {
         keys: Vec<String>,
     },
+    /// Invalidate room settings cache for a specific room
+    RoomSettings {
+        room_id: String,
+    },
     /// Invalidate all caches
     All,
 }
@@ -430,6 +434,13 @@ impl CacheInvalidationService {
     /// Invalidate playback state cache for a room
     pub async fn invalidate_playback_state(&self, room_id: &RoomId) -> Result<()> {
         self.broadcast_remote(InvalidationMessage::PlaybackState {
+            room_id: room_id.as_str().to_string(),
+        }).await
+    }
+
+    /// Invalidate room settings cache for a specific room
+    pub async fn invalidate_room_settings(&self, room_id: &RoomId) -> Result<()> {
+        self.broadcast_remote(InvalidationMessage::RoomSettings {
             room_id: room_id.as_str().to_string(),
         }).await
     }

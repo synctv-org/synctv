@@ -1,6 +1,9 @@
 // Emby Provider Client API
 //
 // This is the client-facing gRPC API for Emby provider
+//
+// SECURITY: Login transmits the Emby API key as plaintext. Deployments MUST use
+// TLS for all connections to this service.
 
 syntax = "proto3";
 
@@ -29,7 +32,7 @@ service EmbyProviderService {
 // Login request
 message LoginRequest {
   string host = 1;
-  string api_key = 2;
+  string api_key = 2;  // SECURITY: Plaintext credential - requires TLS in transit, do not log
   string instance_name = 3; // Optional provider instance name
 }
 

@@ -438,7 +438,7 @@ impl SyncTvRtmpAuth {
         }
 
         let is_media_creator = if !is_global_admin && !is_room_admin_or_creator {
-            media.creator_id == *user_id
+            media.creator_id.as_ref() == Some(user_id)
         } else {
             false
         };

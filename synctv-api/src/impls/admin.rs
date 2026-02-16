@@ -379,8 +379,12 @@ impl AdminApiImpl {
         self.user_service.set_password(&uid, &req.new_password).await
             .map_err(ApiError::from)?;
 
+        // TODO: Implement force_logout using req.force_logout field to invalidate sessions
+        // TODO: Log req.reason for audit trail
+
         Ok(crate::proto::admin::UpdateUserPasswordResponse {
             success: true,
+            sessions_invalidated: 0, // TODO: return actual count when force_logout is implemented
         })
     }
 
@@ -989,7 +993,8 @@ impl AdminApiImpl {
             }
         }
 
-        Ok(crate::proto::admin::GetUserRoomsResponse { rooms: admin_rooms })
+        let total = admin_rooms.len() as i32;
+        Ok(crate::proto::admin::GetUserRoomsResponse { rooms: admin_rooms, total })
     }
 
     // === Room Management (extended) ===
@@ -1383,11 +1388,13 @@ fn admin_user_to_proto(user: &synctv_core::models::User) -> crate::proto::admin:
 }
 
 fn provider_instance_to_proto(instance: synctv_core::models::ProviderInstance) -> crate::proto::admin::ProviderInstance {
+    use crate::proto::admin::ProviderInstanceStatus;
+
     // Generate status based on enabled flag
-    let status = if instance.enabled {
-        "connected".to_string()
+    let status: i32 = if instance.enabled {
+        ProviderInstanceStatus::Connected.into()
     } else {
-        "disabled".to_string()
+        ProviderInstanceStatus::Disconnected.into()
     };
 
     // Parse timeout string (e.g., "10s", "30s") to seconds
@@ -1650,7 +1657,7 @@ mod tests {
         assert!(!proto.insecure_tls);
         assert_eq!(proto.providers, vec!["bilibili", "alist"]);
         assert!(proto.enabled);
-        assert_eq!(proto.status, "connected");
+        assert_eq!(proto.status, i32::from(crate::proto::admin::ProviderInstanceStatus::Connected));
     }
 
     #[test]
@@ -1672,7 +1679,7 @@ mod tests {
 
         let proto = provider_instance_to_proto(instance);
 
-        assert_eq!(proto.status, "disabled");
+        assert_eq!(proto.status, i32::from(crate::proto::admin::ProviderInstanceStatus::Disconnected));
         assert_eq!(proto.comment, ""); // None -> empty
         assert!(!proto.enabled);
     }

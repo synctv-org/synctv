@@ -1655,4 +1655,467 @@ mod websocket_e2e {
         ws1.close(None).await.expect("close ws1");
         ws2.close(None).await.expect("close ws2");
     }
+
+    // ========================================================================
+    // Test: Rate limiter blocks excessive chat messages
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_ws_rate_limiter_blocks_excess_chat() {
+        let infra = TestInfra::new().await;
+        let server = setup_e2e_server(&infra).await;
+
+        let (user_id, token) =
+            register_test_user(&server.user_service, &server.jwt_service, "ratelimit_user").await;
+        let room_id = create_test_room(&server.room_service, &user_id, "Rate Limit Room").await;
+
+        let mut ws = ws_connect(&server.addr, &room_id, &token).await;
+
+        // Consume initial UserJoined
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), recv_server_message(&mut ws)).await;
+
+        // Send many chat messages rapidly (default rate limit is 10/sec)
+        // We send 15 to exceed the limit
+        for i in 0..15 {
+            let chat_msg = ClientMessage {
+                message: Some(client_message::Message::Chat(
+                    synctv_proto::client::ChatMessageSend {
+                        content: format!("Spam message {i}"),
+                        position: None,
+                        color: None,
+                    },
+                )),
+            };
+            send_client_message(&mut ws, &chat_msg).await;
+        }
+
+        // Collect chat echoes and errors for a bounded time
+        let mut chat_count = 0usize;
+        let mut error_received = false;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            match tokio::time::timeout(remaining, recv_server_message(&mut ws)).await {
+                Ok(Some(msg)) => match msg.message {
+                    Some(server_message::Message::Chat(_)) => {
+                        chat_count += 1;
+                    }
+                    Some(server_message::Message::Error(_)) => {
+                        error_received = true;
+                        break;
+                    }
+                    _ => {}
+                },
+                _ => break,
+            }
+        }
+
+        // The rate limiter should have blocked some messages, meaning we either
+        // received fewer chats than sent, or the server sent an error, or the
+        // connection stayed alive but silently dropped messages (no echo).
+        // The key assertion: NOT all 15 messages were echoed as chats.
+        assert!(
+            chat_count < 15 || error_received,
+            "Rate limiter should have blocked some messages: got {} chats, error={}",
+            chat_count,
+            error_received,
+        );
+
+        ws.close(None).await.expect("close");
+    }
+
+    // ========================================================================
+    // Test: Content filter strips XSS from chat messages
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_ws_content_filter_strips_xss() {
+        let infra = TestInfra::new().await;
+        let server = setup_e2e_server(&infra).await;
+
+        // Create room owner (user1) and room
+        let (user1_id, user1_token) =
+            register_test_user(&server.user_service, &server.jwt_service, "xss_sender").await;
+        let room_id = create_test_room(&server.room_service, &user1_id, "XSS Room").await;
+
+        // Create second user and join room
+        let (user2_id, user2_token) =
+            register_test_user(&server.user_service, &server.jwt_service, "xss_receiver").await;
+        let rid = synctv_core::models::RoomId::from_string(room_id.clone());
+        server
+            .room_service
+            .join_room(rid, user2_id.clone(), None)
+            .await
+            .expect("user2 join");
+
+        // Connect both users
+        let mut ws1 = ws_connect(&server.addr, &room_id, &user1_token).await;
+        let mut ws2 = ws_connect(&server.addr, &room_id, &user2_token).await;
+
+        // Drain initial UserJoined messages
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), recv_server_message(&mut ws1)).await;
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), recv_server_message(&mut ws2)).await;
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), recv_server_message(&mut ws1)).await;
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        // user1 sends a message with XSS payload
+        let xss_msg = ClientMessage {
+            message: Some(client_message::Message::Chat(
+                synctv_proto::client::ChatMessageSend {
+                    content: "<script>alert('xss')</script>Hello safe world".to_string(),
+                    position: None,
+                    color: None,
+                },
+            )),
+        };
+        send_client_message(&mut ws1, &xss_msg).await;
+
+        // user2 should receive the sanitized chat
+        let received = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            recv_server_message(&mut ws2),
+        )
+        .await
+        .expect("timeout waiting for sanitized chat")
+        .expect("stream ended");
+
+        match received.message {
+            Some(server_message::Message::Chat(chat)) => {
+                // The content filter should have stripped the <script> tag
+                assert!(
+                    !chat.content.contains("<script>"),
+                    "XSS script tag should be stripped, got: {}",
+                    chat.content,
+                );
+                assert!(
+                    chat.content.contains("Hello safe world"),
+                    "Safe text should be preserved, got: {}",
+                    chat.content,
+                );
+            }
+            other => panic!("Expected Chat message, got: {other:?}"),
+        }
+
+        ws1.close(None).await.expect("close ws1");
+        ws2.close(None).await.expect("close ws2");
+    }
+
+    // ========================================================================
+    // Test: Connection cleanup after abnormal disconnect (TCP drop)
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_ws_connection_cleanup_on_tcp_drop() {
+        let infra = TestInfra::new().await;
+        let server = setup_e2e_server(&infra).await;
+
+        let (user1_id, user1_token) =
+            register_test_user(&server.user_service, &server.jwt_service, "stayer_tcp").await;
+        let room_id = create_test_room(&server.room_service, &user1_id, "TCP Drop Room").await;
+
+        let (user2_id, user2_token) =
+            register_test_user(&server.user_service, &server.jwt_service, "dropper_tcp").await;
+        let rid = synctv_core::models::RoomId::from_string(room_id.clone());
+        server
+            .room_service
+            .join_room(rid.clone(), user2_id.clone(), None)
+            .await
+            .expect("join");
+
+        // Connect user1 (stays connected)
+        let mut ws1 = ws_connect(&server.addr, &room_id, &user1_token).await;
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), recv_server_message(&mut ws1)).await;
+
+        // Connect user2 (will be dropped)
+        let ws2 = ws_connect(&server.addr, &room_id, &user2_token).await;
+
+        // Drain user2's initial message and user1's notification of user2 join
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), recv_server_message(&mut ws1)).await;
+
+        // Abruptly drop user2's WebSocket (simulate TCP disconnect without Close frame)
+        drop(ws2);
+
+        // user1 should receive UserLeft for user2 (server detects the drop)
+        let left_event = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            recv_server_message(&mut ws1),
+        )
+        .await
+        .expect("timeout waiting for UserLeft after TCP drop")
+        .expect("stream ended");
+
+        match left_event.message {
+            Some(server_message::Message::UserLeft(left)) => {
+                assert_eq!(left.room_id, room_id);
+                assert_eq!(left.user_id, user2_id.as_str());
+            }
+            other => panic!("Expected UserLeft after TCP drop, got: {other:?}"),
+        }
+
+        ws1.close(None).await.expect("close ws1");
+    }
+
+    // ========================================================================
+    // Test: ConnectionManager state is consistent after multiple connect/disconnect cycles
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_ws_connection_manager_state_consistency() {
+        let infra = TestInfra::new().await;
+        let server = setup_e2e_server(&infra).await;
+
+        let (user_id, token) =
+            register_test_user(&server.user_service, &server.jwt_service, "cycle_user").await;
+        let room_id = create_test_room(&server.room_service, &user_id, "Cycle Room").await;
+
+        // Perform 3 connect/disconnect cycles
+        for cycle in 0..3 {
+            let mut ws = ws_connect(&server.addr, &room_id, &token).await;
+
+            // Consume initial UserJoined
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), recv_server_message(&mut ws)).await;
+
+            // Send a heartbeat to verify the connection is fully functional
+            let heartbeat = ClientMessage {
+                message: Some(client_message::Message::Heartbeat(HeartbeatMessage {
+                    timestamp: chrono::Utc::now().timestamp_millis(),
+                })),
+            };
+            send_client_message(&mut ws, &heartbeat).await;
+
+            let ack = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                recv_server_message(&mut ws),
+            )
+            .await
+            .expect(&format!("timeout on heartbeat in cycle {cycle}"))
+            .expect("stream ended");
+            assert!(
+                matches!(ack.message, Some(server_message::Message::HeartbeatAck(_))),
+                "Expected HeartbeatAck in cycle {cycle}"
+            );
+
+            // Graceful disconnect
+            ws.close(None).await.expect(&format!("close in cycle {cycle}"));
+
+            // Wait for server to process the disconnect and clean up state
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+
+        // After all cycles, the connection manager should have 0 connections for this user
+        let user_conn_count = server.connection_manager.user_connection_count(&user_id);
+        assert_eq!(
+            user_conn_count, 0,
+            "After all disconnect cycles, user should have 0 connections, got {}",
+            user_conn_count
+        );
+    }
+
+    // ========================================================================
+    // Test: Empty chat message is rejected by the pipeline
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_ws_empty_chat_rejected() {
+        let infra = TestInfra::new().await;
+        let server = setup_e2e_server(&infra).await;
+
+        let (user_id, token) =
+            register_test_user(&server.user_service, &server.jwt_service, "empty_chat_user").await;
+        let room_id = create_test_room(&server.room_service, &user_id, "Empty Chat Room").await;
+
+        let mut ws = ws_connect(&server.addr, &room_id, &token).await;
+
+        // Consume initial UserJoined
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), recv_server_message(&mut ws)).await;
+
+        // Send empty chat message
+        let empty_msg = ClientMessage {
+            message: Some(client_message::Message::Chat(
+                synctv_proto::client::ChatMessageSend {
+                    content: String::new(),
+                    position: None,
+                    color: None,
+                },
+            )),
+        };
+        send_client_message(&mut ws, &empty_msg).await;
+
+        // Connection should remain alive (error is logged server-side, not fatal)
+        // Verify by sending a heartbeat and getting an ack
+        let heartbeat = ClientMessage {
+            message: Some(client_message::Message::Heartbeat(HeartbeatMessage {
+                timestamp: chrono::Utc::now().timestamp_millis(),
+            })),
+        };
+        send_client_message(&mut ws, &heartbeat).await;
+
+        let ack = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            recv_server_message(&mut ws),
+        )
+        .await
+        .expect("timeout waiting for heartbeat ack after empty msg")
+        .expect("stream ended");
+
+        assert!(
+            matches!(ack.message, Some(server_message::Message::HeartbeatAck(_))),
+            "Connection should still be alive after empty chat rejection"
+        );
+
+        ws.close(None).await.expect("close");
+    }
+
+    // ========================================================================
+    // Test: Danmaku message with position is broadcast correctly
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_ws_danmaku_broadcast() {
+        let infra = TestInfra::new().await;
+        let server = setup_e2e_server(&infra).await;
+
+        // Create room owner (user1) and room
+        let (user1_id, user1_token) =
+            register_test_user(&server.user_service, &server.jwt_service, "danmaku_sender").await;
+        let room_id = create_test_room(&server.room_service, &user1_id, "Danmaku Room").await;
+
+        // Create second user and join room
+        let (user2_id, user2_token) =
+            register_test_user(&server.user_service, &server.jwt_service, "danmaku_receiver").await;
+        let rid = synctv_core::models::RoomId::from_string(room_id.clone());
+        server
+            .room_service
+            .join_room(rid, user2_id.clone(), None)
+            .await
+            .expect("user2 join");
+
+        // Connect both users
+        let mut ws1 = ws_connect(&server.addr, &room_id, &user1_token).await;
+        let mut ws2 = ws_connect(&server.addr, &room_id, &user2_token).await;
+
+        // Drain initial messages
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), recv_server_message(&mut ws1)).await;
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), recv_server_message(&mut ws2)).await;
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), recv_server_message(&mut ws1)).await;
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        // user1 sends a danmaku (chat with position)
+        let danmaku_msg = ClientMessage {
+            message: Some(client_message::Message::Chat(
+                synctv_proto::client::ChatMessageSend {
+                    content: "LOL".to_string(),
+                    position: Some(42.5),
+                    color: Some("#FF0000".to_string()),
+                },
+            )),
+        };
+        send_client_message(&mut ws1, &danmaku_msg).await;
+
+        // user2 should receive the danmaku with position and color
+        let received = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            recv_server_message(&mut ws2),
+        )
+        .await
+        .expect("timeout waiting for danmaku")
+        .expect("stream ended");
+
+        match received.message {
+            Some(server_message::Message::Chat(chat)) => {
+                assert_eq!(chat.content, "LOL");
+                assert_eq!(chat.room_id, room_id);
+                assert_eq!(chat.user_id, user1_id.as_str());
+                assert!(
+                    chat.position.is_some(),
+                    "Danmaku should have a position"
+                );
+                assert!(
+                    (chat.position.unwrap() - 42.5).abs() < f64::EPSILON,
+                    "Position should be 42.5"
+                );
+                assert_eq!(
+                    chat.color.as_deref(),
+                    Some("#FF0000"),
+                    "Danmaku should have the specified color"
+                );
+            }
+            other => panic!("Expected Chat (danmaku) message, got: {other:?}"),
+        }
+
+        ws1.close(None).await.expect("close ws1");
+        ws2.close(None).await.expect("close ws2");
+    }
+
+    // ========================================================================
+    // Test: Concurrent connections from same user to same room
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_ws_concurrent_connections_same_user() {
+        let infra = TestInfra::new().await;
+        let server = setup_e2e_server(&infra).await;
+
+        let (user_id, token) =
+            register_test_user(&server.user_service, &server.jwt_service, "multi_conn_user").await;
+        let room_id = create_test_room(&server.room_service, &user_id, "Multi Conn Room").await;
+
+        // Open two connections from the same user to the same room
+        let mut ws1 = ws_connect(&server.addr, &room_id, &token).await;
+        let mut ws2 = ws_connect(&server.addr, &room_id, &token).await;
+
+        // Both should get UserJoined
+        let msg1 = tokio::time::timeout(std::time::Duration::from_secs(5), recv_server_message(&mut ws1))
+            .await
+            .expect("timeout")
+            .expect("no initial msg for conn1");
+        assert!(
+            matches!(msg1.message, Some(server_message::Message::UserJoined(_))),
+            "Connection 1 should get UserJoined"
+        );
+
+        let msg2 = tokio::time::timeout(std::time::Duration::from_secs(5), recv_server_message(&mut ws2))
+            .await
+            .expect("timeout")
+            .expect("no initial msg for conn2");
+        assert!(
+            matches!(msg2.message, Some(server_message::Message::UserJoined(_))),
+            "Connection 2 should get UserJoined"
+        );
+
+        // Send a heartbeat on connection 1 to verify it's still working
+        let heartbeat = ClientMessage {
+            message: Some(client_message::Message::Heartbeat(HeartbeatMessage {
+                timestamp: chrono::Utc::now().timestamp_millis(),
+            })),
+        };
+        send_client_message(&mut ws1, &heartbeat).await;
+
+        // Drain any UserJoined cross-notification on ws1 before checking heartbeat ack
+        let ack = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let msg = recv_server_message(&mut ws1).await?;
+                if matches!(msg.message, Some(server_message::Message::HeartbeatAck(_))) {
+                    return Some(msg);
+                }
+            }
+        })
+        .await
+        .expect("timeout waiting for heartbeat ack on conn1")
+        .expect("stream ended");
+
+        assert!(
+            matches!(ack.message, Some(server_message::Message::HeartbeatAck(_))),
+            "Connection 1 should get HeartbeatAck"
+        );
+
+        ws1.close(None).await.expect("close ws1");
+        ws2.close(None).await.expect("close ws2");
+    }
 }

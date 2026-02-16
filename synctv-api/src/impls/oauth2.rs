@@ -268,7 +268,7 @@ impl OAuth2ApiImpl {
             .map(|provider_type| LinkedProviderInfo {
                 provider_type: provider_type.as_str().to_string(),
                 provider_username: String::new(), // TODO: fetch from repository
-                linked_at: String::new(),         // TODO: fetch from repository
+                linked_at: 0,                     // TODO: fetch from repository
             })
             .collect();
 
@@ -302,7 +302,7 @@ pub struct UnlinkResult {
 pub struct LinkedProviderInfo {
     pub provider_type: String,
     pub provider_username: String,
-    pub linked_at: String,
+    pub linked_at: i64, // Unix timestamp (seconds)
 }
 
 /// Convert User model to OAuth2UserInfo proto
@@ -328,7 +328,7 @@ fn user_to_oauth2_user_info(user: &User) -> OAuth2UserInfo {
         avatar: String::new(), // User model doesn't have avatar field currently
         role: proto_role as i32,
         status: proto_status as i32,
-        created_at: user.created_at.to_rfc3339(),
+        created_at: user.created_at.timestamp(),
     }
 }
 

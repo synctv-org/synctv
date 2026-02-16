@@ -4,9 +4,12 @@ pub mod proto {
     tonic::include_proto!("synctv.stream");
 }
 
+mod connection_pool;
 mod stream_relay_service;
 mod stream_puller;
 mod hls_proxy;
+
+pub use connection_pool::GrpcConnectionPool;
 
 pub use stream_relay_service::StreamRelayServiceImpl;
 pub use stream_puller::GrpcStreamPuller;

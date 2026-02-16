@@ -1,6 +1,9 @@
 // Alist Provider Client API
 //
 // This is the client-facing gRPC API for Alist provider
+//
+// SECURITY: Login transmits credentials (password or hashed_password) as plaintext
+// in the protobuf payload. Deployments MUST use TLS for all connections to this service.
 
 syntax = "proto3";
 
@@ -27,10 +30,11 @@ service AlistProviderService {
 }
 
 // Login request
+// SECURITY: Prefer hashed_password over password when possible to reduce plaintext exposure.
 message LoginRequest {
   string host = 1;
   string username = 2;
-  string password = 3; // Plain password
+  string password = 3; // SECURITY: Plaintext credential - requires TLS in transit. Prefer hashed_password.
   string hashed_password = 4; // Hashed password (if provided, password is ignored)
   string instance_name = 5; // Optional provider instance name
 }

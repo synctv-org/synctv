@@ -290,10 +290,14 @@ impl StreamMessageHandler {
                             // Other admin events (KickPublisher, etc.) not relevant to this connection
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                            // Channel lagged: we may have missed critical KickUser events.
+                            // Re-subscribe to get a fresh receiver so future events are not lost.
                             tracing::warn!(
                                 lagged = n,
-                                "Admin event channel lagged, may have missed disconnect signals"
+                                user_id = %self.user_id.as_str(),
+                                "Admin event channel lagged, re-subscribing to avoid missed kicks"
                             );
+                            admin_rx = self.cluster_manager.subscribe_admin_events();
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                             tracing::error!("Admin event channel closed");
@@ -381,10 +385,11 @@ impl StreamMessageHandler {
 
     /// Cleanup on disconnect
     async fn cleanup(&self, room_id: &str) {
-        // Unregister from connection manager
-        self.connection_manager.unregister(&self.connection_id);
-
-        // Notify cluster that user left
+        // Broadcast UserLeft BEFORE unregistering from the connection manager.
+        // This order prevents state divergence: if the broadcast reaches subscribers
+        // while this connection is still registered, they see a consistent view.
+        // Previously, unregistering first could leave the hub with a stale subscriber
+        // if the broadcast was delayed or had no receivers.
         let event = ClusterEvent::UserLeft {
             event_id: nanoid::nanoid!(16),
             room_id: self.room_id.clone(),
@@ -392,7 +397,19 @@ impl StreamMessageHandler {
             username: self.username.clone(),
             timestamp: chrono::Utc::now(),
         };
-        let _ = self.cluster_manager.broadcast(event);
+        let result = self.cluster_manager.broadcast(event);
+
+        if result.local_sent == 0 && !result.redis_sent {
+            tracing::warn!(
+                user = %self.username,
+                room = %room_id,
+                connection = %self.connection_id,
+                "UserLeft broadcast reached no subscribers; hub may have stale state"
+            );
+        }
+
+        // Now unregister from connection manager after broadcast has been sent
+        self.connection_manager.unregister(&self.connection_id);
 
         tracing::info!(
             "Cleanup complete for user {} in room {} (connection: {})",
@@ -956,6 +973,8 @@ fn cluster_event_to_server_message(
             Some(ServerMessage {
                 message: Some(Message::Error(ErrorMessage {
                     message: message.clone(),
+                    code: 0,
+                    detail: String::new(),
                 })),
             })
         }
@@ -964,6 +983,8 @@ fn cluster_event_to_server_message(
             Some(ServerMessage {
                 message: Some(Message::Error(ErrorMessage {
                     message: "Room has been deleted".to_string(),
+                    code: 0,
+                    detail: String::new(),
                 })),
             })
         }

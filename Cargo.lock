@@ -6239,6 +6239,8 @@ dependencies = [
  "anyhow",
  "axum",
  "futures",
+ "governor",
+ "nonzero_ext",
  "percent-encoding",
  "reqwest 0.13.2",
  "synctv-core",

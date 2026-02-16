@@ -11,6 +11,7 @@ use std::time::Duration;
 use tonic::Request;
 use tracing::debug;
 
+use super::connection_pool::GrpcConnectionPool;
 use super::proto::{
     stream_relay_service_client::StreamRelayServiceClient,
     GetHlsPlaylistRequest, GetHlsSegmentRequest,
@@ -21,6 +22,9 @@ use super::proto::{
 /// TS segments are cached locally with a configurable TTL (default 90s, matching
 /// the Cache-Control header on segment HTTP responses). M3U8 playlists are never
 /// cached because they change with every new segment.
+///
+/// gRPC connections to publisher nodes are pooled via [`GrpcConnectionPool`] to
+/// avoid the overhead of creating a new HTTP/2 connection per request.
 #[derive(Clone)]
 pub struct HlsProxyClient {
     /// Local cache for TS segments (immutable once created)
@@ -28,6 +32,8 @@ pub struct HlsProxyClient {
     segment_cache: Cache<String, Bytes>,
     /// Cluster authentication secret for gRPC metadata
     cluster_secret: Option<String>,
+    /// Pooled gRPC connections to publisher nodes
+    connection_pool: GrpcConnectionPool,
 }
 
 impl HlsProxyClient {
@@ -50,6 +56,7 @@ impl HlsProxyClient {
         Self {
             segment_cache,
             cluster_secret,
+            connection_pool: GrpcConnectionPool::with_defaults(),
         }
     }
 
@@ -140,20 +147,20 @@ impl HlsProxyClient {
         }
     }
 
-    /// Connect to a publisher node's gRPC service.
+    /// Get a gRPC client for the publisher node, reusing pooled connections.
+    ///
+    /// On connection failure, the pooled entry is invalidated so the next
+    /// attempt creates a fresh connection.
     async fn connect(
         &self,
         grpc_address: &str,
     ) -> anyhow::Result<StreamRelayServiceClient<tonic::transport::Channel>> {
-        let url = if grpc_address.starts_with("http://") || grpc_address.starts_with("https://") {
-            grpc_address.to_string()
-        } else {
-            format!("http://{grpc_address}")
-        };
-
-        StreamRelayServiceClient::connect(url)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to connect to publisher gRPC: {e}"))
+        let channel = self.connection_pool.get_channel(grpc_address).await
+            .map_err(|e| {
+                self.connection_pool.invalidate(grpc_address);
+                anyhow::anyhow!("Failed to connect to publisher gRPC at {grpc_address}: {e}")
+            })?;
+        Ok(StreamRelayServiceClient::new(channel))
     }
 
     /// Attach cluster authentication secret to a gRPC request.

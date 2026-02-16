@@ -1171,3 +1171,345 @@ async fn test_leader_election_single_leader() {
     // Give tasks time to shut down
     tokio::time::sleep(Duration::from_millis(200)).await;
 }
+
+// ============================================================================
+// Test 16: Cross-replica PermissionChanged event propagation
+// ============================================================================
+
+#[tokio::test]
+async fn test_cross_replica_permission_changed() {
+    let redis = TestRedis::start().await;
+
+    let node_a = create_node(&redis.redis_url, "node_a").await;
+    let node_b = create_node(&redis.redis_url, "node_b").await;
+
+    let room_id = RoomId::from_string("perm_room".to_string());
+    let user_id = UserId::from_string("perm_user".to_string());
+
+    // Subscribe on node A (simulating a WebSocket client on node A watching the room)
+    let (mut room_rx, conn_id) = node_a.subscribe(room_id.clone(), user_id.clone());
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Node B broadcasts a PermissionChanged event (e.g., admin changed permissions)
+    let perm_event = ClusterEvent::PermissionChanged {
+        event_id: nanoid::nanoid!(16),
+        room_id: room_id.clone(),
+        target_user_id: UserId::from_string("target_user".to_string()),
+        target_username: "target_user".to_string(),
+        new_permissions: synctv_core::models::PermissionBits(
+            synctv_core::models::PermissionBits::DEFAULT_MEMBER
+                | synctv_core::models::PermissionBits::KICK_MEMBER,
+        ),
+        changed_by: UserId::from_string("admin_user".to_string()),
+        changed_by_username: "admin_user".to_string(),
+        timestamp: Utc::now(),
+    };
+
+    let result = node_b.broadcast(perm_event);
+    assert!(
+        result.redis_sent,
+        "PermissionChanged should be published to Redis"
+    );
+
+    // Node A should receive the PermissionChanged event
+    let received = tokio::time::timeout(Duration::from_secs(5), room_rx.recv())
+        .await
+        .expect("Timed out waiting for PermissionChanged on node A")
+        .expect("Room channel closed");
+
+    assert_eq!(received.event_type(), "permission_changed");
+    if let ClusterEvent::PermissionChanged {
+        target_user_id,
+        new_permissions,
+        changed_by_username,
+        ..
+    } = &received
+    {
+        assert_eq!(target_user_id.as_str(), "target_user");
+        assert!(
+            new_permissions.has(synctv_core::models::PermissionBits::KICK_MEMBER),
+            "New permissions should include KICK_MEMBER"
+        );
+        assert_eq!(changed_by_username, "admin_user");
+    } else {
+        panic!(
+            "Expected PermissionChanged event, got {:?}",
+            received.event_type()
+        );
+    }
+
+    node_a.unsubscribe(&conn_id);
+    node_a.shutdown().await;
+    node_b.shutdown().await;
+}
+
+// ============================================================================
+// Test 17: Cross-replica cache invalidation triggers local PermissionService
+//          cache eviction via CacheInvalidationService
+// ============================================================================
+
+#[tokio::test]
+async fn test_cross_replica_permission_cache_invalidation_via_cache_service() {
+    let redis = TestRedis::start().await;
+
+    // Create a CacheInvalidationService for node A
+    let cache_svc_a = CacheInvalidationService::new(
+        None,
+        "node_a".to_string(),
+        "test:perm:inv".to_string(),
+    );
+    let mut local_rx_a = cache_svc_a.subscribe();
+
+    // Create node A with cache invalidation enabled
+    let config_a = ClusterConfig {
+        redis_url: redis.redis_url.clone(),
+        node_id: "node_a".to_string(),
+        dedup_window: Duration::from_secs(10),
+        cleanup_interval: Duration::from_secs(30),
+        critical_channel_capacity: 1000,
+        publish_channel_capacity: 10_000,
+    };
+    let node_a = ClusterManager::new(config_a, None, Some(cache_svc_a))
+        .await
+        .expect("Failed to create node A");
+
+    let node_b = create_node(&redis.redis_url, "node_b").await;
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Node B changes a user's permissions and broadcasts a CacheInvalidate event
+    // targeting the permission cache for that specific user
+    let invalidate_event = ClusterEvent::CacheInvalidate {
+        event_id: nanoid::nanoid!(16),
+        targets: vec![CacheTarget::User {
+            user_id: "perm_changed_user".to_string(),
+        }],
+        timestamp: Utc::now(),
+    };
+
+    let result = node_b.broadcast(invalidate_event);
+    assert!(
+        result.redis_sent,
+        "CacheInvalidate should be published to Redis"
+    );
+
+    // Node A's cache invalidation service should receive the user invalidation
+    let msg = tokio::time::timeout(Duration::from_secs(5), local_rx_a.recv())
+        .await
+        .expect("Timed out waiting for permission cache invalidation")
+        .expect("Cache invalidation channel closed");
+
+    match msg {
+        InvalidationMessage::User { user_id } => {
+            assert_eq!(
+                user_id, "perm_changed_user",
+                "Should invalidate the correct user"
+            );
+        }
+        other => {
+            panic!(
+                "Expected User invalidation, got: {:?}",
+                other
+            );
+        }
+    }
+
+    node_a.shutdown().await;
+    node_b.shutdown().await;
+}
+
+// ============================================================================
+// Test 18: RoomMessageHub + ConnectionManager state consistency after cleanup
+// ============================================================================
+
+#[tokio::test]
+async fn test_room_hub_connection_manager_state_consistency() {
+    use synctv_cluster::sync::{ConnectionManager, ConnectionLimits};
+
+    let config = ClusterConfig {
+        redis_url: "".to_string(), // No Redis -- single-node mode
+        node_id: "test_node".to_string(),
+        dedup_window: Duration::from_secs(1),
+        cleanup_interval: Duration::from_secs(1),
+        critical_channel_capacity: 1000,
+        publish_channel_capacity: 10_000,
+    };
+
+    let manager = ClusterManager::new(config, None, None).await.unwrap();
+    let conn_manager = ConnectionManager::new(ConnectionLimits::default());
+
+    let room_id = RoomId::from_string("consistency_room".to_string());
+    let user1 = UserId::from_string("user_1".to_string());
+    let user2 = UserId::from_string("user_2".to_string());
+
+    // Subscribe two users via ClusterManager (RoomMessageHub)
+    let (_rx1, conn_id_1) = manager.subscribe(room_id.clone(), user1.clone());
+    let (_rx2, conn_id_2) = manager.subscribe(room_id.clone(), user2.clone());
+
+    // Register connections via ConnectionManager
+    conn_manager
+        .register(conn_id_1.clone(), user1.clone())
+        .expect("register user1");
+    conn_manager
+        .join_room(&conn_id_1, room_id.clone())
+        .expect("join room user1");
+    conn_manager
+        .register(conn_id_2.clone(), user2.clone())
+        .expect("register user2");
+    conn_manager
+        .join_room(&conn_id_2, room_id.clone())
+        .expect("join room user2");
+
+    // Verify initial state
+    let hub_metrics = manager.metrics();
+    assert_eq!(hub_metrics.total_connections, 2);
+    assert_eq!(hub_metrics.total_rooms, 1);
+    assert_eq!(conn_manager.connection_count(), 2);
+    assert_eq!(conn_manager.room_connection_count(&room_id), 2);
+
+    // Simulate user1 disconnect: unsubscribe from hub + unregister from connection manager
+    manager.unsubscribe(&conn_id_1);
+    conn_manager.unregister(&conn_id_1);
+
+    // Verify partial state
+    let hub_metrics = manager.metrics();
+    assert_eq!(hub_metrics.total_connections, 1, "Hub should have 1 connection");
+    assert_eq!(conn_manager.connection_count(), 1, "ConnManager should have 1 connection");
+    assert_eq!(
+        conn_manager.room_connection_count(&room_id),
+        1,
+        "Room should have 1 connection"
+    );
+
+    // Simulate user2 disconnect
+    manager.unsubscribe(&conn_id_2);
+    conn_manager.unregister(&conn_id_2);
+
+    // Verify clean state
+    let hub_metrics = manager.metrics();
+    assert_eq!(hub_metrics.total_connections, 0, "Hub should have 0 connections");
+    assert_eq!(hub_metrics.total_rooms, 0, "Hub should have 0 rooms");
+    assert_eq!(conn_manager.connection_count(), 0, "ConnManager should have 0 connections");
+    assert_eq!(
+        conn_manager.room_connection_count(&room_id),
+        0,
+        "Room should have 0 connections"
+    );
+    assert_eq!(
+        conn_manager.user_connection_count(&user1),
+        0,
+        "User1 should have 0 connections"
+    );
+    assert_eq!(
+        conn_manager.user_connection_count(&user2),
+        0,
+        "User2 should have 0 connections"
+    );
+
+    manager.shutdown().await;
+}
+
+// ============================================================================
+// Test 19: Rapid subscribe/unsubscribe does not leak state
+// ============================================================================
+
+#[tokio::test]
+async fn test_rapid_subscribe_unsubscribe_no_leak() {
+    let config = ClusterConfig {
+        redis_url: "".to_string(),
+        node_id: "test_node".to_string(),
+        dedup_window: Duration::from_secs(1),
+        cleanup_interval: Duration::from_secs(1),
+        critical_channel_capacity: 1000,
+        publish_channel_capacity: 10_000,
+    };
+
+    let manager = ClusterManager::new(config, None, None).await.unwrap();
+    let room_id = RoomId::from_string("rapid_room".to_string());
+
+    // Rapidly subscribe and unsubscribe 100 connections
+    for i in 0..100 {
+        let user = UserId::from_string(format!("rapid_user_{i}"));
+        let (_rx, conn_id) = manager.subscribe(room_id.clone(), user);
+        manager.unsubscribe(&conn_id);
+    }
+
+    // After all subscribe/unsubscribe cycles, state should be clean
+    let metrics = manager.metrics();
+    assert_eq!(
+        metrics.total_connections, 0,
+        "No connections should remain after rapid subscribe/unsubscribe"
+    );
+    assert_eq!(
+        metrics.total_rooms, 0,
+        "No rooms should remain after all subscribers removed"
+    );
+
+    manager.shutdown().await;
+}
+
+// ============================================================================
+// Test 20: Cross-replica RoomSettingsChanged event propagation
+// ============================================================================
+
+#[tokio::test]
+async fn test_cross_replica_room_settings_changed() {
+    let redis = TestRedis::start().await;
+
+    let node_a = create_node(&redis.redis_url, "node_a").await;
+    let node_b = create_node(&redis.redis_url, "node_b").await;
+
+    let room_id = RoomId::from_string("settings_room".to_string());
+    let user_id = UserId::from_string("settings_listener".to_string());
+
+    // Subscribe on node A
+    let (mut room_rx, conn_id) = node_a.subscribe(room_id.clone(), user_id.clone());
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Node B broadcasts a RoomSettingsChanged event
+    let settings_bytes = serde_json::to_vec(&serde_json::json!({
+        "max_members": 50,
+        "chat_enabled": false
+    }))
+    .expect("serialize settings");
+
+    let settings_event = ClusterEvent::RoomSettingsChanged {
+        event_id: nanoid::nanoid!(16),
+        room_id: room_id.clone(),
+        user_id: UserId::from_string("room_admin".to_string()),
+        username: "room_admin".to_string(),
+        settings_json: settings_bytes,
+        timestamp: Utc::now(),
+    };
+
+    let result = node_b.broadcast(settings_event);
+    assert!(
+        result.redis_sent,
+        "RoomSettingsChanged should be published to Redis"
+    );
+
+    // Node A should receive the settings change
+    let received = tokio::time::timeout(Duration::from_secs(5), room_rx.recv())
+        .await
+        .expect("Timed out waiting for RoomSettingsChanged")
+        .expect("Room channel closed");
+
+    assert_eq!(received.event_type(), "room_settings_changed");
+    if let ClusterEvent::RoomSettingsChanged {
+        settings_json, ..
+    } = &received
+    {
+        let parsed: serde_json::Value =
+            serde_json::from_slice(settings_json).expect("valid JSON");
+        assert_eq!(parsed["max_members"], 50);
+        assert_eq!(parsed["chat_enabled"], false);
+    } else {
+        panic!("Expected RoomSettingsChanged event");
+    }
+
+    node_a.unsubscribe(&conn_id);
+    node_a.shutdown().await;
+    node_b.shutdown().await;
+}

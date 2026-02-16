@@ -38,6 +38,7 @@ impl ClientApiImpl {
                 urls: vec![stun_url],
                 username: None,
                 credential: None,
+                expiry_time: 0, // STUN servers don't expire
             });
         }
 
@@ -50,6 +51,7 @@ impl ClientApiImpl {
                         urls: vec![url.clone()],
                         username: None,
                         credential: None,
+                        expiry_time: 0, // External STUN servers don't expire
                     });
                 }
             }
@@ -61,6 +63,7 @@ impl ClientApiImpl {
                         urls: ts.urls.clone(),
                         username: ts.username.clone(),
                         credential: ts.credential.clone(),
+                        expiry_time: 0, // TODO: compute TTL from TURN credential rotation policy
                     });
                 }
             }

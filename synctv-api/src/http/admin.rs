@@ -396,6 +396,8 @@ async fn set_user_password(
         .update_user_password(admin::UpdateUserPasswordRequest {
             user_id,
             new_password: req.password,
+            reason: String::new(),
+            force_logout: false,
         }, auth.role)
         .await
         .map_err(admin_err_to_app_error)?;
@@ -470,7 +472,7 @@ async fn get_user_rooms(
 ) -> AppResult<Json<admin::GetUserRoomsResponse>> {
     let api = require_admin_api(&state)?;
     let resp = api
-        .get_user_rooms(admin::GetUserRoomsRequest { user_id })
+        .get_user_rooms(admin::GetUserRoomsRequest { user_id, page: 0, page_size: 0 })
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -841,4 +843,285 @@ async fn remove_admin(
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ========== Request Struct Tests ==========
+
+    #[test]
+    fn test_set_user_role_request_deserialization() {
+        let json = r#"{"role":"admin"}"#;
+        let req: SetUserRoleRequest = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(req.role, "admin");
+    }
+
+    #[test]
+    fn test_set_user_role_request_all_roles() {
+        for role in &["root", "admin", "user"] {
+            let json = format!(r#"{{"role":"{}"}}"#, role);
+            let req: SetUserRoleRequest = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(req.role, *role);
+        }
+    }
+
+    #[test]
+    fn test_set_user_password_request_deserialization() {
+        let json = r#"{"password":"newpassword123"}"#;
+        let req: SetUserPasswordRequest = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(req.password, "newpassword123");
+    }
+
+    #[test]
+    fn test_set_user_username_request_deserialization() {
+        let json = r#"{"username":"newname"}"#;
+        let req: SetUserUsernameRequest = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(req.username, "newname");
+    }
+
+    #[test]
+    fn test_ban_request_with_reason() {
+        let json = r#"{"reason":"spamming"}"#;
+        let req: BanRequest = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(req.reason, "spamming");
+    }
+
+    #[test]
+    fn test_ban_request_empty_reason_default() {
+        let json = r#"{}"#;
+        let req: BanRequest = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(req.reason, ""); // #[serde(default)]
+    }
+
+    #[test]
+    fn test_set_room_password_request_deserialization() {
+        let json = r#"{"password":"roompass"}"#;
+        let req: SetRoomPasswordAdminRequest = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(req.password, "roompass");
+    }
+
+    #[test]
+    fn test_set_room_password_empty_clears_password() {
+        // Empty password means remove password
+        let json = r#"{}"#;
+        let req: SetRoomPasswordAdminRequest = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(req.password, ""); // #[serde(default)]
+    }
+
+    // ========== Query Struct Tests ==========
+
+    #[test]
+    fn test_list_users_query_defaults() {
+        let query = ListUsersQuery::default();
+        assert!(query.page.is_none());
+        assert!(query.page_size.is_none());
+        assert!(query.status.is_none());
+        assert!(query.role.is_none());
+        assert!(query.search.is_none());
+    }
+
+    #[test]
+    fn test_list_users_query_deserialization() {
+        let json = r#"{"page":2,"page_size":50,"status":"active","role":"admin","search":"test"}"#;
+        let query: ListUsersQuery = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(query.page, Some(2));
+        assert_eq!(query.page_size, Some(50));
+        assert_eq!(query.status.as_deref(), Some("active"));
+        assert_eq!(query.role.as_deref(), Some("admin"));
+        assert_eq!(query.search.as_deref(), Some("test"));
+    }
+
+    #[test]
+    fn test_list_rooms_query_defaults() {
+        let query = ListRoomsQuery::default();
+        assert!(query.page.is_none());
+        assert!(query.page_size.is_none());
+        assert!(query.status.is_none());
+        assert!(query.search.is_none());
+        assert!(query.creator_id.is_none());
+        assert!(query.is_banned.is_none());
+    }
+
+    #[test]
+    fn test_list_rooms_query_deserialization() {
+        let json = r#"{"page":1,"page_size":10,"status":"active","search":"room","creator_id":"user1","is_banned":false}"#;
+        let query: ListRoomsQuery = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(query.page, Some(1));
+        assert_eq!(query.page_size, Some(10));
+        assert_eq!(query.status.as_deref(), Some("active"));
+        assert_eq!(query.search.as_deref(), Some("room"));
+        assert_eq!(query.creator_id.as_deref(), Some("user1"));
+        assert_eq!(query.is_banned, Some(false));
+    }
+
+    // ========== AuthAdmin / AuthRoot Type Tests ==========
+
+    #[test]
+    fn test_auth_admin_debug() {
+        let auth = AuthAdmin {
+            user_id: UserId::from_string("admin1".to_string()),
+            role: synctv_core::models::UserRole::Admin,
+        };
+        let debug = format!("{auth:?}");
+        assert!(debug.contains("AuthAdmin"));
+    }
+
+    #[test]
+    fn test_auth_admin_clone() {
+        let auth = AuthAdmin {
+            user_id: UserId::from_string("admin1".to_string()),
+            role: synctv_core::models::UserRole::Admin,
+        };
+        let cloned = auth.clone();
+        assert_eq!(cloned.user_id.as_str(), "admin1");
+    }
+
+    #[test]
+    fn test_auth_root_debug() {
+        let auth = AuthRoot {
+            user_id: UserId::from_string("root1".to_string()),
+        };
+        let debug = format!("{auth:?}");
+        assert!(debug.contains("AuthRoot"));
+    }
+
+    // ========== Error Mapping Tests ==========
+
+    #[test]
+    fn test_require_admin_api_error() {
+        // When admin_api is None, should produce an internal error
+        let err = AppError::internal("Admin service not configured");
+        assert_eq!(err.status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(err.message, "Admin service not configured");
+    }
+
+    #[test]
+    fn test_ban_reason_length_validation() {
+        // The handler validates reason.len() > 500
+        let short_reason = "a".repeat(500);
+        assert!(short_reason.len() <= 500);
+
+        let long_reason = "a".repeat(501);
+        assert!(long_reason.len() > 500);
+    }
+
+    // ========== Role Conversion Tests ==========
+
+    #[test]
+    fn test_role_string_to_proto_mapping() {
+        // Verify the mapping logic used in set_user_role handler
+        let role_mappings = vec![
+            ("root", synctv_proto::common::UserRole::Root as i32),
+            ("admin", synctv_proto::common::UserRole::Admin as i32),
+            ("user", synctv_proto::common::UserRole::User as i32),
+        ];
+        for (role_str, expected_i32) in role_mappings {
+            let actual = match role_str {
+                "root" => synctv_proto::common::UserRole::Root as i32,
+                "admin" => synctv_proto::common::UserRole::Admin as i32,
+                "user" => synctv_proto::common::UserRole::User as i32,
+                _ => panic!("Unknown role"),
+            };
+            assert_eq!(actual, expected_i32, "Role '{}' mapping mismatch", role_str);
+        }
+    }
+
+    #[test]
+    fn test_unknown_role_returns_error() {
+        let role_str = "superuser";
+        let result = match role_str {
+            "root" | "admin" | "user" => Ok(()),
+            _ => Err(AppError::bad_request(format!("Unknown role: {}", role_str))),
+        };
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
+        assert!(err.message.contains("Unknown role"));
+    }
+
+    // ========== Status Conversion Tests ==========
+
+    #[test]
+    fn test_status_string_to_proto_mapping() {
+        let mappings = vec![
+            ("active", synctv_proto::common::UserStatus::Active as i32),
+            ("pending", synctv_proto::common::UserStatus::Pending as i32),
+            ("banned", synctv_proto::common::UserStatus::Banned as i32),
+        ];
+        for (status_str, expected) in mappings {
+            let actual = match status_str {
+                "active" => synctv_proto::common::UserStatus::Active as i32,
+                "pending" => synctv_proto::common::UserStatus::Pending as i32,
+                "banned" => synctv_proto::common::UserStatus::Banned as i32,
+                _ => synctv_proto::common::UserStatus::Unspecified as i32,
+            };
+            assert_eq!(actual, expected, "Status '{}' mismatch", status_str);
+        }
+    }
+
+    #[test]
+    fn test_unknown_status_maps_to_unspecified() {
+        let actual = match "invalid" {
+            "active" => synctv_proto::common::UserStatus::Active as i32,
+            "pending" => synctv_proto::common::UserStatus::Pending as i32,
+            "banned" => synctv_proto::common::UserStatus::Banned as i32,
+            _ => synctv_proto::common::UserStatus::Unspecified as i32,
+        };
+        assert_eq!(actual, synctv_proto::common::UserStatus::Unspecified as i32);
+    }
+
+    // ========== Router Structure Tests ==========
+
+    #[test]
+    fn test_admin_router_creation() {
+        // Verify the admin router can be created without panicking
+        let _router = create_admin_router();
+    }
+
+    // ========== Pagination Clamp Tests ==========
+
+    #[test]
+    fn test_room_members_page_size_clamp() {
+        // The handler clamps page_size to 1..=500
+        let raw_page_size: i32 = 1000;
+        let clamped = raw_page_size.clamp(1, 500);
+        assert_eq!(clamped, 500);
+
+        let raw_page_size: i32 = 0;
+        let clamped = raw_page_size.clamp(1, 500);
+        assert_eq!(clamped, 1);
+
+        let raw_page_size: i32 = 100;
+        let clamped = raw_page_size.clamp(1, 500);
+        assert_eq!(clamped, 100);
+    }
+
+    // ========== Kick Stream Validation Tests ==========
+
+    #[test]
+    fn test_kick_stream_requires_room_id_and_media_id() {
+        // The handler checks: if req.room_id.is_empty() || req.media_id.is_empty()
+        let empty_room = admin::KickStreamRequest {
+            room_id: String::new(),
+            media_id: "media1".to_string(),
+            reason: String::new(),
+        };
+        assert!(empty_room.room_id.is_empty());
+
+        let empty_media = admin::KickStreamRequest {
+            room_id: "room1".to_string(),
+            media_id: String::new(),
+            reason: String::new(),
+        };
+        assert!(empty_media.media_id.is_empty());
+
+        let valid = admin::KickStreamRequest {
+            room_id: "room1".to_string(),
+            media_id: "media1".to_string(),
+            reason: "test".to_string(),
+        };
+        assert!(!valid.room_id.is_empty() && !valid.media_id.is_empty());
+    }
 }

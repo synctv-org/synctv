@@ -14,6 +14,7 @@ use tokio::sync::{mpsc, oneshot};
 use tonic::Request;
 use tracing::{error, info, warn};
 
+use super::connection_pool::GrpcConnectionPool;
 use super::proto::{stream_relay_service_client::StreamRelayServiceClient, PullRtmpStreamRequest};
 use crate::relay::StreamRegistryTrait;
 
@@ -26,6 +27,8 @@ pub struct GrpcStreamPuller {
     stream_hub_event_sender: StreamHubEventSender,
     /// Cluster authentication secret (attached as x-cluster-secret metadata)
     cluster_secret: Option<String>,
+    /// Shared connection pool for reusing gRPC channels to publisher nodes
+    connection_pool: GrpcConnectionPool,
 }
 
 impl GrpcStreamPuller {
@@ -43,6 +46,29 @@ impl GrpcStreamPuller {
             publisher_node_addr,
             stream_hub_event_sender,
             cluster_secret: None,
+            connection_pool: GrpcConnectionPool::with_defaults(),
+        }
+    }
+
+    /// Create a new puller with a shared connection pool.
+    ///
+    /// Preferred over `new()` when a pool is available (e.g., from `PullStreamManager`),
+    /// as it reuses HTTP/2 connections to publisher nodes across retry attempts
+    /// and across different pull streams targeting the same node.
+    pub fn with_pool(
+        room_id: String,
+        media_id: String,
+        publisher_node_addr: String,
+        stream_hub_event_sender: StreamHubEventSender,
+        connection_pool: GrpcConnectionPool,
+    ) -> Self {
+        Self {
+            room_id,
+            media_id,
+            publisher_node_addr,
+            stream_hub_event_sender,
+            cluster_secret: None,
+            connection_pool,
         }
     }
 
@@ -155,25 +181,20 @@ impl GrpcStreamPuller {
     /// Connect to remote publisher and stream data to the local `StreamHub`.
     /// Returns `Ok(())` when the stream ends normally, `Err` on connection or protocol failure.
     ///
-    /// TODO: Consider implementing connection pooling for gRPC clients.
-    /// Current implementation creates a new connection on each retry, which is acceptable
-    /// because retries are infrequent and gRPC has built-in connection management.
-    /// For high-traffic scenarios, a connection pool keyed by `publisher_node_addr` could
-    /// be implemented to reduce connection overhead.
+    /// Uses the shared [`GrpcConnectionPool`] to reuse HTTP/2 connections across
+    /// retry attempts and across different pull streams targeting the same node.
+    /// On connection failure, the pooled entry is invalidated so the next attempt
+    /// creates a fresh connection.
     async fn connect_and_stream(&self, data_sender: &FrameDataSender) -> anyhow::Result<()> {
-        // gRPC uses HTTP/2 as transport. The URL scheme should be:
-        // - http:// for plaintext (development/internal networks)
-        // - https:// for TLS (production)
-        // If grpc_address already contains a scheme, use it directly; otherwise default to http://
-        let publisher_url = if self.publisher_node_addr.starts_with("http://") || self.publisher_node_addr.starts_with("https://") {
-            self.publisher_node_addr.clone()
-        } else {
-            format!("http://{}", self.publisher_node_addr)
-        };
-
-        let mut client = StreamRelayServiceClient::connect(publisher_url)
+        let channel = self.connection_pool
+            .get_channel(&self.publisher_node_addr)
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to connect to publisher: {e}"))?;
+            .map_err(|e| {
+                self.connection_pool.invalidate(&self.publisher_node_addr);
+                anyhow::anyhow!("Failed to connect to publisher: {e}")
+            })?;
+
+        let mut client = StreamRelayServiceClient::new(channel);
 
         let mut request = Request::new(PullRtmpStreamRequest {
             room_id: self.room_id.clone(),
@@ -334,5 +355,45 @@ mod tests {
         assert_eq!(puller.room_id, "room123");
         assert_eq!(puller.media_id, "media456");
         assert_eq!(puller.publisher_node_addr, "publisher-node:50051");
+        // Default pool should be created
+        assert!(puller.connection_pool.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_puller_with_shared_pool() {
+        let (stream_hub_event_sender, _) = tokio::sync::mpsc::channel(64);
+        let pool = GrpcConnectionPool::with_defaults();
+
+        let puller = GrpcStreamPuller::with_pool(
+            "room123".to_string(),
+            "media456".to_string(),
+            "publisher-node:50051".to_string(),
+            stream_hub_event_sender,
+            pool.clone(),
+        );
+
+        assert_eq!(puller.room_id, "room123");
+        assert_eq!(puller.media_id, "media456");
+        assert_eq!(puller.publisher_node_addr, "publisher-node:50051");
+        // Pool should be shared (same underlying Arc)
+        assert!(puller.connection_pool.is_empty());
+        assert_eq!(puller.connection_pool.len(), pool.len());
+    }
+
+    #[tokio::test]
+    async fn test_puller_with_cluster_secret() {
+        let (stream_hub_event_sender, _) = tokio::sync::mpsc::channel(64);
+
+        let puller = GrpcStreamPuller::new(
+            "room".to_string(),
+            "media".to_string(),
+            "node:50051".to_string(),
+            "local".to_string(),
+            stream_hub_event_sender,
+            std::sync::Arc::new(MockStreamRegistry::new()),
+        )
+        .with_cluster_secret(Some("test-secret".to_string()));
+
+        assert_eq!(puller.cluster_secret.as_deref(), Some("test-secret"));
     }
 }

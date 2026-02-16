@@ -6,7 +6,7 @@
 use crate::{
     relay::registry_trait::StreamRegistryTrait,
     error::StreamResult,
-    grpc::GrpcStreamPuller,
+    grpc::{GrpcConnectionPool, GrpcStreamPuller},
     livestream::managed_stream::{ManagedStream, StreamLifecycle},
 };
 use synctv_xiu::streamhub::define::{StreamHubEvent, StreamHubEventSender};
@@ -37,6 +37,8 @@ pub struct PullStream {
     /// Flag to prevent double UnPublish: set to `true` after `stop()` sends UnPublish.
     /// The `Drop` implementation checks this to skip its own UnPublish.
     stopped: AtomicBool,
+    /// Shared gRPC connection pool for reusing HTTP/2 channels to publisher nodes.
+    connection_pool: GrpcConnectionPool,
 }
 
 impl ManagedStream for PullStream {
@@ -59,6 +61,26 @@ impl PullStream {
         stream_hub_event_sender: StreamHubEventSender,
         epoch: u64,
     ) -> Self {
+        Self::with_pool(
+            room_id, media_id, publisher_node, local_node_id,
+            registry, stream_hub_event_sender, epoch,
+            GrpcConnectionPool::with_defaults(),
+        )
+    }
+
+    /// Create a new `PullStream` with a shared gRPC connection pool.
+    ///
+    /// Preferred over `new()` when a pool is available (from `PullStreamManager`).
+    pub fn with_pool(
+        room_id: String,
+        media_id: String,
+        publisher_node: String,
+        local_node_id: String,
+        registry: Arc<dyn StreamRegistryTrait>,
+        stream_hub_event_sender: StreamHubEventSender,
+        epoch: u64,
+        connection_pool: GrpcConnectionPool,
+    ) -> Self {
         Self {
             room_id,
             media_id,
@@ -70,6 +92,7 @@ impl PullStream {
             epoch,
             cancel_token: CancellationToken::new(),
             stopped: AtomicBool::new(false),
+            connection_pool,
         }
     }
 
@@ -116,13 +139,12 @@ impl PullStream {
         // Clone the is_running flag to mark failure in the spawned task
         let is_running_flag = self.lifecycle.is_running_clone();
 
-        let grpc_puller = GrpcStreamPuller::new(
+        let grpc_puller = GrpcStreamPuller::with_pool(
             self.room_id.clone(),
             self.media_id.clone(),
             self.publisher_node.clone(),
-            self.local_node_id.clone(),
             self.stream_hub_event_sender.clone(),
-            self.registry.clone(),
+            self.connection_pool.clone(),
         );
 
         let child_token = self.cancel_token.child_token();

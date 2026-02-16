@@ -169,3 +169,81 @@ impl From<OAuth2ClientRow> for UserOAuthProviderMapping {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+
+    #[test]
+    fn test_oauth2_client_row_to_mapping_all_fields() {
+        let now = Utc::now();
+        let row = OAuth2ClientRow {
+            id: "abc123".to_string(),
+            provider: "github".to_string(),
+            provider_user_id: "gh_user_456".to_string(),
+            user_id: "local_user_789".to_string(),
+            username: "ghuser".to_string(),
+            email: Some("ghuser@example.com".to_string()),
+            avatar_url: Some("https://avatars.example.com/ghuser.png".to_string()),
+            created_at: now,
+            updated_at: now,
+        };
+
+        let mapping: UserOAuthProviderMapping = row.into();
+        assert_eq!(mapping.id, "abc123");
+        assert_eq!(mapping.provider, "github");
+        assert_eq!(mapping.provider_user_id, "gh_user_456");
+        assert_eq!(mapping.user_id.as_str(), "local_user_789");
+        assert_eq!(mapping.username, "ghuser");
+        assert_eq!(mapping.email.as_deref(), Some("ghuser@example.com"));
+        assert_eq!(
+            mapping.avatar_url.as_deref(),
+            Some("https://avatars.example.com/ghuser.png")
+        );
+        assert_eq!(mapping.created_at, now);
+        assert_eq!(mapping.updated_at, now);
+    }
+
+    #[test]
+    fn test_oauth2_client_row_to_mapping_optional_fields_none() {
+        let now = Utc::now();
+        let row = OAuth2ClientRow {
+            id: "def456".to_string(),
+            provider: "oidc".to_string(),
+            provider_user_id: "oidc_user_001".to_string(),
+            user_id: "user_002".to_string(),
+            username: "oidcuser".to_string(),
+            email: None,
+            avatar_url: None,
+            created_at: now,
+            updated_at: now,
+        };
+
+        let mapping: UserOAuthProviderMapping = row.into();
+        assert!(mapping.email.is_none());
+        assert!(mapping.avatar_url.is_none());
+    }
+
+    #[test]
+    fn test_mapping_provider_enum_from_row() {
+        let now = Utc::now();
+        let row = OAuth2ClientRow {
+            id: "id".to_string(),
+            provider: "google".to_string(),
+            provider_user_id: "goog_123".to_string(),
+            user_id: "user".to_string(),
+            username: "googleuser".to_string(),
+            email: None,
+            avatar_url: None,
+            created_at: now,
+            updated_at: now,
+        };
+
+        let mapping: UserOAuthProviderMapping = row.into();
+        assert_eq!(
+            mapping.provider_enum(),
+            Some(crate::models::oauth2_client::OAuth2Provider::Google)
+        );
+    }
+}

@@ -5,6 +5,7 @@
 pub struct ParseRequest {
     #[prost(string, tag = "1")]
     pub url: ::prost::alloc::string::String,
+    /// SENSITIVE: Session cookies - do not log
     #[prost(map = "string, string", tag = "2")]
     pub cookies: ::std::collections::HashMap<
         ::prost::alloc::string::String,
@@ -76,6 +77,7 @@ pub struct QrStatusResponse {
     /// 0=success, 1=expired, 2=not_scanned, 3=scanned_not_confirmed
     #[prost(int32, tag = "1")]
     pub status: i32,
+    /// SENSITIVE: Session cookies - do not log
     #[prost(map = "string, string", tag = "2")]
     pub cookies: ::std::collections::HashMap<
         ::prost::alloc::string::String,
@@ -142,6 +144,7 @@ pub struct LoginSmsRequest {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct LoginSmsResponse {
+    /// SENSITIVE: Session cookies - do not log
     #[prost(map = "string, string", tag = "1")]
     pub cookies: ::std::collections::HashMap<
         ::prost::alloc::string::String,
@@ -152,6 +155,7 @@ pub struct LoginSmsResponse {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct UserInfoRequest {
+    /// SENSITIVE: Session cookies - do not log
     #[prost(map = "string, string", tag = "1")]
     pub cookies: ::std::collections::HashMap<
         ::prost::alloc::string::String,

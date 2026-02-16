@@ -156,8 +156,10 @@ impl ClientApiImpl {
             })
             .collect();
 
+        let total = proto_playlists.len() as i32;
         Ok(crate::proto::client::ListPlaylistsResponse {
             playlists: proto_playlists,
+            total,
         })
     }
 }

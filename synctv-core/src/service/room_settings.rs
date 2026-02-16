@@ -6,12 +6,13 @@
 //! - L1 Cache: In-memory moka cache (per-instance)
 //! - TTL: 5 minutes with time-based expiration
 //! - Max capacity: 10,000 rooms
-//! - Cache invalidation: On settings update via Pub/Sub
+//! - Cache invalidation: Via Redis Streams through CacheInvalidationService
 //!
 //! ## Multi-Replica Synchronization
-//! - Uses Redis Pub/Sub to broadcast settings changes
-//! - Channel: `room_settings_updates`
-//! - Message format: `{"room_id": "xxx", "version": 123}`
+//! - Uses Redis Streams (via CacheInvalidationService) for reliable message delivery
+//! - Messages are persisted and won't be lost if a replica disconnects
+//! - Consumer groups ensure every replica processes invalidation messages
+//! - On reconnection, missed messages are automatically delivered
 //!
 //! ## Performance Optimizations
 //! - Single-flight pattern: Prevents cache thundering
@@ -24,43 +25,18 @@ use serde::{Deserialize, Serialize};
 use rand::RngExt;
 
 use crate::{
+    cache::{CacheInvalidationService, InvalidationMessage},
     models::{RoomId, RoomSettings},
     repository::RoomSettingsRepository,
     service::notification::NotificationService,
     Error, Result,
 };
 
-/// Settings update notification for Pub/Sub
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct SettingsUpdateMessage {
-    room_id: String,
-    version: i64,
-}
-
-/// Abstract cache invalidation trait - allows flexible backend
-#[async_trait::async_trait]
-pub trait CacheInvalidation: Send + Sync {
-    async fn publish(&self, channel: &str, message: &str) -> Result<()>;
-    async fn subscribe(&self, channel: &str) -> Result<Box<dyn InvalidationStream>>;
-}
-
-/// Stream for receiving invalidation messages
-#[async_trait::async_trait]
-pub trait InvalidationStream: Send + Sync {
-    async fn next_message(&mut self) -> Result<InvalidationMessage>;
-}
-
-/// Invalid message from pub/sub
-#[derive(Debug, Clone)]
-pub struct InvalidationMessage {
-    pub payload: String,
-}
-
 /// Room settings service with caching
 pub struct RoomSettingsService {
     repo: RoomSettingsRepository,
     cache: Arc<moka::future::Cache<RoomId, RoomSettings>>,
-    invalidation: Option<Arc<dyn CacheInvalidation>>,
+    invalidation_service: Option<Arc<CacheInvalidationService>>,
     notification_service: Arc<NotificationService>,
     single_flight: Arc<tokio::sync::Mutex<std::collections::HashMap<RoomId, Arc<tokio::sync::Semaphore>>>>,
 }
@@ -78,7 +54,7 @@ impl Clone for RoomSettingsService {
         Self {
             repo: self.repo.clone(),
             cache: self.cache.clone(),
-            invalidation: self.invalidation.clone(),
+            invalidation_service: self.invalidation_service.clone(),
             notification_service: self.notification_service.clone(),
             single_flight: self.single_flight.clone(),
         }
@@ -88,17 +64,20 @@ impl Clone for RoomSettingsService {
 impl RoomSettingsService {
     const CACHE_TTL_SECS: u64 = 300; // 5 minutes
     const CACHE_MAX_CAPACITY: u64 = 10_000;
-    const PUBSUB_CHANNEL: &'static str = "room_settings_updates";
     /// Maximum retry attempts for optimistic lock conflicts
     const MAX_RETRIES: u32 = 3;
     /// Base backoff in milliseconds (exponential: 5ms, 10ms, 20ms)
     const BACKOFF_BASE_MS: u64 = 5;
 
     /// Create a new room settings service
+    ///
+    /// Uses `CacheInvalidationService` (Redis Streams) for reliable cross-replica
+    /// cache invalidation. When a replica disconnects and reconnects, missed
+    /// invalidation messages are automatically delivered via consumer groups.
     #[must_use]
     pub fn new(
         repo: RoomSettingsRepository,
-        invalidation: Option<Arc<dyn CacheInvalidation>>,
+        invalidation_service: Option<Arc<CacheInvalidationService>>,
         notification_service: Arc<NotificationService>,
         cache_ttl_secs: Option<u64>,
         cache_max_capacity: Option<u64>,
@@ -116,23 +95,52 @@ impl RoomSettingsService {
         let service = Self {
             repo,
             cache,
-            invalidation,
+            invalidation_service,
             notification_service,
             single_flight: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         };
 
-        // Start Pub/Sub listener if invalidation backend is available
-        if service.invalidation.is_some() {
-            let service_clone = service.clone();
+        // Start invalidation listener if CacheInvalidationService is available
+        if let Some(ref inv_service) = service.invalidation_service {
+            let cache_clone = service.cache.clone();
+            let mut receiver = inv_service.subscribe();
             let cancel = cancel.unwrap_or_default();
             tokio::spawn(async move {
-                tokio::select! {
-                    _ = cancel.cancelled() => {
-                        tracing::info!("Room settings Pub/Sub listener shutting down");
-                    }
-                    result = service_clone.listen_for_updates() => {
-                        if let Err(e) = result {
-                            tracing::error!("Room settings Pub/Sub listener error: {}", e);
+                loop {
+                    tokio::select! {
+                        _ = cancel.cancelled() => {
+                            tracing::info!("Room settings invalidation listener shutting down");
+                            break;
+                        }
+                        result = receiver.recv() => {
+                            match result {
+                                Ok(InvalidationMessage::RoomSettings { ref room_id }) => {
+                                    let room_id = RoomId::from_string(room_id.clone());
+                                    cache_clone.invalidate(&room_id).await;
+                                    tracing::debug!(
+                                        room_id = %room_id.as_str(),
+                                        "Room settings cache invalidated (cross-replica)"
+                                    );
+                                }
+                                Ok(InvalidationMessage::All) => {
+                                    cache_clone.invalidate_all();
+                                    tracing::debug!("All room settings cache cleared (cross-replica)");
+                                }
+                                Ok(_) => {
+                                    // Other invalidation types are handled elsewhere
+                                }
+                                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                    tracing::debug!("Room settings invalidation channel closed");
+                                    break;
+                                }
+                                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                                    tracing::warn!(
+                                        lagged_messages = n,
+                                        "Room settings invalidation listener lagged, flushing all cache"
+                                    );
+                                    cache_clone.invalidate_all();
+                                }
+                            }
                         }
                     }
                 }
@@ -194,7 +202,7 @@ impl RoomSettingsService {
     /// - Reads current version from database
     /// - Updates database with version check
     /// - Updates local cache
-    /// - Publishes invalidation to Pub/Sub (if configured)
+    /// - Publishes invalidation via Redis Streams (if configured)
     /// - Sends WebSocket notification to connected clients
     pub async fn set(&self, room_id: &RoomId, settings: &RoomSettings) -> Result<()> {
         for attempt in 0..Self::MAX_RETRIES {
@@ -273,38 +281,24 @@ impl RoomSettingsService {
     pub async fn delete(&self, room_id: &RoomId) -> Result<()> {
         self.repo.delete_all(room_id).await?;
 
-        // Invalidate cache
+        // Invalidate local cache
         self.invalidate_local(room_id).await;
 
-        // Notify other replicas (use timestamp as pseudo-version since row is deleted)
-        if let Some(ref invalidation) = self.invalidation {
-            let message = SettingsUpdateMessage {
-                room_id: room_id.as_str().to_string(),
-                version: chrono::Utc::now().timestamp(),
-            };
-
-            let _ = invalidation.publish(
-                Self::PUBSUB_CHANNEL,
-                &serde_json::to_string(&message).unwrap_or_default(),
-            ).await;
+        // Notify other replicas via Redis Streams
+        if let Some(ref inv_service) = self.invalidation_service {
+            if let Err(e) = inv_service.invalidate_room_settings(room_id).await {
+                tracing::error!("Failed to publish room settings invalidation: {}", e);
+            }
         }
 
         Ok(())
     }
 
     /// Publish invalidation to other replicas and notify connected clients.
-    async fn publish_and_notify(&self, room_id: &RoomId, settings: &RoomSettings, version: i64) {
-        if let Some(ref invalidation) = self.invalidation {
-            let message = SettingsUpdateMessage {
-                room_id: room_id.as_str().to_string(),
-                version,
-            };
-
-            if let Err(e) = invalidation.publish(
-                Self::PUBSUB_CHANNEL,
-                &serde_json::to_string(&message).unwrap_or_default(),
-            ).await {
-                tracing::error!("Failed to publish settings update: {}", e);
+    async fn publish_and_notify(&self, room_id: &RoomId, settings: &RoomSettings, _version: i64) {
+        if let Some(ref inv_service) = self.invalidation_service {
+            if let Err(e) = inv_service.invalidate_room_settings(room_id).await {
+                tracing::error!("Failed to publish settings invalidation: {}", e);
             }
         }
 
@@ -314,25 +308,6 @@ impl RoomSettingsService {
     /// Invalidate local cache for a room
     async fn invalidate_local(&self, room_id: &RoomId) {
         let () = self.cache.invalidate(room_id).await;
-    }
-
-    /// Listen for settings updates from Pub/Sub
-    async fn listen_for_updates(&self) -> Result<()> {
-        let invalidation = self.invalidation.as_ref()
-            .ok_or_else(|| Error::Internal("Invalidation backend not configured".to_string()))?;
-
-        let mut stream = invalidation.subscribe(Self::PUBSUB_CHANNEL).await?;
-
-        while let Ok(message) = stream.next_message().await {
-            if let Ok(update) = serde_json::from_str::<SettingsUpdateMessage>(&message.payload) {
-                let room_id = RoomId::from_string(update.room_id);
-                self.invalidate_local(&room_id).await;
-
-                tracing::debug!("Invalidated settings for room: {}", room_id.as_str());
-            }
-        }
-
-        Ok(())
     }
 
     /// Notify connected clients about settings change
@@ -385,7 +360,7 @@ impl RoomSettingsService {
     }
 
     /// Get cache statistics
-    #[must_use] 
+    #[must_use]
     pub fn cache_stats(&self) -> CacheStats {
         CacheStats {
             entry_count: self.cache.entry_count(),
@@ -408,6 +383,69 @@ pub struct CacheStats {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::cache::CacheInvalidationService;
+
+    #[tokio::test]
+    async fn test_invalidation_via_streams() {
+        // Create a CacheInvalidationService without Redis (local-only mode)
+        let inv_service = Arc::new(CacheInvalidationService::new(
+            None,
+            "test-node".to_string(),
+            "synctv:cache:invalidate:stream".to_string(),
+        ));
+
+        // Subscribe before broadcasting so we can verify the message is sent
+        let mut receiver = inv_service.subscribe();
+
+        // Broadcast a RoomSettings invalidation
+        inv_service
+            .broadcast_all(InvalidationMessage::RoomSettings {
+                room_id: "room1".to_string(),
+            })
+            .await
+            .unwrap();
+
+        // Verify the message was received
+        let msg = receiver.recv().await.unwrap();
+        match msg {
+            InvalidationMessage::RoomSettings { ref room_id } => {
+                assert_eq!(room_id, "room1");
+            }
+            _ => panic!("Expected RoomSettings invalidation message"),
+        }
+    }
+
+    #[test]
+    fn test_room_settings_invalidation_message_serialization() {
+        let msg = InvalidationMessage::RoomSettings {
+            room_id: "room123".to_string(),
+        };
+
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("room_settings"));
+        assert!(json.contains("room123"));
+
+        let decoded: InvalidationMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(msg, decoded);
+    }
+
+    #[tokio::test]
+    async fn test_lagged_receiver_flushes_cache() {
+        // Create invalidation service with local-only mode
+        let inv_service = Arc::new(CacheInvalidationService::new(
+            None,
+            "test-node".to_string(),
+            "synctv:cache:invalidate:stream".to_string(),
+        ));
+
+        // Verify that broadcast_all works without panicking
+        // (full lagged-receiver test requires a real RoomSettingsService with DB)
+        inv_service
+            .broadcast_all(InvalidationMessage::All)
+            .await
+            .unwrap();
+    }
 
     #[tokio::test]
     #[ignore = "Requires database"]

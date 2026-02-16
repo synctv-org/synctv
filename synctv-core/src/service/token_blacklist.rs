@@ -477,4 +477,129 @@ mod tests {
         assert!(service.is_enabled());
         assert!(!service.uses_redis());
     }
+
+    // ========== Double-Blacklist Idempotency ==========
+
+    #[tokio::test]
+    async fn test_in_memory_blacklist_idempotent() {
+        let service = TokenBlacklistService::new(None, "synctv".to_string());
+        let token = "idempotent_token";
+
+        // Blacklist the same token twice
+        service.blacklist_token(token, 60).await.unwrap();
+        service.blacklist_token(token, 60).await.unwrap();
+
+        // Should still be blacklisted
+        assert!(service.is_blacklisted(token).await.unwrap());
+
+        // Single remove should clear it
+        service.remove_token(token).await.unwrap();
+        assert!(!service.is_blacklisted(token).await.unwrap());
+    }
+
+    // ========== Remove Non-Existent Token ==========
+
+    #[tokio::test]
+    async fn test_in_memory_remove_nonexistent_token() {
+        let service = TokenBlacklistService::new(None, "synctv".to_string());
+
+        // Removing a token that was never blacklisted should succeed (no-op)
+        service.remove_token("nonexistent").await.unwrap();
+
+        // Verify it's still not blacklisted
+        assert!(!service.is_blacklisted("nonexistent").await.unwrap());
+    }
+
+    // ========== Concurrent Blacklist Operations ==========
+
+    #[tokio::test]
+    async fn test_in_memory_concurrent_blacklist_and_check() {
+        let service = TokenBlacklistService::new(None, "synctv".to_string());
+
+        // Spawn concurrent blacklist operations
+        let mut handles = Vec::new();
+        for i in 0..50 {
+            let svc = service.clone();
+            let token = format!("concurrent_token_{i}");
+            handles.push(tokio::spawn(async move {
+                svc.blacklist_token(&token, 60).await.unwrap();
+                assert!(svc.is_blacklisted(&token).await.unwrap());
+            }));
+        }
+
+        for h in handles {
+            h.await.unwrap();
+        }
+
+        // Verify all tokens are blacklisted
+        for i in 0..50 {
+            let token = format!("concurrent_token_{i}");
+            assert!(service.is_blacklisted(&token).await.unwrap());
+        }
+    }
+
+    // ========== User Invalidation Re-invalidation ==========
+
+    #[tokio::test]
+    async fn test_in_memory_user_re_invalidation_updates_timestamp() {
+        let service = TokenBlacklistService::new(None, "synctv".to_string());
+        let user = UserId::from_string("re_invalidate_user".to_string());
+
+        let now = chrono::Utc::now().timestamp();
+
+        // First invalidation at current time
+        service.invalidate_user_tokens(&user, 3600).await.unwrap();
+
+        // Token issued 100s ago should be invalidated
+        assert!(service.are_user_tokens_invalidated(&user, now - 100).await.unwrap());
+
+        // Token issued at same second as invalidation: rejected (uses <=)
+        assert!(service.are_user_tokens_invalidated(&user, now).await.unwrap());
+
+        // Token that would be issued 1 second from now should still be valid
+        assert!(!service.are_user_tokens_invalidated(&user, now + 1).await.unwrap());
+
+        // Wait so the second clock ticks forward, then re-invalidate
+        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+        service.invalidate_user_tokens(&user, 3600).await.unwrap();
+
+        // Now the token issued at (now + 1) should also be invalidated,
+        // because the new invalidation timestamp is >= now + 2
+        assert!(service.are_user_tokens_invalidated(&user, now + 1).await.unwrap());
+    }
+
+    // ========== Hash Token Determinism ==========
+
+    #[test]
+    fn test_hash_token_deterministic() {
+        let token = "my_secret_jwt_token";
+        let h1 = hash_token(token);
+        let h2 = hash_token(token);
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn test_hash_token_different_inputs() {
+        let h1 = hash_token("token_a");
+        let h2 = hash_token("token_b");
+        assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn test_hash_token_is_hex_sha256() {
+        let h = hash_token("test");
+        // SHA-256 produces 64 hex characters
+        assert_eq!(h.len(), 64);
+        assert!(h.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    // ========== Debug Representation ==========
+
+    #[test]
+    fn test_token_blacklist_debug() {
+        let service = TokenBlacklistService::new(None, "synctv".to_string());
+        let debug = format!("{service:?}");
+        assert!(debug.contains("TokenBlacklistService"));
+        assert!(debug.contains("enabled"));
+    }
 }

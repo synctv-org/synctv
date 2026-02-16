@@ -7,6 +7,10 @@ import "proto/common.proto";
 // ==================== Auth Service ====================
 // Authentication: None (public access)
 // Routes: /api/auth/*
+//
+// SECURITY: All RPCs that transmit passwords (Register, Login) send credentials
+// as plaintext in the protobuf payload. Deployments MUST use TLS to protect
+// credentials in transit. Never expose this service over an unencrypted channel.
 service AuthService {
     rpc Register(RegisterRequest) returns (RegisterResponse);
     rpc Login(LoginRequest) returns (LoginResponse);
@@ -143,14 +147,26 @@ service NotificationService {
 }
 
 // Common Types
+
+// Full user profile - only returned to the authenticated user themselves (e.g., GetProfile, Register, Login).
+// SECURITY: Contains PII (email). Never return this message for other users.
 message User {
     string id = 1;
     string username = 2;
-    string email = 3;
+    string email = 3;                    // PII - only visible to the user themselves or admins
     synctv.common.UserRole role = 4;     // Global RBAC role
     synctv.common.UserStatus status = 5; // Account status
     int64 created_at = 6;
     bool email_verified = 7; // Whether email has been verified
+}
+
+// Public user view - safe to return in any context (room member lists, chat, etc.).
+// Does not contain email or other PII.
+message UserPublicView {
+    string id = 1;
+    string username = 2;
+    synctv.common.UserRole role = 3;     // Global RBAC role
+    int64 created_at = 4;
 }
 
 message Room {
@@ -206,9 +222,10 @@ message PlaybackState {
 }
 
 // Authentication Messages
+// SECURITY: password is transmitted as plaintext. TLS MUST be used.
 message RegisterRequest {
     string username = 1;
-    string password = 2;
+    string password = 2; // SECURITY: Plaintext credential - requires TLS in transit
     string email = 3;
 }
 
@@ -218,9 +235,10 @@ message RegisterResponse {
     string refresh_token = 3;
 }
 
+// SECURITY: password is transmitted as plaintext. TLS MUST be used.
 message LoginRequest {
     string username = 1;
-    string password = 2;
+    string password = 2; // SECURITY: Plaintext credential - requires TLS in transit
 }
 
 message LoginResponse {
@@ -422,10 +440,13 @@ message DeletePlaylistResponse {
 
 message ListPlaylistsRequest {
     string parent_id = 1; // Optional parent ID to get children of specific playlist
+    int32 page = 2;       // Page number (default 1)
+    int32 page_size = 3;  // Items per page (default 50)
 }
 
 message ListPlaylistsResponse {
     repeated Playlist playlists = 1;
+    int32 total = 2; // Total number of playlists matching filter
 }
 
 message SetCurrentMediaRequest {
@@ -522,7 +543,9 @@ message EditMediaResponse {
 }
 
 // Clear Playlist
-message ClearPlaylistRequest {} // room_id from context
+message ClearPlaylistRequest {
+    string playlist_id = 1; // Playlist to clear (room_id from context)
+}
 message ClearPlaylistResponse {
     bool success = 1;
     int32 deleted_count = 2;
@@ -678,6 +701,8 @@ message RoomSettingsChanged {
 
 message ErrorMessage {
     string message = 1;
+    int32 code = 2;    // Application-level error code for programmatic handling (0 = unspecified)
+    string detail = 3; // Optional detailed/debug info (may be empty in production)
 }
 
 // Chat History
@@ -706,9 +731,10 @@ message SetUsernameResponse {
     User user = 1;
 }
 
+// SECURITY: passwords are transmitted as plaintext. TLS MUST be used.
 message SetPasswordRequest {
-    string old_password = 1;
-    string new_password = 2;
+    string old_password = 1; // SECURITY: Plaintext credential - requires TLS in transit
+    string new_password = 2; // SECURITY: Plaintext credential - requires TLS in transit
 }
 
 message SetPasswordResponse {
@@ -798,7 +824,10 @@ message GetStreamInfoResponse {
 }
 
 // ListRoomStreams - List all active streams in the room
-message ListRoomStreamsRequest {}
+message ListRoomStreamsRequest {
+    int32 page = 1;       // Page number (default 1)
+    int32 page_size = 2;  // Items per page (default 50)
+}
 
 message StreamEntry {
     string media_id = 1;
@@ -807,6 +836,7 @@ message StreamEntry {
 
 message ListRoomStreamsResponse {
     repeated StreamEntry streams = 1;
+    int32 total = 2; // Total number of active streams
 }
 
 // ==================== Public Settings ====================
@@ -873,10 +903,11 @@ message RequestPasswordResetResponse {
     string message = 1;
 }
 
+// SECURITY: new_password is transmitted as plaintext. TLS MUST be used.
 message ConfirmPasswordResetRequest {
     string email = 1;
     string token = 2;       // Reset code from email
-    string new_password = 3;
+    string new_password = 3; // SECURITY: Plaintext credential - requires TLS in transit
 }
 
 message ConfirmPasswordResetResponse {
@@ -992,6 +1023,8 @@ message IceServer {
     repeated string urls = 1;     // ["stun:stun.example.com:3478", "turn:turn.example.com:3478"]
     optional string username = 2;  // For TURN authentication
     optional string credential = 3; // For TURN authentication (temporary password)
+    int64 expiry_time = 4;        // Unix timestamp (seconds) when TURN credentials expire. 0 = no expiry (STUN-only).
+                                   // Clients MUST request fresh credentials before this time.
 }
 
 // Request/Response for GetIceServers RPC
@@ -1015,6 +1048,15 @@ message GetNetworkQualityResponse {
     repeated PeerNetworkQuality peers = 1;
 }
 
+// Suggested action based on network quality assessment
+enum QualityAction {
+    QUALITY_ACTION_UNSPECIFIED = 0;
+    QUALITY_ACTION_NONE = 1;             // No change needed
+    QUALITY_ACTION_REDUCE_QUALITY = 2;   // Lower video resolution/bitrate
+    QUALITY_ACTION_REDUCE_FRAMERATE = 3; // Lower framerate
+    QUALITY_ACTION_AUDIO_ONLY = 4;       // Drop video, audio only
+}
+
 message PeerNetworkQuality {
     string peer_id = 1;
     // Round-trip time in milliseconds
@@ -1027,8 +1069,8 @@ message PeerNetworkQuality {
     uint32 available_bandwidth_kbps = 5;
     // Quality score (0-5, where 5 is excellent)
     uint32 quality_score = 6;
-    // Suggested quality action: "none", "reduce_quality", "reduce_framerate", "audio_only"
-    string quality_action = 7;
+    // Suggested quality action based on current network conditions
+    QualityAction quality_action = 7;
 }
 
 // ==================== Movie Info ====================

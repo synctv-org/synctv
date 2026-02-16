@@ -154,7 +154,7 @@ impl ClientApiImpl {
             .await
             .map_err(|e| ApiError::Internal(format!("Failed to list streams: {e}")))?;
 
-        let streams = media_ids
+        let streams: Vec<_> = media_ids
             .into_iter()
             .map(|media_id| crate::proto::client::StreamEntry {
                 media_id,
@@ -162,7 +162,8 @@ impl ClientApiImpl {
             })
             .collect();
 
-        Ok(crate::proto::client::ListRoomStreamsResponse { streams })
+        let total = streams.len() as i32;
+        Ok(crate::proto::client::ListRoomStreamsResponse { streams, total })
     }
 
     /// Get a reference to the live streaming infrastructure, if configured.

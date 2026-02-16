@@ -5,6 +5,10 @@ package synctv.admin;
 import "proto/common.proto";
 
 // Admin API for SyncTV - Requires admin or root permissions
+//
+// SECURITY: Several RPCs (CreateUser, UpdateUserPassword) transmit passwords as
+// plaintext. Deployments MUST use TLS. UpdateUserPassword operations should be
+// logged for audit compliance.
 service AdminService {
     // =========================
     // System Settings Management
@@ -102,6 +106,14 @@ message AdminRoom {
     bool is_banned = 11; // Ban flag set by global admin only
 }
 
+// Connection status for a media provider instance
+enum ProviderInstanceStatus {
+    PROVIDER_INSTANCE_STATUS_UNSPECIFIED = 0;
+    PROVIDER_INSTANCE_STATUS_CONNECTED = 1;
+    PROVIDER_INSTANCE_STATUS_DISCONNECTED = 2;
+    PROVIDER_INSTANCE_STATUS_ERROR = 3;
+}
+
 message ProviderInstance {
     string name = 1; // Instance name (primary key)
     string endpoint = 2; // gRPC service endpoint
@@ -111,7 +123,7 @@ message ProviderInstance {
     bool insecure_tls = 6; // Skip TLS certificate verification (UNSAFE, dev/test only)
     repeated string providers = 7; // Supported media provider types (e.g., ["bilibili", "alist", "emby"])
     bool enabled = 8; // Whether this instance is enabled
-    string status = 9; // connected, disconnected, error
+    ProviderInstanceStatus status = 9; // Connection status
     int64 created_at = 10;
     int64 updated_at = 11;
 }
@@ -235,9 +247,10 @@ message DisableProviderInstanceResponse {
 // User Management
 // =========================
 
+// SECURITY: password is transmitted as plaintext. TLS MUST be used.
 message CreateUserRequest {
     string username = 1;
-    string password = 2;
+    string password = 2; // SECURITY: Plaintext credential - requires TLS in transit
     string email = 3;
     synctv.common.UserRole role = 4; // Default: USER_ROLE_USER
 }
@@ -275,13 +288,18 @@ message GetUserResponse {
     AdminUser user = 1;
 }
 
+// SECURITY: Admin password reset is a privileged operation. The reason field
+// provides an audit trail for compliance. force_logout invalidates existing sessions.
 message UpdateUserPasswordRequest {
     string user_id = 1;
-    string new_password = 2;
+    string new_password = 2;   // SECURITY: Plaintext credential - requires TLS in transit
+    string reason = 3;         // Audit trail: why the password was reset (e.g., "user request", "security incident")
+    bool force_logout = 4;     // If true, invalidate all existing sessions for this user
 }
 
 message UpdateUserPasswordResponse {
     bool success = 1;
+    int32 sessions_invalidated = 2; // Number of sessions invalidated (when force_logout=true)
 }
 
 message UpdateUserUsernameRequest {
@@ -321,10 +339,13 @@ message UnbanUserResponse {
 
 message GetUserRoomsRequest {
     string user_id = 1;
+    int32 page = 2;       // Page number (default 1)
+    int32 page_size = 3;  // Items per page (default 50)
 }
 
 message GetUserRoomsResponse {
     repeated AdminRoom rooms = 1;
+    int32 total = 2; // Total number of rooms for this user
 }
 
 message ApproveUserRequest {
@@ -388,7 +409,7 @@ message ResetRoomSettingsResponse {
 
 message UpdateRoomPasswordRequest {
     string room_id = 1;
-    string new_password = 2; // Empty to remove password
+    string new_password = 2; // Empty to remove password. SECURITY: Plaintext - requires TLS.
 }
 
 message UpdateRoomPasswordResponse {

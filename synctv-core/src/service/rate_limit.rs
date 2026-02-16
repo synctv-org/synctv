@@ -655,6 +655,210 @@ mod tests {
         assert!(limiter.check_rate_limit(&key_room2, 5, 300).await.is_ok());
     }
 
+    // ========== Concurrent Burst Tests ==========
+
+    #[tokio::test]
+    async fn test_concurrent_burst_all_within_limit() {
+        let limiter = RateLimiter::in_memory_only("burst_test:".to_string());
+
+        // Fire 10 concurrent requests with limit of 10 -- all should succeed
+        let mut handles = Vec::new();
+        for _ in 0..10 {
+            let limiter = limiter.clone();
+            handles.push(tokio::spawn(async move {
+                limiter.check_rate_limit("burst_key", 10, 1).await
+            }));
+        }
+
+        let results: Vec<_> = futures::future::join_all(handles)
+            .await
+            .into_iter()
+            .map(|r| r.unwrap())
+            .collect();
+
+        let successes = results.iter().filter(|r| r.is_ok()).count();
+        assert_eq!(successes, 10, "All 10 concurrent requests within limit should succeed");
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_burst_exceeding_limit() {
+        let limiter = RateLimiter::in_memory_only("burst_over:".to_string());
+
+        // Fire 20 concurrent requests with limit of 5
+        let mut handles = Vec::new();
+        for _ in 0..20 {
+            let limiter = limiter.clone();
+            handles.push(tokio::spawn(async move {
+                limiter.check_rate_limit("burst_over_key", 5, 1).await
+            }));
+        }
+
+        let results: Vec<_> = futures::future::join_all(handles)
+            .await
+            .into_iter()
+            .map(|r| r.unwrap())
+            .collect();
+
+        let successes = results.iter().filter(|r| r.is_ok()).count();
+        let failures = results.iter().filter(|r| r.is_err()).count();
+
+        // Exactly 5 should succeed (burst capacity)
+        assert_eq!(successes, 5, "Only 5 concurrent requests should succeed");
+        assert_eq!(failures, 15, "15 requests should be rate limited");
+    }
+
+    // ========== Sync Rate Limit Tests ==========
+
+    #[test]
+    fn test_check_rate_limit_sync_allows_within_limit() {
+        let limiter = RateLimiter::in_memory_only("sync_test:".to_string());
+
+        // First request should succeed
+        assert!(limiter.check_rate_limit_sync("sync_key", 5, 1).is_ok());
+    }
+
+    #[test]
+    fn test_check_rate_limit_sync_blocks_over_limit() {
+        let limiter = RateLimiter::in_memory_only("sync_block:".to_string());
+
+        for _ in 0..5 {
+            limiter.check_rate_limit_sync("sync_key", 5, 1).unwrap();
+        }
+
+        let result = limiter.check_rate_limit_sync("sync_key", 5, 1);
+        assert!(matches!(result, Err(RateLimitError::RateLimitExceeded { .. })));
+    }
+
+    #[test]
+    fn test_check_rate_limit_sync_uses_grpc_key_prefix() {
+        let limiter = RateLimiter::in_memory_only("myprefix:".to_string());
+
+        // Sync method adds "grpc:" between prefix and key
+        // This is an implementation detail but ensures sync and async don't collide
+        for _ in 0..3 {
+            limiter.check_rate_limit_sync("key1", 3, 1).unwrap();
+        }
+        assert!(limiter.check_rate_limit_sync("key1", 3, 1).is_err());
+
+        // Async uses different key space (no "grpc:" prefix), so should still work
+        // (validated by the in-memory governor using different composed keys)
+    }
+
+    // ========== Distributed Rate Limit Tests ==========
+
+    #[tokio::test]
+    async fn test_distributed_rate_limit_fails_closed_without_redis() {
+        let limiter = RateLimiter::in_memory_only("dist_test:".to_string());
+
+        // Without Redis, distributed check should fail closed (deny request)
+        let result = limiter.check_rate_limit_distributed("key", 10, 1).await;
+        assert!(matches!(result, Err(RateLimitError::RateLimitExceeded { retry_after_seconds: 1 })));
+    }
+
+    // ========== RateLimitConfig Tests ==========
+
+    #[test]
+    fn test_rate_limit_config_default_values() {
+        let config = RateLimitConfig::default();
+        assert_eq!(config.chat_per_second, 10);
+        assert_eq!(config.danmaku_per_second, 3);
+        assert_eq!(config.window_seconds, 1);
+    }
+
+    #[test]
+    fn test_rate_limit_config_clone() {
+        let config = RateLimitConfig::default();
+        let cloned = config.clone();
+        assert_eq!(cloned.chat_per_second, config.chat_per_second);
+        assert_eq!(cloned.danmaku_per_second, config.danmaku_per_second);
+    }
+
+    // ========== RateLimitError Conversion Tests ==========
+
+    #[test]
+    fn test_rate_limit_error_to_core_error_exceeded() {
+        let err = RateLimitError::RateLimitExceeded { retry_after_seconds: 30 };
+        let core_err: crate::Error = err.into();
+        match core_err {
+            crate::Error::RateLimited(msg) => {
+                assert!(msg.contains("30"));
+            }
+            other => panic!("Expected RateLimited, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_rate_limit_error_to_core_error_redis() {
+        let redis_err = redis::RedisError::from((redis::ErrorKind::Io, "connection refused"));
+        let err = RateLimitError::RedisError(redis_err);
+        let core_err: crate::Error = err.into();
+        match core_err {
+            crate::Error::Internal(msg) => {
+                assert!(msg.contains("Rate limiter Redis error"));
+            }
+            other => panic!("Expected Internal, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_rate_limit_error_display() {
+        let err = RateLimitError::RateLimitExceeded { retry_after_seconds: 5 };
+        let display = format!("{err}");
+        assert!(display.contains("5s"));
+    }
+
+    // ========== In-Memory Limiter Quota Peek Tests ==========
+
+    #[tokio::test]
+    async fn test_get_quota_without_redis_initial() {
+        let limiter = RateLimiter::in_memory_only("quota_test:".to_string());
+
+        // Initial quota should show near-full remaining
+        let (remaining, _reset) = limiter.get_quota("key", 10, 1).await.unwrap();
+        // Governor peeks by actually consuming a cell, so remaining = max - 1
+        assert_eq!(remaining, 9);
+    }
+
+    #[tokio::test]
+    async fn test_get_quota_without_redis_exhausted() {
+        let limiter = RateLimiter::in_memory_only("quota_exhausted:".to_string());
+
+        // Exhaust the limit
+        for _ in 0..10 {
+            let _ = limiter.check_rate_limit("key", 10, 1).await;
+        }
+
+        let (remaining, _reset) = limiter.get_quota("key", 10, 1).await.unwrap();
+        assert_eq!(remaining, 0);
+    }
+
+    // ========== Health Check Tests ==========
+
+    #[tokio::test]
+    async fn test_health_check_without_redis() {
+        let limiter = RateLimiter::in_memory_only("health:".to_string());
+        let result = limiter.health_check().await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not configured"));
+    }
+
+    // ========== InMemoryRateLimiter Caching Tests ==========
+
+    #[tokio::test]
+    async fn test_in_memory_different_quotas_are_independent() {
+        let limiter = RateLimiter::in_memory_only("quotas:".to_string());
+
+        // Exhaust limit for (5, 1) quota
+        for _ in 0..5 {
+            limiter.check_rate_limit("same_key", 5, 1).await.unwrap();
+        }
+        assert!(limiter.check_rate_limit("same_key", 5, 1).await.is_err());
+
+        // Same key but different quota (10, 1) should still have capacity
+        // because different (max_requests, window_seconds) use different governor instances
+        assert!(limiter.check_rate_limit("same_key", 10, 1).await.is_ok());
+    }
+
     /// When Redis is configured but unreachable, check_rate_limit should
     /// degrade to in-memory governor instead of returning a RedisError.
     #[tokio::test]

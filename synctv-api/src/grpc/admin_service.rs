@@ -590,3 +590,76 @@ impl AdminService for AdminServiceImpl {
         Ok(Response::new(KickStreamResponse {}))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ==================== Error Mapping ====================
+
+    #[test]
+    fn test_api_err_not_found() {
+        let err = crate::impls::ApiError::NotFound("user not found".to_string());
+        let status = api_err(err);
+        assert_eq!(status.code(), tonic::Code::NotFound);
+        assert!(status.message().contains("not found"));
+    }
+
+    #[test]
+    fn test_api_err_unauthenticated() {
+        let err = crate::impls::ApiError::Authentication("bad token".to_string());
+        let status = api_err(err);
+        assert_eq!(status.code(), tonic::Code::Unauthenticated);
+    }
+
+    #[test]
+    fn test_api_err_permission_denied() {
+        let err = crate::impls::ApiError::Authorization("not allowed".to_string());
+        let status = api_err(err);
+        assert_eq!(status.code(), tonic::Code::PermissionDenied);
+    }
+
+    #[test]
+    fn test_api_err_already_exists() {
+        let err = crate::impls::ApiError::AlreadyExists("duplicate".to_string());
+        let status = api_err(err);
+        assert_eq!(status.code(), tonic::Code::AlreadyExists);
+    }
+
+    #[test]
+    fn test_api_err_invalid_argument() {
+        let err = crate::impls::ApiError::InvalidInput("bad field".to_string());
+        let status = api_err(err);
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[test]
+    fn test_api_err_internal_hides_details() {
+        let err = crate::impls::ApiError::Internal("database connection failed with password=secret123".to_string());
+        let status = api_err(err);
+        assert_eq!(status.code(), tonic::Code::Internal);
+        // Internal errors should NOT leak implementation details
+        assert_eq!(status.message(), "Internal error");
+        assert!(!status.message().contains("password"));
+        assert!(!status.message().contains("database"));
+    }
+
+    // ==================== Error Mapping Exhaustiveness ====================
+
+    #[test]
+    fn test_api_err_all_variants_mapped() {
+        // Verify every ApiError variant maps to a distinct gRPC code
+        let variants: Vec<(crate::impls::ApiError, tonic::Code)> = vec![
+            (crate::impls::ApiError::NotFound("x".into()), tonic::Code::NotFound),
+            (crate::impls::ApiError::Authentication("x".into()), tonic::Code::Unauthenticated),
+            (crate::impls::ApiError::Authorization("x".into()), tonic::Code::PermissionDenied),
+            (crate::impls::ApiError::AlreadyExists("x".into()), tonic::Code::AlreadyExists),
+            (crate::impls::ApiError::InvalidInput("x".into()), tonic::Code::InvalidArgument),
+            (crate::impls::ApiError::Internal("x".into()), tonic::Code::Internal),
+        ];
+        for (err, expected_code) in variants {
+            let status = api_err(err);
+            assert_eq!(status.code(), expected_code);
+        }
+    }
+}

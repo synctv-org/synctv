@@ -202,7 +202,7 @@ impl ClientApiImpl {
     ) {
         if let Some(ref tx) = self.redis_publish_tx {
             // Fetch actual usernames and permissions for the event
-            let (target_username, new_permissions) = match self
+            let (target_username, new_permissions, role, added_permissions, removed_permissions) = match self
                 .room_service
                 .member_service()
                 .get_member(room_id, target_user_id)
@@ -216,9 +216,15 @@ impl ClientApiImpl {
                         .map(|u| u.username.clone())
                         .unwrap_or_default();
                     let perms = member.effective_permissions(member.role.permissions());
-                    (username, perms)
+                    let role_i32 = match member.role {
+                        synctv_core::models::RoomRole::Creator => synctv_proto::common::RoomMemberRole::Creator as i32,
+                        synctv_core::models::RoomRole::Admin => synctv_proto::common::RoomMemberRole::Admin as i32,
+                        synctv_core::models::RoomRole::Member => synctv_proto::common::RoomMemberRole::Member as i32,
+                        synctv_core::models::RoomRole::Guest => synctv_proto::common::RoomMemberRole::Guest as i32,
+                    };
+                    (username, perms, role_i32, member.added_permissions, member.removed_permissions)
                 }
-                _ => (String::new(), synctv_core::models::PermissionBits::empty()),
+                _ => (String::new(), synctv_core::models::PermissionBits::empty(), synctv_proto::common::RoomMemberRole::Member as i32, 0u64, 0u64),
             };
 
             let changed_by_username = self
@@ -237,6 +243,9 @@ impl ClientApiImpl {
                     changed_by: changed_by.clone(),
                     changed_by_username,
                     new_permissions,
+                    role,
+                    added_permissions: synctv_core::models::PermissionBits(added_permissions),
+                    removed_permissions: synctv_core::models::PermissionBits(removed_permissions),
                     timestamp: chrono::Utc::now(),
                 },
             });

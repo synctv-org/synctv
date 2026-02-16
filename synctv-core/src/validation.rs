@@ -74,15 +74,16 @@ impl UsernameValidator {
     }
 
     pub fn validate(&self, username: &str) -> ValidationResult<()> {
-        // Check length
-        if username.len() < self.min_length {
+        // Check length (use char count for Unicode safety)
+        let char_count = username.chars().count();
+        if char_count < self.min_length {
             return Err(ValidationError::Field {
                 field: "username".to_string(),
                 message: format!("must be at least {} characters", self.min_length),
             });
         }
 
-        if username.len() > self.max_length {
+        if char_count > self.max_length {
             return Err(ValidationError::Field {
                 field: "username".to_string(),
                 message: format!("must be at most {} characters", self.max_length),
@@ -154,15 +155,16 @@ impl PasswordValidator {
     const MAX_LENGTH: usize = PASSWORD_MAX;
 
     pub fn validate(&self, password: &str) -> ValidationResult<()> {
-        // Check length
-        if password.len() < self.min_length {
+        // Check length (use char count for Unicode safety)
+        let char_count = password.chars().count();
+        if char_count < self.min_length {
             return Err(ValidationError::Field {
                 field: "password".to_string(),
                 message: format!("must be at least {} characters", self.min_length),
             });
         }
 
-        if password.len() > Self::MAX_LENGTH {
+        if char_count > Self::MAX_LENGTH {
             return Err(ValidationError::Field {
                 field: "password".to_string(),
                 message: format!("must not exceed {} characters", Self::MAX_LENGTH),
@@ -325,14 +327,16 @@ impl RoomNameValidator {
     }
 
     pub fn validate(&self, name: &str) -> ValidationResult<()> {
-        if name.len() < self.min_length {
+        // Check length (use char count for Unicode safety)
+        let char_count = name.chars().count();
+        if char_count < self.min_length {
             return Err(ValidationError::Field {
                 field: "room_name".to_string(),
                 message: format!("must be at least {} characters", self.min_length),
             });
         }
 
-        if name.len() > self.max_length {
+        if char_count > self.max_length {
             return Err(ValidationError::Field {
                 field: "room_name".to_string(),
                 message: format!("must be at most {} characters", self.max_length),

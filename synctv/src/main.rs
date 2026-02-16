@@ -616,6 +616,7 @@ async fn main() -> Result<()> {
         email_token_service: synctv_services.email_token_service.clone(),
         publish_key_service: synctv_services.publish_key_service.clone(),
         notification_service: Some(synctv_services.notification_service.clone()),
+        audit_service: synctv_services.audit_service.clone(),
         live_streaming_infrastructure,
         stun_server,
         sfu_manager,

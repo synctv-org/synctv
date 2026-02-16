@@ -61,6 +61,7 @@ pub enum ClusterEvent {
         user_id: UserId,
         username: String,
         permissions: PermissionBits,
+        role: i32, // RoomMemberRole as i32 for serde compatibility
         timestamp: DateTime<Utc>,
     },
 
@@ -107,6 +108,9 @@ pub enum ClusterEvent {
         changed_by: UserId,
         changed_by_username: String,
         new_permissions: PermissionBits,
+        role: i32, // RoomMemberRole as i32 for serde compatibility
+        added_permissions: PermissionBits,
+        removed_permissions: PermissionBits,
         timestamp: DateTime<Utc>,
     },
 
@@ -421,6 +425,7 @@ mod tests {
             user_id: UserId::from_string("user456".to_string()),
             username: "testuser".to_string(),
             permissions: PermissionBits(0),
+            role: 2, // Member role
             timestamp: Utc::now(),
         };
 

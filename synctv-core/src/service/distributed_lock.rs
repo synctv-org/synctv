@@ -578,6 +578,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_acquire_and_release() {
         let infra = crate::test_helpers::containers::TestInfra::redis_only().await;
         let redis = infra.connection_manager().await;
@@ -606,6 +607,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_with_lock() {
         let infra = crate::test_helpers::containers::TestInfra::redis_only().await;
         let redis = infra.connection_manager().await;
@@ -631,6 +633,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_try_with_lock() {
         let infra = crate::test_helpers::containers::TestInfra::redis_only().await;
         let redis = infra.connection_manager().await;
@@ -660,6 +663,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_lock_guard() {
         let infra = crate::test_helpers::containers::TestInfra::redis_only().await;
         let redis = infra.connection_manager().await;
@@ -689,6 +693,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_extend_lock() {
         let infra = crate::test_helpers::containers::TestInfra::redis_only().await;
         let redis = infra.connection_manager().await;
@@ -711,6 +716,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_acquire_with_token() {
         let infra = crate::test_helpers::containers::TestInfra::redis_only().await;
         let redis = infra.connection_manager().await;
@@ -737,6 +743,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_with_lock_token() {
         let infra = crate::test_helpers::containers::TestInfra::redis_only().await;
         let redis = infra.connection_manager().await;
@@ -753,6 +760,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_try_with_lock_token() {
         let infra = crate::test_helpers::containers::TestInfra::redis_only().await;
         let redis = infra.connection_manager().await;
@@ -785,6 +793,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_lock_guard_with_token() {
         let infra = crate::test_helpers::containers::TestInfra::redis_only().await;
         let redis = infra.connection_manager().await;

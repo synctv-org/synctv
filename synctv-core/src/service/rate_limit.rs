@@ -467,6 +467,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_rate_limit_basic() {
         let infra = crate::test_helpers::containers::TestInfra::redis_only().await;
         let conn = infra.connection_manager().await;
@@ -500,6 +501,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_rate_limit_sliding_window() {
         let infra = crate::test_helpers::containers::TestInfra::redis_only().await;
         let conn = infra.connection_manager().await;
@@ -530,6 +532,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_get_quota() {
         let infra = crate::test_helpers::containers::TestInfra::redis_only().await;
         let conn = infra.connection_manager().await;

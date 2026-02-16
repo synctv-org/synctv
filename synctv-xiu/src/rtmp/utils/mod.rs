@@ -124,17 +124,15 @@ mod tests {
 
         parser.parse_url().unwrap();
 
-        println!(" raw_domain_name: {}", parser.host_with_port);
-        if parser.port.is_some() {
-            println!(" port: {}", parser.port.unwrap());
-        }
-        println!(" domain_name: {}", parser.host);
-        println!(" app_name: {}", parser.app_name);
-        println!(" stream_name_with_query: {}", parser.stream_name_with_query);
-        println!(" stream_name: {}", parser.stream_name);
-        if parser.query.is_some() {
-            println!(" query: {}", parser.query.unwrap());
-        }
+        assert_eq!(parser.host, "domain.name.cn", "Parsed host should match");
+        assert_eq!(parser.port, Some("1935".to_string()), "Parsed port should be 1935");
+        assert_eq!(parser.app_name, "app_name", "Parsed app_name should match");
+        assert_eq!(parser.stream_name, "stream_name", "Parsed stream_name should match");
+        assert_eq!(
+            parser.query,
+            Some("auth_key=test_Key".to_string()),
+            "Parsed query string should match"
+        );
     }
     #[test]
     fn test_rtmp_url_parser2() {
@@ -143,16 +141,10 @@ mod tests {
 
         parser.parse_url().unwrap();
 
-        println!(" raw_domain_name: {}", parser.host_with_port);
-        if parser.port.is_some() {
-            println!(" port: {}", parser.port.unwrap());
-        }
-        println!(" domain_name: {}", parser.host);
-        println!(" app_name: {}", parser.app_name);
-        println!(" stream_name_with_query: {}", parser.stream_name_with_query);
-        println!(" stream_name: {}", parser.stream_name);
-        if parser.query.is_some() {
-            println!(" query: {}", parser.query.unwrap());
-        }
+        assert_eq!(parser.host, "domain.name.cn", "Parsed host should match");
+        assert_eq!(parser.port, None, "Port should be None when not specified");
+        assert_eq!(parser.app_name, "app_name", "Parsed app_name should match");
+        assert_eq!(parser.stream_name, "stream_name", "Parsed stream_name should match");
+        assert_eq!(parser.query, None, "Query should be None when not present");
     }
 }

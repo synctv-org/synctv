@@ -6,7 +6,7 @@ CREATE TABLE playlists (
 
     -- Basic information
     room_id CHAR(12) NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
-    creator_id CHAR(12) REFERENCES users(id) ON DELETE SET NULL,
+    creator_id CHAR(12) REFERENCES users(id) ON DELETE CASCADE,
 
     -- Directory name (root directory is empty string)
     name VARCHAR(255) NOT NULL DEFAULT '',

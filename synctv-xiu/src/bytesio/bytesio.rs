@@ -223,13 +223,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_new_udpio_pair() {
-        if let Some((udpio1, udpid2)) = new_udpio_pair().await {
-            println!(
-                "{:?} == {:?}",
-                udpio1.get_local_port(),
-                udpid2.get_local_port()
-            );
-        }
+        let pair = new_udpio_pair().await;
+        assert!(pair.is_some(), "UDP IO pair creation should succeed");
+
+        let (udpio1, udpio2) = pair.unwrap();
+        let port1 = udpio1.get_local_port();
+        let port2 = udpio2.get_local_port();
+
+        assert!(port1.is_some(), "First UDP socket should have valid port");
+        assert!(port2.is_some(), "Second UDP socket should have valid port");
+        assert_ne!(port1, port2, "UDP sockets should have different ports");
     }
 
     #[tokio::test]

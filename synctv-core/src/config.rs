@@ -389,6 +389,12 @@ pub struct WebRTCConfig {
     /// advertise_host:stun_port.
     pub stun_external_addr: String,
 
+    // TURN Configuration
+    /// TURN credential time-to-live in seconds.
+    /// After this duration, clients must refresh their ICE servers.
+    /// Default: 86400 (24 hours). Set to 0 for credentials that never expire.
+    pub turn_credential_ttl_seconds: u64,
+
     // SFU Configuration (for large rooms)
     /// Room size threshold to switch to SFU mode (only for Hybrid mode)
     pub sfu_threshold: usize,
@@ -452,6 +458,9 @@ impl Default for WebRTCConfig {
             stun_port: 3478,
             stun_host: "0.0.0.0".to_string(),
             stun_external_addr: String::new(),
+
+            // TURN credentials expire after 24 hours by default
+            turn_credential_ttl_seconds: 86400,
 
             // SFU configuration
             sfu_threshold: 5, // Switch to SFU for 5+ participants

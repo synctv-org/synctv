@@ -398,7 +398,7 @@ async fn set_user_password(
             new_password: req.password,
             reason: String::new(),
             force_logout: false,
-        }, auth.role)
+        }, auth.user_id, auth.role)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))

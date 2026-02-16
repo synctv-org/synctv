@@ -137,15 +137,4 @@ impl RoomPlaybackStateRepository {
 #[cfg(test)]
 mod tests {
 
-    #[tokio::test]
-    async fn test_create_or_get() {
-        // Placeholder: requires room setup
-        // Covered by higher-level integration tests
-    }
-
-    #[tokio::test]
-    async fn test_optimistic_locking() {
-        // Placeholder: requires room + playback state setup
-        // Covered by higher-level integration tests
-    }
 }

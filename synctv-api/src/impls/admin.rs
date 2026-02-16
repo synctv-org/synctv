@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 use synctv_core::models::{UserId, RoomId, UserRole, UserStatus};
-use synctv_core::service::{RoomService, UserService, SettingsService, EmailService, RemoteProviderManager, SettingsRegistry};
+use synctv_core::service::{RoomService, UserService, SettingsService, EmailService, RemoteProviderManager, SettingsRegistry, AuditService};
 use synctv_cluster::sync::{ConnectionManager, ClusterEvent, PublishRequest};
 use synctv_livestream::api::LiveStreamingInfrastructure;
 use tokio::sync::mpsc;
@@ -69,6 +69,7 @@ pub struct AdminApiImpl {
     pub provider_instance_manager: Arc<RemoteProviderManager>,
     pub live_streaming_infrastructure: Option<Arc<LiveStreamingInfrastructure>>,
     pub redis_publish_tx: Option<mpsc::Sender<PublishRequest>>,
+    pub audit_service: Arc<AuditService>,
 }
 
 impl AdminApiImpl {
@@ -84,6 +85,7 @@ impl AdminApiImpl {
         provider_instance_manager: Arc<RemoteProviderManager>,
         live_streaming_infrastructure: Option<Arc<LiveStreamingInfrastructure>>,
         redis_publish_tx: Option<mpsc::Sender<PublishRequest>>,
+        audit_service: Arc<AuditService>,
     ) -> Self {
         Self {
             room_service,
@@ -95,6 +97,7 @@ impl AdminApiImpl {
             provider_instance_manager,
             live_streaming_infrastructure,
             redis_publish_tx,
+            audit_service,
         }
     }
 
@@ -350,6 +353,7 @@ impl AdminApiImpl {
     pub async fn update_user_password(
         &self,
         req: crate::proto::admin::UpdateUserPasswordRequest,
+        caller_user_id: UserId,
         caller_role: synctv_core::models::UserRole,
     ) -> Result<crate::proto::admin::UpdateUserPasswordResponse, ApiError> {
         use crate::http::validation::limits::{PASSWORD_MIN, PASSWORD_MAX};
@@ -360,7 +364,7 @@ impl AdminApiImpl {
             return Err(ApiError::InvalidInput(format!("Password must be at most {PASSWORD_MAX} characters")));
         }
 
-        let uid = UserId::from_string(req.user_id);
+        let uid = UserId::from_string(req.user_id.clone());
 
         // Fetch target user to check role hierarchy
         let target_user = self.user_service.get_user(&uid).await
@@ -379,12 +383,43 @@ impl AdminApiImpl {
         self.user_service.set_password(&uid, &req.new_password).await
             .map_err(ApiError::from)?;
 
-        // TODO: Implement force_logout using req.force_logout field to invalidate sessions
-        // TODO: Log req.reason for audit trail
+        // Invalidate all tokens if force_logout is true
+        let sessions_invalidated = if req.force_logout {
+            const THIRTY_DAYS_SECS: i64 = 30 * 24 * 60 * 60;
+            self.user_service.invalidate_all_tokens(&uid, THIRTY_DAYS_SECS).await
+                .map_err(ApiError::from)?;
+            // Token blacklist doesn't track exact session count, return 1 to indicate sessions were invalidated
+            1
+        } else {
+            0
+        };
+
+        // Log to audit trail
+        let caller = self.user_service.get_user(&caller_user_id).await
+            .map_err(ApiError::from)?;
+
+        let mut details = serde_json::Map::new();
+        details.insert("target_user_id".to_string(), serde_json::Value::String(uid.as_str().to_string()));
+        details.insert("target_username".to_string(), serde_json::Value::String(target_user.username.clone()));
+        details.insert("force_logout".to_string(), serde_json::Value::Bool(req.force_logout));
+        if !req.reason.is_empty() {
+            details.insert("reason".to_string(), serde_json::Value::String(req.reason));
+        }
+
+        self.audit_service.log(
+            caller_user_id.as_str().to_string(),
+            caller.username,
+            synctv_core::service::AuditAction::UserPasswordUpdated,
+            synctv_core::service::AuditTargetType::User,
+            Some(uid.as_str().to_string()),
+            serde_json::Value::Object(details),
+            None, // ip_address not available at this layer
+            None, // user_agent not available at this layer
+        ).await.map_err(ApiError::from)?;
 
         Ok(crate::proto::admin::UpdateUserPasswordResponse {
             success: true,
-            sessions_invalidated: 0, // TODO: return actual count when force_logout is implemented
+            sessions_invalidated,
         })
     }
 

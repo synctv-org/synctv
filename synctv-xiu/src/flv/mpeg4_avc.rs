@@ -360,7 +360,7 @@ mod tests {
         for _ in 0..4 {
             size = bytes_reader.read_u8().unwrap() as u32 + (size << 8);
         }
-        println!("size: {size}");
+        assert_eq!(size, 1000, "Expected big-endian bytes to decode to 1000");
     }
     #[test]
     fn test_bigend_to_bytes() {
@@ -373,6 +373,10 @@ mod tests {
             let num = ((size >> shift) & 0xFF) as u8;
             bytes_writer.write_u8(num).unwrap();
         }
-        println!("num: {:?}", bytes_writer.extract_current_bytes());
+        assert_eq!(
+            &bytes_writer.extract_current_bytes()[..],
+            &[0, 0, 3, 232],
+            "Expected 1000 to encode as big-endian [0, 0, 3, 232]"
+        );
     }
 }

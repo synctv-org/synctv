@@ -1964,21 +1964,4 @@ mod tests {
 
     // ========== Integration Test Placeholders ==========
 
-    #[tokio::test]
-    async fn test_create_room_integration() {
-        // Placeholder: requires full service layer with DB
-        // Covered by higher-level integration tests
-    }
-
-    #[tokio::test]
-    async fn test_join_room_banned_user_integration() {
-        // Placeholder: requires full service layer with DB
-        // Covered by higher-level integration tests
-    }
-
-    #[tokio::test]
-    async fn test_check_guest_allowed_integration() {
-        // Placeholder: requires full service layer with DB
-        // Covered by higher-level integration tests
-    }
 }

@@ -219,4 +219,140 @@ mod tests {
         assert_eq!(obj.get("key1").cloned().unwrap(), JsonValue::String("value1".to_string()));
         assert_eq!(obj.get("key2").cloned().unwrap(), JsonValue::Number(123.into()));
     }
+
+    // ==================== SettingsGroup Construction ====================
+
+    #[test]
+    fn test_settings_group_new_auto_key() {
+        let sg = SettingsGroup::new("email".to_string(), "{}".to_string());
+        assert_eq!(sg.key, "email.default");
+        assert_eq!(sg.group, "email");
+        assert_eq!(sg.value, "{}");
+    }
+
+    #[test]
+    fn test_settings_group_serde_roundtrip() {
+        let sg = SettingsGroup::new("server".to_string(), r#"{"a":1}"#.to_string());
+        let json = serde_json::to_value(&sg).unwrap();
+        let deserialized: SettingsGroup = serde_json::from_value(json).unwrap();
+        assert_eq!(deserialized.key, sg.key);
+        assert_eq!(deserialized.group, sg.group);
+        assert_eq!(deserialized.value, sg.value);
+    }
+
+    // ==================== Parse Errors ====================
+
+    #[test]
+    fn test_parse_json_invalid() {
+        let sg = SettingsGroup::new("test".to_string(), "not valid json".to_string());
+        let result = sg.parse_json();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("parse"));
+    }
+
+    #[test]
+    fn test_as_object_non_object() {
+        let sg = SettingsGroup::new("test".to_string(), "42".to_string());
+        let result = sg.as_object();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not an object"));
+    }
+
+    // ==================== Default Settings ====================
+
+    #[test]
+    fn test_default_server_settings_structure() {
+        let settings = default_server_settings();
+        let obj = settings.as_object().unwrap();
+        assert!(obj.contains_key("allow_registration"));
+        assert!(obj.contains_key("allow_room_creation"));
+        assert!(obj.contains_key("max_rooms_per_user"));
+        assert!(obj.contains_key("max_members_per_room"));
+        assert!(obj.contains_key("default_room_settings"));
+    }
+
+    #[test]
+    fn test_default_email_settings_structure() {
+        let settings = default_email_settings();
+        let obj = settings.as_object().unwrap();
+        assert!(obj.contains_key("enabled"));
+        assert!(obj.contains_key("smtp_host"));
+        assert!(obj.contains_key("smtp_port"));
+        assert!(obj.contains_key("use_tls"));
+        assert!(obj.contains_key("from_address"));
+        assert!(obj.contains_key("from_name"));
+    }
+
+    #[test]
+    fn test_default_oauth_settings_structure() {
+        let settings = default_oauth_settings();
+        let obj = settings.as_object().unwrap();
+        assert!(obj.contains_key("github_enabled"));
+        assert!(obj.contains_key("google_enabled"));
+        assert!(obj.contains_key("microsoft_enabled"));
+        assert!(obj.contains_key("discord_enabled"));
+    }
+
+    #[test]
+    fn test_get_default_settings_all_groups() {
+        assert!(get_default_settings("server").is_some());
+        assert!(get_default_settings("email").is_some());
+        assert!(get_default_settings("oauth").is_some());
+        assert!(get_default_settings("rate_limit").is_some());
+        assert!(get_default_settings("content_moderation").is_some());
+    }
+
+    #[test]
+    fn test_get_default_settings_unknown_group() {
+        assert!(get_default_settings("nonexistent").is_none());
+        assert!(get_default_settings("").is_none());
+    }
+
+    #[test]
+    fn test_default_email_disabled() {
+        let settings = default_email_settings();
+        assert_eq!(settings["enabled"], false);
+    }
+
+    #[test]
+    fn test_default_oauth_all_disabled() {
+        let settings = default_oauth_settings();
+        assert_eq!(settings["github_enabled"], false);
+        assert_eq!(settings["google_enabled"], false);
+        assert_eq!(settings["microsoft_enabled"], false);
+        assert_eq!(settings["discord_enabled"], false);
+    }
+
+    // ==================== SettingsError ====================
+
+    #[test]
+    fn test_settings_error_display() {
+        let err = SettingsError::InvalidPath("foo.bar".to_string());
+        assert!(err.to_string().contains("Invalid settings path"));
+        assert!(err.to_string().contains("foo.bar"));
+
+        let err = SettingsError::NotFound("server".to_string());
+        assert!(err.to_string().contains("not found"));
+
+        let err = SettingsError::MergeFailed;
+        assert!(err.to_string().contains("merge"));
+    }
+
+    // ==================== Constants ====================
+
+    #[test]
+    fn test_group_name_constants() {
+        assert_eq!(groups::SERVER, "server");
+        assert_eq!(groups::EMAIL, "email");
+        assert_eq!(groups::OAUTH, "oauth");
+        assert_eq!(groups::RATE_LIMIT, "rate_limit");
+        assert_eq!(groups::CONTENT_MODERATION, "content_moderation");
+    }
+
+    #[test]
+    fn test_server_key_constants() {
+        assert_eq!(server::ALLOW_REGISTRATION, "allow_registration");
+        assert_eq!(server::SIGNUP_ENABLED, "signup_enabled");
+        assert_eq!(server::ALLOW_ROOM_CREATION, "allow_room_creation");
+    }
 }

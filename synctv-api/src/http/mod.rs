@@ -69,6 +69,7 @@ pub struct RouterConfig {
     pub email_service: Option<Arc<synctv_core::service::EmailService>>,
     pub publish_key_service: Option<Arc<synctv_core::service::PublishKeyService>>,
     pub notification_service: Option<Arc<synctv_core::service::UserNotificationService>>,
+    pub audit_service: Arc<synctv_core::service::AuditService>,
     pub live_streaming_infrastructure: Option<Arc<LiveStreamingInfrastructure>>,
     pub sfu_manager: Option<Arc<synctv_sfu::SfuManager>>,
     pub rate_limiter: synctv_core::service::rate_limit::RateLimiter,
@@ -163,6 +164,7 @@ fn build_app_state(config: RouterConfig) -> AppState {
             config.provider_instance_manager.clone(),
             config.live_streaming_infrastructure.clone(),
             config.redis_publish_tx.clone(),
+            config.audit_service.clone(),
         ))
     });
 

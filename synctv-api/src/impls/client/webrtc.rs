@@ -31,7 +31,7 @@ impl ClientApiImpl {
         if webrtc_config.enable_builtin_stun {
             let stun_url = format!(
                 "stun:{}:{}",
-                self.config.server.host,
+                self.config.advertise_host(),
                 webrtc_config.stun_port
             );
             servers.push(IceServer {
@@ -58,12 +58,24 @@ impl ClientApiImpl {
 
             // TURN servers
             if let Ok(turn_list) = registry.turn_servers.get() {
+                // Calculate expiry time: current timestamp + TTL
+                let expiry_time = if webrtc_config.turn_credential_ttl_seconds > 0 {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    // Convert to i64 with saturation (proto uses int64)
+                    (now.saturating_add(webrtc_config.turn_credential_ttl_seconds)) as i64
+                } else {
+                    0 // TTL of 0 means credentials never expire
+                };
+
                 for ts in &turn_list.0 {
                     servers.push(IceServer {
                         urls: ts.urls.clone(),
                         username: ts.username.clone(),
                         credential: ts.credential.clone(),
-                        expiry_time: 0, // TODO: compute TTL from TURN credential rotation policy
+                        expiry_time,
                     });
                 }
             }

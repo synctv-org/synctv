@@ -415,23 +415,6 @@ fn test_error_types() {
     assert!(matches!(errors[5], Error::Internal(_)));
 }
 
-// Database-dependent tests are marked #[ignore]
-#[tokio::test]
-#[ignore = "Requires database connection"]
-async fn test_create_room_and_join() {}
-
-#[tokio::test]
-#[ignore = "Requires database connection"]
-async fn test_playlist_operations() {}
-
-#[tokio::test]
-#[ignore = "Requires database connection"]
-async fn test_permission_checks() {}
-
-#[tokio::test]
-#[ignore = "Requires database connection"]
-async fn test_playback_sync() {}
-
 // ==================== End-to-End Test Suite ====================
 
 #[tokio::test]

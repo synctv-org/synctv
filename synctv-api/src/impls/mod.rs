@@ -59,6 +59,44 @@ pub fn kick_stream_cluster(
     }
 }
 
+/// Application-level error codes for client-side programmatic handling.
+///
+/// These codes are included in the `ErrorMessage.code` field and allow
+/// clients to handle specific error conditions without parsing text.
+///
+/// Convention: 1xxx for auth, 2xxx for resources, 3xxx for validation,
+/// 4xxx for permissions, 9xxx for internal errors.
+pub mod error_codes {
+    /// Unspecified error (fallback)
+    pub const UNSPECIFIED: i32 = 0;
+
+    // Authentication errors (1xxx)
+    pub const UNAUTHENTICATED: i32 = 1000;
+    pub const TOKEN_EXPIRED: i32 = 1001;
+    pub const INVALID_CREDENTIALS: i32 = 1002;
+
+    // Resource errors (2xxx)
+    pub const NOT_FOUND: i32 = 2000;
+    pub const ALREADY_EXISTS: i32 = 2001;
+
+    // Validation errors (3xxx)
+    pub const INVALID_ARGUMENT: i32 = 3000;
+    pub const INVALID_FORMAT: i32 = 3001;
+    pub const VALUE_TOO_SHORT: i32 = 3002;
+    pub const VALUE_TOO_LONG: i32 = 3003;
+    pub const REQUIRED_FIELD_MISSING: i32 = 3004;
+
+    // Permission errors (4xxx)
+    pub const PERMISSION_DENIED: i32 = 4000;
+    pub const FORBIDDEN: i32 = 4001;
+    pub const BANNED: i32 = 4002;
+
+    // Internal errors (9xxx)
+    pub const INTERNAL_ERROR: i32 = 9000;
+    pub const DATABASE_ERROR: i32 = 9001;
+    pub const SERVICE_UNAVAILABLE: i32 = 9002;
+}
+
 /// Shared error classification for impls-layer `String` errors.
 ///
 /// Maps keyword patterns in error strings to semantic error categories.
@@ -71,6 +109,20 @@ pub enum ErrorKind {
     AlreadyExists,
     InvalidArgument,
     Internal,
+}
+
+impl ErrorKind {
+    /// Convert this error kind to an application-level error code.
+    pub const fn to_code(&self) -> i32 {
+        match self {
+            Self::NotFound => error_codes::NOT_FOUND,
+            Self::Unauthenticated => error_codes::UNAUTHENTICATED,
+            Self::PermissionDenied => error_codes::PERMISSION_DENIED,
+            Self::AlreadyExists => error_codes::ALREADY_EXISTS,
+            Self::InvalidArgument => error_codes::INVALID_ARGUMENT,
+            Self::Internal => error_codes::INTERNAL_ERROR,
+        }
+    }
 }
 
 /// Structured API error that wraps `synctv_core::Error` variants for
@@ -126,6 +178,11 @@ impl ApiError {
             | Self::Internal(msg) => msg,
         }
     }
+
+    /// Get the application-level error code for this error.
+    pub fn code(&self) -> i32 {
+        self.classify().to_code()
+    }
 }
 
 impl std::fmt::Display for ApiError {
@@ -173,6 +230,25 @@ impl From<serde_json::Error> for ApiError {
 impl From<sqlx::Error> for ApiError {
     fn from(err: sqlx::Error) -> Self {
         Self::Internal(err.to_string())
+    }
+}
+
+impl ApiError {
+    /// Convert this error into a proto ErrorMessage with proper code and detail.
+    ///
+    /// In production mode (not development_mode), the detail field is left empty
+    /// to avoid leaking sensitive information. In development mode, it includes
+    /// the full error message for debugging.
+    pub fn to_proto_error(&self, development_mode: bool) -> crate::proto::client::ErrorMessage {
+        crate::proto::client::ErrorMessage {
+            message: self.message().to_string(),
+            code: self.code(),
+            detail: if development_mode {
+                self.to_string()
+            } else {
+                String::new()
+            },
+        }
     }
 }
 

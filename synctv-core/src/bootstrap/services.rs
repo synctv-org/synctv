@@ -15,6 +15,7 @@ use crate::{
         ContentFilter, JwtService, OAuth2Service, RemoteProviderManager, RateLimitConfig,
         RateLimiter, TokenBlacklistService, UserService, RoomService, ProvidersManager,
         SettingsService, SettingsRegistry, EmailService, EmailTokenService, EmailConfig, PublishKeyService, UserNotificationService,
+        AuditService, AuditFlushHandle,
     },
     Config,
 };
@@ -58,6 +59,8 @@ pub struct Services {
     pub publish_key_service: Arc<PublishKeyService>,
     /// User notification service
     pub notification_service: Arc<UserNotificationService>,
+    /// Audit logging service for security and compliance
+    pub audit_service: Arc<AuditService>,
     /// Cache invalidation service for cross-replica cache sync
     pub cache_invalidation: Arc<CacheInvalidationService>,
     /// Cache manager coordinating all cache layers
@@ -70,6 +73,8 @@ pub struct Services {
     /// Wrapped in `Arc<Mutex<Option<...>>>` so `Services` remains `Clone`.
     /// Take the handle out of the `Option` to join it on shutdown.
     pub settings_listen_task: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    /// Audit flush handle for graceful shutdown of audit logging
+    pub audit_flush_handle: Arc<tokio::sync::Mutex<Option<AuditFlushHandle>>>,
 }
 
 /// Initialize all core services
@@ -283,6 +288,10 @@ pub async fn init_services(
     let notification_service = UserNotificationService::new(notification_repo);
     info!("User notification service initialized");
 
+    // Initialize Audit service with buffering
+    let (audit_service, audit_flush_handle) = AuditService::new(pool.clone());
+    info!("Audit service initialized with async buffering");
+
     // Store the settings listen task handle so it can be joined on shutdown.
     // The task will be cancelled via settings_cancel.
 
@@ -305,11 +314,13 @@ pub async fn init_services(
         email_token_service,
         publish_key_service: Arc::new(publish_key_service),
         notification_service: Arc::new(notification_service),
+        audit_service: Arc::new(audit_service),
         cache_invalidation,
         cache_manager,
         redis_conn,
         settings_cancel,
         settings_listen_task: Arc::new(tokio::sync::Mutex::new(Some(settings_listen_task))),
+        audit_flush_handle: Arc::new(tokio::sync::Mutex::new(Some(audit_flush_handle))),
     })
 }
 

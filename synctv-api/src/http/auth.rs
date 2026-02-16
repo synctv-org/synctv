@@ -176,13 +176,11 @@ mod tests {
 
     #[test]
     fn test_login_request_missing_field_fails() {
-        // LoginRequest requires username and password
+        // LoginRequest requires both username and password via serde
         let json = r#"{"username":"user"}"#;
-        // Proto types use default values for missing fields, so this should succeed with empty password
         let result: Result<LoginRequest, _> = serde_json::from_str(json);
-        // Prost types default missing string fields to empty string
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap().password, "");
+        // serde derive requires all fields; missing password causes deserialization failure
+        assert!(result.is_err());
     }
 
     #[test]

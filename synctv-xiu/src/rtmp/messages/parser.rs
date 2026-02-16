@@ -163,24 +163,32 @@ mod tests {
 
         unpacker.extend_data(&data[..]).unwrap();
 
+        let mut chunk_count = 0;
+        let mut parsed_count = 0;
+
         loop {
             let result = unpacker.read_chunk();
 
             let rv = match result {
                 Ok(val) => val,
                 Err(_) => {
-                    print!("end-----------");
-                    return;
+                    break;
                 }
             };
 
             if let UnpackResult::ChunkInfo(chunk_info) = rv {
+                chunk_count += 1;
                 let _ = chunk_info.message_header.msg_streamd_id;
                 let _ = chunk_info.message_header.timestamp;
 
                 let message_parser = MessageParser::new(chunk_info);
-                let _ = message_parser.parse();
+                if message_parser.parse().is_ok() {
+                    parsed_count += 1;
+                }
             }
         }
+
+        assert!(chunk_count > 0, "Should have parsed at least one chunk from RTMP data");
+        assert!(parsed_count > 0, "Should have successfully parsed at least one RTMP message");
     }
 }

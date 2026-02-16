@@ -731,18 +731,6 @@ impl PlaybackService {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn test_play_pause() {
-        // Placeholder: requires full service layer with DB
-        // Covered by higher-level integration tests
-    }
-
-    #[tokio::test]
-    async fn test_seek() {
-        // Placeholder: requires full service layer with DB
-        // Covered by higher-level integration tests
-    }
-
     #[test]
     fn test_speed_validation_bounds() {
         // Valid boundary values

@@ -197,12 +197,3 @@ impl ChatRepository {
 
 }
 
-#[cfg(test)]
-mod tests {
-
-    #[tokio::test]
-    async fn test_create_message() {
-        // Placeholder: requires user + room setup
-        // Covered by higher-level integration tests
-    }
-}

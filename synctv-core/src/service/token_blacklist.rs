@@ -300,6 +300,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_blacklist_token() {
         let infra = crate::test_helpers::containers::TestInfra::redis_only().await;
         let conn = infra.connection_manager().await;
@@ -371,6 +372,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_user_token_invalidation() {
         let infra = crate::test_helpers::containers::TestInfra::redis_only().await;
         let conn = infra.connection_manager().await;

@@ -978,6 +978,8 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[tokio::test]
+    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_ws_handshake_and_initial_user_joined() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -1012,6 +1014,8 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[tokio::test]
+    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_ws_heartbeat_ping_pong() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -1056,6 +1060,8 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[tokio::test]
+    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_ws_graceful_disconnect() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -1106,6 +1112,8 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[tokio::test]
+    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_ws_unauthenticated_rejected() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -1123,6 +1131,8 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[tokio::test]
+    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_ws_invalid_token_rejected() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -1138,6 +1148,8 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[tokio::test]
+    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_ws_non_member_rejected() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -1166,6 +1178,8 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[tokio::test]
+    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_ws_multi_client_room_sync() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -1228,6 +1242,8 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[tokio::test]
+    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_ws_chat_message_broadcast() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -1300,6 +1316,8 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[tokio::test]
+    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_ws_multiple_heartbeats() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -1340,6 +1358,8 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[tokio::test]
+    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_ws_user_left_on_disconnect() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -1396,6 +1416,8 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[tokio::test]
+    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_ws_room_isolation() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -1469,6 +1491,8 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[tokio::test]
+    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_ws_reconnect_after_disconnect() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -1532,6 +1556,8 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[tokio::test]
+    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_ws_forced_disconnect_via_kick() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -1588,6 +1614,8 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[tokio::test]
+    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_ws_cross_replica_chat_via_redis() {
         let infra = TestInfra::new().await;
 
@@ -1661,6 +1689,8 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[tokio::test]
+    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_ws_rate_limiter_blocks_excess_chat() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -1733,6 +1763,8 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[tokio::test]
+    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_ws_content_filter_strips_xss() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -1810,6 +1842,8 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[tokio::test]
+    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_ws_connection_cleanup_on_tcp_drop() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -1865,6 +1899,8 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[tokio::test]
+    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_ws_connection_manager_state_consistency() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -1921,6 +1957,8 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[tokio::test]
+    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_ws_empty_chat_rejected() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -1976,6 +2014,8 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[tokio::test]
+    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_ws_danmaku_broadcast() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -2058,6 +2098,8 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
+    #[tokio::test]
+    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_ws_concurrent_connections_same_user() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;

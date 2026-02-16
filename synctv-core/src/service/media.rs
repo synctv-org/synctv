@@ -767,29 +767,4 @@ mod tests {
         );
     }
 
-    // ========== Integration Tests (Require DB) ==========
-
-    #[tokio::test]
-    async fn test_add_media() {
-        // Placeholder: requires full service layer with DB
-        // Covered by higher-level integration tests
-    }
-
-    #[tokio::test]
-    async fn test_add_media_batch() {
-        // Placeholder: requires full service layer with DB
-        // Covered by higher-level integration tests
-    }
-
-    #[tokio::test]
-    async fn test_edit_media() {
-        // Placeholder: requires full service layer with DB
-        // Covered by higher-level integration tests
-    }
-
-    #[tokio::test]
-    async fn test_remove_media() {
-        // Placeholder: requires full service layer with DB
-        // Covered by higher-level integration tests
-    }
 }

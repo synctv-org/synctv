@@ -43,11 +43,10 @@ impl ClientApiImpl {
             .map_err(|e| ApiError::Internal(format!("Failed to generate publish key: {e}")))?;
 
         // Construct RTMP URL and stream key from server config
-        let rtmp_host = &self.config.server.host;
+        // Use advertise_host for external clients (resolves to POD_IP in K8s, hostname otherwise)
+        let rtmp_host = self.config.advertise_host();
         let rtmp_port = self.config.livestream.rtmp_port;
-        // If bound to 0.0.0.0, use "localhost" as a safe default hint for clients
-        let display_host = if rtmp_host == "0.0.0.0" { "localhost" } else { rtmp_host.as_str() };
-        let rtmp_url = format!("rtmp://{display_host}:{rtmp_port}/live/{}", rid.as_str());
+        let rtmp_url = format!("rtmp://{}:{}/live/{}", rtmp_host, rtmp_port, rid.as_str());
         let stream_key = publish_key.token.clone();
 
         tracing::info!(

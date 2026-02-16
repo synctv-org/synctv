@@ -116,6 +116,34 @@ impl AdminServiceImpl {
         Ok(role)
     }
 
+    /// Check if user has admin role and return validated admin info.
+    async fn check_admin_get_validated(
+        &self,
+        request: &Request<impl std::fmt::Debug>,
+    ) -> Result<crate::impls::admin::ValidatedAdmin, Status> {
+        let user_context = request
+            .extensions()
+            .get::<super::interceptors::UserContext>()
+            .ok_or_else(|| Status::unauthenticated("Authentication required"))?;
+
+        let user_id = synctv_core::models::UserId::from_string(user_context.user_id.clone());
+        let token_iat = user_context.iat;
+
+        let validated = crate::impls::admin::validate_admin_auth(
+            &self.user_service,
+            user_id,
+            token_iat,
+        )
+        .await
+        .map_err(Status::unauthenticated)?;
+
+        if !validated.role.is_admin_or_above() {
+            return Err(Status::permission_denied("Admin role required"));
+        }
+
+        Ok(validated)
+    }
+
     /// Check if user has admin role (load from database)
     async fn check_admin(&self, request: &Request<impl std::fmt::Debug>) -> Result<(), Status> {
         self.check_admin_get_role(request).await.map(|_| ())
@@ -306,9 +334,9 @@ impl AdminService for AdminServiceImpl {
         &self,
         request: Request<UpdateUserPasswordRequest>,
     ) -> Result<Response<UpdateUserPasswordResponse>, Status> {
-        let caller_role = self.check_admin_get_role(&request).await?;
+        let validated = self.check_admin_get_validated(&request).await?;
         let req = request.into_inner();
-        let resp = self.admin_api.update_user_password(req, caller_role).await.map_err(api_err)?;
+        let resp = self.admin_api.update_user_password(req, validated.user_id, validated.role).await.map_err(api_err)?;
         Ok(Response::new(resp))
     }
 

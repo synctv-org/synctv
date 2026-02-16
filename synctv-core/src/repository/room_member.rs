@@ -872,12 +872,3 @@ impl RoomMemberRepository {
     }
 }
 
-#[cfg(test)]
-mod tests {
-
-    #[tokio::test]
-    async fn test_add_member() {
-        // Placeholder: requires full service layer setup with user/room creation
-        // Covered by higher-level integration tests in synctv-core/tests/
-    }
-}

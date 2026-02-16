@@ -178,6 +178,9 @@ impl StreamMessageHandler {
         // Send initial user joined notification
         stream.send(self.create_user_joined_message(&room_id_str).await)?;
 
+        // Broadcast UserJoined event to other replicas
+        self.broadcast_user_joined().await;
+
         // Create heartbeat interval OUTSIDE the loop so it doesn't reset
         // when other select! branches fire
         let mut heartbeat_interval = tokio::time::interval(std::time::Duration::from_secs(30));
@@ -381,6 +384,42 @@ impl StreamMessageHandler {
                 }),
             })),
         }
+    }
+
+    /// Broadcast UserJoined event to cluster replicas
+    async fn broadcast_user_joined(&self) {
+        // Fetch the actual role and permissions from the membership record
+        let (role_proto, permissions) =
+            match self.room_service.member_service().get_member(&self.room_id, &self.user_id).await {
+                Ok(Some(member)) => {
+                    let effective = member.effective_permissions(member.role.permissions());
+                    let role = match member.role {
+                        synctv_core::models::RoomRole::Creator => synctv_proto::common::RoomMemberRole::Creator as i32,
+                        synctv_core::models::RoomRole::Admin => synctv_proto::common::RoomMemberRole::Admin as i32,
+                        synctv_core::models::RoomRole::Member => synctv_proto::common::RoomMemberRole::Member as i32,
+                        synctv_core::models::RoomRole::Guest => synctv_proto::common::RoomMemberRole::Guest as i32,
+                    };
+                    (role, effective)
+                }
+                _ => {
+                    // Fallback: if we can't fetch membership, use Member defaults
+                    (
+                        synctv_proto::common::RoomMemberRole::Member as i32,
+                        synctv_core::models::PermissionBits(synctv_core::models::PermissionBits::DEFAULT_MEMBER),
+                    )
+                }
+            };
+
+        let event = ClusterEvent::UserJoined {
+            event_id: nanoid::nanoid!(16),
+            room_id: self.room_id.clone(),
+            user_id: self.user_id.clone(),
+            username: self.username.clone(),
+            permissions,
+            role: role_proto,
+            timestamp: chrono::Utc::now(),
+        };
+        let _result = self.cluster_manager.broadcast(event);
     }
 
     /// Cleanup on disconnect
@@ -850,7 +889,7 @@ fn cluster_event_to_server_message(
                 })),
             })
         }
-        ClusterEvent::UserJoined { user_id, username, permissions, .. } => {
+        ClusterEvent::UserJoined { user_id, username, permissions, role, .. } => {
             Some(ServerMessage {
                 message: Some(Message::UserJoined(UserJoinedRoom {
                     room_id: room_id.to_string(),
@@ -858,7 +897,7 @@ fn cluster_event_to_server_message(
                         room_id: room_id.to_string(),
                         user_id: user_id.as_str().to_string(),
                         username: username.clone(),
-                        role: synctv_proto::common::RoomMemberRole::Member as i32,
+                        role: *role,
                         permissions: permissions.0,
                         added_permissions: 0,
                         removed_permissions: 0,
@@ -899,15 +938,15 @@ fn cluster_event_to_server_message(
                 })),
             })
         }
-        ClusterEvent::PermissionChanged { target_user_id, new_permissions, changed_by_username, .. } => {
+        ClusterEvent::PermissionChanged { target_user_id, new_permissions, role, added_permissions, removed_permissions, changed_by_username, .. } => {
             Some(ServerMessage {
                 message: Some(Message::PermissionChanged(crate::proto::client::PermissionChanged {
                     room_id: room_id.to_string(),
                     user_id: target_user_id.as_str().to_string(),
-                    role: synctv_proto::common::RoomMemberRole::Unspecified as i32,
+                    role: *role,
                     effective_permissions: new_permissions.0,
-                    added_permissions: 0,
-                    removed_permissions: 0,
+                    added_permissions: added_permissions.0,
+                    removed_permissions: removed_permissions.0,
                     admin_added_permissions: 0,
                     admin_removed_permissions: 0,
                     updated_by: changed_by_username.clone(),
@@ -973,7 +1012,7 @@ fn cluster_event_to_server_message(
             Some(ServerMessage {
                 message: Some(Message::Error(ErrorMessage {
                     message: message.clone(),
-                    code: 0,
+                    code: 0, // System notifications use code 0 (not actual errors)
                     detail: String::new(),
                 })),
             })
@@ -983,7 +1022,7 @@ fn cluster_event_to_server_message(
             Some(ServerMessage {
                 message: Some(Message::Error(ErrorMessage {
                     message: "Room has been deleted".to_string(),
-                    code: 0,
+                    code: crate::impls::error_codes::NOT_FOUND,
                     detail: String::new(),
                 })),
             })

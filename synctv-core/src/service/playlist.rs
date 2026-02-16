@@ -560,21 +560,4 @@ mod tests {
 
     // ========== Integration Tests (Require DB) ==========
 
-    #[tokio::test]
-    async fn test_create_playlist() {
-        // Placeholder: requires full service layer with DB
-        // Covered by higher-level integration tests
-    }
-
-    #[tokio::test]
-    async fn test_delete_playlist() {
-        // Placeholder: requires full service layer with DB
-        // Covered by higher-level integration tests
-    }
-
-    #[tokio::test]
-    async fn test_get_playlist_path() {
-        // Placeholder: requires full service layer with DB
-        // Covered by higher-level integration tests
-    }
 }

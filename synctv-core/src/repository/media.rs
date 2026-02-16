@@ -532,12 +532,3 @@ impl MediaRepository {
 
 }
 
-#[cfg(test)]
-mod tests {
-
-    #[tokio::test]
-    async fn test_create_media() {
-        // Placeholder: requires room + playlist setup
-        // Covered by higher-level integration tests
-    }
-}

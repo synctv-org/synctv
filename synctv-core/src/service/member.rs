@@ -737,15 +737,4 @@ mod tests {
 
     // ========== Integration test placeholders ==========
 
-    #[tokio::test]
-    async fn test_add_member() {
-        // Placeholder: requires full service layer with DB
-        // Covered by higher-level integration tests
-    }
-
-    #[tokio::test]
-    async fn test_kick_member() {
-        // Placeholder: requires full service layer with DB
-        // Covered by higher-level integration tests
-    }
 }

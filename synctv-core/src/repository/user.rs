@@ -443,6 +443,7 @@ mod tests {
     // ========== Integration Tests (Require DB via testcontainers) ==========
 
     #[tokio::test]
+    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_create_user() {
         let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
         let repo = UserRepository::new(infra.pool.clone());
@@ -453,6 +454,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_create_user_duplicate_username_returns_already_exists() {
         let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
         let repo = UserRepository::new(infra.pool.clone());
@@ -464,6 +466,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_soft_delete_user() {
         let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
         let repo = UserRepository::new(infra.pool.clone());

@@ -870,21 +870,4 @@ mod tests {
 
     // ========== Integration Tests ==========
 
-    #[tokio::test]
-    async fn test_register_user() {
-        // Placeholder: requires full service layer with DB
-        // Covered by higher-level integration tests
-    }
-
-    #[tokio::test]
-    async fn test_login_user() {
-        // Placeholder: requires full service layer with DB
-        // Covered by higher-level integration tests
-    }
-
-    #[tokio::test]
-    async fn test_refresh_token() {
-        // Placeholder: requires full service layer with DB
-        // Covered by higher-level integration tests
-    }
 }

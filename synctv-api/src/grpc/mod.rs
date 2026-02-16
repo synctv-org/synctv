@@ -78,6 +78,7 @@ pub struct GrpcServerConfig<'a> {
     pub publish_key_service: Option<Arc<synctv_core::service::PublishKeyService>>,
     pub notification_service: Option<Arc<synctv_core::service::UserNotificationService>>,
     pub oauth2_service: Option<Arc<synctv_core::service::OAuth2Service>>,
+    pub audit_service: Arc<synctv_core::service::AuditService>,
     pub node_registry: Option<Arc<synctv_cluster::discovery::NodeRegistry>>,
     pub token_blacklist_service: synctv_core::service::TokenBlacklistService,
     pub shutdown_rx: Option<tokio::sync::watch::Receiver<bool>>,
@@ -109,6 +110,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         publish_key_service,
         notification_service,
         oauth2_service,
+        audit_service,
         node_registry,
         token_blacklist_service,
         shutdown_rx,
@@ -201,6 +203,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         provider_instance_manager,
         live_streaming_infrastructure,
         redis_publish_tx.clone(),
+        audit_service.clone(),
     ));
 
     let admin_service = AdminServiceImpl::new(

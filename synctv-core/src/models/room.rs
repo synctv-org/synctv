@@ -159,6 +159,7 @@ pub struct Room {
     /// Room description (max 500 characters)
     #[serde(default)]
     pub description: String,
+    /// Creator user ID (room is CASCADE deleted when creator is deleted)
     pub created_by: UserId,
     /// Room lifecycle status (Active/Pending/Closed)
     pub status: RoomStatus,

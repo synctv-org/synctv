@@ -18,7 +18,7 @@ use crate::repository::ProviderInstanceRepository;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint};
+use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Uri};
 use tonic_health::pb::{health_client::HealthClient, HealthCheckRequest};
 
 /// Redis Pub/Sub channel for provider instance change notifications
@@ -249,24 +249,38 @@ impl RemoteProviderManager {
 
         // Configure TLS if enabled
         if config.tls {
-            let mut tls_config = ClientTlsConfig::new();
-
             if config.insecure_tls {
                 // Skip certificate verification (UNSAFE, development/testing only)
                 tracing::warn!(
                     "Instance '{}' configured with insecure TLS (skips certificate verification)",
                     config.name
                 );
-                tls_config = tls_config.with_native_roots();
+
+                // Build a custom connector that skips TLS certificate verification.
+                // tonic's ClientTlsConfig doesn't expose this, so we build a raw
+                // rustls ClientConfig with a no-op verifier and wrap it in a
+                // tower::Service<Uri> that tonic can use.
+                let channel = Self::connect_insecure_tls(endpoint).await
+                    .map_err(|e| crate::Error::Internal(format!("insecure TLS connect failed: {e}")))?;
+
+                tracing::info!(
+                    "Established insecure-TLS gRPC connection to {} (timeout: {:?})",
+                    config.endpoint,
+                    timeout,
+                );
+
+                return Ok(channel);
+            }
+
+            let mut tls_config = ClientTlsConfig::new();
+
+            // Use custom CA certificate if provided
+            if let Some(ref ca_pem) = config.custom_ca {
+                let cert = Certificate::from_pem(ca_pem);
+                tls_config = tls_config.ca_certificate(cert);
             } else {
-                // Use custom CA certificate if provided
-                if let Some(ref ca_pem) = config.custom_ca {
-                    let cert = Certificate::from_pem(ca_pem);
-                    tls_config = tls_config.ca_certificate(cert);
-                } else {
-                    // Use system CA certificates
-                    tls_config = tls_config.with_native_roots();
-                }
+                // Use system CA certificates
+                tls_config = tls_config.with_native_roots();
             }
 
             endpoint = endpoint.tls_config(tls_config)
@@ -284,6 +298,95 @@ impl RemoteProviderManager {
             config.tls
         );
 
+        Ok(channel)
+    }
+
+    /// Connect to a gRPC endpoint with TLS certificate verification disabled.
+    ///
+    /// This builds a custom `tower::Service<Uri>` connector that uses a rustls
+    /// `ClientConfig` with a no-op certificate verifier. Only for dev/testing.
+    async fn connect_insecure_tls(endpoint: Endpoint) -> Result<Channel, Box<dyn std::error::Error + Send + Sync>> {
+        use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+        use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+        use rustls::{ClientConfig, DigitallySignedStruct, Error as TlsError, SignatureScheme};
+
+        /// A certificate verifier that accepts any server certificate.
+        #[derive(Debug)]
+        struct NoVerifier;
+
+        impl ServerCertVerifier for NoVerifier {
+            fn verify_server_cert(
+                &self,
+                _end_entity: &CertificateDer<'_>,
+                _intermediates: &[CertificateDer<'_>],
+                _server_name: &ServerName<'_>,
+                _ocsp_response: &[u8],
+                _now: UnixTime,
+            ) -> Result<ServerCertVerified, TlsError> {
+                Ok(ServerCertVerified::assertion())
+            }
+
+            fn verify_tls12_signature(
+                &self,
+                _message: &[u8],
+                _cert: &CertificateDer<'_>,
+                _dss: &DigitallySignedStruct,
+            ) -> Result<HandshakeSignatureValid, TlsError> {
+                Ok(HandshakeSignatureValid::assertion())
+            }
+
+            fn verify_tls13_signature(
+                &self,
+                _message: &[u8],
+                _cert: &CertificateDer<'_>,
+                _dss: &DigitallySignedStruct,
+            ) -> Result<HandshakeSignatureValid, TlsError> {
+                Ok(HandshakeSignatureValid::assertion())
+            }
+
+            fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+                vec![
+                    SignatureScheme::RSA_PKCS1_SHA256,
+                    SignatureScheme::RSA_PKCS1_SHA384,
+                    SignatureScheme::RSA_PKCS1_SHA512,
+                    SignatureScheme::ECDSA_NISTP256_SHA256,
+                    SignatureScheme::ECDSA_NISTP384_SHA384,
+                    SignatureScheme::ECDSA_NISTP521_SHA512,
+                    SignatureScheme::RSA_PSS_SHA256,
+                    SignatureScheme::RSA_PSS_SHA384,
+                    SignatureScheme::RSA_PSS_SHA512,
+                    SignatureScheme::ED25519,
+                    SignatureScheme::ED448,
+                ]
+            }
+        }
+
+        let provider = rustls::crypto::CryptoProvider::get_default()
+            .cloned()
+            .unwrap_or_else(|| Arc::new(rustls::crypto::ring::default_provider()));
+
+        let tls_config = ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .map_err(|e| format!("TLS protocol version error: {e}"))?
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(NoVerifier))
+            .with_no_client_auth();
+
+        let connector = tower::service_fn(move |uri: Uri| {
+            let tls_config = tls_config.clone();
+            async move {
+                let host = uri.host().unwrap_or("localhost").to_string();
+                let port = uri.port_u16().unwrap_or(443);
+                let tcp = tokio::net::TcpStream::connect((host.as_str(), port)).await?;
+                let server_name = rustls::pki_types::ServerName::try_from(host)
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+                let tls = tokio_rustls::TlsConnector::from(Arc::new(tls_config));
+                let stream = tls.connect(server_name, tcp).await?;
+                Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(stream))
+            }
+        });
+
+        let channel = endpoint.connect_with_connector(connector).await?;
         Ok(channel)
     }
 

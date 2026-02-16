@@ -5,7 +5,7 @@
 //! Run with: cargo test --test auth_flow_integration_tests
 
 use synctv_core::{
-    models::{User, UserId, UserRole, UserStatus},
+    models::{User, UserId, UserRole, UserStatus, SignupMethod},
     repository::UserRepository,
     service::auth::{jwt::JwtService, password::{hash_password, verify_password}, TokenType},
 };
@@ -14,13 +14,18 @@ use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres;
 
-async fn create_test_pool() -> (Cli, testcontainers::Container<'static, Postgres>, PgPool) {
-    let docker = Cli::default();
-    let postgres = docker.run(Postgres::default());
+async fn create_test_pool() -> (ContainerAsync<Postgres>, PgPool) {
+    let postgres = Postgres::default()
+        .with_db_name("synctv_test")
+        .with_user("synctv")
+        .with_password("synctv_test")
+        .start()
+        .await
+        .expect("Failed to start Postgres container");
 
     let connection_string = format!(
-        "postgresql://postgres:postgres@127.0.0.1:{}/postgres",
-        postgres.get_host_port_ipv4(5432)
+        "postgresql://synctv:synctv_test@127.0.0.1:{}/synctv_test",
+        postgres.get_host_port_ipv4(5432).await.expect("Failed to get port")
     );
 
     let pool = PgPool::connect(&connection_string)
@@ -32,7 +37,7 @@ async fn create_test_pool() -> (Cli, testcontainers::Container<'static, Postgres
         .await
         .expect("Failed to run migrations");
 
-    (docker, postgres, pool)
+    (postgres, pool)
 }
 
 fn create_test_jwt_service() -> JwtService {
@@ -42,7 +47,7 @@ fn create_test_jwt_service() -> JwtService {
 
 #[tokio::test]
 async fn test_complete_registration_flow() {
-    let (_docker, _container, pool) = create_test_pool().await;
+    let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
 
     // Step 1: Register user
@@ -50,24 +55,24 @@ async fn test_complete_registration_flow() {
     let email = format!("{}@test.com", username);
     let password = "SecurePassword123!";
 
-    let password_hash = hash_password(password).expect("Failed to hash password");
+    let password_hash = hash_password(password).await.expect("Failed to hash password");
 
     let user = User {
         id: UserId::new(),
         username: username.clone(),
-        email: email.clone(),
+        email: Some(email.clone()),
         password_hash,
         role: UserRole::User,
-        status: UserStatus::PendingVerification,
+        status: UserStatus::Pending,
         email_verified: false,
+        signup_method: Some(SignupMethod::Email),
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
-        last_login_at: None,
-        password_changed_at: chrono::Utc::now(),
+        deleted_at: None,
     };
 
     let created_user = user_repo.create(&user).await.expect("Failed to create user");
-    assert_eq!(created_user.status, UserStatus::PendingVerification);
+    assert_eq!(created_user.status, UserStatus::Pending);
     assert_eq!(created_user.email_verified, false);
 
     // Step 2: Verify email (simulate)
@@ -85,7 +90,7 @@ async fn test_complete_registration_flow() {
         .expect("Failed to fetch user")
         .expect("User not found");
 
-    assert!(verify_password(password, &fetched_user.password_hash).is_ok());
+    assert!(verify_password(password, &fetched_user.password_hash).await.unwrap());
 
     // Generate tokens
     let jwt_service = create_test_jwt_service();
@@ -106,26 +111,26 @@ async fn test_complete_registration_flow() {
 
 #[tokio::test]
 async fn test_login_with_wrong_password() {
-    let (_docker, _container, pool) = create_test_pool().await;
+    let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
 
     // Create user
     let username = format!("test_user_{}", nanoid::nanoid!(10));
     let password = "CorrectPassword123!";
-    let password_hash = hash_password(password).expect("Failed to hash password");
+    let password_hash = hash_password(password).await.expect("Failed to hash password");
 
     let user = User {
         id: UserId::new(),
         username: username.clone(),
-        email: format!("{}@test.com", username),
+        email: Some(format!("{}@test.com", username)),
         password_hash,
         role: UserRole::User,
         status: UserStatus::Active,
         email_verified: true,
+        signup_method: Some(SignupMethod::Email),
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
-        last_login_at: None,
-        password_changed_at: chrono::Utc::now(),
+        deleted_at: None,
     };
 
     user_repo.create(&user).await.expect("Failed to create user");
@@ -137,32 +142,32 @@ async fn test_login_with_wrong_password() {
         .expect("User not found");
 
     let wrong_password = "WrongPassword123!";
-    let verify_result = verify_password(wrong_password, &fetched_user.password_hash);
-    assert!(verify_result.is_err(), "Wrong password should not verify");
+    let verify_result = verify_password(wrong_password, &fetched_user.password_hash).await.unwrap();
+    assert!(!verify_result, "Wrong password should not verify");
 }
 
 #[tokio::test]
 async fn test_login_unverified_user_rejected() {
-    let (_docker, _container, pool) = create_test_pool().await;
+    let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
 
     // Create unverified user
     let username = format!("test_user_{}", nanoid::nanoid!(10));
     let password = "Password123!";
-    let password_hash = hash_password(password).expect("Failed to hash password");
+    let password_hash = hash_password(password).await.expect("Failed to hash password");
 
     let user = User {
         id: UserId::new(),
         username: username.clone(),
-        email: format!("{}@test.com", username),
+        email: Some(format!("{}@test.com", username)),
         password_hash,
         role: UserRole::User,
-        status: UserStatus::PendingVerification,
+        status: UserStatus::Pending,
         email_verified: false,
+        signup_method: Some(SignupMethod::Email),
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
-        last_login_at: None,
-        password_changed_at: chrono::Utc::now(),
+        deleted_at: None,
     };
 
     user_repo.create(&user).await.expect("Failed to create user");
@@ -174,7 +179,7 @@ async fn test_login_unverified_user_rejected() {
         .expect("User not found");
 
     // Check status
-    assert_eq!(fetched_user.status, UserStatus::PendingVerification);
+    assert_eq!(fetched_user.status, UserStatus::Pending);
     assert!(!fetched_user.email_verified);
 
     // Application should reject login for unverified users
@@ -213,27 +218,27 @@ async fn test_token_refresh_flow() {
 
 #[tokio::test]
 async fn test_password_change_invalidates_tokens() {
-    let (_docker, _container, pool) = create_test_pool().await;
+    let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let jwt_service = create_test_jwt_service();
 
     // Create user
     let username = format!("test_user_{}", nanoid::nanoid!(10));
     let old_password = "OldPassword123!";
-    let password_hash = hash_password(old_password).expect("Failed to hash password");
+    let password_hash = hash_password(old_password).await.expect("Failed to hash password");
 
     let user = User {
         id: UserId::new(),
         username: username.clone(),
-        email: format!("{}@test.com", username),
+        email: Some(format!("{}@test.com", username)),
         password_hash,
         role: UserRole::User,
         status: UserStatus::Active,
         email_verified: true,
+        signup_method: Some(SignupMethod::Email),
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
-        last_login_at: None,
-        password_changed_at: chrono::Utc::now(),
+        deleted_at: None,
     };
 
     let created_user = user_repo.create(&user).await.expect("Failed to create user");
@@ -242,61 +247,58 @@ async fn test_password_change_invalidates_tokens() {
     let old_token = jwt_service.sign_token(&created_user.id, TokenType::Access)
         .expect("Failed to sign token");
 
-    let old_token_claims = jwt_service.verify_access_token(&old_token)
+    let _old_token_claims = jwt_service.verify_access_token(&old_token)
         .expect("Failed to verify old token");
 
     // Change password
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
     let new_password = "NewPassword123!";
-    let new_password_hash = hash_password(new_password).expect("Failed to hash new password");
+    let new_password_hash = hash_password(new_password).await.expect("Failed to hash new password");
 
     let mut updated_user = created_user.clone();
     updated_user.password_hash = new_password_hash;
-    updated_user.password_changed_at = chrono::Utc::now();
+    updated_user.updated_at = chrono::Utc::now();
 
     user_repo.update(&updated_user).await.expect("Failed to update user");
 
-    // In a real system, old tokens should be invalidated by checking password_changed_at
-    // against token issued_at (iat)
+    // In a real system, old tokens should be invalidated by checking updated_at
+    // against token issued_at (iat) or using a token revocation list
     let fetched_user = user_repo.get_by_id(&created_user.id)
         .await
         .expect("Failed to fetch user")
         .expect("User not found");
 
-    // Token was issued before password change
-    let token_issued_at = old_token_claims.iat;
-    let password_changed_timestamp = fetched_user.password_changed_at.timestamp();
-
-    assert!(password_changed_timestamp > token_issued_at,
-            "Password changed after token was issued");
+    // Verify password was changed
+    assert!(verify_password(new_password, &fetched_user.password_hash).await.unwrap());
+    assert!(!verify_password(old_password, &fetched_user.password_hash).await.unwrap());
 }
 
 #[tokio::test]
 async fn test_concurrent_login_attempts() {
     use std::sync::Arc;
 
-    let (_docker, _container, pool) = create_test_pool().await;
+    let (_container, pool) = create_test_pool().await;
     let user_repo = Arc::new(UserRepository::new(pool.clone()));
     let jwt_service = Arc::new(create_test_jwt_service());
 
     // Create user
     let username = format!("test_user_{}", nanoid::nanoid!(10));
     let password = "Password123!";
-    let password_hash = hash_password(password).expect("Failed to hash password");
+    let password_hash = hash_password(password).await.expect("Failed to hash password");
 
     let user = User {
         id: UserId::new(),
         username: username.clone(),
-        email: format!("{}@test.com", username),
+        email: Some(format!("{}@test.com", username)),
         password_hash,
         role: UserRole::User,
         status: UserStatus::Active,
         email_verified: true,
+        signup_method: Some(SignupMethod::Email),
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
-        last_login_at: None,
-        password_changed_at: chrono::Utc::now(),
+        deleted_at: None,
     };
 
     let created_user = user_repo.create(&user).await.expect("Failed to create user");
@@ -337,27 +339,27 @@ async fn test_concurrent_login_attempts() {
 }
 
 #[tokio::test]
-async fn test_suspended_user_login_rejected() {
-    let (_docker, _container, pool) = create_test_pool().await;
+async fn test_banned_user_login_rejected() {
+    let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
 
-    // Create suspended user
+    // Create banned user
     let username = format!("test_user_{}", nanoid::nanoid!(10));
     let password = "Password123!";
-    let password_hash = hash_password(password).expect("Failed to hash password");
+    let password_hash = hash_password(password).await.expect("Failed to hash password");
 
     let user = User {
         id: UserId::new(),
         username: username.clone(),
-        email: format!("{}@test.com", username),
+        email: Some(format!("{}@test.com", username)),
         password_hash,
         role: UserRole::User,
-        status: UserStatus::Suspended,
+        status: UserStatus::Banned,
         email_verified: true,
+        signup_method: Some(SignupMethod::Email),
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
-        last_login_at: None,
-        password_changed_at: chrono::Utc::now(),
+        deleted_at: None,
     };
 
     user_repo.create(&user).await.expect("Failed to create user");
@@ -369,34 +371,34 @@ async fn test_suspended_user_login_rejected() {
         .expect("User not found");
 
     // Check status
-    assert_eq!(fetched_user.status, UserStatus::Suspended);
+    assert_eq!(fetched_user.status, UserStatus::Banned);
 
-    // Application should reject login for suspended users
+    // Application should reject login for banned users
     // (Enforced in service layer)
 }
 
 #[tokio::test]
 async fn test_username_case_insensitive_login() {
-    let (_docker, _container, pool) = create_test_pool().await;
+    let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
 
     // Create user with lowercase username
     let username = format!("testuser_{}", nanoid::nanoid!(10));
     let password = "Password123!";
-    let password_hash = hash_password(password).expect("Failed to hash password");
+    let password_hash = hash_password(password).await.expect("Failed to hash password");
 
     let user = User {
         id: UserId::new(),
         username: username.to_lowercase(),
-        email: format!("{}@test.com", username),
+        email: Some(format!("{}@test.com", username)),
         password_hash,
         role: UserRole::User,
         status: UserStatus::Active,
         email_verified: true,
+        signup_method: Some(SignupMethod::Email),
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
-        last_login_at: None,
-        password_changed_at: chrono::Utc::now(),
+        deleted_at: None,
     };
 
     user_repo.create(&user).await.expect("Failed to create user");

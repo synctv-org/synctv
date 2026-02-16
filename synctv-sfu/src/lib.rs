@@ -26,7 +26,7 @@
 //! ## Partially Implemented
 //!
 //! - WebRTC control plane (basic implementation, needs integration testing)
-//! - Integration with synctv-api signaling endpoints (TODO)
+//! - SFU session manager bridges API signaling with server-side PeerConnections
 
 mod config;
 mod manager;
@@ -35,6 +35,7 @@ mod packet_pacer;
 mod peer;
 mod room;
 mod rtcp_handler;
+mod session_manager;
 mod track;
 mod types;
 mod webrtc_control;
@@ -46,6 +47,7 @@ pub use packet_pacer::{CongestionController, PacketPacer};
 pub use peer::{SfuPeer, PeerStats};
 pub use room::{SfuRoom, RoomMode, RoomStats};
 pub use rtcp_handler::RtcpHandler;
+pub use session_manager::{SfuSessionManager, SfuSignalingEvent};
 pub use track::{MediaTrack, QualityLayer, TrackKind};
 pub use types::{PeerId, RoomId, TrackId};
 pub use webrtc_control::{IceManager, IceServerConfig, PeerConnection};

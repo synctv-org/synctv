@@ -89,6 +89,13 @@ pub enum AuditAction {
     ProviderInstanceUpdated,
     ProviderInstanceDeleted,
     SettingsUpdated,
+    MemberKicked,
+    MemberBanned,
+    MemberUnbanned,
+    MemberRoleUpdated,
+    MemberPermissionUpdated,
+    MemberStatusUpdated,
+    RoomSettingsUpdated,
 }
 
 impl AuditAction {
@@ -113,6 +120,13 @@ impl AuditAction {
             Self::ProviderInstanceUpdated => "provider_instance_updated",
             Self::ProviderInstanceDeleted => "provider_instance_deleted",
             Self::SettingsUpdated => "settings_updated",
+            Self::MemberKicked => "member_kicked",
+            Self::MemberBanned => "member_banned",
+            Self::MemberUnbanned => "member_unbanned",
+            Self::MemberRoleUpdated => "member_role_updated",
+            Self::MemberPermissionUpdated => "member_permission_updated",
+            Self::MemberStatusUpdated => "member_status_updated",
+            Self::RoomSettingsUpdated => "room_settings_updated",
         }
     }
 }
@@ -123,6 +137,7 @@ impl AuditAction {
 pub enum AuditTargetType {
     User,
     Room,
+    Member,
     ProviderInstance,
     Settings,
     System,
@@ -134,6 +149,7 @@ impl AuditTargetType {
         match self {
             Self::User => "user",
             Self::Room => "room",
+            Self::Member => "member",
             Self::ProviderInstance => "provider_instance",
             Self::Settings => "settings",
             Self::System => "system",
@@ -224,23 +240,35 @@ impl AuditService {
         if let Some(ref sender) = self.sender {
             let record = AuditRecord {
                 actor_id: actor_id.clone(),
-                actor_username,
+                actor_username: actor_username.clone(),
                 action_str,
                 target_str,
-                target_id,
-                details,
-                ip_address,
-                user_agent,
+                target_id: target_id.clone(),
+                details: details.clone(),
+                ip_address: ip_address.clone(),
+                user_agent: user_agent.clone(),
                 created_at,
             };
 
             if let Err(_e) = sender.try_send(record) {
-                self.dropped_count.fetch_add(1, Ordering::Relaxed);
+                // Buffer full: fall back to synchronous DB write instead of dropping
                 tracing::warn!(
                     actor_id = %actor_id,
                     action = %action_str,
-                    "Audit buffer full, event dropped"
+                    "Audit buffer full, falling back to synchronous DB write"
                 );
+                if let Err(db_err) = Self::write_single(
+                    &self.pool, action_str, target_str, &actor_id, &actor_username,
+                    &target_id, &details, &ip_address, &user_agent, created_at,
+                ).await {
+                    self.dropped_count.fetch_add(1, Ordering::Relaxed);
+                    tracing::error!(
+                        actor_id = %actor_id,
+                        action = %action_str,
+                        error = %db_err,
+                        "Audit sync fallback write also failed, event dropped"
+                    );
+                }
             } else {
                 tracing::debug!(
                     actor_id = %actor_id,
@@ -518,7 +546,15 @@ impl Drop for AuditFlushHandle {
     }
 }
 
-/// Flush a batch of audit records to the database
+/// Maximum retry attempts for flush_batch
+const FLUSH_MAX_RETRIES: u32 = 3;
+/// Base delay in milliseconds for exponential backoff on flush retries
+const FLUSH_RETRY_BASE_MS: u64 = 100;
+
+/// Flush a batch of audit records to the database with retry on failure.
+///
+/// Uses exponential backoff (100ms, 200ms, 400ms) before giving up and
+/// counting the batch as dropped.
 async fn flush_batch(
     pool: &PgPool,
     buffer: &mut Vec<AuditRecord>,
@@ -561,29 +597,47 @@ async fn flush_batch(
         )
     ";
 
-    match sqlx::query(query)
-        .bind(&actor_ids)
-        .bind(&actor_usernames)
-        .bind(&actions)
-        .bind(&target_types)
-        .bind(&target_ids)
-        .bind(&details_list)
-        .bind(&ip_addresses)
-        .bind(&user_agents)
-        .bind(&created_ats)
-        .execute(pool)
-        .await
-    {
-        Ok(_) => {
-            tracing::debug!(batch_size = batch_size, "Audit batch flushed successfully");
-        }
-        Err(e) => {
-            dropped_count.fetch_add(batch_size, Ordering::Relaxed);
-            tracing::error!(
-                batch_size = batch_size,
-                error = %e,
-                "Failed to flush audit batch to database"
-            );
+    for attempt in 0..FLUSH_MAX_RETRIES {
+        match sqlx::query(query)
+            .bind(&actor_ids)
+            .bind(&actor_usernames)
+            .bind(&actions)
+            .bind(&target_types)
+            .bind(&target_ids)
+            .bind(&details_list)
+            .bind(&ip_addresses)
+            .bind(&user_agents)
+            .bind(&created_ats)
+            .execute(pool)
+            .await
+        {
+            Ok(_) => {
+                tracing::debug!(batch_size = batch_size, "Audit batch flushed successfully");
+                buffer.clear();
+                return;
+            }
+            Err(e) => {
+                if attempt + 1 < FLUSH_MAX_RETRIES {
+                    let backoff_ms = FLUSH_RETRY_BASE_MS * (1 << attempt);
+                    tracing::warn!(
+                        batch_size = batch_size,
+                        attempt = attempt + 1,
+                        max_retries = FLUSH_MAX_RETRIES,
+                        backoff_ms = backoff_ms,
+                        error = %e,
+                        "Audit batch flush failed, retrying"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                } else {
+                    dropped_count.fetch_add(batch_size, Ordering::Relaxed);
+                    tracing::error!(
+                        batch_size = batch_size,
+                        attempts = FLUSH_MAX_RETRIES,
+                        error = %e,
+                        "Failed to flush audit batch after all retries, events dropped"
+                    );
+                }
+            }
         }
     }
 
@@ -624,6 +678,13 @@ mod tests {
             (AuditAction::ProviderInstanceUpdated, "provider_instance_updated"),
             (AuditAction::ProviderInstanceDeleted, "provider_instance_deleted"),
             (AuditAction::SettingsUpdated, "settings_updated"),
+            (AuditAction::MemberKicked, "member_kicked"),
+            (AuditAction::MemberBanned, "member_banned"),
+            (AuditAction::MemberUnbanned, "member_unbanned"),
+            (AuditAction::MemberRoleUpdated, "member_role_updated"),
+            (AuditAction::MemberPermissionUpdated, "member_permission_updated"),
+            (AuditAction::MemberStatusUpdated, "member_status_updated"),
+            (AuditAction::RoomSettingsUpdated, "room_settings_updated"),
         ];
 
         for (action, expected) in actions {
@@ -670,6 +731,13 @@ mod tests {
             AuditAction::ProviderInstanceUpdated,
             AuditAction::ProviderInstanceDeleted,
             AuditAction::SettingsUpdated,
+            AuditAction::MemberKicked,
+            AuditAction::MemberBanned,
+            AuditAction::MemberUnbanned,
+            AuditAction::MemberRoleUpdated,
+            AuditAction::MemberPermissionUpdated,
+            AuditAction::MemberStatusUpdated,
+            AuditAction::RoomSettingsUpdated,
         ];
 
         for action in actions {
@@ -687,6 +755,7 @@ mod tests {
         let targets = vec![
             (AuditTargetType::User, "user"),
             (AuditTargetType::Room, "room"),
+            (AuditTargetType::Member, "member"),
             (AuditTargetType::ProviderInstance, "provider_instance"),
             (AuditTargetType::Settings, "settings"),
             (AuditTargetType::System, "system"),
@@ -703,6 +772,7 @@ mod tests {
         let targets = vec![
             AuditTargetType::User,
             AuditTargetType::Room,
+            AuditTargetType::Member,
             AuditTargetType::ProviderInstance,
             AuditTargetType::Settings,
             AuditTargetType::System,
@@ -903,6 +973,8 @@ mod tests {
         assert_eq!(DEFAULT_BUFFER_CAPACITY, 10_000);
         assert_eq!(FLUSH_BATCH_SIZE, 100);
         assert_eq!(FLUSH_INTERVAL_SECS, 5);
+        assert_eq!(FLUSH_MAX_RETRIES, 3);
+        assert_eq!(FLUSH_RETRY_BASE_MS, 100);
     }
 
     // ========== Integration Tests (Require DB) ==========

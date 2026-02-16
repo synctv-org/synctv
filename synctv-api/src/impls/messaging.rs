@@ -18,6 +18,7 @@ use synctv_core::{
     service::{ContentFilter, RateLimitConfig, RateLimiter, RoomService},
 };
 use synctv_cluster::sync::{ClusterEvent, ClusterManager, ConnectionManager};
+use synctv_sfu::{SfuSessionManager, SfuSignalingEvent};
 
 use crate::proto::client::{ClientMessage, ServerMessage};
 
@@ -84,6 +85,11 @@ pub struct StreamMessageHandler {
     rate_limit_config: Arc<RateLimitConfig>,
     content_filter: Arc<ContentFilter>,
     sender: Arc<dyn MessageSender>,
+    /// Optional SFU session manager for server-side PeerConnection management.
+    /// When present and the room's RTC peer count reaches the SFU threshold,
+    /// WebRTC signaling is routed through server-side PeerConnections instead
+    /// of being relayed peer-to-peer.
+    sfu_session_manager: Option<Arc<SfuSessionManager>>,
 }
 
 impl Clone for StreamMessageHandler {
@@ -100,6 +106,7 @@ impl Clone for StreamMessageHandler {
             rate_limit_config: Arc::clone(&self.rate_limit_config),
             content_filter: Arc::clone(&self.content_filter),
             sender: Arc::clone(&self.sender),
+            sfu_session_manager: self.sfu_session_manager.clone(),
         }
     }
 }
@@ -132,7 +139,14 @@ impl StreamMessageHandler {
             rate_limit_config,
             content_filter,
             sender,
+            sfu_session_manager: None,
         }
+    }
+
+    /// Set the SFU session manager for server-side PeerConnection support
+    pub fn with_sfu_session_manager(mut self, sfu_session_manager: Arc<SfuSessionManager>) -> Self {
+        self.sfu_session_manager = Some(sfu_session_manager);
+        self
     }
 
     /// Run the complete message loop using unified IO abstraction
@@ -541,7 +555,7 @@ impl StreamMessageHandler {
                 if chat_msg.content.is_empty() {
                     return Err("Chat message cannot be empty".to_string());
                 }
-                if chat_msg.content.len() > 2000 {
+                if chat_msg.content.chars().count() > 2000 {
                     return Err("Chat message too long (max 2000 characters)".to_string());
                 }
 
@@ -700,7 +714,30 @@ impl StreamMessageHandler {
             .get_connection_id(&self.room_id, &self.user_id)
             .ok_or_else(|| "Connection not found".to_string())?;
 
-        // Create event with server-set 'from' field (防止伪造)
+        // If this connection has an active SFU session, route the offer to the
+        // server-side PeerConnection and send back the answer directly
+        if let Some(ref sfu_mgr) = self.sfu_session_manager {
+            if sfu_mgr.has_session(&conn_id) {
+                let answer_json = sfu_mgr
+                    .handle_offer(&conn_id, &offer.data)
+                    .await
+                    .map_err(|e| format!("SFU offer handling failed: {e}"))?;
+
+                // Send SDP answer back to the client
+                use crate::proto::client::server_message::Message;
+                let answer_msg = ServerMessage {
+                    message: Some(Message::WebrtcAnswer(crate::proto::client::WebRtcAnswer {
+                        from: "sfu".to_string(),
+                        to: format!("{}:{}", self.user_id.as_str(), conn_id),
+                        data: answer_json,
+                    })),
+                };
+                self.sender.send(answer_msg)?;
+                return Ok(());
+            }
+        }
+
+        // P2P relay path: forward offer to target peer via cluster
         let event = ClusterEvent::WebRTCSignaling {
             event_id: nanoid::nanoid!(16),
             room_id: self.room_id.clone(),
@@ -758,7 +795,19 @@ impl StreamMessageHandler {
             .get_connection_id(&self.room_id, &self.user_id)
             .ok_or_else(|| "Connection not found".to_string())?;
 
-        // Create event with server-set 'from' field
+        // If this connection has an active SFU session, route the ICE candidate
+        // to the server-side PeerConnection
+        if let Some(ref sfu_mgr) = self.sfu_session_manager {
+            if sfu_mgr.has_session(&conn_id) {
+                sfu_mgr
+                    .add_ice_candidate(&conn_id, &candidate.data)
+                    .await
+                    .map_err(|e| format!("SFU ICE candidate failed: {e}"))?;
+                return Ok(());
+            }
+        }
+
+        // P2P relay path: forward ICE candidate to target peer via cluster
         let event = ClusterEvent::WebRTCSignaling {
             event_id: nanoid::nanoid!(16),
             room_id: self.room_id.clone(),
@@ -794,6 +843,84 @@ impl StreamMessageHandler {
         // Track WebRTC peer metrics
         synctv_core::metrics::http::WEBRTC_PEERS_ACTIVE.inc();
 
+        // Check if we should create an SFU session for this peer.
+        // When the room's RTC peer count reaches the threshold, new peers get
+        // a server-side PeerConnection for SFU-mode media forwarding.
+        if let Some(ref sfu_mgr) = self.sfu_session_manager {
+            let rtc_connections = self.connection_manager.get_rtc_connections(&self.room_id);
+            let rtc_peer_count = rtc_connections.len();
+
+            if sfu_mgr.should_use_sfu(rtc_peer_count) {
+                match sfu_mgr
+                    .create_session(
+                        self.room_id.as_str(),
+                        self.user_id.as_str(),
+                        &conn_id,
+                    )
+                    .await
+                {
+                    Ok(mut event_rx) => {
+                        // Spawn a task to forward SFU signaling events to the client
+                        let sender = Arc::clone(&self.sender);
+                        let conn_id_clone = conn_id.clone();
+                        let user_id_str = self.user_id.as_str().to_string();
+                        tokio::spawn(async move {
+                            while let Some(event) = event_rx.recv().await {
+                                let msg = match event {
+                                    SfuSignalingEvent::IceCandidate { candidate_json, .. } => {
+                                        use crate::proto::client::server_message::Message;
+                                        ServerMessage {
+                                            message: Some(Message::WebrtcIceCandidate(
+                                                crate::proto::client::WebRtcIceCandidate {
+                                                    from: "sfu".to_string(),
+                                                    to: format!("{}:{}", user_id_str, conn_id_clone),
+                                                    data: candidate_json,
+                                                },
+                                            )),
+                                        }
+                                    }
+                                    SfuSignalingEvent::SdpAnswer { sdp, .. } => {
+                                        use crate::proto::client::server_message::Message;
+                                        ServerMessage {
+                                            message: Some(Message::WebrtcAnswer(
+                                                crate::proto::client::WebRtcAnswer {
+                                                    from: "sfu".to_string(),
+                                                    to: format!("{}:{}", user_id_str, conn_id_clone),
+                                                    data: sdp,
+                                                },
+                                            )),
+                                        }
+                                    }
+                                };
+                                if sender.send(msg).is_err() {
+                                    break;
+                                }
+                            }
+                        });
+
+                        tracing::info!(
+                            room_id = %self.room_id.as_str(),
+                            user_id = %self.user_id.as_str(),
+                            conn_id = %conn_id,
+                            rtc_peer_count = rtc_peer_count,
+                            "Created SFU session for peer (threshold reached)"
+                        );
+                    }
+                    Err(e) => {
+                        // SFU session creation failed; fall back to P2P relay.
+                        // This is non-fatal: the peer can still communicate via
+                        // signaling relay.
+                        tracing::warn!(
+                            room_id = %self.room_id.as_str(),
+                            user_id = %self.user_id.as_str(),
+                            error = %e,
+                            "Failed to create SFU session, falling back to P2P relay"
+                        );
+                    }
+                }
+            }
+        }
+
         // Broadcast Join event to all RTC-joined users in the room
         let event = ClusterEvent::WebRTCJoin {
             event_id: nanoid::nanoid!(16),
@@ -815,6 +942,22 @@ impl StreamMessageHandler {
         let conn_id = self.connection_manager
             .get_connection_id(&self.room_id, &self.user_id)
             .ok_or_else(|| "Connection not found".to_string())?;
+
+        // Clean up SFU session if one exists for this connection
+        if let Some(ref sfu_mgr) = self.sfu_session_manager {
+            if sfu_mgr.has_session(&conn_id) {
+                if let Err(e) = sfu_mgr
+                    .remove_session(&conn_id, self.room_id.as_str(), self.user_id.as_str())
+                    .await
+                {
+                    tracing::warn!(
+                        conn_id = %conn_id,
+                        error = %e,
+                        "Failed to clean up SFU session on leave"
+                    );
+                }
+            }
+        }
 
         // Mark this connection as left WebRTC session
         self.connection_manager

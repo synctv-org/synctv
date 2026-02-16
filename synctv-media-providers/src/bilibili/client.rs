@@ -78,9 +78,11 @@ struct WbiKeys {
     expires_at: std::time::Instant,
 }
 
-/// Global WBI key cache. Keys are refreshed when expired.
-static WBI_KEY_CACHE: LazyLock<tokio::sync::RwLock<Option<WbiKeys>>> =
-    LazyLock::new(|| tokio::sync::RwLock::new(None));
+/// Global WBI key cache. Uses Mutex instead of RwLock so that when multiple
+/// tasks hit a cache miss simultaneously, only the first one refreshes from
+/// the API while the rest wait and then read the updated value.
+static WBI_KEY_CACHE: LazyLock<tokio::sync::Mutex<Option<WbiKeys>>> =
+    LazyLock::new(|| tokio::sync::Mutex::new(None));
 
 /// WBI key cache TTL (refresh keys every 30 minutes).
 const WBI_KEY_TTL: Duration = Duration::from_secs(30 * 60);
@@ -270,11 +272,16 @@ impl BilibiliClient {
         self.get_wbi_mixin_key_internal(false).await
     }
 
-    /// Internal method to get WBI mixin key with optional force refresh
+    /// Internal method to get WBI mixin key with optional force refresh.
+    ///
+    /// Uses a single Mutex to coordinate access: when the cache is expired (or
+    /// force_refresh is set), only the first caller fetches from the API while
+    /// all others wait on the lock and then read the freshly-cached value.
     async fn get_wbi_mixin_key_internal(&self, force_refresh: bool) -> Result<String, BilibiliError> {
-        // Fast path: check cache (skip if force refresh)
+        let mut cache = WBI_KEY_CACHE.lock().await;
+
+        // Check cache under the lock (unless force refresh)
         if !force_refresh {
-            let cache = WBI_KEY_CACHE.read().await;
             if let Some(ref keys) = *cache {
                 if std::time::Instant::now() < keys.expires_at {
                     return Ok(keys.mixin_key.clone());
@@ -282,7 +289,8 @@ impl BilibiliClient {
             }
         }
 
-        // Slow path: fetch from API
+        // Cache miss or force refresh: fetch from API while holding the lock
+        // so concurrent callers wait rather than all hitting the API.
         self.wait_for_rate_limit().await;
         let url = "https://api.bilibili.com/x/web-interface/nav";
         let req = self.add_cookies(self.client.get(url).header("Referer", REFERER));
@@ -309,14 +317,11 @@ impl BilibiliClient {
             return Err(BilibiliError::Parse("Generated empty mixin key".to_string()));
         }
 
-        // Update cache
-        {
-            let mut cache = WBI_KEY_CACHE.write().await;
-            *cache = Some(WbiKeys {
-                mixin_key: mixin_key.clone(),
-                expires_at: std::time::Instant::now() + WBI_KEY_TTL,
-            });
-        }
+        // Update cache (lock is already held)
+        *cache = Some(WbiKeys {
+            mixin_key: mixin_key.clone(),
+            expires_at: std::time::Instant::now() + WBI_KEY_TTL,
+        });
 
         Ok(mixin_key)
     }
@@ -1070,9 +1075,15 @@ impl BilibiliClient {
                     } else {
                         format!("https:{}", sub.subtitle_url)
                     };
-                    if !name.is_empty() && !url.is_empty() {
-                        subtitles.insert(name, url);
+                    if name.is_empty() || url.is_empty() {
+                        continue;
                     }
+                    // Validate subtitle URL against SSRF
+                    if let Err(e) = crate::grpc::validation::validate_host(&url) {
+                        tracing::warn!("Skipping subtitle with blocked URL: {} ({})", url, e.message());
+                        continue;
+                    }
+                    subtitles.insert(name, url);
                 }
 
                 Ok(subtitles)
@@ -1448,6 +1459,11 @@ impl BilibiliClient {
         // Build WebSocket URL (use wss:// for secure connection)
         let ws_url = format!("wss://{}:{}/sub", host.host, host.wss_port);
 
+        // Validate WebSocket URL against SSRF (convert wss to https for validation)
+        let validation_url = format!("https://{}:{}/sub", host.host, host.wss_port);
+        crate::grpc::validation::validate_host_with_dns(&validation_url).await
+            .map_err(|e| BilibiliError::InvalidConfig(format!("Danmaku WebSocket URL blocked by SSRF check: {}", e.message())))?;
+
         // Connect to WebSocket
         let (ws_stream, _) = connect_async(&ws_url).await.map_err(|e| {
             BilibiliError::Parse(format!("Failed to connect to danmaku WebSocket: {}", e))
@@ -1618,22 +1634,60 @@ fn parse_danmaku_packet(data: &[u8]) -> Result<Option<DanmakuMessage>, BilibiliE
             let decompressed = match protocol_version {
                 0 | 1 => body.to_vec(),
                 2 => {
-                    // zlib compression - would need flate2 crate
-                    // For now, skip compressed messages
-                    return Ok(None);
+                    // zlib (deflate) compression
+                    use std::io::Read;
+                    let mut decoder = flate2::read::ZlibDecoder::new(body);
+                    let mut out = Vec::new();
+                    if decoder.read_to_end(&mut out).is_err() {
+                        return Ok(None);
+                    }
+                    out
                 }
                 3 => {
-                    // brotli compression - would need brotli crate
-                    // For now, skip compressed messages
-                    return Ok(None);
+                    // brotli compression
+                    use std::io::Read;
+                    let mut decoder = brotli::Decompressor::new(body, 4096);
+                    let mut out = Vec::new();
+                    if decoder.read_to_end(&mut out).is_err() {
+                        return Ok(None);
+                    }
+                    out
                 }
                 _ => return Ok(None),
             };
 
-            // Parse JSON message
-            if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&decompressed) {
-                if let Some(cmd) = json.get("cmd").and_then(|v| v.as_str()) {
-                    return Ok(Some(parse_danmaku_cmd(cmd, &json)));
+            // Compressed data contains concatenated sub-packets with headers;
+            // uncompressed (v0/v1) body is raw JSON.
+            if protocol_version == 0 || protocol_version == 1 {
+                if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&decompressed) {
+                    if let Some(cmd) = json.get("cmd").and_then(|v| v.as_str()) {
+                        return Ok(Some(parse_danmaku_cmd(cmd, &json)));
+                    }
+                }
+            } else {
+                // Iterate over sub-packets inside the decompressed buffer
+                let mut offset = 0usize;
+                while offset + 16 <= decompressed.len() {
+                    let pkt_len = u32::from_be_bytes([
+                        decompressed[offset],
+                        decompressed[offset + 1],
+                        decompressed[offset + 2],
+                        decompressed[offset + 3],
+                    ]) as usize;
+                    let hdr_len = u16::from_be_bytes([
+                        decompressed[offset + 4],
+                        decompressed[offset + 5],
+                    ]) as usize;
+                    if pkt_len < hdr_len || offset + pkt_len > decompressed.len() {
+                        break;
+                    }
+                    let sub_body = &decompressed[offset + hdr_len..offset + pkt_len];
+                    if let Ok(json) = serde_json::from_slice::<serde_json::Value>(sub_body) {
+                        if let Some(cmd) = json.get("cmd").and_then(|v| v.as_str()) {
+                            return Ok(Some(parse_danmaku_cmd(cmd, &json)));
+                        }
+                    }
+                    offset += pkt_len;
                 }
             }
         }

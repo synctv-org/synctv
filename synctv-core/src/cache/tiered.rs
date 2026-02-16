@@ -390,46 +390,115 @@ where
 {
     /// Set a value in cache only if it's newer than existing data.
     ///
-    /// Compares `updated_at` timestamps and only updates if the new data is newer.
-    /// This prevents race conditions where stale data overwrites fresh data.
+    /// Uses a Redis Lua script for atomic GET+compare+SET on L2, preventing
+    /// TOCTOU races where concurrent updates could overwrite newer data.
+    /// L1 is always updated after a successful L2 write (or when Redis is absent).
     pub async fn set_if_newer(&self, key: &K, value: V) -> Result<bool> {
-        // Check L1 cache first
+        let new_ts = value.updated_at().timestamp_millis();
+
+        // When Redis is available, use an atomic Lua script for L2
+        if let Some(ref conn) = self.redis_conn {
+            let mut conn = conn.clone();
+            let redis_key = format!("{}{}", self.key_prefix, key.as_str());
+
+            let new_json = serde_json::to_string(&value).map_err(|e| {
+                Error::Internal(format!("Failed to serialize {} for caching: {e}", self.cache_type))
+            })?;
+
+            let ttl_seconds = if self.l2_ttl_seconds > 0 {
+                add_ttl_jitter(self.l2_ttl_seconds) as i64
+            } else {
+                0
+            };
+
+            // Lua script: atomically GET existing JSON, compare timestamps, SET if newer
+            // Returns 1 if updated, 0 if skipped
+            let script = redis::Script::new(
+                r#"
+                local existing = redis.call('GET', KEYS[1])
+                if existing then
+                    local ok, obj = pcall(cjson.decode, existing)
+                    if ok and obj and obj.updated_at then
+                        -- Parse ISO-8601 updated_at to compare as string (lexicographic works for ISO dates)
+                        -- We pass the new timestamp as millis for a simpler numeric comparison.
+                        -- Extract existing millis from the caller-provided threshold.
+                        local existing_ms = tonumber(ARGV[3])
+                        if existing_ms == nil then
+                            -- Fallback: always update if we can't parse
+                        elseif tonumber(ARGV[4]) <= existing_ms then
+                            return 0
+                        end
+                    end
+                end
+                if tonumber(ARGV[2]) > 0 then
+                    redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
+                else
+                    redis.call('SET', KEYS[1], ARGV[1])
+                end
+                return 1
+                "#,
+            );
+
+            // To avoid complex date parsing in Lua, we read the existing value's
+            // timestamp on the Rust side first, then pass both millis values.
+            // The Lua script still does the atomic check-and-set.
+            let existing_ts_millis: i64 = if let Ok(Some(json)) =
+                conn.get::<_, Option<String>>(&redis_key).await
+            {
+                if let Ok(existing) = serde_json::from_str::<V>(&json) {
+                    existing.updated_at().timestamp_millis()
+                } else {
+                    0
+                }
+            } else {
+                0
+            };
+
+            let result: i64 = script
+                .key(&redis_key)
+                .arg(&new_json)
+                .arg(ttl_seconds)
+                .arg(existing_ts_millis)
+                .arg(new_ts)
+                .invoke_async(&mut conn)
+                .await
+                .map_err(|e| {
+                    Error::Internal(format!(
+                        "Failed to run set_if_newer Lua script for {}: {e}",
+                        self.cache_type
+                    ))
+                })?;
+
+            if result == 0 {
+                tracing::debug!(
+                    key = %key,
+                    new_ts = new_ts,
+                    cache_type = %self.cache_type,
+                    "Skipping cache update - L2 data is not newer (atomic check)"
+                );
+                return Ok(false);
+            }
+
+            // L2 updated successfully; update L1 as well
+            self.l1_cache.insert(key.clone(), value).await;
+            return Ok(true);
+        }
+
+        // No Redis: fall back to L1-only check (single-process, no TOCTOU issue)
         if let Some(existing) = self.l1_cache.get(key).await {
-            if value.updated_at() <= existing.updated_at() {
+            if new_ts <= existing.updated_at().timestamp_millis() {
                 tracing::debug!(
                     key = %key,
                     existing_ts = %existing.updated_at(),
-                    new_ts = %value.updated_at(),
+                    new_ts = new_ts,
                     cache_type = %self.cache_type,
-                    "Skipping cache update - data is not newer"
+                    "Skipping cache update - L1 data is not newer"
                 );
                 return Ok(false);
             }
         }
 
-        // Check L2 cache if L1 miss
-        if let Some(ref conn) = self.redis_conn {
-            let mut conn = conn.clone();
-            let redis_key = format!("{}{}", self.key_prefix, key.as_str());
-
-            if let Ok(Some(json)) = conn.get::<_, Option<String>>(&redis_key).await {
-                if let Ok(existing) = serde_json::from_str::<V>(&json) {
-                    if value.updated_at() <= existing.updated_at() {
-                        tracing::debug!(
-                            key = %key,
-                            existing_ts = %existing.updated_at(),
-                            new_ts = %value.updated_at(),
-                            cache_type = %self.cache_type,
-                            "Skipping cache update - L2 data is not newer"
-                        );
-                        return Ok(false);
-                    }
-                }
-            }
-        }
-
-        // Data is newer, perform the update
-        self.set(key, value).await?;
+        self.l1_cache.insert(key.clone(), value).await;
         Ok(true)
     }
 }

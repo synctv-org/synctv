@@ -103,7 +103,7 @@ where
             .user_service
             .is_token_invalidated_by_password_change(&user_id, claims.iat)
             .await
-            .unwrap_or(false)
+            .unwrap_or(true)
         {
             return Err(AppError::unauthorized(
                 "Token invalidated due to password change. Please log in again.",

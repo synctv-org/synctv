@@ -9,9 +9,9 @@ use tracing::{info, debug, error};
 
 use crate::{
     cache::UsernameCache,
-    models::{ChatMessage, RoomId, SendDanmakuRequest, UserId},
+    models::{ChatMessage, PermissionBits, RoomId, SendDanmakuRequest, UserId},
     repository::ChatRepository,
-    service::{ContentFilter, RateLimitConfig, RateLimiter},
+    service::{ContentFilter, PermissionService, RateLimitConfig, RateLimiter, RoomSettingsService},
     Error, Result,
 };
 
@@ -23,6 +23,8 @@ pub struct ChatService {
     rate_limit_config: RateLimitConfig,
     content_filter: ContentFilter,
     username_cache: UsernameCache,
+    permission_service: PermissionService,
+    room_settings_service: RoomSettingsService,
 }
 
 impl std::fmt::Debug for ChatService {
@@ -35,12 +37,14 @@ impl std::fmt::Debug for ChatService {
 impl ChatService {
     /// Create a new chat service
     #[must_use]
-    pub const fn new(
+    pub fn new(
         chat_repository: Arc<ChatRepository>,
         rate_limiter: RateLimiter,
         rate_limit_config: RateLimitConfig,
         content_filter: ContentFilter,
         username_cache: UsernameCache,
+        permission_service: PermissionService,
+        room_settings_service: RoomSettingsService,
     ) -> Self {
         Self {
             chat_repository,
@@ -48,6 +52,8 @@ impl ChatService {
             rate_limit_config,
             content_filter,
             username_cache,
+            permission_service,
+            room_settings_service,
         }
     }
 
@@ -66,6 +72,17 @@ impl ChatService {
         user_id: UserId,
         content: String,
     ) -> Result<ChatMessage> {
+        // Check SEND_CHAT permission
+        self.permission_service
+            .check_permission(&room_id, &user_id, PermissionBits::SEND_CHAT)
+            .await?;
+
+        // Check if chat is enabled for this room
+        let room_settings = self.room_settings_service.get(&room_id).await?;
+        if !room_settings.chat_enabled.0 {
+            return Err(Error::Authorization("Chat is disabled in this room".to_string()));
+        }
+
         // Rate limiting: use configured chat_per_second from RateLimitConfig
         let rate_key = format!("chat:rate:{}:{}", room_id.as_str(), user_id.as_str());
         if let Err(e) = self
@@ -141,7 +158,6 @@ impl ChatService {
     /// # Arguments
     /// * `message_id` - Message ID to delete
     /// * `user_id` - User ID requesting deletion (must be sender or have `DELETE_CHAT` permission)
-    /// * `has_delete_permission` - Whether the user has `DELETE_CHAT` permission in this room
     ///
     /// # Returns
     /// Result indicating success or failure
@@ -149,7 +165,6 @@ impl ChatService {
         &self,
         message_id: &str,
         user_id: &UserId,
-        has_delete_permission: bool,
     ) -> Result<bool> {
         // Get the message to check ownership
         let message = self
@@ -159,10 +174,11 @@ impl ChatService {
             .ok_or_else(|| Error::NotFound("Message not found".to_string()))?;
 
         // Check if user is the sender or has DELETE_CHAT permission
-        if message.user_id != *user_id && !has_delete_permission {
-            return Err(Error::Authorization(
-                "You can only delete your own messages or must have DELETE_CHAT permission".to_string(),
-            ));
+        if message.user_id != *user_id {
+            // Not the sender, check DELETE_CHAT permission via PermissionService
+            self.permission_service
+                .check_permission(&message.room_id, user_id, PermissionBits::DELETE_CHAT)
+                .await?;
         }
 
         self.chat_repository.delete(message_id).await
@@ -184,6 +200,17 @@ impl ChatService {
         request: SendDanmakuRequest,
     ) -> Result<crate::models::DanmakuMessage> {
         use crate::models::DanmakuMessage;
+
+        // Check SEND_CHAT permission (danmaku is a form of chat)
+        self.permission_service
+            .check_permission(&room_id, &user_id, PermissionBits::SEND_CHAT)
+            .await?;
+
+        // Check if danmaku is enabled for this room
+        let room_settings = self.room_settings_service.get(&room_id).await?;
+        if !room_settings.danmaku_enabled.0 {
+            return Err(Error::Authorization("Danmaku is disabled in this room".to_string()));
+        }
 
         // Rate limiting: use configured danmaku_per_second from RateLimitConfig
         let rate_key = format!("danmaku:rate:{}:{}", room_id.as_str(), user_id.as_str());

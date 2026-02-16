@@ -29,6 +29,7 @@ use crate::{
     repository::{RoomRepository, RoomMemberRepository, MediaRepository, PlaylistRepository, RoomPlaybackStateRepository, ChatRepository, RoomSettingsRepository},
     service::{
         auth::password::{hash_password, verify_password},
+        audit::{AuditService, AuditAction, AuditTargetType},
         permission::PermissionService,
         member::MemberService,
         media::MediaService,
@@ -74,6 +75,9 @@ pub struct RoomService {
 
     /// Optional cache invalidation service for cross-replica room cache sync
     cache_invalidation: Option<Arc<CacheInvalidationService>>,
+
+    /// Optional audit service for logging security-sensitive operations
+    audit_service: Option<Arc<AuditService>>,
 }
 
 impl std::fmt::Debug for RoomService {
@@ -180,6 +184,41 @@ impl RoomService {
             notification_service,
             user_service,
             cache_invalidation: None,
+            audit_service: None,
+        }
+    }
+
+    /// Inject the audit service for logging security-sensitive operations.
+    ///
+    /// Also propagates the audit service to the inner `MemberService`.
+    pub fn set_audit_service(&mut self, audit: Arc<AuditService>) {
+        self.member_service.set_audit_service(Arc::clone(&audit));
+        self.audit_service = Some(audit);
+    }
+
+    /// Log an audit event if the audit service is configured.
+    /// Failures are logged as warnings but never propagated.
+    async fn audit_log(
+        &self,
+        actor_id: &UserId,
+        action: AuditAction,
+        target_type: AuditTargetType,
+        target_id: Option<String>,
+        details: serde_json::Value,
+    ) {
+        if let Some(ref audit) = self.audit_service {
+            if let Err(e) = audit.log(
+                actor_id.as_str().to_string(),
+                String::new(),
+                action,
+                target_type,
+                target_id,
+                details,
+                None,
+                None,
+            ).await {
+                tracing::warn!(error = %e, "Failed to write audit log from RoomService");
+            }
         }
     }
 
@@ -457,8 +496,23 @@ impl RoomService {
     }
 
     /// Leave a room
+    ///
+    /// The room creator cannot leave; they must delete the room instead.
     pub async fn leave_room(&self, room_id: RoomId, user_id: UserId) -> Result<()> {
         tracing::info!(room_id = %room_id, user_id = %user_id, "User leaving room");
+
+        // Block the creator from leaving - they must delete the room instead
+        let room = self
+            .room_repo
+            .get_by_id(&room_id)
+            .await?
+            .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
+
+        if room.created_by == user_id {
+            return Err(Error::Authorization(
+                "Room creator cannot leave the room. Delete the room instead.".to_string(),
+            ));
+        }
 
         self.member_service.remove_member(room_id.clone(), user_id.clone()).await?;
 
@@ -576,6 +630,15 @@ impl RoomService {
         // Invalidate room cache across all replicas
         self.notify_room_invalidation(&room_id).await;
 
+        // Audit log
+        self.audit_log(
+            &user_id,
+            AuditAction::RoomDeleted,
+            AuditTargetType::Room,
+            Some(room_id.as_str().to_string()),
+            serde_json::json!({"reason": "Room deleted by user"}),
+        ).await;
+
         Ok(())
     }
 
@@ -613,7 +676,17 @@ impl RoomService {
                     self.permission_service.invalidate_room_cache(&room_id).await;
                     self.notify_room_invalidation(&room_id).await;
                     let settings_json = serde_json::to_value(&settings)?;
-                    let _ = self.notification_service.notify_settings_updated(&room_id, settings_json).await;
+                    let _ = self.notification_service.notify_settings_updated(&room_id, settings_json.clone()).await;
+
+                    // Audit log
+                    self.audit_log(
+                        &user_id,
+                        AuditAction::RoomSettingsUpdated,
+                        AuditTargetType::Room,
+                        Some(room_id.as_str().to_string()),
+                        settings_json,
+                    ).await;
+
                     return Ok(room);
                 }
                 Err(Error::OptimisticLockConflict) if attempt + 1 < Self::MAX_RETRIES => {
@@ -1220,11 +1293,48 @@ impl RoomService {
     }
 
     /// Delete room (admin use, bypasses permission checks)
+    ///
+    /// Uses a transaction for atomicity, matching the pattern of `delete_room`.
     pub async fn admin_delete_room(&self, room_id: &RoomId) -> Result<()> {
         let _ = self.notification_service.notify_room_deleted(room_id).await;
-        self.room_repo.delete(room_id).await?;
+
+        // Wrap deletion in a transaction for atomicity
+        let mut tx = self.pool.begin().await?;
+
+        let deleted = sqlx::query(
+            "UPDATE rooms
+             SET deleted_at = $2, updated_at = $2
+             WHERE id = $1 AND deleted_at IS NULL"
+        )
+        .bind(room_id.as_str())
+        .bind(chrono::Utc::now())
+        .execute(&mut *tx)
+        .await?;
+
+        if deleted.rows_affected() == 0 {
+            tx.rollback().await?;
+            return Err(Error::NotFound("Room not found or already deleted".to_string()));
+        }
+
+        tx.commit().await?;
+
         crate::metrics::http::ROOMS_ACTIVE.dec();
         self.notify_room_invalidation(room_id).await;
+
+        // Audit log
+        if let Some(ref audit) = self.audit_service {
+            let _ = audit.log(
+                "system".to_string(),
+                "system".to_string(),
+                AuditAction::RoomDeleted,
+                AuditTargetType::Room,
+                Some(room_id.as_str().to_string()),
+                serde_json::json!({"reason": "Room deleted by admin"}),
+                None,
+                None,
+            ).await;
+        }
+
         Ok(())
     }
 
@@ -1310,6 +1420,20 @@ impl RoomService {
         let updated_room = self.room_repo.update_ban_status(room_id, true).await?;
         self.notify_room_invalidation(room_id).await;
 
+        // Audit log (admin actor not available at this layer -- logged as system)
+        if let Some(ref audit) = self.audit_service {
+            let _ = audit.log(
+                "system".to_string(),
+                "system".to_string(),
+                AuditAction::RoomBanned,
+                AuditTargetType::Room,
+                Some(room_id.as_str().to_string()),
+                serde_json::json!({"reason": "Room banned by admin"}),
+                None,
+                None,
+            ).await;
+        }
+
         Ok(updated_room)
     }
 
@@ -1327,6 +1451,20 @@ impl RoomService {
 
         let updated_room = self.room_repo.update_ban_status(room_id, false).await?;
         self.notify_room_invalidation(room_id).await;
+
+        // Audit log (admin actor not available at this layer -- logged as system)
+        if let Some(ref audit) = self.audit_service {
+            let _ = audit.log(
+                "system".to_string(),
+                "system".to_string(),
+                AuditAction::RoomUnbanned,
+                AuditTargetType::Room,
+                Some(room_id.as_str().to_string()),
+                serde_json::json!({"reason": "Room unbanned by admin"}),
+                None,
+                None,
+            ).await;
+        }
 
         Ok(updated_room)
     }

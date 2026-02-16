@@ -129,14 +129,15 @@ impl TokenBlacklistService {
                         .with_label_values(&["blacklist_check"])
                         .inc();
 
-                    tracing::warn!(
+                    tracing::error!(
                         error = %e,
-                        "Redis unreachable during blacklist check, falling back to L1 cache (degraded mode)"
+                        "Redis unreachable during blacklist check, propagating error (fail closed)"
                     );
-                    // Fail open: allow request when Redis is unavailable
-                    // The L1 cache was already checked above, so if we reach here
-                    // the token is not in L1. We assume it's valid to maintain availability.
-                    return Ok(false);
+                    // Fail closed: propagate error so callers can deny the request.
+                    // Swallowing the error would let revoked tokens through when Redis is down.
+                    return Err(Error::Internal(format!(
+                        "Token blacklist check failed: {e}"
+                    )));
                 }
             };
 
@@ -257,13 +258,16 @@ impl TokenBlacklistService {
                         .with_label_values(&["user_token_invalidation_check"])
                         .inc();
 
-                    tracing::warn!(
+                    tracing::error!(
                         error = %e,
                         "Redis unreachable during user token invalidation check, \
-                         falling back to L1 cache (degraded mode)"
+                         propagating error (fail closed)"
                     );
-                    // Fail open: L1 cache was already checked above, so allow request
-                    return Ok(false);
+                    // Fail closed: propagate error so callers can deny the request.
+                    // Swallowing the error would let invalidated tokens through when Redis is down.
+                    return Err(Error::Internal(format!(
+                        "User token invalidation check failed: {e}"
+                    )));
                 }
             };
 
@@ -571,8 +575,10 @@ mod tests {
         // Token issued 100s ago should be invalidated
         assert!(service.are_user_tokens_invalidated(&user, now - 100).await.unwrap());
 
-        // Token issued at same second as invalidation: rejected (uses <=)
-        assert!(service.are_user_tokens_invalidated(&user, now).await.unwrap());
+        // Token issued at same second as invalidation: accepted (uses strict <)
+        // A token issued at the exact same second as the password change is still
+        // valid since the password change happens after token issuance in that second.
+        assert!(!service.are_user_tokens_invalidated(&user, now).await.unwrap());
 
         // Token that would be issued 1 second from now should still be valid
         assert!(!service.are_user_tokens_invalidated(&user, now + 1).await.unwrap());

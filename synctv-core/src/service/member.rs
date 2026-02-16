@@ -3,9 +3,12 @@
 //! Handles room member operations including joining, leaving, kicking,
 //! and role management with Allow/Deny permission pattern.
 
+use std::sync::Arc;
+
 use crate::{
     models::{Room, RoomId, RoomMember, RoomMemberWithUser, UserId, PermissionBits, RoomRole, MemberStatus, RoomSettings, PageParams},
     repository::{RoomMemberRepository, RoomRepository, RoomSettingsRepository},
+    service::audit::{AuditService, AuditAction, AuditTargetType},
     service::permission::PermissionService,
     Error, Result,
 };
@@ -115,6 +118,7 @@ pub struct MemberService {
     room_repo: RoomRepository,
     room_settings_repo: Option<RoomSettingsRepository>,
     permission_service: PermissionService,
+    audit_service: Option<Arc<AuditService>>,
 }
 
 impl std::fmt::Debug for MemberService {
@@ -125,8 +129,8 @@ impl std::fmt::Debug for MemberService {
 
 impl MemberService {
     /// Create a new member service
-    #[must_use] 
-    pub const fn new(
+    #[must_use]
+    pub fn new(
         member_repo: RoomMemberRepository,
         room_repo: RoomRepository,
         permission_service: PermissionService,
@@ -136,12 +140,44 @@ impl MemberService {
             room_repo,
             room_settings_repo: None,
             permission_service,
+            audit_service: None,
         }
     }
 
     /// Set the room settings repository
     pub fn set_room_settings_repo(&mut self, repo: RoomSettingsRepository) {
         self.room_settings_repo = Some(repo);
+    }
+
+    /// Inject the audit service for security-sensitive operation logging
+    pub fn set_audit_service(&mut self, audit: Arc<AuditService>) {
+        self.audit_service = Some(audit);
+    }
+
+    /// Log an audit event if the audit service is configured.
+    /// Failures are logged as warnings but never propagated.
+    async fn audit_log(
+        &self,
+        actor_id: &UserId,
+        action: AuditAction,
+        target_type: AuditTargetType,
+        target_id: Option<String>,
+        details: serde_json::Value,
+    ) {
+        if let Some(ref audit) = self.audit_service {
+            if let Err(e) = audit.log(
+                actor_id.as_str().to_string(),
+                String::new(), // username not available at service layer
+                action,
+                target_type,
+                target_id,
+                details,
+                None,
+                None,
+            ).await {
+                tracing::warn!(error = %e, "Failed to write audit log from MemberService");
+            }
+        }
     }
 
     /// Add a user as a member to a room (with default options)
@@ -258,6 +294,18 @@ impl MemberService {
             .invalidate_cache(&room_id, &target_user_id)
             .await;
 
+        // Audit log
+        self.audit_log(
+            &kicker_id,
+            AuditAction::MemberKicked,
+            AuditTargetType::Member,
+            Some(target_user_id.as_str().to_string()),
+            serde_json::json!({
+                "room_id": room_id.as_str(),
+                "target_role": format!("{:?}", target_member.role),
+            }),
+        ).await;
+
         Ok(())
     }
 
@@ -308,6 +356,20 @@ impl MemberService {
         self.permission_service
             .invalidate_cache(&room_id, &target_user_id)
             .await;
+
+        // Audit log
+        self.audit_log(
+            &granter_id,
+            AuditAction::MemberPermissionUpdated,
+            AuditTargetType::Member,
+            Some(target_user_id.as_str().to_string()),
+            serde_json::json!({
+                "room_id": room_id.as_str(),
+                "added_permissions": added_permissions,
+                "removed_permissions": removed_permissions,
+            }),
+        ).await;
+
         Ok(updated_member)
     }
 
@@ -338,6 +400,18 @@ impl MemberService {
             .invalidate_cache(&room_id, &target_user_id)
             .await;
 
+        // Audit log
+        self.audit_log(
+            &granter_id,
+            AuditAction::PermissionGranted,
+            AuditTargetType::Member,
+            Some(target_user_id.as_str().to_string()),
+            serde_json::json!({
+                "room_id": room_id.as_str(),
+                "permission": permission,
+            }),
+        ).await;
+
         Ok(updated_member)
     }
 
@@ -367,6 +441,18 @@ impl MemberService {
         self.permission_service
             .invalidate_cache(&room_id, &target_user_id)
             .await;
+
+        // Audit log
+        self.audit_log(
+            &granter_id,
+            AuditAction::PermissionRevoked,
+            AuditTargetType::Member,
+            Some(target_user_id.as_str().to_string()),
+            serde_json::json!({
+                "room_id": room_id.as_str(),
+                "permission": permission,
+            }),
+        ).await;
 
         Ok(updated_member)
     }
@@ -483,13 +569,26 @@ impl MemberService {
 
         // Ban member
         self.member_repo
-            .ban_member(&room_id, &target_user_id, &admin_id, reason)
+            .ban_member(&room_id, &target_user_id, &admin_id, reason.clone())
             .await?;
 
         // Invalidate permission cache for banned user
         self.permission_service
             .invalidate_cache(&room_id, &target_user_id)
             .await;
+
+        // Audit log
+        self.audit_log(
+            &admin_id,
+            AuditAction::MemberBanned,
+            AuditTargetType::Member,
+            Some(target_user_id.as_str().to_string()),
+            serde_json::json!({
+                "room_id": room_id.as_str(),
+                "reason": reason,
+                "target_role": format!("{:?}", target_member.role),
+            }),
+        ).await;
 
         Ok(())
     }
@@ -515,6 +614,15 @@ impl MemberService {
         self.permission_service
             .invalidate_cache(&room_id, &target_user_id)
             .await;
+
+        // Audit log
+        self.audit_log(
+            &admin_id,
+            AuditAction::MemberUnbanned,
+            AuditTargetType::Member,
+            Some(target_user_id.as_str().to_string()),
+            serde_json::json!({ "room_id": room_id.as_str() }),
+        ).await;
 
         Ok(())
     }
@@ -547,16 +655,31 @@ impl MemberService {
             .await?
             .ok_or_else(|| Error::NotFound("User is not a member of this room".to_string()))?;
 
+        let old_role = member.role.clone();
+
         // Update role with optimistic locking
         let updated_member = self
             .member_repo
-            .update_role(&room_id, &target_user_id, role, member.version)
+            .update_role(&room_id, &target_user_id, role.clone(), member.version)
             .await?;
 
         // Invalidate permission cache
         self.permission_service
             .invalidate_cache(&room_id, &target_user_id)
             .await;
+
+        // Audit log
+        self.audit_log(
+            &creator_id,
+            AuditAction::MemberRoleUpdated,
+            AuditTargetType::Member,
+            Some(target_user_id.as_str().to_string()),
+            serde_json::json!({
+                "room_id": room_id.as_str(),
+                "old_role": format!("{:?}", old_role),
+                "new_role": format!("{:?}", role),
+            }),
+        ).await;
 
         Ok(updated_member)
     }
@@ -581,16 +704,31 @@ impl MemberService {
             .await?
             .ok_or_else(|| Error::NotFound("User is not a member of this room".to_string()))?;
 
+        let old_status = member.status.clone();
+
         // Update status with optimistic locking
         let updated_member = self
             .member_repo
-            .update_status(&room_id, &target_user_id, status, member.version)
+            .update_status(&room_id, &target_user_id, status.clone(), member.version)
             .await?;
 
         // Invalidate permission cache
         self.permission_service
             .invalidate_cache(&room_id, &target_user_id)
             .await;
+
+        // Audit log
+        self.audit_log(
+            &admin_id,
+            AuditAction::MemberStatusUpdated,
+            AuditTargetType::Member,
+            Some(target_user_id.as_str().to_string()),
+            serde_json::json!({
+                "room_id": room_id.as_str(),
+                "old_status": format!("{:?}", old_status),
+                "new_status": format!("{:?}", status),
+            }),
+        ).await;
 
         Ok(updated_member)
     }

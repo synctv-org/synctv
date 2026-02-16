@@ -67,6 +67,11 @@ ipnet.workspace = true
 reqwest.workspace = true
 http.workspace = true
 
+# TLS (for insecure_tls custom connector)
+tokio-rustls.workspace = true
+rustls.workspace = true
+hyper-util.workspace = true
+
 # Resilience
 tower.workspace = true
 tower-http.workspace = true

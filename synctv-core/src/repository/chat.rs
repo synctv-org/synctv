@@ -180,7 +180,7 @@ impl ChatRepository {
                     WHERE room_id IN (
                         SELECT DISTINCT room_id
                         FROM chat_messages
-                        WHERE created_at >= NOW() - ($2 || ' minutes')::INTERVAL
+                        WHERE created_at >= NOW() - make_interval(mins => $2)
                     )
                 ) ranked_messages
                 WHERE rn > $1

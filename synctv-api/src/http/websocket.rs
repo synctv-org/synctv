@@ -148,6 +148,8 @@ struct WebSocketStream {
     receiver: futures::stream::SplitStream<axum::extract::ws::WebSocket>,
     sender: WebSocketMessageSender,
     _is_alive: Arc<std::sync::atomic::AtomicBool>,
+    /// Raw channel for sending WebSocket control frames (Ping)
+    raw_sender: tokio::sync::mpsc::Sender<axum::extract::ws::Message>,
 }
 
 #[async_trait::async_trait]
@@ -177,15 +179,28 @@ impl StreamMessage for WebSocketStream {
     fn is_alive(&self) -> bool {
         self._is_alive.load(std::sync::atomic::Ordering::Relaxed)
     }
+
+    fn ping(&self) -> Result<(), String> {
+        self.raw_sender
+            .try_send(axum::extract::ws::Message::Ping(vec![].into()))
+            .map_err(|e| match e {
+                tokio::sync::mpsc::error::TrySendError::Full(_) => {
+                    "Ping failed: channel full".to_string()
+                }
+                tokio::sync::mpsc::error::TrySendError::Closed(_) => {
+                    "Ping failed: channel closed".to_string()
+                }
+            })
+    }
 }
 
 /// WebSocket message sender implementation
 struct WebSocketMessageSender {
-    sender: tokio::sync::mpsc::Sender<Vec<u8>>,
+    sender: tokio::sync::mpsc::Sender<axum::extract::ws::Message>,
 }
 
 impl WebSocketMessageSender {
-    const fn new(sender: tokio::sync::mpsc::Sender<Vec<u8>>) -> Self {
+    const fn new(sender: tokio::sync::mpsc::Sender<axum::extract::ws::Message>) -> Self {
         Self { sender }
     }
 }
@@ -197,7 +212,7 @@ impl crate::impls::messaging::MessageSender for WebSocketMessageSender {
 
         // Use try_send to provide backpressure for slow clients
         // If channel is full, drop the message (client is too slow)
-        self.sender.try_send(bytes).map_err(|e| match e {
+        self.sender.try_send(axum::extract::ws::Message::Binary(bytes.into())).map_err(|e| match e {
             tokio::sync::mpsc::error::TrySendError::Full(_) => {
                 "Channel full: WebSocket client too slow to consume messages".to_string()
             }
@@ -306,11 +321,12 @@ async fn handle_socket(
 
     // Create channel for sending messages to WebSocket with bounded capacity
     // Buffer size of 1000 messages provides backpressure for slow clients
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1000);
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<axum::extract::ws::Message>(1000);
     let is_alive = Arc::new(std::sync::atomic::AtomicBool::new(true));
 
     // Create WebSocket sender - wrapped in Arc for sharing with handler
     let ws_sender_for_handler = Arc::new(WebSocketMessageSender::new(tx.clone()));
+    let raw_sender_for_ping = tx.clone();
     let ws_sender = WebSocketMessageSender::new(tx);
 
     // Create StreamMessageHandler with all configuration
@@ -333,9 +349,9 @@ async fn handle_socket(
     // Spawn task to handle server messages -> WebSocket
     let is_alive_clone = is_alive.clone();
     tokio::spawn(async move {
-        while let Some(bytes) = rx.recv().await {
+        while let Some(msg) = rx.recv().await {
             if let Err(e) = ws_sender_sink
-                .send(axum::extract::ws::Message::Binary(bytes.into()))
+                .send(msg)
                 .await
             {
                 error!("Failed to send WebSocket message: {}", e);
@@ -350,6 +366,7 @@ async fn handle_socket(
         receiver: ws_receiver,
         sender: ws_sender,
         _is_alive: is_alive,
+        raw_sender: raw_sender_for_ping,
     };
 
     // Run unified message loop - ALL logic is here!

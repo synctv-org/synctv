@@ -38,6 +38,10 @@ subtle.workspace = true
 sha2.workspace = true
 md-5.workspace = true
 
+# Compression
+flate2.workspace = true
+brotli.workspace = true
+
 # Logging
 tracing.workspace = true
 tracing-subscriber.workspace = true

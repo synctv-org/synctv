@@ -330,7 +330,7 @@ impl PlaybackService {
             return Err(Error::Authorization("Media does not belong to this room".to_string()));
         }
 
-        let state = self.update_state(room_id, |state| {
+        let state = self.update_state(room_id.clone(), |state| {
             state.playing_media_id = Some(media_id.clone());
             state.playing_playlist_id = playlist_id.clone();
             state.relative_path = media_path.clone();
@@ -341,6 +341,7 @@ impl PlaybackService {
         })
         .await?;
 
+        self.invalidate_playback_cache(&room_id).await;
         self.broadcast_state_change(&state).await;
         Ok(state)
     }
@@ -473,6 +474,7 @@ impl PlaybackService {
                 "Auto-played next media"
             );
 
+            self.invalidate_playback_cache(room_id).await;
             self.broadcast_state_change(&new_state).await;
             Ok(Some(new_state))
         } else {
@@ -710,7 +712,7 @@ impl PlaybackService {
             }
         }
 
-        let state = self.update_state(room_id, |state| {
+        let state = self.update_state(room_id.clone(), |state| {
             if let Some(p) = playing {
                 state.is_playing = p;
             }
@@ -728,6 +730,7 @@ impl PlaybackService {
         })
         .await?;
 
+        self.invalidate_playback_cache(&room_id).await;
         self.broadcast_state_change(&state).await;
         Ok(state)
     }

@@ -54,6 +54,8 @@ pub struct PullStreamManager {
     /// Kept alive for the lifetime of the manager; dropped (aborted) when the
     /// manager is dropped.
     _pool_cleanup_handle: tokio::task::JoinHandle<()>,
+    /// Cluster authentication secret passed to `GrpcStreamPuller` for inter-node gRPC requests.
+    cluster_secret: Option<String>,
 }
 
 impl PullStreamManager {
@@ -70,6 +72,15 @@ impl PullStreamManager {
     #[must_use]
     pub fn with_grpc_port(mut self, port: u16) -> Self {
         self.grpc_port = port;
+        self
+    }
+
+    /// Set the cluster authentication secret for inter-node gRPC requests.
+    /// When set, all `GrpcStreamPuller` instances created by this manager
+    /// will attach this secret as `x-cluster-secret` metadata.
+    #[must_use]
+    pub fn with_cluster_secret(mut self, secret: Option<String>) -> Self {
+        self.cluster_secret = secret;
         self
     }
 
@@ -103,6 +114,7 @@ impl PullStreamManager {
             grpc_port: DEFAULT_GRPC_PORT,
             connection_pool,
             _pool_cleanup_handle: cleanup_handle,
+            cluster_secret: None,
         }
     }
 
@@ -189,6 +201,7 @@ impl PullStreamManager {
                 epoch,
                 self.connection_pool.clone(),
             )
+            .with_cluster_secret(self.cluster_secret.clone())
         );
 
         // Start pull stream (connects via gRPC to publisher)

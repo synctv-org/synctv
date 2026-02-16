@@ -32,6 +32,9 @@ pub struct ExternalPublishManager {
     registry: Arc<dyn StreamRegistryTrait>,
     local_node_id: String,
     stream_hub_event_sender: StreamHubEventSender,
+    /// Shared HTTP client for FLV connections. Built once with TLS (rustls) support
+    /// and reused across all external publish streams to avoid per-stream TLS setup cost.
+    http_client: reqwest::Client,
 }
 
 impl ExternalPublishManager {
@@ -59,6 +62,13 @@ impl ExternalPublishManager {
         cleanup_check_interval_secs: u64,
         idle_timeout_secs: u64,
     ) -> Self {
+        // Build a shared reqwest::Client with TLS (rustls) support.
+        // Reused across all HTTP-FLV pull streams to amortize TLS setup.
+        let http_client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .build()
+            .expect("failed to build shared reqwest::Client");
+
         Self {
             pool: StreamPool::new(
                 Duration::from_secs(cleanup_check_interval_secs),
@@ -67,6 +77,7 @@ impl ExternalPublishManager {
             registry,
             local_node_id,
             stream_hub_event_sender,
+            http_client,
         }
     }
 
@@ -114,6 +125,7 @@ impl ExternalPublishManager {
             media_id.to_string(),
             source_url.to_string(),
             self.stream_hub_event_sender.clone(),
+            self.http_client.clone(),
         ));
 
         // Start the puller (pushes frames into local StreamHub)
@@ -191,6 +203,8 @@ pub struct ExternalPublishStream {
     lifecycle: StreamLifecycle,
     /// Guard against sending duplicate UnPublish events (stop() + Drop)
     unpublish_sent: AtomicBool,
+    /// Shared HTTP client for FLV connections (supports TLS via rustls).
+    http_client: reqwest::Client,
 }
 
 impl ManagedStream for ExternalPublishStream {
@@ -210,6 +224,7 @@ impl ExternalPublishStream {
         media_id: String,
         source_url: String,
         stream_hub_event_sender: StreamHubEventSender,
+        http_client: reqwest::Client,
     ) -> Self {
         Self {
             room_id,
@@ -218,6 +233,7 @@ impl ExternalPublishStream {
             stream_hub_event_sender,
             lifecycle: StreamLifecycle::new(),
             unpublish_sent: AtomicBool::new(false),
+            http_client,
         }
     }
 
@@ -234,6 +250,7 @@ impl ExternalPublishStream {
         let media_id = self.media_id.clone();
         let source_url = self.source_url.clone();
         let stream_hub_sender = self.stream_hub_event_sender.clone();
+        let http_client = self.http_client.clone();
 
         let (confirm_tx, confirm_rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
 
@@ -245,12 +262,7 @@ impl ExternalPublishStream {
                 source_url,
                 stream_hub_sender,
             ) {
-                Ok(p) => {
-                    // Puller created successfully (connection parameters validated).
-                    // Signal confirmation so the caller can proceed with Redis registration.
-                    let _ = confirm_tx.send(Ok(()));
-                    p
-                }
+                Ok(p) => p.with_confirm(confirm_tx).with_http_client(http_client),
                 Err(e) => {
                     let msg = format!("Failed to create puller for {room_id}/{media_id}: {e}");
                     error!("{}", msg);
@@ -398,6 +410,7 @@ mod tests {
             "media-1".to_string(),
             "rtmp://example.com/live/stream".to_string(),
             sender,
+            reqwest::Client::new(),
         );
 
         assert_eq!(stream.subscriber_count(), 0);

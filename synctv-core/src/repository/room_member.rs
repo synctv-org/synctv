@@ -685,20 +685,9 @@ impl RoomMemberRepository {
         let limit = pagination.limit() as i64;
         let offset = pagination.offset() as i64;
 
-        // Get total count
-        let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) as count
-             FROM room_members rm
-             JOIN rooms r ON rm.room_id = r.id
-             WHERE rm.user_id = $1 AND rm.left_at IS NULL AND r.deleted_at IS NULL"
-        )
-        .bind(user_id.as_str())
-        .fetch_one(&self.pool)
-        .await?;
-
-        // Get room IDs
-        let rows = sqlx::query_scalar::<_, String>(
-            "SELECT rm.room_id
+        // Single query using COUNT(*) OVER() window function for atomic count + fetch
+        let rows = sqlx::query(
+            "SELECT rm.room_id, COUNT(*) OVER() as total_count
              FROM room_members rm
              JOIN rooms r ON rm.room_id = r.id
              WHERE rm.user_id = $1 AND rm.left_at IS NULL AND r.deleted_at IS NULL
@@ -711,9 +700,10 @@ impl RoomMemberRepository {
         .fetch_all(&self.pool)
         .await?;
 
-        let room_ids = rows.into_iter().map(RoomId::from_string).collect();
+        let total_count = rows.first().map(|r| r.get::<i64, _>("total_count")).unwrap_or(0);
+        let room_ids = rows.into_iter().map(|r| RoomId::from_string(r.get::<String, _>("room_id"))).collect();
 
-        Ok((room_ids, count))
+        Ok((room_ids, total_count))
     }
 
     /// Get rooms where a user is a member with full room details and member count (optimized)

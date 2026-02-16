@@ -39,6 +39,8 @@ pub struct PullStream {
     stopped: AtomicBool,
     /// Shared gRPC connection pool for reusing HTTP/2 channels to publisher nodes.
     connection_pool: GrpcConnectionPool,
+    /// Cluster authentication secret passed to `GrpcStreamPuller` for inter-node gRPC requests.
+    cluster_secret: Option<String>,
 }
 
 impl ManagedStream for PullStream {
@@ -93,7 +95,15 @@ impl PullStream {
             cancel_token: CancellationToken::new(),
             stopped: AtomicBool::new(false),
             connection_pool,
+            cluster_secret: None,
         }
+    }
+
+    /// Set the cluster authentication secret for inter-node gRPC requests.
+    #[must_use]
+    pub fn with_cluster_secret(mut self, secret: Option<String>) -> Self {
+        self.cluster_secret = secret;
+        self
     }
 
     /// Start the pull stream - connects to publisher via gRPC
@@ -136,53 +146,94 @@ impl PullStream {
 
         let room_id = self.room_id.clone();
         let media_id = self.media_id.clone();
+        let publisher_node = self.publisher_node.clone();
+        let hub_sender = self.stream_hub_event_sender.clone();
+        let pool = self.connection_pool.clone();
+        let cluster_secret = self.cluster_secret.clone();
         // Clone the is_running flag to mark failure in the spawned task
         let is_running_flag = self.lifecycle.is_running_clone();
-
-        let grpc_puller = GrpcStreamPuller::with_pool(
-            self.room_id.clone(),
-            self.media_id.clone(),
-            self.publisher_node.clone(),
-            self.stream_hub_event_sender.clone(),
-            self.connection_pool.clone(),
-        );
 
         let child_token = self.cancel_token.child_token();
         let handle = tokio::spawn(async move {
             info!("gRPC puller task started for {} / {}", room_id, media_id);
 
-            // Track relay duration via histogram (stream_type = "rtmp" for gRPC RTMP relay)
-            let timer = synctv_core::metrics::stream::STREAM_RELAY_DURATION
-                .with_label_values(&["rtmp"])
-                .start_timer();
-            synctv_core::metrics::stream::ACTIVE_RELAY_STREAMS.inc();
+            /// Maximum number of puller rebuilds before giving up permanently.
+            const MAX_REBUILDS: u32 = 3;
+            /// Delay before rebuilding a puller after it exits with an error.
+            const REBUILD_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
 
-            // Race the puller against cancellation for graceful shutdown
-            let result = tokio::select! {
-                r = grpc_puller.run() => r,
-                _ = child_token.cancelled() => {
-                    info!("gRPC puller task cancelled for {} / {}", room_id, media_id);
-                    Ok(())
+            let mut rebuild_count: u32 = 0;
+            let result = loop {
+                let grpc_puller = GrpcStreamPuller::with_pool(
+                    room_id.clone(),
+                    media_id.clone(),
+                    publisher_node.clone(),
+                    hub_sender.clone(),
+                    pool.clone(),
+                )
+                .with_cluster_secret(cluster_secret.clone());
+
+                // Track relay duration via histogram (stream_type = "rtmp" for gRPC RTMP relay)
+                let timer = synctv_core::metrics::stream::STREAM_RELAY_DURATION
+                    .with_label_values(&["rtmp"])
+                    .start_timer();
+                synctv_core::metrics::stream::ACTIVE_RELAY_STREAMS.inc();
+
+                // Race the puller against cancellation for graceful shutdown
+                let run_result = tokio::select! {
+                    r = grpc_puller.run() => r,
+                    _ = child_token.cancelled() => {
+                        info!("gRPC puller task cancelled for {} / {}", room_id, media_id);
+                        timer.observe_duration();
+                        synctv_core::metrics::stream::ACTIVE_RELAY_STREAMS.dec();
+                        break Ok(());
+                    }
+                };
+
+                timer.observe_duration();
+                synctv_core::metrics::stream::ACTIVE_RELAY_STREAMS.dec();
+
+                match run_result {
+                    Ok(()) => break Ok(()),
+                    Err(e) => {
+                        let error_type = if e.to_string().contains("timeout") {
+                            "timeout"
+                        } else if e.to_string().contains("connection") {
+                            "connection"
+                        } else {
+                            "other"
+                        };
+                        synctv_core::metrics::stream::STREAM_ERRORS
+                            .with_label_values(&["rtmp", error_type])
+                            .inc();
+
+                        rebuild_count += 1;
+                        if rebuild_count > MAX_REBUILDS {
+                            error!(
+                                "gRPC puller exhausted all retries and {} rebuilds for {} / {}: {}",
+                                MAX_REBUILDS, room_id, media_id, e
+                            );
+                            break Err(e);
+                        }
+
+                        warn!(
+                            "gRPC puller exited for {} / {}, rebuilding ({}/{}): {}",
+                            room_id, media_id, rebuild_count, MAX_REBUILDS, e
+                        );
+
+                        // Wait before rebuilding, but respect cancellation
+                        tokio::select! {
+                            _ = tokio::time::sleep(REBUILD_DELAY) => {}
+                            _ = child_token.cancelled() => {
+                                info!("gRPC puller rebuild cancelled for {} / {}", room_id, media_id);
+                                break Ok(());
+                            }
+                        }
+                    }
                 }
             };
 
-            timer.observe_duration();
-            synctv_core::metrics::stream::ACTIVE_RELAY_STREAMS.dec();
-
-            if let Err(ref e) = result {
-                error!("gRPC puller task failed for {} / {}: {}", room_id, media_id, e);
-
-                let error_type = if e.to_string().contains("timeout") {
-                    "timeout"
-                } else if e.to_string().contains("connection") {
-                    "connection"
-                } else {
-                    "other"
-                };
-                synctv_core::metrics::stream::STREAM_ERRORS
-                    .with_label_values(&["rtmp", error_type])
-                    .inc();
-
+            if result.is_err() {
                 // Mark is_running as false so is_healthy() returns false
                 // This ensures the stream will be removed from the pool on next access
                 is_running_flag.store(false, std::sync::atomic::Ordering::SeqCst);

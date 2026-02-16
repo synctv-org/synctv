@@ -362,7 +362,8 @@ impl LivestreamServer {
             event_sender.clone(),
             self.config.cleanup_check_interval_seconds,
             self.config.stream_timeout_seconds,
-        ));
+        )
+        .with_cluster_secret(self.config.cluster_secret.clone()));
         // Start periodic cleanup of stale creation locks to prevent memory leaks
         let pull_manager_cleanup = pull_manager.start_cleanup_task();
 

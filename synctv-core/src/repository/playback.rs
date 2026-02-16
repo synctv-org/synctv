@@ -93,8 +93,8 @@ impl RoomPlaybackStateRepository {
             "UPDATE room_playback_state
              SET playing_media_id = $2, playing_playlist_id = $3, relative_path = $4,
                  current_time = $5, speed = $6, is_playing = $7,
-                 updated_at = $8, version = version + 1
-             WHERE room_id = $1 AND version = $9
+                 version = version + 1
+             WHERE room_id = $1 AND version = $8
              RETURNING room_id, playing_media_id, playing_playlist_id, relative_path, current_time, speed, is_playing, updated_at, version",
         )
         .bind(state.room_id.as_str())
@@ -104,7 +104,6 @@ impl RoomPlaybackStateRepository {
         .bind(state.current_time)
         .bind(state.speed)
         .bind(state.is_playing)
-        .bind(chrono::Utc::now())
         .bind(state.version)
         .fetch_optional(&self.pool)
         .await?;

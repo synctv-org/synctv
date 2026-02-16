@@ -143,11 +143,10 @@ async fn test_jwt_type_confusion_guest_token() {
     let jwt_service = create_test_jwt_service();
     let user_id = UserId::new();
     let room_id = RoomId::new();
-    let session_id = nanoid::nanoid!();
 
-    // Generate guest token
+    // Generate guest token (session_id is generated internally by sign_guest_token)
     let guest_token = jwt_service
-        .sign_guest_token(&room_id, &session_id)
+        .sign_guest_token(&room_id)
         .expect("Failed to sign guest token");
 
     // Try to use guest token as access token

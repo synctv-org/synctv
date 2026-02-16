@@ -18,7 +18,7 @@
 //! - Provides RTCP feedback for network monitoring
 
 use crate::peer::SfuPeer;
-use crate::track::{MediaTrack, TrackKind};
+use crate::track::TrackKind;
 use crate::types::{PeerId, RoomId, TrackId};
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -33,7 +33,7 @@ use webrtc::api::media_engine::MediaEngine;
 use webrtc::api::setting_engine::SettingEngine;
 use webrtc::api::APIBuilder;
 use webrtc::ice::network_type::NetworkType;
-use webrtc::ice_transport::ice_candidate::{RTCIceCandidate, RTCIceCandidateInit};
+use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::ice_transport::ice_connection_state::RTCIceConnectionState;
 use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::interceptor::registry::Registry;
@@ -43,7 +43,6 @@ use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType};
 use webrtc::rtp_transceiver::rtp_sender::RTCRtpSender;
-use webrtc::rtp_transceiver::RTCRtpTransceiver;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_local::{TrackLocal, TrackLocalWriter};
 
@@ -170,7 +169,11 @@ impl PeerConnection {
         })
     }
 
-    /// Set up connection state callbacks
+    /// Set up connection state monitoring callbacks (ICE state, peer connection state).
+    ///
+    /// This method only registers connection lifecycle callbacks. Track and ICE
+    /// candidate callbacks should be set by the caller (e.g., `SfuSessionManager`)
+    /// which has the room context needed to route tracks and candidates.
     pub async fn setup_callbacks(
         &self,
         _network_monitor: Arc<crate::network_monitor::NetworkQualityMonitor>,
@@ -211,59 +214,6 @@ impl PeerConnection {
                     );
                 })
             }));
-
-        // ICE candidate handler
-        let peer_id_clone = peer_id.clone();
-        self.pc
-            .on_ice_candidate(Box::new(move |candidate: Option<RTCIceCandidate>| {
-                let peer_id = peer_id_clone.clone();
-                Box::pin(async move {
-                    if let Some(candidate) = candidate {
-                        debug!(
-                            peer_id = %peer_id,
-                            candidate = %candidate,
-                            "ICE candidate generated"
-                        );
-                        // TODO: Send candidate to signaling channel
-                    }
-                })
-            }));
-
-        // Track handler (for incoming tracks from publisher)
-        let peer_id_clone = peer_id.clone();
-        let room_id_clone = room_id.clone();
-        self.pc
-            .on_track(Box::new(
-                move |remote_track: Arc<webrtc::track::track_remote::TrackRemote>,
-                      rtp_receiver: Arc<webrtc::rtp_transceiver::rtp_receiver::RTCRtpReceiver>,
-                      _transceiver: Arc<RTCRtpTransceiver>| {
-                    let peer_id = peer_id_clone.clone();
-                    let room_id = room_id_clone.clone();
-                    Box::pin(async move {
-                        let track_id = TrackId::from(remote_track.id());
-                        let kind = TrackKind::from(remote_track.kind());
-
-                        info!(
-                            peer_id = %peer_id,
-                            room_id = %room_id,
-                            track_id = %track_id,
-                            kind = ?kind,
-                            "Received new track"
-                        );
-
-                        // Create MediaTrack wrapper
-                        let _media_track = Arc::new(MediaTrack::new(
-                            track_id.clone(),
-                            peer_id.clone(),
-                            remote_track,
-                            rtp_receiver,
-                        ));
-
-                        // TODO: Register track with room
-                        // room.add_published_track(&peer_id, track_id, media_track).await?;
-                    })
-                },
-            ));
 
         Ok(())
     }

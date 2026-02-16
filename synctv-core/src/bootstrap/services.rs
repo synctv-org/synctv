@@ -101,12 +101,25 @@ pub async fn init_services(
     } else {
         use crate::config::RedisDeploymentMode;
 
-        // Check for cluster mode early (not yet fully supported)
+        // Warn about non-standalone deployment modes
         if config.redis.deployment_mode == RedisDeploymentMode::Cluster {
+            tracing::warn!(
+                "Redis Cluster mode is configured but not yet fully supported. \
+                 ConnectionManager does not support cluster-aware routing. \
+                 Please use standalone or sentinel mode for now."
+            );
             return Err(anyhow::anyhow!(
                 "Redis cluster mode requires additional refactoring to support ConnectionManager. \
                  Please use standalone or sentinel mode for now."
             ).into());
+        }
+
+        if config.redis.deployment_mode == RedisDeploymentMode::Sentinel {
+            tracing::warn!(
+                "Redis Sentinel mode is configured. Note: automatic master failover is NOT \
+                 supported with the current ConnectionManager approach. If the master changes, \
+                 a restart will be required. A proper SentinelClient integration is planned."
+            );
         }
 
         let client = match config.redis.deployment_mode {
@@ -332,7 +345,12 @@ pub async fn init_services(
 
     // Initialize Audit service with buffering
     let (audit_service, audit_flush_handle) = AuditService::new(pool.clone());
+    let audit_service = Arc::new(audit_service);
     info!("Audit service initialized with async buffering");
+
+    // Wire audit service into RoomService (propagates to MemberService internally)
+    room_service.set_audit_service(Arc::clone(&audit_service));
+    info!("Audit service wired into RoomService and MemberService");
 
     // Store the settings listen task handle so it can be joined on shutdown.
     // The task will be cancelled via settings_cancel.
@@ -356,7 +374,7 @@ pub async fn init_services(
         email_token_service,
         publish_key_service: Arc::new(publish_key_service),
         notification_service: Arc::new(notification_service),
-        audit_service: Arc::new(audit_service),
+        audit_service,
         cache_invalidation,
         cache_manager,
         redis_conn,

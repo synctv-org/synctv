@@ -225,12 +225,11 @@ pub trait MediaProvider: Send + Sync {
     /// - Shared: "synctv:playback:{provider}:{hash}:shared"
     /// - User: "`synctv:playback:{provider}:{hash}:user:{user_id`}"
     fn cache_key(&self, ctx: &ProviderContext<'_>, source_config: &Value) -> String {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
+        use sha2::{Sha256, Digest};
 
-        let mut hasher = DefaultHasher::new();
-        source_config.to_string().hash(&mut hasher);
-        let config_hash = hasher.finish();
+        let mut hasher = Sha256::new();
+        hasher.update(source_config.to_string().as_bytes());
+        let config_hash = hex::encode(hasher.finalize());
 
         let is_shared = source_config
             .get("shared")

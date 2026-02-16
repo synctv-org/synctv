@@ -169,8 +169,11 @@ impl UserService {
             _ => return Err(Error::Authentication("Invalid username or password".to_string())),
         };
 
-        // Check if user is banned or soft-deleted (generic message to prevent enumeration)
-        if user.status == crate::models::UserStatus::Banned || user.deleted_at.is_some() {
+        // Check if user is banned, pending, or soft-deleted (generic message to prevent enumeration)
+        if user.status == crate::models::UserStatus::Banned
+            || user.status == crate::models::UserStatus::Pending
+            || user.deleted_at.is_some()
+        {
             return Err(Error::Authentication("Invalid username or password".to_string()));
         }
 
@@ -197,7 +200,10 @@ impl UserService {
             .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?;
 
         // Check user status (generic message to prevent user enumeration)
-        if user.is_deleted() || user.status == crate::models::UserStatus::Banned {
+        if user.is_deleted()
+            || user.status == crate::models::UserStatus::Banned
+            || user.status == crate::models::UserStatus::Pending
+        {
             return Err(Error::Authentication("Authentication failed".to_string()));
         }
 

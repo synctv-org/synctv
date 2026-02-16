@@ -200,6 +200,11 @@ chrono = { version = "0.4", features = ["serde"] }
 kube = { version = "1.0", features = ["runtime", "client", "derive"] }
 k8s-openapi = { version = "0.25", features = ["v1_32"] }
 
+# TLS
+tokio-rustls = "0.26"
+rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }
+hyper-util = { version = "0.1", features = ["client-legacy", "tokio", "http2"] }
+
 # Networking
 ipnet = "2.11"
 
@@ -215,6 +220,10 @@ handlebars = "6.4"
 
 # Initialization
 ctor = "0.6"
+
+# Compression
+flate2 = "1.1"
+brotli = "8.0"
 
 # Resilience
 governor = "0.10"

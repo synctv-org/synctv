@@ -81,6 +81,11 @@ pub struct ExternalStreamPuller {
     source_url: String,
     source_type: ExternalSourceType,
     stream_hub_event_sender: StreamHubEventSender,
+    /// Optional one-shot channel to signal that the first connection succeeded.
+    /// Sent once after the first successful publish + connect, then set to `None`.
+    confirm_tx: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
+    /// Shared HTTP client for FLV connections (reused across retries, supports TLS via rustls).
+    http_client: Option<reqwest::Client>,
 }
 
 impl ExternalStreamPuller {
@@ -105,6 +110,8 @@ impl ExternalStreamPuller {
             source_url,
             source_type,
             stream_hub_event_sender,
+            confirm_tx: None,
+            http_client: None,
         })
     }
 
@@ -131,7 +138,24 @@ impl ExternalStreamPuller {
             source_url,
             source_type,
             stream_hub_event_sender,
+            confirm_tx: None,
+            http_client: None,
         })
+    }
+
+    /// Set a one-shot confirmation channel. The puller will signal this channel
+    /// after the first successful connection is established (not just after URL validation).
+    #[must_use]
+    pub fn with_confirm(mut self, tx: tokio::sync::oneshot::Sender<Result<(), String>>) -> Self {
+        self.confirm_tx = Some(tx);
+        self
+    }
+
+    /// Set a shared HTTP client for FLV connections (reused across retries, supports TLS).
+    #[must_use]
+    pub fn with_http_client(mut self, client: reqwest::Client) -> Self {
+        self.http_client = Some(client);
+        self
     }
 
     /// Run the puller with retry logic.
@@ -207,6 +231,14 @@ impl ExternalStreamPuller {
             };
             let stream_duration = connect_start.elapsed();
 
+            // If the connection failed on the first attempt and we have a pending
+            // confirm_tx, signal the failure so the caller doesn't wait forever.
+            if result.is_err() {
+                if let Some(tx) = self.confirm_tx.take() {
+                    let _ = tx.send(Err(format!("{}", result.as_ref().unwrap_err())));
+                }
+            }
+
             // Always clean up local StreamHub before retry or exit
             if let Err(e) = self.unpublish_from_local_stream_hub().await {
                 warn!("Failed to unpublish from local StreamHub: {e}");
@@ -269,7 +301,7 @@ impl ExternalStreamPuller {
     ///    responds with our local `FrameDataSender` instead of creating a new stream
     /// 3. `ClientSession` then sends all received audio/video/metadata frames directly
     ///    through our `FrameDataSender` into the local `StreamHub` under `live/{room_id}/{media_id}`
-    async fn connect_and_stream_rtmp(&self, data_sender: &FrameDataSender) -> Result<()> {
+    async fn connect_and_stream_rtmp(&mut self, data_sender: &FrameDataSender) -> Result<()> {
         // Parse RTMP URL to extract host, port, app_name, stream_name
         let mut parser = RtmpUrlParser::new(self.source_url.clone());
         parser.parse_url()
@@ -298,6 +330,9 @@ impl ExternalStreamPuller {
         .await
         .map_err(|_| anyhow::anyhow!("TCP connection to {connect_addr} timed out after {TCP_CONNECT_TIMEOUT_SECS}s"))?
         .map_err(|e| anyhow::anyhow!("Failed to connect to {connect_addr}: {e}"))?;
+
+        // TCP connection established — signal confirmation
+        self.send_confirm_ok();
 
         // Create bridge channel — ClientSession sends StreamHub events here
         // instead of the real StreamHub. We intercept and redirect.
@@ -365,18 +400,25 @@ impl ExternalStreamPuller {
     /// 2. Repeating: tag header (11 bytes) + tag data + `PreviousTagSize` (4 bytes)
     ///
     /// Each parsed tag is converted to a `FrameData` and sent through `data_sender`.
-    async fn connect_and_stream_flv(&self, data_sender: &FrameDataSender) -> Result<()> {
+    async fn connect_and_stream_flv(&mut self, data_sender: &FrameDataSender) -> Result<()> {
         info!(
             source_url = %self.source_url,
             "Connecting to HTTP-FLV source"
         );
 
-        // No total .timeout() -- live streams run indefinitely.
-        // Use only connect_timeout and per-chunk read timeout below.
-        let client = reqwest::Client::builder()
-            .connect_timeout(std::time::Duration::from_secs(10))
-            .build()
-            .map_err(|e| anyhow::anyhow!("Failed to create HTTP client: {e}"))?;
+        // Use the shared HTTP client if available, otherwise create one.
+        // The shared client supports TLS (via rustls) and is reused across retries.
+        let client = match &self.http_client {
+            Some(c) => c.clone(),
+            None => {
+                let c = reqwest::Client::builder()
+                    .connect_timeout(std::time::Duration::from_secs(10))
+                    .build()
+                    .map_err(|e| anyhow::anyhow!("Failed to create HTTP client: {e}"))?;
+                self.http_client = Some(c.clone());
+                c
+            }
+        };
 
         let mut response = client
             .get(&self.source_url)
@@ -387,6 +429,9 @@ impl ExternalStreamPuller {
         if !response.status().is_success() {
             return Err(anyhow::anyhow!("HTTP error: {}", response.status()));
         }
+
+        // HTTP connection established and response OK — signal confirmation
+        self.send_confirm_ok();
 
         let mut buffer = BytesMut::new();
         let mut header_parsed = false;
@@ -476,13 +521,11 @@ impl ExternalStreamPuller {
                     | (u32::from(buffer[5]) << 8)
                     | u32::from(buffer[6]);
 
-                // Extract tag body data (bytes after the 11-byte header) and freeze for zero-copy
-                let tag_data = bytes::Bytes::copy_from_slice(
-                    &buffer[FLV_TAG_HEADER_SIZE..FLV_TAG_HEADER_SIZE + data_size],
-                );
-
-                // Advance past entire tag: header + data + PreviousTagSize
-                buffer.advance(total_tag_size);
+                // Zero-copy extraction: skip tag header, split out data, freeze to Bytes.
+                // This avoids a memcpy compared to the old copy_from_slice approach.
+                let _ = buffer.split_to(FLV_TAG_HEADER_SIZE); // discard tag header
+                let tag_data = buffer.split_to(data_size).freeze(); // zero-copy Bytes
+                buffer.advance(FLV_PREV_TAG_SIZE_LEN); // skip PreviousTagSize
 
                 // Convert to FrameData based on tag type and send to StreamHub
                 let frame = match tag_type {
@@ -512,6 +555,13 @@ impl ExternalStreamPuller {
         }
         info!("HTTP-FLV stream ended");
         Ok(())
+    }
+
+    /// Send the one-shot confirmation if still pending.
+    fn send_confirm_ok(&mut self) {
+        if let Some(tx) = self.confirm_tx.take() {
+            let _ = tx.send(Ok(()));
+        }
     }
 
     /// Exponential backoff with jitter (delegated to shared utility).

@@ -128,6 +128,25 @@ impl Gop {
 /// Prevents OOM under high-bitrate multi-stream scenarios (e.g., 4K at 50 Mbps).
 const DEFAULT_MAX_TOTAL_BYTES: usize = 50 * 1024 * 1024;
 
+/// Global override for `max_total_bytes`. Set once at startup via
+/// [`set_global_max_total_bytes`] before any streams are published.
+/// If unset, `DEFAULT_MAX_TOTAL_BYTES` is used.
+static GLOBAL_MAX_TOTAL_BYTES: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+
+/// Set the global maximum total bytes for the GOP cache per stream.
+/// Must be called once at startup. Subsequent calls are ignored.
+pub fn set_global_max_total_bytes(bytes: usize) {
+    let _ = GLOBAL_MAX_TOTAL_BYTES.set(bytes);
+}
+
+/// Get the effective max total bytes (global override or default).
+fn effective_max_total_bytes() -> usize {
+    GLOBAL_MAX_TOTAL_BYTES
+        .get()
+        .copied()
+        .unwrap_or(DEFAULT_MAX_TOTAL_BYTES)
+}
+
 #[derive(Clone)]
 pub struct Gops {
     gops: VecDeque<Gop>,
@@ -140,19 +159,41 @@ pub struct Gops {
 
 impl Default for Gops {
     fn default() -> Self {
-        Self::new(1)
+        Self::new(1, None)
     }
 }
 
 impl Gops {
+    /// Create a new `Gops` cache with the given GOP count limit and optional
+    /// per-stream memory cap. If `max_total_bytes` is `None`, the global
+    /// override (set via [`set_global_max_total_bytes`]) is used, or the
+    /// built-in default (50 MB) if neither is set.
     #[must_use]
-    pub fn new(size: usize) -> Self {
+    pub fn new(size: usize, max_total_bytes: Option<usize>) -> Self {
         Self {
             gops: VecDeque::from([Gop::new()]),
             size,
-            max_total_bytes: DEFAULT_MAX_TOTAL_BYTES,
+            max_total_bytes: max_total_bytes.unwrap_or_else(effective_max_total_bytes),
             current_total_bytes: 0,
         }
+    }
+
+    /// Get the current total memory in bytes across all GOPs.
+    #[must_use]
+    pub const fn current_total_bytes(&self) -> usize {
+        self.current_total_bytes
+    }
+
+    /// Get the configured maximum total bytes.
+    #[must_use]
+    pub const fn max_total_bytes(&self) -> usize {
+        self.max_total_bytes
+    }
+
+    /// Get the number of currently cached GOPs.
+    #[must_use]
+    pub fn gop_count(&self) -> usize {
+        self.gops.len()
     }
 
     pub fn save_frame_data(&mut self, data: FrameData, is_key_frame: bool) {

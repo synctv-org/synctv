@@ -231,6 +231,9 @@ http-body-util = "0.1"
 mockall = "0.14"
 wiremock = "0.6"
 tempfile = "3.25"
+testcontainers = "0.26"
+testcontainers-modules = { version = "0.14", features = ["postgres", "redis"] }
+tokio-tungstenite = "0.26"
 
 # Benchmarking
 criterion = { version = "0.8", features = ["html_reports"] }

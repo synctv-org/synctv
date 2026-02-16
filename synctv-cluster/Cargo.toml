@@ -63,3 +63,6 @@ tonic-prost-build.workspace = true
 
 [dev-dependencies]
 mockall.workspace = true
+testcontainers.workspace = true
+testcontainers-modules.workspace = true
+tokio = { workspace = true, features = ["test-util"] }

@@ -440,42 +440,37 @@ mod tests {
         assert_eq!(next, 6);
     }
 
-    // ========== Integration Tests (Require DB) ==========
+    // ========== Integration Tests (Require DB via testcontainers) ==========
 
     #[tokio::test]
-    #[ignore = "Requires database"]
     async fn test_create_user() {
-        // Would connect to test DB and verify:
-        // let pool = PgPool::connect("postgresql://...").await.unwrap();
-        // let repo = UserRepository::new(pool);
-        // let user = User::new("testuser".into(), Some("test@example.com".into()), "hash".into(), None);
-        // let created = repo.create(&user).await.unwrap();
-        // assert_eq!(created.username, "testuser");
-        // assert_eq!(created.email, Some("test@example.com".into()));
+        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
+        let repo = UserRepository::new(infra.pool.clone());
+        let user = User::new("testuser".into(), Some("test@example.com".into()), "hash".into(), None);
+        let created = repo.create(&user).await.unwrap();
+        assert_eq!(created.username, "testuser");
+        assert_eq!(created.email, Some("test@example.com".into()));
     }
 
     #[tokio::test]
-    #[ignore = "Requires database"]
     async fn test_create_user_duplicate_username_returns_already_exists() {
-        // Would connect to test DB and verify:
-        // let pool = PgPool::connect("postgresql://...").await.unwrap();
-        // let repo = UserRepository::new(pool);
-        // let user1 = User::new("same_name".into(), Some("a@b.com".into()), "hash".into(), None);
-        // repo.create(&user1).await.unwrap();
-        // let user2 = User::new("same_name".into(), Some("c@d.com".into()), "hash".into(), None);
-        // let err = repo.create(&user2).await.unwrap_err();
-        // assert!(matches!(err, Error::AlreadyExists(_)));
+        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
+        let repo = UserRepository::new(infra.pool.clone());
+        let user1 = User::new("same_name".into(), Some("a@b.com".into()), "hash".into(), None);
+        repo.create(&user1).await.unwrap();
+        let user2 = User::new("same_name".into(), Some("c@d.com".into()), "hash".into(), None);
+        let err = repo.create(&user2).await.unwrap_err();
+        assert!(matches!(err, Error::AlreadyExists(_)));
     }
 
     #[tokio::test]
-    #[ignore = "Requires database"]
     async fn test_soft_delete_user() {
-        // Would connect to test DB and verify soft delete:
-        // let pool = PgPool::connect("postgresql://...").await.unwrap();
-        // let repo = UserRepository::new(pool);
-        // let user = User::new("deleteme".into(), None, "hash".into(), None);
-        // let created = repo.create(&user).await.unwrap();
-        // assert!(repo.delete(&created.id).await.unwrap());
-        // assert!(repo.get_by_id(&created.id).await.unwrap().is_none()); // soft-deleted users not returned
+        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
+        let repo = UserRepository::new(infra.pool.clone());
+        let user = User::new("deleteme".into(), None, "hash".into(), None);
+        let created = repo.create(&user).await.unwrap();
+        assert!(repo.delete(&created.id).await.unwrap());
+        // Soft-deleted users should not be returned by get_by_id
+        assert!(repo.get_by_id(&created.id).await.unwrap().is_none());
     }
 }

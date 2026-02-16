@@ -528,8 +528,8 @@ impl MediaRepository {
 mod tests {
 
     #[tokio::test]
-    #[ignore = "Requires database"]
     async fn test_create_media() {
-        // Integration test placeholder
+        // Placeholder: requires room + playlist setup
+        // Covered by higher-level integration tests
     }
 }

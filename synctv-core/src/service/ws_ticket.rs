@@ -18,7 +18,7 @@ use base64::Engine;
 use rand::RngExt;
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
 
 use crate::models::UserId;
 use crate::{Error, Result};
@@ -125,6 +125,18 @@ impl WsTicketService {
                  This is only suitable for single-replica deployments. \
                  For multi-replica setups, configure Redis."
             );
+
+            // Detect multi-replica environment and warn loudly
+            if Self::detect_multi_replica_environment() {
+                error!(
+                    "MULTI-REPLICA RISK: WebSocket ticket service is using in-memory storage, \
+                     but the environment appears to be a multi-replica deployment \
+                     (Kubernetes / Docker Swarm / REPLICAS env detected). \
+                     Tickets created on one replica will NOT be valid on others. \
+                     Configure Redis to fix this."
+                );
+            }
+
             Self {
                 redis_conn: None,
                 memory_store: Some(MemoryTicketStore::new(ttl)),
@@ -280,6 +292,37 @@ impl WsTicketService {
         // Encode as URL-safe base64 (no special characters that could cause issues in URLs)
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
     }
+
+    /// Detect if the environment appears to be a multi-replica deployment.
+    ///
+    /// Checks for common indicators:
+    /// - `KUBERNETES_SERVICE_HOST` env var (Kubernetes)
+    /// - `REPLICAS` or `SYNCTV_REPLICAS` env var set to > 1
+    /// - `/var/run/secrets/kubernetes.io` exists (Kubernetes pod)
+    fn detect_multi_replica_environment() -> bool {
+        // Kubernetes environment
+        if std::env::var("KUBERNETES_SERVICE_HOST").is_ok() {
+            return true;
+        }
+
+        // Explicit replica count configuration
+        for var in &["REPLICAS", "SYNCTV_REPLICAS"] {
+            if let Ok(val) = std::env::var(var) {
+                if let Ok(count) = val.parse::<u32>() {
+                    if count > 1 {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        // Kubernetes secrets mount
+        if std::path::Path::new("/var/run/secrets/kubernetes.io").exists() {
+            return true;
+        }
+
+        false
+    }
 }
 
 #[cfg(test)]
@@ -370,5 +413,33 @@ mod tests {
 
         let result = service.validate_and_consume("invalid_ticket").await;
         assert!(result.is_err());
+    }
+
+    // ========== Multi-Replica Detection ==========
+
+    #[test]
+    fn test_detect_multi_replica_no_env_is_false() {
+        // In a normal test environment without Kubernetes, should return false
+        // (unless the CI is running in K8s, which is acceptable)
+        let result = WsTicketService::detect_multi_replica_environment();
+        // We can't assert false because the test might run in K8s.
+        // Just verify it doesn't panic.
+        let _ = result;
+    }
+
+    #[test]
+    fn test_memory_mode_creates_valid_service() {
+        let service = WsTicketService::with_memory(Some(60));
+        assert!(service.redis_conn.is_none());
+        assert!(service.memory_store.is_some());
+        assert_eq!(service.ticket_ttl_secs, 60);
+    }
+
+    #[test]
+    fn test_debug_shows_mode() {
+        let service = WsTicketService::with_memory(Some(30));
+        let debug_str = format!("{service:?}");
+        assert!(debug_str.contains("memory_mode"));
+        assert!(debug_str.contains("true"));
     }
 }

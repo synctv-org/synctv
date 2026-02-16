@@ -231,7 +231,7 @@ mod error_responses {
 // ============================================================================
 
 mod error_classification {
-    use synctv_api::http::error::{impls_err_to_app_error, AppError};
+    use synctv_api::http::error::impls_err_to_app_error;
     use synctv_api::impls::ApiError;
     use axum::http::StatusCode;
 

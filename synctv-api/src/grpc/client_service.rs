@@ -3,8 +3,8 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status};
 
-use synctv_cluster::sync::{ClusterEvent, ClusterManager, ConnectionManager};
-use crate::impls::messaging::{StreamMessageHandler, MessageSender};
+use synctv_cluster::sync::{ClusterManager, ConnectionManager};
+use crate::impls::messaging::{StreamMessageHandler, MessageSender, StreamMessage};
 use synctv_core::models::{
     RoomId, UserId,
 };
@@ -518,7 +518,6 @@ impl RoomService for ClientServiceImpl {
         &self,
         request: Request<tonic::Streaming<ClientMessage>>,
     ) -> Result<Response<Self::MessageStreamStream>, Status> {
-        use nanoid::nanoid;
         use tokio::sync::mpsc;
 
         // Extract all data from request BEFORE any await points.
@@ -531,7 +530,7 @@ impl RoomService for ClientServiceImpl {
             .clone();
         let room_id = self.get_room_id(&request)?;
         // Consume request now so it is not held across await points
-        let mut client_stream = request.into_inner();
+        let client_stream = request.into_inner();
 
         // Check if token has been revoked
         if self
@@ -559,39 +558,14 @@ impl RoomService for ClientServiceImpl {
             .await
             .map_err(|e| Status::permission_denied(format!("Not a member of the room: {e}")))?;
 
-        // Generate unique connection ID
-        let connection_id = nanoid!(16);
-
         tracing::info!(
             user_id = %user_id.as_str(),
             room_id = %room_id.as_str(),
-            connection_id = %connection_id,
             "Client establishing MessageStream connection"
         );
 
-        // Register connection with connection manager
-        if let Err(e) = self
-            .connection_manager
-            .register(connection_id.clone(), user_id.clone())
-        {
-            tracing::warn!(
-                user_id = %user_id.as_str(),
-                error = %e,
-                "Connection rejected by connection manager"
-            );
-            return Err(Status::resource_exhausted(e));
-        }
-
-        // Register with room (rollback global registration on failure)
-        if let Err(e) = self
-            .connection_manager
-            .join_room(&connection_id, room_id.clone())
-        {
-            self.connection_manager.unregister(&connection_id);
-            return Err(Status::resource_exhausted(format!(
-                "Cannot join room: {e}"
-            )));
-        }
+        // Connection registration is handled by StreamMessageHandler::run()
+        // which generates its own connection_id and manages the full lifecycle.
 
         // Create channel for outgoing messages with bounded capacity to prevent memory exhaustion
         let (outgoing_tx, outgoing_rx) = mpsc::channel::<ServerMessage>(MESSAGE_STREAM_BUFFER_SIZE);
@@ -613,48 +587,18 @@ impl RoomService for ClientServiceImpl {
             grpc_sender,
         );
 
-        // Start the handler and get sender for client messages
-        let client_msg_tx = stream_handler.start();
+        // Create unified GrpcStreamMessage adapter
+        let mut grpc_stream = GrpcStreamMessage {
+            client_stream,
+            sender: GrpcMessageSender::new(outgoing_tx),
+            alive: std::sync::atomic::AtomicBool::new(true),
+        };
 
-        // Clone for cleanup task
-        let connection_id_clone = connection_id;
-        let connection_manager_clone = self.connection_manager.clone();
-        let cluster_manager_clone = self.cluster_manager.clone();
-        let room_id_clone = room_id.clone();
-        let user_id_clone = user_id.clone();
-        let username_clone = username;
-        let _outgoing_tx_clone = outgoing_tx;
-
-        // Spawn task to handle incoming client messages
+        // Spawn the unified message loop (handles disconnect signals, heartbeat, cleanup)
         tokio::spawn(async move {
-            while let Ok(Some(client_msg)) = client_stream.message().await {
-                if let Err(e) = client_msg_tx.send(client_msg).await {
-                    tracing::error!("Failed to send message to handler: {}", e);
-                    break;
-                }
+            if let Err(e) = stream_handler.run(&mut grpc_stream).await {
+                tracing::error!("gRPC stream handler error: {}", e);
             }
-
-            // Client disconnected, cleanup
-            cluster_manager_clone.unsubscribe(&connection_id_clone);
-
-            // Notify other users that this user left
-            let event = ClusterEvent::UserLeft {
-                event_id: nanoid::nanoid!(16),
-                room_id: room_id_clone.clone(),
-                user_id: user_id_clone.clone(),
-                username: username_clone.clone(),
-                timestamp: chrono::Utc::now(),
-            };
-            cluster_manager_clone.broadcast(event);
-
-            // Unregister connection from connection manager
-            connection_manager_clone.unregister(&connection_id_clone);
-
-            tracing::info!(
-                user_id = %user_id_clone.as_str(),
-                connection_id = %connection_id_clone,
-                "Client disconnected from MessageStream"
-            );
         });
 
         // Convert outgoing channel to stream, wrapping items in Ok()
@@ -725,6 +669,40 @@ impl MessageSender for GrpcMessageSender {
                 }
             })
     }
+}
+
+/// gRPC stream implementation of `StreamMessage` trait
+///
+/// Adapts `tonic::Streaming<ClientMessage>` + `mpsc::Sender<ServerMessage>` to the
+/// unified `StreamMessage` interface, enabling full code reuse with the WebSocket path.
+struct GrpcStreamMessage {
+    client_stream: tonic::Streaming<ClientMessage>,
+    sender: GrpcMessageSender,
+    alive: std::sync::atomic::AtomicBool,
+}
+
+#[async_trait::async_trait]
+impl StreamMessage for GrpcStreamMessage {
+    async fn recv(&mut self) -> Option<Result<ClientMessage, String>> {
+        match self.client_stream.message().await {
+            Ok(Some(msg)) => Some(Ok(msg)),
+            Ok(None) => None, // Stream ended gracefully
+            Err(e) => {
+                self.alive.store(false, std::sync::atomic::Ordering::Relaxed);
+                Some(Err(format!("gRPC stream error: {e}")))
+            }
+        }
+    }
+
+    fn send(&self, message: ServerMessage) -> Result<(), String> {
+        MessageSender::send(&self.sender, message)
+    }
+
+    fn is_alive(&self) -> bool {
+        self.alive.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    // gRPC uses HTTP/2 PING frames automatically, no application-level ping needed
 }
 
 // ==================== MediaService Implementation ====================

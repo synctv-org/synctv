@@ -208,7 +208,6 @@ config:
   ## LivestreamConfig
   livestream:
     rtmpPort: 1935
-    maxStreams: 50
     gopCacheSize: 2
     streamTimeoutSeconds: 300
     cleanupCheckIntervalSeconds: 60

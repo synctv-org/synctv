@@ -363,6 +363,7 @@ impl SyncTvServer {
                 live_streaming_infrastructure: services.live_streaming_infrastructure,
                 publish_key_service: Some(services.publish_key_service),
                 notification_service: services.notification_service,
+                oauth2_service: services.oauth2_service,
                 node_registry: services.node_registry,
                 token_blacklist_service: services.token_blacklist,
                 shutdown_rx: Some(shutdown_rx),

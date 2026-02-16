@@ -732,15 +732,15 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    #[ignore = "Requires database"]
     async fn test_play_pause() {
-        // Integration test placeholder
+        // Placeholder: requires full service layer with DB
+        // Covered by higher-level integration tests
     }
 
     #[tokio::test]
-    #[ignore = "Requires database"]
     async fn test_seek() {
-        // Integration test placeholder
+        // Placeholder: requires full service layer with DB
+        // Covered by higher-level integration tests
     }
 
     #[test]

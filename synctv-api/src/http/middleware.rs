@@ -311,13 +311,12 @@ pub async fn rate_limit_middleware(
             Ok(response)
         }
         Err(e) => {
-            // Redis error or other issue — fail closed to prevent abuse.
-            // When rate limiting is unavailable, reject requests rather than
-            // allowing unbounded traffic.
-            tracing::error!("Rate limit check failed: {}. Denying request (fail closed).", e);
+            // This branch should not be reached for check_rate_limit (which
+            // degrades to in-memory on Redis errors), but handle defensively.
+            tracing::error!("Rate limit check unexpected error: {}. Denying request (fail closed).", e);
             let response = (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Rate limiting service unavailable. Please try again later.",
+                StatusCode::TOO_MANY_REQUESTS,
+                "Rate limiting temporarily degraded. Please try again shortly.",
             )
                 .into_response();
             Ok(response)

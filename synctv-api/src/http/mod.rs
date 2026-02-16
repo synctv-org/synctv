@@ -445,10 +445,10 @@ fn build_cors_layer(config: &synctv_core::Config) -> CorsLayer {
             .allow_headers(Any)
     } else if config.server.cors_allowed_origins.is_empty() {
         tracing::warn!(
-            "CORS: No allowed origins configured in production. \
-             All cross-origin requests will be denied. \
-             Set server.cors_allowed_origins in config to allow specific origins. \
-             Example: server.cors_allowed_origins = ['https://example.com']"
+            "CORS policy: DENY ALL cross-origin requests (no origins configured). \
+             Web frontends on different origins will fail to connect. \
+             To fix, set server.cors_allowed_origins to your frontend URL(s): \
+             SYNCTV_SERVER_CORS_ALLOWED_ORIGINS='[\"https://app.example.com\"]'"
         );
         CorsLayer::new()
     } else {

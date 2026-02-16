@@ -22,8 +22,20 @@ server:
   # If empty, X-Forwarded-For headers are NOT trusted (socket address is used).
   # Example: ["10.0.0.0/8", "192.168.0.0/16"]
   trusted_proxies: []
-  # CORS allowed origins. In development mode, all origins are allowed.
-  # Example: ["https://app.example.com", "https://admin.example.com"]
+  # CORS allowed origins for cross-origin requests from web frontends.
+  #
+  # In development mode, all origins are allowed automatically.
+  # In production, you MUST set this to your frontend URL(s) or cross-origin
+  # requests (fetch, WebSocket upgrades from browsers) will be rejected.
+  #
+  # Examples:
+  #   cors_allowed_origins: ["https://app.example.com"]
+  #   cors_allowed_origins: ["https://app.example.com", "https://admin.example.com"]
+  #
+  # Environment variable:
+  #   SYNCTV_SERVER_CORS_ALLOWED_ORIGINS='["https://app.example.com"]'
+  #
+  # WARNING: An empty list in production means ALL cross-origin requests are denied.
   cors_allowed_origins: []
   # Shared secret for authenticating cluster gRPC calls between nodes.
   # If empty, cluster endpoints are disabled.
@@ -50,7 +62,9 @@ redis:
   key_prefix: "synctv:"
 
 jwt:
-  secret: ""  # Set via SYNCTV_JWT_SECRET env var (min 32 chars)
+  # REQUIRED in production. Generate with: openssl rand -base64 32
+  # Minimum 32 characters with high entropy (at least 16 unique characters).
+  secret: ""
   access_token_duration_hours: 1
   refresh_token_duration_days: 30
   # Duration for guest (anonymous) access tokens
@@ -65,7 +79,6 @@ logging:
 
 livestream:
   rtmp_port: 1935
-  max_streams: 50
   gop_cache_size: 2
   stream_timeout_seconds: 300
   # How often to check for idle streams (seconds)
@@ -94,6 +107,28 @@ email:
   from_email: ""
   from_name: "SyncTV"
   use_tls: true
+
+# ============================================================================
+# Password Complexity Requirements
+# ============================================================================
+#
+# Controls password strength validation for user account passwords.
+# These settings do NOT apply to room passwords (which have simpler requirements).
+
+password_complexity:
+  # Minimum password length
+  min_length: 8
+  # Require at least one uppercase letter
+  require_uppercase: true
+  # Require at least one lowercase letter
+  require_lowercase: true
+  # Require at least one digit
+  require_digit: true
+  # Require at least one special character (e.g., !@#$%^&*)
+  require_special: false
+  # Maximum consecutive repeated characters allowed (prevents "aaaaaa").
+  # Set to 0 to disable this check.
+  max_repeated_chars: 3
 
 # ============================================================================
 # Connection Limits
@@ -311,3 +346,24 @@ webrtc:
 #   Default: [] (no TURN servers)
 #
 # Changes take effect immediately without restarting the server.
+
+# ============================================================================
+# Buffer Size Tuning
+# ============================================================================
+#
+# Controls internal channel buffer sizes. Larger values provide more resilience
+# during traffic spikes but use more memory. Defaults match the original
+# hardcoded values for backward compatibility.
+#
+# Additional buffer sizes are configured in their respective sections:
+#   - cluster.critical_channel_capacity (default: 1000)
+#   - cluster.publish_channel_capacity (default: 10000)
+#   - livestream.stream_hub_event_channel_capacity (default: 4096)
+
+buffer_sizes:
+  # Per-connection WebSocket outbound message queue.
+  # When full, new messages are dropped (backpressure for slow clients).
+  websocket_outbound: 256
+  # Audit log event buffer. Events are batched and flushed to the database.
+  # When full, new audit events are dropped with a warning.
+  audit_buffer: 10000

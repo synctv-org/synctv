@@ -8,7 +8,7 @@ use prometheus::{CounterVec, HistogramVec, Registry, IntGauge, IntCounterVec, Te
 /// Global metrics registry
 pub static REGISTRY: std::sync::LazyLock<Registry> = std::sync::LazyLock::new(Registry::new);
 
-/// HTTP metrics
+/// HTTP and WebSocket metrics
 pub mod http {
     use super::{IntCounterVec, REGISTRY, HistogramVec, IntGauge};
     use prometheus::{HistogramOpts, Opts, register_int_counter_vec_with_registry, register_int_gauge_with_registry};
@@ -97,6 +97,56 @@ pub mod http {
             "Number of active WebRTC peer connections",
             REGISTRY.clone()
         ).expect("Failed to register WEBRTC_PEERS_ACTIVE")
+    });
+
+    /// Total WebSocket messages processed, labeled by direction (inbound/outbound) and type (text/binary/ping/pong).
+    pub static WEBSOCKET_MESSAGES_TOTAL: std::sync::LazyLock<IntCounterVec> = std::sync::LazyLock::new(|| {
+        register_int_counter_vec_with_registry!(
+            Opts::new("websocket_messages_total", "Total number of WebSocket messages processed"),
+            &["direction", "type"],
+            REGISTRY.clone()
+        ).expect("Failed to register WEBSOCKET_MESSAGES_TOTAL")
+    });
+
+    /// Total WebSocket errors, labeled by error type.
+    pub static WEBSOCKET_ERRORS_TOTAL: std::sync::LazyLock<IntCounterVec> = std::sync::LazyLock::new(|| {
+        register_int_counter_vec_with_registry!(
+            Opts::new("websocket_errors_total", "Total number of WebSocket errors"),
+            &["error_type"],
+            REGISTRY.clone()
+        ).expect("Failed to register WEBSOCKET_ERRORS_TOTAL")
+    });
+
+    /// WebSocket connection duration in seconds (how long each connection was alive).
+    pub static WEBSOCKET_CONNECTION_DURATION_SECONDS: std::sync::LazyLock<HistogramVec> = std::sync::LazyLock::new(|| {
+        HistogramVec::new(
+            HistogramOpts::new(
+                "websocket_connection_duration_seconds",
+                "WebSocket connection duration in seconds",
+            )
+            .buckets(vec![1.0, 5.0, 15.0, 30.0, 60.0, 300.0, 900.0, 1800.0, 3600.0, 7200.0]),
+            &[],
+        )
+        .and_then(|m| { REGISTRY.register(Box::new(m.clone()))?; Ok(m) })
+        .expect("Failed to register WEBSOCKET_CONNECTION_DURATION_SECONDS")
+    });
+
+    /// Total playlist items added.
+    pub static PLAYLIST_ITEMS_TOTAL: std::sync::LazyLock<IntCounterVec> = std::sync::LazyLock::new(|| {
+        register_int_counter_vec_with_registry!(
+            Opts::new("playlist_items_total", "Total number of playlist items added"),
+            &[],
+            REGISTRY.clone()
+        ).expect("Failed to register PLAYLIST_ITEMS_TOTAL")
+    });
+
+    /// Total chat messages sent (persisted to database, excludes ephemeral danmaku).
+    pub static CHAT_MESSAGES_TOTAL: std::sync::LazyLock<IntCounterVec> = std::sync::LazyLock::new(|| {
+        register_int_counter_vec_with_registry!(
+            Opts::new("chat_messages_total", "Total number of chat messages sent"),
+            &[],
+            REGISTRY.clone()
+        ).expect("Failed to register CHAT_MESSAGES_TOTAL")
     });
 }
 
@@ -191,6 +241,26 @@ pub mod cache {
             &["cache_type"],
             REGISTRY.clone()
         ).expect("Failed to register BLOOM_FALSE_POSITIVES")
+    });
+
+    /// Total cache invalidations, labeled by cache type.
+    pub static CACHE_INVALIDATIONS: std::sync::LazyLock<CounterVec> = std::sync::LazyLock::new(|| {
+        register_counter_vec_with_registry!(
+            "cache_invalidations_total",
+            "Total number of cache invalidations",
+            &["cache_type"],
+            REGISTRY.clone()
+        ).expect("Failed to register CACHE_INVALIDATIONS")
+    });
+
+    /// Cache operation duration in seconds, labeled by operation type (get/set/invalidate).
+    pub static CACHE_OPERATION_DURATION: std::sync::LazyLock<HistogramVec> = std::sync::LazyLock::new(|| {
+        register_histogram_vec_with_registry!(
+            "cache_operation_duration_seconds",
+            "Duration of cache operations in seconds",
+            &["operation"],
+            REGISTRY.clone()
+        ).expect("Failed to register CACHE_OPERATION_DURATION")
     });
 }
 
@@ -361,6 +431,41 @@ pub mod cluster {
     });
 }
 
+/// Rate limiting operations
+pub mod rate_limit {
+    use super::{register_counter_vec_with_registry, CounterVec, REGISTRY};
+
+    /// Total rate limit checks, labeled by backend ("redis" or "memory") and category.
+    pub static RATE_LIMIT_CHECKS_TOTAL: std::sync::LazyLock<CounterVec> = std::sync::LazyLock::new(|| {
+        register_counter_vec_with_registry!(
+            "rate_limit_checks_total",
+            "Total number of rate limit checks",
+            &["backend", "category"],
+            REGISTRY.clone()
+        ).expect("Failed to register RATE_LIMIT_CHECKS_TOTAL")
+    });
+
+    /// Total rate limit rejections (429s), labeled by backend and category.
+    pub static RATE_LIMIT_REJECTIONS_TOTAL: std::sync::LazyLock<CounterVec> = std::sync::LazyLock::new(|| {
+        register_counter_vec_with_registry!(
+            "rate_limit_rejections_total",
+            "Total number of rate limit rejections (429)",
+            &["backend", "category"],
+            REGISTRY.clone()
+        ).expect("Failed to register RATE_LIMIT_REJECTIONS_TOTAL")
+    });
+
+    /// Redis errors that triggered fallback to in-memory rate limiting.
+    pub static RATE_LIMIT_REDIS_FALLBACKS_TOTAL: std::sync::LazyLock<CounterVec> = std::sync::LazyLock::new(|| {
+        register_counter_vec_with_registry!(
+            "rate_limit_redis_fallbacks_total",
+            "Total Redis errors that triggered in-memory rate limit fallback",
+            &["category"],
+            REGISTRY.clone()
+        ).expect("Failed to register RATE_LIMIT_REDIS_FALLBACKS_TOTAL")
+    });
+}
+
 /// Stream operations
 pub mod stream {
     use super::{register_histogram_vec_with_registry, register_int_gauge_with_registry, register_counter_vec_with_registry, HistogramVec, REGISTRY, IntGauge, CounterVec};
@@ -392,6 +497,86 @@ pub mod stream {
             &["stream_type", "error_type"],
             REGISTRY.clone()
         ).expect("Failed to register STREAM_ERRORS")
+    });
+}
+
+/// Livestream metrics
+pub mod livestream {
+    use super::{register_counter_vec_with_registry, register_histogram_vec_with_registry, register_int_gauge_with_registry, CounterVec, HistogramVec, REGISTRY, IntGauge};
+
+    /// Number of active publishers (streams being pushed).
+    pub static LIVESTREAM_ACTIVE_PUBLISHERS: std::sync::LazyLock<IntGauge> = std::sync::LazyLock::new(|| {
+        register_int_gauge_with_registry!(
+            "livestream_active_publishers",
+            "Number of active livestream publishers",
+            REGISTRY.clone()
+        ).expect("Failed to register LIVESTREAM_ACTIVE_PUBLISHERS")
+    });
+
+    /// Number of active viewers (clients consuming live streams).
+    pub static LIVESTREAM_ACTIVE_VIEWERS: std::sync::LazyLock<IntGauge> = std::sync::LazyLock::new(|| {
+        register_int_gauge_with_registry!(
+            "livestream_active_viewers",
+            "Number of active livestream viewers",
+            REGISTRY.clone()
+        ).expect("Failed to register LIVESTREAM_ACTIVE_VIEWERS")
+    });
+
+    /// Total bytes transferred for livestream, labeled by direction (in/out).
+    pub static LIVESTREAM_BYTES_TOTAL: std::sync::LazyLock<CounterVec> = std::sync::LazyLock::new(|| {
+        register_counter_vec_with_registry!(
+            "livestream_bytes_total",
+            "Total bytes transferred for livestream",
+            &["direction"],
+            REGISTRY.clone()
+        ).expect("Failed to register LIVESTREAM_BYTES_TOTAL")
+    });
+
+    /// Livestream duration in seconds (how long each stream session lasted).
+    pub static LIVESTREAM_STREAM_DURATION_SECONDS: std::sync::LazyLock<HistogramVec> = std::sync::LazyLock::new(|| {
+        register_histogram_vec_with_registry!(
+            "livestream_stream_duration_seconds",
+            "Livestream session duration in seconds",
+            &["stream_type"],
+            REGISTRY.clone()
+        ).expect("Failed to register LIVESTREAM_STREAM_DURATION_SECONDS")
+    });
+
+    /// Total stream pull errors, labeled by error type.
+    pub static LIVESTREAM_PULL_ERRORS_TOTAL: std::sync::LazyLock<CounterVec> = std::sync::LazyLock::new(|| {
+        register_counter_vec_with_registry!(
+            "livestream_pull_errors_total",
+            "Total number of livestream pull errors",
+            &["error_type"],
+            REGISTRY.clone()
+        ).expect("Failed to register LIVESTREAM_PULL_ERRORS_TOTAL")
+    });
+
+    /// Number of cached GOPs across all active streams.
+    pub static GOP_CACHE_SIZE: std::sync::LazyLock<IntGauge> = std::sync::LazyLock::new(|| {
+        register_int_gauge_with_registry!(
+            "gop_cache_size",
+            "Number of cached GOPs across all active streams",
+            REGISTRY.clone()
+        ).expect("Failed to register GOP_CACHE_SIZE")
+    });
+
+    /// Total number of GOPs evicted due to memory limits since process start.
+    pub static GOP_CACHE_DROPS_TOTAL: std::sync::LazyLock<IntGauge> = std::sync::LazyLock::new(|| {
+        register_int_gauge_with_registry!(
+            "gop_cache_drops_total",
+            "Total number of GOPs evicted due to memory limits",
+            REGISTRY.clone()
+        ).expect("Failed to register GOP_CACHE_DROPS_TOTAL")
+    });
+
+    /// Current memory usage in bytes of the GOP cache across all active streams.
+    pub static GOP_CACHE_MEMORY_BYTES: std::sync::LazyLock<IntGauge> = std::sync::LazyLock::new(|| {
+        register_int_gauge_with_registry!(
+            "gop_cache_memory_bytes",
+            "Current memory usage in bytes of the GOP cache across all active streams",
+            REGISTRY.clone()
+        ).expect("Failed to register GOP_CACHE_MEMORY_BYTES")
     });
 }
 
@@ -654,6 +839,171 @@ mod tests {
     }
 
     #[test]
+    fn test_websocket_message_metrics() {
+        // Test WebSocket message counter with direction and type labels
+        let before_inbound = http::WEBSOCKET_MESSAGES_TOTAL
+            .with_label_values(&["inbound", "binary"])
+            .get();
+        http::WEBSOCKET_MESSAGES_TOTAL
+            .with_label_values(&["inbound", "binary"])
+            .inc();
+        http::WEBSOCKET_MESSAGES_TOTAL
+            .with_label_values(&["outbound", "binary"])
+            .inc();
+        http::WEBSOCKET_MESSAGES_TOTAL
+            .with_label_values(&["inbound", "ping"])
+            .inc();
+        assert_eq!(
+            http::WEBSOCKET_MESSAGES_TOTAL
+                .with_label_values(&["inbound", "binary"])
+                .get(),
+            before_inbound + 1
+        );
+
+        // Test WebSocket errors
+        let before_err = http::WEBSOCKET_ERRORS_TOTAL
+            .with_label_values(&["decode_error"])
+            .get();
+        http::WEBSOCKET_ERRORS_TOTAL
+            .with_label_values(&["decode_error"])
+            .inc();
+        assert_eq!(
+            http::WEBSOCKET_ERRORS_TOTAL
+                .with_label_values(&["decode_error"])
+                .get(),
+            before_err + 1
+        );
+
+        // Test WebSocket connection duration histogram
+        http::WEBSOCKET_CONNECTION_DURATION_SECONDS
+            .with_label_values(&[] as &[&str])
+            .observe(45.0);
+
+        let output = gather_metrics();
+        assert!(output.contains("websocket_messages_total"), "Missing websocket_messages_total");
+        assert!(output.contains("websocket_errors_total"), "Missing websocket_errors_total");
+        assert!(output.contains("websocket_connection_duration_seconds"), "Missing websocket_connection_duration_seconds");
+    }
+
+    #[test]
+    fn test_business_metrics() {
+        // Test playlist items counter
+        let before_playlist = http::PLAYLIST_ITEMS_TOTAL
+            .with_label_values(&[] as &[&str])
+            .get();
+        http::PLAYLIST_ITEMS_TOTAL.with_label_values(&[] as &[&str]).inc();
+        assert_eq!(
+            http::PLAYLIST_ITEMS_TOTAL.with_label_values(&[] as &[&str]).get(),
+            before_playlist + 1
+        );
+
+        // Test chat messages counter
+        let before_chat = http::CHAT_MESSAGES_TOTAL
+            .with_label_values(&[] as &[&str])
+            .get();
+        http::CHAT_MESSAGES_TOTAL.with_label_values(&[] as &[&str]).inc();
+        assert_eq!(
+            http::CHAT_MESSAGES_TOTAL.with_label_values(&[] as &[&str]).get(),
+            before_chat + 1
+        );
+
+        let output = gather_metrics();
+        assert!(output.contains("playlist_items_total"), "Missing playlist_items_total");
+        assert!(output.contains("chat_messages_total"), "Missing chat_messages_total");
+    }
+
+    #[test]
+    fn test_cache_invalidation_and_operation_metrics() {
+        // Test cache invalidations counter
+        cache::CACHE_INVALIDATIONS.with_label_values(&["room"]).inc();
+        cache::CACHE_INVALIDATIONS.with_label_values(&["user"]).inc();
+
+        // Test cache operation duration histogram
+        cache::CACHE_OPERATION_DURATION
+            .with_label_values(&["get"])
+            .observe(0.001);
+        cache::CACHE_OPERATION_DURATION
+            .with_label_values(&["set"])
+            .observe(0.002);
+        cache::CACHE_OPERATION_DURATION
+            .with_label_values(&["invalidate"])
+            .observe(0.005);
+
+        let output = gather_metrics();
+        assert!(output.contains("cache_invalidations_total"), "Missing cache_invalidations_total");
+        assert!(output.contains("cache_operation_duration_seconds"), "Missing cache_operation_duration_seconds");
+    }
+
+    #[test]
+    fn test_livestream_metrics() {
+        // Test publisher/viewer gauges
+        let before_pub = livestream::LIVESTREAM_ACTIVE_PUBLISHERS.get();
+        livestream::LIVESTREAM_ACTIVE_PUBLISHERS.inc();
+        assert_eq!(livestream::LIVESTREAM_ACTIVE_PUBLISHERS.get(), before_pub + 1);
+        livestream::LIVESTREAM_ACTIVE_PUBLISHERS.dec();
+        assert_eq!(livestream::LIVESTREAM_ACTIVE_PUBLISHERS.get(), before_pub);
+
+        let before_view = livestream::LIVESTREAM_ACTIVE_VIEWERS.get();
+        livestream::LIVESTREAM_ACTIVE_VIEWERS.inc();
+        assert_eq!(livestream::LIVESTREAM_ACTIVE_VIEWERS.get(), before_view + 1);
+        livestream::LIVESTREAM_ACTIVE_VIEWERS.dec();
+
+        // Test bytes counter
+        livestream::LIVESTREAM_BYTES_TOTAL
+            .with_label_values(&["in"])
+            .inc_by(1024.0);
+        livestream::LIVESTREAM_BYTES_TOTAL
+            .with_label_values(&["out"])
+            .inc_by(2048.0);
+
+        // Test stream duration histogram
+        livestream::LIVESTREAM_STREAM_DURATION_SECONDS
+            .with_label_values(&["rtmp"])
+            .observe(120.0);
+
+        // Test pull errors counter
+        livestream::LIVESTREAM_PULL_ERRORS_TOTAL
+            .with_label_values(&["connection"])
+            .inc();
+        livestream::LIVESTREAM_PULL_ERRORS_TOTAL
+            .with_label_values(&["timeout"])
+            .inc();
+
+        let output = gather_metrics();
+        assert!(output.contains("livestream_active_publishers"), "Missing livestream_active_publishers");
+        assert!(output.contains("livestream_active_viewers"), "Missing livestream_active_viewers");
+        assert!(output.contains("livestream_bytes_total"), "Missing livestream_bytes_total");
+        assert!(output.contains("livestream_stream_duration_seconds"), "Missing livestream_stream_duration_seconds");
+        assert!(output.contains("livestream_pull_errors_total"), "Missing livestream_pull_errors_total");
+    }
+
+    #[test]
+    fn test_gop_cache_metrics() {
+        // Test GOP cache size gauge
+        let before_size = livestream::GOP_CACHE_SIZE.get();
+        livestream::GOP_CACHE_SIZE.set(5);
+        assert_eq!(livestream::GOP_CACHE_SIZE.get(), 5);
+        livestream::GOP_CACHE_SIZE.set(before_size);
+
+        // Test GOP cache drops gauge (tracks cumulative evictions)
+        let before_drops = livestream::GOP_CACHE_DROPS_TOTAL.get();
+        livestream::GOP_CACHE_DROPS_TOTAL.set(before_drops + 3);
+        assert_eq!(livestream::GOP_CACHE_DROPS_TOTAL.get(), before_drops + 3);
+        livestream::GOP_CACHE_DROPS_TOTAL.set(before_drops);
+
+        // Test GOP cache memory bytes gauge
+        let before_mem = livestream::GOP_CACHE_MEMORY_BYTES.get();
+        livestream::GOP_CACHE_MEMORY_BYTES.set(50 * 1024 * 1024);
+        assert_eq!(livestream::GOP_CACHE_MEMORY_BYTES.get(), 50 * 1024 * 1024);
+        livestream::GOP_CACHE_MEMORY_BYTES.set(before_mem);
+
+        let output = gather_metrics();
+        assert!(output.contains("gop_cache_size"), "Missing gop_cache_size");
+        assert!(output.contains("gop_cache_drops_total"), "Missing gop_cache_drops_total");
+        assert!(output.contains("gop_cache_memory_bytes"), "Missing gop_cache_memory_bytes");
+    }
+
+    #[test]
     fn test_all_metrics_in_gathered_output() {
         // Touch all metric families to ensure they appear in gathered output.
         // IntCounterVec needs at least one label set touched.
@@ -661,26 +1011,60 @@ mod tests {
         http::HTTP_REQUESTS_IN_FLIGHT.dec();
         http::WEBSOCKET_CONNECTIONS_ACTIVE.set(0);
         http::WEBSOCKET_CONNECTIONS_TOTAL.with_label_values(&["success"]).inc();
+        http::WEBSOCKET_MESSAGES_TOTAL.with_label_values(&["inbound", "binary"]).inc();
+        http::WEBSOCKET_ERRORS_TOTAL.with_label_values(&["_test"]).inc();
+        http::WEBSOCKET_CONNECTION_DURATION_SECONDS.with_label_values(&[] as &[&str]).observe(1.0);
         http::ROOMS_ACTIVE.set(0);
         http::USERS_ONLINE.set(0);
         http::STREAMS_ACTIVE.set(0);
         http::WEBRTC_PEERS_ACTIVE.set(0);
+        http::PLAYLIST_ITEMS_TOTAL.with_label_values(&[] as &[&str]).inc();
+        http::CHAT_MESSAGES_TOTAL.with_label_values(&[] as &[&str]).inc();
         database::DB_CONNECTIONS_ACTIVE.set(0);
         database::DB_CONNECTIONS_IDLE.set(0);
         database::DB_POOL_SIZE_MAX.set(0);
         grpc::GRPC_REQUEST_DURATION
             .with_label_values(&["_test", "_test", "_test"])
             .observe(0.0);
+        cache::CACHE_INVALIDATIONS.with_label_values(&["_test"]).inc();
+        cache::CACHE_OPERATION_DURATION.with_label_values(&["_test"]).observe(0.0);
+        livestream::LIVESTREAM_ACTIVE_PUBLISHERS.set(0);
+        livestream::LIVESTREAM_ACTIVE_VIEWERS.set(0);
+        livestream::LIVESTREAM_BYTES_TOTAL.with_label_values(&["in"]).inc_by(0.0);
+        livestream::LIVESTREAM_STREAM_DURATION_SECONDS.with_label_values(&["_test"]).observe(0.0);
+        livestream::LIVESTREAM_PULL_ERRORS_TOTAL.with_label_values(&["_test"]).inc();
+        livestream::GOP_CACHE_SIZE.set(0);
+        livestream::GOP_CACHE_DROPS_TOTAL.set(0);
+        livestream::GOP_CACHE_MEMORY_BYTES.set(0);
 
         let output = gather_metrics();
 
         // HTTP metrics
         assert!(output.contains("websocket_connections_active"), "Missing websocket_connections_active");
         assert!(output.contains("websocket_connections_total"), "Missing websocket_connections_total");
+        assert!(output.contains("websocket_messages_total"), "Missing websocket_messages_total");
+        assert!(output.contains("websocket_errors_total"), "Missing websocket_errors_total");
+        assert!(output.contains("websocket_connection_duration_seconds"), "Missing websocket_connection_duration_seconds");
         assert!(output.contains("rooms_active"), "Missing rooms_active");
         assert!(output.contains("users_online"), "Missing users_online");
         assert!(output.contains("streams_active"), "Missing streams_active");
         assert!(output.contains("webrtc_peers_active"), "Missing webrtc_peers_active");
+        assert!(output.contains("playlist_items_total"), "Missing playlist_items_total");
+        assert!(output.contains("chat_messages_total"), "Missing chat_messages_total");
+
+        // Cache metrics
+        assert!(output.contains("cache_invalidations_total"), "Missing cache_invalidations_total");
+        assert!(output.contains("cache_operation_duration_seconds"), "Missing cache_operation_duration_seconds");
+
+        // Livestream metrics
+        assert!(output.contains("livestream_active_publishers"), "Missing livestream_active_publishers");
+        assert!(output.contains("livestream_active_viewers"), "Missing livestream_active_viewers");
+        assert!(output.contains("livestream_bytes_total"), "Missing livestream_bytes_total");
+        assert!(output.contains("livestream_stream_duration_seconds"), "Missing livestream_stream_duration_seconds");
+        assert!(output.contains("livestream_pull_errors_total"), "Missing livestream_pull_errors_total");
+        assert!(output.contains("gop_cache_size"), "Missing gop_cache_size");
+        assert!(output.contains("gop_cache_drops_total"), "Missing gop_cache_drops_total");
+        assert!(output.contains("gop_cache_memory_bytes"), "Missing gop_cache_memory_bytes");
 
         // Database metrics
         assert!(output.contains("db_connections_active"), "Missing db_connections_active");

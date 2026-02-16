@@ -607,27 +607,26 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "Requires database"]
     async fn test_create_room() {
-        // Would connect to test DB and verify:
-        // let pool = PgPool::connect("postgresql://...").await.unwrap();
-        // let repo = RoomRepository::new(pool);
-        // let room = Room::new("Test Room".into(), Some("desc".into()), UserId::new());
-        // let created = repo.create(&room).await.unwrap();
-        // assert_eq!(created.name, "Test Room");
-        // assert_eq!(created.created_by, room.created_by);
-    }
+        use crate::test_helpers::{UserFixture, RoomFixture};
+        use crate::repository::user::UserRepository;
 
-    #[tokio::test]
-    #[ignore = "Requires database"]
-    async fn test_soft_delete_room() {
-        // Would connect to test DB and verify soft delete:
-        // let pool = PgPool::connect("postgresql://...").await.unwrap();
-        // let repo = RoomRepository::new(pool);
-        // let room = Room::new("Delete Me".into(), None, UserId::new());
-        // let created = repo.create(&room).await.unwrap();
-        // assert!(repo.exists(&created.id).await.unwrap());
-        // assert!(repo.delete(&created.id).await.unwrap());
-        // assert!(!repo.exists(&created.id).await.unwrap());
+        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
+        let user_repo = UserRepository::new(infra.pool.clone());
+        let room_repo = RoomRepository::new(infra.pool.clone());
+
+        // Create owner user first (rooms have FK to users)
+        let owner = UserFixture::new().with_username("room_owner").build();
+        let owner = user_repo.create(&owner).await.unwrap();
+
+        let room = RoomFixture::new()
+            .with_name("Test Room")
+            .with_description("desc")
+            .with_owner(owner.id.clone())
+            .build();
+        let created = room_repo.create(&room).await.unwrap();
+        assert_eq!(created.name, "Test Room");
+        assert_eq!(created.created_by, owner.id);
+        assert!(room_repo.exists(&created.id).await.unwrap());
     }
 }

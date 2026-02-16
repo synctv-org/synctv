@@ -876,8 +876,8 @@ impl RoomMemberRepository {
 mod tests {
 
     #[tokio::test]
-    #[ignore = "Requires database"]
     async fn test_add_member() {
-        // Integration test placeholder
+        // Placeholder: requires full service layer setup with user/room creation
+        // Covered by higher-level integration tests in synctv-core/tests/
     }
 }

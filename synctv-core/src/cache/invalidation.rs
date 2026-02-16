@@ -359,6 +359,18 @@ impl CacheInvalidationService {
         Ok(())
     }
 
+    /// Broadcast a cache invalidation message locally only (no Redis).
+    ///
+    /// Use this when the invalidation event was already received from a remote
+    /// source (e.g., a cluster `CacheInvalidate` event from Redis Pub/Sub) and
+    /// only the local caches on this node need to be notified.
+    pub fn broadcast_local(&self, message: InvalidationMessage) -> Result<()> {
+        if let Err(e) = self.local_sender.send(message) {
+            warn!(error = %e, "Failed to broadcast invalidation locally");
+        }
+        Ok(())
+    }
+
     /// Broadcast a cache invalidation message to ALL nodes including this one
     ///
     /// This sends the message via Redis Pub/Sub (if configured) and also

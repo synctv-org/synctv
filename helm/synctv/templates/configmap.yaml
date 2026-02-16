@@ -52,7 +52,6 @@ data:
 
     livestream:
       rtmp_port: {{ .Values.config.livestream.rtmpPort }}
-      max_streams: {{ .Values.config.livestream.maxStreams }}
       gop_cache_size: {{ .Values.config.livestream.gopCacheSize }}
       stream_timeout_seconds: {{ .Values.config.livestream.streamTimeoutSeconds }}
       cleanup_check_interval_seconds: {{ .Values.config.livestream.cleanupCheckIntervalSeconds }}

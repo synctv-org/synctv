@@ -300,6 +300,7 @@ async fn init_livestream(
             } else {
                 Some(config.server.cluster_secret.clone())
             },
+            gop_cache_max_memory_mb: config.livestream.gop_cache_max_memory_mb,
         },
         publisher_registry,
         user_stream_tracker,

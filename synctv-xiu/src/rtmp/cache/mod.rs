@@ -32,8 +32,14 @@ pub struct Cache {
 }
 
 impl Cache {
-    #[must_use] 
-    pub fn new(gop_num: usize, statistic_data_sender: Option<StatisticDataSender>) -> Self {
+    /// Create a new cache with the given GOP count and optional per-stream memory limit.
+    /// If `max_total_bytes` is `None`, the default (50 MB) is used.
+    #[must_use]
+    pub fn new(
+        gop_num: usize,
+        max_total_bytes: Option<usize>,
+        statistic_data_sender: Option<StatisticDataSender>,
+    ) -> Self {
         Self {
             metadata: metadata::MetaData::new(),
             metadata_timestamp: 0,
@@ -41,7 +47,7 @@ impl Cache {
             video_timestamp: 0,
             audio_seq: BytesMut::new(),
             audio_timestamp: 0,
-            gops: Gops::new(gop_num),
+            gops: Gops::new(gop_num, max_total_bytes),
             statistic_data_sender,
         }
     }

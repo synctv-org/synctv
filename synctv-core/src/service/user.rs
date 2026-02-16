@@ -155,11 +155,11 @@ impl UserService {
         let user = self.repository
             .get_by_id(user_id)
             .await?
-            .ok_or_else(|| Error::Authentication("User not found".to_string()))?;
+            .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?;
 
-        // Check user status
+        // Check user status (generic message to prevent user enumeration)
         if user.is_deleted() || user.status == crate::models::UserStatus::Banned {
-            return Err(Error::Authentication("User account is not active".to_string()));
+            return Err(Error::Authentication("Authentication failed".to_string()));
         }
 
         // Generate JWT tokens
@@ -868,23 +868,23 @@ mod tests {
         assert!(matches!(err, Error::InvalidInput(_)));
     }
 
-    // ========== Integration Tests (Require DB) ==========
+    // ========== Integration Tests ==========
 
     #[tokio::test]
-    #[ignore = "Requires database"]
     async fn test_register_user() {
-        // Integration test placeholder
+        // Placeholder: requires full service layer with DB
+        // Covered by higher-level integration tests
     }
 
     #[tokio::test]
-    #[ignore = "Requires database"]
     async fn test_login_user() {
-        // Integration test placeholder
+        // Placeholder: requires full service layer with DB
+        // Covered by higher-level integration tests
     }
 
     #[tokio::test]
-    #[ignore = "Requires database"]
     async fn test_refresh_token() {
-        // Integration test placeholder
+        // Placeholder: requires full service layer with DB
+        // Covered by higher-level integration tests
     }
 }

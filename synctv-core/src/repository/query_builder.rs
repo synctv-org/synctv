@@ -43,6 +43,12 @@ pub struct WhereClauseBuilder {
     conditions: Vec<Condition>,
 }
 
+impl Default for WhereClauseBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WhereClauseBuilder {
     /// Create an empty builder.
     pub fn new() -> Self {

@@ -19,6 +19,12 @@ const INITIAL_BACKOFF_SECS: u64 = 1;
 /// Maximum backoff delay for subscriber reconnection
 const MAX_BACKOFF_SECS: u64 = 30;
 
+/// Maximum number of XADD retries for critical events before giving up.
+const CRITICAL_STREAM_MAX_RETRIES: u32 = 3;
+
+/// Initial backoff for critical XADD retries (doubles each attempt).
+const CRITICAL_STREAM_INITIAL_BACKOFF_MS: u64 = 100;
+
 /// Redis Stream key for admin/cluster-wide events (no room_id)
 const ADMIN_STREAM_KEY: &str = "synctv:admin:events:stream";
 /// Max length of each per-room stream (approximate)
@@ -546,7 +552,7 @@ impl RedisPubSub {
         // Handle CacheInvalidate events: dispatch to local cache invalidation
         // service and do NOT forward to admin channel or room subscribers.
         if let ClusterEvent::CacheInvalidate { ref targets, .. } = event {
-            self.invalidate_cache_targets(targets).await;
+            self.invalidate_cache_targets(targets);
             return;
         }
 
@@ -607,8 +613,7 @@ impl RedisPubSub {
                     | ClusterEvent::RoomDeleted { .. } => {
                         self.invalidate_cache_targets(&[CacheTarget::Room {
                             room_id: room_id.as_str().to_string(),
-                        }])
-                        .await;
+                        }]);
                     }
                     _ => {}
                 }
@@ -678,7 +683,7 @@ impl RedisPubSub {
     ///
     /// Dispatches each `CacheTarget` to the local `CacheInvalidationService`
     /// broadcast (which the `CacheManager` listener processes).
-    async fn invalidate_cache_targets(&self, targets: &[CacheTarget]) {
+    fn invalidate_cache_targets(&self, targets: &[CacheTarget]) {
         let Some(ref cache_svc) = self.cache_invalidation else {
             return;
         };
@@ -696,10 +701,10 @@ impl RedisPubSub {
                 },
                 CacheTarget::All => InvalidationMessage::All,
             };
-            // broadcast_all sends to local subscribers AND via Redis.
-            // We only need the local broadcast here (the event already came
-            // from Redis), so we use the local-only path.
-            if let Err(e) = cache_svc.broadcast_all(msg).await {
+            // The event already came from Redis, so we only need to notify
+            // local cache subscribers. Using broadcast_local avoids re-publishing
+            // the event back to the Redis cache invalidation stream.
+            if let Err(e) = cache_svc.broadcast_local(msg) {
                 warn!(
                     error = %e,
                     "Failed to dispatch cache invalidation from cluster event"
@@ -743,19 +748,89 @@ impl RedisPubSub {
         // Room events go to synctv:room:{room_id}:events, admin events to synctv:admin:events:stream
         let stream_key = stream_key_for_event(&event);
         use redis::streams::StreamMaxlen;
-        let stream_result = timeout(
-            Duration::from_secs(REDIS_TIMEOUT_SECS),
-            conn.xadd_maxlen::<_, _, _, _, String>(
-                &stream_key,
-                StreamMaxlen::Approx(MAX_STREAM_LENGTH),
-                "*",  // Auto-generate ID
-                &[("channel", channel.as_str()), ("payload", payload.as_str())],
-            ),
-        ).await;
 
-        if let Err(e) = &stream_result {
-            warn!(error = ?e, stream_key = %stream_key, "Failed to add event to Redis Stream (non-critical)");
-            // Continue with Pub/Sub even if Stream fails
+        let is_critical = event.is_critical();
+        let mut stream_ok = false;
+
+        if is_critical {
+            // Critical events: retry XADD with exponential backoff to avoid
+            // silent data loss during transient Redis failures.
+            let mut backoff_ms = CRITICAL_STREAM_INITIAL_BACKOFF_MS;
+            for attempt in 1..=CRITICAL_STREAM_MAX_RETRIES {
+                let result = timeout(
+                    Duration::from_secs(REDIS_TIMEOUT_SECS),
+                    conn.xadd_maxlen::<_, _, _, _, String>(
+                        &stream_key,
+                        StreamMaxlen::Approx(MAX_STREAM_LENGTH),
+                        "*",
+                        &[("channel", channel.as_str()), ("payload", payload.as_str())],
+                    ),
+                ).await;
+
+                match result {
+                    Ok(Ok(_)) => {
+                        stream_ok = true;
+                        break;
+                    }
+                    Ok(Err(e)) => {
+                        warn!(
+                            error = %e,
+                            stream_key = %stream_key,
+                            attempt = attempt,
+                            max_retries = CRITICAL_STREAM_MAX_RETRIES,
+                            "XADD failed for critical event, retrying"
+                        );
+                    }
+                    Err(_) => {
+                        warn!(
+                            stream_key = %stream_key,
+                            attempt = attempt,
+                            max_retries = CRITICAL_STREAM_MAX_RETRIES,
+                            "XADD timed out for critical event, retrying"
+                        );
+                    }
+                }
+                if attempt < CRITICAL_STREAM_MAX_RETRIES {
+                    tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                    backoff_ms *= 2;
+                }
+            }
+            if !stream_ok {
+                error!(
+                    stream_key = %stream_key,
+                    event_type = event.event_type(),
+                    "XADD failed for critical event after {} retries, event may be lost during catch-up",
+                    CRITICAL_STREAM_MAX_RETRIES
+                );
+            }
+        } else {
+            // Non-critical events: single attempt, warn and continue on failure.
+            let stream_result = timeout(
+                Duration::from_secs(REDIS_TIMEOUT_SECS),
+                conn.xadd_maxlen::<_, _, _, _, String>(
+                    &stream_key,
+                    StreamMaxlen::Approx(MAX_STREAM_LENGTH),
+                    "*",
+                    &[("channel", channel.as_str()), ("payload", payload.as_str())],
+                ),
+            ).await;
+
+            match &stream_result {
+                Ok(Ok(_)) => { stream_ok = true; }
+                Ok(Err(e)) => {
+                    warn!(error = %e, stream_key = %stream_key, "Failed to add event to Redis Stream");
+                }
+                Err(_) => {
+                    warn!(stream_key = %stream_key, "Timed out adding event to Redis Stream");
+                }
+            }
+        }
+
+        // Track stream write failures
+        if !stream_ok {
+            synctv_core::metrics::cluster::CLUSTER_EVENTS_RECEIVED
+                .with_label_values(&["stream_write_failed"])
+                .inc();
         }
 
         // 2. Publish to Pub/Sub for real-time delivery
@@ -850,8 +925,10 @@ impl RedisPubSub {
         Ok(reply.ids.into_iter().next().map(|entry| entry.id))
     }
 
-    /// Maximum number of catch-up iterations to prevent infinite loops
-    const MAX_CATCHUP_ITERATIONS: usize = 10;
+    /// Maximum number of catch-up iterations to prevent infinite loops.
+    /// Each iteration reads up to CATCHUP_BATCH_SIZE events, so the effective
+    /// limit is MAX_CATCHUP_ITERATIONS * CATCHUP_BATCH_SIZE (50 * 1000 = 50K).
+    const MAX_CATCHUP_ITERATIONS: usize = 50;
     /// Number of events to read per XREAD call during catch-up
     const CATCHUP_BATCH_SIZE: usize = 1000;
 

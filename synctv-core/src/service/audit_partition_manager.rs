@@ -9,6 +9,11 @@ use tracing::{info, warn};
 
 use crate::{Error, Result};
 
+/// Maximum retry attempts for partition operations
+const MAX_PARTITION_RETRIES: u32 = 3;
+/// Base backoff in milliseconds (exponential: 1s, 2s, 4s)
+const PARTITION_RETRY_BASE_MS: u64 = 1_000;
+
 /// Health check result for audit log partitions
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PartitionHealth {
@@ -236,10 +241,53 @@ impl AuditPartitionManager {
         Ok(stats)
     }
 
+    /// Ensure future partitions with exponential backoff retry.
+    ///
+    /// Retries up to `MAX_PARTITION_RETRIES` times with exponential backoff
+    /// (1s, 2s, 4s) on transient database failures.
+    pub async fn ensure_future_partitions_with_retry(&self, months_ahead: i32) -> Result<PartitionCreationResult> {
+        let mut last_err = None;
+
+        for attempt in 0..MAX_PARTITION_RETRIES {
+            match self.ensure_future_partitions(months_ahead).await {
+                Ok(result) => {
+                    if attempt > 0 {
+                        info!(
+                            "Partition creation succeeded on retry attempt {}",
+                            attempt + 1
+                        );
+                    }
+                    return Ok(result);
+                }
+                Err(e) => {
+                    let backoff_ms = PARTITION_RETRY_BASE_MS * (1 << attempt);
+                    warn!(
+                        attempt = attempt + 1,
+                        max_attempts = MAX_PARTITION_RETRIES,
+                        backoff_ms = backoff_ms,
+                        error = %e,
+                        "Partition creation failed, retrying with exponential backoff"
+                    );
+                    last_err = Some(e);
+
+                    if attempt + 1 < MAX_PARTITION_RETRIES {
+                        tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                    }
+                }
+            }
+        }
+
+        Err(last_err.unwrap_or_else(|| {
+            Error::Internal("Partition creation failed after all retries".to_string())
+        }))
+    }
+
     /// Start automatic partition management task
     ///
     /// Spawns a background task that periodically checks and creates partitions.
     /// The task will shut down gracefully when the provided `CancellationToken` is cancelled.
+    ///
+    /// Partition creation uses exponential backoff retry on transient failures.
     #[must_use]
     pub fn start_auto_management(&self, check_interval_hours: u64, cancel: CancellationToken) -> tokio::task::JoinHandle<()> {
         let manager = self.clone();
@@ -259,14 +307,18 @@ impl AuditPartitionManager {
                 // Check health status
                 match manager.check_health().await {
                     Ok(health) => {
-                        // Create missing partitions if any
+                        // Create missing partitions if any (with retry)
                         if health.missing_count > 0 {
                             warn!(
                                 "Found {} missing partitions, creating now",
                                 health.missing_count
                             );
-                            if let Err(e) = manager.ensure_future_partitions(6).await {
-                                tracing::error!("Failed to create missing partitions: {}", e);
+                            if let Err(e) = manager.ensure_future_partitions_with_retry(6).await {
+                                tracing::error!(
+                                    error = %e,
+                                    "Failed to create missing partitions after {} retries",
+                                    MAX_PARTITION_RETRIES
+                                );
                             }
                         }
                     }
@@ -289,15 +341,16 @@ impl Clone for AuditPartitionManager {
 
 /// Ensure audit partitions exist on application startup
 ///
-/// Should be called during application bootstrap
+/// Should be called during application bootstrap.
+/// Uses exponential backoff retry for partition creation.
 pub async fn ensure_audit_partitions_on_startup(pool: &PgPool) -> Result<()> {
     let manager = AuditPartitionManager::new(pool.clone());
 
     // Step 1: Ensure existing partitions have indexes (idempotent)
     manager.ensure_existing_indexes(4).await?;
 
-    // Step 2: Ensure next 6 months have partitions
-    manager.ensure_future_partitions(6).await?;
+    // Step 2: Ensure next 6 months have partitions (with retry)
+    manager.ensure_future_partitions_with_retry(6).await?;
 
     // Step 3: Check health status
     let health = manager.check_health().await?;
@@ -427,5 +480,39 @@ mod tests {
             };
             assert_eq!(health.health_status, status);
         }
+    }
+
+    // ========== Retry Constants ==========
+
+    #[test]
+    fn test_retry_constants() {
+        assert_eq!(MAX_PARTITION_RETRIES, 3);
+        assert_eq!(PARTITION_RETRY_BASE_MS, 1_000);
+    }
+
+    #[test]
+    fn test_exponential_backoff_sequence() {
+        // Verify the backoff values: 1s, 2s, 4s
+        let backoffs: Vec<u64> = (0..MAX_PARTITION_RETRIES)
+            .map(|attempt| PARTITION_RETRY_BASE_MS * (1 << attempt))
+            .collect();
+        assert_eq!(backoffs, vec![1_000, 2_000, 4_000]);
+    }
+
+    #[test]
+    fn test_partition_stats_deserialization() {
+        let json = r#"{
+            "total_partitions": 3,
+            "total_records": 5000,
+            "partitions": [
+                {"partition": "audit_logs_2025_01", "row_count": 2000, "size_mb": 50.0},
+                {"partition": "audit_logs_2025_02", "row_count": 3000, "size_mb": 75.0}
+            ]
+        }"#;
+
+        let stats: PartitionStats = serde_json::from_str(json).unwrap();
+        assert_eq!(stats.total_partitions, 3);
+        assert_eq!(stats.total_records, 5000);
+        assert_eq!(stats.partitions.len(), 2);
     }
 }

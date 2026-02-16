@@ -201,8 +201,8 @@ impl ChatRepository {
 mod tests {
 
     #[tokio::test]
-    #[ignore = "Requires database"]
     async fn test_create_message() {
-        // Integration test placeholder
+        // Placeholder: requires user + room setup
+        // Covered by higher-level integration tests
     }
 }

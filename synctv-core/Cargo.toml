@@ -107,6 +107,8 @@ mockall.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 criterion.workspace = true
 rand.workspace = true
+testcontainers.workspace = true
+testcontainers-modules.workspace = true
 
 [[bench]]
 name = "auth_service"

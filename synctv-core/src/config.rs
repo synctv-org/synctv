@@ -296,6 +296,10 @@ pub struct LivestreamConfig {
     pub pull_max_backoff_ms: u64,
     /// Max FLV tag size to accept (bytes, prevents OOM)
     pub max_flv_tag_size_bytes: usize,
+    /// Maximum memory (in megabytes) for the GOP cache across all GOPs per stream.
+    /// When exceeded, the oldest GOP is evicted even if `gop_cache_size` hasn't
+    /// been reached. Default: 100 MB. Set to 0 to use the built-in default (50 MB).
+    pub gop_cache_max_memory_mb: u64,
 }
 
 impl Default for LivestreamConfig {
@@ -310,6 +314,7 @@ impl Default for LivestreamConfig {
             pull_initial_backoff_ms: 1000,
             pull_max_backoff_ms: 30_000,
             max_flv_tag_size_bytes: 10 * 1024 * 1024,
+            gop_cache_max_memory_mb: 100,
         }
     }
 }

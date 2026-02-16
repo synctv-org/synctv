@@ -86,6 +86,23 @@ impl BilibiliClient {
         self.rate_limiter.until_ready().await;
     }
 
+    /// Build a sanitized cookie header string from stored cookies.
+    /// Returns `None` if no cookies are configured.
+    /// This is useful when `self` cannot be borrowed inside a closure (e.g. `with_retry`).
+    fn build_cookie_header(&self) -> Option<String> {
+        self.cookies.as_ref().map(|cookies| {
+            cookies
+                .iter()
+                .map(|(k, v)| {
+                    let safe_k: String = k.chars().filter(|c| *c != '\r' && *c != '\n').collect();
+                    let safe_v: String = v.chars().filter(|c| *c != '\r' && *c != '\n').collect();
+                    format!("{safe_k}={safe_v}")
+                })
+                .collect::<Vec<_>>()
+                .join("; ")
+        })
+    }
+
     /// Add cookies to request.
     /// Cookie values are sanitized to prevent header injection via \r\n.
     fn add_cookies(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
@@ -441,8 +458,8 @@ impl BilibiliClient {
                 let resolved = location.to_str().map_err(|e| {
                     BilibiliError::Parse(format!("Invalid Location header: {e}"))
                 })?;
-                // Validate resolved URL against SSRF rules before returning
-                crate::grpc::validation::validate_host(resolved)
+                // Validate resolved URL against SSRF rules (with DNS resolution to prevent rebinding)
+                crate::grpc::validation::validate_host_with_dns(resolved).await
                     .map_err(|e| BilibiliError::InvalidConfig(format!("Resolved URL blocked by SSRF check: {e}")))?;
                 return Ok(resolved.to_string());
             }
@@ -461,16 +478,19 @@ impl BilibiliClient {
         self.wait_for_rate_limit().await;
         let client = self.client.clone();
         let bvid = bvid.to_string();
+        let cookie_header = self.build_cookie_header();
 
         with_retry(|| {
             let client = client.clone();
             let bvid = bvid.clone();
+            let cookie_header = cookie_header.clone();
             async move {
-                let response = check_response(
-                    client.get("https://api.bilibili.com/x/web-interface/view")
-                        .query(&[("bvid", &bvid)])
-                        .send().await?
-                )?;
+                let mut req = client.get("https://api.bilibili.com/x/web-interface/view")
+                    .query(&[("bvid", &bvid)]);
+                if let Some(ref cookies) = cookie_header {
+                    req = req.header("Cookie", cookies.as_str());
+                }
+                let response = check_response(req.send().await?)?;
 
                 let json: serde_json::Value = json_with_limit(response).await?;
 
@@ -505,11 +525,10 @@ impl BilibiliClient {
         self.wait_for_rate_limit().await;
         let cid_str = cid.to_string();
         let qn_str = quality.to_qn().to_string();
-        let response = check_response(
-            self.client.get("https://api.bilibili.com/x/player/playurl")
-                .query(&[("bvid", bvid), ("cid", &cid_str), ("qn", &qn_str)])
-                .send().await?
-        )?;
+        let req = self.client.get("https://api.bilibili.com/x/player/playurl")
+            .query(&[("bvid", bvid), ("cid", &cid_str), ("qn", &qn_str)]);
+        let req = self.add_cookies(req);
+        let response = check_response(req.send().await?)?;
         let json: serde_json::Value = json_with_limit(response).await?;
 
         if json["code"].as_i64() != Some(0) {
@@ -536,11 +555,10 @@ impl BilibiliClient {
     /// Get anime information by EPID
     pub async fn get_anime_info(&self, epid: &str) -> Result<AnimeInfo, BilibiliError> {
         self.wait_for_rate_limit().await;
-        let response = check_response(
-            self.client.get("https://api.bilibili.com/pgc/view/web/season")
-                .query(&[("ep_id", epid)])
-                .send().await?
-        )?;
+        let req = self.client.get("https://api.bilibili.com/pgc/view/web/season")
+            .query(&[("ep_id", epid)]);
+        let req = self.add_cookies(req);
+        let response = check_response(req.send().await?)?;
         let json: serde_json::Value = json_with_limit(response).await?;
 
         if json["code"].as_i64() != Some(0) {

@@ -578,10 +578,9 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    #[ignore = "Requires Redis"]
     async fn test_acquire_and_release() {
-        let redis_client = redis::Client::open("redis://localhost:6379").unwrap();
-        let redis = RedisConnectionManager::new(redis_client).await.unwrap();
+        let infra = crate::test_helpers::containers::TestInfra::redis_only().await;
+        let redis = infra.connection_manager().await;
         let lock = DistributedLock::new(redis);
 
         // Acquire lock
@@ -607,10 +606,9 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "Requires Redis"]
     async fn test_with_lock() {
-        let redis_client = redis::Client::open("redis://localhost:6379").unwrap();
-        let redis = RedisConnectionManager::new(redis_client).await.unwrap();
+        let infra = crate::test_helpers::containers::TestInfra::redis_only().await;
+        let redis = infra.connection_manager().await;
         let lock = DistributedLock::new(redis);
 
         let result = lock
@@ -633,10 +631,9 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "Requires Redis"]
     async fn test_try_with_lock() {
-        let redis_client = redis::Client::open("redis://localhost:6379").unwrap();
-        let redis = RedisConnectionManager::new(redis_client).await.unwrap();
+        let infra = crate::test_helpers::containers::TestInfra::redis_only().await;
+        let redis = infra.connection_manager().await;
         let lock = DistributedLock::new(redis.clone());
 
         // Acquire lock manually
@@ -663,10 +660,9 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "Requires Redis"]
     async fn test_lock_guard() {
-        let redis_client = redis::Client::open("redis://localhost:6379").unwrap();
-        let redis = RedisConnectionManager::new(redis_client).await.unwrap();
+        let infra = crate::test_helpers::containers::TestInfra::redis_only().await;
+        let redis = infra.connection_manager().await;
         let lock = DistributedLock::new(redis.clone());
 
         {
@@ -693,10 +689,9 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "Requires Redis"]
     async fn test_extend_lock() {
-        let redis_client = redis::Client::open("redis://localhost:6379").unwrap();
-        let redis = RedisConnectionManager::new(redis_client).await.unwrap();
+        let infra = crate::test_helpers::containers::TestInfra::redis_only().await;
+        let redis = infra.connection_manager().await;
         let lock = DistributedLock::new(redis);
 
         // Acquire lock with short TTL
@@ -716,10 +711,9 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "Requires Redis"]
     async fn test_acquire_with_token() {
-        let redis_client = redis::Client::open("redis://localhost:6379").unwrap();
-        let redis = RedisConnectionManager::new(redis_client).await.unwrap();
+        let infra = crate::test_helpers::containers::TestInfra::redis_only().await;
+        let redis = infra.connection_manager().await;
         let lock = DistributedLock::new(redis);
 
         // Acquire lock with token
@@ -743,10 +737,9 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "Requires Redis"]
     async fn test_with_lock_token() {
-        let redis_client = redis::Client::open("redis://localhost:6379").unwrap();
-        let redis = RedisConnectionManager::new(redis_client).await.unwrap();
+        let infra = crate::test_helpers::containers::TestInfra::redis_only().await;
+        let redis = infra.connection_manager().await;
         let lock = DistributedLock::new(redis);
 
         let received_token = lock
@@ -760,10 +753,9 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "Requires Redis"]
     async fn test_try_with_lock_token() {
-        let redis_client = redis::Client::open("redis://localhost:6379").unwrap();
-        let redis = RedisConnectionManager::new(redis_client).await.unwrap();
+        let infra = crate::test_helpers::containers::TestInfra::redis_only().await;
+        let redis = infra.connection_manager().await;
         let lock = DistributedLock::new(redis.clone());
 
         // Acquire lock manually
@@ -793,10 +785,9 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "Requires Redis"]
     async fn test_lock_guard_with_token() {
-        let redis_client = redis::Client::open("redis://localhost:6379").unwrap();
-        let redis = RedisConnectionManager::new(redis_client).await.unwrap();
+        let infra = crate::test_helpers::containers::TestInfra::redis_only().await;
+        let redis = infra.connection_manager().await;
         let lock = DistributedLock::new(redis.clone());
 
         {

@@ -55,7 +55,7 @@ pub use playback::{PlaybackService, PlaybackBroadcaster};
 pub use publish_key::{PublishKeyService, PublishKey};
 pub use notification::{NotificationService, RoomEvent};
 pub use user_notification::UserNotificationService;
-pub use audit::{AuditService, AuditAction, AuditTargetType, AuditLog};
+pub use audit::{AuditService, AuditAction, AuditTargetType, AuditLog, AuditFlushHandle};
 pub use audit_partition_manager::{
     AuditPartitionManager, PartitionHealth, PartitionStats,
     ensure_audit_partitions_on_startup

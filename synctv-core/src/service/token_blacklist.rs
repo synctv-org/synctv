@@ -300,10 +300,9 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    #[ignore = "Requires Redis"]
     async fn test_blacklist_token() {
-        let client = redis::Client::open("redis://localhost:6379").unwrap();
-        let conn = redis::aio::ConnectionManager::new(client).await.unwrap();
+        let infra = crate::test_helpers::containers::TestInfra::redis_only().await;
+        let conn = infra.connection_manager().await;
         let service = TokenBlacklistService::new(Some(conn), "synctv".to_string());
 
         let token = "test_token_12345";
@@ -372,10 +371,9 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "Requires Redis"]
     async fn test_user_token_invalidation() {
-        let client = redis::Client::open("redis://localhost:6379").unwrap();
-        let conn = redis::aio::ConnectionManager::new(client).await.unwrap();
+        let infra = crate::test_helpers::containers::TestInfra::redis_only().await;
+        let conn = infra.connection_manager().await;
         let service = TokenBlacklistService::new(Some(conn), "synctv".to_string());
         let user_id = UserId::from_string("test_invalidation_user".to_string());
 

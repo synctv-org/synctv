@@ -468,7 +468,7 @@ impl Common {
         }
 
         self.stream_handler
-            .set_cache(Cache::new(gop_num, statistic_data_sender))
+            .set_cache(Cache::new(gop_num, None, statistic_data_sender))
             .await;
         Ok(())
     }

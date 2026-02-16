@@ -53,6 +53,12 @@ pub trait StreamMessage: Send + Sync {
 
     /// Check if connection is still alive
     fn is_alive(&self) -> bool;
+
+    /// Send a ping to check connection liveness.
+    /// Default implementation is a no-op (gRPC uses HTTP/2 PING automatically).
+    fn ping(&self) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// Per-connection stream message handler with complete logic encapsulation
@@ -163,8 +169,19 @@ impl StreamMessageHandler {
         // Subscribe to disconnect signals
         let mut disconnect_rx = self.connection_manager.subscribe_disconnect();
 
+        // Subscribe to admin events (KickUser, etc.) for cross-replica disconnect propagation.
+        // KickUser events arrive via Redis PubSub on the admin channel and are not
+        // delivered through the room-level event subscription, so each connection
+        // must independently monitor admin events and disconnect when targeted.
+        let mut admin_rx = self.cluster_manager.subscribe_admin_events();
+
         // Send initial user joined notification
         stream.send(self.create_user_joined_message(&room_id_str).await)?;
+
+        // Create heartbeat interval OUTSIDE the loop so it doesn't reset
+        // when other select! branches fire
+        let mut heartbeat_interval = tokio::time::interval(std::time::Duration::from_secs(30));
+        heartbeat_interval.tick().await; // Skip the immediate first tick
 
         // Main message loop using tokio::select! for concurrent operations
         loop {
@@ -256,10 +273,43 @@ impl StreamMessageHandler {
                     }
                 }
 
+                // Admin events from cluster (cross-replica kick/ban propagation)
+                admin_event = admin_rx.recv() => {
+                    match admin_event {
+                        Ok(ClusterEvent::KickUser { ref user_id, ref reason, .. }) => {
+                            if *user_id == self.user_id {
+                                tracing::info!(
+                                    user_id = %self.user_id.as_str(),
+                                    reason = %reason,
+                                    "Received cross-replica KickUser event, disconnecting"
+                                );
+                                break;
+                            }
+                        }
+                        Ok(_) => {
+                            // Other admin events (KickPublisher, etc.) not relevant to this connection
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                            tracing::warn!(
+                                lagged = n,
+                                "Admin event channel lagged, may have missed disconnect signals"
+                            );
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            tracing::error!("Admin event channel closed");
+                            break;
+                        }
+                    }
+                }
+
                 // Heartbeat/health check every 30 seconds
-                () = tokio::time::sleep(std::time::Duration::from_secs(30)) => {
+                _ = heartbeat_interval.tick() => {
                     if !stream.is_alive() {
                         tracing::info!("Connection no longer alive");
+                        break;
+                    }
+                    if let Err(e) = stream.ping() {
+                        tracing::info!("Ping failed, connection dead: {}", e);
                         break;
                     }
                 }
@@ -365,7 +415,7 @@ impl StreamMessageHandler {
         &self,
     ) -> tokio::sync::mpsc::Sender<ClientMessage> {
         // Use bounded channel to prevent memory exhaustion from fast clients
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<ClientMessage>(1000);
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<ClientMessage>(256);
 
         // Subscribe to cluster events and forward to client
         let room_id = self.room_id.clone();
@@ -504,6 +554,11 @@ impl StreamMessageHandler {
             )
             .await
             .map_err(|e| e.to_string())?;
+
+        // Track chat message metric
+        synctv_core::metrics::http::CHAT_MESSAGES_TOTAL
+            .with_label_values(&[] as &[&str])
+            .inc();
 
         let event = ClusterEvent::ChatMessage {
             event_id: nanoid::nanoid!(16),

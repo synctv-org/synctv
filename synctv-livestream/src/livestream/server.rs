@@ -36,6 +36,9 @@ pub struct LivestreamConfig {
     pub stream_timeout_seconds: u64,
     /// Cluster secret for authenticating gRPC HLS proxy calls
     pub cluster_secret: Option<String>,
+    /// Maximum memory (in megabytes) for the GOP cache per stream.
+    /// 0 means use the built-in default (50 MB).
+    pub gop_cache_max_memory_mb: u64,
 }
 
 /// Handle returned by [`LivestreamServer::start`].
@@ -191,6 +194,16 @@ impl LivestreamServer {
         let node_id_for_cleanup = self.config.node_id.clone();
         // Channel to notify PublisherManager to re-register after StreamHub restart
         let (reregister_tx, reregister_rx) = mpsc::channel::<()>(4);
+
+        // Configure global GOP cache memory limit (once, before RTMP starts).
+        if self.config.gop_cache_max_memory_mb > 0 {
+            let max_bytes = self.config.gop_cache_max_memory_mb as usize * 1024 * 1024;
+            synctv_xiu::rtmp::cache::gop::set_global_max_total_bytes(max_bytes);
+            info!(
+                "GOP cache max memory set to {} MB per stream",
+                self.config.gop_cache_max_memory_mb,
+            );
+        }
 
         // RTMP server config -- cloned into the hub restart loop so we can
         // recreate the RTMP server with a fresh CancellationToken on each cycle.

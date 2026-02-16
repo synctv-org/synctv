@@ -148,7 +148,7 @@ impl RemoteProviderManager {
 
         let cache = Arc::clone(&self.channel_cache);
 
-        tokio::spawn(async move {
+        crate::spawn::spawn_monitored("provider_invalidation_listener", async move {
             loop {
                 match Self::run_pubsub_listener(&client, &cache).await {
                     Ok(()) => break, // clean shutdown (shouldn't happen)

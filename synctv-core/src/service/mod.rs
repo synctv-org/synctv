@@ -24,6 +24,7 @@ pub mod user_notification;
 pub mod audit;
 pub mod audit_partition_manager;
 pub mod chat_partition_manager;
+pub mod cleanup;
 pub mod credential_encryption;
 pub mod distributed_lock;
 pub mod email;
@@ -64,6 +65,7 @@ pub use chat_partition_manager::{
     ChatPartitionManager, ChatPartitionHealth,
     ensure_chat_partitions_on_startup
 };
+pub use cleanup::{CleanupService, CleanupConfig, CleanupResult};
 pub use credential_encryption::CredentialEncryption;
 pub use distributed_lock::{DistributedLock, LockGuard};
 pub use email::{EmailService, EmailConfig};

@@ -1062,3 +1062,353 @@ impl ProtoCodec {
             .map_err(|e| format!("Failed to decode message: {e}"))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use synctv_cluster::sync::{ClusterEvent, NotificationLevel};
+    use synctv_core::models::{RoomId, UserId, MediaId, PermissionBits, RoomPlaybackState};
+    use crate::proto::client::server_message::Message;
+
+    fn room_id() -> RoomId { RoomId("room_test".to_string()) }
+    fn user_id() -> UserId { UserId("user_test".to_string()) }
+    fn media_id() -> MediaId { MediaId::from_string("media_test".to_string()) }
+    fn now() -> chrono::DateTime<chrono::Utc> { chrono::Utc::now() }
+
+    // ========== cluster_event_to_server_message Tests ==========
+
+    #[test]
+    fn test_chat_message_event_conversion() {
+        let event = ClusterEvent::ChatMessage {
+            event_id: "evt1".to_string(),
+            room_id: room_id(),
+            user_id: user_id(),
+            username: "alice".to_string(),
+            message: "hello world".to_string(),
+            timestamp: now(),
+            position: Some(42.5),
+            color: Some("#ff0000".to_string()),
+        };
+
+        let msg = cluster_event_to_server_message(&event, "room_test");
+        assert!(msg.is_some());
+        let msg = msg.unwrap();
+        match msg.message {
+            Some(Message::Chat(chat)) => {
+                assert_eq!(chat.room_id, "room_test");
+                assert_eq!(chat.user_id, "user_test");
+                assert_eq!(chat.username, "alice");
+                assert_eq!(chat.content, "hello world");
+                assert_eq!(chat.position, Some(42.5));
+                assert_eq!(chat.color, Some("#ff0000".to_string()));
+            }
+            other => panic!("Expected Chat message, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_playback_state_changed_event_conversion() {
+        let state = RoomPlaybackState {
+            room_id: room_id(),
+            playing_media_id: Some(media_id()),
+            playing_playlist_id: None,
+            relative_path: String::new(),
+            current_time: 123.456,
+            speed: 1.5,
+            is_playing: true,
+            updated_at: now(),
+            version: 7,
+        };
+        let event = ClusterEvent::PlaybackStateChanged {
+            event_id: "evt2".to_string(),
+            room_id: room_id(),
+            user_id: user_id(),
+            username: "bob".to_string(),
+            state: state.clone(),
+            timestamp: now(),
+        };
+
+        let msg = cluster_event_to_server_message(&event, "room_test").unwrap();
+        match msg.message {
+            Some(Message::PlaybackState(ps)) => {
+                assert_eq!(ps.room_id, "room_test");
+                let s = ps.state.unwrap();
+                assert_eq!(s.current_time, 123.456);
+                assert_eq!(s.speed, 1.5);
+                assert!(s.is_playing);
+                assert_eq!(s.playing_media_id, "media_test");
+                assert_eq!(s.version, 7);
+            }
+            other => panic!("Expected PlaybackState, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_user_joined_event_conversion() {
+        let event = ClusterEvent::UserJoined {
+            event_id: "evt3".to_string(),
+            room_id: room_id(),
+            user_id: user_id(),
+            username: "carol".to_string(),
+            permissions: PermissionBits(PermissionBits::DEFAULT_MEMBER),
+            role: 3,
+            timestamp: now(),
+        };
+
+        let msg = cluster_event_to_server_message(&event, "room_test").unwrap();
+        match msg.message {
+            Some(Message::UserJoined(uj)) => {
+                assert_eq!(uj.room_id, "room_test");
+                let member = uj.member.unwrap();
+                assert_eq!(member.user_id, "user_test");
+                assert_eq!(member.username, "carol");
+                assert_eq!(member.role, 3);
+                assert!(member.is_online);
+            }
+            other => panic!("Expected UserJoined, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_user_left_event_conversion() {
+        let event = ClusterEvent::UserLeft {
+            event_id: "evt4".to_string(),
+            room_id: room_id(),
+            user_id: user_id(),
+            username: "dave".to_string(),
+            timestamp: now(),
+        };
+
+        let msg = cluster_event_to_server_message(&event, "room_test").unwrap();
+        match msg.message {
+            Some(Message::UserLeft(ul)) => {
+                assert_eq!(ul.room_id, "room_test");
+                assert_eq!(ul.user_id, "user_test");
+            }
+            other => panic!("Expected UserLeft, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_media_added_event_conversion() {
+        let event = ClusterEvent::MediaAdded {
+            event_id: "evt5".to_string(),
+            room_id: room_id(),
+            user_id: user_id(),
+            username: "eve".to_string(),
+            media_id: media_id(),
+            media_title: "Test Video".to_string(),
+            timestamp: now(),
+        };
+
+        let msg = cluster_event_to_server_message(&event, "room_test").unwrap();
+        match msg.message {
+            Some(Message::MediaAdded(ma)) => {
+                assert_eq!(ma.room_id, "room_test");
+                assert_eq!(ma.media_id, "media_test");
+                assert_eq!(ma.title, "Test Video");
+                assert_eq!(ma.added_by, "eve");
+            }
+            other => panic!("Expected MediaAdded, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_media_removed_event_conversion() {
+        let event = ClusterEvent::MediaRemoved {
+            event_id: "evt6".to_string(),
+            room_id: room_id(),
+            user_id: user_id(),
+            username: "frank".to_string(),
+            media_id: media_id(),
+            timestamp: now(),
+        };
+
+        let msg = cluster_event_to_server_message(&event, "room_test").unwrap();
+        match msg.message {
+            Some(Message::MediaRemoved(mr)) => {
+                assert_eq!(mr.room_id, "room_test");
+                assert_eq!(mr.media_id, "media_test");
+                assert_eq!(mr.removed_by, "frank");
+            }
+            other => panic!("Expected MediaRemoved, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_webrtc_offer_event_conversion() {
+        let event = ClusterEvent::WebRTCSignaling {
+            event_id: "evt7".to_string(),
+            room_id: room_id(),
+            message_type: "offer".to_string(),
+            from: "conn_a".to_string(),
+            to: "conn_b".to_string(),
+            data: "sdp_data".to_string(),
+            timestamp: now(),
+        };
+
+        let msg = cluster_event_to_server_message(&event, "room_test").unwrap();
+        match msg.message {
+            Some(Message::WebrtcOffer(o)) => {
+                assert_eq!(o.from, "conn_a");
+                assert_eq!(o.to, "conn_b");
+                assert_eq!(o.data, "sdp_data");
+            }
+            other => panic!("Expected WebrtcOffer, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_webrtc_answer_event_conversion() {
+        let event = ClusterEvent::WebRTCSignaling {
+            event_id: "evt8".to_string(),
+            room_id: room_id(),
+            message_type: "answer".to_string(),
+            from: "conn_b".to_string(),
+            to: "conn_a".to_string(),
+            data: "answer_sdp".to_string(),
+            timestamp: now(),
+        };
+
+        let msg = cluster_event_to_server_message(&event, "room_test").unwrap();
+        match msg.message {
+            Some(Message::WebrtcAnswer(a)) => {
+                assert_eq!(a.from, "conn_b");
+                assert_eq!(a.to, "conn_a");
+            }
+            other => panic!("Expected WebrtcAnswer, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_webrtc_ice_candidate_event_conversion() {
+        let event = ClusterEvent::WebRTCSignaling {
+            event_id: "evt9".to_string(),
+            room_id: room_id(),
+            message_type: "ice_candidate".to_string(),
+            from: "conn_a".to_string(),
+            to: "conn_b".to_string(),
+            data: "candidate_data".to_string(),
+            timestamp: now(),
+        };
+
+        let msg = cluster_event_to_server_message(&event, "room_test").unwrap();
+        assert!(matches!(msg.message, Some(Message::WebrtcIceCandidate(_))));
+    }
+
+    #[test]
+    fn test_webrtc_unknown_type_returns_none() {
+        let event = ClusterEvent::WebRTCSignaling {
+            event_id: "evt10".to_string(),
+            room_id: room_id(),
+            message_type: "unknown_type".to_string(),
+            from: "conn_a".to_string(),
+            to: "conn_b".to_string(),
+            data: "data".to_string(),
+            timestamp: now(),
+        };
+
+        let msg = cluster_event_to_server_message(&event, "room_test");
+        assert!(msg.is_none());
+    }
+
+    #[test]
+    fn test_room_deleted_event_conversion() {
+        let event = ClusterEvent::RoomDeleted {
+            event_id: "evt11".to_string(),
+            room_id: room_id(),
+            deleted_by: user_id(),
+            timestamp: now(),
+        };
+
+        let msg = cluster_event_to_server_message(&event, "room_test").unwrap();
+        match msg.message {
+            Some(Message::Error(e)) => {
+                assert!(e.message.contains("deleted"));
+                assert_eq!(e.code, crate::impls::error_codes::NOT_FOUND);
+            }
+            other => panic!("Expected Error message for RoomDeleted, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_system_notification_event_conversion() {
+        let event = ClusterEvent::SystemNotification {
+            event_id: "evt12".to_string(),
+            message: "Server maintenance in 5 minutes".to_string(),
+            level: NotificationLevel::Warning,
+            timestamp: now(),
+        };
+
+        let msg = cluster_event_to_server_message(&event, "room_test").unwrap();
+        match msg.message {
+            Some(Message::Error(e)) => {
+                assert_eq!(e.message, "Server maintenance in 5 minutes");
+                assert_eq!(e.code, 0);
+            }
+            other => panic!("Expected Error message for SystemNotification, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_admin_events_return_none() {
+        let event = ClusterEvent::KickPublisher {
+            event_id: "evt13".to_string(),
+            room_id: room_id(),
+            media_id: media_id(),
+            reason: "test".to_string(),
+            timestamp: now(),
+        };
+        assert!(cluster_event_to_server_message(&event, "room_test").is_none());
+
+        let event = ClusterEvent::KickUser {
+            event_id: "evt14".to_string(),
+            user_id: user_id(),
+            reason: "banned".to_string(),
+            timestamp: now(),
+        };
+        assert!(cluster_event_to_server_message(&event, "room_test").is_none());
+    }
+
+    // ========== ProtoCodec Tests ==========
+
+    #[test]
+    fn test_server_message_encode_decode_roundtrip() {
+        let msg = ServerMessage {
+            message: Some(Message::UserLeft(crate::proto::client::UserLeftRoom {
+                room_id: "room1".to_string(),
+                user_id: "user1".to_string(),
+            })),
+        };
+
+        let encoded = ProtoCodec::encode_server_message(&msg).unwrap();
+        let decoded = ProtoCodec::decode_server_message(&encoded).unwrap();
+        match decoded.message {
+            Some(Message::UserLeft(ul)) => {
+                assert_eq!(ul.room_id, "room1");
+                assert_eq!(ul.user_id, "user1");
+            }
+            other => panic!("Expected UserLeft after roundtrip, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_client_message_decode_invalid_data() {
+        let result = ProtoCodec::decode_client_message(&[0xFF, 0xFF, 0xFF]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_server_message_decode_invalid_data() {
+        let result = ProtoCodec::decode_server_message(&[0xFF, 0xFF, 0xFF]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_server_message_encode_empty() {
+        let msg = ServerMessage { message: None };
+        let encoded = ProtoCodec::encode_server_message(&msg).unwrap();
+        let decoded = ProtoCodec::decode_server_message(&encoded).unwrap();
+        assert!(decoded.message.is_none());
+    }
+}

@@ -19,7 +19,7 @@ pub struct UserOAuthProviderRepository {
 
 impl UserOAuthProviderRepository {
     /// Create new repository
-    #[must_use] 
+    #[must_use]
     pub const fn new(pool: PgPool) -> Self {
         Self { pool }
     }
@@ -32,6 +32,21 @@ impl UserOAuthProviderRepository {
         provider_user_id: &str,
         user_info: &OAuth2UserInfo,
     ) -> Result<()> {
+        self.upsert_with_executor(user_id, provider, provider_user_id, user_info, &self.pool).await
+    }
+
+    /// Insert or update `OAuth2` provider mapping using a provided executor (pool or transaction)
+    pub async fn upsert_with_executor<'e, E>(
+        &self,
+        user_id: &UserId,
+        provider: &OAuth2Provider,
+        provider_user_id: &str,
+        user_info: &OAuth2UserInfo,
+        executor: E,
+    ) -> Result<()>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
         let id = nanoid::nanoid!(12);
 
         sqlx::query(
@@ -54,7 +69,7 @@ impl UserOAuthProviderRepository {
         .bind(&user_info.username)
         .bind(&user_info.email)
         .bind(&user_info.avatar)
-        .execute(&self.pool)
+        .execute(executor)
         .await?;
 
         Ok(())

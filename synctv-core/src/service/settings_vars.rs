@@ -139,7 +139,7 @@ impl SettingsStorage {
         let inner = self.inner.clone();
         let mut receiver = self.settings_service.subscribe_reloads();
 
-        tokio::spawn(async move {
+        crate::spawn::spawn_monitored("settings_reload_listener", async move {
             loop {
                 match receiver.recv().await {
                     Ok((key, Some(value))) => {

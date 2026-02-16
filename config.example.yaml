@@ -55,11 +55,49 @@ database:
   connect_timeout_seconds: 10
   idle_timeout_seconds: 600
 
+# ============================================================================
+# Redis Configuration
+# ============================================================================
+#
+# Redis provides critical infrastructure for:
+#   - Token blacklist (JWT revocation across replicas)
+#   - Rate limiting
+#   - Username cache
+#   - Cache invalidation (Redis Streams with per-node consumer groups)
+#   - Cluster coordination (pub/sub for room events, kicks, etc.)
+#
+# Deployment Modes:
+#   - standalone: Single Redis instance (default, OK for development)
+#   - sentinel: Redis Sentinel for high availability (recommended for production)
+#   - cluster: Redis Cluster (not yet fully supported - requires refactoring)
+#
+# IMPORTANT: Standalone Redis is a single point of failure (SPOF). For production
+# deployments, use sentinel mode with 3+ sentinel nodes monitoring a master-replica setup.
+
 redis:
   url: "redis://localhost:6379"
   pool_size: 10
   connect_timeout_seconds: 5
   key_prefix: "synctv:"
+
+  # Deployment mode: standalone, sentinel, or cluster
+  deployment_mode: "standalone"
+
+  # --- Sentinel Mode Configuration (for high availability) ---
+  # When deployment_mode is "sentinel", these fields are required:
+  # sentinel_master_name: "mymaster"
+  # sentinel_addresses:
+  #   - "redis://sentinel1:26379"
+  #   - "redis://sentinel2:26379"
+  #   - "redis://sentinel3:26379"
+
+  # --- Cluster Mode Configuration (experimental) ---
+  # Cluster mode is not yet fully supported and will fail at startup.
+  # Future implementation will require switching from ConnectionManager to ClusterConnection.
+  # cluster_nodes:
+  #   - "redis://node1:6379"
+  #   - "redis://node2:6379"
+  #   - "redis://node3:6379"
 
 jwt:
   # REQUIRED in production. Generate with: openssl rand -base64 32

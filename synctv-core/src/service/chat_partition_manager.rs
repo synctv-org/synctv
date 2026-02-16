@@ -124,7 +124,7 @@ impl ChatPartitionManager {
     pub fn start_auto_management(&self, check_interval_hours: u64, cancel: CancellationToken) -> tokio::task::JoinHandle<()> {
         let manager = self.clone();
 
-        tokio::spawn(async move {
+        crate::spawn::spawn_monitored("chat_partition_manager", async move {
             let mut interval = tokio::time::interval(
                 tokio::time::Duration::from_secs(check_interval_hours * 3600),
             );

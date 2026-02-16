@@ -101,7 +101,7 @@ impl PlaybackService {
         let cache = self.playback_cache.clone();
         let mut receiver = service.subscribe();
 
-        tokio::spawn(async move {
+        crate::spawn::spawn_monitored("playback_invalidation_listener", async move {
             loop {
                 match receiver.recv().await {
                     Ok(msg) => match msg {

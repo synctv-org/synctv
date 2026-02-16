@@ -134,7 +134,7 @@ impl CacheInvalidationService {
         let consumer_group = self.consumer_group.clone();
         let shutdown = self.shutdown.clone();
 
-        tokio::spawn(async move {
+        crate::spawn::spawn_monitored("cache_invalidation_subscriber", async move {
             let mut backoff_secs: u64 = 5;
             const MAX_BACKOFF_SECS: u64 = 60;
 

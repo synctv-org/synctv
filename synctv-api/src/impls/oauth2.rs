@@ -20,7 +20,7 @@
 //! 8. Backend returns JWT token to frontend
 
 use std::sync::Arc;
-use synctv_core::models::{User, UserId, UserRole, UserStatus};
+use synctv_core::models::{SignupMethod, User, UserId, UserRole, UserStatus};
 use synctv_core::service::{OAuth2Service, UserService};
 use synctv_proto::client::{
     OAuth2UserInfo, OAuth2ProviderInstance, LinkedProvider,
@@ -165,23 +165,45 @@ impl OAuth2ApiImpl {
                 .await
                 .map_err(ApiError::from)?
         } else {
-            // User doesn't exist, create new account using register flow
-            // Generate a random password since OAuth2 users don't use password auth
+            // User doesn't exist, create new account and link OAuth2 provider
+            // atomically within a single transaction to prevent orphaned users.
             let random_password = nanoid::nanoid!(32);
+            let pool = self.user_service.pool();
 
-            let (new_user, access_token, refresh_token) = self
+            let mut tx = pool.begin().await.map_err(|e| {
+                ApiError::Internal(format!("Failed to begin transaction: {e}"))
+            })?;
+
+            let new_user = self
                 .user_service
-                .register(
+                .register_with_executor(
                     user_info.username.clone(),
                     user_info.email.clone(),
                     random_password,
+                    SignupMethod::OAuth2,
+                    &mut *tx,
                 )
                 .await
                 .map_err(ApiError::from)?;
 
-            // Link OAuth2 provider to new user
             self.oauth2_service
-                .upsert_user_provider(&new_user.id, &provider_type, &user_info.provider_user_id, &user_info)
+                .upsert_user_provider_with_executor(
+                    &new_user.id,
+                    &provider_type,
+                    &user_info.provider_user_id,
+                    &user_info,
+                    &mut *tx,
+                )
+                .await
+                .map_err(ApiError::from)?;
+
+            tx.commit().await.map_err(|e| {
+                ApiError::Internal(format!("Failed to commit transaction: {e}"))
+            })?;
+
+            let (access_token, refresh_token) = self
+                .user_service
+                .finalize_registration(&new_user)
                 .await
                 .map_err(ApiError::from)?;
 

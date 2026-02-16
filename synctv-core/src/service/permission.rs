@@ -99,7 +99,7 @@ impl PermissionService {
         let last_flush_time = service.last_flush_time.clone();
         let mut receiver = invalidation_service.subscribe();
 
-        tokio::spawn(async move {
+        crate::spawn::spawn_monitored("permission_invalidation_listener", async move {
             loop {
                 match receiver.recv().await {
                     Ok(msg) => {

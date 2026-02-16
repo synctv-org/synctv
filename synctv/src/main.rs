@@ -171,9 +171,29 @@ async fn init_cluster_discovery(
                     let dns_refresh_handle = k8s_discovery.start_refresh_loop(10).await;
 
                     // Still use Redis-based NodeRegistry for health monitoring if Redis is available.
-                    // The DNS discovery finds peers; Redis registry tracks heartbeats and health.
+                    // DNS discovers peers; Redis registry tracks heartbeats and health.
                     if !config.redis.url.is_empty() {
                         let (nr, hm, lb) = init_cluster_components(&config.redis.url, cm, config, connection_manager).await;
+
+                        // Bridge: periodically merge DNS-discovered peers into the
+                        // NodeRegistry so HealthMonitor/LoadBalancer see newly-scaled
+                        // pods before they self-register via Redis heartbeat.
+                        if let Some(ref registry) = nr {
+                            let dns = k8s_discovery.clone();
+                            let reg = registry.clone();
+                            tokio::spawn(async move {
+                                let mut timer = tokio::time::interval(Duration::from_secs(15));
+                                loop {
+                                    timer.tick().await;
+                                    let dns_peers = dns.get_peers_as_node_info().await;
+                                    if !dns_peers.is_empty() {
+                                        reg.merge_dns_peers(dns_peers).await;
+                                    }
+                                }
+                            });
+                            info!("K8s DNS -> NodeRegistry sync bridge started (15s interval)");
+                        }
+
                         (nr, hm, lb, Some(dns_refresh_handle))
                     } else {
                         // K8s DNS mode without Redis: discovery works, but no health monitoring or LB

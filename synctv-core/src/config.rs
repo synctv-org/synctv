@@ -19,6 +19,8 @@ pub struct Config {
     pub connection_limits: ConnectionLimitsConfig,
     pub bootstrap: BootstrapConfig,
     pub cluster: ClusterChannelConfig,
+    pub password_complexity: PasswordComplexityConfig,
+    pub buffer_sizes: BufferSizesConfig,
 }
 
 impl std::fmt::Debug for Config {
@@ -37,6 +39,8 @@ impl std::fmt::Debug for Config {
             .field("connection_limits", &self.connection_limits)
             .field("bootstrap", &"<redacted>")
             .field("cluster", &self.cluster)
+            .field("password_complexity", &self.password_complexity)
+            .field("buffer_sizes", &self.buffer_sizes)
             .finish()
     }
 }
@@ -180,12 +184,31 @@ impl Default for DatabaseConfig {
     }
 }
 
+/// Redis deployment mode
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum RedisDeploymentMode {
+    #[default]
+    Standalone,
+    Sentinel,
+    Cluster,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct RedisConfig {
     pub url: String,
     pub pool_size: u32,
     pub connect_timeout_seconds: u64,
     pub key_prefix: String,
+    /// Deployment mode: standalone (default), sentinel, or cluster
+    pub deployment_mode: RedisDeploymentMode,
+    /// Sentinel master name (required for sentinel mode)
+    pub sentinel_master_name: Option<String>,
+    /// Sentinel node addresses (required for sentinel mode)
+    pub sentinel_addresses: Vec<String>,
+    /// Cluster node addresses (required for cluster mode)
+    pub cluster_nodes: Vec<String>,
 }
 
 impl std::fmt::Debug for RedisConfig {
@@ -211,11 +234,33 @@ impl std::fmt::Debug for RedisConfig {
             self.url.clone()
         };
 
+        // Helper to mask password in Redis URLs
+        let mask_url = |url: &str| -> String {
+            if url.contains('@') {
+                if let Some(at_pos) = url.find('@') {
+                    if let Some(colon_pos) = url[..at_pos].rfind(':') {
+                        let scheme_end = url.find("://").map(|p| p + 3).unwrap_or(0);
+                        if colon_pos >= scheme_end && colon_pos < at_pos {
+                            return format!("{}:****@{}", &url[..colon_pos], &url[at_pos + 1..]);
+                        }
+                    }
+                }
+            }
+            url.to_string()
+        };
+
+        let masked_sentinel: Vec<String> = self.sentinel_addresses.iter().map(|u| mask_url(u)).collect();
+        let masked_cluster: Vec<String> = self.cluster_nodes.iter().map(|u| mask_url(u)).collect();
+
         f.debug_struct("RedisConfig")
             .field("url", &masked_url)
             .field("pool_size", &self.pool_size)
             .field("connect_timeout_seconds", &self.connect_timeout_seconds)
             .field("key_prefix", &self.key_prefix)
+            .field("deployment_mode", &self.deployment_mode)
+            .field("sentinel_master_name", &self.sentinel_master_name)
+            .field("sentinel_addresses", &masked_sentinel)
+            .field("cluster_nodes", &masked_cluster)
             .finish()
     }
 }
@@ -227,6 +272,10 @@ impl Default for RedisConfig {
             pool_size: 10,
             connect_timeout_seconds: 5,
             key_prefix: "synctv:".to_string(),
+            deployment_mode: RedisDeploymentMode::Standalone,
+            sentinel_master_name: None,
+            sentinel_addresses: Vec::new(),
+            cluster_nodes: Vec::new(),
         }
     }
 }
@@ -872,6 +921,50 @@ impl Default for ClusterChannelConfig {
     }
 }
 
+/// Password complexity requirements
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PasswordComplexityConfig {
+    pub min_length: usize,
+    pub require_uppercase: bool,
+    pub require_lowercase: bool,
+    pub require_digit: bool,
+    pub require_special: bool,
+    pub max_repeated_chars: usize,
+}
+
+impl Default for PasswordComplexityConfig {
+    fn default() -> Self {
+        Self {
+            min_length: 8,
+            require_uppercase: true,
+            require_lowercase: true,
+            require_digit: true,
+            require_special: false,
+            max_repeated_chars: 3,
+        }
+    }
+}
+
+/// Internal channel buffer sizes
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BufferSizesConfig {
+    /// Per-connection WebSocket outbound message queue size
+    pub websocket_outbound: usize,
+    /// Audit log event buffer size
+    pub audit_buffer: usize,
+}
+
+impl Default for BufferSizesConfig {
+    fn default() -> Self {
+        Self {
+            websocket_outbound: 256,
+            audit_buffer: 10_000,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -892,6 +985,8 @@ mod tests {
             connection_limits: ConnectionLimitsConfig::default(),
             bootstrap: BootstrapConfig::default(),
             cluster: ClusterChannelConfig::default(),
+            password_complexity: PasswordComplexityConfig::default(),
+            buffer_sizes: BufferSizesConfig::default(),
         });
 
         assert!(!config.database_url().is_empty());
@@ -930,6 +1025,8 @@ mod tests {
             connection_limits: ConnectionLimitsConfig::default(),
             bootstrap: BootstrapConfig::default(),
             cluster: ClusterChannelConfig::default(),
+            password_complexity: PasswordComplexityConfig::default(),
+            buffer_sizes: BufferSizesConfig::default(),
         };
 
         assert_eq!(config.grpc_address(), "127.0.0.1:50051");
@@ -971,6 +1068,8 @@ mod tests {
                 root_password: "StrongPwd12345!".to_string(),
             },
             cluster: ClusterChannelConfig::default(),
+            password_complexity: PasswordComplexityConfig::default(),
+            buffer_sizes: BufferSizesConfig::default(),
         }
     }
 

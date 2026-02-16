@@ -431,6 +431,21 @@ pub mod cluster {
     });
 }
 
+/// Spawned task monitoring
+pub mod task {
+    use super::{register_counter_vec_with_registry, CounterVec, REGISTRY};
+
+    /// Total spawned task panics, labeled by task name.
+    pub static TASK_PANICS_TOTAL: std::sync::LazyLock<CounterVec> = std::sync::LazyLock::new(|| {
+        register_counter_vec_with_registry!(
+            "spawned_task_panics_total",
+            "Total number of spawned task panics caught by spawn_monitored",
+            &["task_name"],
+            REGISTRY.clone()
+        ).expect("Failed to register TASK_PANICS_TOTAL")
+    });
+}
+
 /// Rate limiting operations
 pub mod rate_limit {
     use super::{register_counter_vec_with_registry, CounterVec, REGISTRY};

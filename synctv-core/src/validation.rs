@@ -119,6 +119,8 @@ pub struct PasswordValidator {
     require_lowercase: bool,
     require_digit: bool,
     require_special_char: bool,
+    /// Maximum consecutive repeated characters allowed (0 = disabled)
+    max_repeated_chars: usize,
 }
 
 impl Default for PasswordValidator {
@@ -129,25 +131,45 @@ impl Default for PasswordValidator {
             require_lowercase: true,
             require_digit: true,
             require_special_char: false,
+            max_repeated_chars: 3,
         }
     }
 }
 
 impl PasswordValidator {
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    #[must_use] 
+    /// Create a `PasswordValidator` from a `PasswordComplexityConfig`.
+    #[must_use]
+    pub fn from_config(config: &crate::config::PasswordComplexityConfig) -> Self {
+        Self {
+            min_length: config.min_length,
+            require_uppercase: config.require_uppercase,
+            require_lowercase: config.require_lowercase,
+            require_digit: config.require_digit,
+            require_special_char: config.require_special,
+            max_repeated_chars: config.max_repeated_chars,
+        }
+    }
+
+    #[must_use]
     pub const fn with_min_length(mut self, length: usize) -> Self {
         self.min_length = length;
         self
     }
 
-    #[must_use] 
+    #[must_use]
     pub const fn require_special_char(mut self, required: bool) -> Self {
         self.require_special_char = required;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_max_repeated_chars(mut self, max: usize) -> Self {
+        self.max_repeated_chars = max;
         self
     }
 
@@ -203,6 +225,29 @@ impl PasswordValidator {
                 field: "password".to_string(),
                 message: "must contain at least one special character".to_string(),
             });
+        }
+
+        // Check for consecutive repeated characters
+        if self.max_repeated_chars > 0 {
+            let mut prev = None;
+            let mut count = 1usize;
+            for ch in password.chars() {
+                if prev == Some(ch) {
+                    count += 1;
+                    if count > self.max_repeated_chars {
+                        return Err(ValidationError::Field {
+                            field: "password".to_string(),
+                            message: format!(
+                                "must not contain more than {} consecutive repeated characters",
+                                self.max_repeated_chars
+                            ),
+                        });
+                    }
+                } else {
+                    count = 1;
+                }
+                prev = Some(ch);
+            }
         }
 
         Ok(())
@@ -867,12 +912,14 @@ mod tests {
         // Exactly minimum length
         assert!(validator.validate("Abcd1234").is_ok());
 
-        // Maximum length (128 chars)
-        let max_password = "A".repeat(64) + "a" + &"1".repeat(63);
+        // Maximum length (128 chars) without long consecutive repeats
+        let max_password = "Ab1".repeat(42) + "Ab";
+        assert_eq!(max_password.len(), 128);
         assert!(validator.validate(&max_password).is_ok());
 
         // Over maximum length
-        let too_long = "A".repeat(64) + "a" + &"1".repeat(64);
+        let too_long = "Ab1".repeat(43);
+        assert_eq!(too_long.len(), 129);
         assert!(validator.validate(&too_long).is_err());
 
         // With special characters
@@ -885,6 +932,44 @@ mod tests {
             .with_min_length(4)
             .require_special_char(false);
         assert!(relaxed_validator.validate("Abc1").is_ok());
+    }
+
+    #[test]
+    fn test_password_max_repeated_chars() {
+        let validator = PasswordValidator::new(); // default max_repeated_chars = 3
+
+        // 3 consecutive 'a' is OK
+        assert!(validator.validate("Paaass1w").is_ok());
+        // 4 consecutive 'a' is NOT OK
+        assert!(validator.validate("Paaaass1").is_err());
+
+        // Disabled check (0 means no limit)
+        let no_limit = PasswordValidator::new().with_max_repeated_chars(0);
+        assert!(no_limit.validate("Paaaaaa1").is_ok());
+    }
+
+    #[test]
+    fn test_password_from_config() {
+        use crate::config::PasswordComplexityConfig;
+
+        let config = PasswordComplexityConfig {
+            min_length: 10,
+            require_uppercase: false,
+            require_lowercase: true,
+            require_digit: true,
+            require_special: true,
+            max_repeated_chars: 2,
+        };
+        let validator = PasswordValidator::from_config(&config);
+
+        // 9 chars = too short (min 10)
+        assert!(validator.validate("abcde1!fg").is_err());
+        // 10 chars, no uppercase needed, has special
+        assert!(validator.validate("abcde1!fgh").is_ok());
+        // No special char
+        assert!(validator.validate("abcde1fghi").is_err());
+        // 3 consecutive chars with max_repeated_chars=2
+        assert!(validator.validate("aaabcde1!f").is_err());
     }
 
     #[test]
@@ -1230,8 +1315,8 @@ mod tests {
     #[test]
     fn test_password_exactly_at_max_length() {
         let validator = PasswordValidator::new();
-        // Exactly 128 chars should be OK
-        let pwd = "A".to_string() + &"a".repeat(63) + &"1".repeat(64);
+        // Exactly 128 chars should be OK (no long consecutive repeats)
+        let pwd = "Ab1".repeat(42) + "Ab";
         assert_eq!(pwd.len(), 128);
         assert!(validator.validate(&pwd).is_ok());
     }
@@ -1239,7 +1324,7 @@ mod tests {
     #[test]
     fn test_password_one_over_max_length() {
         let validator = PasswordValidator::new();
-        let pwd = "A".to_string() + &"a".repeat(64) + &"1".repeat(64);
+        let pwd = "Ab1".repeat(43);
         assert_eq!(pwd.len(), 129);
         assert!(validator.validate(&pwd).is_err());
     }

@@ -11,6 +11,7 @@ pub mod bootstrap;
 pub mod transaction;
 pub mod metrics;
 pub mod resilience;
+pub mod spawn;
 pub mod validation;
 pub mod secrets;
 

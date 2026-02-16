@@ -67,7 +67,7 @@ impl CacheManager {
         let protected_cache = self.protected_cache.clone();
         let mut receiver = invalidation_service.subscribe();
 
-        tokio::spawn(async move {
+        crate::spawn::spawn_monitored("cache_invalidation_listener", async move {
             loop {
                 match receiver.recv().await {
                     Ok(msg) => {

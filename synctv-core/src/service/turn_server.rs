@@ -67,7 +67,7 @@ impl StunServer {
 
         let local_addr = listen;
 
-        let task = tokio::spawn(async move {
+        let task = crate::spawn::spawn_monitored("stun_server", async move {
             if let Err(e) = turn_server::start_server(turn_config).await {
                 tracing::error!(error = %e, "STUN server (turn-rs) exited with error");
             }

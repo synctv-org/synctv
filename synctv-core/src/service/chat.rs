@@ -334,7 +334,7 @@ impl ChatService {
         activity_window_minutes: i32,
         cancel: tokio_util::sync::CancellationToken,
     ) -> tokio::task::JoinHandle<()> {
-        tokio::spawn(async move {
+        crate::spawn::spawn_monitored("chat_cleanup", async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_seconds));
 
             loop {

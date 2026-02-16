@@ -222,7 +222,7 @@ impl SettingsService {
         let service = self.clone();
         let pool = self.pool.clone();
 
-        tokio::spawn(async move {
+        crate::spawn::spawn_monitored("settings_pg_listen", async move {
             info!("Starting PostgreSQL LISTEN for settings hot reload");
 
             loop {

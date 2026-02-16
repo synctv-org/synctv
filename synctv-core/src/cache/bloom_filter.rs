@@ -260,7 +260,7 @@ impl ProtectedCache {
         let null_cache = self.null_cache.clone();
         let shutdown = self.shutdown.clone();
 
-        let task = tokio::spawn(async move {
+        let task = crate::spawn::spawn_monitored("bloom_filter_reset", async move {
             let mut interval = tokio::time::interval(reset_interval);
             interval.tick().await; // Skip first tick (immediate)
 

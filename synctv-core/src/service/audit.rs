@@ -444,7 +444,7 @@ impl AuditFlushHandle {
     ) -> Self {
         let (cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
 
-        let join_handle = tokio::spawn(async move {
+        let join_handle = crate::spawn::spawn_monitored("audit_flush", async move {
             let mut buffer: Vec<AuditRecord> = Vec::with_capacity(FLUSH_BATCH_SIZE);
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(FLUSH_INTERVAL_SECS));
             // Don't fire immediately on first tick

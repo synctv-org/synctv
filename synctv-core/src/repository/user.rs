@@ -15,13 +15,13 @@ pub struct UserRepository {
 }
 
 impl UserRepository {
-    #[must_use] 
+    #[must_use]
     pub const fn new(pool: PgPool) -> Self {
         Self { pool }
     }
 
     /// Get the database pool
-    #[must_use] 
+    #[must_use]
     pub const fn pool(&self) -> &PgPool {
         &self.pool
     }
@@ -31,6 +31,17 @@ impl UserRepository {
     /// Relies on database UNIQUE constraints on `username` and `email` columns
     /// to prevent duplicates atomically (no TOCTOU race condition).
     pub async fn create(&self, user: &User) -> Result<User> {
+        self.create_with_executor(user, &self.pool).await
+    }
+
+    /// Create a new user using a provided executor (pool or transaction)
+    ///
+    /// Relies on database UNIQUE constraints on `username` and `email` columns
+    /// to prevent duplicates atomically (no TOCTOU race condition).
+    pub async fn create_with_executor<'e, E>(&self, user: &User, executor: E) -> Result<User>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
         let u = sqlx::query_as::<_, User>(
             r"
             INSERT INTO users (id, username, email, password_hash, signup_method, role, status, email_verified, created_at, updated_at)
@@ -48,7 +59,7 @@ impl UserRepository {
         .bind(user.email_verified)
         .bind(user.created_at)
         .bind(user.updated_at)
-        .fetch_one(&self.pool)
+        .fetch_one(executor)
         .await
         .map_err(|e| match e {
             sqlx::Error::Database(ref db_err) if db_err.constraint().is_some() => {

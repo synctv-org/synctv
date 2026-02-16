@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use futures::stream::StreamExt;
 use redis::{AsyncCommands, Client as RedisClient};
 use redis::streams::StreamReadReply;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::{broadcast, mpsc};
@@ -47,7 +47,7 @@ fn stream_key_for_event(event: &ClusterEvent) -> String {
 
 use super::dedup::{DedupKey, MessageDeduplicator};
 use super::events::{CacheTarget, ClusterEvent};
-use super::room_hub::RoomMessageHub;
+use super::room_hub::{RoomLifecycleEvent, RoomMessageHub};
 use synctv_core::cache::CacheInvalidationService;
 use synctv_core::models::id::RoomId;
 use synctv_core::service::PermissionService;
@@ -325,6 +325,10 @@ impl RedisPubSub {
     /// `is_first_connect` is set to `true` on the first connection. On first
     /// connect we snapshot the stream tips; on reconnect we catch up.
     ///
+    /// Uses dynamic per-room subscriptions instead of a global `psubscribe("synctv:room:*")`
+    /// to avoid receiving messages for rooms that have no local subscribers. The admin
+    /// channel continues to use pattern subscription since admin events are always needed.
+    ///
     /// Returns `SubscriberExit::Disconnected` if the connection was established but then
     /// the stream ended (Redis disconnected). Returns `SubscriberExit::ConnectFailed` if
     /// the initial connection or subscription failed.
@@ -352,27 +356,84 @@ impl RedisPubSub {
             }
         };
 
-        // Subscribe to all room channels and admin channel using patterns
+        // Always subscribe to admin channel pattern (needed for cluster-wide events)
         match timeout(
             Duration::from_secs(REDIS_TIMEOUT_SECS),
-            pubsub.psubscribe(&["synctv:room:*", "synctv:admin:*"]),
+            pubsub.psubscribe("synctv:admin:*"),
         )
         .await
         {
             Ok(Ok(())) => {}
             Ok(Err(e)) => {
                 return SubscriberExit::ConnectFailed(
-                    anyhow::anyhow!(e).context("Failed to subscribe to synctv:room:*/synctv:admin:* patterns"),
+                    anyhow::anyhow!(e).context("Failed to subscribe to synctv:admin:* pattern"),
                 );
             }
             Err(_) => {
                 return SubscriberExit::ConnectFailed(anyhow::anyhow!(
-                    "Timed out subscribing to synctv:room:*/synctv:admin:* patterns"
+                    "Timed out subscribing to synctv:admin:* pattern"
                 ));
             }
         }
 
-        info!("Redis subscriber connected, listening to synctv:room:* and synctv:admin:* channels");
+        // Subscribe to specific room channels for currently active rooms
+        // (instead of psubscribe("synctv:room:*") which receives all rooms globally)
+        let active_rooms = self.message_hub.active_room_ids();
+        let mut subscribed_rooms: HashSet<String> = HashSet::new();
+
+        if !active_rooms.is_empty() {
+            let room_channels: Vec<String> = active_rooms
+                .iter()
+                .map(|rid| format!("synctv:room:{}", rid.as_str()))
+                .collect();
+            let channel_refs: Vec<&str> = room_channels.iter().map(|s| s.as_str()).collect();
+
+            match timeout(
+                Duration::from_secs(REDIS_TIMEOUT_SECS),
+                pubsub.subscribe(channel_refs.as_slice()),
+            )
+            .await
+            {
+                Ok(Ok(())) => {
+                    for rid in &active_rooms {
+                        subscribed_rooms.insert(rid.as_str().to_string());
+                    }
+                }
+                Ok(Err(e)) => {
+                    warn!(
+                        error = %e,
+                        room_count = active_rooms.len(),
+                        "Failed to subscribe to room channels, falling back to pattern"
+                    );
+                    // Fallback: use pattern subscription if individual subscribes fail
+                    if let Err(e) = pubsub.psubscribe("synctv:room:*").await {
+                        return SubscriberExit::ConnectFailed(
+                            anyhow::anyhow!(e).context("Failed to fallback psubscribe to synctv:room:*"),
+                        );
+                    }
+                }
+                Err(_) => {
+                    warn!(
+                        room_count = active_rooms.len(),
+                        "Timed out subscribing to room channels, falling back to pattern"
+                    );
+                    if let Err(e) = pubsub.psubscribe("synctv:room:*").await {
+                        return SubscriberExit::ConnectFailed(
+                            anyhow::anyhow!(e).context("Failed to fallback psubscribe to synctv:room:*"),
+                        );
+                    }
+                }
+            }
+        }
+
+        info!(
+            subscribed_rooms = subscribed_rooms.len(),
+            "Redis subscriber connected, listening to synctv:admin:* pattern and {} room channels",
+            subscribed_rooms.len()
+        );
+
+        // Subscribe to room lifecycle events for dynamic channel management
+        let mut lifecycle_rx = self.message_hub.subscribe_lifecycle();
 
         if *is_first_connect {
             *is_first_connect = false;
@@ -380,7 +441,6 @@ impl RedisPubSub {
             // First connection: snapshot the current stream tips for active rooms
             // and the admin stream so we can catch up from these points if the
             // connection drops later.
-            let active_rooms = self.message_hub.active_room_ids();
             let mut streams_to_snapshot: Vec<String> = active_rooms
                 .iter()
                 .map(|rid| room_stream_key(rid.as_str()))
@@ -417,9 +477,7 @@ impl RedisPubSub {
             let active_rooms = self.message_hub.active_room_ids();
 
             // Prune cursors for rooms that no longer have local subscribers.
-            // This prevents unbounded growth of stream_cursors when rooms are
-            // created and destroyed over time.
-            let active_stream_keys_set: std::collections::HashSet<String> = active_rooms
+            let active_stream_keys_set: HashSet<String> = active_rooms
                 .iter()
                 .map(|rid| room_stream_key(rid.as_str()))
                 .collect();
@@ -478,48 +536,219 @@ impl RedisPubSub {
             }
         }
 
-        // Process incoming messages
-        let mut stream = pubsub.on_message();
+        // Process incoming messages with dynamic room subscription management.
+        //
+        // We loop between processing Redis messages and handling lifecycle events.
+        // When a lifecycle event arrives, we drop the message stream (releasing the
+        // mutable borrow on `pubsub`), perform the subscribe/unsubscribe, then
+        // re-create the message stream.
+        loop {
+            let mut stream = pubsub.on_message();
 
-        while let Some(msg) = stream.next().await {
-            let channel = msg.get_channel_name().to_string();
+            enum SelectResult {
+                Message(redis::Msg),
+                LifecycleEvent(RoomLifecycleEvent),
+                StreamEnded,
+            }
 
-            let payload: String = match msg.get_payload() {
-                Ok(p) => p,
-                Err(e) => {
-                    warn!(error = %e, channel = %channel, "Invalid payload");
-                    continue;
+            let result = tokio::select! {
+                biased;
+                msg_opt = stream.next() => {
+                    match msg_opt {
+                        Some(msg) => SelectResult::Message(msg),
+                        None => SelectResult::StreamEnded,
+                    }
+                }
+                lifecycle = lifecycle_rx.recv() => {
+                    match lifecycle {
+                        Ok(event) => SelectResult::LifecycleEvent(event),
+                        Err(broadcast::error::RecvError::Lagged(count)) => {
+                            warn!(
+                                missed_count = count,
+                                "Lagged on room lifecycle events, re-syncing subscriptions"
+                            );
+                            drop(stream);
+                            self.resync_room_subscriptions(&mut pubsub, &mut subscribed_rooms).await;
+                            continue;
+                        }
+                        Err(broadcast::error::RecvError::Closed) => {
+                            warn!("Room lifecycle channel closed");
+                            match stream.next().await {
+                                Some(msg) => SelectResult::Message(msg),
+                                None => SelectResult::StreamEnded,
+                            }
+                        }
+                    }
                 }
             };
 
-            // Parse the envelope
-            match serde_json::from_str::<EventEnvelope>(&payload) {
-                Ok(envelope) => {
-                    // Ignore events from this node (already broadcasted locally)
-                    if envelope.node_id == self.node_id {
-                        debug!(
-                            channel = %channel,
-                            "Ignoring event from self (node_id: {})",
-                            self.node_id
-                        );
-                        continue;
+            // Drop the stream before handling the result (releases &mut pubsub borrow)
+            drop(stream);
+
+            match result {
+                SelectResult::Message(msg) => {
+                    let channel = msg.get_channel_name().to_string();
+                    let payload: String = match msg.get_payload() {
+                        Ok(p) => p,
+                        Err(e) => {
+                            warn!(error = %e, channel = %channel, "Invalid payload");
+                            continue;
+                        }
+                    };
+
+                    match serde_json::from_str::<EventEnvelope>(&payload) {
+                        Ok(envelope) => {
+                            if envelope.node_id == self.node_id {
+                                debug!(
+                                    channel = %channel,
+                                    "Ignoring event from self (node_id: {})",
+                                    self.node_id
+                                );
+                                continue;
+                            }
+                            self.dispatch_event(&channel, envelope.event).await;
+                        }
+                        Err(e) => {
+                            warn!(
+                                error = %e,
+                                channel = %channel,
+                                payload = %payload,
+                                "Failed to deserialize event envelope"
+                            );
+                        }
+                    }
+                }
+                SelectResult::LifecycleEvent(event) => {
+                    // Drain any additional pending lifecycle events to batch operations
+                    let mut events = vec![event];
+                    while let Ok(ev) = lifecycle_rx.try_recv() {
+                        events.push(ev);
                     }
 
-                    self.dispatch_event(&channel, envelope.event).await;
+                    for ev in events {
+                        match ev {
+                            RoomLifecycleEvent::RoomActivated(room_id) => {
+                                let room_id_str = room_id.as_str().to_string();
+                                if subscribed_rooms.insert(room_id_str.clone()) {
+                                    let channel = format!("synctv:room:{}", room_id_str);
+                                    match timeout(
+                                        Duration::from_secs(REDIS_TIMEOUT_SECS),
+                                        pubsub.subscribe(&channel),
+                                    ).await {
+                                        Ok(Ok(())) => {
+                                            debug!(
+                                                room_id = %room_id_str,
+                                                "Dynamically subscribed to room channel"
+                                            );
+                                        }
+                                        Ok(Err(e)) => {
+                                            warn!(
+                                                error = %e,
+                                                room_id = %room_id_str,
+                                                "Failed to subscribe to room channel"
+                                            );
+                                            subscribed_rooms.remove(&room_id_str);
+                                        }
+                                        Err(_) => {
+                                            warn!(
+                                                room_id = %room_id_str,
+                                                "Timed out subscribing to room channel"
+                                            );
+                                            subscribed_rooms.remove(&room_id_str);
+                                        }
+                                    }
+                                }
+                            }
+                            RoomLifecycleEvent::RoomDeactivated(room_id) => {
+                                let room_id_str = room_id.as_str().to_string();
+                                if subscribed_rooms.remove(&room_id_str) {
+                                    let channel = format!("synctv:room:{}", room_id_str);
+                                    match timeout(
+                                        Duration::from_secs(REDIS_TIMEOUT_SECS),
+                                        pubsub.unsubscribe(&channel),
+                                    ).await {
+                                        Ok(Ok(())) => {
+                                            debug!(
+                                                room_id = %room_id_str,
+                                                "Dynamically unsubscribed from room channel"
+                                            );
+                                            stream_cursors.remove(&room_stream_key(&room_id_str));
+                                        }
+                                        Ok(Err(e)) => {
+                                            warn!(
+                                                error = %e,
+                                                room_id = %room_id_str,
+                                                "Failed to unsubscribe from room channel"
+                                            );
+                                        }
+                                        Err(_) => {
+                                            warn!(
+                                                room_id = %room_id_str,
+                                                "Timed out unsubscribing from room channel"
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
-                Err(e) => {
-                    warn!(
-                        error = %e,
-                        channel = %channel,
-                        payload = %payload,
-                        "Failed to deserialize event envelope"
-                    );
+                SelectResult::StreamEnded => {
+                    return SubscriberExit::Disconnected;
+                }
+            }
+        }
+    }
+
+    /// Re-synchronize room subscriptions with the hub's current active rooms.
+    ///
+    /// Called when the lifecycle event receiver has lagged and missed events.
+    async fn resync_room_subscriptions(
+        &self,
+        pubsub: &mut redis::aio::PubSub,
+        subscribed_rooms: &mut HashSet<String>,
+    ) {
+        let active_rooms: HashSet<String> = self
+            .message_hub
+            .active_room_ids()
+            .into_iter()
+            .map(|rid| rid.as_str().to_string())
+            .collect();
+
+        // Subscribe to newly active rooms
+        for room_id in active_rooms.difference(subscribed_rooms).cloned().collect::<Vec<_>>() {
+            let channel = format!("synctv:room:{}", room_id);
+            match timeout(Duration::from_secs(REDIS_TIMEOUT_SECS), pubsub.subscribe(&channel)).await {
+                Ok(Ok(())) => {
+                    subscribed_rooms.insert(room_id.clone());
+                    debug!(room_id = %room_id, "Re-synced: subscribed to room channel");
+                }
+                _ => {
+                    warn!(room_id = %room_id, "Re-sync: failed to subscribe to room channel");
                 }
             }
         }
 
-        // Stream returned None -- the Redis connection was lost
-        SubscriberExit::Disconnected
+        // Unsubscribe from deactivated rooms
+        for room_id in subscribed_rooms.difference(&active_rooms).cloned().collect::<Vec<_>>() {
+            let channel = format!("synctv:room:{}", room_id);
+            match timeout(Duration::from_secs(REDIS_TIMEOUT_SECS), pubsub.unsubscribe(&channel)).await {
+                Ok(Ok(())) => {
+                    debug!(room_id = %room_id, "Re-synced: unsubscribed from room channel");
+                }
+                _ => {
+                    warn!(room_id = %room_id, "Re-sync: failed to unsubscribe from room channel");
+                }
+            }
+        }
+
+        // Update subscribed set to match active rooms
+        *subscribed_rooms = active_rooms;
+
+        info!(
+            subscribed_rooms = subscribed_rooms.len(),
+            "Re-synced room subscriptions with hub"
+        );
     }
 
     /// Dispatch a single event received from Redis (either live or from catch-up).

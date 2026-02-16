@@ -642,6 +642,7 @@ mod websocket_e2e {
     use synctv_core::service::auth::jwt::{JwtService, TokenType};
     use synctv_core::service::rate_limit::RateLimiter;
     use synctv_core::service::token_blacklist::TokenBlacklistService;
+    use synctv_core::config::PasswordComplexityConfig;
     use synctv_core::service::{RoomService, UserService};
     use synctv_cluster::sync::{ClusterConfig, ClusterManager, ConnectionManager, ConnectionLimits};
     use synctv_proto::client::{
@@ -732,6 +733,7 @@ mod websocket_e2e {
             jwt_service.clone(),
             blacklist_service.clone(),
             username_cache,
+            PasswordComplexityConfig::default(),
         ));
         let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
 
@@ -796,6 +798,8 @@ mod websocket_e2e {
             connection_limits: Default::default(),
             bootstrap: Default::default(),
             cluster: Default::default(),
+            password_complexity: Default::default(),
+            buffer_sizes: Default::default(),
         });
 
         // ClientApiImpl

@@ -2,10 +2,25 @@ use dashmap::DashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use synctv_core::models::id::{RoomId, UserId};
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, info, warn};
 
 use super::events::ClusterEvent;
+
+/// Notification about room lifecycle changes (first subscriber / last unsubscribe).
+/// Sent to the Redis Pub/Sub subscriber task so it can dynamically subscribe/unsubscribe
+/// to specific room channels instead of using a global `psubscribe("synctv:room:*")`.
+#[derive(Debug, Clone)]
+pub enum RoomLifecycleEvent {
+    /// First subscriber joined this room on the local node.
+    RoomActivated(RoomId),
+    /// Last subscriber left this room on the local node.
+    RoomDeactivated(RoomId),
+}
+
+/// Capacity for the room lifecycle broadcast channel.
+/// Large enough to avoid drops during room churn; events are small.
+const LIFECYCLE_CHANNEL_CAPACITY: usize = 1024;
 
 /// Handle for a client connection subscription
 pub type ConnectionId = String;
@@ -50,16 +65,30 @@ pub struct RoomMessageHub {
 
     /// Map of `connection_id` -> (`room_id`, `user_id`) for cleanup
     connections: Arc<DashMap<ConnectionId, (RoomId, UserId)>>,
+
+    /// Broadcast sender for room lifecycle events (first join / last leave).
+    /// The Redis Pub/Sub subscriber task listens on a receiver to dynamically
+    /// subscribe/unsubscribe to specific room channels.
+    lifecycle_tx: broadcast::Sender<RoomLifecycleEvent>,
 }
 
 impl RoomMessageHub {
     /// Create a new `RoomMessageHub`
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
+        let (lifecycle_tx, _) = broadcast::channel(LIFECYCLE_CHANNEL_CAPACITY);
         Self {
             rooms: Arc::new(DashMap::new()),
             connections: Arc::new(DashMap::new()),
+            lifecycle_tx,
         }
+    }
+
+    /// Subscribe to room lifecycle events (room activated / deactivated).
+    /// Used by the Redis Pub/Sub subscriber task.
+    #[must_use]
+    pub fn subscribe_lifecycle(&self) -> broadcast::Receiver<RoomLifecycleEvent> {
+        self.lifecycle_tx.subscribe()
     }
 
     /// Subscribe a client to room events
@@ -79,6 +108,9 @@ impl RoomMessageHub {
             consecutive_drops: Arc::new(AtomicU32::new(0)),
         };
 
+        // Check if this room is newly activated (first subscriber)
+        let is_new_room = !self.rooms.contains_key(&room_id);
+
         // Add to room subscribers
         self.rooms
             .entry(room_id.clone())
@@ -88,6 +120,11 @@ impl RoomMessageHub {
         // Track connection for cleanup
         self.connections
             .insert(connection_id.clone(), (room_id.clone(), user_id.clone()));
+
+        // Emit lifecycle event if this is the first subscriber for the room
+        if is_new_room {
+            let _ = self.lifecycle_tx.send(RoomLifecycleEvent::RoomActivated(room_id.clone()));
+        }
 
         info!(
             room_id = %room_id.as_str(),
@@ -102,6 +139,8 @@ impl RoomMessageHub {
     /// Unsubscribe a client from room events
     pub fn unsubscribe(&self, connection_id: &str) {
         if let Some((_, (room_id, user_id))) = self.connections.remove(connection_id) {
+            let mut room_deactivated = false;
+
             // Remove from room subscribers
             if let Some(mut subscribers) = self.rooms.get_mut(&room_id) {
                 subscribers.retain(|sub| sub.connection_id != connection_id);
@@ -110,8 +149,14 @@ impl RoomMessageHub {
                 if subscribers.is_empty() {
                     drop(subscribers); // Drop the RefMut before removing
                     self.rooms.remove(&room_id);
+                    room_deactivated = true;
                     debug!(room_id = %room_id.as_str(), "Room has no more subscribers, removed");
                 }
+            }
+
+            // Emit lifecycle event if the last subscriber left
+            if room_deactivated {
+                let _ = self.lifecycle_tx.send(RoomLifecycleEvent::RoomDeactivated(room_id.clone()));
             }
 
             info!(
@@ -354,6 +399,8 @@ impl RoomMessageHub {
             for sub in &subscribers {
                 self.connections.remove(&sub.connection_id);
             }
+            // Emit lifecycle event since the room is no longer active
+            let _ = self.lifecycle_tx.send(RoomLifecycleEvent::RoomDeactivated(room_id.clone()));
             info!(
                 room_id = %room_id.as_str(),
                 removed_connections = subscribers.len(),
@@ -511,5 +558,51 @@ mod tests {
             received2.is_err(),
             "User2 should not have received the message"
         );
+    }
+
+    #[tokio::test]
+    async fn test_lifecycle_events_on_subscribe_unsubscribe() {
+        let hub = RoomMessageHub::new();
+        let mut lifecycle_rx = hub.subscribe_lifecycle();
+
+        let room_id = RoomId::from_string("test_room".to_string());
+        let user1 = UserId::from_string("user1".to_string());
+        let user2 = UserId::from_string("user2".to_string());
+
+        // First subscriber triggers RoomActivated
+        let _rx1 = hub.subscribe(room_id.clone(), user1.clone(), "conn1".to_string());
+        let event = lifecycle_rx.try_recv().unwrap();
+        assert!(matches!(event, RoomLifecycleEvent::RoomActivated(ref rid) if rid.as_str() == "test_room"));
+
+        // Second subscriber does NOT trigger RoomActivated
+        let _rx2 = hub.subscribe(room_id.clone(), user2.clone(), "conn2".to_string());
+        assert!(lifecycle_rx.try_recv().is_err());
+
+        // Unsubscribe first user: room still has subscribers, no event
+        hub.unsubscribe("conn1");
+        assert!(lifecycle_rx.try_recv().is_err());
+
+        // Unsubscribe last user: triggers RoomDeactivated
+        hub.unsubscribe("conn2");
+        let event = lifecycle_rx.try_recv().unwrap();
+        assert!(matches!(event, RoomLifecycleEvent::RoomDeactivated(ref rid) if rid.as_str() == "test_room"));
+    }
+
+    #[tokio::test]
+    async fn test_lifecycle_events_on_remove_room() {
+        let hub = RoomMessageHub::new();
+        let mut lifecycle_rx = hub.subscribe_lifecycle();
+
+        let room_id = RoomId::from_string("test_room".to_string());
+        let user_id = UserId::from_string("user1".to_string());
+
+        // Subscribe triggers RoomActivated
+        let _rx = hub.subscribe(room_id.clone(), user_id.clone(), "conn1".to_string());
+        let _ = lifecycle_rx.try_recv().unwrap(); // consume RoomActivated
+
+        // remove_room triggers RoomDeactivated
+        hub.remove_room(&room_id);
+        let event = lifecycle_rx.try_recv().unwrap();
+        assert!(matches!(event, RoomLifecycleEvent::RoomDeactivated(ref rid) if rid.as_str() == "test_room"));
     }
 }

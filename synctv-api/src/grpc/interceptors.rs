@@ -6,12 +6,15 @@ use tonic::{Request, Status};
 use tracing::warn;
 use std::fmt::Debug;
 
-/// Constant-time byte comparison to prevent timing attacks.
+/// Constant-time secret comparison to prevent timing attacks.
+///
+/// Both inputs are hashed to fixed-length SHA-256 digests before comparison,
+/// so the execution time is independent of input lengths. This prevents
+/// leaking whether the attacker's input matches the secret's length.
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    a.ct_eq(b).into()
+    let hash_a = Sha256::digest(a);
+    let hash_b = Sha256::digest(b);
+    hash_a.ct_eq(&hash_b).into()
 }
 
 /// User context - contains `user_id` and `iat` extracted from JWT
@@ -435,6 +438,13 @@ mod tests {
     #[test]
     fn test_constant_time_eq_different_lengths() {
         assert!(!constant_time_eq(b"short", b"longer_string"));
+    }
+
+    #[test]
+    fn test_constant_time_eq_empty_inputs() {
+        assert!(constant_time_eq(b"", b""));
+        assert!(!constant_time_eq(b"", b"notempty"));
+        assert!(!constant_time_eq(b"notempty", b""));
     }
 
     #[test]

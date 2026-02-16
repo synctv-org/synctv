@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use crate::{
     cache::{CacheInvalidationService, UsernameCache},
+    config::PasswordComplexityConfig,
     models::{User, UserId, SignupMethod},
     models::oauth2_client::OAuth2Provider,
     repository::{UserRepository, UserOAuthProviderRepository},
@@ -23,6 +24,8 @@ pub struct UserService {
     username_cache: UsernameCache,
     /// Optional cache invalidation service for cross-replica user cache sync
     cache_invalidation: Option<Arc<CacheInvalidationService>>,
+    /// Password complexity configuration from config file
+    password_complexity: PasswordComplexityConfig,
 }
 
 impl std::fmt::Debug for UserService {
@@ -40,6 +43,7 @@ impl UserService {
         jwt_service: JwtService,
         blacklist_service: TokenBlacklistService,
         username_cache: UsernameCache,
+        password_complexity: PasswordComplexityConfig,
     ) -> Self {
         Self {
             repository: UserRepository::new(pool),
@@ -47,6 +51,7 @@ impl UserService {
             blacklist_service,
             username_cache,
             cache_invalidation: None,
+            password_complexity,
         }
     }
 
@@ -93,6 +98,40 @@ impl UserService {
             .sign_token(&created_user.id, TokenType::Refresh)?;
 
         Ok((created_user, access_token, refresh_token))
+    }
+
+    /// Register a new user using a provided executor (pool or transaction)
+    pub async fn register_with_executor<'e, E>(
+        &self,
+        username: String,
+        email: Option<String>,
+        password: String,
+        signup_method: SignupMethod,
+        executor: E,
+    ) -> Result<User>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
+        self.validate_username(&username)?;
+        if let Some(ref email) = email {
+            self.validate_email(email)?;
+        }
+        self.validate_password(&password)?;
+        let password_hash = hash_password(&password).await?;
+        let user = User::new(username, email, password_hash, Some(signup_method));
+        self.repository.create_with_executor(&user, executor).await
+    }
+
+    /// Generate JWT tokens and populate username cache for a newly created user.
+    pub async fn finalize_registration(&self, user: &User) -> Result<(String, String)> {
+        self.username_cache.set(&user.id, &user.username).await?;
+        let access_token = self
+            .jwt_service
+            .sign_token(&user.id, TokenType::Access)?;
+        let refresh_token = self
+            .jwt_service
+            .sign_token(&user.id, TokenType::Refresh)?;
+        Ok((access_token, refresh_token))
     }
 
     /// Login user
@@ -583,9 +622,9 @@ impl UserService {
             .map_err(|e| Error::InvalidInput(e.to_string()))
     }
 
-    /// Validate password with complexity requirements
+    /// Validate password with complexity requirements from config
     fn validate_password(&self, password: &str) -> Result<()> {
-        crate::validation::PasswordValidator::new()
+        crate::validation::PasswordValidator::from_config(&self.password_complexity)
             .validate(password)
             .map_err(|e| Error::InvalidInput(e.to_string()))
     }
@@ -701,7 +740,7 @@ mod tests {
         let jwt = JwtService::new("test-secret-for-user-service").unwrap();
         let blacklist = TokenBlacklistService::new(None, "test".to_string()); // Disabled for tests
         let username_cache = UsernameCache::new(None, "test:".to_string(), 10, 0);
-        UserService::new(pool, jwt, blacklist, username_cache)
+        UserService::new(pool, jwt, blacklist, username_cache, PasswordComplexityConfig::default())
     }
 
     #[tokio::test]
@@ -853,7 +892,8 @@ mod tests {
     #[tokio::test]
     async fn test_validate_password_exact_max_length() {
         let service = create_test_service();
-        let pwd = "A".to_string() + &"a".repeat(63) + &"1".repeat(64);
+        // Build a 128-char password that satisfies complexity: uppercase, lowercase, digit, no long repeats
+        let pwd = "Ab1".repeat(42) + "Ab";
         assert_eq!(pwd.len(), 128);
         assert!(service.validate_password(&pwd).is_ok());
     }
@@ -861,7 +901,7 @@ mod tests {
     #[tokio::test]
     async fn test_validate_password_over_max_length() {
         let service = create_test_service();
-        let pwd = "A".to_string() + &"a".repeat(64) + &"1".repeat(64);
+        let pwd = "Ab1".repeat(43);
         assert_eq!(pwd.len(), 129);
         assert!(service.validate_password(&pwd).is_err());
     }

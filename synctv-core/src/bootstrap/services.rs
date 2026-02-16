@@ -99,7 +99,49 @@ pub async fn init_services(
     let (redis_conn, redis_client) = if config.redis.url.is_empty() {
         (None, None)
     } else {
-        let client = redis::Client::open(config.redis.url.clone())?;
+        use crate::config::RedisDeploymentMode;
+
+        // Check for cluster mode early (not yet fully supported)
+        if config.redis.deployment_mode == RedisDeploymentMode::Cluster {
+            return Err(anyhow::anyhow!(
+                "Redis cluster mode requires additional refactoring to support ConnectionManager. \
+                 Please use standalone or sentinel mode for now."
+            ).into());
+        }
+
+        let client = match config.redis.deployment_mode {
+            RedisDeploymentMode::Standalone => {
+                info!("Initializing Redis in standalone mode");
+                redis::Client::open(config.redis.url.clone())?
+            }
+            RedisDeploymentMode::Sentinel => {
+                info!("Initializing Redis in sentinel mode");
+                let master_name = config.redis.sentinel_master_name.as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("sentinel_master_name is required for sentinel mode"))?;
+
+                if config.redis.sentinel_addresses.is_empty() {
+                    return Err(anyhow::anyhow!("sentinel_addresses cannot be empty for sentinel mode").into());
+                }
+
+                // Use Sentinel to discover the current master address, then create a
+                // regular Client pointing at it.  This gives us a ConnectionManager
+                // that reconnects automatically, though it won't follow master failover
+                // on its own (a proper SentinelClient integration is tracked separately).
+                let mut sentinel = redis::sentinel::Sentinel::build(
+                    config.redis.sentinel_addresses.iter().map(String::as_str).collect::<Vec<_>>(),
+                )?;
+
+                let node_info: Option<&redis::sentinel::SentinelNodeConnectionInfo> = None;
+                sentinel
+                    .async_master_for(master_name.as_str(), node_info)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Sentinel master discovery failed: {e}"))?
+            }
+            RedisDeploymentMode::Cluster => {
+                unreachable!("Cluster mode was already checked and rejected");
+            }
+        };
+
         let conn = redis::aio::ConnectionManager::new(client.clone()).await?;
         (Some(conn), Some(client))
     };
@@ -143,7 +185,7 @@ pub async fn init_services(
     info!("User and room caches initialized");
 
     // Initialize UserService
-    let mut user_service = UserService::new(pool.clone(), jwt_service.clone(), token_blacklist.clone(), username_cache.clone());
+    let mut user_service = UserService::new(pool.clone(), jwt_service.clone(), token_blacklist.clone(), username_cache.clone(), config.password_complexity.clone());
     user_service.set_cache_invalidation(cache_invalidation.clone());
     info!("UserService initialized");
 

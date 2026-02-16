@@ -905,6 +905,20 @@ impl NodeRegistry {
         }
     }
 
+    /// Merge externally discovered peers (e.g. from K8s DNS) into the local
+    /// cache so that HealthMonitor and LoadBalancer can see them before they
+    /// self-register via Redis.
+    ///
+    /// Only inserts nodes that are not already present in the local cache.
+    /// Existing entries (which may have richer metadata from Redis heartbeats)
+    /// are left untouched.
+    pub async fn merge_dns_peers(&self, peers: Vec<NodeInfo>) {
+        let mut nodes = self.local_nodes.write().await;
+        for peer in peers {
+            nodes.entry(peer.node_id.clone()).or_insert(peer);
+        }
+    }
+
     /// Redis key prefix for nodes
     const KEY_PREFIX: &'static str = "synctv:cluster:nodes";
 
@@ -1045,5 +1059,46 @@ mod tests {
         // Deserialize back
         let deserialized: NodeInfo = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.epoch, 7);
+    }
+
+    #[tokio::test]
+    async fn test_merge_dns_peers_inserts_new() {
+        let registry = NodeRegistry::new(None, "self".to_string(), 30).unwrap();
+
+        let peer = NodeInfo::new(
+            "dns-peer-1".to_string(),
+            "10.0.0.2:50051".to_string(),
+            "10.0.0.2:8080".to_string(),
+        );
+
+        registry.merge_dns_peers(vec![peer]).await;
+
+        let nodes = registry.local_nodes.read().await;
+        assert!(nodes.contains_key("dns-peer-1"));
+        assert_eq!(nodes["dns-peer-1"].grpc_address, "10.0.0.2:50051");
+    }
+
+    #[tokio::test]
+    async fn test_merge_dns_peers_does_not_overwrite_existing() {
+        let registry = NodeRegistry::new(None, "self".to_string(), 30).unwrap();
+
+        // Register a node via normal path (with richer metadata)
+        registry
+            .register("10.0.0.1:50051".to_string(), "10.0.0.1:8080".to_string())
+            .await
+            .unwrap();
+
+        // Try to merge a DNS peer with the same node_id ("self")
+        let dns_peer = NodeInfo::new(
+            "self".to_string(),
+            "10.0.0.99:50051".to_string(),
+            "10.0.0.99:8080".to_string(),
+        );
+
+        registry.merge_dns_peers(vec![dns_peer]).await;
+
+        // Original registration should be preserved (not overwritten)
+        let nodes = registry.local_nodes.read().await;
+        assert_eq!(nodes["self"].grpc_address, "10.0.0.1:50051");
     }
 }

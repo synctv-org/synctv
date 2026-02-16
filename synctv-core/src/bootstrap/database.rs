@@ -36,7 +36,7 @@ pub async fn init_database(config: &Config) -> Result<PgPool> {
 
     // Spawn periodic task to update pool usage metrics
     let pool_clone = pool.clone();
-    tokio::spawn(async move {
+    crate::spawn::spawn_monitored("db_pool_metrics", async move {
         let mut ticker = tokio::time::interval(Duration::from_secs(15));
         loop {
             ticker.tick().await;

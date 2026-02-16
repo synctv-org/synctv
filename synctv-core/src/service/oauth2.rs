@@ -423,6 +423,31 @@ impl OAuth2Service {
             .await
     }
 
+    /// Create or update user-OAuth2 provider mapping using a provided executor
+    pub async fn upsert_user_provider_with_executor<'e, E>(
+        &self,
+        user_id: &UserId,
+        provider: &OAuth2Provider,
+        provider_user_id: &str,
+        user_info: &OAuth2UserInfo,
+        executor: E,
+    ) -> Result<()>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
+        let repo_user_info = crate::models::oauth2_client::OAuth2UserInfo {
+            provider: provider.clone(),
+            provider_user_id: user_info.provider_user_id.clone(),
+            username: user_info.username.clone(),
+            email: user_info.email.clone(),
+            avatar: user_info.avatar.clone(),
+        };
+
+        self.repository
+            .upsert_with_executor(user_id, provider, provider_user_id, &repo_user_info, executor)
+            .await
+    }
+
     /// Find user by `OAuth2` provider
     pub async fn find_user_by_provider(
         &self,

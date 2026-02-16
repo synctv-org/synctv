@@ -105,7 +105,7 @@ impl RoomSettingsService {
             let cache_clone = service.cache.clone();
             let mut receiver = inv_service.subscribe();
             let cancel = cancel.unwrap_or_default();
-            tokio::spawn(async move {
+            crate::spawn::spawn_monitored("room_settings_invalidation_listener", async move {
                 loop {
                     tokio::select! {
                         _ = cancel.cancelled() => {

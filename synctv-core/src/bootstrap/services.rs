@@ -137,7 +137,7 @@ pub async fn init_services(
     let cache_invalidation = Arc::new(CacheInvalidationService::new(
         redis_client.clone(),
         node_id,
-        key_builder.cache_invalidation_channel(),
+        key_builder.cache_invalidation_stream(),
     ));
     info!("Cache invalidation service created");
 

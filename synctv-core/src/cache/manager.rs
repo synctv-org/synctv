@@ -193,7 +193,7 @@ mod tests {
         let (user_cache, room_cache) = make_caches();
         let manager = CacheManager::new(user_cache.clone(), room_cache.clone());
 
-        let service = CacheInvalidationService::new(None, "test-node".to_string(), "synctv:cache:invalidate".to_string());
+        let service = CacheInvalidationService::new(None, "test-node".to_string(), "synctv:cache:invalidate:stream".to_string());
         manager.start_invalidation_listener(&service);
 
         // Insert a user into L1 cache
@@ -228,7 +228,7 @@ mod tests {
         let (user_cache, room_cache) = make_caches();
         let manager = CacheManager::new(user_cache.clone(), room_cache.clone());
 
-        let service = CacheInvalidationService::new(None, "test-node".to_string(), "synctv:cache:invalidate".to_string());
+        let service = CacheInvalidationService::new(None, "test-node".to_string(), "synctv:cache:invalidate:stream".to_string());
         manager.start_invalidation_listener(&service);
 
         // Insert a room into L1 cache
@@ -263,7 +263,7 @@ mod tests {
         let (user_cache, room_cache) = make_caches();
         let manager = CacheManager::new(user_cache.clone(), room_cache.clone());
 
-        let service = CacheInvalidationService::new(None, "test-node".to_string(), "synctv:cache:invalidate".to_string());
+        let service = CacheInvalidationService::new(None, "test-node".to_string(), "synctv:cache:invalidate:stream".to_string());
         manager.start_invalidation_listener(&service);
 
         // Insert entries

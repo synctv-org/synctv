@@ -1,370 +1,233 @@
 //! `OAuth2` HTTP handlers
 //!
-//! Provides `OAuth2` login endpoints for GitHub, Google, Microsoft, Discord
+//! Provides `OAuth2` endpoints for frontend-driven OAuth2 flow
+//! Uses proto-generated types for request/response consistency with gRPC
 
 use axum::{
     extract::{Path, Query, State},
     Json,
 };
-use serde::{Deserialize, Serialize};
-use tracing::{debug, error, info, warn};
+use serde::Deserialize;
+use tracing::{debug, error, info};
 
-use synctv_core::models::{
-    oauth2_client::OAuth2CallbackRequest,
-    id::UserId,
-    user::User,
-    settings::{groups, server},
+use synctv_proto::client::{
+    GetAuthorizationUrlResponse,
+    GetAuthorizationUrlForBindResponse,
+    ExchangeAuthorizationCodeRequest, ExchangeAuthorizationCodeResponse,
+    ListAvailableProvidersResponse,
+    UnlinkProviderResponse,
+    GetLinkedProvidersResponse,
 };
-use synctv_core::service::JwtService;
 
-use super::{middleware::AuthUser, AppResult, AppState};
+use super::{middleware::AuthUser, AppResult, AppState, error::map_api_error};
 
-/// `OAuth2` authorization request query params
+/// Query params for get authorization URL (converted to proto request)
 #[derive(Debug, Deserialize)]
-pub struct OAuth2AuthQuery {
-    pub redirect: Option<String>,
+pub struct GetAuthUrlQuery {
+    pub redirect_url: Option<String>,
 }
 
-/// `OAuth2` authorization URL response
-#[derive(Debug, Serialize)]
-pub struct AuthUrlResponse {
-    pub url: String,
-    pub state: String,
+/// Query params for unlink provider (converted to proto request)
+#[derive(Debug, Deserialize)]
+pub struct UnlinkProviderQuery {
+    pub provider_user_id: Option<String>,
 }
 
-/// `OAuth2` callback response (JSON)
-#[derive(Debug, Serialize)]
-pub struct OAuth2CallbackJsonResponse {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub token: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub redirect: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
-}
-
-/// Get `OAuth2` authorization URL
+/// Get `OAuth2` authorization URL for login flow
 ///
-/// GET /api/oauth2/:instance/authorize?redirect=<url>
+/// GET /api/oauth2/:provider/authorize?redirect_url=<url>
 pub async fn get_authorize_url(
     State(state): State<AppState>,
-    Path(instance_name): Path<String>,
-    Query(params): Query<OAuth2AuthQuery>,
-) -> AppResult<Json<AuthUrlResponse>> {
-    // Check if OAuth2 service exists
-    let oauth2_service = state.oauth2_service.as_ref().ok_or_else(|| {
+    Path(provider): Path<String>,
+    Query(params): Query<GetAuthUrlQuery>,
+) -> AppResult<Json<GetAuthorizationUrlResponse>> {
+    let oauth2_api = state.oauth2_api.as_ref().ok_or_else(|| {
         super::AppError::bad_request("OAuth2 is not configured on this server")
     })?;
 
-    // Get authorization URL
-    let (url, state_token) = oauth2_service
-        .get_authorization_url(&instance_name, params.redirect)
+    let (authorization_url, state_token) = oauth2_api
+        .get_authorization_url(&provider, params.redirect_url)
         .await
         .map_err(|e| {
             error!("Failed to get authorization URL: {}", e);
-            super::AppError::internal_server_error("Failed to get authorization URL")
+            map_api_error(e)
         })?;
 
-    debug!("Generated OAuth2 authorization URL for {}", instance_name);
+    debug!("Generated OAuth2 authorization URL for provider: {}", provider);
 
-    Ok(Json(AuthUrlResponse { url, state: state_token }))
-}
-
-/// `OAuth2` callback handler
-///
-/// GET /api/oauth2/:instance/callback?code=xxx&state=xxx
-pub async fn oauth2_callback_get(
-    State(state): State<AppState>,
-    Path(instance_name): Path<String>,
-    Query(params): Query<OAuth2CallbackRequest>,
-) -> AppResult<Json<OAuth2CallbackJsonResponse>> {
-    handle_oauth2_callback(state, instance_name, params, None).await
-}
-
-/// `OAuth2` callback handler (POST version)
-///
-/// POST /api/oauth2/:instance/callback
-/// Body: { "code": "xxx", "state": "xxx" }
-pub async fn oauth2_callback_post(
-    State(state): State<AppState>,
-    Path(instance_name): Path<String>,
-    Json(req): Json<OAuth2CallbackRequest>,
-) -> AppResult<Json<OAuth2CallbackJsonResponse>> {
-    handle_oauth2_callback(state, instance_name, req, None).await
-}
-
-/// Handle `OAuth2` callback (shared logic)
-async fn handle_oauth2_callback(
-    state: AppState,
-    instance_name: String,
-    req: OAuth2CallbackRequest,
-    expected_user_id: Option<UserId>,
-) -> AppResult<Json<OAuth2CallbackJsonResponse>> {
-    // Check if OAuth2 service exists
-    let oauth2_service = state.oauth2_service.as_ref().ok_or_else(|| {
-        super::AppError::bad_request("OAuth2 is not configured on this server")
-    })?;
-
-    // Verify state
-    let oauth_state = oauth2_service.verify_state(&req.state).await.map_err(|e| {
-        warn!("OAuth2 state verification failed: {}", e);
-        super::AppError::bad_request("Invalid or expired OAuth2 state")
-    })?;
-
-    // Verify instance matches
-    if oauth_state.instance_name != instance_name {
-        return Err(super::AppError::bad_request("Instance mismatch"));
-    }
-
-    // Exchange code for user info (with PKCE verifier from stored state)
-    let (user_info, _provider_type) = oauth2_service
-        .exchange_code_for_user_info(&instance_name, &req.code, &oauth_state.pkce_verifier)
-        .await
-        .map_err(|e| {
-            error!("Failed to exchange OAuth2 code: {}", e);
-            super::AppError::bad_request("Failed to exchange authorization code")
-        })?;
-
-    debug!(
-        "Got OAuth2 user info: {} provider {}",
-        user_info.username,
-        user_info.provider.as_str()
-    );
-
-    // Use bind_user_id from OAuth state if present, or fall back to expected_user_id parameter
-    let effective_user_id = oauth_state.bind_user_id.clone().or(expected_user_id);
-
-    // Find or create user
-    let user_id = match effective_user_id {
-        // Binding to existing user
-        Some(uid) => uid,
-        // Login flow - find or create user
-        None => {
-            // Check if user exists with this OAuth2 provider
-            if let Some(uid) = oauth2_service
-                .find_user_by_provider(&user_info.provider, &user_info.provider_user_id)
-                .await
-                .map_err(|e| {
-                    error!("Failed to query OAuth2 user: {}", e);
-                    super::AppError::internal_server_error("Database error")
-                })?
-            {
-                info!(
-                    "Found existing user {} via OAuth2 provider {}",
-                    uid.as_str(),
-                    user_info.provider.as_str()
-                );
-                uid
-            } else {
-                // User doesn't exist - check if signup is enabled via settings
-                let settings_service = state.settings_service.as_ref()
-                    .ok_or_else(|| super::AppError::internal_server_error("Settings service not available"))?;
-
-                let server_settings = settings_service.get(groups::SERVER).await
-                    .map_err(|_| super::AppError::internal_server_error("Failed to get settings"))?;
-
-                let signup_enabled = server_settings.parse_json()
-                    .ok()
-                    .and_then(|json| json.get(server::SIGNUP_ENABLED).cloned())
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(true); // Default to true if not set
-
-                if !signup_enabled {
-                    return Err(super::AppError::bad_request("User registration is disabled"));
-                }
-
-                let new_user = state
-                    .user_service
-                    .create_or_load_by_oauth2(
-                        &user_info.provider,
-                        &user_info.provider_user_id,
-                        &user_info.username,
-                        user_info.email.as_deref(),
-                    )
-                    .await
-                    .map_err(|e| {
-                        error!("Failed to create user via OAuth2: {}", e);
-                        super::AppError::internal_server_error("Failed to create user")
-                    })?;
-
-                info!(
-                    "Created new user {} via OAuth2 provider {}",
-                    new_user.id.as_str(),
-                    user_info.provider.as_str()
-                );
-                new_user.id
-            }
-        }
-    };
-
-    // Save OAuth2 provider mapping
-    oauth2_service
-        .upsert_user_provider(&user_id, &user_info.provider, &user_info.provider_user_id, &user_info)
-        .await
-        .map_err(|e| {
-            error!("Failed to save OAuth2 mapping: {}", e);
-            super::AppError::internal_server_error("Failed to save OAuth2 mapping")
-        })?;
-
-    // Generate JWT tokens
-    let user = state.user_service.get_user(&user_id).await.map_err(|e| {
-        error!("Failed to get user: {}", e);
-        super::AppError::internal_server_error("Failed to get user info")
-    })?;
-
-    // Check if user is deleted or banned (generic message to prevent user enumeration)
-    if user.is_deleted() || user.status == synctv_core::models::UserStatus::Banned {
-        return Ok(Json(OAuth2CallbackJsonResponse {
-            token: None,
-            redirect: oauth_state.redirect_url,
-            message: Some("Authentication failed".to_string()),
-        }));
-    }
-
-    // Generate tokens
-    let (access_token, _refresh_token) = generate_tokens(&state.jwt_service, &user).await?;
-
-    info!(
-        "OAuth2 login successful for user {} via {}",
-        user_id.as_str(),
-        user_info.provider.as_str()
-    );
-
-    Ok(Json(OAuth2CallbackJsonResponse {
-        token: Some(access_token),
-        redirect: oauth_state.redirect_url,
-        message: None,
+    Ok(Json(GetAuthorizationUrlResponse {
+        authorization_url,
+        state: state_token,
     }))
 }
 
-/// Bind `OAuth2` provider to authenticated user
+/// Exchange authorization code for JWT token (frontend-driven flow)
 ///
-/// POST /api/oauth2/:instance/bind
-///
-/// Requires authentication. The authenticated user's ID is stored in the OAuth state
-/// so the callback can associate the provider with the correct user.
-pub async fn bind_provider(
-    auth: AuthUser,
+/// POST /api/oauth2/:provider/exchange
+/// Body: { "code": "xxx", "state": "xxx" }
+pub async fn exchange_authorization_code(
     State(state): State<AppState>,
-    Path(instance_name): Path<String>,
-    Json(req): Json<OAuth2AuthQuery>,
-) -> AppResult<Json<AuthUrlResponse>> {
-    // Check if OAuth2 service exists
-    let oauth2_service = state.oauth2_service.as_ref().ok_or_else(|| {
+    Path(provider): Path<String>,
+    Json(req): Json<ExchangeAuthorizationCodeRequest>,
+) -> AppResult<Json<ExchangeAuthorizationCodeResponse>> {
+    let oauth2_api = state.oauth2_api.as_ref().ok_or_else(|| {
         super::AppError::bad_request("OAuth2 is not configured on this server")
     })?;
 
-    // Get authorization URL (bind flow stores user_id in state for the callback)
-    let (url, state_token) = oauth2_service
-        .get_authorization_url_with_user(&instance_name, req.redirect, Some(auth.user_id.clone()))
+    let result = oauth2_api
+        .exchange_authorization_code(&provider, &req.code, &req.state)
         .await
         .map_err(|e| {
-            error!("Failed to get authorization URL: {}", e);
-            super::AppError::internal_server_error("Failed to get authorization URL")
+            error!("Failed to exchange authorization code: {}", e);
+            map_api_error(e)
+        })?;
+
+    info!(
+        "OAuth2 exchange successful for provider: {} (is_bind: {})",
+        provider, result.is_bind
+    );
+
+    Ok(Json(ExchangeAuthorizationCodeResponse {
+        access_token: result.access_token.unwrap_or_default(),
+        refresh_token: result.refresh_token.unwrap_or_default(),
+        expires_in: result.expires_in,
+        user_info: result.user_info,
+        redirect_url: result.redirect_url.unwrap_or_default(),
+        is_bind: result.is_bind,
+    }))
+}
+
+/// Get authorization URL for binding OAuth2 provider to authenticated user
+///
+/// GET /api/oauth2/:provider/bind?redirect_url=<url>
+///
+/// Requires authentication. The frontend then redirects to the OAuth2 provider,
+/// receives code/state, and calls exchange endpoint which will bind the provider.
+pub async fn get_bind_authorize_url(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(provider): Path<String>,
+    Query(params): Query<GetAuthUrlQuery>,
+) -> AppResult<Json<GetAuthorizationUrlForBindResponse>> {
+    let oauth2_api = state.oauth2_api.as_ref().ok_or_else(|| {
+        super::AppError::bad_request("OAuth2 is not configured on this server")
+    })?;
+
+    let (authorization_url, state_token) = oauth2_api
+        .get_authorization_url_for_bind(&auth.user_id, &provider, params.redirect_url)
+        .await
+        .map_err(|e| {
+            error!("Failed to get authorization URL for bind: {}", e);
+            map_api_error(e)
         })?;
 
     debug!(
-        "Generated OAuth2 bind URL for {} (user: {})",
-        instance_name,
-        auth.user_id.as_str(),
+        "Generated OAuth2 bind URL for provider: {} (user: {})",
+        provider,
+        auth.user_id.as_str()
     );
 
-    Ok(Json(AuthUrlResponse { url, state: state_token }))
+    Ok(Json(GetAuthorizationUrlForBindResponse {
+        authorization_url,
+        state: state_token,
+    }))
 }
 
-/// Unbind `OAuth2` provider from authenticated user
+/// Unlink OAuth2 provider from authenticated user
 ///
-/// DELETE /api/oauth2/:instance/bind
-pub async fn unbind_provider(
+/// DELETE /api/oauth2/:provider/unlink?provider_user_id=<optional>
+pub async fn unlink_provider(
     auth: AuthUser,
     State(state): State<AppState>,
-    Path(instance_name): Path<String>,
-) -> AppResult<Json<serde_json::Value>> {
-    let oauth2_service = state.oauth2_service.as_ref().ok_or_else(|| {
+    Path(provider): Path<String>,
+    Query(params): Query<UnlinkProviderQuery>,
+) -> AppResult<Json<UnlinkProviderResponse>> {
+    let oauth2_api = state.oauth2_api.as_ref().ok_or_else(|| {
         super::AppError::bad_request("OAuth2 is not configured on this server")
     })?;
 
-    // Parse provider from instance name
-    let provider = synctv_core::models::oauth2_client::OAuth2Provider::from_str_name(&instance_name)
-        .ok_or_else(|| super::AppError::bad_request(format!("Unknown OAuth2 provider: {instance_name}")))?;
-
-    // Unbind all bindings for this provider
-    let deleted = oauth2_service
-        .unlink_provider_all(&auth.user_id, &provider)
+    let result = oauth2_api
+        .unlink_provider(&auth.user_id, &provider, params.provider_user_id.as_deref())
         .await
         .map_err(|e| {
-            error!("Failed to unbind OAuth2 provider: {}", e);
-            super::AppError::internal_server_error("Failed to unbind provider")
+            error!("Failed to unlink OAuth2 provider: {}", e);
+            map_api_error(e)
         })?;
 
-    if !deleted {
+    if !result.success {
         return Err(super::AppError::bad_request("No binding found for this provider"));
     }
 
     info!(
-        "User {} unbound OAuth2 provider {}",
+        "User {} unlinked OAuth2 provider: {}",
         auth.user_id.as_str(),
-        instance_name,
+        provider
     );
 
-    Ok(Json(serde_json::json!({
-        "success": true,
-        "provider": instance_name,
-    })))
+    Ok(Json(UnlinkProviderResponse {
+        success: result.success,
+        removed_count: result.removed_count,
+    }))
 }
 
-/// Get list of available `OAuth2` provider instances
+/// List all available OAuth2 provider instances
 ///
 /// GET /api/oauth2/providers
 ///
-/// Returns the configured `OAuth2` provider instances that clients can use
+/// Returns the configured OAuth2 provider instances that clients can use
 /// for login or account binding. No authentication required.
-///
-/// Response: JSON array of objects, each with:
-/// - `name`: Instance name (e.g., "github", "logto1") used in `OAuth2` URLs
-/// - `type`: Provider type (e.g., "github", "google", "logto", "oidc")
-pub async fn list_providers(
+pub async fn list_available_providers(
     State(state): State<AppState>,
-) -> AppResult<Json<Vec<serde_json::Value>>> {
-    let oauth2_service = state.oauth2_service.as_ref().ok_or_else(|| {
+) -> AppResult<Json<ListAvailableProvidersResponse>> {
+    let oauth2_api = state.oauth2_api.as_ref().ok_or_else(|| {
         super::AppError::bad_request("OAuth2 is not configured on this server")
     })?;
 
-    let instances = oauth2_service.list_available_instances().await;
+    let providers = oauth2_api
+        .list_available_providers()
+        .await
+        .map_err(|e| {
+            error!("Failed to list available providers: {}", e);
+            map_api_error(e)
+        })?;
 
-    let providers: Vec<serde_json::Value> = instances
+    let response = providers
         .into_iter()
-        .map(|(name, provider_type)| {
-            serde_json::json!({
-                "name": name,
-                "type": provider_type.as_str(),
-            })
-        })
+        .map(|p| p.into())
         .collect();
 
-    Ok(Json(providers))
+    Ok(Json(ListAvailableProvidersResponse {
+        providers: response,
+    }))
 }
 
-/// Generate JWT tokens for user
-async fn generate_tokens(
-    jwt_service: &JwtService,
-    user: &User,
-) -> Result<(String, String), super::AppError> {
-    use synctv_core::service::TokenType;
+/// Get linked OAuth2 providers for authenticated user
+///
+/// GET /api/oauth2/linked
+///
+/// Requires authentication.
+pub async fn get_linked_providers(
+    auth: AuthUser,
+    State(state): State<AppState>,
+) -> AppResult<Json<GetLinkedProvidersResponse>> {
+    let oauth2_api = state.oauth2_api.as_ref().ok_or_else(|| {
+        super::AppError::bad_request("OAuth2 is not configured on this server")
+    })?;
 
-    let access_token = jwt_service
-        .sign_token(&user.id, TokenType::Access)
+    let providers = oauth2_api
+        .get_linked_providers(&auth.user_id)
+        .await
         .map_err(|e| {
-            error!("Failed to sign access token: {}", e);
-            super::AppError::internal_server_error("Failed to generate access token")
+            error!("Failed to get linked providers: {}", e);
+            map_api_error(e)
         })?;
 
-    let refresh_token = jwt_service
-        .sign_token(&user.id, TokenType::Refresh)
-        .map_err(|e| {
-            error!("Failed to sign refresh token: {}", e);
-            super::AppError::internal_server_error("Failed to generate refresh token")
-        })?;
+    let response = providers
+        .into_iter()
+        .map(|p| p.into())
+        .collect();
 
-    Ok((access_token, refresh_token))
+    Ok(Json(GetLinkedProvidersResponse {
+        providers: response,
+    }))
 }

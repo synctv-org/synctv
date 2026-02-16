@@ -1,0 +1,210 @@
+syntax = "proto3";
+
+package synctv.client;
+
+import "proto/common.proto";
+
+// ==================== OAuth2 Service ====================
+// OAuth2/OIDC authentication service
+//
+// Frontend-driven flow:
+// 1. Frontend calls GetAuthorizationUrl to get the OAuth2 provider's auth URL
+// 2. Frontend redirects user to the auth URL
+// 3. User authorizes on the OAuth2 provider (e.g., GitHub)
+// 4. Provider redirects to frontend URL with code and state parameters
+// 5. Frontend extracts code and state from URL
+// 6. Frontend calls ExchangeAuthorizationCode with code and state
+// 7. Backend validates state, exchanges code for user info, creates/logs in user
+// 8. Backend returns JWT token to frontend
+//
+// Authentication:
+// - GetAuthorizationUrl, GetAuthorizationUrlForBind, ExchangeAuthorizationCode: None (public)
+// - ListAvailableProviders: None (public)
+// - UnlinkProvider, GetLinkedProviders: JWT Authorization header (user_id)
+//
+// Routes: /api/oauth2/*
+service OAuth2Service {
+    // Get authorization URL for OAuth2 login flow
+    // Returns the URL to redirect the user to for authorization
+    rpc GetAuthorizationUrl(GetAuthorizationUrlRequest) returns (GetAuthorizationUrlResponse);
+
+    // Get authorization URL for binding OAuth2 provider to existing user account
+    // Requires authentication
+    rpc GetAuthorizationUrlForBind(GetAuthorizationUrlForBindRequest) returns (GetAuthorizationUrlForBindResponse);
+
+    // Exchange authorization code for JWT token
+    // Frontend calls this after receiving code and state from OAuth2 provider redirect
+    rpc ExchangeAuthorizationCode(ExchangeAuthorizationCodeRequest) returns (ExchangeAuthorizationCodeResponse);
+
+    // List all available OAuth2 provider instances
+    rpc ListAvailableProviders(ListAvailableProvidersRequest) returns (ListAvailableProvidersResponse);
+
+    // Unlink OAuth2 provider from user account (requires authentication)
+    rpc UnlinkProvider(UnlinkProviderRequest) returns (UnlinkProviderResponse);
+
+    // Get linked OAuth2 providers for authenticated user
+    rpc GetLinkedProviders(GetLinkedProvidersRequest) returns (GetLinkedProvidersResponse);
+}
+
+// ==================== Get Authorization URL ====================
+
+message GetAuthorizationUrlRequest {
+    // OAuth2 provider instance name (e.g., "github", "google", "logto1")
+    string provider = 1;
+
+    // Optional redirect URL for frontend after OAuth2 flow completes
+    // This is stored in state and returned after successful authentication
+    // If not provided, frontend should handle redirect itself
+    string redirect_url = 2;
+}
+
+message GetAuthorizationUrlResponse {
+    // Authorization URL to redirect user to
+    // Frontend should redirect the browser to this URL
+    string authorization_url = 1;
+
+    // State token for CSRF protection
+    // Frontend should store this temporarily and validate it matches the state
+    // received in the callback URL parameters
+    string state = 2;
+}
+
+// ==================== Get Authorization URL for Bind ====================
+
+message GetAuthorizationUrlForBindRequest {
+    // OAuth2 provider instance name (e.g., "github", "google", "logto1")
+    string provider = 1;
+
+    // Optional redirect URL for frontend after bind flow completes
+    string redirect_url = 2;
+}
+
+message GetAuthorizationUrlForBindResponse {
+    // Authorization URL to redirect user to
+    string authorization_url = 1;
+
+    // State token for CSRF protection
+    string state = 2;
+}
+
+// ==================== Exchange Authorization Code ====================
+
+message ExchangeAuthorizationCodeRequest {
+    // OAuth2 provider instance name (must match the provider used in GetAuthorizationUrl)
+    string provider = 1;
+
+    // Authorization code received from OAuth2 provider redirect
+    // Frontend extracts this from the callback URL query parameter
+    string code = 2;
+
+    // State token received from OAuth2 provider redirect
+    // Must match the state returned by GetAuthorizationUrl
+    string state = 3;
+}
+
+message ExchangeAuthorizationCodeResponse {
+    // JWT access token (if login flow)
+    // Empty if this is a bind flow
+    string access_token = 1;
+
+    // JWT refresh token (if login flow and refresh tokens are enabled)
+    string refresh_token = 2;
+
+    // Token expiration time in seconds
+    int64 expires_in = 3;
+
+    // User information (login flow only)
+    OAuth2UserInfo user_info = 4;
+
+    // Redirect URL from the original request (if provided)
+    // Frontend can use this to redirect user after successful authentication
+    string redirect_url = 5;
+
+    // Whether this was a bind operation (true) or login operation (false)
+    bool is_bind = 6;
+}
+
+// ==================== List Available Providers ====================
+
+message ListAvailableProvidersRequest {
+    // Empty request
+}
+
+message ListAvailableProvidersResponse {
+    // List of available OAuth2 provider instances
+    repeated OAuth2ProviderInstance providers = 1;
+}
+
+message OAuth2ProviderInstance {
+    // Instance name (e.g., "github", "google", "logto1")
+    string name = 1;
+
+    // Provider type (e.g., "github", "google", "oidc", "logto")
+    string type = 2;
+}
+
+// ==================== Unlink Provider ====================
+
+message UnlinkProviderRequest {
+    // Provider type to unlink (e.g., "github", "google")
+    string provider = 1;
+
+    // Optional: specific provider user ID to unlink
+    // If not provided, unlinks all bindings for this provider type
+    string provider_user_id = 2;
+}
+
+message UnlinkProviderResponse {
+    // Whether any provider was unlinked
+    bool success = 1;
+
+    // Number of provider bindings removed
+    int32 removed_count = 2;
+}
+
+// ==================== Get Linked Providers ====================
+
+message GetLinkedProvidersRequest {
+    // Empty request (user_id comes from JWT)
+}
+
+message GetLinkedProvidersResponse {
+    // List of linked OAuth2 providers
+    repeated LinkedProvider providers = 1;
+}
+
+message LinkedProvider {
+    // Provider type (e.g., "github", "google", "oidc")
+    string provider_type = 1;
+
+    // Username from the OAuth2 provider
+    string provider_username = 2;
+
+    // When the provider was linked
+    string linked_at = 3;
+}
+
+// ==================== User Info ====================
+
+message OAuth2UserInfo {
+    // User ID
+    string user_id = 1;
+
+    // Username
+    string username = 2;
+
+    // Email (optional)
+    string email = 3;
+
+    // Avatar URL (optional)
+    string avatar = 4;
+
+    // User role
+    synctv.common.UserRole role = 5;
+
+    // Account status
+    synctv.common.UserStatus status = 6;
+
+    // When the account was created
+    string created_at = 7;
+}

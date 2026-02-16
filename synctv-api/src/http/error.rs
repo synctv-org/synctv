@@ -222,3 +222,8 @@ pub fn impls_err_to_app_error(err: crate::impls::ApiError) -> AppError {
 pub fn api_err_to_app_error(err: crate::impls::ApiError) -> AppError {
     AppError::from(err)
 }
+
+/// Convenience alias for mapping ApiError to AppError (used in OAuth2 handlers)
+pub fn map_api_error(err: crate::impls::ApiError) -> AppError {
+    AppError::from(err)
+}

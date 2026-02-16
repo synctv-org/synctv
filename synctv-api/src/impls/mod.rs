@@ -10,6 +10,7 @@ pub mod client;
 pub mod email;
 pub mod messaging;
 pub mod notification;
+pub mod oauth2;
 pub mod providers;
 
 // Re-export for convenience
@@ -18,6 +19,7 @@ pub use client::{ClientApiImpl, ClientApiConfig};
 pub use email::EmailApiImpl;
 pub use messaging::{StreamMessageHandler, MessageSender, ProtoCodec};
 pub use notification::NotificationApiImpl;
+pub use oauth2::OAuth2ApiImpl;
 pub use providers::{AlistApiImpl, BilibiliApiImpl, EmbyApiImpl};
 
 /// Kick a stream both locally and cluster-wide via Redis Pub/Sub.

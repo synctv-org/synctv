@@ -27,6 +27,8 @@ pub struct CachedRoom {
     owner_id: String,
     is_public: bool,
     created_at: chrono::DateTime<chrono::Utc>,
+    /// Timestamp of last update - used to prevent stale data from overwriting fresh data
+    updated_at: chrono::DateTime<chrono::Utc>,
 }
 
 impl CachedRoom {
@@ -39,7 +41,33 @@ impl CachedRoom {
         is_public: bool,
         created_at: chrono::DateTime<chrono::Utc>,
     ) -> Self {
-        Self { id, name, owner_id, is_public, created_at }
+        Self {
+            id,
+            name,
+            owner_id,
+            is_public,
+            created_at,
+            updated_at: chrono::Utc::now(),
+        }
+    }
+
+    /// Create a new `CachedRoom` with explicit updated_at timestamp
+    #[must_use]
+    pub fn with_updated_at(
+        id: String,
+        name: String,
+        owner_id: String,
+        is_public: bool,
+        created_at: chrono::DateTime<chrono::Utc>,
+        updated_at: chrono::DateTime<chrono::Utc>,
+    ) -> Self {
+        Self { id, name, owner_id, is_public, created_at, updated_at }
+    }
+
+    /// Get the updated_at timestamp
+    #[must_use]
+    pub const fn updated_at(&self) -> chrono::DateTime<chrono::Utc> {
+        self.updated_at
     }
 }
 
@@ -140,9 +168,16 @@ impl RoomCache {
                 Error::Internal(format!("Failed to serialize room for caching: {e}"))
             })?;
 
-            if self.l2_ttl_seconds > 0 {
+            // Add TTL jitter to prevent cache avalanche (±10% random jitter)
+            let ttl_with_jitter = if self.l2_ttl_seconds > 0 {
+                self.add_ttl_jitter(self.l2_ttl_seconds)
+            } else {
+                0
+            };
+
+            if ttl_with_jitter > 0 {
                 let _: () = conn
-                    .set_ex(&key, json, self.l2_ttl_seconds)
+                    .set_ex(&key, json, ttl_with_jitter)
                     .await
                     .map_err(|e| Error::Internal(format!("Failed to set room in cache: {e}")))?;
             } else {
@@ -154,12 +189,78 @@ impl RoomCache {
 
             tracing::debug!(
                 room_id = %room_id.0,
-                ttl_seconds = self.l2_ttl_seconds,
+                ttl_seconds = ttl_with_jitter,
                 "Room cached"
             );
         }
 
         Ok(())
+    }
+
+    /// Set room data in cache only if it's newer than existing data
+    ///
+    /// Compares `updated_at` timestamps and only updates if the new data is newer.
+    /// This prevents race conditions where stale data overwrites fresh data.
+    pub async fn set_if_newer(&self, room_id: &RoomId, room: CachedRoom) -> Result<bool> {
+        // Check L1 cache first
+        if let Some(existing) = self.l1_cache.get(room_id).await {
+            if room.updated_at <= existing.updated_at {
+                tracing::debug!(
+                    room_id = %room_id.0,
+                    existing_ts = %existing.updated_at,
+                    new_ts = %room.updated_at,
+                    "Skipping cache update - data is not newer"
+                );
+                return Ok(false);
+            }
+        }
+
+        // Check L2 cache if L1 miss
+        if let Some(ref conn) = self.redis_conn {
+            let mut conn = conn.clone();
+            let key = format!("{}{}", self.key_prefix, room_id.0);
+
+            if let Ok(Some(json)) = conn.get::<_, Option<String>>(&key).await {
+                if let Ok(existing) = serde_json::from_str::<CachedRoom>(&json) {
+                    if room.updated_at <= existing.updated_at {
+                        tracing::debug!(
+                            room_id = %room_id.0,
+                            existing_ts = %existing.updated_at,
+                            new_ts = %room.updated_at,
+                            "Skipping cache update - L2 data is not newer"
+                        );
+                        return Ok(false);
+                    }
+                }
+            }
+        }
+
+        // Data is newer, perform the update
+        self.set(room_id, room).await?;
+        Ok(true)
+    }
+
+    /// Add random jitter to TTL to prevent cache avalanche
+    ///
+    /// Returns TTL with ±10% random jitter
+    fn add_ttl_jitter(&self, ttl_seconds: u64) -> u64 {
+        if ttl_seconds == 0 {
+            return 0;
+        }
+
+        let jitter_range = (ttl_seconds as f64 * 0.1) as u64; // ±10%
+        if jitter_range == 0 {
+            return ttl_seconds;
+        }
+
+        // Use nanosecond timestamp as pseudo-random source
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+        let jitter = now % (jitter_range * 2 + 1);
+
+        ttl_seconds.saturating_sub(jitter_range).saturating_add(jitter)
     }
 
     /// Invalidate room data from cache
@@ -172,15 +273,10 @@ impl RoomCache {
         // Remove from L1 (in-memory) FIRST so this replica stops serving stale data immediately
         self.l1_cache.invalidate(room_id).await;
 
-        // Then remove from L2 (Redis) so other replicas don't re-populate from stale data
-        if let Some(ref conn) = self.redis_conn {
-            let mut conn = conn.clone();
-
+        // Then remove from L2 (Redis) with retry logic
+        if self.redis_conn.is_some() {
             let key = format!("{}{}", self.key_prefix, room_id.0);
-            let _: () = conn
-                .del(&key)
-                .await
-                .map_err(|e| Error::Internal(format!("Failed to invalidate room cache: {e}")))?;
+            self.delete_from_redis_with_retry(&key, 3).await?;
         }
 
         crate::metrics::cache::CACHE_EVICTIONS
@@ -191,15 +287,69 @@ impl RoomCache {
         Ok(())
     }
 
+    /// Delete a key from Redis with retry logic
+    ///
+    /// Attempts to delete up to `max_retries` times with exponential backoff.
+    /// Returns error only if all retries fail.
+    async fn delete_from_redis_with_retry(&self, key: &str, max_retries: u32) -> Result<()> {
+        let Some(ref redis_conn) = self.redis_conn else {
+            return Ok(());
+        };
+
+        for attempt in 0..max_retries {
+            let mut conn = redis_conn.clone();
+
+            match conn.del::<_, ()>(key).await {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    let is_last_attempt = attempt == max_retries - 1;
+
+                    if is_last_attempt {
+                        // Last attempt failed, return error
+                        crate::metrics::cache::CACHE_ERRORS
+                            .with_label_values(&["room", "l2_delete"])
+                            .inc();
+                        tracing::error!(
+                            key = %key,
+                            error = %e,
+                            attempts = max_retries,
+                            "Failed to delete from Redis L2 cache after retries"
+                        );
+                        return Err(Error::Internal(format!("Failed to delete from Redis cache: {e}")));
+                    } else {
+                        // Retry with exponential backoff: 10ms, 50ms, 250ms
+                        let backoff_ms = 10 * u64::pow(5, attempt);
+                        tracing::warn!(
+                            key = %key,
+                            error = %e,
+                            attempt = attempt + 1,
+                            max_retries = max_retries,
+                            backoff_ms = backoff_ms,
+                            "Redis L2 cache delete failed, retrying"
+                        );
+                        tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms)).await;
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Get multiple rooms at once
     ///
     /// More efficient than calling `get()` multiple times.
     /// Returns a map of `room_id` -> `CachedRoom`.
+    ///
+    /// # Performance
+    /// - L1 (Moka): Sequential lookup is optimal for in-memory cache (no I/O bottleneck)
+    /// - L2 (Redis): Uses pipeline for true batch operation (single round-trip)
     pub async fn get_batch(&self, room_ids: &[RoomId]) -> Result<std::collections::HashMap<RoomId, CachedRoom>> {
         let mut result = std::collections::HashMap::new();
         let mut missing_ids = Vec::new();
 
-        // Check L1 cache first
+        // Check L1 cache first (sequential is optimal for in-memory operations)
+        // Note: Parallel lookup would add overhead without benefit for memory cache
         for room_id in room_ids {
             if let Some(room) = self.l1_cache.get(room_id).await {
                 result.insert(room_id.clone(), room);
@@ -258,17 +408,19 @@ impl RoomCache {
         let id = RoomId(room_id.to_string());
         self.l1_cache.invalidate(&id).await;
 
-        // Then remove from L2 (Redis)
-        if let Some(ref conn) = self.redis_conn {
-            let mut conn = conn.clone();
+        // Then remove from L2 (Redis) with retry
+        if self.redis_conn.is_some() {
             let key = format!("{}{}", self.key_prefix, room_id);
-            let result: std::result::Result<(), redis::RedisError> =
-                redis::AsyncCommands::del(&mut conn, &key).await;
-            if let Err(e) = result {
-                tracing::warn!(
+            // Use best-effort retry for cross-replica invalidation
+            // Don't panic if Redis is temporarily unavailable
+            if let Err(e) = self.delete_from_redis_with_retry(&key, 2).await {
+                crate::metrics::cache::CACHE_ERRORS
+                    .with_label_values(&["room", "cross_replica_invalidate"])
+                    .inc();
+                tracing::error!(
                     room_id = %room_id,
                     error = %e,
-                    "Failed to delete room L2 cache during cross-replica invalidation"
+                    "Failed to delete room L2 cache during cross-replica invalidation after retries"
                 );
             }
         }

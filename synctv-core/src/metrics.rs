@@ -111,7 +111,7 @@ pub static ACTIVE_CONNECTIONS: std::sync::LazyLock<IntGauge> = std::sync::LazyLo
 
 /// Cache operations
 pub mod cache {
-    use super::{register_counter_vec_with_registry, CounterVec, REGISTRY};
+    use super::{register_counter_vec_with_registry, register_histogram_vec_with_registry, CounterVec, HistogramVec, REGISTRY};
 
     /// Cache hit counter
     pub static CACHE_HITS: std::sync::LazyLock<CounterVec> = std::sync::LazyLock::new(|| {
@@ -141,6 +141,56 @@ pub mod cache {
             &["cache_type"],
             REGISTRY.clone()
         ).expect("Failed to register CACHE_EVICTIONS")
+    });
+
+    /// Cache error counter (L2 delete failures, cross-replica invalidation errors, etc.)
+    pub static CACHE_ERRORS: std::sync::LazyLock<CounterVec> = std::sync::LazyLock::new(|| {
+        register_counter_vec_with_registry!(
+            "cache_errors_total",
+            "Total number of cache operation errors",
+            &["cache_type", "operation"],
+            REGISTRY.clone()
+        ).expect("Failed to register CACHE_ERRORS")
+    });
+
+    /// Cache fill duration histogram (time taken to load from DB and populate cache)
+    pub static CACHE_FILL_DURATION: std::sync::LazyLock<HistogramVec> = std::sync::LazyLock::new(|| {
+        register_histogram_vec_with_registry!(
+            "cache_fill_duration_seconds",
+            "Time taken to fill cache from database",
+            &["cache_type"],
+            REGISTRY.clone()
+        ).expect("Failed to register CACHE_FILL_DURATION")
+    });
+
+    /// SingleFlight merge counter (how many concurrent requests were deduplicated)
+    pub static SINGLEFLIGHT_MERGES: std::sync::LazyLock<CounterVec> = std::sync::LazyLock::new(|| {
+        register_counter_vec_with_registry!(
+            "cache_singleflight_merges_total",
+            "Total number of requests merged by SingleFlight",
+            &["cache_type"],
+            REGISTRY.clone()
+        ).expect("Failed to register SINGLEFLIGHT_MERGES")
+    });
+
+    /// Cross-replica cache invalidation duration histogram
+    pub static INVALIDATION_LATENCY: std::sync::LazyLock<HistogramVec> = std::sync::LazyLock::new(|| {
+        register_histogram_vec_with_registry!(
+            "cache_invalidation_latency_seconds",
+            "Time taken for cross-replica cache invalidation",
+            &["cache_type"],
+            REGISTRY.clone()
+        ).expect("Failed to register INVALIDATION_LATENCY")
+    });
+
+    /// Bloom filter false positive counter
+    pub static BLOOM_FALSE_POSITIVES: std::sync::LazyLock<CounterVec> = std::sync::LazyLock::new(|| {
+        register_counter_vec_with_registry!(
+            "cache_bloom_false_positives_total",
+            "Total number of Bloom filter false positives",
+            &["cache_type"],
+            REGISTRY.clone()
+        ).expect("Failed to register BLOOM_FALSE_POSITIVES")
     });
 }
 

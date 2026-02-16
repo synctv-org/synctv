@@ -492,7 +492,7 @@ async fn main() -> Result<()> {
         synctv_core::cache::CacheInvalidationService::new(
             redis_client_for_cache,
             node_id.clone(),
-            key_builder.cache_invalidation_channel(),
+            key_builder.cache_invalidation_stream(),
         ),
     );
     if let Err(e) = cache_invalidation_service.start().await {

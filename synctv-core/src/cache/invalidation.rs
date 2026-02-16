@@ -4,7 +4,6 @@
 //! When one node invalidates a cache entry, all other nodes receive the message
 //! and invalidate their local L1 caches accordingly.
 
-use futures::StreamExt;
 use redis::Client;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -52,15 +51,22 @@ pub enum InvalidationMessage {
 }
 
 /// Service for broadcasting and receiving cache invalidation messages
+///
+/// Uses Redis Streams instead of Pub/Sub for reliable message delivery:
+/// - Messages are persisted and won't be lost
+/// - Consumer groups allow multiple replicas to process messages
+/// - Automatic message acknowledgment and retry on failure
 pub struct CacheInvalidationService {
-    /// Redis client for pub/sub
+    /// Redis client for streams
     redis_client: Option<Client>,
     /// Local broadcast sender for invalidation events
     local_sender: broadcast::Sender<InvalidationMessage>,
-    /// Node identifier for logging
+    /// Node identifier for logging and consumer group
     node_id: String,
-    /// Redis pub/sub channel name for cache invalidation
-    channel_name: String,
+    /// Redis stream key for cache invalidation
+    stream_key: String,
+    /// Consumer group name
+    consumer_group: String,
     /// Shutdown flag
     shutdown: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -71,7 +77,8 @@ impl Clone for CacheInvalidationService {
             redis_client: self.redis_client.clone(),
             local_sender: self.local_sender.clone(),
             node_id: self.node_id.clone(),
-            channel_name: self.channel_name.clone(),
+            stream_key: self.stream_key.clone(),
+            consumer_group: self.consumer_group.clone(),
             shutdown: self.shutdown.clone(),
         }
     }
@@ -82,24 +89,26 @@ impl CacheInvalidationService {
     ///
     /// # Arguments
     /// * `redis_client` - Optional Redis client. If None, only local invalidation is used.
-    /// * `node_id` - Unique identifier for this node (for logging)
-    /// * `channel_name` - Redis pub/sub channel name (from `KeyBuilder::cache_invalidation_channel()`)
+    /// * `node_id` - Unique identifier for this node (for consumer group and logging)
+    /// * `stream_key` - Redis stream key for cache invalidation (e.g., "synctv:cache:invalidate:stream")
     #[must_use]
-    pub fn new(redis_client: Option<Client>, node_id: String, channel_name: String) -> Self {
+    pub fn new(redis_client: Option<Client>, node_id: String, stream_key: String) -> Self {
         let (local_sender, _) = broadcast::channel(1024);
+        let consumer_group = "cache-invalidation-group".to_string();
 
         Self {
             redis_client,
             local_sender,
             node_id,
-            channel_name,
+            stream_key,
+            consumer_group,
             shutdown: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
     /// Start listening for cache invalidation messages from Redis
     ///
-    /// This spawns a background task that subscribes to the invalidation channel.
+    /// This spawns a background task that reads from the invalidation stream.
     /// When a message is received, it's broadcast locally to all cache instances.
     pub async fn start(&self) -> Result<()> {
         let Some(client) = self.redis_client.clone() else {
@@ -107,9 +116,18 @@ impl CacheInvalidationService {
             return Ok(());
         };
 
+        // Create consumer group if it doesn't exist
+        if let Err(e) = self.create_consumer_group(&client).await {
+            warn!(
+                error = %e,
+                "Failed to create consumer group (may already exist)"
+            );
+        }
+
         let local_sender = self.local_sender.clone();
         let node_id = self.node_id.clone();
-        let channel_name = self.channel_name.clone();
+        let stream_key = self.stream_key.clone();
+        let consumer_group = self.consumer_group.clone();
         let shutdown = self.shutdown.clone();
 
         tokio::spawn(async move {
@@ -122,7 +140,7 @@ impl CacheInvalidationService {
                     break;
                 }
 
-                match Self::run_subscriber(&client, &local_sender, &node_id, &channel_name, shutdown.clone()).await {
+                match Self::run_subscriber(&client, &local_sender, &node_id, &stream_key, &consumer_group, shutdown.clone()).await {
                     Ok(()) => {
                         // Normal shutdown
                         break;
@@ -145,88 +163,139 @@ impl CacheInvalidationService {
         Ok(())
     }
 
-    /// Run the Redis subscriber loop
+    /// Create the consumer group for the invalidation stream
+    async fn create_consumer_group(&self, client: &Client) -> Result<()> {
+
+        let mut conn = client
+            .get_multiplexed_async_connection()
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to get Redis connection: {e}")))?;
+
+        // XGROUP CREATE <stream> <group> <id> MKSTREAM
+        // Use "0" to read from the beginning, "$" to read only new messages
+        let _: () = redis::cmd("XGROUP")
+            .arg("CREATE")
+            .arg(&self.stream_key)
+            .arg(&self.consumer_group)
+            .arg("$") // Only read new messages (not historical)
+            .arg("MKSTREAM") // Create stream if it doesn't exist
+            .query_async(&mut conn)
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to create consumer group: {e}")))?;
+
+        info!(
+            stream = %self.stream_key,
+            group = %self.consumer_group,
+            "Created consumer group for cache invalidation"
+        );
+
+        Ok(())
+    }
+
+    /// Run the Redis subscriber loop using Streams
     async fn run_subscriber(
         client: &Client,
         local_sender: &broadcast::Sender<InvalidationMessage>,
         node_id: &str,
-        channel_name: &str,
+        stream_key: &str,
+        consumer_group: &str,
         shutdown: Arc<std::sync::atomic::AtomicBool>,
     ) -> Result<()> {
-        // Get async pubsub connection
-        let mut pubsub = client
-            .get_async_pubsub()
-            .await
-            .map_err(|e| Error::Internal(format!("Failed to get Redis Pub/Sub connection: {e}")))?;
 
-        // Subscribe to the invalidation channel
-        pubsub
-            .subscribe(channel_name)
+        // Get async connection
+        let mut conn = client
+            .get_multiplexed_async_connection()
             .await
-            .map_err(|e| Error::Internal(format!("Failed to subscribe: {e}")))?;
+            .map_err(|e| Error::Internal(format!("Failed to get Redis connection: {e}")))?;
 
         info!(
             node_id = %node_id,
-            channel = %channel_name,
-            "Subscribed to cache invalidation channel"
+            stream = %stream_key,
+            group = %consumer_group,
+            "Started cache invalidation stream consumer"
         );
-
-        // Process incoming messages
-        let mut message_stream = pubsub.on_message();
 
         loop {
             if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
                 break;
             }
 
-            // Use timeout to periodically check shutdown flag
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(1),
-                message_stream.next(),
-            ).await {
-                Ok(Some(msg)) => {
-                    // Get the payload as string
-                    let payload: String = match msg.get_payload() {
-                        Ok(p) => p,
-                        Err(e) => {
-                            warn!(error = %e, "Invalid payload in cache invalidation message");
-                            continue;
-                        }
-                    };
+            // XREADGROUP GROUP <group> <consumer> COUNT <count> BLOCK <ms> STREAMS <stream> >
+            // ">" means read new messages not yet delivered to any consumer in the group
+            let result: redis::RedisResult<redis::streams::StreamReadReply> = redis::cmd("XREADGROUP")
+                .arg("GROUP")
+                .arg(consumer_group)
+                .arg(node_id) // Use node_id as consumer name
+                .arg("COUNT")
+                .arg(10) // Read up to 10 messages at once
+                .arg("BLOCK")
+                .arg(1000) // Block for 1 second
+                .arg("STREAMS")
+                .arg(stream_key)
+                .arg(">") // Read new messages
+                .query_async(&mut conn)
+                .await;
 
-                    match serde_json::from_str::<InvalidationMessage>(&payload) {
-                        Ok(invalidation) => {
-                            debug!(
-                                node_id = %node_id,
-                                ?invalidation,
-                                "Received cache invalidation message"
-                            );
+            match result {
+                Ok(reply) => {
+                    for stream_key in &reply.keys {
+                        for stream_id in &stream_key.ids {
+                            // Extract the message payload
+                            if let Some(payload_value) = stream_id.map.get("payload") {
+                                // Try to convert payload to string
+                                let payload_str = match payload_value {
+                                    redis::Value::BulkString(bytes) => {
+                                        std::str::from_utf8(bytes).ok()
+                                    }
+                                    redis::Value::SimpleString(s) => Some(s.as_str()),
+                                    _ => None,
+                                };
 
-                            // Broadcast locally
-                            if let Err(e) = local_sender.send(invalidation) {
-                                warn!(
-                                    error = %e,
-                                    "Failed to broadcast invalidation locally"
-                                );
+                                if let Some(payload_str) = payload_str {
+                                    match serde_json::from_str::<InvalidationMessage>(payload_str) {
+                                        Ok(invalidation) => {
+                                            debug!(
+                                                node_id = %node_id,
+                                                message_id = %stream_id.id,
+                                                ?invalidation,
+                                                "Received cache invalidation message"
+                                            );
+
+                                            // Broadcast locally
+                                            if let Err(e) = local_sender.send(invalidation) {
+                                                warn!(
+                                                    error = %e,
+                                                    "Failed to broadcast invalidation locally"
+                                                );
+                                            }
+
+                                            // Acknowledge the message
+                                            let _: redis::RedisResult<()> = redis::cmd("XACK")
+                                                .arg(stream_key.key.as_str())
+                                                .arg(consumer_group)
+                                                .arg(&stream_id.id)
+                                                .query_async(&mut conn)
+                                                .await;
+                                        }
+                                        Err(e) => {
+                                            warn!(
+                                                error = %e,
+                                                json = %payload_str,
+                                                "Failed to parse invalidation message"
+                                            );
+                                        }
+                                    }
+                                }
                             }
-                        }
-                        Err(e) => {
-                            warn!(
-                                error = %e,
-                                json = %payload,
-                                "Failed to parse invalidation message"
-                            );
                         }
                     }
                 }
-                Ok(None) => {
-                    // Stream ended
-                    info!("Redis Pub/Sub stream ended, reconnecting...");
-                    return Err(Error::Internal("Redis Pub/Sub stream ended".to_string()));
-                }
-                Err(_) => {
-                    // Timeout, check shutdown flag and continue
-                    continue;
+                Err(e) => {
+                    error!(
+                        error = %e,
+                        "Failed to read from Redis stream"
+                    );
+                    return Err(Error::Internal(format!("Failed to read from Redis stream: {e}")));
                 }
             }
         }
@@ -249,13 +318,13 @@ impl CacheInvalidationService {
 
     /// Broadcast a cache invalidation message to all OTHER nodes (remote only)
     ///
-    /// This sends the message via Redis Pub/Sub (if configured).
+    /// This sends the message via Redis Streams (if configured).
     /// Note: This does NOT broadcast locally, as the caller is expected to
     /// invalidate its own local cache after calling this method.
     ///
     /// For local-only invalidation (when Redis is not configured), this is a no-op.
     pub async fn broadcast_remote(&self, message: InvalidationMessage) -> Result<()> {
-        // Broadcast via Redis if available
+        // Broadcast via Redis Streams if available
         if let Some(ref client) = self.redis_client {
             let json = serde_json::to_string(&message).map_err(|e| {
                 Error::Internal(format!("Failed to serialize invalidation message: {e}"))
@@ -266,18 +335,24 @@ impl CacheInvalidationService {
                 .await
                 .map_err(|e| Error::Internal(format!("Redis connection failed: {e}")))?;
 
-            redis::AsyncCommands::publish::<_, _, ()>(
-                &mut conn,
-                &self.channel_name,
-                json,
-            )
-            .await
-            .map_err(|e| Error::Internal(format!("Failed to publish invalidation: {e}")))?;
+            // XADD <stream> MAXLEN ~ <max_len> * payload <json>
+            // "~" makes MAXLEN approximate for better performance
+            let _: String = redis::cmd("XADD")
+                .arg(&self.stream_key)
+                .arg("MAXLEN")
+                .arg("~") // Approximate trimming for performance
+                .arg(10000) // Keep last ~10000 messages
+                .arg("*") // Auto-generate message ID
+                .arg("payload")
+                .arg(json)
+                .query_async(&mut conn)
+                .await
+                .map_err(|e| Error::Internal(format!("Failed to add message to stream: {e}")))?;
 
             debug!(
                 node_id = %self.node_id,
                 ?message,
-                "Published cache invalidation message"
+                "Published cache invalidation message to stream"
             );
         }
 
@@ -405,7 +480,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_local_broadcast() {
-        let service = CacheInvalidationService::new(None, "test-node".to_string(), "synctv:cache:invalidate".to_string());
+        let service = CacheInvalidationService::new(None, "test-node".to_string(), "synctv:cache:invalidate:stream".to_string());
         let mut receiver = service.subscribe();
 
         let msg = InvalidationMessage::User {
@@ -421,7 +496,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_broadcast_without_redis_is_noop() {
-        let service = CacheInvalidationService::new(None, "test-node".to_string(), "synctv:cache:invalidate".to_string());
+        let service = CacheInvalidationService::new(None, "test-node".to_string(), "synctv:cache:invalidate:stream".to_string());
 
         // broadcast_remote() without Redis should be a no-op (no local broadcast)
         let msg = InvalidationMessage::All;

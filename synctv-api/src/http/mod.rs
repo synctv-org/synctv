@@ -115,6 +115,7 @@ pub struct AppState {
     pub client_api: Arc<crate::impls::ClientApiImpl>,
     pub admin_api: Option<Arc<crate::impls::AdminApiImpl>>,
     pub notification_api: Option<Arc<crate::impls::NotificationApiImpl>>,
+    pub oauth2_api: Option<Arc<crate::impls::OAuth2ApiImpl>>,
     // H-2: Provider ApiImpls stored once in AppState (not created per-request)
     pub bilibili_api: Arc<crate::impls::BilibiliApiImpl>,
     pub alist_api: Arc<crate::impls::AlistApiImpl>,
@@ -170,6 +171,14 @@ fn build_app_state(config: RouterConfig) -> AppState {
         Arc::new(crate::impls::NotificationApiImpl::new(notif_svc.clone()))
     });
 
+    // Create shared OAuth2ApiImpl
+    let oauth2_api = config.oauth2_service.as_ref().map(|oauth2_svc| {
+        Arc::new(crate::impls::OAuth2ApiImpl::new(
+            oauth2_svc.clone(),
+            config.user_service.clone(),
+        ))
+    });
+
     // H-3: Create shared RateLimitConfig once at startup (not per-request)
     let rate_limit_config = Arc::new(middleware::RateLimitConfig::default());
 
@@ -211,6 +220,7 @@ fn build_app_state(config: RouterConfig) -> AppState {
         client_api,
         admin_api,
         notification_api,
+        oauth2_api,
         bilibili_api,
         alist_api,
         emby_api,
@@ -218,15 +228,14 @@ fn build_app_state(config: RouterConfig) -> AppState {
     }
 }
 
-/// Authentication routes (register, login, refresh, OAuth2 callbacks, password verify).
+/// Authentication routes (register, login, refresh, OAuth2 exchange, password verify).
 /// Strict rate limiting: 5 req/min.
 fn register_auth_routes(state: &AppState) -> Router<AppState> {
     Router::new()
         .route("/api/auth/register", post(auth::register))
         .route("/api/auth/login", post(auth::login))
         .route("/api/auth/refresh", post(auth::refresh_token))
-        .route("/api/oauth2/{provider}/callback", get(oauth2::oauth2_callback_get))
-        .route("/api/oauth2/{provider}/callback", post(oauth2::oauth2_callback_post))
+        .route("/api/oauth2/{provider}/exchange", post(oauth2::exchange_authorization_code))
         .route("/api/rooms/{room_id}/password/verify", post(room::check_password))
         .route_layer(axum_middleware::from_fn_with_state(
             state.clone(),
@@ -269,8 +278,9 @@ fn register_write_routes(state: &AppState) -> Router<AppState> {
         .route("/api/user", axum::routing::patch(user::update_user))
         .route("/api/auth/session", axum::routing::delete(user::logout))
         .route("/api/user/rooms/{room_id}", axum::routing::delete(user::delete_my_room))
-        .route("/api/oauth2/{provider}/bind", post(oauth2::bind_provider))
-        .route("/api/oauth2/{provider}/bind", axum::routing::delete(oauth2::unbind_provider))
+        .route("/api/oauth2/{provider}/bind", get(oauth2::get_bind_authorize_url))
+        .route("/api/oauth2/{provider}/unlink", axum::routing::delete(oauth2::unlink_provider))
+        .route("/api/oauth2/linked", get(oauth2::get_linked_providers))
         .route("/api/rooms/{room_id}/members/{user_id}", axum::routing::delete(room_extra::kick_member))
         .route("/api/rooms/{room_id}/members/{user_id}", axum::routing::patch(room_extra::set_member_permissions))
         .route("/api/rooms/{room_id}/bans", post(room_extra::ban_member))
@@ -360,7 +370,7 @@ fn register_all_routes(state: AppState) -> Router<AppState> {
         .merge(
             Router::new()
                 .route("/api/oauth2/{provider}/authorize", get(oauth2::get_authorize_url))
-                .route("/api/oauth2/providers", get(oauth2::list_providers))
+                .route("/api/oauth2/providers", get(oauth2::list_available_providers))
                 .route_layer(axum_middleware::from_fn_with_state(
                     state.clone(),
                     middleware::read_rate_limit,

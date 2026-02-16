@@ -202,6 +202,10 @@ pub struct ProtectedCache {
     bloom_filter: Arc<BloomFilter>,
     /// Cache for null values (keys that don't exist) with TTL-based eviction
     null_cache: Arc<moka::sync::Cache<String, ()>>,
+    /// Shutdown signal for background tasks
+    shutdown: Arc<tokio::sync::Notify>,
+    /// Background task join handle
+    background_task: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
 /// Default null cache TTL (5 minutes)
@@ -222,6 +226,8 @@ impl ProtectedCache {
         Self {
             bloom_filter: Arc::new(BloomFilter::with_capacity(expected_elements)),
             null_cache: Arc::new(null_cache),
+            shutdown: Arc::new(tokio::sync::Notify::new()),
+            background_task: Arc::new(tokio::sync::Mutex::new(None)),
         }
     }
 
@@ -229,6 +235,67 @@ impl ProtectedCache {
     #[must_use]
     pub fn with_defaults() -> Self {
         Self::new(1_000_000, 10_000)
+    }
+
+    /// Start periodic Bloom filter reset to prevent unbounded memory growth
+    ///
+    /// Resets the Bloom filter every `reset_interval` to prevent memory leaks
+    /// from unbounded key insertions. The null cache is also cleared on reset.
+    ///
+    /// # Arguments
+    /// * `reset_interval` - Duration between resets (e.g., 24 hours)
+    ///
+    /// # Example
+    /// ```
+    /// # use synctv_core::cache::ProtectedCache;
+    /// # use std::time::Duration;
+    /// # async {
+    /// let cache = ProtectedCache::with_defaults();
+    /// // Reset every 24 hours
+    /// cache.start_periodic_reset(Duration::from_secs(24 * 3600)).await;
+    /// # };
+    /// ```
+    pub async fn start_periodic_reset(&self, reset_interval: std::time::Duration) {
+        let bloom_filter = self.bloom_filter.clone();
+        let null_cache = self.null_cache.clone();
+        let shutdown = self.shutdown.clone();
+
+        let task = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(reset_interval);
+            interval.tick().await; // Skip first tick (immediate)
+
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        tracing::info!("Periodic Bloom filter reset starting");
+
+                        // Clear Bloom filter
+                        bloom_filter.clear().await;
+
+                        // Clear null cache
+                        null_cache.invalidate_all();
+                        null_cache.run_pending_tasks();
+
+                        tracing::info!("Periodic Bloom filter reset completed");
+                    }
+                    _ = shutdown.notified() => {
+                        tracing::debug!("Bloom filter reset task shutting down");
+                        break;
+                    }
+                }
+            }
+        });
+
+        *self.background_task.lock().await = Some(task);
+    }
+
+    /// Stop the periodic reset background task
+    pub async fn stop_periodic_reset(&self) {
+        self.shutdown.notify_one();
+
+        if let Some(task) = self.background_task.lock().await.take() {
+            let _ = task.await;
+        }
     }
 
     /// Mark a key as existing (after successful cache/database lookup)
@@ -305,6 +372,13 @@ impl ProtectedCache {
     #[must_use]
     pub fn bloom_filter(&self) -> &BloomFilter {
         &self.bloom_filter
+    }
+}
+
+impl Drop for ProtectedCache {
+    fn drop(&mut self) {
+        // Signal shutdown to background task
+        self.shutdown.notify_one();
     }
 }
 

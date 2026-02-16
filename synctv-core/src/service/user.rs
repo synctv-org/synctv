@@ -146,6 +146,33 @@ impl UserService {
         Ok((user, access_token, refresh_token))
     }
 
+    /// Generate token pair for OAuth2 login (user already authenticated by OAuth2 provider)
+    ///
+    /// This method generates access and refresh tokens for a user who has been
+    /// authenticated via OAuth2. Unlike `login()`, this skips password verification.
+    pub async fn login_oauth2(&self, user_id: &UserId) -> Result<(User, String, String)> {
+        // Get user to ensure they exist and are active
+        let user = self.repository
+            .get_by_id(user_id)
+            .await?
+            .ok_or_else(|| Error::Authentication("User not found".to_string()))?;
+
+        // Check user status
+        if user.is_deleted() || user.status == crate::models::UserStatus::Banned {
+            return Err(Error::Authentication("User account is not active".to_string()));
+        }
+
+        // Generate JWT tokens
+        let access_token = self
+            .jwt_service
+            .sign_token(&user.id, TokenType::Access)?;
+        let refresh_token = self
+            .jwt_service
+            .sign_token(&user.id, TokenType::Refresh)?;
+
+        Ok((user, access_token, refresh_token))
+    }
+
     /// Refresh access token
     pub async fn refresh_token(&self, refresh_token: String) -> Result<(String, String)> {
         // Verify refresh token

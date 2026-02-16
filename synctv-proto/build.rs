@@ -5,7 +5,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build_client(true)
         .type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]")
         .out_dir("src")
-        .compile_protos(&["proto/client.proto", "proto/admin.proto"], &["."])?;
+        .compile_protos(&["proto/client.proto", "proto/admin.proto", "proto/oauth2.proto"], &["."])?;
 
     // Compile provider proto files to src/providers/
     tonic_prost_build::configure()

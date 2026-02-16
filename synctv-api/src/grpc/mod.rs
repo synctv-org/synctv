@@ -9,6 +9,7 @@ pub mod blacklist_layer;
 pub mod client_service;
 pub mod interceptors;
 pub mod notification_service;
+pub mod oauth2_service;
 
 // Provider gRPC services (local implementations)
 // Provider-specific gRPC services are registered from provider instances
@@ -76,6 +77,7 @@ pub struct GrpcServerConfig<'a> {
     pub live_streaming_infrastructure: Option<Arc<synctv_livestream::api::LiveStreamingInfrastructure>>,
     pub publish_key_service: Option<Arc<synctv_core::service::PublishKeyService>>,
     pub notification_service: Option<Arc<synctv_core::service::UserNotificationService>>,
+    pub oauth2_service: Option<Arc<synctv_core::service::OAuth2Service>>,
     pub node_registry: Option<Arc<synctv_cluster::discovery::NodeRegistry>>,
     pub token_blacklist_service: synctv_core::service::TokenBlacklistService,
     pub shutdown_rx: Option<tokio::sync::watch::Receiver<bool>>,
@@ -106,6 +108,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         live_streaming_infrastructure,
         publish_key_service,
         notification_service,
+        oauth2_service,
         node_registry,
         token_blacklist_service,
         shutdown_rx,
@@ -307,6 +310,29 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         tracing::info!("NotificationService gRPC registered");
     }
 
+    // Register OAuth2Service if oauth2_service is configured
+    if let Some(oauth2_svc) = oauth2_service {
+        use synctv_proto::client::o_auth2_service_server::OAuth2ServiceServer;
+        let oauth2_interceptor = auth_interceptor.clone();
+        let rl_oauth2 = grpc_rate_limiter.with_tier(interceptors::GrpcRateLimitTier::Auth);
+        let oauth2_api = Arc::new(crate::impls::OAuth2ApiImpl::new(
+            oauth2_svc,
+            user_service.clone(),
+        ));
+        let oauth2_impl = oauth2_service::OAuth2GrpcService::new(oauth2_api);
+        // OAuth2Service: All gRPC endpoints require authentication for simplicity
+        // For public OAuth2 flows (GetAuthorizationUrl, ExchangeAuthorizationCode, ListAvailableProviders),
+        // clients should use the HTTP API instead, which supports unauthenticated access
+        router = router.add_service(OAuth2ServiceServer::with_interceptor(
+            oauth2_impl,
+            move |req| {
+                let req = rl_oauth2.check(req)?;
+                oauth2_interceptor.inject_user(req)
+            },
+        ));
+        tracing::info!("OAuth2Service gRPC registered");
+    }
+
     // Register provider gRPC services
     if let Some(_providers_mgr) = providers_manager {
         tracing::info!("Registering provider gRPC services");
@@ -364,6 +390,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
             ).with_redis_publish_tx(redis_publish_tx.clone())),
             admin_api: None,
             notification_api: None,
+            oauth2_api: None, // OAuth2 not used in provider gRPC
             bilibili_api: Arc::new(crate::impls::BilibiliApiImpl::new(bilibili_provider.clone())),
             alist_api: Arc::new(crate::impls::AlistApiImpl::new(alist_provider.clone())),
             emby_api: Arc::new(crate::impls::EmbyApiImpl::new(emby_provider.clone())),

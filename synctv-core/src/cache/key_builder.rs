@@ -220,12 +220,12 @@ impl KeyBuilder {
 
     // ==================== Cache Invalidation ====================
 
-    /// Cache invalidation pub/sub channel
+    /// Cache invalidation stream key
     ///
-    /// Used for cross-node cache invalidation
+    /// Used for cross-node cache invalidation via Redis Streams
     #[must_use]
-    pub fn cache_invalidation_channel(&self) -> String {
-        format!("{}:cache:invalidate", self.prefix)
+    pub fn cache_invalidation_stream(&self) -> String {
+        format!("{}:cache:invalidate:stream", self.prefix)
     }
 
     // ==================== Cluster Events ====================

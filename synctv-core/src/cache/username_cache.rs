@@ -181,18 +181,59 @@ impl UsernameCache {
         // Remove from memory cache (L1) FIRST so this replica stops serving stale data immediately
         self.memory_cache.invalidate(user_id).await;
 
-        // Then remove from Redis cache (L2)
-        if let Some(ref conn) = self.redis_conn {
-            let mut conn = conn.clone();
-
+        // Then remove from Redis cache (L2) with retry
+        if self.redis_conn.is_some() {
             let key = format!("{}{}", self.key_prefix, user_id.as_str());
-            let _: () = conn
-                .del(&key)
-                .await
-                .map_err(|e| Error::Internal(format!("Failed to invalidate username cache: {e}")))?;
+            self.delete_from_redis_with_retry(&key, 3).await?;
         }
 
         tracing::debug!(user_id = %user_id.as_str(), "Username cache invalidated (L1 then L2)");
+
+        Ok(())
+    }
+
+    /// Delete a key from Redis with retry logic
+    ///
+    /// Attempts to delete up to `max_retries` times with exponential backoff.
+    /// Returns error only if all retries fail.
+    async fn delete_from_redis_with_retry(&self, key: &str, max_retries: u32) -> Result<()> {
+        let Some(ref redis_conn) = self.redis_conn else {
+            return Ok(());
+        };
+
+        for attempt in 0..max_retries {
+            let mut conn = redis_conn.clone();
+
+            match conn.del::<_, ()>(key).await {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    let is_last_attempt = attempt == max_retries - 1;
+
+                    if is_last_attempt {
+                        // Last attempt failed, return error
+                        tracing::error!(
+                            key = %key,
+                            error = %e,
+                            attempts = max_retries,
+                            "Failed to delete from Redis L2 cache after retries"
+                        );
+                        return Err(Error::Internal(format!("Failed to delete from Redis cache: {e}")));
+                    } else {
+                        // Retry with exponential backoff: 10ms, 50ms, 250ms
+                        let backoff_ms = 10 * u64::pow(5, attempt);
+                        tracing::warn!(
+                            key = %key,
+                            error = %e,
+                            attempt = attempt + 1,
+                            max_retries = max_retries,
+                            backoff_ms = backoff_ms,
+                            "Redis L2 cache delete failed, retrying"
+                        );
+                        tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms)).await;
+                    }
+                }
+            }
+        }
 
         Ok(())
     }
@@ -208,17 +249,16 @@ impl UsernameCache {
         let id = UserId::from_string(user_id.to_string());
         self.memory_cache.invalidate(&id).await;
 
-        // Then remove from L2 (Redis)
-        if let Some(ref conn) = self.redis_conn {
-            let mut conn = conn.clone();
-
+        // Then remove from L2 (Redis) with retry
+        if self.redis_conn.is_some() {
             let key = format!("{}{}", self.key_prefix, user_id);
-            let result: std::result::Result<(), redis::RedisError> = conn.del(&key).await;
-            if let Err(e) = result {
-                tracing::warn!(
+            // Use best-effort retry for cross-replica invalidation
+            // Don't panic if Redis is temporarily unavailable
+            if let Err(e) = self.delete_from_redis_with_retry(&key, 2).await {
+                tracing::error!(
                     user_id = %user_id,
                     error = %e,
-                    "Failed to delete username L2 cache during cross-replica invalidation"
+                    "Failed to delete username L2 cache during cross-replica invalidation after retries"
                 );
             }
         }

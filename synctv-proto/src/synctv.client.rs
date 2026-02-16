@@ -8459,3 +8459,958 @@ pub mod notification_service_server {
         const NAME: &'static str = SERVICE_NAME;
     }
 }
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetAuthorizationUrlRequest {
+    /// OAuth2 provider instance name (e.g., "github", "google", "logto1")
+    #[prost(string, tag = "1")]
+    pub provider: ::prost::alloc::string::String,
+    /// Optional redirect URL for frontend after OAuth2 flow completes
+    /// This is stored in state and returned after successful authentication
+    /// If not provided, frontend should handle redirect itself
+    #[prost(string, tag = "2")]
+    pub redirect_url: ::prost::alloc::string::String,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetAuthorizationUrlResponse {
+    /// Authorization URL to redirect user to
+    /// Frontend should redirect the browser to this URL
+    #[prost(string, tag = "1")]
+    pub authorization_url: ::prost::alloc::string::String,
+    /// State token for CSRF protection
+    /// Frontend should store this temporarily and validate it matches the state
+    /// received in the callback URL parameters
+    #[prost(string, tag = "2")]
+    pub state: ::prost::alloc::string::String,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetAuthorizationUrlForBindRequest {
+    /// OAuth2 provider instance name (e.g., "github", "google", "logto1")
+    #[prost(string, tag = "1")]
+    pub provider: ::prost::alloc::string::String,
+    /// Optional redirect URL for frontend after bind flow completes
+    #[prost(string, tag = "2")]
+    pub redirect_url: ::prost::alloc::string::String,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetAuthorizationUrlForBindResponse {
+    /// Authorization URL to redirect user to
+    #[prost(string, tag = "1")]
+    pub authorization_url: ::prost::alloc::string::String,
+    /// State token for CSRF protection
+    #[prost(string, tag = "2")]
+    pub state: ::prost::alloc::string::String,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ExchangeAuthorizationCodeRequest {
+    /// OAuth2 provider instance name (must match the provider used in GetAuthorizationUrl)
+    #[prost(string, tag = "1")]
+    pub provider: ::prost::alloc::string::String,
+    /// Authorization code received from OAuth2 provider redirect
+    /// Frontend extracts this from the callback URL query parameter
+    #[prost(string, tag = "2")]
+    pub code: ::prost::alloc::string::String,
+    /// State token received from OAuth2 provider redirect
+    /// Must match the state returned by GetAuthorizationUrl
+    #[prost(string, tag = "3")]
+    pub state: ::prost::alloc::string::String,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ExchangeAuthorizationCodeResponse {
+    /// JWT access token (if login flow)
+    /// Empty if this is a bind flow
+    #[prost(string, tag = "1")]
+    pub access_token: ::prost::alloc::string::String,
+    /// JWT refresh token (if login flow and refresh tokens are enabled)
+    #[prost(string, tag = "2")]
+    pub refresh_token: ::prost::alloc::string::String,
+    /// Token expiration time in seconds
+    #[prost(int64, tag = "3")]
+    pub expires_in: i64,
+    /// User information (login flow only)
+    #[prost(message, optional, tag = "4")]
+    pub user_info: ::core::option::Option<OAuth2UserInfo>,
+    /// Redirect URL from the original request (if provided)
+    /// Frontend can use this to redirect user after successful authentication
+    #[prost(string, tag = "5")]
+    pub redirect_url: ::prost::alloc::string::String,
+    /// Whether this was a bind operation (true) or login operation (false)
+    #[prost(bool, tag = "6")]
+    pub is_bind: bool,
+}
+/// Empty request
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ListAvailableProvidersRequest {}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ListAvailableProvidersResponse {
+    /// List of available OAuth2 provider instances
+    #[prost(message, repeated, tag = "1")]
+    pub providers: ::prost::alloc::vec::Vec<OAuth2ProviderInstance>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct OAuth2ProviderInstance {
+    /// Instance name (e.g., "github", "google", "logto1")
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    /// Provider type (e.g., "github", "google", "oidc", "logto")
+    #[prost(string, tag = "2")]
+    pub r#type: ::prost::alloc::string::String,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct UnlinkProviderRequest {
+    /// Provider type to unlink (e.g., "github", "google")
+    #[prost(string, tag = "1")]
+    pub provider: ::prost::alloc::string::String,
+    /// Optional: specific provider user ID to unlink
+    /// If not provided, unlinks all bindings for this provider type
+    #[prost(string, tag = "2")]
+    pub provider_user_id: ::prost::alloc::string::String,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct UnlinkProviderResponse {
+    /// Whether any provider was unlinked
+    #[prost(bool, tag = "1")]
+    pub success: bool,
+    /// Number of provider bindings removed
+    #[prost(int32, tag = "2")]
+    pub removed_count: i32,
+}
+/// Empty request (user_id comes from JWT)
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetLinkedProvidersRequest {}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GetLinkedProvidersResponse {
+    /// List of linked OAuth2 providers
+    #[prost(message, repeated, tag = "1")]
+    pub providers: ::prost::alloc::vec::Vec<LinkedProvider>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct LinkedProvider {
+    /// Provider type (e.g., "github", "google", "oidc")
+    #[prost(string, tag = "1")]
+    pub provider_type: ::prost::alloc::string::String,
+    /// Username from the OAuth2 provider
+    #[prost(string, tag = "2")]
+    pub provider_username: ::prost::alloc::string::String,
+    /// When the provider was linked
+    #[prost(string, tag = "3")]
+    pub linked_at: ::prost::alloc::string::String,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct OAuth2UserInfo {
+    /// User ID
+    #[prost(string, tag = "1")]
+    pub user_id: ::prost::alloc::string::String,
+    /// Username
+    #[prost(string, tag = "2")]
+    pub username: ::prost::alloc::string::String,
+    /// Email (optional)
+    #[prost(string, tag = "3")]
+    pub email: ::prost::alloc::string::String,
+    /// Avatar URL (optional)
+    #[prost(string, tag = "4")]
+    pub avatar: ::prost::alloc::string::String,
+    /// User role
+    #[prost(enumeration = "super::common::UserRole", tag = "5")]
+    pub role: i32,
+    /// Account status
+    #[prost(enumeration = "super::common::UserStatus", tag = "6")]
+    pub status: i32,
+    /// When the account was created
+    #[prost(string, tag = "7")]
+    pub created_at: ::prost::alloc::string::String,
+}
+/// Generated client implementations.
+pub mod o_auth2_service_client {
+    #![allow(
+        unused_variables,
+        dead_code,
+        missing_docs,
+        clippy::wildcard_imports,
+        clippy::let_unit_value,
+    )]
+    use tonic::codegen::*;
+    use tonic::codegen::http::Uri;
+    /// ==================== OAuth2 Service ====================
+    /// OAuth2/OIDC authentication service
+    ///
+    /// Frontend-driven flow:
+    ///
+    /// 1. Frontend calls GetAuthorizationUrl to get the OAuth2 provider's auth URL
+    /// 1. Frontend redirects user to the auth URL
+    /// 1. User authorizes on the OAuth2 provider (e.g., GitHub)
+    /// 1. Provider redirects to frontend URL with code and state parameters
+    /// 1. Frontend extracts code and state from URL
+    /// 1. Frontend calls ExchangeAuthorizationCode with code and state
+    /// 1. Backend validates state, exchanges code for user info, creates/logs in user
+    /// 1. Backend returns JWT token to frontend
+    ///
+    /// Authentication:
+    ///
+    /// * GetAuthorizationUrl, GetAuthorizationUrlForBind, ExchangeAuthorizationCode: None (public)
+    /// * ListAvailableProviders: None (public)
+    /// * UnlinkProvider, GetLinkedProviders: JWT Authorization header (user_id)
+    ///
+    /// Routes: /api/oauth2/\*
+    #[derive(Debug, Clone)]
+    pub struct OAuth2ServiceClient<T> {
+        inner: tonic::client::Grpc<T>,
+    }
+    impl OAuth2ServiceClient<tonic::transport::Channel> {
+        /// Attempt to create a new client by connecting to a given endpoint.
+        pub async fn connect<D>(dst: D) -> Result<Self, tonic::transport::Error>
+        where
+            D: TryInto<tonic::transport::Endpoint>,
+            D::Error: Into<StdError>,
+        {
+            let conn = tonic::transport::Endpoint::new(dst)?.connect().await?;
+            Ok(Self::new(conn))
+        }
+    }
+    impl<T> OAuth2ServiceClient<T>
+    where
+        T: tonic::client::GrpcService<tonic::body::Body>,
+        T::Error: Into<StdError>,
+        T::ResponseBody: Body<Data = Bytes> + std::marker::Send + 'static,
+        <T::ResponseBody as Body>::Error: Into<StdError> + std::marker::Send,
+    {
+        pub fn new(inner: T) -> Self {
+            let inner = tonic::client::Grpc::new(inner);
+            Self { inner }
+        }
+        pub fn with_origin(inner: T, origin: Uri) -> Self {
+            let inner = tonic::client::Grpc::with_origin(inner, origin);
+            Self { inner }
+        }
+        pub fn with_interceptor<F>(
+            inner: T,
+            interceptor: F,
+        ) -> OAuth2ServiceClient<InterceptedService<T, F>>
+        where
+            F: tonic::service::Interceptor,
+            T::ResponseBody: Default,
+            T: tonic::codegen::Service<
+                http::Request<tonic::body::Body>,
+                Response = http::Response<
+                    <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
+                >,
+            >,
+            <T as tonic::codegen::Service<
+                http::Request<tonic::body::Body>,
+            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
+        {
+            OAuth2ServiceClient::new(InterceptedService::new(inner, interceptor))
+        }
+        /// Compress requests with the given encoding.
+        ///
+        /// This requires the server to support it otherwise it might respond with an
+        /// error.
+        #[must_use]
+        pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.inner = self.inner.send_compressed(encoding);
+            self
+        }
+        /// Enable decompressing responses.
+        #[must_use]
+        pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.inner = self.inner.accept_compressed(encoding);
+            self
+        }
+        /// Limits the maximum size of a decoded message.
+        ///
+        /// Default: `4MB`
+        #[must_use]
+        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
+            self.inner = self.inner.max_decoding_message_size(limit);
+            self
+        }
+        /// Limits the maximum size of an encoded message.
+        ///
+        /// Default: `usize::MAX`
+        #[must_use]
+        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
+            self.inner = self.inner.max_encoding_message_size(limit);
+            self
+        }
+        /// Get authorization URL for OAuth2 login flow
+        /// Returns the URL to redirect the user to for authorization
+        pub async fn get_authorization_url(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetAuthorizationUrlRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetAuthorizationUrlResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.OAuth2Service/GetAuthorizationUrl",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("synctv.client.OAuth2Service", "GetAuthorizationUrl"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// Get authorization URL for binding OAuth2 provider to existing user account
+        /// Requires authentication
+        pub async fn get_authorization_url_for_bind(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetAuthorizationUrlForBindRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetAuthorizationUrlForBindResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.OAuth2Service/GetAuthorizationUrlForBind",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "synctv.client.OAuth2Service",
+                        "GetAuthorizationUrlForBind",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// Exchange authorization code for JWT token
+        /// Frontend calls this after receiving code and state from OAuth2 provider redirect
+        pub async fn exchange_authorization_code(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ExchangeAuthorizationCodeRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ExchangeAuthorizationCodeResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.OAuth2Service/ExchangeAuthorizationCode",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "synctv.client.OAuth2Service",
+                        "ExchangeAuthorizationCode",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// List all available OAuth2 provider instances
+        pub async fn list_available_providers(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ListAvailableProvidersRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListAvailableProvidersResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.OAuth2Service/ListAvailableProviders",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "synctv.client.OAuth2Service",
+                        "ListAvailableProviders",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// Unlink OAuth2 provider from user account (requires authentication)
+        pub async fn unlink_provider(
+            &mut self,
+            request: impl tonic::IntoRequest<super::UnlinkProviderRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::UnlinkProviderResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.OAuth2Service/UnlinkProvider",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("synctv.client.OAuth2Service", "UnlinkProvider"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// Get linked OAuth2 providers for authenticated user
+        pub async fn get_linked_providers(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetLinkedProvidersRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetLinkedProvidersResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.OAuth2Service/GetLinkedProviders",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("synctv.client.OAuth2Service", "GetLinkedProviders"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+    }
+}
+/// Generated server implementations.
+pub mod o_auth2_service_server {
+    #![allow(
+        unused_variables,
+        dead_code,
+        missing_docs,
+        clippy::wildcard_imports,
+        clippy::let_unit_value,
+    )]
+    use tonic::codegen::*;
+    /// Generated trait containing gRPC methods that should be implemented for use with OAuth2ServiceServer.
+    #[async_trait]
+    pub trait OAuth2Service: std::marker::Send + std::marker::Sync + 'static {
+        /// Get authorization URL for OAuth2 login flow
+        /// Returns the URL to redirect the user to for authorization
+        async fn get_authorization_url(
+            &self,
+            request: tonic::Request<super::GetAuthorizationUrlRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetAuthorizationUrlResponse>,
+            tonic::Status,
+        >;
+        /// Get authorization URL for binding OAuth2 provider to existing user account
+        /// Requires authentication
+        async fn get_authorization_url_for_bind(
+            &self,
+            request: tonic::Request<super::GetAuthorizationUrlForBindRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetAuthorizationUrlForBindResponse>,
+            tonic::Status,
+        >;
+        /// Exchange authorization code for JWT token
+        /// Frontend calls this after receiving code and state from OAuth2 provider redirect
+        async fn exchange_authorization_code(
+            &self,
+            request: tonic::Request<super::ExchangeAuthorizationCodeRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ExchangeAuthorizationCodeResponse>,
+            tonic::Status,
+        >;
+        /// List all available OAuth2 provider instances
+        async fn list_available_providers(
+            &self,
+            request: tonic::Request<super::ListAvailableProvidersRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListAvailableProvidersResponse>,
+            tonic::Status,
+        >;
+        /// Unlink OAuth2 provider from user account (requires authentication)
+        async fn unlink_provider(
+            &self,
+            request: tonic::Request<super::UnlinkProviderRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::UnlinkProviderResponse>,
+            tonic::Status,
+        >;
+        /// Get linked OAuth2 providers for authenticated user
+        async fn get_linked_providers(
+            &self,
+            request: tonic::Request<super::GetLinkedProvidersRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetLinkedProvidersResponse>,
+            tonic::Status,
+        >;
+    }
+    /// ==================== OAuth2 Service ====================
+    /// OAuth2/OIDC authentication service
+    ///
+    /// Frontend-driven flow:
+    ///
+    /// 1. Frontend calls GetAuthorizationUrl to get the OAuth2 provider's auth URL
+    /// 1. Frontend redirects user to the auth URL
+    /// 1. User authorizes on the OAuth2 provider (e.g., GitHub)
+    /// 1. Provider redirects to frontend URL with code and state parameters
+    /// 1. Frontend extracts code and state from URL
+    /// 1. Frontend calls ExchangeAuthorizationCode with code and state
+    /// 1. Backend validates state, exchanges code for user info, creates/logs in user
+    /// 1. Backend returns JWT token to frontend
+    ///
+    /// Authentication:
+    ///
+    /// * GetAuthorizationUrl, GetAuthorizationUrlForBind, ExchangeAuthorizationCode: None (public)
+    /// * ListAvailableProviders: None (public)
+    /// * UnlinkProvider, GetLinkedProviders: JWT Authorization header (user_id)
+    ///
+    /// Routes: /api/oauth2/\*
+    #[derive(Debug)]
+    pub struct OAuth2ServiceServer<T> {
+        inner: Arc<T>,
+        accept_compression_encodings: EnabledCompressionEncodings,
+        send_compression_encodings: EnabledCompressionEncodings,
+        max_decoding_message_size: Option<usize>,
+        max_encoding_message_size: Option<usize>,
+    }
+    impl<T> OAuth2ServiceServer<T> {
+        pub fn new(inner: T) -> Self {
+            Self::from_arc(Arc::new(inner))
+        }
+        pub fn from_arc(inner: Arc<T>) -> Self {
+            Self {
+                inner,
+                accept_compression_encodings: Default::default(),
+                send_compression_encodings: Default::default(),
+                max_decoding_message_size: None,
+                max_encoding_message_size: None,
+            }
+        }
+        pub fn with_interceptor<F>(
+            inner: T,
+            interceptor: F,
+        ) -> InterceptedService<Self, F>
+        where
+            F: tonic::service::Interceptor,
+        {
+            InterceptedService::new(Self::new(inner), interceptor)
+        }
+        /// Enable decompressing requests with the given encoding.
+        #[must_use]
+        pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.accept_compression_encodings.enable(encoding);
+            self
+        }
+        /// Compress responses with the given encoding, if the client supports it.
+        #[must_use]
+        pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.send_compression_encodings.enable(encoding);
+            self
+        }
+        /// Limits the maximum size of a decoded message.
+        ///
+        /// Default: `4MB`
+        #[must_use]
+        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
+            self.max_decoding_message_size = Some(limit);
+            self
+        }
+        /// Limits the maximum size of an encoded message.
+        ///
+        /// Default: `usize::MAX`
+        #[must_use]
+        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
+            self.max_encoding_message_size = Some(limit);
+            self
+        }
+    }
+    impl<T, B> tonic::codegen::Service<http::Request<B>> for OAuth2ServiceServer<T>
+    where
+        T: OAuth2Service,
+        B: Body + std::marker::Send + 'static,
+        B::Error: Into<StdError> + std::marker::Send + 'static,
+    {
+        type Response = http::Response<tonic::body::Body>;
+        type Error = std::convert::Infallible;
+        type Future = BoxFuture<Self::Response, Self::Error>;
+        fn poll_ready(
+            &mut self,
+            _cx: &mut Context<'_>,
+        ) -> Poll<std::result::Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+        fn call(&mut self, req: http::Request<B>) -> Self::Future {
+            match req.uri().path() {
+                "/synctv.client.OAuth2Service/GetAuthorizationUrl" => {
+                    #[allow(non_camel_case_types)]
+                    struct GetAuthorizationUrlSvc<T: OAuth2Service>(pub Arc<T>);
+                    impl<
+                        T: OAuth2Service,
+                    > tonic::server::UnaryService<super::GetAuthorizationUrlRequest>
+                    for GetAuthorizationUrlSvc<T> {
+                        type Response = super::GetAuthorizationUrlResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::GetAuthorizationUrlRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as OAuth2Service>::get_authorization_url(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = GetAuthorizationUrlSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.client.OAuth2Service/GetAuthorizationUrlForBind" => {
+                    #[allow(non_camel_case_types)]
+                    struct GetAuthorizationUrlForBindSvc<T: OAuth2Service>(pub Arc<T>);
+                    impl<
+                        T: OAuth2Service,
+                    > tonic::server::UnaryService<
+                        super::GetAuthorizationUrlForBindRequest,
+                    > for GetAuthorizationUrlForBindSvc<T> {
+                        type Response = super::GetAuthorizationUrlForBindResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                super::GetAuthorizationUrlForBindRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as OAuth2Service>::get_authorization_url_for_bind(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = GetAuthorizationUrlForBindSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.client.OAuth2Service/ExchangeAuthorizationCode" => {
+                    #[allow(non_camel_case_types)]
+                    struct ExchangeAuthorizationCodeSvc<T: OAuth2Service>(pub Arc<T>);
+                    impl<
+                        T: OAuth2Service,
+                    > tonic::server::UnaryService<
+                        super::ExchangeAuthorizationCodeRequest,
+                    > for ExchangeAuthorizationCodeSvc<T> {
+                        type Response = super::ExchangeAuthorizationCodeResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                super::ExchangeAuthorizationCodeRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as OAuth2Service>::exchange_authorization_code(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ExchangeAuthorizationCodeSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.client.OAuth2Service/ListAvailableProviders" => {
+                    #[allow(non_camel_case_types)]
+                    struct ListAvailableProvidersSvc<T: OAuth2Service>(pub Arc<T>);
+                    impl<
+                        T: OAuth2Service,
+                    > tonic::server::UnaryService<super::ListAvailableProvidersRequest>
+                    for ListAvailableProvidersSvc<T> {
+                        type Response = super::ListAvailableProvidersResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::ListAvailableProvidersRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as OAuth2Service>::list_available_providers(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ListAvailableProvidersSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.client.OAuth2Service/UnlinkProvider" => {
+                    #[allow(non_camel_case_types)]
+                    struct UnlinkProviderSvc<T: OAuth2Service>(pub Arc<T>);
+                    impl<
+                        T: OAuth2Service,
+                    > tonic::server::UnaryService<super::UnlinkProviderRequest>
+                    for UnlinkProviderSvc<T> {
+                        type Response = super::UnlinkProviderResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::UnlinkProviderRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as OAuth2Service>::unlink_provider(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = UnlinkProviderSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.client.OAuth2Service/GetLinkedProviders" => {
+                    #[allow(non_camel_case_types)]
+                    struct GetLinkedProvidersSvc<T: OAuth2Service>(pub Arc<T>);
+                    impl<
+                        T: OAuth2Service,
+                    > tonic::server::UnaryService<super::GetLinkedProvidersRequest>
+                    for GetLinkedProvidersSvc<T> {
+                        type Response = super::GetLinkedProvidersResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::GetLinkedProvidersRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as OAuth2Service>::get_linked_providers(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = GetLinkedProvidersSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                _ => {
+                    Box::pin(async move {
+                        let mut response = http::Response::new(
+                            tonic::body::Body::default(),
+                        );
+                        let headers = response.headers_mut();
+                        headers
+                            .insert(
+                                tonic::Status::GRPC_STATUS,
+                                (tonic::Code::Unimplemented as i32).into(),
+                            );
+                        headers
+                            .insert(
+                                http::header::CONTENT_TYPE,
+                                tonic::metadata::GRPC_CONTENT_TYPE,
+                            );
+                        Ok(response)
+                    })
+                }
+            }
+        }
+    }
+    impl<T> Clone for OAuth2ServiceServer<T> {
+        fn clone(&self) -> Self {
+            let inner = self.inner.clone();
+            Self {
+                inner,
+                accept_compression_encodings: self.accept_compression_encodings,
+                send_compression_encodings: self.send_compression_encodings,
+                max_decoding_message_size: self.max_decoding_message_size,
+                max_encoding_message_size: self.max_encoding_message_size,
+            }
+        }
+    }
+    /// Generated gRPC service name
+    pub const SERVICE_NAME: &str = "synctv.client.OAuth2Service";
+    impl<T> tonic::server::NamedService for OAuth2ServiceServer<T> {
+        const NAME: &'static str = SERVICE_NAME;
+    }
+}

@@ -57,6 +57,8 @@ pub struct Services {
     pub notification_service: Arc<UserNotificationService>,
     /// Shared Redis connection (optional, None if Redis not configured)
     pub redis_conn: Option<redis::aio::ConnectionManager>,
+    /// CancellationToken for settings listen task (cancel on shutdown)
+    pub settings_cancel: tokio_util::sync::CancellationToken,
 }
 
 /// Initialize all core services
@@ -145,16 +147,24 @@ pub async fn init_services(
         content_filter.max_chat_length, content_filter.max_danmaku_length
     );
 
-    // Initialize RemoteProviderManager
+    // Initialize RemoteProviderManager (with Redis for cross-replica cache invalidation)
     info!("Initializing RemoteProviderManager...");
-    let provider_instance_manager = Arc::new(RemoteProviderManager::new(provider_instance_repo.clone()));
+    let provider_instance_manager = Arc::new(RemoteProviderManager::new(
+        provider_instance_repo.clone(),
+        redis_conn.clone(),
+    ));
 
-    // Load all enabled provider instances from database
+    // Pre-warm cache with all enabled provider instances from database
     if let Err(e) = provider_instance_manager.init().await {
         tracing::error!("Failed to initialize RemoteProviderManager: {}", e);
         tracing::error!("Continuing without remote provider instances");
     } else {
         info!("RemoteProviderManager initialized successfully");
+    }
+
+    // Start cross-replica cache invalidation listener
+    if let Err(e) = provider_instance_manager.start_invalidation_listener().await {
+        tracing::warn!("Failed to start provider invalidation listener: {e}");
     }
 
     // Initialize ProvidersManager
@@ -165,7 +175,7 @@ pub async fn init_services(
     info!("ProvidersManager initialized");
 
     // Initialize OAuth2 service (optional - requires OAuth2_* env vars)
-    let oauth2_service = init_oauth2_service(pool.clone(), config).await?;
+    let oauth2_service = init_oauth2_service(pool.clone(), config, redis_conn.clone()).await?;
     if oauth2_service.is_some() {
         info!("OAuth2 service initialized");
     } else {
@@ -183,7 +193,7 @@ pub async fn init_services(
 
     // Start PostgreSQL LISTEN for hot reload (with CancellationToken for graceful shutdown)
     let settings_cancel = tokio_util::sync::CancellationToken::new();
-    let _settings_listen_task = settings_service.start_listen_task(settings_cancel);
+    let settings_listen_task = settings_service.start_listen_task(settings_cancel.clone());
     info!("Settings hot reload (PostgreSQL LISTEN) started");
 
     // Wrap settings_service in Arc before creating registry
@@ -224,6 +234,10 @@ pub async fn init_services(
     let notification_service = UserNotificationService::new(notification_repo);
     info!("User notification service initialized");
 
+    // Keep the settings listen task handle alive by storing it.
+    // The task will be cancelled via settings_cancel on shutdown.
+    drop(settings_listen_task);
+
     Ok(Services {
         user_service: Arc::new(user_service),
         room_service: Arc::new(room_service),
@@ -244,6 +258,7 @@ pub async fn init_services(
         publish_key_service: Arc::new(publish_key_service),
         notification_service: Arc::new(notification_service),
         redis_conn,
+        settings_cancel,
     })
 }
 
@@ -254,6 +269,7 @@ pub async fn init_services(
 async fn init_oauth2_service(
     pool: PgPool,
     config: &Config,
+    redis_conn: Option<redis::aio::ConnectionManager>,
 ) -> Result<Option<Arc<OAuth2Service>>, anyhow::Error> {
     // 0. Initialize provider registry (register all factory functions)
     crate::oauth2::providers::init_providers();
@@ -276,7 +292,12 @@ async fn init_oauth2_service(
 
     // 2. Create OAuth2 provider repository and service
     let oauth2_repo = UserOAuthProviderRepository::new(pool.clone());
-    let oauth2_service = OAuth2Service::new(oauth2_repo);
+    let oauth2_service = if let Some(conn) = redis_conn {
+        info!("OAuth2 service using Redis for state storage (multi-replica safe)");
+        OAuth2Service::with_redis(oauth2_repo, conn)
+    } else {
+        OAuth2Service::new(oauth2_repo)
+    };
     let oauth2_service = Arc::new(oauth2_service);
 
     // 3. Initialize each provider instance using factory pattern

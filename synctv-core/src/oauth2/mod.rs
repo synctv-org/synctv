@@ -35,20 +35,23 @@ pub trait Provider: Send + Sync {
     /// Provider type identifier (e.g., "github", "logto", "oidc")
     fn provider_type(&self) -> &str;
 
-    /// Generate authorization URL with state
+    /// Generate authorization URL with state and PKCE challenge
     ///
-    /// Similar to Go's `NewAuthURL()` method.
-    async fn new_auth_url(&self, state: &str) -> Result<String, Error>;
+    /// Returns `(authorization_url, pkce_verifier)` where the PKCE verifier must be
+    /// stored and passed back during `get_user_info` to complete the PKCE flow.
+    ///
+    /// Similar to Go's `NewAuthURL()` method, extended with PKCE (RFC 7636).
+    async fn new_auth_url(&self, state: &str) -> Result<(String, String), Error>;
 
-    /// Exchange authorization code for user info
+    /// Exchange authorization code for user info, verifying the PKCE challenge
     ///
     /// This method:
-    /// 1. Exchanges the code for an access token
+    /// 1. Exchanges the code for an access token (with PKCE verifier)
     /// 2. Fetches user info using the token
     /// 3. Returns user info (token is discarded)
     ///
-    /// Similar to Go's `GetUserInfo()` method.
-    async fn get_user_info(&self, code: &str) -> Result<OAuth2UserInfo, Error>;
+    /// Similar to Go's `GetUserInfo()` method, extended with PKCE (RFC 7636).
+    async fn get_user_info(&self, code: &str, pkce_verifier: &str) -> Result<OAuth2UserInfo, Error>;
 }
 
 /// `OAuth2` user info from provider

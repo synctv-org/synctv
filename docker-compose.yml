@@ -50,6 +50,7 @@ services:
       - "8080:8080" # HTTP/REST API
       - "50051:50051" # gRPC
       - "1935:1935" # RTMP (livestream)
+      - "3478:3478/udp" # STUN (WebRTC NAT traversal)
     environment:
       SYNCTV_DATABASE_URL: postgresql://synctv:${POSTGRES_PASSWORD:-synctv}@postgres:5432/synctv
       SYNCTV_REDIS_URL: redis://redis:6379
@@ -68,7 +69,7 @@ services:
       - synctv
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health/live"]
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 30s
       timeout: 3s
       start_period: 40s

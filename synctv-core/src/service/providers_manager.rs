@@ -309,7 +309,7 @@ mod tests {
     async fn test_providers_manager_creation() {
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new(repo));
+        let instance_manager = Arc::new(RemoteProviderManager::new(repo, None));
         let manager = ProvidersManager::new(instance_manager);
 
         // Check that built-in providers are registered
@@ -325,7 +325,7 @@ mod tests {
     async fn test_list_provider_types() {
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new(repo));
+        let instance_manager = Arc::new(RemoteProviderManager::new(repo, None));
         let manager = ProvidersManager::new(instance_manager);
 
         let types = manager.list_types();

@@ -75,7 +75,7 @@ spec:
         # Checks if the application process is running
         livenessProbe:
           httpGet:
-            path: /health/live
+            path: /health
             port: 8080
           initialDelaySeconds: 30
           periodSeconds: 10
@@ -99,7 +99,7 @@ spec:
         # Useful for applications with slow startup times
         startupProbe:
           httpGet:
-            path: /health/live
+            path: /health
             port: 8080
           initialDelaySeconds: 0
           periodSeconds: 5

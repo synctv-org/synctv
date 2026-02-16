@@ -33,7 +33,6 @@ logging:
 
 livestream:
   rtmp_port: 1935
-  hls_port: 8081
   max_streams: 50
   gop_cache_size: 2
   stream_timeout_seconds: 300

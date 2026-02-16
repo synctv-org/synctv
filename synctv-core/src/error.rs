@@ -70,6 +70,12 @@ impl From<sqlx::Error> for Error {
     }
 }
 
+impl From<anyhow::Error> for Error {
+    fn from(err: anyhow::Error) -> Self {
+        Self::Internal(err.to_string())
+    }
+}
+
 impl From<Error> for tonic::Status {
     fn from(err: Error) -> Self {
         match err {

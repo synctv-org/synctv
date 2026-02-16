@@ -133,8 +133,12 @@ impl MediaService {
             .await
             .map_err(|e| Error::InvalidInput(format!("Invalid source_config: {e}")))?;
 
-        // Get next position in playlist
-        let position = self.media_repo.get_next_position(&request.playlist_id).await?;
+        // Use a transaction to atomically get the next position and insert,
+        // preventing concurrent adds from getting the same position
+        let mut tx = self.media_repo.pool().begin().await?;
+
+        // Get next position in playlist (locked with FOR UPDATE)
+        let position = self.media_repo.get_next_position_with_tx(&request.playlist_id, &mut tx).await?;
 
         // Create media with provider info (no enum conversion needed)
         // Business logic will use provider_instance_name to get provider from registry
@@ -149,7 +153,9 @@ impl MediaService {
             position,
         );
 
-        let created_media = self.media_repo.create(&media).await?;
+        let created_media = self.media_repo.create_with_executor(&media, &mut *tx).await?;
+
+        tx.commit().await?;
 
         tracing::info!(
             room_id = %room_id.as_str(),
@@ -197,17 +203,14 @@ impl MediaService {
             ));
         }
 
-        // Get starting position
-        let start_position = self.media_repo.get_next_position(&playlist_id).await?;
-
         // Create provider context for validation
         let ctx = ProviderContext::new("synctv")
             .with_user_id(user_id.as_str())
             .with_room_id(room_id.as_str());
 
-        // Create media items with provider validation
-        let mut media_items = Vec::with_capacity(items.len());
-        for (index, item) in items.into_iter().enumerate() {
+        // Validate all items before starting a transaction
+        let mut validated_items = Vec::with_capacity(items.len());
+        for item in items.into_iter() {
             // Get provider from registry by instance name
             let provider = self
                 .providers_manager
@@ -226,6 +229,19 @@ impl MediaService {
                 .await
                 .map_err(|e| Error::InvalidInput(format!("Invalid source_config for item '{}': {}", item.name, e)))?;
 
+            validated_items.push((item, provider));
+        }
+
+        // Use a transaction to atomically get the next position and batch insert,
+        // preventing concurrent adds from getting the same position
+        let mut tx = self.media_repo.pool().begin().await?;
+
+        // Get starting position (locked with FOR UPDATE)
+        let start_position = self.media_repo.get_next_position_with_tx(&playlist_id, &mut tx).await?;
+
+        // Create media items with provider info
+        let mut media_items = Vec::with_capacity(validated_items.len());
+        for (index, (item, provider)) in validated_items.into_iter().enumerate() {
             let media = Media::from_provider(
                 item.playlist_id,
                 room_id.clone(),
@@ -239,8 +255,10 @@ impl MediaService {
             media_items.push(media);
         }
 
-        // Batch insert
-        let created_items = self.media_repo.create_batch(&media_items).await?;
+        // Batch insert within the transaction
+        let created_items = self.media_repo.create_batch_with_executor(&media_items, &mut *tx).await?;
+
+        tx.commit().await?;
 
         tracing::info!(
             room_id = %room_id.as_str(),

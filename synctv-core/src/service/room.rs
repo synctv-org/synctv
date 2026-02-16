@@ -142,7 +142,7 @@ impl RoomService {
         permission_service.set_room_settings_repo(room_settings_repo.clone());
 
         // Initialize provider instance manager and providers manager
-        let provider_instance_manager = Arc::new(crate::service::RemoteProviderManager::new(provider_instance_repo));
+        let provider_instance_manager = Arc::new(crate::service::RemoteProviderManager::new(provider_instance_repo, None));
         let providers_manager = Arc::new(ProvidersManager::new(provider_instance_manager));
 
         // Initialize domain services
@@ -575,20 +575,17 @@ impl RoomService {
 
     /// Set room settings (replace entire settings object) with optimistic locking.
     pub async fn set_room_settings(&self, room_id: &RoomId, settings: &RoomSettings) -> Result<RoomSettings> {
-        for attempt in 0..Self::MAX_RETRIES {
-            let (_current, version) = self.room_settings_repo.get_with_version(room_id).await?;
-            match self.room_settings_repo.set_settings_with_version(room_id, settings, version).await {
-                Ok(_new_version) => return Ok(settings.clone()),
-                Err(Error::OptimisticLockConflict) if attempt + 1 < Self::MAX_RETRIES => {
-                    let backoff = Self::BACKOFF_BASE_MS * (1 << attempt);
-                    let jitter = rand::rng().random_range(0..Self::BACKOFF_BASE_MS);
-                    tokio::time::sleep(std::time::Duration::from_millis(backoff + jitter)).await;
-                    continue;
-                }
-                Err(e) => return Err(e),
-            }
-        }
-        Err(Error::Internal("Settings update failed after maximum retry attempts".to_string()))
+        super::optimistic_retry::retry_with_optimistic_lock(
+            Self::MAX_RETRIES,
+            Self::BACKOFF_BASE_MS,
+            "Settings update failed after maximum retry attempts",
+            || async {
+                let (_current, version) = self.room_settings_repo.get_with_version(room_id).await?;
+                self.room_settings_repo.set_settings_with_version(room_id, settings, version).await?;
+                Ok(settings.clone())
+            },
+        )
+        .await
     }
 
     /// Update single room setting by key (requires `UPDATE_ROOM_SETTINGS` permission)
@@ -672,24 +669,18 @@ impl RoomService {
 
         let default_settings = RoomSettings::default();
 
-        for attempt in 0..Self::MAX_RETRIES {
-            let (_current, version) = self.room_settings_repo.get_with_version(room_id).await?;
-            match self.room_settings_repo.set_settings_with_version(room_id, &default_settings, version).await {
-                Ok(_new_version) => {
-                    return serde_json::to_string(&default_settings)
-                        .map_err(|e| Error::Internal(format!("Failed to serialize settings: {e}")));
-                }
-                Err(Error::OptimisticLockConflict) if attempt + 1 < Self::MAX_RETRIES => {
-                    let backoff = Self::BACKOFF_BASE_MS * (1 << attempt);
-                    let jitter = rand::rng().random_range(0..Self::BACKOFF_BASE_MS);
-                    tokio::time::sleep(std::time::Duration::from_millis(backoff + jitter)).await;
-                    continue;
-                }
-                Err(e) => return Err(e),
-            }
-        }
-
-        Err(Error::Internal("Settings reset failed after maximum retry attempts".to_string()))
+        super::optimistic_retry::retry_with_optimistic_lock(
+            Self::MAX_RETRIES,
+            Self::BACKOFF_BASE_MS,
+            "Settings reset failed after maximum retry attempts",
+            || async {
+                let (_current, version) = self.room_settings_repo.get_with_version(room_id).await?;
+                self.room_settings_repo.set_settings_with_version(room_id, &default_settings, version).await?;
+                serde_json::to_string(&default_settings)
+                    .map_err(|e| Error::Internal(format!("Failed to serialize settings: {e}")))
+            },
+        )
+        .await
     }
 
     /// Check room password

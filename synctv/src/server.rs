@@ -63,6 +63,10 @@ pub struct Services {
     pub token_blacklist: synctv_core::service::TokenBlacklistService,
     /// Shared Redis connection for playback caching
     pub redis_conn: Option<redis::aio::ConnectionManager>,
+    /// CancellationToken for settings listen task
+    pub settings_cancel: tokio_util::sync::CancellationToken,
+    /// CancellationToken for partition management tasks
+    pub partition_cancel: tokio_util::sync::CancellationToken,
 }
 
 /// `SyncTV` server - manages all server components
@@ -193,6 +197,8 @@ impl SyncTvServer {
         // Signal all components to shut down
         let _ = shutdown_tx.send(true);
         cleanup_cancel.cancel();
+        self.services.settings_cancel.cancel();
+        self.services.partition_cancel.cancel();
 
         // Run graceful shutdown
         self.shutdown().await;

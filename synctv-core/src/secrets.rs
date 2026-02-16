@@ -40,8 +40,10 @@
 
 use std::fs;
 use std::path::Path;
-use anyhow::{Context, Result};
+use anyhow::Context;
 use tracing::{debug, warn};
+
+use crate::Result;
 
 /// Source for loading secrets
 #[derive(Debug, Clone)]
@@ -82,7 +84,9 @@ impl SecretLoader {
                 let trimmed = content.trim().to_string();
 
                 if trimmed.is_empty() {
-                    anyhow::bail!("Secret '{name}' from file '{path}' is empty");
+                    return Err(crate::Error::Internal(
+                        format!("Secret '{name}' from file '{path}' is empty"),
+                    ));
                 }
 
                 debug!(secret_name = name, secret_len = trimmed.len(), "Secret loaded successfully from file");
@@ -100,7 +104,9 @@ impl SecretLoader {
                     .with_context(|| format!("Failed to read secret '{name}' from environment variable '{env_var}'"))?;
 
                 if value.is_empty() {
-                    anyhow::bail!("Secret '{name}' from environment variable '{env_var}' is empty");
+                    return Err(crate::Error::Internal(
+                        format!("Secret '{name}' from environment variable '{env_var}' is empty"),
+                    ));
                 }
 
                 debug!(secret_name = name, secret_len = value.len(), "Secret loaded successfully from environment");
@@ -133,10 +139,12 @@ impl SecretLoader {
                     "Primary secret source failed, trying fallback"
                 );
 
-                Self::load(name, fallback)
-                    .with_context(|| format!(
-                        "Failed to load secret '{name}' from both primary and fallback sources. Primary error: {primary_err}"
+                Self::load(name, fallback).map_err(|fallback_err| {
+                    crate::Error::Internal(format!(
+                        "Failed to load secret '{name}' from both primary and fallback sources. \
+                         Primary error: {primary_err}. Fallback error: {fallback_err}"
                     ))
+                })
             }
         }
     }
@@ -213,10 +221,10 @@ pub fn validate_required_secrets(required_secrets: &[(&str, SecretSource)]) -> R
     }
 
     if !missing_secrets.is_empty() {
-        anyhow::bail!(
+        return Err(crate::Error::Internal(format!(
             "Missing required secrets: {}. Application cannot start without these secrets.",
             missing_secrets.join(", ")
-        );
+        )));
     }
 
     debug!("All required secrets validated successfully");

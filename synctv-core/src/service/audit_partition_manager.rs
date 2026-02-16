@@ -4,6 +4,7 @@
 
 use sqlx::PgPool;
 use serde::{Deserialize, Serialize};
+use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::{Error, Result};
@@ -237,16 +238,23 @@ impl AuditPartitionManager {
 
     /// Start automatic partition management task
     ///
-    /// Spawns a background task that periodically checks and creates partitions
-    #[must_use] 
-    pub fn start_auto_management(&self, check_interval_hours: u64) -> tokio::task::JoinHandle<()> {
+    /// Spawns a background task that periodically checks and creates partitions.
+    /// The task will shut down gracefully when the provided `CancellationToken` is cancelled.
+    #[must_use]
+    pub fn start_auto_management(&self, check_interval_hours: u64, cancel: CancellationToken) -> tokio::task::JoinHandle<()> {
         let manager = self.clone();
 
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(check_interval_hours * 3600));
 
             loop {
-                interval.tick().await;
+                tokio::select! {
+                    _ = interval.tick() => {}
+                    () = cancel.cancelled() => {
+                        info!("Audit partition management task cancelled, shutting down");
+                        return;
+                    }
+                }
 
                 // Check health status
                 match manager.check_health().await {

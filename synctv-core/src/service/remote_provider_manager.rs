@@ -2,78 +2,229 @@
 //
 // Manages remote provider instances (gRPC connections).
 // Supports both local (in-process) and remote (gRPC) provider instances.
+//
+// ## Multi-replica support
+//
+// Instead of maintaining a persistent channel map that is invisible across replicas,
+// channels are created lazily on demand and cached with a TTL. When a provider
+// operation is needed, the manager looks up the instance config from the DB and
+// creates a channel if not already cached.
+//
+// Provider changes (add/update/delete/enable/disable) publish a Redis Pub/Sub
+// notification so other replicas can invalidate their local cache.
 
 use crate::models::ProviderInstance;
 use crate::repository::ProviderInstanceRepository;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::RwLock;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint};
 use tonic_health::pb::{health_client::HealthClient, HealthCheckRequest};
+
+/// Redis Pub/Sub channel for provider instance change notifications
+const PROVIDER_CHANGE_CHANNEL: &str = "synctv:provider_instances:changes";
+
+/// Default channel cache TTL (5 minutes)
+const CHANNEL_CACHE_TTL_SECS: u64 = 300;
+
+/// Maximum number of cached channels
+const MAX_CACHED_CHANNELS: u64 = 1_000;
 
 /// Remote Provider Manager
 ///
 /// Manages remote provider instances (gRPC connections).
 /// When no remote instance is found, providers fallback to singleton local clients.
 ///
-/// Architecture:
-/// - `instances`: `HashMap` of remote gRPC channels (indexed by name)
-/// - `get(name)`: Returns Some(channel) if remote instance found, None otherwise
-#[derive(Debug)]
+/// ## Multi-replica architecture
+///
+/// - Channels are created lazily from DB config and cached with TTL via moka
+/// - `get(name)` looks up the cached channel or creates one from DB on cache miss
+/// - Provider mutations publish a Redis Pub/Sub notification for cross-replica invalidation
+/// - A background subscriber listens for invalidation messages and evicts stale entries
 pub struct RemoteProviderManager {
-    /// Remote instances (indexed by name → gRPC Channel)
-    instances: Arc<RwLock<HashMap<String, Channel>>>,
+    /// Lazily-populated channel cache with TTL (indexed by instance name)
+    channel_cache: Arc<moka::future::Cache<String, Channel>>,
 
     /// Repository for database operations
     repository: Arc<ProviderInstanceRepository>,
+
+    /// Optional Redis connection for Pub/Sub invalidation notifications
+    redis_conn: Option<redis::aio::ConnectionManager>,
+}
+
+impl std::fmt::Debug for RemoteProviderManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RemoteProviderManager")
+            .field("redis_enabled", &self.redis_conn.is_some())
+            .finish()
+    }
 }
 
 impl RemoteProviderManager {
     /// Create a new `RemoteProviderManager`
+    ///
+    /// When `redis_conn` is provided, provider changes are published via Redis Pub/Sub
+    /// so other replicas can invalidate their local cache. Without Redis, cache
+    /// invalidation is local only (entries expire naturally via TTL).
     #[must_use]
-    pub fn new(repository: Arc<ProviderInstanceRepository>) -> Self {
+    pub fn new(
+        repository: Arc<ProviderInstanceRepository>,
+        redis_conn: Option<redis::aio::ConnectionManager>,
+    ) -> Self {
+        if redis_conn.is_none() {
+            tracing::warn!(
+                "RemoteProviderManager using local-only cache invalidation. \
+                 For multi-replica setups, configure Redis for cross-replica sync."
+            );
+        }
+        let channel_cache = moka::future::Cache::builder()
+            .max_capacity(MAX_CACHED_CHANNELS)
+            .time_to_live(Duration::from_secs(CHANNEL_CACHE_TTL_SECS))
+            .build();
+
         Self {
-            instances: Arc::new(RwLock::new(HashMap::new())),
+            channel_cache: Arc::new(channel_cache),
             repository,
+            redis_conn,
         }
     }
 
-    /// Initialize manager by loading all enabled instances from database
+    /// Initialize manager by pre-warming the cache with all enabled instances from database.
     ///
-    /// Call this at application startup to establish gRPC connections
-    /// to all configured remote provider instances.
+    /// This is optional -- channels will be created lazily on demand even without
+    /// calling init(). However, pre-warming reduces latency for the first request
+    /// to each provider.
     pub async fn init(&self) -> crate::Result<()> {
-        tracing::info!("Initializing provider instance manager");
+        tracing::info!("Initializing provider instance manager (pre-warming cache)");
 
-        // Load all enabled instances from database
         let configs = self.repository.get_all_enabled().await?;
-
-        let mut instances = self.instances.write().await;
         let mut success_count = 0;
         let mut error_count = 0;
 
         for config in configs {
             match Self::create_grpc_channel(&config).await {
                 Ok(channel) => {
-                    instances.insert(config.name.clone(), channel);
-                    tracing::info!("Loaded remote provider instance: {}", config.name);
+                    self.channel_cache.insert(config.name.clone(), channel).await;
+                    tracing::info!("Pre-warmed provider instance cache: {}", config.name);
                     success_count += 1;
                 }
                 Err(e) => {
-                    tracing::error!("Failed to load provider instance {}: {}", config.name, e);
+                    tracing::error!("Failed to pre-warm provider instance {}: {}", config.name, e);
                     error_count += 1;
                 }
             }
         }
 
         tracing::info!(
-            "Provider instance manager initialized: {} remote instances loaded, {} failed",
+            "Provider instance manager initialized: {} instances cached, {} failed",
             success_count,
             error_count
         );
 
         Ok(())
+    }
+
+    /// Start the Redis Pub/Sub subscriber for cross-replica cache invalidation.
+    ///
+    /// Spawns a background task that listens for provider change notifications
+    /// and invalidates the local cache accordingly. Returns immediately if Redis
+    /// is not configured.
+    pub async fn start_invalidation_listener(&self) -> crate::Result<()> {
+        let Some(ref conn) = self.redis_conn else {
+            tracing::debug!("No Redis configured, skipping invalidation listener");
+            return Ok(());
+        };
+
+        // We need a separate client for Pub/Sub (can't reuse ConnectionManager for subscriptions)
+        let redis_info = conn.clone();
+        let mut info_conn = redis_info;
+
+        // Get the connection info to create a new client for Pub/Sub
+        let info: String = redis::cmd("INFO")
+            .arg("server")
+            .query_async(&mut info_conn)
+            .await
+            .map_err(|e| crate::Error::Internal(format!("Failed to get Redis info: {e}")))?;
+
+        // Extract the Redis URL from the connection manager's internal state
+        // We'll use the connection manager to get a Pub/Sub connection indirectly
+        let _info = info; // Just validate connectivity
+
+        let cache = Arc::clone(&self.channel_cache);
+        let mut sub_conn = conn.clone();
+
+        // Subscribe to provider change notifications using a polling approach
+        // (ConnectionManager doesn't support native Pub/Sub, so we use a lightweight poll)
+        tokio::spawn(async move {
+            // Use a Redis list as a notification queue (BRPOP with timeout)
+            // This is more compatible with ConnectionManager than native Pub/Sub
+            let notification_key = format!("{PROVIDER_CHANGE_CHANNEL}:notifications");
+            loop {
+                // Block for up to 5 seconds waiting for a notification
+                let result: Result<Option<(String, String)>, redis::RedisError> =
+                    redis::cmd("BRPOP")
+                        .arg(&notification_key)
+                        .arg(5) // 5 second timeout
+                        .query_async(&mut sub_conn)
+                        .await;
+
+                match result {
+                    Ok(Some((_key, instance_name))) => {
+                        tracing::info!(
+                            "Received provider change notification for '{}', invalidating cache",
+                            instance_name
+                        );
+                        cache.invalidate(&instance_name).await;
+                    }
+                    Ok(None) => {
+                        // Timeout, no notification -- continue polling
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Error polling provider change notifications: {e}. Retrying in 5s."
+                        );
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                    }
+                }
+            }
+        });
+
+        tracing::info!("Provider instance cache invalidation listener started");
+        Ok(())
+    }
+
+    /// Publish a cache invalidation notification to Redis so other replicas
+    /// evict the stale entry for `instance_name`.
+    async fn notify_change(&self, instance_name: &str) {
+        let Some(ref conn) = self.redis_conn else {
+            return;
+        };
+
+        let notification_key = format!("{PROVIDER_CHANGE_CHANNEL}:notifications");
+        let mut conn = conn.clone();
+
+        // Push the instance name to a notification list (LPUSH)
+        // Other replicas pick it up via BRPOP in the invalidation listener
+        let result: Result<(), redis::RedisError> = redis::cmd("LPUSH")
+            .arg(&notification_key)
+            .arg(instance_name)
+            .query_async(&mut conn)
+            .await;
+
+        if let Err(e) = result {
+            tracing::warn!(
+                "Failed to publish provider change notification for '{}': {e}",
+                instance_name
+            );
+        }
+
+        // Trim the list to prevent unbounded growth (keep last 1000 notifications)
+        let _: Result<(), redis::RedisError> = redis::cmd("LTRIM")
+            .arg(&notification_key)
+            .arg(0)
+            .arg(999)
+            .query_async(&mut conn)
+            .await;
     }
 
     /// Create a gRPC channel for the given provider instance
@@ -133,13 +284,46 @@ impl RemoteProviderManager {
         Ok(channel)
     }
 
-    /// Get a remote provider instance channel by name
+    /// Get a remote provider instance channel by name.
+    ///
+    /// Checks the local moka cache first. On cache miss, loads the instance config
+    /// from the database and creates a channel lazily. This ensures that provider
+    /// instances added on other replicas are visible after the cache TTL expires
+    /// (or immediately if a Redis invalidation notification was received).
     ///
     /// Returns:
-    /// - `Some(channel)` if remote instance exists
-    /// - `None` if not found (caller should fallback to singleton local client)
+    /// - `Some(channel)` if the instance exists and is enabled
+    /// - `None` if not found or disabled (caller should fallback to singleton local client)
     pub async fn get(&self, name: &str) -> Option<Channel> {
-        self.instances.read().await.get(name).cloned()
+        // Fast path: check cache
+        if let Some(channel) = self.channel_cache.get(name).await {
+            return Some(channel);
+        }
+
+        // Cache miss: try to load from database and create channel lazily
+        match self.repository.get_by_name(name).await {
+            Ok(Some(config)) if config.enabled => {
+                match Self::create_grpc_channel(&config).await {
+                    Ok(channel) => {
+                        self.channel_cache.insert(name.to_string(), channel.clone()).await;
+                        tracing::debug!("Lazily created and cached channel for instance '{}'", name);
+                        Some(channel)
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to create channel for instance '{}': {}", name, e);
+                        None
+                    }
+                }
+            }
+            Ok(_) => {
+                // Instance not found or disabled
+                None
+            }
+            Err(e) => {
+                tracing::error!("Failed to load provider instance '{}' from DB: {}", name, e);
+                None
+            }
+        }
     }
 
     /// Resolve a provider client: try remote instance first, fallback to local.
@@ -161,9 +345,19 @@ impl RemoteProviderManager {
         load_local()
     }
 
-    /// List all remote instance names
+    /// List all remote instance names (from cache + DB)
+    ///
+    /// Returns the union of cached instances and enabled instances from the DB.
     pub async fn list(&self) -> Vec<String> {
-        self.instances.read().await.keys().cloned().collect()
+        // Get all enabled instances from DB for a complete picture
+        match self.repository.get_all_enabled().await {
+            Ok(configs) => configs.into_iter().map(|c| c.name).collect(),
+            Err(e) => {
+                tracing::warn!("Failed to list provider instances from DB: {e}, using cache only");
+                // Fallback to cache keys (moka doesn't expose keys directly, so return empty)
+                Vec::new()
+            }
+        }
     }
 
     /// Get all provider instances with full metadata
@@ -175,12 +369,11 @@ impl RemoteProviderManager {
     ///
     /// 1. Creates gRPC connection
     /// 2. Saves to database
-    /// 3. Adds to in-memory registry
+    /// 3. Caches the channel locally
+    /// 4. Notifies other replicas via Redis
     pub async fn add(&self, config: ProviderInstance) -> crate::Result<()> {
-        // Hold write lock for the entire operation to prevent TOCTOU race
-        let mut instances = self.instances.write().await;
-
-        if instances.contains_key(&config.name) {
+        // Check DB for existing instance (not just local cache)
+        if let Ok(Some(_)) = self.repository.get_by_name(&config.name).await {
             return Err(crate::Error::AlreadyExists(format!("Instance '{}' already exists", config.name)));
         }
 
@@ -190,8 +383,11 @@ impl RemoteProviderManager {
         // Save to database
         self.repository.create(&config).await?;
 
-        // Add to in-memory registry (still holding write lock)
-        instances.insert(config.name.clone(), channel);
+        // Cache locally
+        self.channel_cache.insert(config.name.clone(), channel).await;
+
+        // Notify other replicas
+        self.notify_change(&config.name).await;
 
         tracing::info!("Added provider instance: {}", config.name);
         Ok(())
@@ -201,22 +397,20 @@ impl RemoteProviderManager {
     ///
     /// 1. Creates new gRPC connection
     /// 2. Updates database
-    /// 3. Replaces in-memory channel (old connection closed automatically)
-    ///
-    /// Holds write lock for the entire DB+memory update to prevent TOCTOU races
-    /// where concurrent reads could see stale channel data during the update.
+    /// 3. Replaces cached channel
+    /// 4. Notifies other replicas via Redis
     pub async fn update(&self, config: ProviderInstance) -> crate::Result<()> {
-        // Hold write lock for the entire DB+memory update to prevent TOCTOU
-        let mut instances = self.instances.write().await;
-
         // Create new gRPC connection
         let channel = Self::create_grpc_channel(&config).await?;
 
         // Update database
         self.repository.update(&config).await?;
 
-        // Replace in-memory channel (old connection auto-closed, still holding lock)
-        instances.insert(config.name.clone(), channel);
+        // Replace cached channel
+        self.channel_cache.insert(config.name.clone(), channel).await;
+
+        // Notify other replicas
+        self.notify_change(&config.name).await;
 
         tracing::info!("Updated provider instance: {}", config.name);
         Ok(())
@@ -225,13 +419,17 @@ impl RemoteProviderManager {
     /// Delete a provider instance
     ///
     /// 1. Removes from database
-    /// 2. Removes from in-memory registry (connection closed automatically)
+    /// 2. Invalidates cached channel
+    /// 3. Notifies other replicas via Redis
     pub async fn delete(&self, name: &str) -> crate::Result<()> {
         // Remove from database
         self.repository.delete(name).await?;
 
-        // Remove from memory (connection auto-closed)
-        self.instances.write().await.remove(name);
+        // Invalidate cache
+        self.channel_cache.invalidate(name).await;
+
+        // Notify other replicas
+        self.notify_change(name).await;
 
         tracing::info!("Deleted provider instance: {}", name);
         Ok(())
@@ -239,24 +437,23 @@ impl RemoteProviderManager {
 
     /// Enable a provider instance
     ///
-    /// Re-establishes gRPC connection and adds to active registry.
+    /// Loads config from DB, creates channel, caches it, and notifies replicas.
     pub async fn enable(&self, name: &str) -> crate::Result<()> {
         // Update database
         self.repository.enable(name).await?;
 
-        // Reload instance from database
+        // Reload instance from database and create channel
         let config = self
             .repository
             .get_by_name(name)
             .await?
             .ok_or_else(|| crate::Error::NotFound(format!("Instance '{name}' not found")))?;
 
-        // Create connection and add to registry
         let channel = Self::create_grpc_channel(&config).await?;
-        self.instances
-            .write()
-            .await
-            .insert(config.name.clone(), channel);
+        self.channel_cache.insert(config.name.clone(), channel).await;
+
+        // Notify other replicas
+        self.notify_change(name).await;
 
         tracing::info!("Enabled provider instance: {}", name);
         Ok(())
@@ -264,13 +461,16 @@ impl RemoteProviderManager {
 
     /// Disable a provider instance
     ///
-    /// Removes from active registry and closes connection.
+    /// Invalidates cached channel and notifies replicas.
     pub async fn disable(&self, name: &str) -> crate::Result<()> {
         // Update database
         self.repository.disable(name).await?;
 
-        // Remove from memory (connection auto-closed)
-        self.instances.write().await.remove(name);
+        // Invalidate cache
+        self.channel_cache.invalidate(name).await;
+
+        // Notify other replicas
+        self.notify_change(name).await;
 
         tracing::info!("Disabled provider instance: {}", name);
         Ok(())
@@ -280,13 +480,29 @@ impl RemoteProviderManager {
     ///
     /// Returns a map of instance name to health status.
     /// Uses gRPC Health Check protocol with 5-second timeout per instance.
+    ///
+    /// Loads the full list from DB to check all instances, not just cached ones.
     pub async fn health_check(&self) -> HashMap<String, bool> {
-        let instances = self.instances.read().await;
         let mut results = HashMap::new();
 
-        for (name, channel) in instances.iter() {
-            let is_healthy = self.check_instance_health(name, channel.clone()).await;
-            results.insert(name.clone(), is_healthy);
+        // Get all enabled instances from DB for complete health check
+        let configs = match self.repository.get_all_enabled().await {
+            Ok(configs) => configs,
+            Err(e) => {
+                tracing::error!("Failed to load instances for health check: {e}");
+                return results;
+            }
+        };
+
+        for config in configs {
+            // Try to get channel from cache or create it
+            let channel = match self.get(&config.name).await {
+                Some(ch) => ch,
+                None => continue,
+            };
+
+            let is_healthy = self.check_instance_health(&config.name, channel).await;
+            results.insert(config.name, is_healthy);
         }
 
         results

@@ -9,8 +9,6 @@ use crate::{
     service::permission::PermissionService,
     Error, Result,
 };
-use rand::RngExt;
-
 /// Role hierarchy level for authorization checks (higher = more authority)
 /// Creator > Admin > Member > Guest
 const fn role_level(role: &RoomRole) -> u8 {
@@ -281,37 +279,28 @@ impl MemberService {
             .check_permission_no_cache(&room_id, &granter_id, PermissionBits::GRANT_PERMISSION)
             .await?;
 
-        for attempt in 0..Self::MAX_RETRIES {
-            // Get current member to get version
-            let member = self
-                .member_repo
-                .get(&room_id, &target_user_id)
-                .await?
-                .ok_or_else(|| Error::NotFound("User is not a member of this room".to_string()))?;
+        let updated_member = super::optimistic_retry::retry_with_optimistic_lock(
+            Self::MAX_RETRIES,
+            Self::BACKOFF_BASE_MS,
+            "Permission update failed after maximum retry attempts",
+            || async {
+                let member = self
+                    .member_repo
+                    .get(&room_id, &target_user_id)
+                    .await?
+                    .ok_or_else(|| Error::NotFound("User is not a member of this room".to_string()))?;
+                self.member_repo
+                    .update_permissions(&room_id, &target_user_id, added_permissions, removed_permissions, member.version)
+                    .await
+            },
+        )
+        .await?;
 
-            // Update permissions with optimistic locking
-            match self.member_repo
-                .update_permissions(&room_id, &target_user_id, added_permissions, removed_permissions, member.version)
-                .await
-            {
-                Ok(updated_member) => {
-                    // Invalidate permission cache for target user
-                    self.permission_service
-                        .invalidate_cache(&room_id, &target_user_id)
-                        .await;
-                    return Ok(updated_member);
-                }
-                Err(Error::OptimisticLockConflict) if attempt + 1 < Self::MAX_RETRIES => {
-                    let backoff = Self::BACKOFF_BASE_MS * (1 << attempt);
-                    let jitter = rand::rng().random_range(0..Self::BACKOFF_BASE_MS);
-                    tokio::time::sleep(std::time::Duration::from_millis(backoff + jitter)).await;
-                    continue;
-                }
-                Err(e) => return Err(e),
-            }
-        }
-
-        Err(Error::Internal("Permission update failed after maximum retry attempts".to_string()))
+        // Invalidate permission cache for target user
+        self.permission_service
+            .invalidate_cache(&room_id, &target_user_id)
+            .await;
+        Ok(updated_member)
     }
 
     /// Grant a specific permission to a member (Allow pattern)
@@ -389,37 +378,28 @@ impl MemberService {
             .check_permission_no_cache(&room_id, &granter_id, PermissionBits::GRANT_PERMISSION)
             .await?;
 
-        for attempt in 0..Self::MAX_RETRIES {
-            // Get current member to get version
-            let member = self
-                .member_repo
-                .get(&room_id, &target_user_id)
-                .await?
-                .ok_or_else(|| Error::NotFound("User is not a member of this room".to_string()))?;
+        let updated_member = super::optimistic_retry::retry_with_optimistic_lock(
+            Self::MAX_RETRIES,
+            Self::BACKOFF_BASE_MS,
+            "Permission reset failed after maximum retry attempts",
+            || async {
+                let member = self
+                    .member_repo
+                    .get(&room_id, &target_user_id)
+                    .await?
+                    .ok_or_else(|| Error::NotFound("User is not a member of this room".to_string()))?;
+                self.member_repo
+                    .reset_permissions(&room_id, &target_user_id, member.version)
+                    .await
+            },
+        )
+        .await?;
 
-            // Reset to role default (clear both added and removed)
-            match self.member_repo
-                .reset_permissions(&room_id, &target_user_id, member.version)
-                .await
-            {
-                Ok(updated_member) => {
-                    // Invalidate permission cache for target user
-                    self.permission_service
-                        .invalidate_cache(&room_id, &target_user_id)
-                        .await;
-                    return Ok(updated_member);
-                }
-                Err(Error::OptimisticLockConflict) if attempt + 1 < Self::MAX_RETRIES => {
-                    let backoff = Self::BACKOFF_BASE_MS * (1 << attempt);
-                    let jitter = rand::rng().random_range(0..Self::BACKOFF_BASE_MS);
-                    tokio::time::sleep(std::time::Duration::from_millis(backoff + jitter)).await;
-                    continue;
-                }
-                Err(e) => return Err(e),
-            }
-        }
-
-        Err(Error::Internal("Permission reset failed after maximum retry attempts".to_string()))
+        // Invalidate permission cache for target user
+        self.permission_service
+            .invalidate_cache(&room_id, &target_user_id)
+            .await;
+        Ok(updated_member)
     }
 
     /// Get all members of a room with user info

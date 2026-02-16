@@ -29,6 +29,14 @@ impl MediaRepository {
 
     /// Add media to playlist
     pub async fn create(&self, media: &Media) -> Result<Media> {
+        self.create_with_executor(media, &self.pool).await
+    }
+
+    /// Add media to playlist using a provided executor (for transaction support)
+    pub async fn create_with_executor<'e, E>(&self, media: &Media, executor: E) -> Result<Media>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+    {
         let source_config_json = serde_json::to_value(&media.source_config)?;
 
         let row = sqlx::query(
@@ -51,7 +59,7 @@ impl MediaRepository {
         .bind(&source_config_json)
         .bind(&media.provider_instance_name)
         .bind(media.added_at)
-        .fetch_one(&self.pool)
+        .fetch_one(executor)
         .await?;
 
         Ok(Media::from_row(&row)?)
@@ -188,7 +196,7 @@ impl MediaRepository {
             return Ok(Vec::new());
         }
 
-        let id_strs: Vec<&str> = media_ids.iter().map(super::super::models::id::MediaId::as_str).collect();
+        let id_strs: Vec<&str> = media_ids.iter().map(MediaId::as_str).collect();
         let rows = sqlx::query(
             r"
             SELECT id, playlist_id, room_id, creator_id, name, position,
@@ -333,7 +341,7 @@ impl MediaRepository {
             return Ok(0);
         }
 
-        let id_strs: Vec<&str> = media_ids.iter().map(super::super::models::id::MediaId::as_str).collect();
+        let id_strs: Vec<&str> = media_ids.iter().map(MediaId::as_str).collect();
         let now = chrono::Utc::now();
 
         let result = sqlx::query(

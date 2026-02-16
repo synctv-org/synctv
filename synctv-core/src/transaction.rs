@@ -3,7 +3,6 @@
 //! Provides transactional scope for multi-repository operations.
 
 use sqlx::{PgPool, Postgres, Transaction};
-use std::ops::Deref;
 
 use crate::Result;
 
@@ -52,18 +51,9 @@ impl UnitOfWork {
 
     /// Get the transaction for repository operations
     ///
-    /// # Panics
-    ///
-    /// Panics if the transaction has already been consumed (committed or rolled back).
-    /// For a non-panicking version, use [`try_transaction`](Self::try_transaction).
-    pub const fn transaction(&mut self) -> &mut Transaction<'static, Postgres> {
-        self.tx.as_mut().expect("Transaction already consumed")
-    }
-
-    /// Try to get the transaction for repository operations
-    ///
-    /// Returns an error if the transaction has already been consumed.
-    pub fn try_transaction(&mut self) -> Result<&mut Transaction<'static, Postgres>> {
+    /// Returns an error if the transaction has already been consumed
+    /// (committed or rolled back).
+    pub fn transaction(&mut self) -> Result<&mut Transaction<'static, Postgres>> {
         self.tx.as_mut().ok_or(crate::error::Error::Internal("Transaction already consumed".to_string()))
     }
 
@@ -71,14 +61,6 @@ impl UnitOfWork {
     #[must_use]
     pub const fn is_active(&self) -> bool {
         self.tx.is_some()
-    }
-}
-
-impl Deref for UnitOfWork {
-    type Target = Transaction<'static, Postgres>;
-
-    fn deref(&self) -> &Self::Target {
-        self.tx.as_ref().expect("Transaction already consumed")
     }
 }
 
@@ -142,9 +124,9 @@ mod tests {
     }
 
     #[test]
-    fn test_uow_try_transaction_returns_error_when_none() {
+    fn test_uow_transaction_returns_error_when_consumed() {
         let mut uow = UnitOfWork { tx: None };
-        let result = uow.try_transaction();
+        let result = uow.transaction();
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("already consumed"));
@@ -154,20 +136,6 @@ mod tests {
     fn test_uow_is_active_when_no_transaction() {
         let uow = UnitOfWork { tx: None };
         assert!(!uow.is_active());
-    }
-
-    #[test]
-    #[should_panic(expected = "Transaction already consumed")]
-    fn test_uow_transaction_panics_when_consumed() {
-        let mut uow = UnitOfWork { tx: None };
-        let _ = uow.transaction(); // should panic
-    }
-
-    #[test]
-    #[should_panic(expected = "Transaction already consumed")]
-    fn test_uow_deref_panics_when_consumed() {
-        let uow = UnitOfWork { tx: None };
-        let _ = &*uow; // Deref should panic
     }
 
     #[test]

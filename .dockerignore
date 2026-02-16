@@ -1,29 +1,10 @@
-# Build artifacts
 target/
-**/target/
-
-# IDE files
-.vscode/
-.idea/
-.claude/
-
-# Git
 .git/
-.gitignore
-.gitattributes
-
-# CI/CD
 .github/
-.gitlab-ci.yml
-
-# Development files
-.env
-.env.*
-*.local
-*.local.*
-
-# Logs
-*.log
-
-# macOS
+.claude/
+docs/
+benches/
+*.md
+!README.md
 .DS_Store
+.gitignore

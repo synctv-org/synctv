@@ -2,6 +2,9 @@
 //!
 //! This module provides a safe, composable way to build SQL WHERE clauses
 //! using `SeaQuery`. All queries are properly parameterized to prevent SQL injection.
+//!
+//! TODO: This module is currently unused. Either integrate it into repository
+//! query methods or remove it to reduce dead code.
 
 use sea_query::{Cond, Expr, Iden, SimpleExpr, Value as SeaValue};
 use sea_query::extension::postgres::PgExpr;

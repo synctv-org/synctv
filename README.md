@@ -149,7 +149,7 @@ logging:
 ## Security
 
 - **Password Hashing**: Argon2id (PHC 2023 winner)
-- **JWT**: RS256 asymmetric encryption
+- **JWT**: HS256 symmetric HMAC
 - **Permissions**: 64-bit bitmask system
 - **TLS**: Recommended for production
 

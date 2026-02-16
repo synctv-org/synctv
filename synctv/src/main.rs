@@ -110,8 +110,9 @@ async fn main() -> Result<()> {
         .ok();
 
     // Start automatic partition management (check every 24 hours)
+    let partition_cancel = tokio_util::sync::CancellationToken::new();
     let audit_manager = synctv_core::service::AuditPartitionManager::new(pool.clone());
-    let _audit_task = audit_manager.start_auto_management(24);
+    let _audit_task = audit_manager.start_auto_management(24, partition_cancel.clone());
     info!("Audit log partition management started");
 
     // 5. Initialize services (needed for settings_registry)
@@ -136,7 +137,7 @@ async fn main() -> Result<()> {
         pool.clone(),
         synctv_services.settings_registry.clone()
     );
-    let _chat_partition_task = chat_partition_manager.start_auto_management(24);
+    let _chat_partition_task = chat_partition_manager.start_auto_management(24, partition_cancel.clone());
     info!("Chat message partition management started (check interval: 24 hours)");
 
     // 6. Initialize connection manager with configurable limits (needed early for heartbeat loop)
@@ -606,6 +607,8 @@ async fn main() -> Result<()> {
         load_balancer,
         token_blacklist: synctv_services.token_blacklist.clone(),
         redis_conn: synctv_services.redis_conn.clone(),
+        settings_cancel: synctv_services.settings_cancel.clone(),
+        partition_cancel,
     };
 
     let server = SyncTvServer::new(config, services, livestream_state, pool);

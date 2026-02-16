@@ -14,6 +14,24 @@ server:
   grpc_port: 50051
   http_port: 8080
   enable_reflection: true
+  # WARNING: Never enable in production! Relaxes security checks for local development.
+  development_mode: false
+  # Enable the /metrics Prometheus endpoint (independent of development_mode)
+  metrics_enabled: false
+  # Trusted proxy IP addresses/CIDRs for X-Forwarded-For validation.
+  # If empty, X-Forwarded-For headers are NOT trusted (socket address is used).
+  # Example: ["10.0.0.0/8", "192.168.0.0/16"]
+  trusted_proxies: []
+  # CORS allowed origins. In development mode, all origins are allowed.
+  # Example: ["https://app.example.com", "https://admin.example.com"]
+  cors_allowed_origins: []
+  # Shared secret for authenticating cluster gRPC calls between nodes.
+  # If empty, cluster endpoints are disabled.
+  cluster_secret: ""
+  # Advertise host for cluster node registration (address other nodes use to reach this instance).
+  # Falls back to POD_IP env var, then system hostname if empty.
+  # In Kubernetes, set via SYNCTV_SERVER_ADVERTISE_HOST or downward API (status.podIP).
+  advertise_host: ""
 
 database:
   url: "postgresql://synctv:synctv@localhost:5432/synctv"
@@ -32,6 +50,10 @@ jwt:
   secret: ""  # Set via SYNCTV_JWT_SECRET env var (min 32 chars)
   access_token_duration_hours: 1
   refresh_token_duration_days: 30
+  # Duration for guest (anonymous) access tokens
+  guest_token_duration_hours: 4
+  # Clock skew leeway for token validation (seconds)
+  clock_skew_leeway_secs: 60
 
 logging:
   level: "info"
@@ -43,6 +65,101 @@ livestream:
   max_streams: 50
   gop_cache_size: 2
   stream_timeout_seconds: 300
+  # How often to check for idle streams (seconds)
+  cleanup_check_interval_seconds: 60
+  # Max retries for pull stream connections
+  pull_max_retries: 10
+  # Initial backoff for pull retries (milliseconds)
+  pull_initial_backoff_ms: 1000
+  # Max backoff for pull retries (milliseconds)
+  pull_max_backoff_ms: 30000
+  # Max FLV tag size to accept in bytes (prevents OOM). Default: 10MB
+  max_flv_tag_size_bytes: 10485760
+
+# ============================================================================
+# Email Configuration (SMTP)
+# ============================================================================
+#
+# Configure SMTP to enable email features (verification, notifications).
+# Leave smtp_host empty to disable email functionality.
+
+email:
+  smtp_host: ""
+  smtp_port: 587
+  smtp_username: ""
+  smtp_password: ""  # Set via SYNCTV_EMAIL_SMTP_PASSWORD env var
+  from_email: ""
+  from_name: "SyncTV"
+  use_tls: true
+
+# ============================================================================
+# Connection Limits
+# ============================================================================
+#
+# Controls concurrent WebSocket/streaming connection limits.
+
+connection_limits:
+  # Maximum concurrent connections per user
+  max_per_user: 5
+  # Maximum concurrent connections per room
+  max_per_room: 200
+  # Maximum total concurrent connections
+  max_total: 10000
+  # Idle timeout in seconds (disconnect if no activity)
+  idle_timeout_seconds: 300
+  # Maximum connection duration in seconds (24 hours)
+  max_duration_seconds: 86400
+
+# ============================================================================
+# Bootstrap Configuration
+# ============================================================================
+#
+# Initial setup options for first startup.
+# IMPORTANT: Change root_password in production!
+
+bootstrap:
+  # Whether to create root user on first startup
+  create_root_user: true
+  root_username: "root"
+  # Set via SYNCTV_BOOTSTRAP_ROOT_PASSWORD env var.
+  # In production, must be >= 12 chars with uppercase, lowercase, and digits.
+  root_password: "root"
+
+# ============================================================================
+# Cluster Configuration
+# ============================================================================
+#
+# Controls internal channel buffer sizes for cluster communication
+# and the discovery mechanism for multi-node deployments.
+
+cluster:
+  # Capacity for high-priority critical event channel (KickPublisher, KickUser, etc.)
+  # Critical events are never dropped; senders block when full.
+  critical_channel_capacity: 1000
+  # Capacity for normal-priority Redis publish channel.
+  # Normal events are dropped with a warning when full.
+  publish_channel_capacity: 10000
+  # Discovery mode: "redis" (default) or "k8s_dns" (requires HEADLESS_SERVICE_NAME
+  # and POD_NAMESPACE env vars)
+  discovery_mode: "redis"
+
+# ============================================================================
+# Media Providers Configuration
+# ============================================================================
+#
+# Stores media provider configurations (Alist, Emby, Jellyfin, Bilibili, etc.)
+
+media_providers:
+  # Provider configurations as a dynamic JSON/YAML value.
+  # Example:
+  # providers:
+  #   alist:
+  #     base_url: "https://alist.example.com"
+  #     token: "your_token"
+  #   emby:
+  #     base_url: "https://emby.example.com"
+  #     api_key: "your_api_key"
+  providers: {}
 
 # ============================================================================
 # OAuth2/OIDC Configuration
@@ -90,6 +207,9 @@ livestream:
 #   - Always use HTTPS in production for OAuth2 callbacks
 
 oauth2:
+  # URL scheme for OAuth2 redirect URLs ("http" or "https").
+  # When behind a reverse proxy terminating TLS, set to "https".
+  redirect_scheme: "http"
   # Example configuration (uncomment and modify):
   # providers: |
   #   # Standard OAuth2 Providers
@@ -165,6 +285,12 @@ webrtc:
   enable_simulcast: true     # Multiple quality layers (High/Medium/Low)
   max_sfu_rooms: 0           # 0 = unlimited
   max_peers_per_sfu_room: 50
+  # Simulcast layers to use
+  simulcast_layers: ["high", "medium", "low"]
+  # Maximum bitrate per peer in kbps (0 = unlimited)
+  max_bitrate_per_peer: 0
+  # Enable bandwidth estimation
+  enable_bandwidth_estimation: true
 
 # ============================================================================
 # Dynamic ICE Servers Configuration

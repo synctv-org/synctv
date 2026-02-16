@@ -1,8 +1,9 @@
 //! Settings repository for database operations
 
-use anyhow::Result;
 use sqlx::{PgPool, Row};
 use tracing::debug;
+
+use crate::Result;
 
 use crate::models::settings::SettingsGroup;
 
@@ -30,7 +31,7 @@ impl SettingsRepository {
         .fetch_all(&self.pool)
         .await?;
 
-        let groups: Result<Vec<_>, _> = rows
+        let groups: Result<Vec<_>> = rows
             .into_iter()
             .map(|row| {
                 Ok(SettingsGroup {

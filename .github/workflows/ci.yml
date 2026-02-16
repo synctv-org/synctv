@@ -337,6 +337,7 @@ jobs:
           if [ "${{ needs.format.result }}" != "success" ] || \
              [ "${{ needs.clippy.result }}" != "success" ] || \
              [ "${{ needs.build-and-test.result }}" != "success" ] || \
+             [ "${{ needs.security-audit.result }}" != "success" ] || \
              [ "${{ needs.cargo-deny.result }}" != "success" ]; then
             echo "CI pipeline failed"
             exit 1

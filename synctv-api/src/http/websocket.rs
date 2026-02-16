@@ -82,11 +82,12 @@ async fn extract_user_id(
                     .map_err(|e| AppError::unauthorized(format!("Invalid token: {e}")))?;
 
                 // Check if token has been revoked (e.g. via logout)
+                // Fail closed: deny if blacklist check errors (consistent with HTTP middleware)
                 if state
                     .token_blacklist_service
                     .is_blacklisted(token)
                     .await
-                    .unwrap_or(false)
+                    .unwrap_or(true)
                 {
                     return Err(AppError::unauthorized("Token has been revoked"));
                 }
@@ -116,12 +117,12 @@ async fn extract_user_id(
             .validate_and_extract_user_id(token)
             .map_err(|e| AppError::unauthorized(format!("Invalid token: {e}")))?;
 
-        // Check if token has been revoked (e.g. via logout)
+        // Fail closed: deny if blacklist check errors (consistent with HTTP middleware)
         if state
             .token_blacklist_service
             .is_blacklisted(token)
             .await
-            .unwrap_or(false)
+            .unwrap_or(true)
         {
             return Err(AppError::unauthorized("Token has been revoked"));
         }

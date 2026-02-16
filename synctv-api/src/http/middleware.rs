@@ -125,15 +125,14 @@ where
         parts: &mut Parts,
         state: &S,
     ) -> Result<Option<Self>, Self::Rejection> {
-        // If there's no Authorization header, return None (anonymous user)
+        // If there's no Authorization header, return None (anonymous access)
         if parts.headers.get(axum::http::header::AUTHORIZATION).is_none() {
             return Ok(None);
         }
-        // Otherwise, try to authenticate and return Some or propagate error
-        match <Self as FromRequestParts<S>>::from_request_parts(parts, state).await {
-            Ok(user) => Ok(Some(user)),
-            Err(_) => Ok(None),
-        }
+        // Header IS present: authenticate and propagate errors for invalid tokens
+        // (don't silently downgrade to anonymous when the token is malformed/expired)
+        let user = <Self as FromRequestParts<S>>::from_request_parts(parts, state).await?;
+        Ok(Some(user))
     }
 }
 

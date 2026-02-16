@@ -5,7 +5,8 @@ use crate::Error;
 use async_trait::async_trait;
 use oauth2::{
     basic::BasicClient,
-    AuthUrl, ClientId, ClientSecret, EndpointSet, EndpointNotSet, RedirectUrl, TokenUrl, TokenResponse,
+    AuthUrl, ClientId, ClientSecret, EndpointSet, EndpointNotSet, PkceCodeChallenge,
+    PkceCodeVerifier, RedirectUrl, TokenUrl, TokenResponse,
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -54,19 +55,23 @@ impl Provider for GoogleProvider {
         "google"
     }
 
-    async fn new_auth_url(&self, state: &str) -> Result<String, Error> {
+    async fn new_auth_url(&self, state: &str) -> Result<(String, String), Error> {
+        let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
         let (auth_url, _csrf_token) = self
             .client
             .authorize_url(|| oauth2::CsrfToken::new(state.to_string()))
+            .set_pkce_challenge(pkce_challenge)
             .url();
-        Ok(auth_url.to_string())
+        Ok((auth_url.to_string(), pkce_verifier.secret().to_string()))
     }
 
-    async fn get_user_info(&self, code: &str) -> Result<OAuth2UserInfo, Error> {
-        // Exchange code for token
+    async fn get_user_info(&self, code: &str, pkce_verifier: &str) -> Result<OAuth2UserInfo, Error> {
+        // Exchange code for token with PKCE verifier
+        let verifier = PkceCodeVerifier::new(pkce_verifier.to_string());
         let token = self
             .client
             .exchange_code(oauth2::AuthorizationCode::new(code.to_string()))
+            .set_pkce_verifier(verifier)
             .request_async(&oauth2::reqwest::Client::new())
             .await
             .map_err(|e| Error::Internal(format!("Failed to exchange code: {e}")))?;

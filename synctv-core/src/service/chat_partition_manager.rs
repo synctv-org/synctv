@@ -6,6 +6,7 @@
 use std::sync::Arc;
 use sqlx::PgPool;
 use serde::{Deserialize, Serialize};
+use tokio_util::sync::CancellationToken;
 use tracing::{info, warn, error};
 
 use crate::{Error, Result};
@@ -31,15 +32,15 @@ pub struct ChatPartitionHealth {
 #[derive(Clone)]
 pub struct ChatPartitionManager {
     pool: PgPool,
-    #[allow(dead_code)]
-    settings: Arc<SettingsRegistry>,
+    /// Settings registry for future dynamic configuration (retention days, days ahead, etc.)
+    _settings: Arc<SettingsRegistry>,
 }
 
 impl ChatPartitionManager {
     /// Create a new partition manager
     #[must_use]
     pub fn new(pool: PgPool, settings: Arc<SettingsRegistry>) -> Self {
-        Self { pool, settings }
+        Self { pool, _settings: settings }
     }
 
     /// Ensure partitions exist for the next N days
@@ -115,10 +116,12 @@ impl ChatPartitionManager {
     /// 1. Ensures future partitions exist (default: 30 days ahead)
     /// 2. Drops old partitions (default: keep 90 days)
     ///
+    /// The task will shut down gracefully when the provided `CancellationToken` is cancelled.
+    ///
     /// Note: Per-room message limit cleanup is handled by ChatService.start_cleanup_task()
     /// which runs more frequently (every 60 seconds) for near real-time enforcement.
     #[must_use]
-    pub fn start_auto_management(&self, check_interval_hours: u64) -> tokio::task::JoinHandle<()> {
+    pub fn start_auto_management(&self, check_interval_hours: u64, cancel: CancellationToken) -> tokio::task::JoinHandle<()> {
         let manager = self.clone();
 
         tokio::spawn(async move {
@@ -127,7 +130,13 @@ impl ChatPartitionManager {
             );
 
             loop {
-                interval.tick().await;
+                tokio::select! {
+                    _ = interval.tick() => {}
+                    () = cancel.cancelled() => {
+                        info!("Chat partition management task cancelled, shutting down");
+                        return;
+                    }
+                }
 
                 // 1. Ensure future partitions exist
                 match manager.check_health(DEFAULT_DAYS_AHEAD).await {

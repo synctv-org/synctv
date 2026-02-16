@@ -10,7 +10,7 @@
 use std::sync::Arc;
 use std::collections::HashMap;
 use tokio::sync::RwLock;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -28,7 +28,7 @@ const OAUTH2_STATE_TTL_SECONDS: u64 = 300;
 /// Maximum number of in-memory `OAuth2` states (prevents unbounded memory growth)
 const MAX_LOCAL_STATES: usize = 10_000;
 
-/// `OAuth2` state (for CSRF protection during authorization flow)
+/// `OAuth2` state (for CSRF protection and PKCE during authorization flow)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OAuth2State {
     pub instance_name: String,
@@ -36,6 +36,8 @@ pub struct OAuth2State {
     pub created_at: chrono::DateTime<chrono::Utc>,
     /// User ID for bind flow (None for login flow)
     pub bind_user_id: Option<UserId>,
+    /// PKCE code verifier (RFC 7636) - stored server-side, sent during token exchange
+    pub pkce_verifier: String,
 }
 
 /// `OAuth2` user info from provider (service layer)
@@ -72,8 +74,8 @@ pub struct OAuth2Service {
     providers: Arc<RwLock<HashMap<String, OAuth2ProviderEntry>>>,
     /// In-memory state storage with TTL (fallback when Redis is not available)
     local_states: Arc<moka::future::Cache<String, OAuth2State>>,
-    /// Optional Redis client for distributed state storage
-    redis: Option<Arc<redis::Client>>,
+    /// Redis connection manager for distributed state storage (multi-replica mode)
+    redis_conn: Option<redis::aio::ConnectionManager>,
     /// Allowlist of permitted redirect domains (empty = relative paths only)
     allowed_redirect_domains: Arc<Vec<String>>,
 }
@@ -88,8 +90,17 @@ impl std::fmt::Debug for OAuth2Service {
 
 impl OAuth2Service {
     /// Create new `OAuth2` service (without Redis - single node only)
+    ///
+    /// # Note
+    /// If `redis_conn` is `None`, the service will use in-memory storage,
+    /// which is only suitable for single-replica deployments.
     #[must_use]
     pub fn new(repository: UserOAuthProviderRepository) -> Self {
+        warn!(
+            "OAuth2 service using in-memory state storage. \
+             This is only suitable for single-replica deployments. \
+             For multi-replica setups, configure Redis via with_redis()."
+        );
         let local_states = moka::future::Cache::builder()
             .max_capacity(MAX_LOCAL_STATES as u64)
             .time_to_live(Duration::from_secs(OAUTH2_STATE_TTL_SECONDS))
@@ -98,14 +109,17 @@ impl OAuth2Service {
             repository,
             providers: Arc::new(RwLock::new(HashMap::new())),
             local_states: Arc::new(local_states),
-            redis: None,
+            redis_conn: None,
             allowed_redirect_domains: Arc::new(Vec::new()),
         }
     }
 
-    /// Create new `OAuth2` service with Redis support (multi-node safe)
+    /// Create new `OAuth2` service with Redis `ConnectionManager` (multi-replica safe)
+    ///
+    /// Uses a persistent `ConnectionManager` instead of creating new connections
+    /// per operation, matching the pattern used by `WsTicketService`.
     #[must_use]
-    pub fn with_redis(repository: UserOAuthProviderRepository, redis: Arc<redis::Client>) -> Self {
+    pub fn with_redis(repository: UserOAuthProviderRepository, redis_conn: redis::aio::ConnectionManager) -> Self {
         let local_states = moka::future::Cache::builder()
             .max_capacity(MAX_LOCAL_STATES as u64)
             .time_to_live(Duration::from_secs(OAUTH2_STATE_TTL_SECONDS))
@@ -114,7 +128,7 @@ impl OAuth2Service {
             repository,
             providers: Arc::new(RwLock::new(HashMap::new())),
             local_states: Arc::new(local_states),
-            redis: Some(redis),
+            redis_conn: Some(redis_conn),
             allowed_redirect_domains: Arc::new(Vec::new()),
         }
     }
@@ -129,15 +143,12 @@ impl OAuth2Service {
 
     /// Store `OAuth2` state (Redis if available, otherwise local memory)
     async fn store_state(&self, state_token: &str, state: &OAuth2State) -> Result<()> {
-        if let Some(ref redis) = self.redis {
+        if let Some(ref conn) = self.redis_conn {
             let key = format!("{OAUTH2_STATE_KEY_PREFIX}{state_token}");
             let value = serde_json::to_string(state)
                 .map_err(|e| Error::Internal(format!("Failed to serialize OAuth2 state: {e}")))?;
 
-            let mut conn = redis
-                .get_multiplexed_async_connection()
-                .await
-                .map_err(|e| Error::Internal(format!("Redis connection failed: {e}")))?;
+            let mut conn = conn.clone();
 
             use redis::AsyncCommands;
             let _: () = conn
@@ -154,21 +165,29 @@ impl OAuth2Service {
         Ok(())
     }
 
-    /// Retrieve and remove `OAuth2` state (Redis if available, otherwise local memory)
+    /// Retrieve and remove `OAuth2` state atomically (Redis if available, otherwise local memory)
+    ///
+    /// Uses a Lua script to GET and DEL atomically, preventing race conditions where
+    /// two callbacks with the same state token could both succeed.
     async fn consume_state(&self, state_token: &str) -> Result<OAuth2State> {
-        if let Some(ref redis) = self.redis {
+        if let Some(ref conn) = self.redis_conn {
             let key = format!("{OAUTH2_STATE_KEY_PREFIX}{state_token}");
+            let mut conn = conn.clone();
 
-            let mut conn = redis
-                .get_multiplexed_async_connection()
-                .await
-                .map_err(|e| Error::Internal(format!("Redis connection failed: {e}")))?;
+            // Atomic GET + DEL via Lua script (same pattern as WsTicketService)
+            let lua_script = redis::Script::new(r#"
+                local value = redis.call("GET", KEYS[1])
+                if value then
+                    redis.call("DEL", KEYS[1])
+                end
+                return value
+            "#);
 
-            use redis::AsyncCommands;
-            let value: Option<String> = conn
-                .get_del(&key)
+            let value: Option<String> = lua_script
+                .key(&key)
+                .invoke_async(&mut conn)
                 .await
-                .map_err(|e| Error::Internal(format!("Failed to get OAuth2 state from Redis: {e}")))?;
+                .map_err(|e| Error::Internal(format!("Failed to consume OAuth2 state from Redis: {e}")))?;
 
             match value {
                 Some(json) => {
@@ -206,7 +225,7 @@ impl OAuth2Service {
         providers.insert(instance_name, OAuth2ProviderEntry { provider, provider_type });
     }
 
-    /// Generate authorization URL
+    /// Generate authorization URL with PKCE challenge
     pub async fn get_authorization_url(
         &self,
         instance_name: &str,
@@ -224,16 +243,17 @@ impl OAuth2Service {
         // Generate state token
         let state_token = nanoid::nanoid!(32);
 
-        // Generate authorization URL using provider
-        let auth_url = entry.provider.new_auth_url(&state_token).await
+        // Generate authorization URL with PKCE challenge
+        let (auth_url, pkce_verifier) = entry.provider.new_auth_url(&state_token).await
             .map_err(|e| Error::Internal(format!("Failed to generate authorization URL: {e}")))?;
 
-        // Store state for verification during callback
+        // Store state (including PKCE verifier) for verification during callback
         let oauth_state = OAuth2State {
             instance_name: instance_name.to_string(),
             redirect_url,
             created_at: chrono::Utc::now(),
             bind_user_id: None,
+            pkce_verifier,
         };
 
         self.store_state(&state_token, &oauth_state).await?;
@@ -265,16 +285,17 @@ impl OAuth2Service {
         // Generate state token
         let state_token = nanoid::nanoid!(32);
 
-        // Generate authorization URL using provider
-        let auth_url = entry.provider.new_auth_url(&state_token).await
+        // Generate authorization URL with PKCE challenge
+        let (auth_url, pkce_verifier) = entry.provider.new_auth_url(&state_token).await
             .map_err(|e| Error::Internal(format!("Failed to generate authorization URL: {e}")))?;
 
-        // Store state with user_id for bind flow
+        // Store state with user_id for bind flow (including PKCE verifier)
         let oauth_state = OAuth2State {
             instance_name: instance_name.to_string(),
             redirect_url,
             created_at: chrono::Utc::now(),
             bind_user_id: user_id,
+            pkce_verifier,
         };
 
         self.store_state(&state_token, &oauth_state).await?;
@@ -349,11 +370,12 @@ impl OAuth2Service {
         self.consume_state(state_token).await
     }
 
-    /// Exchange authorization code for user info
+    /// Exchange authorization code for user info with PKCE verification
     pub async fn exchange_code_for_user_info(
         &self,
         instance_name: &str,
         code: &str,
+        pkce_verifier: &str,
     ) -> Result<(OAuth2UserInfo, OAuth2Provider)> {
         // M-03: Single lock acquisition instead of two separate locks
         let providers = self.providers.read().await;
@@ -363,8 +385,8 @@ impl OAuth2Service {
 
         debug!("Exchanging code for user info from {}", instance_name);
 
-        // Use provider to get user info
-        let user_info = entry.provider.get_user_info(code).await
+        // Use provider to get user info (with PKCE verifier)
+        let user_info = entry.provider.get_user_info(code, pkce_verifier).await
             .map_err(|e| Error::Internal(format!("Failed to get user info: {e}")))?;
 
         // Convert provider user info to service user info
@@ -474,6 +496,6 @@ impl OAuth2Service {
     /// Check if Redis is being used for state storage
     #[must_use]
     pub const fn uses_redis(&self) -> bool {
-        self.redis.is_some()
+        self.redis_conn.is_some()
     }
 }

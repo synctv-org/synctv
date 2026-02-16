@@ -467,19 +467,41 @@ fn build_cors_layer(config: &synctv_core::Config) -> CorsLayer {
     }
 }
 
-/// Apply global middleware layers (CORS, body limit, timeout, security headers, tracing)
+/// Apply global middleware layers (CORS, body limit, timeout, security headers, HSTS, tracing)
 /// and bind state.
 fn apply_global_layers(router: Router<AppState>, state: &AppState) -> axum::Router {
     let cors = build_cors_layer(&state.config);
 
-    router
+    let router = router
         .layer(cors)
         .layer(axum::extract::DefaultBodyLimit::max(10 * 1024 * 1024))
         .layer(TimeoutLayer::with_status_code(
             axum::http::StatusCode::REQUEST_TIMEOUT,
             std::time::Duration::from_secs(30),
         ))
-        .layer(axum_middleware::from_fn(middleware::security_headers_middleware))
+        .layer(axum_middleware::from_fn(middleware::security_headers_middleware));
+
+    // Apply HSTS in production (not in development mode)
+    let router = if !state.config.server.development_mode {
+        let hsts_value = middleware::hsts_header(63_072_000, true, false);
+        router.layer(axum_middleware::from_fn(move |request: axum::extract::Request, next: axum::middleware::Next| {
+            let hsts = hsts_value.clone();
+            async move {
+                let mut response = next.run(request).await;
+                if let Ok(value) = axum::http::HeaderValue::from_str(&hsts) {
+                    response.headers_mut().insert(
+                        axum::http::header::STRICT_TRANSPORT_SECURITY,
+                        value,
+                    );
+                }
+                response
+            }
+        }))
+    } else {
+        router
+    };
+
+    router
         .layer(axum_middleware::from_fn(
             crate::observability::metrics_middleware::metrics_layer,
         ))

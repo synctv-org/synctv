@@ -4,7 +4,8 @@
 
 use crate::models::{ProviderInstance, UserProviderCredential};
 use crate::service::CredentialEncryption;
-use sqlx::{PgPool, Result};
+use crate::Result;
+use sqlx::PgPool;
 
 /// Provider Instance Repository
 pub struct ProviderInstanceRepository {
@@ -27,40 +28,40 @@ impl ProviderInstanceRepository {
 
     /// Get all provider instances
     pub async fn get_all(&self) -> Result<Vec<ProviderInstance>> {
-        sqlx::query_as::<_, ProviderInstance>(
+        Ok(sqlx::query_as::<_, ProviderInstance>(
             "SELECT * FROM media_provider_instances ORDER BY created_at DESC"
         )
         .fetch_all(&self.pool)
-        .await
+        .await?)
     }
 
     /// Get all enabled provider instances
     pub async fn get_all_enabled(&self) -> Result<Vec<ProviderInstance>> {
-        sqlx::query_as::<_, ProviderInstance>(
+        Ok(sqlx::query_as::<_, ProviderInstance>(
             "SELECT * FROM media_provider_instances WHERE enabled = true ORDER BY created_at DESC"
         )
         .fetch_all(&self.pool)
-        .await
+        .await?)
     }
 
     /// Get provider instance by name
     pub async fn get_by_name(&self, name: &str) -> Result<Option<ProviderInstance>> {
-        sqlx::query_as::<_, ProviderInstance>(
+        Ok(sqlx::query_as::<_, ProviderInstance>(
             "SELECT * FROM media_provider_instances WHERE name = $1"
         )
         .bind(name)
         .fetch_optional(&self.pool)
-        .await
+        .await?)
     }
 
     /// Get instances that support a specific provider type
     pub async fn find_by_provider(&self, provider: &str) -> Result<Vec<ProviderInstance>> {
-        sqlx::query_as::<_, ProviderInstance>(
+        Ok(sqlx::query_as::<_, ProviderInstance>(
             "SELECT * FROM media_provider_instances WHERE $1 = ANY(providers) AND enabled = true"
         )
         .bind(provider)
         .fetch_all(&self.pool)
-        .await
+        .await?)
     }
 
     /// Create a new provider instance
@@ -179,7 +180,7 @@ impl UserProviderCredentialRepository {
     }
 
     /// Encrypt credential data before storage (if encryption is configured)
-    fn encrypt_credential(&self, data: &serde_json::Value) -> crate::Result<serde_json::Value> {
+    fn encrypt_credential(&self, data: &serde_json::Value) -> Result<serde_json::Value> {
         match &self.encryption {
             Some(enc) => enc.encrypt_to_value(data),
             None => Ok(data.clone()),
@@ -187,7 +188,7 @@ impl UserProviderCredentialRepository {
     }
 
     /// Decrypt credential data after reading (handles both encrypted and plaintext)
-    fn decrypt_credential(&self, data: &serde_json::Value) -> crate::Result<serde_json::Value> {
+    fn decrypt_credential(&self, data: &serde_json::Value) -> Result<serde_json::Value> {
         match &self.encryption {
             Some(enc) => enc.decrypt_value(data),
             None => Ok(data.clone()),
@@ -195,18 +196,18 @@ impl UserProviderCredentialRepository {
     }
 
     /// Decrypt credentials on a `UserProviderCredential` in place
-    fn decrypt_in_credential(&self, mut cred: UserProviderCredential) -> crate::Result<UserProviderCredential> {
+    fn decrypt_in_credential(&self, mut cred: UserProviderCredential) -> Result<UserProviderCredential> {
         cred.credential_data = self.decrypt_credential(&cred.credential_data)?;
         Ok(cred)
     }
 
     /// Decrypt credentials on a list of `UserProviderCredential`
-    fn decrypt_credentials(&self, creds: Vec<UserProviderCredential>) -> crate::Result<Vec<UserProviderCredential>> {
+    fn decrypt_credentials(&self, creds: Vec<UserProviderCredential>) -> Result<Vec<UserProviderCredential>> {
         creds.into_iter().map(|c| self.decrypt_in_credential(c)).collect()
     }
 
     /// Get all credentials for a user (decrypted)
-    pub async fn get_by_user(&self, user_id: &str) -> crate::Result<Vec<UserProviderCredential>> {
+    pub async fn get_by_user(&self, user_id: &str) -> Result<Vec<UserProviderCredential>> {
         let creds = sqlx::query_as::<_, UserProviderCredential>(
             "SELECT * FROM user_media_provider_credentials WHERE user_id = $1 ORDER BY created_at DESC"
         )
@@ -218,7 +219,7 @@ impl UserProviderCredentialRepository {
     }
 
     /// Get credential by ID (decrypted)
-    pub async fn get_by_id(&self, id: &str) -> crate::Result<Option<UserProviderCredential>> {
+    pub async fn get_by_id(&self, id: &str) -> Result<Option<UserProviderCredential>> {
         let cred = sqlx::query_as::<_, UserProviderCredential>(
             "SELECT * FROM user_media_provider_credentials WHERE id = $1"
         )
@@ -238,7 +239,7 @@ impl UserProviderCredentialRepository {
         user_id: &str,
         provider: &str,
         server_id: &str,
-    ) -> crate::Result<Option<UserProviderCredential>> {
+    ) -> Result<Option<UserProviderCredential>> {
         let cred = sqlx::query_as::<_, UserProviderCredential>(
             "SELECT * FROM user_media_provider_credentials WHERE user_id = $1 AND provider = $2 AND server_id = $3"
         )
@@ -259,7 +260,7 @@ impl UserProviderCredentialRepository {
         &self,
         user_id: &str,
         provider: &str,
-    ) -> crate::Result<Vec<UserProviderCredential>> {
+    ) -> Result<Vec<UserProviderCredential>> {
         let creds = sqlx::query_as::<_, UserProviderCredential>(
             "SELECT * FROM user_media_provider_credentials WHERE user_id = $1 AND provider = $2"
         )
@@ -272,7 +273,7 @@ impl UserProviderCredentialRepository {
     }
 
     /// Create a new user credential (encrypts before storage)
-    pub async fn create(&self, credential: &UserProviderCredential) -> crate::Result<()> {
+    pub async fn create(&self, credential: &UserProviderCredential) -> Result<()> {
         let encrypted_data = self.encrypt_credential(&credential.credential_data)?;
 
         sqlx::query(
@@ -296,7 +297,7 @@ impl UserProviderCredentialRepository {
     }
 
     /// Update an existing user credential (encrypts before storage)
-    pub async fn update(&self, credential: &UserProviderCredential) -> crate::Result<()> {
+    pub async fn update(&self, credential: &UserProviderCredential) -> Result<()> {
         let encrypted_data = self.encrypt_credential(&credential.credential_data)?;
 
         sqlx::query(
@@ -338,7 +339,7 @@ impl UserProviderCredentialRepository {
     }
 
     /// Get all expired credentials (for cleanup jobs, decrypted)
-    pub async fn get_expired(&self) -> crate::Result<Vec<UserProviderCredential>> {
+    pub async fn get_expired(&self) -> Result<Vec<UserProviderCredential>> {
         let creds = sqlx::query_as::<_, UserProviderCredential>(
             "SELECT * FROM user_media_provider_credentials WHERE expires_at IS NOT NULL AND expires_at <= NOW()"
         )
@@ -365,7 +366,7 @@ impl UserProviderCredentialRepository {
     /// and encrypts them in place. This is safe to run multiple times (idempotent).
     ///
     /// Returns the number of credentials migrated.
-    pub async fn migrate_plaintext_to_encrypted(&self) -> crate::Result<u64> {
+    pub async fn migrate_plaintext_to_encrypted(&self) -> Result<u64> {
         let encryption = match &self.encryption {
             Some(enc) => enc,
             None => return Err(crate::Error::Internal(

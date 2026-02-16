@@ -278,60 +278,120 @@ impl Debug for ClusterAuthInterceptor {
     }
 }
 
+/// Rate limit tier for gRPC services, aligned with HTTP middleware tiers.
+///
+/// Each tier defines a maximum number of requests per window (default 60s).
+/// This prevents attackers from bypassing HTTP rate limits via the gRPC API.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GrpcRateLimitTier {
+    /// Authentication endpoints (Login, Register, RefreshToken): 5 req/min
+    Auth,
+    /// Media mutation endpoints (AddMedia, RemoveMedia, BatchAdd): 20 req/min
+    Media,
+    /// Write endpoints (CreateRoom, UpdateRoom, JoinRoom, SendChat): 30 req/min
+    Write,
+    /// Read endpoints (GetRoom, ListRooms, GetUser, GetPlaylist): 100 req/min
+    Read,
+    /// Admin endpoints: 30 req/min
+    Admin,
+    /// Email endpoints (SendVerification, PasswordReset): 5 req/min
+    Email,
+}
+
+impl GrpcRateLimitTier {
+    /// Maximum requests per window for this tier
+    const fn max_requests(self) -> u32 {
+        match self {
+            Self::Auth => 5,
+            Self::Email => 5,
+            Self::Media => 20,
+            Self::Write => 30,
+            Self::Admin => 30,
+            Self::Read => 100,
+        }
+    }
+
+    /// Rate limit key suffix for bucketing per tier
+    const fn key_suffix(self) -> &'static str {
+        match self {
+            Self::Auth => "auth",
+            Self::Email => "email",
+            Self::Media => "media",
+            Self::Write => "write",
+            Self::Admin => "admin",
+            Self::Read => "read",
+        }
+    }
+}
+
 /// gRPC rate limit interceptor using the in-memory governor limiter.
 ///
-/// Applies per-client rate limiting at the transport level, matching
+/// Applies per-client, per-tier rate limiting at the transport level, matching
 /// the HTTP middleware rate limiting tiers. Uses the synchronous
 /// in-memory rate limiter since tonic interceptors cannot be async.
 ///
+/// Each gRPC service is registered with a specific `GrpcRateLimitTier`,
+/// ensuring that auth endpoints (5/min) cannot be abused at the rate of
+/// read endpoints (100/min).
+///
 /// Rate limit tiers (aligned with HTTP):
 /// - Auth endpoints: 5 req/min
+/// - Email endpoints: 5 req/min
+/// - Media endpoints: 20 req/min
 /// - Write endpoints: 30 req/min
-/// - Read endpoints: 100 req/min
 /// - Admin endpoints: 30 req/min
+/// - Read endpoints: 100 req/min
 #[derive(Clone)]
 pub struct GrpcRateLimitInterceptor {
     rate_limiter: Arc<synctv_core::service::RateLimiter>,
-    /// Default max requests per minute for unclassified endpoints
-    default_max_requests: u32,
+    /// Rate limit tier for this interceptor instance
+    tier: GrpcRateLimitTier,
     /// Window in seconds
     window_seconds: u64,
 }
 
 impl GrpcRateLimitInterceptor {
-    /// Create a new rate limit interceptor.
+    /// Create a new rate limit interceptor for a specific tier.
     ///
-    /// `default_max_requests` is per-client requests allowed per `window_seconds`.
+    /// Each gRPC service should use its own interceptor with the appropriate tier.
     #[must_use]
     pub fn new(
         rate_limiter: synctv_core::service::RateLimiter,
-        default_max_requests: u32,
+        tier: GrpcRateLimitTier,
         window_seconds: u64,
     ) -> Self {
         Self {
             rate_limiter: Arc::new(rate_limiter),
-            default_max_requests,
+            tier,
             window_seconds,
         }
     }
 
-    /// Apply rate limiting to a gRPC request.
+    /// Create a new interceptor instance for a different tier, sharing the
+    /// same underlying rate limiter.
+    #[must_use]
+    pub fn with_tier(&self, tier: GrpcRateLimitTier) -> Self {
+        Self {
+            rate_limiter: Arc::clone(&self.rate_limiter),
+            tier,
+            window_seconds: self.window_seconds,
+        }
+    }
+
+    /// Extract a stable client identifier from the request.
     ///
-    /// Extracts the client identifier from:
-    /// 1. JWT user_id (if authenticated via authorization header)
-    /// 2. Fallback to peer address
-    /// 3. Fallback to "anonymous"
-    #[allow(clippy::result_large_err)]
-    pub fn check<T>(&self, request: Request<T>) -> Result<Request<T>, Status> {
-        // Extract client identifier for rate limiting
-        let client_id = request
+    /// Priority:
+    /// 1. SHA-256 hash of JWT bearer token (authenticated users)
+    /// 2. Peer IP address (anonymous users)
+    /// 3. "anonymous" fallback
+    fn extract_client_id<T>(request: &Request<T>) -> String {
+        request
             .metadata()
             .get("authorization")
             .and_then(|v| v.to_str().ok())
             .and_then(|s| {
                 if s.len() > 7 && (s.starts_with("Bearer ") || s.starts_with("bearer ")) {
                     // M-9: Use SHA-256 hash of full token for stable client identity.
-                    // Previous approach used first 16 chars which could collide (same JWT header).
                     let token = &s[7..];
                     let hash = Sha256::digest(token.as_bytes());
                     Some(format!("user:{:x}", hash))
@@ -343,27 +403,30 @@ impl GrpcRateLimitInterceptor {
                 // Use peer IP address for anonymous rate limiting instead of a shared bucket
                 request.remote_addr().map(|addr| format!("anon:ip:{}", addr.ip()))
             })
-            .unwrap_or_else(|| "anon:unknown".to_string());
+            .unwrap_or_else(|| "anon:unknown".to_string())
+    }
 
-        // Determine rate limit based on the gRPC method path
-        let method_path = request
-            .metadata()
-            .get("te")  // fallback: use default for all
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
+    /// Apply rate limiting to a gRPC request.
+    ///
+    /// Uses the tier configured for this interceptor instance to determine the
+    /// rate limit. Each client gets independent buckets per tier so that, e.g.,
+    /// auth requests (5/min) don't consume read quota (100/min).
+    #[allow(clippy::result_large_err)]
+    pub fn check<T>(&self, request: Request<T>) -> Result<Request<T>, Status> {
+        let client_id = Self::extract_client_id(&request);
 
-        // Use default rate limit for transport-level limiting
-        // Method-specific limits are enforced at the service layer
-        let _ = method_path;
-        let max_requests = self.default_max_requests;
+        // Include tier in the rate limit key so each tier has its own bucket
+        let rate_key = format!("{}:{}", client_id, self.tier.key_suffix());
 
         if let Err(_e) = self.rate_limiter.check_rate_limit_sync(
-            &client_id,
-            max_requests,
+            &rate_key,
+            self.tier.max_requests(),
             self.window_seconds,
         ) {
             warn!(
                 client_id = %client_id,
+                tier = ?self.tier,
+                max_requests = self.tier.max_requests(),
                 "gRPC rate limit exceeded"
             );
             return Err(Status::resource_exhausted(
@@ -378,7 +441,8 @@ impl GrpcRateLimitInterceptor {
 impl Debug for GrpcRateLimitInterceptor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("GrpcRateLimitInterceptor")
-            .field("default_max_requests", &self.default_max_requests)
+            .field("tier", &self.tier)
+            .field("max_requests", &self.tier.max_requests())
             .field("window_seconds", &self.window_seconds)
             .finish()
     }

@@ -158,11 +158,12 @@ pub async fn serve(
     ).with_redis_publish_tx(redis_publish_tx.clone())
      .with_rate_limiter(rate_limiter.clone()));
 
-    // Create transport-level rate limit interceptor before consuming rate_limiter
-    // Aligned with HTTP tiers: 100 req/min per client (matches HTTP read tier)
+    // Create transport-level rate limit interceptor with tiered limits per service.
+    // Each service gets its own tier matching HTTP rate limits to prevent attackers
+    // from bypassing HTTP rate limits via the gRPC API.
     let grpc_rate_limiter = interceptors::GrpcRateLimitInterceptor::new(
         rate_limiter.clone(),
-        100, // 100 requests per window
+        interceptors::GrpcRateLimitTier::Read, // default tier, overridden per service below
         60,  // 60 second window
     );
 
@@ -228,13 +229,14 @@ pub async fn serve(
     let room_interceptor1 = auth_interceptor.clone();
     let room_interceptor2 = auth_interceptor.clone();
 
-    let rl_auth = grpc_rate_limiter.clone();
-    let rl_user = grpc_rate_limiter.clone();
-    let rl_room = grpc_rate_limiter.clone();
-    let rl_media = grpc_rate_limiter.clone();
-    let rl_public = grpc_rate_limiter.clone();
-    let rl_email = grpc_rate_limiter.clone();
-    let rl_admin = grpc_rate_limiter.clone();
+    // Assign appropriate rate limit tiers per service (aligned with HTTP middleware)
+    let rl_auth = grpc_rate_limiter.with_tier(interceptors::GrpcRateLimitTier::Auth);
+    let rl_user = grpc_rate_limiter.with_tier(interceptors::GrpcRateLimitTier::Write);
+    let rl_room = grpc_rate_limiter.with_tier(interceptors::GrpcRateLimitTier::Write);
+    let rl_media = grpc_rate_limiter.with_tier(interceptors::GrpcRateLimitTier::Media);
+    let rl_public = grpc_rate_limiter.with_tier(interceptors::GrpcRateLimitTier::Read);
+    let rl_email = grpc_rate_limiter.with_tier(interceptors::GrpcRateLimitTier::Email);
+    let rl_admin = grpc_rate_limiter.with_tier(interceptors::GrpcRateLimitTier::Admin);
 
     // Build router - register all client services with rate limiting + auth interceptors
     let client_service_clone1 = client_service.clone();
@@ -295,7 +297,7 @@ pub async fn serve(
     // Register NotificationService if notification_service is configured
     if let Some(notif_svc) = notification_service {
         let notification_interceptor = auth_interceptor.clone();
-        let rl_notif = grpc_rate_limiter.clone();
+        let rl_notif = grpc_rate_limiter.with_tier(interceptors::GrpcRateLimitTier::Read);
         let notification_api = Arc::new(crate::impls::NotificationApiImpl::new(notif_svc));
         let notif_impl = NotificationServiceImpl::new(notification_api);
         router = router.add_service(NotificationServiceServer::with_interceptor(
@@ -380,9 +382,9 @@ pub async fn serve(
         let provider_interceptor1 = auth_interceptor.clone();
         let provider_interceptor2 = auth_interceptor.clone();
         let provider_interceptor3 = auth_interceptor.clone();
-        let rl_provider1 = grpc_rate_limiter.clone();
-        let rl_provider2 = grpc_rate_limiter.clone();
-        let rl_provider3 = grpc_rate_limiter.clone();
+        let rl_provider1 = grpc_rate_limiter.with_tier(interceptors::GrpcRateLimitTier::Read);
+        let rl_provider2 = grpc_rate_limiter.with_tier(interceptors::GrpcRateLimitTier::Read);
+        let rl_provider3 = grpc_rate_limiter.with_tier(interceptors::GrpcRateLimitTier::Read);
 
         router = router.add_service(AlistProviderServiceServer::with_interceptor(
             providers::alist::AlistProviderGrpcService::new(app_state.clone()),

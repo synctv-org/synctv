@@ -228,6 +228,10 @@ impl AuditService {
     }
 
     /// Log permission change
+    ///
+    /// The `is_grant` parameter determines the audit action:
+    /// - `true` => `AuditAction::PermissionGranted`
+    /// - `false` => `AuditAction::PermissionRevoked`
     pub async fn log_permission_changed(
         &self,
         actor_id: String,
@@ -236,11 +240,18 @@ impl AuditService {
         target_id: String,
         old_permissions: u64,
         new_permissions: u64,
+        is_grant: bool,
     ) -> Result<()> {
+        let action = if is_grant {
+            AuditAction::PermissionGranted
+        } else {
+            AuditAction::PermissionRevoked
+        };
+
         self.log(
             actor_id,
             actor_username,
-            AuditAction::PermissionGranted,
+            action,
             target_type,
             Some(target_id),
             serde_json::json!({

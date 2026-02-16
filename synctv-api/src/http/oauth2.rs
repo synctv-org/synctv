@@ -116,9 +116,9 @@ async fn handle_oauth2_callback(
         return Err(super::AppError::bad_request("Instance mismatch"));
     }
 
-    // Exchange code for user info
+    // Exchange code for user info (with PKCE verifier from stored state)
     let (user_info, _provider_type) = oauth2_service
-        .exchange_code_for_user_info(&instance_name, &req.code)
+        .exchange_code_for_user_info(&instance_name, &req.code, &oauth_state.pkce_verifier)
         .await
         .map_err(|e| {
             error!("Failed to exchange OAuth2 code: {}", e);

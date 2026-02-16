@@ -28,6 +28,7 @@ pub mod credential_encryption;
 pub mod distributed_lock;
 pub mod email;
 pub mod email_templates;
+pub mod optimistic_retry;
 pub mod turn_server;
 pub mod ws_ticket;
 
@@ -67,5 +68,6 @@ pub use credential_encryption::CredentialEncryption;
 pub use distributed_lock::{DistributedLock, LockGuard};
 pub use email::{EmailService, EmailConfig};
 pub use email_templates::{EmailTemplateManager, EmailTemplateType};
+pub use optimistic_retry::retry_with_optimistic_lock;
 pub use turn_server::{StunServer, StunServerConfig};
 pub use ws_ticket::{WsTicketService, WsTicketData};

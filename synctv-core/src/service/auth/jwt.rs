@@ -388,6 +388,9 @@ impl JwtService {
         // Add standard JWT claims if not present
         let mut claims_with_standard = claims.clone();
         if let Some(obj) = claims_with_standard.as_object_mut() {
+            obj.entry("jti".to_string())
+                .or_insert_with(|| serde_json::Value::String(nanoid::nanoid!(16)));
+
             obj.entry("iat".to_string())
                 .or_insert_with(|| serde_json::Value::Number(now.timestamp().into()));
 
@@ -705,5 +708,98 @@ mod tests {
         let claims = jwt.verify_token(&token).unwrap();
         let duration = claims.exp - claims.iat;
         assert_eq!(duration, 30 * 86400); // 30 days in seconds
+    }
+
+    #[test]
+    fn test_expired_token_is_rejected() {
+        let secret = "expired-token-test-secret-1234567890";
+        let jwt = JwtService::with_durations(secret, 1, 1, 1, 0).unwrap();
+
+        // Manually craft a token with exp in the past
+        let past = Utc::now() - Duration::hours(2);
+        let claims = Claims {
+            sub: "expired_user".into(),
+            typ: "access".into(),
+            jti: "test-jti".into(),
+            iat: (past - Duration::hours(3)).timestamp(),
+            exp: past.timestamp(), // expired 2 hours ago
+        };
+        let token = encode(
+            &Header::new(Algorithm::HS256),
+            &claims,
+            &EncodingKey::from_secret(secret.as_bytes()),
+        ).unwrap();
+
+        let result = jwt.verify_token(&token);
+        assert!(result.is_err(), "Expired token should be rejected");
+    }
+
+    #[test]
+    fn test_jti_is_unique_per_token() {
+        let jwt = create_jwt_service();
+        let user_id = UserId::new();
+
+        let token1 = jwt.sign_token(&user_id, TokenType::Access).unwrap();
+        let token2 = jwt.sign_token(&user_id, TokenType::Access).unwrap();
+
+        let claims1 = jwt.verify_token(&token1).unwrap();
+        let claims2 = jwt.verify_token(&token2).unwrap();
+
+        assert_ne!(claims1.jti, claims2.jti, "Each token should have a unique jti");
+        assert!(!claims1.jti.is_empty());
+        assert!(!claims2.jti.is_empty());
+    }
+
+    #[test]
+    fn test_token_iat_is_recent() {
+        let jwt = create_jwt_service();
+        let user_id = UserId::new();
+
+        let before = Utc::now().timestamp();
+        let token = jwt.sign_token(&user_id, TokenType::Access).unwrap();
+        let after = Utc::now().timestamp();
+
+        let claims = jwt.verify_token(&token).unwrap();
+        assert!(claims.iat >= before && claims.iat <= after);
+    }
+
+    #[test]
+    fn test_guest_token_duration() {
+        // Default guest token duration is 4 hours
+        let jwt = create_jwt_service();
+        let room_id = RoomId::new();
+        let token = jwt.sign_guest_token(&room_id).unwrap();
+        let claims = jwt.verify_guest_token(&token).unwrap();
+        let duration = claims.exp - claims.iat;
+        assert_eq!(duration, 4 * 3600); // 4 hours in seconds
+    }
+
+    #[tokio::test]
+    async fn test_sign_and_verify_custom_token() {
+        let jwt = create_jwt_service();
+        let claims = serde_json::json!({
+            "sub": "custom_subject",
+            "custom_field": "custom_value",
+        });
+
+        let token = jwt.sign_custom(&claims).await.unwrap();
+        let verified: serde_json::Value = jwt.verify_custom(&token).await.unwrap();
+
+        assert_eq!(verified["sub"], "custom_subject");
+        assert_eq!(verified["custom_field"], "custom_value");
+        assert!(verified.get("jti").is_some());
+        assert!(verified.get("iat").is_some());
+        assert!(verified.get("exp").is_some());
+    }
+
+    #[tokio::test]
+    async fn test_custom_token_wrong_secret_rejected() {
+        let jwt1 = JwtService::new("custom-secret-one-long-enough-1234567890").unwrap();
+        let jwt2 = JwtService::new("custom-secret-two-long-enough-1234567890").unwrap();
+
+        let claims = serde_json::json!({"sub": "test"});
+        let token = jwt1.sign_custom(&claims).await.unwrap();
+        let result = jwt2.verify_custom(&token).await;
+        assert!(result.is_err());
     }
 }

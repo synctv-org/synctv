@@ -44,7 +44,12 @@ impl GoogleProvider {
 
         Ok(Self {
             client,
-            http_client: Arc::new(Client::new()),
+            http_client: Arc::new(
+                Client::builder()
+                    .redirect(reqwest::redirect::Policy::none())
+                    .build()
+                    .map_err(|e| Error::Internal(format!("Failed to build HTTP client: {e}")))?
+            ),
         })
     }
 }

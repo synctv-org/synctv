@@ -260,13 +260,12 @@ impl ClusterClient {
         let mut request = tonic::Request::new(GetUserOnlineStatusRequest { user_ids });
         self.attach_secret(&mut request);
 
-        let response = tokio::time::timeout(
-            self.config.per_node_timeout,
-            client.get_user_online_status(request),
-        )
-        .await
-        .map_err(|_| Error::Timeout(format!("GetUserOnlineStatus timed out for {address}")))?
-        .map_err(|e| Error::Rpc(format!("GetUserOnlineStatus RPC failed for {address}: {e}")))?;
+        // Timeout is already set at the Endpoint level (see get_channel),
+        // so no additional tokio::time::timeout wrapper is needed.
+        let response = client
+            .get_user_online_status(request)
+            .await
+            .map_err(|e| Error::Rpc(format!("GetUserOnlineStatus RPC failed for {address}: {e}")))?;
 
         Ok(response.into_inner())
     }
@@ -365,13 +364,12 @@ impl ClusterClient {
         let mut request = tonic::Request::new(GetRoomConnectionsRequest { room_id });
         self.attach_secret(&mut request);
 
-        let response = tokio::time::timeout(
-            self.config.per_node_timeout,
-            client.get_room_connections(request),
-        )
-        .await
-        .map_err(|_| Error::Timeout(format!("GetRoomConnections timed out for {address}")))?
-        .map_err(|e| Error::Rpc(format!("GetRoomConnections RPC failed for {address}: {e}")))?;
+        // Timeout is already set at the Endpoint level (see get_channel),
+        // so no additional tokio::time::timeout wrapper is needed.
+        let response = client
+            .get_room_connections(request)
+            .await
+            .map_err(|e| Error::Rpc(format!("GetRoomConnections RPC failed for {address}: {e}")))?;
 
         Ok(response.into_inner())
     }

@@ -13,7 +13,7 @@ pub use username_cache::UsernameCache;
 pub use user_cache::UserCache;
 pub use room_cache::RoomCache;
 pub use invalidation::{
-    CacheInvalidationService, InvalidationMessage, CACHE_INVALIDATION_CHANNEL,
+    CacheInvalidationService, InvalidationMessage,
 };
 pub use manager::CacheManager;
 pub use singleflight::{SingleFlight, SingleFlightError};

@@ -194,6 +194,10 @@ utoipa-swagger-ui = { version = "9.0", features = ["axum"] }
 chrono = { version = "0.4", features = ["serde"] }
 
 
+# Kubernetes (in-cluster client for leader election & service discovery)
+kube = { version = "1.0", features = ["runtime", "client", "derive"] }
+k8s-openapi = { version = "0.25", features = ["v1_32"] }
+
 # Networking
 ipnet = "2.11"
 

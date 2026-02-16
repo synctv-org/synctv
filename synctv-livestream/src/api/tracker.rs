@@ -5,7 +5,7 @@
 
 use dashmap::DashMap;
 use std::sync::Arc;
-use tracing::debug;
+use tracing::{debug, info};
 
 /// RAII guard that decrements a stream's subscriber count on drop.
 ///
@@ -328,5 +328,107 @@ impl StreamTracker {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.by_stream.is_empty()
+    }
+
+    /// Remove stale index entries that are orphaned from the primary `by_stream` map.
+    ///
+    /// When a publisher crashes without a clean `on_unpublish`, secondary indexes
+    /// (`by_user`, `by_room`, `by_rtmp`, `rtmp_reverse`) can retain references to
+    /// streams that no longer exist in `by_stream`. This method scans each index
+    /// and removes entries whose stream key is no longer present.
+    ///
+    /// Returns the number of stale entries removed.
+    pub fn cleanup_stale_entries(&self) -> usize {
+        let mut removed = 0usize;
+
+        // Clean by_user: remove stream keys that are not in by_stream
+        let user_keys: Vec<String> = self.by_user.iter().map(|e| e.key().clone()).collect();
+        for user_id in user_keys {
+            if let Some(user_set) = self.by_user.get(&user_id) {
+                let stale: Vec<String> = user_set
+                    .iter()
+                    .filter(|sk| !self.by_stream.contains_key(sk.as_str()))
+                    .map(|sk| sk.clone())
+                    .collect();
+                for sk in &stale {
+                    user_set.remove(sk);
+                    removed += 1;
+                }
+                if user_set.is_empty() {
+                    drop(user_set);
+                    self.by_user.remove(&user_id);
+                }
+            }
+        }
+
+        // Clean by_room: remove media_ids whose stream key is not in by_stream
+        let room_keys: Vec<String> = self.by_room.iter().map(|e| e.key().clone()).collect();
+        for room_id in room_keys {
+            if let Some(room_set) = self.by_room.get(&room_id) {
+                let stale: Vec<String> = room_set
+                    .iter()
+                    .filter(|media_id| {
+                        !self.by_stream.contains_key(&Self::stream_key(&room_id, media_id))
+                    })
+                    .map(|media_id| media_id.clone())
+                    .collect();
+                for media_id in &stale {
+                    room_set.remove(media_id);
+                    removed += 1;
+                }
+                if room_set.is_empty() {
+                    drop(room_set);
+                    self.by_room.remove(&room_id);
+                }
+            }
+        }
+
+        // Clean by_rtmp: remove entries whose stream key is not in by_stream
+        let rtmp_keys: Vec<(String, String)> = self
+            .by_rtmp
+            .iter()
+            .map(|e| (e.key().clone(), e.value().clone()))
+            .collect();
+        for (rk, sk) in rtmp_keys {
+            if !self.by_stream.contains_key(&sk) {
+                self.by_rtmp.remove(&rk);
+                removed += 1;
+            }
+        }
+
+        // Clean rtmp_reverse: remove entries whose stream key is not in by_stream
+        let reverse_keys: Vec<String> = self
+            .rtmp_reverse
+            .iter()
+            .map(|e| e.key().clone())
+            .collect();
+        for sk in reverse_keys {
+            if !self.by_stream.contains_key(&sk) {
+                self.rtmp_reverse.remove(&sk);
+                removed += 1;
+            }
+        }
+
+        if removed > 0 {
+            info!(removed, "Cleaned up stale stream tracker entries");
+        }
+
+        removed
+    }
+
+    /// Spawn a periodic background task that calls `cleanup_stale_entries`
+    /// every `interval` duration. Returns the `JoinHandle` for the task.
+    pub fn start_periodic_cleanup(
+        self: &Arc<Self>,
+        interval: std::time::Duration,
+    ) -> tokio::task::JoinHandle<()> {
+        let tracker = Arc::clone(self);
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(interval);
+            loop {
+                tick.tick().await;
+                tracker.cleanup_stale_entries();
+            }
+        })
     }
 }

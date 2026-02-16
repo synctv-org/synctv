@@ -101,9 +101,17 @@ impl ClientApiImpl {
     /// Get stream info for a specific media in a room.
     pub async fn get_stream_info(
         &self,
+        user_id: &str,
         room_id: &str,
         media_id: &str,
     ) -> Result<crate::proto::client::GetStreamInfoResponse, String> {
+        let uid = UserId::from_string(user_id.to_string());
+        let rid = RoomId::from_string(room_id.to_string());
+
+        // Check membership before returning stream info
+        self.room_service.check_membership(&rid, &uid).await
+            .map_err(|e| format!("Forbidden: {e}"))?;
+
         let infrastructure = self.live_streaming_infrastructure.as_ref()
             .ok_or_else(|| "Live streaming not configured".to_string())?;
 
@@ -129,8 +137,16 @@ impl ClientApiImpl {
     /// List all active streams in a room.
     pub async fn list_room_streams(
         &self,
+        user_id: &str,
         room_id: &str,
     ) -> Result<crate::proto::client::ListRoomStreamsResponse, String> {
+        let uid = UserId::from_string(user_id.to_string());
+        let rid = RoomId::from_string(room_id.to_string());
+
+        // Check membership before listing streams
+        self.room_service.check_membership(&rid, &uid).await
+            .map_err(|e| format!("Forbidden: {e}"))?;
+
         let infrastructure = self.live_streaming_infrastructure.as_ref()
             .ok_or_else(|| "Live streaming not configured".to_string())?;
 

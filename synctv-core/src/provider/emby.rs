@@ -275,7 +275,14 @@ impl MediaProvider for EmbyProvider {
     }
 
     fn cache_key(&self, _ctx: &ProviderContext<'_>, source_config: &Value) -> String {
-        format!("emby:{source_config}")
+        // Hash only host + item_id to avoid leaking tokens/secrets into cache keys
+        if let Ok(config) = EmbySourceConfig::try_from(source_config) {
+            use sha2::{Sha256, Digest};
+            let identifier = format!("{}:{}", config.host, config.item_id);
+            format!("emby:{:x}", Sha256::digest(identifier.as_bytes()))
+        } else {
+            "emby:unknown".to_string()
+        }
     }
 
     fn as_dynamic_folder(&self) -> Option<&dyn DynamicFolder> {

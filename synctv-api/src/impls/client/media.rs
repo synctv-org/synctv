@@ -20,7 +20,7 @@ impl ClientApiImpl {
             ProviderType::DirectUrl
         } else {
             ProviderType::from_str(&req.provider)
-                .unwrap_or(ProviderType::DirectUrl)
+                .map_err(|_| format!("Unknown provider type: '{}'", req.provider))?
         };
 
         // Parse source config from request bytes

@@ -8,7 +8,7 @@ use crate::{
     cache::{CacheInvalidationService, UsernameCache},
     models::{User, UserId, SignupMethod},
     models::oauth2_client::OAuth2Provider,
-    repository::UserRepository,
+    repository::{UserRepository, UserOAuthProviderRepository},
     service::auth::{hash_password, verify_password, JwtService, TokenType},
     service::TokenBlacklistService,
     Error, Result,
@@ -295,27 +295,108 @@ impl UserService {
         self.repository.list(query).await
     }
 
-    /// Logout user by blacklisting the access token
-    pub async fn logout(&self, access_token: &str) -> Result<()> {
-        // Decode token to get expiration time
+    /// Logout user by blacklisting both the access token and refresh token.
+    ///
+    /// Both tokens must be revoked to prevent a stolen refresh token from
+    /// being used to obtain new access tokens after the user has logged out.
+    pub async fn logout(&self, access_token: &str, refresh_token: Option<&str>) -> Result<()> {
+        // Blacklist the access token
         let claims = self.jwt_service.verify_access_token(access_token)?;
-
-        // Calculate TTL (time until token expires)
         let now = Utc::now().timestamp();
-        let ttl = claims.exp - now;
+        let access_ttl = claims.exp - now;
 
-        if ttl > 0 {
-            // Add token to blacklist with TTL
-            self.blacklist_service.blacklist_token(access_token, ttl).await?;
-
-            tracing::info!(
-                user_id = %claims.sub,
-                ttl_seconds = ttl,
-                "User logged out, token blacklisted"
-            );
-        } else {
-            tracing::debug!("Token already expired, no need to blacklist");
+        if access_ttl > 0 {
+            self.blacklist_service.blacklist_token(access_token, access_ttl).await?;
         }
+
+        // Blacklist the refresh token (if provided)
+        if let Some(rt) = refresh_token {
+            match self.jwt_service.verify_refresh_token(rt) {
+                Ok(rt_claims) => {
+                    let rt_ttl = rt_claims.exp - now;
+                    if rt_ttl > 0 {
+                        self.blacklist_service.blacklist_token(rt, rt_ttl).await?;
+                    }
+                }
+                Err(e) => {
+                    // Log but don't fail the logout — the access token is already blacklisted
+                    tracing::warn!(error = %e, "Failed to verify refresh token during logout, skipping blacklist");
+                }
+            }
+        }
+
+        tracing::info!(
+            user_id = %claims.sub,
+            access_ttl_seconds = access_ttl,
+            refresh_token_provided = refresh_token.is_some(),
+            "User logged out, tokens blacklisted"
+        );
+
+        Ok(())
+    }
+
+    /// Invalidate all tokens for a user.
+    ///
+    /// This blacklists all tokens issued before now for the given user. Used
+    /// during user deletion or ban to ensure no existing tokens remain usable.
+    pub async fn invalidate_all_tokens(&self, user_id: &UserId, ttl_seconds: i64) -> Result<()> {
+        self.blacklist_service.invalidate_user_tokens(user_id, ttl_seconds).await
+    }
+
+    /// Delete all OAuth2 provider mappings for a user.
+    ///
+    /// Used during user deletion to clean up OAuth bindings.
+    pub async fn cleanup_oauth_providers(&self, user_id: &UserId) -> Result<u64> {
+        let repo = UserOAuthProviderRepository::new(self.repository.pool().clone());
+        repo.delete_all_for_user(user_id).await
+    }
+
+    /// Soft-delete a user and clean up all related resources.
+    ///
+    /// Performs the following cleanup in order:
+    /// 1. Invalidate all tokens (fail-closed: aborts if Redis is unavailable)
+    /// 2. Soft-delete the user row
+    /// 3. Remove all OAuth2 provider mappings
+    /// 4. Invalidate username cache
+    /// 5. Invalidate user cache across replicas
+    ///
+    /// Steps 3-5 are best-effort: failures are logged but do not abort the
+    /// deletion, since the user is already soft-deleted and tokens invalidated.
+    pub async fn delete_user(&self, user_id: &UserId) -> Result<()> {
+        let user = self.get_user(user_id).await?;
+        if user.deleted_at.is_some() {
+            return Err(Error::InvalidInput("User is already deleted".to_string()));
+        }
+
+        // 1. Invalidate all tokens BEFORE soft-delete (fail-closed)
+        const THIRTY_DAYS_SECS: i64 = 30 * 24 * 60 * 60;
+        self.invalidate_all_tokens(user_id, THIRTY_DAYS_SECS).await?;
+
+        // 2. Soft-delete the user row
+        self.repository.delete(user_id).await?;
+
+        // 3. Remove OAuth2 provider mappings (best-effort)
+        if let Err(e) = self.cleanup_oauth_providers(user_id).await {
+            tracing::warn!(
+                error = %e,
+                user_id = %user_id.as_str(),
+                "Failed to clean up OAuth2 providers during user deletion"
+            );
+        }
+
+        // 4. Invalidate username cache (best-effort)
+        if let Err(e) = self.invalidate_username_cache(user_id).await {
+            tracing::warn!(
+                error = %e,
+                user_id = %user_id.as_str(),
+                "Failed to invalidate username cache during user deletion"
+            );
+        }
+
+        // 5. Invalidate user cache across replicas (best-effort)
+        self.notify_user_invalidation(user_id).await;
+
+        tracing::info!(user_id = %user_id.as_str(), "User soft-deleted with full cleanup");
 
         Ok(())
     }
@@ -570,7 +651,7 @@ mod tests {
         let pool = PgPool::connect_lazy("postgresql://fake").unwrap();
 
         let jwt = JwtService::new("test-secret-for-user-service").unwrap();
-        let blacklist = TokenBlacklistService::new(None); // Disabled for tests
+        let blacklist = TokenBlacklistService::new(None, "test".to_string()); // Disabled for tests
         let username_cache = UsernameCache::new(None, "test:".to_string(), 10, 0);
         UserService::new(pool, jwt, blacklist, username_cache)
     }

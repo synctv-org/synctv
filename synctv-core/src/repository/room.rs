@@ -2,8 +2,9 @@ use sqlx::{PgPool, Row, FromRow};
 
 use crate::{
     models::{Room, RoomId, RoomStatus, UserId, RoomListQuery, PageParams},
-    Error, Result,
+    Result,
 };
+use super::query_builder::{WhereClauseBuilder, escape_ilike};
 
 /// Room repository for database operations
 #[derive(Clone)]
@@ -19,7 +20,7 @@ impl RoomRepository {
 
     /// Create a new room
     pub async fn create(&self, room: &Room) -> Result<Room> {
-        let row = sqlx::query(
+        let created = sqlx::query_as::<_, Room>(
             "INSERT INTO rooms (id, name, description, created_by, status, is_banned, created_at, updated_at)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
              RETURNING id, name, description, created_by, status, is_banned, created_at, updated_at, deleted_at"
@@ -35,7 +36,7 @@ impl RoomRepository {
         .fetch_one(&self.pool)
         .await?;
 
-        Ok(Room::from_row(&row)?)
+        Ok(created)
     }
 
     /// Create a new room using a provided executor (pool or transaction)
@@ -43,7 +44,7 @@ impl RoomRepository {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        let row = sqlx::query(
+        let created = sqlx::query_as::<_, Room>(
             "INSERT INTO rooms (id, name, description, created_by, status, is_banned, created_at, updated_at)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
              RETURNING id, name, description, created_by, status, is_banned, created_at, updated_at, deleted_at"
@@ -59,12 +60,12 @@ impl RoomRepository {
         .fetch_one(executor)
         .await?;
 
-        Ok(Room::from_row(&row)?)
+        Ok(created)
     }
 
     /// Get room by ID
     pub async fn get_by_id(&self, room_id: &RoomId) -> Result<Option<Room>> {
-        let row = sqlx::query(
+        let room = sqlx::query_as::<_, Room>(
             "SELECT id, name, description, created_by, status, is_banned, created_at, updated_at, deleted_at
              FROM rooms
              WHERE id = $1 AND deleted_at IS NULL"
@@ -73,15 +74,12 @@ impl RoomRepository {
         .fetch_optional(&self.pool)
         .await?;
 
-        match row {
-            Some(row) => Ok(Some(Room::from_row(&row)?)),
-            None => Ok(None),
-        }
+        Ok(room)
     }
 
     /// Update room
     pub async fn update(&self, room: &Room) -> Result<Room> {
-        let row = sqlx::query(
+        let updated = sqlx::query_as::<_, Room>(
             "UPDATE rooms
              SET name = $2, description = $3, status = $4, is_banned = $5, updated_at = $6
              WHERE id = $1 AND deleted_at IS NULL
@@ -96,7 +94,7 @@ impl RoomRepository {
         .fetch_one(&self.pool)
         .await?;
 
-        Ok(Room::from_row(&row)?)
+        Ok(updated)
     }
 
     /// Soft delete room
@@ -128,140 +126,104 @@ impl RoomRepository {
         Ok(result.rows_affected() > 0)
     }
 
+    /// Build the shared WHERE clause conditions for room list queries.
+    fn build_room_list_conditions(query: &RoomListQuery) -> WhereClauseBuilder {
+        let mut wb = WhereClauseBuilder::new();
+        wb.push_literal("r.deleted_at IS NULL");
+
+        match &query.status {
+            Some(RoomStatus::Active) => wb.push_literal("r.status = 1"),
+            Some(RoomStatus::Pending) => wb.push_literal("r.status = 2"),
+            Some(RoomStatus::Closed) => wb.push_literal("r.status = 3"),
+            None => {}
+        }
+
+        match query.is_banned {
+            Some(true) => wb.push_literal("r.is_banned = TRUE"),
+            Some(false) => wb.push_literal("r.is_banned = FALSE"),
+            None => {}
+        }
+
+        if query.search.is_some() {
+            wb.push_param("(r.name ILIKE ${idx} OR r.description ILIKE ${idx})");
+        }
+
+        wb
+    }
+
+    /// Bind the search pattern onto a `query_scalar` if present.
+    fn bind_search_scalar<'q>(
+        qb: sqlx::query::QueryScalar<'q, sqlx::Postgres, i64, sqlx::postgres::PgArguments>,
+        search_pattern: &'q Option<String>,
+    ) -> sqlx::query::QueryScalar<'q, sqlx::Postgres, i64, sqlx::postgres::PgArguments> {
+        match search_pattern {
+            Some(pattern) => qb.bind(pattern),
+            None => qb,
+        }
+    }
+
+    /// Bind the search pattern onto a `query_as` if present.
+    fn bind_search<'q, O>(
+        qb: sqlx::query::QueryAs<'q, sqlx::Postgres, O, sqlx::postgres::PgArguments>,
+        search_pattern: &'q Option<String>,
+    ) -> sqlx::query::QueryAs<'q, sqlx::Postgres, O, sqlx::postgres::PgArguments>
+    where
+        O: for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow>,
+    {
+        match search_pattern {
+            Some(pattern) => qb.bind(pattern),
+            None => qb,
+        }
+    }
+
     /// List rooms with pagination and filters
     pub async fn list(&self, query: &RoomListQuery) -> Result<(Vec<Room>, i64)> {
         let limit = query.pagination.limit() as i64;
         let offset = query.pagination.offset() as i64;
+        let search_pattern = query.search.as_ref().map(|s| escape_ilike(s));
+        let wb = Self::build_room_list_conditions(query);
 
-        // Build WHERE conditions - use $1 for search in count query, $3 in list query
-        let mut base_conditions = vec!["r.deleted_at IS NULL"];
+        // Count query: params start at $1
+        let (count_where, _) = wb.build(1);
+        let count_sql = format!("SELECT COUNT(*) as count FROM rooms r WHERE {count_where}");
+        let count: i64 = Self::bind_search_scalar(sqlx::query_scalar(&count_sql), &search_pattern)
+            .fetch_one(&self.pool)
+            .await?;
 
-        let status_filter = match &query.status {
-            Some(RoomStatus::Active) => "r.status = 1",
-            Some(RoomStatus::Pending) => "r.status = 2",
-            Some(RoomStatus::Closed) => "r.status = 3",
-            None => "",
-        };
-        if !status_filter.is_empty() {
-            base_conditions.push(status_filter);
-        }
-
-        // Add is_banned filter
-        if let Some(is_banned) = query.is_banned {
-            base_conditions.push(if is_banned { "r.is_banned = TRUE" } else { "r.is_banned = FALSE" });
-        }
-
-        let has_search = query.search.is_some();
-
-        // Count query: search param is $1
-        let mut count_conditions = base_conditions.clone();
-        if has_search {
-            count_conditions.push("(r.name ILIKE $1 OR r.description ILIKE $1)");
-        }
-        let count_where = count_conditions.join(" AND ");
-        let count_query = format!("SELECT COUNT(*) as count FROM rooms r WHERE {count_where}");
-
-        let count: i64 = if let Some(ref search) = query.search {
-            let search_pattern = format!("%{search}%");
-            sqlx::query_scalar(&count_query)
-                .bind(&search_pattern)
-                .fetch_one(&self.pool)
-                .await?
-        } else {
-            sqlx::query_scalar(&count_query)
-                .fetch_one(&self.pool)
-                .await?
-        };
-
-        // List query: $1=limit, $2=offset, $3=search
-        let mut list_conditions = base_conditions;
-        if has_search {
-            list_conditions.push("(r.name ILIKE $3 OR r.description ILIKE $3)");
-        }
-        let list_where = list_conditions.join(" AND ");
-        let list_query = format!(
+        // List query: $1=limit, $2=offset, then filter params start at $3
+        let (list_where, _) = wb.build(3);
+        let list_sql = format!(
             "SELECT r.id, r.name, r.description, r.created_by, r.status, r.is_banned, r.created_at, r.updated_at, r.deleted_at
              FROM rooms r
              WHERE {list_where}
              ORDER BY r.created_at DESC
              LIMIT $1 OFFSET $2"
         );
+        let list_qb = sqlx::query_as::<_, Room>(&list_sql).bind(limit).bind(offset);
+        let rooms: Vec<Room> = Self::bind_search(list_qb, &search_pattern)
+            .fetch_all(&self.pool)
+            .await?;
 
-        let rows = if let Some(ref search) = query.search {
-            let search_pattern = format!("%{search}%");
-            sqlx::query(&list_query)
-                .bind(limit)
-                .bind(offset)
-                .bind(&search_pattern)
-                .fetch_all(&self.pool)
-                .await?
-        } else {
-            sqlx::query(&list_query)
-                .bind(limit)
-                .bind(offset)
-                .fetch_all(&self.pool)
-                .await?
-        };
-
-        let rooms: Result<Vec<Room>> = rows.into_iter().map(|row| Ok(Room::from_row(&row)?)).collect();
-
-        Ok((rooms?, count))
+        Ok((rooms, count))
     }
 
     /// List rooms with member count (optimized with JOIN)
     pub async fn list_with_count(&self, query: &RoomListQuery) -> Result<(Vec<crate::models::RoomWithCount>, i64)> {
         let limit = query.pagination.limit() as i64;
         let offset = query.pagination.offset() as i64;
+        let search_pattern = query.search.as_ref().map(|s| escape_ilike(s));
+        let wb = Self::build_room_list_conditions(query);
 
-        // Build WHERE conditions
-        let mut base_conditions = vec!["r.deleted_at IS NULL"];
+        // Count query: params start at $1
+        let (count_where, _) = wb.build(1);
+        let count_sql = format!("SELECT COUNT(DISTINCT r.id) FROM rooms r WHERE {count_where}");
+        let count: i64 = Self::bind_search_scalar(sqlx::query_scalar(&count_sql), &search_pattern)
+            .fetch_one(&self.pool)
+            .await?;
 
-        let status_filter = match &query.status {
-            Some(RoomStatus::Active) => "r.status = 1",
-            Some(RoomStatus::Pending) => "r.status = 2",
-            Some(RoomStatus::Closed) => "r.status = 3",
-            None => "",
-        };
-        if !status_filter.is_empty() {
-            base_conditions.push(status_filter);
-        }
-
-        // Add is_banned filter
-        if let Some(is_banned) = query.is_banned {
-            base_conditions.push(if is_banned { "r.is_banned = TRUE" } else { "r.is_banned = FALSE" });
-        }
-
-        let has_search = query.search.is_some();
-
-        // Count query: search param is $1
-        let mut count_conditions = base_conditions.clone();
-        if has_search {
-            count_conditions.push("(r.name ILIKE $1 OR r.description ILIKE $1)");
-        }
-        let count_where = count_conditions.join(" AND ");
-        let count_query = format!(
-            "SELECT COUNT(DISTINCT r.id) FROM rooms r WHERE {count_where}"
-        );
-
-        let count: i64 = if let Some(ref search) = query.search {
-            let search_pattern = format!("%{search}%");
-            sqlx::query_scalar(&count_query)
-                .bind(&search_pattern)
-                .fetch_one(&self.pool)
-                .await?
-        } else {
-            sqlx::query_scalar(&count_query)
-                .fetch_one(&self.pool)
-                .await?
-        };
-
-        // List query: $1=limit, $2=offset, $3=search
-        let mut list_conditions = base_conditions;
-        if has_search {
-            list_conditions.push("(r.name ILIKE $3 OR r.description ILIKE $3)");
-        }
-        let list_where = list_conditions.join(" AND ");
-        let list_query = format!(
+        // List query: $1=limit, $2=offset, then filter params start at $3
+        let (list_where, _) = wb.build(3);
+        let list_sql = format!(
             r"
             SELECT
                 r.id, r.name, r.description, r.created_by, r.status, r.is_banned,
@@ -276,21 +238,11 @@ impl RoomRepository {
             "
         );
 
-        let rows = if let Some(ref search) = query.search {
-            let search_pattern = format!("%{search}%");
-            sqlx::query(&list_query)
-                .bind(limit)
-                .bind(offset)
-                .bind(&search_pattern)
-                .fetch_all(&self.pool)
-                .await?
-        } else {
-            sqlx::query(&list_query)
-                .bind(limit)
-                .bind(offset)
-                .fetch_all(&self.pool)
-                .await?
-        };
+        let mut list_qb = sqlx::query(&list_sql).bind(limit).bind(offset);
+        if let Some(ref pattern) = search_pattern {
+            list_qb = list_qb.bind(pattern);
+        }
+        let rows = list_qb.fetch_all(&self.pool).await?;
 
         let rooms_with_count: Result<Vec<crate::models::RoomWithCount>> = rows
             .into_iter()
@@ -307,8 +259,26 @@ impl RoomRepository {
         Ok((rooms_with_count?, count))
     }
 
-    /// Check if room exists and is active (not deleted and not banned)
+    /// Check if room exists (not soft-deleted)
     pub async fn exists(&self, room_id: &RoomId) -> Result<bool> {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) as count
+             FROM rooms
+             WHERE id = $1 AND deleted_at IS NULL"
+        )
+        .bind(room_id.as_str())
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(count > 0)
+    }
+
+    /// Check if room exists, is active, and is not banned
+    ///
+    /// This is a stricter check than `exists()` -- it also verifies the room
+    /// has status = Active and is not banned, which is the condition for a room
+    /// to be joinable/accessible by regular users.
+    pub async fn is_accessible(&self, room_id: &RoomId) -> Result<bool> {
         let count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) as count
              FROM rooms
@@ -351,7 +321,7 @@ impl RoomRepository {
         .await?;
 
         // Get rooms
-        let rows = sqlx::query(
+        let rooms = sqlx::query_as::<_, Room>(
             "SELECT id, name, description, created_by, status, is_banned, created_at, updated_at, deleted_at
              FROM rooms
              WHERE created_by = $1 AND deleted_at IS NULL
@@ -364,9 +334,7 @@ impl RoomRepository {
         .fetch_all(&self.pool)
         .await?;
 
-        let rooms: Result<Vec<Room>> = rows.into_iter().map(|row| Ok(Room::from_row(&row)?)).collect();
-
-        Ok((rooms?, count))
+        Ok((rooms, count))
     }
 
     /// Get rooms created by a specific user with member count (optimized)
@@ -426,7 +394,7 @@ impl RoomRepository {
 
     /// Update room status
     pub async fn update_status(&self, room_id: &RoomId, status: RoomStatus) -> Result<Room> {
-        let row = sqlx::query(
+        let room = sqlx::query_as::<_, Room>(
             r"
             UPDATE rooms
             SET status = $1, updated_at = CURRENT_TIMESTAMP
@@ -437,34 +405,32 @@ impl RoomRepository {
         .bind(status)
         .bind(room_id.as_str())
         .fetch_one(&self.pool)
-        .await
-        .map_err(Error::Database)?;
+        .await?;
 
-        Ok(Room::from_row(&row)?)
+        Ok(room)
     }
 
     /// Update room ban status (admin only)
     pub async fn update_ban_status(&self, room_id: &RoomId, is_banned: bool) -> Result<Room> {
-        let row = sqlx::query(
+        let room = sqlx::query_as::<_, Room>(
             r"
             UPDATE rooms
             SET is_banned = $1, updated_at = CURRENT_TIMESTAMP
-            WHERE id = $2
+            WHERE id = $2 AND deleted_at IS NULL
             RETURNING id, name, description, created_by, status, is_banned, created_at, updated_at, deleted_at
             ",
         )
         .bind(is_banned)
         .bind(room_id.as_str())
         .fetch_one(&self.pool)
-        .await
-        .map_err(Error::Database)?;
+        .await?;
 
-        Ok(Room::from_row(&row)?)
+        Ok(room)
     }
 
     /// Update room description
     pub async fn update_description(&self, room_id: &RoomId, description: &str) -> Result<Room> {
-        let row = sqlx::query(
+        let room = sqlx::query_as::<_, Room>(
             r"
             UPDATE rooms
             SET description = $1, updated_at = CURRENT_TIMESTAMP
@@ -475,20 +441,193 @@ impl RoomRepository {
         .bind(description)
         .bind(room_id.as_str())
         .fetch_one(&self.pool)
-        .await
-        .map_err(Error::Database)?;
+        .await?;
 
-        Ok(Room::from_row(&row)?)
+        Ok(room)
     }
 
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn test_build_room_list_conditions_no_filters() {
+        let query = RoomListQuery {
+            status: None,
+            is_banned: None,
+            search: None,
+            pagination: PageParams::default(),
+            creator_id: None,
+        };
+        let wb = RoomRepository::build_room_list_conditions(&query);
+
+        let (sql, next_idx) = wb.build(1);
+        assert_eq!(sql, "r.deleted_at IS NULL");
+        assert_eq!(next_idx, 1); // no params consumed
+        assert_eq!(wb.param_count(), 0);
+    }
+
+    #[test]
+    fn test_build_room_list_conditions_with_status_active() {
+        let query = RoomListQuery {
+            status: Some(RoomStatus::Active),
+            is_banned: None,
+            search: None,
+            pagination: PageParams::default(),
+            creator_id: None,
+        };
+        let wb = RoomRepository::build_room_list_conditions(&query);
+
+        let (sql, _) = wb.build(1);
+        assert!(sql.contains("r.deleted_at IS NULL"));
+        assert!(sql.contains("r.status = 1"));
+        assert_eq!(wb.param_count(), 0); // status is a literal, not a param
+    }
+
+    #[test]
+    fn test_build_room_list_conditions_with_status_pending() {
+        let query = RoomListQuery {
+            status: Some(RoomStatus::Pending),
+            is_banned: None,
+            search: None,
+            pagination: PageParams::default(),
+            creator_id: None,
+        };
+        let wb = RoomRepository::build_room_list_conditions(&query);
+
+        let (sql, _) = wb.build(1);
+        assert!(sql.contains("r.status = 2"));
+    }
+
+    #[test]
+    fn test_build_room_list_conditions_with_status_closed() {
+        let query = RoomListQuery {
+            status: Some(RoomStatus::Closed),
+            is_banned: None,
+            search: None,
+            pagination: PageParams::default(),
+            creator_id: None,
+        };
+        let wb = RoomRepository::build_room_list_conditions(&query);
+
+        let (sql, _) = wb.build(1);
+        assert!(sql.contains("r.status = 3"));
+    }
+
+    #[test]
+    fn test_build_room_list_conditions_with_banned_filter() {
+        let query = RoomListQuery {
+            status: None,
+            is_banned: Some(true),
+            search: None,
+            pagination: PageParams::default(),
+            creator_id: None,
+        };
+        let wb = RoomRepository::build_room_list_conditions(&query);
+
+        let (sql, _) = wb.build(1);
+        assert!(sql.contains("r.is_banned = TRUE"));
+    }
+
+    #[test]
+    fn test_build_room_list_conditions_with_not_banned_filter() {
+        let query = RoomListQuery {
+            status: None,
+            is_banned: Some(false),
+            search: None,
+            pagination: PageParams::default(),
+            creator_id: None,
+        };
+        let wb = RoomRepository::build_room_list_conditions(&query);
+
+        let (sql, _) = wb.build(1);
+        assert!(sql.contains("r.is_banned = FALSE"));
+    }
+
+    #[test]
+    fn test_build_room_list_conditions_with_search() {
+        let query = RoomListQuery {
+            status: None,
+            is_banned: None,
+            search: Some("test".to_string()),
+            pagination: PageParams::default(),
+            creator_id: None,
+        };
+        let wb = RoomRepository::build_room_list_conditions(&query);
+
+        assert_eq!(wb.param_count(), 1);
+        let (sql, next_idx) = wb.build(1);
+        assert!(sql.contains("r.name ILIKE"));
+        assert!(sql.contains("r.description ILIKE"));
+        assert_eq!(next_idx, 2);
+    }
+
+    #[test]
+    fn test_build_room_list_conditions_all_filters() {
+        let query = RoomListQuery {
+            status: Some(RoomStatus::Active),
+            is_banned: Some(false),
+            search: Some("room".to_string()),
+            pagination: PageParams::default(),
+            creator_id: None,
+        };
+        let wb = RoomRepository::build_room_list_conditions(&query);
+
+        let (sql, _) = wb.build(1);
+        assert!(sql.contains("r.deleted_at IS NULL"));
+        assert!(sql.contains("r.status = 1"));
+        assert!(sql.contains("r.is_banned = FALSE"));
+        assert!(sql.contains("r.name ILIKE"));
+    }
+
+    #[test]
+    fn test_build_room_list_conditions_param_offset_for_paginated_query() {
+        // Simulates the list query where $1=LIMIT, $2=OFFSET, filters start at $3
+        let query = RoomListQuery {
+            status: None,
+            is_banned: None,
+            search: Some("test".to_string()),
+            pagination: PageParams::default(),
+            creator_id: None,
+        };
+        let wb = RoomRepository::build_room_list_conditions(&query);
+
+        let (count_sql, count_next) = wb.build(1);
+        let (list_sql, list_next) = wb.build(3);
+
+        // Count query uses $1 for the search param
+        assert!(count_sql.contains("$1"));
+        assert_eq!(count_next, 2);
+
+        // List query uses $3 for the search param (after LIMIT $1 and OFFSET $2)
+        assert!(list_sql.contains("$3"));
+        assert_eq!(list_next, 4);
+    }
 
     #[tokio::test]
     #[ignore = "Requires database"]
     async fn test_create_room() {
-        // Integration test placeholder
+        // Would connect to test DB and verify:
+        // let pool = PgPool::connect("postgresql://...").await.unwrap();
+        // let repo = RoomRepository::new(pool);
+        // let room = Room::new("Test Room".into(), Some("desc".into()), UserId::new());
+        // let created = repo.create(&room).await.unwrap();
+        // assert_eq!(created.name, "Test Room");
+        // assert_eq!(created.created_by, room.created_by);
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires database"]
+    async fn test_soft_delete_room() {
+        // Would connect to test DB and verify soft delete:
+        // let pool = PgPool::connect("postgresql://...").await.unwrap();
+        // let repo = RoomRepository::new(pool);
+        // let room = Room::new("Delete Me".into(), None, UserId::new());
+        // let created = repo.create(&room).await.unwrap();
+        // assert!(repo.exists(&created.id).await.unwrap());
+        // assert!(repo.delete(&created.id).await.unwrap());
+        // assert!(!repo.exists(&created.id).await.unwrap());
     }
 }

@@ -54,17 +54,31 @@ impl ClientApiImpl {
             ).await.map_err(|e| e.to_string())?;
         }
 
-        // Determine which permission set to use based on current role
-        // (This is a simplified implementation - proper logic would check the member's current role)
-        let use_admin_perms = req.admin_added_permissions > 0 || req.admin_removed_permissions > 0;
+        // Determine which permission set to use based on the caller's actual role,
+        // not based on whether admin fields are populated in the request.
+        let caller_member = self.room_service.member_service()
+            .get_member(&rid, &uid)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "Caller is not a member of this room".to_string())?;
 
-        let added = if use_admin_perms {
+        let caller_is_admin = matches!(
+            caller_member.role,
+            synctv_core::models::RoomRole::Creator | synctv_core::models::RoomRole::Admin
+        );
+
+        // Only callers with admin/creator role can set admin-level permissions
+        if !caller_is_admin && (req.admin_added_permissions > 0 || req.admin_removed_permissions > 0) {
+            return Err("Only admins or creators can modify admin-level permissions".to_string());
+        }
+
+        let added = if caller_is_admin {
             req.admin_added_permissions
         } else {
             req.added_permissions
         };
 
-        let removed = if use_admin_perms {
+        let removed = if caller_is_admin {
             req.admin_removed_permissions
         } else {
             req.removed_permissions
@@ -154,9 +168,12 @@ impl ClientApiImpl {
         let target_uid = UserId::from_string(req.user_id.clone());
 
         self.room_service.member_service()
-            .unban_member(rid, uid, target_uid)
+            .unban_member(rid.clone(), uid.clone(), target_uid.clone())
             .await
             .map_err(|e| e.to_string())?;
+
+        // Notify other replicas to invalidate permission cache
+        self.publish_permission_changed(&rid, &target_uid, &uid);
 
         Ok(crate::proto::client::UnbanMemberResponse { success: true })
     }

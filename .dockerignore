@@ -8,3 +8,9 @@ benches/
 !README.md
 .DS_Store
 .gitignore
+.dockerignore
+docker-compose.yml
+helm/
+scripts/
+.env
+.env.*

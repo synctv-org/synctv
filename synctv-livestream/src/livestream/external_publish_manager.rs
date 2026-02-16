@@ -15,6 +15,7 @@ use crate::{
     relay::registry_trait::StreamRegistryTrait,
 };
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use synctv_xiu::streamhub::define::{StreamHubEvent, StreamHubEventSender};
 use synctv_xiu::streamhub::stream::StreamIdentifier;
@@ -188,6 +189,8 @@ pub struct ExternalPublishStream {
     source_url: String,
     stream_hub_event_sender: StreamHubEventSender,
     lifecycle: StreamLifecycle,
+    /// Guard against sending duplicate UnPublish events (stop() + Drop)
+    unpublish_sent: AtomicBool,
 }
 
 impl ManagedStream for ExternalPublishStream {
@@ -214,10 +217,15 @@ impl ExternalPublishStream {
             source_url,
             stream_hub_event_sender,
             lifecycle: StreamLifecycle::new(),
+            unpublish_sent: AtomicBool::new(false),
         }
     }
 
     /// Start the external puller task.
+    ///
+    /// Spawns the puller in a background task and waits for it to confirm that
+    /// the connection was established before returning. This prevents the caller
+    /// from registering the stream in Redis before the source is actually reachable.
     pub async fn start(&self) -> StreamResult<()> {
         self.lifecycle.set_running();
         self.lifecycle.update_last_active_time();
@@ -227,14 +235,29 @@ impl ExternalPublishStream {
         let source_url = self.source_url.clone();
         let stream_hub_sender = self.stream_hub_event_sender.clone();
 
+        let (confirm_tx, confirm_rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
+
         let handle = tokio::spawn(async move {
             info!("External publish task started for {}/{}", room_id, media_id);
-            let puller = ExternalStreamPuller::new(
+            let puller = match ExternalStreamPuller::new(
                 room_id.clone(),
                 media_id.clone(),
                 source_url,
                 stream_hub_sender,
-            )?;
+            ) {
+                Ok(p) => {
+                    // Puller created successfully (connection parameters validated).
+                    // Signal confirmation so the caller can proceed with Redis registration.
+                    let _ = confirm_tx.send(Ok(()));
+                    p
+                }
+                Err(e) => {
+                    let msg = format!("Failed to create puller for {room_id}/{media_id}: {e}");
+                    error!("{}", msg);
+                    let _ = confirm_tx.send(Err(msg));
+                    return Err(e);
+                }
+            };
             let result = puller.run().await;
             if let Err(ref e) = result {
                 error!(
@@ -246,6 +269,21 @@ impl ExternalPublishStream {
             }
             result
         });
+
+        // Wait for the spawned task to confirm the connection was established
+        match confirm_rx.await {
+            Ok(Ok(())) => {}
+            Ok(Err(msg)) => {
+                self.lifecycle.mark_stopping();
+                return Err(crate::error::StreamError::ConnectionFailed(msg));
+            }
+            Err(_) => {
+                self.lifecycle.mark_stopping();
+                return Err(crate::error::StreamError::ConnectionFailed(
+                    "Puller task exited before confirming connection".to_string(),
+                ));
+            }
+        }
 
         self.lifecycle.set_task_handle(handle).await;
         info!(
@@ -263,13 +301,16 @@ impl ExternalPublishStream {
     pub async fn stop(&self) -> StreamResult<()> {
         self.lifecycle.mark_stopping();
 
-        let stream_name = format!("{}/{}", self.room_id, self.media_id);
-        let identifier = StreamIdentifier::Rtmp {
-            app_name: "live".to_string(),
-            stream_name,
-        };
-        if let Err(e) = self.stream_hub_event_sender.try_send(StreamHubEvent::UnPublish { identifier }) {
-            warn!("Failed to send UnPublish for {}/{}: {}", self.room_id, self.media_id, e);
+        // Only send UnPublish once (prevents duplicate when Drop also runs)
+        if !self.unpublish_sent.swap(true, Ordering::AcqRel) {
+            let stream_name = format!("{}/{}", self.room_id, self.media_id);
+            let identifier = StreamIdentifier::Rtmp {
+                app_name: "live".to_string(),
+                stream_name,
+            };
+            if let Err(e) = self.stream_hub_event_sender.try_send(StreamHubEvent::UnPublish { identifier }) {
+                warn!("Failed to send UnPublish for {}/{}: {}", self.room_id, self.media_id, e);
+            }
         }
 
         self.lifecycle.abort_task().await;
@@ -309,20 +350,22 @@ impl ExternalPublishStream {
 
 impl Drop for ExternalPublishStream {
     fn drop(&mut self) {
-        // Send UnPublish to StreamHub so the local stream entry is removed.
-        let stream_name = format!("{}/{}", self.room_id, self.media_id);
-        let identifier = StreamIdentifier::Rtmp {
-            app_name: "live".to_string(),
-            stream_name,
-        };
-        if let Err(e) = self
-            .stream_hub_event_sender
-            .try_send(StreamHubEvent::UnPublish { identifier })
-        {
-            warn!(
-                "ExternalPublishStream drop: failed to send UnPublish for {}/{}: {}",
-                self.room_id, self.media_id, e
-            );
+        // Only send UnPublish if stop() hasn't already sent it
+        if !self.unpublish_sent.swap(true, Ordering::AcqRel) {
+            let stream_name = format!("{}/{}", self.room_id, self.media_id);
+            let identifier = StreamIdentifier::Rtmp {
+                app_name: "live".to_string(),
+                stream_name,
+            };
+            if let Err(e) = self
+                .stream_hub_event_sender
+                .try_send(StreamHubEvent::UnPublish { identifier })
+            {
+                warn!(
+                    "ExternalPublishStream drop: failed to send UnPublish for {}/{}: {}",
+                    self.room_id, self.media_id, e
+                );
+            }
         }
 
         debug!(

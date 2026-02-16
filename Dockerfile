@@ -30,6 +30,13 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # Stage 2: Runtime image
 FROM debian:bookworm-slim
 
+# OCI image labels
+LABEL org.opencontainers.image.title="SyncTV" \
+      org.opencontainers.image.description="Distributed video synchronization platform with real-time streaming" \
+      org.opencontainers.image.url="https://github.com/synctv-org/synctv" \
+      org.opencontainers.image.source="https://github.com/synctv-org/synctv" \
+      org.opencontainers.image.licenses="MIT"
+
 # Install runtime dependencies (curl needed for healthcheck)
 RUN apt-get update && apt-get install -y \
     ca-certificates \
@@ -64,6 +71,10 @@ EXPOSE 8080 50051 1935 3478/udp
 # Set environment variables
 ENV RUST_LOG=info
 ENV RUST_BACKTRACE=1
+
+# Health check against the HTTP health endpoint
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+    CMD ["curl", "-f", "http://localhost:8080/health"]
 
 # Run the application
 CMD ["/app/synctv"]

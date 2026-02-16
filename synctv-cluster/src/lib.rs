@@ -2,6 +2,7 @@ pub mod sync;
 pub mod discovery;
 pub mod grpc;
 pub mod error;
+pub mod leader;
 
 pub use error::{Error, Result};
 pub use discovery::{HeartbeatResult, NodeInfo, NodeRegistry, HealthMonitor, NodeHealth, LoadBalancer, LoadBalancingStrategy, K8sDnsDiscovery};
@@ -12,3 +13,4 @@ pub use sync::{
     MessageSender as ClusterMessageSender,
 };
 pub use grpc::{ClusterClient, ClusterClientConfig, ClusterServer, ClusterServiceServer, ClusterAuthInterceptor, FanOutResult};
+pub use leader::{LeaderElector, LeaderElectorConfig, K8sLeaderElector, K8sLeaderElectorConfig};

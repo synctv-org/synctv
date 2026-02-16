@@ -24,12 +24,33 @@ impl ClientApiImpl {
         user_id: &str,
         req: crate::proto::client::SetUsernameRequest,
     ) -> Result<crate::proto::client::SetUsernameResponse, String> {
+        // Validate username length and charset (consistent with registration rules)
+        let username = req.new_username.trim().to_string();
+        if username.len() < synctv_core::validation::USERNAME_MIN {
+            return Err(format!(
+                "Username must be at least {} characters",
+                synctv_core::validation::USERNAME_MIN
+            ));
+        }
+        if username.len() > synctv_core::validation::USERNAME_MAX {
+            return Err(format!(
+                "Username must be at most {} characters",
+                synctv_core::validation::USERNAME_MAX
+            ));
+        }
+        if !username.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+            return Err("Username can only contain letters, numbers, underscores, and hyphens".to_string());
+        }
+        if username.starts_with('_') || username.starts_with('-') {
+            return Err("Username cannot start with underscore or hyphen".to_string());
+        }
+
         let uid = UserId::from_string(user_id.to_string());
         let user = self.user_service.get_user(&uid).await
             .map_err(|e| e.to_string())?;
 
         let updated_user = synctv_core::models::User {
-            username: req.new_username,
+            username,
             ..user
         };
 

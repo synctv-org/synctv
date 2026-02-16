@@ -1,0 +1,369 @@
+//! Kubernetes Lease-based leader election.
+//!
+//! Uses the coordination.k8s.io/v1 Lease resource for leader election
+//! when running in a Kubernetes cluster. This is the recommended approach
+//! for K8s deployments as it uses native K8s primitives.
+//!
+//! For non-K8s deployments, use [`super::LeaderElector`] which uses Redis.
+//!
+//! # How it works
+//!
+//! 1. Each pod tries to create/update a Lease resource with its identity
+//! 2. The holder renews the lease periodically (before `lease_duration` expires)
+//! 3. If the holder crashes, the lease expires and another pod acquires it
+//! 4. Uses optimistic concurrency (resourceVersion) to prevent split-brain
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+
+use k8s_openapi::api::coordination::v1::Lease;
+use kube::api::{Api, Patch, PatchParams, PostParams};
+use kube::Client;
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, info, warn};
+
+/// K8s Lease-based leader election.
+///
+/// Creates or acquires a Lease resource in the pod's namespace.
+/// The leader periodically renews the lease; if it fails, another
+/// pod can take over after the lease expires.
+#[derive(Clone)]
+pub struct K8sLeaderElector {
+    /// Whether this instance is currently the leader
+    is_leader: Arc<AtomicBool>,
+    /// K8s API client (in-cluster)
+    client: Client,
+    /// Lease name (e.g., "synctv-leader")
+    lease_name: String,
+    /// Namespace (from downward API or in-cluster config)
+    namespace: String,
+    /// This pod's identity (pod name)
+    identity: String,
+    /// Lease duration in seconds
+    lease_duration_secs: i32,
+    /// How often to attempt renewal in seconds
+    renew_interval_secs: u64,
+}
+
+/// Configuration for K8s lease-based leader election.
+pub struct K8sLeaderElectorConfig {
+    /// Lease name in Kubernetes (default: "synctv-leader")
+    pub lease_name: String,
+    /// Lease duration in seconds (default: 30)
+    pub lease_duration_secs: i32,
+    /// Renewal interval in seconds (default: 10, must be < lease_duration_secs)
+    pub renew_interval_secs: u64,
+}
+
+impl Default for K8sLeaderElectorConfig {
+    fn default() -> Self {
+        Self {
+            lease_name: "synctv-leader".to_string(),
+            lease_duration_secs: 30,
+            renew_interval_secs: 10,
+        }
+    }
+}
+
+impl K8sLeaderElector {
+    /// Create a new K8s leader elector using in-cluster configuration.
+    ///
+    /// # Arguments
+    /// * `identity` - This pod's unique identity (typically POD_NAME from downward API)
+    /// * `namespace` - Kubernetes namespace (typically POD_NAMESPACE from downward API)
+    /// * `config` - Leader election configuration
+    pub async fn new(
+        identity: String,
+        namespace: String,
+        config: K8sLeaderElectorConfig,
+    ) -> anyhow::Result<Self> {
+        let client = Client::try_default()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to create in-cluster K8s client: {e}"))?;
+
+        Ok(Self {
+            is_leader: Arc::new(AtomicBool::new(false)),
+            client,
+            lease_name: config.lease_name,
+            namespace,
+            identity,
+            lease_duration_secs: config.lease_duration_secs,
+            renew_interval_secs: config.renew_interval_secs,
+        })
+    }
+
+    /// Returns `true` if this instance is currently the leader.
+    pub fn is_leader(&self) -> bool {
+        self.is_leader.load(Ordering::Acquire)
+    }
+
+    /// Start the leader election loop.
+    ///
+    /// Returns a `JoinHandle` for the background task.
+    pub fn start(&self, cancel_token: CancellationToken) -> tokio::task::JoinHandle<()> {
+        let elector = self.clone();
+        tokio::spawn(async move {
+            elector.run_loop(cancel_token).await;
+        })
+    }
+
+    /// Main election loop.
+    async fn run_loop(&self, cancel_token: CancellationToken) {
+        let interval = Duration::from_secs(self.renew_interval_secs);
+        let leases: Api<Lease> = Api::namespaced(self.client.clone(), &self.namespace);
+
+        info!(
+            identity = %self.identity,
+            lease_name = %self.lease_name,
+            namespace = %self.namespace,
+            lease_duration_secs = self.lease_duration_secs,
+            renew_interval_secs = self.renew_interval_secs,
+            "K8s Lease leader election started"
+        );
+
+        loop {
+            tokio::select! {
+                () = cancel_token.cancelled() => {
+                    info!(identity = %self.identity, "K8s leader election shutting down");
+                    self.resign(&leases).await;
+                    break;
+                }
+                () = tokio::time::sleep(interval) => {
+                    self.try_acquire_or_renew(&leases).await;
+                }
+            }
+        }
+    }
+
+    /// Try to acquire or renew the lease.
+    async fn try_acquire_or_renew(&self, leases: &Api<Lease>) {
+        match leases.get_opt(&self.lease_name).await {
+            Ok(Some(existing)) => {
+                self.handle_existing_lease(leases, existing).await;
+            }
+            Ok(None) => {
+                // Lease doesn't exist, try to create it
+                self.try_create_lease(leases).await;
+            }
+            Err(e) => {
+                warn!(
+                    identity = %self.identity,
+                    error = %e,
+                    "Failed to get lease, assuming not leader"
+                );
+                self.set_leader(false);
+            }
+        }
+    }
+
+    /// Handle an existing lease - renew if we hold it, or try to acquire if expired.
+    async fn handle_existing_lease(&self, leases: &Api<Lease>, lease: Lease) {
+        let spec = lease.spec.as_ref();
+        let holder = spec.and_then(|s| s.holder_identity.as_deref());
+        let renew_time = spec.and_then(|s| s.renew_time.as_ref());
+        let duration = spec
+            .and_then(|s| s.lease_duration_seconds)
+            .unwrap_or(self.lease_duration_secs);
+
+        let is_our_lease = holder == Some(self.identity.as_str());
+
+        // Check if the lease has expired
+        let lease_expired = if let Some(renew) = renew_time {
+            let renew_time = renew.0;
+            let now = chrono::Utc::now();
+            let elapsed = now.signed_duration_since(renew_time);
+            elapsed.num_seconds() > i64::from(duration)
+        } else {
+            true // No renew time means expired
+        };
+
+        if is_our_lease {
+            // We hold the lease, renew it
+            self.renew_lease(leases, &lease).await;
+        } else if lease_expired {
+            // Lease expired, try to take it
+            info!(
+                identity = %self.identity,
+                previous_holder = ?holder,
+                "Lease expired, attempting to acquire"
+            );
+            self.update_lease(leases, &lease).await;
+        } else {
+            // Another pod holds a valid lease
+            debug!(
+                identity = %self.identity,
+                holder = ?holder,
+                "Another pod holds the lease"
+            );
+            self.set_leader(false);
+        }
+    }
+
+    /// Try to create a new lease (first time).
+    async fn try_create_lease(&self, leases: &Api<Lease>) {
+        let lease = self.build_lease();
+
+        match leases.create(&PostParams::default(), &lease).await {
+            Ok(_) => {
+                info!(identity = %self.identity, "Created lease, became leader");
+                self.set_leader(true);
+            }
+            Err(kube::Error::Api(err)) if err.code == 409 => {
+                // Conflict - another pod created it first
+                debug!(identity = %self.identity, "Lease creation conflict, another pod is leader");
+                self.set_leader(false);
+            }
+            Err(e) => {
+                warn!(identity = %self.identity, error = %e, "Failed to create lease");
+                self.set_leader(false);
+            }
+        }
+    }
+
+    /// Renew our existing lease.
+    ///
+    /// Uses the `resourceVersion` from the existing lease to detect concurrent
+    /// modifications (optimistic concurrency). If another pod modified the lease
+    /// between our GET and this PATCH, the API server returns 409 Conflict.
+    async fn renew_lease(&self, leases: &Api<Lease>, existing: &Lease) {
+        let resource_version = existing
+            .metadata
+            .resource_version
+            .as_deref()
+            .unwrap_or("");
+        let now = chrono::Utc::now();
+        let patch = serde_json::json!({
+            "metadata": {
+                "resourceVersion": resource_version,
+            },
+            "spec": {
+                "renewTime": k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime(now),
+            }
+        });
+
+        match leases
+            .patch(
+                &self.lease_name,
+                &PatchParams::default(),
+                &Patch::Merge(&patch),
+            )
+            .await
+        {
+            Ok(_) => {
+                debug!(identity = %self.identity, "Lease renewed");
+                self.set_leader(true);
+            }
+            Err(kube::Error::Api(err)) if err.code == 409 => {
+                warn!(identity = %self.identity, "Lease renewal conflict, lost leadership");
+                self.set_leader(false);
+            }
+            Err(e) => {
+                warn!(identity = %self.identity, error = %e, "Failed to renew lease");
+                self.set_leader(false);
+            }
+        }
+    }
+
+    /// Update an expired lease to claim leadership.
+    ///
+    /// Uses the `resourceVersion` from the existing lease so that two pods racing
+    /// to acquire an expired lease will not both succeed: the second PATCH gets a
+    /// 409 Conflict from the API server.
+    async fn update_lease(&self, leases: &Api<Lease>, existing: &Lease) {
+        let resource_version = existing
+            .metadata
+            .resource_version
+            .as_deref()
+            .unwrap_or("");
+        let now = chrono::Utc::now();
+        let patch = serde_json::json!({
+            "metadata": {
+                "resourceVersion": resource_version,
+            },
+            "spec": {
+                "holderIdentity": self.identity,
+                "leaseDurationSeconds": self.lease_duration_secs,
+                "acquireTime": k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime(now),
+                "renewTime": k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime(now),
+            }
+        });
+
+        match leases
+            .patch(
+                &self.lease_name,
+                &PatchParams::default(),
+                &Patch::Merge(&patch),
+            )
+            .await
+        {
+            Ok(_) => {
+                info!(identity = %self.identity, "Acquired expired lease, became leader");
+                self.set_leader(true);
+            }
+            Err(kube::Error::Api(err)) if err.code == 409 => {
+                debug!(identity = %self.identity, "Lease acquisition conflict");
+                self.set_leader(false);
+            }
+            Err(e) => {
+                warn!(identity = %self.identity, error = %e, "Failed to acquire lease");
+                self.set_leader(false);
+            }
+        }
+    }
+
+    /// Resign leadership by clearing the holder.
+    async fn resign(&self, leases: &Api<Lease>) {
+        if !self.is_leader() {
+            return;
+        }
+
+        info!(identity = %self.identity, "Resigning K8s lease leadership");
+
+        let patch = serde_json::json!({
+            "spec": {
+                "holderIdentity": serde_json::Value::Null,
+            }
+        });
+
+        if let Err(e) = leases
+            .patch(
+                &self.lease_name,
+                &PatchParams::default(),
+                &Patch::Merge(&patch),
+            )
+            .await
+        {
+            warn!(identity = %self.identity, error = %e, "Failed to resign lease");
+        }
+
+        self.set_leader(false);
+    }
+
+    /// Build a new Lease resource.
+    fn build_lease(&self) -> Lease {
+        let now = chrono::Utc::now();
+        Lease {
+            metadata: kube::api::ObjectMeta {
+                name: Some(self.lease_name.clone()),
+                namespace: Some(self.namespace.clone()),
+                ..Default::default()
+            },
+            spec: Some(k8s_openapi::api::coordination::v1::LeaseSpec {
+                holder_identity: Some(self.identity.clone()),
+                lease_duration_seconds: Some(self.lease_duration_secs),
+                acquire_time: Some(k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime(now)),
+                renew_time: Some(k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime(now)),
+                ..Default::default()
+            }),
+        }
+    }
+
+    /// Update leader status with logging on transitions.
+    fn set_leader(&self, leader: bool) {
+        let was_leader = self.is_leader.swap(leader, Ordering::AcqRel);
+        if was_leader && !leader {
+            info!(identity = %self.identity, "Lost K8s lease leadership");
+        }
+    }
+}

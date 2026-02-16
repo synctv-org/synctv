@@ -1,11 +1,11 @@
 pub mod chat;
 pub mod email_token;
-pub mod filter;
 pub mod media;
 pub mod notification;
 pub mod playback;
 pub mod playlist;
 pub mod provider_instance;
+pub mod query_builder;
 pub mod room;
 pub mod room_member;
 pub mod room_settings;
@@ -15,12 +15,12 @@ pub mod user_oauth_provider;
 
 pub use chat::ChatRepository;
 pub use email_token::EmailTokenRepository;
-pub use filter::{ColumnRef, Filter, FilterValue};
 pub use media::MediaRepository;
 pub use notification::NotificationRepository;
 pub use playback::RoomPlaybackStateRepository;
 pub use playlist::PlaylistRepository;
 pub use provider_instance::{ProviderInstanceRepository, UserProviderCredentialRepository};
+pub use query_builder::WhereClauseBuilder;
 pub use room::RoomRepository;
 pub use room_member::RoomMemberRepository;
 pub use room_settings::RoomSettingsRepository;

@@ -182,60 +182,6 @@ impl std::fmt::Debug for LoggingInterceptor {
     }
 }
 
-/// Request validation interceptor
-///
-/// Validates common request constraints like size limits.
-#[derive(Clone)]
-pub struct ValidationInterceptor {
-    max_request_size_mb: usize,
-}
-
-impl ValidationInterceptor {
-    #[must_use] 
-    pub const fn new(max_request_size_mb: usize) -> Self {
-        Self {
-            max_request_size_mb,
-        }
-    }
-
-    /// Validate request size
-    #[allow(clippy::result_large_err)]
-    pub fn validate<T>(&self, method: &'static str, request: &Request<T>) -> Result<(), Status> {
-        // Get content-length if available
-        if let Some(content_length) = request.metadata().get("content-length") {
-            let length_str = content_length
-                .to_str()
-                .map_err(|_| Status::invalid_argument("Invalid content-length header"))?;
-
-            if let Ok(size_bytes) = length_str.parse::<usize>() {
-                let max_bytes = self.max_request_size_mb * 1024 * 1024;
-                if size_bytes > max_bytes {
-                    warn!(
-                        method = method,
-                        size_bytes = size_bytes,
-                        max_bytes = max_bytes,
-                        "Request too large"
-                    );
-                    return Err(Status::resource_exhausted(format!(
-                        "Request too large: {} bytes (max {} MB)",
-                        size_bytes, self.max_request_size_mb
-                    )));
-                }
-            }
-        }
-
-        Ok(())
-    }
-}
-
-impl Debug for ValidationInterceptor {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ValidationInterceptor")
-            .field("max_request_size_mb", &self.max_request_size_mb)
-            .finish()
-    }
-}
-
 /// Shared-secret interceptor for cluster gRPC endpoints.
 ///
 /// Validates that incoming inter-node requests carry the correct shared secret

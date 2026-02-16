@@ -27,22 +27,31 @@ pub struct UpdateUserRequest {
     pub old_password: Option<String>,
 }
 
+/// Optional body for logout containing the refresh token.
+#[derive(serde::Deserialize, Default)]
+pub struct LogoutBody {
+    #[serde(default)]
+    pub refresh_token: Option<String>,
+}
+
 /// Logout user
 ///
-/// Extracts the Bearer token from the Authorization header and delegates
-/// to `ClientApiImpl.logout()` for consistent behavior with gRPC.
+/// Extracts the Bearer token from the Authorization header and an optional
+/// refresh token from the JSON body. Both tokens are blacklisted server-side.
 pub async fn logout(
     _auth: AuthUser,
     headers: HeaderMap,
     State(state): State<AppState>,
+    body: Option<Json<LogoutBody>>,
 ) -> AppResult<Json<LogoutResponse>> {
-    let token = headers
+    let access_token = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.strip_prefix("Bearer ").or_else(|| s.strip_prefix("bearer ")))
         .unwrap_or("");
 
-    let response = state.client_api.logout(token).await;
+    let refresh_token = body.and_then(|b| b.0.refresh_token);
+    let response = state.client_api.logout(access_token, refresh_token.as_deref()).await;
     Ok(Json(response))
 }
 

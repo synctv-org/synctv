@@ -29,6 +29,9 @@ pub enum Error {
     #[error("Invalid input: {0}")]
     InvalidInput(String),
 
+    #[error("Rate limited: {0}")]
+    RateLimited(String),
+
     #[error("Internal error: {0}")]
     Internal(String),
 
@@ -84,6 +87,7 @@ impl From<Error> for tonic::Status {
             Error::Authorization(msg) => Self::permission_denied(msg),
             Error::InvalidInput(msg) => Self::invalid_argument(msg),
             Error::AlreadyExists(msg) => Self::already_exists(msg),
+            Error::RateLimited(msg) => Self::resource_exhausted(msg),
             Error::OptimisticLockConflict => Self::aborted("Resource modified concurrently"),
             other => {
                 tracing::error!("Internal error: {other}");

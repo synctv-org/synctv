@@ -18,6 +18,8 @@ fn hash_token(token: &str) -> String {
 #[derive(Clone)]
 pub struct TokenBlacklistService {
     redis_conn: Option<redis::aio::ConnectionManager>,
+    /// Key builder for constructing Redis keys with the configured prefix
+    key_builder: crate::cache::KeyBuilder,
     /// In-memory token blacklist: `token_hash` -> `expiry_timestamp_secs`
     local_blacklist: Arc<moka::future::Cache<String, i64>>,
     /// In-memory user invalidation timestamps: `user_key` -> `password_changed_at`
@@ -29,7 +31,8 @@ impl TokenBlacklistService {
     ///
     /// If `redis_conn` is None, falls back to per-instance in-memory blacklist
     /// using moka cache with TTL per entry.
-    pub fn new(redis_conn: Option<redis::aio::ConnectionManager>) -> Self {
+    /// The `key_prefix` is used to construct Redis keys via `KeyBuilder`.
+    pub fn new(redis_conn: Option<redis::aio::ConnectionManager>, key_prefix: String) -> Self {
         if redis_conn.is_none() {
             tracing::warn!(
                 "Token blacklist using in-memory fallback: Redis not configured. \
@@ -38,6 +41,7 @@ impl TokenBlacklistService {
         }
         Self {
             redis_conn,
+            key_builder: crate::cache::KeyBuilder::new(key_prefix),
             // Max 100K blacklisted tokens in memory; 30-day max TTL covers refresh tokens
             local_blacklist: Arc::new(
                 moka::future::Cache::builder()
@@ -68,11 +72,15 @@ impl TokenBlacklistService {
         if let Some(ref conn) = self.redis_conn {
             let mut conn = conn.clone();
 
-            let key = format!("token:blacklist:{token_hash}");
+            let key = self.key_builder.token_blacklist(&token_hash);
 
             let _: () = conn.set_ex(&key, "1", ttl_seconds as u64)
                 .await
                 .map_err(|e| Error::Internal(format!("Failed to blacklist token: {e}")))?;
+
+            // Also populate L1 cache so this replica sees it immediately
+            let expires_at = chrono::Utc::now().timestamp() + ttl_seconds;
+            self.local_blacklist.insert(token_hash.clone(), expires_at).await;
 
             tracing::info!(token_hash = %&token_hash[..16], ttl_seconds, "Token blacklisted");
         } else {
@@ -87,6 +95,10 @@ impl TokenBlacklistService {
 
     /// Check if a token is blacklisted
     ///
+    /// When Redis is configured, uses L1 (moka) as a read-through cache in front
+    /// of Redis. A hit in L1 avoids the Redis round-trip. On L1 miss, Redis is
+    /// queried and positive results are written back into L1.
+    ///
     /// **Deny-on-error**: If Redis is unreachable, this returns `true` (blacklisted)
     /// to fail closed. This prevents attackers from using revoked tokens when Redis
     /// is temporarily unavailable.
@@ -94,9 +106,19 @@ impl TokenBlacklistService {
         let token_hash = hash_token(token);
 
         if let Some(ref conn) = self.redis_conn {
-            let mut conn = conn.clone();
+            // L1 cache check first - avoids Redis round-trip for known-blacklisted tokens
+            if let Some(expires_at) = self.local_blacklist.get(&token_hash).await {
+                let now = chrono::Utc::now().timestamp();
+                if now < expires_at {
+                    return Ok(true);
+                }
+                // Expired in L1 - remove lazily
+                self.local_blacklist.invalidate(&token_hash).await;
+            }
 
-            let key = format!("token:blacklist:{token_hash}");
+            // L1 miss - check Redis (source of truth)
+            let mut conn = conn.clone();
+            let key = self.key_builder.token_blacklist(&token_hash);
 
             let exists: bool = match conn.exists(&key).await {
                 Ok(v) => v,
@@ -108,6 +130,13 @@ impl TokenBlacklistService {
                     return Ok(true);
                 }
             };
+
+            // Populate L1 on Redis hit so subsequent checks are fast
+            if exists {
+                let ttl: i64 = conn.ttl(&key).await.unwrap_or(60);
+                let expires_at = chrono::Utc::now().timestamp() + ttl.max(1);
+                self.local_blacklist.insert(token_hash, expires_at).await;
+            }
 
             Ok(exists)
         } else {
@@ -131,11 +160,14 @@ impl TokenBlacklistService {
         if let Some(ref conn) = self.redis_conn {
             let mut conn = conn.clone();
 
-            let key = format!("token:blacklist:{token_hash}");
+            let key = self.key_builder.token_blacklist(&token_hash);
 
             let _: () = conn.del(&key)
                 .await
                 .map_err(|e| Error::Internal(format!("Failed to remove token from blacklist: {e}")))?;
+
+            // Also clear L1 cache
+            self.local_blacklist.invalidate(&token_hash).await;
         } else {
             self.local_blacklist.invalidate(&token_hash).await;
         }
@@ -165,11 +197,14 @@ impl TokenBlacklistService {
         if let Some(ref conn) = self.redis_conn {
             let mut conn = conn.clone();
 
-            let key = format!("user:password_changed:{}", user_id.as_str());
+            let key = self.key_builder.token_blacklist_user(user_id.as_str());
 
             let _: () = conn.set_ex(&key, now.to_string(), ttl_seconds as u64)
                 .await
                 .map_err(|e| Error::Internal(format!("Failed to set user token invalidation: {e}")))?;
+
+            // Also populate L1 cache so this replica sees it immediately
+            self.local_user_invalidations.insert(key, now).await;
 
             tracing::info!(
                 user_id = %user_id.as_str(),
@@ -177,7 +212,7 @@ impl TokenBlacklistService {
             );
         } else {
             // In-memory fallback
-            let key = format!("user:password_changed:{}", user_id.as_str());
+            let key = self.key_builder.token_blacklist_user(user_id.as_str());
             self.local_user_invalidations.insert(key, now).await;
             tracing::info!(
                 user_id = %user_id.as_str(),
@@ -195,16 +230,24 @@ impl TokenBlacklistService {
     /// before the most recent password change).
     pub async fn are_user_tokens_invalidated(&self, user_id: &UserId, token_iat: i64) -> Result<bool> {
         if let Some(ref conn) = self.redis_conn {
+            let user_key = self.key_builder.token_blacklist_user(user_id.as_str());
+
+            // L1 cache check first
+            if let Some(password_changed_at) = self.local_user_invalidations.get(&user_key).await {
+                return Ok(token_iat <= password_changed_at);
+            }
+
+            // L1 miss - check Redis (source of truth)
             let mut conn = conn.clone();
 
-            let key = format!("user:password_changed:{}", user_id.as_str());
-
-            let value: Option<String> = conn.get(&key)
+            let value: Option<String> = conn.get(&user_key)
                 .await
                 .map_err(|e| Error::Internal(format!("Failed to check user token invalidation: {e}")))?;
 
             if let Some(timestamp_str) = value {
                 if let Ok(password_changed_at) = timestamp_str.parse::<i64>() {
+                    // Populate L1 cache
+                    self.local_user_invalidations.insert(user_key, password_changed_at).await;
                     // Reject tokens issued before the password change.
                     // We use <= to handle the edge case where a token was
                     // issued in the same second as the password change.
@@ -215,7 +258,7 @@ impl TokenBlacklistService {
             Ok(false)
         } else {
             // In-memory fallback
-            let key = format!("user:password_changed:{}", user_id.as_str());
+            let key = self.key_builder.token_blacklist_user(user_id.as_str());
             if let Some(password_changed_at) = self.local_user_invalidations.get(&key).await {
                 return Ok(token_iat <= password_changed_at);
             }
@@ -253,7 +296,7 @@ mod tests {
     async fn test_blacklist_token() {
         let client = redis::Client::open("redis://localhost:6379").unwrap();
         let conn = redis::aio::ConnectionManager::new(client).await.unwrap();
-        let service = TokenBlacklistService::new(Some(conn));
+        let service = TokenBlacklistService::new(Some(conn), "synctv".to_string());
 
         let token = "test_token_12345";
 
@@ -275,7 +318,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_in_memory_blacklist() {
-        let service = TokenBlacklistService::new(None);
+        let service = TokenBlacklistService::new(None, "synctv".to_string());
 
         assert!(service.is_enabled());
         assert!(!service.uses_redis());
@@ -300,7 +343,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_in_memory_user_token_invalidation() {
-        let service = TokenBlacklistService::new(None);
+        let service = TokenBlacklistService::new(None, "synctv".to_string());
         let user_id = UserId::from_string("test_user".to_string());
 
         let now = chrono::Utc::now().timestamp();
@@ -325,7 +368,7 @@ mod tests {
     async fn test_user_token_invalidation() {
         let client = redis::Client::open("redis://localhost:6379").unwrap();
         let conn = redis::aio::ConnectionManager::new(client).await.unwrap();
-        let service = TokenBlacklistService::new(Some(conn));
+        let service = TokenBlacklistService::new(Some(conn), "synctv".to_string());
         let user_id = UserId::from_string("test_invalidation_user".to_string());
 
         // Initially no invalidation
@@ -345,5 +388,87 @@ mod tests {
         // Token issued after invalidation should be accepted
         let future_iat = now + 10;
         assert!(!service.are_user_tokens_invalidated(&user_id, future_iat).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_blacklist_zero_ttl_is_noop() {
+        let service = TokenBlacklistService::new(None, "synctv".to_string());
+        let token = "token_with_zero_ttl";
+
+        // Blacklisting with TTL <= 0 should be a no-op (token already expired)
+        service.blacklist_token(token, 0).await.unwrap();
+        assert!(!service.is_blacklisted(token).await.unwrap());
+
+        service.blacklist_token(token, -5).await.unwrap();
+        assert!(!service.is_blacklisted(token).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_non_blacklisted_token_returns_false() {
+        let service = TokenBlacklistService::new(None, "synctv".to_string());
+
+        // Arbitrary tokens that were never blacklisted should return false
+        assert!(!service.is_blacklisted("never_seen_token").await.unwrap());
+        assert!(!service.is_blacklisted("another_random_token").await.unwrap());
+        assert!(!service.is_blacklisted("").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_invalidate_user_tokens_zero_ttl_is_noop() {
+        let service = TokenBlacklistService::new(None, "synctv".to_string());
+        let user_id = UserId::from_string("noop_user".to_string());
+
+        // TTL <= 0 should be a no-op
+        service.invalidate_user_tokens(&user_id, 0).await.unwrap();
+
+        let now = chrono::Utc::now().timestamp();
+        // Should not be invalidated since the call was a no-op
+        assert!(!service.are_user_tokens_invalidated(&user_id, now - 100).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_blacklist_multiple_tokens() {
+        let service = TokenBlacklistService::new(None, "synctv".to_string());
+
+        let token_a = "token_aaa";
+        let token_b = "token_bbb";
+        let token_c = "token_ccc";
+
+        service.blacklist_token(token_a, 300).await.unwrap();
+        service.blacklist_token(token_b, 300).await.unwrap();
+
+        assert!(service.is_blacklisted(token_a).await.unwrap());
+        assert!(service.is_blacklisted(token_b).await.unwrap());
+        assert!(!service.is_blacklisted(token_c).await.unwrap());
+
+        // Remove token_a, token_b should still be blacklisted
+        service.remove_token(token_a).await.unwrap();
+        assert!(!service.is_blacklisted(token_a).await.unwrap());
+        assert!(service.is_blacklisted(token_b).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_user_invalidation_different_users_independent() {
+        let service = TokenBlacklistService::new(None, "synctv".to_string());
+        let user_a = UserId::from_string("user_a".to_string());
+        let user_b = UserId::from_string("user_b".to_string());
+
+        let now = chrono::Utc::now().timestamp();
+
+        // Invalidate tokens only for user_a
+        service.invalidate_user_tokens(&user_a, 3600).await.unwrap();
+
+        // user_a's old tokens should be rejected
+        assert!(service.are_user_tokens_invalidated(&user_a, now - 10).await.unwrap());
+
+        // user_b should be unaffected
+        assert!(!service.are_user_tokens_invalidated(&user_b, now - 10).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_service_status_flags() {
+        let service = TokenBlacklistService::new(None, "synctv".to_string());
+        assert!(service.is_enabled());
+        assert!(!service.uses_redis());
     }
 }

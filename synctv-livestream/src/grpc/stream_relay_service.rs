@@ -233,7 +233,7 @@ impl stream_relay_service_server::StreamRelayService for StreamRelayServiceImpl 
                 };
 
                 let packet = RtmpPacket {
-                    data: data.to_vec(),  // Bytes::to_vec() for protobuf serialization
+                    data,  // Zero-copy: FrameData's Bytes passed directly to proto Bytes field
                     timestamp,
                     frame_type,
                 };
@@ -322,11 +322,11 @@ impl stream_relay_service_server::StreamRelayService for StreamRelayServiceImpl 
 
         match segment_manager.storage().read(&storage_key).await {
             Ok(data) => Ok(Response::new(GetHlsSegmentResponse {
-                data: data.to_vec(),
+                data,  // Zero-copy: storage returns Bytes, proto field is now Bytes
                 found: true,
             })),
             Err(_) => Ok(Response::new(GetHlsSegmentResponse {
-                data: Vec::new(),
+                data: bytes::Bytes::new(),
                 found: false,
             })),
         }

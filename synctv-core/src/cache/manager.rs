@@ -4,6 +4,7 @@
 //! Supports cross-replica cache invalidation via `CacheInvalidationService`.
 
 use super::{
+    bloom_filter::ProtectedCache,
     user_cache::UserCache,
     room_cache::RoomCache,
     CacheInvalidationService,
@@ -18,6 +19,8 @@ use tracing::{debug, warn};
 pub struct CacheManager {
     pub user_cache: Arc<UserCache>,
     pub room_cache: Arc<RoomCache>,
+    /// Optional protected cache (bloom filter) for cross-replica sync
+    protected_cache: Option<Arc<ProtectedCache>>,
 }
 
 impl CacheManager {
@@ -27,7 +30,15 @@ impl CacheManager {
         Self {
             user_cache,
             room_cache,
+            protected_cache: None,
         }
+    }
+
+    /// Set the protected cache (bloom filter) for cross-replica sync
+    #[must_use]
+    pub fn with_protected_cache(mut self, protected_cache: Arc<ProtectedCache>) -> Self {
+        self.protected_cache = Some(protected_cache);
+        self
     }
 
     /// Start listening for cross-replica cache invalidation messages
@@ -42,6 +53,7 @@ impl CacheManager {
     pub fn start_invalidation_listener(&self, invalidation_service: &CacheInvalidationService) {
         let user_cache = self.user_cache.clone();
         let room_cache = self.room_cache.clone();
+        let protected_cache = self.protected_cache.clone();
         let mut receiver = invalidation_service.subscribe();
 
         tokio::spawn(async move {
@@ -62,6 +74,16 @@ impl CacheManager {
                                     room_id = %room_id,
                                     "Room cache invalidated (cross-replica)"
                                 );
+                            }
+                            InvalidationMessage::BloomFilterUpdate { ref keys } => {
+                                if let Some(ref pc) = protected_cache {
+                                    let key_refs: Vec<&str> = keys.iter().map(String::as_str).collect();
+                                    pc.mark_many_exists(&key_refs).await;
+                                    debug!(
+                                        count = keys.len(),
+                                        "Bloom filter updated (cross-replica)"
+                                    );
+                                }
                             }
                             InvalidationMessage::All => {
                                 user_cache.clear_l1().await;
@@ -142,7 +164,7 @@ mod tests {
         let (user_cache, room_cache) = make_caches();
         let manager = CacheManager::new(user_cache.clone(), room_cache.clone());
 
-        let service = CacheInvalidationService::new(None, "test-node".to_string());
+        let service = CacheInvalidationService::new(None, "test-node".to_string(), "synctv:cache:invalidate".to_string());
         manager.start_invalidation_listener(&service);
 
         // Insert a user into L1 cache
@@ -177,7 +199,7 @@ mod tests {
         let (user_cache, room_cache) = make_caches();
         let manager = CacheManager::new(user_cache.clone(), room_cache.clone());
 
-        let service = CacheInvalidationService::new(None, "test-node".to_string());
+        let service = CacheInvalidationService::new(None, "test-node".to_string(), "synctv:cache:invalidate".to_string());
         manager.start_invalidation_listener(&service);
 
         // Insert a room into L1 cache
@@ -212,7 +234,7 @@ mod tests {
         let (user_cache, room_cache) = make_caches();
         let manager = CacheManager::new(user_cache.clone(), room_cache.clone());
 
-        let service = CacheInvalidationService::new(None, "test-node".to_string());
+        let service = CacheInvalidationService::new(None, "test-node".to_string(), "synctv:cache:invalidate".to_string());
         manager.start_invalidation_listener(&service);
 
         // Insert entries

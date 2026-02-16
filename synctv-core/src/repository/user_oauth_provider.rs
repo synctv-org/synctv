@@ -108,6 +108,20 @@ impl UserOAuthProviderRepository {
         Ok(result.rows_affected() > 0)
     }
 
+    /// Delete all `OAuth2` provider mappings for a user (all providers).
+    ///
+    /// Used during user deletion to clean up all OAuth bindings.
+    pub async fn delete_all_for_user(&self, user_id: &UserId) -> Result<u64> {
+        let result = sqlx::query(
+            "DELETE FROM oauth2_clients WHERE user_id = $1"
+        )
+        .bind(user_id.as_str())
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected())
+    }
+
     /// Delete all `OAuth2` provider mappings for a user and provider type (single query)
     pub async fn delete_by_user_and_provider(
         &self,

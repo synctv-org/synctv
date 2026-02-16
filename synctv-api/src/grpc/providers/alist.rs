@@ -11,7 +11,21 @@ use crate::impls::providers::{extract_instance_name, get_provider_binds};
 use crate::proto::providers::alist::alist_provider_service_server::AlistProviderService;
 use crate::proto::providers::alist::{LoginRequest, LoginResponse, ListRequest, ListResponse, GetMeRequest, GetMeResponse, LogoutRequest, LogoutResponse, GetBindsRequest, GetBindsResponse, BindInfo};
 
-use crate::grpc::internal_err;
+/// Map provider API string errors to appropriate gRPC status codes.
+fn api_err(err: String) -> Status {
+    use crate::impls::{classify_error, ErrorKind};
+    match classify_error(&err) {
+        ErrorKind::NotFound => Status::not_found(err),
+        ErrorKind::Unauthenticated => Status::unauthenticated(err),
+        ErrorKind::PermissionDenied => Status::permission_denied(err),
+        ErrorKind::AlreadyExists => Status::already_exists(err),
+        ErrorKind::InvalidArgument => Status::invalid_argument(err),
+        ErrorKind::Internal => {
+            tracing::error!("Alist provider internal error: {err}");
+            Status::internal("Internal error")
+        }
+    }
+}
 
 /// Alist Provider gRPC Service
 ///
@@ -34,17 +48,21 @@ impl AlistProviderGrpcService {
 #[allow(clippy::result_large_err)]
 impl AlistProviderService for AlistProviderGrpcService {
     async fn login(&self, request: Request<LoginRequest>) -> Result<Response<LoginResponse>, Status> {
+        let _user_ctx = request.extensions().get::<crate::grpc::interceptors::UserContext>()
+            .ok_or_else(|| Status::unauthenticated("Authentication required"))?;
         let req = request.into_inner();
-        tracing::info!("gRPC Alist login request: host={}, username={}", req.host, req.username);
+        tracing::info!("gRPC Alist login request: host={}", req.host);
         let instance_name = extract_instance_name(&req.instance_name);
 
         self.api.login(req, instance_name.as_deref())
             .await
             .map(Response::new)
-            .map_err(|e| internal_err("Alist login failed", e))
+            .map_err(api_err)
     }
 
     async fn list(&self, request: Request<ListRequest>) -> Result<Response<ListResponse>, Status> {
+        let _user_ctx = request.extensions().get::<crate::grpc::interceptors::UserContext>()
+            .ok_or_else(|| Status::unauthenticated("Authentication required"))?;
         let req = request.into_inner();
         tracing::info!("gRPC Alist list request: host={}, path={}", req.host, req.path);
         let instance_name = extract_instance_name(&req.instance_name);
@@ -52,10 +70,12 @@ impl AlistProviderService for AlistProviderGrpcService {
         self.api.list(req, instance_name.as_deref())
             .await
             .map(Response::new)
-            .map_err(|e| internal_err("Alist list failed", e))
+            .map_err(api_err)
     }
 
     async fn get_me(&self, request: Request<GetMeRequest>) -> Result<Response<GetMeResponse>, Status> {
+        let _user_ctx = request.extensions().get::<crate::grpc::interceptors::UserContext>()
+            .ok_or_else(|| Status::unauthenticated("Authentication required"))?;
         let req = request.into_inner();
         tracing::info!("gRPC Alist me request: host={}", req.host);
         let instance_name = extract_instance_name(&req.instance_name);
@@ -63,17 +83,19 @@ impl AlistProviderService for AlistProviderGrpcService {
         self.api.get_me(req, instance_name.as_deref())
             .await
             .map(Response::new)
-            .map_err(|e| internal_err("Alist get_me failed", e))
+            .map_err(api_err)
     }
 
     async fn logout(&self, request: Request<LogoutRequest>) -> Result<Response<LogoutResponse>, Status> {
+        let _user_ctx = request.extensions().get::<crate::grpc::interceptors::UserContext>()
+            .ok_or_else(|| Status::unauthenticated("Authentication required"))?;
         let req = request.into_inner();
         tracing::info!("gRPC Alist logout request");
 
         self.api.logout(req)
             .await
             .map(Response::new)
-            .map_err(|e| internal_err("Alist logout failed", e))
+            .map_err(api_err)
     }
 
     async fn get_binds(&self, request: Request<GetBindsRequest>) -> Result<Response<GetBindsResponse>, Status> {
@@ -89,7 +111,7 @@ impl AlistProviderService for AlistProviderGrpcService {
             "username",
         )
         .await
-        .map_err(|e| internal_err("Failed to get Alist binds", e))?;
+        .map_err(api_err)?;
 
         let binds = provider_binds
             .into_iter()

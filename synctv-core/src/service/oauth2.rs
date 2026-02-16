@@ -482,6 +482,14 @@ impl OAuth2Service {
         self.repository.delete_by_user_and_provider(user_id, provider).await
     }
 
+    /// Remove all OAuth2 provider mappings for a user.
+    ///
+    /// Used during user deletion to clean up all OAuth bindings.
+    /// Returns the number of mappings removed.
+    pub async fn delete_all_for_user(&self, user_id: &UserId) -> Result<u64> {
+        self.repository.delete_all_for_user(user_id).await
+    }
+
     /// Clean up expired `OAuth2` states (maintenance task)
     ///
     /// Note: Both Redis and moka cache handle TTL automatically.

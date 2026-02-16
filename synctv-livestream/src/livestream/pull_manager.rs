@@ -18,13 +18,13 @@ use tracing::{debug, info, error, warn};
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Default gRPC port for inter-node streaming
+/// Default gRPC port for inter-node streaming (fallback when grpc_address is empty)
 const DEFAULT_GRPC_PORT: u16 = 50051;
 
 /// Extract IP address from `node_id` and construct gRPC address.
 /// `node_id` format is "{hostname}_{ip}-{suffix}", e.g., "server1_192.168.1.1-abc123"
 /// Returns "ip:port" if IP is found, None otherwise.
-fn extract_address_from_node_id(node_id: &str) -> Option<String> {
+fn extract_address_from_node_id(node_id: &str, grpc_port: u16) -> Option<String> {
     // Split by '_' to get the part containing IP
     let after_underscore = node_id.split('_').nth(1)?;
 
@@ -33,7 +33,7 @@ fn extract_address_from_node_id(node_id: &str) -> Option<String> {
 
     // Validate it looks like an IP address
     if ip_part.parse::<std::net::IpAddr>().is_ok() {
-        Some(format!("{ip_part}:{DEFAULT_GRPC_PORT}"))
+        Some(format!("{ip_part}:{grpc_port}"))
     } else {
         None
     }
@@ -44,6 +44,8 @@ pub struct PullStreamManager {
     registry: Arc<dyn StreamRegistryTrait>,
     local_node_id: String,
     stream_hub_event_sender: StreamHubEventSender,
+    /// gRPC port used when extracting address from node_id (fallback)
+    grpc_port: u16,
 }
 
 impl PullStreamManager {
@@ -53,6 +55,14 @@ impl PullStreamManager {
         stream_hub_event_sender: StreamHubEventSender,
     ) -> Self {
         Self::with_timeouts(registry, local_node_id, stream_hub_event_sender, 60, 300)
+    }
+
+    /// Set the gRPC port used for fallback address extraction from node_id.
+    /// If not called, defaults to 50051.
+    #[must_use]
+    pub fn with_grpc_port(mut self, port: u16) -> Self {
+        self.grpc_port = port;
+        self
     }
 
     /// Start the background cleanup task for stale creation locks.
@@ -79,6 +89,7 @@ impl PullStreamManager {
             registry,
             local_node_id,
             stream_hub_event_sender,
+            grpc_port: DEFAULT_GRPC_PORT,
         }
     }
 
@@ -142,8 +153,13 @@ impl PullStreamManager {
         // Use grpc_address if available, otherwise extract IP from node_id
         // node_id format is "{hostname}_{ip}-{suffix}", e.g., "server1_192.168.1.1-abc123"
         let publisher_address = if publisher_info.grpc_address.is_empty() {
-            // Fallback: extract IP from node_id and use default gRPC port
-            extract_address_from_node_id(&publisher_info.node_id)
+            // Fallback: extract IP from node_id and use configured gRPC port
+            warn!(
+                node_id = %publisher_info.node_id,
+                grpc_port = self.grpc_port,
+                "Publisher has no grpc_address, falling back to IP extraction from node_id"
+            );
+            extract_address_from_node_id(&publisher_info.node_id, self.grpc_port)
                 .unwrap_or_else(|| publisher_info.node_id.clone())
         } else {
             publisher_info.grpc_address.clone()

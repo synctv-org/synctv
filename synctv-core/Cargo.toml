@@ -23,7 +23,6 @@ tonic-health.workspace = true
 
 # Database
 sqlx.workspace = true
-sea-query.workspace = true
 
 # Redis
 redis.workspace = true

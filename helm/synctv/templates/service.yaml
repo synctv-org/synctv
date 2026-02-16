@@ -55,6 +55,9 @@ spec:
       targetPort: stun
       protocol: UDP
       name: stun
+      {{- if and (or (eq .Values.service.type "NodePort") (eq .Values.service.type "LoadBalancer")) .Values.service.nodePorts.stun }}
+      nodePort: {{ .Values.service.nodePorts.stun }}
+      {{- end }}
     {{- end }}
   selector:
     {{- include "synctv.selectorLabels" . | nindent 4 }}

@@ -1,11 +1,12 @@
 use std::str::FromStr;
 use chrono::Utc;
-use sqlx::{PgPool, FromRow};
+use sqlx::PgPool;
 
 use crate::{
     models::{User, UserId, UserListQuery},
     Error, Result,
 };
+use super::query_builder::{WhereClauseBuilder, escape_ilike};
 
 /// User repository for database operations
 #[derive(Clone)]
@@ -213,104 +214,101 @@ impl UserRepository {
         Ok(u)
     }
 
+    /// Build the shared WHERE clause conditions for user list queries.
+    fn build_user_list_conditions(query: &UserListQuery) -> WhereClauseBuilder {
+        let mut wb = WhereClauseBuilder::new();
+        wb.push_literal("deleted_at IS NULL");
+
+        if query.search.is_some() {
+            wb.push_param("(username ILIKE ${idx} OR email ILIKE ${idx})");
+        }
+        if query.status.is_some() {
+            wb.push_param("status = ${idx}");
+        }
+        if query.role.is_some() {
+            wb.push_param("role = ${idx}");
+        }
+
+        wb
+    }
+
+    /// Bind the filter parameters (search, status, role) onto a sqlx query in order.
+    /// This is used by both count and list queries to avoid duplicating bind logic.
+    fn bind_user_filters<'q, O>(
+        mut qb: sqlx::query::QueryAs<'q, sqlx::Postgres, O, sqlx::postgres::PgArguments>,
+        search_pattern: &'q Option<String>,
+        status_enum: &'q Option<crate::models::UserStatus>,
+        role_enum: &'q Option<crate::models::UserRole>,
+    ) -> sqlx::query::QueryAs<'q, sqlx::Postgres, O, sqlx::postgres::PgArguments>
+    where
+        O: for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow>,
+    {
+        if let Some(ref pattern) = search_pattern {
+            qb = qb.bind(pattern);
+        }
+        if let Some(status) = status_enum {
+            qb = qb.bind(status);
+        }
+        if let Some(role) = role_enum {
+            qb = qb.bind(role);
+        }
+        qb
+    }
+
     /// List users with pagination
     pub async fn list(&self, query: &UserListQuery) -> Result<(Vec<User>, i64)> {
         let limit = query.pagination.limit() as i64;
         let offset = query.pagination.offset() as i64;
 
-        // Build dynamic filter conditions and params
-        // We build conditions with sequential $N parameters
-        let search_param = query.search.as_ref().map(|search| format!("%{search}%"));
+        let search_pattern = query.search.as_ref().map(|s| escape_ilike(s));
+        let status_enum = query.status.as_ref()
+            .map(|s| crate::models::UserStatus::from_str(s).map_err(crate::Error::InvalidInput))
+            .transpose()?;
+        let role_enum = query.role.as_ref()
+            .map(|s| crate::models::UserRole::from_str(s).map_err(crate::Error::InvalidInput))
+            .transpose()?;
 
-        // --- Count query (params start at $1) ---
-        let mut count_conditions = Vec::new();
-        let mut count_param_idx = 1u32;
+        let wb = Self::build_user_list_conditions(query);
 
-        if search_param.is_some() {
-            count_conditions.push(format!("AND (username ILIKE ${count_param_idx} OR email ILIKE ${count_param_idx})"));
-            count_param_idx += 1;
-        }
-        if query.status.is_some() {
-            count_conditions.push(format!("AND status = ${count_param_idx}"));
-            count_param_idx += 1;
-        }
-        if query.role.is_some() {
-            count_conditions.push(format!("AND role = ${count_param_idx}"));
-            let _ = count_param_idx; // suppress unused warning
-        }
-
-        let count_where = count_conditions.join(" ");
+        // Count query: params start at $1
+        let (count_where, _) = wb.build(1);
         let count_sql = format!(
-            "SELECT COUNT(*) as count FROM users WHERE deleted_at IS NULL {count_where}"
+            "SELECT COUNT(*) as count FROM users WHERE {count_where}"
         );
 
+        // We need to use query_scalar which returns a different type, so bind manually
         let mut count_qb = sqlx::query_scalar::<_, i64>(&count_sql);
-        if let Some(ref search) = search_param {
-            count_qb = count_qb.bind(search.clone());
+        if let Some(ref pattern) = search_pattern {
+            count_qb = count_qb.bind(pattern);
         }
-        if let Some(ref status) = query.status {
-            let status_enum = crate::models::UserStatus::from_str(status)
-                .map_err(crate::Error::InvalidInput)?;
-            count_qb = count_qb.bind(status_enum);
+        if let Some(ref status) = status_enum {
+            count_qb = count_qb.bind(status);
         }
-        if let Some(ref role) = query.role {
-            let role_enum = crate::models::UserRole::from_str(role)
-                .map_err(crate::Error::InvalidInput)?;
-            count_qb = count_qb.bind(role_enum);
+        if let Some(ref role) = role_enum {
+            count_qb = count_qb.bind(role);
         }
         let count: i64 = count_qb.fetch_one(&self.pool).await?;
 
-        // --- List query (params: $1=LIMIT, $2=OFFSET, then $3... for filters) ---
-        let mut list_conditions = Vec::new();
-        let mut list_param_idx = 3u32;
-
-        if search_param.is_some() {
-            list_conditions.push(format!("AND (username ILIKE ${list_param_idx} OR email ILIKE ${list_param_idx})"));
-            list_param_idx += 1;
-        }
-        if query.status.is_some() {
-            list_conditions.push(format!("AND status = ${list_param_idx}"));
-            list_param_idx += 1;
-        }
-        if query.role.is_some() {
-            list_conditions.push(format!("AND role = ${list_param_idx}"));
-            let _ = list_param_idx;
-        }
-
-        let list_where = list_conditions.join(" ");
+        // List query: $1=LIMIT, $2=OFFSET, then filters start at $3
+        let (list_where, _) = wb.build(3);
         let list_sql = format!(
             r"
             SELECT id, username, email, password_hash, signup_method, role, status, created_at, updated_at, deleted_at, email_verified
             FROM users
-            WHERE deleted_at IS NULL {list_where}
+            WHERE {list_where}
             ORDER BY created_at DESC
             LIMIT $1 OFFSET $2
             "
         );
 
-        let mut list_qb = sqlx::query(&list_sql)
+        // Use query_as with the shared bind helper
+        let list_qb = sqlx::query_as::<_, User>(&list_sql)
             .bind(limit)
             .bind(offset);
-        if let Some(ref search) = search_param {
-            list_qb = list_qb.bind(search.clone());
-        }
-        if let Some(ref status) = query.status {
-            let status_enum = crate::models::UserStatus::from_str(status)
-                .map_err(crate::Error::InvalidInput)?;
-            list_qb = list_qb.bind(status_enum);
-        }
-        if let Some(ref role) = query.role {
-            let role_enum = crate::models::UserRole::from_str(role)
-                .map_err(crate::Error::InvalidInput)?;
-            list_qb = list_qb.bind(role_enum);
-        }
-        let rows = list_qb.fetch_all(&self.pool).await?;
+        let list_qb = Self::bind_user_filters(list_qb, &search_pattern, &status_enum, &role_enum);
+        let users: Vec<User> = list_qb.fetch_all(&self.pool).await?;
 
-        let users: Result<Vec<User>> = rows.into_iter()
-            .map(|row| Ok(User::from_row(&row)?))
-            .collect();
-
-        Ok((users?, count))
+        Ok((users, count))
     }
 
     /// Check if username exists
@@ -349,18 +347,135 @@ impl UserRepository {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
 
-    // Integration tests would require a real database
-    // These are placeholder tests that demonstrate the API
+    #[test]
+    fn test_build_user_list_conditions_no_filters() {
+        let query = UserListQuery {
+            search: None,
+            status: None,
+            role: None,
+            pagination: crate::models::PageParams::default(),
+        };
+        let wb = UserRepository::build_user_list_conditions(&query);
+
+        let (sql, next_idx) = wb.build(1);
+        assert_eq!(sql, "deleted_at IS NULL");
+        assert_eq!(next_idx, 1); // no params consumed
+        assert_eq!(wb.param_count(), 0);
+    }
+
+    #[test]
+    fn test_build_user_list_conditions_with_search() {
+        let query = UserListQuery {
+            search: Some("alice".to_string()),
+            status: None,
+            role: None,
+            pagination: crate::models::PageParams::default(),
+        };
+        let wb = UserRepository::build_user_list_conditions(&query);
+
+        assert_eq!(wb.param_count(), 1);
+        let (sql, next_idx) = wb.build(1);
+        assert!(sql.contains("username ILIKE"));
+        assert!(sql.contains("email ILIKE"));
+        assert_eq!(next_idx, 2);
+    }
+
+    #[test]
+    fn test_build_user_list_conditions_with_status() {
+        let query = UserListQuery {
+            search: None,
+            status: Some("active".to_string()),
+            role: None,
+            pagination: crate::models::PageParams::default(),
+        };
+        let wb = UserRepository::build_user_list_conditions(&query);
+
+        assert_eq!(wb.param_count(), 1);
+        let (sql, _) = wb.build(1);
+        assert!(sql.contains("status = $1"));
+    }
+
+    #[test]
+    fn test_build_user_list_conditions_with_role() {
+        let query = UserListQuery {
+            search: None,
+            status: None,
+            role: Some("admin".to_string()),
+            pagination: crate::models::PageParams::default(),
+        };
+        let wb = UserRepository::build_user_list_conditions(&query);
+
+        assert_eq!(wb.param_count(), 1);
+        let (sql, _) = wb.build(1);
+        assert!(sql.contains("role = $1"));
+    }
+
+    #[test]
+    fn test_build_user_list_conditions_all_filters() {
+        let query = UserListQuery {
+            search: Some("bob".to_string()),
+            status: Some("active".to_string()),
+            role: Some("user".to_string()),
+            pagination: crate::models::PageParams::default(),
+        };
+        let wb = UserRepository::build_user_list_conditions(&query);
+
+        assert_eq!(wb.param_count(), 3);
+
+        // Count query: params start at $1
+        let (sql, next) = wb.build(1);
+        assert!(sql.contains("deleted_at IS NULL"));
+        assert!(sql.contains("username ILIKE $1"));
+        assert!(sql.contains("status = $2"));
+        assert!(sql.contains("role = $3"));
+        assert_eq!(next, 4);
+
+        // List query: params start at $3 (after LIMIT/OFFSET)
+        let (sql, next) = wb.build(3);
+        assert!(sql.contains("username ILIKE $3"));
+        assert!(sql.contains("status = $4"));
+        assert!(sql.contains("role = $5"));
+        assert_eq!(next, 6);
+    }
+
+    // ========== Integration Tests (Require DB) ==========
 
     #[tokio::test]
-    #[ignore] // Requires database
+    #[ignore = "Requires database"]
     async fn test_create_user() {
-        // This would connect to a test database
-        // let pool = PgPool::connect("...").await.unwrap();
+        // Would connect to test DB and verify:
+        // let pool = PgPool::connect("postgresql://...").await.unwrap();
         // let repo = UserRepository::new(pool);
-        // let user = User::new(...);
+        // let user = User::new("testuser".into(), Some("test@example.com".into()), "hash".into(), None);
         // let created = repo.create(&user).await.unwrap();
-        // assert_eq!(created.username, user.username);
+        // assert_eq!(created.username, "testuser");
+        // assert_eq!(created.email, Some("test@example.com".into()));
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires database"]
+    async fn test_create_user_duplicate_username_returns_already_exists() {
+        // Would connect to test DB and verify:
+        // let pool = PgPool::connect("postgresql://...").await.unwrap();
+        // let repo = UserRepository::new(pool);
+        // let user1 = User::new("same_name".into(), Some("a@b.com".into()), "hash".into(), None);
+        // repo.create(&user1).await.unwrap();
+        // let user2 = User::new("same_name".into(), Some("c@d.com".into()), "hash".into(), None);
+        // let err = repo.create(&user2).await.unwrap_err();
+        // assert!(matches!(err, Error::AlreadyExists(_)));
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires database"]
+    async fn test_soft_delete_user() {
+        // Would connect to test DB and verify soft delete:
+        // let pool = PgPool::connect("postgresql://...").await.unwrap();
+        // let repo = UserRepository::new(pool);
+        // let user = User::new("deleteme".into(), None, "hash".into(), None);
+        // let created = repo.create(&user).await.unwrap();
+        // assert!(repo.delete(&created.id).await.unwrap());
+        // assert!(repo.get_by_id(&created.id).await.unwrap().is_none()); // soft-deleted users not returned
     }
 }

@@ -64,13 +64,13 @@ impl ClientApiImpl {
         })
     }
 
-    /// Logout: blacklist the given JWT token server-side.
+    /// Logout: blacklist both the access token and refresh token server-side.
     ///
     /// Best-effort: logs failures but always returns success. This ensures
     /// consistent behavior between HTTP and gRPC transports -- a failed
     /// blacklist just means the old token remains valid until expiry.
-    pub async fn logout(&self, token: &str) -> crate::proto::client::LogoutResponse {
-        if let Err(e) = self.user_service.logout(token).await {
+    pub async fn logout(&self, access_token: &str, refresh_token: Option<&str>) -> crate::proto::client::LogoutResponse {
+        if let Err(e) = self.user_service.logout(access_token, refresh_token).await {
             tracing::warn!(error = %e, "Failed to blacklist token during logout");
         }
         crate::proto::client::LogoutResponse { success: true }

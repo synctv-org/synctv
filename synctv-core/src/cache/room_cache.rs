@@ -171,10 +171,14 @@ impl RoomCache {
     /// Invalidate room data from cache
     ///
     /// Removes from both L1 and L2 caches.
-    /// L2 is invalidated first to prevent a concurrent `get()` from reading stale
-    /// L2 data and re-populating L1 after this invalidation clears it.
+    /// L1 is invalidated first to ensure this replica immediately stops serving
+    /// stale data, then L2 is cleared so other replicas don't re-populate from
+    /// stale Redis data.
     pub async fn invalidate(&self, room_id: &RoomId) -> Result<()> {
-        // Remove from L2 (Redis) FIRST
+        // Remove from L1 (in-memory) FIRST so this replica stops serving stale data immediately
+        self.l1_cache.invalidate(room_id).await;
+
+        // Then remove from L2 (Redis) so other replicas don't re-populate from stale data
         if let Some(ref client) = self.redis_client {
             let mut conn = client
                 .get_multiplexed_async_connection()
@@ -188,13 +192,10 @@ impl RoomCache {
                 .map_err(|e| Error::Internal(format!("Failed to invalidate room cache: {e}")))?;
         }
 
-        // Then remove from L1 cache
-        self.l1_cache.invalidate(room_id).await;
-
         crate::metrics::cache::CACHE_EVICTIONS
             .with_label_values(&["room"])
             .inc();
-        tracing::debug!(room_id = %room_id.0, "Room cache invalidated (L2 then L1)");
+        tracing::debug!(room_id = %room_id.0, "Room cache invalidated (L1 then L2)");
 
         Ok(())
     }
@@ -256,14 +257,45 @@ impl RoomCache {
         Ok(result)
     }
 
-    /// Invalidate a specific room's L1 cache entry by ID string
+    /// Invalidate a specific room's cache entry by ID string (both L1 and L2)
     ///
     /// Used by the cross-replica invalidation listener to remove a single
-    /// entry from the local in-memory cache without touching L2 (Redis).
+    /// entry from the local in-memory cache and L2 Redis cache.
+    /// L1 is cleared first so this replica stops serving stale data immediately,
+    /// then L2 is cleared so other replicas don't re-populate from stale Redis data.
+    /// An idempotent Redis DEL is safe even if the originating replica already
+    /// cleared L2.
     pub async fn invalidate_by_id(&self, room_id: &str) {
+        // Remove from L1 (in-memory) FIRST
         let id = RoomId(room_id.to_string());
         self.l1_cache.invalidate(&id).await;
-        tracing::debug!(room_id = %room_id, "Room L1 cache invalidated by id (cross-replica)");
+
+        // Then remove from L2 (Redis)
+        if let Some(ref client) = self.redis_client {
+            let key = format!("{}{}", self.key_prefix, room_id);
+            match client.get_multiplexed_async_connection().await {
+                Ok(mut conn) => {
+                    let result: std::result::Result<(), redis::RedisError> =
+                        redis::AsyncCommands::del(&mut conn, &key).await;
+                    if let Err(e) = result {
+                        tracing::warn!(
+                            room_id = %room_id,
+                            error = %e,
+                            "Failed to delete room L2 cache during cross-replica invalidation"
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        room_id = %room_id,
+                        error = %e,
+                        "Failed to get Redis connection for room L2 cache invalidation"
+                    );
+                }
+            }
+        }
+
+        tracing::debug!(room_id = %room_id, "Room cache invalidated by id (cross-replica, L1 then L2)");
     }
 
     /// Clear L1 cache (memory only)

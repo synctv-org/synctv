@@ -33,28 +33,15 @@
 use redis::aio::ConnectionManager as RedisConnectionManager;
 use redis::Script;
 use std::future::Future;
-use std::sync::atomic::{AtomicU64, Ordering};
 use crate::{Error, Result};
 
 /// Distributed lock service
 ///
 /// Provides Redis-based distributed locking for cross-replica critical sections
 /// with fencing token support for protection against split-brain scenarios.
+#[derive(Clone)]
 pub struct DistributedLock {
     redis: RedisConnectionManager,
-    /// Local monotonic counter for fencing tokens (fallback when Redis INCR fails)
-    local_token: AtomicU64,
-}
-
-impl Clone for DistributedLock {
-    fn clone(&self) -> Self {
-        // Each clone gets a fresh local_token counter (starts at 0)
-        // This is acceptable because Redis INCR is the primary source of truth
-        Self {
-            redis: self.redis.clone(),
-            local_token: AtomicU64::new(0),
-        }
-    }
 }
 
 impl DistributedLock {
@@ -63,35 +50,35 @@ impl DistributedLock {
     pub fn new(redis: RedisConnectionManager) -> Self {
         Self {
             redis,
-            local_token: AtomicU64::new(0),
         }
     }
 
     /// Generate a fencing token for a lock key using Redis INCR
     ///
     /// Uses Redis INCR on a per-key counter to ensure monotonic tokens
-    /// across all clients. Falls back to local counter if Redis fails.
-    async fn generate_fencing_token(&self, key: &str) -> u64 {
+    /// across all clients. Returns an error if Redis INCR fails, since
+    /// the lock itself requires Redis and a local fallback would break
+    /// monotonicity across replicas.
+    async fn generate_fencing_token(&self, key: &str) -> crate::Result<u64> {
         let token_key = format!("lock:token:{key}");
         let mut conn = self.redis.clone();
 
-        // Try Redis INCR first for distributed monotonic guarantee
-        match redis::cmd("INCR")
-            .arg(&token_key)
-            .query_async::<u64>(&mut conn)
+        // Atomically INCR and set a 24-hour TTL to prevent unbounded key accumulation
+        let script = Script::new(
+            r#"
+            local val = redis.call('INCR', KEYS[1])
+            redis.call('EXPIRE', KEYS[1], 86400)
+            return val
+            "#,
+        );
+
+        script
+            .key(&token_key)
+            .invoke_async::<u64>(&mut conn)
             .await
-        {
-            Ok(token) => token,
-            Err(e) => {
-                // Fallback to local counter on Redis failure
-                tracing::warn!(
-                    key = %key,
-                    error = %e,
-                    "Redis INCR failed for fencing token, using local counter"
-                );
-                self.local_token.fetch_add(1, Ordering::SeqCst) + 1
-            }
-        }
+            .map_err(|e| Error::Internal(format!(
+                "Failed to generate fencing token for lock '{key}': {e}"
+            )))
     }
 
     /// Acquire a lock (using SET NX EX atomic operation)
@@ -178,7 +165,7 @@ impl DistributedLock {
         if result.is_some() {
             // Generate fencing token only if requested (saves Redis round-trip)
             let fencing_token = if with_token {
-                self.generate_fencing_token(key).await
+                self.generate_fencing_token(key).await?
             } else {
                 0 // Dummy token when not requested
             };
@@ -484,6 +471,7 @@ impl DistributedLock {
 /// guard.release().await;
 /// result?;
 /// ```
+#[must_use = "lock guard must be explicitly released via .release() for reliable unlock"]
 pub struct LockGuard {
     lock: DistributedLock,
     key: String,

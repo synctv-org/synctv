@@ -197,6 +197,14 @@ impl MemberService {
         Ok(created_member)
     }
 
+    /// Remove a user from all rooms.
+    ///
+    /// Used during user deletion to clean up all room memberships.
+    /// Returns the number of memberships removed.
+    pub async fn remove_all_for_user(&self, user_id: &UserId) -> Result<u64> {
+        self.member_repo.remove_all_for_user(user_id).await
+    }
+
     /// Remove a member from a room
     pub async fn remove_member(&self, room_id: RoomId, user_id: UserId) -> Result<()> {
         // Check if member

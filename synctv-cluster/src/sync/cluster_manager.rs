@@ -245,7 +245,7 @@ impl ClusterManager {
         F: Fn() -> usize + Send + Sync + 'static,
     {
         let cancel_token = self.cancel_token.clone();
-        let interval_secs = (node_registry.heartbeat_timeout_secs / 2).max(1) as u64;
+        let interval_secs = (node_registry.heartbeat_timeout_secs / 3).max(1) as u64;
 
         let registry_for_task = node_registry.clone();
         let handle = tokio::spawn(async move {

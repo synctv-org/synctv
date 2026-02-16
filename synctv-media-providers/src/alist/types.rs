@@ -8,7 +8,7 @@ use serde::Deserialize;
 /// Generic Alist API response wrapper (for HTTP responses)
 #[derive(Debug, Deserialize)]
 pub struct AlistResp<T> {
-    pub code: u64,
+    pub code: i64,
     pub message: String,
     pub data: Option<T>,
 }

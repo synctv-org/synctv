@@ -62,14 +62,30 @@ impl K8sDnsDiscovery {
                 "HEADLESS_SERVICE_NAME env var is required for k8s_dns discovery mode".to_string(),
             )
         })?;
+        if service_name.is_empty() {
+            return Err(Error::Configuration(
+                "HEADLESS_SERVICE_NAME must not be empty".to_string(),
+            ));
+        }
 
         let namespace = std::env::var("POD_NAMESPACE").map_err(|_| {
             Error::Configuration(
                 "POD_NAMESPACE env var is required for k8s_dns discovery mode".to_string(),
             )
         })?;
+        if namespace.is_empty() {
+            return Err(Error::Configuration(
+                "POD_NAMESPACE must not be empty".to_string(),
+            ));
+        }
 
         let self_ip = std::env::var("POD_IP").unwrap_or_default();
+        if self_ip.is_empty() {
+            tracing::warn!(
+                "POD_IP env var is empty or missing; this node will not be excluded \
+                 from its own peer list, which may cause self-connections"
+            );
+        }
 
         let dns_name = format!("{service_name}.{namespace}.svc.cluster.local");
 
@@ -129,10 +145,23 @@ impl K8sDnsDiscovery {
                 continue;
             }
 
+            // Wrap IPv6 addresses in brackets so they form valid socket addresses
+            let (grpc_address, http_address) = if addr.ip().is_ipv6() {
+                (
+                    format!("[{}]:{}", ip, self.grpc_port),
+                    format!("[{}]:{}", ip, self.http_port),
+                )
+            } else {
+                (
+                    format!("{}:{}", ip, self.grpc_port),
+                    format!("{}:{}", ip, self.http_port),
+                )
+            };
+
             peers.push(DnsPeer {
                 ip: ip.clone(),
-                grpc_address: format!("{}:{}", ip, self.grpc_port),
-                http_address: format!("{}:{}", ip, self.http_port),
+                grpc_address,
+                http_address,
             });
         }
 

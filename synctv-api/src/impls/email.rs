@@ -113,6 +113,12 @@ impl EmailApiImpl {
             .await
             .map_err(|e| format!("Failed to update email verification: {e}"))?;
 
+        // Invalidate all remaining email verification tokens for this user
+        self.email_token_service
+            .invalidate_user_tokens(&user.id, EmailTokenType::EmailVerification)
+            .await
+            .map_err(|e| format!("Failed to invalidate tokens: {e}"))?;
+
         tracing::info!("Email verified for user {}", user.id.as_str());
 
         Ok(ConfirmEmailResult {
@@ -199,6 +205,12 @@ impl EmailApiImpl {
             .set_password(&user.id, new_password)
             .await
             .map_err(|e| format!("Failed to update password: {e}"))?;
+
+        // Invalidate all remaining password reset tokens for this user
+        self.email_token_service
+            .invalidate_user_tokens(&user.id, EmailTokenType::PasswordReset)
+            .await
+            .map_err(|e| format!("Failed to invalidate tokens: {e}"))?;
 
         tracing::info!("Password reset completed for user {}", user.id.as_str());
 

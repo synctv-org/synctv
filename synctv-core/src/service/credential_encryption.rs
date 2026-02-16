@@ -3,6 +3,7 @@
 //! Provides encryption and decryption for user provider credentials stored in the database.
 //! Uses AES-256-GCM authenticated encryption to protect sensitive credential data at rest.
 
+use std::sync::Arc;
 use aes_gcm::{
     aead::{Aead, KeyInit, OsRng},
     Aes256Gcm, Key, Nonce,
@@ -26,9 +27,12 @@ const KEY_VERSION: u8 = 0x01;
 ///
 /// Encrypts and decrypts credential data using AES-256-GCM.
 /// The encryption key should be loaded from a secure source (file, env var, KMS).
+///
+/// Uses `Arc` internally so cloning shares a single copy of the cipher
+/// (and its key material) rather than duplicating the key in memory.
 #[derive(Clone)]
 pub struct CredentialEncryption {
-    cipher: Aes256Gcm,
+    cipher: Arc<Aes256Gcm>,
 }
 
 impl std::fmt::Debug for CredentialEncryption {
@@ -56,7 +60,7 @@ impl CredentialEncryption {
         }
         let key = Key::<Aes256Gcm>::from_slice(key_bytes);
         let cipher = Aes256Gcm::new(key);
-        Ok(Self { cipher })
+        Ok(Self { cipher: Arc::new(cipher) })
     }
 
     /// Create from a hex-encoded key string

@@ -11,6 +11,7 @@ use oauth2::{
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use tokio::sync::OnceCell;
 
 /// OIDC provider configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,50 +29,87 @@ pub struct OidcConfig {
     pub userinfo_url: Option<String>,
 }
 
-/// Generic OIDC provider
-pub struct OidcProvider {
-    client: Arc<BasicClient<EndpointSet, EndpointNotSet, EndpointNotSet, EndpointNotSet, EndpointSet>>,
+/// Discovered OIDC endpoints from .well-known/openid-configuration
+#[derive(Debug, Clone, Deserialize)]
+struct OidcDiscoveryDocument {
+    authorization_endpoint: String,
+    token_endpoint: String,
+    #[serde(default)]
+    userinfo_endpoint: Option<String>,
+}
+
+/// Resolved OIDC client and endpoints, initialized lazily via discovery or static config.
+struct ResolvedOidc {
+    client: BasicClient<EndpointSet, EndpointNotSet, EndpointNotSet, EndpointNotSet, EndpointSet>,
     userinfo_url: Option<String>,
+}
+
+/// Generic OIDC provider
+///
+/// When created via `create()` (issuer-only mode), the OAuth2 client and endpoints
+/// are resolved lazily on first use by fetching `{issuer}/.well-known/openid-configuration`.
+/// When created via `create_with_endpoints()`, the provided endpoints are used directly.
+pub struct OidcProvider {
+    resolved: OnceCell<ResolvedOidc>,
+    /// Stored config for lazy initialization (only used in issuer-only mode)
+    init_config: OidcInitConfig,
     http_client: Arc<Client>,
+}
+
+/// Internal config stored for lazy OIDC discovery
+struct OidcInitConfig {
+    client_id: String,
+    client_secret: String,
+    redirect_url: String,
+    issuer: String,
+    /// If set, these are static overrides (no discovery needed)
+    static_endpoints: Option<StaticEndpoints>,
+}
+
+struct StaticEndpoints {
+    auth_url: String,
+    token_url: String,
+    userinfo_url: Option<String>,
 }
 
 impl OidcProvider {
     /// Create a new OIDC provider with issuer (uses .well-known discovery)
     ///
+    /// Endpoints are discovered lazily on first use by fetching
+    /// `{issuer}/.well-known/openid-configuration`.
+    ///
     /// # Errors
-    /// Returns error if `redirect_url` or constructed issuer URLs are not valid URLs.
+    /// Returns error if the HTTP client cannot be built.
     pub fn create(
         client_id: String,
         client_secret: String,
         redirect_url: String,
         issuer: &str,
     ) -> Result<Self, Error> {
-        let issuer = issuer.trim_end_matches('/');
-        let auth_url = AuthUrl::new(format!("{issuer}/authorize"))
-            .map_err(|e| Error::InvalidInput(format!("Invalid OIDC auth URL: {e}")))?;
-        let token_url = TokenUrl::new(format!("{issuer}/token"))
-            .map_err(|e| Error::InvalidInput(format!("Invalid OIDC token URL: {e}")))?;
-        let redirect = RedirectUrl::new(redirect_url)
-            .map_err(|e| Error::InvalidInput(format!("Invalid OIDC redirect URL: {e}")))?;
-        let client = Arc::new(
-            BasicClient::new(ClientId::new(client_id))
-                .set_client_secret(ClientSecret::new(client_secret))
-                .set_auth_uri(auth_url)
-                .set_token_uri(token_url)
-                .set_redirect_uri(redirect),
+        let http_client = Arc::new(
+            Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .map_err(|e| Error::Internal(format!("Failed to build HTTP client: {e}")))?,
         );
 
         Ok(Self {
-            client,
-            userinfo_url: Some(format!("{issuer}/userinfo")),
-            http_client: Arc::new(Client::new()),
+            resolved: OnceCell::new(),
+            init_config: OidcInitConfig {
+                client_id,
+                client_secret,
+                redirect_url,
+                issuer: issuer.trim_end_matches('/').to_string(),
+                static_endpoints: None,
+            },
+            http_client,
         })
     }
 
     /// Create a new OIDC provider with custom endpoints
     ///
     /// # Errors
-    /// Returns error if any of the provided URLs are not valid.
+    /// Returns error if the HTTP client cannot be built.
     pub fn create_with_endpoints(
         client_id: String,
         client_secret: String,
@@ -81,29 +119,114 @@ impl OidcProvider {
         token_url: Option<String>,
         userinfo_url: Option<String>,
     ) -> Result<Self, Error> {
-        let auth = AuthUrl::new(
-            auth_url.unwrap_or_else(|| format!("{}/authorize", issuer.trim_end_matches('/'))),
-        )
-        .map_err(|e| Error::InvalidInput(format!("Invalid OIDC auth URL: {e}")))?;
-        let token = TokenUrl::new(
-            token_url.unwrap_or_else(|| format!("{}/token", issuer.trim_end_matches('/'))),
-        )
-        .map_err(|e| Error::InvalidInput(format!("Invalid OIDC token URL: {e}")))?;
-        let redirect = RedirectUrl::new(redirect_url)
-            .map_err(|e| Error::InvalidInput(format!("Invalid OIDC redirect URL: {e}")))?;
-        let client = Arc::new(
-            BasicClient::new(ClientId::new(client_id))
-                .set_client_secret(ClientSecret::new(client_secret))
-                .set_auth_uri(auth)
-                .set_token_uri(token)
-                .set_redirect_uri(redirect),
+        let issuer_trimmed = issuer.trim_end_matches('/');
+        let http_client = Arc::new(
+            Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .map_err(|e| Error::Internal(format!("Failed to build HTTP client: {e}")))?,
         );
 
         Ok(Self {
-            client,
-            userinfo_url,
-            http_client: Arc::new(Client::new()),
+            resolved: OnceCell::new(),
+            init_config: OidcInitConfig {
+                client_id,
+                client_secret,
+                redirect_url,
+                issuer: issuer_trimmed.to_string(),
+                static_endpoints: Some(StaticEndpoints {
+                    auth_url: auth_url
+                        .unwrap_or_else(|| format!("{issuer_trimmed}/authorize")),
+                    token_url: token_url
+                        .unwrap_or_else(|| format!("{issuer_trimmed}/token")),
+                    userinfo_url,
+                }),
+            },
+            http_client,
         })
+    }
+
+    /// Resolve the OAuth2 client, performing .well-known discovery if needed.
+    async fn get_resolved(&self) -> Result<&ResolvedOidc, Error> {
+        self.resolved
+            .get_or_try_init(|| async {
+                let config = &self.init_config;
+
+                let (auth_url_str, token_url_str, userinfo_url) =
+                    if let Some(static_ep) = &config.static_endpoints {
+                        (
+                            static_ep.auth_url.clone(),
+                            static_ep.token_url.clone(),
+                            static_ep.userinfo_url.clone(),
+                        )
+                    } else {
+                        // Perform .well-known/openid-configuration discovery
+                        let discovery_url = format!(
+                            "{}/.well-known/openid-configuration",
+                            config.issuer
+                        );
+                        tracing::info!(
+                            "OIDC: fetching discovery document from {}",
+                            discovery_url
+                        );
+
+                        let resp = self
+                            .http_client
+                            .get(&discovery_url)
+                            .send()
+                            .await
+                            .map_err(|e| {
+                                Error::Internal(format!(
+                                    "Failed to fetch OIDC discovery document from {discovery_url}: {e}"
+                                ))
+                            })?
+                            .error_for_status()
+                            .map_err(|e| {
+                                Error::Internal(format!(
+                                    "OIDC discovery endpoint returned error: {e}"
+                                ))
+                            })?;
+
+                        let doc: OidcDiscoveryDocument =
+                            resp.json().await.map_err(|e| {
+                                Error::Internal(format!(
+                                    "Failed to parse OIDC discovery document: {e}"
+                                ))
+                            })?;
+
+                        tracing::info!(
+                            "OIDC: discovered endpoints: auth={}, token={}, userinfo={:?}",
+                            doc.authorization_endpoint,
+                            doc.token_endpoint,
+                            doc.userinfo_endpoint
+                        );
+
+                        (
+                            doc.authorization_endpoint,
+                            doc.token_endpoint,
+                            doc.userinfo_endpoint,
+                        )
+                    };
+
+                let auth = AuthUrl::new(auth_url_str)
+                    .map_err(|e| Error::InvalidInput(format!("Invalid OIDC auth URL: {e}")))?;
+                let token = TokenUrl::new(token_url_str)
+                    .map_err(|e| Error::InvalidInput(format!("Invalid OIDC token URL: {e}")))?;
+                let redirect = RedirectUrl::new(config.redirect_url.clone())
+                    .map_err(|e| Error::InvalidInput(format!("Invalid OIDC redirect URL: {e}")))?;
+
+                let client = BasicClient::new(ClientId::new(config.client_id.clone()))
+                    .set_client_secret(ClientSecret::new(config.client_secret.clone()))
+                    .set_auth_uri(auth)
+                    .set_token_uri(token)
+                    .set_redirect_uri(redirect);
+
+                Ok(ResolvedOidc {
+                    client,
+                    userinfo_url,
+                })
+            })
+            .await
     }
 }
 
@@ -114,8 +237,9 @@ impl Provider for OidcProvider {
     }
 
     async fn new_auth_url(&self, state: &str) -> Result<(String, String), Error> {
+        let resolved = self.get_resolved().await?;
         let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
-        let (auth_url, _csrf_token) = self
+        let (auth_url, _csrf_token) = resolved
             .client
             .authorize_url(|| oauth2::CsrfToken::new(state.to_string()))
             .set_pkce_challenge(pkce_challenge)
@@ -124,9 +248,11 @@ impl Provider for OidcProvider {
     }
 
     async fn get_user_info(&self, code: &str, pkce_verifier: &str) -> Result<OAuth2UserInfo, Error> {
+        let resolved = self.get_resolved().await?;
+
         // Exchange code for token with PKCE verifier
         let verifier = PkceCodeVerifier::new(pkce_verifier.to_string());
-        let token = self
+        let token = resolved
             .client
             .exchange_code(oauth2::AuthorizationCode::new(code.to_string()))
             .set_pkce_verifier(verifier)
@@ -135,10 +261,10 @@ impl Provider for OidcProvider {
             .map_err(|e| Error::Internal(format!("Failed to exchange code: {e}")))?;
 
         // Fetch user info from userinfo endpoint
-        let userinfo_url = self
+        let userinfo_url = resolved
             .userinfo_url
             .as_ref()
-            .ok_or_else(|| Error::Internal("userinfo_url not configured".to_string()))?;
+            .ok_or_else(|| Error::Internal("userinfo_url not configured and not found in OIDC discovery".to_string()))?;
 
         let resp = self
             .http_client

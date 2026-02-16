@@ -24,6 +24,10 @@ prost-types.workspace = true
 # Redis
 redis.workspace = true
 
+# Kubernetes (in-cluster leader election & service discovery)
+kube.workspace = true
+k8s-openapi.workspace = true
+
 # Caching
 dashmap.workspace = true
 moka.workspace = true

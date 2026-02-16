@@ -455,10 +455,10 @@ async fn handle_stream_info(
     // Auth via ClientApiImpl
     let token = params.token.as_deref()
         .ok_or_else(|| AppError::unauthorized("token query parameter is required"))?;
-    let _user_id = state.client_api.validate_live_token(token, &room_id).await
+    let user_id = state.client_api.validate_live_token(token, &room_id).await
         .map_err(AppError::unauthorized)?;
 
-    let resp = state.client_api.get_stream_info(&room_id, &media_id).await
+    let resp = state.client_api.get_stream_info(user_id.as_str(), &room_id, &media_id).await
         .map_err(crate::http::error::impls_err_to_app_error)?;
 
     Ok(Json(resp))
@@ -481,10 +481,10 @@ async fn handle_room_streams(
     // Auth via ClientApiImpl
     let token = params.token.as_deref()
         .ok_or_else(|| AppError::unauthorized("token query parameter is required"))?;
-    let _user_id = state.client_api.validate_live_token(token, &room_id).await
+    let user_id = state.client_api.validate_live_token(token, &room_id).await
         .map_err(AppError::unauthorized)?;
 
-    let resp = state.client_api.list_room_streams(&room_id).await
+    let resp = state.client_api.list_room_streams(user_id.as_str(), &room_id).await
         .map_err(crate::http::error::impls_err_to_app_error)?;
 
     Ok(Json(resp))

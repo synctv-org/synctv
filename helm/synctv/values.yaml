@@ -37,6 +37,7 @@ service:
   sessionAffinity: ""
   nodePorts:
     rtmp: 31935
+    stun: 31478
 
 ## Ingress Configuration (for HTTP API access)
 ingress:
@@ -101,7 +102,7 @@ startupProbe:
   initialDelaySeconds: 5
   periodSeconds: 5
   timeoutSeconds: 3
-  failureThreshold: 30  # 5 + 30*5 = 155s max startup time (for migrations)
+  failureThreshold: 30 # 5 + 30*5 = 155s max startup time (for migrations)
 
 livenessProbe:
   httpGet:
@@ -211,6 +212,10 @@ config:
     gopCacheSize: 2
     streamTimeoutSeconds: 300
     cleanupCheckIntervalSeconds: 60
+    pullMaxRetries: 3
+    pullInitialBackoffMs: 1000
+    pullMaxBackoffMs: 30000
+    maxFlvTagSizeBytes: 10485760
 
   ## ClusterChannelConfig (matches code defaults)
   cluster:
@@ -222,12 +227,17 @@ config:
 
   ## WebRTCConfig
   webrtc:
-    mode: "hybrid"  # signaling_only, peer_to_peer, hybrid, sfu
+    mode: "hybrid" # signaling_only, peer_to_peer, hybrid, sfu
     enableBuiltinStun: true
     stunPort: 3478
     stunHost: "0.0.0.0"
+    stunExternalAddr: ""
     sfuThreshold: 5
     enableSimulcast: true
+    simulcastLayers:
+      - "high"
+      - "medium"
+      - "low"
     maxSfuRooms: 0
     maxPeersPerSfuRoom: 50
     maxBitratePerPeer: 0
@@ -243,7 +253,7 @@ config:
 
   ## BootstrapConfig
   bootstrap:
-    createRootUser: false  # disabled by default in production
+    createRootUser: false # disabled by default in production
     rootUsername: "root"
 
   ## EmailConfig (only rendered if smtpHost is set)
@@ -260,23 +270,33 @@ config:
 
 ## ============================================================================
 ## Secrets (sensitive values injected as env vars with SYNCTV_ prefix)
+##
+## WARNING: All default passwords and secrets below are INSECURE placeholders.
+## You MUST replace every "CHANGE_ME_*" value before deploying to production.
+## Failure to do so will leave your deployment vulnerable.
+## Use `--set` flags, a separate values file, or an external secret manager
+## (e.g., sealed-secrets, external-secrets, Vault) for production credentials.
 ## ============================================================================
 secrets:
   ## Database Credentials (composed into SYNCTV_DATABASE_URL)
   database:
     username: "synctv"
+    ## WARNING: Change this password in production!
     password: "CHANGE_ME_IN_PRODUCTION"
 
   ## Redis Password (composed into SYNCTV_REDIS_URL)
   redis:
+    ## WARNING: Change this password in production!
     password: "CHANGE_ME_IN_PRODUCTION"
 
   ## JWT Secret (256-bit random string)
   jwt:
+    ## WARNING: Generate a secure 256-bit random string for production!
     secret: "CHANGE_ME_TO_SECURE_256BIT_RANDOM_STRING"
 
   ## Cluster gRPC Auth Secret
   cluster:
+    ## WARNING: Change this secret in production!
     grpcSecret: "CHANGE_ME_IN_PRODUCTION"
 
   ## Email SMTP Credentials (only used when email.smtpHost is set)
@@ -294,6 +314,7 @@ secrets:
 
   ## Bootstrap root password (only used when bootstrap.createRootUser is true)
   bootstrap:
+    ## WARNING: Change this password in production!
     rootPassword: "CHANGE_ME_IN_PRODUCTION"
 
 ## ============================================================================
@@ -329,7 +350,7 @@ securityContext:
 ## For Prometheus Operator environments, enable serviceMonitor instead.
 metrics:
   enabled: true
-  port: ""    # defaults to config.server.httpPort (8080)
+  port: "" # defaults to config.server.httpPort (8080)
   path: "/metrics"
   serviceMonitor:
     enabled: false
@@ -346,10 +367,21 @@ alerting:
 
 ## Network Policy
 networkPolicy:
-  enabled: false
+  enabled: true
   policyTypes:
     - Ingress
     - Egress
+  ## Pod selectors for PostgreSQL egress rule (must match your PostgreSQL Helm chart labels)
+  postgresSelector:
+    app.kubernetes.io/name: postgresql
+  ## Pod selectors for Redis egress rule (must match your Redis Helm chart labels)
+  redisSelector:
+    app.kubernetes.io/name: redis
+  ## CIDR ranges allowed to send RTMP traffic. Defaults to 0.0.0.0/0 (all) if empty.
+  rtmpSourceCIDRs: []
+  # rtmpSourceCIDRs:
+  #   - "10.0.0.0/8"
+  #   - "192.168.0.0/16"
 
 ## Extra Environment Variables
 extraEnvVars: []

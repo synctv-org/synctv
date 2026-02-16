@@ -19,7 +19,6 @@ pub use client_service::{ClientServiceImpl, ClientServiceConfig};
 pub use notification_service::NotificationServiceImpl;
 pub use interceptors::{
     AuthInterceptor, ClusterAuthInterceptor, LoggingInterceptor,
-    ValidationInterceptor,
 };
 
 /// Log an internal error and return a generic gRPC status to avoid leaking details.
@@ -83,36 +82,34 @@ pub struct GrpcServerConfig<'a> {
 }
 
 /// Build and start the gRPC server
-#[allow(clippy::too_many_arguments, clippy::result_large_err)]
-pub async fn serve(
-    config: &Config,
-    jwt_service: JwtService,
-    user_service: Arc<CoreUserService>,
-    room_service: Arc<CoreRoomService>,
-    cluster_manager: Arc<ClusterManager>,
-    redis_publish_tx: Option<tokio::sync::mpsc::Sender<PublishRequest>>,
-    rate_limiter: RateLimiter,
-    rate_limit_config: RateLimitConfig,
-    content_filter: ContentFilter,
-    connection_manager: ConnectionManager,
-    providers_manager: Option<Arc<ProvidersManager>>,
-    provider_instance_manager: Arc<RemoteProviderManager>,
-    _provider_instance_repository: Arc<synctv_core::repository::ProviderInstanceRepository>,
-    user_provider_credential_repository: Arc<
-        synctv_core::repository::UserProviderCredentialRepository,
-    >,
-    settings_service: Arc<SettingsService>,
-    settings_registry: Option<Arc<SettingsRegistry>>,
-    email_service: Option<Arc<EmailService>>,
-    email_token_service: Option<Arc<EmailTokenService>>,
-    sfu_manager: Option<Arc<synctv_sfu::SfuManager>>,
-    live_streaming_infrastructure: Option<Arc<synctv_livestream::api::LiveStreamingInfrastructure>>,
-    publish_key_service: Option<Arc<synctv_core::service::PublishKeyService>>,
-    notification_service: Option<Arc<synctv_core::service::UserNotificationService>>,
-    node_registry: Option<Arc<synctv_cluster::discovery::NodeRegistry>>,
-    token_blacklist_service: synctv_core::service::TokenBlacklistService,
-    shutdown_rx: Option<tokio::sync::watch::Receiver<bool>>,
-) -> anyhow::Result<()> {
+pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
+    let GrpcServerConfig {
+        config,
+        jwt_service,
+        user_service,
+        room_service,
+        cluster_manager,
+        redis_publish_tx,
+        rate_limiter,
+        rate_limit_config,
+        content_filter,
+        connection_manager,
+        providers_manager,
+        provider_instance_manager,
+        provider_instance_repository: _,
+        user_provider_credential_repository,
+        settings_service,
+        settings_registry,
+        email_service,
+        email_token_service,
+        sfu_manager,
+        live_streaming_infrastructure,
+        publish_key_service,
+        notification_service,
+        node_registry,
+        token_blacklist_service,
+        shutdown_rx,
+    } = grpc_config;
     let addr = config.grpc_address().parse()?;
 
     tracing::info!("Starting gRPC server on {}", addr);
@@ -371,7 +368,7 @@ pub async fn serve(
             alist_api: Arc::new(crate::impls::AlistApiImpl::new(alist_provider.clone())),
             emby_api: Arc::new(crate::impls::EmbyApiImpl::new(emby_provider.clone())),
             redis_conn: None, // gRPC path does not use playback caching (yet)
-            token_blacklist_service: synctv_core::service::TokenBlacklistService::new(None),
+            token_blacklist_service: synctv_core::service::TokenBlacklistService::new(None, "synctv".to_string()),
         });
 
         // Register provider gRPC services with auth interceptor
@@ -474,34 +471,3 @@ pub async fn serve(
     Ok(())
 }
 
-/// Build and start the gRPC server from configuration struct
-pub async fn serve_from_config(config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
-    serve(
-        config.config,
-        config.jwt_service,
-        config.user_service,
-        config.room_service,
-        config.cluster_manager,
-        config.redis_publish_tx,
-        config.rate_limiter,
-        config.rate_limit_config,
-        config.content_filter,
-        config.connection_manager,
-        config.providers_manager,
-        config.provider_instance_manager,
-        config.provider_instance_repository,
-        config.user_provider_credential_repository,
-        config.settings_service,
-        config.settings_registry,
-        config.email_service,
-        config.email_token_service,
-        config.sfu_manager,
-        config.live_streaming_infrastructure,
-        config.publish_key_service,
-        config.notification_service,
-        config.node_registry,
-        config.token_blacklist_service,
-        config.shutdown_rx,
-    )
-    .await
-}

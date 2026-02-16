@@ -67,6 +67,12 @@ pub struct Services {
     pub settings_cancel: tokio_util::sync::CancellationToken,
     /// CancellationToken for partition management tasks
     pub partition_cancel: tokio_util::sync::CancellationToken,
+    /// Leader elector for singleton operations (None in single-node mode)
+    pub leader_elector: Option<synctv_cluster::leader::LeaderElector>,
+    /// CancellationToken for leader election loop
+    pub leader_cancel: tokio_util::sync::CancellationToken,
+    /// K8s DNS refresh background task abort handle (aborted during shutdown)
+    pub dns_refresh_abort: Option<tokio::task::AbortHandle>,
 }
 
 /// `SyncTV` server - manages all server components
@@ -133,10 +139,10 @@ impl SyncTvServer {
         self.http_handle = Some(http_handle);
 
         // Spawn streaming event listener for cluster-wide kicks
-        if let (Some(cluster_mgr), Some(infra)) = (&self.services.cluster_manager, &self.services.live_streaming_infrastructure) {
+        let admin_event_handle: Option<JoinHandle<()>> = if let (Some(cluster_mgr), Some(infra)) = (&self.services.cluster_manager, &self.services.live_streaming_infrastructure) {
             let mut admin_rx = cluster_mgr.subscribe_admin_events();
             let infra = infra.clone();
-            tokio::spawn(async move {
+            let handle = tokio::spawn(async move {
                 loop {
                     match admin_rx.recv().await {
                         Ok(event) => {
@@ -172,7 +178,10 @@ impl SyncTvServer {
                 }
             });
             info!("Admin event listener spawned for cluster-wide stream kicks");
-        }
+            Some(handle)
+        } else {
+            None
+        };
 
         info!("All servers started successfully");
 
@@ -199,6 +208,15 @@ impl SyncTvServer {
         cleanup_cancel.cancel();
         self.services.settings_cancel.cancel();
         self.services.partition_cancel.cancel();
+        self.services.leader_cancel.cancel();
+
+        // Wait for admin event listener to finish before shutting down
+        // the cluster manager (which owns the broadcast channel it reads from).
+        if let Some(handle) = admin_event_handle {
+            info!("Waiting for admin event listener to stop...");
+            let _ = handle.await;
+            info!("Admin event listener stopped");
+        }
 
         // Run graceful shutdown
         self.shutdown().await;
@@ -276,6 +294,13 @@ impl SyncTvServer {
             info!("Health monitor shut down");
         }
 
+        // 4.6. Abort K8s DNS refresh loop (if active)
+        if let Some(ref abort_handle) = self.services.dns_refresh_abort {
+            info!("Aborting K8s DNS refresh loop...");
+            abort_handle.abort();
+            info!("K8s DNS refresh loop aborted");
+        }
+
         // 5. Shut down cluster manager (cancels Redis Pub/Sub + heartbeat + deduplicator tasks)
         if let Some(ref cluster_mgr) = self.services.cluster_manager {
             info!("Shutting down cluster manager...");
@@ -299,9 +324,6 @@ impl SyncTvServer {
     /// Start gRPC server
     async fn start_grpc_server(&self, shutdown_rx: watch::Receiver<bool>) -> anyhow::Result<JoinHandle<()>> {
         let config = self.config.clone();
-        let user_service = self.services.user_service.clone();
-        let room_service = self.services.room_service.clone();
-        let jwt_service = self.services.jwt_service.clone();
         // If no ClusterManager (Redis unavailable), create a default single-node one
         // so gRPC server can still start without Redis.
         let cluster_manager = if let Some(cm) = self.services.cluster_manager.clone() {
@@ -314,57 +336,38 @@ impl SyncTvServer {
                     .map_err(|e| anyhow::anyhow!("Failed to create default ClusterManager: {e}"))?
             )
         };
-        let redis_publish_tx = self.services.redis_publish_tx.clone();
-        let rate_limiter = self.services.rate_limiter.clone();
-        let rate_limit_config = self.services.rate_limit_config.clone();
-        let content_filter = self.services.content_filter.clone();
-        let connection_manager = self.services.connection_manager.clone();
-        let providers_manager = self.services.providers_manager.clone();
-        let provider_instance_manager = self.services.provider_instance_manager.clone();
-        let provider_instance_repository = self.services.provider_instance_repository.clone();
-        let user_provider_credential_repository = self.services.user_provider_credential_repository.clone();
-        let settings_service = self.services.settings_service.clone();
-        let settings_registry = self.services.settings_registry.clone();
-        let email_service = self.services.email_service.clone();
-        let email_token_service = self.services.email_token_service.clone();
-        let sfu_manager = self.services.sfu_manager.clone();
-        let live_streaming_infrastructure = self.services.live_streaming_infrastructure.clone();
-        let publish_key_service = self.services.publish_key_service.clone();
-        let notification_service = self.services.notification_service.clone();
-        let node_registry = self.services.node_registry.clone();
-        let token_blacklist = self.services.token_blacklist.clone();
 
+        let services = self.services.clone();
         let handle = tokio::spawn(async move {
             info!("Starting gRPC server on {}...", config.grpc_address());
-            if let Err(e) = synctv_api::grpc::serve(
-                &config,
-                jwt_service,
-                user_service,
-                room_service,
+            let grpc_config = synctv_api::grpc::GrpcServerConfig {
+                config: &config,
+                jwt_service: services.jwt_service,
+                user_service: services.user_service,
+                room_service: services.room_service,
                 cluster_manager,
-                redis_publish_tx,
-                rate_limiter,
-                rate_limit_config,
-                content_filter,
-                connection_manager,
-                Some(providers_manager),
-                provider_instance_manager,
-                provider_instance_repository,
-                user_provider_credential_repository,
-                settings_service,
-                Some(settings_registry),
-                email_service,
-                email_token_service,
-                sfu_manager,
-                live_streaming_infrastructure,
-                Some(publish_key_service),
-                notification_service,
-                node_registry,
-                token_blacklist,
-                Some(shutdown_rx),
-            )
-            .await
-            {
+                redis_publish_tx: services.redis_publish_tx,
+                rate_limiter: services.rate_limiter,
+                rate_limit_config: services.rate_limit_config,
+                content_filter: services.content_filter,
+                connection_manager: services.connection_manager,
+                providers_manager: Some(services.providers_manager),
+                provider_instance_manager: services.provider_instance_manager,
+                provider_instance_repository: services.provider_instance_repository,
+                user_provider_credential_repository: services.user_provider_credential_repository,
+                settings_service: services.settings_service,
+                settings_registry: Some(services.settings_registry),
+                email_service: services.email_service,
+                email_token_service: services.email_token_service,
+                sfu_manager: services.sfu_manager,
+                live_streaming_infrastructure: services.live_streaming_infrastructure,
+                publish_key_service: Some(services.publish_key_service),
+                notification_service: services.notification_service,
+                node_registry: services.node_registry,
+                token_blacklist_service: services.token_blacklist,
+                shutdown_rx: Some(shutdown_rx),
+            };
+            if let Err(e) = synctv_api::grpc::serve(grpc_config).await {
                 error!("gRPC server error: {}", e);
             }
         });

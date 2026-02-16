@@ -63,6 +63,10 @@ use crate::proto::client::{
 
 use super::internal_err;
 
+/// Buffer size for the outgoing message channel in MessageStream connections.
+/// Provides backpressure for slow clients without excessive memory usage.
+const MESSAGE_STREAM_BUFFER_SIZE: usize = 100;
+
 /// Map impls layer error strings to appropriate gRPC Status codes.
 ///
 /// Uses the shared `classify_error` function from the impls module for
@@ -188,24 +192,16 @@ impl ClientServiceImpl {
         ))
     }
 
-    /// Extract `user_id` from `UserContext` (injected by `inject_user` interceptor)
-    /// and check token blacklist.
+    /// Extract `user_id` from `UserContext` (injected by `inject_user` interceptor).
+    ///
+    /// Blacklist checking is handled by [`BlacklistCheckLayer`] at the transport
+    /// level, so no duplicate check is needed here.
     #[allow(clippy::result_large_err)]
     async fn get_user_id(&self, request: &Request<impl std::fmt::Debug>) -> Result<UserId, Status> {
         let user_context = request
             .extensions()
             .get::<super::interceptors::UserContext>()
             .ok_or_else(|| Status::unauthenticated("Authentication required"))?;
-
-        // Check if token has been revoked (e.g. after logout)
-        if self
-            .token_blacklist_service
-            .is_blacklisted(&user_context.raw_token)
-            .await
-            .unwrap_or(false)
-        {
-            return Err(Status::unauthenticated("Token has been revoked"));
-        }
 
         Ok(UserId::from_string(user_context.user_id.clone()))
     }
@@ -274,7 +270,7 @@ impl UserService for ClientServiceImpl {
         request: Request<LogoutRequest>,
     ) -> Result<Response<LogoutResponse>, Status> {
         // Extract Bearer token from metadata (transport-specific)
-        let token = request
+        let access_token = request
             .metadata()
             .get("authorization")
             .and_then(|v| v.to_str().ok())
@@ -287,7 +283,13 @@ impl UserService for ClientServiceImpl {
             })
             .unwrap_or("");
 
-        let response = self.client_api.logout(token).await;
+        // Extract optional refresh token from metadata
+        let refresh_token = request
+            .metadata()
+            .get("x-refresh-token")
+            .and_then(|v| v.to_str().ok());
+
+        let response = self.client_api.logout(access_token, refresh_token).await;
         Ok(Response::new(response))
     }
 
@@ -593,8 +595,7 @@ impl RoomService for ClientServiceImpl {
         }
 
         // Create channel for outgoing messages with bounded capacity to prevent memory exhaustion
-        // Buffer size of 1000 messages provides backpressure for slow clients
-        let (outgoing_tx, outgoing_rx) = mpsc::channel::<ServerMessage>(1000);
+        let (outgoing_tx, outgoing_rx) = mpsc::channel::<ServerMessage>(MESSAGE_STREAM_BUFFER_SIZE);
 
         // Create gRPC message sender
         let grpc_sender = Arc::new(GrpcMessageSender::new(outgoing_tx.clone()));
@@ -906,12 +907,12 @@ impl MediaService for ClientServiceImpl {
         &self,
         request: Request<GetStreamInfoRequest>,
     ) -> Result<Response<GetStreamInfoResponse>, Status> {
-        let _user_id = self.get_user_id(&request).await?;
+        let user_id = self.get_user_id(&request).await?;
         let room_id = self.get_room_id(&request)?;
         let req = request.into_inner();
 
         self.client_api
-            .get_stream_info(room_id.as_str(), &req.media_id)
+            .get_stream_info(user_id.as_str(), room_id.as_str(), &req.media_id)
             .await
             .map(Response::new)
             .map_err(|e| internal_err("Failed to get stream info", e))
@@ -921,12 +922,12 @@ impl MediaService for ClientServiceImpl {
         &self,
         request: Request<ListRoomStreamsRequest>,
     ) -> Result<Response<ListRoomStreamsResponse>, Status> {
-        let _user_id = self.get_user_id(&request).await?;
+        let user_id = self.get_user_id(&request).await?;
         let room_id = self.get_room_id(&request)?;
         let _req = request.into_inner();
 
         self.client_api
-            .list_room_streams(room_id.as_str())
+            .list_room_streams(user_id.as_str(), room_id.as_str())
             .await
             .map(Response::new)
             .map_err(|e| internal_err("Failed to list room streams", e))
@@ -970,10 +971,10 @@ impl MediaService for ClientServiceImpl {
         &self,
         request: Request<ListPlaylistsRequest>,
     ) -> Result<Response<ListPlaylistsResponse>, Status> {
-        let _user_id = self.get_user_id(&request).await?;
+        let user_id = self.get_user_id(&request).await?;
         let room_id = self.get_room_id(&request)?;
         let req = request.into_inner();
-        let response = self.client_api.list_playlists(room_id.as_str(), req).await.map_err(impls_err_to_status)?;
+        let response = self.client_api.list_playlists(user_id.as_str(), room_id.as_str(), req).await.map_err(impls_err_to_status)?;
         Ok(Response::new(response))
     }
 

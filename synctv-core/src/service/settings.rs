@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 use dashmap::DashMap;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, broadcast};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn, error};
 use sqlx::PgPool;
@@ -28,6 +28,9 @@ pub struct SettingsService {
     cache: Arc<DashMap<String, SettingsGroup>>,
     // Change listeners
     listeners: Arc<RwLock<Vec<SettingsChangeListener>>>,
+    // Broadcast channel for notifying SettingsStorage of remote reload events.
+    // Payload is the setting key that was reloaded along with its new value.
+    reload_sender: broadcast::Sender<(String, Option<String>)>,
 }
 
 impl std::fmt::Debug for SettingsService {
@@ -42,12 +45,22 @@ impl std::fmt::Debug for SettingsService {
 impl SettingsService {
     #[must_use]
     pub fn new(repository: SettingsRepository, pool: PgPool) -> Self {
+        let (reload_sender, _) = broadcast::channel(256);
         Self {
             repository,
             pool,
             cache: Arc::new(DashMap::new()),
             listeners: Arc::new(RwLock::new(Vec::new())),
+            reload_sender,
         }
+    }
+
+    /// Subscribe to reload events triggered by remote replicas.
+    ///
+    /// Each event is `(key, Option<new_value>)` where `None` means the key was deleted.
+    #[must_use]
+    pub fn subscribe_reloads(&self) -> broadcast::Receiver<(String, Option<String>)> {
+        self.reload_sender.subscribe()
     }
 
     /// Initialize the service by loading all settings into cache
@@ -137,7 +150,16 @@ impl SettingsService {
         // Update cache
         self.cache.insert(setting.key.clone(), setting.clone());
 
-        // Notify listeners
+        // Notify other replicas via PostgreSQL NOTIFY
+        if let Err(e) = sqlx::query("SELECT pg_notify('settings_changed', $1)")
+            .bind(key)
+            .execute(&self.pool)
+            .await
+        {
+            warn!("Failed to send pg_notify for setting '{}': {}", key, e);
+        }
+
+        // Notify local listeners
         let json_value: serde_json::Value = value.parse().unwrap_or_else(|_| serde_json::json!(value));
         self.notify_listeners(key, &json_value).await;
 
@@ -305,6 +327,9 @@ impl SettingsService {
                 // Update cache (lock-free via DashMap)
                 self.cache.insert(setting.key.clone(), setting.clone());
 
+                // Notify SettingsStorage subscribers so their inner HashMap stays in sync
+                let _ = self.reload_sender.send((key.to_string(), Some(setting.value.clone())));
+
                 // Notify local listeners
                 let json_value: serde_json::Value = setting.value.parse()
                     .unwrap_or_else(|_| serde_json::json!(setting.value));
@@ -320,6 +345,9 @@ impl SettingsService {
                     key, e
                 );
                 self.cache.remove(key);
+
+                // Notify SettingsStorage subscribers about removal
+                let _ = self.reload_sender.send((key.to_string(), None));
 
                 // Notify listeners about removal
                 self.notify_listeners(key, &serde_json::json!(null)).await;

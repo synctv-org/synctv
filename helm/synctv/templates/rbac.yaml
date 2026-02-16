@@ -1,0 +1,31 @@
+{{- if .Values.serviceAccount.create -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "synctv.fullname" . }}
+  labels:
+    {{- include "synctv.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["endpoints", "pods"]
+    verbs: ["get", "list", "watch"]
+  # Required for K8s Lease-based leader election
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "create", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "synctv.fullname" . }}
+  labels:
+    {{- include "synctv.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "synctv.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "synctv.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

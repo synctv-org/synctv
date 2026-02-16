@@ -15,6 +15,7 @@ use crate::Config;
 ///
 /// This struct provides a centralized way to generate all Redis keys,
 /// ensuring consistency and supporting configuration (prefix, environment).
+#[derive(Clone)]
 pub struct KeyBuilder {
     prefix: String,
 }

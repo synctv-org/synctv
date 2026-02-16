@@ -4,7 +4,7 @@
 //! Used by both HTTP and gRPC handlers.
 
 use std::sync::Arc;
-use synctv_core::models::{UserId, RoomId, MediaId, UserRole, UserStatus};
+use synctv_core::models::{UserId, RoomId, UserRole, UserStatus};
 use synctv_core::service::{RoomService, UserService, SettingsService, EmailService, RemoteProviderManager, SettingsRegistry};
 use synctv_cluster::sync::{ConnectionManager, ClusterEvent, PublishRequest};
 use synctv_livestream::api::LiveStreamingInfrastructure;
@@ -98,23 +98,13 @@ impl AdminApiImpl {
 
     /// Kick a stream both locally and cluster-wide via Redis Pub/Sub
     fn kick_stream_cluster(&self, room_id: &str, media_id: &str, reason: &str) {
-        // 1. Local kick (no-op if stream not on this node)
-        if let Some(infra) = &self.live_streaming_infrastructure {
-            let _ = infra.kick_publisher(room_id, media_id);
-        }
-
-        // 2. Cluster-wide via Redis
-        if let Some(tx) = &self.redis_publish_tx {
-            let _ = tx.try_send(PublishRequest {
-                event: ClusterEvent::KickPublisher {
-                    event_id: nanoid::nanoid!(16),
-                    room_id: RoomId::from_string(room_id.to_string()),
-                    media_id: MediaId::from_string(media_id.to_string()),
-                    reason: reason.to_string(),
-                    timestamp: chrono::Utc::now(),
-                },
-            });
-        }
+        crate::impls::kick_stream_cluster(
+            self.live_streaming_infrastructure.as_ref(),
+            self.redis_publish_tx.as_ref(),
+            room_id,
+            media_id,
+            reason,
+        );
     }
 
     // === Room Management ===
@@ -220,8 +210,15 @@ impl AdminApiImpl {
         &self,
         req: crate::proto::admin::UpdateRoomPasswordRequest,
     ) -> Result<crate::proto::admin::UpdateRoomPasswordResponse, String> {
-        self.room_service.admin_set_room_password(req).await
-            .map_err(|e| e.to_string())
+        let room_id = RoomId::from_string(req.room_id);
+        let new_password = if req.new_password.is_empty() {
+            None
+        } else {
+            Some(req.new_password.as_str())
+        };
+        self.room_service.admin_set_room_password(&room_id, new_password).await
+            .map_err(|e| e.to_string())?;
+        Ok(crate::proto::admin::UpdateRoomPasswordResponse { success: true })
     }
 
     pub async fn get_room_members(
@@ -710,19 +707,26 @@ impl AdminApiImpl {
         req: crate::proto::admin::DeleteUserRequest,
     ) -> Result<crate::proto::admin::DeleteUserResponse, String> {
         let uid = UserId::from_string(req.user_id);
-        let mut user = self.user_service.get_user(&uid).await.map_err(|e| e.to_string())?;
 
-        if user.deleted_at.is_some() {
-            return Err("User is already deleted".to_string());
+        // 1. Remove all room memberships for this user
+        let removed = self.room_service
+            .member_service()
+            .remove_all_for_user(&uid)
+            .await
+            .map_err(|e| format!("Failed to remove memberships: {e}"))?;
+        if removed > 0 {
+            tracing::info!(user_id = %uid.as_str(), removed, "Removed room memberships for deleted user");
         }
 
-        user.deleted_at = Some(chrono::Utc::now());
-        self.user_service.update_user(&user).await.map_err(|e| e.to_string())?;
+        // 2. Soft-delete user with full cleanup (tokens, OAuth, caches)
+        //    This invalidates all tokens first (fail-closed), then soft-deletes,
+        //    then cleans up OAuth mappings, username cache, and cross-replica cache.
+        self.user_service.delete_user(&uid).await.map_err(|e| e.to_string())?;
 
-        // Force disconnect all user connections (WebSocket and streaming)
+        // 3. Force disconnect all user connections (WebSocket and streaming)
         self.connection_manager.disconnect_user(&uid);
 
-        // Kick active RTMP publishers (local + cluster-wide)
+        // 4. Kick active RTMP publishers (local + cluster-wide)
         if let Some(infra) = &self.live_streaming_infrastructure {
             let streams = infra.user_stream_tracker.get_user_streams(uid.as_str());
 

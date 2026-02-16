@@ -1,6 +1,6 @@
 //! Playback operations: play, pause, seek, speed, set_current_media, get_playback_state
 
-use synctv_core::models::{RoomId, UserId};
+use synctv_core::models::{PermissionBits, RoomId, UserId};
 
 use super::ClientApiImpl;
 use super::convert::{media_to_proto, playback_state_to_proto, playlist_to_proto};
@@ -14,6 +14,10 @@ impl ClientApiImpl {
     ) -> Result<crate::proto::client::PlayResponse, String> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
+
+        // Check membership and playback control permission
+        self.room_service.check_permission(&rid, &uid, PermissionBits::PLAY_CONTROL).await
+            .map_err(|e| format!("Forbidden: {e}"))?;
 
         let state = self.room_service.playback_service().set_playing(rid, uid, true).await
             .map_err(|e| e.to_string())?;
@@ -31,6 +35,10 @@ impl ClientApiImpl {
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
 
+        // Check membership and playback control permission
+        self.room_service.check_permission(&rid, &uid, PermissionBits::PLAY_CONTROL).await
+            .map_err(|e| format!("Forbidden: {e}"))?;
+
         let state = self.room_service.playback_service().set_playing(rid, uid, false).await
             .map_err(|e| e.to_string())?;
 
@@ -47,6 +55,10 @@ impl ClientApiImpl {
     ) -> Result<crate::proto::client::SeekResponse, String> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
+
+        // Check membership and playback control permission
+        self.room_service.check_permission(&rid, &uid, PermissionBits::PLAY_CONTROL).await
+            .map_err(|e| format!("Forbidden: {e}"))?;
 
         self.room_service.playback_service().seek(rid.clone(), uid, req.current_time).await
             .map_err(|e| e.to_string())?;
@@ -66,6 +78,10 @@ impl ClientApiImpl {
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
 
+        // Check membership and playback speed permission
+        self.room_service.check_permission(&rid, &uid, PermissionBits::CHANGE_PLAYBACK_RATE).await
+            .map_err(|e| format!("Forbidden: {e}"))?;
+
         self.room_service.playback_service().change_speed(rid.clone(), uid, req.speed).await
             .map_err(|e| e.to_string())?;
 
@@ -84,6 +100,10 @@ impl ClientApiImpl {
     ) -> Result<crate::proto::client::SetCurrentMediaResponse, String> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
+
+        // Check membership and media switching permission
+        self.room_service.check_permission(&rid, &uid, PermissionBits::CHANGE_CURRENT_MOVIE).await
+            .map_err(|e| format!("Forbidden: {e}"))?;
 
         // If media_id is provided, switch to that media
         if !req.media_id.is_empty() {

@@ -73,7 +73,7 @@ impl ChatService {
             .check_rate_limit(&rate_key, self.rate_limit_config.chat_per_second, self.rate_limit_config.window_seconds)
             .await
         {
-            return Err(Error::InvalidInput(format!("Rate limit exceeded: {e}")));
+            return Err(Error::RateLimited(format!("Chat rate limit exceeded: {e}")));
         }
 
         // Validate content length
@@ -192,7 +192,7 @@ impl ChatService {
             .check_rate_limit(&rate_key, self.rate_limit_config.danmaku_per_second, self.rate_limit_config.window_seconds)
             .await
         {
-            return Err(Error::InvalidInput(format!("Rate limit exceeded: {e}")));
+            return Err(Error::RateLimited(format!("Danmaku rate limit exceeded: {e}")));
         }
 
         // Validate content length

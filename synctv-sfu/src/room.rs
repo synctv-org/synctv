@@ -66,7 +66,7 @@ pub struct SfuRoom {
     track_subscribers: Arc<DashMap<TrackId, Vec<PeerId>>>,
 
     /// Forwarding tasks for each track
-    forwarding_tasks: DashMap<TrackId, tokio::task::JoinHandle<()>>,
+    forwarding_tasks: Arc<DashMap<TrackId, tokio::task::JoinHandle<()>>>,
 
     /// Configuration
     pub config: Arc<SfuConfig>,
@@ -96,7 +96,7 @@ impl SfuRoom {
             peers: DashMap::new(),
             published_tracks: DashMap::new(),
             track_subscribers: Arc::new(DashMap::new()),
-            forwarding_tasks: DashMap::new(),
+            forwarding_tasks: Arc::new(DashMap::new()),
             config,
             stats: Arc::new(RwLock::new(RoomStats::default())),
             packets_relayed: Arc::new(AtomicU64::new(0)),
@@ -347,11 +347,13 @@ impl SfuRoom {
     ) -> Result<()> {
         // Clone necessary data for the background task
         let track_id_clone = track_id.clone();
+        let track_id_for_cleanup = track_id.clone();
         let room_id = self.id.clone();
         let peers = self.peers.clone();
         let track_subscribers = Arc::clone(&self.track_subscribers);
         let packets_relayed = Arc::clone(&self.packets_relayed);
         let bytes_relayed = Arc::clone(&self.bytes_relayed);
+        let forwarding_tasks = Arc::clone(&self.forwarding_tasks);
 
         // Spawn forwarding task
         let task = tokio::spawn(async move {
@@ -369,6 +371,12 @@ impl SfuRoom {
             {
                 error!(error = %e, "Track forwarding task failed");
             }
+
+            // Self-cleanup: remove our own entry from forwarding_tasks when the
+            // track closes naturally (channel dropped) or on error. This prevents
+            // stale entries from accumulating when tracks end without going through
+            // remove_published_track (e.g., the publisher's media track closes).
+            forwarding_tasks.remove(&track_id_for_cleanup);
         });
 
         self.forwarding_tasks.insert(track_id, task);
@@ -441,10 +449,17 @@ impl SfuRoom {
         Ok(())
     }
 
-    /// Check if mode switch is needed and perform it
+    /// Check if mode switch is needed and perform it.
+    ///
+    /// Uses hysteresis to prevent rapid P2P/SFU switching: switch to SFU at
+    /// `threshold`, but only switch back to P2P at `threshold - 2`. This
+    /// avoids oscillation when peer count hovers around the threshold.
     async fn check_mode_switch(&self) -> Result<()> {
         let peer_count = self.peers.len();
         let threshold = self.config.sfu_threshold;
+        // Hysteresis: switch back to P2P only when count drops to threshold - 2
+        // (minimum of 1 to avoid underflow when threshold <= 2)
+        let p2p_threshold = threshold.saturating_sub(2).max(1);
         let mut mode = self.mode.write().await;
 
         match *mode {
@@ -466,12 +481,12 @@ impl SfuRoom {
                 // Start forwarding all published tracks
                 self.switch_to_sfu().await?;
             }
-            RoomMode::SFU if peer_count < threshold => {
+            RoomMode::SFU if peer_count < p2p_threshold => {
                 info!(
                     room_id = %self.id,
                     peer_count,
-                    threshold,
-                    "Switching from SFU to P2P mode"
+                    p2p_threshold,
+                    "Switching from SFU to P2P mode (hysteresis)"
                 );
                 *mode = RoomMode::P2P;
 
@@ -645,7 +660,7 @@ impl Drop for SfuRoom {
         let sub_count = self.track_subscribers.len();
 
         // Abort all forwarding tasks to prevent leaked spawned tasks
-        for entry in &self.forwarding_tasks {
+        for entry in self.forwarding_tasks.iter() {
             entry.value().abort();
         }
 
@@ -710,7 +725,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_mode_switch() {
+    async fn test_mode_switch_with_hysteresis() {
         let mut config = SfuConfig::default();
         config.sfu_threshold = 3;
         let config = Arc::new(config);
@@ -725,12 +740,21 @@ mod tests {
         room.add_peer(PeerId::from("peer2"), 0).await.unwrap();
         assert_eq!(room.get_mode().await, RoomMode::P2P);
 
-        // Should switch to SFU
+        // Should switch to SFU at threshold (3)
         room.add_peer(PeerId::from("peer3"), 0).await.unwrap();
         assert_eq!(room.get_mode().await, RoomMode::SFU);
 
-        // Should switch back to P2P
+        // Removing one peer (count=2) should NOT switch back due to hysteresis
+        // (p2p_threshold = 3 - 2 = 1, so need count < 1 to switch back)
         room.remove_peer(&PeerId::from("peer3")).await.unwrap();
+        assert_eq!(room.get_mode().await, RoomMode::SFU);
+
+        // Removing another peer (count=1) should still be SFU (1 >= 1)
+        room.remove_peer(&PeerId::from("peer2")).await.unwrap();
+        assert_eq!(room.get_mode().await, RoomMode::SFU);
+
+        // Removing the last peer (count=0) should switch back to P2P (0 < 1)
+        room.remove_peer(&PeerId::from("peer1")).await.unwrap();
         assert_eq!(room.get_mode().await, RoomMode::P2P);
     }
 }

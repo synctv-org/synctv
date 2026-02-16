@@ -18,7 +18,9 @@ spec:
         - namespaceSelector:
             matchLabels:
               name: ingress-nginx
-        - podSelector: {}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ingress-nginx
       ports:
         - protocol: TCP
           port: {{ .Values.config.server.httpPort }}
@@ -32,16 +34,23 @@ spec:
           port: {{ .Values.config.server.grpcPort }}
     # Allow RTMP ingest (external publishers)
     - from:
-        - namespaceSelector: {}
-        - podSelector: {}
+        {{- if .Values.networkPolicy.rtmpSourceCIDRs }}
+        {{- range .Values.networkPolicy.rtmpSourceCIDRs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+        {{- else }}
+        - ipBlock:
+            cidr: 0.0.0.0/0
+        {{- end }}
       ports:
         - protocol: TCP
           port: {{ .Values.config.livestream.rtmpPort }}
     # Allow STUN traffic (WebRTC NAT traversal, UDP)
     {{- if .Values.config.webrtc.enableBuiltinStun }}
     - from:
-        - namespaceSelector: {}
-        - podSelector: {}
+        - ipBlock:
+            cidr: 0.0.0.0/0
       ports:
         - protocol: UDP
           port: {{ .Values.config.webrtc.stunPort }}
@@ -63,7 +72,7 @@ spec:
     - to:
         - namespaceSelector:
             matchLabels:
-              name: kube-system
+              kubernetes.io/metadata.name: kube-system
       ports:
         - protocol: UDP
           port: 53
@@ -73,7 +82,9 @@ spec:
     - to:
         - podSelector:
             matchLabels:
-              app: postgresql
+              {{- range $key, $value := .Values.networkPolicy.postgresSelector }}
+              {{ $key }}: {{ $value | quote }}
+              {{- end }}
       ports:
         - protocol: TCP
           port: {{ .Values.config.database.port }}
@@ -81,7 +92,9 @@ spec:
     - to:
         - podSelector:
             matchLabels:
-              app: redis
+              {{- range $key, $value := .Values.networkPolicy.redisSelector }}
+              {{ $key }}: {{ $value | quote }}
+              {{- end }}
       ports:
         - protocol: TCP
           port: {{ .Values.config.redis.port }}
@@ -90,6 +103,9 @@ spec:
         - podSelector:
             matchLabels:
               {{- include "synctv.selectorLabels" . | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.config.server.grpcPort }}
     # Allow external HTTPS (for OAuth2, media providers)
     - to:
         - namespaceSelector: {}

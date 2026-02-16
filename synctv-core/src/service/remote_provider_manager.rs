@@ -48,14 +48,18 @@ pub struct RemoteProviderManager {
     /// Repository for database operations
     repository: Arc<ProviderInstanceRepository>,
 
-    /// Optional Redis connection for Pub/Sub invalidation notifications
+    /// Optional Redis connection for publishing invalidation notifications
     redis_conn: Option<redis::aio::ConnectionManager>,
+
+    /// Optional Redis client for creating Pub/Sub subscriptions
+    /// (ConnectionManager cannot be used for subscriptions)
+    redis_client: Option<redis::Client>,
 }
 
 impl std::fmt::Debug for RemoteProviderManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RemoteProviderManager")
-            .field("redis_enabled", &self.redis_conn.is_some())
+            .field("redis_enabled", &self.redis_client.is_some())
             .finish()
     }
 }
@@ -66,10 +70,13 @@ impl RemoteProviderManager {
     /// When `redis_conn` is provided, provider changes are published via Redis Pub/Sub
     /// so other replicas can invalidate their local cache. Without Redis, cache
     /// invalidation is local only (entries expire naturally via TTL).
+    ///
+    /// `redis_client` is needed to create a dedicated Pub/Sub subscription connection.
     #[must_use]
     pub fn new(
         repository: Arc<ProviderInstanceRepository>,
         redis_conn: Option<redis::aio::ConnectionManager>,
+        redis_client: Option<redis::Client>,
     ) -> Self {
         if redis_conn.is_none() {
             tracing::warn!(
@@ -86,6 +93,7 @@ impl RemoteProviderManager {
             channel_cache: Arc::new(channel_cache),
             repository,
             redis_conn,
+            redis_client,
         }
     }
 
@@ -126,62 +134,27 @@ impl RemoteProviderManager {
 
     /// Start the Redis Pub/Sub subscriber for cross-replica cache invalidation.
     ///
-    /// Spawns a background task that listens for provider change notifications
-    /// and invalidates the local cache accordingly. Returns immediately if Redis
-    /// is not configured.
+    /// Spawns a background task that subscribes to the provider change channel
+    /// using a dedicated Pub/Sub connection. All replicas receive every
+    /// invalidation message (broadcast semantics).
+    /// Returns immediately if Redis is not configured.
     pub async fn start_invalidation_listener(&self) -> crate::Result<()> {
-        let Some(ref conn) = self.redis_conn else {
+        let Some(ref client) = self.redis_client else {
             tracing::debug!("No Redis configured, skipping invalidation listener");
             return Ok(());
         };
 
-        // We need a separate client for Pub/Sub (can't reuse ConnectionManager for subscriptions)
-        let redis_info = conn.clone();
-        let mut info_conn = redis_info;
-
-        // Get the connection info to create a new client for Pub/Sub
-        let info: String = redis::cmd("INFO")
-            .arg("server")
-            .query_async(&mut info_conn)
-            .await
-            .map_err(|e| crate::Error::Internal(format!("Failed to get Redis info: {e}")))?;
-
-        // Extract the Redis URL from the connection manager's internal state
-        // We'll use the connection manager to get a Pub/Sub connection indirectly
-        let _info = info; // Just validate connectivity
+        let client = client.clone();
 
         let cache = Arc::clone(&self.channel_cache);
-        let mut sub_conn = conn.clone();
 
-        // Subscribe to provider change notifications using a polling approach
-        // (ConnectionManager doesn't support native Pub/Sub, so we use a lightweight poll)
         tokio::spawn(async move {
-            // Use a Redis list as a notification queue (BRPOP with timeout)
-            // This is more compatible with ConnectionManager than native Pub/Sub
-            let notification_key = format!("{PROVIDER_CHANGE_CHANNEL}:notifications");
             loop {
-                // Block for up to 5 seconds waiting for a notification
-                let result: Result<Option<(String, String)>, redis::RedisError> =
-                    redis::cmd("BRPOP")
-                        .arg(&notification_key)
-                        .arg(5) // 5 second timeout
-                        .query_async(&mut sub_conn)
-                        .await;
-
-                match result {
-                    Ok(Some((_key, instance_name))) => {
-                        tracing::info!(
-                            "Received provider change notification for '{}', invalidating cache",
-                            instance_name
-                        );
-                        cache.invalidate(&instance_name).await;
-                    }
-                    Ok(None) => {
-                        // Timeout, no notification -- continue polling
-                    }
+                match Self::run_pubsub_listener(&client, &cache).await {
+                    Ok(()) => break, // clean shutdown (shouldn't happen)
                     Err(e) => {
                         tracing::warn!(
-                            "Error polling provider change notifications: {e}. Retrying in 5s."
+                            "Provider invalidation subscriber error: {e}. Reconnecting in 5s."
                         );
                         tokio::time::sleep(Duration::from_secs(5)).await;
                     }
@@ -189,8 +162,48 @@ impl RemoteProviderManager {
             }
         });
 
-        tracing::info!("Provider instance cache invalidation listener started");
+        tracing::info!("Provider instance cache invalidation listener started (Pub/Sub)");
         Ok(())
+    }
+
+    /// Internal Pub/Sub listener loop. Returns Err on connection failure so
+    /// the caller can reconnect.
+    async fn run_pubsub_listener(
+        client: &redis::Client,
+        cache: &moka::future::Cache<String, Channel>,
+    ) -> crate::Result<()> {
+        use futures::StreamExt;
+
+        let mut pubsub = client
+            .get_async_pubsub()
+            .await
+            .map_err(|e| crate::Error::Internal(format!("Failed to get Pub/Sub connection: {e}")))?;
+
+        pubsub
+            .subscribe(PROVIDER_CHANGE_CHANNEL)
+            .await
+            .map_err(|e| crate::Error::Internal(format!("Failed to subscribe: {e}")))?;
+
+        let mut stream = pubsub.on_message();
+
+        while let Some(msg) = stream.next().await {
+            let instance_name: String = match msg.get_payload() {
+                Ok(name) => name,
+                Err(e) => {
+                    tracing::warn!("Invalid payload in provider change message: {e}");
+                    continue;
+                }
+            };
+
+            tracing::info!(
+                "Received provider change notification for '{}', invalidating cache",
+                instance_name
+            );
+            cache.invalidate(&instance_name).await;
+        }
+
+        // Stream ended unexpectedly
+        Err(crate::Error::Internal("Pub/Sub stream ended".to_string()))
     }
 
     /// Publish a cache invalidation notification to Redis so other replicas
@@ -200,13 +213,11 @@ impl RemoteProviderManager {
             return;
         };
 
-        let notification_key = format!("{PROVIDER_CHANGE_CHANNEL}:notifications");
         let mut conn = conn.clone();
 
-        // Push the instance name to a notification list (LPUSH)
-        // Other replicas pick it up via BRPOP in the invalidation listener
-        let result: Result<(), redis::RedisError> = redis::cmd("LPUSH")
-            .arg(&notification_key)
+        // PUBLISH to the channel -- all subscribed replicas receive the message
+        let result: Result<(), redis::RedisError> = redis::cmd("PUBLISH")
+            .arg(PROVIDER_CHANGE_CHANNEL)
             .arg(instance_name)
             .query_async(&mut conn)
             .await;
@@ -217,14 +228,6 @@ impl RemoteProviderManager {
                 instance_name
             );
         }
-
-        // Trim the list to prevent unbounded growth (keep last 1000 notifications)
-        let _: Result<(), redis::RedisError> = redis::cmd("LTRIM")
-            .arg(&notification_key)
-            .arg(0)
-            .arg(999)
-            .query_async(&mut conn)
-            .await;
     }
 
     /// Create a gRPC channel for the given provider instance
@@ -234,7 +237,7 @@ impl RemoteProviderManager {
         // Parse timeout
         let timeout = config
             .parse_timeout()
-            .map_err(|e| crate::Error::Internal(format!("{e}")))?;
+            .map_err(|e| crate::Error::Internal(e.to_string()))?;
 
         // Create endpoint
         let mut endpoint = Endpoint::from_shared(config.endpoint.clone())

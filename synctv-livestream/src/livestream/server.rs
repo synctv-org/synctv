@@ -182,10 +182,15 @@ impl LivestreamServer {
             event_receiver,
         );
 
-        // Get broadcast receivers BEFORE spawning the hub
-        // One for PublisherManager, one for HLS remuxer
-        let broadcast_receiver = streams_hub.get_client_event_consumer();
-        let hls_broadcast_receiver = streams_hub.get_client_event_consumer();
+        // Create a long-lived external broadcast channel that survives StreamHub restarts.
+        // The StreamHub's internal broadcast channel is recreated on each restart, which
+        // would leave existing receivers (PublisherManager, HLS remuxer) stale.
+        // Instead, we subscribe to the internal broadcast and forward events to this
+        // external channel on each hub (re)start cycle.
+        let (external_broadcast_tx, _) =
+            tokio::sync::broadcast::channel::<synctv_xiu::streamhub::define::BroadcastEvent>(1000);
+        let broadcast_receiver = external_broadcast_tx.subscribe();
+        let hls_broadcast_receiver = external_broadcast_tx.subscribe();
         let hls_hub_event_sender = streams_hub.get_hub_event_sender();
 
         // Clone registry for cleanup on StreamHub restart
@@ -209,8 +214,37 @@ impl LivestreamServer {
             let mut restart_count: u32 = 0;
 
             loop {
+                // Subscribe to the hub's internal broadcast and forward to the
+                // external channel. A new subscription is needed on each restart
+                // because the hub recreates its internal broadcast::Sender.
+                let mut internal_rx = streams_hub.get_client_event_consumer();
+                let ext_tx = external_broadcast_tx.clone();
+                let forwarder_handle = tokio::spawn(async move {
+                    loop {
+                        match internal_rx.recv().await {
+                            Ok(event) => {
+                                // Best-effort forward; if no external receivers, that's fine
+                                let _ = ext_tx.send(event);
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                                warn!(
+                                    "Internal-to-external broadcast forwarder lagged by {n} events"
+                                );
+                                continue;
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                break;
+                            }
+                        }
+                    }
+                });
+
                 info!("Starting StreamHub event loop...");
                 streams_hub.run().await;
+
+                // Hub exited -- stop the forwarder for this cycle
+                forwarder_handle.abort();
+
                 restart_count += 1;
                 warn!(
                     restart_count,

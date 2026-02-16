@@ -91,7 +91,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bilibili_auth = ProviderAuthInterceptor::new(auth_secret.clone());
     let emby_auth = ProviderAuthInterceptor::new(auth_secret);
 
-    // Build and start server with authentication on all services
+    // Build and start server with authentication on all services and graceful shutdown
+    info!("Starting Provider gRPC server with graceful shutdown support");
+
     Server::builder()
         .add_service(AlistServer::with_interceptor(alist_service, move |req| {
             alist_auth.validate(req)
@@ -103,8 +105,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .add_service(EmbyServer::with_interceptor(emby_service, move |req| {
             emby_auth.validate(req)
         }))
-        .serve(addr)
+        .serve_with_shutdown(addr, shutdown_signal())
         .await?;
 
+    info!("Provider gRPC server shut down gracefully");
     Ok(())
+}
+
+/// Wait for a shutdown signal (Ctrl+C or SIGTERM) for graceful connection draining.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        () = ctrl_c => { info!("Received Ctrl+C, shutting down..."); }
+        () = terminate => { info!("Received SIGTERM, shutting down..."); }
+    }
 }

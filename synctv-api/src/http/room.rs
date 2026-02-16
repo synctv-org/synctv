@@ -758,7 +758,7 @@ pub async fn delete_playlist(
 /// List playlists in a room
 /// GET /`api/rooms/:room_id/playlists`
 pub async fn list_playlists(
-    _auth: AuthUser,
+    auth: AuthUser,
     State(state): State<AppState>,
     Path(room_id): Path<String>,
     Query(params): Query<std::collections::HashMap<String, String>>,
@@ -767,7 +767,7 @@ pub async fn list_playlists(
     let req = crate::proto::client::ListPlaylistsRequest { parent_id };
     let response = state
         .client_api
-        .list_playlists(&room_id, req)
+        .list_playlists(&auth.user_id.to_string(), &room_id, req)
         .await
         .map_err(super::error::impls_err_to_app_error)?;
 

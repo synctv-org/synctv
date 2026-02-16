@@ -32,16 +32,14 @@ fn map_bilibili_error(context: &str, e: ProviderClientError) -> Status {
         ProviderClientError::Network(_) => Status::unavailable(format!("{context}: network error")),
         ProviderClientError::Parse(_) => Status::internal(format!("{context}: failed to parse response")),
         ProviderClientError::Api { code, message } => {
-            // Bilibili API error codes are negative i32 cast to u64; cast back for matching
-            let signed_code = code as i64;
-            if signed_code == -101 {
+            if code == -101 {
                 // -101: not logged in / session expired
                 Status::unauthenticated(format!("{context}: not logged in"))
-            } else if signed_code == -412 {
+            } else if code == -412 {
                 // -412: request rate limited
                 Status::resource_exhausted(format!("{context}: rate limited"))
             } else {
-                Status::internal(format!("{context}: API error (code {signed_code}): {message}"))
+                Status::internal(format!("{context}: API error (code {code}): {message}"))
             }
         }
         ProviderClientError::Auth(_) => Status::unauthenticated(format!("{context}: authentication failed")),

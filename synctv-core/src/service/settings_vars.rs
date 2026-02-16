@@ -31,6 +31,7 @@ use std::fmt::Display;
 use std::hash::BuildHasherDefault;
 use std::sync::Arc;
 use parking_lot::RwLock;
+use tracing::{debug, warn};
 
 use super::SettingsService;
 use crate::Result;
@@ -127,6 +128,41 @@ impl SettingsStorage {
         *storage = all_values.into_iter().collect();
 
         Ok(())
+    }
+
+    /// Start a background task that listens for reload events from `SettingsService`
+    /// and updates the inner `HashMap` accordingly.
+    ///
+    /// This keeps the `SettingsStorage` in sync with remote replica changes
+    /// that are propagated via PostgreSQL LISTEN/NOTIFY.
+    pub fn start_reload_listener(&self) {
+        let inner = self.inner.clone();
+        let mut receiver = self.settings_service.subscribe_reloads();
+
+        tokio::spawn(async move {
+            loop {
+                match receiver.recv().await {
+                    Ok((key, Some(value))) => {
+                        inner.write().insert(key.clone(), value);
+                        debug!("SettingsStorage refreshed key '{}' from remote reload", key);
+                    }
+                    Ok((key, None)) => {
+                        inner.write().remove(&key);
+                        debug!("SettingsStorage removed key '{}' from remote reload", key);
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        warn!(
+                            "SettingsStorage reload listener lagged by {} messages, some settings may be stale until next access",
+                            n
+                        );
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        debug!("SettingsStorage reload channel closed, stopping listener");
+                        break;
+                    }
+                }
+            }
+        });
     }
 
     /// Get raw string value for a key

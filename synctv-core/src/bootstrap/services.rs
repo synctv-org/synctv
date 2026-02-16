@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use sqlx::PgPool;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 use crate::{
     cache::UsernameCache,
@@ -59,6 +59,10 @@ pub struct Services {
     pub redis_conn: Option<redis::aio::ConnectionManager>,
     /// CancellationToken for settings listen task (cancel on shutdown)
     pub settings_cancel: tokio_util::sync::CancellationToken,
+    /// Settings listen task handle (joined on shutdown).
+    /// Wrapped in `Arc<Mutex<Option<...>>>` so `Services` remains `Clone`.
+    /// Take the handle out of the `Option` to join it on shutdown.
+    pub settings_listen_task: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
 /// Initialize all core services
@@ -74,15 +78,16 @@ pub async fn init_services(
     info!("JWT service initialized");
 
     // Initialize shared Redis connection (used by token blacklist, rate limiter, and username cache)
-    let redis_conn = if config.redis.url.is_empty() {
-        None
+    let (redis_conn, redis_client) = if config.redis.url.is_empty() {
+        (None, None)
     } else {
         let client = redis::Client::open(config.redis.url.clone())?;
-        Some(redis::aio::ConnectionManager::new(client).await?)
+        let conn = redis::aio::ConnectionManager::new(client.clone()).await?;
+        (Some(conn), Some(client))
     };
 
     // Initialize token blacklist service
-    let token_blacklist = TokenBlacklistService::new(redis_conn.clone());
+    let token_blacklist = TokenBlacklistService::new(redis_conn.clone(), config.redis.key_prefix.clone());
     if token_blacklist.uses_redis() {
         info!("Token blacklist service initialized with Redis");
     } else {
@@ -152,6 +157,7 @@ pub async fn init_services(
     let provider_instance_manager = Arc::new(RemoteProviderManager::new(
         provider_instance_repo.clone(),
         redis_conn.clone(),
+        redis_client.clone(),
     ));
 
     // Pre-warm cache with all enabled provider instances from database
@@ -234,9 +240,8 @@ pub async fn init_services(
     let notification_service = UserNotificationService::new(notification_repo);
     info!("User notification service initialized");
 
-    // Keep the settings listen task handle alive by storing it.
-    // The task will be cancelled via settings_cancel on shutdown.
-    drop(settings_listen_task);
+    // Store the settings listen task handle so it can be joined on shutdown.
+    // The task will be cancelled via settings_cancel.
 
     Ok(Services {
         user_service: Arc::new(user_service),
@@ -259,6 +264,7 @@ pub async fn init_services(
         notification_service: Arc::new(notification_service),
         redis_conn,
         settings_cancel,
+        settings_listen_task: Arc::new(tokio::sync::Mutex::new(Some(settings_listen_task))),
     })
 }
 
@@ -335,7 +341,13 @@ async fn init_oauth2_service(
                     "google" => crate::models::oauth2_client::OAuth2Provider::Google,
                     "logto" => crate::models::oauth2_client::OAuth2Provider::Logto,
                     "oidc" => crate::models::oauth2_client::OAuth2Provider::Oidc,
-                    _ => continue,
+                    unknown => {
+                        warn!(
+                            "Skipping unknown OAuth2 provider type '{}' for instance '{}'",
+                            unknown, instance_name
+                        );
+                        continue;
+                    }
                 };
 
                 // Store provider for later use
@@ -348,23 +360,8 @@ async fn init_oauth2_service(
         }
     }
 
-    // Spawn background task to clean up expired OAuth2 states
-    // This prevents memory leaks from expired authorization flows
-    let oauth2_service_clone = oauth2_service.clone();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(tokio::time::Duration::from_hours(1)); // Run every hour
-        loop {
-            interval.tick().await;
-            match oauth2_service_clone.cleanup_expired_states(7200).await {
-                Ok(()) => {
-                    debug!("OAuth2 state cleanup completed successfully");
-                }
-                Err(e) => {
-                    error!("Failed to cleanup expired OAuth2 states: {}", e);
-                }
-            }
-        }
-    });
+    // OAuth2 state cleanup is handled automatically by moka cache TTL and Redis SETEX.
+    // No background task needed.
 
     Ok(Some(oauth2_service))
 }

@@ -869,4 +869,200 @@ mod tests {
         assert!(!perms.has_any(PermissionBits::ALL));
         assert!(perms.has_all(0)); // vacuously true
     }
+
+    // ========== Full Three-Layer Override Chain: Guest ==========
+
+    #[test]
+    fn test_three_layer_guest_chain() {
+        let service = make_service();
+
+        // Layer 1: Global defaults for Guest (VIEW_PLAYLIST only)
+        // Layer 2: Room adds SEND_CHAT for guests
+        let mut settings = RoomSettings::default();
+        settings.guest_added_permissions = GuestAddedPermissions(PermissionBits::SEND_CHAT);
+        let role_default = service.calculate_role_default_permissions(&RoomRole::Guest, &settings);
+        assert!(role_default.has(PermissionBits::VIEW_PLAYLIST));
+        assert!(role_default.has(PermissionBits::SEND_CHAT));
+
+        // Layer 3: Member-level removes SEND_CHAT (e.g. muted guest)
+        let mut member = make_member(RoomRole::Guest);
+        member.removed_permissions = PermissionBits::SEND_CHAT;
+        let effective = member.effective_permissions(role_default);
+        assert!(effective.has(PermissionBits::VIEW_PLAYLIST));
+        assert!(!effective.has(PermissionBits::SEND_CHAT));
+    }
+
+    // ========== Full Three-Layer Override Chain: Admin ==========
+
+    #[test]
+    fn test_three_layer_admin_chain() {
+        let service = make_service();
+
+        // Layer 2: Room removes BAN_MEMBER for admins
+        let mut settings = RoomSettings::default();
+        settings.admin_removed_permissions = AdminRemovedPermissions(PermissionBits::BAN_MEMBER);
+        let role_default = service.calculate_role_default_permissions(&RoomRole::Admin, &settings);
+        assert!(!role_default.has(PermissionBits::BAN_MEMBER));
+        assert!(role_default.has(PermissionBits::KICK_USER));
+
+        // Layer 3: Admin-level re-adds BAN_MEMBER (specific admin override)
+        let mut member = make_member(RoomRole::Admin);
+        member.admin_added_permissions = PermissionBits::BAN_MEMBER;
+        let effective = member.effective_permissions(role_default);
+        assert!(effective.has(PermissionBits::BAN_MEMBER));
+        assert!(effective.has(PermissionBits::KICK_USER));
+    }
+
+    // ========== Creator Immunity ==========
+
+    #[test]
+    fn test_creator_ignores_member_level_deny() {
+        let mut member = make_member(RoomRole::Creator);
+        member.removed_permissions = PermissionBits::ALL;
+        member.admin_removed_permissions = PermissionBits::ALL;
+        member.added_permissions = 0;
+        member.admin_added_permissions = 0;
+
+        // Even with everything denied, Creator still has ALL
+        let role_default = PermissionBits::empty();
+        let effective = member.effective_permissions(role_default);
+        assert_eq!(effective.0, PermissionBits::ALL);
+    }
+
+    #[test]
+    fn test_creator_always_all_regardless_of_room_settings() {
+        let service = make_service();
+        let mut settings = RoomSettings::default();
+        // Try to restrict creator via room settings
+        settings.admin_removed_permissions = AdminRemovedPermissions(PermissionBits::ALL);
+        settings.member_removed_permissions = MemberRemovedPermissions(PermissionBits::ALL);
+        let perms = service.calculate_role_default_permissions(&RoomRole::Creator, &settings);
+        assert_eq!(perms.0, PermissionBits::ALL);
+    }
+
+    // ========== Member-Level: Admin Uses admin_* Fields, Member Uses Regular Fields ==========
+
+    #[test]
+    fn test_admin_ignores_member_level_added_permissions() {
+        let mut member = make_member(RoomRole::Admin);
+        // Set member-level overrides (should be ignored for Admin role)
+        member.added_permissions = PermissionBits::EXPORT_DATA;
+        member.removed_permissions = PermissionBits::SEND_CHAT;
+        // Admin-level overrides: these should apply
+        member.admin_added_permissions = 0;
+        member.admin_removed_permissions = 0;
+
+        let role_default = PermissionBits(PermissionBits::DEFAULT_ADMIN);
+        let effective = member.effective_permissions(role_default);
+        // member-level EXPORT_DATA grant should NOT apply to admin
+        assert!(!effective.has(PermissionBits::EXPORT_DATA));
+        // member-level SEND_CHAT deny should NOT apply to admin
+        assert!(effective.has(PermissionBits::SEND_CHAT));
+    }
+
+    #[test]
+    fn test_member_ignores_admin_level_permissions() {
+        let mut member = make_member(RoomRole::Member);
+        // Set admin-level overrides (should be ignored for Member role)
+        member.admin_added_permissions = PermissionBits::DELETE_ROOM;
+        member.admin_removed_permissions = PermissionBits::SEND_CHAT;
+        // Member-level overrides: these should apply
+        member.added_permissions = 0;
+        member.removed_permissions = 0;
+
+        let role_default = PermissionBits(PermissionBits::DEFAULT_MEMBER);
+        let effective = member.effective_permissions(role_default);
+        // admin-level DELETE_ROOM grant should NOT apply
+        assert!(!effective.has(PermissionBits::DELETE_ROOM));
+        // admin-level SEND_CHAT deny should NOT apply
+        assert!(effective.has(PermissionBits::SEND_CHAT));
+    }
+
+    // ========== Banned Member: Various Roles ==========
+
+    #[test]
+    fn test_banned_creator_has_no_permissions_via_has_permission() {
+        // RoomMember::has_permission checks status first
+        let mut member = make_member(RoomRole::Creator);
+        member.status = MemberStatus::Banned;
+        let role_default = PermissionBits(PermissionBits::ALL);
+        assert!(!member.has_permission(PermissionBits::SEND_CHAT, role_default));
+    }
+
+    #[test]
+    fn test_banned_guest_has_no_permissions() {
+        let mut member = make_member(RoomRole::Guest);
+        member.status = MemberStatus::Banned;
+        let role_default = PermissionBits(PermissionBits::DEFAULT_GUEST);
+        assert!(!member.has_permission(PermissionBits::VIEW_PLAYLIST, role_default));
+    }
+
+    // ========== Room-Level: Combined Add and Remove ==========
+
+    #[test]
+    fn test_room_level_add_and_remove_same_permission_for_member() {
+        let service = make_service();
+        let mut settings = RoomSettings::default();
+        // Both add and remove SEND_CHAT at room level:
+        // Result: (default | add) & ~remove => SEND_CHAT is removed
+        settings.member_added_permissions = MemberAddedPermissions(PermissionBits::SEND_CHAT);
+        settings.member_removed_permissions = MemberRemovedPermissions(PermissionBits::SEND_CHAT);
+        let perms = service.calculate_role_default_permissions(&RoomRole::Member, &settings);
+        // Remove is applied after add, so SEND_CHAT should be absent
+        assert!(!perms.has(PermissionBits::SEND_CHAT));
+    }
+
+    #[test]
+    fn test_room_level_add_and_remove_same_permission_for_guest() {
+        let service = make_service();
+        let mut settings = RoomSettings::default();
+        settings.guest_added_permissions = GuestAddedPermissions(PermissionBits::VIEW_PLAYLIST);
+        settings.guest_removed_permissions = GuestRemovedPermissions(PermissionBits::VIEW_PLAYLIST);
+        let perms = service.calculate_role_default_permissions(&RoomRole::Guest, &settings);
+        // Remove wins over add
+        assert!(!perms.has(PermissionBits::VIEW_PLAYLIST));
+    }
+
+    // ========== Member Leave Behavior ==========
+
+    #[test]
+    fn test_member_leave_sets_left_at() {
+        let mut member = make_member(RoomRole::Member);
+        assert!(member.left_at.is_none());
+        assert!(member.is_active());
+
+        member.leave();
+        assert!(member.left_at.is_some());
+        assert!(!member.is_active());
+    }
+
+    // ========== PermissionBits: Grant and Revoke ==========
+
+    #[test]
+    fn test_permission_bits_grant_revoke() {
+        let mut perms = PermissionBits(0);
+        perms.grant(PermissionBits::SEND_CHAT);
+        assert!(perms.has(PermissionBits::SEND_CHAT));
+
+        perms.grant(PermissionBits::ADD_MOVIE);
+        assert!(perms.has(PermissionBits::SEND_CHAT));
+        assert!(perms.has(PermissionBits::ADD_MOVIE));
+
+        perms.revoke(PermissionBits::SEND_CHAT);
+        assert!(!perms.has(PermissionBits::SEND_CHAT));
+        assert!(perms.has(PermissionBits::ADD_MOVIE));
+    }
+
+    #[test]
+    fn test_permission_bits_all_contains_every_named_permission() {
+        let all = PermissionBits(PermissionBits::ALL);
+        assert!(all.has(PermissionBits::SEND_CHAT));
+        assert!(all.has(PermissionBits::ADD_MOVIE));
+        assert!(all.has(PermissionBits::BAN_MEMBER));
+        assert!(all.has(PermissionBits::DELETE_ROOM));
+        assert!(all.has(PermissionBits::EXPORT_DATA));
+        assert!(all.has(PermissionBits::VIEW_PLAYLIST));
+        assert!(all.has(PermissionBits::PLAY_CONTROL));
+        assert!(all.has(PermissionBits::MANAGE_ADMIN));
+    }
 }

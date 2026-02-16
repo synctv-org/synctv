@@ -232,6 +232,24 @@ impl RoomMemberRepository {
         self.row_to_member(row)
     }
 
+    /// Remove a user from all rooms (soft delete - set `left_at` on all active memberships).
+    ///
+    /// Used during user deletion/ban to clean up room memberships.
+    /// Returns the number of memberships removed.
+    pub async fn remove_all_for_user(&self, user_id: &UserId) -> Result<u64> {
+        let result = sqlx::query(
+            "UPDATE room_members
+             SET left_at = $2, version = version + 1
+             WHERE user_id = $1 AND left_at IS NULL"
+        )
+        .bind(user_id.as_str())
+        .bind(chrono::Utc::now())
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected())
+    }
+
     /// Remove user from room (soft delete - set `left_at`)
     pub async fn remove(&self, room_id: &RoomId, user_id: &UserId) -> Result<bool> {
         let result = sqlx::query(

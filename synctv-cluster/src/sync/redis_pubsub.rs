@@ -4,6 +4,7 @@ use redis::{AsyncCommands, Client as RedisClient};
 use redis::streams::StreamReadReply;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::{timeout, Duration};
 use tokio_util::sync::CancellationToken;
@@ -57,6 +58,8 @@ pub struct RedisPubSub {
     /// Shared multiplexed connection for non-Pub/Sub operations (stream reads).
     /// Avoids creating a fresh connection for every get_latest_stream_id / read_missed_events call.
     shared_conn: tokio::sync::Mutex<Option<redis::aio::MultiplexedConnection>>,
+    /// Timestamp of last successful connection health check (Unix seconds)
+    last_health_check: AtomicU64,
     message_hub: Arc<RoomMessageHub>,
     node_id: String,
     admin_event_tx: broadcast::Sender<ClusterEvent>,
@@ -80,6 +83,7 @@ impl RedisPubSub {
         Ok(Self {
             redis_client,
             shared_conn: tokio::sync::Mutex::new(None),
+            last_health_check: AtomicU64::new(0),
             message_hub,
             node_id,
             admin_event_tx,
@@ -684,16 +688,62 @@ impl RedisPubSub {
     }
 
     /// Get or create a shared multiplexed connection for non-Pub/Sub operations.
+    ///
+    /// Includes periodic PING health checks (every 30s) to detect stale connections
+    /// early, matching the pattern used by `NodeRegistry::get_conn()`.
     async fn get_shared_conn(&self) -> Result<redis::aio::MultiplexedConnection> {
+        const HEALTH_CHECK_INTERVAL_SECS: u64 = 30;
+
         let mut guard = self.shared_conn.lock().await;
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let last_check = self.last_health_check.load(Ordering::Relaxed);
+        let needs_health_check = now.saturating_sub(last_check) >= HEALTH_CHECK_INTERVAL_SECS;
+
         if let Some(ref conn) = *guard {
-            return Ok(conn.clone());
+            if !needs_health_check {
+                return Ok(conn.clone());
+            }
+
+            // Perform health check with PING
+            let mut conn_clone = conn.clone();
+            drop(guard); // Release lock during PING
+
+            let ping_result = timeout(
+                Duration::from_secs(2),
+                redis::cmd("PING").query_async::<String>(&mut conn_clone),
+            ).await;
+
+            guard = self.shared_conn.lock().await; // Re-acquire
+
+            match ping_result {
+                Ok(Ok(_)) => {
+                    self.last_health_check.store(now, Ordering::Relaxed);
+                    if let Some(ref current_conn) = *guard {
+                        return Ok(current_conn.clone());
+                    }
+                    // Connection was cleared while we released the lock, fall through
+                }
+                Ok(Err(ref e)) => {
+                    debug!("Redis shared connection PING failed: {}, reconnecting", e);
+                    *guard = None;
+                }
+                Err(_) => {
+                    debug!("Redis shared connection PING timeout, reconnecting");
+                    *guard = None;
+                }
+            }
         }
+
         let conn = self.redis_client
             .get_multiplexed_async_connection()
             .await
             .context("Failed to get Redis shared connection")?;
         *guard = Some(conn.clone());
+        self.last_health_check.store(now, Ordering::Relaxed);
         Ok(conn)
     }
 

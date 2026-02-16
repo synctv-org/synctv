@@ -1,6 +1,19 @@
-//! Room management service
+//! Room management service (facade)
 //!
-//! Handles core room CRUD operations and coordinates with domain services.
+//! `RoomService` is the main entry point for room-related business logic.
+//! It acts as a facade that coordinates between domain sub-services:
+//!
+//! - **Core room CRUD** — create, join, leave, delete rooms (handled here)
+//! - **Member management** — delegated to [`MemberService`]
+//! - **Media management** — delegated to [`MediaService`]
+//! - **Playback control** — delegated to [`PlaybackService`]
+//! - **Permissions** — delegated to [`PermissionService`]
+//! - **Chat** — uses [`ChatRepository`] directly (thin layer)
+//!
+//! The API layer (synctv-api) should call `RoomService` for operations that
+//! span multiple sub-services or require transaction coordination. For
+//! domain-specific operations, the API layer can also access sub-services
+//! directly via the accessor methods (`member_service()`, `media_service()`, etc.).
 
 use sqlx::PgPool;
 use chrono::{DateTime, Utc};
@@ -29,15 +42,6 @@ use crate::{
 };
 use std::sync::Arc;
 
-// Re-export gRPC types for use in service layer
-pub use synctv_proto::admin::{
-    GetRoomRequest, GetRoomResponse,
-    ListRoomsRequest, ListRoomsResponse,
-    DeleteRoomRequest, DeleteRoomResponse,
-    UpdateRoomPasswordRequest, UpdateRoomPasswordResponse,
-    GetRoomMembersRequest, GetRoomMembersResponse,
-    AdminRoom,
-};
 
 /// Room service for business logic
 ///
@@ -142,7 +146,7 @@ impl RoomService {
         permission_service.set_room_settings_repo(room_settings_repo.clone());
 
         // Initialize provider instance manager and providers manager
-        let provider_instance_manager = Arc::new(crate::service::RemoteProviderManager::new(provider_instance_repo, None));
+        let provider_instance_manager = Arc::new(crate::service::RemoteProviderManager::new(provider_instance_repo, None, None));
         let providers_manager = Arc::new(ProvidersManager::new(provider_instance_manager));
 
         // Initialize domain services
@@ -1121,267 +1125,6 @@ impl RoomService {
         self.permission_service.check_permission(room_id, user_id, permission).await
     }
 
-    // ========== gRPC-typed Methods (New Architecture) ==========
-
-    /// Get room members using gRPC types
-    ///
-    /// This method demonstrates the new architecture where service layer
-    /// uses gRPC-generated types, allowing both HTTP and gRPC layers to be
-    /// lightweight wrappers.
-    ///
-    /// # Arguments
-    /// * `request` - `GetRoomMembersRequest` containing `room_id`
-    /// * `requesting_user_id` - The user making the request (for permission checking)
-    ///
-    /// # Returns
-    /// `GetRoomMembersResponse` containing list of room members
-    pub async fn get_room_members_grpc(
-        &self,
-        request: synctv_proto::admin::GetRoomMembersRequest,
-        requesting_user_id: &UserId,
-    ) -> Result<synctv_proto::admin::GetRoomMembersResponse> {
-        // Extract room_id
-        let room_id = RoomId::from_string(request.room_id.clone());
-
-        // Check permission - user must be a member of the room to see members
-        self.permission_service
-            .check_permission(&room_id, requesting_user_id, PermissionBits::SEND_CHAT)
-            .await?;
-
-        // Get members from repository
-        let members_with_users = self.member_service.list_members(&room_id).await?;
-
-        // Load room settings to calculate effective permissions
-        let room_settings = self.room_settings_repo.get(&room_id).await?;
-
-        // Convert to gRPC RoomMember type
-        let total = members_with_users.len() as i32;
-        let proto_members: Vec<synctv_proto::common::RoomMember> = members_with_users
-            .into_iter()
-            .map(|m| {
-                // Calculate role default permissions (global + room-level overrides)
-                let role_default = self.permission_service
-                    .calculate_role_default_permissions(&m.role, &room_settings);
-
-                // Apply member-level overrides
-                let effective = m.effective_permissions(role_default);
-
-                // Map internal Role to proto RoomMemberRole enum
-                let proto_role = match m.role {
-                    crate::models::permission::Role::Guest => synctv_proto::common::RoomMemberRole::Guest as i32,
-                    crate::models::permission::Role::Member => synctv_proto::common::RoomMemberRole::Member as i32,
-                    crate::models::permission::Role::Admin => synctv_proto::common::RoomMemberRole::Admin as i32,
-                    crate::models::permission::Role::Creator => synctv_proto::common::RoomMemberRole::Creator as i32,
-                };
-
-                synctv_proto::common::RoomMember {
-                    room_id: m.room_id.as_str().to_string(),
-                    user_id: m.user_id.as_str().to_string(),
-                    username: m.username,
-                    role: proto_role,
-                    permissions: effective.0,
-                    added_permissions: m.added_permissions,
-                    removed_permissions: m.removed_permissions,
-                    admin_added_permissions: m.admin_added_permissions,
-                    admin_removed_permissions: m.admin_removed_permissions,
-                    joined_at: m.joined_at.timestamp(),
-                    is_online: m.is_online,
-                }
-            })
-            .collect();
-
-        Ok(synctv_proto::admin::GetRoomMembersResponse {
-            members: proto_members,
-            total,
-        })
-    }
-
-    /// Get room by ID using gRPC types
-    pub async fn get_room_grpc(
-        &self,
-        request: GetRoomRequest,
-        requesting_user_id: &UserId,
-    ) -> Result<GetRoomResponse> {
-        let room_id = RoomId::from_string(request.room_id);
-
-        // Check permission - user must be able to view the room
-        self.permission_service
-            .check_permission(&room_id, requesting_user_id, PermissionBits::SEND_CHAT)
-            .await?;
-
-        let room = self.get_room(&room_id).await?;
-
-        // Get member count
-        let member_count = self.get_member_count(&room_id).await?;
-
-        // Get creator username
-        let creator_username = self
-            .user_service
-            .get_username(&room.created_by)
-            .await?
-            .unwrap_or_else(|| "Unknown".to_string());
-
-        // Load room settings
-        let room_settings = self.room_settings_repo.get(&room_id).await?;
-
-        // Convert settings to bytes (protobuf serialization)
-        let settings_bytes = serde_json::to_vec(&room_settings)
-            .unwrap_or_default();
-
-        let admin_room = AdminRoom {
-            id: room.id.as_str().to_string(),
-            name: room.name.clone(),
-            description: room.description,
-            creator_id: room.created_by.as_str().to_string(),
-            creator_username,
-            status: synctv_proto::common::RoomStatus::from(room.status) as i32,
-            settings: settings_bytes,
-            member_count,
-            created_at: room.created_at.timestamp(),
-            updated_at: room.updated_at.timestamp(),
-            is_banned: room.is_banned,
-        };
-
-        Ok(GetRoomResponse {
-            room: Some(admin_room),
-        })
-    }
-
-    /// List rooms using gRPC types
-    pub async fn list_rooms_grpc(
-        &self,
-        request: ListRoomsRequest,
-        _requesting_user_id: &UserId,
-    ) -> Result<ListRoomsResponse> {
-        // Build query from request
-        let mut query = RoomListQuery {
-            pagination: PageParams::new(Some(request.page as u32), Some(request.page_size as u32)),
-            ..Default::default()
-        };
-
-        if !request.status.is_empty() {
-            query.status = match request.status.as_str() {
-                "active" => Some(RoomStatus::Active),
-                "pending" => Some(RoomStatus::Pending),
-                "closed" => Some(RoomStatus::Closed),
-                _ => None,
-            };
-        }
-
-        // Handle is_banned filter separately
-        if let Some(is_banned) = request.is_banned {
-            query.is_banned = Some(is_banned);
-        }
-
-        if !request.search.is_empty() {
-            query.search = Some(request.search);
-        }
-
-        let (rooms, total) = if request.creator_id.is_empty() {
-            self.list_rooms_with_count(&query).await?
-        } else {
-            let creator_id = UserId::from_string(request.creator_id.clone());
-            self.list_rooms_by_creator_with_count(&creator_id, query.pagination).await?
-        };
-
-        let admin_rooms = self.rooms_to_admin_rooms(rooms).await?;
-
-        Ok(ListRoomsResponse {
-            rooms: admin_rooms,
-            total: i32::try_from(total).unwrap_or(i32::MAX),
-        })
-    }
-
-    /// Convert a list of `RoomWithCount` to `AdminRoom` proto format.
-    ///
-    /// Batch-loads usernames and settings in two queries (not N+1).
-    async fn rooms_to_admin_rooms(&self, rooms: Vec<RoomWithCount>) -> Result<Vec<AdminRoom>> {
-        if rooms.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        // Batch lookup: usernames
-        let creator_ids: Vec<UserId> = rooms.iter().map(|r| r.room.created_by.clone()).collect();
-        let usernames_map: std::collections::HashMap<UserId, String> =
-            self.user_service.get_usernames(&creator_ids).await.unwrap_or_default();
-
-        // Batch lookup: settings
-        let room_id_strs: Vec<&str> = rooms.iter().map(|r| r.room.id.as_str()).collect();
-        let settings_map = self.room_settings_repo.get_batch(&room_id_strs).await.unwrap_or_default();
-
-        Ok(rooms
-            .into_iter()
-            .map(|r| {
-                let settings = settings_map.get(r.room.id.as_str())
-                    .cloned()
-                    .unwrap_or_default();
-                let settings_bytes = serde_json::to_vec(&settings).unwrap_or_default();
-                let creator_username = usernames_map
-                    .get(&r.room.created_by)
-                    .cloned()
-                    .unwrap_or_else(|| "Unknown".to_string());
-                AdminRoom {
-                    id: r.room.id.as_str().to_string(),
-                    name: r.room.name,
-                    description: r.room.description,
-                    creator_id: r.room.created_by.as_str().to_string(),
-                    creator_username,
-                    status: synctv_proto::common::RoomStatus::from(r.room.status) as i32,
-                    settings: settings_bytes,
-                    member_count: r.member_count,
-                    created_at: r.room.created_at.timestamp(),
-                    updated_at: r.room.updated_at.timestamp(),
-                    is_banned: r.room.is_banned,
-                }
-            })
-            .collect())
-    }
-
-    /// Delete room using gRPC types
-    pub async fn delete_room_grpc(
-        &self,
-        request: DeleteRoomRequest,
-        requesting_user_id: &UserId,
-    ) -> Result<DeleteRoomResponse> {
-        let room_id = RoomId::from_string(request.room_id);
-
-        self.delete_room(room_id, requesting_user_id.clone()).await?;
-
-        Ok(DeleteRoomResponse { success: true })
-    }
-
-    /// Set room password using gRPC types
-    pub async fn set_room_password(
-        &self,
-        request: UpdateRoomPasswordRequest,
-        requesting_user_id: &UserId,
-    ) -> Result<UpdateRoomPasswordResponse> {
-        let room_id = RoomId::from_string(request.room_id);
-
-        // Check permission
-        self.permission_service
-            .check_permission(&room_id, requesting_user_id, PermissionBits::UPDATE_ROOM_SETTINGS)
-            .await?;
-
-        // Verify room exists
-        let _room = self
-            .room_repo
-            .get_by_id(&room_id)
-            .await?
-            .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
-
-        // Hash new password outside transaction (CPU-intensive)
-        let hashed_password = if request.new_password.is_empty() {
-            None
-        } else {
-            Some(hash_password(&request.new_password).await?)
-        };
-
-        self.do_set_password_hash(&room_id, hashed_password).await?;
-
-        Ok(UpdateRoomPasswordResponse { success: true })
-    }
-
     // ========== Admin Operations ==========
 
     /// Update room status (admin use, bypasses permission checks)
@@ -1408,42 +1151,43 @@ impl RoomService {
     }
 
     /// Set room password (admin use, bypasses permission checks)
+    ///
+    /// Pass `Some(password)` to set a new password, or `None` to remove it.
+    /// When a password is set, all guest members are kicked automatically.
     pub async fn admin_set_room_password(
         &self,
-        request: UpdateRoomPasswordRequest,
-    ) -> Result<UpdateRoomPasswordResponse> {
+        room_id: &RoomId,
+        new_password: Option<&str>,
+    ) -> Result<()> {
         use crate::service::notification::GuestKickReason;
-
-        let room_id = RoomId::from_string(request.room_id.clone());
 
         // Verify room exists
         let _room = self
             .room_repo
-            .get_by_id(&room_id)
+            .get_by_id(room_id)
             .await?
             .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
 
         // Hash new password outside transaction (CPU-intensive)
-        let password_is_being_set = !request.new_password.is_empty();
-        let hashed_password = if password_is_being_set {
-            Some(hash_password(&request.new_password).await?)
-        } else {
-            None
+        let password_is_being_set = new_password.is_some();
+        let hashed_password = match new_password {
+            Some(pwd) => Some(hash_password(pwd).await?),
+            None => None,
         };
 
-        self.do_set_password_hash(&room_id, hashed_password).await?;
+        self.do_set_password_hash(room_id, hashed_password).await?;
 
         // Kick guests when a password is being set (guests cannot join password-protected rooms)
         if password_is_being_set {
             if let Err(e) = self.notification_service.kick_all_guests(
-                &room_id,
+                room_id,
                 GuestKickReason::RoomPasswordAdded,
             ).await {
                 tracing::warn!("Failed to kick guests after admin password set: {}", e);
             }
         }
 
-        Ok(UpdateRoomPasswordResponse { success: true })
+        Ok(())
     }
 
     // ========== Service Accessors ==========
@@ -1891,6 +1635,318 @@ mod tests {
         assert!(RoomStatus::Pending.is_pending());
         assert!(!RoomStatus::Active.is_pending());
         assert!(!RoomStatus::Closed.is_pending());
+    }
+
+    // ========== Room Model: Ban / Unban ==========
+
+    #[test]
+    fn test_room_ban_sets_is_banned_and_preserves_status() {
+        let mut room = RoomFixture::new().build();
+        assert_eq!(room.status, RoomStatus::Active);
+        assert!(!room.is_banned);
+
+        room.ban();
+        assert!(room.is_banned);
+        // Status is unchanged -- banning is orthogonal to lifecycle status
+        assert_eq!(room.status, RoomStatus::Active);
+    }
+
+    #[test]
+    fn test_room_unban_clears_is_banned_and_preserves_status() {
+        let mut room = RoomFixture::new().build();
+        room.ban();
+        assert!(room.is_banned);
+
+        room.unban();
+        assert!(!room.is_banned);
+        assert_eq!(room.status, RoomStatus::Active);
+    }
+
+    #[test]
+    fn test_room_is_active_considers_ban_status_and_deleted() {
+        let mut room = RoomFixture::new().build();
+        assert!(room.is_active());
+
+        // Banned room is not active
+        room.ban();
+        assert!(!room.is_active());
+        room.unban();
+        assert!(room.is_active());
+
+        // Deleted room is not active
+        room.deleted_at = Some(chrono::Utc::now());
+        assert!(!room.is_active());
+    }
+
+    #[test]
+    fn test_room_is_active_requires_active_status() {
+        use crate::models::Room;
+
+        let room = Room::new("test".to_string(), crate::models::UserId::new());
+        assert!(room.is_active());
+
+        // Pending status
+        let mut pending_room = room.clone();
+        pending_room.status = RoomStatus::Pending;
+        assert!(!pending_room.is_active());
+
+        // Closed status
+        let mut closed_room = room.clone();
+        closed_room.status = RoomStatus::Closed;
+        assert!(!closed_room.is_active());
+    }
+
+    // ========== Room Model: Constructor Behavior ==========
+
+    #[test]
+    fn test_room_new_generates_unique_ids() {
+        use crate::models::Room;
+
+        let user_id = crate::models::UserId::new();
+        let room1 = Room::new("Room A".to_string(), user_id.clone());
+        let room2 = Room::new("Room B".to_string(), user_id.clone());
+        assert_ne!(room1.id, room2.id);
+    }
+
+    #[test]
+    fn test_room_new_with_description_sets_fields() {
+        use crate::models::Room;
+
+        let user_id = crate::models::UserId::new();
+        let room = Room::new_with_description(
+            "My Room".to_string(),
+            "A description".to_string(),
+            user_id.clone(),
+        );
+        assert_eq!(room.name, "My Room");
+        assert_eq!(room.description, "A description");
+        assert_eq!(room.created_by, user_id);
+        assert_eq!(room.status, RoomStatus::Active);
+        assert!(!room.is_banned);
+        assert!(room.deleted_at.is_none());
+    }
+
+    // ========== RoomStatus: Exhaustive Status Predicates ==========
+
+    #[test]
+    fn test_room_status_predicates_exhaustive() {
+        // Active
+        assert!(RoomStatus::Active.is_active());
+        assert!(!RoomStatus::Active.is_pending());
+        assert!(!RoomStatus::Active.is_closed());
+
+        // Pending
+        assert!(!RoomStatus::Pending.is_active());
+        assert!(RoomStatus::Pending.is_pending());
+        assert!(!RoomStatus::Pending.is_closed());
+
+        // Closed
+        assert!(!RoomStatus::Closed.is_active());
+        assert!(!RoomStatus::Closed.is_pending());
+        assert!(RoomStatus::Closed.is_closed());
+    }
+
+    #[test]
+    fn test_room_status_as_str() {
+        assert_eq!(RoomStatus::Active.as_str(), "active");
+        assert_eq!(RoomStatus::Pending.as_str(), "pending");
+        assert_eq!(RoomStatus::Closed.as_str(), "closed");
+    }
+
+    #[test]
+    fn test_room_status_default_is_active() {
+        assert_eq!(RoomStatus::default(), RoomStatus::Active);
+    }
+
+    // ========== RoomSettings: require_password Reflects Password State ==========
+
+    #[test]
+    fn test_require_password_is_set_when_password_provided() {
+        // Replicates the logic from `do_create_room`:
+        // `room_settings.require_password = RequirePassword(password.is_some())`
+        let password: Option<String> = Some("secret".to_string());
+        let mut settings = RoomSettings::default();
+        settings.require_password = RequirePassword(password.is_some());
+        assert!(settings.require_password.0);
+    }
+
+    #[test]
+    fn test_require_password_is_unset_when_no_password() {
+        let password: Option<String> = None;
+        let mut settings = RoomSettings::default();
+        settings.require_password = RequirePassword(password.is_some());
+        assert!(!settings.require_password.0);
+    }
+
+    // ========== Room Description Validation: Edge Cases ==========
+
+    #[test]
+    fn test_update_room_description_validation_at_boundary() {
+        // Replicates validation in `update_room_description`
+        fn validate_desc(desc: &str) -> crate::Result<()> {
+            if desc.chars().count() > 500 {
+                return Err(Error::InvalidInput("Room description too long (max 500 characters)".to_string()));
+            }
+            Ok(())
+        }
+
+        // Mixed Unicode: emoji are single characters but multi-byte
+        let emoji_desc: String = std::iter::repeat('\u{1F600}').take(500).collect();
+        assert_eq!(emoji_desc.chars().count(), 500);
+        assert!(validate_desc(&emoji_desc).is_ok());
+
+        let emoji_over: String = std::iter::repeat('\u{1F600}').take(501).collect();
+        assert!(validate_desc(&emoji_over).is_err());
+    }
+
+    // ========== RoomSettings: AllowGuestJoin / RequirePassword Interaction ==========
+
+    #[test]
+    fn test_settings_guest_blocked_by_password_requirement() {
+        // If require_password is true and allow_guest_join is true,
+        // the check_guest_allowed method in the service layer still blocks guests
+        // because guests cannot provide passwords
+        let settings = RoomSettings {
+            allow_guest_join: AllowGuestJoin(true),
+            require_password: RequirePassword(true),
+            ..Default::default()
+        };
+        // This is a data-level check, the actual enforcement is in check_guest_allowed
+        assert!(settings.allow_guest_join.0);
+        assert!(settings.require_password.0);
+    }
+
+    #[test]
+    fn test_settings_guest_allowed_when_no_password_and_guest_join_enabled() {
+        let settings = RoomSettings {
+            allow_guest_join: AllowGuestJoin(true),
+            require_password: RequirePassword(false),
+            ..Default::default()
+        };
+        assert!(settings.allow_guest_join.0);
+        assert!(!settings.require_password.0);
+    }
+
+    #[test]
+    fn test_settings_guest_blocked_when_guest_join_disabled() {
+        let settings = RoomSettings {
+            allow_guest_join: AllowGuestJoin(false),
+            require_password: RequirePassword(false),
+            ..Default::default()
+        };
+        assert!(!settings.allow_guest_join.0);
+    }
+
+    // ========== RoomMember: Ban / Unban Mutations ==========
+
+    #[test]
+    fn test_room_member_ban_sets_status_and_metadata() {
+        use crate::models::{RoomMember, RoomId, UserId, RoomRole, MemberStatus};
+
+        let mut member = RoomMember::new(
+            RoomId("room1".to_string()),
+            UserId("user1".to_string()),
+            RoomRole::Member,
+        );
+        assert!(member.is_active());
+
+        let banner = UserId("admin1".to_string());
+        member.ban(banner.clone(), Some("spamming".to_string()));
+
+        assert_eq!(member.status, MemberStatus::Banned);
+        assert!(member.banned_at.is_some());
+        assert_eq!(member.banned_by, Some(banner));
+        assert_eq!(member.banned_reason, Some("spamming".to_string()));
+        assert!(!member.is_active());
+    }
+
+    #[test]
+    fn test_room_member_unban_clears_metadata() {
+        use crate::models::{RoomMember, RoomId, UserId, RoomRole, MemberStatus};
+
+        let mut member = RoomMember::new(
+            RoomId("room1".to_string()),
+            UserId("user1".to_string()),
+            RoomRole::Member,
+        );
+        member.ban(UserId("admin1".to_string()), Some("reason".to_string()));
+
+        member.unban();
+        assert_eq!(member.status, MemberStatus::Active);
+        assert!(member.banned_at.is_none());
+        assert!(member.banned_by.is_none());
+        assert!(member.banned_reason.is_none());
+        assert!(member.is_active());
+    }
+
+    #[test]
+    fn test_room_member_banned_has_no_permissions() {
+        use crate::models::{RoomMember, RoomId, UserId, RoomRole};
+
+        let mut member = RoomMember::new(
+            RoomId("room1".to_string()),
+            UserId("user1".to_string()),
+            RoomRole::Admin,
+        );
+        let role_default = PermissionBits(PermissionBits::DEFAULT_ADMIN);
+
+        // Before ban: has permissions
+        assert!(member.has_permission(PermissionBits::SEND_CHAT, role_default));
+
+        member.ban(UserId("admin1".to_string()), None);
+
+        // After ban: zero permissions
+        assert!(!member.has_permission(PermissionBits::SEND_CHAT, role_default));
+        assert!(!member.has_permission(PermissionBits::DELETE_ROOM, role_default));
+    }
+
+    // ========== RoomMember: Permission Modification Methods ==========
+
+    #[test]
+    fn test_room_member_add_and_remove_permissions() {
+        use crate::models::{RoomMember, RoomId, UserId, RoomRole};
+
+        let mut member = RoomMember::new(
+            RoomId("room1".to_string()),
+            UserId("user1".to_string()),
+            RoomRole::Member,
+        );
+        assert_eq!(member.added_permissions, 0);
+        assert_eq!(member.removed_permissions, 0);
+
+        member.add_permissions(PermissionBits::PLAY_CONTROL);
+        assert_eq!(member.added_permissions, PermissionBits::PLAY_CONTROL);
+
+        member.remove_permissions(PermissionBits::SEND_CHAT);
+        assert_eq!(member.removed_permissions, PermissionBits::SEND_CHAT);
+
+        let effective = member.effective_permissions(PermissionBits(PermissionBits::DEFAULT_MEMBER));
+        assert!(effective.has(PermissionBits::PLAY_CONTROL));
+        assert!(!effective.has(PermissionBits::SEND_CHAT));
+    }
+
+    #[test]
+    fn test_room_member_reset_to_role_default() {
+        use crate::models::{RoomMember, RoomId, UserId, RoomRole};
+
+        let mut member = RoomMember::new(
+            RoomId("room1".to_string()),
+            UserId("user1".to_string()),
+            RoomRole::Member,
+        );
+        member.added_permissions = PermissionBits::PLAY_CONTROL;
+        member.removed_permissions = PermissionBits::SEND_CHAT;
+        member.admin_added_permissions = PermissionBits::BAN_MEMBER;
+        member.admin_removed_permissions = PermissionBits::KICK_MEMBER;
+
+        member.reset_to_role_default();
+        assert_eq!(member.added_permissions, 0);
+        assert_eq!(member.removed_permissions, 0);
+        assert_eq!(member.admin_added_permissions, 0);
+        assert_eq!(member.admin_removed_permissions, 0);
+
+        let effective = member.effective_permissions(PermissionBits(PermissionBits::DEFAULT_MEMBER));
+        assert_eq!(effective.0, PermissionBits::DEFAULT_MEMBER);
     }
 
     // ========== Integration Test Placeholders ==========

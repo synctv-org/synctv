@@ -154,6 +154,7 @@ pub struct PublicSettings {
     pub create_room_need_review: bool,
     pub room_ttl: i64,
     pub room_must_need_pwd: bool,
+    pub room_must_no_need_pwd: bool,
 
     // User settings
     pub signup_need_review: bool,
@@ -186,6 +187,7 @@ impl PublicSettings {
             create_room_need_review: false,
             room_ttl: 172800,
             room_must_need_pwd: false,
+            room_must_no_need_pwd: false,
             signup_need_review: false,
             enable_password_signup: true,
             enable_guest: true,
@@ -370,7 +372,38 @@ impl SettingsRegistry {
         // Load raw values from database into shared storage
         // Individual settings will lazy-load on first get()
         self.storage.init().await?;
+
+        // Start background listener to keep SettingsStorage in sync with
+        // remote replica changes propagated via PostgreSQL LISTEN/NOTIFY
+        self.storage.start_reload_listener();
+
         Ok(())
+    }
+
+    /// Set `room_must_need_pwd` with cross-validation against `room_must_no_need_pwd`.
+    ///
+    /// Returns an error if setting this to `true` while `room_must_no_need_pwd` is
+    /// already `true`, since the two settings are contradictory.
+    pub async fn set_room_must_need_pwd(&self, value: bool) -> crate::Result<()> {
+        if value && self.room_must_no_need_pwd.get().unwrap_or(false) {
+            return Err(crate::Error::InvalidInput(
+                "room_must_need_pwd and room_must_no_need_pwd cannot both be true".into(),
+            ));
+        }
+        self.room_must_need_pwd.set(value).await
+    }
+
+    /// Set `room_must_no_need_pwd` with cross-validation against `room_must_need_pwd`.
+    ///
+    /// Returns an error if setting this to `true` while `room_must_need_pwd` is
+    /// already `true`, since the two settings are contradictory.
+    pub async fn set_room_must_no_need_pwd(&self, value: bool) -> crate::Result<()> {
+        if value && self.room_must_need_pwd.get().unwrap_or(false) {
+            return Err(crate::Error::InvalidInput(
+                "room_must_need_pwd and room_must_no_need_pwd cannot both be true".into(),
+            ));
+        }
+        self.room_must_no_need_pwd.set(value).await
     }
 
     /// Build a `PublicSettings` snapshot from the current registry values.
@@ -385,6 +418,7 @@ impl SettingsRegistry {
             create_room_need_review: self.create_room_need_review.get().unwrap_or(false),
             room_ttl: self.room_ttl.get().unwrap_or(172800),
             room_must_need_pwd: self.room_must_need_pwd.get().unwrap_or(false),
+            room_must_no_need_pwd: self.room_must_no_need_pwd.get().unwrap_or(false),
             signup_need_review: self.signup_need_review.get().unwrap_or(false),
             enable_password_signup: self.enable_password_signup.get().unwrap_or(true),
             enable_guest: self.enable_guest.get().unwrap_or(true),

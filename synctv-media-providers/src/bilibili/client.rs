@@ -18,7 +18,7 @@ static RE_EPID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"ep(\d+)").expect
 static RE_SSID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"ss(\d+)").expect("invalid SSID regex"));
 static RE_LIVE_ROOM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"/live/(\d+)").expect("invalid live room regex"));
 
-const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36";
+const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 const REFERER: &str = "https://www.bilibili.com";
 
 /// Shared HTTP client for all Bilibili requests (connection pooling)
@@ -100,7 +100,7 @@ impl BilibiliClient {
         let json: QrCodeResp = json_with_limit(resp).await?;
 
         if json.code != 0 {
-            return Err(BilibiliError::Api { code: json.code as u64, message: json.message });
+            return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
         }
 
         let data = json.data.ok_or_else(|| BilibiliError::Parse("Missing QR code data".to_string()))?;
@@ -146,7 +146,7 @@ impl BilibiliClient {
         let json: LoginResp = json_with_limit(resp).await?;
 
         if json.code != 0 {
-            return Err(BilibiliError::Api { code: json.code as u64, message: json.message });
+            return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
         }
 
         let data = json.data.ok_or_else(|| BilibiliError::Parse("Missing login data".to_string()))?;
@@ -189,7 +189,7 @@ impl BilibiliClient {
         let json: CaptchaResp = json_with_limit(resp).await?;
 
         if json.code != 0 {
-            return Err(BilibiliError::Api { code: json.code as u64, message: json.message });
+            return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
         }
 
         let data = json.data.ok_or_else(|| BilibiliError::Parse("Missing captcha data".to_string()))?;
@@ -223,7 +223,7 @@ impl BilibiliClient {
         let json: SpiResp = json_with_limit(resp).await?;
 
         if json.code != 0 {
-            return Err(BilibiliError::Api { code: json.code as u64, message: json.message });
+            return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
         }
 
         let data = json.data.ok_or_else(|| BilibiliError::Parse("Missing BUVID data".to_string()))?;
@@ -293,7 +293,7 @@ impl BilibiliClient {
         let json: SmsResp = json_with_limit(resp).await?;
 
         if json.code != 0 {
-            return Err(BilibiliError::Api { code: json.code as u64, message: json.message });
+            return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
         }
 
         let data = json.data.ok_or_else(|| BilibiliError::Parse("Missing SMS data".to_string()))?;
@@ -351,14 +351,14 @@ impl BilibiliClient {
 
         // Check API-level status before trusting the cookies
         if json.code != 0 {
-            return Err(BilibiliError::Api { code: json.code as u64, message: json.message });
+            return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
         }
 
         // Check data.status field -- non-zero indicates SMS login failure
         if let Some(data) = &json.data {
             if data.status != 0 {
                 return Err(BilibiliError::Api {
-                    code: data.status as u64,
+                    code: data.status as i64,
                     message: format!("SMS login failed with status: {}", data.status),
                 });
             }
@@ -432,7 +432,7 @@ impl BilibiliClient {
 
         if json["code"].as_i64() != Some(0) {
             return Err(BilibiliError::Api {
-                    code: json["code"].as_i64().unwrap_or(0) as u64,
+                    code: json["code"].as_i64().unwrap_or(0),
                     message: json["message"].as_str().unwrap_or("Unknown error").to_string(),
                 });
         }
@@ -467,7 +467,7 @@ impl BilibiliClient {
 
         if json["code"].as_i64() != Some(0) {
             return Err(BilibiliError::Api {
-                    code: json["code"].as_i64().unwrap_or(0) as u64,
+                    code: json["code"].as_i64().unwrap_or(0),
                     message: json["message"].as_str().unwrap_or("Unknown error").to_string(),
                 });
         }
@@ -497,7 +497,7 @@ impl BilibiliClient {
 
         if json["code"].as_i64() != Some(0) {
             return Err(BilibiliError::Api {
-                    code: json["code"].as_i64().unwrap_or(0) as u64,
+                    code: json["code"].as_i64().unwrap_or(0),
                     message: json["message"].as_str().unwrap_or("Unknown error").to_string(),
                 });
         }
@@ -530,7 +530,7 @@ impl BilibiliClient {
         let json: types::VideoPageInfoResp = json_with_limit(resp).await?;
 
         if json.code != 0 {
-            return Err(BilibiliError::Api { code: json.code as u64, message: json.message });
+            return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
         }
 
         let data = json.data;
@@ -573,7 +573,7 @@ impl BilibiliClient {
         let json: types::VideoUrlResp = json_with_limit(resp).await?;
 
         if json.code != 0 {
-            return Err(BilibiliError::Api { code: json.code as u64, message: json.message });
+            return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
         }
 
         let data = json.data;
@@ -607,7 +607,7 @@ impl BilibiliClient {
         let json: types::DashVideoResp = json_with_limit(resp).await?;
 
         if json.code != 0 {
-            return Err(BilibiliError::Api { code: json.code as u64, message: json.message });
+            return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
         }
 
         // Parse DASH data into structured format
@@ -632,7 +632,7 @@ impl BilibiliClient {
         let json: types::PlayerV2InfoResp = json_with_limit(resp).await?;
 
         if json.code != 0 {
-            return Err(BilibiliError::Api { code: json.code as u64, message: json.message });
+            return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
         }
 
         let mut subtitles = HashMap::new();
@@ -659,7 +659,7 @@ impl BilibiliClient {
         let json: types::NavResp = json_with_limit(resp).await?;
 
         if json.code != 0 {
-            return Err(BilibiliError::Api { code: json.code as u64, message: json.message });
+            return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
         }
 
         let data = json.data;
@@ -685,7 +685,7 @@ impl BilibiliClient {
         let json: types::SeasonInfoResp = json_with_limit(resp).await?;
 
         if json.code != 0 {
-            return Err(BilibiliError::Api { code: json.code as u64, message: json.message });
+            return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
         }
 
         let result = json.result;
@@ -727,7 +727,7 @@ impl BilibiliClient {
         let json: types::PgcUrlResp = json_with_limit(resp).await?;
 
         if json.code != 0 {
-            return Err(BilibiliError::Api { code: json.code as u64, message: json.message });
+            return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
         }
 
         let result = json.result;
@@ -756,7 +756,7 @@ impl BilibiliClient {
         let json: types::DashPgcResp = json_with_limit(resp).await?;
 
         if json.code != 0 {
-            return Err(BilibiliError::Api { code: json.code as u64, message: json.message });
+            return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
         }
 
         // Parse DASH data into structured format
@@ -809,7 +809,7 @@ impl BilibiliClient {
         let json: types::ParseLivePageResp = json_with_limit(resp).await?;
 
         if json.code != 0 {
-            return Err(BilibiliError::Api { code: json.code as u64, message: json.message });
+            return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
         }
 
         let data = json.data;
@@ -854,7 +854,7 @@ impl BilibiliClient {
 
         if json["code"].as_i64() != Some(0) {
             return Err(BilibiliError::Api {
-                    code: json["code"].as_i64().unwrap_or(0) as u64,
+                    code: json["code"].as_i64().unwrap_or(0),
                     message: json["message"].as_str().unwrap_or("Unknown error").to_string(),
                 });
         }
@@ -912,7 +912,7 @@ impl BilibiliClient {
         let json: types::GetLiveDanmuInfoResp = json_with_limit(resp).await?;
 
         if json.code != 0 {
-            return Err(BilibiliError::Api { code: json.code as u64, message: json.message });
+            return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
         }
 
         let data = json.data;

@@ -1,8 +1,13 @@
 //! Shared validation utilities for gRPC server layers
 //!
 //! Provides SSRF-safe host validation and common field validators.
+//!
+//! IP blocklist mirrors the canonical implementation in `synctv_core::validation`.
+//! Note: `synctv-core` depends on `synctv-media-providers`, so we cannot import
+//! from it directly (would create a cyclic dependency). Keep this in sync with
+//! `synctv_core::validation::SSRFValidator`.
 
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use tonic::Status;
 
 /// Blocked private/internal hostnames (case-insensitive check)
@@ -17,48 +22,47 @@ const BLOCKED_HOSTNAME_SUFFIXES: &[&str] = &[
     ".local",
 ];
 
-/// Check if an IP address is in a private/reserved range that should be blocked.
-///
-/// Covers: loopback, private, link-local, CGNAT (100.64/10), multicast,
-/// broadcast, unspecified, IPv4-mapped IPv6, and IPv6 unique-local / link-local.
-const fn is_blocked_ip(ip: IpAddr) -> bool {
+/// Check if an IP is private, reserved, or otherwise not a valid public HTTP target.
+/// Covers: loopback, private RFC1918, link-local, CGNAT, multicast, broadcast,
+/// unspecified, IPv6 loopback, IPv4-mapped IPv6 private addresses.
+fn is_blocked_ip(ip: IpAddr) -> bool {
+    if ip.is_unspecified() || ip.is_loopback() || ip.is_multicast() {
+        return true;
+    }
     match ip {
-        IpAddr::V4(v4) => is_blocked_ipv4(v4),
-        IpAddr::V6(v6) => {
-            v6.is_loopback()           // ::1
-            || v6.is_unspecified()     // ::
-            || v6.is_multicast()       // ff00::/8
-            // fe80::/10 (link-local)
-            || (v6.segments()[0] & 0xffc0) == 0xfe80
-            // fc00::/7 (unique local addresses)
-            || (v6.segments()[0] & 0xfe00) == 0xfc00
-            // IPv4-mapped IPv6 (::ffff:x.x.x.x) — check the embedded IPv4
-            || is_ipv4_mapped_private(&v6)
-        }
+        IpAddr::V4(v4) => is_blocked_ipv4(&v4),
+        IpAddr::V6(v6) => is_blocked_ipv6(&v6),
     }
 }
 
-const fn is_blocked_ipv4(v4: std::net::Ipv4Addr) -> bool {
-    v4.is_loopback()           // 127.0.0.0/8
-    || v4.is_private()         // 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
-    || v4.is_link_local()      // 169.254.0.0/16
-    || v4.is_unspecified()     // 0.0.0.0
-    || v4.is_multicast()       // 224.0.0.0/4
-    || v4.is_broadcast()       // 255.255.255.255
-    || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xC0) == 64) // 100.64.0.0/10 (CGNAT)
+fn is_blocked_ipv4(ip: &Ipv4Addr) -> bool {
+    let o = ip.octets();
+    // 10.0.0.0/8
+    o[0] == 10
+    // 172.16.0.0/12
+    || (o[0] == 172 && (16..=31).contains(&o[1]))
+    // 192.168.0.0/16
+    || (o[0] == 192 && o[1] == 168)
+    // 169.254.0.0/16 (link-local, cloud metadata)
+    || (o[0] == 169 && o[1] == 254)
+    // 100.64.0.0/10 (CGNAT)
+    || (o[0] == 100 && (64..=127).contains(&o[1]))
+    // 0.0.0.0/8 (current network)
+    || o[0] == 0
+    // 240.0.0.0/4 (reserved/broadcast)
+    || o[0] >= 240
 }
 
-/// Check if an IPv6 address is IPv4-mapped (`::ffff:x.x.x.x`) with a private IPv4.
-const fn is_ipv4_mapped_private(v6: &std::net::Ipv6Addr) -> bool {
-    let segs = v6.segments();
-    if segs[0] == 0 && segs[1] == 0 && segs[2] == 0 && segs[3] == 0
-        && segs[4] == 0 && segs[5] == 0xffff
-    {
-        let octets = v6.octets();
-        let v4 = std::net::Ipv4Addr::new(octets[12], octets[13], octets[14], octets[15]);
-        return is_blocked_ipv4(v4);
+fn is_blocked_ipv6(ip: &Ipv6Addr) -> bool {
+    // Check IPv4-mapped IPv6 (::ffff:x.x.x.x)
+    if let Some(v4) = ip.to_ipv4_mapped() {
+        return is_blocked_ipv4(&v4);
     }
-    false
+    // Unique local (fc00::/7)
+    let segments = ip.segments();
+    (segments[0] & 0xfe00) == 0xfc00
+    // Link-local (fe80::/10)
+    || (segments[0] & 0xffc0) == 0xfe80
 }
 
 /// Validate that a host string is a non-empty, valid URL with SSRF protections.
@@ -68,8 +72,17 @@ const fn is_ipv4_mapped_private(v6: &std::net::Ipv6Addr) -> bool {
 /// - Scheme is http or https only
 /// - Host is not a private IP range
 /// - Host is not a known internal hostname
+///
+/// NOTE: This performs only string-level checks. For full DNS-rebinding
+/// protection, use [`validate_host_with_dns`] in async contexts.
 #[allow(clippy::result_large_err)] // tonic::Status is inherently large; boxing would break gRPC API
 pub fn validate_host(host: &str) -> Result<(), Status> {
+    validate_host_static(host)
+}
+
+/// Synchronous string-level URL validation (shared between sync and async paths).
+#[allow(clippy::result_large_err)]
+fn validate_host_static(host: &str) -> Result<(), Status> {
     if host.is_empty() {
         return Err(Status::invalid_argument("host must not be empty"));
     }
@@ -127,6 +140,64 @@ pub fn validate_host(host: &str) -> Result<(), Status> {
                 )));
             }
         }
+    }
+
+    Ok(())
+}
+
+/// Async host validation with DNS resolution to prevent DNS rebinding attacks.
+///
+/// Performs all the checks of [`validate_host`] plus resolves the hostname
+/// and verifies that none of the resolved IP addresses are private/reserved.
+#[allow(clippy::result_large_err)]
+pub async fn validate_host_with_dns(host: &str) -> Result<(), Status> {
+    // First run the synchronous string-level checks
+    validate_host_static(host)?;
+
+    // Parse URL again to extract hostname for DNS resolution
+    let parsed = url::Url::parse(host)
+        .map_err(|e| Status::invalid_argument(format!("invalid host URL: {e}")))?;
+
+    let url_host = parsed
+        .host_str()
+        .ok_or_else(|| Status::invalid_argument("host URL must contain a hostname"))?;
+
+    // Only resolve if the host is NOT already a literal IP (already checked above)
+    if url_host.parse::<IpAddr>().is_ok() {
+        return Ok(());
+    }
+    // Also skip if it's a bracketed IPv6 literal
+    if url_host.starts_with('[') && url_host.ends_with(']')
+        && url_host[1..url_host.len() - 1].parse::<IpAddr>().is_ok()
+    {
+        return Ok(());
+    }
+
+    let port = parsed
+        .port()
+        .unwrap_or(if parsed.scheme() == "https" { 443 } else { 80 });
+
+    let addrs = tokio::net::lookup_host((url_host, port))
+        .await
+        .map_err(|e| {
+            Status::invalid_argument(format!("DNS lookup failed for {url_host}: {e}"))
+        })?;
+
+    let mut found = false;
+    for addr in addrs {
+        if is_blocked_ip(addr.ip()) {
+            return Err(Status::invalid_argument(format!(
+                "hostname {url_host} resolves to private/reserved IP {}",
+                addr.ip()
+            )));
+        }
+        found = true;
+    }
+
+    if !found {
+        return Err(Status::invalid_argument(format!(
+            "hostname {url_host} resolved to no addresses"
+        )));
     }
 
     Ok(())

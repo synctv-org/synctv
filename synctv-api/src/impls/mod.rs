@@ -20,6 +20,43 @@ pub use messaging::{StreamMessageHandler, MessageSender, ProtoCodec};
 pub use notification::NotificationApiImpl;
 pub use providers::{AlistApiImpl, BilibiliApiImpl, EmbyApiImpl};
 
+/// Kick a stream both locally and cluster-wide via Redis Pub/Sub.
+///
+/// Shared utility used by both `ClientApiImpl` and `AdminApiImpl` after media
+/// deletion to terminate any active RTMP stream.
+pub fn kick_stream_cluster(
+    live_streaming_infrastructure: Option<&std::sync::Arc<synctv_livestream::api::LiveStreamingInfrastructure>>,
+    redis_publish_tx: Option<&tokio::sync::mpsc::Sender<synctv_cluster::sync::PublishRequest>>,
+    room_id: &str,
+    media_id: &str,
+    reason: &str,
+) {
+    use synctv_cluster::sync::{ClusterEvent, PublishRequest};
+    use synctv_core::models::{RoomId as Rid, MediaId as Mid};
+
+    // 1. Local kick (no-op if stream not on this node)
+    if let Some(infra) = live_streaming_infrastructure {
+        if let Err(e) = infra.kick_publisher(room_id, media_id) {
+            tracing::warn!(room_id, media_id, error = %e, "Failed to kick local publisher");
+        }
+    }
+
+    // 2. Cluster-wide via Redis
+    if let Some(tx) = redis_publish_tx {
+        if tx.try_send(PublishRequest {
+            event: ClusterEvent::KickPublisher {
+                event_id: nanoid::nanoid!(16),
+                room_id: Rid::from_string(room_id.to_string()),
+                media_id: Mid::from_string(media_id.to_string()),
+                reason: reason.to_string(),
+                timestamp: chrono::Utc::now(),
+            },
+        }).is_err() {
+            tracing::warn!(room_id, media_id, "Failed to send cluster-wide kick event (Redis channel closed or full)");
+        }
+    }
+}
+
 /// Shared error classification for impls-layer `String` errors.
 ///
 /// Maps keyword patterns in error strings to semantic error categories.

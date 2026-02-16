@@ -18,7 +18,7 @@ pub enum ProviderClientError {
     Http { status: reqwest::StatusCode, url: String },
 
     #[error("API error (code {code}): {message}")]
-    Api { code: u64, message: String },
+    Api { code: i64, message: String },
 
     #[error("Parse error: {0}")]
     Parse(String),

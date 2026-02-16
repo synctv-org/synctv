@@ -503,34 +503,50 @@ impl ClientApiImpl {
         let (rooms, _total) = self.room_service.list_rooms(&query).await
             .map_err(|e| format!("Failed to list rooms: {e}"))?;
 
-        // Collect room stats (online count and member count)
-        let mut room_stats: Vec<(synctv_core::models::Room, i32, i32)> = Vec::new();
-        for room in rooms {
-            let online_count = self.connection_manager.room_connection_count(&room.id);
-            let member_count = self.room_service.get_member_count(&room.id).await
-                .unwrap_or(0);
+        // Sort by online count (from connection manager, in-memory) and take top N first
+        // to avoid fetching member counts and settings for all 100 rooms.
+        let mut room_online: Vec<(synctv_core::models::Room, i32)> = rooms
+            .into_iter()
+            .map(|room| {
+                let online_count = self.connection_manager.room_connection_count(&room.id) as i32;
+                (room, online_count)
+            })
+            .collect();
+        room_online.sort_by_key(|item| std::cmp::Reverse(item.1));
+        let top_rooms: Vec<_> = room_online.into_iter().take(limit as usize).collect();
 
-            room_stats.push((room, online_count as i32, member_count));
+        // Batch-fetch member counts for the top N rooms only
+        let mut member_counts = std::collections::HashMap::new();
+        for (room, _) in &top_rooms {
+            let count = self.room_service.get_member_count(&room.id).await.unwrap_or(0);
+            member_counts.insert(room.id.as_str().to_string(), count);
         }
 
-        // Sort by online count (descending)
-        room_stats.sort_by_key(|item| std::cmp::Reverse(item.1));
+        // Batch-fetch settings for the top N rooms
+        let room_ids: Vec<&str> = top_rooms.iter().map(|(r, _)| r.id.as_str()).collect();
+        let settings_map = self.room_service
+            .get_room_settings_batch(&room_ids)
+            .await
+            .unwrap_or_default();
 
-        // Take top N rooms
-        let mut hot_rooms: Vec<crate::proto::client::RoomWithStats> = Vec::new();
-        for (room, online_count, member_count) in room_stats.into_iter().take(limit as usize) {
-            // Load room settings
-            let settings = self.room_service.get_room_settings(&room.id).await
-                .unwrap_or_default();
+        let hot_rooms: Vec<crate::proto::client::RoomWithStats> = top_rooms
+            .into_iter()
+            .map(|(room, online_count)| {
+                let member_count = member_counts
+                    .get(room.id.as_str())
+                    .copied()
+                    .unwrap_or(0);
+                let settings = settings_map.get(room.id.as_str());
 
-            let room_proto = room_to_proto_basic(&room, Some(&settings), Some(member_count));
+                let room_proto = room_to_proto_basic(&room, settings, Some(member_count));
 
-            hot_rooms.push(crate::proto::client::RoomWithStats {
-                room: Some(room_proto),
-                online_count,
-                total_members: member_count,
-            });
-        }
+                crate::proto::client::RoomWithStats {
+                    room: Some(room_proto),
+                    online_count,
+                    total_members: member_count,
+                }
+            })
+            .collect();
 
         Ok(crate::proto::client::GetHotRoomsResponse { rooms: hot_rooms })
     }
@@ -550,7 +566,8 @@ impl ClientApiImpl {
         self.room_service.check_membership(&rid, &uid).await
             .map_err(|e| format!("Forbidden: {e}"))?;
 
-        let messages = self.room_service.get_chat_history(&rid, None, req.limit).await
+        let limit = req.limit.clamp(1, 100);
+        let messages = self.room_service.get_chat_history(&rid, None, limit).await
             .map_err(|e| e.to_string())?;
 
         // Collect unique user IDs to batch fetch usernames

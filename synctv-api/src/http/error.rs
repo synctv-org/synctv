@@ -141,6 +141,7 @@ impl From<synctv_core::Error> for AppError {
             Error::Authentication(msg) => Self::unauthorized(msg),
             Error::Authorization(msg) => Self::forbidden(msg),
             Error::InvalidInput(msg) => Self::bad_request(msg),
+            Error::RateLimited(msg) => Self::new(StatusCode::TOO_MANY_REQUESTS, msg),
             Error::Database(e) => {
                 tracing::error!("Database error: {}", e);
                 Self::internal_server_error("Database error")

@@ -14,9 +14,6 @@ use tracing::{debug, error, info, warn};
 use crate::models::RoomId;
 use crate::{Error, Result};
 
-/// Redis channel name for cache invalidation messages
-pub const CACHE_INVALIDATION_CHANNEL: &str = "synctv:cache:invalidation";
-
 /// Cache invalidation message types
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -42,6 +39,10 @@ pub enum InvalidationMessage {
     PlaybackState {
         room_id: String,
     },
+    /// Update bloom filter: mark keys as existing on all replicas
+    BloomFilterUpdate {
+        keys: Vec<String>,
+    },
     /// Invalidate all caches
     All,
 }
@@ -54,6 +55,8 @@ pub struct CacheInvalidationService {
     local_sender: broadcast::Sender<InvalidationMessage>,
     /// Node identifier for logging
     node_id: String,
+    /// Redis pub/sub channel name for cache invalidation
+    channel_name: String,
     /// Shutdown flag
     shutdown: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -64,6 +67,7 @@ impl Clone for CacheInvalidationService {
             redis_client: self.redis_client.clone(),
             local_sender: self.local_sender.clone(),
             node_id: self.node_id.clone(),
+            channel_name: self.channel_name.clone(),
             shutdown: self.shutdown.clone(),
         }
     }
@@ -75,14 +79,16 @@ impl CacheInvalidationService {
     /// # Arguments
     /// * `redis_client` - Optional Redis client. If None, only local invalidation is used.
     /// * `node_id` - Unique identifier for this node (for logging)
-    #[must_use] 
-    pub fn new(redis_client: Option<Client>, node_id: String) -> Self {
+    /// * `channel_name` - Redis pub/sub channel name (from `KeyBuilder::cache_invalidation_channel()`)
+    #[must_use]
+    pub fn new(redis_client: Option<Client>, node_id: String, channel_name: String) -> Self {
         let (local_sender, _) = broadcast::channel(1024);
 
         Self {
             redis_client,
             local_sender,
             node_id,
+            channel_name,
             shutdown: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
@@ -99,6 +105,7 @@ impl CacheInvalidationService {
 
         let local_sender = self.local_sender.clone();
         let node_id = self.node_id.clone();
+        let channel_name = self.channel_name.clone();
         let shutdown = self.shutdown.clone();
 
         tokio::spawn(async move {
@@ -108,7 +115,7 @@ impl CacheInvalidationService {
                     break;
                 }
 
-                match Self::run_subscriber(&client, &local_sender, &node_id, shutdown.clone()).await {
+                match Self::run_subscriber(&client, &local_sender, &node_id, &channel_name, shutdown.clone()).await {
                     Ok(()) => {
                         // Normal shutdown
                         break;
@@ -133,6 +140,7 @@ impl CacheInvalidationService {
         client: &Client,
         local_sender: &broadcast::Sender<InvalidationMessage>,
         node_id: &str,
+        channel_name: &str,
         shutdown: Arc<std::sync::atomic::AtomicBool>,
     ) -> Result<()> {
         // Get async pubsub connection
@@ -143,13 +151,13 @@ impl CacheInvalidationService {
 
         // Subscribe to the invalidation channel
         pubsub
-            .subscribe(CACHE_INVALIDATION_CHANNEL)
+            .subscribe(channel_name)
             .await
             .map_err(|e| Error::Internal(format!("Failed to subscribe: {e}")))?;
 
         info!(
             node_id = %node_id,
-            channel = %CACHE_INVALIDATION_CHANNEL,
+            channel = %channel_name,
             "Subscribed to cache invalidation channel"
         );
 
@@ -250,7 +258,7 @@ impl CacheInvalidationService {
 
             redis::AsyncCommands::publish::<_, _, ()>(
                 &mut conn,
-                CACHE_INVALIDATION_CHANNEL,
+                &self.channel_name,
                 json,
             )
             .await
@@ -326,6 +334,18 @@ impl CacheInvalidationService {
     pub async fn invalidate_all(&self) -> Result<()> {
         self.broadcast_remote(InvalidationMessage::All).await
     }
+
+    /// Broadcast bloom filter updates to other replicas
+    ///
+    /// When a new entity is created on this replica, call this so that other
+    /// replicas mark the key as existing in their bloom filters, preventing
+    /// false "definitely not exists" responses.
+    pub async fn broadcast_bloom_filter_update(&self, keys: Vec<String>) -> Result<()> {
+        if keys.is_empty() {
+            return Ok(());
+        }
+        self.broadcast_remote(InvalidationMessage::BloomFilterUpdate { keys }).await
+    }
 }
 
 impl std::fmt::Debug for CacheInvalidationService {
@@ -368,7 +388,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_local_broadcast() {
-        let service = CacheInvalidationService::new(None, "test-node".to_string());
+        let service = CacheInvalidationService::new(None, "test-node".to_string(), "synctv:cache:invalidate".to_string());
         let mut receiver = service.subscribe();
 
         let msg = InvalidationMessage::User {
@@ -384,7 +404,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_broadcast_without_redis_is_noop() {
-        let service = CacheInvalidationService::new(None, "test-node".to_string());
+        let service = CacheInvalidationService::new(None, "test-node".to_string(), "synctv:cache:invalidate".to_string());
 
         // broadcast_remote() without Redis should be a no-op (no local broadcast)
         let msg = InvalidationMessage::All;

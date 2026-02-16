@@ -908,26 +908,62 @@ impl ServerSession {
             query
         );
 
+        // Helper closure for cleanup on error
+        let cleanup_auth = || async {
+            if let Some(auth) = &self.auth {
+                auth.on_unpublish(
+                    &self.app_name,
+                    &self.stream_name,
+                    self.query.as_deref(),
+                )
+                .await;
+            }
+        };
+
         let mut event_messages = EventMessagesWriter::new(AsyncBytesWriter::new(self.io.clone()));
-        event_messages.write_stream_begin(*stream_id).await?;
+        if let Err(e) = event_messages.write_stream_begin(*stream_id).await {
+            tracing::error!(
+                "Failed to send stream_begin after successful auth, cleaning up: {}",
+                e
+            );
+            cleanup_auth().await;
+            return Err(e.into());
+        }
 
         let mut netstream = NetStreamWriter::new(Arc::clone(&self.io));
-        netstream
+        if let Err(e) = netstream
             .write_on_status(transaction_id, "status", "NetStream.Publish.Start", "")
-            .await?;
+            .await
+        {
+            tracing::error!(
+                "Failed to send NetStream.Publish.Start after successful auth, cleaning up: {}",
+                e
+            );
+            cleanup_auth().await;
+            return Err(e.into());
+        }
         tracing::info!(
             "[ S->C ] [NetStream.Publish.Start]  app_name: {}, stream_name: {}",
             self.app_name,
             self.stream_name
         );
 
-        self.common
+        if let Err(e) = self
+            .common
             .publish_to_stream_hub(
                 self.app_name.clone(),
                 self.stream_name.clone(),
                 self.gop_num,
             )
-            .await?;
+            .await
+        {
+            tracing::error!(
+                "Failed to publish to StreamHub after successful auth, cleaning up: {}",
+                e
+            );
+            cleanup_auth().await;
+            return Err(e.into());
+        }
 
         self.is_publishing = true;
 

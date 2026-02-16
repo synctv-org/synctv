@@ -1,15 +1,18 @@
-// Publisher Manager - Handles RTMP publisher registration to Redis
+// Publisher Manager - Maintains heartbeat for RTMP publishers
 //
-// Listens to StreamHub events and manages publisher lifecycle:
-// 1. On Publish event: Register publisher to Redis (atomic HSETNX)
+// Listens to StreamHub events and manages publisher heartbeat:
+// 1. On Publish event: Track publisher locally (registration happens in auth phase)
 // 2. Maintain heartbeat to keep registration alive
-// 3. On UnPublish event: Remove publisher from Redis
+// 3. On UnPublish event: Remove publisher from Redis and local tracking
+//
+// NOTE: Publisher registration to Redis happens in the authentication phase
+// (SyncTvRtmpAuth::on_publish) before the RTMP session is established.
+// This component only maintains heartbeat for already-registered publishers.
 //
 // Based on design doc 17-数据流设计.md § 11.1
 
 use super::registry::HEARTBEAT_INTERVAL_SECS;
 use super::registry_trait::StreamRegistryTrait;
-use anyhow::anyhow;
 use synctv_xiu::streamhub::{
     define::BroadcastEventReceiver,
     stream::StreamIdentifier,
@@ -85,22 +88,18 @@ impl PublisherManager {
 
     /// Handle `StreamHub` broadcast events
     ///
-    /// Note: If publisher registration fails (e.g., Redis error or another
-    /// node already publishing), we return an error but the RTMP session
-    /// may continue. The stream will be published locally but not registered
-    /// globally. This is a known limitation of the broadcast event pattern.
-    /// Future improvement: Use request-response pattern for Publish events
-    /// to allow rejecting RTMP connections before they start.
+    /// Tracks publishers locally for heartbeat maintenance. Publisher registration
+    /// to Redis happens in the authentication phase (SyncTvRtmpAuth::on_publish),
+    /// which runs BEFORE the RTMP session is established and can reject connections
+    /// on registration failures.
     async fn handle_broadcast_event(&self, event: synctv_xiu::streamhub::define::BroadcastEvent) -> anyhow::Result<()> {
         match event {
             synctv_xiu::streamhub::define::BroadcastEvent::Publish { identifier, .. } => {
                 if let Err(e) = self.handle_publish(identifier.clone()).await {
-                    // Log detailed error for monitoring
                     error!(
                         error = %e,
                         identifier = ?identifier,
-                        "Publisher registration failed - stream will continue locally but not be globally registered. \
-                         This may cause issues with cross-node pull streams."
+                        "Failed to track publisher for heartbeat maintenance"
                     );
                     return Err(e);
                 }
@@ -112,7 +111,12 @@ impl PublisherManager {
         Ok(())
     }
 
-    /// Handle Publish event - Register publisher to Redis
+    /// Handle Publish event - Track publisher locally for heartbeat maintenance
+    ///
+    /// NOTE: This does NOT register the publisher to Redis. Registration happens
+    /// in the authentication phase (SyncTvRtmpAuth::on_publish) before the RTMP
+    /// session is established. This method only tracks publishers that have already
+    /// been successfully authenticated and registered.
     async fn handle_publish(&self, identifier: StreamIdentifier) -> anyhow::Result<()> {
         // Extract app_name and stream_name from RTMP identifier
         let (app_name, stream_name) = if let StreamIdentifier::Rtmp { app_name, stream_name } = identifier { (app_name, stream_name) } else {
@@ -120,50 +124,24 @@ impl PublisherManager {
             return Ok(());
         };
 
+        // StreamIdentifier format for RTMP:
+        // - app_name: room_id (from RTMP connect command)
+        // - stream_name: media_id (from RTMP publish command)
+        // Live streaming granularity is media-level within a room context
+        let room_id = app_name;
+        let media_id = stream_name.clone();
+
         info!(
-            "RTMP Publish event: app_name={}, stream_name={}",
-            app_name,
+            "Tracking publisher for heartbeat: room={}, media={}, stream={}",
+            room_id,
+            media_id,
             stream_name
         );
 
-        // Parse room_id and media_id from stream_name
-        // Expected format: "{room_id}/{media_id}" (e.g., "room123/media456")
-        // Live streaming granularity is media-level within a room context
-        let (room_id, media_id) = if let Some((r, m)) = stream_name.split_once('/') {
-            (r.to_string(), m.to_string())
-        } else {
-            error!("Invalid stream_name format, expected 'room_id/media_id': {}", stream_name);
-            return Err(anyhow!("Invalid stream_name format, expected 'room_id/media_id'"));
-        };
-
-        // Try to register as publisher (atomic HSETNX)
-        match self.registry.try_register_publisher(&room_id, &media_id, &self.local_node_id, "").await {
-            Ok(true) => {
-                info!(
-                    "Successfully registered as publisher for room {} / media {} (stream: {})",
-                    room_id,
-                    media_id,
-                    stream_name
-                );
-                // Track active publisher with composite key
-                let publisher_key = format!("{room_id}:{media_id}");
-                self.active_publishers.insert(stream_name.clone(), publisher_key);
-            }
-            Ok(false) => {
-                warn!(
-                    "Publisher already exists for room {} / media {} (stream: {})",
-                    room_id,
-                    media_id,
-                    stream_name
-                );
-                // Another node is already publisher, reject this push
-                return Err(anyhow!("Publisher already exists for room {room_id} / media {media_id}"));
-            }
-            Err(e) => {
-                error!("Failed to register publisher: {}", e);
-                return Err(e);
-            }
-        }
+        // Track active publisher with composite key (room_id:media_id)
+        // This publisher has already been registered to Redis in the auth phase
+        let publisher_key = format!("{room_id}:{media_id}");
+        self.active_publishers.insert(publisher_key.clone(), publisher_key);
 
         Ok(())
     }
@@ -183,16 +161,18 @@ impl PublisherManager {
             stream_name
         );
 
-        // Get composite key (room_id:media_id) from active publishers
-        if let Some((_, publisher_key)) = self.active_publishers.remove(&stream_name) {
-            // Parse room_id and media_id from the composite key
-            if let Some((room_id, media_id)) = publisher_key.split_once(':') {
-                // Unregister from Redis
-                if let Err(e) = self.registry.unregister_publisher(room_id, media_id).await {
-                    error!("Failed to unregister publisher for room {} / media {}: {}", room_id, media_id, e);
-                } else {
-                    info!("Unregistered publisher for room {} / media {}", room_id, media_id);
-                }
+        // StreamIdentifier format: app_name=room_id, stream_name=media_id
+        let room_id = app_name;
+        let media_id = stream_name;
+
+        // Look up by composite key (room_id:media_id)
+        let publisher_key = format!("{room_id}:{media_id}");
+        if self.active_publishers.remove(&publisher_key).is_some() {
+            // Unregister from Redis
+            if let Err(e) = self.registry.unregister_publisher(&room_id, &media_id).await {
+                error!("Failed to unregister publisher for room {} / media {}: {}", room_id, media_id, e);
+            } else {
+                info!("Unregistered publisher for room {} / media {}", room_id, media_id);
             }
         }
 
@@ -346,16 +326,16 @@ mod tests {
         let manager = PublisherManager::new(registry, "test-node-1".to_string());
 
         let identifier = StreamIdentifier::Rtmp {
-            app_name: "live".to_string(),
-            stream_name: "room123/media456".to_string(),
+            app_name: "room123".to_string(),
+            stream_name: "media456".to_string(),
         };
 
         // Handle publish event
         let result = manager.handle_publish(identifier).await;
         assert!(result.is_ok());
 
-        // Verify publisher was tracked
-        assert!(manager.active_publishers.contains_key("room123/media456"));
+        // Verify publisher was tracked with composite key
+        assert!(manager.active_publishers.contains_key("room123:media456"));
     }
 
     #[tokio::test]
@@ -365,8 +345,8 @@ mod tests {
 
         // First, register a publisher
         let identifier = StreamIdentifier::Rtmp {
-            app_name: "live".to_string(),
-            stream_name: "room123/media456".to_string(),
+            app_name: "room123".to_string(),
+            stream_name: "media456".to_string(),
         };
         let _ = manager.handle_publish(identifier.clone()).await;
 
@@ -374,21 +354,25 @@ mod tests {
         let result = manager.handle_unpublish(identifier).await;
         assert!(result.is_ok());
 
-        // Verify publisher was removed from tracking
-        assert!(!manager.active_publishers.contains_key("room123/media456"));
+        // Verify publisher was removed from tracking (composite key)
+        assert!(!manager.active_publishers.contains_key("room123:media456"));
     }
 
     #[tokio::test]
-    async fn test_handle_publish_invalid_format() {
+    async fn test_handle_publish_tracks_any_stream() {
         let registry = Arc::new(MockStreamRegistry::new());
         let manager = PublisherManager::new(registry, "test-node-1".to_string());
 
         let identifier = StreamIdentifier::Rtmp {
-            app_name: "live".to_string(),
-            stream_name: "invalid_format".to_string(), // Missing room_id/media_id separator
+            app_name: "room123".to_string(),
+            stream_name: "media456".to_string(),
         };
 
+        // PublisherManager just tracks publishers, doesn't validate format
         let result = manager.handle_publish(identifier).await;
-        assert!(result.is_err());
+        assert!(result.is_ok());
+
+        // Verify tracking uses composite key
+        assert!(manager.active_publishers.contains_key("room123:media456"));
     }
 }

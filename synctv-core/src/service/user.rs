@@ -469,6 +469,24 @@ impl UserService {
         username: &str,
         email: Option<&str>,
     ) -> Result<User> {
+        // Sanitize OAuth2 username: remove invalid characters and trim
+        let sanitized_username = username
+            .chars()
+            .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
+            .collect::<String>()
+            .trim()
+            .to_string();
+
+        // If sanitization resulted in empty username, use provider user ID
+        let base_username = if sanitized_username.is_empty() {
+            format!("user_{}", &provider_user_id[..provider_user_id.len().min(20)])
+        } else {
+            sanitized_username
+        };
+
+        // Validate the sanitized username
+        self.validate_username(&base_username)?;
+
         // Generate a random password (OAuth2 users don't need password login)
         let random_password = nanoid::nanoid!(32);
 
@@ -484,14 +502,15 @@ impl UserService {
         // concurrent OAuth2 signups with the same base username.
         let max_attempts = 10;
         let mut candidates = Vec::with_capacity(max_attempts);
-        candidates.push(username.to_string());
+        candidates.push(base_username.clone());
         for _ in 1..max_attempts {
             // Cap the base to leave room for the suffix within the 50-char limit
             let max_base_len = 42;
-            let base = if username.len() > max_base_len {
-                &username[..max_base_len]
+            // Use character count instead of byte length to avoid panics on multi-byte UTF-8
+            let base = if base_username.chars().count() > max_base_len {
+                base_username.chars().take(max_base_len).collect::<String>()
             } else {
-                username
+                base_username.clone()
             };
             // Random 6-char alphanumeric suffix
             let suffix = nanoid::nanoid!(6);
@@ -510,20 +529,22 @@ impl UserService {
                     // Populate username cache
                     self.username_cache.set(&created_user.id, candidate).await?;
 
-                    if candidate == username {
+                    if candidate == &base_username {
                         tracing::info!(
-                            "Created new user {} (username='{}') via OAuth2 provider {} (provider_user_id={})",
+                            "Created new user {} (username='{}', sanitized from '{}') via OAuth2 provider {} (provider_user_id={})",
                             created_user.id.as_str(),
                             candidate,
+                            username,
                             provider.as_str(),
                             provider_user_id
                         );
                     } else {
                         tracing::info!(
-                            "Username '{}' was taken; created user {} as '{}' via OAuth2 provider {} (provider_user_id={})",
-                            username,
+                            "Username '{}' was taken; created user {} as '{}' (original '{}') via OAuth2 provider {} (provider_user_id={})",
+                            base_username,
                             created_user.id.as_str(),
                             candidate,
+                            username,
                             provider.as_str(),
                             provider_user_id
                         );

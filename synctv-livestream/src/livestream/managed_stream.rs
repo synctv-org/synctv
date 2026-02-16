@@ -402,14 +402,19 @@ impl<S: ManagedStream> StreamPool<S> {
                 let idle_secs = stream.lifecycle().last_active_elapsed_secs();
 
                 if idle_secs > idle_timeout.as_secs() {
-                    // Mark stopping FIRST so concurrent viewers see it as unhealthy
+                    // CRITICAL: Mark stopping IMMEDIATELY to prevent race with concurrent viewers.
+                    // This must happen before any async operations to minimize the window where
+                    // a viewer could see healthy status, increment count, then we proceed with cleanup.
                     stream.lifecycle().mark_stopping();
 
-                    // Re-check: a concurrent viewer may have incremented after our check
-                    if stream.lifecycle().subscriber_count() > 0 {
+                    // Re-check subscriber count: a concurrent viewer may have incremented between
+                    // our initial check (line 401) and mark_stopping() above. If so, abort cleanup.
+                    let current_count = stream.lifecycle().subscriber_count();
+                    if current_count > 0 {
                         debug!(
-                            "Cleanup aborted for {}: late subscriber detected",
+                            "Cleanup aborted for {}: {} late subscriber(s) detected after mark_stopping",
                             stream_key,
+                            current_count,
                         );
                         stream.lifecycle().restore_running();
 

@@ -235,15 +235,10 @@ impl RoomService {
             "Creating new room"
         );
 
-        // Validate room name
-        if name.is_empty() {
-            tracing::warn!(user_id = %created_by, "Attempted to create room with empty name");
-            return Err(Error::InvalidInput("Room name cannot be empty".to_string()));
-        }
-        if name.chars().count() > 255 {
-            tracing::warn!(user_id = %created_by, name_len = name.chars().count(), "Attempted to create room with name too long");
-            return Err(Error::InvalidInput("Room name too long".to_string()));
-        }
+        // Validate room name using centralized validator
+        crate::validation::RoomNameValidator::new()
+            .validate(&name)
+            .map_err(|e| Error::InvalidInput(e.to_string()))?;
 
         // Validate description length (character count for Unicode safety)
         if description.chars().count() > 500 {
@@ -1304,13 +1299,9 @@ mod tests {
 
     /// Replicates the room name validation from `do_create_room`.
     fn validate_room_name(name: &str) -> crate::Result<()> {
-        if name.is_empty() {
-            return Err(Error::InvalidInput("Room name cannot be empty".to_string()));
-        }
-        if name.chars().count() > 255 {
-            return Err(Error::InvalidInput("Room name too long".to_string()));
-        }
-        Ok(())
+        crate::validation::RoomNameValidator::new()
+            .validate(name)
+            .map_err(|e| Error::InvalidInput(e.to_string()))
     }
 
     #[test]
@@ -1318,24 +1309,26 @@ mod tests {
         let result = validate_room_name("");
         assert!(result.is_err());
         match result.unwrap_err() {
-            Error::InvalidInput(msg) => assert!(msg.contains("cannot be empty"), "got: {msg}"),
+            Error::InvalidInput(msg) => assert!(msg.contains("at least 1") || msg.contains("cannot be empty"), "got: {msg}"),
             other => panic!("Expected InvalidInput, got: {other:?}"),
         }
     }
 
     #[test]
     fn test_room_name_at_max_length_is_ok() {
-        let name = "a".repeat(255);
+        // Use ROOM_NAME_MAX from validation module (100 characters)
+        let name = "a".repeat(crate::validation::ROOM_NAME_MAX);
         assert!(validate_room_name(&name).is_ok());
     }
 
     #[test]
     fn test_room_name_exceeding_max_length_returns_error() {
-        let name = "a".repeat(256);
+        // One over ROOM_NAME_MAX (101 characters)
+        let name = "a".repeat(crate::validation::ROOM_NAME_MAX + 1);
         let result = validate_room_name(&name);
         assert!(result.is_err());
         match result.unwrap_err() {
-            Error::InvalidInput(msg) => assert!(msg.contains("too long"), "got: {msg}"),
+            Error::InvalidInput(msg) => assert!(msg.contains("characters") || msg.contains("long"), "got: {msg}"),
             other => panic!("Expected InvalidInput, got: {other:?}"),
         }
     }
@@ -1350,14 +1343,15 @@ mod tests {
     #[test]
     fn test_room_name_counts_unicode_characters_not_bytes() {
         // Each CJK character is 3 bytes in UTF-8 but 1 character.
-        // 255 CJK chars = 765 bytes, should be valid.
-        let name: String = std::iter::repeat('\u{4e00}').take(255).collect();
-        assert_eq!(name.chars().count(), 255);
-        assert!(validate_room_name(&name).is_ok());
+        // ROOM_NAME_MAX (100) CJK chars = 300 bytes, should be valid.
+        let max_len = crate::validation::ROOM_NAME_MAX;
+        let name: String = std::iter::repeat('\u{4e00}').take(max_len).collect();
+        assert_eq!(name.chars().count(), max_len);
+        assert!(validate_room_name(&name).is_ok(), "Room name with {} CJK characters should be valid", max_len);
 
-        // 256 CJK characters should be rejected
-        let name_too_long: String = std::iter::repeat('\u{4e00}').take(256).collect();
-        assert!(validate_room_name(&name_too_long).is_err());
+        // (ROOM_NAME_MAX + 1) CJK characters should be rejected
+        let name_too_long: String = std::iter::repeat('\u{4e00}').take(max_len + 1).collect();
+        assert!(validate_room_name(&name_too_long).is_err(), "Room name with {} CJK characters should be rejected", max_len + 1);
     }
 
     // ========== Room Description Validation ==========

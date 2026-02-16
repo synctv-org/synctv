@@ -46,6 +46,17 @@ pub trait StreamRegistryTrait: Send + Sync {
     /// List all active streams (returns tuples of (`room_id`, `media_id`))
     async fn list_active_streams(&self) -> Result<Vec<(String, String)>>;
 
+    /// List active streams for a specific room (returns `media_id` values).
+    /// Default implementation filters `list_active_streams`; backends can
+    /// override for a more efficient query.
+    async fn list_streams_for_room(&self, room_id: &str) -> Result<Vec<String>> {
+        let all = self.list_active_streams().await?;
+        Ok(all.into_iter()
+            .filter(|(rid, _)| rid == room_id)
+            .map(|(_, media_id)| media_id)
+            .collect())
+    }
+
     /// Get all active publishers for a user (via reverse index)
     /// Returns list of (`room_id`, `media_id`) pairs
     async fn get_user_publishers(&self, user_id: &str) -> Result<Vec<(String, String)>>;
@@ -104,6 +115,10 @@ impl StreamRegistryTrait for StreamRegistry {
 
     async fn list_active_streams(&self) -> Result<Vec<(String, String)>> {
         Self::list_active_streams_immut(self).await
+    }
+
+    async fn list_streams_for_room(&self, room_id: &str) -> Result<Vec<String>> {
+        Self::list_streams_for_room(self, room_id).await
     }
 
     async fn get_user_publishers(&self, user_id: &str) -> Result<Vec<(String, String)>> {

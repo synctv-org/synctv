@@ -1,15 +1,25 @@
 //! Bilibili HTTP Client
 
 use std::collections::HashMap;
+use std::num::NonZeroU32;
 use std::sync::LazyLock;
 use std::time::Duration;
 
+use governor::{Quota, RateLimiter};
+use governor::clock::DefaultClock;
+use governor::state::{InMemoryState, NotKeyed};
 use regex::Regex;
 use reqwest::Client;
 use serde::Deserialize;
 
 use super::error::{BilibiliError, check_response, json_with_limit};
 use super::types::{self as types, VideoInfo, Quality, PlayUrlInfo, DurlItem, AnimeInfo};
+use crate::error::with_retry;
+
+/// Default Bilibili API rate limit: 5 requests per second.
+const DEFAULT_RATE_LIMIT_PER_SECOND: u32 = 5;
+
+type BilibiliRateLimiter = RateLimiter<NotKeyed, InMemoryState, DefaultClock>;
 
 // Pre-compiled regexes using std::sync::LazyLock (no external crate needed).
 // These patterns are compile-time constants; Regex::new cannot fail on them.
@@ -34,27 +44,46 @@ static SHARED_CLIENT: LazyLock<Client> = LazyLock::new(|| {
         .expect("Failed to build Bilibili shared HTTP client")
 });
 
+/// Shared rate limiter for all Bilibili requests.
+/// This must be global so that the token bucket is not reset when a new
+/// `BilibiliClient` is created per-request in the service layer.
+static SHARED_RATE_LIMITER: LazyLock<std::sync::Arc<BilibiliRateLimiter>> = LazyLock::new(|| {
+    let quota = Quota::per_second(
+        NonZeroU32::new(DEFAULT_RATE_LIMIT_PER_SECOND).expect("rate limit must be > 0"),
+    );
+    std::sync::Arc::new(RateLimiter::direct(quota))
+});
+
 /// Bilibili HTTP Client
 pub struct BilibiliClient {
     client: Client,
     cookies: Option<HashMap<String, String>>,
+    rate_limiter: std::sync::Arc<BilibiliRateLimiter>,
 }
 
 impl BilibiliClient {
-    /// Create a new Bilibili client (reuses shared connection pool)
+    /// Create a new Bilibili client (reuses shared connection pool and rate limiter)
     pub fn new() -> Result<Self, BilibiliError> {
         Ok(Self {
             client: SHARED_CLIENT.clone(),
             cookies: None,
+            rate_limiter: SHARED_RATE_LIMITER.clone(),
         })
     }
 
-    /// Create a new Bilibili client with cookies (reuses shared connection pool)
+    /// Create a new Bilibili client with cookies (reuses shared connection pool and rate limiter)
     pub fn with_cookies(cookies: HashMap<String, String>) -> Result<Self, BilibiliError> {
         Ok(Self {
             client: SHARED_CLIENT.clone(),
             cookies: Some(cookies),
+            rate_limiter: SHARED_RATE_LIMITER.clone(),
         })
+    }
+
+    /// Wait for the rate limiter before making an API call.
+    /// This prevents concurrent users from triggering IP bans.
+    async fn wait_for_rate_limit(&self) {
+        self.rate_limiter.until_ready().await;
     }
 
     /// Add cookies to request.
@@ -78,6 +107,7 @@ impl BilibiliClient {
 
     /// Generate QR code for login
     pub async fn new_qr_code(&self) -> Result<(String, String), BilibiliError> {
+        self.wait_for_rate_limit().await;
         #[derive(Deserialize)]
         struct QrCodeData {
             url: String,
@@ -109,6 +139,7 @@ impl BilibiliClient {
 
     /// Check QR code login status
     pub async fn login_with_qr_code(&self, key: &str) -> Result<(u32, Option<HashMap<String, String>>), BilibiliError> {
+        self.wait_for_rate_limit().await;
         #[derive(Deserialize)]
         struct LoginData {
             code: u32,
@@ -161,6 +192,7 @@ impl BilibiliClient {
 
     /// Get new captcha for SMS login
     pub async fn new_captcha(&self) -> Result<(String, String, String), BilibiliError> {
+        self.wait_for_rate_limit().await;
         #[derive(Deserialize)]
         struct Geetest {
             challenge: String,
@@ -198,6 +230,7 @@ impl BilibiliClient {
 
     /// Get BUVID cookies for SMS operations
     async fn get_buvid_cookies(&self) -> Result<HashMap<String, String>, BilibiliError> {
+        self.wait_for_rate_limit().await;
         #[derive(Deserialize)]
         struct SpiData {
             #[serde(rename = "b_3")]
@@ -241,6 +274,7 @@ impl BilibiliClient {
         challenge: &str,
         validate: &str,
     ) -> Result<String, BilibiliError> {
+        self.wait_for_rate_limit().await;
         #[derive(Deserialize)]
         struct SmsData {
             captcha_key: String,
@@ -307,6 +341,7 @@ impl BilibiliClient {
         code: &str,
         captcha_key: &str,
     ) -> Result<HashMap<String, String>, BilibiliError> {
+        self.wait_for_rate_limit().await;
         #[derive(Deserialize)]
         struct LoginSmsData {
             status: i32,
@@ -396,6 +431,7 @@ impl BilibiliClient {
     /// the `Location` header from b23.tv to get the resolved URL.
     /// The resolved URL is validated against SSRF rules before returning.
     pub async fn resolve_short_link(&self, url: &str) -> Result<String, BilibiliError> {
+        self.wait_for_rate_limit().await;
         let response = self.client.get(url).send().await?;
         let status = response.status();
 
@@ -422,31 +458,41 @@ impl BilibiliClient {
 
     /// Get video information by BVID
     pub async fn get_video_info(&self, bvid: &str) -> Result<VideoInfo, BilibiliError> {
-        let response = check_response(
-            self.client.get("https://api.bilibili.com/x/web-interface/view")
-                .query(&[("bvid", bvid)])
-                .send().await?
-        )?;
+        self.wait_for_rate_limit().await;
+        let client = self.client.clone();
+        let bvid = bvid.to_string();
 
-        let json: serde_json::Value = json_with_limit(response).await?;
+        with_retry(|| {
+            let client = client.clone();
+            let bvid = bvid.clone();
+            async move {
+                let response = check_response(
+                    client.get("https://api.bilibili.com/x/web-interface/view")
+                        .query(&[("bvid", &bvid)])
+                        .send().await?
+                )?;
 
-        if json["code"].as_i64() != Some(0) {
-            return Err(BilibiliError::Api {
-                    code: json["code"].as_i64().unwrap_or(0),
-                    message: json["message"].as_str().unwrap_or("Unknown error").to_string(),
-                });
-        }
+                let json: serde_json::Value = json_with_limit(response).await?;
 
-        let data = &json["data"];
-        Ok(VideoInfo {
-            bvid: data["bvid"].as_str().unwrap_or("").to_string(),
-            aid: data["aid"].as_u64().unwrap_or(0),
-            cid: data["cid"].as_u64().unwrap_or(0),
-            title: data["title"].as_str().unwrap_or("").to_string(),
-            desc: data["desc"].as_str().unwrap_or("").to_string(),
-            pic: data["pic"].as_str().unwrap_or("").to_string(),
-            duration: data["duration"].as_u64().unwrap_or(0),
-        })
+                if json["code"].as_i64() != Some(0) {
+                    return Err(BilibiliError::Api {
+                        code: json["code"].as_i64().unwrap_or(0),
+                        message: json["message"].as_str().unwrap_or("Unknown error").to_string(),
+                    });
+                }
+
+                let data = &json["data"];
+                Ok(VideoInfo {
+                    bvid: data["bvid"].as_str().unwrap_or("").to_string(),
+                    aid: data["aid"].as_u64().unwrap_or(0),
+                    cid: data["cid"].as_u64().unwrap_or(0),
+                    title: data["title"].as_str().unwrap_or("").to_string(),
+                    desc: data["desc"].as_str().unwrap_or("").to_string(),
+                    pic: data["pic"].as_str().unwrap_or("").to_string(),
+                    duration: data["duration"].as_u64().unwrap_or(0),
+                })
+            }
+        }).await
     }
 
     /// Get playback URL
@@ -456,6 +502,7 @@ impl BilibiliClient {
         cid: u64,
         quality: Quality,
     ) -> Result<PlayUrlInfo, BilibiliError> {
+        self.wait_for_rate_limit().await;
         let cid_str = cid.to_string();
         let qn_str = quality.to_qn().to_string();
         let response = check_response(
@@ -488,6 +535,7 @@ impl BilibiliClient {
 
     /// Get anime information by EPID
     pub async fn get_anime_info(&self, epid: &str) -> Result<AnimeInfo, BilibiliError> {
+        self.wait_for_rate_limit().await;
         let response = check_response(
             self.client.get("https://api.bilibili.com/pgc/view/web/season")
                 .query(&[("ep_id", epid)])
@@ -518,6 +566,7 @@ impl BilibiliClient {
 
     /// Parse video page to get video information
     pub async fn parse_video_page(&self, aid: u64, bvid: &str) -> Result<VideoPageInfo, BilibiliError> {
+        self.wait_for_rate_limit().await;
         let mut req = self.client.get("https://api.bilibili.com/x/web-interface/view");
         if bvid.is_empty() {
             req = req.query(&[("aid", &aid.to_string())]);
@@ -558,6 +607,7 @@ impl BilibiliClient {
 
     /// Get video playback URL (normal video, not DASH)
     pub async fn get_video_url(&self, aid: u64, bvid: &str, cid: u64, quality: Option<u32>) -> Result<VideoUrlInfo, BilibiliError> {
+        self.wait_for_rate_limit().await;
         let qn = quality.unwrap_or(80); // Default to 1080P
         let cid_str = cid.to_string();
         let qn_str = qn.to_string();
@@ -594,6 +644,7 @@ impl BilibiliClient {
 
     /// Get DASH video URL - returns structured DASH data for upper layer to generate MPD
     pub async fn get_dash_video_url(&self, aid: u64, bvid: &str, cid: u64) -> Result<(DashData, DashData), BilibiliError> {
+        self.wait_for_rate_limit().await;
         let cid_str = cid.to_string();
         let mut req = self.client.get("https://api.bilibili.com/x/player/wbi/playurl");
         if bvid.is_empty() {
@@ -619,6 +670,7 @@ impl BilibiliClient {
 
     /// Get subtitles for a video
     pub async fn get_subtitles(&self, aid: u64, bvid: &str, cid: u64) -> Result<HashMap<String, String>, BilibiliError> {
+        self.wait_for_rate_limit().await;
         let cid_str = cid.to_string();
         let mut req = self.client.get("https://api.bilibili.com/x/player/v2");
         if bvid.is_empty() {
@@ -653,6 +705,7 @@ impl BilibiliClient {
 
     /// Get user information
     pub async fn user_info(&self) -> Result<UserInfo, BilibiliError> {
+        self.wait_for_rate_limit().await;
         let url = "https://api.bilibili.com/x/web-interface/nav";
         let req = self.add_cookies(self.client.get(url).header("Referer", REFERER));
         let resp = check_response(req.send().await?)?;
@@ -673,6 +726,7 @@ impl BilibiliClient {
 
     /// Parse PGC (anime/bangumi) page
     pub async fn parse_pgc_page(&self, epid: u64, ssid: u64) -> Result<VideoPageInfo, BilibiliError> {
+        self.wait_for_rate_limit().await;
         let mut req = self.client.get("https://api.bilibili.com/pgc/view/web/season");
         if epid != 0 {
             req = req.query(&[("ep_id", epid)]);
@@ -718,6 +772,7 @@ impl BilibiliClient {
 
     /// Get PGC playback URL
     pub async fn get_pgc_url(&self, epid: u64, cid: u64, quality: Option<u32>) -> Result<VideoUrlInfo, BilibiliError> {
+        self.wait_for_rate_limit().await;
         let qn = quality.unwrap_or(80);
         let req = self.client.get("https://api.bilibili.com/pgc/player/web/playurl")
             .query(&[("ep_id", epid), ("cid", cid), ("qn", qn as u64)]);
@@ -748,6 +803,7 @@ impl BilibiliClient {
 
     /// Get DASH PGC URL - returns structured DASH data for upper layer to generate MPD
     pub async fn get_dash_pgc_url(&self, epid: u64, cid: u64) -> Result<(DashData, DashData), BilibiliError> {
+        self.wait_for_rate_limit().await;
         let req = self.client.get("https://api.bilibili.com/pgc/player/web/playurl")
             .query(&[("ep_id", epid), ("cid", cid), ("fnval", 4048u64)]);
 
@@ -801,6 +857,7 @@ impl BilibiliClient {
 
     /// Parse live page
     pub async fn parse_live_page(&self, room_id: u64) -> Result<VideoPageInfo, BilibiliError> {
+        self.wait_for_rate_limit().await;
         let req = self.client.get("https://api.live.bilibili.com/room/v1/Room/get_info")
             .query(&[("room_id", room_id)]);
 
@@ -836,6 +893,7 @@ impl BilibiliClient {
 
     /// Get live streams
     pub async fn get_live_streams(&self, room_id: u64, _hls: bool) -> Result<Vec<LiveStream>, BilibiliError> {
+        self.wait_for_rate_limit().await;
         // Note: `hls` parameter is currently unused; the API always requests both protocols (0,1).
         let req = self.client.get("https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo")
             .query(&[
@@ -904,6 +962,7 @@ impl BilibiliClient {
 
     /// Get live danmaku server info
     pub async fn get_live_danmu_info(&self, room_id: u64) -> Result<LiveDanmuInfo, BilibiliError> {
+        self.wait_for_rate_limit().await;
         let req = self.client.get("https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo")
             .query(&[("id", room_id)]);
 

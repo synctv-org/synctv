@@ -31,6 +31,10 @@ pub enum InvalidationMessage {
     User {
         user_id: String,
     },
+    /// Invalidate username cache
+    Username {
+        user_id: String,
+    },
     /// Invalidate room cache
     Room {
         room_id: String,
@@ -109,6 +113,9 @@ impl CacheInvalidationService {
         let shutdown = self.shutdown.clone();
 
         tokio::spawn(async move {
+            let mut backoff_secs: u64 = 5;
+            const MAX_BACKOFF_SECS: u64 = 60;
+
             loop {
                 if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
                     debug!("Cache invalidation listener shutting down");
@@ -123,9 +130,12 @@ impl CacheInvalidationService {
                     Err(e) => {
                         error!(
                             error = %e,
-                            "Cache invalidation subscriber error, reconnecting in 5 seconds..."
+                            backoff_seconds = backoff_secs,
+                            "Cache invalidation subscriber error, reconnecting..."
                         );
-                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                        tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
+                        // Exponential backoff: 5 -> 10 -> 20 -> 40 -> 60 (capped)
+                        backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
                     }
                 }
             }
@@ -312,6 +322,13 @@ impl CacheInvalidationService {
     /// Invalidate user cache
     pub async fn invalidate_user(&self, user_id: &crate::models::UserId) -> Result<()> {
         self.broadcast_remote(InvalidationMessage::User {
+            user_id: user_id.as_str().to_string(),
+        }).await
+    }
+
+    /// Invalidate username cache
+    pub async fn invalidate_username(&self, user_id: &crate::models::UserId) -> Result<()> {
+        self.broadcast_remote(InvalidationMessage::Username {
             user_id: user_id.as_str().to_string(),
         }).await
     }

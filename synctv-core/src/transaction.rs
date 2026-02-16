@@ -90,7 +90,9 @@ where
             Ok(result)
         }
         Err(e) => {
-            tx.rollback().await?;
+            if let Err(rollback_err) = tx.rollback().await {
+                tracing::error!("Rollback failed: {rollback_err}");
+            }
             Err(e)
         }
     }

@@ -2,6 +2,7 @@
 
 use synctv_core::models::{PermissionBits, RoomId, UserId};
 
+use crate::impls::ApiError;
 use super::ClientApiImpl;
 use super::convert::{media_to_proto, playback_state_to_proto, playlist_to_proto};
 
@@ -11,16 +12,16 @@ impl ClientApiImpl {
         user_id: &str,
         room_id: &str,
         _req: crate::proto::client::PlayRequest,
-    ) -> Result<crate::proto::client::PlayResponse, String> {
+    ) -> Result<crate::proto::client::PlayResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
 
         // Check membership and playback control permission
         self.room_service.check_permission(&rid, &uid, PermissionBits::PLAY_CONTROL).await
-            .map_err(|e| format!("Forbidden: {e}"))?;
+            .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
 
         let state = self.room_service.playback_service().set_playing(rid, uid, true).await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         Ok(crate::proto::client::PlayResponse {
             playback_state: Some(playback_state_to_proto(&state)),
@@ -31,16 +32,16 @@ impl ClientApiImpl {
         &self,
         user_id: &str,
         room_id: &str,
-    ) -> Result<crate::proto::client::PauseResponse, String> {
+    ) -> Result<crate::proto::client::PauseResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
 
         // Check membership and playback control permission
         self.room_service.check_permission(&rid, &uid, PermissionBits::PLAY_CONTROL).await
-            .map_err(|e| format!("Forbidden: {e}"))?;
+            .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
 
         let state = self.room_service.playback_service().set_playing(rid, uid, false).await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         Ok(crate::proto::client::PauseResponse {
             playback_state: Some(playback_state_to_proto(&state)),
@@ -52,16 +53,16 @@ impl ClientApiImpl {
         user_id: &str,
         room_id: &str,
         req: crate::proto::client::SeekRequest,
-    ) -> Result<crate::proto::client::SeekResponse, String> {
+    ) -> Result<crate::proto::client::SeekResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
 
         // Check membership and playback control permission
         self.room_service.check_permission(&rid, &uid, PermissionBits::PLAY_CONTROL).await
-            .map_err(|e| format!("Forbidden: {e}"))?;
+            .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
 
         self.room_service.playback_service().seek(rid.clone(), uid, req.current_time).await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         let state = self.room_service.get_playback_state(&rid).await.ok();
         Ok(crate::proto::client::SeekResponse {
@@ -74,16 +75,16 @@ impl ClientApiImpl {
         user_id: &str,
         room_id: &str,
         req: crate::proto::client::SetPlaybackSpeedRequest,
-    ) -> Result<crate::proto::client::SetPlaybackSpeedResponse, String> {
+    ) -> Result<crate::proto::client::SetPlaybackSpeedResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
 
         // Check membership and playback speed permission
         self.room_service.check_permission(&rid, &uid, PermissionBits::CHANGE_PLAYBACK_RATE).await
-            .map_err(|e| format!("Forbidden: {e}"))?;
+            .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
 
         self.room_service.playback_service().change_speed(rid.clone(), uid, req.speed).await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         let state = self.room_service.get_playback_state(&rid).await.ok();
         Ok(crate::proto::client::SetPlaybackSpeedResponse {
@@ -97,30 +98,30 @@ impl ClientApiImpl {
         user_id: &str,
         room_id: &str,
         req: crate::proto::client::SetCurrentMediaRequest,
-    ) -> Result<crate::proto::client::SetCurrentMediaResponse, String> {
+    ) -> Result<crate::proto::client::SetCurrentMediaResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
 
         // Check membership and media switching permission
         self.room_service.check_permission(&rid, &uid, PermissionBits::CHANGE_CURRENT_MOVIE).await
-            .map_err(|e| format!("Forbidden: {e}"))?;
+            .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
 
         // If media_id is provided, switch to that media
         if !req.media_id.is_empty() {
             let media_id = synctv_core::models::MediaId::from_string(req.media_id);
             self.room_service.playback_service().switch_media(rid.clone(), uid, media_id).await
-                .map_err(|e| e.to_string())?;
+                .map_err(ApiError::from)?;
         }
 
         // Get the current root playlist and its item count
         let playlist = self.room_service.playlist_service().get_root_playlist(&rid).await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
         let item_count = self.room_service.media_service().count_playlist_media(&playlist.id).await
-            .map_err(|e| e.to_string())? as i32;
+            .map_err(ApiError::from)? as i32;
 
         // Get the currently playing media
         let playing_media = self.room_service.get_playing_media(&rid).await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         Ok(crate::proto::client::SetCurrentMediaResponse {
             playlist: Some(playlist_to_proto(&playlist, item_count)),
@@ -133,16 +134,16 @@ impl ClientApiImpl {
         user_id: &str,
         room_id: &str,
         _req: crate::proto::client::GetPlaybackStateRequest,
-    ) -> Result<crate::proto::client::GetPlaybackStateResponse, String> {
+    ) -> Result<crate::proto::client::GetPlaybackStateResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
 
         // Check membership
         self.room_service.check_membership(&rid, &uid).await
-            .map_err(|e| format!("Forbidden: {e}"))?;
+            .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
 
         let state = self.room_service.get_playback_state(&rid).await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         Ok(crate::proto::client::GetPlaybackStateResponse {
             playback_state: Some(playback_state_to_proto(&state)),

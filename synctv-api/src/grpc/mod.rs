@@ -368,7 +368,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
             alist_api: Arc::new(crate::impls::AlistApiImpl::new(alist_provider.clone())),
             emby_api: Arc::new(crate::impls::EmbyApiImpl::new(emby_provider.clone())),
             redis_conn: None, // gRPC path does not use playback caching (yet)
-            token_blacklist_service: synctv_core::service::TokenBlacklistService::new(None, "synctv".to_string()),
+            token_blacklist_service: token_blacklist_service.clone(),
         });
 
         // Register provider gRPC services with auth interceptor

@@ -88,6 +88,47 @@ impl From<reqwest::header::InvalidHeaderValue> for ProviderClientError {
     }
 }
 
+impl ProviderClientError {
+    /// Whether this error is transient and the request should be retried.
+    ///
+    /// Network errors and server errors (5xx) are retryable.
+    /// Client errors (4xx), parse errors, and auth errors are not.
+    #[must_use]
+    pub fn is_retryable(&self) -> bool {
+        match self {
+            Self::Network(_) => true,
+            Self::Http { status, .. } => status.is_server_error(),
+            _ => false,
+        }
+    }
+}
+
+/// Create the standard exponential backoff for provider API calls.
+///
+/// Starts at 200ms, doubles each attempt, caps at 5s, with up to 3 retries.
+#[must_use]
+pub fn provider_backoff() -> backon::ExponentialBuilder {
+    backon::ExponentialBuilder::default()
+        .with_min_delay(std::time::Duration::from_millis(200))
+        .with_max_delay(std::time::Duration::from_secs(5))
+        .with_max_times(3)
+}
+
+/// Execute an async operation with retry and exponential backoff.
+///
+/// Only retries on transient errors (network errors and 5xx server errors).
+/// Client errors (4xx), parse errors, and auth errors fail immediately.
+pub async fn with_retry<F, Fut, T>(op: F) -> Result<T, ProviderClientError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, ProviderClientError>>,
+{
+    use backon::Retryable;
+    op.retry(provider_backoff())
+        .when(|e: &ProviderClientError| e.is_retryable())
+        .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

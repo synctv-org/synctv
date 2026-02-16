@@ -5,6 +5,7 @@
 
 use super::{
     bloom_filter::ProtectedCache,
+    username_cache::UsernameCache,
     user_cache::UserCache,
     room_cache::RoomCache,
     CacheInvalidationService,
@@ -19,6 +20,7 @@ use tracing::{debug, warn};
 pub struct CacheManager {
     pub user_cache: Arc<UserCache>,
     pub room_cache: Arc<RoomCache>,
+    pub username_cache: Option<Arc<UsernameCache>>,
     /// Optional protected cache (bloom filter) for cross-replica sync
     protected_cache: Option<Arc<ProtectedCache>>,
 }
@@ -30,8 +32,16 @@ impl CacheManager {
         Self {
             user_cache,
             room_cache,
+            username_cache: None,
             protected_cache: None,
         }
+    }
+
+    /// Set the username cache for cross-replica invalidation
+    #[must_use]
+    pub fn with_username_cache(mut self, username_cache: Arc<UsernameCache>) -> Self {
+        self.username_cache = Some(username_cache);
+        self
     }
 
     /// Set the protected cache (bloom filter) for cross-replica sync
@@ -53,6 +63,7 @@ impl CacheManager {
     pub fn start_invalidation_listener(&self, invalidation_service: &CacheInvalidationService) {
         let user_cache = self.user_cache.clone();
         let room_cache = self.room_cache.clone();
+        let username_cache = self.username_cache.clone();
         let protected_cache = self.protected_cache.clone();
         let mut receiver = invalidation_service.subscribe();
 
@@ -67,6 +78,15 @@ impl CacheManager {
                                     user_id = %user_id,
                                     "User cache invalidated (cross-replica)"
                                 );
+                            }
+                            InvalidationMessage::Username { ref user_id } => {
+                                if let Some(ref uc) = username_cache {
+                                    uc.invalidate_by_id(user_id).await;
+                                    debug!(
+                                        user_id = %user_id,
+                                        "Username cache invalidated (cross-replica)"
+                                    );
+                                }
                             }
                             InvalidationMessage::Room { ref room_id } => {
                                 room_cache.invalidate_by_id(room_id).await;
@@ -88,6 +108,9 @@ impl CacheManager {
                             InvalidationMessage::All => {
                                 user_cache.clear_l1().await;
                                 room_cache.clear_l1().await;
+                                if let Some(ref uc) = username_cache {
+                                    uc.clear_memory().await;
+                                }
                                 debug!("All L1 caches cleared (cross-replica)");
                             }
                             // Permission messages are handled by PermissionService;
@@ -108,6 +131,9 @@ impl CacheManager {
                         );
                         user_cache.clear_l1().await;
                         room_cache.clear_l1().await;
+                        if let Some(ref uc) = username_cache {
+                            uc.clear_memory().await;
+                        }
                     }
                 }
             }
@@ -121,6 +147,9 @@ impl CacheManager {
     pub async fn clear_all_l1(&self) {
         self.user_cache.clear_l1().await;
         self.room_cache.clear_l1().await;
+        if let Some(ref uc) = self.username_cache {
+            uc.clear_memory().await;
+        }
         tracing::debug!("All L1 caches cleared");
     }
 }

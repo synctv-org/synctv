@@ -6,7 +6,10 @@ use sqlx::PgPool;
 use tracing::{error, info, warn};
 
 use crate::{
-    cache::UsernameCache,
+    cache::{
+        CacheInvalidationService, CacheManager, KeyBuilder,
+        RoomCache, UserCache, UsernameCache,
+    },
     repository::{UserOAuthProviderRepository, ProviderInstanceRepository, UserProviderCredentialRepository, SettingsRepository, NotificationRepository},
     service::{
         ContentFilter, JwtService, OAuth2Service, RemoteProviderManager, RateLimitConfig,
@@ -55,6 +58,10 @@ pub struct Services {
     pub publish_key_service: Arc<PublishKeyService>,
     /// User notification service
     pub notification_service: Arc<UserNotificationService>,
+    /// Cache invalidation service for cross-replica cache sync
+    pub cache_invalidation: Arc<CacheInvalidationService>,
+    /// Cache manager coordinating all cache layers
+    pub cache_manager: CacheManager,
     /// Shared Redis connection (optional, None if Redis not configured)
     pub redis_conn: Option<redis::aio::ConnectionManager>,
     /// CancellationToken for settings listen task (cancel on shutdown)
@@ -103,13 +110,61 @@ pub async fn init_services(
     );
     info!("Username cache initialized");
 
+    // Initialize user and room L1/L2 caches
+    let key_builder = KeyBuilder::new(&config.redis.key_prefix);
+    let user_cache = Arc::new(
+        UserCache::new(
+            redis_conn.clone(),
+            500,  // L1 max capacity
+            5,    // L1 TTL minutes
+            300,  // L2 TTL seconds (5 min)
+            format!("{}user:", config.redis.key_prefix),
+        )?
+    );
+    let room_cache = Arc::new(
+        RoomCache::new(
+            redis_conn.clone(),
+            500,  // L1 max capacity
+            5,    // L1 TTL minutes
+            300,  // L2 TTL seconds (5 min)
+            format!("{}room:", config.redis.key_prefix),
+        )?
+    );
+    info!("User and room caches initialized");
+
+    // Initialize cache invalidation service for cross-replica sync
+    let node_id = uuid::Uuid::new_v4().to_string();
+    let cache_invalidation = Arc::new(CacheInvalidationService::new(
+        redis_client.clone(),
+        node_id,
+        key_builder.cache_invalidation_channel(),
+    ));
+    info!("Cache invalidation service created");
+
     // Initialize UserService
-    let user_service = UserService::new(pool.clone(), jwt_service.clone(), token_blacklist.clone(), username_cache);
+    let mut user_service = UserService::new(pool.clone(), jwt_service.clone(), token_blacklist.clone(), username_cache.clone());
+    user_service.set_cache_invalidation(cache_invalidation.clone());
     info!("UserService initialized");
 
     // Initialize RoomService
-    let room_service = RoomService::new(pool.clone(), user_service.clone());
+    let mut room_service = RoomService::new(pool.clone(), user_service.clone());
+    room_service.set_cache_invalidation(cache_invalidation.clone());
+    room_service.set_playback_cache_invalidation(cache_invalidation.clone());
     info!("RoomService initialized");
+
+    // Initialize CacheManager and start cross-replica invalidation listener
+    let cache_manager = CacheManager::new(user_cache.clone(), room_cache.clone())
+        .with_username_cache(Arc::new(username_cache.clone()));
+    cache_manager.start_invalidation_listener(&cache_invalidation);
+    info!("CacheManager initialized with invalidation listener");
+
+    // Start the Redis pub/sub subscriber for cache invalidation
+    if let Err(e) = cache_invalidation.start().await {
+        warn!("Failed to start cache invalidation subscriber: {e}");
+        warn!("Cross-replica cache invalidation will not work");
+    } else {
+        info!("Cache invalidation subscriber started");
+    }
 
     // Initialize ProviderInstanceRepository
     let provider_instance_repo = Arc::new(ProviderInstanceRepository::new(pool.clone()));
@@ -262,6 +317,8 @@ pub async fn init_services(
         email_token_service,
         publish_key_service: Arc::new(publish_key_service),
         notification_service: Arc::new(notification_service),
+        cache_invalidation,
+        cache_manager,
         redis_conn,
         settings_cancel,
         settings_listen_task: Arc::new(tokio::sync::Mutex::new(Some(settings_listen_task))),

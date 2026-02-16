@@ -1,5 +1,6 @@
 //! Room operations: list, create, get, join, leave, delete, settings, chat, hot rooms, public settings
 
+use crate::impls::ApiError;
 use synctv_core::models::{RoomId, UserId};
 
 use super::ClientApiImpl;
@@ -17,23 +18,23 @@ impl ClientApiImpl {
         &self,
         user_id: &str,
         room_id: &str,
-    ) -> Result<Option<crate::proto::client::Media>, String> {
+    ) -> Result<Option<crate::proto::client::Media>, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
 
         // Check membership before returning playing media
         self.room_service.check_membership(&rid, &uid).await
-            .map_err(|e| format!("Forbidden: {e}"))?;
+            .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
 
         let media = self.room_service.get_playing_media(&rid).await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
         Ok(media.map(|m| media_to_proto(&m)))
     }
 
     pub async fn list_rooms(
         &self,
         req: crate::proto::client::ListRoomsRequest,
-    ) -> Result<crate::proto::client::ListRoomsResponse, String> {
+    ) -> Result<crate::proto::client::ListRoomsResponse, ApiError> {
         let mut query = synctv_core::models::RoomListQuery {
             pagination: synctv_core::models::PageParams::new(Some(req.page as u32), Some(req.page_size as u32)),
             ..Default::default()
@@ -42,7 +43,7 @@ impl ClientApiImpl {
             query.search = Some(req.search);
         }
         let (rooms, total) = self.room_service.list_rooms(&query).await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         let room_list: Vec<_> = rooms
             .into_iter()
@@ -67,11 +68,11 @@ impl ClientApiImpl {
         user_id: &str,
         page: i32,
         page_size: i32,
-    ) -> Result<crate::proto::client::ListParticipatedRoomsResponse, String> {
+    ) -> Result<crate::proto::client::ListParticipatedRoomsResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let pagination = synctv_core::models::PageParams::new(Some(page as u32), Some(page_size as u32));
         let (rooms, total) = self.room_service.list_joined_rooms_with_details(&uid, pagination).await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         let room_list: Vec<_> = rooms.into_iter().map(|(room, role, _status, _member_count)| {
             let permissions = role.permissions().0;
@@ -100,19 +101,32 @@ impl ClientApiImpl {
         &self,
         user_id: &str,
         req: crate::proto::client::CreateRoomRequest,
-    ) -> Result<crate::proto::client::CreateRoomResponse, String> {
+    ) -> Result<crate::proto::client::CreateRoomResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
 
         let settings = if req.settings.is_empty() {
             None
         } else {
-            Some(serde_json::from_slice(&req.settings).map_err(|e| e.to_string())?)
+            Some(serde_json::from_slice(&req.settings)?)
         };
 
         let password = if req.password.is_empty() { None } else { Some(req.password) };
 
-        let (room, _member) = self.room_service.create_room(req.name, req.description, uid, password, settings).await
-            .map_err(|e| e.to_string())?;
+        let (room, _member) = self.room_service.create_room(req.name, req.description, uid.clone(), password, settings).await
+            .map_err(ApiError::from)?;
+
+        // Publish RoomCreated cluster event for cross-replica propagation
+        if let Some(ref tx) = self.redis_publish_tx {
+            let _ = tx.try_send(synctv_cluster::sync::PublishRequest {
+                event: synctv_cluster::sync::ClusterEvent::RoomCreated {
+                    event_id: nanoid::nanoid!(16),
+                    room_id: room.id.clone(),
+                    room_name: room.name.clone(),
+                    creator_id: uid,
+                    timestamp: chrono::Utc::now(),
+                },
+            });
+        }
 
         let member_count = self.connection_manager.room_connection_count(&room.id).try_into().ok();
 
@@ -125,16 +139,16 @@ impl ClientApiImpl {
         &self,
         user_id: &str,
         room_id: &str,
-    ) -> Result<crate::proto::client::GetRoomResponse, String> {
+    ) -> Result<crate::proto::client::GetRoomResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
 
         // Check membership
         self.room_service.check_membership(&rid, &uid).await
-            .map_err(|e| format!("Forbidden: {e}"))?;
+            .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
 
         let room = self.room_service.get_room(&rid).await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         let playback_state = self.room_service.get_playback_state(&rid).await.ok()
             .map(|s| playback_state_to_proto(&s));
@@ -152,18 +166,18 @@ impl ClientApiImpl {
         user_id: &str,
         room_id: &str,
         req: crate::proto::client::JoinRoomRequest,
-    ) -> Result<crate::proto::client::JoinRoomResponse, String> {
+    ) -> Result<crate::proto::client::JoinRoomResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
 
         let password = if req.password.is_empty() { None } else { Some(req.password) };
 
         let (_room, _member, members) = self.room_service.join_room(rid.clone(), uid, password).await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         // Get updated room and playback state
         let room = self.room_service.get_room(&rid).await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
         let playback_state = self.room_service.get_playback_state(&rid).await.ok()
             .map(|s| playback_state_to_proto(&s));
 
@@ -184,12 +198,12 @@ impl ClientApiImpl {
         &self,
         user_id: &str,
         room_id: &str,
-    ) -> Result<crate::proto::client::LeaveRoomResponse, String> {
+    ) -> Result<crate::proto::client::LeaveRoomResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
 
         self.room_service.leave_room(rid.clone(), uid.clone()).await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         // Force disconnect the user's connections from this room
         self.connection_manager.disconnect_user_from_room(&uid, &rid);
@@ -203,12 +217,24 @@ impl ClientApiImpl {
         &self,
         user_id: &str,
         room_id: &str,
-    ) -> Result<crate::proto::client::DeleteRoomResponse, String> {
+    ) -> Result<crate::proto::client::DeleteRoomResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
 
-        self.room_service.delete_room(rid.clone(), uid).await
-            .map_err(|e| e.to_string())?;
+        self.room_service.delete_room(rid.clone(), uid.clone()).await
+            .map_err(ApiError::from)?;
+
+        // Publish RoomDeleted cluster event for cross-replica propagation
+        if let Some(ref tx) = self.redis_publish_tx {
+            let _ = tx.try_send(synctv_cluster::sync::PublishRequest {
+                event: synctv_cluster::sync::ClusterEvent::RoomDeleted {
+                    event_id: nanoid::nanoid!(16),
+                    room_id: rid.clone(),
+                    deleted_by: uid,
+                    timestamp: chrono::Utc::now(),
+                },
+            });
+        }
 
         // Force disconnect all connections in the deleted room
         self.connection_manager.disconnect_room(&rid);
@@ -223,25 +249,28 @@ impl ClientApiImpl {
         user_id: &str,
         room_id: &str,
         req: crate::proto::client::UpdateRoomSettingsRequest,
-    ) -> Result<crate::proto::client::UpdateRoomSettingsResponse, String> {
+    ) -> Result<crate::proto::client::UpdateRoomSettingsResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
 
-        let settings = if req.settings.is_empty() {
-            // Get current settings from room_settings table
-            self.room_service.get_room_settings(&rid).await
-                .map_err(|e| e.to_string())?
-        } else {
-            serde_json::from_slice::<synctv_core::models::RoomSettings>(&req.settings)
-                .map_err(|e| e.to_string())?
-        };
+        if req.settings.is_empty() {
+            // No settings to update -- return current room state without a DB write.
+            let room = self.room_service.get_room(&rid).await
+                .map_err(ApiError::from)?;
+            let member_count = self.connection_manager.room_connection_count(&rid).try_into().ok();
+            return Ok(crate::proto::client::UpdateRoomSettingsResponse {
+                room: Some(room_to_proto_basic(&room, None, member_count)),
+            });
+        }
+
+        let settings: synctv_core::models::RoomSettings = serde_json::from_slice(&req.settings)?;
 
         self.room_service.set_settings(rid.clone(), uid, settings).await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         // Get updated room
         let room = self.room_service.get_room(&rid).await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         let member_count = self.connection_manager.room_connection_count(&rid).try_into().ok();
 
@@ -258,7 +287,7 @@ impl ClientApiImpl {
         user_id: &str,
         room_id: &str,
         req: crate::proto::client::SetRoomPasswordRequest,
-    ) -> Result<crate::proto::client::SetRoomPasswordResponse, String> {
+    ) -> Result<crate::proto::client::SetRoomPasswordResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
 
@@ -271,7 +300,7 @@ impl ClientApiImpl {
         self.room_service
             .check_permission(&rid, &uid, synctv_core::models::PermissionBits::UPDATE_ROOM_SETTINGS)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         // Hash password if provided, or None to remove
         let password_hash = if req.password.is_empty() {
@@ -279,14 +308,14 @@ impl ClientApiImpl {
         } else {
             let hash = synctv_core::service::auth::password::hash_password(&req.password)
                 .await
-                .map_err(|e| format!("Failed to hash password: {e}"))?;
+                .map_err(|e| ApiError::Internal(format!("Failed to hash password: {e}")))?;
             Some(hash)
         };
 
         self.room_service
             .update_room_password(&rid, password_hash)
             .await
-            .map_err(|e| format!("Failed to update password: {e}"))?;
+            .map_err(|e| ApiError::Internal(format!("Failed to update password: {e}")))?;
 
         Ok(crate::proto::client::SetRoomPasswordResponse { success: true })
     }
@@ -301,7 +330,7 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::CheckRoomPasswordRequest,
         client_ip: &str,
-    ) -> Result<crate::proto::client::CheckRoomPasswordResponse, String> {
+    ) -> Result<crate::proto::client::CheckRoomPasswordResponse, ApiError> {
         let rid = RoomId::from_string(room_id.to_string());
 
         // --- Rate limit: per-IP per-room password check (5 attempts / 300s window) ---
@@ -318,7 +347,7 @@ impl ClientApiImpl {
                     room_id = %room_id,
                     "Room password check rate limit exceeded"
                 );
-                return Err(e.to_string());
+                return Err(ApiError::from(synctv_core::Error::from(e)));
             }
         }
 
@@ -327,12 +356,12 @@ impl ClientApiImpl {
 
         // Verify room exists
         self.room_service.get_room(&rid).await
-            .map_err(|e| format!("Room not found: {e}"))?;
+            .map_err(|e| ApiError::NotFound(format!("Room not found: {e}")))?;
 
         let valid = self.room_service
             .check_room_password(&rid, &req.password)
             .await
-            .map_err(|e| format!("Password verification failed: {e}"))?;
+            .map_err(|e| ApiError::Internal(format!("Password verification failed: {e}")))?;
 
         if !valid {
             tracing::info!(
@@ -354,19 +383,19 @@ impl ClientApiImpl {
         &self,
         user_id: &str,
         room_id: &str,
-    ) -> Result<crate::proto::client::GetRoomSettingsResponse, String> {
+    ) -> Result<crate::proto::client::GetRoomSettingsResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
 
         // Check membership before returning settings
         self.room_service.check_membership(&rid, &uid).await
-            .map_err(|e| format!("Forbidden: {e}"))?;
+            .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
 
         let settings = self.room_service.get_room_settings(&rid).await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         let settings_bytes = serde_json::to_vec(&settings)
-            .map_err(|e| format!("Failed to serialize settings: {e}"))?;
+            .map_err(|e| ApiError::Internal(format!("Failed to serialize settings: {e}")))?;
 
         Ok(crate::proto::client::GetRoomSettingsResponse {
             settings: settings_bytes,
@@ -378,14 +407,14 @@ impl ClientApiImpl {
         &self,
         user_id: &str,
         room_id: &str,
-    ) -> Result<crate::proto::client::ResetRoomSettingsResponse, String> {
+    ) -> Result<crate::proto::client::ResetRoomSettingsResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
 
         let settings_json = self.room_service
             .reset_room_settings(&rid, &uid)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         Ok(crate::proto::client::ResetRoomSettingsResponse {
             settings: settings_json.into_bytes(),
@@ -397,7 +426,7 @@ impl ClientApiImpl {
         &self,
         user_id: &str,
         req: crate::proto::client::ListCreatedRoomsRequest,
-    ) -> Result<crate::proto::client::ListCreatedRoomsResponse, String> {
+    ) -> Result<crate::proto::client::ListCreatedRoomsResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
 
         let pagination = synctv_core::models::PageParams::new(
@@ -408,7 +437,7 @@ impl ClientApiImpl {
         let (rooms_with_count, total) = self.room_service
             .list_rooms_by_creator_with_count(&uid, pagination)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         // Batch-fetch settings for all rooms
         let room_ids: Vec<&str> = rooms_with_count.iter().map(|rwc| rwc.room.id.as_str()).collect();
@@ -431,9 +460,9 @@ impl ClientApiImpl {
     /// Get public settings
     pub fn get_public_settings(
         &self,
-    ) -> Result<crate::proto::client::GetPublicSettingsResponse, String> {
+    ) -> Result<crate::proto::client::GetPublicSettingsResponse, ApiError> {
         let reg = self.settings_registry.as_ref()
-            .ok_or_else(|| "Settings registry not configured".to_string())?;
+            .ok_or_else(|| ApiError::Internal("Settings registry not configured".to_string()))?;
 
         let s = reg.to_public_settings();
         Ok(crate::proto::client::GetPublicSettingsResponse {
@@ -460,7 +489,7 @@ impl ClientApiImpl {
     pub async fn check_room(
         &self,
         req: crate::proto::client::CheckRoomRequest,
-    ) -> Result<crate::proto::client::CheckRoomResponse, String> {
+    ) -> Result<crate::proto::client::CheckRoomResponse, ApiError> {
         let rid = RoomId::from_string(req.room_id);
 
         match self.room_service.get_room(&rid).await {
@@ -484,16 +513,18 @@ impl ClientApiImpl {
     pub async fn get_hot_rooms(
         &self,
         req: crate::proto::client::GetHotRoomsRequest,
-    ) -> Result<crate::proto::client::GetHotRoomsResponse, String> {
+    ) -> Result<crate::proto::client::GetHotRoomsResponse, ApiError> {
         let limit = if req.limit == 0 || req.limit > 50 {
             10
         } else {
             i64::from(req.limit)
         };
 
-        // Query for active, non-banned rooms
+        // Query for active, non-banned rooms.
+        // Fetch a large page so sorting by online count is accurate even for
+        // deployments with many rooms.
         let query = synctv_core::models::RoomListQuery {
-            pagination: synctv_core::models::PageParams::new(Some(1), Some(100)),
+            pagination: synctv_core::models::PageParams::new(Some(1), Some(500)),
             search: None,
             status: Some(synctv_core::models::RoomStatus::Active),
             is_banned: Some(false),
@@ -501,7 +532,7 @@ impl ClientApiImpl {
         };
 
         let (rooms, _total) = self.room_service.list_rooms(&query).await
-            .map_err(|e| format!("Failed to list rooms: {e}"))?;
+            .map_err(|e| ApiError::Internal(format!("Failed to list rooms: {e}")))?;
 
         // Sort by online count (from connection manager, in-memory) and take top N first
         // to avoid fetching member counts and settings for all 100 rooms.
@@ -558,17 +589,17 @@ impl ClientApiImpl {
         user_id: &str,
         room_id: &str,
         req: crate::proto::client::GetChatHistoryRequest,
-    ) -> Result<crate::proto::client::GetChatHistoryResponse, String> {
+    ) -> Result<crate::proto::client::GetChatHistoryResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
 
         // Check membership before returning chat history
         self.room_service.check_membership(&rid, &uid).await
-            .map_err(|e| format!("Forbidden: {e}"))?;
+            .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
 
         let limit = req.limit.clamp(1, 100);
         let messages = self.room_service.get_chat_history(&rid, None, limit).await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         // Collect unique user IDs to batch fetch usernames
         let user_ids: Vec<synctv_core::models::UserId> = messages

@@ -1,5 +1,6 @@
 //! Member operations: get_room_members, update_member_permissions, kick, ban, unban
 
+use crate::impls::ApiError;
 use synctv_core::models::{RoomId, UserId};
 
 use super::ClientApiImpl;
@@ -10,16 +11,16 @@ impl ClientApiImpl {
         &self,
         user_id: &str,
         room_id: &str,
-    ) -> Result<crate::proto::client::GetRoomMembersResponse, String> {
+    ) -> Result<crate::proto::client::GetRoomMembersResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
 
         // Check membership
         self.room_service.check_membership(&rid, &uid).await
-            .map_err(|e| format!("Forbidden: {e}"))?;
+            .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
 
         let members = self.room_service.get_room_members(&rid).await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         let proto_members: Vec<_> = members.into_iter()
             .map(room_member_to_proto)
@@ -37,7 +38,7 @@ impl ClientApiImpl {
         user_id: &str,
         room_id: &str,
         req: crate::proto::client::UpdateMemberPermissionsRequest,
-    ) -> Result<crate::proto::client::UpdateMemberPermissionsResponse, String> {
+    ) -> Result<crate::proto::client::UpdateMemberPermissionsResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
         let target_uid = UserId::from_string(req.user_id.clone());
@@ -51,7 +52,7 @@ impl ClientApiImpl {
                 uid.clone(),
                 target_uid.clone(),
                 new_role,
-            ).await.map_err(|e| e.to_string())?;
+            ).await.map_err(ApiError::from)?;
         }
 
         // Determine which permission set to use based on the caller's actual role,
@@ -59,8 +60,8 @@ impl ClientApiImpl {
         let caller_member = self.room_service.member_service()
             .get_member(&rid, &uid)
             .await
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| "Caller is not a member of this room".to_string())?;
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::Authorization("Caller is not a member of this room".to_string()))?;
 
         let caller_is_admin = matches!(
             caller_member.role,
@@ -69,7 +70,7 @@ impl ClientApiImpl {
 
         // Only callers with admin/creator role can set admin-level permissions
         if !caller_is_admin && (req.admin_added_permissions > 0 || req.admin_removed_permissions > 0) {
-            return Err("Only admins or creators can modify admin-level permissions".to_string());
+            return Err(ApiError::Authorization("Only admins or creators can modify admin-level permissions".to_string()));
         }
 
         let added = if caller_is_admin {
@@ -91,17 +92,17 @@ impl ClientApiImpl {
             added,
             removed,
         ).await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         // Notify other replicas to invalidate permission cache
-        self.publish_permission_changed(&rid, &target_uid, &uid);
+        self.publish_permission_changed(&rid, &target_uid, &uid).await;
 
         // Get updated member
         let members = self.room_service.get_room_members(&rid).await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
         let member = members.into_iter()
             .find(|m| m.user_id == target_uid)
-            .ok_or_else(|| "Member not found".to_string())?;
+            .ok_or_else(|| ApiError::NotFound("Member not found".to_string()))?;
 
         Ok(crate::proto::client::UpdateMemberPermissionsResponse {
             member: Some(room_member_to_proto(member)),
@@ -113,19 +114,19 @@ impl ClientApiImpl {
         user_id: &str,
         room_id: &str,
         req: crate::proto::client::KickMemberRequest,
-    ) -> Result<crate::proto::client::KickMemberResponse, String> {
+    ) -> Result<crate::proto::client::KickMemberResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
         let target_uid = UserId::from_string(req.user_id.clone());
 
         self.room_service.kick_member(rid.clone(), uid.clone(), target_uid.clone()).await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         // Force disconnect the kicked user's connections in this specific room
         self.connection_manager.disconnect_user_from_room(&target_uid, &rid);
 
         // Notify other replicas to invalidate permission cache
-        self.publish_permission_changed(&rid, &target_uid, &uid);
+        self.publish_permission_changed(&rid, &target_uid, &uid).await;
 
         Ok(crate::proto::client::KickMemberResponse {
             success: true,
@@ -137,7 +138,7 @@ impl ClientApiImpl {
         user_id: &str,
         room_id: &str,
         req: crate::proto::client::BanMemberRequest,
-    ) -> Result<crate::proto::client::BanMemberResponse, String> {
+    ) -> Result<crate::proto::client::BanMemberResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
         let target_uid = UserId::from_string(req.user_id.clone());
@@ -146,13 +147,13 @@ impl ClientApiImpl {
         self.room_service.member_service()
             .ban_member(rid.clone(), uid.clone(), target_uid.clone(), reason)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         // Force disconnect the banned user's connections in this specific room
         self.connection_manager.disconnect_user_from_room(&target_uid, &rid);
 
         // Notify other replicas to invalidate permission cache
-        self.publish_permission_changed(&rid, &target_uid, &uid);
+        self.publish_permission_changed(&rid, &target_uid, &uid).await;
 
         Ok(crate::proto::client::BanMemberResponse { success: true })
     }
@@ -162,7 +163,7 @@ impl ClientApiImpl {
         user_id: &str,
         room_id: &str,
         req: crate::proto::client::UnbanMemberRequest,
-    ) -> Result<crate::proto::client::UnbanMemberResponse, String> {
+    ) -> Result<crate::proto::client::UnbanMemberResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
         let target_uid = UserId::from_string(req.user_id.clone());
@@ -170,10 +171,10 @@ impl ClientApiImpl {
         self.room_service.member_service()
             .unban_member(rid.clone(), uid.clone(), target_uid.clone())
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         // Notify other replicas to invalidate permission cache
-        self.publish_permission_changed(&rid, &target_uid, &uid);
+        self.publish_permission_changed(&rid, &target_uid, &uid).await;
 
         Ok(crate::proto::client::UnbanMemberResponse { success: true })
     }

@@ -16,22 +16,22 @@ pub(super) const fn user_status_to_proto(status: synctv_core::models::UserStatus
     }
 }
 
-pub fn proto_role_to_room_role(role_i32: i32) -> Result<synctv_core::models::RoomRole, String> {
+pub fn proto_role_to_room_role(role_i32: i32) -> Result<synctv_core::models::RoomRole, crate::impls::ApiError> {
     match synctv_proto::common::RoomMemberRole::try_from(role_i32) {
         Ok(synctv_proto::common::RoomMemberRole::Creator) => Ok(synctv_core::models::RoomRole::Creator),
         Ok(synctv_proto::common::RoomMemberRole::Admin) => Ok(synctv_core::models::RoomRole::Admin),
         Ok(synctv_proto::common::RoomMemberRole::Member) => Ok(synctv_core::models::RoomRole::Member),
         Ok(synctv_proto::common::RoomMemberRole::Guest) => Ok(synctv_core::models::RoomRole::Guest),
-        _ => Err(format!("Unknown room member role: {role_i32}")),
+        _ => Err(crate::impls::ApiError::InvalidInput(format!("Unknown room member role: {role_i32}"))),
     }
 }
 
-pub fn proto_role_to_user_role(role_i32: i32) -> Result<synctv_core::models::UserRole, String> {
+pub fn proto_role_to_user_role(role_i32: i32) -> Result<synctv_core::models::UserRole, crate::impls::ApiError> {
     match synctv_proto::common::UserRole::try_from(role_i32) {
         Ok(synctv_proto::common::UserRole::Root) => Ok(synctv_core::models::UserRole::Root),
         Ok(synctv_proto::common::UserRole::Admin) => Ok(synctv_core::models::UserRole::Admin),
         Ok(synctv_proto::common::UserRole::User) => Ok(synctv_core::models::UserRole::User),
-        _ => Err(format!("Unknown user role: {role_i32}")),
+        _ => Err(crate::impls::ApiError::InvalidInput(format!("Unknown user role: {role_i32}"))),
     }
 }
 
@@ -138,7 +138,7 @@ pub(super) fn room_member_to_proto(member: synctv_core::models::RoomMemberWithUs
         user_id: member.user_id.as_str().to_string(),
         username: member.username.clone(),
         role: room_role_to_proto(member.role),
-        permissions: member.effective_permissions(synctv_core::models::PermissionBits::empty()).0,
+        permissions: member.effective_permissions(member.role.permissions()).0,
         added_permissions: member.added_permissions,
         removed_permissions: member.removed_permissions,
         admin_added_permissions: member.admin_added_permissions,

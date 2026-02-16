@@ -100,9 +100,13 @@ impl ClusterManager {
     /// * `permission_service` - Optional permission service for cross-replica cache invalidation.
     ///   When provided, `PermissionChanged` and `RoomSettingsChanged` events received from other
     ///   nodes will automatically invalidate the local permission cache.
+    /// * `cache_invalidation` - Optional cache invalidation service for cross-replica
+    ///   user/room/username cache invalidation. When provided, `CacheInvalidate` events
+    ///   and data-mutating events (e.g. `RoomSettingsChanged`) will invalidate local L1 caches.
     pub async fn new(
         config: ClusterConfig,
         permission_service: Option<PermissionService>,
+        cache_invalidation: Option<synctv_core::cache::CacheInvalidationService>,
     ) -> Result<Self, anyhow::Error> {
         let message_hub = Arc::new(RoomMessageHub::new());
         let deduplicator = Arc::new(MessageDeduplicator::new(
@@ -124,6 +128,7 @@ impl ClusterManager {
                     config.node_id.clone(),
                     admin_event_tx.clone(),
                     permission_service,
+                    cache_invalidation,
                     deduplicator.clone(),
                 )?
             );
@@ -184,7 +189,7 @@ impl ClusterManager {
 
     /// Create with default configuration
     pub async fn with_defaults() -> Result<Self, anyhow::Error> {
-        Self::new(ClusterConfig::default(), None).await
+        Self::new(ClusterConfig::default(), None, None).await
     }
 
     /// Get the message hub (for subscriptions)
@@ -544,7 +549,7 @@ mod tests {
             publish_channel_capacity: 10_000,
         };
 
-        let manager = ClusterManager::new(config, None).await.unwrap();
+        let manager = ClusterManager::new(config, None, None).await.unwrap();
 
         // Subscribe a client
         let room_id = RoomId::from_string("room1".to_string());
@@ -595,7 +600,7 @@ mod tests {
             publish_channel_capacity: 10_000,
         };
 
-        let manager = ClusterManager::new(config, None).await.unwrap();
+        let manager = ClusterManager::new(config, None, None).await.unwrap();
 
         // Subscribe to admin events
         let mut admin_rx = manager.subscribe_admin_events();
@@ -635,7 +640,7 @@ mod tests {
             publish_channel_capacity: 10_000,
         };
 
-        let manager = ClusterManager::new(config, None).await.unwrap();
+        let manager = ClusterManager::new(config, None, None).await.unwrap();
 
         // Subscribe two receivers
         let mut rx1 = manager.subscribe_admin_events();

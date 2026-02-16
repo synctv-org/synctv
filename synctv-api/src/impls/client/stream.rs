@@ -3,6 +3,7 @@
 use std::sync::Arc;
 use synctv_core::models::{RoomId, UserId};
 
+use crate::impls::ApiError;
 use super::ClientApiImpl;
 
 impl ClientApiImpl {
@@ -11,38 +12,35 @@ impl ClientApiImpl {
         user_id: &str,
         room_id: &str,
         req: crate::proto::client::CreatePublishKeyRequest,
-    ) -> Result<crate::proto::client::CreatePublishKeyResponse, String> {
+    ) -> Result<crate::proto::client::CreatePublishKeyResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
 
         // Validate media ID
         if req.id.is_empty() {
-            return Err("Media ID is required".to_string());
+            return Err(ApiError::InvalidInput("Media ID is required".to_string()));
         }
         let media_id = synctv_core::models::MediaId::from_string(req.id.clone());
 
         // Check room exists
         let _room = self.room_service.get_room(&rid).await
-            .map_err(|e| match e {
-                synctv_core::Error::NotFound(msg) => format!("Room not found: {msg}"),
-                _ => format!("Failed to get room: {e}"),
-            })?;
+            .map_err(ApiError::from)?;
 
         // Check permission to start live stream
         self.room_service
             .check_permission(&rid, &uid, synctv_core::models::PermissionBits::START_LIVE)
             .await
-            .map_err(|e| format!("Permission denied: {e}"))?;
+            .map_err(|e| ApiError::Authorization(format!("Permission denied: {e}")))?;
 
         // Get publish key service
         let publish_key_service = self.publish_key_service.as_ref()
-            .ok_or_else(|| "Publish key service not configured".to_string())?;
+            .ok_or_else(|| ApiError::Internal("Publish key service not configured".to_string()))?;
 
         // Generate publish key
         let publish_key = publish_key_service
             .generate_publish_key(rid.clone(), media_id.clone(), uid.clone())
             .await
-            .map_err(|e| format!("Failed to generate publish key: {e}"))?;
+            .map_err(|e| ApiError::Internal(format!("Failed to generate publish key: {e}")))?;
 
         // Construct RTMP URL and stream key from server config
         let rtmp_host = &self.config.server.host;
@@ -74,13 +72,13 @@ impl ClientApiImpl {
         &self,
         token: &str,
         room_id: &str,
-    ) -> Result<UserId, String> {
+    ) -> Result<UserId, ApiError> {
         let validator =
             synctv_core::service::auth::JwtValidator::new(Arc::new(self.jwt_service.clone()));
         let bearer_token = format!("Bearer {token}");
         let user_id = validator
             .validate_http_extract_user_id(&bearer_token)
-            .map_err(|e| format!("Invalid token: {e}"))?;
+            .map_err(|e| ApiError::Authentication(format!("Invalid token: {e}")))?;
 
         // Verify room membership
         let rid = RoomId::from_string(room_id.to_string());
@@ -89,10 +87,10 @@ impl ClientApiImpl {
             .member_service()
             .is_member(&rid, &user_id)
             .await
-            .map_err(|e| format!("Failed to check membership: {e}"))?;
+            .map_err(|e| ApiError::Internal(format!("Failed to check membership: {e}")))?;
 
         if !is_member {
-            return Err("Not a member of this room".to_string());
+            return Err(ApiError::Authorization("Not a member of this room".to_string()));
         }
 
         Ok(user_id)
@@ -104,16 +102,16 @@ impl ClientApiImpl {
         user_id: &str,
         room_id: &str,
         media_id: &str,
-    ) -> Result<crate::proto::client::GetStreamInfoResponse, String> {
+    ) -> Result<crate::proto::client::GetStreamInfoResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
 
         // Check membership before returning stream info
         self.room_service.check_membership(&rid, &uid).await
-            .map_err(|e| format!("Forbidden: {e}"))?;
+            .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
 
         let infrastructure = self.live_streaming_infrastructure.as_ref()
-            .ok_or_else(|| "Live streaming not configured".to_string())?;
+            .ok_or_else(|| ApiError::Internal("Live streaming not configured".to_string()))?;
 
         match infrastructure.registry.get_publisher(room_id, media_id).await {
             Ok(Some(pub_info)) => Ok(crate::proto::client::GetStreamInfoResponse {
@@ -129,7 +127,7 @@ impl ClientApiImpl {
             }),
             Err(e) => {
                 tracing::error!("Failed to query stream info: {e}");
-                Err("Failed to query stream info".to_string())
+                Err(ApiError::Internal("Failed to query stream info".to_string()))
             }
         }
     }
@@ -139,27 +137,26 @@ impl ClientApiImpl {
         &self,
         user_id: &str,
         room_id: &str,
-    ) -> Result<crate::proto::client::ListRoomStreamsResponse, String> {
+    ) -> Result<crate::proto::client::ListRoomStreamsResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
 
         // Check membership before listing streams
         self.room_service.check_membership(&rid, &uid).await
-            .map_err(|e| format!("Forbidden: {e}"))?;
+            .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
 
         let infrastructure = self.live_streaming_infrastructure.as_ref()
-            .ok_or_else(|| "Live streaming not configured".to_string())?;
+            .ok_or_else(|| ApiError::Internal("Live streaming not configured".to_string()))?;
 
-        let all_streams = infrastructure
+        let media_ids = infrastructure
             .registry
-            .list_active_streams()
+            .list_streams_for_room(room_id)
             .await
-            .map_err(|e| format!("Failed to list streams: {e}"))?;
+            .map_err(|e| ApiError::Internal(format!("Failed to list streams: {e}")))?;
 
-        let streams = all_streams
+        let streams = media_ids
             .into_iter()
-            .filter(|(rid, _)| rid == room_id)
-            .map(|(_, media_id)| crate::proto::client::StreamEntry {
+            .map(|media_id| crate::proto::client::StreamEntry {
                 media_id,
                 active: true,
             })

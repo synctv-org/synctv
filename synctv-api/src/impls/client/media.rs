@@ -1,6 +1,7 @@
 //! Media operations: add, remove, edit, swap, clear, batch operations, playlist items
 
 use std::str::FromStr;
+use crate::impls::ApiError;
 use synctv_core::models::{ProviderType, RoomId, UserId};
 
 use super::ClientApiImpl;
@@ -12,15 +13,15 @@ impl ClientApiImpl {
         user_id: &str,
         room_id: &str,
         req: crate::proto::client::AddMediaRequest,
-    ) -> Result<crate::proto::client::AddMediaResponse, String> {
+    ) -> Result<crate::proto::client::AddMediaResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
 
-        let _provider = if req.provider.is_empty() {
+        let provider = if req.provider.is_empty() {
             ProviderType::DirectUrl
         } else {
             ProviderType::from_str(&req.provider)
-                .map_err(|_| format!("Unknown provider type: '{}'", req.provider))?
+                .map_err(|_| ApiError::InvalidInput(format!("Unknown provider type: '{}'", req.provider)))?
         };
 
         // Parse source config from request bytes
@@ -28,7 +29,7 @@ impl ClientApiImpl {
             serde_json::json!({})
         } else {
             serde_json::from_slice(&req.source_config)
-                .map_err(|e| format!("Invalid source_config JSON: {e}"))?
+                .map_err(|e| ApiError::InvalidInput(format!("Invalid source_config JSON: {e}")))?
         };
 
         // Use provided title or default
@@ -42,8 +43,14 @@ impl ClientApiImpl {
             req.title
         };
 
-        // For direct URL, provider_instance_name is empty
-        let provider_instance_name = String::new();
+        // Use the parsed provider as the instance name. For DirectUrl, this is
+        // empty (no remote provider). For other types, use the provider string
+        // from the request so the core layer knows which provider to use.
+        let provider_instance_name = if provider == ProviderType::DirectUrl {
+            String::new()
+        } else {
+            req.provider
+        };
 
         let media = self.room_service.add_media(
             rid,
@@ -51,7 +58,7 @@ impl ClientApiImpl {
             provider_instance_name,
             source_config,
             title,
-        ).await.map_err(|e| e.to_string())?;
+        ).await.map_err(ApiError::from)?;
 
         Ok(crate::proto::client::AddMediaResponse {
             media: Some(media_to_proto(&media)),
@@ -63,7 +70,7 @@ impl ClientApiImpl {
         user_id: &str,
         room_id: &str,
         req: crate::proto::client::RemoveMediaRequest,
-    ) -> Result<crate::proto::client::RemoveMediaResponse, String> {
+    ) -> Result<crate::proto::client::RemoveMediaResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
         let media_id_str = req.media_id.clone();
@@ -76,7 +83,7 @@ impl ClientApiImpl {
             .flatten();
 
         self.room_service.remove_media(rid, uid, mid).await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         // Invalidate playback cache (best-effort)
         if let (Some(media), Some(pm)) = (&media, self.providers_manager.as_ref()) {
@@ -108,7 +115,7 @@ impl ClientApiImpl {
         user_id: &str,
         room_id: &str,
         req: crate::proto::client::EditMediaRequest,
-    ) -> Result<crate::proto::client::EditMediaResponse, String> {
+    ) -> Result<crate::proto::client::EditMediaResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
         let mid = synctv_core::models::MediaId::from_string(req.media_id);
@@ -118,7 +125,7 @@ impl ClientApiImpl {
         let media = self.room_service
             .edit_media(rid, uid, mid, title)
             .await
-            .map_err(|e| format!("Failed to edit media: {e}"))?;
+            .map_err(|e| ApiError::Internal(format!("Failed to edit media: {e}")))?;
 
         Ok(crate::proto::client::EditMediaResponse {
             media: Some(media_to_proto(&media)),
@@ -130,7 +137,7 @@ impl ClientApiImpl {
         &self,
         user_id: &str,
         room_id: &str,
-    ) -> Result<crate::proto::client::ClearPlaylistResponse, String> {
+    ) -> Result<crate::proto::client::ClearPlaylistResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
 
@@ -138,7 +145,7 @@ impl ClientApiImpl {
         self.room_service
             .check_permission(&rid, &uid, synctv_core::models::PermissionBits::CLEAR_PLAYLIST)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         // Fetch all media before deletion for cache invalidation
         let media_items = self.room_service
@@ -149,7 +156,7 @@ impl ClientApiImpl {
         let deleted_count = self.room_service
             .clear_playlist(rid, uid)
             .await
-            .map_err(|e| format!("Failed to clear playlist: {e}"))?;
+            .map_err(|e| ApiError::Internal(format!("Failed to clear playlist: {e}")))?;
 
         // Invalidate playback cache for cleared media (best-effort)
         if let Some(pm) = self.providers_manager.as_ref() {
@@ -172,12 +179,12 @@ impl ClientApiImpl {
         user_id: &str,
         room_id: &str,
         req: crate::proto::client::AddMediaBatchRequest,
-    ) -> Result<crate::proto::client::AddMediaBatchResponse, String> {
+    ) -> Result<crate::proto::client::AddMediaBatchResponse, ApiError> {
         if req.items.is_empty() {
-            return Err("items array cannot be empty".to_string());
+            return Err(ApiError::InvalidInput("items array cannot be empty".to_string()));
         }
         if req.items.len() > 100 {
-            return Err("Too many items (max 100 per batch)".to_string());
+            return Err(ApiError::InvalidInput("Too many items (max 100 per batch)".to_string()));
         }
 
         let uid = UserId::from_string(user_id.to_string());
@@ -190,7 +197,7 @@ impl ClientApiImpl {
                 serde_json::json!({})
             } else {
                 serde_json::from_slice(&item.source_config)
-                    .map_err(|e| format!("Invalid source_config JSON: {e}"))?
+                    .map_err(|e| ApiError::InvalidInput(format!("Invalid source_config JSON: {e}")))?
             };
             let title = if item.title.is_empty() {
                 source_config.get("url")
@@ -206,7 +213,7 @@ impl ClientApiImpl {
 
         let media_list = self.room_service.add_media_batch(rid, uid, items)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         let results = media_list.into_iter()
             .map(|media| crate::proto::client::AddMediaResponse {
@@ -223,12 +230,12 @@ impl ClientApiImpl {
         user_id: &str,
         room_id: &str,
         req: crate::proto::client::RemoveMediaBatchRequest,
-    ) -> Result<crate::proto::client::RemoveMediaBatchResponse, String> {
+    ) -> Result<crate::proto::client::RemoveMediaBatchResponse, ApiError> {
         if req.media_ids.is_empty() {
-            return Err("media_ids array cannot be empty".to_string());
+            return Err(ApiError::InvalidInput("media_ids array cannot be empty".to_string()));
         }
         if req.media_ids.len() > 100 {
-            return Err("Too many items (max 100 per batch)".to_string());
+            return Err(ApiError::InvalidInput("Too many items (max 100 per batch)".to_string()));
         }
 
         let uid = UserId::from_string(user_id.to_string());
@@ -254,7 +261,7 @@ impl ClientApiImpl {
             .media_service()
             .remove_media_batch(rid, uid, mids)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         // Invalidate playback cache for deleted media (best-effort)
         if let Some(pm) = self.providers_manager.as_ref() {
@@ -281,12 +288,12 @@ impl ClientApiImpl {
         user_id: &str,
         room_id: &str,
         req: crate::proto::client::ReorderMediaBatchRequest,
-    ) -> Result<crate::proto::client::ReorderMediaBatchResponse, String> {
+    ) -> Result<crate::proto::client::ReorderMediaBatchResponse, ApiError> {
         if req.updates.is_empty() {
-            return Err("updates array cannot be empty".to_string());
+            return Err(ApiError::InvalidInput("updates array cannot be empty".to_string()));
         }
         if req.updates.len() > 100 {
-            return Err("Too many items (max 100 per batch)".to_string());
+            return Err(ApiError::InvalidInput("Too many items (max 100 per batch)".to_string()));
         }
 
         let uid = UserId::from_string(user_id.to_string());
@@ -300,7 +307,7 @@ impl ClientApiImpl {
             .media_service()
             .reorder_media_batch(rid, uid, updates_converted)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         Ok(crate::proto::client::ReorderMediaBatchResponse { success: true })
     }
@@ -309,15 +316,15 @@ impl ClientApiImpl {
         &self,
         user_id: &str,
         room_id: &str,
-    ) -> Result<crate::proto::client::ListPlaylistResponse, String> {
+    ) -> Result<crate::proto::client::ListPlaylistResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
 
         // Check membership
         self.room_service.check_membership(&rid, &uid).await
-            .map_err(|e| format!("Forbidden: {e}"))?;
+            .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
         let media_list = self.room_service.get_playlist(&rid).await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         let media: Vec<_> = media_list.into_iter().map(|m| media_to_proto(&m)).collect();
         let total = media.len() as i32;
@@ -361,7 +368,7 @@ impl ClientApiImpl {
         user_id: &str,
         room_id: &str,
         req: crate::proto::client::ListPlaylistItemsRequest,
-    ) -> Result<crate::proto::client::ListPlaylistItemsResponse, String> {
+    ) -> Result<crate::proto::client::ListPlaylistItemsResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
         let playlist_id = synctv_core::models::PlaylistId::from_string(req.playlist_id.clone());
@@ -380,7 +387,7 @@ impl ClientApiImpl {
             .media_service()
             .list_dynamic_playlist_items(rid, uid, &playlist_id, relative_path, page, page_size)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         // Convert DirectoryItem to proto DirectoryItem
         let proto_items: Vec<_> = items
@@ -419,14 +426,14 @@ impl ClientApiImpl {
         user_id: &str,
         room_id: &str,
         req: crate::proto::client::SwapMediaRequest,
-    ) -> Result<crate::proto::client::SwapMediaResponse, String> {
+    ) -> Result<crate::proto::client::SwapMediaResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
         let media_id1 = synctv_core::models::MediaId::from_string(req.media_id1.clone());
         let media_id2 = synctv_core::models::MediaId::from_string(req.media_id2.clone());
 
         self.room_service.swap_media(rid, uid, media_id1, media_id2).await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         Ok(crate::proto::client::SwapMediaResponse {
             success: true,
@@ -439,7 +446,7 @@ impl ClientApiImpl {
         user_id: &str,
         room_id: &str,
         req: crate::proto::client::GetMovieInfoRequest,
-    ) -> Result<crate::proto::client::GetMovieInfoResponse, String> {
+    ) -> Result<crate::proto::client::GetMovieInfoResponse, ApiError> {
         use std::collections::HashMap;
         use synctv_core::provider::ProviderContext;
 
@@ -452,18 +459,18 @@ impl ClientApiImpl {
             .room_service
             .get_playlist(&rid)
             .await
-            .map_err(|e| format!("Failed to get playlist: {e}"))?;
+            .map_err(|e| ApiError::Internal(format!("Failed to get playlist: {e}")))?;
 
         let media = playlist
             .iter()
             .find(|m| m.id == mid)
-            .ok_or_else(|| "Not found: Media not found in playlist".to_string())?;
+            .ok_or_else(|| ApiError::NotFound("Media not found in playlist".to_string()))?;
 
         // 2. For direct URL media, return playback info directly
         if media.is_direct() {
             let playback = media
                 .get_playback_result()
-                .ok_or_else(|| "Failed to parse direct media playback info".to_string())?;
+                .ok_or_else(|| ApiError::Internal("Failed to parse direct media playback info".to_string()))?;
             let default_info = playback.get_default_playback_info();
             let (url, media_type) = if let Some(info) = default_info {
                 let first_url = info.urls.first().map(|u| u.url.clone()).unwrap_or_default();
@@ -497,7 +504,7 @@ impl ClientApiImpl {
 
         // 3. For provider-backed media, use ProvidersManager
         let providers_manager = self.providers_manager.as_ref()
-            .ok_or_else(|| "Providers manager not configured".to_string())?;
+            .ok_or_else(|| ApiError::Internal("Providers manager not configured".to_string()))?;
 
         let instance_name = media
             .provider_instance_name
@@ -507,7 +514,7 @@ impl ClientApiImpl {
         let provider = providers_manager
             .get(instance_name)
             .await
-            .ok_or_else(|| format!("Not found: Provider instance '{instance_name}' not found"))?;
+            .ok_or_else(|| ApiError::NotFound(format!("Provider instance '{instance_name}' not found")))?;
 
         let ctx = ProviderContext::new("synctv")
             .with_user_id(user_id)
@@ -520,7 +527,7 @@ impl ClientApiImpl {
             self.redis_conn.as_ref(),
         )
         .await
-        .map_err(|e| format!("generate_playback failed: {e}"))?;
+        .map_err(|e| ApiError::Internal(format!("generate_playback failed: {e}")))?;
 
         // 4. Check movie_proxy setting
         let movie_proxy = self.settings_registry.as_ref()

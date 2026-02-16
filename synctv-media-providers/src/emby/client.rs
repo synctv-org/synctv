@@ -8,6 +8,7 @@ use serde_json::{json, Value};
 
 use super::error::{EmbyError, check_response, json_with_limit};
 use super::types::{AuthResponse, Item, UserInfo, ItemsResponse, SystemInfo, FsListResponse, PathInfo, PlaybackInfoResponse, default_device_profile};
+use crate::error::with_retry;
 
 /// URL-encode a string for safe use in query parameters
 fn url_encode(s: &str) -> String {
@@ -141,25 +142,33 @@ impl EmbyClient {
             url_encode(self.user_id.as_ref().ok_or_else(|| EmbyError::InvalidConfig("Missing user_id".to_string()))?),
             url_encode(item_id)
         );
+        let headers = self.build_headers()?;
+        let client = self.client.clone();
 
-        let response = self
-            .client
-            .get(&url)
-            .headers(self.build_headers()?)
-            .send()
-            .await?;
+        with_retry(|| {
+            let url = url.clone();
+            let headers = headers.clone();
+            let client = client.clone();
+            async move {
+                let response = client
+                    .get(&url)
+                    .headers(headers)
+                    .send()
+                    .await?;
 
-        let response = check_response(response)?;
-        let json: Value = json_with_limit(response).await?;
-        let items = json["Items"].as_array()
-            .ok_or_else(|| EmbyError::Parse("Missing Items array".to_string()))?;
+                let response = check_response(response)?;
+                let json: Value = json_with_limit(response).await?;
+                let items = json["Items"].as_array()
+                    .ok_or_else(|| EmbyError::Parse("Missing Items array".to_string()))?;
 
-        if items.is_empty() {
-            return Err(EmbyError::Api { code: 0, message: "Item not found".to_string() });
-        }
+                if items.is_empty() {
+                    return Err(EmbyError::Api { code: 0, message: "Item not found".to_string() });
+                }
 
-        let item: Item = serde_json::from_value(items[0].clone())?;
-        Ok(item)
+                let item: Item = serde_json::from_value(items[0].clone())?;
+                Ok(item)
+            }
+        }).await
     }
 
     /// Get current user information
@@ -171,17 +180,25 @@ impl EmbyClient {
 
         let prefix = self.get_api_prefix();
         let url = format!("{}{}/Users/{}", self.host, prefix, url_encode(user_id));
+        let headers = self.build_headers()?;
+        let client = self.client.clone();
 
-        let response = self
-            .client
-            .get(&url)
-            .headers(self.build_headers()?)
-            .send()
-            .await?;
+        with_retry(|| {
+            let url = url.clone();
+            let headers = headers.clone();
+            let client = client.clone();
+            async move {
+                let response = client
+                    .get(&url)
+                    .headers(headers)
+                    .send()
+                    .await?;
 
-        let response = check_response(response)?;
-        let user: UserInfo = json_with_limit(response).await?;
-        Ok(user)
+                let response = check_response(response)?;
+                let user: UserInfo = json_with_limit(response).await?;
+                Ok(user)
+            }
+        }).await
     }
 
     /// Get items list
@@ -209,33 +226,50 @@ impl EmbyClient {
             url.push_str("&Filters=IsNotFolder");
         }
 
-        let response = self
-            .client
-            .get(&url)
-            .headers(self.build_headers()?)
-            .send()
-            .await?;
+        let headers = self.build_headers()?;
+        let client = self.client.clone();
 
-        let response = check_response(response)?;
-        let items: ItemsResponse = json_with_limit(response).await?;
-        Ok(items)
+        with_retry(|| {
+            let url = url.clone();
+            let headers = headers.clone();
+            let client = client.clone();
+            async move {
+                let response = client
+                    .get(&url)
+                    .headers(headers)
+                    .send()
+                    .await?;
+
+                let response = check_response(response)?;
+                let items: ItemsResponse = json_with_limit(response).await?;
+                Ok(items)
+            }
+        }).await
     }
 
     /// Get system information
     pub async fn get_system_info(&self) -> Result<SystemInfo, EmbyError> {
         let prefix = self.get_api_prefix();
         let url = format!("{}{}/System/Info", self.host, prefix);
+        let headers = self.build_headers()?;
+        let client = self.client.clone();
 
-        let response = self
-            .client
-            .get(&url)
-            .headers(self.build_headers()?)
-            .send()
-            .await?;
+        with_retry(|| {
+            let url = url.clone();
+            let headers = headers.clone();
+            let client = client.clone();
+            async move {
+                let response = client
+                    .get(&url)
+                    .headers(headers)
+                    .send()
+                    .await?;
 
-        let response = check_response(response)?;
-        let info: SystemInfo = json_with_limit(response).await?;
-        Ok(info)
+                let response = check_response(response)?;
+                let info: SystemInfo = json_with_limit(response).await?;
+                Ok(info)
+            }
+        }).await
     }
 
     /// Filesystem list
@@ -374,17 +408,27 @@ impl EmbyClient {
             body["MaxStreamingBitrate"] = json!(bitrate);
         }
 
-        let response = self
-            .client
-            .post(&url)
-            .headers(self.build_headers()?)
-            .json(&body)
-            .send()
-            .await?;
+        let headers = self.build_headers()?;
+        let client = self.client.clone();
 
-        let response = check_response(response)?;
-        let playback_info: PlaybackInfoResponse = json_with_limit(response).await?;
-        Ok(playback_info)
+        with_retry(|| {
+            let url = url.clone();
+            let body = body.clone();
+            let headers = headers.clone();
+            let client = client.clone();
+            async move {
+                let response = client
+                    .post(&url)
+                    .headers(headers)
+                    .json(&body)
+                    .send()
+                    .await?;
+
+                let response = check_response(response)?;
+                let playback_info: PlaybackInfoResponse = json_with_limit(response).await?;
+                Ok(playback_info)
+            }
+        }).await
     }
 
     /// Delete active encodings

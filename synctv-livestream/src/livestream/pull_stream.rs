@@ -14,6 +14,7 @@ use synctv_xiu::streamhub::stream::StreamIdentifier;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Pull stream instance (pulls RTMP from publisher via gRPC, serves FLV to local clients)
 ///
@@ -33,6 +34,9 @@ pub struct PullStream {
     epoch: u64,
     /// Cancellation token for graceful shutdown propagation.
     cancel_token: CancellationToken,
+    /// Flag to prevent double UnPublish: set to `true` after `stop()` sends UnPublish.
+    /// The `Drop` implementation checks this to skip its own UnPublish.
+    stopped: AtomicBool,
 }
 
 impl ManagedStream for PullStream {
@@ -65,6 +69,7 @@ impl PullStream {
             lifecycle: StreamLifecycle::new(),
             epoch,
             cancel_token: CancellationToken::new(),
+            stopped: AtomicBool::new(false),
         }
     }
 
@@ -176,6 +181,9 @@ impl PullStream {
     pub async fn stop(&self) -> StreamResult<()> {
         self.lifecycle.mark_stopping();
 
+        // Mark as stopped so Drop does not send a duplicate UnPublish
+        self.stopped.store(true, Ordering::SeqCst);
+
         // Cancel the puller task gracefully first
         self.cancel_token.cancel();
 
@@ -231,6 +239,15 @@ impl Drop for PullStream {
     fn drop(&mut self) {
         // Cancel the puller task gracefully via token
         self.cancel_token.cancel();
+
+        // Skip UnPublish if stop() was already called (prevents double-send)
+        if self.stopped.load(Ordering::SeqCst) {
+            debug!(
+                "PullStream dropped for {}/{} (stop() already called, skipping UnPublish)",
+                self.room_id, self.media_id
+            );
+            return;
+        }
 
         // Send UnPublish to StreamHub so the local stream entry is removed.
         // Best-effort: if the channel is full or closed, we log and move on.

@@ -481,7 +481,25 @@ async fn main() -> Result<()> {
         "Connection manager initialized with configurable limits"
     );
 
-    // 7. Initialize ClusterManager (unified cluster management)
+    // 7. Initialize CacheInvalidationService early so ClusterManager can use it
+    let redis_client_for_cache = if config.redis.url.is_empty() {
+        None
+    } else {
+        redis::Client::open(config.redis.url.clone()).ok()
+    };
+    let key_builder = synctv_core::cache::KeyBuilder::from_config(&config);
+    let cache_invalidation_service = Arc::new(
+        synctv_core::cache::CacheInvalidationService::new(
+            redis_client_for_cache,
+            node_id.clone(),
+            key_builder.cache_invalidation_channel(),
+        ),
+    );
+    if let Err(e) = cache_invalidation_service.start().await {
+        warn!("Failed to start cache invalidation listener: {}", e);
+    }
+
+    // Initialize ClusterManager (unified cluster management)
     // Extract permission service for cross-replica cache invalidation
     let permission_service = Some(synctv_services.room_service.permission_service().clone());
 
@@ -496,7 +514,7 @@ async fn main() -> Result<()> {
             critical_channel_capacity: config.cluster.critical_channel_capacity,
             publish_channel_capacity: config.cluster.publish_channel_capacity,
         };
-        match ClusterManager::new(cluster_config, None).await {
+        match ClusterManager::new(cluster_config, None, None).await {
             Ok(manager) => Some(Arc::new(manager)),
             Err(e) => {
                 error!("Failed to create single-node ClusterManager: {}", e);
@@ -512,9 +530,13 @@ async fn main() -> Result<()> {
             critical_channel_capacity: config.cluster.critical_channel_capacity,
             publish_channel_capacity: config.cluster.publish_channel_capacity,
         };
-        match ClusterManager::new(cluster_config, permission_service).await {
+        match ClusterManager::new(
+            cluster_config,
+            permission_service,
+            Some((*cache_invalidation_service).clone()),
+        ).await {
             Ok(manager) => {
-                info!("ClusterManager initialized with cross-replica permission cache invalidation");
+                info!("ClusterManager initialized with cross-replica cache invalidation");
                 Some(Arc::new(manager))
             }
             Err(e) => {
@@ -535,24 +557,6 @@ async fn main() -> Result<()> {
             cluster_manager: cm.clone(),
         }));
         info!("PlaybackService wired with cluster broadcaster");
-    }
-
-    // 7.1. Initialize CacheInvalidationService for cross-replica cache sync
-    let redis_client_for_cache = if config.redis.url.is_empty() {
-        None
-    } else {
-        redis::Client::open(config.redis.url.clone()).ok()
-    };
-    let key_builder = synctv_core::cache::KeyBuilder::from_config(&config);
-    let cache_invalidation_service = Arc::new(
-        synctv_core::cache::CacheInvalidationService::new(
-            redis_client_for_cache,
-            node_id.clone(),
-            key_builder.cache_invalidation_channel(),
-        ),
-    );
-    if let Err(e) = cache_invalidation_service.start().await {
-        warn!("Failed to start cache invalidation listener: {}", e);
     }
 
     // Wire CacheInvalidationService into PlaybackService and RoomService.

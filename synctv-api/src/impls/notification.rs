@@ -11,6 +11,7 @@ use synctv_core::models::notification::{
 use synctv_core::service::UserNotificationService;
 use uuid::Uuid;
 
+use crate::impls::ApiError;
 use crate::proto::client::{
     NotificationProto, NotificationType as ProtoNotificationType,
 };
@@ -82,7 +83,7 @@ impl NotificationApiImpl {
         page_size: Option<i32>,
         is_read: Option<bool>,
         notification_type: Option<CoreNotificationType>,
-    ) -> Result<ListNotificationsResult, String> {
+    ) -> Result<ListNotificationsResult, ApiError> {
         let query = NotificationListQuery {
             pagination: synctv_core::models::PageParams::new(
                 page.map(|p| p as u32),
@@ -96,13 +97,13 @@ impl NotificationApiImpl {
             .notification_service
             .list(user_id, query)
             .await
-            .map_err(|e| format!("Failed to list notifications: {e}"))?;
+            .map_err(|e| ApiError::Internal(format!("Failed to list notifications: {e}")))?;
 
         let unread_count = self
             .notification_service
             .get_unread_count(user_id)
             .await
-            .map_err(|e| format!("Failed to get unread count: {e}"))?;
+            .map_err(|e| ApiError::Internal(format!("Failed to get unread count: {e}")))?;
 
         Ok(ListNotificationsResult {
             notifications,
@@ -116,15 +117,15 @@ impl NotificationApiImpl {
         &self,
         user_id: &UserId,
         notification_id: Uuid,
-    ) -> Result<Notification, String> {
+    ) -> Result<Notification, ApiError> {
         self.notification_service
             .get(user_id, notification_id)
             .await
             .map_err(|e| {
                 if e.to_string().contains("not found") {
-                    "Notification not found".to_string()
+                    ApiError::NotFound("Notification not found".to_string())
                 } else {
-                    format!("Failed to get notification: {e}")
+                    ApiError::Internal(format!("Failed to get notification: {e}"))
                 }
             })
     }
@@ -134,12 +135,12 @@ impl NotificationApiImpl {
         &self,
         user_id: &UserId,
         notification_ids: Vec<Uuid>,
-    ) -> Result<(), String> {
+    ) -> Result<(), ApiError> {
         self.notification_service
             .mark_as_read(user_id, MarkAsReadRequest { notification_ids })
             .await
             .map(|_| ())
-            .map_err(|e| format!("Failed to mark notifications as read: {e}"))
+            .map_err(|e| ApiError::Internal(format!("Failed to mark notifications as read: {e}")))
     }
 
     /// Mark all notifications as read, optionally before a timestamp.
@@ -147,12 +148,12 @@ impl NotificationApiImpl {
         &self,
         user_id: &UserId,
         before: Option<chrono::DateTime<chrono::Utc>>,
-    ) -> Result<(), String> {
+    ) -> Result<(), ApiError> {
         self.notification_service
             .mark_all_as_read(user_id, MarkAllAsReadRequest { before })
             .await
             .map(|_| ())
-            .map_err(|e| format!("Failed to mark all notifications as read: {e}"))
+            .map_err(|e| ApiError::Internal(format!("Failed to mark all notifications as read: {e}")))
     }
 
     /// Delete a specific notification.
@@ -160,25 +161,25 @@ impl NotificationApiImpl {
         &self,
         user_id: &UserId,
         notification_id: Uuid,
-    ) -> Result<(), String> {
+    ) -> Result<(), ApiError> {
         self.notification_service
             .delete(user_id, notification_id)
             .await
             .map_err(|e| {
                 if e.to_string().contains("not found") {
-                    "Notification not found".to_string()
+                    ApiError::NotFound("Notification not found".to_string())
                 } else {
-                    format!("Failed to delete notification: {e}")
+                    ApiError::Internal(format!("Failed to delete notification: {e}"))
                 }
             })
     }
 
     /// Delete all read notifications for a user.
-    pub async fn delete_all_read(&self, user_id: &UserId) -> Result<(), String> {
+    pub async fn delete_all_read(&self, user_id: &UserId) -> Result<(), ApiError> {
         self.notification_service
             .delete_all_read(user_id)
             .await
             .map(|_| ())
-            .map_err(|e| format!("Failed to delete all read notifications: {e}"))
+            .map_err(|e| ApiError::Internal(format!("Failed to delete all read notifications: {e}")))
     }
 }

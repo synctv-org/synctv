@@ -40,8 +40,9 @@ fn stream_key_for_event(event: &ClusterEvent) -> String {
 }
 
 use super::dedup::{DedupKey, MessageDeduplicator};
-use super::events::ClusterEvent;
+use super::events::{CacheTarget, ClusterEvent};
 use super::room_hub::RoomMessageHub;
+use synctv_core::cache::CacheInvalidationService;
 use synctv_core::models::id::RoomId;
 use synctv_core::service::PermissionService;
 
@@ -64,6 +65,8 @@ pub struct RedisPubSub {
     node_id: String,
     admin_event_tx: broadcast::Sender<ClusterEvent>,
     permission_service: Option<PermissionService>,
+    /// Cache invalidation service for cross-replica user/room/username cache invalidation
+    cache_invalidation: Option<CacheInvalidationService>,
     deduplicator: Arc<MessageDeduplicator>,
     cancel_token: CancellationToken,
 }
@@ -76,6 +79,7 @@ impl RedisPubSub {
         node_id: String,
         admin_event_tx: broadcast::Sender<ClusterEvent>,
         permission_service: Option<PermissionService>,
+        cache_invalidation: Option<CacheInvalidationService>,
         deduplicator: Arc<MessageDeduplicator>,
     ) -> Result<Self> {
         let redis_client = RedisClient::open(redis_url).context("Failed to create Redis client")?;
@@ -88,6 +92,7 @@ impl RedisPubSub {
             node_id,
             admin_event_tx,
             permission_service,
+            cache_invalidation,
             deduplicator,
             cancel_token: CancellationToken::new(),
         })
@@ -538,6 +543,13 @@ impl RedisPubSub {
             "Dispatching event from Redis"
         );
 
+        // Handle CacheInvalidate events: dispatch to local cache invalidation
+        // service and do NOT forward to admin channel or room subscribers.
+        if let ClusterEvent::CacheInvalidate { ref targets, .. } = event {
+            self.invalidate_cache_targets(targets).await;
+            return;
+        }
+
         // Handle admin channel events (no room_id)
         if channel.starts_with("synctv:admin:") {
             let _ = self.admin_event_tx.send(event);
@@ -572,7 +584,8 @@ impl RedisPubSub {
                             "Invalidated permission cache on UserLeft (cross-replica)"
                         );
                     }
-                    ClusterEvent::RoomSettingsChanged { .. } => {
+                    ClusterEvent::RoomSettingsChanged { .. }
+                    | ClusterEvent::RoomDeleted { .. } => {
                         perm_svc.invalidate_room_cache(&room_id).await;
                         debug!(
                             room_id = %room_id.as_str(),
@@ -581,6 +594,38 @@ impl RedisPubSub {
                     }
                     _ => {}
                 }
+            }
+
+            // Invalidate data caches for events that modify room/user state.
+            // This ensures L1 caches on other replicas stay consistent
+            // without requiring the originating service to publish a
+            // separate CacheInvalidate event.
+            if self.cache_invalidation.is_some() {
+                match &event {
+                    ClusterEvent::RoomSettingsChanged { .. }
+                    | ClusterEvent::RoomCreated { .. }
+                    | ClusterEvent::RoomDeleted { .. } => {
+                        self.invalidate_cache_targets(&[CacheTarget::Room {
+                            room_id: room_id.as_str().to_string(),
+                        }])
+                        .await;
+                    }
+                    _ => {}
+                }
+            }
+
+            // Handle RoomDeleted: broadcast to local subscribers then clean up the room
+            if matches!(&event, ClusterEvent::RoomDeleted { .. }) {
+                // Notify local subscribers so WebSocket clients learn the room is gone
+                let sent_count = self.message_hub.broadcast(&room_id, event);
+                // Remove all local subscriptions for the deleted room
+                self.message_hub.remove_room(&room_id);
+                info!(
+                    room_id = %room_id.as_str(),
+                    notified = sent_count,
+                    "Handled RoomDeleted: notified local subscribers and cleaned up room"
+                );
+                return;
             }
 
             // Route WebRTC signaling to the specific target connection instead of
@@ -627,6 +672,44 @@ impl RedisPubSub {
         } else {
             warn!(channel = %channel, "Invalid channel format");
         }
+    }
+
+    /// Invalidate local L1 caches for the given targets.
+    ///
+    /// Dispatches each `CacheTarget` to the local `CacheInvalidationService`
+    /// broadcast (which the `CacheManager` listener processes).
+    async fn invalidate_cache_targets(&self, targets: &[CacheTarget]) {
+        let Some(ref cache_svc) = self.cache_invalidation else {
+            return;
+        };
+        use synctv_core::cache::InvalidationMessage;
+        for target in targets {
+            let msg = match target {
+                CacheTarget::User { user_id } => InvalidationMessage::User {
+                    user_id: user_id.clone(),
+                },
+                CacheTarget::Username { user_id } => InvalidationMessage::Username {
+                    user_id: user_id.clone(),
+                },
+                CacheTarget::Room { room_id } => InvalidationMessage::Room {
+                    room_id: room_id.clone(),
+                },
+                CacheTarget::All => InvalidationMessage::All,
+            };
+            // broadcast_all sends to local subscribers AND via Redis.
+            // We only need the local broadcast here (the event already came
+            // from Redis), so we use the local-only path.
+            if let Err(e) = cache_svc.broadcast_all(msg).await {
+                warn!(
+                    error = %e,
+                    "Failed to dispatch cache invalidation from cluster event"
+                );
+            }
+        }
+        debug!(
+            target_count = targets.len(),
+            "Processed CacheInvalidate cluster event"
+        );
     }
 
     /// Publish an event to Redis
@@ -920,10 +1003,10 @@ mod tests {
         let dedup1 = Arc::new(MessageDeduplicator::with_defaults());
         let dedup2 = Arc::new(MessageDeduplicator::with_defaults());
         let pubsub1 = Arc::new(
-            RedisPubSub::new(redis_url, message_hub.clone(), "node1".to_string(), admin_tx.clone(), None, dedup1).unwrap(),
+            RedisPubSub::new(redis_url, message_hub.clone(), "node1".to_string(), admin_tx.clone(), None, None, dedup1).unwrap(),
         );
         let pubsub2 = Arc::new(
-            RedisPubSub::new(redis_url, message_hub.clone(), "node2".to_string(), admin_tx.clone(), None, dedup2).unwrap(),
+            RedisPubSub::new(redis_url, message_hub.clone(), "node2".to_string(), admin_tx.clone(), None, None, dedup2).unwrap(),
         );
 
         // Start both

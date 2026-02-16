@@ -74,6 +74,9 @@ pub struct ServerConfig {
     /// to the pod IP via the downward API (status.podIP).
     /// If empty, falls back to POD_IP env var, then to the system hostname.
     pub advertise_host: String,
+    /// Maximum time in seconds to wait for active connections to drain during shutdown.
+    /// Defaults to 30 seconds. Increase for deployments with many long-lived connections.
+    pub shutdown_drain_timeout_seconds: u64,
 }
 
 impl Default for ServerConfig {
@@ -89,6 +92,7 @@ impl Default for ServerConfig {
             cors_allowed_origins: Vec::new(),
             cluster_secret: String::new(),
             advertise_host: String::new(),
+            shutdown_drain_timeout_seconds: 30,
         }
     }
 }
@@ -895,6 +899,7 @@ mod tests {
                 cors_allowed_origins: Vec::new(),
                 cluster_secret: String::new(),
                 advertise_host: String::new(),
+                shutdown_drain_timeout_seconds: 30,
             },
             database: DatabaseConfig::default(),
             redis: RedisConfig::default(),
@@ -928,6 +933,7 @@ mod tests {
                 cors_allowed_origins: Vec::new(),
                 cluster_secret: String::new(),
                 advertise_host: String::new(),
+                shutdown_drain_timeout_seconds: 30,
             },
             database: DatabaseConfig::default(),
             redis: RedisConfig::default(),

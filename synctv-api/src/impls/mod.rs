@@ -77,6 +77,7 @@ pub enum ErrorKind {
 ///
 /// Use `ApiError::from(core_error)` to convert, then call
 /// `.classify()` for the `ErrorKind`.
+#[derive(Debug)]
 pub enum ApiError {
     NotFound(String),
     Authentication(String),
@@ -123,6 +124,62 @@ impl ApiError {
             | Self::Internal(msg) => msg,
         }
     }
+}
+
+impl std::fmt::Display for ApiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Use the same prefixes that classify_by_prefix recognizes, so that
+        // if an ApiError is converted to String it still classifies correctly.
+        match self {
+            Self::NotFound(msg) => write!(f, "Not found: {msg}"),
+            Self::Authentication(msg) => write!(f, "Authentication error: {msg}"),
+            Self::Authorization(msg) => write!(f, "Authorization error: {msg}"),
+            Self::AlreadyExists(msg) => write!(f, "Already exists: {msg}"),
+            Self::InvalidInput(msg) => write!(f, "Invalid input: {msg}"),
+            Self::Internal(msg) => write!(f, "Internal error: {msg}"),
+        }
+    }
+}
+
+impl From<ApiError> for String {
+    fn from(err: ApiError) -> Self {
+        err.to_string()
+    }
+}
+
+impl From<String> for ApiError {
+    fn from(msg: String) -> Self {
+        // Try to classify the string using the existing prefix/keyword matching
+        // so that pre-existing string errors map to the right variant.
+        match classify_error(&msg) {
+            ErrorKind::NotFound => Self::NotFound(msg),
+            ErrorKind::Unauthenticated => Self::Authentication(msg),
+            ErrorKind::PermissionDenied => Self::Authorization(msg),
+            ErrorKind::AlreadyExists => Self::AlreadyExists(msg),
+            ErrorKind::InvalidArgument => Self::InvalidInput(msg),
+            ErrorKind::Internal => Self::Internal(msg),
+        }
+    }
+}
+
+impl From<serde_json::Error> for ApiError {
+    fn from(err: serde_json::Error) -> Self {
+        Self::InvalidInput(err.to_string())
+    }
+}
+
+impl From<sqlx::Error> for ApiError {
+    fn from(err: sqlx::Error) -> Self {
+        Self::Internal(err.to_string())
+    }
+}
+
+/// Classify either a typed `ApiError` or an untyped error string.
+///
+/// Prefer passing `ApiError` when available for guaranteed correct classification.
+/// Falls back to `classify_error()` for legacy string errors.
+pub fn classify_api_or_string_error(err: &str) -> ErrorKind {
+    classify_error(err)
 }
 
 /// Classify an impls-layer error string into a semantic error kind.
@@ -335,5 +392,30 @@ mod tests {
 
         let err = ApiError::Internal("boom".to_string());
         assert!(matches!(err.classify(), ErrorKind::Internal));
+    }
+
+    #[test]
+    fn test_api_error_display_roundtrips_through_classify() {
+        // ApiError::Display produces prefixed strings that classify_by_prefix recognizes
+        let cases: Vec<(ApiError, fn(&ErrorKind) -> bool)> = vec![
+            (ApiError::NotFound("room".into()), |k| matches!(k, ErrorKind::NotFound)),
+            (ApiError::Authentication("bad".into()), |k| matches!(k, ErrorKind::Unauthenticated)),
+            (ApiError::Authorization("denied".into()), |k| matches!(k, ErrorKind::PermissionDenied)),
+            (ApiError::AlreadyExists("dup".into()), |k| matches!(k, ErrorKind::AlreadyExists)),
+            (ApiError::InvalidInput("bad".into()), |k| matches!(k, ErrorKind::InvalidArgument)),
+            (ApiError::Internal("boom".into()), |k| matches!(k, ErrorKind::Internal)),
+        ];
+        for (api_err, check) in cases {
+            let as_string = api_err.to_string();
+            let classified = classify_error(&as_string);
+            assert!(check(&classified), "ApiError '{}' misclassified after Display roundtrip", as_string);
+        }
+    }
+
+    #[test]
+    fn test_api_error_from_string_conversion() {
+        let err = ApiError::NotFound("item".to_string());
+        let s: String = err.into();
+        assert!(s.starts_with("Not found: "));
     }
 }

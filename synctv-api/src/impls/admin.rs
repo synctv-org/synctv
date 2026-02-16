@@ -10,6 +10,8 @@ use synctv_cluster::sync::{ConnectionManager, ClusterEvent, PublishRequest};
 use synctv_livestream::api::LiveStreamingInfrastructure;
 use tokio::sync::mpsc;
 
+use super::ApiError;
+
 /// Result of validating an admin user's authentication.
 ///
 /// Returned by [`validate_admin_auth`] and consumed by both HTTP and gRPC
@@ -29,24 +31,24 @@ pub async fn validate_admin_auth(
     user_service: &UserService,
     user_id: UserId,
     token_iat: i64,
-) -> Result<ValidatedAdmin, String> {
+) -> Result<ValidatedAdmin, ApiError> {
     let user = user_service
         .get_user(&user_id)
         .await
-        .map_err(|_| "Failed to verify user".to_string())?;
+        .map_err(|_| ApiError::Authentication("Failed to verify user".to_string()))?;
 
     if user.is_deleted() || user.status == UserStatus::Banned {
-        return Err("Authentication failed".to_string());
+        return Err(ApiError::Authentication("Authentication failed".to_string()));
     }
 
     if user_service
         .is_token_invalidated_by_password_change(&user_id, token_iat)
         .await
-        .unwrap_or(false)
+        .unwrap_or(true)
     {
-        return Err(
+        return Err(ApiError::Authentication(
             "Token invalidated due to password change. Please log in again.".to_string(),
-        );
+        ));
     }
 
     Ok(ValidatedAdmin {
@@ -112,7 +114,7 @@ impl AdminApiImpl {
     pub async fn list_rooms(
         &self,
         req: crate::proto::admin::ListRoomsRequest,
-    ) -> Result<crate::proto::admin::ListRoomsResponse, String> {
+    ) -> Result<crate::proto::admin::ListRoomsResponse, ApiError> {
         let page = if req.page > 0 { req.page } else { 1 };
         let page_size = if req.page_size > 0 { req.page_size } else { 50 };
 
@@ -137,7 +139,7 @@ impl AdminApiImpl {
         };
 
         let (rooms, total) = self.room_service.list_rooms(&query).await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         let room_list: Vec<_> = rooms
             .into_iter()
@@ -161,10 +163,10 @@ impl AdminApiImpl {
     pub async fn get_room(
         &self,
         req: crate::proto::admin::GetRoomRequest,
-    ) -> Result<crate::proto::admin::GetRoomResponse, String> {
+    ) -> Result<crate::proto::admin::GetRoomResponse, ApiError> {
         let rid = RoomId::from_string(req.room_id);
         let room = self.room_service.get_room(&rid).await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         Ok(crate::proto::admin::GetRoomResponse {
             room: Some(admin_room_to_proto(
@@ -181,11 +183,23 @@ impl AdminApiImpl {
     pub async fn delete_room(
         &self,
         req: crate::proto::admin::DeleteRoomRequest,
-    ) -> Result<crate::proto::admin::DeleteRoomResponse, String> {
+    ) -> Result<crate::proto::admin::DeleteRoomResponse, ApiError> {
         let rid = RoomId::from_string(req.room_id);
 
         self.room_service.admin_delete_room(&rid).await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
+
+        // Publish RoomDeleted cluster event for cross-replica propagation
+        if let Some(ref tx) = self.redis_publish_tx {
+            let _ = tx.try_send(PublishRequest {
+                event: ClusterEvent::RoomDeleted {
+                    event_id: nanoid::nanoid!(16),
+                    room_id: rid.clone(),
+                    deleted_by: UserId::from_string("admin".to_string()),
+                    timestamp: chrono::Utc::now(),
+                },
+            });
+        }
 
         // Force disconnect all connections in the deleted room
         self.connection_manager.disconnect_room(&rid);
@@ -209,7 +223,7 @@ impl AdminApiImpl {
     pub async fn update_room_password(
         &self,
         req: crate::proto::admin::UpdateRoomPasswordRequest,
-    ) -> Result<crate::proto::admin::UpdateRoomPasswordResponse, String> {
+    ) -> Result<crate::proto::admin::UpdateRoomPasswordResponse, ApiError> {
         let room_id = RoomId::from_string(req.room_id);
         let new_password = if req.new_password.is_empty() {
             None
@@ -217,17 +231,17 @@ impl AdminApiImpl {
             Some(req.new_password.as_str())
         };
         self.room_service.admin_set_room_password(&room_id, new_password).await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
         Ok(crate::proto::admin::UpdateRoomPasswordResponse { success: true })
     }
 
     pub async fn get_room_members(
         &self,
         req: crate::proto::admin::GetRoomMembersRequest,
-    ) -> Result<crate::proto::admin::GetRoomMembersResponse, String> {
+    ) -> Result<crate::proto::admin::GetRoomMembersResponse, ApiError> {
         let rid = RoomId::from_string(req.room_id);
         let members = self.room_service.get_room_members(&rid).await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         let proto_members: Vec<_> = members.iter().map(admin_room_member_to_proto).collect();
 
@@ -243,7 +257,7 @@ impl AdminApiImpl {
     pub async fn list_users(
         &self,
         req: crate::proto::admin::ListUsersRequest,
-    ) -> Result<crate::proto::admin::ListUsersResponse, String> {
+    ) -> Result<crate::proto::admin::ListUsersResponse, ApiError> {
         let page = if req.page > 0 { req.page } else { 1 };
         let page_size = if req.page_size > 0 { req.page_size } else { 50 };
 
@@ -270,7 +284,7 @@ impl AdminApiImpl {
         };
 
         let (users, total) = self.user_service.list_users(&query).await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         let user_list: Vec<_> = users.into_iter().map(|u| admin_user_to_proto(&u)).collect();
 
@@ -283,10 +297,10 @@ impl AdminApiImpl {
     pub async fn get_user(
         &self,
         req: crate::proto::admin::GetUserRequest,
-    ) -> Result<crate::proto::admin::GetUserResponse, String> {
+    ) -> Result<crate::proto::admin::GetUserResponse, ApiError> {
         let uid = UserId::from_string(req.user_id);
         let user = self.user_service.get_user(&uid).await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         Ok(crate::proto::admin::GetUserResponse {
             user: Some(admin_user_to_proto(&user)),
@@ -297,27 +311,27 @@ impl AdminApiImpl {
         &self,
         req: crate::proto::admin::UpdateUserRoleRequest,
         caller_role: synctv_core::models::UserRole,
-    ) -> Result<crate::proto::admin::UpdateUserRoleResponse, String> {
+    ) -> Result<crate::proto::admin::UpdateUserRoleResponse, ApiError> {
         let uid = UserId::from_string(req.user_id);
         let user = self.user_service.get_user(&uid).await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         // Parse role from proto enum
         let new_role = crate::impls::client::proto_role_to_user_role(req.role)?;
 
         // Only root can promote to root
         if new_role == synctv_core::models::UserRole::Root && caller_role != synctv_core::models::UserRole::Root {
-            return Err("Only root users can promote to root".to_string());
+            return Err(ApiError::Authorization("Only root users can promote to root".to_string()));
         }
 
         // Only root can change another root user's role
         if user.role == synctv_core::models::UserRole::Root && caller_role != synctv_core::models::UserRole::Root {
-            return Err("Only root users can change root user roles".to_string());
+            return Err(ApiError::Authorization("Only root users can change root user roles".to_string()));
         }
 
         // Only root can change admin user roles
         if user.role == synctv_core::models::UserRole::Admin && caller_role != synctv_core::models::UserRole::Root {
-            return Err("Only root users can change admin user roles".to_string());
+            return Err(ApiError::Authorization("Only root users can change admin user roles".to_string()));
         }
 
         let updated_user = synctv_core::models::User {
@@ -326,7 +340,7 @@ impl AdminApiImpl {
         };
 
         self.user_service.update_user(&updated_user).await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         Ok(crate::proto::admin::UpdateUserRoleResponse {
             user: Some(admin_user_to_proto(&updated_user)),
@@ -337,33 +351,33 @@ impl AdminApiImpl {
         &self,
         req: crate::proto::admin::UpdateUserPasswordRequest,
         caller_role: synctv_core::models::UserRole,
-    ) -> Result<crate::proto::admin::UpdateUserPasswordResponse, String> {
+    ) -> Result<crate::proto::admin::UpdateUserPasswordResponse, ApiError> {
         use crate::http::validation::limits::{PASSWORD_MIN, PASSWORD_MAX};
         if req.new_password.len() < PASSWORD_MIN {
-            return Err(format!("Password must be at least {PASSWORD_MIN} characters"));
+            return Err(ApiError::InvalidInput(format!("Password must be at least {PASSWORD_MIN} characters")));
         }
         if req.new_password.len() > PASSWORD_MAX {
-            return Err(format!("Password must be at most {PASSWORD_MAX} characters"));
+            return Err(ApiError::InvalidInput(format!("Password must be at most {PASSWORD_MAX} characters")));
         }
 
         let uid = UserId::from_string(req.user_id);
 
         // Fetch target user to check role hierarchy
         let target_user = self.user_service.get_user(&uid).await
-            .map_err(|e| format!("User not found: {e}"))?;
+            .map_err(|e| ApiError::NotFound(format!("User not found: {e}")))?;
 
         // Only root can reset another root user's password
         if target_user.role == UserRole::Root && caller_role != UserRole::Root {
-            return Err("Only root users can reset root user passwords".to_string());
+            return Err(ApiError::Authorization("Only root users can reset root user passwords".to_string()));
         }
 
         // Only root can reset admin user passwords (admins cannot reset each other's passwords)
         if target_user.role == UserRole::Admin && caller_role != UserRole::Root {
-            return Err("Only root users can reset admin user passwords".to_string());
+            return Err(ApiError::Authorization("Only root users can reset admin user passwords".to_string()));
         }
 
         self.user_service.set_password(&uid, &req.new_password).await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         Ok(crate::proto::admin::UpdateUserPasswordResponse {
             success: true,
@@ -375,9 +389,9 @@ impl AdminApiImpl {
     pub async fn get_settings(
         &self,
         _req: crate::proto::admin::GetSettingsRequest,
-    ) -> Result<crate::proto::admin::GetSettingsResponse, String> {
+    ) -> Result<crate::proto::admin::GetSettingsResponse, ApiError> {
         let groups = self.settings_service.get_all().await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         let group_list: Vec<_> = groups.into_iter().map(|g| {
             crate::proto::admin::SettingsGroup {
@@ -394,9 +408,9 @@ impl AdminApiImpl {
     pub async fn get_settings_group(
         &self,
         req: crate::proto::admin::GetSettingsGroupRequest,
-    ) -> Result<crate::proto::admin::GetSettingsGroupResponse, String> {
+    ) -> Result<crate::proto::admin::GetSettingsGroupResponse, ApiError> {
         let group = self.settings_service.get(&req.group).await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         Ok(crate::proto::admin::GetSettingsGroupResponse {
             group: Some(crate::proto::admin::SettingsGroup {
@@ -409,11 +423,11 @@ impl AdminApiImpl {
     pub async fn update_settings(
         &self,
         req: crate::proto::admin::UpdateSettingsRequest,
-    ) -> Result<crate::proto::admin::UpdateSettingsResponse, String> {
+    ) -> Result<crate::proto::admin::UpdateSettingsResponse, ApiError> {
         // Update each setting in the group
         for (key, value) in &req.settings {
             self.settings_service.update(key, value.clone()).await
-                .map_err(|e| e.to_string())?;
+                .map_err(ApiError::from)?;
         }
 
         Ok(crate::proto::admin::UpdateSettingsResponse {})
@@ -424,7 +438,7 @@ impl AdminApiImpl {
     pub async fn send_test_email(
         &self,
         req: crate::proto::admin::SendTestEmailRequest,
-    ) -> Result<crate::proto::admin::SendTestEmailResponse, String> {
+    ) -> Result<crate::proto::admin::SendTestEmailResponse, ApiError> {
         // Send test email using EmailService
         match self.email_service.send_test_email(&req.to).await {
             Ok(()) => Ok(crate::proto::admin::SendTestEmailResponse {
@@ -443,11 +457,11 @@ impl AdminApiImpl {
     pub async fn list_provider_instances(
         &self,
         _req: crate::proto::admin::ListProviderInstancesRequest,
-    ) -> Result<crate::proto::admin::ListProviderInstancesResponse, String> {
+    ) -> Result<crate::proto::admin::ListProviderInstancesResponse, ApiError> {
         let instances = self.provider_instance_manager
             .get_all_instances()
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         let proto_instances: Vec<_> = instances
             .into_iter()
@@ -462,13 +476,13 @@ impl AdminApiImpl {
     pub async fn add_provider_instance(
         &self,
         req: crate::proto::admin::AddProviderInstanceRequest,
-    ) -> Result<crate::proto::admin::AddProviderInstanceResponse, String> {
+    ) -> Result<crate::proto::admin::AddProviderInstanceResponse, ApiError> {
         // Parse config if provided
         let (jwt_secret, custom_ca) = if req.config.is_empty() {
             (None, None)
         } else {
             let config: serde_json::Value = serde_json::from_slice(&req.config)
-                .map_err(|e| format!("Invalid config JSON: {e}"))?;
+                .map_err(|e| ApiError::InvalidInput(format!("Invalid config JSON: {e}")))?;
             (
                 config.get("jwt_secret").and_then(|v| v.as_str()).map(String::from),
                 config.get("custom_ca").and_then(|v| v.as_str()).map(String::from),
@@ -493,7 +507,7 @@ impl AdminApiImpl {
         self.provider_instance_manager
             .add(instance.clone())
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         Ok(crate::proto::admin::AddProviderInstanceResponse {
             instance: Some(provider_instance_to_proto(instance)),
@@ -503,13 +517,13 @@ impl AdminApiImpl {
     pub async fn update_provider_instance(
         &self,
         req: crate::proto::admin::UpdateProviderInstanceRequest,
-    ) -> Result<crate::proto::admin::UpdateProviderInstanceResponse, String> {
+    ) -> Result<crate::proto::admin::UpdateProviderInstanceResponse, ApiError> {
         // Get existing instance
         let instances = self.provider_instance_manager.get_all_instances().await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
         let mut instance = instances.into_iter()
             .find(|i| i.name == req.name)
-            .ok_or_else(|| format!("Provider instance '{}' not found", req.name))?;
+            .ok_or_else(|| ApiError::NotFound(format!("Provider instance '{}' not found", req.name)))?;
 
         // Update fields if explicitly provided (optional fields)
         if let Some(endpoint) = req.endpoint {
@@ -536,7 +550,7 @@ impl AdminApiImpl {
         // Parse config if provided for additional settings
         if !req.config.is_empty() {
             let config: serde_json::Value = serde_json::from_slice(&req.config)
-                .map_err(|e| format!("Invalid config JSON: {e}"))?;
+                .map_err(|e| ApiError::InvalidInput(format!("Invalid config JSON: {e}")))?;
             if let Some(jwt_secret) = config.get("jwt_secret").and_then(|v| v.as_str()) {
                 instance.jwt_secret = Some(jwt_secret.to_string());
             }
@@ -556,7 +570,7 @@ impl AdminApiImpl {
         self.provider_instance_manager
             .update(instance.clone())
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         Ok(crate::proto::admin::UpdateProviderInstanceResponse {
             instance: Some(provider_instance_to_proto(instance)),
@@ -566,11 +580,11 @@ impl AdminApiImpl {
     pub async fn delete_provider_instance(
         &self,
         req: crate::proto::admin::DeleteProviderInstanceRequest,
-    ) -> Result<crate::proto::admin::DeleteProviderInstanceResponse, String> {
+    ) -> Result<crate::proto::admin::DeleteProviderInstanceResponse, ApiError> {
         self.provider_instance_manager
             .delete(&req.name)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         Ok(crate::proto::admin::DeleteProviderInstanceResponse {
             success: true,
@@ -580,19 +594,19 @@ impl AdminApiImpl {
     pub async fn reconnect_provider_instance(
         &self,
         req: crate::proto::admin::ReconnectProviderInstanceRequest,
-    ) -> Result<crate::proto::admin::ReconnectProviderInstanceResponse, String> {
+    ) -> Result<crate::proto::admin::ReconnectProviderInstanceResponse, ApiError> {
         // Disable then enable to force reconnect
         self.provider_instance_manager.disable(&req.name).await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
         self.provider_instance_manager.enable(&req.name).await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         // Get updated instance
         let instances = self.provider_instance_manager.get_all_instances().await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
         let instance = instances.into_iter()
             .find(|i| i.name == req.name)
-            .ok_or_else(|| format!("Provider instance '{}' not found", req.name))?;
+            .ok_or_else(|| ApiError::NotFound(format!("Provider instance '{}' not found", req.name)))?;
 
         Ok(crate::proto::admin::ReconnectProviderInstanceResponse {
             instance: Some(provider_instance_to_proto(instance)),
@@ -602,16 +616,16 @@ impl AdminApiImpl {
     pub async fn enable_provider_instance(
         &self,
         req: crate::proto::admin::EnableProviderInstanceRequest,
-    ) -> Result<crate::proto::admin::EnableProviderInstanceResponse, String> {
+    ) -> Result<crate::proto::admin::EnableProviderInstanceResponse, ApiError> {
         self.provider_instance_manager.enable(&req.name).await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         // Get updated instance
         let instances = self.provider_instance_manager.get_all_instances().await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
         let instance = instances.into_iter()
             .find(|i| i.name == req.name)
-            .ok_or_else(|| format!("Provider instance '{}' not found", req.name))?;
+            .ok_or_else(|| ApiError::NotFound(format!("Provider instance '{}' not found", req.name)))?;
 
         Ok(crate::proto::admin::EnableProviderInstanceResponse {
             instance: Some(provider_instance_to_proto(instance)),
@@ -621,16 +635,16 @@ impl AdminApiImpl {
     pub async fn disable_provider_instance(
         &self,
         req: crate::proto::admin::DisableProviderInstanceRequest,
-    ) -> Result<crate::proto::admin::DisableProviderInstanceResponse, String> {
+    ) -> Result<crate::proto::admin::DisableProviderInstanceResponse, ApiError> {
         self.provider_instance_manager.disable(&req.name).await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         // Get updated instance
         let instances = self.provider_instance_manager.get_all_instances().await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
         let instance = instances.into_iter()
             .find(|i| i.name == req.name)
-            .ok_or_else(|| format!("Provider instance '{}' not found", req.name))?;
+            .ok_or_else(|| ApiError::NotFound(format!("Provider instance '{}' not found", req.name)))?;
 
         Ok(crate::proto::admin::DisableProviderInstanceResponse {
             instance: Some(provider_instance_to_proto(instance)),
@@ -643,18 +657,18 @@ impl AdminApiImpl {
         &self,
         req: crate::proto::admin::CreateUserRequest,
         caller_role: synctv_core::models::UserRole,
-    ) -> Result<crate::proto::admin::CreateUserResponse, String> {
+    ) -> Result<crate::proto::admin::CreateUserResponse, ApiError> {
         if req.username.is_empty() || req.password.is_empty() || req.email.is_empty() {
-            return Err("Username, password, and email are required".to_string());
+            return Err(ApiError::InvalidInput("Username, password, and email are required".to_string()));
         }
 
         // Validate password length using shared constants
         use crate::http::validation::limits::{PASSWORD_MIN, PASSWORD_MAX};
         if req.password.len() < PASSWORD_MIN {
-            return Err(format!("Password must be at least {PASSWORD_MIN} characters"));
+            return Err(ApiError::InvalidInput(format!("Password must be at least {PASSWORD_MIN} characters")));
         }
         if req.password.len() > PASSWORD_MAX {
-            return Err(format!("Password must be at most {PASSWORD_MAX} characters"));
+            return Err(ApiError::InvalidInput(format!("Password must be at most {PASSWORD_MAX} characters")));
         }
 
         // Validate role BEFORE registration to fail fast
@@ -664,37 +678,68 @@ impl AdminApiImpl {
             let new_role = crate::impls::client::proto_role_to_user_role(req.role)?;
             // Only root can create root users
             if new_role == synctv_core::models::UserRole::Root && caller_role != synctv_core::models::UserRole::Root {
-                return Err("Only root users can create root users".to_string());
+                return Err(ApiError::Authorization("Only root users can create root users".to_string()));
             }
             Some(new_role)
         } else {
             None
         };
 
-        let (user, _access, _refresh) = self.user_service
-            .register(req.username.clone(), Some(req.email.clone()), req.password.clone())
+        // Hash password before entering the transaction
+        let password_hash = synctv_core::service::hash_password(&req.password)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
-        // Set role immediately after registration (validated above)
-        let user = if let Some(new_role) = target_role {
-            let updated = synctv_core::models::User { role: new_role, ..user };
-            match self.user_service.update_user(&updated).await {
-                Ok(u) => u,
-                Err(e) => {
-                    // Role update failed after registration - log but return the user
-                    // with default role rather than leaving a dangling account
-                    tracing::error!(
-                        user_id = %updated.id.as_str(),
-                        target_role = ?new_role,
-                        error = %e,
-                        "Failed to set role after user creation; user exists with default role"
-                    );
-                    return Err("User created but role update failed".to_string());
-                }
+        // Build user model with the correct role set from the start, avoiding
+        // the previous two-step register-then-update inconsistency window.
+        let mut new_user = synctv_core::models::User::new(
+            req.username.clone(),
+            Some(req.email.clone()),
+            password_hash,
+            Some(synctv_core::models::SignupMethod::Email),
+        );
+        if let Some(role) = target_role {
+            new_user.role = role;
+        }
+
+        // Insert user in a single transaction with the correct role already set.
+        let pool = self.user_service.pool();
+        let mut tx = pool.begin().await.map_err(ApiError::from)?;
+        let user = match sqlx::query_as::<_, synctv_core::models::User>(
+            r"
+            INSERT INTO users (id, username, email, password_hash, signup_method, role, status, email_verified, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            RETURNING id, username, email, password_hash, signup_method, role, status, created_at, updated_at, deleted_at, email_verified
+            ",
+        )
+        .bind(new_user.id.as_str())
+        .bind(&new_user.username)
+        .bind(new_user.email.as_ref())
+        .bind(&new_user.password_hash)
+        .bind(new_user.signup_method.map(|m| m.as_str()))
+        .bind(new_user.role)
+        .bind(new_user.status)
+        .bind(new_user.email_verified)
+        .bind(new_user.created_at)
+        .bind(new_user.updated_at)
+        .fetch_one(&mut *tx)
+        .await {
+            Ok(user) => {
+                tx.commit().await.map_err(ApiError::from)?;
+                user
             }
-        } else {
-            user
+            Err(sqlx::Error::Database(ref db_err)) if db_err.constraint().is_some() => {
+                let constraint = db_err.constraint().unwrap_or("");
+                if constraint.contains("username") {
+                    return Err(ApiError::AlreadyExists("Username already taken".to_string()));
+                } else if constraint.contains("email") {
+                    return Err(ApiError::AlreadyExists("Email already taken".to_string()));
+                }
+                return Err(ApiError::AlreadyExists("Username or email already taken".to_string()));
+            }
+            Err(e) => {
+                return Err(ApiError::Internal(e.to_string()));
+            }
         };
 
         Ok(crate::proto::admin::CreateUserResponse {
@@ -705,28 +750,69 @@ impl AdminApiImpl {
     pub async fn delete_user(
         &self,
         req: crate::proto::admin::DeleteUserRequest,
-    ) -> Result<crate::proto::admin::DeleteUserResponse, String> {
+    ) -> Result<crate::proto::admin::DeleteUserResponse, ApiError> {
         let uid = UserId::from_string(req.user_id);
 
-        // 1. Remove all room memberships for this user
-        let removed = self.room_service
-            .member_service()
-            .remove_all_for_user(&uid)
+        // 1. Invalidate all tokens BEFORE the DB transaction (fail-closed via Redis).
+        //    This ensures the user cannot authenticate even if the DB transaction fails.
+        const THIRTY_DAYS_SECS: i64 = 30 * 24 * 60 * 60;
+        self.user_service
+            .invalidate_all_tokens(&uid, THIRTY_DAYS_SECS)
             .await
-            .map_err(|e| format!("Failed to remove memberships: {e}"))?;
+            .map_err(|e| ApiError::Internal(format!("Failed to invalidate tokens: {e}")))?;
+
+        // 2. Remove memberships + soft-delete user in a single transaction.
+        //    If either step fails, both are rolled back atomically.
+        let pool = self.user_service.pool();
+        let mut tx = pool.begin().await.map_err(ApiError::from)?;
+        let now = chrono::Utc::now();
+
+        // Remove all room memberships
+        let membership_result = sqlx::query(
+            "UPDATE room_members
+             SET left_at = $2, version = version + 1
+             WHERE user_id = $1 AND left_at IS NULL"
+        )
+        .bind(uid.as_str())
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| {
+            ApiError::Internal(format!("Failed to remove memberships: {e}"))
+        })?;
+        let removed = membership_result.rows_affected();
+
+        // Soft-delete the user
+        let delete_result = sqlx::query(
+            "UPDATE users SET deleted_at = $2 WHERE id = $1 AND deleted_at IS NULL"
+        )
+        .bind(uid.as_str())
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(ApiError::from)?;
+
+        if delete_result.rows_affected() == 0 {
+            // Rollback happens automatically on drop
+            return Err(ApiError::NotFound("User not found or already deleted".to_string()));
+        }
+
+        tx.commit().await.map_err(ApiError::from)?;
+
         if removed > 0 {
             tracing::info!(user_id = %uid.as_str(), removed, "Removed room memberships for deleted user");
         }
 
-        // 2. Soft-delete user with full cleanup (tokens, OAuth, caches)
-        //    This invalidates all tokens first (fail-closed), then soft-deletes,
-        //    then cleans up OAuth mappings, username cache, and cross-replica cache.
-        self.user_service.delete_user(&uid).await.map_err(|e| e.to_string())?;
+        // 3. Post-commit cleanup (best-effort, non-transactional side effects)
+        //    OAuth cleanup, cache invalidation, disconnect, kick
+        if let Err(e) = self.user_service.cleanup_oauth_providers(&uid).await {
+            tracing::warn!(error = %e, user_id = %uid.as_str(), "Failed to clean up OAuth2 providers during user deletion");
+        }
 
-        // 3. Force disconnect all user connections (WebSocket and streaming)
+        // Force disconnect all user connections (WebSocket and streaming)
         self.connection_manager.disconnect_user(&uid);
 
-        // 4. Kick active RTMP publishers (local + cluster-wide)
+        // Kick active RTMP publishers (local + cluster-wide)
         if let Some(infra) = &self.live_streaming_infrastructure {
             let streams = infra.user_stream_tracker.get_user_streams(uid.as_str());
 
@@ -743,16 +829,34 @@ impl AdminApiImpl {
     pub async fn update_user_username(
         &self,
         req: crate::proto::admin::UpdateUserUsernameRequest,
-    ) -> Result<crate::proto::admin::UpdateUserUsernameResponse, String> {
+    ) -> Result<crate::proto::admin::UpdateUserUsernameResponse, ApiError> {
         let uid = UserId::from_string(req.user_id);
 
-        if req.new_username.is_empty() {
-            return Err("Username cannot be empty".to_string());
+        // Apply the same validation rules as client-facing set_username:
+        // trim, check length, charset, and leading character restrictions.
+        let username = req.new_username.trim().to_string();
+        if username.chars().count() < synctv_core::validation::USERNAME_MIN {
+            return Err(ApiError::InvalidInput(format!(
+                "Username must be at least {} characters",
+                synctv_core::validation::USERNAME_MIN,
+            )));
+        }
+        if username.chars().count() > synctv_core::validation::USERNAME_MAX {
+            return Err(ApiError::InvalidInput(format!(
+                "Username must be at most {} characters",
+                synctv_core::validation::USERNAME_MAX,
+            )));
+        }
+        if !username.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+            return Err(ApiError::InvalidInput("Username can only contain letters, numbers, underscores, and hyphens".to_string()));
+        }
+        if username.starts_with('_') || username.starts_with('-') {
+            return Err(ApiError::InvalidInput("Username cannot start with underscore or hyphen".to_string()));
         }
 
-        let mut user = self.user_service.get_user(&uid).await.map_err(|e| e.to_string())?;
-        user.username = req.new_username;
-        let updated = self.user_service.update_user(&user).await.map_err(|e| e.to_string())?;
+        let mut user = self.user_service.get_user(&uid).await.map_err(ApiError::from)?;
+        user.username = username;
+        let updated = self.user_service.update_user(&user).await.map_err(ApiError::from)?;
 
         Ok(crate::proto::admin::UpdateUserUsernameResponse {
             user: Some(admin_user_to_proto(&updated)),
@@ -763,28 +867,28 @@ impl AdminApiImpl {
         &self,
         req: crate::proto::admin::BanUserRequest,
         caller_role: synctv_core::models::UserRole,
-    ) -> Result<crate::proto::admin::BanUserResponse, String> {
+    ) -> Result<crate::proto::admin::BanUserResponse, ApiError> {
         let uid = UserId::from_string(req.user_id);
-        let user = self.user_service.get_user(&uid).await.map_err(|e| e.to_string())?;
+        let user = self.user_service.get_user(&uid).await.map_err(ApiError::from)?;
 
         // Prevent admin from banning root users (only root can ban root)
         if user.role == synctv_core::models::UserRole::Root && caller_role != synctv_core::models::UserRole::Root {
-            return Err("Only root users can ban other root users".to_string());
+            return Err(ApiError::Authorization("Only root users can ban other root users".to_string()));
         }
 
         // Prevent admin from banning other admins (only root can ban admins)
         if user.role == synctv_core::models::UserRole::Admin && caller_role != synctv_core::models::UserRole::Root {
-            return Err("Only root users can ban admin users".to_string());
+            return Err(ApiError::Authorization("Only root users can ban admin users".to_string()));
         }
 
         if user.status == UserStatus::Banned {
-            return Err("User is already banned".to_string());
+            return Err(ApiError::InvalidInput("User is already banned".to_string()));
         }
 
         let mut user = user;
 
         user.status = UserStatus::Banned;
-        let updated = self.user_service.update_user(&user).await.map_err(|e| e.to_string())?;
+        let updated = self.user_service.update_user(&user).await.map_err(ApiError::from)?;
 
         // Force disconnect all user connections (WebSocket and streaming)
         self.connection_manager.disconnect_user(&uid);
@@ -814,16 +918,16 @@ impl AdminApiImpl {
     pub async fn unban_user(
         &self,
         req: crate::proto::admin::UnbanUserRequest,
-    ) -> Result<crate::proto::admin::UnbanUserResponse, String> {
+    ) -> Result<crate::proto::admin::UnbanUserResponse, ApiError> {
         let uid = UserId::from_string(req.user_id);
-        let mut user = self.user_service.get_user(&uid).await.map_err(|e| e.to_string())?;
+        let mut user = self.user_service.get_user(&uid).await.map_err(ApiError::from)?;
 
         if user.status != UserStatus::Banned {
-            return Err("User is not banned".to_string());
+            return Err(ApiError::InvalidInput("User is not banned".to_string()));
         }
 
         user.status = UserStatus::Active;
-        let updated = self.user_service.update_user(&user).await.map_err(|e| e.to_string())?;
+        let updated = self.user_service.update_user(&user).await.map_err(ApiError::from)?;
 
         Ok(crate::proto::admin::UnbanUserResponse {
             user: Some(admin_user_to_proto(&updated)),
@@ -833,16 +937,16 @@ impl AdminApiImpl {
     pub async fn approve_user(
         &self,
         req: crate::proto::admin::ApproveUserRequest,
-    ) -> Result<crate::proto::admin::ApproveUserResponse, String> {
+    ) -> Result<crate::proto::admin::ApproveUserResponse, ApiError> {
         let uid = UserId::from_string(req.user_id);
-        let mut user = self.user_service.get_user(&uid).await.map_err(|e| e.to_string())?;
+        let mut user = self.user_service.get_user(&uid).await.map_err(ApiError::from)?;
 
         if user.status != UserStatus::Pending {
-            return Err("User is not pending approval".to_string());
+            return Err(ApiError::InvalidInput("User is not pending approval".to_string()));
         }
 
         user.status = UserStatus::Active;
-        let updated = self.user_service.update_user(&user).await.map_err(|e| e.to_string())?;
+        let updated = self.user_service.update_user(&user).await.map_err(ApiError::from)?;
 
         Ok(crate::proto::admin::ApproveUserResponse {
             user: Some(admin_user_to_proto(&updated)),
@@ -852,20 +956,20 @@ impl AdminApiImpl {
     pub async fn get_user_rooms(
         &self,
         req: crate::proto::admin::GetUserRoomsRequest,
-    ) -> Result<crate::proto::admin::GetUserRoomsResponse, String> {
+    ) -> Result<crate::proto::admin::GetUserRoomsResponse, ApiError> {
         let uid = UserId::from_string(req.user_id);
 
         // Get rooms created by user
         let (created_rooms, _) = self.room_service
             .list_rooms_by_creator(&uid, synctv_core::models::PageParams::new(Some(1), Some(100)))
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         // Get rooms where user is a member
         let (joined_room_ids, _) = self.room_service
             .list_joined_rooms(&uid, synctv_core::models::PageParams::new(Some(1), Some(100)))
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         let mut admin_rooms: Vec<crate::proto::admin::AdminRoom> = created_rooms
             .iter()
@@ -893,16 +997,16 @@ impl AdminApiImpl {
     pub async fn ban_room(
         &self,
         req: crate::proto::admin::BanRoomRequest,
-    ) -> Result<crate::proto::admin::BanRoomResponse, String> {
+    ) -> Result<crate::proto::admin::BanRoomResponse, ApiError> {
         let rid = RoomId::from_string(req.room_id);
-        let room = self.room_service.get_room(&rid).await.map_err(|e| e.to_string())?;
+        let room = self.room_service.get_room(&rid).await.map_err(ApiError::from)?;
 
         if room.is_banned {
-            return Err("Room is already banned".to_string());
+            return Err(ApiError::InvalidInput("Room is already banned".to_string()));
         }
 
         let updated = self.room_service.ban_room(&rid).await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         // Force disconnect all connections in the banned room
         self.connection_manager.disconnect_room(&rid);
@@ -929,16 +1033,16 @@ impl AdminApiImpl {
     pub async fn unban_room(
         &self,
         req: crate::proto::admin::UnbanRoomRequest,
-    ) -> Result<crate::proto::admin::UnbanRoomResponse, String> {
+    ) -> Result<crate::proto::admin::UnbanRoomResponse, ApiError> {
         let rid = RoomId::from_string(req.room_id);
-        let room = self.room_service.get_room(&rid).await.map_err(|e| e.to_string())?;
+        let room = self.room_service.get_room(&rid).await.map_err(ApiError::from)?;
 
         if !room.is_banned {
-            return Err("Room is not banned".to_string());
+            return Err(ApiError::InvalidInput("Room is not banned".to_string()));
         }
 
         let updated = self.room_service.unban_room(&rid).await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         Ok(crate::proto::admin::UnbanRoomResponse {
             room: Some(admin_room_to_proto(
@@ -951,9 +1055,9 @@ impl AdminApiImpl {
     pub async fn approve_room(
         &self,
         req: crate::proto::admin::ApproveRoomRequest,
-    ) -> Result<crate::proto::admin::ApproveRoomResponse, String> {
+    ) -> Result<crate::proto::admin::ApproveRoomResponse, ApiError> {
         let rid = RoomId::from_string(req.room_id);
-        let room = self.room_service.approve_room(&rid).await.map_err(|e| e.to_string())?;
+        let room = self.room_service.approve_room(&rid).await.map_err(ApiError::from)?;
 
         Ok(crate::proto::admin::ApproveRoomResponse {
             room: Some(admin_room_to_proto(
@@ -966,10 +1070,10 @@ impl AdminApiImpl {
     pub async fn get_room_settings(
         &self,
         req: crate::proto::admin::GetRoomSettingsRequest,
-    ) -> Result<crate::proto::admin::GetRoomSettingsResponse, String> {
+    ) -> Result<crate::proto::admin::GetRoomSettingsResponse, ApiError> {
         let rid = RoomId::from_string(req.room_id);
-        let settings = self.room_service.get_room_settings(&rid).await.map_err(|e| e.to_string())?;
-        let settings_json = serde_json::to_vec(&settings).map_err(|e| e.to_string())?;
+        let settings = self.room_service.get_room_settings(&rid).await.map_err(ApiError::from)?;
+        let settings_json = serde_json::to_vec(&settings).map_err(ApiError::from)?;
 
         Ok(crate::proto::admin::GetRoomSettingsResponse { settings: settings_json })
     }
@@ -977,14 +1081,14 @@ impl AdminApiImpl {
     pub async fn update_room_settings(
         &self,
         req: crate::proto::admin::UpdateRoomSettingsRequest,
-    ) -> Result<crate::proto::admin::UpdateRoomSettingsResponse, String> {
+    ) -> Result<crate::proto::admin::UpdateRoomSettingsResponse, ApiError> {
         let rid = RoomId::from_string(req.room_id);
         let settings: synctv_core::models::RoomSettings = serde_json::from_slice(&req.settings)
-            .map_err(|e| format!("Invalid settings JSON: {e}"))?;
+            .map_err(|e| ApiError::InvalidInput(format!("Invalid settings JSON: {e}")))?;
 
-        self.room_service.set_room_settings(&rid, &settings).await.map_err(|e| e.to_string())?;
+        self.room_service.set_room_settings(&rid, &settings).await.map_err(ApiError::from)?;
 
-        let room = self.room_service.get_room(&rid).await.map_err(|e| e.to_string())?;
+        let room = self.room_service.get_room(&rid).await.map_err(ApiError::from)?;
 
         Ok(crate::proto::admin::UpdateRoomSettingsResponse {
             room: Some(admin_room_to_proto(
@@ -998,11 +1102,11 @@ impl AdminApiImpl {
         &self,
         req: crate::proto::admin::ResetRoomSettingsRequest,
         admin_user_id: &UserId,
-    ) -> Result<crate::proto::admin::ResetRoomSettingsResponse, String> {
+    ) -> Result<crate::proto::admin::ResetRoomSettingsResponse, ApiError> {
         let rid = RoomId::from_string(req.room_id);
-        self.room_service.reset_room_settings(&rid, admin_user_id).await.map_err(|e| e.to_string())?;
+        self.room_service.reset_room_settings(&rid, admin_user_id).await.map_err(ApiError::from)?;
 
-        let room = self.room_service.get_room(&rid).await.map_err(|e| e.to_string())?;
+        let room = self.room_service.get_room(&rid).await.map_err(ApiError::from)?;
         let settings = self.room_service.get_room_settings(&rid).await.unwrap_or_default();
 
         Ok(crate::proto::admin::ResetRoomSettingsResponse {
@@ -1018,16 +1122,16 @@ impl AdminApiImpl {
     pub async fn add_admin(
         &self,
         req: crate::proto::admin::AddAdminRequest,
-    ) -> Result<crate::proto::admin::AddAdminResponse, String> {
+    ) -> Result<crate::proto::admin::AddAdminResponse, ApiError> {
         let uid = UserId::from_string(req.user_id);
-        let mut user = self.user_service.get_user(&uid).await.map_err(|e| e.to_string())?;
+        let mut user = self.user_service.get_user(&uid).await.map_err(ApiError::from)?;
 
         if user.role.is_admin_or_above() {
-            return Err("User is already an admin or root".to_string());
+            return Err(ApiError::InvalidInput("User is already an admin or root".to_string()));
         }
 
         user.role = UserRole::Admin;
-        let updated = self.user_service.update_user(&user).await.map_err(|e| e.to_string())?;
+        let updated = self.user_service.update_user(&user).await.map_err(ApiError::from)?;
 
         Ok(crate::proto::admin::AddAdminResponse {
             user: Some(admin_user_to_proto(&updated)),
@@ -1037,19 +1141,19 @@ impl AdminApiImpl {
     pub async fn remove_admin(
         &self,
         req: crate::proto::admin::RemoveAdminRequest,
-    ) -> Result<crate::proto::admin::RemoveAdminResponse, String> {
+    ) -> Result<crate::proto::admin::RemoveAdminResponse, ApiError> {
         let uid = UserId::from_string(req.user_id);
-        let mut user = self.user_service.get_user(&uid).await.map_err(|e| e.to_string())?;
+        let mut user = self.user_service.get_user(&uid).await.map_err(ApiError::from)?;
 
         if matches!(user.role, UserRole::Root) {
-            return Err("Cannot remove admin role from root user".to_string());
+            return Err(ApiError::Authorization("Cannot remove admin role from root user".to_string()));
         }
         if !user.role.is_admin_or_above() {
-            return Err("User is not an admin".to_string());
+            return Err(ApiError::InvalidInput("User is not an admin".to_string()));
         }
 
         user.role = UserRole::User;
-        self.user_service.update_user(&user).await.map_err(|e| e.to_string())?;
+        self.user_service.update_user(&user).await.map_err(ApiError::from)?;
 
         Ok(crate::proto::admin::RemoveAdminResponse { success: true })
     }
@@ -1057,7 +1161,7 @@ impl AdminApiImpl {
     pub async fn list_admins(
         &self,
         _req: crate::proto::admin::ListAdminsRequest,
-    ) -> Result<crate::proto::admin::ListAdminsResponse, String> {
+    ) -> Result<crate::proto::admin::ListAdminsResponse, ApiError> {
         // The DB query filters by role="admin" which returns admin and root users.
         // No additional client-side filtering needed.
         let query = synctv_core::models::UserListQuery {
@@ -1066,7 +1170,7 @@ impl AdminApiImpl {
             ..Default::default()
         };
 
-        let (users, _) = self.user_service.list_users(&query).await.map_err(|e| e.to_string())?;
+        let (users, _) = self.user_service.list_users(&query).await.map_err(ApiError::from)?;
 
         let admins: Vec<_> = users
             .into_iter()
@@ -1081,7 +1185,7 @@ impl AdminApiImpl {
     pub async fn get_system_stats(
         &self,
         _req: crate::proto::admin::GetSystemStatsRequest,
-    ) -> Result<crate::proto::admin::GetSystemStatsResponse, String> {
+    ) -> Result<crate::proto::admin::GetSystemStatsResponse, ApiError> {
         // M-4: Run all 7 independent DB queries in parallel
         let stats_pagination = synctv_core::models::PageParams::new(Some(1), Some(1));
         let query_all = synctv_core::models::UserListQuery { pagination: stats_pagination, ..Default::default() };

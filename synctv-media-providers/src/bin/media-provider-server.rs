@@ -8,6 +8,7 @@
 
 use std::sync::Arc;
 
+use sha2::{Sha256, Digest};
 use subtle::ConstantTimeEq;
 use synctv_media_providers::grpc::{
     alist::alist_server::AlistServer,
@@ -46,9 +47,9 @@ impl ProviderAuthInterceptor {
             .to_str()
             .map_err(|_| Status::unauthenticated("Invalid x-provider-secret header"))?;
 
-        if token.len() != self.secret.len()
-            || !bool::from(token.as_bytes().ct_eq(self.secret.as_bytes()))
-        {
+        let token_hash = Sha256::digest(token.as_bytes());
+        let secret_hash = Sha256::digest(self.secret.as_bytes());
+        if !bool::from(token_hash.ct_eq(&secret_hash)) {
             warn!("Provider gRPC auth failed: invalid secret");
             return Err(Status::unauthenticated("Invalid provider secret"));
         }

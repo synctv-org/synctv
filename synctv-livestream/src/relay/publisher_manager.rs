@@ -199,6 +199,60 @@ impl PublisherManager {
         Ok(())
     }
 
+    /// Force re-registration of all tracked active publishers in Redis.
+    ///
+    /// Called after StreamHub restart to ensure Redis state is consistent
+    /// with the local `active_publishers` map. Without this, publishers
+    /// that were cleaned up from Redis would remain stale until TTL expiry.
+    pub async fn reregister_all_publishers(&self) {
+        let snapshot: Vec<(String, String)> = self
+            .active_publishers
+            .iter()
+            .map(|entry| (entry.key().clone(), entry.value().clone()))
+            .collect();
+
+        if snapshot.is_empty() {
+            debug!("No active publishers to re-register after StreamHub restart");
+            return;
+        }
+
+        info!(
+            "Re-registering {} active publishers after StreamHub restart",
+            snapshot.len()
+        );
+
+        for (stream_name, publisher_key) in &snapshot {
+            if let Some((room_id, media_id)) = publisher_key.split_once(':') {
+                match self
+                    .registry
+                    .try_register_publisher(room_id, media_id, &self.local_node_id, "")
+                    .await
+                {
+                    Ok(true) => {
+                        info!(
+                            "Re-registered publisher for room {} / media {} (stream: {})",
+                            room_id, media_id, stream_name
+                        );
+                    }
+                    Ok(false) => {
+                        warn!(
+                            "Could not re-register publisher for room {} / media {} (another node took over)",
+                            room_id, media_id
+                        );
+                        // Remove from local tracking since we no longer own it
+                        self.active_publishers.remove(stream_name);
+                    }
+                    Err(e) => {
+                        error!(
+                            "Failed to re-register publisher for room {} / media {}: {}",
+                            room_id, media_id, e
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     /// Maintain heartbeat for all active publishers
     async fn maintain_heartbeats(&self) {
         let mut heartbeat_interval = interval(Duration::from_secs(HEARTBEAT_INTERVAL_SECS));

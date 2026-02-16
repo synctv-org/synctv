@@ -2,6 +2,7 @@
 
 use synctv_core::models::{PermissionBits, RoomId, UserId};
 
+use crate::impls::ApiError;
 use super::ClientApiImpl;
 use super::convert::playlist_to_proto;
 
@@ -11,13 +12,13 @@ impl ClientApiImpl {
         user_id: &str,
         room_id: &str,
         req: crate::proto::client::CreatePlaylistRequest,
-    ) -> Result<crate::proto::client::CreatePlaylistResponse, String> {
+    ) -> Result<crate::proto::client::CreatePlaylistResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
 
         // Check membership and playlist management permission
         self.room_service.check_permission(&rid, &uid, PermissionBits::REORDER_PLAYLIST).await
-            .map_err(|e| format!("Forbidden: {e}"))?;
+            .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
 
         let parent_id = if req.parent_id.is_empty() {
             None
@@ -38,7 +39,7 @@ impl ClientApiImpl {
         let playlist = self.room_service.playlist_service()
             .create_playlist(rid, uid, service_req)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         let item_count = self.room_service.media_service()
             .count_playlist_media(&playlist.id)
@@ -55,13 +56,13 @@ impl ClientApiImpl {
         user_id: &str,
         room_id: &str,
         req: crate::proto::client::UpdatePlaylistRequest,
-    ) -> Result<crate::proto::client::UpdatePlaylistResponse, String> {
+    ) -> Result<crate::proto::client::UpdatePlaylistResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
 
         // Check membership and playlist management permission
         self.room_service.check_permission(&rid, &uid, PermissionBits::REORDER_PLAYLIST).await
-            .map_err(|e| format!("Forbidden: {e}"))?;
+            .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
 
         let playlist_id = synctv_core::models::PlaylistId::from_string(req.playlist_id);
 
@@ -77,7 +78,7 @@ impl ClientApiImpl {
         let playlist = self.room_service.playlist_service()
             .set_playlist(rid, uid, service_req)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         let item_count = self.room_service.media_service()
             .count_playlist_media(&playlist.id)
@@ -94,20 +95,20 @@ impl ClientApiImpl {
         user_id: &str,
         room_id: &str,
         req: crate::proto::client::DeletePlaylistRequest,
-    ) -> Result<crate::proto::client::DeletePlaylistResponse, String> {
+    ) -> Result<crate::proto::client::DeletePlaylistResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
 
         // Check membership and playlist management permission
         self.room_service.check_permission(&rid, &uid, PermissionBits::REORDER_PLAYLIST).await
-            .map_err(|e| format!("Forbidden: {e}"))?;
+            .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
 
         let playlist_id = synctv_core::models::PlaylistId::from_string(req.playlist_id);
 
         self.room_service.playlist_service()
             .delete_playlist(rid, uid, playlist_id)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         Ok(crate::proto::client::DeletePlaylistResponse { success: true })
     }
@@ -117,37 +118,43 @@ impl ClientApiImpl {
         user_id: &str,
         room_id: &str,
         req: crate::proto::client::ListPlaylistsRequest,
-    ) -> Result<crate::proto::client::ListPlaylistsResponse, String> {
+    ) -> Result<crate::proto::client::ListPlaylistsResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
 
         // Check membership before returning playlist data
         self.room_service.check_membership(&rid, &uid).await
-            .map_err(|e| format!("Forbidden: {e}"))?;
+            .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
 
         let playlists = if req.parent_id.is_empty() {
             // Get all playlists in room
             self.room_service.playlist_service()
                 .get_room_playlists(&rid)
                 .await
-                .map_err(|e| e.to_string())?
+                .map_err(ApiError::from)?
         } else {
             // Get children of specific playlist
             let parent_id = synctv_core::models::PlaylistId::from_string(req.parent_id);
             self.room_service.playlist_service()
                 .get_children(&parent_id)
                 .await
-                .map_err(|e| e.to_string())?
+                .map_err(ApiError::from)?
         };
 
-        let mut proto_playlists = Vec::with_capacity(playlists.len());
-        for pl in &playlists {
-            let item_count = self.room_service.media_service()
-                .count_playlist_media(&pl.id)
-                .await
-                .unwrap_or(0) as i32;
-            proto_playlists.push(playlist_to_proto(pl, item_count));
-        }
+        // Batch-fetch media counts to avoid N+1 queries.
+        let playlist_ids: Vec<&str> = playlists.iter().map(|pl| pl.id.as_str()).collect();
+        let counts = self.room_service.media_service()
+            .count_playlist_media_batch(&playlist_ids)
+            .await
+            .unwrap_or_default();
+
+        let proto_playlists: Vec<_> = playlists
+            .iter()
+            .map(|pl| {
+                let item_count = counts.get(pl.id.as_str()).copied().unwrap_or(0) as i32;
+                playlist_to_proto(pl, item_count)
+            })
+            .collect();
 
         Ok(crate::proto::client::ListPlaylistsResponse {
             playlists: proto_playlists,

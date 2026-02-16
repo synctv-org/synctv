@@ -412,6 +412,17 @@ impl<S: ManagedStream> StreamPool<S> {
                             stream_key,
                         );
                         stream.lifecycle().restore_running();
+
+                        // Verify we're still in the DashMap. A concurrent viewer may have
+                        // seen us as unhealthy, removed us, and created a replacement.
+                        // If so, exit to avoid leaking this orphaned cleanup task.
+                        if !streams.contains_key(stream_key) {
+                            debug!(
+                                "Cleanup exiting for {}: stream replaced by concurrent viewer",
+                                stream_key,
+                            );
+                            break;
+                        }
                         continue;
                     }
 

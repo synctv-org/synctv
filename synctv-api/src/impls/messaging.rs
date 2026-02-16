@@ -164,7 +164,7 @@ impl StreamMessageHandler {
         let mut disconnect_rx = self.connection_manager.subscribe_disconnect();
 
         // Send initial user joined notification
-        stream.send(self.create_user_joined_message(&room_id_str))?;
+        stream.send(self.create_user_joined_message(&room_id_str).await)?;
 
         // Main message loop using tokio::select! for concurrent operations
         loop {
@@ -272,11 +272,42 @@ impl StreamMessageHandler {
         Ok(())
     }
 
-    /// Create initial user joined message
-    fn create_user_joined_message(&self, room_id: &str) -> ServerMessage {
+    /// Create initial user joined message with actual role and permissions
+    /// fetched from the room membership data.
+    async fn create_user_joined_message(&self, room_id: &str) -> ServerMessage {
         use crate::proto::client::server_message::Message;
         use crate::proto::client::UserJoinedRoom;
         use synctv_proto::common::RoomMember;
+
+        // Fetch the actual role and permissions from the membership record
+        let (role_proto, permissions, added, removed, admin_added, admin_removed) =
+            match self.room_service.member_service().get_member(&self.room_id, &self.user_id).await {
+                Ok(Some(member)) => {
+                    let effective = member.effective_permissions(member.role.permissions());
+                    let role = match member.role {
+                        synctv_core::models::RoomRole::Creator => synctv_proto::common::RoomMemberRole::Creator as i32,
+                        synctv_core::models::RoomRole::Admin => synctv_proto::common::RoomMemberRole::Admin as i32,
+                        synctv_core::models::RoomRole::Member => synctv_proto::common::RoomMemberRole::Member as i32,
+                        synctv_core::models::RoomRole::Guest => synctv_proto::common::RoomMemberRole::Guest as i32,
+                    };
+                    (
+                        role,
+                        effective.0,
+                        member.added_permissions,
+                        member.removed_permissions,
+                        member.admin_added_permissions,
+                        member.admin_removed_permissions,
+                    )
+                }
+                _ => {
+                    // Fallback: if we can't fetch membership, use Member defaults
+                    (
+                        synctv_proto::common::RoomMemberRole::Member as i32,
+                        synctv_core::models::PermissionBits::DEFAULT_MEMBER,
+                        0, 0, 0, 0,
+                    )
+                }
+            };
 
         ServerMessage {
             message: Some(Message::UserJoined(UserJoinedRoom {
@@ -285,12 +316,12 @@ impl StreamMessageHandler {
                     room_id: room_id.to_string(),
                     user_id: self.user_id.as_str().to_string(),
                     username: self.username.clone(),
-                    role: synctv_proto::common::RoomMemberRole::Member as i32,
-                    permissions: 0,
-                    added_permissions: 0,
-                    removed_permissions: 0,
-                    admin_added_permissions: 0,
-                    admin_removed_permissions: 0,
+                    role: role_proto,
+                    permissions,
+                    added_permissions: added,
+                    removed_permissions: removed,
+                    admin_added_permissions: admin_added,
+                    admin_removed_permissions: admin_removed,
                     joined_at: chrono::Utc::now().timestamp(),
                     is_online: true,
                 }),
@@ -491,6 +522,14 @@ impl StreamMessageHandler {
         Ok(())
     }
 
+    /// Handle danmaku (bullet comment) messages.
+    ///
+    /// Danmaku are intentionally ephemeral and NOT persisted to the database.
+    /// Unlike regular chat messages, danmaku are time-anchored video overlays
+    /// that only make sense in the context of the current playback session.
+    /// They are broadcast to all connected clients for real-time display but
+    /// are not saved for later retrieval. This is consistent with how major
+    /// danmaku platforms (Bilibili, Niconico) treat live/real-time danmaku.
     async fn handle_danmaku(&self, content: &str, position: f64, color: Option<String>) -> Result<(), String> {
         let event = ClusterEvent::ChatMessage {
             event_id: nanoid::nanoid!(16),
@@ -865,8 +904,17 @@ fn cluster_event_to_server_message(
                 })),
             })
         }
-        ClusterEvent::KickPublisher { .. } | ClusterEvent::KickUser { .. } => {
-            // Admin events are handled by the admin event channel,
+        ClusterEvent::RoomDeleted { .. } => {
+            // Notify WebSocket clients that the room has been deleted
+            Some(ServerMessage {
+                message: Some(Message::Error(ErrorMessage {
+                    message: "Room has been deleted".to_string(),
+                })),
+            })
+        }
+        ClusterEvent::KickPublisher { .. } | ClusterEvent::KickUser { .. }
+        | ClusterEvent::RoomCreated { .. } | ClusterEvent::CacheInvalidate { .. } => {
+            // Admin/internal events are handled by other channels,
             // not forwarded to WebSocket clients
             None
         }

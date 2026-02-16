@@ -46,7 +46,6 @@ pub struct LivestreamHandle {
     pub infrastructure: Arc<LiveStreamingInfrastructure>,
     pub pull_manager: Arc<PullStreamManager>,
     hub_handle: JoinHandle<()>,
-    rtmp_handle: JoinHandle<()>,
     hls_remuxer_handle: JoinHandle<()>,
     publisher_manager_handle: JoinHandle<()>,
     pull_manager_cleanup: JoinHandle<()>,
@@ -65,7 +64,6 @@ impl LivestreamHandle {
         self.publisher_manager_handle.abort();
         self.hls_shutdown_token.cancel();
         self.hls_remuxer_handle.abort();
-        self.rtmp_handle.abort();
         self.hub_handle.abort();
     }
 
@@ -116,14 +114,9 @@ impl LivestreamHandle {
             all_graceful = false;
         }
 
-        // 5. Stop RTMP server
-        self.rtmp_handle.abort();
-        if timeout(timeout_duration, &mut self.rtmp_handle).await.is_ok() { info!("RTMP server stopped") } else {
-            warn!("RTMP server shutdown timed out");
-            all_graceful = false;
-        }
-
-        // 6. Stop StreamHub (last, as other components depend on it)
+        // 5. Stop StreamHub (last, as other components depend on it)
+        // The RTMP server is now managed inside the hub loop and will be
+        // cancelled automatically when the hub task is aborted.
         self.hub_handle.abort();
         if timeout(timeout_duration, &mut self.hub_handle).await.is_ok() { info!("StreamHub stopped") } else {
             warn!("StreamHub shutdown timed out");
@@ -196,14 +189,15 @@ impl LivestreamServer {
         // Clone registry for cleanup on StreamHub restart
         let registry_for_cleanup = self.publisher_registry.clone();
         let node_id_for_cleanup = self.config.node_id.clone();
+        // Channel to notify PublisherManager to re-register after StreamHub restart
+        let (reregister_tx, reregister_rx) = mpsc::channel::<()>(4);
 
-        // Cancellation token for RTMP sessions -- cancelled on StreamHub restart
-        // to actively terminate all sessions instead of waiting for broken pipe detection.
-        // The RTMP server's shutdown_token is a child of this, so cancelling it
-        // propagates to the server and all its sessions.
-        let rtmp_session_token = CancellationToken::new();
-        let rtmp_session_token_for_server = rtmp_session_token.clone();
-        let rtmp_session_token_for_hub = rtmp_session_token;
+        // RTMP server config -- cloned into the hub restart loop so we can
+        // recreate the RTMP server with a fresh CancellationToken on each cycle.
+        let rtmp_address = self.config.rtmp_address.clone();
+        let rtmp_gop_cache_size = self.config.gop_cache_size;
+        let rtmp_auth = self.auth.clone();
+        let rtmp_event_sender = event_sender.clone();
 
         // 2. Spawn StreamHub event loop with automatic recovery
         let hub_handle = tokio::spawn(async move {
@@ -239,10 +233,30 @@ impl LivestreamServer {
                     }
                 });
 
+                // Create a fresh cancellation token and RTMP server for each cycle.
+                // CancellationToken is single-use: once cancelled it stays cancelled,
+                // so we must create a new one on every restart to keep the RTMP server
+                // functional.
+                let rtmp_session_token = CancellationToken::new();
+                let mut rtmp_server = synctv_xiu::rtmp::rtmp::RtmpServer::new(
+                    rtmp_address.clone(),
+                    rtmp_event_sender.clone(),
+                    rtmp_gop_cache_size,
+                    rtmp_auth.clone(),
+                )
+                .with_cancellation_token(rtmp_session_token.clone());
+                let rtmp_handle = tokio::spawn(async move {
+                    if let Err(e) = rtmp_server.run().await {
+                        error!("RTMP server error: {}", e);
+                    }
+                });
+
                 info!("Starting StreamHub event loop...");
                 streams_hub.run().await;
 
-                // Hub exited -- stop the forwarder for this cycle
+                // Hub exited -- stop the RTMP server and forwarder for this cycle
+                rtmp_session_token.cancel();
+                rtmp_handle.abort();
                 forwarder_handle.abort();
 
                 restart_count += 1;
@@ -252,9 +266,6 @@ impl LivestreamServer {
                     "StreamHub event loop exited unexpectedly, cleaning up local state before restart..."
                 );
 
-                // CRITICAL-1: Cancel all active RTMP sessions immediately.
-                // Without this, sessions hang waiting for broken pipe detection.
-                rtmp_session_token_for_hub.cancel();
                 info!("Cancelled all active RTMP sessions due to StreamHub restart");
 
                 // Clean up all local publisher registrations from Redis
@@ -262,6 +273,9 @@ impl LivestreamServer {
                 if let Err(e) = registry_for_cleanup.cleanup_all_publishers_for_node(&node_id_for_cleanup).await {
                     error!("Failed to cleanup publishers on StreamHub restart: {}", e);
                 }
+
+                // Notify PublisherManager to re-register all active publishers immediately
+                let _ = reregister_tx.try_send(());
 
                 if restart_count >= MAX_RESTARTS {
                     error!(
@@ -280,22 +294,7 @@ impl LivestreamServer {
             }
         });
 
-        // 3. Create and start RTMP server, connected to rtmp_session_token so
-        //    cancelling that token (on StreamHub crash) terminates all RTMP sessions.
-        let mut rtmp_server = synctv_xiu::rtmp::rtmp::RtmpServer::new(
-            self.config.rtmp_address.clone(),
-            event_sender.clone(),
-            self.config.gop_cache_size,
-            self.auth,
-        )
-        .with_cancellation_token(rtmp_session_token_for_server);
-        let rtmp_handle = tokio::spawn(async move {
-            if let Err(e) = rtmp_server.run().await {
-                error!("RTMP server error: {}", e);
-            }
-        });
-
-        // 4. Start HLS remuxer (converts RTMP to HLS segments)
+        // 3. Start HLS remuxer (converts RTMP to HLS segments)
         let hls_storage = Arc::new(MemoryStorage::new()) as Arc<dyn synctv_xiu::storage::HlsStorage>;
         let segment_manager = Arc::new(SegmentManager::new(hls_storage, CleanupConfig::default()));
         let stream_registry: StreamRegistry = Arc::new(DashMap::new());
@@ -375,7 +374,15 @@ impl LivestreamServer {
         ));
         let publisher_manager_handle = tokio::spawn({
             let pm = Arc::clone(&publisher_manager);
+            let mut reregister_rx = reregister_rx;
             async move {
+                // Spawn a task to listen for re-registration signals from StreamHub restart
+                let pm_for_reregister = Arc::clone(&pm);
+                tokio::spawn(async move {
+                    while reregister_rx.recv().await.is_some() {
+                        pm_for_reregister.reregister_all_publishers().await;
+                    }
+                });
                 pm.start(broadcast_receiver).await;
             }
         });
@@ -407,7 +414,6 @@ impl LivestreamServer {
             infrastructure,
             pull_manager,
             hub_handle,
-            rtmp_handle,
             hls_remuxer_handle,
             publisher_manager_handle,
             pull_manager_cleanup,

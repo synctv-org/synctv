@@ -25,9 +25,9 @@ use synctv_core::models::{MediaId, RoomId};
 pub fn bilibili_routes() -> Router<AppState> {
     Router::new()
         .route("/parse", post(parse))
-        .route("/login/qr", get(login_qr))
-        .route("/login/qr", post(qr_check))
-        .route("/login/captcha", get(new_captcha))
+        .route("/login/qr/generate", post(login_qr))
+        .route("/login/qr/check", post(qr_check))
+        .route("/login/captcha", post(new_captcha))
         .route("/login/sms/send", post(sms_send))
         .route("/login/sms/login", post(sms_login))
         .route("/me", get(user_info))
@@ -367,13 +367,33 @@ fn bilibili_proxy_headers() -> HashMap<String, String> {
 // ------------------------------------------------------------------
 
 /// Parse Bilibili URL
+///
+/// Rate limited to 30 requests per minute per user to prevent abuse.
 async fn parse(
-    _auth: AuthUser,
+    auth: AuthUser,
     State(state): State<AppState>,
     Query(query): Query<InstanceQuery>,
     Json(req): Json<crate::proto::providers::bilibili::ParseRequest>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
     tracing::info!("Bilibili parse request");
+
+    // Rate limit: 30 requests per 60 seconds per user
+    const MAX_PARSE_REQUESTS: u32 = 30;
+    const PARSE_WINDOW_SECONDS: u64 = 60;
+    let rate_key = format!("bilibili:parse:{}", auth.user_id);
+    if let Err(e) = state.rate_limiter
+        .check_rate_limit(&rate_key, MAX_PARSE_REQUESTS, PARSE_WINDOW_SECONDS)
+        .await
+    {
+        tracing::warn!(
+            user_id = %auth.user_id,
+            "Bilibili parse rate limit exceeded"
+        );
+        return (StatusCode::TOO_MANY_REQUESTS, Json(json!({
+            "error": "rate_limit_exceeded",
+            "message": e.to_string()
+        }))).into_response();
+    }
 
     let api = &state.bilibili_api;
 
@@ -393,11 +413,11 @@ async fn login_qr(
     _auth: AuthUser,
     State(state): State<AppState>,
     Query(query): Query<InstanceQuery>,
-    Json(req): Json<crate::proto::providers::bilibili::LoginQrRequest>,
 ) -> impl IntoResponse {
     tracing::info!("Bilibili login QR request");
 
     let api = &state.bilibili_api;
+    let req = crate::proto::providers::bilibili::LoginQrRequest::default();
 
     match api.login_qr(req, query.as_deref()).await {
         Ok(resp) => {
@@ -437,11 +457,11 @@ async fn new_captcha(
     _auth: AuthUser,
     State(state): State<AppState>,
     Query(query): Query<InstanceQuery>,
-    Json(req): Json<crate::proto::providers::bilibili::GetCaptchaRequest>,
 ) -> impl IntoResponse {
     tracing::info!("Bilibili new captcha request");
 
     let api = &state.bilibili_api;
+    let req = crate::proto::providers::bilibili::GetCaptchaRequest::default();
 
     match api.get_captcha(req, query.as_deref()).await {
         Ok(resp) => {
@@ -498,16 +518,19 @@ async fn sms_login(
     }
 }
 
-/// Get Bilibili user info
+/// Get Bilibili user info (cookies are read from server-side provider instance)
 async fn user_info(
     _auth: AuthUser,
     State(state): State<AppState>,
     Query(query): Query<InstanceQuery>,
-    Json(req): Json<crate::proto::providers::bilibili::UserInfoRequest>,
 ) -> impl IntoResponse {
     tracing::info!("Bilibili user info request");
 
     let api = &state.bilibili_api;
+    let req = crate::proto::providers::bilibili::UserInfoRequest {
+        cookies: Default::default(),
+        instance_name: query.instance_name.clone().unwrap_or_default(),
+    };
 
     match api.get_user_info(req, query.as_deref()).await {
         Ok(resp) => {

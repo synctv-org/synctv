@@ -37,6 +37,9 @@ const BODY_READ_TIMEOUT: Duration = Duration::from_secs(30);
 ///
 /// # Panics
 ///
+/// Maximum number of redirects to follow manually.
+const MAX_REDIRECTS: usize = 10;
+
 /// Panics during initialization if the HTTP client cannot be built (e.g., TLS backend unavailable).
 /// This is intentional as the proxy cannot function without an HTTP client.
 static PROXY_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
@@ -44,7 +47,7 @@ static PROXY_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(REQUEST_TIMEOUT)
         .read_timeout(BODY_READ_TIMEOUT)
-        .redirect(ssrf_safe_redirect_policy())
+        .redirect(reqwest::redirect::Policy::none())
         .pool_max_idle_per_host(20)
         .pool_idle_timeout(Duration::from_secs(30))
         .build()
@@ -148,10 +151,7 @@ async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response,
 
     request = apply_provider_headers(request, cfg.url, cfg.provider_headers);
 
-    let proxy_response = request
-        .send()
-        .await
-        .map_err(|e| anyhow::anyhow!("Proxy request failed: {e}"))?;
+    let proxy_response = send_with_redirect_validation(request).await?;
 
     let status = proxy_response.status();
     let response_headers = proxy_response.headers().clone();
@@ -239,10 +239,7 @@ pub async fn proxy_m3u8_and_rewrite(
 
     let request = apply_provider_headers(PROXY_CLIENT.get(url), url, provider_headers);
 
-    let proxy_response = request
-        .send()
-        .await
-        .map_err(|e| anyhow::anyhow!("M3U8 proxy request failed: {e}"))?;
+    let proxy_response = send_with_redirect_validation(request).await?;
 
     if !proxy_response.status().is_success() {
         return Err(anyhow::anyhow!(
@@ -401,23 +398,49 @@ pub fn percent_encode(input: &str) -> String {
 }
 
 // ------------------------------------------------------------------
-// Redirect policy
+// Manual redirect following with DNS validation
 // ------------------------------------------------------------------
 
-/// Build a redirect policy that validates each hop against SSRF rules.
+/// Send a request via the proxy client, manually following redirects with
+/// full async DNS validation on every hop.
 ///
-/// Uses synchronous string-level checks only (redirect callbacks are sync).
-/// The initial URL is already checked with full async DNS validation before the request.
-fn ssrf_safe_redirect_policy() -> reqwest::redirect::Policy {
-    reqwest::redirect::Policy::custom(|attempt| {
-        if attempt.previous().len() >= 5 {
-            attempt.error(anyhow::anyhow!("Too many redirects"))
-        } else if let Err(e) = validate_proxy_url_static(attempt.url().as_str()) {
-            attempt.error(e)
-        } else {
-            attempt.follow()
+/// Automatic redirects are disabled on `PROXY_CLIENT`, so 3xx responses
+/// are handled here. Each redirect target gets both static URL validation
+/// and async DNS resolution checks to prevent DNS-rebinding SSRF.
+async fn send_with_redirect_validation(
+    request: reqwest::RequestBuilder,
+) -> Result<reqwest::Response, anyhow::Error> {
+    let mut response = request
+        .send()
+        .await
+        .map_err(|e| anyhow::anyhow!("Proxy request failed: {e}"))?;
+
+    let mut hops = 0usize;
+    while response.status().is_redirection() {
+        hops += 1;
+        if hops > MAX_REDIRECTS {
+            return Err(anyhow::anyhow!("Too many redirects ({MAX_REDIRECTS} max)"));
         }
-    })
+
+        let location = response
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .ok_or_else(|| anyhow::anyhow!("Redirect without Location header"))?
+            .to_str()
+            .map_err(|_| anyhow::anyhow!("Invalid Location header"))?
+            .to_string();
+
+        // Full validation: static checks + async DNS resolution
+        validate_proxy_url(&location).await?;
+
+        response = PROXY_CLIENT
+            .get(&location)
+            .send()
+            .await
+            .map_err(|e| anyhow::anyhow!("Redirect request failed: {e}"))?;
+    }
+
+    Ok(response)
 }
 
 // ------------------------------------------------------------------

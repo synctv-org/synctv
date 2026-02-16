@@ -32,6 +32,9 @@ server:
   # Falls back to POD_IP env var, then system hostname if empty.
   # In Kubernetes, set via SYNCTV_SERVER_ADVERTISE_HOST or downward API (status.podIP).
   advertise_host: ""
+  # Maximum time in seconds to wait for active connections to drain during shutdown.
+  # Defaults to 30 seconds. Increase for deployments with many long-lived connections.
+  shutdown_drain_timeout_seconds: 30
 
 database:
   url: "postgresql://synctv:synctv@localhost:5432/synctv"

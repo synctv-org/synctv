@@ -86,3 +86,12 @@ workspace = true
 [dev-dependencies]
 wiremock.workspace = true
 serde_urlencoded.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tower = { workspace = true, features = ["util"] }
+http-body-util = { workspace = true }
+futures.workspace = true
+synctv-proto.workspace = true
+synctv-core.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+axum = { workspace = true, features = ["ws"] }

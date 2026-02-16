@@ -5,6 +5,8 @@
 use std::sync::Arc;
 use synctv_core::service::{EmailService, EmailTokenService, EmailTokenType, UserService};
 
+use crate::impls::ApiError;
+
 /// Shared email operations implementation.
 pub struct EmailApiImpl {
     pub user_service: Arc<UserService>,
@@ -53,7 +55,7 @@ impl EmailApiImpl {
     pub async fn send_verification_email(
         &self,
         email: &str,
-    ) -> Result<SendVerificationResult, String> {
+    ) -> Result<SendVerificationResult, ApiError> {
         let generic_message =
             "If an account exists with this email, a verification code will be sent.".to_string();
 
@@ -61,7 +63,7 @@ impl EmailApiImpl {
             .user_service
             .get_by_email(email)
             .await
-            .map_err(|e| format!("Database error: {e}"))?;
+            .map_err(|e| ApiError::Internal(format!("Database error: {e}")))?;
 
         let user = match user {
             Some(u) => u,
@@ -76,7 +78,7 @@ impl EmailApiImpl {
             .email_service
             .send_verification_email(email, &self.email_token_service, &user.id)
             .await
-            .map_err(|e| format!("Failed to send email: {e}"))?;
+            .map_err(|e| ApiError::Internal(format!("Failed to send email: {e}")))?;
 
         tracing::info!("Sent verification email to {email}");
 
@@ -90,34 +92,34 @@ impl EmailApiImpl {
         &self,
         email: &str,
         token: &str,
-    ) -> Result<ConfirmEmailResult, String> {
+    ) -> Result<ConfirmEmailResult, ApiError> {
         let validated_user_id = self
             .email_token_service
             .validate_token(token, EmailTokenType::EmailVerification)
             .await
-            .map_err(|_| "Invalid or expired verification token".to_string())?;
+            .map_err(|_| ApiError::InvalidInput("Invalid or expired verification token".to_string()))?;
 
         let user = self
             .user_service
             .get_by_email(email)
             .await
-            .map_err(|e| format!("Database error: {e}"))?
-            .ok_or_else(|| "Invalid or expired verification token".to_string())?;
+            .map_err(|e| ApiError::Internal(format!("Database error: {e}")))?
+            .ok_or_else(|| ApiError::InvalidInput("Invalid or expired verification token".to_string()))?;
 
         if validated_user_id != user.id {
-            return Err("Invalid or expired verification token".to_string());
+            return Err(ApiError::InvalidInput("Invalid or expired verification token".to_string()));
         }
 
         self.user_service
             .set_email_verified(&user.id, true)
             .await
-            .map_err(|e| format!("Failed to update email verification: {e}"))?;
+            .map_err(|e| ApiError::Internal(format!("Failed to update email verification: {e}")))?;
 
         // Invalidate all remaining email verification tokens for this user
         self.email_token_service
             .invalidate_user_tokens(&user.id, EmailTokenType::EmailVerification)
             .await
-            .map_err(|e| format!("Failed to invalidate tokens: {e}"))?;
+            .map_err(|e| ApiError::Internal(format!("Failed to invalidate tokens: {e}")))?;
 
         tracing::info!("Email verified for user {}", user.id.as_str());
 
@@ -132,12 +134,12 @@ impl EmailApiImpl {
     pub async fn request_password_reset(
         &self,
         email: &str,
-    ) -> Result<RequestPasswordResetResult, String> {
+    ) -> Result<RequestPasswordResetResult, ApiError> {
         let user = self
             .user_service
             .get_by_email(email)
             .await
-            .map_err(|e| format!("Database error: {e}"))?;
+            .map_err(|e| ApiError::Internal(format!("Database error: {e}")))?;
 
         let Some(user) = user else {
             return Ok(RequestPasswordResetResult {
@@ -150,7 +152,7 @@ impl EmailApiImpl {
             .email_service
             .send_password_reset_email(email, &self.email_token_service, &user.id)
             .await
-            .map_err(|e| format!("Failed to send email: {e}"))?;
+            .map_err(|e| ApiError::Internal(format!("Failed to send email: {e}")))?;
 
         tracing::info!("Password reset requested for user {}", user.id.as_str());
 
@@ -165,52 +167,52 @@ impl EmailApiImpl {
         email: &str,
         token: &str,
         new_password: &str,
-    ) -> Result<ConfirmPasswordResetResult, String> {
+    ) -> Result<ConfirmPasswordResetResult, ApiError> {
         // Validate password length
         use crate::http::validation::limits::{PASSWORD_MAX, PASSWORD_MIN};
         if new_password.len() < PASSWORD_MIN {
-            return Err(format!(
+            return Err(ApiError::InvalidInput(format!(
                 "Password must be at least {PASSWORD_MIN} characters"
-            ));
+            )));
         }
         if new_password.len() > PASSWORD_MAX {
-            return Err(format!(
+            return Err(ApiError::InvalidInput(format!(
                 "Password must be at most {PASSWORD_MAX} characters"
-            ));
+            )));
         }
 
         let validated_user_id = self
             .email_token_service
             .validate_token(token, EmailTokenType::PasswordReset)
             .await
-            .map_err(|_| "Invalid or expired reset token".to_string())?;
+            .map_err(|_| ApiError::InvalidInput("Invalid or expired reset token".to_string()))?;
 
         let user = self
             .user_service
             .get_by_email(email)
             .await
-            .map_err(|e| format!("Database error: {e}"))?
-            .ok_or_else(|| "Invalid or expired reset token".to_string())?;
+            .map_err(|e| ApiError::Internal(format!("Database error: {e}")))?
+            .ok_or_else(|| ApiError::InvalidInput("Invalid or expired reset token".to_string()))?;
 
         if validated_user_id != user.id {
-            return Err("Invalid or expired reset token".to_string());
+            return Err(ApiError::InvalidInput("Invalid or expired reset token".to_string()));
         }
 
         // Check if user is banned
         if user.status == synctv_core::models::UserStatus::Banned {
-            return Err("Invalid or expired reset token".to_string());
+            return Err(ApiError::InvalidInput("Invalid or expired reset token".to_string()));
         }
 
         self.user_service
             .set_password(&user.id, new_password)
             .await
-            .map_err(|e| format!("Failed to update password: {e}"))?;
+            .map_err(|e| ApiError::Internal(format!("Failed to update password: {e}")))?;
 
         // Invalidate all remaining password reset tokens for this user
         self.email_token_service
             .invalidate_user_tokens(&user.id, EmailTokenType::PasswordReset)
             .await
-            .map_err(|e| format!("Failed to invalidate tokens: {e}"))?;
+            .map_err(|e| ApiError::Internal(format!("Failed to invalidate tokens: {e}")))?;
 
         tracing::info!("Password reset completed for user {}", user.id.as_str());
 

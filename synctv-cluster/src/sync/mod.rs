@@ -12,6 +12,6 @@ pub use connection_manager::{
     ConnectionInfo, ConnectionLimits, ConnectionManager, ConnectionMetrics, DisconnectSignal,
 };
 pub use dedup::{DedupKey, MessageDeduplicator};
-pub use events::{ClusterEvent, NotificationLevel};
+pub use events::{CacheTarget, ClusterEvent, NotificationLevel};
 pub use redis_pubsub::{PublishRequest, RedisPubSub};
 pub use room_hub::{ConnectionId, MessageSender, RoomMessageHub, Subscriber};

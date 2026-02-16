@@ -124,6 +124,15 @@ impl StreamRegistryTrait for MockStreamRegistry {
         Ok(publishers.keys().cloned().collect())
     }
 
+    async fn list_streams_for_room(&self, room_id: &str) -> Result<Vec<String>> {
+        let publishers = self.publishers.lock().await;
+        Ok(publishers
+            .keys()
+            .filter(|(rid, _)| rid == room_id)
+            .map(|(_, media_id)| media_id.clone())
+            .collect())
+    }
+
     async fn get_user_publishers(&self, user_id: &str) -> Result<Vec<(String, String)>> {
         let publishers = self.publishers.lock().await;
         Ok(publishers

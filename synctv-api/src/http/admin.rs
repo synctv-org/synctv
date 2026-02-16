@@ -56,7 +56,7 @@ async fn validate_auth_user(parts: &mut Parts, app_state: &AppState) -> Result<c
         .token_blacklist_service
         .is_blacklisted(&raw_token)
         .await
-        .unwrap_or(false)
+        .unwrap_or(true)
     {
         return Err(AppError::unauthorized("Token has been revoked"));
     }
@@ -161,23 +161,10 @@ fn require_admin_api(state: &AppState) -> Result<&Arc<crate::impls::AdminApiImpl
         .ok_or_else(|| AppError::internal("Admin service not configured"))
 }
 
-/// Map impls-layer error strings to appropriate HTTP status codes.
-///
-/// Uses the shared `classify_error` function from the impls module for
-/// consistent error classification across HTTP and gRPC transports.
-fn admin_err_to_app_error(err: String) -> AppError {
-    use crate::impls::{classify_error, ErrorKind};
-    match classify_error(&err) {
-        ErrorKind::NotFound => AppError::not_found(err),
-        ErrorKind::Unauthenticated => AppError::unauthorized(err),
-        ErrorKind::PermissionDenied => AppError::forbidden(err),
-        ErrorKind::AlreadyExists => AppError::conflict(err),
-        ErrorKind::InvalidArgument => AppError::bad_request(err),
-        ErrorKind::Internal => {
-            tracing::error!("Admin internal error: {err}");
-            AppError::internal("Internal error")
-        }
-    }
+/// Map a typed `ApiError` to an HTTP `AppError` with guaranteed-correct
+/// status code mapping (no keyword-based heuristics).
+fn admin_err_to_app_error(err: crate::impls::ApiError) -> AppError {
+    AppError::from(err)
 }
 
 // ------------------------------------------------------------------

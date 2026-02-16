@@ -173,11 +173,15 @@ impl UsernameCache {
 
     /// Invalidate a cached username
     ///
-    /// Removes the username from both Redis (L2) and memory (L1) cache.
-    /// Important: L2 must be invalidated FIRST to prevent concurrent reads from
-    /// re-populating L1 with stale L2 data between L1 and L2 invalidation.
+    /// Removes the username from both memory (L1) and Redis (L2) cache.
+    /// L1 is invalidated first so this replica immediately stops serving stale
+    /// data, then L2 is cleared so other replicas don't re-populate from stale
+    /// Redis data. This is consistent with `UserCache` and `RoomCache`.
     pub async fn invalidate(&self, user_id: &UserId) -> Result<()> {
-        // Remove from Redis cache FIRST (L2 before L1)
+        // Remove from memory cache (L1) FIRST so this replica stops serving stale data immediately
+        self.memory_cache.invalidate(user_id).await;
+
+        // Then remove from Redis cache (L2)
         if let Some(ref conn) = self.redis_conn {
             let mut conn = conn.clone();
 
@@ -186,14 +190,40 @@ impl UsernameCache {
                 .del(&key)
                 .await
                 .map_err(|e| Error::Internal(format!("Failed to invalidate username cache: {e}")))?;
-
-            tracing::debug!(user_id = %user_id.as_str(), "Username cache invalidated");
         }
 
-        // Then remove from memory cache (L1)
-        self.memory_cache.invalidate(user_id).await;
+        tracing::debug!(user_id = %user_id.as_str(), "Username cache invalidated (L1 then L2)");
 
         Ok(())
+    }
+
+    /// Invalidate a specific username cache entry by ID string (both L1 and L2)
+    ///
+    /// Used by the cross-replica invalidation listener to remove a single
+    /// entry from the local in-memory cache and L2 Redis cache.
+    /// L1 is cleared first so this replica stops serving stale data immediately,
+    /// then L2 is cleared so other replicas don't re-populate from stale Redis data.
+    pub async fn invalidate_by_id(&self, user_id: &str) {
+        // Remove from L1 (in-memory) FIRST
+        let id = UserId::from_string(user_id.to_string());
+        self.memory_cache.invalidate(&id).await;
+
+        // Then remove from L2 (Redis)
+        if let Some(ref conn) = self.redis_conn {
+            let mut conn = conn.clone();
+
+            let key = format!("{}{}", self.key_prefix, user_id);
+            let result: std::result::Result<(), redis::RedisError> = conn.del(&key).await;
+            if let Err(e) = result {
+                tracing::warn!(
+                    user_id = %user_id,
+                    error = %e,
+                    "Failed to delete username L2 cache during cross-replica invalidation"
+                );
+            }
+        }
+
+        tracing::debug!(user_id = %user_id, "Username cache invalidated by id (cross-replica, L1 then L2)");
     }
 
     /// Clear all cached usernames (memory only)

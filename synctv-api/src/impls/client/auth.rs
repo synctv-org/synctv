@@ -1,5 +1,6 @@
 //! Auth operations: register, login, refresh_token, logout
 
+use crate::impls::ApiError;
 use super::ClientApiImpl;
 use super::convert::user_to_proto;
 
@@ -7,7 +8,7 @@ impl ClientApiImpl {
     pub async fn register(
         &self,
         req: crate::proto::client::RegisterRequest,
-    ) -> Result<crate::proto::client::RegisterResponse, String> {
+    ) -> Result<crate::proto::client::RegisterResponse, ApiError> {
         // Validation is handled by UserService::register() using production validators
         let email = if req.email.is_empty() {
             None
@@ -20,7 +21,7 @@ impl ClientApiImpl {
             .user_service
             .register(req.username, email, req.password)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         Ok(crate::proto::client::RegisterResponse {
             user: Some(user_to_proto(&user)),
@@ -32,13 +33,13 @@ impl ClientApiImpl {
     pub async fn login(
         &self,
         req: crate::proto::client::LoginRequest,
-    ) -> Result<crate::proto::client::LoginResponse, String> {
+    ) -> Result<crate::proto::client::LoginResponse, ApiError> {
         // Login user (returns tuple: (User, access_token, refresh_token))
         let (user, access_token, refresh_token) = self
             .user_service
             .login(req.username, req.password)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         Ok(crate::proto::client::LoginResponse {
             user: Some(user_to_proto(&user)),
@@ -50,13 +51,13 @@ impl ClientApiImpl {
     pub async fn refresh_token(
         &self,
         req: crate::proto::client::RefreshTokenRequest,
-    ) -> Result<crate::proto::client::RefreshTokenResponse, String> {
+    ) -> Result<crate::proto::client::RefreshTokenResponse, ApiError> {
         // Refresh tokens (returns tuple: (new_access_token, new_refresh_token))
         let (access_token, refresh_token) = self
             .user_service
             .refresh_token(req.refresh_token)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(ApiError::from)?;
 
         Ok(crate::proto::client::RefreshTokenResponse {
             access_token,

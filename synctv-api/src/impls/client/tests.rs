@@ -20,14 +20,14 @@ fn test_validate_password_for_set_valid() {
 #[test]
 fn test_validate_password_for_set_too_short() {
     let err = validate_password_for_set("abc").unwrap_err();
-    assert!(err.contains("too short"));
+    assert!(err.to_string().contains("too short"));
 }
 
 #[test]
 fn test_validate_password_for_set_too_long() {
     let long = "a".repeat(129);
     let err = validate_password_for_set(&long).unwrap_err();
-    assert!(err.contains("too long"));
+    assert!(err.to_string().contains("too long"));
 }
 
 #[test]
@@ -53,7 +53,7 @@ fn test_validate_password_for_verify_accepts_short() {
 fn test_validate_password_for_verify_rejects_too_long() {
     let long = "a".repeat(129);
     let err = validate_password_for_verify(&long).unwrap_err();
-    assert!(err.contains("too long"));
+    assert!(err.to_string().contains("too long"));
 }
 
 // === Proto Role Conversion Tests ===
@@ -81,7 +81,7 @@ fn test_proto_role_to_room_role_all_variants() {
 #[test]
 fn test_proto_role_to_room_role_invalid() {
     let err = proto_role_to_room_role(999).unwrap_err();
-    assert!(err.contains("Unknown room member role"));
+    assert!(err.to_string().contains("Unknown room member role"));
 }
 
 #[test]
@@ -103,7 +103,7 @@ fn test_proto_role_to_user_role_all_variants() {
 #[test]
 fn test_proto_role_to_user_role_invalid() {
     let err = proto_role_to_user_role(999).unwrap_err();
-    assert!(err.contains("Unknown user role"));
+    assert!(err.to_string().contains("Unknown user role"));
 }
 
 #[test]

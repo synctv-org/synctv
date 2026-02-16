@@ -64,7 +64,10 @@ pub fn error_response(e: ProviderError) -> (StatusCode, Json<serde_json::Value>)
         ProviderError::InvalidConfig(msg) => (StatusCode::BAD_REQUEST, msg.clone(), msg.clone()),
         ProviderError::NotFound => (StatusCode::NOT_FOUND, "Resource not found".to_string(), "Resource not found".to_string()),
         ProviderError::InstanceNotFound(msg) => (StatusCode::NOT_FOUND, msg.clone(), msg.clone()),
-        _ => (StatusCode::INTERNAL_SERVER_ERROR, "Provider error".to_string(), e.to_string()),
+        _ => {
+            tracing::error!(error = %e, "Internal provider error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "Provider error".to_string(), "An internal error occurred".to_string())
+        }
     };
 
     let body = json!({

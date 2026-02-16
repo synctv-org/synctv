@@ -33,10 +33,13 @@ thiserror.workspace = true
 regex.workspace = true
 url.workspace = true
 subtle.workspace = true
+sha2.workspace = true
 
 # Logging
 tracing.workspace = true
 tracing-subscriber.workspace = true
+backon.workspace = true
+governor.workspace = true
 
 [lints]
 workspace = true

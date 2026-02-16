@@ -43,6 +43,7 @@ pub struct WsTicketData {
 #[derive(Clone)]
 struct MemoryTicketStore {
     cache: moka::future::Cache<String, WsTicketData>,
+    ttl_secs: u64,
 }
 
 impl MemoryTicketStore {
@@ -52,6 +53,7 @@ impl MemoryTicketStore {
                 .time_to_live(std::time::Duration::from_secs(ttl_secs))
                 .max_capacity(10_000)
                 .build(),
+            ttl_secs,
         }
     }
 
@@ -60,10 +62,18 @@ impl MemoryTicketStore {
     }
 
     async fn get_and_remove(&self, ticket: &str) -> Option<WsTicketData> {
-        // Check if the ticket exists and hasn't expired (get() respects TTL)
-        let data = self.cache.get(ticket).await?;
-        // Remove it so it can't be used again
-        self.cache.remove(ticket).await;
+        // Use remove() for atomic get-and-delete to prevent TOCTOU race conditions
+        // where two concurrent requests could both get() the same ticket.
+        // Since remove() may return entries that moka hasn't lazily evicted yet,
+        // we manually check TTL expiry on the returned value.
+        let data = self.cache.remove(ticket).await?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        if now.saturating_sub(data.created_at) > self.ttl_secs {
+            return None; // Expired
+        }
         Some(data)
     }
 }

@@ -451,6 +451,42 @@ impl StreamRegistry {
         Ok(streams)
     }
 
+    /// List active streams for a specific room, returning only the `media_id` values.
+    /// More efficient than `list_active_streams_immut` followed by a filter because
+    /// the SCAN pattern is scoped to the room's key prefix.
+    pub async fn list_streams_for_room(&self, room_id: &str) -> Result<Vec<String>> {
+        let mut conn = self.redis.clone();
+        let mut media_ids = Vec::new();
+        let mut cursor: u64 = 0;
+        let pattern = format!("stream:publisher:{room_id}:*");
+        let prefix = format!("stream:publisher:{room_id}:");
+
+        loop {
+            let (new_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+                .arg(cursor)
+                .arg("MATCH")
+                .arg(&pattern)
+                .arg("COUNT")
+                .arg(100)
+                .query_async(&mut conn)
+                .await
+                .map_err(|e| anyhow!(e.to_string()))?;
+
+            for k in keys {
+                if let Some(media_id) = k.strip_prefix(&prefix) {
+                    media_ids.push(media_id.to_string());
+                }
+            }
+
+            cursor = new_cursor;
+            if cursor == 0 {
+                break;
+            }
+        }
+
+        Ok(media_ids)
+    }
+
     /// Validate that the given epoch matches the current publisher's epoch.
     /// Returns Ok(true) if the epoch is valid, Ok(false) if stale/invalid.
     /// Used by pull streams to detect split-brain scenarios.

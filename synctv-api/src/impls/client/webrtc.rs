@@ -2,6 +2,7 @@
 
 use synctv_core::models::{RoomId, UserId};
 
+use crate::impls::ApiError;
 use super::ClientApiImpl;
 use super::convert::network_stats_to_proto;
 
@@ -16,12 +17,12 @@ impl ClientApiImpl {
         &self,
         room_id: &RoomId,
         user_id: &UserId,
-    ) -> Result<crate::proto::client::GetIceServersResponse, anyhow::Error> {
+    ) -> Result<crate::proto::client::GetIceServersResponse, ApiError> {
         use crate::proto::client::{IceServer, GetIceServersResponse};
 
         // Check membership
         self.room_service.check_membership(room_id, user_id).await
-            .map_err(|e| anyhow::anyhow!("Forbidden: {e}"))?;
+            .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
 
         let webrtc_config = &self.config.webrtc;
         let mut servers = Vec::new();
@@ -73,12 +74,12 @@ impl ClientApiImpl {
         &self,
         room_id: &RoomId,
         user_id: &UserId,
-    ) -> Result<crate::proto::client::GetNetworkQualityResponse, anyhow::Error> {
+    ) -> Result<crate::proto::client::GetNetworkQualityResponse, ApiError> {
         use crate::proto::client::GetNetworkQualityResponse;
 
         // Check membership
         self.room_service.check_membership(room_id, user_id).await
-            .map_err(|e| anyhow::anyhow!("Forbidden: {e}"))?;
+            .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
 
         let sfu_manager = if let Some(mgr) = &self.sfu_manager { mgr } else {
             tracing::debug!(
@@ -91,7 +92,7 @@ impl ClientApiImpl {
 
         let stats = sfu_manager.get_room_network_quality(
             &synctv_sfu::RoomId::from(room_id.as_str()),
-        )?;
+        ).map_err(|e| ApiError::Internal(e.to_string()))?;
 
         let peers = stats
             .into_iter()

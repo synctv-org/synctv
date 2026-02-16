@@ -6,6 +6,7 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
+use moka::sync::Cache as MokaCache;
 
 /// Rate limiting error
 #[derive(Error, Debug)]
@@ -21,7 +22,7 @@ impl From<RateLimitError> for crate::Error {
     fn from(err: RateLimitError) -> Self {
         match err {
             RateLimitError::RateLimitExceeded { retry_after_seconds } => {
-                Self::InvalidInput(format!("Rate limit exceeded. Try again in {retry_after_seconds}s"))
+                Self::RateLimited(format!("Rate limit exceeded. Try again in {retry_after_seconds}s"))
             }
             RateLimitError::RedisError(e) => {
                 Self::Internal(format!("Rate limiter Redis error: {e}"))
@@ -29,9 +30,6 @@ impl From<RateLimitError> for crate::Error {
         }
     }
 }
-
-/// Type alias for the keyed limiter map to avoid clippy::type_complexity
-type LimiterMap = dashmap::DashMap<(u32, u64), Arc<DefaultKeyedRateLimiter<String>>>;
 
 /// In-memory rate limiter backed by the `governor` crate (GCRA algorithm).
 ///
@@ -43,16 +41,25 @@ type LimiterMap = dashmap::DashMap<(u32, u64), Arc<DefaultKeyedRateLimiter<Strin
 /// callers to specify different (max_requests, window_seconds) per call, we
 /// create separate governor instances for each quota configuration. In practice,
 /// only a few distinct configurations are used (chat, danmaku), so this is fine.
+///
+/// Uses a Moka cache with TTL and max capacity to prevent unbounded memory growth.
+/// Entries are evicted after idle timeout or when the cache reaches max capacity
+/// (64 quota configurations).
 #[derive(Clone)]
 struct InMemoryRateLimiter {
     /// Stores governor keyed limiters per (max_requests, window_seconds) pair.
-    limiters: Arc<LimiterMap>,
+    /// Uses Moka cache with TTL-based eviction to prevent unbounded growth.
+    limiters: Arc<MokaCache<(u32, u64), Arc<DefaultKeyedRateLimiter<String>>>>,
 }
 
 impl InMemoryRateLimiter {
     fn new() -> Self {
+        let cache = MokaCache::builder()
+            .max_capacity(64)
+            .time_to_idle(Duration::from_secs(600))
+            .build();
         Self {
-            limiters: Arc::new(dashmap::DashMap::new()),
+            limiters: Arc::new(cache),
         }
     }
 
@@ -60,7 +67,7 @@ impl InMemoryRateLimiter {
     fn get_limiter(&self, max_requests: u32, window_seconds: u64) -> Arc<DefaultKeyedRateLimiter<String>> {
         let key = (max_requests, window_seconds);
         if let Some(limiter) = self.limiters.get(&key) {
-            return Arc::clone(limiter.value());
+            return limiter;
         }
 
         // Create quota: max_requests per window_seconds
@@ -198,14 +205,18 @@ impl RateLimiter {
         let expire_seconds = (window_seconds + 1) as i64;
 
         // Use Lua script for true atomic rate limiting (prevents TOCTOU race)
-        // The script: removes expired entries, adds the new request, counts, and sets expiry
-        // Returns the count AFTER adding the current request
+        // The script: removes expired entries, adds the new request, counts, and sets expiry.
+        // A per-key sequence counter generates unique members so concurrent requests
+        // within the same millisecond are counted separately instead of overwriting.
         let script = redis::Script::new(
             r"
             redis.call('ZREMRANGEBYSCORE', KEYS[1], 0, ARGV[1])
-            redis.call('ZADD', KEYS[1], ARGV[2], ARGV[2])
+            local seq = redis.call('INCR', KEYS[1] .. ':seq')
+            local member = ARGV[2] .. ':' .. seq
+            redis.call('ZADD', KEYS[1], ARGV[2], member)
             local count = redis.call('ZCARD', KEYS[1])
             redis.call('EXPIRE', KEYS[1], ARGV[3])
+            redis.call('EXPIRE', KEYS[1] .. ':seq', ARGV[3])
             return count
             "
         );
@@ -276,9 +287,12 @@ impl RateLimiter {
         let script = redis::Script::new(
             r"
             redis.call('ZREMRANGEBYSCORE', KEYS[1], 0, ARGV[1])
-            redis.call('ZADD', KEYS[1], ARGV[2], ARGV[2])
+            local seq = redis.call('INCR', KEYS[1] .. ':seq')
+            local member = ARGV[2] .. ':' .. seq
+            redis.call('ZADD', KEYS[1], ARGV[2], member)
             local count = redis.call('ZCARD', KEYS[1])
             redis.call('EXPIRE', KEYS[1], ARGV[3])
+            redis.call('EXPIRE', KEYS[1] .. ':seq', ARGV[3])
             return count
             "
         );
@@ -378,8 +392,10 @@ impl RateLimiter {
         let full_key = format!("{}{}", self.key_prefix, key);
         if let Some(ref conn) = self.redis_conn {
             let mut conn = conn.clone();
+            let seq_key = format!("{full_key}:seq");
             let _: () = redis::cmd("DEL")
                 .arg(&full_key)
+                .arg(&seq_key)
                 .query_async(&mut conn)
                 .await?;
         }

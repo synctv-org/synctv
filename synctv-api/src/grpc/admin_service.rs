@@ -38,16 +38,17 @@ use crate::impls::AdminApiImpl;
 ///
 /// Note: For internal errors, we log the details and return a generic message
 /// to avoid leaking sensitive implementation details to clients.
-fn api_err(err: String) -> Status {
-    use crate::impls::{classify_error, ErrorKind};
-    match classify_error(&err) {
-        ErrorKind::NotFound => Status::not_found(err),
-        ErrorKind::Unauthenticated => Status::unauthenticated(err),
-        ErrorKind::PermissionDenied => Status::permission_denied(err),
-        ErrorKind::AlreadyExists => Status::already_exists(err),
-        ErrorKind::InvalidArgument => Status::invalid_argument(err),
+fn api_err(err: crate::impls::ApiError) -> Status {
+    use crate::impls::ErrorKind;
+    let msg = err.to_string();
+    match err.classify() {
+        ErrorKind::NotFound => Status::not_found(msg),
+        ErrorKind::Unauthenticated => Status::unauthenticated(msg),
+        ErrorKind::PermissionDenied => Status::permission_denied(msg),
+        ErrorKind::AlreadyExists => Status::already_exists(msg),
+        ErrorKind::InvalidArgument => Status::invalid_argument(msg),
         ErrorKind::Internal => {
-            tracing::error!("Admin API internal error: {err}");
+            tracing::error!("Admin API internal error: {msg}");
             Status::internal("Internal error")
         }
     }
@@ -560,7 +561,10 @@ impl AdminService for AdminServiceImpl {
         let req = request.into_inner();
         let room_id = if req.room_id.is_empty() { None } else { Some(req.room_id.as_str()) };
         let streams = self.admin_api.list_active_streams(room_id).await
-            .map_err(|e| api_err(e.to_string()))?;
+            .map_err(|e| {
+                tracing::error!("list_active_streams error: {e}");
+                Status::internal("Internal error")
+            })?;
         Ok(Response::new(ListActiveStreamsResponse { streams }))
     }
 
@@ -578,7 +582,10 @@ impl AdminService for AdminServiceImpl {
         self.admin_api
             .kick_stream(&req.room_id, &req.media_id, &req.reason)
             .await
-            .map_err(|e| api_err(e.to_string()))?;
+            .map_err(|e| {
+                tracing::error!("kick_stream error: {e}");
+                Status::internal("Internal error")
+            })?;
 
         Ok(Response::new(KickStreamResponse {}))
     }

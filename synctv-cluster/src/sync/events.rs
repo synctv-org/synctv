@@ -4,6 +4,20 @@ use synctv_core::models::id::{MediaId, RoomId, UserId};
 use synctv_core::models::permission::PermissionBits;
 use synctv_core::models::playback::RoomPlaybackState;
 
+/// The kind of cache to invalidate in a `CacheInvalidate` cluster event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CacheTarget {
+    /// Invalidate a specific user's cached data
+    User { user_id: String },
+    /// Invalidate a specific user's username cache
+    Username { user_id: String },
+    /// Invalidate a specific room's cached data
+    Room { room_id: String },
+    /// Invalidate all caches (full flush)
+    All,
+}
+
 /// Events that are synchronized across cluster nodes via Redis Pub/Sub.
 ///
 /// Each event carries a unique `event_id` (nanoid) used as the primary
@@ -171,6 +185,43 @@ pub enum ClusterEvent {
         reason: String,
         timestamp: DateTime<Utc>,
     },
+
+    /// A new room was created.
+    /// Broadcast cluster-wide so other replicas can update room lists / caches.
+    RoomCreated {
+        #[serde(default = "generate_event_id")]
+        event_id: String,
+        room_id: RoomId,
+        room_name: String,
+        creator_id: UserId,
+        timestamp: DateTime<Utc>,
+    },
+
+    /// A room was deleted.
+    /// Broadcast cluster-wide so other replicas can evict caches,
+    /// disconnect users, and terminate active streams.
+    RoomDeleted {
+        #[serde(default = "generate_event_id")]
+        event_id: String,
+        room_id: RoomId,
+        /// The user who initiated the deletion (may be the room creator or an admin).
+        deleted_by: UserId,
+        timestamp: DateTime<Utc>,
+    },
+
+    /// Generic cache invalidation event.
+    ///
+    /// Broadcast cluster-wide when a service mutates data that is cached on
+    /// other replicas (user profile, room metadata, username, etc.).
+    /// Receiving nodes should invalidate the specified cache targets in their
+    /// local L1 caches.
+    CacheInvalidate {
+        #[serde(default = "generate_event_id")]
+        event_id: String,
+        /// One or more cache targets to invalidate.
+        targets: Vec<CacheTarget>,
+        timestamp: DateTime<Utc>,
+    },
 }
 
 /// Generate a unique event ID using nanoid
@@ -205,7 +256,10 @@ impl ClusterEvent {
             | Self::WebRTCLeave { event_id, .. }
             | Self::SystemNotification { event_id, .. }
             | Self::KickPublisher { event_id, .. }
-            | Self::KickUser { event_id, .. } => event_id,
+            | Self::KickUser { event_id, .. }
+            | Self::RoomCreated { event_id, .. }
+            | Self::RoomDeleted { event_id, .. }
+            | Self::CacheInvalidate { event_id, .. } => event_id,
         }
     }
 
@@ -224,8 +278,11 @@ impl ClusterEvent {
             | Self::WebRTCSignaling { room_id, .. }
             | Self::WebRTCJoin { room_id, .. }
             | Self::WebRTCLeave { room_id, .. }
-            | Self::KickPublisher { room_id, .. } => Some(room_id),
-            Self::SystemNotification { .. } | Self::KickUser { .. } => None,
+            | Self::KickPublisher { room_id, .. }
+            | Self::RoomCreated { room_id, .. }
+            | Self::RoomDeleted { room_id, .. } => Some(room_id),
+            Self::SystemNotification { .. } | Self::KickUser { .. }
+            | Self::CacheInvalidate { .. } => None,
         }
     }
 
@@ -243,9 +300,11 @@ impl ClusterEvent {
             | Self::WebRTCJoin { user_id, .. }
             | Self::WebRTCLeave { user_id, .. }
             | Self::KickUser { user_id, .. } => Some(user_id),
+            Self::RoomCreated { creator_id, .. } => Some(creator_id),
+            Self::RoomDeleted { deleted_by, .. } => Some(deleted_by),
             Self::PermissionChanged { changed_by, .. } => Some(changed_by),
             Self::WebRTCSignaling { .. } | Self::SystemNotification { .. }
-            | Self::KickPublisher { .. } => None,
+            | Self::KickPublisher { .. } | Self::CacheInvalidate { .. } => None,
         }
     }
 
@@ -266,7 +325,10 @@ impl ClusterEvent {
             | Self::WebRTCLeave { timestamp, .. }
             | Self::SystemNotification { timestamp, .. }
             | Self::KickPublisher { timestamp, .. }
-            | Self::KickUser { timestamp, .. } => timestamp,
+            | Self::KickUser { timestamp, .. }
+            | Self::RoomCreated { timestamp, .. }
+            | Self::RoomDeleted { timestamp, .. }
+            | Self::CacheInvalidate { timestamp, .. } => timestamp,
         }
     }
 
@@ -279,6 +341,8 @@ impl ClusterEvent {
             Self::KickPublisher { .. }
             | Self::KickUser { .. }
             | Self::PermissionChanged { .. }
+            | Self::PlaybackStateChanged { .. }
+            | Self::RoomDeleted { .. }
         )
     }
 
@@ -315,6 +379,9 @@ impl ClusterEvent {
             Self::SystemNotification { .. } => "system_notification",
             Self::KickPublisher { .. } => "kick_publisher",
             Self::KickUser { .. } => "kick_user",
+            Self::RoomCreated { .. } => "room_created",
+            Self::RoomDeleted { .. } => "room_deleted",
+            Self::CacheInvalidate { .. } => "cache_invalidate",
         }
     }
 }
@@ -451,5 +518,35 @@ mod tests {
         };
 
         assert_eq!(event.dedup_extra(), "kick_user:user456");
+    }
+
+    #[test]
+    fn test_cache_invalidate_serialization() {
+        let event = ClusterEvent::CacheInvalidate {
+            event_id: generate_event_id(),
+            targets: vec![
+                CacheTarget::User { user_id: "u1".to_string() },
+                CacheTarget::Room { room_id: "r1".to_string() },
+                CacheTarget::Username { user_id: "u2".to_string() },
+                CacheTarget::All,
+            ],
+            timestamp: Utc::now(),
+        };
+
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("cache_invalidate"));
+        assert!(json.contains("\"u1\""));
+        assert!(json.contains("\"r1\""));
+
+        let deserialized: ClusterEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.event_type(), "cache_invalidate");
+        assert!(deserialized.room_id().is_none());
+        assert!(deserialized.user_id().is_none());
+
+        if let ClusterEvent::CacheInvalidate { targets, .. } = &deserialized {
+            assert_eq!(targets.len(), 4);
+        } else {
+            panic!("Expected CacheInvalidate variant");
+        }
     }
 }

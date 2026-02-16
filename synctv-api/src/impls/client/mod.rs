@@ -44,21 +44,23 @@ pub use convert::{
 // Room password limits imported from the single source of truth in synctv-core
 use synctv_core::validation::{ROOM_PASSWORD_MIN, ROOM_PASSWORD_MAX};
 
+use crate::impls::ApiError;
+
 /// Validate a password that is being **set** (create room, set password, update settings).
-fn validate_password_for_set(password: &str) -> Result<(), String> {
+fn validate_password_for_set(password: &str) -> Result<(), ApiError> {
     if password.len() < ROOM_PASSWORD_MIN {
-        return Err(format!("Password too short (minimum {ROOM_PASSWORD_MIN} characters)"));
+        return Err(ApiError::InvalidInput(format!("Password too short (minimum {ROOM_PASSWORD_MIN} characters)")));
     }
     if password.len() > ROOM_PASSWORD_MAX {
-        return Err(format!("Password too long (maximum {ROOM_PASSWORD_MAX} characters)"));
+        return Err(ApiError::InvalidInput(format!("Password too long (maximum {ROOM_PASSWORD_MAX} characters)")));
     }
     Ok(())
 }
 
 /// Validate a password that is being **verified** (join room, check password).
-fn validate_password_for_verify(password: &str) -> Result<(), String> {
+fn validate_password_for_verify(password: &str) -> Result<(), ApiError> {
     if password.len() > ROOM_PASSWORD_MAX {
-        return Err(format!("Password too long (maximum {ROOM_PASSWORD_MAX} characters)"));
+        return Err(ApiError::InvalidInput(format!("Password too long (maximum {ROOM_PASSWORD_MAX} characters)")));
     }
     Ok(())
 }
@@ -188,23 +190,53 @@ impl ClientApiImpl {
         );
     }
 
-    /// Publish a permission change event to other cluster replicas
-    fn publish_permission_changed(
+    /// Publish a permission change event to other cluster replicas.
+    ///
+    /// Fetches actual usernames and effective permissions before broadcasting
+    /// so that receivers get correct data without needing additional lookups.
+    async fn publish_permission_changed(
         &self,
         room_id: &RoomId,
         target_user_id: &UserId,
         changed_by: &UserId,
     ) {
         if let Some(ref tx) = self.redis_publish_tx {
+            // Fetch actual usernames and permissions for the event
+            let (target_username, new_permissions) = match self
+                .room_service
+                .member_service()
+                .get_member(room_id, target_user_id)
+                .await
+            {
+                Ok(Some(member)) => {
+                    let username = self
+                        .user_service
+                        .get_user(target_user_id)
+                        .await
+                        .map(|u| u.username.clone())
+                        .unwrap_or_default();
+                    let perms = member.effective_permissions(member.role.permissions());
+                    (username, perms)
+                }
+                _ => (String::new(), synctv_core::models::PermissionBits::empty()),
+            };
+
+            let changed_by_username = self
+                .user_service
+                .get_user(changed_by)
+                .await
+                .map(|u| u.username.clone())
+                .unwrap_or_default();
+
             let _ = tx.try_send(synctv_cluster::sync::PublishRequest {
                 event: synctv_cluster::sync::ClusterEvent::PermissionChanged {
                     event_id: nanoid::nanoid!(16),
                     room_id: room_id.clone(),
                     target_user_id: target_user_id.clone(),
-                    target_username: String::new(), // filled by receiver if needed
+                    target_username,
                     changed_by: changed_by.clone(),
-                    changed_by_username: String::new(),
-                    new_permissions: synctv_core::models::PermissionBits::empty(),
+                    changed_by_username,
+                    new_permissions,
                     timestamp: chrono::Utc::now(),
                 },
             });

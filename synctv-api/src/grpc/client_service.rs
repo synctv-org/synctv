@@ -67,23 +67,22 @@ use super::internal_err;
 /// Provides backpressure for slow clients without excessive memory usage.
 const MESSAGE_STREAM_BUFFER_SIZE: usize = 100;
 
-/// Map impls layer error strings to appropriate gRPC Status codes.
-///
-/// Uses the shared `classify_error` function from the impls module for
-/// consistent error classification across HTTP and gRPC transports.
+/// Map a typed `ApiError` to a gRPC `Status` with guaranteed-correct
+/// status code mapping (no keyword-based heuristics).
 ///
 /// Note: For internal errors, we log the details and return a generic message
 /// to avoid leaking sensitive implementation details to clients.
-fn impls_err_to_status(err: String) -> Status {
-    use crate::impls::{classify_error, ErrorKind};
-    match classify_error(&err) {
-        ErrorKind::NotFound => Status::not_found(err),
-        ErrorKind::Unauthenticated => Status::unauthenticated(err),
-        ErrorKind::PermissionDenied => Status::permission_denied(err),
-        ErrorKind::AlreadyExists => Status::already_exists(err),
-        ErrorKind::InvalidArgument => Status::invalid_argument(err),
+fn impls_err_to_status(err: crate::impls::ApiError) -> Status {
+    use crate::impls::ErrorKind;
+    let msg = err.to_string();
+    match err.classify() {
+        ErrorKind::NotFound => Status::not_found(msg),
+        ErrorKind::Unauthenticated => Status::unauthenticated(msg),
+        ErrorKind::PermissionDenied => Status::permission_denied(msg),
+        ErrorKind::AlreadyExists => Status::already_exists(msg),
+        ErrorKind::InvalidArgument => Status::invalid_argument(msg),
         ErrorKind::Internal => {
-            tracing::error!("Internal error: {err}");
+            tracing::error!("Internal error: {msg}");
             Status::internal("Internal error")
         }
     }
@@ -178,12 +177,12 @@ impl ClientServiceImpl {
         }
     }
 
-    /// Build an `EmailApiImpl` from the configured services, or return an error message
-    fn email_api(&self) -> Result<crate::impls::EmailApiImpl, String> {
+    /// Build an `EmailApiImpl` from the configured services, or return an error
+    fn email_api(&self) -> Result<crate::impls::EmailApiImpl, crate::impls::ApiError> {
         let email_service = self.email_service.as_ref()
-            .ok_or_else(|| "Email service is not configured on this server. Please contact the administrator.".to_string())?;
+            .ok_or_else(|| crate::impls::ApiError::Internal("Email service is not configured on this server. Please contact the administrator.".to_string()))?;
         let email_token_service = self.email_token_service.as_ref()
-            .ok_or_else(|| "Email verification service is not configured on this server.".to_string())?;
+            .ok_or_else(|| crate::impls::ApiError::Internal("Email verification service is not configured on this server.".to_string()))?;
 
         Ok(crate::impls::EmailApiImpl::new(
             self.user_service.clone(),
@@ -539,7 +538,7 @@ impl RoomService for ClientServiceImpl {
             .token_blacklist_service
             .is_blacklisted(&user_context.raw_token)
             .await
-            .unwrap_or(false)
+            .unwrap_or(true)
         {
             return Err(Status::unauthenticated("Token has been revoked"));
         }
@@ -1051,7 +1050,7 @@ impl EmailService for ClientServiceImpl {
         request: Request<SendVerificationEmailRequest>,
     ) -> Result<Response<SendVerificationEmailResponse>, Status> {
         let email_api = self.email_api()
-            .map_err(Status::failed_precondition)?;
+            .map_err(impls_err_to_status)?;
         let req = request.into_inner();
 
         let result = email_api
@@ -1069,7 +1068,7 @@ impl EmailService for ClientServiceImpl {
         request: Request<ConfirmEmailRequest>,
     ) -> Result<Response<ConfirmEmailResponse>, Status> {
         let email_api = self.email_api()
-            .map_err(Status::failed_precondition)?;
+            .map_err(impls_err_to_status)?;
         let req = request.into_inner();
 
         let result = email_api
@@ -1088,7 +1087,7 @@ impl EmailService for ClientServiceImpl {
         request: Request<RequestPasswordResetRequest>,
     ) -> Result<Response<RequestPasswordResetResponse>, Status> {
         let email_api = self.email_api()
-            .map_err(Status::failed_precondition)?;
+            .map_err(impls_err_to_status)?;
         let req = request.into_inner();
 
         let result = email_api
@@ -1106,7 +1105,7 @@ impl EmailService for ClientServiceImpl {
         request: Request<ConfirmPasswordResetRequest>,
     ) -> Result<Response<ConfirmPasswordResetResponse>, Status> {
         let email_api = self.email_api()
-            .map_err(Status::failed_precondition)?;
+            .map_err(impls_err_to_status)?;
         let req = request.into_inner();
 
         let result = email_api

@@ -228,8 +228,8 @@ impl SyncTvServer {
     async fn shutdown(&self) {
         info!("Shutting down SyncTV server...");
 
-        // 1. Wait for active connections to drain (with timeout)
-        let drain_timeout = Duration::from_secs(30);
+        // 1. Wait for active connections to drain (with configurable timeout)
+        let drain_timeout = Duration::from_secs(self.config.server.shutdown_drain_timeout_seconds);
         let drain_poll_interval = Duration::from_millis(500);
         let active = self.services.connection_manager.connection_count();
         if active > 0 {

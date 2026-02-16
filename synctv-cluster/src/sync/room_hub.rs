@@ -344,8 +344,26 @@ impl RoomMessageHub {
         self.connections.len()
     }
 
+    /// Remove all subscribers for a room and clean up connection tracking.
+    ///
+    /// Used when a room is deleted on another replica: after broadcasting the
+    /// `RoomDeleted` event, the hub removes the room so senders are dropped and
+    /// WebSocket read loops terminate.
+    pub fn remove_room(&self, room_id: &RoomId) {
+        if let Some((_, subscribers)) = self.rooms.remove(room_id) {
+            for sub in &subscribers {
+                self.connections.remove(&sub.connection_id);
+            }
+            info!(
+                room_id = %room_id.as_str(),
+                removed_connections = subscribers.len(),
+                "Removed all subscribers for deleted room"
+            );
+        }
+    }
+
     /// Get all subscribers in a room (for debugging/monitoring)
-    #[must_use] 
+    #[must_use]
     pub fn get_room_subscribers(&self, room_id: &RoomId) -> Vec<(UserId, ConnectionId)> {
         self.rooms
             .get(room_id)

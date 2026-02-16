@@ -4,7 +4,7 @@
 //! - L1: In-memory Moka cache (very fast, local to the node)
 //! - L2: Redis cache (fast, shared across nodes)
 
-use redis::{AsyncCommands, Client};
+use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -13,7 +13,7 @@ use crate::{models::UserId, Error, Result};
 /// User cache with L1 (Moka) + L2 (Redis) strategy
 #[derive(Clone)]
 pub struct UserCache {
-    redis_client: Option<Client>,
+    redis_conn: Option<redis::aio::ConnectionManager>,
     l1_cache: Arc<moka::future::Cache<UserId, CachedUser>>,
     l2_ttl_seconds: u64,
     key_prefix: String,
@@ -47,13 +47,13 @@ impl UserCache {
     /// Create a new `UserCache`
     ///
     /// # Arguments
-    /// * `redis_client` - Optional Redis client. If None, only L1 caching is used.
+    /// * `redis_conn` - Optional Redis `ConnectionManager`. If None, only L1 caching is used.
     /// * `l1_max_capacity` - Maximum number of entries in L1 cache
     /// * `l1_ttl_minutes` - TTL for L1 cache entries in minutes
     /// * `l2_ttl_seconds` - TTL for L2 (Redis) cache entries in seconds
     /// * `key_prefix` - Redis key prefix (e.g., "synctv:user:")
     pub fn new(
-        redis_client: Option<Client>,
+        redis_conn: Option<redis::aio::ConnectionManager>,
         l1_max_capacity: u64,
         l1_ttl_minutes: u64,
         l2_ttl_seconds: u64,
@@ -64,7 +64,7 @@ impl UserCache {
             .build();
 
         Ok(Self {
-            redis_client,
+            redis_conn,
             l1_cache: Arc::new(l1_cache),
             l2_ttl_seconds,
             key_prefix,
@@ -88,11 +88,8 @@ impl UserCache {
         }
 
         // Check L2 (Redis) cache
-        if let Some(ref client) = self.redis_client {
-            let mut conn = client
-                .get_multiplexed_async_connection()
-                .await
-                .map_err(|e| Error::Internal(format!("Redis connection failed: {e}")))?;
+        if let Some(ref conn) = self.redis_conn {
+            let mut conn = conn.clone();
 
             let key = format!("{}{}", self.key_prefix, user_id.as_str());
             let user_json: Option<String> = conn
@@ -135,11 +132,8 @@ impl UserCache {
         self.l1_cache.insert(user_id.clone(), user.clone()).await;
 
         // Update L2 cache
-        if let Some(ref client) = self.redis_client {
-            let mut conn = client
-                .get_multiplexed_async_connection()
-                .await
-                .map_err(|e| Error::Internal(format!("Redis connection failed: {e}")))?;
+        if let Some(ref conn) = self.redis_conn {
+            let mut conn = conn.clone();
 
             let key = format!("{}{}", self.key_prefix, user_id.as_str());
             let json = serde_json::to_string(&user).map_err(|e| {
@@ -179,11 +173,8 @@ impl UserCache {
         self.l1_cache.invalidate(user_id).await;
 
         // Then remove from L2 (Redis) so other replicas don't re-populate from stale data
-        if let Some(ref client) = self.redis_client {
-            let mut conn = client
-                .get_multiplexed_async_connection()
-                .await
-                .map_err(|e| Error::Internal(format!("Redis connection failed: {e}")))?;
+        if let Some(ref conn) = self.redis_conn {
+            let mut conn = conn.clone();
 
             let key = format!("{}{}", self.key_prefix, user_id.as_str());
             let _: () = conn
@@ -219,11 +210,8 @@ impl UserCache {
 
         // Check L2 cache for missing IDs
         if !missing_ids.is_empty() {
-            if let Some(ref client) = self.redis_client {
-                let mut conn = client
-                    .get_multiplexed_async_connection()
-                    .await
-                    .map_err(|e| Error::Internal(format!("Redis connection failed: {e}")))?;
+            if let Some(ref conn) = self.redis_conn {
+                let mut conn = conn.clone();
 
                 let mut pipe = redis::pipe();
                 for user_id in &missing_ids {
@@ -271,27 +259,17 @@ impl UserCache {
         self.l1_cache.invalidate(&id).await;
 
         // Then remove from L2 (Redis)
-        if let Some(ref client) = self.redis_client {
+        if let Some(ref conn) = self.redis_conn {
+            let mut conn = conn.clone();
             let key = format!("{}{}", self.key_prefix, user_id);
-            match client.get_multiplexed_async_connection().await {
-                Ok(mut conn) => {
-                    let result: std::result::Result<(), redis::RedisError> =
-                        redis::AsyncCommands::del(&mut conn, &key).await;
-                    if let Err(e) = result {
-                        tracing::warn!(
-                            user_id = %user_id,
-                            error = %e,
-                            "Failed to delete user L2 cache during cross-replica invalidation"
-                        );
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        user_id = %user_id,
-                        error = %e,
-                        "Failed to get Redis connection for user L2 cache invalidation"
-                    );
-                }
+            let result: std::result::Result<(), redis::RedisError> =
+                redis::AsyncCommands::del(&mut conn, &key).await;
+            if let Err(e) = result {
+                tracing::warn!(
+                    user_id = %user_id,
+                    error = %e,
+                    "Failed to delete user L2 cache during cross-replica invalidation"
+                );
             }
         }
 
@@ -311,7 +289,7 @@ impl UserCache {
 impl std::fmt::Debug for UserCache {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("UserCache")
-            .field("redis_enabled", &self.redis_client.is_some())
+            .field("redis_enabled", &self.redis_conn.is_some())
             .field("l2_ttl_seconds", &self.l2_ttl_seconds)
             .field("key_prefix", &self.key_prefix)
             .finish()

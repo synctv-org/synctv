@@ -240,9 +240,17 @@ impl TokenBlacklistService {
             // L1 miss - check Redis (source of truth)
             let mut conn = conn.clone();
 
-            let value: Option<String> = conn.get(&user_key)
-                .await
-                .map_err(|e| Error::Internal(format!("Failed to check user token invalidation: {e}")))?;
+            let value: Option<String> = match conn.get(&user_key).await {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::error!(
+                        "Redis unreachable during user token invalidation check, \
+                         denying request (fail closed): {e}"
+                    );
+                    // Fail closed: treat as invalidated when Redis is unavailable
+                    return Ok(true);
+                }
+            };
 
             if let Some(timestamp_str) = value {
                 if let Ok(password_changed_at) = timestamp_str.parse::<i64>() {

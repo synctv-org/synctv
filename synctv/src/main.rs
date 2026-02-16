@@ -15,7 +15,7 @@ use synctv_core::{
 };
 use synctv_cluster::sync::{ConnectionManager, ConnectionLimits, ClusterManager, ClusterConfig};
 use synctv_cluster::discovery::{NodeRegistry, HealthMonitor, LoadBalancer, LoadBalancingStrategy, K8sDnsDiscovery};
-use synctv_cluster::leader::LeaderElector;
+use synctv_cluster::leader::{LeaderElector, K8sLeaderElector, K8sLeaderElectorConfig};
 
 use server::{SyncTvServer, Services};
 
@@ -499,15 +499,57 @@ async fn main() -> Result<()> {
     // (database migrations are already gated by DistributedLock; leader election
     // provides a continuous leadership signal for periodic cleanup tasks).
     let leader_cancel = tokio_util::sync::CancellationToken::new();
-    let leader_elector = if let Some(ref conn) = synctv_services.redis_conn {
-        let elector = LeaderElector::new(conn.clone(), node_id.clone());
-        let _leader_handle = elector.start(leader_cancel.clone());
-        info!("Leader election started (node_id={})", node_id);
-        Some(elector)
-    } else {
-        // Without Redis, this is a single-node deployment; we are always the leader.
-        info!("Redis not configured, skipping leader election (single-node mode)");
-        None
+    let leader_elector = {
+        let leader_mode = config.cluster.leader_election_mode.as_str();
+        match leader_mode {
+            "k8s_lease" => {
+                info!("Using K8s Lease-based leader election");
+                // Get pod identity and namespace from environment
+                let pod_name = std::env::var("POD_NAME").unwrap_or_else(|_| node_id.clone());
+                let namespace = std::env::var("POD_NAMESPACE").unwrap_or_else(|_| "default".to_string());
+
+                match K8sLeaderElector::new(
+                    pod_name.clone(),
+                    namespace.clone(),
+                    K8sLeaderElectorConfig::default(),
+                ).await {
+                    Ok(elector) => {
+                        let _leader_handle = elector.start(leader_cancel.clone());
+                        info!(
+                            pod_name = %pod_name,
+                            namespace = %namespace,
+                            "K8s leader election started"
+                        );
+                        Some(synctv_cluster::leader::AnyLeaderElector::K8s(elector))
+                    }
+                    Err(e) => {
+                        error!("Failed to initialize K8s leader election: {}", e);
+                        error!("Ensure POD_NAME and POD_NAMESPACE env vars are set and RBAC is configured");
+                        None
+                    }
+                }
+            }
+            _ => {
+                // Default: Redis-based leader election
+                if leader_mode != "redis" {
+                    warn!(
+                        leader_election_mode = %leader_mode,
+                        "Unknown leader election mode, falling back to 'redis'"
+                    );
+                }
+
+                if let Some(ref conn) = synctv_services.redis_conn {
+                    let elector = LeaderElector::new(conn.clone(), node_id.clone());
+                    let _leader_handle = elector.start(leader_cancel.clone());
+                    info!("Redis-based leader election started (node_id={})", node_id);
+                    Some(synctv_cluster::leader::AnyLeaderElector::Redis(elector))
+                } else {
+                    // Without Redis, this is a single-node deployment; we are always the leader.
+                    info!("Redis not configured, skipping leader election (single-node mode)");
+                    None
+                }
+            }
+        }
     };
 
     // 6. Initialize connection manager with configurable limits (needed early for heartbeat loop)

@@ -6,7 +6,7 @@ use handlebars::Handlebars;
 use serde_json::json;
 use std::sync::Arc;
 
-use crate::{Error, Result};
+use crate::{Error, Result, InternalExt};
 
 /// Email template type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,16 +33,16 @@ impl EmailTemplateManager {
 
         // Register templates
         handlebars.register_template_string("email_verification", EMAIL_VERIFICATION_TEMPLATE)
-            .map_err(|e| Error::Internal(format!("Failed to register email verification template: {e}")))?;
+            .internal_with_err("Failed to register email verification template")?;
 
         handlebars.register_template_string("password_reset", PASSWORD_RESET_TEMPLATE)
-            .map_err(|e| Error::Internal(format!("Failed to register password reset template: {e}")))?;
+            .internal_with_err("Failed to register password reset template")?;
 
         handlebars.register_template_string("test_email", TEST_EMAIL_TEMPLATE)
-            .map_err(|e| Error::Internal(format!("Failed to register test email template: {e}")))?;
+            .internal_with_err("Failed to register test email template")?;
 
         handlebars.register_template_string("notification", NOTIFICATION_TEMPLATE)
-            .map_err(|e| Error::Internal(format!("Failed to register notification template: {e}")))?;
+            .internal_with_err("Failed to register notification template")?;
 
         Ok(Self {
             handlebars: Arc::new(handlebars),
@@ -61,7 +61,7 @@ impl EmailTemplateManager {
         });
 
         let html = self.handlebars.render("email_verification", &data)
-            .map_err(|e| Error::Internal(format!("Failed to render template: {e}")))?;
+            .internal_with_err("Failed to render template")?;
 
         let plain_text = format!(
             "Welcome to SyncTV!\n\n\
@@ -88,7 +88,7 @@ impl EmailTemplateManager {
         });
 
         let html = self.handlebars.render("password_reset", &data)
-            .map_err(|e| Error::Internal(format!("Failed to render template: {e}")))?;
+            .internal_with_err("Failed to render template")?;
 
         let plain_text = format!(
             "You requested a password reset for your SyncTV account.\n\n\
@@ -116,7 +116,7 @@ impl EmailTemplateManager {
         });
 
         let html = self.handlebars.render("test_email", &data)
-            .map_err(|e| Error::Internal(format!("Failed to render template: {e}")))?;
+            .internal_with_err("Failed to render template")?;
 
         let plain_text = format!(
             "This is a test email from SyncTV.\n\n\
@@ -163,7 +163,7 @@ impl EmailTemplateManager {
         });
 
         let html = self.handlebars.render("notification", &data)
-            .map_err(|e| Error::Internal(format!("Failed to render template: {e}")))?;
+            .internal_with_err("Failed to render template")?;
 
         let plain_text = if let (Some(action_text), Some(action_url)) = (action_text, action_url) {
             format!(

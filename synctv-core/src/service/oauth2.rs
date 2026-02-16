@@ -18,7 +18,7 @@ use crate::{
     models::{oauth2_client::OAuth2Provider, UserId},
     repository::UserOAuthProviderRepository,
     oauth2::Provider as OAuth2ProviderTrait,
-    Error, Result,
+    Error, Result, InternalExt,
 };
 
 /// Redis key prefix for `OAuth2` states
@@ -146,7 +146,7 @@ impl OAuth2Service {
         if let Some(ref conn) = self.redis_conn {
             let key = format!("{OAUTH2_STATE_KEY_PREFIX}{state_token}");
             let value = serde_json::to_string(state)
-                .map_err(|e| Error::Internal(format!("Failed to serialize OAuth2 state: {e}")))?;
+                .internal_with_err("Failed to serialize OAuth2 state")?;
 
             let mut conn = conn.clone();
 
@@ -154,7 +154,7 @@ impl OAuth2Service {
             let _: () = conn
                 .set_ex(&key, value, OAUTH2_STATE_TTL_SECONDS)
                 .await
-                .map_err(|e| Error::Internal(format!("Failed to store OAuth2 state in Redis: {e}")))?;
+                .internal_with_err("Failed to store OAuth2 state in Redis")?;
 
             debug!("Stored OAuth2 state in Redis for token {}", &state_token[..8]);
         } else {
@@ -187,12 +187,12 @@ impl OAuth2Service {
                 .key(&key)
                 .invoke_async(&mut conn)
                 .await
-                .map_err(|e| Error::Internal(format!("Failed to consume OAuth2 state from Redis: {e}")))?;
+                .internal_with_err("Failed to consume OAuth2 state from Redis")?;
 
             match value {
                 Some(json) => {
                     let state: OAuth2State = serde_json::from_str(&json)
-                        .map_err(|e| Error::Internal(format!("Failed to deserialize OAuth2 state: {e}")))?;
+                        .internal_with_err("Failed to deserialize OAuth2 state")?;
                     debug!("Retrieved OAuth2 state from Redis for token {}", &state_token[..8]);
                     Ok(state)
                 }
@@ -245,7 +245,7 @@ impl OAuth2Service {
 
         // Generate authorization URL with PKCE challenge
         let (auth_url, pkce_verifier) = entry.provider.new_auth_url(&state_token).await
-            .map_err(|e| Error::Internal(format!("Failed to generate authorization URL: {e}")))?;
+            .internal_with_err("Failed to generate authorization URL")?;
 
         // Store state (including PKCE verifier) for verification during callback
         let oauth_state = OAuth2State {
@@ -287,7 +287,7 @@ impl OAuth2Service {
 
         // Generate authorization URL with PKCE challenge
         let (auth_url, pkce_verifier) = entry.provider.new_auth_url(&state_token).await
-            .map_err(|e| Error::Internal(format!("Failed to generate authorization URL: {e}")))?;
+            .internal_with_err("Failed to generate authorization URL")?;
 
         // Store state with user_id for bind flow (including PKCE verifier)
         let oauth_state = OAuth2State {
@@ -387,7 +387,7 @@ impl OAuth2Service {
 
         // Use provider to get user info (with PKCE verifier)
         let user_info = entry.provider.get_user_info(code, pkce_verifier).await
-            .map_err(|e| Error::Internal(format!("Failed to get user info: {e}")))?;
+            .internal_with_err("Failed to get user info")?;
 
         // Convert provider user info to service user info
         let service_user_info = OAuth2UserInfo {

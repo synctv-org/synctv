@@ -33,7 +33,7 @@
 use redis::aio::ConnectionManager as RedisConnectionManager;
 use redis::Script;
 use std::future::Future;
-use crate::{Error, Result};
+use crate::{Error, Result, InternalExt};
 
 /// Distributed lock service
 ///
@@ -76,9 +76,7 @@ impl DistributedLock {
             .key(&token_key)
             .invoke_async::<u64>(&mut conn)
             .await
-            .map_err(|e| Error::Internal(format!(
-                "Failed to generate fencing token for lock '{key}': {e}"
-            )))
+            .internal_with_err(&format!("Failed to generate fencing token for lock '{key}'"))
     }
 
     /// Acquire a lock (using SET NX EX atomic operation)
@@ -160,7 +158,7 @@ impl DistributedLock {
             .arg(ttl_seconds)
             .query_async(&mut conn)
             .await
-            .map_err(|e| Error::Internal(format!("Failed to acquire lock: {e}")))?;
+            .internal_with_err("Failed to acquire lock")?;
 
         if result.is_some() {
             // Generate fencing token only if requested (saves Redis round-trip)
@@ -220,7 +218,7 @@ impl DistributedLock {
             .arg(lock_value)
             .invoke_async::<i32>(&mut conn)
             .await
-            .map_err(|e| Error::Internal(format!("Failed to release lock: {e}")))?;
+            .internal_with_err("Failed to release lock")?;
 
         let released = result == 1;
         if released {
@@ -450,7 +448,7 @@ impl DistributedLock {
             .arg(ttl_seconds)
             .invoke_async::<i32>(&mut conn)
             .await
-            .map_err(|e| Error::Internal(format!("Failed to extend lock: {e}")))?;
+            .internal_with_err("Failed to extend lock")?;
 
         Ok(result == 1)
     }

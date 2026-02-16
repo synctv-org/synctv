@@ -62,6 +62,9 @@ backon.workspace = true
 # Object storage (optional, behind `oss` feature)
 opendal = { workspace = true, optional = true }
 
+# Metrics (Fixed #116: Add Prometheus metrics for RTMP livestream operations)
+synctv-core.workspace = true
+
 [dev-dependencies]
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

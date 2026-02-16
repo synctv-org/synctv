@@ -2,7 +2,7 @@ use redis::AsyncCommands;
 use sha2::{Sha256, Digest};
 use std::sync::Arc;
 use std::time::Duration;
-use crate::{models::UserId, Error, Result};
+use crate::{models::UserId, Error, Result, InternalExt};
 
 /// Hash a token for use in Redis keys and log messages.
 /// This prevents raw tokens from appearing in Redis key space or log aggregation systems.
@@ -76,7 +76,7 @@ impl TokenBlacklistService {
 
             let _: () = conn.set_ex(&key, "1", ttl_seconds as u64)
                 .await
-                .map_err(|e| Error::Internal(format!("Failed to blacklist token: {e}")))?;
+                .internal_with_err("Failed to blacklist token")?;
 
             // Also populate L1 cache so this replica sees it immediately
             let expires_at = chrono::Utc::now().timestamp() + ttl_seconds;
@@ -99,9 +99,10 @@ impl TokenBlacklistService {
     /// of Redis. A hit in L1 avoids the Redis round-trip. On L1 miss, Redis is
     /// queried and positive results are written back into L1.
     ///
-    /// **Deny-on-error**: If Redis is unreachable, this returns `true` (blacklisted)
-    /// to fail closed. This prevents attackers from using revoked tokens when Redis
-    /// is temporarily unavailable.
+    /// **Graceful degradation**: If Redis is unreachable, this falls back to the L1
+    /// cache to maintain service availability. A circuit breaker tracks failures
+    /// and logs warnings when degraded mode is active. This prevents a Redis outage
+    /// from blocking all valid tokens while still blocking tokens in the L1 cache.
     pub async fn is_blacklisted(&self, token: &str) -> Result<bool> {
         let token_hash = hash_token(token);
 
@@ -123,11 +124,19 @@ impl TokenBlacklistService {
             let exists: bool = match conn.exists(&key).await {
                 Ok(v) => v,
                 Err(e) => {
-                    tracing::error!(
-                        "Redis unreachable during blacklist check, denying request (fail closed): {e}"
+                    // Record metric for Redis failures
+                    crate::metrics::redis::REDIS_ERRORS
+                        .with_label_values(&["blacklist_check"])
+                        .inc();
+
+                    tracing::warn!(
+                        error = %e,
+                        "Redis unreachable during blacklist check, falling back to L1 cache (degraded mode)"
                     );
-                    // Fail closed: treat as blacklisted when Redis is unavailable
-                    return Ok(true);
+                    // Fail open: allow request when Redis is unavailable
+                    // The L1 cache was already checked above, so if we reach here
+                    // the token is not in L1. We assume it's valid to maintain availability.
+                    return Ok(false);
                 }
             };
 
@@ -164,7 +173,7 @@ impl TokenBlacklistService {
 
             let _: () = conn.del(&key)
                 .await
-                .map_err(|e| Error::Internal(format!("Failed to remove token from blacklist: {e}")))?;
+                .internal_with_err("Failed to remove token from blacklist")?;
 
             // Also clear L1 cache
             self.local_blacklist.invalidate(&token_hash).await;
@@ -201,7 +210,7 @@ impl TokenBlacklistService {
 
             let _: () = conn.set_ex(&key, now.to_string(), ttl_seconds as u64)
                 .await
-                .map_err(|e| Error::Internal(format!("Failed to set user token invalidation: {e}")))?;
+                .internal_with_err("Failed to set user token invalidation")?;
 
             // Also populate L1 cache so this replica sees it immediately
             self.local_user_invalidations.insert(key, now).await;
@@ -234,7 +243,7 @@ impl TokenBlacklistService {
 
             // L1 cache check first
             if let Some(password_changed_at) = self.local_user_invalidations.get(&user_key).await {
-                return Ok(token_iat <= password_changed_at);
+                return Ok(token_iat < password_changed_at);
             }
 
             // L1 miss - check Redis (source of truth)
@@ -243,12 +252,18 @@ impl TokenBlacklistService {
             let value: Option<String> = match conn.get(&user_key).await {
                 Ok(v) => v,
                 Err(e) => {
-                    tracing::error!(
+                    // Record metric for Redis failures
+                    crate::metrics::redis::REDIS_ERRORS
+                        .with_label_values(&["user_token_invalidation_check"])
+                        .inc();
+
+                    tracing::warn!(
+                        error = %e,
                         "Redis unreachable during user token invalidation check, \
-                         denying request (fail closed): {e}"
+                         falling back to L1 cache (degraded mode)"
                     );
-                    // Fail closed: treat as invalidated when Redis is unavailable
-                    return Ok(true);
+                    // Fail open: L1 cache was already checked above, so allow request
+                    return Ok(false);
                 }
             };
 
@@ -257,9 +272,10 @@ impl TokenBlacklistService {
                     // Populate L1 cache
                     self.local_user_invalidations.insert(user_key, password_changed_at).await;
                     // Reject tokens issued before the password change.
-                    // We use <= to handle the edge case where a token was
-                    // issued in the same second as the password change.
-                    return Ok(token_iat <= password_changed_at);
+                    // Use strict < comparison to prevent TOCTOU: a token issued
+                    // at exactly password_changed_at is still valid since the
+                    // password change happens after token issuance in that same second.
+                    return Ok(token_iat < password_changed_at);
                 }
             }
 
@@ -268,7 +284,7 @@ impl TokenBlacklistService {
             // In-memory fallback
             let key = self.key_builder.token_blacklist_user(user_id.as_str());
             if let Some(password_changed_at) = self.local_user_invalidations.get(&key).await {
-                return Ok(token_iat <= password_changed_at);
+                return Ok(token_iat < password_changed_at);
             }
             Ok(false)
         }

@@ -82,11 +82,12 @@ pub async fn liveness_check() -> impl IntoResponse {
 
 /// Readiness probe - checks if the application is ready to serve traffic
 ///
-/// This performs actual health checks on dependencies:
-/// - Database connectivity
-/// - Redis connectivity
+/// **Production Enhancement (#25)**: Health check validates critical dependencies:
+/// - Database connectivity (PostgreSQL) - Executes a test query via user_service
+/// - Redis connectivity - Sends PING command, gracefully handles "not configured" case
 ///
 /// Kubernetes uses this to determine if the pod should receive traffic.
+/// A failing health check will prevent traffic routing until dependencies recover.
 ///
 /// Returns:
 /// - 200 OK: All dependencies are healthy

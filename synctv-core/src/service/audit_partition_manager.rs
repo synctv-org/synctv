@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use crate::{Error, Result};
+use crate::{Error, Result, InternalExt};
 
 /// Maximum retry attempts for partition operations
 const MAX_PARTITION_RETRIES: u32 = 3;
@@ -93,10 +93,10 @@ impl AuditPartitionManager {
         .bind(partition_count)
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| Error::Internal(format!("Failed to ensure indexes: {e}")))?;
+        .internal_with_err("Failed to ensure indexes")?;
 
         let result: IndexEnsureResult = serde_json::from_value(result_json)
-            .map_err(|e| Error::Internal(format!("Failed to parse index result: {e}")))?;
+            .internal_with_err("Failed to parse index result")?;
 
         info!(
             "Indexes ensured: {} partitions, {} indexes created",
@@ -118,10 +118,10 @@ impl AuditPartitionManager {
         .bind(months_ahead)
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| Error::Internal(format!("Failed to create partitions: {e}")))?;
+        .internal_with_err("Failed to create partitions")?;
 
         let result: PartitionCreationResult = serde_json::from_value(result_json)
-            .map_err(|e| Error::Internal(format!("Failed to parse partition result: {e}")))?;
+            .internal_with_err("Failed to parse partition result")?;
 
         info!(
             "Partitions created: {}/{} successful",
@@ -141,7 +141,7 @@ impl AuditPartitionManager {
         .bind(date)
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| Error::Internal(format!("Failed to create partition: {e}")))?;
+        .internal_with_err("Failed to create partition")?;
 
         let partition_name = result_json["partition_name"]
             .as_str()
@@ -166,7 +166,7 @@ impl AuditPartitionManager {
         .bind(keep_months)
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| Error::Internal(format!("Failed to drop partitions: {e}")))?;
+        .internal_with_err("Failed to drop partitions")?;
 
         let dropped_count = result_json["dropped_count"]
             .as_i64()
@@ -196,10 +196,10 @@ impl AuditPartitionManager {
         )
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| Error::Internal(format!("Failed to check partition health: {e}")))?;
+        .internal_with_err("Failed to check partition health")?;
 
         let health: PartitionHealth = serde_json::from_value(result_json)
-            .map_err(|e| Error::Internal(format!("Failed to parse health result: {e}")))?;
+            .internal_with_err("Failed to parse health result")?;
 
         match health.health_status.as_str() {
             "healthy" => {
@@ -228,10 +228,10 @@ impl AuditPartitionManager {
         )
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| Error::Internal(format!("Failed to get partition stats: {e}")))?;
+        .internal_with_err("Failed to get partition stats")?;
 
         let stats: PartitionStats = serde_json::from_value(result_json)
-            .map_err(|e| Error::Internal(format!("Failed to parse stats result: {e}")))?;
+            .internal_with_err("Failed to parse stats result")?;
 
         info!(
             "Audit log stats: {} partitions, {} total records",

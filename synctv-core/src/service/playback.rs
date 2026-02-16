@@ -226,13 +226,15 @@ impl PlaybackService {
             .check_permission(&room_id, &user_id, PermissionBits::PLAY_PAUSE)
             .await?;
 
-        let state = self.update_state(room_id, |state| {
+        let state = self.update_state(room_id.clone(), |state| {
             state.is_playing = playing;
             state.updated_at = chrono::Utc::now();
             // version is incremented by the SQL UPDATE, not here
         })
         .await?;
 
+        // Invalidate cache after mutation to ensure other replicas see fresh data
+        self.invalidate_playback_cache(&room_id).await;
         self.broadcast_state_change(&state).await;
         Ok(state)
     }
@@ -252,13 +254,15 @@ impl PlaybackService {
             .check_permission(&room_id, &user_id, PermissionBits::SEEK)
             .await?;
 
-        let state = self.update_state(room_id, |state| {
+        let state = self.update_state(room_id.clone(), |state| {
             state.current_time = current_time;
             state.updated_at = chrono::Utc::now();
             // version is incremented by the SQL UPDATE, not here
         })
         .await?;
 
+        // Invalidate cache after mutation to ensure other replicas see fresh data
+        self.invalidate_playback_cache(&room_id).await;
         self.broadcast_state_change(&state).await;
         Ok(state)
     }
@@ -279,13 +283,15 @@ impl PlaybackService {
             return Err(Error::InvalidInput("Speed must be between 0.25 and 4.0".to_string()));
         }
 
-        let state = self.update_state(room_id, |state| {
+        let state = self.update_state(room_id.clone(), |state| {
             state.speed = speed;
             state.updated_at = chrono::Utc::now();
             // version is incremented by the SQL UPDATE, not here
         })
         .await?;
 
+        // Invalidate cache after mutation to ensure other replicas see fresh data
+        self.invalidate_playback_cache(&room_id).await;
         self.broadcast_state_change(&state).await;
         Ok(state)
     }

@@ -163,15 +163,24 @@ impl StreamRegistry {
         };
         let user_member = format!("{room_id}:{media_id}");
 
-        let result: Vec<i64> = redis::Script::new(lua_script)
-            .key(&epoch_key)
-            .key(&key)
-            .arg(&info_json)
-            .arg(PUBLISHER_TTL_SECS)
-            .arg(&user_key)
-            .arg(&user_member)
-            .invoke_async(&mut conn)
+        // Fixed #114: Add timeout for Redis Lua script execution (5 seconds)
+        // Prevents indefinite blocking on Redis server issues or slow Lua execution
+        let result: Vec<i64> = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            async {
+                redis::Script::new(lua_script)
+                    .key(&epoch_key)
+                    .key(&key)
+                    .arg(&info_json)
+                    .arg(PUBLISHER_TTL_SECS)
+                    .arg(&user_key)
+                    .arg(&user_member)
+                    .invoke_async(&mut conn)
+                    .await
+            }
+        )
             .await
+            .map_err(|_| anyhow!("Lua script execution timed out after 5s"))?
             .map_err(|e| anyhow!("Lua script execution failed: {e}"))?;
 
         let registered = result[0] == 1;

@@ -29,6 +29,28 @@
 pub mod k8s_lease;
 pub use k8s_lease::{K8sLeaderElector, K8sLeaderElectorConfig};
 
+/// Unified leader elector that supports both Redis and K8s modes.
+///
+/// This enum allows the application to dynamically switch between
+/// Redis-based and K8s Lease-based leader election at runtime.
+#[derive(Clone)]
+pub enum AnyLeaderElector {
+    /// Redis-based leader election (works in any deployment)
+    Redis(LeaderElector),
+    /// Kubernetes Lease-based leader election (K8s only)
+    K8s(K8sLeaderElector),
+}
+
+impl AnyLeaderElector {
+    /// Returns `true` if this instance is currently the leader.
+    pub fn is_leader(&self) -> bool {
+        match self {
+            AnyLeaderElector::Redis(e) => e.is_leader(),
+            AnyLeaderElector::K8s(e) => e.is_leader(),
+        }
+    }
+}
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;

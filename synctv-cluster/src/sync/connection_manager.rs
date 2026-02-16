@@ -270,6 +270,10 @@ impl ConnectionManager {
 
     /// Associate a connection with a room
     ///
+    /// **Production Enhancement (#24)**: Enforces per-room connection limits to prevent
+    /// resource exhaustion. If a room has reached `max_per_room` connections, new joins
+    /// are rejected with a clear error message.
+    ///
     /// If the connection is already in a different room, it is removed from
     /// the old room first (preventing a double-join / leaked entry).
     pub fn join_room(&self, connection_id: &str, room_id: RoomId) -> Result<(), String> {

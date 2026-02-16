@@ -126,12 +126,14 @@ impl ProviderClientError {
 /// Create the standard exponential backoff for provider API calls.
 ///
 /// Starts at 200ms, doubles each attempt, caps at 5s, with up to 3 retries.
+/// Includes jitter (±25%) to prevent thundering herd on retry storms.
 #[must_use]
 pub fn provider_backoff() -> backon::ExponentialBuilder {
     backon::ExponentialBuilder::default()
         .with_min_delay(std::time::Duration::from_millis(200))
         .with_max_delay(std::time::Duration::from_secs(5))
         .with_max_times(3)
+        .with_jitter() // Add jitter to prevent thundering herd
 }
 
 /// Execute an async operation with retry and exponential backoff.

@@ -45,3 +45,17 @@ email:
   from_email: "noreply@synctv.local"
   from_name: "SyncTV"
   use_tls: true
+
+# Cluster configuration for multi-node deployments
+cluster:
+  # Discovery mode: "redis" (default) or "k8s_dns"
+  # k8s_dns requires HEADLESS_SERVICE_NAME and POD_NAMESPACE env vars
+  discovery_mode: "redis"
+
+  # Leader election mode: "redis" (default) or "k8s_lease"
+  # k8s_lease requires POD_NAME and POD_NAMESPACE env vars + RBAC permissions
+  leader_election_mode: "redis"
+
+  # Channel buffer sizes for cluster event distribution
+  critical_channel_capacity: 1000
+  publish_channel_capacity: 10000

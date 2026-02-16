@@ -154,6 +154,22 @@ impl CustomHlsRemuxer {
     pub async fn run(&mut self) -> Result<(), HlsRemuxerError> {
         tracing::info!("Custom HLS remuxer started");
 
+        // Fixed #113: Clean up orphaned HLS segments from previous restart
+        // This removes all segments (they are ephemeral and rebuilt on stream publish)
+        match self.segment_manager.cleanup_expired().await {
+            Ok(deleted) => {
+                if deleted > 0 {
+                    tracing::info!(
+                        "Cleaned up {} orphaned HLS segments from previous restart",
+                        deleted
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to cleanup orphaned segments on startup: {}", e);
+            }
+        }
+
         loop {
             let val = tokio::select! {
                 _ = self.cancel_token.cancelled() => {

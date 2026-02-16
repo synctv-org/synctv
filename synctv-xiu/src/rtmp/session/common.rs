@@ -20,6 +20,8 @@ use {
     bytes::BytesMut,
     std::fmt,
     std::{net::SocketAddr, sync::Arc},
+    std::collections::VecDeque,
+    std::time::{Duration, Instant},
     crate::streamhub::{
         define::{
             FrameData, FrameDataReceiver, FrameDataSender, NotifyInfo,
@@ -32,6 +34,10 @@ use {
     },
     tokio::sync::{mpsc, Mutex},
 };
+
+// Fixed #107: Rate limiting constants for DoS prevention
+const MAX_FRAMES_PER_SECOND: usize = 120; // Max 120 FPS (generous for 60 FPS + margin)
+const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(1);
 
 pub struct Common {
     /* Used to mark the subscriber's the data producer
@@ -56,6 +62,9 @@ pub struct Common {
     pub stream_handler: Arc<RtmpStreamHandler>,
     /* now used for subscriber session */
     statistic_data_sender: Option<StatisticDataSender>,
+
+    // Fixed #107: Frame rate limiting for DoS prevention (sliding window)
+    frame_timestamps: VecDeque<Instant>,
 }
 
 impl Common {
@@ -79,7 +88,31 @@ impl Common {
             request_url: String::default(),
             stream_handler: Arc::new(RtmpStreamHandler::new()),
             statistic_data_sender: None,
+            frame_timestamps: VecDeque::with_capacity(MAX_FRAMES_PER_SECOND),
         }
+    }
+
+    // Fixed #107: Check frame rate limit before accepting new frame
+    fn check_rate_limit(&mut self) -> bool {
+        let now = Instant::now();
+
+        // Remove timestamps outside the sliding window
+        while let Some(&oldest) = self.frame_timestamps.front() {
+            if now.duration_since(oldest) > RATE_LIMIT_WINDOW {
+                self.frame_timestamps.pop_front();
+            } else {
+                break;
+            }
+        }
+
+        // Check if we've exceeded the rate limit
+        if self.frame_timestamps.len() >= MAX_FRAMES_PER_SECOND {
+            return false;
+        }
+
+        // Add current timestamp and allow frame
+        self.frame_timestamps.push_back(now);
+        true
     }
     pub async fn send_channel_data(&mut self) -> Result<(), SessionError> {
         let mut receiver = self.data_receiver.take().ok_or(SessionError {
@@ -198,6 +231,15 @@ impl Common {
         data: &mut BytesMut,
         timestamp: &u32,
     ) -> Result<(), SessionError> {
+        // Fixed #107: Apply frame rate limiting to prevent DoS attacks
+        if !self.check_rate_limit() {
+            tracing::warn!(
+                "Video frame dropped: rate limit exceeded ({} FPS max)",
+                MAX_FRAMES_PER_SECOND
+            );
+            return Ok(()); // Drop frame silently
+        }
+
         let channel_data = FrameData::Video {
             timestamp: *timestamp,
             data: bytes::Bytes::copy_from_slice(data),
@@ -233,6 +275,15 @@ impl Common {
         data: &mut BytesMut,
         timestamp: &u32,
     ) -> Result<(), SessionError> {
+        // Fixed #107: Apply frame rate limiting to prevent DoS attacks
+        if !self.check_rate_limit() {
+            tracing::warn!(
+                "Audio frame dropped: rate limit exceeded ({} FPS max)",
+                MAX_FRAMES_PER_SECOND
+            );
+            return Ok(()); // Drop frame silently
+        }
+
         let channel_data = FrameData::Audio {
             timestamp: *timestamp,
             data: bytes::Bytes::copy_from_slice(data),

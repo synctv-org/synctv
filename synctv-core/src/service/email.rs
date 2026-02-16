@@ -17,7 +17,7 @@ use lettre::{
 };
 use tracing::{debug, warn};
 
-use crate::{Error, Result};
+use crate::{Error, Result, InternalExt};
 use super::email_token::{EmailTokenService, EmailTokenType};
 use super::email_templates::EmailTemplateManager;
 
@@ -161,19 +161,19 @@ impl EmailService {
         if let Some(ref redis) = self.redis {
             let key = format!("{EMAIL_CODE_KEY_PREFIX}{email}");
             let value = serde_json::to_string(code)
-                .map_err(|e| Error::Internal(format!("Failed to serialize verification code: {e}")))?;
+                .internal_with_err("Failed to serialize verification code")?;
 
             let mut conn = redis
                 .get_multiplexed_async_connection()
                 .await
-                .map_err(|e| Error::Internal(format!("Redis connection failed: {e}")))?;
+                .internal_with_err("Redis connection failed")?;
 
             let ttl_seconds = self.code_ttl_minutes * 60;
             use redis::AsyncCommands;
             let _: () = conn
                 .set_ex(&key, value, ttl_seconds as u64)
                 .await
-                .map_err(|e| Error::Internal(format!("Failed to store verification code in Redis: {e}")))?;
+                .internal_with_err("Failed to store verification code in Redis")?;
 
             debug!("Stored verification code in Redis for email {}", &email[..email.len().min(4)]);
         } else {
@@ -192,18 +192,18 @@ impl EmailService {
             let mut conn = redis
                 .get_multiplexed_async_connection()
                 .await
-                .map_err(|e| Error::Internal(format!("Redis connection failed: {e}")))?;
+                .internal_with_err("Redis connection failed")?;
 
             use redis::AsyncCommands;
             let value: Option<String> = conn
                 .get(&key)
                 .await
-                .map_err(|e| Error::Internal(format!("Failed to get verification code from Redis: {e}")))?;
+                .internal_with_err("Failed to get verification code from Redis")?;
 
             match value {
                 Some(json) => {
                     let code: VerificationCode = serde_json::from_str(&json)
-                        .map_err(|e| Error::Internal(format!("Failed to deserialize verification code: {e}")))?;
+                        .internal_with_err("Failed to deserialize verification code")?;
                     Ok(Some(code))
                 }
                 None => Ok(None),
@@ -234,13 +234,13 @@ impl EmailService {
             let mut conn = redis
                 .get_multiplexed_async_connection()
                 .await
-                .map_err(|e| Error::Internal(format!("Redis connection failed: {e}")))?;
+                .internal_with_err("Redis connection failed")?;
 
             use redis::AsyncCommands;
             let _: () = conn
                 .del(&key)
                 .await
-                .map_err(|e| Error::Internal(format!("Failed to remove verification code from Redis: {e}")))?;
+                .internal_with_err("Failed to remove verification code from Redis")?;
 
             debug!("Removed verification code from Redis for email {}", &email[..email.len().min(4)]);
         } else {
@@ -478,7 +478,7 @@ impl EmailService {
             .arg(self.max_attempts)
             .invoke_async(&mut conn)
             .await
-            .map_err(|e| Error::Internal(format!("Redis script failed: {e}")))?;
+            .internal_with_err("Redis script failed")?;
 
         match result {
             1 => Ok(()),
@@ -622,13 +622,13 @@ impl EmailService {
         let sent_at = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string();
         let (html_body, plain_text_body) = self.template_manager
             .render_test_email(&config.smtp_host, config.smtp_port, &sent_at)
-            .map_err(|e| Error::Internal(format!("Failed to render template: {e}")))?;
+            .internal_with_err("Failed to render template")?;
 
         // Send test email
         let subject = "SyncTV Email Test";
         self.send_html_email(config, to, subject, &html_body, &plain_text_body)
             .await
-            .map_err(|e| Error::Internal(format!("Failed to send test email: {e}")))?;
+            .internal_with_err("Failed to send test email")?;
 
         tracing::info!("Sent test email to {}", mask_email(to));
         Ok(())

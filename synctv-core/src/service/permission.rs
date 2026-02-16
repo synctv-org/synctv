@@ -29,10 +29,12 @@ pub struct PermissionService {
     /// Optional invalidation service for cross-replica cache sync
     invalidation_service: Option<Arc<CacheInvalidationService>>,
     /// When true, cache is considered unreliable due to Pub/Sub lag;
-    /// all permission checks fall back to no-cache until next flush.
+    /// all permission checks fall back to no-cache until recovery.
     cache_degraded: Arc<AtomicBool>,
     /// Tracks last `invalidate_all()` time to rate-limit flushes
     last_flush_time: Arc<parking_lot::Mutex<Instant>>,
+    /// Tracks when cache degradation started for automatic recovery
+    degradation_started: Arc<parking_lot::Mutex<Option<Instant>>>,
 }
 
 impl std::fmt::Debug for PermissionService {
@@ -49,6 +51,9 @@ impl PermissionService {
 
     /// Minimum interval between `invalidate_all()` calls (seconds)
     const FLUSH_RATE_LIMIT_SECS: u64 = 10;
+    /// Maximum duration to remain in degraded mode before automatic recovery (seconds)
+    /// After this time, the cache is re-enabled assuming Pub/Sub lag has resolved.
+    const MAX_DEGRADATION_DURATION_SECS: u64 = 60;
 
     /// Create a new permission service with caching
     #[must_use]
@@ -71,6 +76,7 @@ impl PermissionService {
             invalidation_service: None,
             cache_degraded: Arc::new(AtomicBool::new(false)),
             last_flush_time: Arc::new(parking_lot::Mutex::new(Instant::now())),
+            degradation_started: Arc::new(parking_lot::Mutex::new(None)),
         }
     }
 
@@ -97,6 +103,7 @@ impl PermissionService {
         let cache = service.cache.clone();
         let cache_degraded = service.cache_degraded.clone();
         let last_flush_time = service.last_flush_time.clone();
+        let degradation_started = service.degradation_started.clone();
         let mut receiver = invalidation_service.subscribe();
 
         crate::spawn::spawn_monitored("permission_invalidation_listener", async move {
@@ -104,8 +111,11 @@ impl PermissionService {
                 match receiver.recv().await {
                     Ok(msg) => {
                         // Any successful message means Pub/Sub is healthy;
-                        // clear degraded flag so cached reads resume.
-                        cache_degraded.store(false, Ordering::Release);
+                        // clear degraded flag and reset degradation timer.
+                        if cache_degraded.swap(false, Ordering::Release) {
+                            tracing::info!("Permission cache recovered from degraded state");
+                        }
+                        *degradation_started.lock() = None;
 
                         match msg {
                             InvalidationMessage::UserPermission { room_id, user_id } => {
@@ -163,8 +173,42 @@ impl PermissionService {
                             );
                         }
 
-                        // Mark cache as degraded so check_permission falls back to no_cache
-                        cache_degraded.store(true, Ordering::Release);
+                        // Mark cache as degraded and record when degradation started
+                        let was_degraded = cache_degraded.swap(true, Ordering::Release);
+                        if !was_degraded {
+                            *degradation_started.lock() = Some(Instant::now());
+                            tracing::warn!("Permission cache entered degraded state due to Pub/Sub lag");
+                        }
+                    }
+                }
+            }
+        });
+
+        // Spawn a recovery task that periodically checks if we've been degraded too long
+        let cache_degraded_for_recovery = service.cache_degraded.clone();
+        let degradation_started_for_recovery = service.degradation_started.clone();
+        crate::spawn::spawn_monitored("permission_cache_recovery", async move {
+            let mut ticker = tokio::time::interval(Duration::from_secs(10));
+            loop {
+                ticker.tick().await;
+
+                // Check if we should recover from degraded state
+                if cache_degraded_for_recovery.load(Ordering::Acquire) {
+                    let should_recover = {
+                        let started = degradation_started_for_recovery.lock();
+                        started.map_or(false, |start_time| {
+                            start_time.elapsed() >= Duration::from_secs(Self::MAX_DEGRADATION_DURATION_SECS)
+                        })
+                    };
+
+                    if should_recover {
+                        tracing::warn!(
+                            "Permission cache degraded for {} seconds, forcing recovery",
+                            Self::MAX_DEGRADATION_DURATION_SECS
+                        );
+                        cache_degraded_for_recovery.store(false, Ordering::Release);
+                        *degradation_started_for_recovery.lock() = None;
+                        tracing::info!("Permission cache auto-recovered after max degradation duration");
                     }
                 }
             }
@@ -195,6 +239,7 @@ impl PermissionService {
             invalidation_service: None,
             cache_degraded: Arc::new(AtomicBool::new(false)),
             last_flush_time: Arc::new(parking_lot::Mutex::new(Instant::now())),
+            degradation_started: Arc::new(parking_lot::Mutex::new(None)),
         }
     }
 
@@ -256,9 +301,13 @@ impl PermissionService {
         }
     }
 
-    /// Generate cache key for room + user
+    /// Generate cache key for room + user with namespace prefix
+    ///
+    /// Format: `perm:room:<room_id>:user:<user_id>`
+    /// The namespace prefix prevents collisions with other cache types and
+    /// ensures room/user ID pairs are always unique even if IDs overlap.
     fn cache_key(room_id: &RoomId, user_id: &UserId) -> String {
-        format!("{}:{}", room_id.0, user_id.0)
+        format!("perm:room:{}:user:{}", room_id.0, user_id.0)
     }
 
     /// Check if a user has a specific permission in a room
@@ -386,28 +435,32 @@ impl PermissionService {
     /// invalidation to other replicas via Redis Pub/Sub.
     ///
     /// # Multi-Replica Consistency
-    /// The order is: broadcast to Redis first, then invalidate local cache.
-    /// This ensures that if Redis broadcast fails, the local cache is not
-    /// invalidated while other replicas still have stale data.
+    /// The order is: invalidate local cache first, then broadcast to Redis.
+    /// This prevents a stale cache window where:
+    /// 1. Broadcast succeeds → other replicas invalidate
+    /// 2. Before local invalidation → cached reads on this node return stale data
+    /// 3. After local invalidation → window closes
+    ///
+    /// By invalidating locally first, we ensure this node never serves stale
+    /// data after the mutation completes, even if the broadcast fails.
     pub async fn invalidate_cache(&self, room_id: &RoomId, user_id: &UserId) {
-        // Broadcast to other replicas first (if configured)
-        // This ensures other nodes get the invalidation before we invalidate ours
+        // Invalidate local cache first to close the stale read window immediately
+        let cache_key = Self::cache_key(room_id, user_id);
+        self.cache.invalidate(&cache_key).await;
+
+        // Broadcast to other replicas (best effort)
         if let Some(ref service) = self.invalidation_service {
             if let Err(e) = service.invalidate_user_permission(room_id, user_id).await {
                 tracing::warn!(
                     error = %e,
                     room_id = %room_id.as_str(),
                     user_id = %user_id.as_str(),
-                    "Failed to broadcast permission cache invalidation"
+                    "Failed to broadcast permission cache invalidation to other replicas"
                 );
-                // Continue to invalidate local cache even if broadcast fails
-                // This is a trade-off: we prefer local consistency over global
+                // Local cache is already invalidated, so this node is consistent.
+                // Other replicas may have a brief stale window until their TTL expires.
             }
         }
-
-        // Invalidate local cache last
-        let cache_key = Self::cache_key(room_id, user_id);
-        self.cache.invalidate(&cache_key).await;
     }
 
     /// Invalidate permission cache for all users in a room.
@@ -417,20 +470,21 @@ impl PermissionService {
     /// If cache invalidation service is configured, this also broadcasts the
     /// invalidation to other replicas via Redis Pub/Sub.
     pub async fn invalidate_room_cache(&self, room_id: &RoomId) {
-        // Broadcast to other replicas first (if configured)
+        // Invalidate local cache first to close the stale read window immediately
+        // Use namespace prefix to match all permission cache entries for this room
+        let prefix = format!("perm:room:{}:user:", room_id.0);
+        let _ = self.cache.invalidate_entries_if(move |key, _| key.starts_with(&prefix));
+
+        // Broadcast to other replicas (best effort)
         if let Some(ref service) = self.invalidation_service {
             if let Err(e) = service.invalidate_room_permission(room_id).await {
                 tracing::warn!(
                     error = %e,
                     room_id = %room_id.as_str(),
-                    "Failed to broadcast room permission cache invalidation"
+                    "Failed to broadcast room permission cache invalidation to other replicas"
                 );
             }
         }
-
-        // Invalidate local cache last
-        let prefix = format!("{}:", room_id.0);
-        let _ = self.cache.invalidate_entries_if(move |key, _| key.starts_with(&prefix));
     }
 
     /// Clear all permission cache
@@ -438,18 +492,18 @@ impl PermissionService {
     /// If cache invalidation service is configured, this also broadcasts the
     /// invalidation to other replicas via Redis Pub/Sub.
     pub async fn clear_cache(&self) {
-        // Broadcast to other replicas first (if configured)
+        // Clear local cache first to close the stale read window immediately
+        self.cache.invalidate_all();
+
+        // Broadcast to other replicas (best effort)
         if let Some(ref service) = self.invalidation_service {
             if let Err(e) = service.invalidate_all().await {
                 tracing::warn!(
                     error = %e,
-                    "Failed to broadcast full permission cache invalidation"
+                    "Failed to broadcast full permission cache invalidation to other replicas"
                 );
             }
         }
-
-        // Clear local cache last
-        self.cache.invalidate_all();
     }
 
     /// Check if user can perform an action (alias for `check_permission`)
@@ -561,6 +615,7 @@ mod tests {
             invalidation_service: None,
             cache_degraded: Arc::new(AtomicBool::new(false)),
             last_flush_time: Arc::new(parking_lot::Mutex::new(Instant::now())),
+            degradation_started: Arc::new(parking_lot::Mutex::new(None)),
         }
     }
 
@@ -579,7 +634,7 @@ mod tests {
         let room_id = RoomId("room123".to_string());
         let user_id = UserId("user456".to_string());
         let key = PermissionService::cache_key(&room_id, &user_id);
-        assert_eq!(key, "room123:user456");
+        assert_eq!(key, "perm:room:room123:user:user456");
     }
 
     #[test]

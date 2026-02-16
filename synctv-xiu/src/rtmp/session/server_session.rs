@@ -618,6 +618,9 @@ impl ServerSession {
                 )
                 .await;
             }
+
+            // Fixed #116: Decrement Prometheus metrics for publisher disconnect
+            synctv_core::metrics::livestream::LIVESTREAM_ACTIVE_PUBLISHERS.dec();
         } else {
             self.common
                 .unsubscribe_from_stream_hub(self.app_name.clone(), self.stream_name.clone())
@@ -631,6 +634,9 @@ impl ServerSession {
                 )
                 .await;
             }
+
+            // Fixed #116: Decrement Prometheus metrics for viewer disconnect
+            synctv_core::metrics::livestream::LIVESTREAM_ACTIVE_VIEWERS.dec();
         }
 
         let mut netstream = NetStreamWriter::new(Arc::clone(&self.io));
@@ -809,6 +815,9 @@ impl ServerSession {
 
         self.state = ServerSessionState::Play;
 
+        // Fixed #116: Add Prometheus metrics for livestream viewers
+        synctv_core::metrics::livestream::LIVESTREAM_ACTIVE_VIEWERS.inc();
+
         Ok(())
     }
 
@@ -966,6 +975,9 @@ impl ServerSession {
         }
 
         self.is_publishing = true;
+
+        // Fixed #116: Add Prometheus metrics for livestream publishers
+        synctv_core::metrics::livestream::LIVESTREAM_ACTIVE_PUBLISHERS.inc();
 
         Ok(())
     }

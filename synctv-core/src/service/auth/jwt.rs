@@ -5,7 +5,7 @@ use jsonwebtoken::{
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use crate::{models::{UserId, RoomId}, Error, Result};
+use crate::{models::{UserId, RoomId}, Error, Result, InternalExt};
 
 /// JWT token type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -246,7 +246,7 @@ impl JwtService {
 
         let header = Header::new(self.algorithm);
         encode(&header, &claims, &self.encoding_key)
-            .map_err(|e| Error::Internal(format!("Failed to sign token: {e}")))
+            .internal_with_err("Failed to sign token")
     }
 
     /// Verify a token and extract claims
@@ -320,7 +320,7 @@ impl JwtService {
 
         let header = Header::new(self.algorithm);
         encode(&header, &guest_claims, &self.encoding_key)
-            .map_err(|e| Error::Internal(format!("Failed to sign guest token: {e}")))
+            .internal_with_err("Failed to sign guest token")
     }
 
     /// Verify a guest token and extract guest claims
@@ -402,7 +402,7 @@ impl JwtService {
 
         let header = Header::new(self.algorithm);
         encode(&header, &claims_with_standard, &self.encoding_key)
-            .map_err(|e| Error::Internal(format!("Failed to sign custom token: {e}")))
+            .internal_with_err("Failed to sign custom token")
     }
 
     /// Verify a custom JWT token

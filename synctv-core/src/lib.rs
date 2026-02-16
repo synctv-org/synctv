@@ -19,6 +19,6 @@ pub mod secrets;
 pub mod test_helpers;
 
 pub use config::Config;
-pub use error::{Error, Result};
+pub use error::{Error, Result, InternalExt};
 pub use transaction::{UnitOfWork, with_transaction};
 pub use cache::KeyBuilder;

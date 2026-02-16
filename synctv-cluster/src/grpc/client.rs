@@ -19,6 +19,7 @@ use tonic::metadata::MetadataValue;
 use tonic::transport::{Channel, Endpoint};
 use tracing::{debug, warn};
 
+use super::circuit_breaker::GrpcCircuitBreakerRegistry;
 use super::synctv::cluster::cluster_service_client::ClusterServiceClient;
 use super::synctv::cluster::{
     GetRoomConnectionsRequest, GetRoomConnectionsResponse, GetUserOnlineStatusRequest,
@@ -96,6 +97,8 @@ pub struct ClusterClient {
     /// Entries are automatically evicted after `CHANNEL_CACHE_TTL_SECS` of
     /// inactivity (no get/insert), preventing unbounded growth from stale nodes.
     channels: Cache<String, Channel>,
+    /// Circuit breaker registry for endpoint health tracking
+    circuit_breakers: Arc<GrpcCircuitBreakerRegistry>,
 }
 
 impl ClusterClient {
@@ -110,6 +113,7 @@ impl ClusterClient {
             node_registry,
             config,
             channels,
+            circuit_breakers: Arc::new(GrpcCircuitBreakerRegistry::new()),
         }
     }
 
@@ -254,6 +258,13 @@ impl ClusterClient {
         address: &str,
         user_ids: Vec<String>,
     ) -> Result<GetUserOnlineStatusResponse> {
+        // Check circuit breaker before attempting call
+        if !self.circuit_breakers.is_call_permitted(address).await {
+            return Err(Error::Rpc(format!(
+                "GetUserOnlineStatus rejected: circuit breaker open for {address}"
+            )));
+        }
+
         let channel = self.get_channel(address).await?;
         let mut client = self.make_client(channel);
 
@@ -262,12 +273,18 @@ impl ClusterClient {
 
         // Timeout is already set at the Endpoint level (see get_channel),
         // so no additional tokio::time::timeout wrapper is needed.
-        let response = client
-            .get_user_online_status(request)
-            .await
-            .map_err(|e| Error::Rpc(format!("GetUserOnlineStatus RPC failed for {address}: {e}")))?;
+        let result = client.get_user_online_status(request).await;
 
-        Ok(response.into_inner())
+        match result {
+            Ok(response) => {
+                self.circuit_breakers.on_success(address).await;
+                Ok(response.into_inner())
+            }
+            Err(e) => {
+                self.circuit_breakers.on_error(address).await;
+                Err(Error::Rpc(format!("GetUserOnlineStatus RPC failed for {address}: {e}")))
+            }
+        }
     }
 
     /// Fan-out `GetRoomConnections` to all remote nodes in parallel.
@@ -358,6 +375,13 @@ impl ClusterClient {
         address: &str,
         room_id: String,
     ) -> Result<GetRoomConnectionsResponse> {
+        // Check circuit breaker before attempting call
+        if !self.circuit_breakers.is_call_permitted(address).await {
+            return Err(Error::Rpc(format!(
+                "GetRoomConnections rejected: circuit breaker open for {address}"
+            )));
+        }
+
         let channel = self.get_channel(address).await?;
         let mut client = self.make_client(channel);
 
@@ -366,12 +390,18 @@ impl ClusterClient {
 
         // Timeout is already set at the Endpoint level (see get_channel),
         // so no additional tokio::time::timeout wrapper is needed.
-        let response = client
-            .get_room_connections(request)
-            .await
-            .map_err(|e| Error::Rpc(format!("GetRoomConnections RPC failed for {address}: {e}")))?;
+        let result = client.get_room_connections(request).await;
 
-        Ok(response.into_inner())
+        match result {
+            Ok(response) => {
+                self.circuit_breakers.on_success(address).await;
+                Ok(response.into_inner())
+            }
+            Err(e) => {
+                self.circuit_breakers.on_error(address).await;
+                Err(Error::Rpc(format!("GetRoomConnections RPC failed for {address}: {e}")))
+            }
+        }
     }
 
     /// Merge user online statuses from multiple nodes into a deduplicated view.

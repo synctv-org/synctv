@@ -59,6 +59,15 @@ use synctv_core::service::PermissionService;
 /// 2. Subscribing to Redis channels for events from other nodes
 /// 3. Forwarding received events to the local `RoomMessageHub`
 ///
+/// **Production Enhancement (#31)**: Comprehensive error handling for cluster pub/sub:
+/// - Automatic reconnection with exponential backoff (1s → 30s max)
+/// - Failed publish retry logic: saves failed events and retries after reconnection
+/// - Stream-based catch-up mechanism: recovers missed events during disconnection
+/// - Timeout protection: 5s timeout on all Redis operations
+/// - Critical event guarantee: XADD operations retry up to 3 times with backoff
+/// - Graceful degradation: logs warnings but continues operation on non-critical failures
+/// - Connection health checks: periodic PING to detect stale connections
+///
 /// Channel naming: `room:{room_id`} for room-specific events
 pub struct RedisPubSub {
     redis_client: RedisClient,

@@ -213,6 +213,13 @@ impl UserService {
     }
 
     /// Refresh access token
+    ///
+    /// **Production Enhancement (#32)**: Implements refresh token rotation to prevent
+    /// stolen token reuse. After verifying the old refresh token and issuing new tokens,
+    /// the old refresh token is blacklisted for its remaining lifetime. This ensures:
+    /// - A stolen refresh token can only be used once
+    /// - Legitimate users get new tokens on each refresh
+    /// - Replay attacks are prevented
     pub async fn refresh_token(&self, refresh_token: String) -> Result<(String, String)> {
         // Verify refresh token
         let claims = self.jwt_service.verify_refresh_token(&refresh_token)?;
@@ -249,6 +256,23 @@ impl UserService {
         let new_refresh_token = self
             .jwt_service
             .sign_token(&user.id, TokenType::Refresh)?;
+
+        // **Token Rotation (#32)**: Blacklist the old refresh token to prevent reuse.
+        // This protects against stolen token replay attacks. The TTL is set to the
+        // token's remaining lifetime so it expires naturally alongside the token.
+        let now = chrono::Utc::now().timestamp();
+        let old_token_ttl = claims.exp - now;
+        if old_token_ttl > 0 {
+            // Best-effort blacklisting: if Redis is down, we still issue new tokens
+            // (availability over perfect security). The token will expire naturally.
+            if let Err(e) = self.blacklist_service.blacklist_token(&refresh_token, old_token_ttl).await {
+                tracing::warn!(
+                    user_id = %user_id.as_str(),
+                    error = %e,
+                    "Failed to blacklist old refresh token during rotation (token will expire naturally)"
+                );
+            }
+        }
 
         Ok((new_access_token, new_refresh_token))
     }

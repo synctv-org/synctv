@@ -267,8 +267,16 @@ impl AlistClient {
     ///
     /// # Arguments
     /// * `path` - File path
-    /// * `method` - Method name (e.g., "`video_preview`")
+    /// * `method` - Method name (e.g., "video_preview")
     /// * `password` - Optional password for protected directories
+    ///
+    /// # Returns
+    /// Video transcoding information if supported by the Alist instance.
+    /// The response includes:
+    /// - Available transcoding quality levels
+    /// - Transcoding task status
+    /// - Playback URLs for transcoded versions
+    /// - Video metadata (duration, dimensions)
     pub async fn fs_other(
         &self,
         path: &str,
@@ -347,6 +355,25 @@ impl AlistClient {
                 resp.data.ok_or_else(|| AlistError::Parse("Missing data in me response".to_string()))
             }
         }).await
+    }
+
+    /// Get video transcoding/preview information
+    ///
+    /// This is a convenience wrapper around `fs_other` specifically for video transcoding.
+    /// It handles the common case of requesting video preview information.
+    ///
+    /// # Arguments
+    /// * `path` - Video file path
+    /// * `password` - Optional password for protected directories
+    ///
+    /// # Returns
+    /// Transcoding information including available quality levels and playback URLs
+    pub async fn get_video_transcode(
+        &self,
+        path: &str,
+        password: Option<&str>,
+    ) -> Result<HttpFsOtherResp, AlistError> {
+        self.fs_other(path, "video_preview", password).await
     }
 
     /// Search files and directories

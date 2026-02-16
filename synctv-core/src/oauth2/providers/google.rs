@@ -1,7 +1,7 @@
 //! Google `OAuth2` provider
 
 use crate::oauth2::{Provider, OAuth2UserInfo};
-use crate::Error;
+use crate::{Error, InternalExt};
 use async_trait::async_trait;
 use oauth2::{
     basic::BasicClient,
@@ -48,7 +48,7 @@ impl GoogleProvider {
                 Client::builder()
                     .redirect(reqwest::redirect::Policy::none())
                     .build()
-                    .map_err(|e| Error::Internal(format!("Failed to build HTTP client: {e}")))?
+                    .internal_with_err("Failed to build HTTP client")?
             ),
         })
     }
@@ -79,7 +79,7 @@ impl Provider for GoogleProvider {
             .set_pkce_verifier(verifier)
             .request_async(&oauth2::reqwest::Client::new())
             .await
-            .map_err(|e| Error::Internal(format!("Failed to exchange code: {e}")))?;
+            .internal_with_err("Failed to exchange code")?;
 
         // Fetch user info
         let resp = self
@@ -88,9 +88,9 @@ impl Provider for GoogleProvider {
             .header("Authorization", format!("Bearer {}", token.access_token().secret()))
             .send()
             .await
-            .map_err(|e| Error::Internal(format!("Failed to fetch user info: {e}")))?
+            .internal_with_err("Failed to fetch user info")?
             .error_for_status()
-            .map_err(|e| Error::Internal(format!("Google API error: {e}")))?;
+            .internal_with_err("Google API error")?;
 
         #[derive(Deserialize)]
         struct GoogleUser {
@@ -103,7 +103,7 @@ impl Provider for GoogleProvider {
         let user: GoogleUser = resp
             .json()
             .await
-            .map_err(|e| Error::Internal(format!("Failed to parse user info: {e}")))?;
+            .internal_with_err("Failed to parse user info")?;
 
         Ok(OAuth2UserInfo {
             provider_user_id: user.id,

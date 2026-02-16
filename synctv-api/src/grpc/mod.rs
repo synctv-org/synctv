@@ -215,20 +215,25 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         admin_api,
     );
 
-    // Create server builder with blacklist checking tower layer.
+    // Create auth interceptor for authenticated services (clone jwt_service for blacklist layer)
+    let auth_interceptor = AuthInterceptor::new(jwt_service.clone());
+
+    // Create server builder with blacklist + password invalidation checking tower layer.
     // This layer extracts the raw JWT bearer token from the HTTP Authorization
-    // header and performs an async Redis blacklist lookup. It runs before tonic
-    // routes and interceptors, so public endpoints (no Authorization header)
-    // pass through without a blacklist check.
-    let blacklist_layer = blacklist_layer::BlacklistCheckLayer::new(token_blacklist_service.clone());
+    // header and performs two async security checks:
+    // 1. Token blacklist check (explicit logout/revocation via Redis)
+    // 2. Password invalidation check (tokens issued before password change)
+    // It runs before tonic routes and interceptors, so public endpoints (no Authorization header)
+    // pass through without security checks.
+    let blacklist_layer = blacklist_layer::BlacklistCheckLayer::new(
+        token_blacklist_service.clone(),
+        jwt_service,
+    );
     let mut server_builder = Server::builder()
         .layer(blacklist_layer);
 
     // Note: gRPC reflection is disabled - proto definitions are in synctv-proto crate
     // To enable reflection in the future, we would need to re-export descriptor from synctv-proto
-
-    // Create auth interceptor for authenticated services
-    let auth_interceptor = AuthInterceptor::new(jwt_service);
 
     // Clone interceptors for different services
     let user_interceptor = auth_interceptor.clone();

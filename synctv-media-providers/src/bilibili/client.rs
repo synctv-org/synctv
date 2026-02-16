@@ -12,6 +12,8 @@ use regex::Regex;
 use reqwest::Client;
 use serde::Deserialize;
 use md5::{Md5, Digest};
+use tokio_tungstenite::{connect_async, tungstenite::Message};
+use futures_util::{SinkExt, StreamExt};
 
 use super::error::{BilibiliError, check_response, json_with_limit};
 use super::types::{self as types, VideoInfo, Quality, PlayUrlInfo, DurlItem, AnimeInfo};
@@ -162,6 +164,37 @@ fn wbi_sign(params: &[(&str, String)], mixin_key: &str) -> Vec<(String, String)>
     all_params
 }
 
+/// Cookie storage with expiration tracking
+#[derive(Clone)]
+struct CookieStore {
+    cookies: HashMap<String, String>,
+    expires_at: std::time::Instant,
+}
+
+impl CookieStore {
+    /// Check if cookies are expired (30 days TTL)
+    fn is_expired(&self) -> bool {
+        std::time::Instant::now() >= self.expires_at
+    }
+
+    /// Create new cookie store with default TTL of 30 days
+    fn new(cookies: HashMap<String, String>) -> Self {
+        Self {
+            cookies,
+            expires_at: std::time::Instant::now() + Duration::from_secs(30 * 24 * 60 * 60),
+        }
+    }
+
+    /// Refresh the expiration time
+    fn refresh(&mut self) {
+        self.expires_at = std::time::Instant::now() + Duration::from_secs(30 * 24 * 60 * 60);
+    }
+}
+
+/// Global cookie cache for authenticated sessions
+static COOKIE_CACHE: LazyLock<tokio::sync::RwLock<Option<CookieStore>>> =
+    LazyLock::new(|| tokio::sync::RwLock::new(None));
+
 /// Bilibili HTTP Client
 pub struct BilibiliClient {
     client: Client,
@@ -188,6 +221,40 @@ impl BilibiliClient {
         })
     }
 
+    /// Store cookies in global cache for persistence
+    pub async fn store_cookies(cookies: HashMap<String, String>) {
+        let mut cache = COOKIE_CACHE.write().await;
+        *cache = Some(CookieStore::new(cookies));
+    }
+
+    /// Load cookies from global cache if not expired
+    pub async fn load_cookies() -> Option<HashMap<String, String>> {
+        let mut cache = COOKIE_CACHE.write().await;
+        if let Some(ref mut store) = *cache {
+            if !store.is_expired() {
+                store.refresh(); // Refresh on successful use
+                return Some(store.cookies.clone());
+            }
+            // Expired, clear cache
+            *cache = None;
+        }
+        None
+    }
+
+    /// Refresh cookies by validating them with a lightweight API call
+    /// Returns true if cookies are still valid
+    pub async fn refresh_cookies(&self) -> Result<bool, BilibiliError> {
+        // Try to fetch user info to validate cookies
+        match self.user_info().await {
+            Ok(info) => Ok(info.is_login),
+            Err(BilibiliError::Api { code, .. }) if code == -101 => {
+                // -101 is "not logged in" error code
+                Ok(false)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     /// Wait for the rate limiter before making an API call.
     /// This prevents concurrent users from triggering IP bans.
     async fn wait_for_rate_limit(&self) {
@@ -200,8 +267,13 @@ impl BilibiliClient {
     /// the Bilibili nav API. It is cached globally for `WBI_KEY_TTL` to
     /// avoid excessive API calls.
     async fn get_wbi_mixin_key(&self) -> Result<String, BilibiliError> {
-        // Fast path: check cache
-        {
+        self.get_wbi_mixin_key_internal(false).await
+    }
+
+    /// Internal method to get WBI mixin key with optional force refresh
+    async fn get_wbi_mixin_key_internal(&self, force_refresh: bool) -> Result<String, BilibiliError> {
+        // Fast path: check cache (skip if force refresh)
+        if !force_refresh {
             let cache = WBI_KEY_CACHE.read().await;
             if let Some(ref keys) = *cache {
                 if std::time::Instant::now() < keys.expires_at {
@@ -247,6 +319,17 @@ impl BilibiliClient {
         }
 
         Ok(mixin_key)
+    }
+
+    /// Detect if WBI signature is stale based on error response
+    fn is_wbi_stale_error(error: &BilibiliError) -> bool {
+        match error {
+            BilibiliError::Api { code, .. } => {
+                // -352: signature error, -401: unauthorized (could be stale key)
+                *code == -352 || *code == -401
+            }
+            _ => false,
+        }
     }
 
     /// Build a sanitized cookie header string from stored cookies.
@@ -883,9 +966,26 @@ impl BilibiliClient {
     ///
     /// This endpoint (`/x/player/wbi/playurl`) requires WBI parameter signing.
     /// Query parameters are signed with the WBI mixin key before sending.
+    /// Automatically detects and retries on stale WBI key errors.
     pub async fn get_dash_video_url(&self, aid: u64, bvid: &str, cid: u64) -> Result<(DashData, DashData), BilibiliError> {
-        // Obtain the WBI mixin key (cached, refreshed on expiry)
-        let mixin_key = self.get_wbi_mixin_key().await?;
+        // First attempt with cached key
+        let result = self.get_dash_video_url_internal(aid, bvid, cid, false).await;
+
+        // If we get a WBI stale error, retry once with fresh key
+        if let Err(ref e) = result {
+            if Self::is_wbi_stale_error(e) {
+                tracing::warn!("WBI key appears stale, refreshing and retrying");
+                return self.get_dash_video_url_internal(aid, bvid, cid, true).await;
+            }
+        }
+
+        result
+    }
+
+    /// Internal method for DASH video URL with optional key refresh
+    async fn get_dash_video_url_internal(&self, aid: u64, bvid: &str, cid: u64, force_key_refresh: bool) -> Result<(DashData, DashData), BilibiliError> {
+        // Obtain the WBI mixin key (cached, refreshed on expiry or if forced)
+        let mixin_key = self.get_wbi_mixin_key_internal(force_key_refresh).await?;
         let client = self.client.clone();
         let cookie_header = self.build_cookie_header();
         let bvid = bvid.to_string();
@@ -1329,6 +1429,276 @@ impl BilibiliClient {
             }
         }).await
     }
+
+    /// Connect to live danmaku WebSocket and return a message stream
+    ///
+    /// Returns a tuple of (sender, receiver) for bidirectional communication
+    pub async fn connect_live_danmaku(
+        &self,
+        room_id: u64,
+    ) -> Result<LiveDanmakuConnection, BilibiliError> {
+        // Get danmaku server info
+        let danmu_info = self.get_live_danmu_info(room_id).await?;
+
+        // Select first available host with wss_port
+        let host = danmu_info.host_list.first().ok_or_else(|| {
+            BilibiliError::Parse("No danmaku host available".to_string())
+        })?;
+
+        // Build WebSocket URL (use wss:// for secure connection)
+        let ws_url = format!("wss://{}:{}/sub", host.host, host.wss_port);
+
+        // Connect to WebSocket
+        let (ws_stream, _) = connect_async(&ws_url).await.map_err(|e| {
+            BilibiliError::Parse(format!("Failed to connect to danmaku WebSocket: {}", e))
+        })?;
+
+        let (mut write, read) = ws_stream.split();
+
+        // Send authentication packet
+        let auth_packet = build_auth_packet(room_id, &danmu_info.token);
+        write.send(Message::Binary(auth_packet.into())).await.map_err(|e| {
+            BilibiliError::Parse(format!("Failed to send auth packet: {}", e))
+        })?;
+
+        Ok(LiveDanmakuConnection {
+            write: tokio::sync::Mutex::new(write),
+            read: tokio::sync::Mutex::new(read),
+            room_id,
+        })
+    }
+}
+
+/// Live danmaku WebSocket connection
+pub struct LiveDanmakuConnection {
+    write: tokio::sync::Mutex<futures_util::stream::SplitSink<
+        tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+        Message
+    >>,
+    read: tokio::sync::Mutex<futures_util::stream::SplitStream<
+        tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>
+    >>,
+    room_id: u64,
+}
+
+impl LiveDanmakuConnection {
+    /// Receive next danmaku message
+    pub async fn recv(&self) -> Result<Option<DanmakuMessage>, BilibiliError> {
+        let mut read = self.read.lock().await;
+
+        match read.next().await {
+            Some(Ok(Message::Binary(data))) => {
+                parse_danmaku_packet(&data)
+            }
+            Some(Ok(_)) => Ok(None), // Ignore non-binary messages
+            Some(Err(e)) => Err(BilibiliError::Parse(format!("WebSocket error: {}", e))),
+            None => Ok(None), // Connection closed
+        }
+    }
+
+    /// Send heartbeat to keep connection alive
+    pub async fn send_heartbeat(&self) -> Result<(), BilibiliError> {
+        let mut write = self.write.lock().await;
+        let heartbeat_packet = build_heartbeat_packet();
+        write.send(Message::Binary(heartbeat_packet.into())).await.map_err(|e| {
+            BilibiliError::Parse(format!("Failed to send heartbeat: {}", e))
+        })
+    }
+
+    /// Get room ID
+    pub fn room_id(&self) -> u64 {
+        self.room_id
+    }
+}
+
+/// Danmaku message types
+#[derive(Debug, Clone)]
+pub enum DanmakuMessage {
+    /// Chat message
+    Chat {
+        user: String,
+        message: String,
+        timestamp: u64,
+    },
+    /// User entered room
+    UserEnter {
+        user: String,
+    },
+    /// Gift sent
+    Gift {
+        user: String,
+        gift_name: String,
+        count: u32,
+    },
+    /// Heartbeat response (online viewer count)
+    Heartbeat {
+        online_count: u32,
+    },
+    /// Unknown message type
+    Unknown,
+}
+
+/// Build authentication packet for danmaku WebSocket
+fn build_auth_packet(room_id: u64, token: &str) -> Vec<u8> {
+    // Bilibili danmaku protocol format:
+    // Header (16 bytes):
+    // - packet_length: u32 (big-endian)
+    // - header_length: u16 (big-endian) = 16
+    // - protocol_version: u16 (big-endian) = 1
+    // - operation: u32 (big-endian) = 7 (auth)
+    // - sequence: u32 (big-endian) = 1
+    // Body: JSON auth data
+
+    let auth_json = serde_json::json!({
+        "roomid": room_id,
+        "uid": 0,
+        "protover": 3,
+        "key": token,
+        "platform": "web",
+        "type": 2
+    });
+    let body = serde_json::to_vec(&auth_json).unwrap_or_default();
+
+    let packet_length = 16 + body.len();
+    let mut packet = Vec::with_capacity(packet_length);
+
+    // Header
+    packet.extend_from_slice(&(packet_length as u32).to_be_bytes());
+    packet.extend_from_slice(&16u16.to_be_bytes()); // header length
+    packet.extend_from_slice(&1u16.to_be_bytes());  // protocol version
+    packet.extend_from_slice(&7u32.to_be_bytes());  // operation = auth
+    packet.extend_from_slice(&1u32.to_be_bytes());  // sequence
+
+    // Body
+    packet.extend_from_slice(&body);
+
+    packet
+}
+
+/// Build heartbeat packet for danmaku WebSocket
+fn build_heartbeat_packet() -> Vec<u8> {
+    // Heartbeat packet: operation = 2, empty body
+    let mut packet = Vec::with_capacity(16);
+
+    packet.extend_from_slice(&16u32.to_be_bytes());  // packet length
+    packet.extend_from_slice(&16u16.to_be_bytes());  // header length
+    packet.extend_from_slice(&1u16.to_be_bytes());   // protocol version
+    packet.extend_from_slice(&2u32.to_be_bytes());   // operation = heartbeat
+    packet.extend_from_slice(&1u32.to_be_bytes());   // sequence
+
+    packet
+}
+
+/// Parse danmaku packet from binary data
+fn parse_danmaku_packet(data: &[u8]) -> Result<Option<DanmakuMessage>, BilibiliError> {
+    if data.len() < 16 {
+        return Ok(None);
+    }
+
+    // Parse header
+    let _packet_length = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
+    let _header_length = u16::from_be_bytes([data[4], data[5]]);
+    let protocol_version = u16::from_be_bytes([data[6], data[7]]);
+    let operation = u32::from_be_bytes([data[8], data[9], data[10], data[11]]);
+    let _sequence = u32::from_be_bytes([data[12], data[13], data[14], data[15]]);
+
+    match operation {
+        3 => {
+            // Heartbeat response (online count)
+            if data.len() >= 20 {
+                let online_count = u32::from_be_bytes([data[16], data[17], data[18], data[19]]);
+                return Ok(Some(DanmakuMessage::Heartbeat { online_count }));
+            }
+        }
+        5 => {
+            // Notification message
+            let body = &data[16..];
+
+            // Handle compression (protocol_version 2 = zlib, 3 = brotli)
+            let decompressed = match protocol_version {
+                0 | 1 => body.to_vec(),
+                2 => {
+                    // zlib compression - would need flate2 crate
+                    // For now, skip compressed messages
+                    return Ok(None);
+                }
+                3 => {
+                    // brotli compression - would need brotli crate
+                    // For now, skip compressed messages
+                    return Ok(None);
+                }
+                _ => return Ok(None),
+            };
+
+            // Parse JSON message
+            if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&decompressed) {
+                if let Some(cmd) = json.get("cmd").and_then(|v| v.as_str()) {
+                    return Ok(Some(parse_danmaku_cmd(cmd, &json)));
+                }
+            }
+        }
+        8 => {
+            // Auth response - connection established
+            tracing::debug!("Danmaku authentication successful");
+        }
+        _ => {}
+    }
+
+    Ok(None)
+}
+
+/// Parse danmaku command from JSON
+fn parse_danmaku_cmd(cmd: &str, json: &serde_json::Value) -> DanmakuMessage {
+    match cmd {
+        "DANMU_MSG" => {
+            // Chat message
+            let info = json.get("info").and_then(|v| v.as_array());
+            if let Some(info) = info {
+                let message = info.get(1).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let user_info = info.get(2).and_then(|v| v.as_array());
+                let user = user_info
+                    .and_then(|arr| arr.get(1))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Unknown")
+                    .to_string();
+                let timestamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+
+                return DanmakuMessage::Chat {
+                    user,
+                    message,
+                    timestamp,
+                };
+            }
+        }
+        "INTERACT_WORD" => {
+            // User enter room
+            let data = json.get("data");
+            if let Some(data) = data {
+                let user = data.get("uname").and_then(|v| v.as_str()).unwrap_or("Unknown").to_string();
+                return DanmakuMessage::UserEnter { user };
+            }
+        }
+        "SEND_GIFT" => {
+            // Gift sent
+            let data = json.get("data");
+            if let Some(data) = data {
+                let user = data.get("uname").and_then(|v| v.as_str()).unwrap_or("Unknown").to_string();
+                let gift_name = data.get("giftName").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let count = data.get("num").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
+                return DanmakuMessage::Gift {
+                    user,
+                    gift_name,
+                    count,
+                };
+            }
+        }
+        _ => {}
+    }
+
+    DanmakuMessage::Unknown
 }
 
 /// Video page information
@@ -1583,6 +1953,142 @@ fn parse_dash_info(
     };
 
     Ok((regular_dash, hevc_dash))
+}
+
+/// Generate DASH MPD XML from structured data
+pub fn generate_mpd_xml(dash_data: &DashData) -> String {
+    let mut mpd = String::new();
+
+    // MPD header
+    mpd.push_str(r#"<?xml version="1.0" encoding="UTF-8"?>"#);
+    mpd.push('\n');
+    mpd.push_str(r#"<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" "#);
+    mpd.push_str(r#"xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" "#);
+    mpd.push_str(r#"xsi:schemaLocation="urn:mpeg:dash:schema:mpd:2011 DASH-MPD.xsd" "#);
+    mpd.push_str(&format!(r#"minBufferTime="PT{:.1}S" "#, dash_data.min_buffer_time));
+    mpd.push_str(r#"type="static" "#);
+    mpd.push_str(&format!(r#"mediaPresentationDuration="PT{:.1}S" "#, dash_data.duration));
+    mpd.push_str(r#"profiles="urn:mpeg:dash:profile:isoff-on-demand:2011">"#);
+    mpd.push('\n');
+
+    // Period
+    mpd.push_str(r#"  <Period>"#);
+    mpd.push('\n');
+
+    // Video AdaptationSet
+    if !dash_data.video_streams.is_empty() {
+        mpd.push_str(r#"    <AdaptationSet mimeType="video/mp4" contentType="video" "#);
+        mpd.push_str(r#"startWithSAP="1" segmentAlignment="true">"#);
+        mpd.push('\n');
+
+        for video in &dash_data.video_streams {
+            mpd.push_str(&format!(
+                r#"      <Representation id="{}" "#,
+                video.id
+            ));
+            mpd.push_str(&format!(r#"codecs="{}" "#, video.codecs));
+            mpd.push_str(&format!(r#"width="{}" "#, video.width));
+            mpd.push_str(&format!(r#"height="{}" "#, video.height));
+            mpd.push_str(&format!(r#"frameRate="{}" "#, video.frame_rate));
+            mpd.push_str(&format!(r#"sar="{}" "#, video.sar));
+            mpd.push_str(&format!(r#"bandwidth="{}">"#, video.bandwidth));
+            mpd.push('\n');
+
+            // BaseURL
+            mpd.push_str(&format!(r#"        <BaseURL>{}</BaseURL>"#, escape_xml(&video.base_url)));
+            mpd.push('\n');
+
+            // Backup URLs
+            for backup_url in &video.backup_urls {
+                mpd.push_str(&format!(r#"        <BaseURL>{}</BaseURL>"#, escape_xml(backup_url)));
+                mpd.push('\n');
+            }
+
+            // SegmentBase
+            mpd.push_str(&format!(
+                r#"        <SegmentBase indexRange="{}">"#,
+                video.segment_base.index_range
+            ));
+            mpd.push('\n');
+            mpd.push_str(&format!(
+                r#"          <Initialization range="{}"/>"#,
+                video.segment_base.initialization_range
+            ));
+            mpd.push('\n');
+            mpd.push_str(r#"        </SegmentBase>"#);
+            mpd.push('\n');
+
+            mpd.push_str(r#"      </Representation>"#);
+            mpd.push('\n');
+        }
+
+        mpd.push_str(r#"    </AdaptationSet>"#);
+        mpd.push('\n');
+    }
+
+    // Audio AdaptationSet
+    if !dash_data.audio_streams.is_empty() {
+        mpd.push_str(r#"    <AdaptationSet mimeType="audio/mp4" contentType="audio" "#);
+        mpd.push_str(r#"startWithSAP="1" segmentAlignment="true">"#);
+        mpd.push('\n');
+
+        for audio in &dash_data.audio_streams {
+            mpd.push_str(&format!(
+                r#"      <Representation id="{}" "#,
+                audio.id
+            ));
+            mpd.push_str(&format!(r#"codecs="{}" "#, audio.codecs));
+            mpd.push_str(&format!(r#"audioSamplingRate="{}" "#, audio.audio_sampling_rate));
+            mpd.push_str(&format!(r#"bandwidth="{}">"#, audio.bandwidth));
+            mpd.push('\n');
+
+            // BaseURL
+            mpd.push_str(&format!(r#"        <BaseURL>{}</BaseURL>"#, escape_xml(&audio.base_url)));
+            mpd.push('\n');
+
+            // Backup URLs
+            for backup_url in &audio.backup_urls {
+                mpd.push_str(&format!(r#"        <BaseURL>{}</BaseURL>"#, escape_xml(backup_url)));
+                mpd.push('\n');
+            }
+
+            // SegmentBase
+            mpd.push_str(&format!(
+                r#"        <SegmentBase indexRange="{}">"#,
+                audio.segment_base.index_range
+            ));
+            mpd.push('\n');
+            mpd.push_str(&format!(
+                r#"          <Initialization range="{}"/>"#,
+                audio.segment_base.initialization_range
+            ));
+            mpd.push('\n');
+            mpd.push_str(r#"        </SegmentBase>"#);
+            mpd.push('\n');
+
+            mpd.push_str(r#"      </Representation>"#);
+            mpd.push('\n');
+        }
+
+        mpd.push_str(r#"    </AdaptationSet>"#);
+        mpd.push('\n');
+    }
+
+    // Close Period and MPD
+    mpd.push_str(r#"  </Period>"#);
+    mpd.push('\n');
+    mpd.push_str(r#"</MPD>"#);
+
+    mpd
+}
+
+/// Escape XML special characters
+fn escape_xml(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
 }
 
 #[cfg(test)]

@@ -106,9 +106,16 @@ use governor::clock::Clock;
 
 /// Rate limiter using Redis sliding window algorithm
 ///
-/// Uses Redis sorted sets to implement accurate sliding window rate limiting
-/// that works across multiple replicas. Falls back to per-instance in-memory
-/// rate limiting (via `governor` crate) when Redis is not configured.
+/// **Production Enhancement (#26)**: Implements graceful degradation for Redis failures.
+/// - Uses Redis sorted sets for accurate cross-replica sliding window rate limiting
+/// - Automatically falls back to per-instance in-memory limiting (`governor` crate) when:
+///   - Redis is not configured at startup
+///   - Redis becomes unavailable at runtime (connection errors, timeouts)
+/// - Fallback ensures service availability even during Redis outages
+/// - Metrics track fallback events via `RATE_LIMIT_REDIS_FALLBACKS_TOTAL`
+///
+/// Trade-off: In-memory fallback is per-instance only (not shared across replicas),
+/// so rate limits become per-replica during Redis outages.
 #[derive(Clone)]
 pub struct RateLimiter {
     redis_conn: Option<redis::aio::ConnectionManager>,

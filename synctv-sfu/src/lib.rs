@@ -23,26 +23,29 @@
 //! - Per-peer subscription management
 //! - Network quality monitoring with adaptive actions
 //!
-//! ## Not Yet Implemented
+//! ## Partially Implemented
 //!
-//! - `RTCPeerConnection` lifecycle management
-//! - SDP offer/answer signaling
-//! - ICE candidate handling
-//! - Subscriber output path (forwarded packets to outbound WebRTC tracks)
-//! - Integration with synctv-api signaling endpoints
+//! - WebRTC control plane (basic implementation, needs integration testing)
+//! - Integration with synctv-api signaling endpoints (TODO)
 
 mod config;
 mod manager;
 pub mod network_monitor;
+mod packet_pacer;
 mod peer;
 mod room;
+mod rtcp_handler;
 mod track;
 mod types;
+mod webrtc_control;
 
 pub use config::SfuConfig;
 pub use manager::SfuManager;
 pub use network_monitor::{NetworkQualityMonitor, NetworkStats, QualityAction};
+pub use packet_pacer::{CongestionController, PacketPacer};
 pub use peer::{SfuPeer, PeerStats};
 pub use room::{SfuRoom, RoomMode, RoomStats};
+pub use rtcp_handler::RtcpHandler;
 pub use track::{MediaTrack, QualityLayer, TrackKind};
 pub use types::{PeerId, RoomId, TrackId};
+pub use webrtc_control::{IceManager, IceServerConfig, PeerConnection};

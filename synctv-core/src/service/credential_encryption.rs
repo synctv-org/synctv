@@ -10,7 +10,7 @@ use aes_gcm::{
 };
 use aes_gcm::aead::rand_core::RngCore;
 
-use crate::{Error, Result};
+use crate::{Error, Result, InternalExt};
 
 /// AES-256-GCM nonce size (96 bits / 12 bytes)
 const NONCE_SIZE: usize = 12;
@@ -69,7 +69,7 @@ impl CredentialEncryption {
     /// * `hex_key` - 64-character hex string representing a 32-byte key
     pub fn from_hex_key(hex_key: &str) -> Result<Self> {
         let key_bytes = hex::decode(hex_key)
-            .map_err(|e| Error::Internal(format!("Invalid hex key: {e}")))?;
+            .internal_with_err("Invalid hex key")?;
         Self::new(&key_bytes)
     }
 
@@ -79,7 +79,7 @@ impl CredentialEncryption {
     /// A version byte is prepended for future key rotation support.
     pub fn encrypt(&self, plaintext: &serde_json::Value) -> Result<String> {
         let plaintext_bytes = serde_json::to_vec(plaintext)
-            .map_err(|e| Error::Internal(format!("Failed to serialize credential data: {e}")))?;
+            .internal_with_err("Failed to serialize credential data")?;
 
         // Generate random nonce
         let mut nonce_bytes = [0u8; NONCE_SIZE];
@@ -88,7 +88,7 @@ impl CredentialEncryption {
 
         // Encrypt
         let ciphertext = self.cipher.encrypt(nonce, plaintext_bytes.as_ref())
-            .map_err(|e| Error::Internal(format!("Credential encryption failed: {e}")))?;
+            .internal_with_err("Credential encryption failed")?;
 
         // Prepend version byte + nonce to ciphertext and encode as base64
         let mut combined = Vec::with_capacity(1 + NONCE_SIZE + ciphertext.len());
@@ -109,7 +109,7 @@ impl CredentialEncryption {
         if let Some(encoded) = stored.strip_prefix(ENCRYPTED_PREFIX) {
             // Encrypted format
             let combined = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded)
-                .map_err(|e| Error::Internal(format!("Invalid base64 in encrypted credential: {e}")))?;
+                .internal_with_err("Invalid base64 in encrypted credential")?;
 
             if combined.len() < 1 + NONCE_SIZE {
                 return Err(Error::Internal("Encrypted credential data too short".to_string()));
@@ -130,11 +130,11 @@ impl CredentialEncryption {
                 .map_err(|_| Error::Internal("Credential decryption failed (wrong key or corrupted data)".to_string()))?;
 
             serde_json::from_slice(&plaintext)
-                .map_err(|e| Error::Internal(format!("Decrypted credential is not valid JSON: {e}")))
+                .internal_with_err("Decrypted credential is not valid JSON")
         } else {
             // Plaintext JSON (backward compatibility)
             serde_json::from_str(stored)
-                .map_err(|e| Error::Internal(format!("Credential data is not valid JSON: {e}")))
+                .internal_with_err("Credential data is not valid JSON")
         }
     }
 

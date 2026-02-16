@@ -14,7 +14,7 @@ use sqlx::PgPool;
 
 use crate::models::settings::{get_default_settings, SettingsGroup};
 use crate::repository::SettingsRepository;
-use crate::Error;
+use crate::{Error, InternalExt};
 
 /// Change listener callback type
 pub type SettingsChangeListener = Arc<dyn Fn(&str, &serde_json::Value) + Send + Sync>;
@@ -124,7 +124,7 @@ impl SettingsService {
             .repository
             .get(key)
             .await
-            .map_err(|e| Error::Internal(format!("Failed to get setting: {e}")))?;
+            .internal_with_err("Failed to get setting")?;
 
         // Update cache
         self.cache.insert(setting.key.clone(), setting.clone());
@@ -145,7 +145,7 @@ impl SettingsService {
             .repository
             .update(key, &value)
             .await
-            .map_err(|e| Error::Internal(format!("Failed to update setting: {e}")))?;
+            .internal_with_err("Failed to update setting")?;
 
         // Update cache
         self.cache.insert(setting.key.clone(), setting.clone());

@@ -23,17 +23,27 @@ pub mod http {
     });
 
     /// HTTP request duration in seconds, labeled by method and path.
+    /// Buckets optimized for P50/P95/P99 calculation (Task #119).
     pub static HTTP_REQUEST_DURATION_SECONDS: std::sync::LazyLock<HistogramVec> = std::sync::LazyLock::new(|| {
         HistogramVec::new(
             HistogramOpts::new(
                 "http_request_duration_seconds",
-                "HTTP request duration in seconds",
+                "HTTP request duration in seconds (P50/P95/P99)",
             )
-            .buckets(vec![0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0]),
+            .buckets(vec![0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0]),
             &["method", "path"],
         )
         .and_then(|m| { REGISTRY.register(Box::new(m.clone()))?; Ok(m) })
         .expect("Failed to register HTTP_REQUEST_DURATION_SECONDS")
+    });
+
+    /// HTTP error rate counter, labeled by method, path, and error type.
+    pub static HTTP_ERROR_RATE: std::sync::LazyLock<IntCounterVec> = std::sync::LazyLock::new(|| {
+        register_int_counter_vec_with_registry!(
+            Opts::new("http_error_rate_total", "Total HTTP errors by type"),
+            &["method", "path", "error_type"],
+            REGISTRY.clone()
+        ).expect("Failed to register HTTP_ERROR_RATE")
     });
 
     /// Number of in-flight HTTP requests.
@@ -266,17 +276,30 @@ pub mod cache {
 
 /// Database operations
 pub mod database {
-    use super::{register_histogram_vec_with_registry, register_int_gauge_with_registry, register_counter_vec_with_registry, HistogramVec, REGISTRY, IntGauge, CounterVec};
-    use prometheus::{GaugeVec, register_gauge_vec_with_registry};
+    use super::{register_histogram_vec_with_registry, register_int_gauge_with_registry, register_counter_vec_with_registry, HistogramVec, REGISTRY, IntGauge, CounterVec, IntCounterVec};
+    use prometheus::{GaugeVec, register_gauge_vec_with_registry, HistogramOpts, Opts, register_int_counter_vec_with_registry};
 
-    /// Query duration histogram
+    /// Query duration histogram with optimized buckets for P50/P95/P99 (Task #119).
     pub static DB_QUERY_DURATION: std::sync::LazyLock<HistogramVec> = std::sync::LazyLock::new(|| {
-        register_histogram_vec_with_registry!(
-            "db_query_duration_seconds",
-            "Database query duration in seconds",
+        HistogramVec::new(
+            HistogramOpts::new(
+                "db_query_duration_seconds",
+                "Database query duration in seconds (P50/P95/P99)",
+            )
+            .buckets(vec![0.001, 0.002, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0]),
             &["operation", "table"],
+        )
+        .and_then(|m| { REGISTRY.register(Box::new(m.clone()))?; Ok(m) })
+        .expect("Failed to register DB_QUERY_DURATION")
+    });
+
+    /// Total database operations, labeled by operation, table, and result.
+    pub static DB_OPERATIONS_TOTAL: std::sync::LazyLock<IntCounterVec> = std::sync::LazyLock::new(|| {
+        register_int_counter_vec_with_registry!(
+            Opts::new("db_operations_total", "Total database operations"),
+            &["operation", "table", "result"],
             REGISTRY.clone()
-        ).expect("Failed to register DB_QUERY_DURATION")
+        ).expect("Failed to register DB_OPERATIONS_TOTAL")
     });
 
     /// Active connections gauge
@@ -380,10 +403,60 @@ pub mod grpc {
     });
 }
 
+/// Redis operations
+pub mod redis {
+    use super::{REGISTRY, IntCounterVec, HistogramVec};
+    use prometheus::{Opts, register_int_counter_vec_with_registry, register_histogram_vec_with_registry, HistogramOpts};
+
+    /// Total Redis operation errors, labeled by operation type.
+    pub static REDIS_ERRORS: std::sync::LazyLock<IntCounterVec> = std::sync::LazyLock::new(|| {
+        register_int_counter_vec_with_registry!(
+            Opts::new("redis_errors_total", "Total Redis operation errors"),
+            &["operation"],
+            REGISTRY.clone()
+        ).expect("Failed to register REDIS_ERRORS")
+    });
+
+    // --- Task #119: Hot Path Metrics for Redis ---
+
+    /// Redis operation duration in seconds, labeled by operation type.
+    /// Buckets optimized for P50/P95/P99 calculation.
+    pub static REDIS_OPERATION_DURATION: std::sync::LazyLock<HistogramVec> = std::sync::LazyLock::new(|| {
+        HistogramVec::new(
+            HistogramOpts::new(
+                "redis_operation_duration_seconds",
+                "Redis operation duration in seconds (P50/P95/P99)",
+            )
+            .buckets(vec![0.001, 0.002, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5]),
+            &["operation"],
+        )
+        .and_then(|m| { REGISTRY.register(Box::new(m.clone()))?; Ok(m) })
+        .expect("Failed to register REDIS_OPERATION_DURATION")
+    });
+
+    /// Total Redis operations, labeled by operation and result (success/error).
+    pub static REDIS_OPERATIONS_TOTAL: std::sync::LazyLock<IntCounterVec> = std::sync::LazyLock::new(|| {
+        register_int_counter_vec_with_registry!(
+            Opts::new("redis_operations_total", "Total Redis operations"),
+            &["operation", "result"],
+            REGISTRY.clone()
+        ).expect("Failed to register REDIS_OPERATIONS_TOTAL")
+    });
+
+    /// Redis connection pool size.
+    pub static REDIS_POOL_SIZE: std::sync::LazyLock<IntCounterVec> = std::sync::LazyLock::new(|| {
+        register_int_counter_vec_with_registry!(
+            Opts::new("redis_pool_size", "Redis connection pool size"),
+            &["pool"],
+            REGISTRY.clone()
+        ).expect("Failed to register REDIS_POOL_SIZE")
+    });
+}
+
 /// Cluster operations
 pub mod cluster {
-    use super::{REGISTRY, IntGauge, IntCounterVec};
-    use prometheus::{Opts, register_int_gauge_with_registry, register_int_counter_vec_with_registry};
+    use super::{REGISTRY, IntGauge, IntCounterVec, HistogramVec};
+    use prometheus::{Opts, register_int_gauge_with_registry, register_int_counter_vec_with_registry, GaugeVec, register_gauge_vec_with_registry, HistogramOpts};
 
     /// Current number of active connections on this cluster node.
     pub static CLUSTER_CONNECTIONS: std::sync::LazyLock<IntGauge> = std::sync::LazyLock::new(|| {
@@ -428,6 +501,114 @@ pub mod cluster {
             &["reason"],
             REGISTRY.clone()
         ).expect("Failed to register CLUSTER_EVENTS_DROPPED")
+    });
+
+    /// Consecutive heartbeat failures (network partition detection).
+    /// Reset to 0 on successful heartbeat. Values >= 3 indicate possible partition.
+    pub static CLUSTER_HEARTBEAT_FAILURES: std::sync::LazyLock<IntGauge> = std::sync::LazyLock::new(|| {
+        register_int_gauge_with_registry!(
+            "synctv_cluster_heartbeat_failures",
+            "Consecutive Redis heartbeat failures for network partition detection",
+            REGISTRY.clone()
+        ).expect("Failed to register CLUSTER_HEARTBEAT_FAILURES")
+    });
+
+    // --- Task #79: Cluster Health Metrics ---
+
+    /// Node health status (1 = healthy, 0 = unhealthy).
+    pub static NODE_HEALTH_STATUS: std::sync::LazyLock<IntGauge> = std::sync::LazyLock::new(|| {
+        register_int_gauge_with_registry!(
+            "synctv_cluster_node_health_status",
+            "Node health status (1 = healthy, 0 = unhealthy)",
+            REGISTRY.clone()
+        ).expect("Failed to register NODE_HEALTH_STATUS")
+    });
+
+    /// Leader election state (1 = leader, 0 = follower).
+    pub static LEADER_ELECTION_STATE: std::sync::LazyLock<IntGauge> = std::sync::LazyLock::new(|| {
+        register_int_gauge_with_registry!(
+            "synctv_cluster_leader_election_state",
+            "Leader election state (1 = leader, 0 = follower)",
+            REGISTRY.clone()
+        ).expect("Failed to register LEADER_ELECTION_STATE")
+    });
+
+    /// Redis pub/sub connection health (1 = connected, 0 = disconnected).
+    pub static REDIS_PUBSUB_HEALTH: std::sync::LazyLock<IntGauge> = std::sync::LazyLock::new(|| {
+        register_int_gauge_with_registry!(
+            "synctv_cluster_redis_pubsub_health",
+            "Redis pub/sub connection health (1 = connected, 0 = disconnected)",
+            REGISTRY.clone()
+        ).expect("Failed to register REDIS_PUBSUB_HEALTH")
+    });
+
+    /// Total number of cluster members.
+    pub static CLUSTER_MEMBER_COUNT: std::sync::LazyLock<IntGauge> = std::sync::LazyLock::new(|| {
+        register_int_gauge_with_registry!(
+            "synctv_cluster_member_count",
+            "Total number of cluster members",
+            REGISTRY.clone()
+        ).expect("Failed to register CLUSTER_MEMBER_COUNT")
+    });
+
+    /// Leader election duration in seconds.
+    pub static LEADER_ELECTION_DURATION: std::sync::LazyLock<HistogramVec> = std::sync::LazyLock::new(|| {
+        HistogramVec::new(
+            HistogramOpts::new(
+                "synctv_cluster_leader_election_duration_seconds",
+                "Leader election duration in seconds",
+            ),
+            &["result"],
+        )
+        .and_then(|m| { REGISTRY.register(Box::new(m.clone()))?; Ok(m) })
+        .expect("Failed to register LEADER_ELECTION_DURATION")
+    });
+
+    /// Redis pub/sub message publish latency in seconds.
+    pub static REDIS_PUBSUB_PUBLISH_LATENCY: std::sync::LazyLock<HistogramVec> = std::sync::LazyLock::new(|| {
+        HistogramVec::new(
+            HistogramOpts::new(
+                "synctv_cluster_redis_pubsub_publish_latency_seconds",
+                "Redis pub/sub message publish latency in seconds",
+            )
+            .buckets(vec![0.0005, 0.001, 0.002, 0.005, 0.01, 0.025, 0.05, 0.1]),
+            &["channel"],
+        )
+        .and_then(|m| { REGISTRY.register(Box::new(m.clone()))?; Ok(m) })
+        .expect("Failed to register REDIS_PUBSUB_PUBLISH_LATENCY")
+    });
+
+    /// Node-to-node message latency in seconds (end-to-end).
+    pub static NODE_MESSAGE_LATENCY: std::sync::LazyLock<HistogramVec> = std::sync::LazyLock::new(|| {
+        HistogramVec::new(
+            HistogramOpts::new(
+                "synctv_cluster_node_message_latency_seconds",
+                "Node-to-node message latency in seconds",
+            )
+            .buckets(vec![0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5]),
+            &["event_type"],
+        )
+        .and_then(|m| { REGISTRY.register(Box::new(m.clone()))?; Ok(m) })
+        .expect("Failed to register NODE_MESSAGE_LATENCY")
+    });
+
+    /// Total cluster synchronization errors, labeled by error type.
+    pub static CLUSTER_SYNC_ERRORS: std::sync::LazyLock<IntCounterVec> = std::sync::LazyLock::new(|| {
+        register_int_counter_vec_with_registry!(
+            Opts::new("synctv_cluster_sync_errors_total", "Total cluster synchronization errors"),
+            &["error_type"],
+            REGISTRY.clone()
+        ).expect("Failed to register CLUSTER_SYNC_ERRORS")
+    });
+
+    /// Node last heartbeat timestamp (Unix timestamp).
+    pub static NODE_LAST_HEARTBEAT: std::sync::LazyLock<GaugeVec> = std::sync::LazyLock::new(|| {
+        register_gauge_vec_with_registry!(
+            "synctv_cluster_node_last_heartbeat_timestamp",
+            "Node last successful heartbeat timestamp (Unix)",
+            &["node_id"],
+            REGISTRY.clone()
+        ).expect("Failed to register NODE_LAST_HEARTBEAT")
     });
 }
 
@@ -681,6 +862,115 @@ pub fn normalize_path(path: &str) -> String {
     }
 
     result.join("/")
+}
+
+/// Hot path metrics (Task #119)
+pub mod hot_paths {
+    use super::{REGISTRY, HistogramVec};
+    use prometheus::HistogramOpts;
+
+    /// API endpoint latency for hot paths, optimized for P50/P95/P99.
+    pub static API_HOT_PATH_LATENCY: std::sync::LazyLock<HistogramVec> = std::sync::LazyLock::new(|| {
+        HistogramVec::new(
+            HistogramOpts::new(
+                "api_hot_path_latency_seconds",
+                "API hot path latency in seconds (P50/P95/P99)",
+            )
+            .buckets(vec![0.001, 0.002, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0]),
+            &["endpoint", "method"],
+        )
+        .and_then(|m| { REGISTRY.register(Box::new(m.clone()))?; Ok(m) })
+        .expect("Failed to register API_HOT_PATH_LATENCY")
+    });
+
+    /// Database query latency for hot paths.
+    pub static DB_HOT_PATH_LATENCY: std::sync::LazyLock<HistogramVec> = std::sync::LazyLock::new(|| {
+        HistogramVec::new(
+            HistogramOpts::new(
+                "db_hot_path_latency_seconds",
+                "Database hot path query latency in seconds (P50/P95/P99)",
+            )
+            .buckets(vec![0.0005, 0.001, 0.002, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5]),
+            &["query_name", "table"],
+        )
+        .and_then(|m| { REGISTRY.register(Box::new(m.clone()))?; Ok(m) })
+        .expect("Failed to register DB_HOT_PATH_LATENCY")
+    });
+
+    /// Redis operation latency for hot paths.
+    pub static REDIS_HOT_PATH_LATENCY: std::sync::LazyLock<HistogramVec> = std::sync::LazyLock::new(|| {
+        HistogramVec::new(
+            HistogramOpts::new(
+                "redis_hot_path_latency_seconds",
+                "Redis hot path operation latency in seconds (P50/P95/P99)",
+            )
+            .buckets(vec![0.0005, 0.001, 0.002, 0.005, 0.01, 0.025, 0.05, 0.1]),
+            &["operation", "key_pattern"],
+        )
+        .and_then(|m| { REGISTRY.register(Box::new(m.clone()))?; Ok(m) })
+        .expect("Failed to register REDIS_HOT_PATH_LATENCY")
+    });
+}
+
+/// Tracing and observability (Task #120)
+///
+/// This module provides utilities for distributed tracing with OpenTelemetry.
+/// Use the #[instrument] macro from tracing crate for automatic span creation.
+///
+/// Example usage:
+/// ```ignore
+/// use tracing::instrument;
+///
+/// #[instrument(skip(db), fields(room_id = %room_id))]
+/// async fn get_room(db: &Database, room_id: RoomId) -> Result<Room> {
+///     // Span automatically created with function name and fields
+///     // ...
+/// }
+/// ```
+pub mod tracing_spans {
+    // Tracing configuration notes for Task #120:
+    //
+    // 1. Add OpenTelemetry support to Cargo.toml:
+    //    - opentelemetry = { version = "0.27", features = ["trace"] }
+    //    - opentelemetry-otlp = { version = "0.27", features = ["trace"] }
+    //    - tracing-opentelemetry = "0.28"
+    //
+    // 2. Initialize OpenTelemetry tracer in main():
+    //    ```
+    //    use opentelemetry::trace::TracerProvider;
+    //    use opentelemetry_otlp::WithExportConfig;
+    //    use tracing_subscriber::layer::SubscriberExt;
+    //
+    //    let otlp_exporter = opentelemetry_otlp::SpanExporter::builder()
+    //        .with_tonic()
+    //        .with_endpoint("http://localhost:4317")
+    //        .build()?;
+    //
+    //    let tracer = opentelemetry_otlp::TracerProvider::builder()
+    //        .with_batch_exporter(otlp_exporter, opentelemetry_sdk::runtime::Tokio)
+    //        .build()
+    //        .tracer("synctv");
+    //
+    //    let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
+    //    let subscriber = tracing_subscriber::registry()
+    //        .with(telemetry)
+    //        .with(tracing_subscriber::fmt::layer());
+    //    tracing::subscriber::set_global_default(subscriber)?;
+    //    ```
+    //
+    // 3. Use #[instrument] attribute on critical functions:
+    //    - API handlers
+    //    - Database queries
+    //    - Redis operations
+    //    - Cross-replica operations
+    //    - Room synchronization
+    //    - WebSocket message handlers
+    //
+    // 4. Add custom span attributes for debugging:
+    //    ```
+    //    use tracing::Span;
+    //    Span::current().record("user_id", user_id.to_string());
+    //    ```
 }
 
 /// Expose metrics in Prometheus format
@@ -1088,5 +1378,123 @@ mod tests {
 
         // gRPC metrics
         assert!(output.contains("grpc_request_duration_seconds"), "Missing grpc_request_duration_seconds");
+    }
+
+    #[test]
+    fn test_cluster_health_metrics() {
+        // Test Task #79: Cluster health metrics
+        cluster::NODE_HEALTH_STATUS.set(1);
+        assert_eq!(cluster::NODE_HEALTH_STATUS.get(), 1);
+
+        cluster::LEADER_ELECTION_STATE.set(1);
+        assert_eq!(cluster::LEADER_ELECTION_STATE.get(), 1);
+
+        cluster::REDIS_PUBSUB_HEALTH.set(1);
+        assert_eq!(cluster::REDIS_PUBSUB_HEALTH.get(), 1);
+
+        cluster::CLUSTER_MEMBER_COUNT.set(3);
+        assert_eq!(cluster::CLUSTER_MEMBER_COUNT.get(), 3);
+
+        cluster::LEADER_ELECTION_DURATION
+            .with_label_values(&["success"])
+            .observe(0.5);
+
+        cluster::REDIS_PUBSUB_PUBLISH_LATENCY
+            .with_label_values(&["cluster_events"])
+            .observe(0.002);
+
+        cluster::NODE_MESSAGE_LATENCY
+            .with_label_values(&["sync"])
+            .observe(0.010);
+
+        cluster::CLUSTER_SYNC_ERRORS
+            .with_label_values(&["timeout"])
+            .inc();
+
+        cluster::NODE_LAST_HEARTBEAT
+            .with_label_values(&["node_1"])
+            .set(1234567890.0);
+
+        let output = gather_metrics();
+        assert!(output.contains("synctv_cluster_node_health_status"), "Missing node health status");
+        assert!(output.contains("synctv_cluster_leader_election_state"), "Missing leader election state");
+        assert!(output.contains("synctv_cluster_redis_pubsub_health"), "Missing redis pubsub health");
+        assert!(output.contains("synctv_cluster_member_count"), "Missing cluster member count");
+        assert!(output.contains("synctv_cluster_leader_election_duration_seconds"), "Missing leader election duration");
+        assert!(output.contains("synctv_cluster_redis_pubsub_publish_latency_seconds"), "Missing redis pubsub latency");
+        assert!(output.contains("synctv_cluster_node_message_latency_seconds"), "Missing node message latency");
+        assert!(output.contains("synctv_cluster_sync_errors_total"), "Missing cluster sync errors");
+        assert!(output.contains("synctv_cluster_node_last_heartbeat_timestamp"), "Missing node last heartbeat");
+    }
+
+    #[test]
+    fn test_redis_hot_path_metrics() {
+        // Test Task #119: Redis hot path metrics
+        redis::REDIS_OPERATION_DURATION
+            .with_label_values(&["get"])
+            .observe(0.002);
+
+        redis::REDIS_OPERATIONS_TOTAL
+            .with_label_values(&["get", "success"])
+            .inc();
+
+        redis::REDIS_OPERATIONS_TOTAL
+            .with_label_values(&["set", "error"])
+            .inc();
+
+        let output = gather_metrics();
+        assert!(output.contains("redis_operation_duration_seconds"), "Missing redis operation duration");
+        assert!(output.contains("redis_operations_total"), "Missing redis operations total");
+    }
+
+    #[test]
+    fn test_hot_path_metrics() {
+        // Test Task #119: Hot path metrics
+        hot_paths::API_HOT_PATH_LATENCY
+            .with_label_values(&["/api/rooms/:id", "GET"])
+            .observe(0.015);
+
+        hot_paths::DB_HOT_PATH_LATENCY
+            .with_label_values(&["get_room_by_id", "rooms"])
+            .observe(0.003);
+
+        hot_paths::REDIS_HOT_PATH_LATENCY
+            .with_label_values(&["get", "room:*"])
+            .observe(0.001);
+
+        let output = gather_metrics();
+        assert!(output.contains("api_hot_path_latency_seconds"), "Missing API hot path latency");
+        assert!(output.contains("db_hot_path_latency_seconds"), "Missing DB hot path latency");
+        assert!(output.contains("redis_hot_path_latency_seconds"), "Missing Redis hot path latency");
+    }
+
+    #[test]
+    fn test_http_error_rate_metrics() {
+        // Test Task #119: HTTP error rate metrics
+        http::HTTP_ERROR_RATE
+            .with_label_values(&["GET", "/api/rooms/:id", "timeout"])
+            .inc();
+
+        http::HTTP_ERROR_RATE
+            .with_label_values(&["POST", "/api/rooms", "validation"])
+            .inc();
+
+        let output = gather_metrics();
+        assert!(output.contains("http_error_rate_total"), "Missing HTTP error rate");
+    }
+
+    #[test]
+    fn test_database_operations_total() {
+        // Test Task #119: Database operations total
+        database::DB_OPERATIONS_TOTAL
+            .with_label_values(&["select", "rooms", "success"])
+            .inc();
+
+        database::DB_OPERATIONS_TOTAL
+            .with_label_values(&["insert", "messages", "error"])
+            .inc();
+
+        let output = gather_metrics();
+        assert!(output.contains("db_operations_total"), "Missing db operations total");
     }
 }

@@ -99,6 +99,41 @@ impl From<Error> for tonic::Status {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Extension trait for convenient error mapping to Internal
+///
+/// This trait provides convenient methods to map errors to `Error::Internal`
+/// with context, reducing boilerplate across the codebase.
+///
+/// # Examples
+///
+/// Before:
+/// ```ignore
+/// serde_json::to_string(&data)
+///     .map_err(|e| Error::Internal(format!("Failed to serialize: {e}")))?
+/// ```
+///
+/// After:
+/// ```ignore
+/// serde_json::to_string(&data).internal("Failed to serialize")?
+/// ```
+pub trait InternalExt<T> {
+    /// Map any error to `Error::Internal` with a static message
+    fn internal(self, msg: &str) -> Result<T>;
+
+    /// Map any error to `Error::Internal` with a formatted message that includes the original error
+    fn internal_with_err(self, context: &str) -> Result<T>;
+}
+
+impl<T, E: std::fmt::Display> InternalExt<T> for std::result::Result<T, E> {
+    fn internal(self, msg: &str) -> Result<T> {
+        self.map_err(|_| Error::Internal(msg.to_string()))
+    }
+
+    fn internal_with_err(self, context: &str) -> Result<T> {
+        self.map_err(|e| Error::Internal(format!("{context}: {e}")))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

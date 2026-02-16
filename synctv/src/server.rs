@@ -69,7 +69,7 @@ pub struct Services {
     /// CancellationToken for partition management tasks
     pub partition_cancel: tokio_util::sync::CancellationToken,
     /// Leader elector for singleton operations (None in single-node mode)
-    pub leader_elector: Option<synctv_cluster::leader::LeaderElector>,
+    pub leader_elector: Option<synctv_cluster::leader::AnyLeaderElector>,
     /// CancellationToken for leader election loop
     pub leader_cancel: tokio_util::sync::CancellationToken,
     /// K8s DNS refresh background task abort handle (aborted during shutdown)
@@ -226,6 +226,13 @@ impl SyncTvServer {
     }
 
     /// Gracefully shut down all server components
+    ///
+    /// **Production Enhancement (#72)**: Implements graceful shutdown with connection draining:
+    /// - Waits for active connections to complete before shutting down (configurable timeout)
+    /// - Polls connection count every 500ms to track drainage progress
+    /// - Deregisters node from cluster registry for immediate peer discovery of departure
+    /// - Sequentially shuts down components: SFU → STUN → livestream → cluster → database
+    /// - Ensures zero-downtime deployments in Kubernetes (readiness probe fails immediately)
     async fn shutdown(&self) {
         info!("Shutting down SyncTV server...");
 

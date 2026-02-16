@@ -404,16 +404,29 @@ impl Default for OAuth2Config {
 ///
 /// Stores media provider configurations (Alist, Emby, Bilibili, etc.)
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct MediaProvidersConfig {
     /// Provider configurations (e.g., alist, emby, jellyfin, bilibili)
     #[serde(default)]
     pub providers: serde_json::Value,
+
+    /// **Production Enhancement (#23)**: Timeout for external provider HTTP requests (seconds)
+    /// Prevents indefinite hanging on slow/unresponsive provider APIs (Bilibili, Alist, Emby).
+    /// Default: 30 seconds. Set to 0 to disable timeout (not recommended in production).
+    pub request_timeout_seconds: u64,
+
+    /// **Production Enhancement (#23)**: Connection timeout for provider API connections (seconds)
+    /// Limits time spent establishing TCP connections to external providers.
+    /// Default: 10 seconds.
+    pub connect_timeout_seconds: u64,
 }
 
 impl Default for MediaProvidersConfig {
     fn default() -> Self {
         Self {
             providers: serde_json::json!({}),
+            request_timeout_seconds: 30,
+            connect_timeout_seconds: 10,
         }
     }
 }
@@ -823,6 +836,34 @@ impl Config {
             }
         }
 
+        // **Production Enhancement (#23)**: Validate media provider timeouts
+        if self.media_providers.request_timeout_seconds > 300 {
+            errors.push("media_providers.request_timeout_seconds should not exceed 300 seconds (5 minutes)".to_string());
+        }
+        if self.media_providers.connect_timeout_seconds == 0 {
+            errors.push("media_providers.connect_timeout_seconds must be greater than 0".to_string());
+        }
+        if self.media_providers.connect_timeout_seconds > self.media_providers.request_timeout_seconds && self.media_providers.request_timeout_seconds > 0 {
+            errors.push("media_providers.connect_timeout_seconds should not exceed request_timeout_seconds".to_string());
+        }
+
+        // **Production Enhancement (#27)**: Validate CORS in production
+        if !self.server.development_mode && !self.server.cors_allowed_origins.is_empty() {
+            for origin in &self.server.cors_allowed_origins {
+                if origin == "*" {
+                    errors.push("CORS wildcard '*' is not allowed in production mode. Specify exact origins or use development_mode for testing.".to_string());
+                    break;
+                }
+                // Validate origin format
+                if !origin.starts_with("http://") && !origin.starts_with("https://") {
+                    errors.push(format!(
+                        "CORS origin '{}' must start with http:// or https://",
+                        origin
+                    ));
+                }
+            }
+        }
+
         if errors.is_empty() {
             Ok(())
         } else {
@@ -909,6 +950,12 @@ pub struct ClusterChannelConfig {
     /// - "k8s_dns": Use Kubernetes headless service DNS for peer discovery
     ///   (requires HEADLESS_SERVICE_NAME and POD_NAMESPACE env vars)
     pub discovery_mode: String,
+
+    /// Leader election mode for singleton operations.
+    /// - "redis": Use Redis-based distributed locks (default, works everywhere)
+    /// - "k8s_lease": Use Kubernetes coordination.k8s.io/v1 Lease resource
+    ///   (requires POD_NAME and POD_NAMESPACE env vars, RBAC permissions)
+    pub leader_election_mode: String,
 }
 
 impl Default for ClusterChannelConfig {
@@ -917,6 +964,7 @@ impl Default for ClusterChannelConfig {
             critical_channel_capacity: 1000,
             publish_channel_capacity: 10_000,
             discovery_mode: "redis".to_string(),
+            leader_election_mode: "redis".to_string(),
         }
     }
 }

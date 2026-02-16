@@ -12,7 +12,7 @@ use sqlx::PgPool;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use crate::{Error, Result};
+use crate::{Error, Result, InternalExt};
 
 /// Configuration for data cleanup retention periods
 #[derive(Debug, Clone)]
@@ -175,7 +175,7 @@ impl CleanupService {
         .bind(days)
         .execute(&self.pool)
         .await
-        .map_err(|e| Error::Internal(format!("Failed to purge soft-deleted users: {e}")))?;
+        .internal_with_err("Failed to purge soft-deleted users")?;
 
         Ok(result.rows_affected())
     }
@@ -193,7 +193,7 @@ impl CleanupService {
         .bind(days)
         .execute(&self.pool)
         .await
-        .map_err(|e| Error::Internal(format!("Failed to purge soft-deleted rooms: {e}")))?;
+        .internal_with_err("Failed to purge soft-deleted rooms")?;
 
         Ok(result.rows_affected())
     }
@@ -211,7 +211,7 @@ impl CleanupService {
         .bind(days)
         .execute(&self.pool)
         .await
-        .map_err(|e| Error::Internal(format!("Failed to purge soft-deleted media: {e}")))?;
+        .internal_with_err("Failed to purge soft-deleted media")?;
 
         Ok(result.rows_affected())
     }
@@ -228,7 +228,7 @@ impl CleanupService {
         .bind(days)
         .execute(&self.pool)
         .await
-        .map_err(|e| Error::Internal(format!("Failed to delete expired tokens: {e}")))?;
+        .internal_with_err("Failed to delete expired tokens")?;
 
         Ok(result.rows_affected())
     }
@@ -246,7 +246,7 @@ impl CleanupService {
         .bind(days)
         .execute(&self.pool)
         .await
-        .map_err(|e| Error::Internal(format!("Failed to delete old notifications: {e}")))?;
+        .internal_with_err("Failed to delete old notifications")?;
 
         Ok(result.rows_affected())
     }
@@ -276,7 +276,7 @@ impl CleanupService {
         .bind(keep_count)
         .execute(&self.pool)
         .await
-        .map_err(|e| Error::Internal(format!("Failed to cleanup chat messages: {e}")))?;
+        .internal_with_err("Failed to cleanup chat messages")?;
 
         Ok(result.rows_affected())
     }

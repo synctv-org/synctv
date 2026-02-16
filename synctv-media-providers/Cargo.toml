@@ -16,6 +16,8 @@ async-trait.workspace = true
 
 # HTTP Client
 reqwest.workspace = true
+tokio-tungstenite = { workspace = true, features = ["native-tls"] }
+futures-util = "0.3"
 
 # gRPC
 tonic.workspace = true

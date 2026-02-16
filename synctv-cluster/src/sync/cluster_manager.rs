@@ -275,6 +275,8 @@ impl ClusterManager {
                         match node_registry.heartbeat().await {
                             Ok(HeartbeatResult::Ok) => {
                                 debug!("Heartbeat sent successfully");
+                                // Reset consecutive failure counter on success (for partition detection)
+                                synctv_core::metrics::cluster::CLUSTER_HEARTBEAT_FAILURES.set(0);
                             }
                             Ok(HeartbeatResult::NeedReregistration) => {
                                 warn!("Node key expired in Redis, re-registering");
@@ -298,7 +300,24 @@ impl ClusterManager {
                                 }
                             }
                             Err(e) => {
-                                error!(error = %e, "Heartbeat failed (Redis error), will retry");
+                                // Increment failure counter for network partition detection
+                                synctv_core::metrics::cluster::CLUSTER_HEARTBEAT_FAILURES.inc();
+                                let failures = synctv_core::metrics::cluster::CLUSTER_HEARTBEAT_FAILURES.get();
+                                error!(
+                                    error = %e,
+                                    consecutive_failures = failures,
+                                    "Heartbeat failed (Redis error), will retry"
+                                );
+
+                                // After 3 consecutive failures, suspect network partition
+                                // Log a warning but continue attempting heartbeats for recovery
+                                if failures >= 3 {
+                                    warn!(
+                                        consecutive_failures = failures,
+                                        "Possible network partition: {} consecutive Redis heartbeat failures",
+                                        failures
+                                    );
+                                }
                             }
                         }
                     }

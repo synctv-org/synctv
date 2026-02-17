@@ -644,9 +644,9 @@ impl RedisPubSub {
                         warn!(
                             error = %e,
                             stream_key = %stream_key,
-                            "Failed to read latest stream ID, using '0' as fallback"
+                            "Failed to read latest stream ID, using '$' as fallback (skip catch-up)"
                         );
-                        stream_cursors.insert(stream_key, "0".to_string());
+                        stream_cursors.insert(stream_key, "$".to_string());
                     }
                 }
             }
@@ -848,9 +848,9 @@ impl RedisPubSub {
                                                     warn!(
                                                         error = %e,
                                                         room_id = %room_id_str,
-                                                        "Dynamically subscribed but failed to snapshot cursor, using '0'"
+                                                        "Dynamically subscribed but failed to snapshot cursor, using '$' (skip catch-up)"
                                                     );
-                                                    stream_cursors.insert(sk, "0".to_string());
+                                                    stream_cursors.insert(sk, "$".to_string());
                                                 }
                                             }
                                         }
@@ -1412,6 +1412,14 @@ impl RedisPubSub {
         stream_key: &str,
         last_id: &str,
     ) -> Result<Vec<(String, String, ClusterEvent)>> {
+        // "$" is a sentinel meaning "skip catch-up for this stream" -- used when
+        // the initial cursor snapshot failed and we don't know where to start.
+        // Reading from "$" in XREAD would be invalid, so return empty.
+        if last_id == "$" {
+            debug!(stream_key = %stream_key, "Skipping catch-up (cursor is '$')");
+            return Ok(Vec::new());
+        }
+
         let mut conn = self.get_shared_conn().await?;
 
         let mut events = Vec::new();

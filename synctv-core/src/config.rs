@@ -192,6 +192,45 @@ impl Default for DatabaseConfig {
 }
 
 /// Redis deployment mode
+///
+/// # Supported modes
+///
+/// - **Standalone** (default): Single Redis instance. Works with all features.
+/// - **Sentinel**: Redis Sentinel for high availability. Automatic master
+///   failover is NOT yet supported; a restart is required after failover.
+///   A proper `SentinelClient` integration is planned.
+///
+/// # Why Redis Cluster is not supported
+///
+/// Redis Cluster mode is defined here for forward compatibility but is
+/// **not currently supported** at runtime. Attempting to use it will fail
+/// at startup with an error. The reasons are:
+///
+/// 1. **`ConnectionManager` does not support cluster-aware routing.**
+///    The `redis` crate's `ConnectionManager` (used throughout for
+///    multiplexed async connections) connects to a single Redis node.
+///    Redis Cluster requires a `ClusterClient` that maintains connections
+///    to all shard nodes and routes commands by key hash slot.
+///
+/// 2. **Lua scripts use multi-key operations.** The node registry and
+///    leader election use Lua scripts that touch multiple Redis keys
+///    (e.g., SCAN + GET). In Redis Cluster, all keys accessed in a
+///    single script invocation must hash to the same slot. Refactoring
+///    to use hash tags (`{prefix}:key`) is required.
+///
+/// 3. **Pub/Sub semantics differ.** In Redis Cluster, PUBLISH is
+///    broadcast to all nodes, but SUBSCRIBE only receives messages
+///    published on the connected node's shard. The current pub/sub
+///    architecture assumes single-node semantics.
+///
+/// # Future plan
+///
+/// Redis Cluster support requires:
+/// - Migrate from `ConnectionManager` to `ClusterConnection`
+/// - Add hash tags to all Redis keys so related keys land on the same slot
+/// - Test Pub/Sub behavior under cluster mode (may need sharded pub/sub
+///   from Redis 7.0+)
+/// - Validate Lua scripts work within single-slot constraints
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum RedisDeploymentMode {

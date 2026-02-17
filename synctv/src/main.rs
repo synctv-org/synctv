@@ -426,13 +426,13 @@ async fn init_webrtc(
         || config.webrtc.mode == synctv_core::config::WebRTCMode::Hybrid
     {
         info!("Initializing SFU manager for mode: {:?}", config.webrtc.mode);
-        let sfu_config = synctv_sfu::SfuConfig {
-            sfu_threshold: config.webrtc.sfu_threshold,
-            max_sfu_rooms: config.webrtc.max_sfu_rooms,
-            max_peers_per_room: config.webrtc.max_peers_per_sfu_room,
-            enable_simulcast: config.webrtc.enable_simulcast,
-            enable_bandwidth_estimation: config.webrtc.enable_bandwidth_estimation,
-        };
+        let sfu_config = synctv_sfu::SfuConfig::from_webrtc_fields(
+            config.webrtc.sfu_threshold,
+            config.webrtc.max_sfu_rooms,
+            config.webrtc.max_peers_per_sfu_room,
+            config.webrtc.enable_simulcast,
+            config.webrtc.enable_bandwidth_estimation,
+        );
         let manager = synctv_sfu::SfuManager::new(sfu_config);
         info!(
             "SFU manager initialized (threshold: {}, max_rooms: {}, max_peers_per_room: {})",

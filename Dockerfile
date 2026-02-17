@@ -74,7 +74,7 @@ ENV RUST_BACKTRACE=1
 
 # Health check against the HTTP health endpoint
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-    CMD ["curl", "-f", "http://localhost:8080/health"]
+    CMD ["curl", "-f", "http://localhost:8080/health/ready"]
 
 # Run the application
 CMD ["/app/synctv"]

@@ -102,6 +102,20 @@ pub struct MediaInfo {
     pub vcodec: VideoCodecType,
 }
 
+impl MediaInfo {
+    /// Return the number of heap-allocated bytes owned by this `MediaInfo`.
+    ///
+    /// Currently all fields are stack-only (`u32`, enum), so this returns 0.
+    /// If heap-allocated fields (e.g., `String`) are added in the future,
+    /// their `.len()` / `.capacity()` should be included here so that
+    /// `Gop::frame_memory_size` remains accurate.
+    #[must_use]
+    pub fn heap_size(&self) -> usize {
+        // No heap-allocated fields at present.
+        0
+    }
+}
+
 /// Frame data using `Bytes` for zero-copy fan-out.
 /// `Bytes::clone()` is O(1) -- only bumps Arc reference count, no data copy.
 /// Publishers create `BytesMut` and call `.freeze()` before wrapping in `FrameData`.

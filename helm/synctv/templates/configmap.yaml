@@ -64,6 +64,7 @@ data:
       critical_channel_capacity: {{ .Values.config.cluster.criticalChannelCapacity }}
       publish_channel_capacity: {{ .Values.config.cluster.publishChannelCapacity }}
       discovery_mode: {{ .Values.config.cluster.discoveryMode | default "redis" | quote }}
+      leader_election_mode: {{ .Values.config.cluster.leaderElectionMode | default "redis" | quote }}
 
     webrtc:
       mode: {{ .Values.config.webrtc.mode | default "hybrid" | quote }}

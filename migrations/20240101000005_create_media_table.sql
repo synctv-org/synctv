@@ -46,6 +46,7 @@ CREATE INDEX idx_media_creator ON media(creator_id);
 CREATE INDEX idx_media_added_at ON media(added_at DESC);
 CREATE INDEX idx_media_deleted_at ON media(deleted_at) WHERE deleted_at IS NOT NULL;
 CREATE INDEX idx_media_source_provider ON media(source_provider) WHERE deleted_at IS NULL;
+CREATE INDEX idx_media_provider_name ON media(provider_instance_name) WHERE provider_instance_name IS NOT NULL;
 CREATE INDEX idx_media_source_config ON media USING gin(source_config) WHERE deleted_at IS NULL;
 
 -- Performance optimization: covering index for playlist queries

@@ -29,7 +29,7 @@ const MAX_MANIFEST_SIZE: usize = 10 * 1024 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Overall request timeout for outbound proxy requests.
-const REQUEST_TIMEOUT: Duration = Duration::from_mins(1);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Timeout for reading the response body after headers are received.
 const BODY_READ_TIMEOUT: Duration = Duration::from_secs(30);
@@ -379,11 +379,11 @@ fn rewrite_m3u8(m3u8: &str, source_url: &str, proxy_base: &str) -> String {
                         source_url = %source_url,
                         url_count = url_count,
                         max = MAX_M3U8_URLS,
-                        "M3U8 playlist exceeded maximum URL limit, truncating"
+                        "M3U8 playlist exceeded maximum URL limit, truncating with EXT-X-ENDLIST"
                     );
-                    // Still output the line but don't proxy it
-                    output.push_str("# ERROR: Too many URLs in playlist\n");
-                    continue;
+                    // Terminate the playlist cleanly instead of including raw segments
+                    output.push_str("#EXT-X-ENDLIST\n");
+                    break;
                 }
                 let absolute = make_absolute(trimmed, base.as_ref());
                 let proxied = format!("{}?url={}", proxy_base, percent_encode(&absolute));
@@ -492,6 +492,12 @@ async fn send_with_redirect_validation(
     let built = request
         .build()
         .map_err(|e| anyhow::anyhow!("Failed to build proxy request: {e}"))?;
+
+    // Validate the INITIAL URL before sending (SSRF protection).
+    // Previously only redirect targets were validated here, relying on callers
+    // to validate the initial URL. This was fragile and left a gap if any
+    // caller forgot to validate. Now we validate both initial and redirect URLs.
+    validate_proxy_url(built.url().as_str()).await?;
 
     // Snapshot headers to preserve across redirects.
     let preserved: Vec<(reqwest::header::HeaderName, reqwest::header::HeaderValue)> = built

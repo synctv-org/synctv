@@ -46,12 +46,20 @@ impl Gop {
     }
 
     /// Estimate the memory size of a FrameData in bytes.
+    ///
+    /// For `MediaInfo`, we account for both the inline struct size and any
+    /// heap-allocated fields (e.g., `String`s).  Currently `MediaInfo` has no
+    /// heap data, so `heap_size()` returns 0, but using this pattern ensures
+    /// correctness if fields are added in the future.
     pub(crate) fn frame_memory_size(data: &FrameData) -> usize {
         match data {
             FrameData::Video { data, .. } => data.len(),
             FrameData::Audio { data, .. } => data.len(),
             FrameData::MetaData { data, .. } => data.len(),
-            FrameData::MediaInfo { .. } => std::mem::size_of::<crate::streamhub::define::MediaInfo>(),
+            FrameData::MediaInfo { media_info } => {
+                std::mem::size_of::<crate::streamhub::define::MediaInfo>()
+                    + media_info.heap_size()
+            }
         }
     }
 
@@ -126,26 +134,7 @@ impl Gop {
 /// Default maximum total bytes across all GOPs per stream (50 MB).
 /// When exceeded, the oldest GOP is dropped even if `gop_num` hasn't been reached.
 /// Prevents OOM under high-bitrate multi-stream scenarios (e.g., 4K at 50 Mbps).
-const DEFAULT_MAX_TOTAL_BYTES: usize = 50 * 1024 * 1024;
-
-/// Global override for `max_total_bytes`. Set once at startup via
-/// [`set_global_max_total_bytes`] before any streams are published.
-/// If unset, `DEFAULT_MAX_TOTAL_BYTES` is used.
-static GLOBAL_MAX_TOTAL_BYTES: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-
-/// Set the global maximum total bytes for the GOP cache per stream.
-/// Must be called once at startup. Subsequent calls are ignored.
-pub fn set_global_max_total_bytes(bytes: usize) {
-    let _ = GLOBAL_MAX_TOTAL_BYTES.set(bytes);
-}
-
-/// Get the effective max total bytes (global override or default).
-fn effective_max_total_bytes() -> usize {
-    GLOBAL_MAX_TOTAL_BYTES
-        .get()
-        .copied()
-        .unwrap_or(DEFAULT_MAX_TOTAL_BYTES)
-}
+pub const DEFAULT_MAX_TOTAL_BYTES: usize = 50 * 1024 * 1024;
 
 #[derive(Clone)]
 pub struct Gops {
@@ -165,15 +154,14 @@ impl Default for Gops {
 
 impl Gops {
     /// Create a new `Gops` cache with the given GOP count limit and optional
-    /// per-stream memory cap. If `max_total_bytes` is `None`, the global
-    /// override (set via [`set_global_max_total_bytes`]) is used, or the
-    /// built-in default (50 MB) if neither is set.
+    /// per-stream memory cap. If `max_total_bytes` is `None`, the built-in
+    /// default ([`DEFAULT_MAX_TOTAL_BYTES`], 50 MB) is used.
     #[must_use]
     pub fn new(size: usize, max_total_bytes: Option<usize>) -> Self {
         Self {
             gops: VecDeque::from([Gop::new()]),
             size,
-            max_total_bytes: max_total_bytes.unwrap_or_else(effective_max_total_bytes),
+            max_total_bytes: max_total_bytes.unwrap_or(DEFAULT_MAX_TOTAL_BYTES),
             current_total_bytes: 0,
         }
     }
@@ -202,6 +190,29 @@ impl Gops {
         self.size
     }
 
+    /// Evict the oldest GOP from this stream, updating per-stream counters.
+    /// Returns the number of bytes evicted, or 0 if nothing could be evicted.
+    fn evict_oldest_gop(&mut self, reason: &str) -> usize {
+        if self.gops.len() <= 1 {
+            return 0;
+        }
+        if let Some(evicted) = self.gops.pop_front() {
+            let evicted_bytes = evicted.memory_bytes();
+            self.current_total_bytes = self.current_total_bytes.saturating_sub(evicted_bytes);
+            tracing::warn!(
+                evicted_bytes,
+                remaining_gops = self.gops.len(),
+                stream_bytes = self.current_total_bytes,
+                max_total_bytes = self.max_total_bytes,
+                reason,
+                "GOP evicted"
+            );
+            evicted_bytes
+        } else {
+            0
+        }
+    }
+
     pub fn save_frame_data(&mut self, data: FrameData, is_key_frame: bool) {
         if self.size == 0 {
             return;
@@ -214,49 +225,23 @@ impl Gops {
                 back.freeze();
             }
             if self.gops.len() == self.size {
-                if let Some(evicted) = self.gops.pop_front() {
-                    self.current_total_bytes = self.current_total_bytes.saturating_sub(evicted.memory_bytes());
-                }
+                self.evict_oldest_gop("GOP count limit reached");
             }
             self.gops.push_back(Gop::new());
         }
 
-        // Evict oldest GOPs if total memory exceeds limit (keep at least the active GOP)
+        // Evict oldest GOPs if per-stream memory exceeds limit (keep at least the active GOP)
         while self.current_total_bytes > self.max_total_bytes && self.gops.len() > 1 {
-            if let Some(evicted) = self.gops.pop_front() {
-                let evicted_bytes = evicted.memory_bytes();
-                self.current_total_bytes = self.current_total_bytes.saturating_sub(evicted_bytes);
-                tracing::warn!(
-                    evicted_bytes,
-                    remaining_gops = self.gops.len(),
-                    total_bytes = self.current_total_bytes,
-                    max_total_bytes = self.max_total_bytes,
-                    "GOP evicted due to total memory limit"
-                );
-            }
+            self.evict_oldest_gop("per-stream memory limit");
         }
 
         // Check memory limit BEFORE adding the frame to keep accounting precise.
-        // Without this pre-check, current_total_bytes could temporarily exceed
-        // max_total_bytes until the next keyframe triggers eviction.
         let frame_bytes = Gop::frame_memory_size(&data);
-        if self.current_total_bytes + frame_bytes > self.max_total_bytes && self.gops.len() > 1 {
-            // Try to make room by evicting oldest GOPs
-            while self.current_total_bytes + frame_bytes > self.max_total_bytes
-                && self.gops.len() > 1
-            {
-                if let Some(evicted) = self.gops.pop_front() {
-                    let evicted_bytes = evicted.memory_bytes();
-                    self.current_total_bytes =
-                        self.current_total_bytes.saturating_sub(evicted_bytes);
-                    tracing::warn!(
-                        evicted_bytes,
-                        remaining_gops = self.gops.len(),
-                        total_bytes = self.current_total_bytes,
-                        max_total_bytes = self.max_total_bytes,
-                        "GOP evicted due to total memory limit (pre-frame check)"
-                    );
-                }
+        while self.current_total_bytes + frame_bytes > self.max_total_bytes
+            && self.gops.len() > 1
+        {
+            if self.evict_oldest_gop("per-stream memory limit (pre-frame)") == 0 {
+                break;
             }
         }
 

@@ -48,7 +48,7 @@ pub async fn logout(
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.strip_prefix("Bearer ").or_else(|| s.strip_prefix("bearer ")))
-        .unwrap_or("");
+        .ok_or_else(|| super::AppError::unauthorized("Missing or invalid Bearer token"))?;
 
     let refresh_token = body.and_then(|b| b.0.refresh_token);
     let response = state.client_api.logout(access_token, refresh_token.as_deref()).await

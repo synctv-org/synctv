@@ -9,11 +9,13 @@
 //!
 //! Runs as a background task with configurable intervals and retention periods.
 
+use std::sync::Arc;
 use sqlx::PgPool;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::{Result, InternalExt};
+use super::LeaderCheck;
 
 /// Configuration for data cleanup retention periods
 #[derive(Debug, Clone)]
@@ -74,13 +76,17 @@ pub struct CleanupResult {
 pub struct CleanupService {
     pool: PgPool,
     config: CleanupConfig,
+    leader_check: Arc<dyn LeaderCheck>,
 }
 
 impl CleanupService {
-    /// Create a new cleanup service
+    /// Create a new cleanup service with a leader check.
+    ///
+    /// Cleanup only runs when this node is the cluster leader (or in
+    /// single-node mode where `AlwaysLeader` is used).
     #[must_use]
-    pub const fn new(pool: PgPool, config: CleanupConfig) -> Self {
-        Self { pool, config }
+    pub fn new(pool: PgPool, config: CleanupConfig, leader_check: Arc<dyn LeaderCheck>) -> Self {
+        Self { pool, config, leader_check }
     }
 
     /// Run all cleanup tasks once
@@ -374,6 +380,7 @@ impl CleanupService {
         let service = Self {
             pool: self.pool.clone(),
             config: self.config.clone(),
+            leader_check: self.leader_check.clone(),
         };
 
         crate::spawn::spawn_monitored("data_cleanup", async move {
@@ -390,6 +397,12 @@ impl CleanupService {
                         info!("Data cleanup task cancelled, shutting down");
                         return;
                     }
+                }
+
+                // Only run cleanup on the leader node to avoid duplicate work
+                if !service.leader_check.is_leader() {
+                    info!("Skipping data cleanup (not leader)");
+                    continue;
                 }
 
                 info!(

@@ -69,26 +69,7 @@ use super::internal_err;
 /// Provides backpressure for slow clients without excessive memory usage.
 const MESSAGE_STREAM_BUFFER_SIZE: usize = 100;
 
-/// Map a typed `ApiError` to a gRPC `Status` with guaranteed-correct
-/// status code mapping (no keyword-based heuristics).
-///
-/// Note: For internal errors, we log the details and return a generic message
-/// to avoid leaking sensitive implementation details to clients.
-fn impls_err_to_status(err: crate::impls::ApiError) -> Status {
-    use crate::impls::ErrorKind;
-    let msg = err.to_string();
-    match err.classify() {
-        ErrorKind::NotFound => Status::not_found(msg),
-        ErrorKind::Unauthenticated => Status::unauthenticated(msg),
-        ErrorKind::PermissionDenied => Status::permission_denied(msg),
-        ErrorKind::AlreadyExists => Status::already_exists(msg),
-        ErrorKind::InvalidArgument => Status::invalid_argument(msg),
-        ErrorKind::Internal => {
-            tracing::error!("Internal error: {msg}");
-            Status::internal("Internal error")
-        }
-    }
-}
+use super::map_api_error as impls_err_to_status;
 
 /// Configuration for `ClientService`
 #[derive(Clone)]
@@ -293,8 +274,10 @@ impl UserService for ClientServiceImpl {
             .metadata()
             .get("authorization")
             .and_then(|v| v.to_str().ok())
-            .map(|s| JwtValidator::extract_bearer_token(s).unwrap_or_default())
-            .unwrap_or_default();
+            .map(|s| JwtValidator::extract_bearer_token(s))
+            .transpose()
+            .map_err(|_| Status::unauthenticated("Missing or invalid Bearer token"))?
+            .ok_or_else(|| Status::unauthenticated("Authorization header required"))?;
 
         // Extract optional refresh token from metadata
         let refresh_token = request
@@ -352,9 +335,8 @@ impl UserService for ClientServiceImpl {
     ) -> Result<Response<ListParticipatedRoomsResponse>, Status> {
         let user_id = self.get_user_id(&request).await?;
         let req = request.into_inner();
-        let page = if req.page > 0 { req.page } else { 1 };
-        let page_size = req.page_size.clamp(1, 100);
-        let response = self.client_api.get_joined_rooms(user_id.as_str(), page, page_size).await.map_err(impls_err_to_status)?;
+        let params = synctv_core::models::PageParams::new(Some(req.page as u32), Some(req.page_size as u32));
+        let response = self.client_api.get_joined_rooms(user_id.as_str(), params.page as i32, params.page_size as i32).await.map_err(impls_err_to_status)?;
         Ok(Response::new(response))
     }
 }

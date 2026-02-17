@@ -1097,10 +1097,15 @@ impl RedisPubSub {
                 }
             }
 
-            // Handle RoomDeleted: broadcast to local subscribers then clean up the room
+            // Handle RoomDeleted: broadcast to local subscribers then clean up the room.
+            // A small delay between broadcast and remove_room ensures that the
+            // WebSocket read loops have time to dequeue and forward the RoomDeleted
+            // event to clients before the senders are dropped.
             if matches!(&event, ClusterEvent::RoomDeleted { .. }) {
                 // Notify local subscribers so WebSocket clients learn the room is gone
                 let sent_count = self.message_hub.broadcast(&room_id, event);
+                // Allow WebSocket tasks to process the queued event before cleanup
+                tokio::time::sleep(Duration::from_millis(100)).await;
                 // Remove all local subscriptions for the deleted room
                 self.message_hub.remove_room(&room_id);
                 info!(

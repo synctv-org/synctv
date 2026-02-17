@@ -217,7 +217,7 @@ impl<S: ManagedStream> StreamPool<S> {
             cleanup_check_interval,
             idle_timeout,
             // Clean up creation locks that haven't been used for 10 minutes
-            creation_lock_max_age: Duration::from_mins(10),
+            creation_lock_max_age: Duration::from_secs(10 * 60),
             cancel_token: CancellationToken::new(),
         }
     }

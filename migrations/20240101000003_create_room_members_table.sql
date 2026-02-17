@@ -34,8 +34,8 @@ CREATE TABLE IF NOT EXISTS room_members (
 -- Create indexes
 CREATE INDEX idx_room_members_user_id ON room_members(user_id);
 CREATE INDEX idx_room_members_joined_at ON room_members(joined_at);
--- Note: No idx_room_members_active needed — the PK (room_id, user_id) already
--- covers lookups, and idx_room_members_version adds the left_at IS NULL filter.
+-- Partial index for efficient lookup of active members in a room
+CREATE INDEX idx_room_members_room_active ON room_members(room_id) WHERE left_at IS NULL;
 
 -- Performance optimization indexes (covering indexes to avoid table lookups)
 CREATE INDEX idx_room_members_user_active ON room_members(user_id, room_id, role, joined_at DESC)

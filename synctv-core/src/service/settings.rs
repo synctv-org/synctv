@@ -150,14 +150,9 @@ impl SettingsService {
         // Update cache
         self.cache.insert(setting.key.clone(), setting.clone());
 
-        // Notify other replicas via PostgreSQL NOTIFY
-        if let Err(e) = sqlx::query("SELECT pg_notify('settings_changed', $1)")
-            .bind(key)
-            .execute(&self.pool)
-            .await
-        {
-            warn!("Failed to send pg_notify for setting '{}': {}", key, e);
-        }
+        // Note: pg_notify('settings_changed', key) is handled by the database
+        // trigger (settings_change_trigger on the settings table). No manual
+        // notification is needed here; the trigger fires on UPDATE automatically.
 
         // Notify local listeners
         let json_value: serde_json::Value = value.parse().unwrap_or_else(|_| serde_json::json!(value));

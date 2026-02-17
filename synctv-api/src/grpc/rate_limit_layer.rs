@@ -194,7 +194,9 @@ where
         let client_id = extract_client_id(req.headers());
 
         Box::pin(async move {
-            let rate_key = format!("grpc:{}:{}", client_id, tier.key_suffix());
+            // Use the same key format as HTTP middleware ("ratelimit:{category}:{client_id}")
+            // so that rate limits are shared across HTTP and gRPC transports.
+            let rate_key = format!("ratelimit:{}:{}", tier.key_suffix(), client_id);
 
             if let Err(_e) = rate_limiter
                 .check_rate_limit(&rate_key, tier.max_requests(), window_seconds)

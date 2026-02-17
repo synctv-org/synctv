@@ -381,6 +381,7 @@ impl ExternalStreamPuller {
             parser.stream_name_with_query.clone(),
             bridge_tx,
             2, // gop_num (GOP cache on bridge side; real caching happens in local StreamHub)
+            None, // per_stream_max_bytes: use default for external pulls
         );
 
         let result = client.run().await;

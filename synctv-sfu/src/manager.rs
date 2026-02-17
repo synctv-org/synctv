@@ -338,7 +338,7 @@ impl SfuManager {
     /// Background task for periodic cleanup using Weak reference.
     /// Exits when the manager is dropped or the cancel token is triggered.
     async fn cleanup_task_weak(weak: std::sync::Weak<Self>, cancel: CancellationToken) {
-        let mut ticker = interval(Duration::from_mins(1));
+        let mut ticker = interval(Duration::from_secs(60));
         info!("Starting cleanup task (interval: 60s)");
 
         loop {

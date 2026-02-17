@@ -250,3 +250,9 @@ $$ LANGUAGE plpgsql;
 COMMENT ON FUNCTION auto_create_chat_message_partition() IS
 'Automatically create missing chat message partitions on INSERT. Called by trigger before INSERT.';
 
+-- Trigger: auto-create partition before INSERT if missing
+CREATE TRIGGER trigger_auto_create_chat_partition
+    BEFORE INSERT ON chat_messages
+    FOR EACH ROW
+    EXECUTE FUNCTION auto_create_chat_message_partition();
+

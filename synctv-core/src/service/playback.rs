@@ -105,6 +105,16 @@ impl PlaybackService {
             loop {
                 match receiver.recv().await {
                     Ok(msg) => match msg {
+                        InvalidationMessage::PlaybackStateUpdate { room_id, state } => {
+                            // Write the updated state directly into the L1 cache,
+                            // avoiding the stale-read window between invalidation
+                            // and the next DB fetch.
+                            cache.insert(room_id.clone(), state).await;
+                            tracing::debug!(
+                                room_id = %room_id,
+                                "Playback state cache updated directly (cross-replica)"
+                            );
+                        }
                         InvalidationMessage::PlaybackState { room_id } => {
                             cache.invalidate(&room_id).await;
                             tracing::debug!(
@@ -576,13 +586,15 @@ impl PlaybackService {
                     let cache_key = room_id.as_str().to_string();
                     self.playback_cache.invalidate(&cache_key).await;
 
-                    // Broadcast invalidation to other replicas so they evict stale entries
+                    // Broadcast updated state to other replicas so they can write
+                    // it directly into their L1 cache, avoiding the stale-read
+                    // window that occurs with invalidation-only messages.
                     if let Some(ref service) = self.invalidation_service {
-                        if let Err(e) = service.invalidate_playback_state(&room_id).await {
+                        if let Err(e) = service.update_playback_state(&room_id, &updated_state).await {
                             tracing::warn!(
                                 error = %e,
                                 room_id = %room_id.as_str(),
-                                "Failed to broadcast playback state cache invalidation after update"
+                                "Failed to broadcast playback state update to other replicas"
                             );
                         }
                     }

@@ -172,6 +172,14 @@ impl UserRepository {
 
     /// Soft delete user
     pub async fn delete(&self, user_id: &UserId) -> Result<bool> {
+        self.delete_with_executor(user_id, &self.pool).await
+    }
+
+    /// Soft delete user using a provided executor (pool or transaction)
+    pub async fn delete_with_executor<'e, E>(&self, user_id: &UserId, executor: E) -> Result<bool>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
         let result = sqlx::query(
             r"
             UPDATE users
@@ -181,7 +189,7 @@ impl UserRepository {
         )
         .bind(user_id.as_str())
         .bind(Utc::now())
-        .execute(&self.pool)
+        .execute(executor)
         .await?;
 
         Ok(result.rows_affected() > 0)

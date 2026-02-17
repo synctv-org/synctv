@@ -479,6 +479,7 @@ impl Common {
         app_name: String,
         stream_name: String,
         gop_num: usize,
+        per_stream_max_bytes: Option<usize>,
     ) -> Result<(), SessionError> {
         let (event_result_sender, event_result_receiver) = oneshot::channel();
         let info = self.get_publisher_info();
@@ -519,7 +520,7 @@ impl Common {
         }
 
         self.stream_handler
-            .set_cache(Cache::new(gop_num, None, statistic_data_sender))
+            .set_cache(Cache::new(gop_num, per_stream_max_bytes, statistic_data_sender))
             .await;
         Ok(())
     }

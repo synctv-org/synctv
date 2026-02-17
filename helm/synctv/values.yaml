@@ -102,7 +102,7 @@ startupProbe:
   initialDelaySeconds: 5
   periodSeconds: 5
   timeoutSeconds: 3
-  failureThreshold: 30 # 5 + 30*5 = 155s max startup time (for migrations)
+  failureThreshold: 60 # 5 + 60*5 = 305s max startup time (matching MIGRATION_MAX_WAIT=300s)
 
 livenessProbe:
   httpGet:
@@ -223,6 +223,8 @@ config:
     ## Discovery mode: "redis" (default) or "k8s_dns" (uses headless service DNS)
     ## In K8s deployments, "k8s_dns" is recommended as it uses native DNS discovery
     discoveryMode: "k8s_dns"
+    ## Leader election mode: "redis" (default) or "k8s_lease" (uses Kubernetes Lease)
+    leaderElectionMode: "redis"
 
   ## WebRTCConfig
   webrtc:

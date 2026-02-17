@@ -74,6 +74,10 @@ pub struct Services {
     pub leader_cancel: tokio_util::sync::CancellationToken,
     /// K8s DNS refresh background task abort handle (aborted during shutdown)
     pub dns_refresh_abort: Option<tokio::task::AbortHandle>,
+    /// Settings listen task handle (joined before DB pool closure to release PG connection)
+    pub settings_listen_task: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    /// Audit flush handle for graceful shutdown (flushed before DB pool closure)
+    pub audit_flush_handle: Arc<tokio::sync::Mutex<Option<synctv_core::service::AuditFlushHandle>>>,
 }
 
 /// `SyncTV` server - manages all server components
@@ -127,7 +131,7 @@ impl SyncTvServer {
         // Start background connection cleanup (every 60 seconds)
         let cleanup_cancel = tokio_util::sync::CancellationToken::new();
         let _conn_cleanup = self.services.connection_manager.spawn_cleanup_task(
-            Duration::from_mins(1),
+            Duration::from_secs(60),
             cleanup_cancel.clone(),
         );
 
@@ -321,7 +325,32 @@ impl SyncTvServer {
             info!("Closing Redis publish channel");
         }
 
-        // 6. Close the database connection pool
+        // 6.5. Flush audit service buffer BEFORE closing the database pool.
+        // The audit service buffers events in memory and writes them to the DB
+        // in batches. If we close the pool first, the final flush would fail and
+        // recent audit events would be lost.
+        {
+            let mut handle_guard = self.services.audit_flush_handle.lock().await;
+            if let Some(flush_handle) = handle_guard.take() {
+                info!("Flushing audit service buffer...");
+                flush_handle.shutdown().await;
+                info!("Audit service buffer flushed");
+            }
+        }
+
+        // 6.6. Join the settings listen task BEFORE closing the database pool.
+        // The settings task holds a PG LISTEN connection. If we close the pool
+        // first, the task may panic or leak the connection.
+        {
+            let mut task_guard = self.services.settings_listen_task.lock().await;
+            if let Some(task) = task_guard.take() {
+                info!("Waiting for settings listen task to stop...");
+                let _ = task.await;
+                info!("Settings listen task stopped");
+            }
+        }
+
+        // 7. Close the database connection pool
         info!("Closing database connection pool...");
         self.pool.close().await;
         info!("Database pool closed");
@@ -407,30 +436,17 @@ impl SyncTvServer {
         let live_streaming_infrastructure = self.services.live_streaming_infrastructure.clone();
         let sfu_manager = self.services.sfu_manager.clone();
 
-        // Create WebSocket ticket service if Redis is configured
-        let ws_ticket_service = if self.config.redis.url.is_empty() {
-            None
+        // Create WebSocket ticket service using the shared Redis connection.
+        // Previously this created a separate Redis client + ConnectionManager,
+        // which was redundant since services.redis_conn is already a multiplexed
+        // ConnectionManager that supports concurrent use.
+        let ws_ticket_service = if let Some(ref conn) = self.services.redis_conn {
+            Some(Arc::new(synctv_core::service::WsTicketService::new(
+                Some(conn.clone()),
+                None,
+            )))
         } else {
-            match redis::Client::open(self.config.redis.url.clone()) {
-                Ok(redis_client) => {
-                    match redis::aio::ConnectionManager::new(redis_client).await {
-                        Ok(conn) => {
-                            Some(Arc::new(synctv_core::service::WsTicketService::new(
-                                Some(conn),
-                                None,
-                            )))
-                        }
-                        Err(e) => {
-                            tracing::warn!("Failed to create Redis ConnectionManager for ws_ticket_service: {}", e);
-                            None
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to create Redis client for ws_ticket_service: {}", e);
-                    None
-                }
-            }
+            None
         };
 
         let http_router = synctv_api::http::create_router_from_config(

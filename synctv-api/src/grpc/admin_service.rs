@@ -31,28 +31,7 @@ use crate::proto::admin::{
 
 use crate::impls::AdminApiImpl;
 
-/// Convert a String error from `AdminApiImpl` into a gRPC Status.
-///
-/// Uses the shared `classify_error` function from the impls module for
-/// consistent error classification across HTTP and gRPC transports.
-///
-/// Note: For internal errors, we log the details and return a generic message
-/// to avoid leaking sensitive implementation details to clients.
-fn api_err(err: crate::impls::ApiError) -> Status {
-    use crate::impls::ErrorKind;
-    let msg = err.to_string();
-    match err.classify() {
-        ErrorKind::NotFound => Status::not_found(msg),
-        ErrorKind::Unauthenticated => Status::unauthenticated(msg),
-        ErrorKind::PermissionDenied => Status::permission_denied(msg),
-        ErrorKind::AlreadyExists => Status::already_exists(msg),
-        ErrorKind::InvalidArgument => Status::invalid_argument(msg),
-        ErrorKind::Internal => {
-            tracing::error!("Admin API internal error: {msg}");
-            Status::internal("Internal error")
-        }
-    }
-}
+use super::map_api_error;
 
 /// `AdminService` gRPC implementation.
 ///
@@ -172,7 +151,7 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<GetSettingsResponse>, Status> {
         self.check_admin(&request).await?;
         let req = request.into_inner();
-        let resp = self.admin_api.get_settings(req).await.map_err(api_err)?;
+        let resp = self.admin_api.get_settings(req).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -182,7 +161,7 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<GetSettingsGroupResponse>, Status> {
         self.check_admin(&request).await?;
         let req = request.into_inner();
-        let resp = self.admin_api.get_settings_group(req).await.map_err(api_err)?;
+        let resp = self.admin_api.get_settings_group(req).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -192,7 +171,7 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<UpdateSettingsResponse>, Status> {
         self.check_admin(&request).await?;
         let req = request.into_inner();
-        let resp = self.admin_api.update_settings(req).await.map_err(api_err)?;
+        let resp = self.admin_api.update_settings(req).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -202,7 +181,7 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<SendTestEmailResponse>, Status> {
         self.check_admin(&request).await?;
         let req = request.into_inner();
-        let resp = self.admin_api.send_test_email(req).await.map_err(api_err)?;
+        let resp = self.admin_api.send_test_email(req).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -216,7 +195,7 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<ListProviderInstancesResponse>, Status> {
         self.check_admin(&request).await?;
         let req = request.into_inner();
-        let resp = self.admin_api.list_provider_instances(req).await.map_err(api_err)?;
+        let resp = self.admin_api.list_provider_instances(req).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -226,7 +205,7 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<AddProviderInstanceResponse>, Status> {
         self.check_admin(&request).await?;
         let req = request.into_inner();
-        let resp = self.admin_api.add_provider_instance(req).await.map_err(api_err)?;
+        let resp = self.admin_api.add_provider_instance(req).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -236,7 +215,7 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<UpdateProviderInstanceResponse>, Status> {
         self.check_admin(&request).await?;
         let req = request.into_inner();
-        let resp = self.admin_api.update_provider_instance(req).await.map_err(api_err)?;
+        let resp = self.admin_api.update_provider_instance(req).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -246,7 +225,7 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<DeleteProviderInstanceResponse>, Status> {
         self.check_admin(&request).await?;
         let req = request.into_inner();
-        let resp = self.admin_api.delete_provider_instance(req).await.map_err(api_err)?;
+        let resp = self.admin_api.delete_provider_instance(req).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -256,7 +235,7 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<ReconnectProviderInstanceResponse>, Status> {
         self.check_admin(&request).await?;
         let req = request.into_inner();
-        let resp = self.admin_api.reconnect_provider_instance(req).await.map_err(api_err)?;
+        let resp = self.admin_api.reconnect_provider_instance(req).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -266,7 +245,7 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<EnableProviderInstanceResponse>, Status> {
         self.check_admin(&request).await?;
         let req = request.into_inner();
-        let resp = self.admin_api.enable_provider_instance(req).await.map_err(api_err)?;
+        let resp = self.admin_api.enable_provider_instance(req).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -276,7 +255,7 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<DisableProviderInstanceResponse>, Status> {
         self.check_admin(&request).await?;
         let req = request.into_inner();
-        let resp = self.admin_api.disable_provider_instance(req).await.map_err(api_err)?;
+        let resp = self.admin_api.disable_provider_instance(req).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -296,7 +275,7 @@ impl AdminService for AdminServiceImpl {
             self.check_admin_get_role(&request).await?
         };
         let req = request.into_inner();
-        let resp = self.admin_api.create_user(req, caller_role).await.map_err(api_err)?;
+        let resp = self.admin_api.create_user(req, caller_role).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -306,7 +285,7 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<DeleteUserResponse>, Status> {
         self.check_root(&request).await?;
         let req = request.into_inner();
-        let resp = self.admin_api.delete_user(req).await.map_err(api_err)?;
+        let resp = self.admin_api.delete_user(req).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -316,7 +295,7 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<ListUsersResponse>, Status> {
         self.check_admin(&request).await?;
         let req = request.into_inner();
-        let resp = self.admin_api.list_users(req).await.map_err(api_err)?;
+        let resp = self.admin_api.list_users(req).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -326,7 +305,7 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<GetUserResponse>, Status> {
         self.check_admin(&request).await?;
         let req = request.into_inner();
-        let resp = self.admin_api.get_user(req).await.map_err(api_err)?;
+        let resp = self.admin_api.get_user(req).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -336,7 +315,7 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<UpdateUserPasswordResponse>, Status> {
         let validated = self.check_admin_get_validated(&request).await?;
         let req = request.into_inner();
-        let resp = self.admin_api.update_user_password(req, validated.user_id, validated.role).await.map_err(api_err)?;
+        let resp = self.admin_api.update_user_password(req, validated.user_id, validated.role).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -346,7 +325,7 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<UpdateUserUsernameResponse>, Status> {
         self.check_admin(&request).await?;
         let req = request.into_inner();
-        let resp = self.admin_api.update_user_username(req).await.map_err(api_err)?;
+        let resp = self.admin_api.update_user_username(req).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -362,7 +341,7 @@ impl AdminService for AdminServiceImpl {
             self.check_admin_get_role(&request).await?
         };
         let req = request.into_inner();
-        let resp = self.admin_api.update_user_role(req, caller_role).await.map_err(api_err)?;
+        let resp = self.admin_api.update_user_role(req, caller_role).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -372,7 +351,7 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<BanUserResponse>, Status> {
         let caller_role = self.check_admin_get_role(&request).await?;
         let req = request.into_inner();
-        let resp = self.admin_api.ban_user(req, caller_role).await.map_err(api_err)?;
+        let resp = self.admin_api.ban_user(req, caller_role).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -382,7 +361,7 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<UnbanUserResponse>, Status> {
         self.check_admin(&request).await?;
         let req = request.into_inner();
-        let resp = self.admin_api.unban_user(req).await.map_err(api_err)?;
+        let resp = self.admin_api.unban_user(req).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -392,7 +371,7 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<GetUserRoomsResponse>, Status> {
         self.check_admin(&request).await?;
         let req = request.into_inner();
-        let resp = self.admin_api.get_user_rooms(req).await.map_err(api_err)?;
+        let resp = self.admin_api.get_user_rooms(req).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -402,7 +381,7 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<ApproveUserResponse>, Status> {
         self.check_admin(&request).await?;
         let req = request.into_inner();
-        let resp = self.admin_api.approve_user(req).await.map_err(api_err)?;
+        let resp = self.admin_api.approve_user(req).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -416,7 +395,7 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<ListRoomsResponse>, Status> {
         self.check_admin(&request).await?;
         let req = request.into_inner();
-        let resp = self.admin_api.list_rooms(req).await.map_err(api_err)?;
+        let resp = self.admin_api.list_rooms(req).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -426,7 +405,7 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<GetRoomResponse>, Status> {
         self.check_admin(&request).await?;
         let req = request.into_inner();
-        let resp = self.admin_api.get_room(req).await.map_err(api_err)?;
+        let resp = self.admin_api.get_room(req).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -436,7 +415,7 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<UpdateRoomPasswordResponse>, Status> {
         self.check_admin(&request).await?;
         let req = request.into_inner();
-        let resp = self.admin_api.update_room_password(req).await.map_err(api_err)?;
+        let resp = self.admin_api.update_room_password(req).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -446,7 +425,7 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<DeleteRoomResponse>, Status> {
         self.check_admin(&request).await?;
         let req = request.into_inner();
-        let resp = self.admin_api.delete_room(req).await.map_err(api_err)?;
+        let resp = self.admin_api.delete_room(req).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -456,7 +435,7 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<BanRoomResponse>, Status> {
         self.check_admin(&request).await?;
         let req = request.into_inner();
-        let resp = self.admin_api.ban_room(req).await.map_err(api_err)?;
+        let resp = self.admin_api.ban_room(req).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -466,7 +445,7 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<UnbanRoomResponse>, Status> {
         self.check_admin(&request).await?;
         let req = request.into_inner();
-        let resp = self.admin_api.unban_room(req).await.map_err(api_err)?;
+        let resp = self.admin_api.unban_room(req).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -476,7 +455,7 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<ApproveRoomResponse>, Status> {
         self.check_admin(&request).await?;
         let req = request.into_inner();
-        let resp = self.admin_api.approve_room(req).await.map_err(api_err)?;
+        let resp = self.admin_api.approve_room(req).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -486,7 +465,7 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<GetRoomMembersResponse>, Status> {
         self.check_admin(&request).await?;
         let req = request.into_inner();
-        let resp = self.admin_api.get_room_members(req).await.map_err(api_err)?;
+        let resp = self.admin_api.get_room_members(req).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -500,7 +479,7 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<AddAdminResponse>, Status> {
         self.check_root(&request).await?;
         let req = request.into_inner();
-        let resp = self.admin_api.add_admin(req).await.map_err(api_err)?;
+        let resp = self.admin_api.add_admin(req).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -510,7 +489,7 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<RemoveAdminResponse>, Status> {
         self.check_root(&request).await?;
         let req = request.into_inner();
-        let resp = self.admin_api.remove_admin(req).await.map_err(api_err)?;
+        let resp = self.admin_api.remove_admin(req).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -520,7 +499,7 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<ListAdminsResponse>, Status> {
         self.check_root(&request).await?;
         let req = request.into_inner();
-        let resp = self.admin_api.list_admins(req).await.map_err(api_err)?;
+        let resp = self.admin_api.list_admins(req).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -534,7 +513,7 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<GetSystemStatsResponse>, Status> {
         self.check_admin(&request).await?;
         let req = request.into_inner();
-        let resp = self.admin_api.get_system_stats(req).await.map_err(api_err)?;
+        let resp = self.admin_api.get_system_stats(req).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -548,7 +527,7 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<GetRoomSettingsResponse>, Status> {
         self.check_admin(&request).await?;
         let req = request.into_inner();
-        let resp = self.admin_api.get_room_settings(req).await.map_err(api_err)?;
+        let resp = self.admin_api.get_room_settings(req).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -558,7 +537,7 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<UpdateRoomSettingsResponse>, Status> {
         self.check_admin(&request).await?;
         let req = request.into_inner();
-        let resp = self.admin_api.update_room_settings(req).await.map_err(api_err)?;
+        let resp = self.admin_api.update_room_settings(req).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -567,13 +546,9 @@ impl AdminService for AdminServiceImpl {
         request: Request<ResetRoomSettingsRequest>,
     ) -> Result<Response<ResetRoomSettingsResponse>, Status> {
         self.check_admin(&request).await?;
-        let user_context = request
-            .extensions()
-            .get::<super::interceptors::UserContext>()
-            .ok_or_else(|| Status::unauthenticated("Authentication required"))?;
-        let admin_user_id = synctv_core::models::UserId::from_string(user_context.user_id.clone());
+        let admin_user_id = super::interceptors::extract_user_id(&request)?;
         let req = request.into_inner();
-        let resp = self.admin_api.reset_room_settings(req, &admin_user_id).await.map_err(api_err)?;
+        let resp = self.admin_api.reset_room_settings(req, &admin_user_id).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -628,7 +603,7 @@ mod tests {
     #[test]
     fn test_api_err_not_found() {
         let err = crate::impls::ApiError::NotFound("user not found".to_string());
-        let status = api_err(err);
+        let status = map_api_error(err);
         assert_eq!(status.code(), tonic::Code::NotFound);
         assert!(status.message().contains("not found"));
     }
@@ -636,35 +611,35 @@ mod tests {
     #[test]
     fn test_api_err_unauthenticated() {
         let err = crate::impls::ApiError::Authentication("bad token".to_string());
-        let status = api_err(err);
+        let status = map_api_error(err);
         assert_eq!(status.code(), tonic::Code::Unauthenticated);
     }
 
     #[test]
     fn test_api_err_permission_denied() {
         let err = crate::impls::ApiError::Authorization("not allowed".to_string());
-        let status = api_err(err);
+        let status = map_api_error(err);
         assert_eq!(status.code(), tonic::Code::PermissionDenied);
     }
 
     #[test]
     fn test_api_err_already_exists() {
         let err = crate::impls::ApiError::AlreadyExists("duplicate".to_string());
-        let status = api_err(err);
+        let status = map_api_error(err);
         assert_eq!(status.code(), tonic::Code::AlreadyExists);
     }
 
     #[test]
     fn test_api_err_invalid_argument() {
         let err = crate::impls::ApiError::InvalidInput("bad field".to_string());
-        let status = api_err(err);
+        let status = map_api_error(err);
         assert_eq!(status.code(), tonic::Code::InvalidArgument);
     }
 
     #[test]
     fn test_api_err_internal_hides_details() {
         let err = crate::impls::ApiError::Internal("database connection failed with password=secret123".to_string());
-        let status = api_err(err);
+        let status = map_api_error(err);
         assert_eq!(status.code(), tonic::Code::Internal);
         // Internal errors should NOT leak implementation details
         assert_eq!(status.message(), "Internal error");
@@ -686,7 +661,7 @@ mod tests {
             (crate::impls::ApiError::Internal("x".into()), tonic::Code::Internal),
         ];
         for (err, expected_code) in variants {
-            let status = api_err(err);
+            let status = map_api_error(err);
             assert_eq!(status.code(), expected_code);
         }
     }

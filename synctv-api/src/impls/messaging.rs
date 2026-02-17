@@ -211,6 +211,13 @@ impl StreamMessageHandler {
         let mut heartbeat_interval = tokio::time::interval(std::time::Duration::from_secs(30));
         heartbeat_interval.tick().await; // Skip the immediate first tick
 
+        // Global per-connection message rate limiter (token bucket).
+        // Limits to 50 messages/second to prevent abuse before per-type checks.
+        // This is local to each connection (no Redis needed).
+        const GLOBAL_MSG_RATE_LIMIT: u32 = 50;
+        let mut global_msg_count: u32 = 0;
+        let mut global_msg_window_start = tokio::time::Instant::now();
+
         // Main message loop using tokio::select! for concurrent operations
         loop {
             tokio::select! {
@@ -218,6 +225,23 @@ impl StreamMessageHandler {
                 client_msg_result = stream.recv() => {
                     match client_msg_result {
                         Some(Ok(msg)) => {
+                            // Global per-connection rate limit check (before any processing)
+                            let now = tokio::time::Instant::now();
+                            if now.duration_since(global_msg_window_start) >= std::time::Duration::from_secs(1) {
+                                // Reset window
+                                global_msg_count = 0;
+                                global_msg_window_start = now;
+                            }
+                            global_msg_count += 1;
+                            if global_msg_count > GLOBAL_MSG_RATE_LIMIT {
+                                tracing::warn!(
+                                    user_id = %self.user_id.as_str(),
+                                    room_id = %self.room_id.as_str(),
+                                    "Global WebSocket message rate limit exceeded ({GLOBAL_MSG_RATE_LIMIT}/s), dropping message"
+                                );
+                                continue;
+                            }
+
                             if let Err(e) = self.handle_client_message(&msg).await {
                                 tracing::error!("Failed to handle client message: {}", e);
                                 // Don't break on individual message errors, continue processing

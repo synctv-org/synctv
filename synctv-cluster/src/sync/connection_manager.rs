@@ -117,8 +117,8 @@ impl Default for ConnectionLimits {
             max_per_user: 5,
             max_per_room: 200,
             max_total: 10000,
-            idle_timeout: Duration::from_mins(5), // 5 minutes
-            max_duration: Duration::from_hours(24), // 24 hours
+            idle_timeout: Duration::from_secs(5 * 60), // 5 minutes
+            max_duration: Duration::from_secs(24 * 60 * 60), // 24 hours
         }
     }
 }
@@ -454,44 +454,48 @@ impl ConnectionManager {
             }
         }
 
-        // Check distributed per-room limit via Redis (if configured).
-        let redis_room_incremented = if let Some(ref _conn) = self.redis_conn {
-            let redis_key = format!("{}connections:room:{}", self.redis_key_prefix, room_id.as_str());
-            match self.redis_incr_and_check(&redis_key, self.limits.max_per_room).await {
-                Ok(true) => true,
-                Ok(false) => {
-                    let _ = self.redis_decr(_conn, &redis_key).await;
-                    return Err(format!(
-                        "Room at capacity across all replicas ({} connections)",
-                        self.limits.max_per_room
-                    ));
-                }
-                Err(e) => {
-                    warn!("Distributed room connection check failed, using local fallback: {e}");
-                    false
-                }
-            }
-        } else {
-            false
-        };
-
-        // Atomically check per-room limit locally and add connection.
-        // Holding the entry ref-mut prevents concurrent joins from exceeding the limit.
+        // Atomically check per-room limit locally, increment Redis, and add connection.
+        //
+        // Order of operations (fixes TOCTOU race):
+        // 1. Acquire DashMap entry lock (prevents concurrent local joins)
+        // 2. Check local limit
+        // 3. Increment Redis counter and verify distributed limit
+        // 4. Add to local DashMap
+        //
+        // This ensures the Redis counter is only incremented while holding the
+        // local lock, preventing a window where the counter is inflated but the
+        // local entry hasn't been added yet.
+        let redis_room_incremented;
         {
             let mut room_entry = self.room_connections.entry(room_id.clone()).or_default();
             if room_entry.len() >= self.limits.max_per_room {
-                // Roll back Redis counter
-                if redis_room_incremented {
-                    if let Some(ref conn) = self.redis_conn {
-                        let redis_key = format!("{}connections:room:{}", self.redis_key_prefix, room_id.as_str());
-                        let _ = self.redis_decr(conn, &redis_key).await;
-                    }
-                }
                 return Err(format!(
                     "Room at capacity ({} connections)",
                     self.limits.max_per_room
                 ));
             }
+
+            // Check distributed per-room limit via Redis while holding the local lock.
+            redis_room_incremented = if let Some(ref _conn) = self.redis_conn {
+                let redis_key = format!("{}connections:room:{}", self.redis_key_prefix, room_id.as_str());
+                match self.redis_incr_and_check(&redis_key, self.limits.max_per_room).await {
+                    Ok(true) => true,
+                    Ok(false) => {
+                        let _ = self.redis_decr(_conn, &redis_key).await;
+                        return Err(format!(
+                            "Room at capacity across all replicas ({} connections)",
+                            self.limits.max_per_room
+                        ));
+                    }
+                    Err(e) => {
+                        warn!("Distributed room connection check failed, using local fallback: {e}");
+                        false
+                    }
+                }
+            } else {
+                false
+            };
+
             room_entry.push(connection_id.to_string());
             // Drop the shard lock before accessing `connections` DashMap
         }

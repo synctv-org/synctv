@@ -31,6 +31,48 @@ pub(crate) fn internal_err(context: &str, err: impl std::fmt::Display) -> tonic:
     tonic::Status::internal(context)
 }
 
+/// Map a typed [`ApiError`](crate::impls::ApiError) to a gRPC `Status`.
+///
+/// Shared across all gRPC service implementations to avoid duplicating the
+/// identical match block in every service file.
+///
+/// For internal errors, the details are logged server-side and a generic
+/// message is returned to the client to avoid leaking sensitive information.
+pub(crate) fn map_api_error(err: crate::impls::ApiError) -> tonic::Status {
+    use crate::impls::ErrorKind;
+    let msg = err.to_string();
+    match err.classify() {
+        ErrorKind::NotFound => tonic::Status::not_found(msg),
+        ErrorKind::Unauthenticated => tonic::Status::unauthenticated(msg),
+        ErrorKind::PermissionDenied => tonic::Status::permission_denied(msg),
+        ErrorKind::AlreadyExists => tonic::Status::already_exists(msg),
+        ErrorKind::InvalidArgument => tonic::Status::invalid_argument(msg),
+        ErrorKind::Internal => {
+            tracing::error!("API internal error: {msg}");
+            tonic::Status::internal("Internal error")
+        }
+    }
+}
+
+/// Map a provider API string error to an appropriate gRPC status code.
+///
+/// Uses the keyword-based [`classify_error`](crate::impls::classify_error)
+/// for legacy provider errors that return `String` instead of `ApiError`.
+pub(crate) fn map_provider_error(err: String) -> tonic::Status {
+    use crate::impls::{classify_error, ErrorKind};
+    match classify_error(&err) {
+        ErrorKind::NotFound => tonic::Status::not_found(err),
+        ErrorKind::Unauthenticated => tonic::Status::unauthenticated(err),
+        ErrorKind::PermissionDenied => tonic::Status::permission_denied(err),
+        ErrorKind::AlreadyExists => tonic::Status::already_exists(err),
+        ErrorKind::InvalidArgument => tonic::Status::invalid_argument(err),
+        ErrorKind::Internal => {
+            tracing::error!("Provider internal error: {err}");
+            tonic::Status::internal("Internal error")
+        }
+    }
+}
+
 // Use synctv_proto for all server traits and message types (single source of truth)
 use crate::proto::admin_service_server::AdminServiceServer;
 use crate::proto::client::{
@@ -295,23 +337,24 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         tracing::info!("NotificationService gRPC registered");
     }
 
-    // Register OAuth2Service if oauth2_service is configured
+    // Register OAuth2Service if oauth2_service is configured.
+    // Uses a single service with NO global auth interceptor. Public endpoints
+    // (GetAuthorizationUrl, ExchangeAuthorizationCode, ListAvailableProviders)
+    // require no authentication. Private endpoints (GetAuthorizationUrlForBind,
+    // UnlinkProvider, GetLinkedProviders) perform inline JWT validation using
+    // the auth interceptor passed to the service constructor.
     if let Some(oauth2_svc) = oauth2_service {
         use synctv_proto::client::o_auth2_service_server::OAuth2ServiceServer;
-        let oauth2_interceptor = auth_interceptor.clone();
+        let oauth2_auth_interceptor = auth_interceptor.clone();
         let oauth2_api = Arc::new(crate::impls::OAuth2ApiImpl::new(
             oauth2_svc,
             user_service.clone(),
         ));
-        let oauth2_impl = oauth2_service::OAuth2GrpcService::new(oauth2_api);
-        // OAuth2Service: All gRPC endpoints require authentication for simplicity
-        // For public OAuth2 flows (GetAuthorizationUrl, ExchangeAuthorizationCode, ListAvailableProviders),
-        // clients should use the HTTP API instead, which supports unauthenticated access
-        router = router.add_service(OAuth2ServiceServer::with_interceptor(
-            oauth2_impl,
-            move |req| oauth2_interceptor.inject_user(req),
-        ));
-        tracing::info!("OAuth2Service gRPC registered");
+        let oauth2_impl = oauth2_service::OAuth2GrpcService::new(oauth2_api, oauth2_auth_interceptor);
+        // No global interceptor: public endpoints are unauthenticated,
+        // private endpoints call require_auth() inline.
+        router = router.add_service(OAuth2ServiceServer::new(oauth2_impl));
+        tracing::info!("OAuth2Service gRPC registered (public + authenticated split)");
     }
 
     // Register provider gRPC services

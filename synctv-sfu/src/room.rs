@@ -227,29 +227,30 @@ impl SfuRoom {
             .get(peer_id)
             .ok_or_else(|| anyhow!("Peer not found in room"))?;
 
-        // **Track ID Conflict Detection (#21)**: Check for duplicate track_id before inserting.
-        // If a track with this ID already exists (from any peer), reject the publish request.
-        // This prevents ambiguity in track routing and subscription logic.
-        if let Some(existing) = self.published_tracks.get(&track_id) {
-            let (existing_peer_id, _existing_track) = existing.value();
-            error!(
-                room_id = %self.id,
-                peer_id = %peer_id,
-                track_id = %track_id,
-                existing_peer_id = %existing_peer_id,
-                "Track ID conflict: track_id already exists in room"
-            );
-            return Err(anyhow!(
-                "Track ID conflict: track '{}' already published by peer '{}'. \
-                 Use unique track IDs or implement composite IDs (peer_id:track_id).",
-                track_id.as_str(),
-                existing_peer_id.as_str()
-            ));
+        // **Track ID Conflict Detection (#21)**: Atomic check-and-insert using DashMap::entry()
+        // to prevent TOCTOU races where two concurrent publishes with the same track_id
+        // could both pass the existence check.
+        match self.published_tracks.entry(track_id.clone()) {
+            dashmap::mapref::entry::Entry::Occupied(existing) => {
+                let (existing_peer_id, _existing_track) = existing.get();
+                error!(
+                    room_id = %self.id,
+                    peer_id = %peer_id,
+                    track_id = %track_id,
+                    existing_peer_id = %existing_peer_id,
+                    "Track ID conflict: track_id already exists in room"
+                );
+                return Err(anyhow!(
+                    "Track ID conflict: track '{}' already published by peer '{}'. \
+                     Use unique track IDs or implement composite IDs (peer_id:track_id).",
+                    track_id.as_str(),
+                    existing_peer_id.as_str()
+                ));
+            }
+            dashmap::mapref::entry::Entry::Vacant(entry) => {
+                entry.insert((peer_id.clone(), track.clone()));
+            }
         }
-
-        // Store track (safe: peer reference still held, no conflicts)
-        self.published_tracks
-            .insert(track_id.clone(), (peer_id.clone(), track.clone()));
 
         info!(
             room_id = %self.id,

@@ -2,12 +2,14 @@
 //!
 //! Automatically manages audit log partition creation and maintenance
 
+use std::sync::Arc;
 use sqlx::PgPool;
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::{Error, Result, InternalExt};
+use super::LeaderCheck;
 
 /// Maximum retry attempts for partition operations
 const MAX_PARTITION_RETRIES: u32 = 3;
@@ -72,13 +74,16 @@ pub struct IndexEnsureResult {
 /// Audit log partition manager
 pub struct AuditPartitionManager {
     pool: PgPool,
+    leader_check: Arc<dyn LeaderCheck>,
 }
 
 impl AuditPartitionManager {
-    /// Create a new partition manager
-    #[must_use] 
-    pub const fn new(pool: PgPool) -> Self {
-        Self { pool }
+    /// Create a new partition manager with a leader check.
+    ///
+    /// Automatic partition management only runs on the leader node.
+    #[must_use]
+    pub fn new(pool: PgPool, leader_check: Arc<dyn LeaderCheck>) -> Self {
+        Self { pool, leader_check }
     }
 
     /// Ensure existing partitions have indexes
@@ -304,6 +309,12 @@ impl AuditPartitionManager {
                     }
                 }
 
+                // Only run partition management on the leader node
+                if !manager.leader_check.is_leader() {
+                    info!("Skipping audit partition management (not leader)");
+                    continue;
+                }
+
                 // Check health status
                 match manager.check_health().await {
                     Ok(health) => {
@@ -335,6 +346,7 @@ impl Clone for AuditPartitionManager {
     fn clone(&self) -> Self {
         Self {
             pool: self.pool.clone(),
+            leader_check: self.leader_check.clone(),
         }
     }
 }
@@ -343,8 +355,13 @@ impl Clone for AuditPartitionManager {
 ///
 /// Should be called during application bootstrap.
 /// Uses exponential backoff retry for partition creation.
+///
+/// Note: Startup partition initialization runs on every node (not leader-gated)
+/// because partitions must exist before any node can insert data. Only the
+/// periodic `start_auto_management` task is leader-gated.
 pub async fn ensure_audit_partitions_on_startup(pool: &PgPool) -> Result<()> {
-    let manager = AuditPartitionManager::new(pool.clone());
+    // Startup uses AlwaysLeader since this is initialization, not periodic management
+    let manager = AuditPartitionManager::new(pool.clone(), Arc::new(super::AlwaysLeader));
 
     // Step 1: Ensure existing partitions have indexes (idempotent)
     manager.ensure_existing_indexes(4).await?;

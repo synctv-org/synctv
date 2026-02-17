@@ -87,6 +87,8 @@ pub struct ClientSession {
     is_subscribed: bool,
     /// Tracks whether this session has published to the `StreamHub`
     is_publishing: bool,
+    /// Per-stream GOP cache memory limit in bytes. `None` uses the default.
+    per_stream_max_bytes: Option<usize>,
 }
 
 impl ClientSession {
@@ -98,6 +100,7 @@ impl ClientSession {
         raw_stream_name: String,
         event_producer: StreamHubEventSender,
         gop_num: usize,
+        per_stream_max_bytes: Option<usize>,
     ) -> Self {
         let remote_addr = if let Ok(addr) = stream.peer_addr() {
             tracing::info!("server session: {addr}");
@@ -135,6 +138,7 @@ impl ClientSession {
             gop_num,
             is_subscribed: false,
             is_publishing: false,
+            per_stream_max_bytes,
         }
     }
     
@@ -611,6 +615,7 @@ impl ClientSession {
                             self.app_name.clone(),
                             self.stream_name.clone(),
                             self.gop_num,
+                            self.per_stream_max_bytes,
                         )
                         .await?;
                     self.is_publishing = true;

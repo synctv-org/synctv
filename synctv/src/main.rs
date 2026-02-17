@@ -486,22 +486,13 @@ async fn main() -> Result<()> {
         // Non-fatal: continue startup even if bootstrap fails
     }
 
-    // 4.5. Initialize audit log partitions
+    // 4.5. Initialize audit log partitions (runs on every node at startup)
     info!("Initializing audit log partitions...");
-    synctv_core::service::ensure_audit_partitions_on_startup(&pool)
-        .await
-        .map_err(|e| {
-            warn!("Failed to initialize audit partitions (non-fatal): {}", e);
-            // Non-fatal: continue startup even if partition creation fails
-            e
-        })
-        .ok();
+    if let Err(e) = synctv_core::service::ensure_audit_partitions_on_startup(&pool).await {
+        error!("Failed to initialize audit partitions (non-fatal, continuing startup): {}", e);
+    }
 
-    // Start automatic partition management (check every 24 hours)
     let partition_cancel = tokio_util::sync::CancellationToken::new();
-    let audit_manager = synctv_core::service::AuditPartitionManager::new(pool.clone());
-    let _audit_task = audit_manager.start_auto_management(24, partition_cancel.clone());
-    info!("Audit log partition management started");
 
     // 4.7. Initialize CacheInvalidationService early (before init_services)
     // This is the single source of truth for cache invalidation across the entire
@@ -530,35 +521,14 @@ async fn main() -> Result<()> {
         warn!("Failed to start cache invalidation listener: {}", e);
     }
 
-    // 4.6. Initialize chat message partitions with dynamic granularity
+    // 4.6. Initialize chat message partitions (runs on every node at startup)
     info!("Initializing chat message partitions...");
-    synctv_core::service::ensure_chat_partitions_on_startup(
+    if let Err(e) = synctv_core::service::ensure_chat_partitions_on_startup(
         &pool,
         synctv_services.settings_registry.clone()
-    )
-        .await
-        .map_err(|e| {
-            warn!("Failed to initialize chat partitions (non-fatal): {}", e);
-            e
-        })
-        .ok();
-
-    // Start automatic chat partition management (time-based)
-    // Check interval: 24 hours (only manages partitions, not per-room limits)
-    let chat_partition_manager = synctv_core::service::ChatPartitionManager::new(
-        pool.clone(),
-        synctv_services.settings_registry.clone()
-    );
-    let _chat_partition_task = chat_partition_manager.start_auto_management(24, partition_cancel.clone());
-    info!("Chat message partition management started (check interval: 24 hours)");
-
-    // Start periodic data cleanup (soft-deleted records, expired tokens, old notifications)
-    let cleanup_service = synctv_core::service::CleanupService::new(
-        pool.clone(),
-        synctv_core::service::CleanupConfig::default(),
-    );
-    let _cleanup_task = cleanup_service.start_periodic(24, partition_cancel.clone());
-    info!("Periodic data cleanup started (interval: 24 hours)");
+    ).await {
+        error!("Failed to initialize chat partitions (non-fatal, continuing startup): {}", e);
+    }
 
     // 5.5. Initialize leader election for singleton operations.
     // Only one replica at a time becomes the leader and runs singleton tasks
@@ -626,6 +596,36 @@ async fn main() -> Result<()> {
             }
         }
     };
+
+    // 5.6. Create leader check for singleton task gating.
+    // If a leader elector is available, wrap it; otherwise use AlwaysLeader
+    // (single-node mode where this node always runs singleton tasks).
+    let leader_check: Arc<dyn synctv_core::service::LeaderCheck> = match &leader_elector {
+        Some(elector) => Arc::new(elector.clone()),
+        None => Arc::new(synctv_core::service::AlwaysLeader),
+    };
+
+    // 5.7. Start singleton background tasks (leader-gated).
+    // These tasks check leadership before each run, so only the leader executes them.
+    let audit_manager = synctv_core::service::AuditPartitionManager::new(pool.clone(), leader_check.clone());
+    let _audit_task = audit_manager.start_auto_management(24, partition_cancel.clone());
+    info!("Audit log partition management started (leader-gated)");
+
+    let chat_partition_manager = synctv_core::service::ChatPartitionManager::new(
+        pool.clone(),
+        synctv_services.settings_registry.clone(),
+        leader_check.clone(),
+    );
+    let _chat_partition_task = chat_partition_manager.start_auto_management(24, partition_cancel.clone());
+    info!("Chat message partition management started (leader-gated, check interval: 24 hours)");
+
+    let cleanup_service = synctv_core::service::CleanupService::new(
+        pool.clone(),
+        synctv_core::service::CleanupConfig::default(),
+        leader_check,
+    );
+    let _cleanup_task = cleanup_service.start_periodic(24, partition_cancel.clone());
+    info!("Periodic data cleanup started (leader-gated, interval: 24 hours)");
 
     // 6. Initialize connection manager with configurable limits (needed early for heartbeat loop)
     let connection_limits = ConnectionLimits {
@@ -767,6 +767,8 @@ async fn main() -> Result<()> {
         leader_elector,
         leader_cancel,
         dns_refresh_abort: dns_refresh_handle.map(|h| h.abort_handle()),
+        settings_listen_task: synctv_services.settings_listen_task.clone(),
+        audit_flush_handle: synctv_services.audit_flush_handle.clone(),
     };
 
     let server = SyncTvServer::new(config, services, livestream_state, pool);

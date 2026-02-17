@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use super::id::{MediaId, PlaylistId, RoomId};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RoomPlaybackState {
     pub room_id: RoomId,
     pub playing_media_id: Option<MediaId>,

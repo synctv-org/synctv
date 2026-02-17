@@ -209,8 +209,14 @@ impl CustomHlsRemuxer {
                         Ok(event) => event,
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                             tracing::warn!(
-                                "HLS remuxer lagged behind by {n} broadcast events; re-subscribing to avoid permanent stream loss"
+                                "HLS remuxer lagged behind by {n} broadcast events; aborting {} active handler tasks and re-subscribing",
+                                self.handler_tasks.len()
                             );
+                            // Abort all active handler tasks so they stop using
+                            // stale receivers. They will be recreated when the
+                            // new broadcast receiver delivers fresh Publish events.
+                            self.handler_tasks.abort_all();
+                            while self.handler_tasks.join_next().await.is_some() {}
                             // Re-subscribe to get a fresh receiver that is
                             // caught up with the broadcast tail. Without this,
                             // any Publish events in the skipped window would be
@@ -392,7 +398,7 @@ impl StreamHandler {
         self.unsubscribe_from_stream_hub().await?;
 
         // Remove from registry after some delay (allow clients to finish)
-        tokio::time::sleep(tokio::time::Duration::from_mins(1)).await;
+        tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
         self.stream_registry.remove(&registry_key);
 
         // Explicitly clean up segments for this stream to free memory immediately

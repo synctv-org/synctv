@@ -164,6 +164,9 @@ impl PullStream {
             /// Delay before rebuilding a puller after it exits with an error.
             const REBUILD_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
 
+            /// Interval for periodic epoch re-validation during streaming.
+            const EPOCH_REVALIDATION_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+
             let mut rebuild_count: u32 = 0;
             let result = loop {
                 let grpc_puller = GrpcStreamPuller::with_pool(
@@ -181,7 +184,11 @@ impl PullStream {
                     .start_timer();
                 synctv_core::metrics::stream::ACTIVE_RELAY_STREAMS.inc();
 
-                // Race the puller against cancellation for graceful shutdown
+                // Race the puller against cancellation and periodic epoch re-validation
+                let mut epoch_interval = tokio::time::interval(EPOCH_REVALIDATION_INTERVAL);
+                // Skip the first immediate tick
+                epoch_interval.tick().await;
+
                 let run_result = tokio::select! {
                     r = grpc_puller.run() => r,
                     _ = child_token.cancelled() => {
@@ -189,6 +196,41 @@ impl PullStream {
                         timer.observe_duration();
                         synctv_core::metrics::stream::ACTIVE_RELAY_STREAMS.dec();
                         break Ok(());
+                    }
+                    _ = async {
+                        loop {
+                            epoch_interval.tick().await;
+                            match registry.validate_epoch(&room_id, &media_id, epoch).await {
+                                Ok(true) => {
+                                    debug!(
+                                        "Periodic epoch {} still valid for {}/{}",
+                                        epoch, room_id, media_id
+                                    );
+                                }
+                                Ok(false) => {
+                                    warn!(
+                                        "Periodic epoch re-validation: epoch {} is stale for {}/{}, publisher changed",
+                                        epoch, room_id, media_id
+                                    );
+                                    return;
+                                }
+                                Err(e) => {
+                                    // Fail open: don't kill the stream for registry errors
+                                    warn!(
+                                        "Periodic epoch re-validation failed for {}/{}: {}. Continuing.",
+                                        room_id, media_id, e
+                                    );
+                                }
+                            }
+                        }
+                    } => {
+                        // Epoch became stale during streaming
+                        timer.observe_duration();
+                        synctv_core::metrics::stream::ACTIVE_RELAY_STREAMS.dec();
+                        break Err(anyhow::anyhow!(
+                            "Stale epoch detected during streaming: publisher changed for {} / {}",
+                            room_id, media_id
+                        ));
                     }
                 };
 

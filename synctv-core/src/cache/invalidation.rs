@@ -23,7 +23,7 @@ const MAX_STREAM_LENGTH: i64 = 1000;
 const STREAM_RETENTION_MS: u64 = 3_600_000;
 
 /// Cache invalidation message types
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum InvalidationMessage {
     /// Invalidate permission cache for a specific user in a room
@@ -50,6 +50,16 @@ pub enum InvalidationMessage {
     /// Invalidate playback state cache for a room
     PlaybackState {
         room_id: String,
+    },
+    /// Update playback state cache for a room with the new state.
+    ///
+    /// Unlike `PlaybackState` (which only invalidates), this variant carries
+    /// the full updated state so receiving replicas can write it directly into
+    /// their L1 cache, avoiding the stale-read window between cache
+    /// invalidation and the next DB fetch.
+    PlaybackStateUpdate {
+        room_id: String,
+        state: crate::models::RoomPlaybackState,
     },
     /// Update bloom filter: mark keys as existing on all replicas
     BloomFilterUpdate {
@@ -655,6 +665,16 @@ impl CacheInvalidationService {
     pub async fn invalidate_playback_state(&self, room_id: &RoomId) -> Result<()> {
         self.broadcast_remote(InvalidationMessage::PlaybackState {
             room_id: room_id.as_str().to_string(),
+        }).await
+    }
+
+    /// Broadcast an updated playback state to other replicas so they can
+    /// write it directly into their L1 cache, avoiding the stale-read window
+    /// that occurs when only an invalidation message is sent.
+    pub async fn update_playback_state(&self, room_id: &RoomId, state: &crate::models::RoomPlaybackState) -> Result<()> {
+        self.broadcast_remote(InvalidationMessage::PlaybackStateUpdate {
+            room_id: room_id.as_str().to_string(),
+            state: state.clone(),
         }).await
     }
 

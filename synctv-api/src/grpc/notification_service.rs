@@ -33,30 +33,11 @@ impl NotificationServiceImpl {
     /// Extract user_id from UserContext (injected by inject_user interceptor)
     #[allow(clippy::result_large_err)]
     fn get_user_id(&self, request: &Request<impl std::fmt::Debug>) -> Result<UserId, Status> {
-        let user_context = request
-            .extensions()
-            .get::<super::interceptors::UserContext>()
-            .ok_or_else(|| Status::unauthenticated("Authentication required"))?;
-        Ok(UserId::from_string(user_context.user_id.clone()))
+        super::interceptors::extract_user_id(request)
     }
 }
 
-/// Map NotificationApiImpl errors to gRPC Status using typed classification
-fn api_err(err: crate::impls::ApiError) -> Status {
-    use crate::impls::ErrorKind;
-    let msg = err.to_string();
-    match err.classify() {
-        ErrorKind::NotFound => Status::not_found(msg),
-        ErrorKind::Unauthenticated => Status::unauthenticated(msg),
-        ErrorKind::PermissionDenied => Status::permission_denied(msg),
-        ErrorKind::AlreadyExists => Status::already_exists(msg),
-        ErrorKind::InvalidArgument => Status::invalid_argument(msg),
-        ErrorKind::Internal => {
-            tracing::error!("Notification API internal error: {msg}");
-            Status::internal("Internal error")
-        }
-    }
-}
+use super::map_api_error as api_err;
 
 #[tonic::async_trait]
 #[allow(clippy::result_large_err)]
@@ -72,12 +53,14 @@ impl NotificationService for NotificationServiceImpl {
             .notification_type
             .and_then(proto_notification_type_to_core);
 
+        let pagination = synctv_core::models::PageParams::new(Some(req.page as u32), Some(req.page_size as u32));
+
         let result = self
             .notification_api
             .list_notifications(
                 &user_id,
-                Some(if req.page > 0 { req.page } else { 1 }),
-                Some(req.page_size.clamp(1, 100)),
+                Some(pagination.page as i32),
+                Some(pagination.page_size as i32),
                 req.is_read,
                 notification_type,
             )

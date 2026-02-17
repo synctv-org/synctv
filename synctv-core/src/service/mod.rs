@@ -73,3 +73,26 @@ pub use email_templates::{EmailTemplateManager, EmailTemplateType};
 pub use optimistic_retry::retry_with_optimistic_lock;
 pub use turn_server::{StunServer, StunServerConfig, resolve_external_ip, validate_external_addr};
 pub use ws_ticket::{WsTicketService, WsTicketData};
+
+/// Trait for checking if the current node is the cluster leader.
+///
+/// Singleton tasks (cleanup, partition management, etc.) should only run
+/// on the leader node to avoid duplicate work across replicas.
+///
+/// In single-node mode (no cluster), implementations should always return `true`.
+pub trait LeaderCheck: Send + Sync {
+    /// Returns `true` if this node is currently the cluster leader.
+    fn is_leader(&self) -> bool;
+}
+
+/// A `LeaderCheck` implementation that always returns `true`.
+///
+/// Used in single-node deployments where there is no cluster and
+/// every node should run singleton tasks.
+pub struct AlwaysLeader;
+
+impl LeaderCheck for AlwaysLeader {
+    fn is_leader(&self) -> bool {
+        true
+    }
+}

@@ -33,14 +33,6 @@ const DEFAULT_MAX_MEMORY_BYTES: usize = 512 * 1024 * 1024;
 /// Default max keys: 10,000
 const DEFAULT_MAX_KEYS: usize = 10_000;
 
-/// Monotonic sequence number used as a total ordering for entries.
-/// This avoids ties that would occur with `Instant` on fast inserts.
-static SEQUENCE: AtomicU64 = AtomicU64::new(0);
-
-fn next_seq() -> u64 {
-    SEQUENCE.fetch_add(1, Ordering::Relaxed)
-}
-
 struct Entry {
     data: Bytes,
     seq: u64,
@@ -65,6 +57,9 @@ struct MemoryStorageInner {
     time_index: BTreeMap<u64, String>,
     /// Running total of data bytes for O(1) memory usage queries
     total_bytes: usize,
+    /// Monotonic sequence number used as a total ordering for entries.
+    /// This avoids ties that would occur with `Instant` on fast inserts.
+    next_seq: AtomicU64,
 }
 
 impl MemoryStorageInner {
@@ -73,6 +68,7 @@ impl MemoryStorageInner {
             data: std::collections::HashMap::new(),
             time_index: BTreeMap::new(),
             total_bytes: 0,
+            next_seq: AtomicU64::new(0),
         }
     }
 
@@ -226,7 +222,7 @@ impl HlsStorage for MemoryStorage {
         // Evict old entries if needed
         inner.evict_if_needed(size, self.max_keys, self.max_memory_bytes);
 
-        let seq = next_seq();
+        let seq = inner.next_seq.fetch_add(1, Ordering::Relaxed);
         let write_time = std::time::Instant::now();
         inner.total_bytes += size;
         inner.time_index.insert(seq, key.to_string());

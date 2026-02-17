@@ -48,7 +48,7 @@ impl TokenBlacklistService {
             local_blacklist: Arc::new(
                 moka::future::Cache::builder()
                     .max_capacity(100_000)
-                    .time_to_live(Duration::from_hours(720))
+                    .time_to_live(Duration::from_secs(720 * 60 * 60))
                     .build(),
             ),
             // Max 50K user invalidation entries; 1-hour L1 TTL.

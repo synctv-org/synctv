@@ -127,11 +127,22 @@ impl UserOAuthProviderRepository {
     ///
     /// Used during user deletion to clean up all OAuth bindings.
     pub async fn delete_all_for_user(&self, user_id: &UserId) -> Result<u64> {
+        self.delete_all_for_user_with_executor(user_id, &self.pool).await
+    }
+
+    /// Delete all `OAuth2` provider mappings for a user using a provided executor (pool or transaction).
+    ///
+    /// Used during user deletion to atomically clean up OAuth bindings within the same
+    /// transaction as the soft-delete.
+    pub async fn delete_all_for_user_with_executor<'e, E>(&self, user_id: &UserId, executor: E) -> Result<u64>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
         let result = sqlx::query(
             "DELETE FROM oauth2_clients WHERE user_id = $1"
         )
         .bind(user_id.as_str())
-        .execute(&self.pool)
+        .execute(executor)
         .await?;
 
         Ok(result.rows_affected())

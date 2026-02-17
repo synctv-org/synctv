@@ -244,6 +244,11 @@ pub enum RedisDeploymentMode {
 #[serde(default)]
 pub struct RedisConfig {
     pub url: String,
+    /// **Note**: This field is currently unused. The Redis connection uses a single
+    /// multiplexed `ConnectionManager` (not a pool of connections), so pool_size has
+    /// no effect. It is retained for configuration compatibility; removing it would
+    /// break existing config files. If a true connection pool is ever introduced,
+    /// this field will be wired in.
     pub pool_size: u32,
     pub connect_timeout_seconds: u64,
     pub key_prefix: String,
@@ -949,6 +954,22 @@ impl Config {
                     ));
                 }
             }
+        }
+
+        // Warn if cluster_secret is empty when Redis is configured (multi-replica mode)
+        if !self.server.development_mode && !self.redis.url.is_empty() && self.server.cluster_secret.is_empty() {
+            tracing::warn!(
+                "Redis is configured but server.cluster_secret is empty. \
+                 In multi-replica deployments, set cluster_secret to secure inter-node gRPC communication."
+            );
+        }
+
+        // Warn if cors_allowed_origins is empty in production mode
+        if !self.server.development_mode && self.server.cors_allowed_origins.is_empty() {
+            tracing::warn!(
+                "server.cors_allowed_origins is empty in production mode. \
+                 CORS requests will be rejected. Set allowed origins or enable development_mode for testing."
+            );
         }
 
         // **WebRTC Issue (#21)**: Block SFU/Hybrid modes in cluster environments

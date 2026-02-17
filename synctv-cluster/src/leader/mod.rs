@@ -96,6 +96,12 @@ impl AnyLeaderElector {
     }
 }
 
+impl synctv_core::service::LeaderCheck for AnyLeaderElector {
+    fn is_leader(&self) -> bool {
+        self.is_leader()
+    }
+}
+
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;

@@ -242,6 +242,9 @@ impl OAuth2ApiImpl {
     ///
     /// If provider_user_id is provided, only unlinks that specific binding.
     /// If provider_user_id is None, unlinks all bindings for the provider type.
+    ///
+    /// Safety: refuses to unlink if this is the user's last authentication method
+    /// (no password set and no other OAuth providers linked).
     pub async fn unlink_provider(
         &self,
         user_id: &UserId,
@@ -251,6 +254,25 @@ impl OAuth2ApiImpl {
         use synctv_core::models::OAuth2Provider;
         let provider_type = OAuth2Provider::from_str_name(provider)
             .ok_or_else(|| ApiError::InvalidInput(format!("Unknown provider type: {provider}")))?;
+
+        // Check if user has other auth methods before unlinking
+        let user = self.user_service.get_user(user_id).await.map_err(ApiError::from)?;
+        let linked_providers = self.oauth2_service.get_user_providers(user_id).await.map_err(ApiError::from)?;
+
+        // Count how many providers would remain after unlinking
+        let remaining_providers = linked_providers.iter()
+            .filter(|p| **p != provider_type)
+            .count();
+
+        // Check if user has a real password (OAuth2 users get a random password they don't know,
+        // but we check signup_method to distinguish)
+        let has_password_auth = user.signup_method != Some(synctv_core::models::SignupMethod::OAuth2);
+
+        if remaining_providers == 0 && !has_password_auth {
+            return Err(ApiError::InvalidInput(
+                "Cannot unlink last authentication method. Please set a password first.".to_string(),
+            ));
+        }
 
         let removed = if let Some(provider_user_id) = provider_user_id {
             // Unlink specific binding

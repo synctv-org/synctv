@@ -67,6 +67,8 @@ pub struct ServerSession {
     is_publishing: bool,
     /// Tracks when the last complete RTMP message was received (for idle timeout).
     last_message_time: tokio::time::Instant,
+    /// Per-stream GOP cache memory limit in bytes. `None` uses the default.
+    per_stream_max_bytes: Option<usize>,
 }
 
 impl ServerSession {
@@ -75,6 +77,7 @@ impl ServerSession {
         event_producer: StreamHubEventSender,
         gop_num: usize,
         auth: Option<Arc<dyn AuthCallback>>,
+        per_stream_max_bytes: Option<usize>,
     ) -> Self {
         let remote_addr = if let Ok(addr) = stream.peer_addr() {
             tracing::info!("server session: {addr}");
@@ -108,6 +111,7 @@ impl ServerSession {
             auth,
             is_publishing: false,
             last_message_time: tokio::time::Instant::now(),
+            per_stream_max_bytes,
         }
     }
 
@@ -975,6 +979,7 @@ impl ServerSession {
                 self.app_name.clone(),
                 self.stream_name.clone(),
                 self.gop_num,
+                self.per_stream_max_bytes,
             )
             .await
         {

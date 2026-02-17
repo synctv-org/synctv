@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::cache::tiered::{CacheKey, TieredCache};
+use crate::cache::tiered::TieredCache;
 use crate::models::UserId;
 use crate::{cache::CacheInvalidationService, Result};
 
@@ -37,16 +37,26 @@ impl CachedUsername {
     fn into_inner(self) -> String {
         self.username
     }
-
-    fn as_str(&self) -> &str {
-        &self.username
-    }
 }
 
 /// Username cache service with L1 (Moka) + L2 (Redis) strategy
 ///
 /// Delegates to `TieredCache<UserId, CachedUsername>` for all L1/L2 operations
 /// including retry logic, metrics, and batch lookups.
+///
+/// ## Cache key design
+///
+/// The cache is keyed by `UserId`, NOT by the username string. This means
+/// invalidation messages containing a `user_id` directly evict the correct
+/// cache entry. When a username is changed:
+///
+/// 1. The old entry `user_id -> old_username` is invalidated via `invalidate(user_id)`
+/// 2. The next lookup for `user_id` misses the cache and fetches the new username from DB
+/// 3. The new entry `user_id -> new_username` is populated on that cache miss
+///
+/// A reverse mapping (`user_id -> old_username`) is NOT needed because the
+/// cache key IS the `user_id`, so `InvalidationMessage::Username { user_id }`
+/// maps directly to the cache key without needing to know the old username.
 #[derive(Clone)]
 pub struct UsernameCache {
     inner: TieredCache<UserId, CachedUsername>,

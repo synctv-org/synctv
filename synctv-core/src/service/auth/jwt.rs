@@ -142,16 +142,38 @@ impl JwtService {
         guest_token_duration_hours: u64,
         clock_skew_leeway_secs: u64,
     ) -> Result<Self> {
+        Self::with_durations_and_mode(
+            secret,
+            access_token_duration_hours,
+            refresh_token_duration_days,
+            guest_token_duration_hours,
+            clock_skew_leeway_secs,
+            false,
+        )
+    }
+
+    /// Create a new JWT service with custom token durations and development mode flag
+    ///
+    /// When `development_mode` is true, JWT secret entropy validation is skipped
+    /// to allow weak secrets during local development. This should never be used
+    /// in production.
+    pub fn with_durations_and_mode(
+        secret: &str,
+        access_token_duration_hours: u64,
+        refresh_token_duration_days: u64,
+        guest_token_duration_hours: u64,
+        clock_skew_leeway_secs: u64,
+        development_mode: bool,
+    ) -> Result<Self> {
         if secret.is_empty() {
             return Err(Error::Internal("JWT secret cannot be empty".to_string()));
         }
 
-        // Validate secret entropy unless explicitly opted out via environment variable.
+        // Validate secret entropy unless running in development mode.
         // This runs in both debug and release builds to catch weak secrets early.
-        // Set SYNCTV_JWT_SKIP_ENTROPY_CHECK=1 to bypass (e.g., for testing).
-        if std::env::var("SYNCTV_JWT_SKIP_ENTROPY_CHECK").unwrap_or_default() == "1" {
+        if development_mode {
             tracing::warn!(
-                "JWT secret entropy validation skipped (SYNCTV_JWT_SKIP_ENTROPY_CHECK=1). \
+                "JWT secret entropy validation skipped (development_mode=true). \
                  Do NOT use this in production."
             );
         } else {

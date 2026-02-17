@@ -11,6 +11,7 @@ use tracing::{info, warn, error};
 
 use crate::{Error, Result};
 use crate::service::global_settings::SettingsRegistry;
+use super::LeaderCheck;
 
 /// Default retention period in days for chat messages
 const DEFAULT_RETENTION_DAYS: i32 = 90;
@@ -34,13 +35,16 @@ pub struct ChatPartitionManager {
     pool: PgPool,
     /// Settings registry for future dynamic configuration (retention days, days ahead, etc.)
     _settings: Arc<SettingsRegistry>,
+    leader_check: Arc<dyn LeaderCheck>,
 }
 
 impl ChatPartitionManager {
-    /// Create a new partition manager
+    /// Create a new partition manager with a leader check.
+    ///
+    /// Automatic partition management only runs on the leader node.
     #[must_use]
-    pub fn new(pool: PgPool, settings: Arc<SettingsRegistry>) -> Self {
-        Self { pool, _settings: settings }
+    pub fn new(pool: PgPool, settings: Arc<SettingsRegistry>, leader_check: Arc<dyn LeaderCheck>) -> Self {
+        Self { pool, _settings: settings, leader_check }
     }
 
     /// Ensure partitions exist for the next N days
@@ -138,6 +142,12 @@ impl ChatPartitionManager {
                     }
                 }
 
+                // Only run partition management on the leader node
+                if !manager.leader_check.is_leader() {
+                    info!("Skipping chat partition management (not leader)");
+                    continue;
+                }
+
                 // 1. Ensure future partitions exist
                 match manager.check_health(DEFAULT_DAYS_AHEAD).await {
                     Ok(health) => {
@@ -165,11 +175,16 @@ impl ChatPartitionManager {
 /// Ensure chat message partitions exist on application startup
 ///
 /// Should be called during application bootstrap, after migrations.
+///
+/// Note: Startup partition initialization runs on every node (not leader-gated)
+/// because partitions must exist before any node can insert data. Only the
+/// periodic `start_auto_management` task is leader-gated.
 pub async fn ensure_chat_partitions_on_startup(
     pool: &PgPool,
     settings: Arc<SettingsRegistry>
 ) -> Result<()> {
-    let manager = ChatPartitionManager::new(pool.clone(), settings);
+    // Startup uses AlwaysLeader since this is initialization, not periodic management
+    let manager = ChatPartitionManager::new(pool.clone(), settings, Arc::new(super::AlwaysLeader));
 
     // Step 1: Ensure future partitions exist
     manager.ensure_future_partitions(DEFAULT_DAYS_AHEAD).await?;

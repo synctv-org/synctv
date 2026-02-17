@@ -28,6 +28,8 @@ pub struct UserService {
     password_complexity: PasswordComplexityConfig,
     /// Optional brute-force protection for login attempts
     brute_force: Option<BruteForceProtection>,
+    /// Whether email verification is required for login (true when email service is configured)
+    email_verification_required: bool,
 }
 
 impl std::fmt::Debug for UserService {
@@ -55,6 +57,7 @@ impl UserService {
             cache_invalidation: None,
             password_complexity,
             brute_force: None,
+            email_verification_required: false,
         }
     }
 
@@ -66,6 +69,11 @@ impl UserService {
     /// Set the brute-force protection service for per-account login rate limiting
     pub fn set_brute_force_protection(&mut self, service: BruteForceProtection) {
         self.brute_force = Some(service);
+    }
+
+    /// Enable email verification requirement for login (call when email service is configured)
+    pub fn set_email_verification_required(&mut self, required: bool) {
+        self.email_verification_required = required;
     }
 
     /// Register a new user
@@ -191,7 +199,7 @@ impl UserService {
                         tracing::warn!(error = %e, "Failed to record login failure for brute-force tracking");
                     }
                 }
-                return Err(Error::Authentication("Invalid username or password".to_string()));
+                return Err(Error::Authentication("Authentication failed".to_string()));
             }
         };
 
@@ -206,7 +214,14 @@ impl UserService {
                     tracing::warn!(error = %e, "Failed to record login failure for brute-force tracking");
                 }
             }
-            return Err(Error::Authentication("Invalid username or password".to_string()));
+            return Err(Error::Authentication("Authentication failed".to_string()));
+        }
+
+        // Check email verification when email service is configured
+        if self.email_verification_required && user.email.is_some() && !user.email_verified {
+            return Err(Error::Authentication(
+                "Email not verified. Please check your inbox for a verification link.".to_string(),
+            ));
         }
 
         // Successful login: reset brute-force counter
@@ -300,7 +315,7 @@ impl UserService {
             .repository
             .get_by_id(&user_id)
             .await?
-            .ok_or_else(|| Error::Authentication("User not found".to_string()))?;
+            .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?;
 
         // Reject banned or soft-deleted users (generic message to prevent enumeration)
         if user.status == crate::models::UserStatus::Banned || user.deleted_at.is_some() {
@@ -309,9 +324,7 @@ impl UserService {
 
         // Reject refresh tokens issued before the last password change
         if self.blacklist_service.are_user_tokens_invalidated(&user_id, claims.iat).await? {
-            return Err(Error::Authentication(
-                "Token invalidated due to password change. Please log in again.".to_string(),
-            ));
+            return Err(Error::Authentication("Authentication failed".to_string()));
         }
 
         // Generate new tokens (role will be fetched from DB on each request)
@@ -493,13 +506,14 @@ impl UserService {
     ///
     /// Performs the following cleanup in order:
     /// 1. Invalidate all tokens (fail-closed: aborts if Redis is unavailable)
-    /// 2. Soft-delete the user row
-    /// 3. Remove all OAuth2 provider mappings
-    /// 4. Invalidate username cache
-    /// 5. Invalidate user cache across replicas
+    /// 2. Within a single DB transaction:
+    ///    a. Soft-delete the user row
+    ///    b. Remove all OAuth2 provider mappings
+    /// 3. Invalidate username cache (best-effort)
+    /// 4. Invalidate user cache across replicas (best-effort)
     ///
-    /// Steps 3-5 are best-effort: failures are logged but do not abort the
-    /// deletion, since the user is already soft-deleted and tokens invalidated.
+    /// Steps 2a and 2b are atomic: if OAuth2 cleanup fails, the soft-delete
+    /// is rolled back to prevent orphaned mappings.
     pub async fn delete_user(&self, user_id: &UserId) -> Result<()> {
         let user = self.get_user(user_id).await?;
         if user.deleted_at.is_some() {
@@ -510,19 +524,18 @@ impl UserService {
         const THIRTY_DAYS_SECS: i64 = 30 * 24 * 60 * 60;
         self.invalidate_all_tokens(user_id, THIRTY_DAYS_SECS).await?;
 
-        // 2. Soft-delete the user row
-        self.repository.delete(user_id).await?;
+        // 2. Soft-delete + OAuth2 cleanup in a single transaction
+        let pool = self.repository.pool();
+        let mut tx = pool.begin().await?;
 
-        // 3. Remove OAuth2 provider mappings (best-effort)
-        if let Err(e) = self.cleanup_oauth_providers(user_id).await {
-            tracing::warn!(
-                error = %e,
-                user_id = %user_id.as_str(),
-                "Failed to clean up OAuth2 providers during user deletion"
-            );
-        }
+        self.repository.delete_with_executor(user_id, &mut *tx).await?;
 
-        // 4. Invalidate username cache (best-effort)
+        let oauth_repo = UserOAuthProviderRepository::new(pool.clone());
+        oauth_repo.delete_all_for_user_with_executor(user_id, &mut *tx).await?;
+
+        tx.commit().await?;
+
+        // 3. Invalidate username cache (best-effort)
         if let Err(e) = self.invalidate_username_cache(user_id).await {
             tracing::warn!(
                 error = %e,
@@ -531,7 +544,7 @@ impl UserService {
             );
         }
 
-        // 5. Invalidate user cache across replicas (best-effort)
+        // 4. Invalidate user cache across replicas (best-effort)
         self.notify_user_invalidation(user_id).await;
 
         tracing::info!(user_id = %user_id.as_str(), "User soft-deleted with full cleanup");

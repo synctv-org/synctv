@@ -241,6 +241,21 @@ impl MemberService {
             self.permission_service
                 .invalidate_cache(&room_id, &user_id)
                 .await;
+
+            // Broadcast permission cache invalidation to other replicas.
+            // This is necessary for re-joins (ON CONFLICT UPDATE) where the
+            // user's permissions may have changed. Without this, other replicas
+            // would serve stale permission data from their L1 caches.
+            if let Some(ref invalidation) = self.cache_invalidation {
+                if let Err(e) = invalidation.invalidate_user_permission(&room_id, &user_id).await {
+                    tracing::warn!(
+                        error = %e,
+                        room_id = %room_id.as_str(),
+                        user_id = %user_id.as_str(),
+                        "Failed to broadcast permission cache invalidation after member add/re-join"
+                    );
+                }
+            }
         }
 
         Ok(created_member)
@@ -382,13 +397,38 @@ impl MemberService {
             .await;
 
         // Broadcast permission cache invalidation to other cluster replicas
+        // with retry logic (3 attempts, exponential backoff) since permission
+        // changes are critical for security consistency across replicas.
         if let Some(ref invalidation) = self.cache_invalidation {
-            if let Err(e) = invalidation.invalidate_user_permission(&room_id, &target_user_id).await {
-                tracing::warn!(
+            let mut last_err = None;
+            for attempt in 0..3u32 {
+                match invalidation.invalidate_user_permission(&room_id, &target_user_id).await {
+                    Ok(()) => {
+                        last_err = None;
+                        break;
+                    }
+                    Err(e) => {
+                        let backoff_ms = 50 * (1u64 << attempt); // 50ms, 100ms, 200ms
+                        tracing::warn!(
+                            error = %e,
+                            room_id = %room_id.as_str(),
+                            user_id = %target_user_id.as_str(),
+                            attempt = attempt + 1,
+                            backoff_ms = backoff_ms,
+                            "Permission invalidation broadcast failed, retrying"
+                        );
+                        last_err = Some(e);
+                        tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                    }
+                }
+            }
+            if let Some(e) = last_err {
+                tracing::error!(
                     error = %e,
                     room_id = %room_id.as_str(),
                     user_id = %target_user_id.as_str(),
-                    "Failed to broadcast permission invalidation to cluster"
+                    permission_change = %format!("added={added_permissions:?}, removed={removed_permissions:?}"),
+                    "Permission invalidation broadcast failed after 3 attempts"
                 );
             }
         }

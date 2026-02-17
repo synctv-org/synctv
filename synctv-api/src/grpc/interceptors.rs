@@ -175,6 +175,18 @@ impl LoggingInterceptor {
     }
 }
 
+/// Extract `user_id` from `UserContext` (injected by `inject_user` interceptor).
+///
+/// Shared helper to avoid duplicating this pattern across gRPC service files.
+#[allow(clippy::result_large_err)]
+pub fn extract_user_id<T: std::fmt::Debug>(request: &Request<T>) -> Result<synctv_core::models::UserId, Status> {
+    let user_context = request
+        .extensions()
+        .get::<UserContext>()
+        .ok_or_else(|| Status::unauthenticated("Authentication required"))?;
+    Ok(synctv_core::models::UserId::from_string(user_context.user_id.clone()))
+}
+
 impl Default for LoggingInterceptor {
     fn default() -> Self {
         Self::new()

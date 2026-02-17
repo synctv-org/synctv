@@ -11,21 +11,7 @@ use crate::impls::providers::{extract_instance_name, get_provider_binds};
 use crate::proto::providers::emby::emby_provider_service_server::EmbyProviderService;
 use crate::proto::providers::emby::{LoginRequest, LoginResponse, ListRequest, ListResponse, GetMeRequest, GetMeResponse, LogoutRequest, LogoutResponse, GetBindsRequest, GetBindsResponse, BindInfo};
 
-/// Map provider API string errors to appropriate gRPC status codes.
-fn api_err(err: String) -> Status {
-    use crate::impls::{classify_error, ErrorKind};
-    match classify_error(&err) {
-        ErrorKind::NotFound => Status::not_found(err),
-        ErrorKind::Unauthenticated => Status::unauthenticated(err),
-        ErrorKind::PermissionDenied => Status::permission_denied(err),
-        ErrorKind::AlreadyExists => Status::already_exists(err),
-        ErrorKind::InvalidArgument => Status::invalid_argument(err),
-        ErrorKind::Internal => {
-            tracing::error!("Emby provider internal error: {err}");
-            Status::internal("Internal error")
-        }
-    }
-}
+use crate::grpc::map_provider_error as api_err;
 
 /// Emby Provider gRPC Service
 ///

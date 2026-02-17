@@ -3,10 +3,11 @@
 //! Tonic interceptors are synchronous and cannot perform async Redis lookups.
 //! This tower layer wraps the entire gRPC server and runs **before** routing
 //! and per-service interceptors. It extracts the raw JWT bearer token from the
-//! HTTP `Authorization` header and performs three security checks:
-//! 1. Token blacklist check (explicit logout/revocation)
-//! 2. Password invalidation check (tokens issued before password change)
-//! 3. Banned/deleted user check (defense-in-depth against banned users with valid JWTs)
+//! HTTP `Authorization` header and performs four security checks:
+//! 1. JWT verification (validate signature, expiration, and access token type)
+//! 2. Token blacklist check (explicit logout/revocation)
+//! 3. Password invalidation check (tokens issued before password change)
+//! 4. Banned/deleted user check (defense-in-depth against banned users with valid JWTs)
 //!
 //! Requests with blacklisted or invalidated tokens, or from banned/deleted users,
 //! are rejected with `UNAUTHENTICATED` status.
@@ -68,14 +69,14 @@ pub struct BlacklistCheckService<S> {
 
 /// Extract a bearer token from the HTTP Authorization header value.
 ///
-/// Returns `Some(token)` for `"Bearer <token>"` (case-insensitive prefix),
+/// Returns `Some(token)` for `"Bearer <token>"` (case-insensitive prefix per RFC 7235),
 /// or `None` if the header is absent, not a bearer token, or malformed.
 fn extract_bearer_token(headers: &http::HeaderMap) -> Option<String> {
     let auth_value = headers.get(http::header::AUTHORIZATION)?;
     let auth_str = auth_value.to_str().ok()?;
     let trimmed = auth_str.trim();
     if trimmed.len() > 7
-        && (trimmed.starts_with("Bearer ") || trimmed.starts_with("bearer "))
+        && trimmed[..7].eq_ignore_ascii_case("Bearer ")
     {
         Some(trimmed[7..].to_string())
     } else {
@@ -112,7 +113,24 @@ where
 
         Box::pin(async move {
             if let Some(token) = raw_token {
-                // Step 1: Check if token is explicitly blacklisted (logout/revocation)
+                // Unified security check order (matches HTTP AuthUser extractor):
+                // 1. JWT verification  2. Blacklist  3. Password invalidation  4. Banned user
+
+                // Step 1: Verify JWT and extract claims
+                let claims = match jwt_service.verify_access_token(&token) {
+                    Ok(claims) => claims,
+                    Err(e) => {
+                        tracing::warn!("gRPC request rejected: JWT validation failed: {e}");
+                        let response = tonic::Status::unauthenticated("Invalid or expired token")
+                            .into_http();
+                        return Ok(response);
+                    }
+                };
+
+                let user_id = claims.user_id();
+                let token_iat = claims.iat;
+
+                // Step 2: Check if token is explicitly blacklisted (logout/revocation)
                 match blacklist_service.is_blacklisted(&token).await {
                     Ok(true) => {
                         tracing::warn!("gRPC request rejected: token is blacklisted");
@@ -136,77 +154,61 @@ where
                     }
                 }
 
-                // Step 2: Check if token was issued before a password change
-                // Parse JWT to extract user_id and iat (issued-at timestamp)
-                match jwt_service.verify_token(&token) {
-                    Ok(claims) => {
-                        let user_id = claims.user_id();
-                        let token_iat = claims.iat;
+                // Step 3: Check if token was issued before a password change
+                match blacklist_service.are_user_tokens_invalidated(&user_id, token_iat).await {
+                    Ok(true) => {
+                        tracing::warn!(
+                            user_id = %user_id.as_str(),
+                            token_iat = token_iat,
+                            "gRPC request rejected: token invalidated by password change"
+                        );
+                        let response = tonic::Status::unauthenticated(
+                            "Token invalidated due to password change"
+                        )
+                        .into_http();
+                        return Ok(response);
+                    }
+                    Ok(false) => {
+                        // Token is valid, continue to banned user check
+                    }
+                    Err(e) => {
+                        // Fail closed: deny access if password invalidation check errors
+                        tracing::error!(
+                            "Password invalidation check failed, denying request (fail closed): {e}"
+                        );
+                        let response = tonic::Status::unavailable(
+                            "Authentication service temporarily unavailable",
+                        )
+                        .into_http();
+                        return Ok(response);
+                    }
+                }
 
-                        // Check if all user tokens were invalidated due to password change
-                        match blacklist_service.are_user_tokens_invalidated(&user_id, token_iat).await {
-                            Ok(true) => {
-                                tracing::warn!(
-                                    user_id = %user_id.as_str(),
-                                    token_iat = token_iat,
-                                    "gRPC request rejected: token invalidated by password change"
-                                );
-                                let response = tonic::Status::unauthenticated(
-                                    "Token invalidated due to password change"
-                                )
-                                .into_http();
-                                return Ok(response);
-                            }
-                            Ok(false) => {
-                                // Token is valid, continue to banned user check
-                            }
-                            Err(e) => {
-                                // Fail closed: deny access if password invalidation check errors
-                                tracing::error!(
-                                    "Password invalidation check failed, denying request (fail closed): {e}"
-                                );
-                                let response = tonic::Status::unavailable(
-                                    "Authentication service temporarily unavailable",
-                                )
-                                .into_http();
-                                return Ok(response);
-                            }
-                        }
-
-                        // Step 3: Check if user is banned or deleted (defense-in-depth:
-                        // catches banned users even if they hold a valid JWT issued before the ban)
-                        match user_service.get_user(&user_id).await {
-                            Ok(user) => {
-                                if user.is_deleted() || user.status == UserStatus::Banned {
-                                    tracing::warn!(
-                                        user_id = %user_id.as_str(),
-                                        "gRPC request rejected: user is banned or deleted"
-                                    );
-                                    let response = tonic::Status::unauthenticated(
-                                        "Authentication failed"
-                                    )
-                                    .into_http();
-                                    return Ok(response);
-                                }
-                            }
-                            Err(e) => {
-                                // Fail closed: deny access if user lookup fails
-                                tracing::error!(
-                                    "User lookup failed, denying request (fail closed): {e}"
-                                );
-                                let response = tonic::Status::unauthenticated(
-                                    "User not found"
-                                )
-                                .into_http();
-                                return Ok(response);
-                            }
+                // Step 4: Check if user is banned or deleted (defense-in-depth:
+                // catches banned users even if they hold a valid JWT issued before the ban)
+                match user_service.get_user(&user_id).await {
+                    Ok(user) => {
+                        if user.is_deleted() || user.status == UserStatus::Banned {
+                            tracing::warn!(
+                                user_id = %user_id.as_str(),
+                                "gRPC request rejected: user is banned or deleted"
+                            );
+                            let response = tonic::Status::unauthenticated(
+                                "Authentication failed"
+                            )
+                            .into_http();
+                            return Ok(response);
                         }
                     }
                     Err(e) => {
-                        // JWT validation failed - this is a malformed or expired token
-                        tracing::warn!("gRPC request rejected: JWT validation failed: {e}");
-                        let response = tonic::Status::unauthenticated("Invalid or expired token")
-                            .into_http();
+                        // Fail closed: deny access if user lookup fails
+                        tracing::error!(
+                            "User lookup failed, denying request (fail closed): {e}"
+                        );
+                        let response = tonic::Status::unauthenticated(
+                            "User not found"
+                        )
+                        .into_http();
                         return Ok(response);
                     }
                 }
@@ -312,15 +314,16 @@ mod tests {
     // ========== Security Parity: gRPC checks match HTTP checks ==========
     //
     // These tests verify that the gRPC BlacklistCheckService performs
-    // the same three security checks as the HTTP AuthUser extractor:
-    // 1. Token blacklist check
-    // 2. Password invalidation check
-    // 3. Banned/deleted user check
+    // the same four security checks as the HTTP AuthUser extractor:
+    // 1. JWT verification (validate signature, expiration, access token type)
+    // 2. Token blacklist check
+    // 3. Password invalidation check
+    // 4. Banned/deleted user check
     //
     // Both layers:
     // - Extract the bearer token from the Authorization header
+    // - Verify JWT and extract claims (reject malformed/expired/non-access tokens)
     // - Check blacklist (fail closed on error)
-    // - Verify JWT and extract claims
     // - Check user-level token invalidation (fail closed on error)
     // - Look up user status and reject banned/deleted users
     //

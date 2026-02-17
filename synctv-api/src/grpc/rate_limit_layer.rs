@@ -118,7 +118,7 @@ fn extract_client_id(headers: &http::HeaderMap) -> String {
         .get(http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|s| {
-            if s.len() > 7 && (s.starts_with("Bearer ") || s.starts_with("bearer ")) {
+            if s.len() > 7 && s[..7].eq_ignore_ascii_case("Bearer ") {
                 let token = &s[7..];
                 let hash = Sha256::digest(token.as_bytes());
                 Some(format!("user:{:x}", hash))

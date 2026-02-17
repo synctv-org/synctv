@@ -27,15 +27,17 @@ impl JwtValidator {
 
     /// Extract bearer token from Authorization header value
     ///
-    /// Supports both "Bearer <token>" and "bearer <token>" formats.
+    /// Uses case-insensitive comparison per RFC 7235 (auth scheme is case-insensitive).
     pub fn extract_bearer_token(auth_value: &str) -> Result<String> {
-        if !auth_value.starts_with("Bearer ") && !auth_value.starts_with("bearer ") {
+        if auth_value.len() <= 7
+            || !auth_value[..7].eq_ignore_ascii_case("Bearer ")
+        {
             return Err(Error::Authentication(
                 "Authorization header must start with 'Bearer '".to_string(),
             ));
         }
 
-        Ok(auth_value[7..].to_string()) // Skip "Bearer "
+        Ok(auth_value[7..].to_string())
     }
 
     /// Validate JWT token and return claims

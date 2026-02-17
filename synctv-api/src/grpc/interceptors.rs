@@ -341,7 +341,7 @@ impl GrpcRateLimitInterceptor {
             .get("authorization")
             .and_then(|v| v.to_str().ok())
             .and_then(|s| {
-                if s.len() > 7 && (s.starts_with("Bearer ") || s.starts_with("bearer ")) {
+                if s.len() > 7 && s[..7].eq_ignore_ascii_case("Bearer ") {
                     // M-9: Use SHA-256 hash of full token for stable client identity.
                     let token = &s[7..];
                     let hash = Sha256::digest(token.as_bytes());

@@ -30,22 +30,26 @@ impl DirectUrlProvider {
         })
     }
 
-    /// Detect format from URL
+    /// Detect format from URL path extension.
+    ///
+    /// Parses the URL to extract the path component, then checks the file
+    /// extension. This avoids false positives from `contains()` matching
+    /// against query parameters or hostnames (e.g., "cdn.flv.com/video").
     fn detect_format(url: &str) -> String {
-        if url.contains(".m3u8") || url.ends_with(".m3u8") {
-            "m3u8"
-        } else if url.contains(".flv") || url.ends_with(".flv") {
-            "flv"
-        } else if url.contains(".mp4") || url.ends_with(".mp4") {
-            "mp4"
-        } else if url.contains(".mkv") || url.ends_with(".mkv") {
-            "mkv"
-        } else if url.contains(".webm") || url.ends_with(".webm") {
-            "webm"
-        } else if url.contains(".avi") || url.ends_with(".avi") {
-            "avi"
-        } else {
-            "video"
+        let path = url::Url::parse(url)
+            .map(|u| u.path().to_string())
+            .unwrap_or_else(|_| url.to_string());
+
+        let ext = path.rsplit('.').next().unwrap_or("").to_lowercase();
+        match ext.as_str() {
+            "m3u8" => "m3u8",
+            "flv" => "flv",
+            "mp4" | "m4v" => "mp4",
+            "mkv" => "mkv",
+            "webm" => "webm",
+            "avi" => "avi",
+            "mov" => "mp4",
+            _ => "video",
         }
         .to_string()
     }
@@ -225,6 +229,23 @@ mod tests {
         assert_eq!(
             DirectUrlProvider::detect_format("http://example.com/video"),
             "video"
+        );
+    }
+
+    #[test]
+    fn test_detect_format_ignores_query_params() {
+        // Previously contains(".flv") would false-positive on query params or hostnames
+        assert_eq!(
+            DirectUrlProvider::detect_format("http://cdn.flv.com/video"),
+            "video"
+        );
+        assert_eq!(
+            DirectUrlProvider::detect_format("http://example.com/stream?file=test.mp4&token=abc"),
+            "video" // extension is on the query param, not the path
+        );
+        assert_eq!(
+            DirectUrlProvider::detect_format("http://example.com/video.mp4?quality=high"),
+            "mp4"
         );
     }
 }

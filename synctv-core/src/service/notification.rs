@@ -514,25 +514,43 @@ impl NotificationService {
 
 impl Default for NotificationService {
     fn default() -> Self {
-        // Use a no-op broadcaster as default
-        struct NoOpBroadcaster;
+        // Use a no-op broadcaster as default — logs a warning on first broadcast
+        // so operators notice that notifications are silently dropped.
+        struct NoOpBroadcaster {
+            warned: std::sync::Once,
+        }
+
+        impl NoOpBroadcaster {
+            fn warn_once(&self) {
+                self.warned.call_once(|| {
+                    tracing::warn!(
+                        "NotificationService is using a no-op broadcaster (created via Default). \
+                         All room event notifications will be silently dropped. \
+                         Call NotificationService::new() with a real EventBroadcaster to enable notifications."
+                    );
+                });
+            }
+        }
 
         #[async_trait::async_trait]
         impl EventBroadcaster for NoOpBroadcaster {
             async fn broadcast_to_room(&self, _room_id: &RoomId, _event: &RoomEvent) -> Result<usize> {
+                self.warn_once();
                 Ok(0)
             }
 
             async fn send_to_user(&self, _room_id: &RoomId, _user_id: &UserId, _event: &RoomEvent) -> Result<bool> {
+                self.warn_once();
                 Ok(false)
             }
 
             async fn broadcast_to_cluster(&self, _room_id: &RoomId, _event: &RoomEvent) -> Result<()> {
+                self.warn_once();
                 Ok(())
             }
         }
 
-        Self::new(Arc::new(NoOpBroadcaster))
+        Self::new(Arc::new(NoOpBroadcaster { warned: std::sync::Once::new() }))
     }
 }
 

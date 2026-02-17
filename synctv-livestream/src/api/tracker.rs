@@ -22,7 +22,11 @@ use tracing::{debug, info};
 pub struct StreamSubscriberGuard(Option<Box<dyn FnOnce() + Send>>);
 
 impl StreamSubscriberGuard {
-    pub(crate) fn new(on_drop: impl FnOnce() + Send + 'static) -> Self {
+    /// Create a new guard that runs `on_drop` when dropped.
+    ///
+    /// The callback should use [`StreamLifecycle::decrement_subscriber_count`]
+    /// which has built-in underflow protection.
+    pub fn new(on_drop: impl FnOnce() + Send + 'static) -> Self {
         Self(Some(Box::new(on_drop)))
     }
 

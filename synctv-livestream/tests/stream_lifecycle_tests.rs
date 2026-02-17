@@ -343,3 +343,237 @@ async fn test_stream_bitrate_limits() {
     assert!(validate_bitrate(50).is_err());
     assert!(validate_bitrate(15000).is_err());
 }
+
+// ========== StreamTracker lifecycle tests ==========
+
+#[tokio::test]
+async fn test_stream_tracker_insert_and_lookup() {
+    use synctv_livestream::api::StreamTracker;
+
+    let tracker = StreamTracker::new();
+
+    // Insert a publisher mapping
+    tracker.insert(
+        "user1".to_string(),
+        "room1".to_string(),
+        "media1".to_string(),
+        "room1",       // app_name
+        "jwt_token_1", // stream_name (raw RTMP)
+    );
+
+    // Lookup by user
+    let streams = tracker.get_streams_by_user("user1");
+    assert_eq!(streams.len(), 1);
+    assert_eq!(streams[0], ("room1".to_string(), "media1".to_string()));
+
+    // Lookup by room
+    let media_ids = tracker.get_streams_by_room("room1");
+    assert_eq!(media_ids.len(), 1);
+    assert_eq!(media_ids[0], "media1");
+
+    // Lookup by stream
+    let user = tracker.get_user_by_stream("room1", "media1");
+    assert_eq!(user, Some("user1".to_string()));
+}
+
+#[tokio::test]
+async fn test_stream_tracker_remove_by_app_stream() {
+    use synctv_livestream::api::StreamTracker;
+
+    let tracker = StreamTracker::new();
+
+    tracker.insert(
+        "user1".to_string(),
+        "room1".to_string(),
+        "media1".to_string(),
+        "room1",
+        "jwt_token_1",
+    );
+
+    // Remove by RTMP identifiers (simulates on_unpublish)
+    let removed = tracker.remove_by_app_stream("room1", "jwt_token_1");
+    assert!(removed.is_some());
+    let (user_id, room_id, media_id) = removed.unwrap();
+    assert_eq!(user_id, "user1");
+    assert_eq!(room_id, "room1");
+    assert_eq!(media_id, "media1");
+
+    // Verify all indexes are cleaned up
+    assert!(tracker.get_streams_by_user("user1").is_empty());
+    assert!(tracker.get_streams_by_room("room1").is_empty());
+    assert!(tracker.get_user_by_stream("room1", "media1").is_none());
+}
+
+#[tokio::test]
+async fn test_stream_tracker_multi_user_multi_room() {
+    use synctv_livestream::api::StreamTracker;
+
+    let tracker = StreamTracker::new();
+
+    // User1 publishes to room1/media1 and room2/media2
+    tracker.insert(
+        "user1".to_string(),
+        "room1".to_string(),
+        "media1".to_string(),
+        "room1",
+        "token_a",
+    );
+    tracker.insert(
+        "user1".to_string(),
+        "room2".to_string(),
+        "media2".to_string(),
+        "room2",
+        "token_b",
+    );
+
+    // User2 publishes to room1/media3
+    tracker.insert(
+        "user2".to_string(),
+        "room1".to_string(),
+        "media3".to_string(),
+        "room1",
+        "token_c",
+    );
+
+    // User1 has 2 streams
+    let user1_streams = tracker.get_streams_by_user("user1");
+    assert_eq!(user1_streams.len(), 2);
+
+    // Room1 has 2 media IDs (media1 from user1, media3 from user2)
+    let room1_media = tracker.get_streams_by_room("room1");
+    assert_eq!(room1_media.len(), 2);
+
+    // Remove all streams for user1
+    let removed = tracker.remove_all_by_user("user1");
+    assert_eq!(removed.len(), 2);
+
+    // User1 has no streams left
+    assert!(tracker.get_streams_by_user("user1").is_empty());
+
+    // Room1 still has media3 (from user2)
+    let room1_media = tracker.get_streams_by_room("room1");
+    assert_eq!(room1_media.len(), 1);
+    assert_eq!(room1_media[0], "media3");
+}
+
+#[tokio::test]
+async fn test_stream_subscriber_guard_disarm() {
+    use synctv_livestream::api::StreamSubscriberGuard;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let called = Arc::new(AtomicBool::new(false));
+    let called_clone = called.clone();
+
+    let mut guard = StreamSubscriberGuard::new(move || {
+        called_clone.store(true, Ordering::SeqCst);
+    });
+
+    // Disarm the guard
+    guard.disarm();
+
+    // Drop should NOT call the callback
+    drop(guard);
+    assert!(!called.load(Ordering::SeqCst), "Disarmed guard should not call callback on drop");
+}
+
+#[tokio::test]
+async fn test_stream_subscriber_guard_normal_drop() {
+    use synctv_livestream::api::StreamSubscriberGuard;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let called = Arc::new(AtomicBool::new(false));
+    let called_clone = called.clone();
+
+    let guard = StreamSubscriberGuard::new(move || {
+        called_clone.store(true, Ordering::SeqCst);
+    });
+
+    // Drop should call the callback
+    drop(guard);
+    assert!(called.load(Ordering::SeqCst), "Guard should call callback on drop");
+}
+
+// ========== PublisherInfo validation tests ==========
+
+#[tokio::test]
+async fn test_publisher_info_validate_grpc_address() {
+    use synctv_livestream::relay::PublisherInfo;
+    use chrono::Utc;
+
+    let valid = PublisherInfo {
+        node_id: "node1".to_string(),
+        grpc_address: "10.0.0.1:50051".to_string(),
+        app_name: "live".to_string(),
+        user_id: "user1".to_string(),
+        started_at: Utc::now(),
+        epoch: 1,
+    };
+    assert!(valid.validate_grpc_address().is_ok());
+    assert_eq!(valid.validate_grpc_address().unwrap(), "10.0.0.1:50051");
+
+    let empty = PublisherInfo {
+        node_id: "node1".to_string(),
+        grpc_address: String::new(),
+        app_name: "live".to_string(),
+        user_id: "user1".to_string(),
+        started_at: Utc::now(),
+        epoch: 1,
+    };
+    assert!(empty.validate_grpc_address().is_err());
+
+    let whitespace = PublisherInfo {
+        node_id: "node1".to_string(),
+        grpc_address: "   ".to_string(),
+        app_name: "live".to_string(),
+        user_id: "user1".to_string(),
+        started_at: Utc::now(),
+        epoch: 1,
+    };
+    assert!(whitespace.validate_grpc_address().is_err());
+}
+
+// ========== PublisherInfo serialization round-trip ==========
+
+#[tokio::test]
+async fn test_publisher_info_serde_round_trip() {
+    use synctv_livestream::relay::PublisherInfo;
+    use chrono::Utc;
+
+    let info = PublisherInfo {
+        node_id: "node-abc".to_string(),
+        grpc_address: "10.0.0.1:50051".to_string(),
+        app_name: "live".to_string(),
+        user_id: "user-123".to_string(),
+        started_at: Utc::now(),
+        epoch: 42,
+    };
+
+    let json = serde_json::to_string(&info).unwrap();
+    let deserialized: PublisherInfo = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(info.node_id, deserialized.node_id);
+    assert_eq!(info.grpc_address, deserialized.grpc_address);
+    assert_eq!(info.epoch, deserialized.epoch);
+    assert_eq!(info.user_id, deserialized.user_id);
+}
+
+// ========== PublisherInfo default fields ==========
+
+#[tokio::test]
+async fn test_publisher_info_serde_defaults() {
+    use synctv_livestream::relay::PublisherInfo;
+
+    // JSON without optional fields — serde defaults should apply
+    let json = r#"{
+        "node_id": "node1",
+        "app_name": "live",
+        "started_at": "2024-01-01T00:00:00Z"
+    }"#;
+
+    let info: PublisherInfo = serde_json::from_str(json).unwrap();
+    assert_eq!(info.grpc_address, "");
+    assert_eq!(info.user_id, "");
+    assert_eq!(info.epoch, 0);
+}

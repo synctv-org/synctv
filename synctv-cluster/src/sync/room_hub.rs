@@ -581,9 +581,31 @@ impl RoomMessageHub {
     /// Recover subscription state from Redis on startup.
     ///
     /// This method scans Redis for persisted subscription relationships and
-    /// rebuilds the local cache. Note: MessageSenders cannot be recovered,
-    /// so this is primarily useful for monitoring/metrics, not message routing.
-    /// Actual message routing requires clients to reconnect.
+    /// logs the recovered room/subscriber counts. It does **not** populate the
+    /// local `rooms` or `connections` DashMaps because:
+    ///
+    /// 1. **`MessageSender` cannot be recovered.** Each subscriber's `mpsc::Sender`
+    ///    is only meaningful to the original WebSocket connection. Without a live
+    ///    sender, messages cannot be routed, so inserting a fake `Subscriber` would
+    ///    create a broken entry that either panics or silently drops events.
+    ///
+    /// 2. **Stale data from crashed replicas.** Redis may contain subscriptions from
+    ///    nodes that crashed without unsubscribing. These will expire via TTL, but
+    ///    recovering them into the local cache would create phantom subscribers.
+    ///
+    /// 3. **No lifecycle events.** Populating the local cache would emit spurious
+    ///    `RoomActivated` events to the Redis Pub/Sub subscriber task, causing it
+    ///    to subscribe to channels for rooms that have no real local subscribers.
+    ///
+    /// **Usage:** Call on startup to log how many subscriptions exist across the
+    /// cluster. Useful for monitoring dashboards and verifying Redis state. Actual
+    /// message routing requires clients to reconnect and call `subscribe()`.
+    ///
+    /// **Alternative approaches for true state recovery:**
+    /// - Have clients reconnect automatically via exponential backoff after a
+    ///   node restart (recommended).
+    /// - Use Redis Streams instead of Pub/Sub so messages are persisted and can
+    ///   be replayed on reconnect (requires architectural change).
     pub async fn recover_from_redis(&self) -> Result<usize, String> {
         let Some(ref conn) = self.redis_conn else {
             return Err("Redis not configured".to_string());

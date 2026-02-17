@@ -1,7 +1,25 @@
 //! `OAuth2` HTTP handlers
 //!
-//! Provides `OAuth2` endpoints for frontend-driven OAuth2 flow
-//! Uses proto-generated types for request/response consistency with gRPC
+//! Provides `OAuth2` endpoints for browser/frontend-driven OAuth2 flows.
+//! Uses proto-generated types for request/response consistency with gRPC.
+//!
+//! ## HTTP vs gRPC endpoint mapping
+//!
+//! | HTTP endpoint                                          | gRPC RPC                         | Auth required |
+//! |--------------------------------------------------------|----------------------------------|---------------|
+//! | `GET  /api/oauth2/:provider/authorize?redirect_url=`   | `GetAuthorizationUrl`            | No            |
+//! | `GET  /api/oauth2/:provider/bind?redirect_url=`        | `GetAuthorizationUrlForBind`     | Yes           |
+//! | `POST /api/oauth2/:provider/exchange` (JSON body)      | `ExchangeAuthorizationCode`      | No            |
+//! | `GET  /api/oauth2/providers`                           | `ListAvailableProviders`         | No            |
+//! | `DELETE /api/oauth2/:provider/unlink?provider_user_id=`| `UnlinkProvider`                 | Yes           |
+//! | `GET  /api/oauth2/linked`                              | `GetLinkedProviders`             | Yes           |
+//!
+//! Both transports share the same `OAuth2ApiImpl` backend. HTTP extracts the
+//! provider name from URL path segments and optional params from query strings;
+//! gRPC encodes everything in the request message. Error responses differ:
+//! HTTP returns `AppError` JSON `{error, status}`, gRPC returns `tonic::Status`.
+//!
+//! See also: [`crate::grpc::oauth2_service`] for the gRPC implementation.
 
 use axum::{
     extract::{Path, Query, State},

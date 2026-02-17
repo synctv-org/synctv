@@ -119,6 +119,7 @@ impl MediaProvider for DirectUrlProvider {
                 headers: config.headers,
                 subtitles: Vec::new(),
                 expires_at: None,
+                cors_proxy_required: false,
             },
         );
 

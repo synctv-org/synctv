@@ -52,6 +52,14 @@ pub struct PlaybackInfo {
     /// URL expiration time (Unix timestamp in seconds, optional)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<i64>,
+
+    /// Whether this playback source requires CORS proxying
+    ///
+    /// When `true`, the client should route requests through the SyncTV server's
+    /// CORS proxy endpoint instead of fetching the URLs directly. This is needed
+    /// for providers whose CDNs do not set permissive CORS headers (e.g., Bilibili).
+    #[serde(default)]
+    pub cors_proxy_required: bool,
 }
 
 /// Complete playback result with multiple modes

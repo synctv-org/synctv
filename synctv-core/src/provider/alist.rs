@@ -258,6 +258,7 @@ impl MediaProvider for AlistProvider {
                                 })
                                 .collect(),
                             expires_at: task_expires_at,
+                            cors_proxy_required: false,
                         },
                     );
                 }
@@ -286,6 +287,7 @@ impl MediaProvider for AlistProvider {
                     headers: HashMap::new(),
                     subtitles: Vec::new(),
                     expires_at: direct_expires_at,
+                    cors_proxy_required: false,
                 },
             );
         }

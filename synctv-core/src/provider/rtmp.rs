@@ -66,6 +66,7 @@ impl MediaProvider for RtmpProvider {
                 headers: HashMap::new(),
                 subtitles: Vec::new(),
                 expires_at: live_expires_at,
+                cors_proxy_required: false,
             },
         );
 
@@ -81,6 +82,7 @@ impl MediaProvider for RtmpProvider {
                 headers: HashMap::new(),
                 subtitles: Vec::new(),
                 expires_at: live_expires_at,
+                cors_proxy_required: false,
             },
         );
 

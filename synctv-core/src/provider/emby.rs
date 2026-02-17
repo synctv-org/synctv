@@ -299,6 +299,7 @@ impl MediaProvider for EmbyProvider {
                     headers: emby_auth_headers.clone(),
                     subtitles,
                     expires_at: emby_expires_at,
+                    cors_proxy_required: false,
                 },
             );
 
@@ -318,6 +319,7 @@ impl MediaProvider for EmbyProvider {
                         headers: emby_auth_headers.clone(),
                         subtitles: Vec::new(), // Subtitles burned in for transcode
                         expires_at: emby_expires_at,
+                        cors_proxy_required: false,
                     },
                 );
             }

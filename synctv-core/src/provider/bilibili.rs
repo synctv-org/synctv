@@ -334,6 +334,7 @@ impl MediaProvider for BilibiliProvider {
                         headers: bilibili_headers(),
                         subtitles,
                         expires_at,
+                        cors_proxy_required: true,
                     },
                 );
 
@@ -404,6 +405,7 @@ impl MediaProvider for BilibiliProvider {
                         headers: bilibili_headers(),
                         subtitles,
                         expires_at,
+                        cors_proxy_required: true,
                     },
                 );
 
@@ -453,6 +455,7 @@ impl MediaProvider for BilibiliProvider {
                             },
                             subtitles: Vec::new(),
                             expires_at: live_expires_at,
+                            cors_proxy_required: true,
                         },
                     );
                 }

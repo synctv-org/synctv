@@ -79,6 +79,7 @@ impl MediaProvider for LiveProxyProvider {
                 headers: HashMap::new(),
                 subtitles: Vec::new(),
                 expires_at: live_expires_at,
+                cors_proxy_required: false,
             },
         );
 
@@ -94,6 +95,7 @@ impl MediaProvider for LiveProxyProvider {
                 headers: HashMap::new(),
                 subtitles: Vec::new(),
                 expires_at: live_expires_at,
+                cors_proxy_required: false,
             },
         );
 

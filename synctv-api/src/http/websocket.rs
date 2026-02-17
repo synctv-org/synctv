@@ -116,6 +116,13 @@ async fn extract_user_id(
 
     // Finally, try JWT token query parameter (legacy fallback)
     if let Some(ref token) = query.token {
+        // Check if token query parameter is disabled via configuration
+        if state.config.server.disable_ws_token_query {
+            return Err(AppError::unauthorized(
+                "WebSocket ?token= query parameter is disabled. Use Authorization header or ?ticket= instead.",
+            ));
+        }
+
         let user_id = validator
             .validate_and_extract_user_id(token)
             .map_err(|e| AppError::unauthorized(format!("Invalid token: {e}")))?;

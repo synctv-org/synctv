@@ -81,6 +81,12 @@ pub struct ServerConfig {
     /// Maximum time in seconds to wait for active connections to drain during shutdown.
     /// Defaults to 30 seconds. Increase for deployments with many long-lived connections.
     pub shutdown_drain_timeout_seconds: u64,
+    /// Disable the legacy `?token=<jwt>` WebSocket query parameter authentication.
+    /// When true, only Authorization header and `?ticket=` are accepted for WebSocket auth.
+    /// The `?token=` method is less secure because JWT tokens appear in server logs,
+    /// browser history, and Referer headers. Defaults to false (allowed) for backward
+    /// compatibility; set to true in production to enforce secure auth methods only.
+    pub disable_ws_token_query: bool,
 }
 
 impl Default for ServerConfig {
@@ -97,6 +103,7 @@ impl Default for ServerConfig {
             cluster_secret: String::new(),
             advertise_host: String::new(),
             shutdown_drain_timeout_seconds: 30,
+            disable_ws_token_query: false,
         }
     }
 }
@@ -1106,6 +1113,7 @@ mod tests {
                 cluster_secret: String::new(),
                 advertise_host: String::new(),
                 shutdown_drain_timeout_seconds: 30,
+                disable_ws_token_query: false,
             },
             database: DatabaseConfig::default(),
             redis: RedisConfig::default(),
@@ -1142,6 +1150,7 @@ mod tests {
                 cluster_secret: String::new(),
                 advertise_host: String::new(),
                 shutdown_drain_timeout_seconds: 30,
+                disable_ws_token_query: false,
             },
             database: DatabaseConfig::default(),
             redis: RedisConfig::default(),

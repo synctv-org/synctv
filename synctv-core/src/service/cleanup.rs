@@ -392,7 +392,12 @@ impl CleanupService {
                     }
                 }
 
-                info!("Starting periodic data cleanup");
+                info!(
+                    room_retention_days = service.config.room_soft_delete_retention_days,
+                    user_retention_days = service.config.soft_delete_retention_days,
+                    media_retention_days = service.config.media_soft_delete_retention_days,
+                    "Starting periodic data cleanup"
+                );
                 let result = service.run_all().await;
 
                 let total = result.users_purged

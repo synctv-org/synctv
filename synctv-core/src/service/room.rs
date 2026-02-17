@@ -589,13 +589,22 @@ impl RoomService {
         Ok(())
     }
 
-    /// Delete a room (creator only)
+    /// Soft-delete a room (creator only)
     ///
-    /// **Production Enhancement (#22)**: Room deletion is wrapped in a transaction
-    /// to ensure atomic deletion of the room and all related data (members, playlists,
-    /// settings, media, chat messages). Prevents partial deletion on database errors.
+    /// Sets the `deleted_at` timestamp on the room row. The room and its related
+    /// data (members, playlists, media, chat messages, settings, playback state)
+    /// remain in the database until the periodic `CleanupService` permanently
+    /// purges rows whose `deleted_at` exceeds the configured retention period
+    /// (default: 90 days). The actual SQL `DELETE` at purge time triggers
+    /// `ON DELETE CASCADE` on all related tables.
+    ///
+    /// **Soft-delete lifecycle:**
+    /// 1. This method sets `rooms.deleted_at = NOW()` (room becomes invisible to queries)
+    /// 2. `CleanupService::purge_soft_deleted_rooms()` runs periodically (default: every 24h)
+    /// 3. Rooms with `deleted_at` older than `room_soft_delete_retention_days` (default: 90)
+    ///    are permanently deleted, cascading to all related tables
     pub async fn delete_room(&self, room_id: RoomId, user_id: UserId) -> Result<()> {
-        tracing::info!(room_id = %room_id, user_id = %user_id, "Deleting room");
+        tracing::info!(room_id = %room_id, user_id = %user_id, "Soft-deleting room");
 
         // Check permission without cache - critical operation requires fresh permissions
         self.permission_service
@@ -605,12 +614,11 @@ impl RoomService {
         // Notify before deletion
         let _ = self.notification_service.notify_room_deleted(&room_id).await;
 
-        // **Production Enhancement**: Wrap deletion in transaction for atomicity
-        // This ensures room and all related data (via CASCADE) are deleted atomically
         let mut tx = self.pool.begin().await?;
 
-        // Delete room (soft-delete: sets deleted_at timestamp)
-        // CASCADE will handle related data: room_members, playlists, media, chat_messages, room_settings
+        // Soft-delete: set deleted_at timestamp.
+        // Related data is NOT deleted yet — it is cleaned up when CleanupService
+        // permanently deletes the room row (ON DELETE CASCADE on all FK references).
         let deleted = sqlx::query(
             "UPDATE rooms
              SET deleted_at = $2, updated_at = $2
@@ -632,7 +640,7 @@ impl RoomService {
         tracing::info!(
             room_id = %room_id,
             user_id = %user_id,
-            "Room and related data deleted atomically in transaction"
+            "Room soft-deleted (will be permanently purged by CleanupService after retention period)"
         );
 
         // Track room metrics

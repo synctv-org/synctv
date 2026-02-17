@@ -3,8 +3,6 @@
 //! Provides reusable functions for proxying media streams and rewriting M3U8
 //! playlists.  Used by per-provider proxy routes in `synctv-api`.
 
-pub mod mpd;
-
 use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::sync::LazyLock;

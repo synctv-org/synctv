@@ -176,3 +176,155 @@ pub fn network_stats_to_proto(
         quality_action,
     }
 }
+
+/// Convert provider PlaybackInfo to models PlaybackInfo
+#[must_use]
+pub fn provider_playback_info_to_model(
+    info: &synctv_core::provider::traits::PlaybackInfo,
+) -> synctv_core::models::media::PlaybackInfo {
+    use synctv_core::models::media::{PlaybackInfo, PlaybackUrl, Subtitle, SubtitleUrl};
+
+    let urls = info
+        .urls
+        .iter()
+        .map(|url| PlaybackUrl::simple(String::new(), url.clone()))
+        .collect();
+
+    let subtitles = info
+        .subtitles
+        .iter()
+        .map(|sub| {
+            let url = SubtitleUrl {
+                name: String::new(),
+                url: sub.url.clone(),
+                headers: std::collections::HashMap::new(),
+            };
+            Subtitle {
+                name: sub.name.clone(),
+                language: sub.language.clone(),
+                urls: vec![url],
+                default_url_index: 0,
+            }
+        })
+        .collect();
+
+    PlaybackInfo {
+        urls,
+        default_url_index: 0,
+        subtitles,
+        default_subtitle_index: None,
+        danmakus: Vec::new(),
+    }
+}
+
+/// Convert models PlaybackResult to proto PlaybackResult
+#[must_use]
+pub(super) fn playback_result_to_proto(
+    result: &synctv_core::models::media::PlaybackResult,
+) -> crate::proto::client::PlaybackResult {
+
+    let playback_infos = result
+        .playback_infos
+        .iter()
+        .map(|(mode, info)| (mode.clone(), playback_info_to_proto(info)))
+        .collect();
+
+    let metadata = result
+        .metadata
+        .iter()
+        .map(|(k, v)| (k.clone(), serde_json::to_string(v).unwrap_or_default()))
+        .collect();
+
+    crate::proto::client::PlaybackResult {
+        media_id: result.id.as_ref().map(|id| id.as_str().to_string()).unwrap_or_default(),
+        playlist_id: result.playlist_id.as_str().to_string(),
+        room_id: result.room_id.as_str().to_string(),
+        name: result.name.clone(),
+        position: result.position,
+        playback_infos,
+        default_mode: result.default_mode.clone(),
+        metadata,
+    }
+}
+
+/// Convert models PlaybackInfo to proto PlaybackInfo
+fn playback_info_to_proto(
+    info: &synctv_core::models::media::PlaybackInfo,
+) -> crate::proto::client::PlaybackInfo {
+    crate::proto::client::PlaybackInfo {
+        urls: info.urls.iter().map(playback_url_to_proto).collect(),
+        default_url_index: info.default_url_index as i32,
+        subtitles: info.subtitles.iter().map(subtitle_to_proto).collect(),
+        default_subtitle_index: info.default_subtitle_index.map(|idx| idx as i32),
+        danmakus: info.danmakus.iter().map(danmaku_to_proto).collect(),
+        format: String::new(),
+    }
+}
+
+/// Convert models PlaybackUrl to proto PlaybackUrl
+fn playback_url_to_proto(
+    url: &synctv_core::models::media::PlaybackUrl,
+) -> crate::proto::client::PlaybackUrl {
+    crate::proto::client::PlaybackUrl {
+        name: url.name.clone(),
+        url: url.url.clone(),
+        headers: url.headers.clone(),
+        expire_at: url.expire_at.map(|dt| dt.timestamp()),
+        metadata: url.metadata.as_ref().map(playback_url_metadata_to_proto),
+    }
+}
+
+/// Convert models PlaybackUrlMetadata to proto PlaybackUrlMetadata
+fn playback_url_metadata_to_proto(
+    metadata: &synctv_core::models::media::PlaybackUrlMetadata,
+) -> crate::proto::client::PlaybackUrlMetadata {
+    let extra = metadata
+        .extra
+        .iter()
+        .map(|(k, v)| (k.clone(), serde_json::to_string(v).unwrap_or_default()))
+        .collect();
+
+    crate::proto::client::PlaybackUrlMetadata {
+        resolution: metadata.resolution.clone(),
+        bitrate: metadata.bitrate,
+        codec: metadata.codec.clone(),
+        fps: metadata.fps,
+        extra,
+    }
+}
+
+/// Convert models Subtitle to proto Subtitle
+fn subtitle_to_proto(
+    subtitle: &synctv_core::models::media::Subtitle,
+) -> crate::proto::client::Subtitle {
+    crate::proto::client::Subtitle {
+        name: subtitle.name.clone(),
+        language: subtitle.language.clone(),
+        urls: subtitle.urls.iter().map(subtitle_url_to_proto).collect(),
+        default_url_index: subtitle.default_url_index as i32,
+    }
+}
+
+/// Convert models SubtitleUrl to proto SubtitleUrl
+fn subtitle_url_to_proto(
+    url: &synctv_core::models::media::SubtitleUrl,
+) -> crate::proto::client::SubtitleUrl {
+    crate::proto::client::SubtitleUrl {
+        name: url.name.clone(),
+        url: url.url.clone(),
+        headers: url.headers.clone(),
+        format: String::new(),
+    }
+}
+
+/// Convert models Danmaku to proto Danmaku
+fn danmaku_to_proto(
+    danmaku: &synctv_core::models::media::Danmaku,
+) -> crate::proto::client::Danmaku {
+    crate::proto::client::Danmaku {
+        name: danmaku.name.clone(),
+        url: danmaku.url.clone(),
+        format: danmaku.format.clone(),
+        headers: danmaku.headers.clone(),
+    }
+}

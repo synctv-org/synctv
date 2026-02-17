@@ -30,7 +30,7 @@
 //! RETURNS TRIGGER AS $$
 //! BEGIN
 //!     PERFORM pg_notify('synctv_user_deleted',
-//!         json_build_object('user_id', OLD.id, 'deleted_at', CURRENT_TIMESTAMP)::text
+//!         json_build_object('user_id', OLD.id, 'timestamp', CURRENT_TIMESTAMP)::text
 //!     );
 //!     RETURN OLD;
 //! END;
@@ -65,22 +65,22 @@ pub enum ChangeEvent {
     /// User was deleted from the database
     UserDeleted {
         user_id: String,
-        deleted_at: DateTime<Utc>,
+        timestamp: DateTime<Utc>,
     },
     /// Room was deleted from the database
     RoomDeleted {
         room_id: String,
-        deleted_at: DateTime<Utc>,
+        timestamp: DateTime<Utc>,
     },
     /// Playlist was deleted from the database
     PlaylistDeleted {
         playlist_id: String,
-        deleted_at: DateTime<Utc>,
+        timestamp: DateTime<Utc>,
     },
     /// Media was deleted from the database
     MediaDeleted {
         media_id: String,
-        deleted_at: DateTime<Utc>,
+        timestamp: DateTime<Utc>,
     },
 }
 
@@ -265,7 +265,7 @@ impl PostgresChangeListener {
                         .as_str()
                         .context("Missing user_id in payload")?
                         .to_string(),
-                    deleted_at: data["deleted_at"]
+                    timestamp: data["timestamp"]
                         .as_str()
                         .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
                         .map(|dt| dt.with_timezone(&Utc))
@@ -280,7 +280,7 @@ impl PostgresChangeListener {
                         .as_str()
                         .context("Missing room_id in payload")?
                         .to_string(),
-                    deleted_at: data["deleted_at"]
+                    timestamp: data["timestamp"]
                         .as_str()
                         .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
                         .map(|dt| dt.with_timezone(&Utc))
@@ -295,7 +295,7 @@ impl PostgresChangeListener {
                         .as_str()
                         .context("Missing playlist_id in payload")?
                         .to_string(),
-                    deleted_at: data["deleted_at"]
+                    timestamp: data["timestamp"]
                         .as_str()
                         .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
                         .map(|dt| dt.with_timezone(&Utc))
@@ -310,7 +310,7 @@ impl PostgresChangeListener {
                         .as_str()
                         .context("Missing media_id in payload")?
                         .to_string(),
-                    deleted_at: data["deleted_at"]
+                    timestamp: data["timestamp"]
                         .as_str()
                         .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
                         .map(|dt| dt.with_timezone(&Utc))
@@ -397,7 +397,7 @@ mod tests {
     fn test_change_event_serialization() {
         let event = ChangeEvent::UserDeleted {
             user_id: "user123".to_string(),
-            deleted_at: Utc::now(),
+            timestamp: Utc::now(),
         };
 
         assert_eq!(event.event_type(), "user_deleted");

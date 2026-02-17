@@ -307,8 +307,6 @@ impl MediaProvider for AlistProvider {
             playback_infos,
             default_mode,
             metadata,
-            dash: None,
-            hevc_dash: None,
         })
     }
 
@@ -396,9 +394,9 @@ impl DynamicFolder for AlistProvider {
             .filter_map(|file_item| {
                 // Determine item type
                 let item_type = if file_item.is_dir {
-                    ItemType::Folder
+                    ItemType::Playlist
                 } else {
-                    // Check if it's a video file
+                    // Check if it's a media file (video or audio)
                     let ext = file_item
                         .name
                         .rsplit('.')
@@ -406,10 +404,8 @@ impl DynamicFolder for AlistProvider {
                         .unwrap_or("")
                         .to_lowercase();
                     match ext.as_str() {
-                        "mp4" | "mkv" | "avi" | "mov" | "flv" | "webm" | "m4v" | "wmv" | "m3u8" => {
-                            ItemType::Video
-                        }
-                        "mp3" | "flac" | "wav" | "aac" | "m4a" | "ogg" => ItemType::Audio,
+                        "mp4" | "mkv" | "avi" | "mov" | "flv" | "webm" | "m4v" | "wmv" | "m3u8" |
+                        "mp3" | "flac" | "wav" | "aac" | "m4a" | "ogg" => ItemType::Media,
                         _ => return None, // Skip non-media files
                     }
                 };
@@ -493,7 +489,7 @@ impl DynamicFolder for AlistProvider {
                     let next_item = items
                         .iter()
                         .skip(idx + 1)
-                        .find(|item| item.item_type == ItemType::Video);
+                        .find(|item| item.item_type == ItemType::Media);
 
                     if let Some(next) = next_item {
                         // Parse base config to construct source_config
@@ -536,7 +532,7 @@ impl DynamicFolder for AlistProvider {
                         // Wrap around to first video
                         let first_video = items
                             .iter()
-                            .find(|item| item.item_type == ItemType::Video);
+                            .find(|item| item.item_type == ItemType::Media);
 
                         if let Some(first) = first_video {
                             let config = playlist.source_config.as_ref().ok_or_else(|| {
@@ -600,7 +596,7 @@ impl DynamicFolder for AlistProvider {
 
                 let videos: Vec<_> = items
                     .iter()
-                    .filter(|item| item.item_type == ItemType::Video)
+                    .filter(|item| item.item_type == ItemType::Media)
                     .collect();
 
                 if videos.is_empty() {

@@ -13,25 +13,24 @@ use crate::proto::client::{
     CreateRoomResponse, CreateRoomRequest, GetRoomResponse,
     JoinRoomResponse, JoinRoomRequest, LeaveRoomResponse,
     DeleteRoomResponse,
-    AddMediaResponse, AddMediaRequest, RemoveMediaResponse, RemoveMediaRequest,
+    AddMediaResponse, AddMediaRequest, DeleteMediaResponse, DeleteMediaRequest,
     ListPlaylistResponse, SwapMediaResponse, SwapMediaRequest,
-    PlayResponse, PlayRequest, PauseResponse, SeekResponse, SeekRequest,
-    GetPlaybackStateResponse, GetPlaybackStateRequest,
+    StartPlaybackResponse, StartPlaybackRequest,
+    StopPlaybackResponse, StopPlaybackRequest,
+    GetPlaybackResponse, GetPlaybackRequest,
     GetRoomMembersResponse, CheckRoomResponse, ListRoomsResponse, ListRoomsRequest,
     UpdateRoomSettingsRequest, UpdateRoomSettingsResponse,
     ResetRoomSettingsResponse,
     SetRoomPasswordRequest, SetRoomPasswordResponse,
     CheckRoomPasswordRequest, CheckRoomPasswordResponse,
     EditMediaRequest, EditMediaResponse, ClearPlaylistResponse,
-    AddMediaBatchRequest, RemoveMediaBatchRequest, RemoveMediaBatchResponse,
+    AddMediaBatchRequest, DeleteMediaBatchRequest, DeleteMediaBatchResponse,
     ReorderMediaBatchRequest, ReorderMediaBatchResponse, MediaReorderUpdate,
     GetChatHistoryResponse,
     CreatePlaylistRequest, CreatePlaylistResponse,
     UpdatePlaylistRequest, UpdatePlaylistResponse,
     DeletePlaylistRequest, DeletePlaylistResponse,
     ListPlaylistsResponse,
-    SetCurrentMediaRequest, SetCurrentMediaResponse,
-    SetPlaybackSpeedRequest, SetPlaybackSpeedResponse,
     GetHotRoomsResponse,
 };
 
@@ -146,36 +145,36 @@ pub async fn add_media(
     Ok(Json(response))
 }
 
-/// Remove media from playlist
-pub async fn remove_media(
+/// Delete media from playlist
+pub async fn delete_media(
     auth: AuthUser,
     State(state): State<AppState>,
     Path((room_id, media_id)): Path<(String, String)>,
-) -> AppResult<Json<RemoveMediaResponse>> {
-    let proto_req = RemoveMediaRequest { media_id };
+) -> AppResult<Json<DeleteMediaResponse>> {
+    let proto_req = DeleteMediaRequest { media_id };
     let response = state
         .client_api
-        .remove_media(&auth.user_id.to_string(), &room_id, proto_req)
+        .delete_media(&auth.user_id.to_string(), &room_id, proto_req)
         .await
         .map_err(super::error::map_api_error)?;
 
     Ok(Json(response))
 }
 
-/// Bulk remove media from playlist
-#[tracing::instrument(name = "http_remove_media_batch", skip(state, req), fields(user_id = %auth.user_id, room_id = %room_id))]
-pub async fn remove_media_batch(
+/// Bulk delete media from playlist
+#[tracing::instrument(name = "http_delete_media_batch", skip(state, req), fields(user_id = %auth.user_id, room_id = %room_id))]
+pub async fn delete_media_batch(
     auth: AuthUser,
     State(state): State<AppState>,
     Path(room_id): Path<String>,
-    Json(req): Json<RemoveMediaBatchRequest>,
-) -> AppResult<Json<RemoveMediaBatchResponse>> {
+    Json(req): Json<DeleteMediaBatchRequest>,
+) -> AppResult<Json<DeleteMediaBatchResponse>> {
     let response = state
         .client_api
-        .remove_media_batch(&auth.user_id.to_string(), &room_id, req)
+        .delete_media_batch(&auth.user_id.to_string(), &room_id, req)
         .await
         .map_err(|e| {
-            tracing::error!(user_id = %auth.user_id, room_id = %room_id, error = %e, "Failed to remove media batch");
+            tracing::error!(user_id = %auth.user_id, room_id = %room_id, error = %e, "Failed to delete media batch");
             super::error::map_api_error(e)
         })?;
 
@@ -202,15 +201,15 @@ pub async fn reorder_media_batch(
     Ok(Json(response))
 }
 
-/// Get playlist
-pub async fn get_playlist(
+/// List media items in room
+pub async fn list_media(
     auth: AuthUser,
     State(state): State<AppState>,
     Path(room_id): Path<String>,
 ) -> AppResult<Json<ListPlaylistResponse>> {
     let response = state
         .client_api
-        .get_playlist(&auth.user_id.to_string(), &room_id)
+        .list_media(&auth.user_id.to_string(), &room_id)
         .await
         .map_err(super::error::map_api_error)?;
 
@@ -236,61 +235,47 @@ pub async fn swap_media_items(
 // ==================== Playback Control Endpoints ====================
 
 /// Play (resume playback)
-pub async fn play(
+/// POST /api/rooms/{room_id}/playback/start - Start playback of a specific media
+pub async fn start_playback(
     auth: AuthUser,
     State(state): State<AppState>,
     Path(room_id): Path<String>,
-) -> AppResult<Json<PlayResponse>> {
-    let proto_req = PlayRequest {};
+    Json(req): Json<StartPlaybackRequest>,
+) -> AppResult<Json<StartPlaybackResponse>> {
     let response = state
         .client_api
-        .play(&auth.user_id.to_string(), &room_id, proto_req)
+        .start_playback(&auth.user_id.to_string(), &room_id, req)
         .await
         .map_err(super::error::map_api_error)?;
 
     Ok(Json(response))
 }
 
-/// Pause playback
-pub async fn pause(
+/// POST /api/rooms/{room_id}/playback/stop - Stop current playback
+pub async fn stop_playback(
     auth: AuthUser,
     State(state): State<AppState>,
     Path(room_id): Path<String>,
-) -> AppResult<Json<PauseResponse>> {
+    Json(req): Json<StopPlaybackRequest>,
+) -> AppResult<Json<StopPlaybackResponse>> {
     let response = state
         .client_api
-        .pause(&auth.user_id.to_string(), &room_id)
+        .stop_playback(&auth.user_id.to_string(), &room_id, req)
         .await
         .map_err(super::error::map_api_error)?;
 
     Ok(Json(response))
 }
 
-/// Seek to position
-pub async fn seek(
+/// GET /api/rooms/{room_id}/playback - Get current playback state and complete playback information
+pub async fn get_playback(
     auth: AuthUser,
     State(state): State<AppState>,
     Path(room_id): Path<String>,
-    Json(req): Json<SeekRequest>,
-) -> AppResult<Json<SeekResponse>> {
+) -> AppResult<Json<GetPlaybackResponse>> {
     let response = state
         .client_api
-        .seek(&auth.user_id.to_string(), &room_id, req)
-        .await
-        .map_err(super::error::map_api_error)?;
-
-    Ok(Json(response))
-}
-
-/// Get playback state
-pub async fn get_playback_state(
-    auth: AuthUser,
-    State(state): State<AppState>,
-    Path(room_id): Path<String>,
-) -> AppResult<Json<GetPlaybackStateResponse>> {
-    let response = state
-        .client_api
-        .get_playback_state(&auth.user_id.to_string(), &room_id, GetPlaybackStateRequest {})
+        .get_playback(&auth.user_id.to_string(), &room_id, GetPlaybackRequest {})
         .await
         .map_err(super::error::map_api_error)?;
 
@@ -475,20 +460,34 @@ pub async fn clear_playlist(
     Ok(Json(response))
 }
 
-/// GET /`api/rooms/:room_id/movie/:media_id` - Get movie playback info
-pub async fn get_movie_info(
+/// GET /api/rooms/:room_id/media/:media_id - Get media record from database
+pub async fn get_media(
     auth: AuthUser,
     State(state): State<AppState>,
     Path((room_id, media_id)): Path<(String, String)>,
-) -> AppResult<Json<crate::proto::client::GetMovieInfoResponse>> {
-    let req = crate::proto::client::GetMovieInfoRequest { media_id };
-    let resp = state
+) -> AppResult<Json<crate::proto::client::Media>> {
+    let media = state
         .client_api
-        .get_movie_info(auth.user_id.as_str(), &room_id, req)
+        .get_media(auth.user_id.as_str(), &room_id, &media_id)
         .await
         .map_err(super::error::map_api_error)?;
 
-    Ok(Json(resp))
+    Ok(Json(media))
+}
+
+/// GET /api/rooms/:room_id/playlists/:playlist_id - Get single playlist info
+pub async fn get_playlist(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path((room_id, playlist_id)): Path<(String, String)>,
+) -> AppResult<Json<crate::proto::client::GetPlaylistResponse>> {
+    let response = state
+        .client_api
+        .get_playlist(auth.user_id.as_str(), &room_id, &playlist_id)
+        .await
+        .map_err(super::error::map_api_error)?;
+
+    Ok(Json(response))
 }
 
 // ==================== New RESTful Endpoints ====================
@@ -571,7 +570,7 @@ pub async fn update_playback(
     State(state): State<AppState>,
     Path(room_id): Path<String>,
     Json(req): Json<UpdatePlaybackRequest>,
-) -> AppResult<Json<GetPlaybackStateResponse>> {
+) -> AppResult<Json<GetPlaybackResponse>> {
     use synctv_core::models::{MediaId, PlaylistId, RoomId, UserId};
 
     let user_id = auth.user_id.to_string();
@@ -604,9 +603,9 @@ pub async fn update_playback(
         .update_multiple(rid, uid, playing, req.position, req.speed, media_id, playlist_id)
         .await?;
 
-    // Return final playback state
+    // Return final playback state and playback info
     let pb = state.client_api
-        .get_playback_state(&user_id, &room_id, GetPlaybackStateRequest {})
+        .get_playback(&user_id, &room_id, GetPlaybackRequest {})
         .await.map_err(super::error::map_api_error)?;
     Ok(Json(pb))
 }
@@ -776,42 +775,6 @@ pub async fn list_playlists(
     let response = state
         .client_api
         .list_playlists(&auth.user_id.to_string(), &room_id, req)
-        .await
-        .map_err(super::error::map_api_error)?;
-
-    Ok(Json(response))
-}
-
-// ==================== Playback: Set Current Media & Speed ====================
-
-/// Set current media
-/// POST /`api/rooms/:room_id/playback/current`
-pub async fn set_current_media(
-    auth: AuthUser,
-    State(state): State<AppState>,
-    Path(room_id): Path<String>,
-    Json(req): Json<SetCurrentMediaRequest>,
-) -> AppResult<Json<SetCurrentMediaResponse>> {
-    let response = state
-        .client_api
-        .set_current_media(&auth.user_id.to_string(), &room_id, req)
-        .await
-        .map_err(super::error::map_api_error)?;
-
-    Ok(Json(response))
-}
-
-/// Set playback speed
-/// POST /`api/rooms/:room_id/playback/speed`
-pub async fn set_playback_speed(
-    auth: AuthUser,
-    State(state): State<AppState>,
-    Path(room_id): Path<String>,
-    Json(req): Json<SetPlaybackSpeedRequest>,
-) -> AppResult<Json<SetPlaybackSpeedResponse>> {
-    let response = state
-        .client_api
-        .set_playback_speed(&auth.user_id.to_string(), &room_id, req)
         .await
         .map_err(super::error::map_api_error)?;
 

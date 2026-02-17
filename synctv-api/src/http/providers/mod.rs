@@ -29,9 +29,15 @@ macro_rules! provider_proxy_handlers {
             let media_id = synctv_core::models::MediaId::from_string(media_id);
 
             let (url, provider_headers) =
-                crate::http::provider_common::resolve_provider_playback_url(
-                    &auth, &room_id, &media_id, &app_state, app_state.$provider_accessor.as_ref(),
-                ).await?;
+                crate::impls::provider::resolve_provider_playback_url(
+                    &auth.user_id,
+                    &room_id,
+                    &media_id,
+                    app_state.$provider_accessor.as_ref(),
+                    &app_state.room_service,
+                    app_state.redis_conn.as_ref(),
+                ).await
+                .map_err(crate::http::error::map_api_error)?;
 
             tracing::debug!(concat!("Proxying ", $provider_name, " media: {}"), url);
 
@@ -56,9 +62,15 @@ macro_rules! provider_proxy_handlers {
             let media_id_parsed = synctv_core::models::MediaId::from_string(media_id.clone());
 
             let (url, provider_headers) =
-                crate::http::provider_common::resolve_provider_playback_url(
-                    &auth, &room_id_parsed, &media_id_parsed, &app_state, app_state.$provider_accessor.as_ref(),
-                ).await?;
+                crate::impls::provider::resolve_provider_playback_url(
+                    &auth.user_id,
+                    &room_id_parsed,
+                    &media_id_parsed,
+                    app_state.$provider_accessor.as_ref(),
+                    &app_state.room_service,
+                    app_state.redis_conn.as_ref(),
+                ).await
+                .map_err(crate::http::error::map_api_error)?;
 
             let proxy_base = format!("{}/{}/{}", $proxy_path_prefix, room_id, media_id);
 

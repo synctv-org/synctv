@@ -70,7 +70,6 @@ pub struct Media {
     /// Used to look up the provider from the registry at playback time
     pub provider_instance_name: Option<String>,
     pub added_at: DateTime<Utc>,
-    pub deleted_at: Option<DateTime<Utc>>,
 }
 
 /// Parameters for creating media from a provider
@@ -124,7 +123,6 @@ impl Media {
             source_config,
             provider_instance_name: Some(provider_instance_name),
             added_at: Utc::now(),
-            deleted_at: None,
         }
     }
 
@@ -142,13 +140,7 @@ impl Media {
             source_config: params.source_config,
             provider_instance_name: Some(params.provider_instance_name),
             added_at: Utc::now(),
-            deleted_at: None,
         }
-    }
-
-    #[must_use]
-    pub const fn is_deleted(&self) -> bool {
-        self.deleted_at.is_some()
     }
 
     /// Check if this media is a direct URL type (no provider needed for playback)
@@ -229,7 +221,6 @@ impl Media {
             source_config,
             provider_instance_name: None,
             added_at: Utc::now(),
-            deleted_at: None,
         }
     }
 

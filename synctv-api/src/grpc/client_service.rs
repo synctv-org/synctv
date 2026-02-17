@@ -35,19 +35,18 @@ use crate::proto::client::{
     SetRoomPasswordRequest, SetRoomPasswordResponse,
     CheckRoomPasswordRequest, CheckRoomPasswordResponse,
     ClientMessage, GetChatHistoryRequest, GetChatHistoryResponse,
-    AddMediaRequest, AddMediaResponse, RemoveMediaRequest, RemoveMediaResponse,
+    AddMediaRequest, AddMediaResponse, DeleteMediaRequest, DeleteMediaResponse,
     EditMediaRequest, EditMediaResponse, ListPlaylistRequest, ListPlaylistResponse,
     ListPlaylistItemsRequest, ListPlaylistItemsResponse,
     SwapMediaRequest, SwapMediaResponse, ClearPlaylistRequest, ClearPlaylistResponse,
-    AddMediaBatchRequest, AddMediaBatchResponse, RemoveMediaBatchRequest, RemoveMediaBatchResponse,
+    AddMediaBatchRequest, AddMediaBatchResponse, DeleteMediaBatchRequest, DeleteMediaBatchResponse,
     ReorderMediaBatchRequest, ReorderMediaBatchResponse,
-    PlayRequest, PlayResponse, PauseRequest, PauseResponse, SeekRequest, SeekResponse,
-    SetPlaybackSpeedRequest, SetPlaybackSpeedResponse,
-    GetPlaybackStateRequest, GetPlaybackStateResponse,
+    StartPlaybackRequest, StartPlaybackResponse,
+    StopPlaybackRequest, StopPlaybackResponse,
+    GetPlaybackRequest, GetPlaybackResponse,
     CreatePublishKeyRequest, CreatePublishKeyResponse,
     CreatePlaylistRequest, CreatePlaylistResponse, UpdatePlaylistRequest, UpdatePlaylistResponse,
     DeletePlaylistRequest, DeletePlaylistResponse, ListPlaylistsRequest, ListPlaylistsResponse,
-    SetCurrentMediaRequest, SetCurrentMediaResponse,
     CheckRoomRequest, CheckRoomResponse, ListRoomsRequest, ListRoomsResponse,
     GetHotRoomsRequest, GetHotRoomsResponse, GetPublicSettingsRequest, GetPublicSettingsResponse,
     SendVerificationEmailRequest, SendVerificationEmailResponse,
@@ -56,7 +55,6 @@ use crate::proto::client::{
     ConfirmPasswordResetRequest, ConfirmPasswordResetResponse,
     GetIceServersRequest, GetIceServersResponse,
     GetNetworkQualityRequest, GetNetworkQualityResponse,
-    GetMovieInfoRequest, GetMovieInfoResponse,
     GetStreamInfoRequest, GetStreamInfoResponse,
     ListRoomStreamsRequest, ListRoomStreamsResponse,
 };
@@ -730,14 +728,14 @@ impl MediaService for ClientServiceImpl {
         Ok(Response::new(response))
     }
 
-    async fn remove_media(
+    async fn delete_media(
         &self,
-        request: Request<RemoveMediaRequest>,
-    ) -> Result<Response<RemoveMediaResponse>, Status> {
+        request: Request<DeleteMediaRequest>,
+    ) -> Result<Response<DeleteMediaResponse>, Status> {
         let user_id = self.get_user_id(&request).await?;
         let room_id = self.get_room_id(&request)?;
         let req = request.into_inner();
-        let response = self.client_api.remove_media(user_id.as_str(), room_id.as_str(), req).await.map_err(map_api_error)?;
+        let response = self.client_api.delete_media(user_id.as_str(), room_id.as_str(), req).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -758,7 +756,7 @@ impl MediaService for ClientServiceImpl {
     ) -> Result<Response<ListPlaylistResponse>, Status> {
         let user_id = self.get_user_id(&request).await?;
         let room_id = self.get_room_id(&request)?;
-        let response = self.client_api.get_playlist(user_id.as_str(), room_id.as_str()).await.map_err(map_api_error)?;
+        let response = self.client_api.list_media(user_id.as_str(), room_id.as_str()).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -805,14 +803,14 @@ impl MediaService for ClientServiceImpl {
         Ok(Response::new(response))
     }
 
-    async fn remove_media_batch(
+    async fn delete_media_batch(
         &self,
-        request: Request<RemoveMediaBatchRequest>,
-    ) -> Result<Response<RemoveMediaBatchResponse>, Status> {
+        request: Request<DeleteMediaBatchRequest>,
+    ) -> Result<Response<DeleteMediaBatchResponse>, Status> {
         let user_id = self.get_user_id(&request).await?;
         let room_id = self.get_room_id(&request)?;
         let req = request.into_inner();
-        let response = self.client_api.remove_media_batch(user_id.as_str(), room_id.as_str(), req).await.map_err(map_api_error)?;
+        let response = self.client_api.delete_media_batch(user_id.as_str(), room_id.as_str(), req).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -827,51 +825,36 @@ impl MediaService for ClientServiceImpl {
         Ok(Response::new(response))
     }
 
-    async fn play(&self, request: Request<PlayRequest>) -> Result<Response<PlayResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let room_id = self.get_room_id(&request)?;
-        let req = request.into_inner();
-        let response = self.client_api.play(user_id.as_str(), room_id.as_str(), req).await.map_err(map_api_error)?;
-        Ok(Response::new(response))
-    }
-
-    async fn pause(
+    async fn start_playback(
         &self,
-        request: Request<PauseRequest>,
-    ) -> Result<Response<PauseResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let room_id = self.get_room_id(&request)?;
-        let response = self.client_api.pause(user_id.as_str(), room_id.as_str()).await.map_err(map_api_error)?;
-        Ok(Response::new(response))
-    }
-
-    async fn seek(&self, request: Request<SeekRequest>) -> Result<Response<SeekResponse>, Status> {
+        request: Request<StartPlaybackRequest>,
+    ) -> Result<Response<StartPlaybackResponse>, Status> {
         let user_id = self.get_user_id(&request).await?;
         let room_id = self.get_room_id(&request)?;
         let req = request.into_inner();
-        let response = self.client_api.seek(user_id.as_str(), room_id.as_str(), req).await.map_err(map_api_error)?;
+        let response = self.client_api.start_playback(user_id.as_str(), room_id.as_str(), req).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
-    async fn set_playback_speed(
+    async fn stop_playback(
         &self,
-        request: Request<SetPlaybackSpeedRequest>,
-    ) -> Result<Response<SetPlaybackSpeedResponse>, Status> {
+        request: Request<StopPlaybackRequest>,
+    ) -> Result<Response<StopPlaybackResponse>, Status> {
         let user_id = self.get_user_id(&request).await?;
         let room_id = self.get_room_id(&request)?;
         let req = request.into_inner();
-        let response = self.client_api.set_playback_speed(user_id.as_str(), room_id.as_str(), req).await.map_err(map_api_error)?;
+        let response = self.client_api.stop_playback(user_id.as_str(), room_id.as_str(), req).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
-    async fn get_playback_state(
+    async fn get_playback(
         &self,
-        request: Request<GetPlaybackStateRequest>,
-    ) -> Result<Response<GetPlaybackStateResponse>, Status> {
+        request: Request<GetPlaybackRequest>,
+    ) -> Result<Response<GetPlaybackResponse>, Status> {
         let user_id = self.get_user_id(&request).await?;
         let room_id = self.get_room_id(&request)?;
         let req = request.into_inner();
-        let response = self.client_api.get_playback_state(user_id.as_str(), room_id.as_str(), req).await.map_err(map_api_error)?;
+        let response = self.client_api.get_playback(user_id.as_str(), room_id.as_str(), req).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -965,27 +948,6 @@ impl MediaService for ClientServiceImpl {
         Ok(Response::new(response))
     }
 
-    async fn set_current_media(
-        &self,
-        request: Request<SetCurrentMediaRequest>,
-    ) -> Result<Response<SetCurrentMediaResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let room_id = self.get_room_id(&request)?;
-        let req = request.into_inner();
-        let response = self.client_api.set_current_media(user_id.as_str(), room_id.as_str(), req).await.map_err(map_api_error)?;
-        Ok(Response::new(response))
-    }
-
-    async fn get_movie_info(
-        &self,
-        request: Request<GetMovieInfoRequest>,
-    ) -> Result<Response<GetMovieInfoResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let room_id = self.get_room_id(&request)?;
-        let req = request.into_inner();
-        let response = self.client_api.get_movie_info(user_id.as_str(), room_id.as_str(), req).await.map_err(map_api_error)?;
-        Ok(Response::new(response))
-    }
 }
 
 // ==================== PublicService Implementation ====================

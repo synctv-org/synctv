@@ -895,6 +895,18 @@ impl StreamMessageHandler {
             Some(Message::PlaybackProgress(report)) => {
                 self.handle_playback_progress(report).await?;
             }
+            Some(Message::PlayCommand(_)) => {
+                self.handle_play_command().await?;
+            }
+            Some(Message::PauseCommand(_)) => {
+                self.handle_pause_command().await?;
+            }
+            Some(Message::SeekCommand(seek)) => {
+                self.handle_seek_command(seek.current_time).await?;
+            }
+            Some(Message::SetSpeedCommand(speed_cmd)) => {
+                self.handle_set_speed_command(speed_cmd.speed).await?;
+            }
             None => {
                 return Err("Empty message".to_string());
             }
@@ -1664,6 +1676,66 @@ impl StreamMessageHandler {
             }
         }
 
+        Ok(())
+    }
+
+    /// Handle Play command from WebSocket
+    async fn handle_play_command(&self) -> Result<(), String> {
+        // Permission check (PLAY_PAUSE) is handled by PlaybackService::set_playing()
+        self.room_service
+            .playback_service()
+            .set_playing(self.room_id.clone(), self.user_id.clone(), true)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        // PlaybackStateChanged broadcast is handled by room_service
+        Ok(())
+    }
+
+    /// Handle Pause command from WebSocket
+    async fn handle_pause_command(&self) -> Result<(), String> {
+        // Permission check (PLAY_PAUSE) is handled by PlaybackService::set_playing()
+        self.room_service
+            .playback_service()
+            .set_playing(self.room_id.clone(), self.user_id.clone(), false)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        // PlaybackStateChanged broadcast is handled by room_service
+        Ok(())
+    }
+
+    /// Handle Seek command from WebSocket
+    async fn handle_seek_command(&self, current_time: f64) -> Result<(), String> {
+        if current_time < 0.0 {
+            return Err("Seek position must be non-negative".to_string());
+        }
+
+        // Permission check (SEEK) is handled by PlaybackService::seek()
+        self.room_service
+            .playback_service()
+            .seek(self.room_id.clone(), self.user_id.clone(), current_time)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        // PlaybackStateChanged broadcast is handled by room_service
+        Ok(())
+    }
+
+    /// Handle SetPlaybackSpeed command from WebSocket
+    async fn handle_set_speed_command(&self, speed: f64) -> Result<(), String> {
+        if speed <= 0.0 || speed > 4.0 {
+            return Err("Playback speed must be between 0.0 and 4.0".to_string());
+        }
+
+        // Permission check (CHANGE_SPEED) is handled by PlaybackService::change_speed()
+        self.room_service
+            .playback_service()
+            .change_speed(self.room_id.clone(), self.user_id.clone(), speed)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        // PlaybackStateChanged broadcast is handled by room_service
         Ok(())
     }
 

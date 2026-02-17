@@ -46,7 +46,7 @@ impl MediaRepository {
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
              RETURNING id, playlist_id, room_id, creator_id, name, position,
                        source_provider, source_config, provider_instance_name,
-                       added_at, deleted_at
+                       added_at
             "
         )
         .bind(media.id.as_str())
@@ -123,7 +123,7 @@ impl MediaRepository {
         query_builder.push_str(
             " RETURNING id, playlist_id, room_id, creator_id, name, position,
                        source_provider, source_config, provider_instance_name,
-                       added_at, deleted_at"
+                       added_at"
         );
 
         let mut query = sqlx::query(&query_builder);
@@ -180,10 +180,9 @@ impl MediaRepository {
             UPDATE media
             SET name = $2, position = $3, source_config = $4,
                 provider_instance_name = $5
-             WHERE id = $1 AND deleted_at IS NULL
-             RETURNING id, playlist_id, room_id, creator_id, name, position,
+             WHERE id = $1             RETURNING id, playlist_id, room_id, creator_id, name, position,
                        source_provider, source_config, provider_instance_name,
-                       added_at, deleted_at
+                       added_at
             "
         )
         .bind(media.id.as_str())
@@ -203,10 +202,9 @@ impl MediaRepository {
             r"
             SELECT id, playlist_id, room_id, creator_id, name, position,
                    source_provider, source_config, provider_instance_name,
-                   added_at, deleted_at
+                   added_at
              FROM media
-             WHERE id = $1 AND deleted_at IS NULL
-            "
+             WHERE id = $1            "
         )
         .bind(media_id.as_str())
         .fetch_optional(&self.pool)
@@ -237,10 +235,9 @@ impl MediaRepository {
             r"
             SELECT id, playlist_id, room_id, creator_id, name, position,
                    source_provider, source_config, provider_instance_name,
-                   added_at, deleted_at
+                   added_at
              FROM media
-             WHERE id = ANY($1) AND deleted_at IS NULL
-            "
+             WHERE id = ANY($1)            "
         )
         .bind(&id_strs)
         .fetch_all(executor)
@@ -255,10 +252,9 @@ impl MediaRepository {
             r"
             SELECT id, playlist_id, room_id, creator_id, name, position,
                    source_provider, source_config, provider_instance_name,
-                   added_at, deleted_at
+                   added_at
              FROM media
-             WHERE room_id = $1 AND deleted_at IS NULL
-             ORDER BY playlist_id, position ASC
+             WHERE room_id = $1             ORDER BY playlist_id, position ASC
             "
         )
         .bind(room_id.as_str())
@@ -274,10 +270,9 @@ impl MediaRepository {
             r"
             SELECT id, playlist_id, room_id, creator_id, name, position,
                    source_provider, source_config, provider_instance_name,
-                   added_at, deleted_at
+                   added_at
              FROM media
-             WHERE playlist_id = $1 AND deleted_at IS NULL
-             ORDER BY position ASC
+             WHERE playlist_id = $1             ORDER BY position ASC
             "
         )
         .bind(playlist_id.as_str())
@@ -299,8 +294,7 @@ impl MediaRepository {
         // Get total count
         let total: i64 = sqlx::query_scalar(
             r"
-            SELECT COUNT(*) FROM media WHERE playlist_id = $1 AND deleted_at IS NULL
-            "
+            SELECT COUNT(*) FROM media WHERE playlist_id = $1            "
         )
         .bind(playlist_id.as_str())
         .fetch_one(&self.pool)
@@ -311,10 +305,9 @@ impl MediaRepository {
             r"
             SELECT id, playlist_id, room_id, creator_id, name, position,
                    source_provider, source_config, provider_instance_name,
-                   added_at, deleted_at
+                   added_at
              FROM media
-             WHERE playlist_id = $1 AND deleted_at IS NULL
-             ORDER BY position ASC
+             WHERE playlist_id = $1             ORDER BY position ASC
              LIMIT $2 OFFSET $3
             "
         )
@@ -329,17 +322,15 @@ impl MediaRepository {
         Ok((items, total))
     }
 
-    /// Delete media from playlist (soft delete)
+    /// Delete media from playlist
     pub async fn delete(&self, media_id: &MediaId) -> Result<bool> {
         let result = sqlx::query(
             r"
-            UPDATE media
-             SET deleted_at = $2
-             WHERE id = $1 AND deleted_at IS NULL
+            DELETE FROM media
+             WHERE id = $1
             "
         )
         .bind(media_id.as_str())
-        .bind(chrono::Utc::now())
         .execute(&self.pool)
         .await?;
 
@@ -350,13 +341,11 @@ impl MediaRepository {
     pub async fn delete_by_playlist(&self, playlist_id: &PlaylistId) -> Result<usize> {
         let result = sqlx::query(
             r"
-            UPDATE media
-             SET deleted_at = $2
-             WHERE playlist_id = $1 AND deleted_at IS NULL
+            DELETE FROM media
+             WHERE playlist_id = $1
             "
         )
         .bind(playlist_id.as_str())
-        .bind(chrono::Utc::now())
         .execute(&self.pool)
         .await?;
 
@@ -378,17 +367,14 @@ impl MediaRepository {
         }
 
         let id_strs: Vec<&str> = media_ids.iter().map(MediaId::as_str).collect();
-        let now = chrono::Utc::now();
 
         let result = sqlx::query(
             r"
-            UPDATE media
-             SET deleted_at = $2
-             WHERE id = ANY($1) AND deleted_at IS NULL
+            DELETE FROM media
+             WHERE id = ANY($1)
             "
         )
         .bind(&id_strs)
-        .bind(now)
         .execute(executor)
         .await?;
 
@@ -465,7 +451,7 @@ impl MediaRepository {
 
         // Lock all affected rows first to prevent concurrent modification
         for (media_id, _) in &sorted_updates {
-            sqlx::query("SELECT id FROM media WHERE id = $1 AND deleted_at IS NULL FOR UPDATE")
+            sqlx::query("SELECT id FROM media WHERE id = $1 FOR UPDATE")
                 .bind(media_id.as_str())
                 .fetch_optional(&mut **tx)
                 .await?;
@@ -473,7 +459,7 @@ impl MediaRepository {
 
         // Now update positions within the lock scope
         for (media_id, new_position) in &sorted_updates {
-            sqlx::query("UPDATE media SET position = $2 WHERE id = $1 AND deleted_at IS NULL")
+            sqlx::query("UPDATE media SET position = $2 WHERE id = $1")
                 .bind(media_id.as_str())
                 .bind(new_position)
                 .execute(&mut **tx)
@@ -493,8 +479,7 @@ impl MediaRepository {
             r"
             SELECT COALESCE(MAX(position), -1) + 1
             FROM media
-            WHERE playlist_id = $1 AND deleted_at IS NULL
-            "
+            WHERE playlist_id = $1            "
         )
         .bind(playlist_id.as_str())
         .fetch_one(&self.pool)
@@ -517,8 +502,7 @@ impl MediaRepository {
             r"
             SELECT COALESCE(MAX(position), -1) + 1
             FROM media
-            WHERE playlist_id = $1 AND deleted_at IS NULL
-            FOR UPDATE
+            WHERE playlist_id = $1            FOR UPDATE
             "
         )
         .bind(playlist_id.as_str())
@@ -532,8 +516,7 @@ impl MediaRepository {
     pub async fn count_by_playlist(&self, playlist_id: &PlaylistId) -> Result<i64> {
         let count: i64 = sqlx::query_scalar(
             r"
-            SELECT COUNT(*) FROM media WHERE playlist_id = $1 AND deleted_at IS NULL
-            "
+            SELECT COUNT(*) FROM media WHERE playlist_id = $1            "
         )
         .bind(playlist_id.as_str())
         .fetch_one(&self.pool)
@@ -549,8 +532,7 @@ impl MediaRepository {
             r"
             SELECT playlist_id, COUNT(*) as cnt
             FROM media
-            WHERE playlist_id = ANY($1) AND deleted_at IS NULL
-            GROUP BY playlist_id
+            WHERE playlist_id = ANY($1)            GROUP BY playlist_id
             "
         )
         .bind(playlist_ids)

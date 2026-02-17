@@ -178,7 +178,7 @@ BEGIN
         'synctv_playlist_deleted',
         json_build_object(
             'playlist_id', OLD.id,
-            'deleted_at', CURRENT_TIMESTAMP
+            'timestamp', CURRENT_TIMESTAMP
         )::text
     );
     RETURN OLD;

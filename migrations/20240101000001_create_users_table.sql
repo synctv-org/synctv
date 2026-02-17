@@ -80,7 +80,7 @@ BEGIN
         'synctv_user_deleted',
         json_build_object(
             'user_id', OLD.id,
-            'deleted_at', CURRENT_TIMESTAMP
+            'timestamp', CURRENT_TIMESTAMP
         )::text
     );
     RETURN OLD;

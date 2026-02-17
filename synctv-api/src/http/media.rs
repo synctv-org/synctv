@@ -33,16 +33,16 @@ pub async fn get_playing_media(
 
 /// Get playlist for a room
 ///
-/// Delegates to `ClientApiImpl::get_playlist()` for consistent behavior with gRPC.
+/// Delegates to `ClientApiImpl::list_media()` for consistent behavior with gRPC.
 #[axum::debug_handler]
-pub async fn get_playlist(
+pub async fn list_media(
     auth: AuthUser,
     State(state): State<AppState>,
     Path(room_id): Path<String>,
 ) -> AppResult<impl IntoResponse> {
     let response = state
         .client_api
-        .get_playlist(auth.user_id.as_str(), &room_id)
+        .list_media(auth.user_id.as_str(), &room_id)
         .await
         .map_err(super::error::map_api_error)?;
 
@@ -77,21 +77,21 @@ pub async fn list_playlist_items(
 
 /// Set current playing media
 ///
-/// Delegates to `ClientApiImpl::set_current_media()` for consistent behavior with gRPC.
+/// Start playback of a specific media
+/// Delegates to `ClientApiImpl::start_playback()` for consistent behavior with gRPC.
 #[axum::debug_handler]
 pub async fn set_playing_media(
     auth: AuthUser,
     State(state): State<AppState>,
     Path((room_id, media_id)): Path<(String, String)>,
 ) -> AppResult<impl IntoResponse> {
-    let req = crate::proto::client::SetCurrentMediaRequest {
-        playlist_id: String::new(), // Use current playlist
+    let req = crate::proto::client::StartPlaybackRequest {
         media_id,
     };
 
     let response = state
         .client_api
-        .set_current_media(auth.user_id.as_str(), &room_id, req)
+        .start_playback(auth.user_id.as_str(), &room_id, req)
         .await
         .map_err(super::error::map_api_error)?;
 

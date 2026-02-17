@@ -6,8 +6,7 @@ use super::{
     provider_client::{
         create_remote_bilibili_client, load_local_bilibili_client, BilibiliClientArc,
     },
-    DashAudioStream, DashManifestData, DashSegmentBase, DashVideoStream, MediaProvider,
-    PlaybackInfo, PlaybackResult, ProviderContext, ProviderError, SubtitleTrack,
+    MediaProvider, PlaybackInfo, PlaybackResult, ProviderContext, ProviderError, SubtitleTrack,
 };
 use async_trait::async_trait;
 use chrono::Utc;
@@ -305,16 +304,11 @@ impl MediaProvider for BilibiliProvider {
                         .collect();
                 }
 
-                // Convert proto DashInfo → DashManifestData
-                let dash = dash_resp.dash.map(|d| {
+                // Store DASH duration metadata
+                if let Some(d) = &dash_resp.dash {
                     metadata.insert("duration".to_string(), json!(d.duration));
                     metadata.insert("min_buffer_time".to_string(), json!(d.min_buffer_time));
-                    proto_dash_to_manifest(&d)
-                });
-                let hevc_dash = dash_resp
-                    .hevc_dash
-                    .filter(|d| !d.video_streams.is_empty())
-                    .map(|d| proto_dash_to_manifest(&d));
+                }
 
                 metadata.insert("content_type".to_string(), json!("video"));
                 metadata.insert("bvid".to_string(), json!(bvid));
@@ -342,8 +336,6 @@ impl MediaProvider for BilibiliProvider {
                     playback_infos,
                     default_mode: "dash".to_string(),
                     metadata,
-                    dash,
-                    hevc_dash,
                 })
             }
 
@@ -380,14 +372,10 @@ impl MediaProvider for BilibiliProvider {
                         .collect();
                 }
 
-                let dash = dash_resp.dash.map(|d| {
+                // Store DASH duration metadata
+                if let Some(d) = &dash_resp.dash {
                     metadata.insert("duration".to_string(), json!(d.duration));
-                    proto_dash_to_manifest(&d)
-                });
-                let hevc_dash = dash_resp
-                    .hevc_dash
-                    .filter(|d| !d.video_streams.is_empty())
-                    .map(|d| proto_dash_to_manifest(&d));
+                }
 
                 metadata.insert("content_type".to_string(), json!("pgc"));
                 metadata.insert("epid".to_string(), json!(epid));
@@ -413,8 +401,6 @@ impl MediaProvider for BilibiliProvider {
                     playback_infos,
                     default_mode: "dash".to_string(),
                     metadata,
-                    dash,
-                    hevc_dash,
                 })
             }
 
@@ -474,8 +460,6 @@ impl MediaProvider for BilibiliProvider {
                     playback_infos,
                     default_mode,
                     metadata,
-                    dash: None,
-                    hevc_dash: None,
                 })
             }
         }
@@ -572,73 +556,6 @@ fn bilibili_headers() -> HashMap<String, String> {
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36".to_string(),
     );
     headers
-}
-
-/// Convert proto `DashInfo` → provider-agnostic `DashManifestData`
-fn proto_dash_to_manifest(
-    dash: &synctv_media_providers::grpc::bilibili::DashInfo,
-) -> DashManifestData {
-    let video_streams = dash
-        .video_streams
-        .iter()
-        .map(|v| {
-            let seg = v.segment_base.as_ref();
-            DashVideoStream {
-                id: format!("{}P", v.height),
-                base_url: v.base_url.clone(),
-                backup_urls: Vec::new(),
-                mime_type: v.mime_type.clone(),
-                codecs: v.codecs.clone(),
-                width: v.width,
-                height: v.height,
-                frame_rate: v.frame_rate.clone(),
-                bandwidth: v.bandwidth,
-                sar: "1:1".to_string(),
-                start_with_sap: v.start_with_sap,
-                segment_base: DashSegmentBase {
-                    initialization: seg
-                        .map(|s| s.initialization_range.clone())
-                        .unwrap_or_default(),
-                    index_range: seg
-                        .map(|s| s.index_range.clone())
-                        .unwrap_or_default(),
-                },
-            }
-        })
-        .collect();
-
-    let audio_streams = dash
-        .audio_streams
-        .iter()
-        .map(|a| {
-            let seg = a.segment_base.as_ref();
-            DashAudioStream {
-                id: format!("audio_{}", a.id),
-                base_url: a.base_url.clone(),
-                backup_urls: Vec::new(),
-                mime_type: a.mime_type.clone(),
-                codecs: a.codecs.clone(),
-                bandwidth: a.bandwidth,
-                audio_sampling_rate: if a.audio_sampling_rate > 0 { a.audio_sampling_rate } else { 44100 },
-                start_with_sap: a.start_with_sap,
-                segment_base: DashSegmentBase {
-                    initialization: seg
-                        .map(|s| s.initialization_range.clone())
-                        .unwrap_or_default(),
-                    index_range: seg
-                        .map(|s| s.index_range.clone())
-                        .unwrap_or_default(),
-                },
-            }
-        })
-        .collect();
-
-    DashManifestData {
-        duration: dash.duration,
-        min_buffer_time: dash.min_buffer_time,
-        video_streams,
-        audio_streams,
-    }
 }
 
 #[cfg(test)]

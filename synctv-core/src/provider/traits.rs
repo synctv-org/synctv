@@ -74,31 +74,14 @@ pub struct PlaybackResult {
     /// Additional metadata (duration, thumbnail, etc.)
     #[serde(default)]
     pub metadata: HashMap<String, Value>,
-
-    /// Structured DASH manifest data (set by DASH providers like Bilibili)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dash: Option<DashManifestData>,
-
-    /// HEVC variant of DASH manifest (if available)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hevc_dash: Option<DashManifestData>,
 }
-
-// DASH types are defined in synctv-proto so they can be shared with synctv-proxy
-// without requiring synctv-proxy to depend on synctv-core.
-pub use synctv_proto::dash::{
-    DashAudioStream, DashManifestData, DashSegmentBase, DashVideoStream,
-};
 
 /// Item type
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ItemType {
-    Video,   // Video file
-    Audio,   // Audio file
-    Folder,  // Folder/directory
-    Live,    // Live stream
-    File,    // Other file
+    Playlist,  // Folder/directory (playlist)
+    Media,     // File (video/audio/live stream)
 }
 
 /// Directory item (file or folder)

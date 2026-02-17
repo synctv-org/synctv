@@ -1,153 +1,72 @@
-//! Playback operations: play, pause, seek, speed, set_current_media, get_playback_state
+//! Playback operations: start, stop, get playback state and info
+//!
+//! Note: Real-time playback control (play/pause/seek/speed) is handled via WebSocket messages
 
-use synctv_core::models::{RoomId, UserId};
+use synctv_core::models::{MediaId, RoomId, UserId};
+use synctv_core::provider::ProviderContext;
 
-use super::convert::{media_to_proto, playback_state_to_proto, playlist_to_proto};
+use super::convert::{playback_state_to_proto, playback_result_to_proto, provider_playback_info_to_model};
 use super::ClientApiImpl;
 use crate::impls::ApiError;
 
 impl ClientApiImpl {
-    pub async fn play(
+    /// Start playback of a specific media
+    /// HTTP API: POST /api/rooms/{room_id}/playback/start
+    pub async fn start_playback(
         &self,
         user_id: &str,
         room_id: &str,
-        _req: crate::proto::client::PlayRequest,
-    ) -> Result<crate::proto::client::PlayResponse, ApiError> {
+        req: crate::proto::client::StartPlaybackRequest,
+    ) -> Result<crate::proto::client::StartPlaybackResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
-
-        // Permission check (PLAY_PAUSE) is handled by PlaybackService::set_playing()
-        let state = self
-            .room_service
-            .playback_service()
-            .set_playing(rid.clone(), uid.clone(), true)
-            .await
-            .map_err(ApiError::from)?;
-
-        Ok(crate::proto::client::PlayResponse {
-            playback_state: Some(playback_state_to_proto(&state)),
-        })
-    }
-
-    pub async fn pause(
-        &self,
-        user_id: &str,
-        room_id: &str,
-    ) -> Result<crate::proto::client::PauseResponse, ApiError> {
-        let uid = UserId::from_string(user_id.to_string());
-        let rid = RoomId::from_string(room_id.to_string());
-
-        // Permission check (PLAY_PAUSE) is handled by PlaybackService::set_playing()
-        let state = self
-            .room_service
-            .playback_service()
-            .set_playing(rid.clone(), uid.clone(), false)
-            .await
-            .map_err(ApiError::from)?;
-
-        Ok(crate::proto::client::PauseResponse {
-            playback_state: Some(playback_state_to_proto(&state)),
-        })
-    }
-
-    pub async fn seek(
-        &self,
-        user_id: &str,
-        room_id: &str,
-        req: crate::proto::client::SeekRequest,
-    ) -> Result<crate::proto::client::SeekResponse, ApiError> {
-        let uid = UserId::from_string(user_id.to_string());
-        let rid = RoomId::from_string(room_id.to_string());
-
-        // Permission check (SEEK) is handled by PlaybackService::seek()
-        let state = self
-            .room_service
-            .playback_service()
-            .seek(rid.clone(), uid.clone(), req.current_time)
-            .await
-            .map_err(ApiError::from)?;
-
-        Ok(crate::proto::client::SeekResponse {
-            playback_state: Some(playback_state_to_proto(&state)),
-        })
-    }
-
-    pub async fn set_playback_speed(
-        &self,
-        user_id: &str,
-        room_id: &str,
-        req: crate::proto::client::SetPlaybackSpeedRequest,
-    ) -> Result<crate::proto::client::SetPlaybackSpeedResponse, ApiError> {
-        let uid = UserId::from_string(user_id.to_string());
-        let rid = RoomId::from_string(room_id.to_string());
-
-        // Permission check (CHANGE_SPEED) is handled by PlaybackService::change_speed()
-        let state = self
-            .room_service
-            .playback_service()
-            .change_speed(rid.clone(), uid.clone(), req.speed)
-            .await
-            .map_err(ApiError::from)?;
-
-        Ok(crate::proto::client::SetPlaybackSpeedResponse {
-            playback_state: Some(playback_state_to_proto(&state)),
-        })
-    }
-
-    // set_current_media - Set which media to play (previously set_playing)
-    pub async fn set_current_media(
-        &self,
-        user_id: &str,
-        room_id: &str,
-        req: crate::proto::client::SetCurrentMediaRequest,
-    ) -> Result<crate::proto::client::SetCurrentMediaResponse, ApiError> {
-        let uid = UserId::from_string(user_id.to_string());
-        let rid = RoomId::from_string(room_id.to_string());
+        let media_id = MediaId::from_string(req.media_id);
 
         // Permission check (SWITCH_MEDIA) is handled by PlaybackService::switch_media()
-        // If media_id is provided, switch to that media
-        if !req.media_id.is_empty() {
-            let media_id = synctv_core::models::MediaId::from_string(req.media_id);
-            self.room_service
-                .playback_service()
-                .switch_media(rid.clone(), uid.clone(), media_id)
-                .await
-                .map_err(ApiError::from)?;
-        }
-
-        // Get the current root playlist and its item count
-        let playlist = self
-            .room_service
-            .playlist_service()
-            .get_root_playlist(&rid)
-            .await
-            .map_err(ApiError::from)?;
-        let item_count = self
-            .room_service
-            .media_service()
-            .count_playlist_media(&playlist.id)
-            .await
-            .map_err(ApiError::from)? as i32;
-
-        // Get the currently playing media
-        let playing_media = self
-            .room_service
-            .get_playing_media(&rid)
+        self.room_service
+            .playback_service()
+            .switch_media(rid.clone(), uid.clone(), media_id.clone())
             .await
             .map_err(ApiError::from)?;
 
-        Ok(crate::proto::client::SetCurrentMediaResponse {
-            playlist: Some(playlist_to_proto(&playlist, item_count)),
-            playing_media: playing_media.map(|m| media_to_proto(&m)),
-        })
+        // Broadcast PlaybackStateChanged via WebSocket
+        // (handled by room_service internally)
+
+        Ok(crate::proto::client::StartPlaybackResponse {})
     }
 
-    pub async fn get_playback_state(
+    /// Stop current playback
+    /// HTTP API: POST /api/rooms/{room_id}/playback/stop
+    pub async fn stop_playback(
         &self,
         user_id: &str,
         room_id: &str,
-        _req: crate::proto::client::GetPlaybackStateRequest,
-    ) -> Result<crate::proto::client::GetPlaybackStateResponse, ApiError> {
+        _req: crate::proto::client::StopPlaybackRequest,
+    ) -> Result<crate::proto::client::StopPlaybackResponse, ApiError> {
+        let uid = UserId::from_string(user_id.to_string());
+        let rid = RoomId::from_string(room_id.to_string());
+
+        // Permission check (PLAY_PAUSE) is handled by PlaybackService::reset()
+        self.room_service
+            .playback_service()
+            .reset(rid.clone(), uid.clone())
+            .await
+            .map_err(ApiError::from)?;
+
+        // Broadcast PlaybackStateChanged via WebSocket
+        // (handled by room_service internally)
+
+        Ok(crate::proto::client::StopPlaybackResponse {})
+    }
+
+    /// Get current playback state and complete playback information
+    /// HTTP API: GET /api/rooms/{room_id}/playback
+    pub async fn get_playback(
+        &self,
+        user_id: &str,
+        room_id: &str,
+        _req: crate::proto::client::GetPlaybackRequest,
+    ) -> Result<crate::proto::client::GetPlaybackResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
 
@@ -157,14 +76,188 @@ impl ClientApiImpl {
             .await
             .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
 
+        // Get playback state
         let state = self
             .room_service
             .get_playback_state(&rid)
             .await
             .map_err(ApiError::from)?;
 
-        Ok(crate::proto::client::GetPlaybackStateResponse {
+        // Get currently playing media (if any)
+        let playing_media = self
+            .room_service
+            .get_playing_media(&rid)
+            .await
+            .map_err(ApiError::from)?;
+
+        // Generate playback result with provider
+        let playback_result = if let Some(media) = playing_media {
+            // Check if media is direct URL or needs provider
+            if media.is_direct() {
+                // For direct media, get playback info from source_config
+                let result = media.get_playback_result()
+                    .ok_or_else(|| ApiError::Internal("Failed to parse direct media playback info".to_string()))?;
+
+                playback_result_to_proto(&result)
+            } else {
+                // For provider-backed media, use ProvidersManager to generate playback
+                let providers_manager = self.providers_manager.as_ref()
+                    .ok_or_else(|| ApiError::Internal("Providers manager not configured".to_string()))?;
+
+                let instance_name = media
+                    .provider_instance_name
+                    .as_deref()
+                    .unwrap_or(&media.source_provider);
+
+                let provider = providers_manager
+                    .get(instance_name)
+                    .await
+                    .ok_or_else(|| ApiError::NotFound(format!("Provider instance '{}' not found", instance_name)))?;
+
+                let ctx = ProviderContext::new("synctv")
+                    .with_user_id(user_id)
+                    .with_room_id(room_id);
+
+                // Use cached playback generation
+                let provider_result = crate::impls::provider::cached_generate_playback(
+                    provider.as_ref(),
+                    &ctx,
+                    &media.source_config,
+                    self.redis_conn.as_ref(),
+                )
+                .await
+                .map_err(|e| ApiError::Internal(format!("generate_playback failed: {e}")))?;
+
+                // Build full PlaybackResult from provider result + media fields
+                // Convert provider PlaybackInfo to models PlaybackInfo
+                let mut builder = synctv_core::models::media::PlaybackResult::builder(
+                    media.playlist_id.clone(),
+                    media.room_id.clone(),
+                    media.name.clone(),
+                    media.position,
+                )
+                .id(media.id.clone())
+                .default_mode(provider_result.default_mode.clone());
+
+                // Add all playback modes from provider result
+                for (mode_name, provider_info) in provider_result.playback_infos {
+                    // Convert provider PlaybackInfo to models PlaybackInfo
+                    let info = provider_playback_info_to_model(&provider_info);
+                    builder = builder.add_mode(mode_name, info);
+                }
+
+                // Add metadata from provider result
+                for (key, value) in provider_result.metadata {
+                    builder = builder.add_metadata(key, value);
+                }
+
+                let full_result = builder.build()
+                    .ok_or_else(|| ApiError::Internal("Failed to build PlaybackResult".to_string()))?;
+
+                playback_result_to_proto(&full_result)
+            }
+        } else {
+            // No media playing, return empty playback result
+            crate::proto::client::PlaybackResult {
+                media_id: String::new(),
+                playlist_id: String::new(),
+                room_id: rid.as_str().to_string(),
+                name: String::new(),
+                position: 0,
+                playback_infos: std::collections::HashMap::new(),
+                default_mode: String::new(),
+                metadata: std::collections::HashMap::new(),
+            }
+        };
+
+        Ok(crate::proto::client::GetPlaybackResponse {
             playback_state: Some(playback_state_to_proto(&state)),
+            playback_result: Some(playback_result),
         })
+    }
+
+    // ==================== WebSocket Command Handlers ====================
+    // These methods are called from WebSocket message handler
+
+    /// Handle Play command from WebSocket
+    pub async fn handle_play_command(
+        &self,
+        user_id: &str,
+        room_id: &str,
+    ) -> Result<(), ApiError> {
+        let uid = UserId::from_string(user_id.to_string());
+        let rid = RoomId::from_string(room_id.to_string());
+
+        // Permission check (PLAY_PAUSE) is handled by PlaybackService::set_playing()
+        self.room_service
+            .playback_service()
+            .set_playing(rid, uid, true)
+            .await
+            .map_err(ApiError::from)?;
+
+        // PlaybackStateChanged broadcast is handled by room_service
+        Ok(())
+    }
+
+    /// Handle Pause command from WebSocket
+    pub async fn handle_pause_command(
+        &self,
+        user_id: &str,
+        room_id: &str,
+    ) -> Result<(), ApiError> {
+        let uid = UserId::from_string(user_id.to_string());
+        let rid = RoomId::from_string(room_id.to_string());
+
+        // Permission check (PLAY_PAUSE) is handled by PlaybackService::set_playing()
+        self.room_service
+            .playback_service()
+            .set_playing(rid, uid, false)
+            .await
+            .map_err(ApiError::from)?;
+
+        // PlaybackStateChanged broadcast is handled by room_service
+        Ok(())
+    }
+
+    /// Handle Seek command from WebSocket
+    pub async fn handle_seek_command(
+        &self,
+        user_id: &str,
+        room_id: &str,
+        current_time: f64,
+    ) -> Result<(), ApiError> {
+        let uid = UserId::from_string(user_id.to_string());
+        let rid = RoomId::from_string(room_id.to_string());
+
+        // Permission check (SEEK) is handled by PlaybackService::seek()
+        self.room_service
+            .playback_service()
+            .seek(rid, uid, current_time)
+            .await
+            .map_err(ApiError::from)?;
+
+        // PlaybackStateChanged broadcast is handled by room_service
+        Ok(())
+    }
+
+    /// Handle SetPlaybackSpeed command from WebSocket
+    pub async fn handle_set_speed_command(
+        &self,
+        user_id: &str,
+        room_id: &str,
+        speed: f64,
+    ) -> Result<(), ApiError> {
+        let uid = UserId::from_string(user_id.to_string());
+        let rid = RoomId::from_string(room_id.to_string());
+
+        // Permission check (CHANGE_SPEED) is handled by PlaybackService::change_speed()
+        self.room_service
+            .playback_service()
+            .change_speed(rid, uid, speed)
+            .await
+            .map_err(ApiError::from)?;
+
+        // PlaybackStateChanged broadcast is handled by room_service
+        Ok(())
     }
 }

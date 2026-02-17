@@ -11,6 +11,7 @@ pub mod email;
 pub mod messaging;
 pub mod notification;
 pub mod oauth2;
+pub mod provider;
 pub mod providers;
 
 // Re-export for convenience

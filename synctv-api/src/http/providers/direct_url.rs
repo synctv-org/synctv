@@ -11,7 +11,8 @@ use axum::{
     Router,
 };
 
-use crate::http::{AppState, error::AppResult, middleware::AuthUser, provider_common::resolve_media_from_playlist};
+use crate::http::{AppState, error::AppResult, middleware::AuthUser};
+use crate::impls::provider::resolve_media_from_playlist;
 use synctv_core::models::{MediaId, RoomId};
 
 /// Build `DirectURL` HTTP routes (proxy only, no provider API)
@@ -35,7 +36,13 @@ async fn resolve_direct_playback(
     media_id: &MediaId,
     state: &AppState,
 ) -> Result<(String, HashMap<String, String>), crate::http::AppError> {
-    let media = resolve_media_from_playlist(auth, room_id, media_id, state).await?;
+    let media = resolve_media_from_playlist(
+        &auth.user_id,
+        room_id,
+        media_id,
+        &state.room_service,
+    ).await
+    .map_err(crate::http::error::map_api_error)?;
 
     let playback_result = media
         .get_playback_result()

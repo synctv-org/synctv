@@ -60,7 +60,7 @@ BEGIN
         'synctv_room_deleted',
         json_build_object(
             'room_id', OLD.id,
-            'deleted_at', CURRENT_TIMESTAMP
+            'timestamp', CURRENT_TIMESTAMP
         )::text
     );
     RETURN OLD;

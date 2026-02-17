@@ -152,6 +152,48 @@ impl ClientApiImpl {
         Ok(crate::proto::client::DeletePlaylistResponse { success: true })
     }
 
+    /// Get a single playlist by ID
+    pub async fn get_playlist(
+        &self,
+        user_id: &str,
+        room_id: &str,
+        playlist_id: &str,
+    ) -> Result<crate::proto::client::GetPlaylistResponse, ApiError> {
+        let uid = UserId::from_string(user_id.to_string());
+        let rid = RoomId::from_string(room_id.to_string());
+        let pid = synctv_core::models::PlaylistId::from_string(playlist_id.to_string());
+
+        // Check membership
+        self.room_service.check_membership(&rid, &uid).await
+            .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
+
+        // Get playlist
+        let playlist = self.room_service.playlist_service()
+            .get_playlist(&pid)
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::NotFound(format!("Playlist {} not found", playlist_id)))?;
+
+        // Count child folders and media files
+        let child_folders = self.room_service.playlist_service()
+            .get_children(&pid)
+            .await
+            .map_err(ApiError::from)?;
+        let child_folder_count = child_folders.len() as i32;
+
+        let media_count = self.room_service.media_service()
+            .count_playlist_media(&pid)
+            .await
+            .unwrap_or(0) as i32;
+
+        Ok(crate::proto::client::GetPlaylistResponse {
+            playlist: Some(playlist_to_proto(&playlist, media_count)),
+            child_folder_count,
+            media_count,
+        })
+    }
+
+    /// List playlists (folders) in a room or under a parent
     pub async fn list_playlists(
         &self,
         user_id: &str,

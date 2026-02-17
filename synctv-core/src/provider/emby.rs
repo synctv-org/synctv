@@ -336,8 +336,6 @@ impl MediaProvider for EmbyProvider {
             playback_infos,
             default_mode,
             metadata,
-            dash: None,
-            hevc_dash: None,
         })
     }
 
@@ -575,11 +573,10 @@ impl DynamicFolder for EmbyProvider {
             .filter_map(|item| {
                 // Determine item type
                 let item_type = if item.is_folder {
-                    ItemType::Folder
+                    ItemType::Playlist
                 } else {
                     match item.r#type.as_str() {
-                        "Movie" | "Episode" | "Video" => ItemType::Video,
-                        "Audio" | "MusicAlbum" => ItemType::Audio,
+                        "Movie" | "Episode" | "Video" | "Audio" | "MusicAlbum" => ItemType::Media,
                         _ => return None, // Skip other types
                     }
                 };
@@ -654,7 +651,7 @@ impl DynamicFolder for EmbyProvider {
                 if let Some(idx) = current_idx {
                     // Get next video/audio item
                     let next_item = items.iter().skip(idx + 1).find(|item| {
-                        matches!(item.item_type, ItemType::Video | ItemType::Audio)
+                        item.item_type == ItemType::Media
                     });
 
                     if let Some(next) = next_item {
@@ -678,7 +675,7 @@ impl DynamicFolder for EmbyProvider {
                     } else if play_mode == PlayMode::RepeatAll {
                         // Wrap around to first video/audio
                         let first_item = items.iter().find(|item| {
-                            matches!(item.item_type, ItemType::Video | ItemType::Audio)
+                            item.item_type == ItemType::Media
                         });
 
                         if let Some(first) = first_item {
@@ -725,7 +722,7 @@ impl DynamicFolder for EmbyProvider {
 
                 let playable_items: Vec<_> = items
                     .iter()
-                    .filter(|item| matches!(item.item_type, ItemType::Video | ItemType::Audio))
+                    .filter(|item| item.item_type == ItemType::Media)
                     .collect();
 
                 if playable_items.is_empty() {

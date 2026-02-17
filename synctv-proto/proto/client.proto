@@ -79,11 +79,10 @@ service MediaService {
     rpc UpdatePlaylist(UpdatePlaylistRequest) returns (UpdatePlaylistResponse);
     rpc DeletePlaylist(DeletePlaylistRequest) returns (DeletePlaylistResponse);
     rpc ListPlaylists(ListPlaylistsRequest) returns (ListPlaylistsResponse);
-    rpc SetCurrentMedia(SetCurrentMediaRequest) returns (SetCurrentMediaResponse);
 
     // Media Management (room-scoped operations, use x-room-id)
     rpc AddMedia(AddMediaRequest) returns (AddMediaResponse);
-    rpc RemoveMedia(RemoveMediaRequest) returns (RemoveMediaResponse);
+    rpc DeleteMedia(DeleteMediaRequest) returns (DeleteMediaResponse);
     rpc EditMedia(EditMediaRequest) returns (EditMediaResponse);
     rpc ListPlaylist(ListPlaylistRequest) returns (ListPlaylistResponse);
     rpc ListPlaylistItems(ListPlaylistItemsRequest) returns (ListPlaylistItemsResponse); // List dynamic playlist items
@@ -92,23 +91,19 @@ service MediaService {
 
     // Batch Operations (room-scoped)
     rpc AddMediaBatch(AddMediaBatchRequest) returns (AddMediaBatchResponse);
-    rpc RemoveMediaBatch(RemoveMediaBatchRequest) returns (RemoveMediaBatchResponse);
+    rpc DeleteMediaBatch(DeleteMediaBatchRequest) returns (DeleteMediaBatchResponse);
     rpc ReorderMediaBatch(ReorderMediaBatchRequest) returns (ReorderMediaBatchResponse);
 
     // Playback Control (room-scoped operations, use x-room-id)
-    rpc Play(PlayRequest) returns (PlayResponse);
-    rpc Pause(PauseRequest) returns (PauseResponse);
-    rpc Seek(SeekRequest) returns (SeekResponse);
-    rpc SetPlaybackSpeed(SetPlaybackSpeedRequest) returns (SetPlaybackSpeedResponse);
-    rpc GetPlaybackState(GetPlaybackStateRequest) returns (GetPlaybackStateResponse);
+    // Note: Real-time playback commands (play/pause/seek/speed) are sent via WebSocket ClientMessage
+    rpc StartPlayback(StartPlaybackRequest) returns (StartPlaybackResponse); // Start playing a specific media
+    rpc StopPlayback(StopPlaybackRequest) returns (StopPlaybackResponse); // Stop current playback
+    rpc GetPlayback(GetPlaybackRequest) returns (GetPlaybackResponse); // Get current playback state and info
 
     // Live Streaming (room-scoped, use x-room-id)
     rpc CreatePublishKey(CreatePublishKeyRequest) returns (CreatePublishKeyResponse);
     rpc GetStreamInfo(GetStreamInfoRequest) returns (GetStreamInfoResponse);
     rpc ListRoomStreams(ListRoomStreamsRequest) returns (ListRoomStreamsResponse);
-
-    // Movie Info (room-scoped, use x-room-id)
-    rpc GetMovieInfo(GetMovieInfoRequest) returns (GetMovieInfoResponse);
 }
 
 // ==================== Public Service ====================
@@ -438,25 +433,48 @@ message DeletePlaylistResponse {
     bool success = 1;
 }
 
+// Get single playlist info
+message GetPlaylistRequest {
+    string playlist_id = 1; // Playlist ID. Validation: required, max 64 chars
+}
+
+message GetPlaylistResponse {
+    Playlist playlist = 1;
+    int32 child_folder_count = 2; // Number of child playlists (folders)
+    int32 media_count = 3; // Number of media items (files)
+}
+
+// List playlists (folders) in a room or under a parent
 message ListPlaylistsRequest {
     string parent_id = 1; // Optional parent ID to get children of specific playlist
     int32 page = 2;       // Page number (default 1). Validation: >= 1
     int32 page_size = 3;  // Items per page (default 50). Validation: max 100
 }
 
+// DEPRECATED: Use GetPlaylistResponse and ListPlaylistContentsResponse instead
 message ListPlaylistsResponse {
     repeated Playlist playlists = 1;
     int32 total = 2; // Total number of playlists matching filter
 }
 
-message SetCurrentMediaRequest {
-    string playlist_id = 1; // Playlist to play from
-    string media_id = 2; // Optional specific media to play (if not specified, starts from first or current position)
+// HTTP API: Start playback of a specific media
+message StartPlaybackRequest {
+    string media_id = 1; // Media ID to start playing. Validation: required
 }
 
-message SetCurrentMediaResponse {
-    Playlist playlist = 1;
-    Media playing_media = 2; // The media that is now playing
+message StartPlaybackResponse {
+    // Empty: playback started successfully
+    // Use GetPlayback to retrieve current state and info
+}
+
+// HTTP API: Stop current playback
+message StopPlaybackRequest {
+    // Empty: stops the currently playing media
+}
+
+message StopPlaybackResponse {
+    // Empty: playback stopped successfully
+    // Use GetPlayback to retrieve updated state
 }
 
 // Media Management Messages
@@ -474,11 +492,11 @@ message AddMediaResponse {
     Media media = 1;
 }
 
-message RemoveMediaRequest {
+message DeleteMediaRequest {
     string media_id = 1;
 }
 
-message RemoveMediaResponse {
+message DeleteMediaResponse {
     bool success = 1;
 }
 
@@ -496,28 +514,31 @@ message ListPlaylistResponse {
 
 message ListPlaylistItemsRequest {
     string playlist_id = 1; // Playlist ID. Validation: required, max 64 chars
-    string relative_path = 2; // Relative path within dynamic folder (empty for root)
+    string relative_path = 2; // Relative path within dynamic folder (empty for root, only for dynamic playlists)
     int32 page = 3; // Page number (default 1). Validation: >= 1
     int32 page_size = 4; // Items per page (default 50). Validation: max 100
 }
 
 message ListPlaylistItemsResponse {
-    repeated DirectoryItem items = 1; // Directory items
-    int32 total = 2; // Total number of items
+    repeated Playlist playlists = 1; // Child playlists (folders, listed first)
+    repeated Media media = 2; // Media items (files, listed after folders)
+    int32 total = 3; // Total number of items (playlists + media)
+    int32 folder_count = 4; // Number of playlists (folders)
+    int32 file_count = 5; // Number of media items (files)
+
+    // For dynamic playlists only
+    repeated PlaylistItem dynamic_items = 6; // Remote provider items (used when browsing dynamic folders)
 }
 
 enum ItemType {
     ITEM_TYPE_UNSPECIFIED = 0;
-    ITEM_TYPE_VIDEO = 1; // Video file
-    ITEM_TYPE_AUDIO = 2; // Audio file
-    ITEM_TYPE_FOLDER = 3; // Folder/directory
-    ITEM_TYPE_LIVE = 4; // Live stream
-    ITEM_TYPE_FILE = 5; // Other file
+    ITEM_TYPE_PLAYLIST = 1; // Folder/directory (playlist)
+    ITEM_TYPE_MEDIA = 2; // File (video/audio/live stream)
 }
 
-message DirectoryItem {
+message PlaylistItem {
     string name = 1; // Item name
-    ItemType item_type = 2; // Item type
+    ItemType item_type = 2; // Item type (PLAYLIST or MEDIA)
     string path = 3; // Full path from root
     optional int64 size = 4; // File size in bytes (for files)
     optional string thumbnail = 5; // Thumbnail URL
@@ -559,10 +580,10 @@ message AddMediaBatchResponse {
     repeated AddMediaResponse results = 1;
 }
 
-message RemoveMediaBatchRequest {
+message DeleteMediaBatchRequest {
     repeated string media_ids = 1;
 }
-message RemoveMediaBatchResponse {
+message DeleteMediaBatchResponse {
     int32 deleted_count = 1;
 }
 
@@ -579,38 +600,156 @@ message ReorderMediaBatchResponse {
 
 // Playback Control Messages
 // Note: room_id extracted from x-room-id metadata
-message PlayRequest {}
+// Client -> Server: Real-time playback control commands (sent via WebSocket)
+// Server broadcasts playback state changes to all room members via ServerMessage.PlaybackStateChanged
 
-message PlayResponse {
-    PlaybackState playback_state = 1;
+message PlayCommand {
+    // Empty: just resume playback
 }
 
-message PauseRequest {}
-
-message PauseResponse {
-    PlaybackState playback_state = 1;
+message PauseCommand {
+    // Empty: just pause playback
 }
 
-message SeekRequest {
+message SeekCommand {
     double current_time = 1; // Playback position in seconds. Validation: >= 0, max 86400, must be finite
 }
 
-message SeekResponse {
-    PlaybackState playback_state = 1;
-}
-
-message SetPlaybackSpeedRequest {
+message SetPlaybackSpeedCommand {
     double speed = 1; // Validation: 0.25 to 4.0, must be finite
 }
 
-message SetPlaybackSpeedResponse {
+message GetPlaybackRequest {}
+
+message GetPlaybackResponse {
+    // Playback state (current time, speed, is_playing, etc.)
     PlaybackState playback_state = 1;
+    // Complete playback information for currently playing media
+    // Includes URLs, subtitles, danmakus, etc.
+    PlaybackResult playback_result = 2;
 }
 
-message GetPlaybackStateRequest {}
+// ==================== Playback Information Structures ====================
 
-message GetPlaybackStateResponse {
-    PlaybackState playback_state = 1;
+// Complete playback information (returned by provider's generate_playback)
+message PlaybackResult {
+    string media_id = 1; // Media ID
+    string playlist_id = 2; // Playlist ID
+    string room_id = 3; // Room ID
+    string name = 4; // Media name
+    int32 position = 5; // Position in playlist
+
+    // Multiple playback modes (e.g., "direct", "proxied", "cdn1", "cdn2")
+    // Provider can define arbitrary mode names
+    map<string, PlaybackInfo> playback_infos = 6;
+
+    // Default mode name (must be a key in playback_infos)
+    string default_mode = 7;
+
+    // Media-level metadata (duration, thumbnail, title, author, etc.)
+    map<string, string> metadata = 8;
+}
+
+// Playback information for a single mode
+message PlaybackInfo {
+    // List of playback URLs (different qualities, codecs)
+    repeated PlaybackUrl urls = 1;
+
+    // Default URL index
+    int32 default_url_index = 2;
+
+    // Subtitle list
+    repeated Subtitle subtitles = 3;
+
+    // Default subtitle index (optional)
+    optional int32 default_subtitle_index = 4;
+
+    // Danmaku list
+    repeated Danmaku danmakus = 5;
+
+    // Format type (e.g., "m3u8", "mp4", "flv")
+    string format = 6;
+}
+
+// Playback URL (represents a quality/codec option)
+message PlaybackUrl {
+    // Display name (e.g., "1080P", "HEVC 4K", "720P")
+    string name = 1;
+
+    // Complete URL
+    string url = 2;
+
+    // Request headers (if needed)
+    map<string, string> headers = 3;
+
+    // Expiration time (Unix timestamp, optional)
+    optional int64 expire_at = 4;
+
+    // URL-level metadata (resolution, codec, bitrate, fps, etc.)
+    optional PlaybackUrlMetadata metadata = 5;
+}
+
+// URL-level metadata
+message PlaybackUrlMetadata {
+    // Resolution (e.g., "1920x1080", "1280x720")
+    optional string resolution = 1;
+
+    // Bitrate in bps
+    optional int64 bitrate = 2;
+
+    // Video codec (e.g., "avc", "hevc", "av1")
+    optional string codec = 3;
+
+    // Frame rate
+    optional int32 fps = 4;
+
+    // Additional metadata
+    map<string, string> extra = 5;
+}
+
+// Subtitle information
+message Subtitle {
+    // Display name (e.g., "简体中文", "English")
+    string name = 1;
+
+    // Language code (e.g., "zh-CN", "en-US")
+    string language = 2;
+
+    // Subtitle URL list (multiple sources/formats)
+    repeated SubtitleUrl urls = 3;
+
+    // Default URL index
+    int32 default_url_index = 4;
+}
+
+// Subtitle URL
+message SubtitleUrl {
+    // Display name (e.g., "原始", "AI翻译")
+    string name = 1;
+
+    // Subtitle file URL
+    string url = 2;
+
+    // Request headers (if needed)
+    map<string, string> headers = 3;
+
+    // Format (e.g., "json", "srt", "vtt")
+    string format = 4;
+}
+
+// Danmaku (bullet comments) information
+message Danmaku {
+    // Display name (e.g., "Bilibili弹幕", "本地弹幕")
+    string name = 1;
+
+    // Danmaku API URL or file URL
+    string url = 2;
+
+    // Format type (e.g., "bilibili", "ass", "xml")
+    optional string format = 3;
+
+    // Request headers (if needed)
+    map<string, string> headers = 4;
 }
 
 // Real-time Messaging
@@ -628,6 +767,11 @@ message ClientMessage {
         SfuMigrationAnswer sfu_migration_answer = 8;
         // Playback progress heartbeat: client periodically reports current position
         PlaybackProgressReport playback_progress = 9;
+        // Playback control commands (real-time)
+        PlayCommand play_command = 10;
+        PauseCommand pause_command = 11;
+        SeekCommand seek_command = 12;
+        SetPlaybackSpeedCommand set_speed_command = 13;
     }
 }
 
@@ -1124,40 +1268,6 @@ message PeerNetworkQuality {
     uint32 quality_score = 6;
     // Suggested quality action based on current network conditions
     QualityAction quality_action = 7;
-}
-
-// ==================== Movie Info ====================
-
-message GetMovieInfoRequest {
-    string media_id = 1;
-}
-
-message GetMovieInfoResponse {
-    MovieInfo movie = 1;
-}
-
-message MovieInfo {
-    string type = 1;          // "mpd", "m3u8", "mp4", "flv"
-    string url = 2;           // Playback URL (proxy or direct)
-    map<string, string> headers = 3; // Required HTTP headers (direct mode)
-    repeated MovieSource more_sources = 4;
-    repeated MovieSubtitle subtitles = 5;
-    bool is_live = 6;
-    double duration = 7;
-}
-
-message MovieSource {
-    string name = 1;          // "HEVC", "4K"
-    string type = 2;          // "mpd", "m3u8"
-    string url = 3;
-    map<string, string> headers = 4;
-}
-
-message MovieSubtitle {
-    string name = 1;
-    string language = 2;
-    string url = 3;
-    string format = 4;        // "json", "srt", "vtt"
 }
 
 // ==================== Notification Messages ====================

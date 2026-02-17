@@ -256,7 +256,7 @@ fn register_auth_routes(state: &AppState) -> Router<AppState> {
         ))
 }
 
-/// Media mutation routes (add, remove, reorder, edit, batch operations).
+/// Media mutation routes (add, delete, reorder, edit, batch operations).
 /// Moderate rate limiting: 20 req/min.
 fn register_media_routes(state: &AppState) -> Router<AppState> {
     Router::new()
@@ -264,10 +264,10 @@ fn register_media_routes(state: &AppState) -> Router<AppState> {
         .route("/api/rooms/{room_id}/media", axum::routing::delete(room::clear_playlist))
         .route("/api/rooms/{room_id}/media", axum::routing::patch(room::update_media_batch))
         .route("/api/rooms/{room_id}/media/batch", post(room::push_media_batch))
-        .route("/api/rooms/{room_id}/media/batch", axum::routing::delete(room::remove_media_batch))
+        .route("/api/rooms/{room_id}/media/batch", axum::routing::delete(room::delete_media_batch))
         .route("/api/rooms/{room_id}/media/reorder", post(room::reorder_media_batch))
         .route("/api/rooms/{room_id}/media/swap", post(room::swap_media_items))
-        .route("/api/rooms/{room_id}/media/{media_id}", axum::routing::delete(room::remove_media))
+        .route("/api/rooms/{room_id}/media/{media_id}", axum::routing::delete(room::delete_media))
         .route("/api/rooms/{room_id}/media/{media_id}", axum::routing::patch(room::edit_media))
         .route_layer(axum_middleware::from_fn_with_state(
             state.clone(),
@@ -285,9 +285,8 @@ fn register_write_routes(state: &AppState) -> Router<AppState> {
         .route("/api/rooms/{room_id}/members/@me", axum::routing::delete(room::leave_room))
         .route("/api/rooms/{room_id}/settings", axum::routing::patch(room::update_room_settings))
         .route("/api/rooms/{room_id}/password", axum::routing::patch(room::set_room_password))
-        .route("/api/rooms/{room_id}/playback/play", post(room::play))
-        .route("/api/rooms/{room_id}/playback/pause", post(room::pause))
-        .route("/api/rooms/{room_id}/playback/seek", post(room::seek))
+        .route("/api/rooms/{room_id}/playback/start", post(room::start_playback))
+        .route("/api/rooms/{room_id}/playback/stop", post(room::stop_playback))
         .route("/api/user", axum::routing::patch(user::update_user))
         .route("/api/auth/session", axum::routing::delete(user::logout))
         .route("/api/user/rooms/{room_id}", axum::routing::delete(user::delete_my_room))
@@ -298,13 +297,10 @@ fn register_write_routes(state: &AppState) -> Router<AppState> {
         .route("/api/rooms/{room_id}/members/{user_id}", axum::routing::patch(room_extra::set_member_permissions))
         .route("/api/rooms/{room_id}/bans", post(room_extra::ban_member))
         .route("/api/rooms/{room_id}/bans/{user_id}", axum::routing::delete(room_extra::unban_member))
-        .route("/api/rooms/{room_id}/playback", axum::routing::patch(room::update_playback))
         .route("/api/rooms/{room_id}/playlists", post(room::create_playlist))
         .route("/api/rooms/{room_id}/playlists/{playlist_id}", axum::routing::patch(room::update_playlist))
         .route("/api/rooms/{room_id}/playlists/{playlist_id}", axum::routing::delete(room::delete_playlist))
         .route("/api/rooms/{room_id}/settings/reset", post(room::reset_room_settings))
-        .route("/api/rooms/{room_id}/playback/current", post(room::set_current_media))
-        .route("/api/rooms/{room_id}/playback/speed", post(room::set_playback_speed))
         .route_layer(axum_middleware::from_fn_with_state(
             state.clone(),
             middleware::write_rate_limit,
@@ -325,12 +321,14 @@ fn register_read_routes(state: &AppState) -> Router<AppState> {
         .route("/api/rooms/{room_id}", get(room::get_room))
         .route("/api/rooms/{room_id}/settings", get(room::get_room_settings))
         .route("/api/rooms/{room_id}/members", get(room::get_room_members))
-        .route("/api/rooms/{room_id}/playlists", get(room::list_playlists))
         .route("/api/rooms/{room_id}/chat/history", get(room::get_chat_history))
-        .route("/api/rooms/{room_id}/media", get(room::get_playlist))
-        .route("/api/rooms/{room_id}/movie/{media_id}", get(room::get_movie_info))
+        // Playlist and Media APIs
+        .route("/api/rooms/{room_id}/playlists", get(room::list_playlists))
+        .route("/api/rooms/{room_id}/playlists/{playlist_id}", get(room::get_playlist))
         .route("/api/rooms/{room_id}/playlists/{playlist_id}/items", get(media::list_playlist_items))
-        .route("/api/rooms/{room_id}/playback", get(room::get_playback_state))
+        .route("/api/rooms/{room_id}/media", get(room::list_media))
+        .route("/api/rooms/{room_id}/media/{media_id}", get(room::get_media))
+        .route("/api/rooms/{room_id}/playback", get(room::get_playback))
         .route_layer(axum_middleware::from_fn_with_state(
             state.clone(),
             middleware::read_rate_limit,

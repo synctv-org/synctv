@@ -512,6 +512,27 @@ pub struct DeletePlaylistResponse {
     #[prost(bool, tag = "1")]
     pub success: bool,
 }
+/// Get single playlist info
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetPlaylistRequest {
+    /// Playlist ID. Validation: required, max 64 chars
+    #[prost(string, tag = "1")]
+    pub playlist_id: ::prost::alloc::string::String,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetPlaylistResponse {
+    #[prost(message, optional, tag = "1")]
+    pub playlist: ::core::option::Option<Playlist>,
+    /// Number of child playlists (folders)
+    #[prost(int32, tag = "2")]
+    pub child_folder_count: i32,
+    /// Number of media items (files)
+    #[prost(int32, tag = "3")]
+    pub media_count: i32,
+}
+/// List playlists (folders) in a room or under a parent
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ListPlaylistsRequest {
@@ -525,6 +546,7 @@ pub struct ListPlaylistsRequest {
     #[prost(int32, tag = "3")]
     pub page_size: i32,
 }
+/// DEPRECATED: Use GetPlaylistResponse and ListPlaylistContentsResponse instead
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ListPlaylistsResponse {
@@ -534,25 +556,30 @@ pub struct ListPlaylistsResponse {
     #[prost(int32, tag = "2")]
     pub total: i32,
 }
+/// HTTP API: Start playback of a specific media
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct SetCurrentMediaRequest {
-    /// Playlist to play from
+pub struct StartPlaybackRequest {
+    /// Media ID to start playing. Validation: required
     #[prost(string, tag = "1")]
-    pub playlist_id: ::prost::alloc::string::String,
-    /// Optional specific media to play (if not specified, starts from first or current position)
-    #[prost(string, tag = "2")]
     pub media_id: ::prost::alloc::string::String,
 }
+/// Empty: playback started successfully
+/// Use GetPlayback to retrieve current state and info
 #[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct SetCurrentMediaResponse {
-    #[prost(message, optional, tag = "1")]
-    pub playlist: ::core::option::Option<Playlist>,
-    /// The media that is now playing
-    #[prost(message, optional, tag = "2")]
-    pub playing_media: ::core::option::Option<Media>,
-}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StartPlaybackResponse {}
+/// HTTP API: Stop current playback
+///
+/// Empty: stops the currently playing media
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StopPlaybackRequest {}
+/// Empty: playback stopped successfully
+/// Use GetPlayback to retrieve updated state
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StopPlaybackResponse {}
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct AddMediaRequest {
@@ -580,13 +607,13 @@ pub struct AddMediaResponse {
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct RemoveMediaRequest {
+pub struct DeleteMediaRequest {
     #[prost(string, tag = "1")]
     pub media_id: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct RemoveMediaResponse {
+pub struct DeleteMediaResponse {
     #[prost(bool, tag = "1")]
     pub success: bool,
 }
@@ -620,7 +647,7 @@ pub struct ListPlaylistItemsRequest {
     /// Playlist ID. Validation: required, max 64 chars
     #[prost(string, tag = "1")]
     pub playlist_id: ::prost::alloc::string::String,
-    /// Relative path within dynamic folder (empty for root)
+    /// Relative path within dynamic folder (empty for root, only for dynamic playlists)
     #[prost(string, tag = "2")]
     pub relative_path: ::prost::alloc::string::String,
     /// Page number (default 1). Validation: >= 1
@@ -633,20 +660,34 @@ pub struct ListPlaylistItemsRequest {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ListPlaylistItemsResponse {
-    /// Directory items
+    /// Child playlists (folders, listed first)
     #[prost(message, repeated, tag = "1")]
-    pub items: ::prost::alloc::vec::Vec<DirectoryItem>,
-    /// Total number of items
-    #[prost(int32, tag = "2")]
+    pub playlists: ::prost::alloc::vec::Vec<Playlist>,
+    /// Media items (files, listed after folders)
+    #[prost(message, repeated, tag = "2")]
+    pub media: ::prost::alloc::vec::Vec<Media>,
+    /// Total number of items (playlists + media)
+    #[prost(int32, tag = "3")]
     pub total: i32,
+    /// Number of playlists (folders)
+    #[prost(int32, tag = "4")]
+    pub folder_count: i32,
+    /// Number of media items (files)
+    #[prost(int32, tag = "5")]
+    pub file_count: i32,
+    /// For dynamic playlists only
+    ///
+    /// Remote provider items (used when browsing dynamic folders)
+    #[prost(message, repeated, tag = "6")]
+    pub dynamic_items: ::prost::alloc::vec::Vec<PlaylistItem>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct DirectoryItem {
+pub struct PlaylistItem {
     /// Item name
     #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
-    /// Item type
+    /// Item type (PLAYLIST or MEDIA)
     #[prost(enumeration = "ItemType", tag = "2")]
     pub item_type: i32,
     /// Full path from root
@@ -723,13 +764,13 @@ pub struct AddMediaBatchResponse {
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct RemoveMediaBatchRequest {
+pub struct DeleteMediaBatchRequest {
     #[prost(string, repeated, tag = "1")]
     pub media_ids: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct RemoveMediaBatchResponse {
+pub struct DeleteMediaBatchResponse {
     #[prost(int32, tag = "1")]
     pub deleted_count: i32,
 }
@@ -753,66 +794,212 @@ pub struct ReorderMediaBatchResponse {
     #[prost(bool, tag = "1")]
     pub success: bool,
 }
-/// Playback Control Messages
-/// Note: room_id extracted from x-room-id metadata
+/// Empty: just resume playback
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct PlayRequest {}
-#[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct PlayResponse {
-    #[prost(message, optional, tag = "1")]
-    pub playback_state: ::core::option::Option<PlaybackState>,
-}
+pub struct PlayCommand {}
+/// Empty: just pause playback
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct PauseRequest {}
-#[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct PauseResponse {
-    #[prost(message, optional, tag = "1")]
-    pub playback_state: ::core::option::Option<PlaybackState>,
-}
+pub struct PauseCommand {}
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
-pub struct SeekRequest {
+pub struct SeekCommand {
     /// Playback position in seconds. Validation: >= 0, max 86400, must be finite
     #[prost(double, tag = "1")]
     pub current_time: f64,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct SeekResponse {
-    #[prost(message, optional, tag = "1")]
-    pub playback_state: ::core::option::Option<PlaybackState>,
-}
-#[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
-pub struct SetPlaybackSpeedRequest {
+pub struct SetPlaybackSpeedCommand {
     /// Validation: 0.25 to 4.0, must be finite
     #[prost(double, tag = "1")]
     pub speed: f64,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct SetPlaybackSpeedResponse {
-    #[prost(message, optional, tag = "1")]
-    pub playback_state: ::core::option::Option<PlaybackState>,
-}
-#[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct GetPlaybackStateRequest {}
+pub struct GetPlaybackRequest {}
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct GetPlaybackStateResponse {
+pub struct GetPlaybackResponse {
+    /// Playback state (current time, speed, is_playing, etc.)
     #[prost(message, optional, tag = "1")]
     pub playback_state: ::core::option::Option<PlaybackState>,
+    /// Complete playback information for currently playing media
+    /// Includes URLs, subtitles, danmakus, etc.
+    #[prost(message, optional, tag = "2")]
+    pub playback_result: ::core::option::Option<PlaybackResult>,
+}
+/// Complete playback information (returned by provider's generate_playback)
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PlaybackResult {
+    /// Media ID
+    #[prost(string, tag = "1")]
+    pub media_id: ::prost::alloc::string::String,
+    /// Playlist ID
+    #[prost(string, tag = "2")]
+    pub playlist_id: ::prost::alloc::string::String,
+    /// Room ID
+    #[prost(string, tag = "3")]
+    pub room_id: ::prost::alloc::string::String,
+    /// Media name
+    #[prost(string, tag = "4")]
+    pub name: ::prost::alloc::string::String,
+    /// Position in playlist
+    #[prost(int32, tag = "5")]
+    pub position: i32,
+    /// Multiple playback modes (e.g., "direct", "proxied", "cdn1", "cdn2")
+    /// Provider can define arbitrary mode names
+    #[prost(map = "string, message", tag = "6")]
+    pub playback_infos: ::std::collections::HashMap<
+        ::prost::alloc::string::String,
+        PlaybackInfo,
+    >,
+    /// Default mode name (must be a key in playback_infos)
+    #[prost(string, tag = "7")]
+    pub default_mode: ::prost::alloc::string::String,
+    /// Media-level metadata (duration, thumbnail, title, author, etc.)
+    #[prost(map = "string, string", tag = "8")]
+    pub metadata: ::std::collections::HashMap<
+        ::prost::alloc::string::String,
+        ::prost::alloc::string::String,
+    >,
+}
+/// Playback information for a single mode
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PlaybackInfo {
+    /// List of playback URLs (different qualities, codecs)
+    #[prost(message, repeated, tag = "1")]
+    pub urls: ::prost::alloc::vec::Vec<PlaybackUrl>,
+    /// Default URL index
+    #[prost(int32, tag = "2")]
+    pub default_url_index: i32,
+    /// Subtitle list
+    #[prost(message, repeated, tag = "3")]
+    pub subtitles: ::prost::alloc::vec::Vec<Subtitle>,
+    /// Default subtitle index (optional)
+    #[prost(int32, optional, tag = "4")]
+    pub default_subtitle_index: ::core::option::Option<i32>,
+    /// Danmaku list
+    #[prost(message, repeated, tag = "5")]
+    pub danmakus: ::prost::alloc::vec::Vec<Danmaku>,
+    /// Format type (e.g., "m3u8", "mp4", "flv")
+    #[prost(string, tag = "6")]
+    pub format: ::prost::alloc::string::String,
+}
+/// Playback URL (represents a quality/codec option)
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PlaybackUrl {
+    /// Display name (e.g., "1080P", "HEVC 4K", "720P")
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    /// Complete URL
+    #[prost(string, tag = "2")]
+    pub url: ::prost::alloc::string::String,
+    /// Request headers (if needed)
+    #[prost(map = "string, string", tag = "3")]
+    pub headers: ::std::collections::HashMap<
+        ::prost::alloc::string::String,
+        ::prost::alloc::string::String,
+    >,
+    /// Expiration time (Unix timestamp, optional)
+    #[prost(int64, optional, tag = "4")]
+    pub expire_at: ::core::option::Option<i64>,
+    /// URL-level metadata (resolution, codec, bitrate, fps, etc.)
+    #[prost(message, optional, tag = "5")]
+    pub metadata: ::core::option::Option<PlaybackUrlMetadata>,
+}
+/// URL-level metadata
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PlaybackUrlMetadata {
+    /// Resolution (e.g., "1920x1080", "1280x720")
+    #[prost(string, optional, tag = "1")]
+    pub resolution: ::core::option::Option<::prost::alloc::string::String>,
+    /// Bitrate in bps
+    #[prost(int64, optional, tag = "2")]
+    pub bitrate: ::core::option::Option<i64>,
+    /// Video codec (e.g., "avc", "hevc", "av1")
+    #[prost(string, optional, tag = "3")]
+    pub codec: ::core::option::Option<::prost::alloc::string::String>,
+    /// Frame rate
+    #[prost(int32, optional, tag = "4")]
+    pub fps: ::core::option::Option<i32>,
+    /// Additional metadata
+    #[prost(map = "string, string", tag = "5")]
+    pub extra: ::std::collections::HashMap<
+        ::prost::alloc::string::String,
+        ::prost::alloc::string::String,
+    >,
+}
+/// Subtitle information
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Subtitle {
+    /// Display name (e.g., "简体中文", "English")
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    /// Language code (e.g., "zh-CN", "en-US")
+    #[prost(string, tag = "2")]
+    pub language: ::prost::alloc::string::String,
+    /// Subtitle URL list (multiple sources/formats)
+    #[prost(message, repeated, tag = "3")]
+    pub urls: ::prost::alloc::vec::Vec<SubtitleUrl>,
+    /// Default URL index
+    #[prost(int32, tag = "4")]
+    pub default_url_index: i32,
+}
+/// Subtitle URL
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SubtitleUrl {
+    /// Display name (e.g., "原始", "AI翻译")
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    /// Subtitle file URL
+    #[prost(string, tag = "2")]
+    pub url: ::prost::alloc::string::String,
+    /// Request headers (if needed)
+    #[prost(map = "string, string", tag = "3")]
+    pub headers: ::std::collections::HashMap<
+        ::prost::alloc::string::String,
+        ::prost::alloc::string::String,
+    >,
+    /// Format (e.g., "json", "srt", "vtt")
+    #[prost(string, tag = "4")]
+    pub format: ::prost::alloc::string::String,
+}
+/// Danmaku (bullet comments) information
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Danmaku {
+    /// Display name (e.g., "Bilibili弹幕", "本地弹幕")
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    /// Danmaku API URL or file URL
+    #[prost(string, tag = "2")]
+    pub url: ::prost::alloc::string::String,
+    /// Format type (e.g., "bilibili", "ass", "xml")
+    #[prost(string, optional, tag = "3")]
+    pub format: ::core::option::Option<::prost::alloc::string::String>,
+    /// Request headers (if needed)
+    #[prost(map = "string, string", tag = "4")]
+    pub headers: ::std::collections::HashMap<
+        ::prost::alloc::string::String,
+        ::prost::alloc::string::String,
+    >,
 }
 /// Real-time Messaging
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ClientMessage {
-    #[prost(oneof = "client_message::Message", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9")]
+    #[prost(
+        oneof = "client_message::Message",
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13"
+    )]
     pub message: ::core::option::Option<client_message::Message>,
 }
 /// Nested message and enum types in `ClientMessage`.
@@ -841,6 +1028,15 @@ pub mod client_message {
         /// Playback progress heartbeat: client periodically reports current position
         #[prost(message, tag = "9")]
         PlaybackProgress(super::PlaybackProgressReport),
+        /// Playback control commands (real-time)
+        #[prost(message, tag = "10")]
+        PlayCommand(super::PlayCommand),
+        #[prost(message, tag = "11")]
+        PauseCommand(super::PauseCommand),
+        #[prost(message, tag = "12")]
+        SeekCommand(super::SeekCommand),
+        #[prost(message, tag = "13")]
+        SetSpeedCommand(super::SetPlaybackSpeedCommand),
     }
 }
 /// Client -> Server: periodic playback progress heartbeat
@@ -1628,72 +1824,6 @@ pub struct PeerNetworkQuality {
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct GetMovieInfoRequest {
-    #[prost(string, tag = "1")]
-    pub media_id: ::prost::alloc::string::String,
-}
-#[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct GetMovieInfoResponse {
-    #[prost(message, optional, tag = "1")]
-    pub movie: ::core::option::Option<MovieInfo>,
-}
-#[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct MovieInfo {
-    /// "mpd", "m3u8", "mp4", "flv"
-    #[prost(string, tag = "1")]
-    pub r#type: ::prost::alloc::string::String,
-    /// Playback URL (proxy or direct)
-    #[prost(string, tag = "2")]
-    pub url: ::prost::alloc::string::String,
-    /// Required HTTP headers (direct mode)
-    #[prost(map = "string, string", tag = "3")]
-    pub headers: ::std::collections::HashMap<
-        ::prost::alloc::string::String,
-        ::prost::alloc::string::String,
-    >,
-    #[prost(message, repeated, tag = "4")]
-    pub more_sources: ::prost::alloc::vec::Vec<MovieSource>,
-    #[prost(message, repeated, tag = "5")]
-    pub subtitles: ::prost::alloc::vec::Vec<MovieSubtitle>,
-    #[prost(bool, tag = "6")]
-    pub is_live: bool,
-    #[prost(double, tag = "7")]
-    pub duration: f64,
-}
-#[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct MovieSource {
-    /// "HEVC", "4K"
-    #[prost(string, tag = "1")]
-    pub name: ::prost::alloc::string::String,
-    /// "mpd", "m3u8"
-    #[prost(string, tag = "2")]
-    pub r#type: ::prost::alloc::string::String,
-    #[prost(string, tag = "3")]
-    pub url: ::prost::alloc::string::String,
-    #[prost(map = "string, string", tag = "4")]
-    pub headers: ::std::collections::HashMap<
-        ::prost::alloc::string::String,
-        ::prost::alloc::string::String,
-    >,
-}
-#[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct MovieSubtitle {
-    #[prost(string, tag = "1")]
-    pub name: ::prost::alloc::string::String,
-    #[prost(string, tag = "2")]
-    pub language: ::prost::alloc::string::String,
-    #[prost(string, tag = "3")]
-    pub url: ::prost::alloc::string::String,
-    /// "json", "srt", "vtt"
-    #[prost(string, tag = "4")]
-    pub format: ::prost::alloc::string::String,
-}
-#[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct NotificationProto {
     #[prost(string, tag = "1")]
     pub id: ::prost::alloc::string::String,
@@ -1792,16 +1922,10 @@ pub struct DeleteAllReadResponse {}
 #[repr(i32)]
 pub enum ItemType {
     Unspecified = 0,
-    /// Video file
-    Video = 1,
-    /// Audio file
-    Audio = 2,
-    /// Folder/directory
-    Folder = 3,
-    /// Live stream
-    Live = 4,
-    /// Other file
-    File = 5,
+    /// Folder/directory (playlist)
+    Playlist = 1,
+    /// File (video/audio/live stream)
+    Media = 2,
 }
 impl ItemType {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -1811,22 +1935,16 @@ impl ItemType {
     pub fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "ITEM_TYPE_UNSPECIFIED",
-            Self::Video => "ITEM_TYPE_VIDEO",
-            Self::Audio => "ITEM_TYPE_AUDIO",
-            Self::Folder => "ITEM_TYPE_FOLDER",
-            Self::Live => "ITEM_TYPE_LIVE",
-            Self::File => "ITEM_TYPE_FILE",
+            Self::Playlist => "ITEM_TYPE_PLAYLIST",
+            Self::Media => "ITEM_TYPE_MEDIA",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
     pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
         match value {
             "ITEM_TYPE_UNSPECIFIED" => Some(Self::Unspecified),
-            "ITEM_TYPE_VIDEO" => Some(Self::Video),
-            "ITEM_TYPE_AUDIO" => Some(Self::Audio),
-            "ITEM_TYPE_FOLDER" => Some(Self::Folder),
-            "ITEM_TYPE_LIVE" => Some(Self::Live),
-            "ITEM_TYPE_FILE" => Some(Self::File),
+            "ITEM_TYPE_PLAYLIST" => Some(Self::Playlist),
+            "ITEM_TYPE_MEDIA" => Some(Self::Media),
             _ => None,
         }
     }
@@ -5001,32 +5119,6 @@ pub mod media_service_client {
                 .insert(GrpcMethod::new("synctv.client.MediaService", "ListPlaylists"));
             self.inner.unary(req, path, codec).await
         }
-        pub async fn set_current_media(
-            &mut self,
-            request: impl tonic::IntoRequest<super::SetCurrentMediaRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::SetCurrentMediaResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.client.MediaService/SetCurrentMedia",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new("synctv.client.MediaService", "SetCurrentMedia"),
-                );
-            self.inner.unary(req, path, codec).await
-        }
         /// Media Management (room-scoped operations, use x-room-id)
         pub async fn add_media(
             &mut self,
@@ -5052,11 +5144,11 @@ pub mod media_service_client {
                 .insert(GrpcMethod::new("synctv.client.MediaService", "AddMedia"));
             self.inner.unary(req, path, codec).await
         }
-        pub async fn remove_media(
+        pub async fn delete_media(
             &mut self,
-            request: impl tonic::IntoRequest<super::RemoveMediaRequest>,
+            request: impl tonic::IntoRequest<super::DeleteMediaRequest>,
         ) -> std::result::Result<
-            tonic::Response<super::RemoveMediaResponse>,
+            tonic::Response<super::DeleteMediaResponse>,
             tonic::Status,
         > {
             self.inner
@@ -5069,11 +5161,11 @@ pub mod media_service_client {
                 })?;
             let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
-                "/synctv.client.MediaService/RemoveMedia",
+                "/synctv.client.MediaService/DeleteMedia",
             );
             let mut req = request.into_request();
             req.extensions_mut()
-                .insert(GrpcMethod::new("synctv.client.MediaService", "RemoveMedia"));
+                .insert(GrpcMethod::new("synctv.client.MediaService", "DeleteMedia"));
             self.inner.unary(req, path, codec).await
         }
         pub async fn edit_media(
@@ -5223,11 +5315,11 @@ pub mod media_service_client {
                 .insert(GrpcMethod::new("synctv.client.MediaService", "AddMediaBatch"));
             self.inner.unary(req, path, codec).await
         }
-        pub async fn remove_media_batch(
+        pub async fn delete_media_batch(
             &mut self,
-            request: impl tonic::IntoRequest<super::RemoveMediaBatchRequest>,
+            request: impl tonic::IntoRequest<super::DeleteMediaBatchRequest>,
         ) -> std::result::Result<
-            tonic::Response<super::RemoveMediaBatchResponse>,
+            tonic::Response<super::DeleteMediaBatchResponse>,
             tonic::Status,
         > {
             self.inner
@@ -5240,12 +5332,12 @@ pub mod media_service_client {
                 })?;
             let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
-                "/synctv.client.MediaService/RemoveMediaBatch",
+                "/synctv.client.MediaService/DeleteMediaBatch",
             );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(
-                    GrpcMethod::new("synctv.client.MediaService", "RemoveMediaBatch"),
+                    GrpcMethod::new("synctv.client.MediaService", "DeleteMediaBatch"),
                 );
             self.inner.unary(req, path, codec).await
         }
@@ -5276,74 +5368,12 @@ pub mod media_service_client {
             self.inner.unary(req, path, codec).await
         }
         /// Playback Control (room-scoped operations, use x-room-id)
-        pub async fn play(
+        /// Note: Real-time playback commands (play/pause/seek/speed) are sent via WebSocket ClientMessage
+        pub async fn start_playback(
             &mut self,
-            request: impl tonic::IntoRequest<super::PlayRequest>,
-        ) -> std::result::Result<tonic::Response<super::PlayResponse>, tonic::Status> {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.client.MediaService/Play",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("synctv.client.MediaService", "Play"));
-            self.inner.unary(req, path, codec).await
-        }
-        pub async fn pause(
-            &mut self,
-            request: impl tonic::IntoRequest<super::PauseRequest>,
-        ) -> std::result::Result<tonic::Response<super::PauseResponse>, tonic::Status> {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.client.MediaService/Pause",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("synctv.client.MediaService", "Pause"));
-            self.inner.unary(req, path, codec).await
-        }
-        pub async fn seek(
-            &mut self,
-            request: impl tonic::IntoRequest<super::SeekRequest>,
-        ) -> std::result::Result<tonic::Response<super::SeekResponse>, tonic::Status> {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.client.MediaService/Seek",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("synctv.client.MediaService", "Seek"));
-            self.inner.unary(req, path, codec).await
-        }
-        pub async fn set_playback_speed(
-            &mut self,
-            request: impl tonic::IntoRequest<super::SetPlaybackSpeedRequest>,
+            request: impl tonic::IntoRequest<super::StartPlaybackRequest>,
         ) -> std::result::Result<
-            tonic::Response<super::SetPlaybackSpeedResponse>,
+            tonic::Response<super::StartPlaybackResponse>,
             tonic::Status,
         > {
             self.inner
@@ -5356,20 +5386,18 @@ pub mod media_service_client {
                 })?;
             let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
-                "/synctv.client.MediaService/SetPlaybackSpeed",
+                "/synctv.client.MediaService/StartPlayback",
             );
             let mut req = request.into_request();
             req.extensions_mut()
-                .insert(
-                    GrpcMethod::new("synctv.client.MediaService", "SetPlaybackSpeed"),
-                );
+                .insert(GrpcMethod::new("synctv.client.MediaService", "StartPlayback"));
             self.inner.unary(req, path, codec).await
         }
-        pub async fn get_playback_state(
+        pub async fn stop_playback(
             &mut self,
-            request: impl tonic::IntoRequest<super::GetPlaybackStateRequest>,
+            request: impl tonic::IntoRequest<super::StopPlaybackRequest>,
         ) -> std::result::Result<
-            tonic::Response<super::GetPlaybackStateResponse>,
+            tonic::Response<super::StopPlaybackResponse>,
             tonic::Status,
         > {
             self.inner
@@ -5382,13 +5410,35 @@ pub mod media_service_client {
                 })?;
             let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
-                "/synctv.client.MediaService/GetPlaybackState",
+                "/synctv.client.MediaService/StopPlayback",
             );
             let mut req = request.into_request();
             req.extensions_mut()
-                .insert(
-                    GrpcMethod::new("synctv.client.MediaService", "GetPlaybackState"),
-                );
+                .insert(GrpcMethod::new("synctv.client.MediaService", "StopPlayback"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn get_playback(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetPlaybackRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetPlaybackResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.MediaService/GetPlayback",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("synctv.client.MediaService", "GetPlayback"));
             self.inner.unary(req, path, codec).await
         }
         /// Live Streaming (room-scoped, use x-room-id)
@@ -5468,31 +5518,6 @@ pub mod media_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        /// Movie Info (room-scoped, use x-room-id)
-        pub async fn get_movie_info(
-            &mut self,
-            request: impl tonic::IntoRequest<super::GetMovieInfoRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::GetMovieInfoResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.client.MediaService/GetMovieInfo",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("synctv.client.MediaService", "GetMovieInfo"));
-            self.inner.unary(req, path, codec).await
-        }
     }
 }
 /// Generated server implementations.
@@ -5537,13 +5562,6 @@ pub mod media_service_server {
             tonic::Response<super::ListPlaylistsResponse>,
             tonic::Status,
         >;
-        async fn set_current_media(
-            &self,
-            request: tonic::Request<super::SetCurrentMediaRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::SetCurrentMediaResponse>,
-            tonic::Status,
-        >;
         /// Media Management (room-scoped operations, use x-room-id)
         async fn add_media(
             &self,
@@ -5552,11 +5570,11 @@ pub mod media_service_server {
             tonic::Response<super::AddMediaResponse>,
             tonic::Status,
         >;
-        async fn remove_media(
+        async fn delete_media(
             &self,
-            request: tonic::Request<super::RemoveMediaRequest>,
+            request: tonic::Request<super::DeleteMediaRequest>,
         ) -> std::result::Result<
-            tonic::Response<super::RemoveMediaResponse>,
+            tonic::Response<super::DeleteMediaResponse>,
             tonic::Status,
         >;
         async fn edit_media(
@@ -5602,11 +5620,11 @@ pub mod media_service_server {
             tonic::Response<super::AddMediaBatchResponse>,
             tonic::Status,
         >;
-        async fn remove_media_batch(
+        async fn delete_media_batch(
             &self,
-            request: tonic::Request<super::RemoveMediaBatchRequest>,
+            request: tonic::Request<super::DeleteMediaBatchRequest>,
         ) -> std::result::Result<
-            tonic::Response<super::RemoveMediaBatchResponse>,
+            tonic::Response<super::DeleteMediaBatchResponse>,
             tonic::Status,
         >;
         async fn reorder_media_batch(
@@ -5617,30 +5635,26 @@ pub mod media_service_server {
             tonic::Status,
         >;
         /// Playback Control (room-scoped operations, use x-room-id)
-        async fn play(
+        /// Note: Real-time playback commands (play/pause/seek/speed) are sent via WebSocket ClientMessage
+        async fn start_playback(
             &self,
-            request: tonic::Request<super::PlayRequest>,
-        ) -> std::result::Result<tonic::Response<super::PlayResponse>, tonic::Status>;
-        async fn pause(
-            &self,
-            request: tonic::Request<super::PauseRequest>,
-        ) -> std::result::Result<tonic::Response<super::PauseResponse>, tonic::Status>;
-        async fn seek(
-            &self,
-            request: tonic::Request<super::SeekRequest>,
-        ) -> std::result::Result<tonic::Response<super::SeekResponse>, tonic::Status>;
-        async fn set_playback_speed(
-            &self,
-            request: tonic::Request<super::SetPlaybackSpeedRequest>,
+            request: tonic::Request<super::StartPlaybackRequest>,
         ) -> std::result::Result<
-            tonic::Response<super::SetPlaybackSpeedResponse>,
+            tonic::Response<super::StartPlaybackResponse>,
             tonic::Status,
         >;
-        async fn get_playback_state(
+        async fn stop_playback(
             &self,
-            request: tonic::Request<super::GetPlaybackStateRequest>,
+            request: tonic::Request<super::StopPlaybackRequest>,
         ) -> std::result::Result<
-            tonic::Response<super::GetPlaybackStateResponse>,
+            tonic::Response<super::StopPlaybackResponse>,
+            tonic::Status,
+        >;
+        async fn get_playback(
+            &self,
+            request: tonic::Request<super::GetPlaybackRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetPlaybackResponse>,
             tonic::Status,
         >;
         /// Live Streaming (room-scoped, use x-room-id)
@@ -5663,14 +5677,6 @@ pub mod media_service_server {
             request: tonic::Request<super::ListRoomStreamsRequest>,
         ) -> std::result::Result<
             tonic::Response<super::ListRoomStreamsResponse>,
-            tonic::Status,
-        >;
-        /// Movie Info (room-scoped, use x-room-id)
-        async fn get_movie_info(
-            &self,
-            request: tonic::Request<super::GetMovieInfoRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::GetMovieInfoResponse>,
             tonic::Status,
         >;
     }
@@ -5933,52 +5939,6 @@ pub mod media_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/synctv.client.MediaService/SetCurrentMedia" => {
-                    #[allow(non_camel_case_types)]
-                    struct SetCurrentMediaSvc<T: MediaService>(pub Arc<T>);
-                    impl<
-                        T: MediaService,
-                    > tonic::server::UnaryService<super::SetCurrentMediaRequest>
-                    for SetCurrentMediaSvc<T> {
-                        type Response = super::SetCurrentMediaResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::SetCurrentMediaRequest>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as MediaService>::set_current_media(&inner, request)
-                                    .await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = SetCurrentMediaSvc(inner);
-                        let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
                 "/synctv.client.MediaService/AddMedia" => {
                     #[allow(non_camel_case_types)]
                     struct AddMediaSvc<T: MediaService>(pub Arc<T>);
@@ -6024,25 +5984,25 @@ pub mod media_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/synctv.client.MediaService/RemoveMedia" => {
+                "/synctv.client.MediaService/DeleteMedia" => {
                     #[allow(non_camel_case_types)]
-                    struct RemoveMediaSvc<T: MediaService>(pub Arc<T>);
+                    struct DeleteMediaSvc<T: MediaService>(pub Arc<T>);
                     impl<
                         T: MediaService,
-                    > tonic::server::UnaryService<super::RemoveMediaRequest>
-                    for RemoveMediaSvc<T> {
-                        type Response = super::RemoveMediaResponse;
+                    > tonic::server::UnaryService<super::DeleteMediaRequest>
+                    for DeleteMediaSvc<T> {
+                        type Response = super::DeleteMediaResponse;
                         type Future = BoxFuture<
                             tonic::Response<Self::Response>,
                             tonic::Status,
                         >;
                         fn call(
                             &mut self,
-                            request: tonic::Request<super::RemoveMediaRequest>,
+                            request: tonic::Request<super::DeleteMediaRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as MediaService>::remove_media(&inner, request).await
+                                <T as MediaService>::delete_media(&inner, request).await
                             };
                             Box::pin(fut)
                         }
@@ -6053,7 +6013,7 @@ pub mod media_service_server {
                     let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
-                        let method = RemoveMediaSvc(inner);
+                        let method = DeleteMediaSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
@@ -6340,25 +6300,25 @@ pub mod media_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/synctv.client.MediaService/RemoveMediaBatch" => {
+                "/synctv.client.MediaService/DeleteMediaBatch" => {
                     #[allow(non_camel_case_types)]
-                    struct RemoveMediaBatchSvc<T: MediaService>(pub Arc<T>);
+                    struct DeleteMediaBatchSvc<T: MediaService>(pub Arc<T>);
                     impl<
                         T: MediaService,
-                    > tonic::server::UnaryService<super::RemoveMediaBatchRequest>
-                    for RemoveMediaBatchSvc<T> {
-                        type Response = super::RemoveMediaBatchResponse;
+                    > tonic::server::UnaryService<super::DeleteMediaBatchRequest>
+                    for DeleteMediaBatchSvc<T> {
+                        type Response = super::DeleteMediaBatchResponse;
                         type Future = BoxFuture<
                             tonic::Response<Self::Response>,
                             tonic::Status,
                         >;
                         fn call(
                             &mut self,
-                            request: tonic::Request<super::RemoveMediaBatchRequest>,
+                            request: tonic::Request<super::DeleteMediaBatchRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as MediaService>::remove_media_batch(&inner, request)
+                                <T as MediaService>::delete_media_batch(&inner, request)
                                     .await
                             };
                             Box::pin(fut)
@@ -6370,7 +6330,7 @@ pub mod media_service_server {
                     let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
-                        let method = RemoveMediaBatchSvc(inner);
+                        let method = DeleteMediaBatchSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
@@ -6432,67 +6392,25 @@ pub mod media_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/synctv.client.MediaService/Play" => {
+                "/synctv.client.MediaService/StartPlayback" => {
                     #[allow(non_camel_case_types)]
-                    struct PlaySvc<T: MediaService>(pub Arc<T>);
-                    impl<T: MediaService> tonic::server::UnaryService<super::PlayRequest>
-                    for PlaySvc<T> {
-                        type Response = super::PlayResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::PlayRequest>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as MediaService>::play(&inner, request).await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = PlaySvc(inner);
-                        let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
-                "/synctv.client.MediaService/Pause" => {
-                    #[allow(non_camel_case_types)]
-                    struct PauseSvc<T: MediaService>(pub Arc<T>);
+                    struct StartPlaybackSvc<T: MediaService>(pub Arc<T>);
                     impl<
                         T: MediaService,
-                    > tonic::server::UnaryService<super::PauseRequest> for PauseSvc<T> {
-                        type Response = super::PauseResponse;
+                    > tonic::server::UnaryService<super::StartPlaybackRequest>
+                    for StartPlaybackSvc<T> {
+                        type Response = super::StartPlaybackResponse;
                         type Future = BoxFuture<
                             tonic::Response<Self::Response>,
                             tonic::Status,
                         >;
                         fn call(
                             &mut self,
-                            request: tonic::Request<super::PauseRequest>,
+                            request: tonic::Request<super::StartPlaybackRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as MediaService>::pause(&inner, request).await
+                                <T as MediaService>::start_playback(&inner, request).await
                             };
                             Box::pin(fut)
                         }
@@ -6503,7 +6421,7 @@ pub mod media_service_server {
                     let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
-                        let method = PauseSvc(inner);
+                        let method = StartPlaybackSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
@@ -6519,69 +6437,25 @@ pub mod media_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/synctv.client.MediaService/Seek" => {
+                "/synctv.client.MediaService/StopPlayback" => {
                     #[allow(non_camel_case_types)]
-                    struct SeekSvc<T: MediaService>(pub Arc<T>);
-                    impl<T: MediaService> tonic::server::UnaryService<super::SeekRequest>
-                    for SeekSvc<T> {
-                        type Response = super::SeekResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::SeekRequest>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as MediaService>::seek(&inner, request).await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = SeekSvc(inner);
-                        let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
-                "/synctv.client.MediaService/SetPlaybackSpeed" => {
-                    #[allow(non_camel_case_types)]
-                    struct SetPlaybackSpeedSvc<T: MediaService>(pub Arc<T>);
+                    struct StopPlaybackSvc<T: MediaService>(pub Arc<T>);
                     impl<
                         T: MediaService,
-                    > tonic::server::UnaryService<super::SetPlaybackSpeedRequest>
-                    for SetPlaybackSpeedSvc<T> {
-                        type Response = super::SetPlaybackSpeedResponse;
+                    > tonic::server::UnaryService<super::StopPlaybackRequest>
+                    for StopPlaybackSvc<T> {
+                        type Response = super::StopPlaybackResponse;
                         type Future = BoxFuture<
                             tonic::Response<Self::Response>,
                             tonic::Status,
                         >;
                         fn call(
                             &mut self,
-                            request: tonic::Request<super::SetPlaybackSpeedRequest>,
+                            request: tonic::Request<super::StopPlaybackRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as MediaService>::set_playback_speed(&inner, request)
-                                    .await
+                                <T as MediaService>::stop_playback(&inner, request).await
                             };
                             Box::pin(fut)
                         }
@@ -6592,7 +6466,7 @@ pub mod media_service_server {
                     let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
-                        let method = SetPlaybackSpeedSvc(inner);
+                        let method = StopPlaybackSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
@@ -6608,26 +6482,25 @@ pub mod media_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/synctv.client.MediaService/GetPlaybackState" => {
+                "/synctv.client.MediaService/GetPlayback" => {
                     #[allow(non_camel_case_types)]
-                    struct GetPlaybackStateSvc<T: MediaService>(pub Arc<T>);
+                    struct GetPlaybackSvc<T: MediaService>(pub Arc<T>);
                     impl<
                         T: MediaService,
-                    > tonic::server::UnaryService<super::GetPlaybackStateRequest>
-                    for GetPlaybackStateSvc<T> {
-                        type Response = super::GetPlaybackStateResponse;
+                    > tonic::server::UnaryService<super::GetPlaybackRequest>
+                    for GetPlaybackSvc<T> {
+                        type Response = super::GetPlaybackResponse;
                         type Future = BoxFuture<
                             tonic::Response<Self::Response>,
                             tonic::Status,
                         >;
                         fn call(
                             &mut self,
-                            request: tonic::Request<super::GetPlaybackStateRequest>,
+                            request: tonic::Request<super::GetPlaybackRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as MediaService>::get_playback_state(&inner, request)
-                                    .await
+                                <T as MediaService>::get_playback(&inner, request).await
                             };
                             Box::pin(fut)
                         }
@@ -6638,7 +6511,7 @@ pub mod media_service_server {
                     let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
-                        let method = GetPlaybackStateSvc(inner);
+                        let method = GetPlaybackSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
@@ -6776,51 +6649,6 @@ pub mod media_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = ListRoomStreamsSvc(inner);
-                        let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
-                "/synctv.client.MediaService/GetMovieInfo" => {
-                    #[allow(non_camel_case_types)]
-                    struct GetMovieInfoSvc<T: MediaService>(pub Arc<T>);
-                    impl<
-                        T: MediaService,
-                    > tonic::server::UnaryService<super::GetMovieInfoRequest>
-                    for GetMovieInfoSvc<T> {
-                        type Response = super::GetMovieInfoResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::GetMovieInfoRequest>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as MediaService>::get_movie_info(&inner, request).await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = GetMovieInfoSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

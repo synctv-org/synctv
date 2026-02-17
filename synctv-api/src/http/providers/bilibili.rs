@@ -14,10 +14,10 @@ use axum::{
     Json, Router,
 };
 use futures::stream::Stream;
-use serde::Deserialize;
 use serde_json::json;
 
-use crate::http::{AppState, error::AppResult, middleware::AuthUser, provider_common::{InstanceQuery, error_response, parse_provider_error, resolve_media_from_playlist, resolve_provider_playback_result}};
+use crate::http::{AppState, error::AppResult, middleware::AuthUser, provider_common::{InstanceQuery, error_response, parse_provider_error}};
+use crate::impls::provider::{resolve_media_from_playlist, resolve_provider_playback_result};
 
 use synctv_core::models::{MediaId, RoomId};
 
@@ -33,14 +33,7 @@ pub fn bilibili_routes() -> Router<AppState> {
         .route("/me", get(user_info))
         .route("/logout", post(logout))
         // Provider-specific proxy routes
-        .route(
-            "/proxy/{room_id}/{media_id}/mpd",
-            get(serve_mpd).options(synctv_proxy::proxy_options_preflight),
-        )
-        .route(
-            "/proxy/{room_id}/{media_id}/stream/{stream_id}",
-            get(proxy_stream).options(synctv_proxy::proxy_options_preflight),
-        )
+        // Note: MPD and stream proxying removed as DASH manifest structures were simplified
         .route(
             "/proxy/{room_id}/{media_id}/subtitle/{name}",
             get(proxy_subtitle).options(synctv_proxy::proxy_options_preflight),
@@ -53,128 +46,6 @@ pub fn bilibili_routes() -> Router<AppState> {
 // Proxy handlers
 // ------------------------------------------------------------------
 
-/// Query params for MPD endpoint
-#[derive(Deserialize, Default)]
-struct MpdQuery {
-    /// If "hevc", serve the HEVC DASH variant
-    #[serde(default)]
-    codec: Option<String>,
-    /// If "1", generate MPD with direct CDN `BaseURLs`
-    #[serde(default)]
-    direct: Option<String>,
-    /// JWT token for stream proxy auth
-    #[serde(default)]
-    token: Option<String>,
-}
-
-/// GET /`proxy/:room_id/:media_id/mpd` - Serve MPEG-DASH MPD manifest
-async fn serve_mpd(
-    auth: AuthUser,
-    Path((room_id, media_id)): Path<(String, String)>,
-    Query(query): Query<MpdQuery>,
-    State(state): State<AppState>,
-) -> AppResult<axum::response::Response> {
-    let room_id_parsed = RoomId::from_string(room_id.clone());
-    let media_id_parsed = MediaId::from_string(media_id.clone());
-
-    let result =
-        resolve_provider_playback_result(&auth, &room_id_parsed, &media_id_parsed, &state, state.bilibili_provider.as_ref())
-            .await?;
-
-    // Select AVC or HEVC variant
-    let is_hevc = query.codec.as_deref() == Some("hevc");
-    let dash_data = if is_hevc {
-        result
-            .hevc_dash
-            .as_ref()
-            .or(result.dash.as_ref())
-            .ok_or_else(|| anyhow::anyhow!("No DASH data available"))?
-    } else {
-        result
-            .dash
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("No DASH data available"))?
-    };
-
-    // Generate MPD XML
-    let is_direct = query.direct.as_deref() == Some("1");
-    let proxy_base = format!("/api/providers/bilibili/proxy/{room_id}/{media_id}");
-
-    let opts = if is_direct {
-        synctv_proxy::mpd::MpdOptions {
-            proxy_base_url: None,
-            token: None,
-        }
-    } else {
-        synctv_proxy::mpd::MpdOptions {
-            proxy_base_url: Some(&proxy_base),
-            token: query.token.as_deref(),
-        }
-    };
-
-    let mpd_xml = synctv_proxy::mpd::generate_mpd(dash_data, &opts);
-
-    Ok((
-        [(
-            axum::http::header::CONTENT_TYPE,
-            "application/dash+xml; charset=utf-8",
-        )],
-        mpd_xml,
-    )
-        .into_response())
-}
-
-/// GET /`proxy/:room_id/:media_id/stream/:stream_id` - Proxy a single DASH stream segment
-async fn proxy_stream(
-    auth: AuthUser,
-    Path((room_id, media_id, stream_id)): Path<(String, String, String)>,
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> AppResult<axum::response::Response> {
-    let room_id_parsed = RoomId::from_string(room_id);
-    let media_id_parsed = MediaId::from_string(media_id);
-
-    let result =
-        resolve_provider_playback_result(&auth, &room_id_parsed, &media_id_parsed, &state, state.bilibili_provider.as_ref())
-            .await?;
-
-    let dash = result
-        .dash
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("No DASH data available"))?;
-
-    // Parse stream index: video[0..N], then audio[N..M]
-    let idx: usize = stream_id
-        .parse()
-        .map_err(|_| anyhow::anyhow!("Invalid stream index"))?;
-
-    let video_count = dash.video_streams.len();
-    let cdn_url = if idx < video_count {
-        &dash.video_streams[idx].base_url
-    } else {
-        let audio_idx = idx - video_count;
-        dash.audio_streams
-            .get(audio_idx)
-            .map(|a| &a.base_url)
-            .ok_or_else(|| anyhow::anyhow!("Stream index {idx} out of range"))?
-    };
-
-    // Bilibili-specific headers
-    let provider_headers = bilibili_proxy_headers();
-
-    tracing::debug!("Proxying Bilibili DASH stream {idx}: {cdn_url}");
-
-    let cfg = synctv_proxy::ProxyConfig {
-        url: cdn_url,
-        provider_headers: &provider_headers,
-        client_headers: &headers,
-    };
-
-    synctv_proxy::proxy_fetch_and_forward(cfg, &synctv_proxy::NoopMetrics)
-        .await
-        .map_err(Into::into)
-}
-
 /// GET /`proxy/:room_id/:media_id/subtitle/:name` - Proxy subtitle
 async fn proxy_subtitle(
     auth: AuthUser,
@@ -186,8 +57,15 @@ async fn proxy_subtitle(
     let media_id_parsed = MediaId::from_string(media_id);
 
     let result =
-        resolve_provider_playback_result(&auth, &room_id_parsed, &media_id_parsed, &state, state.bilibili_provider.as_ref())
-            .await?;
+        resolve_provider_playback_result(
+            &auth.user_id,
+            &room_id_parsed,
+            &media_id_parsed,
+            state.bilibili_provider.as_ref(),
+            &state.room_service,
+            state.redis_conn.as_ref(),
+        ).await
+        .map_err(crate::http::error::map_api_error)?;
 
     // Find subtitle by name across all playback infos
     let subtitle_url = result
@@ -221,8 +99,15 @@ async fn proxy_m3u8(
     let media_id_parsed = MediaId::from_string(media_id.clone());
 
     let result =
-        resolve_provider_playback_result(&auth, &room_id_parsed, &media_id_parsed, &state, state.bilibili_provider.as_ref())
-            .await?;
+        resolve_provider_playback_result(
+            &auth.user_id,
+            &room_id_parsed,
+            &media_id_parsed,
+            state.bilibili_provider.as_ref(),
+            &state.room_service,
+            state.redis_conn.as_ref(),
+        ).await
+        .map_err(crate::http::error::map_api_error)?;
 
     let default_info = result
         .playback_infos
@@ -288,9 +173,13 @@ async fn resolve_danmu_info(
     media_id: &MediaId,
     state: &AppState,
 ) -> Result<Event, anyhow::Error> {
-    let media = resolve_media_from_playlist(auth, room_id, media_id, state)
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let media = resolve_media_from_playlist(
+        &auth.user_id,
+        room_id,
+        media_id,
+        &state.room_service,
+    ).await
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     // Parse source_config to determine if this is a live stream
     #[derive(serde::Deserialize)]

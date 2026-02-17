@@ -5,7 +5,7 @@ use crate::impls::ApiError;
 use synctv_core::models::{ProviderType, RoomId, UserId};
 
 use super::ClientApiImpl;
-use super::convert::media_to_proto;
+use super::convert::{media_to_proto, playlist_to_proto};
 
 impl ClientApiImpl {
     pub async fn add_media(
@@ -83,12 +83,12 @@ impl ClientApiImpl {
         })
     }
 
-    pub async fn remove_media(
+    pub async fn delete_media(
         &self,
         user_id: &str,
         room_id: &str,
-        req: crate::proto::client::RemoveMediaRequest,
-    ) -> Result<crate::proto::client::RemoveMediaResponse, ApiError> {
+        req: crate::proto::client::DeleteMediaRequest,
+    ) -> Result<crate::proto::client::DeleteMediaResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
         let media_id_str = req.media_id.clone();
@@ -127,7 +127,7 @@ impl ClientApiImpl {
                     .as_deref()
                     .unwrap_or(&media.source_provider);
                 if let Some(provider) = pm.get(instance_name).await {
-                    crate::http::provider_common::invalidate_playback_cache(
+                    crate::impls::provider::invalidate_playback_cache(
                         provider.as_ref(),
                         &media.source_config,
                         self.redis_conn.as_ref(),
@@ -139,7 +139,7 @@ impl ClientApiImpl {
         // Kick active stream for deleted media (local + cluster-wide)
         self.kick_stream_cluster(room_id, &media_id_str, "media_deleted");
 
-        Ok(crate::proto::client::RemoveMediaResponse {
+        Ok(crate::proto::client::DeleteMediaResponse {
             success: true,
         })
     }
@@ -227,7 +227,7 @@ impl ClientApiImpl {
 
         // Invalidate playback cache for cleared media (best-effort)
         if let Some(pm) = self.providers_manager.as_ref() {
-            crate::http::provider_common::invalidate_playback_cache_batch(
+            crate::impls::provider::invalidate_playback_cache_batch(
                 &media_items,
                 pm,
                 self.redis_conn.as_ref(),
@@ -311,13 +311,13 @@ impl ClientApiImpl {
         Ok(crate::proto::client::AddMediaBatchResponse { results })
     }
 
-    /// Bulk remove multiple media items
-    pub async fn remove_media_batch(
+    /// Bulk delete multiple media items
+    pub async fn delete_media_batch(
         &self,
         user_id: &str,
         room_id: &str,
-        req: crate::proto::client::RemoveMediaBatchRequest,
-    ) -> Result<crate::proto::client::RemoveMediaBatchResponse, ApiError> {
+        req: crate::proto::client::DeleteMediaBatchRequest,
+    ) -> Result<crate::proto::client::DeleteMediaBatchResponse, ApiError> {
         if req.media_ids.is_empty() {
             return Err(ApiError::InvalidInput("media_ids array cannot be empty".to_string()));
         }
@@ -371,7 +371,7 @@ impl ClientApiImpl {
 
         // Invalidate playback cache for deleted media (best-effort)
         if let Some(pm) = self.providers_manager.as_ref() {
-            crate::http::provider_common::invalidate_playback_cache_batch(
+            crate::impls::provider::invalidate_playback_cache_batch(
                 &media_items,
                 pm,
                 self.redis_conn.as_ref(),
@@ -383,7 +383,7 @@ impl ClientApiImpl {
             self.kick_stream_cluster(room_id, media_id, "media_deleted");
         }
 
-        Ok(crate::proto::client::RemoveMediaBatchResponse {
+        Ok(crate::proto::client::DeleteMediaBatchResponse {
             deleted_count: deleted_count as i32,
         })
     }
@@ -431,7 +431,8 @@ impl ClientApiImpl {
         Ok(crate::proto::client::ReorderMediaBatchResponse { success: true })
     }
 
-    pub async fn get_playlist(
+    /// List media items in room's playlist
+    pub async fn list_media(
         &self,
         user_id: &str,
         room_id: &str,
@@ -482,6 +483,10 @@ impl ClientApiImpl {
         })
     }
 
+    /// List playlist items (supports both static and dynamic playlists)
+    ///
+    /// For static playlists: returns child playlists + media from database
+    /// For dynamic playlists: returns remote provider items
     pub async fn list_playlist_items(
         &self,
         user_id: &str,
@@ -492,52 +497,139 @@ impl ClientApiImpl {
         let rid = RoomId::from_string(room_id.to_string());
         let playlist_id = synctv_core::models::PlaylistId::from_string(req.playlist_id.clone());
 
-        let relative_path = if req.relative_path.is_empty() {
-            None
-        } else {
-            Some(req.relative_path.as_str())
-        };
+        // Check membership
+        self.room_service.check_membership(&rid, &uid).await
+            .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
 
-        let page = req.page.max(0) as usize;
+        // Get playlist info to determine if static or dynamic
+        let playlist = self.room_service.playlist_service()
+            .get_playlist(&playlist_id)
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::NotFound(format!("Playlist {} not found", req.playlist_id)))?;
+
+        let page = req.page.max(1) as usize;
         let page_size = req.page_size.clamp(1, 100) as usize;
 
-        let items = self
-            .room_service
-            .media_service()
-            .list_dynamic_playlist_items(rid, uid, &playlist_id, relative_path, page, page_size)
-            .await
-            .map_err(ApiError::from)?;
+        if playlist.is_dynamic() {
+            // Dynamic playlist: fetch from provider
+            let relative_path = if req.relative_path.is_empty() {
+                None
+            } else {
+                Some(req.relative_path.as_str())
+            };
 
-        // Convert DirectoryItem to proto DirectoryItem
-        let proto_items: Vec<_> = items
-            .into_iter()
-            .map(|item| {
-                use synctv_core::provider::ItemType;
-                let item_type = match item.item_type {
-                    ItemType::Video => crate::proto::client::ItemType::Video as i32,
-                    ItemType::Audio => crate::proto::client::ItemType::Audio as i32,
-                    ItemType::Folder => crate::proto::client::ItemType::Folder as i32,
-                    ItemType::Live => crate::proto::client::ItemType::Live as i32,
-                    ItemType::File => crate::proto::client::ItemType::File as i32,
-                };
+            let items = self
+                .room_service
+                .media_service()
+                .list_dynamic_playlist_items(rid, uid, &playlist_id, relative_path, page, page_size)
+                .await
+                .map_err(ApiError::from)?;
 
-                crate::proto::client::DirectoryItem {
-                    name: item.name,
-                    item_type,
-                    path: item.path,
-                    size: item.size.map(|s| s as i64),
-                    thumbnail: item.thumbnail,
-                    modified_at: item.modified_at,
-                }
+            // Convert provider DirectoryItem to proto PlaylistItem
+            let dynamic_items: Vec<_> = items
+                .into_iter()
+                .map(|item| {
+                    use synctv_core::provider::ItemType;
+                    let item_type = match item.item_type {
+                        ItemType::Playlist => crate::proto::client::ItemType::Playlist as i32,
+                        ItemType::Media => crate::proto::client::ItemType::Media as i32,
+                    };
+
+                    crate::proto::client::PlaylistItem {
+                        name: item.name,
+                        item_type,
+                        path: item.path,
+                        size: item.size.map(|s| s as i64),
+                        thumbnail: Some(item.thumbnail.unwrap_or_default()),
+                        modified_at: Some(item.modified_at.unwrap_or(0)),
+                    }
+                })
+                .collect();
+
+            let total = dynamic_items.len() as i32;
+
+            Ok(crate::proto::client::ListPlaylistItemsResponse {
+                playlists: Vec::new(),
+                media: Vec::new(),
+                total,
+                folder_count: 0,
+                file_count: 0,
+                dynamic_items,
             })
-            .collect();
+        } else {
+            // Static playlist: list child playlists and media from database
+            // Get all child playlists (folders)
+            let child_playlists = self.room_service.playlist_service()
+                .get_children(&playlist_id)
+                .await
+                .map_err(ApiError::from)?;
+            let folder_count = child_playlists.len();
 
-        let total = proto_items.len() as i32;
+            // Get all media in this playlist (files)
+            let all_media = self.room_service.media_service()
+                .get_playlist_media(&playlist_id)
+                .await
+                .map_err(ApiError::from)?;
+            let file_count = all_media.len();
 
-        Ok(crate::proto::client::ListPlaylistItemsResponse {
-            items: proto_items,
-            total,
-        })
+            let total = folder_count + file_count;
+
+            // Pagination: folders first, then files
+            let skip = (page - 1) * page_size;
+
+            let (mut proto_playlists, mut proto_media) = (Vec::new(), Vec::new());
+
+            if skip < folder_count {
+                // Current page includes folders
+                let folder_take = (folder_count - skip).min(page_size);
+                let folders_page: Vec<_> = child_playlists.into_iter()
+                    .skip(skip)
+                    .take(folder_take)
+                    .collect();
+
+                // Batch fetch media counts for folders
+                let folder_ids: Vec<&str> = folders_page.iter().map(|pl| pl.id.as_str()).collect();
+                let counts = self.room_service.media_service()
+                    .count_playlist_media_batch(&folder_ids)
+                    .await
+                    .unwrap_or_default();
+
+                // Convert to proto Playlist
+                proto_playlists = folders_page.iter()
+                    .map(|pl| {
+                        let item_count = counts.get(pl.id.as_str()).copied().unwrap_or(0) as i32;
+                        playlist_to_proto(pl, item_count)
+                    })
+                    .collect();
+
+                // If there's room left on this page, add media
+                let remaining = page_size - folder_take;
+                if remaining > 0 && !all_media.is_empty() {
+                    proto_media = all_media.into_iter()
+                        .take(remaining)
+                        .map(|m| media_to_proto(&m))
+                        .collect();
+                }
+            } else {
+                // Current page only has media (all folders already shown)
+                let media_skip = skip - folder_count;
+                proto_media = all_media.into_iter()
+                    .skip(media_skip)
+                    .take(page_size)
+                    .map(|m| media_to_proto(&m))
+                    .collect();
+            }
+
+            Ok(crate::proto::client::ListPlaylistItemsResponse {
+                playlists: proto_playlists,
+                media: proto_media,
+                total: total as i32,
+                folder_count: folder_count as i32,
+                file_count: file_count as i32,
+                dynamic_items: Vec::new(),
+            })
+        }
     }
 
     pub async fn swap_media(
@@ -572,224 +664,32 @@ impl ClientApiImpl {
         })
     }
 
-    /// Get movie info for a media item (resolves provider playback + proxy/direct decision)
-    pub async fn get_movie_info(
+    /// Get a single media record from database
+    pub async fn get_media(
         &self,
         user_id: &str,
         room_id: &str,
-        req: crate::proto::client::GetMovieInfoRequest,
-    ) -> Result<crate::proto::client::GetMovieInfoResponse, ApiError> {
-        use std::collections::HashMap;
-        use synctv_core::provider::ProviderContext;
-
-        let rid = RoomId::from_string(room_id.to_string());
+        media_id: &str,
+    ) -> Result<crate::proto::client::Media, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
-        let mid = synctv_core::models::MediaId::from_string(req.media_id);
-        let media_id = mid.as_str();
+        let rid = RoomId::from_string(room_id.to_string());
+        let mid = synctv_core::models::MediaId::from_string(media_id.to_string());
 
-        // Check VIEW_PLAYLIST permission before exposing playback URLs
+        // Check VIEW_PLAYLIST permission
         self.room_service
             .check_permission(&rid, &uid, synctv_core::models::PermissionBits::VIEW_PLAYLIST)
             .await
             .map_err(ApiError::from)?;
 
-        // 1. Get media from playlist
-        let playlist = self
-            .room_service
-            .get_playlist(&rid)
-            .await
-            .map_err(|e| ApiError::Internal(format!("Failed to get playlist: {e}")))?;
+        // Get media list and find the requested media
+        let playlist = self.room_service.get_playlist(&rid).await
+            .map_err(ApiError::from)?;
 
         let media = playlist
             .iter()
             .find(|m| m.id == mid)
-            .ok_or_else(|| ApiError::NotFound("Media not found in playlist".to_string()))?;
+            .ok_or_else(|| ApiError::NotFound(format!("Media {} not found", media_id)))?;
 
-        // 2. For direct URL media, return playback info directly
-        if media.is_direct() {
-            let playback = media
-                .get_playback_result()
-                .ok_or_else(|| ApiError::Internal("Failed to parse direct media playback info".to_string()))?;
-            let default_info = playback.get_default_playback_info();
-            let (url, media_type) = if let Some(info) = default_info {
-                let first_url = info.urls.first().map(|u| u.url.clone()).unwrap_or_default();
-                let fmt = info
-                    .urls
-                    .first()
-                    .and_then(|u| u.metadata.as_ref())
-                    .and_then(|m| m.codec.clone())
-                    .unwrap_or_else(|| "mp4".to_string());
-                (first_url, fmt)
-            } else {
-                (String::new(), "unknown".to_string())
-            };
-
-            return Ok(crate::proto::client::GetMovieInfoResponse {
-                movie: Some(crate::proto::client::MovieInfo {
-                    r#type: media_type,
-                    url,
-                    headers: HashMap::new(),
-                    more_sources: Vec::new(),
-                    subtitles: Vec::new(),
-                    is_live: false,
-                    duration: playback
-                        .metadata
-                        .get("duration")
-                        .and_then(serde_json::Value::as_f64)
-                        .unwrap_or(0.0),
-                }),
-            });
-        }
-
-        // 3. For provider-backed media, use ProvidersManager
-        let providers_manager = self.providers_manager.as_ref()
-            .ok_or_else(|| ApiError::Internal("Providers manager not configured".to_string()))?;
-
-        let instance_name = media
-            .provider_instance_name
-            .as_deref()
-            .unwrap_or(&media.source_provider);
-
-        let provider = providers_manager
-            .get(instance_name)
-            .await
-            .ok_or_else(|| ApiError::NotFound(format!("Provider instance '{instance_name}' not found")))?;
-
-        let ctx = ProviderContext::new("synctv")
-            .with_user_id(user_id)
-            .with_room_id(room_id);
-
-        let result = crate::http::provider_common::cached_generate_playback(
-            provider.as_ref(),
-            &ctx,
-            &media.source_config,
-            self.redis_conn.as_ref(),
-        )
-        .await
-        .map_err(|e| ApiError::Internal(format!("generate_playback failed: {e}")))?;
-
-        // 4. Check movie_proxy setting
-        let movie_proxy = self.settings_registry.as_ref()
-            .is_none_or(|r| r.to_public_settings().movie_proxy);
-
-        // 5. Build MovieInfo
-        let is_live = result
-            .metadata
-            .get("is_live")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false);
-        let duration = result
-            .metadata
-            .get("duration")
-            .and_then(serde_json::Value::as_f64)
-            .unwrap_or(0.0);
-
-        let subtitles: Vec<crate::proto::client::MovieSubtitle> = result
-            .playback_infos
-            .values()
-            .flat_map(|pi| &pi.subtitles)
-            .map(|s| crate::proto::client::MovieSubtitle {
-                name: s.name.clone(),
-                language: s.language.clone(),
-                url: if movie_proxy {
-                    format!(
-                        "/api/providers/{}/proxy/{room_id}/{media_id}/subtitle/{}",
-                        media.source_provider,
-                        url::form_urlencoded::byte_serialize(s.name.as_bytes())
-                            .collect::<String>()
-                    )
-                } else {
-                    s.url.clone()
-                },
-                format: s.format.clone(),
-            })
-            .collect();
-
-        // For DASH providers (bilibili Video/Pgc): generate MPD URLs
-        if result.dash.is_some() {
-            let (url, media_type, headers) = if movie_proxy {
-                (
-                    format!("/api/providers/{}/proxy/{room_id}/{media_id}/mpd", media.source_provider),
-                    "mpd".to_string(),
-                    HashMap::new(),
-                )
-            } else {
-                // Strip credential headers before exposing to client
-                let safe_headers: HashMap<String, String> = result
-                    .playback_infos
-                    .get("dash")
-                    .map(|pi| {
-                        pi.headers.iter()
-                            .filter(|(k, _)| {
-                                let lower = k.to_lowercase();
-                                !lower.contains("token") && !lower.contains("authorization")
-                                    && !lower.contains("cookie") && !lower.contains("api_key")
-                                    && !lower.contains("x-emby")
-                            })
-                            .map(|(k, v)| (k.clone(), v.clone()))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                (
-                    format!("/api/providers/{}/proxy/{room_id}/{media_id}/mpd?direct=1", media.source_provider),
-                    "mpd".to_string(),
-                    safe_headers,
-                )
-            };
-
-            let mut more_sources = Vec::new();
-            if result.hevc_dash.is_some() {
-                let hevc_url = if movie_proxy {
-                    format!("/api/providers/{}/proxy/{room_id}/{media_id}/mpd?codec=hevc", media.source_provider)
-                } else {
-                    format!("/api/providers/{}/proxy/{room_id}/{media_id}/mpd?codec=hevc&direct=1", media.source_provider)
-                };
-                more_sources.push(crate::proto::client::MovieSource {
-                    name: "HEVC".to_string(),
-                    r#type: "mpd".to_string(),
-                    url: hevc_url,
-                    headers: HashMap::new(),
-                });
-            }
-
-            return Ok(crate::proto::client::GetMovieInfoResponse {
-                movie: Some(crate::proto::client::MovieInfo {
-                    r#type: media_type, url, headers, more_sources, subtitles, is_live, duration,
-                }),
-            });
-        }
-
-        // For HLS/direct providers: use first URL from default playback mode
-        let default_info = result.playback_infos.get(&result.default_mode);
-        let (url, media_type, headers) = if let Some(info) = default_info {
-            let first_url = info.urls.first().cloned().unwrap_or_default();
-            if movie_proxy && !first_url.is_empty() {
-                (
-                    format!("/api/providers/{}/proxy/{room_id}/{media_id}", media.source_provider),
-                    info.format.clone(),
-                    HashMap::new(),
-                )
-            } else {
-                // Strip credential headers before exposing to client
-                let safe_headers: HashMap<String, String> = info.headers.iter()
-                    .filter(|(k, _)| {
-                        let lower = k.to_lowercase();
-                        !lower.contains("token") && !lower.contains("authorization")
-                            && !lower.contains("cookie") && !lower.contains("api_key")
-                            && !lower.contains("x-emby")
-                    })
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect();
-                (first_url, info.format.clone(), safe_headers)
-            }
-        } else {
-            (String::new(), "unknown".to_string(), HashMap::new())
-        };
-
-        Ok(crate::proto::client::GetMovieInfoResponse {
-            movie: Some(crate::proto::client::MovieInfo {
-                r#type: media_type, url, headers, more_sources: Vec::new(), subtitles, is_live, duration,
-            }),
-        })
+        Ok(media_to_proto(media))
     }
 }

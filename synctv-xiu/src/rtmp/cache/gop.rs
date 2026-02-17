@@ -268,8 +268,16 @@ impl Gops {
         }
     }
 
+    /// Returns `true` if the GOP cache is configured (size > 0).
     #[must_use]
+    #[deprecated(since = "0.1.0", note = "Use is_enabled() instead")]
     pub const fn setted(&self) -> bool {
+        self.size != 0
+    }
+
+    /// Returns `true` if the GOP cache is enabled (has non-zero size limit).
+    #[must_use]
+    pub const fn is_enabled(&self) -> bool {
         self.size != 0
     }
 

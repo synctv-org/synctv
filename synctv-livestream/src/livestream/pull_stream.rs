@@ -260,10 +260,9 @@ impl PullStream {
         // Cancel the puller task gracefully first
         self.cancel_token.cancel();
 
-        let stream_name = format!("{}/{}", self.room_id, self.media_id);
         let identifier = StreamIdentifier::Rtmp {
-            app_name: "live".to_string(),
-            stream_name,
+            app_name: self.room_id.clone(),
+            stream_name: self.media_id.clone(),
         };
         if let Err(e) = self.stream_hub_event_sender.try_send(StreamHubEvent::UnPublish { identifier }) {
             warn!("Failed to send UnPublish to StreamHub for {} / {}: {}", self.room_id, self.media_id, e);
@@ -325,10 +324,9 @@ impl Drop for PullStream {
         // Send UnPublish to StreamHub so the local stream entry is removed.
         // Use try_send first for the fast path; if the channel is full, spawn
         // an async task that awaits `.send()` so the event is not silently lost.
-        let stream_name = format!("{}/{}", self.room_id, self.media_id);
         let identifier = StreamIdentifier::Rtmp {
-            app_name: "live".to_string(),
-            stream_name,
+            app_name: self.room_id.clone(),
+            stream_name: self.media_id.clone(),
         };
         let room_id = self.room_id.clone();
         let media_id = self.media_id.clone();

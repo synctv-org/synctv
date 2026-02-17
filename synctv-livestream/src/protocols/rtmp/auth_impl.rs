@@ -10,7 +10,7 @@
 // - Publisher: rtmp://host/room_id/JWT_TOKEN  or  rtmp://host/room_id/media_id?token=JWT
 // - Player:   rtmp://host/room_id/media_id
 
-use synctv_xiu::rtmp::auth::AuthCallback;
+use synctv_xiu::rtmp::auth::{AuthCallback, AuthPublishRewrite};
 use async_trait::async_trait;
 use std::sync::Arc;
 use synctv_core::service::PublishKeyService;
@@ -36,7 +36,7 @@ impl AuthCallback for RtmpAuthCallbackImpl {
         app_name: &str,
         stream_name: &str,
         query: Option<&str>,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<Option<AuthPublishRewrite>, Box<dyn std::error::Error + Send + Sync>> {
         debug!(
             "RTMP publish auth: app={}, stream={}, query={:?}",
             app_name,
@@ -73,7 +73,11 @@ impl AuthCallback for RtmpAuthCallbackImpl {
             claims.user_id
         );
 
-        Ok(())
+        // Return rewrite so StreamHub uses canonical (room_id, media_id)
+        Ok(Some(AuthPublishRewrite {
+            app_name: claims.room_id,
+            stream_name: claims.media_id,
+        }))
     }
 
     async fn on_play(

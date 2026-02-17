@@ -176,8 +176,8 @@ impl ExternalPublishManager {
 
                         // Send UnPublish to StreamHub
                         let identifier = StreamIdentifier::Rtmp {
-                            app_name: "live".to_string(),
-                            stream_name: format!("{room_id}/{media_id}"),
+                            app_name: room_id.to_string(),
+                            stream_name: media_id.to_string(),
                         };
                         if let Err(e) = hub_sender.try_send(StreamHubEvent::UnPublish { identifier }) {
                             warn!("Failed to send UnPublish for {}: {}", stream_key, e);
@@ -315,10 +315,9 @@ impl ExternalPublishStream {
 
         // Only send UnPublish once (prevents duplicate when Drop also runs)
         if !self.unpublish_sent.swap(true, Ordering::AcqRel) {
-            let stream_name = format!("{}/{}", self.room_id, self.media_id);
             let identifier = StreamIdentifier::Rtmp {
-                app_name: "live".to_string(),
-                stream_name,
+                app_name: self.room_id.clone(),
+                stream_name: self.media_id.clone(),
             };
             if let Err(e) = self.stream_hub_event_sender.try_send(StreamHubEvent::UnPublish { identifier }) {
                 warn!("Failed to send UnPublish for {}/{}: {}", self.room_id, self.media_id, e);
@@ -364,10 +363,9 @@ impl Drop for ExternalPublishStream {
     fn drop(&mut self) {
         // Only send UnPublish if stop() hasn't already sent it
         if !self.unpublish_sent.swap(true, Ordering::AcqRel) {
-            let stream_name = format!("{}/{}", self.room_id, self.media_id);
             let identifier = StreamIdentifier::Rtmp {
-                app_name: "live".to_string(),
-                stream_name,
+                app_name: self.room_id.clone(),
+                stream_name: self.media_id.clone(),
             };
             if let Err(e) = self
                 .stream_hub_event_sender

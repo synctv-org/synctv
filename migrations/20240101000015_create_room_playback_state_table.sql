@@ -25,7 +25,7 @@ CREATE TRIGGER update_room_playback_state_updated_at
 ALTER TABLE room_playback_state ADD CONSTRAINT playback_current_time_check
     CHECK (current_time >= 0);
 ALTER TABLE room_playback_state ADD CONSTRAINT playback_speed_check
-    CHECK (speed > 0 AND speed <= 4.0);
+    CHECK (speed >= 0.25 AND speed <= 4.0);
 
 -- Comments
 COMMENT ON TABLE room_playback_state IS 'Current playback state for each room';

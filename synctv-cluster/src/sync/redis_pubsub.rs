@@ -165,6 +165,10 @@ impl RedisPubSub {
     /// to recover critical events that were saved to WAL during previous Redis
     /// outages.
     ///
+    /// Successfully replayed events are removed from the WAL immediately, so
+    /// partial success does not cause already-published events to be re-delivered
+    /// on the next startup.
+    ///
     /// Returns the number of events replayed successfully.
     pub async fn replay_wal(&self) -> Result<usize> {
         let Some(ref wal) = self.event_wal else {
@@ -180,9 +184,19 @@ impl RedisPubSub {
 
         let mut conn = self.get_shared_conn().await?;
         let mut success_count = 0;
+        let mut had_failure = false;
+        // Collect events that failed to replay so we can re-write them to the WAL
+        let mut failed_events: Vec<ClusterEvent> = Vec::new();
 
         for event in &events {
-            match Self::publish_event(&mut conn, &self.node_id, event.clone(), &self.event_wal).await {
+            if had_failure {
+                // Once we hit a failure, keep remaining events for retry
+                // (preserves ordering guarantee for critical events)
+                failed_events.push(event.clone());
+                continue;
+            }
+
+            match Self::publish_event(&mut conn, &self.node_id, event.clone(), &None).await {
                 Ok(_) => {
                     success_count += 1;
                 }
@@ -190,24 +204,35 @@ impl RedisPubSub {
                     warn!(
                         error = %e,
                         event_type = event.event_type(),
-                        "Failed to replay WAL event to Redis, will keep in WAL"
+                        "Failed to replay WAL event to Redis, keeping remaining events"
                     );
+                    had_failure = true;
+                    failed_events.push(event.clone());
                 }
             }
         }
 
-        if success_count == events.len() {
-            // All events replayed successfully, clear WAL
-            wal.clear().await.context("Failed to clear WAL after replay")?;
-            info!(event_count = success_count, "All WAL events replayed successfully, cleared WAL");
-        } else {
+        // Clear the old WAL completely, then re-write only the failed events
+        wal.clear().await.context("Failed to clear WAL after replay")?;
+
+        if !failed_events.is_empty() {
+            for event in &failed_events {
+                if let Err(e) = wal.append(event.clone()).await {
+                    error!(
+                        error = %e,
+                        event_type = event.event_type(),
+                        "Failed to re-write failed event to WAL, event may be lost"
+                    );
+                }
+            }
             warn!(
                 success = success_count,
+                remaining = failed_events.len(),
                 total = events.len(),
-                "Partial WAL replay: {} of {} events replayed, keeping WAL for retry",
-                success_count,
-                events.len()
+                "Partial WAL replay: successfully published events cleared, failed events kept for next retry"
             );
+        } else {
+            info!(event_count = success_count, "All WAL events replayed successfully, WAL cleared");
         }
 
         Ok(success_count)
@@ -229,11 +254,18 @@ impl RedisPubSub {
         let cancel_publisher = self.cancel_token.clone();
         let event_wal = self.event_wal.clone();
 
+        /// Maximum number of failed events to buffer for retry after reconnection.
+        /// Prevents unbounded memory growth during prolonged Redis outages.
+        const MAX_RETRY_BUFFER: usize = 1000;
+
         // Spawn task to handle publishing with reconnection logic
         tokio::spawn(async move {
             let mut backoff_secs = INITIAL_BACKOFF_SECS;
-            // Buffer for retrying a failed publish after reconnection
-            let mut retry_request: Option<PublishRequest> = None;
+            // Buffer for retrying failed publishes after reconnection.
+            // Using a Vec instead of Option<PublishRequest> ensures that multiple
+            // events that fail during a connection interruption window are all
+            // preserved for retry, not just the last one.
+            let mut retry_buffer: Vec<PublishRequest> = Vec::new();
 
             loop {
                 let conn = match timeout(
@@ -270,29 +302,44 @@ impl RedisPubSub {
                 info!("Redis publisher task (re)connected");
                 let mut conn = conn;
 
-                // Retry the previously failed publish request if any
-                if let Some(req) = retry_request.take() {
-                    let event_type = req.event.event_type();
-                    match Self::publish_event(&mut conn, &node_id, req.event.clone(), &event_wal).await {
-                        Ok(subscribers) => {
-                            debug!(
-                                event_type = event_type,
-                                subscribers = subscribers,
-                                "Retried event published to Redis"
-                            );
-                        }
-                        Err(e) => {
-                            warn!(
-                                error = %e,
-                                event_type = event_type,
-                                "Retry publish failed, will retry after next reconnect"
-                            );
-                            // Put request back for another attempt after reconnection
-                            retry_request = Some(req);
-                            tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
-                            backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
+                // Retry all buffered failed publish requests
+                if !retry_buffer.is_empty() {
+                    let buffered = std::mem::take(&mut retry_buffer);
+                    info!(
+                        buffered_count = buffered.len(),
+                        "Retrying buffered events after reconnection"
+                    );
+                    let mut retry_failed = false;
+                    for req in buffered {
+                        if retry_failed {
+                            // Connection broke mid-retry; keep remaining events
+                            retry_buffer.push(req);
                             continue;
                         }
+                        let event_type = req.event.event_type();
+                        match Self::publish_event(&mut conn, &node_id, req.event.clone(), &event_wal).await {
+                            Ok(subscribers) => {
+                                debug!(
+                                    event_type = event_type,
+                                    subscribers = subscribers,
+                                    "Retried event published to Redis"
+                                );
+                            }
+                            Err(e) => {
+                                warn!(
+                                    error = %e,
+                                    event_type = event_type,
+                                    "Retry publish failed, will retry after next reconnect"
+                                );
+                                retry_buffer.push(req);
+                                retry_failed = true;
+                            }
+                        }
+                    }
+                    if !retry_buffer.is_empty() {
+                        tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
+                        backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
+                        continue;
                     }
                 }
 
@@ -332,10 +379,24 @@ impl RedisPubSub {
                                 error!(
                                     error = %e,
                                     event_type = event_type,
-                                    "Failed to publish event, saving for retry after reconnect"
+                                    "Failed to publish event, buffering for retry after reconnect"
                                 );
-                                // Save failed request for retry after reconnection
-                                retry_request = Some(req);
+                                // Buffer failed request for retry after reconnection
+                                retry_buffer.push(req);
+
+                                // Drain remaining events from channel into retry buffer
+                                // (connection is broken, no point trying to publish more)
+                                while let Ok(req) = publish_rx.try_recv() {
+                                    if retry_buffer.len() >= MAX_RETRY_BUFFER {
+                                        warn!(
+                                            max = MAX_RETRY_BUFFER,
+                                            "Retry buffer full, dropping event: {}",
+                                            req.event.event_type()
+                                        );
+                                        break;
+                                    }
+                                    retry_buffer.push(req);
+                                }
                                 break;
                             }
                         }

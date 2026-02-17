@@ -221,8 +221,8 @@ impl PullStreamManager {
                 Box::pin(async move {
                     if let Some((room_id, media_id)) = stream_key.split_once(':') {
                         let identifier = StreamIdentifier::Rtmp {
-                            app_name: "live".to_string(),
-                            stream_name: format!("{room_id}/{media_id}"),
+                            app_name: room_id.to_string(),
+                            stream_name: media_id.to_string(),
                         };
                         if let Err(e) = hub_sender.try_send(StreamHubEvent::UnPublish { identifier }) {
                             warn!("Failed to send UnPublish for idle-cleaned pull stream {}: {}", stream_key, e);

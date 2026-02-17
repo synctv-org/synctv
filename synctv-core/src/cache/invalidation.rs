@@ -482,9 +482,50 @@ impl CacheInvalidationService {
         }
     }
 
-    /// Stop the cache invalidation service
-    pub fn stop(&self) {
+    /// Stop the cache invalidation service and clean up the consumer group.
+    ///
+    /// Signals the background subscriber to stop, then destroys the Redis
+    /// consumer group so it does not leak when this node shuts down.
+    pub async fn stop(&self) {
         self.shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
+
+        // Clean up the consumer group in Redis to prevent leaked groups from
+        // accumulating when nodes are restarted or scaled down.
+        if let Some(ref client) = self.redis_client {
+            match client.get_multiplexed_async_connection().await {
+                Ok(mut conn) => {
+                    let result: redis::RedisResult<()> = redis::cmd("XGROUP")
+                        .arg("DESTROY")
+                        .arg(&self.stream_key)
+                        .arg(&self.consumer_group)
+                        .query_async(&mut conn)
+                        .await;
+                    match result {
+                        Ok(()) => {
+                            info!(
+                                stream = %self.stream_key,
+                                group = %self.consumer_group,
+                                "Destroyed consumer group on shutdown"
+                            );
+                        }
+                        Err(e) => {
+                            warn!(
+                                error = %e,
+                                stream = %self.stream_key,
+                                group = %self.consumer_group,
+                                "Failed to destroy consumer group on shutdown (may already be removed)"
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        error = %e,
+                        "Failed to get Redis connection for consumer group cleanup"
+                    );
+                }
+            }
+        }
     }
 
     /// Subscribe to local cache invalidation events

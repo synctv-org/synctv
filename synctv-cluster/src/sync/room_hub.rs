@@ -82,6 +82,12 @@ pub struct RoomMessageHub {
 
     /// Key prefix for Redis keys (e.g., "synctv:")
     redis_key_prefix: String,
+
+    /// TTL in seconds for Redis subscription keys.
+    /// Acts as a crash-safety mechanism: if a node crashes without unsubscribing,
+    /// the stale keys will expire after this duration instead of accumulating forever.
+    /// Refreshed on each subscribe operation. Default: 300 seconds (5 minutes).
+    redis_key_ttl_secs: i64,
 }
 
 impl RoomMessageHub {
@@ -95,6 +101,7 @@ impl RoomMessageHub {
             lifecycle_tx,
             redis_conn: None,
             redis_key_prefix: String::new(),
+            redis_key_ttl_secs: 300, // 5 minutes default
         }
     }
 
@@ -107,6 +114,16 @@ impl RoomMessageHub {
     pub fn with_redis(mut self, conn: redis::aio::ConnectionManager, key_prefix: &str) -> Self {
         self.redis_conn = Some(conn);
         self.redis_key_prefix = key_prefix.to_string();
+        self
+    }
+
+    /// Set the TTL for Redis subscription keys (crash-safety mechanism).
+    ///
+    /// If a node crashes without properly unsubscribing, stale keys will expire
+    /// after this duration. Should be set to at least `heartbeat_timeout * 2`.
+    #[must_use]
+    pub const fn with_redis_key_ttl_secs(mut self, ttl_secs: i64) -> Self {
+        self.redis_key_ttl_secs = ttl_secs;
         self
     }
 
@@ -164,6 +181,7 @@ impl RoomMessageHub {
             let user_id_str = user_id.as_str().to_string();
             let room_id_str = room_id.as_str().to_string();
             let connection_id_clone = connection_id.clone();
+            let ttl_secs = self.redis_key_ttl_secs;
 
             // Spawn best-effort Redis update (don't block the subscribe path)
             tokio::spawn(async move {
@@ -171,8 +189,11 @@ impl RoomMessageHub {
                 if let Err(e) = conn_clone.hset::<_, _, _, ()>(&room_key, &connection_id_clone, &user_id_str).await {
                     warn!("Failed to persist room subscription to Redis: {e}");
                 }
-                // Store connection -> room_id mapping for cleanup
-                if let Err(e) = conn_clone.set::<_, _, ()>(&conn_key, &room_id_str).await {
+                // Set TTL on room key so stale data expires if the node crashes
+                let _: Result<(), _> = conn_clone.expire::<_, ()>(&room_key, ttl_secs).await;
+
+                // Store connection -> room_id mapping for cleanup, with TTL
+                if let Err(e) = conn_clone.set_ex::<_, _, ()>(&conn_key, &room_id_str, ttl_secs as u64).await {
                     warn!("Failed to persist connection mapping to Redis: {e}");
                 }
             });

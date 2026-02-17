@@ -101,14 +101,19 @@ impl AuthCallback for SyncTvRtmpAuth {
         app_name: &str,
         stream_name: &str,
         query: Option<&str>,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<Option<synctv_livestream::rtmp_auth::AuthPublishRewrite>, Box<dyn std::error::Error + Send + Sync>> {
         // Phase 1: Validate room, token, user status, and authorization
         let validated = self.validate_publish_request(app_name, stream_name, query).await?;
 
         // Phase 2: Register in Redis, track mapping, emit event, spawn TTL renewal
         self.register_and_start_ttl(&validated, app_name, stream_name).await?;
 
-        Ok(())
+        // Phase 3: Return rewrite so StreamHub uses canonical (room_id, media_id)
+        // instead of the raw RTMP identifiers (room_id, JWT_TOKEN).
+        Ok(Some(synctv_livestream::rtmp_auth::AuthPublishRewrite {
+            app_name: validated.room_id,
+            stream_name: validated.media_id,
+        }))
     }
 
     /// RTMP pull (play) is unconditionally rejected.

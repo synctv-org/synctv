@@ -469,10 +469,15 @@ async fn get_user_rooms(
     _auth: AuthAdmin,
     State(state): State<AppState>,
     Path(user_id): Path<String>,
+    Query(q): Query<PaginationQuery>,
 ) -> AppResult<Json<admin::GetUserRoomsResponse>> {
     let api = require_admin_api(&state)?;
     let resp = api
-        .get_user_rooms(admin::GetUserRoomsRequest { user_id, page: 0, page_size: 0 })
+        .get_user_rooms(admin::GetUserRoomsRequest {
+            user_id,
+            page: q.page.unwrap_or(1),
+            page_size: q.page_size.unwrap_or(50),
+        })
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))

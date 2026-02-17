@@ -586,10 +586,10 @@ impl ExternalStreamPuller {
             },
         };
 
-        let stream_name = format!("{}/{}", self.room_id, self.media_id);
+        // Use canonical (room_id, media_id) format matching RTMP publish identifier
         let identifier = StreamIdentifier::Rtmp {
-            app_name: "live".to_string(),
-            stream_name: stream_name.clone(),
+            app_name: self.room_id.clone(),
+            stream_name: self.media_id.clone(),
         };
 
         let stream_handler = Arc::new(RtmpStreamHandler::new());
@@ -625,10 +625,9 @@ impl ExternalStreamPuller {
 
     /// Unpublish from local `StreamHub`.
     async fn unpublish_from_local_stream_hub(&mut self) -> Result<()> {
-        let stream_name = format!("{}/{}", self.room_id, self.media_id);
         let identifier = StreamIdentifier::Rtmp {
-            app_name: "live".to_string(),
-            stream_name,
+            app_name: self.room_id.clone(),
+            stream_name: self.media_id.clone(),
         };
 
         let unpublish_event = StreamHubEvent::UnPublish { identifier };

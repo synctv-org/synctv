@@ -10,7 +10,7 @@
 use crate::config::SfuConfig;
 use crate::network_monitor::NetworkQualityMonitor;
 use crate::peer::SfuPeer;
-use crate::track::MediaTrack;
+use crate::track::{MediaTrack, TrackKind};
 use crate::types::{PeerId, RoomId, TrackId};
 use anyhow::{anyhow, Result};
 use dashmap::DashMap;
@@ -695,6 +695,21 @@ impl SfuRoom {
         self.published_tracks
             .iter()
             .map(|entry| entry.key().clone())
+            .collect()
+    }
+
+    /// Get published track info for creating outbound tracks on subscriber PeerConnections.
+    ///
+    /// Returns `(track_id, publisher_peer_id, kind, codec_mime_type)` for each published track.
+    #[must_use]
+    pub fn get_published_track_info(&self) -> Vec<(TrackId, PeerId, TrackKind, String)> {
+        self.published_tracks
+            .iter()
+            .map(|entry| {
+                let track_id = entry.key().clone();
+                let (publisher_peer_id, track) = entry.value();
+                (track_id, publisher_peer_id.clone(), track.kind, track.codec())
+            })
             .collect()
     }
 

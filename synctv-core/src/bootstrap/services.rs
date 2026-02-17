@@ -216,11 +216,18 @@ pub async fn init_services(
     room_service.set_playback_cache_invalidation(cache_invalidation.clone());
     info!("RoomService initialized");
 
+    // Initialize protected cache (bloom filter) for cache penetration protection
+    let protected_cache = Arc::new(crate::cache::ProtectedCache::with_defaults());
+    // Start periodic bloom filter reset (every 24 hours) to prevent unbounded growth
+    protected_cache.start_periodic_reset(std::time::Duration::from_secs(24 * 3600)).await;
+    info!("Protected cache (bloom filter) initialized");
+
     // Initialize CacheManager and start cross-replica invalidation listener
     let cache_manager = CacheManager::new(user_cache.clone(), room_cache.clone())
-        .with_username_cache(Arc::new(username_cache.clone()));
+        .with_username_cache(Arc::new(username_cache.clone()))
+        .with_protected_cache(protected_cache);
     cache_manager.start_invalidation_listener(&cache_invalidation);
-    info!("CacheManager initialized with invalidation listener");
+    info!("CacheManager initialized with invalidation listener and bloom filter protection");
 
     // Initialize ProviderInstanceRepository
     let provider_instance_repo = Arc::new(ProviderInstanceRepository::new(pool.clone()));

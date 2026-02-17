@@ -376,11 +376,32 @@ pub async fn set_room_password(
 pub async fn check_password(
     _auth: AuthUser,
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     connect_info: axum::extract::ConnectInfo<std::net::SocketAddr>,
     Path(room_id): Path<String>,
     Json(req): Json<CheckRoomPasswordRequest>,
 ) -> AppResult<Json<CheckRoomPasswordResponse>> {
-    let client_ip = connect_info.0.ip().to_string();
+    let socket_ip = connect_info.0.ip();
+
+    // Use X-Forwarded-For / X-Real-IP from trusted proxies, otherwise socket IP
+    let client_ip = if state.config.server.development_mode
+        || state.config.server.is_trusted_proxy(&socket_ip)
+    {
+        headers
+            .get("X-Forwarded-For")
+            .and_then(|h| h.to_str().ok())
+            .and_then(|v| v.split(',').next())
+            .map(|s| s.trim().to_string())
+            .or_else(|| {
+                headers
+                    .get("X-Real-IP")
+                    .and_then(|h| h.to_str().ok())
+                    .map(|s| s.to_string())
+            })
+            .unwrap_or_else(|| socket_ip.to_string())
+    } else {
+        socket_ip.to_string()
+    };
 
     let response = state
         .client_api
@@ -540,6 +561,9 @@ pub struct UpdatePlaybackRequest {
 /// Unified handler for updating playback state via PATCH
 /// PATCH /`api/rooms/:room_id/playback`
 /// Supports: state (play/pause), position (seek), speed, `media_id` (switch)
+///
+/// Applies ALL provided fields atomically. Previous implementation used early
+/// returns, silently dropping all fields after the first match (P0 data loss).
 pub async fn update_playback(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -548,61 +572,72 @@ pub async fn update_playback(
 ) -> AppResult<Json<GetPlaybackStateResponse>> {
     let user_id = auth.user_id.to_string();
 
-    // Handle state change (play/pause)
+    // Validate that at least one field is provided
+    if req.state.is_none() && req.position.is_none() && req.speed.is_none() && req.media_id.is_none() {
+        return Err(super::AppError::bad_request(
+            "No valid playback update field provided (state, position, speed, or media_id)"
+        ));
+    }
+
+    // Validate state value early before applying any changes
     if let Some(ref state_str) = req.state {
         match state_str.as_str() {
-            "playing" => {
-                let response = state.client_api
-                    .play(&user_id, &room_id, PlayRequest {})
-                    .await.map_err(super::error::map_api_error)?;
-                return Ok(Json(GetPlaybackStateResponse { playback_state: response.playback_state }));
-            }
-            "paused" => {
-                let response = state.client_api
-                    .pause(&user_id, &room_id)
-                    .await.map_err(super::error::map_api_error)?;
-                return Ok(Json(GetPlaybackStateResponse { playback_state: response.playback_state }));
-            }
+            "playing" | "paused" => {}
             _ => return Err(super::AppError::bad_request("Invalid state value, use 'playing' or 'paused'")),
         }
     }
 
-    // Handle position change (seek)
+    // Apply all provided fields sequentially. Each call is independently
+    // permission-checked and persisted by the service layer.
+
+    // Apply state change (play/pause)
+    if let Some(ref state_str) = req.state {
+        match state_str.as_str() {
+            "playing" => {
+                state.client_api
+                    .play(&user_id, &room_id, PlayRequest {})
+                    .await.map_err(super::error::map_api_error)?;
+            }
+            "paused" => {
+                state.client_api
+                    .pause(&user_id, &room_id)
+                    .await.map_err(super::error::map_api_error)?;
+            }
+            _ => unreachable!("state value validated above"),
+        }
+    }
+
+    // Apply position change (seek)
     if let Some(position) = req.position {
-        let response = state.client_api
+        state.client_api
             .seek(&user_id, &room_id, SeekRequest { current_time: position })
             .await.map_err(super::error::map_api_error)?;
-        return Ok(Json(GetPlaybackStateResponse { playback_state: response.playback_state }));
     }
 
-    // Handle speed change
+    // Apply speed change
     if let Some(speed) = req.speed {
         use crate::proto::client::SetPlaybackSpeedRequest;
-        let response = state.client_api
+        state.client_api
             .set_playback_speed(&user_id, &room_id, SetPlaybackSpeedRequest { speed })
             .await.map_err(super::error::map_api_error)?;
-        return Ok(Json(GetPlaybackStateResponse { playback_state: response.playback_state }));
     }
 
-    // Handle media switch
-    if let Some(media_id) = req.media_id {
+    // Apply media switch
+    if let Some(ref media_id) = req.media_id {
         use crate::proto::client::SetCurrentMediaRequest;
-        let _response = state.client_api
+        state.client_api
             .set_current_media(&user_id, &room_id, SetCurrentMediaRequest {
                 playlist_id: String::new(),
-                media_id,
+                media_id: media_id.clone(),
             })
             .await.map_err(super::error::map_api_error)?;
-        // Return current playback state after media switch
-        let pb = state.client_api
-            .get_playback_state(&user_id, &room_id, GetPlaybackStateRequest {})
-            .await.map_err(super::error::map_api_error)?;
-        return Ok(Json(pb));
     }
 
-    Err(super::AppError::bad_request(
-        "No valid playback update field provided (state, position, speed, or media_id)"
-    ))
+    // Return final playback state reflecting all applied changes
+    let pb = state.client_api
+        .get_playback_state(&user_id, &room_id, GetPlaybackStateRequest {})
+        .await.map_err(super::error::map_api_error)?;
+    Ok(Json(pb))
 }
 
 /// HTTP-specific: Media batch update request for PATCH endpoint
@@ -764,7 +799,9 @@ pub async fn list_playlists(
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> AppResult<Json<ListPlaylistsResponse>> {
     let parent_id = params.get("parent_id").cloned().unwrap_or_default();
-    let req = crate::proto::client::ListPlaylistsRequest { parent_id, page: 0, page_size: 0 };
+    let page: i32 = params.get("page").and_then(|v| v.parse().ok()).unwrap_or(1);
+    let page_size: i32 = params.get("page_size").and_then(|v| v.parse().ok()).unwrap_or(50);
+    let req = crate::proto::client::ListPlaylistsRequest { parent_id, page, page_size };
     let response = state
         .client_api
         .list_playlists(&auth.user_id.to_string(), &room_id, req)

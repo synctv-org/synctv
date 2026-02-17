@@ -734,6 +734,84 @@ impl ConnectionManager {
         }
     }
 
+    /// Refresh TTLs on all active distributed connection counters in Redis.
+    ///
+    /// Long-lived connections (up to 24 hours) outlive the crash-safety TTL
+    /// (`DISTRIBUTED_COUNTER_TTL_SECONDS`). Without periodic refreshes, the
+    /// counter expires while the connection is still alive, causing distributed
+    /// rate limiting to silently stop working.
+    async fn refresh_distributed_counter_ttls(&self) {
+        let Some(ref conn) = self.redis_conn else {
+            return;
+        };
+        let mut conn = conn.clone();
+
+        // Collect unique user and room keys from active connections
+        let mut keys = std::collections::HashSet::new();
+        for entry in self.user_connections.iter() {
+            if !entry.value().is_empty() {
+                keys.insert(format!(
+                    "{}connections:user:{}",
+                    self.redis_key_prefix,
+                    entry.key().as_str()
+                ));
+            }
+        }
+        for entry in self.room_connections.iter() {
+            if !entry.value().is_empty() {
+                keys.insert(format!(
+                    "{}connections:room:{}",
+                    self.redis_key_prefix,
+                    entry.key().as_str()
+                ));
+            }
+        }
+
+        for key in &keys {
+            let result: Result<(), _> = conn.expire(key, DISTRIBUTED_COUNTER_TTL_SECONDS).await;
+            if let Err(e) = result {
+                warn!("Failed to refresh TTL for distributed counter {key}: {e}");
+            }
+        }
+
+        if !keys.is_empty() {
+            debug!(
+                key_count = keys.len(),
+                "Refreshed TTLs on distributed connection counters"
+            );
+        }
+    }
+
+    /// Spawn a background task that periodically refreshes TTLs on distributed
+    /// connection counters in Redis.
+    ///
+    /// This prevents the crash-safety TTL from expiring while long-lived
+    /// connections are still active. Runs every 60 seconds by default.
+    #[must_use]
+    pub fn spawn_ttl_refresh_task(
+        &self,
+        interval: Duration,
+        cancel_token: tokio_util::sync::CancellationToken,
+    ) -> tokio::task::JoinHandle<()> {
+        let manager = self.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            // Skip the first immediate tick
+            ticker.tick().await;
+            loop {
+                tokio::select! {
+                    () = cancel_token.cancelled() => {
+                        info!("Distributed counter TTL refresh task shutting down");
+                        return;
+                    }
+                    _ = ticker.tick() => {
+                        manager.refresh_distributed_counter_ttls().await;
+                    }
+                }
+            }
+        })
+    }
+
     /// Get connection ID for a user in a specific room
     ///
     /// Returns the first active connection ID found for the user in the room.

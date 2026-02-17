@@ -16,7 +16,7 @@ pub async fn register(
         .client_api
         .register(req)
         .await
-        .map_err(super::AppError::bad_request)?;
+        .map_err(super::error::map_api_error)?;
 
     Ok(Json(response))
 }
@@ -30,7 +30,7 @@ pub async fn login(
         .client_api
         .login(req)
         .await
-        .map_err(super::AppError::unauthorized)?;
+        .map_err(super::error::map_api_error)?;
 
     Ok(Json(response))
 }
@@ -133,10 +133,8 @@ mod tests {
     }
 
     // ========== Error Mapping Tests ==========
-    // Verify that auth handlers use the correct error mapping:
-    // - register: maps errors via bad_request (400)
-    // - login: maps errors via unauthorized (401)
-    // - refresh_token: maps errors via map_api_error (typed classification)
+    // All three auth handlers (register, login, refresh_token) now use
+    // map_api_error for consistent typed error classification.
 
     #[test]
     fn test_app_error_bad_request_status() {

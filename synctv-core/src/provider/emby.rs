@@ -8,6 +8,7 @@ use super::{
     PlaybackResult, ProviderContext, ProviderError, SubtitleTrack,
 };
 use crate::service::RemoteProviderManager;
+use crate::validation::{validate_url_for_ssrf, ValidationError};
 use async_trait::async_trait;
 use chrono::Utc;
 use rand::prelude::IndexedRandom;
@@ -126,6 +127,14 @@ impl MediaProvider for EmbyProvider {
                 config.host
             )));
         }
+
+        // SSRF protection: reject private/internal network addresses
+        validate_url_for_ssrf(&config.host).map_err(|e| match e {
+            ValidationError::SSRF(msg) => {
+                ProviderError::InvalidUrl(format!("SSRF protection: {msg}"))
+            }
+            _ => ProviderError::InvalidUrl(e.to_string()),
+        })?;
 
         // Validate item_id is non-empty
         if config.item_id.is_empty() {
@@ -306,7 +315,7 @@ impl MediaProvider for EmbyProvider {
                     PlaybackInfo {
                         urls: vec![transcode_url],
                         format: "hls".to_string(), // Emby transcodes to HLS
-                        headers: HashMap::new(),
+                        headers: emby_auth_headers.clone(),
                         subtitles: Vec::new(), // Subtitles burned in for transcode
                         expires_at: emby_expires_at,
                     },

@@ -7,7 +7,7 @@ use failsafe::{backoff, failure_policy, Config as CbConfig};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::sync::RwLock;
 use tokio::time::{timeout, Duration};
 
@@ -132,6 +132,9 @@ pub struct NodeRegistry {
     nodes_cache: moka::future::Cache<(), Vec<NodeInfo>>,
     /// Redis key prefix for cluster node keys (e.g. "synctv:cluster:nodes")
     key_prefix: String,
+    /// Guard to ensure only one health probe task runs at a time.
+    /// Set to `true` when a probe is spawned, reset to `false` when it exits.
+    health_probe_running: Arc<AtomicBool>,
 }
 
 impl NodeRegistry {
@@ -166,6 +169,7 @@ impl NodeRegistry {
             circuit_breaker: create_redis_circuit_breaker(),
             nodes_cache,
             key_prefix: format!("{}cluster:nodes", key_prefix),
+            health_probe_running: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -279,10 +283,30 @@ impl NodeRegistry {
             return; // Circuit is not open, no need for probe
         }
 
-        // Spawn a detached health probe task
-        // (No need to track JoinHandle - task will detect circuit state and exit)
+        // Atomically check-and-set the probe guard.
+        // compare_exchange ensures only one task is spawned even under concurrent calls.
+        if self
+            .health_probe_running
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return; // Another probe task is already running
+        }
+
+        // Spawn a detached health probe task.
+        // The guard is reset to `false` when the task exits (success, circuit close, or drop).
         let breaker = self.circuit_breaker.clone();
+        let probe_guard = self.health_probe_running.clone();
         tokio::spawn(async move {
+            // Ensure the guard is reset when the task exits, regardless of path.
+            struct ProbeGuard(Arc<AtomicBool>);
+            impl Drop for ProbeGuard {
+                fn drop(&mut self) {
+                    self.0.store(false, Ordering::Release);
+                }
+            }
+            let _guard = ProbeGuard(probe_guard);
+
             let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -484,8 +508,12 @@ impl NodeRegistry {
             // Atomic Lua script: check epoch matches before writing heartbeat
             // Returns:
             //   -1 if key doesn't exist (need re-registration)
-            //   -2 if epoch mismatch (returns remote epoch as second value via error message)
+            //   -(1000 + remote_epoch) if epoch mismatch (encodes remote epoch)
             //   current_epoch on success
+            //
+            // We use -(1000 + remote_epoch) instead of -remote_epoch to avoid
+            // ambiguity when remote_epoch == 0 (which would return 0, colliding
+            // with a successful epoch-0 result).
             let script = redis::Script::new(
                 r"
                 local key = KEYS[1]
@@ -503,8 +531,8 @@ impl NodeRegistry {
                 local remote_epoch = existing_info.epoch or 0
 
                 if remote_epoch ~= expected_epoch then
-                    -- Epoch mismatch: return the remote epoch so caller can update
-                    return -remote_epoch
+                    -- Epoch mismatch: encode remote_epoch with offset to avoid 0-ambiguity
+                    return -(1000 + remote_epoch)
                 end
 
                 -- Epoch matches: update heartbeat and refresh TTL
@@ -552,8 +580,9 @@ impl NodeRegistry {
                     "Auto-registration after heartbeat failure succeeded"
                 );
                 return Ok(HeartbeatResult::Ok);
-            } else if result < 0 {
-                let remote_epoch = (-result) as u64;
+            } else if result <= -1000 {
+                // Lua returns -(1000 + remote_epoch) on epoch mismatch
+                let remote_epoch = ((-result) - 1000) as u64;
                 tracing::warn!(
                     node_id = %self.node_id,
                     local_epoch = current_epoch,

@@ -12,6 +12,7 @@ use super::{
     DynamicFolder, DirectoryItem, ItemType, NextPlayItem,
 };
 use crate::service::RemoteProviderManager;
+use crate::validation::{validate_url_for_ssrf, ValidationError};
 use async_trait::async_trait;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -143,6 +144,14 @@ impl MediaProvider for AlistProvider {
                 config.host
             )));
         }
+
+        // SSRF protection: reject private/internal network addresses
+        validate_url_for_ssrf(&config.host).map_err(|e| match e {
+            ValidationError::SSRF(msg) => {
+                ProviderError::InvalidUrl(format!("SSRF protection: {msg}"))
+            }
+            _ => ProviderError::InvalidUrl(e.to_string()),
+        })?;
 
         // Validate path is not empty and doesn't contain path traversal
         if config.path.is_empty() {
@@ -302,13 +311,12 @@ impl MediaProvider for AlistProvider {
     }
 
     fn cache_key(&self, _ctx: &ProviderContext<'_>, source_config: &Value) -> String {
-        // Cache key includes user-specific path (Alist requires per-user credentials)
+        // Cache key must include token hash to prevent cross-user data leakage.
+        // Different users have different tokens and may see different files.
         if let Ok(config) = AlistSourceConfig::try_from(source_config) {
-            let host_hash = {
-                use sha2::{Sha256, Digest};
-                format!("{:x}", Sha256::digest(config.host.as_bytes()))
-            };
-            format!("alist:{}:{}", host_hash, config.path)
+            use sha2::{Sha256, Digest};
+            let identifier = format!("{}:{}:{}", config.host, config.token, config.path);
+            format!("alist:{:x}", Sha256::digest(identifier.as_bytes()))
         } else {
             "alist:unknown".to_string()
         }

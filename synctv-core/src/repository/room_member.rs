@@ -38,6 +38,7 @@ impl RoomMemberRepository {
                 left_at = NULL,
                 joined_at = EXCLUDED.joined_at,
                 version = room_members.version + 1
+             WHERE room_members.status != $9
              RETURNING
                 room_id, user_id, role, status,
                 added_permissions, removed_permissions,
@@ -53,6 +54,7 @@ impl RoomMemberRepository {
         .bind(member.removed_permissions as i64)
         .bind(member.joined_at)
         .bind(member.version)
+        .bind(MemberStatus::Banned)
         .fetch_one(&self.pool)
         .await?;
 
@@ -80,6 +82,7 @@ impl RoomMemberRepository {
                 left_at = NULL,
                 joined_at = EXCLUDED.joined_at,
                 version = room_members.version + 1
+             WHERE room_members.status != $9
              RETURNING
                 room_id, user_id, role, status,
                 added_permissions, removed_permissions,
@@ -95,6 +98,7 @@ impl RoomMemberRepository {
         .bind(member.removed_permissions as i64)
         .bind(member.joined_at)
         .bind(member.version)
+        .bind(MemberStatus::Banned)
         .fetch_one(executor)
         .await?;
 
@@ -211,6 +215,7 @@ impl RoomMemberRepository {
                 left_at = NULL,
                 joined_at = EXCLUDED.joined_at,
                 version = room_members.version + 1
+             WHERE room_members.status != $9
              RETURNING
                 room_id, user_id, role, status,
                 added_permissions, removed_permissions,
@@ -226,6 +231,7 @@ impl RoomMemberRepository {
         .bind(member.removed_permissions as i64)
         .bind(member.joined_at)
         .bind(member.version)
+        .bind(MemberStatus::Banned)
         .fetch_one(&mut **tx)
         .await?;
 
@@ -475,6 +481,9 @@ impl RoomMemberRepository {
     }
 
     /// Atomically grant permission bits (bitwise OR in SQL to avoid read-modify-write TOCTOU)
+    ///
+    /// Only applies to active members (`left_at IS NULL`). Returns `NotFound` if
+    /// the member has left, preventing ghost permission grants on departed users.
     pub async fn grant_permission_atomic(
         &self,
         room_id: &RoomId,
@@ -486,7 +495,7 @@ impl RoomMemberRepository {
              SET
                 added_permissions = added_permissions | $3,
                 version = version + 1
-             WHERE room_id = $1 AND user_id = $2
+             WHERE room_id = $1 AND user_id = $2 AND left_at IS NULL
              RETURNING
                 room_id, user_id, role, status,
                 added_permissions, removed_permissions,
@@ -497,13 +506,19 @@ impl RoomMemberRepository {
         .bind(room_id.as_str())
         .bind(user_id.as_str())
         .bind(permission as i64)
-        .fetch_one(&self.pool)
+        .fetch_optional(&self.pool)
         .await?;
 
-        self.row_to_member(row)
+        match row {
+            Some(row) => self.row_to_member(row),
+            None => Err(Error::NotFound("Active room member not found".to_string())),
+        }
     }
 
     /// Atomically revoke permission bits (bitwise OR on `removed_permissions` in SQL)
+    ///
+    /// Only applies to active members (`left_at IS NULL`). Returns `NotFound` if
+    /// the member has left, preventing ghost permission revokes on departed users.
     pub async fn revoke_permission_atomic(
         &self,
         room_id: &RoomId,
@@ -515,7 +530,7 @@ impl RoomMemberRepository {
              SET
                 removed_permissions = removed_permissions | $3,
                 version = version + 1
-             WHERE room_id = $1 AND user_id = $2
+             WHERE room_id = $1 AND user_id = $2 AND left_at IS NULL
              RETURNING
                 room_id, user_id, role, status,
                 added_permissions, removed_permissions,
@@ -526,10 +541,13 @@ impl RoomMemberRepository {
         .bind(room_id.as_str())
         .bind(user_id.as_str())
         .bind(permission as i64)
-        .fetch_one(&self.pool)
+        .fetch_optional(&self.pool)
         .await?;
 
-        self.row_to_member(row)
+        match row {
+            Some(row) => self.row_to_member(row),
+            None => Err(Error::NotFound("Active room member not found".to_string())),
+        }
     }
 
     /// Reset member permissions to role default (clear added/removed)
@@ -568,6 +586,9 @@ impl RoomMemberRepository {
     }
 
     /// Ban member from room
+    ///
+    /// Only bans members that are not already banned (`status != Banned`),
+    /// preserving the original ban audit info (banned_at, banned_by, banned_reason).
     pub async fn ban_member(
         &self,
         room_id: &RoomId,
@@ -583,7 +604,7 @@ impl RoomMemberRepository {
                 banned_by = $5,
                 banned_reason = $6,
                 version = version + 1
-             WHERE room_id = $1 AND user_id = $2 AND left_at IS NULL
+             WHERE room_id = $1 AND user_id = $2 AND left_at IS NULL AND status != $3
              RETURNING
                 room_id, user_id, role, status,
                 added_permissions, removed_permissions,

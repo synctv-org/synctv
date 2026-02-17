@@ -390,8 +390,11 @@ where
 {
     /// Set a value in cache only if it's newer than existing data.
     ///
-    /// Uses a Redis Lua script for atomic GET+compare+SET on L2, preventing
+    /// Uses a Redis Lua script for fully atomic GET+compare+SET on L2, preventing
     /// TOCTOU races where concurrent updates could overwrite newer data.
+    /// The Lua script parses the existing value's `updated_at` field directly,
+    /// so no separate Rust-side GET is needed (eliminating the race window between
+    /// a Rust GET and the Lua execution).
     /// L1 is always updated after a successful L2 write (or when Redis is absent).
     pub async fn set_if_newer(&self, key: &K, value: V) -> Result<bool> {
         let new_ts = value.updated_at().timestamp_millis();
@@ -411,21 +414,27 @@ where
                 0
             };
 
-            // Lua script: atomically GET existing JSON, compare timestamps, SET if newer
-            // Returns 1 if updated, 0 if skipped
+            // Lua script: atomically GET existing JSON, parse its updated_at inside
+            // Lua via cjson, compare with the new timestamp (passed as millis),
+            // and SET only if the new value is strictly newer.
+            // Returns 1 if updated, 0 if skipped.
+            //
+            // The updated_at field is an ISO-8601 string in the JSON. We extract
+            // it via cjson.decode and compare lexicographically, which is correct
+            // for ISO-8601 timestamps in the same timezone (UTC).
+            // ARGV[1] = new JSON value
+            // ARGV[2] = TTL in seconds (0 = no expiry)
+            // ARGV[3] = new timestamp as ISO-8601 string for comparison
             let script = redis::Script::new(
                 r#"
                 local existing = redis.call('GET', KEYS[1])
                 if existing then
                     local ok, obj = pcall(cjson.decode, existing)
                     if ok and obj and obj.updated_at then
-                        -- Parse ISO-8601 updated_at to compare as string (lexicographic works for ISO dates)
-                        -- We pass the new timestamp as millis for a simpler numeric comparison.
-                        -- Extract existing millis from the caller-provided threshold.
-                        local existing_ms = tonumber(ARGV[3])
-                        if existing_ms == nil then
-                            -- Fallback: always update if we can't parse
-                        elseif tonumber(ARGV[4]) <= existing_ms then
+                        local existing_ts = obj.updated_at
+                        local new_ts = ARGV[3]
+                        -- Lexicographic comparison works for ISO-8601 UTC timestamps
+                        if new_ts <= existing_ts then
                             return 0
                         end
                     end
@@ -439,27 +448,15 @@ where
                 "#,
             );
 
-            // To avoid complex date parsing in Lua, we read the existing value's
-            // timestamp on the Rust side first, then pass both millis values.
-            // The Lua script still does the atomic check-and-set.
-            let existing_ts_millis: i64 = if let Ok(Some(json)) =
-                conn.get::<_, Option<String>>(&redis_key).await
-            {
-                if let Ok(existing) = serde_json::from_str::<V>(&json) {
-                    existing.updated_at().timestamp_millis()
-                } else {
-                    0
-                }
-            } else {
-                0
-            };
+            // Pass the new updated_at as ISO-8601 string for Lua-side comparison.
+            // This avoids any Rust-side GET, eliminating the TOCTOU window entirely.
+            let new_ts_iso = value.updated_at().to_rfc3339();
 
             let result: i64 = script
                 .key(&redis_key)
                 .arg(&new_json)
                 .arg(ttl_seconds)
-                .arg(existing_ts_millis)
-                .arg(new_ts)
+                .arg(&new_ts_iso)
                 .invoke_async(&mut conn)
                 .await
                 .map_err(|e| {

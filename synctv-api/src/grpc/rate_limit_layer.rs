@@ -110,9 +110,11 @@ fn tier_from_path(path: &str) -> Option<GrpcRateLimitTier> {
 ///
 /// Priority:
 /// 1. SHA-256 hash of JWT bearer token (authenticated users)
-/// 2. "anon:unknown" fallback
+/// 2. Client IP from X-Forwarded-For or X-Real-IP headers
+/// 3. "anon:unknown" fallback (only if no IP info available)
 fn extract_client_id(headers: &http::HeaderMap) -> String {
-    headers
+    // Try authenticated user first
+    if let Some(id) = headers
         .get(http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|s| {
@@ -124,7 +126,27 @@ fn extract_client_id(headers: &http::HeaderMap) -> String {
                 None
             }
         })
-        .unwrap_or_else(|| "anon:unknown".to_string())
+    {
+        return id;
+    }
+
+    // For anonymous requests, use client IP to avoid sharing a single bucket
+    if let Some(ip) = headers
+        .get("X-Forwarded-For")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|v| v.split(',').next())
+        .map(str::trim)
+    {
+        return format!("anon:{ip}");
+    }
+    if let Some(ip) = headers
+        .get("X-Real-IP")
+        .and_then(|h| h.to_str().ok())
+    {
+        return format!("anon:{ip}");
+    }
+
+    "anon:unknown".to_string()
 }
 
 impl<S> Service<http::Request<TonicBody>> for GrpcRateLimitService<S>
@@ -324,6 +346,35 @@ mod tests {
             http::header::AUTHORIZATION,
             "Basic dXNlcjpwYXNz".parse().unwrap(),
         );
+        // Basic auth with no IP headers falls back to anon:unknown
         assert_eq!(extract_client_id(&headers), "anon:unknown");
+    }
+
+    #[test]
+    fn test_extract_client_id_x_forwarded_for() {
+        let mut headers = http::HeaderMap::new();
+        headers.insert("X-Forwarded-For", "203.0.113.50, 70.41.3.18".parse().unwrap());
+        let id = extract_client_id(&headers);
+        assert_eq!(id, "anon:203.0.113.50");
+    }
+
+    #[test]
+    fn test_extract_client_id_x_real_ip() {
+        let mut headers = http::HeaderMap::new();
+        headers.insert("X-Real-IP", "198.51.100.42".parse().unwrap());
+        let id = extract_client_id(&headers);
+        assert_eq!(id, "anon:198.51.100.42");
+    }
+
+    #[test]
+    fn test_extract_client_id_bearer_takes_priority_over_ip() {
+        let mut headers = http::HeaderMap::new();
+        headers.insert(
+            http::header::AUTHORIZATION,
+            "Bearer my_token_here".parse().unwrap(),
+        );
+        headers.insert("X-Forwarded-For", "203.0.113.50".parse().unwrap());
+        let id = extract_client_id(&headers);
+        assert!(id.starts_with("user:"), "Bearer token should take priority over IP");
     }
 }

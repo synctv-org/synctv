@@ -874,7 +874,7 @@ impl ServerSession {
                 RtmpUrlParser::parse_stream_name_with_query(&stream_name_with_query);
         }
         if let Some(auth) = &self.auth {
-            auth.on_publish(
+            let rewrite = auth.on_publish(
                 &self.app_name,
                 &self.stream_name,
                 self.query.as_deref(),
@@ -883,6 +883,18 @@ impl ServerSession {
             .map_err(|e| SessionError {
                 value: SessionErrorValue::AuthFailed(e.to_string()),
             })?;
+
+            // Apply identifier rewrite if the auth callback resolved a JWT token
+            // to a canonical (room_id, media_id) pair.
+            if let Some(rewrite) = rewrite {
+                tracing::info!(
+                    "Auth rewrite: ({}, {}) -> ({}, {})",
+                    self.app_name, self.stream_name,
+                    rewrite.app_name, rewrite.stream_name
+                );
+                self.app_name = rewrite.app_name;
+                self.stream_name = rewrite.stream_name;
+            }
         }
 
         /*Now it can update the request url*/

@@ -160,11 +160,10 @@ impl stream_relay_service_server::StreamRelayService for StreamRelayServiceImpl 
             },
         };
 
-        // Stream name format: room_id/media_id
-        let stream_name = format!("{}/{}", req.room_id, req.media_id);
+        // Use canonical (room_id, media_id) format matching RTMP publish identifier
         let identifier = StreamIdentifier::Rtmp {
-            app_name: "live".to_string(),
-            stream_name: stream_name.clone(),
+            app_name: req.room_id.clone(),
+            stream_name: req.media_id.clone(),
         };
 
         let (event_result_sender, event_result_receiver) = tokio::sync::oneshot::channel();
@@ -197,7 +196,8 @@ impl stream_relay_service_server::StreamRelayService for StreamRelayServiceImpl 
         let (tx, rx) = mpsc::channel(128);
 
         // Spawn task to forward frames with cancellation support
-        let stream_name_clone = stream_name.clone();
+        let room_id_clone = req.room_id.clone();
+        let media_id_clone = req.media_id.clone();
         let event_sender_clone = self.stream_hub_event_sender.clone();
         let child_token = self.cancel_token.child_token();
         tokio::spawn(async move {
@@ -245,7 +245,7 @@ impl stream_relay_service_server::StreamRelayService for StreamRelayServiceImpl 
             }
 
             info!("Stream ended, unsubscribing");
-            Self::unsubscribe_from_hub(event_sender_clone, subscriber_id, stream_name_clone).await;
+            Self::unsubscribe_from_hub(event_sender_clone, subscriber_id, room_id_clone, media_id_clone).await;
         });
 
         let output_stream = ReceiverStream::new(rx);
@@ -272,8 +272,8 @@ impl stream_relay_service_server::StreamRelayService for StreamRelayServiceImpl 
         let hls_registry = self.hls_stream_registry.as_ref()
             .ok_or_else(|| Status::unavailable("HLS not enabled on this node"))?;
 
-        // Registry key format matches the HLS remuxer: "live/room_id:media_id"
-        let stream_key = format!("live/{}:{}", req.room_id, req.media_id);
+        // Registry key format: "room_id/media_id" (matches remuxer's app_name/stream_name)
+        let stream_key = format!("{}/{}", req.room_id, req.media_id);
 
         let response = match hls_registry.get(&stream_key) {
             Some(stream_state) => {
@@ -316,9 +316,8 @@ impl stream_relay_service_server::StreamRelayService for StreamRelayServiceImpl 
             .ok_or_else(|| Status::unavailable("HLS not enabled on this node"))?;
 
         // Build storage key: app_name-stream_name-ts_name
-        // stream_name format is "room_id:media_id", replace : with - for flat key
-        let stream_name = format!("{}:{}", req.room_id, req.media_id);
-        let storage_key = format!("live-{}-{}", stream_name.replace(':', "-"), req.segment_name);
+        // With canonical format: app_name=room_id, stream_name=media_id
+        let storage_key = format!("{}-{}-{}", req.room_id, req.media_id, req.segment_name);
 
         match segment_manager.storage().read(&storage_key).await {
             Ok(data) => Ok(Response::new(GetHlsSegmentResponse {
@@ -338,7 +337,8 @@ impl StreamRelayServiceImpl {
     async fn unsubscribe_from_hub(
         event_sender: StreamHubEventSender,
         subscriber_id: Uuid,
-        stream_name: String,
+        room_id: String,
+        media_id: String,
     ) {
         let sub_info = SubscriberInfo {
             id: subscriber_id,
@@ -351,8 +351,8 @@ impl StreamRelayServiceImpl {
         };
 
         let identifier = StreamIdentifier::Rtmp {
-            app_name: "live".to_string(),
-            stream_name,
+            app_name: room_id,
+            stream_name: media_id,
         };
 
         let unsubscribe_event = StreamHubEvent::UnSubscribe {

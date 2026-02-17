@@ -50,6 +50,13 @@ static SHARED_CLIENT: LazyLock<Client> = LazyLock::new(|| {
 /// Shared rate limiter for all Bilibili requests.
 /// This must be global so that the token bucket is not reset when a new
 /// `BilibiliClient` is created per-request in the service layer.
+///
+/// **Known limitation**: This is an in-memory rate limiter, so in multi-replica
+/// deployments the effective rate is `N * DEFAULT_RATE_LIMIT_PER_SECOND` where N
+/// is the number of running instances. For Bilibili's API this is acceptable
+/// because the limit is conservative (5 req/s) and replicas are typically few.
+/// A Redis-backed limiter (e.g. via `redis-cell` or a Lua script) would be
+/// needed if the deployment scales to many replicas.
 static SHARED_RATE_LIMITER: LazyLock<std::sync::Arc<BilibiliRateLimiter>> = LazyLock::new(|| {
     let quota = Quota::per_second(
         NonZeroU32::new(DEFAULT_RATE_LIMIT_PER_SECOND).expect("rate limit must be > 0"),

@@ -153,14 +153,14 @@ async fn test_complete_hls_workflow() {
     }
 
     let state = Arc::new(RwLock::new(StreamProcessorState {
-        app_name: "live".to_string(),
-        stream_name: "test_room:test_media".to_string(),
+        app_name: "test_room".to_string(),
+        stream_name: "test_media".to_string(),
         segments,
         is_ended: false,
     }));
 
     if let Some(registry) = &infrastructure.hls_stream_registry {
-        registry.insert("live/test_room:test_media".to_string(), state);
+        registry.insert("test_room/test_media".to_string(), state);
     }
 
     // Step 3: Generate HLS playlist
@@ -253,22 +253,23 @@ async fn test_storage_key_format_consistency() {
 async fn test_registry_key_format_consistency() {
     let infrastructure = create_test_infrastructure();
 
-    // Register stream with format: live/room_id:media_id
+    // Register stream with canonical format: room_id/media_id
     let state = Arc::new(RwLock::new(StreamProcessorState {
-        app_name: "live".to_string(),
-        stream_name: "room123:media456".to_string(),
+        app_name: "room123".to_string(),
+        stream_name: "media456".to_string(),
         segments: VecDeque::new(),
         is_ended: false,
     }));
 
     if let Some(registry) = &infrastructure.hls_stream_registry {
-        let key = "live/room123:media456";
+        let key = "room123/media456";
         registry.insert(key.to_string(), state);
 
         // Verify exact key exists
         assert!(registry.contains_key(key));
 
         // Verify alternative formats do NOT exist
+        assert!(!registry.contains_key("live/room123:media456"));
         assert!(!registry.contains_key("live/room123/media456"));
         assert!(!registry.contains_key("live-room123:media456"));
         assert!(!registry.contains_key("room123:media456"));
@@ -291,14 +292,14 @@ async fn test_hls_url_generation_with_custom_callback() {
     });
 
     let state = Arc::new(RwLock::new(StreamProcessorState {
-        app_name: "live".to_string(),
-        stream_name: "room123:media456".to_string(),
+        app_name: "room123".to_string(),
+        stream_name: "media456".to_string(),
         segments,
         is_ended: false,
     }));
 
     if let Some(registry) = &infrastructure.hls_stream_registry {
-        registry.insert("live/room123:media456".to_string(), state);
+        registry.insert("room123/media456".to_string(), state);
     }
 
     // Test with CDN URL
@@ -415,14 +416,14 @@ async fn test_hls_playlist_with_discontinuity() {
     });
 
     let state = Arc::new(RwLock::new(StreamProcessorState {
-        app_name: "live".to_string(),
-        stream_name: "room1:media1".to_string(),
+        app_name: "room1".to_string(),
+        stream_name: "media1".to_string(),
         segments,
         is_ended: false,
     }));
 
     if let Some(registry) = &infrastructure.hls_stream_registry {
-        registry.insert("live/room1:media1".to_string(), state);
+        registry.insert("room1/media1".to_string(), state);
     }
 
     let playlist = HlsStreamingApi::generate_playlist(
@@ -450,14 +451,14 @@ async fn test_hls_playlist_ended_stream() {
     });
 
     let state = Arc::new(RwLock::new(StreamProcessorState {
-        app_name: "live".to_string(),
-        stream_name: "room1:media1".to_string(),
+        app_name: "room1".to_string(),
+        stream_name: "media1".to_string(),
         segments,
         is_ended: true,  // Stream ended
     }));
 
     if let Some(registry) = &infrastructure.hls_stream_registry {
-        registry.insert("live/room1:media1".to_string(), state);
+        registry.insert("room1/media1".to_string(), state);
     }
 
     let playlist = HlsStreamingApi::generate_playlist(

@@ -80,11 +80,10 @@ async fn handle_flv_stream(
         synctv_xiu::httpflv::FLV_RESPONSE_CHANNEL_CAPACITY,
     );
 
-    // Spawn FLV session
-    let stream_name = format!("{room_id}/{media_id}");
+    // Spawn FLV session using canonical (room_id, media_id) StreamIdentifier
     let mut flv_session = HttpFlvSession::new(
-        "live".to_string(),
-        stream_name,
+        room_id.to_string(),
+        media_id.to_string(),
         state.stream_hub_event_sender,
         tx,
     );

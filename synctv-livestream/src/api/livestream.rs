@@ -31,7 +31,7 @@ use bytes::Bytes;
 use std::sync::Arc;
 use synctv_xiu::streamhub::define::StreamHubEventSender;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info};
+use tracing::{error, info};
 
 pub use super::tracker::{StreamSubscriberGuard, StreamTracker, UserStreamTracker};
 
@@ -124,24 +124,10 @@ impl LiveStreamingInfrastructure {
     pub fn kick_publisher(&self, room_id: &str, media_id: &str) -> Result<()> {
         use synctv_xiu::streamhub::stream::StreamIdentifier;
 
-        // Look up RTMP identifiers from tracker (app_name, stream_name)
-        // StreamHub uses the original RTMP identifiers, not (room_id, media_id)
-        let (app_name, stream_name) = self.user_stream_tracker
-            .get_rtmp_identifiers(room_id, media_id)
-            .unwrap_or_else(|| {
-                // Fallback: use room_id as app_name, media_id as stream_name
-                // This matches the case where stream_name was directly the media_id
-                debug!(
-                    room_id = %room_id,
-                    media_id = %media_id,
-                    "No RTMP mapping found, using direct identifiers as fallback"
-                );
-                (room_id.to_string(), media_id.to_string())
-            });
-
+        // StreamHub uses canonical (room_id, media_id) identifiers after auth rewrite
         let identifier = StreamIdentifier::Rtmp {
-            app_name,
-            stream_name,
+            app_name: room_id.to_string(),
+            stream_name: media_id.to_string(),
         };
 
         self.stream_hub_event_sender
@@ -309,11 +295,10 @@ impl FlvStreamingApi {
         // Create bounded channel for FLV data (backpressure for slow clients)
         let (tx, rx) = mpsc::channel(synctv_xiu::httpflv::FLV_RESPONSE_CHANNEL_CAPACITY);
 
-        // Create FLV session
-        let stream_name = format!("{room_id}/{media_id}");
+        // Create FLV session using canonical (room_id, media_id) StreamIdentifier
         let mut flv_session = HttpFlvSession::new(
-            "live".to_string(),
-            stream_name,
+            room_id.to_string(),
+            media_id.to_string(),
             infrastructure.stream_hub_event_sender.clone(),
             tx,
         );
@@ -446,8 +431,8 @@ impl HlsStreamingApi {
         F: Fn(&str) -> String,
     {
         if let Some(hls_registry) = &infrastructure.hls_stream_registry {
-            // Registry key format: "live/room_id:media_id" (same as remuxer uses)
-            let stream_key = format!("live/{room_id}:{media_id}");
+            // Registry key format: "room_id/media_id" (matches remuxer's app_name/stream_name)
+            let stream_key = format!("{room_id}/{media_id}");
 
             let playlist = hls_registry.get(&stream_key).map_or_else(|| {
                     // Empty playlist if stream not in registry yet
@@ -543,9 +528,8 @@ impl HlsStreamingApi {
     ) -> Result<Bytes> {
         if let Some(segment_manager) = &infrastructure.segment_manager {
             // Build storage key: app_name-stream_name-ts_name
-            // stream_name format is "room_id:media_id", replace : with - for flat key
-            let stream_name = format!("{room_id}:{media_id}");
-            let storage_key = format!("live-{}-{}", stream_name.replace(':', "-"), segment_name);
+            // With canonical format: app_name=room_id, stream_name=media_id
+            let storage_key = format!("{room_id}-{media_id}-{segment_name}");
 
             segment_manager
                 .storage()

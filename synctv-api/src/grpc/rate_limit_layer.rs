@@ -146,6 +146,15 @@ fn extract_client_id(headers: &http::HeaderMap) -> String {
         return format!("anon:{ip}");
     }
 
+    // No client identifier available (no auth, no IP headers).
+    // This typically means the deployment is misconfigured (missing trusted proxy
+    // headers) or a direct connection without a reverse proxy. Log a warning
+    // so operators notice the misconfiguration, and use a shared "unknown" bucket
+    // with a tighter effective limit (the shared bucket naturally applies pressure).
+    warn!(
+        "Rate limit: no client identifier available (no Authorization, X-Forwarded-For, or X-Real-IP). \
+         Configure trusted_proxies and ensure your reverse proxy sets X-Forwarded-For."
+    );
     "anon:unknown".to_string()
 }
 

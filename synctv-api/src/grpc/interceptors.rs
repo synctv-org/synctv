@@ -334,7 +334,7 @@ impl GrpcRateLimitInterceptor {
     /// Priority:
     /// 1. SHA-256 hash of JWT bearer token (authenticated users)
     /// 2. Peer IP address (anonymous users)
-    /// 3. "anonymous" fallback
+    /// 3. "anon:unknown" fallback (shared bucket; logs warning about misconfiguration)
     fn extract_client_id<T>(request: &Request<T>) -> String {
         request
             .metadata()
@@ -354,7 +354,14 @@ impl GrpcRateLimitInterceptor {
                 // Use peer IP address for anonymous rate limiting instead of a shared bucket
                 request.remote_addr().map(|addr| format!("anon:ip:{}", addr.ip()))
             })
-            .unwrap_or_else(|| "anon:unknown".to_string())
+            .unwrap_or_else(|| {
+                warn!(
+                    "Rate limit: no client identifier available (no Authorization header or peer address). \
+                     Falling back to shared 'anon:unknown' bucket. \
+                     Configure trusted_proxies and ensure your reverse proxy sets X-Forwarded-For."
+                );
+                "anon:unknown".to_string()
+            })
     }
 
     /// Apply rate limiting to a gRPC request.

@@ -1,4 +1,8 @@
 //! Error types for cluster module
+//!
+//! All public cluster APIs return [`Result<T>`] using the [`Error`] enum below.
+//! Internal helpers may use `anyhow::Result` for ergonomic `.context()` chains;
+//! the `From<anyhow::Error>` impl bridges the two.
 
 use thiserror::Error;
 
@@ -28,6 +32,11 @@ pub enum Error {
 
     #[error("Timeout: {0}")]
     Timeout(String),
+
+    /// Catch-all for errors originating from internal `anyhow::Error` chains
+    /// (e.g. redis_pubsub, WAL). Preserves the full error context.
+    #[error("{0:#}")]
+    Internal(#[from] anyhow::Error),
 }
 
 /// Result type for cluster operations

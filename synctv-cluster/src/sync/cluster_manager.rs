@@ -18,6 +18,7 @@ use super::events::ClusterEvent;
 use super::redis_pubsub::{PublishRequest, RedisPubSub};
 use super::room_hub::{ConnectionId, RoomMessageHub};
 use crate::discovery::{HeartbeatResult, NodeRegistry};
+use crate::error::{Error as ClusterError, Result as ClusterResult};
 use synctv_core::models::id::{RoomId, UserId};
 use synctv_core::service::PermissionService;
 
@@ -107,7 +108,7 @@ impl ClusterManager {
         config: ClusterConfig,
         permission_service: Option<PermissionService>,
         cache_invalidation: Option<synctv_core::cache::CacheInvalidationService>,
-    ) -> Result<Self, anyhow::Error> {
+    ) -> ClusterResult<Self> {
         let message_hub = Arc::new(RoomMessageHub::new());
         let deduplicator = Arc::new(MessageDeduplicator::new(
             config.dedup_window,
@@ -188,7 +189,7 @@ impl ClusterManager {
     }
 
     /// Create with default configuration
-    pub async fn with_defaults() -> Result<Self, anyhow::Error> {
+    pub async fn with_defaults() -> ClusterResult<Self> {
         Self::new(ClusterConfig::default(), None, None).await
     }
 

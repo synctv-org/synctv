@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS email_tokens (
 );
 
 -- Create indexes
-CREATE INDEX idx_email_tokens_token ON email_tokens(token);
+-- Note: No separate index on token needed — the UNIQUE constraint already provides one
 CREATE INDEX idx_email_tokens_user_id ON email_tokens(user_id);
 CREATE INDEX idx_email_tokens_type_expires ON email_tokens(token_type, expires_at);
 CREATE INDEX idx_email_tokens_expires_at ON email_tokens(expires_at);

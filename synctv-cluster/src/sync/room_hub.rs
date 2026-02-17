@@ -293,58 +293,68 @@ impl RoomMessageHub {
         let mut sent_count = 0;
         let mut failed_connections = Vec::new();
 
-        if let Some(subscribers) = self.rooms.get(room_id) {
-            for subscriber in subscribers.iter() {
-                match subscriber.sender.try_send(event.clone()) {
-                    Ok(()) => {
-                        // Reset consecutive drop counter on successful send
-                        subscriber.consecutive_drops.store(0, Ordering::Relaxed);
-                        sent_count += 1;
-                        debug!(
-                            room_id = %room_id.as_str(),
-                            user_id = %subscriber.user_id.as_str(),
-                            connection_id = %subscriber.connection_id,
-                            event_type = %event.event_type(),
-                            "Event sent to client"
-                        );
-                    }
-                    Err(mpsc::error::TrySendError::Full(_)) => {
-                        let drops = subscriber.consecutive_drops.fetch_add(1, Ordering::Relaxed) + 1;
-                        if drops >= MAX_CONSECUTIVE_DROPS {
-                            warn!(
-                                room_id = %room_id.as_str(),
-                                user_id = %subscriber.user_id.as_str(),
-                                connection_id = %subscriber.connection_id,
-                                consecutive_drops = drops,
-                                "Disconnecting persistently slow subscriber after {} consecutive drops",
-                                MAX_CONSECUTIVE_DROPS
-                            );
-                            failed_connections.push(subscriber.connection_id.clone());
-                        } else {
-                            warn!(
+        // LOCK ORDERING: Acquire `rooms` read guard in a scoped block. The guard
+        // MUST be dropped before calling `unsubscribe()`, which acquires write
+        // guards on both `rooms` (via `get_mut` / `remove_if`) and `connections`.
+        // Holding the read guard across the `unsubscribe` call would deadlock on
+        // the same DashMap shard.
+        {
+            let subscribers_guard = self.rooms.get(room_id);
+            if let Some(subscribers) = &subscribers_guard {
+                for subscriber in subscribers.iter() {
+                    match subscriber.sender.try_send(event.clone()) {
+                        Ok(()) => {
+                            // Reset consecutive drop counter on successful send
+                            subscriber.consecutive_drops.store(0, Ordering::Relaxed);
+                            sent_count += 1;
+                            debug!(
                                 room_id = %room_id.as_str(),
                                 user_id = %subscriber.user_id.as_str(),
                                 connection_id = %subscriber.connection_id,
                                 event_type = %event.event_type(),
-                                consecutive_drops = drops,
-                                "Subscriber channel full, dropping event for slow consumer"
+                                "Event sent to client"
                             );
                         }
-                    }
-                    Err(mpsc::error::TrySendError::Closed(_)) => {
-                        warn!(
-                            room_id = %room_id.as_str(),
-                            user_id = %subscriber.user_id.as_str(),
-                            connection_id = %subscriber.connection_id,
-                            "Subscriber channel closed, marking for cleanup"
-                        );
-                        failed_connections.push(subscriber.connection_id.clone());
+                        Err(mpsc::error::TrySendError::Full(_)) => {
+                            let drops = subscriber.consecutive_drops.fetch_add(1, Ordering::Relaxed) + 1;
+                            if drops >= MAX_CONSECUTIVE_DROPS {
+                                warn!(
+                                    room_id = %room_id.as_str(),
+                                    user_id = %subscriber.user_id.as_str(),
+                                    connection_id = %subscriber.connection_id,
+                                    consecutive_drops = drops,
+                                    "Disconnecting persistently slow subscriber after {} consecutive drops",
+                                    MAX_CONSECUTIVE_DROPS
+                                );
+                                failed_connections.push(subscriber.connection_id.clone());
+                            } else {
+                                warn!(
+                                    room_id = %room_id.as_str(),
+                                    user_id = %subscriber.user_id.as_str(),
+                                    connection_id = %subscriber.connection_id,
+                                    event_type = %event.event_type(),
+                                    consecutive_drops = drops,
+                                    "Subscriber channel full, dropping event for slow consumer"
+                                );
+                            }
+                        }
+                        Err(mpsc::error::TrySendError::Closed(_)) => {
+                            warn!(
+                                room_id = %room_id.as_str(),
+                                user_id = %subscriber.user_id.as_str(),
+                                connection_id = %subscriber.connection_id,
+                                "Subscriber channel closed, marking for cleanup"
+                            );
+                            failed_connections.push(subscriber.connection_id.clone());
+                        }
                     }
                 }
             }
+            // `subscribers_guard` (rooms read guard) is explicitly dropped here
+            // before the cleanup loop below.
         }
 
-        // Clean up failed/slow connections (drop the read guard first)
+        // Clean up failed/slow connections (rooms read guard already dropped above)
         for conn_id in failed_connections {
             self.unsubscribe(&conn_id);
         }
@@ -371,44 +381,49 @@ impl RoomMessageHub {
         let mut sent_count = 0;
         let mut failed_connections = Vec::new();
 
-        if let Some(subscribers) = self.rooms.get(room_id) {
-            for subscriber in subscribers.iter() {
-                if subscriber.user_id == *user_id {
-                    match subscriber.sender.try_send(event.clone()) {
-                        Ok(()) => {
-                            sent_count += 1;
-                            debug!(
-                                room_id = %room_id.as_str(),
-                                user_id = %subscriber.user_id.as_str(),
-                                connection_id = %subscriber.connection_id,
-                                event_type = %event.event_type(),
-                                "Event sent to specific user"
-                            );
-                        }
-                        Err(mpsc::error::TrySendError::Full(_)) => {
-                            warn!(
-                                room_id = %room_id.as_str(),
-                                user_id = %subscriber.user_id.as_str(),
-                                connection_id = %subscriber.connection_id,
-                                event_type = %event.event_type(),
-                                "Subscriber channel full, dropping event for slow consumer"
-                            );
-                        }
-                        Err(mpsc::error::TrySendError::Closed(_)) => {
-                            warn!(
-                                room_id = %room_id.as_str(),
-                                user_id = %subscriber.user_id.as_str(),
-                                connection_id = %subscriber.connection_id,
-                                "Subscriber channel closed, marking for cleanup"
-                            );
-                            failed_connections.push(subscriber.connection_id.clone());
+        // LOCK ORDERING: Same pattern as broadcast() -- scoped read guard on
+        // `rooms` must be dropped before calling `unsubscribe()`.
+        {
+            let subscribers_guard = self.rooms.get(room_id);
+            if let Some(subscribers) = &subscribers_guard {
+                for subscriber in subscribers.iter() {
+                    if subscriber.user_id == *user_id {
+                        match subscriber.sender.try_send(event.clone()) {
+                            Ok(()) => {
+                                sent_count += 1;
+                                debug!(
+                                    room_id = %room_id.as_str(),
+                                    user_id = %subscriber.user_id.as_str(),
+                                    connection_id = %subscriber.connection_id,
+                                    event_type = %event.event_type(),
+                                    "Event sent to specific user"
+                                );
+                            }
+                            Err(mpsc::error::TrySendError::Full(_)) => {
+                                warn!(
+                                    room_id = %room_id.as_str(),
+                                    user_id = %subscriber.user_id.as_str(),
+                                    connection_id = %subscriber.connection_id,
+                                    event_type = %event.event_type(),
+                                    "Subscriber channel full, dropping event for slow consumer"
+                                );
+                            }
+                            Err(mpsc::error::TrySendError::Closed(_)) => {
+                                warn!(
+                                    room_id = %room_id.as_str(),
+                                    user_id = %subscriber.user_id.as_str(),
+                                    connection_id = %subscriber.connection_id,
+                                    "Subscriber channel closed, marking for cleanup"
+                                );
+                                failed_connections.push(subscriber.connection_id.clone());
+                            }
                         }
                     }
                 }
             }
         }
 
-        // Clean up failed connections
+        // Clean up failed connections (rooms read guard already dropped above)
         for conn_id in failed_connections {
             self.unsubscribe(&conn_id);
         }

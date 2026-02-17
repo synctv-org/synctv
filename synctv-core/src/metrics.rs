@@ -610,6 +610,41 @@ pub mod cluster {
             REGISTRY.clone()
         ).expect("Failed to register NODE_LAST_HEARTBEAT")
     });
+
+    /// Total distributed counter TTL refresh operations, labeled by result.
+    /// Labels: "success", "failure".
+    /// Alert condition: if `failure` count increases while `success` stays
+    /// flat, distributed rate limiting may silently stop working.
+    pub static DISTRIBUTED_COUNTER_TTL_REFRESHES: std::sync::LazyLock<IntCounterVec> = std::sync::LazyLock::new(|| {
+        register_int_counter_vec_with_registry!(
+            Opts::new(
+                "synctv_cluster_distributed_counter_ttl_refreshes_total",
+                "Total distributed counter TTL refresh operations"
+            ),
+            &["result"],
+            REGISTRY.clone()
+        ).expect("Failed to register DISTRIBUTED_COUNTER_TTL_REFRESHES")
+    });
+
+    /// Number of keys refreshed in the last TTL refresh cycle.
+    /// A sudden drop to 0 while connections are active indicates a problem.
+    pub static DISTRIBUTED_COUNTER_TTL_KEYS_REFRESHED: std::sync::LazyLock<IntGauge> = std::sync::LazyLock::new(|| {
+        register_int_gauge_with_registry!(
+            "synctv_cluster_distributed_counter_ttl_keys_refreshed",
+            "Number of keys refreshed in the last TTL refresh cycle",
+            REGISTRY.clone()
+        ).expect("Failed to register DISTRIBUTED_COUNTER_TTL_KEYS_REFRESHED")
+    });
+
+    /// Consecutive TTL refresh failures. Reset to 0 on success.
+    /// Alert when value >= 3 (counters may have expired).
+    pub static DISTRIBUTED_COUNTER_TTL_CONSECUTIVE_FAILURES: std::sync::LazyLock<IntGauge> = std::sync::LazyLock::new(|| {
+        register_int_gauge_with_registry!(
+            "synctv_cluster_distributed_counter_ttl_consecutive_failures",
+            "Consecutive TTL refresh failures (alert when >= 3)",
+            REGISTRY.clone()
+        ).expect("Failed to register DISTRIBUTED_COUNTER_TTL_CONSECUTIVE_FAILURES")
+    });
 }
 
 /// Spawned task monitoring

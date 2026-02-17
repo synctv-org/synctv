@@ -880,24 +880,62 @@ impl ConnectionManager {
             counter_keys.insert(total_key);
         }
 
+        let mut failure_count = 0u64;
+        let mut success_count = 0u64;
+
         for key in &counter_keys {
             let result: Result<(), _> = conn.expire(key, DISTRIBUTED_COUNTER_TTL_SECONDS).await;
             if let Err(e) = result {
+                failure_count += 1;
                 warn!("Failed to refresh TTL for distributed counter {key}: {e}");
+            } else {
+                success_count += 1;
             }
         }
 
         for key in &metadata_keys {
             let result: Result<(), _> = conn.expire(key, CONNECTION_METADATA_TTL_SECONDS).await;
             if let Err(e) = result {
+                failure_count += 1;
                 warn!("Failed to refresh TTL for connection metadata {key}: {e}");
+            } else {
+                success_count += 1;
             }
         }
+
+        // Update monitoring metrics
+        if success_count > 0 {
+            synctv_core::metrics::cluster::DISTRIBUTED_COUNTER_TTL_REFRESHES
+                .with_label_values(&["success"])
+                .inc_by(success_count);
+        }
+        if failure_count > 0 {
+            synctv_core::metrics::cluster::DISTRIBUTED_COUNTER_TTL_REFRESHES
+                .with_label_values(&["failure"])
+                .inc_by(failure_count);
+            let consecutive = synctv_core::metrics::cluster::DISTRIBUTED_COUNTER_TTL_CONSECUTIVE_FAILURES.get() + 1;
+            synctv_core::metrics::cluster::DISTRIBUTED_COUNTER_TTL_CONSECUTIVE_FAILURES.set(consecutive);
+            if consecutive >= 3 {
+                warn!(
+                    consecutive_failures = consecutive,
+                    "ALERT: Distributed counter TTL refresh has failed {} consecutive times. \
+                     Connection rate limiting across replicas may stop working if counters expire.",
+                    consecutive
+                );
+            }
+        } else if !counter_keys.is_empty() || !metadata_keys.is_empty() {
+            // Reset consecutive failure counter on full success
+            synctv_core::metrics::cluster::DISTRIBUTED_COUNTER_TTL_CONSECUTIVE_FAILURES.set(0);
+        }
+
+        let total_refreshed = (counter_keys.len() + metadata_keys.len()) as i64;
+        synctv_core::metrics::cluster::DISTRIBUTED_COUNTER_TTL_KEYS_REFRESHED.set(total_refreshed);
 
         if !counter_keys.is_empty() || !metadata_keys.is_empty() {
             debug!(
                 counter_keys = counter_keys.len(),
                 metadata_keys = metadata_keys.len(),
+                failures = failure_count,
                 "Refreshed TTLs on distributed counters and connection metadata"
             );
         }

@@ -69,6 +69,23 @@ pub trait HlsStorage: Send + Sync {
         Ok(0)
     }
 
+    /// Delete all keys matching a given prefix.
+    ///
+    /// Used for immediate segment cleanup when a specific stream ends,
+    /// rather than waiting for periodic time-based cleanup.
+    ///
+    /// # Arguments
+    /// * `prefix` - Key prefix to match (e.g., "room123-media456-")
+    ///
+    /// # Returns
+    /// Number of keys deleted
+    ///
+    /// # Default Implementation
+    /// No-op by default (returns 0). Storage backends should implement this.
+    async fn delete_by_prefix(&self, _prefix: &str) -> Result<usize> {
+        Ok(0)
+    }
+
     /// Get public URL for direct access (async)
     ///
     /// Use cases:

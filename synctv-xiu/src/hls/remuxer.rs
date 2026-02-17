@@ -373,6 +373,17 @@ impl StreamHandler {
         tokio::time::sleep(tokio::time::Duration::from_mins(1)).await;
         self.stream_registry.remove(&registry_key);
 
+        // Explicitly clean up segments for this stream to free memory immediately
+        // rather than waiting for the periodic cleanup cycle (LS-3)
+        if let Err(e) = self.segment_manager.cleanup_stream(&self.app_name, &self.stream_name).await {
+            tracing::warn!(
+                "Failed to cleanup segments for {}/{}: {}",
+                self.app_name,
+                self.stream_name,
+                e
+            );
+        }
+
         Ok(())
     }
 

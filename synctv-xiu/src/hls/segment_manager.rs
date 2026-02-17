@@ -115,6 +115,31 @@ impl SegmentManager {
     pub async fn cleanup_expired(&self) -> std::io::Result<usize> {
         self.storage.cleanup(Duration::from_secs(0)).await
     }
+
+    /// Cleanup all segments for a specific stream immediately.
+    ///
+    /// Called when a stream ends (publisher disconnect, idle timeout) to
+    /// immediately free memory rather than waiting for the periodic cleanup cycle.
+    ///
+    /// # Arguments
+    /// * `app_name` - Application/room name (e.g., "room123")
+    /// * `stream_name` - Stream/media name (e.g., "media456")
+    ///
+    /// # Returns
+    /// Number of segments deleted
+    pub async fn cleanup_stream(&self, app_name: &str, stream_name: &str) -> std::io::Result<usize> {
+        let prefix = format!("{app_name}-{stream_name}-");
+        let deleted = self.storage.delete_by_prefix(&prefix).await?;
+        if deleted > 0 {
+            tracing::info!(
+                "Cleaned up {} segments for stream {}/{}",
+                deleted,
+                app_name,
+                stream_name
+            );
+        }
+        Ok(deleted)
+    }
 }
 
 #[cfg(test)]

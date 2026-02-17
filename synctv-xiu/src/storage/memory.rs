@@ -264,6 +264,33 @@ impl HlsStorage for MemoryStorage {
         Ok(inner.data.contains_key(key))
     }
 
+    async fn delete_by_prefix(&self, prefix: &str) -> Result<usize> {
+        let mut inner = self.inner.write();
+
+        let matching_keys: Vec<String> = inner.data
+            .keys()
+            .filter(|key| key.starts_with(prefix))
+            .cloned()
+            .collect();
+
+        let mut deleted = 0;
+        for key in matching_keys {
+            if inner.remove(&key) {
+                deleted += 1;
+            }
+        }
+
+        if deleted > 0 {
+            tracing::debug!(
+                "Deleted {} keys with prefix '{}' from memory storage",
+                deleted,
+                prefix
+            );
+        }
+
+        Ok(deleted)
+    }
+
     async fn cleanup(&self, older_than: Duration) -> Result<usize> {
         let mut inner = self.inner.write();
         let cutoff = std::time::Instant::now()

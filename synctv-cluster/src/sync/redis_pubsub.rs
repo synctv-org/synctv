@@ -343,6 +343,9 @@ impl RedisPubSub {
                     }
                 }
 
+                // Track whether this session was healthy (at least one event sent)
+                let mut session_healthy = false;
+
                 // Process events until connection breaks or cancelled
                 loop {
                     let req = tokio::select! {
@@ -369,6 +372,7 @@ impl RedisPubSub {
                         let event_type = req.event.event_type();
                         match Self::publish_event(&mut conn, &node_id, req.event.clone(), &event_wal).await {
                             Ok(subscribers) => {
+                                session_healthy = true;
                                 debug!(
                                     event_type = event_type,
                                     subscribers = subscribers,
@@ -405,6 +409,13 @@ impl RedisPubSub {
                         warn!("Redis publisher channel closed, exiting");
                         return;
                     }
+                }
+
+                // Reset backoff if the session was healthy (connection was working
+                // before it dropped), so we reconnect quickly. Only escalate backoff
+                // when the connection never worked.
+                if session_healthy {
+                    backoff_secs = INITIAL_BACKOFF_SECS;
                 }
 
                 // Wait before reconnecting
@@ -997,8 +1008,8 @@ impl RedisPubSub {
         if let Some(room_id_str) = channel.strip_prefix("synctv:room:") {
             let room_id = RoomId::from_string(room_id_str.to_string());
 
-            // Forward KickPublisher events to admin channel
-            if matches!(&event, ClusterEvent::KickPublisher { .. }) {
+            // Forward kick events to admin channel for cross-replica disconnect handling
+            if matches!(&event, ClusterEvent::KickPublisher { .. } | ClusterEvent::KickUserFromRoom { .. }) {
                 let _ = self.admin_event_tx.send(event.clone());
             }
 

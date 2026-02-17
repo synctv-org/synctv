@@ -389,6 +389,10 @@ impl HlsStreamingApi {
             // Local publisher: read from local HLS stream registry
             Self::generate_playlist_local(infrastructure, room_id, media_id, url_generator)
         } else if let Some(hls_proxy) = &infrastructure.hls_proxy {
+            // Validate gRPC address before attempting remote proxy
+            let grpc_addr = publisher_info.validate_grpc_address()
+                .map_err(|e| anyhow::anyhow!("Cannot proxy HLS for {room_id}/{media_id}: {e}"))?;
+
             // Remote publisher: proxy via gRPC
             // We need a segment_url_base for the remote node to generate URLs.
             // The remote node will use this base to construct segment URLs in the M3U8.
@@ -401,7 +405,7 @@ impl HlsStreamingApi {
 
             let playlist = hls_proxy
                 .get_playlist(
-                    &publisher_info.grpc_address,
+                    grpc_addr,
                     room_id,
                     media_id,
                     &segment_url_base,

@@ -34,8 +34,11 @@ const _: () = assert!(
 pub struct PublisherInfo {
     /// Node ID of the publisher
     pub node_id: String,
-    /// gRPC address of the publisher node (e.g., "10.0.0.1:50051")
-    /// Used by pull streams to connect to the publisher
+    /// gRPC address of the publisher node (e.g., "10.0.0.1:50051").
+    /// Used by pull streams to connect to the publisher.
+    ///
+    /// **Must not be empty** when the publisher is used for cross-node proxying.
+    /// Use [`PublisherInfo::validate_grpc_address`] before connecting.
     #[serde(default)]
     pub grpc_address: String,
     /// RTMP app name
@@ -50,6 +53,22 @@ pub struct PublisherInfo {
     /// Pull streams must validate their token matches to prevent stale connections.
     #[serde(default)]
     pub epoch: u64,
+}
+
+impl PublisherInfo {
+    /// Validate that `grpc_address` is set and non-empty.
+    ///
+    /// Returns `Err` if the address is empty, which would happen if the publisher
+    /// registered without configuring a gRPC listen address (misconfiguration).
+    pub fn validate_grpc_address(&self) -> Result<&str> {
+        if self.grpc_address.trim().is_empty() {
+            return Err(anyhow!(
+                "PublisherInfo for node={} has empty grpc_address (room/media stream cannot be proxied)",
+                self.node_id
+            ));
+        }
+        Ok(&self.grpc_address)
+    }
 }
 
 /// Stream registry for tracking active publishers
@@ -535,10 +554,46 @@ impl StreamRegistry {
     /// Used when a node restarts to remove stale entries from Redis.
     ///
     /// This uses SCAN to iterate through all publisher keys and removes
-    /// those belonging to the specified `node_id`.
+    /// those belonging to the specified `node_id`, using epoch validation
+    /// to avoid deleting publishers that were re-registered by a new node
+    /// between the SCAN and the delete (TOCTOU race).
     pub async fn cleanup_all_publishers_for_node(&self, node_id: &str) -> Result<()> {
         let mut conn = self.redis.clone();
         let mut cursor: u64 = 0;
+
+        // Atomic Lua script: check node_id AND epoch before deleting.
+        // This prevents a race where a new publisher registers between
+        // our SCAN (which reads epoch) and the delete.
+        let cleanup_script = r#"
+            local hash_key = KEYS[1]
+            local expected_node_id = ARGV[1]
+            local expected_epoch = tonumber(ARGV[2])
+
+            local info_json = redis.call('HGET', hash_key, 'publisher')
+            if not info_json then
+                return {0, ''}
+            end
+
+            -- Verify node_id matches
+            local stored_node_id = string.match(info_json, '"node_id":"([^"]*)"')
+            if not stored_node_id or stored_node_id ~= expected_node_id then
+                return {0, ''}
+            end
+
+            -- Verify epoch matches (a newer registration would have a higher epoch)
+            local stored_epoch = string.match(info_json, '"epoch":(%d+)')
+            if stored_epoch and tonumber(stored_epoch) ~= expected_epoch then
+                return {-1, ''}
+            end
+
+            -- Extract user_id for reverse-index cleanup
+            local user_id = string.match(info_json, '"user_id":"([^"]*)"')
+
+            -- Delete the publisher entry
+            redis.call('HDEL', hash_key, 'publisher')
+
+            return {1, user_id or ''}
+        "#;
 
         loop {
             // SCAN for publisher keys
@@ -564,7 +619,7 @@ impl StreamRegistry {
                     None => continue,
                 };
 
-                // Get publisher info
+                // Get publisher info to read its epoch for validation
                 let info_json: Option<String> = redis::cmd("HGET")
                     .arg(&key)
                     .arg("publisher")
@@ -572,35 +627,56 @@ impl StreamRegistry {
                     .await
                     .map_err(|e| anyhow!(e.to_string()))?;
 
-                if let Some(json) = info_json {
-                    if let Ok(info) = serde_json::from_str::<PublisherInfo>(&json) {
+                if let Some(json) = &info_json {
+                    if let Ok(info) = serde_json::from_str::<PublisherInfo>(json) {
                         if info.node_id == node_id {
-                            // Remove the publisher entry
-                            let _: () = redis::cmd("HDEL")
-                                .arg(&key)
-                                .arg("publisher")
-                                .query_async(&mut conn)
-                                .await
-                                .map_err(|e| anyhow!(e.to_string()))?;
-
-                            // Also clean up user reverse index if present
-                            if !info.user_id.is_empty() {
-                                let user_key = format!("stream:user_publishers:{}", info.user_id);
-                                let member = format!("{room_id}:{media_id}");
-                                let _: () = redis::cmd("SREM")
-                                    .arg(&user_key)
-                                    .arg(&member)
-                                    .query_async(&mut conn)
+                            // Atomically delete only if node_id AND epoch still match
+                            let result: Vec<redis::Value> =
+                                redis::Script::new(cleanup_script)
+                                    .key(&key)
+                                    .arg(node_id)
+                                    .arg(info.epoch)
+                                    .invoke_async(&mut conn)
                                     .await
-                                    .map_err(|e| anyhow!(e.to_string()))?;
-                            }
+                                    .map_err(|e| anyhow!("Cleanup Lua script failed: {e}"))?;
 
-                            info!(
-                                "Cleaned up stale publisher entry for node {} (room: {}, media: {})",
-                                node_id,
-                                room_id,
-                                media_id
-                            );
+                            let status = match &result[0] {
+                                redis::Value::Int(v) => *v,
+                                _ => 0,
+                            };
+
+                            if status == 1 {
+                                // Successfully deleted; clean up user reverse index
+                                let user_id = match &result[1] {
+                                    redis::Value::BulkString(s) => {
+                                        String::from_utf8_lossy(s).to_string()
+                                    }
+                                    redis::Value::SimpleString(s) => s.clone(),
+                                    _ => String::new(),
+                                };
+
+                                if !user_id.is_empty() {
+                                    let user_key =
+                                        format!("stream:user_publishers:{}", user_id);
+                                    let member = format!("{room_id}:{media_id}");
+                                    let _: () = redis::cmd("SREM")
+                                        .arg(&user_key)
+                                        .arg(&member)
+                                        .query_async(&mut conn)
+                                        .await
+                                        .map_err(|e| anyhow!(e.to_string()))?;
+                                }
+
+                                info!(
+                                    "Cleaned up stale publisher entry for node {} (room: {}, media: {})",
+                                    node_id, room_id, media_id
+                                );
+                            } else if status == -1 {
+                                info!(
+                                    "Skipped cleanup for node {} (room: {}, media: {}): epoch mismatch (newer publisher exists)",
+                                    node_id, room_id, media_id
+                                );
+                            }
                         }
                     }
                 }

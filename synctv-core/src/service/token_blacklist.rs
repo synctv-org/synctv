@@ -201,11 +201,18 @@ impl TokenBlacklistService {
             if let Some(expires_at) = self.local_blacklist.get(&token_hash).await {
                 let now = chrono::Utc::now().timestamp();
                 if now < expires_at {
+                    crate::metrics::cache::CACHE_HITS
+                        .with_label_values(&["token_blacklist", "l1"])
+                        .inc();
                     return Ok(true);
                 }
                 // Expired in L1 - remove lazily
                 self.local_blacklist.invalidate(&token_hash).await;
             }
+
+            crate::metrics::cache::CACHE_MISSES
+                .with_label_values(&["token_blacklist", "l1"])
+                .inc();
 
             // L1 miss - check Redis (source of truth)
             let mut conn = conn.clone();
@@ -345,8 +352,15 @@ impl TokenBlacklistService {
 
             // L1 cache check first
             if let Some(password_changed_at) = self.local_user_invalidations.get(&user_key).await {
+                crate::metrics::cache::CACHE_HITS
+                    .with_label_values(&["token_blacklist_user", "l1"])
+                    .inc();
                 return Ok(token_iat < password_changed_at);
             }
+
+            crate::metrics::cache::CACHE_MISSES
+                .with_label_values(&["token_blacklist_user", "l1"])
+                .inc();
 
             // L1 miss - check Redis (source of truth)
             let mut conn = conn.clone();

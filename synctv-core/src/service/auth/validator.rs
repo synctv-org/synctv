@@ -194,7 +194,7 @@ mod tests {
 
     fn create_test_jwt_service() -> Arc<JwtService> {
         use super::super::jwt::JwtService;
-        Arc::new(JwtService::new("test-secret-for-validator").unwrap())
+        Arc::new(JwtService::new("test-secret-for-validator-that-is-long-enough-1234567890").unwrap())
     }
 
     fn create_test_token(jwt_service: &JwtService, user_id: &str) -> String {

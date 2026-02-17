@@ -287,7 +287,7 @@ mod tests {
     #[tokio::test]
     async fn test_blacklist_check_layer_clone() {
         let blacklist = TokenBlacklistService::new(None, "test".to_string());
-        let jwt = JwtService::new("test-grpc-layer-secret-key").unwrap();
+        let jwt = JwtService::new("test-grpc-layer-secret-key-long-enough-1234567890").unwrap();
         let pool = sqlx::PgPool::connect_lazy("postgresql://fake").unwrap();
         let username_cache = synctv_core::cache::UsernameCache::new(None, "test:".to_string(), 10, 0);
         let user_service = UserService::new(
@@ -327,7 +327,7 @@ mod tests {
     #[tokio::test]
     async fn test_grpc_layer_has_all_three_security_services() {
         let blacklist = TokenBlacklistService::new(None, "test".to_string());
-        let jwt = JwtService::new("test-parity-secret-key-12345").unwrap();
+        let jwt = JwtService::new("test-parity-secret-key-12345-long-enough-1234567890").unwrap();
         let pool = sqlx::PgPool::connect_lazy("postgresql://fake").unwrap();
         let username_cache = synctv_core::cache::UsernameCache::new(None, "test:".to_string(), 10, 0);
         let user_service = UserService::new(

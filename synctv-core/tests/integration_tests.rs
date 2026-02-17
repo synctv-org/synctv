@@ -13,7 +13,7 @@ use synctv_core::{
 
 /// Helper to create a test JWT service with a test secret
 fn create_test_jwt_service() -> JwtService {
-    JwtService::new("test-secret-key-for-integration-tests").expect("Failed to create JWT service")
+    JwtService::new("test-secret-key-for-integration-tests-long-enough-1234567890").expect("Failed to create JWT service")
 }
 
 #[tokio::test]

@@ -146,14 +146,16 @@ impl JwtService {
             return Err(Error::Internal("JWT secret cannot be empty".to_string()));
         }
 
-        // Validate secret entropy in production builds
-        #[cfg(not(debug_assertions))]
-        Self::validate_secret_entropy(secret)?;
-
-        // In debug builds, warn but allow (for development/testing convenience)
-        #[cfg(debug_assertions)]
-        if let Err(e) = Self::validate_secret_entropy(secret) {
-            tracing::warn!("JWT secret validation: {}", e);
+        // Validate secret entropy unless explicitly opted out via environment variable.
+        // This runs in both debug and release builds to catch weak secrets early.
+        // Set SYNCTV_JWT_SKIP_ENTROPY_CHECK=1 to bypass (e.g., for testing).
+        if std::env::var("SYNCTV_JWT_SKIP_ENTROPY_CHECK").unwrap_or_default() == "1" {
+            tracing::warn!(
+                "JWT secret entropy validation skipped (SYNCTV_JWT_SKIP_ENTROPY_CHECK=1). \
+                 Do NOT use this in production."
+            );
+        } else {
+            Self::validate_secret_entropy(secret)?;
         }
 
         let encoding_key = EncodingKey::from_secret(secret.as_bytes());
@@ -443,7 +445,8 @@ mod tests {
     use super::*;
 
     fn create_jwt_service() -> JwtService {
-        JwtService::new("test-secret-key-for-jwt").unwrap()
+        // Use a sufficiently long secret to pass entropy validation
+        JwtService::new("test-secret-key-for-jwt-that-is-long-enough-1234567890").unwrap()
     }
 
     #[test]

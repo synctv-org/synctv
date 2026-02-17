@@ -9,7 +9,7 @@ use std::time::Duration;
 
 /// Benchmark: JWT token generation
 fn bench_jwt_sign(c: &mut Criterion) {
-    let jwt_service = JwtService::new("benchmark-secret-key").expect("Failed to create JwtService");
+    let jwt_service = JwtService::new("benchmark-secret-key-long-enough-for-entropy-1234567890").expect("Failed to create JwtService");
     let user_id = UserId::from_string("bench_user_001".to_string());
 
     c.bench_function("jwt_sign_access_token", |b| {
@@ -24,7 +24,7 @@ fn bench_jwt_sign(c: &mut Criterion) {
 
 /// Benchmark: JWT token verification
 fn bench_jwt_verify(c: &mut Criterion) {
-    let jwt_service = JwtService::new("benchmark-secret-key").expect("Failed to create JwtService");
+    let jwt_service = JwtService::new("benchmark-secret-key-long-enough-for-entropy-1234567890").expect("Failed to create JwtService");
     let user_id = UserId::from_string("bench_user_001".to_string());
 
     let token = jwt_service
@@ -94,7 +94,7 @@ fn bench_password_verify(c: &mut Criterion) {
 fn bench_concurrent_token_generation(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().unwrap();
 
-    let jwt_service = JwtService::new("benchmark-secret-key").expect("Failed to create JwtService");
+    let jwt_service = JwtService::new("benchmark-secret-key-long-enough-for-entropy-1234567890").expect("Failed to create JwtService");
     let jwt_service = std::sync::Arc::new(jwt_service);
 
     let mut group = c.benchmark_group("concurrent_token_generation");

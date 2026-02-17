@@ -809,7 +809,7 @@ mod tests {
     fn create_test_service() -> UserService {
         let pool = PgPool::connect_lazy("postgresql://fake").unwrap();
 
-        let jwt = JwtService::new("test-secret-for-user-service").unwrap();
+        let jwt = JwtService::new("test-secret-for-user-service-long-enough-1234567890").unwrap();
         let blacklist = TokenBlacklistService::new(None, "test".to_string()); // Disabled for tests
         let username_cache = UsernameCache::new(None, "test:".to_string(), 10, 0);
         UserService::new(pool, jwt, blacklist, username_cache, PasswordComplexityConfig::default())

@@ -208,7 +208,7 @@ mod tests {
     use crate::service::auth::JwtService;
 
     fn create_jwt_service() -> JwtService {
-        JwtService::new("test-secret-key-for-publish-key-tests").unwrap()
+        JwtService::new("test-secret-key-for-publish-key-tests-long-enough-1234567890").unwrap()
     }
 
     fn create_publish_key_service() -> PublishKeyService {
@@ -316,7 +316,7 @@ mod tests {
     async fn test_validate_publish_key_wrong_secret() {
         let service1 = create_publish_key_service();
         let service2 = PublishKeyService::new(
-            JwtService::new("different-secret-key-for-tests-abcdef").unwrap(),
+            JwtService::new("different-secret-key-for-tests-abcdef-long-enough-1234567890").unwrap(),
             24,
         );
 

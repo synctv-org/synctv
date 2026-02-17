@@ -35,6 +35,12 @@ pub struct DnsPeer {
 ///
 /// Resolves the headless service DNS name to discover peer pod IPs,
 /// then constructs gRPC/HTTP addresses using configured ports.
+///
+/// **Redis is still required.** DNS discovery only handles peer IP resolution.
+/// All cluster functionality -- pub/sub event synchronization, health monitoring,
+/// leader election, stream-based catch-up, and connection load balancing -- depends
+/// on Redis. Without Redis, nodes discovered via DNS cannot communicate or coordinate.
+/// Configure `REDIS_URL` alongside the K8s DNS environment variables.
 #[derive(Clone)]
 pub struct K8sDnsDiscovery {
     /// Headless service DNS name (e.g., "synctv-headless.default.svc.cluster.local")
@@ -58,6 +64,10 @@ impl K8sDnsDiscovery {
     /// - `HEADLESS_SERVICE_NAME`: name of the K8s headless service
     /// - `POD_NAMESPACE`: namespace of the pod (from downward API)
     /// - `POD_IP`: this pod's IP address (from downward API)
+    ///
+    /// **Also required**: `REDIS_URL` must be set separately. DNS discovery only
+    /// resolves peer IPs; Redis is required for pub/sub, health checks, leader
+    /// election, and all other cluster coordination.
     ///
     /// Ports are read from config (grpc_port, http_port).
     pub fn from_env(grpc_port: u16, http_port: u16) -> Result<Self> {

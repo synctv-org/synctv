@@ -14,9 +14,9 @@ use tokio::sync::RwLock;
 async fn test_node_info_serialization() {
     let node = NodeInfo {
         node_id: "node-123".to_string(),
-        grpc_addr: "127.0.0.1:50051".to_string(),
-        http_addr: Some("127.0.0.1:8080".to_string()),
-        is_leader: false,
+        grpc_address: "127.0.0.1:50051".to_string(),
+        http_address: "127.0.0.1:8080".to_string(),
+        epoch: 0,
         last_heartbeat: chrono::Utc::now(),
         metadata: Default::default(),
     };
@@ -26,7 +26,7 @@ async fn test_node_info_serialization() {
         .expect("Failed to deserialize");
 
     assert_eq!(node.node_id, deserialized.node_id);
-    assert_eq!(node.grpc_addr, deserialized.grpc_addr);
+    assert_eq!(node.grpc_address, deserialized.grpc_address);
 }
 
 #[tokio::test]
@@ -42,9 +42,9 @@ async fn test_node_registry_concurrent_registration() {
         let handle = tokio::spawn(async move {
             let node = NodeInfo {
                 node_id: format!("node-{}", i),
-                grpc_addr: format!("127.0.0.1:{}", 50000 + i),
-                http_addr: Some(format!("127.0.0.1:{}", 8000 + i)),
-                is_leader: false,
+                grpc_address: format!("127.0.0.1:{}", 50000 + i),
+                http_address: format!("127.0.0.1:{}", 8000 + i),
+                epoch: 0,
                 last_heartbeat: chrono::Utc::now(),
                 metadata: Default::default(),
             };

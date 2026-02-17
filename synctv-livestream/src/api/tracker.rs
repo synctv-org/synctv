@@ -15,11 +15,23 @@ use tracing::{debug, info};
 ///
 /// The cleanup task in both managers checks `subscriber_count == 0 && idle > 5 min`
 /// before tearing down the stream, so this guard is essential for correct lifecycle.
+///
+/// The callback should use [`StreamLifecycle::decrement_subscriber_count`] which
+/// has built-in underflow protection (saturates at zero instead of wrapping).
+#[must_use = "dropping the guard immediately would decrement the subscriber count right away"]
 pub struct StreamSubscriberGuard(Option<Box<dyn FnOnce() + Send>>);
 
 impl StreamSubscriberGuard {
     pub(crate) fn new(on_drop: impl FnOnce() + Send + 'static) -> Self {
         Self(Some(Box::new(on_drop)))
+    }
+
+    /// Disarm the guard without running the callback.
+    ///
+    /// Use this when the stream has already been cleaned up by another path
+    /// (e.g., pool eviction) and decrementing would cause an underflow warning.
+    pub fn disarm(&mut self) {
+        self.0.take();
     }
 }
 

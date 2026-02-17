@@ -300,6 +300,14 @@ impl ConnectionManager {
             ));
         }
 
+        // Increment distributed total connection counter (best-effort).
+        if let Some(ref conn) = self.redis_conn {
+            let total_key = format!("{}connections:total", self.redis_key_prefix);
+            let mut conn_clone = conn.clone();
+            let _ = conn_clone.incr::<_, _, i64>(&total_key, 1i64).await;
+            let _ = conn_clone.expire::<_, ()>(&total_key, DISTRIBUTED_COUNTER_TTL_SECONDS).await;
+        }
+
         // Check distributed per-user limit via Redis (if configured).
         // On Redis failure, fall back to local-only check.
         let redis_user_incremented = if let Some(ref conn) = self.redis_conn {
@@ -593,6 +601,10 @@ impl ConnectionManager {
 
             // Decrement distributed Redis counters and remove metadata (best-effort)
             if let Some(ref conn) = self.redis_conn {
+                // Decrement total distributed counter
+                let total_key = format!("{}connections:total", self.redis_key_prefix);
+                let _ = self.redis_decr(conn, &total_key).await;
+
                 let user_key = format!("{}connections:user:{}", self.redis_key_prefix, conn_info.user_id.as_str());
                 let _ = self.redis_decr(conn, &user_key).await;
 
@@ -676,10 +688,31 @@ impl ConnectionManager {
         to_disconnect
     }
 
-    /// Get connection count
-    #[must_use] 
+    /// Get connection count (local node only)
+    #[must_use]
     pub fn connection_count(&self) -> usize {
         self.connections.len()
+    }
+
+    /// Get total connection count across all replicas (distributed).
+    ///
+    /// Reads the Redis atomic counter (`connections:total`) which is maintained
+    /// by `register`/`unregister`. Falls back to the local-only count if Redis
+    /// is not configured or unavailable.
+    pub async fn connection_count_distributed(&self) -> usize {
+        if let Some(ref conn) = self.redis_conn {
+            let redis_key = format!("{}connections:total", self.redis_key_prefix);
+            let mut conn_clone = conn.clone();
+            match conn_clone.get::<_, Option<i64>>(&redis_key).await {
+                Ok(Some(count)) if count > 0 => return count as usize,
+                Ok(_) => return 0,
+                Err(e) => {
+                    warn!("Failed to read distributed total connection count from Redis, falling back to local: {e}");
+                }
+            }
+        }
+        // Fallback to local-only count
+        self.connection_count()
     }
 
     /// Get connection count for a user
@@ -839,6 +872,12 @@ impl ConnectionManager {
                 self.redis_key_prefix,
                 entry.key()
             ));
+        }
+
+        // Also refresh the total connections counter TTL
+        if self.connection_count() > 0 {
+            let total_key = format!("{}connections:total", self.redis_key_prefix);
+            counter_keys.insert(total_key);
         }
 
         for key in &counter_keys {

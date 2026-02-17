@@ -46,6 +46,9 @@ impl PermissionBits {
     /// Start live stream (RTMP push)
     pub const START_LIVE: u64 = 1 << 8;
 
+    /// Reserved for future content management use (bit 9)
+    pub const RESERVED_9: u64 = 1 << 9;
+
     // ===== Playback Control Permissions (10-19) =====
 
     /// Play control (play/pause/seek)

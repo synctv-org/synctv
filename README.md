@@ -178,6 +178,6 @@ Contributions are welcome! Please read CONTRIBUTING.md for guidelines.
 
 ### In Progress
 - [ ] WebRTC SFU for large rooms (basic implementation complete, cluster support blocked)
-- [ ] Cross-replica cache invalidation via Redis Pub/Sub
+- [x] Cross-replica cache invalidation via Redis Streams (durable delivery with catch-up on reconnection)
 
 **Next Milestone**: Production hardening and performance optimization

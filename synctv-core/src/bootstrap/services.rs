@@ -218,11 +218,17 @@ pub async fn init_services(
     room_service.set_playback_cache_invalidation(cache_invalidation.clone());
     info!("RoomService initialized");
 
-    // Initialize protected cache (bloom filter) for cache penetration protection
+    // Initialize protected cache (bloom filter) for cache penetration protection.
+    //
+    // Warm-up strategy: The bloom filter starts empty and warms up organically as
+    // cache lookups occur. Each successful database hit calls `mark_exists()`, which
+    // populates the filter. This avoids coupling the cache layer to specific database
+    // queries and prevents a slow startup scan of the entire database. The periodic
+    // reset (every 24 hours) clears the filter to bound memory, after which it
+    // re-warms naturally through normal traffic.
     let protected_cache = Arc::new(crate::cache::ProtectedCache::with_defaults());
-    // Start periodic bloom filter reset (every 24 hours) to prevent unbounded growth
     protected_cache.start_periodic_reset(std::time::Duration::from_secs(24 * 3600)).await;
-    info!("Protected cache (bloom filter) initialized");
+    info!("Protected cache (bloom filter) initialized with organic warm-up strategy");
 
     // Initialize CacheManager and start cross-replica invalidation listener
     let cache_manager = CacheManager::new(user_cache.clone(), room_cache.clone())

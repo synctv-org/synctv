@@ -519,6 +519,8 @@ where
 ///
 /// Returns TTL with +-10% random jitter.
 fn add_ttl_jitter(ttl_seconds: u64) -> u64 {
+    use rand::RngExt;
+
     if ttl_seconds == 0 {
         return 0;
     }
@@ -528,12 +530,7 @@ fn add_ttl_jitter(ttl_seconds: u64) -> u64 {
         return ttl_seconds;
     }
 
-    // Use nanosecond timestamp as pseudo-random source
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system clock went backwards")
-        .as_nanos() as u64;
-    let jitter = now % (jitter_range * 2 + 1);
+    let jitter = rand::rng().random_range(0..=(jitter_range * 2));
 
     ttl_seconds.saturating_sub(jitter_range).saturating_add(jitter)
 }

@@ -6,6 +6,7 @@
 use std::sync::Arc;
 
 use crate::{
+    cache::CacheInvalidationService,
     models::{Room, RoomId, RoomMember, RoomMemberWithUser, UserId, PermissionBits, RoomRole, MemberStatus, RoomSettings, PageParams},
     repository::{RoomMemberRepository, RoomRepository, RoomSettingsRepository},
     service::audit::{AuditService, AuditAction, AuditTargetType},
@@ -119,6 +120,7 @@ pub struct MemberService {
     room_settings_repo: Option<RoomSettingsRepository>,
     permission_service: PermissionService,
     audit_service: Option<Arc<AuditService>>,
+    cache_invalidation: Option<Arc<CacheInvalidationService>>,
 }
 
 impl std::fmt::Debug for MemberService {
@@ -141,6 +143,7 @@ impl MemberService {
             room_settings_repo: None,
             permission_service,
             audit_service: None,
+            cache_invalidation: None,
         }
     }
 
@@ -152,6 +155,11 @@ impl MemberService {
     /// Inject the audit service for security-sensitive operation logging
     pub fn set_audit_service(&mut self, audit: Arc<AuditService>) {
         self.audit_service = Some(audit);
+    }
+
+    /// Set the cache invalidation service for cross-replica permission cache sync
+    pub fn set_cache_invalidation(&mut self, service: Arc<CacheInvalidationService>) {
+        self.cache_invalidation = Some(service);
     }
 
     /// Log an audit event if the audit service is configured.
@@ -352,10 +360,22 @@ impl MemberService {
         )
         .await?;
 
-        // Invalidate permission cache for target user
+        // Invalidate permission cache for target user (local)
         self.permission_service
             .invalidate_cache(&room_id, &target_user_id)
             .await;
+
+        // Broadcast permission cache invalidation to other cluster replicas
+        if let Some(ref invalidation) = self.cache_invalidation {
+            if let Err(e) = invalidation.invalidate_user_permission(&room_id, &target_user_id).await {
+                tracing::warn!(
+                    error = %e,
+                    room_id = %room_id.as_str(),
+                    user_id = %target_user_id.as_str(),
+                    "Failed to broadcast permission invalidation to cluster"
+                );
+            }
+        }
 
         // Audit log
         self.audit_log(
@@ -663,10 +683,22 @@ impl MemberService {
             .update_role(&room_id, &target_user_id, role.clone(), member.version)
             .await?;
 
-        // Invalidate permission cache
+        // Invalidate permission cache (local)
         self.permission_service
             .invalidate_cache(&room_id, &target_user_id)
             .await;
+
+        // Broadcast permission cache invalidation to other cluster replicas
+        if let Some(ref invalidation) = self.cache_invalidation {
+            if let Err(e) = invalidation.invalidate_user_permission(&room_id, &target_user_id).await {
+                tracing::warn!(
+                    error = %e,
+                    room_id = %room_id.as_str(),
+                    user_id = %target_user_id.as_str(),
+                    "Failed to broadcast role change invalidation to cluster"
+                );
+            }
+        }
 
         // Audit log
         self.audit_log(

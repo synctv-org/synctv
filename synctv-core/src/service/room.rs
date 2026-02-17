@@ -111,8 +111,12 @@ impl RoomService {
         self.distributed_lock = Some(lock);
     }
 
-    /// Set the cache invalidation service for cross-replica room cache sync
+    /// Set the cache invalidation service for cross-replica room cache sync.
+    ///
+    /// Also propagates to the inner `MemberService` so that permission/role
+    /// changes are broadcast to other replicas.
     pub fn set_cache_invalidation(&mut self, service: Arc<CacheInvalidationService>) {
+        self.member_service.set_cache_invalidation(Arc::clone(&service));
         self.cache_invalidation = Some(service);
     }
 

@@ -784,6 +784,35 @@ impl Config {
                     ));
                 }
             }
+
+            // H-01b: Detect production environment indicators.
+            // If common env vars signal production, development_mode should be off.
+            let prod_indicators: &[&str] = &[
+                "KUBERNETES_SERVICE_HOST", // Running in Kubernetes
+                "ECS_CONTAINER_METADATA_URI", // Running in AWS ECS
+            ];
+            for var in prod_indicators {
+                if std::env::var(var).is_ok() {
+                    errors.push(format!(
+                        "development_mode=true but production environment detected ({var} is set). \
+                         Disable development_mode for production deployments."
+                    ));
+                    break;
+                }
+            }
+            // Also check explicit environment variables
+            for var in &["NODE_ENV", "ENVIRONMENT", "ENV"] {
+                if let Ok(val) = std::env::var(var) {
+                    let val_lower = val.to_lowercase();
+                    if val_lower == "production" || val_lower == "prod" {
+                        errors.push(format!(
+                            "development_mode=true but {var}={val} indicates production. \
+                             Disable development_mode for production deployments."
+                        ));
+                        break;
+                    }
+                }
+            }
         }
 
         // Validate JWT secret (warn if using default)

@@ -29,6 +29,9 @@ pub const ROOM_PASSWORD_MAX: usize = 128;
 /// Maximum room name length
 pub const ROOM_NAME_MAX: usize = 100;
 
+/// Maximum room description length (must match DB constraint rooms_description_length_check)
+pub const ROOM_DESCRIPTION_MAX: usize = 500;
+
 /// Validation error
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum ValidationError {

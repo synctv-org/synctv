@@ -242,8 +242,8 @@ impl ClusterManager {
     pub async fn start_heartbeat_loop<F>(
         &self,
         node_registry: Arc<NodeRegistry>,
-        grpc_address: String,
-        http_address: String,
+        _grpc_address: String,
+        _http_address: String,
         connection_count_fn: Option<F>,
     )
     where
@@ -279,25 +279,18 @@ impl ClusterManager {
                                 synctv_core::metrics::cluster::CLUSTER_HEARTBEAT_FAILURES.set(0);
                             }
                             Ok(HeartbeatResult::NeedReregistration) => {
-                                warn!("Node key expired in Redis, re-registering");
-                                if let Err(e) = node_registry
-                                    .register(grpc_address.clone(), http_address.clone())
-                                    .await
-                                {
-                                    error!(error = %e, "Failed to re-register node after key expiry");
-                                }
+                                // NodeRegistry::heartbeat() already attempted auto-registration
+                                // internally. If we still get NeedReregistration, it means the
+                                // internal retry failed. Just log and let the next tick try again.
+                                warn!("Node key expired in Redis, internal auto-registration failed; will retry on next heartbeat");
                             }
                             Ok(HeartbeatResult::EpochMismatch(remote_epoch)) => {
+                                // NodeRegistry::heartbeat() already attempted auto-registration
+                                // internally. If we still get EpochMismatch, the retry failed.
                                 warn!(
                                     remote_epoch = remote_epoch,
-                                    "Epoch mismatch during heartbeat, re-registering"
+                                    "Epoch mismatch during heartbeat, internal auto-registration failed; will retry on next heartbeat"
                                 );
-                                if let Err(e) = node_registry
-                                    .register(grpc_address.clone(), http_address.clone())
-                                    .await
-                                {
-                                    error!(error = %e, "Failed to re-register node after epoch mismatch");
-                                }
                             }
                             Err(e) => {
                                 // Increment failure counter for network partition detection

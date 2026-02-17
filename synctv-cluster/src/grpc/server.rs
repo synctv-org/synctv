@@ -131,7 +131,7 @@ impl ClusterServer {
 impl ClusterService for ClusterServer {
     /// Register a new node in the cluster.
     ///
-    /// # Status: UNUSED
+    /// # Status: UNUSED -- kept for potential future node-to-node gRPC discovery
     ///
     /// No client code calls this RPC. Nodes self-register directly in Redis
     /// via `NodeRegistry::register()` on startup. This handler exists for
@@ -142,6 +142,8 @@ impl ClusterService for ClusterServer {
     /// If called, this handler will register the remote node in Redis via
     /// `NodeRegistry::register_remote()`. This allows peer-to-peer registration
     /// if needed in future architectures.
+    #[allow(deprecated)]
+    #[deprecated(note = "UNUSED: nodes self-register via Redis. Kept for future gRPC discovery.")]
     async fn register_node(
         &self,
         request: Request<RegisterNodeRequest>,
@@ -202,7 +204,7 @@ impl ClusterService for ClusterServer {
 
     /// Handle heartbeat from a node.
     ///
-    /// # Status: UNUSED
+    /// # Status: UNUSED -- kept for potential future node-to-node gRPC discovery
     ///
     /// No client code calls this RPC. Heartbeats are sent directly to Redis
     /// via `NodeRegistry::heartbeat()` in a background task started by
@@ -213,6 +215,8 @@ impl ClusterService for ClusterServer {
     /// If called, this handler will update the remote node's heartbeat in Redis
     /// via `NodeRegistry::heartbeat_remote()`. This allows peer-to-peer heartbeat
     /// if needed in future architectures.
+    #[allow(deprecated)]
+    #[deprecated(note = "UNUSED: heartbeats go directly to Redis. Kept for future gRPC discovery.")]
     async fn heartbeat(
         &self,
         request: Request<HeartbeatRequest>,

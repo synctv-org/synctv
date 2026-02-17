@@ -160,7 +160,8 @@ pub async fn init_services(
     };
 
     // Initialize token blacklist service
-    let token_blacklist = TokenBlacklistService::new(redis_conn.clone(), config.redis.key_prefix.clone());
+    let token_blacklist = TokenBlacklistService::new(redis_conn.clone(), config.redis.key_prefix.clone())
+        .with_invalidation_service(cache_invalidation.clone());
     if token_blacklist.uses_redis() {
         info!("Token blacklist service initialized with Redis");
     } else {
@@ -173,7 +174,8 @@ pub async fn init_services(
         format!("{}username:", config.redis.key_prefix),
         1000, // Cache up to 1000 usernames in memory
         3600, // Cache for 1 hour in Redis
-    );
+    )
+    .with_invalidation_service(cache_invalidation.clone());
     info!("Username cache initialized");
 
     // Initialize user and room L1/L2 caches
@@ -225,16 +227,27 @@ pub async fn init_services(
     // Initialize CacheManager and start cross-replica invalidation listener
     let cache_manager = CacheManager::new(user_cache.clone(), room_cache.clone())
         .with_username_cache(Arc::new(username_cache.clone()))
+        .with_token_blacklist(Arc::new(token_blacklist.clone()))
         .with_protected_cache(protected_cache);
     cache_manager.start_invalidation_listener(&cache_invalidation);
     info!("CacheManager initialized with invalidation listener and bloom filter protection");
 
-    // Initialize ProviderInstanceRepository
-    let provider_instance_repo = Arc::new(ProviderInstanceRepository::new(pool.clone()));
+    // Initialize credential encryption (shared by both repositories)
+    let credential_encryption = init_credential_encryption();
+
+    // Initialize ProviderInstanceRepository (with optional encryption for jwt_secret/custom_ca)
+    let provider_instance_repo = match &credential_encryption {
+        Some(enc) => {
+            info!("ProviderInstanceRepository initialized with encryption enabled");
+            Arc::new(ProviderInstanceRepository::new_with_encryption(pool.clone(), enc.clone()))
+        }
+        None => {
+            Arc::new(ProviderInstanceRepository::new(pool.clone()))
+        }
+    };
     info!("ProviderInstanceRepository initialized");
 
     // Initialize UserProviderCredentialRepository (with optional encryption)
-    let credential_encryption = init_credential_encryption();
     let user_provider_credential_repo = match credential_encryption {
         Some(enc) => {
             info!("UserProviderCredentialRepository initialized with encryption enabled");

@@ -8,64 +8,127 @@ use crate::Result;
 use sqlx::PgPool;
 
 /// Provider Instance Repository
+///
+/// Supports optional encryption for sensitive fields (`jwt_secret`, `custom_ca`)
+/// using `CredentialEncryption`. When encryption is configured, these fields are
+/// encrypted before storage and decrypted after read. Plaintext values are
+/// supported for backward compatibility during the migration period.
 pub struct ProviderInstanceRepository {
     pool: PgPool,
+    encryption: Option<CredentialEncryption>,
 }
 
 impl std::fmt::Debug for ProviderInstanceRepository {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ProviderInstanceRepository")
             .field("pool", &"PgPool")
+            .field("encryption", &self.encryption.is_some())
             .finish()
     }
 }
 
 impl ProviderInstanceRepository {
-    #[must_use] 
+    /// Create a new repository without encryption (backward compatible)
+    #[must_use]
     pub const fn new(pool: PgPool) -> Self {
-        Self { pool }
+        Self { pool, encryption: None }
     }
 
-    /// Get all provider instances
+    /// Create a new repository with credential encryption enabled
+    #[must_use]
+    pub const fn new_with_encryption(pool: PgPool, encryption: CredentialEncryption) -> Self {
+        Self { pool, encryption: Some(encryption) }
+    }
+
+    /// Encrypt a string field before storage (if encryption is configured).
+    /// Returns the encrypted string or the original if encryption is not configured.
+    fn encrypt_field(&self, plaintext: &Option<String>) -> Result<Option<String>> {
+        match (&self.encryption, plaintext) {
+            (Some(enc), Some(value)) if !value.is_empty() => {
+                let json_value = serde_json::Value::String(value.clone());
+                let encrypted = enc.encrypt(&json_value)?;
+                Ok(Some(encrypted))
+            }
+            _ => Ok(plaintext.clone()),
+        }
+    }
+
+    /// Decrypt a string field after reading (handles both encrypted and plaintext).
+    fn decrypt_field(&self, stored: &Option<String>) -> Result<Option<String>> {
+        match (&self.encryption, stored) {
+            (Some(enc), Some(value)) if value.starts_with("enc:") => {
+                let decrypted = enc.decrypt(value)?;
+                match decrypted {
+                    serde_json::Value::String(s) => Ok(Some(s)),
+                    other => Ok(Some(other.to_string())),
+                }
+            }
+            _ => Ok(stored.clone()),
+        }
+    }
+
+    /// Decrypt sensitive fields on a `ProviderInstance` after reading from DB.
+    fn decrypt_instance(&self, mut instance: ProviderInstance) -> Result<ProviderInstance> {
+        instance.jwt_secret = self.decrypt_field(&instance.jwt_secret)?;
+        instance.custom_ca = self.decrypt_field(&instance.custom_ca)?;
+        Ok(instance)
+    }
+
+    /// Decrypt sensitive fields on a list of `ProviderInstance`.
+    fn decrypt_instances(&self, instances: Vec<ProviderInstance>) -> Result<Vec<ProviderInstance>> {
+        instances.into_iter().map(|i| self.decrypt_instance(i)).collect()
+    }
+
+    /// Get all provider instances (sensitive fields decrypted)
     pub async fn get_all(&self) -> Result<Vec<ProviderInstance>> {
-        Ok(sqlx::query_as::<_, ProviderInstance>(
+        let instances = sqlx::query_as::<_, ProviderInstance>(
             "SELECT * FROM media_provider_instances ORDER BY created_at DESC"
         )
         .fetch_all(&self.pool)
-        .await?)
+        .await?;
+        self.decrypt_instances(instances)
     }
 
-    /// Get all enabled provider instances
+    /// Get all enabled provider instances (sensitive fields decrypted)
     pub async fn get_all_enabled(&self) -> Result<Vec<ProviderInstance>> {
-        Ok(sqlx::query_as::<_, ProviderInstance>(
+        let instances = sqlx::query_as::<_, ProviderInstance>(
             "SELECT * FROM media_provider_instances WHERE enabled = true ORDER BY created_at DESC"
         )
         .fetch_all(&self.pool)
-        .await?)
+        .await?;
+        self.decrypt_instances(instances)
     }
 
-    /// Get provider instance by name
+    /// Get provider instance by name (sensitive fields decrypted)
     pub async fn get_by_name(&self, name: &str) -> Result<Option<ProviderInstance>> {
-        Ok(sqlx::query_as::<_, ProviderInstance>(
+        let instance = sqlx::query_as::<_, ProviderInstance>(
             "SELECT * FROM media_provider_instances WHERE name = $1"
         )
         .bind(name)
         .fetch_optional(&self.pool)
-        .await?)
+        .await?;
+        match instance {
+            Some(i) => Ok(Some(self.decrypt_instance(i)?)),
+            None => Ok(None),
+        }
     }
 
-    /// Get instances that support a specific provider type
+    /// Get instances that support a specific provider type (sensitive fields decrypted)
     pub async fn find_by_provider(&self, provider: &str) -> Result<Vec<ProviderInstance>> {
-        Ok(sqlx::query_as::<_, ProviderInstance>(
+        let instances = sqlx::query_as::<_, ProviderInstance>(
             "SELECT * FROM media_provider_instances WHERE $1 = ANY(providers) AND enabled = true"
         )
         .bind(provider)
         .fetch_all(&self.pool)
-        .await?)
+        .await?;
+        self.decrypt_instances(instances)
     }
 
-    /// Create a new provider instance
+    /// Create a new provider instance (encrypts sensitive fields before storage)
     pub async fn create(&self, instance: &ProviderInstance) -> Result<()> {
+        let encrypted_jwt_secret = self.encrypt_field(&instance.jwt_secret)?;
+        let encrypted_custom_ca = self.encrypt_field(&instance.custom_ca)?;
+
         sqlx::query(
             r"
             INSERT INTO media_provider_instances
@@ -76,8 +139,8 @@ impl ProviderInstanceRepository {
         .bind(&instance.name)
         .bind(&instance.endpoint)
         .bind(&instance.comment)
-        .bind(&instance.jwt_secret)
-        .bind(&instance.custom_ca)
+        .bind(&encrypted_jwt_secret)
+        .bind(&encrypted_custom_ca)
         .bind(&instance.timeout)
         .bind(instance.tls)
         .bind(instance.insecure_tls)
@@ -89,8 +152,11 @@ impl ProviderInstanceRepository {
         Ok(())
     }
 
-    /// Update an existing provider instance
+    /// Update an existing provider instance (encrypts sensitive fields before storage)
     pub async fn update(&self, instance: &ProviderInstance) -> Result<()> {
+        let encrypted_jwt_secret = self.encrypt_field(&instance.jwt_secret)?;
+        let encrypted_custom_ca = self.encrypt_field(&instance.custom_ca)?;
+
         sqlx::query(
             r"
             UPDATE media_provider_instances
@@ -103,8 +169,8 @@ impl ProviderInstanceRepository {
         .bind(&instance.name)
         .bind(&instance.endpoint)
         .bind(&instance.comment)
-        .bind(&instance.jwt_secret)
-        .bind(&instance.custom_ca)
+        .bind(&encrypted_jwt_secret)
+        .bind(&encrypted_custom_ca)
         .bind(&instance.timeout)
         .bind(instance.tls)
         .bind(instance.insecure_tls)
@@ -144,6 +210,75 @@ impl ProviderInstanceRepository {
             .await?;
 
         Ok(())
+    }
+
+    /// Migrate plaintext jwt_secret and custom_ca to encrypted format.
+    ///
+    /// Reads all provider instances, checks if sensitive fields are plaintext
+    /// (not starting with "enc:"), and encrypts them in place. Safe to run
+    /// multiple times (idempotent).
+    ///
+    /// Returns the number of instances migrated.
+    pub async fn migrate_plaintext_to_encrypted(&self) -> Result<u64> {
+        let encryption = match &self.encryption {
+            Some(enc) => enc,
+            None => return Err(crate::Error::Internal(
+                "Cannot migrate provider instances: encryption not configured".to_string()
+            )),
+        };
+
+        // Fetch all instances (raw, without decryption)
+        let instances = sqlx::query_as::<_, ProviderInstance>(
+            "SELECT * FROM media_provider_instances ORDER BY name"
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut migrated_count = 0u64;
+
+        for instance in instances {
+            let mut needs_update = false;
+            let mut new_jwt_secret = instance.jwt_secret.clone();
+            let mut new_custom_ca = instance.custom_ca.clone();
+
+            // Check and encrypt jwt_secret if plaintext
+            if let Some(ref secret) = instance.jwt_secret {
+                if !secret.is_empty() && !secret.starts_with("enc:") {
+                    let json_value = serde_json::Value::String(secret.clone());
+                    new_jwt_secret = Some(encryption.encrypt(&json_value)?);
+                    needs_update = true;
+                }
+            }
+
+            // Check and encrypt custom_ca if plaintext
+            if let Some(ref ca) = instance.custom_ca {
+                if !ca.is_empty() && !ca.starts_with("enc:") {
+                    let json_value = serde_json::Value::String(ca.clone());
+                    new_custom_ca = Some(encryption.encrypt(&json_value)?);
+                    needs_update = true;
+                }
+            }
+
+            if needs_update {
+                sqlx::query(
+                    "UPDATE media_provider_instances SET jwt_secret = $2, custom_ca = $3, updated_at = NOW() WHERE name = $1"
+                )
+                .bind(&instance.name)
+                .bind(&new_jwt_secret)
+                .bind(&new_custom_ca)
+                .execute(&self.pool)
+                .await?;
+
+                migrated_count += 1;
+            }
+        }
+
+        tracing::info!(
+            "Migrated {} provider instances from plaintext to encrypted secrets",
+            migrated_count
+        );
+
+        Ok(migrated_count)
     }
 }
 

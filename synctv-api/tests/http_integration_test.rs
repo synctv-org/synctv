@@ -1141,6 +1141,107 @@ mod playback_request {
 // Module: User update request deserialization
 // ============================================================================
 
+// ============================================================================
+// Module: Complete authentication flow (no DB required)
+// ============================================================================
+
+mod auth_flow {
+    use synctv_core::service::auth::{JwtService, TokenType, hash_password, verify_password};
+    use synctv_core::models::UserId;
+
+    fn jwt_service() -> JwtService {
+        JwtService::new("test-secret-key-for-jwt-that-is-long-enough-1234567890").unwrap()
+    }
+
+    /// Full flow: hash password -> verify password -> issue tokens -> validate tokens
+    #[tokio::test]
+    async fn test_register_login_flow() {
+        let password = "StrongP@ssw0rd!";
+
+        // 1. Registration: hash the password (simulates register endpoint)
+        let hash = hash_password(password).await.expect("hashing should succeed");
+        assert_ne!(hash, password, "hash must differ from plaintext");
+
+        // 2. Login: verify the password
+        assert!(
+            verify_password(password, &hash).await.expect("verify call should succeed"),
+            "correct password should verify"
+        );
+        assert!(
+            !verify_password("wrong_password", &hash).await.unwrap_or(false),
+            "wrong password should fail verification"
+        );
+
+        // 3. Issue access + refresh tokens
+        let jwt = jwt_service();
+        let user_id = UserId::new();
+
+        let access_token = jwt.sign_token(&user_id, TokenType::Access).expect("access token");
+        let refresh_token = jwt.sign_token(&user_id, TokenType::Refresh).expect("refresh token");
+
+        // 4. Validate access token (simulates auth middleware)
+        let claims = jwt.verify_access_token(&access_token).expect("access token valid");
+        assert_eq!(claims.sub, user_id.as_str());
+        assert!(claims.is_access_token());
+
+        // 5. Access token cannot be used as refresh token
+        assert!(jwt.verify_refresh_token(&access_token).is_err());
+
+        // 6. Validate refresh token (simulates token refresh endpoint)
+        let refresh_claims = jwt.verify_refresh_token(&refresh_token).expect("refresh token valid");
+        assert_eq!(refresh_claims.sub, user_id.as_str());
+        assert!(refresh_claims.is_refresh_token());
+
+        // 7. Issue new access token from refresh (simulates refresh flow)
+        let new_access = jwt.sign_token(&user_id, TokenType::Access).expect("new access token");
+        let new_claims = jwt.verify_access_token(&new_access).expect("new access token valid");
+        assert_eq!(new_claims.sub, user_id.as_str());
+    }
+
+    /// Verify that tokens signed by one secret are rejected by another
+    #[test]
+    fn test_cross_secret_rejection() {
+        let jwt_a = JwtService::new("secret-aaaa-long-enough-for-entropy-check-1234567890").unwrap();
+        let jwt_b = JwtService::new("secret-bbbb-long-enough-for-entropy-check-1234567890").unwrap();
+        let user_id = UserId::new();
+
+        let token = jwt_a.sign_token(&user_id, TokenType::Access).unwrap();
+        assert!(jwt_b.verify_access_token(&token).is_err(), "cross-secret token must be rejected");
+    }
+
+    /// Verify password validation rejects common weak passwords at the API layer
+    #[test]
+    fn test_weak_password_rejected_at_validation() {
+        use synctv_api::http::validation::validate_password;
+
+        // Common passwords should fail
+        assert!(validate_password("password").is_err());
+        assert!(validate_password("123456").is_err());
+        assert!(validate_password("qwerty").is_err());
+
+        // Non-common passwords that meet length requirement should pass
+        assert!(validate_password("MyUniquePass1!").is_ok());
+    }
+
+    /// Guest token flow: issue -> validate -> verify room binding
+    #[test]
+    fn test_guest_auth_flow() {
+        let jwt = jwt_service();
+        let room_id = synctv_core::models::RoomId::new();
+
+        // Issue guest token
+        let token = jwt.sign_guest_token(&room_id).expect("guest token");
+
+        // Validate
+        let claims = jwt.verify_guest_token(&token).expect("guest token valid");
+        assert!(claims.is_guest());
+        assert_eq!(claims.room_id(), room_id);
+
+        // Guest token must not pass as regular access token
+        assert!(jwt.verify_access_token(&token).is_err());
+    }
+}
+
 mod user_request {
     use synctv_api::http::user::UpdateUserRequest;
 

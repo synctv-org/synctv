@@ -489,7 +489,7 @@ impl ClusterManager {
     /// Subscribe a client to room events
     ///
     /// Returns a receiver for messages and a connection ID for cleanup
-    pub fn subscribe(
+    pub async fn subscribe(
         &self,
         room_id: RoomId,
         user_id: UserId,
@@ -497,7 +497,7 @@ impl ClusterManager {
         let room_id_str = room_id.as_str().to_string();
         let user_id_str = user_id.as_str().to_string();
         let connection_id = format!("{}_{}", user_id_str, nanoid::nanoid!(8));
-        let rx = self.message_hub.subscribe(room_id, user_id, connection_id.clone());
+        let rx = self.message_hub.subscribe(room_id, user_id, connection_id.clone()).await;
 
         info!(
             room_id = %room_id_str,
@@ -573,7 +573,7 @@ mod tests {
         // Subscribe a client
         let room_id = RoomId::from_string("room1".to_string());
         let user_id = UserId::from_string("user1".to_string());
-        let (mut rx, conn_id) = manager.subscribe(room_id.clone(), user_id.clone());
+        let (mut rx, conn_id) = manager.subscribe(room_id.clone(), user_id.clone()).await;
 
         // Broadcast event
         let event = ClusterEvent::ChatMessage {

@@ -76,3 +76,42 @@ $$ LANGUAGE plpgsql;
 
 COMMENT ON FUNCTION cleanup_old_notifications(INTEGER, INTEGER) IS
 'Delete old notifications: read notifications after read_retention_days (default 30), all notifications after max_retention_days (default 90)';
+
+-- ============================================================================
+-- Partition Strategy Notes (Future Optimization)
+-- ============================================================================
+
+-- IMPORTANT: This table is currently NOT partitioned to avoid migration complexity
+-- for an existing production system.
+--
+-- Performance Optimization Recommendations:
+--
+-- 1. **If table grows beyond 10M rows**, consider converting to partitioned table:
+--    - Partition by RANGE(created_at) with monthly granularity
+--    - Would enable O(1) deletion of old partitions instead of DELETE scans
+--    - Migration requires downtime or complex online migration
+--
+-- 2. **Current optimization strategy**:
+--    - Regular cleanup via cleanup_old_notifications() scheduled job
+--    - Covering indexes on (user_id, is_read, created_at) for fast queries
+--    - Index on (user_id, created_at DESC) for pagination
+--
+-- 3. **When to partition**:
+--    - If cleanup_old_notifications() becomes slow (> 1 second)
+--    - If table size exceeds 50GB
+--    - If write throughput exceeds 1000 inserts/sec consistently
+--
+-- 4. **Partitioning migration path** (future):
+--    - Create new partitioned table: notifications_partitioned
+--    - Copy old data in batches with partition assignment
+--    - Swap table names atomically
+--    - Update application code to call partition management functions
+--
+-- 5. **Index strategy for partitioned table**:
+--    - Create indexes on each partition (auto-inherited)
+--    - Maintain same index structure as current table
+--
+-- Decision: Keep as regular table until performance metrics indicate partitioning is needed.
+-- Current cleanup function is sufficient for moderate load (< 1M notifications/month).
+
+COMMENT ON TABLE notifications IS 'User notifications for room invitations, system announcements, and room events. NOT partitioned - see migration notes for future optimization strategy.';

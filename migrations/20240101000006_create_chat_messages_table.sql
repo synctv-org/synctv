@@ -218,3 +218,44 @@ COMMENT ON FUNCTION check_chat_message_partitions(INTEGER) IS
 
 -- Create partitions for current day + next 30 days (fixed daily granularity)
 SELECT create_chat_message_partitions(30) AS initial_partitions;
+
+-- ============================================================================
+-- Auto-expand partitions on INSERT (create missing partitions dynamically)
+-- ============================================================================
+
+-- Function: Auto-create partition on INSERT if missing
+-- This function is called by a trigger before each INSERT to ensure the partition exists
+CREATE OR REPLACE FUNCTION auto_create_chat_message_partition()
+RETURNS TRIGGER AS $$
+DECLARE
+    partition_date DATE;
+    partition_result JSON;
+BEGIN
+    -- Extract date from created_at
+    partition_date := DATE_TRUNC('day', NEW.created_at);
+
+    -- Try to create partition (idempotent, no error if exists)
+    BEGIN
+        partition_result := create_chat_message_partition(partition_date);
+        RAISE NOTICE 'Auto-created chat message partition: %', partition_result->>'partition_name';
+    EXCEPTION WHEN OTHERS THEN
+        -- Log error but don't fail the INSERT
+        RAISE WARNING 'Failed to auto-create chat partition for %: %', partition_date, SQLERRM;
+    END;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+COMMENT ON FUNCTION auto_create_chat_message_partition() IS
+'Automatically create missing chat message partitions on INSERT. Called by trigger before INSERT.';
+
+-- Trigger: Auto-create partition before INSERT
+-- This ensures that even if partitions are not pre-created, INSERTs will still succeed
+CREATE TRIGGER trigger_auto_create_chat_partition
+    BEFORE INSERT ON chat_messages
+    FOR EACH ROW
+    EXECUTE FUNCTION auto_create_chat_message_partition();
+
+COMMENT ON TRIGGER trigger_auto_create_chat_partition ON chat_messages IS
+'Auto-create missing partitions on INSERT to handle unexpected dates (e.g., clock skew, manual inserts)';

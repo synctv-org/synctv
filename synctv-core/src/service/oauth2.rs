@@ -473,6 +473,11 @@ impl OAuth2Service {
             .collect())
     }
 
+    /// Get all `OAuth2` provider mappings with complete information for a user
+    pub async fn get_user_provider_mappings(&self, user_id: &UserId) -> Result<Vec<crate::models::oauth2_client::UserOAuthProviderMapping>> {
+        self.repository.find_by_user(user_id).await
+    }
+
     /// List all configured `OAuth2` provider instances
     ///
     /// Returns a list of (`instance_name`, `provider_type`) pairs for all registered providers.

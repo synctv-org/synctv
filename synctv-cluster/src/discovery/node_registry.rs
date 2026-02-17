@@ -245,8 +245,16 @@ impl NodeRegistry {
     /// failure in the circuit breaker, but does NOT record success --
     /// callers must call `record_operation_result()` after the full
     /// operation (connection + command) completes.
+    ///
+    /// **Background health probe**: When the circuit breaker is open (after 3
+    /// consecutive failures), starts a background task that periodically probes
+    /// Redis with PING commands. If a PING succeeds, the circuit is transitioned
+    /// to half-open (allowing the next operation to attempt). The probe task
+    /// stops when the circuit closes or when the NodeRegistry is dropped.
     async fn get_conn_with_breaker(&self, client: &redis::Client) -> Result<redis::aio::MultiplexedConnection> {
         if !self.circuit_breaker.is_call_permitted() {
+            // Circuit is open - spawn background health probe if not already running
+            self.maybe_start_health_probe(client.clone());
             return Err(Error::Database(
                 "Redis circuit breaker is open, request rejected".to_string(),
             ));
@@ -257,6 +265,60 @@ impl NodeRegistry {
             self.circuit_breaker.on_error();
         }
         result
+    }
+
+    /// Start a background health probe task (if not already running) when the
+    /// circuit breaker opens. The task PINGs Redis every 5 seconds. On success,
+    /// the circuit transitions to half-open, allowing the next operation to try.
+    ///
+    /// The probe task automatically stops when the circuit closes or the
+    /// NodeRegistry is dropped.
+    fn maybe_start_health_probe(&self, client: redis::Client) {
+        // Check if circuit is open before spawning
+        if self.circuit_breaker.is_call_permitted() {
+            return; // Circuit is not open, no need for probe
+        }
+
+        // Spawn a detached health probe task
+        // (No need to track JoinHandle - task will detect circuit state and exit)
+        let breaker = self.circuit_breaker.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+            loop {
+                interval.tick().await;
+
+                // Stop probing if circuit is no longer open
+                if breaker.is_call_permitted() {
+                    tracing::debug!("Circuit breaker health probe stopping (circuit closed)");
+                    break;
+                }
+
+                // Attempt to connect and PING
+                let probe_result = tokio::time::timeout(
+                    tokio::time::Duration::from_secs(3),
+                    async {
+                        let mut conn = client.get_multiplexed_async_connection().await?;
+                        redis::cmd("PING").query_async::<String>(&mut conn).await
+                    }
+                ).await;
+
+                match probe_result {
+                    Ok(Ok(_)) => {
+                        tracing::info!("Circuit breaker health probe succeeded, transitioning to half-open");
+                        breaker.on_success();
+                        break; // Allow next operation to attempt
+                    }
+                    Ok(Err(e)) => {
+                        tracing::debug!(error = %e, "Circuit breaker health probe failed (Redis error)");
+                    }
+                    Err(_) => {
+                        tracing::debug!("Circuit breaker health probe failed (timeout)");
+                    }
+                }
+            }
+        });
     }
 
     /// Record the result of a complete Redis operation (connection + command).
@@ -389,6 +451,11 @@ impl NodeRegistry {
     /// preventing stale heartbeats from overwriting newer registrations.
     ///
     /// Returns `HeartbeatResult` indicating whether re-registration is needed.
+    ///
+    /// **Auto-retry on failure**: If `NeedReregistration` or `EpochMismatch` is returned,
+    /// automatically attempts re-registration once (to recover from transient Redis issues
+    /// or key expiry). Subsequent heartbeat calls will detect if the auto-registration
+    /// succeeded.
     pub async fn heartbeat(&self) -> Result<HeartbeatResult> {
         if let Some(ref client) = self.redis_client {
             let mut conn = self.get_conn_with_breaker(client).await?;
@@ -400,15 +467,18 @@ impl NodeRegistry {
             let ttl = self.heartbeat_timeout_secs * 2;
 
             // Build updated node info from local cache
-            let node_json = {
+            let (node_json, grpc_addr, http_addr) = {
                 let nodes = self.local_nodes.read().await;
                 let mut info = nodes.get(&self.node_id).cloned().unwrap_or_else(|| {
                     NodeInfo::new(self.node_id.clone(), String::new(), String::new())
                 });
+                let grpc = info.grpc_address.clone();
+                let http = info.http_address.clone();
                 info.last_heartbeat = now;
                 info.epoch = current_epoch;
-                serde_json::to_string(&info)
-                    .map_err(|e| Error::Serialization(format!("Failed to serialize node info: {e}")))?
+                let json = serde_json::to_string(&info)
+                    .map_err(|e| Error::Serialization(format!("Failed to serialize node info: {e}")))?;
+                (json, grpc, http)
             };
 
             // Atomic Lua script: check epoch matches before writing heartbeat
@@ -466,22 +536,45 @@ impl NodeRegistry {
             if result == -1 {
                 tracing::warn!(
                     node_id = %self.node_id,
-                    "Heartbeat failed: key not found, node needs re-registration"
+                    "Heartbeat failed: key not found, auto-registering"
                 );
-                return Ok(HeartbeatResult::NeedReregistration);
+                // Auto-retry: attempt re-registration once
+                if let Err(e) = self.register(grpc_addr, http_addr).await {
+                    tracing::error!(
+                        node_id = %self.node_id,
+                        error = %e,
+                        "Auto-registration after heartbeat failure failed"
+                    );
+                    return Ok(HeartbeatResult::NeedReregistration);
+                }
+                tracing::info!(
+                    node_id = %self.node_id,
+                    "Auto-registration after heartbeat failure succeeded"
+                );
+                return Ok(HeartbeatResult::Ok);
             } else if result < 0 {
                 let remote_epoch = (-result) as u64;
                 tracing::warn!(
                     node_id = %self.node_id,
                     local_epoch = current_epoch,
                     remote_epoch = remote_epoch,
-                    "Epoch mismatch during heartbeat, node may need re-registration"
+                    "Epoch mismatch during heartbeat, auto-registering"
                 );
-                // Don't update local epoch on mismatch -- let the caller
-                // handle it by re-registering, which atomically sets the
-                // correct epoch. Updating here is misleading because the
-                // Lua script requires exact match, not max(remote, local).
-                return Ok(HeartbeatResult::EpochMismatch(remote_epoch));
+                // Auto-retry: attempt re-registration once to resolve epoch conflict
+                if let Err(e) = self.register(grpc_addr, http_addr).await {
+                    tracing::error!(
+                        node_id = %self.node_id,
+                        error = %e,
+                        "Auto-registration after epoch mismatch failed"
+                    );
+                    return Ok(HeartbeatResult::EpochMismatch(remote_epoch));
+                }
+                tracing::info!(
+                    node_id = %self.node_id,
+                    new_epoch = self.current_epoch.load(Ordering::SeqCst),
+                    "Auto-registration after epoch mismatch succeeded"
+                );
+                return Ok(HeartbeatResult::Ok);
             }
         }
 

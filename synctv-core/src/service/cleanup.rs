@@ -3,6 +3,7 @@
 //! Coordinates cleanup of:
 //! - Soft-deleted records (users, rooms, media) past retention period
 //! - Expired email verification tokens
+//! - Expired media provider credentials
 //! - Old notifications
 //! - Old chat messages (per-room cap)
 //!
@@ -12,7 +13,7 @@ use sqlx::PgPool;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use crate::{Error, Result, InternalExt};
+use crate::{Result, InternalExt};
 
 /// Configuration for data cleanup retention periods
 #[derive(Debug, Clone)]
@@ -25,6 +26,8 @@ pub struct CleanupConfig {
     pub media_soft_delete_retention_days: u32,
     /// Days to retain expired email tokens before deletion (0 = never purge)
     pub expired_token_retention_days: u32,
+    /// Hours buffer for expired credential cleanup (prevents race conditions)
+    pub expired_credential_buffer_hours: u32,
     /// Days to retain read notifications before deletion (0 = never purge)
     pub notification_retention_days: u32,
     /// Days to retain any notification (read or unread) before deletion (0 = never purge)
@@ -40,6 +43,7 @@ impl Default for CleanupConfig {
             room_soft_delete_retention_days: 90,
             media_soft_delete_retention_days: 30,
             expired_token_retention_days: 7,
+            expired_credential_buffer_hours: 1,
             notification_retention_days: 30,
             notification_max_retention_days: 90,
             chat_max_messages_per_room: 0, // unlimited by default
@@ -58,6 +62,8 @@ pub struct CleanupResult {
     pub media_purged: u64,
     /// Number of expired email tokens deleted
     pub tokens_deleted: u64,
+    /// Number of expired credentials deleted
+    pub credentials_deleted: u64,
     /// Number of old notifications deleted
     pub notifications_deleted: u64,
     /// Number of old chat messages deleted
@@ -133,6 +139,19 @@ impl CleanupService {
                     }
                 }
                 Err(e) => warn!(error = %e, "Failed to delete expired email tokens"),
+            }
+        }
+
+        // 4b. Delete expired media provider credentials
+        if self.config.expired_credential_buffer_hours > 0 {
+            match self.delete_expired_credentials().await {
+                Ok(count) => {
+                    result.credentials_deleted = count;
+                    if count > 0 {
+                        info!(count, "Deleted expired media provider credentials");
+                    }
+                }
+                Err(e) => warn!(error = %e, "Failed to delete expired credentials"),
             }
         }
 
@@ -249,6 +268,27 @@ impl CleanupService {
         Ok(result.rows_affected())
     }
 
+    /// Delete expired media provider credentials with buffer to prevent race conditions
+    ///
+    /// Calls the database function cleanup_expired_credentials() which deletes credentials
+    /// that expired more than buffer_hours ago.
+    async fn delete_expired_credentials(&self) -> Result<u64> {
+        let buffer_hours = self.config.expired_credential_buffer_hours as i32;
+        let result_json = sqlx::query_scalar::<_, serde_json::Value>(
+            "SELECT cleanup_expired_credentials($1)"
+        )
+        .bind(buffer_hours)
+        .fetch_one(&self.pool)
+        .await
+        .internal_with_err("Failed to delete expired credentials")?;
+
+        let deleted_count = result_json["deleted_count"]
+            .as_i64()
+            .unwrap_or(0) as u64;
+
+        Ok(deleted_count)
+    }
+
     /// Delete read notifications older than the retention period
     async fn delete_old_notifications(&self) -> Result<u64> {
         let days = self.config.notification_retention_days as i32;
@@ -359,6 +399,7 @@ impl CleanupService {
                     + result.rooms_purged
                     + result.media_purged
                     + result.tokens_deleted
+                    + result.credentials_deleted
                     + result.notifications_deleted
                     + result.chat_messages_deleted;
 
@@ -368,6 +409,7 @@ impl CleanupService {
                         rooms = result.rooms_purged,
                         media = result.media_purged,
                         tokens = result.tokens_deleted,
+                        credentials = result.credentials_deleted,
                         notifications = result.notifications_deleted,
                         chat_messages = result.chat_messages_deleted,
                         total,
@@ -392,6 +434,7 @@ mod tests {
         assert_eq!(config.room_soft_delete_retention_days, 90);
         assert_eq!(config.media_soft_delete_retention_days, 30);
         assert_eq!(config.expired_token_retention_days, 7);
+        assert_eq!(config.expired_credential_buffer_hours, 1);
         assert_eq!(config.notification_retention_days, 30);
         assert_eq!(config.notification_max_retention_days, 90);
         assert_eq!(config.chat_max_messages_per_room, 0);
@@ -404,6 +447,7 @@ mod tests {
         assert_eq!(result.rooms_purged, 0);
         assert_eq!(result.media_purged, 0);
         assert_eq!(result.tokens_deleted, 0);
+        assert_eq!(result.credentials_deleted, 0);
         assert_eq!(result.notifications_deleted, 0);
         assert_eq!(result.chat_messages_deleted, 0);
     }
@@ -415,6 +459,7 @@ mod tests {
             room_soft_delete_retention_days: 60,
             media_soft_delete_retention_days: 14,
             expired_token_retention_days: 3,
+            expired_credential_buffer_hours: 2,
             notification_retention_days: 14,
             notification_max_retention_days: 60,
             chat_max_messages_per_room: 1000,
@@ -423,6 +468,7 @@ mod tests {
         assert_eq!(config.room_soft_delete_retention_days, 60);
         assert_eq!(config.media_soft_delete_retention_days, 14);
         assert_eq!(config.expired_token_retention_days, 3);
+        assert_eq!(config.expired_credential_buffer_hours, 2);
         assert_eq!(config.notification_retention_days, 14);
         assert_eq!(config.notification_max_retention_days, 60);
         assert_eq!(config.chat_max_messages_per_room, 1000);
@@ -435,12 +481,14 @@ mod tests {
             room_soft_delete_retention_days: 0,
             media_soft_delete_retention_days: 0,
             expired_token_retention_days: 0,
+            expired_credential_buffer_hours: 0,
             notification_retention_days: 0,
             notification_max_retention_days: 0,
             chat_max_messages_per_room: 0,
         };
         // All zero means all cleanup is disabled
         assert_eq!(config.soft_delete_retention_days, 0);
+        assert_eq!(config.expired_credential_buffer_hours, 0);
         assert_eq!(config.notification_max_retention_days, 0);
         assert_eq!(config.chat_max_messages_per_room, 0);
     }
@@ -452,6 +500,7 @@ mod tests {
             rooms_purged: 3,
             media_purged: 10,
             tokens_deleted: 20,
+            credentials_deleted: 15,
             notifications_deleted: 50,
             chat_messages_deleted: 100,
         };
@@ -459,8 +508,9 @@ mod tests {
             + result.rooms_purged
             + result.media_purged
             + result.tokens_deleted
+            + result.credentials_deleted
             + result.notifications_deleted
             + result.chat_messages_deleted;
-        assert_eq!(total, 188);
+        assert_eq!(total, 203);
     }
 }

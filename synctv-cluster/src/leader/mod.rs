@@ -75,10 +75,20 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use synctv_core::service::DistributedLock;
+
+/// Leadership change event for observers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LeadershipEvent {
+    /// This node gained leadership (includes the new epoch).
+    Gained { epoch: u64 },
+    /// This node lost leadership.
+    Lost,
+}
 
 /// Default Redis key for leader election lock (used when no prefix is configured).
 const DEFAULT_LEADER_LOCK_KEY: &str = "leader_election";
@@ -99,6 +109,12 @@ const DEFAULT_LEADER_LOCK_KEY: &str = "leader_election";
 /// (no waiting for the next tick). After losing leadership, a grace period
 /// equal to `renew_interval_secs` is enforced before attempting re-acquisition
 /// to prevent rapid flip-flopping during transient network issues.
+///
+/// ## Observer pattern
+///
+/// Use `subscribe()` to receive leadership change notifications (gained/lost
+/// events). Observers can use this to start/stop singleton tasks when
+/// leadership changes.
 #[derive(Clone)]
 pub struct LeaderElector {
     /// Whether this instance is currently the leader
@@ -121,6 +137,8 @@ pub struct LeaderElector {
     /// Timestamp (Instant) at which leadership was lost. Used to enforce a
     /// grace period before re-acquisition attempts.
     leadership_lost_at: Arc<parking_lot::Mutex<Option<tokio::time::Instant>>>,
+    /// Broadcast channel for leadership change events (observer pattern)
+    event_tx: Arc<broadcast::Sender<LeadershipEvent>>,
 }
 
 /// Configuration for leader election.
@@ -170,6 +188,8 @@ impl LeaderElector {
             config.lease_duration_secs
         );
 
+        let (event_tx, _) = broadcast::channel(16);
+
         Self {
             is_leader: Arc::new(AtomicBool::new(false)),
             lock: DistributedLock::new(redis_conn),
@@ -180,7 +200,24 @@ impl LeaderElector {
             lock_key: format!("{}{}", key_prefix, DEFAULT_LEADER_LOCK_KEY),
             leader_epoch: Arc::new(AtomicU64::new(0)),
             leadership_lost_at: Arc::new(parking_lot::Mutex::new(None)),
+            event_tx: Arc::new(event_tx),
         }
+    }
+
+    /// Subscribe to leadership change events (observer pattern).
+    ///
+    /// Returns a receiver that will receive `LeadershipEvent::Gained` when this
+    /// node becomes leader and `LeadershipEvent::Lost` when it loses leadership.
+    ///
+    /// Observers can use this to start/stop singleton tasks (database migrations,
+    /// periodic cleanup, etc.) when leadership changes.
+    ///
+    /// The channel has a capacity of 16 events. If observers lag behind, they
+    /// will receive a `RecvError::Lagged` error and can resync by checking
+    /// `is_leader()` and `leader_epoch()`.
+    #[must_use]
+    pub fn subscribe(&self) -> broadcast::Receiver<LeadershipEvent> {
+        self.event_tx.subscribe()
     }
 
     /// Returns `true` if this instance is currently the leader.
@@ -281,7 +318,7 @@ impl LeaderElector {
     /// Immediately mark this node as no longer the leader, clear the lock
     /// value, and record the time of loss for grace period enforcement.
     fn lose_leadership(&self) {
-        self.set_leader(false);
+        self.set_leader(false, None);
         *self.lock_value.lock() = None;
         *self.leadership_lost_at.lock() = Some(tokio::time::Instant::now());
     }
@@ -311,11 +348,11 @@ impl LeaderElector {
                 *self.lock_value.lock() = Some(value);
                 // Clear grace period since we successfully acquired
                 *self.leadership_lost_at.lock() = None;
-                self.set_leader(true);
+                self.set_leader(true, Some(epoch));
             }
             Ok(None) => {
                 debug!(identity = %self.identity, "Another node is leader");
-                self.set_leader(false);
+                self.set_leader(false, None);
             }
             Err(e) => {
                 warn!(
@@ -323,7 +360,7 @@ impl LeaderElector {
                     error = %e,
                     "Failed to acquire leader lock"
                 );
-                self.set_leader(false);
+                self.set_leader(false, None);
             }
         }
     }
@@ -341,16 +378,23 @@ impl LeaderElector {
                 );
             }
         }
-        self.set_leader(false);
+        self.set_leader(false, None);
     }
 
     /// Update the is_leader flag and log transitions.
-    fn set_leader(&self, leader: bool) {
+    /// Notifies observers of leadership changes.
+    fn set_leader(&self, leader: bool, gained_epoch: Option<u64>) {
         let was_leader = self.is_leader.swap(leader, Ordering::AcqRel);
         if was_leader && !leader {
             info!(identity = %self.identity, "Lost leadership");
+            // Notify observers of leadership loss
+            let _ = self.event_tx.send(LeadershipEvent::Lost);
+        } else if !was_leader && leader {
+            // Notify observers of leadership gain (epoch provided by caller)
+            if let Some(epoch) = gained_epoch {
+                let _ = self.event_tx.send(LeadershipEvent::Gained { epoch });
+            }
         }
-        // Gaining leadership is logged in try_acquire
     }
 }
 

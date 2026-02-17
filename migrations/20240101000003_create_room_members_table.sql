@@ -74,3 +74,80 @@ COMMENT ON COLUMN room_members.banned_at IS 'Timestamp when member was banned';
 COMMENT ON COLUMN room_members.banned_by IS 'User ID who banned this member';
 COMMENT ON COLUMN room_members.banned_reason IS 'Reason for banning';
 COMMENT ON COLUMN room_members.left_at IS 'NULL if currently in room, timestamp if left';
+
+-- ============================================================================
+-- Optimistic Locking with Version Field (CAS pattern)
+-- ============================================================================
+
+-- Function: Update room member permissions with optimistic locking
+-- This function implements Compare-And-Swap (CAS) pattern to prevent race conditions
+-- Returns TRUE if update succeeded, FALSE if version mismatch (indicating concurrent update)
+CREATE OR REPLACE FUNCTION update_room_member_permissions_cas(
+    p_room_id CHAR(12),
+    p_user_id CHAR(12),
+    p_expected_version BIGINT,
+    p_added_permissions BIGINT DEFAULT NULL,
+    p_removed_permissions BIGINT DEFAULT NULL,
+    p_admin_added_permissions BIGINT DEFAULT NULL,
+    p_admin_removed_permissions BIGINT DEFAULT NULL
+) RETURNS JSON AS $$
+DECLARE
+    rows_updated INTEGER;
+    new_version BIGINT;
+BEGIN
+    -- Perform atomic CAS update: only update if version matches
+    UPDATE room_members
+    SET
+        added_permissions = COALESCE(p_added_permissions, added_permissions),
+        removed_permissions = COALESCE(p_removed_permissions, removed_permissions),
+        admin_added_permissions = COALESCE(p_admin_added_permissions, admin_added_permissions),
+        admin_removed_permissions = COALESCE(p_admin_removed_permissions, admin_removed_permissions),
+        version = version + 1
+    WHERE room_id = p_room_id
+      AND user_id = p_user_id
+      AND version = p_expected_version
+    RETURNING version INTO new_version;
+
+    GET DIAGNOSTICS rows_updated = ROW_COUNT;
+
+    IF rows_updated = 0 THEN
+        -- Version mismatch or row not found
+        RETURN json_build_object(
+            'success', FALSE,
+            'error', 'version_mismatch',
+            'message', 'Concurrent update detected or member not found',
+            'expected_version', p_expected_version
+        );
+    END IF;
+
+    -- Success
+    RETURN json_build_object(
+        'success', TRUE,
+        'new_version', new_version,
+        'message', 'Permissions updated successfully'
+    );
+END;
+$$ LANGUAGE plpgsql;
+
+COMMENT ON FUNCTION update_room_member_permissions_cas IS
+'Update room member permissions with optimistic locking (CAS pattern). Returns success=false on version mismatch. Use in retry loop in application code.';
+
+-- Example usage in Rust:
+-- let mut retries = 3;
+-- loop {
+--     let member = get_room_member(room_id, user_id).await?;
+--     let result = update_room_member_permissions_cas(
+--         room_id, user_id, member.version,
+--         Some(new_added), Some(new_removed), None, None
+--     ).await?;
+--
+--     if result["success"].as_bool() == Some(true) {
+--         break; // Success
+--     }
+--
+--     retries -= 1;
+--     if retries == 0 {
+--         return Err("Max retries exceeded due to concurrent updates");
+--     }
+--     tokio::time::sleep(Duration::from_millis(50)).await;
+-- }

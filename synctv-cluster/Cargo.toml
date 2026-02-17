@@ -70,4 +70,5 @@ tonic-prost-build.workspace = true
 mockall.workspace = true
 testcontainers.workspace = true
 testcontainers-modules.workspace = true
+tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

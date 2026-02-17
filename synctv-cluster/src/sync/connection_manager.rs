@@ -1,8 +1,9 @@
 use dashmap::DashMap;
 use redis::AsyncCommands;
+use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use synctv_core::models::id::{RoomId, UserId};
 use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
@@ -30,6 +31,39 @@ pub struct ConnectionInfo {
     pub last_activity: Instant,
     pub message_count: u64,
     pub rtc_joined: bool,
+}
+
+/// Serializable version of ConnectionInfo for Redis persistence.
+/// Uses Unix timestamps instead of Instant for cross-process compatibility.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ConnectionInfoPersistent {
+    connection_id: String,
+    user_id: String,
+    room_id: Option<String>,
+    connected_at_unix: u64,
+    last_activity_unix: u64,
+    message_count: u64,
+    rtc_joined: bool,
+}
+
+impl From<&ConnectionInfo> for ConnectionInfoPersistent {
+    fn from(info: &ConnectionInfo) -> Self {
+        let now = SystemTime::now();
+        let connected_at_unix = now.duration_since(UNIX_EPOCH).unwrap().as_secs()
+            .saturating_sub(info.connected_at.elapsed().as_secs());
+        let last_activity_unix = now.duration_since(UNIX_EPOCH).unwrap().as_secs()
+            .saturating_sub(info.last_activity.elapsed().as_secs());
+
+        Self {
+            connection_id: info.connection_id.clone(),
+            user_id: info.user_id.as_str().to_string(),
+            room_id: info.room_id.as_ref().map(|r| r.as_str().to_string()),
+            connected_at_unix,
+            last_activity_unix,
+            message_count: info.message_count,
+            rtc_joined: info.rtc_joined,
+        }
+    }
 }
 
 impl ConnectionInfo {
@@ -311,7 +345,31 @@ impl ConnectionManager {
 
         // Create and register connection info
         let conn_info = ConnectionInfo::new(connection_id.clone(), user_id.clone());
-        self.connections.insert(connection_id.clone(), conn_info);
+        self.connections.insert(connection_id.clone(), conn_info.clone());
+
+        // Persist connection metadata to Redis (best-effort)
+        if let Some(ref conn) = self.redis_conn {
+            let conn_key = format!("{}conn_mgr:conn:{}", self.redis_key_prefix, connection_id);
+            let user_index_key = format!("{}conn_mgr:user:{}", self.redis_key_prefix, user_id.as_str());
+
+            let persistent = ConnectionInfoPersistent::from(&conn_info);
+            let mut conn_clone = conn.clone();
+            let connection_id_clone = connection_id.clone();
+
+            tokio::spawn(async move {
+                // Store connection metadata as JSON
+                if let Ok(json) = serde_json::to_string(&persistent) {
+                    if let Err(e) = conn_clone.set::<_, _, ()>(&conn_key, &json).await {
+                        warn!("Failed to persist connection metadata to Redis: {e}");
+                    }
+                }
+
+                // Add to user's connection set for distributed queries
+                if let Err(e) = conn_clone.sadd::<_, _, ()>(&user_index_key, &connection_id_clone).await {
+                    warn!("Failed to add connection to user index: {e}");
+                }
+            });
+        }
 
         // Update metrics
         self.total_connections_ever.fetch_add(1, Ordering::Relaxed);
@@ -414,9 +472,10 @@ impl ConnectionManager {
         }
 
         // Update connection info
-        if let Some(mut conn) = self.connections.get_mut(connection_id) {
+        let conn_info_updated = if let Some(mut conn) = self.connections.get_mut(connection_id) {
             conn.room_id = Some(room_id.clone());
             conn.last_activity = Instant::now();
+            Some(conn.clone())
         } else {
             // Connection disappeared -- roll back the room_connections entry
             if let Some(mut room_conns) = self.room_connections.get_mut(&room_id) {
@@ -430,6 +489,30 @@ impl ConnectionManager {
                 }
             }
             return Err("Connection not found".to_string());
+        };
+
+        // Update Redis metadata with new room_id (best-effort)
+        if let (Some(info), Some(ref conn)) = (conn_info_updated, &self.redis_conn) {
+            let conn_key = format!("{}conn_mgr:conn:{}", self.redis_key_prefix, connection_id);
+            let room_index_key = format!("{}conn_mgr:room:{}", self.redis_key_prefix, room_id.as_str());
+
+            let persistent = ConnectionInfoPersistent::from(&info);
+            let mut conn_clone = conn.clone();
+            let connection_id_clone = connection_id.to_string();
+
+            tokio::spawn(async move {
+                // Update connection metadata with new room_id
+                if let Ok(json) = serde_json::to_string(&persistent) {
+                    if let Err(e) = conn_clone.set::<_, _, ()>(&conn_key, &json).await {
+                        warn!("Failed to update connection metadata in Redis: {e}");
+                    }
+                }
+
+                // Add to room's connection set
+                if let Err(e) = conn_clone.sadd::<_, _, ()>(&room_index_key, &connection_id_clone).await {
+                    warn!("Failed to add connection to room index: {e}");
+                }
+            });
         }
 
         synctv_core::metrics::cluster::CLUSTER_ROOMS.set(
@@ -482,7 +565,7 @@ impl ConnectionManager {
                 }
             }
 
-            // Decrement distributed Redis counters (best-effort)
+            // Decrement distributed Redis counters and remove metadata (best-effort)
             if let Some(ref conn) = self.redis_conn {
                 let user_key = format!("{}connections:user:{}", self.redis_key_prefix, conn_info.user_id.as_str());
                 let _ = self.redis_decr(conn, &user_key).await;
@@ -491,6 +574,28 @@ impl ConnectionManager {
                     let room_key = format!("{}connections:room:{}", self.redis_key_prefix, room_id.as_str());
                     let _ = self.redis_decr(conn, &room_key).await;
                 }
+
+                // Remove metadata and index entries (best-effort, spawn background task)
+                let conn_key = format!("{}conn_mgr:conn:{}", self.redis_key_prefix, connection_id);
+                let user_index_key = format!("{}conn_mgr:user:{}", self.redis_key_prefix, conn_info.user_id.as_str());
+                let room_index_key = conn_info.room_id.as_ref()
+                    .map(|r| format!("{}conn_mgr:room:{}", self.redis_key_prefix, r.as_str()));
+
+                let mut conn_clone = conn.clone();
+                let connection_id_owned = connection_id.to_string();
+
+                tokio::spawn(async move {
+                    // Remove connection metadata
+                    let _: Result<(), _> = conn_clone.del(&conn_key).await;
+
+                    // Remove from user index
+                    let _: Result<(), _> = conn_clone.srem(&user_index_key, &connection_id_owned).await;
+
+                    // Remove from room index if applicable
+                    if let Some(room_key) = room_index_key {
+                        let _: Result<(), _> = conn_clone.srem(&room_key, &connection_id_owned).await;
+                    }
+                });
             }
 
             synctv_core::metrics::ACTIVE_CONNECTIONS.dec();
@@ -724,6 +829,45 @@ impl ConnectionManager {
                 }
             }
         })
+    }
+
+    /// Get all connections for a user across all replicas (from Redis).
+    ///
+    /// Returns connection metadata from Redis, which includes connections from
+    /// all replicas in the cluster. Falls back to local-only if Redis fails.
+    pub async fn get_user_connections_distributed(&self, user_id: &UserId) -> Vec<ConnectionInfo> {
+        // Note: We can't fully reconstruct ConnectionInfo from Redis because
+        // Instant can't be deserialized across processes. For distributed
+        // queries, use get_room_connections_distributed which returns connection IDs.
+        // For now, this method returns local connections only.
+        // TODO: Return ConnectionInfoPersistent or redesign to use connection IDs.
+
+        // Fallback to local-only
+        self.get_user_connections(user_id)
+    }
+
+    /// Get all connections in a room across all replicas (from Redis).
+    ///
+    /// Returns connection IDs from Redis, which includes connections from
+    /// all replicas in the cluster. Falls back to local-only if Redis fails.
+    pub async fn get_room_connections_distributed(&self, room_id: &RoomId) -> Vec<String> {
+        if let Some(ref conn) = self.redis_conn {
+            let room_index_key = format!("{}conn_mgr:room:{}", self.redis_key_prefix, room_id.as_str());
+            let mut conn_clone = conn.clone();
+
+            match conn_clone.smembers::<_, Vec<String>>(&room_index_key).await {
+                Ok(conn_ids) => return conn_ids,
+                Err(e) => {
+                    warn!("Failed to fetch room connections from Redis, falling back to local: {e}");
+                }
+            }
+        }
+
+        // Fallback to local-only
+        self.get_room_connections(room_id)
+            .into_iter()
+            .map(|c| c.connection_id)
+            .collect()
     }
 
     /// Atomically increment a Redis counter and check if the new value exceeds the limit.

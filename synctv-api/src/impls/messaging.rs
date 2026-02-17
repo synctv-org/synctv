@@ -189,7 +189,7 @@ impl StreamMessageHandler {
         let (mut event_rx, _connection_id) = self.cluster_manager.subscribe(
             self.room_id.clone(),
             self.user_id.clone()
-        );
+        ).await;
 
         // Subscribe to disconnect signals
         let mut disconnect_rx = self.connection_manager.subscribe_disconnect();
@@ -518,7 +518,7 @@ impl StreamMessageHandler {
         let room_id = self.room_id.clone();
         let user_id = self.user_id.clone();
         let room_id_str = room_id.as_str().to_string();
-        let (mut rx_events, _connection_id) = self.cluster_manager.subscribe(room_id, user_id);
+        let (mut rx_events, _connection_id) = self.cluster_manager.subscribe(room_id, user_id).await;
         let sender = self.sender.clone();
 
         tokio::spawn(async move {

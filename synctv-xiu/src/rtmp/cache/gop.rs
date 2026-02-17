@@ -196,6 +196,12 @@ impl Gops {
         self.gops.len()
     }
 
+    /// Get the configured maximum number of GOPs (size limit).
+    #[must_use]
+    pub const fn max_gop_count(&self) -> usize {
+        self.size
+    }
+
     pub fn save_frame_data(&mut self, data: FrameData, is_key_frame: bool) {
         if self.size == 0 {
             return;

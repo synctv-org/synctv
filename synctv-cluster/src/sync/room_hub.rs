@@ -1,4 +1,5 @@
 use dashmap::DashMap;
+use redis::AsyncCommands;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use synctv_core::models::id::{RoomId, UserId};
@@ -58,18 +59,29 @@ impl Clone for Subscriber {
 
 /// In-memory hub for routing messages to connected clients in rooms
 /// This handles local message distribution (single node)
+///
+/// With Redis configured, subscription state is persisted for cross-replica visibility
+/// and recovery after restarts. Local DashMaps serve as a fast cache.
 #[derive(Clone, Debug)]
 pub struct RoomMessageHub {
-    /// Map of `room_id` -> list of subscribers
+    /// Map of `room_id` -> list of subscribers (local cache)
     rooms: Arc<DashMap<RoomId, Vec<Subscriber>>>,
 
-    /// Map of `connection_id` -> (`room_id`, `user_id`) for cleanup
+    /// Map of `connection_id` -> (`room_id`, `user_id`) for cleanup (local cache)
     connections: Arc<DashMap<ConnectionId, (RoomId, UserId)>>,
 
     /// Broadcast sender for room lifecycle events (first join / last leave).
     /// The Redis Pub/Sub subscriber task listens on a receiver to dynamically
     /// subscribe/unsubscribe to specific room channels.
     lifecycle_tx: broadcast::Sender<RoomLifecycleEvent>,
+
+    /// Optional Redis connection for distributed subscription state.
+    /// When present, subscription relationships are persisted to Redis for
+    /// cross-replica visibility and recovery. When absent, operates local-only.
+    redis_conn: Option<redis::aio::ConnectionManager>,
+
+    /// Key prefix for Redis keys (e.g., "synctv:")
+    redis_key_prefix: String,
 }
 
 impl RoomMessageHub {
@@ -81,7 +93,21 @@ impl RoomMessageHub {
             rooms: Arc::new(DashMap::new()),
             connections: Arc::new(DashMap::new()),
             lifecycle_tx,
+            redis_conn: None,
+            redis_key_prefix: String::new(),
         }
+    }
+
+    /// Enable distributed subscription state via Redis.
+    ///
+    /// When Redis is configured, subscription relationships are persisted to Redis
+    /// for cross-replica visibility and recovery after restarts. Local DashMaps
+    /// remain as a fast cache for message routing.
+    #[must_use]
+    pub fn with_redis(mut self, conn: redis::aio::ConnectionManager, key_prefix: &str) -> Self {
+        self.redis_conn = Some(conn);
+        self.redis_key_prefix = key_prefix.to_string();
+        self
     }
 
     /// Subscribe to room lifecycle events (room activated / deactivated).
@@ -93,7 +119,10 @@ impl RoomMessageHub {
 
     /// Subscribe a client to room events
     /// Returns a receiver for messages
-    pub fn subscribe(
+    ///
+    /// With Redis configured, persists the subscription relationship for cross-replica
+    /// visibility and recovery. Falls back to local-only on Redis errors.
+    pub async fn subscribe(
         &self,
         room_id: RoomId,
         user_id: UserId,
@@ -126,6 +155,29 @@ impl RoomMessageHub {
         self.connections
             .insert(connection_id.clone(), (room_id.clone(), user_id.clone()));
 
+        // Persist to Redis for cross-replica visibility (best-effort)
+        if let Some(ref conn) = self.redis_conn {
+            let room_key = format!("{}room_hub:room:{}", self.redis_key_prefix, room_id.as_str());
+            let conn_key = format!("{}room_hub:conn:{}", self.redis_key_prefix, connection_id);
+
+            let mut conn_clone = conn.clone();
+            let user_id_str = user_id.as_str().to_string();
+            let room_id_str = room_id.as_str().to_string();
+            let connection_id_clone = connection_id.clone();
+
+            // Spawn best-effort Redis update (don't block the subscribe path)
+            tokio::spawn(async move {
+                // Store room -> {connection_id: user_id} mapping
+                if let Err(e) = conn_clone.hset::<_, _, _, ()>(&room_key, &connection_id_clone, &user_id_str).await {
+                    warn!("Failed to persist room subscription to Redis: {e}");
+                }
+                // Store connection -> room_id mapping for cleanup
+                if let Err(e) = conn_clone.set::<_, _, ()>(&conn_key, &room_id_str).await {
+                    warn!("Failed to persist connection mapping to Redis: {e}");
+                }
+            });
+        }
+
         // Emit lifecycle event if this is the first subscriber for the room
         if is_new_room {
             let _ = self.lifecycle_tx.send(RoomLifecycleEvent::RoomActivated(room_id.clone()));
@@ -142,6 +194,8 @@ impl RoomMessageHub {
     }
 
     /// Unsubscribe a client from room events
+    ///
+    /// Removes subscription from both local cache and Redis (if configured).
     pub fn unsubscribe(&self, connection_id: &str) {
         if let Some((_, (room_id, user_id))) = self.connections.remove(connection_id) {
             let mut room_deactivated = false;
@@ -169,6 +223,25 @@ impl RoomMessageHub {
             if self.rooms.remove_if(&room_id, |_, subscribers| subscribers.is_empty()).is_some() {
                 room_deactivated = true;
                 debug!(room_id = %room_id.as_str(), "Room has no more subscribers, removed");
+            }
+
+            // Remove from Redis (best-effort, don't block unsubscribe path)
+            if let Some(ref conn) = self.redis_conn {
+                let room_key = format!("{}room_hub:room:{}", self.redis_key_prefix, room_id.as_str());
+                let conn_key = format!("{}room_hub:conn:{}", self.redis_key_prefix, connection_id);
+                let mut conn_clone = conn.clone();
+                let connection_id_owned = connection_id.to_string();
+
+                tokio::spawn(async move {
+                    // Remove connection from room's subscriber hash
+                    if let Err(e) = conn_clone.hdel::<_, _, ()>(&room_key, &connection_id_owned).await {
+                        warn!("Failed to remove room subscription from Redis: {e}");
+                    }
+                    // Remove connection mapping
+                    if let Err(e) = conn_clone.del::<_, ()>(&conn_key).await {
+                        warn!("Failed to remove connection mapping from Redis: {e}");
+                    }
+                });
             }
 
             // Emit lifecycle event if the last subscriber left
@@ -439,6 +512,79 @@ impl RoomMessageHub {
             })
             .unwrap_or_default()
     }
+
+    /// Get all subscribers in a room across all replicas (from Redis).
+    ///
+    /// Returns the full subscriber list from Redis, which includes subscriptions
+    /// from all replicas in the cluster. Falls back to local-only if Redis is
+    /// not configured or fails.
+    pub async fn get_room_subscribers_distributed(&self, room_id: &RoomId) -> Vec<(UserId, ConnectionId)> {
+        if let Some(ref conn) = self.redis_conn {
+            let room_key = format!("{}room_hub:room:{}", self.redis_key_prefix, room_id.as_str());
+            let mut conn_clone = conn.clone();
+
+            match conn_clone.hgetall::<_, Vec<(String, String)>>(&room_key).await {
+                Ok(entries) => {
+                    return entries
+                        .into_iter()
+                        .map(|(conn_id, user_id_str)| {
+                            (UserId::from_string(user_id_str), conn_id)
+                        })
+                        .collect();
+                }
+                Err(e) => {
+                    warn!("Failed to fetch room subscribers from Redis, falling back to local: {e}");
+                }
+            }
+        }
+
+        // Fallback to local-only
+        self.get_room_subscribers(room_id)
+    }
+
+    /// Recover subscription state from Redis on startup.
+    ///
+    /// This method scans Redis for persisted subscription relationships and
+    /// rebuilds the local cache. Note: MessageSenders cannot be recovered,
+    /// so this is primarily useful for monitoring/metrics, not message routing.
+    /// Actual message routing requires clients to reconnect.
+    pub async fn recover_from_redis(&self) -> Result<usize, String> {
+        let Some(ref conn) = self.redis_conn else {
+            return Err("Redis not configured".to_string());
+        };
+
+        let pattern = format!("{}room_hub:room:*", self.redis_key_prefix);
+        let mut conn_clone = conn.clone();
+        let mut recovered = 0;
+
+        // Scan for all room keys
+        let keys: Vec<String> = conn_clone
+            .keys(&pattern)
+            .await
+            .map_err(|e| format!("Failed to scan Redis keys: {e}"))?;
+
+        for key in keys {
+            // Extract room_id from key
+            let room_id_str = key.trim_start_matches(&format!("{}room_hub:room:", self.redis_key_prefix));
+            let room_id = RoomId::from_string(room_id_str.to_string());
+
+            // Fetch all subscribers for this room
+            let entries: Vec<(String, String)> = conn_clone
+                .hgetall(&key)
+                .await
+                .map_err(|e| format!("Failed to fetch room {room_id_str} subscribers: {e}"))?;
+
+            recovered += entries.len();
+
+            info!(
+                room_id = %room_id.as_str(),
+                subscriber_count = entries.len(),
+                "Recovered room subscription state from Redis"
+            );
+        }
+
+        Ok(recovered)
+    }
 }
 
 impl Default for RoomMessageHub {
@@ -459,7 +605,7 @@ mod tests {
         let user_id = UserId::from_string("test_user".to_string());
 
         // Subscribe
-        let mut rx = hub.subscribe(room_id.clone(), user_id.clone(), "conn1".to_string());
+        let mut rx = hub.subscribe(room_id.clone(), user_id.clone(), "conn1".to_string()).await;
 
         assert_eq!(hub.subscriber_count(&room_id), 1);
         assert_eq!(hub.connection_count(), 1);
@@ -491,7 +637,7 @@ mod tests {
         let user_id = UserId::from_string("test_user".to_string());
 
         // Subscribe
-        let _rx = hub.subscribe(room_id.clone(), user_id.clone(), "conn1".to_string());
+        let _rx = hub.subscribe(room_id.clone(), user_id.clone(), "conn1".to_string()).await;
         assert_eq!(hub.subscriber_count(&room_id), 1);
 
         // Unsubscribe
@@ -509,8 +655,8 @@ mod tests {
         let user2 = UserId::from_string("user2".to_string());
 
         // Subscribe two clients
-        let mut rx1 = hub.subscribe(room_id.clone(), user1.clone(), "conn1".to_string());
-        let mut rx2 = hub.subscribe(room_id.clone(), user2.clone(), "conn2".to_string());
+        let mut rx1 = hub.subscribe(room_id.clone(), user1.clone(), "conn1".to_string()).await;
+        let mut rx2 = hub.subscribe(room_id.clone(), user2.clone(), "conn2".to_string()).await;
 
         assert_eq!(hub.subscriber_count(&room_id), 2);
 
@@ -545,8 +691,8 @@ mod tests {
         let user2 = UserId::from_string("user2".to_string());
 
         // Subscribe two clients
-        let mut rx1 = hub.subscribe(room_id.clone(), user1.clone(), "conn1".to_string());
-        let mut rx2 = hub.subscribe(room_id.clone(), user2.clone(), "conn2".to_string());
+        let mut rx1 = hub.subscribe(room_id.clone(), user1.clone(), "conn1".to_string()).await;
+        let mut rx2 = hub.subscribe(room_id.clone(), user2.clone(), "conn2".to_string()).await;
 
         // Broadcast to user1 only
         let event = ClusterEvent::SystemNotification {
@@ -587,12 +733,12 @@ mod tests {
         let user2 = UserId::from_string("user2".to_string());
 
         // First subscriber triggers RoomActivated
-        let _rx1 = hub.subscribe(room_id.clone(), user1.clone(), "conn1".to_string());
+        let _rx1 = hub.subscribe(room_id.clone(), user1.clone(), "conn1".to_string()).await;
         let event = lifecycle_rx.try_recv().unwrap();
         assert!(matches!(event, RoomLifecycleEvent::RoomActivated(ref rid) if rid.as_str() == "test_room"));
 
         // Second subscriber does NOT trigger RoomActivated
-        let _rx2 = hub.subscribe(room_id.clone(), user2.clone(), "conn2".to_string());
+        let _rx2 = hub.subscribe(room_id.clone(), user2.clone(), "conn2".to_string()).await;
         assert!(lifecycle_rx.try_recv().is_err());
 
         // Unsubscribe first user: room still has subscribers, no event
@@ -614,7 +760,7 @@ mod tests {
         let user_id = UserId::from_string("user1".to_string());
 
         // Subscribe triggers RoomActivated
-        let _rx = hub.subscribe(room_id.clone(), user_id.clone(), "conn1".to_string());
+        let _rx = hub.subscribe(room_id.clone(), user_id.clone(), "conn1".to_string()).await;
         let _ = lifecycle_rx.try_recv().unwrap(); // consume RoomActivated
 
         // remove_room triggers RoomDeactivated

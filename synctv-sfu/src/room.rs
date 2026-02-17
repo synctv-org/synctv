@@ -820,7 +820,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_track_id_conflict_detection() {
-        use crate::track::MediaTrack;
         use std::sync::Arc;
 
         let config = Arc::new(SfuConfig::default());
@@ -832,16 +831,12 @@ mod tests {
         room.add_peer(peer1.clone(), 0).await.unwrap();
         room.add_peer(peer2.clone(), 0).await.unwrap();
 
-        // Create a mock track for peer1
-        let track_id = TrackId::from("track123");
         // Note: MediaTrack::new requires a real TrackRemote which is hard to mock,
         // so we'll test the conflict check indirectly by verifying the room prevents duplicate IDs.
         //
         // For now, verify that the published_tracks map correctly detects conflicts
         // by manually inserting a track (simulating what add_published_track does).
 
-        // Insert a dummy entry to simulate peer1 publishing a track
-        use crate::track::{TrackKind, MediaTrack};
         // Since we can't easily construct a MediaTrack in tests without a real RTCTrack,
         // this test documents the intended behavior. Real integration tests would be needed
         // to fully test this path.

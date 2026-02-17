@@ -48,6 +48,7 @@ fn stream_key_for_event(event: &ClusterEvent) -> String {
 use super::dedup::{DedupKey, MessageDeduplicator};
 use super::events::{CacheTarget, ClusterEvent};
 use super::room_hub::{RoomLifecycleEvent, RoomMessageHub};
+use super::wal::EventWal;
 use synctv_core::cache::CacheInvalidationService;
 use synctv_core::models::id::RoomId;
 use synctv_core::service::PermissionService;
@@ -65,6 +66,9 @@ use synctv_core::service::PermissionService;
 /// - Stream-based catch-up mechanism: recovers missed events during disconnection
 /// - Timeout protection: 5s timeout on all Redis operations
 /// - Critical event guarantee: XADD operations retry up to 3 times with backoff
+/// - **WAL fallback**: Critical events that fail XADD after retries are saved to
+///   local Write-Ahead Log for durable storage. On startup, WAL events are replayed
+///   and re-published to Redis Stream.
 /// - Graceful degradation: logs warnings but continues operation on non-critical failures
 /// - Connection health checks: periodic PING to detect stale connections
 ///
@@ -84,10 +88,12 @@ pub struct RedisPubSub {
     cache_invalidation: Option<CacheInvalidationService>,
     deduplicator: Arc<MessageDeduplicator>,
     cancel_token: CancellationToken,
+    /// Write-Ahead Log for critical events that fail to write to Redis Stream
+    event_wal: Option<Arc<EventWal>>,
 }
 
 impl RedisPubSub {
-    /// Create a new `RedisPubSub` service
+    /// Create a new `RedisPubSub` service without WAL fallback.
     pub fn new(
         redis_url: &str,
         message_hub: Arc<RoomMessageHub>,
@@ -96,6 +102,33 @@ impl RedisPubSub {
         permission_service: Option<PermissionService>,
         cache_invalidation: Option<CacheInvalidationService>,
         deduplicator: Arc<MessageDeduplicator>,
+    ) -> Result<Self> {
+        Self::with_wal(
+            redis_url,
+            message_hub,
+            node_id,
+            admin_event_tx,
+            permission_service,
+            cache_invalidation,
+            deduplicator,
+            None,
+        )
+    }
+
+    /// Create a new `RedisPubSub` service with optional WAL fallback for critical events.
+    ///
+    /// If `event_wal` is provided, critical events that fail XADD after retries
+    /// will be saved to the WAL for durable storage. On startup, use `replay_wal()`
+    /// to re-publish WAL events to Redis Stream.
+    pub fn with_wal(
+        redis_url: &str,
+        message_hub: Arc<RoomMessageHub>,
+        node_id: String,
+        admin_event_tx: broadcast::Sender<ClusterEvent>,
+        permission_service: Option<PermissionService>,
+        cache_invalidation: Option<CacheInvalidationService>,
+        deduplicator: Arc<MessageDeduplicator>,
+        event_wal: Option<Arc<EventWal>>,
     ) -> Result<Self> {
         let redis_client = RedisClient::open(redis_url).context("Failed to create Redis client")?;
 
@@ -110,6 +143,7 @@ impl RedisPubSub {
             cache_invalidation,
             deduplicator,
             cancel_token: CancellationToken::new(),
+            event_wal,
         })
     }
 
@@ -123,6 +157,60 @@ impl RedisPubSub {
     pub fn shutdown(&self) {
         info!("Shutting down RedisPubSub service");
         self.cancel_token.cancel();
+    }
+
+    /// Replay events from the Write-Ahead Log and publish them to Redis Stream.
+    ///
+    /// Should be called once during startup (before starting the pub/sub loops)
+    /// to recover critical events that were saved to WAL during previous Redis
+    /// outages.
+    ///
+    /// Returns the number of events replayed successfully.
+    pub async fn replay_wal(&self) -> Result<usize> {
+        let Some(ref wal) = self.event_wal else {
+            return Ok(0); // No WAL configured
+        };
+
+        let events = wal.replay().await.context("Failed to replay WAL")?;
+        if events.is_empty() {
+            return Ok(0);
+        }
+
+        info!(event_count = events.len(), "Replaying events from WAL");
+
+        let mut conn = self.get_shared_conn().await?;
+        let mut success_count = 0;
+
+        for event in &events {
+            match Self::publish_event(&mut conn, &self.node_id, event.clone(), &self.event_wal).await {
+                Ok(_) => {
+                    success_count += 1;
+                }
+                Err(e) => {
+                    warn!(
+                        error = %e,
+                        event_type = event.event_type(),
+                        "Failed to replay WAL event to Redis, will keep in WAL"
+                    );
+                }
+            }
+        }
+
+        if success_count == events.len() {
+            // All events replayed successfully, clear WAL
+            wal.clear().await.context("Failed to clear WAL after replay")?;
+            info!(event_count = success_count, "All WAL events replayed successfully, cleared WAL");
+        } else {
+            warn!(
+                success = success_count,
+                total = events.len(),
+                "Partial WAL replay: {} of {} events replayed, keeping WAL for retry",
+                success_count,
+                events.len()
+            );
+        }
+
+        Ok(success_count)
     }
 
     /// Start the Pub/Sub service
@@ -139,6 +227,7 @@ impl RedisPubSub {
         let publish_client = self.redis_client.clone();
         let node_id = self.node_id.clone();
         let cancel_publisher = self.cancel_token.clone();
+        let event_wal = self.event_wal.clone();
 
         // Spawn task to handle publishing with reconnection logic
         tokio::spawn(async move {
@@ -184,7 +273,7 @@ impl RedisPubSub {
                 // Retry the previously failed publish request if any
                 if let Some(req) = retry_request.take() {
                     let event_type = req.event.event_type();
-                    match Self::publish_event(&mut conn, &node_id, req.event.clone()).await {
+                    match Self::publish_event(&mut conn, &node_id, req.event.clone(), &event_wal).await {
                         Ok(subscribers) => {
                             debug!(
                                 event_type = event_type,
@@ -215,7 +304,7 @@ impl RedisPubSub {
                             info!("Redis publisher task cancelled, draining remaining events");
                             while let Ok(req) = publish_rx.try_recv() {
                                 let event_type = req.event.event_type();
-                                match Self::publish_event(&mut conn, &node_id, req.event.clone()).await {
+                                match Self::publish_event(&mut conn, &node_id, req.event.clone(), &event_wal).await {
                                     Ok(_) => {
                                         debug!(event_type = event_type, "Drained event published");
                                     }
@@ -231,7 +320,7 @@ impl RedisPubSub {
                     };
                     if let Some(req) = req {
                         let event_type = req.event.event_type();
-                        match Self::publish_event(&mut conn, &node_id, req.event.clone()).await {
+                        match Self::publish_event(&mut conn, &node_id, req.event.clone(), &event_wal).await {
                             Ok(subscribers) => {
                                 debug!(
                                     event_type = event_type,
@@ -1004,10 +1093,15 @@ impl RedisPubSub {
     /// If a subscriber disconnects, it can catch up by reading only the streams
     /// for rooms that have local subscribers, avoiding the N*M amplification of
     /// a single global stream.
+    ///
+    /// **WAL fallback**: If XADD fails for a critical event after retries, the
+    /// event is saved to the local Write-Ahead Log (if configured) for durable
+    /// storage.
     async fn publish_event(
         conn: &mut redis::aio::MultiplexedConnection,
         node_id: &str,
         event: ClusterEvent,
+        event_wal: &Option<Arc<EventWal>>,
     ) -> Result<usize> {
         // Events with a room_id go to synctv:room:{room_id}, admin-only events go to synctv:admin:events
         let channel = if let Some(room_id) = event.room_id() {
@@ -1080,9 +1174,29 @@ impl RedisPubSub {
                 error!(
                     stream_key = %stream_key,
                     event_type = event.event_type(),
-                    "XADD failed for critical event after {} retries, event may be lost during catch-up",
+                    "XADD failed for critical event after {} retries, attempting WAL fallback",
                     CRITICAL_STREAM_MAX_RETRIES
                 );
+                // WAL fallback for critical events
+                if let Some(ref wal) = event_wal {
+                    if let Err(e) = wal.append(event.clone()).await {
+                        error!(
+                            error = %e,
+                            event_type = event.event_type(),
+                            "Failed to save critical event to WAL, event will be lost"
+                        );
+                    } else {
+                        info!(
+                            event_type = event.event_type(),
+                            "Saved critical event to WAL after Redis XADD failure"
+                        );
+                    }
+                } else {
+                    error!(
+                        event_type = event.event_type(),
+                        "No WAL configured, critical event may be lost during catch-up"
+                    );
+                }
             }
         } else {
             // Non-critical events: single attempt, warn and continue on failure.
@@ -1402,6 +1516,7 @@ mod tests {
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
         // Client should receive the event
+        let mut rx = rx.await;
         let received = tokio::time::timeout(tokio::time::Duration::from_secs(2), rx.recv())
             .await
             .unwrap()

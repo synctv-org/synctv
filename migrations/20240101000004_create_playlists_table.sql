@@ -69,3 +69,80 @@ COMMENT ON COLUMN playlists.provider_instance_name IS 'Recommended media provide
 COMMENT ON CONSTRAINT unique_playlist_name ON playlists IS 'No duplicate names in same directory';
 COMMENT ON CONSTRAINT valid_name ON playlists IS 'Name validation: root directory must be empty string, non-root cannot be empty/spaces, forbids / character';
 COMMENT ON CONSTRAINT valid_dynamic_folder ON playlists IS 'Dynamic folder constraint: source_provider/source_config must either both exist or both be NULL';
+
+-- ============================================================================
+-- Circular Reference Protection
+-- ============================================================================
+
+-- Function: Detect circular references in playlist tree
+-- This function checks if setting parent_id would create a cycle
+-- Uses recursive CTE to traverse the tree from the proposed parent upwards
+CREATE OR REPLACE FUNCTION check_playlist_cycle(
+    playlist_id CHAR(12),
+    new_parent_id CHAR(12)
+) RETURNS BOOLEAN AS $$
+DECLARE
+    cycle_detected BOOLEAN;
+BEGIN
+    -- If new parent is NULL, no cycle possible
+    IF new_parent_id IS NULL THEN
+        RETURN FALSE;
+    END IF;
+
+    -- Check if playlist_id appears in the ancestor chain of new_parent_id
+    SELECT EXISTS (
+        WITH RECURSIVE ancestors AS (
+            -- Start from the proposed parent
+            SELECT id, parent_id, 0 AS depth
+            FROM playlists
+            WHERE id = new_parent_id
+
+            UNION ALL
+
+            -- Traverse up the tree
+            SELECT p.id, p.parent_id, a.depth + 1
+            FROM playlists p
+            JOIN ancestors a ON p.id = a.parent_id
+            WHERE a.depth < 50  -- Prevent infinite loop (max depth protection)
+        )
+        SELECT 1
+        FROM ancestors
+        WHERE id = playlist_id
+    ) INTO cycle_detected;
+
+    RETURN cycle_detected;
+END;
+$$ LANGUAGE plpgsql;
+
+COMMENT ON FUNCTION check_playlist_cycle(CHAR, CHAR) IS
+'Check if setting parent_id would create a circular reference. Returns TRUE if cycle detected. Max depth: 50 levels.';
+
+-- Trigger function: Prevent circular references
+CREATE OR REPLACE FUNCTION prevent_playlist_cycle()
+RETURNS TRIGGER AS $$
+BEGIN
+    -- Only check on UPDATE if parent_id is being changed, or on INSERT with non-NULL parent
+    IF (TG_OP = 'INSERT' AND NEW.parent_id IS NOT NULL) OR
+       (TG_OP = 'UPDATE' AND NEW.parent_id IS DISTINCT FROM OLD.parent_id AND NEW.parent_id IS NOT NULL) THEN
+
+        -- Check for cycle
+        IF check_playlist_cycle(NEW.id, NEW.parent_id) THEN
+            RAISE EXCEPTION 'Circular reference detected: setting parent_id=% for playlist % would create a cycle',
+                NEW.parent_id, NEW.id
+                USING ERRCODE = '23514',  -- check_violation
+                      HINT = 'Cannot set a descendant as parent';
+        END IF;
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Trigger: Validate playlist tree integrity before INSERT/UPDATE
+CREATE TRIGGER trigger_prevent_playlist_cycle
+    BEFORE INSERT OR UPDATE OF parent_id ON playlists
+    FOR EACH ROW
+    EXECUTE FUNCTION prevent_playlist_cycle();
+
+COMMENT ON TRIGGER trigger_prevent_playlist_cycle ON playlists IS
+'Prevent circular references in playlist tree. Validates that parent_id does not create a cycle (max depth: 50).';

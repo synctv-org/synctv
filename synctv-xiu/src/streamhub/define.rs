@@ -89,13 +89,13 @@ impl Serialize for PublisherInfo {
     }
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum VideoCodecType {
     H264,
     H265,
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct MediaInfo {
     pub audio_clock_rate: u32,
     pub video_clock_rate: u32,
@@ -105,12 +105,33 @@ pub struct MediaInfo {
 /// Frame data using `Bytes` for zero-copy fan-out.
 /// `Bytes::clone()` is O(1) -- only bumps Arc reference count, no data copy.
 /// Publishers create `BytesMut` and call `.freeze()` before wrapping in `FrameData`.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub enum FrameData {
-    Video { timestamp: u32, data: Bytes },
-    Audio { timestamp: u32, data: Bytes },
-    MetaData { timestamp: u32, data: Bytes },
+    Video { timestamp: u32, #[serde(with = "bytes_serde")] data: Bytes },
+    Audio { timestamp: u32, #[serde(with = "bytes_serde")] data: Bytes },
+    MetaData { timestamp: u32, #[serde(with = "bytes_serde")] data: Bytes },
     MediaInfo { media_info: MediaInfo },
+}
+
+/// Serde support for Bytes (serialize as Vec<u8>)
+mod bytes_serde {
+    use bytes::Bytes;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(bytes: &Bytes, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_bytes(bytes)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Bytes, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let vec = Vec::<u8>::deserialize(deserializer)?;
+        Ok(Bytes::from(vec))
+    }
 }
 
 /// Used to pass RTP raw data.

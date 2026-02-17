@@ -277,20 +277,19 @@ impl OAuth2ApiImpl {
         &self,
         user_id: &UserId,
     ) -> Result<Vec<LinkedProviderInfo>, ApiError> {
-        let providers = self
+        // Fetch complete provider mappings with username and linked_at
+        let mappings = self
             .oauth2_service
-            .get_user_providers(user_id)
+            .get_user_provider_mappings(user_id)
             .await
             .map_err(ApiError::from)?;
 
-        // TODO: Get detailed provider info including username and linked_at
-        // For now, just return provider types
-        let result = providers
+        let result = mappings
             .into_iter()
-            .map(|provider_type| LinkedProviderInfo {
-                provider_type: provider_type.as_str().to_string(),
-                provider_username: String::new(), // TODO: fetch from repository
-                linked_at: 0,                     // TODO: fetch from repository
+            .map(|mapping| LinkedProviderInfo {
+                provider_type: mapping.provider,
+                provider_username: mapping.username,
+                linked_at: mapping.created_at.timestamp(),
             })
             .collect();
 

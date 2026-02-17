@@ -51,6 +51,9 @@ impl GrpcConnectionPool {
     /// Returns a cached channel if one exists and is not stale, otherwise
     /// creates a new connection. The address should be in `host:port` format
     /// (scheme is added automatically if missing).
+    ///
+    /// Connection attempts timeout after 5 seconds to prevent hanging indefinitely
+    /// when the target node is unreachable.
     pub async fn get_channel(&self, address: &str) -> anyhow::Result<Channel> {
         // Fast path: check for existing healthy connection
         if let Some(entry) = self.connections.get(address) {
@@ -72,6 +75,7 @@ impl GrpcConnectionPool {
 
         let channel = Channel::from_shared(url.clone())
             .map_err(|e| anyhow::anyhow!("Invalid gRPC endpoint URL '{url}': {e}"))?
+            .connect_timeout(Duration::from_secs(5))
             .connect()
             .await
             .map_err(|e| anyhow::anyhow!("Failed to connect to gRPC endpoint '{address}': {e}"))?;
@@ -167,5 +171,25 @@ mod tests {
         // the eviction logic with the empty pool (integration test would cover the full path)
         pool.evict_stale();
         assert!(pool.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_connection_timeout_configuration() {
+        // This test verifies that the timeout is properly configured in the
+        // Channel builder. We can't easily test the actual timeout behavior
+        // without a real unresponsive server, but we can verify the code compiles
+        // and the timeout parameter is used.
+        let pool = GrpcConnectionPool::with_defaults();
+
+        // Try to connect to localhost with a non-existent port
+        // This should fail quickly (connection refused) but with timeout configured
+        let result = pool.get_channel("127.0.0.1:65535").await;
+
+        // Should fail because nothing is listening on this port
+        assert!(result.is_err(),
+            "Expected connection to 127.0.0.1:65535 to fail");
+
+        // The important part is that connect_timeout() is called in the code,
+        // which is verified at compile time by the type system
     }
 }

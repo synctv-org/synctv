@@ -586,7 +586,7 @@ fn proto_dash_to_manifest(
                 mime_type: a.mime_type.clone(),
                 codecs: a.codecs.clone(),
                 bandwidth: a.bandwidth,
-                audio_sampling_rate: 44100,
+                audio_sampling_rate: if a.audio_sampling_rate > 0 { a.audio_sampling_rate } else { 44100 },
                 start_with_sap: a.start_with_sap,
                 segment_base: DashSegmentBase {
                     initialization: seg

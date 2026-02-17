@@ -223,6 +223,8 @@ pub struct AudioStream {
     pub start_with_sap: u64,
     #[prost(message, optional, tag = "7")]
     pub segment_base: ::core::option::Option<SegmentBase>,
+    #[prost(uint32, tag = "8")]
+    pub audio_sampling_rate: u32,
 }
 /// Segment base information
 #[derive(serde::Serialize, serde::Deserialize)]

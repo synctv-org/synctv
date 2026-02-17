@@ -1913,6 +1913,7 @@ impl From<&AudioStreamData> for crate::grpc::bilibili::AudioStream {
             bandwidth: data.bandwidth,
             start_with_sap: data.start_with_sap,
             segment_base: Some((&data.segment_base).into()),
+            audio_sampling_rate: data.audio_sampling_rate,
         }
     }
 }

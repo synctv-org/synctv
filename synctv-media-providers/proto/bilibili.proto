@@ -148,6 +148,7 @@ message AudioStream {
   uint64 bandwidth = 5;
   uint64 startWithSap = 6;
   SegmentBase segmentBase = 7;
+  uint32 audioSamplingRate = 8;
 }
 
 // Segment base information

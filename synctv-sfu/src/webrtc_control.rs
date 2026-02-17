@@ -17,6 +17,7 @@
 //! - Handles outgoing tracks (subscriber) via `SubscriberOutput`
 //! - Provides RTCP feedback for network monitoring
 
+use crate::packet_pacer::PacketPacer;
 use crate::peer::SfuPeer;
 use crate::track::TrackKind;
 use crate::types::{PeerId, RoomId, TrackId};
@@ -107,7 +108,7 @@ impl PeerConnection {
             RTPCodecType::Video,
         )?;
 
-        // Register H264 video codec
+        // Register H264 video codec (Constrained Baseline profile)
         media_engine.register_codec(
             RTCRtpCodecParameters {
                 capability: RTCRtpCodecCapability {
@@ -115,9 +116,57 @@ impl PeerConnection {
                     clock_rate: 90000,
                     channels: 0,
                     sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f".to_string(),
-                    rtcp_feedback: video_rtcp_feedback,
+                    rtcp_feedback: video_rtcp_feedback.clone(),
                 },
                 payload_type: 102,
+                ..Default::default()
+            },
+            RTPCodecType::Video,
+        )?;
+
+        // Register VP9 video codec (Profile 0)
+        media_engine.register_codec(
+            RTCRtpCodecParameters {
+                capability: RTCRtpCodecCapability {
+                    mime_type: "video/VP9".to_string(),
+                    clock_rate: 90000,
+                    channels: 0,
+                    sdp_fmtp_line: "profile-id=0".to_string(),
+                    rtcp_feedback: video_rtcp_feedback.clone(),
+                },
+                payload_type: 98,
+                ..Default::default()
+            },
+            RTPCodecType::Video,
+        )?;
+
+        // Register VP9 video codec (Profile 2 - 10-bit HDR)
+        media_engine.register_codec(
+            RTCRtpCodecParameters {
+                capability: RTCRtpCodecCapability {
+                    mime_type: "video/VP9".to_string(),
+                    clock_rate: 90000,
+                    channels: 0,
+                    sdp_fmtp_line: "profile-id=2".to_string(),
+                    rtcp_feedback: video_rtcp_feedback.clone(),
+                },
+                payload_type: 100,
+                ..Default::default()
+            },
+            RTPCodecType::Video,
+        )?;
+
+        // Register AV1 video codec
+        media_engine.register_codec(
+            RTCRtpCodecParameters {
+                capability: RTCRtpCodecCapability {
+                    mime_type: "video/AV1".to_string(),
+                    clock_rate: 90000,
+                    channels: 0,
+                    sdp_fmtp_line: "".to_string(),
+                    rtcp_feedback: video_rtcp_feedback,
+                },
+                payload_type: 35,
                 ..Default::default()
             },
             RTPCodecType::Video,
@@ -187,6 +236,10 @@ impl PeerConnection {
     /// This method only registers connection lifecycle callbacks. Track and ICE
     /// candidate callbacks should be set by the caller (e.g., `SfuSessionManager`)
     /// which has the room context needed to route tracks and candidates.
+    ///
+    /// Includes ICE failure fallback: when ICE enters `Disconnected` or `Failed`,
+    /// an ICE restart is attempted to recover the connection without requiring a
+    /// full renegotiation.
     pub async fn setup_callbacks(
         &self,
         _network_monitor: Arc<crate::network_monitor::NetworkQualityMonitor>,
@@ -194,13 +247,15 @@ impl PeerConnection {
         let peer_id = self.peer_id.clone();
         let room_id = self.room_id.clone();
 
-        // ICE connection state change handler
+        // ICE connection state change handler with restart fallback
         let peer_id_clone = peer_id.clone();
         let room_id_clone = room_id.clone();
+        let pc_for_ice = Arc::clone(&self.pc);
         self.pc
             .on_ice_connection_state_change(Box::new(move |state: RTCIceConnectionState| {
                 let peer_id = peer_id_clone.clone();
                 let room_id = room_id_clone.clone();
+                let pc = Arc::clone(&pc_for_ice);
                 Box::pin(async move {
                     info!(
                         peer_id = %peer_id,
@@ -208,6 +263,53 @@ impl PeerConnection {
                         state = ?state,
                         "ICE connection state changed"
                     );
+
+                    // Attempt ICE restart on disconnection or failure
+                    match state {
+                        RTCIceConnectionState::Disconnected => {
+                            warn!(
+                                peer_id = %peer_id,
+                                room_id = %room_id,
+                                "ICE disconnected, will attempt restart if it progresses to Failed"
+                            );
+                        }
+                        RTCIceConnectionState::Failed => {
+                            warn!(
+                                peer_id = %peer_id,
+                                room_id = %room_id,
+                                "ICE failed, attempting ICE restart"
+                            );
+                            // Create a new offer with ICE restart to re-gather candidates
+                            // without tearing down the entire PeerConnection.
+                            let mut offer_options = webrtc::peer_connection::offer_answer_options::RTCOfferOptions::default();
+                            offer_options.ice_restart = true;
+
+                            match pc.create_offer(Some(offer_options)).await {
+                                Ok(offer) => {
+                                    if let Err(e) = pc.set_local_description(offer).await {
+                                        warn!(
+                                            peer_id = %peer_id,
+                                            error = %e,
+                                            "ICE restart: failed to set local description"
+                                        );
+                                    } else {
+                                        info!(
+                                            peer_id = %peer_id,
+                                            "ICE restart: new offer created, waiting for answer"
+                                        );
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        peer_id = %peer_id,
+                                        error = %e,
+                                        "ICE restart: failed to create offer"
+                                    );
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
                 })
             }));
 
@@ -376,6 +478,9 @@ impl PeerConnection {
     /// Routes each forwarded packet to the correct outbound track by matching
     /// `source_track_id`. This ensures audio packets go to audio tracks and
     /// video packets go to video tracks.
+    ///
+    /// Uses `PacketPacer` to smooth outgoing traffic and prevent bursty
+    /// transmission that can cause congestion and packet loss.
     pub async fn start_subscriber_output(&self, peer: Arc<SfuPeer>) -> Result<()> {
         // Take packet receiver from peer (can only be called once)
         let mut packet_rx = peer
@@ -387,12 +492,15 @@ impl PeerConnection {
         let outbound_tracks = Arc::clone(&self.outbound_tracks);
         let cancel_token = self.cancel_token.clone();
 
+        // Create packet pacer: 1 Mbps initial target, 50ms max burst
+        let pacer = PacketPacer::new(1000, 50);
+
         // Spawn output task
         let handle = tokio::spawn(async move {
             info!(
                 peer_id = %peer_id,
                 room_id = %room_id,
-                "Started subscriber output task"
+                "Started subscriber output task with packet pacing"
             );
 
             loop {
@@ -404,6 +512,17 @@ impl PeerConnection {
                     packet = packet_rx.recv() => {
                         match packet {
                             Some(forwarded_packet) => {
+                                // Pace packet to prevent bursty transmission
+                                let packet_size = forwarded_packet.data.len();
+                                if !pacer.pace_packet(packet_size).await {
+                                    debug!(
+                                        peer_id = %peer_id,
+                                        packet_size = packet_size,
+                                        "Packet dropped by pacer (congestion)"
+                                    );
+                                    continue;
+                                }
+
                                 let tracks = outbound_tracks.read().await;
 
                                 // Route packet to the matching outbound track by source_track_id.

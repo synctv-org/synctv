@@ -444,13 +444,26 @@ impl DynamicFolder for AlistProvider {
                 Ok(None)
             }
             PlayMode::Sequential | PlayMode::RepeatAll => {
-                // Get directory listing
+                // Get directory listing with pagination instead of fetching all at once.
+                // Use a reasonable page size and iterate pages to find the current and next items.
                 let parent_path = relative_path.rsplit_once('/').map(|x| x.0)
                     .and_then(|s| if s.is_empty() { None } else { Some(s) });
 
-                let items = self
-                    .list_playlist(ctx, playlist, parent_path, 0, 1000)
-                    .await?;
+                const PAGE_SIZE: usize = 50;
+                let mut all_items = Vec::new();
+                let mut page = 0;
+                loop {
+                    let page_items = self
+                        .list_playlist(ctx, playlist, parent_path, page, PAGE_SIZE)
+                        .await?;
+                    let is_last_page = page_items.len() < PAGE_SIZE;
+                    all_items.extend(page_items);
+                    if is_last_page {
+                        break;
+                    }
+                    page += 1;
+                }
+                let items = all_items;
 
                 // Find current item index
                 let current_idx = items
@@ -547,13 +560,25 @@ impl DynamicFolder for AlistProvider {
                 Ok(None)
             }
             PlayMode::Shuffle => {
-                // Get all video items and pick random
+                // Get all video items and pick random, using paginated fetching
                 let parent_path = relative_path.rsplit_once('/').map(|x| x.0)
                     .and_then(|s| if s.is_empty() { None } else { Some(s) });
 
-                let items = self
-                    .list_playlist(ctx, playlist, parent_path, 0, 1000)
-                    .await?;
+                const PAGE_SIZE: usize = 50;
+                let mut all_items = Vec::new();
+                let mut page = 0;
+                loop {
+                    let page_items = self
+                        .list_playlist(ctx, playlist, parent_path, page, PAGE_SIZE)
+                        .await?;
+                    let is_last_page = page_items.len() < PAGE_SIZE;
+                    all_items.extend(page_items);
+                    if is_last_page {
+                        break;
+                    }
+                    page += 1;
+                }
+                let items = all_items;
 
                 let videos: Vec<_> = items
                     .iter()

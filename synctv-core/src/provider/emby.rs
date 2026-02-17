@@ -561,13 +561,22 @@ impl DynamicFolder for EmbyProvider {
                 Ok(None)
             }
             PlayMode::Sequential | PlayMode::RepeatAll => {
-                // Get directory listing
-                // Extract parent path from relative_path (item_id in Emby)
-                // For Emby, we need to query the parent folder
-                // Since relative_path is the item_id, we need to get items from the base config's path
-                let items = self
-                    .list_playlist(_ctx, playlist, Some(&base_config.item_id), 0, 1000)
-                    .await?;
+                // Get directory listing with pagination instead of fetching all at once.
+                const PAGE_SIZE: usize = 50;
+                let mut all_items = Vec::new();
+                let mut page = 0;
+                loop {
+                    let page_items = self
+                        .list_playlist(_ctx, playlist, Some(&base_config.item_id), page, PAGE_SIZE)
+                        .await?;
+                    let is_last_page = page_items.len() < PAGE_SIZE;
+                    all_items.extend(page_items);
+                    if is_last_page {
+                        break;
+                    }
+                    page += 1;
+                }
+                let items = all_items;
 
                 // Find current item index
                 let current_idx = items.iter().position(|item| item.path == relative_path);
@@ -627,10 +636,22 @@ impl DynamicFolder for EmbyProvider {
                 Ok(None)
             }
             PlayMode::Shuffle => {
-                // Get all video/audio items and pick random
-                let items = self
-                    .list_playlist(_ctx, playlist, Some(&base_config.item_id), 0, 1000)
-                    .await?;
+                // Get all video/audio items and pick random, using paginated fetching
+                const PAGE_SIZE: usize = 50;
+                let mut all_items = Vec::new();
+                let mut page = 0;
+                loop {
+                    let page_items = self
+                        .list_playlist(_ctx, playlist, Some(&base_config.item_id), page, PAGE_SIZE)
+                        .await?;
+                    let is_last_page = page_items.len() < PAGE_SIZE;
+                    all_items.extend(page_items);
+                    if is_last_page {
+                        break;
+                    }
+                    page += 1;
+                }
+                let items = all_items;
 
                 let playable_items: Vec<_> = items
                     .iter()

@@ -111,7 +111,7 @@ impl AlistClient {
     fn build_headers(&self) -> Result<HeaderMap, AlistError> {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        headers.insert(USER_AGENT, HeaderValue::from_static("Mozilla/5.0"));
+        headers.insert(USER_AGENT, HeaderValue::from_static(crate::error::PROVIDER_USER_AGENT));
         headers.insert(ORIGIN, HeaderValue::from_str(&self.host)?);
         headers.insert(REFERER, HeaderValue::from_str(&format!("{}/", self.host))?);
 

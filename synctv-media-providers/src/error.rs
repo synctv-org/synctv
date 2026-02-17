@@ -8,6 +8,12 @@ use thiserror::Error;
 /// Prevents OOM from malicious or misconfigured upstream servers.
 pub const MAX_RESPONSE_SIZE: usize = 16 * 1024 * 1024;
 
+/// Shared User-Agent string for all provider HTTP clients.
+///
+/// Using a consistent browser-like User-Agent across all providers prevents
+/// request fingerprinting and ensures uniform behavior with upstream APIs.
+pub const PROVIDER_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+
 /// Common error type for all provider HTTP clients.
 #[derive(Debug, Error)]
 pub enum ProviderClientError {

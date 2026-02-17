@@ -72,9 +72,31 @@ impl<'a> ProviderContext<'a> {
     }
 
     /// Set Redis connection manager
-    #[must_use] 
+    #[must_use]
     pub const fn with_redis(mut self, redis: &'a redis::aio::ConnectionManager) -> Self {
         self.redis = Some(redis);
         self
+    }
+
+    /// Validate that all required fields are present for playback generation.
+    ///
+    /// Returns an error listing missing required fields (`base_url`, `db`).
+    /// Optional fields (`user_id`, `room_id`, `redis`) are not checked.
+    pub fn validate(&self) -> Result<(), crate::Error> {
+        let mut missing = Vec::new();
+        if self.base_url.is_none() {
+            missing.push("base_url");
+        }
+        if self.db.is_none() {
+            missing.push("db");
+        }
+        if missing.is_empty() {
+            Ok(())
+        } else {
+            Err(crate::Error::InvalidInput(format!(
+                "ProviderContext missing required fields: {}",
+                missing.join(", ")
+            )))
+        }
     }
 }

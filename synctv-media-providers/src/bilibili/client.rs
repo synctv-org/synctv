@@ -31,7 +31,7 @@ static RE_EPID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"ep(\d+)").expect
 static RE_SSID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"ss(\d+)").expect("invalid SSID regex"));
 static RE_LIVE_ROOM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"/live/(\d+)").expect("invalid live room regex"));
 
-const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+use crate::error::PROVIDER_USER_AGENT as USER_AGENT;
 const REFERER: &str = "https://www.bilibili.com";
 
 /// Shared HTTP client for all Bilibili requests (connection pooling)
@@ -1510,17 +1510,21 @@ pub struct LiveDanmakuConnection {
 }
 
 impl LiveDanmakuConnection {
-    /// Receive next danmaku message
-    pub async fn recv(&self) -> Result<Option<DanmakuMessage>, BilibiliError> {
+    /// Receive next danmaku messages from one WebSocket frame.
+    ///
+    /// A single binary frame can contain multiple compressed sub-packets
+    /// (e.g. several chat messages batched together). This returns all
+    /// parsed messages from the frame.
+    pub async fn recv(&self) -> Result<Vec<DanmakuMessage>, BilibiliError> {
         let mut read = self.read.lock().await;
 
         match read.next().await {
             Some(Ok(Message::Binary(data))) => {
                 parse_danmaku_packet(&data)
             }
-            Some(Ok(_)) => Ok(None), // Ignore non-binary messages
+            Some(Ok(_)) => Ok(Vec::new()), // Ignore non-binary messages
             Some(Err(e)) => Err(BilibiliError::Parse(format!("WebSocket error: {}", e))),
-            None => Ok(None), // Connection closed
+            None => Ok(Vec::new()), // Connection closed
         }
     }
 
@@ -1617,10 +1621,14 @@ fn build_heartbeat_packet() -> Vec<u8> {
     packet
 }
 
-/// Parse danmaku packet from binary data
-fn parse_danmaku_packet(data: &[u8]) -> Result<Option<DanmakuMessage>, BilibiliError> {
+/// Parse danmaku packet from binary data.
+///
+/// A single binary frame may contain multiple sub-packets (especially when
+/// compressed with zlib/brotli). This function collects all parsed messages
+/// instead of returning only the first one.
+fn parse_danmaku_packet(data: &[u8]) -> Result<Vec<DanmakuMessage>, BilibiliError> {
     if data.len() < 16 {
-        return Ok(None);
+        return Ok(Vec::new());
     }
 
     // Parse header
@@ -1630,12 +1638,14 @@ fn parse_danmaku_packet(data: &[u8]) -> Result<Option<DanmakuMessage>, BilibiliE
     let operation = u32::from_be_bytes([data[8], data[9], data[10], data[11]]);
     let _sequence = u32::from_be_bytes([data[12], data[13], data[14], data[15]]);
 
+    let mut messages = Vec::new();
+
     match operation {
         3 => {
             // Heartbeat response (online count)
             if data.len() >= 20 {
                 let online_count = u32::from_be_bytes([data[16], data[17], data[18], data[19]]);
-                return Ok(Some(DanmakuMessage::Heartbeat { online_count }));
+                messages.push(DanmakuMessage::Heartbeat { online_count });
             }
         }
         5 => {
@@ -1651,7 +1661,7 @@ fn parse_danmaku_packet(data: &[u8]) -> Result<Option<DanmakuMessage>, BilibiliE
                     let mut decoder = flate2::read::ZlibDecoder::new(body);
                     let mut out = Vec::new();
                     if decoder.read_to_end(&mut out).is_err() {
-                        return Ok(None);
+                        return Ok(Vec::new());
                     }
                     out
                 }
@@ -1661,11 +1671,11 @@ fn parse_danmaku_packet(data: &[u8]) -> Result<Option<DanmakuMessage>, BilibiliE
                     let mut decoder = brotli::Decompressor::new(body, 4096);
                     let mut out = Vec::new();
                     if decoder.read_to_end(&mut out).is_err() {
-                        return Ok(None);
+                        return Ok(Vec::new());
                     }
                     out
                 }
-                _ => return Ok(None),
+                _ => return Ok(Vec::new()),
             };
 
             // Compressed data contains concatenated sub-packets with headers;
@@ -1673,11 +1683,11 @@ fn parse_danmaku_packet(data: &[u8]) -> Result<Option<DanmakuMessage>, BilibiliE
             if protocol_version == 0 || protocol_version == 1 {
                 if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&decompressed) {
                     if let Some(cmd) = json.get("cmd").and_then(|v| v.as_str()) {
-                        return Ok(Some(parse_danmaku_cmd(cmd, &json)));
+                        messages.push(parse_danmaku_cmd(cmd, &json));
                     }
                 }
             } else {
-                // Iterate over sub-packets inside the decompressed buffer
+                // Iterate over ALL sub-packets inside the decompressed buffer
                 let mut offset = 0usize;
                 while offset + 16 <= decompressed.len() {
                     let pkt_len = u32::from_be_bytes([
@@ -1696,7 +1706,7 @@ fn parse_danmaku_packet(data: &[u8]) -> Result<Option<DanmakuMessage>, BilibiliE
                     let sub_body = &decompressed[offset + hdr_len..offset + pkt_len];
                     if let Ok(json) = serde_json::from_slice::<serde_json::Value>(sub_body) {
                         if let Some(cmd) = json.get("cmd").and_then(|v| v.as_str()) {
-                            return Ok(Some(parse_danmaku_cmd(cmd, &json)));
+                            messages.push(parse_danmaku_cmd(cmd, &json));
                         }
                     }
                     offset += pkt_len;
@@ -1710,7 +1720,7 @@ fn parse_danmaku_packet(data: &[u8]) -> Result<Option<DanmakuMessage>, BilibiliE
         _ => {}
     }
 
-    Ok(None)
+    Ok(messages)
 }
 
 /// Parse danmaku command from JSON

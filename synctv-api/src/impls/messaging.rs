@@ -314,11 +314,22 @@ impl StreamMessageHandler {
                                 break;
                             }
                         }
+                        Ok(ClusterEvent::KickUserFromRoom { ref user_id, ref room_id, ref reason, .. }) => {
+                            if *user_id == self.user_id && *room_id == self.room_id {
+                                tracing::info!(
+                                    user_id = %self.user_id.as_str(),
+                                    room_id = %self.room_id.as_str(),
+                                    reason = %reason,
+                                    "Received cross-replica KickUserFromRoom event, disconnecting"
+                                );
+                                break;
+                            }
+                        }
                         Ok(_) => {
                             // Other admin events (KickPublisher, etc.) not relevant to this connection
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                            // Channel lagged: we may have missed critical KickUser events.
+                            // Channel lagged: we may have missed critical KickUser/KickUserFromRoom events.
                             // Re-subscribe to get a fresh receiver so future events are not lost.
                             tracing::warn!(
                                 lagged = n,
@@ -1202,18 +1213,28 @@ impl StreamMessageHandler {
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_secs(30)).await;
 
-            // Check which sessions are still pending (session exists but may not
-            // have completed ICE). For now, we just log -- the PeerConnection
-            // state change callback handles actual cleanup.
+            // SFU-13: Clean up sessions that are still pending after the migration
+            // timeout. If ICE negotiation hasn't completed within 30 seconds, the
+            // migration has effectively failed and the session is leaked.
             for (peer_user_id, peer_conn_id) in &p2p_peer_conn_ids {
                 if sfu_mgr_clone.has_session(peer_conn_id) {
-                    tracing::debug!(
+                    tracing::warn!(
                         room_id = %room_id.as_str(),
                         migration_id = %migration_id_for_timeout,
                         peer = %peer_user_id,
                         conn_id = %peer_conn_id,
-                        "Migration session still active after timeout (ICE may still be negotiating)"
+                        "Migration timeout: cleaning up stale SFU session"
                     );
+                    if let Err(e) = sfu_mgr_clone
+                        .remove_session(peer_conn_id, room_id.as_str(), peer_user_id)
+                        .await
+                    {
+                        tracing::error!(
+                            conn_id = %peer_conn_id,
+                            error = %e,
+                            "Failed to clean up stale migration SFU session"
+                        );
+                    }
                 }
             }
         });
@@ -1556,6 +1577,7 @@ fn cluster_event_to_server_message(
             })
         }
         ClusterEvent::KickPublisher { .. } | ClusterEvent::KickUser { .. }
+        | ClusterEvent::KickUserFromRoom { .. }
         | ClusterEvent::RoomCreated { .. } | ClusterEvent::CacheInvalidate { .. } => {
             // Admin/internal events are handled by other channels,
             // not forwarded to WebSocket clients

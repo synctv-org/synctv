@@ -11,7 +11,6 @@ pub mod media;
 pub mod middleware;
 pub mod notifications;
 pub mod oauth2;
-pub mod openapi;
 pub mod public;
 pub mod publish_key;
 pub mod room;
@@ -35,8 +34,6 @@ use axum::{
 };
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
-use utoipa::OpenApi;
-use utoipa_swagger_ui::SwaggerUi;
 use synctv_cluster::sync::PublishRequest;
 use synctv_core::provider::{AlistProvider, BilibiliProvider, EmbyProvider};
 use synctv_core::repository::UserProviderCredentialRepository;
@@ -430,12 +427,7 @@ fn register_all_routes(state: AppState) -> Router<AppState> {
                 ))
         );
 
-    // Only expose Swagger UI in development mode
-    if state.config.server.development_mode {
-        router.merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", openapi::ApiDoc::openapi()))
-    } else {
-        router
-    }
+    router
 }
 
 /// Build CORS layer based on configuration.

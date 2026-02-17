@@ -251,7 +251,7 @@ impl NotificationRepository {
         let result = sqlx::query(
             r"
             DELETE FROM notifications
-            WHERE created_at < CURRENT_TIMESTAMP - ($1 || ' days')::INTERVAL
+            WHERE created_at < CURRENT_TIMESTAMP - make_interval(days => $1)
             ",
         )
         .bind(days)

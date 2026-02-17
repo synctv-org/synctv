@@ -49,10 +49,6 @@ sqlx.workspace = true
 # Redis
 redis.workspace = true
 
-# OpenAPI
-utoipa.workspace = true
-utoipa-swagger-ui.workspace = true
-
 # Utilities
 anyhow.workspace = true
 thiserror.workspace = true

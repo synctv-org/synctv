@@ -14,7 +14,6 @@ pub mod service;
 pub mod types;
 
 pub use client::BilibiliClient;
-pub use client::{ApiRateLimiter, WbiKeyCache, set_shared_rate_limiter, set_shared_wbi_cache};
 pub use error::BilibiliError;
 pub use service::{BilibiliInterface, BilibiliService};
 pub use types::*;

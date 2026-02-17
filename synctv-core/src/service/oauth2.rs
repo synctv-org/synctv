@@ -48,6 +48,8 @@ pub struct OAuth2UserInfo {
     pub username: String,
     pub email: Option<String>,
     pub avatar: Option<String>,
+    /// Whether the provider has verified the user's email address
+    pub email_verified: bool,
 }
 
 /// An OAuth2 provider entry combining the provider instance and its type
@@ -451,6 +453,7 @@ impl OAuth2Service {
             username: user_info.username,
             email: user_info.email,
             avatar: user_info.avatar,
+            email_verified: user_info.email_verified,
         };
 
         Ok((service_user_info, entry.provider_type.clone()))
@@ -625,6 +628,7 @@ mod tests {
                     username: "testuser".to_string(),
                     email: Some("test@example.com".to_string()),
                     avatar: Some("https://avatar.example.com/42.png".to_string()),
+                    email_verified: true,
                 }),
                 exchange_error: None,
             }
@@ -1521,6 +1525,7 @@ mod tests {
                 username: "user1".to_string(),
                 email: None,
                 avatar: None,
+                email_verified: false,
             }),
             exchange_error: None,
         };

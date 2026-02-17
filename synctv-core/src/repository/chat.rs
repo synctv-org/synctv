@@ -143,17 +143,26 @@ impl ChatRepository {
         Ok(count)
     }
 
-    /// Delete old messages for a room (keep only last N messages)
+    /// Delete old messages for a room (keep only last N messages).
+    ///
+    /// Uses `ROW_NUMBER()` window function instead of `NOT IN` subquery for
+    /// better performance.
     pub async fn cleanup_old_messages(&self, room_id: &RoomId, keep_count: i32) -> Result<u64> {
+        if keep_count <= 0 {
+            return Ok(0);
+        }
+
         let result = sqlx::query(
             r"
             DELETE FROM chat_messages
-            WHERE room_id = $1
-            AND (id, created_at) NOT IN (
-                SELECT id, created_at FROM chat_messages
-                WHERE room_id = $1
-                ORDER BY created_at DESC
-                LIMIT $2
+            WHERE (id, created_at) IN (
+                SELECT id, created_at FROM (
+                    SELECT id, created_at,
+                           ROW_NUMBER() OVER (ORDER BY created_at DESC) as rn
+                    FROM chat_messages
+                    WHERE room_id = $1
+                ) ranked
+                WHERE rn > $2
             )
             ",
         )

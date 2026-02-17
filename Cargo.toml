@@ -190,10 +190,6 @@ http = "1.4"
 # Monitoring
 prometheus = "0.14.0"
 
-# OpenAPI
-utoipa = { version = "5.4", features = ["axum_extras", "chrono", "uuid"] }
-utoipa-swagger-ui = { version = "9.0", features = ["axum"] }
-
 # Time
 chrono = { version = "0.4", features = ["serde"] }
 

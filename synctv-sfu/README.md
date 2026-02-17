@@ -85,7 +85,6 @@ In single-node mode, the `NoopSessionRegistry` is used (zero overhead).
 ### P1: Incomplete Features
 - **Simulcast layer switching** -- Basic implementation exists but lacks dynamic layer
   switching based on bandwidth estimation. All subscribers currently receive the medium layer.
-- **Track ID conflict detection** -- No duplicate track ID validation when peers publish.
 
 ### P2: Production Hardening
 - **STUN server configuration** -- Built-in STUN server (`enable_builtin_stun`) requires

@@ -65,15 +65,22 @@ impl MediaRepository {
         Ok(Media::from_row(&row)?)
     }
 
-    /// Batch insert media items
+    /// Batch insert media items.
+    ///
+    /// Automatically chunks large batches to stay within PostgreSQL's 65535
+    /// bind-parameter limit (each row uses 10 parameters, so we chunk at 1000
+    /// rows = 10000 parameters per statement).
     pub async fn create_batch(&self, items: &[Media]) -> Result<Vec<Media>> {
         let mut tx = self.pool.begin().await?;
-        let results = self.create_batch_with_executor(items, &mut *tx).await?;
+        let results = self.create_batch_chunked(items, &mut tx).await?;
         tx.commit().await?;
         Ok(results)
     }
 
-    /// Batch insert media items using a provided executor (for transaction support)
+    /// Batch insert media items using a provided executor (for transaction support).
+    ///
+    /// Inserts all items in a single statement. For large batches (>1000 items),
+    /// prefer `create_batch_chunked` which automatically splits into chunks.
     pub async fn create_batch_with_executor<'e, E>(&self, items: &[Media], executor: E) -> Result<Vec<Media>>
     where
         E: sqlx::Executor<'e, Database = sqlx::Postgres>,
@@ -82,12 +89,19 @@ impl MediaRepository {
             return Ok(Vec::new());
         }
 
-        // For executor-based usage, we need to execute all queries on the same executor.
-        // Since sqlx::Executor is consumed on use, we need to use a reference.
-        // The caller should pass &mut *tx where tx is a Transaction.
+        Self::create_batch_chunk(items, executor).await
+    }
+
+    /// Internal: insert a single chunk of media items (max 1000).
+    async fn create_batch_chunk<'e, E>(items: &[Media], executor: E) -> Result<Vec<Media>>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+    {
+        debug_assert!(!items.is_empty());
+        debug_assert!(items.len() <= 1000);
+
         let mut results = Vec::with_capacity(items.len());
 
-        // Build a single batch insert query for efficiency
         let mut query_builder = String::from(
             "INSERT INTO media (id, playlist_id, room_id, creator_id, name, position,
                                source_provider, source_config, provider_instance_name, added_at)
@@ -133,6 +147,28 @@ impl MediaRepository {
         }
 
         Ok(results)
+    }
+
+    /// Batch insert media items within a transaction, automatically chunking
+    /// to stay within PostgreSQL's bind-parameter limit.
+    pub async fn create_batch_chunked(
+        &self,
+        items: &[Media],
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ) -> Result<Vec<Media>> {
+        if items.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        const CHUNK_SIZE: usize = 1000;
+        let mut all_results = Vec::with_capacity(items.len());
+
+        for chunk in items.chunks(CHUNK_SIZE) {
+            let results = Self::create_batch_chunk(chunk, &mut **tx).await?;
+            all_results.extend(results);
+        }
+
+        Ok(all_results)
     }
 
     /// Update media

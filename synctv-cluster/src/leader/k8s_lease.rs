@@ -529,6 +529,11 @@ impl K8sLeaderElector {
     }
 
     /// Resign leadership by clearing the holder.
+    ///
+    /// Fetches the current Lease to verify that we still hold it (holderIdentity
+    /// matches our identity) and uses the `resourceVersion` for optimistic
+    /// concurrency. This prevents accidentally clearing another pod's lease if
+    /// leadership was already transferred before the resign call.
     async fn resign(&self, leases: &Api<Lease>) {
         if !self.is_leader() {
             return;
@@ -536,7 +541,46 @@ impl K8sLeaderElector {
 
         info!(identity = %self.identity, "Resigning K8s lease leadership");
 
+        // Fetch the current lease to get resourceVersion and verify we still hold it
+        let current_lease = match leases.get_opt(&self.lease_name).await {
+            Ok(Some(lease)) => lease,
+            Ok(None) => {
+                debug!(identity = %self.identity, "Lease does not exist during resign, nothing to do");
+                self.set_leader(false);
+                return;
+            }
+            Err(e) => {
+                warn!(identity = %self.identity, error = %e, "Failed to fetch lease for resign");
+                self.set_leader(false);
+                return;
+            }
+        };
+
+        // Verify that we still hold the lease before clearing it
+        let holder = current_lease
+            .spec
+            .as_ref()
+            .and_then(|s| s.holder_identity.as_deref());
+        if holder != Some(self.identity.as_str()) {
+            debug!(
+                identity = %self.identity,
+                holder = ?holder,
+                "Lease is no longer held by us, skipping resign"
+            );
+            self.set_leader(false);
+            return;
+        }
+
+        let resource_version = current_lease
+            .metadata
+            .resource_version
+            .as_deref()
+            .unwrap_or("");
+
         let patch = serde_json::json!({
+            "metadata": {
+                "resourceVersion": resource_version,
+            },
             "spec": {
                 "holderIdentity": serde_json::Value::Null,
             }

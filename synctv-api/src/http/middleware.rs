@@ -243,8 +243,8 @@ impl Default for RateLimitConfig {
             admin_max_requests: 30,
             admin_window_seconds: 60,
 
-            // Streaming: 50 requests per minute (playlist + segment fetches)
-            streaming_max_requests: 50,
+            // Streaming: 200 requests per minute (playlist + segment fetches)
+            streaming_max_requests: 200,
             streaming_window_seconds: 60,
 
             // WebSocket: 10 connection attempts per minute

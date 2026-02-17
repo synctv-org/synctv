@@ -26,7 +26,7 @@ use super::middleware::AuthUser;
 use super::{AppError, AppState};
 
 /// Request to create a WebSocket ticket
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Deserialize)]
 pub struct CreateTicketRequest {
     /// Optional room ID to pre-validate membership
     /// If provided, the ticket will only be valid for that room
@@ -34,7 +34,7 @@ pub struct CreateTicketRequest {
 }
 
 /// Response containing the WebSocket ticket
-#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[derive(Debug, Serialize)]
 pub struct TicketResponse {
     /// The ticket string to use in WebSocket URL
     pub ticket: String,
@@ -67,19 +67,6 @@ pub struct TicketResponse {
 ///   "usage": "Use in WebSocket URL: ws://host/ws/room/{room_id}?ticket=xxx"
 /// }
 /// ```
-#[utoipa::path(
-    post,
-    path = "/api/tickets",
-    request_body = CreateTicketRequest,
-    responses(
-        (status = 200, description = "Ticket created successfully", body = TicketResponse),
-        (status = 401, description = "Not authenticated"),
-        (status = 500, description = "Internal server error")
-    ),
-    security(
-        ("bearer_auth" = [])
-    )
-)]
 pub async fn create_ticket(
     auth: AuthUser,
     State(state): State<AppState>,

@@ -15,6 +15,7 @@
 //! This integrates with the NetworkQualityMonitor to drive adaptive quality.
 
 use crate::network_monitor::NetworkQualityMonitor;
+use crate::packet_pacer::PacketPacer;
 use crate::peer::{PeerStats, SfuPeer};
 use crate::types::PeerId;
 use anyhow::Result;
@@ -40,6 +41,11 @@ pub struct RtcpHandler {
     /// SFU peer for stats updates
     peer: Arc<SfuPeer>,
 
+    /// Shared packet pacer for dynamic bitrate updates.
+    /// After each bandwidth estimation cycle, the pacer's target bitrate is
+    /// updated so outgoing packet pacing matches the measured capacity.
+    packet_pacer: Option<Arc<PacketPacer>>,
+
     /// Cancellation token
     cancel_token: CancellationToken,
 
@@ -60,11 +66,13 @@ impl RtcpHandler {
         peer_id: PeerId,
         network_monitor: Arc<NetworkQualityMonitor>,
         peer: Arc<SfuPeer>,
+        packet_pacer: Option<Arc<PacketPacer>>,
     ) -> Self {
         Self {
             peer_id,
             network_monitor,
             peer,
+            packet_pacer,
             cancel_token: CancellationToken::new(),
             last_stats: Arc::new(parking_lot::Mutex::new(None)),
         }
@@ -79,6 +87,7 @@ impl RtcpHandler {
         let peer_id = self.peer_id.clone();
         let network_monitor = Arc::clone(&self.network_monitor);
         let peer = Arc::clone(&self.peer);
+        let packet_pacer = self.packet_pacer.clone();
         let cancel_token = self.cancel_token.clone();
         let last_stats = self.last_stats.clone();
 
@@ -106,6 +115,7 @@ impl RtcpHandler {
                             &network_monitor,
                             &peer,
                             &Arc::clone(&last_stats),
+                            packet_pacer.as_deref(),
                         ).await {
                             warn!(
                                 peer_id = %peer_id,
@@ -137,6 +147,7 @@ impl RtcpHandler {
         network_monitor: &NetworkQualityMonitor,
         peer: &SfuPeer,
         last_stats: &Arc<parking_lot::Mutex<Option<StatsSnapshot>>>,
+        packet_pacer: Option<&PacketPacer>,
     ) -> Result<()> {
         let stats_report = pc.get_stats().await;
 
@@ -267,6 +278,12 @@ impl RtcpHandler {
             );
         }
 
+        // Propagate updated bandwidth to the packet pacer so outgoing traffic
+        // is paced according to the measured network capacity.
+        if let Some(pacer) = packet_pacer {
+            pacer.set_target_bitrate(estimated_bw);
+        }
+
         // Store current snapshot for next delta calculation
         *last_stats.lock() = Some(current_snapshot);
 
@@ -294,7 +311,7 @@ mod tests {
         let peer_id = PeerId::from("test-peer");
         let network_monitor = Arc::new(NetworkQualityMonitor::new());
         let peer = Arc::new(SfuPeer::new(peer_id.clone()));
-        let handler = RtcpHandler::new(peer_id.clone(), network_monitor, peer);
+        let handler = RtcpHandler::new(peer_id.clone(), network_monitor, peer, None);
         assert_eq!(handler.peer_id.as_str(), "test-peer");
     }
 }

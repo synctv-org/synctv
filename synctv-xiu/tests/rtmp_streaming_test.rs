@@ -1,0 +1,839 @@
+//! RTMP & Streaming Infrastructure Tests
+//!
+//! This test suite covers:
+//! 1. RTMP chunk header construction and validation
+//! 2. GOP cache frame management and memory limits
+//! 3. StreamIdentifier operations
+//! 4. FLV codec conversion functions
+//! 5. StreamsHub publish/subscribe flow
+//! 6. Fan-out frame/packet delivery
+//! 7. Statistics data processing
+
+use bytes::{Bytes, BytesMut};
+use std::sync::Arc;
+
+// === RTMP Chunk Header Tests ===
+
+#[test]
+fn test_chunk_basic_header_creation() {
+    use synctv_xiu::rtmp::chunk::ChunkBasicHeader;
+    let header = ChunkBasicHeader::new(0, 3);
+    assert_eq!(header.format, 0);
+    assert_eq!(header.chunk_stream_id, 3);
+}
+
+#[test]
+fn test_chunk_message_header_creation() {
+    use synctv_xiu::rtmp::chunk::ChunkMessageHeader;
+    let header = ChunkMessageHeader::new(1000, 512, 9, 1);
+    assert_eq!(header.timestamp, 1000);
+    assert_eq!(header.msg_length, 512);
+    assert_eq!(header.msg_type_id, 9);
+    assert_eq!(header.msg_streamd_id, 1);
+    assert_eq!(header.timestamp_delta, 0);
+    assert_eq!(header.extended_timestamp_type, synctv_xiu::rtmp::chunk::ExtendTimestampType::NONE);
+}
+
+#[test]
+fn test_chunk_header_default() {
+    use synctv_xiu::rtmp::chunk::ChunkHeader;
+    let header = ChunkHeader::default();
+    assert_eq!(header.basic_header.format, 0);
+    assert_eq!(header.basic_header.chunk_stream_id, 0);
+    assert_eq!(header.message_header.timestamp, 0);
+}
+
+#[test]
+fn test_chunk_info_construction() {
+    use synctv_xiu::rtmp::chunk::ChunkInfo;
+    let payload = BytesMut::from(&b"test data"[..]);
+    let info = ChunkInfo::new(3, 0, 1000, 9, 9, 1, payload.clone());
+    assert_eq!(info.basic_header.chunk_stream_id, 3);
+    assert_eq!(info.basic_header.format, 0);
+    assert_eq!(info.message_header.timestamp, 1000);
+    assert_eq!(info.message_header.msg_length, 9);
+    assert_eq!(info.message_header.msg_type_id, 9);
+    assert_eq!(info.message_header.msg_streamd_id, 1);
+    assert_eq!(info.payload, payload);
+}
+
+#[test]
+fn test_chunk_info_default() {
+    use synctv_xiu::rtmp::chunk::ChunkInfo;
+    let info = ChunkInfo::default();
+    assert_eq!(info.basic_header.format, 0);
+    assert_eq!(info.basic_header.chunk_stream_id, 0);
+    assert!(info.payload.is_empty());
+}
+
+#[test]
+fn test_chunk_info_debug_format() {
+    use synctv_xiu::rtmp::chunk::ChunkInfo;
+    let payload = BytesMut::from(&[0xAB, 0xCD][..]);
+    let info = ChunkInfo::new(3, 0, 0, 2, 9, 1, payload);
+    let debug = format!("{:?}", info);
+    assert!(debug.contains("ChunkInfo"));
+    assert!(debug.contains("0xab"));
+    assert!(debug.contains("0xcd"));
+}
+
+#[test]
+fn test_chunk_info_equality() {
+    use synctv_xiu::rtmp::chunk::ChunkInfo;
+    let payload = BytesMut::from(&b"test"[..]);
+    let info1 = ChunkInfo::new(3, 0, 1000, 4, 9, 1, payload.clone());
+    let info2 = ChunkInfo::new(3, 0, 1000, 4, 9, 1, payload);
+    assert_eq!(info1, info2);
+}
+
+#[test]
+fn test_extended_timestamp_type_equality() {
+    use synctv_xiu::rtmp::chunk::ExtendTimestampType;
+    assert_eq!(ExtendTimestampType::NONE, ExtendTimestampType::NONE);
+    assert_eq!(ExtendTimestampType::FORMAT0, ExtendTimestampType::FORMAT0);
+    assert_eq!(ExtendTimestampType::FORMAT12, ExtendTimestampType::FORMAT12);
+    assert_ne!(ExtendTimestampType::NONE, ExtendTimestampType::FORMAT0);
+}
+
+// === RTMP Chunk Constants Tests ===
+
+#[test]
+fn test_rtmp_chunk_constants() {
+    use synctv_xiu::rtmp::chunk::define;
+    assert_eq!(define::CHUNK_SIZE, 4096);
+    assert_eq!(define::INIT_CHUNK_SIZE, 128);
+    assert_eq!(define::csid_type::PROTOCOL_USER_CONTROL, 2);
+    assert_eq!(define::csid_type::COMMAND_AMF0_AMF3, 3);
+    assert_eq!(define::csid_type::AUDIO, 4);
+    assert_eq!(define::csid_type::VIDEO, 5);
+    assert_eq!(define::csid_type::DATA_AMF0_AMF3, 6);
+    assert_eq!(define::chunk_type::TYPE_0, 0);
+    assert_eq!(define::chunk_type::TYPE_1, 1);
+    assert_eq!(define::chunk_type::TYPE_2, 2);
+    assert_eq!(define::chunk_type::TYPE_3, 3);
+}
+
+// === RTMP Handshake Constants Tests ===
+
+#[test]
+fn test_rtmp_handshake_constants() {
+    use synctv_xiu::rtmp::handshake::define;
+    assert_eq!(define::RTMP_VERSION, 3);
+    assert_eq!(define::RTMP_HANDSHAKE_SIZE, 1536);
+    assert_eq!(define::RTMP_DIGEST_LENGTH, 32);
+    assert_eq!(define::RTMP_SERVER_KEY.len(), 68);
+    assert_eq!(define::RTMP_SERVER_KEY_FIRST_HALF, "Genuine Adobe Flash Media Server 001");
+    assert_eq!(define::RTMP_CLIENT_KEY_FIRST_HALF, "Genuine Adobe Flash Player 001");
+}
+
+// === GOP Cache Tests ===
+
+#[test]
+fn test_gop_new_is_empty() {
+    use synctv_xiu::rtmp::cache::gop::Gop;
+    let gop = Gop::new();
+    assert!(gop.is_empty());
+    assert_eq!(gop.len(), 0);
+    assert_eq!(gop.memory_bytes(), 0);
+}
+
+#[test]
+fn test_gop_default_is_empty() {
+    use synctv_xiu::rtmp::cache::gop::Gop;
+    let gop = Gop::default();
+    assert!(gop.is_empty());
+}
+
+#[test]
+fn test_gops_new_default() {
+    use synctv_xiu::rtmp::cache::gop::Gops;
+    let gops = Gops::default();
+    assert_eq!(gops.max_gop_count(), 1);
+    assert_eq!(gops.gop_count(), 1); // starts with one empty GOP
+    assert_eq!(gops.current_total_bytes(), 0);
+}
+
+#[test]
+fn test_gops_save_frame_data_non_keyframe() {
+    use synctv_xiu::rtmp::cache::gop::Gops;
+    use synctv_xiu::streamhub::define::FrameData;
+
+    let mut gops = Gops::new(2, None);
+    let frame = FrameData::Video {
+        timestamp: 0,
+        data: Bytes::from(vec![0u8; 100]),
+    };
+    gops.save_frame_data(frame, false);
+    assert!(gops.current_total_bytes() > 0);
+}
+
+#[test]
+fn test_gops_save_keyframe_creates_new_gop() {
+    use synctv_xiu::rtmp::cache::gop::Gops;
+    use synctv_xiu::streamhub::define::FrameData;
+
+    let mut gops = Gops::new(3, None);
+
+    // Add a non-keyframe
+    let frame1 = FrameData::Video {
+        timestamp: 0,
+        data: Bytes::from(vec![0u8; 50]),
+    };
+    gops.save_frame_data(frame1, false);
+    assert_eq!(gops.gop_count(), 1);
+
+    // Add a keyframe - should create a new GOP
+    let frame2 = FrameData::Video {
+        timestamp: 33,
+        data: Bytes::from(vec![1u8; 100]),
+    };
+    gops.save_frame_data(frame2, true);
+    assert_eq!(gops.gop_count(), 2);
+}
+
+#[test]
+fn test_gops_evicts_when_limit_reached() {
+    use synctv_xiu::rtmp::cache::gop::Gops;
+    use synctv_xiu::streamhub::define::FrameData;
+
+    let mut gops = Gops::new(2, None);
+
+    // Fill up GOP 1
+    gops.save_frame_data(
+        FrameData::Video { timestamp: 0, data: Bytes::from(vec![0u8; 10]) },
+        false,
+    );
+
+    // Keyframe -> new GOP 2
+    gops.save_frame_data(
+        FrameData::Video { timestamp: 33, data: Bytes::from(vec![1u8; 10]) },
+        true,
+    );
+    assert_eq!(gops.gop_count(), 2);
+
+    // Keyframe -> new GOP 3 (should evict GOP 1)
+    gops.save_frame_data(
+        FrameData::Video { timestamp: 66, data: Bytes::from(vec![2u8; 10]) },
+        true,
+    );
+    // Size limit is 2, so after adding 3rd GOP, oldest is evicted
+    assert_eq!(gops.gop_count(), 2);
+}
+
+#[test]
+fn test_gops_is_enabled() {
+    use synctv_xiu::rtmp::cache::gop::Gops;
+    let gops = Gops::new(3, None);
+    assert!(gops.is_enabled());
+
+    let gops_disabled = Gops::new(0, None);
+    assert!(!gops_disabled.is_enabled());
+}
+
+#[test]
+fn test_gops_size_zero_discards_frames() {
+    use synctv_xiu::rtmp::cache::gop::Gops;
+    use synctv_xiu::streamhub::define::FrameData;
+
+    let mut gops = Gops::new(0, None);
+    gops.save_frame_data(
+        FrameData::Video { timestamp: 0, data: Bytes::from(vec![0u8; 100]) },
+        true,
+    );
+    // Should not accumulate data
+    assert_eq!(gops.current_total_bytes(), 0);
+}
+
+// Note: Gop::frame_memory_size is pub(crate), tested indirectly via save_frame_data
+
+#[test]
+fn test_gops_get_gops_returns_frozen() {
+    use synctv_xiu::rtmp::cache::gop::Gops;
+    use synctv_xiu::streamhub::define::FrameData;
+
+    let mut gops = Gops::new(2, None);
+    gops.save_frame_data(
+        FrameData::Video { timestamp: 0, data: Bytes::from(vec![0u8; 10]) },
+        false,
+    );
+    gops.save_frame_data(
+        FrameData::Audio { timestamp: 0, data: Bytes::from(vec![1u8; 10]) },
+        false,
+    );
+
+    let cached = gops.get_gops();
+    assert_eq!(cached.len(), 1);
+    // frame_data() should return frozen frames
+    assert_eq!(cached[0].frame_data().len(), 2);
+}
+
+#[test]
+fn test_gop_get_frame_data_consumes() {
+    use synctv_xiu::rtmp::cache::gop::Gops;
+    use synctv_xiu::streamhub::define::FrameData;
+
+    let mut gops = Gops::new(2, None);
+    gops.save_frame_data(
+        FrameData::Video { timestamp: 0, data: Bytes::from(vec![0u8; 10]) },
+        false,
+    );
+
+    let cached = gops.get_gops();
+    let gop_clone = cached[0].clone();
+    let frames = gop_clone.get_frame_data();
+    assert_eq!(frames.len(), 1);
+}
+
+#[test]
+fn test_gops_memory_limit() {
+    use synctv_xiu::rtmp::cache::gop::Gops;
+    use synctv_xiu::streamhub::define::FrameData;
+
+    // Create with very low memory limit (1 KB)
+    let mut gops = Gops::new(10, Some(1024));
+    assert_eq!(gops.max_total_bytes(), 1024);
+
+    // Fill GOP 1 with data close to limit
+    gops.save_frame_data(
+        FrameData::Video { timestamp: 0, data: Bytes::from(vec![0u8; 500]) },
+        false,
+    );
+
+    // Keyframe to create GOP 2
+    gops.save_frame_data(
+        FrameData::Video { timestamp: 33, data: Bytes::from(vec![1u8; 400]) },
+        true,
+    );
+
+    // Another keyframe should evict old GOP to stay under memory limit
+    gops.save_frame_data(
+        FrameData::Video { timestamp: 66, data: Bytes::from(vec![2u8; 500]) },
+        true,
+    );
+
+    // Should have evicted old data
+    assert!(gops.current_total_bytes() <= 1024 + 500); // Some tolerance for the active GOP
+}
+
+// === StreamIdentifier Tests ===
+
+#[test]
+fn test_stream_identifier_rtmp() {
+    use synctv_xiu::streamhub::stream::StreamIdentifier;
+    let id = StreamIdentifier::Rtmp {
+        app_name: "live".to_string(),
+        stream_name: "test".to_string(),
+    };
+    let display = format!("{}", id);
+    assert!(display.contains("RTMP"));
+    assert!(display.contains("live"));
+    assert!(display.contains("test"));
+}
+
+#[test]
+fn test_stream_identifier_unknown() {
+    use synctv_xiu::streamhub::stream::StreamIdentifier;
+    let id = StreamIdentifier::Unknown;
+    let display = format!("{}", id);
+    assert_eq!(display, "Unknown");
+}
+
+#[test]
+fn test_stream_identifier_default() {
+    use synctv_xiu::streamhub::stream::StreamIdentifier;
+    let id = StreamIdentifier::default();
+    assert_eq!(id, StreamIdentifier::Unknown);
+}
+
+#[test]
+fn test_stream_identifier_equality() {
+    use synctv_xiu::streamhub::stream::StreamIdentifier;
+    let id1 = StreamIdentifier::Rtmp {
+        app_name: "live".to_string(),
+        stream_name: "test".to_string(),
+    };
+    let id2 = StreamIdentifier::Rtmp {
+        app_name: "live".to_string(),
+        stream_name: "test".to_string(),
+    };
+    assert_eq!(id1, id2);
+}
+
+#[test]
+fn test_stream_identifier_inequality() {
+    use synctv_xiu::streamhub::stream::StreamIdentifier;
+    let id1 = StreamIdentifier::Rtmp {
+        app_name: "live".to_string(),
+        stream_name: "test1".to_string(),
+    };
+    let id2 = StreamIdentifier::Rtmp {
+        app_name: "live".to_string(),
+        stream_name: "test2".to_string(),
+    };
+    assert_ne!(id1, id2);
+}
+
+#[test]
+fn test_stream_identifier_hash() {
+    use synctv_xiu::streamhub::stream::StreamIdentifier;
+    use std::collections::HashMap;
+
+    let mut map = HashMap::new();
+    let id = StreamIdentifier::Rtmp {
+        app_name: "live".to_string(),
+        stream_name: "test".to_string(),
+    };
+    map.insert(id.clone(), "value");
+    assert_eq!(map.get(&id), Some(&"value"));
+}
+
+#[test]
+fn test_stream_identifier_serialization() {
+    use synctv_xiu::streamhub::stream::StreamIdentifier;
+    let id = StreamIdentifier::Rtmp {
+        app_name: "live".to_string(),
+        stream_name: "test".to_string(),
+    };
+    let json = serde_json::to_string(&id).unwrap();
+    assert!(json.contains("rtmp"));
+    assert!(json.contains("live"));
+    assert!(json.contains("test"));
+
+    // Roundtrip
+    let deserialized: StreamIdentifier = serde_json::from_str(&json).unwrap();
+    assert_eq!(id, deserialized);
+}
+
+// === FLV Define Tests ===
+
+#[test]
+fn test_u8_2_avc_codec_id() {
+    use synctv_xiu::flv::define::{u8_2_avc_codec_id, AvcCodecId};
+    assert!(matches!(u8_2_avc_codec_id(7), AvcCodecId::H264));
+    assert!(matches!(u8_2_avc_codec_id(12), AvcCodecId::HEVC));
+    assert!(matches!(u8_2_avc_codec_id(0), AvcCodecId::UNKNOWN));
+    assert!(matches!(u8_2_avc_codec_id(255), AvcCodecId::UNKNOWN));
+}
+
+#[test]
+fn test_u8_2_aac_profile() {
+    use synctv_xiu::flv::define::{u8_2_aac_profile, AacProfile};
+    assert!(matches!(u8_2_aac_profile(2), AacProfile::LC));
+    assert!(matches!(u8_2_aac_profile(3), AacProfile::SSR));
+    assert!(matches!(u8_2_aac_profile(5), AacProfile::HE));
+    assert!(matches!(u8_2_aac_profile(29), AacProfile::HEV2));
+    assert!(matches!(u8_2_aac_profile(0), AacProfile::UNKNOWN));
+    assert!(matches!(u8_2_aac_profile(255), AacProfile::UNKNOWN));
+}
+
+#[test]
+fn test_u8_2_avc_profile() {
+    use synctv_xiu::flv::define::{u8_2_avc_profile, AvcProfile};
+    assert!(matches!(u8_2_avc_profile(66), AvcProfile::Baseline));
+    assert!(matches!(u8_2_avc_profile(77), AvcProfile::Main));
+    assert!(matches!(u8_2_avc_profile(88), AvcProfile::Extended));
+    assert!(matches!(u8_2_avc_profile(100), AvcProfile::High));
+    assert!(matches!(u8_2_avc_profile(0), AvcProfile::UNKNOWN));
+}
+
+#[test]
+fn test_u8_2_avc_level() {
+    use synctv_xiu::flv::define::{u8_2_avc_level, AvcLevel};
+    assert!(matches!(u8_2_avc_level(10), AvcLevel::Level1));
+    assert!(matches!(u8_2_avc_level(31), AvcLevel::Level31));
+    assert!(matches!(u8_2_avc_level(41), AvcLevel::Level41));
+    assert!(matches!(u8_2_avc_level(51), AvcLevel::Level51));
+    assert!(matches!(u8_2_avc_level(0), AvcLevel::UNKNOWN));
+    assert!(matches!(u8_2_avc_level(255), AvcLevel::UNKNOWN));
+}
+
+#[test]
+fn test_flv_tag_type_constants() {
+    use synctv_xiu::flv::define::tag_type;
+    assert_eq!(tag_type::AUDIO, 8);
+    assert_eq!(tag_type::VIDEO, 9);
+    assert_eq!(tag_type::SCRIPT_DATA_AMF, 18);
+}
+
+#[test]
+fn test_flv_frame_type_constants() {
+    use synctv_xiu::flv::define::frame_type;
+    assert_eq!(frame_type::KEY_FRAME, 1);
+    assert_eq!(frame_type::INTER_FRAME, 2);
+}
+
+#[test]
+fn test_flv_h264_nal_type_constants() {
+    use synctv_xiu::flv::define::h264_nal_type;
+    assert_eq!(h264_nal_type::H264_NAL_IDR, 5);
+    assert_eq!(h264_nal_type::H264_NAL_SPS, 7);
+    assert_eq!(h264_nal_type::H264_NAL_PPS, 8);
+    assert_eq!(h264_nal_type::H264_NAL_AUD, 9);
+}
+
+#[test]
+fn test_aac_packet_type_constants() {
+    use synctv_xiu::flv::define::aac_packet_type;
+    assert_eq!(aac_packet_type::AAC_SEQHDR, 0);
+    assert_eq!(aac_packet_type::AAC_RAW, 1);
+}
+
+#[test]
+fn test_avc_packet_type_constants() {
+    use synctv_xiu::flv::define::avc_packet_type;
+    assert_eq!(avc_packet_type::AVC_SEQHDR, 0);
+    assert_eq!(avc_packet_type::AVC_NALU, 1);
+    assert_eq!(avc_packet_type::AVC_EOS, 2);
+}
+
+// === MPEG-TS Define Tests ===
+
+#[test]
+fn test_mpegts_constants() {
+    use synctv_xiu::mpegts::define;
+    assert_eq!(define::TS_PACKET_SIZE, 188);
+    assert_eq!(define::TS_HEADER_LEN, 4);
+    assert_eq!(define::PES_HEADER_LEN, 6);
+}
+
+#[test]
+fn test_mpegts_stream_types() {
+    use synctv_xiu::mpegts::define::epsi_stream_type;
+    assert_eq!(epsi_stream_type::PSI_STREAM_H264, 0x1b);
+    assert_eq!(epsi_stream_type::PSI_STREAM_AAC, 0x0f);
+    assert_eq!(epsi_stream_type::PSI_STREAM_AUDIO_OPUS, 0x9c);
+}
+
+// === FrameData Tests ===
+
+#[test]
+fn test_frame_data_video_clone() {
+    use synctv_xiu::streamhub::define::FrameData;
+    let frame = FrameData::Video {
+        timestamp: 100,
+        data: Bytes::from(vec![1, 2, 3, 4]),
+    };
+    let cloned = frame.clone();
+    if let (FrameData::Video { timestamp: t1, data: d1 }, FrameData::Video { timestamp: t2, data: d2 }) = (&frame, &cloned) {
+        assert_eq!(t1, t2);
+        assert_eq!(d1, d2);
+    } else {
+        panic!("Expected Video variant");
+    }
+}
+
+#[test]
+fn test_frame_data_serialization_roundtrip() {
+    use synctv_xiu::streamhub::define::FrameData;
+    let frame = FrameData::Video {
+        timestamp: 42,
+        data: Bytes::from(vec![0xDE, 0xAD, 0xBE, 0xEF]),
+    };
+    let serialized = serde_json::to_string(&frame).unwrap();
+    let deserialized: FrameData = serde_json::from_str(&serialized).unwrap();
+    if let FrameData::Video { timestamp, data } = deserialized {
+        assert_eq!(timestamp, 42);
+        assert_eq!(data.as_ref(), &[0xDE, 0xAD, 0xBE, 0xEF]);
+    } else {
+        panic!("Expected Video variant");
+    }
+}
+
+#[test]
+fn test_frame_data_audio_serialization() {
+    use synctv_xiu::streamhub::define::FrameData;
+    let frame = FrameData::Audio {
+        timestamp: 10,
+        data: Bytes::from(vec![0xAA, 0xBB]),
+    };
+    let json = serde_json::to_string(&frame).unwrap();
+    assert!(json.contains("Audio"));
+}
+
+#[test]
+fn test_media_info_heap_size() {
+    use synctv_xiu::streamhub::define::{MediaInfo, VideoCodecType};
+    let info = MediaInfo {
+        audio_clock_rate: 44100,
+        video_clock_rate: 90000,
+        vcodec: VideoCodecType::H264,
+    };
+    assert_eq!(info.heap_size(), 0);
+}
+
+// === StreamHub Define Channel Capacities ===
+
+#[test]
+fn test_channel_capacities() {
+    use synctv_xiu::streamhub::define;
+    assert_eq!(define::FRAME_DATA_CHANNEL_CAPACITY, 4096);
+    assert_eq!(define::PACKET_DATA_CHANNEL_CAPACITY, 256);
+    assert_eq!(define::STREAM_HUB_EVENT_CHANNEL_CAPACITY, 4096);
+    assert_eq!(define::TRANSCEIVER_EVENT_CHANNEL_CAPACITY, 1024);
+    assert_eq!(define::STATISTIC_DATA_CHANNEL_CAPACITY, 1024);
+}
+
+// === StreamHub Error Tests ===
+
+#[test]
+fn test_streamhub_error_display() {
+    use synctv_xiu::streamhub::errors::{StreamHubError, StreamHubErrorValue};
+
+    let err = StreamHubError { value: StreamHubErrorValue::NoAppName };
+    assert_eq!(err.to_string(), "no app name");
+
+    let err = StreamHubError { value: StreamHubErrorValue::Exists };
+    assert_eq!(err.to_string(), "exists");
+
+    let err = StreamHubError { value: StreamHubErrorValue::SendError };
+    assert_eq!(err.to_string(), "send error");
+
+    let err = StreamHubError { value: StreamHubErrorValue::NoAppOrStreamName };
+    assert_eq!(err.to_string(), "no app or stream name");
+
+    let err = StreamHubError { value: StreamHubErrorValue::SubscriberClosed };
+    assert_eq!(err.to_string(), "subscriber channel closed");
+}
+
+#[test]
+fn test_streamhub_error_from_string() {
+    use synctv_xiu::streamhub::errors::{StreamHubError, StreamHubErrorValue};
+    let err: StreamHubError = "custom error message".to_string().into();
+    assert!(matches!(err.value, StreamHubErrorValue::ClientSessionError(_)));
+    assert!(err.to_string().contains("custom error message"));
+}
+
+// === Subscribe/Publish Type Tests ===
+
+#[test]
+fn test_subscribe_type_serialization() {
+    use synctv_xiu::streamhub::define::SubscribeType;
+    let types = vec![
+        SubscribeType::RtmpPull,
+        SubscribeType::RtmpRemux2HttpFlv,
+        SubscribeType::RtmpRemux2Hls,
+        SubscribeType::RtmpRelay,
+    ];
+    for t in types {
+        let json = serde_json::to_string(&t).unwrap();
+        assert!(!json.is_empty());
+    }
+}
+
+#[test]
+fn test_publish_type_serialization() {
+    use synctv_xiu::streamhub::define::PublishType;
+    let types = vec![
+        PublishType::RtmpPush,
+        PublishType::RtmpRelay,
+    ];
+    for t in types {
+        let json = serde_json::to_string(&t).unwrap();
+        assert!(!json.is_empty());
+    }
+}
+
+// === StreamsHub Publish/Subscribe Integration Tests ===
+
+#[tokio::test]
+async fn test_streams_hub_publish_and_subscribe() {
+    use synctv_xiu::streamhub::define::*;
+    use synctv_xiu::streamhub::stream::StreamIdentifier;
+    use synctv_xiu::streamhub::StreamsHub;
+    use synctv_xiu::streamhub::errors::StreamHubError;
+
+    let (event_sender, event_receiver) = tokio::sync::mpsc::channel(100);
+    let mut hub = StreamsHub::new(event_sender, event_receiver);
+
+    let identifier = StreamIdentifier::Rtmp {
+        app_name: "live".to_string(),
+        stream_name: "test_stream".to_string(),
+    };
+
+    // Create a mock stream handler
+    struct MockHandler;
+    #[async_trait::async_trait]
+    impl TStreamHandler for MockHandler {
+        async fn send_prior_data(
+            &self,
+            _sender: DataSender,
+            _sub_type: SubscribeType,
+        ) -> Result<(), StreamHubError> {
+            Ok(())
+        }
+    }
+
+    let handler: Arc<dyn TStreamHandler> = Arc::new(MockHandler);
+
+    // Create frame data receiver
+    let (_frame_sender, frame_receiver) = tokio::sync::mpsc::channel(100);
+    let receiver = DataReceiver {
+        frame_receiver: Some(frame_receiver),
+        packet_receiver: None,
+    };
+
+    // Publish
+    let result = hub.publish(
+        identifier.clone(),
+        PublishType::RtmpPush,
+        receiver,
+        handler,
+    ).await;
+    assert!(result.is_ok());
+
+    // Duplicate publish should fail
+    let (_, frame_receiver2) = tokio::sync::mpsc::channel(100);
+    let receiver2 = DataReceiver {
+        frame_receiver: Some(frame_receiver2),
+        packet_receiver: None,
+    };
+
+    struct MockHandler2;
+    #[async_trait::async_trait]
+    impl TStreamHandler for MockHandler2 {
+        async fn send_prior_data(
+            &self,
+            _sender: DataSender,
+            _sub_type: SubscribeType,
+        ) -> Result<(), StreamHubError> {
+            Ok(())
+        }
+    }
+
+    let result2 = hub.publish(
+        identifier.clone(),
+        PublishType::RtmpPush,
+        receiver2,
+        Arc::new(MockHandler2),
+    ).await;
+    assert!(result2.is_err());
+}
+
+#[tokio::test]
+async fn test_streams_hub_subscribe_no_stream() {
+    use synctv_xiu::streamhub::define::*;
+    use synctv_xiu::streamhub::stream::StreamIdentifier;
+    use synctv_xiu::streamhub::StreamsHub;
+    use synctv_xiu::streamhub::utils::Uuid;
+
+    let (event_sender, event_receiver) = tokio::sync::mpsc::channel(100);
+    let mut hub = StreamsHub::new(event_sender, event_receiver);
+
+    let identifier = StreamIdentifier::Rtmp {
+        app_name: "live".to_string(),
+        stream_name: "nonexistent".to_string(),
+    };
+
+    let (sender, _) = tokio::sync::mpsc::channel(100);
+    let sub_info = SubscriberInfo {
+        id: Uuid::new(),
+        sub_type: SubscribeType::RtmpPull,
+        notify_info: NotifyInfo {
+            request_url: String::new(),
+            remote_addr: String::new(),
+        },
+        sub_data_type: SubDataType::Frame,
+    };
+
+    let result = hub.subscribe(
+        &identifier,
+        sub_info,
+        DataSender::Frame { sender },
+    ).await;
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn test_streams_hub_unsubscribe_no_stream() {
+    use synctv_xiu::streamhub::define::*;
+    use synctv_xiu::streamhub::stream::StreamIdentifier;
+    use synctv_xiu::streamhub::StreamsHub;
+    use synctv_xiu::streamhub::utils::Uuid;
+
+    let (event_sender, event_receiver) = tokio::sync::mpsc::channel(100);
+    let mut hub = StreamsHub::new(event_sender, event_receiver);
+
+    let identifier = StreamIdentifier::Rtmp {
+        app_name: "live".to_string(),
+        stream_name: "nonexistent".to_string(),
+    };
+
+    let sub_info = SubscriberInfo {
+        id: Uuid::new(),
+        sub_type: SubscribeType::RtmpPull,
+        notify_info: NotifyInfo {
+            request_url: String::new(),
+            remote_addr: String::new(),
+        },
+        sub_data_type: SubDataType::Frame,
+    };
+
+    let result = hub.unsubscribe(&identifier, sub_info);
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn test_streams_hub_broadcast_event() {
+    use synctv_xiu::streamhub::define::*;
+    use synctv_xiu::streamhub::stream::StreamIdentifier;
+    use synctv_xiu::streamhub::StreamsHub;
+    use synctv_xiu::streamhub::errors::StreamHubError;
+
+    let (event_sender, event_receiver) = tokio::sync::mpsc::channel(100);
+    let mut hub = StreamsHub::new(event_sender, event_receiver);
+
+    // Subscribe to broadcast events
+    let mut broadcast_rx = hub.get_client_event_consumer();
+
+    let identifier = StreamIdentifier::Rtmp {
+        app_name: "live".to_string(),
+        stream_name: "test".to_string(),
+    };
+
+    struct MockHandler;
+    #[async_trait::async_trait]
+    impl TStreamHandler for MockHandler {
+        async fn send_prior_data(
+            &self,
+            _sender: DataSender,
+            _sub_type: SubscribeType,
+        ) -> Result<(), StreamHubError> {
+            Ok(())
+        }
+    }
+
+    let (_, frame_receiver) = tokio::sync::mpsc::channel(100);
+    let receiver = DataReceiver {
+        frame_receiver: Some(frame_receiver),
+        packet_receiver: None,
+    };
+
+    // Publish should trigger a broadcast event
+    hub.publish(
+        identifier.clone(),
+        PublishType::RtmpPush,
+        receiver,
+        Arc::new(MockHandler),
+    ).await.unwrap();
+
+    // Should receive the publish broadcast event
+    let event = broadcast_rx.try_recv();
+    assert!(event.is_ok());
+    if let Ok(BroadcastEvent::Publish { identifier: id, pub_type }) = event {
+        assert_eq!(id, identifier);
+        assert!(matches!(pub_type, PublishType::RtmpPush));
+    } else {
+        panic!("Expected BroadcastEvent::Publish");
+    }
+}
+
+// === RTMP Config Constants Tests ===
+
+#[test]
+fn test_rtmp_config_constants() {
+    use synctv_xiu::rtmp::config;
+    assert_eq!(config::CLIENT_PUSH, 1);
+    assert_eq!(config::CLIENT_PULL, 2);
+    assert_eq!(config::SERVER_PUSH, 4);
+    assert_eq!(config::SERVER_PULL, 8);
+}

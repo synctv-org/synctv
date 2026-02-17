@@ -46,7 +46,13 @@ impl AuditLogRepository {
     /// List audit logs with filters and pagination.
     ///
     /// Returns `(rows, total_count)`.
+    ///
+    /// When no `from` time is specified, defaults to the last 90 days to enable
+    /// partition pruning on the `audit_logs` table.
     pub async fn list(&self, query: &AuditLogQuery) -> Result<(Vec<AuditLogRow>, i64)> {
+        let default_from = Utc::now() - chrono::Duration::days(90);
+        let effective_from = query.from.unwrap_or(default_from);
+
         // Build WHERE conditions dynamically
         let mut conditions: Vec<String> = Vec::new();
         let mut param_idx: u32 = 1;
@@ -67,10 +73,9 @@ impl AuditLogRepository {
             conditions.push(format!("target_id = ${param_idx}"));
             param_idx += 1;
         }
-        if query.from.is_some() {
-            conditions.push(format!("created_at >= ${param_idx}"));
-            param_idx += 1;
-        }
+        // Always add time range lower bound for partition pruning
+        conditions.push(format!("created_at >= ${param_idx}"));
+        param_idx += 1;
         if query.to.is_some() {
             conditions.push(format!("created_at <= ${param_idx}"));
             param_idx += 1;
@@ -104,7 +109,7 @@ impl AuditLogRepository {
         if let Some(ref v) = query.action { count_query = count_query.bind(v); }
         if let Some(ref v) = query.target_type { count_query = count_query.bind(v); }
         if let Some(ref v) = query.target_id { count_query = count_query.bind(v); }
-        if let Some(ref v) = query.from { count_query = count_query.bind(v); }
+        count_query = count_query.bind(effective_from);
         if let Some(ref v) = query.to { count_query = count_query.bind(v); }
 
         let total: i64 = count_query.fetch_one(&self.pool).await?;
@@ -115,7 +120,7 @@ impl AuditLogRepository {
         if let Some(ref v) = query.action { list_query = list_query.bind(v); }
         if let Some(ref v) = query.target_type { list_query = list_query.bind(v); }
         if let Some(ref v) = query.target_id { list_query = list_query.bind(v); }
-        if let Some(ref v) = query.from { list_query = list_query.bind(v); }
+        list_query = list_query.bind(effective_from);
         if let Some(ref v) = query.to { list_query = list_query.bind(v); }
         list_query = list_query.bind(query.page.limit() as i64);
         list_query = list_query.bind(query.page.offset() as i64);

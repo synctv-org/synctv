@@ -61,6 +61,8 @@ pub struct OAuth2UserInfo {
     pub username: String,
     pub email: Option<String>,
     pub avatar: Option<String>,
+    /// Whether the provider has verified the user's email address
+    pub email_verified: bool,
 }
 
 // ============================================================================

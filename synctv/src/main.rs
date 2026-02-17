@@ -524,16 +524,6 @@ async fn main() -> Result<()> {
         warn!("Failed to start cache invalidation listener: {}", e);
     }
 
-    // 5.1. Initialize Bilibili Redis-backed rate limiter and WBI cache.
-    // This replaces the per-process in-memory governor limiter with a distributed
-    // Redis sliding-window limiter shared across all replicas.
-    synctv_core::provider::init_bilibili_redis_backends(
-        &synctv_services.rate_limiter,
-        synctv_services.redis_conn.as_ref(),
-        &config.redis.key_prefix,
-    )
-    .await;
-
     // 4.6. Initialize chat message partitions (runs on every node at startup)
     info!("Initializing chat message partitions...");
     if let Err(e) = synctv_core::service::ensure_chat_partitions_on_startup(

@@ -146,9 +146,9 @@ impl TokenBlacklistService {
                     .query_async::<Option<String>>(&mut conn),
             )
                 .await
-                .unwrap_or(Ok(None))
+                .map_err(|_| Error::Internal("Redis timeout: try_consume_refresh_token".to_string()))?
                 .map(|v: Option<String>| v.is_some())
-                .unwrap_or(false);
+                .internal_with_err("Redis error: try_consume_refresh_token")?;
 
             if was_set {
                 // Populate L1 cache so this replica sees it immediately
@@ -260,10 +260,22 @@ impl TokenBlacklistService {
 
             // Populate L1 on Redis hit so subsequent checks are fast
             if exists {
-                let ttl: i64 = tokio::time::timeout(REDIS_OPERATION_TIMEOUT, conn.ttl(&key))
-                    .await
-                    .unwrap_or(Ok(60))
-                    .unwrap_or(60);
+                let ttl: i64 = match tokio::time::timeout(REDIS_OPERATION_TIMEOUT, conn.ttl(&key)).await {
+                    Ok(Ok(t)) => t,
+                    Ok(Err(e)) => {
+                        tracing::warn!(
+                            error = %e,
+                            "Failed to get TTL from Redis for blacklisted token, using default 60s"
+                        );
+                        60
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            "Redis timeout getting TTL for blacklisted token, using default 60s"
+                        );
+                        60
+                    }
+                };
                 let expires_at = chrono::Utc::now().timestamp() + ttl.max(1);
                 self.local_blacklist.insert(token_hash, expires_at).await;
             }

@@ -1,14 +1,9 @@
 //! Bilibili HTTP Client
 
 use std::collections::HashMap;
-use std::num::NonZeroU32;
 use std::sync::LazyLock;
 use std::time::Duration;
 
-use async_trait::async_trait;
-use governor::{Quota, RateLimiter};
-use governor::clock::DefaultClock;
-use governor::state::{InMemoryState, NotKeyed};
 use regex::Regex;
 use reqwest::Client;
 use serde::Deserialize;
@@ -19,51 +14,6 @@ use futures_util::{SinkExt, StreamExt};
 use super::error::{BilibiliError, check_response, json_with_limit};
 use super::types::{self as types, VideoInfo, Quality, PlayUrlInfo, DurlItem, AnimeInfo};
 use crate::error::with_retry;
-
-/// Default Bilibili API rate limit: 5 requests per second.
-const DEFAULT_RATE_LIMIT_PER_SECOND: u32 = 5;
-
-type GovernorRateLimiter = RateLimiter<NotKeyed, InMemoryState, DefaultClock>;
-
-// ============================================================================
-// Pluggable Rate Limiter Abstraction
-// ============================================================================
-
-/// Trait for pluggable rate limiting in the Bilibili client.
-///
-/// By default, an in-memory governor-based limiter is used. In multi-replica
-/// deployments, `synctv-core` can inject a Redis-backed implementation via
-/// [`set_shared_rate_limiter`] so that rate limits are enforced globally across
-/// all replicas, preventing IP bans from Bilibili.
-#[async_trait]
-pub trait ApiRateLimiter: Send + Sync + 'static {
-    /// Wait until a request is allowed under the rate limit.
-    /// Implementations should block (asynchronously) until a token is available.
-    async fn wait_for_permit(&self);
-}
-
-/// In-memory rate limiter using `governor` (single-process only).
-struct InMemoryApiRateLimiter {
-    inner: std::sync::Arc<GovernorRateLimiter>,
-}
-
-impl InMemoryApiRateLimiter {
-    fn new(requests_per_second: u32) -> Self {
-        let quota = Quota::per_second(
-            NonZeroU32::new(requests_per_second).expect("rate limit must be > 0"),
-        );
-        Self {
-            inner: std::sync::Arc::new(RateLimiter::direct(quota)),
-        }
-    }
-}
-
-#[async_trait]
-impl ApiRateLimiter for InMemoryApiRateLimiter {
-    async fn wait_for_permit(&self) {
-        self.inner.until_ready().await;
-    }
-}
 
 // Pre-compiled regexes using std::sync::LazyLock (no external crate needed).
 // These patterns are compile-time constants; Regex::new cannot fail on them.
@@ -88,27 +38,6 @@ static SHARED_CLIENT: LazyLock<Client> = LazyLock::new(|| {
         .expect("Failed to build Bilibili shared HTTP client")
 });
 
-/// Shared rate limiter for all Bilibili requests.
-///
-/// Defaults to an in-memory governor limiter. In multi-replica deployments,
-/// call [`set_shared_rate_limiter`] during startup to inject a Redis-backed
-/// implementation so that rate limits are enforced globally.
-static SHARED_RATE_LIMITER: LazyLock<std::sync::Arc<tokio::sync::RwLock<std::sync::Arc<dyn ApiRateLimiter>>>> =
-    LazyLock::new(|| {
-        let limiter: std::sync::Arc<dyn ApiRateLimiter> =
-            std::sync::Arc::new(InMemoryApiRateLimiter::new(DEFAULT_RATE_LIMIT_PER_SECOND));
-        std::sync::Arc::new(tokio::sync::RwLock::new(limiter))
-    });
-
-/// Replace the shared Bilibili API rate limiter.
-///
-/// Call this at startup from `synctv-core` to inject a Redis-backed rate
-/// limiter so that limits are enforced across all replicas.
-pub async fn set_shared_rate_limiter(limiter: std::sync::Arc<dyn ApiRateLimiter>) {
-    let mut guard = SHARED_RATE_LIMITER.write().await;
-    *guard = limiter;
-}
-
 // ============================================================================
 // WBI Signing
 // ============================================================================
@@ -124,73 +53,16 @@ const MIXIN_KEY_ENC_TAB: [u8; 64] = [
     22, 25, 54, 21, 56, 59,  6, 63, 57, 62, 11, 36, 20, 34, 44, 52,
 ];
 
-/// Cached WBI keys with expiration timestamp (in-memory fallback).
+/// Cached WBI keys with expiration timestamp.
 struct WbiKeys {
     mixin_key: String,
     expires_at: std::time::Instant,
 }
 
-/// Trait for pluggable WBI key caching.
-///
-/// Defaults to an in-memory cache. In multi-replica deployments, inject a
-/// Redis-backed implementation via [`set_shared_wbi_cache`] so that only one
-/// replica refreshes the mixin key from Bilibili's nav API.
-#[async_trait]
-pub trait WbiKeyCache: Send + Sync + 'static {
-    /// Try to read the cached mixin key. Returns `None` on miss or expiry.
-    async fn get(&self) -> Option<String>;
-    /// Store the mixin key with TTL.
-    async fn set(&self, mixin_key: &str, ttl: Duration);
-}
-
-/// In-memory WBI key cache (single-process only).
-struct InMemoryWbiKeyCache {
-    inner: tokio::sync::Mutex<Option<WbiKeys>>,
-}
-
-impl InMemoryWbiKeyCache {
-    fn new() -> Self {
-        Self {
-            inner: tokio::sync::Mutex::new(None),
-        }
-    }
-}
-
-#[async_trait]
-impl WbiKeyCache for InMemoryWbiKeyCache {
-    async fn get(&self) -> Option<String> {
-        let guard = self.inner.lock().await;
-        guard
-            .as_ref()
-            .filter(|k| std::time::Instant::now() < k.expires_at)
-            .map(|k| k.mixin_key.clone())
-    }
-
-    async fn set(&self, mixin_key: &str, ttl: Duration) {
-        let mut guard = self.inner.lock().await;
-        *guard = Some(WbiKeys {
-            mixin_key: mixin_key.to_string(),
-            expires_at: std::time::Instant::now() + ttl,
-        });
-    }
-}
-
-/// Global WBI key cache with pluggable implementation.
-static WBI_KEY_CACHE: LazyLock<std::sync::Arc<tokio::sync::RwLock<std::sync::Arc<dyn WbiKeyCache>>>> =
-    LazyLock::new(|| {
-        let cache: std::sync::Arc<dyn WbiKeyCache> =
-            std::sync::Arc::new(InMemoryWbiKeyCache::new());
-        std::sync::Arc::new(tokio::sync::RwLock::new(cache))
-    });
-
-/// Replace the shared WBI key cache.
-///
-/// Call this at startup from `synctv-core` to inject a Redis-backed cache
-/// so that only one replica refreshes the mixin key from Bilibili's nav API.
-pub async fn set_shared_wbi_cache(cache: std::sync::Arc<dyn WbiKeyCache>) {
-    let mut guard = WBI_KEY_CACHE.write().await;
-    *guard = cache;
-}
+/// Global in-memory WBI key cache.
+/// WBI keys are refreshed from Bilibili's nav API every 30 minutes.
+static WBI_KEY_CACHE: LazyLock<tokio::sync::Mutex<Option<WbiKeys>>> =
+    LazyLock::new(|| tokio::sync::Mutex::new(None));
 
 /// WBI key cache TTL (refresh keys every 30 minutes).
 const WBI_KEY_TTL: Duration = Duration::from_secs(30 * 60);
@@ -274,38 +146,6 @@ fn wbi_sign(params: &[(&str, String)], mixin_key: &str) -> Vec<(String, String)>
     all_params
 }
 
-/// Cookie storage with expiration tracking
-#[derive(Clone)]
-struct CookieStore {
-    cookies: HashMap<String, String>,
-    expires_at: std::time::Instant,
-}
-
-impl CookieStore {
-    /// Check if cookies are expired (30 days TTL)
-    fn is_expired(&self) -> bool {
-        std::time::Instant::now() >= self.expires_at
-    }
-
-    /// Create new cookie store with default TTL of 30 days
-    fn new(cookies: HashMap<String, String>) -> Self {
-        Self {
-            cookies,
-            expires_at: std::time::Instant::now() + Duration::from_secs(30 * 24 * 60 * 60),
-        }
-    }
-
-    /// Refresh the expiration time
-    fn refresh(&mut self) {
-        self.expires_at = std::time::Instant::now() + Duration::from_secs(30 * 24 * 60 * 60);
-    }
-}
-
-/// Per-user cookie cache for authenticated sessions.
-/// Keyed by user identifier to prevent cross-user cookie leakage.
-static COOKIE_CACHE: LazyLock<tokio::sync::RwLock<HashMap<String, CookieStore>>> =
-    LazyLock::new(|| tokio::sync::RwLock::new(HashMap::new()));
-
 /// Bilibili HTTP Client
 pub struct BilibiliClient {
     client: Client,
@@ -329,80 +169,22 @@ impl BilibiliClient {
         })
     }
 
-    /// Store cookies in per-user cache for persistence.
+    /// Get WBI mixin key, fetching and caching it if necessary.
+    /// Internal method with optional force refresh.
     ///
-    /// Each user's cookies are stored independently to prevent cross-user leakage.
-    pub async fn store_cookies(user_id: &str, cookies: HashMap<String, String>) {
-        let mut cache = COOKIE_CACHE.write().await;
-        cache.insert(user_id.to_string(), CookieStore::new(cookies));
-    }
-
-    /// Load cookies from per-user cache if not expired.
-    ///
-    /// Returns `None` if the user has no cached cookies or they have expired.
-    pub async fn load_cookies(user_id: &str) -> Option<HashMap<String, String>> {
-        let mut cache = COOKIE_CACHE.write().await;
-        if let Some(store) = cache.get_mut(user_id) {
-            if !store.is_expired() {
-                store.refresh(); // Refresh on successful use
-                return Some(store.cookies.clone());
-            }
-            // Expired, remove entry
-            cache.remove(user_id);
-        }
-        None
-    }
-
-    /// Refresh cookies by validating them with a lightweight API call
-    /// Returns true if cookies are still valid
-    pub async fn refresh_cookies(&self) -> Result<bool, BilibiliError> {
-        // Try to fetch user info to validate cookies
-        match self.user_info().await {
-            Ok(info) => Ok(info.is_login),
-            Err(BilibiliError::Api { code, .. }) if code == -101 => {
-                // -101 is "not logged in" error code
-                Ok(false)
-            }
-            Err(e) => Err(e),
-        }
-    }
-
-    /// Wait for the rate limiter before making an API call.
-    /// This prevents concurrent users from triggering IP bans.
-    ///
-    /// Uses the shared pluggable rate limiter which may be backed by Redis
-    /// in multi-replica deployments (see [`set_shared_rate_limiter`]).
-    async fn wait_for_rate_limit(&self) {
-        let limiter = SHARED_RATE_LIMITER.read().await.clone();
-        limiter.wait_for_permit().await;
-    }
-
-    /// Get the WBI mixin key, fetching and caching it if necessary.
-    ///
-    /// The mixin key is derived from `img_key` and `sub_key` obtained from
-    /// the Bilibili nav API. It is cached globally for `WBI_KEY_TTL` to
-    /// avoid excessive API calls.
-    async fn get_wbi_mixin_key(&self) -> Result<String, BilibiliError> {
-        self.get_wbi_mixin_key_internal(false).await
-    }
-
-    /// Internal method to get WBI mixin key with optional force refresh.
-    ///
-    /// Uses the pluggable [`WbiKeyCache`] (in-memory by default, Redis-backed
-    /// in multi-replica deployments). When the cache misses, only one caller
-    /// fetches from the Bilibili API while others wait and re-check.
+    /// Fetches from Bilibili's nav API and caches in memory for 30 minutes.
     async fn get_wbi_mixin_key_internal(&self, force_refresh: bool) -> Result<String, BilibiliError> {
-        let wbi_cache = WBI_KEY_CACHE.read().await.clone();
-
         // Check cache (unless force refresh)
         if !force_refresh {
-            if let Some(key) = wbi_cache.get().await {
-                return Ok(key);
+            let guard = WBI_KEY_CACHE.lock().await;
+            if let Some(cached) = guard.as_ref() {
+                if std::time::Instant::now() < cached.expires_at {
+                    return Ok(cached.mixin_key.clone());
+                }
             }
         }
 
         // Cache miss or force refresh: fetch from Bilibili API.
-        self.wait_for_rate_limit().await;
         let url = "https://api.bilibili.com/x/web-interface/nav";
         let req = self.add_cookies(self.client.get(url).header("Referer", REFERER));
         let resp = check_response(req.send().await?)?;
@@ -428,8 +210,12 @@ impl BilibiliClient {
             return Err(BilibiliError::Parse("Generated empty mixin key".to_string()));
         }
 
-        // Store in pluggable cache
-        wbi_cache.set(&mixin_key, WBI_KEY_TTL).await;
+        // Store in cache with TTL
+        let mut guard = WBI_KEY_CACHE.lock().await;
+        *guard = Some(WbiKeys {
+            mixin_key: mixin_key.clone(),
+            expires_at: std::time::Instant::now() + WBI_KEY_TTL,
+        });
 
         Ok(mixin_key)
     }
@@ -483,7 +269,6 @@ impl BilibiliClient {
 
     /// Generate QR code for login
     pub async fn new_qr_code(&self) -> Result<(String, String), BilibiliError> {
-        self.wait_for_rate_limit().await;
         #[derive(Deserialize)]
         struct QrCodeData {
             url: String,
@@ -515,7 +300,6 @@ impl BilibiliClient {
 
     /// Check QR code login status
     pub async fn login_with_qr_code(&self, key: &str) -> Result<(u32, Option<HashMap<String, String>>), BilibiliError> {
-        self.wait_for_rate_limit().await;
         #[derive(Deserialize)]
         struct LoginData {
             code: u32,
@@ -568,7 +352,6 @@ impl BilibiliClient {
 
     /// Get new captcha for SMS login
     pub async fn new_captcha(&self) -> Result<(String, String, String), BilibiliError> {
-        self.wait_for_rate_limit().await;
         #[derive(Deserialize)]
         struct Geetest {
             challenge: String,
@@ -606,7 +389,6 @@ impl BilibiliClient {
 
     /// Get BUVID cookies for SMS operations
     async fn get_buvid_cookies(&self) -> Result<HashMap<String, String>, BilibiliError> {
-        self.wait_for_rate_limit().await;
         #[derive(Deserialize)]
         struct SpiData {
             #[serde(rename = "b_3")]
@@ -650,7 +432,6 @@ impl BilibiliClient {
         challenge: &str,
         validate: &str,
     ) -> Result<String, BilibiliError> {
-        self.wait_for_rate_limit().await;
         #[derive(Deserialize)]
         struct SmsData {
             captcha_key: String,
@@ -717,7 +498,6 @@ impl BilibiliClient {
         code: &str,
         captcha_key: &str,
     ) -> Result<HashMap<String, String>, BilibiliError> {
-        self.wait_for_rate_limit().await;
         #[derive(Deserialize)]
         struct LoginSmsData {
             status: i32,
@@ -813,7 +593,6 @@ impl BilibiliClient {
     /// the `Location` header from b23.tv to get the resolved URL.
     /// The resolved URL is validated against SSRF rules before returning.
     pub async fn resolve_short_link(&self, url: &str) -> Result<String, BilibiliError> {
-        self.wait_for_rate_limit().await;
         let response = self.client.get(url).send().await?;
         let status = response.status();
 
@@ -840,7 +619,6 @@ impl BilibiliClient {
 
     /// Get video information by BVID
     pub async fn get_video_info(&self, bvid: &str) -> Result<VideoInfo, BilibiliError> {
-        self.wait_for_rate_limit().await;
         let client = self.client.clone();
         let bvid = bvid.to_string();
         let cookie_header = self.build_cookie_header();

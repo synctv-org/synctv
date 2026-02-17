@@ -386,9 +386,68 @@ impl RedisPubSub {
                 loop {
                     let req = tokio::select! {
                         () = cancel_publisher.cancelled() => {
-                            // Drain remaining events before exiting to avoid losing critical events
-                            info!("Redis publisher task cancelled, draining remaining events");
+                            // Flush retry_buffer first, then drain channel
+                            info!(
+                                retry_buffer_len = retry_buffer.len(),
+                                "Redis publisher task cancelled, flushing retry buffer and draining remaining events"
+                            );
+                            let mut flush_failed = false;
+                            // Flush retry_buffer (events from previous failed publishes)
+                            for req in std::mem::take(&mut retry_buffer) {
+                                if flush_failed {
+                                    // Connection broken; write critical events to WAL
+                                    if req.event.is_critical() {
+                                        if let Some(ref wal) = event_wal {
+                                            if let Err(e) = wal.append(req.event.clone()).await {
+                                                error!(
+                                                    error = %e,
+                                                    event_type = req.event.event_type(),
+                                                    "Failed to save critical retry_buffer event to WAL on shutdown"
+                                                );
+                                            }
+                                        }
+                                    }
+                                    continue;
+                                }
+                                let event_type = req.event.event_type();
+                                match Self::publish_event(&mut conn, &node_id, req.event.clone(), &event_wal).await {
+                                    Ok(_) => {
+                                        debug!(event_type = event_type, "Retry buffer event flushed on shutdown");
+                                    }
+                                    Err(e) => {
+                                        warn!(error = %e, event_type = event_type, "Failed to flush retry buffer event on shutdown");
+                                        flush_failed = true;
+                                        // Write this critical event to WAL
+                                        if req.event.is_critical() {
+                                            if let Some(ref wal) = event_wal {
+                                                if let Err(e) = wal.append(req.event.clone()).await {
+                                                    error!(
+                                                        error = %e,
+                                                        event_type = event_type,
+                                                        "Failed to save critical retry_buffer event to WAL on shutdown"
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            // Then drain remaining events from channel
                             while let Ok(req) = publish_rx.try_recv() {
+                                if flush_failed {
+                                    if req.event.is_critical() {
+                                        if let Some(ref wal) = event_wal {
+                                            if let Err(e) = wal.append(req.event.clone()).await {
+                                                error!(
+                                                    error = %e,
+                                                    event_type = req.event.event_type(),
+                                                    "Failed to save critical drained event to WAL on shutdown"
+                                                );
+                                            }
+                                        }
+                                    }
+                                    continue;
+                                }
                                 let event_type = req.event.event_type();
                                 match Self::publish_event(&mut conn, &node_id, req.event.clone(), &event_wal).await {
                                     Ok(_) => {
@@ -396,7 +455,18 @@ impl RedisPubSub {
                                     }
                                     Err(e) => {
                                         warn!(error = %e, event_type = event_type, "Failed to publish drained event");
-                                        break; // Connection likely broken, stop draining
+                                        flush_failed = true;
+                                        if req.event.is_critical() {
+                                            if let Some(ref wal) = event_wal {
+                                                if let Err(e) = wal.append(req.event.clone()).await {
+                                                    error!(
+                                                        error = %e,
+                                                        event_type = event_type,
+                                                        "Failed to save critical drained event to WAL on shutdown"
+                                                    );
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -433,6 +503,9 @@ impl RedisPubSub {
                                             "Retry buffer full, dropping event: {}",
                                             req.event.event_type()
                                         );
+                                        synctv_core::metrics::cluster::CLUSTER_EVENTS_DROPPED
+                                            .with_label_values(&["retry_buffer_full"])
+                                            .inc();
                                         break;
                                     }
                                     retry_buffer.push(req);
@@ -812,7 +885,7 @@ impl RedisPubSub {
                                 "Lagged on room lifecycle events, re-syncing subscriptions"
                             );
                             drop(stream);
-                            self.resync_room_subscriptions(&mut pubsub, &mut subscribed_rooms).await;
+                            self.resync_room_subscriptions(&mut pubsub, &mut subscribed_rooms, stream_cursors).await;
                             continue;
                         }
                         Err(broadcast::error::RecvError::Closed) => {
@@ -976,10 +1049,13 @@ impl RedisPubSub {
     /// Re-synchronize room subscriptions with the hub's current active rooms.
     ///
     /// Called when the lifecycle event receiver has lagged and missed events.
+    /// Also snapshots stream cursors for newly subscribed rooms so that
+    /// reconnect catch-up starts from the correct position.
     async fn resync_room_subscriptions(
         &self,
         pubsub: &mut redis::aio::PubSub,
         subscribed_rooms: &mut HashSet<String>,
+        stream_cursors: &mut HashMap<String, String>,
     ) {
         let active_rooms: HashSet<String> = self
             .message_hub
@@ -994,7 +1070,34 @@ impl RedisPubSub {
             match timeout(Duration::from_secs(REDIS_TIMEOUT_SECS), pubsub.subscribe(&channel)).await {
                 Ok(Ok(())) => {
                     subscribed_rooms.insert(room_id.clone());
-                    debug!(room_id = %room_id, "Re-synced: subscribed to room channel");
+                    // Snapshot stream cursor for the newly subscribed room so that
+                    // reconnect catch-up reads from the right position instead of "0".
+                    let sk = room_stream_key(&room_id);
+                    match self.get_latest_stream_id_for(&sk).await {
+                        Ok(Some(id)) => {
+                            debug!(
+                                room_id = %room_id,
+                                stream_id = %id,
+                                "Re-synced: subscribed to room channel, cursor snapshotted"
+                            );
+                            stream_cursors.insert(sk, id);
+                        }
+                        Ok(None) => {
+                            debug!(
+                                room_id = %room_id,
+                                "Re-synced: subscribed to room channel (empty stream)"
+                            );
+                            stream_cursors.insert(sk, "0".to_string());
+                        }
+                        Err(e) => {
+                            warn!(
+                                error = %e,
+                                room_id = %room_id,
+                                "Re-synced: subscribed but failed to snapshot cursor, using '$'"
+                            );
+                            stream_cursors.insert(sk, "$".to_string());
+                        }
+                    }
                 }
                 _ => {
                     warn!(room_id = %room_id, "Re-sync: failed to subscribe to room channel");
@@ -1008,6 +1111,7 @@ impl RedisPubSub {
             match timeout(Duration::from_secs(REDIS_TIMEOUT_SECS), pubsub.unsubscribe(&channel)).await {
                 Ok(Ok(())) => {
                     debug!(room_id = %room_id, "Re-synced: unsubscribed from room channel");
+                    stream_cursors.remove(&room_stream_key(&room_id));
                 }
                 _ => {
                     warn!(room_id = %room_id, "Re-sync: failed to unsubscribe from room channel");

@@ -74,15 +74,16 @@ impl ClientApiImpl {
         let (rooms, total) = self.room_service.list_joined_rooms_with_details(&uid, pagination).await
             .map_err(ApiError::from)?;
 
+        // Batch-fetch distributed connection counts (single Redis MGET) to avoid N+1 queries
+        let room_id_refs: Vec<&synctv_core::models::RoomId> = rooms.iter().map(|(r, _, _, _)| &r.id).collect();
+        let counts = self.connection_manager
+            .room_connection_count_distributed_batch(&room_id_refs)
+            .await;
+
         let mut room_list = Vec::with_capacity(rooms.len());
-        for (room, role, _status, _member_count) in &rooms {
+        for ((room, role, _status, _member_count), count) in rooms.iter().zip(counts.into_iter()) {
             let permissions = role.permissions().0;
-            let member_count = self
-                .connection_manager
-                .room_connection_count_distributed(&room.id)
-                .await
-                .try_into()
-                .ok();
+            let member_count: Option<i32> = count.try_into().ok();
             room_list.push(crate::proto::client::RoomWithRole {
                 room: Some(room_to_proto_basic(room, None, member_count)),
                 permissions,

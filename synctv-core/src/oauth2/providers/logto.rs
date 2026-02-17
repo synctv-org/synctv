@@ -109,6 +109,8 @@ impl Provider for LogtoProvider {
             username: Option<String>,
             name: Option<String>,
             email: Option<String>,
+            #[serde(default)]
+            email_verified: bool,
             picture: Option<String>,
         }
 
@@ -124,6 +126,7 @@ impl Provider for LogtoProvider {
             username,
             email: user.email,
             avatar: user.picture,
+            email_verified: user.email_verified,
         })
     }
 }

@@ -520,14 +520,19 @@ impl StreamDataTransceiver {
                             statistics_data.subscriber_count += 1;
                         }
                         TransceiverEvent::UnSubscribe { info } => {
-                            frame_senders.lock().await.remove(&info.id);
+                            // Remove from both sender maps and update statistics
+                            // in a single logical block to minimize lock hold times.
+                            {
+                                let mut fs = frame_senders.lock().await;
+                                let mut ps = packet_senders.lock().await;
+                                fs.remove(&info.id);
+                                ps.remove(&info.id);
+                            }
                             frame_generation.fetch_add(1, Ordering::Release);
-                            packet_senders.lock().await.remove(&info.id);
                             packet_generation.fetch_add(1, Ordering::Release);
-                            let mut statistics_data = statistics_data.lock().await;
-                            let subscribers = &mut statistics_data.subscribers;
-                            subscribers.remove(&info.id);
 
+                            let mut statistics_data = statistics_data.lock().await;
+                            statistics_data.subscribers.remove(&info.id);
                             statistics_data.subscriber_count = statistics_data.subscriber_count.saturating_sub(1);
                         }
                         TransceiverEvent::UnPublish {} => {

@@ -97,6 +97,8 @@ impl Provider for GoogleProvider {
             id: String,
             name: String,
             email: String,
+            #[serde(default)]
+            verified_email: bool,
             picture: Option<String>,
         }
 
@@ -110,6 +112,7 @@ impl Provider for GoogleProvider {
             username: user.name,
             email: Some(user.email),
             avatar: user.picture,
+            email_verified: user.verified_email,
         })
     }
 }

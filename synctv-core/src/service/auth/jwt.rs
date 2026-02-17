@@ -391,9 +391,17 @@ impl JwtService {
     ///
     /// # Returns
     /// * `true` if token is a valid guest token, `false` otherwise
-    #[must_use] 
+    #[must_use]
     pub fn is_guest_token(&self, token: &str) -> bool {
         self.verify_guest_token(token).is_ok()
+    }
+
+    /// Get access token duration in seconds
+    ///
+    /// Used by OAuth2 token response to report the correct `expires_in` value.
+    #[must_use]
+    pub const fn access_token_duration_seconds(&self) -> i64 {
+        (self.access_token_duration_hours as i64) * 3600
     }
 
     /// Sign a custom JSON value as JWT

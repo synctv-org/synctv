@@ -68,6 +68,10 @@ pub struct PeerConnection {
     /// Subscriber output task handle
     output_task_handle: parking_lot::Mutex<Option<JoinHandle<()>>>,
 
+    /// Packet pacer shared with the RTCP handler so bandwidth estimation
+    /// updates can dynamically adjust the pacing rate.
+    packet_pacer: Arc<PacketPacer>,
+
     /// Cancellation token for cleanup
     cancel_token: CancellationToken,
 }
@@ -291,6 +295,7 @@ impl PeerConnection {
             ice_servers,
             outbound_tracks: Arc::new(RwLock::new(HashMap::new())),
             output_task_handle: parking_lot::Mutex::new(None),
+            packet_pacer: Arc::new(PacketPacer::new(1000, 50)),
             cancel_token: CancellationToken::new(),
         })
     }
@@ -577,6 +582,14 @@ impl PeerConnection {
         Ok(local_track)
     }
 
+    /// Get a reference to the shared packet pacer.
+    ///
+    /// The RTCP handler uses this to call `set_target_bitrate()` whenever
+    /// bandwidth estimation produces a new value.
+    pub fn pacer(&self) -> &Arc<PacketPacer> {
+        &self.packet_pacer
+    }
+
     /// Start subscriber output task (reads from peer's packet channel and writes to WebRTC)
     ///
     /// Routes each forwarded packet to the correct outbound track by matching
@@ -596,8 +609,9 @@ impl PeerConnection {
         let outbound_tracks = Arc::clone(&self.outbound_tracks);
         let cancel_token = self.cancel_token.clone();
 
-        // Create packet pacer: 1 Mbps initial target, 50ms max burst
-        let pacer = PacketPacer::new(1000, 50);
+        // Use the shared packet pacer so the RTCP handler can update its
+        // target bitrate dynamically based on bandwidth estimation.
+        let pacer = Arc::clone(&self.packet_pacer);
 
         // Spawn output task
         let handle = tokio::spawn(async move {

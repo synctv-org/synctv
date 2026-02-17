@@ -107,11 +107,14 @@ impl Provider for GitHubProvider {
             .await
             .internal_with_err("Failed to parse user info")?;
 
+        // GitHub only returns the primary verified email on the /user endpoint
+        let email_verified = user.email.is_some();
         Ok(OAuth2UserInfo {
             provider_user_id: user.id.to_string(),
             username: user.login,
             email: user.email,
             avatar: user.avatar_url,
+            email_verified,
         })
     }
 }

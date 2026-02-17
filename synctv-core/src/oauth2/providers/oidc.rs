@@ -281,6 +281,8 @@ impl Provider for OidcProvider {
             sub: String,
             name: Option<String>,
             email: Option<String>,
+            #[serde(default)]
+            email_verified: bool,
             picture: Option<String>,
         }
 
@@ -294,6 +296,7 @@ impl Provider for OidcProvider {
             username: user.name.unwrap_or_default(),
             email: user.email,
             avatar: user.picture,
+            email_verified: user.email_verified,
         })
     }
 }

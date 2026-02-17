@@ -235,6 +235,12 @@ pub trait MediaProvider: Send + Sync {
     fn cache_key(&self, ctx: &ProviderContext<'_>, source_config: &Value) -> String {
         use sha2::{Sha256, Digest};
 
+        tracing::warn!(
+            provider = self.name(),
+            "Provider uses default cache_key implementation; \
+             consider overriding cache_key() for optimal caching behaviour"
+        );
+
         let mut hasher = Sha256::new();
         hasher.update(source_config.to_string().as_bytes());
         let config_hash = hex::encode(hasher.finalize());

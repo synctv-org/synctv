@@ -775,6 +775,7 @@ impl SfuSessionManager {
                 sfu_peer_id.clone(),
                 network_monitor,
                 Arc::clone(&sfu_peer),
+                Some(Arc::clone(pc.pacer())),
             );
             let task = match handler.start(Arc::clone(&pc.pc), vec![]).await {
                 Ok(handle) => Some(handle),

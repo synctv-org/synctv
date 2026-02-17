@@ -201,6 +201,21 @@ impl OAuth2ApiImpl {
                 ApiError::Internal(format!("Failed to commit transaction: {e}"))
             })?;
 
+            // Set email_verified if the OAuth2 provider confirmed the user's email
+            if user_info.email_verified && user_info.email.is_some() {
+                if let Err(e) = self
+                    .user_service
+                    .set_email_verified(&new_user.id, true)
+                    .await
+                {
+                    tracing::warn!(
+                        error = %e,
+                        user_id = %new_user.id.as_str(),
+                        "Failed to set email_verified for OAuth2 user"
+                    );
+                }
+            }
+
             let (access_token, refresh_token) = self
                 .user_service
                 .finalize_registration(&new_user)
@@ -210,8 +225,8 @@ impl OAuth2ApiImpl {
             (new_user, access_token, refresh_token)
         };
 
-        // Calculate token expiration (tokens are typically valid for 7 days)
-        let expires_in = 7 * 24 * 3600; // 7 days in seconds
+        // Get the actual access token duration from the JWT service
+        let expires_in = self.user_service.access_token_duration_seconds();
 
         Ok(ExchangeCodeResult {
             access_token: Some(access_token),

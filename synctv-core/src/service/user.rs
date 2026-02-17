@@ -810,9 +810,17 @@ impl UserService {
     }
 
     /// Get the database pool (for creating dependent services)
-    #[must_use] 
+    #[must_use]
     pub const fn pool(&self) -> &PgPool {
         self.repository.pool()
+    }
+
+    /// Get the access token duration in seconds from the JWT service
+    ///
+    /// Used by OAuth2 token response to report the correct `expires_in` value.
+    #[must_use]
+    pub const fn access_token_duration_seconds(&self) -> i64 {
+        self.jwt_service.access_token_duration_seconds()
     }
 
     /// Get the username cache (for creating dependent services)

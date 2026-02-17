@@ -187,7 +187,14 @@ impl RoomMessageHub {
             let connection_id_clone = connection_id.clone();
             let ttl_secs = self.redis_key_ttl_secs;
 
-            // Spawn best-effort Redis update (don't block the subscribe path)
+            // Spawn best-effort Redis update (don't block the subscribe path).
+            //
+            // SAFETY: This is a fire-and-forget task. If the node crashes before
+            // the Redis write completes, or if the spawned task panics, the stale
+            // subscription key will remain in Redis. This is acceptable because
+            // all Redis keys are written with a TTL (`redis_key_ttl_secs`, default
+            // 300s). Stale entries will expire automatically rather than
+            // accumulating indefinitely.
             tokio::spawn(async move {
                 // Store room -> {connection_id: user_id} mapping
                 if let Err(e) = conn_clone.hset::<_, _, _, ()>(&room_key, &connection_id_clone, &user_id_str).await {
@@ -241,7 +248,11 @@ impl RoomMessageHub {
                 debug!(room_id = %room_id.as_str(), "Room has no more subscribers, removed");
             }
 
-            // Remove from Redis (best-effort, don't block unsubscribe path)
+            // Remove from Redis (best-effort, don't block unsubscribe path).
+            //
+            // SAFETY: Fire-and-forget cleanup. If the node crashes before the
+            // Redis delete completes, the stale keys will be cleaned up by their
+            // TTL (set during subscribe). No manual intervention is needed.
             if let Some(ref conn) = self.redis_conn {
                 let room_key = format!("{}room_hub:room:{}", self.redis_key_prefix, room_id.as_str());
                 let conn_key = format!("{}room_hub:conn:{}", self.redis_key_prefix, connection_id);

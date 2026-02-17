@@ -18,6 +18,9 @@ use tracing::{debug, info, warn};
 
 pub struct RtmpAuthCallbackImpl {
     publish_key_service: Arc<PublishKeyService>,
+    /// Optional stream tracker for cleanup on unpublish.
+    /// When set, `on_unpublish` removes the publisher from the tracker.
+    stream_tracker: Option<Arc<crate::api::StreamTracker>>,
 }
 
 impl RtmpAuthCallbackImpl {
@@ -25,6 +28,19 @@ impl RtmpAuthCallbackImpl {
     pub const fn new(publish_key_service: Arc<PublishKeyService>) -> Self {
         Self {
             publish_key_service,
+            stream_tracker: None,
+        }
+    }
+
+    /// Create with a stream tracker for automatic cleanup on unpublish.
+    #[must_use]
+    pub fn with_stream_tracker(
+        publish_key_service: Arc<PublishKeyService>,
+        stream_tracker: Arc<crate::api::StreamTracker>,
+    ) -> Self {
+        Self {
+            publish_key_service,
+            stream_tracker: Some(stream_tracker),
         }
     }
 }
@@ -92,6 +108,36 @@ impl AuthCallback for RtmpAuthCallbackImpl {
             stream_name
         );
         Err("RTMP pull is disabled. Use HTTP-FLV or HLS endpoints for playback.".into())
+    }
+
+    async fn on_unpublish(
+        &self,
+        app_name: &str,
+        stream_name: &str,
+        _query: Option<&str>,
+    ) {
+        if let Some(tracker) = &self.stream_tracker {
+            if let Some((user_id, room_id, media_id)) =
+                tracker.remove_by_app_stream(app_name, stream_name)
+            {
+                info!(
+                    user_id = %user_id,
+                    room_id = %room_id,
+                    media_id = %media_id,
+                    "RTMP publisher unpublished, removed from tracker"
+                );
+            } else {
+                warn!(
+                    app_name = %app_name,
+                    "on_unpublish: no matching stream found in tracker"
+                );
+            }
+        } else {
+            info!(
+                "RTMP publisher unpublished: app_name={}, stream_name={}",
+                app_name, stream_name
+            );
+        }
     }
 
     async fn on_unplay(

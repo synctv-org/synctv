@@ -37,7 +37,7 @@ use tower_http::cors::{Any, CorsLayer};
 use synctv_cluster::sync::PublishRequest;
 use synctv_core::provider::{AlistProvider, BilibiliProvider, EmbyProvider};
 use synctv_core::repository::UserProviderCredentialRepository;
-use synctv_core::service::{RemoteProviderManager, RoomService, TokenBlacklistService, UserService};
+use synctv_core::service::{RemoteProviderManager, RoomService, UserService};
 use synctv_livestream::api::LiveStreamingInfrastructure;
 use tokio::sync::mpsc;
 use tower_http::timeout::TimeoutLayer;
@@ -72,8 +72,6 @@ pub struct RouterConfig {
     /// SFU session manager for session affinity queries (multi-replica routing).
     pub sfu_session_manager: Option<Arc<synctv_sfu::SfuSessionManager>>,
     pub rate_limiter: synctv_core::service::rate_limit::RateLimiter,
-    /// Token blacklist service for checking revoked tokens
-    pub token_blacklist_service: TokenBlacklistService,
     /// WebSocket ticket service for secure WebSocket authentication (HTTP only)
     pub ws_ticket_service: Option<Arc<synctv_core::service::WsTicketService>>,
     /// Shared Redis connection for playback caching
@@ -109,10 +107,8 @@ pub struct AppState {
     pub rate_limit_config: Arc<middleware::RateLimitConfig>,
     /// Shared JWT validator (created once at startup, not per-request)
     pub jwt_validator: Arc<synctv_core::service::auth::JwtValidator>,
-    /// Shared security pipeline for post-JWT checks (blacklist, password, user status)
+    /// Shared security pipeline for post-JWT checks (password, user status)
     pub security_pipeline: Arc<synctv_core::service::SecurityPipeline>,
-    /// Token blacklist service for checking revoked tokens
-    pub token_blacklist_service: TokenBlacklistService,
     /// WebSocket ticket service for secure WebSocket authentication (HTTP only)
     pub ws_ticket_service: Option<Arc<synctv_core::service::WsTicketService>>,
     // Unified API implementation layer
@@ -227,7 +223,6 @@ fn build_app_state(config: RouterConfig) -> AppState {
         rate_limit_config,
         jwt_validator,
         security_pipeline,
-        token_blacklist_service: config.token_blacklist_service,
         ws_ticket_service: config.ws_ticket_service,
         client_api,
         admin_api,

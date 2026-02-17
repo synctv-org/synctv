@@ -81,20 +81,6 @@ async fn extract_user_id(
                     .validate_and_extract_user_id(token)
                     .map_err(|e| AppError::unauthorized(format!("Invalid token: {e}")))?;
 
-                // Check if token has been revoked (e.g. via logout)
-                // Properly handle errors from blacklist check
-                let is_blacklisted = state
-                    .token_blacklist_service
-                    .is_blacklisted(token)
-                    .await
-                    .map_err(|e| AppError::internal_server_error(format!(
-                        "Failed to check token blacklist: {e}"
-                    )))?;
-
-                if is_blacklisted {
-                    return Err(AppError::unauthorized("Token has been revoked"));
-                }
-
                 return Ok((user_id, AuthMethod::Header));
             }
         }
@@ -126,19 +112,6 @@ async fn extract_user_id(
         let user_id = validator
             .validate_and_extract_user_id(token)
             .map_err(|e| AppError::unauthorized(format!("Invalid token: {e}")))?;
-
-        // Properly handle errors from blacklist check
-        let is_blacklisted = state
-            .token_blacklist_service
-            .is_blacklisted(token)
-            .await
-            .map_err(|e| AppError::internal_server_error(format!(
-                "Failed to check token blacklist: {e}"
-            )))?;
-
-        if is_blacklisted {
-            return Err(AppError::unauthorized("Token has been revoked"));
-        }
 
         return Ok((user_id, AuthMethod::TokenQuery));
     }

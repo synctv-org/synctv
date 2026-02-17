@@ -79,7 +79,7 @@ impl ClientApiImpl {
     pub async fn logout(&self, access_token: &str, _refresh_token: Option<&str>) -> Result<crate::proto::client::LogoutResponse, ApiError> {
         // Validate the access token to ensure it's well-formed
         let claims = self.jwt_service.verify_access_token(access_token)
-            .map_err(|e| ApiError::Unauthorized(format!("Invalid access token: {e}")))?;
+            .map_err(|e| ApiError::Authentication(format!("Invalid access token: {e}")))?;
 
         tracing::info!(
             user_id = %claims.sub,

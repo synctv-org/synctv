@@ -123,7 +123,6 @@ pub struct GrpcServerConfig<'a> {
     pub oauth2_service: Option<Arc<synctv_core::service::OAuth2Service>>,
     pub audit_service: Arc<synctv_core::service::AuditService>,
     pub node_registry: Option<Arc<synctv_cluster::discovery::NodeRegistry>>,
-    pub token_blacklist_service: synctv_core::service::TokenBlacklistService,
     /// Shared Redis connection for playback caching
     pub redis_conn: Option<redis::aio::ConnectionManager>,
     pub shutdown_rx: Option<tokio::sync::watch::Receiver<bool>>,
@@ -157,7 +156,6 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         oauth2_service,
         audit_service,
         node_registry,
-        token_blacklist_service,
         redis_conn,
         shutdown_rx,
     } = grpc_config;
@@ -218,7 +216,6 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         connection_manager,
         email_service,
         email_token_service,
-        token_blacklist_service: token_blacklist_service.clone(),
         settings_registry: settings_registry.clone(),
         providers_manager: providers_manager_for_client,
         config: Arc::new(config.clone()),
@@ -421,11 +418,9 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
             emby_api: Arc::new(crate::impls::EmbyApiImpl::new(emby_provider.clone())),
             redis_conn: redis_conn.clone(),
             security_pipeline: Arc::new(synctv_core::service::SecurityPipeline::new(
-                Arc::new(token_blacklist_service.clone()),
                 user_service.clone(),
             )),
             sfu_session_manager: None,
-            token_blacklist_service: token_blacklist_service.clone(),
         });
 
         // Register provider gRPC services with auth interceptor

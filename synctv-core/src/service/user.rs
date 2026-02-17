@@ -1,5 +1,4 @@
 use sqlx::PgPool;
-use chrono::Utc;
 use std::collections::HashMap;
 
 use std::sync::Arc;

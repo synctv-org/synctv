@@ -62,8 +62,6 @@ pub struct Services {
     pub node_registry: Option<Arc<synctv_cluster::discovery::NodeRegistry>>,
     pub health_monitor: Option<Arc<synctv_cluster::discovery::HealthMonitor>>,
     pub load_balancer: Option<Arc<synctv_cluster::discovery::LoadBalancer>>,
-    /// Token blacklist service for checking revoked tokens
-    pub token_blacklist: synctv_core::service::TokenBlacklistService,
     /// Shared Redis connection for playback caching
     pub redis_conn: Option<redis::aio::ConnectionManager>,
     /// CancellationToken for settings listen task
@@ -417,7 +415,6 @@ impl SyncTvServer {
                 oauth2_service: services.oauth2_service,
                 audit_service: services.audit_service,
                 node_registry: services.node_registry,
-                token_blacklist_service: services.token_blacklist,
                 redis_conn: services.redis_conn,
                 shutdown_rx: Some(shutdown_rx),
             };
@@ -488,7 +485,6 @@ impl SyncTvServer {
                 sfu_manager,
                 sfu_session_manager: self.services.sfu_session_manager.clone(),
                 rate_limiter: self.services.rate_limiter.clone(),
-                token_blacklist_service: self.services.token_blacklist.clone(),
                 ws_ticket_service,
                 redis_conn: self.services.redis_conn.clone(),
             },

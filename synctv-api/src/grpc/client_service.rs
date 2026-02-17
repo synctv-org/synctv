@@ -81,7 +81,6 @@ pub struct ClientServiceConfig {
     pub connection_manager: ConnectionManager,
     pub email_service: Option<Arc<synctv_core::service::EmailService>>,
     pub email_token_service: Option<Arc<synctv_core::service::EmailTokenService>>,
-    pub token_blacklist_service: synctv_core::service::TokenBlacklistService,
     pub settings_registry: Option<Arc<synctv_core::service::SettingsRegistry>>,
     pub providers_manager: Option<Arc<synctv_core::service::ProvidersManager>>,
     pub config: Arc<synctv_core::Config>,
@@ -101,7 +100,6 @@ pub struct ClientServiceImpl {
     connection_manager: Arc<ConnectionManager>,
     email_service: Option<Arc<synctv_core::service::EmailService>>,
     email_token_service: Option<Arc<synctv_core::service::EmailTokenService>>,
-    token_blacklist_service: synctv_core::service::TokenBlacklistService,
     client_api: Arc<crate::impls::ClientApiImpl>,
 }
 
@@ -118,7 +116,6 @@ impl ClientServiceImpl {
         connection_manager: ConnectionManager,
         email_service: Option<Arc<synctv_core::service::EmailService>>,
         email_token_service: Option<Arc<synctv_core::service::EmailTokenService>>,
-        token_blacklist_service: synctv_core::service::TokenBlacklistService,
         _settings_registry: Option<Arc<synctv_core::service::SettingsRegistry>>,
         _providers_manager: Option<Arc<synctv_core::service::ProvidersManager>>,
         _config: Arc<synctv_core::Config>,
@@ -135,7 +132,6 @@ impl ClientServiceImpl {
             connection_manager: Arc::new(connection_manager),
             email_service,
             email_token_service,
-            token_blacklist_service,
             client_api,
         }
     }
@@ -153,7 +149,6 @@ impl ClientServiceImpl {
             connection_manager: Arc::new(config.connection_manager),
             email_service: config.email_service,
             email_token_service: config.email_token_service,
-            token_blacklist_service: config.token_blacklist_service,
             client_api: config.client_api,
         }
     }
@@ -539,16 +534,6 @@ impl RoomService for ClientServiceImpl {
         let room_id = self.get_room_id(&request)?;
         // Consume request now so it is not held across await points
         let client_stream = request.into_inner();
-
-        // Check if token has been revoked
-        if self
-            .token_blacklist_service
-            .is_blacklisted(&user_context.raw_token)
-            .await
-            .unwrap_or(true)
-        {
-            return Err(Status::unauthenticated("Token has been revoked"));
-        }
 
         let user_id = UserId::from_string(user_context.user_id.clone());
 

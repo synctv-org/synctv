@@ -271,6 +271,27 @@ impl NodeRegistry {
         result
     }
 
+    /// Handle a Redis operation error and check if it indicates a Sentinel
+    /// failover (READONLY error). If so, invalidate the cached connection
+    /// so the next operation reconnects to the new master.
+    ///
+    /// Call this after any Redis write operation that returns an error.
+    /// Returns `true` if the error was a READONLY/failover error (connection was cleared).
+    async fn handle_potential_failover(&self, error: &impl std::fmt::Display) -> bool {
+        let error_str = error.to_string();
+        if error_str.contains("READONLY") || error_str.contains("LOADING") {
+            tracing::warn!(
+                error = %error_str,
+                "Redis Sentinel failover detected (READONLY/LOADING), clearing cached connection"
+            );
+            *self.cached_conn.lock().await = None;
+            self.last_health_check.store(0, Ordering::Relaxed);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Start a background health probe task (if not already running) when the
     /// circuit breaker opens. The task PINGs Redis every 5 seconds. On success,
     /// the circuit transitions to half-open, allowing the next operation to try.
@@ -346,10 +367,24 @@ impl NodeRegistry {
     }
 
     /// Record the result of a complete Redis operation (connection + command).
-    fn record_operation_result<T>(&self, result: &std::result::Result<T, impl std::fmt::Debug>) {
+    /// Also detects Sentinel failover errors and clears the cached connection.
+    fn record_operation_result<T>(&self, result: &std::result::Result<T, impl std::fmt::Display>) {
         if result.is_ok() {
             self.circuit_breaker.on_success();
         } else {
+            let error = result.as_ref().unwrap_err();
+            let error_str = error.to_string();
+            if error_str.contains("READONLY") || error_str.contains("LOADING") {
+                tracing::warn!(
+                    error = %error_str,
+                    "Redis Sentinel failover detected in operation result, will reconnect"
+                );
+                // Clear cached connection synchronously (best effort via try_lock)
+                if let Ok(mut guard) = self.cached_conn.try_lock() {
+                    *guard = None;
+                }
+                self.last_health_check.store(0, Ordering::Relaxed);
+            }
             self.circuit_breaker.on_error();
         }
     }

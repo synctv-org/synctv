@@ -200,9 +200,10 @@ impl CookieStore {
     }
 }
 
-/// Global cookie cache for authenticated sessions
-static COOKIE_CACHE: LazyLock<tokio::sync::RwLock<Option<CookieStore>>> =
-    LazyLock::new(|| tokio::sync::RwLock::new(None));
+/// Per-user cookie cache for authenticated sessions.
+/// Keyed by user identifier to prevent cross-user cookie leakage.
+static COOKIE_CACHE: LazyLock<tokio::sync::RwLock<HashMap<String, CookieStore>>> =
+    LazyLock::new(|| tokio::sync::RwLock::new(HashMap::new()));
 
 /// Bilibili HTTP Client
 pub struct BilibiliClient {
@@ -230,22 +231,26 @@ impl BilibiliClient {
         })
     }
 
-    /// Store cookies in global cache for persistence
-    pub async fn store_cookies(cookies: HashMap<String, String>) {
+    /// Store cookies in per-user cache for persistence.
+    ///
+    /// Each user's cookies are stored independently to prevent cross-user leakage.
+    pub async fn store_cookies(user_id: &str, cookies: HashMap<String, String>) {
         let mut cache = COOKIE_CACHE.write().await;
-        *cache = Some(CookieStore::new(cookies));
+        cache.insert(user_id.to_string(), CookieStore::new(cookies));
     }
 
-    /// Load cookies from global cache if not expired
-    pub async fn load_cookies() -> Option<HashMap<String, String>> {
+    /// Load cookies from per-user cache if not expired.
+    ///
+    /// Returns `None` if the user has no cached cookies or they have expired.
+    pub async fn load_cookies(user_id: &str) -> Option<HashMap<String, String>> {
         let mut cache = COOKIE_CACHE.write().await;
-        if let Some(ref mut store) = *cache {
+        if let Some(store) = cache.get_mut(user_id) {
             if !store.is_expired() {
                 store.refresh(); // Refresh on successful use
                 return Some(store.cookies.clone());
             }
-            // Expired, clear cache
-            *cache = None;
+            // Expired, remove entry
+            cache.remove(user_id);
         }
         None
     }

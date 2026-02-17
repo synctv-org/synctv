@@ -478,8 +478,15 @@ impl RoomService {
         room_id: RoomId,
         user_id: UserId,
     ) -> Result<(Room, RoomMember, Vec<crate::models::RoomMemberWithUser>)> {
-        // Add member (will check if already member and max members)
-        let created_member = self.member_service.add_member(room_id.clone(), user_id.clone(), RoomRole::Member).await?;
+        // R-P2-1: Enforce room capacity limits by enabling max_members check.
+        // AddMemberOptions::new() defaults to check_max_members=false; explicitly
+        // enable it so the member_service reads max_members from RoomSettings and
+        // rejects the join if the room is at capacity.
+        use crate::service::member::AddMemberOptions;
+        let options = AddMemberOptions::new().with_max_members(0); // 0 = read from RoomSettings
+        let created_member = self.member_service
+            .add_member_with_options(room_id.clone(), user_id.clone(), RoomRole::Member, options)
+            .await?;
 
         // Get all members
         let members = self.member_service.list_members(&room_id).await?;

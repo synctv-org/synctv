@@ -174,6 +174,10 @@ struct SfuSession {
     /// RTCP handler (held for cancellation on drop)
     #[allow(dead_code)]
     rtcp_handler: Option<RtcpHandler>,
+    /// Signaling event sender for SDP renegotiation and ICE candidates.
+    /// When a new track is added to a subscriber, the SFU creates a new offer
+    /// and sends it through this channel so the API layer forwards it to the client.
+    event_tx: mpsc::UnboundedSender<SfuSignalingEvent>,
     /// Last activity timestamp for idle timeout detection
     last_activity: Arc<parking_lot::Mutex<Instant>>,
     /// Connection ID for logging
@@ -431,6 +435,48 @@ impl SfuSessionManager {
                                     "{}: Failed to subscribe peer to track", prefix
                                 );
                             }
+
+                            // SFU-12: Trigger SDP renegotiation so the subscriber
+                            // learns about the newly added track. Without this, the
+                            // remote peer's SDP never includes the new m= line and
+                            // the track is effectively invisible.
+                            match session.pc.create_offer().await {
+                                Ok(offer) => {
+                                    let offer_json = match serde_json::to_string(&offer) {
+                                        Ok(json) => json,
+                                        Err(e) => {
+                                            warn!(
+                                                subscriber_peer = %session.peer_id,
+                                                error = %e,
+                                                "{}: Failed to serialize renegotiation offer", prefix
+                                            );
+                                            continue;
+                                        }
+                                    };
+                                    if session.event_tx.send(SfuSignalingEvent::SdpAnswer {
+                                        peer_id: session.peer_id.clone(),
+                                        sdp: offer_json,
+                                    }).is_err() {
+                                        debug!(
+                                            subscriber_peer = %session.peer_id,
+                                            "{}: Signaling channel closed for renegotiation", prefix
+                                        );
+                                    } else {
+                                        info!(
+                                            subscriber_peer = %session.peer_id,
+                                            track_id = %track_id,
+                                            "{}: Triggered SDP renegotiation after new track", prefix
+                                        );
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        subscriber_peer = %session.peer_id,
+                                        error = %e,
+                                        "{}: Failed to create renegotiation offer", prefix
+                                    );
+                                }
+                            }
                         }
                     }
                 })
@@ -551,7 +597,8 @@ impl SfuSessionManager {
             (None, None)
         };
 
-        // Store session
+        // Store session (event_tx is cloned so the on_track callback can trigger
+        // renegotiation on subscriber sessions)
         self.sessions.insert(
             conn_id.to_string(),
             SfuSession {
@@ -560,6 +607,7 @@ impl SfuSessionManager {
                 sfu_peer: Arc::clone(&sfu_peer),
                 rtcp_task,
                 rtcp_handler,
+                event_tx: event_tx.clone(),
                 last_activity: Arc::new(parking_lot::Mutex::new(Instant::now())),
                 conn_id: conn_id.to_string(),
                 room_id: room_id.to_string(),

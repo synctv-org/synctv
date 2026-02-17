@@ -368,7 +368,7 @@ impl NodeRegistry {
 
     /// Record the result of a complete Redis operation (connection + command).
     /// Also detects Sentinel failover errors and clears the cached connection.
-    fn record_operation_result<T>(&self, result: &std::result::Result<T, impl std::fmt::Display>) {
+    fn record_operation_result<T: std::fmt::Debug>(&self, result: &std::result::Result<T, impl std::fmt::Display>) {
         if result.is_ok() {
             self.circuit_breaker.on_success();
         } else {

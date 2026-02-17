@@ -25,7 +25,7 @@ use crate::webrtc_control::{IceManager, PeerConnection};
 use anyhow::{anyhow, Result};
 use dashmap::DashMap;
 use std::net::IpAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -228,9 +228,14 @@ impl SfuSessionManager {
         manager
     }
 
-    /// Start background task to clean up idle sessions
+    /// Start background task to clean up idle sessions.
+    ///
+    /// Uses a `Weak` reference to `Self` to avoid an Arc cycle between the
+    /// `SfuSessionManager` and the spawned cleanup task. The task exits
+    /// gracefully when the manager is dropped (Weak::upgrade returns None).
     fn start_cleanup_task(manager: Arc<Self>) {
         let cancel_token = manager.cleanup_cancel_token.clone();
+        let weak_manager = Arc::downgrade(&manager);
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(60));
             loop {
@@ -240,6 +245,10 @@ impl SfuSessionManager {
                         break;
                     }
                     _ = interval.tick() => {
+                        let Some(manager) = weak_manager.upgrade() else {
+                            info!("SFU session manager dropped, cleanup task exiting");
+                            break;
+                        };
                         manager.cleanup_idle_sessions().await;
                     }
                 }
@@ -295,19 +304,18 @@ impl SfuSessionManager {
         self.sfu_manager.config().sfu_threshold
     }
 
-    /// Create an SFU session for a peer.
+    /// Common session setup: creates PeerConnection, registers callbacks, subscribes
+    /// to existing tracks, starts RTCP handler, stores the session, and starts
+    /// subscriber output.
     ///
-    /// This creates a server-side `PeerConnection`, registers the peer with the
-    /// SFU room, and sets up track/ICE callbacks.
-    ///
-    /// Returns an `UnboundedReceiver` for signaling events (ICE candidates, etc.)
-    /// that must be forwarded to the client.
-    pub async fn create_session(
+    /// Returns `(pc, event_rx, outbound_count)` for caller-specific post-processing.
+    async fn setup_session_core(
         &self,
         room_id: &str,
         peer_id: &str,
         conn_id: &str,
-    ) -> Result<mpsc::UnboundedReceiver<SfuSignalingEvent>> {
+        log_prefix: &str,
+    ) -> Result<(Arc<PeerConnection>, mpsc::UnboundedReceiver<SfuSignalingEvent>, usize)> {
         let sfu_room_id = RoomId::from(room_id);
         let sfu_peer_id = PeerId::from(peer_id);
 
@@ -337,18 +345,14 @@ impl SfuSessionManager {
         // Create signaling event channel
         let (event_tx, event_rx) = mpsc::unbounded_channel();
 
-        // Set up callbacks with room integration
+        // Set up on_track callback
         let room_for_track = Arc::clone(&room);
         let peer_id_for_track = sfu_peer_id.clone();
         let room_id_for_track = sfu_room_id.clone();
         let sessions_for_track = Arc::clone(&self.sessions);
-        let event_tx_for_ice = event_tx.clone();
-        let peer_id_str = peer_id.to_string();
+        let log_prefix_track = log_prefix.to_string();
         let simulcast_enabled = self.sfu_manager.config().enable_simulcast;
 
-        // on_track: register incoming tracks with the SFU room, then create
-        // outbound tracks on all other subscribers' PeerConnections so they
-        // can receive the newly published media.
         pc.pc.on_track(Box::new(
             move |remote_track: Arc<webrtc::track::track_remote::TrackRemote>,
                   rtp_receiver: Arc<webrtc::rtp_transceiver::rtp_receiver::RTCRtpReceiver>,
@@ -357,6 +361,7 @@ impl SfuSessionManager {
                 let peer_id = peer_id_for_track.clone();
                 let room_id = room_id_for_track.clone();
                 let sessions = sessions_for_track.clone();
+                let prefix = log_prefix_track.clone();
                 Box::pin(async move {
                     let track_id = TrackId::from(remote_track.id());
                     let kind = TrackKind::from(remote_track.kind());
@@ -368,7 +373,7 @@ impl SfuSessionManager {
                         track_id = %track_id,
                         kind = ?kind,
                         codec = %codec,
-                        "SFU: Received new track from peer"
+                        "{}: Received track from peer", prefix
                     );
 
                     let media_track = Arc::new(MediaTrack::new(
@@ -392,16 +397,13 @@ impl SfuSessionManager {
                             peer_id = %peer_id,
                             track_id = %track_id,
                             error = %e,
-                            "SFU: Failed to register track with room"
+                            "{}: Failed to register track with room", prefix
                         );
                         return;
                     }
 
-                    // Add outbound track to all other peers' PeerConnections
-                    // so they can receive this newly published track.
                     for entry in sessions.iter() {
                         let session = entry.value();
-                        // Skip the publisher itself
                         if session.peer_id == peer_id.as_str() {
                             continue;
                         }
@@ -414,10 +416,9 @@ impl SfuSessionManager {
                                 subscriber_peer = %session.peer_id,
                                 track_id = %track_id,
                                 error = %e,
-                                "SFU: Failed to add outbound track to subscriber"
+                                "{}: Failed to add outbound track to subscriber", prefix
                             );
                         } else {
-                            // Subscribe the peer to the track in the room
                             let subscriber_peer_id = PeerId::from(session.peer_id.as_str());
                             if let Err(e) = room
                                 .subscribe_track(&subscriber_peer_id, &track_id)
@@ -427,7 +428,7 @@ impl SfuSessionManager {
                                     subscriber_peer = %session.peer_id,
                                     track_id = %track_id,
                                     error = %e,
-                                    "SFU: Failed to subscribe peer to track"
+                                    "{}: Failed to subscribe peer to track", prefix
                                 );
                             }
                         }
@@ -436,14 +437,17 @@ impl SfuSessionManager {
             },
         ));
 
-        // on_ice_candidate: send candidates back through the signaling channel
-        // Apply filtering to prevent leaking internal network topology
+        // Set up on_ice_candidate callback with security filtering
+        let event_tx_for_ice = event_tx.clone();
+        let peer_id_str = peer_id.to_string();
+        let log_prefix_ice = log_prefix.to_string();
+
         pc.pc.on_ice_candidate(Box::new(move |candidate: Option<RTCIceCandidate>| {
             let event_tx = event_tx_for_ice.clone();
             let peer_id = peer_id_str.clone();
+            let prefix = log_prefix_ice.clone();
             Box::pin(async move {
                 if let Some(candidate) = candidate {
-                    // Filter candidate for security (only send reflexive/relay, not private IPs)
                     let filtered_candidate = filter_ice_candidate(&candidate);
                     if filtered_candidate.is_none() {
                         debug!(
@@ -471,7 +475,7 @@ impl SfuSessionManager {
                     debug!(
                         peer_id = %peer_id,
                         candidate_type = %candidate.typ,
-                        "SFU: Sending filtered ICE candidate to signaling channel"
+                        "{}: Sending filtered ICE candidate to signaling channel", prefix
                     );
 
                     if event_tx
@@ -481,7 +485,7 @@ impl SfuSessionManager {
                         })
                         .is_err()
                     {
-                        debug!(peer_id = %peer_id, "SFU: Signaling event channel closed");
+                        debug!(peer_id = %peer_id, "{}: Signaling event channel closed", prefix);
                     }
                 }
             })
@@ -491,13 +495,10 @@ impl SfuSessionManager {
         let network_monitor = room.network_monitor().clone();
         pc.setup_callbacks(network_monitor.clone()).await?;
 
-        // Add outbound tracks for all existing published tracks from other peers.
-        // This ensures the new subscriber can receive media that is already being
-        // published in the room.
+        // Add outbound tracks for all existing published tracks from other peers
         let existing_tracks = room.get_published_track_info();
         let mut outbound_count: usize = 0;
         for (track_id, publisher_peer_id, kind, codec) in existing_tracks.iter() {
-            // Skip tracks published by this peer (they are inbound, not outbound)
             if *publisher_peer_id == sfu_peer_id {
                 continue;
             }
@@ -507,17 +508,16 @@ impl SfuSessionManager {
                     peer_id = %sfu_peer_id,
                     track_id = %track_id,
                     error = %e,
-                    "SFU: Failed to add outbound track for existing published track"
+                    "{}: Failed to add outbound track for existing published track", log_prefix
                 );
             } else {
                 outbound_count += 1;
-                // Subscribe in the room so forwarding includes this peer
                 if let Err(e) = room.subscribe_track(&sfu_peer_id, track_id).await {
                     warn!(
                         peer_id = %sfu_peer_id,
                         track_id = %track_id,
                         error = %e,
-                        "SFU: Failed to subscribe to existing track"
+                        "{}: Failed to subscribe to existing track", log_prefix
                     );
                 }
             }
@@ -537,7 +537,7 @@ impl SfuSessionManager {
                     warn!(
                         peer_id = %sfu_peer_id,
                         error = %e,
-                        "SFU: Failed to start RTCP handler, continuing without bandwidth estimation"
+                        "{}: Failed to start RTCP handler, continuing without bandwidth estimation", log_prefix
                     );
                     None
                 }
@@ -546,12 +546,12 @@ impl SfuSessionManager {
         } else {
             debug!(
                 peer_id = %sfu_peer_id,
-                "SFU: Bandwidth estimation disabled by config, skipping RTCP handler"
+                "{}: Bandwidth estimation disabled by config, skipping RTCP handler", log_prefix
             );
             (None, None)
         };
 
-        // Store session with initial activity timestamp
+        // Store session
         self.sessions.insert(
             conn_id.to_string(),
             SfuSession {
@@ -569,6 +569,25 @@ impl SfuSessionManager {
 
         // Start subscriber output for this peer
         pc.start_subscriber_output(sfu_peer).await?;
+
+        Ok((pc, event_rx, outbound_count))
+    }
+
+    /// Create an SFU session for a peer.
+    ///
+    /// This creates a server-side `PeerConnection`, registers the peer with the
+    /// SFU room, and sets up track/ICE callbacks.
+    ///
+    /// Returns an `UnboundedReceiver` for signaling events (ICE candidates, etc.)
+    /// that must be forwarded to the client.
+    pub async fn create_session(
+        &self,
+        room_id: &str,
+        peer_id: &str,
+        conn_id: &str,
+    ) -> Result<mpsc::UnboundedReceiver<SfuSignalingEvent>> {
+        let (_pc, event_rx, outbound_count) =
+            self.setup_session_core(room_id, peer_id, conn_id, "SFU").await?;
 
         info!(
             room_id = %room_id,
@@ -721,270 +740,14 @@ impl SfuSessionManager {
         peer_id: &str,
         conn_id: &str,
     ) -> Result<PeerMigrationResult> {
-        let sfu_room_id = RoomId::from(room_id);
-        let sfu_peer_id = PeerId::from(peer_id);
-
-        // Get or create the SFU room
-        let room = self
-            .sfu_manager
-            .get_or_create_room(sfu_room_id.clone())
-            .await?;
-
-        // Register the peer with the room
-        let sfu_peer = room
-            .add_peer(sfu_peer_id.clone(), self.sfu_manager.config().max_peers_per_room)
-            .await?;
-
-        // Get ICE servers
-        let ice_servers = self.ice_manager.get_servers().await;
-
-        // Create server-side PeerConnection
-        let pc = PeerConnection::new(
-            sfu_peer_id.clone(),
-            sfu_room_id.clone(),
-            ice_servers,
-        )
-        .await?;
-        let pc = Arc::new(pc);
-
-        // Create signaling event channel
-        let (event_tx, event_rx) = mpsc::unbounded_channel();
-
-        // Set up callbacks with room integration
-        let room_for_track = Arc::clone(&room);
-        let peer_id_for_track = sfu_peer_id.clone();
-        let room_id_for_track = sfu_room_id.clone();
-        let sessions_for_track = Arc::clone(&self.sessions);
-        let event_tx_for_ice = event_tx.clone();
-        let peer_id_str = peer_id.to_string();
-        let simulcast_enabled_migration = self.sfu_manager.config().enable_simulcast;
-
-        // on_track: register incoming tracks with the SFU room, then create
-        // outbound tracks on all other subscribers' PeerConnections so they
-        // can receive the newly published media.
-        pc.pc.on_track(Box::new(
-            move |remote_track: Arc<webrtc::track::track_remote::TrackRemote>,
-                  rtp_receiver: Arc<webrtc::rtp_transceiver::rtp_receiver::RTCRtpReceiver>,
-                  _transceiver: Arc<webrtc::rtp_transceiver::RTCRtpTransceiver>| {
-                let room = Arc::clone(&room_for_track);
-                let peer_id = peer_id_for_track.clone();
-                let room_id = room_id_for_track.clone();
-                let sessions = sessions_for_track.clone();
-                Box::pin(async move {
-                    let track_id = TrackId::from(remote_track.id());
-                    let kind = TrackKind::from(remote_track.kind());
-                    let codec = remote_track.codec().capability.mime_type.clone();
-
-                    info!(
-                        peer_id = %peer_id,
-                        room_id = %room_id,
-                        track_id = %track_id,
-                        kind = ?kind,
-                        codec = %codec,
-                        "SFU migration: Received track from migrating peer"
-                    );
-
-                    let media_track = Arc::new(MediaTrack::new(
-                        track_id.clone(),
-                        peer_id.clone(),
-                        remote_track,
-                        rtp_receiver,
-                    ));
-
-                    // Set initial simulcast quality layer for video tracks only
-                    // when simulcast is enabled in config
-                    if simulcast_enabled_migration && kind == TrackKind::Video {
-                        media_track.set_quality_layer(crate::track::QualityLayer::Medium);
-                    }
-
-                    if let Err(e) = room
-                        .add_published_track(&peer_id, track_id.clone(), media_track)
-                        .await
-                    {
-                        error!(
-                            peer_id = %peer_id,
-                            track_id = %track_id,
-                            error = %e,
-                            "SFU migration: Failed to register track with room"
-                        );
-                        return;
-                    }
-
-                    // Add outbound track to all other peers' PeerConnections
-                    // so they can receive this newly published track.
-                    for entry in sessions.iter() {
-                        let session = entry.value();
-                        // Skip the publisher itself
-                        if session.peer_id == peer_id.as_str() {
-                            continue;
-                        }
-                        if let Err(e) = session
-                            .pc
-                            .add_outbound_track(track_id.clone(), kind, &codec)
-                            .await
-                        {
-                            warn!(
-                                subscriber_peer = %session.peer_id,
-                                track_id = %track_id,
-                                error = %e,
-                                "SFU migration: Failed to add outbound track to subscriber"
-                            );
-                        } else {
-                            let subscriber_peer_id = PeerId::from(session.peer_id.as_str());
-                            if let Err(e) = room
-                                .subscribe_track(&subscriber_peer_id, &track_id)
-                                .await
-                            {
-                                warn!(
-                                    subscriber_peer = %session.peer_id,
-                                    track_id = %track_id,
-                                    error = %e,
-                                    "SFU migration: Failed to subscribe peer to track"
-                                );
-                            }
-                        }
-                    }
-                })
-            },
-        ));
-
-        // on_ice_candidate: send candidates back through the signaling channel
-        // Apply filtering to prevent leaking internal network topology
-        pc.pc.on_ice_candidate(Box::new(move |candidate: Option<RTCIceCandidate>| {
-            let event_tx = event_tx_for_ice.clone();
-            let peer_id = peer_id_str.clone();
-            Box::pin(async move {
-                if let Some(candidate) = candidate {
-                    // Filter candidate for security (only send reflexive/relay, not private IPs)
-                    let filtered_candidate = filter_ice_candidate(&candidate);
-                    if filtered_candidate.is_none() {
-                        debug!(
-                            peer_id = %peer_id,
-                            candidate_type = %candidate.typ,
-                            "ICE candidate filtered (security)"
-                        );
-                        return;
-                    }
-
-                    let candidate_json = match candidate.to_json() {
-                        Ok(init) => match serde_json::to_string(&init) {
-                            Ok(json) => json,
-                            Err(e) => {
-                                warn!(error = %e, "Failed to serialize ICE candidate");
-                                return;
-                            }
-                        },
-                        Err(e) => {
-                            warn!(error = %e, "Failed to convert ICE candidate to JSON");
-                            return;
-                        }
-                    };
-
-                    debug!(
-                        peer_id = %peer_id,
-                        candidate_type = %candidate.typ,
-                        "SFU migration: Sending filtered ICE candidate to signaling channel"
-                    );
-
-                    if event_tx
-                        .send(SfuSignalingEvent::IceCandidate {
-                            peer_id: peer_id.clone(),
-                            candidate_json,
-                        })
-                        .is_err()
-                    {
-                        debug!(peer_id = %peer_id, "SFU migration: Signaling event channel closed");
-                    }
-                }
-            })
-        }));
-
-        // Set up connection state monitoring
-        let network_monitor = room.network_monitor().clone();
-        pc.setup_callbacks(network_monitor.clone()).await?;
-
-        // Add outbound tracks for all existing published tracks from other peers.
-        // This ensures the migrating subscriber can receive media already being
-        // published in the room.
-        let existing_tracks = room.get_published_track_info();
-        let mut outbound_count: usize = 0;
-        for (track_id, publisher_peer_id, kind, codec) in existing_tracks.iter() {
-            if *publisher_peer_id == sfu_peer_id {
-                continue;
-            }
-            let tid: TrackId = track_id.clone();
-            if let Err(e) = pc.add_outbound_track(tid, *kind, codec.as_str()).await {
-                warn!(
-                    peer_id = %sfu_peer_id,
-                    track_id = %track_id,
-                    error = %e,
-                    "SFU migration: Failed to add outbound track for existing published track"
-                );
-            } else {
-                outbound_count += 1;
-                if let Err(e) = room.subscribe_track(&sfu_peer_id, track_id).await {
-                    warn!(
-                        peer_id = %sfu_peer_id,
-                        track_id = %track_id,
-                        error = %e,
-                        "SFU migration: Failed to subscribe to existing track"
-                    );
-                }
-            }
-        }
+        let (pc, event_rx, outbound_count) =
+            self.setup_session_core(room_id, peer_id, conn_id, "SFU migration").await?;
 
         // Create SDP offer from the server side (after adding outbound tracks
         // so they are included in the SDP offer)
         let offer = pc.create_offer().await?;
         let offer_json = serde_json::to_string(&offer)
             .map_err(|e| anyhow!("Failed to serialize SDP offer: {}", e))?;
-
-        // Start RTCP handler for bandwidth estimation and network quality monitoring,
-        // but only if bandwidth estimation is enabled in config.
-        let (rtcp_handler, rtcp_task) = if self.sfu_manager.config().enable_bandwidth_estimation {
-            let handler = RtcpHandler::new(
-                sfu_peer_id.clone(),
-                network_monitor,
-                Arc::clone(&sfu_peer),
-            );
-            let task = match handler.start(Arc::clone(&pc.pc), vec![]).await {
-                Ok(handle) => Some(handle),
-                Err(e) => {
-                    warn!(
-                        peer_id = %sfu_peer_id,
-                        error = %e,
-                        "SFU migration: Failed to start RTCP handler, continuing without bandwidth estimation"
-                    );
-                    None
-                }
-            };
-            (Some(handler), task)
-        } else {
-            debug!(
-                peer_id = %sfu_peer_id,
-                "SFU migration: Bandwidth estimation disabled by config, skipping RTCP handler"
-            );
-            (None, None)
-        };
-
-        // Store session with initial activity timestamp
-        self.sessions.insert(
-            conn_id.to_string(),
-            SfuSession {
-                pc: Arc::clone(&pc),
-                room: Arc::clone(&room),
-                sfu_peer: Arc::clone(&sfu_peer),
-                rtcp_task,
-                rtcp_handler,
-                last_activity: Arc::new(parking_lot::Mutex::new(Instant::now())),
-                conn_id: conn_id.to_string(),
-                room_id: room_id.to_string(),
-                peer_id: peer_id.to_string(),
-            },
-        );
-
-        // Start subscriber output for this peer
-        pc.start_subscriber_output(sfu_peer).await?;
 
         info!(
             room_id = %room_id,

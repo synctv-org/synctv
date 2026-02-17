@@ -128,6 +128,12 @@ impl Default for ConnectionLimits {
 /// the counter will expire after this duration.
 const DISTRIBUTED_COUNTER_TTL_SECONDS: i64 = 90; // 3x heartbeat interval (30s)
 
+/// TTL for connection metadata keys in Redis (seconds).
+/// Set to max_duration (24h) + buffer (1h) so metadata auto-expires if a node
+/// crashes without calling unregister(). The TTL refresh task keeps active
+/// connections alive by periodically resetting this TTL.
+const CONNECTION_METADATA_TTL_SECONDS: i64 = 90_000; // 25 hours
+
 /// Connection manager for tracking active gRPC streaming connections
 #[derive(Clone)]
 pub struct ConnectionManager {
@@ -357,9 +363,18 @@ impl ConnectionManager {
             let connection_id_clone = connection_id.clone();
 
             tokio::spawn(async move {
-                // Store connection metadata as JSON
+                // Store connection metadata as JSON with TTL for crash-safety.
+                // If the node crashes without calling unregister(), the key
+                // auto-expires instead of leaking indefinitely.
                 if let Ok(json) = serde_json::to_string(&persistent) {
-                    if let Err(e) = conn_clone.set::<_, _, ()>(&conn_key, &json).await {
+                    let result: Result<(), _> = redis::cmd("SET")
+                        .arg(&conn_key)
+                        .arg(&json)
+                        .arg("EX")
+                        .arg(CONNECTION_METADATA_TTL_SECONDS)
+                        .query_async(&mut conn_clone)
+                        .await;
+                    if let Err(e) = result {
                         warn!("Failed to persist connection metadata to Redis: {e}");
                     }
                 }
@@ -368,6 +383,8 @@ impl ConnectionManager {
                 if let Err(e) = conn_clone.sadd::<_, _, ()>(&user_index_key, &connection_id_clone).await {
                     warn!("Failed to add connection to user index: {e}");
                 }
+                // Set TTL on user index set
+                let _: Result<(), _> = conn_clone.expire(&user_index_key, CONNECTION_METADATA_TTL_SECONDS).await;
             });
         }
 
@@ -501,9 +518,16 @@ impl ConnectionManager {
             let connection_id_clone = connection_id.to_string();
 
             tokio::spawn(async move {
-                // Update connection metadata with new room_id
+                // Update connection metadata with new room_id (with TTL for crash-safety)
                 if let Ok(json) = serde_json::to_string(&persistent) {
-                    if let Err(e) = conn_clone.set::<_, _, ()>(&conn_key, &json).await {
+                    let result: Result<(), _> = redis::cmd("SET")
+                        .arg(&conn_key)
+                        .arg(&json)
+                        .arg("EX")
+                        .arg(CONNECTION_METADATA_TTL_SECONDS)
+                        .query_async(&mut conn_clone)
+                        .await;
+                    if let Err(e) = result {
                         warn!("Failed to update connection metadata in Redis: {e}");
                     }
                 }
@@ -512,6 +536,8 @@ impl ConnectionManager {
                 if let Err(e) = conn_clone.sadd::<_, _, ()>(&room_index_key, &connection_id_clone).await {
                     warn!("Failed to add connection to room index: {e}");
                 }
+                // Set TTL on room index set
+                let _: Result<(), _> = conn_clone.expire(&room_index_key, CONNECTION_METADATA_TTL_SECONDS).await;
             });
         }
 
@@ -664,12 +690,33 @@ impl ConnectionManager {
             .map_or(0, |conns| conns.len())
     }
 
-    /// Get connection count for a room
-    #[must_use] 
+    /// Get connection count for a room (local node only)
+    #[must_use]
     pub fn room_connection_count(&self, room_id: &RoomId) -> usize {
         self.room_connections
             .get(room_id)
             .map_or(0, |conns| conns.len())
+    }
+
+    /// Get connection count for a room across all replicas (distributed).
+    ///
+    /// Reads the Redis atomic counter (`connections:room:{room_id}`) which is
+    /// maintained by `register`/`unregister`/`join_room`. Falls back to the
+    /// local-only count if Redis is not configured or unavailable.
+    pub async fn room_connection_count_distributed(&self, room_id: &RoomId) -> usize {
+        if let Some(ref conn) = self.redis_conn {
+            let redis_key = format!("{}connections:room:{}", self.redis_key_prefix, room_id.as_str());
+            let mut conn_clone = conn.clone();
+            match conn_clone.get::<_, Option<i64>>(&redis_key).await {
+                Ok(Some(count)) if count > 0 => return count as usize,
+                Ok(_) => return 0,
+                Err(e) => {
+                    warn!("Failed to read distributed room connection count from Redis, falling back to local: {e}");
+                }
+            }
+        }
+        // Fallback to local-only count
+        self.room_connection_count(room_id)
     }
 
     /// Get total connections ever established
@@ -734,12 +781,16 @@ impl ConnectionManager {
         }
     }
 
-    /// Refresh TTLs on all active distributed connection counters in Redis.
+    /// Refresh TTLs on all active distributed connection counters and metadata in Redis.
     ///
     /// Long-lived connections (up to 24 hours) outlive the crash-safety TTL
     /// (`DISTRIBUTED_COUNTER_TTL_SECONDS`). Without periodic refreshes, the
     /// counter expires while the connection is still alive, causing distributed
     /// rate limiting to silently stop working.
+    ///
+    /// Also refreshes TTLs on connection metadata keys (`conn_mgr:conn:*`,
+    /// `conn_mgr:user:*`, `conn_mgr:room:*`) to prevent them from expiring
+    /// while the connection is still active.
     async fn refresh_distributed_counter_ttls(&self) {
         let Some(ref conn) = self.redis_conn else {
             return;
@@ -747,11 +798,19 @@ impl ConnectionManager {
         let mut conn = conn.clone();
 
         // Collect unique user and room keys from active connections
-        let mut keys = std::collections::HashSet::new();
+        let mut counter_keys = std::collections::HashSet::new();
+        let mut metadata_keys = std::collections::HashSet::new();
+
         for entry in self.user_connections.iter() {
             if !entry.value().is_empty() {
-                keys.insert(format!(
+                counter_keys.insert(format!(
                     "{}connections:user:{}",
+                    self.redis_key_prefix,
+                    entry.key().as_str()
+                ));
+                // R-P2-4: Also refresh user index metadata TTL
+                metadata_keys.insert(format!(
+                    "{}conn_mgr:user:{}",
                     self.redis_key_prefix,
                     entry.key().as_str()
                 ));
@@ -759,25 +818,48 @@ impl ConnectionManager {
         }
         for entry in self.room_connections.iter() {
             if !entry.value().is_empty() {
-                keys.insert(format!(
+                counter_keys.insert(format!(
                     "{}connections:room:{}",
+                    self.redis_key_prefix,
+                    entry.key().as_str()
+                ));
+                // R-P2-4: Also refresh room index metadata TTL
+                metadata_keys.insert(format!(
+                    "{}conn_mgr:room:{}",
                     self.redis_key_prefix,
                     entry.key().as_str()
                 ));
             }
         }
 
-        for key in &keys {
+        // R-P2-4: Refresh per-connection metadata TTLs
+        for entry in self.connections.iter() {
+            metadata_keys.insert(format!(
+                "{}conn_mgr:conn:{}",
+                self.redis_key_prefix,
+                entry.key()
+            ));
+        }
+
+        for key in &counter_keys {
             let result: Result<(), _> = conn.expire(key, DISTRIBUTED_COUNTER_TTL_SECONDS).await;
             if let Err(e) = result {
                 warn!("Failed to refresh TTL for distributed counter {key}: {e}");
             }
         }
 
-        if !keys.is_empty() {
+        for key in &metadata_keys {
+            let result: Result<(), _> = conn.expire(key, CONNECTION_METADATA_TTL_SECONDS).await;
+            if let Err(e) = result {
+                warn!("Failed to refresh TTL for connection metadata {key}: {e}");
+            }
+        }
+
+        if !counter_keys.is_empty() || !metadata_keys.is_empty() {
             debug!(
-                key_count = keys.len(),
-                "Refreshed TTLs on distributed connection counters"
+                counter_keys = counter_keys.len(),
+                metadata_keys = metadata_keys.len(),
+                "Refreshed TTLs on distributed counters and connection metadata"
             );
         }
     }

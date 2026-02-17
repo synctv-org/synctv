@@ -363,6 +363,19 @@ impl ClientApiImpl {
             .await
             .map_err(|e| ApiError::Internal(format!("Failed to update password: {e}")))?;
 
+        // Invalidate room cache on other replicas so password check uses fresh data
+        if let Some(ref tx) = self.redis_publish_tx {
+            let _ = tx.try_send(synctv_cluster::sync::PublishRequest {
+                event: synctv_cluster::sync::ClusterEvent::CacheInvalidate {
+                    event_id: nanoid::nanoid!(16),
+                    targets: vec![synctv_cluster::sync::CacheTarget::Room {
+                        room_id: rid.as_str().to_string(),
+                    }],
+                    timestamp: chrono::Utc::now(),
+                },
+            });
+        }
+
         Ok(crate::proto::client::SetRoomPasswordResponse { success: true })
     }
 
@@ -461,6 +474,26 @@ impl ClientApiImpl {
             .reset_room_settings(&rid, &uid)
             .await
             .map_err(ApiError::from)?;
+
+        // Broadcast RoomSettingsChanged cluster event for cross-replica propagation
+        if let Some(ref tx) = self.redis_publish_tx {
+            let username = self.user_service.get_user(&uid).await
+                .map(|u| u.username.clone())
+                .unwrap_or_default();
+
+            if let Err(e) = tx.send(synctv_cluster::sync::PublishRequest {
+                event: synctv_cluster::sync::ClusterEvent::RoomSettingsChanged {
+                    event_id: nanoid::nanoid!(16),
+                    room_id: rid,
+                    user_id: uid,
+                    username,
+                    settings_json: settings_json.as_bytes().to_vec(),
+                    timestamp: chrono::Utc::now(),
+                },
+            }).await {
+                tracing::error!("Failed to publish RoomSettingsChanged cluster event for reset: {e}");
+            }
+        }
 
         Ok(crate::proto::client::ResetRoomSettingsResponse {
             settings: settings_json.into_bytes(),

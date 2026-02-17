@@ -35,14 +35,23 @@ pub async fn login(
     Ok(Json(response))
 }
 
-/// Refresh access token using refresh token
+/// Refresh access token using refresh token.
+///
+/// If the caller includes an `Authorization: Bearer <access_token>` header,
+/// the old access token will be blacklisted to prevent further use.
 pub async fn refresh_token(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<RefreshTokenRequest>,
 ) -> AppResult<Json<RefreshTokenResponse>> {
+    let old_access_token = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| synctv_core::service::auth::JwtValidator::extract_bearer_token(s).ok());
+
     let response = state
         .client_api
-        .refresh_token(req)
+        .refresh_token(req, old_access_token.as_deref())
         .await
         .map_err(super::error::map_api_error)?;
 

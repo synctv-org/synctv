@@ -17,10 +17,15 @@ use axum::{
     Router,
 };
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 use tracing::{error, warn};
 
 use crate::http::AppState;
 use crate::observability::metrics;
+
+/// Timeout for individual health check probes (DB, Redis).
+/// Prevents a hung dependency from blocking the readiness endpoint indefinitely.
+const HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Health check router (without metrics endpoint)
 ///
@@ -155,15 +160,17 @@ pub async fn readiness_check(State(state): State<AppState>) -> impl IntoResponse
     (status_code, Json(response))
 }
 
-/// Check database connectivity
+/// Check database connectivity with timeout
 async fn check_database_health(state: &AppState) -> Result<(), String> {
-    // Try to execute a simple query to verify database connectivity
-    // Using the user_service which has access to the database pool
-    match state.user_service.health_check().await {
-        Ok(()) => Ok(()),
-        Err(e) => {
+    match tokio::time::timeout(HEALTH_CHECK_TIMEOUT, state.user_service.health_check()).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => {
             warn!("Database health check failed: {}", e);
             Err(format!("Database connection failed: {e}"))
+        }
+        Err(_) => {
+            warn!("Database health check timed out after {}s", HEALTH_CHECK_TIMEOUT.as_secs());
+            Err(format!("Database health check timed out after {}s", HEALTH_CHECK_TIMEOUT.as_secs()))
         }
     }
 }
@@ -190,17 +197,21 @@ fn check_cluster_health(state: &AppState) -> Option<Result<(), String>> {
     Some(Ok(()))
 }
 
-/// Check Redis connectivity by sending a PING command
+/// Check Redis connectivity by sending a PING command with timeout
 async fn check_redis_health(state: &AppState) -> Result<(), String> {
-    match state.rate_limiter.health_check().await {
-        Ok(()) => Ok(()),
-        Err(e) if e.contains("not configured") => {
+    match tokio::time::timeout(HEALTH_CHECK_TIMEOUT, state.rate_limiter.health_check()).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) if e.contains("not configured") => {
             // Redis not configured - acceptable in some deployments
             Ok(())
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             warn!("Redis health check failed: {}", e);
             Err(e)
+        }
+        Err(_) => {
+            warn!("Redis health check timed out after {}s", HEALTH_CHECK_TIMEOUT.as_secs());
+            Err(format!("Redis health check timed out after {}s", HEALTH_CHECK_TIMEOUT.as_secs()))
         }
     }
 }

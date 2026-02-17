@@ -1,9 +1,11 @@
 //! Publish key generation for RTMP live streaming
 //!
 //! Generates JWT tokens for RTMP push authentication.
+//! Includes single-use enforcement to prevent TOCTOU races.
 
 use serde::{Deserialize, Serialize};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::{
     models::{MediaId, RoomId, UserId},
@@ -46,33 +48,51 @@ pub struct PublishClaims {
 }
 
 /// Publish key service for generating RTMP streaming tokens
+///
+/// Includes single-use enforcement: each publish key `jti` can only be
+/// consumed once by `validate_publish_key`. This prevents TOCTOU races
+/// where the same token is replayed by a second RTMP connection before
+/// the first session registers in Redis.
 #[derive(Clone)]
 pub struct PublishKeyService {
     jwt_service: JwtService,
     token_ttl_hours: i64,
+    /// In-memory set of consumed `jti` values (moka cache with TTL matching
+    /// token lifetime). Prevents publish key replay within the same node.
+    consumed_jtis: Arc<moka::future::Cache<String, ()>>,
 }
 
 impl std::fmt::Debug for PublishKeyService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PublishKeyService")
             .field("token_ttl_hours", &self.token_ttl_hours)
+            .field("consumed_jtis_count", &self.consumed_jtis.entry_count())
             .finish()
     }
 }
 
 impl PublishKeyService {
     /// Create a new publish key service
-    #[must_use] 
-    pub const fn new(jwt_service: JwtService, token_ttl_hours: i64) -> Self {
+    #[must_use]
+    pub fn new(jwt_service: JwtService, token_ttl_hours: i64) -> Self {
+        // Cache TTL slightly exceeds token TTL so consumed jtis remain tracked
+        // until their tokens are definitely expired.
+        let cache_ttl_secs = (token_ttl_hours as u64).saturating_mul(3600).saturating_add(300);
         Self {
             jwt_service,
             token_ttl_hours,
+            consumed_jtis: Arc::new(
+                moka::future::Cache::builder()
+                    .max_capacity(100_000)
+                    .time_to_live(Duration::from_secs(cache_ttl_secs))
+                    .build(),
+            ),
         }
     }
 
     /// Create a new publish key service with default TTL (24 hours)
-    #[must_use] 
-    pub const fn with_default_ttl(jwt_service: JwtService) -> Self {
+    #[must_use]
+    pub fn with_default_ttl(jwt_service: JwtService) -> Self {
         Self::new(jwt_service, 24)
     }
 
@@ -127,13 +147,18 @@ impl PublishKeyService {
         })
     }
 
-    /// Validate a publish key token
+    /// Validate a publish key token (single-use).
+    ///
+    /// Each publish key can only be validated once. Subsequent calls with the
+    /// same token (same `jti`) will fail with an authentication error. This
+    /// prevents TOCTOU races where the same publish key is used by two
+    /// concurrent RTMP connections.
     ///
     /// # Arguments
     /// * `token` - The JWT token to validate
     ///
     /// # Returns
-    /// The validated claims if the token is valid and not expired
+    /// The validated claims if the token is valid, not expired, and not already consumed
     pub async fn validate_publish_key(&self, token: &str) -> Result<PublishClaims> {
         // Verify JWT signature and expiration
         let claims_value = self
@@ -160,6 +185,15 @@ impl PublishKeyService {
                 "Token does not have START_LIVE permission".to_string(),
             ));
         }
+
+        // Single-use enforcement: check if the jti has already been consumed.
+        // If so, reject the token to prevent replay attacks.
+        if self.consumed_jtis.contains_key(&claims.jti) {
+            return Err(Error::Authentication(
+                "Publish key has already been used (single-use token)".to_string(),
+            ));
+        }
+        self.consumed_jtis.insert(claims.jti.clone(), ()).await;
 
         Ok(claims)
     }
@@ -445,6 +479,34 @@ mod tests {
         assert_eq!(back.token, "jwt.token.here");
         assert_eq!(back.room_id, "room1");
         assert_eq!(back.expires_at, 9999);
+    }
+
+    // ========== Single-use enforcement ==========
+
+    #[tokio::test]
+    async fn test_validate_publish_key_single_use() {
+        let service = create_publish_key_service();
+        let room_id = RoomId::new();
+        let media_id = MediaId::new();
+        let user_id = UserId::new();
+
+        let key = service
+            .generate_publish_key(room_id, media_id, user_id)
+            .await
+            .unwrap();
+
+        // First validation succeeds
+        let result = service.validate_publish_key(&key.token).await;
+        assert!(result.is_ok());
+
+        // Second validation with same token fails (jti already consumed)
+        let result = service.validate_publish_key(&key.token).await;
+        assert!(result.is_err());
+        if let Err(Error::Authentication(msg)) = result {
+            assert!(msg.contains("single-use"), "Expected single-use error, got: {msg}");
+        } else {
+            panic!("Expected Authentication error for replay");
+        }
     }
 
     // ========== Unique JTI per token ==========

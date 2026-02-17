@@ -493,6 +493,7 @@ impl PublisherManager {
                 if success {
                     trace!("Heartbeat refreshed for room {} / media {}", room_id, media_id);
                 } else {
+                    synctv_core::metrics::livestream::PUBLISHER_HEARTBEAT_FAILURES.inc();
                     self.cleanup_publisher(
                         room_id,
                         media_id,

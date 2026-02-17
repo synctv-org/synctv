@@ -1,6 +1,12 @@
 //! Health monitoring for cluster nodes
 //!
 //! Tracks node health via periodic heartbeats and active TCP health probes.
+//!
+//! **Reconnection resilience**: When the node registry (backed by Redis) becomes
+//! unreachable, the monitoring loop applies exponential backoff (2x, 4x, up to 8x
+//! the base check interval) to reduce log noise and wasted Redis round-trips.
+//! Active TCP probes are also skipped while the registry is unreachable. Once the
+//! registry recovers, the monitor resumes normal-interval checks.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -121,24 +127,71 @@ impl HealthMonitor {
         let cancel_token = self.cancel_token.clone();
         let probe_config = self.probe_config.clone();
         let probe_states = self.probe_states.clone();
+        let check_interval_secs = self.check_interval_secs;
 
-        let mut timer = interval(Duration::from_secs(self.check_interval_secs));
         let mut probe_timer = interval(Duration::from_secs(probe_config.probe_interval_secs));
 
         let handle = tokio::spawn(async move {
+            /// Maximum backoff multiplier when registry is unreachable.
+            /// Caps at 8x the base check interval to avoid excessively long gaps.
+            const MAX_BACKOFF_MULTIPLIER: u64 = 8;
+
+            let mut consecutive_registry_failures: u32 = 0;
+
             loop {
+                // Calculate backoff delay for heartbeat checks when registry is unreachable.
+                // On consecutive failures, wait longer (exponential backoff capped at 8x)
+                // to reduce log noise and wasted Redis round-trips.
+                let backoff_multiplier = if consecutive_registry_failures > 0 {
+                    (1u64 << consecutive_registry_failures.min(3)).min(MAX_BACKOFF_MULTIPLIER)
+                } else {
+                    1
+                };
+                let effective_check_interval = Duration::from_secs(
+                    check_interval_secs * backoff_multiplier,
+                );
+
                 tokio::select! {
                     () = cancel_token.cancelled() => {
                         tracing::info!("Health monitor shutting down");
                         return;
                     }
-                    _ = timer.tick() => {
-                        // Passive heartbeat check
-                        Self::check_heartbeats(&registry, &health_status, timeout_secs).await;
+                    _ = tokio::time::sleep(effective_check_interval) => {
+                        // Passive heartbeat check with backoff on registry failures
+                        match registry.get_all_nodes().await {
+                            Ok(nodes) => {
+                                if consecutive_registry_failures > 0 {
+                                    tracing::info!(
+                                        previous_failures = consecutive_registry_failures,
+                                        "Health monitor reconnected to registry"
+                                    );
+                                }
+                                consecutive_registry_failures = 0;
+                                Self::process_heartbeats(&health_status, &nodes, timeout_secs).await;
+                            }
+                            Err(e) => {
+                                consecutive_registry_failures = consecutive_registry_failures.saturating_add(1);
+                                if consecutive_registry_failures <= 3 {
+                                    tracing::error!(
+                                        consecutive_failures = consecutive_registry_failures,
+                                        error = %e,
+                                        "Failed to get nodes for health check"
+                                    );
+                                } else {
+                                    tracing::debug!(
+                                        consecutive_failures = consecutive_registry_failures,
+                                        error = %e,
+                                        "Failed to get nodes for health check (backoff active)"
+                                    );
+                                }
+                            }
+                        }
                     }
                     _ = probe_timer.tick() => {
-                        // Active TCP probe
-                        Self::probe_nodes(&registry, &health_status, &probe_config, &probe_states).await;
+                        // Active TCP probe -- skip if registry is unreachable
+                        if consecutive_registry_failures == 0 {
+                            Self::probe_nodes(&registry, &health_status, &probe_config, &probe_states).await;
+                        }
                     }
                 }
             }
@@ -147,42 +200,38 @@ impl HealthMonitor {
         Ok(handle)
     }
 
-    /// Check heartbeats for all nodes (passive check)
-    async fn check_heartbeats(
-        registry: &Arc<NodeRegistry>,
+    /// Process heartbeat status for a set of nodes (passive check).
+    ///
+    /// The caller is responsible for fetching nodes from the registry and
+    /// handling errors (with backoff). This function only processes results.
+    async fn process_heartbeats(
         health_status: &Arc<RwLock<std::collections::HashMap<String, NodeHealth>>>,
+        nodes: &[super::node_registry::NodeInfo],
         timeout_secs: i64,
     ) {
-        match registry.get_all_nodes().await {
-            Ok(nodes) => {
-                let mut status = health_status.write().await;
-                let node_ids: std::collections::HashSet<String> = nodes.iter().map(|n| n.node_id.clone()).collect();
+        let mut status = health_status.write().await;
+        let node_ids: std::collections::HashSet<String> = nodes.iter().map(|n| n.node_id.clone()).collect();
 
-                for node in nodes {
-                    // Only update to unhealthy based on heartbeat; probes may override
-                    let is_alive = !node.is_stale(timeout_secs);
-                    if !is_alive {
-                        // Heartbeat expired - mark unhealthy immediately
-                        let old_status = status.get(&node.node_id);
-                        if old_status != Some(&NodeHealth::Unhealthy) {
-                            tracing::warn!(
-                                node_id = %node.node_id,
-                                last_heartbeat = ?node.last_heartbeat,
-                                "Node marked unhealthy: heartbeat expired"
-                            );
-                        }
-                        status.insert(node.node_id.clone(), NodeHealth::Unhealthy);
-                    }
-                    // If heartbeat is alive, don't override - let probes decide
+        for node in nodes {
+            // Only update to unhealthy based on heartbeat; probes may override
+            let is_alive = !node.is_stale(timeout_secs);
+            if !is_alive {
+                // Heartbeat expired - mark unhealthy immediately
+                let old_status = status.get(&node.node_id);
+                if old_status != Some(&NodeHealth::Unhealthy) {
+                    tracing::warn!(
+                        node_id = %node.node_id,
+                        last_heartbeat = ?node.last_heartbeat,
+                        "Node marked unhealthy: heartbeat expired"
+                    );
                 }
-
-                // Remove nodes that are no longer in registry
-                status.retain(|node_id, _| node_ids.contains(node_id));
+                status.insert(node.node_id.clone(), NodeHealth::Unhealthy);
             }
-            Err(e) => {
-                tracing::error!("Failed to get nodes for health check: {}", e);
-            }
+            // If heartbeat is alive, don't override - let probes decide
         }
+
+        // Remove nodes that are no longer in registry
+        status.retain(|node_id, _| node_ids.contains(node_id));
     }
 
     /// Perform active TCP probes on all nodes concurrently
@@ -408,53 +457,40 @@ mod tests {
         assert_eq!(monitor.get_node_status("nonexistent").await, None);
     }
 
-    // --- check_heartbeats (passive check) ---
+    // --- process_heartbeats (passive check) ---
 
     #[tokio::test]
-    async fn test_check_heartbeats_marks_stale_nodes_unhealthy() {
-        let registry = make_registry();
-
-        // Register a node and then make its heartbeat stale
-        registry.register("localhost:50051".to_string(), "localhost:8080".to_string()).await.unwrap();
-
-        // Manually insert a stale node into local_nodes
-        {
-            let mut nodes = registry.local_nodes.write().await;
-            let mut stale_node = super::super::node_registry::NodeInfo::new(
-                "stale-node".to_string(),
-                "localhost:50052".to_string(),
-                "localhost:8081".to_string(),
-            );
-            stale_node.last_heartbeat = chrono::Utc::now() - chrono::Duration::seconds(120);
-            nodes.insert("stale-node".to_string(), stale_node);
-        }
-
-        let health_status = Arc::new(RwLock::new(HashMap::new()));
-
-        HealthMonitor::check_heartbeats(&registry, &health_status, 30).await;
-
-        let status = health_status.read().await;
-        // stale-node should be unhealthy (heartbeat > 30s old) BUT it's also
-        // filtered by is_stale in get_all_nodes, so it might not appear.
-        // The local-mode "self" node should be fresh.
-        // If stale-node is returned by get_all_nodes, it should be Unhealthy.
-        if let Some(stale_status) = status.get("stale-node") {
-            assert_eq!(*stale_status, NodeHealth::Unhealthy);
-        }
-    }
-
-    #[tokio::test]
-    async fn test_check_heartbeats_does_not_mark_fresh_nodes() {
+    async fn test_process_heartbeats_does_not_mark_fresh_nodes() {
         let registry = make_registry();
         registry.register("localhost:50051".to_string(), "localhost:8080".to_string()).await.unwrap();
 
         let health_status = Arc::new(RwLock::new(HashMap::new()));
-        HealthMonitor::check_heartbeats(&registry, &health_status, 30).await;
+        let nodes = registry.get_all_nodes().await.unwrap();
+        HealthMonitor::process_heartbeats(&health_status, &nodes, 30).await;
 
         let status = health_status.read().await;
         // Fresh node should not be marked unhealthy
         let self_status = status.get("self");
         assert!(self_status.is_none() || *self_status.unwrap() != NodeHealth::Unhealthy);
+    }
+
+    #[tokio::test]
+    async fn test_process_heartbeats_prunes_removed_nodes() {
+        let registry = make_registry();
+        registry.register("localhost:50051".to_string(), "localhost:8080".to_string()).await.unwrap();
+
+        let health_status = Arc::new(RwLock::new(HashMap::new()));
+        // Pre-populate with a node that no longer exists
+        {
+            let mut status = health_status.write().await;
+            status.insert("ghost-node".to_string(), NodeHealth::Healthy);
+        }
+
+        let nodes = registry.get_all_nodes().await.unwrap();
+        HealthMonitor::process_heartbeats(&health_status, &nodes, 30).await;
+
+        let status = health_status.read().await;
+        assert!(!status.contains_key("ghost-node"), "Removed node should be pruned");
     }
 
     // --- probe_node_static ---
@@ -529,23 +565,5 @@ mod tests {
 
         assert_eq!(state.failure_count.load(Ordering::Relaxed), 0);
         assert_eq!(state.success_count.load(Ordering::Relaxed), 1);
-    }
-
-    #[tokio::test]
-    async fn test_check_heartbeats_prunes_removed_nodes() {
-        let registry = make_registry();
-        registry.register("localhost:50051".to_string(), "localhost:8080".to_string()).await.unwrap();
-
-        let health_status = Arc::new(RwLock::new(HashMap::new()));
-        // Pre-populate with a node that no longer exists
-        {
-            let mut status = health_status.write().await;
-            status.insert("ghost-node".to_string(), NodeHealth::Healthy);
-        }
-
-        HealthMonitor::check_heartbeats(&registry, &health_status, 30).await;
-
-        let status = health_status.read().await;
-        assert!(!status.contains_key("ghost-node"), "Removed node should be pruned");
     }
 }

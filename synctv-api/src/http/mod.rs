@@ -476,6 +476,11 @@ fn build_cors_layer(config: &synctv_core::Config) -> CorsLayer {
                 x_room_id,
             ])
             .allow_credentials(true)
+            .vary([
+                axum::http::header::ORIGIN,
+                axum::http::header::ACCESS_CONTROL_REQUEST_METHOD,
+                axum::http::header::ACCESS_CONTROL_REQUEST_HEADERS,
+            ])
     }
 }
 

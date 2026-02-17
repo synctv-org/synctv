@@ -8,7 +8,7 @@ use axum::{
 };
 use std::sync::LazyLock;
 use synctv_core::{
-    models::{id::UserId, UserStatus},
+    models::{id::UserId, RoomId, UserStatus},
     service::{auth::JwtValidator, rate_limit::RateLimitError},
 };
 
@@ -135,6 +135,56 @@ where
         // (don't silently downgrade to anonymous when the token is malformed/expired)
         let user = <Self as FromRequestParts<S>>::from_request_parts(parts, state).await?;
         Ok(Some(user))
+    }
+}
+
+/// Authenticated guest extracted from a guest JWT token.
+///
+/// Guest tokens are scoped to a single room and only permit read/view
+/// operations. Write endpoints must use [`AuthUser`] which rejects guest
+/// tokens. This type-safe separation ensures guest tokens cannot be used
+/// to create, modify, or manage resources.
+#[derive(Debug, Clone)]
+pub struct GuestUser {
+    pub room_id: RoomId,
+    pub session_id: String,
+}
+
+impl<S> FromRequestParts<S> for GuestUser
+where
+    S: Send + Sync,
+    AppState: FromRef<S>,
+{
+    type Rejection = AppError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let app_state = AppState::from_ref(state);
+
+        let auth_header = parts
+            .headers
+            .get(axum::http::header::AUTHORIZATION)
+            .ok_or_else(|| AppError::unauthorized("Missing Authorization header"))?;
+
+        let auth_str = auth_header
+            .to_str()
+            .map_err(|e| AppError::unauthorized(format!("Invalid Authorization header: {e}")))?;
+
+        let token = JwtValidator::extract_bearer_token(auth_str)
+            .map_err(|e| AppError::unauthorized(format!("{e}")))?;
+
+        let claims = app_state
+            .jwt_service
+            .verify_guest_token(&token)
+            .map_err(|e| AppError::unauthorized(format!("{e}")))?;
+
+        if !claims.is_guest() {
+            return Err(AppError::unauthorized("Not a guest token"));
+        }
+
+        Ok(Self {
+            room_id: claims.room_id(),
+            session_id: claims.session_id,
+        })
     }
 }
 

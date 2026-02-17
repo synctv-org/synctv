@@ -254,8 +254,21 @@ impl AuthService for ClientServiceImpl {
         &self,
         request: Request<RefreshTokenRequest>,
     ) -> Result<Response<RefreshTokenResponse>, Status> {
+        // Extract old access token from gRPC metadata (if present)
+        let old_access_token = request
+            .metadata()
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| {
+                synctv_core::service::auth::JwtValidator::extract_bearer_token(s).ok()
+            });
+
         let req = request.into_inner();
-        let response = self.client_api.refresh_token(req).await.map_err(impls_err_to_status)?;
+        let response = self
+            .client_api
+            .refresh_token(req, old_access_token.as_deref())
+            .await
+            .map_err(impls_err_to_status)?;
         Ok(Response::new(response))
     }
 }

@@ -33,6 +33,7 @@ mod manager;
 pub mod network_monitor;
 mod packet_pacer;
 mod peer;
+pub mod redis_affinity;
 mod room;
 mod rtcp_handler;
 mod session_manager;

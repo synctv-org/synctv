@@ -18,7 +18,7 @@ use super::events::ClusterEvent;
 use super::redis_pubsub::{PublishRequest, RedisPubSub};
 use super::room_hub::{ConnectionId, RoomMessageHub};
 use crate::discovery::{HeartbeatResult, NodeRegistry};
-use crate::error::{Error as ClusterError, Result as ClusterResult};
+use crate::error::Result as ClusterResult;
 use synctv_core::models::id::{RoomId, UserId};
 use synctv_core::service::PermissionService;
 

@@ -53,12 +53,30 @@ impl ClientApiImpl {
         };
 
         let media = self.room_service.add_media(
-            rid,
-            uid,
+            rid.clone(),
+            uid.clone(),
             provider_instance_name,
             source_config,
             title,
         ).await.map_err(ApiError::from)?;
+
+        // Broadcast MediaAdded cluster event for cross-replica propagation
+        if let Some(ref tx) = self.redis_publish_tx {
+            let username = self.user_service.get_user(&uid).await
+                .map(|u| u.username.clone())
+                .unwrap_or_default();
+            let _ = tx.try_send(synctv_cluster::sync::PublishRequest {
+                event: synctv_cluster::sync::ClusterEvent::MediaAdded {
+                    event_id: nanoid::nanoid!(16),
+                    room_id: rid,
+                    user_id: uid,
+                    username,
+                    media_id: media.id.clone(),
+                    media_title: media.name.clone(),
+                    timestamp: chrono::Utc::now(),
+                },
+            });
+        }
 
         Ok(crate::proto::client::AddMediaResponse {
             media: Some(media_to_proto(&media)),
@@ -82,8 +100,25 @@ impl ClientApiImpl {
             .ok()
             .flatten();
 
-        self.room_service.remove_media(rid, uid, mid).await
+        self.room_service.remove_media(rid.clone(), uid.clone(), mid).await
             .map_err(ApiError::from)?;
+
+        // Broadcast MediaRemoved cluster event for cross-replica propagation
+        if let Some(ref tx) = self.redis_publish_tx {
+            let username = self.user_service.get_user(&uid).await
+                .map(|u| u.username.clone())
+                .unwrap_or_default();
+            let _ = tx.try_send(synctv_cluster::sync::PublishRequest {
+                event: synctv_cluster::sync::ClusterEvent::MediaRemoved {
+                    event_id: nanoid::nanoid!(16),
+                    room_id: rid,
+                    user_id: uid,
+                    username,
+                    media_id: synctv_core::models::MediaId::from_string(media_id_str.clone()),
+                    timestamp: chrono::Utc::now(),
+                },
+            });
+        }
 
         // Invalidate playback cache (best-effort)
         if let (Some(media), Some(pm)) = (&media, self.providers_manager.as_ref()) {
@@ -123,9 +158,22 @@ impl ClientApiImpl {
         let title = if req.title.is_empty() { None } else { Some(req.title) };
 
         let media = self.room_service
-            .edit_media(rid, uid, mid, title)
+            .edit_media(rid.clone(), uid, mid, title)
             .await
             .map_err(|e| ApiError::Internal(format!("Failed to edit media: {e}")))?;
+
+        // Invalidate room cache on other replicas so they see updated metadata
+        if let Some(ref tx) = self.redis_publish_tx {
+            let _ = tx.try_send(synctv_cluster::sync::PublishRequest {
+                event: synctv_cluster::sync::ClusterEvent::CacheInvalidate {
+                    event_id: nanoid::nanoid!(16),
+                    targets: vec![synctv_cluster::sync::CacheTarget::Room {
+                        room_id: rid.as_str().to_string(),
+                    }],
+                    timestamp: chrono::Utc::now(),
+                },
+            });
+        }
 
         Ok(crate::proto::client::EditMediaResponse {
             media: Some(media_to_proto(&media)),
@@ -154,9 +202,28 @@ impl ClientApiImpl {
             .unwrap_or_default();
 
         let deleted_count = self.room_service
-            .clear_playlist(rid, uid)
+            .clear_playlist(rid.clone(), uid.clone())
             .await
             .map_err(|e| ApiError::Internal(format!("Failed to clear playlist: {e}")))?;
+
+        // Broadcast MediaRemoved for each cleared item so other replicas update playlists
+        if let Some(ref tx) = self.redis_publish_tx {
+            let username = self.user_service.get_user(&uid).await
+                .map(|u| u.username.clone())
+                .unwrap_or_default();
+            for media in &media_items {
+                let _ = tx.try_send(synctv_cluster::sync::PublishRequest {
+                    event: synctv_cluster::sync::ClusterEvent::MediaRemoved {
+                        event_id: nanoid::nanoid!(16),
+                        room_id: rid.clone(),
+                        user_id: uid.clone(),
+                        username: username.clone(),
+                        media_id: media.id.clone(),
+                        timestamp: chrono::Utc::now(),
+                    },
+                });
+            }
+        }
 
         // Invalidate playback cache for cleared media (best-effort)
         if let Some(pm) = self.providers_manager.as_ref() {
@@ -211,9 +278,29 @@ impl ClientApiImpl {
             items.push((String::new(), source_config, title));
         }
 
-        let media_list = self.room_service.add_media_batch(rid, uid, items)
+        let media_list = self.room_service.add_media_batch(rid.clone(), uid.clone(), items)
             .await
             .map_err(ApiError::from)?;
+
+        // Broadcast MediaAdded for each item in the batch
+        if let Some(ref tx) = self.redis_publish_tx {
+            let username = self.user_service.get_user(&uid).await
+                .map(|u| u.username.clone())
+                .unwrap_or_default();
+            for media in &media_list {
+                let _ = tx.try_send(synctv_cluster::sync::PublishRequest {
+                    event: synctv_cluster::sync::ClusterEvent::MediaAdded {
+                        event_id: nanoid::nanoid!(16),
+                        room_id: rid.clone(),
+                        user_id: uid.clone(),
+                        username: username.clone(),
+                        media_id: media.id.clone(),
+                        media_title: media.name.clone(),
+                        timestamp: chrono::Utc::now(),
+                    },
+                });
+            }
+        }
 
         let results = media_list.into_iter()
             .map(|media| crate::proto::client::AddMediaResponse {
@@ -259,9 +346,28 @@ impl ClientApiImpl {
 
         let deleted_count = self.room_service
             .media_service()
-            .remove_media_batch(rid, uid, mids)
+            .remove_media_batch(rid.clone(), uid.clone(), mids)
             .await
             .map_err(ApiError::from)?;
+
+        // Broadcast MediaRemoved for each deleted item
+        if let Some(ref tx) = self.redis_publish_tx {
+            let username = self.user_service.get_user(&uid).await
+                .map(|u| u.username.clone())
+                .unwrap_or_default();
+            for media_id in &media_id_strings {
+                let _ = tx.try_send(synctv_cluster::sync::PublishRequest {
+                    event: synctv_cluster::sync::ClusterEvent::MediaRemoved {
+                        event_id: nanoid::nanoid!(16),
+                        room_id: rid.clone(),
+                        user_id: uid.clone(),
+                        username: username.clone(),
+                        media_id: synctv_core::models::MediaId::from_string(media_id.clone()),
+                        timestamp: chrono::Utc::now(),
+                    },
+                });
+            }
+        }
 
         // Invalidate playback cache for deleted media (best-effort)
         if let Some(pm) = self.providers_manager.as_ref() {
@@ -305,9 +411,22 @@ impl ClientApiImpl {
 
         self.room_service
             .media_service()
-            .reorder_media_batch(rid, uid, updates_converted)
+            .reorder_media_batch(rid.clone(), uid, updates_converted)
             .await
             .map_err(ApiError::from)?;
+
+        // Invalidate room cache on other replicas so they refresh playlist order
+        if let Some(ref tx) = self.redis_publish_tx {
+            let _ = tx.try_send(synctv_cluster::sync::PublishRequest {
+                event: synctv_cluster::sync::ClusterEvent::CacheInvalidate {
+                    event_id: nanoid::nanoid!(16),
+                    targets: vec![synctv_cluster::sync::CacheTarget::Room {
+                        room_id: rid.as_str().to_string(),
+                    }],
+                    timestamp: chrono::Utc::now(),
+                },
+            });
+        }
 
         Ok(crate::proto::client::ReorderMediaBatchResponse { success: true })
     }
@@ -432,8 +551,21 @@ impl ClientApiImpl {
         let media_id1 = synctv_core::models::MediaId::from_string(req.media_id1.clone());
         let media_id2 = synctv_core::models::MediaId::from_string(req.media_id2.clone());
 
-        self.room_service.swap_media(rid, uid, media_id1, media_id2).await
+        self.room_service.swap_media(rid.clone(), uid, media_id1, media_id2).await
             .map_err(ApiError::from)?;
+
+        // Invalidate room cache on other replicas so they refresh playlist order
+        if let Some(ref tx) = self.redis_publish_tx {
+            let _ = tx.try_send(synctv_cluster::sync::PublishRequest {
+                event: synctv_cluster::sync::ClusterEvent::CacheInvalidate {
+                    event_id: nanoid::nanoid!(16),
+                    targets: vec![synctv_cluster::sync::CacheTarget::Room {
+                        room_id: rid.as_str().to_string(),
+                    }],
+                    timestamp: chrono::Utc::now(),
+                },
+            });
+        }
 
         Ok(crate::proto::client::SwapMediaResponse {
             success: true,

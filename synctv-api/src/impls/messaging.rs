@@ -1038,6 +1038,18 @@ impl StreamMessageHandler {
                             )),
                         }
                     }
+                    SfuSignalingEvent::SdpOffer { sdp, .. } => {
+                        use crate::proto::client::server_message::Message;
+                        ServerMessage {
+                            message: Some(Message::WebrtcOffer(
+                                crate::proto::client::WebRtcOffer {
+                                    from: "sfu".to_string(),
+                                    to: format!("{}:{}", user_id_str, conn_id),
+                                    data: sdp,
+                                },
+                            )),
+                        }
+                    }
                     SfuSignalingEvent::IceRestartOffer { sdp, .. } => {
                         use crate::proto::client::server_message::Message;
                         ServerMessage {
@@ -1174,7 +1186,7 @@ impl StreamMessageHandler {
                                     };
                                     let _ = cluster_mgr.broadcast(ice_event);
                                 }
-                                SfuSignalingEvent::SdpAnswer { .. } | SfuSignalingEvent::IceRestartOffer { .. } | SfuSignalingEvent::MigrationOffer { .. } => {
+                                SfuSignalingEvent::SdpAnswer { .. } | SfuSignalingEvent::SdpOffer { .. } | SfuSignalingEvent::IceRestartOffer { .. } | SfuSignalingEvent::MigrationOffer { .. } => {
                                     // Not expected in this context
                                 }
                             }

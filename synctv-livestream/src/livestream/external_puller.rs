@@ -86,6 +86,10 @@ pub struct ExternalStreamPuller {
     confirm_tx: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
     /// Shared HTTP client for FLV connections (reused across retries, supports TLS via rustls).
     http_client: Option<reqwest::Client>,
+    /// Pinned resolved address from SSRF validation to prevent DNS rebinding attacks.
+    /// Set by `new_async()` after validating the URL; the actual TCP/HTTP connection
+    /// uses this address instead of re-resolving the hostname.
+    resolved_addr: Option<std::net::SocketAddr>,
 }
 
 impl ExternalStreamPuller {
@@ -112,6 +116,7 @@ impl ExternalStreamPuller {
             stream_hub_event_sender,
             confirm_tx: None,
             http_client: None,
+            resolved_addr: None,
         })
     }
 
@@ -132,6 +137,25 @@ impl ExternalStreamPuller {
         SSRFValidator::new().validate_url_async(&source_url).await
             .map_err(|e| anyhow::anyhow!("SSRF protection blocked URL: {e}"))?;
 
+        // Pin the resolved IP to prevent DNS rebinding attacks: the actual connection
+        // will use this address instead of re-resolving the hostname.
+        let mut resolved_addr = None;
+        let parsed = reqwest::Url::parse(&source_url)?;
+        let host = parsed.host_str().unwrap_or("");
+        if !host.is_empty() && host.parse::<std::net::IpAddr>().is_err() {
+            // It's a hostname (not a literal IP), resolve and pin
+            let port = parsed.port().unwrap_or(match source_type {
+                ExternalSourceType::Rtmp => 1935,
+                ExternalSourceType::HttpFlv => if parsed.scheme() == "https" { 443 } else { 80 },
+            });
+            let addrs: Vec<std::net::SocketAddr> =
+                tokio::net::lookup_host(format!("{host}:{port}"))
+                    .await
+                    .map_err(|e| anyhow::anyhow!("DNS resolution failed: {e}"))?
+                    .collect();
+            resolved_addr = addrs.into_iter().next();
+        }
+
         Ok(Self {
             room_id,
             media_id,
@@ -140,6 +164,7 @@ impl ExternalStreamPuller {
             stream_hub_event_sender,
             confirm_tx: None,
             http_client: None,
+            resolved_addr,
         })
     }
 
@@ -307,8 +332,11 @@ impl ExternalStreamPuller {
         parser.parse_url()
             .map_err(|e| anyhow::anyhow!("Invalid RTMP URL: {e:?}"))?;
 
-        // Ensure port is present (default RTMP port is 1935)
-        let connect_addr = if parser.port.is_none() {
+        // Use pinned resolved address if available (prevents DNS rebinding);
+        // otherwise fall back to the hostname from the URL.
+        let connect_addr = if let Some(addr) = &self.resolved_addr {
+            addr.to_string()
+        } else if parser.port.is_none() {
             format!("{}:1935", parser.host)
         } else {
             parser.host_with_port.clone()
@@ -407,18 +435,22 @@ impl ExternalStreamPuller {
             "Connecting to HTTP-FLV source"
         );
 
-        // Use the shared HTTP client if available, otherwise create one.
-        // The shared client supports TLS (via rustls) and is reused across retries.
-        let client = match &self.http_client {
-            Some(c) => c.clone(),
-            None => {
-                let c = reqwest::Client::builder()
-                    .connect_timeout(std::time::Duration::from_secs(10))
-                    .build()
-                    .map_err(|e| anyhow::anyhow!("Failed to create HTTP client: {e}"))?;
-                self.http_client = Some(c.clone());
-                c
-            }
+        // Build HTTP client with pinned DNS resolution if available (prevents DNS rebinding).
+        // When a resolved_addr is set, we use reqwest's .resolve() to pin the hostname
+        // to the validated IP, bypassing the system resolver for the actual connection.
+        let client = {
+            let builder = reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(10));
+            let builder = if let Some(addr) = &self.resolved_addr {
+                let parsed = reqwest::Url::parse(&self.source_url)?;
+                let host = parsed.host_str().unwrap_or("");
+                builder.resolve(host, *addr)
+            } else {
+                builder
+            };
+            builder
+                .build()
+                .map_err(|e| anyhow::anyhow!("Failed to create HTTP client: {e}"))?
         };
 
         let mut response = client

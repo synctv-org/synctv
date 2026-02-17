@@ -37,9 +37,22 @@ impl ClientApiImpl {
         };
 
         let playlist = self.room_service.playlist_service()
-            .create_playlist(rid, uid, service_req)
+            .create_playlist(rid.clone(), uid, service_req)
             .await
             .map_err(ApiError::from)?;
+
+        // Invalidate room cache on other replicas for playlist structure change
+        if let Some(ref tx) = self.redis_publish_tx {
+            let _ = tx.try_send(synctv_cluster::sync::PublishRequest {
+                event: synctv_cluster::sync::ClusterEvent::CacheInvalidate {
+                    event_id: nanoid::nanoid!(16),
+                    targets: vec![synctv_cluster::sync::CacheTarget::Room {
+                        room_id: rid.as_str().to_string(),
+                    }],
+                    timestamp: chrono::Utc::now(),
+                },
+            });
+        }
 
         let item_count = self.room_service.media_service()
             .count_playlist_media(&playlist.id)
@@ -76,9 +89,22 @@ impl ClientApiImpl {
         };
 
         let playlist = self.room_service.playlist_service()
-            .set_playlist(rid, uid, service_req)
+            .set_playlist(rid.clone(), uid, service_req)
             .await
             .map_err(ApiError::from)?;
+
+        // Invalidate room cache on other replicas for playlist update
+        if let Some(ref tx) = self.redis_publish_tx {
+            let _ = tx.try_send(synctv_cluster::sync::PublishRequest {
+                event: synctv_cluster::sync::ClusterEvent::CacheInvalidate {
+                    event_id: nanoid::nanoid!(16),
+                    targets: vec![synctv_cluster::sync::CacheTarget::Room {
+                        room_id: rid.as_str().to_string(),
+                    }],
+                    timestamp: chrono::Utc::now(),
+                },
+            });
+        }
 
         let item_count = self.room_service.media_service()
             .count_playlist_media(&playlist.id)
@@ -106,9 +132,22 @@ impl ClientApiImpl {
         let playlist_id = synctv_core::models::PlaylistId::from_string(req.playlist_id);
 
         self.room_service.playlist_service()
-            .delete_playlist(rid, uid, playlist_id)
+            .delete_playlist(rid.clone(), uid, playlist_id)
             .await
             .map_err(ApiError::from)?;
+
+        // Invalidate room cache on other replicas for playlist deletion
+        if let Some(ref tx) = self.redis_publish_tx {
+            let _ = tx.try_send(synctv_cluster::sync::PublishRequest {
+                event: synctv_cluster::sync::ClusterEvent::CacheInvalidate {
+                    event_id: nanoid::nanoid!(16),
+                    targets: vec![synctv_cluster::sync::CacheTarget::Room {
+                        room_id: rid.as_str().to_string(),
+                    }],
+                    timestamp: chrono::Utc::now(),
+                },
+            });
+        }
 
         Ok(crate::proto::client::DeletePlaylistResponse { success: true })
     }

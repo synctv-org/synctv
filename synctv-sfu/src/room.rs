@@ -17,6 +17,7 @@ use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::time::Duration;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
@@ -87,6 +88,11 @@ pub struct SfuRoom {
 
     /// Network quality monitoring
     network_monitor: Arc<NetworkQualityMonitor>,
+
+    /// Timestamp when the room entered `Migrating` mode.
+    /// Used to detect and recover from stuck migrations (e.g., if
+    /// `complete_migration()` is never called due to a crash or error).
+    migration_started_at: Arc<RwLock<Option<tokio::time::Instant>>>,
 }
 
 impl SfuRoom {
@@ -107,6 +113,7 @@ impl SfuRoom {
             bytes_relayed: Arc::new(AtomicU64::new(0)),
             peer_count_atomic: Arc::new(AtomicUsize::new(0)),
             network_monitor: Arc::new(NetworkQualityMonitor::new()),
+            migration_started_at: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -487,6 +494,26 @@ impl SfuRoom {
         let p2p_threshold = threshold.saturating_sub(2).max(1);
         let mut mode = self.mode.write().await;
 
+        // Check for stuck migration: if the room has been in Migrating state
+        // longer than the configured timeout, force-transition to SFU mode.
+        // This prevents rooms from being stuck indefinitely when
+        // `complete_migration()` is never called (crash, error, etc.).
+        if *mode == RoomMode::Migrating {
+            if let Some(started) = *self.migration_started_at.read().await {
+                if started.elapsed() > Duration::from_secs(self.config.migration_timeout_secs) {
+                    warn!(
+                        room_id = %self.id,
+                        elapsed_secs = started.elapsed().as_secs(),
+                        timeout_secs = self.config.migration_timeout_secs,
+                        "Migration timed out, forcing transition to SFU mode"
+                    );
+                    *mode = RoomMode::SFU;
+                    *self.migration_started_at.write().await = None;
+                    return Ok(());
+                }
+            }
+        }
+
         match *mode {
             RoomMode::P2P if peer_count >= threshold => {
                 info!(
@@ -496,6 +523,7 @@ impl SfuRoom {
                     "Switching from P2P to Migrating mode (threshold reached)"
                 );
                 *mode = RoomMode::Migrating;
+                *self.migration_started_at.write().await = Some(tokio::time::Instant::now());
 
                 // Update statistics
                 let mut stats = self.stats.write().await;
@@ -517,6 +545,7 @@ impl SfuRoom {
                     "Switching from Migrating to P2P mode (peers left during migration)"
                 );
                 *mode = RoomMode::P2P;
+                *self.migration_started_at.write().await = None;
 
                 let mut stats = self.stats.write().await;
                 stats.mode_switches += 1;
@@ -561,6 +590,7 @@ impl SfuRoom {
                 "Migration complete, switching to SFU mode"
             );
             *mode = RoomMode::SFU;
+            *self.migration_started_at.write().await = None;
         }
         Ok(())
     }

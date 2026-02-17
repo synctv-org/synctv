@@ -52,11 +52,12 @@ impl ClientApiImpl {
     pub async fn refresh_token(
         &self,
         req: crate::proto::client::RefreshTokenRequest,
+        old_access_token: Option<&str>,
     ) -> Result<crate::proto::client::RefreshTokenResponse, ApiError> {
         // Refresh tokens (returns tuple: (new_access_token, new_refresh_token))
         let (access_token, refresh_token) = self
             .user_service
-            .refresh_token(req.refresh_token)
+            .refresh_token(req.refresh_token, old_access_token)
             .await
             .map_err(ApiError::from)?;
 

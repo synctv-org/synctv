@@ -134,14 +134,9 @@ impl PlaylistService {
             }
         }
 
-        // Calculate position if not provided
-        let position = if let Some(pos) = request.position {
-            pos
-        } else {
-            self.playlist_repo
-                .get_next_position(&room_id.clone(), request.parent_id.as_ref())
-                .await?
-        };
+        // Use explicit position if provided, otherwise use -1 sentinel
+        // to let the repository compute it atomically in the INSERT query
+        let position = request.position.unwrap_or(-1);
 
         // Validate dynamic folder requirements
         if request.source_provider.is_some() && request.source_config.is_none() {

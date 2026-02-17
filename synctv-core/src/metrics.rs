@@ -381,7 +381,17 @@ pub mod database {
 
 /// gRPC operations
 pub mod grpc {
-    use super::{register_histogram_vec_with_registry, register_int_gauge_with_registry, HistogramVec, REGISTRY, IntGauge};
+    use super::{register_histogram_vec_with_registry, register_int_gauge_with_registry, HistogramVec, REGISTRY, IntGauge, IntCounterVec};
+    use prometheus::{Opts, register_int_counter_vec_with_registry};
+
+    /// Total gRPC requests, labeled by service, method, and status code.
+    pub static GRPC_REQUESTS_TOTAL: std::sync::LazyLock<IntCounterVec> = std::sync::LazyLock::new(|| {
+        register_int_counter_vec_with_registry!(
+            Opts::new("grpc_requests_total", "Total number of gRPC requests"),
+            &["service", "method", "status"],
+            REGISTRY.clone()
+        ).expect("Failed to register GRPC_REQUESTS_TOTAL")
+    });
 
     /// RPC request duration histogram
     pub static GRPC_REQUEST_DURATION: std::sync::LazyLock<HistogramVec> = std::sync::LazyLock::new(|| {
@@ -406,7 +416,7 @@ pub mod grpc {
 /// Redis operations
 pub mod redis {
     use super::{REGISTRY, IntCounterVec, HistogramVec};
-    use prometheus::{Opts, register_int_counter_vec_with_registry, register_histogram_vec_with_registry, HistogramOpts};
+    use prometheus::{Opts, register_int_counter_vec_with_registry, HistogramOpts};
 
     /// Total Redis operation errors, labeled by operation type.
     pub static REDIS_ERRORS: std::sync::LazyLock<IntCounterVec> = std::sync::LazyLock::new(|| {
@@ -750,6 +760,18 @@ pub mod streamhub {
 /// Livestream metrics
 pub mod livestream {
     use super::{register_counter_vec_with_registry, register_histogram_vec_with_registry, register_int_gauge_with_registry, CounterVec, HistogramVec, REGISTRY, IntGauge};
+    use prometheus::{IntCounter, Opts};
+
+    /// Total publisher cleanups due to heartbeat failure.
+    pub static PUBLISHER_HEARTBEAT_FAILURES: std::sync::LazyLock<IntCounter> = std::sync::LazyLock::new(|| {
+        IntCounter::with_opts(
+            Opts::new(
+                "synctv_publisher_heartbeat_failures_total",
+                "Total publisher cleanups due to heartbeat failure",
+            )
+        ).and_then(|c| { REGISTRY.register(Box::new(c.clone()))?; Ok(c) })
+        .expect("Failed to register PUBLISHER_HEARTBEAT_FAILURES")
+    });
 
     /// Number of active publishers (streams being pushed).
     pub static LIVESTREAM_ACTIVE_PUBLISHERS: std::sync::LazyLock<IntGauge> = std::sync::LazyLock::new(|| {
@@ -1171,7 +1193,12 @@ mod tests {
     }
 
     #[test]
-    fn test_grpc_duration_histogram() {
+    fn test_grpc_metrics() {
+        // Verify gRPC request counter
+        grpc::GRPC_REQUESTS_TOTAL
+            .with_label_values(&["cluster", "get_nodes", "ok"])
+            .inc();
+
         // Verify gRPC duration histogram can be observed with correct labels
         let timer = grpc::GRPC_REQUEST_DURATION
             .with_label_values(&["cluster", "get_nodes", "ok"])
@@ -1179,6 +1206,7 @@ mod tests {
         timer.observe_duration();
 
         let output = gather_metrics();
+        assert!(output.contains("grpc_requests_total"), "Missing grpc_requests_total");
         assert!(output.contains("grpc_request_duration_seconds"));
     }
 
@@ -1379,6 +1407,9 @@ mod tests {
         database::DB_CONNECTIONS_ACTIVE.set(0);
         database::DB_CONNECTIONS_IDLE.set(0);
         database::DB_POOL_SIZE_MAX.set(0);
+        grpc::GRPC_REQUESTS_TOTAL
+            .with_label_values(&["_test", "_test", "_test"])
+            .inc();
         grpc::GRPC_REQUEST_DURATION
             .with_label_values(&["_test", "_test", "_test"])
             .observe(0.0);
@@ -1428,6 +1459,7 @@ mod tests {
         assert!(output.contains("db_pool_size_max"), "Missing db_pool_size_max");
 
         // gRPC metrics
+        assert!(output.contains("grpc_requests_total"), "Missing grpc_requests_total");
         assert!(output.contains("grpc_request_duration_seconds"), "Missing grpc_request_duration_seconds");
     }
 

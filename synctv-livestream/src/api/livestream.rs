@@ -501,10 +501,14 @@ impl HlsStreamingApi {
             // Local publisher: read from local storage
             Self::get_segment_local(infrastructure, room_id, media_id, segment_name).await
         } else if let Some(hls_proxy) = &infrastructure.hls_proxy {
+            // Validate gRPC address before attempting remote proxy
+            let grpc_addr = publisher_info.validate_grpc_address()
+                .map_err(|e| anyhow::anyhow!("Cannot proxy HLS segment for {room_id}/{media_id}: {e}"))?;
+
             // Remote publisher: proxy via gRPC (with local cache)
             let segment = hls_proxy
                 .get_segment(
-                    &publisher_info.grpc_address,
+                    grpc_addr,
                     room_id,
                     media_id,
                     segment_name,

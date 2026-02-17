@@ -209,18 +209,13 @@ impl CustomHlsRemuxer {
                         Ok(event) => event,
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                             tracing::warn!(
-                                "HLS remuxer lagged behind by {n} broadcast events; aborting {} active handler tasks and re-subscribing",
+                                "HLS remuxer lagged behind by {n} broadcast events; re-subscribing. \
+                                 {} active handler tasks remain unaffected.",
                                 self.handler_tasks.len()
                             );
-                            // Abort all active handler tasks so they stop using
-                            // stale receivers. They will be recreated when the
-                            // new broadcast receiver delivers fresh Publish events.
-                            self.handler_tasks.abort_all();
-                            while self.handler_tasks.join_next().await.is_some() {}
-                            // Re-subscribe to get a fresh receiver that is
-                            // caught up with the broadcast tail. Without this,
-                            // any Publish events in the skipped window would be
-                            // permanently missed.
+                            // Existing handler tasks are NOT aborted — they have independent
+                            // data channels. Only Publish events in the skipped window are lost;
+                            // those streams will be picked up on the next broadcast.
                             self.client_event_consumer = self.client_event_consumer.resubscribe();
                             continue;
                         }

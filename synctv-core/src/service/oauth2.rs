@@ -78,6 +78,8 @@ pub struct OAuth2Service {
     redis_conn: Option<redis::aio::ConnectionManager>,
     /// Allowlist of permitted redirect domains (empty = relative paths only)
     allowed_redirect_domains: Arc<Vec<String>>,
+    /// When true, in-memory state storage is rejected (requires Redis)
+    cluster_mode: bool,
 }
 
 impl std::fmt::Debug for OAuth2Service {
@@ -111,6 +113,7 @@ impl OAuth2Service {
             local_states: Arc::new(local_states),
             redis_conn: None,
             allowed_redirect_domains: Arc::new(Vec::new()),
+            cluster_mode: false,
         }
     }
 
@@ -130,6 +133,7 @@ impl OAuth2Service {
             local_states: Arc::new(local_states),
             redis_conn: Some(redis_conn),
             allowed_redirect_domains: Arc::new(Vec::new()),
+            cluster_mode: false,
         }
     }
 
@@ -139,6 +143,17 @@ impl OAuth2Service {
     /// one of the allowed domains. When empty, only relative paths are allowed.
     pub fn set_allowed_redirect_domains(&mut self, domains: Vec<String>) {
         self.allowed_redirect_domains = Arc::new(domains);
+    }
+
+    /// Enable cluster mode safety check
+    ///
+    /// When enabled, `store_state` and `consume_state` will return an error
+    /// if Redis is not configured, preventing silent fallback to in-memory
+    /// storage that breaks multi-replica deployments.
+    #[must_use]
+    pub fn with_cluster_mode(mut self, cluster_mode: bool) -> Self {
+        self.cluster_mode = cluster_mode;
+        self
     }
 
     /// Store `OAuth2` state (Redis if available, otherwise local memory)
@@ -157,6 +172,11 @@ impl OAuth2Service {
                 .internal_with_err("Failed to store OAuth2 state in Redis")?;
 
             debug!("Stored OAuth2 state in Redis for token {}", &state_token[..8]);
+        } else if self.cluster_mode {
+            return Err(Error::Internal(
+                "OAuth2 state storage requires Redis in cluster/multi-replica mode. \
+                 Configure Redis or disable cluster mode.".to_string()
+            ));
         } else {
             // moka cache handles capacity and TTL automatically
             self.local_states.insert(state_token.to_string(), state.clone()).await;
@@ -198,6 +218,11 @@ impl OAuth2Service {
                 }
                 None => Err(Error::Authentication("Invalid or expired OAuth2 state".to_string())),
             }
+        } else if self.cluster_mode {
+            return Err(Error::Internal(
+                "OAuth2 state storage requires Redis in cluster/multi-replica mode. \
+                 Configure Redis or disable cluster mode.".to_string()
+            ));
         } else {
             // moka cache: remove returns the removed value if it existed
             self.local_states

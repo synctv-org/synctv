@@ -79,6 +79,48 @@ pub struct GrpcRateLimitService<S> {
     config: Arc<Config>,
 }
 
+/// Extract service and method labels from a gRPC path for metrics.
+///
+/// gRPC paths follow the format `/<package>.<ServiceName>/<MethodName>`.
+/// Returns `(service_name, method_name)` for prometheus labels.
+fn extract_grpc_labels(path: &str) -> (String, String) {
+    let parts: Vec<&str> = path.split('/').collect();
+    if parts.len() >= 3 {
+        let service = parts[1].rsplit('.').next().unwrap_or(parts[1]);
+        (service.to_string(), parts[2].to_string())
+    } else {
+        ("unknown".to_string(), "unknown".to_string())
+    }
+}
+
+/// Extract the gRPC status code from an HTTP response.
+///
+/// gRPC uses the `grpc-status` trailer/header. If not present, infer from
+/// HTTP status code.
+fn grpc_status_from_response(resp: &http::Response<TonicBody>) -> &'static str {
+    if let Some(status_header) = resp.headers().get("grpc-status") {
+        match status_header.to_str().unwrap_or("") {
+            "0" => "ok",
+            "1" => "cancelled",
+            "2" => "unknown",
+            "3" => "invalid_argument",
+            "4" => "deadline_exceeded",
+            "5" => "not_found",
+            "6" => "already_exists",
+            "7" => "permission_denied",
+            "8" => "resource_exhausted",
+            "13" => "internal",
+            "14" => "unavailable",
+            "16" => "unauthenticated",
+            _ => "unknown",
+        }
+    } else if resp.status().is_success() {
+        "ok"
+    } else {
+        "error"
+    }
+}
+
 /// Determine the rate limit tier from the gRPC request path.
 ///
 /// gRPC paths follow the format `/<package>.<ServiceName>/<MethodName>`.
@@ -211,9 +253,23 @@ where
         let path = req.uri().path().to_string();
         let tier = tier_from_path(&path);
 
+        // Extract service and method names for metrics labels
+        let (service_label, method_label) = extract_grpc_labels(&path);
+
         // If no tier matches (cluster service, unknown paths), skip rate limiting
+        // but still record metrics
         let Some(tier) = tier else {
-            return Box::pin(async move { inner.call(req).await });
+            return Box::pin(async move {
+                let result = inner.call(req).await;
+                let status = match &result {
+                    Ok(resp) => grpc_status_from_response(resp),
+                    Err(_) => "error",
+                };
+                synctv_core::metrics::grpc::GRPC_REQUESTS_TOTAL
+                    .with_label_values(&[&service_label, &method_label, status])
+                    .inc();
+                result
+            });
         };
 
         let client_id = extract_client_id(req.headers(), &config);
@@ -234,6 +290,9 @@ where
                     path = %path,
                     "gRPC distributed rate limit exceeded"
                 );
+                synctv_core::metrics::grpc::GRPC_REQUESTS_TOTAL
+                    .with_label_values(&[&service_label, &method_label, "resource_exhausted"])
+                    .inc();
                 let response = tonic::Status::resource_exhausted(
                     "Rate limit exceeded. Please retry later.",
                 )
@@ -241,7 +300,15 @@ where
                 return Ok(response);
             }
 
-            inner.call(req).await
+            let result = inner.call(req).await;
+            let status = match &result {
+                Ok(resp) => grpc_status_from_response(resp),
+                Err(_) => "error",
+            };
+            synctv_core::metrics::grpc::GRPC_REQUESTS_TOTAL
+                .with_label_values(&[&service_label, &method_label, status])
+                .inc();
+            result
         })
     }
 }
@@ -249,6 +316,20 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_extract_grpc_labels() {
+        let (service, method) = extract_grpc_labels("/synctv.client.AuthService/Login");
+        assert_eq!(service, "AuthService");
+        assert_eq!(method, "Login");
+    }
+
+    #[test]
+    fn test_extract_grpc_labels_unknown_path() {
+        let (service, method) = extract_grpc_labels("/");
+        assert_eq!(service, "unknown");
+        assert_eq!(method, "unknown");
+    }
 
     #[test]
     fn test_tier_from_path_auth() {

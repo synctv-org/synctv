@@ -148,6 +148,9 @@ impl ClusterService for ClusterServer {
         &self,
         _request: Request<GetNodesRequest>,
     ) -> std::result::Result<Response<GetNodesResponse>, Status> {
+        synctv_core::metrics::grpc::GRPC_REQUESTS_TOTAL
+            .with_label_values(&["cluster", "get_nodes", "ok"])
+            .inc();
         let _timer = synctv_core::metrics::grpc::GRPC_REQUEST_DURATION
             .with_label_values(&["cluster", "get_nodes", "ok"])
             .start_timer();
@@ -172,6 +175,9 @@ impl ClusterService for ClusterServer {
         &self,
         request: Request<DeregisterNodeRequest>,
     ) -> std::result::Result<Response<DeregisterNodeResponse>, Status> {
+        synctv_core::metrics::grpc::GRPC_REQUESTS_TOTAL
+            .with_label_values(&["cluster", "deregister_node", "ok"])
+            .inc();
         let _timer = synctv_core::metrics::grpc::GRPC_REQUEST_DURATION
             .with_label_values(&["cluster", "deregister_node", "ok"])
             .start_timer();
@@ -221,6 +227,9 @@ impl ClusterService for ClusterServer {
         &self,
         request: Request<GetUserOnlineStatusRequest>,
     ) -> std::result::Result<Response<GetUserOnlineStatusResponse>, Status> {
+        synctv_core::metrics::grpc::GRPC_REQUESTS_TOTAL
+            .with_label_values(&["cluster", "get_user_online_status", "ok"])
+            .inc();
         let _timer = synctv_core::metrics::grpc::GRPC_REQUEST_DURATION
             .with_label_values(&["cluster", "get_user_online_status", "ok"])
             .start_timer();
@@ -272,6 +281,9 @@ impl ClusterService for ClusterServer {
         &self,
         request: Request<GetRoomConnectionsRequest>,
     ) -> std::result::Result<Response<GetRoomConnectionsResponse>, Status> {
+        synctv_core::metrics::grpc::GRPC_REQUESTS_TOTAL
+            .with_label_values(&["cluster", "get_room_connections", "ok"])
+            .inc();
         let _timer = synctv_core::metrics::grpc::GRPC_REQUEST_DURATION
             .with_label_values(&["cluster", "get_room_connections", "ok"])
             .start_timer();

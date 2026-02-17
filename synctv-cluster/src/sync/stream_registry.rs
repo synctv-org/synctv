@@ -94,7 +94,7 @@ impl StreamRegistry {
         // Store in local cache
         self.local_streams.insert(identifier.to_string(), metadata.clone());
 
-        // Persist to Redis (best-effort)
+        // Persist to Redis synchronously to ensure data is written before returning
         if let Some(ref conn) = self.redis_conn {
             let active_key = format!("{}streams:active", self.redis_key_prefix);
             let meta_key = format!("{}streams:meta:{}", self.redis_key_prefix, identifier);
@@ -103,21 +103,23 @@ impl StreamRegistry {
                 .map_err(|e| format!("Failed to serialize stream metadata: {e}"))?;
 
             let mut conn_clone = conn.clone();
-            let identifier_owned = identifier.to_string();
 
-            tokio::spawn(async move {
-                // Add to active streams set
-                if let Err(e) = conn_clone.sadd::<_, _, ()>(&active_key, &identifier_owned).await {
-                    warn!("Failed to add stream to active set: {e}");
-                }
+            // Add to active streams set
+            if let Err(e) = conn_clone.sadd::<_, _, ()>(&active_key, identifier).await {
+                warn!("Failed to add stream to active set: {e}");
+            }
 
-                // Store metadata with TTL for crash safety
-                if let Err(e) = conn_clone.set::<_, _, ()>(&meta_key, &json).await {
-                    warn!("Failed to persist stream metadata: {e}");
-                } else if let Err(e) = conn_clone.expire::<_, ()>(&meta_key, STREAM_METADATA_TTL_SECONDS).await {
-                    warn!("Failed to set stream metadata TTL: {e}");
-                }
-            });
+            // Store metadata with TTL atomically using set_ex
+            if let Err(e) = conn_clone
+                .set_ex::<_, _, ()>(
+                    &meta_key,
+                    &json,
+                    STREAM_METADATA_TTL_SECONDS.try_into().unwrap_or(300),
+                )
+                .await
+            {
+                warn!("Failed to persist stream metadata: {e}");
+            }
         }
 
         info!(
@@ -136,18 +138,19 @@ impl StreamRegistry {
     pub async fn unregister_stream(&self, identifier: &str) {
         self.local_streams.remove(identifier);
 
-        // Remove from Redis (best-effort)
+        // Remove from Redis synchronously to ensure cleanup completes
         if let Some(ref conn) = self.redis_conn {
             let active_key = format!("{}streams:active", self.redis_key_prefix);
             let meta_key = format!("{}streams:meta:{}", self.redis_key_prefix, identifier);
 
             let mut conn_clone = conn.clone();
-            let identifier_owned = identifier.to_string();
 
-            tokio::spawn(async move {
-                let _: Result<(), _> = conn_clone.srem(&active_key, &identifier_owned).await;
-                let _: Result<(), _> = conn_clone.del(&meta_key).await;
-            });
+            if let Err(e) = conn_clone.srem::<_, _, ()>(&active_key, identifier).await {
+                warn!("Failed to remove stream from active set: {e}");
+            }
+            if let Err(e) = conn_clone.del::<_, ()>(&meta_key).await {
+                warn!("Failed to delete stream metadata: {e}");
+            }
         }
 
         info!(
@@ -355,14 +358,13 @@ impl StreamRegistry {
 
             let stream_count = local_streams.len();
             let mut conn_clone = conn.clone();
-            let prefix = self.redis_key_prefix.clone();
 
-            tokio::spawn(async move {
-                for identifier in local_streams {
-                    let meta_key = format!("{}streams:meta:{}", prefix, identifier);
-                    let _: Result<(), _> = conn_clone.expire(&meta_key, STREAM_METADATA_TTL_SECONDS).await;
+            for identifier in &local_streams {
+                let meta_key = format!("{}streams:meta:{}", self.redis_key_prefix, identifier);
+                if let Err(e) = conn_clone.expire::<_, ()>(&meta_key, STREAM_METADATA_TTL_SECONDS).await {
+                    warn!(stream = %identifier, "Failed to refresh stream metadata TTL: {e}");
                 }
-            });
+            }
 
             debug!(
                 count = stream_count,

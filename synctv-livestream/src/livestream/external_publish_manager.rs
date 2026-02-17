@@ -258,6 +258,8 @@ impl ExternalPublishStream {
         let source_url = self.source_url.clone();
         let stream_hub_sender = self.stream_hub_event_sender.clone();
         let http_client = self.http_client.clone();
+        // Clone the is_running flag so the task can mark itself unhealthy on exit
+        let is_running_flag = self.lifecycle.is_running_clone();
 
         let (confirm_tx, confirm_rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
 
@@ -274,6 +276,7 @@ impl ExternalPublishStream {
                     let msg = format!("Failed to create puller for {room_id}/{media_id}: {e}");
                     error!("{}", msg);
                     let _ = confirm_tx.send(Err(msg));
+                    is_running_flag.store(false, Ordering::SeqCst);
                     return Err(e);
                 }
             };
@@ -286,6 +289,9 @@ impl ExternalPublishStream {
                     e
                 );
             }
+            // Mark as not running so is_healthy() returns false and the pool
+            // can remove/replace this stream on next access.
+            is_running_flag.store(false, Ordering::SeqCst);
             result
         });
 

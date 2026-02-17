@@ -125,8 +125,13 @@ pub enum SfuSignalingEvent {
         peer_id: String,
         candidate_json: String,
     },
-    /// A new SDP offer/answer from the server (e.g., after renegotiation)
+    /// A new SDP answer from the server
     SdpAnswer {
+        peer_id: String,
+        sdp: String,
+    },
+    /// A new SDP offer from the server (e.g., after renegotiation)
+    SdpOffer {
         peer_id: String,
         sdp: String,
     },
@@ -630,7 +635,7 @@ impl SfuSessionManager {
                                             continue;
                                         }
                                     };
-                                    if sub_event_tx.send(SfuSignalingEvent::SdpAnswer {
+                                    if sub_event_tx.send(SfuSignalingEvent::SdpOffer {
                                         peer_id: sub_peer_id.clone(),
                                         sdp: offer_json,
                                     }).is_err() {
@@ -671,44 +676,43 @@ impl SfuSessionManager {
             let prefix = log_prefix_ice.clone();
             Box::pin(async move {
                 if let Some(candidate) = candidate {
-                    let filtered_candidate = filter_ice_candidate(&candidate);
-                    if filtered_candidate.is_none() {
+                    if let Some(filtered) = filter_ice_candidate(&candidate) {
+                        let candidate_json = match filtered.to_json() {
+                            Ok(init) => match serde_json::to_string(&init) {
+                                Ok(json) => json,
+                                Err(e) => {
+                                    warn!(error = %e, "Failed to serialize ICE candidate");
+                                    return;
+                                }
+                            },
+                            Err(e) => {
+                                warn!(error = %e, "Failed to convert ICE candidate to JSON");
+                                return;
+                            }
+                        };
+
+                        debug!(
+                            peer_id = %peer_id,
+                            candidate_type = %filtered.typ,
+                            "{}: Sending filtered ICE candidate to signaling channel", prefix
+                        );
+
+                        if event_tx
+                            .send(SfuSignalingEvent::IceCandidate {
+                                peer_id: peer_id.clone(),
+                                candidate_json,
+                            })
+                            .is_err()
+                        {
+                            debug!(peer_id = %peer_id, "{}: Signaling event channel closed", prefix);
+                        }
+                    } else {
                         debug!(
                             peer_id = %peer_id,
                             candidate_type = %candidate.typ,
                             "ICE candidate filtered (security)"
                         );
                         return;
-                    }
-
-                    let candidate_json = match candidate.to_json() {
-                        Ok(init) => match serde_json::to_string(&init) {
-                            Ok(json) => json,
-                            Err(e) => {
-                                warn!(error = %e, "Failed to serialize ICE candidate");
-                                return;
-                            }
-                        },
-                        Err(e) => {
-                            warn!(error = %e, "Failed to convert ICE candidate to JSON");
-                            return;
-                        }
-                    };
-
-                    debug!(
-                        peer_id = %peer_id,
-                        candidate_type = %candidate.typ,
-                        "{}: Sending filtered ICE candidate to signaling channel", prefix
-                    );
-
-                    if event_tx
-                        .send(SfuSignalingEvent::IceCandidate {
-                            peer_id: peer_id.clone(),
-                            candidate_json,
-                        })
-                        .is_err()
-                    {
-                        debug!(peer_id = %peer_id, "{}: Signaling event channel closed", prefix);
                     }
                 }
             })
@@ -812,6 +816,42 @@ impl SfuSessionManager {
 
         // Start subscriber output for this peer
         pc.start_subscriber_output(sfu_peer).await?;
+
+        // Spawn ICE connection timeout task: if ICE doesn't reach Connected
+        // within the configured timeout, close the peer connection and remove
+        // the session to prevent ghost connections consuming resources.
+        let ice_timeout_secs = self.sfu_manager.config().ice_connection_timeout_secs;
+        if ice_timeout_secs > 0 {
+            let pc_weak = Arc::downgrade(&pc);
+            let sessions_ref = Arc::clone(&self.sessions);
+            let conn_id_owned = conn_id.to_string();
+            let room_id_owned = room_id.to_string();
+            let peer_id_owned = peer_id.to_string();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(ice_timeout_secs)).await;
+                let Some(pc) = pc_weak.upgrade() else { return };
+                let state = pc.pc.ice_connection_state();
+                if state != webrtc::ice_transport::ice_connection_state::RTCIceConnectionState::Connected
+                    && state != webrtc::ice_transport::ice_connection_state::RTCIceConnectionState::Completed
+                {
+                    warn!(
+                        conn_id = %conn_id_owned,
+                        peer_id = %peer_id_owned,
+                        ice_state = ?state,
+                        timeout_secs = ice_timeout_secs,
+                        "ICE connection timeout reached, closing peer connection"
+                    );
+                    let _ = pc.pc.close().await;
+                    sessions_ref.remove(&conn_id_owned);
+                    info!(
+                        conn_id = %conn_id_owned,
+                        peer_id = %peer_id_owned,
+                        room_id = %room_id_owned,
+                        "Removed SFU session after ICE timeout"
+                    );
+                }
+            });
+        }
 
         Ok((pc, event_rx, outbound_count))
     }

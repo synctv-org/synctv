@@ -42,7 +42,8 @@ CREATE TABLE playlists (
         (source_provider IS NOT NULL AND source_config IS NOT NULL)
         OR
         (source_provider IS NULL AND source_config IS NULL)
-    )
+    ),
+    CONSTRAINT unique_playlist_position UNIQUE (room_id, parent_id, position)
 );
 
 -- Indexes
@@ -60,6 +61,14 @@ CREATE INDEX idx_playlists_created_at ON playlists(created_at DESC);
 -- ensures at most one root playlist per room with a given name.
 CREATE UNIQUE INDEX idx_playlists_unique_root_name
     ON playlists(room_id, name)
+    WHERE parent_id IS NULL;
+
+-- Same NULL handling for position uniqueness: the UNIQUE constraint
+-- unique_playlist_position on (room_id, parent_id, position) does not
+-- prevent duplicates when parent_id IS NULL. This partial index ensures
+-- unique positions among root-level playlists in a room.
+CREATE UNIQUE INDEX idx_playlists_unique_root_position
+    ON playlists(room_id, position)
     WHERE parent_id IS NULL;
 
 -- Trigger to update updated_at

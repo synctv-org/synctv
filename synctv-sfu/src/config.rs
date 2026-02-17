@@ -40,6 +40,17 @@ pub struct SfuConfig {
     /// Enable bandwidth estimation.
     /// Maps to `WebRTCConfig::enable_bandwidth_estimation`.
     pub enable_bandwidth_estimation: bool,
+    /// Timeout in seconds for ICE connection establishment.
+    /// If a peer fails to reach `Connected` ICE state within this duration,
+    /// the peer connection is closed and the session is removed.
+    /// 0 = no timeout (not recommended in production).
+    pub ice_connection_timeout_secs: u64,
+    /// Timeout in seconds for room migration from P2P to SFU mode.
+    /// If `complete_migration()` is not called within this duration after
+    /// entering `Migrating` mode, the room is force-transitioned to SFU mode.
+    /// This prevents rooms from being stuck indefinitely in `Migrating` state
+    /// due to crashes or errors during the migration process.
+    pub migration_timeout_secs: u64,
 }
 
 impl SfuConfig {
@@ -74,6 +85,8 @@ impl SfuConfig {
             max_peers_per_room,
             enable_simulcast,
             enable_bandwidth_estimation,
+            ice_connection_timeout_secs: 30,
+            migration_timeout_secs: 60,
         }
     }
 }
@@ -86,6 +99,8 @@ impl Default for SfuConfig {
             max_peers_per_room: 50,
             enable_simulcast: true,
             enable_bandwidth_estimation: true,
+            ice_connection_timeout_secs: 30,
+            migration_timeout_secs: 60,
         }
     }
 }

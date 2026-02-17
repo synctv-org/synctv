@@ -6349,6 +6349,7 @@ dependencies = [
  "dashmap",
  "futures",
  "parking_lot",
+ "redis",
  "serde",
  "serde_json",
  "thiserror 2.0.18",

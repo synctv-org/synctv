@@ -290,7 +290,10 @@ impl UserService {
     /// - A stolen refresh token can only be used once
     /// - Legitimate users get new tokens on each refresh
     /// - Replay attacks are prevented even in multi-replica deployments
-    pub async fn refresh_token(&self, refresh_token: String) -> Result<(String, String)> {
+    ///
+    /// If `old_access_token` is provided, it will be blacklisted to prevent
+    /// further use after the refresh.
+    pub async fn refresh_token(&self, refresh_token: String, old_access_token: Option<&str>) -> Result<(String, String)> {
         // Verify refresh token
         let claims = self.jwt_service.verify_refresh_token(&refresh_token)?;
         let user_id = UserId::from_string(claims.sub);
@@ -317,6 +320,31 @@ impl UserService {
                     "Refresh token consumption failed (fail closed)"
                 );
                 return Err(Error::Authentication("Token has been revoked".to_string()));
+            }
+        }
+
+        // Blacklist the old access token if provided (best-effort).
+        if let Some(old_at) = old_access_token {
+            match self.jwt_service.verify_access_token(old_at) {
+                Ok(at_claims) => {
+                    let now = Utc::now().timestamp();
+                    let at_ttl = at_claims.exp - now;
+                    if at_ttl > 0 {
+                        if let Err(e) = self.blacklist_service.blacklist_token(old_at, at_ttl).await {
+                            tracing::warn!(
+                                error = %e,
+                                jti = %at_claims.jti,
+                                "Failed to blacklist old access token during refresh (best-effort)"
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::debug!(
+                        error = %e,
+                        "Old access token provided during refresh is invalid, skipping blacklist"
+                    );
+                }
             }
         }
 

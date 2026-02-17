@@ -469,6 +469,17 @@ impl AdminApiImpl {
                 .map_err(ApiError::from)?;
         }
 
+        // Broadcast CacheInvalidate so other replicas refresh their settings caches
+        if let Some(ref tx) = self.redis_publish_tx {
+            let _ = tx.try_send(PublishRequest {
+                event: ClusterEvent::CacheInvalidate {
+                    event_id: nanoid::nanoid!(16),
+                    targets: vec![synctv_cluster::sync::CacheTarget::All],
+                    timestamp: chrono::Utc::now(),
+                },
+            });
+        }
+
         Ok(crate::proto::admin::UpdateSettingsResponse {})
     }
 
@@ -926,6 +937,15 @@ impl AdminApiImpl {
 
         let mut user = user;
 
+        // Invalidate all tokens BEFORE changing status so that even if the
+        // status update fails, we don't leave valid tokens for a user that
+        // was intended to be banned.  TTL = 30 days (max refresh token lifetime).
+        const THIRTY_DAYS_SECS: i64 = 30 * 24 * 60 * 60;
+        self.user_service
+            .invalidate_all_tokens(&uid, THIRTY_DAYS_SECS)
+            .await
+            .map_err(ApiError::from)?;
+
         user.status = UserStatus::Banned;
         let updated = self.user_service.update_user(&user).await.map_err(ApiError::from)?;
 
@@ -1048,6 +1068,19 @@ impl AdminApiImpl {
         let updated = self.room_service.ban_room(&rid).await
             .map_err(ApiError::from)?;
 
+        // Broadcast cache invalidation for the banned room
+        if let Some(ref tx) = self.redis_publish_tx {
+            let _ = tx.try_send(PublishRequest {
+                event: ClusterEvent::CacheInvalidate {
+                    event_id: nanoid::nanoid!(16),
+                    targets: vec![synctv_cluster::sync::CacheTarget::Room {
+                        room_id: rid.as_str().to_string(),
+                    }],
+                    timestamp: chrono::Utc::now(),
+                },
+            });
+        }
+
         // Force disconnect all connections in the banned room
         self.connection_manager.disconnect_room(&rid);
 
@@ -1128,6 +1161,20 @@ impl AdminApiImpl {
 
         self.room_service.set_room_settings(&rid, &settings).await.map_err(ApiError::from)?;
 
+        // Broadcast RoomSettingsChanged cluster event for cross-replica propagation
+        if let Some(ref tx) = self.redis_publish_tx {
+            let _ = tx.try_send(PublishRequest {
+                event: ClusterEvent::RoomSettingsChanged {
+                    event_id: nanoid::nanoid!(16),
+                    room_id: rid.clone(),
+                    user_id: UserId::from_string("admin".to_string()),
+                    username: "admin".to_string(),
+                    settings_json: req.settings.clone(),
+                    timestamp: chrono::Utc::now(),
+                },
+            });
+        }
+
         let room = self.room_service.get_room(&rid).await.map_err(ApiError::from)?;
 
         Ok(crate::proto::admin::UpdateRoomSettingsResponse {
@@ -1148,6 +1195,21 @@ impl AdminApiImpl {
 
         let room = self.room_service.get_room(&rid).await.map_err(ApiError::from)?;
         let settings = self.room_service.get_room_settings(&rid).await.unwrap_or_default();
+
+        // Broadcast RoomSettingsChanged cluster event for cross-replica propagation
+        if let Some(ref tx) = self.redis_publish_tx {
+            let settings_json = serde_json::to_vec(&settings).unwrap_or_default();
+            let _ = tx.try_send(PublishRequest {
+                event: ClusterEvent::RoomSettingsChanged {
+                    event_id: nanoid::nanoid!(16),
+                    room_id: rid.clone(),
+                    user_id: UserId::from_string("admin".to_string()),
+                    username: "admin".to_string(),
+                    settings_json,
+                    timestamp: chrono::Utc::now(),
+                },
+            });
+        }
 
         Ok(crate::proto::admin::ResetRoomSettingsResponse {
             room: Some(admin_room_to_proto(

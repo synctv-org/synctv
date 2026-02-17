@@ -16,6 +16,25 @@ use crate::error::{Error, Result};
 /// Timeout for Redis operations in seconds
 const REDIS_TIMEOUT_SECS: u64 = 5;
 
+/// TTL for the `get_all_nodes()` moka cache, in seconds.
+///
+/// This controls the maximum staleness of node discovery queries used by health
+/// checks and load balancer. A 2-second window means that a node that registers
+/// or deregisters may not appear/disappear from `get_all_nodes()` for up to 2s.
+///
+/// Trade-offs:
+/// - **Lower value** (1-2s): fresher view of the cluster, but more Redis SCAN
+///   calls under high query rates (health probes run every ~5-15s, so this is
+///   usually negligible).
+/// - **Higher value** (5-10s): fewer Redis round-trips, but stale membership
+///   data may cause load balancer to route to a recently-departed node or miss
+///   a newly-joined node for longer.
+///
+/// The value of 2s was chosen as a balance: it is well below the heartbeat
+/// interval (typically 10s) so membership changes are reflected promptly, while
+/// still coalescing bursts of `get_all_nodes()` calls within the same tick.
+const NODES_CACHE_TTL_SECS: u64 = 2;
+
 /// Create a failsafe circuit breaker for Redis operations.
 ///
 /// Opens after 3 consecutive failures. Uses exponential backoff starting at
@@ -127,8 +146,8 @@ pub struct NodeRegistry {
     current_epoch: Arc<AtomicU64>,
     /// Circuit breaker for Redis operations (failsafe crate)
     circuit_breaker: RedisCircuitBreaker,
-    /// Short-lived cache for get_all_nodes() to avoid hammering Redis on every
-    /// health check / load balancer query. TTL of 5 seconds.
+    /// Short-lived cache for `get_all_nodes()`. See [`NODES_CACHE_TTL_SECS`] for
+    /// staleness trade-off documentation.
     nodes_cache: moka::future::Cache<(), Vec<NodeInfo>>,
     /// Redis key prefix for cluster node keys (e.g. "synctv:cluster:nodes")
     key_prefix: String,
@@ -154,7 +173,7 @@ impl NodeRegistry {
         };
 
         let nodes_cache = moka::future::Cache::builder()
-            .time_to_live(std::time::Duration::from_secs(5))
+            .time_to_live(std::time::Duration::from_secs(NODES_CACHE_TTL_SECS))
             .max_capacity(1)
             .build();
 
@@ -912,7 +931,8 @@ impl NodeRegistry {
         Ok(())
     }
 
-    /// Get all active nodes (cached for 5 seconds to avoid hammering Redis).
+    /// Get all active nodes (cached for [`NODES_CACHE_TTL_SECS`] to avoid
+    /// hammering Redis). See the constant's documentation for staleness trade-offs.
     pub async fn get_all_nodes(&self) -> Result<Vec<NodeInfo>> {
         // Check the short-lived cache first
         if let Some(cached) = self.nodes_cache.get(&()).await {

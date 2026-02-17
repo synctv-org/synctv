@@ -74,7 +74,8 @@ const CREDENTIAL_FIELDS: &[&str] = &[
 /// Strip credential fields from a `source_config` value before sending to clients.
 ///
 /// Returns a sanitized copy with sensitive fields replaced by `"[REDACTED]"`.
-/// Non-object values are returned unchanged.
+/// Recursively processes nested objects and arrays.
+/// Non-object/non-array values are returned unchanged.
 #[must_use]
 pub fn strip_source_config_credentials(source_config: &serde_json::Value) -> serde_json::Value {
     match source_config {
@@ -84,10 +85,13 @@ pub fn strip_source_config_credentials(source_config: &serde_json::Value) -> ser
                 if CREDENTIAL_FIELDS.contains(&key.as_str()) {
                     sanitized.insert(key.clone(), serde_json::Value::String("[REDACTED]".to_string()));
                 } else {
-                    sanitized.insert(key.clone(), value.clone());
+                    sanitized.insert(key.clone(), strip_source_config_credentials(value));
                 }
             }
             serde_json::Value::Object(sanitized)
+        }
+        serde_json::Value::Array(arr) => {
+            serde_json::Value::Array(arr.iter().map(strip_source_config_credentials).collect())
         }
         other => other.clone(),
     }

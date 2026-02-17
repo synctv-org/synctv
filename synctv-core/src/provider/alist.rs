@@ -500,7 +500,7 @@ impl DynamicFolder for AlistProvider {
                             }),
                             provider_data: json!({}),
                             relative_path: next.path.clone(),
-                        }));
+                        }.strip_credentials()));
                     } else if play_mode == PlayMode::RepeatAll {
                         // Wrap around to first video
                         let first_video = items
@@ -538,7 +538,7 @@ impl DynamicFolder for AlistProvider {
                                 }),
                                 provider_data: json!({}),
                                 relative_path: first.path.clone(),
-                            }));
+                            }.strip_credentials()));
                         }
                     }
                 }
@@ -600,7 +600,7 @@ impl DynamicFolder for AlistProvider {
                     }),
                     provider_data: json!({}),
                     relative_path: random_item.path.clone(),
-                }))
+                }.strip_credentials()))
             }
         }
     }

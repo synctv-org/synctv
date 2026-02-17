@@ -440,3 +440,15 @@ pub struct NextPlayItem {
     /// Relative path within the dynamic folder
     pub relative_path: String,
 }
+
+impl NextPlayItem {
+    /// Return a copy with credentials stripped from `source_config`.
+    ///
+    /// This **must** be called before serializing the item to any client-facing
+    /// API response so that tokens, passwords, cookies, etc. are never leaked.
+    #[must_use]
+    pub fn strip_credentials(mut self) -> Self {
+        self.source_config = super::strip_source_config_credentials(&self.source_config);
+        self
+    }
+}

@@ -340,10 +340,11 @@ impl MediaProvider for EmbyProvider {
     }
 
     fn cache_key(&self, _ctx: &ProviderContext<'_>, source_config: &Value) -> String {
-        // Hash only host + item_id to avoid leaking tokens/secrets into cache keys
+        // Cache key must include token hash to prevent cross-user data leakage.
+        // Different users have different tokens and may see different content.
         if let Ok(config) = EmbySourceConfig::try_from(source_config) {
             use sha2::{Sha256, Digest};
-            let identifier = format!("{}:{}", config.host, config.item_id);
+            let identifier = format!("{}:{}:{}", config.host, config.token, config.item_id);
             format!("emby:{:x}", Sha256::digest(identifier.as_bytes()))
         } else {
             "emby:unknown".to_string()
@@ -594,7 +595,7 @@ impl DynamicFolder for EmbyProvider {
                             metadata: json!({}),
                             provider_data: json!({}),
                             relative_path: next.path.clone(),
-                        }));
+                        }.strip_credentials()));
                     } else if play_mode == PlayMode::RepeatAll {
                         // Wrap around to first video/audio
                         let first_item = items.iter().find(|item| {
@@ -617,7 +618,7 @@ impl DynamicFolder for EmbyProvider {
                                 metadata: json!({}),
                                 provider_data: json!({}),
                                 relative_path: first.path.clone(),
-                            }));
+                            }.strip_credentials()));
                         }
                     }
                 }
@@ -670,7 +671,7 @@ impl DynamicFolder for EmbyProvider {
                         metadata: json!({}),
                         provider_data: json!({}),
                         relative_path: random.path.clone(),
-                    }))
+                    }.strip_credentials()))
                 } else {
                     Ok(None)
                 }

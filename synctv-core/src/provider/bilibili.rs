@@ -357,6 +357,27 @@ impl MediaProvider for BilibiliProvider {
                 let dash_resp = client.get_dash_pgcurl(request).await?;
 
                 let mut metadata = HashMap::new();
+                let mut subtitles = Vec::new();
+
+                // Fetch subtitles for PGC content (uses cid-based lookup)
+                let subtitle_request = synctv_media_providers::grpc::bilibili::GetSubtitlesReq {
+                    aid: 0,
+                    bvid: String::new(),
+                    cid,
+                    cookies,
+                };
+                if let Ok(subtitle_resp) = client.get_subtitles(subtitle_request).await {
+                    subtitles = subtitle_resp
+                        .subtitles
+                        .into_iter()
+                        .map(|(name, url)| SubtitleTrack {
+                            language: name.clone(),
+                            name,
+                            url,
+                            format: "json".to_string(),
+                        })
+                        .collect();
+                }
 
                 let dash = dash_resp.dash.map(|d| {
                     metadata.insert("duration".to_string(), json!(d.duration));
@@ -381,7 +402,7 @@ impl MediaProvider for BilibiliProvider {
                         urls: Vec::new(),
                         format: "mpd".to_string(),
                         headers: bilibili_headers(),
-                        subtitles: Vec::new(),
+                        subtitles,
                         expires_at,
                     },
                 );
@@ -474,6 +495,15 @@ impl MediaProvider for BilibiliProvider {
                     return Err(ProviderError::InvalidConfig(
                         "Bilibili video requires either bvid or aid".to_string(),
                     ));
+                }
+                // Validate bvid format to prevent injection via crafted identifiers.
+                // Valid BV IDs are alphanumeric (e.g. "BV1xx411c7mD").
+                if let Some(bv) = bvid.as_ref() {
+                    if !bv.is_empty() && !bv.chars().all(|c| c.is_ascii_alphanumeric()) {
+                        return Err(ProviderError::InvalidConfig(
+                            "Bilibili bvid must contain only alphanumeric characters".to_string(),
+                        ));
+                    }
                 }
                 if *cid == 0 {
                     return Err(ProviderError::InvalidConfig(
@@ -625,6 +655,13 @@ mod tests {
                         "Bilibili video requires either bvid or aid".to_string(),
                     ));
                 }
+                if let Some(bv) = bvid.as_ref() {
+                    if !bv.is_empty() && !bv.chars().all(|c| c.is_ascii_alphanumeric()) {
+                        return Err(ProviderError::InvalidConfig(
+                            "Bilibili bvid must contain only alphanumeric characters".to_string(),
+                        ));
+                    }
+                }
                 if *cid == 0 {
                     return Err(ProviderError::InvalidConfig(
                         "Bilibili video cid must be non-zero".to_string(),
@@ -735,6 +772,26 @@ mod tests {
     fn test_invalid_type() {
         let config = json!({
             "type": "unknown_type",
+            "cid": 12345
+        });
+        assert!(validate_bilibili(config).is_err());
+    }
+
+    #[test]
+    fn test_video_config_invalid_bvid_rejects_injection() {
+        let config = json!({
+            "type": "video",
+            "bvid": "BV1xx/../../../etc/passwd",
+            "cid": 12345
+        });
+        assert!(validate_bilibili(config).is_err());
+    }
+
+    #[test]
+    fn test_video_config_invalid_bvid_rejects_special_chars() {
+        let config = json!({
+            "type": "video",
+            "bvid": "BV1xx;DROP TABLE",
             "cid": 12345
         });
         assert!(validate_bilibili(config).is_err());

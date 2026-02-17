@@ -333,8 +333,9 @@ impl GrpcRateLimitInterceptor {
     ///
     /// Priority:
     /// 1. SHA-256 hash of JWT bearer token (authenticated users)
-    /// 2. Peer IP address (anonymous users)
-    /// 3. "anon:unknown" fallback (shared bucket; logs warning about misconfiguration)
+    /// 2. Client IP from X-Forwarded-For or X-Real-IP headers (behind reverse proxy)
+    /// 3. Peer IP address (direct connection)
+    /// 4. "anon:unknown" fallback (shared bucket; logs warning about misconfiguration)
     fn extract_client_id<T>(request: &Request<T>) -> String {
         request
             .metadata()
@@ -348,12 +349,31 @@ impl GrpcRateLimitInterceptor {
                 })
             })
             .or_else(|| {
-                // Use peer IP address for anonymous rate limiting instead of a shared bucket
-                request.remote_addr().map(|addr| format!("anon:ip:{}", addr.ip()))
+                // Try X-Forwarded-For first (first IP is the original client)
+                request
+                    .metadata()
+                    .get("x-forwarded-for")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.split(',').next())
+                    .map(|ip| format!("anon:{}", ip.trim()))
+            })
+            .or_else(|| {
+                // Try X-Real-IP header
+                request
+                    .metadata()
+                    .get("x-real-ip")
+                    .and_then(|v| v.to_str().ok())
+                    .map(|ip| format!("anon:{}", ip.trim()))
+            })
+            .or_else(|| {
+                // Fall back to peer IP address (direct connection, often the proxy IP).
+                // Use the same "anon:<ip>" format as header-based extraction for
+                // consistent rate-limit key formatting.
+                request.remote_addr().map(|addr| format!("anon:{}", addr.ip()))
             })
             .unwrap_or_else(|| {
                 warn!(
-                    "Rate limit: no client identifier available (no Authorization header or peer address). \
+                    "Rate limit: no client identifier available (no Authorization, X-Forwarded-For, X-Real-IP, or peer address). \
                      Falling back to shared 'anon:unknown' bucket. \
                      Configure trusted_proxies and ensure your reverse proxy sets X-Forwarded-For."
                 );

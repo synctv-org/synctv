@@ -344,6 +344,7 @@ impl SfuSessionManager {
         let sessions_for_track = Arc::clone(&self.sessions);
         let event_tx_for_ice = event_tx.clone();
         let peer_id_str = peer_id.to_string();
+        let simulcast_enabled = self.sfu_manager.config().enable_simulcast;
 
         // on_track: register incoming tracks with the SFU room, then create
         // outbound tracks on all other subscribers' PeerConnections so they
@@ -377,8 +378,9 @@ impl SfuSessionManager {
                         rtp_receiver,
                     ));
 
-                    // Set initial simulcast quality layer for video tracks
-                    if kind == TrackKind::Video {
+                    // Set initial simulcast quality layer for video tracks only
+                    // when simulcast is enabled in config
+                    if simulcast_enabled && kind == TrackKind::Video {
                         media_track.set_quality_layer(crate::track::QualityLayer::Medium);
                     }
 
@@ -755,6 +757,7 @@ impl SfuSessionManager {
         let sessions_for_track = Arc::clone(&self.sessions);
         let event_tx_for_ice = event_tx.clone();
         let peer_id_str = peer_id.to_string();
+        let simulcast_enabled_migration = self.sfu_manager.config().enable_simulcast;
 
         // on_track: register incoming tracks with the SFU room, then create
         // outbound tracks on all other subscribers' PeerConnections so they
@@ -788,8 +791,9 @@ impl SfuSessionManager {
                         rtp_receiver,
                     ));
 
-                    // Set initial simulcast quality layer for video tracks
-                    if kind == TrackKind::Video {
+                    // Set initial simulcast quality layer for video tracks only
+                    // when simulcast is enabled in config
+                    if simulcast_enabled_migration && kind == TrackKind::Video {
                         media_track.set_quality_layer(crate::track::QualityLayer::Medium);
                     }
 

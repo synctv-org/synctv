@@ -1,3 +1,30 @@
+//! Rate limiting service with Redis-backed distributed sliding window.
+//!
+//! # Multi-Replica Behavior
+//!
+//! When Redis is configured, rate limits are **shared across all replicas** using
+//! a Redis sorted-set sliding window algorithm. A user's request count is tracked
+//! globally, so the configured limit applies to the total across all nodes.
+//!
+//! When Redis is unavailable (not configured or temporarily down), the service
+//! falls back to **per-instance in-memory** limiting using the `governor` crate.
+//! In this mode each replica enforces the limit independently, so the effective
+//! global limit becomes `N * max_requests` where `N` is the number of replicas.
+//! This is an intentional trade-off: allowing slightly more requests is preferable
+//! to rejecting all requests during a Redis outage.
+//!
+//! ## Implications for Operators
+//!
+//! - **Single replica**: In-memory and Redis modes behave identically.
+//! - **Multiple replicas with Redis**: Limits are globally accurate.
+//! - **Multiple replicas without Redis / during Redis outage**: Limits are
+//!   per-replica. If strict global enforcement is critical, consider lowering
+//!   `max_requests` by a factor of the expected replica count, or ensuring Redis
+//!   high availability.
+//! - **Sync endpoints** (`check_rate_limit_sync` for gRPC interceptors) always
+//!   use in-memory limiting regardless of Redis availability, since gRPC
+//!   interceptors are synchronous.
+
 use crate::Result;
 use governor::{DefaultKeyedRateLimiter, Quota, RateLimiter as GovernorRateLimiter};
 use nonzero_ext::nonzero;

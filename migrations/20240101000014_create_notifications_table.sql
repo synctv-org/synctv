@@ -18,19 +18,11 @@ CREATE INDEX idx_notifications_created_at ON notifications(created_at DESC);
 CREATE INDEX idx_notifications_user_unread ON notifications(user_id, is_read) WHERE is_read = FALSE;
 CREATE INDEX idx_notifications_user_created ON notifications(user_id, created_at DESC);
 
--- Trigger to update updated_at timestamp
-CREATE OR REPLACE FUNCTION update_notifications_updated_at()
-RETURNS TRIGGER AS $$
-BEGIN
-    NEW.updated_at = NOW();
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
+-- Trigger to update updated_at timestamp (uses generic function from users migration)
 CREATE TRIGGER trigger_update_notifications_updated_at
 BEFORE UPDATE ON notifications
 FOR EACH ROW
-EXECUTE FUNCTION update_notifications_updated_at();
+EXECUTE FUNCTION update_updated_at_column();
 
 COMMENT ON TABLE notifications IS 'User notifications for room invitations, system announcements, and room events';
 COMMENT ON COLUMN notifications.type IS 'Notification type: room_invitation, system_announcement, room_event, etc.';

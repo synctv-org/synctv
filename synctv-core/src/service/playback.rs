@@ -233,8 +233,7 @@ impl PlaybackService {
         })
         .await?;
 
-        // Invalidate cache after mutation to ensure other replicas see fresh data
-        self.invalidate_playback_cache(&room_id).await;
+        // Cache invalidation is already handled inside update_state()
         self.broadcast_state_change(&state).await;
         Ok(state)
     }
@@ -261,8 +260,7 @@ impl PlaybackService {
         })
         .await?;
 
-        // Invalidate cache after mutation to ensure other replicas see fresh data
-        self.invalidate_playback_cache(&room_id).await;
+        // Cache invalidation is already handled inside update_state()
         self.broadcast_state_change(&state).await;
         Ok(state)
     }
@@ -290,8 +288,7 @@ impl PlaybackService {
         })
         .await?;
 
-        // Invalidate cache after mutation to ensure other replicas see fresh data
-        self.invalidate_playback_cache(&room_id).await;
+        // Cache invalidation is already handled inside update_state()
         self.broadcast_state_change(&state).await;
         Ok(state)
     }
@@ -341,7 +338,7 @@ impl PlaybackService {
         })
         .await?;
 
-        self.invalidate_playback_cache(&room_id).await;
+        // Cache invalidation is already handled inside update_state()
         self.broadcast_state_change(&state).await;
         Ok(state)
     }
@@ -474,7 +471,7 @@ impl PlaybackService {
                 "Auto-played next media"
             );
 
-            self.invalidate_playback_cache(room_id).await;
+            // Cache invalidation is already handled inside update_state()
             self.broadcast_state_change(&new_state).await;
             Ok(Some(new_state))
         } else {
@@ -730,7 +727,7 @@ impl PlaybackService {
         })
         .await?;
 
-        self.invalidate_playback_cache(&room_id).await;
+        // Cache invalidation is already handled inside update_state()
         self.broadcast_state_change(&state).await;
         Ok(state)
     }

@@ -150,6 +150,8 @@ impl PullStream {
         let hub_sender = self.stream_hub_event_sender.clone();
         let pool = self.connection_pool.clone();
         let cluster_secret = self.cluster_secret.clone();
+        let epoch = self.epoch;
+        let registry = Arc::clone(&self.registry);
         // Clone the is_running flag to mark failure in the spawned task
         let is_running_flag = self.lifecycle.is_running_clone();
 
@@ -227,6 +229,35 @@ impl PullStream {
                             _ = child_token.cancelled() => {
                                 info!("gRPC puller rebuild cancelled for {} / {}", room_id, media_id);
                                 break Ok(());
+                            }
+                        }
+
+                        // LS-7: Re-validate epoch before reconnecting to detect
+                        // split-brain scenarios where the publisher has changed
+                        // during the network disruption.
+                        match registry.validate_epoch(&room_id, &media_id, epoch).await {
+                            Ok(true) => {
+                                debug!(
+                                    "Epoch {} still valid on reconnect for {}/{}",
+                                    epoch, room_id, media_id
+                                );
+                            }
+                            Ok(false) => {
+                                warn!(
+                                    "Epoch {} is stale on reconnect for {}/{}, publisher changed. Stopping pull stream.",
+                                    epoch, room_id, media_id
+                                );
+                                break Err(anyhow::anyhow!(
+                                    "Stale epoch on reconnect: publisher changed for {} / {}",
+                                    room_id, media_id
+                                ));
+                            }
+                            Err(e) => {
+                                // Fail open: continue reconnect if registry is unreachable
+                                warn!(
+                                    "Failed to validate epoch on reconnect for {}/{}: {}. Continuing optimistically.",
+                                    room_id, media_id, e
+                                );
                             }
                         }
                     }

@@ -521,22 +521,32 @@ impl SfuSessionManager {
             }
         }
 
-        // Start RTCP handler for bandwidth estimation and network quality monitoring
-        let rtcp_handler = RtcpHandler::new(
-            sfu_peer_id.clone(),
-            network_monitor,
-            Arc::clone(&sfu_peer),
-        );
-        let rtcp_task = match rtcp_handler.start(Arc::clone(&pc.pc), vec![]).await {
-            Ok(handle) => Some(handle),
-            Err(e) => {
-                warn!(
-                    peer_id = %sfu_peer_id,
-                    error = %e,
-                    "SFU: Failed to start RTCP handler, continuing without bandwidth estimation"
-                );
-                None
-            }
+        // Start RTCP handler for bandwidth estimation and network quality monitoring,
+        // but only if bandwidth estimation is enabled in config.
+        let (rtcp_handler, rtcp_task) = if self.sfu_manager.config().enable_bandwidth_estimation {
+            let handler = RtcpHandler::new(
+                sfu_peer_id.clone(),
+                network_monitor,
+                Arc::clone(&sfu_peer),
+            );
+            let task = match handler.start(Arc::clone(&pc.pc), vec![]).await {
+                Ok(handle) => Some(handle),
+                Err(e) => {
+                    warn!(
+                        peer_id = %sfu_peer_id,
+                        error = %e,
+                        "SFU: Failed to start RTCP handler, continuing without bandwidth estimation"
+                    );
+                    None
+                }
+            };
+            (Some(handler), task)
+        } else {
+            debug!(
+                peer_id = %sfu_peer_id,
+                "SFU: Bandwidth estimation disabled by config, skipping RTCP handler"
+            );
+            (None, None)
         };
 
         // Store session with initial activity timestamp
@@ -547,7 +557,7 @@ impl SfuSessionManager {
                 room: Arc::clone(&room),
                 sfu_peer: Arc::clone(&sfu_peer),
                 rtcp_task,
-                rtcp_handler: Some(rtcp_handler),
+                rtcp_handler,
                 last_activity: Arc::new(parking_lot::Mutex::new(Instant::now())),
                 conn_id: conn_id.to_string(),
                 room_id: room_id.to_string(),
@@ -925,22 +935,32 @@ impl SfuSessionManager {
         let offer_json = serde_json::to_string(&offer)
             .map_err(|e| anyhow!("Failed to serialize SDP offer: {}", e))?;
 
-        // Start RTCP handler for bandwidth estimation and network quality monitoring
-        let rtcp_handler = RtcpHandler::new(
-            sfu_peer_id.clone(),
-            network_monitor,
-            Arc::clone(&sfu_peer),
-        );
-        let rtcp_task = match rtcp_handler.start(Arc::clone(&pc.pc), vec![]).await {
-            Ok(handle) => Some(handle),
-            Err(e) => {
-                warn!(
-                    peer_id = %sfu_peer_id,
-                    error = %e,
-                    "SFU migration: Failed to start RTCP handler, continuing without bandwidth estimation"
-                );
-                None
-            }
+        // Start RTCP handler for bandwidth estimation and network quality monitoring,
+        // but only if bandwidth estimation is enabled in config.
+        let (rtcp_handler, rtcp_task) = if self.sfu_manager.config().enable_bandwidth_estimation {
+            let handler = RtcpHandler::new(
+                sfu_peer_id.clone(),
+                network_monitor,
+                Arc::clone(&sfu_peer),
+            );
+            let task = match handler.start(Arc::clone(&pc.pc), vec![]).await {
+                Ok(handle) => Some(handle),
+                Err(e) => {
+                    warn!(
+                        peer_id = %sfu_peer_id,
+                        error = %e,
+                        "SFU migration: Failed to start RTCP handler, continuing without bandwidth estimation"
+                    );
+                    None
+                }
+            };
+            (Some(handler), task)
+        } else {
+            debug!(
+                peer_id = %sfu_peer_id,
+                "SFU migration: Bandwidth estimation disabled by config, skipping RTCP handler"
+            );
+            (None, None)
         };
 
         // Store session with initial activity timestamp
@@ -951,7 +971,7 @@ impl SfuSessionManager {
                 room: Arc::clone(&room),
                 sfu_peer: Arc::clone(&sfu_peer),
                 rtcp_task,
-                rtcp_handler: Some(rtcp_handler),
+                rtcp_handler,
                 last_activity: Arc::new(parking_lot::Mutex::new(Instant::now())),
                 conn_id: conn_id.to_string(),
                 room_id: room_id.to_string(),

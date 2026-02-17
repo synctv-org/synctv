@@ -45,6 +45,42 @@ fn stream_key_for_event(event: &ClusterEvent) -> String {
     }
 }
 
+// ---- Unified Pub/Sub channel naming ----
+//
+// Both admin and room events use the same channel naming scheme and are published
+// via PUBLISH + XADD in `publish_event()`. The subscription strategy differs:
+//
+//   - **Admin events**: Pattern subscription (`PSUBSCRIBE synctv:admin:*`)
+//     because admin events are global and infrequent. All nodes receive all admin
+//     events regardless of which rooms they serve.
+//
+//   - **Room events**: Per-room subscriptions (`SUBSCRIBE synctv:room:{room_id}`)
+//     managed dynamically via `RoomLifecycleEvent`s. This avoids receiving traffic
+//     for rooms the node does not serve, which is important in large deployments
+//     with many active rooms.
+//
+// Dispatch for both paths converges in `dispatch_event()`, which handles
+// deduplication, cache invalidation, permission syncing, and local broadcast
+// uniformly.
+
+/// Admin event Pub/Sub channel.
+const ADMIN_PUBSUB_CHANNEL: &str = "synctv:admin:events";
+
+/// Build the Redis Pub/Sub channel for a specific room.
+fn room_pubsub_channel(room_id: &str) -> String {
+    format!("synctv:room:{room_id}")
+}
+
+/// Build the Redis Pub/Sub channel for a given event.
+/// Room events go to per-room channels; admin events go to the global admin channel.
+fn pubsub_channel_for_event(event: &ClusterEvent) -> String {
+    if let Some(room_id) = event.room_id() {
+        room_pubsub_channel(room_id.as_str())
+    } else {
+        ADMIN_PUBSUB_CHANNEL.to_string()
+    }
+}
+
 use super::dedup::{DedupKey, MessageDeduplicator};
 use super::events::{CacheTarget, ClusterEvent};
 use super::room_hub::{RoomLifecycleEvent, RoomMessageHub};
@@ -554,7 +590,7 @@ impl RedisPubSub {
         if !active_rooms.is_empty() {
             let room_channels: Vec<String> = active_rooms
                 .iter()
-                .map(|rid| format!("synctv:room:{}", rid.as_str()))
+                .map(|rid| room_pubsub_channel(rid.as_str()))
                 .collect();
             let channel_refs: Vec<&str> = room_channels.iter().map(|s| s.as_str()).collect();
 
@@ -814,7 +850,7 @@ impl RedisPubSub {
                             RoomLifecycleEvent::RoomActivated(room_id) => {
                                 let room_id_str = room_id.as_str().to_string();
                                 if subscribed_rooms.insert(room_id_str.clone()) {
-                                    let channel = format!("synctv:room:{}", room_id_str);
+                                    let channel = room_pubsub_channel(&room_id_str);
                                     match timeout(
                                         Duration::from_secs(REDIS_TIMEOUT_SECS),
                                         pubsub.subscribe(&channel),
@@ -875,7 +911,7 @@ impl RedisPubSub {
                             RoomLifecycleEvent::RoomDeactivated(room_id) => {
                                 let room_id_str = room_id.as_str().to_string();
                                 if subscribed_rooms.remove(&room_id_str) {
-                                    let channel = format!("synctv:room:{}", room_id_str);
+                                    let channel = room_pubsub_channel(&room_id_str);
                                     match timeout(
                                         Duration::from_secs(REDIS_TIMEOUT_SECS),
                                         pubsub.unsubscribe(&channel),
@@ -930,7 +966,7 @@ impl RedisPubSub {
 
         // Subscribe to newly active rooms
         for room_id in active_rooms.difference(subscribed_rooms).cloned().collect::<Vec<_>>() {
-            let channel = format!("synctv:room:{}", room_id);
+            let channel = room_pubsub_channel(&room_id);
             match timeout(Duration::from_secs(REDIS_TIMEOUT_SECS), pubsub.subscribe(&channel)).await {
                 Ok(Ok(())) => {
                     subscribed_rooms.insert(room_id.clone());
@@ -944,7 +980,7 @@ impl RedisPubSub {
 
         // Unsubscribe from deactivated rooms
         for room_id in subscribed_rooms.difference(&active_rooms).cloned().collect::<Vec<_>>() {
-            let channel = format!("synctv:room:{}", room_id);
+            let channel = room_pubsub_channel(&room_id);
             match timeout(Duration::from_secs(REDIS_TIMEOUT_SECS), pubsub.unsubscribe(&channel)).await {
                 Ok(Ok(())) => {
                     debug!(room_id = %room_id, "Re-synced: unsubscribed from room channel");
@@ -1175,12 +1211,7 @@ impl RedisPubSub {
         event: ClusterEvent,
         event_wal: &Option<Arc<EventWal>>,
     ) -> Result<usize> {
-        // Events with a room_id go to synctv:room:{room_id}, admin-only events go to synctv:admin:events
-        let channel = if let Some(room_id) = event.room_id() {
-            format!("synctv:room:{}", room_id.as_str())
-        } else {
-            "synctv:admin:events".to_string()
-        };
+        let channel = pubsub_channel_for_event(&event);
 
         // Wrap event in envelope with node_id
         let envelope = EventEnvelope {

@@ -61,6 +61,10 @@ where
     /// * `l2_ttl_seconds` - TTL for L2 (Redis) cache entries in seconds
     /// * `key_prefix` - Redis key prefix (e.g., "synctv:user:")
     /// * `cache_type` - Label for metrics (e.g., "user", "room")
+    /// Minimum L2 TTL in seconds. Prevents persistent keys in Redis from
+    /// unbounded memory growth when `l2_ttl_seconds` is misconfigured as 0.
+    const MIN_L2_TTL_SECONDS: u64 = 60;
+
     pub fn new(
         redis_conn: Option<redis::aio::ConnectionManager>,
         l1_max_capacity: u64,
@@ -69,6 +73,20 @@ where
         key_prefix: String,
         cache_type: String,
     ) -> Result<Self> {
+        // Enforce minimum L2 TTL when Redis is configured to prevent
+        // persistent keys that cause unbounded memory growth.
+        let l2_ttl_seconds = if redis_conn.is_some() && l2_ttl_seconds < Self::MIN_L2_TTL_SECONDS {
+            tracing::warn!(
+                cache_type = %cache_type,
+                configured_ttl = l2_ttl_seconds,
+                enforced_ttl = Self::MIN_L2_TTL_SECONDS,
+                "L2 TTL too low, enforcing minimum to prevent unbounded Redis memory growth"
+            );
+            Self::MIN_L2_TTL_SECONDS
+        } else {
+            l2_ttl_seconds
+        };
+
         let l1_cache = moka::future::CacheBuilder::new(l1_max_capacity)
             .time_to_live(std::time::Duration::from_secs(l1_ttl_minutes * 60))
             .build();
@@ -166,24 +184,15 @@ where
                 Error::Internal(format!("Failed to serialize {} for caching: {e}", self.cache_type))
             })?;
 
-            // Add TTL jitter to prevent cache avalanche (+-10% random jitter)
-            let ttl_with_jitter = if self.l2_ttl_seconds > 0 {
-                add_ttl_jitter(self.l2_ttl_seconds)
-            } else {
-                0
-            };
+            // Add TTL jitter to prevent cache avalanche (+-10% random jitter).
+            // l2_ttl_seconds is guaranteed >= MIN_L2_TTL_SECONDS by the constructor,
+            // so ttl_with_jitter is always > 0. We use max() as defense-in-depth.
+            let ttl_with_jitter = add_ttl_jitter(self.l2_ttl_seconds).max(Self::MIN_L2_TTL_SECONDS);
 
-            if ttl_with_jitter > 0 {
-                let _: () = conn
-                    .set_ex(&redis_key, json, ttl_with_jitter)
-                    .await
-                    .map_err(|e| Error::Internal(format!("Failed to set {} in cache: {e}", self.cache_type)))?;
-            } else {
-                let _: () = conn
-                    .set(&redis_key, json)
-                    .await
-                    .map_err(|e| Error::Internal(format!("Failed to set {} in cache: {e}", self.cache_type)))?;
-            }
+            let _: () = conn
+                .set_ex(&redis_key, json, ttl_with_jitter)
+                .await
+                .map_err(|e| Error::Internal(format!("Failed to set {} in cache: {e}", self.cache_type)))?;
 
             tracing::debug!(
                 key = %key,
@@ -408,11 +417,8 @@ where
                 Error::Internal(format!("Failed to serialize {} for caching: {e}", self.cache_type))
             })?;
 
-            let ttl_seconds = if self.l2_ttl_seconds > 0 {
-                add_ttl_jitter(self.l2_ttl_seconds) as i64
-            } else {
-                0
-            };
+            // l2_ttl_seconds is guaranteed >= MIN_L2_TTL_SECONDS by the constructor.
+            let ttl_seconds = add_ttl_jitter(self.l2_ttl_seconds).max(Self::MIN_L2_TTL_SECONDS) as i64;
 
             // Lua script: atomically GET existing JSON, parse its updated_at inside
             // Lua via cjson, compare with the new timestamp (passed as millis),
@@ -423,7 +429,7 @@ where
             // it via cjson.decode and compare lexicographically, which is correct
             // for ISO-8601 timestamps in the same timezone (UTC).
             // ARGV[1] = new JSON value
-            // ARGV[2] = TTL in seconds (0 = no expiry)
+            // ARGV[2] = TTL in seconds (always > 0)
             // ARGV[3] = new timestamp as ISO-8601 string for comparison
             let script = redis::Script::new(
                 r#"
@@ -439,11 +445,7 @@ where
                         end
                     end
                 end
-                if tonumber(ARGV[2]) > 0 then
-                    redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
-                else
-                    redis.call('SET', KEYS[1], ARGV[1])
-                end
+                redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
                 return 1
                 "#,
             );

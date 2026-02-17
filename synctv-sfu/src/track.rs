@@ -76,12 +76,34 @@ impl QualityLayer {
     }
 
     /// Get the RID (restriction identifier) for this layer
-    #[must_use] 
+    #[must_use]
     pub const fn rid(&self) -> &'static str {
         match self {
             Self::High => "h",
             Self::Medium => "m",
             Self::Low => "l",
+        }
+    }
+
+    /// Parse a quality layer from a WebRTC RID (restriction identifier) string.
+    ///
+    /// Common RID conventions:
+    /// - `"h"`, `"high"`, `"f"` (full) -> High
+    /// - `"m"`, `"medium"`, `"mid"` -> Medium
+    /// - `"l"`, `"low"`, `"q"` (quarter) -> Low
+    ///
+    /// Returns `None` for empty or unrecognized RIDs.
+    #[must_use]
+    pub fn from_rid(rid: &str) -> Option<Self> {
+        match rid.to_lowercase().as_str() {
+            "h" | "high" | "f" => Some(Self::High),
+            "m" | "medium" | "mid" => Some(Self::Medium),
+            "l" | "low" | "q" => Some(Self::Low),
+            "" => None,
+            _ => {
+                tracing::debug!(rid = %rid, "Unknown simulcast RID, ignoring");
+                None
+            }
         }
     }
 
@@ -455,4 +477,41 @@ pub struct TrackStats {
     pub packets_lost: u64,
     pub bitrate_kbps: u32,
     pub quality_layer: Option<QualityLayer>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_quality_layer_from_rid() {
+        assert_eq!(QualityLayer::from_rid("h"), Some(QualityLayer::High));
+        assert_eq!(QualityLayer::from_rid("m"), Some(QualityLayer::Medium));
+        assert_eq!(QualityLayer::from_rid("l"), Some(QualityLayer::Low));
+        assert_eq!(QualityLayer::from_rid("high"), Some(QualityLayer::High));
+        assert_eq!(QualityLayer::from_rid("medium"), Some(QualityLayer::Medium));
+        assert_eq!(QualityLayer::from_rid("low"), Some(QualityLayer::Low));
+        assert_eq!(QualityLayer::from_rid("f"), Some(QualityLayer::High));
+        assert_eq!(QualityLayer::from_rid("q"), Some(QualityLayer::Low));
+        assert_eq!(QualityLayer::from_rid(""), None);
+        assert_eq!(QualityLayer::from_rid("unknown"), None);
+    }
+
+    #[test]
+    fn test_quality_layer_from_bandwidth() {
+        assert_eq!(QualityLayer::from_bandwidth(3000), QualityLayer::High);
+        assert_eq!(QualityLayer::from_bandwidth(2000), QualityLayer::High);
+        assert_eq!(QualityLayer::from_bandwidth(1500), QualityLayer::Medium);
+        assert_eq!(QualityLayer::from_bandwidth(1000), QualityLayer::Medium);
+        assert_eq!(QualityLayer::from_bandwidth(500), QualityLayer::Low);
+        assert_eq!(QualityLayer::from_bandwidth(0), QualityLayer::Low);
+    }
+
+    #[test]
+    fn test_quality_layer_rid_roundtrip() {
+        for layer in [QualityLayer::High, QualityLayer::Medium, QualityLayer::Low] {
+            let rid = layer.rid();
+            assert_eq!(QualityLayer::from_rid(rid), Some(layer));
+        }
+    }
 }

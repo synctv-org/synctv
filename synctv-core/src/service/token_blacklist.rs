@@ -3,6 +3,7 @@ use sha2::{Sha256, Digest};
 use std::sync::Arc;
 use std::time::Duration;
 use crate::{cache::CacheInvalidationService, models::UserId, Error, Result, InternalExt};
+use crate::resilience::timeout::REDIS_OPERATION_TIMEOUT;
 
 /// Hash a token for use in Redis keys and log messages.
 /// This prevents raw tokens from appearing in Redis key space or log aggregation systems.
@@ -87,8 +88,9 @@ impl TokenBlacklistService {
 
             let key = self.key_builder.token_blacklist(&token_hash);
 
-            let _: () = conn.set_ex(&key, "1", ttl_seconds as u64)
+            let _: () = tokio::time::timeout(REDIS_OPERATION_TIMEOUT, conn.set_ex(&key, "1", ttl_seconds as u64))
                 .await
+                .map_err(|_| Error::Internal("Redis timeout: blacklist_token".to_string()))?
                 .internal_with_err("Failed to blacklist token")?;
 
             // Also populate L1 cache so this replica sees it immediately
@@ -133,14 +135,18 @@ impl TokenBlacklistService {
 
             // SET key "1" NX EX ttl -- returns true if the key was set (token was NOT
             // previously blacklisted), false if it already existed (replay detected).
-            let was_set: bool = redis::cmd("SET")
-                .arg(&key)
-                .arg("1")
-                .arg("NX")
-                .arg("EX")
-                .arg(ttl_seconds as u64)
-                .query_async(&mut conn)
+            let was_set: bool = tokio::time::timeout(
+                REDIS_OPERATION_TIMEOUT,
+                redis::cmd("SET")
+                    .arg(&key)
+                    .arg("1")
+                    .arg("NX")
+                    .arg("EX")
+                    .arg(ttl_seconds as u64)
+                    .query_async::<Option<String>>(&mut conn),
+            )
                 .await
+                .unwrap_or(Ok(None))
                 .map(|v: Option<String>| v.is_some())
                 .unwrap_or(false);
 
@@ -162,24 +168,31 @@ impl TokenBlacklistService {
                 Ok(false)
             }
         } else {
-            // In-memory fallback: check if already blacklisted, then insert
-            // Note: this is not truly atomic across replicas but is the best
-            // we can do without Redis in single-node mode.
-            if let Some(expires_at) = self.local_blacklist.get(&token_hash).await {
-                let now = chrono::Utc::now().timestamp();
-                if now < expires_at {
-                    // Already blacklisted -- replay detected
-                    return Ok(false);
-                }
-            }
+            // In-memory fallback: use Moka's entry API for atomic check-and-insert
+            // to prevent TOCTOU race where concurrent tasks could consume the same token.
             let expires_at = chrono::Utc::now().timestamp() + ttl_seconds;
-            self.local_blacklist.insert(token_hash.clone(), expires_at).await;
-            tracing::info!(
-                token_hash = %&token_hash[..16],
-                ttl_seconds,
-                "Refresh token consumed (in-memory)"
-            );
-            Ok(true)
+            let entry = self
+                .local_blacklist
+                .entry_by_ref(&token_hash)
+                .or_insert(expires_at)
+                .await;
+
+            if entry.is_fresh() {
+                // We inserted the entry -- token is now consumed
+                tracing::info!(
+                    token_hash = %&token_hash[..16],
+                    ttl_seconds,
+                    "Refresh token consumed (in-memory)"
+                );
+                Ok(true)
+            } else {
+                // Entry already existed -- replay detected
+                tracing::warn!(
+                    token_hash = %&token_hash[..16],
+                    "Refresh token replay detected: already consumed"
+                );
+                Ok(false)
+            }
         }
     }
 
@@ -218,9 +231,16 @@ impl TokenBlacklistService {
             let mut conn = conn.clone();
             let key = self.key_builder.token_blacklist(&token_hash);
 
-            let exists: bool = match conn.exists(&key).await {
-                Ok(v) => v,
-                Err(e) => {
+            let exists_result = tokio::time::timeout(REDIS_OPERATION_TIMEOUT, conn.exists::<_, bool>(&key)).await;
+            let exists: bool = match exists_result {
+                Err(_) => {
+                    crate::metrics::redis::REDIS_ERRORS
+                        .with_label_values(&["blacklist_check"])
+                        .inc();
+                    return Err(Error::Internal("Redis timeout: blacklist check".to_string()));
+                }
+                Ok(Ok(v)) => v,
+                Ok(Err(e)) => {
                     // Record metric for Redis failures
                     crate::metrics::redis::REDIS_ERRORS
                         .with_label_values(&["blacklist_check"])
@@ -240,7 +260,10 @@ impl TokenBlacklistService {
 
             // Populate L1 on Redis hit so subsequent checks are fast
             if exists {
-                let ttl: i64 = conn.ttl(&key).await.unwrap_or(60);
+                let ttl: i64 = tokio::time::timeout(REDIS_OPERATION_TIMEOUT, conn.ttl(&key))
+                    .await
+                    .unwrap_or(Ok(60))
+                    .unwrap_or(60);
                 let expires_at = chrono::Utc::now().timestamp() + ttl.max(1);
                 self.local_blacklist.insert(token_hash, expires_at).await;
             }
@@ -269,8 +292,9 @@ impl TokenBlacklistService {
 
             let key = self.key_builder.token_blacklist(&token_hash);
 
-            let _: () = conn.del(&key)
+            let _: () = tokio::time::timeout(REDIS_OPERATION_TIMEOUT, conn.del(&key))
                 .await
+                .map_err(|_| Error::Internal("Redis timeout: remove_token".to_string()))?
                 .internal_with_err("Failed to remove token from blacklist")?;
 
             // Also clear L1 cache
@@ -306,8 +330,9 @@ impl TokenBlacklistService {
 
             let key = self.key_builder.token_blacklist_user(user_id.as_str());
 
-            let _: () = conn.set_ex(&key, now.to_string(), ttl_seconds as u64)
+            let _: () = tokio::time::timeout(REDIS_OPERATION_TIMEOUT, conn.set_ex(&key, now.to_string(), ttl_seconds as u64))
                 .await
+                .map_err(|_| Error::Internal("Redis timeout: invalidate_user_tokens".to_string()))?
                 .internal_with_err("Failed to set user token invalidation")?;
 
             // Also populate L1 cache so this replica sees it immediately
@@ -365,9 +390,16 @@ impl TokenBlacklistService {
             // L1 miss - check Redis (source of truth)
             let mut conn = conn.clone();
 
-            let value: Option<String> = match conn.get(&user_key).await {
-                Ok(v) => v,
-                Err(e) => {
+            let get_result = tokio::time::timeout(REDIS_OPERATION_TIMEOUT, conn.get::<_, Option<String>>(&user_key)).await;
+            let value: Option<String> = match get_result {
+                Err(_) => {
+                    crate::metrics::redis::REDIS_ERRORS
+                        .with_label_values(&["user_token_invalidation_check"])
+                        .inc();
+                    return Err(Error::Internal("Redis timeout: user token invalidation check".to_string()));
+                }
+                Ok(Ok(v)) => v,
+                Ok(Err(e)) => {
                     // Record metric for Redis failures
                     crate::metrics::redis::REDIS_ERRORS
                         .with_label_values(&["user_token_invalidation_check"])

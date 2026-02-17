@@ -103,24 +103,42 @@ impl PlaylistRepository {
 
     /// Create a new playlist
     ///
-    /// If `playlist.position` is negative, the position is computed atomically
-    /// as `COALESCE(MAX(position), -1) + 1` within the INSERT to prevent race
-    /// conditions from concurrent inserts. Pass a non-negative position to use
+    /// If `playlist.position` is negative, the position is computed within a
+    /// transaction using `SELECT ... FOR UPDATE` to prevent concurrent inserts
+    /// from computing the same position. Pass a non-negative position to use
     /// an explicit value (e.g., when the caller already holds a transaction lock).
     pub async fn create(&self, playlist: &Playlist) -> Result<Playlist> {
-        let source_provider_str = playlist.source_provider.as_deref();
-        let parent_id_str = playlist.parent_id.as_ref().map(super::super::models::id::PlaylistId::as_str);
+        if playlist.position < 0 {
+            // Use a transaction with row-level locking to prevent concurrent
+            // inserts from computing the same next position.
+            let mut tx = self.pool.begin().await?;
 
-        let row = if playlist.position < 0 {
-            // Atomic position: compute MAX(position)+1 inside the INSERT
-            sqlx::query(
+            let parent_id_str = playlist.parent_id.as_ref().map(super::super::models::id::PlaylistId::as_str);
+
+            // Lock existing rows for this room+parent to serialize position computation.
+            // FOR UPDATE locks prevent concurrent transactions from reading until we commit.
+            let max_pos: Option<i32> = sqlx::query_scalar(
+                r"
+                SELECT MAX(position)
+                FROM playlists
+                WHERE room_id = $1
+                  AND parent_id IS NOT DISTINCT FROM $2
+                FOR UPDATE
+                "
+            )
+            .bind(playlist.room_id.as_str())
+            .bind(parent_id_str)
+            .fetch_one(&mut *tx)
+            .await?;
+
+            let next_position = max_pos.unwrap_or(-1) + 1;
+
+            let source_provider_str = playlist.source_provider.as_deref();
+            let row = sqlx::query(
                 r"
                 INSERT INTO playlists (id, room_id, creator_id, name, parent_id, position,
                                        source_provider, source_config, provider_instance_name)
-                VALUES ($1, $2, $3, $4, $5,
-                        COALESCE((SELECT MAX(position) + 1 FROM playlists
-                                  WHERE room_id = $2 AND parent_id IS NOT DISTINCT FROM $5), 0),
-                        $6, $7, $8)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                 RETURNING id, room_id, creator_id, name, parent_id, position,
                           source_provider, source_config, provider_instance_name,
                           created_at, updated_at
@@ -131,14 +149,21 @@ impl PlaylistRepository {
             .bind(playlist.creator_id.as_ref().map(|id| id.as_str()))
             .bind(&playlist.name)
             .bind(parent_id_str)
+            .bind(next_position)
             .bind(source_provider_str)
             .bind(&playlist.source_config)
             .bind(&playlist.provider_instance_name)
-            .fetch_one(&self.pool)
-            .await?
+            .fetch_one(&mut *tx)
+            .await?;
+
+            let result = Playlist::from_row(&row)?;
+            tx.commit().await?;
+            Ok(result)
         } else {
             // Explicit position provided by caller
-            sqlx::query(
+            let source_provider_str = playlist.source_provider.as_deref();
+            let parent_id_str = playlist.parent_id.as_ref().map(super::super::models::id::PlaylistId::as_str);
+            let row = sqlx::query(
                 r"
                 INSERT INTO playlists (id, room_id, creator_id, name, parent_id, position,
                                        source_provider, source_config, provider_instance_name)
@@ -158,18 +183,20 @@ impl PlaylistRepository {
             .bind(&playlist.source_config)
             .bind(&playlist.provider_instance_name)
             .fetch_one(&self.pool)
-            .await?
-        };
+            .await?;
 
-        Ok(Playlist::from_row(&row)?)
+            Ok(Playlist::from_row(&row)?)
+        }
     }
 
-    /// Create a playlist using a provided executor (pool or transaction)
+    /// Create a playlist using a provided executor (pool or transaction).
     ///
-    /// If `playlist.position` is negative, the position is computed atomically
-    /// as `COALESCE(MAX(position), -1) + 1` within the INSERT to prevent race
-    /// conditions from concurrent inserts. Pass a non-negative position to use
-    /// an explicit value (e.g., when the caller already holds a transaction lock).
+    /// **Important:** When `playlist.position` is negative (auto-position), the
+    /// caller MUST ensure the executor is a transaction and should call
+    /// [`get_next_position_for_update`] first to lock the relevant rows. Otherwise,
+    /// concurrent inserts may compute the same position.
+    ///
+    /// Pass a non-negative position to use an explicit value.
     pub async fn create_with_executor<'e, E>(&self, playlist: &Playlist, executor: E) -> Result<Playlist>
     where
         E: sqlx::PgExecutor<'e>,
@@ -178,7 +205,8 @@ impl PlaylistRepository {
         let parent_id_str = playlist.parent_id.as_ref().map(super::super::models::id::PlaylistId::as_str);
 
         let row = if playlist.position < 0 {
-            // Atomic position: compute MAX(position)+1 inside the INSERT
+            // Use subquery for convenience, but callers should prefer
+            // get_next_position_for_update + explicit position in a transaction.
             sqlx::query(
                 r"
                 INSERT INTO playlists (id, room_id, creator_id, name, parent_id, position,
@@ -230,7 +258,38 @@ impl PlaylistRepository {
         Ok(Playlist::from_row(&row)?)
     }
 
-    /// Get next available position in a parent
+    /// Get next available position in a parent, locking rows with `FOR UPDATE`.
+    ///
+    /// Must be called within a transaction. The `FOR UPDATE` lock prevents
+    /// concurrent transactions from reading the same MAX(position) until this
+    /// transaction commits, eliminating the position race condition.
+    pub async fn get_next_position_for_update<'e>(
+        &self,
+        room_id: &RoomId,
+        parent_id: Option<&PlaylistId>,
+        tx: &mut sqlx::Transaction<'e, sqlx::Postgres>,
+    ) -> Result<i32> {
+        let max_pos: Option<i32> = sqlx::query_scalar(
+            r"
+            SELECT MAX(position)
+            FROM playlists
+            WHERE room_id = $1
+              AND parent_id IS NOT DISTINCT FROM $2
+            FOR UPDATE
+            "
+        )
+        .bind(room_id.as_str())
+        .bind(parent_id.map(super::super::models::id::PlaylistId::as_str))
+        .fetch_one(&mut **tx)
+        .await?;
+
+        Ok(max_pos.unwrap_or(-1) + 1)
+    }
+
+    /// Get next available position in a parent (non-locking, for read-only use).
+    ///
+    /// **Warning:** This does NOT acquire a lock. For concurrent-safe position
+    /// computation, use [`get_next_position_for_update`] within a transaction.
     pub async fn get_next_position(&self, room_id: &RoomId, parent_id: Option<&PlaylistId>) -> Result<i32> {
         let max_pos: Option<i32> = sqlx::query_scalar(
             r"

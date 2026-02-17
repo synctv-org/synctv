@@ -62,8 +62,7 @@ async fn handle_flv_stream(
     );
 
     // Check if stream exists (publisher registered)
-    let mut registry = (*state.registry).clone();
-    match registry.get_publisher(&room_id, media_id).await {
+    match state.registry.get_publisher_immut(&room_id, media_id).await {
         Ok(Some(_)) => {}
         Ok(None) => {
             warn!("No publisher for room {} / media {}", room_id, media_id);

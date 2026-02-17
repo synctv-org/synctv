@@ -385,6 +385,7 @@ impl RoomMessageHub {
                     if subscriber.user_id == *user_id {
                         match subscriber.sender.try_send(event.clone()) {
                             Ok(()) => {
+                                subscriber.consecutive_drops.store(0, Ordering::Relaxed);
                                 sent_count += 1;
                                 debug!(
                                     room_id = %room_id.as_str(),
@@ -395,13 +396,27 @@ impl RoomMessageHub {
                                 );
                             }
                             Err(mpsc::error::TrySendError::Full(_)) => {
-                                warn!(
-                                    room_id = %room_id.as_str(),
-                                    user_id = %subscriber.user_id.as_str(),
-                                    connection_id = %subscriber.connection_id,
-                                    event_type = %event.event_type(),
-                                    "Subscriber channel full, dropping event for slow consumer"
-                                );
+                                let drops = subscriber.consecutive_drops.fetch_add(1, Ordering::Relaxed) + 1;
+                                if drops >= MAX_CONSECUTIVE_DROPS {
+                                    warn!(
+                                        room_id = %room_id.as_str(),
+                                        user_id = %subscriber.user_id.as_str(),
+                                        connection_id = %subscriber.connection_id,
+                                        consecutive_drops = drops,
+                                        "Disconnecting persistently slow subscriber after {} consecutive drops (targeted)",
+                                        MAX_CONSECUTIVE_DROPS
+                                    );
+                                    failed_connections.push(subscriber.connection_id.clone());
+                                } else {
+                                    warn!(
+                                        room_id = %room_id.as_str(),
+                                        user_id = %subscriber.user_id.as_str(),
+                                        connection_id = %subscriber.connection_id,
+                                        event_type = %event.event_type(),
+                                        consecutive_drops = drops,
+                                        "Subscriber channel full, dropping event for slow consumer"
+                                    );
+                                }
                             }
                             Err(mpsc::error::TrySendError::Closed(_)) => {
                                 warn!(

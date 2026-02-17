@@ -2,11 +2,12 @@
 
 use anyhow::Result;
 use sqlx::postgres::PgPoolOptions;
-use sqlx::PgPool;
+use sqlx::{Executor, PgPool};
 use std::time::Duration;
 use tracing::{error, info};
 
 use crate::Config;
+use crate::resilience::timeout::DB_QUERY_TIMEOUT;
 
 /// Initialize database connection pool
 ///
@@ -18,12 +19,23 @@ pub async fn init_database(config: &Config) -> Result<PgPool> {
     let masked_url = mask_database_url(database_url);
     info!("Connecting to database: {}", masked_url);
 
+    let statement_timeout_ms = DB_QUERY_TIMEOUT.as_millis();
+
     let pool: PgPool = PgPoolOptions::new()
         .max_connections(config.database.max_connections)
         .min_connections(config.database.min_connections)
         .acquire_timeout(Duration::from_secs(config.database.connect_timeout_seconds))
         .idle_timeout(Duration::from_secs(config.database.idle_timeout_seconds))
         .max_lifetime(Duration::from_secs(config.database.max_lifetime_seconds))
+        .after_connect(move |conn, _meta| {
+            Box::pin(async move {
+                conn.execute(
+                    format!("SET statement_timeout = {statement_timeout_ms}").as_str(),
+                )
+                .await?;
+                Ok(())
+            })
+        })
         .connect(database_url)
         .await
         .map_err(|e| {

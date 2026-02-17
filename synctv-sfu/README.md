@@ -41,50 +41,58 @@ The following features are implemented and tested:
 - **Session lifecycle** -- `SfuSessionManager` creates and destroys server-side
   `PeerConnection` instances based on room size thresholds.
 
+## Architecture: Single-Node SFU
+
+SFU mode operates as a **single-node service**. All WebRTC PeerConnections for a
+room must reside on the same process. Cross-node media forwarding is not implemented.
+
+### Why single-node only
+
+WebRTC PeerConnections maintain stateful ICE/DTLS sessions tied to a specific
+process. Forwarding RTP packets between nodes would require:
+- RTP packet tunneling (gRPC streaming or Redis Pub/Sub) with sub-100ms latency
+- Cross-node RTCP feedback aggregation for bandwidth estimation
+- Distributed room state synchronization
+
+These are non-trivial to implement correctly without degrading media quality.
+
+### Enforcement
+
+Startup configuration validation (`Config::validate()`) **blocks SFU and Hybrid
+modes** when a cluster secret is configured. This prevents silent failures in
+multi-node deployments. The relevant check is in `synctv-core/src/config.rs`.
+
+### Session affinity (prepared, not required for single-node)
+
+Infrastructure for session-affine routing exists for potential future use:
+- `SessionAffinityRegistry` trait in `session_manager.rs`
+- `RedisSessionAffinityRegistry` implementation in `redis_affinity.rs`
+- `lookup_session_replica()` for routing queries
+
+In single-node mode, the `NoopSessionRegistry` is used (zero overhead).
+
+### Deployment options
+
+| Mode | Nodes | Description |
+|------|-------|-------------|
+| `peer_to_peer` | 1+ | Direct P2P media, signaling relay only |
+| `signaling_only` | 1+ | WebSocket signaling relay, no SFU/TURN |
+| `hybrid` | **1 only** | P2P for small rooms, SFU for large rooms |
+| `sfu` | **1 only** | All rooms use SFU forwarding |
+
 ## Known Issues and Limitations
-
-### P0: Cluster Limitations
-**SFU mode does not work correctly in multi-replica cluster deployments.**
-
-In a clustered environment:
-- WebSocket connections may be distributed across different nodes
-- SFU rooms are created on individual nodes, not replicated via Redis
-- P2P peer migrations to SFU fail when peers are on different nodes
-- Media streams cannot be forwarded across cluster nodes
-
-**Workarounds:**
-- Use `webrtc.mode: peer_to_peer` or `webrtc.mode: signaling_only` in production clusters
-- Deploy a single replica for SFU/Hybrid modes (not recommended for high availability)
-- Use sticky sessions to route all room members to the same node (partial solution)
-
-**Future Work:**
-- Implement cross-node media forwarding via Redis Pub/Sub or gRPC streaming
-- Add cluster-aware peer migration (migrate entire rooms, not individual peers)
-- Document deployment topologies (single-node SFU vs. multi-node P2P)
 
 ### P1: Incomplete Features
 - **Simulcast layer switching** -- Basic implementation exists but lacks dynamic layer
-  switching based on bandwidth estimation. All subscribers currently receive the high layer.
-- **ICE candidate filtering** -- No SRFLX/RELAY preference logic implemented yet.
+  switching based on bandwidth estimation. All subscribers currently receive the medium layer.
 - **Track ID conflict detection** -- No duplicate track ID validation when peers publish.
-- **Session timeout mechanism** -- SFU sessions do not expire automatically on idle or
-  connection failure. Manual cleanup required.
 
 ### P2: Production Hardening
 - **STUN server configuration** -- Built-in STUN server (`enable_builtin_stun`) requires
   `stun_external_addr` to be set in NAT/K8s environments. Falls back to `advertise_host`
   but may not work correctly behind load balancers.
-- **No integration tests** -- Unit tests pass but end-to-end SFU→client integration
+- **No integration tests** -- Unit tests pass but end-to-end SFU-to-client integration
   is not tested. Manual testing required before production use.
-
-## Usage Status
-
-**Single-node deployments:** Basic SFU functionality works for testing.
-**Multi-node clusters:** DO NOT USE `sfu` or `hybrid` modes. Use `peer_to_peer` or `signaling_only`.
-
-To prevent misconfiguration, startup validation blocks `sfu`/`hybrid` modes when:
-- Cluster secret is configured (indicates multi-node deployment)
-- This prevents silent failures in production clusters
 
 ## Configuration Recommendations
 

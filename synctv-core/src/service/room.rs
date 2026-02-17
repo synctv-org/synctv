@@ -611,9 +611,6 @@ impl RoomService {
             .check_permission_no_cache(&room_id, &user_id, PermissionBits::DELETE_ROOM)
             .await?;
 
-        // Notify before deletion
-        let _ = self.notification_service.notify_room_deleted(&room_id).await;
-
         let mut tx = self.pool.begin().await?;
 
         // Soft-delete: set deleted_at timestamp.
@@ -636,6 +633,9 @@ impl RoomService {
 
         // Commit transaction - all or nothing
         tx.commit().await?;
+
+        // Notify after commit so notifications are only sent for successful deletions
+        let _ = self.notification_service.notify_room_deleted(&room_id).await;
 
         tracing::info!(
             room_id = %room_id,
@@ -1315,9 +1315,7 @@ impl RoomService {
     /// Delete room (admin use, bypasses permission checks)
     ///
     /// Uses a transaction for atomicity, matching the pattern of `delete_room`.
-    pub async fn admin_delete_room(&self, room_id: &RoomId) -> Result<()> {
-        let _ = self.notification_service.notify_room_deleted(room_id).await;
-
+    pub async fn admin_delete_room(&self, room_id: &RoomId, admin_user_id: &UserId) -> Result<()> {
         // Wrap deletion in a transaction for atomicity
         let mut tx = self.pool.begin().await?;
 
@@ -1338,14 +1336,17 @@ impl RoomService {
 
         tx.commit().await?;
 
+        // Notify after commit so notifications are only sent for successful deletions
+        let _ = self.notification_service.notify_room_deleted(room_id).await;
+
         crate::metrics::http::ROOMS_ACTIVE.dec();
         self.notify_room_invalidation(room_id).await;
 
         // Audit log
         if let Some(ref audit) = self.audit_service {
             let _ = audit.log(
-                "system".to_string(),
-                "system".to_string(),
+                admin_user_id.as_str().to_string(),
+                admin_user_id.as_str().to_string(),
                 AuditAction::RoomDeleted,
                 AuditTargetType::Room,
                 Some(room_id.as_str().to_string()),
@@ -1429,7 +1430,7 @@ impl RoomService {
     ///
     /// Sets the is_banned flag. The room retains its previous status (Active/Closed/etc).
     /// Only global admins can ban rooms.
-    pub async fn ban_room(&self, room_id: &RoomId) -> Result<Room> {
+    pub async fn ban_room(&self, room_id: &RoomId, admin_user_id: &UserId) -> Result<Room> {
         let room = self.room_repo.get_by_id(room_id).await?
             .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
 
@@ -1440,11 +1441,11 @@ impl RoomService {
         let updated_room = self.room_repo.update_ban_status(room_id, true).await?;
         self.notify_room_invalidation(room_id).await;
 
-        // Audit log (admin actor not available at this layer -- logged as system)
+        // Audit log
         if let Some(ref audit) = self.audit_service {
             let _ = audit.log(
-                "system".to_string(),
-                "system".to_string(),
+                admin_user_id.as_str().to_string(),
+                admin_user_id.as_str().to_string(),
                 AuditAction::RoomBanned,
                 AuditTargetType::Room,
                 Some(room_id.as_str().to_string()),
@@ -1461,7 +1462,7 @@ impl RoomService {
     ///
     /// Clears the is_banned flag. The room returns to its previous status.
     /// Only global admins can unban rooms.
-    pub async fn unban_room(&self, room_id: &RoomId) -> Result<Room> {
+    pub async fn unban_room(&self, room_id: &RoomId, admin_user_id: &UserId) -> Result<Room> {
         let room = self.room_repo.get_by_id(room_id).await?
             .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
 
@@ -1472,11 +1473,11 @@ impl RoomService {
         let updated_room = self.room_repo.update_ban_status(room_id, false).await?;
         self.notify_room_invalidation(room_id).await;
 
-        // Audit log (admin actor not available at this layer -- logged as system)
+        // Audit log
         if let Some(ref audit) = self.audit_service {
             let _ = audit.log(
-                "system".to_string(),
-                "system".to_string(),
+                admin_user_id.as_str().to_string(),
+                admin_user_id.as_str().to_string(),
                 AuditAction::RoomUnbanned,
                 AuditTargetType::Room,
                 Some(room_id.as_str().to_string()),

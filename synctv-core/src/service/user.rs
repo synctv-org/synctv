@@ -355,8 +355,11 @@ impl UserService {
             .await?
             .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?;
 
-        // Reject banned or soft-deleted users (generic message to prevent enumeration)
-        if user.status == crate::models::UserStatus::Banned || user.deleted_at.is_some() {
+        // Reject banned, pending, or soft-deleted users (generic message to prevent enumeration)
+        if user.status == crate::models::UserStatus::Banned
+            || user.status == crate::models::UserStatus::Pending
+            || user.deleted_at.is_some()
+        {
             return Err(Error::Authentication("Authentication failed".to_string()));
         }
 

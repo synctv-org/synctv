@@ -31,13 +31,19 @@ CREATE TABLE IF NOT EXISTS media (
     deleted_at TIMESTAMPTZ NULL,
 
     -- Constraints
-    CONSTRAINT unique_media_name UNIQUE (playlist_id, name),
     CONSTRAINT valid_media_name CHECK (
         length(trim(name)) > 0
         AND length(name) <= 255
         AND name NOT LIKE '%/%'
     )
 );
+
+-- Partial unique index: enforce uniqueness only on non-deleted rows.
+-- This replaces the table-level UNIQUE constraint (which would include
+-- soft-deleted rows and prevent re-creating a media item with the same name
+-- after deletion).
+CREATE UNIQUE INDEX unique_media_name ON media (playlist_id, name)
+    WHERE deleted_at IS NULL;
 
 -- Create indexes
 CREATE INDEX idx_media_playlist ON media(playlist_id, position) WHERE deleted_at IS NULL;
@@ -62,5 +68,5 @@ COMMENT ON COLUMN media.position IS 'Position in playlist (0-indexed)';
 COMMENT ON COLUMN media.source_provider IS 'Media provider type name (e.g., "bilibili", "alist", "emby", "direct_url")';
 COMMENT ON COLUMN media.source_config IS 'Media provider-specific configuration (persistent)';
 COMMENT ON COLUMN media.provider_instance_name IS 'Media provider instance name for registry lookup (e.g., "bilibili_main")';
-COMMENT ON CONSTRAINT unique_media_name ON media IS 'No duplicate names in same playlist';
+COMMENT ON INDEX unique_media_name IS 'No duplicate names in same playlist (excludes soft-deleted rows)';
 COMMENT ON CONSTRAINT valid_media_name ON media IS 'File name validation: not empty, 1-255 chars, no / character';

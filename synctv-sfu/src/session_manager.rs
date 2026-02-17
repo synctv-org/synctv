@@ -540,14 +540,31 @@ impl SfuSessionManager {
                     let media_track = Arc::new(MediaTrack::new(
                         track_id.clone(),
                         peer_id.clone(),
-                        remote_track,
+                        remote_track.clone(),
                         rtp_receiver,
                     ));
 
-                    // Set initial simulcast quality layer for video tracks only
-                    // when simulcast is enabled in config
+                    // Set simulcast quality layer from the track's RID when
+                    // simulcast is enabled. Each simulcast layer arrives as a
+                    // separate on_track callback with a distinct RID (e.g.,
+                    // "h", "m", "l"). Tagging packets with the correct layer
+                    // allows the forwarding loop to filter by subscriber
+                    // bandwidth.
                     if simulcast_enabled && kind == TrackKind::Video {
-                        media_track.set_quality_layer(crate::track::QualityLayer::Medium);
+                        let rid = remote_track.rid().to_string();
+                        if let Some(layer) = crate::track::QualityLayer::from_rid(&rid) {
+                            info!(
+                                peer_id = %peer_id,
+                                track_id = %track_id,
+                                rid = %rid,
+                                layer = ?layer,
+                                "{}: Detected simulcast layer from RID", prefix
+                            );
+                            media_track.set_quality_layer(layer);
+                        } else {
+                            // No RID or unrecognized: default to Medium
+                            media_track.set_quality_layer(crate::track::QualityLayer::Medium);
+                        }
                     }
 
                     if let Err(e) = room
@@ -824,6 +841,8 @@ impl SfuSessionManager {
         if ice_timeout_secs > 0 {
             let pc_weak = Arc::downgrade(&pc);
             let sessions_ref = Arc::clone(&self.sessions);
+            let sfu_manager_ref = Arc::clone(&self.sfu_manager);
+            let affinity_registry_ref = Arc::clone(&self.affinity_registry);
             let conn_id_owned = conn_id.to_string();
             let room_id_owned = room_id.to_string();
             let peer_id_owned = peer_id.to_string();
@@ -841,8 +860,33 @@ impl SfuSessionManager {
                         timeout_secs = ice_timeout_secs,
                         "ICE connection timeout reached, closing peer connection"
                     );
-                    let _ = pc.pc.close().await;
-                    sessions_ref.remove(&conn_id_owned);
+                    // Perform full session cleanup: close PeerConnection, remove peer
+                    // from SFU room, and unregister session affinity (matching
+                    // remove_session() behavior).
+                    if let Some((_, session)) = sessions_ref.remove(&conn_id_owned) {
+                        let _ = session.pc.close().await;
+
+                        let sfu_room_id = RoomId::from(room_id_owned.as_str());
+                        let sfu_peer_id = PeerId::from(peer_id_owned.as_str());
+                        if let Err(e) = sfu_manager_ref
+                            .remove_peer_from_room(&sfu_room_id, &sfu_peer_id)
+                            .await
+                        {
+                            warn!(
+                                conn_id = %conn_id_owned,
+                                error = %e,
+                                "ICE timeout: failed to remove peer from SFU room"
+                            );
+                        }
+
+                        if let Err(e) = affinity_registry_ref.unregister(&conn_id_owned).await {
+                            warn!(
+                                conn_id = %conn_id_owned,
+                                error = %e,
+                                "ICE timeout: failed to unregister session affinity"
+                            );
+                        }
+                    }
                     info!(
                         conn_id = %conn_id_owned,
                         peer_id = %peer_id_owned,

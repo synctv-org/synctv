@@ -537,13 +537,13 @@ async fn get_room(
 }
 
 async fn delete_room(
-    _auth: AuthAdmin,
+    auth: AuthAdmin,
     State(state): State<AppState>,
     Path(room_id): Path<String>,
 ) -> AppResult<Json<admin::DeleteRoomResponse>> {
     let api = require_admin_api(&state)?;
     let resp = api
-        .delete_room(admin::DeleteRoomRequest { room_id })
+        .delete_room(admin::DeleteRoomRequest { room_id }, &auth.user_id)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -585,7 +585,7 @@ async fn get_room_members(
 }
 
 async fn ban_room(
-    _auth: AuthAdmin,
+    auth: AuthAdmin,
     State(state): State<AppState>,
     Path(room_id): Path<String>,
     Json(req): Json<BanRequest>,
@@ -596,20 +596,20 @@ async fn ban_room(
 
     let api = require_admin_api(&state)?;
     let resp = api
-        .ban_room(admin::BanRoomRequest { room_id, reason: req.reason })
+        .ban_room(admin::BanRoomRequest { room_id, reason: req.reason }, &auth.user_id)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
 }
 
 async fn unban_room(
-    _auth: AuthAdmin,
+    auth: AuthAdmin,
     State(state): State<AppState>,
     Path(room_id): Path<String>,
 ) -> AppResult<Json<admin::UnbanRoomResponse>> {
     let api = require_admin_api(&state)?;
     let resp = api
-        .unban_room(admin::UnbanRoomRequest { room_id })
+        .unban_room(admin::UnbanRoomRequest { room_id }, &auth.user_id)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))

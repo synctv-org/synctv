@@ -524,13 +524,14 @@ impl StreamMessageHandler {
     /// 1. Registers the connection and joins the room (enforcing connection limits)
     /// 2. Subscribes to cluster events and forwards them to the client
     /// 3. Spawns a task to handle incoming client messages
-    /// 4. Returns a sender that the caller should use to send `ClientMessages` to this handler
+    /// 4. Returns a sender and a cancellation token for the caller to manage lifecycle
     ///
-    /// Returns a sender that the caller should use to send `ClientMessages`,
-    /// or an error if connection limits are exceeded.
+    /// Returns a tuple of (sender, CancellationToken), or an error if connection limits
+    /// are exceeded. Drop the CancellationToken or call `cancel()` on it to stop the
+    /// spawned tasks and trigger cleanup (unregister, unsubscribe).
     pub async fn start(
         &self,
-    ) -> Result<tokio::sync::mpsc::Sender<ClientMessage>, String> {
+    ) -> Result<(tokio::sync::mpsc::Sender<ClientMessage>, tokio_util::sync::CancellationToken), String> {
         // Register connection with connection manager
         self.connection_manager.register(
             self.connection_id.clone(),
@@ -546,6 +547,8 @@ impl StreamMessageHandler {
             return Err(e);
         }
 
+        let cancel_token = tokio_util::sync::CancellationToken::new();
+
         // Use bounded channel to prevent memory exhaustion from fast clients
         let (tx, mut rx) = tokio::sync::mpsc::channel::<ClientMessage>(256);
 
@@ -556,12 +559,23 @@ impl StreamMessageHandler {
         let (mut rx_events, _connection_id) = self.cluster_manager.subscribe(room_id, user_id).await;
         let sender = self.sender.clone();
 
+        let event_token = cancel_token.clone();
         tokio::spawn(async move {
-            while let Some(event) = rx_events.recv().await {
-                if let Some(msg) = cluster_event_to_server_message(&event, &room_id_str) {
-                    if let Err(e) = sender.send(msg) {
-                        tracing::error!("Failed to send message: {}", e);
-                        break;
+            loop {
+                tokio::select! {
+                    _ = event_token.cancelled() => break,
+                    event = rx_events.recv() => {
+                        match event {
+                            Some(event) => {
+                                if let Some(msg) = cluster_event_to_server_message(&event, &room_id_str) {
+                                    if let Err(e) = sender.send(msg) {
+                                        tracing::error!("Failed to send message: {}", e);
+                                        break;
+                                    }
+                                }
+                            }
+                            None => break,
+                        }
                     }
                 }
             }
@@ -569,15 +583,35 @@ impl StreamMessageHandler {
 
         // Spawn task to handle incoming messages
         let handler = self.clone();
+        let msg_token = cancel_token.clone();
         tokio::spawn(async move {
-            while let Some(msg) = rx.recv().await {
-                if let Err(e) = handler.handle_client_message(&msg).await {
-                    tracing::error!("Failed to handle client message: {}", e);
+            loop {
+                tokio::select! {
+                    _ = msg_token.cancelled() => break,
+                    msg = rx.recv() => {
+                        match msg {
+                            Some(msg) => {
+                                if let Err(e) = handler.handle_client_message(&msg).await {
+                                    tracing::error!("Failed to handle client message: {}", e);
+                                }
+                            }
+                            None => break,
+                        }
+                    }
                 }
             }
         });
 
-        Ok(tx)
+        // Spawn cleanup task that waits for cancellation
+        let cleanup_handler = self.clone();
+        let cleanup_room_id = self.room_id.as_str().to_string();
+        let cleanup_token = cancel_token.clone();
+        tokio::spawn(async move {
+            cleanup_token.cancelled().await;
+            cleanup_handler.cleanup(&cleanup_room_id).await;
+        });
+
+        Ok((tx, cancel_token))
     }
 
     /// Handle incoming client message with all validations

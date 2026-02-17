@@ -352,6 +352,62 @@ impl ClusterManager {
         );
     }
 
+    /// Spawn a background task that periodically attempts to replay WAL events.
+    ///
+    /// When Redis recovers after an outage, events stored in the WAL need to be
+    /// replayed. This task checks every `interval` whether the WAL has pending
+    /// entries and, if so, calls `replay_wal()` on the `RedisPubSub` service.
+    ///
+    /// The task is cancelled automatically when `shutdown()` is called.
+    pub fn spawn_replay_task(&self, interval: Duration) {
+        let Some(ref pubsub) = self.redis_pubsub else {
+            debug!("No Redis pubsub configured, WAL replay task not started");
+            return;
+        };
+
+        let pubsub = pubsub.clone();
+        let cancel_token = self.cancel_token.clone();
+
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            // Skip the first immediate tick (startup replay is handled elsewhere if needed)
+            ticker.tick().await;
+
+            loop {
+                tokio::select! {
+                    () = cancel_token.cancelled() => {
+                        info!("WAL replay task cancelled");
+                        return;
+                    }
+                    _ = ticker.tick() => {
+                        match pubsub.replay_wal().await {
+                            Ok(0) => {
+                                // No events to replay, nothing to log
+                            }
+                            Ok(count) => {
+                                info!(
+                                    replayed = count,
+                                    "WAL replay task successfully replayed events"
+                                );
+                            }
+                            Err(e) => {
+                                warn!(
+                                    error = %e,
+                                    "WAL replay task failed, will retry on next interval"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        info!(
+            interval_secs = interval.as_secs(),
+            "WAL replay background task started"
+        );
+    }
+
     /// Gracefully shut down the cluster manager and all background tasks.
     ///
     /// This method:

@@ -274,6 +274,19 @@ pub async fn websocket_handler(
         return Err(AppError::forbidden("Not a member of this room"));
     }
 
+    // Check if the room is banned before upgrading
+    let room = state
+        .room_service
+        .get_room(&rid)
+        .await
+        .map_err(|e| {
+            AppError::internal_server_error(format!("Failed to fetch room: {e}"))
+        })?;
+
+    if room.is_banned {
+        return Err(AppError::forbidden("This room has been banned"));
+    }
+
     // Authentication and membership verified, upgrade to WebSocket
     // Limit max message size to 64KB (default is 64MB which is excessive for signaling)
     Ok(ws.max_message_size(64 * 1024)

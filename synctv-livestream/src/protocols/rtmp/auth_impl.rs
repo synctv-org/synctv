@@ -89,6 +89,17 @@ impl AuthCallback for RtmpAuthCallbackImpl {
             claims.user_id
         );
 
+        // Register in stream tracker so kick_user/room_publishers can find this publisher
+        if let Some(tracker) = &self.stream_tracker {
+            tracker.insert(
+                claims.user_id.clone(),
+                claims.room_id.clone(),
+                claims.media_id.clone(),
+                app_name,
+                stream_name,
+            );
+        }
+
         // Return rewrite so StreamHub uses canonical (room_id, media_id)
         Ok(Some(AuthPublishRewrite {
             app_name: claims.room_id,

@@ -128,7 +128,7 @@ impl SegmentManager {
     /// # Returns
     /// Number of segments deleted
     pub async fn cleanup_stream(&self, app_name: &str, stream_name: &str) -> std::io::Result<usize> {
-        let prefix = format!("{app_name}-{stream_name}-");
+        let prefix = format!("{}/{}/", app_name, stream_name.replace(':', "/"));
         let deleted = self.storage.delete_by_prefix(&prefix).await?;
         if deleted > 0 {
             tracing::info!(

@@ -526,6 +526,8 @@ pub struct PlayUrlContainer {
 #[derive(Debug, Clone, Deserialize)]
 pub struct StreamEntry {
     #[serde(default)]
+    pub protocol_name: String,
+    #[serde(default)]
     pub format: Vec<FormatEntry>,
 }
 

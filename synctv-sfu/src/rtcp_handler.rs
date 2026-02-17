@@ -242,6 +242,18 @@ impl RtcpHandler {
         // Feed real measurements to network quality monitor
         network_monitor.update_peer_stats(peer_id, &peer_stats, bandwidth_kbps);
 
+        // Feed measured bytes into the peer's bandwidth estimator so it has
+        // real data for exponential smoothing. Without this, the estimator
+        // only has its initial 1 Mbps guess and never adapts.
+        if let Some(prev) = last_stats.lock().as_ref() {
+            let bytes_delta = current_snapshot
+                .bytes_received
+                .saturating_sub(prev.bytes_received);
+            if bytes_delta > 0 {
+                peer.record_received_bytes(bytes_delta as usize);
+            }
+        }
+
         // Trigger bandwidth estimation and quality layer switching.
         // This calls the peer's BandwidthEstimator which may change the
         // preferred QualityLayer (High/Medium/Low) based on measured bandwidth.

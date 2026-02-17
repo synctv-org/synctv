@@ -43,7 +43,7 @@ impl ClientApiImpl {
 
         // Invalidate room cache on other replicas for playlist structure change
         if let Some(ref tx) = self.redis_publish_tx {
-            let _ = tx.try_send(synctv_cluster::sync::PublishRequest {
+            crate::impls::try_publish_cluster_event(tx, synctv_cluster::sync::PublishRequest {
                 event: synctv_cluster::sync::ClusterEvent::CacheInvalidate {
                     event_id: nanoid::nanoid!(16),
                     targets: vec![synctv_cluster::sync::CacheTarget::Room {
@@ -95,7 +95,7 @@ impl ClientApiImpl {
 
         // Invalidate room cache on other replicas for playlist update
         if let Some(ref tx) = self.redis_publish_tx {
-            let _ = tx.try_send(synctv_cluster::sync::PublishRequest {
+            crate::impls::try_publish_cluster_event(tx, synctv_cluster::sync::PublishRequest {
                 event: synctv_cluster::sync::ClusterEvent::CacheInvalidate {
                     event_id: nanoid::nanoid!(16),
                     targets: vec![synctv_cluster::sync::CacheTarget::Room {
@@ -138,7 +138,7 @@ impl ClientApiImpl {
 
         // Invalidate room cache on other replicas for playlist deletion
         if let Some(ref tx) = self.redis_publish_tx {
-            let _ = tx.try_send(synctv_cluster::sync::PublishRequest {
+            crate::impls::try_publish_cluster_event(tx, synctv_cluster::sync::PublishRequest {
                 event: synctv_cluster::sync::ClusterEvent::CacheInvalidate {
                     event_id: nanoid::nanoid!(16),
                     targets: vec![synctv_cluster::sync::CacheTarget::Room {

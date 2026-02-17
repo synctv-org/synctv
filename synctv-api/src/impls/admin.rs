@@ -186,15 +186,16 @@ impl AdminApiImpl {
     pub async fn delete_room(
         &self,
         req: crate::proto::admin::DeleteRoomRequest,
+        admin_user_id: &UserId,
     ) -> Result<crate::proto::admin::DeleteRoomResponse, ApiError> {
         let rid = RoomId::from_string(req.room_id);
 
-        self.room_service.admin_delete_room(&rid).await
+        self.room_service.admin_delete_room(&rid, admin_user_id).await
             .map_err(ApiError::from)?;
 
         // Publish RoomDeleted cluster event for cross-replica propagation
         if let Some(ref tx) = self.redis_publish_tx {
-            let _ = tx.try_send(PublishRequest {
+            super::try_publish_cluster_event(tx, PublishRequest {
                 event: ClusterEvent::RoomDeleted {
                     event_id: nanoid::nanoid!(16),
                     room_id: rid.clone(),
@@ -471,7 +472,7 @@ impl AdminApiImpl {
 
         // Broadcast CacheInvalidate so other replicas refresh their settings caches
         if let Some(ref tx) = self.redis_publish_tx {
-            let _ = tx.try_send(PublishRequest {
+            super::try_publish_cluster_event(tx, PublishRequest {
                 event: ClusterEvent::CacheInvalidate {
                     event_id: nanoid::nanoid!(16),
                     targets: vec![synctv_cluster::sync::CacheTarget::All],
@@ -959,7 +960,7 @@ impl AdminApiImpl {
         }
         // 2. Cluster-wide broadcast so other replicas kick their local streams for this user
         if let Some(tx) = &self.redis_publish_tx {
-            let _ = tx.try_send(PublishRequest {
+            super::try_publish_cluster_event(tx, PublishRequest {
                 event: ClusterEvent::KickUser {
                     event_id: nanoid::nanoid!(16),
                     user_id: uid.clone(),
@@ -1057,6 +1058,7 @@ impl AdminApiImpl {
     pub async fn ban_room(
         &self,
         req: crate::proto::admin::BanRoomRequest,
+        admin_user_id: &UserId,
     ) -> Result<crate::proto::admin::BanRoomResponse, ApiError> {
         let rid = RoomId::from_string(req.room_id);
         let room = self.room_service.get_room(&rid).await.map_err(ApiError::from)?;
@@ -1065,12 +1067,12 @@ impl AdminApiImpl {
             return Err(ApiError::InvalidInput("Room is already banned".to_string()));
         }
 
-        let updated = self.room_service.ban_room(&rid).await
+        let updated = self.room_service.ban_room(&rid, admin_user_id).await
             .map_err(ApiError::from)?;
 
         // Broadcast cache invalidation for the banned room
         if let Some(ref tx) = self.redis_publish_tx {
-            let _ = tx.try_send(PublishRequest {
+            super::try_publish_cluster_event(tx, PublishRequest {
                 event: ClusterEvent::CacheInvalidate {
                     event_id: nanoid::nanoid!(16),
                     targets: vec![synctv_cluster::sync::CacheTarget::Room {
@@ -1106,6 +1108,7 @@ impl AdminApiImpl {
     pub async fn unban_room(
         &self,
         req: crate::proto::admin::UnbanRoomRequest,
+        admin_user_id: &UserId,
     ) -> Result<crate::proto::admin::UnbanRoomResponse, ApiError> {
         let rid = RoomId::from_string(req.room_id);
         let room = self.room_service.get_room(&rid).await.map_err(ApiError::from)?;
@@ -1114,7 +1117,7 @@ impl AdminApiImpl {
             return Err(ApiError::InvalidInput("Room is not banned".to_string()));
         }
 
-        let updated = self.room_service.unban_room(&rid).await
+        let updated = self.room_service.unban_room(&rid, admin_user_id).await
             .map_err(ApiError::from)?;
 
         Ok(crate::proto::admin::UnbanRoomResponse {
@@ -1163,7 +1166,7 @@ impl AdminApiImpl {
 
         // Broadcast RoomSettingsChanged cluster event for cross-replica propagation
         if let Some(ref tx) = self.redis_publish_tx {
-            let _ = tx.try_send(PublishRequest {
+            super::try_publish_cluster_event(tx, PublishRequest {
                 event: ClusterEvent::RoomSettingsChanged {
                     event_id: nanoid::nanoid!(16),
                     room_id: rid.clone(),
@@ -1199,7 +1202,7 @@ impl AdminApiImpl {
         // Broadcast RoomSettingsChanged cluster event for cross-replica propagation
         if let Some(ref tx) = self.redis_publish_tx {
             let settings_json = serde_json::to_vec(&settings).unwrap_or_default();
-            let _ = tx.try_send(PublishRequest {
+            super::try_publish_cluster_event(tx, PublishRequest {
                 event: ClusterEvent::RoomSettingsChanged {
                     event_id: nanoid::nanoid!(16),
                     room_id: rid.clone(),

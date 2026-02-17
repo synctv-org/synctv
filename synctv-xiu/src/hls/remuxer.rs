@@ -666,7 +666,7 @@ impl StreamProcessor {
         // Now we use a timeout-based approach instead.
         // Must not be less than the silent publisher timeout (60s) to avoid
         // false stream-end detection while the publisher is still connected.
-        const RECV_TIMEOUT_MS: u64 = 30000; // 30 seconds of no data = stream ended
+        const RECV_TIMEOUT_MS: u64 = 65000; // 65 seconds of no data = stream ended
 
         // Throttle activity callbacks to avoid excessive overhead.
         // The silent publisher timeout is 60s, so recording every 10s is sufficient.

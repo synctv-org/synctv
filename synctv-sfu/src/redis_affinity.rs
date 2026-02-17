@@ -7,6 +7,10 @@
 use crate::session_manager::SessionAffinityRegistry;
 use anyhow::Result;
 use redis::AsyncCommands;
+use std::time::Duration;
+
+/// Default timeout for Redis operations (mirrors synctv-core value)
+const REDIS_OPERATION_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Redis-backed implementation of [`SessionAffinityRegistry`].
 ///
@@ -37,20 +41,37 @@ impl RedisSessionAffinityRegistry {
 impl SessionAffinityRegistry for RedisSessionAffinityRegistry {
     async fn register(&self, conn_id: &str, replica_id: &str, ttl_secs: u64) -> Result<()> {
         let mut conn = self.conn.clone();
-        conn.set_ex::<_, _, ()>(&self.key(conn_id), replica_id, ttl_secs)
-            .await?;
+        tokio::time::timeout(
+            REDIS_OPERATION_TIMEOUT,
+            conn.set_ex::<_, _, ()>(&self.key(conn_id), replica_id, ttl_secs),
+        )
+            .await
+            .map_err(|_| anyhow::anyhow!("Redis timeout: register SFU session affinity"))?
+            .map_err(|e| anyhow::anyhow!("Redis error: {e}"))?;
         Ok(())
     }
 
     async fn lookup(&self, conn_id: &str) -> Result<Option<String>> {
         let mut conn = self.conn.clone();
-        let result: Option<String> = conn.get(&self.key(conn_id)).await?;
+        let result: Option<String> = tokio::time::timeout(
+            REDIS_OPERATION_TIMEOUT,
+            conn.get(&self.key(conn_id)),
+        )
+            .await
+            .map_err(|_| anyhow::anyhow!("Redis timeout: lookup SFU session affinity"))?
+            .map_err(|e| anyhow::anyhow!("Redis error: {e}"))?;
         Ok(result)
     }
 
     async fn unregister(&self, conn_id: &str) -> Result<()> {
         let mut conn = self.conn.clone();
-        conn.del::<_, ()>(&self.key(conn_id)).await?;
+        tokio::time::timeout(
+            REDIS_OPERATION_TIMEOUT,
+            conn.del::<_, ()>(&self.key(conn_id)),
+        )
+            .await
+            .map_err(|_| anyhow::anyhow!("Redis timeout: unregister SFU session affinity"))?
+            .map_err(|e| anyhow::anyhow!("Redis error: {e}"))?;
         Ok(())
     }
 }

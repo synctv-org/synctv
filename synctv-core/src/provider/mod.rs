@@ -41,6 +41,7 @@ pub use traits::*;
 // Re-export providers
 pub use alist::AlistProvider;
 pub use bilibili::BilibiliProvider;
+pub use bilibili::init_bilibili_redis_backends;
 pub use direct_url::DirectUrlProvider;
 pub use emby::EmbyProvider;
 pub use rtmp::RtmpProvider;

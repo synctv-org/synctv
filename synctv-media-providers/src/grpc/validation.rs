@@ -2,68 +2,14 @@
 //!
 //! Provides SSRF-safe host validation and common field validators.
 //!
-//! IP blocklist mirrors the canonical implementation in `synctv_core::validation`.
-//! Note: `synctv-core` depends on `synctv-media-providers`, so we cannot import
-//! from it directly (would create a cyclic dependency). Keep this in sync with
-//! `synctv_core::validation::SSRFValidator`.
+//! IP/hostname blocklists are delegated to [`crate::ssrf`] which is the single
+//! source of truth for SSRF primitives across the entire workspace (both this
+//! crate and `synctv-core` use it).
 
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::IpAddr;
 use tonic::Status;
 
-/// Blocked private/internal hostnames (case-insensitive check)
-const BLOCKED_HOSTNAMES: &[&str] = &[
-    "localhost",
-    "metadata.google.internal",
-];
-
-/// Blocked hostname suffixes (case-insensitive check)
-const BLOCKED_HOSTNAME_SUFFIXES: &[&str] = &[
-    ".internal",
-    ".local",
-];
-
-/// Check if an IP is private, reserved, or otherwise not a valid public HTTP target.
-/// Covers: loopback, private RFC1918, link-local, CGNAT, multicast, broadcast,
-/// unspecified, IPv6 loopback, IPv4-mapped IPv6 private addresses.
-fn is_blocked_ip(ip: IpAddr) -> bool {
-    if ip.is_unspecified() || ip.is_loopback() || ip.is_multicast() {
-        return true;
-    }
-    match ip {
-        IpAddr::V4(v4) => is_blocked_ipv4(&v4),
-        IpAddr::V6(v6) => is_blocked_ipv6(&v6),
-    }
-}
-
-fn is_blocked_ipv4(ip: &Ipv4Addr) -> bool {
-    let o = ip.octets();
-    // 10.0.0.0/8
-    o[0] == 10
-    // 172.16.0.0/12
-    || (o[0] == 172 && (16..=31).contains(&o[1]))
-    // 192.168.0.0/16
-    || (o[0] == 192 && o[1] == 168)
-    // 169.254.0.0/16 (link-local, cloud metadata)
-    || (o[0] == 169 && o[1] == 254)
-    // 100.64.0.0/10 (CGNAT)
-    || (o[0] == 100 && (64..=127).contains(&o[1]))
-    // 0.0.0.0/8 (current network)
-    || o[0] == 0
-    // 240.0.0.0/4 (reserved/broadcast)
-    || o[0] >= 240
-}
-
-fn is_blocked_ipv6(ip: &Ipv6Addr) -> bool {
-    // Check IPv4-mapped IPv6 (::ffff:x.x.x.x)
-    if let Some(v4) = ip.to_ipv4_mapped() {
-        return is_blocked_ipv4(&v4);
-    }
-    // Unique local (fc00::/7)
-    let segments = ip.segments();
-    (segments[0] & 0xfe00) == 0xfc00
-    // Link-local (fe80::/10)
-    || (segments[0] & 0xffc0) == 0xfe80
-}
+use crate::ssrf;
 
 /// Validate that a host string is a non-empty, valid URL with SSRF protections.
 ///
@@ -83,66 +29,12 @@ pub fn validate_host(host: &str) -> Result<(), Status> {
 /// Synchronous string-level URL validation (shared between sync and async paths).
 #[allow(clippy::result_large_err)]
 fn validate_host_static(host: &str) -> Result<(), Status> {
-    if host.is_empty() {
-        return Err(Status::invalid_argument("host must not be empty"));
-    }
-
-    let parsed = url::Url::parse(host)
-        .map_err(|e| Status::invalid_argument(format!("invalid host URL: {e}")))?;
-
-    // Verify scheme is http or https only
-    match parsed.scheme() {
-        "http" | "https" => {}
-        scheme => {
-            return Err(Status::invalid_argument(format!(
-                "unsupported URL scheme: {scheme} (only http and https are allowed)"
-            )));
+    match ssrf::check_url(host) {
+        ssrf::SsrfCheckResult::Ok => Ok(()),
+        ssrf::SsrfCheckResult::Blocked(reason) => {
+            Err(Status::invalid_argument(reason))
         }
     }
-
-    let url_host = parsed
-        .host_str()
-        .ok_or_else(|| Status::invalid_argument("host URL must contain a hostname"))?;
-
-    let host_lower = url_host.to_lowercase();
-
-    // Block known internal hostnames
-    for blocked in BLOCKED_HOSTNAMES {
-        if host_lower == *blocked {
-            return Err(Status::invalid_argument(format!(
-                "host URL must not target internal address: {url_host}"
-            )));
-        }
-    }
-    for suffix in BLOCKED_HOSTNAME_SUFFIXES {
-        if host_lower.ends_with(suffix) {
-            return Err(Status::invalid_argument(format!(
-                "host URL must not target internal address: {url_host}"
-            )));
-        }
-    }
-
-    // Try to parse as IP address and block private ranges
-    if let Ok(ip) = url_host.parse::<IpAddr>() {
-        if is_blocked_ip(ip) {
-            return Err(Status::invalid_argument(format!(
-                "host URL must not target private/reserved IP: {url_host}"
-            )));
-        }
-    }
-
-    // Also handle bracket-wrapped IPv6 like [::1]
-    if url_host.starts_with('[') && url_host.ends_with(']') {
-        if let Ok(ip) = url_host[1..url_host.len() - 1].parse::<IpAddr>() {
-            if is_blocked_ip(ip) {
-                return Err(Status::invalid_argument(format!(
-                    "host URL must not target private/reserved IP: {url_host}"
-                )));
-            }
-        }
-    }
-
-    Ok(())
 }
 
 /// Async host validation with DNS resolution to prevent DNS rebinding attacks.
@@ -185,7 +77,7 @@ pub async fn validate_host_with_dns(host: &str) -> Result<(), Status> {
 
     let mut found = false;
     for addr in addrs {
-        if is_blocked_ip(addr.ip()) {
+        if ssrf::is_blocked_ip(addr.ip()) {
             return Err(Status::invalid_argument(format!(
                 "hostname {url_host} resolves to private/reserved IP {}",
                 addr.ip()
@@ -260,8 +152,6 @@ mod tests {
     fn test_invalid_url() {
         assert!(validate_host("not-a-url").is_err());
     }
-
-    // === Extended SSRF Protection Tests ===
 
     #[test]
     fn test_blocked_cgnat() {

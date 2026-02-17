@@ -226,14 +226,49 @@ impl StreamRegistry {
             let mut conn_clone = conn.clone();
 
             match conn_clone.smembers::<_, Vec<String>>(&active_key).await {
-                Ok(identifiers) => {
-                    let mut results = Vec::new();
-                    for id in identifiers {
-                        if let Some(meta) = self.get_stream(&id).await {
-                            results.push(meta);
+                Ok(identifiers) if !identifiers.is_empty() => {
+                    let mut results = Vec::with_capacity(identifiers.len());
+                    // Separate local hits from remote misses
+                    let mut remote_ids = Vec::new();
+                    for id in &identifiers {
+                        if let Some(meta) = self.local_streams.get(id.as_str()) {
+                            results.push(meta.clone());
+                        } else {
+                            remote_ids.push(id.clone());
                         }
                     }
+
+                    // Batch-fetch all remote metadata in a single MGET
+                    if !remote_ids.is_empty() {
+                        let meta_keys: Vec<String> = remote_ids
+                            .iter()
+                            .map(|id| format!("{}streams:meta:{}", self.redis_key_prefix, id))
+                            .collect();
+
+                        match conn_clone.mget::<_, Vec<Option<String>>>(&meta_keys).await {
+                            Ok(values) => {
+                                for json_opt in values {
+                                    if let Some(json) = json_opt {
+                                        match serde_json::from_str::<StreamMetadata>(&json) {
+                                            Ok(meta) => results.push(meta),
+                                            Err(e) => {
+                                                warn!("Failed to parse stream metadata: {e}");
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                warn!("MGET for stream metadata failed: {e}");
+                            }
+                        }
+                    }
+
                     return results;
+                }
+                Ok(_) => {
+                    // Empty set, return empty
+                    return Vec::new();
                 }
                 Err(e) => {
                     warn!("Failed to fetch active streams from Redis, falling back to local: {e}");

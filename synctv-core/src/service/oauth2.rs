@@ -74,6 +74,8 @@ pub struct OAuth2Service {
     providers: Arc<RwLock<HashMap<String, OAuth2ProviderEntry>>>,
     /// In-memory state storage with TTL (fallback when Redis is not available)
     local_states: Arc<moka::future::Cache<String, OAuth2State>>,
+    /// Mutex to ensure atomic consume (get+remove) of in-memory states
+    local_states_consume_lock: Arc<tokio::sync::Mutex<()>>,
     /// Redis connection manager for distributed state storage (multi-replica mode)
     redis_conn: Option<redis::aio::ConnectionManager>,
     /// Allowlist of permitted redirect domains (empty = relative paths only)
@@ -111,6 +113,7 @@ impl OAuth2Service {
             repository,
             providers: Arc::new(RwLock::new(HashMap::new())),
             local_states: Arc::new(local_states),
+            local_states_consume_lock: Arc::new(tokio::sync::Mutex::new(())),
             redis_conn: None,
             allowed_redirect_domains: Arc::new(Vec::new()),
             cluster_mode: false,
@@ -131,6 +134,7 @@ impl OAuth2Service {
             repository,
             providers: Arc::new(RwLock::new(HashMap::new())),
             local_states: Arc::new(local_states),
+            local_states_consume_lock: Arc::new(tokio::sync::Mutex::new(())),
             redis_conn: Some(redis_conn),
             allowed_redirect_domains: Arc::new(Vec::new()),
             cluster_mode: false,
@@ -166,9 +170,12 @@ impl OAuth2Service {
             let mut conn = conn.clone();
 
             use redis::AsyncCommands;
-            let _: () = conn
-                .set_ex(&key, value, OAUTH2_STATE_TTL_SECONDS)
+            let _: () = tokio::time::timeout(
+                crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,
+                conn.set_ex(&key, value, OAUTH2_STATE_TTL_SECONDS),
+            )
                 .await
+                .map_err(|_| Error::Internal("Redis timeout: store OAuth2 state".to_string()))?
                 .internal_with_err("Failed to store OAuth2 state in Redis")?;
 
             debug!("Stored OAuth2 state in Redis for token {}", &state_token[..8]);
@@ -203,10 +210,12 @@ impl OAuth2Service {
                 return value
             "#);
 
-            let value: Option<String> = lua_script
-                .key(&key)
-                .invoke_async(&mut conn)
+            let value: Option<String> = tokio::time::timeout(
+                crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,
+                lua_script.key(&key).invoke_async(&mut conn),
+            )
                 .await
+                .map_err(|_| Error::Internal("Redis timeout: consume OAuth2 state".to_string()))?
                 .internal_with_err("Failed to consume OAuth2 state from Redis")?;
 
             match value {
@@ -224,7 +233,9 @@ impl OAuth2Service {
                  Configure Redis or disable cluster mode.".to_string()
             ));
         } else {
-            // moka cache: remove returns the removed value if it existed
+            // Hold a lock to make get+remove atomic, preventing concurrent
+            // consumers from both succeeding with the same state token.
+            let _guard = self.local_states_consume_lock.lock().await;
             self.local_states
                 .remove(state_token)
                 .await
@@ -374,7 +385,26 @@ impl OAuth2Service {
                         "Absolute redirect URLs are not allowed. Use a relative path instead.".to_string()
                     ));
                 }
-                if !allowed_domains.iter().any(|d| host == d || host.ends_with(&format!(".{d}"))) {
+                let domain_matched = allowed_domains.iter().any(|d| {
+                    // Reject TLD-only entries (no dots) to prevent overly broad matching.
+                    // e.g. "com" in the allowlist should NOT allow all .com domains.
+                    if !d.contains('.') {
+                        return false;
+                    }
+                    // Exact match or single-level subdomain only (e.g. "sub.example.com"
+                    // matches allowlist entry "example.com", but "deep.sub.example.com" does not)
+                    if host == d {
+                        return true;
+                    }
+                    let suffix = format!(".{d}");
+                    if let Some(prefix) = host.strip_suffix(&suffix) {
+                        // Only allow single-level subdomain: prefix must not contain dots
+                        !prefix.contains('.')
+                    } else {
+                        false
+                    }
+                });
+                if !domain_matched {
                     return Err(Error::InvalidInput(format!(
                         "Redirect URL domain '{host}' is not in the allowed domains list"
                     )));
@@ -776,6 +806,28 @@ mod tests {
         let domains = vec!["example.com".to_string()];
         let result = OAuth2Service::validate_redirect_url_with_allowlist(
             "not a valid url at all",
+            &domains,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_redirect_tld_only_domain_rejected() {
+        // Adding "com" to allowlist should NOT allow all .com domains
+        let domains = vec!["com".to_string()];
+        let result = OAuth2Service::validate_redirect_url_with_allowlist(
+            "https://evil.com/callback",
+            &domains,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_redirect_deep_subdomain_rejected() {
+        // Only single-level subdomains are allowed
+        let domains = vec!["example.com".to_string()];
+        let result = OAuth2Service::validate_redirect_url_with_allowlist(
+            "https://deep.sub.example.com/callback",
             &domains,
         );
         assert!(result.is_err());
@@ -1558,17 +1610,14 @@ mod tests {
             }
         }
 
-        // In-memory moka `remove` is not strictly atomic across tasks, so
-        // more than one may succeed in rare race conditions. The critical
-        // invariant is that the token is fully consumed afterward.
-        assert!(
-            success_count >= 1,
-            "At least one consumer must succeed"
+        // With the consume lock, exactly one consumer must succeed.
+        assert_eq!(
+            success_count, 1,
+            "Exactly one consumer must succeed"
         );
         assert_eq!(
-            success_count + failure_count,
-            20,
-            "All 20 attempts should resolve"
+            failure_count, 19,
+            "All other consumers must fail"
         );
 
         // Token is fully consumed -- no further consumption should succeed
@@ -1610,8 +1659,8 @@ mod tests {
             }
         }
 
-        // At least one should succeed, and the state should be consumed
-        assert!(success_count >= 1, "At least one verify must succeed");
+        // Exactly one should succeed with the consume lock
+        assert_eq!(success_count, 1, "Exactly one verify must succeed");
 
         // No further verification should succeed
         let replay = service.verify_state(&state_token).await;

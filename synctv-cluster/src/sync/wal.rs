@@ -278,6 +278,14 @@ impl EventWal {
         Ok(events)
     }
 
+    /// Check if there are any WAL files (entries pending replay).
+    pub async fn has_entries(&self) -> bool {
+        match self.list_wal_files().await {
+            Ok(files) => !files.is_empty(),
+            Err(_) => false,
+        }
+    }
+
     /// Clear all WAL files (after successful replay and Redis write).
     ///
     /// Closes the current file (if any) and deletes all WAL files in the directory.

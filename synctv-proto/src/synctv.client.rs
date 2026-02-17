@@ -158,11 +158,13 @@ pub struct PlaybackState {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RegisterRequest {
+    /// Validation: min 3, max 32 chars, pattern: \[\\p{L}\p{N}\_-\]+
     #[prost(string, tag = "1")]
     pub username: ::prost::alloc::string::String,
-    /// SECURITY: Plaintext credential - requires TLS in transit
+    /// SECURITY: Plaintext credential - requires TLS in transit. Validation: min 8, max 128 chars, rejects common weak passwords
     #[prost(string, tag = "2")]
     pub password: ::prost::alloc::string::String,
+    /// Validation: max 254 chars, email format required
     #[prost(string, tag = "3")]
     pub email: ::prost::alloc::string::String,
 }
@@ -180,9 +182,10 @@ pub struct RegisterResponse {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct LoginRequest {
+    /// Validation: min 3, max 32 chars
     #[prost(string, tag = "1")]
     pub username: ::prost::alloc::string::String,
-    /// SECURITY: Plaintext credential - requires TLS in transit
+    /// SECURITY: Plaintext credential - requires TLS in transit. Validation: min 8, max 128 chars
     #[prost(string, tag = "2")]
     pub password: ::prost::alloc::string::String,
 }
@@ -223,6 +226,7 @@ pub struct GetProfileResponse {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CreateRoomRequest {
+    /// Validation: max 100 chars, no HTML tags
     #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
     /// Optional room password
@@ -231,7 +235,7 @@ pub struct CreateRoomRequest {
     /// JSON settings
     #[prost(bytes = "vec", tag = "3")]
     pub settings: ::prost::alloc::vec::Vec<u8>,
-    /// Room description
+    /// Validation: max 500 chars, no HTML tags
     #[prost(string, tag = "4")]
     pub description: ::prost::alloc::string::String,
 }
@@ -282,8 +286,10 @@ pub struct LeaveRoomResponse {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ListRoomsRequest {
+    /// Validation: >= 1
     #[prost(int32, tag = "1")]
     pub page: i32,
+    /// Validation: max 100, default 20
     #[prost(int32, tag = "2")]
     pub page_size: i32,
     /// Optional search by name/description
@@ -373,10 +379,10 @@ pub struct CheckRoomPasswordResponse {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetRoomMembersRequest {
-    /// Page number (default 1)
+    /// Page number (default 1). Validation: >= 1
     #[prost(int32, tag = "1")]
     pub page: i32,
-    /// Items per page (default 50)
+    /// Items per page (default 50). Validation: max 100
     #[prost(int32, tag = "2")]
     pub page_size: i32,
 }
@@ -512,10 +518,10 @@ pub struct ListPlaylistsRequest {
     /// Optional parent ID to get children of specific playlist
     #[prost(string, tag = "1")]
     pub parent_id: ::prost::alloc::string::String,
-    /// Page number (default 1)
+    /// Page number (default 1). Validation: >= 1
     #[prost(int32, tag = "2")]
     pub page: i32,
-    /// Items per page (default 50)
+    /// Items per page (default 50). Validation: max 100
     #[prost(int32, tag = "3")]
     pub page_size: i32,
 }
@@ -550,7 +556,7 @@ pub struct SetCurrentMediaResponse {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct AddMediaRequest {
-    /// Target playlist ID
+    /// Target playlist ID. Validation: required, max 64 chars
     #[prost(string, tag = "1")]
     pub playlist_id: ::prost::alloc::string::String,
     /// Optional, provider type name (e.g., "bilibili", "alist")
@@ -562,7 +568,7 @@ pub struct AddMediaRequest {
     /// JSON source config (e.g., {"url": "...", "path": "..."})
     #[prost(bytes = "vec", tag = "4")]
     pub source_config: ::prost::alloc::vec::Vec<u8>,
-    /// Optional media title
+    /// Optional media title. Validation: max 500 chars, no HTML tags
     #[prost(string, tag = "5")]
     pub title: ::prost::alloc::string::String,
 }
@@ -587,13 +593,13 @@ pub struct RemoveMediaResponse {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ListPlaylistRequest {
-    /// Playlist ID to get
+    /// Playlist ID to get. Validation: required, max 64 chars
     #[prost(string, tag = "1")]
     pub playlist_id: ::prost::alloc::string::String,
-    /// Page number (default 1)
+    /// Page number (default 1). Validation: >= 1
     #[prost(int32, tag = "2")]
     pub page: i32,
-    /// Items per page (default 50)
+    /// Items per page (default 50). Validation: max 100
     #[prost(int32, tag = "3")]
     pub page_size: i32,
 }
@@ -611,16 +617,16 @@ pub struct ListPlaylistResponse {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ListPlaylistItemsRequest {
-    /// Playlist ID
+    /// Playlist ID. Validation: required, max 64 chars
     #[prost(string, tag = "1")]
     pub playlist_id: ::prost::alloc::string::String,
     /// Relative path within dynamic folder (empty for root)
     #[prost(string, tag = "2")]
     pub relative_path: ::prost::alloc::string::String,
-    /// Page number (default 1)
+    /// Page number (default 1). Validation: >= 1
     #[prost(int32, tag = "3")]
     pub page: i32,
-    /// Items per page (default 50)
+    /// Items per page (default 50). Validation: max 100
     #[prost(int32, tag = "4")]
     pub page_size: i32,
 }
@@ -705,6 +711,7 @@ pub struct ClearPlaylistResponse {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct AddMediaBatchRequest {
+    /// Validation: max 50 items
     #[prost(message, repeated, tag = "1")]
     pub items: ::prost::alloc::vec::Vec<AddMediaRequest>,
 }
@@ -769,7 +776,7 @@ pub struct PauseResponse {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct SeekRequest {
-    /// playback position in seconds
+    /// Playback position in seconds. Validation: >= 0, max 86400, must be finite
     #[prost(double, tag = "1")]
     pub current_time: f64,
 }
@@ -782,7 +789,7 @@ pub struct SeekResponse {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct SetPlaybackSpeedRequest {
-    /// 0.5, 1.0, 1.5, 2.0, etc.
+    /// Validation: 0.25 to 4.0, must be finite
     #[prost(double, tag = "1")]
     pub speed: f64,
 }
@@ -915,9 +922,10 @@ pub mod server_message {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ChatMessageSend {
+    /// Validation: required, max 5000 chars, HTML tags stripped
     #[prost(string, tag = "1")]
     pub content: ::prost::alloc::string::String,
-    /// Video position in seconds (for danmaku display)
+    /// Video position in seconds (for danmaku display). Validation: >= 0, max 86400
     #[prost(double, optional, tag = "2")]
     pub position: ::core::option::Option<f64>,
     /// Hex color (e.g., "#FFFFFF") for danmaku
@@ -1008,7 +1016,7 @@ pub struct ErrorMessage {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetChatHistoryRequest {
-    /// Max 500
+    /// Validation: max 500, default 50
     #[prost(int32, tag = "1")]
     pub limit: i32,
     /// Timestamp for pagination
@@ -1034,6 +1042,7 @@ pub struct LogoutResponse {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SetUsernameRequest {
+    /// Validation: min 3, max 32 chars, pattern: \[\\p{L}\p{N}\_-\]+
     #[prost(string, tag = "1")]
     pub new_username: ::prost::alloc::string::String,
 }
@@ -1047,10 +1056,10 @@ pub struct SetUsernameResponse {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SetPasswordRequest {
-    /// SECURITY: Plaintext credential - requires TLS in transit
+    /// SECURITY: Plaintext credential - requires TLS in transit. Validation: required
     #[prost(string, tag = "1")]
     pub old_password: ::prost::alloc::string::String,
-    /// SECURITY: Plaintext credential - requires TLS in transit
+    /// SECURITY: Plaintext credential - requires TLS in transit. Validation: min 8, max 128 chars, rejects common weak passwords
     #[prost(string, tag = "2")]
     pub new_password: ::prost::alloc::string::String,
 }
@@ -1063,8 +1072,10 @@ pub struct SetPasswordResponse {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ListCreatedRoomsRequest {
+    /// Validation: >= 1
     #[prost(int32, tag = "1")]
     pub page: i32,
+    /// Validation: max 100, default 20
     #[prost(int32, tag = "2")]
     pub page_size: i32,
 }
@@ -1079,8 +1090,10 @@ pub struct ListCreatedRoomsResponse {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ListParticipatedRoomsRequest {
+    /// Validation: >= 1
     #[prost(int32, tag = "1")]
     pub page: i32,
+    /// Validation: max 100, default 20
     #[prost(int32, tag = "2")]
     pub page_size: i32,
 }
@@ -1124,7 +1137,7 @@ pub struct CheckRoomResponse {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetHotRoomsRequest {
-    /// Default 10, max 50
+    /// Validation: default 10, max 50
     #[prost(int32, tag = "1")]
     pub limit: i32,
 }
@@ -1271,6 +1284,7 @@ pub struct GetPublicSettingsResponse {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SendVerificationEmailRequest {
+    /// Validation: required, max 254 chars, email format
     #[prost(string, tag = "1")]
     pub email: ::prost::alloc::string::String,
 }
@@ -1313,12 +1327,13 @@ pub struct RequestPasswordResetResponse {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ConfirmPasswordResetRequest {
+    /// Validation: required, email format
     #[prost(string, tag = "1")]
     pub email: ::prost::alloc::string::String,
-    /// Reset code from email
+    /// Reset code from email. Validation: required
     #[prost(string, tag = "2")]
     pub token: ::prost::alloc::string::String,
-    /// SECURITY: Plaintext credential - requires TLS in transit
+    /// SECURITY: Plaintext credential - requires TLS in transit. Validation: min 8, max 128 chars, rejects common weak passwords
     #[prost(string, tag = "3")]
     pub new_password: ::prost::alloc::string::String,
 }
@@ -1703,10 +1718,10 @@ pub struct NotificationProto {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ListNotificationsRequest {
-    /// Page number (default 1)
+    /// Page number (default 1). Validation: >= 1
     #[prost(int32, tag = "1")]
     pub page: i32,
-    /// Items per page (default 20, max 100)
+    /// Items per page (default 20). Validation: max 100
     #[prost(int32, tag = "2")]
     pub page_size: i32,
     /// Filter by read status
@@ -8677,11 +8692,15 @@ pub mod notification_service_server {
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetAuthorizationUrlRequest {
     /// OAuth2 provider instance name (e.g., "github", "google", "logto1")
+    ///
+    /// Validation: required, max 64 chars
     #[prost(string, tag = "1")]
     pub provider: ::prost::alloc::string::String,
     /// Optional redirect URL for frontend after OAuth2 flow completes
     /// This is stored in state and returned after successful authentication
     /// If not provided, frontend should handle redirect itself
+    ///
+    /// Validation: max 2048 chars, must be valid URL when non-empty
     #[prost(string, tag = "2")]
     pub redirect_url: ::prost::alloc::string::String,
 }
@@ -8722,14 +8741,20 @@ pub struct GetAuthorizationUrlForBindResponse {
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExchangeAuthorizationCodeRequest {
     /// OAuth2 provider instance name (must match the provider used in GetAuthorizationUrl)
+    ///
+    /// Validation: required, max 64 chars
     #[prost(string, tag = "1")]
     pub provider: ::prost::alloc::string::String,
     /// Authorization code received from OAuth2 provider redirect
     /// Frontend extracts this from the callback URL query parameter
+    ///
+    /// Validation: required, max 2048 chars
     #[prost(string, tag = "2")]
     pub code: ::prost::alloc::string::String,
     /// State token received from OAuth2 provider redirect
     /// Must match the state returned by GetAuthorizationUrl
+    ///
+    /// Validation: required, max 512 chars
     #[prost(string, tag = "3")]
     pub state: ::prost::alloc::string::String,
 }

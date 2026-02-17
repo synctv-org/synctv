@@ -167,6 +167,51 @@ impl MemberService {
         self.cache_invalidation = Some(service);
     }
 
+    /// Broadcast permission cache invalidation to other cluster replicas with
+    /// retry logic (3 attempts, exponential backoff starting at 50ms).
+    ///
+    /// Permission changes are security-critical, so we retry aggressively to
+    /// ensure all replicas see the invalidation. If all attempts fail, an error
+    /// is logged but the operation is not rolled back (the local change succeeded).
+    async fn broadcast_permission_invalidation_with_retry(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+    ) {
+        let Some(ref invalidation) = self.cache_invalidation else {
+            return;
+        };
+        let mut last_err = None;
+        for attempt in 0..3u32 {
+            match invalidation.invalidate_user_permission(room_id, user_id).await {
+                Ok(()) => {
+                    return;
+                }
+                Err(e) => {
+                    let backoff_ms = 50 * (1u64 << attempt); // 50ms, 100ms, 200ms
+                    tracing::warn!(
+                        error = %e,
+                        room_id = %room_id.as_str(),
+                        user_id = %user_id.as_str(),
+                        attempt = attempt + 1,
+                        backoff_ms = backoff_ms,
+                        "Permission invalidation broadcast failed, retrying"
+                    );
+                    last_err = Some(e);
+                    tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                }
+            }
+        }
+        if let Some(e) = last_err {
+            tracing::error!(
+                error = %e,
+                room_id = %room_id.as_str(),
+                user_id = %user_id.as_str(),
+                "Permission invalidation broadcast failed after 3 attempts"
+            );
+        }
+    }
+
     /// Log an audit event if the audit service is configured.
     /// Failures are logged as warnings but never propagated.
     async fn audit_log(
@@ -409,41 +454,7 @@ impl MemberService {
             .await;
 
         // Broadcast permission cache invalidation to other cluster replicas
-        // with retry logic (3 attempts, exponential backoff) since permission
-        // changes are critical for security consistency across replicas.
-        if let Some(ref invalidation) = self.cache_invalidation {
-            let mut last_err = None;
-            for attempt in 0..3u32 {
-                match invalidation.invalidate_user_permission(&room_id, &target_user_id).await {
-                    Ok(()) => {
-                        last_err = None;
-                        break;
-                    }
-                    Err(e) => {
-                        let backoff_ms = 50 * (1u64 << attempt); // 50ms, 100ms, 200ms
-                        tracing::warn!(
-                            error = %e,
-                            room_id = %room_id.as_str(),
-                            user_id = %target_user_id.as_str(),
-                            attempt = attempt + 1,
-                            backoff_ms = backoff_ms,
-                            "Permission invalidation broadcast failed, retrying"
-                        );
-                        last_err = Some(e);
-                        tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
-                    }
-                }
-            }
-            if let Some(e) = last_err {
-                tracing::error!(
-                    error = %e,
-                    room_id = %room_id.as_str(),
-                    user_id = %target_user_id.as_str(),
-                    permission_change = %format!("added={added_permissions:?}, removed={removed_permissions:?}"),
-                    "Permission invalidation broadcast failed after 3 attempts"
-                );
-            }
-        }
+        self.broadcast_permission_invalidation_with_retry(&room_id, &target_user_id).await;
 
         // Audit log
         self.audit_log(
@@ -489,40 +500,7 @@ impl MemberService {
             .await;
 
         // Broadcast permission cache invalidation to other cluster replicas
-        // with retry logic (3 attempts, exponential backoff) since permission
-        // changes are critical for security consistency across replicas.
-        if let Some(ref invalidation) = self.cache_invalidation {
-            let mut last_err = None;
-            for attempt in 0..3u32 {
-                match invalidation.invalidate_user_permission(&room_id, &target_user_id).await {
-                    Ok(()) => {
-                        last_err = None;
-                        break;
-                    }
-                    Err(e) => {
-                        let backoff_ms = 50 * (1u64 << attempt); // 50ms, 100ms, 200ms
-                        tracing::warn!(
-                            error = %e,
-                            room_id = %room_id.as_str(),
-                            user_id = %target_user_id.as_str(),
-                            attempt = attempt + 1,
-                            backoff_ms = backoff_ms,
-                            "Grant permission invalidation broadcast failed, retrying"
-                        );
-                        last_err = Some(e);
-                        tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
-                    }
-                }
-            }
-            if let Some(e) = last_err {
-                tracing::error!(
-                    error = %e,
-                    room_id = %room_id.as_str(),
-                    user_id = %target_user_id.as_str(),
-                    "Grant permission invalidation broadcast failed after 3 attempts"
-                );
-            }
-        }
+        self.broadcast_permission_invalidation_with_retry(&room_id, &target_user_id).await;
 
         // Audit log
         self.audit_log(
@@ -567,40 +545,7 @@ impl MemberService {
             .await;
 
         // Broadcast permission cache invalidation to other cluster replicas
-        // with retry logic (3 attempts, exponential backoff) since permission
-        // changes are critical for security consistency across replicas.
-        if let Some(ref invalidation) = self.cache_invalidation {
-            let mut last_err = None;
-            for attempt in 0..3u32 {
-                match invalidation.invalidate_user_permission(&room_id, &target_user_id).await {
-                    Ok(()) => {
-                        last_err = None;
-                        break;
-                    }
-                    Err(e) => {
-                        let backoff_ms = 50 * (1u64 << attempt); // 50ms, 100ms, 200ms
-                        tracing::warn!(
-                            error = %e,
-                            room_id = %room_id.as_str(),
-                            user_id = %target_user_id.as_str(),
-                            attempt = attempt + 1,
-                            backoff_ms = backoff_ms,
-                            "Revoke permission invalidation broadcast failed, retrying"
-                        );
-                        last_err = Some(e);
-                        tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
-                    }
-                }
-            }
-            if let Some(e) = last_err {
-                tracing::error!(
-                    error = %e,
-                    room_id = %room_id.as_str(),
-                    user_id = %target_user_id.as_str(),
-                    "Revoke permission invalidation broadcast failed after 3 attempts"
-                );
-            }
-        }
+        self.broadcast_permission_invalidation_with_retry(&room_id, &target_user_id).await;
 
         // Audit log
         self.audit_log(
@@ -655,40 +600,7 @@ impl MemberService {
             .await;
 
         // Broadcast permission cache invalidation to other cluster replicas
-        // with retry logic (3 attempts, exponential backoff) since permission
-        // resets are critical for security consistency across replicas.
-        if let Some(ref invalidation) = self.cache_invalidation {
-            let mut last_err = None;
-            for attempt in 0..3u32 {
-                match invalidation.invalidate_user_permission(&room_id, &target_user_id).await {
-                    Ok(()) => {
-                        last_err = None;
-                        break;
-                    }
-                    Err(e) => {
-                        let backoff_ms = 50 * (1u64 << attempt); // 50ms, 100ms, 200ms
-                        tracing::warn!(
-                            error = %e,
-                            room_id = %room_id.as_str(),
-                            user_id = %target_user_id.as_str(),
-                            attempt = attempt + 1,
-                            backoff_ms = backoff_ms,
-                            "Permission reset invalidation broadcast failed, retrying"
-                        );
-                        last_err = Some(e);
-                        tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
-                    }
-                }
-            }
-            if let Some(e) = last_err {
-                tracing::error!(
-                    error = %e,
-                    room_id = %room_id.as_str(),
-                    user_id = %target_user_id.as_str(),
-                    "Permission reset invalidation broadcast failed after 3 attempts"
-                );
-            }
-        }
+        self.broadcast_permission_invalidation_with_retry(&room_id, &target_user_id).await;
 
         Ok(updated_member)
     }

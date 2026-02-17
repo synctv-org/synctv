@@ -454,50 +454,52 @@ impl ConnectionManager {
             }
         }
 
-        // Atomically check per-room limit locally, increment Redis, and add connection.
+        // Check per-room limit locally, then increment Redis, then add to local map.
         //
-        // Order of operations (fixes TOCTOU race):
-        // 1. Acquire DashMap entry lock (prevents concurrent local joins)
-        // 2. Check local limit
-        // 3. Increment Redis counter and verify distributed limit
-        // 4. Add to local DashMap
-        //
-        // This ensures the Redis counter is only incremented while holding the
-        // local lock, preventing a window where the counter is inflated but the
-        // local entry hasn't been added yet.
-        let redis_room_incremented;
+        // The DashMap entry lock is NOT held across the Redis await to avoid
+        // blocking the entire shard during Redis RTT. This means there is a
+        // small TOCTOU window where concurrent local joins could both pass the
+        // local check, but the Redis counter still enforces the distributed
+        // limit correctly, and the local overshoot is bounded to the number of
+        // concurrent join_room calls (typically very small).
+
+        // Step 1: Check local limit (short-lived lock)
         {
-            let mut room_entry = self.room_connections.entry(room_id.clone()).or_default();
+            let room_entry = self.room_connections.entry(room_id.clone()).or_default();
             if room_entry.len() >= self.limits.max_per_room {
                 return Err(format!(
                     "Room at capacity ({} connections)",
                     self.limits.max_per_room
                 ));
             }
+            // Lock dropped here
+        }
 
-            // Check distributed per-room limit via Redis while holding the local lock.
-            redis_room_incremented = if let Some(ref _conn) = self.redis_conn {
-                let redis_key = format!("{}connections:room:{}", self.redis_key_prefix, room_id.as_str());
-                match self.redis_incr_and_check(&redis_key, self.limits.max_per_room).await {
-                    Ok(true) => true,
-                    Ok(false) => {
-                        let _ = self.redis_decr(_conn, &redis_key).await;
-                        return Err(format!(
-                            "Room at capacity across all replicas ({} connections)",
-                            self.limits.max_per_room
-                        ));
-                    }
-                    Err(e) => {
-                        warn!("Distributed room connection check failed, using local fallback: {e}");
-                        false
-                    }
+        // Step 2: Check distributed per-room limit via Redis (no DashMap lock held)
+        let redis_room_incremented = if let Some(ref _conn) = self.redis_conn {
+            let redis_key = format!("{}connections:room:{}", self.redis_key_prefix, room_id.as_str());
+            match self.redis_incr_and_check(&redis_key, self.limits.max_per_room).await {
+                Ok(true) => true,
+                Ok(false) => {
+                    let _ = self.redis_decr(_conn, &redis_key).await;
+                    return Err(format!(
+                        "Room at capacity across all replicas ({} connections)",
+                        self.limits.max_per_room
+                    ));
                 }
-            } else {
-                false
-            };
+                Err(e) => {
+                    warn!("Distributed room connection check failed, using local fallback: {e}");
+                    false
+                }
+            }
+        } else {
+            false
+        };
 
+        // Step 3: Add connection to local map (short-lived lock)
+        {
+            let mut room_entry = self.room_connections.entry(room_id.clone()).or_default();
             room_entry.push(connection_id.to_string());
-            // Drop the shard lock before accessing `connections` DashMap
         }
 
         // Update connection info
@@ -928,23 +930,25 @@ impl ConnectionManager {
         let mut failure_count = 0u64;
         let mut success_count = 0u64;
 
-        for key in &counter_keys {
-            let result: Result<(), _> = conn.expire(key, DISTRIBUTED_COUNTER_TTL_SECONDS).await;
-            if let Err(e) = result {
-                failure_count += 1;
-                warn!("Failed to refresh TTL for distributed counter {key}: {e}");
-            } else {
-                success_count += 1;
+        // Batch all EXPIRE commands into a single Redis pipeline round-trip
+        let total_commands = counter_keys.len() + metadata_keys.len();
+        if total_commands > 0 {
+            let mut pipe = redis::pipe();
+            for key in &counter_keys {
+                pipe.expire(key, DISTRIBUTED_COUNTER_TTL_SECONDS).ignore();
             }
-        }
-
-        for key in &metadata_keys {
-            let result: Result<(), _> = conn.expire(key, CONNECTION_METADATA_TTL_SECONDS).await;
-            if let Err(e) = result {
-                failure_count += 1;
-                warn!("Failed to refresh TTL for connection metadata {key}: {e}");
-            } else {
-                success_count += 1;
+            for key in &metadata_keys {
+                pipe.expire(key, CONNECTION_METADATA_TTL_SECONDS).ignore();
+            }
+            let result: Result<(), redis::RedisError> = pipe.query_async(&mut conn).await;
+            match result {
+                Ok(()) => {
+                    success_count = total_commands as u64;
+                }
+                Err(e) => {
+                    failure_count = total_commands as u64;
+                    warn!("Failed to refresh TTLs via pipeline ({total_commands} keys): {e}");
+                }
             }
         }
 

@@ -423,9 +423,10 @@ impl AdminService for AdminServiceImpl {
         &self,
         request: Request<DeleteRoomRequest>,
     ) -> Result<Response<DeleteRoomResponse>, Status> {
-        self.check_admin(&request).await?;
+        let validated = self.check_admin_get_validated(&request).await?;
+        let admin_user_id = validated.user_id;
         let req = request.into_inner();
-        let resp = self.admin_api.delete_room(req).await.map_err(map_api_error)?;
+        let resp = self.admin_api.delete_room(req, &admin_user_id).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -433,9 +434,10 @@ impl AdminService for AdminServiceImpl {
         &self,
         request: Request<BanRoomRequest>,
     ) -> Result<Response<BanRoomResponse>, Status> {
-        self.check_admin(&request).await?;
+        let validated = self.check_admin_get_validated(&request).await?;
+        let admin_user_id = validated.user_id;
         let req = request.into_inner();
-        let resp = self.admin_api.ban_room(req).await.map_err(map_api_error)?;
+        let resp = self.admin_api.ban_room(req, &admin_user_id).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -443,9 +445,10 @@ impl AdminService for AdminServiceImpl {
         &self,
         request: Request<UnbanRoomRequest>,
     ) -> Result<Response<UnbanRoomResponse>, Status> {
-        self.check_admin(&request).await?;
+        let validated = self.check_admin_get_validated(&request).await?;
+        let admin_user_id = validated.user_id;
         let req = request.into_inner();
-        let resp = self.admin_api.unban_room(req).await.map_err(map_api_error)?;
+        let resp = self.admin_api.unban_room(req, &admin_user_id).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 

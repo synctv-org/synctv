@@ -12,6 +12,9 @@
 // Shared error types
 pub mod error;
 
+// SSRF protection primitives (shared with synctv-core)
+pub mod ssrf;
+
 // HTTP clients (no MediaProvider dependency)
 pub mod alist;
 pub mod bilibili;

@@ -22,6 +22,33 @@ pub use notification::NotificationApiImpl;
 pub use oauth2::OAuth2ApiImpl;
 pub use providers::{AlistApiImpl, BilibiliApiImpl, EmbyApiImpl};
 
+/// Try to publish a cluster event via the Redis publish channel.
+///
+/// On success, the event is queued for publication. On failure (channel full
+/// or closed), a warning is logged and the `CLUSTER_EVENTS_DROPPED` metric
+/// is incremented so operators can detect state drift.
+pub fn try_publish_cluster_event(
+    tx: &tokio::sync::mpsc::Sender<synctv_cluster::sync::PublishRequest>,
+    request: synctv_cluster::sync::PublishRequest,
+) {
+    if let Err(err) = tx.try_send(request) {
+        match err {
+            tokio::sync::mpsc::error::TrySendError::Full(_) => {
+                synctv_core::metrics::cluster::CLUSTER_EVENTS_DROPPED
+                    .with_label_values(&["channel_full"])
+                    .inc();
+                tracing::warn!("Cluster event publish channel full, event dropped");
+            }
+            tokio::sync::mpsc::error::TrySendError::Closed(_) => {
+                synctv_core::metrics::cluster::CLUSTER_EVENTS_DROPPED
+                    .with_label_values(&["channel_closed"])
+                    .inc();
+                tracing::warn!("Cluster event publish channel closed, event dropped");
+            }
+        }
+    }
+}
+
 /// Kick a stream both locally and cluster-wide via Redis Pub/Sub.
 ///
 /// Shared utility used by both `ClientApiImpl` and `AdminApiImpl` after media

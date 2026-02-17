@@ -123,13 +123,17 @@ impl ChatRepository {
         Ok(result.rows_affected() > 0)
     }
 
-    /// Get message count for a room
+    /// Get message count for a room.
+    ///
+    /// Scans only recent partitions (last 90 days) to avoid full partition scan.
+    /// This matches the default retention period for chat messages.
     pub async fn count_by_room(&self, room_id: &RoomId) -> Result<i64> {
         let count: i64 = sqlx::query_scalar(
             r"
             SELECT COUNT(*) as count
             FROM chat_messages
             WHERE room_id = $1
+              AND created_at >= NOW() - INTERVAL '90 days'
             ",
         )
         .bind(room_id.as_str())

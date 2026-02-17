@@ -460,10 +460,17 @@ impl Default for Validator {
 // SSRF Protection
 // ============================================================================
 
+// Core IP/hostname primitives live in `synctv_media_providers::ssrf` (single
+// source of truth). This module provides the higher-level `SSRFValidator` with
+// configurable blocklists, custom blocked IPs, and async DNS resolution.
+use synctv_media_providers::ssrf as ssrf_primitives;
+
 /// SSRF (Server-Side Request Forgery) protection validator
 ///
 /// Validates URLs to prevent requests to internal/private networks.
 /// This is critical for Provider URLs that are fetched server-side.
+///
+/// Core IP/hostname checking is delegated to `synctv_media_providers::ssrf`.
 #[derive(Debug, Clone)]
 pub struct SSRFValidator {
     /// Additional IP addresses to block (e.g., cloud metadata endpoints)
@@ -539,7 +546,6 @@ impl SSRFValidator {
         ))?;
 
         // Handle IPv6 addresses which come with brackets from url parser
-        // e.g., "[::1]" needs to become "::1" for IpAddr parsing
         let host = if host.starts_with('[') && host.ends_with(']') {
             &host[1..host.len()-1]
         } else {
@@ -552,9 +558,7 @@ impl SSRFValidator {
             return Ok(());
         }
 
-        // For hostnames, we need to be careful about DNS rebinding attacks.
-        // We validate that the hostname doesn't look suspicious but
-        // actual IP resolution should be done at request time.
+        // For hostnames, validate against suspicious patterns
         self.validate_hostname(host)?;
 
         Ok(())
@@ -601,7 +605,10 @@ impl SSRFValidator {
         Ok(())
     }
 
-    /// Validate an IP address against blocklists
+    /// Validate an IP address against blocklists.
+    ///
+    /// Checks the custom blocklist first, then delegates to shared primitives.
+    /// Respects the `block_localhost` and `block_link_local` settings.
     pub fn validate_ip(&self, ip: &IpAddr) -> ValidationResult<()> {
         // Check explicit blocklist
         if self.blocked_ips.contains(ip) {
@@ -611,118 +618,37 @@ impl SSRFValidator {
         }
 
         match ip {
-            IpAddr::V4(ipv4) => self.validate_ipv4(ipv4),
-            IpAddr::V6(ipv6) => self.validate_ipv6(ipv6),
-        }
-    }
-
-    fn validate_ipv4(&self, ip: &Ipv4Addr) -> ValidationResult<()> {
-        let octets = ip.octets();
-
-        // Block localhost/loopback (127.0.0.0/8)
-        if self.block_localhost && octets[0] == 127 {
-            return Err(ValidationError::SSRF(
-                "Loopback addresses (127.x.x.x) are not allowed".to_string()
-            ));
-        }
-
-        // Block private networks
-        // 10.0.0.0/8
-        if octets[0] == 10 {
-            return Err(ValidationError::SSRF(
-                "Private network address (10.x.x.x) is not allowed".to_string()
-            ));
-        }
-
-        // 172.16.0.0/12
-        if octets[0] == 172 && (16..=31).contains(&octets[1]) {
-            return Err(ValidationError::SSRF(
-                "Private network address (172.16-31.x.x) is not allowed".to_string()
-            ));
-        }
-
-        // 192.168.0.0/16
-        if octets[0] == 192 && octets[1] == 168 {
-            return Err(ValidationError::SSRF(
-                "Private network address (192.168.x.x) is not allowed".to_string()
-            ));
-        }
-
-        // Block link-local (169.254.0.0/16) - includes cloud metadata
-        if self.block_link_local && octets[0] == 169 && octets[1] == 254 {
-            return Err(ValidationError::SSRF(
-                "Link-local address (169.254.x.x) is not allowed".to_string()
-            ));
-        }
-
-        // Block CGNAT (100.64.0.0/10) - Carrier-grade NAT
-        if octets[0] == 100 && (64..=127).contains(&octets[1]) {
-            return Err(ValidationError::SSRF(
-                "CGNAT address (100.64.x.x - 100.127.x.x) is not allowed".to_string()
-            ));
-        }
-
-        // Block 0.0.0.0/8 (current network)
-        if octets[0] == 0 {
-            return Err(ValidationError::SSRF(
-                "Current network address (0.x.x.x) is not allowed".to_string()
-            ));
-        }
-
-        // Block 224.0.0.0/4 (multicast)
-        if (224..=239).contains(&octets[0]) {
-            return Err(ValidationError::SSRF(
-                "Multicast address (224-239.x.x.x) is not allowed".to_string()
-            ));
-        }
-
-        // Block 240.0.0.0/4 (reserved/broadcast)
-        if octets[0] >= 240 {
-            return Err(ValidationError::SSRF(
-                "Reserved address (240+.x.x.x) is not allowed".to_string()
-            ));
-        }
-
-        Ok(())
-    }
-
-    fn validate_ipv6(&self, ip: &Ipv6Addr) -> ValidationResult<()> {
-        // Block localhost/loopback (::1)
-        if self.block_localhost && *ip == Ipv6Addr::LOCALHOST {
-            return Err(ValidationError::SSRF(
-                "IPv6 loopback address (::1) is not allowed".to_string()
-            ));
-        }
-
-        // Block IPv4-mapped IPv6 addresses (::ffff:0:0/96)
-        if ip.to_string().starts_with("::ffff:") {
-            // Extract the embedded IPv4 and validate it
-            let segments = ip.segments();
-            let ipv4 = Ipv4Addr::new(
-                (segments[6] >> 8) as u8,
-                (segments[6] & 0xFF) as u8,
-                (segments[7] >> 8) as u8,
-                (segments[7] & 0xFF) as u8,
-            );
-            return self.validate_ipv4(&ipv4);
-        }
-
-        // Block link-local (fe80::/10)
-        if self.block_link_local {
-            let segments = ip.segments();
-            if (segments[0] & 0xFFC0) == 0xFE80 {
-                return Err(ValidationError::SSRF(
-                    "IPv6 link-local address (fe80::) is not allowed".to_string()
-                ));
+            IpAddr::V4(ipv4) => {
+                let octets = ipv4.octets();
+                // Respect configurable localhost blocking
+                if !self.block_localhost && octets[0] == 127 {
+                    return Ok(());
+                }
+                // Respect configurable link-local blocking
+                if !self.block_link_local && octets[0] == 169 && octets[1] == 254 {
+                    return Ok(());
+                }
+                if ssrf_primitives::is_blocked_ipv4(ipv4) {
+                    return Err(ValidationError::SSRF(
+                        format!("IP {ip} is a private/reserved address")
+                    ));
+                }
             }
-        }
-
-        // Block unique local (fc00::/7)
-        let segments = ip.segments();
-        if (segments[0] & 0xFE00) == 0xFC00 {
-            return Err(ValidationError::SSRF(
-                "IPv6 unique local address (fc00::/7) is not allowed".to_string()
-            ));
+            IpAddr::V6(ipv6) => {
+                // Respect configurable localhost blocking
+                if !self.block_localhost && *ipv6 == Ipv6Addr::LOCALHOST {
+                    return Ok(());
+                }
+                // Respect configurable link-local blocking
+                if !self.block_link_local && (ipv6.segments()[0] & 0xffc0) == 0xfe80 {
+                    return Ok(());
+                }
+                if ssrf_primitives::is_blocked_ipv6(ipv6) {
+                    return Err(ValidationError::SSRF(
+                        format!("IP {ip} is a private/reserved address")
+                    ));
+                }
+            }
         }
 
         Ok(())
@@ -730,73 +656,29 @@ impl SSRFValidator {
 
     /// Validate a hostname (without DNS resolution)
     ///
-    /// This checks for suspicious hostname patterns that might bypass IP checks.
+    /// Delegates to shared SSRF hostname checking in `synctv_media_providers::ssrf`.
     fn validate_hostname(&self, host: &str) -> ValidationResult<()> {
-        // Block localhost variations
-        if self.block_localhost {
+        // Respect configurable localhost blocking
+        if !self.block_localhost {
             let lower = host.to_lowercase();
             if lower == "localhost" || lower == "localhost.localdomain" {
-                return Err(ValidationError::SSRF(
-                    "localhost hostname is not allowed".to_string()
-                ));
+                return Ok(());
             }
         }
 
-        // Block hostnames that look like IP addresses (to prevent DNS rebinding)
-        // This is a basic check; full protection requires runtime IP validation
-        if host.parse::<Ipv4Addr>().is_ok() || host.parse::<Ipv6Addr>().is_ok() {
-            // Already handled by IP validation, but double-check
-            return Ok(());
-        }
-
-        // Block suspicious TLDs
-        let lower = host.to_lowercase();
-        if lower.ends_with(".local") || lower.ends_with(".internal") {
-            return Err(ValidationError::SSRF(
-                format!("Internal hostname '{host}' is not allowed")
-            ));
-        }
-
-        // Block cloud metadata service hostnames
-        // AWS EC2 instance metadata: http://instance-data/latest
-        // GCP metadata: http://metadata.google.internal
-        // Azure metadata: http://169.254.169.254 (IP already blocked)
-        let blocked_hostnames = [
-            "instance-data",
-            "metadata.google.internal",
-            "metadata.azure",
-        ];
-        for blocked in blocked_hostnames {
-            if lower == blocked || lower.starts_with(&format!("{blocked}.")) {
-                return Err(ValidationError::SSRF(
-                    format!("Cloud metadata hostname '{host}' is not allowed")
-                ));
+        match ssrf_primitives::check_hostname(host) {
+            ssrf_primitives::SsrfCheckResult::Ok => Ok(()),
+            ssrf_primitives::SsrfCheckResult::Blocked(reason) => {
+                Err(ValidationError::SSRF(reason))
             }
         }
-
-        // Block hostnames that might resolve to internal IPs
-        // These are common patterns for internal services
-        let blocked_prefixes = [
-            "metadata.", "metadata.google", "metadata.azure",
-            "kubernetes.", "k8s.", "docker.", "container.",
-        ];
-        for prefix in blocked_prefixes {
-            if lower.starts_with(prefix) {
-                return Err(ValidationError::SSRF(
-                    format!("Internal service hostname '{host}' is not allowed")
-                ));
-            }
-        }
-
-        Ok(())
     }
 }
 
 /// Check if an IP address is private/internal (helper function)
 #[must_use]
 pub fn is_private_ip(ip: &IpAddr) -> bool {
-    let validator = SSRFValidator::new();
-    validator.validate_ip(ip).is_err()
+    ssrf_primitives::is_blocked_ip(*ip)
 }
 
 /// Validate a URL for SSRF protection (convenience function)

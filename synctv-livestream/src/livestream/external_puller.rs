@@ -435,10 +435,11 @@ impl ExternalStreamPuller {
             "Connecting to HTTP-FLV source"
         );
 
-        // Build HTTP client with pinned DNS resolution if available (prevents DNS rebinding).
-        // When a resolved_addr is set, we use reqwest's .resolve() to pin the hostname
-        // to the validated IP, bypassing the system resolver for the actual connection.
-        let client = {
+        // Use the shared HTTP client if configured (connection pooling, TLS reuse).
+        // Fall back to creating a new client with pinned DNS resolution if needed.
+        let client = if let Some(ref client) = self.http_client {
+            client.clone()
+        } else {
             let builder = reqwest::Client::builder()
                 .connect_timeout(std::time::Duration::from_secs(10));
             let builder = if let Some(addr) = &self.resolved_addr {

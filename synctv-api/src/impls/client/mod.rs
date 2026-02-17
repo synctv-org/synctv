@@ -240,7 +240,7 @@ impl ClientApiImpl {
                 .map(|u| u.username.clone())
                 .unwrap_or_default();
 
-            let _ = tx.try_send(synctv_cluster::sync::PublishRequest {
+            crate::impls::try_publish_cluster_event(tx, synctv_cluster::sync::PublishRequest {
                 event: synctv_cluster::sync::ClusterEvent::PermissionChanged {
                     event_id: nanoid::nanoid!(16),
                     room_id: room_id.clone(),

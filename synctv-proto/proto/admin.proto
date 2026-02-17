@@ -249,9 +249,9 @@ message DisableProviderInstanceResponse {
 
 // SECURITY: password is transmitted as plaintext. TLS MUST be used.
 message CreateUserRequest {
-    string username = 1;
-    string password = 2; // SECURITY: Plaintext credential - requires TLS in transit
-    string email = 3;
+    string username = 1; // Validation: min 3, max 32 chars, pattern: [\p{L}\p{N}_-]+
+    string password = 2; // SECURITY: Plaintext credential - requires TLS in transit. Validation: min 8, max 128 chars
+    string email = 3; // Validation: max 254 chars, email format when non-empty
     synctv.common.UserRole role = 4; // Default: USER_ROLE_USER
 }
 
@@ -268,8 +268,8 @@ message DeleteUserResponse {
 }
 
 message ListUsersRequest {
-    int32 page = 1;
-    int32 page_size = 2;
+    int32 page = 1; // Validation: >= 1
+    int32 page_size = 2; // Validation: max 100, default 20
     synctv.common.UserStatus status = 3; // Optional filter (UNSPECIFIED = show all)
     synctv.common.UserRole role = 4; // Optional filter (UNSPECIFIED = show all)
     string search = 5; // Search by username or email
@@ -291,9 +291,9 @@ message GetUserResponse {
 // SECURITY: Admin password reset is a privileged operation. The reason field
 // provides an audit trail for compliance. force_logout invalidates existing sessions.
 message UpdateUserPasswordRequest {
-    string user_id = 1;
-    string new_password = 2;   // SECURITY: Plaintext credential - requires TLS in transit
-    string reason = 3;         // Audit trail: why the password was reset (e.g., "user request", "security incident")
+    string user_id = 1; // Validation: required
+    string new_password = 2;   // SECURITY: Plaintext credential - requires TLS in transit. Validation: min 8, max 128 chars
+    string reason = 3;         // Audit trail: why the password was reset. Validation: max 500 chars
     bool force_logout = 4;     // If true, invalidate all existing sessions for this user
 }
 
@@ -303,8 +303,8 @@ message UpdateUserPasswordResponse {
 }
 
 message UpdateUserUsernameRequest {
-    string user_id = 1;
-    string new_username = 2;
+    string user_id = 1; // Validation: required
+    string new_username = 2; // Validation: min 3, max 32 chars, pattern: [\p{L}\p{N}_-]+
 }
 
 message UpdateUserUsernameResponse {
@@ -338,9 +338,9 @@ message UnbanUserResponse {
 }
 
 message GetUserRoomsRequest {
-    string user_id = 1;
-    int32 page = 2;       // Page number (default 1)
-    int32 page_size = 3;  // Items per page (default 50)
+    string user_id = 1; // Validation: required
+    int32 page = 2;       // Page number (default 1). Validation: >= 1
+    int32 page_size = 3;  // Items per page (default 50). Validation: max 100
 }
 
 message GetUserRoomsResponse {
@@ -361,8 +361,8 @@ message ApproveUserResponse {
 // =========================
 
 message ListRoomsRequest {
-    int32 page = 1;
-    int32 page_size = 2;
+    int32 page = 1; // Validation: >= 1
+    int32 page_size = 2; // Validation: max 100, default 20
     string status = 3; // Optional filter: active, closed, pending (use is_banned for ban filter)
     string search = 4; // Search by name
     string creator_id = 5; // Optional filter by creator
@@ -450,9 +450,9 @@ message ApproveRoomResponse {
 }
 
 message GetRoomMembersRequest {
-    string room_id = 1;
-    int32 page = 2;      // Page number (default 1)
-    int32 page_size = 3;  // Items per page (default 50)
+    string room_id = 1; // Validation: required
+    int32 page = 2;      // Page number (default 1). Validation: >= 1
+    int32 page_size = 3;  // Items per page (default 50). Validation: max 100
 }
 
 message GetRoomMembersResponse {

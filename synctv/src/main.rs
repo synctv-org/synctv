@@ -121,6 +121,9 @@ async fn init_cluster_components(
         Some(move || conn_mgr_for_hb.connection_count()),
     ).await;
 
+    // Start WAL replay background task (checks every 60s for pending WAL events)
+    cm.spawn_replay_task(std::time::Duration::from_secs(60));
+
     let health_monitor = Arc::new(HealthMonitor::new(registry.clone(), 15));
     match health_monitor.start().await {
         Ok(hm_handle) => {
@@ -520,6 +523,16 @@ async fn main() -> Result<()> {
     if let Err(e) = cache_invalidation_service.start().await {
         warn!("Failed to start cache invalidation listener: {}", e);
     }
+
+    // 5.1. Initialize Bilibili Redis-backed rate limiter and WBI cache.
+    // This replaces the per-process in-memory governor limiter with a distributed
+    // Redis sliding-window limiter shared across all replicas.
+    synctv_core::provider::init_bilibili_redis_backends(
+        &synctv_services.rate_limiter,
+        synctv_services.redis_conn.as_ref(),
+        &config.redis.key_prefix,
+    )
+    .await;
 
     // 4.6. Initialize chat message partitions (runs on every node at startup)
     info!("Initializing chat message partitions...");

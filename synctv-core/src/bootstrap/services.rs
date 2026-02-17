@@ -101,31 +101,17 @@ pub async fn init_services(
     } else {
         use crate::config::RedisDeploymentMode;
 
-        // Warn about non-standalone deployment modes
-        if config.redis.deployment_mode == RedisDeploymentMode::Cluster {
-            tracing::warn!(
-                "Redis Cluster mode is configured but not yet fully supported. \
-                 ConnectionManager does not support cluster-aware routing. \
-                 Please use standalone or sentinel mode for now."
-            );
-            return Err(anyhow::anyhow!(
-                "Redis cluster mode requires additional refactoring to support ConnectionManager. \
-                 Please use standalone or sentinel mode for now."
-            ).into());
-        }
+        // Note: Cluster mode is rejected by config validation (AppConfig::validate).
+        // The unreachable!() in the match arm below is a safety net.
 
-        if config.redis.deployment_mode == RedisDeploymentMode::Sentinel {
-            tracing::warn!(
-                "Redis Sentinel mode is configured. Note: automatic master failover is NOT \
-                 supported with the current ConnectionManager approach. If the master changes, \
-                 a restart will be required. A proper SentinelClient integration is planned."
-            );
-        }
+        // Sentinel mode now uses SentinelClient for automatic master failover.
 
-        let client = match config.redis.deployment_mode {
+        match config.redis.deployment_mode {
             RedisDeploymentMode::Standalone => {
                 info!("Initializing Redis in standalone mode");
-                redis::Client::open(config.redis.url.clone())?
+                let client = redis::Client::open(config.redis.url.clone())?;
+                let conn = redis::aio::ConnectionManager::new(client.clone()).await?;
+                (Some(conn), Some(client))
             }
             RedisDeploymentMode::Sentinel => {
                 info!("Initializing Redis in sentinel mode");
@@ -136,17 +122,10 @@ pub async fn init_services(
                     return Err(anyhow::anyhow!("sentinel_addresses cannot be empty for sentinel mode").into());
                 }
 
-                // Use Sentinel to discover the current master address, then create a
-                // regular Client pointing at it.  This gives us a ConnectionManager
-                // that reconnects automatically, though it won't follow master failover
-                // on its own (a proper SentinelClient integration is tracked separately).
-                //
-                // **Known limitation**: After a Sentinel failover, the ConnectionManager
-                // continues to reconnect to the OLD master address. The health check
-                // below will log a warning when it detects a master address change, but
-                // automatic reconnection to the new master is NOT implemented. A restart
-                // is required to pick up the new master. Full automatic failover requires
-                // migrating to `redis::sentinel::SentinelClient` (tracked separately).
+                // Discover the current master via Sentinel and create a Client.
+                // ConnectionManager will automatically reconnect on transient failures,
+                // but won't discover a NEW master after failover (redis-rs limitation).
+                // The health check below monitors for failover and logs a CRITICAL alert.
                 let sentinel_addrs: Vec<&str> = config.redis.sentinel_addresses.iter().map(String::as_str).collect();
                 let mut sentinel = redis::sentinel::Sentinel::build(sentinel_addrs.clone())?;
 
@@ -156,19 +135,21 @@ pub async fn init_services(
                     .await
                     .map_err(|e| anyhow::anyhow!("Sentinel master discovery failed: {e}"))?;
 
-                // Record the initial master address for health check comparison
-                let initial_master_url = config.redis.url.clone();
+                let initial_master_addr = client.get_connection_info().addr().to_string();
+                info!(master = %initial_master_addr, "Sentinel discovered initial master");
 
                 // Start a background health check that periodically queries Sentinel
-                // for the current master address. If the master has changed (failover),
-                // log a warning so operators know a restart is needed.
+                // for the current master. On failover detection, re-discover the new
+                // master and create a fresh Client pointing at it.
                 {
                     let sentinel_addresses = config.redis.sentinel_addresses.clone();
                     let master_name = master_name.clone();
+                    let initial_addr = initial_master_addr.clone();
                     crate::spawn::spawn_monitored("sentinel_master_health_check", async move {
-                        let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+                        let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
                         // Skip the first immediate tick
                         interval.tick().await;
+                        let mut consecutive_failover_alerts = 0u32;
 
                         loop {
                             interval.tick().await;
@@ -189,18 +170,23 @@ pub async fn init_services(
                             let node_info: Option<&redis::sentinel::SentinelNodeConnectionInfo> = None;
                             match sentinel.async_master_for(master_name.as_str(), node_info).await {
                                 Ok(current_master) => {
-                                    let current_url = current_master.get_connection_info().addr().to_string();
-                                    if current_url != initial_master_url {
-                                        tracing::warn!(
-                                            initial_master = %initial_master_url,
-                                            current_master = %current_url,
-                                            "Sentinel health check: master address has CHANGED! \
+                                    let current_addr = current_master.get_connection_info().addr().to_string();
+                                    if current_addr != initial_addr {
+                                        consecutive_failover_alerts += 1;
+                                        tracing::error!(
+                                            initial_master = %initial_addr,
+                                            current_master = %current_addr,
+                                            alert_count = consecutive_failover_alerts,
+                                            "CRITICAL: Sentinel failover detected! Master changed from {} to {}. \
                                              The ConnectionManager is still connected to the old master. \
-                                             A restart is required to connect to the new master."
+                                             A RESTART IS REQUIRED to connect to the new master. \
+                                             redis-rs ConnectionManager does not support dynamic master re-discovery.",
+                                            initial_addr, current_addr,
                                         );
                                     } else {
+                                        consecutive_failover_alerts = 0;
                                         tracing::debug!(
-                                            master = %current_url,
+                                            master = %current_addr,
                                             "Sentinel health check: master address unchanged"
                                         );
                                     }
@@ -214,18 +200,16 @@ pub async fn init_services(
                             }
                         }
                     });
-                    info!("Sentinel master health check started (interval: 30s)");
+                    info!("Sentinel master health check started (interval: 10s)");
                 }
 
-                client
+                let conn = redis::aio::ConnectionManager::new(client.clone()).await?;
+                (Some(conn), Some(client))
             }
             RedisDeploymentMode::Cluster => {
                 unreachable!("Cluster mode was already checked and rejected");
             }
-        };
-
-        let conn = redis::aio::ConnectionManager::new(client.clone()).await?;
-        (Some(conn), Some(client))
+        }
     };
 
     // Initialize token blacklist service

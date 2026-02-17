@@ -5,6 +5,24 @@
 //! Provides distributed locking mechanism for multi-replica deployments.
 //! Uses Redis SET NX EX for atomic lock acquisition.
 //!
+//! # Safety Warning: Single-Instance Only
+//!
+//! **This implementation operates on a single Redis instance and is NOT
+//! Redlock-compliant.** It relies on a single Redis node for lock state, which
+//! means:
+//!
+//! - **Standalone mode**: Safe. The single Redis instance is the source of truth.
+//! - **Sentinel mode**: **Unsafe during failover.** When the Sentinel promotes a
+//!   replica to master, any locks held on the old master are lost because Redis
+//!   replication is asynchronous. Two clients may simultaneously believe they hold
+//!   the same lock (split-brain). The fencing token mechanism mitigates this for
+//!   database writes, but not for all use cases.
+//! - **Cluster mode**: Not supported (rejected at config validation).
+//!
+//! For true distributed lock safety across failovers, consider implementing the
+//! [Redlock algorithm](https://redis.io/docs/manual/patterns/distributed-locks/)
+//! with multiple independent Redis masters.
+//!
 //! # Fencing Token Support
 //!
 //! This implementation provides fencing tokens to handle the "split-brain" scenario
@@ -35,10 +53,15 @@ use redis::Script;
 use std::future::Future;
 use crate::{Error, Result, InternalExt};
 
-/// Distributed lock service
+/// Distributed lock service (single Redis instance)
 ///
 /// Provides Redis-based distributed locking for cross-replica critical sections
 /// with fencing token support for protection against split-brain scenarios.
+///
+/// **Warning:** This lock is NOT safe during Redis Sentinel failovers. Locks held
+/// on the old master are lost when a replica is promoted. Use fencing tokens for
+/// any database writes protected by this lock. See module-level documentation for
+/// details.
 #[derive(Clone)]
 pub struct DistributedLock {
     redis: RedisConnectionManager,
@@ -72,10 +95,12 @@ impl DistributedLock {
             "#,
         );
 
-        script
-            .key(&token_key)
-            .invoke_async::<u64>(&mut conn)
+        tokio::time::timeout(
+            crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,
+            script.key(&token_key).invoke_async::<u64>(&mut conn),
+        )
             .await
+            .map_err(|_| Error::Internal(format!("Redis timeout: generate fencing token for lock '{key}'")))?
             .internal_with_err(&format!("Failed to generate fencing token for lock '{key}'"))
     }
 
@@ -150,14 +175,18 @@ impl DistributedLock {
         // SET key value NX EX ttl
         // NX: Only set if not exists
         // EX: Set expiration time
-        let result: Option<String> = redis::cmd("SET")
-            .arg(&lock_key)
-            .arg(&lock_value)
-            .arg("NX")
-            .arg("EX")
-            .arg(ttl_seconds)
-            .query_async(&mut conn)
+        let result: Option<String> = tokio::time::timeout(
+            crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,
+            redis::cmd("SET")
+                .arg(&lock_key)
+                .arg(&lock_value)
+                .arg("NX")
+                .arg("EX")
+                .arg(ttl_seconds)
+                .query_async(&mut conn),
+        )
             .await
+            .map_err(|_| Error::Internal("Redis timeout: acquire lock".to_string()))?
             .internal_with_err("Failed to acquire lock")?;
 
         if result.is_some() {
@@ -213,11 +242,12 @@ impl DistributedLock {
 
         let mut conn = self.redis.clone();
 
-        let result: i32 = script
-            .key(&lock_key)
-            .arg(lock_value)
-            .invoke_async::<i32>(&mut conn)
+        let result: i32 = tokio::time::timeout(
+            crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,
+            script.key(&lock_key).arg(lock_value).invoke_async::<i32>(&mut conn),
+        )
             .await
+            .map_err(|_| Error::Internal("Redis timeout: release lock".to_string()))?
             .internal_with_err("Failed to release lock")?;
 
         let released = result == 1;
@@ -442,12 +472,12 @@ impl DistributedLock {
 
         let mut conn = self.redis.clone();
 
-        let result: i32 = script
-            .key(&lock_key)
-            .arg(lock_value)
-            .arg(ttl_seconds)
-            .invoke_async::<i32>(&mut conn)
+        let result: i32 = tokio::time::timeout(
+            crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,
+            script.key(&lock_key).arg(lock_value).arg(ttl_seconds).invoke_async::<i32>(&mut conn),
+        )
             .await
+            .map_err(|_| Error::Internal("Redis timeout: extend lock".to_string()))?
             .internal_with_err("Failed to extend lock")?;
 
         Ok(result == 1)

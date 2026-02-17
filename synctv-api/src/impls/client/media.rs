@@ -65,7 +65,7 @@ impl ClientApiImpl {
             let username = self.user_service.get_user(&uid).await
                 .map(|u| u.username.clone())
                 .unwrap_or_default();
-            let _ = tx.try_send(synctv_cluster::sync::PublishRequest {
+            crate::impls::try_publish_cluster_event(tx, synctv_cluster::sync::PublishRequest {
                 event: synctv_cluster::sync::ClusterEvent::MediaAdded {
                     event_id: nanoid::nanoid!(16),
                     room_id: rid,
@@ -108,7 +108,7 @@ impl ClientApiImpl {
             let username = self.user_service.get_user(&uid).await
                 .map(|u| u.username.clone())
                 .unwrap_or_default();
-            let _ = tx.try_send(synctv_cluster::sync::PublishRequest {
+            crate::impls::try_publish_cluster_event(tx, synctv_cluster::sync::PublishRequest {
                 event: synctv_cluster::sync::ClusterEvent::MediaRemoved {
                     event_id: nanoid::nanoid!(16),
                     room_id: rid,
@@ -164,7 +164,7 @@ impl ClientApiImpl {
 
         // Invalidate room cache on other replicas so they see updated metadata
         if let Some(ref tx) = self.redis_publish_tx {
-            let _ = tx.try_send(synctv_cluster::sync::PublishRequest {
+            crate::impls::try_publish_cluster_event(tx, synctv_cluster::sync::PublishRequest {
                 event: synctv_cluster::sync::ClusterEvent::CacheInvalidate {
                     event_id: nanoid::nanoid!(16),
                     targets: vec![synctv_cluster::sync::CacheTarget::Room {
@@ -212,7 +212,7 @@ impl ClientApiImpl {
                 .map(|u| u.username.clone())
                 .unwrap_or_default();
             for media in &media_items {
-                let _ = tx.try_send(synctv_cluster::sync::PublishRequest {
+                crate::impls::try_publish_cluster_event(tx, synctv_cluster::sync::PublishRequest {
                     event: synctv_cluster::sync::ClusterEvent::MediaRemoved {
                         event_id: nanoid::nanoid!(16),
                         room_id: rid.clone(),
@@ -288,7 +288,7 @@ impl ClientApiImpl {
                 .map(|u| u.username.clone())
                 .unwrap_or_default();
             for media in &media_list {
-                let _ = tx.try_send(synctv_cluster::sync::PublishRequest {
+                crate::impls::try_publish_cluster_event(tx, synctv_cluster::sync::PublishRequest {
                     event: synctv_cluster::sync::ClusterEvent::MediaAdded {
                         event_id: nanoid::nanoid!(16),
                         room_id: rid.clone(),
@@ -356,7 +356,7 @@ impl ClientApiImpl {
                 .map(|u| u.username.clone())
                 .unwrap_or_default();
             for media_id in &media_id_strings {
-                let _ = tx.try_send(synctv_cluster::sync::PublishRequest {
+                crate::impls::try_publish_cluster_event(tx, synctv_cluster::sync::PublishRequest {
                     event: synctv_cluster::sync::ClusterEvent::MediaRemoved {
                         event_id: nanoid::nanoid!(16),
                         room_id: rid.clone(),
@@ -417,7 +417,7 @@ impl ClientApiImpl {
 
         // Invalidate room cache on other replicas so they refresh playlist order
         if let Some(ref tx) = self.redis_publish_tx {
-            let _ = tx.try_send(synctv_cluster::sync::PublishRequest {
+            crate::impls::try_publish_cluster_event(tx, synctv_cluster::sync::PublishRequest {
                 event: synctv_cluster::sync::ClusterEvent::CacheInvalidate {
                     event_id: nanoid::nanoid!(16),
                     targets: vec![synctv_cluster::sync::CacheTarget::Room {
@@ -556,7 +556,7 @@ impl ClientApiImpl {
 
         // Invalidate room cache on other replicas so they refresh playlist order
         if let Some(ref tx) = self.redis_publish_tx {
-            let _ = tx.try_send(synctv_cluster::sync::PublishRequest {
+            crate::impls::try_publish_cluster_event(tx, synctv_cluster::sync::PublishRequest {
                 event: synctv_cluster::sync::ClusterEvent::CacheInvalidate {
                     event_id: nanoid::nanoid!(16),
                     targets: vec![synctv_cluster::sync::CacheTarget::Room {

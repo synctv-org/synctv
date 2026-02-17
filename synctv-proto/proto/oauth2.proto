@@ -50,12 +50,12 @@ service OAuth2Service {
 
 message GetAuthorizationUrlRequest {
     // OAuth2 provider instance name (e.g., "github", "google", "logto1")
-    string provider = 1;
+    string provider = 1; // Validation: required, max 64 chars
 
     // Optional redirect URL for frontend after OAuth2 flow completes
     // This is stored in state and returned after successful authentication
     // If not provided, frontend should handle redirect itself
-    string redirect_url = 2;
+    string redirect_url = 2; // Validation: max 2048 chars, must be valid URL when non-empty
 }
 
 message GetAuthorizationUrlResponse {
@@ -91,15 +91,15 @@ message GetAuthorizationUrlForBindResponse {
 
 message ExchangeAuthorizationCodeRequest {
     // OAuth2 provider instance name (must match the provider used in GetAuthorizationUrl)
-    string provider = 1;
+    string provider = 1; // Validation: required, max 64 chars
 
     // Authorization code received from OAuth2 provider redirect
     // Frontend extracts this from the callback URL query parameter
-    string code = 2;
+    string code = 2; // Validation: required, max 2048 chars
 
     // State token received from OAuth2 provider redirect
     // Must match the state returned by GetAuthorizationUrl
-    string state = 3;
+    string state = 3; // Validation: required, max 512 chars
 }
 
 message ExchangeAuthorizationCodeResponse {

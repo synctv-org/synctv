@@ -187,9 +187,12 @@ impl WsTicketService {
 
             let mut conn = conn.clone();
 
-            let _: () = conn
-                .set_ex(&key, json, self.ticket_ttl_secs)
+            let _: () = tokio::time::timeout(
+                crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,
+                conn.set_ex(&key, json, self.ticket_ttl_secs),
+            )
                 .await
+                .map_err(|_| Error::Internal("Redis timeout: store ticket".to_string()))?
                 .map_err(|e| Error::Internal(format!("Failed to store ticket: {e}")))?;
 
             debug!(
@@ -237,10 +240,12 @@ impl WsTicketService {
                 return value
             "#);
 
-            let json: Option<String> = lua_script
-                .key(&key)
-                .invoke_async(&mut conn)
+            let json: Option<String> = tokio::time::timeout(
+                crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,
+                lua_script.key(&key).invoke_async(&mut conn),
+            )
                 .await
+                .map_err(|_| Error::Internal("Redis timeout: validate ticket".to_string()))?
                 .map_err(|e| Error::Internal(format!("Failed to validate ticket: {e}")))?;
 
             let Some(json) = json else {

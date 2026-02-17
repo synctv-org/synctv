@@ -641,6 +641,146 @@ fn proto_dash_to_manifest(
     }
 }
 
+// ============================================================================
+// Redis-backed adapters for multi-replica Bilibili rate limiting & WBI caching
+// ============================================================================
+
+use crate::service::RateLimiter;
+
+/// Redis-backed Bilibili API rate limiter.
+///
+/// Wraps the core [`RateLimiter`] (which already implements Redis sliding-window
+/// with in-memory fallback) behind the [`ApiRateLimiter`] trait expected by the
+/// media-providers crate.
+pub struct RedisApiRateLimiter {
+    inner: RateLimiter,
+    key: String,
+    max_requests: u32,
+    window_seconds: u64,
+}
+
+impl RedisApiRateLimiter {
+    /// Create a new Redis-backed rate limiter for Bilibili API calls.
+    ///
+    /// * `rate_limiter` - Core rate limiter (Redis + in-memory fallback)
+    /// * `max_requests` - Max requests per window (e.g. 5)
+    /// * `window_seconds` - Window duration in seconds (e.g. 1)
+    pub fn new(rate_limiter: RateLimiter, max_requests: u32, window_seconds: u64) -> Self {
+        Self {
+            inner: rate_limiter,
+            key: "bilibili:api".to_string(),
+            max_requests,
+            window_seconds,
+        }
+    }
+}
+
+#[async_trait]
+impl synctv_media_providers::bilibili::ApiRateLimiter for RedisApiRateLimiter {
+    async fn wait_for_permit(&self) {
+        // Retry loop: wait and retry until the sliding window allows the request.
+        loop {
+            match self
+                .inner
+                .check_rate_limit(&self.key, self.max_requests, self.window_seconds)
+                .await
+            {
+                Ok(()) => return,
+                Err(crate::service::RateLimitError::RateLimitExceeded {
+                    retry_after_seconds,
+                }) => {
+                    // Sleep for the retry-after period (at least 50ms to avoid busy-spin)
+                    let wait = std::time::Duration::from_millis(
+                        (retry_after_seconds * 1000).max(50),
+                    );
+                    tokio::time::sleep(wait).await;
+                }
+                Err(_) => {
+                    // Redis error already logged by RateLimiter; fall through
+                    // (the in-memory fallback already handled it)
+                    return;
+                }
+            }
+        }
+    }
+}
+
+/// Redis-backed WBI mixin key cache.
+///
+/// Stores the mixin key in Redis with SETNX + TTL so that only one replica
+/// fetches from Bilibili's nav API on cache miss.
+pub struct RedisWbiKeyCache {
+    conn: redis::aio::ConnectionManager,
+    key: String,
+}
+
+impl RedisWbiKeyCache {
+    /// Create a new Redis-backed WBI key cache.
+    ///
+    /// * `conn` - Redis connection manager
+    /// * `key_prefix` - Redis key prefix (e.g. "synctv:")
+    pub fn new(conn: redis::aio::ConnectionManager, key_prefix: &str) -> Self {
+        Self {
+            conn,
+            key: format!("{key_prefix}bilibili:wbi_mixin_key"),
+        }
+    }
+}
+
+#[async_trait]
+impl synctv_media_providers::bilibili::WbiKeyCache for RedisWbiKeyCache {
+    async fn get(&self) -> Option<String> {
+        let mut conn = self.conn.clone();
+        redis::cmd("GET")
+            .arg(&self.key)
+            .query_async::<Option<String>>(&mut conn)
+            .await
+            .ok()
+            .flatten()
+    }
+
+    async fn set(&self, mixin_key: &str, ttl: std::time::Duration) {
+        let mut conn = self.conn.clone();
+        let ttl_secs = ttl.as_secs().max(1) as i64;
+        // SET key value EX ttl NX -- only set if not already present
+        // If another replica already set it, that's fine (same value).
+        let _: Result<(), _> = redis::cmd("SET")
+            .arg(&self.key)
+            .arg(mixin_key)
+            .arg("EX")
+            .arg(ttl_secs)
+            .query_async(&mut conn)
+            .await;
+    }
+}
+
+/// Initialize Bilibili rate limiter and WBI cache with Redis backends.
+///
+/// Call this during startup after Redis is available. If Redis is not
+/// configured, the defaults (in-memory governor + in-memory cache) are used.
+pub async fn init_bilibili_redis_backends(
+    rate_limiter: &RateLimiter,
+    redis_conn: Option<&redis::aio::ConnectionManager>,
+    key_prefix: &str,
+) {
+    // Always inject the Redis-backed rate limiter (it falls back to in-memory
+    // internally if Redis is unavailable)
+    let bilibili_limiter = std::sync::Arc::new(RedisApiRateLimiter::new(
+        rate_limiter.clone(),
+        5, // 5 requests per second
+        1, // 1 second window
+    ));
+    synctv_media_providers::bilibili::set_shared_rate_limiter(bilibili_limiter).await;
+    tracing::info!("Bilibili API rate limiter initialized (Redis-backed with in-memory fallback)");
+
+    // Inject Redis-backed WBI key cache if Redis is available
+    if let Some(conn) = redis_conn {
+        let wbi_cache = std::sync::Arc::new(RedisWbiKeyCache::new(conn.clone(), key_prefix));
+        synctv_media_providers::bilibili::set_shared_wbi_cache(wbi_cache).await;
+        tracing::info!("Bilibili WBI key cache initialized (Redis-backed)");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

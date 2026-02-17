@@ -224,9 +224,9 @@ message PlaybackState {
 // Authentication Messages
 // SECURITY: password is transmitted as plaintext. TLS MUST be used.
 message RegisterRequest {
-    string username = 1;
-    string password = 2; // SECURITY: Plaintext credential - requires TLS in transit
-    string email = 3;
+    string username = 1; // Validation: min 3, max 32 chars, pattern: [\p{L}\p{N}_-]+
+    string password = 2; // SECURITY: Plaintext credential - requires TLS in transit. Validation: min 8, max 128 chars, rejects common weak passwords
+    string email = 3; // Validation: max 254 chars, email format required
 }
 
 message RegisterResponse {
@@ -237,8 +237,8 @@ message RegisterResponse {
 
 // SECURITY: password is transmitted as plaintext. TLS MUST be used.
 message LoginRequest {
-    string username = 1;
-    string password = 2; // SECURITY: Plaintext credential - requires TLS in transit
+    string username = 1; // Validation: min 3, max 32 chars
+    string password = 2; // SECURITY: Plaintext credential - requires TLS in transit. Validation: min 8, max 128 chars
 }
 
 message LoginResponse {
@@ -264,10 +264,10 @@ message GetProfileResponse {
 
 // Room Management Messages
 message CreateRoomRequest {
-    string name = 1;
+    string name = 1; // Validation: max 100 chars, no HTML tags
     string password = 2; // Optional room password
     bytes settings = 3; // JSON settings
-    string description = 4; // Room description
+    string description = 4; // Validation: max 500 chars, no HTML tags
 }
 
 message CreateRoomResponse {
@@ -299,8 +299,8 @@ message LeaveRoomResponse {
 }
 
 message ListRoomsRequest {
-    int32 page = 1;
-    int32 page_size = 2;
+    int32 page = 1; // Validation: >= 1
+    int32 page_size = 2; // Validation: max 100, default 20
     string search = 3; // Optional search by name/description
 }
 
@@ -355,8 +355,8 @@ message CheckRoomPasswordResponse {
 // Room Members Messages
 // Note: room_id extracted from x-room-id metadata
 message GetRoomMembersRequest {
-    int32 page = 1;      // Page number (default 1)
-    int32 page_size = 2;  // Items per page (default 50)
+    int32 page = 1;      // Page number (default 1). Validation: >= 1
+    int32 page_size = 2;  // Items per page (default 50). Validation: max 100
 }
 
 message GetRoomMembersResponse {
@@ -440,8 +440,8 @@ message DeletePlaylistResponse {
 
 message ListPlaylistsRequest {
     string parent_id = 1; // Optional parent ID to get children of specific playlist
-    int32 page = 2;       // Page number (default 1)
-    int32 page_size = 3;  // Items per page (default 50)
+    int32 page = 2;       // Page number (default 1). Validation: >= 1
+    int32 page_size = 3;  // Items per page (default 50). Validation: max 100
 }
 
 message ListPlaylistsResponse {
@@ -463,11 +463,11 @@ message SetCurrentMediaResponse {
 // Note: room_id extracted from x-room-id metadata
 
 message AddMediaRequest {
-    string playlist_id = 1; // Target playlist ID
+    string playlist_id = 1; // Target playlist ID. Validation: required, max 64 chars
     string provider = 2; // Optional, provider type name (e.g., "bilibili", "alist")
     string provider_instance_name = 3; // Optional, specific provider instance (e.g., "bilibili_main")
     bytes source_config = 4; // JSON source config (e.g., {"url": "...", "path": "..."})
-    string title = 5; // Optional media title
+    string title = 5; // Optional media title. Validation: max 500 chars, no HTML tags
 }
 
 message AddMediaResponse {
@@ -483,9 +483,9 @@ message RemoveMediaResponse {
 }
 
 message ListPlaylistRequest {
-    string playlist_id = 1; // Playlist ID to get
-    int32 page = 2; // Page number (default 1)
-    int32 page_size = 3; // Items per page (default 50)
+    string playlist_id = 1; // Playlist ID to get. Validation: required, max 64 chars
+    int32 page = 2; // Page number (default 1). Validation: >= 1
+    int32 page_size = 3; // Items per page (default 50). Validation: max 100
 }
 
 message ListPlaylistResponse {
@@ -495,10 +495,10 @@ message ListPlaylistResponse {
 }
 
 message ListPlaylistItemsRequest {
-    string playlist_id = 1; // Playlist ID
+    string playlist_id = 1; // Playlist ID. Validation: required, max 64 chars
     string relative_path = 2; // Relative path within dynamic folder (empty for root)
-    int32 page = 3; // Page number (default 1)
-    int32 page_size = 4; // Items per page (default 50)
+    int32 page = 3; // Page number (default 1). Validation: >= 1
+    int32 page_size = 4; // Items per page (default 50). Validation: max 100
 }
 
 message ListPlaylistItemsResponse {
@@ -553,7 +553,7 @@ message ClearPlaylistResponse {
 
 // Batch Media Operations
 message AddMediaBatchRequest {
-    repeated AddMediaRequest items = 1;
+    repeated AddMediaRequest items = 1; // Validation: max 50 items
 }
 message AddMediaBatchResponse {
     repeated AddMediaResponse results = 1;
@@ -592,7 +592,7 @@ message PauseResponse {
 }
 
 message SeekRequest {
-    double current_time = 1; // playback position in seconds
+    double current_time = 1; // Playback position in seconds. Validation: >= 0, max 86400, must be finite
 }
 
 message SeekResponse {
@@ -600,7 +600,7 @@ message SeekResponse {
 }
 
 message SetPlaybackSpeedRequest {
-    double speed = 1; // 0.5, 1.0, 1.5, 2.0, etc.
+    double speed = 1; // Validation: 0.25 to 4.0, must be finite
 }
 
 message SetPlaybackSpeedResponse {
@@ -672,8 +672,8 @@ message ServerMessage {
 // Note: room_id extracted from x-room-id metadata in MessageStream context
 // If position is set, client may display this as a danmaku (bullet comment)
 message ChatMessageSend {
-    string content = 1;
-    optional double position = 2; // Video position in seconds (for danmaku display)
+    string content = 1; // Validation: required, max 5000 chars, HTML tags stripped
+    optional double position = 2; // Video position in seconds (for danmaku display). Validation: >= 0, max 86400
     optional string color = 3; // Hex color (e.g., "#FFFFFF") for danmaku
 }
 
@@ -725,7 +725,7 @@ message ErrorMessage {
 // Chat History
 // Note: room_id extracted from x-room-id metadata
 message GetChatHistoryRequest {
-    int32 limit = 1; // Max 500
+    int32 limit = 1; // Validation: max 500, default 50
     int64 before = 2; // Timestamp for pagination
 }
 
@@ -741,7 +741,7 @@ message LogoutResponse {
 }
 
 message SetUsernameRequest {
-    string new_username = 1;
+    string new_username = 1; // Validation: min 3, max 32 chars, pattern: [\p{L}\p{N}_-]+
 }
 
 message SetUsernameResponse {
@@ -750,8 +750,8 @@ message SetUsernameResponse {
 
 // SECURITY: passwords are transmitted as plaintext. TLS MUST be used.
 message SetPasswordRequest {
-    string old_password = 1; // SECURITY: Plaintext credential - requires TLS in transit
-    string new_password = 2; // SECURITY: Plaintext credential - requires TLS in transit
+    string old_password = 1; // SECURITY: Plaintext credential - requires TLS in transit. Validation: required
+    string new_password = 2; // SECURITY: Plaintext credential - requires TLS in transit. Validation: min 8, max 128 chars, rejects common weak passwords
 }
 
 message SetPasswordResponse {
@@ -759,8 +759,8 @@ message SetPasswordResponse {
 }
 
 message ListCreatedRoomsRequest {
-    int32 page = 1;
-    int32 page_size = 2;
+    int32 page = 1; // Validation: >= 1
+    int32 page_size = 2; // Validation: max 100, default 20
 }
 
 message ListCreatedRoomsResponse {
@@ -769,8 +769,8 @@ message ListCreatedRoomsResponse {
 }
 
 message ListParticipatedRoomsRequest {
-    int32 page = 1;
-    int32 page_size = 2;
+    int32 page = 1; // Validation: >= 1
+    int32 page_size = 2; // Validation: max 100, default 20
 }
 
 message ListParticipatedRoomsResponse {
@@ -796,7 +796,7 @@ message CheckRoomResponse {
 }
 
 message GetHotRoomsRequest {
-    int32 limit = 1; // Default 10, max 50
+    int32 limit = 1; // Validation: default 10, max 50
 }
 
 message GetHotRoomsResponse {
@@ -893,7 +893,7 @@ message GetPublicSettingsResponse {
 // ==================== Email Verification ====================
 
 message SendVerificationEmailRequest {
-    string email = 1;
+    string email = 1; // Validation: required, max 254 chars, email format
 }
 
 message SendVerificationEmailResponse {
@@ -922,9 +922,9 @@ message RequestPasswordResetResponse {
 
 // SECURITY: new_password is transmitted as plaintext. TLS MUST be used.
 message ConfirmPasswordResetRequest {
-    string email = 1;
-    string token = 2;       // Reset code from email
-    string new_password = 3; // SECURITY: Plaintext credential - requires TLS in transit
+    string email = 1; // Validation: required, email format
+    string token = 2;       // Reset code from email. Validation: required
+    string new_password = 3; // SECURITY: Plaintext credential - requires TLS in transit. Validation: min 8, max 128 chars, rejects common weak passwords
 }
 
 message ConfirmPasswordResetResponse {
@@ -1184,8 +1184,8 @@ message NotificationProto {
 }
 
 message ListNotificationsRequest {
-    int32 page = 1;      // Page number (default 1)
-    int32 page_size = 2;  // Items per page (default 20, max 100)
+    int32 page = 1;      // Page number (default 1). Validation: >= 1
+    int32 page_size = 2;  // Items per page (default 20). Validation: max 100
     optional bool is_read = 3; // Filter by read status
     optional NotificationType notification_type = 4; // Filter by type
 }

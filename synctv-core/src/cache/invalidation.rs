@@ -5,10 +5,11 @@
 //! in the stream and can be caught up on reconnection, preventing stale caches
 //! after transient disconnections.
 
+use redis::aio::ConnectionManager;
 use redis::Client;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, OnceCell};
 use tracing::{debug, error, info, warn};
 
 use crate::models::RoomId;
@@ -84,8 +85,10 @@ pub enum InvalidationMessage {
 /// - Each node uses its own consumer group for broadcast semantics
 /// - Automatic message acknowledgment and retry on failure
 pub struct CacheInvalidationService {
-    /// Redis client for streams
+    /// Redis client for streams (used by the subscriber background task)
     redis_client: Option<Client>,
+    /// Reusable Redis connection for publishing (lazily initialized)
+    redis_conn: Arc<OnceCell<ConnectionManager>>,
     /// Local broadcast sender for invalidation events
     local_sender: broadcast::Sender<InvalidationMessage>,
     /// Node identifier for logging and consumer group
@@ -102,6 +105,7 @@ impl Clone for CacheInvalidationService {
     fn clone(&self) -> Self {
         Self {
             redis_client: self.redis_client.clone(),
+            redis_conn: self.redis_conn.clone(),
             local_sender: self.local_sender.clone(),
             node_id: self.node_id.clone(),
             stream_key: self.stream_key.clone(),
@@ -125,12 +129,26 @@ impl CacheInvalidationService {
 
         Self {
             redis_client,
+            redis_conn: Arc::new(OnceCell::new()),
             local_sender,
             node_id,
             stream_key,
             consumer_group,
             shutdown: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
+    }
+
+    /// Get or lazily initialize the shared Redis connection for publishing.
+    async fn get_conn(&self) -> Result<ConnectionManager> {
+        let client = self.redis_client.as_ref().ok_or_else(|| {
+            Error::Internal("Redis not configured".to_string())
+        })?;
+        let conn = self.redis_conn.get_or_try_init(|| async {
+            client.get_connection_manager().await.map_err(|e| {
+                Error::Internal(format!("Failed to create Redis ConnectionManager: {e}"))
+            })
+        }).await?;
+        Ok(conn.clone())
     }
 
     /// Start listening for cache invalidation messages from Redis
@@ -149,7 +167,7 @@ impl CacheInvalidationService {
         // Use "0" so that on first start, all existing messages are delivered.
         // In practice the stream will be empty on first deploy.
         // If the group already exists, BUSYGROUP error is expected and ignored.
-        if let Err(e) = self.create_consumer_group(&client).await {
+        if let Err(e) = self.create_consumer_group().await {
             // BUSYGROUP = group already exists, which is fine
             let err_str = format!("{e}");
             if !err_str.contains("BUSYGROUP") {
@@ -199,11 +217,8 @@ impl CacheInvalidationService {
     }
 
     /// Create the consumer group for the invalidation stream
-    async fn create_consumer_group(&self, client: &Client) -> Result<()> {
-        let mut conn = client
-            .get_multiplexed_async_connection()
-            .await
-            .map_err(|e| Error::Internal(format!("Failed to get Redis connection: {e}")))?;
+    async fn create_consumer_group(&self) -> Result<()> {
+        let mut conn = self.get_conn().await?;
 
         // XGROUP CREATE <stream> <group> 0 MKSTREAM
         // Use "0" to read all existing messages on first start. On reconnection,
@@ -501,8 +516,8 @@ impl CacheInvalidationService {
 
         // Clean up the consumer group in Redis to prevent leaked groups from
         // accumulating when nodes are restarted or scaled down.
-        if let Some(ref client) = self.redis_client {
-            match client.get_multiplexed_async_connection().await {
+        if self.redis_client.is_some() {
+            match self.get_conn().await {
                 Ok(mut conn) => {
                     let result: redis::RedisResult<()> = redis::cmd("XGROUP")
                         .arg("DESTROY")
@@ -558,15 +573,12 @@ impl CacheInvalidationService {
     /// For local-only invalidation (when Redis is not configured), this is a no-op.
     pub async fn broadcast_remote(&self, message: InvalidationMessage) -> Result<()> {
         // Broadcast via Redis Streams if available
-        if let Some(ref client) = self.redis_client {
+        if self.redis_client.is_some() {
             let json = serde_json::to_string(&message).map_err(|e| {
                 Error::Internal(format!("Failed to serialize invalidation message: {e}"))
             })?;
 
-            let mut conn = client
-                .get_multiplexed_async_connection()
-                .await
-                .map_err(|e| Error::Internal(format!("Redis connection failed: {e}")))?;
+            let mut conn = self.get_conn().await?;
 
             // XADD <stream> MAXLEN ~ <max_len> * origin <node_id> payload <json>
             let _: String = redis::cmd("XADD")

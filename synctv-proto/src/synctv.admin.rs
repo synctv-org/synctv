@@ -280,11 +280,13 @@ pub struct DisableProviderInstanceResponse {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CreateUserRequest {
+    /// Validation: min 3, max 32 chars, pattern: \[\\p{L}\p{N}\_-\]+
     #[prost(string, tag = "1")]
     pub username: ::prost::alloc::string::String,
-    /// SECURITY: Plaintext credential - requires TLS in transit
+    /// SECURITY: Plaintext credential - requires TLS in transit. Validation: min 8, max 128 chars
     #[prost(string, tag = "2")]
     pub password: ::prost::alloc::string::String,
+    /// Validation: max 254 chars, email format when non-empty
     #[prost(string, tag = "3")]
     pub email: ::prost::alloc::string::String,
     /// Default: USER_ROLE_USER
@@ -312,8 +314,10 @@ pub struct DeleteUserResponse {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ListUsersRequest {
+    /// Validation: >= 1
     #[prost(int32, tag = "1")]
     pub page: i32,
+    /// Validation: max 100, default 20
     #[prost(int32, tag = "2")]
     pub page_size: i32,
     /// Optional filter (UNSPECIFIED = show all)
@@ -351,12 +355,13 @@ pub struct GetUserResponse {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UpdateUserPasswordRequest {
+    /// Validation: required
     #[prost(string, tag = "1")]
     pub user_id: ::prost::alloc::string::String,
-    /// SECURITY: Plaintext credential - requires TLS in transit
+    /// SECURITY: Plaintext credential - requires TLS in transit. Validation: min 8, max 128 chars
     #[prost(string, tag = "2")]
     pub new_password: ::prost::alloc::string::String,
-    /// Audit trail: why the password was reset (e.g., "user request", "security incident")
+    /// Audit trail: why the password was reset. Validation: max 500 chars
     #[prost(string, tag = "3")]
     pub reason: ::prost::alloc::string::String,
     /// If true, invalidate all existing sessions for this user
@@ -375,8 +380,10 @@ pub struct UpdateUserPasswordResponse {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UpdateUserUsernameRequest {
+    /// Validation: required
     #[prost(string, tag = "1")]
     pub user_id: ::prost::alloc::string::String,
+    /// Validation: min 3, max 32 chars, pattern: \[\\p{L}\p{N}\_-\]+
     #[prost(string, tag = "2")]
     pub new_username: ::prost::alloc::string::String,
 }
@@ -431,12 +438,13 @@ pub struct UnbanUserResponse {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetUserRoomsRequest {
+    /// Validation: required
     #[prost(string, tag = "1")]
     pub user_id: ::prost::alloc::string::String,
-    /// Page number (default 1)
+    /// Page number (default 1). Validation: >= 1
     #[prost(int32, tag = "2")]
     pub page: i32,
-    /// Items per page (default 50)
+    /// Items per page (default 50). Validation: max 100
     #[prost(int32, tag = "3")]
     pub page_size: i32,
 }
@@ -464,8 +472,10 @@ pub struct ApproveUserResponse {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ListRoomsRequest {
+    /// Validation: >= 1
     #[prost(int32, tag = "1")]
     pub page: i32,
+    /// Validation: max 100, default 20
     #[prost(int32, tag = "2")]
     pub page_size: i32,
     /// Optional filter: active, closed, pending (use is_banned for ban filter)
@@ -610,12 +620,13 @@ pub struct ApproveRoomResponse {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetRoomMembersRequest {
+    /// Validation: required
     #[prost(string, tag = "1")]
     pub room_id: ::prost::alloc::string::String,
-    /// Page number (default 1)
+    /// Page number (default 1). Validation: >= 1
     #[prost(int32, tag = "2")]
     pub page: i32,
-    /// Items per page (default 50)
+    /// Items per page (default 50). Validation: max 100
     #[prost(int32, tag = "3")]
     pub page_size: i32,
 }

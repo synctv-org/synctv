@@ -47,18 +47,32 @@ pub type UserStreamTracker = Arc<StreamTracker>;
 /// not the `media_id`. On unpublish, we only know `(app_name, stream_name)` and
 /// need to resolve the logical `(room_id, media_id)`.
 ///
+/// ## Key Formats
+///
+/// All internal composite keys use a consistent format:
+///
+/// - **Stream key** (`by_stream`, `by_user` sets, `rtmp_reverse` keys):
+///   `"{room_id}:{media_id}"` — colon-separated, e.g. `"room123:media456"`
+///
+/// - **RTMP key** (`by_rtmp` keys, `rtmp_reverse` values):
+///   `"{app_name}\0{stream_name}"` — null-byte-separated to avoid ambiguity
+///   (app_name and stream_name can contain colons)
+///
+/// - **Publisher key** (used by `PublisherManager` and Redis):
+///   `"{room_id}:{media_id}"` — matches the stream key format above
+///
 /// All mutations atomically update all indexes.
 /// A single user may publish to multiple rooms/media simultaneously.
 pub struct StreamTracker {
-    /// `user_id` → Set of "`room_id:media_id`" composite keys
+    /// `user_id` → Set of `"{room_id}:{media_id}"` composite keys
     by_user: DashMap<String, dashmap::DashSet<String>>,
     /// `room_id` → Set<`media_id`>
     by_room: DashMap<String, dashmap::DashSet<String>>,
-    /// "`room_id:media_id`" → `user_id`
+    /// `"{room_id}:{media_id}"` → `user_id`
     by_stream: DashMap<String, String>,
-    /// "`app_name\0stream_name`" → "`room_id:media_id`" (RTMP→logical)
+    /// `"{app_name}\0{stream_name}"` → `"{room_id}:{media_id}"` (RTMP→logical)
     by_rtmp: DashMap<String, String>,
-    /// "`room_id:media_id`" → "`app_name\0stream_name`" (logical→RTMP, for cleanup)
+    /// `"{room_id}:{media_id}"` → `"{app_name}\0{stream_name}"` (logical→RTMP, for cleanup)
     rtmp_reverse: DashMap<String, String>,
 }
 
@@ -80,14 +94,26 @@ impl StreamTracker {
         }
     }
 
+    /// Build a composite key from `(room_id, media_id)`.
+    ///
+    /// Format: `"{room_id}:{media_id}"` — used as the canonical key across
+    /// `by_stream`, `by_user` sets, `rtmp_reverse` keys, and `PublisherManager`.
     fn stream_key(room_id: &str, media_id: &str) -> String {
         format!("{room_id}:{media_id}")
     }
 
+    /// Parse a composite stream key back into `(room_id, media_id)`.
+    ///
+    /// Splits on the first `:` — room_id and media_id must not contain colons.
     fn parse_stream_key(key: &str) -> Option<(String, String)> {
         key.split_once(':').map(|(r, m)| (r.to_string(), m.to_string()))
     }
 
+    /// Build an RTMP composite key from `(app_name, stream_name)`.
+    ///
+    /// Format: `"{app_name}\0{stream_name}"` — uses null byte separator to
+    /// avoid ambiguity (RTMP app_name/stream_name can contain colons but
+    /// not null bytes).
     fn rtmp_key(app_name: &str, stream_name: &str) -> String {
         format!("{app_name}\0{stream_name}")
     }

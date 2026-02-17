@@ -108,7 +108,23 @@ impl PeerConnection {
             RTPCodecType::Video,
         )?;
 
-        // Register H264 video codec (Constrained Baseline profile)
+        // Register H264 video codecs.
+        //
+        // Supported profiles (profile-level-id format: PPCCll):
+        //   42e01f = Constrained Baseline Profile, Level 3.1
+        //            Widest compatibility (mobile, low-end devices, all browsers)
+        //   42001f = Baseline Profile, Level 3.1
+        //            Same as CB but without constraint flags
+        //   4d001f = Main Profile, Level 3.1
+        //            Better compression than Baseline (B-frames), most desktop browsers
+        //   640c1f = High Profile, Level 3.1
+        //            Best compression, hardware acceleration on modern devices
+        //
+        // Each profile is registered as a separate codec entry so that SDP
+        // negotiation can match the profile advertised by the remote peer.
+        // Payload types follow Chrome/Firefox conventions.
+
+        // H264 Constrained Baseline Profile, Level 3.1 (widest compatibility)
         media_engine.register_codec(
             RTCRtpCodecParameters {
                 capability: RTCRtpCodecCapability {
@@ -119,6 +135,54 @@ impl PeerConnection {
                     rtcp_feedback: video_rtcp_feedback.clone(),
                 },
                 payload_type: 102,
+                ..Default::default()
+            },
+            RTPCodecType::Video,
+        )?;
+
+        // H264 Constrained Baseline Profile, Level 3.1 (packetization-mode=0, single NAL)
+        media_engine.register_codec(
+            RTCRtpCodecParameters {
+                capability: RTCRtpCodecCapability {
+                    mime_type: "video/H264".to_string(),
+                    clock_rate: 90000,
+                    channels: 0,
+                    sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=0;profile-level-id=42e01f".to_string(),
+                    rtcp_feedback: video_rtcp_feedback.clone(),
+                },
+                payload_type: 127,
+                ..Default::default()
+            },
+            RTPCodecType::Video,
+        )?;
+
+        // H264 Main Profile, Level 3.1 (better compression with B-frames)
+        media_engine.register_codec(
+            RTCRtpCodecParameters {
+                capability: RTCRtpCodecCapability {
+                    mime_type: "video/H264".to_string(),
+                    clock_rate: 90000,
+                    channels: 0,
+                    sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=4d001f".to_string(),
+                    rtcp_feedback: video_rtcp_feedback.clone(),
+                },
+                payload_type: 125,
+                ..Default::default()
+            },
+            RTPCodecType::Video,
+        )?;
+
+        // H264 High Profile, Level 3.1 (best compression, hardware accelerated)
+        media_engine.register_codec(
+            RTCRtpCodecParameters {
+                capability: RTCRtpCodecCapability {
+                    mime_type: "video/H264".to_string(),
+                    clock_rate: 90000,
+                    channels: 0,
+                    sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=640c1f".to_string(),
+                    rtcp_feedback: video_rtcp_feedback.clone(),
+                },
+                payload_type: 108,
                 ..Default::default()
             },
             RTPCodecType::Video,

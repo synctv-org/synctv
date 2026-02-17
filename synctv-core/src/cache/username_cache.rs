@@ -73,9 +73,16 @@ impl UsernameCache {
     pub async fn get(&self, user_id: &UserId) -> Result<Option<String>> {
         // Check memory cache first (moka handles LRU automatically)
         if let Some(username) = self.memory_cache.get(user_id).await {
+            crate::metrics::cache::CACHE_HITS
+                .with_label_values(&["username", "l1"])
+                .inc();
             tracing::debug!(user_id = %user_id.as_str(), username = %username, "Username cache hit (memory)");
             return Ok(Some(username));
         }
+
+        crate::metrics::cache::CACHE_MISSES
+            .with_label_values(&["username", "l1"])
+            .inc();
 
         // Check Redis cache
         if let Some(ref conn) = self.redis_conn {
@@ -88,6 +95,9 @@ impl UsernameCache {
                 .map_err(|e| Error::Internal(format!("Failed to get username from cache: {e}")))?;
 
             if let Some(username) = username {
+                crate::metrics::cache::CACHE_HITS
+                    .with_label_values(&["username", "l2"])
+                    .inc();
                 tracing::debug!(user_id = %user_id.as_str(), username = %username, "Username cache hit (Redis)");
 
                 // Populate memory cache
@@ -95,6 +105,10 @@ impl UsernameCache {
 
                 return Ok(Some(username));
             }
+
+            crate::metrics::cache::CACHE_MISSES
+                .with_label_values(&["username", "l2"])
+                .inc();
         }
 
         tracing::debug!(user_id = %user_id.as_str(), "Username cache miss");
@@ -214,6 +228,9 @@ impl UsernameCache {
     pub async fn invalidate(&self, user_id: &UserId) -> Result<()> {
         // Remove from memory cache (L1) FIRST so this replica stops serving stale data immediately
         self.memory_cache.invalidate(user_id).await;
+        crate::metrics::cache::CACHE_INVALIDATIONS
+            .with_label_values(&["username"])
+            .inc();
 
         // Then remove from Redis cache (L2) with retry
         if self.redis_conn.is_some() {

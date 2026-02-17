@@ -517,9 +517,10 @@ impl DynamicFolder for EmbyProvider {
                 };
 
                 let thumbnail_url = format!(
-                    "{}/emby/Items/{}/Images/Primary?maxHeight=300",
+                    "{}/emby/Items/{}/Images/Primary?maxHeight=300&api_key={}",
                     base_config.host.trim_end_matches('/'),
                     item.id,
+                    base_config.token,
                 );
 
                 Some(DirectoryItem {

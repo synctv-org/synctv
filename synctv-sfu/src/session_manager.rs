@@ -682,6 +682,19 @@ impl SfuSessionManager {
         self.sessions.len()
     }
 
+    /// Complete migration for a room, transitioning it from Migrating to SFU mode.
+    ///
+    /// Called by the API layer after all existing P2P peers have been sent migration
+    /// offers (or failed). This finalizes the room state so new peers join in SFU mode.
+    pub async fn complete_room_migration(&self, room_id: &str) -> Result<()> {
+        let sfu_room_id = RoomId::from(room_id);
+        let room = self
+            .sfu_manager
+            .get_or_create_room(sfu_room_id)
+            .await?;
+        room.complete_migration().await
+    }
+
     /// Create an SFU session for an existing P2P peer during migration.
     ///
     /// Unlike `create_session`, this creates a server-side `PeerConnection` and

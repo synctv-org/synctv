@@ -1176,6 +1176,20 @@ impl StreamMessageHandler {
             failed,
         );
 
+        // Complete the room migration: transition the SFU room from Migrating to SFU mode.
+        // This must be called after migration offers have been sent so the room no longer
+        // stays stuck in the Migrating state indefinitely.
+        if completed > 0 {
+            if let Err(e) = sfu_mgr.complete_room_migration(self.room_id.as_str()).await {
+                tracing::warn!(
+                    room_id = %self.room_id.as_str(),
+                    migration_id = %migration_id,
+                    error = %e,
+                    "Failed to complete room migration to SFU mode"
+                );
+            }
+        }
+
         // Spawn a timeout task: if any migrating peers haven't completed
         // within 30 seconds, mark their migration as failed and clean up
         let sfu_mgr_clone = Arc::clone(sfu_mgr);

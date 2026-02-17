@@ -80,12 +80,16 @@ impl UserService {
     ///
     /// Uniqueness of username/email is enforced atomically by the database
     /// UNIQUE constraints, avoiding any check-then-act (TOCTOU) race condition.
+    ///
+    /// When email verification is required (email service is configured), tokens
+    /// are NOT returned -- the user must verify their email first. When email
+    /// verification is not required, tokens are returned immediately.
     pub async fn register(
         &self,
         username: String,
         email: Option<String>,
         password: String,
-    ) -> Result<(User, String, String)> {
+    ) -> Result<(User, Option<String>, Option<String>)> {
         // Validate input
         self.validate_username(&username)?;
         if let Some(ref email) = email {
@@ -105,6 +109,12 @@ impl UserService {
         // Populate username cache
         self.username_cache.set(&created_user.id, &username).await?;
 
+        // When email verification is required, do NOT issue tokens for pending users.
+        // The user must complete email verification before they can authenticate.
+        if self.email_verification_required {
+            return Ok((created_user, None, None));
+        }
+
         // Generate JWT tokens (role will be fetched from DB on each request)
         let access_token = self
             .jwt_service
@@ -113,7 +123,7 @@ impl UserService {
             .jwt_service
             .sign_token(&created_user.id, TokenType::Refresh)?;
 
-        Ok((created_user, access_token, refresh_token))
+        Ok((created_user, Some(access_token), Some(refresh_token)))
     }
 
     /// Register a new user using a provided executor (pool or transaction)

@@ -331,6 +331,7 @@ mod tests {
         assert!(manager.has_factory("emby"));
         assert!(manager.has_factory("rtmp"));
         assert!(manager.has_factory("direct_url"));
+        assert!(manager.has_factory("live_proxy"));
         assert!(!manager.has_factory("unknown"));
     }
 
@@ -344,6 +345,7 @@ mod tests {
         let types = manager.list_types();
         assert!(types.contains(&"alist".to_string()));
         assert!(types.contains(&"bilibili".to_string()));
-        assert_eq!(types.len(), 5); // alist, bilibili, emby, rtmp, direct_url
+        assert!(types.contains(&"live_proxy".to_string()));
+        assert_eq!(types.len(), 6); // alist, bilibili, emby, rtmp, direct_url, live_proxy
     }
 }

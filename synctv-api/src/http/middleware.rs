@@ -104,11 +104,11 @@ where
             ));
         }
 
-        // Step 4: Check if user is banned or deleted (defense-in-depth: catches banned
-        // users even if they hold a valid JWT issued before the ban)
+        // Step 4: Check if user is banned, pending, or deleted (defense-in-depth: catches
+        // banned/pending users even if they hold a valid JWT issued before the status change)
         let user = app_state.user_service.get_user(&user_id).await
             .map_err(|_| AppError::unauthorized("User not found"))?;
-        if user.is_deleted() || user.status == UserStatus::Banned {
+        if user.is_deleted() || user.status == UserStatus::Banned || user.status == UserStatus::Pending {
             return Err(AppError::unauthorized("Authentication failed"));
         }
 

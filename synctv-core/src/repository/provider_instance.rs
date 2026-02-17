@@ -157,7 +157,7 @@ impl ProviderInstanceRepository {
         let encrypted_jwt_secret = self.encrypt_field(&instance.jwt_secret)?;
         let encrypted_custom_ca = self.encrypt_field(&instance.custom_ca)?;
 
-        sqlx::query(
+        let result = sqlx::query(
             r"
             UPDATE media_provider_instances
             SET endpoint = $2, comment = $3, jwt_secret = $4, custom_ca = $5,
@@ -179,35 +179,51 @@ impl ProviderInstanceRepository {
         .execute(&self.pool)
         .await?;
 
+        if result.rows_affected() == 0 {
+            return Err(crate::Error::NotFound(format!("Provider instance '{}' not found", instance.name)));
+        }
+
         Ok(())
     }
 
     /// Delete a provider instance
     pub async fn delete(&self, name: &str) -> Result<()> {
-        sqlx::query("DELETE FROM media_provider_instances WHERE name = $1")
+        let result = sqlx::query("DELETE FROM media_provider_instances WHERE name = $1")
             .bind(name)
             .execute(&self.pool)
             .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(crate::Error::NotFound(format!("Provider instance '{name}' not found")));
+        }
 
         Ok(())
     }
 
     /// Enable a provider instance
     pub async fn enable(&self, name: &str) -> Result<()> {
-        sqlx::query("UPDATE media_provider_instances SET enabled = true, updated_at = NOW() WHERE name = $1")
+        let result = sqlx::query("UPDATE media_provider_instances SET enabled = true, updated_at = NOW() WHERE name = $1")
             .bind(name)
             .execute(&self.pool)
             .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(crate::Error::NotFound(format!("Provider instance '{name}' not found")));
+        }
 
         Ok(())
     }
 
     /// Disable a provider instance
     pub async fn disable(&self, name: &str) -> Result<()> {
-        sqlx::query("UPDATE media_provider_instances SET enabled = false, updated_at = NOW() WHERE name = $1")
+        let result = sqlx::query("UPDATE media_provider_instances SET enabled = false, updated_at = NOW() WHERE name = $1")
             .bind(name)
             .execute(&self.pool)
             .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(crate::Error::NotFound(format!("Provider instance '{name}' not found")));
+        }
 
         Ok(())
     }
@@ -439,7 +455,7 @@ impl UserProviderCredentialRepository {
     pub async fn update(&self, credential: &UserProviderCredential) -> Result<()> {
         let encrypted_data = self.encrypt_credential(&credential.credential_data)?;
 
-        sqlx::query(
+        let result = sqlx::query(
             r"
             UPDATE user_media_provider_credentials
             SET provider_instance_name = $2, credential_data = $3, expires_at = $4, updated_at = NOW()
@@ -453,26 +469,40 @@ impl UserProviderCredentialRepository {
         .execute(&self.pool)
         .await?;
 
+        if result.rows_affected() == 0 {
+            return Err(crate::Error::NotFound(format!("User provider credential '{}' not found", credential.id)));
+        }
+
         Ok(())
     }
 
     /// Delete a user credential
     pub async fn delete(&self, id: &str) -> Result<()> {
-        sqlx::query("DELETE FROM user_media_provider_credentials WHERE id = $1")
+        let result = sqlx::query("DELETE FROM user_media_provider_credentials WHERE id = $1")
             .bind(id)
             .execute(&self.pool)
             .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(crate::Error::NotFound(format!("User provider credential '{id}' not found")));
+        }
 
         Ok(())
     }
 
     /// Delete all credentials for a user and provider
     pub async fn delete_by_user_and_provider(&self, user_id: &str, provider: &str) -> Result<()> {
-        sqlx::query("DELETE FROM user_media_provider_credentials WHERE user_id = $1 AND provider = $2")
+        let result = sqlx::query("DELETE FROM user_media_provider_credentials WHERE user_id = $1 AND provider = $2")
             .bind(user_id)
             .bind(provider)
             .execute(&self.pool)
             .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(crate::Error::NotFound(
+                format!("No credentials found for user '{user_id}' and provider '{provider}'")
+            ));
+        }
 
         Ok(())
     }

@@ -35,6 +35,9 @@ pub struct ExternalPublishManager {
     /// Shared HTTP client for FLV connections. Built once with TLS (rustls) support
     /// and reused across all external publish streams to avoid per-stream TLS setup cost.
     http_client: reqwest::Client,
+    /// Handle for the background creation lock cleanup task.
+    /// Auto-started in `with_timeouts()` to prevent memory leaks from failed stream creation attempts.
+    _cleanup_handle: tokio::task::JoinHandle<()>,
 }
 
 impl ExternalPublishManager {
@@ -69,15 +72,19 @@ impl ExternalPublishManager {
             .build()
             .expect("failed to build shared reqwest::Client");
 
+        let pool = StreamPool::new(
+            Duration::from_secs(cleanup_check_interval_secs),
+            Duration::from_secs(idle_timeout_secs),
+        );
+        // Auto-start creation lock cleanup to prevent memory leaks
+        let cleanup_handle = pool.start_creation_lock_cleanup();
         Self {
-            pool: StreamPool::new(
-                Duration::from_secs(cleanup_check_interval_secs),
-                Duration::from_secs(idle_timeout_secs),
-            ),
+            pool,
             registry,
             local_node_id,
             stream_hub_event_sender,
             http_client,
+            _cleanup_handle: cleanup_handle,
         }
     }
 

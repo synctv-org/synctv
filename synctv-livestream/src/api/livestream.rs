@@ -526,9 +526,9 @@ impl HlsStreamingApi {
         segment_name: &str,
     ) -> Result<Bytes> {
         if let Some(segment_manager) = &infrastructure.segment_manager {
-            // Build storage key: app_name-stream_name-ts_name
-            // With canonical format: app_name=room_id, stream_name=media_id
-            let storage_key = format!("{room_id}-{media_id}-{segment_name}");
+            // Build storage key: room_id/media_id/segment_name
+            // Uses `/` as separator to avoid ambiguity with UUID dashes
+            let storage_key = format!("{room_id}/{media_id}/{segment_name}");
 
             segment_manager
                 .storage()

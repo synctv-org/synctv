@@ -607,25 +607,43 @@ async fn main() -> Result<()> {
 
     // 5.7. Start singleton background tasks (leader-gated).
     // These tasks check leadership before each run, so only the leader executes them.
+    // Additionally, if a leader_guard is available, the tasks are cancelled immediately
+    // when leadership is lost (fencing), preventing stale singleton work after demotion.
+    let leader_guard_token = leader_elector.as_ref().map(|e| e.leader_guard());
+    let singleton_cancel = match &leader_guard_token {
+        Some(guard) => {
+            // Combine: cancel when either the partition_cancel OR the leader guard fires
+            let combined = partition_cancel.clone();
+            let guard_clone = guard.clone();
+            let combined_clone = combined.clone();
+            tokio::spawn(async move {
+                guard_clone.cancelled().await;
+                combined_clone.cancel();
+            });
+            combined
+        }
+        None => partition_cancel.clone(),
+    };
+
     let audit_manager = synctv_core::service::AuditPartitionManager::new(pool.clone(), leader_check.clone());
-    let _audit_task = audit_manager.start_auto_management(24, partition_cancel.clone());
-    info!("Audit log partition management started (leader-gated)");
+    let _audit_task = audit_manager.start_auto_management(24, singleton_cancel.clone());
+    info!("Audit log partition management started (leader-gated with fencing)");
 
     let chat_partition_manager = synctv_core::service::ChatPartitionManager::new(
         pool.clone(),
         synctv_services.settings_registry.clone(),
         leader_check.clone(),
     );
-    let _chat_partition_task = chat_partition_manager.start_auto_management(24, partition_cancel.clone());
-    info!("Chat message partition management started (leader-gated, check interval: 24 hours)");
+    let _chat_partition_task = chat_partition_manager.start_auto_management(24, singleton_cancel.clone());
+    info!("Chat message partition management started (leader-gated with fencing, check interval: 24 hours)");
 
     let cleanup_service = synctv_core::service::CleanupService::new(
         pool.clone(),
         synctv_core::service::CleanupConfig::default(),
         leader_check,
     );
-    let _cleanup_task = cleanup_service.start_periodic(24, partition_cancel.clone());
-    info!("Periodic data cleanup started (leader-gated, interval: 24 hours)");
+    let _cleanup_task = cleanup_service.start_periodic(24, singleton_cancel.clone());
+    info!("Periodic data cleanup started (leader-gated with fencing, interval: 24 hours)");
 
     // 6. Initialize connection manager with configurable limits (needed early for heartbeat loop)
     let connection_limits = ConnectionLimits {

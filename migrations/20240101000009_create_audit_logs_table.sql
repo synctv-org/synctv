@@ -1,7 +1,7 @@
 -- Create audit_logs table (partitioned by month)
 CREATE TABLE IF NOT EXISTS audit_logs (
     id BIGSERIAL,
-    actor_id CHAR(12) REFERENCES users(id) ON DELETE SET NULL,
+    actor_id CHAR(12),
     actor_username VARCHAR(50),
     action VARCHAR(50) NOT NULL,
     target_type VARCHAR(50),

@@ -228,7 +228,9 @@ config:
 
   ## WebRTCConfig
   webrtc:
-    mode: "hybrid" # signaling_only, peer_to_peer, hybrid, sfu
+    # Default to peer_to_peer because hybrid/SFU modes require a media server
+    # which is incompatible with Helm's default multi-replica cluster posture.
+    mode: "peer_to_peer" # signaling_only, peer_to_peer, hybrid, sfu
     enableBuiltinStun: true
     stunPort: 3478
     stunHost: "0.0.0.0"

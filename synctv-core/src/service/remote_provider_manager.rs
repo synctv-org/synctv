@@ -234,6 +234,10 @@ impl RemoteProviderManager {
     ///
     /// Establishes gRPC connection with configured TLS settings, timeout, and middleware.
     async fn create_grpc_channel(config: &ProviderInstance) -> crate::Result<Channel> {
+        // SSRF validation: reject endpoints pointing to internal/private IP ranges
+        crate::validation::validate_url_for_ssrf(&config.endpoint)
+            .map_err(|e| crate::Error::Internal(format!("SSRF validation failed for endpoint '{}': {e}", config.endpoint)))?;
+
         // Parse timeout
         let timeout = config
             .parse_timeout()

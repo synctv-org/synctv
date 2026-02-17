@@ -23,6 +23,7 @@ use tower::{Layer, Service};
 use tracing::warn;
 
 use super::interceptors::GrpcRateLimitTier;
+use synctv_core::Config;
 use synctv_core::service::RateLimiter;
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -38,16 +39,19 @@ type BoxError = Box<dyn std::error::Error + Send + Sync>;
 pub struct GrpcRateLimitLayer {
     rate_limiter: Arc<RateLimiter>,
     window_seconds: u64,
+    config: Arc<Config>,
 }
 
 impl GrpcRateLimitLayer {
     /// Create a new distributed rate limit layer.
     ///
     /// The tier is determined per-request from the gRPC service path.
-    pub fn new(rate_limiter: RateLimiter, window_seconds: u64) -> Self {
+    /// The `config` is used for trusted-proxy validation when extracting client IPs.
+    pub fn new(rate_limiter: RateLimiter, window_seconds: u64, config: Arc<Config>) -> Self {
         Self {
             rate_limiter: Arc::new(rate_limiter),
             window_seconds,
+            config,
         }
     }
 }
@@ -60,6 +64,7 @@ impl<S> Layer<S> for GrpcRateLimitLayer {
             inner,
             rate_limiter: self.rate_limiter.clone(),
             window_seconds: self.window_seconds,
+            config: self.config.clone(),
         }
     }
 }
@@ -71,6 +76,7 @@ pub struct GrpcRateLimitService<S> {
     inner: S,
     rate_limiter: Arc<RateLimiter>,
     window_seconds: u64,
+    config: Arc<Config>,
 }
 
 /// Determine the rate limit tier from the gRPC request path.
@@ -110,9 +116,14 @@ fn tier_from_path(path: &str) -> Option<GrpcRateLimitTier> {
 ///
 /// Priority:
 /// 1. SHA-256 hash of JWT bearer token (authenticated users)
-/// 2. Client IP from X-Forwarded-For or X-Real-IP headers
-/// 3. "anon:unknown" fallback (only if no IP info available)
-fn extract_client_id(headers: &http::HeaderMap) -> String {
+/// 2. Client IP from X-Forwarded-For or X-Real-IP headers (only if from a trusted proxy)
+/// 3. Remote socket address (direct connection)
+/// 4. "anon:unknown" fallback (only if no IP info available)
+///
+/// X-Forwarded-For and X-Real-IP headers are only trusted when the request comes
+/// from a configured trusted proxy or when development mode is enabled, matching
+/// the HTTP middleware pattern.
+fn extract_client_id(headers: &http::HeaderMap, config: &Config) -> String {
     // Try authenticated user first - delegate to unified bearer token extraction
     if let Some(id) = headers
         .get(http::header::AUTHORIZATION)
@@ -129,29 +140,42 @@ fn extract_client_id(headers: &http::HeaderMap) -> String {
         return id;
     }
 
-    // For anonymous requests, use client IP to avoid sharing a single bucket
-    if let Some(ip) = headers
-        .get("X-Forwarded-For")
+    // For anonymous requests, extract remote address from tonic's socket peer.
+    // Tonic injects the remote address as a header extension during HTTP/2 transport.
+    let remote_addr = headers
+        .get("x-real-ip-internal")
         .and_then(|h| h.to_str().ok())
-        .and_then(|v| v.split(',').next())
-        .map(str::trim)
-    {
-        return format!("anon:{ip}");
+        .and_then(|s| s.parse::<std::net::IpAddr>().ok());
+
+    // Only trust X-Forwarded-For/X-Real-IP when from a trusted proxy or in dev mode
+    let should_trust_headers = config.server.development_mode
+        || remote_addr.is_some_and(|ip| config.server.is_trusted_proxy(&ip));
+
+    if should_trust_headers {
+        if let Some(ip) = headers
+            .get("X-Forwarded-For")
+            .and_then(|h| h.to_str().ok())
+            .and_then(|v| v.split(',').next())
+            .map(str::trim)
+        {
+            return format!("anon:{ip}");
+        }
+        if let Some(ip) = headers
+            .get("X-Real-IP")
+            .and_then(|h| h.to_str().ok())
+        {
+            return format!("anon:{ip}");
+        }
     }
-    if let Some(ip) = headers
-        .get("X-Real-IP")
-        .and_then(|h| h.to_str().ok())
-    {
+
+    // Use the direct socket address when headers are not trusted
+    if let Some(ip) = remote_addr {
         return format!("anon:{ip}");
     }
 
-    // No client identifier available (no auth, no IP headers).
-    // This typically means the deployment is misconfigured (missing trusted proxy
-    // headers) or a direct connection without a reverse proxy. Log a warning
-    // so operators notice the misconfiguration, and use a shared "unknown" bucket
-    // with a tighter effective limit (the shared bucket naturally applies pressure).
+    // No client identifier available (no auth, no IP headers, no socket address).
     warn!(
-        "Rate limit: no client identifier available (no Authorization, X-Forwarded-For, or X-Real-IP). \
+        "Rate limit: no client identifier available (no Authorization, no trusted proxy headers, no socket address). \
          Configure trusted_proxies and ensure your reverse proxy sets X-Forwarded-For."
     );
     "anon:unknown".to_string()
@@ -181,6 +205,7 @@ where
 
         let rate_limiter = self.rate_limiter.clone();
         let window_seconds = self.window_seconds;
+        let config = self.config.clone();
 
         // Determine tier from the request path
         let path = req.uri().path().to_string();
@@ -191,7 +216,7 @@ where
             return Box::pin(async move { inner.call(req).await });
         };
 
-        let client_id = extract_client_id(req.headers());
+        let client_id = extract_client_id(req.headers(), &config);
 
         Box::pin(async move {
             // Use the same key format as HTTP middleware ("ratelimit:{category}:{client_id}")
@@ -331,60 +356,90 @@ mod tests {
         assert_eq!(tier_from_path(""), None);
     }
 
+    /// Create a default config for tests (no trusted proxies, dev mode off)
+    fn test_config() -> Config {
+        Config::default()
+    }
+
+    /// Create a config with development_mode enabled (trusts all proxy headers)
+    fn dev_config() -> Config {
+        let mut config = Config::default();
+        config.server.development_mode = true;
+        config
+    }
+
     #[test]
     fn test_extract_client_id_bearer() {
+        let config = test_config();
         let mut headers = http::HeaderMap::new();
         headers.insert(
             http::header::AUTHORIZATION,
             "Bearer my_token_here".parse().unwrap(),
         );
-        let id = extract_client_id(&headers);
+        let id = extract_client_id(&headers, &config);
         assert!(id.starts_with("user:"));
         assert!(id.len() > 10); // SHA-256 hex is 64 chars
     }
 
     #[test]
     fn test_extract_client_id_no_auth() {
+        let config = test_config();
         let headers = http::HeaderMap::new();
-        assert_eq!(extract_client_id(&headers), "anon:unknown");
+        assert_eq!(extract_client_id(&headers, &config), "anon:unknown");
     }
 
     #[test]
     fn test_extract_client_id_basic_auth() {
+        let config = test_config();
         let mut headers = http::HeaderMap::new();
         headers.insert(
             http::header::AUTHORIZATION,
             "Basic dXNlcjpwYXNz".parse().unwrap(),
         );
         // Basic auth with no IP headers falls back to anon:unknown
-        assert_eq!(extract_client_id(&headers), "anon:unknown");
+        assert_eq!(extract_client_id(&headers, &config), "anon:unknown");
     }
 
     #[test]
-    fn test_extract_client_id_x_forwarded_for() {
+    fn test_extract_client_id_x_forwarded_for_untrusted() {
+        // Without trusted proxies or dev mode, X-Forwarded-For should NOT be trusted
+        let config = test_config();
         let mut headers = http::HeaderMap::new();
         headers.insert("X-Forwarded-For", "203.0.113.50, 70.41.3.18".parse().unwrap());
-        let id = extract_client_id(&headers);
+        let id = extract_client_id(&headers, &config);
+        // Should fall through to anon:unknown since headers are not trusted
+        assert_eq!(id, "anon:unknown");
+    }
+
+    #[test]
+    fn test_extract_client_id_x_forwarded_for_dev_mode() {
+        // In dev mode, X-Forwarded-For is trusted
+        let config = dev_config();
+        let mut headers = http::HeaderMap::new();
+        headers.insert("X-Forwarded-For", "203.0.113.50, 70.41.3.18".parse().unwrap());
+        let id = extract_client_id(&headers, &config);
         assert_eq!(id, "anon:203.0.113.50");
     }
 
     #[test]
-    fn test_extract_client_id_x_real_ip() {
+    fn test_extract_client_id_x_real_ip_dev_mode() {
+        let config = dev_config();
         let mut headers = http::HeaderMap::new();
         headers.insert("X-Real-IP", "198.51.100.42".parse().unwrap());
-        let id = extract_client_id(&headers);
+        let id = extract_client_id(&headers, &config);
         assert_eq!(id, "anon:198.51.100.42");
     }
 
     #[test]
     fn test_extract_client_id_bearer_takes_priority_over_ip() {
+        let config = dev_config();
         let mut headers = http::HeaderMap::new();
         headers.insert(
             http::header::AUTHORIZATION,
             "Bearer my_token_here".parse().unwrap(),
         );
         headers.insert("X-Forwarded-For", "203.0.113.50".parse().unwrap());
-        let id = extract_client_id(&headers);
+        let id = extract_client_id(&headers, &config);
         assert!(id.starts_with("user:"), "Bearer token should take priority over IP");
     }
 }

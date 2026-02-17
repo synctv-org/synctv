@@ -271,7 +271,7 @@ impl PeerConnection {
 
         // Create peer connection configuration
         let config = RTCConfiguration {
-            ice_servers,
+            ice_servers: ice_servers.clone(),
             ..Default::default()
         };
 
@@ -288,7 +288,7 @@ impl PeerConnection {
             peer_id,
             room_id,
             pc,
-            ice_servers: vec![],
+            ice_servers,
             outbound_tracks: Arc::new(RwLock::new(HashMap::new())),
             output_task_handle: parking_lot::Mutex::new(None),
             cancel_token: CancellationToken::new(),
@@ -372,7 +372,7 @@ impl PeerConnection {
                                         if let Some(ref tx) = restart_tx {
                                             match serde_json::to_string(&offer) {
                                                 Ok(offer_json) => {
-                                                    if tx.send(crate::session_manager::SfuSignalingEvent::SdpAnswer {
+                                                    if tx.send(crate::session_manager::SfuSignalingEvent::IceRestartOffer {
                                                         peer_id: peer_id.as_str().to_string(),
                                                         sdp: offer_json,
                                                     }).is_err() {

@@ -130,6 +130,12 @@ pub enum SfuSignalingEvent {
         peer_id: String,
         sdp: String,
     },
+    /// An ICE restart offer from the server, sent when ICE enters Failed state.
+    /// The client must respond with an SDP answer to complete the ICE restart.
+    IceRestartOffer {
+        peer_id: String,
+        sdp: String,
+    },
     /// SFU migration offer for an existing P2P peer
     MigrationOffer {
         migration_id: String,

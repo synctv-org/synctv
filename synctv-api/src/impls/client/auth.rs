@@ -16,7 +16,8 @@ impl ClientApiImpl {
             Some(req.email.clone())
         };
 
-        // Register user (returns tuple: (User, access_token, refresh_token))
+        // Register user (returns tuple: (User, Option<access_token>, Option<refresh_token>))
+        // Tokens are None when email verification is required (user is Pending).
         let (user, access_token, refresh_token) = self
             .user_service
             .register(req.username, email, req.password)
@@ -25,8 +26,8 @@ impl ClientApiImpl {
 
         Ok(crate::proto::client::RegisterResponse {
             user: Some(user_to_proto(&user)),
-            access_token,
-            refresh_token,
+            access_token: access_token.unwrap_or_default(),
+            refresh_token: refresh_token.unwrap_or_default(),
         })
     }
 

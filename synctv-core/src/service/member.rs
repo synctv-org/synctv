@@ -282,6 +282,18 @@ impl MemberService {
         // Invalidate permission cache
         self.permission_service.invalidate_cache(&room_id, &user_id).await;
 
+        // Broadcast permission cache invalidation to other cluster replicas
+        if let Some(ref invalidation) = self.cache_invalidation {
+            if let Err(e) = invalidation.invalidate_user_permission(&room_id, &user_id).await {
+                tracing::warn!(
+                    error = %e,
+                    room_id = %room_id.as_str(),
+                    user_id = %user_id.as_str(),
+                    "Failed to broadcast remove member invalidation to cluster"
+                );
+            }
+        }
+
         Ok(())
     }
 
@@ -476,6 +488,42 @@ impl MemberService {
             .invalidate_cache(&room_id, &target_user_id)
             .await;
 
+        // Broadcast permission cache invalidation to other cluster replicas
+        // with retry logic (3 attempts, exponential backoff) since permission
+        // changes are critical for security consistency across replicas.
+        if let Some(ref invalidation) = self.cache_invalidation {
+            let mut last_err = None;
+            for attempt in 0..3u32 {
+                match invalidation.invalidate_user_permission(&room_id, &target_user_id).await {
+                    Ok(()) => {
+                        last_err = None;
+                        break;
+                    }
+                    Err(e) => {
+                        let backoff_ms = 50 * (1u64 << attempt); // 50ms, 100ms, 200ms
+                        tracing::warn!(
+                            error = %e,
+                            room_id = %room_id.as_str(),
+                            user_id = %target_user_id.as_str(),
+                            attempt = attempt + 1,
+                            backoff_ms = backoff_ms,
+                            "Grant permission invalidation broadcast failed, retrying"
+                        );
+                        last_err = Some(e);
+                        tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                    }
+                }
+            }
+            if let Some(e) = last_err {
+                tracing::error!(
+                    error = %e,
+                    room_id = %room_id.as_str(),
+                    user_id = %target_user_id.as_str(),
+                    "Grant permission invalidation broadcast failed after 3 attempts"
+                );
+            }
+        }
+
         // Audit log
         self.audit_log(
             &granter_id,
@@ -517,6 +565,42 @@ impl MemberService {
         self.permission_service
             .invalidate_cache(&room_id, &target_user_id)
             .await;
+
+        // Broadcast permission cache invalidation to other cluster replicas
+        // with retry logic (3 attempts, exponential backoff) since permission
+        // changes are critical for security consistency across replicas.
+        if let Some(ref invalidation) = self.cache_invalidation {
+            let mut last_err = None;
+            for attempt in 0..3u32 {
+                match invalidation.invalidate_user_permission(&room_id, &target_user_id).await {
+                    Ok(()) => {
+                        last_err = None;
+                        break;
+                    }
+                    Err(e) => {
+                        let backoff_ms = 50 * (1u64 << attempt); // 50ms, 100ms, 200ms
+                        tracing::warn!(
+                            error = %e,
+                            room_id = %room_id.as_str(),
+                            user_id = %target_user_id.as_str(),
+                            attempt = attempt + 1,
+                            backoff_ms = backoff_ms,
+                            "Revoke permission invalidation broadcast failed, retrying"
+                        );
+                        last_err = Some(e);
+                        tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                    }
+                }
+            }
+            if let Some(e) = last_err {
+                tracing::error!(
+                    error = %e,
+                    room_id = %room_id.as_str(),
+                    user_id = %target_user_id.as_str(),
+                    "Revoke permission invalidation broadcast failed after 3 attempts"
+                );
+            }
+        }
 
         // Audit log
         self.audit_log(
@@ -569,6 +653,43 @@ impl MemberService {
         self.permission_service
             .invalidate_cache(&room_id, &target_user_id)
             .await;
+
+        // Broadcast permission cache invalidation to other cluster replicas
+        // with retry logic (3 attempts, exponential backoff) since permission
+        // resets are critical for security consistency across replicas.
+        if let Some(ref invalidation) = self.cache_invalidation {
+            let mut last_err = None;
+            for attempt in 0..3u32 {
+                match invalidation.invalidate_user_permission(&room_id, &target_user_id).await {
+                    Ok(()) => {
+                        last_err = None;
+                        break;
+                    }
+                    Err(e) => {
+                        let backoff_ms = 50 * (1u64 << attempt); // 50ms, 100ms, 200ms
+                        tracing::warn!(
+                            error = %e,
+                            room_id = %room_id.as_str(),
+                            user_id = %target_user_id.as_str(),
+                            attempt = attempt + 1,
+                            backoff_ms = backoff_ms,
+                            "Permission reset invalidation broadcast failed, retrying"
+                        );
+                        last_err = Some(e);
+                        tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                    }
+                }
+            }
+            if let Some(e) = last_err {
+                tracing::error!(
+                    error = %e,
+                    room_id = %room_id.as_str(),
+                    user_id = %target_user_id.as_str(),
+                    "Permission reset invalidation broadcast failed after 3 attempts"
+                );
+            }
+        }
+
         Ok(updated_member)
     }
 
@@ -698,6 +819,18 @@ impl MemberService {
             .invalidate_cache(&room_id, &target_user_id)
             .await;
 
+        // Broadcast permission cache invalidation to other cluster replicas
+        if let Some(ref invalidation) = self.cache_invalidation {
+            if let Err(e) = invalidation.invalidate_user_permission(&room_id, &target_user_id).await {
+                tracing::warn!(
+                    error = %e,
+                    room_id = %room_id.as_str(),
+                    user_id = %target_user_id.as_str(),
+                    "Failed to broadcast unban invalidation to cluster"
+                );
+            }
+        }
+
         // Audit log
         self.audit_log(
             &admin_id,
@@ -731,20 +864,28 @@ impl MemberService {
             ));
         }
 
-        // Verify target is a member
-        let member = self
-            .member_repo
-            .get(&room_id, &target_user_id)
-            .await?
-            .ok_or_else(|| Error::NotFound("User is not a member of this room".to_string()))?;
+        // Verify target is a member and update role with optimistic lock retry
+        let (updated_member, old_role) = super::optimistic_retry::retry_with_optimistic_lock(
+            Self::MAX_RETRIES,
+            Self::BACKOFF_BASE_MS,
+            "Role update failed after maximum retry attempts",
+            || async {
+                let member = self
+                    .member_repo
+                    .get(&room_id, &target_user_id)
+                    .await?
+                    .ok_or_else(|| Error::NotFound("User is not a member of this room".to_string()))?;
 
-        let old_role = member.role.clone();
+                let old_role = member.role.clone();
 
-        // Update role with optimistic locking
-        let updated_member = self
-            .member_repo
-            .update_role(&room_id, &target_user_id, role.clone(), member.version)
-            .await?;
+                let updated = self
+                    .member_repo
+                    .update_role(&room_id, &target_user_id, role.clone(), member.version)
+                    .await?;
+                Ok((updated, old_role))
+            },
+        )
+        .await?;
 
         // Invalidate permission cache (local)
         self.permission_service
@@ -792,25 +933,45 @@ impl MemberService {
             .check_permission_no_cache(&room_id.clone(), &admin_id, PermissionBits::BAN_MEMBER)
             .await?;
 
-        // Get current member
-        let member = self
-            .member_repo
-            .get(&room_id, &target_user_id)
-            .await?
-            .ok_or_else(|| Error::NotFound("User is not a member of this room".to_string()))?;
+        // Get current member and update status with optimistic lock retry
+        let (updated_member, old_status) = super::optimistic_retry::retry_with_optimistic_lock(
+            Self::MAX_RETRIES,
+            Self::BACKOFF_BASE_MS,
+            "Status update failed after maximum retry attempts",
+            || async {
+                let member = self
+                    .member_repo
+                    .get(&room_id, &target_user_id)
+                    .await?
+                    .ok_or_else(|| Error::NotFound("User is not a member of this room".to_string()))?;
 
-        let old_status = member.status.clone();
+                let old_status = member.status.clone();
 
-        // Update status with optimistic locking
-        let updated_member = self
-            .member_repo
-            .update_status(&room_id, &target_user_id, status.clone(), member.version)
-            .await?;
+                let updated = self
+                    .member_repo
+                    .update_status(&room_id, &target_user_id, status.clone(), member.version)
+                    .await?;
+                Ok((updated, old_status))
+            },
+        )
+        .await?;
 
         // Invalidate permission cache
         self.permission_service
             .invalidate_cache(&room_id, &target_user_id)
             .await;
+
+        // Broadcast permission cache invalidation to other cluster replicas
+        if let Some(ref invalidation) = self.cache_invalidation {
+            if let Err(e) = invalidation.invalidate_user_permission(&room_id, &target_user_id).await {
+                tracing::warn!(
+                    error = %e,
+                    room_id = %room_id.as_str(),
+                    user_id = %target_user_id.as_str(),
+                    "Failed to broadcast status change invalidation to cluster"
+                );
+            }
+        }
 
         // Audit log
         self.audit_log(

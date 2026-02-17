@@ -88,10 +88,15 @@ impl EventWal {
     ///
     /// If `wal_dir` doesn't exist, it will be created. Existing WAL files
     /// in the directory are left untouched and can be replayed with `replay()`.
+    ///
+    /// Logs a warning if the WAL directory appears to be on ephemeral storage
+    /// (e.g., default pod-local paths in Kubernetes).
     pub async fn new(wal_dir: PathBuf) -> Result<Self> {
         fs::create_dir_all(&wal_dir)
             .await
             .with_context(|| format!("Failed to create WAL directory: {}", wal_dir.display()))?;
+
+        Self::check_ephemeral_storage(&wal_dir);
 
         Ok(Self {
             wal_dir,
@@ -113,6 +118,8 @@ impl EventWal {
             .await
             .with_context(|| format!("Failed to create WAL directory: {}", wal_dir.display()))?;
 
+        Self::check_ephemeral_storage(&wal_dir);
+
         Ok(Self {
             wal_dir,
             current_file: tokio::sync::Mutex::new(None),
@@ -121,6 +128,43 @@ impl EventWal {
             max_file_size_bytes,
             max_total_size_bytes,
         })
+    }
+
+    /// Check if the WAL directory is likely on ephemeral storage and log a warning.
+    ///
+    /// In Kubernetes, pod-local paths like `/tmp`, `/var/run`, or any path that is
+    /// not backed by a PersistentVolumeClaim will lose data on pod restart. This
+    /// heuristic checks for common ephemeral paths and the presence of K8s environment
+    /// variables to produce a prominent warning.
+    fn check_ephemeral_storage(wal_dir: &Path) {
+        let path_str = wal_dir.to_string_lossy();
+
+        // Known ephemeral prefixes on Linux/K8s
+        let ephemeral_prefixes = ["/tmp", "/var/tmp", "/var/run", "/dev/shm"];
+        let on_ephemeral_path = ephemeral_prefixes.iter().any(|p| path_str.starts_with(p));
+
+        // Detect if running in Kubernetes
+        let in_kubernetes = std::env::var("KUBERNETES_SERVICE_HOST").is_ok()
+            || std::env::var("POD_NAME").is_ok();
+
+        if on_ephemeral_path {
+            warn!(
+                wal_dir = %path_str,
+                "WAL directory '{}' is on a known ephemeral path. \
+                 Data will be lost on process/pod restart. \
+                 Use a persistent directory (or PersistentVolumeClaim in Kubernetes) to prevent data loss.",
+                path_str
+            );
+        } else if in_kubernetes {
+            // In K8s, even non-tmp paths are ephemeral unless backed by a PVC.
+            // We can't detect PVCs from inside the pod, so always warn.
+            info!(
+                wal_dir = %path_str,
+                "WAL directory '{}' detected in Kubernetes environment. \
+                 Ensure this path is backed by a PersistentVolumeClaim to prevent data loss during pod restarts.",
+                path_str
+            );
+        }
     }
 
     /// Append a critical event to the WAL.

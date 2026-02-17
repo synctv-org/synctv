@@ -131,9 +131,8 @@ impl stream_relay_service_server::StreamRelayService for StreamRelayServiceImpl 
         );
 
         // Check if this node is the publisher
-        let mut registry = (*self.registry).clone();
-        let publisher_info = registry
-            .get_publisher(&req.room_id, &req.media_id)
+        let publisher_info = self.registry
+            .get_publisher_immut(&req.room_id, &req.media_id)
             .await
             .map_err(|e| {
                 tracing::error!("Failed to get publisher: {e}");
@@ -315,9 +314,9 @@ impl stream_relay_service_server::StreamRelayService for StreamRelayServiceImpl 
         let segment_manager = self.segment_manager.as_ref()
             .ok_or_else(|| Status::unavailable("HLS not enabled on this node"))?;
 
-        // Build storage key: app_name-stream_name-ts_name
-        // With canonical format: app_name=room_id, stream_name=media_id
-        let storage_key = format!("{}-{}-{}", req.room_id, req.media_id, req.segment_name);
+        // Build storage key: room_id/media_id/segment_name
+        // Uses `/` as separator to avoid ambiguity with UUID dashes
+        let storage_key = format!("{}/{}/{}", req.room_id, req.media_id, req.segment_name);
 
         match segment_manager.storage().read(&storage_key).await {
             Ok(data) => Ok(Response::new(GetHlsSegmentResponse {

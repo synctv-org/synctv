@@ -388,8 +388,13 @@ impl PlaybackService {
         // Get current state
         let state = self.get_state(room_id).await?;
 
-        // Get playlist
-        let playlist = self.media_repo.get_playlist(room_id).await?;
+        // Get playlist scoped to the current playing playlist folder if set,
+        // otherwise fall back to the flat room-wide list.
+        let playlist = if let Some(ref playlist_id) = state.playing_playlist_id {
+            self.media_service.get_playlist_media(playlist_id).await?
+        } else {
+            self.media_repo.get_playlist(room_id).await?
+        };
 
         if playlist.is_empty() {
             return Ok(None);
@@ -465,8 +470,12 @@ impl PlaybackService {
 
         // Switch to next media
         if let Some(next) = next_media {
+            let next_playlist_id = Some(next.playlist_id.clone());
+            let next_name = next.name.clone();
             let new_state = self.update_state(room_id.clone(), |state| {
                 state.playing_media_id = Some(next.id.clone());
+                state.playing_playlist_id = next_playlist_id.clone();
+                state.relative_path = next_name.clone();
                 state.current_time = 0.0;
                 state.is_playing = true;
                 state.updated_at = chrono::Utc::now();
@@ -502,7 +511,7 @@ impl PlaybackService {
         &self,
         room_id: &RoomId,
         settings: &RoomSettings,
-        current_time: f64,
+        _current_time: f64,
     ) -> Result<Option<RoomPlaybackState>> {
         // Use new auto_play settings with legacy fallback
         let enabled = settings.auto_play.value.enabled || settings.auto_play_next.0;
@@ -513,7 +522,7 @@ impl PlaybackService {
 
         // Get current media to check duration
         let state = self.get_state(room_id).await?;
-        let playing_media_id = state.playing_media_id;
+        let playing_media_id = state.playing_media_id.clone();
 
         let playing_media = match playing_media_id {
             Some(ref id) => self.media_service.get_media(id).await?.ok_or_else(|| {
@@ -537,9 +546,12 @@ impl PlaybackService {
             return Ok(None);
         };
 
+        // Use computed time to account for elapsed wall-clock time when playing
+        let effective_time = state.computed_current_time();
+
         // Check if current_time is near end (within 1 second or past end)
         if let Some(dur) = duration {
-            if current_time >= dur - 1.0 {
+            if effective_time >= dur - 1.0 {
                 // Auto-play next media
                 self.play_next(room_id, settings).await
             } else {
@@ -679,6 +691,7 @@ impl PlaybackService {
         current_time: Option<f64>,
         speed: Option<f64>,
         media_id: Option<MediaId>,
+        playlist_id: Option<Option<PlaylistId>>,
     ) -> Result<RoomPlaybackState> {
         // Check permissions based on what's being updated
         let mut required_perms = PermissionBits::NONE;
@@ -733,6 +746,9 @@ impl PlaybackService {
             }
             if let Some(ref mid) = media_id {
                 state.playing_media_id = Some(mid.clone());
+            }
+            if let Some(ref pid) = playlist_id {
+                state.playing_playlist_id = pid.clone();
             }
             state.updated_at = chrono::Utc::now();
             // version is incremented by the SQL UPDATE, not here

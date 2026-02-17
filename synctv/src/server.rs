@@ -191,16 +191,16 @@ impl SyncTvServer {
         info!("All servers started successfully");
 
         // Wait for either a server to stop or a shutdown signal
-        let grpc_handle = self.grpc_handle.take()
+        let mut grpc_handle = self.grpc_handle.take()
             .ok_or_else(|| anyhow::anyhow!("gRPC server handle missing after startup"))?;
-        let http_handle = self.http_handle.take()
+        let mut http_handle = self.http_handle.take()
             .ok_or_else(|| anyhow::anyhow!("HTTP server handle missing after startup"))?;
 
         tokio::select! {
-            _ = grpc_handle => {
+            _ = &mut grpc_handle => {
                 error!("gRPC server stopped unexpectedly");
             }
-            _ = http_handle => {
+            _ = &mut http_handle => {
                 error!("HTTP server stopped unexpectedly");
             }
             () = shutdown_signal() => {
@@ -214,6 +214,18 @@ impl SyncTvServer {
         self.services.settings_cancel.cancel();
         self.services.partition_cancel.cancel();
         self.services.leader_cancel.cancel();
+
+        // Wait for gRPC and HTTP servers to finish with a timeout
+        let drain_timeout = self.config.server.shutdown_drain_timeout_seconds;
+        info!("Waiting up to {}s for gRPC and HTTP servers to shut down...", drain_timeout);
+        let _ = tokio::time::timeout(
+            Duration::from_secs(drain_timeout),
+            async {
+                let _ = grpc_handle.await;
+                let _ = http_handle.await;
+            },
+        ).await;
+        info!("gRPC and HTTP servers shut down");
 
         // Wait for admin event listener to finish before shutting down
         // the cluster manager (which owns the broadcast channel it reads from).
@@ -503,7 +515,10 @@ impl SyncTvServer {
                 let _ = rx.changed().await;
             };
 
-            if let Err(e) = axum::serve(listener, http_router)
+            if let Err(e) = axum::serve(
+                listener,
+                http_router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
                 .with_graceful_shutdown(graceful)
                 .await
             {

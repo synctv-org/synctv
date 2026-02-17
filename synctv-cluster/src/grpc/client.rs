@@ -19,6 +19,12 @@ use tonic::metadata::MetadataValue;
 use tonic::transport::{Channel, Endpoint};
 use tracing::{debug, warn};
 
+/// Aggregate timeout for fan-out operations across all nodes.
+/// Individual per-node timeouts protect against single slow nodes,
+/// but this aggregate timeout prevents the entire fan-out from hanging
+/// when multiple nodes are slow or unreachable simultaneously.
+const FAN_OUT_AGGREGATE_TIMEOUT: Duration = Duration::from_secs(5);
+
 use super::circuit_breaker::GrpcCircuitBreakerRegistry;
 use super::synctv::cluster::cluster_service_client::ClusterServiceClient;
 use super::synctv::cluster::{
@@ -195,8 +201,29 @@ impl ClusterClient {
             });
         }
 
+        // In degraded mode (>50% circuit breakers open), only query healthy nodes
+        // to return partial results quickly instead of waiting for timeouts.
+        let mut skipped_nodes = 0usize;
+        let query_nodes: Vec<_> = if self.circuit_breakers.is_cluster_degraded().await {
+            let healthy = self.circuit_breakers.healthy_endpoints().await;
+            let (queryable, skipped): (Vec<_>, Vec<_>) = remote_nodes
+                .iter()
+                .partition(|n| healthy.contains(&n.grpc_address));
+            skipped_nodes = skipped.len();
+            if skipped_nodes > 0 {
+                warn!(
+                    skipped = skipped_nodes,
+                    healthy = queryable.len(),
+                    "Cluster degraded: skipping unhealthy nodes for GetUserOnlineStatus fan-out"
+                );
+            }
+            queryable.into_iter().cloned().collect()
+        } else {
+            remote_nodes.clone()
+        };
+
         // Fan out to all remote nodes in parallel
-        let futures: Vec<_> = remote_nodes
+        let futures: Vec<_> = query_nodes
             .iter()
             .map(|node| {
                 let user_ids = user_ids.clone();
@@ -209,12 +236,30 @@ impl ClusterClient {
             })
             .collect();
 
-        let results = futures::future::join_all(futures).await;
+        let results = match tokio::time::timeout(
+            FAN_OUT_AGGREGATE_TIMEOUT,
+            futures::future::join_all(futures),
+        ).await {
+            Ok(results) => results,
+            Err(_) => {
+                warn!(
+                    node_count = query_nodes.len(),
+                    "Fan-out GetUserOnlineStatus aggregate timeout ({:?}), returning empty partial results",
+                    FAN_OUT_AGGREGATE_TIMEOUT,
+                );
+                return Ok(FanOutResult {
+                    data: Vec::new(),
+                    nodes_succeeded: 0,
+                    nodes_failed: query_nodes.len() + skipped_nodes,
+                    failures: query_nodes.iter().map(|n| (n.node_id.clone(), "aggregate timeout".to_string())).collect(),
+                });
+            }
+        };
 
         // Merge results
         let mut all_statuses: Vec<UserOnlineStatus> = Vec::new();
         let mut nodes_succeeded = 0usize;
-        let mut nodes_failed = 0usize;
+        let mut nodes_failed = skipped_nodes;
         let mut failures = Vec::new();
 
         for (node_id, address, result) in results {
@@ -312,8 +357,29 @@ impl ClusterClient {
             });
         }
 
+        // In degraded mode (>50% circuit breakers open), only query healthy nodes
+        // to return partial results quickly instead of waiting for timeouts.
+        let mut skipped_nodes = 0usize;
+        let query_nodes: Vec<_> = if self.circuit_breakers.is_cluster_degraded().await {
+            let healthy = self.circuit_breakers.healthy_endpoints().await;
+            let (queryable, skipped): (Vec<_>, Vec<_>) = remote_nodes
+                .iter()
+                .partition(|n| healthy.contains(&n.grpc_address));
+            skipped_nodes = skipped.len();
+            if skipped_nodes > 0 {
+                warn!(
+                    skipped = skipped_nodes,
+                    healthy = queryable.len(),
+                    "Cluster degraded: skipping unhealthy nodes for GetRoomConnections fan-out"
+                );
+            }
+            queryable.into_iter().cloned().collect()
+        } else {
+            remote_nodes.clone()
+        };
+
         // Fan out to all remote nodes in parallel
-        let futures: Vec<_> = remote_nodes
+        let futures: Vec<_> = query_nodes
             .iter()
             .map(|node| {
                 let room_id = room_id.clone();
@@ -326,12 +392,30 @@ impl ClusterClient {
             })
             .collect();
 
-        let results = futures::future::join_all(futures).await;
+        let results = match tokio::time::timeout(
+            FAN_OUT_AGGREGATE_TIMEOUT,
+            futures::future::join_all(futures),
+        ).await {
+            Ok(results) => results,
+            Err(_) => {
+                warn!(
+                    node_count = query_nodes.len(),
+                    "Fan-out GetRoomConnections aggregate timeout ({:?}), returning empty partial results",
+                    FAN_OUT_AGGREGATE_TIMEOUT,
+                );
+                return Ok(FanOutResult {
+                    data: Vec::new(),
+                    nodes_succeeded: 0,
+                    nodes_failed: query_nodes.len() + skipped_nodes,
+                    failures: query_nodes.iter().map(|n| (n.node_id.clone(), "aggregate timeout".to_string())).collect(),
+                });
+            }
+        };
 
         // Merge results
         let mut all_connections: Vec<RoomConnection> = Vec::new();
         let mut nodes_succeeded = 0usize;
-        let mut nodes_failed = 0usize;
+        let mut nodes_failed = skipped_nodes;
         let mut failures = Vec::new();
 
         for (node_id, address, result) in results {

@@ -110,6 +110,11 @@ impl EmailApiImpl {
             return Err(ApiError::InvalidInput("Invalid or expired verification token".to_string()));
         }
 
+        // Reject banned or soft-deleted users
+        if user.is_deleted() || user.status == synctv_core::models::UserStatus::Banned {
+            return Err(ApiError::InvalidInput("Invalid or expired verification token".to_string()));
+        }
+
         self.user_service
             .set_email_verified(&user.id, true)
             .await
@@ -168,18 +173,9 @@ impl EmailApiImpl {
         token: &str,
         new_password: &str,
     ) -> Result<ConfirmPasswordResetResult, ApiError> {
-        // Validate password length
-        use crate::http::validation::limits::{PASSWORD_MAX, PASSWORD_MIN};
-        if new_password.len() < PASSWORD_MIN {
-            return Err(ApiError::InvalidInput(format!(
-                "Password must be at least {PASSWORD_MIN} characters"
-            )));
-        }
-        if new_password.len() > PASSWORD_MAX {
-            return Err(ApiError::InvalidInput(format!(
-                "Password must be at most {PASSWORD_MAX} characters"
-            )));
-        }
+        // Password validation (complexity, length) is handled by
+        // UserService::set_password() which uses the full PasswordValidator.
+        // No redundant length-only check here.
 
         let validated_user_id = self
             .email_token_service
@@ -198,8 +194,8 @@ impl EmailApiImpl {
             return Err(ApiError::InvalidInput("Invalid or expired reset token".to_string()));
         }
 
-        // Check if user is banned
-        if user.status == synctv_core::models::UserStatus::Banned {
+        // Check if user is banned or soft-deleted
+        if user.is_deleted() || user.status == synctv_core::models::UserStatus::Banned {
             return Err(ApiError::InvalidInput("Invalid or expired reset token".to_string()));
         }
 

@@ -3,8 +3,8 @@
 
 CREATE TABLE IF NOT EXISTS chat_messages (
     id CHAR(12) NOT NULL,
-    room_id CHAR(12) NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
-    user_id CHAR(12) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    room_id CHAR(12) NOT NULL,  -- application-enforced, no FK
+    user_id CHAR(12) NOT NULL,  -- application-enforced, no FK
     content TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (id, created_at)  -- Partition key must be in PK
@@ -219,40 +219,8 @@ COMMENT ON FUNCTION check_chat_message_partitions(INTEGER) IS
 -- Create partitions for current day + next 30 days (fixed daily granularity)
 SELECT create_chat_message_partitions(30) AS initial_partitions;
 
--- ============================================================================
--- Auto-expand partitions on INSERT (create missing partitions dynamically)
--- ============================================================================
-
--- Function: Auto-create partition on INSERT if missing
--- This function is called by a trigger before each INSERT to ensure the partition exists
-CREATE OR REPLACE FUNCTION auto_create_chat_message_partition()
-RETURNS TRIGGER AS $$
-DECLARE
-    partition_date DATE;
-    partition_result JSON;
-BEGIN
-    -- Extract date from created_at
-    partition_date := DATE_TRUNC('day', NEW.created_at);
-
-    -- Try to create partition (idempotent, no error if exists)
-    BEGIN
-        partition_result := create_chat_message_partition(partition_date);
-        RAISE NOTICE 'Auto-created chat message partition: %', partition_result->>'partition_name';
-    EXCEPTION WHEN OTHERS THEN
-        -- Log error but don't fail the INSERT
-        RAISE WARNING 'Failed to auto-create chat partition for %: %', partition_date, SQLERRM;
-    END;
-
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-COMMENT ON FUNCTION auto_create_chat_message_partition() IS
-'Automatically create missing chat message partitions on INSERT. Called by trigger before INSERT.';
-
--- Trigger: auto-create partition before INSERT if missing
-CREATE TRIGGER trigger_auto_create_chat_partition
-    BEFORE INSERT ON chat_messages
-    FOR EACH ROW
-    EXECUTE FUNCTION auto_create_chat_message_partition();
+-- Per-row trigger removed: partition pre-creation via create_chat_message_partitions(30) above
+-- and periodic background task (ChatPartitionManager) handle partition availability.
+DROP TRIGGER IF EXISTS trigger_auto_create_chat_partition ON chat_messages;
+DROP FUNCTION IF EXISTS auto_create_chat_message_partition();
 

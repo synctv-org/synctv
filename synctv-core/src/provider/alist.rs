@@ -350,6 +350,15 @@ impl DynamicFolder for AlistProvider {
 
         let base_config = AlistSourceConfig::try_from(config)?;
 
+        // Validate relative_path to prevent path traversal attacks
+        if let Some(rel) = relative_path {
+            if rel.contains("..") || rel.contains('\0') {
+                return Err(ProviderError::InvalidConfig(
+                    "Relative path must not contain path traversal (..) or null bytes".to_string(),
+                ));
+            }
+        }
+
         // Construct full path: base_path + relative_path
         let full_path = if let Some(rel) = relative_path {
             if rel.starts_with('/') {
@@ -439,6 +448,13 @@ impl DynamicFolder for AlistProvider {
         play_mode: crate::models::PlayMode,
     ) -> Result<Option<NextPlayItem>, ProviderError> {
         use crate::models::PlayMode;
+
+        // Validate relative_path to prevent path traversal attacks
+        if relative_path.contains("..") || relative_path.contains('\0') {
+            return Err(ProviderError::InvalidConfig(
+                "Relative path must not contain path traversal (..) or null bytes".to_string(),
+            ));
+        }
 
         match play_mode {
             PlayMode::RepeatOne => {

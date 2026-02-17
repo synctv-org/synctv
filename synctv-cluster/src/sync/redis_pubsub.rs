@@ -694,6 +694,14 @@ impl RedisPubSub {
         } else {
             // Reconnection: catch up on events missed during disconnection.
             // Only read streams for rooms that currently have local subscribers.
+            //
+            // IMPORTANT: The stream cursor is the authoritative dedup boundary
+            // for catch-up. XREAD returns only entries with IDs strictly greater
+            // than the cursor, so events at or before the cursor are guaranteed
+            // to have been delivered before disconnection. The in-memory dedup
+            // cache is supplementary -- it handles overlap between live PubSub
+            // and stream catch-up but is NOT relied upon as the primary mechanism
+            // (its TTL may have expired during a long disconnection).
             let active_rooms = self.message_hub.active_room_ids();
 
             // Prune cursors for rooms that no longer have local subscribers.
@@ -727,11 +735,26 @@ impl RedisPubSub {
             };
 
             let mut total_caught_up = 0usize;
+            let mut total_skipped = 0usize;
             for stream_key in &active_stream_keys {
                 let cursor = stream_cursors.get(stream_key).cloned().unwrap_or_else(|| "0".to_string());
                 match self.read_missed_events_from(stream_key, &cursor).await {
                     Ok(events) => {
                         for (stream_id, channel, event) in events {
+                            // Stream cursor is the authoritative boundary: XREAD
+                            // already filters by cursor, but as a defense-in-depth
+                            // check, skip events whose stream IDs are not strictly
+                            // after the last known cursor.
+                            if stream_id.as_str() <= cursor.as_str() {
+                                total_skipped += 1;
+                                debug!(
+                                    stream_key = %stream_key,
+                                    stream_id = %stream_id,
+                                    cursor = %cursor,
+                                    "Skipping catch-up event at or before cursor (defense-in-depth)"
+                                );
+                                continue;
+                            }
                             self.dispatch_event(&channel, event).await;
                             stream_cursors.insert(stream_key.clone(), stream_id);
                             total_caught_up += 1;
@@ -747,9 +770,10 @@ impl RedisPubSub {
                 }
             }
 
-            if total_caught_up > 0 {
+            if total_caught_up > 0 || total_skipped > 0 {
                 info!(
                     total_events = total_caught_up,
+                    skipped_by_cursor = total_skipped,
                     streams = active_stream_keys.len(),
                     "Caught up on missed events from per-room streams"
                 );

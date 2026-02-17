@@ -535,6 +535,15 @@ impl DynamicFolder for EmbyProvider {
             ProviderError::InvalidConfig(format!("Failed to parse Emby playlist config: {e}"))
         })?;
 
+        // Validate relative_path to prevent path traversal and injection
+        if let Some(rel) = relative_path {
+            if rel.contains("..") || rel.contains('/') || rel.contains('\\') || rel.contains('\0') {
+                return Err(ProviderError::InvalidConfig(
+                    "Relative path must not contain path traversal (..), slashes, or null bytes".to_string(),
+                ));
+            }
+        }
+
         // Determine path to list
         // If relative_path is provided, use it as the item_id to list that folder's contents
         // Otherwise, use the base config's item_id

@@ -125,7 +125,7 @@ pub(super) fn playback_state_to_proto(state: &synctv_core::models::RoomPlaybackS
     crate::proto::client::PlaybackState {
         room_id: state.room_id.as_str().to_string(),
         playing_media_id: state.playing_media_id.as_ref().map(|id| id.as_str().to_string()).unwrap_or_default(),
-        current_time: state.current_time,
+        current_time: state.computed_current_time(),
         speed: state.speed,
         is_playing: state.is_playing,
         updated_at: state.updated_at.timestamp(),

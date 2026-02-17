@@ -31,6 +31,21 @@ impl RoomPlaybackState {
             version: 0,
         }
     }
+
+    /// Compute the current playback time accounting for elapsed wall-clock time.
+    ///
+    /// When playback is active (`is_playing == true`), the stored `current_time`
+    /// becomes stale immediately after the last DB write.  This method extrapolates
+    /// the position using `speed` and the time elapsed since `updated_at`.
+    #[must_use]
+    pub fn computed_current_time(&self) -> f64 {
+        if self.is_playing {
+            let elapsed = (Utc::now() - self.updated_at).num_milliseconds() as f64 / 1000.0;
+            self.current_time + elapsed * self.speed
+        } else {
+            self.current_time
+        }
+    }
 }
 
 #[cfg(test)]

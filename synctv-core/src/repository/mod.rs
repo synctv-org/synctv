@@ -1,3 +1,4 @@
+pub mod audit;
 pub mod chat;
 pub mod email_token;
 pub mod media;
@@ -13,6 +14,7 @@ pub mod settings;
 pub mod user;
 pub mod user_oauth_provider;
 
+pub use audit::{AuditLogRepository, AuditLogRow, AuditLogQuery};
 pub use chat::ChatRepository;
 pub use email_token::EmailTokenRepository;
 pub use media::MediaRepository;

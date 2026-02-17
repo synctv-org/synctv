@@ -304,11 +304,11 @@ async fn test_room_lifecycle_events_across_replicas() {
 }
 
 // ============================================================================
-// Test 5: recover_from_redis reports correct counts without populating local
+// Test 5: audit_redis_subscriptions reports correct counts without populating local
 // ============================================================================
 
 #[tokio::test]
-async fn test_recover_from_redis_reports_without_local_populate() {
+async fn test_audit_redis_subscriptions_reports_without_local_populate() {
     let redis = TestRedis::start().await;
 
     let hub_a = create_hub(&redis.redis_url, "test5:").await;
@@ -343,9 +343,9 @@ async fn test_recover_from_redis_reports_without_local_populate() {
 
     // Hub B recovers from Redis -- should report the count but not populate local state
     let recovered = hub_b
-        .recover_from_redis()
+        .audit_redis_subscriptions()
         .await
-        .expect("recover_from_redis failed");
+        .expect("audit_redis_subscriptions failed");
 
     assert_eq!(
         recovered, 3,
@@ -353,16 +353,16 @@ async fn test_recover_from_redis_reports_without_local_populate() {
         recovered
     );
 
-    // Local state of hub B should still be empty (recover_from_redis is read-only)
+    // Local state of hub B should still be empty (audit_redis_subscriptions is read-only)
     assert_eq!(
         hub_b.room_count(),
         0,
-        "Hub B local room count should be 0 after recover_from_redis"
+        "Hub B local room count should be 0 after audit_redis_subscriptions"
     );
     assert_eq!(
         hub_b.connection_count(),
         0,
-        "Hub B local connection count should be 0 after recover_from_redis"
+        "Hub B local connection count should be 0 after audit_redis_subscriptions"
     );
 
     // Cleanup

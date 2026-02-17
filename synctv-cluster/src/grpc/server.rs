@@ -25,15 +25,16 @@ use crate::sync::connection_manager::ConnectionManager;
 ///
 /// | Endpoint | Status | Notes |
 /// |----------|--------|-------|
-/// | `RegisterNode` | UNUSED | Kept for potential future node-to-node gRPC discovery |
-/// | `Heartbeat` | UNUSED | Kept for potential future node-to-node gRPC discovery |
+/// | `RegisterNode` | UNIMPLEMENTED | Returns `Unimplemented` -- nodes self-register via Redis |
+/// | `Heartbeat` | UNIMPLEMENTED | Returns `Unimplemented` -- heartbeats go directly to Redis |
 /// | `GetNodes` | ACTIVE | Returns all known nodes from Redis registry |
 /// | `DeregisterNode` | ACTIVE | Handles graceful shutdown with epoch validation |
 /// | `GetUserOnlineStatus` | ACTIVE | Fan-out query for user presence across nodes |
 /// | `GetRoomConnections` | ACTIVE | Fan-out query for room participants across nodes |
 ///
-/// The `RegisterNode` and `Heartbeat` gRPC handlers exist for potential future
-/// node-to-node gRPC discovery but no client code currently calls them.
+/// The `RegisterNode` and `Heartbeat` proto definitions are preserved for potential
+/// future node-to-node gRPC discovery. The handlers return `Unimplemented` status
+/// since no client code calls them and nodes use Redis directly.
 #[derive(Clone)]
 pub struct ClusterServer {
     node_registry: Arc<NodeRegistry>,
@@ -87,29 +88,6 @@ impl ClusterServer {
         Ok(())
     }
 
-    /// Validate an address: must be parseable as host:port
-    fn validate_address(address: &str) -> std::result::Result<(), Status> {
-        if address.is_empty() {
-            return Err(Status::invalid_argument("address must not be empty"));
-        }
-        // Try parsing as SocketAddr first, then as host:port
-        if address.parse::<std::net::SocketAddr>().is_err() {
-            // Check it at least has a host:port format
-            let parts: Vec<&str> = address.rsplitn(2, ':').collect();
-            if parts.len() != 2 {
-                return Err(Status::invalid_argument(
-                    "address must be in host:port format",
-                ));
-            }
-            if parts[0].parse::<u16>().is_err() {
-                return Err(Status::invalid_argument(
-                    "address port must be a valid number",
-                ));
-            }
-        }
-        Ok(())
-    }
-
     /// Convert discovery `NodeInfo` to proto `NodeInfo`
     fn discovery_to_proto_node(&self, discovery: &DiscoveryNodeInfo) -> NodeInfo {
         NodeInfo {
@@ -131,120 +109,38 @@ impl ClusterServer {
 impl ClusterService for ClusterServer {
     /// Register a new node in the cluster.
     ///
-    /// # Status: UNUSED -- kept for potential future node-to-node gRPC discovery
+    /// # Status: UNIMPLEMENTED
     ///
     /// No client code calls this RPC. Nodes self-register directly in Redis
-    /// via `NodeRegistry::register()` on startup. This handler exists for
-    /// potential future node-to-node gRPC discovery but is currently unused.
-    ///
-    /// # Implementation Note
-    ///
-    /// If called, this handler will register the remote node in Redis via
-    /// `NodeRegistry::register_remote()`. This allows peer-to-peer registration
-    /// if needed in future architectures.
-    // NOTE: UNUSED -- nodes self-register via Redis. Kept for future gRPC discovery.
+    /// via `NodeRegistry::register()` on startup. The proto definition is kept
+    /// for potential future node-to-node gRPC discovery, but the handler returns
+    /// `Unimplemented` to avoid exposing dead code on the wire.
     async fn register_node(
         &self,
-        request: Request<RegisterNodeRequest>,
+        _request: Request<RegisterNodeRequest>,
     ) -> std::result::Result<Response<RegisterNodeResponse>, Status> {
-        let _timer = synctv_core::metrics::grpc::GRPC_REQUEST_DURATION
-            .with_label_values(&["cluster", "register_node", "ok"])
-            .start_timer();
-        let req = request.into_inner();
-
-        // Validate inputs
-        Self::validate_node_id(&req.node_id)?;
-        Self::validate_address(&req.address)?;
-
-        // Create node info
-        let node_info = DiscoveryNodeInfo {
-            node_id: req.node_id.clone(),
-            grpc_address: req.address.clone(),
-            http_address: String::new(),
-            last_heartbeat: chrono::Utc::now(),
-            metadata: std::collections::HashMap::new(),
-            epoch: 1, // Start with epoch 1 for remote nodes
-        };
-
-        // Register the remote node in Redis
-        if let Err(e) = self.node_registry.register_remote(node_info.clone()).await {
-            tracing::error!(
-                node_id = %req.node_id,
-                error = %e,
-                "Failed to register node in cluster"
-            );
-            return Err(Status::internal("Failed to register node"));
-        }
-
-        tracing::info!(
-            node_id = %req.node_id,
-            address = %req.address,
-            "Node registered in cluster"
-        );
-
-        // Get peer nodes
-        let peers = match self.node_registry.get_all_nodes().await {
-            Ok(nodes) => nodes
-                .into_iter()
-                .filter(|n| n.node_id != req.node_id)
-                .map(|n| self.discovery_to_proto_node(&n))
-                .collect(),
-            Err(e) => {
-                tracing::warn!("Failed to get peer nodes: {}", e);
-                Vec::new()
-            }
-        };
-
-        Ok(Response::new(RegisterNodeResponse {
-            node: Some(self.discovery_to_proto_node(&node_info)),
-            peers,
-        }))
+        Err(Status::unimplemented(
+            "RegisterNode is not implemented. Nodes self-register via Redis. \
+             See NodeRegistry::register().",
+        ))
     }
 
     /// Handle heartbeat from a node.
     ///
-    /// # Status: UNUSED -- kept for potential future node-to-node gRPC discovery
+    /// # Status: UNIMPLEMENTED
     ///
     /// No client code calls this RPC. Heartbeats are sent directly to Redis
-    /// via `NodeRegistry::heartbeat()` in a background task started by
-    /// `ClusterManager::start_heartbeat_loop()`.
-    ///
-    /// # Implementation Note
-    ///
-    /// If called, this handler will update the remote node's heartbeat in Redis
-    /// via `NodeRegistry::heartbeat_remote()`. This allows peer-to-peer heartbeat
-    /// if needed in future architectures.
-    // NOTE: UNUSED -- heartbeats go directly to Redis. Kept for future gRPC discovery.
+    /// via `NodeRegistry::heartbeat()` in a background task. The proto definition
+    /// is kept for potential future node-to-node gRPC discovery, but the handler
+    /// returns `Unimplemented` to avoid exposing dead code on the wire.
     async fn heartbeat(
         &self,
-        request: Request<HeartbeatRequest>,
+        _request: Request<HeartbeatRequest>,
     ) -> std::result::Result<Response<HeartbeatResponse>, Status> {
-        let _timer = synctv_core::metrics::grpc::GRPC_REQUEST_DURATION
-            .with_label_values(&["cluster", "heartbeat", "ok"])
-            .start_timer();
-        let req = request.into_inner();
-
-        Self::validate_node_id(&req.node_id)?;
-
-        // Update heartbeat in registry (refreshes TTL and last_heartbeat in Redis)
-        if let Err(e) = self.node_registry.heartbeat_remote(&req.node_id).await {
-            tracing::warn!(
-                node_id = %req.node_id,
-                error = %e,
-                "Failed to update heartbeat"
-            );
-            return Err(Status::internal("Failed to update heartbeat"));
-        }
-
-        tracing::trace!(
-            node_id = %req.node_id,
-            "Heartbeat received"
-        );
-
-        Ok(Response::new(HeartbeatResponse {
-            success: true,
-            timestamp: chrono::Utc::now().timestamp(),
-        }))
+        Err(Status::unimplemented(
+            "Heartbeat is not implemented. Heartbeats are sent directly to Redis. \
+             See NodeRegistry::heartbeat().",
+        ))
     }
 
     /// Get all nodes in the cluster

@@ -1113,19 +1113,28 @@ impl ConnectionManager {
         })
     }
 
-    /// Get all connections for a user across all replicas (from Redis).
+    /// Get all connection IDs for a user across all replicas (from Redis).
     ///
-    /// Returns connection metadata from Redis, which includes connections from
+    /// Returns connection IDs from Redis, which includes connections from
     /// all replicas in the cluster. Falls back to local-only if Redis fails.
-    pub async fn get_user_connections_distributed(&self, user_id: &UserId) -> Vec<ConnectionInfo> {
-        // Note: We can't fully reconstruct ConnectionInfo from Redis because
-        // Instant can't be deserialized across processes. For distributed
-        // queries, use get_room_connections_distributed which returns connection IDs.
-        // For now, this method returns local connections only.
-        // TODO: Return ConnectionInfoPersistent or redesign to use connection IDs.
+    pub async fn get_user_connections_distributed(&self, user_id: &UserId) -> Vec<String> {
+        if let Some(ref conn) = self.redis_conn {
+            let user_index_key = format!("{}conn_mgr:user:{}", self.redis_key_prefix, user_id.as_str());
+            let mut conn_clone = conn.clone();
+
+            match conn_clone.smembers::<_, Vec<String>>(&user_index_key).await {
+                Ok(conn_ids) => return conn_ids,
+                Err(e) => {
+                    warn!("Failed to fetch user connections from Redis, falling back to local: {e}");
+                }
+            }
+        }
 
         // Fallback to local-only
         self.get_user_connections(user_id)
+            .into_iter()
+            .map(|c| c.connection_id)
+            .collect()
     }
 
     /// Get all connections in a room across all replicas (from Redis).

@@ -3,6 +3,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     tonic_prost_build::configure()
         .build_server(true)
         .build_client(true)
+        .file_descriptor_set_path("src/descriptor.bin")
         .type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]")
         .out_dir("src")
         .compile_protos(&["proto/client.proto", "proto/admin.proto", "proto/oauth2.proto"], &["."])?;

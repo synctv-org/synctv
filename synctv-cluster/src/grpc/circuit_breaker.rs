@@ -114,6 +114,35 @@ impl GrpcCircuitBreakerRegistry {
         let closed = total - open;
         (total, open, closed)
     }
+
+    /// Check if the cluster is in a degraded state (mass failure).
+    ///
+    /// Returns `true` if more than 50% of known endpoints have open circuit
+    /// breakers. When degraded, callers should skip fan-out to unhealthy nodes
+    /// and return partial results immediately to avoid cascading timeouts.
+    pub async fn is_cluster_degraded(&self) -> bool {
+        let breakers = self.breakers.read().await;
+        let total = breakers.len();
+        if total == 0 {
+            return false;
+        }
+        let open = breakers.values().filter(|b| !b.is_call_permitted()).count();
+        open * 2 > total // more than 50% open
+    }
+
+    /// Get only the endpoints with closed (healthy) circuit breakers.
+    ///
+    /// Used during degraded mode to limit fan-out to nodes that are likely
+    /// reachable, returning partial results rather than waiting for timeouts
+    /// from unhealthy nodes.
+    pub async fn healthy_endpoints(&self) -> Vec<String> {
+        let breakers = self.breakers.read().await;
+        breakers
+            .iter()
+            .filter(|(_, b)| b.is_call_permitted())
+            .map(|(addr, _)| addr.clone())
+            .collect()
+    }
 }
 
 impl Default for GrpcCircuitBreakerRegistry {

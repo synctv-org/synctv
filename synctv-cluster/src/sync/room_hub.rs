@@ -578,11 +578,13 @@ impl RoomMessageHub {
         self.get_room_subscribers(room_id)
     }
 
-    /// Recover subscription state from Redis on startup.
+    /// Audit cluster-wide subscription state from Redis (observability only).
     ///
-    /// This method scans Redis for persisted subscription relationships and
-    /// logs the recovered room/subscriber counts. It does **not** populate the
-    /// local `rooms` or `connections` DashMaps because:
+    /// Scans Redis for persisted subscription relationships and logs room/subscriber
+    /// counts. This is an **observability tool**, not a recovery mechanism.
+    ///
+    /// This method does **not** populate the local `rooms` or `connections` DashMaps
+    /// because:
     ///
     /// 1. **`MessageSender` cannot be recovered.** Each subscriber's `mpsc::Sender`
     ///    is only meaningful to the original WebSocket connection. Without a live
@@ -597,16 +599,11 @@ impl RoomMessageHub {
     ///    `RoomActivated` events to the Redis Pub/Sub subscriber task, causing it
     ///    to subscribe to channels for rooms that have no real local subscribers.
     ///
-    /// **Usage:** Call on startup to log how many subscriptions exist across the
-    /// cluster. Useful for monitoring dashboards and verifying Redis state. Actual
-    /// message routing requires clients to reconnect and call `subscribe()`.
-    ///
-    /// **Alternative approaches for true state recovery:**
-    /// - Have clients reconnect automatically via exponential backoff after a
-    ///   node restart (recommended).
-    /// - Use Redis Streams instead of Pub/Sub so messages are persisted and can
-    ///   be replayed on reconnect (requires architectural change).
-    pub async fn recover_from_redis(&self) -> Result<usize, String> {
+    /// **Clients must reconnect** after a replica restart to re-establish their
+    /// subscriptions via `subscribe()`. This method only logs what Redis knows
+    /// about for dashboards and debugging.
+    pub async fn audit_redis_subscriptions(&self) -> Result<usize, String> {
+        info!("Auditing cluster subscription state from Redis (observability only, clients must reconnect for message routing)");
         let Some(ref conn) = self.redis_conn else {
             return Err("Redis not configured".to_string());
         };
@@ -615,11 +612,27 @@ impl RoomMessageHub {
         let mut conn_clone = conn.clone();
         let mut recovered = 0;
 
-        // Scan for all room keys
-        let keys: Vec<String> = conn_clone
-            .keys(&pattern)
-            .await
-            .map_err(|e| format!("Failed to scan Redis keys: {e}"))?;
+        // Use SCAN instead of KEYS to avoid blocking Redis on large datasets
+        let mut keys = Vec::new();
+        let mut cursor: u64 = 0;
+        loop {
+            let scan_result: (u64, Vec<String>) = redis::cmd("SCAN")
+                .arg(cursor)
+                .arg("MATCH")
+                .arg(&pattern)
+                .arg("COUNT")
+                .arg(100)
+                .query_async(&mut conn_clone)
+                .await
+                .map_err(|e| format!("Failed to SCAN Redis keys: {e}"))?;
+
+            cursor = scan_result.0;
+            keys.extend(scan_result.1);
+
+            if cursor == 0 {
+                break;
+            }
+        }
 
         for key in keys {
             // Extract room_id from key
@@ -637,7 +650,7 @@ impl RoomMessageHub {
             info!(
                 room_id = %room_id.as_str(),
                 subscriber_count = entries.len(),
-                "Recovered room subscription state from Redis"
+                "Audited room subscription state from Redis (observability only)"
             );
         }
 

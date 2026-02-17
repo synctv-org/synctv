@@ -273,13 +273,11 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
     let distributed_rate_limit_layer = rate_limit_layer::GrpcRateLimitLayer::new(
         rate_limiter_for_layer,
         60,  // 60 second window
+        Arc::new(config.clone()),
     );
     let mut server_builder = Server::builder()
         .layer(blacklist_layer)
         .layer(distributed_rate_limit_layer);
-
-    // Note: gRPC reflection is disabled - proto definitions are in synctv-proto crate
-    // To enable reflection in the future, we would need to re-export descriptor from synctv-proto
 
     // Clone interceptors for different services
     let user_interceptor = auth_interceptor.clone();
@@ -492,6 +490,26 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
                 }
             }
         }
+    }
+
+    // Register gRPC health check service (standard grpc.health.v1.Health)
+    let (health_reporter, health_service) = tonic_health::server::health_reporter();
+    // Mark the overall server as serving
+    health_reporter
+        .set_serving::<AuthServiceServer<ClientServiceImpl>>()
+        .await;
+    router = router.add_service(health_service);
+    tracing::info!("gRPC health check service registered");
+
+    // Register gRPC reflection service if enabled in config
+    if config.server.enable_reflection {
+        let reflection_service = tonic_reflection::server::Builder::configure()
+            .register_encoded_file_descriptor_set(synctv_proto::FILE_DESCRIPTOR_SET)
+            .register_encoded_file_descriptor_set(synctv_proto::PROVIDERS_FILE_DESCRIPTOR_SET)
+            .build_v1()
+            .map_err(|e| anyhow::anyhow!("Failed to build gRPC reflection service: {e}"))?;
+        router = router.add_service(reflection_service);
+        tracing::info!("gRPC reflection service registered");
     }
 
     // Start server with graceful shutdown support

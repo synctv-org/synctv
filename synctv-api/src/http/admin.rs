@@ -33,7 +33,7 @@ async fn validate_auth_user(parts: &mut Parts, app_state: &AppState) -> Result<c
     let validator = parts
         .extensions
         .get::<JwtValidatorExt>().map_or_else(|| {
-            Arc::new(JwtValidator::new(Arc::new(app_state.jwt_service.clone())))
+            app_state.jwt_validator.clone()
         }, |v| v.0.clone());
 
     let auth_header = parts

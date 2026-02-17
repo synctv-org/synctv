@@ -556,20 +556,24 @@ pub struct UpdatePlaybackRequest {
     /// Switch to media ID
     #[serde(default)]
     pub media_id: Option<String>,
+    /// Playlist context when switching media
+    #[serde(default)]
+    pub playlist_id: Option<String>,
 }
 
 /// Unified handler for updating playback state via PATCH
 /// PATCH /`api/rooms/:room_id/playback`
-/// Supports: state (play/pause), position (seek), speed, `media_id` (switch)
+/// Supports: state (play/pause), position (seek), speed, `media_id` (switch), `playlist_id`
 ///
-/// Applies ALL provided fields atomically. Previous implementation used early
-/// returns, silently dropping all fields after the first match (P0 data loss).
+/// Applies ALL provided fields atomically via `PlaybackService::update_multiple()`.
 pub async fn update_playback(
     auth: AuthUser,
     State(state): State<AppState>,
     Path(room_id): Path<String>,
     Json(req): Json<UpdatePlaybackRequest>,
 ) -> AppResult<Json<GetPlaybackStateResponse>> {
+    use synctv_core::models::{MediaId, PlaylistId, RoomId, UserId};
+
     let user_id = auth.user_id.to_string();
 
     // Validate that at least one field is provided
@@ -579,61 +583,28 @@ pub async fn update_playback(
         ));
     }
 
-    // Validate state value early before applying any changes
-    if let Some(ref state_str) = req.state {
-        match state_str.as_str() {
-            "playing" | "paused" => {}
-            _ => return Err(super::AppError::bad_request("Invalid state value, use 'playing' or 'paused'")),
-        }
-    }
+    // Translate "playing"/"paused" to bool
+    let playing = match req.state.as_deref() {
+        Some("playing") => Some(true),
+        Some("paused") => Some(false),
+        Some(_) => return Err(super::AppError::bad_request("Invalid state value, use 'playing' or 'paused'")),
+        None => None,
+    };
 
-    // Apply all provided fields sequentially. Each call is independently
-    // permission-checked and persisted by the service layer.
+    let media_id = req.media_id.map(MediaId::from_string);
+    let playlist_id = req.playlist_id.map(|pid| {
+        if pid.is_empty() { None } else { Some(PlaylistId::from_string(pid)) }
+    });
 
-    // Apply state change (play/pause)
-    if let Some(ref state_str) = req.state {
-        match state_str.as_str() {
-            "playing" => {
-                state.client_api
-                    .play(&user_id, &room_id, PlayRequest {})
-                    .await.map_err(super::error::map_api_error)?;
-            }
-            "paused" => {
-                state.client_api
-                    .pause(&user_id, &room_id)
-                    .await.map_err(super::error::map_api_error)?;
-            }
-            _ => unreachable!("state value validated above"),
-        }
-    }
+    let rid = RoomId::from_string(room_id.clone());
+    let uid = UserId::from_string(user_id.clone());
 
-    // Apply position change (seek)
-    if let Some(position) = req.position {
-        state.client_api
-            .seek(&user_id, &room_id, SeekRequest { current_time: position })
-            .await.map_err(super::error::map_api_error)?;
-    }
+    // Apply all fields atomically in a single DB update
+    state.room_service.playback_service()
+        .update_multiple(rid, uid, playing, req.position, req.speed, media_id, playlist_id)
+        .await?;
 
-    // Apply speed change
-    if let Some(speed) = req.speed {
-        use crate::proto::client::SetPlaybackSpeedRequest;
-        state.client_api
-            .set_playback_speed(&user_id, &room_id, SetPlaybackSpeedRequest { speed })
-            .await.map_err(super::error::map_api_error)?;
-    }
-
-    // Apply media switch
-    if let Some(ref media_id) = req.media_id {
-        use crate::proto::client::SetCurrentMediaRequest;
-        state.client_api
-            .set_current_media(&user_id, &room_id, SetCurrentMediaRequest {
-                playlist_id: String::new(),
-                media_id: media_id.clone(),
-            })
-            .await.map_err(super::error::map_api_error)?;
-    }
-
-    // Return final playback state reflecting all applied changes
+    // Return final playback state
     let pb = state.client_api
         .get_playback_state(&user_id, &room_id, GetPlaybackStateRequest {})
         .await.map_err(super::error::map_api_error)?;
@@ -912,12 +883,13 @@ mod tests {
 
     #[test]
     fn test_update_playback_request_deserialize_combined() {
-        let json = r#"{"state": "paused", "position": 10.0, "speed": 1.5, "media_id": "m1"}"#;
+        let json = r#"{"state": "paused", "position": 10.0, "speed": 1.5, "media_id": "m1", "playlist_id": "pl1"}"#;
         let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.state.as_deref(), Some("paused"));
         assert!((req.position.unwrap() - 10.0).abs() < f64::EPSILON);
         assert!((req.speed.unwrap() - 1.5).abs() < f64::EPSILON);
         assert_eq!(req.media_id.as_deref(), Some("m1"));
+        assert_eq!(req.playlist_id.as_deref(), Some("pl1"));
     }
 
     #[test]
@@ -928,5 +900,6 @@ mod tests {
         assert!(req.position.is_none());
         assert!(req.speed.is_none());
         assert!(req.media_id.is_none());
+        assert!(req.playlist_id.is_none());
     }
 }

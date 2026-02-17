@@ -3,6 +3,13 @@
 //! This crate contains all protobuf definitions and generated code for `SyncTV`'s
 //! external APIs.
 
+/// Encoded file descriptor set for client/admin/oauth2 proto definitions.
+/// Used by tonic-reflection to serve gRPC server reflection.
+pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("descriptor.bin");
+
+/// Encoded file descriptor set for provider proto definitions.
+pub const PROVIDERS_FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("providers/descriptor.bin");
+
 // Common shared types (enums, RoomMember)
 pub mod common {
     include!("synctv.common.rs");

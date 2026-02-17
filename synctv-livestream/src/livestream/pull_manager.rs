@@ -54,6 +54,9 @@ pub struct PullStreamManager {
     /// Kept alive for the lifetime of the manager; dropped (aborted) when the
     /// manager is dropped.
     _pool_cleanup_handle: tokio::task::JoinHandle<()>,
+    /// Handle for the background creation lock cleanup task.
+    /// Auto-started in `with_timeouts()` to prevent memory leaks from failed stream creation attempts.
+    _cleanup_handle: tokio::task::JoinHandle<()>,
     /// Cluster authentication secret passed to `GrpcStreamPuller` for inter-node gRPC requests.
     cluster_secret: Option<String>,
 }
@@ -102,18 +105,22 @@ impl PullStreamManager {
     ) -> Self {
         let connection_pool = GrpcConnectionPool::with_defaults();
         // Evict stale gRPC connections every 5 minutes in the background
-        let cleanup_handle = connection_pool.spawn_cleanup_task(Duration::from_secs(300));
+        let pool_cleanup_handle = connection_pool.spawn_cleanup_task(Duration::from_secs(300));
+        let pool = StreamPool::new(
+            Duration::from_secs(cleanup_check_interval_secs),
+            Duration::from_secs(idle_timeout_secs),
+        );
+        // Auto-start creation lock cleanup to prevent memory leaks
+        let cleanup_handle = pool.start_creation_lock_cleanup();
         Self {
-            pool: StreamPool::new(
-                Duration::from_secs(cleanup_check_interval_secs),
-                Duration::from_secs(idle_timeout_secs),
-            ),
+            pool,
             registry,
             local_node_id,
             stream_hub_event_sender,
             grpc_port: DEFAULT_GRPC_PORT,
             connection_pool,
-            _pool_cleanup_handle: cleanup_handle,
+            _pool_cleanup_handle: pool_cleanup_handle,
+            _cleanup_handle: cleanup_handle,
             cluster_secret: None,
         }
     }
@@ -185,7 +192,15 @@ impl PullStreamManager {
                 "Publisher has no grpc_address, falling back to IP extraction from node_id"
             );
             extract_address_from_node_id(&publisher_info.node_id, self.grpc_port)
-                .unwrap_or_else(|| publisher_info.node_id.clone())
+                .ok_or_else(|| {
+                    error!(
+                        node_id = %publisher_info.node_id,
+                        "Cannot extract gRPC address from node_id"
+                    );
+                    crate::error::StreamError::InvalidAddress(format!(
+                        "Cannot extract gRPC address from node_id '{}'", publisher_info.node_id
+                    ))
+                })?
         } else {
             publisher_info.grpc_address.clone()
         };

@@ -6,7 +6,7 @@ CREATE TABLE IF NOT EXISTS users (
     password_hash VARCHAR(255) NOT NULL,
     signup_method VARCHAR(20),  -- NULL for legacy users, 'email' or 'oauth2' for new users
     role SMALLINT NOT NULL DEFAULT 3,  -- 1=root, 2=admin, 3=user
-    status SMALLINT NOT NULL DEFAULT 1,  -- 1=active, 2=pending, 3=banned
+    status SMALLINT NOT NULL DEFAULT 2,  -- 1=active, 2=pending, 3=banned
     email_verified BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,

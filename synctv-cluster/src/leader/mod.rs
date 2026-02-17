@@ -94,6 +94,46 @@ impl AnyLeaderElector {
             AnyLeaderElector::K8s(e) => e.start(cancel_token),
         }
     }
+
+    /// Create a fencing guard that is automatically cancelled when leadership is lost.
+    ///
+    /// Returns a `CancellationToken` that singleton tasks should use as their
+    /// cancellation signal. When this node loses leadership (receives a `Lost`
+    /// event), the token is cancelled, causing the singleton task to stop.
+    ///
+    /// This prevents split-brain scenarios where a demoted leader continues
+    /// running singleton tasks that should only execute on the current leader.
+    #[must_use]
+    pub fn leader_guard(&self) -> CancellationToken {
+        let token = CancellationToken::new();
+        let token_clone = token.clone();
+        let mut rx = self.subscribe();
+        tokio::spawn(async move {
+            loop {
+                match rx.recv().await {
+                    Ok(LeadershipEvent::Lost) => {
+                        token_clone.cancel();
+                        break;
+                    }
+                    Ok(LeadershipEvent::Gained { .. }) => {
+                        // Still leader or re-elected, continue watching
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        // Missed events; check current state is ambiguous,
+                        // so cancel to be safe (singleton will restart on next election)
+                        token_clone.cancel();
+                        break;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        // Channel closed (elector dropped), cancel the guard
+                        token_clone.cancel();
+                        break;
+                    }
+                }
+            }
+        });
+        token
+    }
 }
 
 impl synctv_core::service::LeaderCheck for AnyLeaderElector {
@@ -266,6 +306,43 @@ impl LeaderElector {
     /// Returns 0 if this node has never been leader.
     pub fn leader_epoch(&self) -> u64 {
         self.leader_epoch.load(Ordering::Acquire)
+    }
+
+    /// Create a fencing guard that is automatically cancelled when leadership is lost.
+    ///
+    /// Returns a `CancellationToken` that singleton tasks should use as their
+    /// cancellation signal. When this node loses leadership (receives a `Lost`
+    /// event), the token is cancelled, causing the singleton task to stop.
+    ///
+    /// This prevents split-brain scenarios where a demoted leader continues
+    /// running singleton tasks that should only execute on the current leader.
+    #[must_use]
+    pub fn leader_guard(&self) -> CancellationToken {
+        let token = CancellationToken::new();
+        let token_clone = token.clone();
+        let mut rx = self.subscribe();
+        tokio::spawn(async move {
+            loop {
+                match rx.recv().await {
+                    Ok(LeadershipEvent::Lost) => {
+                        token_clone.cancel();
+                        break;
+                    }
+                    Ok(LeadershipEvent::Gained { .. }) => {
+                        // Still leader or re-elected, continue watching
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        token_clone.cancel();
+                        break;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        token_clone.cancel();
+                        break;
+                    }
+                }
+            }
+        });
+        token
     }
 
     /// Start the leader election loop.

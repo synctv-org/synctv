@@ -66,3 +66,31 @@ COMMENT ON COLUMN users.status IS 'User account status: 1=active, 2=pending (ema
 COMMENT ON COLUMN users.email_verified IS 'Whether the user email has been verified';
 COMMENT ON COLUMN users.deleted_at IS 'Soft delete timestamp (NULL = active user)';
 COMMENT ON CONSTRAINT users_email_not_empty ON users IS 'Ensures email is either NULL or a non-empty string';
+
+-- ============================================================================
+-- User Deletion Notification (for cluster-wide resource cleanup)
+-- ============================================================================
+
+CREATE OR REPLACE FUNCTION notify_user_deleted()
+RETURNS TRIGGER AS $$
+BEGIN
+    -- Send notification to all cluster nodes listening on 'synctv_user_deleted'
+    -- Enables stateless cleanup without requiring PersistentVolumeClaim/WAL
+    PERFORM pg_notify(
+        'synctv_user_deleted',
+        json_build_object(
+            'user_id', OLD.id,
+            'deleted_at', CURRENT_TIMESTAMP
+        )::text
+    );
+    RETURN OLD;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trigger_user_deleted
+AFTER DELETE ON users
+FOR EACH ROW
+EXECUTE FUNCTION notify_user_deleted();
+
+COMMENT ON FUNCTION notify_user_deleted IS
+'Sends a notification when a user is deleted. Cluster nodes listen for this to clear caches and disconnect user connections.';

@@ -11,7 +11,7 @@ mod hls_proxy;
 
 pub use connection_pool::GrpcConnectionPool;
 
-pub use stream_relay_service::StreamRelayServiceImpl;
+pub use stream_relay_service::{StreamRelayServiceImpl, RelayActivityCallback};
 pub use stream_puller::GrpcStreamPuller;
 pub use hls_proxy::HlsProxyClient;
 pub use proto::stream_relay_service_server::{StreamRelayService, StreamRelayServiceServer};

@@ -4,12 +4,17 @@
 // that multiplexes HTTP/2 streams. Idle connections are evicted after a
 // configurable TTL to avoid holding stale connections to nodes that may have
 // been replaced.
+//
+// Includes a per-node circuit breaker to prevent retry storms when a publisher
+// node is down. After consecutive failures exceed the threshold, the circuit
+// opens and rejects connection attempts for a cooldown period.
 
 use dashmap::DashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tonic::transport::Channel;
-use tracing::debug;
+use tracing::{debug, warn};
 
 /// A pooled gRPC channel with creation timestamp for staleness checks.
 struct PooledChannel {
@@ -17,16 +22,88 @@ struct PooledChannel {
     created_at: Instant,
 }
 
+/// Per-node circuit breaker state.
+///
+/// Tracks consecutive failures to a specific node address. When failures exceed
+/// `CIRCUIT_BREAKER_THRESHOLD`, the circuit opens and rejects all connection
+/// attempts for `CIRCUIT_BREAKER_COOLDOWN` to prevent retry storms across
+/// multiple pull streams targeting the same down node.
+struct CircuitBreakerState {
+    /// Number of consecutive connection failures
+    consecutive_failures: AtomicU32,
+    /// Unix timestamp (millis) when the circuit was opened (0 = circuit closed)
+    opened_at_millis: AtomicU64,
+}
+
+impl CircuitBreakerState {
+    fn new() -> Self {
+        Self {
+            consecutive_failures: AtomicU32::new(0),
+            opened_at_millis: AtomicU64::new(0),
+        }
+    }
+
+    fn record_success(&self) {
+        self.consecutive_failures.store(0, Ordering::Release);
+        self.opened_at_millis.store(0, Ordering::Release);
+    }
+
+    fn record_failure(&self, threshold: u32) {
+        let failures = self.consecutive_failures.fetch_add(1, Ordering::AcqRel) + 1;
+        if failures >= threshold {
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_millis() as u64);
+            self.opened_at_millis.store(now_ms, Ordering::Release);
+            warn!(
+                consecutive_failures = failures,
+                "Circuit breaker opened after {} consecutive failures",
+                failures
+            );
+        }
+    }
+
+    fn is_open(&self, cooldown_ms: u64) -> bool {
+        let opened = self.opened_at_millis.load(Ordering::Acquire);
+        if opened == 0 {
+            return false;
+        }
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis() as u64);
+        let elapsed = now_ms.saturating_sub(opened);
+        if elapsed >= cooldown_ms {
+            // Cooldown expired: allow a single probe attempt (half-open state)
+            // Reset opened_at so only one caller probes
+            self.opened_at_millis.store(0, Ordering::Release);
+            false
+        } else {
+            true
+        }
+    }
+}
+
+/// Number of consecutive failures before the circuit opens.
+const CIRCUIT_BREAKER_THRESHOLD: u32 = 5;
+/// How long the circuit stays open before allowing a probe attempt (30 seconds).
+const CIRCUIT_BREAKER_COOLDOWN_MS: u64 = 30_000;
+
 /// Thread-safe gRPC connection pool keyed by node address.
 ///
 /// Channels are reused across callers (tonic `Channel` is clone-cheap and
 /// multiplexes over a single HTTP/2 connection). Stale entries are lazily
 /// evicted on access when they exceed `max_idle`.
+///
+/// Includes a per-node circuit breaker: after `CIRCUIT_BREAKER_THRESHOLD`
+/// consecutive failures to a node, connection attempts are rejected for
+/// `CIRCUIT_BREAKER_COOLDOWN_MS` to prevent retry storms.
 #[derive(Clone)]
 pub struct GrpcConnectionPool {
     connections: Arc<DashMap<String, PooledChannel>>,
     /// Maximum time a pooled connection is considered healthy before re-creation.
     max_idle: Duration,
+    /// Per-node circuit breaker state
+    circuit_breakers: Arc<DashMap<String, Arc<CircuitBreakerState>>>,
 }
 
 impl GrpcConnectionPool {
@@ -38,6 +115,7 @@ impl GrpcConnectionPool {
         Self {
             connections: Arc::new(DashMap::new()),
             max_idle,
+            circuit_breakers: Arc::new(DashMap::new()),
         }
     }
 
@@ -55,9 +133,24 @@ impl GrpcConnectionPool {
     /// Connection attempts timeout after 5 seconds to prevent hanging indefinitely
     /// when the target node is unreachable.
     pub async fn get_channel(&self, address: &str) -> anyhow::Result<Channel> {
+        // Check circuit breaker before attempting connection
+        let cb = self.circuit_breakers
+            .entry(address.to_string())
+            .or_insert_with(|| Arc::new(CircuitBreakerState::new()))
+            .clone();
+
+        if cb.is_open(CIRCUIT_BREAKER_COOLDOWN_MS) {
+            return Err(anyhow::anyhow!(
+                "Circuit breaker open for '{}': too many consecutive failures, \
+                 rejecting to prevent retry storm (will probe after cooldown)",
+                address
+            ));
+        }
+
         // Fast path: check for existing healthy connection
         if let Some(entry) = self.connections.get(address) {
             if entry.created_at.elapsed() < self.max_idle {
+                cb.record_success();
                 return Ok(entry.channel.clone());
             }
             // Stale -- drop the read guard and remove below
@@ -73,12 +166,21 @@ impl GrpcConnectionPool {
             format!("http://{address}")
         };
 
-        let channel = Channel::from_shared(url.clone())
+        let channel = match Channel::from_shared(url.clone())
             .map_err(|e| anyhow::anyhow!("Invalid gRPC endpoint URL '{url}': {e}"))?
             .connect_timeout(Duration::from_secs(5))
             .connect()
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to connect to gRPC endpoint '{address}': {e}"))?;
+        {
+            Ok(ch) => {
+                cb.record_success();
+                ch
+            }
+            Err(e) => {
+                cb.record_failure(CIRCUIT_BREAKER_THRESHOLD);
+                return Err(anyhow::anyhow!("Failed to connect to gRPC endpoint '{address}': {e}"));
+            }
+        };
 
         self.connections.insert(
             address.to_string(),
@@ -191,5 +293,46 @@ mod tests {
 
         // The important part is that connect_timeout() is called in the code,
         // which is verified at compile time by the type system
+    }
+
+    #[test]
+    fn test_circuit_breaker_closed_by_default() {
+        let cb = CircuitBreakerState::new();
+        assert!(!cb.is_open(CIRCUIT_BREAKER_COOLDOWN_MS));
+    }
+
+    #[test]
+    fn test_circuit_breaker_opens_after_threshold() {
+        let cb = CircuitBreakerState::new();
+        for _ in 0..CIRCUIT_BREAKER_THRESHOLD {
+            cb.record_failure(CIRCUIT_BREAKER_THRESHOLD);
+        }
+        assert!(cb.is_open(CIRCUIT_BREAKER_COOLDOWN_MS));
+    }
+
+    #[test]
+    fn test_circuit_breaker_success_resets() {
+        let cb = CircuitBreakerState::new();
+        for _ in 0..CIRCUIT_BREAKER_THRESHOLD {
+            cb.record_failure(CIRCUIT_BREAKER_THRESHOLD);
+        }
+        assert!(cb.is_open(CIRCUIT_BREAKER_COOLDOWN_MS));
+        cb.record_success();
+        assert!(!cb.is_open(CIRCUIT_BREAKER_COOLDOWN_MS));
+    }
+
+    #[test]
+    fn test_circuit_breaker_cooldown_expires() {
+        let cb = CircuitBreakerState::new();
+        for _ in 0..CIRCUIT_BREAKER_THRESHOLD {
+            cb.record_failure(CIRCUIT_BREAKER_THRESHOLD);
+        }
+        // Simulate cooldown by setting opened_at to the past
+        let past_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis() as u64)
+            .saturating_sub(CIRCUIT_BREAKER_COOLDOWN_MS + 1000);
+        cb.opened_at_millis.store(past_ms, Ordering::Release);
+        assert!(!cb.is_open(CIRCUIT_BREAKER_COOLDOWN_MS));
     }
 }

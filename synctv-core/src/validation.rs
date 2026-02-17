@@ -26,6 +26,8 @@ pub const ROOM_PASSWORD_MIN: usize = 4;
 /// Maximum room password length (same cap as user password)
 pub const ROOM_PASSWORD_MAX: usize = 128;
 
+/// Minimum room name length
+pub const ROOM_NAME_MIN: usize = 1;
 /// Maximum room name length
 pub const ROOM_NAME_MAX: usize = 100;
 

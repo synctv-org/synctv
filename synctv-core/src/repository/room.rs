@@ -100,8 +100,9 @@ impl RoomRepository {
         .bind(room.status)
         .bind(room.is_banned)
         .bind(chrono::Utc::now())
-        .fetch_one(&self.pool)
-        .await?;
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| crate::Error::NotFound(format!("Room {} not found", room.id.as_str())))?;
 
         Ok(updated)
     }
@@ -413,8 +414,9 @@ impl RoomRepository {
         )
         .bind(status)
         .bind(room_id.as_str())
-        .fetch_one(&self.pool)
-        .await?;
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| crate::Error::NotFound(format!("Room {} not found", room_id.as_str())))?;
 
         Ok(room)
     }
@@ -431,8 +433,9 @@ impl RoomRepository {
         )
         .bind(is_banned)
         .bind(room_id.as_str())
-        .fetch_one(&self.pool)
-        .await?;
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| crate::Error::NotFound(format!("Room {} not found", room_id.as_str())))?;
 
         Ok(room)
     }
@@ -449,8 +452,9 @@ impl RoomRepository {
         )
         .bind(description)
         .bind(room_id.as_str())
-        .fetch_one(&self.pool)
-        .await?;
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| crate::Error::NotFound(format!("Room {} not found", room_id.as_str())))?;
 
         Ok(room)
     }

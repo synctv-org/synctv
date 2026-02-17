@@ -26,6 +26,11 @@ type ResponseStream = Pin<Box<dyn Stream<Item = Result<RtmpPacket, Status>> + Se
 /// Metadata key for cluster authentication shared secret
 const AUTH_SECRET_METADATA_KEY: &str = "x-cluster-secret";
 
+/// Callback invoked when the relay service forwards frames from a local publisher.
+/// Used to record publisher data activity so that silent publisher detection does not
+/// incorrectly time out publishers that are actively sending data via gRPC relay.
+pub type RelayActivityCallback = Arc<dyn Fn(&str, &str) + Send + Sync>;
+
 /// `StreamRelayService` implementation
 /// Publisher nodes use this to serve RTMP packets to Puller nodes via subscription
 /// and HLS playlists/segments to non-publisher nodes via proxy.
@@ -44,6 +49,11 @@ pub struct StreamRelayServiceImpl {
     segment_manager: Option<Arc<SegmentManager>>,
     /// HLS stream registry for M3U8 generation (optional, only on HLS-enabled nodes)
     hls_stream_registry: Option<HlsStreamRegistry>,
+    /// Optional callback to record publisher activity when forwarding frames.
+    /// This extends silent publisher detection (LS-5) to the gRPC relay path,
+    /// preventing false timeouts when a publisher has remote viewers via gRPC
+    /// but no local HLS consumers.
+    activity_callback: Option<RelayActivityCallback>,
 }
 
 impl StreamRelayServiceImpl {
@@ -62,7 +72,16 @@ impl StreamRelayServiceImpl {
             cancel_token,
             segment_manager: None,
             hls_stream_registry: None,
+            activity_callback: None,
         }
+    }
+
+    /// Set a callback to record publisher activity when forwarding frames.
+    /// This extends LS-5 silent publisher detection to the FLV/gRPC relay path.
+    #[must_use]
+    pub fn with_activity_callback(mut self, callback: RelayActivityCallback) -> Self {
+        self.activity_callback = Some(callback);
+        self
     }
 
     /// Set the cluster authentication secret.
@@ -127,6 +146,7 @@ impl stream_relay_service_server::StreamRelayService for StreamRelayServiceImpl 
         info!(
             room_id = req.room_id,
             media_id = req.media_id,
+            is_reconnect = req.is_reconnect,
             "PullRtmpStream request (service-to-service internal call)"
         );
 
@@ -199,10 +219,13 @@ impl stream_relay_service_server::StreamRelayService for StreamRelayServiceImpl 
         let media_id_clone = req.media_id.clone();
         let event_sender_clone = self.stream_hub_event_sender.clone();
         let child_token = self.cancel_token.child_token();
+        let activity_cb = self.activity_callback.clone();
         tokio::spawn(async move {
             // Stream live data from StreamHub subscription
             // (GOP frames are automatically sent first by StreamHub's send_prior_data)
             info!("Streaming live data to puller");
+            // Frame counter for periodic activity recording (avoid calling on every frame)
+            let mut frame_count: u64 = 0;
             loop {
                 let frame_data = tokio::select! {
                     _ = child_token.cancelled() => {
@@ -240,6 +263,17 @@ impl stream_relay_service_server::StreamRelayService for StreamRelayServiceImpl 
                 if tx.send(Ok(packet)).await.is_err() {
                     warn!("Client disconnected during live streaming");
                     break;
+                }
+
+                // LS-5 fix: Record publisher activity periodically when forwarding
+                // frames via gRPC relay. This prevents silent publisher timeout from
+                // incorrectly cleaning up publishers that have remote FLV/gRPC viewers
+                // but no local HLS consumers. Record every 100 frames to avoid overhead.
+                frame_count += 1;
+                if frame_count % 100 == 1 {
+                    if let Some(ref cb) = activity_cb {
+                        cb(&room_id_clone, &media_id_clone);
+                    }
                 }
             }
 

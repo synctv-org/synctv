@@ -253,19 +253,22 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
     // Create auth interceptor for authenticated services (clone jwt_service for blacklist layer)
     let auth_interceptor = AuthInterceptor::new(jwt_service.clone());
 
-    // Create server builder with blacklist + password invalidation checking tower layer.
+    // Create server builder with the security checking tower layer.
     // This layer extracts the raw JWT bearer token from the HTTP Authorization
-    // header and performs two async security checks:
-    // 1. Token blacklist check (explicit logout/revocation via Redis)
-    // 2. Password invalidation check (tokens issued before password change)
+    // header and performs four async security checks via the shared SecurityPipeline:
+    // 1. JWT verification (validate signature, expiration, access token type)
+    // 2. Token blacklist check (explicit logout/revocation via Redis)
+    // 3. Password invalidation check (tokens issued before password change)
+    // 4. User status check (banned/pending/deleted)
     // It runs before tonic routes and interceptors, so public endpoints (no Authorization header)
     // pass through without security checks.
-    let user_service_for_blacklist =
-        Arc::try_unwrap(user_service.clone()).unwrap_or_else(|arc| (*arc).clone());
+    let security_pipeline = synctv_core::service::SecurityPipeline::new(
+        Arc::new(token_blacklist_service.clone()),
+        user_service.clone(),
+    );
     let blacklist_layer = blacklist_layer::BlacklistCheckLayer::new(
-        token_blacklist_service.clone(),
         jwt_service,
-        user_service_for_blacklist,
+        security_pipeline,
     );
     // Distributed rate limiting layer: uses Redis when available (shared across
     // replicas), falls back to in-memory governor when Redis is unavailable.
@@ -418,6 +421,11 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
             alist_api: Arc::new(crate::impls::AlistApiImpl::new(alist_provider.clone())),
             emby_api: Arc::new(crate::impls::EmbyApiImpl::new(emby_provider.clone())),
             redis_conn: redis_conn.clone(),
+            security_pipeline: Arc::new(synctv_core::service::SecurityPipeline::new(
+                Arc::new(token_blacklist_service.clone()),
+                user_service.clone(),
+            )),
+            sfu_session_manager: None,
             token_blacklist_service: token_blacklist_service.clone(),
         });
 

@@ -119,6 +119,23 @@ impl std::fmt::Debug for JwtService {
 /// Minimum entropy bits required for JWT secret (256 bits = 32 bytes)
 const MIN_JWT_SECRET_ENTROPY_BITS: usize = 256;
 
+/// Map a `jsonwebtoken` error to our domain `Error::Authentication`, using
+/// the given `context` string to prefix the messages (e.g. "Token" or "Guest token").
+fn map_jwt_error(e: jsonwebtoken::errors::Error, context: &str) -> Error {
+    match e.kind() {
+        jsonwebtoken::errors::ErrorKind::ExpiredSignature => {
+            Error::Authentication(format!("{context} expired"))
+        }
+        jsonwebtoken::errors::ErrorKind::InvalidToken => {
+            Error::Authentication(format!("Invalid {}", context.to_lowercase()))
+        }
+        jsonwebtoken::errors::ErrorKind::InvalidSignature => {
+            Error::Authentication(format!("Invalid {} signature", context.to_lowercase()))
+        }
+        _ => Error::Authentication(format!("{context} verification failed: {e}")),
+    }
+}
+
 impl JwtService {
     /// Create a new JWT service with HS256 secret and configurable token durations
     ///
@@ -284,18 +301,7 @@ impl JwtService {
         validation.leeway = self.clock_skew_leeway_secs;
 
         let token_data: TokenData<Claims> = decode(token, &self.decoding_key, &validation)
-            .map_err(|e| match e.kind() {
-                jsonwebtoken::errors::ErrorKind::ExpiredSignature => {
-                    Error::Authentication("Token expired".to_string())
-                }
-                jsonwebtoken::errors::ErrorKind::InvalidToken => {
-                    Error::Authentication("Invalid token".to_string())
-                }
-                jsonwebtoken::errors::ErrorKind::InvalidSignature => {
-                    Error::Authentication("Invalid token signature".to_string())
-                }
-                _ => Error::Authentication(format!("Token verification failed: {e}")),
-            })?;
+            .map_err(|e| map_jwt_error(e, "Token"))?;
 
         Ok(token_data.claims)
     }
@@ -361,18 +367,7 @@ impl JwtService {
         validation.leeway = self.clock_skew_leeway_secs;
 
         let token_data: TokenData<GuestClaims> = decode(token, &self.decoding_key, &validation)
-            .map_err(|e| match e.kind() {
-                jsonwebtoken::errors::ErrorKind::ExpiredSignature => {
-                    Error::Authentication("Guest token expired".to_string())
-                }
-                jsonwebtoken::errors::ErrorKind::InvalidToken => {
-                    Error::Authentication("Invalid guest token".to_string())
-                }
-                jsonwebtoken::errors::ErrorKind::InvalidSignature => {
-                    Error::Authentication("Invalid guest token signature".to_string())
-                }
-                _ => Error::Authentication(format!("Guest token verification failed: {e}")),
-            })?;
+            .map_err(|e| map_jwt_error(e, "Guest token"))?;
 
         let claims = token_data.claims;
 
@@ -453,18 +448,7 @@ impl JwtService {
         validation.leeway = self.clock_skew_leeway_secs;
 
         let token_data = decode(token, &self.decoding_key, &validation)
-            .map_err(|e| match e.kind() {
-                jsonwebtoken::errors::ErrorKind::ExpiredSignature => {
-                    Error::Authentication("Token expired".to_string())
-                }
-                jsonwebtoken::errors::ErrorKind::InvalidToken => {
-                    Error::Authentication("Invalid token".to_string())
-                }
-                jsonwebtoken::errors::ErrorKind::InvalidSignature => {
-                    Error::Authentication("Invalid token signature".to_string())
-                }
-                _ => Error::Authentication(format!("Token verification failed: {e}")),
-            })?;
+            .map_err(|e| map_jwt_error(e, "Token"))?;
 
         Ok(token_data.claims)
     }

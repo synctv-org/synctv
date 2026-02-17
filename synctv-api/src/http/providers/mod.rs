@@ -41,7 +41,7 @@ macro_rules! provider_proxy_handlers {
                 client_headers: &headers,
             };
 
-            synctv_proxy::proxy_fetch_and_forward(cfg)
+            synctv_proxy::proxy_fetch_and_forward(cfg, &synctv_proxy::NoopMetrics)
                 .await
                 .map_err(Into::into)
         }

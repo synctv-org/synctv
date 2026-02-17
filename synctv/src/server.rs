@@ -57,6 +57,8 @@ pub struct Services {
     pub live_streaming_infrastructure: Option<Arc<synctv_livestream::api::LiveStreamingInfrastructure>>,
     pub stun_server: Option<Arc<synctv_core::service::StunServer>>,
     pub sfu_manager: Option<Arc<synctv_sfu::SfuManager>>,
+    /// SFU session manager for session affinity queries (multi-replica routing).
+    pub sfu_session_manager: Option<Arc<synctv_sfu::SfuSessionManager>>,
     pub node_registry: Option<Arc<synctv_cluster::discovery::NodeRegistry>>,
     pub health_monitor: Option<Arc<synctv_cluster::discovery::HealthMonitor>>,
     pub load_balancer: Option<Arc<synctv_cluster::discovery::LoadBalancer>>,
@@ -484,6 +486,7 @@ impl SyncTvServer {
                 audit_service: self.services.audit_service.clone(),
                 live_streaming_infrastructure,
                 sfu_manager,
+                sfu_session_manager: self.services.sfu_session_manager.clone(),
                 rate_limiter: self.services.rate_limiter.clone(),
                 token_blacklist_service: self.services.token_blacklist.clone(),
                 ws_ticket_service,

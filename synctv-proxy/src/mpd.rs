@@ -3,7 +3,7 @@
 //! Pure data → XML string conversion. No I/O, no async.
 
 use std::fmt::Write;
-use synctv_core::provider::DashManifestData;
+use synctv_proto::dash::DashManifestData;
 
 /// Options for MPD generation
 pub struct MpdOptions<'a> {
@@ -166,7 +166,7 @@ fn xml_escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use synctv_core::provider::{DashAudioStream, DashSegmentBase, DashVideoStream};
+    use synctv_proto::dash::{DashAudioStream, DashSegmentBase, DashVideoStream};
 
     fn sample_data() -> DashManifestData {
         DashManifestData {

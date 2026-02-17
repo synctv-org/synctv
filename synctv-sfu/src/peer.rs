@@ -45,7 +45,12 @@ impl BandwidthEstimator {
             recent_bytes: VecDeque::new(),
             current_bandwidth_kbps: 1000, // Start with 1 Mbps assumption
             last_update: Instant::now(),
-            smoothing_factor: 0.8,
+            // Smoothing factor of 0.5 gives equal weight to the previous
+            // estimate and the latest measurement. This adapts more quickly
+            // to bandwidth changes than the prior value of 0.8, which was
+            // too sluggish for real-time video and caused delayed quality
+            // layer switching.
+            smoothing_factor: 0.5,
             window_duration_secs: 1,
         }
     }
@@ -140,11 +145,19 @@ impl SfuPeer {
 
     /// Try to send a forwarded RTP packet to this peer.
     /// Returns false if the channel is full (slow subscriber) or closed.
+    /// Increments packet_loss_count in stats when a packet is dropped due
+    /// to a full channel, providing visibility into slow-subscriber backpressure.
     pub fn try_forward_packet(&self, packet: &ForwardablePacket) -> bool {
         match self.packet_tx.try_send(packet.clone()) {
             Ok(()) => true,
-            Err(mpsc::error::TrySendError::Full(_)) => false,
-            Err(mpsc::error::TrySendError::Closed(_)) => false,
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                self.stats.write().packet_loss_count += 1;
+                false
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                self.stats.write().packet_loss_count += 1;
+                false
+            }
         }
     }
 

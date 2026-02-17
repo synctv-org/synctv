@@ -1,5 +1,18 @@
 //! Rate limiting service with Redis-backed distributed sliding window.
 //!
+//! # Usage
+//!
+//! This module lives in `synctv-core` because it serves **both** domain-level
+//! and API-level rate limiting:
+//!
+//! - **Domain-level**: `ChatService` uses `RateLimiter` for per-user chat and
+//!   danmaku throttling (business logic).
+//! - **API-level**: `synctv-api` uses `RateLimiter` in gRPC interceptors,
+//!   tower middleware layers, and HTTP handlers for request-level throttling.
+//!
+//! If rate limiting were only needed at the API boundary, it would belong in
+//! `synctv-api`. Its placement here reflects the domain-level usage.
+//!
 //! # Multi-Replica Behavior
 //!
 //! When Redis is configured, rate limits are **shared across all replicas** using

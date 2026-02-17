@@ -1,3 +1,13 @@
+//! Token blacklist service for managing revoked JWT tokens.
+//!
+//! # Placement
+//!
+//! This service lives in `synctv-core` (not `synctv-api`) because token
+//! revocation is a **domain concern**: `UserService` calls
+//! `invalidate_user_tokens` on password change, and `is_blacklisted` is called
+//! from both core auth validation and API middleware. Moving it to the API layer
+//! would create a circular dependency since `UserService` (core) depends on it.
+
 use redis::AsyncCommands;
 use sha2::{Sha256, Digest};
 use std::sync::Arc;

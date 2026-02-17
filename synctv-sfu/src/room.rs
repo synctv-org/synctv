@@ -437,25 +437,44 @@ impl SfuRoom {
             "Started forwarding track packets"
         );
 
+        // Cache the subscriber list to avoid a DashMap lookup on every single
+        // RTP packet. For large rooms (50+ subscribers), the per-packet shard
+        // lock contention in DashMap becomes a measurable bottleneck.
+        //
+        // The cache is refreshed every 100 packets (~3-4 seconds at 30fps).
+        // The staleness window is acceptable: a new subscriber added between
+        // refreshes will miss at most a few frames before the next refresh,
+        // and a removed subscriber's packet channel will be closed (try_send
+        // returns Closed, which is harmless).
+        let mut cached_subscribers: Vec<PeerId> = Vec::new();
+        let mut packets_since_refresh: u32 = 0;
+        const SUBSCRIBER_CACHE_REFRESH_INTERVAL: u32 = 100;
+
         // Forward packets to subscribers
         while let Some(packet) = packet_rx.recv().await {
-            // O(subscribers_of_track) lookup instead of O(total_subscriptions)
-            let subscribers: Vec<PeerId> = track_subscribers
-                .get(&track_id)
-                .map(|subs| {
-                    subs.iter()
-                        .filter(|id| *id != &publisher_peer_id)
-                        .cloned()
-                        .collect()
-                })
-                .unwrap_or_default();
+            // Refresh the cached subscriber list periodically
+            if packets_since_refresh == 0 || packets_since_refresh >= SUBSCRIBER_CACHE_REFRESH_INTERVAL {
+                cached_subscribers = track_subscribers
+                    .get(&track_id)
+                    .map(|subs| {
+                        subs.iter()
+                            .filter(|id| *id != &publisher_peer_id)
+                            .cloned()
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                packets_since_refresh = 0;
+            }
+            packets_since_refresh += 1;
 
             // Forward to each subscriber via their packet channel
             let packet_size = packet.data.len();
-            for subscriber_id in &subscribers {
+            for subscriber_id in &cached_subscribers {
                 if let Some(peer) = peers.get(subscriber_id) {
                     // Simulcast quality filtering: skip packets that don't match
-                    // the subscriber's preferred quality layer
+                    // the subscriber's preferred quality layer. Packets with
+                    // quality_layer = None (non-simulcast) bypass this filter
+                    // and are forwarded to all subscribers.
                     if let Some(packet_quality) = packet.quality_layer {
                         let preferred = peer.get_preferred_quality();
                         if packet_quality != preferred {

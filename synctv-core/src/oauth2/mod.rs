@@ -15,7 +15,7 @@ pub use providers::{GitHubConfig, GoogleConfig, LogtoConfig, OidcConfig};
 
 use crate::Error;
 use std::collections::HashMap;
-use std::sync::LazyLock;
+use std::sync::Arc;
 use async_trait::async_trait;
 
 // ============================================================================
@@ -76,78 +76,106 @@ pub struct OAuth2UserInfo {
 /// All parameters (`client_id`, `client_secret`, `redirect_url`, etc.) are in config.
 pub type ProviderFactory = fn(config: &serde_json::Value) -> Result<Box<dyn Provider>, Error>;
 
-/// Provider registry
+/// Instance-based provider registry.
 ///
 /// Maps provider type strings to factory functions.
 /// Similar to Go's `allProviders rwmap.RWMap[provider.OAuth2Provider, provider.Interface]`
 ///
 /// Uses `parking_lot::RwLock` (non-poisoning) for consistency with the rest of the codebase.
 /// Registration happens only during initialization and lookups are extremely fast.
-static PROVIDER_REGISTRY: LazyLock<parking_lot::RwLock<HashMap<String, ProviderFactory>>> =
-    LazyLock::new(|| parking_lot::RwLock::new(HashMap::new()));
+///
+/// Wrapped in `Arc` so it can be shared across services via dependency injection
+/// rather than relying on a global static.
+#[derive(Clone)]
+pub struct ProviderRegistry {
+    factories: Arc<parking_lot::RwLock<HashMap<String, ProviderFactory>>>,
+}
 
-/// Register an `OAuth2` provider factory function
+impl ProviderRegistry {
+    /// Create a new empty provider registry.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            factories: Arc::new(parking_lot::RwLock::new(HashMap::new())),
+        }
+    }
+
+    /// Register a provider factory function.
+    pub fn register(&self, provider_type: &str, factory: ProviderFactory) {
+        let mut registry = self.factories.write();
+        registry.insert(provider_type.to_string(), factory);
+    }
+
+    /// Get a registered factory function by type.
+    pub fn get_factory(&self, provider_type: &str) -> Option<ProviderFactory> {
+        let registry = self.factories.read();
+        registry.get(provider_type).copied()
+    }
+
+    /// Create a provider instance with configuration.
+    ///
+    /// Looks up the factory function in the registry and calls it.
+    pub fn create_provider(
+        &self,
+        provider_type: &str,
+        config: &serde_json::Value,
+    ) -> Result<Box<dyn Provider>, Error> {
+        let factory = self.get_factory(provider_type)
+            .ok_or_else(|| Error::InvalidInput(format!("Unknown provider type: {provider_type}")))?;
+        factory(config)
+    }
+}
+
+impl Default for ProviderRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl std::fmt::Debug for ProviderRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let count = self.factories.read().len();
+        f.debug_struct("ProviderRegistry")
+            .field("registered_count", &count)
+            .finish()
+    }
+}
+
+// ============================================================================
+// Global singleton (backwards compatibility)
+// ============================================================================
+
+/// Global provider registry singleton.
+///
+/// Prefer injecting `ProviderRegistry` via constructor/DI where possible.
+/// This global exists for backward compatibility with `init_providers()` and
+/// `create_provider()` free functions.
+static PROVIDER_REGISTRY: std::sync::LazyLock<ProviderRegistry> =
+    std::sync::LazyLock::new(ProviderRegistry::new);
+
+/// Get a reference to the global provider registry.
+#[must_use]
+pub fn global_provider_registry() -> &'static ProviderRegistry {
+    &PROVIDER_REGISTRY
+}
+
+/// Register an `OAuth2` provider factory function in the global registry.
 ///
 /// Call this for each provider type during initialization.
-/// Similar to Go's `RegisterProvider()` in providers.go
-///
-/// # Example
-///
-/// ```ignore
-/// register_provider_factory("github", github_factory);
-/// ```
 pub fn register_provider_factory(provider_type: &str, factory: ProviderFactory) {
-    let mut registry = PROVIDER_REGISTRY.write();
-    registry.insert(provider_type.to_string(), factory);
-}
-
-/// Get a registered factory function by type
-async fn get_provider_factory(provider_type: &str) -> Option<ProviderFactory> {
-    let registry = PROVIDER_REGISTRY.read();
-    registry.get(provider_type).copied()
+    PROVIDER_REGISTRY.register(provider_type, factory);
 }
 
 // ============================================================================
-// Factory Pattern
+// Factory Pattern (convenience free function)
 // ============================================================================
 
-/// Create a provider instance with configuration
+/// Create a provider instance with configuration using the global registry.
 ///
-/// This is the factory function that creates fully-configured providers.
-/// Similar to Go's `InitProvider()` in providers.go:
-///
-/// ```go
-/// func InitProvider(p provider.OAuth2Provider, c provider.Oauth2Option) (provider.Interface, error) {
-///     pi, ok := allProviders.Load(p)
-///     if !ok { return nil, FormatNotImplementedError(p) }
-///     pi.Init(c)
-///     return pi, nil
-/// }
-/// ```
-///
-/// # Arguments
-/// * `provider_type` - The type of provider ("github", "logto", "oidc", etc.)
-/// * `config` - Full configuration including `client_id`, `client_secret`, `redirect_url`, etc.
-///
-/// # Example
-///
-/// ```ignore
-/// // Create GitHub provider
-/// let config = serde_json::from_str::<serde_json::Value>(json)?;
-/// let github = create_provider("github", &config).await?;
-///
-/// // Create Logto provider with custom endpoint
-/// let config = serde_json::from_str::<serde_json::Value>(json)?;
-/// let logto = create_provider("logto", &config).await?;
-/// ```
+/// Prefer `ProviderRegistry::create_provider()` on an injected instance.
 pub async fn create_provider(
     provider_type: &str,
     config: &serde_json::Value,
 ) -> Result<Box<dyn Provider>, Error> {
-    // Look up factory function in registry
-    let factory = get_provider_factory(provider_type).await
-        .ok_or_else(|| Error::InvalidInput(format!("Unknown provider type: {provider_type}")))?;
-
-    // Call factory function to create provider instance
-    factory(config)
+    PROVIDER_REGISTRY.create_provider(provider_type, config)
 }

@@ -121,9 +121,6 @@ async fn init_cluster_components(
         Some(move || conn_mgr_for_hb.connection_count()),
     ).await;
 
-    // Start WAL replay background task (checks every 60s for pending WAL events)
-    cm.spawn_replay_task(std::time::Duration::from_secs(60));
-
     let health_monitor = Arc::new(HealthMonitor::new(registry.clone(), 15));
     match health_monitor.start().await {
         Ok(hm_handle) => {
@@ -189,13 +186,21 @@ async fn init_cluster_discovery(
                         if let Some(ref registry) = nr {
                             let dns = k8s_discovery.clone();
                             let reg = registry.clone();
+                            let bridge_cancel = cm.cancel_token();
                             tokio::spawn(async move {
                                 let mut timer = tokio::time::interval(Duration::from_secs(15));
                                 loop {
-                                    timer.tick().await;
-                                    let dns_peers = dns.get_peers_as_node_info().await;
-                                    if !dns_peers.is_empty() {
-                                        reg.merge_dns_peers(dns_peers).await;
+                                    tokio::select! {
+                                        () = bridge_cancel.cancelled() => {
+                                            info!("K8s DNS -> NodeRegistry sync bridge shutting down");
+                                            return;
+                                        }
+                                        _ = timer.tick() => {
+                                            let dns_peers = dns.get_peers_as_node_info().await;
+                                            if !dns_peers.is_empty() {
+                                                reg.merge_dns_peers(dns_peers).await;
+                                            }
+                                        }
                                     }
                                 }
                             });
@@ -678,7 +683,6 @@ async fn main() -> Result<()> {
             cleanup_interval: std::time::Duration::from_secs(30),
             critical_channel_capacity: config.cluster.critical_channel_capacity,
             publish_channel_capacity: config.cluster.publish_channel_capacity,
-            wal_path: config.cluster.wal_path.clone(),
         };
         match ClusterManager::new(cluster_config, None, None).await {
             Ok(manager) => Some(Arc::new(manager)),
@@ -695,7 +699,6 @@ async fn main() -> Result<()> {
             cleanup_interval: std::time::Duration::from_secs(30),
             critical_channel_capacity: config.cluster.critical_channel_capacity,
             publish_channel_capacity: config.cluster.publish_channel_capacity,
-            wal_path: config.cluster.wal_path.clone(),
         };
         match ClusterManager::new(
             cluster_config,
@@ -780,6 +783,10 @@ async fn main() -> Result<()> {
         live_streaming_infrastructure,
         stun_server,
         sfu_manager,
+        // SFU session manager is constructed lazily at runtime when a room
+        // transitions to SFU mode (via messaging.rs). For now pass None;
+        // it will be wired when the SFU session lifecycle is fully integrated.
+        sfu_session_manager: None,
         node_registry,
         health_monitor,
         load_balancer,

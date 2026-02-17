@@ -6,42 +6,15 @@ use super::alist::{
     alist_server::Alist, FsGetReq, FsGetResp, FsListReq, FsListResp, FsOtherReq, FsOtherResp,
     FsSearchReq, FsSearchResp, LoginReq, LoginResp, MeReq, MeResp,
 };
+use super::error_mapper::map_provider_error;
 use super::validation::validate_host_with_dns;
 use crate::alist::{AlistInterface, AlistService as AlistServiceImpl};
 use crate::alist::error::AlistError;
 use tonic::{Request, Response, Status};
 
-/// Map Alist errors to appropriate gRPC status codes instead of leaking internals.
+/// Map Alist errors to appropriate gRPC status codes using the shared mapper.
 fn map_alist_error(context: &str, e: AlistError) -> Status {
-    match e {
-        AlistError::Auth(_) => Status::unauthenticated(format!("{context}: authentication failed")),
-        AlistError::Http { status, .. } => {
-            if status.as_u16() == 401 || status.as_u16() == 403 {
-                Status::permission_denied(format!("{context}: access denied"))
-            } else if status.as_u16() == 404 {
-                Status::not_found(format!("{context}: resource not found"))
-            } else if status.is_server_error() {
-                Status::unavailable(format!("{context}: upstream server error"))
-            } else {
-                Status::internal(format!("{context}: request failed"))
-            }
-        }
-        AlistError::Network(_) => Status::unavailable(format!("{context}: network error")),
-        AlistError::Parse(_) => Status::internal(format!("{context}: failed to parse response")),
-        AlistError::Api { code, .. } => {
-            if code == 401 || code == 403 {
-                Status::permission_denied(format!("{context}: access denied"))
-            } else if code == 404 {
-                Status::not_found(format!("{context}: resource not found"))
-            } else {
-                Status::internal(format!("{context}: API error (code {code})"))
-            }
-        }
-        AlistError::InvalidConfig(_) => Status::invalid_argument(format!("{context}: invalid configuration")),
-        AlistError::InvalidHeader(_) => Status::internal(format!("{context}: invalid header")),
-        AlistError::NotImplemented(_) => Status::unimplemented(format!("{context}: not implemented")),
-        AlistError::ResponseTooLarge { size } => Status::resource_exhausted(format!("{context}: response too large ({size} bytes)")),
-    }
+    map_provider_error(context, &e)
 }
 
 /// Alist gRPC server

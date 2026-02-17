@@ -33,7 +33,7 @@ pub mod optimistic_retry;
 pub mod turn_server;
 pub mod ws_ticket;
 
-pub use auth::{hash_password, verify_password, JwtService, TokenType, Claims, BruteForceProtection};
+pub use auth::{hash_password, verify_password, JwtService, TokenType, Claims, BruteForceProtection, SecurityPipeline, AuthenticatedToken};
 pub use chat::ChatService;
 pub use email_token::{EmailTokenService, EmailTokenType};
 pub use oauth2::{OAuth2Service, OAuth2State, OAuth2UserInfo};
@@ -50,7 +50,7 @@ pub use remote_provider_manager::RemoteProviderManager;
 pub use providers_manager::ProvidersManager;
 pub use token_blacklist::TokenBlacklistService;
 pub use permission::PermissionService;
-pub use member::{MemberService, AddMemberOptions};
+pub use member::{MemberService, AddMemberOptions, MemberEventBroadcaster};
 pub use media::MediaService;
 pub use playback::{PlaybackService, PlaybackBroadcaster};
 pub use publish_key::{PublishKeyService, PublishKey};

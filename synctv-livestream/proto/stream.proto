@@ -22,6 +22,11 @@ service StreamRelayService {
 message PullRtmpStreamRequest {
     string room_id = 1;
     string media_id = 2;
+    // When true, this is a reconnection after a transient failure.
+    // The server should prioritize sending cached GOP frames for fast recovery.
+    // (StreamHub already does this automatically, but this flag allows the server
+    // to log reconnection events and apply reconnection-specific optimizations.)
+    bool is_reconnect = 3;
 }
 
 // RTMP packet with timestamp

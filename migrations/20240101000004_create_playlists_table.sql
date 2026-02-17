@@ -164,3 +164,31 @@ CREATE TRIGGER trigger_prevent_playlist_cycle
 
 COMMENT ON TRIGGER trigger_prevent_playlist_cycle ON playlists IS
 'Prevent circular references in playlist tree. Validates that parent_id does not create a cycle (max depth: 50).';
+
+-- ============================================================================
+-- Playlist Deletion Notification (for cluster-wide resource cleanup)
+-- ============================================================================
+
+CREATE OR REPLACE FUNCTION notify_playlist_deleted()
+RETURNS TRIGGER AS $$
+BEGIN
+    -- Send notification to all cluster nodes listening on 'synctv_playlist_deleted'
+    -- Enables stateless cleanup without requiring PersistentVolumeClaim/WAL
+    PERFORM pg_notify(
+        'synctv_playlist_deleted',
+        json_build_object(
+            'playlist_id', OLD.id,
+            'deleted_at', CURRENT_TIMESTAMP
+        )::text
+    );
+    RETURN OLD;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trigger_playlist_deleted
+AFTER DELETE ON playlists
+FOR EACH ROW
+EXECUTE FUNCTION notify_playlist_deleted();
+
+COMMENT ON FUNCTION notify_playlist_deleted IS
+'Sends a notification when a playlist is deleted. Cluster nodes listen for this to clear playlist caches.';

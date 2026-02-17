@@ -71,7 +71,21 @@ impl PublisherInfo {
     }
 }
 
-/// Stream registry for tracking active publishers
+/// Publisher Registry for tracking active publishers via Redis.
+///
+/// **Role**: Publisher Ownership -- enforces single-publisher-per-media and provides
+/// publisher discovery for cross-node gRPC relay. Used by the livestream layer to:
+/// 1. Atomically register a publisher (prevents duplicate publishers for the same media)
+/// 2. Look up the publisher's node/gRPC address for cross-node relay
+/// 3. Manage publisher TTL via heartbeat for crash detection
+///
+/// **Distinction from `synctv_cluster::sync::StreamRegistry`**:
+/// - This registry tracks *publisher ownership* (who is publishing, on which node,
+///   with what gRPC address, at what epoch) using room_id/media_id keys.
+/// - The cluster stream registry tracks *stream presence* for routing/discovery
+///   using app/stream identifiers.
+/// - Both use Redis; this one is Redis-only (no local cache) because publisher
+///   ownership must always be authoritative from Redis.
 #[derive(Clone)]
 pub struct StreamRegistry {
     redis: RedisConnectionManager,

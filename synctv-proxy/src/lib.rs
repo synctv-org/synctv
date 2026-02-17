@@ -6,7 +6,6 @@
 pub mod mpd;
 
 use std::collections::HashMap;
-use std::net::IpAddr;
 use std::num::NonZeroU32;
 use std::sync::LazyLock;
 use std::time::Duration;
@@ -18,6 +17,7 @@ use axum::{
 };
 use governor::{clock::Clock, DefaultKeyedRateLimiter, Quota, RateLimiter as GovernorRateLimiter};
 use nonzero_ext::nonzero;
+use synctv_media_providers::ssrf;
 
 /// Maximum response body size for proxied media (256 MB).
 const MAX_PROXY_BODY_SIZE: usize = 256 * 1024 * 1024;
@@ -73,6 +73,10 @@ const PROXY_RATE_LIMIT_WINDOW_SECS: u64 = 60;
 
 /// In-memory rate limiter for proxy endpoints, keyed by caller-provided string
 /// (typically the client IP address). Uses the GCRA algorithm via `governor`.
+///
+/// NOTE: This is a local (in-process) rate limiter and does NOT provide
+/// distributed rate limiting across multiple replicas. For multi-replica
+/// deployments, use [`DistributedRateLimiter`] backed by Redis.
 static PROXY_RATE_LIMITER: LazyLock<DefaultKeyedRateLimiter<String>> = LazyLock::new(|| {
     let period = Duration::from_secs(PROXY_RATE_LIMIT_WINDOW_SECS)
         .checked_div(PROXY_RATE_LIMIT_PER_MIN)
@@ -85,10 +89,32 @@ static PROXY_RATE_LIMITER: LazyLock<DefaultKeyedRateLimiter<String>> = LazyLock:
     GovernorRateLimiter::keyed(quota)
 });
 
+/// Abstraction over rate limiting backends.
+///
+/// Implementations can use in-process `governor` (single-replica) or
+/// Redis-backed distributed rate limiting (multi-replica).
+pub trait ProxyRateLimiter: Send + Sync {
+    /// Check if the request is allowed. Returns `Ok(())` if allowed,
+    /// or an error `Response` with 429 status if rate-limited.
+    fn check(&self, key: &str) -> Result<(), Response>;
+}
+
+/// In-process rate limiter using `governor`. Suitable for single-replica deployments.
+pub struct LocalRateLimiter;
+
+impl ProxyRateLimiter for LocalRateLimiter {
+    fn check(&self, key: &str) -> Result<(), Response> {
+        check_proxy_rate_limit(key)
+    }
+}
+
 /// Check the proxy rate limit for `key` (typically a client IP).
 ///
 /// Returns `Ok(())` if the request is allowed, or an error `Response` with
 /// `429 Too Many Requests` if the rate limit is exceeded.
+///
+/// This uses the in-process `governor` rate limiter. For distributed rate
+/// limiting, implement [`ProxyRateLimiter`] with a Redis backend.
 pub fn check_proxy_rate_limit(key: &str) -> Result<(), Response> {
     match PROXY_RATE_LIMITER.check_key(&key.to_string()) {
         Ok(_) => Ok(()),
@@ -147,27 +173,49 @@ fn apply_provider_headers(
     request
 }
 
+/// Callback for proxy metrics reporting.
+///
+/// Called after each proxy fetch completes. Implementations can record
+/// latency, error counts, etc. to their preferred metrics backend.
+pub trait ProxyMetrics: Send + Sync {
+    /// Called when a proxy fetch completes (success or failure).
+    fn on_proxy_complete(&self, protocol: &str, duration: Duration, error: Option<&str>);
+}
+
+/// No-op metrics implementation used when callers don't need metrics.
+pub struct NoopMetrics;
+
+impl ProxyMetrics for NoopMetrics {
+    fn on_proxy_complete(&self, _protocol: &str, _duration: Duration, _error: Option<&str>) {}
+}
+
 /// Fetch a remote URL and return the response.
-pub async fn proxy_fetch_and_forward(cfg: ProxyConfig<'_>) -> Result<Response, anyhow::Error> {
-    let timer = synctv_core::metrics::stream::STREAM_RELAY_DURATION
-        .with_label_values(&["hls"])
-        .start_timer();
+///
+/// The `metrics` parameter allows callers to inject their own metrics
+/// recording without this crate depending on any specific metrics library.
+pub async fn proxy_fetch_and_forward(
+    cfg: ProxyConfig<'_>,
+    metrics: &dyn ProxyMetrics,
+) -> Result<Response, anyhow::Error> {
+    let start = std::time::Instant::now();
 
     let result = proxy_fetch_and_forward_inner(cfg).await;
 
-    timer.observe_duration();
-    if let Err(ref e) = result {
-        let error_type = if e.to_string().contains("timeout") {
-            "timeout"
-        } else if e.to_string().contains("connection") {
-            "connection"
-        } else {
-            "other"
-        };
-        synctv_core::metrics::stream::STREAM_ERRORS
-            .with_label_values(&["hls", error_type])
-            .inc();
-    }
+    let elapsed = start.elapsed();
+    let error_type = match &result {
+        Ok(_) => None,
+        Err(e) => {
+            let msg = e.to_string();
+            Some(if msg.contains("timeout") {
+                "timeout"
+            } else if msg.contains("connection") {
+                "connection"
+            } else {
+                "other"
+            })
+        }
+    };
+    metrics.on_proxy_complete("hls", elapsed, error_type);
 
     result
 }
@@ -199,6 +247,31 @@ async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response,
     request = apply_provider_headers(request, cfg.url, cfg.provider_headers);
 
     let proxy_response = send_with_redirect_validation(request).await?;
+
+    // Retry on 5xx server errors: build a fresh request and retry once.
+    // We only retry once to avoid excessive latency for the client.
+    let proxy_response = if proxy_response.status().is_server_error() {
+        tracing::warn!(
+            status = %proxy_response.status(),
+            url = %cfg.url,
+            "Upstream returned server error, retrying once"
+        );
+        let mut retry_req = PROXY_CLIENT.get(cfg.url);
+        for (name, value) in cfg.client_headers {
+            if matches!(
+                name.as_str(),
+                "range" | "if-none-match" | "if-modified-since" | "accept" | "accept-language" | "user-agent"
+            ) {
+                if let Ok(v) = value.to_str() {
+                    retry_req = retry_req.header(name.as_str(), v);
+                }
+            }
+        }
+        retry_req = apply_provider_headers(retry_req, cfg.url, cfg.provider_headers);
+        send_with_redirect_validation(retry_req).await?
+    } else {
+        proxy_response
+    };
 
     let status = proxy_response.status();
     let response_headers = proxy_response.headers().clone();
@@ -236,8 +309,22 @@ async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response,
         }
     }
 
-    builder = builder.header("Cache-Control", "no-cache");
-    builder = builder.header("Pragma", "no-cache");
+    // Set Cache-Control based on content type:
+    // - Segment files (.m4s, .ts) are immutable and can be cached aggressively
+    // - Manifests (.m3u8, .mpd) and unknown types must not be cached
+    let cache_control = match response_headers
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+    {
+        Some(ct) if ct.contains("video/") || ct.contains("audio/") || ct.contains("octet-stream") => {
+            "public, max-age=86400, immutable"
+        }
+        _ => "no-cache",
+    };
+    builder = builder.header("Cache-Control", cache_control);
+    if cache_control == "no-cache" {
+        builder = builder.header("Pragma", "no-cache");
+    }
     builder = builder.header("X-Content-Type-Options", "nosniff");
 
     // Stream the body with cumulative size enforcement to prevent upstream servers
@@ -249,7 +336,7 @@ async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response,
             return futures::future::ready(None);
         }
         match chunk {
-            Ok(ref data) => {
+            Ok(data) => {
                 *total += data.len();
                 if *total > MAX_PROXY_BODY_SIZE {
                     *exceeded = true;
@@ -260,7 +347,9 @@ async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response,
                         ),
                     ))))
                 } else {
-                    futures::future::ready(Some(Ok(data.clone())))
+                    // `data` is already a `Bytes` which is cheaply cloneable (Arc-backed),
+                    // but we own it here so no clone is needed at all.
+                    futures::future::ready(Some(Ok(data)))
                 }
             }
             Err(e) => futures::future::ready(Some(Err(std::io::Error::other(
@@ -552,14 +641,18 @@ async fn send_with_redirect_validation(
 ///
 /// Performs DNS resolution to guard against DNS rebinding attacks where a
 /// hostname passes string-level checks but resolves to a private IP.
+///
+/// Delegates to `synctv_media_providers::ssrf` as the single source of truth
+/// for SSRF validation logic.
 pub async fn validate_proxy_url(raw: &str) -> Result<(), anyhow::Error> {
+    // Static string-level checks (scheme, hostname blocklist, literal IP)
     validate_proxy_url_static(raw)?;
 
     // Resolve hostname and check all resolved IPs to prevent DNS rebinding
     let parsed = url::Url::parse(raw)?;
     let host = parsed.host_str().unwrap_or("");
     // Only resolve if the host is NOT already a literal IP (already checked above)
-    if host.parse::<IpAddr>().is_err() {
+    if host.parse::<std::net::IpAddr>().is_err() {
         let port = parsed.port().unwrap_or(if parsed.scheme() == "https" { 443 } else { 80 });
         let addrs = tokio::net::lookup_host((host, port))
             .await
@@ -567,7 +660,7 @@ pub async fn validate_proxy_url(raw: &str) -> Result<(), anyhow::Error> {
 
         let mut found = false;
         for addr in addrs {
-            if is_private_ip(addr.ip()) {
+            if ssrf::is_blocked_ip(addr.ip()) {
                 return Err(anyhow::anyhow!(
                     "Hostname {host} resolves to private/reserved IP {}",
                     addr.ip()
@@ -584,63 +677,14 @@ pub async fn validate_proxy_url(raw: &str) -> Result<(), anyhow::Error> {
 }
 
 /// Synchronous URL string validation (scheme, hostname blocklist, literal IP checks).
-/// Used by redirect policy where async is not available.
-fn validate_proxy_url_static(raw: &str) -> Result<(), anyhow::Error> {
-    let parsed = url::Url::parse(raw)
-        .map_err(|_| anyhow::anyhow!("Invalid proxy URL"))?;
-
-    // Only allow HTTP(S) schemes
-    match parsed.scheme() {
-        "http" | "https" => {}
-        s => return Err(anyhow::anyhow!("Disallowed URL scheme: {s}")),
-    }
-
-    let host = parsed.host_str()
-        .ok_or_else(|| anyhow::anyhow!("URL has no host"))?;
-
-    // Block well-known internal hostnames (defense-in-depth; IP checks cover most cases)
-    if matches!(
-        host,
-        "localhost"
-            | "metadata.google.internal"
-            | "instance-data"
-            | "metadata"
-            | "kubernetes.default"
-            | "kubernetes.default.svc"
-    ) {
-        return Err(anyhow::anyhow!("Proxy to internal hosts is not allowed"));
-    }
-
-    // Parse and check IP address
-    if let Ok(ip) = host.parse::<IpAddr>() {
-        if is_private_ip(ip) {
-            return Err(anyhow::anyhow!("Proxy to private IP addresses is not allowed"));
-        }
-    }
-
-    // Also check hostnames that are raw IPv6 in brackets (url crate strips brackets)
-    if let Some(url::Host::Ipv4(ip)) = parsed.host() {
-        if is_private_ip(IpAddr::V4(ip)) {
-            return Err(anyhow::anyhow!("Proxy to private IP addresses is not allowed"));
-        }
-    }
-    if let Some(url::Host::Ipv6(ip)) = parsed.host() {
-        if is_private_ip(IpAddr::V6(ip)) {
-            return Err(anyhow::anyhow!("Proxy to private IP addresses is not allowed"));
-        }
-    }
-
-    Ok(())
-}
-
-/// Check if an IP address is in a private/reserved range.
 ///
-/// Delegates to `synctv_core::validation::is_private_ip` which is the
-/// authoritative SSRF IP validator covering IPv4 private, loopback,
-/// link-local, CGNAT, multicast, broadcast, IPv4-mapped IPv6, and
-/// IPv6 unique-local addresses.
-fn is_private_ip(ip: IpAddr) -> bool {
-    synctv_core::validation::is_private_ip(&ip)
+/// Delegates to `synctv_media_providers::ssrf::check_url` as the single source
+/// of truth for SSRF URL validation.
+fn validate_proxy_url_static(raw: &str) -> Result<(), anyhow::Error> {
+    match ssrf::check_url(raw) {
+        ssrf::SsrfCheckResult::Ok => Ok(()),
+        ssrf::SsrfCheckResult::Blocked(reason) => Err(anyhow::anyhow!(reason)),
+    }
 }
 
 #[cfg(test)]

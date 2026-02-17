@@ -68,8 +68,13 @@ impl UnitOfWork {
 impl Drop for UnitOfWork {
     fn drop(&mut self) {
         if self.tx.is_some() {
-            // Transaction was not explicitly committed/rolled back
-            // It will be automatically rolled back when dropped
+            // Transaction was not explicitly committed/rolled back.
+            // sqlx will automatically rollback when the Transaction is dropped,
+            // but this is likely a bug in the caller.
+            tracing::warn!(
+                "UnitOfWork dropped without explicit commit or rollback; \
+                 transaction will be rolled back automatically"
+            );
         }
     }
 }

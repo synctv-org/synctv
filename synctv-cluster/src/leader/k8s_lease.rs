@@ -142,6 +142,11 @@ impl K8sLeaderElector {
         self.leader_epoch.load(Ordering::Acquire)
     }
 
+    /// Returns this pod's identity string (typically POD_NAME).
+    pub fn identity(&self) -> &str {
+        &self.identity
+    }
+
     /// Start the leader election loop.
     ///
     /// Returns a `JoinHandle` for the background task.

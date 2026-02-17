@@ -10,44 +10,26 @@ use super::bilibili::{
     MatchResp, NewCaptchaResp, NewQrCodeResp, NewSmsReq, NewSmsResp, ParseLivePageReq,
     ParsePgcPageReq, ParseVideoPageReq, UserInfoReq, UserInfoResp, VideoPageInfo, VideoUrl,
 };
+use super::error_mapper::map_provider_error;
 use super::validation::validate_required;
 use crate::bilibili::{BilibiliInterface, BilibiliService as BilibiliServiceImpl};
 use crate::error::ProviderClientError;
 use tonic::{Request, Response, Status};
 
-/// Map provider errors to appropriate gRPC status codes instead of leaking internals.
+/// Map Bilibili provider errors to appropriate gRPC status codes using the shared mapper.
+///
+/// Bilibili has special API error codes (-101 for auth, -412 for rate limit) that
+/// are handled by the shared mapper's `api_error_code()` classification.
 fn map_bilibili_error(context: &str, e: ProviderClientError) -> Status {
-    match e {
-        ProviderClientError::Http { status, .. } => {
-            if status.as_u16() == 401 || status.as_u16() == 403 {
-                Status::permission_denied(format!("{context}: access denied"))
-            } else if status.as_u16() == 404 {
-                Status::not_found(format!("{context}: resource not found"))
-            } else if status.is_server_error() {
-                Status::unavailable(format!("{context}: upstream server error"))
-            } else {
-                Status::internal(format!("{context}: request failed"))
-            }
+    // Special handling for Bilibili-specific API error codes
+    if let ProviderClientError::Api { code, .. } = &e {
+        match code {
+            -101 => return Status::unauthenticated(format!("{context}: not logged in")),
+            -412 => return Status::resource_exhausted(format!("{context}: rate limited")),
+            _ => {}
         }
-        ProviderClientError::Network(_) => Status::unavailable(format!("{context}: network error")),
-        ProviderClientError::Parse(_) => Status::internal(format!("{context}: failed to parse response")),
-        ProviderClientError::Api { code, message } => {
-            if code == -101 {
-                // -101: not logged in / session expired
-                Status::unauthenticated(format!("{context}: not logged in"))
-            } else if code == -412 {
-                // -412: request rate limited
-                Status::resource_exhausted(format!("{context}: rate limited"))
-            } else {
-                Status::internal(format!("{context}: API error (code {code}): {message}"))
-            }
-        }
-        ProviderClientError::Auth(_) => Status::unauthenticated(format!("{context}: authentication failed")),
-        ProviderClientError::InvalidConfig(_) => Status::invalid_argument(format!("{context}: invalid configuration")),
-        ProviderClientError::InvalidHeader(_) => Status::internal(format!("{context}: invalid header")),
-        ProviderClientError::NotImplemented(_) => Status::unimplemented(format!("{context}: not implemented")),
-        ProviderClientError::ResponseTooLarge { size } => Status::resource_exhausted(format!("{context}: response too large ({size} bytes)")),
     }
+    map_provider_error(context, &e)
 }
 
 /// Bilibili gRPC server

@@ -7,7 +7,6 @@ pub mod events;
 pub mod redis_pubsub;
 pub mod room_hub;
 pub mod stream_registry;
-pub mod wal;
 
 pub use cluster_manager::{BroadcastResult, ClusterConfig, ClusterManager, ClusterMetrics};
 pub use connection_manager::{
@@ -18,4 +17,3 @@ pub use events::{CacheTarget, ClusterEvent, NotificationLevel};
 pub use redis_pubsub::{PublishRequest, RedisPubSub};
 pub use room_hub::{ConnectionId, MessageSender, RoomLifecycleEvent, RoomMessageHub, Subscriber};
 pub use stream_registry::{StreamMetadata, StreamRegistry};
-pub use wal::EventWal;

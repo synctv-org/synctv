@@ -10,6 +10,9 @@ pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("descriptor.bin");
 /// Encoded file descriptor set for provider proto definitions.
 pub const PROVIDERS_FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("providers/descriptor.bin");
 
+// DASH manifest data types (shared between synctv-core and synctv-proxy)
+pub mod dash;
+
 // Common shared types (enums, RoomMember)
 pub mod common {
     include!("synctv.common.rs");

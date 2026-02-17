@@ -526,9 +526,25 @@ impl NodeRegistry {
             // Build updated node info from local cache
             let (node_json, grpc_addr, http_addr) = {
                 let nodes = self.local_nodes.read().await;
-                let mut info = nodes.get(&self.node_id).cloned().unwrap_or_else(|| {
-                    NodeInfo::new(self.node_id.clone(), String::new(), String::new())
-                });
+                let info_opt = nodes.get(&self.node_id).cloned();
+                drop(nodes);
+
+                let mut info = match info_opt {
+                    Some(existing) if !existing.grpc_address.is_empty() => existing,
+                    _ => {
+                        // Local cache is missing or has empty addresses (should not happen
+                        // after a successful register()). Log a warning so operators know
+                        // the heartbeat is running with degraded data.
+                        tracing::warn!(
+                            node_id = %self.node_id,
+                            "Heartbeat: local node cache missing or has empty addresses, \
+                             auto-re-registration may use empty addresses"
+                        );
+                        info_opt.unwrap_or_else(|| {
+                            NodeInfo::new(self.node_id.clone(), String::new(), String::new())
+                        })
+                    }
+                };
                 let grpc = info.grpc_address.clone();
                 let http = info.http_address.clone();
                 info.last_heartbeat = now;
@@ -595,6 +611,15 @@ impl NodeRegistry {
             let result = op_result?;
 
             if result == -1 {
+                if grpc_addr.is_empty() || http_addr.is_empty() {
+                    tracing::error!(
+                        node_id = %self.node_id,
+                        grpc_address = %grpc_addr,
+                        http_address = %http_addr,
+                        "Heartbeat auto-re-registration has empty address(es); \
+                         node will be unreachable by peers until next restart"
+                    );
+                }
                 tracing::warn!(
                     node_id = %self.node_id,
                     "Heartbeat failed: key not found, auto-registering"
@@ -616,6 +641,15 @@ impl NodeRegistry {
             } else if result <= -1000 {
                 // Lua returns -(1000 + remote_epoch) on epoch mismatch
                 let remote_epoch = ((-result) - 1000) as u64;
+                if grpc_addr.is_empty() || http_addr.is_empty() {
+                    tracing::error!(
+                        node_id = %self.node_id,
+                        grpc_address = %grpc_addr,
+                        http_address = %http_addr,
+                        "Heartbeat auto-re-registration has empty address(es); \
+                         node will be unreachable by peers until next restart"
+                    );
+                }
                 tracing::warn!(
                     node_id = %self.node_id,
                     local_epoch = current_epoch,

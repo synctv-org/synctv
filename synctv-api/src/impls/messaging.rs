@@ -185,10 +185,11 @@ impl StreamMessageHandler {
             return Err(e);
         }
 
-        // Subscribe to cluster events
-        let (mut event_rx, _connection_id) = self.cluster_manager.subscribe(
+        // Subscribe to cluster events using the same connection_id as ConnectionManager
+        let (mut event_rx, _connection_id) = self.cluster_manager.subscribe_with_id(
             self.room_id.clone(),
-            self.user_id.clone()
+            self.user_id.clone(),
+            self.connection_id.clone(),
         ).await;
 
         // Subscribe to disconnect signals
@@ -313,10 +314,46 @@ impl StreamMessageHandler {
                                 break;
                             }
                         }
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                            // Channel lagged, continue - we might have missed some signals
-                            // but we'll still receive future ones
-                            tracing::warn!("Disconnect signal channel lagged");
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                            // Channel lagged: we may have missed critical disconnect signals.
+                            // Re-subscribe to get a fresh receiver so future signals are not lost,
+                            // then verify membership to catch any missed kick/ban.
+                            tracing::warn!(
+                                lagged = n,
+                                user_id = %self.user_id.as_str(),
+                                room_id = %self.room_id.as_str(),
+                                "Disconnect signal channel lagged, re-subscribing and verifying membership"
+                            );
+                            disconnect_rx = self.connection_manager.subscribe_disconnect();
+
+                            // Fallback: check database to see if we were kicked/banned while lagged
+                            match self.room_service.member_service().get_member(&self.room_id, &self.user_id).await {
+                                Ok(Some(member)) => {
+                                    if member.status == synctv_core::models::MemberStatus::Banned {
+                                        tracing::info!(
+                                            user_id = %self.user_id.as_str(),
+                                            room_id = %self.room_id.as_str(),
+                                            "User is banned (detected after disconnect signal lag), disconnecting"
+                                        );
+                                        break;
+                                    }
+                                }
+                                Ok(None) => {
+                                    tracing::info!(
+                                        user_id = %self.user_id.as_str(),
+                                        room_id = %self.room_id.as_str(),
+                                        "User is no longer a member (detected after disconnect signal lag), disconnecting"
+                                    );
+                                    break;
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        error = %e,
+                                        "Failed to verify membership after disconnect signal lag"
+                                    );
+                                    // Continue - we'll catch it on the next event or heartbeat
+                                }
+                            }
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                             tracing::error!("Disconnect signal channel closed");
@@ -358,9 +395,38 @@ impl StreamMessageHandler {
                             tracing::warn!(
                                 lagged = n,
                                 user_id = %self.user_id.as_str(),
-                                "Admin event channel lagged, re-subscribing to avoid missed kicks"
+                                "Admin event channel lagged, re-subscribing and verifying membership"
                             );
                             admin_rx = self.cluster_manager.subscribe_admin_events();
+
+                            // Fallback: query database to confirm member status since we may
+                            // have missed a KickUser or KickUserFromRoom event during the lag.
+                            match self.room_service.member_service().get_member(&self.room_id, &self.user_id).await {
+                                Ok(Some(member)) => {
+                                    if member.status == synctv_core::models::MemberStatus::Banned {
+                                        tracing::info!(
+                                            user_id = %self.user_id.as_str(),
+                                            room_id = %self.room_id.as_str(),
+                                            "User is banned (detected after admin event lag), disconnecting"
+                                        );
+                                        break;
+                                    }
+                                }
+                                Ok(None) => {
+                                    tracing::info!(
+                                        user_id = %self.user_id.as_str(),
+                                        room_id = %self.room_id.as_str(),
+                                        "User is no longer a member (detected after admin event lag), disconnecting"
+                                    );
+                                    break;
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        error = %e,
+                                        "Failed to verify membership after admin event lag"
+                                    );
+                                }
+                            }
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                             tracing::error!("Admin event channel closed");
@@ -552,11 +618,13 @@ impl StreamMessageHandler {
         // Use bounded channel to prevent memory exhaustion from fast clients
         let (tx, mut rx) = tokio::sync::mpsc::channel::<ClientMessage>(256);
 
-        // Subscribe to cluster events and forward to client
+        // Subscribe to cluster events using the same connection_id as ConnectionManager
         let room_id = self.room_id.clone();
         let user_id = self.user_id.clone();
         let room_id_str = room_id.as_str().to_string();
-        let (mut rx_events, _connection_id) = self.cluster_manager.subscribe(room_id, user_id).await;
+        let (mut rx_events, _connection_id) = self.cluster_manager.subscribe_with_id(
+            room_id, user_id, self.connection_id.clone(),
+        ).await;
         let sender = self.sender.clone();
 
         let event_token = cancel_token.clone();
@@ -601,6 +669,113 @@ impl StreamMessageHandler {
                 }
             }
         });
+
+        // Spawn task to monitor disconnect signals and admin events.
+        // When a relevant signal is received, cancel the token to stop all other tasks.
+        {
+            let mut disconnect_rx = self.connection_manager.subscribe_disconnect();
+            let mut admin_rx = self.cluster_manager.subscribe_admin_events();
+            let disconnect_token = cancel_token.clone();
+            let connection_id = self.connection_id.clone();
+            let user_id = self.user_id.clone();
+            let room_id = self.room_id.clone();
+            let room_service = Arc::clone(&self.room_service);
+            let cluster_manager = Arc::clone(&self.cluster_manager);
+            let connection_manager = self.connection_manager.clone();
+
+            tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        _ = disconnect_token.cancelled() => break,
+
+                        signal = disconnect_rx.recv() => {
+                            let should_disconnect = match &signal {
+                                Ok(synctv_cluster::sync::DisconnectSignal::Connection(conn_id)) => {
+                                    *conn_id == connection_id
+                                }
+                                Ok(synctv_cluster::sync::DisconnectSignal::User(uid)) => {
+                                    *uid == user_id
+                                }
+                                Ok(synctv_cluster::sync::DisconnectSignal::Room(rid)) => {
+                                    *rid == room_id
+                                }
+                                Ok(synctv_cluster::sync::DisconnectSignal::UserFromRoom { user_id: uid, room_id: rid }) => {
+                                    *uid == user_id && *rid == room_id
+                                }
+                                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => false,
+                                Err(tokio::sync::broadcast::error::RecvError::Closed) => true,
+                            };
+                            // Handle lag separately (needs mutable borrow of disconnect_rx)
+                            if let Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) = signal {
+                                tracing::warn!(
+                                    lagged = n,
+                                    user_id = %user_id.as_str(),
+                                    "Disconnect signal channel lagged in start(), re-subscribing and verifying"
+                                );
+                                disconnect_rx = connection_manager.subscribe_disconnect();
+                                // Verify membership after lag
+                                let is_removed = match room_service.member_service().get_member(&room_id, &user_id).await {
+                                    Ok(Some(member)) => member.status == synctv_core::models::MemberStatus::Banned,
+                                    Ok(None) => true,
+                                    _ => false,
+                                };
+                                if is_removed {
+                                    disconnect_token.cancel();
+                                    break;
+                                }
+                            } else if should_disconnect {
+                                tracing::info!(
+                                    connection_id = %connection_id,
+                                    "Disconnect signal received in start(), cancelling"
+                                );
+                                disconnect_token.cancel();
+                                break;
+                            }
+                        }
+
+                        admin_event = admin_rx.recv() => {
+                            let should_disconnect = match &admin_event {
+                                Ok(ClusterEvent::KickUser { user_id: uid, .. }) => {
+                                    *uid == user_id
+                                }
+                                Ok(ClusterEvent::KickUserFromRoom { user_id: uid, room_id: rid, .. }) => {
+                                    *uid == user_id && *rid == room_id
+                                }
+                                Ok(_) => false,
+                                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => false,
+                                Err(tokio::sync::broadcast::error::RecvError::Closed) => true,
+                            };
+                            // Handle lag separately
+                            if let Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) = admin_event {
+                                tracing::warn!(
+                                    lagged = n,
+                                    user_id = %user_id.as_str(),
+                                    "Admin event channel lagged in start(), re-subscribing and verifying"
+                                );
+                                admin_rx = cluster_manager.subscribe_admin_events();
+                                // Verify membership after lag
+                                let is_removed = match room_service.member_service().get_member(&room_id, &user_id).await {
+                                    Ok(Some(member)) => member.status == synctv_core::models::MemberStatus::Banned,
+                                    Ok(None) => true,
+                                    _ => false,
+                                };
+                                if is_removed {
+                                    disconnect_token.cancel();
+                                    break;
+                                }
+                            } else if should_disconnect {
+                                tracing::info!(
+                                    connection_id = %connection_id,
+                                    "Admin event triggered disconnect in start(), cancelling"
+                                );
+                                disconnect_token.cancel();
+                                break;
+                            }
+                        }
+                    }
+                }
+            });
+        }
 
         // Spawn cleanup task that waits for cancellation
         let cleanup_handler = self.clone();

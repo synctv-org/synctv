@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use rand::RngExt;
 
 use crate::{
-    cache::{CacheInvalidationService, InvalidationMessage},
+    cache::{CacheInvalidationService, InvalidationMessage, SingleFlight},
     models::{RoomId, RoomSettings},
     repository::RoomSettingsRepository,
     service::notification::NotificationService,
@@ -38,7 +38,9 @@ pub struct RoomSettingsService {
     cache: Arc<moka::future::Cache<RoomId, RoomSettings>>,
     invalidation_service: Option<Arc<CacheInvalidationService>>,
     notification_service: Arc<NotificationService>,
-    single_flight: Arc<tokio::sync::Mutex<std::collections::HashMap<RoomId, Arc<tokio::sync::Semaphore>>>>,
+    /// SingleFlight to prevent thundering herd on cache miss.
+    /// Uses `String` key (room_id) and `String` error (since `Error` is not `Clone`).
+    single_flight: SingleFlight<String, RoomSettings, String>,
 }
 
 impl std::fmt::Debug for RoomSettingsService {
@@ -56,7 +58,7 @@ impl Clone for RoomSettingsService {
             cache: self.cache.clone(),
             invalidation_service: self.invalidation_service.clone(),
             notification_service: self.notification_service.clone(),
-            single_flight: self.single_flight.clone(),
+            single_flight: self.single_flight.clone(), // Arc-backed, shares state
         }
     }
 }
@@ -97,7 +99,7 @@ impl RoomSettingsService {
             cache,
             invalidation_service,
             notification_service,
-            single_flight: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+            single_flight: SingleFlight::new(),
         };
 
         // Start invalidation listener if CacheInvalidationService is available
@@ -155,27 +157,38 @@ impl RoomSettingsService {
     /// # Performance
     /// - L1 cache hit: < 1ms
     /// - Cache miss + DB query: ~10ms
-    /// - Single-flight: Prevents thundering herd
+    /// - SingleFlight: Prevents thundering herd on cache miss
     pub async fn get(&self, room_id: &RoomId) -> Result<RoomSettings> {
         // Try cache first
         if let Some(settings) = self.cache.get(room_id).await {
             return Ok(settings);
         }
 
-        // Use single-flight pattern to prevent thundering herd
-        let semaphore = self.get_or_create_semaphore(room_id).await;
-        let _permit = semaphore.acquire().await;
+        // Use SingleFlight to prevent thundering herd:
+        // Only one task loads from DB for a given room_id; others wait for the result.
+        let sf_key = room_id.as_str().to_string();
+        let repo = self.repo.clone();
+        let cache = self.cache.clone();
+        let room_id_clone = room_id.clone();
 
-        // Double-check cache after acquiring semaphore
-        if let Some(settings) = self.cache.get(room_id).await {
-            return Ok(settings);
-        }
+        let settings = self.single_flight.do_work_with_fallback(
+            sf_key,
+            async move {
+                // Double-check cache (another task may have populated it)
+                if let Some(settings) = cache.get(&room_id_clone).await {
+                    return Ok(settings);
+                }
 
-        // Load from database
-        let settings = self.repo.get(room_id).await?;
+                // Load from database
+                let settings = repo.get(&room_id_clone).await.map_err(|e| e.to_string())?;
 
-        // Store in cache
-        self.cache.insert(room_id.clone(), settings.clone()).await;
+                // Store in cache
+                cache.insert(room_id_clone, settings.clone()).await;
+
+                Ok(settings)
+            },
+            || "SingleFlight worker failed during room settings fetch".to_string(),
+        ).await.map_err(Error::Internal)?;
 
         Ok(settings)
     }
@@ -323,22 +336,6 @@ impl RoomSettingsService {
         let _ = self.notification_service
             .notify_settings_updated(room_id, settings_value)
             .await;
-    }
-
-    /// Get or create semaphore for single-flight pattern.
-    /// Cleans up entries with no external references to prevent unbounded memory growth.
-    async fn get_or_create_semaphore(&self, room_id: &RoomId) -> Arc<tokio::sync::Semaphore> {
-        let mut map = self.single_flight.lock().await;
-
-        // Periodically clean up semaphores that are no longer in use (strong_count == 1
-        // means only the map itself holds a reference, so no one is waiting on it)
-        if map.len() > 1000 {
-            map.retain(|_, sem| Arc::strong_count(sem) > 1);
-        }
-
-        map.entry(room_id.clone())
-            .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(1)))
-            .clone()
     }
 
     /// Preload settings for multiple rooms (bulk loading)

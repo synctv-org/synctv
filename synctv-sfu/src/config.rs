@@ -13,6 +13,7 @@
 //! | `max_peers_per_room`         | `max_peers_per_sfu_room`           |
 //! | `enable_simulcast`           | `enable_simulcast`                 |
 //! | `enable_bandwidth_estimation`| `enable_bandwidth_estimation`      |
+//! | `filter_private_ice_candidates`| `filter_private_ice_candidates`  |
 //!
 //! The conversion is performed in `synctv/src/main.rs` at startup.
 //! Use [`SfuConfig::from_webrtc_fields`] for a less error-prone mapping.
@@ -51,6 +52,12 @@ pub struct SfuConfig {
     /// This prevents rooms from being stuck indefinitely in `Migrating` state
     /// due to crashes or errors during the migration process.
     pub migration_timeout_secs: u64,
+    /// Whether to filter private/internal ICE candidates before sending them
+    /// to clients. When true (default), host candidates with private IPs
+    /// (RFC 1918, loopback, link-local) are stripped to prevent leaking
+    /// internal network topology. Set to false in development or when the
+    /// SFU and clients are on the same private network.
+    pub filter_private_ice_candidates: bool,
 }
 
 impl SfuConfig {
@@ -87,6 +94,7 @@ impl SfuConfig {
             enable_bandwidth_estimation,
             ice_connection_timeout_secs: 30,
             migration_timeout_secs: 60,
+            filter_private_ice_candidates: true,
         }
     }
 }
@@ -101,6 +109,7 @@ impl Default for SfuConfig {
             enable_bandwidth_estimation: true,
             ice_connection_timeout_secs: 30,
             migration_timeout_secs: 60,
+            filter_private_ice_candidates: true,
         }
     }
 }

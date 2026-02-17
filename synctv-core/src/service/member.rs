@@ -10,9 +10,23 @@ use crate::{
     models::{Room, RoomId, RoomMember, RoomMemberWithUser, UserId, PermissionBits, RoomRole, MemberStatus, RoomSettings, PageParams},
     repository::{RoomMemberRepository, RoomRepository, RoomSettingsRepository},
     service::audit::{AuditService, AuditAction, AuditTargetType},
+    service::notification::NotificationService,
     service::permission::PermissionService,
     Error, Result,
 };
+
+/// Trait for broadcasting member events to cluster replicas.
+///
+/// This abstracts over the cluster manager so that `synctv-core` does not
+/// depend on `synctv-cluster`. The implementation lives in the API/wiring
+/// layer where `ClusterManager` is available.
+pub trait MemberEventBroadcaster: Send + Sync {
+    /// Broadcast a kick event for a user from a specific room to all cluster replicas.
+    fn broadcast_kick_from_room(&self, room_id: &RoomId, user_id: &UserId, reason: &str);
+
+    /// Broadcast a ban event for a user (disconnect from all rooms) to all cluster replicas.
+    fn broadcast_kick_user(&self, user_id: &UserId, reason: &str);
+}
 /// Role hierarchy level for authorization checks (higher = more authority)
 /// Creator > Admin > Member > Guest
 ///
@@ -126,6 +140,8 @@ pub struct MemberService {
     permission_service: PermissionService,
     audit_service: Option<Arc<AuditService>>,
     cache_invalidation: Option<Arc<CacheInvalidationService>>,
+    notification_service: Option<NotificationService>,
+    event_broadcaster: Option<Arc<dyn MemberEventBroadcaster>>,
 }
 
 impl std::fmt::Debug for MemberService {
@@ -149,6 +165,8 @@ impl MemberService {
             permission_service,
             audit_service: None,
             cache_invalidation: None,
+            notification_service: None,
+            event_broadcaster: None,
         }
     }
 
@@ -165,6 +183,16 @@ impl MemberService {
     /// Set the cache invalidation service for cross-replica permission cache sync
     pub fn set_cache_invalidation(&mut self, service: Arc<CacheInvalidationService>) {
         self.cache_invalidation = Some(service);
+    }
+
+    /// Set the notification service for broadcasting member events to local WebSocket clients
+    pub fn set_notification_service(&mut self, service: NotificationService) {
+        self.notification_service = Some(service);
+    }
+
+    /// Set the cluster event broadcaster for cross-replica kick/ban propagation
+    pub fn set_event_broadcaster(&mut self, broadcaster: Arc<dyn MemberEventBroadcaster>) {
+        self.event_broadcaster = Some(broadcaster);
     }
 
     /// Broadcast permission cache invalidation to other cluster replicas with
@@ -327,16 +355,12 @@ impl MemberService {
         // Invalidate permission cache
         self.permission_service.invalidate_cache(&room_id, &user_id).await;
 
-        // Broadcast permission cache invalidation to other cluster replicas
-        if let Some(ref invalidation) = self.cache_invalidation {
-            if let Err(e) = invalidation.invalidate_user_permission(&room_id, &user_id).await {
-                tracing::warn!(
-                    error = %e,
-                    room_id = %room_id.as_str(),
-                    user_id = %user_id.as_str(),
-                    "Failed to broadcast remove member invalidation to cluster"
-                );
-            }
+        // Broadcast permission cache invalidation to other cluster replicas with retry
+        self.broadcast_permission_invalidation_with_retry(&room_id, &user_id).await;
+
+        // Broadcast kick event to cluster for cross-replica disconnect
+        if let Some(ref broadcaster) = self.event_broadcaster {
+            broadcaster.broadcast_kick_from_room(&room_id, &user_id, "removed");
         }
 
         Ok(())
@@ -379,16 +403,24 @@ impl MemberService {
             .invalidate_cache(&room_id, &target_user_id)
             .await;
 
-        // Broadcast permission cache invalidation to other cluster replicas
-        if let Some(ref invalidation) = self.cache_invalidation {
-            if let Err(e) = invalidation.invalidate_user_permission(&room_id, &target_user_id).await {
+        // Broadcast permission cache invalidation to other cluster replicas with retry
+        self.broadcast_permission_invalidation_with_retry(&room_id, &target_user_id).await;
+
+        // Notify local WebSocket clients that member was kicked
+        if let Some(ref ns) = self.notification_service {
+            if let Err(e) = ns.notify_member_kicked(&room_id, &target_user_id).await {
                 tracing::warn!(
                     error = %e,
                     room_id = %room_id.as_str(),
                     user_id = %target_user_id.as_str(),
-                    "Failed to broadcast kick invalidation to cluster"
+                    "Failed to notify local clients of member kick"
                 );
             }
+        }
+
+        // Broadcast kick event to all cluster replicas for cross-replica disconnect
+        if let Some(ref broadcaster) = self.event_broadcaster {
+            broadcaster.broadcast_kick_from_room(&room_id, &target_user_id, "kicked");
         }
 
         // Audit log
@@ -682,16 +714,28 @@ impl MemberService {
             .invalidate_cache(&room_id, &target_user_id)
             .await;
 
-        // Broadcast permission cache invalidation to other cluster replicas
-        if let Some(ref invalidation) = self.cache_invalidation {
-            if let Err(e) = invalidation.invalidate_user_permission(&room_id, &target_user_id).await {
+        // Broadcast permission cache invalidation to other cluster replicas with retry
+        self.broadcast_permission_invalidation_with_retry(&room_id, &target_user_id).await;
+
+        // Notify local WebSocket clients that member was kicked (ban implies kick)
+        if let Some(ref ns) = self.notification_service {
+            if let Err(e) = ns.notify_member_kicked(&room_id, &target_user_id).await {
                 tracing::warn!(
                     error = %e,
                     room_id = %room_id.as_str(),
                     user_id = %target_user_id.as_str(),
-                    "Failed to broadcast ban invalidation to cluster"
+                    "Failed to notify local clients of member ban"
                 );
             }
+        }
+
+        // Broadcast kick event to all cluster replicas for cross-replica disconnect
+        if let Some(ref broadcaster) = self.event_broadcaster {
+            broadcaster.broadcast_kick_from_room(
+                &room_id,
+                &target_user_id,
+                reason.as_deref().unwrap_or("banned"),
+            );
         }
 
         // Audit log
@@ -731,17 +775,8 @@ impl MemberService {
             .invalidate_cache(&room_id, &target_user_id)
             .await;
 
-        // Broadcast permission cache invalidation to other cluster replicas
-        if let Some(ref invalidation) = self.cache_invalidation {
-            if let Err(e) = invalidation.invalidate_user_permission(&room_id, &target_user_id).await {
-                tracing::warn!(
-                    error = %e,
-                    room_id = %room_id.as_str(),
-                    user_id = %target_user_id.as_str(),
-                    "Failed to broadcast unban invalidation to cluster"
-                );
-            }
-        }
+        // Broadcast permission cache invalidation to other cluster replicas with retry
+        self.broadcast_permission_invalidation_with_retry(&room_id, &target_user_id).await;
 
         // Audit log
         self.audit_log(
@@ -804,17 +839,8 @@ impl MemberService {
             .invalidate_cache(&room_id, &target_user_id)
             .await;
 
-        // Broadcast permission cache invalidation to other cluster replicas
-        if let Some(ref invalidation) = self.cache_invalidation {
-            if let Err(e) = invalidation.invalidate_user_permission(&room_id, &target_user_id).await {
-                tracing::warn!(
-                    error = %e,
-                    room_id = %room_id.as_str(),
-                    user_id = %target_user_id.as_str(),
-                    "Failed to broadcast role change invalidation to cluster"
-                );
-            }
-        }
+        // Broadcast permission cache invalidation to other cluster replicas with retry
+        self.broadcast_permission_invalidation_with_retry(&room_id, &target_user_id).await;
 
         // Audit log
         self.audit_log(
@@ -873,17 +899,8 @@ impl MemberService {
             .invalidate_cache(&room_id, &target_user_id)
             .await;
 
-        // Broadcast permission cache invalidation to other cluster replicas
-        if let Some(ref invalidation) = self.cache_invalidation {
-            if let Err(e) = invalidation.invalidate_user_permission(&room_id, &target_user_id).await {
-                tracing::warn!(
-                    error = %e,
-                    room_id = %room_id.as_str(),
-                    user_id = %target_user_id.as_str(),
-                    "Failed to broadcast status change invalidation to cluster"
-                );
-            }
-        }
+        // Broadcast permission cache invalidation to other cluster replicas with retry
+        self.broadcast_permission_invalidation_with_retry(&room_id, &target_user_id).await;
 
         // Audit log
         self.audit_log(

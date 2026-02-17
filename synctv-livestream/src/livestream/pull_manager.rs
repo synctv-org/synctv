@@ -19,12 +19,17 @@ use tracing::{debug, info, error, warn};
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Default gRPC port for inter-node streaming (fallback when grpc_address is empty)
+/// Default gRPC port for inter-node streaming (fallback when grpc_address is empty).
+/// DEPRECATED: Only used by the legacy `extract_address_from_node_id` fallback.
 const DEFAULT_GRPC_PORT: u16 = 50051;
 
 /// Extract IP address from `node_id` and construct gRPC address.
 /// `node_id` format is "{hostname}_{ip}-{suffix}", e.g., "server1_192.168.1.1-abc123"
 /// Returns "ip:port" if IP is found, None otherwise.
+///
+/// **DEPRECATED**: This is a fragile fallback that parses the node_id format.
+/// All publisher nodes should set `grpc_address` explicitly during registration.
+/// This function is retained only for backwards compatibility with older nodes.
 fn extract_address_from_node_id(node_id: &str, grpc_port: u16) -> Option<String> {
     // Split by '_' to get the part containing IP
     let after_underscore = node_id.split('_').nth(1)?;
@@ -182,27 +187,36 @@ impl PullStreamManager {
         // Store the epoch from publisher info for split-brain detection
         let epoch = publisher_info.epoch;
 
-        // Use grpc_address if available, otherwise extract IP from node_id
-        // node_id format is "{hostname}_{ip}-{suffix}", e.g., "server1_192.168.1.1-abc123"
-        let publisher_address = if publisher_info.grpc_address.is_empty() {
-            // Fallback: extract IP from node_id and use configured gRPC port
-            warn!(
-                node_id = %publisher_info.node_id,
-                grpc_port = self.grpc_port,
-                "Publisher has no grpc_address, falling back to IP extraction from node_id"
-            );
-            extract_address_from_node_id(&publisher_info.node_id, self.grpc_port)
-                .ok_or_else(|| {
-                    error!(
-                        node_id = %publisher_info.node_id,
-                        "Cannot extract gRPC address from node_id"
-                    );
-                    crate::error::StreamError::InvalidAddress(format!(
-                        "Cannot extract gRPC address from node_id '{}'", publisher_info.node_id
-                    ))
-                })?
-        } else {
-            publisher_info.grpc_address.clone()
+        // Use grpc_address from publisher info. All publisher nodes MUST set this
+        // during registration for reliable cross-node proxying.
+        let publisher_address = match publisher_info.validate_grpc_address() {
+            Ok(addr) => addr.to_string(),
+            Err(_) => {
+                // DEPRECATED fallback: extract IP from node_id format.
+                // This path exists only for backwards compatibility with older nodes
+                // that were registered without grpc_address. New deployments should
+                // always set `advertise_grpc_address` in config.
+                warn!(
+                    node_id = %publisher_info.node_id,
+                    grpc_port = self.grpc_port,
+                    "Publisher has no grpc_address (misconfiguration). \
+                     Falling back to deprecated IP extraction from node_id. \
+                     Fix: set advertise_grpc_address in the publisher node's config."
+                );
+                extract_address_from_node_id(&publisher_info.node_id, self.grpc_port)
+                    .ok_or_else(|| {
+                        error!(
+                            node_id = %publisher_info.node_id,
+                            "Cannot extract gRPC address from node_id and grpc_address is empty. \
+                             Set advertise_grpc_address on the publisher node."
+                        );
+                        crate::error::StreamError::InvalidAddress(format!(
+                            "Publisher node '{}' has no grpc_address and node_id format is unrecognized. \
+                             Configure advertise_grpc_address on the publisher node.",
+                            publisher_info.node_id
+                        ))
+                    })?
+            }
         };
 
         let pull_stream = Arc::new(

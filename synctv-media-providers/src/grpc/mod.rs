@@ -19,6 +19,9 @@ pub mod emby {
 // Shared validation
 pub mod validation;
 
+// Shared gRPC error mapping
+pub mod error_mapper;
+
 // Server implementations
 pub mod alist_server;
 pub mod bilibili_server;

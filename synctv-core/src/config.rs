@@ -530,6 +530,12 @@ pub struct WebRTCConfig {
     pub max_bitrate_per_peer: u32,
     /// Enable bandwidth estimation
     pub enable_bandwidth_estimation: bool,
+    /// Filter private/internal ICE candidates before sending to clients.
+    /// When true (default), host candidates with private IPs (RFC 1918,
+    /// loopback, link-local) are stripped to prevent leaking internal
+    /// network topology. Set to false in development or when the SFU and
+    /// clients are on the same private network.
+    pub filter_private_ice_candidates: bool,
 }
 
 /// WebRTC operation mode
@@ -597,6 +603,7 @@ impl Default for WebRTCConfig {
             ],
             max_bitrate_per_peer: 0, // No limit by default
             enable_bandwidth_estimation: true,
+            filter_private_ice_candidates: true,
         }
     }
 }
@@ -703,7 +710,8 @@ impl Config {
 
     /// Resolve the advertise host for cluster node registration.
     ///
-    /// Priority: `server.advertise_host` config > `POD_IP` env var > system hostname.
+    /// Priority: `server.advertise_host` config > `POD_IP` env var >
+    /// first non-loopback IP > system hostname.
     /// This address must be routable from other nodes (never `0.0.0.0`).
     #[must_use]
     pub fn advertise_host(&self) -> String {
@@ -719,11 +727,37 @@ impl Config {
             }
         }
 
-        // 3. System hostname
+        // 3. Auto-detect first non-loopback IP (for non-K8s environments like
+        //    Docker Compose, bare-metal, or VMs where hostname may not be routable)
+        if let Some(ip) = Self::detect_non_loopback_ip() {
+            return ip;
+        }
+
+        // 4. System hostname (last resort)
         hostname::get()
             .ok()
             .and_then(|h| h.into_string().ok())
             .unwrap_or_else(|| self.server.host.clone())
+    }
+
+    /// Detect the outbound IP address by performing a UDP connect to a public
+    /// address. This triggers the OS to select the appropriate network interface
+    /// without actually sending any packets.
+    ///
+    /// Returns `None` if the detection fails (e.g., no network available).
+    fn detect_non_loopback_ip() -> Option<String> {
+        // Connect a UDP socket to a well-known public IP (Google DNS).
+        // No actual data is sent; the OS just selects the outbound interface.
+        let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+        socket.connect("8.8.8.8:53").ok()?;
+        let local_addr = socket.local_addr().ok()?;
+        let ip = local_addr.ip();
+
+        if ip.is_loopback() || ip.is_unspecified() {
+            return None;
+        }
+
+        Some(ip.to_string())
     }
 
     /// Get the gRPC address advertised to other cluster nodes.
@@ -1008,15 +1042,30 @@ impl Config {
             }
         }
 
-        // **WebRTC Issue (#21)**: Validate STUN external address in non-dev mode
+        // **WebRTC Issue (#21)**: Validate STUN external address in non-dev mode.
+        // In cluster/K8s/NAT environments (indicated by cluster_secret being set),
+        // stun_external_addr is REQUIRED because pods sit behind NAT and the
+        // default advertise_host (pod IP) is not reachable from the internet.
+        // Without an explicit external address, STUN reflexive candidates will
+        // contain internal IPs and WebRTC connections will fail.
         if self.webrtc.enable_builtin_stun && !self.server.development_mode {
             if self.webrtc.stun_external_addr.is_empty() {
-                tracing::warn!(
-                    "webrtc.enable_builtin_stun=true but stun_external_addr is not set. \
-                     STUN server will advertise reflexive candidates using advertise_host. \
-                     This may not work correctly behind NAT or load balancers. \
-                     Set webrtc.stun_external_addr to the server's public IP:port."
-                );
+                if !self.server.cluster_secret.is_empty() {
+                    errors.push(
+                        "webrtc.stun_external_addr must be set when running in cluster mode \
+                         (cluster_secret is configured). In NAT/K8s environments, STUN needs \
+                         the server's public IP:port to generate valid reflexive candidates. \
+                         Example: webrtc.stun_external_addr = \"203.0.113.1:3478\""
+                            .to_string(),
+                    );
+                } else {
+                    tracing::warn!(
+                        "webrtc.enable_builtin_stun=true but stun_external_addr is not set. \
+                         STUN server will advertise reflexive candidates using advertise_host. \
+                         This may not work correctly behind NAT or load balancers. \
+                         Set webrtc.stun_external_addr to the server's public IP:port."
+                    );
+                }
             }
         }
 
@@ -1116,13 +1165,6 @@ pub struct ClusterChannelConfig {
     /// - "k8s_lease": Use Kubernetes coordination.k8s.io/v1 Lease resource
     ///   (requires POD_NAME and POD_NAMESPACE env vars, RBAC permissions)
     pub leader_election_mode: String,
-
-    /// Optional path for the cluster event Write-Ahead Log (WAL).
-    /// When set, critical cluster events are persisted to disk before being
-    /// published to Redis, ensuring no events are lost during Redis outages.
-    /// Example: "data/wal"
-    /// Default: None (WAL disabled)
-    pub wal_path: Option<String>,
 }
 
 impl Default for ClusterChannelConfig {
@@ -1132,7 +1174,6 @@ impl Default for ClusterChannelConfig {
             publish_channel_capacity: 10_000,
             discovery_mode: "redis".to_string(),
             leader_election_mode: "redis".to_string(),
-            wal_path: None,
         }
     }
 }

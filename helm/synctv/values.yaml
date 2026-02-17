@@ -225,6 +225,11 @@ config:
     discoveryMode: "k8s_dns"
     ## Leader election mode: "redis" (default) or "k8s_lease" (uses Kubernetes Lease)
     leaderElectionMode: "redis"
+    ## Optional path for the cluster event Write-Ahead Log (WAL).
+    ## When set, critical events are persisted to disk before Redis publish,
+    ## ensuring no events are lost during Redis outages.
+    ## Requires a persistent volume (see wal.persistence below).
+    walPath: ""
 
   ## WebRTCConfig
   webrtc:
@@ -385,6 +390,21 @@ networkPolicy:
   # rtmpSourceCIDRs:
   #   - "10.0.0.0/8"
   #   - "192.168.0.0/16"
+
+## WAL Persistence (for cluster event Write-Ahead Log)
+## WARNING: Without persistence, the WAL uses emptyDir which is lost on pod restart.
+## Critical events stored in the WAL during Redis outages will be lost.
+## Enable persistence for production deployments that use the WAL feature.
+wal:
+  persistence:
+    enabled: false
+    ## Storage class for the WAL PVC (leave empty for default)
+    storageClass: ""
+    ## Size of the WAL persistent volume
+    size: 1Gi
+    ## Access modes for the PVC
+    accessModes:
+      - ReadWriteOnce
 
 ## Extra Environment Variables
 extraEnvVars: []

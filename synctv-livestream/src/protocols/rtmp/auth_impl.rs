@@ -14,21 +14,34 @@ use synctv_xiu::rtmp::auth::{AuthCallback, AuthPublishRewrite};
 use async_trait::async_trait;
 use std::sync::Arc;
 use synctv_core::service::PublishKeyService;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
+use crate::relay::registry_trait::StreamRegistryTrait;
 
 pub struct RtmpAuthCallbackImpl {
     publish_key_service: Arc<PublishKeyService>,
     /// Optional stream tracker for cleanup on unpublish.
     /// When set, `on_unpublish` removes the publisher from the tracker.
     stream_tracker: Option<Arc<crate::api::StreamTracker>>,
+    /// Optional publisher registry for atomic registration in on_publish.
+    /// When set, publishers are atomically registered in Redis BEFORE the
+    /// StreamHub Publish event, ensuring no window where a publisher is
+    /// active in StreamHub but not registered in the cluster registry.
+    registry: Option<Arc<dyn StreamRegistryTrait>>,
+    /// Node ID for publisher registration (required if registry is set).
+    node_id: String,
+    /// Advertised gRPC address for cross-node proxying.
+    grpc_address: String,
 }
 
 impl RtmpAuthCallbackImpl {
     #[must_use]
-    pub const fn new(publish_key_service: Arc<PublishKeyService>) -> Self {
+    pub fn new(publish_key_service: Arc<PublishKeyService>) -> Self {
         Self {
             publish_key_service,
             stream_tracker: None,
+            registry: None,
+            node_id: String::new(),
+            grpc_address: String::new(),
         }
     }
 
@@ -41,7 +54,26 @@ impl RtmpAuthCallbackImpl {
         Self {
             publish_key_service,
             stream_tracker: Some(stream_tracker),
+            registry: None,
+            node_id: String::new(),
+            grpc_address: String::new(),
         }
+    }
+
+    /// Enable atomic publisher registration in Redis during on_publish.
+    /// This ensures the publisher is registered BEFORE the StreamHub Publish event,
+    /// preventing a window where a publisher is active but not discoverable by other nodes.
+    #[must_use]
+    pub fn with_registry(
+        mut self,
+        registry: Arc<dyn StreamRegistryTrait>,
+        node_id: String,
+        grpc_address: String,
+    ) -> Self {
+        self.registry = Some(registry);
+        self.node_id = node_id;
+        self.grpc_address = grpc_address;
+        self
     }
 }
 
@@ -89,6 +121,35 @@ impl AuthCallback for RtmpAuthCallbackImpl {
             claims.user_id
         );
 
+        // Atomic registration in Redis BEFORE StreamHub Publish event.
+        // This ensures the publisher is discoverable by other nodes as soon as
+        // the stream starts, with no window where it's active but unregistered.
+        if let Some(ref registry) = self.registry {
+            let registered = registry
+                .try_register_publisher(
+                    &claims.room_id,
+                    &claims.media_id,
+                    &self.node_id,
+                    &claims.user_id,
+                    &self.grpc_address,
+                )
+                .await
+                .map_err(|e| format!("Failed to register publisher in Redis: {e}"))?;
+
+            if !registered {
+                return Err(format!(
+                    "Another publisher is already active for media {} in room {}",
+                    claims.media_id, claims.room_id
+                )
+                .into());
+            }
+
+            info!(
+                "Publisher registered atomically in auth phase: room={}, media={}, node={}",
+                claims.room_id, claims.media_id, self.node_id
+            );
+        }
+
         // Register in stream tracker so kick_user/room_publishers can find this publisher
         if let Some(tracker) = &self.stream_tracker {
             tracker.insert(
@@ -127,27 +188,46 @@ impl AuthCallback for RtmpAuthCallbackImpl {
         stream_name: &str,
         _query: Option<&str>,
     ) {
-        if let Some(tracker) = &self.stream_tracker {
-            if let Some((user_id, room_id, media_id)) =
-                tracker.remove_by_app_stream(app_name, stream_name)
-            {
-                info!(
-                    user_id = %user_id,
-                    room_id = %room_id,
-                    media_id = %media_id,
-                    "RTMP publisher unpublished, removed from tracker"
-                );
-            } else {
-                warn!(
-                    app_name = %app_name,
-                    "on_unpublish: no matching stream found in tracker"
-                );
+        let tracked = if let Some(tracker) = &self.stream_tracker {
+            tracker.remove_by_app_stream(app_name, stream_name)
+        } else {
+            None
+        };
+
+        if let Some((ref user_id, ref room_id, ref media_id)) = tracked {
+            info!(
+                user_id = %user_id,
+                room_id = %room_id,
+                media_id = %media_id,
+                "RTMP publisher unpublished, removed from tracker"
+            );
+
+            // Unregister from Redis if registry is configured
+            if let Some(ref registry) = self.registry {
+                if let Err(e) = registry.unregister_publisher(room_id, media_id).await {
+                    error!(
+                        room_id = %room_id,
+                        media_id = %media_id,
+                        "Failed to unregister publisher from Redis: {}", e
+                    );
+                }
             }
         } else {
-            info!(
-                "RTMP publisher unpublished: app_name={}, stream_name={}",
-                app_name, stream_name
+            warn!(
+                app_name = %app_name,
+                "on_unpublish: no matching stream found in tracker"
             );
+            // Best-effort: try to unregister using app_name/stream_name directly
+            // (these are the canonical room_id/media_id after auth rewrite)
+            if let Some(ref registry) = self.registry {
+                if let Err(e) = registry.unregister_publisher(app_name, stream_name).await {
+                    error!(
+                        app_name = %app_name,
+                        stream_name = %stream_name,
+                        "Failed to unregister publisher from Redis (fallback): {}", e
+                    );
+                }
+            }
         }
     }
 

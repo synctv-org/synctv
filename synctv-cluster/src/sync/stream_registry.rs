@@ -62,9 +62,22 @@ const STREAM_METADATA_TTL_SECONDS: i64 = 300; // 5 minutes
 
 /// Registry for tracking active streams across all replicas in the cluster.
 ///
+/// **Role**: Stream Discovery -- provides cross-replica stream discovery and
+/// routing capabilities. Used by the cluster layer to know which streams exist
+/// on which replicas so that viewer requests can be routed to the correct node.
+///
+/// **Distinction from `synctv_livestream::relay::StreamRegistry`**:
+/// - This registry (`synctv_cluster`) tracks *stream presence* for routing/discovery
+///   (identifier + replica mapping). It answers: "where is stream X available?"
+/// - The livestream publisher registry (`synctv_livestream::relay`) tracks *publisher
+///   ownership* for single-publisher enforcement and cross-node relay. It answers:
+///   "who is publishing stream X, and what is their gRPC address?"
+/// - Both use Redis for distributed state; this one adds a local DashMap cache.
+/// - They operate at different granularity: this uses app/stream identifiers,
+///   the publisher registry uses room_id/media_id.
+///
 /// Uses Redis for distributed state, with local DashMap as a cache for
-/// streams hosted on this replica. Provides cross-replica stream discovery
-/// and routing capabilities.
+/// streams hosted on this replica.
 #[derive(Clone)]
 pub struct StreamRegistry {
     /// Local cache of streams hosted on this replica

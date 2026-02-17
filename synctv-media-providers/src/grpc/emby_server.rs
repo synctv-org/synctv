@@ -8,34 +8,15 @@ use super::emby::{
     PlaybackInfoReq, PlaybackInfoResp, ReportPlaybackStartReq, ReportPlaybackStopReq,
     ReportPlaybackProgressReq, SystemInfoReq, SystemInfoResp,
 };
+use super::error_mapper::map_provider_error;
 use super::validation::validate_host_with_dns;
 use crate::emby::{EmbyInterface, EmbyService as EmbyServiceImpl};
 use crate::emby::error::EmbyError;
 use tonic::{Request, Response, Status};
 
-/// Map Emby errors to appropriate gRPC status codes instead of leaking internals.
+/// Map Emby errors to appropriate gRPC status codes using the shared mapper.
 fn map_emby_error(context: &str, e: EmbyError) -> Status {
-    match e {
-        EmbyError::Auth(_) => Status::unauthenticated(format!("{context}: authentication failed")),
-        EmbyError::Http { status, .. } => {
-            if status.as_u16() == 401 || status.as_u16() == 403 {
-                Status::permission_denied(format!("{context}: access denied"))
-            } else if status.as_u16() == 404 {
-                Status::not_found(format!("{context}: resource not found"))
-            } else if status.is_server_error() {
-                Status::unavailable(format!("{context}: upstream server error"))
-            } else {
-                Status::internal(format!("{context}: request failed"))
-            }
-        }
-        EmbyError::Network(_) => Status::unavailable(format!("{context}: network error")),
-        EmbyError::Parse(_) => Status::internal(format!("{context}: failed to parse response")),
-        EmbyError::Api { .. } => Status::internal(format!("{context}: API error")),
-        EmbyError::InvalidConfig(_) => Status::invalid_argument(format!("{context}: invalid configuration")),
-        EmbyError::InvalidHeader(_) => Status::internal(format!("{context}: invalid header")),
-        EmbyError::NotImplemented(_) => Status::unimplemented(format!("{context}: not implemented")),
-        EmbyError::ResponseTooLarge { size } => Status::resource_exhausted(format!("{context}: response too large ({size} bytes)")),
-    }
+    map_provider_error(context, &e)
 }
 
 /// Emby gRPC server

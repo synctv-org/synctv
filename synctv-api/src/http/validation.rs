@@ -13,7 +13,7 @@ pub mod limits {
     pub use synctv_core::validation::{
         USERNAME_MIN, USERNAME_MAX,
         PASSWORD_MIN, PASSWORD_MAX,
-        ROOM_NAME_MAX,
+        ROOM_NAME_MIN, ROOM_NAME_MAX,
     };
 
     /// Maximum room description length
@@ -199,6 +199,13 @@ pub fn validate_room_name(name: &str) -> ValidationResult<String> {
     let sanitized = sanitize_string(name);
 
     let len = sanitized.len();
+    if len < limits::ROOM_NAME_MIN {
+        return Err(ValidationError::TooShort {
+            field: "room_name",
+            min: limits::ROOM_NAME_MIN,
+            actual: len,
+        });
+    }
     if len > limits::ROOM_NAME_MAX {
         return Err(ValidationError::TooLong {
             field: "room_name",
@@ -519,6 +526,8 @@ mod tests {
     #[test]
     fn test_validate_room_name() {
         assert!(validate_room_name("My Room").is_ok());
+        assert!(validate_room_name("").is_err()); // Too short (empty after trim)
+        assert!(validate_room_name("   ").is_err()); // Too short (whitespace-only)
         assert!(validate_room_name(&"a".repeat(limits::ROOM_NAME_MAX + 1)).is_err()); // Too long
         assert!(validate_room_name("<script>alert('xss')</script>").is_err()); // XSS attempt
     }

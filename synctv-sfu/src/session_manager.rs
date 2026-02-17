@@ -550,6 +550,12 @@ impl SfuSessionManager {
                     // "h", "m", "l"). Tagging packets with the correct layer
                     // allows the forwarding loop to filter by subscriber
                     // bandwidth.
+                    //
+                    // Non-simulcast tracks (or audio tracks) keep quality_layer
+                    // as None so they are forwarded to ALL subscribers regardless
+                    // of the subscriber's preferred quality layer. Previously,
+                    // defaulting to Medium caused non-simulcast video to be
+                    // dropped for subscribers at High or Low preference.
                     if simulcast_enabled && kind == TrackKind::Video {
                         let rid = remote_track.rid().to_string();
                         if let Some(layer) = crate::track::QualityLayer::from_rid(&rid) {
@@ -561,10 +567,10 @@ impl SfuSessionManager {
                                 "{}: Detected simulcast layer from RID", prefix
                             );
                             media_track.set_quality_layer(layer);
-                        } else {
-                            // No RID or unrecognized: default to Medium
-                            media_track.set_quality_layer(crate::track::QualityLayer::Medium);
                         }
+                        // No RID or unrecognized: leave quality_layer as None
+                        // so the packet bypasses quality filtering in the
+                        // forwarding loop.
                     }
 
                     if let Err(e) = room
@@ -638,7 +644,16 @@ impl SfuSessionManager {
                             // serialize concurrent offer creation. Without this,
                             // multiple on_track callbacks racing on the same peer
                             // would produce invalid SDP states.
+                            //
+                            // Batch renegotiation: sleep briefly while holding the
+                            // lock so that if another on_track callback fires within
+                            // this window, its add_outbound_track() completes first
+                            // and both tracks are included in a single SDP offer.
+                            // This reduces redundant renegotiation rounds when a
+                            // publisher adds multiple tracks (e.g., audio + video)
+                            // almost simultaneously.
                             let _reneg_guard = reneg_lock.lock().await;
+                            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                             match sub_pc.create_offer().await {
                                 Ok(offer) => {
                                     let offer_json = match serde_json::to_string(&offer) {
@@ -682,10 +697,13 @@ impl SfuSessionManager {
             },
         ));
 
-        // Set up on_ice_candidate callback with security filtering
+        // Set up on_ice_candidate callback with security filtering.
+        // When filter_private_ice_candidates is false, all candidates are
+        // forwarded without filtering (useful for dev or same-network setups).
         let event_tx_for_ice = event_tx.clone();
         let peer_id_str = peer_id.to_string();
         let log_prefix_ice = log_prefix.to_string();
+        let filter_candidates = self.sfu_manager.config().filter_private_ice_candidates;
 
         pc.pc.on_ice_candidate(Box::new(move |candidate: Option<RTCIceCandidate>| {
             let event_tx = event_tx_for_ice.clone();
@@ -693,7 +711,12 @@ impl SfuSessionManager {
             let prefix = log_prefix_ice.clone();
             Box::pin(async move {
                 if let Some(candidate) = candidate {
-                    if let Some(filtered) = filter_ice_candidate(&candidate) {
+                    let maybe_filtered = if filter_candidates {
+                        filter_ice_candidate(&candidate)
+                    } else {
+                        Some(candidate.clone())
+                    };
+                    if let Some(filtered) = maybe_filtered {
                         let candidate_json = match filtered.to_json() {
                             Ok(init) => match serde_json::to_string(&init) {
                                 Ok(json) => json,

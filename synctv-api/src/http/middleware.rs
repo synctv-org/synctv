@@ -8,7 +8,7 @@ use axum::{
 };
 use std::sync::LazyLock;
 use synctv_core::{
-    models::{id::UserId, RoomId, UserStatus},
+    models::{id::UserId, RoomId},
     service::{auth::JwtValidator, rate_limit::RateLimitError},
 };
 
@@ -64,55 +64,26 @@ where
             .ok_or_else(|| AppError::unauthorized("Missing Authorization header"))?;
 
         // Parse Bearer token and validate using unified validator.
-        // We extract full claims (not just user_id) so we can check the
-        // issued-at timestamp against password-change invalidation.
         let auth_str = auth_header
             .to_str()
             .map_err(|e| AppError::unauthorized(format!("Invalid Authorization header: {e}")))?;
 
+        // Step 1: JWT verification
         let claims = validator
             .validate_http(auth_str)
             .map_err(|e| AppError::unauthorized(format!("{e}")))?;
 
-        // Unified security check order (matches gRPC BlacklistCheckLayer):
-        // 1. JWT verification (done above)  2. Blacklist  3. Password invalidation  4. Banned user
-
-        // Step 2: Check if the token has been revoked (e.g. after logout).
         let raw_token = JwtValidator::extract_bearer_token(auth_str)
             .map_err(|e| AppError::unauthorized(format!("{e}")))?;
-        if app_state
-            .token_blacklist_service
-            .is_blacklisted(&raw_token)
+
+        // Steps 2-4: Shared security pipeline (blacklist, password invalidation, user status)
+        let authenticated = app_state
+            .security_pipeline
+            .check(&raw_token, &claims)
             .await
-            .unwrap_or(true) // Fail closed: deny if blacklist check errors
-        {
-            return Err(AppError::unauthorized("Token has been revoked"));
-        }
+            .map_err(|e| AppError::unauthorized(format!("{e}")))?;
 
-        let user_id = UserId::from_string(claims.sub);
-
-        // Step 3: Reject tokens issued before the user's last password change.
-        // This ensures that stolen tokens become useless after a password reset.
-        if app_state
-            .user_service
-            .is_token_invalidated_by_password_change(&user_id, claims.iat)
-            .await
-            .unwrap_or(true)
-        {
-            return Err(AppError::unauthorized(
-                "Token invalidated due to password change. Please log in again.",
-            ));
-        }
-
-        // Step 4: Check if user is banned, pending, or deleted (defense-in-depth: catches
-        // banned/pending users even if they hold a valid JWT issued before the status change)
-        let user = app_state.user_service.get_user(&user_id).await
-            .map_err(|_| AppError::unauthorized("User not found"))?;
-        if user.is_deleted() || user.status == UserStatus::Banned || user.status == UserStatus::Pending {
-            return Err(AppError::unauthorized("Authentication failed"));
-        }
-
-        Ok(Self { user_id })
+        Ok(Self { user_id: authenticated.user_id })
     }
 }
 

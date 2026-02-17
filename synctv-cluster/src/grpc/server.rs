@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
 use super::synctv::cluster::cluster_service_server::ClusterService;
-use super::synctv::cluster::{NodeInfo, RegisterNodeRequest, RegisterNodeResponse, HeartbeatRequest, HeartbeatResponse, GetNodesRequest, GetNodesResponse, DeregisterNodeRequest, DeregisterNodeResponse, GetUserOnlineStatusRequest, GetUserOnlineStatusResponse, UserOnlineStatus, GetRoomConnectionsRequest, GetRoomConnectionsResponse, RoomConnection};
+use super::synctv::cluster::{NodeInfo, NodeStatus, RegisterNodeRequest, RegisterNodeResponse, HeartbeatRequest, HeartbeatResponse, GetNodesRequest, GetNodesResponse, DeregisterNodeRequest, DeregisterNodeResponse, GetUserOnlineStatusRequest, GetUserOnlineStatusResponse, UserOnlineStatus, GetRoomConnectionsRequest, GetRoomConnectionsResponse, RoomConnection};
 use crate::discovery::{NodeInfo as DiscoveryNodeInfo, NodeRegistry};
 use crate::sync::connection_manager::ConnectionManager;
 
@@ -88,13 +88,16 @@ impl ClusterServer {
         Ok(())
     }
 
-    /// Convert discovery `NodeInfo` to proto `NodeInfo`
+    /// Convert discovery `NodeInfo` to proto `NodeInfo`.
+    ///
+    /// Proto enum `NodeStatus` mapping (see `synctv.cluster.proto`):
+    ///   0 = Unknown, 1 = Active, 2 = Draining, 3 = Offline
     fn discovery_to_proto_node(&self, discovery: &DiscoveryNodeInfo) -> NodeInfo {
         NodeInfo {
             node_id: discovery.node_id.clone(),
             address: discovery.grpc_address.clone(),
             region: String::new(),
-            status: 1, // Active
+            status: NodeStatus::Active as i32,
             // Use last_heartbeat as proxy for registered_at since
             // DiscoveryNodeInfo doesn't track actual registration time.
             registered_at: discovery.last_heartbeat.timestamp(),

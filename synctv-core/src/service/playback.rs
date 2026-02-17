@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::{
-    cache::{CacheInvalidationService, InvalidationMessage},
+    cache::{CacheInvalidationService, InvalidationMessage, SingleFlight},
     models::{RoomId, UserId, MediaId, PlaylistId, PermissionBits, RoomPlaybackState, RoomSettings, PlayMode},
     repository::{RoomPlaybackStateRepository, MediaRepository},
     service::{permission::PermissionService, media::MediaService, notification::NotificationService},
@@ -44,6 +44,9 @@ pub struct PlaybackService {
     playback_cache: Arc<moka::future::Cache<String, RoomPlaybackState>>,
     /// Optional cache invalidation service for cross-replica cache sync
     invalidation_service: Option<Arc<CacheInvalidationService>>,
+    /// SingleFlight to prevent thundering herd on cache miss.
+    /// Uses `String` key (room_id) and `String` error (since `Error` is not `Clone`).
+    single_flight: SingleFlight<String, RoomPlaybackState, String>,
 }
 
 impl std::fmt::Debug for PlaybackService {
@@ -79,6 +82,7 @@ impl PlaybackService {
                     .build(),
             ),
             invalidation_service: None,
+            single_flight: SingleFlight::new(),
         }
     }
 
@@ -182,8 +186,8 @@ impl PlaybackService {
 
     /// Get playback state for a room.
     ///
-    /// Checks the L1 in-memory cache first; on miss, falls through to the
-    /// database and populates the cache for subsequent reads.
+    /// Checks the L1 in-memory cache first; on miss, uses SingleFlight to ensure
+    /// only one concurrent DB fetch per room_id, then populates the cache.
     pub async fn get_state(&self, room_id: &RoomId) -> Result<RoomPlaybackState> {
         let cache_key = room_id.as_str().to_string();
 
@@ -192,14 +196,28 @@ impl PlaybackService {
             return Ok(state);
         }
 
-        // Cache miss — fetch from DB (pure read, no INSERT)
-        let state = match self.playback_repo.get(room_id).await? {
-            Some(s) => s,
-            None => RoomPlaybackState::new(room_id.clone()),
-        };
+        // Cache miss — use SingleFlight to prevent thundering herd:
+        // Only one task loads from DB for a given room_id; others wait for the result.
+        let repo = self.playback_repo.clone();
+        let cache = self.playback_cache.clone();
+        let room_id_clone = room_id.clone();
 
-        // Populate cache
-        self.playback_cache.insert(cache_key, state.clone()).await;
+        let state = self.single_flight.do_work_with_fallback(
+            cache_key,
+            async move {
+                let state = match repo.get(&room_id_clone).await {
+                    Ok(Some(s)) => s,
+                    Ok(None) => RoomPlaybackState::new(room_id_clone),
+                    Err(e) => return Err(e.to_string()),
+                };
+
+                // Populate cache
+                cache.insert(state.room_id.as_str().to_string(), state.clone()).await;
+
+                Ok(state)
+            },
+            || "SingleFlight worker failed during playback state fetch".to_string(),
+        ).await.map_err(Error::Internal)?;
 
         Ok(state)
     }

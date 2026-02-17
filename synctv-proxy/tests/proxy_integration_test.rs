@@ -6,7 +6,7 @@
 //! 3. Rate limiting enforcement
 //! 4. XML escaping
 
-use synctv_core::provider::{DashAudioStream, DashManifestData, DashSegmentBase, DashVideoStream};
+use synctv_proto::dash::{DashAudioStream, DashManifestData, DashSegmentBase, DashVideoStream};
 use synctv_proxy::mpd::{generate_mpd, MpdOptions};
 use synctv_proxy::{check_proxy_rate_limit, percent_encode};
 

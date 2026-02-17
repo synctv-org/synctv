@@ -69,6 +69,8 @@ pub struct RouterConfig {
     pub audit_service: Arc<synctv_core::service::AuditService>,
     pub live_streaming_infrastructure: Option<Arc<LiveStreamingInfrastructure>>,
     pub sfu_manager: Option<Arc<synctv_sfu::SfuManager>>,
+    /// SFU session manager for session affinity queries (multi-replica routing).
+    pub sfu_session_manager: Option<Arc<synctv_sfu::SfuSessionManager>>,
     pub rate_limiter: synctv_core::service::rate_limit::RateLimiter,
     /// Token blacklist service for checking revoked tokens
     pub token_blacklist_service: TokenBlacklistService,
@@ -100,11 +102,15 @@ pub struct AppState {
     pub publish_key_service: Option<Arc<synctv_core::service::PublishKeyService>>,
     pub notification_service: Option<Arc<synctv_core::service::UserNotificationService>>,
     pub live_streaming_infrastructure: Option<Arc<LiveStreamingInfrastructure>>,
+    /// SFU session manager for session affinity queries (multi-replica routing).
+    pub sfu_session_manager: Option<Arc<synctv_sfu::SfuSessionManager>>,
     pub rate_limiter: synctv_core::service::rate_limit::RateLimiter,
     /// Shared rate limit config (created once at startup, not per-request)
     pub rate_limit_config: Arc<middleware::RateLimitConfig>,
     /// Shared JWT validator (created once at startup, not per-request)
     pub jwt_validator: Arc<synctv_core::service::auth::JwtValidator>,
+    /// Shared security pipeline for post-JWT checks (blacklist, password, user status)
+    pub security_pipeline: Arc<synctv_core::service::SecurityPipeline>,
     /// Token blacklist service for checking revoked tokens
     pub token_blacklist_service: TokenBlacklistService,
     /// WebSocket ticket service for secure WebSocket authentication (HTTP only)
@@ -191,6 +197,12 @@ fn build_app_state(config: RouterConfig) -> AppState {
     let alist_api = Arc::new(crate::impls::AlistApiImpl::new(config.alist_provider.clone()));
     let emby_api = Arc::new(crate::impls::EmbyApiImpl::new(config.emby_provider.clone()));
 
+    // Create shared security pipeline for post-JWT checks (steps 2-4)
+    let security_pipeline = Arc::new(synctv_core::service::SecurityPipeline::new(
+        Arc::new(config.token_blacklist_service.clone()),
+        config.user_service.clone(),
+    ));
+
     AppState {
         config: config.config,
         user_service: config.user_service,
@@ -211,9 +223,11 @@ fn build_app_state(config: RouterConfig) -> AppState {
         publish_key_service: config.publish_key_service,
         notification_service: config.notification_service,
         live_streaming_infrastructure: config.live_streaming_infrastructure,
+        sfu_session_manager: config.sfu_session_manager,
         rate_limiter: config.rate_limiter,
         rate_limit_config,
         jwt_validator,
+        security_pipeline,
         token_blacklist_service: config.token_blacklist_service,
         ws_ticket_service: config.ws_ticket_service,
         client_api,
@@ -399,6 +413,7 @@ fn register_all_routes(state: AppState) -> Router<AppState> {
             Router::new()
                 .route("/api/rooms/{room_id}/webrtc/ice-servers", get(webrtc::get_ice_servers))
                 .route("/api/rooms/{room_id}/webrtc/network-quality", get(webrtc::get_network_quality))
+                .route("/api/webrtc/session/{conn_id}/affinity", get(webrtc::session_affinity_lookup))
                 .route_layer(axum_middleware::from_fn_with_state(
                     state.clone(),
                     middleware::read_rate_limit,

@@ -88,6 +88,10 @@ impl GrpcStreamPuller {
         const MAX_RETRIES: u32 = 10;
         const INITIAL_BACKOFF_MS: u64 = 1000;
         const MAX_BACKOFF_MS: u64 = 30_000;
+        // Faster backoff for reconnections after a successful stream to minimize
+        // GOP cache staleness and viewer disruption.
+        const RECONNECT_INITIAL_BACKOFF_MS: u64 = 200;
+        const RECONNECT_MAX_BACKOFF_MS: u64 = 5_000;
 
         info!(
             room_id = %self.room_id,
@@ -97,6 +101,7 @@ impl GrpcStreamPuller {
         );
 
         let mut attempt: u32 = 0;
+        let mut is_reconnect = false;
         /// Minimum connection duration to consider "successful" for retry reset
         const MIN_SUCCESSFUL_DURATION: std::time::Duration = std::time::Duration::from_secs(60);
 
@@ -123,7 +128,7 @@ impl GrpcStreamPuller {
             };
 
             let connect_start = Instant::now();
-            let result = self.connect_and_stream(&data_sender).await;
+            let result = self.connect_and_stream(&data_sender, is_reconnect).await;
             let stream_duration = connect_start.elapsed();
 
             // Always clean up local StreamHub before retry or exit
@@ -152,6 +157,11 @@ impl GrpcStreamPuller {
                         attempt = 0;
                     }
 
+                    // Mark subsequent attempts as reconnections for faster GOP recovery.
+                    // After a successful stream, use faster backoff on reconnect to
+                    // minimize the window where viewers have stale GOP cache data.
+                    is_reconnect = true;
+
                     if attempt >= MAX_RETRIES {
                         error!(
                             room_id = %self.room_id,
@@ -169,10 +179,16 @@ impl GrpcStreamPuller {
                         media_id = %self.media_id,
                         attempt = attempt,
                         max_retries = MAX_RETRIES,
+                        is_reconnect = is_reconnect,
                         "Stream pull failed, retrying: {e}"
                     );
 
-                    Self::backoff(attempt, INITIAL_BACKOFF_MS, MAX_BACKOFF_MS).await;
+                    // Use faster backoff on reconnection to minimize GOP cache staleness
+                    if is_reconnect && attempt <= 3 {
+                        Self::backoff(attempt, RECONNECT_INITIAL_BACKOFF_MS, RECONNECT_MAX_BACKOFF_MS).await;
+                    } else {
+                        Self::backoff(attempt, INITIAL_BACKOFF_MS, MAX_BACKOFF_MS).await;
+                    }
                 }
             }
         }
@@ -185,7 +201,7 @@ impl GrpcStreamPuller {
     /// retry attempts and across different pull streams targeting the same node.
     /// On connection failure, the pooled entry is invalidated so the next attempt
     /// creates a fresh connection.
-    async fn connect_and_stream(&self, data_sender: &FrameDataSender) -> anyhow::Result<()> {
+    async fn connect_and_stream(&self, data_sender: &FrameDataSender, is_reconnect: bool) -> anyhow::Result<()> {
         let channel = self.connection_pool
             .get_channel(&self.publisher_node_addr)
             .await
@@ -199,6 +215,7 @@ impl GrpcStreamPuller {
         let mut request = Request::new(PullRtmpStreamRequest {
             room_id: self.room_id.clone(),
             media_id: self.media_id.clone(),
+            is_reconnect,
         });
 
         // Attach cluster authentication secret if configured

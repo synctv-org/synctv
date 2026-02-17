@@ -17,7 +17,6 @@ use super::dedup::{DedupKey, MessageDeduplicator};
 use super::events::ClusterEvent;
 use super::redis_pubsub::{PublishRequest, RedisPubSub};
 use super::room_hub::{ConnectionId, RoomMessageHub};
-use super::wal::EventWal;
 use crate::discovery::{HeartbeatResult, NodeRegistry};
 use crate::error::Result as ClusterResult;
 use synctv_core::models::id::{RoomId, UserId};
@@ -40,10 +39,6 @@ pub struct ClusterConfig {
     /// Capacity for the normal-priority Redis publish channel.
     /// Normal events are dropped with warning when full.
     pub publish_channel_capacity: usize,
-    /// Optional path for the cluster event Write-Ahead Log (WAL).
-    /// When set, critical events are persisted to disk before Redis publish,
-    /// ensuring no events are lost during Redis outages.
-    pub wal_path: Option<String>,
 }
 
 impl Default for ClusterConfig {
@@ -55,7 +50,6 @@ impl Default for ClusterConfig {
             cleanup_interval: Duration::from_secs(30),
             critical_channel_capacity: 1000,
             publish_channel_capacity: 10_000,
-            wal_path: None,
         }
     }
 }
@@ -97,6 +91,9 @@ pub struct ClusterManager {
 struct HeartbeatState {
     node_registry: Option<Arc<NodeRegistry>>,
     handle: Option<tokio::task::JoinHandle<()>>,
+    /// Stored addresses for heartbeat re-registration (avoid empty-address bug)
+    grpc_address: String,
+    http_address: String,
 }
 
 impl ClusterManager {
@@ -128,24 +125,8 @@ impl ClusterManager {
             warn!("Redis URL not provided, running in single-node mode");
             (None, None, None)
         } else {
-            // Initialize the WAL if a path is configured
-            let event_wal = if let Some(ref wal_path) = config.wal_path {
-                match EventWal::new(std::path::PathBuf::from(wal_path)).await {
-                    Ok(wal) => {
-                        info!(wal_path = %wal_path, "Cluster event WAL enabled");
-                        Some(Arc::new(wal))
-                    }
-                    Err(e) => {
-                        warn!(wal_path = %wal_path, error = %e, "Failed to initialize event WAL, continuing without WAL");
-                        None
-                    }
-                }
-            } else {
-                None
-            };
-
             let redis_pubsub = Arc::new(
-                RedisPubSub::with_wal(
+                RedisPubSub::new(
                     &config.redis_url,
                     message_hub.clone(),
                     config.node_id.clone(),
@@ -153,7 +134,6 @@ impl ClusterManager {
                     permission_service,
                     cache_invalidation,
                     deduplicator.clone(),
-                    event_wal,
                 )?
             );
 
@@ -207,6 +187,8 @@ impl ClusterManager {
             heartbeat_state: tokio::sync::Mutex::new(HeartbeatState {
                 node_registry: None,
                 handle: None,
+                grpc_address: String::new(),
+                http_address: String::new(),
             }),
         })
     }
@@ -232,6 +214,12 @@ impl ClusterManager {
     #[must_use]
     pub fn node_id(&self) -> &str {
         &self.node_id
+    }
+
+    /// Get the cancellation token (for coordinating background tasks)
+    #[must_use]
+    pub fn cancel_token(&self) -> CancellationToken {
+        self.cancel_token.clone()
     }
 
     /// Get the Redis publish sender
@@ -266,8 +254,8 @@ impl ClusterManager {
     pub async fn start_heartbeat_loop<F>(
         &self,
         node_registry: Arc<NodeRegistry>,
-        _grpc_address: String,
-        _http_address: String,
+        grpc_address: String,
+        http_address: String,
         connection_count_fn: Option<F>,
     )
     where
@@ -342,71 +330,18 @@ impl ClusterManager {
             }
         });
 
-        // Store the node_registry and handle
+        // Store the node_registry, handle, and addresses for re-registration
         let mut state = self.heartbeat_state.lock().await;
         state.node_registry = Some(node_registry);
         state.handle = Some(handle);
+        state.grpc_address = grpc_address;
+        state.http_address = http_address;
         info!(
             interval_secs = interval_secs,
             "Heartbeat loop started"
         );
     }
 
-    /// Spawn a background task that periodically attempts to replay WAL events.
-    ///
-    /// When Redis recovers after an outage, events stored in the WAL need to be
-    /// replayed. This task checks every `interval` whether the WAL has pending
-    /// entries and, if so, calls `replay_wal()` on the `RedisPubSub` service.
-    ///
-    /// The task is cancelled automatically when `shutdown()` is called.
-    pub fn spawn_replay_task(&self, interval: Duration) {
-        let Some(ref pubsub) = self.redis_pubsub else {
-            debug!("No Redis pubsub configured, WAL replay task not started");
-            return;
-        };
-
-        let pubsub = pubsub.clone();
-        let cancel_token = self.cancel_token.clone();
-
-        tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(interval);
-            // Skip the first immediate tick (startup replay is handled elsewhere if needed)
-            ticker.tick().await;
-
-            loop {
-                tokio::select! {
-                    () = cancel_token.cancelled() => {
-                        info!("WAL replay task cancelled");
-                        return;
-                    }
-                    _ = ticker.tick() => {
-                        match pubsub.replay_wal().await {
-                            Ok(0) => {
-                                // No events to replay, nothing to log
-                            }
-                            Ok(count) => {
-                                info!(
-                                    replayed = count,
-                                    "WAL replay task successfully replayed events"
-                                );
-                            }
-                            Err(e) => {
-                                warn!(
-                                    error = %e,
-                                    "WAL replay task failed, will retry on next interval"
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-        });
-
-        info!(
-            interval_secs = interval.as_secs(),
-            "WAL replay background task started"
-        );
-    }
 
     /// Gracefully shut down the cluster manager and all background tasks.
     ///
@@ -561,15 +496,31 @@ impl ClusterManager {
 
     /// Subscribe a client to room events
     ///
-    /// Returns a receiver for messages and a connection ID for cleanup
+    /// Returns a receiver for messages and a connection ID for cleanup.
+    /// Generates a new connection ID internally. Prefer `subscribe_with_id`
+    /// when the caller already has a connection ID (e.g., from `ConnectionManager`).
     pub async fn subscribe(
         &self,
         room_id: RoomId,
         user_id: UserId,
     ) -> (tokio::sync::mpsc::Receiver<ClusterEvent>, ConnectionId) {
+        let connection_id = format!("{}_{}", user_id.as_str(), nanoid::nanoid!(8));
+        self.subscribe_with_id(room_id, user_id, connection_id).await
+    }
+
+    /// Subscribe a client to room events using an existing connection ID.
+    ///
+    /// This ensures the same connection ID is used across the `ConnectionManager`
+    /// and the message hub, avoiding mismatches that can cause leaked subscriptions
+    /// or missed disconnect signals.
+    pub async fn subscribe_with_id(
+        &self,
+        room_id: RoomId,
+        user_id: UserId,
+        connection_id: ConnectionId,
+    ) -> (tokio::sync::mpsc::Receiver<ClusterEvent>, ConnectionId) {
         let room_id_str = room_id.as_str().to_string();
         let user_id_str = user_id.as_str().to_string();
-        let connection_id = format!("{}_{}", user_id_str, nanoid::nanoid!(8));
         let rx = self.message_hub.subscribe(room_id, user_id, connection_id.clone()).await;
 
         info!(

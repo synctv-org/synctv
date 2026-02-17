@@ -22,25 +22,22 @@ use axum::http;
 use tonic::body::Body as TonicBody;
 use tower::{Layer, Service};
 
-use synctv_core::models::UserStatus;
-use synctv_core::service::{TokenBlacklistService, UserService, auth::JwtService};
+use synctv_core::service::{SecurityPipeline, auth::JwtService};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 /// Tower layer that wraps a gRPC service with async token blacklist and password invalidation checking.
 #[derive(Clone)]
 pub struct BlacklistCheckLayer {
-    blacklist_service: Arc<TokenBlacklistService>,
     jwt_service: Arc<JwtService>,
-    user_service: Arc<UserService>,
+    security_pipeline: Arc<SecurityPipeline>,
 }
 
 impl BlacklistCheckLayer {
-    pub fn new(blacklist_service: TokenBlacklistService, jwt_service: JwtService, user_service: UserService) -> Self {
+    pub fn new(jwt_service: JwtService, security_pipeline: SecurityPipeline) -> Self {
         Self {
-            blacklist_service: Arc::new(blacklist_service),
             jwt_service: Arc::new(jwt_service),
-            user_service: Arc::new(user_service),
+            security_pipeline: Arc::new(security_pipeline),
         }
     }
 }
@@ -51,9 +48,8 @@ impl<S> Layer<S> for BlacklistCheckLayer {
     fn layer(&self, inner: S) -> Self::Service {
         BlacklistCheckService {
             inner,
-            blacklist_service: self.blacklist_service.clone(),
             jwt_service: self.jwt_service.clone(),
-            user_service: self.user_service.clone(),
+            security_pipeline: self.security_pipeline.clone(),
         }
     }
 }
@@ -62,9 +58,8 @@ impl<S> Layer<S> for BlacklistCheckLayer {
 #[derive(Clone)]
 pub struct BlacklistCheckService<S> {
     inner: S,
-    blacklist_service: Arc<TokenBlacklistService>,
     jwt_service: Arc<JwtService>,
-    user_service: Arc<UserService>,
+    security_pipeline: Arc<SecurityPipeline>,
 }
 
 /// Extract a bearer token from the HTTP Authorization header value.
@@ -101,9 +96,8 @@ where
         // Extract the bearer token from the HTTP Authorization header synchronously.
         // Requests without a bearer token (public endpoints) skip security checks.
         let raw_token = extract_bearer_token(req.headers());
-        let blacklist_service = self.blacklist_service.clone();
         let jwt_service = self.jwt_service.clone();
-        let user_service = self.user_service.clone();
+        let security_pipeline = self.security_pipeline.clone();
 
         Box::pin(async move {
             if let Some(token) = raw_token {
@@ -121,90 +115,12 @@ where
                     }
                 };
 
-                let user_id = claims.user_id();
-                let token_iat = claims.iat;
-
-                // Step 2: Check if token is explicitly blacklisted (logout/revocation)
-                match blacklist_service.is_blacklisted(&token).await {
-                    Ok(true) => {
-                        tracing::warn!("gRPC request rejected: token is blacklisted");
-                        let response = tonic::Status::unauthenticated("Token has been revoked")
-                            .into_http();
-                        return Ok(response);
-                    }
-                    Ok(false) => {
-                        // Token is not blacklisted, continue to password invalidation check
-                    }
-                    Err(e) => {
-                        // Fail closed: deny access if blacklist check errors
-                        tracing::error!(
-                            "Token blacklist check failed, denying request (fail closed): {e}"
-                        );
-                        let response = tonic::Status::unavailable(
-                            "Authentication service temporarily unavailable",
-                        )
+                // Steps 2-4: Shared security pipeline (blacklist, password invalidation, user status)
+                if let Err(e) = security_pipeline.check(&token, &claims).await {
+                    tracing::warn!("gRPC request rejected by security pipeline: {e}");
+                    let response = tonic::Status::unauthenticated(format!("{e}"))
                         .into_http();
-                        return Ok(response);
-                    }
-                }
-
-                // Step 3: Check if token was issued before a password change
-                match blacklist_service.are_user_tokens_invalidated(&user_id, token_iat).await {
-                    Ok(true) => {
-                        tracing::warn!(
-                            user_id = %user_id.as_str(),
-                            token_iat = token_iat,
-                            "gRPC request rejected: token invalidated by password change"
-                        );
-                        let response = tonic::Status::unauthenticated(
-                            "Token invalidated due to password change"
-                        )
-                        .into_http();
-                        return Ok(response);
-                    }
-                    Ok(false) => {
-                        // Token is valid, continue to banned user check
-                    }
-                    Err(e) => {
-                        // Fail closed: deny access if password invalidation check errors
-                        tracing::error!(
-                            "Password invalidation check failed, denying request (fail closed): {e}"
-                        );
-                        let response = tonic::Status::unavailable(
-                            "Authentication service temporarily unavailable",
-                        )
-                        .into_http();
-                        return Ok(response);
-                    }
-                }
-
-                // Step 4: Check if user is banned, pending, or deleted (defense-in-depth:
-                // catches banned/pending users even if they hold a valid JWT issued before the status change)
-                match user_service.get_user(&user_id).await {
-                    Ok(user) => {
-                        if user.is_deleted() || user.status == UserStatus::Banned || user.status == UserStatus::Pending {
-                            tracing::warn!(
-                                user_id = %user_id.as_str(),
-                                "gRPC request rejected: user is banned, pending, or deleted"
-                            );
-                            let response = tonic::Status::unauthenticated(
-                                "Authentication failed"
-                            )
-                            .into_http();
-                            return Ok(response);
-                        }
-                    }
-                    Err(e) => {
-                        // Fail closed: deny access if user lookup fails
-                        tracing::error!(
-                            "User lookup failed, denying request (fail closed): {e}"
-                        );
-                        let response = tonic::Status::unauthenticated(
-                            "User not found"
-                        )
-                        .into_http();
-                        return Ok(response);
-                    }
+                    return Ok(response);
                 }
             }
 
@@ -284,6 +200,8 @@ mod tests {
 
     // ========== BlacklistCheckLayer Construction ==========
 
+    use synctv_core::service::{TokenBlacklistService, UserService};
+
     #[tokio::test]
     async fn test_blacklist_check_layer_clone() {
         let blacklist = TokenBlacklistService::new(None, "test".to_string());
@@ -298,34 +216,27 @@ mod tests {
             synctv_core::config::PasswordComplexityConfig::default(),
         );
 
-        let layer = BlacklistCheckLayer::new(blacklist, jwt, user_service);
+        let pipeline = SecurityPipeline::new(
+            Arc::new(blacklist),
+            Arc::new(user_service),
+        );
+        let layer = BlacklistCheckLayer::new(jwt, pipeline);
         let cloned = layer.clone();
 
         // Both should be valid (no panic on clone)
-        assert!(Arc::strong_count(&cloned.blacklist_service) >= 2);
+        assert!(Arc::strong_count(&cloned.jwt_service) >= 2);
     }
 
     // ========== Security Parity: gRPC checks match HTTP checks ==========
     //
-    // These tests verify that the gRPC BlacklistCheckService performs
-    // the same four security checks as the HTTP AuthUser extractor:
-    // 1. JWT verification (validate signature, expiration, access token type)
-    // 2. Token blacklist check
-    // 3. Password invalidation check
-    // 4. Banned/deleted user check
+    // Both the gRPC BlacklistCheckService and the HTTP AuthUser extractor
+    // now delegate steps 2-4 to the shared SecurityPipeline, ensuring
+    // identical enforcement across both transport layers.
     //
-    // Both layers:
-    // - Extract the bearer token from the Authorization header
-    // - Verify JWT and extract claims (reject malformed/expired/non-access tokens)
-    // - Check blacklist (fail closed on error)
-    // - Check user-level token invalidation (fail closed on error)
-    // - Look up user status and reject banned/deleted users
-    //
-    // This is tested structurally by verifying the extract_bearer_token
-    // function and the layer construction include all three services.
+    // The structural tests below verify the layer is properly constructed.
 
     #[tokio::test]
-    async fn test_grpc_layer_has_all_three_security_services() {
+    async fn test_grpc_layer_uses_shared_security_pipeline() {
         let blacklist = TokenBlacklistService::new(None, "test".to_string());
         let jwt = JwtService::new("test-parity-secret-key-12345-long-enough-1234567890").unwrap();
         let pool = sqlx::PgPool::connect_lazy("postgresql://fake").unwrap();
@@ -338,16 +249,15 @@ mod tests {
             synctv_core::config::PasswordComplexityConfig::default(),
         );
 
-        let layer = BlacklistCheckLayer::new(blacklist, jwt, user_service);
+        let pipeline = SecurityPipeline::new(
+            Arc::new(blacklist),
+            Arc::new(user_service),
+        );
+        let layer = BlacklistCheckLayer::new(jwt, pipeline);
 
-        // The layer holds all three services needed for security parity with HTTP:
-        // 1. blacklist_service (token revocation)
-        // 2. jwt_service (token validation + claims extraction)
-        // 3. user_service (banned/deleted user check)
-        assert!(layer.blacklist_service.is_enabled());
-        // jwt_service and user_service are held as Arc -- verify they exist
+        // The layer holds jwt_service and security_pipeline
         assert!(Arc::strong_count(&layer.jwt_service) >= 1);
-        assert!(Arc::strong_count(&layer.user_service) >= 1);
+        assert!(Arc::strong_count(&layer.security_pipeline) >= 1);
     }
 
     #[test]

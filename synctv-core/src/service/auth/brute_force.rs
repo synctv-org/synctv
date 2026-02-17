@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::{cache::KeyBuilder, Error, Result, InternalExt};
+use crate::{cache::KeyBuilder, resilience::timeout::REDIS_OPERATION_TIMEOUT, Error, Result, InternalExt};
 
 /// Stored state for brute-force tracking in Redis.
 /// Serialized as JSON to store both the count and last failure timestamp.
@@ -136,19 +136,41 @@ impl BruteForceProtection {
                 "#,
             );
 
-            let count: u64 = script
-                .key(&key)
-                .arg(now)
-                .arg(ATTEMPTS_TTL_SECS as i64)
-                .invoke_async(&mut conn)
+            let result: std::result::Result<u64, _> = tokio::time::timeout(
+                REDIS_OPERATION_TIMEOUT,
+                script
+                    .key(&key)
+                    .arg(now)
+                    .arg(ATTEMPTS_TTL_SECS as i64)
+                    .invoke_async(&mut conn),
+            )
                 .await
-                .internal_with_err("Failed to record login failure")?;
+                .unwrap_or_else(|_| Err(redis::RedisError::from((
+                    redis::ErrorKind::Io,
+                    "Redis timeout: record_failure",
+                ))));
 
-            tracing::debug!(
-                username = %username,
-                attempts = count,
-                "Recorded failed login attempt"
-            );
+            match result {
+                Ok(count) => {
+                    tracing::debug!(
+                        username = %username,
+                        attempts = count,
+                        "Recorded failed login attempt"
+                    );
+                }
+                Err(e) => {
+                    // Degrade to in-memory fallback on Redis error (fail-closed:
+                    // we still record the attempt so brute-force protection
+                    // remains active during Redis outages)
+                    tracing::warn!(
+                        username = %username,
+                        error = %e,
+                        "Redis error in record_failure, falling back to in-memory tracking"
+                    );
+                    let (count, _) = self.local_attempts.get(&key).await.unwrap_or((0, now));
+                    self.local_attempts.insert(key, (count + 1, now)).await;
+                }
+            }
         } else {
             // In-memory fallback
             let key = self.key_builder.login_attempts(username);
@@ -165,8 +187,9 @@ impl BruteForceProtection {
             let mut conn = conn.clone();
             let key = self.key_builder.login_attempts(username);
 
-            let _: () = conn.del(&key)
+            let _: () = tokio::time::timeout(REDIS_OPERATION_TIMEOUT, conn.del(&key))
                 .await
+                .map_err(|_| Error::Internal("Redis timeout: reset login attempts".to_string()))?
                 .internal_with_err("Failed to reset login attempts")?;
         } else {
             let key = self.key_builder.login_attempts(username);
@@ -188,7 +211,27 @@ impl BruteForceProtection {
         if let Some(ref conn) = self.redis_conn {
             let mut conn = conn.clone();
 
-            match conn.get::<_, Option<String>>(&key).await {
+            let redis_result = tokio::time::timeout(
+                REDIS_OPERATION_TIMEOUT,
+                conn.get::<_, Option<String>>(&key),
+            )
+                .await;
+
+            // Flatten timeout into a Redis-style error for unified fallback handling
+            let redis_result = match redis_result {
+                Ok(inner) => inner,
+                Err(_) => {
+                    tracing::warn!(
+                        username = %username,
+                        "Redis timeout in brute-force check, falling back to in-memory cache"
+                    );
+                    // Fall through to in-memory lookup below
+                    let (count, ts) = self.local_attempts.get(&key).await.unwrap_or((0, 0));
+                    return Ok((count, ts));
+                }
+            };
+
+            match redis_result {
                 Ok(Some(raw)) => {
                     // Try parsing as JSON state first, fall back to plain integer
                     // for backward compatibility with pre-existing counters.

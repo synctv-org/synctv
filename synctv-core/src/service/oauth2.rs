@@ -76,8 +76,6 @@ pub struct OAuth2Service {
     providers: Arc<RwLock<HashMap<String, OAuth2ProviderEntry>>>,
     /// In-memory state storage with TTL (fallback when Redis is not available)
     local_states: Arc<moka::future::Cache<String, OAuth2State>>,
-    /// Mutex to ensure atomic consume (get+remove) of in-memory states
-    local_states_consume_lock: Arc<tokio::sync::Mutex<()>>,
     /// Redis connection manager for distributed state storage (multi-replica mode)
     redis_conn: Option<redis::aio::ConnectionManager>,
     /// Allowlist of permitted redirect domains (empty = relative paths only)
@@ -107,6 +105,18 @@ impl OAuth2Service {
              This is only suitable for single-replica deployments. \
              For multi-replica setups, configure Redis via with_redis()."
         );
+
+        // Detect multi-replica environment and warn loudly
+        if Self::detect_multi_replica_environment() {
+            tracing::error!(
+                "MULTI-REPLICA RISK: OAuth2 service is using in-memory state storage, \
+                 but the environment appears to be a multi-replica deployment \
+                 (Kubernetes / Docker Swarm / REPLICAS env detected). \
+                 OAuth2 states created on one replica will NOT be valid on others. \
+                 Configure Redis to fix this."
+            );
+        }
+
         let local_states = moka::future::Cache::builder()
             .max_capacity(MAX_LOCAL_STATES as u64)
             .time_to_live(Duration::from_secs(OAUTH2_STATE_TTL_SECONDS))
@@ -115,7 +125,6 @@ impl OAuth2Service {
             repository,
             providers: Arc::new(RwLock::new(HashMap::new())),
             local_states: Arc::new(local_states),
-            local_states_consume_lock: Arc::new(tokio::sync::Mutex::new(())),
             redis_conn: None,
             allowed_redirect_domains: Arc::new(Vec::new()),
             cluster_mode: false,
@@ -136,7 +145,6 @@ impl OAuth2Service {
             repository,
             providers: Arc::new(RwLock::new(HashMap::new())),
             local_states: Arc::new(local_states),
-            local_states_consume_lock: Arc::new(tokio::sync::Mutex::new(())),
             redis_conn: Some(redis_conn),
             allowed_redirect_domains: Arc::new(Vec::new()),
             cluster_mode: false,
@@ -235,9 +243,8 @@ impl OAuth2Service {
                  Configure Redis or disable cluster mode.".to_string()
             ));
         } else {
-            // Hold a lock to make get+remove atomic, preventing concurrent
-            // consumers from both succeeding with the same state token.
-            let _guard = self.local_states_consume_lock.lock().await;
+            // moka's remove() is internally atomic: only one concurrent caller
+            // will receive Some(value), others get None.
             self.local_states
                 .remove(state_token)
                 .await
@@ -269,6 +276,26 @@ impl OAuth2Service {
         instance_name: &str,
         redirect_url: Option<String>,
     ) -> Result<(String, String)> {
+        self.build_authorization_url(instance_name, redirect_url, None).await
+    }
+
+    /// Generate authorization URL for bind flow (associates with an authenticated user)
+    pub async fn get_authorization_url_with_user(
+        &self,
+        instance_name: &str,
+        redirect_url: Option<String>,
+        user_id: Option<UserId>,
+    ) -> Result<(String, String)> {
+        self.build_authorization_url(instance_name, redirect_url, user_id).await
+    }
+
+    /// Shared implementation for building an OAuth2 authorization URL.
+    async fn build_authorization_url(
+        &self,
+        instance_name: &str,
+        redirect_url: Option<String>,
+        bind_user_id: Option<UserId>,
+    ) -> Result<(String, String)> {
         // Validate redirect URL if provided
         if let Some(ref url) = redirect_url {
             Self::validate_redirect_url_with_allowlist(url, &self.allowed_redirect_domains)?;
@@ -290,7 +317,7 @@ impl OAuth2Service {
             instance_name: instance_name.to_string(),
             redirect_url,
             created_at: chrono::Utc::now(),
-            bind_user_id: None,
+            bind_user_id,
             pkce_verifier,
         };
 
@@ -300,43 +327,6 @@ impl OAuth2Service {
             "Generated OAuth2 authorization URL for provider {}",
             instance_name
         );
-
-        Ok((auth_url, state_token))
-    }
-
-    /// Generate authorization URL for bind flow (associates with an authenticated user)
-    pub async fn get_authorization_url_with_user(
-        &self,
-        instance_name: &str,
-        redirect_url: Option<String>,
-        user_id: Option<UserId>,
-    ) -> Result<(String, String)> {
-        // Validate redirect URL if provided
-        if let Some(ref url) = redirect_url {
-            Self::validate_redirect_url_with_allowlist(url, &self.allowed_redirect_domains)?;
-        }
-
-        let providers = self.providers.read().await;
-        let entry = providers.get(instance_name)
-            .ok_or_else(|| Error::InvalidInput(format!("OAuth2 provider instance not found: {instance_name}")))?;
-
-        // Generate state token
-        let state_token = nanoid::nanoid!(32);
-
-        // Generate authorization URL with PKCE challenge
-        let (auth_url, pkce_verifier) = entry.provider.new_auth_url(&state_token).await
-            .internal_with_err("Failed to generate authorization URL")?;
-
-        // Store state with user_id for bind flow (including PKCE verifier)
-        let oauth_state = OAuth2State {
-            instance_name: instance_name.to_string(),
-            redirect_url,
-            created_at: chrono::Utc::now(),
-            bind_user_id: user_id,
-            pkce_verifier,
-        };
-
-        self.store_state(&state_token, &oauth_state).await?;
 
         Ok((auth_url, state_token))
     }
@@ -593,6 +583,37 @@ impl OAuth2Service {
     #[must_use]
     pub const fn uses_redis(&self) -> bool {
         self.redis_conn.is_some()
+    }
+
+    /// Detect if the environment appears to be a multi-replica deployment.
+    ///
+    /// Checks for common indicators:
+    /// - `KUBERNETES_SERVICE_HOST` env var (Kubernetes)
+    /// - `REPLICAS` or `SYNCTV_REPLICAS` env var set to > 1
+    /// - `/var/run/secrets/kubernetes.io` exists (Kubernetes pod)
+    fn detect_multi_replica_environment() -> bool {
+        // Kubernetes environment
+        if std::env::var("KUBERNETES_SERVICE_HOST").is_ok() {
+            return true;
+        }
+
+        // Explicit replica count configuration
+        for var in &["REPLICAS", "SYNCTV_REPLICAS"] {
+            if let Ok(val) = std::env::var(var) {
+                if let Ok(count) = val.parse::<u32>() {
+                    if count > 1 {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        // Kubernetes secrets mount
+        if std::path::Path::new("/var/run/secrets/kubernetes.io").exists() {
+            return true;
+        }
+
+        false
     }
 }
 

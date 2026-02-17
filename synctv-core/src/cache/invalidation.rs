@@ -720,6 +720,58 @@ impl CacheInvalidationService {
         }
         self.broadcast_remote(InvalidationMessage::BloomFilterUpdate { keys }).await
     }
+
+    /// Spawn a named invalidation listener that subscribes to this service's
+    /// broadcast channel and dispatches messages to a user-provided handler.
+    ///
+    /// This extracts the common pattern shared by `CacheManager`, `PermissionService`,
+    /// `PlaybackService`, `RoomSettingsService`, etc.:
+    ///
+    /// 1. Subscribe to the broadcast channel
+    /// 2. Spawn a monitored task that loops on `recv()`
+    /// 3. On `Ok(msg)` -> call `handler(msg)`
+    /// 4. On `Lagged(n)` -> call `on_lagged()` to flush caches
+    /// 5. On `Closed` -> break
+    ///
+    /// # Arguments
+    /// * `name` - Task name for monitoring (e.g., "room_settings_invalidation_listener")
+    /// * `handler` - Async closure called for each received message
+    /// * `on_lagged` - Async closure called when the receiver falls behind (should flush caches)
+    pub fn spawn_listener<H, Hf, L, Lf>(
+        &self,
+        name: &'static str,
+        handler: H,
+        on_lagged: L,
+    )
+    where
+        H: Fn(InvalidationMessage) -> Hf + Send + 'static,
+        Hf: std::future::Future<Output = ()> + Send,
+        L: Fn(u64) -> Lf + Send + 'static,
+        Lf: std::future::Future<Output = ()> + Send,
+    {
+        let mut receiver = self.subscribe();
+
+        crate::spawn::spawn_monitored(name, async move {
+            loop {
+                match receiver.recv().await {
+                    Ok(msg) => {
+                        handler(msg).await;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        debug!("{name}: invalidation channel closed, stopping listener");
+                        break;
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        warn!(
+                            lagged_messages = n,
+                            "{name}: invalidation listener lagged, triggering flush"
+                        );
+                        on_lagged(n).await;
+                    }
+                }
+            }
+        });
+    }
 }
 
 impl std::fmt::Debug for CacheInvalidationService {

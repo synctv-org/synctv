@@ -55,6 +55,25 @@ impl AnyLeaderElector {
         }
     }
 
+    /// Returns the identity of the current leader if this node is the leader.
+    ///
+    /// Returns `Some(identity)` if this node currently holds leadership,
+    /// `None` otherwise. For querying the identity of a remote leader,
+    /// check the distributed lock directly.
+    pub fn current_leader_identity(&self) -> Option<String> {
+        match self {
+            AnyLeaderElector::Redis(e) => e.current_leader_identity(),
+            #[cfg(feature = "k8s")]
+            AnyLeaderElector::K8s(e) => {
+                if e.is_leader() {
+                    Some(e.identity().to_string())
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
     /// Returns the current leader epoch (fencing token).
     ///
     /// The epoch is monotonically increasing and changes each time this node
@@ -306,6 +325,23 @@ impl LeaderElector {
     /// Returns 0 if this node has never been leader.
     pub fn leader_epoch(&self) -> u64 {
         self.leader_epoch.load(Ordering::Acquire)
+    }
+
+    /// Returns the identity of this node if it is currently the leader.
+    ///
+    /// Returns `Some(identity)` when this node holds the leader lock,
+    /// `None` otherwise.
+    pub fn current_leader_identity(&self) -> Option<String> {
+        if self.is_leader() {
+            Some(self.identity.clone())
+        } else {
+            None
+        }
+    }
+
+    /// Returns this node's identity string.
+    pub fn identity(&self) -> &str {
+        &self.identity
     }
 
     /// Create a fencing guard that is automatically cancelled when leadership is lost.

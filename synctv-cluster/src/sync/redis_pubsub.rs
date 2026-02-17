@@ -84,7 +84,6 @@ fn pubsub_channel_for_event(event: &ClusterEvent) -> String {
 use super::dedup::{DedupKey, MessageDeduplicator};
 use super::events::{CacheTarget, ClusterEvent};
 use super::room_hub::{RoomLifecycleEvent, RoomMessageHub};
-use super::wal::EventWal;
 use synctv_core::cache::CacheInvalidationService;
 use synctv_core::models::id::RoomId;
 use synctv_core::service::PermissionService;
@@ -102,9 +101,6 @@ use synctv_core::service::PermissionService;
 /// - Stream-based catch-up mechanism: recovers missed events during disconnection
 /// - Timeout protection: 5s timeout on all Redis operations
 /// - Critical event guarantee: XADD operations retry up to 3 times with backoff
-/// - **WAL fallback**: Critical events that fail XADD after retries are saved to
-///   local Write-Ahead Log for durable storage. On startup, WAL events are replayed
-///   and re-published to Redis Stream.
 /// - Graceful degradation: logs warnings but continues operation on non-critical failures
 /// - Connection health checks: periodic PING to detect stale connections
 ///
@@ -124,12 +120,10 @@ pub struct RedisPubSub {
     cache_invalidation: Option<CacheInvalidationService>,
     deduplicator: Arc<MessageDeduplicator>,
     cancel_token: CancellationToken,
-    /// Write-Ahead Log for critical events that fail to write to Redis Stream
-    event_wal: Option<Arc<EventWal>>,
 }
 
 impl RedisPubSub {
-    /// Create a new `RedisPubSub` service without WAL fallback.
+    /// Create a new `RedisPubSub` service.
     pub fn new(
         redis_url: &str,
         message_hub: Arc<RoomMessageHub>,
@@ -138,33 +132,6 @@ impl RedisPubSub {
         permission_service: Option<PermissionService>,
         cache_invalidation: Option<CacheInvalidationService>,
         deduplicator: Arc<MessageDeduplicator>,
-    ) -> Result<Self> {
-        Self::with_wal(
-            redis_url,
-            message_hub,
-            node_id,
-            admin_event_tx,
-            permission_service,
-            cache_invalidation,
-            deduplicator,
-            None,
-        )
-    }
-
-    /// Create a new `RedisPubSub` service with optional WAL fallback for critical events.
-    ///
-    /// If `event_wal` is provided, critical events that fail XADD after retries
-    /// will be saved to the WAL for durable storage. On startup, use `replay_wal()`
-    /// to re-publish WAL events to Redis Stream.
-    pub fn with_wal(
-        redis_url: &str,
-        message_hub: Arc<RoomMessageHub>,
-        node_id: String,
-        admin_event_tx: broadcast::Sender<ClusterEvent>,
-        permission_service: Option<PermissionService>,
-        cache_invalidation: Option<CacheInvalidationService>,
-        deduplicator: Arc<MessageDeduplicator>,
-        event_wal: Option<Arc<EventWal>>,
     ) -> Result<Self> {
         let redis_client = RedisClient::open(redis_url).context("Failed to create Redis client")?;
 
@@ -179,7 +146,6 @@ impl RedisPubSub {
             cache_invalidation,
             deduplicator,
             cancel_token: CancellationToken::new(),
-            event_wal,
         })
     }
 
@@ -193,85 +159,6 @@ impl RedisPubSub {
     pub fn shutdown(&self) {
         info!("Shutting down RedisPubSub service");
         self.cancel_token.cancel();
-    }
-
-    /// Replay events from the Write-Ahead Log and publish them to Redis Stream.
-    ///
-    /// Should be called once during startup (before starting the pub/sub loops)
-    /// to recover critical events that were saved to WAL during previous Redis
-    /// outages.
-    ///
-    /// Successfully replayed events are removed from the WAL immediately, so
-    /// partial success does not cause already-published events to be re-delivered
-    /// on the next startup.
-    ///
-    /// Returns the number of events replayed successfully.
-    pub async fn replay_wal(&self) -> Result<usize> {
-        let Some(ref wal) = self.event_wal else {
-            return Ok(0); // No WAL configured
-        };
-
-        let events = wal.replay().await.context("Failed to replay WAL")?;
-        if events.is_empty() {
-            return Ok(0);
-        }
-
-        info!(event_count = events.len(), "Replaying events from WAL");
-
-        let mut conn = self.get_shared_conn().await?;
-        let mut success_count = 0;
-        let mut had_failure = false;
-        // Collect events that failed to replay so we can re-write them to the WAL
-        let mut failed_events: Vec<ClusterEvent> = Vec::new();
-
-        for event in &events {
-            if had_failure {
-                // Once we hit a failure, keep remaining events for retry
-                // (preserves ordering guarantee for critical events)
-                failed_events.push(event.clone());
-                continue;
-            }
-
-            match Self::publish_event(&mut conn, &self.node_id, event.clone(), &None).await {
-                Ok(_) => {
-                    success_count += 1;
-                }
-                Err(e) => {
-                    warn!(
-                        error = %e,
-                        event_type = event.event_type(),
-                        "Failed to replay WAL event to Redis, keeping remaining events"
-                    );
-                    had_failure = true;
-                    failed_events.push(event.clone());
-                }
-            }
-        }
-
-        // Clear the old WAL completely, then re-write only the failed events
-        wal.clear().await.context("Failed to clear WAL after replay")?;
-
-        if !failed_events.is_empty() {
-            for event in &failed_events {
-                if let Err(e) = wal.append(event.clone()).await {
-                    error!(
-                        error = %e,
-                        event_type = event.event_type(),
-                        "Failed to re-write failed event to WAL, event may be lost"
-                    );
-                }
-            }
-            warn!(
-                success = success_count,
-                remaining = failed_events.len(),
-                total = events.len(),
-                "Partial WAL replay: successfully published events cleared, failed events kept for next retry"
-            );
-        } else {
-            info!(event_count = success_count, "All WAL events replayed successfully, WAL cleared");
-        }
-
-        Ok(success_count)
     }
 
     /// Start the Pub/Sub service
@@ -288,7 +175,6 @@ impl RedisPubSub {
         let publish_client = self.redis_client.clone();
         let node_id = self.node_id.clone();
         let cancel_publisher = self.cancel_token.clone();
-        let event_wal = self.event_wal.clone();
 
         /// Maximum number of failed events to buffer for retry after reconnection.
         /// Prevents unbounded memory growth during prolonged Redis outages.
@@ -353,7 +239,7 @@ impl RedisPubSub {
                             continue;
                         }
                         let event_type = req.event.event_type();
-                        match Self::publish_event(&mut conn, &node_id, req.event.clone(), &event_wal).await {
+                        match Self::publish_event(&mut conn, &node_id, req.event.clone()).await {
                             Ok(subscribers) => {
                                 debug!(
                                     event_type = event_type,
@@ -395,40 +281,23 @@ impl RedisPubSub {
                             // Flush retry_buffer (events from previous failed publishes)
                             for req in std::mem::take(&mut retry_buffer) {
                                 if flush_failed {
-                                    // Connection broken; write critical events to WAL
+                                    // Connection broken; skip remaining events
                                     if req.event.is_critical() {
-                                        if let Some(ref wal) = event_wal {
-                                            if let Err(e) = wal.append(req.event.clone()).await {
-                                                error!(
-                                                    error = %e,
-                                                    event_type = req.event.event_type(),
-                                                    "Failed to save critical retry_buffer event to WAL on shutdown"
-                                                );
-                                            }
-                                        }
+                                        warn!(
+                                            event_type = req.event.event_type(),
+                                            "Critical retry_buffer event lost during shutdown (connection broken)"
+                                        );
                                     }
                                     continue;
                                 }
                                 let event_type = req.event.event_type();
-                                match Self::publish_event(&mut conn, &node_id, req.event.clone(), &event_wal).await {
+                                match Self::publish_event(&mut conn, &node_id, req.event.clone()).await {
                                     Ok(_) => {
                                         debug!(event_type = event_type, "Retry buffer event flushed on shutdown");
                                     }
                                     Err(e) => {
                                         warn!(error = %e, event_type = event_type, "Failed to flush retry buffer event on shutdown");
                                         flush_failed = true;
-                                        // Write this critical event to WAL
-                                        if req.event.is_critical() {
-                                            if let Some(ref wal) = event_wal {
-                                                if let Err(e) = wal.append(req.event.clone()).await {
-                                                    error!(
-                                                        error = %e,
-                                                        event_type = event_type,
-                                                        "Failed to save critical retry_buffer event to WAL on shutdown"
-                                                    );
-                                                }
-                                            }
-                                        }
                                     }
                                 }
                             }
@@ -436,37 +305,21 @@ impl RedisPubSub {
                             while let Ok(req) = publish_rx.try_recv() {
                                 if flush_failed {
                                     if req.event.is_critical() {
-                                        if let Some(ref wal) = event_wal {
-                                            if let Err(e) = wal.append(req.event.clone()).await {
-                                                error!(
-                                                    error = %e,
-                                                    event_type = req.event.event_type(),
-                                                    "Failed to save critical drained event to WAL on shutdown"
-                                                );
-                                            }
-                                        }
+                                        warn!(
+                                            event_type = req.event.event_type(),
+                                            "Critical drained event lost during shutdown (connection broken)"
+                                        );
                                     }
                                     continue;
                                 }
                                 let event_type = req.event.event_type();
-                                match Self::publish_event(&mut conn, &node_id, req.event.clone(), &event_wal).await {
+                                match Self::publish_event(&mut conn, &node_id, req.event.clone()).await {
                                     Ok(_) => {
                                         debug!(event_type = event_type, "Drained event published");
                                     }
                                     Err(e) => {
                                         warn!(error = %e, event_type = event_type, "Failed to publish drained event");
                                         flush_failed = true;
-                                        if req.event.is_critical() {
-                                            if let Some(ref wal) = event_wal {
-                                                if let Err(e) = wal.append(req.event.clone()).await {
-                                                    error!(
-                                                        error = %e,
-                                                        event_type = event_type,
-                                                        "Failed to save critical drained event to WAL on shutdown"
-                                                    );
-                                                }
-                                            }
-                                        }
                                     }
                                 }
                             }
@@ -476,7 +329,7 @@ impl RedisPubSub {
                     };
                     if let Some(req) = req {
                         let event_type = req.event.event_type();
-                        match Self::publish_event(&mut conn, &node_id, req.event.clone(), &event_wal).await {
+                        match Self::publish_event(&mut conn, &node_id, req.event.clone()).await {
                             Ok(subscribers) => {
                                 session_healthy = true;
                                 debug!(
@@ -859,12 +712,22 @@ impl RedisPubSub {
         // When a lifecycle event arrives, we drop the message stream (releasing the
         // mutable borrow on `pubsub`), perform the subscribe/unsubscribe, then
         // re-create the message stream.
+        //
+        // A periodic cursor refresh ensures that stream cursors stay up-to-date
+        // during long-lived sessions, so reconnect catch-up only reads truly missed
+        // events (avoiding replay of events already delivered via live Pub/Sub).
+        let mut cursor_refresh_interval = tokio::time::interval(Duration::from_secs(60));
+        cursor_refresh_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // Skip the first immediate tick
+        cursor_refresh_interval.tick().await;
+
         loop {
             let mut stream = pubsub.on_message();
 
             enum SelectResult {
                 Message(redis::Msg),
                 LifecycleEvent(RoomLifecycleEvent),
+                CursorRefresh,
                 StreamEnded,
             }
 
@@ -896,6 +759,9 @@ impl RedisPubSub {
                             }
                         }
                     }
+                }
+                _ = cursor_refresh_interval.tick() => {
+                    SelectResult::CursorRefresh
                 }
             };
 
@@ -1037,6 +903,38 @@ impl RedisPubSub {
                                 }
                             }
                         }
+                    }
+                }
+                SelectResult::CursorRefresh => {
+                    // Periodically advance stream cursors to the latest stream tips.
+                    // This prevents catch-up from replaying the entire session's worth
+                    // of events after a reconnect (the deduplicator window may have
+                    // expired for events delivered hours ago via live Pub/Sub).
+                    let keys_to_refresh: Vec<String> = stream_cursors.keys().cloned().collect();
+                    let mut updated = 0usize;
+                    for sk in keys_to_refresh {
+                        match self.get_latest_stream_id_for(&sk).await {
+                            Ok(Some(id)) => {
+                                stream_cursors.insert(sk, id);
+                                updated += 1;
+                            }
+                            Ok(None) => {
+                                // Stream is empty or was trimmed, keep existing cursor
+                            }
+                            Err(e) => {
+                                debug!(
+                                    error = %e,
+                                    stream_key = %sk,
+                                    "Failed to refresh stream cursor, keeping existing"
+                                );
+                            }
+                        }
+                    }
+                    if updated > 0 {
+                        debug!(
+                            updated_cursors = updated,
+                            "Periodic stream cursor refresh completed"
+                        );
                     }
                 }
                 SelectResult::StreamEnded => {
@@ -1334,15 +1232,10 @@ impl RedisPubSub {
     /// If a subscriber disconnects, it can catch up by reading only the streams
     /// for rooms that have local subscribers, avoiding the N*M amplification of
     /// a single global stream.
-    ///
-    /// **WAL fallback**: If XADD fails for a critical event after retries, the
-    /// event is saved to the local Write-Ahead Log (if configured) for durable
-    /// storage.
     async fn publish_event(
         conn: &mut redis::aio::MultiplexedConnection,
         node_id: &str,
         event: ClusterEvent,
-        event_wal: &Option<Arc<EventWal>>,
     ) -> Result<usize> {
         let channel = pubsub_channel_for_event(&event);
 
@@ -1410,29 +1303,9 @@ impl RedisPubSub {
                 error!(
                     stream_key = %stream_key,
                     event_type = event.event_type(),
-                    "XADD failed for critical event after {} retries, attempting WAL fallback",
+                    "XADD failed for critical event after {} retries, event may be lost during catch-up",
                     CRITICAL_STREAM_MAX_RETRIES
                 );
-                // WAL fallback for critical events
-                if let Some(ref wal) = event_wal {
-                    if let Err(e) = wal.append(event.clone()).await {
-                        error!(
-                            error = %e,
-                            event_type = event.event_type(),
-                            "Failed to save critical event to WAL, event will be lost"
-                        );
-                    } else {
-                        info!(
-                            event_type = event.event_type(),
-                            "Saved critical event to WAL after Redis XADD failure"
-                        );
-                    }
-                } else {
-                    error!(
-                        event_type = event.event_type(),
-                        "No WAL configured, critical event may be lost during catch-up"
-                    );
-                }
             }
         } else {
             // Non-critical events: single attempt, warn and continue on failure.

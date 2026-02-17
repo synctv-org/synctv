@@ -164,8 +164,9 @@ impl UserRepository {
         .bind(user.role)
         .bind(user.status)
         .bind(Utc::now())
-        .fetch_one(&self.pool)
-        .await?;
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| Error::NotFound(format!("User {} not found", user.id.as_str())))?;
 
         Ok(u)
     }
@@ -208,8 +209,9 @@ impl UserRepository {
         .bind(user_id.as_str())
         .bind(password_hash)
         .bind(Utc::now())
-        .fetch_one(&self.pool)
-        .await?;
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| Error::NotFound(format!("User {} not found", user_id.as_str())))?;
 
         Ok(u)
     }
@@ -227,8 +229,9 @@ impl UserRepository {
         .bind(user_id.as_str())
         .bind(email_verified)
         .bind(Utc::now())
-        .fetch_one(&self.pool)
-        .await?;
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| Error::NotFound(format!("User {} not found", user_id.as_str())))?;
 
         Ok(u)
     }

@@ -2,13 +2,18 @@
 //!
 //! Provides a reusable `TieredCache<K, V>` that encapsulates the L1+L2 caching
 //! pattern shared by `UserCache`, `RoomCache`, and any future entity caches.
+//!
+//! Integrates `SingleFlight` to prevent cache stampede: when multiple concurrent
+//! requests miss L1 and L2 simultaneously, only one request fetches from L2
+//! (Redis), and the others wait for its result.
 
 use redis::AsyncCommands;
 use serde::{de::DeserializeOwned, Serialize};
-use std::fmt::Display;
+use std::fmt::{Debug, Display};
 use std::hash::Hash;
 use std::sync::Arc;
 
+use crate::cache::singleflight::SingleFlight;
 use crate::{Error, Result};
 
 /// Trait for cache values that support conditional updates based on freshness.
@@ -23,12 +28,16 @@ pub trait Timestamped {
 ///
 /// This is needed for Redis key construction and for cross-replica
 /// invalidation (which passes entity IDs as plain strings).
-pub trait CacheKey: Hash + Eq + Clone + Display + Send + Sync + 'static {
+pub trait CacheKey: Hash + Eq + Clone + Debug + Display + Send + Sync + 'static {
     fn as_str(&self) -> &str;
     fn from_id(id: &str) -> Self;
 }
 
 /// Generic two-tier cache with L1 (Moka in-memory) and L2 (Redis).
+///
+/// Integrates `SingleFlight` to prevent cache stampede on L2 misses:
+/// when many concurrent requests miss L1 for the same key, only one
+/// proceeds to query L2 (Redis), and the rest wait for its result.
 ///
 /// # Type Parameters
 /// - `K`: Cache key type (e.g. `UserId`, `RoomId`)
@@ -45,6 +54,11 @@ where
     key_prefix: String,
     /// Label used for metrics (e.g. "user", "room")
     cache_type: String,
+    /// SingleFlight to deduplicate concurrent L2 fetches for the same key.
+    /// Uses `String` as both the key and error type: `Error` does not implement
+    /// `Clone` (due to `sqlx::Error`), so we use `String` for the error type
+    /// and convert back to `Error::Internal` at the call site.
+    singleflight: SingleFlight<String, Option<V>, String>,
 }
 
 impl<K, V> TieredCache<K, V>
@@ -97,12 +111,17 @@ where
             l2_ttl_seconds,
             key_prefix,
             cache_type,
+            singleflight: SingleFlight::new(),
         })
     }
 
     /// Get a value from cache.
     ///
     /// Checks L1 first, then L2. Returns None if not found in either cache.
+    ///
+    /// Uses `SingleFlight` for L2 lookups to prevent cache stampede: when
+    /// multiple concurrent requests miss L1 for the same key, only one
+    /// proceeds to query Redis while the rest wait for its result.
     pub async fn get(&self, key: &K) -> Result<Option<V>> {
         let start = std::time::Instant::now();
 
@@ -122,17 +141,40 @@ where
             return Ok(Some(value));
         }
 
-        // Check L2 (Redis) cache
-        if let Some(ref conn) = self.redis_conn {
-            let mut conn = conn.clone();
+        // Check L2 (Redis) cache via SingleFlight to prevent stampede
+        if self.redis_conn.is_some() {
+            let sf_key = key.as_str().to_string();
+            let conn = self.redis_conn.clone().unwrap();
+            let key_prefix = self.key_prefix.clone();
+            let key_str = key.as_str().to_string();
+            let cache_type = self.cache_type.clone();
 
-            let redis_key = format!("{}{}", self.key_prefix, key.as_str());
-            let json: Option<String> = conn
-                .get(&redis_key)
-                .await
-                .map_err(|e| Error::Internal(format!("Failed to get {} from cache: {e}", self.cache_type)))?;
+            let result = self.singleflight.do_work_with_fallback(
+                sf_key,
+                {
+                    async move {
+                        let mut conn = conn;
+                        let redis_key = format!("{}{}", key_prefix, key_str);
+                        let json: Option<String> = conn
+                            .get(&redis_key)
+                            .await
+                            .map_err(|e| format!("Failed to get {} from cache: {e}", cache_type))?;
 
-            if let Some(json) = json {
+                        match json {
+                            Some(json) => {
+                                let value: V = serde_json::from_str(&json).map_err(|e| {
+                                    format!("Failed to deserialize cached {}: {e}", cache_type)
+                                })?;
+                                Ok(Some(value))
+                            }
+                            None => Ok(None),
+                        }
+                    }
+                },
+                || "SingleFlight worker failed during L2 cache fetch".to_string(),
+            ).await.map_err(Error::Internal)?;
+
+            if let Some(ref value) = result {
                 crate::metrics::cache::CACHE_HITS
                     .with_label_values(&[&self.cache_type, "l2"])
                     .inc();
@@ -142,17 +184,13 @@ where
                     "Cache hit (L2)"
                 );
 
-                let value: V = serde_json::from_str(&json).map_err(|e| {
-                    Error::Internal(format!("Failed to deserialize cached {}: {e}", self.cache_type))
-                })?;
-
                 // Populate L1 cache
                 self.l1_cache.insert(key.clone(), value.clone()).await;
 
                 crate::metrics::cache::CACHE_OPERATION_DURATION
                     .with_label_values(&["get"])
                     .observe(start.elapsed().as_secs_f64());
-                return Ok(Some(value));
+                return Ok(result);
             }
         }
 

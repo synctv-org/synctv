@@ -63,9 +63,17 @@ pub trait RoomSettingProvider: Send + Sync {
     fn apply_to(&self, settings: &mut RoomSettings, value: &str) -> Result<()>;
 }
 
-/// Global registry for all room setting types
+/// Global registry for all room setting types.
 ///
-/// Auto-populated by ctor in each setting type.
+/// Auto-populated by `#[ctor]` functions in each setting type at program startup
+/// (before `main`). After initialization, this registry is effectively read-only.
+///
+/// Unlike `ProviderRegistry` (oauth2), this cannot easily be converted to DI
+/// because `#[ctor]` runs before any application context exists. The `LazyLock`
+/// + `RwLock` pattern is appropriate here since:
+/// 1. Writes happen only during static initialization (before `main`)
+/// 2. All runtime access is read-only
+/// 3. The set of settings is fixed at compile time (not configurable)
 static REGISTRY: std::sync::LazyLock<RwLock<HashMap<String, Arc<dyn RoomSettingProvider>>>> =
     std::sync::LazyLock::new(|| RwLock::new(HashMap::new()));
 

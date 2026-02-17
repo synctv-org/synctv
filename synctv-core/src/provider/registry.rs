@@ -4,9 +4,10 @@
 
 use super::{MediaProvider, ProviderError};
 use dashmap::DashMap;
+use parking_lot::RwLock;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 /// Provider factory function type
 pub type ProviderFactory =
@@ -17,7 +18,8 @@ pub type ProviderFactory =
 /// Uses factory pattern to create provider instances from configuration.
 /// Each provider type registers a factory function.
 ///
-/// Factories are behind an `RwLock` (registered at startup, rarely mutated).
+/// Factories are behind a `parking_lot::RwLock` (registered at startup, rarely mutated).
+/// Unlike `std::sync::RwLock`, parking_lot's RwLock does not poison on panic.
 /// Instances use `DashMap` for lock-free concurrent reads.
 pub struct ProviderRegistry {
     /// Registered provider factories by type name
@@ -48,7 +50,6 @@ impl ProviderRegistry {
     pub fn register_factory(&self, provider_type: &str, factory: ProviderFactory) {
         self.factories
             .write()
-            .expect("factory lock poisoned")
             .insert(provider_type.to_string(), factory);
     }
 
@@ -73,7 +74,7 @@ impl ProviderRegistry {
         instance_id: &str,
         config: Value,
     ) -> Result<(), ProviderError> {
-        let factories = self.factories.read().expect("factory lock poisoned");
+        let factories = self.factories.read();
         let factory = factories
             .get(provider_type)
             .ok_or_else(|| ProviderError::InstanceNotFound(provider_type.to_string()))?;

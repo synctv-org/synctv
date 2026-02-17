@@ -327,6 +327,22 @@ impl LivestreamServer {
         // Start segment cleanup background task
         segment_manager.clone().start_cleanup_task(hls_shutdown_token.clone());
 
+        // Create PublisherManager early so the activity callback can be wired to the HLS remuxer.
+        // The manager itself is started later (step 7) after all components are created.
+        let publisher_manager = Arc::new(PublisherManager::new(
+            self.publisher_registry.clone(),
+            self.config.node_id.clone(),
+            event_sender.clone(),
+        ));
+
+        // Create activity callback for the HLS remuxer to record publisher data activity.
+        // This prevents the silent publisher detection from incorrectly timing out active publishers.
+        let activity_pm = Arc::clone(&publisher_manager);
+        let activity_callback: crate::protocols::hls::PublisherActivityCallback =
+            Arc::new(move |room_id: &str, media_id: &str| {
+                activity_pm.record_publisher_activity(room_id, media_id);
+            });
+
         // Start the HLS remuxer
         let hls_segment_manager = segment_manager.clone();
         let hls_stream_registry = stream_registry.clone();
@@ -338,7 +354,8 @@ impl LivestreamServer {
                 hls_segment_manager,
                 hls_stream_registry,
                 hls_cancel,
-            );
+            )
+            .with_activity_callback(activity_callback);
 
             let timer = synctv_core::metrics::stream::STREAM_RELAY_DURATION
                 .with_label_values(&["hls"])
@@ -391,13 +408,9 @@ impl LivestreamServer {
 
         // 7. Start PublisherManager -- listens to StreamHub broadcast events
         // and registers/unregisters publishers in Redis for multi-node relay
+        // (PublisherManager was created earlier in step 3 to wire the activity callback)
         let local_node_id = self.config.node_id.clone();
         let cluster_secret = self.config.cluster_secret.clone();
-        let publisher_manager = Arc::new(PublisherManager::new(
-            self.publisher_registry.clone(),
-            self.config.node_id,
-            event_sender.clone(),
-        ));
         let publisher_manager_handle = tokio::spawn({
             let pm = Arc::clone(&publisher_manager);
             let mut reregister_rx = reregister_rx;

@@ -12,11 +12,13 @@ CREATE TABLE IF NOT EXISTS notifications (
 );
 
 -- Indexes for efficient queries
-CREATE INDEX idx_notifications_user_id ON notifications(user_id);
+-- Composite index for the common "list notifications by read status" query pattern
+-- Covers: SELECT ... FROM notifications WHERE user_id = ? AND is_read = ? ORDER BY created_at DESC
+CREATE INDEX idx_notifications_user_read_created ON notifications(user_id, is_read, created_at DESC);
 CREATE INDEX idx_notifications_is_read ON notifications(is_read);
 CREATE INDEX idx_notifications_created_at ON notifications(created_at DESC);
 CREATE INDEX idx_notifications_user_unread ON notifications(user_id, is_read) WHERE is_read = FALSE;
-CREATE INDEX idx_notifications_user_created ON notifications(user_id, created_at DESC);
+-- Note: idx_notifications_user_id is covered by the leading column of idx_notifications_user_read_created
 
 -- Trigger to update updated_at timestamp (uses generic function from users migration)
 CREATE TRIGGER trigger_update_notifications_updated_at

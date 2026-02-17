@@ -646,6 +646,9 @@ impl StreamMessageHandler {
             Some(Message::SfuMigrationAnswer(answer)) => {
                 self.handle_sfu_migration_answer(answer).await?;
             }
+            Some(Message::PlaybackProgress(report)) => {
+                self.handle_playback_progress(report).await?;
+            }
             None => {
                 return Err("Empty message".to_string());
             }
@@ -1202,7 +1205,13 @@ impl StreamMessageHandler {
         }
 
         // Spawn a timeout task: if any migrating peers haven't completed
-        // within 30 seconds, mark their migration as failed and clean up
+        // within 30 seconds, mark their migration as failed and clean up.
+        //
+        // SFU-23 Fix 3: Only clean up sessions still in `Migrating` state.
+        // Previously, `has_session()` was used which would also match
+        // successfully-migrated sessions (where the answer was received
+        // and ICE completed). Now we check `get_migration_state()` to
+        // only remove sessions that never completed their migration.
         let sfu_mgr_clone = Arc::clone(sfu_mgr);
         let room_id = self.room_id.clone();
         let migration_id_for_timeout = migration_id.clone();
@@ -1213,26 +1222,44 @@ impl StreamMessageHandler {
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_secs(30)).await;
 
-            // SFU-13: Clean up sessions that are still pending after the migration
-            // timeout. If ICE negotiation hasn't completed within 30 seconds, the
-            // migration has effectively failed and the session is leaked.
             for (peer_user_id, peer_conn_id) in &p2p_peer_conn_ids {
-                if sfu_mgr_clone.has_session(peer_conn_id) {
-                    tracing::warn!(
-                        room_id = %room_id.as_str(),
-                        migration_id = %migration_id_for_timeout,
-                        peer = %peer_user_id,
-                        conn_id = %peer_conn_id,
-                        "Migration timeout: cleaning up stale SFU session"
-                    );
-                    if let Err(e) = sfu_mgr_clone
-                        .remove_session(peer_conn_id, room_id.as_str(), peer_user_id)
-                        .await
-                    {
-                        tracing::error!(
+                let migration_state = sfu_mgr_clone.get_migration_state(peer_conn_id);
+                match migration_state {
+                    Some(synctv_sfu::PeerMigrationState::Migrating) => {
+                        // Session is still in Migrating state after 30s - migration failed
+                        tracing::warn!(
+                            room_id = %room_id.as_str(),
+                            migration_id = %migration_id_for_timeout,
+                            peer = %peer_user_id,
                             conn_id = %peer_conn_id,
-                            error = %e,
-                            "Failed to clean up stale migration SFU session"
+                            "Migration timeout: cleaning up stale SFU session (still in Migrating state)"
+                        );
+                        if let Err(e) = sfu_mgr_clone
+                            .remove_session(peer_conn_id, room_id.as_str(), peer_user_id)
+                            .await
+                        {
+                            tracing::error!(
+                                conn_id = %peer_conn_id,
+                                error = %e,
+                                "Failed to clean up stale migration SFU session"
+                            );
+                        }
+                    }
+                    Some(synctv_sfu::PeerMigrationState::Completed) => {
+                        tracing::debug!(
+                            migration_id = %migration_id_for_timeout,
+                            peer = %peer_user_id,
+                            conn_id = %peer_conn_id,
+                            "Migration timeout: session already completed, skipping cleanup"
+                        );
+                    }
+                    Some(synctv_sfu::PeerMigrationState::Failed) | None => {
+                        tracing::debug!(
+                            migration_id = %migration_id_for_timeout,
+                            peer = %peer_user_id,
+                            conn_id = %peer_conn_id,
+                            state = ?migration_state,
+                            "Migration timeout: session already removed or failed"
                         );
                     }
                 }
@@ -1312,6 +1339,60 @@ impl StreamMessageHandler {
             migration_id = %answer.migration_id,
             "SFU migration answer processed successfully"
         );
+
+        Ok(())
+    }
+
+    /// Handle playback progress report from client.
+    ///
+    /// Clients send periodic progress heartbeats so the server knows each
+    /// client's actual playback position. The server updates the canonical
+    /// playback state, which:
+    /// - Gives new joiners an accurate starting position (solves drift for late joiners)
+    /// - Enables server-side drift detection across clients
+    ///
+    /// Rate limited by design: the heartbeat interval on the client side
+    /// (typically 3-5 seconds) is the throttle. The server accepts the report
+    /// and performs a lightweight state update.
+    async fn handle_playback_progress(
+        &self,
+        report: &crate::proto::client::PlaybackProgressReport,
+    ) -> Result<(), String> {
+        if report.current_time < 0.0 {
+            return Err("Playback position must be non-negative".to_string());
+        }
+
+        // Update the server-side playback state with the reported position.
+        // This is best-effort: we don't require SEEK permission for progress
+        // reporting because the client isn't seeking -- it's reporting where
+        // it naturally is. The authoritative playback state stays consistent
+        // because only the actively-playing state is updated.
+        let playback_service = self.room_service.playback_service();
+        let state = playback_service
+            .get_state(&self.room_id)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        // Only accept progress reports when playback is active and the
+        // reported state matches the server's playing state
+        if state.is_playing && report.is_playing {
+            // Update the canonical position without broadcasting to avoid
+            // feedback loops (the client already knows its own position).
+            // We use update_state directly to set the current_time.
+            if let Err(e) = playback_service
+                .update_state(self.room_id.clone(), |s| {
+                    s.current_time = report.current_time;
+                    s.updated_at = chrono::Utc::now();
+                })
+                .await
+            {
+                tracing::debug!(
+                    error = %e,
+                    room_id = %self.room_id.as_str(),
+                    "Failed to update playback state from progress report (non-critical)"
+                );
+            }
+        }
 
         Ok(())
     }

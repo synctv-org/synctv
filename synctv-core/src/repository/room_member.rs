@@ -835,6 +835,102 @@ impl RoomMemberRepository {
             .collect()
     }
 
+    /// Atomically remove a member only if the actor has a strictly higher role.
+    ///
+    /// Role values in DB: 1=Creator, 2=Admin, 3=Member, 4=Guest (lower = higher authority).
+    /// The WHERE clause `actor.role < target.role` ensures the actor outranks the target,
+    /// eliminating the TOCTOU race between checking roles and performing the removal.
+    ///
+    /// Returns `Ok(true)` if the member was removed, `Ok(false)` if the target was not
+    /// found or the actor does not outrank the target.
+    pub async fn remove_with_role_check(
+        &self,
+        room_id: &RoomId,
+        actor_id: &UserId,
+        target_id: &UserId,
+    ) -> Result<bool> {
+        let result = sqlx::query(
+            "UPDATE room_members AS target
+             SET left_at = $4, version = target.version + 1
+             WHERE target.room_id = $1
+               AND target.user_id = $3
+               AND target.left_at IS NULL
+               AND EXISTS (
+                   SELECT 1 FROM room_members AS actor
+                   WHERE actor.room_id = $1
+                     AND actor.user_id = $2
+                     AND actor.left_at IS NULL
+                     AND actor.role < target.role
+               )"
+        )
+        .bind(room_id.as_str())
+        .bind(actor_id.as_str())
+        .bind(target_id.as_str())
+        .bind(chrono::Utc::now())
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Atomically ban a member only if the actor has a strictly higher role.
+    ///
+    /// Combines the role hierarchy check and ban update into a single SQL statement
+    /// to prevent TOCTOU races. See `remove_with_role_check` for role value semantics.
+    ///
+    /// Returns the banned member on success. Returns `Err(NotFound)` if the target
+    /// does not exist or the actor does not outrank the target.
+    pub async fn ban_with_role_check(
+        &self,
+        room_id: &RoomId,
+        actor_id: &UserId,
+        target_id: &UserId,
+        reason: Option<String>,
+    ) -> Result<RoomMember> {
+        let row = sqlx::query(
+            "UPDATE room_members AS target
+             SET
+                status = $4,
+                banned_at = $5,
+                banned_by = $6,
+                banned_reason = $7,
+                version = target.version + 1
+             WHERE target.room_id = $1
+               AND target.user_id = $3
+               AND target.left_at IS NULL
+               AND target.status != $4
+               AND EXISTS (
+                   SELECT 1 FROM room_members AS actor
+                   WHERE actor.room_id = $1
+                     AND actor.user_id = $2
+                     AND actor.left_at IS NULL
+                     AND actor.role < target.role
+               )
+             RETURNING
+                target.room_id, target.user_id, target.role, target.status,
+                target.added_permissions, target.removed_permissions,
+                target.admin_added_permissions, target.admin_removed_permissions,
+                target.joined_at, target.left_at, target.version,
+                target.banned_at, target.banned_by, target.banned_reason"
+        )
+        .bind(room_id.as_str())
+        .bind(actor_id.as_str())
+        .bind(target_id.as_str())
+        .bind(MemberStatus::Banned)
+        .bind(chrono::Utc::now())
+        .bind(actor_id.as_str())
+        .bind(reason)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => self.row_to_member(row),
+            None => Err(Error::NotFound(
+                "Target not found, already banned, or actor does not outrank target".to_string()
+            )),
+        }
+    }
+
     /// Convert database row to `RoomMember`
     fn row_to_member(&self, row: PgRow) -> Result<RoomMember> {
         let role: RoomRole = row.try_get("role")?;

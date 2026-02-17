@@ -214,8 +214,8 @@ impl ProviderInstanceRepository {
 
     /// Migrate plaintext jwt_secret and custom_ca to encrypted format.
     ///
-    /// Reads all provider instances, checks if sensitive fields are plaintext
-    /// (not starting with "enc:"), and encrypts them in place. Safe to run
+    /// Runs inside a single database transaction so that a crash mid-migration
+    /// will not leave a mix of encrypted and plaintext rows. Safe to run
     /// multiple times (idempotent).
     ///
     /// Returns the number of instances migrated.
@@ -227,11 +227,13 @@ impl ProviderInstanceRepository {
             )),
         };
 
-        // Fetch all instances (raw, without decryption)
+        let mut tx = self.pool.begin().await?;
+
+        // Fetch all instances within the transaction (raw, without decryption)
         let instances = sqlx::query_as::<_, ProviderInstance>(
             "SELECT * FROM media_provider_instances ORDER BY name"
         )
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await?;
 
         let mut migrated_count = 0u64;
@@ -266,12 +268,14 @@ impl ProviderInstanceRepository {
                 .bind(&instance.name)
                 .bind(&new_jwt_secret)
                 .bind(&new_custom_ca)
-                .execute(&self.pool)
+                .execute(&mut *tx)
                 .await?;
 
                 migrated_count += 1;
             }
         }
+
+        tx.commit().await?;
 
         tracing::info!(
             "Migrated {} provider instances from plaintext to encrypted secrets",
@@ -497,8 +501,9 @@ impl UserProviderCredentialRepository {
 
     /// Migrate plaintext credentials to encrypted format
     ///
-    /// Reads all credentials, checks if they are plaintext (not encrypted),
-    /// and encrypts them in place. This is safe to run multiple times (idempotent).
+    /// Runs inside a single database transaction so that a crash mid-migration
+    /// will not leave a mix of encrypted and plaintext rows. Safe to run
+    /// multiple times (idempotent).
     ///
     /// Returns the number of credentials migrated.
     pub async fn migrate_plaintext_to_encrypted(&self) -> Result<u64> {
@@ -509,11 +514,13 @@ impl UserProviderCredentialRepository {
             )),
         };
 
-        // Fetch all credentials (raw, without decryption)
+        let mut tx = self.pool.begin().await?;
+
+        // Fetch all credentials within the transaction (raw, without decryption)
         let creds = sqlx::query_as::<_, UserProviderCredential>(
             "SELECT * FROM user_media_provider_credentials ORDER BY id"
         )
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await?;
 
         let mut migrated_count = 0u64;
@@ -533,11 +540,13 @@ impl UserProviderCredentialRepository {
             )
             .bind(&cred.id)
             .bind(&encrypted_data)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
 
             migrated_count += 1;
         }
+
+        tx.commit().await?;
 
         tracing::info!("Migrated {} plaintext credentials to encrypted format", migrated_count);
 

@@ -37,7 +37,7 @@ pub use auth::{hash_password, verify_password, JwtService, TokenType, Claims, Br
 pub use chat::ChatService;
 pub use email_token::{EmailTokenService, EmailTokenType};
 pub use oauth2::{OAuth2Service, OAuth2State, OAuth2UserInfo};
-pub use playlist::PlaylistService;
+pub use playlist::{PlaylistService, PlaylistBroadcaster};
 pub use room_settings::{RoomSettingsService, CacheStats};
 pub use settings::{SettingsService, SettingsChangeListener};
 pub use settings_vars::{Setting, SettingsStorage};

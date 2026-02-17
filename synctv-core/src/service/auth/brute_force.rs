@@ -135,21 +135,32 @@ impl BruteForceProtection {
     }
 
     /// Get the current failed attempt count for a username.
+    ///
+    /// On Redis error, falls back to the in-memory cache rather than returning 0
+    /// (fail-closed). Returning 0 on error would disable brute-force protection
+    /// entirely, allowing unlimited login attempts during Redis outages.
     async fn get_attempts(&self, username: &str) -> Result<u64> {
+        let key = self.key_builder.login_attempts(username);
+
         if let Some(ref conn) = self.redis_conn {
             let mut conn = conn.clone();
-            let key = self.key_builder.login_attempts(username);
 
-            let count: Option<u64> = conn.get(&key)
-                .await
-                .unwrap_or(None); // Degrade gracefully on Redis error
-
-            Ok(count.unwrap_or(0))
-        } else {
-            let key = self.key_builder.login_attempts(username);
-            let count = self.local_attempts.get(&key).await.map_or(0, |(c, _)| c);
-            Ok(count)
+            match conn.get::<_, Option<u64>>(&key).await {
+                Ok(count) => return Ok(count.unwrap_or(0)),
+                Err(e) => {
+                    tracing::warn!(
+                        username = %username,
+                        error = %e,
+                        "Redis error in brute-force check, falling back to in-memory cache"
+                    );
+                    // Fall through to in-memory lookup below
+                }
+            }
         }
+
+        // In-memory fallback (used when Redis is unavailable or errored)
+        let count = self.local_attempts.get(&key).await.map_or(0, |(c, _)| c);
+        Ok(count)
     }
 
     /// Determine lockout duration based on failure count.

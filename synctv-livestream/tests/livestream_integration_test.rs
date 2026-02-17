@@ -42,6 +42,7 @@ impl synctv_livestream::relay::StreamRegistryTrait for MockStreamRegistry {
         _media_id: &str,
         _node_id: &str,
         _user_id: &str,
+        _grpc_address: &str,
     ) -> anyhow::Result<bool> {
         Ok(true)
     }

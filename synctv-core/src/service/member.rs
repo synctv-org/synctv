@@ -15,6 +15,11 @@ use crate::{
 };
 /// Role hierarchy level for authorization checks (higher = more authority)
 /// Creator > Admin > Member > Guest
+///
+/// Note: kick_member/ban_member enforce role hierarchy atomically in SQL
+/// (see `remove_with_role_check` / `ban_with_role_check` in the repository layer).
+/// This function is kept for unit tests that validate the conceptual hierarchy.
+#[cfg(test)]
 const fn role_level(role: &RoomRole) -> u8 {
     match role {
         RoomRole::Creator => 3,
@@ -266,6 +271,10 @@ impl MemberService {
     }
 
     /// Kick a member from a room (requires permission)
+    ///
+    /// Uses an atomic SQL statement that combines the role hierarchy check with the
+    /// removal, eliminating the TOCTOU race between checking roles and performing
+    /// the kick.
     pub async fn kick_member(
         &self,
         room_id: RoomId,
@@ -282,25 +291,33 @@ impl MemberService {
             return Err(Error::InvalidInput("Cannot kick yourself".to_string()));
         }
 
-        // Prevent kicking users with equal or higher role
-        let kicker_member = self.member_repo.get(&room_id, &kicker_id).await?
-            .ok_or_else(|| Error::NotFound("Kicker is not a member".to_string()))?;
-        let target_member = self.member_repo.get(&room_id, &target_user_id).await?
-            .ok_or_else(|| Error::NotFound("User is not a member of this room".to_string()))?;
-        if role_level(&target_member.role) >= role_level(&kicker_member.role) {
-            return Err(Error::Authorization("Cannot kick a member with equal or higher role".to_string()));
-        }
-
-        // Remove member
-        let removed = self.member_repo.remove(&room_id, &target_user_id).await?;
+        // Atomic role check + removal: the SQL WHERE clause ensures the kicker
+        // outranks the target, preventing TOCTOU races.
+        let removed = self.member_repo
+            .remove_with_role_check(&room_id, &kicker_id, &target_user_id)
+            .await?;
         if !removed {
-            return Err(Error::NotFound("User is not a member of this room".to_string()));
+            return Err(Error::Authorization(
+                "User is not a member or cannot kick a member with equal or higher role".to_string(),
+            ));
         }
 
-        // Invalidate permission cache for kicked user
+        // Invalidate permission cache for kicked user (local)
         self.permission_service
             .invalidate_cache(&room_id, &target_user_id)
             .await;
+
+        // Broadcast permission cache invalidation to other cluster replicas
+        if let Some(ref invalidation) = self.cache_invalidation {
+            if let Err(e) = invalidation.invalidate_user_permission(&room_id, &target_user_id).await {
+                tracing::warn!(
+                    error = %e,
+                    room_id = %room_id.as_str(),
+                    user_id = %target_user_id.as_str(),
+                    "Failed to broadcast kick invalidation to cluster"
+                );
+            }
+        }
 
         // Audit log
         self.audit_log(
@@ -310,7 +327,6 @@ impl MemberService {
             Some(target_user_id.as_str().to_string()),
             serde_json::json!({
                 "room_id": room_id.as_str(),
-                "target_role": format!("{:?}", target_member.role),
             }),
         ).await;
 
@@ -566,6 +582,10 @@ impl MemberService {
     }
 
     /// Ban a member from a room
+    ///
+    /// Uses an atomic SQL statement that combines the role hierarchy check with the
+    /// ban update, eliminating the TOCTOU race between checking roles and performing
+    /// the ban.
     pub async fn ban_member(
         &self,
         room_id: RoomId,
@@ -575,27 +595,31 @@ impl MemberService {
     ) -> Result<()> {
         // Check admin permission without cache - critical operation requires fresh permissions
         self.permission_service
-            .check_permission_no_cache(&room_id.clone(), &admin_id, PermissionBits::BAN_MEMBER)
+            .check_permission_no_cache(&room_id, &admin_id, PermissionBits::BAN_MEMBER)
             .await?;
 
-        // Prevent banning users with equal or higher role (Creator > Admin > Member > Guest)
-        let admin_member = self.member_repo.get(&room_id, &admin_id).await?
-            .ok_or_else(|| Error::NotFound("Admin is not a member".to_string()))?;
-        let target_member = self.member_repo.get(&room_id, &target_user_id).await?
-            .ok_or_else(|| Error::NotFound("Target user is not a member".to_string()))?;
-        if role_level(&target_member.role) >= role_level(&admin_member.role) {
-            return Err(Error::Authorization("Cannot ban a member with equal or higher role".to_string()));
-        }
-
-        // Ban member
+        // Atomic role check + ban: the SQL WHERE clause ensures the admin outranks
+        // the target, preventing TOCTOU races.
         self.member_repo
-            .ban_member(&room_id, &target_user_id, &admin_id, reason.clone())
+            .ban_with_role_check(&room_id, &admin_id, &target_user_id, reason.clone())
             .await?;
 
-        // Invalidate permission cache for banned user
+        // Invalidate permission cache for banned user (local)
         self.permission_service
             .invalidate_cache(&room_id, &target_user_id)
             .await;
+
+        // Broadcast permission cache invalidation to other cluster replicas
+        if let Some(ref invalidation) = self.cache_invalidation {
+            if let Err(e) = invalidation.invalidate_user_permission(&room_id, &target_user_id).await {
+                tracing::warn!(
+                    error = %e,
+                    room_id = %room_id.as_str(),
+                    user_id = %target_user_id.as_str(),
+                    "Failed to broadcast ban invalidation to cluster"
+                );
+            }
+        }
 
         // Audit log
         self.audit_log(
@@ -606,7 +630,6 @@ impl MemberService {
             serde_json::json!({
                 "room_id": room_id.as_str(),
                 "reason": reason,
-                "target_role": format!("{:?}", target_member.role),
             }),
         ).await;
 

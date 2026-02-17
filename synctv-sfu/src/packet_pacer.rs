@@ -66,44 +66,50 @@ impl PacketPacer {
 
         loop {
             // Refill tokens based on elapsed time
-            self.refill_tokens().await;
+            self.refill_tokens();
 
-            // Try to consume tokens
-            let mut tokens = self.tokens.lock();
-            if *tokens >= packet_size_f64 {
-                *tokens -= packet_size_f64;
-                drop(tokens);
-                return true;
+            // Try to consume tokens or calculate wait time.
+            // All mutex access is scoped in this block so no MutexGuard
+            // is held across the subsequent await point.
+            let wait_result = {
+                let mut tokens = self.tokens.lock();
+                if *tokens >= packet_size_f64 {
+                    *tokens -= packet_size_f64;
+                    None // No wait needed, packet is allowed
+                } else {
+                    let bitrate_kbps = *self.target_bitrate_kbps.lock();
+                    let bytes_per_sec = f64::from(bitrate_kbps) * 1000.0 / 8.0;
+
+                    let tokens_needed = packet_size_f64 - *tokens;
+                    let wait_time_secs = tokens_needed / bytes_per_sec;
+                    let wait_time = Duration::from_secs_f64(wait_time_secs.max(0.001)); // Min 1ms
+                    Some((wait_time, bitrate_kbps))
+                }
+            };
+
+            match wait_result {
+                None => return true,
+                Some((wait_time, bitrate_kbps)) => {
+                    // Check if wait time is reasonable
+                    if wait_time > Duration::from_secs(1) {
+                        // If we need to wait more than 1 second, drop the packet
+                        debug!(
+                            packet_size = packet_size,
+                            bitrate_kbps = bitrate_kbps,
+                            "Dropping packet due to excessive pacing delay"
+                        );
+                        return false;
+                    }
+
+                    // Wait for tokens to become available
+                    sleep(wait_time.max(self.min_pacing_interval)).await;
+                }
             }
-
-            // Not enough tokens, calculate wait time
-            let bitrate_kbps = *self.target_bitrate_kbps.lock();
-            let bytes_per_sec = f64::from(bitrate_kbps) * 1000.0 / 8.0;
-
-            let tokens_needed = packet_size_f64 - *tokens;
-            let wait_time_secs = tokens_needed / bytes_per_sec;
-            let wait_time = Duration::from_secs_f64(wait_time_secs.max(0.001)); // Min 1ms
-
-            drop(tokens);
-
-            // Check if wait time is reasonable
-            if wait_time > Duration::from_secs(1) {
-                // If we need to wait more than 1 second, drop the packet
-                debug!(
-                    packet_size = packet_size,
-                    bitrate_kbps = bitrate_kbps,
-                    "Dropping packet due to excessive pacing delay"
-                );
-                return false;
-            }
-
-            // Wait for tokens to become available
-            sleep(wait_time.max(self.min_pacing_interval)).await;
         }
     }
 
     /// Refill token bucket based on elapsed time
-    async fn refill_tokens(&self) {
+    fn refill_tokens(&self) {
         let now = Instant::now();
         let mut last_refill = self.last_refill.lock();
         let elapsed = now.duration_since(*last_refill);
@@ -143,114 +149,17 @@ impl PacketPacer {
     }
 }
 
-/// Congestion controller using a simplified BBR-like algorithm
-pub struct CongestionController {
-    /// Current estimated bandwidth in kbps
-    estimated_bandwidth_kbps: Arc<Mutex<u32>>,
-
-    /// Minimum observed RTT in milliseconds
-    min_rtt_ms: Arc<Mutex<u32>>,
-
-    /// Pacing gain for bandwidth probing
-    pacing_gain: f64,
-
-    /// Current congestion state
-    state: Arc<Mutex<CongestionState>>,
-}
-
-/// Congestion control state
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CongestionState {
-    /// Startup: aggressively probe for bandwidth
-    Startup,
-    /// Drain: reduce sending rate after startup
-    Drain,
-    /// ProbeBW: maintain bandwidth and occasionally probe for more
-    ProbeBW,
-    /// ProbeRTT: reduce sending rate to measure minimum RTT
-    ProbeRTT,
-}
-
-impl CongestionController {
-    /// Create a new congestion controller
-    pub fn new(initial_bandwidth_kbps: u32) -> Self {
-        Self {
-            estimated_bandwidth_kbps: Arc::new(Mutex::new(initial_bandwidth_kbps)),
-            min_rtt_ms: Arc::new(Mutex::new(u32::MAX)),
-            pacing_gain: 2.0, // Start with 2x gain for startup
-            state: Arc::new(Mutex::new(CongestionState::Startup)),
-        }
-    }
-
-    /// Update with new RTT measurement
-    pub fn update_rtt(&self, rtt_ms: u32) {
-        let mut min_rtt = self.min_rtt_ms.lock();
-        if rtt_ms < *min_rtt {
-            *min_rtt = rtt_ms;
-            debug!(min_rtt_ms = rtt_ms, "Updated minimum RTT");
-        }
-    }
-
-    /// Update with bandwidth measurement
-    pub fn update_bandwidth(&self, bandwidth_kbps: u32) {
-        let mut estimated = self.estimated_bandwidth_kbps.lock();
-        let old_estimate = *estimated;
-
-        // Use exponential moving average
-        *estimated = ((old_estimate as f64 * 0.8) + (bandwidth_kbps as f64 * 0.2)) as u32;
-
-        debug!(
-            old_bandwidth = old_estimate,
-            new_measurement = bandwidth_kbps,
-            estimated_bandwidth = *estimated,
-            "Updated bandwidth estimate"
-        );
-    }
-
-    /// Update with packet loss indication
-    pub fn update_loss(&self, loss_rate: f32) {
-        if loss_rate > 0.05 {
-            // Significant loss detected, reduce estimate
-            let mut estimated = self.estimated_bandwidth_kbps.lock();
-            let reduction = (*estimated as f32 * loss_rate.min(0.5)) as u32;
-            *estimated = estimated.saturating_sub(reduction).max(100); // Min 100 kbps
-
-            debug!(
-                loss_rate = loss_rate,
-                new_bandwidth = *estimated,
-                "Reduced bandwidth estimate due to packet loss"
-            );
-
-            // Transition to drain state
-            *self.state.lock() = CongestionState::Drain;
-        }
-    }
-
-    /// Get pacing rate for packet pacer
-    pub fn get_pacing_rate(&self) -> u32 {
-        let estimated = *self.estimated_bandwidth_kbps.lock();
-        let state = *self.state.lock();
-
-        let pacing_gain = match state {
-            CongestionState::Startup => 2.0,
-            CongestionState::Drain => 0.75,
-            CongestionState::ProbeBW => 1.25,
-            CongestionState::ProbeRTT => 0.5,
-        };
-
-        ((estimated as f64) * pacing_gain) as u32
-    }
-
-    /// Get current estimated bandwidth
-    pub fn get_estimated_bandwidth(&self) -> u32 {
-        *self.estimated_bandwidth_kbps.lock()
-    }
-
-    /// Get minimum RTT
-    pub fn get_min_rtt(&self) -> u32 {
-        *self.min_rtt_ms.lock()
-    }
-}
+// NOTE: CongestionController was removed (SFU-23 Issue 1).
+//
+// The previous implementation had an incomplete BBR-like state machine:
+// - Entering `Drain` on packet loss was a one-way trip (no recovery to ProbeBW/ProbeRTT)
+// - The `pacing_gain` field was never used (shadowed by per-state constants)
+// - No timer-driven state transitions existed
+//
+// The PacketPacer above handles pacing correctly via its token-bucket algorithm.
+// Bandwidth estimation is handled by the RTCP handler and NetworkQualityMonitor.
+// A proper congestion controller should be implemented when needed, with full
+// BBR state transitions (Startup -> Drain -> ProbeBW <-> ProbeRTT).
 
 #[cfg(test)]
 mod tests {
@@ -279,24 +188,5 @@ mod tests {
         assert!(allowed);
     }
 
-    #[test]
-    fn test_congestion_controller_creation() {
-        let controller = CongestionController::new(1000);
-        assert_eq!(controller.get_estimated_bandwidth(), 1000);
-    }
-
-    #[test]
-    fn test_congestion_controller_rtt_update() {
-        let controller = CongestionController::new(1000);
-        controller.update_rtt(50);
-        assert_eq!(controller.get_min_rtt(), 50);
-    }
-
-    #[test]
-    fn test_congestion_controller_loss_reduction() {
-        let controller = CongestionController::new(1000);
-        controller.update_loss(0.1); // 10% loss
-        let new_bandwidth = controller.get_estimated_bandwidth();
-        assert!(new_bandwidth < 1000);
-    }
+    // CongestionController tests removed along with the dead code (SFU-23 Issue 1)
 }

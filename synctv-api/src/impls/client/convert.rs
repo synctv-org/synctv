@@ -135,13 +135,16 @@ pub(super) fn playback_state_to_proto(state: &synctv_core::models::RoomPlaybackS
     }
 }
 
-pub(super) fn room_member_to_proto(member: synctv_core::models::RoomMemberWithUser) -> synctv_proto::common::RoomMember {
+pub(super) fn room_member_to_proto(
+    member: synctv_core::models::RoomMemberWithUser,
+    role_default: synctv_core::models::PermissionBits,
+) -> synctv_proto::common::RoomMember {
     synctv_proto::common::RoomMember {
         room_id: member.room_id.as_str().to_string(),
         user_id: member.user_id.as_str().to_string(),
         username: member.username.clone(),
         role: room_role_to_proto(member.role),
-        permissions: member.effective_permissions(member.role.permissions()).0,
+        permissions: member.effective_permissions(role_default).0,
         added_permissions: member.added_permissions,
         removed_permissions: member.removed_permissions,
         admin_added_permissions: member.admin_added_permissions,

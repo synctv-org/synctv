@@ -24,14 +24,7 @@ use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-/// Leadership change event for observers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LeadershipEvent {
-    /// This node gained leadership (includes the new epoch).
-    Gained { epoch: u64 },
-    /// This node lost leadership.
-    Lost,
-}
+use super::LeadershipEvent;
 
 /// K8s Lease-based leader election.
 ///

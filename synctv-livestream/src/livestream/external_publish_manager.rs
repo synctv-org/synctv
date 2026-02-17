@@ -134,7 +134,7 @@ impl ExternalPublishManager {
         // Register as publisher in Redis so other nodes can discover this stream
         if let Err(e) = self
             .registry
-            .try_register_publisher(room_id, media_id, &self.local_node_id, "external_puller")
+            .try_register_publisher(room_id, media_id, &self.local_node_id, "external_puller", "")
             .await
         {
             error!("Failed to register external publisher in Redis, rolling back: {e}");

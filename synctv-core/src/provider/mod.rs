@@ -58,6 +58,71 @@ pub fn parse_source_config<T: serde::de::DeserializeOwned>(
     })
 }
 
+/// Build a `PlaybackResult` with HLS and FLV playback URLs for a live stream.
+///
+/// Shared by `RtmpProvider` and `LiveProxyProvider` which both generate
+/// identical playback URLs pointing to synctv's own HLS/FLV endpoints.
+/// The only difference between the two is the `metadata` map (live_proxy adds
+/// `source_url` and `provider` fields), which callers can extend after this
+/// function returns.
+pub fn build_live_playback(
+    base_url: &str,
+    media_id: &str,
+    room_id: &str,
+) -> PlaybackResult {
+    use serde_json::json;
+    use std::collections::HashMap;
+
+    let live_expires_at = Some(chrono::Utc::now().timestamp() + 30);
+
+    let mut playback_infos = HashMap::new();
+
+    // HLS URL — matches actual HTTP route: /api/room/movie/live/hls/list/:media_id?room_id=:room_id
+    playback_infos.insert(
+        "hls".to_string(),
+        PlaybackInfo {
+            urls: vec![format!(
+                "{}/api/room/movie/live/hls/list/{}?room_id={}",
+                base_url, media_id, room_id
+            )],
+            format: "m3u8".to_string(),
+            headers: HashMap::new(),
+            subtitles: Vec::new(),
+            expires_at: live_expires_at,
+            cors_proxy_required: false,
+        },
+    );
+
+    // FLV URL — matches actual HTTP route: /api/room/movie/live/flv/:media_id.flv?room_id=:room_id
+    playback_infos.insert(
+        "flv".to_string(),
+        PlaybackInfo {
+            urls: vec![format!(
+                "{}/api/room/movie/live/flv/{}.flv?room_id={}",
+                base_url, media_id, room_id
+            )],
+            format: "flv".to_string(),
+            headers: HashMap::new(),
+            subtitles: Vec::new(),
+            expires_at: live_expires_at,
+            cors_proxy_required: false,
+        },
+    );
+
+    let mut metadata = HashMap::new();
+    metadata.insert("is_live".to_string(), json!(true));
+    metadata.insert("media_id".to_string(), json!(media_id));
+    metadata.insert("room_id".to_string(), json!(room_id));
+
+    PlaybackResult {
+        playback_infos,
+        default_mode: "hls".to_string(),
+        metadata,
+        dash: None,
+        hevc_dash: None,
+    }
+}
+
 /// Credential field names that must never be included in API responses.
 ///
 /// These fields are stripped from `source_config` before serialization to

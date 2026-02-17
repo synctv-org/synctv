@@ -96,7 +96,7 @@ impl StreamRegistry {
         node_id: &str,
         _app_name: &str,
     ) -> anyhow::Result<bool> {
-        self.try_register_publisher_with_user(room_id, media_id, node_id, "").await
+        self.try_register_publisher_with_user(room_id, media_id, node_id, "", "").await
     }
 
     /// Try to register as publisher (simplified version for `PublisherManager`)
@@ -107,7 +107,7 @@ impl StreamRegistry {
         media_id: &str,
         node_id: &str,
     ) -> anyhow::Result<bool> {
-        self.try_register_publisher_with_user(room_id, media_id, node_id, "").await
+        self.try_register_publisher_with_user(room_id, media_id, node_id, "", "").await
     }
 
     /// Try to register as publisher with `user_id`
@@ -121,6 +121,7 @@ impl StreamRegistry {
         media_id: &str,
         node_id: &str,
         user_id: &str,
+        grpc_address: &str,
     ) -> anyhow::Result<bool> {
         let key = format!("stream:publisher:{room_id}:{media_id}");
         let epoch_key = format!("{EPOCH_KEY_PREFIX}:{room_id}:{media_id}");
@@ -129,7 +130,7 @@ impl StreamRegistry {
         // Create PublisherInfo template (epoch will be filled by Lua script)
         let info = PublisherInfo {
             node_id: node_id.to_string(),
-            grpc_address: String::new(),
+            grpc_address: grpc_address.to_string(),
             app_name: "live".to_string(),
             user_id: user_id.to_string(),
             started_at: Utc::now(),

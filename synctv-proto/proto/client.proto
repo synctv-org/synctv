@@ -626,7 +626,18 @@ message ClientMessage {
         WebRTCLeave webrtc_leave = 7;
         // SFU migration: client responds to server's migration offer
         SfuMigrationAnswer sfu_migration_answer = 8;
+        // Playback progress heartbeat: client periodically reports current position
+        PlaybackProgressReport playback_progress = 9;
     }
+}
+
+// Client -> Server: periodic playback progress heartbeat
+// Sent every few seconds by clients that are actively playing media.
+// The server uses these reports to track actual client playback positions,
+// detect drift between clients, and provide accurate positions to new joiners.
+message PlaybackProgressReport {
+    double current_time = 1;  // Current playback position in seconds
+    bool is_playing = 2;      // Whether the client is currently playing
 }
 
 message ServerMessage {

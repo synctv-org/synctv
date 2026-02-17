@@ -51,12 +51,16 @@ static SHARED_CLIENT: LazyLock<Client> = LazyLock::new(|| {
 /// This must be global so that the token bucket is not reset when a new
 /// `BilibiliClient` is created per-request in the service layer.
 ///
-/// **Known limitation**: This is an in-memory rate limiter, so in multi-replica
-/// deployments the effective rate is `N * DEFAULT_RATE_LIMIT_PER_SECOND` where N
-/// is the number of running instances. For Bilibili's API this is acceptable
-/// because the limit is conservative (5 req/s) and replicas are typically few.
-/// A Redis-backed limiter (e.g. via `redis-cell` or a Lua script) would be
-/// needed if the deployment scales to many replicas.
+/// **Known limitation – multi-replica deployments**: This is an in-memory rate
+/// limiter, so the effective cluster-wide rate is `N * DEFAULT_RATE_LIMIT_PER_SECOND`
+/// where N is the number of running instances. With more than ~3 replicas this
+/// may exceed Bilibili's undocumented per-IP rate limit and trigger temporary bans.
+///
+/// TODO(multi-replica): Replace with a Redis-backed sliding-window limiter
+/// (e.g. a Lua EVALSHA implementing the token-bucket algorithm, or the
+/// `redis-cell` module's `CL.THROTTLE` command). The limiter should live in the
+/// `synctv-core` service layer that already has access to `redis::aio::ConnectionManager`
+/// via `ProviderContext`, keeping this crate free of Redis dependencies.
 static SHARED_RATE_LIMITER: LazyLock<std::sync::Arc<BilibiliRateLimiter>> = LazyLock::new(|| {
     let quota = Quota::per_second(
         NonZeroU32::new(DEFAULT_RATE_LIMIT_PER_SECOND).expect("rate limit must be > 0"),
@@ -88,6 +92,12 @@ struct WbiKeys {
 /// Global WBI key cache. Uses Mutex instead of RwLock so that when multiple
 /// tasks hit a cache miss simultaneously, only the first one refreshes from
 /// the API while the rest wait and then read the updated value.
+///
+/// TODO(multi-replica): In a multi-replica deployment every instance refreshes
+/// independently, causing a "thundering herd" against Bilibili's nav API at
+/// expiry time. Store the mixin key in Redis with SETNX + TTL so that only one
+/// replica performs the refresh. This requires moving the caching logic to the
+/// `synctv-core` service layer which has `ProviderContext.redis`.
 static WBI_KEY_CACHE: LazyLock<tokio::sync::Mutex<Option<WbiKeys>>> =
     LazyLock::new(|| tokio::sync::Mutex::new(None));
 

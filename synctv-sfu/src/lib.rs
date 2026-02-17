@@ -43,11 +43,14 @@ mod webrtc_control;
 pub use config::SfuConfig;
 pub use manager::SfuManager;
 pub use network_monitor::{NetworkQualityMonitor, NetworkStats, QualityAction};
-pub use packet_pacer::{CongestionController, PacketPacer};
+pub use packet_pacer::PacketPacer;
 pub use peer::{SfuPeer, PeerStats};
 pub use room::{SfuRoom, RoomMode, RoomStats};
 pub use rtcp_handler::RtcpHandler;
-pub use session_manager::{SfuSessionManager, SfuSignalingEvent, PeerMigrationResult, PeerMigrationState};
+pub use session_manager::{
+    NoopSessionRegistry, PeerMigrationResult, PeerMigrationState,
+    SessionAffinityRegistry, SfuSessionManager, SfuSignalingEvent,
+};
 pub use track::{MediaTrack, QualityLayer, TrackKind};
 pub use types::{PeerId, RoomId, TrackId};
 pub use webrtc_control::{IceManager, IceServerConfig, PeerConnection};

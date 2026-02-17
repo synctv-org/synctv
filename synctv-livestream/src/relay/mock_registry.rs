@@ -74,6 +74,7 @@ impl StreamRegistryTrait for MockStreamRegistry {
         media_id: &str,
         node_id: &str,
         user_id: &str,
+        grpc_address: &str,
     ) -> Result<bool> {
         let mut publishers = self.publishers.lock().await;
         let mut epoch_counters = self.epoch_counters.lock().await;
@@ -88,7 +89,7 @@ impl StreamRegistryTrait for MockStreamRegistry {
 
             publishers.insert(key, PublisherInfo {
                 node_id: node_id.to_string(),
-                grpc_address: String::new(),
+                grpc_address: grpc_address.to_string(),
                 app_name: "live".to_string(),
                 user_id: user_id.to_string(),
                 started_at: Utc::now(),
@@ -214,11 +215,11 @@ mod tests {
         let registry = MockStreamRegistry::new();
 
         // First try_register should succeed
-        let result = registry.try_register_publisher("room123", "media456", "node1", "user1").await.unwrap();
+        let result = registry.try_register_publisher("room123", "media456", "node1", "user1", "10.0.0.1:50051").await.unwrap();
         assert!(result);
 
         // Second try_register should return false (already exists)
-        let result = registry.try_register_publisher("room123", "media456", "node2", "user2").await.unwrap();
+        let result = registry.try_register_publisher("room123", "media456", "node2", "user2", "10.0.0.2:50051").await.unwrap();
         assert!(!result);
     }
 

@@ -201,6 +201,10 @@ impl ClientApiImpl {
         changed_by: &UserId,
     ) {
         if let Some(ref tx) = self.redis_publish_tx {
+            // Fetch room settings for proper three-layer permission calculation
+            let room_settings = self.room_service.get_room_settings(room_id).await
+                .unwrap_or_default();
+
             // Fetch actual usernames and permissions for the event
             let (target_username, new_permissions, role, added_permissions, removed_permissions) = match self
                 .room_service
@@ -215,7 +219,9 @@ impl ClientApiImpl {
                         .await
                         .map(|u| u.username.clone())
                         .unwrap_or_default();
-                    let perms = member.effective_permissions(member.role.permissions());
+                    let role_default = self.room_service.permission_service()
+                        .calculate_role_default_permissions(&member.role, &room_settings);
+                    let perms = member.effective_permissions(role_default);
                     let role_i32 = match member.role {
                         synctv_core::models::RoomRole::Creator => synctv_proto::common::RoomMemberRole::Creator as i32,
                         synctv_core::models::RoomRole::Admin => synctv_proto::common::RoomMemberRole::Admin as i32,

@@ -74,8 +74,10 @@ where
             .validate_http(auth_str)
             .map_err(|e| AppError::unauthorized(format!("{e}")))?;
 
-        // Check if the token has been revoked (e.g. after logout).
-        // Extract the raw bearer token for blacklist lookup.
+        // Unified security check order (matches gRPC BlacklistCheckLayer):
+        // 1. JWT verification (done above)  2. Blacklist  3. Password invalidation  4. Banned user
+
+        // Step 2: Check if the token has been revoked (e.g. after logout).
         let raw_token = JwtValidator::extract_bearer_token(auth_str)
             .map_err(|e| AppError::unauthorized(format!("{e}")))?;
         if app_state
@@ -89,15 +91,7 @@ where
 
         let user_id = UserId::from_string(claims.sub);
 
-        // Check if user is banned or deleted (defense-in-depth: catches banned
-        // users even if they hold a valid JWT issued before the ban)
-        let user = app_state.user_service.get_user(&user_id).await
-            .map_err(|_| AppError::unauthorized("User not found"))?;
-        if user.is_deleted() || user.status == UserStatus::Banned {
-            return Err(AppError::unauthorized("Authentication failed"));
-        }
-
-        // Reject tokens issued before the user's last password change.
+        // Step 3: Reject tokens issued before the user's last password change.
         // This ensures that stolen tokens become useless after a password reset.
         if app_state
             .user_service
@@ -108,6 +102,14 @@ where
             return Err(AppError::unauthorized(
                 "Token invalidated due to password change. Please log in again.",
             ));
+        }
+
+        // Step 4: Check if user is banned or deleted (defense-in-depth: catches banned
+        // users even if they hold a valid JWT issued before the ban)
+        let user = app_state.user_service.get_user(&user_id).await
+            .map_err(|_| AppError::unauthorized("User not found"))?;
+        if user.is_deleted() || user.status == UserStatus::Banned {
+            return Err(AppError::unauthorized("Authentication failed"));
         }
 
         Ok(Self { user_id })
@@ -773,10 +775,11 @@ mod tests {
 
     // === Security Parity: HTTP middleware checks ===
     //
-    // The HTTP AuthUser extractor performs three security checks in order:
-    // 1. Token blacklist check (reject revoked tokens)
-    // 2. Password invalidation check (reject tokens issued before password change)
-    // 3. Banned/deleted user check (reject banned or soft-deleted users)
+    // The HTTP AuthUser extractor performs four security checks in order:
+    // 1. JWT verification (validate signature, expiration, and access token type)
+    // 2. Token blacklist check (reject revoked tokens)
+    // 3. Password invalidation check (reject tokens issued before password change)
+    // 4. Banned/deleted user check (reject banned or soft-deleted users)
     //
     // These checks mirror the gRPC BlacklistCheckLayer to ensure consistent
     // security enforcement across both transport layers.

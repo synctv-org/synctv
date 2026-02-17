@@ -69,6 +69,31 @@ impl AnyLeaderElector {
             AnyLeaderElector::K8s(e) => e.leader_epoch(),
         }
     }
+
+    /// Subscribe to leadership change events (observer pattern).
+    ///
+    /// Returns a receiver that will receive `LeadershipEvent::Gained` when this
+    /// node becomes leader and `LeadershipEvent::Lost` when it loses leadership.
+    #[must_use]
+    pub fn subscribe(&self) -> broadcast::Receiver<LeadershipEvent> {
+        match self {
+            AnyLeaderElector::Redis(e) => e.subscribe(),
+            #[cfg(feature = "k8s")]
+            AnyLeaderElector::K8s(e) => e.subscribe(),
+        }
+    }
+
+    /// Start the leader election loop.
+    ///
+    /// Spawns a background task that continuously tries to acquire or
+    /// renew leadership. The task runs until the `cancel_token` is cancelled.
+    pub fn start(&self, cancel_token: CancellationToken) -> tokio::task::JoinHandle<()> {
+        match self {
+            AnyLeaderElector::Redis(e) => e.start(cancel_token),
+            #[cfg(feature = "k8s")]
+            AnyLeaderElector::K8s(e) => e.start(cancel_token),
+        }
+    }
 }
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};

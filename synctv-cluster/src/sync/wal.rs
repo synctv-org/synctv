@@ -4,6 +4,29 @@
 //! Events are stored in append-only log files and replayed on startup or
 //! when Redis becomes available again.
 //!
+//! ## Kubernetes deployment: PersistentVolume required
+//!
+//! **WARNING**: The WAL uses the local filesystem. In Kubernetes, pod-local
+//! storage is ephemeral -- data is lost when the pod restarts, is evicted, or
+//! is rescheduled to a different node. This means WAL entries written during a
+//! Redis outage will be permanently lost if the pod restarts before replay.
+//!
+//! To ensure WAL durability in Kubernetes, mount a **PersistentVolumeClaim**
+//! at the WAL directory path. Example:
+//!
+//! ```yaml
+//! volumes:
+//!   - name: wal-storage
+//!     persistentVolumeClaim:
+//!       claimName: synctv-wal-pvc
+//! volumeMounts:
+//!   - name: wal-storage
+//!     mountPath: /data/wal
+//! ```
+//!
+//! Without a PersistentVolume, the WAL provides crash recovery only for
+//! in-process failures (panic, OOM), not for pod-level restarts.
+//!
 //! ## File format
 //!
 //! Each WAL entry is a single line of JSON:

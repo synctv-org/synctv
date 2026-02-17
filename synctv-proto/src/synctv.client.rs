@@ -805,7 +805,7 @@ pub struct GetPlaybackStateResponse {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ClientMessage {
-    #[prost(oneof = "client_message::Message", tags = "1, 2, 3, 4, 5, 6, 7, 8")]
+    #[prost(oneof = "client_message::Message", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9")]
     pub message: ::core::option::Option<client_message::Message>,
 }
 /// Nested message and enum types in `ClientMessage`.
@@ -831,7 +831,24 @@ pub mod client_message {
         /// SFU migration: client responds to server's migration offer
         #[prost(message, tag = "8")]
         SfuMigrationAnswer(super::SfuMigrationAnswer),
+        /// Playback progress heartbeat: client periodically reports current position
+        #[prost(message, tag = "9")]
+        PlaybackProgress(super::PlaybackProgressReport),
     }
+}
+/// Client -> Server: periodic playback progress heartbeat
+/// Sent every few seconds by clients that are actively playing media.
+/// The server uses these reports to track actual client playback positions,
+/// detect drift between clients, and provide accurate positions to new joiners.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct PlaybackProgressReport {
+    /// Current playback position in seconds
+    #[prost(double, tag = "1")]
+    pub current_time: f64,
+    /// Whether the client is currently playing
+    #[prost(bool, tag = "2")]
+    pub is_playing: bool,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]

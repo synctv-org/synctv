@@ -116,6 +116,11 @@ impl StreamProcessorState {
     }
 }
 
+/// Callback invoked when media data is received from a publisher.
+/// Arguments: (app_name/room_id, stream_name/media_id).
+/// Used to record publisher activity for silent publisher detection.
+pub type PublisherActivityCallback = Arc<dyn Fn(&str, &str) + Send + Sync>;
+
 /// Custom HLS remuxer with storage abstraction
 pub struct CustomHlsRemuxer {
     /// Event receiver from `StreamHub`
@@ -130,6 +135,8 @@ pub struct CustomHlsRemuxer {
     cancel_token: CancellationToken,
     /// Tracked spawned stream handler tasks
     handler_tasks: tokio::task::JoinSet<()>,
+    /// Optional callback to record publisher data activity
+    activity_callback: Option<PublisherActivityCallback>,
 }
 
 impl CustomHlsRemuxer {
@@ -148,7 +155,17 @@ impl CustomHlsRemuxer {
             stream_registry,
             cancel_token,
             handler_tasks: tokio::task::JoinSet::new(),
+            activity_callback: None,
         }
+    }
+
+    /// Set a callback that is invoked when media frames are received from a publisher.
+    /// This is used by `PublisherManager` to track publisher liveness and prevent
+    /// silent publisher timeouts.
+    #[must_use]
+    pub fn with_activity_callback(mut self, callback: PublisherActivityCallback) -> Self {
+        self.activity_callback = Some(callback);
+        self
     }
 
     pub async fn run(&mut self) -> Result<(), HlsRemuxerError> {
@@ -232,6 +249,7 @@ impl CustomHlsRemuxer {
                             self.event_producer.clone(),
                             Arc::clone(&self.segment_manager),
                             self.stream_registry.clone(),
+                            self.activity_callback.clone(),
                         );
 
                         self.handler_tasks.spawn(async move {
@@ -304,6 +322,8 @@ struct StreamHandler {
     stream_registry: StreamRegistry,
     data_consumer: FrameDataReceiver,
     subscriber_id: Uuid,
+    /// Optional callback to record publisher data activity
+    activity_callback: Option<PublisherActivityCallback>,
 }
 
 impl StreamHandler {
@@ -313,6 +333,7 @@ impl StreamHandler {
         event_producer: StreamHubEventSender,
         segment_manager: Arc<SegmentManager>,
         stream_registry: StreamRegistry,
+        activity_callback: Option<PublisherActivityCallback>,
     ) -> Self {
         let (_, data_consumer) = mpsc::channel(crate::streamhub::define::FRAME_DATA_CHANNEL_CAPACITY);
         let subscriber_id = Uuid::new();
@@ -325,6 +346,7 @@ impl StreamHandler {
             stream_registry,
             data_consumer,
             subscriber_id,
+            activity_callback,
         }
     }
 
@@ -361,7 +383,7 @@ impl StreamHandler {
             state.clone(),
         )?;
 
-        processor.process_stream(&mut self.data_consumer).await?;
+        processor.process_stream(&mut self.data_consumer, &self.activity_callback).await?;
 
         // Deactivate drop guard - we'll unsubscribe explicitly
         unsub_guard.active = false;
@@ -580,12 +602,18 @@ impl StreamProcessor {
     async fn process_stream(
         &mut self,
         data_consumer: &mut FrameDataReceiver,
+        activity_callback: &Option<PublisherActivityCallback>,
     ) -> Result<(), HlsRemuxerError> {
         // Use a longer timeout for stream end detection
         // The original logic had a flaw: it would increment retry_count on any
         // recv() returning None, even during brief network pauses.
         // Now we use a timeout-based approach instead.
         const RECV_TIMEOUT_MS: u64 = 5000; // 5 seconds of no data = stream ended
+
+        // Throttle activity callbacks to avoid excessive overhead.
+        // The silent publisher timeout is 60s, so recording every 10s is sufficient.
+        let mut last_activity_record = Instant::now();
+        const ACTIVITY_RECORD_INTERVAL: Duration = Duration::from_secs(10);
 
         loop {
             match tokio::time::timeout(
@@ -598,6 +626,15 @@ impl StreamProcessor {
                         FrameData::Video { timestamp, data } => FlvData::Video { timestamp, data: BytesMut::from(&data[..]) },
                         _ => continue,
                     };
+
+                    // Record publisher activity (throttled) to prevent silent publisher timeout
+                    if let Some(callback) = activity_callback {
+                        if last_activity_record.elapsed() >= ACTIVITY_RECORD_INTERVAL {
+                            callback(&self.app_name, &self.stream_name);
+                            last_activity_record = Instant::now();
+                        }
+                    }
+
                     self.process_flv_data(flv_data).await?;
                 }
                 Ok(None) => {

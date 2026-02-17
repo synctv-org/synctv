@@ -308,9 +308,11 @@ pub async fn invalidate_playback_cache_batch(
 // Shared playback resolution helpers
 // ------------------------------------------------------------------
 
-/// Verify room membership, fetch the playlist, and find a specific media item.
+/// Verify room membership and look up a specific media item by ID.
 ///
 /// This is the common first phase shared by all provider proxy handlers.
+/// Uses a direct media lookup by primary key instead of fetching the entire
+/// playlist and scanning linearly, which is O(1) vs O(n) in playlist size.
 pub async fn resolve_media_from_playlist(
     auth: &AuthUser,
     room_id: &RoomId,
@@ -323,16 +325,18 @@ pub async fn resolve_media_from_playlist(
         .await
         .map_err(|_| AppError::forbidden("Not a member of this room"))?;
 
-    let playlist = state
+    let media = state
         .room_service
-        .get_playlist(room_id)
+        .media_service()
+        .get_media(media_id)
         .await
-        .map_err(|e| anyhow::anyhow!("Failed to get playlist: {e}"))?;
-
-    let media = playlist
-        .into_iter()
-        .find(|m| m.id == *media_id)
+        .map_err(|e| anyhow::anyhow!("Failed to get media: {e}"))?
         .ok_or_else(|| anyhow::anyhow!("Media not found in playlist"))?;
+
+    // Verify the media belongs to the requested room
+    if media.room_id != *room_id {
+        return Err(anyhow::anyhow!("Media not found in playlist").into());
+    }
 
     Ok(media)
 }

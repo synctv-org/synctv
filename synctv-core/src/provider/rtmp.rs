@@ -4,12 +4,10 @@
 //! URLs point to synctv's own HTTP-FLV and HLS endpoints.
 
 use super::{
-    MediaProvider, PlaybackInfo, PlaybackResult, ProviderContext, ProviderError,
+    MediaProvider, PlaybackResult, ProviderContext, ProviderError,
 };
 use async_trait::async_trait;
-use chrono::Utc;
-use serde_json::{json, Value};
-use std::collections::HashMap;
+use serde_json::Value;
 
 /// RTMP `MediaProvider`
 pub struct RtmpProvider {
@@ -51,53 +49,7 @@ impl MediaProvider for RtmpProvider {
             .and_then(|v| v.as_str())
             .ok_or_else(|| ProviderError::InvalidConfig("Missing room_id".to_string()))?;
 
-        let mut playback_infos = HashMap::new();
-        let live_expires_at = Some(Utc::now().timestamp() + 30);
-
-        // HLS URL — matches actual HTTP route: /api/room/movie/live/hls/list/:media_id?room_id=:room_id
-        playback_infos.insert(
-            "hls".to_string(),
-            PlaybackInfo {
-                urls: vec![format!(
-                    "{}/api/room/movie/live/hls/list/{}?room_id={}",
-                    self.base_url, media_id, room_id
-                )],
-                format: "m3u8".to_string(),
-                headers: HashMap::new(),
-                subtitles: Vec::new(),
-                expires_at: live_expires_at,
-                cors_proxy_required: false,
-            },
-        );
-
-        // FLV URL — matches actual HTTP route: /api/room/movie/live/flv/:media_id.flv?room_id=:room_id
-        playback_infos.insert(
-            "flv".to_string(),
-            PlaybackInfo {
-                urls: vec![format!(
-                    "{}/api/room/movie/live/flv/{}.flv?room_id={}",
-                    self.base_url, media_id, room_id
-                )],
-                format: "flv".to_string(),
-                headers: HashMap::new(),
-                subtitles: Vec::new(),
-                expires_at: live_expires_at,
-                cors_proxy_required: false,
-            },
-        );
-
-        let mut metadata = HashMap::new();
-        metadata.insert("is_live".to_string(), json!(true));
-        metadata.insert("media_id".to_string(), json!(media_id));
-        metadata.insert("room_id".to_string(), json!(room_id));
-
-        Ok(PlaybackResult {
-            playback_infos,
-            default_mode: "hls".to_string(),
-            metadata,
-            dash: None,
-            hevc_dash: None,
-        })
+        Ok(super::build_live_playback(&self.base_url, media_id, room_id))
     }
 
     async fn validate_source_config(

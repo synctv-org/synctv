@@ -7,6 +7,8 @@
 //! - Tree structure navigation
 //! - Position management
 
+use std::sync::Arc;
+
 use crate::{
     models::{Playlist, PlaylistId, RoomId, UserId, PermissionBits},
     repository::PlaylistRepository,
@@ -14,6 +16,19 @@ use crate::{
     Error, Result,
 };
 use serde_json::Value as JsonValue;
+
+/// Trait for broadcasting playlist changes to cluster replicas.
+///
+/// This abstracts over the cluster manager so that `synctv-core` does not
+/// depend on `synctv-cluster`. The implementation lives in the API/wiring
+/// layer where `ClusterManager` is available.
+pub trait PlaylistBroadcaster: Send + Sync {
+    /// Broadcast that a playlist was created.
+    fn broadcast_playlist_created(&self, room_id: &RoomId, playlist: &Playlist, user_id: &UserId, username: &str);
+
+    /// Broadcast that a playlist was deleted.
+    fn broadcast_playlist_deleted(&self, room_id: &RoomId, playlist_id: &PlaylistId, user_id: &UserId, username: &str);
+}
 
 /// Request to create a playlist/folder
 #[derive(Debug, Clone)]
@@ -47,6 +62,8 @@ pub struct SetPlaylistRequest {
 pub struct PlaylistService {
     playlist_repo: PlaylistRepository,
     permission_service: PermissionService,
+    /// Optional cluster broadcaster for cross-replica playlist sync
+    cluster_broadcaster: Option<Arc<dyn PlaylistBroadcaster>>,
 }
 
 impl std::fmt::Debug for PlaylistService {
@@ -57,15 +74,21 @@ impl std::fmt::Debug for PlaylistService {
 
 impl PlaylistService {
     /// Create a new playlist service
-    #[must_use] 
-    pub const fn new(
+    #[must_use]
+    pub fn new(
         playlist_repo: PlaylistRepository,
         permission_service: PermissionService,
     ) -> Self {
         Self {
             playlist_repo,
             permission_service,
+            cluster_broadcaster: None,
         }
+    }
+
+    /// Set the cluster broadcaster for cross-replica playlist sync
+    pub fn set_cluster_broadcaster(&mut self, broadcaster: Arc<dyn PlaylistBroadcaster>) {
+        self.cluster_broadcaster = Some(broadcaster);
     }
 
     /// Create a new playlist/folder
@@ -131,7 +154,7 @@ impl PlaylistService {
         let playlist = Playlist {
             id: crate::models::PlaylistId::new(),
             room_id: room_id.clone(),
-            creator_id: Some(user_id),
+            creator_id: Some(user_id.clone()),
             name: name.to_string(),
             parent_id: request.parent_id,
             position,
@@ -151,6 +174,11 @@ impl PlaylistService {
             is_dynamic = created_playlist.is_dynamic(),
             "Playlist created"
         );
+
+        // Broadcast to cluster replicas
+        if let Some(ref broadcaster) = self.cluster_broadcaster {
+            broadcaster.broadcast_playlist_created(&room_id, &created_playlist, &user_id, "");
+        }
 
         Ok(created_playlist)
     }
@@ -264,6 +292,11 @@ impl PlaylistService {
             playlist_id = %playlist_id.as_str(),
             "Playlist deleted"
         );
+
+        // Broadcast to cluster replicas
+        if let Some(ref broadcaster) = self.cluster_broadcaster {
+            broadcaster.broadcast_playlist_deleted(&room_id, &playlist_id, &user_id, "");
+        }
 
         Ok(())
     }

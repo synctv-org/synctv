@@ -323,6 +323,7 @@ async fn init_livestream(
             user_stream_tracker.clone(),
             publisher_registry.clone(),
             node_id.to_string(),
+            config.advertise_grpc_address(),
             Some(stream_lifecycle_tx),
         ));
 

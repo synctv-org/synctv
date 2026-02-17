@@ -152,7 +152,7 @@ impl PlaybackService {
             if let Err(e) = ns.notify_playback_state_changed(
                 &state.room_id,
                 state.is_playing,
-                state.current_time as i64,
+                state.current_time,
                 state.speed,
                 state.playing_media_id.as_ref().map(|id| id.as_str().to_string()),
             ).await {

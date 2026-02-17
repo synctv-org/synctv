@@ -246,6 +246,19 @@ impl RtcpHandler {
         // Feed real measurements to network quality monitor
         network_monitor.update_peer_stats(peer_id, &peer_stats, bandwidth_kbps);
 
+        // Trigger bandwidth estimation and quality layer switching.
+        // This calls the peer's BandwidthEstimator which may change the
+        // preferred QualityLayer (High/Medium/Low) based on measured bandwidth.
+        let (estimated_bw, quality_change) = peer.update_bandwidth_estimation();
+        if let Some(new_quality) = quality_change {
+            info!(
+                peer_id = %peer_id,
+                estimated_bandwidth_kbps = estimated_bw,
+                new_quality = ?new_quality,
+                "RTCP: Quality layer switched based on bandwidth estimation"
+            );
+        }
+
         // Store current snapshot for next delta calculation
         *last_stats.lock() = Some(current_snapshot);
 

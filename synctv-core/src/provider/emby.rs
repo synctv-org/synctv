@@ -575,11 +575,12 @@ impl DynamicFolder for EmbyProvider {
                     }
                 };
 
+                // Route thumbnails through synctv's proxy endpoint so the Emby
+                // API key is never exposed to the client.  The proxy handler
+                // will inject the authentication header server-side.
                 let thumbnail_url = format!(
-                    "{}/emby/Items/{}/Images/Primary?maxHeight=300&api_key={}",
-                    base_config.host.trim_end_matches('/'),
-                    item.id,
-                    base_config.token,
+                    "/api/providers/emby/thumbnail/{item_id}?maxHeight=300",
+                    item_id = item.id,
                 );
 
                 Some(DirectoryItem {

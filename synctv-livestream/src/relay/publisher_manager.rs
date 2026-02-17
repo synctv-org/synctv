@@ -350,7 +350,7 @@ impl PublisherManager {
             if let Some((room_id, media_id)) = publisher_key.split_once(':') {
                 match self
                     .registry
-                    .try_register_publisher(room_id, media_id, &self.local_node_id, "")
+                    .try_register_publisher(room_id, media_id, &self.local_node_id, "", "")
                     .await
                 {
                     Ok(true) => {
@@ -398,23 +398,28 @@ impl PublisherManager {
             );
         }
 
-        // 3. Send UnPublish to StreamHub so subscribers are notified
+        // 3. Send UnPublish to StreamHub so subscribers are notified.
+        // Use try_send() instead of send().await to avoid blocking the heartbeat
+        // loop if the StreamHub event channel is full or slow.
         let identifier = StreamIdentifier::Rtmp {
             app_name: room_id.to_string(),
             stream_name: media_id.to_string(),
         };
-        if let Err(e) = self.hub_event_sender.send(StreamHubEvent::UnPublish {
+        match self.hub_event_sender.try_send(StreamHubEvent::UnPublish {
             identifier: identifier.clone(),
-        }).await {
-            error!(
-                "Failed to send UnPublish event for {:?}: {}",
-                identifier, e
-            );
-        } else {
-            info!(
-                "Sent UnPublish event for room {} / media {} ({})",
-                room_id, media_id, reason
-            );
+        }) {
+            Ok(()) => {
+                info!(
+                    "Sent UnPublish event for room {} / media {} ({})",
+                    room_id, media_id, reason
+                );
+            }
+            Err(e) => {
+                error!(
+                    "Failed to send UnPublish event for {:?}: {}",
+                    identifier, e
+                );
+            }
         }
     }
 
@@ -608,7 +613,7 @@ mod tests {
     async fn test_reconcile_removes_stale_entries() {
         // Registry has room1:media1 on our node, but NOT room2:media2
         let registry = Arc::new(MockStreamRegistry::new());
-        registry.try_register_publisher("room1", "media1", "test-node", "").await.unwrap();
+        registry.try_register_publisher("room1", "media1", "test-node", "", "").await.unwrap();
 
         let (manager, _rx) = test_manager(registry, "test-node");
 
@@ -629,7 +634,7 @@ mod tests {
     async fn test_reconcile_removes_entries_moved_to_other_node() {
         // Registry has room1:media1 but on a DIFFERENT node
         let registry = Arc::new(MockStreamRegistry::new());
-        registry.try_register_publisher("room1", "media1", "other-node", "").await.unwrap();
+        registry.try_register_publisher("room1", "media1", "other-node", "", "").await.unwrap();
 
         let (manager, _rx) = test_manager(registry, "test-node");
 
@@ -647,8 +652,8 @@ mod tests {
     async fn test_reconcile_keeps_valid_entries() {
         // Registry has both publishers on our node
         let registry = Arc::new(MockStreamRegistry::new());
-        registry.try_register_publisher("room1", "media1", "test-node", "").await.unwrap();
-        registry.try_register_publisher("room2", "media2", "test-node", "").await.unwrap();
+        registry.try_register_publisher("room1", "media1", "test-node", "", "").await.unwrap();
+        registry.try_register_publisher("room2", "media2", "test-node", "", "").await.unwrap();
 
         let (manager, _rx) = test_manager(registry, "test-node");
 

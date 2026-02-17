@@ -22,8 +22,16 @@ impl ClientApiImpl {
         let members = self.room_service.get_room_members(&rid).await
             .map_err(ApiError::from)?;
 
+        // Fetch room settings for proper three-layer permission calculation
+        let room_settings = self.room_service.get_room_settings(&rid).await
+            .unwrap_or_default();
+        let permission_service = self.room_service.permission_service();
+
         let proto_members: Vec<_> = members.into_iter()
-            .map(room_member_to_proto)
+            .map(|m| {
+                let role_default = permission_service.calculate_role_default_permissions(&m.role, &room_settings);
+                room_member_to_proto(m, role_default)
+            })
             .collect();
 
         let total = proto_members.len() as i32;
@@ -44,10 +52,11 @@ impl ClientApiImpl {
         let target_uid = UserId::from_string(req.user_id.clone());
 
         // Check that the caller has GRANT_PERMISSION before any mutation.
-        // This prevents privilege escalation by users who lack the permission
-        // but happen to have an admin/creator role.
+        // Use check_permission_no_cache for security-sensitive operations to
+        // ensure we always use fresh permission state from the database.
         self.room_service
-            .check_permission(&rid, &uid, synctv_core::models::PermissionBits::GRANT_PERMISSION)
+            .permission_service()
+            .check_permission_no_cache(&rid, &uid, synctv_core::models::PermissionBits::GRANT_PERMISSION)
             .await
             .map_err(ApiError::from)?;
 
@@ -112,8 +121,14 @@ impl ClientApiImpl {
             .find(|m| m.user_id == target_uid)
             .ok_or_else(|| ApiError::NotFound("Member not found".to_string()))?;
 
+        // Fetch room settings for proper three-layer permission calculation
+        let room_settings = self.room_service.get_room_settings(&rid).await
+            .unwrap_or_default();
+        let role_default = self.room_service.permission_service()
+            .calculate_role_default_permissions(&member.role, &room_settings);
+
         Ok(crate::proto::client::UpdateMemberPermissionsResponse {
-            member: Some(room_member_to_proto(member)),
+            member: Some(room_member_to_proto(member, role_default)),
         })
     }
 
@@ -132,6 +147,21 @@ impl ClientApiImpl {
 
         // Force disconnect the kicked user's connections in this specific room
         self.connection_manager.disconnect_user_from_room(&target_uid, &rid);
+
+        // Broadcast KickUserFromRoom cluster event so other replicas also disconnect this user
+        if let Some(ref tx) = self.redis_publish_tx {
+            if let Err(e) = tx.send(synctv_cluster::sync::PublishRequest {
+                event: synctv_cluster::sync::ClusterEvent::KickUserFromRoom {
+                    event_id: nanoid::nanoid!(16),
+                    room_id: rid.clone(),
+                    user_id: target_uid.clone(),
+                    reason: "kicked".to_string(),
+                    timestamp: chrono::Utc::now(),
+                },
+            }).await {
+                tracing::error!(room_id = %rid.as_str(), user_id = %target_uid.as_str(), "Failed to publish KickUserFromRoom cluster event: {e}");
+            }
+        }
 
         // Notify other replicas to invalidate permission cache
         self.publish_permission_changed(&rid, &target_uid, &uid).await;
@@ -159,6 +189,21 @@ impl ClientApiImpl {
 
         // Force disconnect the banned user's connections in this specific room
         self.connection_manager.disconnect_user_from_room(&target_uid, &rid);
+
+        // Broadcast KickUserFromRoom cluster event so other replicas also disconnect this user
+        if let Some(ref tx) = self.redis_publish_tx {
+            if let Err(e) = tx.send(synctv_cluster::sync::PublishRequest {
+                event: synctv_cluster::sync::ClusterEvent::KickUserFromRoom {
+                    event_id: nanoid::nanoid!(16),
+                    room_id: rid.clone(),
+                    user_id: target_uid.clone(),
+                    reason: "banned".to_string(),
+                    timestamp: chrono::Utc::now(),
+                },
+            }).await {
+                tracing::error!(room_id = %rid.as_str(), user_id = %target_uid.as_str(), "Failed to publish KickUserFromRoom cluster event: {e}");
+            }
+        }
 
         // Notify other replicas to invalidate permission cache
         self.publish_permission_changed(&rid, &target_uid, &uid).await;

@@ -256,6 +256,90 @@ impl StreamRegistry {
         })
     }
 
+    /// Spawn a background task to periodically clean up stale entries from the
+    /// Redis `streams:active` set.
+    ///
+    /// When a node crashes without unpublishing, its stream metadata keys expire
+    /// via TTL but the corresponding entry in the `streams:active` set is never
+    /// removed. This task scans the active set and removes any entry whose
+    /// metadata key no longer exists in Redis.
+    #[must_use]
+    pub fn spawn_active_set_cleanup_task(
+        &self,
+        interval: Duration,
+        cancel_token: tokio_util::sync::CancellationToken,
+    ) -> tokio::task::JoinHandle<()> {
+        let registry = self.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            ticker.tick().await; // Skip first immediate tick
+
+            loop {
+                tokio::select! {
+                    () = cancel_token.cancelled() => {
+                        info!("Stream registry active set cleanup task shutting down");
+                        return;
+                    }
+                    _ = ticker.tick() => {
+                        registry.cleanup_stale_active_entries().await;
+                    }
+                }
+            }
+        })
+    }
+
+    /// Remove entries from the `streams:active` set whose metadata keys have expired.
+    async fn cleanup_stale_active_entries(&self) {
+        let Some(ref conn) = self.redis_conn else {
+            return;
+        };
+
+        let active_key = format!("{}streams:active", self.redis_key_prefix);
+        let mut conn_clone = conn.clone();
+
+        let identifiers: Vec<String> = match conn_clone.smembers(&active_key).await {
+            Ok(ids) => ids,
+            Err(e) => {
+                warn!("Failed to read active streams set for cleanup: {e}");
+                return;
+            }
+        };
+
+        let mut removed = 0u64;
+        for identifier in &identifiers {
+            let meta_key = format!("{}streams:meta:{}", self.redis_key_prefix, identifier);
+            let exists: bool = match conn_clone.exists(&meta_key).await {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!("Failed to check stream metadata existence for cleanup: {e}");
+                    continue;
+                }
+            };
+
+            if !exists {
+                // Metadata expired (node crashed) -- remove from active set
+                let result: Result<(), _> = conn_clone.srem(&active_key, identifier).await;
+                if let Err(e) = result {
+                    warn!("Failed to remove stale stream from active set: {e}");
+                } else {
+                    removed += 1;
+                    debug!(
+                        stream = %identifier,
+                        "Removed stale stream from active set (metadata expired)"
+                    );
+                }
+            }
+        }
+
+        if removed > 0 {
+            info!(
+                removed_count = removed,
+                total_checked = identifiers.len(),
+                "Cleaned up stale entries from streams:active set"
+            );
+        }
+    }
+
     /// Refresh TTLs for all local streams in Redis
     async fn refresh_ttls(&self) {
         if let Some(ref conn) = self.redis_conn {

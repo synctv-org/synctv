@@ -61,6 +61,8 @@ use crate::proto::client::{
     ListRoomStreamsRequest, ListRoomStreamsResponse,
 };
 
+use synctv_core::service::auth::JwtValidator;
+
 use super::internal_err;
 
 /// Buffer size for the outgoing message channel in MessageStream connections.
@@ -285,19 +287,14 @@ impl UserService for ClientServiceImpl {
         &self,
         request: Request<LogoutRequest>,
     ) -> Result<Response<LogoutResponse>, Status> {
-        // Extract Bearer token from metadata (transport-specific)
+        // Extract Bearer token from metadata using the shared validator
+        // (case-insensitive per RFC 7235, consistent with all other gRPC endpoints)
         let access_token = request
             .metadata()
             .get("authorization")
             .and_then(|v| v.to_str().ok())
-            .and_then(|s| {
-                if s.starts_with("Bearer ") || s.starts_with("bearer ") {
-                    Some(&s[7..])
-                } else {
-                    None
-                }
-            })
-            .unwrap_or("");
+            .map(|s| JwtValidator::extract_bearer_token(s).unwrap_or_default())
+            .unwrap_or_default();
 
         // Extract optional refresh token from metadata
         let refresh_token = request
@@ -305,7 +302,7 @@ impl UserService for ClientServiceImpl {
             .get("x-refresh-token")
             .and_then(|v| v.to_str().ok());
 
-        let response = self.client_api.logout(access_token, refresh_token).await
+        let response = self.client_api.logout(&access_token, refresh_token).await
             .map_err(impls_err_to_status)?;
         Ok(Response::new(response))
     }

@@ -66,7 +66,7 @@ pub enum RoomEvent {
     /// Playback state changed
     PlaybackStateChanged {
         playing: bool,
-        position: i64,
+        position: f64,
         speed: f64,
         media_id: Option<String>,
     },
@@ -369,7 +369,7 @@ impl NotificationService {
         &self,
         room_id: &RoomId,
         playing: bool,
-        position: i64,
+        position: f64,
         speed: f64,
         media_id: Option<String>,
     ) -> Result<()> {
@@ -673,7 +673,7 @@ mod tests {
             },
             RoomEvent::PlaybackStateChanged {
                 playing: true,
-                position: 100,
+                position: 100.0,
                 speed: 1.0,
                 media_id: Some("media123".to_string()),
             },

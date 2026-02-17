@@ -181,6 +181,7 @@ impl PermissionBits {
         | Self::APPROVE_MEMBER
         | Self::KICK_MEMBER
         | Self::BAN_MEMBER
+        | Self::SET_MEMBER_PERMISSIONS
         | Self::SET_ROOM_SETTINGS
         | Self::SET_ROOM_PASSWORD
         | Self::DELETE_CHAT

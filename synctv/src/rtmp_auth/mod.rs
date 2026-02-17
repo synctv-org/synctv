@@ -65,6 +65,8 @@ pub struct SyncTvRtmpAuth {
     registry: Arc<dyn StreamRegistryTrait>,
     /// This node's unique identifier for publisher registration
     node_id: String,
+    /// Advertised gRPC address for cross-node proxying (e.g., "10.0.0.1:50051")
+    grpc_address: String,
     /// Broadcast channel for stream lifecycle events (StreamStarted/StreamStopped)
     stream_event_tx: Option<tokio::sync::broadcast::Sender<StreamLifecycleEvent>>,
     /// Active TTL renewal tasks: "`room_id:media_id`" → `AbortHandle`
@@ -79,6 +81,7 @@ impl SyncTvRtmpAuth {
         user_stream_tracker: UserStreamTracker,
         registry: Arc<dyn StreamRegistryTrait>,
         node_id: String,
+        grpc_address: String,
         stream_event_tx: Option<tokio::sync::broadcast::Sender<StreamLifecycleEvent>>,
     ) -> Self {
         Self {
@@ -88,6 +91,7 @@ impl SyncTvRtmpAuth {
             user_stream_tracker,
             registry,
             node_id,
+            grpc_address,
             stream_event_tx,
             ttl_handles: DashMap::new(),
         }
@@ -478,6 +482,7 @@ impl SyncTvRtmpAuth {
                 &validated.media_id,
                 &self.node_id,
                 &validated.user_id,
+                &self.grpc_address,
             )
             .await
             .map_err(|e| format!("Failed to register publisher in Redis: {e}"))?;

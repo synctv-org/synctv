@@ -93,7 +93,7 @@ impl RoomPlaybackStateRepository {
             "UPDATE room_playback_state
              SET playing_media_id = $2, playing_playlist_id = $3, relative_path = $4,
                  current_time = $5, speed = $6, is_playing = $7,
-                 version = version + 1
+                 updated_at = NOW(), version = version + 1
              WHERE room_id = $1 AND version = $8
              RETURNING room_id, playing_media_id, playing_playlist_id, relative_path, current_time, speed, is_playing, updated_at, version",
         )

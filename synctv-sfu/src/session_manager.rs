@@ -25,9 +25,9 @@ use crate::webrtc_control::{IceManager, PeerConnection};
 use anyhow::{anyhow, Result};
 use dashmap::DashMap;
 use std::net::IpAddr;
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex as TokioMutex};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
@@ -180,12 +180,74 @@ struct SfuSession {
     event_tx: mpsc::UnboundedSender<SfuSignalingEvent>,
     /// Last activity timestamp for idle timeout detection
     last_activity: Arc<parking_lot::Mutex<Instant>>,
+    /// Per-peer renegotiation lock.
+    /// Prevents concurrent SDP renegotiations on the same PeerConnection, which
+    /// would cause "set remote description called in wrong state" errors.
+    /// Multiple on_track callbacks can fire concurrently when a publisher adds
+    /// several tracks at once.
+    renegotiation_lock: Arc<TokioMutex<()>>,
+    /// Migration state for this session (SFU-23 Fix 3).
+    /// Tracks whether this session was created via migration and whether migration
+    /// has completed. Used by the migration timeout task to avoid removing
+    /// successfully-migrated sessions.
+    migration_state: Arc<parking_lot::Mutex<Option<PeerMigrationState>>>,
     /// Connection ID for logging
     conn_id: String,
     /// Room ID for cleanup
     room_id: String,
     /// Peer ID for cleanup
     peer_id: String,
+}
+
+/// Trait for registering SFU session affinity in a shared store (e.g., Redis).
+///
+/// In a multi-replica deployment, WebRTC PeerConnections are inherently local
+/// to the process that created them. This trait allows the SFU session manager
+/// to advertise which replica owns a given session, enabling sticky routing at
+/// the load balancer or API gateway layer.
+///
+/// ## Usage
+///
+/// - `register`: Called when a new SFU session is created. Stores
+///   `conn_id -> replica_id` mapping with a TTL.
+/// - `lookup`: Called by the API layer to determine which replica should handle
+///   signaling for a given connection.
+/// - `unregister`: Called when a session is removed.
+///
+/// The default implementation (`NoopSessionRegistry`) does nothing, which is
+/// correct for single-replica deployments.
+#[async_trait::async_trait]
+pub trait SessionAffinityRegistry: Send + Sync {
+    /// Register session affinity: maps `conn_id` to `replica_id` with a TTL.
+    async fn register(&self, conn_id: &str, replica_id: &str, ttl_secs: u64) -> Result<()>;
+
+    /// Look up which replica owns a session. Returns `None` if not found or expired.
+    async fn lookup(&self, conn_id: &str) -> Result<Option<String>>;
+
+    /// Remove session affinity mapping.
+    async fn unregister(&self, conn_id: &str) -> Result<()>;
+
+    /// Refresh the TTL for an existing session (called periodically by the cleanup task).
+    async fn refresh(&self, conn_id: &str, replica_id: &str, ttl_secs: u64) -> Result<()> {
+        // Default: re-register (idempotent)
+        self.register(conn_id, replica_id, ttl_secs).await
+    }
+}
+
+/// No-op session registry for single-replica deployments.
+pub struct NoopSessionRegistry;
+
+#[async_trait::async_trait]
+impl SessionAffinityRegistry for NoopSessionRegistry {
+    async fn register(&self, _conn_id: &str, _replica_id: &str, _ttl_secs: u64) -> Result<()> {
+        Ok(())
+    }
+    async fn lookup(&self, _conn_id: &str) -> Result<Option<String>> {
+        Ok(None)
+    }
+    async fn unregister(&self, _conn_id: &str) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// SFU Session Manager - manages server-side PeerConnections for rooms in SFU mode
@@ -204,32 +266,97 @@ pub struct SfuSessionManager {
 
     /// Session idle timeout (connections with no RTCP stats for this duration are closed)
     session_idle_timeout: Duration,
+
+    /// Unique identifier for this replica/instance (SFU-23 Fix 1).
+    /// Used to register session affinity so the load balancer can route
+    /// subsequent signaling requests to the correct replica.
+    replica_id: String,
+
+    /// Session affinity registry for multi-replica sticky routing (SFU-23 Fix 1).
+    /// In single-replica mode, this is a `NoopSessionRegistry`.
+    affinity_registry: Arc<dyn SessionAffinityRegistry>,
+
+    /// TTL for session affinity entries (default: 5 minutes, refreshed periodically)
+    affinity_ttl_secs: u64,
 }
 
 impl SfuSessionManager {
-    /// Create a new SFU session manager with default 5-minute idle timeout
+    /// Create a new SFU session manager with default 5-minute idle timeout.
+    ///
+    /// Uses a no-op session affinity registry (correct for single-replica deployments).
     pub fn new(sfu_manager: Arc<SfuManager>, ice_manager: Arc<IceManager>) -> Arc<Self> {
         Self::with_timeout(sfu_manager, ice_manager, Duration::from_secs(300))
     }
 
-    /// Create a new SFU session manager with custom idle timeout
+    /// Create a new SFU session manager with custom idle timeout.
+    ///
+    /// Uses a no-op session affinity registry (correct for single-replica deployments).
     pub fn with_timeout(
         sfu_manager: Arc<SfuManager>,
         ice_manager: Arc<IceManager>,
         session_idle_timeout: Duration,
     ) -> Arc<Self> {
+        Self::with_affinity(
+            sfu_manager,
+            ice_manager,
+            session_idle_timeout,
+            format!("sfu-{:x}", std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis()),
+            Arc::new(NoopSessionRegistry),
+        )
+    }
+
+    /// Create a new SFU session manager with session affinity support (SFU-23 Fix 1).
+    ///
+    /// For multi-replica deployments, pass a `SessionAffinityRegistry` implementation
+    /// (e.g., backed by Redis) and a unique `replica_id` for this instance.
+    /// The load balancer can then query the registry to route signaling
+    /// requests to the correct replica.
+    pub fn with_affinity(
+        sfu_manager: Arc<SfuManager>,
+        ice_manager: Arc<IceManager>,
+        session_idle_timeout: Duration,
+        replica_id: String,
+        affinity_registry: Arc<dyn SessionAffinityRegistry>,
+    ) -> Arc<Self> {
+        let affinity_ttl_secs = session_idle_timeout.as_secs().max(300); // at least 5 min
+
         let manager = Arc::new(Self {
             sfu_manager,
             ice_manager,
             sessions: Arc::new(DashMap::new()),
             cleanup_cancel_token: CancellationToken::new(),
             session_idle_timeout,
+            replica_id,
+            affinity_registry,
+            affinity_ttl_secs,
         });
 
         // Start background cleanup task
         Self::start_cleanup_task(Arc::clone(&manager));
 
         manager
+    }
+
+    /// Get this replica's unique identifier.
+    pub fn replica_id(&self) -> &str {
+        &self.replica_id
+    }
+
+    /// Look up which replica owns a session.
+    ///
+    /// Returns `Some(replica_id)` if the session exists in the affinity registry,
+    /// or `None` if not found. If the session is local, callers should handle it
+    /// directly; otherwise, the request should be proxied to the owning replica.
+    pub async fn lookup_session_replica(&self, conn_id: &str) -> Result<Option<String>> {
+        // Fast path: session is local
+        if self.sessions.contains_key(conn_id) {
+            return Ok(Some(self.replica_id.clone()));
+        }
+        // Check the shared affinity registry
+        self.affinity_registry.lookup(conn_id).await
     }
 
     /// Start background task to clean up idle sessions.
@@ -260,12 +387,14 @@ impl SfuSessionManager {
         });
     }
 
-    /// Clean up idle sessions that have exceeded the timeout
+    /// Clean up idle sessions that have exceeded the timeout, and refresh
+    /// session affinity TTLs for active sessions (SFU-23 Fix 1).
     async fn cleanup_idle_sessions(&self) {
         let now = Instant::now();
         let mut expired_sessions = Vec::new();
+        let mut active_conn_ids = Vec::new();
 
-        // Identify expired sessions
+        // Identify expired sessions and collect active ones for TTL refresh
         for entry in self.sessions.iter() {
             let (conn_id, session) = (entry.key(), entry.value());
             let last_activity = *session.last_activity.lock();
@@ -283,6 +412,8 @@ impl SfuSessionManager {
                     session.room_id.clone(),
                     session.peer_id.clone(),
                 ));
+            } else {
+                active_conn_ids.push(conn_id.clone());
             }
         }
 
@@ -293,6 +424,21 @@ impl SfuSessionManager {
                     conn_id = %conn_id,
                     error = %e,
                     "Failed to clean up idle SFU session"
+                );
+            }
+        }
+
+        // Refresh TTLs for active sessions (SFU-23 Fix 1)
+        for conn_id in active_conn_ids {
+            if let Err(e) = self
+                .affinity_registry
+                .refresh(&conn_id, &self.replica_id, self.affinity_ttl_secs)
+                .await
+            {
+                debug!(
+                    conn_id = %conn_id,
+                    error = %e,
+                    "Failed to refresh session affinity TTL"
                 );
             }
         }
@@ -406,30 +552,49 @@ impl SfuSessionManager {
                         return;
                     }
 
-                    for entry in sessions.iter() {
-                        let session = entry.value();
-                        if session.peer_id == peer_id.as_str() {
-                            continue;
-                        }
-                        if let Err(e) = session
-                            .pc
+                    // SFU-23 Fix 4: Collect subscriber sessions into a Vec FIRST,
+                    // then drop the DashMap iterator. This prevents:
+                    // 1. Missing newly-joined peers (iterator snapshot is stale but safe)
+                    // 2. Holding the DashMap shard locks during async renegotiation
+                    let subscribers: Vec<(
+                        Arc<PeerConnection>,
+                        String,  // peer_id
+                        mpsc::UnboundedSender<SfuSignalingEvent>,
+                        Arc<TokioMutex<()>>,  // renegotiation lock
+                    )> = sessions
+                        .iter()
+                        .filter(|entry| entry.value().peer_id != peer_id.as_str())
+                        .map(|entry| {
+                            let s = entry.value();
+                            (
+                                Arc::clone(&s.pc),
+                                s.peer_id.clone(),
+                                s.event_tx.clone(),
+                                Arc::clone(&s.renegotiation_lock),
+                            )
+                        })
+                        .collect();
+                    // DashMap iterator is now dropped, shard locks released.
+
+                    for (sub_pc, sub_peer_id, sub_event_tx, reneg_lock) in subscribers {
+                        if let Err(e) = sub_pc
                             .add_outbound_track(track_id.clone(), kind, &codec)
                             .await
                         {
                             warn!(
-                                subscriber_peer = %session.peer_id,
+                                subscriber_peer = %sub_peer_id,
                                 track_id = %track_id,
                                 error = %e,
                                 "{}: Failed to add outbound track to subscriber", prefix
                             );
                         } else {
-                            let subscriber_peer_id = PeerId::from(session.peer_id.as_str());
+                            let subscriber_peer_id = PeerId::from(sub_peer_id.as_str());
                             if let Err(e) = room
                                 .subscribe_track(&subscriber_peer_id, &track_id)
                                 .await
                             {
                                 warn!(
-                                    subscriber_peer = %session.peer_id,
+                                    subscriber_peer = %sub_peer_id,
                                     track_id = %track_id,
                                     error = %e,
                                     "{}: Failed to subscribe peer to track", prefix
@@ -440,30 +605,36 @@ impl SfuSessionManager {
                             // learns about the newly added track. Without this, the
                             // remote peer's SDP never includes the new m= line and
                             // the track is effectively invisible.
-                            match session.pc.create_offer().await {
+                            //
+                            // SFU-23 Fix 4: Acquire per-peer renegotiation lock to
+                            // serialize concurrent offer creation. Without this,
+                            // multiple on_track callbacks racing on the same peer
+                            // would produce invalid SDP states.
+                            let _reneg_guard = reneg_lock.lock().await;
+                            match sub_pc.create_offer().await {
                                 Ok(offer) => {
                                     let offer_json = match serde_json::to_string(&offer) {
                                         Ok(json) => json,
                                         Err(e) => {
                                             warn!(
-                                                subscriber_peer = %session.peer_id,
+                                                subscriber_peer = %sub_peer_id,
                                                 error = %e,
                                                 "{}: Failed to serialize renegotiation offer", prefix
                                             );
                                             continue;
                                         }
                                     };
-                                    if session.event_tx.send(SfuSignalingEvent::SdpAnswer {
-                                        peer_id: session.peer_id.clone(),
+                                    if sub_event_tx.send(SfuSignalingEvent::SdpAnswer {
+                                        peer_id: sub_peer_id.clone(),
                                         sdp: offer_json,
                                     }).is_err() {
                                         debug!(
-                                            subscriber_peer = %session.peer_id,
+                                            subscriber_peer = %sub_peer_id,
                                             "{}: Signaling channel closed for renegotiation", prefix
                                         );
                                     } else {
                                         info!(
-                                            subscriber_peer = %session.peer_id,
+                                            subscriber_peer = %sub_peer_id,
                                             track_id = %track_id,
                                             "{}: Triggered SDP renegotiation after new track", prefix
                                         );
@@ -471,7 +642,7 @@ impl SfuSessionManager {
                                 }
                                 Err(e) => {
                                     warn!(
-                                        subscriber_peer = %session.peer_id,
+                                        subscriber_peer = %sub_peer_id,
                                         error = %e,
                                         "{}: Failed to create renegotiation offer", prefix
                                     );
@@ -537,9 +708,10 @@ impl SfuSessionManager {
             })
         }));
 
-        // Set up connection state monitoring
+        // Set up connection state monitoring.
+        // Pass event_tx so ICE restart offers can be delivered to the client (SFU-23 Fix 2).
         let network_monitor = room.network_monitor().clone();
-        pc.setup_callbacks(network_monitor.clone()).await?;
+        pc.setup_callbacks(network_monitor.clone(), Some(event_tx.clone())).await?;
 
         // Add outbound tracks for all existing published tracks from other peers
         let existing_tracks = room.get_published_track_info();
@@ -609,11 +781,28 @@ impl SfuSessionManager {
                 rtcp_handler,
                 event_tx: event_tx.clone(),
                 last_activity: Arc::new(parking_lot::Mutex::new(Instant::now())),
+                renegotiation_lock: Arc::new(TokioMutex::new(())),
+                migration_state: Arc::new(parking_lot::Mutex::new(None)),
                 conn_id: conn_id.to_string(),
                 room_id: room_id.to_string(),
                 peer_id: peer_id.to_string(),
             },
         );
+
+        // Register session affinity so load balancers can route signaling
+        // requests to this replica (SFU-23 Fix 1).
+        if let Err(e) = self
+            .affinity_registry
+            .register(conn_id, &self.replica_id, self.affinity_ttl_secs)
+            .await
+        {
+            warn!(
+                conn_id = %conn_id,
+                replica_id = %self.replica_id,
+                error = %e,
+                "{}: Failed to register session affinity (non-fatal)", log_prefix
+            );
+        }
 
         // Start subscriber output for this peer
         pc.start_subscriber_output(sfu_peer).await?;
@@ -745,6 +934,15 @@ impl SfuSessionManager {
                 );
             }
 
+            // Unregister session affinity (SFU-23 Fix 1)
+            if let Err(e) = self.affinity_registry.unregister(conn_id).await {
+                warn!(
+                    conn_id = %conn_id,
+                    error = %e,
+                    "Failed to unregister session affinity (non-fatal)"
+                );
+            }
+
             info!(
                 room_id = %room_id,
                 peer_id = %peer_id,
@@ -791,6 +989,10 @@ impl SfuSessionManager {
         let (pc, event_rx, outbound_count) =
             self.setup_session_core(room_id, peer_id, conn_id, "SFU migration").await?;
 
+        // SFU-23 Fix 3: Mark session as Migrating so timeout cleanup can
+        // distinguish incomplete migrations from successfully completed ones.
+        self.set_migration_state(conn_id, PeerMigrationState::Migrating);
+
         // Create SDP offer from the server side (after adding outbound tracks
         // so they are included in the SDP offer)
         let offer = pc.create_offer().await?;
@@ -835,11 +1037,32 @@ impl SfuSessionManager {
             "SFU migration: answer processed, ICE negotiation in progress"
         );
 
+        // SFU-23 Fix 3: Mark migration as Completed so the timeout task
+        // won't remove this successfully-migrated session.
+        *session.migration_state.lock() = Some(PeerMigrationState::Completed);
+
         // Update activity timestamp
         drop(session);
         self.touch_session(conn_id);
 
         Ok(())
+    }
+
+    /// Set the migration state for a session (SFU-23 Fix 3).
+    fn set_migration_state(&self, conn_id: &str, state: PeerMigrationState) {
+        if let Some(session) = self.sessions.get(conn_id) {
+            *session.migration_state.lock() = Some(state);
+        }
+    }
+
+    /// Get the migration state for a session (SFU-23 Fix 3).
+    ///
+    /// Returns `None` if the session was not created via migration (i.e., it was
+    /// created via `create_session` for a peer joining after SFU mode was active).
+    pub fn get_migration_state(&self, conn_id: &str) -> Option<PeerMigrationState> {
+        self.sessions
+            .get(conn_id)
+            .and_then(|session| *session.migration_state.lock())
     }
 }
 

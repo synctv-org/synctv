@@ -304,9 +304,17 @@ impl PeerConnection {
     /// Includes ICE failure fallback: when ICE enters `Disconnected` or `Failed`,
     /// an ICE restart is attempted to recover the connection without requiring a
     /// full renegotiation.
+    ///
+    /// ## Parameters
+    ///
+    /// * `_network_monitor` - Network quality monitor (reserved for future use)
+    /// * `ice_restart_tx` - Optional signaling channel for sending ICE restart offers
+    ///   back to the client. If `None`, ICE restart offers are created but cannot be
+    ///   delivered (the pre-SFU-23 behavior).
     pub async fn setup_callbacks(
         &self,
         _network_monitor: Arc<crate::network_monitor::NetworkQualityMonitor>,
+        ice_restart_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::session_manager::SfuSignalingEvent>>,
     ) -> Result<()> {
         let peer_id = self.peer_id.clone();
         let room_id = self.room_id.clone();
@@ -320,6 +328,7 @@ impl PeerConnection {
                 let peer_id = peer_id_clone.clone();
                 let room_id = room_id_clone.clone();
                 let pc = Arc::clone(&pc_for_ice);
+                let restart_tx = ice_restart_tx.clone();
                 Box::pin(async move {
                     info!(
                         peer_id = %peer_id,
@@ -350,17 +359,48 @@ impl PeerConnection {
 
                             match pc.create_offer(Some(offer_options)).await {
                                 Ok(offer) => {
-                                    if let Err(e) = pc.set_local_description(offer).await {
+                                    if let Err(e) = pc.set_local_description(offer.clone()).await {
                                         warn!(
                                             peer_id = %peer_id,
                                             error = %e,
                                             "ICE restart: failed to set local description"
                                         );
                                     } else {
-                                        info!(
-                                            peer_id = %peer_id,
-                                            "ICE restart: new offer created, waiting for answer"
-                                        );
+                                        // SFU-23 Fix 2: Send the restart offer to the client
+                                        // through the signaling channel so the client can
+                                        // respond with an answer to complete ICE restart.
+                                        if let Some(ref tx) = restart_tx {
+                                            match serde_json::to_string(&offer) {
+                                                Ok(offer_json) => {
+                                                    if tx.send(crate::session_manager::SfuSignalingEvent::SdpAnswer {
+                                                        peer_id: peer_id.as_str().to_string(),
+                                                        sdp: offer_json,
+                                                    }).is_err() {
+                                                        warn!(
+                                                            peer_id = %peer_id,
+                                                            "ICE restart: signaling channel closed, cannot deliver offer"
+                                                        );
+                                                    } else {
+                                                        info!(
+                                                            peer_id = %peer_id,
+                                                            "ICE restart: offer sent to client via signaling channel"
+                                                        );
+                                                    }
+                                                }
+                                                Err(e) => {
+                                                    warn!(
+                                                        peer_id = %peer_id,
+                                                        error = %e,
+                                                        "ICE restart: failed to serialize offer"
+                                                    );
+                                                }
+                                            }
+                                        } else {
+                                            warn!(
+                                                peer_id = %peer_id,
+                                                "ICE restart: no signaling channel available to deliver offer"
+                                            );
+                                        }
                                     }
                                 }
                                 Err(e) => {

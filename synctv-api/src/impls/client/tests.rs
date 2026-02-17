@@ -346,7 +346,8 @@ fn make_test_member(role: RoomRole) -> synctv_core::models::RoomMemberWithUser {
 #[test]
 fn test_room_member_to_proto() {
     let member = make_test_member(RoomRole::Member);
-    let proto = room_member_to_proto(member);
+    let role_default = RoomRole::Member.permissions();
+    let proto = room_member_to_proto(member, role_default);
 
     assert_eq!(proto.room_id, "room1");
     assert_eq!(proto.user_id, "user1");
@@ -358,7 +359,8 @@ fn test_room_member_to_proto() {
 #[test]
 fn test_room_member_to_proto_creator() {
     let member = make_test_member(RoomRole::Creator);
-    let proto = room_member_to_proto(member);
+    let role_default = RoomRole::Creator.permissions();
+    let proto = room_member_to_proto(member, role_default);
     assert_eq!(proto.role, synctv_proto::common::RoomMemberRole::Creator as i32);
 }
 
@@ -367,7 +369,8 @@ fn test_room_member_to_proto_custom_permissions() {
     let mut member = make_test_member(RoomRole::Member);
     member.added_permissions = 0xFF;
     member.removed_permissions = 0x0F;
-    let proto = room_member_to_proto(member);
+    let role_default = RoomRole::Member.permissions();
+    let proto = room_member_to_proto(member, role_default);
     assert_eq!(proto.added_permissions, 0xFF);
     assert_eq!(proto.removed_permissions, 0x0F);
 }

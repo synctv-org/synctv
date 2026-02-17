@@ -752,8 +752,49 @@ impl ConnectionManager {
         self.room_connection_count(room_id)
     }
 
+    /// Get connection counts for multiple rooms across all replicas (distributed).
+    ///
+    /// Uses Redis MGET to fetch all room counters in a single round-trip,
+    /// avoiding N+1 queries. Falls back to sequential local-only counts if
+    /// Redis is not configured or unavailable.
+    pub async fn room_connection_count_distributed_batch(&self, room_ids: &[&RoomId]) -> Vec<usize> {
+        if room_ids.is_empty() {
+            return Vec::new();
+        }
+
+        if let Some(ref conn) = self.redis_conn {
+            let keys: Vec<String> = room_ids
+                .iter()
+                .map(|rid| format!("{}connections:room:{}", self.redis_key_prefix, rid.as_str()))
+                .collect();
+
+            let mut conn_clone = conn.clone();
+            match redis::cmd("MGET")
+                .arg(&keys)
+                .query_async::<Vec<Option<i64>>>(&mut conn_clone)
+                .await
+            {
+                Ok(values) => {
+                    return values
+                        .into_iter()
+                        .map(|v| v.filter(|&c| c > 0).unwrap_or(0) as usize)
+                        .collect();
+                }
+                Err(e) => {
+                    warn!("Failed to read distributed room connection counts from Redis (MGET), falling back to local: {e}");
+                }
+            }
+        }
+
+        // Fallback to local-only counts
+        room_ids
+            .iter()
+            .map(|rid| self.room_connection_count(rid))
+            .collect()
+    }
+
     /// Get total connections ever established
-    #[must_use] 
+    #[must_use]
     pub fn total_connections_ever(&self) -> u64 {
         self.total_connections_ever.load(Ordering::Relaxed)
     }
@@ -1107,7 +1148,11 @@ impl ConnectionManager {
             .collect()
     }
 
-    /// Atomically increment a Redis counter and check if the new value exceeds the limit.
+    /// Atomically increment a Redis counter, set its TTL, and check if the new
+    /// value exceeds the limit.
+    ///
+    /// Uses a Lua script to make INCR + EXPIRE atomic, preventing a crash between
+    /// the two operations from leaving a key without a TTL.
     ///
     /// Returns `Ok(true)` if the counter was incremented and is within the limit,
     /// `Ok(false)` if the limit was exceeded (counter was still incremented and must be rolled back),
@@ -1118,12 +1163,19 @@ impl ConnectionManager {
         };
         let mut conn = conn.clone();
 
-        // INCR returns the new value after increment
-        let count: i64 = conn.incr(key, 1i64).await.map_err(|e| format!("Redis INCR failed: {e}"))?;
-
-        // Set TTL as crash-safety: if this node crashes without DECR, the counter
-        // will auto-expire after DISTRIBUTED_COUNTER_TTL_SECONDS.
-        let _: Result<(), _> = conn.expire(key, DISTRIBUTED_COUNTER_TTL_SECONDS).await;
+        // Lua script: atomically INCR the key and set TTL in a single round-trip.
+        // Returns the new counter value after increment.
+        let script = redis::Script::new(
+            "local count = redis.call('INCR', KEYS[1]) \
+             redis.call('EXPIRE', KEYS[1], ARGV[1]) \
+             return count"
+        );
+        let count: i64 = script
+            .key(key)
+            .arg(DISTRIBUTED_COUNTER_TTL_SECONDS)
+            .invoke_async(&mut conn)
+            .await
+            .map_err(|e| format!("Redis INCR+EXPIRE script failed: {e}"))?;
 
         Ok(count <= max as i64)
     }

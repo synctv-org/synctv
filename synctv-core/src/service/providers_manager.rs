@@ -4,8 +4,8 @@
 //! Providers are loaded from configuration and created once at startup.
 
 use crate::provider::{
-    AlistProvider, BilibiliProvider, DirectUrlProvider, EmbyProvider, MediaProvider,
-    RtmpProvider,
+    AlistProvider, BilibiliProvider, DirectUrlProvider, EmbyProvider, LiveProxyProvider,
+    MediaProvider, RtmpProvider,
 };
 use crate::service::RemoteProviderManager;
 use crate::Config;
@@ -119,6 +119,19 @@ impl ProvidersManager {
             "direct_url",
             Box::new(|_instance_id, _config, _instance_manager| {
                 Ok(Arc::new(DirectUrlProvider::new()))
+            }),
+        );
+
+        // LiveProxy factory
+        self.register_factory(
+            "live_proxy",
+            Box::new(|_instance_id, config, _instance_manager| {
+                let base_url = config
+                    .get("base_url")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("http://localhost:8080");
+
+                Ok(Arc::new(LiveProxyProvider::new(base_url)))
             }),
         );
     }

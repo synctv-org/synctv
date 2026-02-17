@@ -7,12 +7,10 @@
 //! The `PullStreamManager` handles the actual pulling from the external source.
 
 use super::{
-    MediaProvider, PlaybackInfo, PlaybackResult, ProviderContext, ProviderError,
+    MediaProvider, PlaybackResult, ProviderContext, ProviderError,
 };
 use async_trait::async_trait;
-use chrono::Utc;
 use serde_json::{json, Value};
-use std::collections::HashMap;
 use std::net::IpAddr;
 
 /// `LiveProxy` `MediaProvider`
@@ -64,55 +62,11 @@ impl MediaProvider for LiveProxyProvider {
             .and_then(|v| v.as_str())
             .ok_or_else(|| ProviderError::InvalidConfig("Missing url".to_string()))?;
 
-        let mut playback_infos = HashMap::new();
-        let live_expires_at = Some(Utc::now().timestamp() + 30);
+        let mut result = super::build_live_playback(&self.base_url, media_id, room_id);
+        result.metadata.insert("source_url".to_string(), json!(source_url));
+        result.metadata.insert("provider".to_string(), json!("live_proxy"));
 
-        // HLS URL — matches actual HTTP route
-        playback_infos.insert(
-            "hls".to_string(),
-            PlaybackInfo {
-                urls: vec![format!(
-                    "{}/api/room/movie/live/hls/list/{}?room_id={}",
-                    self.base_url, media_id, room_id
-                )],
-                format: "m3u8".to_string(),
-                headers: HashMap::new(),
-                subtitles: Vec::new(),
-                expires_at: live_expires_at,
-                cors_proxy_required: false,
-            },
-        );
-
-        // FLV URL — matches actual HTTP route
-        playback_infos.insert(
-            "flv".to_string(),
-            PlaybackInfo {
-                urls: vec![format!(
-                    "{}/api/room/movie/live/flv/{}.flv?room_id={}",
-                    self.base_url, media_id, room_id
-                )],
-                format: "flv".to_string(),
-                headers: HashMap::new(),
-                subtitles: Vec::new(),
-                expires_at: live_expires_at,
-                cors_proxy_required: false,
-            },
-        );
-
-        let mut metadata = HashMap::new();
-        metadata.insert("is_live".to_string(), json!(true));
-        metadata.insert("media_id".to_string(), json!(media_id));
-        metadata.insert("room_id".to_string(), json!(room_id));
-        metadata.insert("source_url".to_string(), json!(source_url));
-        metadata.insert("provider".to_string(), json!("live_proxy"));
-
-        Ok(PlaybackResult {
-            playback_infos,
-            default_mode: "hls".to_string(),
-            metadata,
-            dash: None,
-            hevc_dash: None,
-        })
+        Ok(result)
     }
 
     async fn validate_source_config(
@@ -147,7 +101,7 @@ impl MediaProvider for LiveProxyProvider {
         }
 
         // SSRF protection: validate the host is not a private/internal address
-        validate_source_url_host(url)?;
+        validate_source_url_host(url).await?;
 
         Ok(())
     }
@@ -169,35 +123,47 @@ impl MediaProvider for LiveProxyProvider {
 ///
 /// Supports `rtmp://`, `http://`, and `https://` schemes. Strips `rtmp://` prefix and
 /// parses the host portion to check against private IP ranges and well-known internal hostnames.
-fn validate_source_url_host(raw: &str) -> Result<(), ProviderError> {
-    // For RTMP URLs, extract host from rtmp://host:port/app/stream format
-    let host_str = if let Some(rest) = raw.strip_prefix("rtmp://") {
-        // Take everything before the first '/' after the host:port
+///
+/// In addition to static hostname/IP checks, performs **async DNS resolution** to guard
+/// against DNS rebinding attacks where a public-looking domain resolves to a private IP.
+async fn validate_source_url_host(raw: &str) -> Result<(), ProviderError> {
+    // For RTMP URLs, extract host and port from rtmp://host:port/app/stream format
+    let (host_str, port) = if let Some(rest) = raw.strip_prefix("rtmp://") {
         let authority = rest.split('/').next().unwrap_or(rest);
-        // Strip port if present
-        if let Some((host, _port)) = authority.rsplit_once(':') {
-            host
+        if let Some((host, port_str)) = authority.rsplit_once(':') {
+            (host, port_str.parse::<u16>().unwrap_or(1935))
         } else {
-            authority
+            (authority, 1935u16)
         }
     } else if let Ok(parsed) = url::Url::parse(raw) {
-        // For HTTP(S) URLs, use url crate
-        return match parsed.host_str() {
-            Some(host) => check_host_not_internal(host),
-            None => Err(ProviderError::InvalidConfig("URL has no host".to_string())),
+        match parsed.host_str() {
+            Some(host) => {
+                let port = parsed.port().unwrap_or(if parsed.scheme() == "https" { 443 } else { 80 });
+                // check_host_not_internal borrows the parsed URL's host_str, so
+                // run the static + DNS check inline here to avoid lifetime issues.
+                check_host_not_internal(host)?;
+                return resolve_and_check_dns(host, port).await;
+            }
+            None => return Err(ProviderError::InvalidConfig("URL has no host".to_string())),
         };
     } else {
         return Err(ProviderError::InvalidConfig(format!("Cannot parse URL: {raw}")));
     };
 
-    check_host_not_internal(host_str)
+    check_host_not_internal(host_str)?;
+    resolve_and_check_dns(host_str, port).await
 }
 
 fn check_host_not_internal(host: &str) -> Result<(), ProviderError> {
     // Block well-known internal hostnames
     if matches!(
         host,
-        "localhost" | "metadata.google.internal" | "instance-data"
+        "localhost"
+            | "metadata.google.internal"
+            | "instance-data"
+            | "metadata"
+            | "kubernetes.default"
+            | "kubernetes.default.svc"
     ) {
         return Err(ProviderError::InvalidConfig(
             "Source URL targets an internal host".to_string(),
@@ -211,6 +177,40 @@ fn check_host_not_internal(host: &str) -> Result<(), ProviderError> {
                 "Source URL targets a private IP address".to_string(),
             ));
         }
+    }
+
+    Ok(())
+}
+
+/// Perform async DNS resolution and reject any address that resolves to a private IP.
+///
+/// This prevents DNS rebinding attacks where a domain passes static hostname
+/// checks but resolves to a private/internal IP address at query time.
+async fn resolve_and_check_dns(host: &str, port: u16) -> Result<(), ProviderError> {
+    // Skip DNS resolution for literal IP addresses (already validated above)
+    if host.parse::<IpAddr>().is_ok() {
+        return Ok(());
+    }
+
+    let addrs = tokio::net::lookup_host((host, port))
+        .await
+        .map_err(|e| ProviderError::InvalidConfig(format!("DNS lookup failed for {host}: {e}")))?;
+
+    let mut found = false;
+    for addr in addrs {
+        if crate::validation::is_private_ip(&addr.ip()) {
+            return Err(ProviderError::InvalidConfig(format!(
+                "Hostname {host} resolves to private/reserved IP {}",
+                addr.ip()
+            )));
+        }
+        found = true;
+    }
+
+    if !found {
+        return Err(ProviderError::InvalidConfig(format!(
+            "Hostname {host} resolved to no addresses"
+        )));
     }
 
     Ok(())

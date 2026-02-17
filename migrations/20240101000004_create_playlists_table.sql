@@ -53,6 +53,15 @@ CREATE INDEX idx_playlists_creator ON playlists(creator_id);
 CREATE INDEX idx_playlists_source_provider ON playlists(source_provider) WHERE source_provider IS NOT NULL;
 CREATE INDEX idx_playlists_created_at ON playlists(created_at DESC);
 
+-- Partial unique index for root playlists (parent_id IS NULL).
+-- The UNIQUE constraint unique_playlist_name on (room_id, parent_id, name)
+-- does not prevent duplicates when parent_id IS NULL because PostgreSQL
+-- treats NULLs as distinct in UNIQUE constraints. This partial index
+-- ensures at most one root playlist per room with a given name.
+CREATE UNIQUE INDEX idx_playlists_unique_root_name
+    ON playlists(room_id, name)
+    WHERE parent_id IS NULL;
+
 -- Trigger to update updated_at
 CREATE TRIGGER update_playlists_updated_at
     BEFORE UPDATE ON playlists

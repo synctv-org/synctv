@@ -11,7 +11,6 @@ use crate::{
     models::oauth2_client::OAuth2Provider,
     repository::{UserRepository, UserOAuthProviderRepository},
     service::auth::{hash_password, verify_password, JwtService, TokenType, BruteForceProtection},
-    service::TokenBlacklistService,
     Error, Result,
 };
 
@@ -20,7 +19,6 @@ use crate::{
 pub struct UserService {
     pub(crate) repository: UserRepository,
     jwt_service: JwtService,
-    blacklist_service: TokenBlacklistService,
     username_cache: UsernameCache,
     /// Optional cache invalidation service for cross-replica user cache sync
     cache_invalidation: Option<Arc<CacheInvalidationService>>,
@@ -45,14 +43,12 @@ impl UserService {
     pub const fn new(
         pool: PgPool,
         jwt_service: JwtService,
-        blacklist_service: TokenBlacklistService,
         username_cache: UsernameCache,
         password_complexity: PasswordComplexityConfig,
     ) -> Self {
         Self {
             repository: UserRepository::new(pool),
             jwt_service,
-            blacklist_service,
             username_cache,
             cache_invalidation: None,
             password_complexity,
@@ -284,69 +280,18 @@ impl UserService {
 
     /// Refresh access token
     ///
-    /// **Production Enhancement (#32)**: Implements refresh token rotation to prevent
-    /// stolen token reuse. The old refresh token is atomically consumed (blacklisted)
-    /// using SET NX before issuing new tokens. This ensures:
-    /// - A stolen refresh token can only be used once
-    /// - Legitimate users get new tokens on each refresh
-    /// - Replay attacks are prevented even in multi-replica deployments
+    /// **Security Note**: Without Redis-based token blacklisting, this implementation
+    /// does not provide refresh token replay protection. A stolen refresh token can
+    /// be used until it expires naturally. Consider these trade-offs:
+    /// - Tokens are still validated for signature, expiration, and password changes
+    /// - Shorter token lifetimes reduce the replay window
+    /// - Password changes immediately invalidate all tokens
     ///
-    /// If `old_access_token` is provided, it will be blacklisted to prevent
-    /// further use after the refresh.
-    pub async fn refresh_token(&self, refresh_token: String, old_access_token: Option<&str>) -> Result<(String, String)> {
+    /// The `old_access_token` parameter is ignored (no longer blacklisted).
+    pub async fn refresh_token(&self, refresh_token: String, _old_access_token: Option<&str>) -> Result<(String, String)> {
         // Verify refresh token
         let claims = self.jwt_service.verify_refresh_token(&refresh_token)?;
         let user_id = UserId::from_string(claims.sub);
-
-        // Atomically consume the refresh token: blacklist it if not already blacklisted.
-        // This prevents the TOCTOU race where two replicas could both accept the same
-        // old refresh token between separate is_blacklisted + blacklist_token calls.
-        let now = chrono::Utc::now().timestamp();
-        let old_token_ttl = claims.exp - now;
-        let consumed = self.blacklist_service.try_consume_refresh_token(&refresh_token, old_token_ttl).await;
-        match consumed {
-            Ok(true) => {
-                // Successfully consumed -- this is the first (and only) use
-            }
-            Ok(false) => {
-                // Token was already consumed or blacklisted -- reject as replay
-                return Err(Error::Authentication("Token has been revoked".to_string()));
-            }
-            Err(e) => {
-                // Redis error during consumption -- fail closed to prevent replay
-                tracing::error!(
-                    user_id = %user_id.as_str(),
-                    error = %e,
-                    "Refresh token consumption failed (fail closed)"
-                );
-                return Err(Error::Authentication("Token has been revoked".to_string()));
-            }
-        }
-
-        // Blacklist the old access token if provided (best-effort).
-        if let Some(old_at) = old_access_token {
-            match self.jwt_service.verify_access_token(old_at) {
-                Ok(at_claims) => {
-                    let now = Utc::now().timestamp();
-                    let at_ttl = at_claims.exp - now;
-                    if at_ttl > 0 {
-                        if let Err(e) = self.blacklist_service.blacklist_token(old_at, at_ttl).await {
-                            tracing::warn!(
-                                error = %e,
-                                jti = %at_claims.jti,
-                                "Failed to blacklist old access token during refresh (best-effort)"
-                            );
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::debug!(
-                        error = %e,
-                        "Old access token provided during refresh is invalid, skipping blacklist"
-                    );
-                }
-            }
-        }
 
         // Get user to ensure they still exist and are active
         let user = self
@@ -363,8 +308,8 @@ impl UserService {
             return Err(Error::Authentication("Authentication failed".to_string()));
         }
 
-        // Reject refresh tokens issued before the last password change
-        if self.blacklist_service.are_user_tokens_invalidated(&user_id, claims.iat).await? {
+        // Reject refresh tokens issued before the last password change (database-based check)
+        if claims.iat < user.password_changed_at.timestamp() {
             return Err(Error::Authentication("Authentication failed".to_string()));
         }
 
@@ -417,12 +362,9 @@ impl UserService {
     /// Set user password (admin use, no old password required)
     ///
     /// After updating the password, all existing tokens for the user are
-    /// invalidated so that stolen or leaked tokens cannot be reused.
-    ///
-    /// Token invalidation is performed **before** the database password
-    /// update.  If Redis is unavailable the password change is aborted,
-    /// because allowing the password to change while old tokens remain
-    /// valid is a security risk.
+    /// invalidated. This is done by updating the `password_changed_at`
+    /// timestamp in the database, which causes all tokens with iat <
+    /// password_changed_at to be rejected by the security pipeline.
     pub async fn set_password(&self, user_id: &UserId, new_password: &str) -> Result<User> {
         // Validate new password
         self.validate_password(new_password)?;
@@ -430,32 +372,8 @@ impl UserService {
         // Hash new password
         let password_hash = hash_password(new_password).await?;
 
-        // Invalidate all existing tokens for this user BEFORE updating the
-        // password.  This ordering ensures that if Redis is down we abort
-        // early and the password remains unchanged — a safe, consistent
-        // state.  The reverse (password first, then invalidation) would
-        // leave old tokens valid after a successful password change, which
-        // is a security hole.
-        //
-        // TTL = 30 days (the maximum token lifetime, i.e. refresh tokens).
-        // After 30 days, even old refresh tokens will have expired naturally.
-        const THIRTY_DAYS_SECS: i64 = 30 * 24 * 60 * 60;
-        if let Err(e) = self.blacklist_service.invalidate_user_tokens(user_id, THIRTY_DAYS_SECS).await {
-            tracing::error!(
-                user_id = %user_id.as_str(),
-                error = %e,
-                "SECURITY: Failed to invalidate tokens during password change — \
-                 aborting password update to prevent old tokens from remaining valid"
-            );
-            return Err(Error::Internal(
-                "Cannot securely process password change: \
-                 token invalidation service is unavailable. \
-                 Please try again later."
-                    .to_string(),
-            ));
-        }
-
-        // Update password in database (only reached if token invalidation succeeded)
+        // Update password in database (this also updates password_changed_at,
+        // which invalidates all tokens issued before this moment)
         let updated_user = self.repository.update_password(user_id, &password_hash).await?;
 
         // Invalidate user cache across all replicas
@@ -487,54 +405,6 @@ impl UserService {
         self.repository.list(query).await
     }
 
-    /// Logout user by blacklisting both the access token and refresh token.
-    ///
-    /// Both tokens must be revoked to prevent a stolen refresh token from
-    /// being used to obtain new access tokens after the user has logged out.
-    pub async fn logout(&self, access_token: &str, refresh_token: Option<&str>) -> Result<()> {
-        // Blacklist the access token
-        let claims = self.jwt_service.verify_access_token(access_token)?;
-        let now = Utc::now().timestamp();
-        let access_ttl = claims.exp - now;
-
-        if access_ttl > 0 {
-            self.blacklist_service.blacklist_token(access_token, access_ttl).await?;
-        }
-
-        // Blacklist the refresh token (if provided)
-        if let Some(rt) = refresh_token {
-            match self.jwt_service.verify_refresh_token(rt) {
-                Ok(rt_claims) => {
-                    let rt_ttl = rt_claims.exp - now;
-                    if rt_ttl > 0 {
-                        self.blacklist_service.blacklist_token(rt, rt_ttl).await?;
-                    }
-                }
-                Err(e) => {
-                    // Log but don't fail the logout — the access token is already blacklisted
-                    tracing::warn!(error = %e, "Failed to verify refresh token during logout, skipping blacklist");
-                }
-            }
-        }
-
-        tracing::info!(
-            user_id = %claims.sub,
-            access_ttl_seconds = access_ttl,
-            refresh_token_provided = refresh_token.is_some(),
-            "User logged out, tokens blacklisted"
-        );
-
-        Ok(())
-    }
-
-    /// Invalidate all tokens for a user.
-    ///
-    /// This blacklists all tokens issued before now for the given user. Used
-    /// during user deletion or ban to ensure no existing tokens remain usable.
-    pub async fn invalidate_all_tokens(&self, user_id: &UserId, ttl_seconds: i64) -> Result<()> {
-        self.blacklist_service.invalidate_user_tokens(user_id, ttl_seconds).await
-    }
-
     /// Delete all OAuth2 provider mappings for a user.
     ///
     /// Used during user deletion to clean up OAuth bindings.
@@ -546,26 +416,24 @@ impl UserService {
     /// Soft-delete a user and clean up all related resources.
     ///
     /// Performs the following cleanup in order:
-    /// 1. Invalidate all tokens (fail-closed: aborts if Redis is unavailable)
-    /// 2. Within a single DB transaction:
+    /// 1. Within a single DB transaction:
     ///    a. Soft-delete the user row
     ///    b. Remove all OAuth2 provider mappings
-    /// 3. Invalidate username cache (best-effort)
-    /// 4. Invalidate user cache across replicas (best-effort)
+    /// 2. Invalidate username cache (best-effort)
+    /// 3. Invalidate user cache across replicas (best-effort)
     ///
-    /// Steps 2a and 2b are atomic: if OAuth2 cleanup fails, the soft-delete
+    /// Steps 1a and 1b are atomic: if OAuth2 cleanup fails, the soft-delete
     /// is rolled back to prevent orphaned mappings.
+    ///
+    /// **Token Invalidation**: Tokens are invalidated implicitly because the
+    /// security pipeline checks for deleted users (deleted_at IS NOT NULL).
     pub async fn delete_user(&self, user_id: &UserId) -> Result<()> {
         let user = self.get_user(user_id).await?;
         if user.deleted_at.is_some() {
             return Err(Error::InvalidInput("User is already deleted".to_string()));
         }
 
-        // 1. Invalidate all tokens BEFORE soft-delete (fail-closed)
-        const THIRTY_DAYS_SECS: i64 = 30 * 24 * 60 * 60;
-        self.invalidate_all_tokens(user_id, THIRTY_DAYS_SECS).await?;
-
-        // 2. Soft-delete + OAuth2 cleanup in a single transaction
+        // 1. Soft-delete + OAuth2 cleanup in a single transaction
         let pool = self.repository.pool();
         let mut tx = pool.begin().await?;
 
@@ -576,7 +444,7 @@ impl UserService {
 
         tx.commit().await?;
 
-        // 3. Invalidate username cache (best-effort)
+        // 2. Invalidate username cache (best-effort)
         if let Err(e) = self.invalidate_username_cache(user_id).await {
             tracing::warn!(
                 error = %e,
@@ -585,17 +453,12 @@ impl UserService {
             );
         }
 
-        // 4. Invalidate user cache across replicas (best-effort)
+        // 3. Invalidate user cache across replicas (best-effort)
         self.notify_user_invalidation(user_id).await;
 
         tracing::info!(user_id = %user_id.as_str(), "User soft-deleted with full cleanup");
 
         Ok(())
-    }
-
-    /// Check if a token is blacklisted
-    pub async fn is_token_blacklisted(&self, token: &str) -> Result<bool> {
-        self.blacklist_service.is_blacklisted(token).await
     }
 
     /// Check if a token has been invalidated by a password change.
@@ -607,9 +470,13 @@ impl UserService {
         user_id: &UserId,
         token_iat: i64,
     ) -> Result<bool> {
-        self.blacklist_service
-            .are_user_tokens_invalidated(user_id, token_iat)
-            .await
+        // Query password_changed_at from database
+        let user = self.repository.get_by_id(user_id).await?
+            .ok_or_else(|| Error::NotFound(format!("User {} not found", user_id.as_str())))?;
+
+        // Token is invalid if it was issued before the password change
+        // Using < (strict less than) means a token issued at the exact same second as password change is considered valid
+        Ok(token_iat < user.password_changed_at.timestamp())
     }
 
     /// Create a new user for an `OAuth2` login.
@@ -872,9 +739,8 @@ mod tests {
         let pool = PgPool::connect_lazy("postgresql://fake").unwrap();
 
         let jwt = JwtService::new("test-secret-for-user-service-long-enough-1234567890").unwrap();
-        let blacklist = TokenBlacklistService::new(None, "test".to_string()); // Disabled for tests
         let username_cache = UsernameCache::new(None, "test:".to_string(), 10, 0);
-        UserService::new(pool, jwt, blacklist, username_cache, PasswordComplexityConfig::default())
+        UserService::new(pool, jwt, username_cache, PasswordComplexityConfig::default())
     }
 
     #[tokio::test]
@@ -1065,183 +931,4 @@ mod tests {
 
     // ========== Integration Tests ==========
 
-    // ========== Token Blacklist Integration ==========
-
-    #[tokio::test]
-    async fn test_is_token_blacklisted_delegates_to_blacklist_service() {
-        let service = create_test_service();
-
-        let token = "test_blacklist_check_token";
-
-        // Not blacklisted initially
-        assert!(!service.is_token_blacklisted(token).await.unwrap());
-
-        // Blacklist it via the underlying service
-        service.blacklist_service.blacklist_token(token, 3600).await.unwrap();
-
-        // Should now be blacklisted via UserService wrapper
-        assert!(service.is_token_blacklisted(token).await.unwrap());
-    }
-
-    #[tokio::test]
-    async fn test_is_token_invalidated_by_password_change_delegates() {
-        let service = create_test_service();
-        let user_id = UserId::from_string("pwd_change_delegate_user".to_string());
-
-        let now = chrono::Utc::now().timestamp();
-
-        // Not invalidated initially
-        assert!(
-            !service
-                .is_token_invalidated_by_password_change(&user_id, now - 100)
-                .await
-                .unwrap()
-        );
-
-        // Simulate invalidation via blacklist service (as set_password would do)
-        service
-            .blacklist_service
-            .invalidate_user_tokens(&user_id, 30 * 24 * 60 * 60)
-            .await
-            .unwrap();
-
-        // Old token should now be invalidated
-        assert!(
-            service
-                .is_token_invalidated_by_password_change(&user_id, now - 100)
-                .await
-                .unwrap()
-        );
-
-        // Token issued after invalidation should be accepted
-        let future_iat = chrono::Utc::now().timestamp() + 10;
-        assert!(
-            !service
-                .is_token_invalidated_by_password_change(&user_id, future_iat)
-                .await
-                .unwrap()
-        );
-    }
-
-    #[tokio::test]
-    async fn test_invalidate_all_tokens_sets_user_invalidation() {
-        let service = create_test_service();
-        let user_id = UserId::from_string("invalidate_all_user".to_string());
-
-        let now = chrono::Utc::now().timestamp();
-
-        // No invalidation before calling
-        assert!(
-            !service
-                .is_token_invalidated_by_password_change(&user_id, now - 10)
-                .await
-                .unwrap()
-        );
-
-        // Invalidate all tokens for user
-        service.invalidate_all_tokens(&user_id, 3600).await.unwrap();
-
-        // Old tokens should be rejected
-        assert!(
-            service
-                .is_token_invalidated_by_password_change(&user_id, now - 10)
-                .await
-                .unwrap()
-        );
-    }
-
-    // ========== Refresh Token Rotation via UserService ==========
-
-    #[tokio::test]
-    async fn test_refresh_token_rotation_blacklists_old_token() {
-        // Create a UserService with a functional JWT + blacklist (no DB needed for this test)
-        let service = create_test_service();
-
-        let user_id = UserId::from_string("rotation_user".to_string());
-
-        // Sign a refresh token
-        let refresh_token = service
-            .jwt_service
-            .sign_token(&user_id, TokenType::Refresh)
-            .unwrap();
-
-        // The old refresh token should NOT be blacklisted before rotation
-        assert!(!service.is_token_blacklisted(&refresh_token).await.unwrap());
-
-        // Simulate what refresh_token() does: consume the old refresh token
-        let claims = service.jwt_service.verify_refresh_token(&refresh_token).unwrap();
-        let now = chrono::Utc::now().timestamp();
-        let old_token_ttl = claims.exp - now;
-
-        let consumed = service
-            .blacklist_service
-            .try_consume_refresh_token(&refresh_token, old_token_ttl)
-            .await
-            .unwrap();
-        assert!(consumed, "First consumption should succeed");
-
-        // Now the old token should be blacklisted
-        assert!(service.is_token_blacklisted(&refresh_token).await.unwrap());
-
-        // Second attempt to consume should fail (replay detection)
-        let consumed_again = service
-            .blacklist_service
-            .try_consume_refresh_token(&refresh_token, old_token_ttl)
-            .await
-            .unwrap();
-        assert!(!consumed_again, "Replay should be detected");
-    }
-
-    // ========== Password Change Token Flow ==========
-
-    #[tokio::test]
-    async fn test_password_change_flow_invalidates_tokens() {
-        // This tests the token invalidation logic that set_password performs,
-        // without needing a real database connection.
-        let service = create_test_service();
-        let user_id = UserId::from_string("set_password_user".to_string());
-
-        // Simulate a token issued 5 seconds ago (before the password change).
-        // We use an explicit iat in the past to avoid same-second timing issues,
-        // since the comparison is strict `<` (iat < password_changed_at).
-        let old_token_iat = chrono::Utc::now().timestamp() - 5;
-
-        // Token should be valid before password change
-        assert!(
-            !service
-                .is_token_invalidated_by_password_change(&user_id, old_token_iat)
-                .await
-                .unwrap()
-        );
-
-        // Simulate the invalidation that set_password would do
-        const THIRTY_DAYS: i64 = 30 * 24 * 60 * 60;
-        service
-            .blacklist_service
-            .invalidate_user_tokens(&user_id, THIRTY_DAYS)
-            .await
-            .unwrap();
-
-        // The pre-change token (iat 5s ago) should now be rejected
-        // because old_token_iat < password_changed_at (which is "now")
-        assert!(
-            service
-                .is_token_invalidated_by_password_change(&user_id, old_token_iat)
-                .await
-                .unwrap()
-        );
-
-        // A newly issued token (iat >= password_changed_at) should be accepted
-        let new_token = service
-            .jwt_service
-            .sign_token(&user_id, TokenType::Access)
-            .unwrap();
-        let new_claims = service.jwt_service.verify_access_token(&new_token).unwrap();
-        assert!(
-            !service
-                .is_token_invalidated_by_password_change(&user_id, new_claims.iat)
-                .await
-                .unwrap()
-        );
-    }
 }

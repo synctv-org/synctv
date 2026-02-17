@@ -13,7 +13,7 @@ use crate::{
     repository::{UserOAuthProviderRepository, ProviderInstanceRepository, UserProviderCredentialRepository, SettingsRepository, NotificationRepository},
     service::{
         ContentFilter, JwtService, OAuth2Service, RemoteProviderManager, RateLimitConfig,
-        RateLimiter, TokenBlacklistService, UserService, RoomService, ProvidersManager,
+        RateLimiter, UserService, RoomService, ProvidersManager,
         SettingsService, SettingsRegistry, EmailService, EmailTokenService, EmailConfig, PublishKeyService, UserNotificationService,
         AuditService, AuditFlushHandle,
     },
@@ -29,8 +29,6 @@ pub struct Services {
     pub room_service: Arc<RoomService>,
     /// JWT token service
     pub jwt_service: JwtService,
-    /// Token blacklist (uses Redis)
-    pub token_blacklist: TokenBlacklistService,
     /// Rate limiter (uses Redis)
     pub rate_limiter: RateLimiter,
     /// Rate limit configuration
@@ -212,15 +210,6 @@ pub async fn init_services(
         }
     };
 
-    // Initialize token blacklist service
-    let token_blacklist = TokenBlacklistService::new(redis_conn.clone(), config.redis.key_prefix.clone())
-        .with_invalidation_service(cache_invalidation.clone());
-    if token_blacklist.uses_redis() {
-        info!("Token blacklist service initialized with Redis");
-    } else {
-        warn!("Token blacklist using in-memory fallback (no Redis) — revocations are per-instance only");
-    }
-
     // Initialize username cache
     let username_cache = UsernameCache::new(
         redis_conn.clone(),
@@ -260,7 +249,7 @@ pub async fn init_services(
     info!("Brute-force protection initialized (redis={})", redis_conn.is_some());
 
     // Initialize UserService
-    let mut user_service = UserService::new(pool.clone(), jwt_service.clone(), token_blacklist.clone(), username_cache.clone(), config.password_complexity.clone());
+    let mut user_service = UserService::new(pool.clone(), jwt_service.clone(), username_cache.clone(), config.password_complexity.clone());
     user_service.set_cache_invalidation(cache_invalidation.clone());
     user_service.set_brute_force_protection(brute_force);
     info!("UserService initialized");
@@ -286,7 +275,6 @@ pub async fn init_services(
     // Initialize CacheManager and start cross-replica invalidation listener
     let cache_manager = CacheManager::new(user_cache.clone(), room_cache.clone())
         .with_username_cache(Arc::new(username_cache.clone()))
-        .with_token_blacklist(Arc::new(token_blacklist.clone()))
         .with_protected_cache(protected_cache);
     cache_manager.start_invalidation_listener(&cache_invalidation);
     info!("CacheManager initialized with invalidation listener and bloom filter protection");
@@ -452,7 +440,6 @@ pub async fn init_services(
         user_service: Arc::new(user_service),
         room_service: Arc::new(room_service),
         jwt_service,
-        token_blacklist,
         rate_limiter,
         rate_limit_config,
         content_filter,

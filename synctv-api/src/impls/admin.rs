@@ -384,16 +384,11 @@ impl AdminApiImpl {
         self.user_service.set_password(&uid, &req.new_password).await
             .map_err(ApiError::from)?;
 
-        // Invalidate all tokens if force_logout is true
-        let sessions_invalidated = if req.force_logout {
-            const THIRTY_DAYS_SECS: i64 = 30 * 24 * 60 * 60;
-            self.user_service.invalidate_all_tokens(&uid, THIRTY_DAYS_SECS).await
-                .map_err(ApiError::from)?;
-            // Token blacklist doesn't track exact session count, return 1 to indicate sessions were invalidated
-            1
-        } else {
-            0
-        };
+        // Note: force_logout parameter is no longer used.
+        // Without token blacklisting, existing tokens remain valid until expiry.
+        // The status change (Banned/Pending) will cause the security pipeline to
+        // reject all subsequent requests using those tokens.
+        let sessions_invalidated = 0;
 
         // Log to audit trail
         let caller = self.user_service.get_user(&caller_user_id).await
@@ -804,15 +799,7 @@ impl AdminApiImpl {
     ) -> Result<crate::proto::admin::DeleteUserResponse, ApiError> {
         let uid = UserId::from_string(req.user_id);
 
-        // 1. Invalidate all tokens BEFORE the DB transaction (fail-closed via Redis).
-        //    This ensures the user cannot authenticate even if the DB transaction fails.
-        const THIRTY_DAYS_SECS: i64 = 30 * 24 * 60 * 60;
-        self.user_service
-            .invalidate_all_tokens(&uid, THIRTY_DAYS_SECS)
-            .await
-            .map_err(|e| ApiError::Internal(format!("Failed to invalidate tokens: {e}")))?;
-
-        // 2. Remove memberships + soft-delete user in a single transaction.
+        // 1. Remove memberships + soft-delete user in a single transaction.
         //    If either step fails, both are rolled back atomically.
         let pool = self.user_service.pool();
         let mut tx = pool.begin().await.map_err(ApiError::from)?;
@@ -938,15 +925,8 @@ impl AdminApiImpl {
 
         let mut user = user;
 
-        // Invalidate all tokens BEFORE changing status so that even if the
-        // status update fails, we don't leave valid tokens for a user that
-        // was intended to be banned.  TTL = 30 days (max refresh token lifetime).
-        const THIRTY_DAYS_SECS: i64 = 30 * 24 * 60 * 60;
-        self.user_service
-            .invalidate_all_tokens(&uid, THIRTY_DAYS_SECS)
-            .await
-            .map_err(ApiError::from)?;
-
+        // Update user status to Banned. Existing tokens will be rejected by the
+        // security pipeline on subsequent requests due to the Banned status.
         user.status = UserStatus::Banned;
         let updated = self.user_service.update_user(&user).await.map_err(ApiError::from)?;
 

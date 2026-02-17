@@ -197,9 +197,8 @@ fn build_app_state(config: RouterConfig) -> AppState {
     let alist_api = Arc::new(crate::impls::AlistApiImpl::new(config.alist_provider.clone()));
     let emby_api = Arc::new(crate::impls::EmbyApiImpl::new(config.emby_provider.clone()));
 
-    // Create shared security pipeline for post-JWT checks (steps 2-4)
+    // Create shared security pipeline for post-JWT checks (steps 2-3)
     let security_pipeline = Arc::new(synctv_core::service::SecurityPipeline::new(
-        Arc::new(config.token_blacklist_service.clone()),
         config.user_service.clone(),
     ));
 

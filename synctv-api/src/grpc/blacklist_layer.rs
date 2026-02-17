@@ -115,8 +115,8 @@ where
                     }
                 };
 
-                // Steps 2-4: Shared security pipeline (blacklist, password invalidation, user status)
-                if let Err(e) = security_pipeline.check(&token, &claims).await {
+                // Steps 2-3: Shared security pipeline (password invalidation, user status)
+                if let Err(e) = security_pipeline.check(&claims).await {
                     tracing::warn!("gRPC request rejected by security pipeline: {e}");
                     let response = tonic::Status::unauthenticated(format!("{e}"))
                         .into_http();
@@ -204,20 +204,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_blacklist_check_layer_clone() {
-        let blacklist = TokenBlacklistService::new(None, "test".to_string());
         let jwt = JwtService::new("test-grpc-layer-secret-key-long-enough-1234567890").unwrap();
         let pool = sqlx::PgPool::connect_lazy("postgresql://fake").unwrap();
         let username_cache = synctv_core::cache::UsernameCache::new(None, "test:".to_string(), 10, 0);
         let user_service = UserService::new(
             pool,
             jwt.clone(),
-            blacklist.clone(),
             username_cache,
             synctv_core::config::PasswordComplexityConfig::default(),
         );
 
         let pipeline = SecurityPipeline::new(
-            Arc::new(blacklist),
             Arc::new(user_service),
         );
         let layer = BlacklistCheckLayer::new(jwt, pipeline);
@@ -237,20 +234,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_grpc_layer_uses_shared_security_pipeline() {
-        let blacklist = TokenBlacklistService::new(None, "test".to_string());
         let jwt = JwtService::new("test-parity-secret-key-12345-long-enough-1234567890").unwrap();
         let pool = sqlx::PgPool::connect_lazy("postgresql://fake").unwrap();
         let username_cache = synctv_core::cache::UsernameCache::new(None, "test:".to_string(), 10, 0);
         let user_service = UserService::new(
             pool,
             jwt.clone(),
-            blacklist.clone(),
             username_cache,
             synctv_core::config::PasswordComplexityConfig::default(),
         );
 
         let pipeline = SecurityPipeline::new(
-            Arc::new(blacklist),
             Arc::new(user_service),
         );
         let layer = BlacklistCheckLayer::new(jwt, pipeline);

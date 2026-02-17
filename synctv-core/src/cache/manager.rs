@@ -11,7 +11,6 @@ use super::{
     CacheInvalidationService,
     InvalidationMessage,
 };
-use crate::service::TokenBlacklistService;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use tracing::{debug, warn};
@@ -24,8 +23,6 @@ pub struct CacheManager {
     pub username_cache: Option<Arc<UsernameCache>>,
     /// Optional protected cache (bloom filter) for cross-replica sync
     protected_cache: Option<Arc<ProtectedCache>>,
-    /// Optional token blacklist service for cross-replica L1 invalidation
-    token_blacklist: Option<Arc<TokenBlacklistService>>,
 }
 
 impl CacheManager {
@@ -37,7 +34,6 @@ impl CacheManager {
             room_cache,
             username_cache: None,
             protected_cache: None,
-            token_blacklist: None,
         }
     }
 
@@ -55,13 +51,6 @@ impl CacheManager {
         self
     }
 
-    /// Set the token blacklist service for cross-replica L1 invalidation
-    #[must_use]
-    pub fn with_token_blacklist(mut self, token_blacklist: Arc<TokenBlacklistService>) -> Self {
-        self.token_blacklist = Some(token_blacklist);
-        self
-    }
-
     /// Start listening for cross-replica cache invalidation messages
     ///
     /// Subscribes to `CacheInvalidationService` and dispatches invalidation
@@ -76,7 +65,6 @@ impl CacheManager {
         let room_cache = self.room_cache.clone();
         let username_cache = self.username_cache.clone();
         let protected_cache = self.protected_cache.clone();
-        let token_blacklist = self.token_blacklist.clone();
         let mut receiver = invalidation_service.subscribe();
 
         crate::spawn::spawn_monitored("cache_invalidation_listener", async move {
@@ -117,14 +105,8 @@ impl CacheManager {
                                     );
                                 }
                             }
-                            InvalidationMessage::UserTokenInvalidation { ref user_id } => {
-                                if let Some(ref tb) = token_blacklist {
-                                    tb.invalidate_user_l1(user_id).await;
-                                    debug!(
-                                        user_id = %user_id,
-                                        "Token blacklist L1 invalidated (cross-replica)"
-                                    );
-                                }
+                            InvalidationMessage::UserTokenInvalidation { .. } => {
+                                // Token blacklist removed - this message is now ignored
                             }
                             InvalidationMessage::All => {
                                 user_cache.clear_l1().await;

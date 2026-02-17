@@ -73,13 +73,10 @@ where
             .validate_http(auth_str)
             .map_err(|e| AppError::unauthorized(format!("{e}")))?;
 
-        let raw_token = JwtValidator::extract_bearer_token(auth_str)
-            .map_err(|e| AppError::unauthorized(format!("{e}")))?;
-
-        // Steps 2-4: Shared security pipeline (blacklist, password invalidation, user status)
+        // Steps 2-3: Shared security pipeline (password invalidation, user status)
         let authenticated = app_state
             .security_pipeline
-            .check(&raw_token, &claims)
+            .check(&claims)
             .await
             .map_err(|e| AppError::unauthorized(format!("{e}")))?;
 

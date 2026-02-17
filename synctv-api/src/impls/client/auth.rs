@@ -67,40 +67,25 @@ impl ClientApiImpl {
         })
     }
 
-    /// Logout: blacklist both the access token and refresh token server-side.
+    /// Logout: validates tokens and returns success.
     ///
-    /// Fail-fast: returns an error if token revocation fails (e.g. Redis is
-    /// down). This prevents the user from believing they are logged out while
-    /// their tokens remain valid -- a security concern on shared/public devices.
+    /// **Security Note**: Without Redis-based token blacklisting, tokens are
+    /// NOT revoked server-side. They will remain valid until they expire
+    /// naturally. Users should:
+    /// - Use short token lifetimes to minimize exposure
+    /// - Change password if tokens are suspected to be compromised
     ///
-    /// Retries up to 3 times with exponential backoff before giving up.
-    pub async fn logout(&self, access_token: &str, refresh_token: Option<&str>) -> Result<crate::proto::client::LogoutResponse, ApiError> {
-        const MAX_RETRIES: u32 = 3;
-        let mut last_err = None;
+    /// This method validates the access token to ensure it's well-formed.
+    pub async fn logout(&self, access_token: &str, _refresh_token: Option<&str>) -> Result<crate::proto::client::LogoutResponse, ApiError> {
+        // Validate the access token to ensure it's well-formed
+        let claims = self.jwt_service.verify_access_token(access_token)
+            .map_err(|e| ApiError::Unauthorized(format!("Invalid access token: {e}")))?;
 
-        for attempt in 0..MAX_RETRIES {
-            match self.user_service.logout(access_token, refresh_token).await {
-                Ok(()) => return Ok(crate::proto::client::LogoutResponse { success: true }),
-                Err(e) => {
-                    tracing::warn!(
-                        attempt = attempt + 1,
-                        max_retries = MAX_RETRIES,
-                        error = %e,
-                        "Logout token revocation failed, retrying"
-                    );
-                    last_err = Some(e);
-                    if attempt + 1 < MAX_RETRIES {
-                        let backoff = tokio::time::Duration::from_millis(100 * 2u64.pow(attempt));
-                        tokio::time::sleep(backoff).await;
-                    }
-                }
-            }
-        }
+        tracing::info!(
+            user_id = %claims.sub,
+            "User logged out (tokens not revoked - will expire naturally)"
+        );
 
-        let err = last_err.unwrap();
-        tracing::error!(error = %err, "Logout failed after {MAX_RETRIES} attempts: token revocation unsuccessful");
-        Err(ApiError::Internal(
-            "Logout failed: could not revoke token. Please try again later.".to_string(),
-        ))
+        Ok(crate::proto::client::LogoutResponse { success: true })
     }
 }

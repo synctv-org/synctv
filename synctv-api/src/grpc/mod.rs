@@ -263,7 +263,6 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
     // It runs before tonic routes and interceptors, so public endpoints (no Authorization header)
     // pass through without security checks.
     let security_pipeline = synctv_core::service::SecurityPipeline::new(
-        Arc::new(token_blacklist_service.clone()),
         user_service.clone(),
     );
     let blacklist_layer = blacklist_layer::BlacklistCheckLayer::new(

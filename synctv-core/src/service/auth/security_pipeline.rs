@@ -1,12 +1,11 @@
-//! Shared 4-step security pipeline for HTTP and gRPC authentication.
+//! Shared 3-step security pipeline for HTTP and gRPC authentication.
 //!
 //! Both the HTTP `AuthUser` extractor and the gRPC `BlacklistCheckLayer` enforce
 //! identical security checks in a fixed order:
 //!
 //! 1. **JWT verification** -- validate signature, expiration, and access token type
-//! 2. **Token blacklist** -- reject explicitly revoked tokens (e.g. after logout)
-//! 3. **Password invalidation** -- reject tokens issued before a password change
-//! 4. **User status** -- reject banned, pending, or soft-deleted users
+//! 2. **Password invalidation** -- reject tokens issued before a password change (database-based)
+//! 3. **User status** -- reject banned, pending, or soft-deleted users
 //!
 //! This module provides [`SecurityPipeline`] so both transport layers can delegate
 //! to a single implementation, preventing divergence.
@@ -15,7 +14,7 @@ use std::sync::Arc;
 
 use crate::{
     models::{UserId, UserStatus},
-    service::{TokenBlacklistService, UserService},
+    service::UserService,
     Error, Result,
 };
 
@@ -32,52 +31,32 @@ pub struct AuthenticatedToken {
 ///
 /// Step 1 (JWT verification) is intentionally left to the caller because
 /// the HTTP and gRPC layers extract the raw token differently. Once the
-/// caller has valid [`Claims`], it passes them here for steps 2-4.
+/// caller has valid [`Claims`], it passes them here for steps 2-3.
 #[derive(Clone)]
 pub struct SecurityPipeline {
-    blacklist_service: Arc<TokenBlacklistService>,
     user_service: Arc<UserService>,
 }
 
 impl SecurityPipeline {
     /// Create a new security pipeline.
-    pub fn new(
-        blacklist_service: Arc<TokenBlacklistService>,
-        user_service: Arc<UserService>,
-    ) -> Self {
-        Self {
-            blacklist_service,
-            user_service,
-        }
+    pub fn new(user_service: Arc<UserService>) -> Self {
+        Self { user_service }
     }
 
-    /// Run post-JWT security checks (steps 2-4).
+    /// Run post-JWT security checks (steps 2-3).
     ///
     /// The caller is responsible for step 1 (JWT verification) and must
-    /// provide the validated [`Claims`] and the raw token string.
+    /// provide the validated [`Claims`].
     ///
     /// # Arguments
-    /// * `raw_token` -- the raw JWT string (needed for blacklist lookup)
     /// * `claims` -- the already-verified JWT claims
     ///
     /// # Returns
     /// [`AuthenticatedToken`] on success, or an [`Error::Authentication`] on failure.
-    pub async fn check(&self, raw_token: &str, claims: &Claims) -> Result<AuthenticatedToken> {
+    pub async fn check(&self, claims: &Claims) -> Result<AuthenticatedToken> {
         let user_id = claims.user_id();
 
-        // Step 2: Token blacklist check (explicit revocation via logout)
-        if self
-            .blacklist_service
-            .is_blacklisted(raw_token)
-            .await
-            .unwrap_or(true) // Fail closed
-        {
-            return Err(Error::Authentication(
-                "Token has been revoked".to_string(),
-            ));
-        }
-
-        // Step 3: Password invalidation check
+        // Step 2: Password invalidation check (database-based)
         if self
             .user_service
             .is_token_invalidated_by_password_change(&user_id, claims.iat)
@@ -89,7 +68,7 @@ impl SecurityPipeline {
             ));
         }
 
-        // Step 4: User status check (banned / pending / deleted)
+        // Step 3: User status check (banned / pending / deleted)
         let user = self
             .user_service
             .get_user(&user_id)

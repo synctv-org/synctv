@@ -281,11 +281,12 @@ pub struct User {
     pub email_verified: bool,  // Whether email has been verified
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub password_changed_at: DateTime<Utc>,  // Timestamp of last password change (for token invalidation)
     pub deleted_at: Option<DateTime<Utc>>,
 }
 
 impl User {
-    #[must_use] 
+    #[must_use]
     pub fn new(username: String, email: Option<String>, password_hash: String, signup_method: Option<SignupMethod>) -> Self {
         let now = Utc::now();
         Self {
@@ -299,6 +300,7 @@ impl User {
             email_verified: false,  // Default to not verified
             created_at: now,
             updated_at: now,
+            password_changed_at: now,  // Initialize to creation time
             deleted_at: None,
         }
     }

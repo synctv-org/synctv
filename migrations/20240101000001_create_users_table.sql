@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS users (
     email_verified BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    password_changed_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,  -- Last password change timestamp (for token invalidation)
     deleted_at TIMESTAMPTZ NULL,
 
     -- Ensure email is not empty or whitespace-only
@@ -37,6 +38,7 @@ CREATE INDEX idx_users_email_lower ON users(LOWER(email)) WHERE deleted_at IS NU
 CREATE INDEX idx_users_role ON users(role) WHERE deleted_at IS NULL;
 CREATE INDEX idx_users_status ON users(status) WHERE deleted_at IS NULL;
 CREATE INDEX idx_users_signup_method ON users(signup_method) WHERE deleted_at IS NULL;
+CREATE INDEX idx_users_password_changed_at ON users(password_changed_at) WHERE deleted_at IS NULL;
 
 -- pg_trgm GIN indexes for ILIKE pattern matching in user search
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
@@ -64,6 +66,7 @@ COMMENT ON COLUMN users.signup_method IS 'Method used to register: email or oaut
 COMMENT ON COLUMN users.role IS 'User RBAC role: 1=root, 2=admin, 3=user (global access level)';
 COMMENT ON COLUMN users.status IS 'User account status: 1=active, 2=pending (email verification), 3=banned';
 COMMENT ON COLUMN users.email_verified IS 'Whether the user email has been verified';
+COMMENT ON COLUMN users.password_changed_at IS 'Timestamp of last password change. Tokens issued before this timestamp are invalid.';
 COMMENT ON COLUMN users.deleted_at IS 'Soft delete timestamp (NULL = active user)';
 COMMENT ON CONSTRAINT users_email_not_empty ON users IS 'Ensures email is either NULL or a non-empty string';
 

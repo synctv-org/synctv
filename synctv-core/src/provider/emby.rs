@@ -363,11 +363,22 @@ impl MediaProvider for EmbyProvider {
         session_id: &str,
         source_config: &Value,
     ) -> Result<(), ProviderError> {
-        let config = EmbySourceConfig::try_from(source_config)?;
+        let config = match EmbySourceConfig::try_from(source_config) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    session_id = %session_id,
+                    "Emby on_playback_start: failed to parse source_config, skipping"
+                );
+                return Ok(());
+            }
+        };
         let client = self
             .get_client(config.provider_instance_name.as_deref())
             .await;
 
+        let item_id = config.item_id.clone();
         let req = synctv_media_providers::grpc::emby::ReportPlaybackStartReq {
             host: config.host,
             token: config.token,
@@ -378,7 +389,12 @@ impl MediaProvider for EmbyProvider {
         };
 
         if let Err(e) = client.report_playback_start(req).await {
-            tracing::warn!(error = %e, "Failed to report Emby playback start");
+            tracing::warn!(
+                error = %e,
+                session_id = %session_id,
+                item_id = %item_id,
+                "Failed to report Emby playback start"
+            );
         }
 
         Ok(())
@@ -391,13 +407,25 @@ impl MediaProvider for EmbyProvider {
         source_config: &Value,
         position: f64,
     ) -> Result<(), ProviderError> {
-        let config = EmbySourceConfig::try_from(source_config)?;
+        let config = match EmbySourceConfig::try_from(source_config) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    session_id = %session_id,
+                    "Emby on_playback_stop: failed to parse source_config, skipping"
+                );
+                return Ok(());
+            }
+        };
         let client = self
             .get_client(config.provider_instance_name.as_deref())
             .await;
 
         // Convert seconds to Emby ticks (1 tick = 100 nanoseconds = 10^-7 seconds)
         let position_ticks = (position * 10_000_000.0) as i64;
+
+        let item_id = config.item_id.clone();
 
         // Report playback stopped
         let stop_req = synctv_media_providers::grpc::emby::ReportPlaybackStopReq {
@@ -409,10 +437,16 @@ impl MediaProvider for EmbyProvider {
         };
 
         if let Err(e) = client.report_playback_stop(stop_req).await {
-            tracing::warn!(error = %e, "Failed to report Emby playback stop");
+            tracing::warn!(
+                error = %e,
+                session_id = %session_id,
+                item_id = %item_id,
+                position = %position,
+                "Failed to report Emby playback stop"
+            );
         }
 
-        // Also clean up active encodings
+        // Also clean up active encodings (best effort, do not fail if this errors)
         let delete_req = synctv_media_providers::grpc::emby::DeleteActiveEncodingsReq {
             host: config.host,
             token: config.token,
@@ -420,7 +454,12 @@ impl MediaProvider for EmbyProvider {
         };
 
         if let Err(e) = client.delete_active_encodings(delete_req).await {
-            tracing::warn!(error = %e, "Failed to delete Emby active encodings");
+            tracing::warn!(
+                error = %e,
+                session_id = %session_id,
+                item_id = %item_id,
+                "Failed to delete Emby active encodings during playback stop"
+            );
         }
 
         Ok(())
@@ -433,7 +472,18 @@ impl MediaProvider for EmbyProvider {
         source_config: &Value,
         position: f64,
     ) -> Result<(), ProviderError> {
-        let config = EmbySourceConfig::try_from(source_config)?;
+        let config = match EmbySourceConfig::try_from(source_config) {
+            Ok(c) => c,
+            Err(e) => {
+                // Progress reports happen every 10s; log at debug level to avoid log spam
+                tracing::debug!(
+                    error = %e,
+                    session_id = %session_id,
+                    "Emby on_playback_progress: failed to parse source_config, skipping"
+                );
+                return Ok(());
+            }
+        };
         let client = self
             .get_client(config.provider_instance_name.as_deref())
             .await;
@@ -441,6 +491,7 @@ impl MediaProvider for EmbyProvider {
         // Convert seconds to Emby ticks (1 tick = 100 nanoseconds = 10^-7 seconds)
         let position_ticks = (position * 10_000_000.0) as i64;
 
+        let item_id = config.item_id.clone();
         let req = synctv_media_providers::grpc::emby::ReportPlaybackProgressReq {
             host: config.host,
             token: config.token,
@@ -452,7 +503,13 @@ impl MediaProvider for EmbyProvider {
         };
 
         if let Err(e) = client.report_playback_progress(req).await {
-            tracing::warn!(error = %e, "Failed to report Emby playback progress");
+            tracing::debug!(
+                error = %e,
+                session_id = %session_id,
+                item_id = %item_id,
+                position = %position,
+                "Failed to report Emby playback progress"
+            );
         }
 
         Ok(())

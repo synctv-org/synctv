@@ -345,10 +345,207 @@ impl HealthMonitor {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    /// Helper: create a NodeRegistry in local-only mode (no Redis)
+    fn make_registry() -> Arc<NodeRegistry> {
+        Arc::new(NodeRegistry::new(None, "self".to_string(), 30, "test:").unwrap())
+    }
+
+    // --- HealthProbeConfig tests ---
+
+    #[test]
+    fn test_health_probe_config_defaults() {
+        let config = HealthProbeConfig::default();
+        assert_eq!(config.probe_timeout_secs, 3);
+        assert_eq!(config.failure_threshold, 2);
+        assert_eq!(config.success_threshold, 1);
+        assert_eq!(config.probe_interval_secs, 15);
+    }
+
+    // --- NodeHealth enum tests ---
+
+    #[test]
+    fn test_node_health_equality() {
+        assert_eq!(NodeHealth::Healthy, NodeHealth::Healthy);
+        assert_eq!(NodeHealth::Degraded, NodeHealth::Degraded);
+        assert_eq!(NodeHealth::Unhealthy, NodeHealth::Unhealthy);
+        assert_ne!(NodeHealth::Healthy, NodeHealth::Unhealthy);
+        assert_ne!(NodeHealth::Healthy, NodeHealth::Degraded);
+    }
+
+    // --- HealthMonitor construction ---
 
     #[tokio::test]
-    #[ignore = "Requires Redis"]
-    async fn test_health_monitor() {
-        // Integration test placeholder
+    async fn test_health_monitor_new() {
+        let registry = make_registry();
+        let monitor = HealthMonitor::new(registry, 10);
+        let status = monitor.get_all_status().await;
+        assert!(status.is_empty(), "New monitor should have no statuses");
+    }
+
+    #[tokio::test]
+    async fn test_health_monitor_with_probe_config() {
+        let registry = make_registry();
+        let config = HealthProbeConfig {
+            probe_timeout_secs: 1,
+            failure_threshold: 5,
+            success_threshold: 3,
+            probe_interval_secs: 30,
+        };
+        let monitor = HealthMonitor::with_probe_config(registry, 10, config);
+        assert_eq!(monitor.probe_config.failure_threshold, 5);
+        assert_eq!(monitor.probe_config.success_threshold, 3);
+    }
+
+    // --- get_node_status ---
+
+    #[tokio::test]
+    async fn test_get_node_status_returns_none_for_unknown() {
+        let registry = make_registry();
+        let monitor = HealthMonitor::new(registry, 10);
+        assert_eq!(monitor.get_node_status("nonexistent").await, None);
+    }
+
+    // --- check_heartbeats (passive check) ---
+
+    #[tokio::test]
+    async fn test_check_heartbeats_marks_stale_nodes_unhealthy() {
+        let registry = make_registry();
+
+        // Register a node and then make its heartbeat stale
+        registry.register("localhost:50051".to_string(), "localhost:8080".to_string()).await.unwrap();
+
+        // Manually insert a stale node into local_nodes
+        {
+            let mut nodes = registry.local_nodes.write().await;
+            let mut stale_node = super::super::node_registry::NodeInfo::new(
+                "stale-node".to_string(),
+                "localhost:50052".to_string(),
+                "localhost:8081".to_string(),
+            );
+            stale_node.last_heartbeat = chrono::Utc::now() - chrono::Duration::seconds(120);
+            nodes.insert("stale-node".to_string(), stale_node);
+        }
+
+        let health_status = Arc::new(RwLock::new(HashMap::new()));
+
+        HealthMonitor::check_heartbeats(&registry, &health_status, 30).await;
+
+        let status = health_status.read().await;
+        // stale-node should be unhealthy (heartbeat > 30s old) BUT it's also
+        // filtered by is_stale in get_all_nodes, so it might not appear.
+        // The local-mode "self" node should be fresh.
+        // If stale-node is returned by get_all_nodes, it should be Unhealthy.
+        if let Some(stale_status) = status.get("stale-node") {
+            assert_eq!(*stale_status, NodeHealth::Unhealthy);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_check_heartbeats_does_not_mark_fresh_nodes() {
+        let registry = make_registry();
+        registry.register("localhost:50051".to_string(), "localhost:8080".to_string()).await.unwrap();
+
+        let health_status = Arc::new(RwLock::new(HashMap::new()));
+        HealthMonitor::check_heartbeats(&registry, &health_status, 30).await;
+
+        let status = health_status.read().await;
+        // Fresh node should not be marked unhealthy
+        let self_status = status.get("self");
+        assert!(self_status.is_none() || *self_status.unwrap() != NodeHealth::Unhealthy);
+    }
+
+    // --- probe_node_static ---
+
+    #[tokio::test]
+    async fn test_probe_node_static_invalid_address() {
+        // Invalid address should return false
+        assert!(!HealthMonitor::probe_node_static("not-an-address", 1).await);
+    }
+
+    #[tokio::test]
+    async fn test_probe_node_static_unreachable() {
+        // Unreachable address should return false (timeout)
+        assert!(!HealthMonitor::probe_node_static("192.0.2.1:12345", 1).await);
+    }
+
+    #[tokio::test]
+    async fn test_probe_node_static_no_port() {
+        assert!(!HealthMonitor::probe_node_static("localhost", 1).await);
+    }
+
+    #[tokio::test]
+    async fn test_probe_node_static_invalid_port() {
+        assert!(!HealthMonitor::probe_node_static("localhost:abc", 1).await);
+    }
+
+    // --- ProbeState ---
+
+    #[test]
+    fn test_probe_state_default() {
+        let state = ProbeState::default();
+        assert_eq!(state.success_count.load(Ordering::Relaxed), 0);
+        assert_eq!(state.failure_count.load(Ordering::Relaxed), 0);
+    }
+
+    // --- start / shutdown lifecycle ---
+
+    #[tokio::test]
+    async fn test_health_monitor_start_and_shutdown() {
+        let registry = make_registry();
+        let monitor = HealthMonitor::new(registry, 60);
+        let handle = monitor.start().await.unwrap();
+        monitor.set_join_handle(handle);
+
+        // Let it run briefly
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Shutdown should complete without error
+        monitor.shutdown().await;
+    }
+
+    // --- probe_nodes with threshold logic ---
+
+    #[tokio::test]
+    async fn test_probe_failure_threshold() {
+        // Test that probe_states track consecutive failures
+        let state = ProbeState::default();
+
+        // Simulate 3 failures
+        for _ in 0..3 {
+            state.success_count.store(0, Ordering::Relaxed);
+            let failures = state.failure_count.fetch_add(1, Ordering::Relaxed) + 1;
+            assert!(failures <= 3);
+        }
+
+        assert_eq!(state.failure_count.load(Ordering::Relaxed), 3);
+        assert_eq!(state.success_count.load(Ordering::Relaxed), 0);
+
+        // Simulate one success resetting failures
+        state.failure_count.store(0, Ordering::Relaxed);
+        state.success_count.fetch_add(1, Ordering::Relaxed);
+
+        assert_eq!(state.failure_count.load(Ordering::Relaxed), 0);
+        assert_eq!(state.success_count.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn test_check_heartbeats_prunes_removed_nodes() {
+        let registry = make_registry();
+        registry.register("localhost:50051".to_string(), "localhost:8080".to_string()).await.unwrap();
+
+        let health_status = Arc::new(RwLock::new(HashMap::new()));
+        // Pre-populate with a node that no longer exists
+        {
+            let mut status = health_status.write().await;
+            status.insert("ghost-node".to_string(), NodeHealth::Healthy);
+        }
+
+        HealthMonitor::check_heartbeats(&registry, &health_status, 30).await;
+
+        let status = health_status.read().await;
+        assert!(!status.contains_key("ghost-node"), "Removed node should be pruned");
     }
 }

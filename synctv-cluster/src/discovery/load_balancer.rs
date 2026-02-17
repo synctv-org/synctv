@@ -198,10 +198,284 @@ impl LoadBalancer {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    /// Helper: create a NodeRegistry in local-only mode (no Redis)
+    fn make_registry() -> Arc<NodeRegistry> {
+        Arc::new(NodeRegistry::new(None, "self".to_string(), 30, "test:").unwrap())
+    }
+
+    /// Helper: register N nodes into a local-mode registry
+    async fn register_nodes(registry: &NodeRegistry, count: usize) {
+        // Register "self" first
+        registry
+            .register("localhost:50051".to_string(), "localhost:8080".to_string())
+            .await
+            .unwrap();
+
+        // Add remote nodes
+        for i in 1..count {
+            let node = NodeInfo::new(
+                format!("node-{i}"),
+                format!("localhost:{}", 50051 + i),
+                format!("localhost:{}", 8080 + i),
+            );
+            registry.register_remote(node).await.unwrap();
+        }
+    }
+
+    // --- Construction ---
 
     #[tokio::test]
-    #[ignore = "Requires Redis"]
-    async fn test_load_balancer() {
-        // Integration test placeholder
+    async fn test_load_balancer_new() {
+        let registry = make_registry();
+        let _lb = LoadBalancer::new(registry, LoadBalancingStrategy::Random);
+    }
+
+    #[tokio::test]
+    async fn test_load_balancer_with_health_monitor() {
+        let registry = make_registry();
+        let monitor = Arc::new(HealthMonitor::new(Arc::clone(&registry), 60));
+        let _lb = LoadBalancer::new(registry, LoadBalancingStrategy::Random)
+            .with_health_monitor(monitor);
+    }
+
+    // --- select_node: empty cluster ---
+
+    #[tokio::test]
+    async fn test_select_node_empty_cluster() {
+        let registry = make_registry();
+        let lb = LoadBalancer::new(registry, LoadBalancingStrategy::Random);
+        let result = lb.select_node().await;
+        assert!(result.is_err(), "Empty cluster should return error");
+    }
+
+    // --- select_node: Random strategy ---
+
+    #[tokio::test]
+    async fn test_select_node_random_single() {
+        let registry = make_registry();
+        register_nodes(&registry, 1).await;
+        let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::Random);
+
+        let node = lb.select_node().await.unwrap();
+        assert_eq!(node, "self");
+    }
+
+    #[tokio::test]
+    async fn test_select_node_random_multiple() {
+        let registry = make_registry();
+        register_nodes(&registry, 5).await;
+        let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::Random);
+
+        // Run many selections and verify we get a reasonable distribution
+        let mut selected: HashSet<String> = HashSet::new();
+        for _ in 0..100 {
+            let node = lb.select_node().await.unwrap();
+            selected.insert(node);
+        }
+
+        // With 5 nodes and 100 selections, we should see at least 2 different nodes
+        assert!(
+            selected.len() >= 2,
+            "Random selection should hit multiple nodes, got: {selected:?}"
+        );
+    }
+
+    // --- select_node: RoundRobin strategy ---
+
+    #[tokio::test]
+    async fn test_select_node_round_robin() {
+        let registry = make_registry();
+        register_nodes(&registry, 3).await;
+        let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::RoundRobin);
+
+        // Collect one full cycle
+        let mut cycle = Vec::new();
+        for _ in 0..3 {
+            cycle.push(lb.select_node().await.unwrap());
+        }
+
+        // Should get all 3 unique nodes in one cycle
+        let unique: HashSet<_> = cycle.iter().collect();
+        assert_eq!(unique.len(), 3, "Round-robin should cycle through all nodes");
+
+        // Next cycle should repeat the same order (sorted by node_id)
+        let mut second_cycle = Vec::new();
+        for _ in 0..3 {
+            second_cycle.push(lb.select_node().await.unwrap());
+        }
+        assert_eq!(cycle, second_cycle, "Round-robin should be deterministic");
+    }
+
+    // --- select_node: LeastConnections strategy ---
+
+    #[tokio::test]
+    async fn test_select_node_least_connections() {
+        let registry = make_registry();
+        register_nodes(&registry, 3).await;
+
+        // Set connection counts via metadata
+        {
+            let mut nodes = registry.local_nodes.write().await;
+            // "self" = 10 connections
+            nodes.get_mut("self").unwrap().metadata.insert("connections".to_string(), "10".to_string());
+            // Ensure past warmup by setting registered_at far in the past
+            nodes.get_mut("self").unwrap().metadata.insert("registered_at".to_string(), "0".to_string());
+            // "node-1" = 5 connections (fewest)
+            nodes.get_mut("node-1").unwrap().metadata.insert("connections".to_string(), "5".to_string());
+            nodes.get_mut("node-1").unwrap().metadata.insert("registered_at".to_string(), "0".to_string());
+            // "node-2" = 20 connections
+            nodes.get_mut("node-2").unwrap().metadata.insert("connections".to_string(), "20".to_string());
+            nodes.get_mut("node-2").unwrap().metadata.insert("registered_at".to_string(), "0".to_string());
+        }
+
+        let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::LeastConnections);
+        let node = lb.select_node().await.unwrap();
+        assert_eq!(node, "node-1", "Should select node with fewest connections");
+    }
+
+    #[tokio::test]
+    async fn test_select_node_least_connections_warmup_penalty() {
+        let registry = make_registry();
+        register_nodes(&registry, 2).await;
+
+        // "self" has 5 connections, established node
+        // "node-1" has no connection metadata and was just registered
+        {
+            let mut nodes = registry.local_nodes.write().await;
+            nodes.get_mut("self").unwrap().metadata.insert("connections".to_string(), "5".to_string());
+            nodes.get_mut("self").unwrap().metadata.insert("registered_at".to_string(), "0".to_string());
+            // node-1: recently registered (current time), no connections reported
+            let now = chrono::Utc::now().timestamp().to_string();
+            nodes.get_mut("node-1").unwrap().metadata.insert("registered_at".to_string(), now);
+        }
+
+        let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::LeastConnections);
+        let node = lb.select_node().await.unwrap();
+        // node-1 is in warmup period with penalty > 5, so "self" should be selected
+        assert_eq!(node, "self", "Warmup node should be penalized");
+    }
+
+    // --- select_node_by_id ---
+
+    #[tokio::test]
+    async fn test_select_node_by_id_found() {
+        let registry = make_registry();
+        register_nodes(&registry, 3).await;
+        let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::Random);
+
+        let node = lb.select_node_by_id("node-1").await.unwrap();
+        assert_eq!(node, "node-1");
+    }
+
+    #[tokio::test]
+    async fn test_select_node_by_id_not_found() {
+        let registry = make_registry();
+        register_nodes(&registry, 1).await;
+        let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::Random);
+
+        let result = lb.select_node_by_id("nonexistent").await;
+        assert!(result.is_err());
+    }
+
+    // --- get_available_nodes ---
+
+    #[tokio::test]
+    async fn test_get_available_nodes() {
+        let registry = make_registry();
+        register_nodes(&registry, 3).await;
+        let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::Random);
+
+        let available = lb.get_available_nodes().await.unwrap();
+        assert_eq!(available.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_available_count() {
+        let registry = make_registry();
+        register_nodes(&registry, 4).await;
+        let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::Random);
+
+        let count = lb.available_count().await.unwrap();
+        assert_eq!(count, 4);
+    }
+
+    // --- Health filtering ---
+
+    #[tokio::test]
+    async fn test_select_node_filters_unhealthy() {
+        let registry = make_registry();
+        register_nodes(&registry, 3).await;
+
+        let monitor = Arc::new(HealthMonitor::new(Arc::clone(&registry), 60));
+
+        // Mark "node-1" as unhealthy
+        {
+            let mut status = monitor.health_status.write().await;
+            status.insert("node-1".to_string(), NodeHealth::Unhealthy);
+        }
+
+        let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::RoundRobin)
+            .with_health_monitor(Arc::clone(&monitor));
+
+        // Should never select node-1
+        let mut selected: HashSet<String> = HashSet::new();
+        for _ in 0..20 {
+            selected.insert(lb.select_node().await.unwrap());
+        }
+
+        assert!(!selected.contains("node-1"), "Unhealthy node should be excluded");
+        assert!(selected.contains("self") || selected.contains("node-2"));
+    }
+
+    #[tokio::test]
+    async fn test_select_node_fallback_when_all_unhealthy() {
+        let registry = make_registry();
+        register_nodes(&registry, 2).await;
+
+        let monitor = Arc::new(HealthMonitor::new(Arc::clone(&registry), 60));
+
+        // Mark all nodes as unhealthy
+        {
+            let mut status = monitor.health_status.write().await;
+            status.insert("self".to_string(), NodeHealth::Unhealthy);
+            status.insert("node-1".to_string(), NodeHealth::Unhealthy);
+        }
+
+        let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::Random)
+            .with_health_monitor(monitor);
+
+        // Should still return a node (fallback behavior)
+        let node = lb.select_node().await;
+        assert!(node.is_ok(), "Should fall back to random selection when all unhealthy");
+    }
+
+    #[tokio::test]
+    async fn test_degraded_nodes_are_not_excluded() {
+        let registry = make_registry();
+        register_nodes(&registry, 2).await;
+
+        let monitor = Arc::new(HealthMonitor::new(Arc::clone(&registry), 60));
+
+        // Mark node-1 as Degraded (not Unhealthy)
+        {
+            let mut status = monitor.health_status.write().await;
+            status.insert("node-1".to_string(), NodeHealth::Degraded);
+        }
+
+        let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::RoundRobin)
+            .with_health_monitor(monitor);
+
+        let mut selected: HashSet<String> = HashSet::new();
+        for _ in 0..20 {
+            selected.insert(lb.select_node().await.unwrap());
+        }
+
+        assert!(
+            selected.contains("node-1"),
+            "Degraded nodes should still be included"
+        );
     }
 }

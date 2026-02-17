@@ -28,18 +28,59 @@ const MAX_HEARTBEAT_RETRIES: u32 = 3;
 /// Delay between heartbeat retries (exponential backoff base)
 const HEARTBEAT_RETRY_BASE_DELAY_MS: u64 = 100;
 
+/// Duration after which a publisher that hasn't sent any media data is
+/// considered silent and should be cleaned up (LS-5). This is separate from
+/// Redis TTL, which only detects node-level failures. A silent publisher may
+/// keep its TCP connection alive but stop sending RTMP frames (e.g., crashed
+/// encoder, frozen camera).
+const SILENT_PUBLISHER_TIMEOUT_SECS: u64 = 60;
+
+/// Tracked publisher state including activity timestamp.
+struct PublisherEntry {
+    /// Composite key (room_id:media_id)
+    key: String,
+    /// Unix timestamp (seconds) of last observed data activity.
+    /// Updated via `record_publisher_activity` when media frames arrive.
+    last_active_secs: AtomicU64,
+}
+
+impl PublisherEntry {
+    fn new(key: String) -> Self {
+        Self {
+            key,
+            last_active_secs: AtomicU64::new(Self::now_secs()),
+        }
+    }
+
+    fn now_secs() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs())
+    }
+
+    fn touch(&self) {
+        self.last_active_secs.store(Self::now_secs(), Ordering::Release);
+    }
+
+    fn idle_secs(&self) -> u64 {
+        Self::now_secs().saturating_sub(self.last_active_secs.load(Ordering::Acquire))
+    }
+}
+
 /// Publisher manager that listens to `StreamHub` events
 pub struct PublisherManager {
     registry: Arc<dyn StreamRegistryTrait>,
     local_node_id: String,
-    /// Active publishers (`stream_key` -> `media_id`)
+    /// Active publishers (composite key -> `PublisherEntry`)
     /// Live streaming is media-level, not room-level
-    active_publishers: Arc<DashMap<String, String>>,
+    active_publishers: Arc<DashMap<String, Arc<PublisherEntry>>>,
     /// Sender for StreamHub events -- used to trigger unpublish on heartbeat failure
     /// so that subscribers are notified immediately instead of waiting for Redis TTL expiry.
     hub_event_sender: StreamHubEventSender,
     /// Counter for broadcast lag events (for monitoring)
     lag_event_count: AtomicU64,
+    /// Duration of inactivity before a publisher is considered silent
+    silent_timeout_secs: u64,
 }
 
 impl PublisherManager {
@@ -54,12 +95,26 @@ impl PublisherManager {
             active_publishers: Arc::new(DashMap::new()),
             hub_event_sender,
             lag_event_count: AtomicU64::new(0),
+            silent_timeout_secs: SILENT_PUBLISHER_TIMEOUT_SECS,
         }
     }
 
     /// Returns the number of broadcast lag events observed since startup.
     pub fn lag_event_count(&self) -> u64 {
         self.lag_event_count.load(Ordering::Relaxed)
+    }
+
+    /// Record media data activity for a publisher.
+    ///
+    /// Call this when media frames are received from a publisher to reset
+    /// the silent publisher timeout. Without periodic calls to this method,
+    /// the publisher will be considered silent after `SILENT_PUBLISHER_TIMEOUT_SECS`
+    /// and automatically cleaned up.
+    pub fn record_publisher_activity(&self, room_id: &str, media_id: &str) {
+        let key = format!("{room_id}:{media_id}");
+        if let Some(entry) = self.active_publishers.get(&key) {
+            entry.touch();
+        }
     }
 
     /// Start listening to `StreamHub` broadcast events
@@ -158,7 +213,10 @@ impl PublisherManager {
         // Track active publisher with composite key (room_id:media_id)
         // This publisher has already been registered to Redis in the auth phase
         let publisher_key = format!("{room_id}:{media_id}");
-        self.active_publishers.insert(publisher_key.clone(), publisher_key);
+        self.active_publishers.insert(
+            publisher_key.clone(),
+            Arc::new(PublisherEntry::new(publisher_key)),
+        );
 
         Ok(())
     }
@@ -272,10 +330,10 @@ impl PublisherManager {
     /// with the local `active_publishers` map. Without this, publishers
     /// that were cleaned up from Redis would remain stale until TTL expiry.
     pub async fn reregister_all_publishers(&self) {
-        let snapshot: Vec<(String, String)> = self
+        let snapshot: Vec<String> = self
             .active_publishers
             .iter()
-            .map(|entry| (entry.key().clone(), entry.value().clone()))
+            .map(|entry| entry.key().clone())
             .collect();
 
         if snapshot.is_empty() {
@@ -288,7 +346,7 @@ impl PublisherManager {
             snapshot.len()
         );
 
-        for (stream_name, publisher_key) in &snapshot {
+        for publisher_key in &snapshot {
             if let Some((room_id, media_id)) = publisher_key.split_once(':') {
                 match self
                     .registry
@@ -297,8 +355,8 @@ impl PublisherManager {
                 {
                     Ok(true) => {
                         info!(
-                            "Re-registered publisher for room {} / media {} (stream: {})",
-                            room_id, media_id, stream_name
+                            "Re-registered publisher for room {} / media {}",
+                            room_id, media_id
                         );
                     }
                     Ok(false) => {
@@ -306,8 +364,7 @@ impl PublisherManager {
                             "Could not re-register publisher for room {} / media {} (another node took over)",
                             room_id, media_id
                         );
-                        // Remove from local tracking since we no longer own it
-                        self.active_publishers.remove(stream_name);
+                        self.active_publishers.remove(publisher_key);
                     }
                     Err(e) => {
                         error!(
@@ -320,7 +377,54 @@ impl PublisherManager {
         }
     }
 
-    /// Maintain heartbeat for all active publishers
+    /// Cleanup a publisher: remove from local tracking, unregister from Redis,
+    /// and notify StreamHub. Used by both heartbeat failure and silent publisher
+    /// timeout paths.
+    async fn cleanup_publisher(&self, room_id: &str, media_id: &str, reason: &str) {
+        let publisher_key = format!("{room_id}:{media_id}");
+        info!(
+            "Cleaning up publisher room={} media={}: {}",
+            room_id, media_id, reason
+        );
+
+        // 1. Remove from local tracking
+        self.active_publishers.remove(&publisher_key);
+
+        // 2. Unregister from Redis immediately (don't wait for TTL)
+        if let Err(e) = self.registry.unregister_publisher(room_id, media_id).await {
+            warn!(
+                "Failed to unregister publisher from Redis for room {} / media {}: {}",
+                room_id, media_id, e
+            );
+        }
+
+        // 3. Send UnPublish to StreamHub so subscribers are notified
+        let identifier = StreamIdentifier::Rtmp {
+            app_name: room_id.to_string(),
+            stream_name: media_id.to_string(),
+        };
+        if let Err(e) = self.hub_event_sender.send(StreamHubEvent::UnPublish {
+            identifier: identifier.clone(),
+        }).await {
+            error!(
+                "Failed to send UnPublish event for {:?}: {}",
+                identifier, e
+            );
+        } else {
+            info!(
+                "Sent UnPublish event for room {} / media {} ({})",
+                room_id, media_id, reason
+            );
+        }
+    }
+
+    /// Maintain heartbeat for all active publishers and detect silent publishers.
+    ///
+    /// Two checks run on each heartbeat interval:
+    /// 1. Redis TTL refresh (detects node-level failures)
+    /// 2. Silent publisher detection (LS-5): if no media data has been received
+    ///    for `silent_timeout_secs`, the publisher is considered dead even though
+    ///    the TCP connection may still be alive.
     async fn maintain_heartbeats(&self) {
         let mut heartbeat_interval = interval(Duration::from_secs(HEARTBEAT_INTERVAL_SECS));
 
@@ -328,83 +432,67 @@ impl PublisherManager {
             heartbeat_interval.tick().await;
 
             // M-8: Snapshot keys first to avoid holding DashMap read guard during async Redis ops.
-            let snapshot: Vec<String> = self
+            let snapshot: Vec<(String, Arc<PublisherEntry>)> = self
                 .active_publishers
                 .iter()
-                .map(|entry| entry.value().clone())
+                .map(|entry| (entry.key().clone(), entry.value().clone()))
                 .collect();
 
-            for publisher_key in &snapshot {
+            for (publisher_key, entry) in &snapshot {
                 // Parse room_id and media_id from the composite key
-                if let Some((room_id, media_id)) = publisher_key.split_once(':') {
-                    // Try heartbeat with retries
-                    let mut success = false;
-                    for attempt in 0..MAX_HEARTBEAT_RETRIES {
-                        match self.registry.refresh_publisher_ttl(room_id, media_id, "").await {
-                            Ok(()) => {
-                                success = true;
-                                break;
-                            }
-                            Err(e) => {
-                                if attempt < MAX_HEARTBEAT_RETRIES - 1 {
-                                    // Exponential backoff: 100ms, 200ms, 400ms...
-                                    let delay_ms = HEARTBEAT_RETRY_BASE_DELAY_MS * (1 << attempt);
-                                    warn!(
-                                        "Heartbeat attempt {} failed for room {} / media {}: {}. Retrying in {}ms",
-                                        attempt + 1, room_id, media_id, e, delay_ms
-                                    );
-                                    sleep(Duration::from_millis(delay_ms)).await;
-                                } else {
-                                    error!(
-                                        "All {} heartbeat attempts failed for room {} / media {}: {}. Publisher may be lost.",
-                                        MAX_HEARTBEAT_RETRIES, room_id, media_id, e
-                                    );
-                                }
+                let Some((room_id, media_id)) = publisher_key.split_once(':') else {
+                    continue;
+                };
+
+                // LS-5: Check for silent publisher (no media data for too long)
+                let idle_secs = entry.idle_secs();
+                if idle_secs > self.silent_timeout_secs {
+                    warn!(
+                        "Silent publisher detected: room={} media={} (no data for {}s, threshold={}s)",
+                        room_id, media_id, idle_secs, self.silent_timeout_secs
+                    );
+                    self.cleanup_publisher(
+                        room_id,
+                        media_id,
+                        &format!("silent publisher timeout ({}s idle)", idle_secs),
+                    ).await;
+                    continue;
+                }
+
+                // Try heartbeat with retries (Redis TTL refresh)
+                let mut success = false;
+                for attempt in 0..MAX_HEARTBEAT_RETRIES {
+                    match self.registry.refresh_publisher_ttl(room_id, media_id, "").await {
+                        Ok(()) => {
+                            success = true;
+                            break;
+                        }
+                        Err(e) => {
+                            if attempt < MAX_HEARTBEAT_RETRIES - 1 {
+                                let delay_ms = HEARTBEAT_RETRY_BASE_DELAY_MS * (1 << attempt);
+                                warn!(
+                                    "Heartbeat attempt {} failed for room {} / media {}: {}. Retrying in {}ms",
+                                    attempt + 1, room_id, media_id, e, delay_ms
+                                );
+                                sleep(Duration::from_millis(delay_ms)).await;
+                            } else {
+                                error!(
+                                    "All {} heartbeat attempts failed for room {} / media {}: {}. Publisher may be lost.",
+                                    MAX_HEARTBEAT_RETRIES, room_id, media_id, e
+                                );
                             }
                         }
                     }
+                }
 
-                    if success {
-                        trace!("Heartbeat refreshed for room {} / media {}", room_id, media_id);
-                    } else {
-                        // All heartbeat retries exhausted -- proactively clean up
-                        // to avoid zombie streams (stale routing for up to TTL expiry).
-                        error!(
-                            "Heartbeat permanently failed for room {} / media {}. \
-                             Triggering stream cleanup.",
-                            room_id, media_id
-                        );
-
-                        // 1. Remove from local tracking
-                        self.active_publishers.remove(publisher_key);
-
-                        // 2. Unregister from Redis immediately (don't wait for TTL)
-                        if let Err(e) = self.registry.unregister_publisher(room_id, media_id).await {
-                            warn!(
-                                "Failed to unregister publisher from Redis for room {} / media {}: {}",
-                                room_id, media_id, e
-                            );
-                        }
-
-                        // 3. Send UnPublish to StreamHub so subscribers are notified
-                        let identifier = StreamIdentifier::Rtmp {
-                            app_name: room_id.to_string(),
-                            stream_name: media_id.to_string(),
-                        };
-                        if let Err(e) = self.hub_event_sender.send(StreamHubEvent::UnPublish {
-                            identifier: identifier.clone(),
-                        }).await {
-                            error!(
-                                "Failed to send UnPublish event for {:?}: {}",
-                                identifier, e
-                            );
-                        } else {
-                            info!(
-                                "Sent UnPublish event for room {} / media {} after heartbeat failure",
-                                room_id, media_id
-                            );
-                        }
-                    }
+                if success {
+                    trace!("Heartbeat refreshed for room {} / media {}", room_id, media_id);
+                } else {
+                    self.cleanup_publisher(
+                        room_id,
+                        media_id,
+                        "heartbeat permanently failed",
+                    ).await;
                 }
             }
 
@@ -508,6 +596,14 @@ mod tests {
         assert!(manager.active_publishers.contains_key("room123:media456"));
     }
 
+    /// Helper to insert a publisher entry into the active_publishers map.
+    fn insert_entry(manager: &PublisherManager, key: &str) {
+        manager.active_publishers.insert(
+            key.to_string(),
+            Arc::new(PublisherEntry::new(key.to_string())),
+        );
+    }
+
     #[tokio::test]
     async fn test_reconcile_removes_stale_entries() {
         // Registry has room1:media1 on our node, but NOT room2:media2
@@ -517,8 +613,8 @@ mod tests {
         let (manager, _rx) = test_manager(registry, "test-node");
 
         // Simulate local tracking of two publishers
-        manager.active_publishers.insert("room1:media1".to_string(), "room1:media1".to_string());
-        manager.active_publishers.insert("room2:media2".to_string(), "room2:media2".to_string());
+        insert_entry(&manager, "room1:media1");
+        insert_entry(&manager, "room2:media2");
         assert_eq!(manager.active_publishers.len(), 2);
 
         // Reconcile should remove room2:media2 (not in registry)
@@ -538,7 +634,7 @@ mod tests {
         let (manager, _rx) = test_manager(registry, "test-node");
 
         // Local tracking thinks we own it
-        manager.active_publishers.insert("room1:media1".to_string(), "room1:media1".to_string());
+        insert_entry(&manager, "room1:media1");
         assert_eq!(manager.active_publishers.len(), 1);
 
         // Reconcile should remove it (owned by other-node)
@@ -556,8 +652,8 @@ mod tests {
 
         let (manager, _rx) = test_manager(registry, "test-node");
 
-        manager.active_publishers.insert("room1:media1".to_string(), "room1:media1".to_string());
-        manager.active_publishers.insert("room2:media2".to_string(), "room2:media2".to_string());
+        insert_entry(&manager, "room1:media1");
+        insert_entry(&manager, "room2:media2");
 
         manager.reconcile_with_registry().await;
 
@@ -581,5 +677,44 @@ mod tests {
         let (manager, _rx) = test_manager(registry, "test-node");
 
         assert_eq!(manager.lag_event_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_record_publisher_activity() {
+        let registry = Arc::new(MockStreamRegistry::new());
+        let (manager, _rx) = test_manager(registry, "test-node");
+
+        // Insert publisher
+        let identifier = StreamIdentifier::Rtmp {
+            app_name: "room1".to_string(),
+            stream_name: "media1".to_string(),
+        };
+        manager.handle_publish(identifier).await.unwrap();
+
+        // Record activity and verify the entry was touched
+        let before = manager
+            .active_publishers
+            .get("room1:media1")
+            .unwrap()
+            .idle_secs();
+        assert!(before <= 1); // just created
+
+        manager.record_publisher_activity("room1", "media1");
+
+        let after = manager
+            .active_publishers
+            .get("room1:media1")
+            .unwrap()
+            .idle_secs();
+        assert!(after <= 1); // just touched
+    }
+
+    #[tokio::test]
+    async fn test_record_activity_nonexistent_publisher() {
+        let registry = Arc::new(MockStreamRegistry::new());
+        let (manager, _rx) = test_manager(registry, "test-node");
+
+        // Should not panic when recording activity for a publisher that doesn't exist
+        manager.record_publisher_activity("nonexistent", "publisher");
     }
 }

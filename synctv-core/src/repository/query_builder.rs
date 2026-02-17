@@ -93,7 +93,7 @@ impl WhereClauseBuilder {
                     parts.push((*sql).to_string());
                 }
                 Condition::Parameterized { template } => {
-                    parts.push(template.replace("${idx}", &format!("${idx}")));
+                    parts.push(template.replace("${idx}", &format!("${}", idx)));
                     idx += 1;
                 }
             }

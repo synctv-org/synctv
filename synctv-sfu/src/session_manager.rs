@@ -23,7 +23,9 @@ use crate::webrtc_control::{IceManager, PeerConnection};
 use anyhow::{anyhow, Result};
 use dashmap::DashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 use webrtc::ice_transport::ice_candidate::RTCIceCandidate;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
@@ -77,6 +79,14 @@ struct SfuSession {
     /// SFU room reference (held to keep the room alive while the session exists)
     #[allow(dead_code)]
     room: Arc<SfuRoom>,
+    /// Last activity timestamp for idle timeout detection
+    last_activity: Arc<parking_lot::Mutex<Instant>>,
+    /// Connection ID for logging
+    conn_id: String,
+    /// Room ID for cleanup
+    room_id: String,
+    /// Peer ID for cleanup
+    peer_id: String,
 }
 
 /// SFU Session Manager - manages server-side PeerConnections for rooms in SFU mode
@@ -89,16 +99,95 @@ pub struct SfuSessionManager {
 
     /// Active sessions: connection_id -> SfuSession
     sessions: DashMap<String, SfuSession>,
+
+    /// Cleanup task cancellation token
+    cleanup_cancel_token: CancellationToken,
+
+    /// Session idle timeout (connections with no RTCP stats for this duration are closed)
+    session_idle_timeout: Duration,
 }
 
 impl SfuSessionManager {
-    /// Create a new SFU session manager
+    /// Create a new SFU session manager with default 5-minute idle timeout
     pub fn new(sfu_manager: Arc<SfuManager>, ice_manager: Arc<IceManager>) -> Arc<Self> {
-        Arc::new(Self {
+        Self::with_timeout(sfu_manager, ice_manager, Duration::from_secs(300))
+    }
+
+    /// Create a new SFU session manager with custom idle timeout
+    pub fn with_timeout(
+        sfu_manager: Arc<SfuManager>,
+        ice_manager: Arc<IceManager>,
+        session_idle_timeout: Duration,
+    ) -> Arc<Self> {
+        let manager = Arc::new(Self {
             sfu_manager,
             ice_manager,
             sessions: DashMap::new(),
-        })
+            cleanup_cancel_token: CancellationToken::new(),
+            session_idle_timeout,
+        });
+
+        // Start background cleanup task
+        Self::start_cleanup_task(Arc::clone(&manager));
+
+        manager
+    }
+
+    /// Start background task to clean up idle sessions
+    fn start_cleanup_task(manager: Arc<Self>) {
+        let cancel_token = manager.cleanup_cancel_token.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(60));
+            loop {
+                tokio::select! {
+                    () = cancel_token.cancelled() => {
+                        info!("SFU session cleanup task cancelled");
+                        break;
+                    }
+                    _ = interval.tick() => {
+                        manager.cleanup_idle_sessions().await;
+                    }
+                }
+            }
+        });
+    }
+
+    /// Clean up idle sessions that have exceeded the timeout
+    async fn cleanup_idle_sessions(&self) {
+        let now = Instant::now();
+        let mut expired_sessions = Vec::new();
+
+        // Identify expired sessions
+        for entry in self.sessions.iter() {
+            let (conn_id, session) = (entry.key(), entry.value());
+            let last_activity = *session.last_activity.lock();
+            let idle_duration = now.duration_since(last_activity);
+
+            if idle_duration > self.session_idle_timeout {
+                warn!(
+                    conn_id = %conn_id,
+                    idle_duration_secs = idle_duration.as_secs(),
+                    timeout_secs = self.session_idle_timeout.as_secs(),
+                    "SFU session idle timeout, marking for cleanup"
+                );
+                expired_sessions.push((
+                    conn_id.clone(),
+                    session.room_id.clone(),
+                    session.peer_id.clone(),
+                ));
+            }
+        }
+
+        // Remove expired sessions
+        for (conn_id, room_id, peer_id) in expired_sessions {
+            if let Err(e) = self.remove_session(&conn_id, &room_id, &peer_id).await {
+                error!(
+                    conn_id = %conn_id,
+                    error = %e,
+                    "Failed to clean up idle SFU session"
+                );
+            }
+        }
     }
 
     /// Check whether a room should use SFU mode based on the current RTC peer count
@@ -244,12 +333,16 @@ impl SfuSessionManager {
         let network_monitor = room.network_monitor().clone();
         pc.setup_callbacks(network_monitor).await?;
 
-        // Store session
+        // Store session with initial activity timestamp
         self.sessions.insert(
             conn_id.to_string(),
             SfuSession {
                 pc: Arc::clone(&pc),
                 room: Arc::clone(&room),
+                last_activity: Arc::new(parking_lot::Mutex::new(Instant::now())),
+                conn_id: conn_id.to_string(),
+                room_id: room_id.to_string(),
+                peer_id: peer_id.to_string(),
             },
         );
 
@@ -288,6 +381,10 @@ impl SfuSessionManager {
         let answer_json = serde_json::to_string(&answer)
             .map_err(|e| anyhow!("Failed to serialize SDP answer: {}", e))?;
 
+        // Update activity timestamp
+        drop(session);
+        self.touch_session(conn_id);
+
         Ok(answer_json)
     }
 
@@ -308,7 +405,18 @@ impl SfuSessionManager {
 
         session.pc.add_ice_candidate(candidate_init).await?;
 
+        // Update activity timestamp
+        drop(session);
+        self.touch_session(conn_id);
+
         Ok(())
+    }
+
+    /// Update activity timestamp for a session (prevents idle timeout)
+    fn touch_session(&self, conn_id: &str) {
+        if let Some(session) = self.sessions.get(conn_id) {
+            *session.last_activity.lock() = Instant::now();
+        }
     }
 
     /// Check if a connection has an active SFU session
@@ -503,12 +611,16 @@ impl SfuSessionManager {
         let offer_json = serde_json::to_string(&offer)
             .map_err(|e| anyhow!("Failed to serialize SDP offer: {}", e))?;
 
-        // Store session
+        // Store session with initial activity timestamp
         self.sessions.insert(
             conn_id.to_string(),
             SfuSession {
                 pc: Arc::clone(&pc),
                 room: Arc::clone(&room),
+                last_activity: Arc::new(parking_lot::Mutex::new(Instant::now())),
+                conn_id: conn_id.to_string(),
+                room_id: room_id.to_string(),
+                peer_id: peer_id.to_string(),
             },
         );
 
@@ -552,7 +664,18 @@ impl SfuSessionManager {
             "SFU migration: answer processed, ICE negotiation in progress"
         );
 
+        // Update activity timestamp
+        drop(session);
+        self.touch_session(conn_id);
+
         Ok(())
+    }
+}
+
+impl Drop for SfuSessionManager {
+    fn drop(&mut self) {
+        // Cancel cleanup task on drop
+        self.cleanup_cancel_token.cancel();
     }
 }
 
@@ -569,7 +692,11 @@ mod tests {
         };
         let manager = SfuManager::new(config);
         let ice_manager = Arc::new(IceManager::new());
-        let session_mgr = SfuSessionManager::new(manager, ice_manager);
+        let session_mgr = SfuSessionManager::with_timeout(
+            manager,
+            ice_manager,
+            Duration::from_secs(300),
+        );
 
         assert!(!session_mgr.should_use_sfu(0));
         assert!(!session_mgr.should_use_sfu(1));
@@ -586,7 +713,11 @@ mod tests {
         };
         let manager = SfuManager::new(config);
         let ice_manager = Arc::new(IceManager::new());
-        let session_mgr = SfuSessionManager::new(manager, ice_manager);
+        let session_mgr = SfuSessionManager::with_timeout(
+            manager,
+            ice_manager,
+            Duration::from_secs(300),
+        );
 
         assert_eq!(session_mgr.sfu_threshold(), 5);
     }
@@ -596,7 +727,11 @@ mod tests {
         let config = SfuConfig::default();
         let manager = SfuManager::new(config);
         let ice_manager = Arc::new(IceManager::new());
-        let session_mgr = SfuSessionManager::new(manager, ice_manager);
+        let session_mgr = SfuSessionManager::with_timeout(
+            manager,
+            ice_manager,
+            Duration::from_secs(300),
+        );
 
         assert!(!session_mgr.has_session("non-existent"));
         assert_eq!(session_mgr.session_count(), 0);

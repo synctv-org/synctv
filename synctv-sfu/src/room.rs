@@ -779,18 +779,19 @@ mod tests {
         room.add_peer(PeerId::from("peer2"), 0).await.unwrap();
         assert_eq!(room.get_mode().await, RoomMode::P2P);
 
-        // Should switch to SFU at threshold (3)
+        // Should switch to Migrating at threshold (3) - not SFU yet
+        // (SFU state requires explicit migration completion by API layer)
         room.add_peer(PeerId::from("peer3"), 0).await.unwrap();
-        assert_eq!(room.get_mode().await, RoomMode::SFU);
+        assert_eq!(room.get_mode().await, RoomMode::Migrating);
 
         // Removing one peer (count=2) should NOT switch back due to hysteresis
         // (p2p_threshold = 3 - 2 = 1, so need count < 1 to switch back)
         room.remove_peer(&PeerId::from("peer3")).await.unwrap();
-        assert_eq!(room.get_mode().await, RoomMode::SFU);
+        assert_eq!(room.get_mode().await, RoomMode::Migrating);
 
-        // Removing another peer (count=1) should still be SFU (1 >= 1)
+        // Removing another peer (count=1) should still be Migrating (1 >= 1)
         room.remove_peer(&PeerId::from("peer2")).await.unwrap();
-        assert_eq!(room.get_mode().await, RoomMode::SFU);
+        assert_eq!(room.get_mode().await, RoomMode::Migrating);
 
         // Removing the last peer (count=0) should switch back to P2P (0 < 1)
         room.remove_peer(&PeerId::from("peer1")).await.unwrap();

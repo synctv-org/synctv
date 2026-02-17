@@ -1,20 +1,20 @@
 # synctv-sfu
 
-**Status: Experimental / Infrastructure Only**
+**Status: Experimental / Partially Functional**
 
-This crate implements the forwarding plane of a WebRTC Selective Forwarding Unit (SFU)
-for synctv. It is **not production-ready** and cannot be used end-to-end in its current
-state. The crate exists as foundational infrastructure that can be completed when WebRTC
-support for large rooms becomes a priority.
+This crate implements a WebRTC Selective Forwarding Unit (SFU) for synctv.
+The core infrastructure is implemented but has **known limitations in production environments**,
+particularly in multi-node cluster deployments. See **Cluster Limitations** below.
 
 ## What works
 
-The internal forwarding and quality-management layers are implemented and tested:
+The following features are implemented and tested:
 
+### Forwarding Plane
 - **RTP packet forwarding** -- `MediaTrack` reads RTP packets from a `TrackRemote`,
   wraps them in `ForwardablePacket`, and fans them out to subscriber channels.
 - **Simulcast quality layers** -- `QualityLayer` (High/Medium/Low) with
-  bandwidth-based selection and per-subscriber filtering.
+  bandwidth-based selection and per-subscriber filtering (basic implementation).
 - **Bandwidth estimation** -- Exponential-smoothing estimator in `SfuPeer` that
   drives automatic quality adaptation.
 - **Room management** -- `SfuRoom` handles peer add/remove, track
@@ -24,42 +24,81 @@ The internal forwarding and quality-management layers are implemented and tested
 - **Network quality monitoring** -- `NetworkQualityMonitor` computes per-peer
   quality scores (0--5) and suggests adaptive actions (reduce quality, reduce
   framerate, audio-only).
+- **Packet pacing** -- `PacketPacer` implements token bucket rate limiting to prevent
+  bursty traffic and network congestion.
+- **RTCP feedback** -- `RtcpHandler` polls WebRTC statistics to extract RTT, packet loss,
+  and bandwidth metrics for adaptive quality control.
 
-## What is missing
+### Control Plane
+- **Peer connection management** -- `PeerConnection` wraps `RTCPeerConnection` instances,
+  configures ICE servers, and manages connection state transitions.
+- **SDP signaling** -- `SfuSessionManager` handles offer/answer exchange and integrates
+  with the WebSocket messaging layer in `synctv-api`.
+- **ICE candidate handling** -- Trickle ICE support with automatic candidate relay
+  through the signaling channel.
+- **Subscriber output path** -- `PeerConnection::start_subscriber_output()` consumes
+  packets from `SfuPeer::take_packet_receiver()` and writes to `TrackLocal` instances.
+- **Session lifecycle** -- `SfuSessionManager` creates and destroys server-side
+  `PeerConnection` instances based on room size thresholds.
 
-The control plane and output path are not implemented, which means the crate
-cannot handle a real WebRTC session:
+## Known Issues and Limitations
 
-- **Peer connection management** -- There is no code that creates
-  `RTCPeerConnection` instances, configures ICE servers, or manages connection
-  state transitions. `SfuPeer` models a logical peer but does not own a
-  connection.
-- **SDP signaling** -- No offer/answer exchange. The crate has no HTTP or
-  WebSocket signaling endpoint and no SDP manipulation logic.
-- **ICE candidate handling** -- No trickle ICE support, no candidate gathering
-  or relay configuration.
-- **Subscriber output path** -- `SfuPeer::take_packet_receiver()` returns an
-  `mpsc::Receiver<ForwardablePacket>`, but nothing consumes it to write packets
-  to an outbound WebRTC track. The last hop from the SFU to the subscriber
-  browser is unimplemented.
-- **Integration with synctv-api** -- The API layer depends on this crate but
-  does not expose any SFU-related endpoints or signaling handlers.
+### P0: Cluster Limitations
+**SFU mode does not work correctly in multi-replica cluster deployments.**
 
-## Usage status
+In a clustered environment:
+- WebSocket connections may be distributed across different nodes
+- SFU rooms are created on individual nodes, not replicated via Redis
+- P2P peer migrations to SFU fail when peers are on different nodes
+- Media streams cannot be forwarded across cluster nodes
 
-The crate compiles and its unit tests pass (`cargo test -p synctv-sfu`), but it
-cannot serve real WebRTC traffic. It is included in the workspace for forward
-compatibility and to preserve the existing design work.
+**Workarounds:**
+- Use `webrtc.mode: peer_to_peer` or `webrtc.mode: signaling_only` in production clusters
+- Deploy a single replica for SFU/Hybrid modes (not recommended for high availability)
+- Use sticky sessions to route all room members to the same node (partial solution)
 
-## Future work
+**Future Work:**
+- Implement cross-node media forwarding via Redis Pub/Sub or gRPC streaming
+- Add cluster-aware peer migration (migrate entire rooms, not individual peers)
+- Document deployment topologies (single-node SFU vs. multi-node P2P)
 
-To make the SFU operational, the following would need to be implemented:
+### P1: Incomplete Features
+- **Simulcast layer switching** -- Basic implementation exists but lacks dynamic layer
+  switching based on bandwidth estimation. All subscribers currently receive the high layer.
+- **ICE candidate filtering** -- No SRFLX/RELAY preference logic implemented yet.
+- **Track ID conflict detection** -- No duplicate track ID validation when peers publish.
+- **Session timeout mechanism** -- SFU sessions do not expire automatically on idle or
+  connection failure. Manual cleanup required.
 
-1. A signaling endpoint (WebSocket or HTTP) for SDP offer/answer and ICE
-   candidates.
-2. `RTCPeerConnection` lifecycle management per peer (create, configure, close).
-3. An output task per subscriber that reads from
-   `SfuPeer::take_packet_receiver()` and writes to `TrackLocal` instances on the
-   subscriber's peer connection.
-4. Integration hooks in synctv-api to route signaling traffic and manage SFU
-   room lifecycle alongside existing room logic.
+### P2: Production Hardening
+- **STUN server configuration** -- Built-in STUN server (`enable_builtin_stun`) requires
+  `stun_external_addr` to be set in NAT/K8s environments. Falls back to `advertise_host`
+  but may not work correctly behind load balancers.
+- **No integration tests** -- Unit tests pass but end-to-end SFU→client integration
+  is not tested. Manual testing required before production use.
+
+## Usage Status
+
+**Single-node deployments:** Basic SFU functionality works for testing.
+**Multi-node clusters:** DO NOT USE `sfu` or `hybrid` modes. Use `peer_to_peer` or `signaling_only`.
+
+To prevent misconfiguration, startup validation blocks `sfu`/`hybrid` modes when:
+- Cluster secret is configured (indicates multi-node deployment)
+- This prevents silent failures in production clusters
+
+## Configuration Recommendations
+
+```yaml
+# Production cluster (multi-node) - REQUIRED
+webrtc:
+  mode: peer_to_peer  # or signaling_only
+  enable_builtin_stun: true
+  stun_external_addr: ""  # Auto-detected from advertise_host
+
+# Single-node deployment (for testing SFU)
+webrtc:
+  mode: hybrid
+  sfu_threshold: 5
+  enable_builtin_stun: true
+  stun_external_addr: "1.2.3.4:3478"  # Set to node's public IP
+```

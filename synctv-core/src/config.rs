@@ -876,6 +876,36 @@ impl Config {
             }
         }
 
+        // **WebRTC Issue (#21)**: Block SFU/Hybrid modes in cluster environments
+        // SFU does not support cross-node media forwarding yet. In multi-node deployments,
+        // peers on different nodes cannot exchange media via the SFU.
+        if !self.server.cluster_secret.is_empty() {
+            if matches!(
+                self.webrtc.mode,
+                WebRTCMode::SFU | WebRTCMode::Hybrid
+            ) {
+                errors.push(
+                    "WebRTC SFU and Hybrid modes are not supported in cluster deployments. \
+                     SFU media forwarding is limited to a single node. \
+                     Set webrtc.mode to 'peer_to_peer' or 'signaling_only' for multi-node clusters. \
+                     See synctv-sfu/README.md for details."
+                        .to_string(),
+                );
+            }
+        }
+
+        // **WebRTC Issue (#21)**: Validate STUN external address in non-dev mode
+        if self.webrtc.enable_builtin_stun && !self.server.development_mode {
+            if self.webrtc.stun_external_addr.is_empty() {
+                tracing::warn!(
+                    "webrtc.enable_builtin_stun=true but stun_external_addr is not set. \
+                     STUN server will advertise reflexive candidates using advertise_host. \
+                     This may not work correctly behind NAT or load balancers. \
+                     Set webrtc.stun_external_addr to the server's public IP:port."
+                );
+            }
+        }
+
         if errors.is_empty() {
             Ok(())
         } else {
@@ -1344,5 +1374,39 @@ mod tests {
         config.livestream.stream_timeout_seconds = 0;
         let errors = config.validate().unwrap_err();
         assert!(errors.iter().any(|e| e.contains("stream_timeout_seconds")));
+    }
+
+    #[test]
+    fn test_validate_webrtc_sfu_mode_blocked_in_cluster() {
+        let mut config = valid_prod_config();
+        config.server.cluster_secret = "shared-secret-123".to_string();
+        config.webrtc.mode = WebRTCMode::SFU;
+        let errors = config.validate().unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("SFU") && e.contains("cluster")));
+    }
+
+    #[test]
+    fn test_validate_webrtc_hybrid_mode_blocked_in_cluster() {
+        let mut config = valid_prod_config();
+        config.server.cluster_secret = "shared-secret-123".to_string();
+        config.webrtc.mode = WebRTCMode::Hybrid;
+        let errors = config.validate().unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("Hybrid") && e.contains("cluster")));
+    }
+
+    #[test]
+    fn test_validate_webrtc_p2p_mode_allowed_in_cluster() {
+        let mut config = valid_prod_config();
+        config.server.cluster_secret = "shared-secret-123".to_string();
+        config.webrtc.mode = WebRTCMode::PeerToPeer;
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_webrtc_signaling_only_mode_allowed_in_cluster() {
+        let mut config = valid_prod_config();
+        config.server.cluster_secret = "shared-secret-123".to_string();
+        config.webrtc.mode = WebRTCMode::SignalingOnly;
+        assert!(config.validate().is_ok());
     }
 }

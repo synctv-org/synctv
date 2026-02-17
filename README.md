@@ -18,7 +18,7 @@ A production-grade real-time synchronized video watching platform built in Rust.
 - **synctv-livestream**: Live streaming service (RTMP/HLS/FLV)
 - **synctv-cluster**: Cluster coordination library
 - **synctv-xiu**: Consolidated streaming library (RTMP/HLS/HTTP-FLV protocols)
-- **synctv-sfu**: WebRTC SFU forwarding plane *(experimental -- infrastructure only, not production-ready)*
+- **synctv-sfu**: WebRTC SFU forwarding plane *(experimental -- cluster limitations, see synctv-sfu/README.md)*
 
 ## Quick Start
 
@@ -177,7 +177,7 @@ Contributions are welcome! Please read CONTRIBUTING.md for guidelines.
 - [x] WebSocket real-time communication
 
 ### In Progress
-- [ ] WebRTC SFU for large rooms
+- [ ] WebRTC SFU for large rooms (basic implementation complete, cluster support blocked)
 - [ ] Cross-replica cache invalidation via Redis Pub/Sub
 
 **Next Milestone**: Production hardening and performance optimization

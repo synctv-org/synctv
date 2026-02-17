@@ -236,11 +236,33 @@ impl Gops {
             }
         }
 
-        // Track memory of the new frame
+        // Check memory limit BEFORE adding the frame to keep accounting precise.
+        // Without this pre-check, current_total_bytes could temporarily exceed
+        // max_total_bytes until the next keyframe triggers eviction.
         let frame_bytes = Gop::frame_memory_size(&data);
+        if self.current_total_bytes + frame_bytes > self.max_total_bytes && self.gops.len() > 1 {
+            // Try to make room by evicting oldest GOPs
+            while self.current_total_bytes + frame_bytes > self.max_total_bytes
+                && self.gops.len() > 1
+            {
+                if let Some(evicted) = self.gops.pop_front() {
+                    let evicted_bytes = evicted.memory_bytes();
+                    self.current_total_bytes =
+                        self.current_total_bytes.saturating_sub(evicted_bytes);
+                    tracing::warn!(
+                        evicted_bytes,
+                        remaining_gops = self.gops.len(),
+                        total_bytes = self.current_total_bytes,
+                        max_total_bytes = self.max_total_bytes,
+                        "GOP evicted due to total memory limit (pre-frame check)"
+                    );
+                }
+            }
+        }
+
         if let Some(gop) = self.gops.back_mut() {
-            gop.save_frame_data(data);
             self.current_total_bytes += frame_bytes;
+            gop.save_frame_data(data);
         } else {
             tracing::error!("should not be here!");
         }

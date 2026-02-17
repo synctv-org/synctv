@@ -296,6 +296,10 @@ impl SfuManager {
     ///
     /// Uses `DashMap::remove_if` for atomic check-and-remove to avoid a TOCTOU
     /// race where a peer joins between the emptiness check and the removal.
+    ///
+    /// Uses `SfuRoom::is_empty_sync()` (atomic counter) instead of directly
+    /// accessing the `peers` DashMap, so the emptiness check goes through the
+    /// room's public API and stays consistent with `add_peer`/`remove_peer`.
     pub async fn cleanup_empty_rooms(&self) {
         let mut removed_count = 0;
 
@@ -303,7 +307,7 @@ impl SfuManager {
         let candidate_ids: Vec<RoomId> = self
             .rooms
             .iter()
-            .filter(|entry| entry.value().peers.is_empty())
+            .filter(|entry| entry.value().is_empty_sync())
             .map(|entry| entry.key().clone())
             .collect();
 
@@ -311,7 +315,7 @@ impl SfuManager {
         for room_id in candidate_ids {
             if self
                 .rooms
-                .remove_if(&room_id, |_, room| room.peers.is_empty())
+                .remove_if(&room_id, |_, room| room.is_empty_sync())
                 .is_some()
             {
                 if self.config.max_sfu_rooms > 0 {

@@ -75,13 +75,7 @@ fn extract_bearer_token(headers: &http::HeaderMap) -> Option<String> {
     let auth_value = headers.get(http::header::AUTHORIZATION)?;
     let auth_str = auth_value.to_str().ok()?;
     let trimmed = auth_str.trim();
-    if trimmed.len() > 7
-        && trimmed[..7].eq_ignore_ascii_case("Bearer ")
-    {
-        Some(trimmed[7..].to_string())
-    } else {
-        None
-    }
+    synctv_core::service::auth::JwtValidator::extract_bearer_token(trimmed).ok()
 }
 
 impl<S> Service<http::Request<TonicBody>> for BlacklistCheckService<S>

@@ -113,18 +113,17 @@ fn tier_from_path(path: &str) -> Option<GrpcRateLimitTier> {
 /// 2. Client IP from X-Forwarded-For or X-Real-IP headers
 /// 3. "anon:unknown" fallback (only if no IP info available)
 fn extract_client_id(headers: &http::HeaderMap) -> String {
-    // Try authenticated user first
+    // Try authenticated user first - delegate to unified bearer token extraction
     if let Some(id) = headers
         .get(http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|s| {
-            if s.len() > 7 && s[..7].eq_ignore_ascii_case("Bearer ") {
-                let token = &s[7..];
-                let hash = Sha256::digest(token.as_bytes());
-                Some(format!("user:{:x}", hash))
-            } else {
-                None
-            }
+            synctv_core::service::auth::JwtValidator::extract_bearer_token(s)
+                .ok()
+                .map(|token| {
+                    let hash = Sha256::digest(token.as_bytes());
+                    format!("user:{:x}", hash)
+                })
         })
     {
         return id;

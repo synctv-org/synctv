@@ -341,14 +341,11 @@ impl GrpcRateLimitInterceptor {
             .get("authorization")
             .and_then(|v| v.to_str().ok())
             .and_then(|s| {
-                if s.len() > 7 && s[..7].eq_ignore_ascii_case("Bearer ") {
-                    // M-9: Use SHA-256 hash of full token for stable client identity.
-                    let token = &s[7..];
+                // Delegate to unified bearer token extraction (RFC 7235 case-insensitive)
+                JwtValidator::extract_bearer_token(s).ok().map(|token| {
                     let hash = Sha256::digest(token.as_bytes());
-                    Some(format!("user:{:x}", hash))
-                } else {
-                    None
-                }
+                    format!("user:{:x}", hash)
+                })
             })
             .or_else(|| {
                 // Use peer IP address for anonymous rate limiting instead of a shared bucket

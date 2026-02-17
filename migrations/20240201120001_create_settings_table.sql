@@ -12,19 +12,11 @@ CREATE TABLE IF NOT EXISTS settings (
 
 CREATE INDEX idx_settings_group ON settings(group_name);
 
--- Trigger to update updated_at timestamp
-CREATE OR REPLACE FUNCTION update_settings_updated_at()
-RETURNS TRIGGER AS $$
-BEGIN
-    NEW.updated_at = NOW();
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
+-- Trigger to update updated_at timestamp (uses generic function from users migration)
 CREATE TRIGGER trigger_update_settings_updated_at
 BEFORE UPDATE ON settings
 FOR EACH ROW
-EXECUTE FUNCTION update_settings_updated_at();
+EXECUTE FUNCTION update_updated_at_column();
 
 -- Function to notify all replicas when settings change (for hot reload)
 -- Design reference: /Volumes/workspace/rust/synctv-rs-design/19-配置管理系统.md §6.2

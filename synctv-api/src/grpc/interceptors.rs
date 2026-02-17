@@ -58,13 +58,14 @@ impl AuthInterceptor {
     /// Used for `UserService` and `AdminService`
     #[allow(clippy::result_large_err)]
     pub fn inject_user<T>(&self, mut request: Request<T>) -> Result<Request<T>, Status> {
-        // Extract raw token before validation (for blacklist checking at service layer)
+        // Extract raw token once (for both validation and blacklist checking)
         let raw_token = Self::extract_raw_token(request.metadata())?;
 
-        // Use unified validator for gRPC validation
+        // Validate the already-extracted token directly (avoids re-parsing the header)
         let claims = self
             .jwt_validator
-            .validate_grpc_as_status(request.metadata())?;
+            .validate_token(&raw_token)
+            .map_err(|e| Status::unauthenticated(format!("Token verification failed: {e}")))?;
 
         // Inject UserContext with user_id, iat, and raw token
         let user_context = UserContext {
@@ -81,13 +82,14 @@ impl AuthInterceptor {
     /// Used for `RoomService` and `MediaService`
     #[allow(clippy::result_large_err)]
     pub fn inject_room<T>(&self, mut request: Request<T>) -> Result<Request<T>, Status> {
-        // Extract raw token before validation (for blacklist checking at service layer)
+        // Extract raw token once (for both validation and blacklist checking)
         let raw_token = Self::extract_raw_token(request.metadata())?;
 
-        // Use unified validator for gRPC validation
+        // Validate the already-extracted token directly (avoids re-parsing the header)
         let claims = self
             .jwt_validator
-            .validate_grpc_as_status(request.metadata())?;
+            .validate_token(&raw_token)
+            .map_err(|e| Status::unauthenticated(format!("Token verification failed: {e}")))?;
 
         // Extract room_id from x-room-id header
         let room_id = request

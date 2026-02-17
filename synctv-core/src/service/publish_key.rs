@@ -116,8 +116,7 @@ impl PublishKeyService {
         // Sign with JWT service (using RS256)
         let token = self
             .jwt_service
-            .sign_custom(&claims_json)
-            .await?;
+            .sign_custom(&claims_json)?;
 
         Ok(PublishKey {
             token,
@@ -139,8 +138,7 @@ impl PublishKeyService {
         // Verify JWT signature and expiration
         let claims_value = self
             .jwt_service
-            .verify_custom(token)
-            .await?;
+            .verify_custom(token)?;
 
         // Deserialize claims
         let claims: PublishClaims = serde_json::from_value(claims_value)

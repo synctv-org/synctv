@@ -382,7 +382,7 @@ impl JwtService {
     ///
     /// # Returns
     /// Signed JWT token string
-    pub async fn sign_custom(&self, claims: &serde_json::Value) -> Result<String> {
+    pub fn sign_custom(&self, claims: &serde_json::Value) -> Result<String> {
         let now = Utc::now();
 
         // Add standard JWT claims if not present
@@ -414,7 +414,7 @@ impl JwtService {
     ///
     /// # Returns
     /// JSON value containing the claims
-    pub async fn verify_custom(&self, token: &str) -> Result<serde_json::Value> {
+    pub fn verify_custom(&self, token: &str) -> Result<serde_json::Value> {
         let mut validation = Validation::new(self.algorithm);
         validation.validate_exp = true;
         validation.validate_nbf = false;
@@ -774,16 +774,16 @@ mod tests {
         assert_eq!(duration, 4 * 3600); // 4 hours in seconds
     }
 
-    #[tokio::test]
-    async fn test_sign_and_verify_custom_token() {
+    #[test]
+    fn test_sign_and_verify_custom_token() {
         let jwt = create_jwt_service();
         let claims = serde_json::json!({
             "sub": "custom_subject",
             "custom_field": "custom_value",
         });
 
-        let token = jwt.sign_custom(&claims).await.unwrap();
-        let verified: serde_json::Value = jwt.verify_custom(&token).await.unwrap();
+        let token = jwt.sign_custom(&claims).unwrap();
+        let verified: serde_json::Value = jwt.verify_custom(&token).unwrap();
 
         assert_eq!(verified["sub"], "custom_subject");
         assert_eq!(verified["custom_field"], "custom_value");
@@ -792,14 +792,14 @@ mod tests {
         assert!(verified.get("exp").is_some());
     }
 
-    #[tokio::test]
-    async fn test_custom_token_wrong_secret_rejected() {
+    #[test]
+    fn test_custom_token_wrong_secret_rejected() {
         let jwt1 = JwtService::new("custom-secret-one-long-enough-1234567890").unwrap();
         let jwt2 = JwtService::new("custom-secret-two-long-enough-1234567890").unwrap();
 
         let claims = serde_json::json!({"sub": "test"});
-        let token = jwt1.sign_custom(&claims).await.unwrap();
-        let result = jwt2.verify_custom(&token).await;
+        let token = jwt1.sign_custom(&claims).unwrap();
+        let result = jwt2.verify_custom(&token);
         assert!(result.is_err());
     }
 }

@@ -354,13 +354,17 @@ impl HlsStreamingApi {
     /// - If publisher is local: generates from local HLS stream registry
     /// - If publisher is remote: proxies to publisher node via gRPC
     ///
+    /// Returns `Ok(Some(playlist))` when a stream is found, `Ok(None)` when
+    /// the stream is not yet available (caller should return HTTP 404 or retry),
+    /// and `Err` on infrastructure failures.
+    ///
     /// HLS requests do NOT trigger gRPC RTMP pull streams. Only FLV needs that.
     pub async fn generate_playlist<F>(
         infrastructure: &LiveStreamingInfrastructure,
         room_id: &str,
         media_id: &str,
         url_generator: F,
-    ) -> Result<String>
+    ) -> Result<Option<String>>
     where
         F: Fn(&str) -> String,
     {
@@ -373,7 +377,7 @@ impl HlsStreamingApi {
         let publisher_info = match publisher_info {
             Some(info) => info,
             None => {
-                return Err(anyhow::anyhow!("No publisher for {room_id}/{media_id}"));
+                return Ok(None);
             }
         };
 
@@ -404,16 +408,7 @@ impl HlsStreamingApi {
                 )
                 .await?;
 
-            match playlist {
-                Some(p) => Ok(p),
-                None => {
-                    // Playlist not found on remote — return empty playlist
-                    Ok("#EXTM3U\n\
-                         #EXT-X-VERSION:3\n\
-                         #EXT-X-TARGETDURATION:10\n\
-                         #EXT-X-MEDIA-SEQUENCE:0\n".to_string())
-                }
-            }
+            Ok(playlist)
         } else {
             // No proxy configured, try local anyway (single-node mode)
             Self::generate_playlist_local(infrastructure, room_id, media_id, url_generator)
@@ -421,12 +416,15 @@ impl HlsStreamingApi {
     }
 
     /// Generate playlist from local HLS stream registry.
+    ///
+    /// Returns `Ok(None)` if the stream is not yet in the HLS registry
+    /// (publisher exists but no segments have been generated yet).
     fn generate_playlist_local<F>(
         infrastructure: &LiveStreamingInfrastructure,
         room_id: &str,
         media_id: &str,
         url_generator: F,
-    ) -> Result<String>
+    ) -> Result<Option<String>>
     where
         F: Fn(&str) -> String,
     {
@@ -434,35 +432,32 @@ impl HlsStreamingApi {
             // Registry key format: "room_id/media_id" (matches remuxer's app_name/stream_name)
             let stream_key = format!("{room_id}/{media_id}");
 
-            let playlist = hls_registry.get(&stream_key).map_or_else(|| {
-                    // Empty playlist if stream not in registry yet
-                    "#EXTM3U\n\
-                         #EXT-X-VERSION:3\n\
-                         #EXT-X-TARGETDURATION:10\n\
-                         #EXT-X-MEDIA-SEQUENCE:0\n".to_string()
-                }, |stream_state| {
+            match hls_registry.get(&stream_key) {
+                Some(stream_state) => {
                     let state = stream_state.read();
                     // Use caller-provided URL generator for maximum flexibility
-                    state.generate_m3u8(url_generator)
-                });
-
-            Ok(playlist)
+                    Ok(Some(state.generate_m3u8(url_generator)))
+                }
+                None => {
+                    // Stream not in registry yet — signal caller to return 404
+                    Ok(None)
+                }
+            }
         } else {
-            // Fallback: empty playlist
-            Ok("#EXTM3U\n\
-                 #EXT-X-VERSION:3\n\
-                 #EXT-X-TARGETDURATION:10\n\
-                 #EXT-X-MEDIA-SEQUENCE:0\n".to_string())
+            // No HLS registry configured — signal caller to return 404
+            Ok(None)
         }
     }
 
-    /// Generate HLS M3U8 playlist with simple base URL (convenience method)
+    /// Generate HLS M3U8 playlist with simple base URL (convenience method).
+    ///
+    /// Returns `Ok(None)` when the stream does not exist (HTTP handler should return 404).
     pub async fn generate_playlist_simple(
         infrastructure: &LiveStreamingInfrastructure,
         room_id: &str,
         media_id: &str,
         segment_url_base: &str,
-    ) -> Result<String> {
+    ) -> Result<Option<String>> {
         Self::generate_playlist(infrastructure, room_id, media_id, |ts_name| {
             format!("{segment_url_base}{ts_name}.ts")
         }).await
@@ -546,13 +541,14 @@ impl HlsStreamingApi {
     /// **DEPRECATED for HLS**: Use `generate_playlist` instead. HLS should NOT
     /// trigger RTMP pull streams. This method is kept for backwards compatibility
     /// but now behaves identically to `generate_playlist` (no pull stream).
+    #[deprecated(since = "0.1.0", note = "Use generate_playlist instead; HLS should not trigger RTMP pull streams")]
     pub async fn generate_playlist_with_pull<F>(
         infrastructure: &LiveStreamingInfrastructure,
         room_id: &str,
         media_id: &str,
         _external_source_url: Option<&str>,
         url_generator: F,
-    ) -> Result<String>
+    ) -> Result<Option<String>>
     where
         F: Fn(&str) -> String,
     {
@@ -564,13 +560,14 @@ impl HlsStreamingApi {
     /// Generate HLS M3U8 playlist with lazy-load pull and simple base URL (convenience method).
     ///
     /// **DEPRECATED for HLS**: Use `generate_playlist_simple` instead.
+    #[deprecated(since = "0.1.0", note = "Use generate_playlist_simple instead")]
     pub async fn generate_playlist_with_pull_simple(
         infrastructure: &LiveStreamingInfrastructure,
         room_id: &str,
         media_id: &str,
         _external_source_url: Option<&str>,
         segment_url_base: &str,
-    ) -> Result<String> {
+    ) -> Result<Option<String>> {
         Self::generate_playlist_simple(infrastructure, room_id, media_id, segment_url_base).await
     }
 }

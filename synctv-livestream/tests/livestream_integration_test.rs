@@ -169,7 +169,7 @@ async fn test_complete_hls_workflow() {
         "test_room",
         "test_media",
         |ts_name| format!("/api/room/movie/live/hls/data/test_room/test_media/{}.ts", ts_name),
-    ).await.unwrap();
+    ).await.unwrap().expect("playlist should exist for registered stream");
 
     // Verify playlist contains all segments
     assert!(playlist.contains("#EXTM3U"));
@@ -308,7 +308,7 @@ async fn test_hls_url_generation_with_custom_callback() {
         "room123",
         "media456",
         |ts_name| format!("https://cdn.example.com/hls/{}.ts", ts_name),
-    ).await.unwrap();
+    ).await.unwrap().expect("playlist should exist");
 
     assert!(playlist.contains("https://cdn.example.com/hls/segment0.ts"));
 
@@ -319,7 +319,7 @@ async fn test_hls_url_generation_with_custom_callback() {
         "room123",
         "media456",
         move |ts_name| format!("/api/room/movie/live/hls/data/room123/media456/{}.ts?token={}", ts_name, token),
-    ).await.unwrap();
+    ).await.unwrap().expect("playlist should exist");
 
     assert!(playlist.contains(&format!("?token={}", token)));
 }
@@ -431,7 +431,7 @@ async fn test_hls_playlist_with_discontinuity() {
         "room1",
         "media1",
         |ts_name| format!("/{}.ts", ts_name),
-    ).await.unwrap();
+    ).await.unwrap().expect("playlist should exist");
 
     assert!(playlist.contains("#EXT-X-DISCONTINUITY"));
 }
@@ -466,7 +466,7 @@ async fn test_hls_playlist_ended_stream() {
         "room1",
         "media1",
         |ts_name| format!("/{}.ts", ts_name),
-    ).await.unwrap();
+    ).await.unwrap().expect("playlist should exist");
 
     assert!(playlist.contains("#EXT-X-ENDLIST"));
 }
@@ -499,10 +499,12 @@ async fn test_path_parameter_separation() {
 }
 
 #[tokio::test]
-async fn test_empty_playlist_generation() {
+async fn test_empty_playlist_returns_none() {
     let infrastructure = create_test_infrastructure();
 
-    // No streams registered, should return empty playlist
+    // No streams registered in the HLS registry, but the mock registry
+    // always returns a publisher. The playlist should be None because
+    // the HLS registry has no entry for this stream.
     let playlist = HlsStreamingApi::generate_playlist(
         &infrastructure,
         "nonexistent",
@@ -510,8 +512,6 @@ async fn test_empty_playlist_generation() {
         |ts_name| format!("/{}.ts", ts_name),
     ).await.unwrap();
 
-    assert!(playlist.contains("#EXTM3U"));
-    assert!(playlist.contains("#EXT-X-VERSION:3"));
-    assert!(playlist.contains("#EXT-X-TARGETDURATION:10"));
-    assert!(playlist.contains("#EXT-X-MEDIA-SEQUENCE:0"));
+    // Stream not in HLS registry -> None (caller returns HTTP 404)
+    assert!(playlist.is_none(), "Expected None for stream not in HLS registry");
 }

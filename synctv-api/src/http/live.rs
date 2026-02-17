@@ -280,19 +280,30 @@ async fn handle_hls_playlist(
     .await
     .map_err(|e| AppError::internal_server_error(format!("Failed to generate HLS playlist: {e}")))?;
 
-    debug!(
-        room_id = %room_id,
-        media_id = %media_id,
-        "Generated HLS playlist"
-    );
+    match playlist {
+        Some(content) => {
+            debug!(
+                room_id = %room_id,
+                media_id = %media_id,
+                "Generated HLS playlist"
+            );
 
-    Ok(Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "application/vnd.apple.mpegurl")
-        .header(header::CACHE_CONTROL, "no-cache, no-store")
-        .body(playlist)
-        .map_err(|_| AppError::internal_server_error("Failed to build response"))?
-        .into_response())
+            Ok(Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "application/vnd.apple.mpegurl")
+                .header(header::CACHE_CONTROL, "no-cache, no-store")
+                .body(content)
+                .map_err(|_| AppError::internal_server_error("Failed to build response"))?
+                .into_response())
+        }
+        None => {
+            // No active stream — return 404 so players can distinguish
+            // "stream not found" from "stream starting" (empty playlist).
+            Err(AppError::not_found(format!(
+                "No active HLS stream for {room_id}/{media_id}"
+            )))
+        }
+    }
 }
 
 /// Handle HLS segment request

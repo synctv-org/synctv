@@ -337,11 +337,8 @@ impl TsMuxer {
     }
 
     pub fn find_stream(&mut self, pid: u16) -> Result<(), MpegTsError> {
-        // let mut pmt_index: usize = 0;
-        let mut stream_index: usize = 0;
-
         for (pmt_index, pmt) in self.pat.pmt.iter_mut().enumerate() {
-            stream_index = 0;
+            let mut stream_index: usize = 0;
             for stream in &mut pmt.streams {
                 if stream.pid == pid {
                     self.cur_pmt_index = pmt_index;

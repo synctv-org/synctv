@@ -438,8 +438,14 @@ pub async fn init_services(
     }
 
     // Initialize Publish Key service (for RTMP streaming)
-    let publish_key_service = PublishKeyService::with_default_ttl(jwt_service.clone());
-    info!("Publish key service initialized");
+    let publish_key_service = if let Some(ref conn) = redis_conn {
+        info!("Publish key service initialized with Redis-backed JTI deduplication");
+        PublishKeyService::with_default_ttl(jwt_service.clone())
+            .with_redis(conn.clone(), config.redis.key_prefix.clone())
+    } else {
+        info!("Publish key service initialized (local-only JTI deduplication)");
+        PublishKeyService::with_default_ttl(jwt_service.clone())
+    };
 
     // Initialize User Notification service
     let notification_repo = NotificationRepository::new(pool.clone());

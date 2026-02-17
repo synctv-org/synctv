@@ -889,6 +889,16 @@ impl Config {
             }
         }
 
+        // Reject Redis Cluster mode (not yet supported)
+        if self.redis.deployment_mode == RedisDeploymentMode::Cluster {
+            errors.push(
+                "Redis Cluster mode is not yet supported. \
+                 Please use Standalone or Sentinel mode. \
+                 See the RedisDeploymentMode documentation for details."
+                    .to_string(),
+            );
+        }
+
         // Warn about missing Redis in production (security features degrade)
         if !self.server.development_mode && self.redis.url.is_empty() {
             tracing::warn!("Redis is not configured in production mode — token blacklist and rate limiting will be DISABLED");
@@ -954,6 +964,16 @@ impl Config {
                     ));
                 }
             }
+        }
+
+        // Warn that default HLS MemoryStorage is single-node only in cluster deployments.
+        // Operators should use FileStorage or OssStorage for multi-replica HLS.
+        if !self.server.cluster_secret.is_empty() {
+            tracing::warn!(
+                "Cluster mode is enabled but the default HLS storage backend is MemoryStorage, \
+                 which is node-local. HLS segments will NOT be shared across replicas. \
+                 For multi-replica HLS, configure FileStorage (shared volume) or OssStorage."
+            );
         }
 
         // Warn if cluster_secret is empty when Redis is configured (multi-replica mode)
@@ -1098,6 +1118,13 @@ pub struct ClusterChannelConfig {
     /// - "k8s_lease": Use Kubernetes coordination.k8s.io/v1 Lease resource
     ///   (requires POD_NAME and POD_NAMESPACE env vars, RBAC permissions)
     pub leader_election_mode: String,
+
+    /// Optional path for the cluster event Write-Ahead Log (WAL).
+    /// When set, critical cluster events are persisted to disk before being
+    /// published to Redis, ensuring no events are lost during Redis outages.
+    /// Example: "data/wal"
+    /// Default: None (WAL disabled)
+    pub wal_path: Option<String>,
 }
 
 impl Default for ClusterChannelConfig {
@@ -1107,6 +1134,7 @@ impl Default for ClusterChannelConfig {
             publish_channel_capacity: 10_000,
             discovery_mode: "redis".to_string(),
             leader_election_mode: "redis".to_string(),
+            wal_path: None,
         }
     }
 }
@@ -1505,6 +1533,28 @@ mod tests {
         let mut config = valid_prod_config();
         config.server.cluster_secret = "shared-secret-123".to_string();
         config.webrtc.mode = WebRTCMode::SignalingOnly;
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_redis_cluster_mode_rejected() {
+        let mut config = valid_prod_config();
+        config.redis.deployment_mode = RedisDeploymentMode::Cluster;
+        let errors = config.validate().unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("Cluster") && e.contains("not yet supported")));
+    }
+
+    #[test]
+    fn test_validate_redis_standalone_mode_allowed() {
+        let config = valid_prod_config();
+        // Default is Standalone, should pass
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_redis_sentinel_mode_allowed() {
+        let mut config = valid_prod_config();
+        config.redis.deployment_mode = RedisDeploymentMode::Sentinel;
         assert!(config.validate().is_ok());
     }
 }

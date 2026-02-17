@@ -22,15 +22,16 @@ impl ChatRepository {
     pub async fn create(&self, message: &ChatMessage) -> Result<ChatMessage> {
         let msg = sqlx::query_as::<_, ChatMessage>(
             r"
-            INSERT INTO chat_messages (id, room_id, user_id, content, created_at)
-            VALUES ($1, $2, $3, $4, $5)
-            RETURNING id, room_id, user_id, content, created_at
+            INSERT INTO chat_messages (id, room_id, user_id, content, message_type, created_at)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            RETURNING id, room_id, user_id, content, message_type, created_at
             ",
         )
         .bind(&message.id)
         .bind(message.room_id.as_str())
         .bind(message.user_id.as_str())
         .bind(&message.content)
+        .bind(message.message_type)
         .bind(message.created_at)
         .fetch_one(&self.pool)
         .await?;
@@ -51,7 +52,7 @@ impl ChatRepository {
         let messages = if let Some(before_time) = before {
             sqlx::query_as::<_, ChatMessage>(
                 r"
-                SELECT id, room_id, user_id, content, created_at
+                SELECT id, room_id, user_id, content, message_type, created_at
                 FROM chat_messages
                 WHERE room_id = $1 AND created_at < $2
                 ORDER BY created_at DESC
@@ -66,7 +67,7 @@ impl ChatRepository {
         } else {
             sqlx::query_as::<_, ChatMessage>(
                 r"
-                SELECT id, room_id, user_id, content, created_at
+                SELECT id, room_id, user_id, content, message_type, created_at
                 FROM chat_messages
                 WHERE room_id = $1
                 ORDER BY created_at DESC
@@ -89,7 +90,7 @@ impl ChatRepository {
     pub async fn get_by_id(&self, message_id: &str) -> Result<Option<ChatMessage>> {
         let msg = sqlx::query_as::<_, ChatMessage>(
             r"
-            SELECT id, room_id, user_id, content, created_at
+            SELECT id, room_id, user_id, content, message_type, created_at
             FROM chat_messages
             WHERE id = $1
               AND created_at >= NOW() - INTERVAL '90 days'

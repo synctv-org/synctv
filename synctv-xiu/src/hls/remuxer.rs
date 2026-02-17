@@ -121,6 +121,11 @@ impl StreamProcessorState {
 /// Used to record publisher activity for silent publisher detection.
 pub type PublisherActivityCallback = Arc<dyn Fn(&str, &str) + Send + Sync>;
 
+/// Callback that returns the list of active RTMP publishers as
+/// `(app_name, stream_name)` pairs. Used for reconciliation after
+/// broadcast channel lag.
+pub type ActivePublishersSource = Arc<dyn Fn() -> Vec<(String, String)> + Send + Sync>;
+
 /// Custom HLS remuxer with storage abstraction
 pub struct CustomHlsRemuxer {
     /// Event receiver from `StreamHub`
@@ -137,6 +142,8 @@ pub struct CustomHlsRemuxer {
     handler_tasks: tokio::task::JoinSet<()>,
     /// Optional callback to record publisher data activity
     activity_callback: Option<PublisherActivityCallback>,
+    /// Optional source of currently active publishers for post-lag reconciliation
+    active_publishers_source: Option<ActivePublishersSource>,
 }
 
 impl CustomHlsRemuxer {
@@ -156,6 +163,7 @@ impl CustomHlsRemuxer {
             cancel_token,
             handler_tasks: tokio::task::JoinSet::new(),
             activity_callback: None,
+            active_publishers_source: None,
         }
     }
 
@@ -165,6 +173,17 @@ impl CustomHlsRemuxer {
     #[must_use]
     pub fn with_activity_callback(mut self, callback: PublisherActivityCallback) -> Self {
         self.activity_callback = Some(callback);
+        self
+    }
+
+    /// Set a source of active publishers for post-lag reconciliation.
+    ///
+    /// After broadcast channel lag causes a resubscribe, the remuxer queries
+    /// this callback for the current list of active RTMP publishers and starts
+    /// HLS handlers for any that are missing.
+    #[must_use]
+    pub fn with_active_publishers_source(mut self, source: ActivePublishersSource) -> Self {
+        self.active_publishers_source = Some(source);
         self
     }
 
@@ -214,9 +233,45 @@ impl CustomHlsRemuxer {
                                 self.handler_tasks.len()
                             );
                             // Existing handler tasks are NOT aborted — they have independent
-                            // data channels. Only Publish events in the skipped window are lost;
-                            // those streams will be picked up on the next broadcast.
+                            // data channels. Only Publish events in the skipped window are lost.
                             self.client_event_consumer = self.client_event_consumer.resubscribe();
+
+                            // Reconcile: start HLS handlers for any active publishers
+                            // that don't already have a running handler.
+                            if let Some(ref source) = self.active_publishers_source {
+                                let active = source();
+                                let mut started = 0u32;
+                                for (app_name, stream_name) in active {
+                                    let key = format!("{}/{}", app_name, stream_name);
+                                    if self.stream_registry.contains_key(&key) {
+                                        continue; // handler already running
+                                    }
+                                    tracing::info!(
+                                        "HLS remuxer reconciliation: starting handler for {}/{}",
+                                        app_name, stream_name
+                                    );
+                                    let stream_handler = StreamHandler::new(
+                                        app_name,
+                                        stream_name,
+                                        self.event_producer.clone(),
+                                        Arc::clone(&self.segment_manager),
+                                        self.stream_registry.clone(),
+                                        self.activity_callback.clone(),
+                                    );
+                                    self.handler_tasks.spawn(async move {
+                                        if let Err(e) = stream_handler.run().await {
+                                            tracing::error!("HLS stream handler error (reconciliation): {}", e);
+                                        }
+                                    });
+                                    started += 1;
+                                }
+                                if started > 0 {
+                                    tracing::info!(
+                                        "HLS remuxer reconciliation: started {} new handlers after lag",
+                                        started
+                                    );
+                                }
+                            }
                             continue;
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => {
@@ -609,7 +664,9 @@ impl StreamProcessor {
         // The original logic had a flaw: it would increment retry_count on any
         // recv() returning None, even during brief network pauses.
         // Now we use a timeout-based approach instead.
-        const RECV_TIMEOUT_MS: u64 = 5000; // 5 seconds of no data = stream ended
+        // Must not be less than the silent publisher timeout (60s) to avoid
+        // false stream-end detection while the publisher is still connected.
+        const RECV_TIMEOUT_MS: u64 = 30000; // 30 seconds of no data = stream ended
 
         // Throttle activity callbacks to avoid excessive overhead.
         // The silent publisher timeout is 60s, so recording every 10s is sufficient.

@@ -6,21 +6,19 @@
 //! On successful publish auth:
 //! 1. Atomically registers the publisher in Redis (single-publisher-per-media enforcement)
 //! 2. Registers the user→stream mapping in the local `StreamTracker`
-//! 3. Spawns a background TTL renewal task for the Redis registration
+//!
+//! Ongoing TTL renewal is handled by `PublisherManager::maintain_heartbeats()`.
 //!
 //! On unpublish:
-//! 1. Aborts the TTL renewal task
-//! 2. Unregisters the publisher from Redis
-//! 3. Removes the user→stream mapping from the local `StreamTracker`
+//! 1. Unregisters the publisher from Redis
+//! 2. Removes the user→stream mapping from the local `StreamTracker`
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use dashmap::DashMap;
 use synctv_livestream::AuthCallback;
 use synctv_livestream::api::UserStreamTracker;
 use synctv_livestream::relay::StreamRegistryTrait;
-use tokio::task::AbortHandle;
 
 use synctv_core::{
     models::{RoomStatus, UserStatus, MediaId, UserId},
@@ -69,8 +67,6 @@ pub struct SyncTvRtmpAuth {
     grpc_address: String,
     /// Broadcast channel for stream lifecycle events (StreamStarted/StreamStopped)
     stream_event_tx: Option<tokio::sync::broadcast::Sender<StreamLifecycleEvent>>,
-    /// Active TTL renewal tasks: "`room_id:media_id`" → `AbortHandle`
-    ttl_handles: DashMap<String, AbortHandle>,
 }
 
 impl SyncTvRtmpAuth {
@@ -93,7 +89,6 @@ impl SyncTvRtmpAuth {
             node_id,
             grpc_address,
             stream_event_tx,
-            ttl_handles: DashMap::new(),
         }
     }
 }
@@ -165,12 +160,6 @@ impl AuthCallback for SyncTvRtmpAuth {
                 media_id = %media_id,
                 "Publisher unpublished, cleaning up"
             );
-
-            // Abort TTL renewal task
-            let ttl_key = format!("{room_id}:{media_id}");
-            if let Some((_, handle)) = self.ttl_handles.remove(&ttl_key) {
-                handle.abort();
-            }
 
             // Unregister from Redis
             if let Err(e) = self.registry.unregister_publisher(room_id, media_id).await {
@@ -468,7 +457,10 @@ impl SyncTvRtmpAuth {
         })
     }
 
-    /// Register the publisher in Redis and spawn a TTL renewal task.
+    /// Register the publisher in Redis and set up tracking.
+    ///
+    /// Ongoing TTL renewal is handled by `PublisherManager::maintain_heartbeats()`,
+    /// not here. This method only performs the initial registration.
     async fn register_and_start_ttl(
         &self,
         validated: &ValidatedPublish,
@@ -520,59 +512,6 @@ impl SyncTvRtmpAuth {
                 user_id: validated.user_id.clone(),
             });
         }
-
-        // Spawn TTL renewal task
-        let ttl_key = format!("{}:{}", validated.room_id, validated.media_id);
-        let registry = self.registry.clone();
-        let room_id = validated.room_id.clone();
-        let media_id = validated.media_id.clone();
-        let ttl_user_id = validated.user_id.clone();
-        let ttl_task = tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
-            interval.tick().await;
-            let mut consecutive_failures: u32 = 0;
-            loop {
-                interval.tick().await;
-                if let Err(e) = registry.refresh_publisher_ttl(&room_id, &media_id, &ttl_user_id).await {
-                    consecutive_failures += 1;
-                    tracing::warn!(
-                        room_id = %room_id,
-                        media_id = %media_id,
-                        attempt = consecutive_failures,
-                        "Failed to refresh publisher TTL: {}",
-                        e
-                    );
-                    if consecutive_failures >= 10 {
-                        tracing::error!(
-                            room_id = %room_id,
-                            media_id = %media_id,
-                            "TTL renewal giving up after 10 consecutive failures, unregistering publisher"
-                        );
-                        if let Err(e) = registry.unregister_publisher(&room_id, &media_id).await {
-                            tracing::error!(
-                                room_id = %room_id,
-                                media_id = %media_id,
-                                "Failed to unregister orphaned publisher: {}",
-                                e
-                            );
-                        }
-                        break;
-                    }
-                    let backoff = std::time::Duration::from_secs(
-                        2u64.saturating_pow(consecutive_failures.min(5)),
-                    );
-                    tokio::time::sleep(backoff).await;
-                    continue;
-                }
-                consecutive_failures = 0;
-                tracing::trace!(
-                    room_id = %room_id,
-                    media_id = %media_id,
-                    "Refreshed publisher TTL"
-                );
-            }
-        });
-        self.ttl_handles.insert(ttl_key, ttl_task.abort_handle());
 
         Ok(())
     }

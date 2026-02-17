@@ -2,7 +2,11 @@
 //!
 //! Generates JWT tokens for RTMP push authentication.
 //! Includes single-use enforcement to prevent TOCTOU races.
+//!
+//! In multi-replica deployments, JTI deduplication is backed by Redis
+//! (SETNX with TTL) so the same token cannot be replayed on different nodes.
 
+use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -53,6 +57,10 @@ pub struct PublishClaims {
 /// consumed once by `validate_publish_key`. This prevents TOCTOU races
 /// where the same token is replayed by a second RTMP connection before
 /// the first session registers in Redis.
+///
+/// In multi-replica deployments, pass a Redis connection via
+/// [`with_redis`](Self::with_redis) so that JTI deduplication is
+/// cluster-wide. Without Redis, enforcement is per-node only.
 #[derive(Clone)]
 pub struct PublishKeyService {
     jwt_service: JwtService,
@@ -60,6 +68,10 @@ pub struct PublishKeyService {
     /// In-memory set of consumed `jti` values (moka cache with TTL matching
     /// token lifetime). Prevents publish key replay within the same node.
     consumed_jtis: Arc<moka::future::Cache<String, ()>>,
+    /// Optional Redis connection for cross-replica JTI deduplication.
+    redis_conn: Option<redis::aio::ConnectionManager>,
+    /// Redis key prefix (e.g. "synctv:").
+    redis_key_prefix: String,
 }
 
 impl std::fmt::Debug for PublishKeyService {
@@ -67,12 +79,13 @@ impl std::fmt::Debug for PublishKeyService {
         f.debug_struct("PublishKeyService")
             .field("token_ttl_hours", &self.token_ttl_hours)
             .field("consumed_jtis_count", &self.consumed_jtis.entry_count())
+            .field("redis_enabled", &self.redis_conn.is_some())
             .finish()
     }
 }
 
 impl PublishKeyService {
-    /// Create a new publish key service
+    /// Create a new publish key service (local-only JTI deduplication)
     #[must_use]
     pub fn new(jwt_service: JwtService, token_ttl_hours: i64) -> Self {
         // Cache TTL slightly exceeds token TTL so consumed jtis remain tracked
@@ -87,6 +100,8 @@ impl PublishKeyService {
                     .time_to_live(Duration::from_secs(cache_ttl_secs))
                     .build(),
             ),
+            redis_conn: None,
+            redis_key_prefix: String::new(),
         }
     }
 
@@ -94,6 +109,17 @@ impl PublishKeyService {
     #[must_use]
     pub fn with_default_ttl(jwt_service: JwtService) -> Self {
         Self::new(jwt_service, 24)
+    }
+
+    /// Enable Redis-backed JTI deduplication for multi-replica deployments.
+    ///
+    /// When set, `validate_publish_key` uses Redis SETNX so a JTI consumed
+    /// on one node is rejected on all other nodes.
+    #[must_use]
+    pub fn with_redis(mut self, conn: redis::aio::ConnectionManager, key_prefix: String) -> Self {
+        self.redis_conn = Some(conn);
+        self.redis_key_prefix = key_prefix;
+        self
     }
 
     /// Generate a publish key for RTMP streaming
@@ -188,11 +214,44 @@ impl PublishKeyService {
 
         // Single-use enforcement: check if the jti has already been consumed.
         // If so, reject the token to prevent replay attacks.
+        //
+        // 1. Fast path: check local moka cache (covers same-node replay).
         if self.consumed_jtis.contains_key(&claims.jti) {
             return Err(Error::Authentication(
                 "Publish key has already been used (single-use token)".to_string(),
             ));
         }
+
+        // 2. Cross-replica check: use Redis SETNX so a JTI consumed on any
+        //    node is rejected cluster-wide. If Redis is unavailable, fall
+        //    back to local-only enforcement with a warning.
+        if let Some(ref conn) = self.redis_conn {
+            let redis_key = format!("{}publish_key:jti:{}", self.redis_key_prefix, claims.jti);
+            // TTL matches token TTL + 5 min buffer (same as moka cache).
+            let ttl_secs = (claims.exp - claims.iat).max(0) as u64 + 300;
+            let mut conn = conn.clone();
+            match conn.set_nx::<_, _, bool>(&redis_key, 1).await {
+                Ok(true) => {
+                    // We won the SETNX race -- set the TTL and proceed.
+                    let _: std::result::Result<(), _> = conn.expire(&redis_key, ttl_secs as i64).await;
+                }
+                Ok(false) => {
+                    // Another replica already consumed this JTI.
+                    return Err(Error::Authentication(
+                        "Publish key has already been used (single-use token)".to_string(),
+                    ));
+                }
+                Err(e) => {
+                    // Redis unavailable -- fall back to local-only enforcement.
+                    tracing::warn!(
+                        jti = %claims.jti,
+                        "Redis unavailable for JTI dedup, using local-only enforcement: {e}"
+                    );
+                }
+            }
+        }
+
+        // 3. Add to local moka cache for fast subsequent checks on this node.
         self.consumed_jtis.insert(claims.jti.clone(), ()).await;
 
         Ok(claims)

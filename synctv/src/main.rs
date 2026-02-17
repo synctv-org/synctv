@@ -675,6 +675,7 @@ async fn main() -> Result<()> {
             cleanup_interval: std::time::Duration::from_secs(30),
             critical_channel_capacity: config.cluster.critical_channel_capacity,
             publish_channel_capacity: config.cluster.publish_channel_capacity,
+            wal_path: config.cluster.wal_path.clone(),
         };
         match ClusterManager::new(cluster_config, None, None).await {
             Ok(manager) => Some(Arc::new(manager)),
@@ -691,6 +692,7 @@ async fn main() -> Result<()> {
             cleanup_interval: std::time::Duration::from_secs(30),
             critical_channel_capacity: config.cluster.critical_channel_capacity,
             publish_channel_capacity: config.cluster.publish_channel_capacity,
+            wal_path: config.cluster.wal_path.clone(),
         };
         match ClusterManager::new(
             cluster_config,

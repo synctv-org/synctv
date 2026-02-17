@@ -69,7 +69,7 @@ use super::internal_err;
 /// Provides backpressure for slow clients without excessive memory usage.
 const MESSAGE_STREAM_BUFFER_SIZE: usize = 100;
 
-use super::map_api_error as impls_err_to_status;
+use super::map_api_error;
 
 /// Configuration for `ClientService`
 #[derive(Clone)]
@@ -237,7 +237,7 @@ impl AuthService for ClientServiceImpl {
         request: Request<RegisterRequest>,
     ) -> Result<Response<RegisterResponse>, Status> {
         let req = request.into_inner();
-        let response = self.client_api.register(req).await.map_err(impls_err_to_status)?;
+        let response = self.client_api.register(req).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -246,7 +246,7 @@ impl AuthService for ClientServiceImpl {
         request: Request<LoginRequest>,
     ) -> Result<Response<LoginResponse>, Status> {
         let req = request.into_inner();
-        let response = self.client_api.login(req).await.map_err(impls_err_to_status)?;
+        let response = self.client_api.login(req).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -268,7 +268,7 @@ impl AuthService for ClientServiceImpl {
             .client_api
             .refresh_token(req, old_access_token.as_deref())
             .await
-            .map_err(impls_err_to_status)?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 }
@@ -299,7 +299,7 @@ impl UserService for ClientServiceImpl {
             .and_then(|v| v.to_str().ok());
 
         let response = self.client_api.logout(&access_token, refresh_token).await
-            .map_err(impls_err_to_status)?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -308,7 +308,7 @@ impl UserService for ClientServiceImpl {
         request: Request<GetProfileRequest>,
     ) -> Result<Response<GetProfileResponse>, Status> {
         let user_id = self.get_user_id(&request).await?;
-        let response = self.client_api.get_profile(user_id.as_str()).await.map_err(impls_err_to_status)?;
+        let response = self.client_api.get_profile(user_id.as_str()).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -318,7 +318,7 @@ impl UserService for ClientServiceImpl {
     ) -> Result<Response<SetUsernameResponse>, Status> {
         let user_id = self.get_user_id(&request).await?;
         let req = request.into_inner();
-        let response = self.client_api.set_username(user_id.as_str(), req).await.map_err(impls_err_to_status)?;
+        let response = self.client_api.set_username(user_id.as_str(), req).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -328,7 +328,7 @@ impl UserService for ClientServiceImpl {
     ) -> Result<Response<SetPasswordResponse>, Status> {
         let user_id = self.get_user_id(&request).await?;
         let req = request.into_inner();
-        let response = self.client_api.set_password(user_id.as_str(), req).await.map_err(impls_err_to_status)?;
+        let response = self.client_api.set_password(user_id.as_str(), req).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -338,7 +338,7 @@ impl UserService for ClientServiceImpl {
     ) -> Result<Response<ListCreatedRoomsResponse>, Status> {
         let user_id = self.get_user_id(&request).await?;
         let req = request.into_inner();
-        let response = self.client_api.list_created_rooms(user_id.as_str(), req).await.map_err(impls_err_to_status)?;
+        let response = self.client_api.list_created_rooms(user_id.as_str(), req).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -349,7 +349,7 @@ impl UserService for ClientServiceImpl {
         let user_id = self.get_user_id(&request).await?;
         let req = request.into_inner();
         let params = synctv_core::models::PageParams::new(Some(req.page as u32), Some(req.page_size as u32));
-        let response = self.client_api.get_joined_rooms(user_id.as_str(), params.page as i32, params.page_size as i32).await.map_err(impls_err_to_status)?;
+        let response = self.client_api.get_joined_rooms(user_id.as_str(), params.page as i32, params.page_size as i32).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 }
@@ -364,7 +364,7 @@ impl RoomService for ClientServiceImpl {
     ) -> Result<Response<CreateRoomResponse>, Status> {
         let user_id = self.get_user_id(&request).await?;
         let req = request.into_inner();
-        let response = self.client_api.create_room(user_id.as_str(), req).await.map_err(impls_err_to_status)?;
+        let response = self.client_api.create_room(user_id.as_str(), req).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -374,7 +374,7 @@ impl RoomService for ClientServiceImpl {
     ) -> Result<Response<GetRoomResponse>, Status> {
         let user_id = self.get_user_id(&request).await?;
         let room_id = self.get_room_id(&request)?;
-        let response = self.client_api.get_room(user_id.as_str(), room_id.as_str()).await.map_err(impls_err_to_status)?;
+        let response = self.client_api.get_room(user_id.as_str(), room_id.as_str()).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -385,7 +385,7 @@ impl RoomService for ClientServiceImpl {
         let user_id = self.get_user_id(&request).await?;
         let room_id = self.get_room_id(&request)?;
         let req = request.into_inner();
-        let response = self.client_api.join_room(user_id.as_str(), room_id.as_str(), req).await.map_err(impls_err_to_status)?;
+        let response = self.client_api.join_room(user_id.as_str(), room_id.as_str(), req).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -395,7 +395,7 @@ impl RoomService for ClientServiceImpl {
     ) -> Result<Response<LeaveRoomResponse>, Status> {
         let user_id = self.get_user_id(&request).await?;
         let room_id = self.get_room_id(&request)?;
-        let response = self.client_api.leave_room(user_id.as_str(), room_id.as_str()).await.map_err(impls_err_to_status)?;
+        let response = self.client_api.leave_room(user_id.as_str(), room_id.as_str()).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -405,7 +405,7 @@ impl RoomService for ClientServiceImpl {
     ) -> Result<Response<DeleteRoomResponse>, Status> {
         let user_id = self.get_user_id(&request).await?;
         let room_id = self.get_room_id(&request)?;
-        let response = self.client_api.delete_room(user_id.as_str(), room_id.as_str()).await.map_err(impls_err_to_status)?;
+        let response = self.client_api.delete_room(user_id.as_str(), room_id.as_str()).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -416,7 +416,7 @@ impl RoomService for ClientServiceImpl {
         let user_id = self.get_user_id(&request).await?;
         let room_id = self.get_room_id(&request)?;
         let req = request.into_inner();
-        let response = self.client_api.update_room_settings(user_id.as_str(), room_id.as_str(), req).await.map_err(impls_err_to_status)?;
+        let response = self.client_api.update_room_settings(user_id.as_str(), room_id.as_str(), req).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -426,7 +426,7 @@ impl RoomService for ClientServiceImpl {
     ) -> Result<Response<GetRoomMembersResponse>, Status> {
         let user_id = self.get_user_id(&request).await?;
         let room_id = self.get_room_id(&request)?;
-        let response = self.client_api.get_room_members(user_id.as_str(), room_id.as_str()).await.map_err(impls_err_to_status)?;
+        let response = self.client_api.get_room_members(user_id.as_str(), room_id.as_str()).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -437,7 +437,7 @@ impl RoomService for ClientServiceImpl {
         let user_id = self.get_user_id(&request).await?;
         let room_id = self.get_room_id(&request)?;
         let req = request.into_inner();
-        let response = self.client_api.update_member_permissions(user_id.as_str(), room_id.as_str(), req).await.map_err(impls_err_to_status)?;
+        let response = self.client_api.update_member_permissions(user_id.as_str(), room_id.as_str(), req).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -448,7 +448,7 @@ impl RoomService for ClientServiceImpl {
         let user_id = self.get_user_id(&request).await?;
         let room_id = self.get_room_id(&request)?;
         let req = request.into_inner();
-        let response = self.client_api.kick_member(user_id.as_str(), room_id.as_str(), req).await.map_err(impls_err_to_status)?;
+        let response = self.client_api.kick_member(user_id.as_str(), room_id.as_str(), req).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -459,7 +459,7 @@ impl RoomService for ClientServiceImpl {
         let user_id = self.get_user_id(&request).await?;
         let room_id = self.get_room_id(&request)?;
         let req = request.into_inner();
-        let response = self.client_api.ban_member(user_id.as_str(), room_id.as_str(), req).await.map_err(impls_err_to_status)?;
+        let response = self.client_api.ban_member(user_id.as_str(), room_id.as_str(), req).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -470,7 +470,7 @@ impl RoomService for ClientServiceImpl {
         let user_id = self.get_user_id(&request).await?;
         let room_id = self.get_room_id(&request)?;
         let req = request.into_inner();
-        let response = self.client_api.unban_member(user_id.as_str(), room_id.as_str(), req).await.map_err(impls_err_to_status)?;
+        let response = self.client_api.unban_member(user_id.as_str(), room_id.as_str(), req).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -480,7 +480,7 @@ impl RoomService for ClientServiceImpl {
     ) -> Result<Response<GetRoomSettingsResponse>, Status> {
         let user_id = self.get_user_id(&request).await?;
         let room_id = self.get_room_id(&request)?;
-        let response = self.client_api.get_room_settings(user_id.as_str(), room_id.as_str()).await.map_err(impls_err_to_status)?;
+        let response = self.client_api.get_room_settings(user_id.as_str(), room_id.as_str()).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -490,7 +490,7 @@ impl RoomService for ClientServiceImpl {
     ) -> Result<Response<ResetRoomSettingsResponse>, Status> {
         let user_id = self.get_user_id(&request).await?;
         let room_id = self.get_room_id(&request)?;
-        let response = self.client_api.reset_room_settings(user_id.as_str(), room_id.as_str()).await.map_err(impls_err_to_status)?;
+        let response = self.client_api.reset_room_settings(user_id.as_str(), room_id.as_str()).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -501,7 +501,7 @@ impl RoomService for ClientServiceImpl {
         let user_id = self.get_user_id(&request).await?;
         let room_id = self.get_room_id(&request)?;
         let req = request.into_inner();
-        let response = self.client_api.set_room_password(user_id.as_str(), room_id.as_str(), req).await.map_err(impls_err_to_status)?;
+        let response = self.client_api.set_room_password(user_id.as_str(), room_id.as_str(), req).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -516,7 +516,7 @@ impl RoomService for ClientServiceImpl {
             .map(|addr| addr.ip().to_string())
             .unwrap_or_else(|| "unknown".to_string());
         let req = request.into_inner();
-        let response = self.client_api.check_room_password(room_id.as_str(), req, &client_ip).await.map_err(impls_err_to_status)?;
+        let response = self.client_api.check_room_password(room_id.as_str(), req, &client_ip).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -626,7 +626,7 @@ impl RoomService for ClientServiceImpl {
         let user_id = self.get_user_id(&request).await?;
         let room_id = self.get_room_id(&request)?;
         let req = request.into_inner();
-        let response = self.client_api.get_chat_history(user_id.as_str(), room_id.as_str(), req).await.map_err(impls_err_to_status)?;
+        let response = self.client_api.get_chat_history(user_id.as_str(), room_id.as_str(), req).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -726,7 +726,7 @@ impl MediaService for ClientServiceImpl {
         let user_id = self.get_user_id(&request).await?;
         let room_id = self.get_room_id(&request)?;
         let req = request.into_inner();
-        let response = self.client_api.add_media(user_id.as_str(), room_id.as_str(), req).await.map_err(impls_err_to_status)?;
+        let response = self.client_api.add_media(user_id.as_str(), room_id.as_str(), req).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -737,7 +737,7 @@ impl MediaService for ClientServiceImpl {
         let user_id = self.get_user_id(&request).await?;
         let room_id = self.get_room_id(&request)?;
         let req = request.into_inner();
-        let response = self.client_api.remove_media(user_id.as_str(), room_id.as_str(), req).await.map_err(impls_err_to_status)?;
+        let response = self.client_api.remove_media(user_id.as_str(), room_id.as_str(), req).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -748,7 +748,7 @@ impl MediaService for ClientServiceImpl {
         let user_id = self.get_user_id(&request).await?;
         let room_id = self.get_room_id(&request)?;
         let req = request.into_inner();
-        let response = self.client_api.edit_media(user_id.as_str(), room_id.as_str(), req).await.map_err(impls_err_to_status)?;
+        let response = self.client_api.edit_media(user_id.as_str(), room_id.as_str(), req).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -758,7 +758,7 @@ impl MediaService for ClientServiceImpl {
     ) -> Result<Response<ListPlaylistResponse>, Status> {
         let user_id = self.get_user_id(&request).await?;
         let room_id = self.get_room_id(&request)?;
-        let response = self.client_api.get_playlist(user_id.as_str(), room_id.as_str()).await.map_err(impls_err_to_status)?;
+        let response = self.client_api.get_playlist(user_id.as_str(), room_id.as_str()).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -769,7 +769,7 @@ impl MediaService for ClientServiceImpl {
         let user_id = self.get_user_id(&request).await?;
         let room_id = self.get_room_id(&request)?;
         let req = request.into_inner();
-        let response = self.client_api.list_playlist_items(user_id.as_str(), room_id.as_str(), req).await.map_err(impls_err_to_status)?;
+        let response = self.client_api.list_playlist_items(user_id.as_str(), room_id.as_str(), req).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -780,7 +780,7 @@ impl MediaService for ClientServiceImpl {
         let user_id = self.get_user_id(&request).await?;
         let room_id = self.get_room_id(&request)?;
         let req = request.into_inner();
-        let response = self.client_api.swap_media(user_id.as_str(), room_id.as_str(), req).await.map_err(impls_err_to_status)?;
+        let response = self.client_api.swap_media(user_id.as_str(), room_id.as_str(), req).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -790,7 +790,7 @@ impl MediaService for ClientServiceImpl {
     ) -> Result<Response<ClearPlaylistResponse>, Status> {
         let user_id = self.get_user_id(&request).await?;
         let room_id = self.get_room_id(&request)?;
-        let response = self.client_api.clear_playlist(user_id.as_str(), room_id.as_str()).await.map_err(impls_err_to_status)?;
+        let response = self.client_api.clear_playlist(user_id.as_str(), room_id.as_str()).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -801,7 +801,7 @@ impl MediaService for ClientServiceImpl {
         let user_id = self.get_user_id(&request).await?;
         let room_id = self.get_room_id(&request)?;
         let req = request.into_inner();
-        let response = self.client_api.add_media_batch(user_id.as_str(), room_id.as_str(), req).await.map_err(impls_err_to_status)?;
+        let response = self.client_api.add_media_batch(user_id.as_str(), room_id.as_str(), req).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -812,7 +812,7 @@ impl MediaService for ClientServiceImpl {
         let user_id = self.get_user_id(&request).await?;
         let room_id = self.get_room_id(&request)?;
         let req = request.into_inner();
-        let response = self.client_api.remove_media_batch(user_id.as_str(), room_id.as_str(), req).await.map_err(impls_err_to_status)?;
+        let response = self.client_api.remove_media_batch(user_id.as_str(), room_id.as_str(), req).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -823,7 +823,7 @@ impl MediaService for ClientServiceImpl {
         let user_id = self.get_user_id(&request).await?;
         let room_id = self.get_room_id(&request)?;
         let req = request.into_inner();
-        let response = self.client_api.reorder_media_batch(user_id.as_str(), room_id.as_str(), req).await.map_err(impls_err_to_status)?;
+        let response = self.client_api.reorder_media_batch(user_id.as_str(), room_id.as_str(), req).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -831,7 +831,7 @@ impl MediaService for ClientServiceImpl {
         let user_id = self.get_user_id(&request).await?;
         let room_id = self.get_room_id(&request)?;
         let req = request.into_inner();
-        let response = self.client_api.play(user_id.as_str(), room_id.as_str(), req).await.map_err(impls_err_to_status)?;
+        let response = self.client_api.play(user_id.as_str(), room_id.as_str(), req).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -841,7 +841,7 @@ impl MediaService for ClientServiceImpl {
     ) -> Result<Response<PauseResponse>, Status> {
         let user_id = self.get_user_id(&request).await?;
         let room_id = self.get_room_id(&request)?;
-        let response = self.client_api.pause(user_id.as_str(), room_id.as_str()).await.map_err(impls_err_to_status)?;
+        let response = self.client_api.pause(user_id.as_str(), room_id.as_str()).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -849,7 +849,7 @@ impl MediaService for ClientServiceImpl {
         let user_id = self.get_user_id(&request).await?;
         let room_id = self.get_room_id(&request)?;
         let req = request.into_inner();
-        let response = self.client_api.seek(user_id.as_str(), room_id.as_str(), req).await.map_err(impls_err_to_status)?;
+        let response = self.client_api.seek(user_id.as_str(), room_id.as_str(), req).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -860,7 +860,7 @@ impl MediaService for ClientServiceImpl {
         let user_id = self.get_user_id(&request).await?;
         let room_id = self.get_room_id(&request)?;
         let req = request.into_inner();
-        let response = self.client_api.set_playback_speed(user_id.as_str(), room_id.as_str(), req).await.map_err(impls_err_to_status)?;
+        let response = self.client_api.set_playback_speed(user_id.as_str(), room_id.as_str(), req).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -871,7 +871,7 @@ impl MediaService for ClientServiceImpl {
         let user_id = self.get_user_id(&request).await?;
         let room_id = self.get_room_id(&request)?;
         let req = request.into_inner();
-        let response = self.client_api.get_playback_state(user_id.as_str(), room_id.as_str(), req).await.map_err(impls_err_to_status)?;
+        let response = self.client_api.get_playback_state(user_id.as_str(), room_id.as_str(), req).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -928,7 +928,7 @@ impl MediaService for ClientServiceImpl {
         let user_id = self.get_user_id(&request).await?;
         let room_id = self.get_room_id(&request)?;
         let req = request.into_inner();
-        let response = self.client_api.create_playlist(user_id.as_str(), room_id.as_str(), req).await.map_err(impls_err_to_status)?;
+        let response = self.client_api.create_playlist(user_id.as_str(), room_id.as_str(), req).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -939,7 +939,7 @@ impl MediaService for ClientServiceImpl {
         let user_id = self.get_user_id(&request).await?;
         let room_id = self.get_room_id(&request)?;
         let req = request.into_inner();
-        let response = self.client_api.update_playlist(user_id.as_str(), room_id.as_str(), req).await.map_err(impls_err_to_status)?;
+        let response = self.client_api.update_playlist(user_id.as_str(), room_id.as_str(), req).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -950,7 +950,7 @@ impl MediaService for ClientServiceImpl {
         let user_id = self.get_user_id(&request).await?;
         let room_id = self.get_room_id(&request)?;
         let req = request.into_inner();
-        let response = self.client_api.delete_playlist(user_id.as_str(), room_id.as_str(), req).await.map_err(impls_err_to_status)?;
+        let response = self.client_api.delete_playlist(user_id.as_str(), room_id.as_str(), req).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -961,7 +961,7 @@ impl MediaService for ClientServiceImpl {
         let user_id = self.get_user_id(&request).await?;
         let room_id = self.get_room_id(&request)?;
         let req = request.into_inner();
-        let response = self.client_api.list_playlists(user_id.as_str(), room_id.as_str(), req).await.map_err(impls_err_to_status)?;
+        let response = self.client_api.list_playlists(user_id.as_str(), room_id.as_str(), req).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -972,7 +972,7 @@ impl MediaService for ClientServiceImpl {
         let user_id = self.get_user_id(&request).await?;
         let room_id = self.get_room_id(&request)?;
         let req = request.into_inner();
-        let response = self.client_api.set_current_media(user_id.as_str(), room_id.as_str(), req).await.map_err(impls_err_to_status)?;
+        let response = self.client_api.set_current_media(user_id.as_str(), room_id.as_str(), req).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -983,7 +983,7 @@ impl MediaService for ClientServiceImpl {
         let user_id = self.get_user_id(&request).await?;
         let room_id = self.get_room_id(&request)?;
         let req = request.into_inner();
-        let response = self.client_api.get_movie_info(user_id.as_str(), room_id.as_str(), req).await.map_err(impls_err_to_status)?;
+        let response = self.client_api.get_movie_info(user_id.as_str(), room_id.as_str(), req).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 }
@@ -997,7 +997,7 @@ impl PublicService for ClientServiceImpl {
         request: Request<CheckRoomRequest>,
     ) -> Result<Response<CheckRoomResponse>, Status> {
         let req = request.into_inner();
-        let response = self.client_api.check_room(req).await.map_err(impls_err_to_status)?;
+        let response = self.client_api.check_room(req).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -1006,7 +1006,7 @@ impl PublicService for ClientServiceImpl {
         request: Request<ListRoomsRequest>,
     ) -> Result<Response<ListRoomsResponse>, Status> {
         let req = request.into_inner();
-        let response = self.client_api.list_rooms(req).await.map_err(impls_err_to_status)?;
+        let response = self.client_api.list_rooms(req).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -1015,7 +1015,7 @@ impl PublicService for ClientServiceImpl {
         request: Request<GetHotRoomsRequest>,
     ) -> Result<Response<GetHotRoomsResponse>, Status> {
         let req = request.into_inner();
-        let response = self.client_api.get_hot_rooms(req).await.map_err(impls_err_to_status)?;
+        let response = self.client_api.get_hot_rooms(req).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -1023,7 +1023,7 @@ impl PublicService for ClientServiceImpl {
         &self,
         _request: Request<GetPublicSettingsRequest>,
     ) -> Result<Response<GetPublicSettingsResponse>, Status> {
-        let response = self.client_api.get_public_settings().map_err(impls_err_to_status)?;
+        let response = self.client_api.get_public_settings().map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 }
@@ -1038,7 +1038,7 @@ impl EmailService for ClientServiceImpl {
         request: Request<SendVerificationEmailRequest>,
     ) -> Result<Response<SendVerificationEmailResponse>, Status> {
         let email_api = self.email_api()
-            .map_err(impls_err_to_status)?;
+            .map_err(map_api_error)?;
         let req = request.into_inner();
 
         let result = email_api
@@ -1056,7 +1056,7 @@ impl EmailService for ClientServiceImpl {
         request: Request<ConfirmEmailRequest>,
     ) -> Result<Response<ConfirmEmailResponse>, Status> {
         let email_api = self.email_api()
-            .map_err(impls_err_to_status)?;
+            .map_err(map_api_error)?;
         let req = request.into_inner();
 
         let result = email_api
@@ -1075,7 +1075,7 @@ impl EmailService for ClientServiceImpl {
         request: Request<RequestPasswordResetRequest>,
     ) -> Result<Response<RequestPasswordResetResponse>, Status> {
         let email_api = self.email_api()
-            .map_err(impls_err_to_status)?;
+            .map_err(map_api_error)?;
         let req = request.into_inner();
 
         let result = email_api
@@ -1093,7 +1093,7 @@ impl EmailService for ClientServiceImpl {
         request: Request<ConfirmPasswordResetRequest>,
     ) -> Result<Response<ConfirmPasswordResetResponse>, Status> {
         let email_api = self.email_api()
-            .map_err(impls_err_to_status)?;
+            .map_err(map_api_error)?;
         let req = request.into_inner();
 
         let result = email_api
@@ -1115,45 +1115,45 @@ mod tests {
     // ==================== Error Mapping ====================
 
     #[test]
-    fn test_impls_err_to_status_not_found() {
+    fn test_map_api_error_not_found() {
         let err = crate::impls::ApiError::NotFound("room not found".to_string());
-        let status = impls_err_to_status(err);
+        let status = map_api_error(err);
         assert_eq!(status.code(), tonic::Code::NotFound);
         assert!(status.message().contains("not found"));
     }
 
     #[test]
-    fn test_impls_err_to_status_unauthenticated() {
+    fn test_map_api_error_unauthenticated() {
         let err = crate::impls::ApiError::Authentication("invalid token".to_string());
-        let status = impls_err_to_status(err);
+        let status = map_api_error(err);
         assert_eq!(status.code(), tonic::Code::Unauthenticated);
     }
 
     #[test]
-    fn test_impls_err_to_status_permission_denied() {
+    fn test_map_api_error_permission_denied() {
         let err = crate::impls::ApiError::Authorization("forbidden".to_string());
-        let status = impls_err_to_status(err);
+        let status = map_api_error(err);
         assert_eq!(status.code(), tonic::Code::PermissionDenied);
     }
 
     #[test]
-    fn test_impls_err_to_status_already_exists() {
+    fn test_map_api_error_already_exists() {
         let err = crate::impls::ApiError::AlreadyExists("user exists".to_string());
-        let status = impls_err_to_status(err);
+        let status = map_api_error(err);
         assert_eq!(status.code(), tonic::Code::AlreadyExists);
     }
 
     #[test]
-    fn test_impls_err_to_status_invalid_argument() {
+    fn test_map_api_error_invalid_argument() {
         let err = crate::impls::ApiError::InvalidInput("bad input".to_string());
-        let status = impls_err_to_status(err);
+        let status = map_api_error(err);
         assert_eq!(status.code(), tonic::Code::InvalidArgument);
     }
 
     #[test]
-    fn test_impls_err_to_status_internal_hides_details() {
+    fn test_map_api_error_internal_hides_details() {
         let err = crate::impls::ApiError::Internal("secret DB password=abc123".to_string());
-        let status = impls_err_to_status(err);
+        let status = map_api_error(err);
         assert_eq!(status.code(), tonic::Code::Internal);
         // Internal errors should NOT leak implementation details
         assert_eq!(status.message(), "Internal error");
@@ -1162,7 +1162,7 @@ mod tests {
     }
 
     #[test]
-    fn test_impls_err_to_status_all_variants() {
+    fn test_map_api_error_all_variants() {
         let variants: Vec<(crate::impls::ApiError, tonic::Code)> = vec![
             (crate::impls::ApiError::NotFound("x".into()), tonic::Code::NotFound),
             (crate::impls::ApiError::Authentication("x".into()), tonic::Code::Unauthenticated),
@@ -1172,7 +1172,7 @@ mod tests {
             (crate::impls::ApiError::Internal("x".into()), tonic::Code::Internal),
         ];
         for (err, expected_code) in variants {
-            let status = impls_err_to_status(err);
+            let status = map_api_error(err);
             assert_eq!(status.code(), expected_code);
         }
     }

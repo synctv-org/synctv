@@ -51,8 +51,6 @@ pub struct RtcpHandler {
 #[derive(Debug, Clone)]
 struct StatsSnapshot {
     timestamp: Instant,
-    packets_received: u64,
-    packets_lost: u64,
     bytes_received: u64,
 }
 
@@ -213,8 +211,6 @@ impl RtcpHandler {
         let now = Instant::now();
         let current_snapshot = StatsSnapshot {
             timestamp: now,
-            packets_received: total_packets_received,
-            packets_lost: total_packets_lost,
             bytes_received: total_bytes_received,
         };
 

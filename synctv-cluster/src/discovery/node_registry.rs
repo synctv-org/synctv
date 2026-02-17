@@ -141,7 +141,7 @@ pub struct NodeRegistry {
     last_health_check: AtomicU64,
     node_id: String,
     pub heartbeat_timeout_secs: i64,
-    local_nodes: Arc<RwLock<HashMap<String, NodeInfo>>>,
+    pub(crate) local_nodes: Arc<RwLock<HashMap<String, NodeInfo>>>,
     /// Current epoch for this node (incremented on each registration)
     current_epoch: Arc<AtomicU64>,
     /// Circuit breaker for Redis operations (failsafe crate)

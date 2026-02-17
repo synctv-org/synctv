@@ -17,6 +17,7 @@ use super::dedup::{DedupKey, MessageDeduplicator};
 use super::events::ClusterEvent;
 use super::redis_pubsub::{PublishRequest, RedisPubSub};
 use super::room_hub::{ConnectionId, RoomMessageHub};
+use super::wal::EventWal;
 use crate::discovery::{HeartbeatResult, NodeRegistry};
 use crate::error::Result as ClusterResult;
 use synctv_core::models::id::{RoomId, UserId};
@@ -39,6 +40,10 @@ pub struct ClusterConfig {
     /// Capacity for the normal-priority Redis publish channel.
     /// Normal events are dropped with warning when full.
     pub publish_channel_capacity: usize,
+    /// Optional path for the cluster event Write-Ahead Log (WAL).
+    /// When set, critical events are persisted to disk before Redis publish,
+    /// ensuring no events are lost during Redis outages.
+    pub wal_path: Option<String>,
 }
 
 impl Default for ClusterConfig {
@@ -50,6 +55,7 @@ impl Default for ClusterConfig {
             cleanup_interval: Duration::from_secs(30),
             critical_channel_capacity: 1000,
             publish_channel_capacity: 10_000,
+            wal_path: None,
         }
     }
 }
@@ -122,8 +128,24 @@ impl ClusterManager {
             warn!("Redis URL not provided, running in single-node mode");
             (None, None, None)
         } else {
+            // Initialize the WAL if a path is configured
+            let event_wal = if let Some(ref wal_path) = config.wal_path {
+                match EventWal::new(std::path::PathBuf::from(wal_path)).await {
+                    Ok(wal) => {
+                        info!(wal_path = %wal_path, "Cluster event WAL enabled");
+                        Some(Arc::new(wal))
+                    }
+                    Err(e) => {
+                        warn!(wal_path = %wal_path, error = %e, "Failed to initialize event WAL, continuing without WAL");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
             let redis_pubsub = Arc::new(
-                RedisPubSub::new(
+                RedisPubSub::with_wal(
                     &config.redis_url,
                     message_hub.clone(),
                     config.node_id.clone(),
@@ -131,6 +153,7 @@ impl ClusterManager {
                     permission_service,
                     cache_invalidation,
                     deduplicator.clone(),
+                    event_wal,
                 )?
             );
 
@@ -560,6 +583,7 @@ mod tests {
             cleanup_interval: Duration::from_secs(1),
             critical_channel_capacity: 1000,
             publish_channel_capacity: 10_000,
+            wal_path: None,
         };
 
         let manager = ClusterManager::new(config, None, None).await.unwrap();
@@ -611,6 +635,7 @@ mod tests {
             cleanup_interval: Duration::from_secs(1),
             critical_channel_capacity: 1000,
             publish_channel_capacity: 10_000,
+            wal_path: None,
         };
 
         let manager = ClusterManager::new(config, None, None).await.unwrap();
@@ -651,6 +676,7 @@ mod tests {
             cleanup_interval: Duration::from_secs(1),
             critical_channel_capacity: 1000,
             publish_channel_capacity: 10_000,
+            wal_path: None,
         };
 
         let manager = ClusterManager::new(config, None, None).await.unwrap();

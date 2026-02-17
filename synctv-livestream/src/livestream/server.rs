@@ -346,6 +346,11 @@ impl LivestreamServer {
                 activity_pm.record_publisher_activity(room_id, media_id);
             });
 
+        // Create active publishers source for post-lag reconciliation in the HLS remuxer.
+        let reconcile_pm = Arc::clone(&publisher_manager);
+        let active_publishers_source: crate::protocols::hls::ActivePublishersSource =
+            Arc::new(move || reconcile_pm.active_publisher_streams());
+
         // Start the HLS remuxer
         let hls_segment_manager = segment_manager.clone();
         let hls_stream_registry = stream_registry.clone();
@@ -358,7 +363,8 @@ impl LivestreamServer {
                 hls_stream_registry,
                 hls_cancel,
             )
-            .with_activity_callback(activity_callback);
+            .with_activity_callback(activity_callback)
+            .with_active_publishers_source(active_publishers_source);
 
             let timer = synctv_core::metrics::stream::STREAM_RELAY_DURATION
                 .with_label_values(&["hls"])

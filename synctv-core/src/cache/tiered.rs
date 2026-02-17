@@ -139,7 +139,7 @@ where
         }
 
         crate::metrics::cache::CACHE_MISSES
-            .with_label_values(&[&self.cache_type, "l1"])
+            .with_label_values(&[&self.cache_type, "l1_l2"])
             .inc();
         crate::metrics::cache::CACHE_OPERATION_DURATION
             .with_label_values(&["get"])

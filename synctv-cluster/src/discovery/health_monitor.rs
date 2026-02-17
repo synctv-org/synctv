@@ -69,7 +69,7 @@ struct ProbeState {
 pub struct HealthMonitor {
     node_registry: Arc<NodeRegistry>,
     check_interval_secs: u64,
-    health_status: Arc<RwLock<std::collections::HashMap<String, NodeHealth>>>,
+    pub(crate) health_status: Arc<RwLock<std::collections::HashMap<String, NodeHealth>>>,
     cancel_token: CancellationToken,
     /// Active probe configuration
     probe_config: HealthProbeConfig,

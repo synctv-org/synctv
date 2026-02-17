@@ -392,21 +392,13 @@ impl RateLimiter {
         max_requests: u32,
         window_seconds: u64,
     ) -> Result<(u32, u64)> {
-        // If Redis not configured, return a best-effort estimate
+        // If Redis not configured, return a best-effort estimate.
+        // We intentionally do NOT call `check_key()` here because governor's
+        // `check_key()` consumes a token, and `get_quota()` is meant to be a
+        // read-only query. Consuming a token on every quota check would cause
+        // callers to burn through their rate limit just by inspecting it.
         let Some(ref conn) = self.redis_conn else {
-            // Governor doesn't expose remaining quota directly, so we return
-            // a simple check: if allowed, full quota; if not, zero.
-            let mem_key = format!("{}{}", self.key_prefix, key);
-            let limiter = self.in_memory.get_limiter(max_requests, window_seconds);
-            // Peek without consuming -- governor doesn't support this natively,
-            // so we just report based on whether the next request would succeed.
-            match limiter.check_key(&mem_key) {
-                Ok(_) => return Ok((max_requests.saturating_sub(1), 0)),
-                Err(not_until) => {
-                    let wait = not_until.wait_time_from(governor::clock::DefaultClock::default().now());
-                    return Ok((0, wait.as_secs()));
-                }
-            }
+            return Ok((max_requests, 0));
         };
 
         let mut conn = conn.clone();
@@ -847,26 +839,33 @@ mod tests {
     // ========== In-Memory Limiter Quota Peek Tests ==========
 
     #[tokio::test]
-    async fn test_get_quota_without_redis_initial() {
+    async fn test_get_quota_without_redis_returns_max() {
         let limiter = RateLimiter::in_memory_only("quota_test:".to_string());
 
-        // Initial quota should show near-full remaining
-        let (remaining, _reset) = limiter.get_quota("key", 10, 1).await.unwrap();
-        // Governor peeks by actually consuming a cell, so remaining = max - 1
-        assert_eq!(remaining, 9);
+        // In-memory mode returns max_requests as a best-effort estimate
+        // without consuming a token (unlike the old behavior).
+        let (remaining, reset) = limiter.get_quota("key", 10, 1).await.unwrap();
+        assert_eq!(remaining, 10);
+        assert_eq!(reset, 0);
     }
 
     #[tokio::test]
-    async fn test_get_quota_without_redis_exhausted() {
-        let limiter = RateLimiter::in_memory_only("quota_exhausted:".to_string());
+    async fn test_get_quota_without_redis_does_not_consume_token() {
+        let limiter = RateLimiter::in_memory_only("quota_no_consume:".to_string());
 
-        // Exhaust the limit
-        for _ in 0..10 {
-            let _ = limiter.check_rate_limit("key", 10, 1).await;
+        // Calling get_quota multiple times should NOT exhaust the rate limit
+        for _ in 0..20 {
+            let (remaining, _) = limiter.get_quota("key", 10, 1).await.unwrap();
+            assert_eq!(remaining, 10);
         }
 
-        let (remaining, _reset) = limiter.get_quota("key", 10, 1).await.unwrap();
-        assert_eq!(remaining, 0);
+        // The actual rate limit should still have full capacity
+        for i in 0..10 {
+            limiter
+                .check_rate_limit("key", 10, 1)
+                .await
+                .unwrap_or_else(|_| panic!("Request {} should succeed after get_quota calls", i));
+        }
     }
 
     // ========== Health Check Tests ==========

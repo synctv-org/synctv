@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use super::id::{MediaId, PlaylistId, RoomId};
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, sqlx::FromRow)]
 pub struct RoomPlaybackState {
     pub room_id: RoomId,
     pub playing_media_id: Option<MediaId>,
@@ -40,7 +40,7 @@ impl RoomPlaybackState {
     #[must_use]
     pub fn computed_current_time(&self) -> f64 {
         if self.is_playing {
-            let elapsed = (Utc::now() - self.updated_at).num_milliseconds() as f64 / 1000.0;
+            let elapsed = ((Utc::now() - self.updated_at).num_milliseconds() as f64 / 1000.0).max(0.0);
             self.current_time + elapsed * self.speed
         } else {
             self.current_time

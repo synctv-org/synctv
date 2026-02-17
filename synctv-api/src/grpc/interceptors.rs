@@ -311,86 +311,134 @@ pub struct GrpcRateLimitInterceptor {
     tier: GrpcRateLimitTier,
     /// Window in seconds
     window_seconds: u64,
+    /// Trusted proxy CIDRs/IPs for X-Forwarded-For validation.
+    /// Only requests from these addresses may have their forwarded headers trusted.
+    trusted_proxies: Arc<Vec<String>>,
+    /// Whether development mode is enabled (trusts all proxy headers).
+    development_mode: bool,
 }
 
 impl GrpcRateLimitInterceptor {
     /// Create a new rate limit interceptor for a specific tier.
     ///
     /// Each gRPC service should use its own interceptor with the appropriate tier.
+    /// `trusted_proxies` and `development_mode` control whether X-Forwarded-For
+    /// and X-Real-IP headers are trusted (matching the HTTP middleware pattern).
     #[must_use]
     pub fn new(
         rate_limiter: synctv_core::service::RateLimiter,
         tier: GrpcRateLimitTier,
         window_seconds: u64,
+        trusted_proxies: Vec<String>,
+        development_mode: bool,
     ) -> Self {
         Self {
             rate_limiter: Arc::new(rate_limiter),
             tier,
             window_seconds,
+            trusted_proxies: Arc::new(trusted_proxies),
+            development_mode,
         }
     }
 
     /// Create a new interceptor instance for a different tier, sharing the
-    /// same underlying rate limiter.
+    /// same underlying rate limiter and proxy configuration.
     #[must_use]
     pub fn with_tier(&self, tier: GrpcRateLimitTier) -> Self {
         Self {
             rate_limiter: Arc::clone(&self.rate_limiter),
             tier,
             window_seconds: self.window_seconds,
+            trusted_proxies: Arc::clone(&self.trusted_proxies),
+            development_mode: self.development_mode,
         }
+    }
+
+    /// Check if an IP address is from a trusted proxy.
+    ///
+    /// Mirrors `ServerConfig::is_trusted_proxy` logic for use in the interceptor.
+    fn is_trusted_proxy(&self, ip: &std::net::IpAddr) -> bool {
+        if self.trusted_proxies.is_empty() {
+            return false;
+        }
+        for proxy in self.trusted_proxies.iter() {
+            if let Ok(network) = proxy.parse::<ipnet::IpNet>() {
+                if network.contains(ip) {
+                    return true;
+                }
+            }
+            if let Ok(proxy_ip) = proxy.parse::<std::net::IpAddr>() {
+                if &proxy_ip == ip {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// Extract a stable client identifier from the request.
     ///
     /// Priority:
     /// 1. SHA-256 hash of JWT bearer token (authenticated users)
-    /// 2. Client IP from X-Forwarded-For or X-Real-IP headers (behind reverse proxy)
+    /// 2. Client IP from X-Forwarded-For or X-Real-IP headers (only if from a trusted proxy
+    ///    or development mode is enabled)
     /// 3. Peer IP address (direct connection)
     /// 4. "anon:unknown" fallback (shared bucket; logs warning about misconfiguration)
-    fn extract_client_id<T>(request: &Request<T>) -> String {
-        request
+    fn extract_client_id<T>(&self, request: &Request<T>) -> String {
+        // 1. Try authenticated user first
+        if let Some(id) = request
             .metadata()
             .get("authorization")
             .and_then(|v| v.to_str().ok())
             .and_then(|s| {
-                // Delegate to unified bearer token extraction (RFC 7235 case-insensitive)
                 JwtValidator::extract_bearer_token(s).ok().map(|token| {
                     let hash = Sha256::digest(token.as_bytes());
                     format!("user:{:x}", hash)
                 })
             })
-            .or_else(|| {
-                // Try X-Forwarded-For first (first IP is the original client)
-                request
-                    .metadata()
-                    .get("x-forwarded-for")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|v| v.split(',').next())
-                    .map(|ip| format!("anon:{}", ip.trim()))
-            })
-            .or_else(|| {
-                // Try X-Real-IP header
-                request
-                    .metadata()
-                    .get("x-real-ip")
-                    .and_then(|v| v.to_str().ok())
-                    .map(|ip| format!("anon:{}", ip.trim()))
-            })
-            .or_else(|| {
-                // Fall back to peer IP address (direct connection, often the proxy IP).
-                // Use the same "anon:<ip>" format as header-based extraction for
-                // consistent rate-limit key formatting.
-                request.remote_addr().map(|addr| format!("anon:{}", addr.ip()))
-            })
-            .unwrap_or_else(|| {
-                warn!(
-                    "Rate limit: no client identifier available (no Authorization, X-Forwarded-For, X-Real-IP, or peer address). \
-                     Falling back to shared 'anon:unknown' bucket. \
-                     Configure trusted_proxies and ensure your reverse proxy sets X-Forwarded-For."
-                );
-                "anon:unknown".to_string()
-            })
+        {
+            return id;
+        }
+
+        // 2. Get the peer (socket) IP to check if it's a trusted proxy
+        let peer_ip = request.remote_addr().map(|addr| addr.ip());
+
+        let should_trust_headers = self.development_mode
+            || peer_ip.is_some_and(|ip| self.is_trusted_proxy(&ip));
+
+        if should_trust_headers {
+            // Try X-Forwarded-For first (first IP is the original client)
+            if let Some(ip) = request
+                .metadata()
+                .get("x-forwarded-for")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.split(',').next())
+                .map(|ip| ip.trim().to_string())
+            {
+                return format!("anon:{ip}");
+            }
+            // Try X-Real-IP header
+            if let Some(ip) = request
+                .metadata()
+                .get("x-real-ip")
+                .and_then(|v| v.to_str().ok())
+            {
+                return format!("anon:{}", ip.trim());
+            }
+        }
+
+        // 3. Fall back to peer IP address (direct connection)
+        if let Some(ip) = peer_ip {
+            return format!("anon:{ip}");
+        }
+
+        // 4. No client identifier available
+        warn!(
+            "Rate limit: no client identifier available (no Authorization, X-Forwarded-For, X-Real-IP, or peer address). \
+             Falling back to shared 'anon:unknown' bucket. \
+             Configure trusted_proxies and ensure your reverse proxy sets X-Forwarded-For."
+        );
+        "anon:unknown".to_string()
     }
 
     /// Apply rate limiting to a gRPC request.
@@ -400,7 +448,7 @@ impl GrpcRateLimitInterceptor {
     /// auth requests (5/min) don't consume read quota (100/min).
     #[allow(clippy::result_large_err)]
     pub fn check<T>(&self, request: Request<T>) -> Result<Request<T>, Status> {
-        let client_id = Self::extract_client_id(&request);
+        let client_id = self.extract_client_id(&request);
 
         // Include tier in the rate limit key so each tier has its own bucket
         let rate_key = format!("{}:{}", client_id, self.tier.key_suffix());

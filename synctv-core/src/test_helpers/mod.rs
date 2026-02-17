@@ -194,6 +194,7 @@ impl ChatMessageFixture {
             room_id: self.room_id,
             user_id: self.user_id,
             content: self.content,
+            message_type: 1,
             created_at: Utc::now(),
         }
     }

@@ -1,19 +1,26 @@
-//! Cache invalidation tests for multi-replica settings (Task #85)
+//! Cache invalidation tests for multi-replica settings
 //!
 //! Tests verify cache invalidation works correctly across multiple replicas
 //! using Redis Pub/Sub or Streams.
 //!
 //! Run with: cargo test --test cache_invalidation_tests
+//! Requires Docker for testcontainers.
 
 use synctv_core::{
     cache::{CacheInvalidationService, InvalidationMessage},
     models::{RoomId, UserId},
 };
 use testcontainers::runners::AsyncRunner;
-use testcontainers::ContainerAsync;
 use testcontainers_modules::redis::Redis;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+
+async fn start_redis() -> (testcontainers::ContainerAsync<Redis>, String) {
+    let container = Redis::default().start().await.expect("Failed to start Redis");
+    let port = container.get_host_port_ipv4(6379).await.expect("Failed to get port");
+    let redis_url = format!("redis://127.0.0.1:{}", port);
+    (container, redis_url)
+}
 
 #[tokio::test]
 async fn test_cache_invalidation_message_serialization() {
@@ -31,14 +38,7 @@ async fn test_cache_invalidation_message_serialization() {
 
 #[tokio::test]
 async fn test_cache_invalidation_broadcast_received() {
-    let docker = Cli::default();
-    let redis_container = docker.run(Redis::default());
-
-    let redis_url = format!(
-        "redis://127.0.0.1:{}",
-        redis_container.get_host_port_ipv4(6379)
-    );
-
+    let (_container, redis_url) = start_redis().await;
     let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");
 
     // Create two invalidation services (simulating two replicas)
@@ -89,14 +89,7 @@ async fn test_cache_invalidation_broadcast_received() {
 
 #[tokio::test]
 async fn test_cache_invalidation_all_message() {
-    let docker = Cli::default();
-    let redis_container = docker.run(Redis::default());
-
-    let redis_url = format!(
-        "redis://127.0.0.1:{}",
-        redis_container.get_host_port_ipv4(6379)
-    );
-
+    let (_container, redis_url) = start_redis().await;
     let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");
 
     let service1 = Arc::new(CacheInvalidationService::new(
@@ -134,14 +127,7 @@ async fn test_cache_invalidation_all_message() {
 
 #[tokio::test]
 async fn test_cache_invalidation_room_permission() {
-    let docker = Cli::default();
-    let redis_container = docker.run(Redis::default());
-
-    let redis_url = format!(
-        "redis://127.0.0.1:{}",
-        redis_container.get_host_port_ipv4(6379)
-    );
-
+    let (_container, redis_url) = start_redis().await;
     let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");
 
     let service1 = CacheInvalidationService::new(
@@ -184,14 +170,7 @@ async fn test_cache_invalidation_room_permission() {
 
 #[tokio::test]
 async fn test_cache_invalidation_multiple_messages() {
-    let docker = Cli::default();
-    let redis_container = docker.run(Redis::default());
-
-    let redis_url = format!(
-        "redis://127.0.0.1:{}",
-        redis_container.get_host_port_ipv4(6379)
-    );
-
+    let (_container, redis_url) = start_redis().await;
     let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");
 
     let service1 = Arc::new(CacheInvalidationService::new(
@@ -276,14 +255,7 @@ async fn test_cache_invalidation_without_redis() {
 
 #[tokio::test]
 async fn test_cache_invalidation_playback_state() {
-    let docker = Cli::default();
-    let redis_container = docker.run(Redis::default());
-
-    let redis_url = format!(
-        "redis://127.0.0.1:{}",
-        redis_container.get_host_port_ipv4(6379)
-    );
-
+    let (_container, redis_url) = start_redis().await;
     let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");
 
     let service1 = CacheInvalidationService::new(

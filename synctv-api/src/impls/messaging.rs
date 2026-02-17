@@ -597,6 +597,19 @@ impl StreamMessageHandler {
                 // Check if this is a danmaku message (has position)
                 let is_danmaku = chat_msg.position.is_some();
 
+                // Check if chat/danmaku is enabled in room settings
+                let room_settings = self.room_service
+                    .get_room_settings(&self.room_id)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                if is_danmaku {
+                    if !room_settings.danmaku_enabled.0 {
+                        return Err("Danmaku is disabled in this room".to_string());
+                    }
+                } else if !room_settings.chat_enabled.0 {
+                    return Err("Chat is disabled in this room".to_string());
+                }
+
                 // Check rate limit
                 let rate_limit_key = if is_danmaku {
                     format!("user:{}:danmaku", self.user_id.as_str())

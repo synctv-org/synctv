@@ -210,7 +210,6 @@ impl PullStreamManager {
                 room_id.to_string(),
                 media_id.to_string(),
                 publisher_address,
-                self.local_node_id.clone(),
                 Arc::clone(&self.registry),
                 self.stream_hub_event_sender.clone(),
                 epoch,

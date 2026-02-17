@@ -237,6 +237,12 @@ impl PlaybackService {
             .await?;
 
         let state = self.update_state(room_id.clone(), |state| {
+            if !playing {
+                // Snapshot the computed playback position before pausing so that
+                // the stored current_time reflects where the user actually was.
+                // Without this, resuming would jump back to the last persisted time.
+                state.current_time = state.computed_current_time();
+            }
             state.is_playing = playing;
             state.updated_at = chrono::Utc::now();
             // version is incremented by the SQL UPDATE, not here

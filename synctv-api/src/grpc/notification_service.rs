@@ -37,7 +37,7 @@ impl NotificationServiceImpl {
     }
 }
 
-use super::map_api_error as api_err;
+use super::map_api_error;
 
 #[tonic::async_trait]
 #[allow(clippy::result_large_err)]
@@ -65,7 +65,7 @@ impl NotificationService for NotificationServiceImpl {
                 notification_type,
             )
             .await
-            .map_err(api_err)?;
+            .map_err(map_api_error)?;
 
         Ok(Response::new(ListNotificationsResponse {
             notifications: result.notifications.into_iter().map(notification_to_proto).collect(),
@@ -88,7 +88,7 @@ impl NotificationService for NotificationServiceImpl {
             .notification_api
             .get_notification(&user_id, notification_id)
             .await
-            .map_err(api_err)?;
+            .map_err(map_api_error)?;
 
         Ok(Response::new(GetNotificationResponse {
             notification: Some(notification_to_proto(notification)),
@@ -114,7 +114,7 @@ impl NotificationService for NotificationServiceImpl {
         self.notification_api
             .mark_as_read(&user_id, notification_ids)
             .await
-            .map_err(api_err)?;
+            .map_err(map_api_error)?;
 
         Ok(Response::new(MarkAsReadResponse {}))
     }
@@ -137,7 +137,7 @@ impl NotificationService for NotificationServiceImpl {
         self.notification_api
             .mark_all_as_read(&user_id, before)
             .await
-            .map_err(api_err)?;
+            .map_err(map_api_error)?;
 
         Ok(Response::new(MarkAllAsReadResponse {}))
     }
@@ -155,7 +155,7 @@ impl NotificationService for NotificationServiceImpl {
         self.notification_api
             .delete_notification(&user_id, notification_id)
             .await
-            .map_err(api_err)?;
+            .map_err(map_api_error)?;
 
         Ok(Response::new(DeleteNotificationResponse {}))
     }
@@ -169,7 +169,7 @@ impl NotificationService for NotificationServiceImpl {
         self.notification_api
             .delete_all_read(&user_id)
             .await
-            .map_err(api_err)?;
+            .map_err(map_api_error)?;
 
         Ok(Response::new(DeleteAllReadResponse {}))
     }

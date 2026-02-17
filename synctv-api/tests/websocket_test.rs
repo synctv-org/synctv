@@ -511,6 +511,7 @@ mod health_types {
             details: Some(HealthDetails {
                 database: "healthy".to_string(),
                 redis: "healthy".to_string(),
+                cluster: None,
                 message: None,
             }),
         };
@@ -529,6 +530,7 @@ mod health_types {
             details: Some(HealthDetails {
                 database: "unhealthy".to_string(),
                 redis: "healthy".to_string(),
+                cluster: None,
                 message: Some("Database: connection refused".to_string()),
             }),
         };
@@ -982,7 +984,6 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
-    #[tokio::test]
     #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_ws_handshake_and_initial_user_joined() {
         let infra = TestInfra::new().await;
@@ -1017,7 +1018,6 @@ mod websocket_e2e {
     // Test: Ping/Pong heartbeat mechanism (client sends heartbeat, gets ack)
     // ========================================================================
 
-    #[tokio::test]
     #[tokio::test]
     #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_ws_heartbeat_ping_pong() {
@@ -1063,7 +1063,6 @@ mod websocket_e2e {
     // Test: Graceful disconnect (client sends Close frame)
     // ========================================================================
 
-    #[tokio::test]
     #[tokio::test]
     #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_ws_graceful_disconnect() {
@@ -1116,7 +1115,6 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
-    #[tokio::test]
     #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_ws_unauthenticated_rejected() {
         let infra = TestInfra::new().await;
@@ -1135,7 +1133,6 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
-    #[tokio::test]
     #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_ws_invalid_token_rejected() {
         let infra = TestInfra::new().await;
@@ -1151,7 +1148,6 @@ mod websocket_e2e {
     // Test: Non-member of room is rejected (valid token, not a room member)
     // ========================================================================
 
-    #[tokio::test]
     #[tokio::test]
     #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_ws_non_member_rejected() {
@@ -1181,7 +1177,6 @@ mod websocket_e2e {
     // Test: Multiple clients join the same room and receive each other's events
     // ========================================================================
 
-    #[tokio::test]
     #[tokio::test]
     #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_ws_multi_client_room_sync() {
@@ -1245,7 +1240,6 @@ mod websocket_e2e {
     // Test: Chat message broadcast between two clients in the same room
     // ========================================================================
 
-    #[tokio::test]
     #[tokio::test]
     #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_ws_chat_message_broadcast() {
@@ -1320,7 +1314,6 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
-    #[tokio::test]
     #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_ws_multiple_heartbeats() {
         let infra = TestInfra::new().await;
@@ -1361,7 +1354,6 @@ mod websocket_e2e {
     // Test: UserLeft event is sent when a client disconnects
     // ========================================================================
 
-    #[tokio::test]
     #[tokio::test]
     #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_ws_user_left_on_disconnect() {
@@ -1419,7 +1411,6 @@ mod websocket_e2e {
     // Test: Room isolation (user in a different room does NOT receive messages)
     // ========================================================================
 
-    #[tokio::test]
     #[tokio::test]
     #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_ws_room_isolation() {
@@ -1495,7 +1486,6 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
-    #[tokio::test]
     #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_ws_reconnect_after_disconnect() {
         let infra = TestInfra::new().await;
@@ -1560,7 +1550,6 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
-    #[tokio::test]
     #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_ws_forced_disconnect_via_kick() {
         let infra = TestInfra::new().await;
@@ -1617,7 +1606,6 @@ mod websocket_e2e {
     // Test: Cross-replica messaging via Redis Pub/Sub
     // ========================================================================
 
-    #[tokio::test]
     #[tokio::test]
     #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_ws_cross_replica_chat_via_redis() {
@@ -1693,7 +1681,6 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
-    #[tokio::test]
     #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_ws_rate_limiter_blocks_excess_chat() {
         let infra = TestInfra::new().await;
@@ -1766,7 +1753,6 @@ mod websocket_e2e {
     // Test: Content filter strips XSS from chat messages
     // ========================================================================
 
-    #[tokio::test]
     #[tokio::test]
     #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_ws_content_filter_strips_xss() {
@@ -1846,7 +1832,6 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
-    #[tokio::test]
     #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_ws_connection_cleanup_on_tcp_drop() {
         let infra = TestInfra::new().await;
@@ -1902,7 +1887,6 @@ mod websocket_e2e {
     // Test: ConnectionManager state is consistent after multiple connect/disconnect cycles
     // ========================================================================
 
-    #[tokio::test]
     #[tokio::test]
     #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_ws_connection_manager_state_consistency() {
@@ -1961,7 +1945,6 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
-    #[tokio::test]
     #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_ws_empty_chat_rejected() {
         let infra = TestInfra::new().await;
@@ -2017,7 +2000,6 @@ mod websocket_e2e {
     // Test: Danmaku message with position is broadcast correctly
     // ========================================================================
 
-    #[tokio::test]
     #[tokio::test]
     #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_ws_danmaku_broadcast() {
@@ -2101,7 +2083,6 @@ mod websocket_e2e {
     // Test: Concurrent connections from same user to same room
     // ========================================================================
 
-    #[tokio::test]
     #[tokio::test]
     #[ignore = "Requires Docker (PostgreSQL/Redis)"]
     async fn test_ws_concurrent_connections_same_user() {

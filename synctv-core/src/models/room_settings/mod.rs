@@ -29,7 +29,8 @@
 use crate::models::permission::PermissionBits;
 use crate::{Error, Result};
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+use parking_lot::RwLock;
 
 // Forward-declare RoomSettings so the trait can reference it.
 // The actual struct definition is below, after the setting type definitions.
@@ -74,30 +75,26 @@ pub struct RoomSettingsRegistry;
 impl RoomSettingsRegistry {
     /// Register a setting type (called automatically by ctor)
     pub fn register(key: &'static str, provider: Arc<dyn RoomSettingProvider>) {
-        let mut registry = REGISTRY.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut registry = REGISTRY.write();
         registry.insert(key.to_string(), provider);
     }
 
     /// Get provider for a setting by key
     pub fn get_provider(key: &str) -> Option<Arc<dyn RoomSettingProvider>> {
-        let registry = REGISTRY.read().ok()?;
+        let registry = REGISTRY.read();
         registry.get(key).cloned()
     }
 
     /// Get all registered setting keys
     pub fn all_keys() -> Vec<String> {
-        match REGISTRY.read() {
-            Ok(registry) => registry.keys().cloned().collect(),
-            Err(e) => e.into_inner().keys().cloned().collect(),
-        }
+        let registry = REGISTRY.read();
+        registry.keys().cloned().collect()
     }
 
     /// Check if a setting exists
     pub fn has_key(key: &str) -> bool {
-        match REGISTRY.read() {
-            Ok(registry) => registry.contains_key(key),
-            Err(e) => e.into_inner().contains_key(key),
-        }
+        let registry = REGISTRY.read();
+        registry.contains_key(key)
     }
 
     /// Validate a setting value by key (dynamic validation)

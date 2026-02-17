@@ -6,6 +6,7 @@
 use growable_bloom_filter::GrowableBloom;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::RwLock;
 
 /// Bloom filter configuration
@@ -206,6 +207,10 @@ pub struct ProtectedCache {
     shutdown: Arc<tokio::sync::Notify>,
     /// Background task join handle
     background_task: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    /// Flag indicating the bloom filter is being rebuilt after a periodic reset.
+    /// When true, `check_exists` and `check_exists_quick` bypass the bloom filter
+    /// (return "might exist") to avoid false negatives causing a thundering herd.
+    rebuilding: Arc<AtomicBool>,
 }
 
 /// Default null cache TTL (5 minutes)
@@ -228,6 +233,7 @@ impl ProtectedCache {
             null_cache: Arc::new(null_cache),
             shutdown: Arc::new(tokio::sync::Notify::new()),
             background_task: Arc::new(tokio::sync::Mutex::new(None)),
+            rebuilding: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -259,6 +265,7 @@ impl ProtectedCache {
         let bloom_filter = self.bloom_filter.clone();
         let null_cache = self.null_cache.clone();
         let shutdown = self.shutdown.clone();
+        let rebuilding = self.rebuilding.clone();
 
         let task = crate::spawn::spawn_monitored("bloom_filter_reset", async move {
             let mut interval = tokio::time::interval(reset_interval);
@@ -269,12 +276,19 @@ impl ProtectedCache {
                     _ = interval.tick() => {
                         tracing::info!("Periodic Bloom filter reset starting");
 
+                        // Set rebuilding flag so lookups bypass the bloom filter
+                        // instead of getting false negatives from an empty filter
+                        rebuilding.store(true, Ordering::Release);
+
                         // Clear Bloom filter
                         bloom_filter.clear().await;
 
                         // Clear null cache
                         null_cache.invalidate_all();
                         null_cache.run_pending_tasks();
+
+                        // Clear rebuilding flag -- bloom filter is ready for use
+                        rebuilding.store(false, Ordering::Release);
 
                         tracing::info!("Periodic Bloom filter reset completed");
                     }
@@ -322,6 +336,12 @@ impl ProtectedCache {
             return Some(false);
         }
 
+        // During a periodic reset the bloom filter is empty and would produce
+        // false negatives.  Bypass it so all lookups go to cache/DB directly.
+        if self.rebuilding.load(Ordering::Acquire) {
+            return None;
+        }
+
         // Check bloom filter
         if self.bloom_filter.contains(key).await {
             // Might exist, need to verify
@@ -337,6 +357,10 @@ impl ProtectedCache {
     /// This is faster than `check_exists` but only checks the bloom filter,
     /// not the null cache. Use this for pre-filtering.
     pub async fn check_exists_quick(&self, key: &str) -> bool {
+        // During a periodic reset, bypass the bloom filter to avoid false negatives
+        if self.rebuilding.load(Ordering::Acquire) {
+            return true;
+        }
         self.bloom_filter.contains(key).await
     }
 

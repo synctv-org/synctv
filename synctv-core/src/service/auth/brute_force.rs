@@ -11,10 +11,19 @@
 //! A successful login resets the counter to zero.
 
 use redis::AsyncCommands;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 
 use crate::{cache::KeyBuilder, Error, Result, InternalExt};
+
+/// Stored state for brute-force tracking in Redis.
+/// Serialized as JSON to store both the count and last failure timestamp.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BruteForceState {
+    count: u64,
+    last_failure_at: i64,
+}
 
 /// Lockout thresholds and durations
 const TIER1_THRESHOLD: u64 = 5;
@@ -67,37 +76,71 @@ impl BruteForceProtection {
     /// Check if a login attempt is allowed for the given username.
     ///
     /// Returns `Ok(())` if the attempt is allowed, or an authentication error
-    /// with the lockout duration if the account is locked.
+    /// with the remaining lockout duration if the account is locked.
+    ///
+    /// The lockout check compares the elapsed time since the last failure against
+    /// the lockout duration for the current tier. Once the lockout period has
+    /// elapsed, the attempt is allowed even though the failure counter is preserved
+    /// (so tier escalation still works on the next failure).
     pub async fn check_allowed(&self, username: &str) -> Result<()> {
-        let attempts = self.get_attempts(username).await?;
+        let (attempts, last_failure_at) = self.get_attempts(username).await?;
         if let Some(lockout_secs) = Self::lockout_duration(attempts) {
-            tracing::warn!(
-                username = %username,
-                attempts = attempts,
-                lockout_secs = lockout_secs,
-                "Login attempt blocked: account temporarily locked"
-            );
-            return Err(Error::Authentication(format!(
-                "Too many failed login attempts. Please try again in {} seconds.",
-                lockout_secs
-            )));
+            let now = chrono::Utc::now().timestamp();
+            let elapsed = (now - last_failure_at).max(0) as u64;
+            if elapsed < lockout_secs {
+                let remaining = lockout_secs - elapsed;
+                tracing::warn!(
+                    username = %username,
+                    attempts = attempts,
+                    lockout_secs = lockout_secs,
+                    remaining_secs = remaining,
+                    "Login attempt blocked: account temporarily locked"
+                );
+                return Err(Error::Authentication(format!(
+                    "Too many failed login attempts. Please try again in {} seconds.",
+                    remaining
+                )));
+            }
         }
         Ok(())
     }
 
-    /// Record a failed login attempt. Increments the counter and sets/refreshes TTL.
+    /// Record a failed login attempt. Increments the counter, stores the
+    /// last-failure timestamp, and sets/refreshes the Redis TTL.
     pub async fn record_failure(&self, username: &str) -> Result<()> {
+        let now = chrono::Utc::now().timestamp();
+
         if let Some(ref conn) = self.redis_conn {
             let mut conn = conn.clone();
             let key = self.key_builder.login_attempts(username);
 
-            // INCR + EXPIRE atomically via pipeline
-            let (count,): (u64,) = redis::pipe()
-                .atomic()
-                .incr(&key, 1u64)
-                .expire(&key, ATTEMPTS_TTL_SECS as i64)
-                .ignore()
-                .query_async(&mut conn)
+            // Read current state, increment, write back with timestamp.
+            // Uses a Lua script for atomicity so concurrent failures don't
+            // lose updates.
+            let script = redis::Script::new(
+                r#"
+                local raw = redis.call('GET', KEYS[1])
+                local count = 0
+                if raw then
+                    local ok, state = pcall(cjson.decode, raw)
+                    if ok and state and state.count then
+                        count = tonumber(state.count) or 0
+                    else
+                        count = tonumber(raw) or 0
+                    end
+                end
+                count = count + 1
+                local new_state = cjson.encode({count = count, last_failure_at = tonumber(ARGV[1])})
+                redis.call('SET', KEYS[1], new_state, 'EX', tonumber(ARGV[2]))
+                return count
+                "#,
+            );
+
+            let count: u64 = script
+                .key(&key)
+                .arg(now)
+                .arg(ATTEMPTS_TTL_SECS as i64)
+                .invoke_async(&mut conn)
                 .await
                 .internal_with_err("Failed to record login failure")?;
 
@@ -108,7 +151,6 @@ impl BruteForceProtection {
             );
         } else {
             // In-memory fallback
-            let now = chrono::Utc::now().timestamp();
             let key = self.key_builder.login_attempts(username);
             let (count, _) = self.local_attempts.get(&key).await.unwrap_or((0, now));
             self.local_attempts.insert(key, (count + 1, now)).await;
@@ -134,19 +176,32 @@ impl BruteForceProtection {
         Ok(())
     }
 
-    /// Get the current failed attempt count for a username.
+    /// Get the current failed attempt count and last-failure timestamp for a username.
     ///
+    /// Returns `(count, last_failure_at)` where `last_failure_at` is a Unix timestamp.
     /// On Redis error, falls back to the in-memory cache rather than returning 0
     /// (fail-closed). Returning 0 on error would disable brute-force protection
     /// entirely, allowing unlimited login attempts during Redis outages.
-    async fn get_attempts(&self, username: &str) -> Result<u64> {
+    async fn get_attempts(&self, username: &str) -> Result<(u64, i64)> {
         let key = self.key_builder.login_attempts(username);
 
         if let Some(ref conn) = self.redis_conn {
             let mut conn = conn.clone();
 
-            match conn.get::<_, Option<u64>>(&key).await {
-                Ok(count) => return Ok(count.unwrap_or(0)),
+            match conn.get::<_, Option<String>>(&key).await {
+                Ok(Some(raw)) => {
+                    // Try parsing as JSON state first, fall back to plain integer
+                    // for backward compatibility with pre-existing counters.
+                    if let Ok(state) = serde_json::from_str::<BruteForceState>(&raw) {
+                        return Ok((state.count, state.last_failure_at));
+                    }
+                    // Legacy plain integer format (no timestamp available)
+                    if let Ok(count) = raw.parse::<u64>() {
+                        return Ok((count, 0));
+                    }
+                    return Ok((0, 0));
+                }
+                Ok(None) => return Ok((0, 0)),
                 Err(e) => {
                     tracing::warn!(
                         username = %username,
@@ -159,8 +214,8 @@ impl BruteForceProtection {
         }
 
         // In-memory fallback (used when Redis is unavailable or errored)
-        let count = self.local_attempts.get(&key).await.map_or(0, |(c, _)| c);
-        Ok(count)
+        let (count, ts) = self.local_attempts.get(&key).await.unwrap_or((0, 0));
+        Ok((count, ts))
     }
 
     /// Determine lockout duration based on failure count.

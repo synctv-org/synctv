@@ -63,6 +63,7 @@ async fn create_node(redis_url: &str, node_id: &str) -> ClusterManager {
         cleanup_interval: Duration::from_secs(30),
         critical_channel_capacity: 1000,
         publish_channel_capacity: 10_000,
+        wal_path: None,
     };
     ClusterManager::new(config, None, None)
         .await
@@ -146,7 +147,7 @@ async fn test_cross_replica_room_event_propagation() {
     let user_id = UserId::from_string("viewer_user".to_string());
 
     // User subscribes to room on node A (simulating a WebSocket connection on node A)
-    let (mut room_rx, conn_id) = node_a.subscribe(room_id.clone(), user_id.clone());
+    let (mut room_rx, conn_id) = node_a.subscribe(room_id.clone(), user_id.clone()).await;
 
     // Allow Redis pub/sub connections to settle
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -203,7 +204,7 @@ async fn test_cross_replica_kick_publisher() {
     // Also subscribe to the room on node A so Redis subscriber is active for this room
     let room_id = RoomId::from_string("stream_room".to_string());
     let user_id = UserId::from_string("publisher_user".to_string());
-    let (_room_rx, conn_id) = node_a.subscribe(room_id.clone(), user_id.clone());
+    let (_room_rx, conn_id) = node_a.subscribe(room_id.clone(), user_id.clone()).await;
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -262,6 +263,7 @@ async fn test_cross_replica_cache_invalidation() {
         cleanup_interval: Duration::from_secs(30),
         critical_channel_capacity: 1000,
         publish_channel_capacity: 10_000,
+        wal_path: None,
     };
     let node_a = ClusterManager::new(config_a, None, Some(cache_svc_a))
         .await
@@ -337,7 +339,7 @@ async fn test_redis_pubsub_no_message_loss() {
     let user_id = UserId::from_string("listener".to_string());
 
     // Subscribe on node A
-    let (mut room_rx, conn_id) = node_a.subscribe(room_id.clone(), user_id.clone());
+    let (mut room_rx, conn_id) = node_a.subscribe(room_id.clone(), user_id.clone()).await;
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -415,7 +417,7 @@ async fn test_cross_replica_deduplication() {
     let room_id = RoomId::from_string("dedup_room".to_string());
     let user_id = UserId::from_string("listener".to_string());
 
-    let (mut room_rx, conn_id) = node_a.subscribe(room_id.clone(), user_id.clone());
+    let (mut room_rx, conn_id) = node_a.subscribe(room_id.clone(), user_id.clone()).await;
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -473,7 +475,7 @@ async fn test_cross_replica_room_deleted() {
     let user_id = UserId::from_string("user_in_room".to_string());
 
     // Subscribe user on node A
-    let (mut room_rx, _conn_id) = node_a.subscribe(room_id.clone(), user_id.clone());
+    let (mut room_rx, _conn_id) = node_a.subscribe(room_id.clone(), user_id.clone()).await;
 
     // Verify subscriber exists
     let metrics = node_a.metrics();
@@ -533,7 +535,7 @@ async fn test_event_propagation_latency() {
     let room_id = RoomId::from_string("latency_room".to_string());
     let user_id = UserId::from_string("listener".to_string());
 
-    let (mut room_rx, conn_id) = node_a.subscribe(room_id.clone(), user_id.clone());
+    let (mut room_rx, conn_id) = node_a.subscribe(room_id.clone(), user_id.clone()).await;
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -588,8 +590,8 @@ async fn test_multiple_rooms_cross_replica() {
     let user2 = UserId::from_string("user_2".to_string());
 
     // User1 in room1 on node A, User2 in room2 on node A
-    let (mut rx1, conn1) = node_a.subscribe(room1.clone(), user1.clone());
-    let (mut rx2, conn2) = node_a.subscribe(room2.clone(), user2.clone());
+    let (mut rx1, conn1) = node_a.subscribe(room1.clone(), user1.clone()).await;
+    let (mut rx2, conn2) = node_a.subscribe(room2.clone(), user2.clone()).await;
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -681,11 +683,11 @@ async fn test_three_node_cluster() {
     let (mut rx_a, conn_a) = node_a.subscribe(
         room_id.clone(),
         UserId::from_string("user_a".to_string()),
-    );
+    ).await;
     let (mut rx_c, conn_c) = node_c.subscribe(
         room_id.clone(),
         UserId::from_string("user_c".to_string()),
-    );
+    ).await;
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -752,7 +754,7 @@ async fn test_redis_stream_catchup() {
         room_id.clone(),
         user_id.clone(),
         "catchup_conn".to_string(),
-    );
+    ).await;
 
     // Create the publisher node separately to write events to Redis streams
     let publisher = create_node(&redis.redis_url, "publisher_node").await;
@@ -845,7 +847,7 @@ async fn test_critical_events_high_priority() {
     let room_id = RoomId::from_string("critical_room".to_string());
     let user_id = UserId::from_string("listener".to_string());
 
-    let (mut room_rx, conn_id) = node_a.subscribe(room_id.clone(), user_id.clone());
+    let (mut room_rx, conn_id) = node_a.subscribe(room_id.clone(), user_id.clone()).await;
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -1191,7 +1193,7 @@ async fn test_cross_replica_permission_changed() {
     let user_id = UserId::from_string("perm_user".to_string());
 
     // Subscribe on node A (simulating a WebSocket client on node A watching the room)
-    let (mut room_rx, conn_id) = node_a.subscribe(room_id.clone(), user_id.clone());
+    let (mut room_rx, conn_id) = node_a.subscribe(room_id.clone(), user_id.clone()).await;
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -1276,6 +1278,7 @@ async fn test_cross_replica_permission_cache_invalidation_via_cache_service() {
         cleanup_interval: Duration::from_secs(30),
         critical_channel_capacity: 1000,
         publish_channel_capacity: 10_000,
+        wal_path: None,
     };
     let node_a = ClusterManager::new(config_a, None, Some(cache_svc_a))
         .await
@@ -1341,6 +1344,7 @@ async fn test_room_hub_connection_manager_state_consistency() {
         cleanup_interval: Duration::from_secs(1),
         critical_channel_capacity: 1000,
         publish_channel_capacity: 10_000,
+        wal_path: None,
     };
 
     let manager = ClusterManager::new(config, None, None).await.unwrap();
@@ -1351,8 +1355,8 @@ async fn test_room_hub_connection_manager_state_consistency() {
     let user2 = UserId::from_string("user_2".to_string());
 
     // Subscribe two users via ClusterManager (RoomMessageHub)
-    let (_rx1, conn_id_1) = manager.subscribe(room_id.clone(), user1.clone());
-    let (_rx2, conn_id_2) = manager.subscribe(room_id.clone(), user2.clone());
+    let (_rx1, conn_id_1) = manager.subscribe(room_id.clone(), user1.clone()).await;
+    let (_rx2, conn_id_2) = manager.subscribe(room_id.clone(), user2.clone()).await;
 
     // Register connections via ConnectionManager
     conn_manager
@@ -1434,6 +1438,7 @@ async fn test_rapid_subscribe_unsubscribe_no_leak() {
         cleanup_interval: Duration::from_secs(1),
         critical_channel_capacity: 1000,
         publish_channel_capacity: 10_000,
+        wal_path: None,
     };
 
     let manager = ClusterManager::new(config, None, None).await.unwrap();
@@ -1442,7 +1447,7 @@ async fn test_rapid_subscribe_unsubscribe_no_leak() {
     // Rapidly subscribe and unsubscribe 100 connections
     for i in 0..100 {
         let user = UserId::from_string(format!("rapid_user_{i}"));
-        let (_rx, conn_id) = manager.subscribe(room_id.clone(), user);
+        let (_rx, conn_id) = manager.subscribe(room_id.clone(), user).await;
         manager.unsubscribe(&conn_id);
     }
 
@@ -1475,7 +1480,7 @@ async fn test_cross_replica_room_settings_changed() {
     let user_id = UserId::from_string("settings_listener".to_string());
 
     // Subscribe on node A
-    let (mut room_rx, conn_id) = node_a.subscribe(room_id.clone(), user_id.clone());
+    let (mut room_rx, conn_id) = node_a.subscribe(room_id.clone(), user_id.clone()).await;
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -1513,7 +1518,7 @@ async fn test_cross_replica_room_settings_changed() {
     } = &received
     {
         let parsed: serde_json::Value =
-            serde_json::from_slice(settings_json).expect("valid JSON");
+            serde_json::from_slice(&settings_json).expect("valid JSON");
         assert_eq!(parsed["max_members"], 50);
         assert_eq!(parsed["chat_enabled"], false);
     } else {

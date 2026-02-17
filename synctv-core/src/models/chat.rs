@@ -9,6 +9,8 @@ pub struct ChatMessage {
     pub room_id: RoomId,
     pub user_id: UserId,
     pub content: String,
+    /// Message type: 1=text, 2=system, 3=action
+    pub message_type: i16,
     pub created_at: DateTime<Utc>,
 }
 
@@ -20,6 +22,7 @@ impl ChatMessage {
             room_id,
             user_id,
             content,
+            message_type: 1, // default: text
             created_at: Utc::now(),
         }
     }

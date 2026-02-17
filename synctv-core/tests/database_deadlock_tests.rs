@@ -1,11 +1,12 @@
-//! Database deadlock detection tests (Task #91)
+//! Database deadlock detection tests
 //!
 //! Tests verify that the application properly detects and handles deadlocks.
 //!
 //! Run with: cargo test --test database_deadlock_tests
+//! Requires Docker for testcontainers.
 
 use synctv_core::{
-    models::{Room, RoomId, RoomMember, RoomRole, UserId, MemberStatus, PermissionBits},
+    models::{Room, RoomId, RoomMember, RoomRole, UserId, MemberStatus},
     repository::{RoomRepository, RoomMemberRepository},
 };
 use sqlx::PgPool;
@@ -15,13 +16,13 @@ use testcontainers_modules::postgres::Postgres;
 use std::sync::Arc;
 use tokio::sync::Barrier;
 
-async fn create_test_pool() -> (Cli, testcontainers::Container<'static, Postgres>, PgPool) {
-    let docker = Cli::default();
-    let postgres = docker.run(Postgres::default());
+async fn create_test_pool() -> (ContainerAsync<Postgres>, PgPool) {
+    let container = Postgres::default().start().await.expect("Failed to start postgres");
 
+    let port = container.get_host_port_ipv4(5432).await.expect("Failed to get port");
     let connection_string = format!(
         "postgresql://postgres:postgres@127.0.0.1:{}/postgres",
-        postgres.get_host_port_ipv4(5432)
+        port,
     );
 
     let pool = PgPool::connect(&connection_string)
@@ -33,46 +34,60 @@ async fn create_test_pool() -> (Cli, testcontainers::Container<'static, Postgres
         .await
         .expect("Failed to run migrations");
 
-    (docker, postgres, pool)
+    (container, pool)
 }
 
-#[tokio::test]
-async fn test_deadlock_detection_opposite_lock_order() {
-    let (_docker, _container, pool) = create_test_pool().await;
+fn make_member(room_id: RoomId, user_id: UserId) -> RoomMember {
+    RoomMember {
+        room_id,
+        user_id,
+        role: RoomRole::Member,
+        status: MemberStatus::Active,
+        added_permissions: 0,
+        removed_permissions: 0,
+        admin_added_permissions: 0,
+        admin_removed_permissions: 0,
+        joined_at: chrono::Utc::now(),
+        left_at: None,
+        version: 0,
+        banned_at: None,
+        banned_by: None,
+        banned_reason: None,
+    }
+}
 
-    let room_repo = RoomRepository::new(pool.clone());
-    let member_repo = RoomMemberRepository::new(pool.clone());
-
-    // Create test data
-    let creator_id = UserId::new();
-    let room = Room {
+fn make_room(creator_id: UserId) -> Room {
+    Room {
         id: RoomId::new(),
         name: "Test Room".to_string(),
         description: "Test".to_string(),
-        created_by: creator_id.clone(),
+        created_by: creator_id,
         status: synctv_core::models::RoomStatus::Active,
         is_banned: false,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         deleted_at: None,
-    };
+    }
+}
+
+#[tokio::test]
+async fn test_deadlock_detection_opposite_lock_order() {
+    let (_container, pool) = create_test_pool().await;
+
+    let room_repo = RoomRepository::new(pool.clone());
+    let member_repo = RoomMemberRepository::new(pool.clone());
+
+    let creator_id = UserId::new();
+    let room = make_room(creator_id);
     room_repo.create(&room).await.expect("Failed to create room");
 
     let user1 = UserId::new();
     let user2 = UserId::new();
 
-    for user_id in [&user1, &user2] {
-        let member = RoomMember {
-            room_id: room.id.clone(),
-            user_id: user_id.clone(),
-            role: RoomRole::Member,
-            permissions: PermissionBits::DEFAULT_MEMBER,
-            status: MemberStatus::Active,
-            joined_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-        };
-        member_repo.create(&member).await.expect("Failed to create member");
-    }
+    let member1 = make_member(room.id.clone(), user1.clone());
+    let member2 = make_member(room.id.clone(), user2.clone());
+    member_repo.add(&member1).await.expect("Failed to create member1");
+    member_repo.add(&member2).await.expect("Failed to create member2");
 
     // Try to cause deadlock with opposite lock order
     let barrier = Arc::new(Barrier::new(2));
@@ -91,7 +106,7 @@ async fn test_deadlock_detection_opposite_lock_order() {
 
             // Lock user1 first
             sqlx::query(
-                "UPDATE room_members SET permissions = $1
+                "UPDATE room_members SET added_permissions = $1
                  WHERE room_id = $2 AND user_id = $3"
             )
             .bind(100i64)
@@ -104,7 +119,7 @@ async fn test_deadlock_detection_opposite_lock_order() {
 
             // Then lock user2
             sqlx::query(
-                "UPDATE room_members SET permissions = $1
+                "UPDATE room_members SET added_permissions = $1
                  WHERE room_id = $2 AND user_id = $3"
             )
             .bind(200i64)
@@ -134,7 +149,7 @@ async fn test_deadlock_detection_opposite_lock_order() {
 
             // Lock user2 first (opposite order)
             sqlx::query(
-                "UPDATE room_members SET permissions = $1
+                "UPDATE room_members SET added_permissions = $1
                  WHERE room_id = $2 AND user_id = $3"
             )
             .bind(300i64)
@@ -147,7 +162,7 @@ async fn test_deadlock_detection_opposite_lock_order() {
 
             // Then lock user1 (creates potential deadlock)
             sqlx::query(
-                "UPDATE room_members SET permissions = $1
+                "UPDATE room_members SET added_permissions = $1
                  WHERE room_id = $2 AND user_id = $3"
             )
             .bind(400i64)
@@ -187,37 +202,18 @@ async fn test_deadlock_detection_opposite_lock_order() {
 
 #[tokio::test]
 async fn test_deadlock_with_for_update_nowait() {
-    let (_docker, _container, pool) = create_test_pool().await;
+    let (_container, pool) = create_test_pool().await;
 
     let room_repo = RoomRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
-    // Create test data
     let creator_id = UserId::new();
-    let room = Room {
-        id: RoomId::new(),
-        name: "Test Room".to_string(),
-        description: "Test".to_string(),
-        created_by: creator_id.clone(),
-        status: synctv_core::models::RoomStatus::Active,
-        is_banned: false,
-        created_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
-        deleted_at: None,
-    };
+    let room = make_room(creator_id);
     room_repo.create(&room).await.expect("Failed to create room");
 
     let user_id = UserId::new();
-    let member = RoomMember {
-        room_id: room.id.clone(),
-        user_id: user_id.clone(),
-        role: RoomRole::Member,
-        permissions: PermissionBits::DEFAULT_MEMBER,
-        status: MemberStatus::Active,
-        joined_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
-    };
-    member_repo.create(&member).await.expect("Failed to create member");
+    let member = make_member(room.id.clone(), user_id.clone());
+    member_repo.add(&member).await.expect("Failed to create member");
 
     let barrier = Arc::new(Barrier::new(2));
 
@@ -306,24 +302,13 @@ async fn test_deadlock_with_for_update_nowait() {
 
 #[tokio::test]
 async fn test_deadlock_avoidance_with_ordered_locks() {
-    let (_docker, _container, pool) = create_test_pool().await;
+    let (_container, pool) = create_test_pool().await;
 
     let room_repo = RoomRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
-    // Create test data
     let creator_id = UserId::new();
-    let room = Room {
-        id: RoomId::new(),
-        name: "Test Room".to_string(),
-        description: "Test".to_string(),
-        created_by: creator_id.clone(),
-        status: synctv_core::models::RoomStatus::Active,
-        is_banned: false,
-        created_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
-        deleted_at: None,
-    };
+    let room = make_room(creator_id);
     room_repo.create(&room).await.expect("Failed to create room");
 
     let user1 = UserId::new();
@@ -336,18 +321,10 @@ async fn test_deadlock_avoidance_with_ordered_locks() {
         (user2.clone(), user1.clone())
     };
 
-    for user_id in [&first_user, &second_user] {
-        let member = RoomMember {
-            room_id: room.id.clone(),
-            user_id: user_id.clone(),
-            role: RoomRole::Member,
-            permissions: PermissionBits::DEFAULT_MEMBER,
-            status: MemberStatus::Active,
-            joined_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-        };
-        member_repo.create(&member).await.expect("Failed to create member");
-    }
+    let member1 = make_member(room.id.clone(), first_user.clone());
+    let member2 = make_member(room.id.clone(), second_user.clone());
+    member_repo.add(&member1).await.expect("Failed to create member1");
+    member_repo.add(&member2).await.expect("Failed to create member2");
 
     let barrier = Arc::new(Barrier::new(2));
 
@@ -366,7 +343,7 @@ async fn test_deadlock_avoidance_with_ordered_locks() {
 
             // Lock in consistent order
             sqlx::query(
-                "UPDATE room_members SET permissions = $1
+                "UPDATE room_members SET added_permissions = $1
                  WHERE room_id = $2 AND user_id = $3"
             )
             .bind(100i64)
@@ -376,7 +353,7 @@ async fn test_deadlock_avoidance_with_ordered_locks() {
             .await?;
 
             sqlx::query(
-                "UPDATE room_members SET permissions = $1
+                "UPDATE room_members SET added_permissions = $1
                  WHERE room_id = $2 AND user_id = $3"
             )
             .bind(200i64)
@@ -406,7 +383,7 @@ async fn test_deadlock_avoidance_with_ordered_locks() {
 
             // Lock in same consistent order
             sqlx::query(
-                "UPDATE room_members SET permissions = $1
+                "UPDATE room_members SET added_permissions = $1
                  WHERE room_id = $2 AND user_id = $3"
             )
             .bind(300i64)
@@ -416,7 +393,7 @@ async fn test_deadlock_avoidance_with_ordered_locks() {
             .await?;
 
             sqlx::query(
-                "UPDATE room_members SET permissions = $1
+                "UPDATE room_members SET added_permissions = $1
                  WHERE room_id = $2 AND user_id = $3"
             )
             .bind(400i64)
@@ -442,37 +419,18 @@ async fn test_deadlock_avoidance_with_ordered_locks() {
 
 #[tokio::test]
 async fn test_transaction_timeout_prevents_indefinite_wait() {
-    let (_docker, _container, pool) = create_test_pool().await;
+    let (_container, pool) = create_test_pool().await;
 
     let room_repo = RoomRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
-    // Create test data
     let creator_id = UserId::new();
-    let room = Room {
-        id: RoomId::new(),
-        name: "Test Room".to_string(),
-        description: "Test".to_string(),
-        created_by: creator_id.clone(),
-        status: synctv_core::models::RoomStatus::Active,
-        is_banned: false,
-        created_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
-        deleted_at: None,
-    };
+    let room = make_room(creator_id);
     room_repo.create(&room).await.expect("Failed to create room");
 
     let user_id = UserId::new();
-    let member = RoomMember {
-        room_id: room.id.clone(),
-        user_id: user_id.clone(),
-        role: RoomRole::Member,
-        permissions: PermissionBits::DEFAULT_MEMBER,
-        status: MemberStatus::Active,
-        joined_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
-    };
-    member_repo.create(&member).await.expect("Failed to create member");
+    let member = make_member(room.id.clone(), user_id.clone());
+    member_repo.add(&member).await.expect("Failed to create member");
 
     // Start a long-running transaction
     let pool1 = pool.clone();

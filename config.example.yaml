@@ -223,6 +223,12 @@ cluster:
   # new pods faster. Without Redis, k8s_dns provides DNS resolution only -- no
   # NodeRegistry, HealthMonitor, or LoadBalancer will be created.
   discovery_mode: "redis"
+  # Optional path for the cluster event Write-Ahead Log (WAL).
+  # When set, critical cluster events are persisted to disk before being published
+  # to Redis, ensuring no events are lost during Redis outages.
+  # Recommended for production multi-replica deployments.
+  # Example: "data/wal"
+  # wal_path: "data/wal"
 
 # ============================================================================
 # Media Providers Configuration

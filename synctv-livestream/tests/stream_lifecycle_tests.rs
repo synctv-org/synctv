@@ -5,7 +5,7 @@
 //!
 //! Run with: cargo test --test stream_lifecycle_tests
 
-use synctv_core::models::{RoomId, MediaId, UserId};
+use synctv_core::models::{RoomId, MediaId};
 
 #[tokio::test]
 async fn test_stream_key_format_parsing() {
@@ -297,7 +297,7 @@ async fn test_stream_duplicate_publish_rejected() {
 
 #[tokio::test]
 async fn test_stream_metadata_preservation() {
-    #[derive(Debug, Clone, PartialEq)]
+    #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
     struct StreamMetadata {
         width: u32,
         height: u32,
@@ -362,17 +362,17 @@ async fn test_stream_tracker_insert_and_lookup() {
     );
 
     // Lookup by user
-    let streams = tracker.get_streams_by_user("user1");
+    let streams = tracker.get_user_streams("user1");
     assert_eq!(streams.len(), 1);
     assert_eq!(streams[0], ("room1".to_string(), "media1".to_string()));
 
     // Lookup by room
-    let media_ids = tracker.get_streams_by_room("room1");
+    let media_ids = tracker.get_room_streams("room1");
     assert_eq!(media_ids.len(), 1);
     assert_eq!(media_ids[0], "media1");
 
     // Lookup by stream
-    let user = tracker.get_user_by_stream("room1", "media1");
+    let user = tracker.get_stream_user("room1", "media1");
     assert_eq!(user, Some("user1".to_string()));
 }
 
@@ -399,9 +399,9 @@ async fn test_stream_tracker_remove_by_app_stream() {
     assert_eq!(media_id, "media1");
 
     // Verify all indexes are cleaned up
-    assert!(tracker.get_streams_by_user("user1").is_empty());
-    assert!(tracker.get_streams_by_room("room1").is_empty());
-    assert!(tracker.get_user_by_stream("room1", "media1").is_none());
+    assert!(tracker.get_user_streams("user1").is_empty());
+    assert!(tracker.get_room_streams("room1").is_empty());
+    assert!(tracker.get_stream_user("room1", "media1").is_none());
 }
 
 #[tokio::test]
@@ -436,29 +436,29 @@ async fn test_stream_tracker_multi_user_multi_room() {
     );
 
     // User1 has 2 streams
-    let user1_streams = tracker.get_streams_by_user("user1");
+    let user1_streams = tracker.get_user_streams("user1");
     assert_eq!(user1_streams.len(), 2);
 
     // Room1 has 2 media IDs (media1 from user1, media3 from user2)
-    let room1_media = tracker.get_streams_by_room("room1");
+    let room1_media = tracker.get_room_streams("room1");
     assert_eq!(room1_media.len(), 2);
 
     // Remove all streams for user1
-    let removed = tracker.remove_all_by_user("user1");
+    let removed = tracker.remove_user("user1");
     assert_eq!(removed.len(), 2);
 
     // User1 has no streams left
-    assert!(tracker.get_streams_by_user("user1").is_empty());
+    assert!(tracker.get_user_streams("user1").is_empty());
 
     // Room1 still has media3 (from user2)
-    let room1_media = tracker.get_streams_by_room("room1");
+    let room1_media = tracker.get_room_streams("room1");
     assert_eq!(room1_media.len(), 1);
     assert_eq!(room1_media[0], "media3");
 }
 
 #[tokio::test]
 async fn test_stream_subscriber_guard_disarm() {
-    use synctv_livestream::api::StreamSubscriberGuard;
+    use synctv_livestream::api::tracker::StreamSubscriberGuard;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -479,7 +479,7 @@ async fn test_stream_subscriber_guard_disarm() {
 
 #[tokio::test]
 async fn test_stream_subscriber_guard_normal_drop() {
-    use synctv_livestream::api::StreamSubscriberGuard;
+    use synctv_livestream::api::tracker::StreamSubscriberGuard;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 

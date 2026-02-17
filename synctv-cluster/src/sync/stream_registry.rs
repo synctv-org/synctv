@@ -5,6 +5,38 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::{debug, info, warn};
 
+/// Lua script that atomically adds a stream to the active set and stores its
+/// metadata with a TTL. This prevents orphaned entries that could occur if the
+/// process crashes between separate SADD and SETEX commands.
+///
+/// KEYS[1] = active set key, KEYS[2] = metadata key
+/// ARGV[1] = stream identifier, ARGV[2] = TTL seconds, ARGV[3] = JSON metadata
+const REGISTER_STREAM_SCRIPT: &str = r"
+redis.call('SADD', KEYS[1], ARGV[1])
+redis.call('SETEX', KEYS[2], tonumber(ARGV[2]), ARGV[3])
+return 1
+";
+
+/// Lua script that atomically cleans up stale entries from the active streams set.
+/// Iterates all members of the set, checks if each metadata key still exists, and
+/// removes any stale entries in a single round-trip instead of N+1 EXISTS calls.
+///
+/// KEYS[1] = active set key
+/// ARGV[1] = metadata key prefix (e.g., "synctv:streams:meta:")
+const CLEANUP_STALE_SCRIPT: &str = r"
+local stale = {}
+local members = redis.call('SMEMBERS', KEYS[1])
+for _, id in ipairs(members) do
+    if redis.call('EXISTS', ARGV[1] .. id) == 0 then
+        table.insert(stale, id)
+    end
+end
+if #stale > 0 then
+    redis.call('SREM', KEYS[1], unpack(stale))
+end
+return #stale
+";
+
 /// Identifier for a stream (app_name/stream_name)
 pub type StreamIdentifier = String;
 
@@ -94,7 +126,9 @@ impl StreamRegistry {
         // Store in local cache
         self.local_streams.insert(identifier.to_string(), metadata.clone());
 
-        // Persist to Redis synchronously to ensure data is written before returning
+        // Persist to Redis atomically using a Lua script.
+        // A single script execution ensures that SADD + SETEX happen together;
+        // a crash between them can no longer leave an orphaned active-set entry.
         if let Some(ref conn) = self.redis_conn {
             let active_key = format!("{}streams:active", self.redis_key_prefix);
             let meta_key = format!("{}streams:meta:{}", self.redis_key_prefix, identifier);
@@ -104,21 +138,18 @@ impl StreamRegistry {
 
             let mut conn_clone = conn.clone();
 
-            // Add to active streams set
-            if let Err(e) = conn_clone.sadd::<_, _, ()>(&active_key, identifier).await {
-                warn!("Failed to add stream to active set: {e}");
-            }
-
-            // Store metadata with TTL atomically using set_ex
-            if let Err(e) = conn_clone
-                .set_ex::<_, _, ()>(
-                    &meta_key,
-                    &json,
-                    STREAM_METADATA_TTL_SECONDS.try_into().unwrap_or(300),
-                )
+            let ttl: u64 = STREAM_METADATA_TTL_SECONDS.try_into().unwrap_or(300);
+            let script = redis::Script::new(REGISTER_STREAM_SCRIPT);
+            if let Err(e) = script
+                .key(&active_key)
+                .key(&meta_key)
+                .arg(identifier)
+                .arg(ttl)
+                .arg(&json)
+                .invoke_async::<()>(&mut conn_clone)
                 .await
             {
-                warn!("Failed to persist stream metadata: {e}");
+                warn!("Failed to register stream in Redis (atomic script): {e}");
             }
         }
 
@@ -292,54 +323,37 @@ impl StreamRegistry {
     }
 
     /// Remove entries from the `streams:active` set whose metadata keys have expired.
+    ///
+    /// Uses a Lua script to perform the full scan+check+remove server-side in a
+    /// single round-trip, eliminating the previous N+1 EXISTS pattern.
     async fn cleanup_stale_active_entries(&self) {
         let Some(ref conn) = self.redis_conn else {
             return;
         };
 
         let active_key = format!("{}streams:active", self.redis_key_prefix);
+        let meta_prefix = format!("{}streams:meta:", self.redis_key_prefix);
         let mut conn_clone = conn.clone();
 
-        let identifiers: Vec<String> = match conn_clone.smembers(&active_key).await {
-            Ok(ids) => ids,
+        let script = redis::Script::new(CLEANUP_STALE_SCRIPT);
+        match script
+            .key(&active_key)
+            .arg(&meta_prefix)
+            .invoke_async::<i64>(&mut conn_clone)
+            .await
+        {
+            Ok(removed) if removed > 0 => {
+                info!(
+                    removed_count = removed,
+                    "Cleaned up stale entries from streams:active set"
+                );
+            }
+            Ok(_) => {
+                // No stale entries found -- nothing to log
+            }
             Err(e) => {
-                warn!("Failed to read active streams set for cleanup: {e}");
-                return;
+                warn!("Failed to run stale stream cleanup script: {e}");
             }
-        };
-
-        let mut removed = 0u64;
-        for identifier in &identifiers {
-            let meta_key = format!("{}streams:meta:{}", self.redis_key_prefix, identifier);
-            let exists: bool = match conn_clone.exists(&meta_key).await {
-                Ok(v) => v,
-                Err(e) => {
-                    warn!("Failed to check stream metadata existence for cleanup: {e}");
-                    continue;
-                }
-            };
-
-            if !exists {
-                // Metadata expired (node crashed) -- remove from active set
-                let result: Result<(), _> = conn_clone.srem(&active_key, identifier).await;
-                if let Err(e) = result {
-                    warn!("Failed to remove stale stream from active set: {e}");
-                } else {
-                    removed += 1;
-                    debug!(
-                        stream = %identifier,
-                        "Removed stale stream from active set (metadata expired)"
-                    );
-                }
-            }
-        }
-
-        if removed > 0 {
-            info!(
-                removed_count = removed,
-                total_checked = identifiers.len(),
-                "Cleaned up stale entries from streams:active set"
-            );
         }
     }
 

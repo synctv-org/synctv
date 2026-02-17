@@ -129,6 +129,29 @@ pub struct RoomMember {
     pub banned_reason: Option<String>,
 }
 
+impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for RoomMember {
+    fn from_row(row: &'r sqlx::postgres::PgRow) -> std::result::Result<Self, sqlx::Error> {
+        use sqlx::Row;
+        let banned_by: Option<String> = row.try_get("banned_by")?;
+        Ok(Self {
+            room_id: row.try_get("room_id")?,
+            user_id: row.try_get("user_id")?,
+            role: row.try_get("role")?,
+            status: row.try_get("status")?,
+            added_permissions: row.try_get::<i64, _>("added_permissions")? as u64,
+            removed_permissions: row.try_get::<i64, _>("removed_permissions")? as u64,
+            admin_added_permissions: row.try_get::<i64, _>("admin_added_permissions")? as u64,
+            admin_removed_permissions: row.try_get::<i64, _>("admin_removed_permissions")? as u64,
+            joined_at: row.try_get("joined_at")?,
+            left_at: row.try_get("left_at")?,
+            version: row.try_get("version")?,
+            banned_at: row.try_get("banned_at")?,
+            banned_by: banned_by.map(UserId::from_string),
+            banned_reason: row.try_get("banned_reason")?,
+        })
+    }
+}
+
 impl RoomMember {
     #[must_use] 
     pub fn new(room_id: RoomId, user_id: UserId, role: RoomRole) -> Self {

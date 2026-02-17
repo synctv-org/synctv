@@ -1,7 +1,9 @@
 use dashmap::DashMap;
 use redis::AsyncCommands;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Duration;
 use synctv_core::models::id::{RoomId, UserId};
 use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, info, warn};
@@ -64,8 +66,8 @@ impl Clone for Subscriber {
 /// and recovery after restarts. Local DashMaps serve as a fast cache.
 #[derive(Clone, Debug)]
 pub struct RoomMessageHub {
-    /// Map of `room_id` -> list of subscribers (local cache)
-    rooms: Arc<DashMap<RoomId, Vec<Subscriber>>>,
+    /// Map of `room_id` -> subscribers indexed by connection_id (local cache)
+    rooms: Arc<DashMap<RoomId, HashMap<ConnectionId, Subscriber>>>,
 
     /// Map of `connection_id` -> (`room_id`, `user_id`) for cleanup (local cache)
     connections: Arc<DashMap<ConnectionId, (RoomId, UserId)>>,
@@ -159,11 +161,13 @@ impl RoomMessageHub {
         // where two concurrent subscribes could both see the room as new.
         let is_new_room = match self.rooms.entry(room_id.clone()) {
             dashmap::mapref::entry::Entry::Occupied(mut entry) => {
-                entry.get_mut().push(subscriber);
+                entry.get_mut().insert(connection_id.clone(), subscriber);
                 false
             }
             dashmap::mapref::entry::Entry::Vacant(entry) => {
-                entry.insert(vec![subscriber]);
+                let mut map = HashMap::new();
+                map.insert(connection_id.clone(), subscriber);
+                entry.insert(map);
                 true
             }
         };
@@ -221,20 +225,11 @@ impl RoomMessageHub {
         if let Some((_, (room_id, user_id))) = self.connections.remove(connection_id) {
             let mut room_deactivated = false;
 
-            // Atomically remove subscriber and clean up empty room using
-            // DashMap's `remove_if` to avoid the TOCTOU race between checking
-            // `is_empty()`, dropping the guard, and calling `remove()`. A
-            // concurrent `subscribe` could insert a new subscriber between
-            // the guard drop and the remove, causing the new subscriber to
-            // be silently lost.
-            //
-            // We first retain to remove the target subscriber, then use
-            // `remove_if` which holds the shard lock while checking emptiness
-            // and removing the entry atomically.
+            // Remove the subscriber by connection_id (O(1) HashMap lookup).
+            // We must drop the RefMut before calling remove_if, since both
+            // acquire the same shard lock and would deadlock.
             if let Some(mut subscribers) = self.rooms.get_mut(&room_id) {
-                subscribers.retain(|sub| sub.connection_id != connection_id);
-                // We must drop the RefMut before calling remove_if, since both
-                // acquire the same shard lock and would deadlock.
+                subscribers.remove(connection_id);
                 drop(subscribers);
             }
 
@@ -301,7 +296,7 @@ impl RoomMessageHub {
         {
             let subscribers_guard = self.rooms.get(room_id);
             if let Some(subscribers) = &subscribers_guard {
-                for subscriber in subscribers.iter() {
+                for subscriber in subscribers.values() {
                     match subscriber.sender.try_send(event.clone()) {
                         Ok(()) => {
                             // Reset consecutive drop counter on successful send
@@ -386,7 +381,7 @@ impl RoomMessageHub {
         {
             let subscribers_guard = self.rooms.get(room_id);
             if let Some(subscribers) = &subscribers_guard {
-                for subscriber in subscribers.iter() {
+                for subscriber in subscribers.values() {
                     if subscriber.user_id == *user_id {
                         match subscriber.sender.try_send(event.clone()) {
                             Ok(()) => {
@@ -445,36 +440,33 @@ impl RoomMessageHub {
         let mut failed_connection: Option<ConnectionId> = None;
 
         if let Some(subscribers) = self.rooms.get(room_id) {
-            for subscriber in subscribers.iter() {
-                if subscriber.connection_id == connection_id {
-                    let event_type = event.event_type().to_string();
-                    match subscriber.sender.try_send(event) {
-                        Ok(()) => {
-                            debug!(
-                                room_id = %room_id.as_str(),
-                                connection_id = %connection_id,
-                                event_type = %event_type,
-                                "Event sent to specific connection"
-                            );
-                            result = 1;
-                        }
-                        Err(mpsc::error::TrySendError::Full(_)) => {
-                            warn!(
-                                room_id = %room_id.as_str(),
-                                connection_id = %connection_id,
-                                "Subscriber channel full, dropping targeted event"
-                            );
-                        }
-                        Err(mpsc::error::TrySendError::Closed(_)) => {
-                            warn!(
-                                room_id = %room_id.as_str(),
-                                connection_id = %connection_id,
-                                "Subscriber channel closed for targeted event"
-                            );
-                            failed_connection = Some(subscriber.connection_id.clone());
-                        }
+            if let Some(subscriber) = subscribers.get(connection_id) {
+                let event_type = event.event_type().to_string();
+                match subscriber.sender.try_send(event) {
+                    Ok(()) => {
+                        debug!(
+                            room_id = %room_id.as_str(),
+                            connection_id = %connection_id,
+                            event_type = %event_type,
+                            "Event sent to specific connection"
+                        );
+                        result = 1;
                     }
-                    break;
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        warn!(
+                            room_id = %room_id.as_str(),
+                            connection_id = %connection_id,
+                            "Subscriber channel full, dropping targeted event"
+                        );
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                        warn!(
+                            room_id = %room_id.as_str(),
+                            connection_id = %connection_id,
+                            "Subscriber channel closed for targeted event"
+                        );
+                        failed_connection = Some(subscriber.connection_id.clone());
+                    }
                 }
             }
         }
@@ -522,7 +514,7 @@ impl RoomMessageHub {
     /// WebSocket read loops terminate.
     pub fn remove_room(&self, room_id: &RoomId) {
         if let Some((_, subscribers)) = self.rooms.remove(room_id) {
-            for sub in &subscribers {
+            for sub in subscribers.values() {
                 self.connections.remove(&sub.connection_id);
             }
             // Emit lifecycle event since the room is no longer active
@@ -542,7 +534,7 @@ impl RoomMessageHub {
             .get(room_id)
             .map(|subscribers| {
                 subscribers
-                    .iter()
+                    .values()
                     .map(|sub| (sub.user_id.clone(), sub.connection_id.clone()))
                     .collect()
             })
@@ -655,6 +647,92 @@ impl RoomMessageHub {
         }
 
         Ok(recovered)
+    }
+
+    /// Refresh TTLs on all active Redis subscription keys.
+    ///
+    /// Redis keys for room subscriptions (`room_hub:room:*`) and connection
+    /// mappings (`room_hub:conn:*`) are set with a TTL as a crash-safety
+    /// mechanism. Long-lived subscriptions can outlive this TTL if it is not
+    /// periodically refreshed, causing cross-replica visibility to silently
+    /// stop working.
+    async fn refresh_redis_key_ttls(&self) {
+        let Some(ref conn) = self.redis_conn else {
+            return;
+        };
+        let mut conn = conn.clone();
+        let ttl_secs = self.redis_key_ttl_secs;
+
+        let mut keys_to_refresh = Vec::new();
+
+        // Collect room keys for all active rooms
+        for entry in self.rooms.iter() {
+            let room_key = format!("{}room_hub:room:{}", self.redis_key_prefix, entry.key().as_str());
+            keys_to_refresh.push(room_key);
+        }
+
+        // Collect connection keys for all active connections
+        for entry in self.connections.iter() {
+            let conn_key = format!("{}room_hub:conn:{}", self.redis_key_prefix, entry.key());
+            keys_to_refresh.push(conn_key);
+        }
+
+        if keys_to_refresh.is_empty() {
+            return;
+        }
+
+        let mut failure_count = 0u64;
+        for key in &keys_to_refresh {
+            let result: Result<(), _> = conn.expire(key, ttl_secs).await;
+            if let Err(e) = result {
+                failure_count += 1;
+                warn!("Failed to refresh TTL for room_hub key {key}: {e}");
+            }
+        }
+
+        if failure_count > 0 {
+            warn!(
+                total_keys = keys_to_refresh.len(),
+                failures = failure_count,
+                "Some room_hub Redis key TTL refreshes failed"
+            );
+        } else {
+            debug!(
+                refreshed_keys = keys_to_refresh.len(),
+                "Refreshed TTLs on room_hub Redis subscription keys"
+            );
+        }
+    }
+
+    /// Spawn a background task that periodically refreshes TTLs on Redis
+    /// subscription keys to prevent them from expiring while subscriptions
+    /// are still active.
+    ///
+    /// The refresh interval should be less than half the TTL to ensure keys
+    /// are always refreshed before expiration.
+    #[must_use]
+    pub fn spawn_ttl_refresh_task(
+        &self,
+        interval: Duration,
+        cancel_token: tokio_util::sync::CancellationToken,
+    ) -> tokio::task::JoinHandle<()> {
+        let hub = self.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            // Skip the first immediate tick
+            ticker.tick().await;
+            loop {
+                tokio::select! {
+                    () = cancel_token.cancelled() => {
+                        info!("Room hub TTL refresh task shutting down");
+                        return;
+                    }
+                    _ = ticker.tick() => {
+                        hub.refresh_redis_key_ttls().await;
+                    }
+                }
+            }
+        })
     }
 }
 

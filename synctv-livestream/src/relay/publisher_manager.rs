@@ -37,17 +37,14 @@ const SILENT_PUBLISHER_TIMEOUT_SECS: u64 = 60;
 
 /// Tracked publisher state including activity timestamp.
 struct PublisherEntry {
-    /// Composite key (room_id:media_id)
-    key: String,
     /// Unix timestamp (seconds) of last observed data activity.
     /// Updated via `record_publisher_activity` when media frames arrive.
     last_active_secs: AtomicU64,
 }
 
 impl PublisherEntry {
-    fn new(key: String) -> Self {
+    fn new() -> Self {
         Self {
-            key,
             last_active_secs: AtomicU64::new(Self::now_secs()),
         }
     }
@@ -102,6 +99,22 @@ impl PublisherManager {
     /// Returns the number of broadcast lag events observed since startup.
     pub fn lag_event_count(&self) -> u64 {
         self.lag_event_count.load(Ordering::Relaxed)
+    }
+
+    /// Returns the list of active publishers as `(app_name, stream_name)` pairs.
+    ///
+    /// Used by the HLS remuxer for post-lag reconciliation: after a broadcast
+    /// lag event, the remuxer queries this list and starts HLS handlers for
+    /// any active publishers that don't already have a running handler.
+    pub fn active_publisher_streams(&self) -> Vec<(String, String)> {
+        self.active_publishers
+            .iter()
+            .filter_map(|entry| {
+                entry.key().split_once(':').map(|(room_id, media_id)| {
+                    (room_id.to_string(), media_id.to_string())
+                })
+            })
+            .collect()
     }
 
     /// Record media data activity for a publisher.
@@ -215,7 +228,7 @@ impl PublisherManager {
         let publisher_key = format!("{room_id}:{media_id}");
         self.active_publishers.insert(
             publisher_key.clone(),
-            Arc::new(PublisherEntry::new(publisher_key)),
+            Arc::new(PublisherEntry::new()),
         );
 
         Ok(())
@@ -606,7 +619,7 @@ mod tests {
     fn insert_entry(manager: &PublisherManager, key: &str) {
         manager.active_publishers.insert(
             key.to_string(),
-            Arc::new(PublisherEntry::new(key.to_string())),
+            Arc::new(PublisherEntry::new()),
         );
     }
 

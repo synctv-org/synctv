@@ -1278,6 +1278,7 @@ impl RoomService {
             room_id,
             user_id,
             content,
+            message_type: 1, // text message
             created_at: Utc::now(),
         };
         self.chat_repo.create(&message).await

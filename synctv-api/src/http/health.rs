@@ -18,7 +18,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use tracing::{error, warn};
+use tracing::warn;
 
 use crate::http::AppState;
 use crate::observability::metrics;
@@ -109,7 +109,7 @@ pub async fn readiness_check(State(state): State<AppState>) -> impl IntoResponse
         Err(e) => {
             error_messages.push(format!("Database: {e}"));
             is_healthy = false;
-            error!("Database health check failed: {}", e);
+            warn!("Database health check failed: {}", e);
             "unhealthy".to_string()
         }
     };
@@ -120,7 +120,7 @@ pub async fn readiness_check(State(state): State<AppState>) -> impl IntoResponse
         Err(e) => {
             error_messages.push(format!("Redis: {e}"));
             is_healthy = false;
-            error!("Redis health check failed: {}", e);
+            warn!("Redis health check failed: {}", e);
             "unhealthy".to_string()
         }
     };

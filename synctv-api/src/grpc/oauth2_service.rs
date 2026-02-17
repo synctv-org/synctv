@@ -46,7 +46,7 @@ use tracing::{debug, error, info};
 use synctv_core::models::UserId;
 use std::sync::Arc;
 
-use super::map_api_error as impls_err_to_status;
+use super::map_api_error;
 
 /// gRPC OAuth2 service with mixed authentication.
 ///
@@ -100,7 +100,7 @@ impl OAuth2Service for OAuth2GrpcService {
             .await
             .map_err(|e| {
                 error!("Failed to get authorization URL: {}", e);
-                impls_err_to_status(e)
+                map_api_error(e)
             })?;
 
         debug!("Generated OAuth2 authorization URL for provider: {}", req.provider);
@@ -125,7 +125,7 @@ impl OAuth2Service for OAuth2GrpcService {
             .await
             .map_err(|e| {
                 error!("Failed to get authorization URL for bind: {}", e);
-                impls_err_to_status(e)
+                map_api_error(e)
             })?;
 
         debug!(
@@ -151,7 +151,7 @@ impl OAuth2Service for OAuth2GrpcService {
             .await
             .map_err(|e| {
                 error!("Failed to exchange authorization code: {}", e);
-                impls_err_to_status(e)
+                map_api_error(e)
             })?;
 
         info!(
@@ -179,7 +179,7 @@ impl OAuth2Service for OAuth2GrpcService {
             .await
             .map_err(|e| {
                 error!("Failed to list available providers: {}", e);
-                impls_err_to_status(e)
+                map_api_error(e)
             })?;
 
         let response = providers
@@ -209,7 +209,7 @@ impl OAuth2Service for OAuth2GrpcService {
             .await
             .map_err(|e| {
                 error!("Failed to unlink OAuth2 provider: {}", e);
-                impls_err_to_status(e)
+                map_api_error(e)
             })?;
 
         if !result.success {
@@ -240,7 +240,7 @@ impl OAuth2Service for OAuth2GrpcService {
             .await
             .map_err(|e| {
                 error!("Failed to get linked providers: {}", e);
-                impls_err_to_status(e)
+                map_api_error(e)
             })?;
 
         let response = providers

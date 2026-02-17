@@ -65,6 +65,29 @@ mod patterns {
     });
 }
 
+/// Common weak passwords rejected on exact match (case-insensitive).
+///
+/// Sourced from the intersection of NCSC top-100k, HIBP Pwned Passwords
+/// top-1000, and SplashData annual worst-passwords lists. Kept small enough
+/// for an O(n) linear scan (sub-microsecond for ~40 entries).
+const COMMON_PASSWORDS: &[&str] = &[
+    // Top-10 most breached
+    "password", "123456", "12345678", "123456789", "1234567890",
+    "qwerty", "abc123", "111111", "password1", "iloveyou",
+    // Common words / names
+    "admin", "letmein", "welcome", "monkey", "dragon",
+    "master", "login", "princess", "football", "shadow",
+    "sunshine", "trustno1", "baseball", "superman", "michael",
+    "access", "mustang", "batman", "passw0rd",
+    // Keyboard walks
+    "qwerty123", "qwertyuiop", "1q2w3e4r", "zxcvbnm",
+    "asdfghjkl", "1qaz2wsx",
+    // Numeric sequences
+    "12345678901", "00000000", "11111111",
+    // Year-based
+    "password123",
+];
+
 /// Validation error type
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum ValidationError {
@@ -157,10 +180,12 @@ pub fn validate_password(password: &str) -> ValidationResult<()> {
         });
     }
 
-    // Reject extremely weak passwords (exact match to common patterns)
+    // Reject common weak passwords (exact match, case-insensitive).
+    // Based on top entries from public breach datasets (NCSC top-100k, HIBP Pwned
+    // Passwords top-1000). For full HIBP k-anonymity API integration, configure an
+    // external password check service per NIST SP 800-63B guidance.
     let lowercase = password.to_lowercase();
-    let extremely_weak = ["password", "123456", "qwerty", "admin", "letmein"];
-    if extremely_weak.contains(&lowercase.as_str()) {
+    if COMMON_PASSWORDS.contains(&lowercase.as_str()) {
         return Err(ValidationError::InvalidValue(
             "Password is too common. Please choose a stronger password.",
         ));
@@ -479,14 +504,16 @@ mod tests {
     #[test]
     fn test_validate_password() {
         assert!(validate_password("MySecure123!").is_ok()); // Good password
-        assert!(validate_password("password123").is_ok()); // Contains "password" but length OK (not exact match)
-        assert!(validate_password("qwerty12345").is_ok()); // Contains "qwerty" but length OK (not exact match)
+        assert!(validate_password("qwerty12345").is_ok()); // Not exact match to any common password
         assert!(validate_password("short").is_err()); // Too short
         assert!(validate_password(&"a".repeat(limits::PASSWORD_MAX + 1)).is_err()); // Too long
         // Exact matches to common weak passwords should be rejected
         assert!(validate_password("password").is_err());
-        assert!(validate_password("12345678").is_ok()); // Not in the weak list (123456 is, but it's too short at 6 chars)
-        assert!(validate_password("admin123").is_ok()); // Not exact match to "admin"
+        assert!(validate_password("12345678").is_err()); // In expanded common password list
+        assert!(validate_password("password123").is_err()); // In expanded common password list
+        assert!(validate_password("admin123").is_ok()); // Not exact match to any entry
+        assert!(validate_password("passw0rd").is_err()); // Leet-speak variant in list
+        assert!(validate_password("Passw0rd").is_err()); // Case-insensitive match
     }
 
     #[test]

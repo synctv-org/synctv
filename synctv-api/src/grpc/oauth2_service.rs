@@ -1,4 +1,20 @@
 //! gRPC OAuth2 service implementation
+//!
+//! # HTTP vs gRPC endpoint differences
+//!
+//! Both transports expose the same logical operations via `OAuth2ApiImpl`, but
+//! differ in how they handle the OAuth2 redirect flow:
+//!
+//! - **HTTP** (`GET /api/oauth2/:provider/authorize`): The provider name is a
+//!   URL path segment and the redirect URL is a query parameter. This is the
+//!   natural fit for browser-initiated OAuth2 flows.
+//!
+//! - **gRPC** (`GetAuthorizationUrl`): The provider name and redirect URL are
+//!   fields in the `GetAuthorizationUrlRequest` message. Mobile/desktop clients
+//!   that already use gRPC for all other calls can stay on a single transport.
+//!
+//! Both transports delegate to the same `OAuth2ApiImpl` implementation, so
+//! business logic (token exchange, provider linking) is identical.
 
 use synctv_proto::client::{
     o_auth2_service_server::OAuth2Service,

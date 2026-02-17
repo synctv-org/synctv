@@ -461,6 +461,13 @@ async fn main() -> Result<()> {
     // Hold the guard so buffered log entries are flushed on shutdown
     let _log_guard = logging::init_logging(&config.logging)?;
     info!("SyncTV server starting...");
+    if config.server.development_mode {
+        warn!("===========================================================");
+        warn!("  DEVELOPMENT MODE IS ENABLED");
+        warn!("  Security checks are relaxed. DO NOT use in production!");
+        warn!("  Set server.development_mode = false for production.");
+        warn!("===========================================================");
+    }
     info!("gRPC address: {}", config.grpc_address());
     info!("HTTP address: {}", config.http_address());
 

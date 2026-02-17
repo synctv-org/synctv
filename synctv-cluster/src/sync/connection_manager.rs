@@ -126,7 +126,7 @@ impl Default for ConnectionLimits {
 /// TTL for distributed connection counters in Redis (seconds).
 /// Acts as a crash-safety mechanism: if a node crashes without decrementing,
 /// the counter will expire after this duration.
-const DISTRIBUTED_COUNTER_TTL_SECONDS: i64 = 300; // 5 minutes
+const DISTRIBUTED_COUNTER_TTL_SECONDS: i64 = 90; // 3x heartbeat interval (30s)
 
 /// Connection manager for tracking active gRPC streaming connections
 #[derive(Clone)]

@@ -21,9 +21,11 @@ use super::proto::{
 
 /// HLS proxy client that fetches playlists and segments from publisher nodes via gRPC.
 ///
-/// TS segments are cached locally with a configurable TTL (default 90s, matching
-/// the Cache-Control header on segment HTTP responses). M3U8 playlists are never
-/// cached because they change with every new segment.
+/// Two-tier local cache:
+/// - **TS segments**: cached with 90s TTL (immutable once created, high hit rate)
+/// - **M3U8 playlists**: cached with short TTL (default 1s) to coalesce concurrent
+///   requests from multiple viewers polling the same stream, while still picking up
+///   new segments promptly.
 ///
 /// gRPC connections to publisher nodes are pooled via [`GrpcConnectionPool`] to
 /// avoid the overhead of creating a new HTTP/2 connection per request.
@@ -32,6 +34,9 @@ pub struct HlsProxyClient {
     /// Local cache for TS segments (immutable once created)
     /// Key: "{room_id}:{media_id}:{segment_name}"
     segment_cache: Cache<String, Bytes>,
+    /// Short-lived cache for M3U8 playlists to coalesce concurrent requests.
+    /// Key: "{room_id}:{media_id}", Value: playlist string or empty for "not found"
+    playlist_cache: Cache<String, Option<String>>,
     /// Cluster authentication secret for gRPC metadata
     cluster_secret: Option<String>,
     /// Pooled gRPC connections to publisher nodes
@@ -48,10 +53,12 @@ impl HlsProxyClient {
     /// # Arguments
     /// * `segment_cache_ttl` - TTL for cached TS segments (default: 90 seconds)
     /// * `segment_cache_max_entries` - Max cached segments (default: 1000)
+    /// * `playlist_cache_ttl` - TTL for cached M3U8 playlists (default: 1 second)
     /// * `cluster_secret` - Optional cluster authentication secret
     pub fn new(
         segment_cache_ttl: Duration,
         segment_cache_max_entries: u64,
+        playlist_cache_ttl: Duration,
         cluster_secret: Option<String>,
     ) -> Self {
         let segment_cache = Cache::builder()
@@ -59,8 +66,14 @@ impl HlsProxyClient {
             .max_capacity(segment_cache_max_entries)
             .build();
 
+        let playlist_cache = Cache::builder()
+            .time_to_live(playlist_cache_ttl)
+            .max_capacity(500)
+            .build();
+
         Self {
             segment_cache,
+            playlist_cache,
             cluster_secret,
             connection_pool: GrpcConnectionPool::with_defaults(),
             cache_hits: Arc::new(AtomicU64::new(0)),
@@ -68,17 +81,21 @@ impl HlsProxyClient {
         }
     }
 
-    /// Create with default settings (90s TTL, 1000 max entries).
+    /// Create with default settings (90s segment TTL, 1s playlist TTL, 1000 max segment entries).
     pub fn with_defaults(cluster_secret: Option<String>) -> Self {
         Self::new(
             Duration::from_secs(90),
             1000,
+            Duration::from_secs(1),
             cluster_secret,
         )
     }
 
     /// Fetch M3U8 playlist from the publisher node via gRPC.
-    /// Playlists are NOT cached (they change frequently).
+    ///
+    /// Playlists are cached with a short TTL (default 1s) to coalesce concurrent
+    /// requests from multiple viewers polling the same stream. This significantly
+    /// reduces gRPC calls under load while still picking up new segments promptly.
     pub async fn get_playlist(
         &self,
         grpc_address: &str,
@@ -86,6 +103,21 @@ impl HlsProxyClient {
         media_id: &str,
         segment_url_base: &str,
     ) -> anyhow::Result<Option<String>> {
+        let cache_key = format!("{room_id}:{media_id}");
+
+        // Check playlist cache first
+        if let Some(cached) = self.playlist_cache.get(&cache_key).await {
+            self.cache_hits.fetch_add(1, Ordering::Relaxed);
+            debug!(
+                room_id = room_id,
+                media_id = media_id,
+                "HLS playlist cache hit"
+            );
+            return Ok(cached);
+        }
+
+        self.cache_misses.fetch_add(1, Ordering::Relaxed);
+
         let mut client = self.connect(grpc_address).await?;
 
         let mut request = Request::new(GetHlsPlaylistRequest {
@@ -101,11 +133,16 @@ impl HlsProxyClient {
             .map_err(|e| anyhow::anyhow!("gRPC GetHlsPlaylist failed: {e}"))?
             .into_inner();
 
-        if response.found {
-            Ok(Some(response.playlist))
+        let result = if response.found {
+            Some(response.playlist)
         } else {
-            Ok(None)
-        }
+            None
+        };
+
+        // Cache the result (including None for "not found") with short TTL
+        self.playlist_cache.insert(cache_key, result.clone()).await;
+
+        Ok(result)
     }
 
     /// Fetch TS segment from the publisher node via gRPC.

@@ -498,7 +498,7 @@ async fn init_oauth2_service(
     let oauth2_service = if let Some(conn) = redis_conn {
         info!("OAuth2 service using Redis for state storage (multi-replica safe)");
         OAuth2Service::with_redis(oauth2_repo, conn)
-            .with_cluster_mode(is_cluster_mode)
+            .with_cluster_mode(is_cluster_mode)?
     } else if is_cluster_mode {
         // In cluster mode without Redis, OAuth2 state storage falls back to in-memory,
         // which breaks the authorization flow: the callback request may hit a different

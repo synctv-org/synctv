@@ -69,6 +69,7 @@ impl UserFixture {
     }
 
     pub fn build(self) -> crate::models::User {
+        let now = Utc::now();
         crate::models::User {
             id: self.id,
             username: self.username,
@@ -78,8 +79,9 @@ impl UserFixture {
             status: self.status,
             signup_method: None,
             email_verified: true,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
+            created_at: now,
+            updated_at: now,
+            password_changed_at: now,
             deleted_at: None,
         }
     }

@@ -37,7 +37,7 @@ use synctv_core::service::{UserService, RoomService};
 
 // Re-export public items from convert module
 pub use convert::{
-    media_to_proto, network_stats_to_proto, proto_role_to_room_role, proto_role_to_user_role,
+    media_to_proto, proto_role_to_room_role, proto_role_to_user_role,
     room_role_to_proto,
 };
 
@@ -73,7 +73,6 @@ pub struct ClientApiConfig {
     pub room_service: Arc<RoomService>,
     pub connection_manager: Arc<ConnectionManager>,
     pub config: Arc<synctv_core::Config>,
-    pub sfu_manager: Option<Arc<synctv_sfu::SfuManager>>,
     pub publish_key_service: Option<Arc<synctv_core::service::PublishKeyService>>,
     pub jwt_service: synctv_core::service::JwtService,
     pub live_streaming_infrastructure: Option<Arc<synctv_livestream::api::LiveStreamingInfrastructure>>,
@@ -88,7 +87,6 @@ pub struct ClientApiImpl {
     pub room_service: Arc<RoomService>,
     pub connection_manager: Arc<ConnectionManager>,
     pub config: Arc<synctv_core::Config>,
-    pub sfu_manager: Option<Arc<synctv_sfu::SfuManager>>,
     pub publish_key_service: Option<Arc<synctv_core::service::PublishKeyService>>,
     pub jwt_service: synctv_core::service::JwtService,
     pub live_streaming_infrastructure: Option<Arc<synctv_livestream::api::LiveStreamingInfrastructure>>,
@@ -112,7 +110,6 @@ impl ClientApiImpl {
         room_service: Arc<RoomService>,
         connection_manager: Arc<ConnectionManager>,
         config: Arc<synctv_core::Config>,
-        sfu_manager: Option<Arc<synctv_sfu::SfuManager>>,
         publish_key_service: Option<Arc<synctv_core::service::PublishKeyService>>,
         jwt_service: synctv_core::service::JwtService,
         live_streaming_infrastructure: Option<Arc<synctv_livestream::api::LiveStreamingInfrastructure>>,
@@ -124,7 +121,6 @@ impl ClientApiImpl {
             room_service,
             connection_manager,
             config,
-            sfu_manager,
             publish_key_service,
             jwt_service,
             live_streaming_infrastructure,
@@ -144,7 +140,6 @@ impl ClientApiImpl {
             room_service: config.room_service,
             connection_manager: config.connection_manager,
             config: config.config,
-            sfu_manager: config.sfu_manager,
             publish_key_service: config.publish_key_service,
             jwt_service: config.jwt_service,
             live_streaming_infrastructure: config.live_streaming_infrastructure,

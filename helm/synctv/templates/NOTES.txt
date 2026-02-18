@@ -67,5 +67,29 @@ Ingress is enabled. Access the application at:
   Headless service: {{ include "synctv.fullname" . }}-headless.{{ .Release.Namespace }}.svc.cluster.local
 {{- end }}
 
-IMPORTANT: Remember to update the secrets in production!
-  Run: helm get values {{ .Release.Name }} -n {{ .Release.Namespace }}
+{{- if not .Values.existingSecret }}
+{{- $secretName := include "synctv.secretName" . }}
+
+## Generated Secrets
+
+{{- if not .Values.secrets.database.password }}
+Secure passwords have been auto-generated for this deployment.
+{{- end }}
+
+To view all generated secrets:
+
+  kubectl get secret {{ $secretName }} -n {{ .Release.Namespace }} -o jsonpath='{.data}' | jq -r 'to_entries[] | "\(.key): \(.value | @base64d)"'
+
+Or view specific secrets:
+
+  # Database password
+  kubectl get secret {{ $secretName }} -n {{ .Release.Namespace }} -o jsonpath='{.data.SYNCTV_DATABASE_URL}' | base64 -d
+
+  # JWT secret
+  kubectl get secret {{ $secretName }} -n {{ .Release.Namespace }} -o jsonpath='{.data.SYNCTV_JWT_SECRET}' | base64 -d
+
+  # Root password (for initial login)
+  kubectl get secret {{ $secretName }} -n {{ .Release.Namespace }} -o jsonpath='{.data.SYNCTV_BOOTSTRAP_ROOT_PASSWORD}' | base64 -d
+
+IMPORTANT: These secrets are stored in Kubernetes and preserved across upgrades.
+{{- end }}

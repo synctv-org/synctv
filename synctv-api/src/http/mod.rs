@@ -68,9 +68,6 @@ pub struct RouterConfig {
     pub notification_service: Option<Arc<synctv_core::service::UserNotificationService>>,
     pub audit_service: Arc<synctv_core::service::AuditService>,
     pub live_streaming_infrastructure: Option<Arc<LiveStreamingInfrastructure>>,
-    pub sfu_manager: Option<Arc<synctv_sfu::SfuManager>>,
-    /// SFU session manager for session affinity queries (multi-replica routing).
-    pub sfu_session_manager: Option<Arc<synctv_sfu::SfuSessionManager>>,
     pub rate_limiter: synctv_core::service::rate_limit::RateLimiter,
     /// WebSocket ticket service for secure WebSocket authentication (HTTP only)
     pub ws_ticket_service: Option<Arc<synctv_core::service::WsTicketService>>,
@@ -100,8 +97,6 @@ pub struct AppState {
     pub publish_key_service: Option<Arc<synctv_core::service::PublishKeyService>>,
     pub notification_service: Option<Arc<synctv_core::service::UserNotificationService>>,
     pub live_streaming_infrastructure: Option<Arc<LiveStreamingInfrastructure>>,
-    /// SFU session manager for session affinity queries (multi-replica routing).
-    pub sfu_session_manager: Option<Arc<synctv_sfu::SfuSessionManager>>,
     pub rate_limiter: synctv_core::service::rate_limit::RateLimiter,
     /// Shared rate limit config (created once at startup, not per-request)
     pub rate_limit_config: Arc<middleware::RateLimitConfig>,
@@ -138,7 +133,6 @@ fn build_app_state(config: RouterConfig) -> AppState {
         config.room_service.clone(),
         config.connection_manager.clone(),
         config.config.clone(),
-        config.sfu_manager,
         config.publish_key_service.clone(),
         config.jwt_service.clone(),
         config.live_streaming_infrastructure.clone(),
@@ -218,7 +212,6 @@ fn build_app_state(config: RouterConfig) -> AppState {
         publish_key_service: config.publish_key_service,
         notification_service: config.notification_service,
         live_streaming_infrastructure: config.live_streaming_infrastructure,
-        sfu_session_manager: config.sfu_session_manager,
         rate_limiter: config.rate_limiter,
         rate_limit_config,
         jwt_validator,

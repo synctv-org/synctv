@@ -149,6 +149,33 @@ impl PermissionService {
                         break;
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
+                        // CRITICAL FIX: Set degraded flag BEFORE flushing cache to prevent race condition
+                        // Race condition scenario without this fix:
+                        // 1. Thread A: flush cache (cache is empty)
+                        // 2. Thread B: check cache_degraded=false, read cache (gets nothing)
+                        // 3. Thread A: set cache_degraded=true
+                        // Result: Thread B got stale/missing data
+                        //
+                        // With this fix:
+                        // 1. Thread A: set cache_degraded=true
+                        // 2. Thread B: check cache_degraded=true, skip cache, query DB
+                        // 3. Thread A: flush cache
+                        // Result: Thread B correctly bypassed cache
+
+                        // Step 1: Mark cache as degraded FIRST
+                        let was_degraded = cache_degraded.swap(true, Ordering::Release);
+                        if !was_degraded {
+                            *degradation_started.lock() = Some(Instant::now());
+                            tracing::warn!(
+                                lagged_messages = n,
+                                "Permission cache entered degraded state due to Pub/Sub lag"
+                            );
+                        }
+
+                        // Step 2: Memory barrier to ensure degraded flag is visible to all threads
+                        std::sync::atomic::fence(Ordering::SeqCst);
+
+                        // Step 3: Now safe to flush cache (other threads will see degraded=true)
                         // Rate-limit invalidate_all() to prevent cache storms
                         let should_flush = {
                             let mut last = last_flush_time.lock();
@@ -167,17 +194,10 @@ impl PermissionService {
                             );
                             cache.invalidate_all();
                         } else {
-                            tracing::warn!(
+                            tracing::debug!(
                                 lagged_messages = n,
-                                "Invalidation listener lagged, cache flush rate-limited; falling back to no-cache"
+                                "Invalidation listener lagged, cache flush rate-limited (already degraded)"
                             );
-                        }
-
-                        // Mark cache as degraded and record when degradation started
-                        let was_degraded = cache_degraded.swap(true, Ordering::Release);
-                        if !was_degraded {
-                            *degradation_started.lock() = Some(Instant::now());
-                            tracing::warn!("Permission cache entered degraded state due to Pub/Sub lag");
                         }
                     }
                 }

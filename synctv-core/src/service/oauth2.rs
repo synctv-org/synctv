@@ -161,13 +161,23 @@ impl OAuth2Service {
 
     /// Enable cluster mode safety check
     ///
-    /// When enabled, `store_state` and `consume_state` will return an error
-    /// if Redis is not configured, preventing silent fallback to in-memory
-    /// storage that breaks multi-replica deployments.
-    #[must_use]
-    pub fn with_cluster_mode(mut self, cluster_mode: bool) -> Self {
+    /// When enabled and Redis is not configured, this method returns an error
+    /// immediately, preventing silent fallback to in-memory storage that breaks
+    /// multi-replica deployments.
+    ///
+    /// # Errors
+    /// Returns an error if `cluster_mode` is true but Redis connection is not configured.
+    pub fn with_cluster_mode(mut self, cluster_mode: bool) -> Result<Self> {
+        if cluster_mode && self.redis_conn.is_none() {
+            return Err(Error::Internal(
+                "OAuth2 cluster mode requires Redis connection. \
+                 Use with_redis() before enabling cluster mode, \
+                 or disable cluster mode for single-node deployments."
+                    .to_string(),
+            ));
+        }
         self.cluster_mode = cluster_mode;
-        self
+        Ok(self)
     }
 
     /// Store `OAuth2` state (Redis if available, otherwise local memory)

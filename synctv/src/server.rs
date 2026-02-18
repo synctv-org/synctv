@@ -56,9 +56,6 @@ pub struct Services {
     pub audit_service: Arc<synctv_core::service::AuditService>,
     pub live_streaming_infrastructure: Option<Arc<synctv_livestream::api::LiveStreamingInfrastructure>>,
     pub stun_server: Option<Arc<synctv_core::service::StunServer>>,
-    pub sfu_manager: Option<Arc<synctv_sfu::SfuManager>>,
-    /// SFU session manager for session affinity queries (multi-replica routing).
-    pub sfu_session_manager: Option<Arc<synctv_sfu::SfuSessionManager>>,
     pub node_registry: Option<Arc<synctv_cluster::discovery::NodeRegistry>>,
     pub health_monitor: Option<Arc<synctv_cluster::discovery::HealthMonitor>>,
     pub load_balancer: Option<Arc<synctv_cluster::discovery::LoadBalancer>>,
@@ -123,9 +120,6 @@ impl SyncTvServer {
         }
         if self.services.stun_server.is_some() {
             info!("STUN server: enabled");
-        }
-        if self.services.sfu_manager.is_some() {
-            info!("SFU manager: enabled");
         }
 
         // Start background connection cleanup (every 60 seconds)
@@ -291,13 +285,7 @@ impl SyncTvServer {
             }
         }
 
-        // 2. Shutdown SFU manager (close all SFU rooms)
-        if let Some(ref sfu) = self.services.sfu_manager {
-            info!("Shutting down SFU manager...");
-            sfu.shutdown().await;
-        }
-
-        // 3. Shut down STUN server
+        // 2. Shut down STUN server
         if let Some(ref stun) = self.services.stun_server {
             info!("Shutting down STUN server...");
             stun.shutdown().await;
@@ -408,7 +396,6 @@ impl SyncTvServer {
                 settings_registry: Some(services.settings_registry),
                 email_service: services.email_service,
                 email_token_service: services.email_token_service,
-                sfu_manager: services.sfu_manager,
                 live_streaming_infrastructure: services.live_streaming_infrastructure,
                 publish_key_service: Some(services.publish_key_service),
                 notification_service: services.notification_service,
@@ -445,7 +432,6 @@ impl SyncTvServer {
         let connection_manager = self.services.connection_manager.clone();
 
         let live_streaming_infrastructure = self.services.live_streaming_infrastructure.clone();
-        let sfu_manager = self.services.sfu_manager.clone();
 
         // Create WebSocket ticket service using the shared Redis connection.
         // Previously this created a separate Redis client + ConnectionManager,
@@ -482,8 +468,6 @@ impl SyncTvServer {
                 notification_service,
                 audit_service: self.services.audit_service.clone(),
                 live_streaming_infrastructure,
-                sfu_manager,
-                sfu_session_manager: self.services.sfu_session_manager.clone(),
                 rate_limiter: self.services.rate_limiter.clone(),
                 ws_ticket_service,
                 redis_conn: self.services.redis_conn.clone(),

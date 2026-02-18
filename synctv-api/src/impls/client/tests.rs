@@ -375,52 +375,6 @@ fn test_room_member_to_proto_custom_permissions() {
     assert_eq!(proto.removed_permissions, 0x0F);
 }
 
-// === Network Stats Conversion Tests ===
-
-#[test]
-fn test_network_stats_to_proto_none_action() {
-    let stats = synctv_sfu::NetworkStats {
-        rtt_ms: 50,
-        packet_loss_rate: 0.01,
-        jitter_ms: 5,
-        available_bandwidth_kbps: 5000,
-        quality_score: 4,
-        quality_action: synctv_sfu::QualityAction::None,
-    };
-    let proto = network_stats_to_proto("peer1".to_string(), stats);
-
-    assert_eq!(proto.peer_id, "peer1");
-    assert_eq!(proto.rtt_ms, 50);
-    assert!((proto.packet_loss_rate - 0.01).abs() < f32::EPSILON);
-    assert_eq!(proto.jitter_ms, 5);
-    assert_eq!(proto.available_bandwidth_kbps, 5000);
-    assert_eq!(proto.quality_score, 4);
-    assert_eq!(proto.quality_action, i32::from(crate::proto::client::QualityAction::None));
-}
-
-#[test]
-fn test_network_stats_to_proto_all_actions() {
-    let actions = [
-        (synctv_sfu::QualityAction::None, crate::proto::client::QualityAction::None),
-        (synctv_sfu::QualityAction::ReduceQuality, crate::proto::client::QualityAction::ReduceQuality),
-        (synctv_sfu::QualityAction::ReduceFramerate, crate::proto::client::QualityAction::ReduceFramerate),
-        (synctv_sfu::QualityAction::AudioOnly, crate::proto::client::QualityAction::AudioOnly),
-    ];
-
-    for (action, expected) in actions {
-        let stats = synctv_sfu::NetworkStats {
-            rtt_ms: 0,
-            packet_loss_rate: 0.0,
-            jitter_ms: 0,
-            available_bandwidth_kbps: 0,
-            quality_score: 0,
-            quality_action: action,
-        };
-        let proto = network_stats_to_proto("p".to_string(), stats);
-        assert_eq!(proto.quality_action, i32::from(expected));
-    }
-}
-
 // === Playlist Conversion Tests ===
 
 #[test]

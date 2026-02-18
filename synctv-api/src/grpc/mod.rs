@@ -116,7 +116,6 @@ pub struct GrpcServerConfig<'a> {
     pub settings_registry: Option<Arc<SettingsRegistry>>,
     pub email_service: Option<Arc<EmailService>>,
     pub email_token_service: Option<Arc<EmailTokenService>>,
-    pub sfu_manager: Option<Arc<synctv_sfu::SfuManager>>,
     pub live_streaming_infrastructure: Option<Arc<synctv_livestream::api::LiveStreamingInfrastructure>>,
     pub publish_key_service: Option<Arc<synctv_core::service::PublishKeyService>>,
     pub notification_service: Option<Arc<synctv_core::service::UserNotificationService>>,
@@ -149,7 +148,6 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         settings_registry,
         email_service,
         email_token_service,
-        sfu_manager,
         live_streaming_infrastructure,
         publish_key_service,
         notification_service,
@@ -195,7 +193,6 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         room_service.clone(),
         Arc::new(connection_manager.clone()),
         Arc::new(config.clone()),
-        sfu_manager.clone(),
         publish_key_service,
         jwt_service.clone(),
         live_streaming_infrastructure.clone(),
@@ -219,7 +216,6 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         settings_registry: settings_registry.clone(),
         providers_manager: providers_manager_for_client,
         config: Arc::new(config.clone()),
-        sfu_manager: sfu_manager.clone(),
         client_api: client_api.clone(),
     });
 
@@ -402,7 +398,6 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
                 room_service_for_provider,
                 Arc::new(connection_manager_for_provider.clone()),
                 Arc::new(config.clone()),
-                sfu_manager,
                 None, // No publish_key_service for provider gRPC
                 jwt_service_for_provider.clone(),
                 None, // No live_streaming_infrastructure for provider gRPC
@@ -420,7 +415,6 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
             security_pipeline: Arc::new(synctv_core::service::SecurityPipeline::new(
                 user_service.clone(),
             )),
-            sfu_session_manager: None,
         });
 
         // Register provider gRPC services with auth interceptor

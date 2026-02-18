@@ -43,13 +43,17 @@ const MAX_REDIRECTS: usize = 10;
 
 /// Panics during initialization if the HTTP client cannot be built (e.g., TLS backend unavailable).
 /// This is intentional as the proxy cannot function without an HTTP client.
+///
+/// **Performance Enhancement**: Increased connection pool from 20 to 100 connections per host
+/// to better support high-traffic scenarios where multiple media sources may be accessed
+/// simultaneously (e.g., multi-room streaming, provider API calls).
 static PROXY_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
     reqwest::Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(REQUEST_TIMEOUT)
         .read_timeout(BODY_READ_TIMEOUT)
         .redirect(reqwest::redirect::Policy::none())
-        .pool_max_idle_per_host(20)
+        .pool_max_idle_per_host(100)  // Increased from 20 to support high concurrency
         .pool_idle_timeout(Duration::from_secs(30))
         .build()
         .unwrap_or_else(|e| {

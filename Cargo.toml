@@ -9,7 +9,6 @@ members = [
     "synctv-cluster",
     "synctv-media-providers",
     "synctv",
-    "synctv-sfu",
     # xiu consolidated crate
     "synctv-xiu",
 ]
@@ -255,7 +254,6 @@ synctv-cluster = { path = "synctv-cluster", default-features = false }
 synctv-media-providers = { path = "synctv-media-providers" }
 synctv-proxy = { path = "synctv-proxy" }
 synctv-livestream = { path = "synctv-livestream" }
-synctv-sfu = { path = "synctv-sfu" }
 
 [profile.dev]
 debug = 0

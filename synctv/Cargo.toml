@@ -25,7 +25,6 @@ synctv-core.workspace = true
 synctv-api.workspace = true
 synctv-livestream.workspace = true
 synctv-cluster = { workspace = true, default-features = false }
-synctv-sfu.workspace = true
 
 # Async
 tokio.workspace = true

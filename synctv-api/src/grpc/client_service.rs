@@ -84,7 +84,6 @@ pub struct ClientServiceConfig {
     pub settings_registry: Option<Arc<synctv_core::service::SettingsRegistry>>,
     pub providers_manager: Option<Arc<synctv_core::service::ProvidersManager>>,
     pub config: Arc<synctv_core::Config>,
-    pub sfu_manager: Option<Arc<synctv_sfu::SfuManager>>,
     pub client_api: Arc<crate::impls::ClientApiImpl>,
 }
 
@@ -119,7 +118,6 @@ impl ClientServiceImpl {
         _settings_registry: Option<Arc<synctv_core::service::SettingsRegistry>>,
         _providers_manager: Option<Arc<synctv_core::service::ProvidersManager>>,
         _config: Arc<synctv_core::Config>,
-        _sfu_manager: Option<Arc<synctv_sfu::SfuManager>>,
         client_api: Arc<crate::impls::ClientApiImpl>,
     ) -> Self {
         Self {

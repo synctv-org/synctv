@@ -279,33 +279,43 @@ config:
 ## ============================================================================
 ## Secrets (sensitive values injected as env vars with SYNCTV_ prefix)
 ##
-## WARNING: All default passwords and secrets below are INSECURE placeholders.
-## You MUST replace every "CHANGE_ME_*" value before deploying to production.
-## Failure to do so will leave your deployment vulnerable.
-## Use `--set` flags, a separate values file, or an external secret manager
-## (e.g., sealed-secrets, external-secrets, Vault) for production credentials.
+## AUTOMATIC PASSWORD GENERATION: All passwords and secrets below are now
+## auto-generated on first install when left empty (recommended for production).
+##
+## On first install: Random secure passwords are generated and stored in the Secret
+## On upgrades: Existing passwords are automatically preserved
+##
+## To view generated passwords:
+##   kubectl get secret synctv-secrets -n <namespace> -o jsonpath='{.data}' | jq 'map_values(@base64d)'
+##
+## You can still provide explicit values via `--set` flags, separate values file,
+## or external secret managers (e.g., sealed-secrets, external-secrets, Vault).
 ## ============================================================================
 secrets:
   ## Database Credentials (composed into SYNCTV_DATABASE_URL)
   database:
     username: "synctv"
-    ## WARNING: Change this password in production!
-    password: "CHANGE_ME_IN_PRODUCTION"
+    ## Leave empty to auto-generate a secure 32-character random password (recommended)
+    ## On upgrades, the existing password is preserved automatically
+    password: ""
 
   ## Redis Password (composed into SYNCTV_REDIS_URL)
   redis:
-    ## WARNING: Change this password in production!
-    password: "CHANGE_ME_IN_PRODUCTION"
+    ## Leave empty to auto-generate a secure 32-character random password (recommended)
+    ## On upgrades, the existing password is preserved automatically
+    password: ""
 
   ## JWT Secret (256-bit random string)
   jwt:
-    ## WARNING: Generate a secure 256-bit random string for production!
-    secret: "CHANGE_ME_TO_SECURE_256BIT_RANDOM_STRING"
+    ## Leave empty to auto-generate a secure 64-character random secret (recommended)
+    ## On upgrades, the existing secret is preserved automatically
+    secret: ""
 
   ## Cluster gRPC Auth Secret
   cluster:
-    ## WARNING: Change this secret in production!
-    grpcSecret: "CHANGE_ME_IN_PRODUCTION"
+    ## Leave empty to auto-generate a secure 32-character random secret (recommended)
+    ## On upgrades, the existing secret is preserved automatically
+    grpcSecret: ""
 
   ## Email SMTP Credentials (only used when email.smtpHost is set)
   email:
@@ -314,16 +324,18 @@ secrets:
 
   ## Credential encryption key (64-char hex string for AES-256-GCM)
   ## Used to encrypt provider credentials at rest
+  ## Leave empty to auto-generate a secure 64-character random key (recommended)
   credentialEncryptionKey: ""
 
   ## OAuth2 encryption key (64-char hex string for AES-256-GCM)
-  ## Required for OAuth2 state encryption
+  ## Required for OAuth2 state encryption (leave empty if OAuth2 is not used)
   oauth2EncryptionKey: ""
 
   ## Bootstrap root password (only used when bootstrap.createRootUser is true)
   bootstrap:
-    ## WARNING: Change this password in production!
-    rootPassword: "CHANGE_ME_IN_PRODUCTION"
+    ## Leave empty to auto-generate a secure 16-character random password (recommended)
+    ## On upgrades, the existing password is preserved automatically
+    rootPassword: ""
 
 ## ============================================================================
 ## Additional Settings

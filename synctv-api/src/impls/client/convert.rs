@@ -154,28 +154,6 @@ pub(super) fn room_member_to_proto(
     }
 }
 
-/// Convert SFU `NetworkStats` to proto `PeerNetworkQuality`
-#[must_use]
-pub fn network_stats_to_proto(
-    peer_id: String,
-    ns: synctv_sfu::NetworkStats,
-) -> crate::proto::client::PeerNetworkQuality {
-    let quality_action = match ns.quality_action {
-        synctv_sfu::QualityAction::None => crate::proto::client::QualityAction::None.into(),
-        synctv_sfu::QualityAction::ReduceQuality => crate::proto::client::QualityAction::ReduceQuality.into(),
-        synctv_sfu::QualityAction::ReduceFramerate => crate::proto::client::QualityAction::ReduceFramerate.into(),
-        synctv_sfu::QualityAction::AudioOnly => crate::proto::client::QualityAction::AudioOnly.into(),
-    };
-    crate::proto::client::PeerNetworkQuality {
-        peer_id,
-        rtt_ms: ns.rtt_ms,
-        packet_loss_rate: ns.packet_loss_rate,
-        jitter_ms: ns.jitter_ms,
-        available_bandwidth_kbps: ns.available_bandwidth_kbps,
-        quality_score: u32::from(ns.quality_score),
-        quality_action,
-    }
-}
 
 /// Convert provider PlaybackInfo to models PlaybackInfo
 #[must_use]

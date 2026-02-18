@@ -365,10 +365,10 @@ async fn init_livestream(
     Ok((state, Some(live_infra)))
 }
 
-/// Initialize WebRTC components: SFU manager and STUN server.
+/// Initialize WebRTC components: STUN server.
 async fn init_webrtc(
     config: &Config,
-) -> (Option<Arc<synctv_sfu::SfuManager>>, Option<Arc<synctv_core::service::StunServer>>) {
+) -> Option<Arc<synctv_core::service::StunServer>> {
     // STUN server (if enabled, powered by turn-rs)
     let stun_server = if config.webrtc.enable_builtin_stun {
         info!("Starting built-in STUN server (turn-rs)...");
@@ -430,32 +430,7 @@ async fn init_webrtc(
         None
     };
 
-    // SFU manager (if needed for WebRTC mode)
-    let sfu_manager = if config.webrtc.mode == synctv_core::config::WebRTCMode::SFU
-        || config.webrtc.mode == synctv_core::config::WebRTCMode::Hybrid
-    {
-        info!("Initializing SFU manager for mode: {:?}", config.webrtc.mode);
-        let sfu_config = synctv_sfu::SfuConfig::from_webrtc_fields(
-            config.webrtc.sfu_threshold,
-            config.webrtc.max_sfu_rooms,
-            config.webrtc.max_peers_per_sfu_room,
-            config.webrtc.enable_simulcast,
-            config.webrtc.enable_bandwidth_estimation,
-        );
-        let manager = synctv_sfu::SfuManager::new(sfu_config);
-        info!(
-            "SFU manager initialized (threshold: {}, max_rooms: {}, max_peers_per_room: {})",
-            config.webrtc.sfu_threshold,
-            if config.webrtc.max_sfu_rooms == 0 { "unlimited".to_string() } else { config.webrtc.max_sfu_rooms.to_string() },
-            config.webrtc.max_peers_per_sfu_room
-        );
-        Some(manager)
-    } else {
-        info!("SFU manager disabled (mode: {:?})", config.webrtc.mode);
-        None
-    };
-
-    (sfu_manager, stun_server)
+    stun_server
 }
 
 #[tokio::main]
@@ -746,8 +721,8 @@ async fn main() -> Result<()> {
     let (livestream_state, live_streaming_infrastructure) =
         init_livestream(&config, &synctv_services, &node_id).await?;
 
-    // 9.5-9.7. Initialize WebRTC components (STUN server and SFU manager)
-    let (sfu_manager, stun_server) = init_webrtc(&config).await;
+    // 9.5. Initialize WebRTC components (STUN server)
+    let stun_server = init_webrtc(&config).await;
 
     // 10. Create server with all services
     let provider_instance_manager = synctv_services.provider_instance_manager.clone();
@@ -782,11 +757,6 @@ async fn main() -> Result<()> {
         audit_service: synctv_services.audit_service.clone(),
         live_streaming_infrastructure,
         stun_server,
-        sfu_manager,
-        // SFU session manager is constructed lazily at runtime when a room
-        // transitions to SFU mode (via messaging.rs). For now pass None;
-        // it will be wired when the SFU session lifecycle is fully integrated.
-        sfu_session_manager: None,
         node_registry,
         health_monitor,
         load_balancer,

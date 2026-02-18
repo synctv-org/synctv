@@ -515,26 +515,11 @@ pub struct WebRTCConfig {
     /// Default: 86400 (24 hours). Set to 0 for credentials that never expire.
     pub turn_credential_ttl_seconds: u64,
 
-    // SFU Configuration (for large rooms)
-    /// Room size threshold to switch to SFU mode (only for Hybrid mode)
-    pub sfu_threshold: usize,
-    /// Enable Simulcast (multiple quality layers)
-    pub enable_simulcast: bool,
-    /// Maximum concurrent SFU rooms (0 = unlimited)
-    pub max_sfu_rooms: usize,
-    /// Maximum peers per SFU room
-    pub max_peers_per_sfu_room: usize,
-    /// Simulcast layers to use (e.g., ["high", "medium", "low"])
-    pub simulcast_layers: Vec<String>,
-    /// Maximum bitrate per peer in kbps (0 = unlimited)
-    pub max_bitrate_per_peer: u32,
-    /// Enable bandwidth estimation
-    pub enable_bandwidth_estimation: bool,
     /// Filter private/internal ICE candidates before sending to clients.
     /// When true (default), host candidates with private IPs (RFC 1918,
     /// loopback, link-local) are stripped to prevent leaking internal
-    /// network topology. Set to false in development or when the SFU and
-    /// clients are on the same private network.
+    /// network topology. Set to false in development or when clients are
+    /// on the same private network.
     pub filter_private_ice_candidates: bool,
 }
 
@@ -543,7 +528,7 @@ pub struct WebRTCConfig {
 #[serde(rename_all = "snake_case")]
 pub enum WebRTCMode {
     /// Pure P2P mode (zero server cost)
-    /// - Signaling only, no STUN/TURN/SFU
+    /// - Signaling only, no STUN/TURN
     /// - Best for: personal deployments
     /// - Connection success rate: ~70-75%
     SignalingOnly,
@@ -555,29 +540,13 @@ pub enum WebRTCMode {
     /// - Best for: small to medium deployments
     /// - Connection success rate: ~99%
     PeerToPeer,
-
-    /// Hybrid mode (P2P for small rooms, SFU for large rooms)
-    /// - Automatically switches based on room size
-    /// - P2P for rooms < threshold
-    /// - SFU for rooms >= threshold
-    /// - Best for: flexible deployments with mixed room sizes
-    /// - Optimal balance of cost and performance
-    Hybrid,
-
-    /// Pure SFU mode (enterprise grade)
-    /// - All rooms use SFU regardless of size
-    /// - Server receives and forwards all media streams
-    /// - Best for: large scale deployments, recording, monitoring
-    /// - Highest server cost, best quality and reliability
-    #[serde(rename = "sfu")]
-    SFU,
 }
 
 impl Default for WebRTCConfig {
     fn default() -> Self {
         Self {
-            // Default to Hybrid mode (balanced)
-            mode: WebRTCMode::Hybrid,
+            // Default to PeerToPeer mode (recommended for most deployments)
+            mode: WebRTCMode::PeerToPeer,
 
             // STUN enabled by default (powered by turn-rs)
             enable_builtin_stun: true,
@@ -591,18 +560,6 @@ impl Default for WebRTCConfig {
             // TURN credentials expire after 24 hours by default
             turn_credential_ttl_seconds: 86400,
 
-            // SFU configuration
-            sfu_threshold: 5, // Switch to SFU for 5+ participants
-            enable_simulcast: true,
-            max_sfu_rooms: 0, // No limit by default
-            max_peers_per_sfu_room: 50,
-            simulcast_layers: vec![
-                "high".to_string(),
-                "medium".to_string(),
-                "low".to_string(),
-            ],
-            max_bitrate_per_peer: 0, // No limit by default
-            enable_bandwidth_estimation: true,
             filter_private_ice_candidates: true,
         }
     }
@@ -1024,23 +981,6 @@ impl Config {
             );
         }
 
-        // **WebRTC Issue (#21)**: Block SFU/Hybrid modes in cluster environments
-        // SFU does not support cross-node media forwarding yet. In multi-node deployments,
-        // peers on different nodes cannot exchange media via the SFU.
-        if !self.server.cluster_secret.is_empty() {
-            if matches!(
-                self.webrtc.mode,
-                WebRTCMode::SFU | WebRTCMode::Hybrid
-            ) {
-                errors.push(
-                    "WebRTC SFU and Hybrid modes are not supported in cluster deployments. \
-                     SFU media forwarding is limited to a single node. \
-                     Set webrtc.mode to 'peer_to_peer' or 'signaling_only' for multi-node clusters. \
-                     See synctv-sfu/README.md for details."
-                        .to_string(),
-                );
-            }
-        }
 
         // **WebRTC Issue (#21)**: Validate STUN external address in non-dev mode.
         // In cluster/K8s/NAT environments (indicated by cluster_secret being set),
@@ -1067,6 +1007,20 @@ impl Config {
                     );
                 }
             }
+        }
+
+        // **P0-2**: Validate OAuth2 requires Redis
+        // OAuth2 uses state storage for CSRF protection during the authorization flow.
+        // In multi-replica deployments, the callback request may hit a different replica
+        // than the one that generated the auth URL. Without Redis, state lookup fails.
+        let oauth2_enabled = self.oauth2.providers.as_object()
+            .map_or(false, |obj| !obj.is_empty());
+        if oauth2_enabled && self.redis.url.is_empty() {
+            errors.push(
+                "OAuth2 requires Redis for state storage in multi-replica deployments. \
+                 Configure redis.url or disable OAuth2 by removing all oauth2.providers."
+                    .to_string(),
+            );
         }
 
         if errors.is_empty() {
@@ -1539,24 +1493,6 @@ mod tests {
         config.livestream.stream_timeout_seconds = 0;
         let errors = config.validate().unwrap_err();
         assert!(errors.iter().any(|e| e.contains("stream_timeout_seconds")));
-    }
-
-    #[test]
-    fn test_validate_webrtc_sfu_mode_blocked_in_cluster() {
-        let mut config = valid_prod_config();
-        config.server.cluster_secret = "shared-secret-123".to_string();
-        config.webrtc.mode = WebRTCMode::SFU;
-        let errors = config.validate().unwrap_err();
-        assert!(errors.iter().any(|e| e.contains("SFU") && e.contains("cluster")));
-    }
-
-    #[test]
-    fn test_validate_webrtc_hybrid_mode_blocked_in_cluster() {
-        let mut config = valid_prod_config();
-        config.server.cluster_secret = "shared-secret-123".to_string();
-        config.webrtc.mode = WebRTCMode::Hybrid;
-        let errors = config.validate().unwrap_err();
-        assert!(errors.iter().any(|e| e.contains("Hybrid") && e.contains("cluster")));
     }
 
     #[test]

@@ -4,7 +4,6 @@ use synctv_core::models::{RoomId, UserId};
 
 use crate::impls::ApiError;
 use super::ClientApiImpl;
-use super::convert::network_stats_to_proto;
 
 impl ClientApiImpl {
     /// Get ICE servers configuration for WebRTC.
@@ -100,6 +99,9 @@ impl ClientApiImpl {
     }
 
     /// Get network quality stats for peers in a room
+    ///
+    /// Note: With SFU removed, this always returns an empty list.
+    /// Network quality is now handled purely peer-to-peer without centralized tracking.
     pub async fn get_network_quality(
         &self,
         room_id: &RoomId,
@@ -111,24 +113,13 @@ impl ClientApiImpl {
         self.room_service.check_membership(room_id, user_id).await
             .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
 
-        let sfu_manager = if let Some(mgr) = &self.sfu_manager { mgr } else {
-            tracing::debug!(
-                room_id = %room_id,
-                user_id = %user_id,
-                "Network quality requested but SFU manager not enabled"
-            );
-            return Ok(GetNetworkQualityResponse { peers: vec![] });
-        };
+        // SFU removed: network quality is now handled peer-to-peer
+        tracing::debug!(
+            room_id = %room_id,
+            user_id = %user_id,
+            "Network quality requested but SFU is no longer supported"
+        );
 
-        let stats = sfu_manager.get_room_network_quality(
-            &synctv_sfu::RoomId::from(room_id.as_str()),
-        ).map_err(|e| ApiError::Internal(e.to_string()))?;
-
-        let peers = stats
-            .into_iter()
-            .map(|(peer_id, ns)| network_stats_to_proto(peer_id, ns))
-            .collect();
-
-        Ok(GetNetworkQualityResponse { peers })
+        Ok(GetNetworkQualityResponse { peers: vec![] })
     }
 }

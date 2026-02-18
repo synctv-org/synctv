@@ -17,8 +17,7 @@ use synctv_core::{
     models::{RoomId, UserId, PermissionBits},
     service::{ContentFilter, RateLimitConfig, RateLimiter, RoomService},
 };
-use synctv_cluster::sync::{ClusterEvent, ClusterManager, ConnectionInfo, ConnectionManager};
-use synctv_sfu::{SfuSessionManager, SfuSignalingEvent};
+use synctv_cluster::sync::{ClusterEvent, ClusterManager, ConnectionManager};
 
 use crate::proto::client::{ClientMessage, ServerMessage};
 
@@ -85,11 +84,6 @@ pub struct StreamMessageHandler {
     rate_limit_config: Arc<RateLimitConfig>,
     content_filter: Arc<ContentFilter>,
     sender: Arc<dyn MessageSender>,
-    /// Optional SFU session manager for server-side PeerConnection management.
-    /// When present and the room's RTC peer count reaches the SFU threshold,
-    /// WebRTC signaling is routed through server-side PeerConnections instead
-    /// of being relayed peer-to-peer.
-    sfu_session_manager: Option<Arc<SfuSessionManager>>,
 }
 
 impl Clone for StreamMessageHandler {
@@ -106,7 +100,6 @@ impl Clone for StreamMessageHandler {
             rate_limit_config: Arc::clone(&self.rate_limit_config),
             content_filter: Arc::clone(&self.content_filter),
             sender: Arc::clone(&self.sender),
-            sfu_session_manager: self.sfu_session_manager.clone(),
         }
     }
 }
@@ -139,14 +132,7 @@ impl StreamMessageHandler {
             rate_limit_config,
             content_filter,
             sender,
-            sfu_session_manager: None,
         }
-    }
-
-    /// Set the SFU session manager for server-side PeerConnection support
-    pub fn with_sfu_session_manager(mut self, sfu_session_manager: Arc<SfuSessionManager>) -> Self {
-        self.sfu_session_manager = Some(sfu_session_manager);
-        self
     }
 
     /// Run the complete message loop using unified IO abstraction
@@ -889,9 +875,6 @@ impl StreamMessageHandler {
             Some(Message::WebrtcLeave(leave)) => {
                 self.handle_webrtc_leave(leave).await?;
             }
-            Some(Message::SfuMigrationAnswer(answer)) => {
-                self.handle_sfu_migration_answer(answer).await?;
-            }
             Some(Message::PlaybackProgress(report)) => {
                 self.handle_playback_progress(report).await?;
             }
@@ -906,6 +889,9 @@ impl StreamMessageHandler {
             }
             Some(Message::SetSpeedCommand(speed_cmd)) => {
                 self.handle_set_speed_command(speed_cmd.speed).await?;
+            }
+            Some(Message::SfuMigrationAnswer(_)) => {
+                return Err("SFU is no longer supported".to_string());
             }
             None => {
                 return Err("Empty message".to_string());
@@ -989,29 +975,6 @@ impl StreamMessageHandler {
             .get_connection_id(&self.room_id, &self.user_id)
             .ok_or_else(|| "Connection not found".to_string())?;
 
-        // If this connection has an active SFU session, route the offer to the
-        // server-side PeerConnection and send back the answer directly
-        if let Some(ref sfu_mgr) = self.sfu_session_manager {
-            if sfu_mgr.has_session(&conn_id) {
-                let answer_json = sfu_mgr
-                    .handle_offer(&conn_id, &offer.data)
-                    .await
-                    .map_err(|e| format!("SFU offer handling failed: {e}"))?;
-
-                // Send SDP answer back to the client
-                use crate::proto::client::server_message::Message;
-                let answer_msg = ServerMessage {
-                    message: Some(Message::WebrtcAnswer(crate::proto::client::WebRtcAnswer {
-                        from: "sfu".to_string(),
-                        to: format!("{}:{}", self.user_id.as_str(), conn_id),
-                        data: answer_json,
-                    })),
-                };
-                self.sender.send(answer_msg)?;
-                return Ok(());
-            }
-        }
-
         // P2P relay path: forward offer to target peer via cluster
         let event = ClusterEvent::WebRTCSignaling {
             event_id: nanoid::nanoid!(16),
@@ -1070,18 +1033,6 @@ impl StreamMessageHandler {
             .get_connection_id(&self.room_id, &self.user_id)
             .ok_or_else(|| "Connection not found".to_string())?;
 
-        // If this connection has an active SFU session, route the ICE candidate
-        // to the server-side PeerConnection
-        if let Some(ref sfu_mgr) = self.sfu_session_manager {
-            if sfu_mgr.has_session(&conn_id) {
-                sfu_mgr
-                    .add_ice_candidate(&conn_id, &candidate.data)
-                    .await
-                    .map_err(|e| format!("SFU ICE candidate failed: {e}"))?;
-                return Ok(());
-            }
-        }
-
         // P2P relay path: forward ICE candidate to target peer via cluster
         let event = ClusterEvent::WebRTCSignaling {
             event_id: nanoid::nanoid!(16),
@@ -1118,63 +1069,6 @@ impl StreamMessageHandler {
         // Track WebRTC peer metrics
         synctv_core::metrics::http::WEBRTC_PEERS_ACTIVE.inc();
 
-        // Check if we should create SFU sessions.
-        // When the room's RTC peer count reaches the threshold, we need to:
-        // 1. Create an SFU session for the new (joining) peer
-        // 2. Migrate all existing P2P peers to SFU mode
-        if let Some(ref sfu_mgr) = self.sfu_session_manager {
-            let rtc_connections = self.connection_manager.get_rtc_connections(&self.room_id);
-            let rtc_peer_count = rtc_connections.len();
-
-            if sfu_mgr.should_use_sfu(rtc_peer_count) {
-                // Create SFU session for the newly joining peer
-                match sfu_mgr
-                    .create_session(
-                        self.room_id.as_str(),
-                        self.user_id.as_str(),
-                        &conn_id,
-                    )
-                    .await
-                {
-                    Ok(event_rx) => {
-                        Self::spawn_sfu_event_forwarder(
-                            Arc::clone(&self.sender),
-                            self.user_id.as_str().to_string(),
-                            conn_id.clone(),
-                            event_rx,
-                        );
-
-                        tracing::info!(
-                            room_id = %self.room_id.as_str(),
-                            user_id = %self.user_id.as_str(),
-                            conn_id = %conn_id,
-                            rtc_peer_count = rtc_peer_count,
-                            "Created SFU session for peer (threshold reached)"
-                        );
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            room_id = %self.room_id.as_str(),
-                            user_id = %self.user_id.as_str(),
-                            error = %e,
-                            "Failed to create SFU session, falling back to P2P relay"
-                        );
-                    }
-                }
-
-                // Check if this is the first time we're crossing the threshold
-                // (i.e., exactly at threshold). If so, migrate existing P2P peers.
-                let threshold = sfu_mgr.sfu_threshold();
-                if rtc_peer_count == threshold {
-                    self.initiate_p2p_to_sfu_migration(
-                        sfu_mgr,
-                        &rtc_connections,
-                        &conn_id,
-                    ).await;
-                }
-            }
-        }
-
         // Broadcast Join event to all RTC-joined users in the room
         let event = ClusterEvent::WebRTCJoin {
             event_id: nanoid::nanoid!(16),
@@ -1197,22 +1091,6 @@ impl StreamMessageHandler {
             .get_connection_id(&self.room_id, &self.user_id)
             .ok_or_else(|| "Connection not found".to_string())?;
 
-        // Clean up SFU session if one exists for this connection
-        if let Some(ref sfu_mgr) = self.sfu_session_manager {
-            if sfu_mgr.has_session(&conn_id) {
-                if let Err(e) = sfu_mgr
-                    .remove_session(&conn_id, self.room_id.as_str(), self.user_id.as_str())
-                    .await
-                {
-                    tracing::warn!(
-                        conn_id = %conn_id,
-                        error = %e,
-                        "Failed to clean up SFU session on leave"
-                    );
-                }
-            }
-        }
-
         // Mark this connection as left WebRTC session
         self.connection_manager
             .mark_rtc_joined(&self.room_id, &self.user_id, &conn_id, false);
@@ -1231,396 +1109,6 @@ impl StreamMessageHandler {
 
         // Broadcast to cluster
         let _result = self.cluster_manager.broadcast(event);
-
-        Ok(())
-    }
-
-    // ==================== SFU Migration ====================
-
-    /// Spawn a background task that forwards SFU signaling events (ICE candidates,
-    /// SDP answers) to the client via the message sender.
-    fn spawn_sfu_event_forwarder(
-        sender: Arc<dyn MessageSender>,
-        user_id_str: String,
-        conn_id: String,
-        mut event_rx: tokio::sync::mpsc::UnboundedReceiver<SfuSignalingEvent>,
-    ) {
-        tokio::spawn(async move {
-            while let Some(event) = event_rx.recv().await {
-                let msg = match event {
-                    SfuSignalingEvent::IceCandidate { candidate_json, .. } => {
-                        use crate::proto::client::server_message::Message;
-                        ServerMessage {
-                            message: Some(Message::WebrtcIceCandidate(
-                                crate::proto::client::WebRtcIceCandidate {
-                                    from: "sfu".to_string(),
-                                    to: format!("{}:{}", user_id_str, conn_id),
-                                    data: candidate_json,
-                                },
-                            )),
-                        }
-                    }
-                    SfuSignalingEvent::SdpAnswer { sdp, .. } => {
-                        use crate::proto::client::server_message::Message;
-                        ServerMessage {
-                            message: Some(Message::WebrtcAnswer(
-                                crate::proto::client::WebRtcAnswer {
-                                    from: "sfu".to_string(),
-                                    to: format!("{}:{}", user_id_str, conn_id),
-                                    data: sdp,
-                                },
-                            )),
-                        }
-                    }
-                    SfuSignalingEvent::SdpOffer { sdp, .. } => {
-                        use crate::proto::client::server_message::Message;
-                        ServerMessage {
-                            message: Some(Message::WebrtcOffer(
-                                crate::proto::client::WebRtcOffer {
-                                    from: "sfu".to_string(),
-                                    to: format!("{}:{}", user_id_str, conn_id),
-                                    data: sdp,
-                                },
-                            )),
-                        }
-                    }
-                    SfuSignalingEvent::IceRestartOffer { sdp, .. } => {
-                        use crate::proto::client::server_message::Message;
-                        ServerMessage {
-                            message: Some(Message::WebrtcOffer(
-                                crate::proto::client::WebRtcOffer {
-                                    from: "sfu".to_string(),
-                                    to: format!("{}:{}", user_id_str, conn_id),
-                                    data: sdp,
-                                },
-                            )),
-                        }
-                    }
-                    SfuSignalingEvent::MigrationOffer { .. } => {
-                        // Migration offers are sent directly, not through this channel
-                        continue;
-                    }
-                };
-                if sender.send(msg).is_err() {
-                    break;
-                }
-            }
-        });
-    }
-
-    /// Initiate P2P-to-SFU migration for all existing P2P peers in the room.
-    ///
-    /// When the SFU threshold is crossed, this method:
-    /// 1. Identifies all existing RTC peers that don't have SFU sessions
-    /// 2. Creates server-side PeerConnections for each
-    /// 3. Sends SDP migration offers to each peer
-    /// 4. Spawns a timeout task that marks failed migrations after 30 seconds
-    /// 5. Broadcasts migration status to all peers
-    async fn initiate_p2p_to_sfu_migration(
-        &self,
-        sfu_mgr: &Arc<SfuSessionManager>,
-        rtc_connections: &[ConnectionInfo],
-        new_peer_conn_id: &str,
-    ) {
-        let migration_id = nanoid::nanoid!(16);
-
-        // Filter to only existing P2P peers (exclude the peer that just joined,
-        // which already has an SFU session created above)
-        let p2p_peers: Vec<&ConnectionInfo> = rtc_connections
-            .iter()
-            .filter(|conn| {
-                conn.connection_id != new_peer_conn_id
-                    && !sfu_mgr.has_session(&conn.connection_id)
-            })
-            .collect();
-
-        if p2p_peers.is_empty() {
-            tracing::debug!(
-                room_id = %self.room_id.as_str(),
-                migration_id = %migration_id,
-                "No existing P2P peers to migrate"
-            );
-            return;
-        }
-
-        let total_peers = p2p_peers.len() as i32;
-        tracing::info!(
-            room_id = %self.room_id.as_str(),
-            migration_id = %migration_id,
-            total_peers = total_peers,
-            "Initiating P2P-to-SFU migration for existing peers"
-        );
-
-        // Broadcast migration started status
-        self.broadcast_migration_status(
-            &migration_id,
-            crate::proto::client::SfuMigrationState::Started,
-            total_peers,
-            0,
-            0,
-        );
-
-        let mut completed = 0i32;
-        let mut failed = 0i32;
-
-        for conn_info in &p2p_peers {
-            let peer_user_id = conn_info.user_id.as_str();
-            let peer_conn_id = &conn_info.connection_id;
-
-            match sfu_mgr
-                .create_migration_session(
-                    self.room_id.as_str(),
-                    peer_user_id,
-                    peer_conn_id,
-                )
-                .await
-            {
-                Ok(migration_result) => {
-                    // Send the SFU migration offer to the peer via cluster broadcast.
-                    // The peer's connection handler will receive this as a WebRTCSignaling
-                    // event with a special "sfu_migration_offer" type.
-                    let offer_event = ClusterEvent::WebRTCSignaling {
-                        event_id: nanoid::nanoid!(16),
-                        room_id: self.room_id.clone(),
-                        message_type: "sfu_migration_offer".to_string(),
-                        from: "sfu".to_string(),
-                        to: format!("{}:{}", peer_user_id, peer_conn_id),
-                        data: serde_json::json!({
-                            "migration_id": migration_id,
-                            "sdp": migration_result.sdp_offer,
-                        }).to_string(),
-                        timestamp: chrono::Utc::now(),
-                    };
-                    let _result = self.cluster_manager.broadcast(offer_event);
-
-                    // Spawn event forwarder for ICE candidates from this migration session
-                    // We need to get the sender for THIS peer, but since we only have
-                    // access to the cluster broadcast, ICE candidates will flow through
-                    // the WebRTCSignaling cluster event path.
-                    // The event_rx is for server-generated ICE candidates that need to
-                    // reach the migrating peer.
-                    let cluster_mgr = Arc::clone(&self.cluster_manager);
-                    let room_id = self.room_id.clone();
-                    let peer_user_id_owned = peer_user_id.to_string();
-                    let peer_conn_id_owned = peer_conn_id.clone();
-                    let migration_id_clone = migration_id.clone();
-                    tokio::spawn(async move {
-                        let mut event_rx = migration_result.event_rx;
-                        while let Some(event) = event_rx.recv().await {
-                            match event {
-                                SfuSignalingEvent::IceCandidate { candidate_json, .. } => {
-                                    let ice_event = ClusterEvent::WebRTCSignaling {
-                                        event_id: nanoid::nanoid!(16),
-                                        room_id: room_id.clone(),
-                                        message_type: "ice_candidate".to_string(),
-                                        from: "sfu".to_string(),
-                                        to: format!("{}:{}", peer_user_id_owned, peer_conn_id_owned),
-                                        data: candidate_json,
-                                        timestamp: chrono::Utc::now(),
-                                    };
-                                    let _ = cluster_mgr.broadcast(ice_event);
-                                }
-                                SfuSignalingEvent::SdpAnswer { .. } | SfuSignalingEvent::SdpOffer { .. } | SfuSignalingEvent::IceRestartOffer { .. } | SfuSignalingEvent::MigrationOffer { .. } => {
-                                    // Not expected in this context
-                                }
-                            }
-                        }
-                        tracing::debug!(
-                            migration_id = %migration_id_clone,
-                            peer = %peer_user_id_owned,
-                            "Migration ICE forwarder task ended"
-                        );
-                    });
-
-                    completed += 1;
-                    tracing::info!(
-                        room_id = %self.room_id.as_str(),
-                        migration_id = %migration_id,
-                        peer_user_id = %peer_user_id,
-                        peer_conn_id = %peer_conn_id,
-                        "Sent SFU migration offer to P2P peer"
-                    );
-                }
-                Err(e) => {
-                    failed += 1;
-                    tracing::warn!(
-                        room_id = %self.room_id.as_str(),
-                        migration_id = %migration_id,
-                        peer_user_id = %peer_user_id,
-                        error = %e,
-                        "Failed to create migration session for P2P peer, keeping in P2P mode"
-                    );
-                }
-            }
-        }
-
-        // Broadcast final migration status
-        let final_state = if failed == 0 {
-            crate::proto::client::SfuMigrationState::Completed
-        } else if completed == 0 {
-            crate::proto::client::SfuMigrationState::Failed
-        } else {
-            // Partial success -- some peers migrated, some failed
-            crate::proto::client::SfuMigrationState::Completed
-        };
-
-        self.broadcast_migration_status(
-            &migration_id,
-            final_state,
-            total_peers,
-            completed,
-            failed,
-        );
-
-        // Complete the room migration: transition the SFU room from Migrating to SFU mode.
-        // This must be called after migration offers have been sent so the room no longer
-        // stays stuck in the Migrating state indefinitely.
-        if completed > 0 {
-            if let Err(e) = sfu_mgr.complete_room_migration(self.room_id.as_str()).await {
-                tracing::warn!(
-                    room_id = %self.room_id.as_str(),
-                    migration_id = %migration_id,
-                    error = %e,
-                    "Failed to complete room migration to SFU mode"
-                );
-            }
-        }
-
-        // Spawn a timeout task: if any migrating peers haven't completed
-        // within 30 seconds, mark their migration as failed and clean up.
-        //
-        // SFU-23 Fix 3: Only clean up sessions still in `Migrating` state.
-        // Previously, `has_session()` was used which would also match
-        // successfully-migrated sessions (where the answer was received
-        // and ICE completed). Now we check `get_migration_state()` to
-        // only remove sessions that never completed their migration.
-        let sfu_mgr_clone = Arc::clone(sfu_mgr);
-        let room_id = self.room_id.clone();
-        let migration_id_for_timeout = migration_id.clone();
-        let p2p_peer_conn_ids: Vec<(String, String)> = p2p_peers
-            .iter()
-            .map(|c| (c.user_id.as_str().to_string(), c.connection_id.clone()))
-            .collect();
-        tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-
-            for (peer_user_id, peer_conn_id) in &p2p_peer_conn_ids {
-                let migration_state = sfu_mgr_clone.get_migration_state(peer_conn_id);
-                match migration_state {
-                    Some(synctv_sfu::PeerMigrationState::Migrating) => {
-                        // Session is still in Migrating state after 30s - migration failed
-                        tracing::warn!(
-                            room_id = %room_id.as_str(),
-                            migration_id = %migration_id_for_timeout,
-                            peer = %peer_user_id,
-                            conn_id = %peer_conn_id,
-                            "Migration timeout: cleaning up stale SFU session (still in Migrating state)"
-                        );
-                        if let Err(e) = sfu_mgr_clone
-                            .remove_session(peer_conn_id, room_id.as_str(), peer_user_id)
-                            .await
-                        {
-                            tracing::error!(
-                                conn_id = %peer_conn_id,
-                                error = %e,
-                                "Failed to clean up stale migration SFU session"
-                            );
-                        }
-                    }
-                    Some(synctv_sfu::PeerMigrationState::Completed) => {
-                        tracing::debug!(
-                            migration_id = %migration_id_for_timeout,
-                            peer = %peer_user_id,
-                            conn_id = %peer_conn_id,
-                            "Migration timeout: session already completed, skipping cleanup"
-                        );
-                    }
-                    Some(synctv_sfu::PeerMigrationState::Failed) | None => {
-                        tracing::debug!(
-                            migration_id = %migration_id_for_timeout,
-                            peer = %peer_user_id,
-                            conn_id = %peer_conn_id,
-                            state = ?migration_state,
-                            "Migration timeout: session already removed or failed"
-                        );
-                    }
-                }
-            }
-        });
-    }
-
-    /// Broadcast migration status to all peers in the room
-    fn broadcast_migration_status(
-        &self,
-        migration_id: &str,
-        state: crate::proto::client::SfuMigrationState,
-        total_peers: i32,
-        completed_peers: i32,
-        failed_peers: i32,
-    ) {
-        // We broadcast a system notification via WebRTCSignaling with a special type
-        // so all connected peers receive it
-        let status_data = serde_json::json!({
-            "migration_id": migration_id,
-            "state": state as i32,
-            "total_peers": total_peers,
-            "completed_peers": completed_peers,
-            "failed_peers": failed_peers,
-        });
-
-        let event = ClusterEvent::WebRTCSignaling {
-            event_id: nanoid::nanoid!(16),
-            room_id: self.room_id.clone(),
-            message_type: "sfu_migration_status".to_string(),
-            from: "sfu".to_string(),
-            to: "broadcast".to_string(),
-            data: status_data.to_string(),
-            timestamp: chrono::Utc::now(),
-        };
-
-        let _result = self.cluster_manager.broadcast(event);
-
-        tracing::info!(
-            room_id = %self.room_id.as_str(),
-            migration_id = %migration_id,
-            state = ?state,
-            total = total_peers,
-            completed = completed_peers,
-            failed = failed_peers,
-            "Broadcast SFU migration status"
-        );
-    }
-
-    /// Handle SFU migration answer from a client
-    async fn handle_sfu_migration_answer(
-        &self,
-        answer: &crate::proto::client::SfuMigrationAnswer,
-    ) -> Result<(), String> {
-        let conn_id = self.connection_manager
-            .get_connection_id(&self.room_id, &self.user_id)
-            .ok_or_else(|| "Connection not found".to_string())?;
-
-        let Some(ref sfu_mgr) = self.sfu_session_manager else {
-            return Err("SFU session manager not configured".to_string());
-        };
-
-        if !sfu_mgr.has_session(&conn_id) {
-            return Err("No SFU migration session for this connection".to_string());
-        }
-
-        // Parse the migration data to extract the SDP answer
-        sfu_mgr
-            .handle_migration_answer(&conn_id, &answer.data)
-            .await
-            .map_err(|e| format!("Failed to process migration answer: {e}"))?;
-
-        tracing::info!(
-            room_id = %self.room_id.as_str(),
-            user_id = %self.user_id.as_str(),
-            conn_id = %conn_id,
-            migration_id = %answer.migration_id,
-            "SFU migration answer processed successfully"
-        );
 
         Ok(())
     }

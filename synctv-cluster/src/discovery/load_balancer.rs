@@ -51,7 +51,7 @@ impl LoadBalancer {
 
     /// Get healthy nodes, filtering by health monitor if available
     async fn get_healthy_nodes(&self) -> Result<Vec<NodeInfo>> {
-        let nodes = self.node_registry.get_all_nodes().await?;
+        let nodes = self.node_registry.get_all_nodes_local().await;
 
         // If no health monitor, return all nodes (stale nodes already filtered by registry)
         let Some(ref monitor) = self.health_monitor else {
@@ -81,7 +81,7 @@ impl LoadBalancer {
 
         if nodes.is_empty() {
             // Fallback: when all nodes are unhealthy, pick a random one from the full set
-            let all_nodes = self.node_registry.get_all_nodes().await?;
+            let all_nodes = self.node_registry.get_all_nodes_local().await;
             if all_nodes.is_empty() {
                 return Err(Error::NotFound("No nodes registered in the cluster".to_string()));
             }
@@ -176,8 +176,8 @@ impl LoadBalancer {
     pub async fn select_node_by_id(&self, node_id: &str) -> Result<String> {
         let node = self
             .node_registry
-            .get_node(node_id)
-            .await?
+            .get_node_local(node_id)
+            .await
             .ok_or_else(|| Error::NotFound(format!("Node {node_id} not found")))?;
 
         Ok(node.node_id)
@@ -201,27 +201,28 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
-    /// Helper: create a NodeRegistry in local-only mode (no Redis)
+    /// Helper: create a NodeRegistry (redis::Client::open succeeds without a running server)
     fn make_registry() -> Arc<NodeRegistry> {
-        Arc::new(NodeRegistry::new(None, "self".to_string(), 30, "test:").unwrap())
+        Arc::new(NodeRegistry::new("redis://localhost:6379".to_string(), "self".to_string(), 30, "test:").unwrap())
     }
 
-    /// Helper: register N nodes into a local-mode registry
+    /// Helper: populate N nodes directly into the local cache (no Redis required)
     async fn register_nodes(registry: &NodeRegistry, count: usize) {
+        let mut nodes = registry.local_nodes.write().await;
         // Register "self" first
-        registry
-            .register("localhost:50051".to_string(), "localhost:8080".to_string())
-            .await
-            .unwrap();
+        nodes.insert("self".to_string(), NodeInfo::new(
+            "self".to_string(),
+            "localhost:50051".to_string(),
+            "localhost:8080".to_string(),
+        ));
 
         // Add remote nodes
         for i in 1..count {
-            let node = NodeInfo::new(
+            nodes.insert(format!("node-{i}"), NodeInfo::new(
                 format!("node-{i}"),
                 format!("localhost:{}", 50051 + i),
                 format!("localhost:{}", 8080 + i),
-            );
-            registry.register_remote(node).await.unwrap();
+            ));
         }
     }
 

@@ -162,6 +162,14 @@ impl PublisherManager {
 
     /// Start listening to `StreamHub` broadcast events
     pub async fn start(self: Arc<Self>, mut event_receiver: BroadcastEventReceiver) {
+        if self.local_grpc_address.is_empty() {
+            warn!(
+                "PublisherManager started with empty grpc_address. \
+                 Re-registration after StreamHub restart will use an empty address, \
+                 preventing cross-node HLS proxy from reaching this node. \
+                 Set grpc_address in LivestreamConfig."
+            );
+        }
         info!("Publisher manager started");
 
         // Start heartbeat maintenance task and track its handle
@@ -414,6 +422,15 @@ impl PublisherManager {
 
         if snapshot.is_empty() {
             debug!("No active publishers to re-register after StreamHub restart");
+            return;
+        }
+
+        if self.local_grpc_address.is_empty() {
+            error!(
+                "Cannot re-register {} publishers: local_grpc_address is empty. \
+                 Cross-node proxying will fail. Set grpc_address in LivestreamConfig.",
+                snapshot.len()
+            );
             return;
         }
 

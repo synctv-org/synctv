@@ -26,15 +26,10 @@ impl ClientApiImpl {
         let webrtc_config = &self.config.webrtc;
         let mut servers = Vec::new();
 
-        // 1. Built-in STUN server (static config)
-        if webrtc_config.enable_builtin_stun {
-            let stun_url = format!(
-                "stun:{}:{}",
-                self.config.advertise_host(),
-                webrtc_config.stun_port
-            );
+        // 1. Built-in STUN server (only if it started successfully with a valid external address)
+        if let Some(ref stun_url) = self.builtin_stun_url {
             servers.push(IceServer {
-                urls: vec![stun_url],
+                urls: vec![stun_url.clone()],
                 username: None,
                 credential: None,
                 expiry_time: 0, // STUN servers don't expire

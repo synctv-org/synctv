@@ -28,6 +28,10 @@ const CRITICAL_STREAM_INITIAL_BACKOFF_MS: u64 = 100;
 /// Max length of each per-room stream (approximate)
 const MAX_STREAM_LENGTH: usize = 10000;
 
+/// Milliseconds to wait after broadcasting a RoomDeleted event before removing
+/// room subscriptions, giving WebSocket read loops time to drain queued messages.
+const ROOM_DELETED_BROADCAST_DRAIN_MS: u64 = 100;
+
 // ---- Unified Pub/Sub channel naming ----
 //
 // Both admin and room events use the same channel naming scheme and are published
@@ -632,13 +636,22 @@ impl RedisPubSub {
                 .collect();
             streams_to_catchup.push(self.admin_stream_key());
 
-            // New node: catch up on recent historical events from each stream
-            // starting from "0-0" so we don't miss state that was published
-            // before this node joined the cluster.
+            // New node: catch up on recent historical events from each stream.
+            // Instead of reading from "0" (all history), we start from 5 minutes ago
+            // to avoid processing a large backlog in big clusters.
+            let catchup_start_id = {
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis();
+                // 5 minutes = 300,000 ms
+                let start_ms = now_ms.saturating_sub(300_000);
+                format!("{start_ms}-0")
+            };
             let mut total_caught_up = 0usize;
             let mut total_skipped = 0usize;
             for stream_key in &streams_to_catchup {
-                match self.read_missed_events_from(stream_key, "0").await {
+                match self.read_missed_events_from(stream_key, &catchup_start_id).await {
                     Ok(events) => {
                         for (stream_id, channel, event) in events {
                             let dedup_key = DedupKey::from_event(&event);
@@ -1134,8 +1147,10 @@ impl RedisPubSub {
         if let Some(room_id_str) = self.extract_room_id_from_channel(channel) {
             let room_id = RoomId::from_string(room_id_str.to_string());
 
-            // Forward kick events to admin channel for cross-replica disconnect handling
-            if matches!(&event, ClusterEvent::KickPublisher { .. } | ClusterEvent::KickUserFromRoom { .. }) {
+            // Forward kick/leave events to admin channel for cross-replica disconnect handling.
+            // UserLeft is included so other replicas disconnect the user's connections
+            // from the room (same behavior as KickUserFromRoom but with correct semantics).
+            if matches!(&event, ClusterEvent::KickPublisher { .. } | ClusterEvent::KickUserFromRoom { .. } | ClusterEvent::UserLeft { .. }) {
                 let _ = self.admin_event_tx.send(event.clone());
             }
 
@@ -1177,11 +1192,30 @@ impl RedisPubSub {
             if self.cache_invalidation.is_some() {
                 match &event {
                     ClusterEvent::RoomSettingsChanged { .. }
-                    | ClusterEvent::RoomCreated { .. }
-                    | ClusterEvent::RoomDeleted { .. } => {
+                    | ClusterEvent::RoomCreated { .. } => {
                         self.invalidate_cache_targets(&[CacheTarget::Room {
                             room_id: room_id.as_str().to_string(),
                         }]);
+                    }
+                    ClusterEvent::RoomDeleted { .. } => {
+                        // Invalidate both room cache and playback state cache
+                        self.invalidate_cache_targets(&[CacheTarget::Room {
+                            room_id: room_id.as_str().to_string(),
+                        }]);
+                        // PlaybackState is a separate moka cache; invalidate it
+                        // directly via the CacheInvalidationService.
+                        if let Some(ref cache_svc) = self.cache_invalidation {
+                            use synctv_core::cache::InvalidationMessage;
+                            if let Err(e) = cache_svc.broadcast_local(InvalidationMessage::PlaybackState {
+                                room_id: room_id.as_str().to_string(),
+                            }) {
+                                tracing::warn!(
+                                    error = %e,
+                                    room_id = %room_id.as_str(),
+                                    "Failed to broadcast PlaybackState invalidation for deleted room"
+                                );
+                            }
+                        }
                     }
                     _ => {}
                 }
@@ -1195,7 +1229,7 @@ impl RedisPubSub {
                 // Notify local subscribers so WebSocket clients learn the room is gone
                 let sent_count = self.message_hub.broadcast(&room_id, event);
                 // Allow WebSocket tasks to process the queued event before cleanup
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                tokio::time::sleep(Duration::from_millis(ROOM_DELETED_BROADCAST_DRAIN_MS)).await;
                 // Remove all local subscriptions for the deleted room
                 self.message_hub.remove_room(&room_id);
                 info!(

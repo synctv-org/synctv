@@ -1176,8 +1176,8 @@ mod auth_flow {
         let jwt = jwt_service();
         let user_id = UserId::new();
 
-        let access_token = jwt.sign_token(&user_id, TokenType::Access).expect("access token");
-        let refresh_token = jwt.sign_token(&user_id, TokenType::Refresh).expect("refresh token");
+        let access_token = jwt.sign_token(&user_id, TokenType::Access, 0).expect("access token");
+        let refresh_token = jwt.sign_token(&user_id, TokenType::Refresh, 0).expect("refresh token");
 
         // 4. Validate access token (simulates auth middleware)
         let claims = jwt.verify_access_token(&access_token).expect("access token valid");
@@ -1193,7 +1193,7 @@ mod auth_flow {
         assert!(refresh_claims.is_refresh_token());
 
         // 7. Issue new access token from refresh (simulates refresh flow)
-        let new_access = jwt.sign_token(&user_id, TokenType::Access).expect("new access token");
+        let new_access = jwt.sign_token(&user_id, TokenType::Access, 0).expect("new access token");
         let new_claims = jwt.verify_access_token(&new_access).expect("new access token valid");
         assert_eq!(new_claims.sub, user_id.as_str());
     }
@@ -1205,7 +1205,7 @@ mod auth_flow {
         let jwt_b = JwtService::new("secret-bbbb-long-enough-for-entropy-check-1234567890").unwrap();
         let user_id = UserId::new();
 
-        let token = jwt_a.sign_token(&user_id, TokenType::Access).unwrap();
+        let token = jwt_a.sign_token(&user_id, TokenType::Access, 0).unwrap();
         assert!(jwt_b.verify_access_token(&token).is_err(), "cross-secret token must be rejected");
     }
 

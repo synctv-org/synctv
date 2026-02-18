@@ -896,7 +896,7 @@ async fn test_node_discovery_three_nodes() {
     let redis = TestRedis::start().await;
 
     let registry_a = NodeRegistry::new(
-        Some(redis.redis_url.clone()),
+        redis.redis_url.clone(),
         "node_a".to_string(),
         30,
         "synctv:",
@@ -904,7 +904,7 @@ async fn test_node_discovery_three_nodes() {
     .expect("Failed to create registry A");
 
     let registry_b = NodeRegistry::new(
-        Some(redis.redis_url.clone()),
+        redis.redis_url.clone(),
         "node_b".to_string(),
         30,
         "synctv:",
@@ -912,7 +912,7 @@ async fn test_node_discovery_three_nodes() {
     .expect("Failed to create registry B");
 
     let registry_c = NodeRegistry::new(
-        Some(redis.redis_url.clone()),
+        redis.redis_url.clone(),
         "node_c".to_string(),
         30,
         "synctv:",
@@ -1019,7 +1019,7 @@ async fn test_node_epoch_fencing() {
     let redis = TestRedis::start().await;
 
     let registry = NodeRegistry::new(
-        Some(redis.redis_url.clone()),
+        redis.redis_url.clone(),
         "fencing_node".to_string(),
         30,
         "synctv:",

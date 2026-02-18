@@ -239,8 +239,10 @@ impl AuthService for ClientServiceImpl {
         &self,
         request: Request<LoginRequest>,
     ) -> Result<Response<LoginResponse>, Status> {
+        // Extract client IP from gRPC remote_addr
+        let client_ip = request.remote_addr().map(|addr| addr.ip());
         let req = request.into_inner();
-        let response = self.client_api.login(req).await.map_err(map_api_error)?;
+        let response = self.client_api.login(req, client_ip).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 

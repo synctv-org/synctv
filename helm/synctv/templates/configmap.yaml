@@ -11,7 +11,6 @@ data:
       http_port: {{ .Values.config.server.httpPort }}
       grpc_port: {{ .Values.config.server.grpcPort }}
       enable_reflection: {{ .Values.config.server.enableReflection | default false }}
-      development_mode: false
       metrics_enabled: {{ .Values.metrics.enabled | default false }}
       {{- if .Values.config.server.trustedProxies }}
       trusted_proxies:

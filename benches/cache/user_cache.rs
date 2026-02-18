@@ -15,6 +15,7 @@ fn create_test_user(id: &str, username: &str) -> CachedUser {
         UserRole::User,
         UserStatus::Active,
         Utc::now(),
+        0,
     )
 }
 

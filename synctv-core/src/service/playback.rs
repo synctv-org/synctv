@@ -383,6 +383,10 @@ impl PlaybackService {
     ///
     /// This is called when current media finishes playing.
     /// Returns the new playback state if successful, or None if there's no next media.
+    ///
+    /// Uses a retry loop that re-fetches state and playlist on each attempt to
+    /// avoid TOCTOU races where another user changes the playlist or playback
+    /// state between the read and the optimistic-lock update.
     pub async fn play_next(
         &self,
         room_id: &RoomId,
@@ -411,122 +415,162 @@ impl PlaybackService {
             return Ok(None);
         }
 
-        // Get current state
-        let state = self.get_state(room_id).await?;
+        // Retry loop: re-fetch state + playlist on each attempt so that
+        // concurrent playlist/state changes are correctly reflected.
+        for attempt in 0..Self::MAX_RETRIES {
+            // Get current state (fresh on every retry)
+            let state = match self.playback_repo.get(room_id).await? {
+                Some(s) => s,
+                None => self.playback_repo.create_or_get(room_id).await?,
+            };
 
-        // Get playlist scoped to the current playing playlist folder if set,
-        // otherwise fall back to the flat room-wide list.
-        let playlist = if let Some(ref playlist_id) = state.playing_playlist_id {
-            self.media_service.get_playlist_media(playlist_id).await?
-        } else {
-            self.media_repo.get_playlist(room_id).await?
-        };
+            // Get playlist scoped to the current playing playlist folder if set,
+            // otherwise fall back to the flat room-wide list.
+            let playlist = if let Some(ref playlist_id) = state.playing_playlist_id {
+                self.media_service.get_playlist_media(playlist_id).await?
+            } else {
+                self.media_repo.get_playlist(room_id).await?
+            };
 
-        if playlist.is_empty() {
-            return Ok(None);
+            if playlist.is_empty() {
+                return Ok(None);
+            }
+
+            // Handle different play modes
+            let next_media = match mode {
+                PlayMode::Sequential => {
+                    // Find next media by position
+                    let current_pos = if let Some(ref current_id) = state.playing_media_id {
+                        playlist.iter()
+                            .position(|m| &m.id == current_id)
+                            .unwrap_or(0)
+                    } else {
+                        0
+                    };
+
+                    if current_pos + 1 < playlist.len() {
+                        Some(&playlist[current_pos + 1])
+                    } else {
+                        None // End of playlist
+                    }
+                }
+
+                PlayMode::RepeatOne => {
+                    // Repeat current media
+                    if let Some(ref current_id) = state.playing_media_id {
+                        playlist.iter()
+                            .find(|m| &m.id == current_id)
+                    } else {
+                        playlist.first()
+                    }
+                }
+
+                PlayMode::RepeatAll => {
+                    // Loop back to start
+                    let current_pos = if let Some(ref current_id) = state.playing_media_id {
+                        playlist.iter()
+                            .position(|m| &m.id == current_id)
+                            .unwrap_or(0)
+                    } else {
+                        0
+                    };
+
+                    let next_pos = (current_pos + 1) % playlist.len();
+                    Some(&playlist[next_pos])
+                }
+
+                PlayMode::Shuffle => {
+                    // Random next media (excluding current)
+                    //
+                    // NOTE: This is a simplified shuffle implementation that randomly selects
+                    // the next media from the playlist (excluding the current one).
+                    //
+                    // Pros: Simple, efficient, no additional state storage required
+                    // Cons: May play some media more frequently than others
+                    //
+                    // For a production-grade shuffle without repeats, consider implementing
+                    // Fisher-Yates shuffle algorithm with persistent state storage (Redis):
+                    // 1. Shuffle the entire playlist once
+                    // 2. Play through shuffled order
+                    // 3. Re-shuffle when all items played
+                    // See: /Volumes/workspace/rust/design/13-自动连播设计.md §3.4
+                    if let Some(ref current_id) = state.playing_media_id {
+                        playlist.iter()
+                            .filter(|m| &m.id != current_id)
+                            .choose(&mut rand::rng())
+                    } else {
+                        playlist.first()
+                    }
+                }
+            };
+
+            // Switch to next media
+            let Some(next) = next_media else {
+                tracing::info!(
+                    room_id = %room_id.as_str(),
+                    mode = ?mode,
+                    "Playlist ended"
+                );
+                return Ok(None);
+            };
+
+            // Apply update to the fetched state and try to save with optimistic locking
+            let mut updated_state = state;
+            updated_state.playing_media_id = Some(next.id.clone());
+            updated_state.playing_playlist_id = Some(next.playlist_id.clone());
+            updated_state.relative_path = next.name.clone();
+            updated_state.current_time = 0.0;
+            updated_state.is_playing = true;
+            updated_state.updated_at = chrono::Utc::now();
+
+            match self.playback_repo.update(&updated_state).await {
+                Ok(saved_state) => {
+                    // Invalidate local cache
+                    let cache_key = room_id.as_str().to_string();
+                    self.playback_cache.invalidate(&cache_key).await;
+
+                    // Broadcast to other replicas
+                    if let Some(ref service) = self.invalidation_service {
+                        if let Err(e) = service.update_playback_state(room_id, &saved_state).await {
+                            tracing::warn!(
+                                error = %e,
+                                room_id = %room_id.as_str(),
+                                "Failed to broadcast playback state update for play_next"
+                            );
+                        }
+                    }
+
+                    tracing::info!(
+                        room_id = %room_id.as_str(),
+                        media_id = %next.id.as_str(),
+                        name = %next.name,
+                        mode = ?mode,
+                        "Auto-played next media"
+                    );
+
+                    self.broadcast_state_change(&saved_state).await;
+                    return Ok(Some(saved_state));
+                }
+                Err(Error::OptimisticLockConflict) if attempt + 1 < Self::MAX_RETRIES => {
+                    let backoff = Self::BACKOFF_BASE_MS * (1 << attempt);
+                    let jitter = rand::rng().random_range(0..Self::BACKOFF_BASE_MS);
+                    let delay = backoff + jitter;
+                    tracing::debug!(
+                        room_id = %room_id.as_str(),
+                        attempt = attempt + 1,
+                        delay_ms = delay,
+                        "play_next version conflict, re-fetching state and retrying"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
         }
 
-        // Handle different play modes
-        let next_media = match mode {
-            PlayMode::Sequential => {
-                // Find next media by position
-                let current_pos = if let Some(ref current_id) = state.playing_media_id {
-                    playlist.iter()
-                        .position(|m| &m.id == current_id)
-                        .unwrap_or(0)
-                } else {
-                    0
-                };
-
-                if current_pos + 1 < playlist.len() {
-                    Some(&playlist[current_pos + 1])
-                } else {
-                    None // End of playlist
-                }
-            }
-
-            PlayMode::RepeatOne => {
-                // Repeat current media
-                if let Some(ref current_id) = state.playing_media_id {
-                    playlist.iter()
-                        .find(|m| &m.id == current_id)
-                } else {
-                    playlist.first()
-                }
-            }
-
-            PlayMode::RepeatAll => {
-                // Loop back to start
-                let current_pos = if let Some(ref current_id) = state.playing_media_id {
-                    playlist.iter()
-                        .position(|m| &m.id == current_id)
-                        .unwrap_or(0)
-                } else {
-                    0
-                };
-
-                let next_pos = (current_pos + 1) % playlist.len();
-                Some(&playlist[next_pos])
-            }
-
-            PlayMode::Shuffle => {
-                // Random next media (excluding current)
-                //
-                // NOTE: This is a simplified shuffle implementation that randomly selects
-                // the next media from the playlist (excluding the current one).
-                //
-                // Pros: Simple, efficient, no additional state storage required
-                // Cons: May play some media more frequently than others
-                //
-                // For a production-grade shuffle without repeats, consider implementing
-                // Fisher-Yates shuffle algorithm with persistent state storage (Redis):
-                // 1. Shuffle the entire playlist once
-                // 2. Play through shuffled order
-                // 3. Re-shuffle when all items played
-                // See: /Volumes/workspace/rust/design/13-自动连播设计.md §3.4
-                if let Some(ref current_id) = state.playing_media_id {
-                    playlist.iter()
-                        .filter(|m| &m.id != current_id)
-                        .choose(&mut rand::rng())
-                } else {
-                    playlist.first()
-                }
-            }
-        };
-
-        // Switch to next media
-        if let Some(next) = next_media {
-            let next_playlist_id = Some(next.playlist_id.clone());
-            let next_name = next.name.clone();
-            let new_state = self.update_state(room_id.clone(), |state| {
-                state.playing_media_id = Some(next.id.clone());
-                state.playing_playlist_id = next_playlist_id.clone();
-                state.relative_path = next_name.clone();
-                state.current_time = 0.0;
-                state.is_playing = true;
-                state.updated_at = chrono::Utc::now();
-                // version is incremented by the SQL UPDATE, not here
-            }).await?;
-
-            tracing::info!(
-                room_id = %room_id.as_str(),
-                media_id = %next.id.as_str(),
-                name = %next.name,
-                mode = ?mode,
-                "Auto-played next media"
-            );
-
-            // Cache invalidation is already handled inside update_state()
-            self.broadcast_state_change(&new_state).await;
-            Ok(Some(new_state))
-        } else {
-            tracing::info!(
-                room_id = %room_id.as_str(),
-                mode = ?mode,
-                "Playlist ended"
-            );
-            Ok(None)
-        }
+        Err(Error::Internal(
+            "play_next failed after maximum retry attempts".to_string(),
+        ))
     }
 
     /// Check if media has ended and auto-play next if needed
@@ -589,7 +633,7 @@ impl PlaybackService {
     }
 
     /// Maximum retry attempts for optimistic lock conflicts
-    const MAX_RETRIES: u32 = 3;
+    const MAX_RETRIES: u32 = 5;
     /// Base delay for exponential backoff (milliseconds)
     const BACKOFF_BASE_MS: u64 = 5;
 
@@ -819,7 +863,7 @@ mod tests {
 
     #[test]
     fn test_update_state_constants() {
-        assert_eq!(PlaybackService::MAX_RETRIES, 3);
+        assert_eq!(PlaybackService::MAX_RETRIES, 5);
         assert_eq!(PlaybackService::BACKOFF_BASE_MS, 5);
     }
 }

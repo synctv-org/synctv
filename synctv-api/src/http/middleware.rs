@@ -258,8 +258,7 @@ pub async fn rate_limit_middleware(
             .map(|ci| ci.0.ip());
 
         // Check if we should trust proxy headers
-        let should_trust_headers = state.config.server.development_mode
-            || remote_addr.is_some_and(|ip| state.config.server.is_trusted_proxy(&ip));
+        let should_trust_headers = remote_addr.is_some_and(|ip| state.config.server.is_trusted_proxy(&ip));
 
         if should_trust_headers {
             // Trust X-Forwarded-For from trusted proxies (or in dev mode)

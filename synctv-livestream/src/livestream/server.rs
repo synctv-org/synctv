@@ -39,6 +39,9 @@ pub struct LivestreamConfig {
     /// Maximum memory (in megabytes) for the GOP cache per stream.
     /// 0 means use the built-in default (50 MB).
     pub gop_cache_max_memory_mb: u64,
+    /// Advertised gRPC address of this node for cross-node proxying.
+    /// Used by PublisherManager for re-registration after StreamHub restart.
+    pub grpc_address: String,
 }
 
 /// Handle returned by [`LivestreamServer::start`].
@@ -347,6 +350,18 @@ impl LivestreamServer {
 
         // 3. Start HLS remuxer (converts RTMP to HLS segments)
         let hls_storage = Arc::new(MemoryStorage::new()) as Arc<dyn synctv_xiu::storage::HlsStorage>;
+
+        // Warn if using in-memory HLS storage in cluster mode (cluster_secret is set).
+        // In cluster mode, each HLS segment request for a remote publisher requires a
+        // gRPC proxy call to the publisher node, which is inefficient at scale.
+        if self.config.cluster_secret.is_some() {
+            warn!(
+                "HLS storage is using in-memory backend in cluster mode. \
+                 Each segment request will require gRPC proxy to the publisher node. \
+                 Consider using OSS or shared filesystem storage for better performance."
+            );
+        }
+
         let segment_manager = Arc::new(SegmentManager::new(hls_storage, CleanupConfig::default()));
         let stream_registry: StreamRegistry = Arc::new(DashMap::new());
         let hls_shutdown_token = CancellationToken::new();
@@ -360,7 +375,7 @@ impl LivestreamServer {
             self.publisher_registry.clone(),
             self.config.node_id.clone(),
             event_sender.clone(),
-        ));
+        ).with_grpc_address(self.config.grpc_address.clone()));
 
         // Create activity callback for the HLS remuxer to record publisher data activity.
         // This prevents the silent publisher detection from incorrectly timing out active publishers.
@@ -459,6 +474,12 @@ impl LivestreamServer {
         // and registers/unregisters publishers in Redis for multi-node relay
         // (PublisherManager was created earlier in step 3 to wire the activity callback)
         let local_node_id = self.config.node_id.clone();
+        if local_node_id.is_empty() {
+            tracing::error!(
+                "Livestream node_id is empty! HLS local/remote publisher detection will not work correctly. \
+                 Set node_id in the livestream config."
+            );
+        }
         let cluster_secret = self.config.cluster_secret.clone();
         let publisher_manager_handle = tokio::spawn({
             let pm = Arc::clone(&publisher_manager);

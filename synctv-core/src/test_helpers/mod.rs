@@ -82,6 +82,7 @@ impl UserFixture {
             created_at: now,
             updated_at: now,
             password_changed_at: now,
+            password_version: 0,
             deleted_at: None,
         }
     }

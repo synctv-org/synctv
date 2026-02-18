@@ -54,11 +54,7 @@ pub struct ServerConfig {
     pub grpc_port: u16,
     pub http_port: u16,
     pub enable_reflection: bool,
-    /// Development mode enables relaxed security checks for local development.
-    /// WARNING: Never enable in production!
-    pub development_mode: bool,
     /// Enable the `/metrics` Prometheus endpoint.
-    /// Independent of `development_mode` so metrics can be scraped in production.
     /// Defaults to `false`. In Kubernetes, set via Helm `metrics.enabled`.
     pub metrics_enabled: bool,
     /// Trusted proxy IP addresses/CIDRs for X-Forwarded-For validation.
@@ -66,8 +62,7 @@ pub struct ServerConfig {
     /// Example: ["10.0.0.0/8", "192.168.0.0/16"] for internal load balancers.
     /// If empty, X-Forwarded-For headers are NOT trusted (socket address is used).
     pub trusted_proxies: Vec<String>,
-    /// CORS allowed origins. In development mode, all origins are allowed.
-    /// In production, this should be set to specific domains.
+    /// CORS allowed origins. Must be set to specific domains.
     /// Example: ["<https://app.example.com>", "<https://admin.example.com>"]
     pub cors_allowed_origins: Vec<String>,
     /// Shared secret for authenticating cluster gRPC calls between nodes.
@@ -98,7 +93,6 @@ impl Default for ServerConfig {
             grpc_port: 50051,
             http_port: 8080,
             enable_reflection: true,
-            development_mode: false,
             metrics_enabled: false,
             trusted_proxies: Vec::new(),
             cors_allowed_origins: Vec::new(),
@@ -761,81 +755,25 @@ impl Config {
             errors.push("database.url must not be empty".to_string());
         }
 
-        // H-01: Dev mode guard - prevent development_mode on non-localhost addresses
-        if self.server.development_mode {
-            let host = self.server.host.as_str();
-            let is_localhost = matches!(host, "127.0.0.1" | "localhost" | "::1");
-            if !is_localhost {
-                tracing::warn!(
-                    "development_mode=true with non-localhost host '{}'. \
-                     This is dangerous in production! Only bind to 127.0.0.1/localhost/::1 in dev mode.",
-                    host
-                );
-                // 0.0.0.0 is commonly used in containers even for dev, so warn but don't error
-                if host != "0.0.0.0" && host != "::" {
-                    errors.push(format!(
-                        "development_mode=true with non-localhost host '{}'. \
-                         Set host to 127.0.0.1/localhost/::1 or disable development_mode",
-                        host
-                    ));
-                }
-            }
-
-            // H-01b: Detect production environment indicators.
-            // If common env vars signal production, development_mode should be off.
-            let prod_indicators: &[&str] = &[
-                "KUBERNETES_SERVICE_HOST", // Running in Kubernetes
-                "ECS_CONTAINER_METADATA_URI", // Running in AWS ECS
-            ];
-            for var in prod_indicators {
-                if std::env::var(var).is_ok() {
-                    errors.push(format!(
-                        "development_mode=true but production environment detected ({var} is set). \
-                         Disable development_mode for production deployments."
-                    ));
-                    break;
-                }
-            }
-            // Also check explicit environment variables
-            for var in &["NODE_ENV", "ENVIRONMENT", "ENV"] {
-                if let Ok(val) = std::env::var(var) {
-                    let val_lower = val.to_lowercase();
-                    if val_lower == "production" || val_lower == "prod" {
-                        errors.push(format!(
-                            "development_mode=true but {var}={val} indicates production. \
-                             Disable development_mode for production deployments."
-                        ));
-                        break;
-                    }
-                }
-            }
-        }
-
-        // Validate JWT secret (warn if using default)
+        // Validate JWT secret
         if self.jwt.secret.is_empty() {
             errors.push("JWT secret is empty".to_string());
         } else if self.jwt.secret == "change-me-in-production" {
-            if self.server.development_mode {
-                // Allow default secret in dev mode (just log a warning at startup)
-                tracing::warn!("Using default JWT secret in development mode - do NOT use in production");
-            } else {
-                errors.push("JWT secret is set to default value 'change-me-in-production'. Set SYNCTV_JWT_SECRET environment variable or server.development_mode=true for local development".to_string());
-            }
+            errors.push("JWT secret is set to default value 'change-me-in-production'. Set SYNCTV_JWT_SECRET environment variable".to_string());
         }
 
-        // Validate root credentials (only in production mode)
-        if !self.server.development_mode
-            && self.bootstrap.create_root_user {
+        // Validate root credentials
+        if self.bootstrap.create_root_user {
                 if self.bootstrap.root_password == "root" {
-                    errors.push("Root password is set to default value 'root'. Set SYNCTV_BOOTSTRAP_ROOT_PASSWORD environment variable or server.development_mode=true for local development".to_string());
+                    errors.push("Root password is set to default value 'root'. Set SYNCTV_BOOTSTRAP_ROOT_PASSWORD environment variable".to_string());
                 }
                 if self.bootstrap.root_username.len() < 3 {
                     errors.push("Root username must be at least 3 characters".to_string());
                 }
-                // H-02: Enforce 12-char minimum and complexity for root password in production
+                // H-02: Enforce 12-char minimum and complexity for root password
                 let pwd = &self.bootstrap.root_password;
                 if pwd.len() < 12 {
-                    errors.push("Root password must be at least 12 characters in production mode".to_string());
+                    errors.push("Root password must be at least 12 characters".to_string());
                 }
                 if !pwd.chars().any(char::is_uppercase) {
                     errors.push("Root password must contain at least one uppercase letter".to_string());
@@ -890,9 +828,9 @@ impl Config {
             );
         }
 
-        // Warn about missing Redis in production (security features degrade)
-        if !self.server.development_mode && self.redis.url.is_empty() {
-            tracing::warn!("Redis is not configured in production mode — token blacklist and rate limiting will be DISABLED");
+        // Warn about missing Redis (security features degrade)
+        if self.redis.url.is_empty() {
+            tracing::warn!("Redis is not configured — token blacklist and rate limiting will be DISABLED");
         }
 
         // Validate connection limits
@@ -940,11 +878,11 @@ impl Config {
             errors.push("media_providers.connect_timeout_seconds should not exceed request_timeout_seconds".to_string());
         }
 
-        // **Production Enhancement (#27)**: Validate CORS in production
-        if !self.server.development_mode && !self.server.cors_allowed_origins.is_empty() {
+        // Validate CORS origins
+        if !self.server.cors_allowed_origins.is_empty() {
             for origin in &self.server.cors_allowed_origins {
                 if origin == "*" {
-                    errors.push("CORS wildcard '*' is not allowed in production mode. Specify exact origins or use development_mode for testing.".to_string());
+                    errors.push("CORS wildcard '*' is not allowed. Specify exact origins.".to_string());
                     break;
                 }
                 // Validate origin format
@@ -968,29 +906,29 @@ impl Config {
         }
 
         // Warn if cluster_secret is empty when Redis is configured (multi-replica mode)
-        if !self.server.development_mode && !self.redis.url.is_empty() && self.server.cluster_secret.is_empty() {
+        if !self.redis.url.is_empty() && self.server.cluster_secret.is_empty() {
             tracing::warn!(
                 "Redis is configured but server.cluster_secret is empty. \
                  In multi-replica deployments, set cluster_secret to secure inter-node gRPC communication."
             );
         }
 
-        // Warn if cors_allowed_origins is empty in production mode
-        if !self.server.development_mode && self.server.cors_allowed_origins.is_empty() {
+        // Warn if cors_allowed_origins is empty
+        if self.server.cors_allowed_origins.is_empty() {
             tracing::warn!(
-                "server.cors_allowed_origins is empty in production mode. \
-                 CORS requests will be rejected. Set allowed origins or enable development_mode for testing."
+                "server.cors_allowed_origins is empty. \
+                 CORS requests will be rejected. Set allowed origins."
             );
         }
 
 
-        // **WebRTC Issue (#21)**: Validate STUN external address in non-dev mode.
+        // **WebRTC Issue (#21)**: Validate STUN external address.
         // In cluster/K8s/NAT environments (indicated by cluster_secret being set),
         // stun_external_addr is REQUIRED because pods sit behind NAT and the
         // default advertise_host (pod IP) is not reachable from the internet.
         // Without an explicit external address, STUN reflexive candidates will
         // contain internal IPs and WebRTC connections will fail.
-        if self.webrtc.enable_builtin_stun && !self.server.development_mode {
+        if self.webrtc.enable_builtin_stun {
             if self.webrtc.stun_external_addr.is_empty() {
                 if !self.server.cluster_secret.is_empty() {
                     errors.push(
@@ -1270,7 +1208,6 @@ mod tests {
                 grpc_port: 50051,
                 http_port: 8080,
                 enable_reflection: true,
-                development_mode: false,
                 metrics_enabled: false,
                 trusted_proxies: Vec::new(),
                 cors_allowed_origins: Vec::new(),
@@ -1307,7 +1244,6 @@ mod tests {
                 host: "0.0.0.0".to_string(),
                 grpc_port: 50051,
                 http_port: 8080,
-                development_mode: false,
                 metrics_enabled: false,
                 enable_reflection: false,
                 trusted_proxies: Vec::new(),
@@ -1398,18 +1334,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_default_jwt_secret_dev_mode_ok() {
-        let mut config = valid_prod_config();
-        config.server.development_mode = true;
-        config.server.host = "127.0.0.1".to_string();
-        config.jwt.secret = "change-me-in-production".to_string();
-        // dev mode relaxes root password requirements, so use default
-        config.bootstrap.create_root_user = false;
-        assert!(config.validate().is_ok());
-    }
-
-    #[test]
-    fn test_validate_default_root_password_production() {
+    fn test_validate_default_root_password() {
         let mut config = valid_prod_config();
         config.bootstrap.root_password = "root".to_string();
         let errors = config.validate().unwrap_err();
@@ -1509,38 +1434,6 @@ mod tests {
         config.email.from_email = "@invalid".to_string();
         let errors = config.validate().unwrap_err();
         assert!(errors.iter().any(|e| e.contains("from_email") && e.contains("not a valid")));
-    }
-
-    #[test]
-    fn test_validate_dev_mode_non_localhost_host() {
-        let mut config = valid_prod_config();
-        config.server.development_mode = true;
-        config.server.host = "192.168.1.100".to_string();
-        config.bootstrap.create_root_user = false;
-        config.jwt.secret = "change-me-in-production".to_string();
-        let errors = config.validate().unwrap_err();
-        assert!(errors.iter().any(|e| e.contains("development_mode") && e.contains("non-localhost")));
-    }
-
-    #[test]
-    fn test_validate_dev_mode_0000_warns_but_no_error() {
-        let mut config = valid_prod_config();
-        config.server.development_mode = true;
-        config.server.host = "0.0.0.0".to_string();
-        config.bootstrap.create_root_user = false;
-        config.jwt.secret = "change-me-in-production".to_string();
-        // 0.0.0.0 should warn but NOT error (common in containers)
-        assert!(config.validate().is_ok());
-    }
-
-    #[test]
-    fn test_validate_dev_mode_localhost_ok() {
-        let mut config = valid_prod_config();
-        config.server.development_mode = true;
-        config.server.host = "127.0.0.1".to_string();
-        config.bootstrap.create_root_user = false;
-        config.jwt.secret = "change-me-in-production".to_string();
-        assert!(config.validate().is_ok());
     }
 
     #[test]

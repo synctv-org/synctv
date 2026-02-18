@@ -33,6 +33,7 @@ fn test_m3u8_generation_basic() {
         stream_name: "test".to_string(),
         segments,
         is_ended: false,
+        created_at: Instant::now(),
     };
 
     let m3u8 = state.generate_m3u8(|ts_name| format!("/hls/{}", ts_name));
@@ -72,6 +73,7 @@ fn test_m3u8_generation_ended_stream() {
         stream_name: "test".to_string(),
         segments,
         is_ended: true,
+        created_at: std::time::Instant::now(),
     };
 
     let m3u8 = state.generate_m3u8(|ts_name| format!("/hls/{}", ts_name));
@@ -109,6 +111,7 @@ fn test_m3u8_discontinuity() {
         stream_name: "test".to_string(),
         segments,
         is_ended: false,
+        created_at: std::time::Instant::now(),
     };
 
     let m3u8 = state.generate_m3u8(|ts_name| format!("/hls/{}", ts_name));
@@ -140,6 +143,7 @@ fn test_m3u8_custom_url_generator() {
         stream_name: "test".to_string(),
         segments,
         is_ended: false,
+        created_at: std::time::Instant::now(),
     };
 
     let token = "secret-jwt-token";
@@ -189,6 +193,7 @@ fn test_m3u8_variable_duration() {
         stream_name: "test".to_string(),
         segments,
         is_ended: false,
+        created_at: std::time::Instant::now(),
     };
 
     let m3u8 = state.generate_m3u8(|ts_name| format!("/hls/{}", ts_name));
@@ -210,6 +215,7 @@ fn test_m3u8_empty_segments() {
         stream_name: "test".to_string(),
         segments: VecDeque::new(),
         is_ended: false,
+        created_at: std::time::Instant::now(),
     };
 
     let m3u8 = state.generate_m3u8(|ts_name| format!("/hls/{}", ts_name));
@@ -247,6 +253,7 @@ fn test_m3u8_sliding_window() {
         stream_name: "test".to_string(),
         segments,
         is_ended: false,
+        created_at: std::time::Instant::now(),
     };
 
     let m3u8 = state.generate_m3u8(|ts_name| format!("/hls/{}", ts_name));
@@ -289,6 +296,7 @@ fn test_segment_duration_precision() {
         stream_name: "test".to_string(),
         segments,
         is_ended: false,
+        created_at: std::time::Instant::now(),
     };
 
     let m3u8 = state.generate_m3u8(|ts_name| format!("/hls/{}", ts_name));
@@ -317,6 +325,7 @@ fn test_m3u8_url_special_chars() {
         stream_name: "test".to_string(),
         segments,
         is_ended: false,
+        created_at: std::time::Instant::now(),
     };
 
     let m3u8 = state.generate_m3u8(|ts_name| {
@@ -374,6 +383,7 @@ fn test_m3u8_multiple_discontinuities() {
         stream_name: "test".to_string(),
         segments,
         is_ended: false,
+        created_at: std::time::Instant::now(),
     };
 
     let m3u8 = state.generate_m3u8(|ts_name| format!("/hls/{}", ts_name));

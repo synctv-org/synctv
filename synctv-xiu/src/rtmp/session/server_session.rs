@@ -226,6 +226,9 @@ impl ServerSession {
                         self.common
                             .unpublish_to_stream_hub(self.app_name.clone(), self.stream_name.clone())
                             .await?;
+                        if let Some(cb) = &self.callbacks.on_publisher_stop {
+                            cb();
+                        }
                     } else {
                         if let Some(auth) = &self.auth {
                             auth.on_unplay(
@@ -238,6 +241,9 @@ impl ServerSession {
                         self.common
                             .unsubscribe_from_stream_hub(self.app_name.clone(), self.stream_name.clone())
                             .await?;
+                        if let Some(cb) = &self.callbacks.on_viewer_leave {
+                            cb();
+                        }
                     }
 
                     return Err(SessionError {
@@ -283,6 +289,9 @@ impl ServerSession {
                             self.common
                                 .unpublish_to_stream_hub(self.app_name.clone(), self.stream_name.clone())
                                 .await?;
+                            if let Some(cb) = &self.callbacks.on_publisher_stop {
+                                cb();
+                            }
                         } else {
                             if let Some(auth) = &self.auth {
                                 auth.on_unplay(
@@ -295,6 +304,9 @@ impl ServerSession {
                             self.common
                                 .unsubscribe_from_stream_hub(self.app_name.clone(), self.stream_name.clone())
                                 .await?;
+                            if let Some(cb) = &self.callbacks.on_viewer_leave {
+                                cb();
+                            }
                         }
                         return Err(err)?;
                     }
@@ -320,6 +332,9 @@ impl ServerSession {
                 self.common
                     .unsubscribe_from_stream_hub(self.app_name.clone(), self.stream_name.clone())
                     .await?;
+                if let Some(cb) = &self.callbacks.on_viewer_leave {
+                    cb();
+                }
                 return Err(err);
             }
         }

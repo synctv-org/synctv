@@ -28,9 +28,9 @@ use super::{AppError, AppState};
 /// Request to create a WebSocket ticket
 #[derive(Debug, Deserialize)]
 pub struct CreateTicketRequest {
-    /// Optional room ID to pre-validate membership
-    /// If provided, the ticket will only be valid for that room
-    pub room_id: Option<String>,
+    /// Unused field, kept for API backward compatibility.
+    #[serde(default, skip)]
+    pub _room_id: Option<String>,
 }
 
 /// Response containing the WebSocket ticket
@@ -89,7 +89,7 @@ pub async fn create_ticket(
 
     let response = TicketResponse {
         ticket,
-        expires_in_secs: 30, // Default TTL
+        expires_in_secs: ws_ticket_service.ticket_ttl_secs(),
         usage: "Use in WebSocket URL: ws://host/ws/room/{room_id}?ticket=xxx".to_string(),
     };
 

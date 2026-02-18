@@ -31,7 +31,6 @@ const HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
 ///
 /// To expose the `/metrics` endpoint, set `server.metrics_enabled = true`
 /// in the application config (or `metrics.enabled` in Helm values).
-/// The metrics endpoint is also exposed when `development_mode` is true.
 pub fn create_health_router() -> Router<AppState> {
     
 

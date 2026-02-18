@@ -162,13 +162,21 @@ impl ClusterClient {
         ClusterServiceClient::new(channel)
     }
 
-    /// Attach the shared secret to a tonic request
-    fn attach_secret<T>(&self, request: &mut tonic::Request<T>) {
+    /// Attach the shared secret to a tonic request.
+    ///
+    /// Returns `Err` if the cluster secret contains invalid (non-ASCII) characters,
+    /// which would cause the request to be sent without authentication.
+    fn attach_secret<T>(&self, request: &mut tonic::Request<T>) -> Result<()> {
         if !self.config.cluster_secret.is_empty() {
-            if let Ok(val) = self.config.cluster_secret.parse::<MetadataValue<_>>() {
-                request.metadata_mut().insert("x-cluster-secret", val);
+            match self.config.cluster_secret.parse::<MetadataValue<tonic::metadata::Ascii>>() {
+                Ok(val) => { request.metadata_mut().insert("x-cluster-secret", val); }
+                Err(e) => {
+                    tracing::error!("cluster_secret contains invalid characters (non-ASCII?): {}", e);
+                    return Err(Error::Rpc("invalid cluster secret configuration".to_string()));
+                }
             }
         }
+        Ok(())
     }
 
     /// Remove a cached channel (e.g., after connection failure)
@@ -314,7 +322,7 @@ impl ClusterClient {
         let mut client = self.make_client(channel);
 
         let mut request = tonic::Request::new(GetUserOnlineStatusRequest { user_ids });
-        self.attach_secret(&mut request);
+        self.attach_secret(&mut request)?;
 
         // Timeout is already set at the Endpoint level (see get_channel),
         // so no additional tokio::time::timeout wrapper is needed.
@@ -470,7 +478,7 @@ impl ClusterClient {
         let mut client = self.make_client(channel);
 
         let mut request = tonic::Request::new(GetRoomConnectionsRequest { room_id });
-        self.attach_secret(&mut request);
+        self.attach_secret(&mut request)?;
 
         // Timeout is already set at the Endpoint level (see get_channel),
         // so no additional tokio::time::timeout wrapper is needed.
@@ -658,15 +666,18 @@ mod tests {
 
     #[tokio::test]
     async fn test_cluster_client_no_remote_nodes() {
-        // Create a local-only node registry (no Redis)
         let registry = Arc::new(
-            NodeRegistry::new(None, "self_node".to_string(), 30, "synctv:").unwrap(),
+            NodeRegistry::new("redis://localhost:6379".to_string(), "self_node".to_string(), 30, "synctv:").unwrap(),
         );
-        // Register only ourselves
-        registry
-            .register("localhost:50051".to_string(), "localhost:8080".to_string())
-            .await
-            .unwrap();
+        // Populate local cache directly (no Redis connection needed)
+        {
+            let mut nodes = registry.local_nodes.write().await;
+            nodes.insert("self_node".to_string(), crate::discovery::NodeInfo::new(
+                "self_node".to_string(),
+                "localhost:50051".to_string(),
+                "localhost:8080".to_string(),
+            ));
+        }
 
         let config = ClusterClientConfig {
             self_node_id: "self_node".to_string(),

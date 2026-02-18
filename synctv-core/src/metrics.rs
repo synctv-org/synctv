@@ -3,7 +3,7 @@
 //! This module provides production-grade metrics collection using prometheus crate.
 //! All metrics are automatically exposed via the /metrics endpoint for Prometheus scraping.
 
-use prometheus::{CounterVec, HistogramVec, Registry, IntGauge, IntCounterVec, TextEncoder, Encoder, register_counter_vec_with_registry, register_histogram_vec_with_registry, register_int_gauge_with_registry};
+use prometheus::{CounterVec, HistogramVec, Registry, IntGauge, IntCounter, IntCounterVec, TextEncoder, Encoder, register_counter_vec_with_registry, register_histogram_vec_with_registry, register_int_gauge_with_registry, register_int_counter_with_registry};
 
 /// Global metrics registry
 pub static REGISTRY: std::sync::LazyLock<Registry> = std::sync::LazyLock::new(Registry::new);
@@ -416,7 +416,7 @@ pub mod grpc {
 /// Redis operations
 pub mod redis {
     use super::{REGISTRY, IntCounterVec, HistogramVec};
-    use prometheus::{Opts, register_int_counter_vec_with_registry, HistogramOpts};
+    use prometheus::{IntGaugeVec, Opts, register_int_counter_vec_with_registry, register_int_gauge_vec_with_registry, HistogramOpts};
 
     /// Total Redis operation errors, labeled by operation type.
     pub static REDIS_ERRORS: std::sync::LazyLock<IntCounterVec> = std::sync::LazyLock::new(|| {
@@ -454,8 +454,8 @@ pub mod redis {
     });
 
     /// Redis connection pool size.
-    pub static REDIS_POOL_SIZE: std::sync::LazyLock<IntCounterVec> = std::sync::LazyLock::new(|| {
-        register_int_counter_vec_with_registry!(
+    pub static REDIS_POOL_SIZE: std::sync::LazyLock<IntGaugeVec> = std::sync::LazyLock::new(|| {
+        register_int_gauge_vec_with_registry!(
             Opts::new("redis_pool_size", "Redis connection pool size"),
             &["pool"],
             REGISTRY.clone()
@@ -466,7 +466,7 @@ pub mod redis {
 /// Cluster operations
 pub mod cluster {
     use super::{REGISTRY, IntGauge, IntCounterVec, HistogramVec};
-    use prometheus::{Opts, register_int_gauge_with_registry, register_int_counter_vec_with_registry, GaugeVec, register_gauge_vec_with_registry, HistogramOpts};
+    use prometheus::{Opts, register_int_gauge_with_registry, register_int_counter_vec_with_registry, HistogramOpts};
 
     /// Current number of active connections on this cluster node.
     pub static CLUSTER_CONNECTIONS: std::sync::LazyLock<IntGauge> = std::sync::LazyLock::new(|| {
@@ -611,14 +611,16 @@ pub mod cluster {
         ).expect("Failed to register CLUSTER_SYNC_ERRORS")
     });
 
-    /// Node last heartbeat timestamp (Unix timestamp).
-    pub static NODE_LAST_HEARTBEAT: std::sync::LazyLock<GaugeVec> = std::sync::LazyLock::new(|| {
-        register_gauge_vec_with_registry!(
-            "synctv_cluster_node_last_heartbeat_timestamp",
-            "Node last successful heartbeat timestamp (Unix)",
-            &["node_id"],
-            REGISTRY.clone()
-        ).expect("Failed to register NODE_LAST_HEARTBEAT")
+    /// This node's last successful heartbeat timestamp (Unix timestamp).
+    /// Reports only this node's own heartbeat (no per-node_id label to avoid unbounded cardinality).
+    pub static NODE_LAST_HEARTBEAT: std::sync::LazyLock<prometheus::Gauge> = std::sync::LazyLock::new(|| {
+        prometheus::Gauge::with_opts(
+            prometheus::Opts::new(
+                "synctv_cluster_node_last_heartbeat_timestamp",
+                "This node's last successful heartbeat timestamp (Unix)",
+            )
+        ).and_then(|g| { REGISTRY.register(Box::new(g.clone()))?; Ok(g) })
+        .expect("Failed to register NODE_LAST_HEARTBEAT")
     });
 
     /// Total distributed counter TTL refresh operations, labeled by result.
@@ -759,8 +761,8 @@ pub mod streamhub {
 
 /// Livestream metrics
 pub mod livestream {
-    use super::{register_counter_vec_with_registry, register_histogram_vec_with_registry, register_int_gauge_with_registry, CounterVec, HistogramVec, REGISTRY, IntGauge, IntCounterVec};
-    use prometheus::{IntCounter, Opts, register_int_counter_vec_with_registry};
+    use super::{register_counter_vec_with_registry, register_histogram_vec_with_registry, register_int_gauge_with_registry, register_int_counter_with_registry, CounterVec, HistogramVec, REGISTRY, IntGauge, IntCounter};
+    use prometheus::Opts;
 
     /// Total publisher cleanups due to heartbeat failure.
     pub static PUBLISHER_HEARTBEAT_FAILURES: std::sync::LazyLock<IntCounter> = std::sync::LazyLock::new(|| {
@@ -821,13 +823,12 @@ pub mod livestream {
         ).expect("Failed to register LIVESTREAM_PULL_ERRORS_TOTAL")
     });
 
-    /// Total relay frames dropped due to backpressure, labeled by stream_id.
-    pub static LIVESTREAM_RELAY_FRAME_DROPS: std::sync::LazyLock<IntCounterVec> = std::sync::LazyLock::new(|| {
-        register_int_counter_vec_with_registry!(
+    /// Total relay frames dropped due to backpressure.
+    pub static LIVESTREAM_RELAY_FRAME_DROPS: std::sync::LazyLock<IntCounter> = std::sync::LazyLock::new(|| {
+        IntCounter::with_opts(
             Opts::new("livestream_relay_frame_drops_total", "Total relay frames dropped due to backpressure"),
-            &["stream_id"],
-            REGISTRY.clone()
-        ).expect("Failed to register LIVESTREAM_RELAY_FRAME_DROPS")
+        ).and_then(|c| { REGISTRY.register(Box::new(c.clone()))?; Ok(c) })
+        .expect("Failed to register LIVESTREAM_RELAY_FRAME_DROPS")
     });
 
     /// Number of cached GOPs across all active streams.
@@ -840,8 +841,8 @@ pub mod livestream {
     });
 
     /// Total number of GOPs evicted due to memory limits since process start.
-    pub static GOP_CACHE_DROPS_TOTAL: std::sync::LazyLock<IntGauge> = std::sync::LazyLock::new(|| {
-        register_int_gauge_with_registry!(
+    pub static GOP_CACHE_DROPS_TOTAL: std::sync::LazyLock<IntCounter> = std::sync::LazyLock::new(|| {
+        register_int_counter_with_registry!(
             "gop_cache_drops_total",
             "Total number of GOPs evicted due to memory limits",
             REGISTRY.clone()
@@ -1378,11 +1379,10 @@ mod tests {
         assert_eq!(livestream::GOP_CACHE_SIZE.get(), 5);
         livestream::GOP_CACHE_SIZE.set(before_size);
 
-        // Test GOP cache drops gauge (tracks cumulative evictions)
+        // Test GOP cache drops counter (tracks cumulative evictions)
         let before_drops = livestream::GOP_CACHE_DROPS_TOTAL.get();
-        livestream::GOP_CACHE_DROPS_TOTAL.set(before_drops + 3);
+        livestream::GOP_CACHE_DROPS_TOTAL.inc_by(3);
         assert_eq!(livestream::GOP_CACHE_DROPS_TOTAL.get(), before_drops + 3);
-        livestream::GOP_CACHE_DROPS_TOTAL.set(before_drops);
 
         // Test GOP cache memory bytes gauge
         let before_mem = livestream::GOP_CACHE_MEMORY_BYTES.get();
@@ -1430,7 +1430,7 @@ mod tests {
         livestream::LIVESTREAM_STREAM_DURATION_SECONDS.with_label_values(&["_test"]).observe(0.0);
         livestream::LIVESTREAM_PULL_ERRORS_TOTAL.with_label_values(&["_test"]).inc();
         livestream::GOP_CACHE_SIZE.set(0);
-        livestream::GOP_CACHE_DROPS_TOTAL.set(0);
+        livestream::GOP_CACHE_DROPS_TOTAL.inc();
         livestream::GOP_CACHE_MEMORY_BYTES.set(0);
 
         let output = gather_metrics();
@@ -1504,7 +1504,6 @@ mod tests {
             .inc();
 
         cluster::NODE_LAST_HEARTBEAT
-            .with_label_values(&["node_1"])
             .set(1234567890.0);
 
         let output = gather_metrics();

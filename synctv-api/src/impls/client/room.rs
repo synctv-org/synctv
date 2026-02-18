@@ -212,24 +212,31 @@ impl ClientApiImpl {
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
 
+        // Resolve username for the UserLeft event before performing the leave
+        let username = self.user_service.get_user(&uid).await
+            .map(|u| u.username.clone())
+            .unwrap_or_default();
+
         self.room_service.leave_room(rid.clone(), uid.clone()).await
             .map_err(ApiError::from)?;
 
         // Force disconnect the user's connections from this room (local)
         self.connection_manager.disconnect_user_from_room(&uid, &rid);
 
-        // Publish KickUserFromRoom cluster event so other replicas also disconnect this user
+        // Publish UserLeft cluster event so other replicas also disconnect this user.
+        // Using UserLeft (not KickUserFromRoom) to correctly distinguish voluntary
+        // departure from administrative kicks in audit logs.
         if let Some(ref tx) = self.redis_publish_tx {
             if let Err(e) = tx.send(synctv_cluster::sync::PublishRequest {
-                event: synctv_cluster::sync::ClusterEvent::KickUserFromRoom {
+                event: synctv_cluster::sync::ClusterEvent::UserLeft {
                     event_id: nanoid::nanoid!(16),
                     room_id: rid,
                     user_id: uid,
-                    reason: "left".to_string(),
+                    username,
                     timestamp: chrono::Utc::now(),
                 },
             }).await {
-                tracing::error!("Failed to publish KickUserFromRoom cluster event for leave_room: {e}");
+                tracing::error!("Failed to publish UserLeft cluster event for leave_room: {e}");
             }
         }
 
@@ -246,16 +253,15 @@ impl ClientApiImpl {
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
 
-        self.room_service.delete_room(rid.clone(), uid.clone()).await
-            .map_err(ApiError::from)?;
-
-        // Publish RoomDeleted cluster event for cross-replica propagation (critical event)
+        // 1. Publish RoomDeleted cluster event FIRST so other replicas disconnect
+        //    their users before we delete the DB record. If publishing fails, we
+        //    still proceed with deletion to avoid permanent DB/cluster inconsistency.
         if let Some(ref tx) = self.redis_publish_tx {
             if let Err(e) = tx.send(synctv_cluster::sync::PublishRequest {
                 event: synctv_cluster::sync::ClusterEvent::RoomDeleted {
                     event_id: nanoid::nanoid!(16),
                     room_id: rid.clone(),
-                    deleted_by: uid,
+                    deleted_by: uid.clone(),
                     timestamp: chrono::Utc::now(),
                 },
             }).await {
@@ -263,8 +269,12 @@ impl ClientApiImpl {
             }
         }
 
-        // Force disconnect all connections in the deleted room
+        // 2. Force disconnect all local connections in the deleted room
         self.connection_manager.disconnect_room(&rid);
+
+        // 3. Delete the DB record last
+        self.room_service.delete_room(rid.clone(), uid).await
+            .map_err(ApiError::from)?;
 
         Ok(crate::proto::client::DeleteRoomResponse {
             success: true,

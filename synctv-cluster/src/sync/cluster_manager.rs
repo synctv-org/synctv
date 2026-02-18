@@ -13,6 +13,7 @@ use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
+use super::connection_manager::ConnectionManager;
 use super::dedup::{DedupKey, MessageDeduplicator};
 use super::events::ClusterEvent;
 use super::redis_pubsub::{PublishRequest, RedisPubSub};
@@ -88,6 +89,8 @@ pub struct ClusterManager {
     critical_channel_capacity: usize,
     /// Capacity for the publish channel (for logging)
     publish_channel_capacity: usize,
+    /// Optional connection manager for coordinated shutdown
+    connection_manager: Option<ConnectionManager>,
 }
 
 /// State for the background heartbeat loop, guarded by Mutex for async shutdown
@@ -194,6 +197,7 @@ impl ClusterManager {
                 grpc_address: String::new(),
                 http_address: String::new(),
             }),
+            connection_manager: None,
         })
     }
 
@@ -224,6 +228,14 @@ impl ClusterManager {
     #[must_use]
     pub fn cancel_token(&self) -> CancellationToken {
         self.cancel_token.clone()
+    }
+
+    /// Set the connection manager for coordinated shutdown.
+    ///
+    /// When set, `shutdown()` will also cancel the ConnectionManager's TTL
+    /// refresh task, ensuring background tasks don't outlive the cluster.
+    pub fn set_connection_manager(&mut self, cm: ConnectionManager) {
+        self.connection_manager = Some(cm);
     }
 
     /// Get the Redis publish sender
@@ -364,6 +376,11 @@ impl ClusterManager {
         // Cancel Redis Pub/Sub tasks
         if let Some(ref pubsub) = self.redis_pubsub {
             pubsub.shutdown();
+        }
+
+        // Shut down ConnectionManager's TTL refresh task
+        if let Some(ref cm) = self.connection_manager {
+            cm.shutdown();
         }
 
         // Wait for the heartbeat task to finish and unregister

@@ -92,12 +92,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bilibili_auth = ProviderAuthInterceptor::new(auth_secret.clone());
     let emby_auth = ProviderAuthInterceptor::new(auth_secret);
 
+    // Register gRPC Health Check service so RemoteProviderManager health probes succeed
+    let (health_reporter, health_service) = tonic_health::server::health_reporter();
+    health_reporter
+        .set_serving::<AlistServer<AlistGrpcService>>()
+        .await;
+    health_reporter
+        .set_serving::<BilibiliServer<BilibiliService>>()
+        .await;
+    health_reporter
+        .set_serving::<EmbyServer<EmbyService>>()
+        .await;
+
     // Build and start server with authentication on all services and graceful shutdown
     info!("Starting Provider gRPC server with graceful shutdown support");
 
     Server::builder()
         .max_frame_size(Some(4 * 1024 * 1024))
         .concurrency_limit_per_connection(100)
+        .add_service(health_service)
         .add_service(AlistServer::with_interceptor(alist_service, move |req| {
             alist_auth.validate(req)
         }))

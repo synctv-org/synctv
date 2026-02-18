@@ -147,24 +147,28 @@ impl SecurityPipeline {
             ));
         }
 
-        // Step 3: Password invalidation check (database-based)
-        if self
-            .user_service
-            .is_token_invalidated_by_password_change(&user_id, claims.iat)
-            .await
-            .unwrap_or(true) // Fail closed
-        {
-            return Err(Error::Authentication(
-                "Token invalidated due to password change. Please log in again.".to_string(),
-            ));
-        }
-
-        // Step 4: User status check (banned / pending / deleted)
+        // Step 3 + 4: Fetch user and check password version + status
         let user = self
             .user_service
             .get_user(&user_id)
             .await
             .map_err(|_| Error::Authentication("User not found".to_string()))?;
+
+        // Step 3: Password version check
+        if let Some(token_pv) = claims.pv {
+            if token_pv < user.password_version {
+                return Err(Error::Authentication(
+                    "Token invalidated due to password change. Please log in again.".to_string(),
+                ));
+            }
+        } else {
+            // Legacy tokens without pv: fall back to iat-based check
+            if claims.iat < user.password_changed_at.timestamp() {
+                return Err(Error::Authentication(
+                    "Token invalidated due to password change. Please log in again.".to_string(),
+                ));
+            }
+        }
 
         if user.is_deleted() || user.status == UserStatus::Banned || user.status == UserStatus::Pending {
             return Err(Error::Authentication(

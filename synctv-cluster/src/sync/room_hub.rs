@@ -29,11 +29,14 @@ const LIFECYCLE_CHANNEL_CAPACITY: usize = 1024;
 pub type ConnectionId = String;
 
 /// Capacity for per-subscriber message channels.
-/// Messages are dropped with a warning when a subscriber is too slow.
-const SUBSCRIBER_CHANNEL_CAPACITY: usize = 256;
+/// Must be large enough to absorb bursts of playback state updates (seek, pause,
+/// play) without dropping critical synchronization messages.
+const SUBSCRIBER_CHANNEL_CAPACITY: usize = 512;
 
 /// Number of consecutive drops before automatically disconnecting a slow subscriber.
-const MAX_CONSECUTIVE_DROPS: u32 = 10;
+/// Set higher to tolerate transient bursts (e.g., rapid seek operations) without
+/// prematurely disconnecting clients on slower networks.
+const MAX_CONSECUTIVE_DROPS: u32 = 50;
 
 /// Message sender for a client connection
 pub type MessageSender = mpsc::Sender<ClusterEvent>;

@@ -424,8 +424,16 @@ pub async fn init_services(
     ));
     info!("ProvidersManager initialized");
 
-    // Initialize OAuth2 service (optional - requires OAuth2_* env vars)
-    let oauth2_service = init_oauth2_service(pool.clone(), config, redis_conn.clone()).await?;
+    // Initialize OAuth2 service (optional - requires OAuth2 provider config)
+    // Redis is guaranteed to be available (enforced at startup in main.rs).
+    let oauth2_service = if let Some(ref conn) = redis_conn {
+        init_oauth2_service(pool.clone(), config, conn.clone()).await?
+    } else {
+        // Redis is required globally. If we reach here, main.rs validation was bypassed.
+        // Log a warning but skip OAuth2 rather than panicking.
+        tracing::warn!("Redis not available, skipping OAuth2 service initialization");
+        None
+    };
     if oauth2_service.is_some() {
         info!("OAuth2 service initialized");
     } else {
@@ -537,7 +545,7 @@ pub async fn init_services(
 async fn init_oauth2_service(
     pool: PgPool,
     config: &Config,
-    redis_conn: Option<redis::aio::ConnectionManager>,
+    redis_conn: redis::aio::ConnectionManager,
 ) -> Result<Option<Arc<OAuth2Service>>, anyhow::Error> {
     // 0. Initialize provider registry (register all factory functions)
     crate::oauth2::providers::init_providers();
@@ -559,24 +567,10 @@ async fn init_oauth2_service(
     }
 
     // 2. Create OAuth2 provider repository and service
+    //    Redis is guaranteed to be available (checked at startup).
     let oauth2_repo = UserOAuthProviderRepository::new(pool.clone());
-    let is_cluster_mode = !config.server.cluster_secret.is_empty();
-    let oauth2_service = if let Some(conn) = redis_conn {
-        info!("OAuth2 service using Redis for state storage (multi-replica safe)");
-        OAuth2Service::with_redis(oauth2_repo, conn)
-            .with_cluster_mode(is_cluster_mode)?
-    } else if is_cluster_mode {
-        // In cluster mode without Redis, OAuth2 state storage falls back to in-memory,
-        // which breaks the authorization flow: the callback request may hit a different
-        // replica than the one that generated the auth URL, causing state lookup to fail.
-        return Err(anyhow::anyhow!(
-            "OAuth2 requires Redis in multi-replica deployments. \
-             A cluster_secret is configured (indicating cluster mode) but Redis is not available. \
-             Either configure Redis or remove cluster_secret for single-node mode."
-        ));
-    } else {
-        OAuth2Service::new(oauth2_repo)
-    };
+    let state_store = Arc::new(crate::service::oauth2::RedisOAuthStateStore::new(redis_conn));
+    let oauth2_service = OAuth2Service::new(oauth2_repo, state_store);
     let oauth2_service = Arc::new(oauth2_service);
 
     // 3. Initialize each provider instance using factory pattern
@@ -630,7 +624,7 @@ async fn init_oauth2_service(
         }
     }
 
-    // OAuth2 state cleanup is handled automatically by moka cache TTL and Redis SETEX.
+    // OAuth2 state cleanup is handled automatically by Redis SETEX TTL.
     // No background task needed.
 
     Ok(Some(oauth2_service))
@@ -661,13 +655,12 @@ fn load_jwt_service(config: &Config) -> Result<JwtService, anyhow::Error> {
         ));
     }
 
-    JwtService::with_durations_and_mode(
+    JwtService::with_durations(
         &config.jwt.secret,
         config.jwt.access_token_duration_hours,
         config.jwt.refresh_token_duration_days,
         config.jwt.guest_token_duration_hours,
         config.jwt.clock_skew_leeway_secs,
-        config.server.development_mode,
     )
     .map_err(|e| anyhow::anyhow!("Failed to initialize JWT service: {e}"))
 }

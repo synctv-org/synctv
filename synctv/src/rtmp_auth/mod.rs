@@ -171,10 +171,27 @@ impl AuthCallback for SyncTvRtmpAuth {
                 );
             }
         } else {
-            tracing::warn!(
+            // Tracker lookup failed -- the RTMP identifiers after AuthPublishRewrite are
+            // (room_id, media_id), so we can still attempt Redis cleanup directly.
+            // This handles edge cases where the tracker entry was lost (e.g., process
+            // restart, race condition) but Redis still has a stale publisher entry.
+            tracing::error!(
                 app_name = %app_name,
-                "on_unpublish: no matching stream found in tracker (stream_name redacted)"
+                "on_unpublish: no matching stream found in tracker. \
+                 Attempting direct Redis cleanup using RTMP identifiers (room_id={}, media_id={}). \
+                 Redis TTL will serve as fallback if this also fails.",
+                app_name, stream_name
             );
+
+            if let Err(e) = self.registry.unregister_publisher(app_name, stream_name).await {
+                tracing::error!(
+                    room_id = %app_name,
+                    media_id = %stream_name,
+                    "Failed fallback Redis cleanup on unpublish: {}. \
+                     Redis TTL will eventually expire the stale entry.",
+                    e
+                );
+            }
         }
 
         // Always emit StreamStopped event, even if tracker removal failed.

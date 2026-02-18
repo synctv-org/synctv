@@ -39,6 +39,8 @@ pub struct CachedUser {
     created_at: chrono::DateTime<chrono::Utc>,
     /// Timestamp of last update - used to prevent stale data from overwriting fresh data
     updated_at: chrono::DateTime<chrono::Utc>,
+    /// Password version counter for JWT invalidation
+    password_version: i32,
 }
 
 impl CachedUser {
@@ -50,6 +52,7 @@ impl CachedUser {
         role: UserRole,
         status: UserStatus,
         created_at: chrono::DateTime<chrono::Utc>,
+        password_version: i32,
     ) -> Self {
         Self {
             id,
@@ -58,6 +61,7 @@ impl CachedUser {
             status,
             created_at,
             updated_at: chrono::Utc::now(),
+            password_version,
         }
     }
 
@@ -70,8 +74,9 @@ impl CachedUser {
         status: UserStatus,
         created_at: chrono::DateTime<chrono::Utc>,
         updated_at: chrono::DateTime<chrono::Utc>,
+        password_version: i32,
     ) -> Self {
-        Self { id, username, role, status, created_at, updated_at }
+        Self { id, username, role, status, created_at, updated_at, password_version }
     }
 
     /// Get the user's role
@@ -90,6 +95,12 @@ impl CachedUser {
     #[must_use]
     pub const fn updated_at(&self) -> chrono::DateTime<chrono::Utc> {
         self.updated_at
+    }
+
+    /// Get the password version counter
+    #[must_use]
+    pub const fn password_version(&self) -> i32 {
+        self.password_version
     }
 }
 
@@ -204,6 +215,7 @@ mod tests {
             status: UserStatus::Active,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
+            password_version: 0,
         }
     }
 

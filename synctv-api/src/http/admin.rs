@@ -51,7 +51,7 @@ async fn validate_auth_user(parts: &mut Parts, app_state: &AppState) -> Result<c
 
     let user_id = UserId::from_string(claims.sub);
 
-    crate::impls::admin::validate_admin_auth(&app_state.user_service, user_id, claims.iat)
+    crate::impls::admin::validate_admin_auth(&app_state.user_service, user_id, claims.pv, claims.iat)
         .await
         .map_err(AppError::unauthorized)
 }
@@ -248,12 +248,12 @@ async fn get_settings_group(
 }
 
 async fn set_settings(
-    _auth: AuthAdmin,
+    auth: AuthAdmin,
     State(state): State<AppState>,
     Json(req): Json<admin::UpdateSettingsRequest>,
 ) -> AppResult<Json<admin::UpdateSettingsResponse>> {
     let api = require_admin_api(&state)?;
-    let resp = api.update_settings(req).await.map_err(admin_err_to_app_error)?;
+    let resp = api.update_settings(req, &auth.user_id).await.map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
 }
 
@@ -306,7 +306,7 @@ async fn list_users(
     let resp = api
         .list_users(admin::ListUsersRequest {
             page: q.page.unwrap_or(1),
-            page_size: q.page_size.unwrap_or(20),
+            page_size: q.page_size.unwrap_or(20).clamp(1, 200),
             status: status_i32,
             role: role_i32,
             search: q.search.unwrap_or_default(),
@@ -464,7 +464,7 @@ async fn get_user_rooms(
         .get_user_rooms(admin::GetUserRoomsRequest {
             user_id,
             page: q.page.unwrap_or(1),
-            page_size: q.page_size.unwrap_or(50),
+            page_size: q.page_size.unwrap_or(50).clamp(1, 200),
         })
         .await
         .map_err(admin_err_to_app_error)?;
@@ -500,7 +500,7 @@ async fn list_rooms(
     let resp = api
         .list_rooms(admin::ListRoomsRequest {
             page: q.page.unwrap_or(1),
-            page_size: q.page_size.unwrap_or(20),
+            page_size: q.page_size.unwrap_or(20).clamp(1, 200),
             status: q.status.unwrap_or_default(),
             search: q.search.unwrap_or_default(),
             creator_id: q.creator_id.unwrap_or_default(),

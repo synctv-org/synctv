@@ -32,6 +32,10 @@ pub struct Claims {
     pub iat: i64,
     /// Expiration time (Unix timestamp)
     pub exp: i64,
+    /// Password version at time of token issuance.
+    /// Tokens with a `pv` lower than the user's current `password_version` are rejected.
+    #[serde(default)]
+    pub pv: Option<i32>,
 }
 
 impl Claims {
@@ -159,43 +163,12 @@ impl JwtService {
         guest_token_duration_hours: u64,
         clock_skew_leeway_secs: u64,
     ) -> Result<Self> {
-        Self::with_durations_and_mode(
-            secret,
-            access_token_duration_hours,
-            refresh_token_duration_days,
-            guest_token_duration_hours,
-            clock_skew_leeway_secs,
-            false,
-        )
-    }
-
-    /// Create a new JWT service with custom token durations and development mode flag
-    ///
-    /// When `development_mode` is true, JWT secret entropy validation is skipped
-    /// to allow weak secrets during local development. This should never be used
-    /// in production.
-    pub fn with_durations_and_mode(
-        secret: &str,
-        access_token_duration_hours: u64,
-        refresh_token_duration_days: u64,
-        guest_token_duration_hours: u64,
-        clock_skew_leeway_secs: u64,
-        development_mode: bool,
-    ) -> Result<Self> {
         if secret.is_empty() {
             return Err(Error::Internal("JWT secret cannot be empty".to_string()));
         }
 
-        // Validate secret entropy unless running in development mode.
-        // This runs in both debug and release builds to catch weak secrets early.
-        if development_mode {
-            tracing::warn!(
-                "JWT secret entropy validation skipped (development_mode=true). \
-                 Do NOT use this in production."
-            );
-        } else {
-            Self::validate_secret_entropy(secret)?;
-        }
+        // Always validate secret entropy
+        Self::validate_secret_entropy(secret)?;
 
         let encoding_key = EncodingKey::from_secret(secret.as_bytes());
         let decoding_key = DecodingKey::from_secret(secret.as_bytes());
@@ -265,6 +238,7 @@ impl JwtService {
         &self,
         user_id: &UserId,
         token_type: TokenType,
+        password_version: i32,
     ) -> Result<String> {
         let now = Utc::now();
         let duration = match token_type {
@@ -283,6 +257,7 @@ impl JwtService {
             jti: nanoid::nanoid!(16),
             iat: now.timestamp(),
             exp: (now + duration).timestamp(),
+            pv: Some(password_version),
         };
 
         let header = Header::new(self.algorithm);
@@ -468,7 +443,7 @@ mod tests {
         let jwt = create_jwt_service();
         let user_id = UserId::new();
 
-        let token = jwt.sign_token(&user_id, TokenType::Access).unwrap();
+        let token = jwt.sign_token(&user_id, TokenType::Access, 0).unwrap();
         let claims = jwt.verify_access_token(&token).unwrap();
 
         assert_eq!(claims.sub, user_id.as_str());
@@ -480,7 +455,7 @@ mod tests {
         let jwt = create_jwt_service();
         let user_id = UserId::new();
 
-        let token = jwt.sign_token(&user_id, TokenType::Refresh).unwrap();
+        let token = jwt.sign_token(&user_id, TokenType::Refresh, 0).unwrap();
         let claims = jwt.verify_refresh_token(&token).unwrap();
 
         assert_eq!(claims.sub, user_id.as_str());
@@ -492,11 +467,11 @@ mod tests {
         let jwt = create_jwt_service();
         let user_id = UserId::new();
 
-        let access_token = jwt.sign_token(&user_id, TokenType::Access).unwrap();
+        let access_token = jwt.sign_token(&user_id, TokenType::Access, 0).unwrap();
         let result = jwt.verify_refresh_token(&access_token);
         assert!(result.is_err());
 
-        let refresh_token = jwt.sign_token(&user_id, TokenType::Refresh).unwrap();
+        let refresh_token = jwt.sign_token(&user_id, TokenType::Refresh, 0).unwrap();
         let result = jwt.verify_access_token(&refresh_token);
         assert!(result.is_err());
     }
@@ -513,7 +488,7 @@ mod tests {
         let jwt = create_jwt_service();
         let user_id = UserId::new();
 
-        let token = jwt.sign_token(&user_id, TokenType::Access).unwrap();
+        let token = jwt.sign_token(&user_id, TokenType::Access, 0).unwrap();
         let mut parts: Vec<&str> = token.split('.').collect();
         parts[1] = "tampered_payload";
         let tampered_token = parts.join(".");
@@ -567,7 +542,7 @@ mod tests {
         assert!(jwt.is_guest_token(&guest_token));
 
         let user_id = UserId::new();
-        let access_token = jwt.sign_token(&user_id, TokenType::Access).unwrap();
+        let access_token = jwt.sign_token(&user_id, TokenType::Access, 0).unwrap();
         assert!(!jwt.is_guest_token(&access_token));
     }
 
@@ -576,7 +551,7 @@ mod tests {
         let jwt = create_jwt_service();
         let user_id = UserId::new();
 
-        let access_token = jwt.sign_token(&user_id, TokenType::Access).unwrap();
+        let access_token = jwt.sign_token(&user_id, TokenType::Access, 0).unwrap();
         let result = jwt.verify_guest_token(&access_token);
         assert!(result.is_err());
     }
@@ -587,7 +562,7 @@ mod tests {
     fn test_access_token_rejected_as_refresh() {
         let jwt = create_jwt_service();
         let user_id = UserId::new();
-        let token = jwt.sign_token(&user_id, TokenType::Access).unwrap();
+        let token = jwt.sign_token(&user_id, TokenType::Access, 0).unwrap();
         let result = jwt.verify_refresh_token(&token);
         assert!(result.is_err());
     }
@@ -596,7 +571,7 @@ mod tests {
     fn test_refresh_token_rejected_as_access() {
         let jwt = create_jwt_service();
         let user_id = UserId::new();
-        let token = jwt.sign_token(&user_id, TokenType::Refresh).unwrap();
+        let token = jwt.sign_token(&user_id, TokenType::Refresh, 0).unwrap();
         let result = jwt.verify_access_token(&token);
         assert!(result.is_err());
     }
@@ -606,7 +581,7 @@ mod tests {
         // A token signed with TokenType::Guest via sign_token has typ="guest"
         let jwt = create_jwt_service();
         let user_id = UserId::new();
-        let token = jwt.sign_token(&user_id, TokenType::Guest).unwrap();
+        let token = jwt.sign_token(&user_id, TokenType::Guest, 0).unwrap();
         let result = jwt.verify_access_token(&token);
         assert!(result.is_err());
     }
@@ -615,7 +590,7 @@ mod tests {
     fn test_guest_type_token_rejected_as_refresh() {
         let jwt = create_jwt_service();
         let user_id = UserId::new();
-        let token = jwt.sign_token(&user_id, TokenType::Guest).unwrap();
+        let token = jwt.sign_token(&user_id, TokenType::Guest, 0).unwrap();
         let result = jwt.verify_refresh_token(&token);
         assert!(result.is_err());
     }
@@ -626,24 +601,24 @@ mod tests {
     fn test_claims_user_id_extraction() {
         let jwt = create_jwt_service();
         let user_id = UserId::new();
-        let token = jwt.sign_token(&user_id, TokenType::Access).unwrap();
+        let token = jwt.sign_token(&user_id, TokenType::Access, 0).unwrap();
         let claims = jwt.verify_token(&token).unwrap();
         assert_eq!(claims.user_id(), user_id);
     }
 
     #[test]
     fn test_claims_type_predicates() {
-        let access = Claims { sub: "u1".into(), typ: "access".into(), jti: String::new(), iat: 0, exp: 0 };
+        let access = Claims { sub: "u1".into(), typ: "access".into(), jti: String::new(), iat: 0, exp: 0, pv: None };
         assert!(access.is_access_token());
         assert!(!access.is_refresh_token());
         assert!(!access.is_guest_token());
 
-        let refresh = Claims { sub: "u1".into(), typ: "refresh".into(), jti: String::new(), iat: 0, exp: 0 };
+        let refresh = Claims { sub: "u1".into(), typ: "refresh".into(), jti: String::new(), iat: 0, exp: 0, pv: None };
         assert!(!refresh.is_access_token());
         assert!(refresh.is_refresh_token());
         assert!(!refresh.is_guest_token());
 
-        let guest = Claims { sub: "u1".into(), typ: "guest".into(), jti: String::new(), iat: 0, exp: 0 };
+        let guest = Claims { sub: "u1".into(), typ: "guest".into(), jti: String::new(), iat: 0, exp: 0, pv: None };
         assert!(!guest.is_access_token());
         assert!(!guest.is_refresh_token());
         assert!(guest.is_guest_token());
@@ -691,7 +666,7 @@ mod tests {
         let jwt2 = JwtService::new("secret-KEY-Two-LONG-ENOUGH-0987654321!@#$").unwrap();
         let user_id = UserId::new();
 
-        let token = jwt1.sign_token(&user_id, TokenType::Access).unwrap();
+        let token = jwt1.sign_token(&user_id, TokenType::Access, 0).unwrap();
         let result = jwt2.verify_token(&token);
         assert!(result.is_err());
     }
@@ -709,7 +684,7 @@ mod tests {
         ).unwrap();
 
         let user_id = UserId::new();
-        let token = jwt.sign_token(&user_id, TokenType::Access).unwrap();
+        let token = jwt.sign_token(&user_id, TokenType::Access, 0).unwrap();
         let claims = jwt.verify_token(&token).unwrap();
 
         // Verify token has exp roughly 2 hours from iat
@@ -721,7 +696,7 @@ mod tests {
     fn test_refresh_token_duration() {
         let jwt = create_jwt_service();
         let user_id = UserId::new();
-        let token = jwt.sign_token(&user_id, TokenType::Refresh).unwrap();
+        let token = jwt.sign_token(&user_id, TokenType::Refresh, 0).unwrap();
         let claims = jwt.verify_token(&token).unwrap();
         let duration = claims.exp - claims.iat;
         assert_eq!(duration, 30 * 86400); // 30 days in seconds
@@ -740,6 +715,7 @@ mod tests {
             jti: "test-jti".into(),
             iat: (past - Duration::hours(3)).timestamp(),
             exp: past.timestamp(), // expired 2 hours ago
+            pv: None,
         };
         let token = encode(
             &Header::new(Algorithm::HS256),
@@ -756,8 +732,8 @@ mod tests {
         let jwt = create_jwt_service();
         let user_id = UserId::new();
 
-        let token1 = jwt.sign_token(&user_id, TokenType::Access).unwrap();
-        let token2 = jwt.sign_token(&user_id, TokenType::Access).unwrap();
+        let token1 = jwt.sign_token(&user_id, TokenType::Access, 0).unwrap();
+        let token2 = jwt.sign_token(&user_id, TokenType::Access, 0).unwrap();
 
         let claims1 = jwt.verify_token(&token1).unwrap();
         let claims2 = jwt.verify_token(&token2).unwrap();
@@ -773,7 +749,7 @@ mod tests {
         let user_id = UserId::new();
 
         let before = Utc::now().timestamp();
-        let token = jwt.sign_token(&user_id, TokenType::Access).unwrap();
+        let token = jwt.sign_token(&user_id, TokenType::Access, 0).unwrap();
         let after = Utc::now().timestamp();
 
         let claims = jwt.verify_token(&token).unwrap();

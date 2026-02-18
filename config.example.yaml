@@ -14,9 +14,7 @@ server:
   grpc_port: 50051
   http_port: 8080
   enable_reflection: true
-  # WARNING: Never enable in production! Relaxes security checks for local development.
-  development_mode: false
-  # Enable the /metrics Prometheus endpoint (independent of development_mode)
+  # Enable the /metrics Prometheus endpoint
   metrics_enabled: false
   # Trusted proxy IP addresses/CIDRs for X-Forwarded-For validation.
   # If empty, X-Forwarded-For headers are NOT trusted (socket address is used).
@@ -24,8 +22,7 @@ server:
   trusted_proxies: []
   # CORS allowed origins for cross-origin requests from web frontends.
   #
-  # In development mode, all origins are allowed automatically.
-  # In production, you MUST set this to your frontend URL(s) or cross-origin
+  # You MUST set this to your frontend URL(s) or cross-origin
   # requests (fetch, WebSocket upgrades from browsers) will be rejected.
   #
   # Examples:
@@ -237,6 +234,20 @@ cluster:
   # new pods faster. Without Redis, k8s_dns provides DNS resolution only -- no
   # NodeRegistry, HealthMonitor, or LoadBalancer will be created.
   discovery_mode: "redis"
+
+  # --- Static Discovery Configuration ---
+  # When discovery_mode is "static", list peers explicitly.
+  # Each peer requires a gRPC address; http_address is optional and will be
+  # derived from the gRPC address (replacing the port with default_http_port)
+  # if not specified.
+  #
+  # static_peers:
+  #   - grpc_address: "node2.example.com:50051"
+  #     http_address: "node2.example.com:8080"   # optional
+  #   - grpc_address: "node3.example.com:50051"
+  #     # http_address omitted: derived as node3.example.com:8080
+  # default_http_port: 8080
+
   # Leader election mode for singleton operations.
   # - "redis": Use Redis-based distributed locks (default, works everywhere)
   # - "k8s_lease": Use Kubernetes coordination.k8s.io/v1 Lease resource

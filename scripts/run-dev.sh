@@ -29,9 +29,6 @@ if [ -z "$SYNCTV_JWT_SECRET" ]; then
     echo "⚠️  Using development JWT secret (do NOT use in production)"
 fi
 
-# Enable development mode for relaxed security checks
-export SYNCTV_SERVER_DEVELOPMENT_MODE=true
-
 echo "Starting synctv server..."
 echo "  HTTP: http://localhost:${SYNCTV_SERVER_HTTP_PORT:-8080}"
 echo "  gRPC: localhost:${SYNCTV_SERVER_GRPC_PORT:-50051}"

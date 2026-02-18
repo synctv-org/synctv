@@ -55,6 +55,51 @@ impl GitHubProvider {
     }
 }
 
+impl GitHubProvider {
+    /// Fetch the user's primary verified email from the GitHub `/user/emails` API.
+    ///
+    /// Returns `(Some(email), true)` if a primary+verified email is found,
+    /// `(Some(email), false)` if only a primary (unverified) email is found,
+    /// or an error if the API call fails.
+    async fn fetch_verified_email(&self, access_token: &str) -> Result<(Option<String>, bool), Error> {
+        #[derive(Deserialize)]
+        struct GitHubEmail {
+            email: String,
+            primary: bool,
+            verified: bool,
+        }
+
+        let resp = self
+            .http_client
+            .get("https://api.github.com/user/emails")
+            .header("Authorization", format!("Bearer {access_token}"))
+            .header("User-Agent", "synctv-rs")
+            .send()
+            .await
+            .internal_with_err("Failed to fetch user emails")?
+            .error_for_status()
+            .internal_with_err("GitHub emails API error")?;
+
+        let emails: Vec<GitHubEmail> = resp
+            .json()
+            .await
+            .internal_with_err("Failed to parse email list")?;
+
+        // Prefer the primary + verified email
+        if let Some(e) = emails.iter().find(|e| e.primary && e.verified) {
+            return Ok((Some(e.email.clone()), true));
+        }
+
+        // Fall back to primary (unverified)
+        if let Some(e) = emails.iter().find(|e| e.primary) {
+            return Ok((Some(e.email.clone()), false));
+        }
+
+        // No primary email found
+        Ok((None, false))
+    }
+}
+
 #[async_trait]
 impl Provider for GitHubProvider {
     fn provider_type(&self) -> &'static str {
@@ -107,12 +152,22 @@ impl Provider for GitHubProvider {
             .await
             .internal_with_err("Failed to parse user info")?;
 
-        // GitHub only returns the primary verified email on the /user endpoint
-        let email_verified = user.email.is_some();
+        // Fetch verified email from the /user/emails endpoint.
+        // The /user endpoint may return an email, but does not indicate
+        // whether it is verified. We must call /user/emails to get the
+        // actual verification status.
+        let (email, email_verified) = self
+            .fetch_verified_email(token.access_token().secret())
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!("Failed to fetch GitHub emails, falling back to /user email: {e}");
+                (user.email, false)
+            });
+
         Ok(OAuth2UserInfo {
             provider_user_id: user.id.to_string(),
             username: user.login,
-            email: user.email,
+            email,
             avatar: user.avatar_url,
             email_verified,
         })

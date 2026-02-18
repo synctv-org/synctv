@@ -20,13 +20,12 @@ use crate::{
 ///
 /// * `pool` - Database connection pool
 /// * `config` - Bootstrap configuration
-/// * `development_mode` - Whether running in development mode
 ///
 /// # Returns
 ///
 /// * `Ok(())` if root user exists or was created successfully
 /// * `Err` if database error occurs
-pub async fn bootstrap_root_user(pool: &PgPool, config: &BootstrapConfig, development_mode: bool) -> Result<()> {
+pub async fn bootstrap_root_user(pool: &PgPool, config: &BootstrapConfig) -> Result<()> {
     if !config.create_root_user {
         info!("Root user bootstrap disabled in config");
         return Ok(());
@@ -82,10 +81,9 @@ pub async fn bootstrap_root_user(pool: &PgPool, config: &BootstrapConfig, develo
     info!("  Role: {:?}", created_user.role);
     info!("  Status: {:?}", created_user.status);
 
-    if config.root_password == "root" && development_mode {
-        warn!("⚠ WARNING: Root password is set to default value 'root'");
-        warn!("⚠ This is only allowed in development mode.");
-        warn!("⚠ Please change the root password immediately after first login!");
+    if config.root_password == "root" {
+        warn!("WARNING: Root password is set to default value 'root'");
+        warn!("Please change the root password immediately after first login!");
     }
 
     Ok(())

@@ -282,6 +282,9 @@ pub struct User {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub password_changed_at: DateTime<Utc>,  // Timestamp of last password change (for token invalidation)
+    /// Monotonically increasing counter, incremented on each password change.
+    /// Used to invalidate JWTs via the `pv` claim.
+    pub password_version: i32,
     pub deleted_at: Option<DateTime<Utc>>,
 }
 
@@ -301,6 +304,7 @@ impl User {
             created_at: now,
             updated_at: now,
             password_changed_at: now,  // Initialize to creation time
+            password_version: 0,
             deleted_at: None,
         }
     }

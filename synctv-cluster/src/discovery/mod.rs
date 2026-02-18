@@ -10,6 +10,6 @@ pub mod k8s_dns;
 pub use node_registry::{HeartbeatResult, NodeInfo, NodeRegistry};
 pub use health_monitor::{HealthMonitor, NodeHealth};
 pub use load_balancer::{LoadBalancer, LoadBalancingStrategy};
-pub use static_discovery::{StaticDiscovery, StaticDiscoveryConfig};
+pub use static_discovery::{StaticDiscovery, StaticDiscoveryConfig, StaticPeerConfig};
 #[cfg(feature = "k8s")]
 pub use k8s_dns::K8sDnsDiscovery;

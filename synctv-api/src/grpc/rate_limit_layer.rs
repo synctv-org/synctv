@@ -190,8 +190,7 @@ fn extract_client_id(headers: &http::HeaderMap, config: &Config) -> String {
         .and_then(|s| s.parse::<std::net::IpAddr>().ok());
 
     // Only trust X-Forwarded-For/X-Real-IP when from a trusted proxy or in dev mode
-    let should_trust_headers = config.server.development_mode
-        || remote_addr.is_some_and(|ip| config.server.is_trusted_proxy(&ip));
+    let should_trust_headers = remote_addr.is_some_and(|ip| config.server.is_trusted_proxy(&ip));
 
     if should_trust_headers {
         if let Some(ip) = headers
@@ -442,10 +441,10 @@ mod tests {
         Config::default()
     }
 
-    /// Create a config with development_mode enabled (trusts all proxy headers)
-    fn dev_config() -> Config {
+    /// Create a config with trusted proxies (trusts proxy headers from 127.0.0.1)
+    fn trusted_proxy_config() -> Config {
         let mut config = Config::default();
-        config.server.development_mode = true;
+        config.server.trusted_proxies = vec!["127.0.0.1".to_string()];
         config
     }
 
@@ -493,27 +492,29 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_client_id_x_forwarded_for_dev_mode() {
-        // In dev mode, X-Forwarded-For is trusted
-        let config = dev_config();
+    fn test_extract_client_id_x_forwarded_for_trusted_proxy() {
+        // With trusted proxies and x-real-ip-internal header, X-Forwarded-For is trusted
+        let config = trusted_proxy_config();
         let mut headers = http::HeaderMap::new();
         headers.insert("X-Forwarded-For", "203.0.113.50, 70.41.3.18".parse().unwrap());
+        headers.insert("x-real-ip-internal", "127.0.0.1".parse().unwrap());
         let id = extract_client_id(&headers, &config);
         assert_eq!(id, "anon:203.0.113.50");
     }
 
     #[test]
-    fn test_extract_client_id_x_real_ip_dev_mode() {
-        let config = dev_config();
+    fn test_extract_client_id_x_real_ip_trusted_proxy() {
+        let config = trusted_proxy_config();
         let mut headers = http::HeaderMap::new();
         headers.insert("X-Real-IP", "198.51.100.42".parse().unwrap());
+        headers.insert("x-real-ip-internal", "127.0.0.1".parse().unwrap());
         let id = extract_client_id(&headers, &config);
         assert_eq!(id, "anon:198.51.100.42");
     }
 
     #[test]
     fn test_extract_client_id_bearer_takes_priority_over_ip() {
-        let config = dev_config();
+        let config = trusted_proxy_config();
         let mut headers = http::HeaderMap::new();
         headers.insert(
             http::header::AUTHORIZATION,

@@ -69,6 +69,7 @@ async fn test_complete_registration_flow() {
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         password_changed_at: chrono::Utc::now(),
+        password_version: 0,
         deleted_at: None,
     };
 
@@ -95,9 +96,9 @@ async fn test_complete_registration_flow() {
 
     // Generate tokens
     let jwt_service = create_test_jwt_service();
-    let access_token = jwt_service.sign_token(&fetched_user.id, TokenType::Access)
+    let access_token = jwt_service.sign_token(&fetched_user.id, TokenType::Access, 0)
         .expect("Failed to sign access token");
-    let refresh_token = jwt_service.sign_token(&fetched_user.id, TokenType::Refresh)
+    let refresh_token = jwt_service.sign_token(&fetched_user.id, TokenType::Refresh, 0)
         .expect("Failed to sign refresh token");
 
     // Verify tokens
@@ -132,6 +133,7 @@ async fn test_login_with_wrong_password() {
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         password_changed_at: chrono::Utc::now(),
+        password_version: 0,
         deleted_at: None,
     };
 
@@ -170,6 +172,7 @@ async fn test_login_unverified_user_rejected() {
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         password_changed_at: chrono::Utc::now(),
+        password_version: 0,
         deleted_at: None,
     };
 
@@ -195,9 +198,9 @@ async fn test_token_refresh_flow() {
     let user_id = UserId::new();
 
     // Step 1: Initial login - get access and refresh tokens
-    let access_token = jwt_service.sign_token(&user_id, TokenType::Access)
+    let access_token = jwt_service.sign_token(&user_id, TokenType::Access, 0)
         .expect("Failed to sign access token");
-    let refresh_token = jwt_service.sign_token(&user_id, TokenType::Refresh)
+    let refresh_token = jwt_service.sign_token(&user_id, TokenType::Refresh, 0)
         .expect("Failed to sign refresh token");
 
     // Step 2: Access token expires (simulated by time passing)
@@ -207,7 +210,7 @@ async fn test_token_refresh_flow() {
     let refresh_claims = jwt_service.verify_refresh_token(&refresh_token)
         .expect("Failed to verify refresh token");
 
-    let new_access_token = jwt_service.sign_token(&refresh_claims.user_id(), TokenType::Access)
+    let new_access_token = jwt_service.sign_token(&refresh_claims.user_id(), TokenType::Access, 0)
         .expect("Failed to sign new access token");
 
     // Step 4: Verify new access token works
@@ -242,13 +245,14 @@ async fn test_password_change_invalidates_tokens() {
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         password_changed_at: chrono::Utc::now(),
+        password_version: 0,
         deleted_at: None,
     };
 
     let created_user = user_repo.create(&user).await.expect("Failed to create user");
 
     // Generate token
-    let old_token = jwt_service.sign_token(&created_user.id, TokenType::Access)
+    let old_token = jwt_service.sign_token(&created_user.id, TokenType::Access, 0)
         .expect("Failed to sign token");
 
     let _old_token_claims = jwt_service.verify_access_token(&old_token)
@@ -303,6 +307,7 @@ async fn test_concurrent_login_attempts() {
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         password_changed_at: chrono::Utc::now(),
+        password_version: 0,
         deleted_at: None,
     };
 
@@ -322,7 +327,7 @@ async fn test_concurrent_login_attempts() {
                 .expect("Failed to fetch user")
                 .expect("User not found");
 
-            let token = jwt.sign_token(&user.id, TokenType::Access)
+            let token = jwt.sign_token(&user.id, TokenType::Access, 0)
                 .expect("Failed to sign token");
 
             jwt.verify_access_token(&token)
@@ -365,6 +370,7 @@ async fn test_banned_user_login_rejected() {
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         password_changed_at: chrono::Utc::now(),
+        password_version: 0,
         deleted_at: None,
     };
 
@@ -405,6 +411,7 @@ async fn test_username_case_insensitive_login() {
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         password_changed_at: chrono::Utc::now(),
+        password_version: 0,
         deleted_at: None,
     };
 

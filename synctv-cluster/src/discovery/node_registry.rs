@@ -133,8 +133,12 @@ type RedisCircuitBreaker = failsafe::StateMachine<failure_policy::ConsecutiveFai
 ///
 /// Tracks active nodes in the cluster using Redis key expiration.
 /// Uses epoch-based fencing tokens to prevent split-brain scenarios.
+///
+/// **Redis is required.** All cluster coordination relies on Redis for
+/// distributed state. If Redis is not configured, the application should
+/// fail at startup (enforced in `main.rs`).
 pub struct NodeRegistry {
-    redis_client: Option<redis::Client>,
+    redis_client: redis::Client,
     /// Cached multiplexed connection, reused across operations
     cached_conn: tokio::sync::Mutex<Option<redis::aio::MultiplexedConnection>>,
     /// Timestamp of last successful connection health check (Unix seconds)
@@ -157,20 +161,17 @@ pub struct NodeRegistry {
 }
 
 impl NodeRegistry {
-    /// Create a new node registry
+    /// Create a new node registry backed by Redis.
     ///
-    /// If Redis URL is None, operates in local-only mode (useful for single-node deployments).
+    /// Redis is required for all cluster coordination. If the Redis URL is
+    /// invalid, returns an error immediately. The caller (typically `main.rs`)
+    /// should abort startup if this fails.
+    ///
     /// The `key_prefix` is prepended to cluster node keys in Redis (e.g. `"synctv:"` produces
     /// keys like `synctv:cluster:nodes:<node_id>`). Pass an empty string to use unprefixed keys.
-    pub fn new(redis_url: Option<String>, node_id: String, heartbeat_timeout_secs: i64, key_prefix: &str) -> Result<Self> {
-        let redis_client = if let Some(url) = redis_url {
-            Some(
-                redis::Client::open(url)
-                    .map_err(|e| Error::Configuration(format!("Failed to connect to Redis: {e}")))?,
-            )
-        } else {
-            None
-        };
+    pub fn new(redis_url: String, node_id: String, heartbeat_timeout_secs: i64, key_prefix: &str) -> Result<Self> {
+        let redis_client = redis::Client::open(redis_url)
+            .map_err(|e| Error::Configuration(format!("Failed to connect to Redis: {e}")))?;
 
         let nodes_cache = moka::future::Cache::builder()
             .time_to_live(std::time::Duration::from_secs(NODES_CACHE_TTL_SECS))
@@ -197,7 +198,8 @@ impl NodeRegistry {
     /// `MultiplexedConnection` handles concurrent requests internally and
     /// reconnects automatically, so we reuse a single instance.
     /// Every 30 seconds, we PING the connection to detect stale connections early.
-    async fn get_conn(&self, client: &redis::Client) -> Result<redis::aio::MultiplexedConnection> {
+    async fn get_conn(&self) -> Result<redis::aio::MultiplexedConnection> {
+        let client = &self.redis_client;
         const HEALTH_CHECK_INTERVAL_SECS: u64 = 30;
 
         let mut guard = self.cached_conn.lock().await;
@@ -274,15 +276,15 @@ impl NodeRegistry {
     /// Redis with PING commands. If a PING succeeds, the circuit is transitioned
     /// to half-open (allowing the next operation to attempt). The probe task
     /// stops when the circuit closes or when the NodeRegistry is dropped.
-    async fn get_conn_with_breaker(&self, client: &redis::Client) -> Result<redis::aio::MultiplexedConnection> {
+    async fn get_conn_with_breaker(&self) -> Result<redis::aio::MultiplexedConnection> {
         if !self.circuit_breaker.is_call_permitted() {
             // Circuit is open - spawn background health probe if not already running
-            self.maybe_start_health_probe(client.clone());
+            self.maybe_start_health_probe(self.redis_client.clone());
             return Err(Error::Database(
                 "Redis circuit breaker is open, request rejected".to_string(),
             ));
         }
-        let result = self.get_conn(client).await;
+        let result = self.get_conn().await;
         if result.is_err() {
             *self.cached_conn.lock().await = None;
             self.circuit_breaker.on_error();
@@ -405,99 +407,92 @@ impl NodeRegistry {
     ///
     /// This prevents race conditions when multiple instances register concurrently.
     pub async fn register(&self, grpc_address: String, http_address: String) -> Result<()> {
-        if let Some(ref client) = self.redis_client {
-            let mut conn = self.get_conn_with_breaker(client).await?;
+        let mut conn = self.get_conn_with_breaker().await?;
 
-            let key = self.node_key(&self.node_id);
-            let local_epoch = self.current_epoch.load(Ordering::SeqCst);
-            let ttl = self.heartbeat_timeout_secs * 2;
+        let key = self.node_key(&self.node_id);
+        let local_epoch = self.current_epoch.load(Ordering::SeqCst);
+        let ttl = self.heartbeat_timeout_secs * 2;
 
-            // Create node info template
-            let mut node_info = NodeInfo::new(self.node_id.clone(), grpc_address, http_address);
-            node_info.metadata.insert("local_epoch".to_string(), local_epoch.to_string());
-            // Record registration timestamp for load balancer warmup logic
-            node_info.metadata.insert("registered_at".to_string(), chrono::Utc::now().timestamp().to_string());
-            let node_json = serde_json::to_string(&node_info)
-                .map_err(|e| Error::Serialization(format!("Failed to serialize node info: {e}")))?;
+        // Create node info template
+        let mut node_info = NodeInfo::new(self.node_id.clone(), grpc_address, http_address);
+        node_info.metadata.insert("local_epoch".to_string(), local_epoch.to_string());
+        // Record registration timestamp for load balancer warmup logic
+        node_info.metadata.insert("registered_at".to_string(), chrono::Utc::now().timestamp().to_string());
+        let node_json = serde_json::to_string(&node_info)
+            .map_err(|e| Error::Serialization(format!("Failed to serialize node info: {e}")))?;
 
-            // Atomic Lua script: read epoch, increment, write with TTL
-            // Returns the new epoch assigned
-            let script = redis::Script::new(
-                r"
-                local key = KEYS[1]
-                local new_node_json = ARGV[1]
-                local ttl = tonumber(ARGV[2])
-                local local_epoch = tonumber(ARGV[3])
-                local node_id = ARGV[4]
+        // Atomic Lua script: read epoch, increment, write with TTL
+        // Returns the new epoch assigned
+        let script = redis::Script::new(
+            r"
+            local key = KEYS[1]
+            local new_node_json = ARGV[1]
+            local ttl = tonumber(ARGV[2])
+            local local_epoch = tonumber(ARGV[3])
+            local node_id = ARGV[4]
 
-                -- Parse incoming node info
-                local new_node = cjson.decode(new_node_json)
+            -- Parse incoming node info
+            local new_node = cjson.decode(new_node_json)
 
-                -- Read existing value
-                local existing = redis.call('GET', key)
-                local existing_epoch = 0
+            -- Read existing value
+            local existing = redis.call('GET', key)
+            local existing_epoch = 0
 
-                if existing then
-                    local existing_info = cjson.decode(existing)
-                    -- Only use existing epoch if it's the same node
-                    if existing_info.node_id == node_id then
-                        existing_epoch = existing_info.epoch or 0
-                    end
+            if existing then
+                local existing_info = cjson.decode(existing)
+                -- Only use existing epoch if it's the same node
+                if existing_info.node_id == node_id then
+                    existing_epoch = existing_info.epoch or 0
                 end
+            end
 
-                -- Calculate new epoch: max(existing + 1, local_epoch + 1, 1)
-                local new_epoch = math.max(existing_epoch + 1, local_epoch + 1, 1)
+            -- Calculate new epoch: max(existing + 1, local_epoch + 1, 1)
+            local new_epoch = math.max(existing_epoch + 1, local_epoch + 1, 1)
 
-                -- Update node info with new epoch and current timestamp
-                new_node['epoch'] = new_epoch
-                new_node['last_heartbeat'] = ARGV[5]
+            -- Update node info with new epoch and current timestamp
+            new_node['epoch'] = new_epoch
+            new_node['last_heartbeat'] = ARGV[5]
 
-                -- Write with TTL
-                local final_json = cjson.encode(new_node)
-                redis.call('SETEX', key, ttl, final_json)
+            -- Write with TTL
+            local final_json = cjson.encode(new_node)
+            redis.call('SETEX', key, ttl, final_json)
 
-                return new_epoch
-                ",
-            );
+            return new_epoch
+            ",
+        );
 
-            let now_rfc3339 = Utc::now().to_rfc3339();
-            let op_result: std::result::Result<u64, Error> = timeout(
-                Duration::from_secs(REDIS_TIMEOUT_SECS),
-                script
-                    .key(&key)
-                    .arg(&node_json)
-                    .arg(ttl)
-                    .arg(local_epoch)
-                    .arg(&self.node_id)
-                    .arg(&now_rfc3339)
-                    .invoke_async(&mut conn),
-            )
-            .await
-            .map_err(|_| Error::Timeout("Redis register script timed out".to_string()))
-            .and_then(|r| r.map_err(|e| Error::Database(format!("Redis register script failed: {e}"))));
-            self.record_operation_result(&op_result);
-            let new_epoch = op_result?;
+        let now_rfc3339 = Utc::now().to_rfc3339();
+        let op_result: std::result::Result<u64, Error> = timeout(
+            Duration::from_secs(REDIS_TIMEOUT_SECS),
+            script
+                .key(&key)
+                .arg(&node_json)
+                .arg(ttl)
+                .arg(local_epoch)
+                .arg(&self.node_id)
+                .arg(&now_rfc3339)
+                .invoke_async(&mut conn),
+        )
+        .await
+        .map_err(|_| Error::Timeout("Redis register script timed out".to_string()))
+        .and_then(|r| r.map_err(|e| Error::Database(format!("Redis register script failed: {e}"))));
+        self.record_operation_result(&op_result);
+        let new_epoch = op_result?;
 
-            // Update local epoch
-            self.current_epoch.store(new_epoch, Ordering::SeqCst);
+        // Update local epoch
+        self.current_epoch.store(new_epoch, Ordering::SeqCst);
 
-            // Update local cache
-            node_info.epoch = new_epoch;
-            node_info.last_heartbeat = Utc::now();
-            let mut nodes = self.local_nodes.write().await;
-            nodes.insert(self.node_id.clone(), node_info);
+        // Update local cache
+        node_info.epoch = new_epoch;
+        node_info.last_heartbeat = Utc::now();
+        let mut nodes = self.local_nodes.write().await;
+        nodes.insert(self.node_id.clone(), node_info);
 
-            tracing::debug!(
-                node_id = %self.node_id,
-                epoch = new_epoch,
-                "Node registered with fencing token (atomic)"
-            );
-        } else {
-            // Local-only mode
-            let node_info = NodeInfo::new(self.node_id.clone(), grpc_address, http_address);
-            let mut nodes = self.local_nodes.write().await;
-            nodes.insert(self.node_id.clone(), node_info);
-        }
+        tracing::debug!(
+            node_id = %self.node_id,
+            epoch = new_epoch,
+            "Node registered with fencing token (atomic)"
+        );
 
         Ok(())
     }
@@ -514,8 +509,8 @@ impl NodeRegistry {
     /// or key expiry). Subsequent heartbeat calls will detect if the auto-registration
     /// succeeded.
     pub async fn heartbeat(&self) -> Result<HeartbeatResult> {
-        if let Some(ref client) = self.redis_client {
-            let mut conn = self.get_conn_with_breaker(client).await?;
+        {
+            let mut conn = self.get_conn_with_breaker().await?;
 
             let key = self.node_key(&self.node_id);
             let current_epoch = self.current_epoch.load(Ordering::SeqCst);
@@ -688,8 +683,8 @@ impl NodeRegistry {
     /// Uses an atomic Lua script to check epoch <= `local_epoch` before deleting.
     /// Prevents stale nodes from unregistering newer registrations.
     pub async fn unregister(&self) -> Result<()> {
-        if let Some(ref client) = self.redis_client {
-            let mut conn = self.get_conn_with_breaker(client).await?;
+        {
+            let mut conn = self.get_conn_with_breaker().await?;
 
             let key = self.node_key(&self.node_id);
             let current_epoch = self.current_epoch.load(Ordering::SeqCst);
@@ -753,8 +748,8 @@ impl NodeRegistry {
     /// Uses an atomic Lua script that only allows registration if the incoming
     /// epoch >= existing epoch, preventing stale registrations from overwriting newer ones.
     pub async fn register_remote(&self, node_info: NodeInfo) -> Result<()> {
-        if let Some(ref client) = self.redis_client {
-            let mut conn = self.get_conn_with_breaker(client).await?;
+        {
+            let mut conn = self.get_conn_with_breaker().await?;
 
             let key = self.node_key(&node_info.node_id);
             let value = serde_json::to_string(&node_info)
@@ -817,48 +812,40 @@ impl NodeRegistry {
 
     /// Update heartbeat for a remote node (atomic via Lua script)
     pub async fn heartbeat_remote(&self, node_id: &str) -> Result<()> {
-        if let Some(ref client) = self.redis_client {
-            let mut conn = self.get_conn_with_breaker(client).await?;
+        let mut conn = self.get_conn_with_breaker().await?;
 
-            let key = self.node_key(node_id);
-            let now = Utc::now().to_rfc3339();
-            let ttl = self.heartbeat_timeout_secs * 2;
+        let key = self.node_key(node_id);
+        let now = Utc::now().to_rfc3339();
+        let ttl = self.heartbeat_timeout_secs * 2;
 
-            // Atomic Lua: read → update last_heartbeat → write back with fresh TTL
-            let script = redis::Script::new(
-                r"
-                local val = redis.call('GET', KEYS[1])
-                if not val then return nil end
-                local obj = cjson.decode(val)
-                obj['last_heartbeat'] = ARGV[1]
-                local updated = cjson.encode(obj)
-                redis.call('SETEX', KEYS[1], ARGV[2], updated)
-                return updated
-                ",
-            );
+        // Atomic Lua: read → update last_heartbeat → write back with fresh TTL
+        let script = redis::Script::new(
+            r"
+            local val = redis.call('GET', KEYS[1])
+            if not val then return nil end
+            local obj = cjson.decode(val)
+            obj['last_heartbeat'] = ARGV[1]
+            local updated = cjson.encode(obj)
+            redis.call('SETEX', KEYS[1], ARGV[2], updated)
+            return updated
+            ",
+        );
 
-            let op_result: std::result::Result<Option<String>, Error> = timeout(
-                Duration::from_secs(REDIS_TIMEOUT_SECS),
-                script.key(&key).arg(&now).arg(ttl).invoke_async(&mut conn),
-            )
-            .await
-            .map_err(|_| Error::Timeout("Redis heartbeat script timed out".to_string()))
-            .and_then(|r| r.map_err(|e| Error::Database(format!("Redis heartbeat script failed: {e}"))));
-            self.record_operation_result(&op_result);
-            let result = op_result?;
+        let op_result: std::result::Result<Option<String>, Error> = timeout(
+            Duration::from_secs(REDIS_TIMEOUT_SECS),
+            script.key(&key).arg(&now).arg(ttl).invoke_async(&mut conn),
+        )
+        .await
+        .map_err(|_| Error::Timeout("Redis heartbeat script timed out".to_string()))
+        .and_then(|r| r.map_err(|e| Error::Database(format!("Redis heartbeat script failed: {e}"))));
+        self.record_operation_result(&op_result);
+        let result = op_result?;
 
-            // Update local cache from the returned value
-            if let Some(updated_json) = result {
-                if let Ok(node_info) = serde_json::from_str::<NodeInfo>(&updated_json) {
-                    let mut nodes = self.local_nodes.write().await;
-                    nodes.insert(node_id.to_string(), node_info);
-                }
-            }
-        } else {
-            // Local-only mode: update local cache
-            let mut nodes = self.local_nodes.write().await;
-            if let Some(node) = nodes.get_mut(node_id) {
-                node.last_heartbeat = Utc::now();
+        // Update local cache from the returned value
+        if let Some(updated_json) = result {
+            if let Ok(node_info) = serde_json::from_str::<NodeInfo>(&updated_json) {
+                let mut nodes = self.local_nodes.write().await;
+                nodes.insert(node_id.to_string(), node_info);
             }
         }
 
@@ -871,8 +858,8 @@ impl NodeRegistry {
     /// that the existing epoch is not newer than what we expect, preventing
     /// stale deregister requests from removing re-registered nodes.
     pub async fn unregister_remote(&self, node_id: &str, expected_epoch: Option<u64>) -> Result<()> {
-        if let Some(ref client) = self.redis_client {
-            let mut conn = self.get_conn_with_breaker(client).await?;
+        {
+            let mut conn = self.get_conn_with_breaker().await?;
 
             let key = self.node_key(node_id);
 
@@ -923,7 +910,14 @@ impl NodeRegistry {
                     return Ok(());
                 }
             } else {
-                // No epoch provided: best-effort delete (backwards compat)
+                // No epoch provided: best-effort delete (backwards compat).
+                // WARNING: This path bypasses epoch validation, which means a stale
+                // deregister request could remove a re-registered node. Callers should
+                // prefer passing an expected_epoch whenever possible.
+                tracing::warn!(
+                    node_id = %node_id,
+                    "unregister_remote called without expected_epoch, bypassing epoch validation (best-effort delete)"
+                );
                 let op_result: std::result::Result<(), Error> = timeout(
                     Duration::from_secs(REDIS_TIMEOUT_SECS),
                     redis::cmd("DEL")
@@ -959,8 +953,8 @@ impl NodeRegistry {
 
     /// Uncached implementation of get_all_nodes for internal use.
     async fn get_all_nodes_uncached(&self) -> Result<Vec<NodeInfo>> {
-        if let Some(ref client) = self.redis_client {
-            let mut conn = self.get_conn_with_breaker(client).await?;
+        {
+            let mut conn = self.get_conn_with_breaker().await?;
 
             // Use SCAN instead of KEYS for better performance on large datasets
             // SCAN is non-blocking and returns results incrementally
@@ -1040,51 +1034,37 @@ impl NodeRegistry {
             });
 
             Ok(nodes)
-        } else {
-            // Local mode: return cached nodes, filtering out stale ones
-            let timeout = self.heartbeat_timeout_secs;
-            let nodes = self.local_nodes.read().await;
-            Ok(nodes.values()
-                .filter(|n| !n.is_stale(timeout))
-                .cloned()
-                .collect())
         }
     }
 
     /// Get a specific node by ID
     pub async fn get_node(&self, node_id: &str) -> Result<Option<NodeInfo>> {
-        if let Some(ref client) = self.redis_client {
-            let mut conn = self.get_conn_with_breaker(client).await?;
+        let mut conn = self.get_conn_with_breaker().await?;
 
-            let key = self.node_key(node_id);
-            let op_result: std::result::Result<Option<String>, Error> = timeout(
-                Duration::from_secs(REDIS_TIMEOUT_SECS),
-                redis::cmd("GET")
-                    .arg(&key)
-                    .query_async(&mut conn),
-            )
-            .await
-            .map_err(|_| Error::Timeout("Redis GET timed out".to_string()))
-            .and_then(|r| r.map_err(|e| Error::Database(format!("Redis GET failed: {e}"))));
-            self.record_operation_result(&op_result);
-            let value = op_result?;
+        let key = self.node_key(node_id);
+        let op_result: std::result::Result<Option<String>, Error> = timeout(
+            Duration::from_secs(REDIS_TIMEOUT_SECS),
+            redis::cmd("GET")
+                .arg(&key)
+                .query_async(&mut conn),
+        )
+        .await
+        .map_err(|_| Error::Timeout("Redis GET timed out".to_string()))
+        .and_then(|r| r.map_err(|e| Error::Database(format!("Redis GET failed: {e}"))));
+        self.record_operation_result(&op_result);
+        let value = op_result?;
 
-            if let Some(value) = value {
-                let node_info: NodeInfo = serde_json::from_str(&value)
-                    .map_err(|e| Error::Serialization(format!("Failed to deserialize node info: {e}")))?;
+        if let Some(value) = value {
+            let node_info: NodeInfo = serde_json::from_str(&value)
+                .map_err(|e| Error::Serialization(format!("Failed to deserialize node info: {e}")))?;
 
-                if node_info.is_stale(self.heartbeat_timeout_secs) {
-                    return Ok(None);
-                }
-
-                Ok(Some(node_info))
-            } else {
-                Ok(None)
+            if node_info.is_stale(self.heartbeat_timeout_secs) {
+                return Ok(None);
             }
+
+            Ok(Some(node_info))
         } else {
-            // Local mode: check cache
-            let nodes = self.local_nodes.read().await;
-            Ok(nodes.get(node_id).cloned())
+            Ok(None)
         }
     }
 
@@ -1114,8 +1094,64 @@ impl NodeRegistry {
         }
     }
 
+    /// Read all non-stale nodes from the local in-memory cache.
+    ///
+    /// Unlike [`get_all_nodes`], this does NOT query Redis. It returns whatever
+    /// nodes are currently in the local cache, which is kept up-to-date by
+    /// heartbeat, registration, and `get_all_nodes()` calls. Useful when a
+    /// Redis round-trip is not desired (e.g., in hot-path load balancing or
+    /// when Redis is temporarily unavailable).
+    pub async fn get_all_nodes_local(&self) -> Vec<NodeInfo> {
+        let timeout = self.heartbeat_timeout_secs;
+        let nodes = self.local_nodes.read().await;
+        nodes.values()
+            .filter(|n| !n.is_stale(timeout))
+            .cloned()
+            .collect()
+    }
+
+    /// Read a single node from the local in-memory cache.
+    ///
+    /// Unlike [`get_node`], this does NOT query Redis.
+    pub async fn get_node_local(&self, node_id: &str) -> Option<NodeInfo> {
+        let nodes = self.local_nodes.read().await;
+        nodes.get(node_id).cloned()
+    }
+
     fn node_key(&self, node_id: &str) -> String {
         format!("{}:{}", self.key_prefix, node_id)
+    }
+
+    /// Insert a node directly into the local cache, bypassing Redis.
+    ///
+    /// This is intended for unit tests that need to populate node state
+    /// without a running Redis instance. Production code should use
+    /// [`register`] or [`register_remote`].
+    #[doc(hidden)]
+    pub async fn test_insert_local(&self, node_info: NodeInfo) {
+        let mut nodes = self.local_nodes.write().await;
+        nodes.insert(node_info.node_id.clone(), node_info);
+    }
+
+    /// Remove a node directly from the local cache, bypassing Redis.
+    ///
+    /// Test-only counterpart to [`test_insert_local`].
+    #[doc(hidden)]
+    pub async fn test_remove_local(&self, node_id: &str) {
+        let mut nodes = self.local_nodes.write().await;
+        nodes.remove(node_id);
+    }
+
+    /// Alias for [`get_all_nodes_local`] in test context.
+    #[doc(hidden)]
+    pub async fn test_get_all_local(&self) -> Vec<NodeInfo> {
+        self.get_all_nodes_local().await
+    }
+
+    /// Alias for [`get_node_local`] in test context.
+    #[doc(hidden)]
+    pub async fn test_get_local(&self, node_id: &str) -> Option<NodeInfo> {
+        self.get_node_local(node_id).await
     }
 }
 
@@ -1200,24 +1236,15 @@ mod tests {
         assert_eq!(token.epoch, 10);
     }
 
-    #[tokio::test]
-    async fn test_node_registry_local_mode() {
-        let registry = NodeRegistry::new(None, "test_node".to_string(), 30, "synctv:").unwrap();
+    #[test]
+    fn test_node_registry_creation_and_fencing_token() {
+        // redis::Client::open succeeds even without a running Redis server
+        let registry = NodeRegistry::new("redis://localhost:6379".to_string(), "test_node".to_string(), 30, "synctv:").unwrap();
 
         // Get fencing token
         let token = registry.current_fencing_token();
         assert_eq!(token.node_id, "test_node");
         assert_eq!(token.epoch, 1);
-
-        // Register in local mode
-        registry
-            .register("localhost:50051".to_string(), "localhost:8080".to_string())
-            .await
-            .unwrap();
-
-        // Check local cache
-        let nodes = registry.local_nodes.read().await;
-        assert!(nodes.contains_key("test_node"));
     }
 
     #[test]
@@ -1255,7 +1282,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_merge_dns_peers_inserts_new() {
-        let registry = NodeRegistry::new(None, "self".to_string(), 30, "synctv:").unwrap();
+        let registry = NodeRegistry::new("redis://localhost:6379".to_string(), "self".to_string(), 30, "synctv:").unwrap();
 
         let peer = NodeInfo::new(
             "dns-peer-1".to_string(),
@@ -1272,13 +1299,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_merge_dns_peers_does_not_overwrite_existing() {
-        let registry = NodeRegistry::new(None, "self".to_string(), 30, "synctv:").unwrap();
+        let registry = NodeRegistry::new("redis://localhost:6379".to_string(), "self".to_string(), 30, "synctv:").unwrap();
 
-        // Register a node via normal path (with richer metadata)
-        registry
-            .register("10.0.0.1:50051".to_string(), "10.0.0.1:8080".to_string())
-            .await
-            .unwrap();
+        // Pre-populate local cache directly (simulating a prior registration)
+        {
+            let mut nodes = registry.local_nodes.write().await;
+            nodes.insert("self".to_string(), NodeInfo::new(
+                "self".to_string(),
+                "10.0.0.1:50051".to_string(),
+                "10.0.0.1:8080".to_string(),
+            ));
+        }
 
         // Try to merge a DNS peer with the same node_id ("self")
         let dns_peer = NodeInfo::new(

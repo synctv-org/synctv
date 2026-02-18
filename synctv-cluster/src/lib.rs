@@ -5,7 +5,7 @@ pub mod error;
 pub mod leader;
 
 pub use error::{Error, Result};
-pub use discovery::{HeartbeatResult, NodeInfo, NodeRegistry, HealthMonitor, NodeHealth, LoadBalancer, LoadBalancingStrategy, StaticDiscovery, StaticDiscoveryConfig};
+pub use discovery::{HeartbeatResult, NodeInfo, NodeRegistry, HealthMonitor, NodeHealth, LoadBalancer, LoadBalancingStrategy, StaticDiscovery, StaticDiscoveryConfig, StaticPeerConfig};
 #[cfg(feature = "k8s")]
 pub use discovery::K8sDnsDiscovery;
 pub use sync::{

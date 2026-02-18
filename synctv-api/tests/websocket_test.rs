@@ -157,14 +157,14 @@ mod ticket_types {
     fn test_create_ticket_request_deserialize() {
         let json = r#"{"room_id": "room_abc"}"#;
         let req: CreateTicketRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(req.room_id.as_deref(), Some("room_abc"));
+        assert_eq!(req._room_id.as_deref(), Some("room_abc"));
     }
 
     #[test]
     fn test_create_ticket_request_empty() {
         let json = r#"{}"#;
         let req: CreateTicketRequest = serde_json::from_str(json).unwrap();
-        assert!(req.room_id.is_none());
+        assert!(req._room_id.is_none());
     }
 
     #[test]
@@ -220,7 +220,7 @@ mod jwt_auth {
     fn test_sign_access_token() {
         let svc = test_jwt_service();
         let user_id = UserId::from_string("user_123".to_string());
-        let token = svc.sign_token(&user_id, TokenType::Access).unwrap();
+        let token = svc.sign_token(&user_id, TokenType::Access, 0).unwrap();
         assert!(!token.is_empty());
         // JWT has 3 parts separated by dots
         assert_eq!(token.split('.').count(), 3);
@@ -230,7 +230,7 @@ mod jwt_auth {
     fn test_sign_refresh_token() {
         let svc = test_jwt_service();
         let user_id = UserId::from_string("user_456".to_string());
-        let token = svc.sign_token(&user_id, TokenType::Refresh).unwrap();
+        let token = svc.sign_token(&user_id, TokenType::Refresh, 0).unwrap();
         assert!(!token.is_empty());
     }
 
@@ -238,7 +238,7 @@ mod jwt_auth {
     fn test_verify_access_token() {
         let svc = test_jwt_service();
         let user_id = UserId::from_string("user_789".to_string());
-        let token = svc.sign_token(&user_id, TokenType::Access).unwrap();
+        let token = svc.sign_token(&user_id, TokenType::Access, 0).unwrap();
 
         let claims = svc.verify_access_token(&token).unwrap();
         assert_eq!(claims.sub, "user_789");
@@ -250,7 +250,7 @@ mod jwt_auth {
     fn test_verify_refresh_token() {
         let svc = test_jwt_service();
         let user_id = UserId::from_string("user_abc".to_string());
-        let token = svc.sign_token(&user_id, TokenType::Refresh).unwrap();
+        let token = svc.sign_token(&user_id, TokenType::Refresh, 0).unwrap();
 
         let claims = svc.verify_refresh_token(&token).unwrap();
         assert_eq!(claims.sub, "user_abc");
@@ -266,7 +266,7 @@ mod jwt_auth {
         ).unwrap();
 
         let user_id = UserId::from_string("user_xyz".to_string());
-        let token = svc1.sign_token(&user_id, TokenType::Access).unwrap();
+        let token = svc1.sign_token(&user_id, TokenType::Access, 0).unwrap();
 
         // Verification with different secret should fail
         assert!(svc2.verify_access_token(&token).is_err());
@@ -289,7 +289,7 @@ mod jwt_auth {
         let svc = test_jwt_service();
         let validator = test_validator();
         let user_id = UserId::from_string("user_val".to_string());
-        let token = svc.sign_token(&user_id, TokenType::Access).unwrap();
+        let token = svc.sign_token(&user_id, TokenType::Access, 0).unwrap();
         let _bearer = format!("Bearer {}", token);
 
         let extracted = validator.validate_and_extract_user_id(&token).unwrap();
@@ -301,7 +301,7 @@ mod jwt_auth {
         let svc = test_jwt_service();
         let validator = test_validator();
         let user_id = UserId::from_string("user_http".to_string());
-        let token = svc.sign_token(&user_id, TokenType::Access).unwrap();
+        let token = svc.sign_token(&user_id, TokenType::Access, 0).unwrap();
         let header = format!("Bearer {}", token);
 
         let claims = validator.validate_http(&header).unwrap();
@@ -313,7 +313,7 @@ mod jwt_auth {
         let svc = test_jwt_service();
         let validator = test_validator();
         let user_id = UserId::from_string("user_no_prefix".to_string());
-        let token = svc.sign_token(&user_id, TokenType::Access).unwrap();
+        let token = svc.sign_token(&user_id, TokenType::Access, 0).unwrap();
 
         // Without "Bearer " prefix
         assert!(validator.validate_http(&token).is_err());
@@ -323,7 +323,7 @@ mod jwt_auth {
     fn test_access_token_has_jti() {
         let svc = test_jwt_service();
         let user_id = UserId::from_string("user_jti".to_string());
-        let token = svc.sign_token(&user_id, TokenType::Access).unwrap();
+        let token = svc.sign_token(&user_id, TokenType::Access, 0).unwrap();
         let claims = svc.verify_access_token(&token).unwrap();
         assert!(!claims.jti.is_empty(), "JWT ID (jti) should be set");
     }
@@ -332,8 +332,8 @@ mod jwt_auth {
     fn test_unique_jti_per_token() {
         let svc = test_jwt_service();
         let user_id = UserId::from_string("user_unique".to_string());
-        let token1 = svc.sign_token(&user_id, TokenType::Access).unwrap();
-        let token2 = svc.sign_token(&user_id, TokenType::Access).unwrap();
+        let token1 = svc.sign_token(&user_id, TokenType::Access, 0).unwrap();
+        let token2 = svc.sign_token(&user_id, TokenType::Access, 0).unwrap();
         let claims1 = svc.verify_access_token(&token1).unwrap();
         let claims2 = svc.verify_access_token(&token2).unwrap();
         assert_ne!(claims1.jti, claims2.jti, "Each token should have a unique jti");
@@ -343,7 +343,7 @@ mod jwt_auth {
     fn test_claims_iat_is_recent() {
         let svc = test_jwt_service();
         let user_id = UserId::from_string("user_iat".to_string());
-        let token = svc.sign_token(&user_id, TokenType::Access).unwrap();
+        let token = svc.sign_token(&user_id, TokenType::Access, 0).unwrap();
         let claims = svc.verify_access_token(&token).unwrap();
 
         let now = chrono::Utc::now().timestamp();
@@ -354,7 +354,7 @@ mod jwt_auth {
     fn test_access_token_exp_is_in_future() {
         let svc = test_jwt_service();
         let user_id = UserId::from_string("user_exp".to_string());
-        let token = svc.sign_token(&user_id, TokenType::Access).unwrap();
+        let token = svc.sign_token(&user_id, TokenType::Access, 0).unwrap();
         let claims = svc.verify_access_token(&token).unwrap();
 
         let now = chrono::Utc::now().timestamp();
@@ -738,10 +738,7 @@ mod websocket_e2e {
 
         // Config
         let config = Arc::new(synctv_core::Config {
-            server: synctv_core::config::ServerConfig {
-                development_mode: true,
-                ..Default::default()
-            },
+            server: synctv_core::config::ServerConfig::default(),
             database: Default::default(),
             redis: Default::default(),
             jwt: Default::default(),
@@ -858,7 +855,7 @@ mod websocket_e2e {
             .await
             .expect("register user");
         let token = jwt_service
-            .sign_token(&user.id, TokenType::Access)
+            .sign_token(&user.id, TokenType::Access, 0)
             .expect("sign token");
         (user.id, token)
     }

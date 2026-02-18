@@ -25,7 +25,7 @@ async fn test_jwt_tampering_detection_signature() {
 
     // Generate valid token
     let token = jwt_service
-        .sign_token(&user_id, TokenType::Access)
+        .sign_token(&user_id, TokenType::Access, 0)
         .expect("Failed to sign token");
 
     // Tamper with signature
@@ -45,7 +45,7 @@ async fn test_jwt_tampering_detection_payload() {
     let user_id = UserId::new();
 
     let token = jwt_service
-        .sign_token(&user_id, TokenType::Access)
+        .sign_token(&user_id, TokenType::Access, 0)
         .expect("Failed to sign token");
 
     // Extract and modify payload
@@ -115,12 +115,12 @@ async fn test_jwt_type_confusion_access_vs_refresh() {
 
     // Generate access token
     let access_token = jwt_service
-        .sign_token(&user_id, TokenType::Access)
+        .sign_token(&user_id, TokenType::Access, 0)
         .expect("Failed to sign access token");
 
     // Generate refresh token
     let refresh_token = jwt_service
-        .sign_token(&user_id, TokenType::Refresh)
+        .sign_token(&user_id, TokenType::Refresh, 0)
         .expect("Failed to sign refresh token");
 
     // Try to use access token as refresh token
@@ -155,7 +155,7 @@ async fn test_jwt_type_confusion_guest_token() {
 
     // Generate regular access token
     let access_token = jwt_service
-        .sign_token(&user_id, TokenType::Access)
+        .sign_token(&user_id, TokenType::Access, 0)
         .expect("Failed to sign access token");
 
     // Try to use access token as guest token
@@ -269,8 +269,8 @@ async fn test_jwt_jti_uniqueness() {
     let user_id = UserId::new();
 
     // Generate multiple tokens
-    let token1 = jwt_service.sign_token(&user_id, TokenType::Access).unwrap();
-    let token2 = jwt_service.sign_token(&user_id, TokenType::Access).unwrap();
+    let token1 = jwt_service.sign_token(&user_id, TokenType::Access, 0).unwrap();
+    let token2 = jwt_service.sign_token(&user_id, TokenType::Access, 0).unwrap();
 
     let claims1 = jwt_service.verify_access_token(&token1).unwrap();
     let claims2 = jwt_service.verify_access_token(&token2).unwrap();
@@ -292,7 +292,7 @@ async fn test_jwt_different_secrets_incompatible() {
 
     // Sign with service 1
     let token = jwt_service1
-        .sign_token(&user_id, TokenType::Access)
+        .sign_token(&user_id, TokenType::Access, 0)
         .expect("Failed to sign token");
 
     // Verify with service 2 should fail
@@ -307,7 +307,7 @@ async fn test_jwt_token_expiration_boundary() {
 
     // Generate token
     let token = jwt_service
-        .sign_token(&user_id, TokenType::Access)
+        .sign_token(&user_id, TokenType::Access, 0)
         .expect("Failed to sign token");
 
     let claims = jwt_service.verify_access_token(&token).expect("Failed to verify token");
@@ -318,7 +318,7 @@ async fn test_jwt_token_expiration_boundary() {
 
     // Generate refresh token
     let refresh_token = jwt_service
-        .sign_token(&user_id, TokenType::Refresh)
+        .sign_token(&user_id, TokenType::Refresh, 0)
         .expect("Failed to sign refresh token");
 
     let refresh_claims = jwt_service.verify_refresh_token(&refresh_token)
@@ -342,7 +342,7 @@ async fn test_jwt_concurrent_token_generation() {
         let service = jwt_service.clone();
         let handle = tokio::spawn(async move {
             let user_id = UserId::new();
-            let token = service.sign_token(&user_id, TokenType::Access)
+            let token = service.sign_token(&user_id, TokenType::Access, 0)
                 .expect("Failed to sign token");
             let claims = service.verify_access_token(&token)
                 .expect("Failed to verify token");

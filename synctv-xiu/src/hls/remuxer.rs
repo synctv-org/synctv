@@ -58,6 +58,8 @@ pub struct StreamProcessorState {
     pub stream_name: String,
     pub segments: VecDeque<SegmentInfo>,
     pub is_ended: bool,
+    /// Creation timestamp used to detect if this entry was replaced by a new handler
+    pub created_at: Instant,
 }
 
 impl StreamProcessorState {
@@ -369,6 +371,37 @@ impl Drop for UnsubscribeGuard {
     }
 }
 
+/// Drop guard that removes the stream registry entry on drop.
+/// Used to prevent registry leaks if the handler panics.
+/// On the normal path, `active` is set to `false` before the delayed remove.
+struct StreamRegistryGuard {
+    registry: StreamRegistry,
+    key: String,
+    /// The creation timestamp of the entry this guard owns.
+    /// Only removes the entry if it still matches (prevents removing a newer handler's entry).
+    created_at: Instant,
+    active: bool,
+}
+
+impl Drop for StreamRegistryGuard {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        // Only remove if the entry still belongs to this handler
+        if let Some(entry) = self.registry.get(&self.key) {
+            if entry.read().created_at == self.created_at {
+                drop(entry);
+                self.registry.remove(&self.key);
+                tracing::warn!(
+                    "StreamRegistryGuard: removed registry entry for {} on panic/early-return",
+                    self.key
+                );
+            }
+        }
+    }
+}
+
 /// Handler for a single HLS stream
 struct StreamHandler {
     app_name: String,
@@ -423,11 +456,13 @@ impl StreamHandler {
         let registry_key = format!("{}/{}", self.app_name, self.stream_name);
 
         // Register stream in registry
+        let handler_created_at = Instant::now();
         let state = Arc::new(parking_lot::RwLock::new(StreamProcessorState {
             app_name: self.app_name.clone(),
             stream_name: self.stream_name.clone(),
             segments: VecDeque::new(),
             is_ended: false,
+            created_at: handler_created_at,
         }));
         self.stream_registry.insert(registry_key.clone(), state.clone());
 
@@ -439,17 +474,37 @@ impl StreamHandler {
             state.clone(),
         )?;
 
+        // Install registry guard: if the handler panics, immediately remove the
+        // registry entry so it doesn't leak. On the normal path we disarm it
+        // and do a delayed remove instead.
+        let mut registry_guard = StreamRegistryGuard {
+            registry: self.stream_registry.clone(),
+            key: registry_key.clone(),
+            created_at: handler_created_at,
+            active: true,
+        };
+
         processor.process_stream(&mut self.data_consumer, &self.activity_callback).await?;
 
         // Deactivate drop guard - we'll unsubscribe explicitly
         unsub_guard.active = false;
+        // Disarm registry guard - we'll do a delayed remove below
+        registry_guard.active = false;
 
         // Unsubscribe when done
         self.unsubscribe_from_stream_hub().await?;
 
         // Remove from registry after some delay (allow clients to finish)
         tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
-        self.stream_registry.remove(&registry_key);
+
+        // Only remove if the entry still belongs to this handler (not replaced by a new one)
+        if let Some(entry) = self.stream_registry.get(&registry_key) {
+            if entry.read().created_at == handler_created_at {
+                drop(entry);
+                self.stream_registry.remove(&registry_key);
+            }
+            // else: new handler has overwritten the entry, don't remove
+        }
 
         // Explicitly clean up segments for this stream to free memory immediately
         // rather than waiting for the periodic cleanup cycle (LS-3)
@@ -914,6 +969,7 @@ mod tests {
             stream_name: "room123/media456".to_string(),
             segments: VecDeque::new(),
             is_ended: false,
+            created_at: Instant::now(),
         };
 
         // Add some segments
@@ -954,6 +1010,7 @@ mod tests {
             stream_name: "room123/media456".to_string(),
             segments: VecDeque::new(),
             is_ended: false,
+            created_at: Instant::now(),
         };
 
         // Add segment with discontinuity
@@ -980,6 +1037,7 @@ mod tests {
             stream_name: "room123/media456".to_string(),
             segments: VecDeque::new(),
             is_ended: true,
+            created_at: Instant::now(),
         };
 
         // Add a segment
@@ -1006,6 +1064,7 @@ mod tests {
             stream_name: "room123/media456".to_string(),
             segments: VecDeque::new(),
             is_ended: false,
+            created_at: Instant::now(),
         };
 
         // Add segment

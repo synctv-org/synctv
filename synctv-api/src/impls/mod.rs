@@ -264,18 +264,12 @@ impl From<sqlx::Error> for ApiError {
 impl ApiError {
     /// Convert this error into a proto ErrorMessage with proper code and detail.
     ///
-    /// In production mode (not development_mode), the detail field is left empty
-    /// to avoid leaking sensitive information. In development mode, it includes
-    /// the full error message for debugging.
-    pub fn to_proto_error(&self, development_mode: bool) -> crate::proto::client::ErrorMessage {
+    /// The detail field is left empty to avoid leaking sensitive information.
+    pub fn to_proto_error(&self) -> crate::proto::client::ErrorMessage {
         crate::proto::client::ErrorMessage {
             message: self.message().to_string(),
             code: self.code(),
-            detail: if development_mode {
-                self.to_string()
-            } else {
-                String::new()
-            },
+            detail: String::new(),
         }
     }
 }

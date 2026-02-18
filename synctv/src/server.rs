@@ -410,6 +410,10 @@ impl SyncTvServer {
                 node_registry: services.node_registry,
                 redis_conn: services.redis_conn,
                 shutdown_rx: Some(shutdown_rx),
+                builtin_stun_url: services.stun_server.as_ref().map(|s| {
+                    let addr = s.external_addr();
+                    format!("stun:{}:{}", addr.ip(), addr.port())
+                }),
             };
             if let Err(e) = synctv_api::grpc::serve(grpc_config).await {
                 error!("gRPC server error: {}", e);
@@ -477,6 +481,10 @@ impl SyncTvServer {
                 rate_limiter: self.services.rate_limiter.clone(),
                 ws_ticket_service,
                 redis_conn: self.services.redis_conn.clone(),
+                builtin_stun_url: self.services.stun_server.as_ref().map(|s| {
+                    let addr = s.external_addr();
+                    format!("stun:{}:{}", addr.ip(), addr.port())
+                }),
             },
         );
 

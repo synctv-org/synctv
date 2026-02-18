@@ -30,6 +30,7 @@ pub struct ValidatedAdmin {
 pub async fn validate_admin_auth(
     user_service: &UserService,
     user_id: UserId,
+    token_pv: Option<i32>,
     token_iat: i64,
 ) -> Result<ValidatedAdmin, ApiError> {
     let user = user_service
@@ -41,11 +42,14 @@ pub async fn validate_admin_auth(
         return Err(ApiError::Authentication("Authentication failed".to_string()));
     }
 
-    if user_service
-        .is_token_invalidated_by_password_change(&user_id, token_iat)
-        .await
-        .unwrap_or(true)
-    {
+    // Check password version (with iat fallback for legacy tokens)
+    if let Some(pv) = token_pv {
+        if pv < user.password_version {
+            return Err(ApiError::Authentication(
+                "Token invalidated due to password change. Please log in again.".to_string(),
+            ));
+        }
+    } else if token_iat < user.password_changed_at.timestamp() {
         return Err(ApiError::Authentication(
             "Token invalidated due to password change. Please log in again.".to_string(),
         ));
@@ -474,8 +478,10 @@ impl AdminApiImpl {
     pub async fn update_settings(
         &self,
         req: crate::proto::admin::UpdateSettingsRequest,
+        admin_user_id: &UserId,
     ) -> Result<crate::proto::admin::UpdateSettingsResponse, ApiError> {
         // Update each setting in the group
+        let changed_keys: Vec<String> = req.settings.keys().cloned().collect();
         for (key, value) in &req.settings {
             self.settings_service.update(key, value.clone()).await
                 .map_err(ApiError::from)?;
@@ -490,6 +496,27 @@ impl AdminApiImpl {
                     timestamp: chrono::Utc::now(),
                 },
             });
+        }
+
+        // Write audit log for settings change
+        let admin_user = self.user_service.get_user(admin_user_id).await
+            .map_err(ApiError::from)?;
+
+        let mut details = serde_json::Map::new();
+        details.insert("changed_keys".to_string(),
+            serde_json::Value::Array(changed_keys.into_iter().map(serde_json::Value::String).collect()));
+
+        if let Err(e) = self.audit_service.log(
+            admin_user_id.as_str().to_string(),
+            admin_user.username,
+            synctv_core::service::AuditAction::SettingsUpdated,
+            synctv_core::service::AuditTargetType::Settings,
+            None,
+            serde_json::Value::Object(details),
+            None,
+            None,
+        ).await {
+            tracing::warn!(error = %e, "Failed to write audit log for settings update");
         }
 
         Ok(crate::proto::admin::UpdateSettingsResponse {})
@@ -1616,6 +1643,7 @@ mod tests {
             updated_at: chrono::Utc::now(),
             deleted_at: None,
             password_changed_at: chrono::Utc::now(),
+            password_version: 0,
         }
     }
 

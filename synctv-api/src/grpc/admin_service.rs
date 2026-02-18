@@ -70,12 +70,12 @@ impl AdminServiceImpl {
             .ok_or_else(|| Status::unauthenticated("Authentication required"))?;
 
         let user_id = synctv_core::models::UserId::from_string(user_context.user_id.clone());
-        let token_iat = user_context.iat;
 
         let validated = crate::impls::admin::validate_admin_auth(
             &self.user_service,
             user_id,
-            token_iat,
+            user_context.pv,
+            user_context.iat,
         )
         .await
         .map_err(Status::unauthenticated)?;
@@ -106,12 +106,12 @@ impl AdminServiceImpl {
             .ok_or_else(|| Status::unauthenticated("Authentication required"))?;
 
         let user_id = synctv_core::models::UserId::from_string(user_context.user_id.clone());
-        let token_iat = user_context.iat;
 
         let validated = crate::impls::admin::validate_admin_auth(
             &self.user_service,
             user_id,
-            token_iat,
+            user_context.pv,
+            user_context.iat,
         )
         .await
         .map_err(Status::unauthenticated)?;
@@ -169,9 +169,9 @@ impl AdminService for AdminServiceImpl {
         &self,
         request: Request<UpdateSettingsRequest>,
     ) -> Result<Response<UpdateSettingsResponse>, Status> {
-        self.check_admin(&request).await?;
+        let validated = self.check_admin_get_validated(&request).await?;
         let req = request.into_inner();
-        let resp = self.admin_api.update_settings(req).await.map_err(map_api_error)?;
+        let resp = self.admin_api.update_settings(req, &validated.user_id).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 

@@ -34,11 +34,12 @@ impl ClientApiImpl {
     pub async fn login(
         &self,
         req: crate::proto::client::LoginRequest,
+        client_ip: Option<std::net::IpAddr>,
     ) -> Result<crate::proto::client::LoginResponse, ApiError> {
         // Login user (returns tuple: (User, access_token, refresh_token))
         let (user, access_token, refresh_token) = self
             .user_service
-            .login(req.username, req.password)
+            .login(req.username, req.password, client_ip)
             .await
             .map_err(ApiError::from)?;
 

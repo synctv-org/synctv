@@ -628,41 +628,54 @@ impl ConnectionManager {
                 }
             }
 
-            // Decrement distributed Redis counters and remove metadata (best-effort)
+            // Decrement distributed Redis counters and remove metadata.
+            // Use a timeout to ensure cleanup completes promptly during normal
+            // unregister. If the timeout expires (e.g., Redis is slow/down), the
+            // TTL on Redis keys acts as a safety net for eventual cleanup.
             if let Some(ref conn) = self.redis_conn {
-                // Decrement total distributed counter
-                let total_key = format!("{}connections:total", self.redis_key_prefix);
-                let _ = self.redis_decr(conn, &total_key).await;
-
-                let user_key = format!("{}connections:user:{}", self.redis_key_prefix, conn_info.user_id.as_str());
-                let _ = self.redis_decr(conn, &user_key).await;
-
-                if let Some(ref room_id) = conn_info.room_id {
-                    let room_key = format!("{}connections:room:{}", self.redis_key_prefix, room_id.as_str());
-                    let _ = self.redis_decr(conn, &room_key).await;
-                }
-
-                // Remove metadata and index entries (best-effort, spawn background task)
-                let conn_key = format!("{}conn_mgr:conn:{}", self.redis_key_prefix, connection_id);
-                let user_index_key = format!("{}conn_mgr:user:{}", self.redis_key_prefix, conn_info.user_id.as_str());
-                let room_index_key = conn_info.room_id.as_ref()
-                    .map(|r| format!("{}conn_mgr:room:{}", self.redis_key_prefix, r.as_str()));
-
-                let mut conn_clone = conn.clone();
+                let conn_clone = conn.clone();
+                let key_prefix = self.redis_key_prefix.clone();
+                let user_id_str = conn_info.user_id.as_str().to_string();
+                let room_id_str = conn_info.room_id.as_ref().map(|r| r.as_str().to_string());
                 let connection_id_owned = connection_id.to_string();
 
-                tokio::spawn(async move {
-                    // Remove connection metadata
-                    let _: Result<(), _> = conn_clone.del(&conn_key).await;
+                let cleanup = async {
+                    let this = &*self;
 
-                    // Remove from user index
-                    let _: Result<(), _> = conn_clone.srem(&user_index_key, &connection_id_owned).await;
+                    // Decrement total distributed counter
+                    let total_key = format!("{key_prefix}connections:total");
+                    let _ = this.redis_decr(&conn_clone, &total_key).await;
 
-                    // Remove from room index if applicable
-                    if let Some(room_key) = room_index_key {
-                        let _: Result<(), _> = conn_clone.srem(&room_key, &connection_id_owned).await;
+                    // Decrement user counter
+                    let user_key = format!("{key_prefix}connections:user:{user_id_str}");
+                    let _ = this.redis_decr(&conn_clone, &user_key).await;
+
+                    // Decrement room counter
+                    if let Some(ref room_id) = room_id_str {
+                        let room_key = format!("{key_prefix}connections:room:{room_id}");
+                        let _ = this.redis_decr(&conn_clone, &room_key).await;
                     }
-                });
+
+                    // Remove metadata and index entries
+                    let conn_key = format!("{key_prefix}conn_mgr:conn:{connection_id_owned}");
+                    let user_index_key = format!("{key_prefix}conn_mgr:user:{user_id_str}");
+                    let room_index_key = room_id_str.as_ref()
+                        .map(|r| format!("{key_prefix}conn_mgr:room:{r}"));
+
+                    let mut mc = conn_clone.clone();
+                    let _: Result<(), _> = mc.del(&conn_key).await;
+                    let _: Result<(), _> = mc.srem(&user_index_key, &connection_id_owned).await;
+                    if let Some(room_key) = room_index_key {
+                        let _: Result<(), _> = mc.srem(&room_key, &connection_id_owned).await;
+                    }
+                };
+
+                if tokio::time::timeout(Duration::from_secs(2), cleanup).await.is_err() {
+                    warn!(
+                        connection_id = %connection_id,
+                        "Redis cleanup timed out during unregister, TTL will handle eventual cleanup"
+                    );
+                }
             }
 
             synctv_core::metrics::ACTIVE_CONNECTIONS.dec();

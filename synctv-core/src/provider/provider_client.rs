@@ -21,10 +21,14 @@ use std::time::Duration;
 use synctv_media_providers::alist::{AlistError, AlistInterface};
 use synctv_media_providers::grpc::alist::{FsGetResp, FsListResp, FsOtherResp};
 
+/// Default per-request timeout for gRPC calls to remote providers.
+const GRPC_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Macro to generate a boilerplate gRPC client method implementation.
 ///
 /// Each generated method: creates the gRPC client from the channel,
-/// sends a `tonic::Request`, maps errors, and returns the inner response.
+/// sends a `tonic::Request` with a per-request timeout, maps errors,
+/// and returns the inner response.
 ///
 /// Generates the desugared `async_trait` form directly so the macro can be
 /// used inside `#[async_trait]` impl blocks (proc-macros run before
@@ -42,8 +46,17 @@ macro_rules! impl_grpc_method {
             Box::pin(async move {
                 use $client_mod as _client_mod;
                 let mut client = _client_mod::$client_name::new(self.channel.clone());
-                let response = client.$method(tonic::Request::new(request)).await
-                    .map_err(|e| <$error>::Network(format!("gRPC error: {e}")))?;
+                let response = tokio::time::timeout(
+                    GRPC_REQUEST_TIMEOUT,
+                    client.$method(tonic::Request::new(request)),
+                )
+                .await
+                .map_err(|_| <$error>::Network(format!(
+                    "gRPC request timeout ({}s) for {}",
+                    GRPC_REQUEST_TIMEOUT.as_secs(),
+                    stringify!($method),
+                )))?
+                .map_err(|e| <$error>::Network(format!("gRPC error: {e}")))?;
                 Ok(response.into_inner())
             })
         }
@@ -99,8 +112,16 @@ impl AlistInterface for GrpcAlistClient {
     async fn login(&self, request: synctv_media_providers::grpc::alist::LoginReq) -> Result<String, AlistError> {
         use synctv_media_providers::grpc::alist::alist_client::AlistClient;
         let mut client = AlistClient::new(self.channel.clone());
-        let response = client.login(tonic::Request::new(request)).await
-            .map_err(|e| AlistError::Network(format!("gRPC error: {e}")))?;
+        let response = tokio::time::timeout(
+            GRPC_REQUEST_TIMEOUT,
+            client.login(tonic::Request::new(request)),
+        )
+        .await
+        .map_err(|_| AlistError::Network(format!(
+            "gRPC request timeout ({}s) for login",
+            GRPC_REQUEST_TIMEOUT.as_secs(),
+        )))?
+        .map_err(|e| AlistError::Network(format!("gRPC error: {e}")))?;
         Ok(response.into_inner().token)
     }
 }

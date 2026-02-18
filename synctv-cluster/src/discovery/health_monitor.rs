@@ -395,11 +395,12 @@ impl HealthMonitor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::node_registry::NodeInfo;
     use std::collections::HashMap;
 
-    /// Helper: create a NodeRegistry in local-only mode (no Redis)
+    /// Helper: create a NodeRegistry (redis::Client::open succeeds without a running server)
     fn make_registry() -> Arc<NodeRegistry> {
-        Arc::new(NodeRegistry::new(None, "self".to_string(), 30, "test:").unwrap())
+        Arc::new(NodeRegistry::new("redis://localhost:6379".to_string(), "self".to_string(), 30, "test:").unwrap())
     }
 
     // --- HealthProbeConfig tests ---
@@ -462,10 +463,14 @@ mod tests {
     #[tokio::test]
     async fn test_process_heartbeats_does_not_mark_fresh_nodes() {
         let registry = make_registry();
-        registry.register("localhost:50051".to_string(), "localhost:8080".to_string()).await.unwrap();
+        registry.test_insert_local(NodeInfo::new(
+            "self".to_string(),
+            "localhost:50051".to_string(),
+            "localhost:8080".to_string(),
+        )).await;
 
         let health_status = Arc::new(RwLock::new(HashMap::new()));
-        let nodes = registry.get_all_nodes().await.unwrap();
+        let nodes = registry.get_all_nodes_local().await;
         HealthMonitor::process_heartbeats(&health_status, &nodes, 30).await;
 
         let status = health_status.read().await;
@@ -477,7 +482,11 @@ mod tests {
     #[tokio::test]
     async fn test_process_heartbeats_prunes_removed_nodes() {
         let registry = make_registry();
-        registry.register("localhost:50051".to_string(), "localhost:8080".to_string()).await.unwrap();
+        registry.test_insert_local(NodeInfo::new(
+            "self".to_string(),
+            "localhost:50051".to_string(),
+            "localhost:8080".to_string(),
+        )).await;
 
         let health_status = Arc::new(RwLock::new(HashMap::new()));
         // Pre-populate with a node that no longer exists
@@ -486,7 +495,7 @@ mod tests {
             status.insert("ghost-node".to_string(), NodeHealth::Healthy);
         }
 
-        let nodes = registry.get_all_nodes().await.unwrap();
+        let nodes = registry.get_all_nodes_local().await;
         HealthMonitor::process_heartbeats(&health_status, &nodes, 30).await;
 
         let status = health_status.read().await;

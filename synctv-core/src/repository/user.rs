@@ -46,7 +46,7 @@ impl UserRepository {
             r"
             INSERT INTO users (id, username, email, password_hash, signup_method, role, status, email_verified, created_at, updated_at, password_changed_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)
-            RETURNING id, username, email, password_hash, signup_method, role, status, created_at, updated_at, password_changed_at, deleted_at, email_verified
+            RETURNING id, username, email, password_hash, signup_method, role, status, created_at, updated_at, password_changed_at, password_version, deleted_at, email_verified
             ",
         )
         .bind(user.id.as_str())
@@ -82,7 +82,7 @@ impl UserRepository {
     pub async fn get_by_id(&self, user_id: &UserId) -> Result<Option<User>> {
         let u = sqlx::query_as::<_, User>(
             r"
-            SELECT id, username, email, password_hash, signup_method, role, status, created_at, updated_at, password_changed_at, deleted_at, email_verified
+            SELECT id, username, email, password_hash, signup_method, role, status, created_at, updated_at, password_changed_at, password_version, deleted_at, email_verified
             FROM users
             WHERE id = $1 AND deleted_at IS NULL
             ",
@@ -103,7 +103,7 @@ impl UserRepository {
         let ids: Vec<&str> = user_ids.iter().map(super::super::models::id::UserId::as_str).collect();
         let users = sqlx::query_as::<_, User>(
             r"
-            SELECT id, username, email, password_hash, signup_method, role, status, created_at, updated_at, password_changed_at, deleted_at, email_verified
+            SELECT id, username, email, password_hash, signup_method, role, status, created_at, updated_at, password_changed_at, password_version, deleted_at, email_verified
             FROM users
             WHERE id = ANY($1) AND deleted_at IS NULL
             ",
@@ -119,7 +119,7 @@ impl UserRepository {
     pub async fn get_by_username(&self, username: &str) -> Result<Option<User>> {
         let u = sqlx::query_as::<_, User>(
             r"
-            SELECT id, username, email, password_hash, signup_method, role, status, created_at, updated_at, password_changed_at, deleted_at, email_verified
+            SELECT id, username, email, password_hash, signup_method, role, status, created_at, updated_at, password_changed_at, password_version, deleted_at, email_verified
             FROM users
             WHERE username = $1 AND deleted_at IS NULL
             ",
@@ -135,7 +135,7 @@ impl UserRepository {
     pub async fn get_by_email(&self, email: &str) -> Result<Option<User>> {
         let u = sqlx::query_as::<_, User>(
             r"
-            SELECT id, username, email, password_hash, signup_method, role, status, created_at, updated_at, password_changed_at, deleted_at, email_verified
+            SELECT id, username, email, password_hash, signup_method, role, status, created_at, updated_at, password_changed_at, password_version, deleted_at, email_verified
             FROM users
             WHERE email = $1 AND deleted_at IS NULL
             ",
@@ -154,7 +154,7 @@ impl UserRepository {
             UPDATE users
             SET username = $2, email = $3, password_hash = $4, role = $5, status = $6, updated_at = $7
             WHERE id = $1 AND deleted_at IS NULL
-            RETURNING id, username, email, password_hash, signup_method, role, status, created_at, updated_at, password_changed_at, deleted_at, email_verified
+            RETURNING id, username, email, password_hash, signup_method, role, status, created_at, updated_at, password_changed_at, password_version, deleted_at, email_verified
             ",
         )
         .bind(user.id.as_str())
@@ -202,9 +202,9 @@ impl UserRepository {
         let u = sqlx::query_as::<_, User>(
             r"
             UPDATE users
-            SET password_hash = $2, updated_at = $3, password_changed_at = $3
+            SET password_hash = $2, updated_at = $3, password_changed_at = $3, password_version = password_version + 1
             WHERE id = $1 AND deleted_at IS NULL
-            RETURNING id, username, email, password_hash, signup_method, role, status, created_at, updated_at, password_changed_at, deleted_at, email_verified
+            RETURNING id, username, email, password_hash, signup_method, role, status, created_at, updated_at, password_changed_at, password_version, deleted_at, email_verified
             ",
         )
         .bind(user_id.as_str())
@@ -224,7 +224,7 @@ impl UserRepository {
             UPDATE users
             SET email_verified = $2, updated_at = $3
             WHERE id = $1 AND deleted_at IS NULL
-            RETURNING id, username, email, password_hash, signup_method, role, status, created_at, updated_at, password_changed_at, deleted_at, email_verified
+            RETURNING id, username, email, password_hash, signup_method, role, status, created_at, updated_at, password_changed_at, password_version, deleted_at, email_verified
             ",
         )
         .bind(user_id.as_str())
@@ -316,7 +316,7 @@ impl UserRepository {
         let (list_where, _) = wb.build(3);
         let list_sql = format!(
             r"
-            SELECT id, username, email, password_hash, signup_method, role, status, created_at, updated_at, password_changed_at, deleted_at, email_verified
+            SELECT id, username, email, password_hash, signup_method, role, status, created_at, updated_at, password_changed_at, password_version, deleted_at, email_verified
             FROM users
             WHERE {list_where}
             ORDER BY created_at DESC

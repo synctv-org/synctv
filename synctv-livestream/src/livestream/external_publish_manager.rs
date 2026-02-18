@@ -432,8 +432,12 @@ impl Drop for ExternalPublishStream {
                 .stream_hub_event_sender
                 .try_send(StreamHubEvent::UnPublish { identifier })
             {
+                // During runtime shutdown, the channel may already be closed.
+                // This is best-effort cleanup; Redis TTL will eventually expire the
+                // publisher entry if this UnPublish is lost.
                 warn!(
-                    "ExternalPublishStream drop: failed to send UnPublish for {}/{}: {}",
+                    "ExternalPublishStream drop: failed to send UnPublish for {}/{}: {} \
+                     (best-effort cleanup; Redis TTL will expire stale entry)",
                     self.room_id, self.media_id, e
                 );
             }
@@ -443,7 +447,8 @@ impl Drop for ExternalPublishStream {
             "ExternalPublishStream dropped for {}/{}",
             self.room_id, self.media_id
         );
-        // StreamLifecycle's Drop will abort the task handle
+        // StreamLifecycle's Drop will abort the task handle (best-effort:
+        // if the Tokio runtime is shutting down, the abort may not complete).
     }
 }
 

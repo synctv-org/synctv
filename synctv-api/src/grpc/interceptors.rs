@@ -22,8 +22,10 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 #[derive(Debug, Clone)]
 pub struct UserContext {
     pub user_id: String,
-    /// Token issued-at timestamp (Unix seconds), used for password-change invalidation
+    /// Token issued-at timestamp (Unix seconds), used for password-change invalidation (legacy fallback)
     pub iat: i64,
+    /// Password version from JWT claims, used for password-change invalidation
+    pub pv: Option<i32>,
     /// Raw bearer token, used for blacklist checking at the service layer
     /// (interceptors are sync and cannot perform async Redis lookups)
     pub raw_token: String,
@@ -67,10 +69,11 @@ impl AuthInterceptor {
             .validate_token(&raw_token)
             .map_err(|e| Status::unauthenticated(format!("Token verification failed: {e}")))?;
 
-        // Inject UserContext with user_id, iat, and raw token
+        // Inject UserContext with user_id, iat, pv, and raw token
         let user_context = UserContext {
             user_id: claims.sub,
             iat: claims.iat,
+            pv: claims.pv,
             raw_token,
         };
         request.extensions_mut().insert(user_context);
@@ -104,6 +107,7 @@ impl AuthInterceptor {
         let user_context = UserContext {
             user_id: claims.sub.clone(),
             iat: claims.iat,
+            pv: claims.pv,
             raw_token: raw_token.clone(),
         };
         request.extensions_mut().insert(user_context);
@@ -113,6 +117,7 @@ impl AuthInterceptor {
             user_ctx: UserContext {
                 user_id: claims.sub,
                 iat: claims.iat,
+                pv: claims.pv,
                 raw_token,
             },
             room_id,
@@ -314,15 +319,13 @@ pub struct GrpcRateLimitInterceptor {
     /// Trusted proxy CIDRs/IPs for X-Forwarded-For validation.
     /// Only requests from these addresses may have their forwarded headers trusted.
     trusted_proxies: Arc<Vec<String>>,
-    /// Whether development mode is enabled (trusts all proxy headers).
-    development_mode: bool,
 }
 
 impl GrpcRateLimitInterceptor {
     /// Create a new rate limit interceptor for a specific tier.
     ///
     /// Each gRPC service should use its own interceptor with the appropriate tier.
-    /// `trusted_proxies` and `development_mode` control whether X-Forwarded-For
+    /// `trusted_proxies` controls whether X-Forwarded-For
     /// and X-Real-IP headers are trusted (matching the HTTP middleware pattern).
     #[must_use]
     pub fn new(
@@ -330,14 +333,12 @@ impl GrpcRateLimitInterceptor {
         tier: GrpcRateLimitTier,
         window_seconds: u64,
         trusted_proxies: Vec<String>,
-        development_mode: bool,
     ) -> Self {
         Self {
             rate_limiter: Arc::new(rate_limiter),
             tier,
             window_seconds,
             trusted_proxies: Arc::new(trusted_proxies),
-            development_mode,
         }
     }
 
@@ -350,7 +351,6 @@ impl GrpcRateLimitInterceptor {
             tier,
             window_seconds: self.window_seconds,
             trusted_proxies: Arc::clone(&self.trusted_proxies),
-            development_mode: self.development_mode,
         }
     }
 
@@ -403,8 +403,7 @@ impl GrpcRateLimitInterceptor {
         // 2. Get the peer (socket) IP to check if it's a trusted proxy
         let peer_ip = request.remote_addr().map(|addr| addr.ip());
 
-        let should_trust_headers = self.development_mode
-            || peer_ip.is_some_and(|ip| self.is_trusted_proxy(&ip));
+        let should_trust_headers = peer_ip.is_some_and(|ip| self.is_trusted_proxy(&ip));
 
         if should_trust_headers {
             // Try X-Forwarded-For first (first IP is the original client)
@@ -538,10 +537,12 @@ mod tests {
         let ctx = UserContext {
             user_id: "user1".to_string(),
             iat: 1234567890,
+            pv: Some(3),
             raw_token: "token123".to_string(),
         };
         assert_eq!(ctx.raw_token, "token123");
         assert_eq!(ctx.user_id, "user1");
         assert_eq!(ctx.iat, 1234567890);
+        assert_eq!(ctx.pv, Some(3));
     }
 }

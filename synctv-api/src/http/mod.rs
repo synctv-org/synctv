@@ -33,7 +33,7 @@ use axum::{
     Router,
 };
 use std::sync::Arc;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::CorsLayer;
 use synctv_cluster::sync::PublishRequest;
 use synctv_core::provider::{AlistProvider, BilibiliProvider, EmbyProvider};
 use synctv_core::repository::UserProviderCredentialRepository;
@@ -73,6 +73,9 @@ pub struct RouterConfig {
     pub ws_ticket_service: Option<Arc<synctv_core::service::WsTicketService>>,
     /// Shared Redis connection for playback caching
     pub redis_conn: Option<redis::aio::ConnectionManager>,
+    /// Resolved built-in STUN URL (e.g. "stun:203.0.113.1:3478") from a successfully started
+    /// STUN server. When `None`, the built-in STUN entry is omitted from ICE server lists.
+    pub builtin_stun_url: Option<String>,
 }
 
 /// Shared application state
@@ -158,6 +161,14 @@ fn build_app_state(config: RouterConfig) -> AppState {
      .with_redis_conn(config.redis_conn.clone())
      .with_rate_limiter(config.rate_limiter.clone())
      .with_security_pipeline(security_pipeline.clone()));
+
+    // Wire in the resolved STUN URL if the built-in STUN server started successfully
+    let client_api = if let Some(stun_url) = config.builtin_stun_url {
+        let inner = Arc::try_unwrap(client_api).unwrap_or_else(|arc| (*arc).clone());
+        Arc::new(inner.with_builtin_stun_url(stun_url))
+    } else {
+        client_api
+    };
 
     let admin_api = config.settings_service.as_ref().map(|settings_svc| {
         let email_svc = config.email_service.clone().unwrap_or_else(|| {
@@ -336,7 +347,7 @@ fn register_read_routes(state: &AppState) -> Router<AppState> {
 
 /// Assemble all route groups into a single router.
 fn register_all_routes(state: AppState) -> Router<AppState> {
-    let health_router = if state.config.server.metrics_enabled || state.config.server.development_mode {
+    let health_router = if state.config.server.metrics_enabled {
         health::create_health_router_with_metrics()
     } else {
         health::create_health_router()
@@ -409,8 +420,6 @@ fn register_all_routes(state: AppState) -> Router<AppState> {
         .merge(
             Router::new()
                 .route("/api/rooms/{room_id}/webrtc/ice-servers", get(webrtc::get_ice_servers))
-                .route("/api/rooms/{room_id}/webrtc/network-quality", get(webrtc::get_network_quality))
-                .route("/api/webrtc/session/{conn_id}/affinity", get(webrtc::session_affinity_lookup))
                 .route_layer(axum_middleware::from_fn_with_state(
                     state.clone(),
                     middleware::read_rate_limit,
@@ -444,12 +453,7 @@ fn register_all_routes(state: AppState) -> Router<AppState> {
 
 /// Build CORS layer based on configuration.
 fn build_cors_layer(config: &synctv_core::Config) -> CorsLayer {
-    if config.server.development_mode {
-        CorsLayer::new()
-            .allow_origin(Any)
-            .allow_methods(Any)
-            .allow_headers(Any)
-    } else if config.server.cors_allowed_origins.is_empty() {
+    if config.server.cors_allowed_origins.is_empty() {
         tracing::warn!(
             "CORS policy: DENY ALL cross-origin requests (no origins configured). \
              Web frontends on different origins will fail to connect. \
@@ -502,25 +506,21 @@ fn apply_global_layers(router: Router<AppState>, state: &AppState) -> axum::Rout
         ))
         .layer(axum_middleware::from_fn(middleware::security_headers_middleware));
 
-    // Apply HSTS in production (not in development mode)
-    let router = if !state.config.server.development_mode {
-        let hsts_value = middleware::hsts_header(63_072_000, true, false);
-        router.layer(axum_middleware::from_fn(move |request: axum::extract::Request, next: axum::middleware::Next| {
-            let hsts = hsts_value.clone();
-            async move {
-                let mut response = next.run(request).await;
-                if let Ok(value) = axum::http::HeaderValue::from_str(&hsts) {
-                    response.headers_mut().insert(
-                        axum::http::header::STRICT_TRANSPORT_SECURITY,
-                        value,
-                    );
-                }
-                response
+    // Apply HSTS
+    let hsts_value = middleware::hsts_header(63_072_000, true, false);
+    let router = router.layer(axum_middleware::from_fn(move |request: axum::extract::Request, next: axum::middleware::Next| {
+        let hsts = hsts_value.clone();
+        async move {
+            let mut response = next.run(request).await;
+            if let Ok(value) = axum::http::HeaderValue::from_str(&hsts) {
+                response.headers_mut().insert(
+                    axum::http::header::STRICT_TRANSPORT_SECURITY,
+                    value,
+                );
             }
-        }))
-    } else {
-        router
-    };
+            response
+        }
+    }));
 
     router
         .layer(axum_middleware::from_fn(

@@ -218,6 +218,15 @@ impl KeyBuilder {
         format!("{}:auth:login_attempts:{}", self.prefix, username)
     }
 
+    /// Failed login attempt counter per IP address
+    ///
+    /// Type: String + TTL (10 minutes)
+    /// Value: JSON with count and last_failure_at
+    #[must_use]
+    pub fn login_attempts_ip(&self, ip: &str) -> String {
+        format!("{}:auth:login_attempts_ip:{}", self.prefix, ip)
+    }
+
     // ==================== WebSocket Ticket ====================
 
     /// WebSocket ticket (one-time use)

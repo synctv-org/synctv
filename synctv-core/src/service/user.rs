@@ -113,10 +113,10 @@ impl UserService {
         // Generate JWT tokens (role will be fetched from DB on each request)
         let access_token = self
             .jwt_service
-            .sign_token(&created_user.id, TokenType::Access)?;
+            .sign_token(&created_user.id, TokenType::Access, created_user.password_version)?;
         let refresh_token = self
             .jwt_service
-            .sign_token(&created_user.id, TokenType::Refresh)?;
+            .sign_token(&created_user.id, TokenType::Refresh, created_user.password_version)?;
 
         Ok((created_user, Some(access_token), Some(refresh_token)))
     }
@@ -175,10 +175,10 @@ impl UserService {
         self.username_cache.set(&user.id, &user.username).await?;
         let access_token = self
             .jwt_service
-            .sign_token(&user.id, TokenType::Access)?;
+            .sign_token(&user.id, TokenType::Access, user.password_version)?;
         let refresh_token = self
             .jwt_service
-            .sign_token(&user.id, TokenType::Refresh)?;
+            .sign_token(&user.id, TokenType::Refresh, user.password_version)?;
         Ok((access_token, refresh_token))
     }
 
@@ -187,18 +187,19 @@ impl UserService {
     /// Timing-safe: always performs password verification regardless of user existence
     /// to prevent username enumeration via response time analysis.
     ///
-    /// Includes per-account brute-force protection: after repeated failures, accounts
-    /// are temporarily locked with exponential backoff (1min / 5min / 15min).
+    /// Includes per-account and per-IP brute-force protection: after repeated failures,
+    /// accounts/IPs are temporarily locked with exponential backoff (1min / 5min / 15min).
     pub async fn login(
         &self,
         username: String,
         password: String,
+        client_ip: Option<std::net::IpAddr>,
     ) -> Result<(User, String, String)> {
         // Check brute-force lockout before expensive Argon2 verification.
         // This applies to all usernames (existing or not) to prevent
         // distributed attacks while also saving CPU on locked accounts.
         if let Some(ref bf) = self.brute_force {
-            bf.check_allowed(&username).await?;
+            bf.check_allowed(&username, client_ip).await?;
         }
 
         // Get user by username
@@ -227,7 +228,7 @@ impl UserService {
             _ => {
                 // Record failed attempt for brute-force tracking
                 if let Some(ref bf) = self.brute_force {
-                    if let Err(e) = bf.record_failure(&username).await {
+                    if let Err(e) = bf.record_failure(&username, client_ip).await {
                         tracing::warn!(error = %e, "Failed to record login failure for brute-force tracking");
                     }
                 }
@@ -242,7 +243,7 @@ impl UserService {
         {
             // Record failure (account is locked/deleted but attacker shouldn't know)
             if let Some(ref bf) = self.brute_force {
-                if let Err(e) = bf.record_failure(&username).await {
+                if let Err(e) = bf.record_failure(&username, client_ip).await {
                     tracing::warn!(error = %e, "Failed to record login failure for brute-force tracking");
                 }
             }
@@ -266,10 +267,10 @@ impl UserService {
         // Generate JWT tokens (role will be fetched from DB on each request)
         let access_token = self
             .jwt_service
-            .sign_token(&user.id, TokenType::Access)?;
+            .sign_token(&user.id, TokenType::Access, user.password_version)?;
         let refresh_token = self
             .jwt_service
-            .sign_token(&user.id, TokenType::Refresh)?;
+            .sign_token(&user.id, TokenType::Refresh, user.password_version)?;
 
         Ok((user, access_token, refresh_token))
     }
@@ -296,10 +297,10 @@ impl UserService {
         // Generate JWT tokens
         let access_token = self
             .jwt_service
-            .sign_token(&user.id, TokenType::Access)?;
+            .sign_token(&user.id, TokenType::Access, user.password_version)?;
         let refresh_token = self
             .jwt_service
-            .sign_token(&user.id, TokenType::Refresh)?;
+            .sign_token(&user.id, TokenType::Refresh, user.password_version)?;
 
         Ok((user, access_token, refresh_token))
     }
@@ -334,18 +335,25 @@ impl UserService {
             return Err(Error::Authentication("Authentication failed".to_string()));
         }
 
-        // Reject refresh tokens issued before the last password change (database-based check)
-        if claims.iat < user.password_changed_at.timestamp() {
-            return Err(Error::Authentication("Authentication failed".to_string()));
+        // Reject refresh tokens issued with an old password version
+        if let Some(token_pv) = claims.pv {
+            if token_pv < user.password_version {
+                return Err(Error::Authentication("Authentication failed".to_string()));
+            }
+        } else {
+            // Legacy tokens without pv: fall back to iat-based check
+            if claims.iat < user.password_changed_at.timestamp() {
+                return Err(Error::Authentication("Authentication failed".to_string()));
+            }
         }
 
         // Generate new tokens (role will be fetched from DB on each request)
         let new_access_token = self
             .jwt_service
-            .sign_token(&user.id, TokenType::Access)?;
+            .sign_token(&user.id, TokenType::Access, user.password_version)?;
         let new_refresh_token = self
             .jwt_service
-            .sign_token(&user.id, TokenType::Refresh)?;
+            .sign_token(&user.id, TokenType::Refresh, user.password_version)?;
 
         Ok((new_access_token, new_refresh_token))
     }
@@ -485,24 +493,6 @@ impl UserService {
         tracing::info!(user_id = %user_id.as_str(), "User soft-deleted with full cleanup");
 
         Ok(())
-    }
-
-    /// Check if a token has been invalidated by a password change.
-    ///
-    /// Returns `true` if the token was issued before the user's most recent
-    /// password change and should therefore be rejected.
-    pub async fn is_token_invalidated_by_password_change(
-        &self,
-        user_id: &UserId,
-        token_iat: i64,
-    ) -> Result<bool> {
-        // Query password_changed_at from database
-        let user = self.repository.get_by_id(user_id).await?
-            .ok_or_else(|| Error::NotFound(format!("User {} not found", user_id.as_str())))?;
-
-        // Token is invalid if it was issued before the password change
-        // Using < (strict less than) means a token issued at the exact same second as password change is considered valid
-        Ok(token_iat < user.password_changed_at.timestamp())
     }
 
     /// Create a new user for an `OAuth2` login.

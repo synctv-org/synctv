@@ -181,6 +181,8 @@ pub fn validate_external_addr(addr: &str) -> Result<(), String> {
 pub struct StunServer {
     task: JoinHandle<()>,
     local_addr: SocketAddr,
+    /// The resolved external address that clients should use in STUN URLs.
+    external_addr: SocketAddr,
 }
 
 impl StunServer {
@@ -226,13 +228,19 @@ impl StunServer {
             "STUN server started (powered by turn-rs)"
         );
 
-        Ok(Arc::new(Self { task, local_addr }))
+        Ok(Arc::new(Self { task, local_addr, external_addr: external }))
     }
 
     /// Get the local bind address.
     #[must_use]
     pub const fn local_addr(&self) -> SocketAddr {
         self.local_addr
+    }
+
+    /// Get the resolved external address (used for STUN URLs sent to clients).
+    #[must_use]
+    pub const fn external_addr(&self) -> SocketAddr {
+        self.external_addr
     }
 
     /// Shut down the STUN server by aborting the background task.

@@ -99,6 +99,10 @@ pub struct ClientApiImpl {
     pub rate_limiter: Option<synctv_core::service::rate_limit::RateLimiter>,
     /// Security pipeline for token blacklisting on logout
     pub security_pipeline: Option<Arc<synctv_core::service::SecurityPipeline>>,
+    /// Resolved built-in STUN URL (e.g. "stun:203.0.113.1:3478"), set only when the
+    /// built-in STUN server started successfully with a valid external address.
+    /// When `None`, the built-in STUN entry is omitted from ICE server lists.
+    pub builtin_stun_url: Option<String>,
 }
 
 impl ClientApiImpl {
@@ -132,6 +136,7 @@ impl ClientApiImpl {
             redis_conn: None,
             rate_limiter: None,
             security_pipeline: None,
+            builtin_stun_url: None,
         }
     }
 
@@ -152,6 +157,7 @@ impl ClientApiImpl {
             redis_conn: None,
             rate_limiter: None,
             security_pipeline: None,
+            builtin_stun_url: None,
         }
     }
 
@@ -180,6 +186,14 @@ impl ClientApiImpl {
     #[must_use]
     pub fn with_security_pipeline(mut self, pipeline: Arc<synctv_core::service::SecurityPipeline>) -> Self {
         self.security_pipeline = Some(pipeline);
+        self
+    }
+
+    /// Set the resolved built-in STUN URL for ICE server lists.
+    /// Should be called with the external address from a successfully started StunServer.
+    #[must_use]
+    pub fn with_builtin_stun_url(mut self, url: String) -> Self {
+        self.builtin_stun_url = Some(url);
         self
     }
 

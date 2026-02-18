@@ -32,11 +32,26 @@ pub async fn register(
 /// Login with username and password
 pub async fn login(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<LoginRequest>,
 ) -> AppResult<Json<LoginResponse>> {
+    // Extract client IP from X-Forwarded-For or X-Real-IP headers.
+    // Behind a reverse proxy these headers carry the real client IP.
+    let client_ip = headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split(',').next())
+        .and_then(|s| s.trim().parse::<std::net::IpAddr>().ok())
+        .or_else(|| {
+            headers
+                .get("x-real-ip")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.trim().parse::<std::net::IpAddr>().ok())
+        });
+
     let response = state
         .client_api
-        .login(req)
+        .login(req, client_ip)
         .await
         .map_err(super::error::map_api_error)?;
 

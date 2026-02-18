@@ -90,7 +90,7 @@ async fn init_cluster_components(
     let node_id = cm.node_id().to_string();
     let heartbeat_timeout_secs: i64 = 30;
 
-    let registry = match NodeRegistry::new(Some(redis_url.to_string()), node_id.clone(), heartbeat_timeout_secs, &config.redis.key_prefix) {
+    let registry = match NodeRegistry::new(redis_url.to_string(), node_id.clone(), heartbeat_timeout_secs, &config.redis.key_prefix) {
         Ok(r) => Arc::new(r),
         Err(e) => {
             warn!("Failed to create NodeRegistry: {}", e);
@@ -353,6 +353,7 @@ async fn init_livestream(
                 Some(config.server.cluster_secret.clone())
             },
             gop_cache_max_memory_mb: config.livestream.gop_cache_max_memory_mb,
+            grpc_address: config.advertise_grpc_address(),
         },
         publisher_registry,
         user_stream_tracker,
@@ -395,13 +396,14 @@ async fn init_webrtc(
                 match synctv_core::service::resolve_external_ip().await {
                     Some(ip) => format!("{ip}:{}", config.webrtc.stun_port),
                     None => {
-                        warn!(
-                            "Could not auto-detect external IP for STUN server. \
-                             Falling back to '{}'. Set SYNCTV_WEBRTC_STUN_EXTERNAL_ADDR \
-                             or STUN_EXTERNAL_IP to a public IP for NAT traversal to work.",
-                            candidate
+                        error!(
+                            "Could not resolve a routable external IP for STUN server. \
+                             advertise_host '{}' is not routable and cloud metadata detection failed. \
+                             Set SYNCTV_WEBRTC_STUN_EXTERNAL_ADDR or STUN_EXTERNAL_IP to a public IP. \
+                             Built-in STUN server will NOT start.",
+                            advertise
                         );
-                        candidate
+                        return None;
                     }
                 }
             }
@@ -409,8 +411,12 @@ async fn init_webrtc(
 
         // Validate the final external address
         if let Err(e) = synctv_core::service::validate_external_addr(&external_addr) {
-            warn!("{}", e);
-            warn!("STUN server will start but NAT traversal may not work correctly");
+            error!("STUN external address validation failed: {}", e);
+            error!(
+                "Built-in STUN server will NOT start. NAT traversal requires a valid \
+                 public external address. Set SYNCTV_WEBRTC_STUN_EXTERNAL_ADDR to a routable IP."
+            );
+            return None;
         }
 
         let stun_config = synctv_core::service::StunServerConfig {
@@ -441,6 +447,18 @@ async fn main() -> Result<()> {
     // 1. Load configuration (load_config already calls validate())
     let config = load_config()?;
 
+    // 1.1. Redis is a mandatory dependency for SyncTV. Reject startup early
+    // if it is not configured. Multiple subsystems (OAuth2 state, brute-force
+    // protection, rate limiting, cluster coordination, cache invalidation)
+    // require Redis; running without it leads to silent data-loss or broken
+    // multi-replica behavior.
+    if config.redis.url.is_empty() {
+        return Err(anyhow::anyhow!(
+            "Redis is required. Please configure redis in config \
+             (set SYNCTV_REDIS_URL or redis.url in config file)."
+        ));
+    }
+
     // 1.5. Generate node_id once for the entire process
     let node_id = generate_node_id();
 
@@ -448,13 +466,6 @@ async fn main() -> Result<()> {
     // Hold the guard so buffered log entries are flushed on shutdown
     let _log_guard = logging::init_logging(&config.logging)?;
     info!("SyncTV server starting...");
-    if config.server.development_mode {
-        warn!("===========================================================");
-        warn!("  DEVELOPMENT MODE IS ENABLED");
-        warn!("  Security checks are relaxed. DO NOT use in production!");
-        warn!("  Set server.development_mode = false for production.");
-        warn!("===========================================================");
-    }
     info!("gRPC address: {}", config.grpc_address());
     info!("HTTP address: {}", config.http_address());
 
@@ -466,7 +477,7 @@ async fn main() -> Result<()> {
 
     // 4.3. Bootstrap root user (if enabled and no root user exists)
     info!("Checking root user bootstrap...");
-    if let Err(e) = bootstrap_root_user(&pool, &config.bootstrap, config.server.development_mode).await {
+    if let Err(e) = bootstrap_root_user(&pool, &config.bootstrap).await {
         warn!("Failed to bootstrap root user: {}", e);
         warn!("You may need to manually create a root user");
         // Non-fatal: continue startup even if bootstrap fails

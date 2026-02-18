@@ -162,6 +162,12 @@ impl WsTicketService {
         }
     }
 
+    /// Get the configured ticket TTL in seconds
+    #[must_use]
+    pub const fn ticket_ttl_secs(&self) -> u64 {
+        self.ticket_ttl_secs
+    }
+
     /// Create a new ticket for a user
     ///
     /// Returns a ticket string that can be used once for WebSocket authentication.

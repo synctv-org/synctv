@@ -36,7 +36,7 @@ pub mod ws_ticket;
 pub use auth::{hash_password, verify_password, JwtService, TokenType, Claims, BruteForceProtection, SecurityPipeline, AuthenticatedToken};
 pub use chat::ChatService;
 pub use email_token::{EmailTokenService, EmailTokenType};
-pub use oauth2::{OAuth2Service, OAuth2State, OAuth2UserInfo};
+pub use oauth2::{OAuth2Service, OAuth2State, OAuth2UserInfo, OAuthStateStore, RedisOAuthStateStore};
 pub use playlist::{PlaylistService, PlaylistBroadcaster};
 pub use room_settings::{RoomSettingsService, CacheStats};
 pub use settings::{SettingsService, SettingsChangeListener};

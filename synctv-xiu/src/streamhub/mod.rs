@@ -868,11 +868,15 @@ impl StreamsHub {
         receiver: DataReceiver,
         handler: Arc<dyn TStreamHandler>,
     ) -> Result<StatisticDataSender, StreamHubError> {
-        if self.streams.contains_key(&identifier) {
-            return Err(StreamHubError {
-                value: StreamHubErrorValue::Exists,
-            });
-        }
+        // Use entry API for atomic check-and-insert
+        let entry = match self.streams.entry(identifier.clone()) {
+            std::collections::hash_map::Entry::Occupied(_) => {
+                return Err(StreamHubError {
+                    value: StreamHubErrorValue::Exists,
+                });
+            }
+            std::collections::hash_map::Entry::Vacant(e) => e,
+        };
 
         let (event_sender, event_receiver) = mpsc::channel(define::TRANSCEIVER_EVENT_CHANNEL_CAPACITY);
         let transceiver =
@@ -893,7 +897,7 @@ impl StreamsHub {
             }
         });
 
-        self.streams.insert(identifier.clone(), event_sender);
+        entry.insert(event_sender);
 
         // Always broadcast publish event to listeners (HLS remuxer, publisher manager, etc.)
         let client_event = BroadcastEvent::Publish { identifier, pub_type };

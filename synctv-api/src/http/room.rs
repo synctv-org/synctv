@@ -373,9 +373,7 @@ pub async fn check_password(
     let socket_ip = connect_info.0.ip();
 
     // Use X-Forwarded-For / X-Real-IP from trusted proxies, otherwise socket IP
-    let client_ip = if state.config.server.development_mode
-        || state.config.server.is_trusted_proxy(&socket_ip)
-    {
+    let client_ip = if state.config.server.is_trusted_proxy(&socket_ip) {
         headers
             .get("X-Forwarded-For")
             .and_then(|h| h.to_str().ok())

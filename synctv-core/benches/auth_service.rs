@@ -3,7 +3,7 @@
 //! Run with: cargo bench -p synctv-core --bench auth_service
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use synctv_core::models::{UserId, UserRole};
+use synctv_core::models::UserId;
 use synctv_core::service::auth::{hash_password, verify_password, JwtService, TokenType};
 use std::time::Duration;
 
@@ -15,7 +15,7 @@ fn bench_jwt_sign(c: &mut Criterion) {
     c.bench_function("jwt_sign_access_token", |b| {
         b.iter(|| {
             let token = jwt_service
-                .sign_token(black_box(&user_id), UserRole::User, TokenType::Access)
+                .sign_token(black_box(&user_id), TokenType::Access, 0)
                 .expect("sign failed");
             black_box(token);
         })
@@ -28,7 +28,7 @@ fn bench_jwt_verify(c: &mut Criterion) {
     let user_id = UserId::from_string("bench_user_001".to_string());
 
     let token = jwt_service
-        .sign_token(&user_id, UserRole::User, TokenType::Access)
+        .sign_token(&user_id, TokenType::Access, 0)
         .expect("sign failed");
 
     c.bench_function("jwt_verify_access_token", |b| {
@@ -115,7 +115,7 @@ fn bench_concurrent_token_generation(c: &mut Criterion) {
                                 let user_id =
                                     UserId::from_string(format!("bench_user_{i:03}"));
                                 let token = jwt_service
-                                    .sign_token(&user_id, UserRole::User, TokenType::Access)
+                                    .sign_token(&user_id, TokenType::Access, 0)
                                     .expect("sign failed");
                                 black_box(token);
                             }));

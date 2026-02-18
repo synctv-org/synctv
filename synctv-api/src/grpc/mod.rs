@@ -125,6 +125,9 @@ pub struct GrpcServerConfig<'a> {
     /// Shared Redis connection for playback caching
     pub redis_conn: Option<redis::aio::ConnectionManager>,
     pub shutdown_rx: Option<tokio::sync::watch::Receiver<bool>>,
+    /// Resolved built-in STUN URL (e.g. "stun:203.0.113.1:3478") from a successfully started
+    /// STUN server. When `None`, the built-in STUN entry is omitted from ICE server lists.
+    pub builtin_stun_url: Option<String>,
 }
 
 /// Build and start the gRPC server
@@ -156,6 +159,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         node_registry,
         redis_conn,
         shutdown_rx,
+        builtin_stun_url,
     } = grpc_config;
     let addr = config.grpc_address().parse()?;
 
@@ -204,6 +208,14 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
     ).with_redis_publish_tx(redis_publish_tx.clone())
      .with_redis_conn(redis_conn.clone())
      .with_rate_limiter(rate_limiter.clone()));
+
+    // Wire in the resolved STUN URL if the built-in STUN server started successfully
+    let client_api = if let Some(stun_url) = builtin_stun_url {
+        let inner = Arc::try_unwrap(client_api).unwrap_or_else(|arc| (*arc).clone());
+        Arc::new(inner.with_builtin_stun_url(stun_url))
+    } else {
+        client_api
+    };
 
     let rate_limiter_for_layer = rate_limiter.clone();
     let client_service = ClientServiceImpl::from_config(ClientServiceConfig {
@@ -462,7 +474,12 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
     }
 
     // Register cluster gRPC service (requires cluster_secret and NodeRegistry)
-    if !config.server.cluster_secret.is_empty() {
+    if config.server.cluster_secret.is_empty() {
+        tracing::error!(
+            "cluster_secret is empty — cluster gRPC service will NOT be registered. \
+             Cluster coordination will be disabled. Set cluster_secret in config to enable."
+        );
+    } else {
         if let Some(ref nr) = node_registry {
             let cluster_server = synctv_cluster::grpc::ClusterServer::new(
                 nr.clone(),
@@ -478,14 +495,9 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
                 ),
             );
             tracing::info!("Cluster gRPC service registered with shared-secret auth (using shared NodeRegistry)");
-        } else {
+        } else if !config.redis.url.is_empty() {
             // Fallback: create a standalone NodeRegistry for cluster gRPC (single-node mode)
-            let redis_url = if config.redis.url.is_empty() {
-                None
-            } else {
-                Some(config.redis.url.clone())
-            };
-            match synctv_cluster::discovery::NodeRegistry::new(redis_url, cluster_node_id.clone(), 30, &config.redis.key_prefix) {
+            match synctv_cluster::discovery::NodeRegistry::new(config.redis.url.clone(), cluster_node_id.clone(), 30, &config.redis.key_prefix) {
                 Ok(fallback_registry) => {
                     let cluster_server = synctv_cluster::grpc::ClusterServer::new(
                         std::sync::Arc::new(fallback_registry),

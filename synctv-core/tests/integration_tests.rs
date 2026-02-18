@@ -24,7 +24,7 @@ async fn test_user_registration_and_authentication() {
     // Generate access token (role is intentionally NOT in JWT claims;
     // it's fetched from the database on each request for security)
     let access_token = jwt_service
-        .sign_token(&user_id, TokenType::Access)
+        .sign_token(&user_id, TokenType::Access, 0)
         .unwrap();
 
     let claims = jwt_service.verify_access_token(&access_token).unwrap();
@@ -33,7 +33,7 @@ async fn test_user_registration_and_authentication() {
 
     // Generate refresh token
     let refresh_token = jwt_service
-        .sign_token(&user_id, TokenType::Refresh)
+        .sign_token(&user_id, TokenType::Refresh, 0)
         .unwrap();
 
     let claims = jwt_service.verify_refresh_token(&refresh_token).unwrap();
@@ -47,7 +47,7 @@ async fn test_jwt_token_expiration() {
     let user_id = UserId::new();
 
     let token = jwt_service
-        .sign_token(&user_id, TokenType::Access)
+        .sign_token(&user_id, TokenType::Access, 0)
         .unwrap();
 
     let claims = jwt_service.verify_token(&token).unwrap();
@@ -69,7 +69,7 @@ async fn test_jwt_invalid_token() {
     // Tampered token
     let user_id = UserId::new();
     let token = jwt_service
-        .sign_token(&user_id, TokenType::Access)
+        .sign_token(&user_id, TokenType::Access, 0)
         .unwrap();
 
     let parts: Vec<&str> = token.split('.').collect();
@@ -346,7 +346,7 @@ async fn test_jwt_token_types() {
 
     // Generate access token
     let access_token = jwt_service
-        .sign_token(&user_id, TokenType::Access)
+        .sign_token(&user_id, TokenType::Access, 0)
         .unwrap();
 
     let claims = jwt_service.verify_access_token(&access_token).unwrap();
@@ -355,7 +355,7 @@ async fn test_jwt_token_types() {
 
     // Generate refresh token
     let refresh_token = jwt_service
-        .sign_token(&user_id, TokenType::Refresh)
+        .sign_token(&user_id, TokenType::Refresh, 0)
         .unwrap();
 
     let claims = jwt_service.verify_refresh_token(&refresh_token).unwrap();
@@ -369,10 +369,10 @@ async fn test_jwt_access_and_refresh_tokens_different() {
     let user_id = UserId::new();
 
     let access_token = jwt_service
-        .sign_token(&user_id, TokenType::Access)
+        .sign_token(&user_id, TokenType::Access, 0)
         .unwrap();
     let refresh_token = jwt_service
-        .sign_token(&user_id, TokenType::Refresh)
+        .sign_token(&user_id, TokenType::Refresh, 0)
         .unwrap();
 
     // Tokens should be different
@@ -424,11 +424,11 @@ async fn test_e2e_user_auth_flow() {
 
     // Step 1: User logs in and gets access + refresh tokens
     let access_token = jwt_service
-        .sign_token(&user_id, TokenType::Access)
+        .sign_token(&user_id, TokenType::Access, 0)
         .expect("Failed to generate access token");
 
     let refresh_token = jwt_service
-        .sign_token(&user_id, TokenType::Refresh)
+        .sign_token(&user_id, TokenType::Refresh, 0)
         .expect("Failed to generate refresh token");
 
     // Step 2: Verify access token for API requests
@@ -449,7 +449,7 @@ async fn test_e2e_user_auth_flow() {
 
     // Step 4: Generate new access token using refresh token
     let new_access_token = jwt_service
-        .sign_token(&user_id, TokenType::Access)
+        .sign_token(&user_id, TokenType::Access, 0)
         .expect("Failed to generate new access token");
 
     let new_claims = jwt_service
@@ -604,7 +604,7 @@ async fn test_e2e_multiple_users_concurrent_auth() {
             let user_id = UserId::new();
 
             let token = jwt
-                .sign_token(&user_id, TokenType::Access)
+                .sign_token(&user_id, TokenType::Access, 0)
                 .expect("Failed to sign token");
 
             let claims = jwt
@@ -648,11 +648,11 @@ async fn test_e2e_token_type_validation() {
     let user_id = UserId::new();
 
     let access = jwt_service
-        .sign_token(&user_id, TokenType::Access)
+        .sign_token(&user_id, TokenType::Access, 0)
         .unwrap();
 
     let refresh = jwt_service
-        .sign_token(&user_id, TokenType::Refresh)
+        .sign_token(&user_id, TokenType::Refresh, 0)
         .unwrap();
 
     assert!(jwt_service.verify_access_token(&access).is_ok());

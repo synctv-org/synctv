@@ -201,7 +201,7 @@ mod tests {
         use super::super::jwt::TokenType;
         let user_id = UserId::from_string(user_id.to_string());
         jwt_service
-            .sign_token(&user_id, TokenType::Access)
+            .sign_token(&user_id, TokenType::Access, 0)
             .unwrap()
     }
 

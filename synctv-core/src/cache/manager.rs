@@ -210,6 +210,7 @@ mod tests {
             crate::models::UserRole::User,
             crate::models::UserStatus::Active,
             chrono::Utc::now(),
+            0,
         );
         user_cache.set(&user_id, cached_user).await.unwrap();
         assert!(user_cache.get(&user_id).await.unwrap().is_some());
@@ -280,6 +281,7 @@ mod tests {
             crate::models::UserRole::User,
             crate::models::UserStatus::Active,
             chrono::Utc::now(),
+            0,
         );
         user_cache.set(&user_id, cached_user).await.unwrap();
 

@@ -4,15 +4,20 @@
 //! Tokens are only used temporarily during login to fetch user info.
 //!
 //! ## State Storage
-//! `OAuth2` states are stored in Redis when available (for multi-node deployments).
-//! Falls back to in-memory storage when Redis is not configured.
+//! `OAuth2` states are persisted via the [`OAuthStateStore`] trait. The
+//! production implementation ([`RedisOAuthStateStore`]) uses Redis with TTL.
+//! Alternative backends (e.g., in-memory for tests) can be injected through
+//! the trait without `OAuth2Service` knowing the underlying technology.
+//!
+//! Redis is **required** in production. This system is designed for
+//! multi-replica stateless deployment where in-memory state would break
+//! the authorization callback flow.
 
 use std::sync::Arc;
 use std::collections::HashMap;
 use tokio::sync::RwLock;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
 
 use crate::{
     models::{oauth2_client::OAuth2Provider, UserId},
@@ -21,12 +26,116 @@ use crate::{
     Error, Result, InternalExt,
 };
 
-/// Redis key prefix for `OAuth2` states
+// ============================================================================
+// OAuthStateStore trait
+// ============================================================================
+
+/// Storage backend for OAuth2 CSRF state tokens.
+///
+/// Implementations **must** guarantee atomic single-use consumption: a state
+/// stored with [`store`] can only be retrieved once via [`consume`]. Concurrent
+/// attempts to consume the same token must result in exactly one success and
+/// all others returning `Ok(None)`.
+///
+/// The Redis implementation achieves this via a Lua `GET + DEL` script.
+/// An in-memory implementation can use a `Mutex`-protected `HashMap`.
+#[async_trait::async_trait]
+pub trait OAuthStateStore: Send + Sync {
+    /// Persist `state` under `token_id`, expiring it after `ttl`.
+    async fn store(&self, token_id: &str, state: &OAuth2State, ttl: std::time::Duration) -> Result<()>;
+
+    /// Atomically retrieve **and remove** the state for `token_id`.
+    ///
+    /// Returns `Ok(Some(_))` exactly once per stored token.
+    /// Returns `Ok(None)` for unknown or already-consumed tokens.
+    async fn consume(&self, token_id: &str) -> Result<Option<OAuth2State>>;
+}
+
+// ============================================================================
+// RedisOAuthStateStore
+// ============================================================================
+
+/// Redis-backed [`OAuthStateStore`].
+///
+/// States are stored as JSON with `SET EX` and consumed atomically with a
+/// Lua `GET + DEL` script (same pattern as `WsTicketService`).
+pub struct RedisOAuthStateStore {
+    conn: redis::aio::ConnectionManager,
+}
+
+impl RedisOAuthStateStore {
+    /// Create from an existing Redis `ConnectionManager`.
+    pub fn new(conn: redis::aio::ConnectionManager) -> Self {
+        Self { conn }
+    }
+}
+
+/// Redis key prefix for OAuth2 state tokens
 const OAUTH2_STATE_KEY_PREFIX: &str = "oauth2:state:";
+
+#[async_trait::async_trait]
+impl OAuthStateStore for RedisOAuthStateStore {
+    async fn store(&self, token_id: &str, state: &OAuth2State, ttl: std::time::Duration) -> Result<()> {
+        let key = format!("{OAUTH2_STATE_KEY_PREFIX}{token_id}");
+        let value = serde_json::to_string(state)
+            .internal_with_err("Failed to serialize OAuth2 state")?;
+
+        let mut conn = self.conn.clone();
+        use redis::AsyncCommands;
+        let _: () = tokio::time::timeout(
+            crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,
+            conn.set_ex(&key, value, ttl.as_secs()),
+        )
+        .await
+        .map_err(|_| Error::Internal("Redis timeout: store OAuth2 state".to_string()))?
+        .internal_with_err("Failed to store OAuth2 state in Redis")?;
+
+        debug!("Stored OAuth2 state in Redis for token {}", &token_id[..8.min(token_id.len())]);
+        Ok(())
+    }
+
+    async fn consume(&self, token_id: &str) -> Result<Option<OAuth2State>> {
+        let key = format!("{OAUTH2_STATE_KEY_PREFIX}{token_id}");
+        let mut conn = self.conn.clone();
+
+        // Atomic GET + DEL via Lua script (same pattern as WsTicketService)
+        let lua_script = redis::Script::new(r#"
+            local value = redis.call("GET", KEYS[1])
+            if value then
+                redis.call("DEL", KEYS[1])
+            end
+            return value
+        "#);
+
+        let value: Option<String> = tokio::time::timeout(
+            crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,
+            lua_script.key(&key).invoke_async(&mut conn),
+        )
+        .await
+        .map_err(|_| Error::Internal("Redis timeout: consume OAuth2 state".to_string()))?
+        .internal_with_err("Failed to consume OAuth2 state from Redis")?;
+
+        match value {
+            Some(json) => {
+                let state: OAuth2State = serde_json::from_str(&json)
+                    .internal_with_err("Failed to deserialize OAuth2 state")?;
+                debug!(
+                    "Retrieved OAuth2 state from Redis for token {}",
+                    &token_id[..8.min(token_id.len())]
+                );
+                Ok(Some(state))
+            }
+            None => Ok(None),
+        }
+    }
+}
+
+// ============================================================================
+// Domain types
+// ============================================================================
+
 /// Default TTL for `OAuth2` states (5 minutes)
 const OAUTH2_STATE_TTL_SECONDS: u64 = 300;
-/// Maximum number of in-memory `OAuth2` states (prevents unbounded memory growth)
-const MAX_LOCAL_STATES: usize = 10_000;
 
 /// `OAuth2` state (for CSRF protection and PKCE during authorization flow)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,6 +167,10 @@ struct OAuth2ProviderEntry {
     provider_type: OAuth2Provider,
 }
 
+// ============================================================================
+// OAuth2Service
+// ============================================================================
+
 /// `OAuth2` authentication service
 ///
 /// Handles OAuth2/OIDC login flow:
@@ -65,23 +178,18 @@ struct OAuth2ProviderEntry {
 /// 2. Exchange authorization code for user info
 /// 3. Create/update user-provider mapping (NO TOKENS STORED)
 ///
-/// State storage:
-/// - When Redis is available: states are stored in Redis with TTL (multi-node safe)
-/// - When Redis is not available: states are stored in memory with TTL via moka cache (single-node only)
+/// State storage is delegated to the [`OAuthStateStore`] trait. Inject a
+/// [`RedisOAuthStateStore`] for production; an in-memory implementation for tests.
 #[derive(Clone)]
 pub struct OAuth2Service {
     repository: UserOAuthProviderRepository,
     /// Map of instance name -> (provider instance, provider enum type)
     /// M-03: Consolidated from separate providers + provider_types maps to prevent lock ordering issues
     providers: Arc<RwLock<HashMap<String, OAuth2ProviderEntry>>>,
-    /// In-memory state storage with TTL (fallback when Redis is not available)
-    local_states: Arc<moka::future::Cache<String, OAuth2State>>,
-    /// Redis connection manager for distributed state storage (multi-replica mode)
-    redis_conn: Option<redis::aio::ConnectionManager>,
+    /// State storage backend — injected via trait object
+    state_store: Arc<dyn OAuthStateStore>,
     /// Allowlist of permitted redirect domains (empty = relative paths only)
     allowed_redirect_domains: Arc<Vec<String>>,
-    /// When true, in-memory state storage is rejected (requires Redis)
-    cluster_mode: bool,
 }
 
 impl std::fmt::Debug for OAuth2Service {
@@ -93,61 +201,18 @@ impl std::fmt::Debug for OAuth2Service {
 }
 
 impl OAuth2Service {
-    /// Create new `OAuth2` service (without Redis - single node only)
+    /// Create a new `OAuth2` service.
     ///
-    /// # Note
-    /// If `redis_conn` is `None`, the service will use in-memory storage,
-    /// which is only suitable for single-replica deployments.
+    /// * `state_store` — use [`RedisOAuthStateStore`] in production.
     #[must_use]
-    pub fn new(repository: UserOAuthProviderRepository) -> Self {
-        warn!(
-            "OAuth2 service using in-memory state storage. \
-             This is only suitable for single-replica deployments. \
-             For multi-replica setups, configure Redis via with_redis()."
-        );
+    pub fn new(repository: UserOAuthProviderRepository, state_store: Arc<dyn OAuthStateStore>) -> Self {
+        info!("OAuth2 service initialized");
 
-        // Detect multi-replica environment and warn loudly
-        if Self::detect_multi_replica_environment() {
-            tracing::error!(
-                "MULTI-REPLICA RISK: OAuth2 service is using in-memory state storage, \
-                 but the environment appears to be a multi-replica deployment \
-                 (Kubernetes / Docker Swarm / REPLICAS env detected). \
-                 OAuth2 states created on one replica will NOT be valid on others. \
-                 Configure Redis to fix this."
-            );
-        }
-
-        let local_states = moka::future::Cache::builder()
-            .max_capacity(MAX_LOCAL_STATES as u64)
-            .time_to_live(Duration::from_secs(OAUTH2_STATE_TTL_SECONDS))
-            .build();
         Self {
             repository,
             providers: Arc::new(RwLock::new(HashMap::new())),
-            local_states: Arc::new(local_states),
-            redis_conn: None,
+            state_store,
             allowed_redirect_domains: Arc::new(Vec::new()),
-            cluster_mode: false,
-        }
-    }
-
-    /// Create new `OAuth2` service with Redis `ConnectionManager` (multi-replica safe)
-    ///
-    /// Uses a persistent `ConnectionManager` instead of creating new connections
-    /// per operation, matching the pattern used by `WsTicketService`.
-    #[must_use]
-    pub fn with_redis(repository: UserOAuthProviderRepository, redis_conn: redis::aio::ConnectionManager) -> Self {
-        let local_states = moka::future::Cache::builder()
-            .max_capacity(MAX_LOCAL_STATES as u64)
-            .time_to_live(Duration::from_secs(OAUTH2_STATE_TTL_SECONDS))
-            .build();
-        Self {
-            repository,
-            providers: Arc::new(RwLock::new(HashMap::new())),
-            local_states: Arc::new(local_states),
-            redis_conn: Some(redis_conn),
-            allowed_redirect_domains: Arc::new(Vec::new()),
-            cluster_mode: false,
         }
     }
 
@@ -159,106 +224,33 @@ impl OAuth2Service {
         self.allowed_redirect_domains = Arc::new(domains);
     }
 
-    /// Enable cluster mode safety check
-    ///
-    /// When enabled and Redis is not configured, this method returns an error
-    /// immediately, preventing silent fallback to in-memory storage that breaks
-    /// multi-replica deployments.
-    ///
-    /// # Errors
-    /// Returns an error if `cluster_mode` is true but Redis connection is not configured.
-    pub fn with_cluster_mode(mut self, cluster_mode: bool) -> Result<Self> {
-        if cluster_mode && self.redis_conn.is_none() {
-            return Err(Error::Internal(
-                "OAuth2 cluster mode requires Redis connection. \
-                 Use with_redis() before enabling cluster mode, \
-                 or disable cluster mode for single-node deployments."
-                    .to_string(),
-            ));
-        }
-        self.cluster_mode = cluster_mode;
-        Ok(self)
-    }
-
-    /// Store `OAuth2` state (Redis if available, otherwise local memory)
+    /// Store `OAuth2` state via the configured state store
     async fn store_state(&self, state_token: &str, state: &OAuth2State) -> Result<()> {
-        if let Some(ref conn) = self.redis_conn {
-            let key = format!("{OAUTH2_STATE_KEY_PREFIX}{state_token}");
-            let value = serde_json::to_string(state)
-                .internal_with_err("Failed to serialize OAuth2 state")?;
-
-            let mut conn = conn.clone();
-
-            use redis::AsyncCommands;
-            let _: () = tokio::time::timeout(
-                crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,
-                conn.set_ex(&key, value, OAUTH2_STATE_TTL_SECONDS),
+        self.state_store
+            .store(
+                state_token,
+                state,
+                std::time::Duration::from_secs(OAUTH2_STATE_TTL_SECONDS),
             )
-                .await
-                .map_err(|_| Error::Internal("Redis timeout: store OAuth2 state".to_string()))?
-                .internal_with_err("Failed to store OAuth2 state in Redis")?;
-
-            debug!("Stored OAuth2 state in Redis for token {}", &state_token[..8]);
-        } else if self.cluster_mode {
-            return Err(Error::Internal(
-                "OAuth2 state storage requires Redis in cluster/multi-replica mode. \
-                 Configure Redis or disable cluster mode.".to_string()
-            ));
-        } else {
-            // moka cache handles capacity and TTL automatically
-            self.local_states.insert(state_token.to_string(), state.clone()).await;
-            debug!("Stored OAuth2 state in memory for token {}", &state_token[..8]);
-        }
+            .await?;
+        debug!("Stored OAuth2 state for token {}", &state_token[..8.min(state_token.len())]);
         Ok(())
     }
 
-    /// Retrieve and remove `OAuth2` state atomically (Redis if available, otherwise local memory)
+    /// Retrieve and remove `OAuth2` state atomically.
     ///
-    /// Uses a Lua script to GET and DEL atomically, preventing race conditions where
-    /// two callbacks with the same state token could both succeed.
+    /// Uses the configured [`OAuthStateStore`] to ensure single-use consumption
+    /// and prevent CSRF replay attacks.
     async fn consume_state(&self, state_token: &str) -> Result<OAuth2State> {
-        if let Some(ref conn) = self.redis_conn {
-            let key = format!("{OAUTH2_STATE_KEY_PREFIX}{state_token}");
-            let mut conn = conn.clone();
-
-            // Atomic GET + DEL via Lua script (same pattern as WsTicketService)
-            let lua_script = redis::Script::new(r#"
-                local value = redis.call("GET", KEYS[1])
-                if value then
-                    redis.call("DEL", KEYS[1])
-                end
-                return value
-            "#);
-
-            let value: Option<String> = tokio::time::timeout(
-                crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,
-                lua_script.key(&key).invoke_async(&mut conn),
-            )
-                .await
-                .map_err(|_| Error::Internal("Redis timeout: consume OAuth2 state".to_string()))?
-                .internal_with_err("Failed to consume OAuth2 state from Redis")?;
-
-            match value {
-                Some(json) => {
-                    let state: OAuth2State = serde_json::from_str(&json)
-                        .internal_with_err("Failed to deserialize OAuth2 state")?;
-                    debug!("Retrieved OAuth2 state from Redis for token {}", &state_token[..8]);
-                    Ok(state)
-                }
-                None => Err(Error::Authentication("Invalid or expired OAuth2 state".to_string())),
+        match self.state_store.consume(state_token).await? {
+            Some(state) => {
+                debug!(
+                    "Retrieved OAuth2 state for token {}",
+                    &state_token[..8.min(state_token.len())]
+                );
+                Ok(state)
             }
-        } else if self.cluster_mode {
-            return Err(Error::Internal(
-                "OAuth2 state storage requires Redis in cluster/multi-replica mode. \
-                 Configure Redis or disable cluster mode.".to_string()
-            ));
-        } else {
-            // moka's remove() is internally atomic: only one concurrent caller
-            // will receive Some(value), others get None.
-            self.local_states
-                .remove(state_token)
-                .await
-                .ok_or_else(|| Error::Authentication("Invalid or expired OAuth2 state".to_string()))
+            None => Err(Error::Authentication("Invalid or expired OAuth2 state".to_string())),
         }
     }
 
@@ -580,50 +572,12 @@ impl OAuth2Service {
 
     /// Clean up expired `OAuth2` states (maintenance task)
     ///
-    /// Note: Both Redis and moka cache handle TTL automatically.
+    /// Note: Redis handles TTL automatically via SETEX.
     /// This method is now a no-op but kept for API compatibility.
     pub async fn cleanup_expired_states(&self, _max_age_seconds: i64) -> Result<()> {
-        // moka cache handles TTL expiration automatically via time_to_live policy
         // Redis handles its own TTL via SETEX
         // This method is kept for API compatibility but is now a no-op
         Ok(())
-    }
-
-    /// Check if Redis is being used for state storage
-    #[must_use]
-    pub const fn uses_redis(&self) -> bool {
-        self.redis_conn.is_some()
-    }
-
-    /// Detect if the environment appears to be a multi-replica deployment.
-    ///
-    /// Checks for common indicators:
-    /// - `KUBERNETES_SERVICE_HOST` env var (Kubernetes)
-    /// - `REPLICAS` or `SYNCTV_REPLICAS` env var set to > 1
-    /// - `/var/run/secrets/kubernetes.io` exists (Kubernetes pod)
-    fn detect_multi_replica_environment() -> bool {
-        // Kubernetes environment
-        if std::env::var("KUBERNETES_SERVICE_HOST").is_ok() {
-            return true;
-        }
-
-        // Explicit replica count configuration
-        for var in &["REPLICAS", "SYNCTV_REPLICAS"] {
-            if let Ok(val) = std::env::var(var) {
-                if let Ok(count) = val.parse::<u32>() {
-                    if count > 1 {
-                        return true;
-                    }
-                }
-            }
-        }
-
-        // Kubernetes secrets mount
-        if std::path::Path::new("/var/run/secrets/kubernetes.io").exists() {
-            return true;
-        }
-
-        false
     }
 }
 
@@ -633,6 +587,38 @@ mod tests {
     use crate::oauth2::Provider as OAuth2ProviderTrait;
     use async_trait::async_trait;
     use sqlx::PgPool;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    // ========================================================================
+    // InMemoryOAuthStateStore — no Redis required in tests
+    // ========================================================================
+
+    /// In-memory [`OAuthStateStore`] for unit tests.
+    ///
+    /// Uses a `Mutex<HashMap>` for atomic single-use consumption without Redis.
+    /// TTL is accepted but not enforced (tests don't wait for expiry).
+    struct InMemoryOAuthStateStore {
+        states: Mutex<HashMap<String, OAuth2State>>,
+    }
+
+    impl InMemoryOAuthStateStore {
+        fn new() -> Self {
+            Self { states: Mutex::new(HashMap::new()) }
+        }
+    }
+
+    #[async_trait]
+    impl OAuthStateStore for InMemoryOAuthStateStore {
+        async fn store(&self, token_id: &str, state: &OAuth2State, _ttl: std::time::Duration) -> Result<()> {
+            self.states.lock().unwrap().insert(token_id.to_string(), state.clone());
+            Ok(())
+        }
+
+        async fn consume(&self, token_id: &str) -> Result<Option<OAuth2State>> {
+            Ok(self.states.lock().unwrap().remove(token_id))
+        }
+    }
 
     // ========================================================================
     // Mock OAuth2 Provider
@@ -698,15 +684,14 @@ mod tests {
     }
 
     // ========================================================================
-    // Helper: create service with in-memory state (no Redis, no real DB)
+    // Test service helpers — no Redis required
     // ========================================================================
 
     fn create_test_service() -> OAuth2Service {
-        // connect_lazy does not establish a real connection; safe for tests
-        // that never call repository methods
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = crate::repository::UserOAuthProviderRepository::new(pool);
-        OAuth2Service::new(repo)
+        let state_store = Arc::new(InMemoryOAuthStateStore::new());
+        OAuth2Service::new(repo, state_store)
     }
 
     fn create_test_service_with_domains(domains: Vec<String>) -> OAuth2Service {
@@ -869,7 +854,7 @@ mod tests {
     }
 
     // ========================================================================
-    // Tests: In-Memory State Management
+    // Tests: State Management (in-memory, no Redis required)
     // ========================================================================
 
     #[tokio::test]
@@ -1409,10 +1394,11 @@ mod tests {
     // Tests: Service Configuration
     // ========================================================================
 
-    #[tokio::test]
-    async fn test_service_uses_memory_by_default() {
-        let service = create_test_service();
-        assert!(!service.uses_redis());
+    #[test]
+    fn test_state_store_is_abstracted() {
+        // OAuth2Service takes Arc<dyn OAuthStateStore>, not a concrete Redis type.
+        // This verifies the abstraction compiles with the in-memory implementation.
+        let _service = create_test_service();
     }
 
     #[tokio::test]
@@ -1459,7 +1445,7 @@ mod tests {
     }
 
     // ========================================================================
-    // Tests: OAuth2State serialization (used for Redis storage path)
+    // Tests: OAuth2State serialization (used for storage path)
     // ========================================================================
 
     #[test]
@@ -1612,7 +1598,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_concurrent_state_consumption_only_first_succeeds() {
-        let service = create_test_service();
+        let service = Arc::new(create_test_service());
         let state = OAuth2State {
             instance_name: "github".to_string(),
             redirect_url: None,
@@ -1646,7 +1632,7 @@ mod tests {
             }
         }
 
-        // With the consume lock, exactly one consumer must succeed.
+        // With the Mutex-based store, exactly one consumer must succeed.
         assert_eq!(
             success_count, 1,
             "Exactly one consumer must succeed"
@@ -1663,7 +1649,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_concurrent_verify_state_only_first_succeeds() {
-        let service = create_test_service();
+        let service = Arc::new(create_test_service());
         service
             .register_provider(
                 "github".to_string(),
@@ -1695,7 +1681,7 @@ mod tests {
             }
         }
 
-        // Exactly one should succeed with the consume lock
+        // Exactly one should succeed with the Mutex-based store
         assert_eq!(success_count, 1, "Exactly one verify must succeed");
 
         // No further verification should succeed

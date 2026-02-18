@@ -384,6 +384,16 @@ impl StreamMessageHandler {
                                 break;
                             }
                         }
+                        Ok(ClusterEvent::UserLeft { ref user_id, ref room_id, .. }) => {
+                            if *user_id == self.user_id && *room_id == self.room_id {
+                                tracing::info!(
+                                    user_id = %self.user_id.as_str(),
+                                    room_id = %self.room_id.as_str(),
+                                    "Received cross-replica UserLeft event, disconnecting"
+                                );
+                                break;
+                            }
+                        }
                         Ok(_) => {
                             // Other admin events (KickPublisher, etc.) not relevant to this connection
                         }
@@ -737,6 +747,9 @@ impl StreamMessageHandler {
                                     *uid == user_id
                                 }
                                 Ok(ClusterEvent::KickUserFromRoom { user_id: uid, room_id: rid, .. }) => {
+                                    *uid == user_id && *rid == room_id
+                                }
+                                Ok(ClusterEvent::UserLeft { user_id: uid, room_id: rid, .. }) => {
                                     *uid == user_id && *rid == room_id
                                 }
                                 Ok(_) => false,

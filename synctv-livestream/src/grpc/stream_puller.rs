@@ -263,9 +263,7 @@ impl GrpcStreamPuller {
             // If channel is full, drop the packet (backpressure)
             if let Err(mpsc::error::TrySendError::Full(_)) = data_sender.try_send(frame_data) {
                 dropped_frames += 1;
-                let stream_id = format!("{}:{}", self.room_id, self.media_id);
                 synctv_core::metrics::livestream::LIVESTREAM_RELAY_FRAME_DROPS
-                    .with_label_values(&[&stream_id])
                     .inc();
                 if dropped_frames % DROP_LOG_INTERVAL == 1 {
                     warn!(

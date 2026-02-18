@@ -1,4 +1,4 @@
-//! Per-account brute-force protection for login attempts.
+//! Per-account and per-IP brute-force protection for login attempts.
 //!
 //! Tracks failed login attempts per username in Redis (with in-memory fallback)
 //! and enforces exponential lockout after repeated failures:
@@ -7,11 +7,16 @@
 //! - 10 failures: 5 minute lockout
 //! - 15+ failures: 15 minute lockout
 //!
+//! Additionally tracks per-IP failures: 20 failures from a single IP within
+//! 10 minutes triggers an IP-level lockout (10 minutes), preventing distributed
+//! username enumeration attacks.
+//!
 //! The counter auto-expires after 15 minutes of no new failures (Redis TTL).
-//! A successful login resets the counter to zero.
+//! A successful login resets the username counter to zero.
 
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
+use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -39,6 +44,13 @@ const TIER3_LOCKOUT_SECS: u64 = 900; // 15 minutes
 /// After 15 minutes of inactivity, the counter resets automatically.
 const ATTEMPTS_TTL_SECS: u64 = 900;
 
+/// Per-IP failure threshold: 20 failures from the same IP triggers lockout.
+const IP_THRESHOLD: u64 = 20;
+/// Per-IP lockout duration (10 minutes).
+const IP_LOCKOUT_SECS: u64 = 600;
+/// TTL for the per-IP failure counter in Redis (10 minutes).
+const IP_ATTEMPTS_TTL_SECS: u64 = 600;
+
 /// Brute-force protection service
 #[derive(Clone)]
 pub struct BruteForceProtection {
@@ -46,6 +58,8 @@ pub struct BruteForceProtection {
     key_builder: KeyBuilder,
     /// In-memory fallback: username -> (attempt_count, last_attempt_timestamp)
     local_attempts: Arc<moka::future::Cache<String, (u64, i64)>>,
+    /// In-memory fallback for per-IP tracking: ip -> (attempt_count, last_attempt_timestamp)
+    local_ip_attempts: Arc<moka::future::Cache<String, (u64, i64)>>,
 }
 
 impl std::fmt::Debug for BruteForceProtection {
@@ -70,19 +84,47 @@ impl BruteForceProtection {
                     .time_to_live(Duration::from_secs(ATTEMPTS_TTL_SECS))
                     .build(),
             ),
+            local_ip_attempts: Arc::new(
+                moka::future::Cache::builder()
+                    .max_capacity(100_000)
+                    .time_to_live(Duration::from_secs(IP_ATTEMPTS_TTL_SECS))
+                    .build(),
+            ),
         }
     }
 
-    /// Check if a login attempt is allowed for the given username.
+    /// Check if a login attempt is allowed for the given username and optional IP.
     ///
     /// Returns `Ok(())` if the attempt is allowed, or an authentication error
-    /// with the remaining lockout duration if the account is locked.
+    /// with the remaining lockout duration if the account or IP is locked.
     ///
     /// The lockout check compares the elapsed time since the last failure against
     /// the lockout duration for the current tier. Once the lockout period has
     /// elapsed, the attempt is allowed even though the failure counter is preserved
     /// (so tier escalation still works on the next failure).
-    pub async fn check_allowed(&self, username: &str) -> Result<()> {
+    pub async fn check_allowed(&self, username: &str, ip: Option<IpAddr>) -> Result<()> {
+        // Check IP-level lockout first
+        if let Some(ip_addr) = ip {
+            let (ip_attempts, ip_last_failure_at) = self.get_ip_attempts(&ip_addr).await?;
+            if ip_attempts >= IP_THRESHOLD {
+                let now = chrono::Utc::now().timestamp();
+                let elapsed = (now - ip_last_failure_at).max(0) as u64;
+                if elapsed < IP_LOCKOUT_SECS {
+                    let remaining = IP_LOCKOUT_SECS - elapsed;
+                    tracing::warn!(
+                        ip = %ip_addr,
+                        attempts = ip_attempts,
+                        remaining_secs = remaining,
+                        "Login attempt blocked: IP temporarily locked"
+                    );
+                    return Err(Error::Authentication(format!(
+                        "Too many failed login attempts. Please try again in {remaining} seconds.",
+                    )));
+                }
+            }
+        }
+
+        // Check per-username lockout
         let (attempts, last_failure_at) = self.get_attempts(username).await?;
         if let Some(lockout_secs) = Self::lockout_duration(attempts) {
             let now = chrono::Utc::now().timestamp();
@@ -97,8 +139,7 @@ impl BruteForceProtection {
                     "Login attempt blocked: account temporarily locked"
                 );
                 return Err(Error::Authentication(format!(
-                    "Too many failed login attempts. Please try again in {} seconds.",
-                    remaining
+                    "Too many failed login attempts. Please try again in {remaining} seconds.",
                 )));
             }
         }
@@ -107,7 +148,17 @@ impl BruteForceProtection {
 
     /// Record a failed login attempt. Increments the counter, stores the
     /// last-failure timestamp, and sets/refreshes the Redis TTL.
-    pub async fn record_failure(&self, username: &str) -> Result<()> {
+    /// Also records the failure against the IP address if provided.
+    pub async fn record_failure(&self, username: &str, ip: Option<IpAddr>) -> Result<()> {
+        // Record IP-level failure
+        if let Some(ip_addr) = ip {
+            self.record_ip_failure(&ip_addr).await?;
+        }
+        self.record_username_failure(username).await
+    }
+
+    /// Record a failed login attempt for a specific username.
+    async fn record_username_failure(&self, username: &str) -> Result<()> {
         let now = chrono::Utc::now().timestamp();
 
         if let Some(ref conn) = self.redis_conn {
@@ -197,6 +248,121 @@ impl BruteForceProtection {
         }
 
         Ok(())
+    }
+
+    /// Record a failed login attempt for a specific IP address.
+    async fn record_ip_failure(&self, ip: &IpAddr) -> Result<()> {
+        let now = chrono::Utc::now().timestamp();
+        let ip_str = ip.to_string();
+
+        if let Some(ref conn) = self.redis_conn {
+            let mut conn = conn.clone();
+            let key = self.key_builder.login_attempts_ip(&ip_str);
+
+            let script = redis::Script::new(
+                r#"
+                local raw = redis.call('GET', KEYS[1])
+                local count = 0
+                if raw then
+                    local ok, state = pcall(cjson.decode, raw)
+                    if ok and state and state.count then
+                        count = tonumber(state.count) or 0
+                    end
+                end
+                count = count + 1
+                local new_state = cjson.encode({count = count, last_failure_at = tonumber(ARGV[1])})
+                redis.call('SET', KEYS[1], new_state, 'EX', tonumber(ARGV[2]))
+                return count
+                "#,
+            );
+
+            let result: std::result::Result<u64, _> = tokio::time::timeout(
+                REDIS_OPERATION_TIMEOUT,
+                script
+                    .key(&key)
+                    .arg(now)
+                    .arg(IP_ATTEMPTS_TTL_SECS as i64)
+                    .invoke_async(&mut conn),
+            )
+                .await
+                .unwrap_or_else(|_| Err(redis::RedisError::from((
+                    redis::ErrorKind::Io,
+                    "Redis timeout: record_ip_failure",
+                ))));
+
+            match result {
+                Ok(count) => {
+                    tracing::debug!(
+                        ip = %ip,
+                        attempts = count,
+                        "Recorded failed login attempt for IP"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        ip = %ip,
+                        error = %e,
+                        "Redis error in record_ip_failure, falling back to in-memory tracking"
+                    );
+                    let (count, _) = self.local_ip_attempts.get(&key).await.unwrap_or((0, now));
+                    self.local_ip_attempts.insert(key, (count + 1, now)).await;
+                }
+            }
+        } else {
+            let key = self.key_builder.login_attempts_ip(&ip_str);
+            let (count, _) = self.local_ip_attempts.get(&key).await.unwrap_or((0, now));
+            self.local_ip_attempts.insert(key, (count + 1, now)).await;
+        }
+
+        Ok(())
+    }
+
+    /// Get the current failed attempt count and last-failure timestamp for an IP address.
+    async fn get_ip_attempts(&self, ip: &IpAddr) -> Result<(u64, i64)> {
+        let ip_str = ip.to_string();
+        let key = self.key_builder.login_attempts_ip(&ip_str);
+
+        if let Some(ref conn) = self.redis_conn {
+            let mut conn = conn.clone();
+
+            let redis_result = tokio::time::timeout(
+                REDIS_OPERATION_TIMEOUT,
+                conn.get::<_, Option<String>>(&key),
+            )
+                .await;
+
+            let redis_result = match redis_result {
+                Ok(inner) => inner,
+                Err(_) => {
+                    tracing::warn!(
+                        ip = %ip,
+                        "Redis timeout in IP brute-force check, falling back to in-memory cache"
+                    );
+                    let (count, ts) = self.local_ip_attempts.get(&key).await.unwrap_or((0, 0));
+                    return Ok((count, ts));
+                }
+            };
+
+            match redis_result {
+                Ok(Some(raw)) => {
+                    if let Ok(state) = serde_json::from_str::<BruteForceState>(&raw) {
+                        return Ok((state.count, state.last_failure_at));
+                    }
+                    return Ok((0, 0));
+                }
+                Ok(None) => return Ok((0, 0)),
+                Err(e) => {
+                    tracing::warn!(
+                        ip = %ip,
+                        error = %e,
+                        "Redis error in IP brute-force check, falling back to in-memory cache"
+                    );
+                }
+            }
+        }
+
+        let (count, ts) = self.local_ip_attempts.get(&key).await.unwrap_or((0, 0));
+        Ok((count, ts))
     }
 
     /// Get the current failed attempt count and last-failure timestamp for a username.
@@ -311,17 +477,17 @@ mod tests {
         let service = BruteForceProtection::new(None, "test".to_string());
 
         // Initially allowed
-        assert!(service.check_allowed("testuser").await.is_ok());
+        assert!(service.check_allowed("testuser", None).await.is_ok());
 
         // Record 4 failures - still allowed
         for _ in 0..4 {
-            service.record_failure("testuser").await.unwrap();
+            service.record_failure("testuser", None).await.unwrap();
         }
-        assert!(service.check_allowed("testuser").await.is_ok());
+        assert!(service.check_allowed("testuser", None).await.is_ok());
 
         // 5th failure triggers lockout
-        service.record_failure("testuser").await.unwrap();
-        assert!(service.check_allowed("testuser").await.is_err());
+        service.record_failure("testuser", None).await.unwrap();
+        assert!(service.check_allowed("testuser", None).await.is_err());
     }
 
     #[tokio::test]
@@ -330,13 +496,13 @@ mod tests {
 
         // Record 5 failures
         for _ in 0..5 {
-            service.record_failure("testuser").await.unwrap();
+            service.record_failure("testuser", None).await.unwrap();
         }
-        assert!(service.check_allowed("testuser").await.is_err());
+        assert!(service.check_allowed("testuser", None).await.is_err());
 
         // Reset on successful login
         service.reset("testuser").await.unwrap();
-        assert!(service.check_allowed("testuser").await.is_ok());
+        assert!(service.check_allowed("testuser", None).await.is_ok());
     }
 
     #[tokio::test]
@@ -345,12 +511,12 @@ mod tests {
 
         // Lock out user_a
         for _ in 0..5 {
-            service.record_failure("user_a").await.unwrap();
+            service.record_failure("user_a", None).await.unwrap();
         }
-        assert!(service.check_allowed("user_a").await.is_err());
+        assert!(service.check_allowed("user_a", None).await.is_err());
 
         // user_b should be unaffected
-        assert!(service.check_allowed("user_b").await.is_ok());
+        assert!(service.check_allowed("user_b", None).await.is_ok());
     }
 
     #[tokio::test]
@@ -359,23 +525,43 @@ mod tests {
 
         // 5 failures -> tier 1 lockout (60s)
         for _ in 0..5 {
-            service.record_failure("testuser").await.unwrap();
+            service.record_failure("testuser", None).await.unwrap();
         }
-        let err = service.check_allowed("testuser").await.unwrap_err();
+        let err = service.check_allowed("testuser", None).await.unwrap_err();
         assert!(err.to_string().contains("60 seconds"));
 
         // 5 more failures -> tier 2 lockout (300s)
         for _ in 0..5 {
-            service.record_failure("testuser").await.unwrap();
+            service.record_failure("testuser", None).await.unwrap();
         }
-        let err = service.check_allowed("testuser").await.unwrap_err();
+        let err = service.check_allowed("testuser", None).await.unwrap_err();
         assert!(err.to_string().contains("300 seconds"));
 
         // 5 more failures -> tier 3 lockout (900s)
         for _ in 0..5 {
-            service.record_failure("testuser").await.unwrap();
+            service.record_failure("testuser", None).await.unwrap();
         }
-        let err = service.check_allowed("testuser").await.unwrap_err();
+        let err = service.check_allowed("testuser", None).await.unwrap_err();
         assert!(err.to_string().contains("900 seconds"));
+    }
+
+    #[tokio::test]
+    async fn test_ip_lockout() {
+        let service = BruteForceProtection::new(None, "test".to_string());
+        let ip: IpAddr = "192.168.1.100".parse().unwrap();
+
+        // Record 19 failures from the same IP across different usernames - still allowed
+        for i in 0..19 {
+            service.record_failure(&format!("user_{i}"), Some(ip)).await.unwrap();
+        }
+        assert!(service.check_allowed("any_user", Some(ip)).await.is_ok());
+
+        // 20th failure triggers IP lockout
+        service.record_failure("user_19", Some(ip)).await.unwrap();
+        assert!(service.check_allowed("any_user", Some(ip)).await.is_err());
+
+        // Different IP should still be allowed
+        let other_ip: IpAddr = "10.0.0.1".parse().unwrap();
+        assert!(service.check_allowed("any_user", Some(other_ip)).await.is_ok());
     }
 }

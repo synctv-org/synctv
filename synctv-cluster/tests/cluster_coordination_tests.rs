@@ -9,9 +9,9 @@ use synctv_cluster::discovery::{NodeInfo, NodeRegistry, HealthMonitor, NodeHealt
 use std::collections::HashSet;
 use std::sync::Arc;
 
-/// Helper: create a local-mode NodeRegistry (no Redis required)
+/// Helper: create a NodeRegistry (redis::Client::open succeeds without a running server)
 fn make_registry(node_id: &str) -> Arc<NodeRegistry> {
-    Arc::new(NodeRegistry::new(None, node_id.to_string(), 30, "test:").unwrap())
+    Arc::new(NodeRegistry::new("redis://localhost:6379".to_string(), node_id.to_string(), 30, "test:").unwrap())
 }
 
 // =====================================================================
@@ -62,9 +62,9 @@ async fn test_node_info_is_stale() {
 #[tokio::test]
 async fn test_node_registry_register_and_get() {
     let registry = make_registry("self");
-    registry.register("localhost:50051".to_string(), "localhost:8080".to_string()).await.unwrap();
+    registry.test_insert_local(NodeInfo::new("self".to_string(), "localhost:50051".to_string(), "localhost:8080".to_string())).await;
 
-    let node = registry.get_node("self").await.unwrap();
+    let node = registry.test_get_local("self").await;
     assert!(node.is_some());
     let node = node.unwrap();
     assert_eq!(node.node_id, "self");
@@ -74,7 +74,7 @@ async fn test_node_registry_register_and_get() {
 #[tokio::test]
 async fn test_node_registry_concurrent_registration() {
     let registry = make_registry("self");
-    registry.register("localhost:50051".to_string(), "localhost:8080".to_string()).await.unwrap();
+    registry.test_insert_local(NodeInfo::new("self".to_string(), "localhost:50051".to_string(), "localhost:8080".to_string())).await;
 
     // Register 9 additional remote nodes concurrently
     let mut handles = vec![];
@@ -86,42 +86,42 @@ async fn test_node_registry_concurrent_registration() {
                 format!("localhost:{}", 50051 + i),
                 format!("localhost:{}", 8080 + i),
             );
-            reg.register_remote(node).await.unwrap();
+            reg.test_insert_local(node).await;
         });
         handles.push(handle);
     }
 
     futures::future::join_all(handles).await;
 
-    let all_nodes = registry.get_all_nodes().await.unwrap();
+    let all_nodes = registry.test_get_all_local().await;
     assert_eq!(all_nodes.len(), 10);
 }
 
 #[tokio::test]
 async fn test_node_registry_unregister() {
     let registry = make_registry("self");
-    registry.register("localhost:50051".to_string(), "localhost:8080".to_string()).await.unwrap();
+    registry.test_insert_local(NodeInfo::new("self".to_string(), "localhost:50051".to_string(), "localhost:8080".to_string())).await;
 
     let remote = NodeInfo::new(
         "remote-1".to_string(),
         "localhost:50052".to_string(),
         "localhost:8081".to_string(),
     );
-    registry.register_remote(remote).await.unwrap();
+    registry.test_insert_local(remote).await;
 
-    assert_eq!(registry.get_all_nodes().await.unwrap().len(), 2);
+    assert_eq!(registry.test_get_all_local().await.len(), 2);
 
     // Unregister the remote node
-    registry.unregister_remote("remote-1", None).await.unwrap();
-    assert_eq!(registry.get_all_nodes().await.unwrap().len(), 1);
+    registry.test_remove_local("remote-1").await;
+    assert_eq!(registry.test_get_all_local().await.len(), 1);
 }
 
 #[tokio::test]
 async fn test_node_registry_get_nonexistent() {
     let registry = make_registry("self");
-    registry.register("localhost:50051".to_string(), "localhost:8080".to_string()).await.unwrap();
+    registry.test_insert_local(NodeInfo::new("self".to_string(), "localhost:50051".to_string(), "localhost:8080".to_string())).await;
 
-    let node = registry.get_node("nonexistent").await.unwrap();
+    let node = registry.test_get_local("nonexistent").await;
     assert!(node.is_none());
 }
 
@@ -142,7 +142,7 @@ async fn test_health_monitor_initial_state() {
 #[tokio::test]
 async fn test_health_monitor_start_and_shutdown() {
     let registry = make_registry("self");
-    registry.register("localhost:50051".to_string(), "localhost:8080".to_string()).await.unwrap();
+    registry.test_insert_local(NodeInfo::new("self".to_string(), "localhost:50051".to_string(), "localhost:8080".to_string())).await;
 
     let monitor = HealthMonitor::new(registry, 60);
     let handle = monitor.start().await.unwrap();
@@ -169,7 +169,7 @@ async fn test_load_balancer_empty_cluster_returns_error() {
 #[tokio::test]
 async fn test_load_balancer_single_node() {
     let registry = make_registry("self");
-    registry.register("localhost:50051".to_string(), "localhost:8080".to_string()).await.unwrap();
+    registry.test_insert_local(NodeInfo::new("self".to_string(), "localhost:50051".to_string(), "localhost:8080".to_string())).await;
 
     let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::Random);
     let node = lb.select_node().await.unwrap();
@@ -179,7 +179,7 @@ async fn test_load_balancer_single_node() {
 #[tokio::test]
 async fn test_load_balancer_round_robin_cycles() {
     let registry = make_registry("self");
-    registry.register("localhost:50051".to_string(), "localhost:8080".to_string()).await.unwrap();
+    registry.test_insert_local(NodeInfo::new("self".to_string(), "localhost:50051".to_string(), "localhost:8080".to_string())).await;
 
     for i in 1..3 {
         let node = NodeInfo::new(
@@ -187,7 +187,7 @@ async fn test_load_balancer_round_robin_cycles() {
             format!("localhost:{}", 50051 + i),
             format!("localhost:{}", 8080 + i),
         );
-        registry.register_remote(node).await.unwrap();
+        registry.test_insert_local(node).await;
     }
 
     let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::RoundRobin);
@@ -213,7 +213,7 @@ async fn test_load_balancer_round_robin_cycles() {
 #[tokio::test]
 async fn test_load_balancer_random_distributes() {
     let registry = make_registry("self");
-    registry.register("localhost:50051".to_string(), "localhost:8080".to_string()).await.unwrap();
+    registry.test_insert_local(NodeInfo::new("self".to_string(), "localhost:50051".to_string(), "localhost:8080".to_string())).await;
 
     for i in 1..5 {
         let node = NodeInfo::new(
@@ -221,7 +221,7 @@ async fn test_load_balancer_random_distributes() {
             format!("localhost:{}", 50051 + i),
             format!("localhost:{}", 8080 + i),
         );
-        registry.register_remote(node).await.unwrap();
+        registry.test_insert_local(node).await;
     }
 
     let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::Random);
@@ -237,14 +237,14 @@ async fn test_load_balancer_random_distributes() {
 #[tokio::test]
 async fn test_load_balancer_with_health_monitor_no_status() {
     let registry = make_registry("self");
-    registry.register("localhost:50051".to_string(), "localhost:8080".to_string()).await.unwrap();
+    registry.test_insert_local(NodeInfo::new("self".to_string(), "localhost:50051".to_string(), "localhost:8080".to_string())).await;
 
     let remote = NodeInfo::new(
         "node-1".to_string(),
         "localhost:50052".to_string(),
         "localhost:8081".to_string(),
     );
-    registry.register_remote(remote).await.unwrap();
+    registry.test_insert_local(remote).await;
 
     // Monitor has no statuses yet -- all nodes should be available
     let monitor = Arc::new(HealthMonitor::new(Arc::clone(&registry), 60));
@@ -258,7 +258,7 @@ async fn test_load_balancer_with_health_monitor_no_status() {
 #[tokio::test]
 async fn test_load_balancer_available_count() {
     let registry = make_registry("self");
-    registry.register("localhost:50051".to_string(), "localhost:8080".to_string()).await.unwrap();
+    registry.test_insert_local(NodeInfo::new("self".to_string(), "localhost:50051".to_string(), "localhost:8080".to_string())).await;
 
     for i in 1..4 {
         let node = NodeInfo::new(
@@ -266,7 +266,7 @@ async fn test_load_balancer_available_count() {
             format!("localhost:{}", 50051 + i),
             format!("localhost:{}", 8080 + i),
         );
-        registry.register_remote(node).await.unwrap();
+        registry.test_insert_local(node).await;
     }
 
     let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::Random);
@@ -276,7 +276,7 @@ async fn test_load_balancer_available_count() {
 #[tokio::test]
 async fn test_load_balancer_select_by_id() {
     let registry = make_registry("self");
-    registry.register("localhost:50051".to_string(), "localhost:8080".to_string()).await.unwrap();
+    registry.test_insert_local(NodeInfo::new("self".to_string(), "localhost:50051".to_string(), "localhost:8080".to_string())).await;
 
     let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::Random);
 

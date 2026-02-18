@@ -19,5 +19,3 @@ tokio = { workspace = true, features = ["time"] }
 tracing.workspace = true
 synctv-proto.workspace = true
 synctv-media-providers.workspace = true
-governor.workspace = true
-nonzero_ext.workspace = true

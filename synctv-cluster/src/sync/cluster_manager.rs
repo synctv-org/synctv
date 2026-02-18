@@ -118,7 +118,7 @@ impl ClusterManager {
             config.cleanup_interval,
         ));
 
-        let (admin_event_tx, _) = broadcast::channel(256);
+        let (admin_event_tx, _) = broadcast::channel(4096);
 
         // Start Redis pub/sub if Redis URL is provided
         let (redis_publish_tx, redis_critical_tx, redis_pubsub) = if config.redis_url.is_empty() {

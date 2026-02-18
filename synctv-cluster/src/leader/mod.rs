@@ -114,44 +114,15 @@ impl AnyLeaderElector {
         }
     }
 
-    /// Create a fencing guard that is automatically cancelled when leadership is lost.
-    ///
-    /// Returns a `CancellationToken` that singleton tasks should use as their
-    /// cancellation signal. When this node loses leadership (receives a `Lost`
-    /// event), the token is cancelled, causing the singleton task to stop.
-    ///
-    /// This prevents split-brain scenarios where a demoted leader continues
-    /// running singleton tasks that should only execute on the current leader.
-    #[must_use]
-    pub fn leader_guard(&self) -> CancellationToken {
-        let token = CancellationToken::new();
-        let token_clone = token.clone();
-        let mut rx = self.subscribe();
-        tokio::spawn(async move {
-            loop {
-                match rx.recv().await {
-                    Ok(LeadershipEvent::Lost) => {
-                        token_clone.cancel();
-                        break;
-                    }
-                    Ok(LeadershipEvent::Gained { .. }) => {
-                        // Still leader or re-elected, continue watching
-                    }
-                    Err(broadcast::error::RecvError::Lagged(_)) => {
-                        // Missed events; check current state is ambiguous,
-                        // so cancel to be safe (singleton will restart on next election)
-                        token_clone.cancel();
-                        break;
-                    }
-                    Err(broadcast::error::RecvError::Closed) => {
-                        // Channel closed (elector dropped), cancel the guard
-                        token_clone.cancel();
-                        break;
-                    }
-                }
-            }
-        });
-        token
+}
+
+impl LeaderElect for AnyLeaderElector {
+    fn subscribe(&self) -> broadcast::Receiver<LeadershipEvent> {
+        match self {
+            AnyLeaderElector::Redis(e) => e.event_tx.subscribe(),
+            #[cfg(feature = "k8s")]
+            AnyLeaderElector::K8s(e) => e.subscribe(),
+        }
     }
 }
 
@@ -178,6 +149,56 @@ pub enum LeadershipEvent {
     Gained { epoch: u64 },
     /// This node lost leadership.
     Lost,
+}
+
+/// Trait for types that participate in leader election.
+///
+/// Provides a default [`leader_guard`](Self::leader_guard) implementation
+/// built on top of [`subscribe`](Self::subscribe), eliminating duplicated
+/// fencing-guard logic across each concrete elector.
+pub trait LeaderElect {
+    /// Subscribe to leadership change events.
+    fn subscribe(&self) -> broadcast::Receiver<LeadershipEvent>;
+
+    /// Create a fencing guard that is automatically cancelled when leadership is lost.
+    ///
+    /// Returns a `CancellationToken` that singleton tasks should use as their
+    /// cancellation signal. When this node loses leadership (receives a `Lost`
+    /// event), the token is cancelled, causing the singleton task to stop.
+    ///
+    /// This prevents split-brain scenarios where a demoted leader continues
+    /// running singleton tasks that should only execute on the current leader.
+    #[must_use]
+    fn leader_guard(&self) -> CancellationToken {
+        let token = CancellationToken::new();
+        let token_clone = token.clone();
+        let mut rx = self.subscribe();
+        tokio::spawn(async move {
+            loop {
+                match rx.recv().await {
+                    Ok(LeadershipEvent::Lost) => {
+                        token_clone.cancel();
+                        break;
+                    }
+                    Ok(LeadershipEvent::Gained { .. }) => {
+                        // Still leader or re-elected, continue watching
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        // Missed events; cancel to be safe (singleton will restart
+                        // on next election).
+                        token_clone.cancel();
+                        break;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        // Channel closed (elector dropped), cancel the guard
+                        token_clone.cancel();
+                        break;
+                    }
+                }
+            }
+        });
+        token
+    }
 }
 
 /// Default Redis key for leader election lock (used when no prefix is configured).
@@ -344,43 +365,6 @@ impl LeaderElector {
         &self.identity
     }
 
-    /// Create a fencing guard that is automatically cancelled when leadership is lost.
-    ///
-    /// Returns a `CancellationToken` that singleton tasks should use as their
-    /// cancellation signal. When this node loses leadership (receives a `Lost`
-    /// event), the token is cancelled, causing the singleton task to stop.
-    ///
-    /// This prevents split-brain scenarios where a demoted leader continues
-    /// running singleton tasks that should only execute on the current leader.
-    #[must_use]
-    pub fn leader_guard(&self) -> CancellationToken {
-        let token = CancellationToken::new();
-        let token_clone = token.clone();
-        let mut rx = self.subscribe();
-        tokio::spawn(async move {
-            loop {
-                match rx.recv().await {
-                    Ok(LeadershipEvent::Lost) => {
-                        token_clone.cancel();
-                        break;
-                    }
-                    Ok(LeadershipEvent::Gained { .. }) => {
-                        // Still leader or re-elected, continue watching
-                    }
-                    Err(broadcast::error::RecvError::Lagged(_)) => {
-                        token_clone.cancel();
-                        break;
-                    }
-                    Err(broadcast::error::RecvError::Closed) => {
-                        token_clone.cancel();
-                        break;
-                    }
-                }
-            }
-        });
-        token
-    }
-
     /// Start the leader election loop.
     ///
     /// This spawns a background task that continuously tries to acquire or
@@ -539,6 +523,12 @@ impl LeaderElector {
                 let _ = self.event_tx.send(LeadershipEvent::Gained { epoch });
             }
         }
+    }
+}
+
+impl LeaderElect for LeaderElector {
+    fn subscribe(&self) -> broadcast::Receiver<LeadershipEvent> {
+        self.event_tx.subscribe()
     }
 }
 

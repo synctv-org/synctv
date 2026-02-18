@@ -4,7 +4,6 @@
 //! playlists.  Used by per-provider proxy routes in `synctv-api`.
 
 use std::collections::HashMap;
-use std::num::NonZeroU32;
 use std::sync::LazyLock;
 use std::time::Duration;
 
@@ -13,8 +12,6 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
-use governor::{clock::Clock, DefaultKeyedRateLimiter, Quota, RateLimiter as GovernorRateLimiter};
-use nonzero_ext::nonzero;
 use synctv_media_providers::ssrf;
 
 /// Maximum response body size for proxied media (256 MB).
@@ -62,76 +59,6 @@ static PROXY_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
             panic!("Failed to build shared proxy HTTP client: {e}")
         })
 });
-
-// ------------------------------------------------------------------
-// Proxy rate limiting
-// ------------------------------------------------------------------
-
-/// Maximum proxy stream requests per IP: 60 per minute.
-const PROXY_RATE_LIMIT_PER_MIN: u32 = 60;
-
-/// Rate limit window in seconds.
-const PROXY_RATE_LIMIT_WINDOW_SECS: u64 = 60;
-
-/// In-memory rate limiter for proxy endpoints, keyed by caller-provided string
-/// (typically the client IP address). Uses the GCRA algorithm via `governor`.
-///
-/// NOTE: This is a local (in-process) rate limiter and does NOT provide
-/// distributed rate limiting across multiple replicas. For multi-replica
-/// deployments, use [`DistributedRateLimiter`] backed by Redis.
-static PROXY_RATE_LIMITER: LazyLock<DefaultKeyedRateLimiter<String>> = LazyLock::new(|| {
-    let period = Duration::from_secs(PROXY_RATE_LIMIT_WINDOW_SECS)
-        .checked_div(PROXY_RATE_LIMIT_PER_MIN)
-        .unwrap_or(Duration::from_millis(1));
-    let quota = Quota::with_period(period)
-        .expect("non-zero period")
-        .allow_burst(
-            NonZeroU32::new(PROXY_RATE_LIMIT_PER_MIN).unwrap_or(nonzero!(1u32)),
-        );
-    GovernorRateLimiter::keyed(quota)
-});
-
-/// Abstraction over rate limiting backends.
-///
-/// Implementations can use in-process `governor` (single-replica) or
-/// Redis-backed distributed rate limiting (multi-replica).
-pub trait ProxyRateLimiter: Send + Sync {
-    /// Check if the request is allowed. Returns `Ok(())` if allowed,
-    /// or an error `Response` with 429 status if rate-limited.
-    fn check(&self, key: &str) -> Result<(), Response>;
-}
-
-/// In-process rate limiter using `governor`. Suitable for single-replica deployments.
-pub struct LocalRateLimiter;
-
-impl ProxyRateLimiter for LocalRateLimiter {
-    fn check(&self, key: &str) -> Result<(), Response> {
-        check_proxy_rate_limit(key)
-    }
-}
-
-/// Check the proxy rate limit for `key` (typically a client IP).
-///
-/// Returns `Ok(())` if the request is allowed, or an error `Response` with
-/// `429 Too Many Requests` if the rate limit is exceeded.
-///
-/// This uses the in-process `governor` rate limiter. For distributed rate
-/// limiting, implement [`ProxyRateLimiter`] with a Redis backend.
-pub fn check_proxy_rate_limit(key: &str) -> Result<(), Response> {
-    match PROXY_RATE_LIMITER.check_key(&key.to_string()) {
-        Ok(_) => Ok(()),
-        Err(not_until) => {
-            let wait = not_until
-                .wait_time_from(governor::clock::DefaultClock::default().now());
-            let retry_after = wait.as_secs().max(1);
-            Err(Response::builder()
-                .status(StatusCode::TOO_MANY_REQUESTS)
-                .header("Retry-After", retry_after.to_string())
-                .body(Body::from("Rate limit exceeded for proxy endpoint"))
-                .expect("valid response"))
-        }
-    }
-}
 
 /// Configuration for a single proxy fetch.
 pub struct ProxyConfig<'a> {
@@ -721,59 +648,6 @@ mod tests {
         assert!(
             headers.get("Access-Control-Max-Age").is_some(),
             "OPTIONS preflight should include Access-Control-Max-Age for caching"
-        );
-    }
-
-    // ------------------------------------------------------------------
-    // P-02: Proxy rate limiting
-    // ------------------------------------------------------------------
-
-    #[test]
-    fn test_rate_limiter_allows_burst() {
-        let key = "test-ip-burst";
-        // Should allow up to PROXY_RATE_LIMIT_PER_MIN requests in a burst
-        for i in 0..PROXY_RATE_LIMIT_PER_MIN {
-            assert!(
-                check_proxy_rate_limit(key).is_ok(),
-                "Request {i} within burst should be allowed"
-            );
-        }
-    }
-
-    #[test]
-    fn test_rate_limiter_rejects_over_limit() {
-        let key = "test-ip-over-limit";
-        // Exhaust the burst
-        for _ in 0..PROXY_RATE_LIMIT_PER_MIN {
-            let _ = check_proxy_rate_limit(key);
-        }
-        // Next request should be rejected
-        let result = check_proxy_rate_limit(key);
-        assert!(result.is_err(), "Request over burst limit should be rejected");
-
-        let response = result.unwrap_err();
-        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
-        assert!(
-            response.headers().get("Retry-After").is_some(),
-            "429 response must include Retry-After header"
-        );
-    }
-
-    #[test]
-    fn test_rate_limiter_independent_keys() {
-        let key_a = "test-ip-a-independent";
-        let key_b = "test-ip-b-independent";
-
-        // Exhaust key_a
-        for _ in 0..PROXY_RATE_LIMIT_PER_MIN {
-            let _ = check_proxy_rate_limit(key_a);
-        }
-        assert!(check_proxy_rate_limit(key_a).is_err());
-
-        // key_b should still be allowed
-        assert!(
-            check_proxy_rate_limit(key_b).is_ok(),
-            "Different keys should have independent rate limits"
         );
     }
 

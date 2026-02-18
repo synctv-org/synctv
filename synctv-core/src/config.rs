@@ -84,8 +84,8 @@ pub struct ServerConfig {
     /// Disable the legacy `?token=<jwt>` WebSocket query parameter authentication.
     /// When true, only Authorization header and `?ticket=` are accepted for WebSocket auth.
     /// The `?token=` method is less secure because JWT tokens appear in server logs,
-    /// browser history, and Referer headers. Defaults to false (allowed) for backward
-    /// compatibility; set to true in production to enforce secure auth methods only.
+    /// browser history, and Referer headers. Defaults to true (disabled) for security;
+    /// set to false only if you need backward compatibility with legacy clients.
     pub disable_ws_token_query: bool,
 }
 
@@ -103,7 +103,7 @@ impl Default for ServerConfig {
             cluster_secret: String::new(),
             advertise_host: String::new(),
             shutdown_drain_timeout_seconds: 30,
-            disable_ws_token_query: false,
+            disable_ws_token_query: true,
         }
     }
 }
@@ -1049,6 +1049,12 @@ pub struct ConnectionLimitsConfig {
 
     /// Maximum connection duration in seconds
     pub max_duration_seconds: u64,
+
+    /// Global per-connection WebSocket message rate limit (messages per second).
+    /// Applies to all message types before per-type rate limiting.
+    /// Prevents abuse from flooding the server with rapid messages.
+    /// Defaults to 50 messages per second.
+    pub ws_message_rate_limit_per_second: u32,
 }
 
 impl Default for ConnectionLimitsConfig {
@@ -1059,6 +1065,7 @@ impl Default for ConnectionLimitsConfig {
             max_total: 10000,
             idle_timeout_seconds: 300, // 5 minutes
             max_duration_seconds: 86400, // 24 hours
+            ws_message_rate_limit_per_second: 50,
         }
     }
 }
@@ -1223,7 +1230,7 @@ mod tests {
                 cluster_secret: String::new(),
                 advertise_host: String::new(),
                 shutdown_drain_timeout_seconds: 30,
-                disable_ws_token_query: false,
+                disable_ws_token_query: true,
             },
             database: DatabaseConfig::default(),
             redis: RedisConfig::default(),
@@ -1260,7 +1267,7 @@ mod tests {
                 cluster_secret: String::new(),
                 advertise_host: String::new(),
                 shutdown_drain_timeout_seconds: 30,
-                disable_ws_token_query: false,
+                disable_ws_token_query: true,
             },
             database: DatabaseConfig::default(),
             redis: RedisConfig::default(),

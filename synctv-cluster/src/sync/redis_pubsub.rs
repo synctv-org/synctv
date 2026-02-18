@@ -178,7 +178,9 @@ impl RedisPubSub {
 
         /// Maximum number of failed events to buffer for retry after reconnection.
         /// Prevents unbounded memory growth during prolonged Redis outages.
-        const MAX_RETRY_BUFFER: usize = 1000;
+        /// Set to 10000 to reduce the chance of dropping critical events during
+        /// sustained outages.
+        const MAX_RETRY_BUFFER: usize = 10000;
 
         // Spawn task to handle publishing with reconnection logic
         tokio::spawn(async move {
@@ -351,11 +353,24 @@ impl RedisPubSub {
                                 // (connection is broken, no point trying to publish more)
                                 while let Ok(req) = publish_rx.try_recv() {
                                     if retry_buffer.len() >= MAX_RETRY_BUFFER {
-                                        warn!(
-                                            max = MAX_RETRY_BUFFER,
-                                            "Retry buffer full, dropping event: {}",
-                                            req.event.event_type()
-                                        );
+                                        let event_type = req.event.event_type();
+                                        let is_critical = req.event.is_critical();
+                                        if is_critical {
+                                            error!(
+                                                max = MAX_RETRY_BUFFER,
+                                                event_type = event_type,
+                                                "CRITICAL EVENT DROPPED: retry buffer full, dropping critical event"
+                                            );
+                                            synctv_core::metrics::cluster::CLUSTER_EVENTS_DROPPED
+                                                .with_label_values(&["critical_retry_buffer_full"])
+                                                .inc();
+                                        } else {
+                                            warn!(
+                                                max = MAX_RETRY_BUFFER,
+                                                event_type = event_type,
+                                                "Retry buffer full, dropping event"
+                                            );
+                                        }
                                         synctv_core::metrics::cluster::CLUSTER_EVENTS_DROPPED
                                             .with_label_values(&["retry_buffer_full"])
                                             .inc();

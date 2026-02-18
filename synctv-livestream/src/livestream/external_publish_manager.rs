@@ -135,20 +135,27 @@ impl ExternalPublishManager {
             self.http_client.clone(),
         ));
 
-        // Start the puller (pushes frames into local StreamHub)
-        stream.start().await?;
-
-        // Register as publisher in Redis so other nodes can discover this stream
+        // Register as publisher in Redis FIRST so other nodes can discover this stream.
+        // If registration fails, don't start the stream at all to avoid orphaned frames.
         if let Err(e) = self
             .registry
             .try_register_publisher(room_id, media_id, &self.local_node_id, "external_puller", "")
             .await
         {
-            error!("Failed to register external publisher in Redis, rolling back: {e}");
-            stream.stop().await.ok();
+            error!("Failed to register external publisher in Redis: {e}");
             return Err(crate::error::StreamError::RegistryError(
                 format!("Failed to register publisher in Redis: {e}"),
             ));
+        }
+
+        // Start the puller (pushes frames into local StreamHub)
+        if let Err(e) = stream.start().await {
+            error!("Failed to start external stream after registration, unregistering: {e}");
+            // Roll back: unregister from Redis since stream didn't start
+            if let Err(unreg_err) = self.registry.unregister_publisher(room_id, media_id).await {
+                warn!("Failed to unregister after stream start failure: {unreg_err}");
+            }
+            return Err(e);
         }
 
         stream.lifecycle().increment_subscriber_count();

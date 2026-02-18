@@ -84,6 +84,8 @@ pub struct StreamMessageHandler {
     rate_limit_config: Arc<RateLimitConfig>,
     content_filter: Arc<ContentFilter>,
     sender: Arc<dyn MessageSender>,
+    /// Global per-connection WebSocket message rate limit (messages per second)
+    ws_message_rate_limit: u32,
 }
 
 impl Clone for StreamMessageHandler {
@@ -100,6 +102,7 @@ impl Clone for StreamMessageHandler {
             rate_limit_config: Arc::clone(&self.rate_limit_config),
             content_filter: Arc::clone(&self.content_filter),
             sender: Arc::clone(&self.sender),
+            ws_message_rate_limit: self.ws_message_rate_limit,
         }
     }
 }
@@ -132,7 +135,15 @@ impl StreamMessageHandler {
             rate_limit_config,
             content_filter,
             sender,
+            ws_message_rate_limit: 50, // default, overridden by with_ws_message_rate_limit()
         }
+    }
+
+    /// Set the per-connection WebSocket message rate limit from config.
+    #[must_use]
+    pub fn with_ws_message_rate_limit(mut self, limit: u32) -> Self {
+        self.ws_message_rate_limit = limit;
+        self
     }
 
     /// Run the complete message loop using unified IO abstraction
@@ -199,9 +210,9 @@ impl StreamMessageHandler {
         heartbeat_interval.tick().await; // Skip the immediate first tick
 
         // Global per-connection message rate limiter (token bucket).
-        // Limits to 50 messages/second to prevent abuse before per-type checks.
+        // Configured via connection_limits.ws_message_rate_limit_per_second.
         // This is local to each connection (no Redis needed).
-        const GLOBAL_MSG_RATE_LIMIT: u32 = 50;
+        let global_msg_rate_limit = self.ws_message_rate_limit;
         let mut global_msg_count: u32 = 0;
         let mut global_msg_window_start = tokio::time::Instant::now();
 
@@ -220,11 +231,12 @@ impl StreamMessageHandler {
                                 global_msg_window_start = now;
                             }
                             global_msg_count += 1;
-                            if global_msg_count > GLOBAL_MSG_RATE_LIMIT {
+                            if global_msg_count > global_msg_rate_limit {
                                 tracing::warn!(
                                     user_id = %self.user_id.as_str(),
                                     room_id = %self.room_id.as_str(),
-                                    "Global WebSocket message rate limit exceeded ({GLOBAL_MSG_RATE_LIMIT}/s), dropping message"
+                                    limit = global_msg_rate_limit,
+                                    "Global WebSocket message rate limit exceeded, dropping message"
                                 );
                                 continue;
                             }

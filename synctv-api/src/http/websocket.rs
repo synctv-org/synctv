@@ -334,7 +334,7 @@ async fn handle_socket(
         rate_limit_config,
         content_filter,
         ws_sender_for_handler,
-    );
+    ).with_ws_message_rate_limit(state.config.connection_limits.ws_message_rate_limit_per_second);
 
     // Split WebSocket into sender and receiver
     let (mut ws_sender_sink, ws_receiver) = socket.split();

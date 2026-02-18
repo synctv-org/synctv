@@ -75,6 +75,8 @@ pub struct Services {
     pub settings_listen_task: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
     /// Audit flush handle for graceful shutdown (flushed before DB pool closure)
     pub audit_flush_handle: Arc<tokio::sync::Mutex<Option<synctv_core::service::AuditFlushHandle>>>,
+    /// Background task JoinHandles to await during graceful shutdown
+    pub background_handles: Arc<tokio::sync::Mutex<Vec<JoinHandle<()>>>>,
 }
 
 /// `SyncTV` server - manages all server components
@@ -320,6 +322,18 @@ impl SyncTvServer {
             info!("Cluster manager shut down");
         }
 
+        // 5.5. Await tracked background tasks
+        {
+            let mut handles = self.services.background_handles.lock().await;
+            if !handles.is_empty() {
+                info!("Waiting for {} background task(s) to finish...", handles.len());
+                for handle in handles.drain(..) {
+                    let _ = handle.await;
+                }
+                info!("Background tasks finished");
+            }
+        }
+
         // 6. Redis publish channel closes when sender is dropped
         if self.services.redis_publish_tx.is_some() {
             info!("Closing Redis publish channel");
@@ -361,18 +375,10 @@ impl SyncTvServer {
     /// Start gRPC server
     async fn start_grpc_server(&self, shutdown_rx: watch::Receiver<bool>) -> anyhow::Result<JoinHandle<()>> {
         let config = self.config.clone();
-        // If no ClusterManager (Redis unavailable), create a default single-node one
-        // so gRPC server can still start without Redis.
-        let cluster_manager = if let Some(cm) = self.services.cluster_manager.clone() {
-            cm
-        } else {
-            warn!("ClusterManager not available, creating default single-node instance for gRPC server");
-            Arc::new(
-                synctv_cluster::sync::ClusterManager::with_defaults()
-                    .await
-                    .map_err(|e| anyhow::anyhow!("Failed to create default ClusterManager: {e}"))?
-            )
-        };
+        // Pass the Option<Arc<ClusterManager>> through directly.
+        // gRPC handlers that require cluster support will return Unavailable
+        // when cluster_manager is None (single-node mode without Redis).
+        let cluster_manager = self.services.cluster_manager.clone();
 
         let services = self.services.clone();
         let handle = tokio::spawn(async move {

@@ -74,7 +74,7 @@ use super::map_api_error;
 pub struct ClientServiceConfig {
     pub user_service: CoreUserService,
     pub room_service: CoreRoomService,
-    pub cluster_manager: Arc<ClusterManager>,
+    pub cluster_manager: Option<Arc<ClusterManager>>,
     pub rate_limiter: RateLimiter,
     pub rate_limit_config: RateLimitConfig,
     pub content_filter: ContentFilter,
@@ -92,7 +92,7 @@ pub struct ClientServiceConfig {
 pub struct ClientServiceImpl {
     user_service: Arc<CoreUserService>,
     room_service: Arc<CoreRoomService>,
-    cluster_manager: Arc<ClusterManager>,
+    cluster_manager: Option<Arc<ClusterManager>>,
     rate_limiter: Arc<RateLimiter>,
     rate_limit_config: Arc<RateLimitConfig>,
     content_filter: Arc<ContentFilter>,
@@ -100,6 +100,7 @@ pub struct ClientServiceImpl {
     email_service: Option<Arc<synctv_core::service::EmailService>>,
     email_token_service: Option<Arc<synctv_core::service::EmailTokenService>>,
     client_api: Arc<crate::impls::ClientApiImpl>,
+    config: Arc<synctv_core::Config>,
 }
 
 impl ClientServiceImpl {
@@ -108,7 +109,7 @@ impl ClientServiceImpl {
     pub fn new(
         user_service: CoreUserService,
         room_service: CoreRoomService,
-        cluster_manager: Arc<ClusterManager>,
+        cluster_manager: Option<Arc<ClusterManager>>,
         rate_limiter: RateLimiter,
         rate_limit_config: RateLimitConfig,
         content_filter: ContentFilter,
@@ -117,7 +118,7 @@ impl ClientServiceImpl {
         email_token_service: Option<Arc<synctv_core::service::EmailTokenService>>,
         _settings_registry: Option<Arc<synctv_core::service::SettingsRegistry>>,
         _providers_manager: Option<Arc<synctv_core::service::ProvidersManager>>,
-        _config: Arc<synctv_core::Config>,
+        config: Arc<synctv_core::Config>,
         client_api: Arc<crate::impls::ClientApiImpl>,
     ) -> Self {
         Self {
@@ -131,6 +132,7 @@ impl ClientServiceImpl {
             email_service,
             email_token_service,
             client_api,
+            config,
         }
     }
 
@@ -148,6 +150,7 @@ impl ClientServiceImpl {
             email_service: config.email_service,
             email_token_service: config.email_token_service,
             client_api: config.client_api,
+            config: config.config,
         }
     }
 
@@ -558,6 +561,12 @@ impl RoomService for ClientServiceImpl {
         // Connection registration is handled by StreamMessageHandler::run()
         // which generates its own connection_id and manages the full lifecycle.
 
+        // ClusterManager is required for real-time messaging; in single-node mode
+        // without Redis, streaming is not supported.
+        let cluster_manager = self.cluster_manager.clone().ok_or_else(|| {
+            Status::unavailable("Real-time messaging requires cluster manager (Redis not configured)")
+        })?;
+
         // Create channel for outgoing messages with bounded capacity to prevent memory exhaustion
         let (outgoing_tx, outgoing_rx) = mpsc::channel::<ServerMessage>(MESSAGE_STREAM_BUFFER_SIZE);
 
@@ -570,13 +579,13 @@ impl RoomService for ClientServiceImpl {
             user_id.clone(),
             username.clone(),
             self.room_service.clone(),
-            self.cluster_manager.clone(),
+            cluster_manager,
             (*self.connection_manager).clone(),
             self.rate_limiter.clone(),
             self.rate_limit_config.clone(),
             self.content_filter.clone(),
             grpc_sender,
-        );
+        ).with_ws_message_rate_limit(self.config.connection_limits.ws_message_rate_limit_per_second);
 
         // Create unified GrpcStreamMessage adapter
         let mut grpc_stream = GrpcStreamMessage {

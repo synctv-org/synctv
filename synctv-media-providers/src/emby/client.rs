@@ -1,10 +1,8 @@
 //! Emby/Jellyfin HTTP Client
 
-use std::num::NonZeroU32;
 use std::sync::LazyLock;
 use std::time::Duration;
 
-use governor::{DefaultKeyedRateLimiter, Quota, RateLimiter};
 use reqwest::{Client, header::{HeaderMap, HeaderValue, CONTENT_TYPE}};
 use serde_json::{json, Value};
 
@@ -12,34 +10,21 @@ use super::error::{EmbyError, check_response, json_with_limit};
 use super::types::{AuthResponse, Item, UserInfo, ItemsResponse, SystemInfo, FsListResponse, PathInfo, PlaybackInfoResponse, default_device_profile};
 use crate::error::with_retry;
 
-/// Default Emby API rate limit: 5 requests per second per host.
-const DEFAULT_RATE_LIMIT_PER_SECOND: u32 = 5;
-
-/// Per-host rate limiter for Emby/Jellyfin requests.
-/// Each Emby/Jellyfin server gets its own independent rate limit bucket so that
-/// requests to one server don't throttle requests to another.
-static PER_HOST_RATE_LIMITER: LazyLock<std::sync::Arc<DefaultKeyedRateLimiter<String>>> = LazyLock::new(|| {
-    let quota = Quota::per_second(
-        NonZeroU32::new(DEFAULT_RATE_LIMIT_PER_SECOND).expect("rate limit must be > 0"),
-    );
-    std::sync::Arc::new(RateLimiter::keyed(quota))
-});
-
 /// URL-encode a string for safe use in query parameters
 fn url_encode(s: &str) -> String {
     url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
 }
 
-/// Validate that an item ID does not contain path traversal or injection characters.
+/// Validate that an item ID contains only safe characters.
 /// Emby/Jellyfin item IDs are typically numeric or alphanumeric UUIDs.
-/// Rejects IDs containing `..`, `/`, `\`, or null bytes.
+/// Uses a whitelist approach: only alphanumeric characters, hyphens, and underscores are allowed.
 fn validate_item_id(id: &str) -> Result<(), EmbyError> {
     if id.is_empty() {
         return Err(EmbyError::InvalidConfig("Item ID must not be empty".to_string()));
     }
-    if id.contains("..") || id.contains('/') || id.contains('\\') || id.contains('\0') {
+    if !id.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
         return Err(EmbyError::InvalidConfig(
-            "Item ID contains invalid characters (path traversal not allowed)".to_string(),
+            "Item ID contains invalid characters (only alphanumeric, hyphens, underscores allowed)".to_string(),
         ));
     }
     Ok(())
@@ -95,12 +80,6 @@ impl EmbyClient {
         })
     }
 
-    /// Wait for the per-host rate limiter before making an API call.
-    /// Each Emby/Jellyfin server host gets its own independent rate limit bucket.
-    async fn wait_for_rate_limit(&self) {
-        PER_HOST_RATE_LIMITER.until_key_ready(&self.host).await;
-    }
-
     /// Set a custom API prefix (e.g., "/emby" or "/jellyfin").
     /// When set, overrides the auto-detection based on hostname.
     pub fn set_api_prefix(&mut self, prefix: impl Into<String>) {
@@ -147,7 +126,7 @@ impl EmbyClient {
 
     /// Login to Emby/Jellyfin server
     pub async fn login(&mut self, username: &str, password: &str) -> Result<(String, String), EmbyError> {
-        self.wait_for_rate_limit().await;
+
         let prefix = self.get_api_prefix();
         let url = format!("{}{}/Users/authenticatebyname", self.host, prefix);
 
@@ -179,7 +158,7 @@ impl EmbyClient {
     /// Get item information
     pub async fn get_item(&self, item_id: &str) -> Result<Item, EmbyError> {
         validate_item_id(item_id)?;
-        self.wait_for_rate_limit().await;
+
         let prefix = self.get_api_prefix();
         let url = format!("{}{}/Users/{}/Items?Ids={}",
             self.host,
@@ -218,7 +197,7 @@ impl EmbyClient {
 
     /// Get current user information
     pub async fn me(&self) -> Result<UserInfo, EmbyError> {
-        self.wait_for_rate_limit().await;
+
         let user_id = self
             .user_id
             .as_ref()
@@ -256,7 +235,7 @@ impl EmbyClient {
         if let Some(pid) = parent_id {
             validate_item_id(pid)?;
         }
-        self.wait_for_rate_limit().await;
+
         let user_id = self
             .user_id
             .as_ref()
@@ -299,7 +278,7 @@ impl EmbyClient {
 
     /// Get system information
     pub async fn get_system_info(&self) -> Result<SystemInfo, EmbyError> {
-        self.wait_for_rate_limit().await;
+
         let prefix = self.get_api_prefix();
         let url = format!("{}{}/System/Info", self.host, prefix);
         let headers = self.build_headers()?;
@@ -334,7 +313,7 @@ impl EmbyClient {
         if let Some(p) = path {
             validate_item_id(p)?;
         }
-        self.wait_for_rate_limit().await;
+
         let user_id = self
             .user_id
             .as_ref()
@@ -412,7 +391,7 @@ impl EmbyClient {
 
     /// Logout
     pub async fn logout(&self) -> Result<(), EmbyError> {
-        self.wait_for_rate_limit().await;
+
         let prefix = self.get_api_prefix();
         let url = format!("{}{}/Sessions/Logout", self.host, prefix);
 
@@ -439,7 +418,7 @@ impl EmbyClient {
         max_streaming_bitrate: Option<i64>,
     ) -> Result<PlaybackInfoResponse, EmbyError> {
         validate_item_id(item_id)?;
-        self.wait_for_rate_limit().await;
+
         let user_id = self
             .user_id
             .as_ref()
@@ -492,7 +471,7 @@ impl EmbyClient {
     /// Delete active encodings
     pub async fn delete_active_encodings(&self, play_session_id: &str) -> Result<(), EmbyError> {
         validate_item_id(play_session_id)?;
-        self.wait_for_rate_limit().await;
+
         let prefix = self.get_api_prefix();
         let url = format!(
             "{}{}/Videos/ActiveEncodings?PlaySessionId={}",
@@ -521,7 +500,7 @@ impl EmbyClient {
         position_ticks: i64,
     ) -> Result<(), EmbyError> {
         validate_item_id(item_id)?;
-        self.wait_for_rate_limit().await;
+
         let prefix = self.get_api_prefix();
         let url = format!("{}{}/Sessions/Playing", self.host, prefix);
 
@@ -557,7 +536,7 @@ impl EmbyClient {
         position_ticks: i64,
     ) -> Result<(), EmbyError> {
         validate_item_id(item_id)?;
-        self.wait_for_rate_limit().await;
+
         let prefix = self.get_api_prefix();
         let url = format!("{}{}/Sessions/Playing/Stopped", self.host, prefix);
 
@@ -591,7 +570,7 @@ impl EmbyClient {
         is_paused: bool,
     ) -> Result<(), EmbyError> {
         validate_item_id(item_id)?;
-        self.wait_for_rate_limit().await;
+
         let prefix = self.get_api_prefix();
         let url = format!("{}{}/Sessions/Playing/Progress", self.host, prefix);
 

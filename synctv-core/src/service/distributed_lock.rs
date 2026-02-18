@@ -292,25 +292,34 @@ impl DistributedLock {
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<T>>,
     {
-        // Try to acquire lock
-        let lock_value = self
-            .acquire(key, ttl_seconds)
-            .await?
-            .ok_or_else(|| Error::Internal(format!("Failed to acquire lock: {key}")))?;
+        // Client-side timeout slightly longer than lock TTL to prevent infinite
+        // waits during Redis partitions. The lock will expire server-side after
+        // ttl_seconds, so we allow ttl + 5s for network round-trips.
+        let client_timeout = std::time::Duration::from_secs(ttl_seconds + 5);
 
-        // Execute operation
-        let result = operation().await;
+        tokio::time::timeout(client_timeout, async {
+            // Try to acquire lock
+            let lock_value = self
+                .acquire(key, ttl_seconds)
+                .await?
+                .ok_or_else(|| Error::Internal(format!("Failed to acquire lock: {key}")))?;
 
-        // Always release lock, even if operation failed
-        if let Err(e) = self.release(key, &lock_value).await {
-            tracing::error!(
-                key = %key,
-                error = %e,
-                "Failed to release lock after operation"
-            );
-        }
+            // Execute operation
+            let result = operation().await;
 
-        result
+            // Always release lock, even if operation failed
+            if let Err(e) = self.release(key, &lock_value).await {
+                tracing::error!(
+                    key = %key,
+                    error = %e,
+                    "Failed to release lock after operation"
+                );
+            }
+
+            result
+        })
+        .await
+        .map_err(|_| Error::Internal(format!("Lock operation timed out for key: {key}")))?
     }
 
     /// Try to acquire a lock and execute an operation
@@ -336,25 +345,31 @@ impl DistributedLock {
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<T>>,
     {
-        // Try to acquire lock
-        let lock_value = match self.acquire(key, ttl_seconds).await? {
-            Some(value) => value,
-            None => return Ok(None), // Lock already held
-        };
+        let client_timeout = std::time::Duration::from_secs(ttl_seconds + 5);
 
-        // Execute operation
-        let result = operation().await;
+        tokio::time::timeout(client_timeout, async {
+            // Try to acquire lock
+            let lock_value = match self.acquire(key, ttl_seconds).await? {
+                Some(value) => value,
+                None => return Ok(None), // Lock already held
+            };
 
-        // Always release lock
-        if let Err(e) = self.release(key, &lock_value).await {
-            tracing::error!(
-                key = %key,
-                error = %e,
-                "Failed to release lock after operation"
-            );
-        }
+            // Execute operation
+            let result = operation().await;
 
-        result.map(Some)
+            // Always release lock
+            if let Err(e) = self.release(key, &lock_value).await {
+                tracing::error!(
+                    key = %key,
+                    error = %e,
+                    "Failed to release lock after operation"
+                );
+            }
+
+            result.map(Some)
+        })
+        .await
+        .map_err(|_| Error::Internal(format!("Lock operation timed out for key: {key}")))?
     }
 
     /// Execute an operation with automatic lock acquisition and release (with fencing token)
@@ -384,25 +399,31 @@ impl DistributedLock {
         F: FnOnce(u64) -> Fut,
         Fut: Future<Output = Result<T>>,
     {
-        // Try to acquire lock with token
-        let (lock_value, fencing_token) = self
-            .acquire_with_token(key, ttl_seconds)
-            .await?
-            .ok_or_else(|| Error::Internal(format!("Failed to acquire lock: {key}")))?;
+        let client_timeout = std::time::Duration::from_secs(ttl_seconds + 5);
 
-        // Execute operation with fencing token
-        let result = operation(fencing_token).await;
+        tokio::time::timeout(client_timeout, async {
+            // Try to acquire lock with token
+            let (lock_value, fencing_token) = self
+                .acquire_with_token(key, ttl_seconds)
+                .await?
+                .ok_or_else(|| Error::Internal(format!("Failed to acquire lock: {key}")))?;
 
-        // Always release lock, even if operation failed
-        if let Err(e) = self.release(key, &lock_value).await {
-            tracing::error!(
-                key = %key,
-                error = %e,
-                "Failed to release lock after operation"
-            );
-        }
+            // Execute operation with fencing token
+            let result = operation(fencing_token).await;
 
-        result
+            // Always release lock, even if operation failed
+            if let Err(e) = self.release(key, &lock_value).await {
+                tracing::error!(
+                    key = %key,
+                    error = %e,
+                    "Failed to release lock after operation"
+                );
+            }
+
+            result
+        })
+        .await
+        .map_err(|_| Error::Internal(format!("Lock operation timed out for key: {key}")))?
     }
 
     /// Try to acquire a lock and execute an operation (with fencing token)
@@ -428,25 +449,31 @@ impl DistributedLock {
         F: FnOnce(u64) -> Fut,
         Fut: Future<Output = Result<T>>,
     {
-        // Try to acquire lock with token
-        let (lock_value, fencing_token) = match self.acquire_with_token(key, ttl_seconds).await? {
-            Some(result) => result,
-            None => return Ok(None), // Lock already held
-        };
+        let client_timeout = std::time::Duration::from_secs(ttl_seconds + 5);
 
-        // Execute operation with fencing token
-        let result = operation(fencing_token).await;
+        tokio::time::timeout(client_timeout, async {
+            // Try to acquire lock with token
+            let (lock_value, fencing_token) = match self.acquire_with_token(key, ttl_seconds).await? {
+                Some(result) => result,
+                None => return Ok(None), // Lock already held
+            };
 
-        // Always release lock
-        if let Err(e) = self.release(key, &lock_value).await {
-            tracing::error!(
-                key = %key,
-                error = %e,
-                "Failed to release lock after operation"
-            );
-        }
+            // Execute operation with fencing token
+            let result = operation(fencing_token).await;
 
-        result.map(Some)
+            // Always release lock
+            if let Err(e) = self.release(key, &lock_value).await {
+                tracing::error!(
+                    key = %key,
+                    error = %e,
+                    "Failed to release lock after operation"
+                );
+            }
+
+            result.map(Some)
+        })
+        .await
+        .map_err(|_| Error::Internal(format!("Lock operation timed out for key: {key}")))?
     }
 
     /// Extend lock TTL (refresh expiration)

@@ -38,8 +38,9 @@ pub struct PlaybackService {
     media_repo: MediaRepository,
     /// Optional notification service for broadcasting to local WebSocket clients
     notification_service: Option<NotificationService>,
-    /// Optional cluster broadcaster for cross-replica sync
-    cluster_broadcaster: Option<Arc<dyn PlaybackBroadcaster>>,
+    /// Optional cluster broadcaster for cross-replica sync (interior mutability
+    /// so the broadcaster can be wired after Arc<RoomService> is already cloned)
+    cluster_broadcaster: Arc<std::sync::RwLock<Option<Arc<dyn PlaybackBroadcaster>>>>,
     /// L1 in-memory cache for playback state, keyed by room_id
     playback_cache: Arc<moka::future::Cache<String, RoomPlaybackState>>,
     /// Optional cache invalidation service for cross-replica cache sync
@@ -75,7 +76,7 @@ impl PlaybackService {
             media_service,
             media_repo,
             notification_service: None,
-            cluster_broadcaster: None,
+            cluster_broadcaster: Arc::new(std::sync::RwLock::new(None)),
             playback_cache: Arc::new(
                 moka::future::CacheBuilder::new(Self::DEFAULT_CACHE_SIZE)
                     .time_to_live(Duration::from_secs(Self::DEFAULT_CACHE_TTL_SECS))
@@ -91,9 +92,10 @@ impl PlaybackService {
         self.notification_service = Some(service);
     }
 
-    /// Set the cluster broadcaster for cross-replica playback state sync
-    pub fn set_cluster_broadcaster(&mut self, broadcaster: Arc<dyn PlaybackBroadcaster>) {
-        self.cluster_broadcaster = Some(broadcaster);
+    /// Set the cluster broadcaster for cross-replica playback state sync.
+    /// Uses interior mutability so this can be called through `Arc<RoomService>`.
+    pub fn set_cluster_broadcaster(&self, broadcaster: Arc<dyn PlaybackBroadcaster>) {
+        *self.cluster_broadcaster.write().unwrap() = Some(broadcaster);
     }
 
     /// Set the cache invalidation service and start listening for cross-replica invalidation.
@@ -179,7 +181,7 @@ impl PlaybackService {
         }
 
         // 2. Broadcast to other cluster replicas
-        if let Some(ref broadcaster) = self.cluster_broadcaster {
+        if let Some(ref broadcaster) = *self.cluster_broadcaster.read().unwrap() {
             broadcaster.broadcast_playback_state(state);
         }
     }

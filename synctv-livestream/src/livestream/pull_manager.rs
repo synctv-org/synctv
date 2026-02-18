@@ -48,7 +48,6 @@ fn extract_address_from_node_id(node_id: &str, grpc_port: u16) -> Option<String>
 pub struct PullStreamManager {
     pool: StreamPool<PullStream>,
     registry: Arc<dyn StreamRegistryTrait>,
-    local_node_id: String,
     stream_hub_event_sender: StreamHubEventSender,
     /// gRPC port used when extracting address from node_id (fallback)
     grpc_port: u16,
@@ -69,10 +68,9 @@ pub struct PullStreamManager {
 impl PullStreamManager {
     pub fn new(
         registry: Arc<dyn StreamRegistryTrait>,
-        local_node_id: String,
         stream_hub_event_sender: StreamHubEventSender,
     ) -> Self {
-        Self::with_timeouts(registry, local_node_id, stream_hub_event_sender, 60, 300)
+        Self::with_timeouts(registry, stream_hub_event_sender, 60, 300)
     }
 
     /// Set the gRPC port used for fallback address extraction from node_id.
@@ -103,7 +101,6 @@ impl PullStreamManager {
 
     pub fn with_timeouts(
         registry: Arc<dyn StreamRegistryTrait>,
-        local_node_id: String,
         stream_hub_event_sender: StreamHubEventSender,
         cleanup_check_interval_secs: u64,
         idle_timeout_secs: u64,
@@ -120,7 +117,6 @@ impl PullStreamManager {
         Self {
             pool,
             registry,
-            local_node_id,
             stream_hub_event_sender,
             grpc_port: DEFAULT_GRPC_PORT,
             connection_pool,
@@ -277,11 +273,9 @@ mod tests {
 
         let manager = PullStreamManager::new(
             registry,
-            "node-1".to_string(),
             stream_hub_event_sender,
         );
 
-        assert_eq!(manager.local_node_id, "node-1");
         assert_eq!(manager.pool.streams.len(), 0);
     }
 

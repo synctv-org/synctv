@@ -25,6 +25,7 @@ pub mod audit_partition_manager;
 pub mod chat_partition_manager;
 pub mod cleanup;
 pub mod credential_encryption;
+pub mod db_maintenance;
 pub mod distributed_lock;
 pub mod email;
 pub mod email_templates;
@@ -65,6 +66,7 @@ pub use chat_partition_manager::{
 };
 pub use cleanup::{CleanupService, CleanupConfig, CleanupResult};
 pub use credential_encryption::CredentialEncryption;
+pub use db_maintenance::DatabaseMaintenanceService;
 pub use distributed_lock::{DistributedLock, LockGuard};
 pub use email::{EmailService, EmailConfig};
 pub use email_templates::{EmailTemplateManager, EmailTemplateType};

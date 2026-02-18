@@ -110,7 +110,6 @@ fn create_test_infrastructure() -> LiveStreamingInfrastructure {
 
     let pull_manager = Arc::new(synctv_livestream::livestream::PullStreamManager::new(
         registry.clone(),
-        "test-node".to_string(),
         event_sender.clone(),
     ));
 

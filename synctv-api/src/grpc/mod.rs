@@ -102,7 +102,7 @@ pub struct GrpcServerConfig<'a> {
     pub jwt_service: JwtService,
     pub user_service: Arc<CoreUserService>,
     pub room_service: Arc<CoreRoomService>,
-    pub cluster_manager: Arc<ClusterManager>,
+    pub cluster_manager: Option<Arc<ClusterManager>>,
     pub redis_publish_tx: Option<tokio::sync::mpsc::Sender<PublishRequest>>,
     pub rate_limiter: RateLimiter,
     pub rate_limit_config: RateLimitConfig,
@@ -178,7 +178,10 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         Arc::try_unwrap(room_service_for_client).unwrap_or_else(|arc| (*arc).clone());
 
     // Extract node_id reference before moving cluster_manager
-    let cluster_node_id = cluster_manager.node_id().to_string();
+    let cluster_node_id = cluster_manager
+        .as_ref()
+        .map(|cm| cm.node_id().to_string())
+        .unwrap_or_else(|| "single-node".to_string());
 
     // Clone connection_manager for later use
     let connection_manager_for_provider = connection_manager.clone();

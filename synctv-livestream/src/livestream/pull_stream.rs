@@ -164,7 +164,12 @@ impl PullStream {
             /// Interval for periodic epoch re-validation during streaming.
             const EPOCH_REVALIDATION_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 
+            /// L-04: Maximum consecutive Redis failures before treating epoch as potentially stale.
+            /// After this many failures, the stream is terminated to avoid running with stale data.
+            const MAX_CONSECUTIVE_EPOCH_FAILURES: u32 = 3;
+
             let mut rebuild_count: u32 = 0;
+            let mut consecutive_epoch_failures: u32 = 0;
             let result = loop {
                 let grpc_puller = GrpcStreamPuller::with_pool(
                     room_id.clone(),
@@ -199,6 +204,8 @@ impl PullStream {
                             epoch_interval.tick().await;
                             match registry.validate_epoch(&room_id, &media_id, epoch).await {
                                 Ok(true) => {
+                                    // L-04: Reset failure counter on success
+                                    consecutive_epoch_failures = 0;
                                     debug!(
                                         "Periodic epoch {} still valid for {}/{}",
                                         epoch, room_id, media_id
@@ -212,10 +219,20 @@ impl PullStream {
                                     return;
                                 }
                                 Err(e) => {
-                                    // Fail open: don't kill the stream for registry errors
+                                    // L-04: Track consecutive failures instead of unconditional fail-open
+                                    consecutive_epoch_failures += 1;
+                                    if consecutive_epoch_failures >= MAX_CONSECUTIVE_EPOCH_FAILURES {
+                                        error!(
+                                            "Epoch validation failed {} consecutive times for {}/{}: {}. \
+                                             Terminating pull stream (publisher may be stale). \
+                                             Stream will reconnect when Redis is available.",
+                                            consecutive_epoch_failures, room_id, media_id, e
+                                        );
+                                        return;
+                                    }
                                     warn!(
-                                        "Periodic epoch re-validation failed for {}/{}: {}. Continuing.",
-                                        room_id, media_id, e
+                                        "Periodic epoch re-validation failed for {}/{}: {} ({}/{} consecutive failures). Continuing.",
+                                        room_id, media_id, e, consecutive_epoch_failures, MAX_CONSECUTIVE_EPOCH_FAILURES
                                     );
                                 }
                             }
@@ -276,6 +293,8 @@ impl PullStream {
                         // during the network disruption.
                         match registry.validate_epoch(&room_id, &media_id, epoch).await {
                             Ok(true) => {
+                                // L-04: Reset failure counter on success
+                                consecutive_epoch_failures = 0;
                                 debug!(
                                     "Epoch {} still valid on reconnect for {}/{}",
                                     epoch, room_id, media_id
@@ -292,10 +311,23 @@ impl PullStream {
                                 ));
                             }
                             Err(e) => {
-                                // Fail open: continue reconnect if registry is unreachable
+                                // L-04: Track consecutive failures instead of unconditional fail-open
+                                consecutive_epoch_failures += 1;
+                                if consecutive_epoch_failures >= MAX_CONSECUTIVE_EPOCH_FAILURES {
+                                    error!(
+                                        "Epoch validation on reconnect failed {} consecutive times for {}/{}: {}. \
+                                         Terminating pull stream (publisher may be stale). \
+                                         Stream will reconnect when Redis is available.",
+                                        consecutive_epoch_failures, room_id, media_id, e
+                                    );
+                                    break Err(anyhow::anyhow!(
+                                        "Epoch validation unreachable after {} consecutive failures for {} / {}",
+                                        consecutive_epoch_failures, room_id, media_id
+                                    ));
+                                }
                                 warn!(
-                                    "Failed to validate epoch on reconnect for {}/{}: {}. Continuing optimistically.",
-                                    room_id, media_id, e
+                                    "Failed to validate epoch on reconnect for {}/{}: {} ({}/{} consecutive failures). Continuing.",
+                                    room_id, media_id, e, consecutive_epoch_failures, MAX_CONSECUTIVE_EPOCH_FAILURES
                                 );
                             }
                         }

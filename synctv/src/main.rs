@@ -17,7 +17,7 @@ use synctv_cluster::sync::{ConnectionManager, ConnectionLimits, ClusterManager, 
 use synctv_cluster::discovery::{NodeRegistry, HealthMonitor, LoadBalancer, LoadBalancingStrategy};
 #[cfg(feature = "k8s")]
 use synctv_cluster::discovery::K8sDnsDiscovery;
-use synctv_cluster::leader::LeaderElector;
+use synctv_cluster::leader::{LeaderElect, LeaderElector};
 #[cfg(feature = "k8s")]
 use synctv_cluster::leader::{K8sLeaderElector, K8sLeaderElectorConfig};
 
@@ -264,10 +264,10 @@ async fn init_livestream(
     config: &Config,
     synctv_services: &synctv_core::bootstrap::services::Services,
     node_id: &str,
-) -> Result<(Option<server::LivestreamState>, Option<Arc<synctv_livestream::api::LiveStreamingInfrastructure>>)> {
+) -> Result<(Option<server::LivestreamState>, Option<Arc<synctv_livestream::api::LiveStreamingInfrastructure>>, Vec<tokio::task::JoinHandle<()>>)> {
     if config.redis.url.is_empty() {
         info!("Redis not configured, livestream features disabled");
-        return Ok((None, None));
+        return Ok((None, None, Vec::new()));
     }
 
     info!("Initializing livestream infrastructure...");
@@ -276,7 +276,7 @@ async fn init_livestream(
         Ok(c) => c,
         Err(e) => {
             error!("Failed to create Redis client for livestream: {}", e);
-            return Ok((None, None));
+            return Ok((None, None, Vec::new()));
         }
     };
 
@@ -284,7 +284,7 @@ async fn init_livestream(
         Ok(c) => c,
         Err(e) => {
             error!("Failed to connect to Redis for livestream: {}", e);
-            return Ok((None, None));
+            return Ok((None, None, Vec::new()));
         }
     };
 
@@ -299,7 +299,9 @@ async fn init_livestream(
     let (stream_lifecycle_tx, mut stream_lifecycle_rx) =
         tokio::sync::broadcast::channel::<rtmp_auth::StreamLifecycleEvent>(64);
 
-    tokio::spawn(async move {
+    let mut background_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+
+    let lifecycle_handle = tokio::spawn(async move {
         while let Ok(event) = stream_lifecycle_rx.recv().await {
             match event {
                 rtmp_auth::StreamLifecycleEvent::Started { room_id, media_id, user_id } => {
@@ -321,6 +323,7 @@ async fn init_livestream(
             }
         }
     });
+    background_handles.push(lifecycle_handle);
 
     // RTMP auth callback (needs synctv-core services)
     let rtmp_auth: Arc<dyn synctv_livestream::AuthCallback> =
@@ -362,7 +365,7 @@ async fn init_livestream(
     let live_infra = handle.infrastructure.clone();
     let state = Some(server::LivestreamState { handle });
 
-    Ok((state, Some(live_infra)))
+    Ok((state, Some(live_infra), background_handles))
 }
 
 /// Initialize WebRTC components: STUN server.
@@ -496,7 +499,7 @@ async fn main() -> Result<()> {
     );
 
     // 5. Initialize services (needed for settings_registry)
-    let mut synctv_services = init_services(pool.clone(), &config, cache_invalidation_service.clone()).await?;
+    let synctv_services = init_services(pool.clone(), &config, cache_invalidation_service.clone()).await?;
 
     // Start the cache invalidation Redis subscriber (exactly once, after all
     // components have registered their invalidation callbacks via init_services).
@@ -592,6 +595,9 @@ async fn main() -> Result<()> {
     // These tasks check leadership before each run, so only the leader executes them.
     // Additionally, if a leader_guard is available, the tasks are cancelled immediately
     // when leadership is lost (fencing), preventing stale singleton work after demotion.
+    // Track background task JoinHandles for graceful shutdown
+    let mut main_background_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+
     let leader_guard_token = leader_elector.as_ref().map(|e| e.leader_guard());
     let singleton_cancel = match &leader_guard_token {
         Some(guard) => {
@@ -599,10 +605,11 @@ async fn main() -> Result<()> {
             let combined = partition_cancel.clone();
             let guard_clone = guard.clone();
             let combined_clone = combined.clone();
-            tokio::spawn(async move {
+            let guard_handle = tokio::spawn(async move {
                 guard_clone.cancelled().await;
                 combined_clone.cancel();
             });
+            main_background_handles.push(guard_handle);
             combined
         }
         None => partition_cancel.clone(),
@@ -623,10 +630,17 @@ async fn main() -> Result<()> {
     let cleanup_service = synctv_core::service::CleanupService::new(
         pool.clone(),
         synctv_core::service::CleanupConfig::default(),
-        leader_check,
+        leader_check.clone(),
     );
     let _cleanup_task = cleanup_service.start_periodic(24, singleton_cancel.clone());
     info!("Periodic data cleanup started (leader-gated with fencing, interval: 24 hours)");
+
+    let db_maintenance = synctv_core::service::DatabaseMaintenanceService::new(
+        pool.clone(),
+        leader_check,
+    );
+    let _db_maintenance_task = db_maintenance.spawn_maintenance_loop(singleton_cancel.clone());
+    info!("Database maintenance service started (leader-gated: partitions every 12h, cleanups every 1h)");
 
     // 6. Initialize connection manager with configurable limits (needed early for heartbeat loop)
     let connection_limits = ConnectionLimits {
@@ -693,12 +707,9 @@ async fn main() -> Result<()> {
     };
 
     // Wire cluster broadcaster into PlaybackService for cross-replica playback sync.
-    // Arc::get_mut requires exclusive ownership (refcount == 1). This must run
-    // before any code clones synctv_services.room_service.
+    // Uses interior mutability so this works regardless of Arc clone order.
     if let Some(ref cm) = cluster_manager {
-        let room_svc = Arc::get_mut(&mut synctv_services.room_service)
-            .ok_or_else(|| anyhow::anyhow!("BUG: room_service Arc has multiple owners during initialization"))?;
-        room_svc.set_playback_cluster_broadcaster(Arc::new(ClusterPlaybackBroadcaster {
+        synctv_services.room_service.set_playback_cluster_broadcaster(Arc::new(ClusterPlaybackBroadcaster {
             cluster_manager: cm.clone(),
         }));
         info!("PlaybackService wired with cluster broadcaster");
@@ -718,7 +729,7 @@ async fn main() -> Result<()> {
         .and_then(|cm| cm.redis_publish_tx().cloned());
 
     // 9. Initialize livestream components (RTMP server and live streaming infrastructure)
-    let (livestream_state, live_streaming_infrastructure) =
+    let (livestream_state, live_streaming_infrastructure, background_handles) =
         init_livestream(&config, &synctv_services, &node_id).await?;
 
     // 9.5. Initialize WebRTC components (STUN server)
@@ -768,6 +779,11 @@ async fn main() -> Result<()> {
         dns_refresh_abort: dns_refresh_handle.map(|h| h.abort_handle()),
         settings_listen_task: synctv_services.settings_listen_task.clone(),
         audit_flush_handle: synctv_services.audit_flush_handle.clone(),
+        background_handles: {
+            // Merge all tracked background handles for graceful shutdown
+            main_background_handles.extend(background_handles);
+            Arc::new(tokio::sync::Mutex::new(main_background_handles))
+        },
     };
 
     let server = SyncTvServer::new(config, services, livestream_state, pool);

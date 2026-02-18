@@ -924,9 +924,9 @@ impl MemberService {
         room_id: &RoomId,
         admin_id: UserId,
     ) -> Result<Vec<RoomMemberWithUser>> {
-        // Check admin permission
+        // Check admin permission without cache - security-critical operation
         self.permission_service
-            .check_permission(&room_id.clone(), &admin_id, PermissionBits::KICK_USER)
+            .check_permission_no_cache(&room_id.clone(), &admin_id, PermissionBits::KICK_USER)
             .await?;
 
         // Get all members regardless of left_at status

@@ -418,14 +418,21 @@ impl<S: ManagedStream> StreamPool<S> {
                         );
                         stream.lifecycle().restore_running();
 
-                        // Verify we're still in the DashMap. A concurrent viewer may have
-                        // seen us as unhealthy, removed us, and created a replacement.
-                        // If so, exit to avoid leaking this orphaned cleanup task.
-                        if !streams.contains_key(stream_key) {
+                        // L-03: Verify we're still the SAME stream in the DashMap using
+                        // Arc pointer equality. A concurrent viewer may have seen us as
+                        // unhealthy (during mark_stopping), removed us, and created a
+                        // replacement stream. If the stream in the map is a different
+                        // instance, exit to avoid two concurrent streams for the same key.
+                        let is_same_instance = streams
+                            .get(stream_key)
+                            .map_or(false, |map_entry| Arc::ptr_eq(map_entry.value(), stream));
+                        if !is_same_instance {
                             debug!(
-                                "Cleanup exiting for {}: stream replaced by concurrent viewer",
+                                "Cleanup exiting for {}: stream was replaced by concurrent viewer",
                                 stream_key,
                             );
+                            // Undo restore_running since we're the stale instance
+                            stream.lifecycle().mark_stopping();
                             break;
                         }
                         continue;

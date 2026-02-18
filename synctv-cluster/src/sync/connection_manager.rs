@@ -167,6 +167,10 @@ pub struct ConnectionManager {
 
     /// Key prefix for Redis keys (e.g., "synctv:")
     redis_key_prefix: String,
+
+    /// Cancellation token for the auto-spawned TTL refresh task.
+    /// Cancelled on shutdown to stop the background task.
+    ttl_refresh_cancel: Arc<tokio_util::sync::CancellationToken>,
 }
 
 impl ConnectionManager {
@@ -185,6 +189,7 @@ impl ConnectionManager {
             disconnect_tx: Arc::new(disconnect_tx),
             redis_conn: None,
             redis_key_prefix: String::new(),
+            ttl_refresh_cancel: Arc::new(tokio_util::sync::CancellationToken::new()),
         }
     }
 
@@ -192,11 +197,29 @@ impl ConnectionManager {
     ///
     /// When Redis is configured, per-user and per-room connection limits are
     /// enforced across all replicas. Without Redis, limits are per-node only.
+    ///
+    /// Automatically spawns a background TTL refresh task (every 60s) to keep
+    /// Redis connection counters alive for long-lived connections. The task is
+    /// cancelled when `shutdown()` is called.
     #[must_use]
     pub fn with_redis(mut self, conn: redis::aio::ConnectionManager, key_prefix: &str) -> Self {
         self.redis_conn = Some(conn);
         self.redis_key_prefix = key_prefix.to_string();
+
+        // Auto-spawn the TTL refresh task so callers don't need to remember
+        // to call spawn_ttl_refresh_task() manually.
+        let cancel = tokio_util::sync::CancellationToken::new();
+        self.ttl_refresh_cancel = Arc::new(cancel.clone());
+        let _handle = self.spawn_ttl_refresh_task(Duration::from_secs(60), cancel);
+
         self
+    }
+
+    /// Cancel the auto-spawned TTL refresh task.
+    ///
+    /// Should be called during graceful shutdown to stop the background task.
+    pub fn shutdown(&self) {
+        self.ttl_refresh_cancel.cancel();
     }
 
     /// Subscribe to disconnect signals

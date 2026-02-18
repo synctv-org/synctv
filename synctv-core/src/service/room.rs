@@ -120,8 +120,9 @@ impl RoomService {
         self.cache_invalidation = Some(service);
     }
 
-    /// Set the cluster broadcaster on the inner playback service for cross-replica sync
-    pub fn set_playback_cluster_broadcaster(&mut self, broadcaster: Arc<dyn crate::service::PlaybackBroadcaster>) {
+    /// Set the cluster broadcaster on the inner playback service for cross-replica sync.
+    /// Uses interior mutability so this can be called through `Arc<RoomService>`.
+    pub fn set_playback_cluster_broadcaster(&self, broadcaster: Arc<dyn crate::service::PlaybackBroadcaster>) {
         self.playback_service.set_cluster_broadcaster(broadcaster);
     }
 

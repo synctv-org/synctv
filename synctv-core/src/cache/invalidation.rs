@@ -168,14 +168,12 @@ impl CacheInvalidationService {
         // In practice the stream will be empty on first deploy.
         // If the group already exists, BUSYGROUP error is expected and ignored.
         if let Err(e) = self.create_consumer_group().await {
-            // BUSYGROUP = group already exists, which is fine
-            let err_str = format!("{e}");
-            if !err_str.contains("BUSYGROUP") {
-                warn!(
-                    error = %e,
-                    "Failed to create consumer group"
-                );
-            }
+            // create_consumer_group returns Ok(()) if the group was created,
+            // or Ok(()) if BUSYGROUP (already exists). Any error here is unexpected.
+            warn!(
+                error = %e,
+                "Failed to create consumer group"
+            );
         }
 
         let local_sender = self.local_sender.clone();
@@ -217,29 +215,48 @@ impl CacheInvalidationService {
     }
 
     /// Create the consumer group for the invalidation stream
+    ///
+    /// Returns `Ok(())` if the group was created or already exists (BUSYGROUP).
     async fn create_consumer_group(&self) -> Result<()> {
         let mut conn = self.get_conn().await?;
 
         // XGROUP CREATE <stream> <group> 0 MKSTREAM
         // Use "0" to read all existing messages on first start. On reconnection,
         // pending messages are re-read via XREADGROUP ... 0 (catch-up phase).
-        let _: () = redis::cmd("XGROUP")
+        let result: redis::RedisResult<()> = redis::cmd("XGROUP")
             .arg("CREATE")
             .arg(&self.stream_key)
             .arg(&self.consumer_group)
             .arg("0")
             .arg("MKSTREAM")
             .query_async(&mut conn)
-            .await
-            .map_err(|e| Error::Internal(format!("Failed to create consumer group: {e}")))?;
+            .await;
 
-        info!(
-            stream = %self.stream_key,
-            group = %self.consumer_group,
-            "Created consumer group for cache invalidation"
-        );
-
-        Ok(())
+        match result {
+            Ok(()) => {
+                info!(
+                    stream = %self.stream_key,
+                    group = %self.consumer_group,
+                    "Created consumer group for cache invalidation"
+                );
+                Ok(())
+            }
+            Err(e) => {
+                // Use the redis error's code() method to detect BUSYGROUP structurally
+                // rather than string-matching on the formatted error message.
+                // Redis returns "BUSYGROUP" as the error code when the group already exists.
+                if e.code() == Some("BUSYGROUP") {
+                    debug!(
+                        stream = %self.stream_key,
+                        group = %self.consumer_group,
+                        "Consumer group already exists"
+                    );
+                    Ok(())
+                } else {
+                    Err(Error::Internal(format!("Failed to create consumer group: {e}")))
+                }
+            }
+        }
     }
 
     /// Run the Redis subscriber loop using Streams with catch-up on reconnection

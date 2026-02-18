@@ -593,6 +593,9 @@ impl BilibiliClient {
     /// the `Location` header from b23.tv to get the resolved URL.
     /// The resolved URL is validated against SSRF rules before returning.
     pub async fn resolve_short_link(&self, url: &str) -> Result<String, BilibiliError> {
+        // Validate the initial URL before making the HTTP request (SSRF protection)
+        crate::grpc::validation::validate_host_with_dns(url).await
+            .map_err(|e| BilibiliError::InvalidConfig(e.to_string()))?;
         let response = self.client.get(url).send().await?;
         let status = response.status();
 

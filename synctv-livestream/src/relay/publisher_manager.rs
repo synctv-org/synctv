@@ -23,10 +23,13 @@ use tokio::time::{interval, sleep, Duration};
 use tracing::{debug, error, info, trace, warn};
 use dashmap::DashMap;
 
-/// Maximum number of retry attempts for heartbeat failures
+/// Maximum number of retry attempts for heartbeat failures within a single heartbeat cycle
 const MAX_HEARTBEAT_RETRIES: u32 = 3;
 /// Delay between heartbeat retries (exponential backoff base)
 const HEARTBEAT_RETRY_BASE_DELAY_MS: u64 = 100;
+/// Number of consecutive heartbeat *cycles* that must fail before cleaning up a publisher.
+/// This prevents killing active streams during transient Redis maintenance or network issues.
+const MAX_CONSECUTIVE_HEARTBEAT_FAILURES: u32 = 3;
 
 /// Duration after which a publisher that hasn't sent any media data is
 /// considered silent and should be cleaned up (LS-5). This is separate from
@@ -35,17 +38,33 @@ const HEARTBEAT_RETRY_BASE_DELAY_MS: u64 = 100;
 /// encoder, frozen camera).
 const SILENT_PUBLISHER_TIMEOUT_SECS: u64 = 60;
 
-/// Tracked publisher state including activity timestamp.
+/// Tracked publisher state including activity timestamp and registration info.
 struct PublisherEntry {
     /// Unix timestamp (seconds) of last observed data activity.
     /// Updated via `record_publisher_activity` when media frames arrive.
     last_active_secs: AtomicU64,
+    /// Number of consecutive heartbeat cycles where all retries failed.
+    /// Reset to 0 on any successful heartbeat. Only triggers cleanup when
+    /// this reaches `MAX_CONSECUTIVE_HEARTBEAT_FAILURES`.
+    consecutive_heartbeat_failures: std::sync::atomic::AtomicU32,
+    /// User ID from the publisher registration (L-01: for reverse-index TTL refresh).
+    user_id: String,
 }
 
 impl PublisherEntry {
     fn new() -> Self {
         Self {
             last_active_secs: AtomicU64::new(Self::now_secs()),
+            consecutive_heartbeat_failures: std::sync::atomic::AtomicU32::new(0),
+            user_id: String::new(),
+        }
+    }
+
+    fn with_user_id(user_id: String) -> Self {
+        Self {
+            last_active_secs: AtomicU64::new(Self::now_secs()),
+            consecutive_heartbeat_failures: std::sync::atomic::AtomicU32::new(0),
+            user_id,
         }
     }
 
@@ -68,6 +87,8 @@ impl PublisherEntry {
 pub struct PublisherManager {
     registry: Arc<dyn StreamRegistryTrait>,
     local_node_id: String,
+    /// Advertised gRPC address of this node (L-05: used for re-registration after restart).
+    local_grpc_address: String,
     /// Active publishers (composite key -> `PublisherEntry`)
     /// Live streaming is media-level, not room-level
     active_publishers: Arc<DashMap<String, Arc<PublisherEntry>>>,
@@ -89,11 +110,20 @@ impl PublisherManager {
         Self {
             registry,
             local_node_id,
+            local_grpc_address: String::new(),
             active_publishers: Arc::new(DashMap::new()),
             hub_event_sender,
             lag_event_count: AtomicU64::new(0),
             silent_timeout_secs: SILENT_PUBLISHER_TIMEOUT_SECS,
         }
+    }
+
+    /// Set the advertised gRPC address for this node.
+    /// Used during re-registration after StreamHub restart (L-05).
+    #[must_use]
+    pub fn with_grpc_address(mut self, grpc_address: String) -> Self {
+        self.local_grpc_address = grpc_address;
+        self
     }
 
     /// Returns the number of broadcast lag events observed since startup.
@@ -224,12 +254,33 @@ impl PublisherManager {
         );
 
         // Track active publisher with composite key (room_id:media_id)
-        // This publisher has already been registered to Redis in the auth phase
+        // This publisher has already been registered to Redis in the auth phase.
+        // L-01: Query registry to get user_id for heartbeat TTL refresh.
         let publisher_key = format!("{room_id}:{media_id}");
-        self.active_publishers.insert(
-            publisher_key.clone(),
-            Arc::new(PublisherEntry::new()),
-        );
+        let entry = match self.registry.get_publisher(&room_id, &media_id).await {
+            Ok(Some(info)) => {
+                debug!(
+                    "Retrieved publisher info for heartbeat tracking: room={}, media={}, user_id={}",
+                    room_id, media_id, info.user_id
+                );
+                Arc::new(PublisherEntry::with_user_id(info.user_id))
+            }
+            Ok(None) => {
+                warn!(
+                    "Publisher not found in registry during tracking (room={}, media={}), using empty user_id",
+                    room_id, media_id
+                );
+                Arc::new(PublisherEntry::new())
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to query registry for publisher info (room={}, media={}): {}. Using empty user_id",
+                    room_id, media_id, e
+                );
+                Arc::new(PublisherEntry::new())
+            }
+        };
+        self.active_publishers.insert(publisher_key.clone(), entry);
 
         Ok(())
     }
@@ -343,10 +394,11 @@ impl PublisherManager {
     /// with the local `active_publishers` map. Without this, publishers
     /// that were cleaned up from Redis would remain stale until TTL expiry.
     pub async fn reregister_all_publishers(&self) {
-        let snapshot: Vec<String> = self
+        // L-05: Snapshot both key and entry to access stored user_id for re-registration
+        let snapshot: Vec<(String, Arc<PublisherEntry>)> = self
             .active_publishers
             .iter()
-            .map(|entry| entry.key().clone())
+            .map(|entry| (entry.key().clone(), entry.value().clone()))
             .collect();
 
         if snapshot.is_empty() {
@@ -359,11 +411,18 @@ impl PublisherManager {
             snapshot.len()
         );
 
-        for publisher_key in &snapshot {
+        for (publisher_key, entry) in &snapshot {
             if let Some((room_id, media_id)) = publisher_key.split_once(':') {
+                // L-05: Use stored user_id and node's grpc_address instead of empty strings
                 match self
                     .registry
-                    .try_register_publisher(room_id, media_id, &self.local_node_id, "", "")
+                    .try_register_publisher(
+                        room_id,
+                        media_id,
+                        &self.local_node_id,
+                        &entry.user_id,
+                        &self.local_grpc_address,
+                    )
                     .await
                 {
                     Ok(true) => {
@@ -477,10 +536,13 @@ impl PublisherManager {
                     continue;
                 }
 
+                // L-01: Pass stored user_id to refresh both publisher TTL and user reverse-index TTL
+                let user_id = &entry.user_id;
+
                 // Try heartbeat with retries (Redis TTL refresh)
                 let mut success = false;
                 for attempt in 0..MAX_HEARTBEAT_RETRIES {
-                    match self.registry.refresh_publisher_ttl(room_id, media_id, "").await {
+                    match self.registry.refresh_publisher_ttl(room_id, media_id, user_id).await {
                         Ok(()) => {
                             success = true;
                             break;
@@ -504,14 +566,28 @@ impl PublisherManager {
                 }
 
                 if success {
+                    // Reset consecutive failure counter on any successful heartbeat
+                    entry.consecutive_heartbeat_failures.store(0, Ordering::Release);
                     trace!("Heartbeat refreshed for room {} / media {}", room_id, media_id);
                 } else {
                     synctv_core::metrics::livestream::PUBLISHER_HEARTBEAT_FAILURES.inc();
-                    self.cleanup_publisher(
-                        room_id,
-                        media_id,
-                        "heartbeat permanently failed",
-                    ).await;
+                    let failures = entry.consecutive_heartbeat_failures.fetch_add(1, Ordering::AcqRel) + 1;
+                    if failures >= MAX_CONSECUTIVE_HEARTBEAT_FAILURES {
+                        error!(
+                            "Publisher room={} media={} failed {} consecutive heartbeat cycles, cleaning up",
+                            room_id, media_id, failures
+                        );
+                        self.cleanup_publisher(
+                            room_id,
+                            media_id,
+                            &format!("heartbeat failed {} consecutive cycles", failures),
+                        ).await;
+                    } else {
+                        warn!(
+                            "Heartbeat cycle failed for room={} media={} ({}/{} consecutive failures)",
+                            room_id, media_id, failures, MAX_CONSECUTIVE_HEARTBEAT_FAILURES
+                        );
+                    }
                 }
             }
 

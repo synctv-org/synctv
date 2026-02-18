@@ -2,30 +2,15 @@
 //!
 //! Pure HTTP client for Alist API, no dependency on `MediaProvider`
 
-use std::num::NonZeroU32;
 use std::sync::LazyLock;
 use std::time::Duration;
 
-use governor::{DefaultKeyedRateLimiter, Quota, RateLimiter};
 use reqwest::{Client, header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE, ORIGIN, REFERER, USER_AGENT}};
 use serde_json::json;
 
 use super::error::{AlistError, check_response, json_with_limit};
 use super::types::{AlistResp, LoginData, HttpFsGetResp, HttpFsListResp, HttpFsOtherResp, HttpMeResp, HttpFsSearchResp};
 use crate::error::with_retry;
-
-/// Default Alist API rate limit: 5 requests per second per host.
-const DEFAULT_RATE_LIMIT_PER_SECOND: u32 = 5;
-
-/// Per-host rate limiter for Alist requests.
-/// Each Alist server gets its own independent rate limit bucket so that
-/// requests to one server don't throttle requests to another.
-static PER_HOST_RATE_LIMITER: LazyLock<std::sync::Arc<DefaultKeyedRateLimiter<String>>> = LazyLock::new(|| {
-    let quota = Quota::per_second(
-        NonZeroU32::new(DEFAULT_RATE_LIMIT_PER_SECOND).expect("rate limit must be > 0"),
-    );
-    std::sync::Arc::new(RateLimiter::keyed(quota))
-});
 
 /// Validate that a path does not contain traversal components (`..`).
 /// Rejects paths that attempt directory traversal to escape the intended root.
@@ -84,12 +69,6 @@ impl AlistClient {
         })
     }
 
-    /// Wait for the per-host rate limiter before making an API call.
-    /// Each Alist server host gets its own independent rate limit bucket.
-    async fn wait_for_rate_limit(&self) {
-        PER_HOST_RATE_LIMITER.until_key_ready(&self.host).await;
-    }
-
     /// Set authentication token
     pub fn set_token(&mut self, token: impl Into<String>) {
         self.token = Some(token.into());
@@ -126,7 +105,7 @@ impl AlistClient {
     ///
     /// Returns authentication token on success
     pub async fn login(&mut self, username: &str, password: &str) -> Result<String, AlistError> {
-        self.wait_for_rate_limit().await;
+
         let url = format!("{}/api/auth/login", self.host);
         let body = json!({
             "username": username,
@@ -164,7 +143,7 @@ impl AlistClient {
     /// * `path` - File or directory path
     /// * `password` - Optional password for protected directories
     pub async fn fs_get(&self, path: &str, password: Option<&str>) -> Result<HttpFsGetResp, AlistError> {
-        self.wait_for_rate_limit().await;
+
         validate_path(path)?;
         let url = format!("{}/api/fs/get", self.host);
         let body = json!({
@@ -216,7 +195,7 @@ impl AlistClient {
         per_page: u64,
         password: Option<&str>,
     ) -> Result<HttpFsListResp, AlistError> {
-        self.wait_for_rate_limit().await;
+
         validate_path(path)?;
         let url = format!("{}/api/fs/list", self.host);
         let body = json!({
@@ -277,7 +256,7 @@ impl AlistClient {
         method: &str,
         password: Option<&str>,
     ) -> Result<HttpFsOtherResp, AlistError> {
-        self.wait_for_rate_limit().await;
+
         validate_path(path)?;
         let url = format!("{}/api/fs/other", self.host);
         let body = json!({
@@ -320,7 +299,7 @@ impl AlistClient {
     ///
     /// Requires authentication token
     pub async fn me(&self) -> Result<HttpMeResp, AlistError> {
-        self.wait_for_rate_limit().await;
+
         let url = format!("{}/api/me", self.host);
         let headers = self.build_headers()?;
         let client = self.client.clone();
@@ -388,7 +367,7 @@ impl AlistClient {
         per_page: u64,
         password: Option<&str>,
     ) -> Result<HttpFsSearchResp, AlistError> {
-        self.wait_for_rate_limit().await;
+
         validate_path(parent)?;
         let url = format!("{}/api/fs/search", self.host);
         let body = json!({

@@ -37,10 +37,26 @@ impl RoomPlaybackState {
     /// When playback is active (`is_playing == true`), the stored `current_time`
     /// becomes stale immediately after the last DB write.  This method extrapolates
     /// the position using `speed` and the time elapsed since `updated_at`.
+    ///
+    /// # NTP / clock adjustment caveat
+    ///
+    /// This calculation uses `Utc::now()` which is subject to NTP clock adjustments.
+    /// If the system clock jumps backward, the elapsed time could be negative (clamped
+    /// to 0.0 below). If it jumps forward, the computed position will overshoot.
+    /// Clients should use their own local monotonic clock for smooth playback
+    /// interpolation and treat this server-side value as a periodic sync reference.
     #[must_use]
     pub fn computed_current_time(&self) -> f64 {
         if self.is_playing {
-            let elapsed = ((Utc::now() - self.updated_at).num_milliseconds() as f64 / 1000.0).max(0.0);
+            // Use checked subtraction to get elapsed seconds safely.
+            // `num_seconds()` returns i64 which fits in f64 for reasonable durations.
+            // We add the fractional millisecond part separately to avoid precision
+            // loss from converting a large millisecond count directly to f64.
+            let delta = Utc::now() - self.updated_at;
+            let whole_secs = delta.num_seconds() as f64;
+            let frac_ms = (delta - chrono::Duration::seconds(delta.num_seconds()))
+                .num_milliseconds() as f64;
+            let elapsed = (whole_secs + frac_ms / 1000.0).max(0.0);
             self.current_time + elapsed * self.speed
         } else {
             self.current_time

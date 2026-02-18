@@ -38,7 +38,7 @@ impl RoomMemberRepository {
                 left_at = NULL,
                 joined_at = EXCLUDED.joined_at,
                 version = room_members.version + 1
-             WHERE room_members.status != $9
+             WHERE room_members.status != $9 AND room_members.left_at IS NULL
              RETURNING
                 room_id, user_id, role, status,
                 added_permissions, removed_permissions,
@@ -82,7 +82,7 @@ impl RoomMemberRepository {
                 left_at = NULL,
                 joined_at = EXCLUDED.joined_at,
                 version = room_members.version + 1
-             WHERE room_members.status != $9
+             WHERE room_members.status != $9 AND room_members.left_at IS NULL
              RETURNING
                 room_id, user_id, role, status,
                 added_permissions, removed_permissions,
@@ -215,7 +215,7 @@ impl RoomMemberRepository {
                 left_at = NULL,
                 joined_at = EXCLUDED.joined_at,
                 version = room_members.version + 1
-             WHERE room_members.status != $9
+             WHERE room_members.status != $9 AND room_members.left_at IS NULL
              RETURNING
                 room_id, user_id, role, status,
                 added_permissions, removed_permissions,

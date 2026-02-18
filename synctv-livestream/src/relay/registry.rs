@@ -308,23 +308,30 @@ impl StreamRegistry {
                 return {0, ''}
             end
 
+            -- Parse JSON robustly using cjson instead of fragile regex
+            local ok, parsed = pcall(cjson.decode, info_json)
+            if not ok or not parsed then
+                -- JSON is corrupt; delete the entry but return empty user_id
+                redis.call('HDEL', hash_key, 'publisher')
+                return {1, ''}
+            end
+
             -- If epoch check is requested, validate before deleting
             if check_epoch >= 0 then
-                -- Extract epoch from JSON using pattern match
-                local stored_epoch = string.match(info_json, '"epoch":(%d+)')
-                if stored_epoch and tonumber(stored_epoch) ~= check_epoch then
+                local stored_epoch = tonumber(parsed.epoch)
+                if stored_epoch and stored_epoch ~= check_epoch then
                     -- Epoch mismatch: a newer publisher registered, do NOT delete
                     return {-1, ''}
                 end
             end
 
             -- Extract user_id for reverse-index cleanup
-            local user_id = string.match(info_json, '"user_id":"([^"]*)"')
+            local user_id = parsed.user_id or ''
 
             -- Delete the publisher entry
             redis.call('HDEL', hash_key, 'publisher')
 
-            return {1, user_id or ''}
+            return {1, user_id}
         "#;
 
         // Use -1 to mean "no epoch check" (unconditional delete)
@@ -589,25 +596,33 @@ impl StreamRegistry {
                 return {0, ''}
             end
 
+            -- Parse JSON robustly using cjson instead of fragile regex
+            local ok, parsed = pcall(cjson.decode, info_json)
+            if not ok or not parsed then
+                -- JSON is corrupt; delete the entry but return empty user_id
+                redis.call('HDEL', hash_key, 'publisher')
+                return {1, ''}
+            end
+
             -- Verify node_id matches
-            local stored_node_id = string.match(info_json, '"node_id":"([^"]*)"')
+            local stored_node_id = parsed.node_id
             if not stored_node_id or stored_node_id ~= expected_node_id then
                 return {0, ''}
             end
 
             -- Verify epoch matches (a newer registration would have a higher epoch)
-            local stored_epoch = string.match(info_json, '"epoch":(%d+)')
-            if stored_epoch and tonumber(stored_epoch) ~= expected_epoch then
+            local stored_epoch = tonumber(parsed.epoch)
+            if stored_epoch and stored_epoch ~= expected_epoch then
                 return {-1, ''}
             end
 
             -- Extract user_id for reverse-index cleanup
-            local user_id = string.match(info_json, '"user_id":"([^"]*)"')
+            local user_id = parsed.user_id or ''
 
             -- Delete the publisher entry
             redis.call('HDEL', hash_key, 'publisher')
 
-            return {1, user_id or ''}
+            return {1, user_id}
         "#;
 
         loop {

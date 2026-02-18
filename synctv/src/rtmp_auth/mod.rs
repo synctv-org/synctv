@@ -278,7 +278,7 @@ mod tests {
                 assert_eq!(media_id, "media1");
                 assert_eq!(user_id, "user1");
             }
-            _ => panic!("Expected Started variant"),
+            other => unreachable!("Expected Started variant, got: {other:?}"),
         }
     }
 
@@ -295,7 +295,7 @@ mod tests {
                 assert_eq!(media_id, "media1");
                 assert_eq!(user_id, "user1");
             }
-            _ => panic!("Expected Stopped variant"),
+            other => unreachable!("Expected Stopped variant, got: {other:?}"),
         }
     }
 
@@ -311,7 +311,7 @@ mod tests {
             StreamLifecycleEvent::Started { room_id, .. } => {
                 assert_eq!(room_id, "r1");
             }
-            _ => panic!("Expected Started variant"),
+            other => unreachable!("Expected Started variant, got: {other:?}"),
         }
     }
 }

@@ -395,7 +395,6 @@ impl LivestreamServer {
         // 5. Create PullStreamManager
         let pull_manager = Arc::new(PullStreamManager::with_timeouts(
             self.publisher_registry.clone(),
-            self.config.node_id.clone(),
             event_sender.clone(),
             self.config.cleanup_check_interval_seconds,
             self.config.stream_timeout_seconds,

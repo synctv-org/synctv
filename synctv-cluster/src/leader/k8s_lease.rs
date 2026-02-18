@@ -97,6 +97,21 @@ impl K8sLeaderElector {
             .await
             .map_err(|e| anyhow::anyhow!("Failed to create in-cluster K8s client: {e}"))?;
 
+        // Probe RBAC permissions by attempting to read the lease we will manage.
+        // 404 (not found) is fine — the lease just doesn't exist yet.
+        // 403 (forbidden) means the service account lacks the required permissions.
+        let leases: Api<Lease> = Api::namespaced(client.clone(), &namespace);
+        match leases.get_opt(&config.lease_name).await {
+            Ok(_) => {} // Permission verified (lease exists or doesn't — both OK)
+            Err(kube::Error::Api(err)) if err.code == 403 => {
+                return Err(anyhow::anyhow!(
+                    "K8s service account lacks permission to manage Leases in namespace {namespace}. \
+                     Required RBAC: verbs [get,create,update] on resource leases in group coordination.k8s.io"
+                ));
+            }
+            Err(_) => {} // Other errors (e.g. transient network) are acceptable at startup
+        }
+
         let (event_tx, _) = broadcast::channel(16);
 
         Ok(Self {
@@ -638,16 +653,31 @@ impl K8sLeaderElector {
 
     /// Record leadership gain: increment epoch and clear grace period.
     /// Notifies observers when leadership is gained.
+    ///
+    /// Ordering: (1) store is_leader=true, (2) SeqCst fence, (3) increment epoch,
+    /// (4) log, (5) send Gained event. This ensures observers always see
+    /// is_leader=true before the epoch changes and before the event arrives.
     fn gain_leadership(&self) {
+        // Step 1: Set is_leader first so observers never see epoch change
+        // while is_leader() still returns false.
+        self.is_leader.store(true, Ordering::Release);
+
+        // Step 2: Full fence ensures the is_leader store is visible to all
+        // threads before the epoch increment below.
+        std::sync::atomic::fence(Ordering::SeqCst);
+
+        // Step 3: Increment epoch after is_leader is visible.
         let epoch = self.leader_epoch.fetch_add(1, Ordering::AcqRel) + 1;
+
+        // Step 4: Clear grace period and log.
         *self.leadership_lost_at.lock() = None;
         info!(
             identity = %self.identity,
             epoch = epoch,
             "Gained K8s lease leadership"
         );
-        self.is_leader.store(true, Ordering::Release);
-        // Notify observers of leadership gain
+
+        // Step 5: Notify observers of leadership gain (after is_leader and epoch are set).
         let _ = self.event_tx.send(LeadershipEvent::Gained { epoch });
     }
 
@@ -660,5 +690,11 @@ impl K8sLeaderElector {
         } else {
             false
         }
+    }
+}
+
+impl super::LeaderElect for K8sLeaderElector {
+    fn subscribe(&self) -> tokio::sync::broadcast::Receiver<super::LeadershipEvent> {
+        self.event_tx.subscribe()
     }
 }

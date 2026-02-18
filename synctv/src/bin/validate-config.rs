@@ -1,6 +1,6 @@
 //! Configuration Validation Tool
 //!
-//! Validates a SyncTV configuration file without starting the server.
+//! Validates a `SyncTV` configuration file without starting the server.
 //! Useful for CI/CD pipelines and pre-deployment validation.
 //!
 //! ## Usage
@@ -54,7 +54,7 @@ fn main() {
         });
 
     if let Some(ref path) = config_path {
-        println!("📁 Loading configuration from: {}", path);
+        println!("📁 Loading configuration from: {path}");
     } else {
         println!("📁 No config file found, will validate environment variables");
     }
@@ -67,7 +67,7 @@ fn main() {
             cfg
         }
         Err(e) => {
-            eprintln!("❌ Failed to parse configuration: {}\n", e);
+            eprintln!("❌ Failed to parse configuration: {e}\n");
             eprintln!("Please check the configuration file format and syntax.");
             process::exit(2);
         }
@@ -137,7 +137,7 @@ fn print_config_summary(config: &Config) {
         if !providers.is_empty() {
             println!("   OAuth2:");
             for provider_name in providers.keys() {
-                println!("     • {}", provider_name);
+                println!("     • {provider_name}");
             }
         }
     }

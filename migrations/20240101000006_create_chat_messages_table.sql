@@ -3,13 +3,15 @@
 
 CREATE TABLE IF NOT EXISTS chat_messages (
     id CHAR(12) NOT NULL,
-    room_id CHAR(12) NOT NULL,  -- application-enforced, no FK
-    user_id CHAR(12) NOT NULL,  -- application-enforced, no FK
+    room_id CHAR(12) NOT NULL,
+    user_id CHAR(12),  -- nullable to support SET NULL on user deletion
     content TEXT NOT NULL,
     message_type SMALLINT NOT NULL DEFAULT 1,  -- 1=text, 2=system, 3=action
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (id, created_at),  -- Partition key must be in PK
-    CONSTRAINT chat_messages_message_type_check CHECK (message_type BETWEEN 1 AND 3)
+    CONSTRAINT chat_messages_message_type_check CHECK (message_type BETWEEN 1 AND 3),
+    FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
 ) PARTITION BY RANGE (created_at);
 
 -- Comments

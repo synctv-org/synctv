@@ -36,7 +36,7 @@ struct CircuitBreakerState {
 }
 
 impl CircuitBreakerState {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             consecutive_failures: AtomicU32::new(0),
             opened_at_millis: AtomicU64::new(0),
@@ -111,6 +111,7 @@ impl GrpcConnectionPool {
     ///
     /// `max_idle` controls how long a cached channel is reused before being
     /// discarded and re-created on the next request.
+    #[must_use] 
     pub fn new(max_idle: Duration) -> Self {
         Self {
             connections: Arc::new(DashMap::new()),
@@ -120,8 +121,9 @@ impl GrpcConnectionPool {
     }
 
     /// Create a pool with a default max idle time of 5 minutes.
+    #[must_use] 
     pub fn with_defaults() -> Self {
-        Self::new(Duration::from_secs(300))
+        Self::new(Duration::from_mins(5))
     }
 
     /// Get or create a gRPC channel for the given address.
@@ -141,9 +143,8 @@ impl GrpcConnectionPool {
 
         if cb.is_open(CIRCUIT_BREAKER_COOLDOWN_MS) {
             return Err(anyhow::anyhow!(
-                "Circuit breaker open for '{}': too many consecutive failures, \
-                 rejecting to prevent retry storm (will probe after cooldown)",
-                address
+                "Circuit breaker open for '{address}': too many consecutive failures, \
+                 rejecting to prevent retry storm (will probe after cooldown)"
             ));
         }
 
@@ -215,6 +216,7 @@ impl GrpcConnectionPool {
     ///
     /// The task runs until the returned `JoinHandle` is aborted or the process
     /// exits. Typical usage: call once at startup with a 5-minute interval.
+    #[must_use] 
     pub fn spawn_cleanup_task(&self, interval: Duration) -> tokio::task::JoinHandle<()> {
         let pool = self.clone();
         tokio::spawn(async move {
@@ -228,11 +230,13 @@ impl GrpcConnectionPool {
     }
 
     /// Number of connections currently in the pool.
+    #[must_use] 
     pub fn len(&self) -> usize {
         self.connections.len()
     }
 
     /// Whether the pool is empty.
+    #[must_use] 
     pub fn is_empty(&self) -> bool {
         self.connections.is_empty()
     }

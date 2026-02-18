@@ -22,10 +22,10 @@ pub struct RtmpAuthCallbackImpl {
     /// Optional stream tracker for cleanup on unpublish.
     /// When set, `on_unpublish` removes the publisher from the tracker.
     stream_tracker: Option<Arc<crate::api::StreamTracker>>,
-    /// Optional publisher registry for atomic registration in on_publish.
+    /// Optional publisher registry for atomic registration in `on_publish`.
     /// When set, publishers are atomically registered in Redis BEFORE the
-    /// StreamHub Publish event, ensuring no window where a publisher is
-    /// active in StreamHub but not registered in the cluster registry.
+    /// `StreamHub` Publish event, ensuring no window where a publisher is
+    /// active in `StreamHub` but not registered in the cluster registry.
     registry: Option<Arc<dyn StreamRegistryTrait>>,
     /// Node ID for publisher registration (required if registry is set).
     node_id: String,
@@ -60,8 +60,8 @@ impl RtmpAuthCallbackImpl {
         }
     }
 
-    /// Enable atomic publisher registration in Redis during on_publish.
-    /// This ensures the publisher is registered BEFORE the StreamHub Publish event,
+    /// Enable atomic publisher registration in Redis during `on_publish`.
+    /// This ensures the publisher is registered BEFORE the `StreamHub` Publish event,
     /// preventing a window where a publisher is active but not discoverable by other nodes.
     #[must_use]
     pub fn with_registry(

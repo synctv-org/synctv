@@ -177,6 +177,7 @@ impl AuditService {
     ///
     /// The returned [`AuditFlushHandle`] must be held for the lifetime of
     /// the service. Dropping it triggers a graceful flush of remaining events.
+    #[must_use] 
     pub fn new(pool: PgPool) -> (Self, AuditFlushHandle) {
         Self::with_capacity(pool, DEFAULT_BUFFER_CAPACITY)
     }
@@ -185,6 +186,7 @@ impl AuditService {
     ///
     /// Use this to override the default buffer capacity (10,000) via configuration.
     /// A capacity of 0 falls back to `DEFAULT_BUFFER_CAPACITY`.
+    #[must_use] 
     pub fn with_capacity(pool: PgPool, capacity: usize) -> (Self, AuditFlushHandle) {
         let capacity = if capacity > 0 { capacity } else { DEFAULT_BUFFER_CAPACITY };
         let (tx, rx) = mpsc::channel(capacity);
@@ -215,6 +217,7 @@ impl AuditService {
     }
 
     /// Return the number of events that were dropped because the buffer was full.
+    #[must_use] 
     pub fn dropped_count(&self) -> usize {
         self.dropped_count.load(Ordering::Relaxed)
     }
@@ -482,21 +485,18 @@ impl AuditFlushHandle {
                 tokio::select! {
                     // Receive events
                     maybe_record = rx.recv() => {
-                        match maybe_record {
-                            Some(record) => {
-                                buffer.push(record);
-                                if buffer.len() >= FLUSH_BATCH_SIZE {
-                                    flush_batch(&pool, &mut buffer, &dropped_count).await;
-                                }
+                        if let Some(record) = maybe_record {
+                            buffer.push(record);
+                            if buffer.len() >= FLUSH_BATCH_SIZE {
+                                flush_batch(&pool, &mut buffer, &dropped_count).await;
                             }
-                            None => {
-                                // Channel closed, flush remaining and exit
-                                if !buffer.is_empty() {
-                                    flush_batch(&pool, &mut buffer, &dropped_count).await;
-                                }
-                                tracing::info!("Audit flush task: channel closed, exiting");
-                                return;
+                        } else {
+                            // Channel closed, flush remaining and exit
+                            if !buffer.is_empty() {
+                                flush_batch(&pool, &mut buffer, &dropped_count).await;
                             }
+                            tracing::info!("Audit flush task: channel closed, exiting");
+                            return;
                         }
                     }
                     // Periodic flush
@@ -546,7 +546,7 @@ impl Drop for AuditFlushHandle {
     }
 }
 
-/// Maximum retry attempts for flush_batch
+/// Maximum retry attempts for `flush_batch`
 const FLUSH_MAX_RETRIES: u32 = 3;
 /// Base delay in milliseconds for exponential backoff on flush retries
 const FLUSH_RETRY_BASE_MS: u64 = 100;

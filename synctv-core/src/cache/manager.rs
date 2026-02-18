@@ -28,7 +28,7 @@ pub struct CacheManager {
 impl CacheManager {
     /// Create a new cache manager
     #[must_use]
-    pub fn new(user_cache: Arc<UserCache>, room_cache: Arc<RoomCache>) -> Self {
+    pub const fn new(user_cache: Arc<UserCache>, room_cache: Arc<RoomCache>) -> Self {
         Self {
             user_cache,
             room_cache,

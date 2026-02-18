@@ -1,4 +1,4 @@
-//! Live streaming operations: publish_key, validate_live_token, stream_info, live proxy
+//! Live streaming operations: `publish_key`, `validate_live_token`, `stream_info`, live proxy
 
 use std::sync::Arc;
 use synctv_core::models::{RoomId, UserId};

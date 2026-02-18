@@ -37,7 +37,7 @@ impl std::fmt::Debug for ChatService {
 impl ChatService {
     /// Create a new chat service
     #[must_use]
-    pub fn new(
+    pub const fn new(
         chat_repository: Arc<ChatRepository>,
         rate_limiter: RateLimiter,
         rate_limit_config: RateLimitConfig,
@@ -366,7 +366,7 @@ impl ChatService {
 
             loop {
                 tokio::select! {
-                    _ = cancel.cancelled() => {
+                    () = cancel.cancelled() => {
                         info!("Chat cleanup task shutting down");
                         return;
                     }

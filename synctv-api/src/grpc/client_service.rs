@@ -63,7 +63,7 @@ use synctv_core::service::auth::JwtValidator;
 
 use super::internal_err;
 
-/// Buffer size for the outgoing message channel in MessageStream connections.
+/// Buffer size for the outgoing message channel in `MessageStream` connections.
 /// Provides backpressure for slow clients without excessive memory usage.
 const MESSAGE_STREAM_BUFFER_SIZE: usize = 100;
 
@@ -250,19 +250,10 @@ impl AuthService for ClientServiceImpl {
         &self,
         request: Request<RefreshTokenRequest>,
     ) -> Result<Response<RefreshTokenResponse>, Status> {
-        // Extract old access token from gRPC metadata (if present)
-        let old_access_token = request
-            .metadata()
-            .get("authorization")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| {
-                synctv_core::service::auth::JwtValidator::extract_bearer_token(s).ok()
-            });
-
         let req = request.into_inner();
         let response = self
             .client_api
-            .refresh_token(req, old_access_token.as_deref())
+            .refresh_token(req)
             .await
             .map_err(map_api_error)?;
         Ok(Response::new(response))
@@ -283,7 +274,7 @@ impl UserService for ClientServiceImpl {
             .metadata()
             .get("authorization")
             .and_then(|v| v.to_str().ok())
-            .map(|s| JwtValidator::extract_bearer_token(s))
+            .map(JwtValidator::extract_bearer_token)
             .transpose()
             .map_err(|_| Status::unauthenticated("Missing or invalid Bearer token"))?
             .ok_or_else(|| Status::unauthenticated("Authorization header required"))?;
@@ -508,9 +499,7 @@ impl RoomService for ClientServiceImpl {
         let _user_id = self.get_user_id(&request).await?;
         let room_id = self.get_room_id(&request)?;
         let client_ip = request
-            .remote_addr()
-            .map(|addr| addr.ip().to_string())
-            .unwrap_or_else(|| "unknown".to_string());
+            .remote_addr().map_or_else(|| "unknown".to_string(), |addr| addr.ip().to_string());
         let req = request.into_inner();
         let response = self.client_api.check_room_password(room_id.as_str(), req, &client_ip).await.map_err(map_api_error)?;
         Ok(Response::new(response))

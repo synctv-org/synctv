@@ -67,7 +67,7 @@ impl UserService {
     }
 
     /// Enable email verification requirement for login (call when email service is configured)
-    pub fn set_email_verification_required(&mut self, required: bool) {
+    pub const fn set_email_verification_required(&mut self, required: bool) {
         self.email_verification_required = required;
     }
 
@@ -95,10 +95,20 @@ impl UserService {
         // Hash password
         let password_hash = hash_password(&password).await?;
 
+        // Set initial status based on email verification config.
+        // When verification is required, users start as Pending and must verify
+        // their email before they can log in. When verification is disabled,
+        // users start as Active and receive tokens immediately.
+        let initial_status = if self.email_verification_required {
+            crate::models::UserStatus::Pending
+        } else {
+            crate::models::UserStatus::Active
+        };
+
         // Create user with email signup method.
         // The database UNIQUE constraints on username and email will reject
         // duplicates atomically -- no separate existence check needed.
-        let user = User::new(username.clone(), email.clone(), password_hash, Some(SignupMethod::Email));
+        let user = User::new_with_status(username.clone(), email.clone(), password_hash, Some(SignupMethod::Email), initial_status);
         let created_user = self.repository.create(&user).await?;
 
         // Populate username cache
@@ -275,10 +285,10 @@ impl UserService {
         Ok((user, access_token, refresh_token))
     }
 
-    /// Generate token pair for OAuth2 login (user already authenticated by OAuth2 provider)
+    /// Generate token pair for `OAuth2` login (user already authenticated by `OAuth2` provider)
     ///
     /// This method generates access and refresh tokens for a user who has been
-    /// authenticated via OAuth2. Unlike `login()`, this skips password verification.
+    /// authenticated via `OAuth2`. Unlike `login()`, this skips password verification.
     pub async fn login_oauth2(&self, user_id: &UserId) -> Result<(User, String, String)> {
         // Get user to ensure they exist and are active
         let user = self.repository
@@ -313,9 +323,7 @@ impl UserService {
     /// - Tokens are still validated for signature, expiration, and password changes
     /// - Shorter token lifetimes reduce the replay window
     /// - Password changes immediately invalidate all tokens
-    ///
-    /// The `old_access_token` parameter is ignored (no longer blacklisted).
-    pub async fn refresh_token(&self, refresh_token: String, _old_access_token: Option<&str>) -> Result<(String, String)> {
+    pub async fn refresh_token(&self, refresh_token: String) -> Result<(String, String)> {
         // Verify refresh token
         let claims = self.jwt_service.verify_refresh_token(&refresh_token)?;
         let user_id = UserId::from_string(claims.sub);
@@ -398,7 +406,7 @@ impl UserService {
     /// After updating the password, all existing tokens for the user are
     /// invalidated. This is done by updating the `password_changed_at`
     /// timestamp in the database, which causes all tokens with iat <
-    /// password_changed_at to be rejected by the security pipeline.
+    /// `password_changed_at` to be rejected by the security pipeline.
     pub async fn set_password(&self, user_id: &UserId, new_password: &str) -> Result<User> {
         // Validate new password
         self.validate_password(new_password)?;
@@ -439,7 +447,7 @@ impl UserService {
         self.repository.list(query).await
     }
 
-    /// Delete all OAuth2 provider mappings for a user.
+    /// Delete all `OAuth2` provider mappings for a user.
     ///
     /// Used during user deletion to clean up OAuth bindings.
     pub async fn cleanup_oauth_providers(&self, user_id: &UserId) -> Result<u64> {
@@ -447,20 +455,29 @@ impl UserService {
         repo.delete_all_for_user(user_id).await
     }
 
+    /// Soft-delete the currently authenticated user's own account.
+    ///
+    /// This is the self-service account deletion endpoint. It sets `deleted_at = NOW()`
+    /// on the user row so all subsequent token validation will fail (the security pipeline
+    /// checks `is_deleted()`). `OAuth2` mappings are cleaned up in the same transaction.
+    pub async fn delete_self(&self, user_id: &UserId) -> Result<()> {
+        self.delete_user(user_id).await
+    }
+
     /// Soft-delete a user and clean up all related resources.
     ///
     /// Performs the following cleanup in order:
     /// 1. Within a single DB transaction:
     ///    a. Soft-delete the user row
-    ///    b. Remove all OAuth2 provider mappings
+    ///    b. Remove all `OAuth2` provider mappings
     /// 2. Invalidate username cache (best-effort)
     /// 3. Invalidate user cache across replicas (best-effort)
     ///
-    /// Steps 1a and 1b are atomic: if OAuth2 cleanup fails, the soft-delete
+    /// Steps 1a and 1b are atomic: if `OAuth2` cleanup fails, the soft-delete
     /// is rolled back to prevent orphaned mappings.
     ///
     /// **Token Invalidation**: Tokens are invalidated implicitly because the
-    /// security pipeline checks for deleted users (deleted_at IS NOT NULL).
+    /// security pipeline checks for deleted users (`deleted_at` IS NOT NULL).
     pub async fn delete_user(&self, user_id: &UserId) -> Result<()> {
         let user = self.get_user(user_id).await?;
         if user.deleted_at.is_some() {
@@ -700,7 +717,7 @@ impl UserService {
 
     /// Get the access token duration in seconds from the JWT service
     ///
-    /// Used by OAuth2 token response to report the correct `expires_in` value.
+    /// Used by `OAuth2` token response to report the correct `expires_in` value.
     #[must_use]
     pub const fn access_token_duration_seconds(&self) -> i64 {
         self.jwt_service.access_token_duration_seconds()

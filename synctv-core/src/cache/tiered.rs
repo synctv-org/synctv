@@ -54,7 +54,7 @@ where
     key_prefix: String,
     /// Label used for metrics (e.g. "user", "room")
     cache_type: String,
-    /// SingleFlight to deduplicate concurrent L2 fetches for the same key.
+    /// `SingleFlight` to deduplicate concurrent L2 fetches for the same key.
     /// Uses `String` as both the key and error type: `Error` does not implement
     /// `Clone` (due to `sqlx::Error`), so we use `String` for the error type
     /// and convert back to `Error::Internal` at the call site.
@@ -154,16 +154,16 @@ where
                 {
                     async move {
                         let mut conn = conn;
-                        let redis_key = format!("{}{}", key_prefix, key_str);
+                        let redis_key = format!("{key_prefix}{key_str}");
                         let json: Option<String> = conn
                             .get(&redis_key)
                             .await
-                            .map_err(|e| format!("Failed to get {} from cache: {e}", cache_type))?;
+                            .map_err(|e| format!("Failed to get {cache_type} from cache: {e}"))?;
 
                         match json {
                             Some(json) => {
                                 let value: V = serde_json::from_str(&json).map_err(|e| {
-                                    format!("Failed to deserialize cached {}: {e}", cache_type)
+                                    format!("Failed to deserialize cached {cache_type}: {e}")
                                 })?;
                                 Ok(Some(value))
                             }
@@ -470,7 +470,7 @@ where
             // ARGV[2] = TTL in seconds (always > 0)
             // ARGV[3] = new timestamp as ISO-8601 string for comparison
             let script = redis::Script::new(
-                r#"
+                r"
                 local existing = redis.call('GET', KEYS[1])
                 if existing then
                     local ok, obj = pcall(cjson.decode, existing)
@@ -485,7 +485,7 @@ where
                 end
                 redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
                 return 1
-                "#,
+                ",
             );
 
             // Pass the new updated_at as ISO-8601 string for Lua-side comparison.

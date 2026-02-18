@@ -52,7 +52,7 @@ pub struct RemoteProviderManager {
     redis_conn: Option<redis::aio::ConnectionManager>,
 
     /// Optional Redis client for creating Pub/Sub subscriptions
-    /// (ConnectionManager cannot be used for subscriptions)
+    /// (`ConnectionManager` cannot be used for subscriptions)
     redis_client: Option<redis::Client>,
 }
 
@@ -100,7 +100,7 @@ impl RemoteProviderManager {
     /// Initialize manager by pre-warming the cache with all enabled instances from database.
     ///
     /// This is optional -- channels will be created lazily on demand even without
-    /// calling init(). However, pre-warming reduces latency for the first request
+    /// calling `init()`. However, pre-warming reduces latency for the first request
     /// to each provider.
     pub async fn init(&self) -> crate::Result<()> {
         tracing::info!("Initializing provider instance manager (pre-warming cache)");
@@ -241,7 +241,7 @@ impl RemoteProviderManager {
         // Parse timeout
         let timeout = config
             .parse_timeout()
-            .map_err(|e| crate::Error::Internal(e.to_string()))?;
+            .map_err(|e| crate::Error::Internal(e))?;
 
         // Create endpoint
         let mut endpoint = Endpoint::from_shared(config.endpoint.clone())

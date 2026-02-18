@@ -108,7 +108,7 @@ impl From<RoomStatus> for synctv_proto::common::RoomStatus {
 // Conversion from core RoomStatus to i32 (via proto enum)
 impl From<RoomStatus> for i32 {
     fn from(value: RoomStatus) -> Self {
-        synctv_proto::common::RoomStatus::from(value) as i32
+        synctv_proto::common::RoomStatus::from(value) as Self
     }
 }
 

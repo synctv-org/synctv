@@ -17,7 +17,7 @@ use synctv_cluster::sync::{ConnectionManager, ConnectionLimits, ClusterManager, 
 use synctv_cluster::discovery::{NodeRegistry, HealthMonitor, LoadBalancer, LoadBalancingStrategy};
 #[cfg(feature = "k8s")]
 use synctv_cluster::discovery::K8sDnsDiscovery;
-use synctv_cluster::leader::{LeaderElect, LeaderElector};
+use synctv_cluster::leader::LeaderElector;
 #[cfg(feature = "k8s")]
 use synctv_cluster::leader::{K8sLeaderElector, K8sLeaderElectorConfig};
 
@@ -45,7 +45,7 @@ impl synctv_core::service::PlaybackBroadcaster for ClusterPlaybackBroadcaster {
 }
 
 /// Generate a unique node ID for this server instance.
-/// Prefers the POD_NAME environment variable (set by Kubernetes downward API)
+/// Prefers the `POD_NAME` environment variable (set by Kubernetes downward API)
 /// for predictable, consistent node IDs in K8s deployments.
 /// Falls back to hostname + local IP + random suffix for non-K8s environments.
 fn generate_node_id() -> String {
@@ -76,11 +76,11 @@ fn generate_node_id() -> String {
     format!("{hostname}_{local_ip}-{suffix}")
 }
 
-/// Initialize the shared cluster components: NodeRegistry, heartbeat loop,
-/// HealthMonitor, and LoadBalancer.
+/// Initialize the shared cluster components: `NodeRegistry`, heartbeat loop,
+/// `HealthMonitor`, and `LoadBalancer`.
 ///
-/// This is the common code shared between the "k8s_dns" and "redis" discovery
-/// branches. Both modes use a Redis-backed NodeRegistry for health tracking.
+/// This is the common code shared between the "`k8s_dns`" and "redis" discovery
+/// branches. Both modes use a Redis-backed `NodeRegistry` for health tracking.
 async fn init_cluster_components(
     redis_url: &str,
     cm: &Arc<ClusterManager>,
@@ -141,13 +141,13 @@ async fn init_cluster_components(
     (Some(registry), Some(health_monitor), Some(lb))
 }
 
-/// Initialize cluster discovery infrastructure (NodeRegistry + HealthMonitor + LoadBalancer).
+/// Initialize cluster discovery infrastructure (`NodeRegistry` + `HealthMonitor` + `LoadBalancer`).
 ///
 /// Supports two discovery modes:
 ///   "redis"   - Redis-based node registry (default)
-///   "k8s_dns" - Kubernetes headless service DNS discovery
+///   "`k8s_dns`" - Kubernetes headless service DNS discovery
 ///
-/// Returns (NodeRegistry, HealthMonitor, LoadBalancer, optional DNS refresh handle).
+/// Returns (`NodeRegistry`, `HealthMonitor`, `LoadBalancer`, optional DNS refresh handle).
 async fn init_cluster_discovery(
     config: &Config,
     cm: &Arc<ClusterManager>,
@@ -177,7 +177,18 @@ async fn init_cluster_discovery(
 
                     // Still use Redis-based NodeRegistry for health monitoring if Redis is available.
                     // DNS discovers peers; Redis registry tracks heartbeats and health.
-                    if !config.redis.url.is_empty() {
+                    if config.redis.url.is_empty() {
+                        // K8s DNS mode without Redis: DNS resolution works, but there is no
+                        // NodeRegistry, HealthMonitor, or LoadBalancer. Cluster coordination
+                        // (pub/sub, heartbeats, load balancing) requires Redis even in k8s_dns mode.
+                        warn!(
+                            "K8s DNS discovery is active but Redis is not configured. \
+                             DNS will resolve peers, but cluster health monitoring, load balancing, \
+                             and pub/sub are DISABLED. To enable full cluster functionality, \
+                             configure a Redis URL. See: https://docs.synctv.dev/deployment/k8s"
+                        );
+                        (None, None, None, Some(dns_refresh_handle))
+                    } else {
                         let (nr, hm, lb) = init_cluster_components(&config.redis.url, cm, config, connection_manager).await;
 
                         // Bridge: periodically merge DNS-discovered peers into the
@@ -208,17 +219,6 @@ async fn init_cluster_discovery(
                         }
 
                         (nr, hm, lb, Some(dns_refresh_handle))
-                    } else {
-                        // K8s DNS mode without Redis: DNS resolution works, but there is no
-                        // NodeRegistry, HealthMonitor, or LoadBalancer. Cluster coordination
-                        // (pub/sub, heartbeats, load balancing) requires Redis even in k8s_dns mode.
-                        warn!(
-                            "K8s DNS discovery is active but Redis is not configured. \
-                             DNS will resolve peers, but cluster health monitoring, load balancing, \
-                             and pub/sub are DISABLED. To enable full cluster functionality, \
-                             configure a Redis URL. See: https://docs.synctv.dev/deployment/k8s"
-                        );
-                        (None, None, None, Some(dns_refresh_handle))
                     }
                 }
                 Err(e) => {
@@ -245,12 +245,12 @@ async fn init_cluster_discovery(
                 );
             }
 
-            if !config.redis.url.is_empty() {
-                let (nr, hm, lb) = init_cluster_components(&config.redis.url, cm, config, connection_manager).await;
-                (nr, hm, lb, None)
-            } else {
+            if config.redis.url.is_empty() {
                 info!("Redis not configured, cluster discovery disabled");
                 (None, None, None, None)
+            } else {
+                let (nr, hm, lb) = init_cluster_components(&config.redis.url, cm, config, connection_manager).await;
+                (nr, hm, lb, None)
             }
         }
     }
@@ -289,6 +289,9 @@ async fn init_livestream(
     };
 
     // Publisher registry for Redis (used by PullStreamManager + PublisherManager)
+    // Clone before move so we can also pass redis_conn to SyncTvRtmpAuth for the
+    // cross-replica rtmp:user_streams HSET mapping.
+    let redis_conn_for_auth = redis_conn.clone();
     let publisher_registry = Arc::new(synctv_livestream::relay::StreamRegistry::new(redis_conn)) as Arc<dyn synctv_livestream::relay::StreamRegistryTrait>;
 
     // Shared tracker for user->stream mapping (kick-on-ban)
@@ -326,17 +329,20 @@ async fn init_livestream(
     background_handles.push(lifecycle_handle);
 
     // RTMP auth callback (needs synctv-core services)
-    let rtmp_auth: Arc<dyn synctv_livestream::AuthCallback> =
-        Arc::new(rtmp_auth::SyncTvRtmpAuth::new(
-            synctv_services.room_service.clone(),
-            synctv_services.user_service.clone(),
-            synctv_services.publish_key_service.clone(),
-            user_stream_tracker.clone(),
-            publisher_registry.clone(),
-            node_id.to_string(),
-            config.advertise_grpc_address(),
-            Some(stream_lifecycle_tx),
-        ));
+    // Attach the Redis connection so cross-replica user→stream mapping is maintained
+    // in `rtmp:user_streams` (HSET) in addition to the Set-based publisher registry.
+    let rtmp_auth_impl = rtmp_auth::SyncTvRtmpAuth::new(
+        synctv_services.room_service.clone(),
+        synctv_services.user_service.clone(),
+        synctv_services.publish_key_service.clone(),
+        user_stream_tracker.clone(),
+        publisher_registry.clone(),
+        node_id.to_string(),
+        config.advertise_grpc_address(),
+        Some(stream_lifecycle_tx),
+    );
+    let rtmp_auth_impl = rtmp_auth_impl.with_redis(redis_conn_for_auth);
+    let rtmp_auth: Arc<dyn synctv_livestream::AuthCallback> = Arc::new(rtmp_auth_impl);
 
     // One-shot facade: start all xiu components
     let rtmp_listen_addr = format!("{}:{}", config.server.host, config.livestream.rtmp_port);
@@ -382,9 +388,7 @@ async fn init_webrtc(
         // 1. Explicit config (stun_external_addr)
         // 2. advertise_host config / POD_IP
         // 3. Cloud metadata (AWS/GCP/Azure)
-        let external_addr = if !config.webrtc.stun_external_addr.is_empty() {
-            config.webrtc.stun_external_addr.clone()
-        } else {
+        let external_addr = if config.webrtc.stun_external_addr.is_empty() {
             let advertise = config.advertise_host();
             // Check if advertise_host resolved to something usable
             let candidate = format!("{advertise}:{}", config.webrtc.stun_port);
@@ -393,20 +397,19 @@ async fn init_webrtc(
             } else {
                 // Try auto-detecting from cloud metadata
                 info!("advertise_host '{}' is not a routable external IP, attempting cloud metadata detection...", advertise);
-                match synctv_core::service::resolve_external_ip().await {
-                    Some(ip) => format!("{ip}:{}", config.webrtc.stun_port),
-                    None => {
-                        error!(
-                            "Could not resolve a routable external IP for STUN server. \
-                             advertise_host '{}' is not routable and cloud metadata detection failed. \
-                             Set SYNCTV_WEBRTC_STUN_EXTERNAL_ADDR or STUN_EXTERNAL_IP to a public IP. \
-                             Built-in STUN server will NOT start.",
-                            advertise
-                        );
-                        return None;
-                    }
+                if let Some(ip) = synctv_core::service::resolve_external_ip().await { format!("{ip}:{}", config.webrtc.stun_port) } else {
+                    error!(
+                        "Could not resolve a routable external IP for STUN server. \
+                         advertise_host '{}' is not routable and cloud metadata detection failed. \
+                         Set SYNCTV_WEBRTC_STUN_EXTERNAL_ADDR or STUN_EXTERNAL_IP to a public IP. \
+                         Built-in STUN server will NOT start.",
+                        advertise
+                    );
+                    return None;
                 }
             }
+        } else {
+            config.webrtc.stun_external_addr.clone()
         };
 
         // Validate the final external address
@@ -581,7 +584,8 @@ async fn main() -> Result<()> {
                 }
 
                 if let Some(ref conn) = synctv_services.redis_conn {
-                    let elector = LeaderElector::new(conn.clone(), node_id.clone(), &config.redis.key_prefix);
+                    let plain_conn = conn.read().await.clone();
+                    let elector = LeaderElector::new(plain_conn, node_id.clone(), &config.redis.key_prefix);
                     let _leader_handle = elector.start(leader_cancel.clone());
                     info!("Redis-based leader election started (node_id={})", node_id);
                     Some(synctv_cluster::leader::AnyLeaderElector::Redis(elector))
@@ -609,7 +613,7 @@ async fn main() -> Result<()> {
     // Track background task JoinHandles for graceful shutdown
     let mut main_background_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
 
-    let leader_guard_token = leader_elector.as_ref().map(|e| e.leader_guard());
+    let leader_guard_token = leader_elector.as_ref().map(synctv_cluster::leader::LeaderElect::leader_guard);
     let singleton_cancel = match &leader_guard_token {
         Some(guard) => {
             // Combine: cancel when either the partition_cancel OR the leader guard fires
@@ -684,6 +688,7 @@ async fn main() -> Result<()> {
             critical_channel_capacity: config.cluster.critical_channel_capacity,
             publish_channel_capacity: config.cluster.publish_channel_capacity,
             key_prefix: config.redis.key_prefix.clone(),
+            catchup_window_secs: config.cluster.catchup_window_secs,
         };
         match ClusterManager::new(cluster_config, None, None).await {
             Ok(manager) => Some(Arc::new(manager)),
@@ -701,6 +706,7 @@ async fn main() -> Result<()> {
             critical_channel_capacity: config.cluster.critical_channel_capacity,
             publish_channel_capacity: config.cluster.publish_channel_capacity,
             key_prefix: config.redis.key_prefix.clone(),
+            catchup_window_secs: config.cluster.catchup_window_secs,
         };
         match ClusterManager::new(
             cluster_config,
@@ -784,7 +790,18 @@ async fn main() -> Result<()> {
         node_registry,
         health_monitor,
         load_balancer,
-        redis_conn: synctv_services.redis_conn.clone(),
+        redis_conn: {
+            // Extract a snapshot of the current ConnectionManager from the shared
+            // Arc<RwLock<>> for use in the HTTP/gRPC handler layers.  In Sentinel
+            // mode the background health check keeps the inner value up-to-date;
+            // for request-time operations the ConnectionManager's internal
+            // reconnect logic handles transient failures.
+            if let Some(ref shared) = synctv_services.redis_conn {
+                Some(shared.read().await.clone())
+            } else {
+                None
+            }
+        },
         settings_cancel: synctv_services.settings_cancel.clone(),
         partition_cancel,
         leader_elector,

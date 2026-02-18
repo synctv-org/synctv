@@ -6,12 +6,14 @@
 //! On successful publish auth:
 //! 1. Atomically registers the publisher in Redis (single-publisher-per-media enforcement)
 //! 2. Registers the user→stream mapping in the local `StreamTracker`
+//! 3. Writes `user_id → stream_key` to Redis hash `rtmp:user_streams` for cross-replica lookup
 //!
 //! Ongoing TTL renewal is handled by `PublisherManager::maintain_heartbeats()`.
 //!
 //! On unpublish:
 //! 1. Unregisters the publisher from Redis
 //! 2. Removes the user→stream mapping from the local `StreamTracker`
+//! 3. Removes the `rtmp:user_streams` Redis hash field for the user
 
 use std::sync::Arc;
 
@@ -19,6 +21,8 @@ use async_trait::async_trait;
 use synctv_livestream::AuthCallback;
 use synctv_livestream::api::UserStreamTracker;
 use synctv_livestream::relay::StreamRegistryTrait;
+// TTL for the rtmp:user_streams Redis hash field, matching the publisher TTL.
+use synctv_livestream::relay::registry::PUBLISHER_TTL_SECS;
 
 use synctv_core::{
     models::{RoomStatus, UserStatus, MediaId, UserId},
@@ -67,9 +71,20 @@ pub struct SyncTvRtmpAuth {
     grpc_address: String,
     /// Broadcast channel for stream lifecycle events (StreamStarted/StreamStopped)
     stream_event_tx: Option<tokio::sync::broadcast::Sender<StreamLifecycleEvent>>,
+    /// Optional Redis connection for cross-replica `user_id → stream_key` mapping.
+    ///
+    /// When set, each successful publish auth additionally writes:
+    ///   `HSET rtmp:user_streams {user_id} {room_id}:{media_id}`
+    /// with a TTL matching the publisher TTL.  This allows any replica to resolve
+    /// which stream a user is publishing without querying the local in-memory tracker
+    /// (which is only populated on the replica that authenticated the publisher).
+    ///
+    /// On unpublish, the field is removed: `HDEL rtmp:user_streams {user_id}`.
+    redis_conn: Option<redis::aio::ConnectionManager>,
 }
 
 impl SyncTvRtmpAuth {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         room_service: Arc<RoomService>,
         user_service: Arc<UserService>,
@@ -89,7 +104,18 @@ impl SyncTvRtmpAuth {
             node_id,
             grpc_address,
             stream_event_tx,
+            redis_conn: None,
         }
+    }
+
+    /// Attach a Redis connection for cross-replica user→stream mapping.
+    ///
+    /// Call this after construction when a Redis connection is available.
+    /// If not called, cross-replica user→stream lookup falls back to the
+    /// publisher registry's reverse index (`stream:user_publishers:{user_id}`).
+    pub fn with_redis(mut self, conn: redis::aio::ConnectionManager) -> Self {
+        self.redis_conn = Some(conn);
+        self
     }
 }
 
@@ -161,7 +187,7 @@ impl AuthCallback for SyncTvRtmpAuth {
                 "Publisher unpublished, cleaning up"
             );
 
-            // Unregister from Redis
+            // Unregister from Redis (publisher entry + stream:user_publishers Set)
             if let Err(e) = self.registry.unregister_publisher(room_id, media_id).await {
                 tracing::error!(
                     room_id = %room_id,
@@ -169,6 +195,23 @@ impl AuthCallback for SyncTvRtmpAuth {
                     "Failed to unregister publisher from Redis: {}",
                     e
                 );
+            }
+
+            // Clean up the cross-replica HSET entry (rtmp:user_streams)
+            if let Some(ref conn) = self.redis_conn {
+                let mut conn = conn.clone();
+                let result: Result<(), redis::RedisError> = redis::cmd("HDEL")
+                    .arg("rtmp:user_streams")
+                    .arg(user_id.as_str())
+                    .query_async(&mut conn)
+                    .await;
+                if let Err(e) = result {
+                    tracing::warn!(
+                        user_id = %user_id,
+                        "Failed to remove rtmp:user_streams entry on unpublish (non-fatal): {}",
+                        e
+                    );
+                }
             }
         } else {
             // Tracker lookup failed -- the RTMP identifiers after AuthPublishRewrite are
@@ -484,7 +527,10 @@ impl SyncTvRtmpAuth {
         app_name: &str,
         stream_name: &str,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        // Enforce single-publisher-per-media: atomically register in Redis
+        // Enforce single-publisher-per-media: atomically register in Redis.
+        // This also writes user→stream to `stream:user_publishers:{user_id}` via
+        // the Lua script in try_register_publisher_with_user, providing a cross-replica
+        // reverse index for user→stream lookups via get_user_publishers().
         let registered = self.registry
             .try_register_publisher(
                 &validated.room_id,
@@ -512,7 +558,36 @@ impl SyncTvRtmpAuth {
             validated.auth_level,
         );
 
-        // Track user->stream mapping for kick-on-ban
+        // Write an additional cross-replica user→stream mapping to Redis.
+        // Key: `rtmp:user_streams` (Hash)
+        // Field: `{user_id}`, Value: `{room_id}:{media_id}`
+        //
+        // This complements the Set-based `stream:user_publishers:{user_id}` index
+        // already written by try_register_publisher_with_user.  The HSET form
+        // provides O(1) single-field lookup on any replica when only one active
+        // stream per user is expected, without needing to scan a Set.
+        if let Some(ref conn) = self.redis_conn {
+            let mut conn = conn.clone();
+            let stream_key = format!("{}:{}", validated.room_id, validated.media_id);
+            // HSET + EXPIRE in a single pipeline for atomicity
+            let hset_result: Result<(i64, i64), redis::RedisError> = redis::pipe()
+                .hset("rtmp:user_streams", &validated.user_id, &stream_key)
+                .expire("rtmp:user_streams", PUBLISHER_TTL_SECS)
+                .query_async(&mut conn)
+                .await;
+            if let Err(e) = hset_result {
+                // Non-fatal: log and continue.  The Set-based index is the primary
+                // source of truth for cross-replica lookup.
+                tracing::warn!(
+                    user_id = %validated.user_id,
+                    stream_key = %stream_key,
+                    "Failed to write rtmp:user_streams to Redis (non-fatal): {}",
+                    e
+                );
+            }
+        }
+
+        // Track user->stream mapping locally for kick-on-ban (O(1) local lookup)
         self.user_stream_tracker.insert(
             validated.user_id.clone(),
             app_name.to_string(),
@@ -531,5 +606,51 @@ impl SyncTvRtmpAuth {
         }
 
         Ok(())
+    }
+
+    /// Look up the stream key for a user, checking the local tracker first and
+    /// falling back to Redis if not found locally (cross-replica lookup).
+    ///
+    /// Returns `Some((room_id, media_id))` if the user is actively publishing.
+    #[allow(dead_code)]
+    pub async fn get_user_stream(&self, user_id: &str) -> Option<(String, String)> {
+        // Fast path: check local in-memory tracker
+        let local = self.user_stream_tracker.get_user_streams(user_id);
+        if !local.is_empty() {
+            return local.into_iter().next();
+        }
+
+        // Slow path: check Redis cross-replica mapping (rtmp:user_streams HGET)
+        if let Some(ref conn) = self.redis_conn {
+            let mut conn = conn.clone();
+            let result: Result<Option<String>, redis::RedisError> =
+                redis::cmd("HGET")
+                    .arg("rtmp:user_streams")
+                    .arg(user_id)
+                    .query_async(&mut conn)
+                    .await;
+            match result {
+                Ok(Some(stream_key)) => {
+                    if let Some((room_id, media_id)) = stream_key.split_once(':') {
+                        return Some((room_id.to_string(), media_id.to_string()));
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!(
+                        user_id = %user_id,
+                        "Failed to query rtmp:user_streams from Redis: {}",
+                        e
+                    );
+                }
+            }
+        }
+
+        // Final fallback: check Set-based publisher reverse index
+        if let Ok(publishers) = self.registry.get_user_publishers(user_id).await {
+            return publishers.into_iter().next();
+        }
+
+        None
     }
 }

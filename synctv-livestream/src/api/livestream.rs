@@ -470,7 +470,7 @@ impl HlsStreamingApi {
     /// Get HLS segment data.
     ///
     /// In cluster mode:
-    /// - If publisher is local: reads from local SegmentManager
+    /// - If publisher is local: reads from local `SegmentManager`
     /// - If publisher is remote: proxies to publisher node via gRPC (with local cache)
     ///
     /// HLS segment requests do NOT trigger gRPC RTMP pull streams.

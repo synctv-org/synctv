@@ -71,9 +71,9 @@ pub struct ServerConfig {
     pub cluster_secret: String,
     /// Advertise host for cluster node registration.
     /// This is the address other nodes use to reach this instance.
-    /// Reads from SYNCTV_SERVER_ADVERTISE_HOST env var. In Kubernetes, set this
+    /// Reads from `SYNCTV_SERVER_ADVERTISE_HOST` env var. In Kubernetes, set this
     /// to the pod IP via the downward API (status.podIP).
-    /// If empty, falls back to POD_IP env var, then to the system hostname.
+    /// If empty, falls back to `POD_IP` env var, then to the system hostname.
     pub advertise_host: String,
     /// Maximum time in seconds to wait for active connections to drain during shutdown.
     /// Defaults to 30 seconds. Increase for deployments with many long-lived connections.
@@ -149,7 +149,7 @@ impl std::fmt::Debug for DatabaseConfig {
         // Mask password in database URL if present
         let masked_url = if let Some(at_pos) = self.url.find('@') {
             if let Some(colon_pos) = self.url[..at_pos].rfind(':') {
-                let scheme_end = self.url.find("://").map(|p| p + 3).unwrap_or(0);
+                let scheme_end = self.url.find("://").map_or(0, |p| p + 3);
                 if colon_pos > scheme_end {
                     // Has password - mask it
                     format!("{}:****@{}", &self.url[..colon_pos], &self.url[at_pos + 1..])
@@ -241,7 +241,7 @@ pub enum RedisDeploymentMode {
 pub struct RedisConfig {
     pub url: String,
     /// **Note**: This field is currently unused. The Redis connection uses a single
-    /// multiplexed `ConnectionManager` (not a pool of connections), so pool_size has
+    /// multiplexed `ConnectionManager` (not a pool of connections), so `pool_size` has
     /// no effect. It is retained for configuration compatibility; removing it would
     /// break existing config files. If a true connection pool is ever introduced,
     /// this field will be wired in.
@@ -264,7 +264,7 @@ impl std::fmt::Debug for RedisConfig {
         let masked_url = if self.url.contains('@') {
             if let Some(at_pos) = self.url.find('@') {
                 if let Some(colon_pos) = self.url[..at_pos].rfind(':') {
-                    let scheme_end = self.url.find("://").map(|p| p + 3).unwrap_or(0);
+                    let scheme_end = self.url.find("://").map_or(0, |p| p + 3);
                     if colon_pos >= scheme_end && colon_pos < at_pos {
                         // Has password - mask it
                         format!("{}:****@{}", &self.url[..colon_pos], &self.url[at_pos + 1..])
@@ -286,7 +286,7 @@ impl std::fmt::Debug for RedisConfig {
             if url.contains('@') {
                 if let Some(at_pos) = url.find('@') {
                     if let Some(colon_pos) = url[..at_pos].rfind(':') {
-                        let scheme_end = url.find("://").map(|p| p + 3).unwrap_or(0);
+                        let scheme_end = url.find("://").map_or(0, |p| p + 3);
                         if colon_pos >= scheme_end && colon_pos < at_pos {
                             return format!("{}:****@{}", &url[..colon_pos], &url[at_pos + 1..]);
                         }
@@ -398,6 +398,21 @@ pub struct LivestreamConfig {
     /// When exceeded, the oldest GOP is evicted even if `gop_cache_size` hasn't
     /// been reached. Default: 100 MB. Set to 0 to use the built-in default (50 MB).
     pub gop_cache_max_memory_mb: u64,
+    /// Whether HLS segment storage is on shared storage accessible by all replicas.
+    ///
+    /// In cluster mode (cluster.enabled=true or `cluster_secret` is set), HLS segments
+    /// must be accessible from any replica. If this is false and cluster mode is
+    /// enabled, a warning is logged at startup. Set to true when using NFS, shared
+    /// volume mounts, or S3-compatible object storage for HLS segments.
+    ///
+    /// Default: false (local storage, single-node safe).
+    pub hls_shared_storage: bool,
+    /// Base path for HLS segment storage.
+    ///
+    /// Used for validation: paths that are obviously local-only (e.g. /tmp/)
+    /// trigger a stronger warning in cluster mode even when `hls_shared_storage=true`.
+    /// If empty, the default in-memory storage is used.
+    pub hls_storage_path: String,
 }
 
 impl Default for LivestreamConfig {
@@ -412,6 +427,8 @@ impl Default for LivestreamConfig {
             pull_max_backoff_ms: 30_000,
             max_flv_tag_size_bytes: 10 * 1024 * 1024,
             gop_cache_max_memory_mb: 100,
+            hls_shared_storage: false,
+            hls_storage_path: String::new(),
         }
     }
 }
@@ -424,7 +441,7 @@ pub struct OAuth2Config {
     /// Provider configurations (e.g., github, google, logto1, logto2)
     #[serde(default)]
     pub providers: serde_json::Value,
-    /// URL scheme for OAuth2 redirect URLs.
+    /// URL scheme for `OAuth2` redirect URLs.
     /// Supported values: "http", "https"
     /// Default: "http" for backward compatibility.
     /// When behind a reverse proxy terminating TLS, set this to "https".
@@ -493,7 +510,7 @@ pub struct WebRTCConfig {
     /// STUN server external address for reflexive candidates.
     /// In K8s/NAT environments, set this to the routable address
     /// (e.g., pod IP or service IP). If empty, falls back to
-    /// advertise_host:stun_port.
+    /// `advertise_host:stun_port`.
     pub stun_external_addr: String,
 
     // TURN Configuration
@@ -888,20 +905,65 @@ impl Config {
                 // Validate origin format
                 if !origin.starts_with("http://") && !origin.starts_with("https://") {
                     errors.push(format!(
-                        "CORS origin '{}' must start with http:// or https://",
-                        origin
+                        "CORS origin '{origin}' must start with http:// or https://"
                     ));
                 }
             }
         }
 
-        // Warn that default HLS MemoryStorage is single-node only in cluster deployments.
-        // Operators should use FileStorage or OssStorage for multi-replica HLS.
-        if !self.server.cluster_secret.is_empty() {
+        // Validate: cluster mode requires Redis.
+        // Redis is essential for cross-replica pub/sub, leader election, node registry,
+        // distributed rate limiting, and brute-force protection. Running cluster mode
+        // without Redis causes silent data loss and broken multi-replica coordination.
+        let cluster_mode_active = self.cluster.enabled || !self.server.cluster_secret.is_empty();
+        if cluster_mode_active && self.redis.url.is_empty() {
+            errors.push(
+                "Redis is required when cluster mode is enabled. \
+                 Configure redis.url (or SYNCTV_REDIS_URL env var) before starting \
+                 with cluster.enabled=true or server.cluster_secret set. \
+                 Redis provides cross-replica pub/sub, leader election, node registry, \
+                 and distributed rate limiting — all mandatory for multi-replica deployments."
+                    .to_string(),
+            );
+        }
+
+        // HLS shared storage validation in cluster mode.
+        // In cluster mode, HLS segments must be on storage accessible by all replicas.
+        // If segments are on local-only storage, clients will receive 404s for segments
+        // served by a replica that did not create them.
+        if cluster_mode_active {
+            if self.livestream.hls_shared_storage {
+                // shared_storage=true but check for obviously-local paths
+                let path = &self.livestream.hls_storage_path;
+                let is_obviously_local = path.starts_with("/tmp/")
+                    || path == "/tmp"
+                    || path.starts_with("/var/tmp/")
+                    || path.starts_with("/dev/shm/");
+                if is_obviously_local {
+                    tracing::warn!(
+                        hls_storage_path = %path,
+                        "livestream.hls_shared_storage=true but hls_storage_path '{}' appears \
+                         to be a local-only path. Ensure this path is actually mounted from \
+                         shared storage (NFS, CSI volume) on every replica, otherwise HLS \
+                         clients will receive 404 errors for segments on other replicas.",
+                        path
+                    );
+                }
+            } else {
+                tracing::warn!(
+                    "Cluster mode is enabled but livestream.hls_shared_storage is false. \
+                     HLS segments stored on node-local storage will NOT be accessible from \
+                     other replicas, causing 404 errors for clients. \
+                     Use a shared volume (NFS, CSI), S3-compatible mount, or set \
+                     livestream.hls_shared_storage=true once shared storage is configured."
+                );
+            }
+        } else {
+            // Single-node: warn about MemoryStorage for observability
             tracing::warn!(
-                "Cluster mode is enabled but the default HLS storage backend is MemoryStorage, \
-                 which is node-local. HLS segments will NOT be shared across replicas. \
-                 For multi-replica HLS, configure FileStorage (shared volume) or OssStorage."
+                "The default HLS storage backend is MemoryStorage, which is node-local. \
+                 HLS segments will NOT be shared across replicas if cluster mode is later enabled. \
+                 For multi-replica HLS, configure shared FileStorage (NFS/CSI volume) or OssStorage."
             );
         }
 
@@ -928,9 +990,16 @@ impl Config {
         // default advertise_host (pod IP) is not reachable from the internet.
         // Without an explicit external address, STUN reflexive candidates will
         // contain internal IPs and WebRTC connections will fail.
-        if self.webrtc.enable_builtin_stun {
-            if self.webrtc.stun_external_addr.is_empty() {
-                if !self.server.cluster_secret.is_empty() {
+        if self.webrtc.enable_builtin_stun
+            && self.webrtc.stun_external_addr.is_empty() {
+                if self.server.cluster_secret.is_empty() {
+                    tracing::warn!(
+                        "webrtc.enable_builtin_stun=true but stun_external_addr is not set. \
+                         STUN server will advertise reflexive candidates using advertise_host. \
+                         This may not work correctly behind NAT or load balancers. \
+                         Set webrtc.stun_external_addr to the server's public IP:port."
+                    );
+                } else {
                     errors.push(
                         "webrtc.stun_external_addr must be set when running in cluster mode \
                          (cluster_secret is configured). In NAT/K8s environments, STUN needs \
@@ -938,23 +1007,15 @@ impl Config {
                          Example: webrtc.stun_external_addr = \"203.0.113.1:3478\""
                             .to_string(),
                     );
-                } else {
-                    tracing::warn!(
-                        "webrtc.enable_builtin_stun=true but stun_external_addr is not set. \
-                         STUN server will advertise reflexive candidates using advertise_host. \
-                         This may not work correctly behind NAT or load balancers. \
-                         Set webrtc.stun_external_addr to the server's public IP:port."
-                    );
                 }
             }
-        }
 
         // **P0-2**: Validate OAuth2 requires Redis
         // OAuth2 uses state storage for CSRF protection during the authorization flow.
         // In multi-replica deployments, the callback request may hit a different replica
         // than the one that generated the auth URL. Without Redis, state lookup fails.
         let oauth2_enabled = self.oauth2.providers.as_object()
-            .map_or(false, |obj| !obj.is_empty());
+            .is_some_and(|obj| !obj.is_empty());
         if oauth2_enabled && self.redis.url.is_empty() {
             errors.push(
                 "OAuth2 requires Redis for state storage in multi-replica deployments. \
@@ -1039,8 +1100,21 @@ impl Default for BootstrapConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ClusterChannelConfig {
+    /// Whether cluster mode is explicitly enabled.
+    ///
+    /// When true, Redis is **mandatory** and startup will fail (not warn) if
+    /// `redis.url` is empty or unset. Cluster mode uses Redis for:
+    /// - Cross-replica pub/sub (`PlaybackStateChanged`, `KickUser`, etc.)
+    /// - Distributed leader election (singleton tasks)
+    /// - Node registry and health monitoring
+    /// - Brute-force protection and rate limiting (shared counters)
+    ///
+    /// Defaults to false (single-node mode). In Kubernetes / Docker Compose
+    /// multi-replica deployments, set this to true.
+    pub enabled: bool,
+
     /// Capacity for the high-priority critical event channel.
-    /// Critical events (KickPublisher, KickUser, PermissionChanged) are never dropped;
+    /// Critical events (`KickPublisher`, `KickUser`, `PermissionChanged`) are never dropped;
     /// when this channel is full, senders block until space is available.
     /// Default: 1000
     pub critical_channel_capacity: usize,
@@ -1053,35 +1127,46 @@ pub struct ClusterChannelConfig {
 
     /// Discovery mode for cluster node registration.
     /// - "redis": Use Redis-based node registry (default, works everywhere)
-    /// - "k8s_dns": Use Kubernetes headless service DNS for peer discovery
-    ///   (requires HEADLESS_SERVICE_NAME and POD_NAMESPACE env vars).
+    /// - "`k8s_dns"`: Use Kubernetes headless service DNS for peer discovery
+    ///   (requires `HEADLESS_SERVICE_NAME` and `POD_NAMESPACE` env vars).
     ///   NOTE: K8s DNS mode still requires Redis for health monitoring, load
     ///   balancing, and cluster pub/sub. DNS only supplements peer discovery
-    ///   (faster detection of new pods). Without Redis, k8s_dns mode provides
-    ///   DNS resolution only -- no NodeRegistry, HealthMonitor, or LoadBalancer.
+    ///   (faster detection of new pods). Without Redis, `k8s_dns` mode provides
+    ///   DNS resolution only -- no `NodeRegistry`, `HealthMonitor`, or `LoadBalancer`.
     pub discovery_mode: String,
 
     /// Leader election mode for singleton operations.
     /// - "redis": Use Redis-based distributed locks (default, works everywhere)
-    /// - "k8s_lease": Use Kubernetes coordination.k8s.io/v1 Lease resource
-    ///   (requires POD_NAME and POD_NAMESPACE env vars, RBAC permissions)
+    /// - "`k8s_lease"`: Use Kubernetes coordination.k8s.io/v1 Lease resource
+    ///   (requires `POD_NAME` and `POD_NAMESPACE` env vars, RBAC permissions)
     pub leader_election_mode: String,
 
     /// Static peer addresses for non-K8s / non-Redis cluster discovery.
     /// When configured, each peer is periodically health-checked via gRPC
-    /// and registered into the NodeRegistry if alive.
+    /// and registered into the `NodeRegistry` if alive.
     /// Example: ["host1:50051", "host2:50051"]
     pub peers: Vec<String>,
+
+    /// How far back (in seconds) to replay Redis Stream events when a new node
+    /// first connects to the cluster.  Replaying recent history ensures that
+    /// events published just before this node subscribed are not silently missed.
+    /// Setting this too large increases startup latency in busy clusters; setting
+    /// it too small risks missing events published during a brief delay between
+    /// Redis subscription and stream snapshot.
+    /// Default: 300 (5 minutes)
+    pub catchup_window_secs: u64,
 }
 
 impl Default for ClusterChannelConfig {
     fn default() -> Self {
         Self {
+            enabled: false,
             critical_channel_capacity: 1000,
             publish_channel_capacity: 10_000,
             discovery_mode: "redis".to_string(),
             leader_election_mode: "redis".to_string(),
             peers: Vec::new(),
+            catchup_window_secs: 300,
         }
     }
 }
@@ -1482,5 +1567,44 @@ mod tests {
         let mut config = valid_prod_config();
         config.redis.deployment_mode = RedisDeploymentMode::Sentinel;
         assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_cluster_enabled_requires_redis() {
+        let mut config = valid_prod_config();
+        config.cluster.enabled = true;
+        config.redis.url = String::new();
+        // cluster.enabled=true with no Redis URL must produce an error
+        let errors = config.validate().unwrap_err();
+        assert!(
+            errors.iter().any(|e| e.contains("Redis is required when cluster mode is enabled")),
+            "Expected cluster+no-redis error, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn test_validate_cluster_enabled_with_redis_ok() {
+        let mut config = valid_prod_config();
+        config.cluster.enabled = true;
+        // redis.url has a default value ("redis://localhost:6379"), so this should pass
+        // (assuming webrtc.stun_external_addr is set for cluster mode)
+        config.webrtc.stun_external_addr = "203.0.113.1:3478".to_string();
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_cluster_secret_without_redis_requires_redis() {
+        let mut config = valid_prod_config();
+        // cluster_secret set (cluster mode active) but no Redis
+        config.server.cluster_secret = "shared-secret".to_string();
+        config.redis.url = String::new();
+        config.webrtc.stun_external_addr = "203.0.113.1:3478".to_string();
+        let errors = config.validate().unwrap_err();
+        assert!(
+            errors.iter().any(|e| e.contains("Redis is required when cluster mode is enabled")),
+            "Expected cluster+no-redis error, got: {:?}",
+            errors
+        );
     }
 }

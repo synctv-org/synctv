@@ -368,7 +368,7 @@ impl JwtService {
 
     /// Get access token duration in seconds
     ///
-    /// Used by OAuth2 token response to report the correct `expires_in` value.
+    /// Used by `OAuth2` token response to report the correct `expires_in` value.
     #[must_use]
     pub const fn access_token_duration_seconds(&self) -> i64 {
         (self.access_token_duration_hours as i64) * 3600

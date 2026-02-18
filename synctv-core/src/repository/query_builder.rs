@@ -51,7 +51,8 @@ impl Default for WhereClauseBuilder {
 
 impl WhereClauseBuilder {
     /// Create an empty builder.
-    pub fn new() -> Self {
+    #[must_use] 
+    pub const fn new() -> Self {
         Self {
             conditions: Vec::new(),
         }
@@ -71,6 +72,7 @@ impl WhereClauseBuilder {
     }
 
     /// The number of bound parameters this builder will consume.
+    #[must_use] 
     pub fn param_count(&self) -> u32 {
         self.conditions
             .iter()
@@ -83,6 +85,7 @@ impl WhereClauseBuilder {
     /// `start_idx` is the first `$N` index to use for parameterized conditions.
     ///
     /// Returns `(sql_fragment, next_unused_index)`.
+    #[must_use] 
     pub fn build(&self, start_idx: u32) -> (String, u32) {
         let mut parts: Vec<String> = Vec::with_capacity(self.conditions.len());
         let mut idx = start_idx;
@@ -93,7 +96,7 @@ impl WhereClauseBuilder {
                     parts.push((*sql).to_string());
                 }
                 Condition::Parameterized { template } => {
-                    parts.push(template.replace("${idx}", &format!("${}", idx)));
+                    parts.push(template.replace("${idx}", &format!("${idx}")));
                     idx += 1;
                 }
             }
@@ -104,6 +107,7 @@ impl WhereClauseBuilder {
 
     /// Convenience: build `WHERE <conditions>` string.  Returns empty string if
     /// there are no conditions.
+    #[must_use] 
     pub fn build_where(&self, start_idx: u32) -> (String, u32) {
         let (body, next) = self.build(start_idx);
         if body.is_empty() {
@@ -115,6 +119,7 @@ impl WhereClauseBuilder {
 }
 
 /// Escape special characters in a search string for use with SQL ILIKE.
+#[must_use] 
 pub fn escape_ilike(search: &str) -> String {
     let escaped = search
         .replace('\\', "\\\\")

@@ -214,7 +214,7 @@ impl ClientApiImpl {
 
         // Resolve username for the UserLeft event before performing the leave
         let username = self.user_service.get_user(&uid).await
-            .map(|u| u.username.clone())
+            .map(|u| u.username)
             .unwrap_or_default();
 
         self.room_service.leave_room(rid.clone(), uid.clone()).await
@@ -308,7 +308,7 @@ impl ClientApiImpl {
         // Publish RoomSettingsChanged cluster event for cross-replica propagation
         if let Some(ref tx) = self.redis_publish_tx {
             let username = self.user_service.get_user(&uid).await
-                .map(|u| u.username.clone())
+                .map(|u| u.username)
                 .unwrap_or_default();
 
             if let Err(e) = tx.send(synctv_cluster::sync::PublishRequest {
@@ -489,7 +489,7 @@ impl ClientApiImpl {
         // Broadcast RoomSettingsChanged cluster event for cross-replica propagation
         if let Some(ref tx) = self.redis_publish_tx {
             let username = self.user_service.get_user(&uid).await
-                .map(|u| u.username.clone())
+                .map(|u| u.username)
                 .unwrap_or_default();
 
             if let Err(e) = tx.send(synctv_cluster::sync::PublishRequest {

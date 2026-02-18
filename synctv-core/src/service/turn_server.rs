@@ -27,7 +27,7 @@ impl Default for StunServerConfig {
 }
 
 /// Returns `true` if the IP is unspecified (0.0.0.0 / ::) or a private/loopback address.
-fn is_unusable_external_ip(ip: &IpAddr) -> bool {
+const fn is_unusable_external_ip(ip: &IpAddr) -> bool {
     if ip.is_unspecified() || ip.is_loopback() {
         return true;
     }
@@ -42,7 +42,7 @@ fn is_unusable_external_ip(ip: &IpAddr) -> bool {
 /// Tries sources in order:
 /// 1. `STUN_EXTERNAL_IP` env var (explicit override)
 /// 2. `POD_IP` env var (Kubernetes downward API)
-/// 3. AWS EC2 instance metadata (IMDSv2)
+/// 3. AWS EC2 instance metadata (`IMDSv2`)
 /// 4. GCP instance metadata
 /// 5. Azure instance metadata (IMDS)
 ///
@@ -163,10 +163,9 @@ pub fn validate_external_addr(addr: &str) -> Result<(), String> {
 
     if is_unusable_external_ip(&sock.ip()) {
         return Err(format!(
-            "STUN external address '{}' is not routable (unspecified, loopback, or private). \
+            "STUN external address '{addr}' is not routable (unspecified, loopback, or private). \
              Set SYNCTV_WEBRTC_STUN_EXTERNAL_ADDR to a public IP, or set STUN_EXTERNAL_IP / POD_IP env var. \
-             In Kubernetes, use the pod's host IP or a LoadBalancer IP.",
-            addr
+             In Kubernetes, use the pod's host IP or a LoadBalancer IP."
         ));
     }
 
@@ -280,6 +279,7 @@ pub struct TurnCredential {
 ///
 /// # Returns
 /// A `TurnCredential` with the generated username, password, and expiry time.
+#[must_use] 
 pub fn generate_turn_credentials(
     shared_secret: &str,
     user_id: &str,

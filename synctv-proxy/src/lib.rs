@@ -25,7 +25,7 @@ const MAX_MANIFEST_SIZE: usize = 10 * 1024 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Overall request timeout for outbound proxy requests.
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+const REQUEST_TIMEOUT: Duration = Duration::from_mins(1);
 
 /// Timeout for reading the response body after headers are received.
 const BODY_READ_TIMEOUT: Duration = Duration::from_secs(30);
@@ -58,16 +58,14 @@ impl reqwest::dns::Resolve for SsrfSafeDnsResolver {
             let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host, 0))
                 .await
                 .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
-                    Box::new(std::io::Error::new(
-                        std::io::ErrorKind::Other,
+                    Box::new(std::io::Error::other(
                         format!("DNS lookup failed for {host}: {e}"),
                     ))
                 })?
                 .collect();
 
             if addrs.is_empty() {
-                return Err(Box::new(std::io::Error::new(
-                    std::io::ErrorKind::Other,
+                return Err(Box::new(std::io::Error::other(
                     format!("DNS lookup for {host} returned no addresses"),
                 )) as Box<dyn std::error::Error + Send + Sync>);
             }
@@ -79,8 +77,7 @@ impl reqwest::dns::Resolve for SsrfSafeDnsResolver {
                 .collect();
 
             if safe_addrs.is_empty() {
-                return Err(Box::new(std::io::Error::new(
-                    std::io::ErrorKind::Other,
+                return Err(Box::new(std::io::Error::other(
                     format!("All resolved IPs for {host} are private/reserved (SSRF blocked)"),
                 )) as Box<dyn std::error::Error + Send + Sync>);
             }
@@ -233,13 +230,13 @@ async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response,
 
     request = apply_provider_headers(request, cfg.url, cfg.provider_headers);
 
-    let proxy_response = send_with_redirect_validation(request).await?;
+    let proxy_result = send_with_redirect_validation(request).await?;
 
     // Retry on 5xx server errors: build a fresh request and retry once.
     // We only retry once to avoid excessive latency for the client.
-    let proxy_response = if proxy_response.status().is_server_error() {
+    let (proxy_response, followed_redirects) = if proxy_result.response.status().is_server_error() {
         tracing::warn!(
-            status = %proxy_response.status(),
+            status = %proxy_result.response.status(),
             url = %cfg.url,
             "Upstream returned server error, retrying once"
         );
@@ -255,9 +252,10 @@ async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response,
             }
         }
         retry_req = apply_provider_headers(retry_req, cfg.url, cfg.provider_headers);
-        send_with_redirect_validation(retry_req).await?
+        let retry_result = send_with_redirect_validation(retry_req).await?;
+        (retry_result.response, retry_result.followed_redirects)
     } else {
-        proxy_response
+        (proxy_result.response, proxy_result.followed_redirects)
     };
 
     let status = proxy_response.status();
@@ -279,14 +277,17 @@ async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response,
     // client would try to decompress already-decoded data).
     // For other encodings (e.g. zstd) that reqwest does NOT handle, we must
     // preserve the header so the client knows to decode it.
-    let reqwest_auto_decompressed = response_headers
+    //
+    // Additionally, when redirects were followed the body has been fully
+    // consumed and re-requested at the final URL; in that case we strip
+    // content-encoding unconditionally because the body is already decoded.
+    let reqwest_auto_decompressed = followed_redirects || response_headers
         .get("content-encoding")
         .and_then(|v| v.to_str().ok())
-        .map(|ce| {
+        .is_some_and(|ce| {
             let ce_lower = ce.to_lowercase();
             ce_lower == "gzip" || ce_lower == "deflate" || ce_lower == "br"
-        })
-        .unwrap_or(false);
+        });
 
     let mut builder = Response::builder().status(status);
 
@@ -381,7 +382,8 @@ pub async fn proxy_m3u8_and_rewrite(
 
     let request = apply_provider_headers(PROXY_CLIENT.get(url), url, provider_headers);
 
-    let proxy_response = send_with_redirect_validation(request).await?;
+    let proxy_result = send_with_redirect_validation(request).await?;
+    let proxy_response = proxy_result.response;
 
     if !proxy_response.status().is_success() {
         return Err(anyhow::anyhow!(
@@ -481,7 +483,8 @@ fn rewrite_m3u8(m3u8: &str, source_url: &str, proxy_base: &str) -> String {
                     break;
                 }
                 let absolute = make_absolute(trimmed, base.as_ref());
-                let proxied = format!("{}?url={}", proxy_base, percent_encode(&absolute));
+                let separator = if proxy_base.contains('?') { '&' } else { '?' };
+                let proxied = format!("{}{separator}url={}", proxy_base, percent_encode(&absolute));
                 output.push_str(&proxied);
             }
         }
@@ -527,7 +530,8 @@ fn rewrite_uri_attribute_with_count(line: &str, base: Option<&url::Url>, proxy_b
         if let Some(end) = remaining.find('"') {
             let uri = &remaining[..end];
             let absolute = make_absolute(uri, base);
-            let proxied = format!("{}?url={}", proxy_base, percent_encode(&absolute));
+            let separator = if proxy_base.contains('?') { '&' } else { '?' };
+            let proxied = format!("{}{separator}url={}", proxy_base, percent_encode(&absolute));
             result.push_str(&proxied);
             result.push('"');
             remaining = &remaining[end + 1..];
@@ -570,6 +574,19 @@ const REDIRECT_PRESERVE_HEADERS: &[&str] = &[
     "if-modified-since",
 ];
 
+/// Result of `send_with_redirect_validation`.
+struct ProxyResponse {
+    /// The final HTTP response after following any redirects.
+    response: reqwest::Response,
+    /// `true` if at least one redirect was followed.
+    ///
+    /// When redirects occurred the response body has been fully consumed and
+    /// re-requested at the final URL, so `Content-Encoding` must be stripped
+    /// from the forwarded headers regardless of the encoding value (the body
+    /// is already decoded by reqwest).
+    followed_redirects: bool,
+}
+
 /// Send a request via the proxy client, manually following redirects with
 /// full async DNS validation on every hop.
 ///
@@ -582,7 +599,7 @@ const REDIRECT_PRESERVE_HEADERS: &[&str] = &[
 /// and client headers are not lost.
 async fn send_with_redirect_validation(
     request: reqwest::RequestBuilder,
-) -> Result<reqwest::Response, anyhow::Error> {
+) -> Result<ProxyResponse, anyhow::Error> {
     // Build the request to capture headers before sending.
     let built = request
         .build()
@@ -636,7 +653,10 @@ async fn send_with_redirect_validation(
             .map_err(|e| anyhow::anyhow!("Redirect request failed: {e}"))?;
     }
 
-    Ok(response)
+    Ok(ProxyResponse {
+        response,
+        followed_redirects: hops > 0,
+    })
 }
 
 // ------------------------------------------------------------------

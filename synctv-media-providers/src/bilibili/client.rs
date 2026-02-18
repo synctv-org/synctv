@@ -65,7 +65,7 @@ static WBI_KEY_CACHE: LazyLock<tokio::sync::Mutex<Option<WbiKeys>>> =
     LazyLock::new(|| tokio::sync::Mutex::new(None));
 
 /// WBI key cache TTL (refresh keys every 30 minutes).
-const WBI_KEY_TTL: Duration = Duration::from_secs(30 * 60);
+const WBI_KEY_TTL: Duration = Duration::from_mins(30);
 
 /// Generate the mixin key from `img_key` and `sub_key` using the encoding table.
 ///
@@ -191,7 +191,7 @@ impl BilibiliClient {
         let json: types::NavResp = json_with_limit(resp).await?;
 
         if json.code != 0 {
-            return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
+            return Err(BilibiliError::Api { code: i64::from(json.code), message: json.message });
         }
 
         let wbi_img = json.data.wbi_img.ok_or_else(|| {
@@ -221,7 +221,7 @@ impl BilibiliClient {
     }
 
     /// Detect if WBI signature is stale based on error response
-    fn is_wbi_stale_error(error: &BilibiliError) -> bool {
+    const fn is_wbi_stale_error(error: &BilibiliError) -> bool {
         match error {
             BilibiliError::Api { code, .. } => {
                 // -352: signature error, -401: unauthorized (could be stale key)
@@ -291,7 +291,7 @@ impl BilibiliClient {
         let json: QrCodeResp = json_with_limit(resp).await?;
 
         if json.code != 0 {
-            return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
+            return Err(BilibiliError::Api { code: i64::from(json.code), message: json.message });
         }
 
         let data = json.data.ok_or_else(|| BilibiliError::Parse("Missing QR code data".to_string()))?;
@@ -337,7 +337,7 @@ impl BilibiliClient {
         let json: LoginResp = json_with_limit(resp).await?;
 
         if json.code != 0 {
-            return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
+            return Err(BilibiliError::Api { code: i64::from(json.code), message: json.message });
         }
 
         let data = json.data.ok_or_else(|| BilibiliError::Parse("Missing login data".to_string()))?;
@@ -380,7 +380,7 @@ impl BilibiliClient {
         let json: CaptchaResp = json_with_limit(resp).await?;
 
         if json.code != 0 {
-            return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
+            return Err(BilibiliError::Api { code: i64::from(json.code), message: json.message });
         }
 
         let data = json.data.ok_or_else(|| BilibiliError::Parse("Missing captcha data".to_string()))?;
@@ -414,7 +414,7 @@ impl BilibiliClient {
         let json: SpiResp = json_with_limit(resp).await?;
 
         if json.code != 0 {
-            return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
+            return Err(BilibiliError::Api { code: i64::from(json.code), message: json.message });
         }
 
         let data = json.data.ok_or_else(|| BilibiliError::Parse("Missing BUVID data".to_string()))?;
@@ -484,7 +484,7 @@ impl BilibiliClient {
         let json: SmsResp = json_with_limit(resp).await?;
 
         if json.code != 0 {
-            return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
+            return Err(BilibiliError::Api { code: i64::from(json.code), message: json.message });
         }
 
         let data = json.data.ok_or_else(|| BilibiliError::Parse("Missing SMS data".to_string()))?;
@@ -542,14 +542,14 @@ impl BilibiliClient {
 
         // Check API-level status before trusting the cookies
         if json.code != 0 {
-            return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
+            return Err(BilibiliError::Api { code: i64::from(json.code), message: json.message });
         }
 
         // Check data.status field -- non-zero indicates SMS login failure
         if let Some(data) = &json.data {
             if data.status != 0 {
                 return Err(BilibiliError::Api {
-                    code: data.status as i64,
+                    code: i64::from(data.status),
                     message: format!("SMS login failed with status: {}", data.status),
                 });
             }
@@ -777,7 +777,7 @@ impl BilibiliClient {
                 let json: types::VideoPageInfoResp = json_with_limit(resp).await?;
 
                 if json.code != 0 {
-                    return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
+                    return Err(BilibiliError::Api { code: i64::from(json.code), message: json.message });
                 }
 
                 let data = json.data;
@@ -835,7 +835,7 @@ impl BilibiliClient {
                 let json: types::VideoUrlResp = json_with_limit(resp).await?;
 
                 if json.code != 0 {
-                    return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
+                    return Err(BilibiliError::Api { code: i64::from(json.code), message: json.message });
                 }
 
                 let data = json.data;
@@ -918,7 +918,7 @@ impl BilibiliClient {
                 let json: types::DashVideoResp = json_with_limit(resp).await?;
 
                 if json.code != 0 {
-                    return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
+                    return Err(BilibiliError::Api { code: i64::from(json.code), message: json.message });
                 }
 
                 // Parse DASH data into structured format
@@ -957,7 +957,7 @@ impl BilibiliClient {
                 let json: types::PlayerV2InfoResp = json_with_limit(resp).await?;
 
                 if json.code != 0 {
-                    return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
+                    return Err(BilibiliError::Api { code: i64::from(json.code), message: json.message });
                 }
 
                 let mut subtitles = HashMap::new();
@@ -1002,7 +1002,7 @@ impl BilibiliClient {
                 let json: types::NavResp = json_with_limit(resp).await?;
 
                 if json.code != 0 {
-                    return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
+                    return Err(BilibiliError::Api { code: i64::from(json.code), message: json.message });
                 }
 
                 let data = json.data;
@@ -1039,7 +1039,7 @@ impl BilibiliClient {
                 let json: types::SeasonInfoResp = json_with_limit(resp).await?;
 
                 if json.code != 0 {
-                    return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
+                    return Err(BilibiliError::Api { code: i64::from(json.code), message: json.message });
                 }
 
                 let result = json.result;
@@ -1083,7 +1083,7 @@ impl BilibiliClient {
             let cookie_header = cookie_header.clone();
             async move {
                 let mut req = client.get("https://api.bilibili.com/pgc/player/web/playurl")
-                    .query(&[("ep_id", epid), ("cid", cid), ("qn", qn as u64)]);
+                    .query(&[("ep_id", epid), ("cid", cid), ("qn", u64::from(qn))]);
                 req = req.header("Referer", REFERER);
                 if let Some(ref cookies) = cookie_header {
                     req = req.header("Cookie", cookies.as_str());
@@ -1092,7 +1092,7 @@ impl BilibiliClient {
                 let json: types::PgcUrlResp = json_with_limit(resp).await?;
 
                 if json.code != 0 {
-                    return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
+                    return Err(BilibiliError::Api { code: i64::from(json.code), message: json.message });
                 }
 
                 let result = json.result;
@@ -1136,7 +1136,7 @@ impl BilibiliClient {
                 let json: types::DashPgcResp = json_with_limit(resp).await?;
 
                 if json.code != 0 {
-                    return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
+                    return Err(BilibiliError::Api { code: i64::from(json.code), message: json.message });
                 }
 
                 let dash_info = json.result.dash;
@@ -1199,7 +1199,7 @@ impl BilibiliClient {
                 let json: types::ParseLivePageResp = json_with_limit(resp).await?;
 
                 if json.code != 0 {
-                    return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
+                    return Err(BilibiliError::Api { code: i64::from(json.code), message: json.message });
                 }
 
                 let data = json.data;
@@ -1275,7 +1275,7 @@ impl BilibiliClient {
 
                 if json.code != 0 {
                     return Err(BilibiliError::Api {
-                        code: json.code as i64,
+                        code: i64::from(json.code),
                         message: json.message,
                     });
                 }
@@ -1341,7 +1341,7 @@ impl BilibiliClient {
                 let json: types::GetLiveDanmuInfoResp = json_with_limit(resp).await?;
 
                 if json.code != 0 {
-                    return Err(BilibiliError::Api { code: json.code as i64, message: json.message });
+                    return Err(BilibiliError::Api { code: i64::from(json.code), message: json.message });
                 }
 
                 let data = json.data;
@@ -1389,7 +1389,7 @@ impl BilibiliClient {
 
         // Connect to WebSocket
         let (ws_stream, _) = connect_async(&ws_url).await.map_err(|e| {
-            BilibiliError::Parse(format!("Failed to connect to danmaku WebSocket: {}", e))
+            BilibiliError::Parse(format!("Failed to connect to danmaku WebSocket: {e}"))
         })?;
 
         let (mut write, read) = ws_stream.split();
@@ -1397,7 +1397,7 @@ impl BilibiliClient {
         // Send authentication packet
         let auth_packet = build_auth_packet(room_id, &danmu_info.token);
         write.send(Message::Binary(auth_packet.into())).await.map_err(|e| {
-            BilibiliError::Parse(format!("Failed to send auth packet: {}", e))
+            BilibiliError::Parse(format!("Failed to send auth packet: {e}"))
         })?;
 
         Ok(LiveDanmakuConnection {
@@ -1437,7 +1437,7 @@ impl LiveDanmakuConnection {
                 Err(BilibiliError::Parse("Danmaku WebSocket connection closed by server".to_string()))
             }
             Some(Ok(_)) => Ok(Vec::new()), // Ignore non-binary messages (ping/pong/text)
-            Some(Err(e)) => Err(BilibiliError::Parse(format!("WebSocket error: {}", e))),
+            Some(Err(e)) => Err(BilibiliError::Parse(format!("WebSocket error: {e}"))),
             None => {
                 // Stream ended = connection closed unexpectedly
                 Err(BilibiliError::Parse("Danmaku WebSocket connection closed".to_string()))
@@ -1450,12 +1450,12 @@ impl LiveDanmakuConnection {
         let mut write = self.write.lock().await;
         let heartbeat_packet = build_heartbeat_packet();
         write.send(Message::Binary(heartbeat_packet.into())).await.map_err(|e| {
-            BilibiliError::Parse(format!("Failed to send heartbeat: {}", e))
+            BilibiliError::Parse(format!("Failed to send heartbeat: {e}"))
         })
     }
 
     /// Get room ID
-    pub fn room_id(&self) -> u64 {
+    pub const fn room_id(&self) -> u64 {
         self.room_id
     }
 }
@@ -1686,7 +1686,7 @@ fn parse_danmaku_cmd(cmd: &str, json: &serde_json::Value) -> DanmakuMessage {
             if let Some(data) = data {
                 let user = data.get("uname").and_then(|v| v.as_str()).unwrap_or("Unknown").to_string();
                 let gift_name = data.get("giftName").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let count = data.get("num").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
+                let count = data.get("num").and_then(serde_json::Value::as_u64).unwrap_or(1) as u32;
                 return DanmakuMessage::Gift {
                     user,
                     gift_name,
@@ -1970,6 +1970,7 @@ fn parse_dash_info(
 }
 
 /// Generate DASH MPD XML from structured data
+#[must_use] 
 pub fn generate_mpd_xml(dash_data: &DashData) -> String {
     let mut mpd = String::new();
 
@@ -1986,7 +1987,7 @@ pub fn generate_mpd_xml(dash_data: &DashData) -> String {
     mpd.push('\n');
 
     // Period
-    mpd.push_str(r#"  <Period>"#);
+    mpd.push_str(r"  <Period>");
     mpd.push('\n');
 
     // Video AdaptationSet
@@ -2009,12 +2010,12 @@ pub fn generate_mpd_xml(dash_data: &DashData) -> String {
             mpd.push('\n');
 
             // BaseURL
-            mpd.push_str(&format!(r#"        <BaseURL>{}</BaseURL>"#, escape_xml(&video.base_url)));
+            mpd.push_str(&format!(r"        <BaseURL>{}</BaseURL>", escape_xml(&video.base_url)));
             mpd.push('\n');
 
             // Backup URLs
             for backup_url in &video.backup_urls {
-                mpd.push_str(&format!(r#"        <BaseURL>{}</BaseURL>"#, escape_xml(backup_url)));
+                mpd.push_str(&format!(r"        <BaseURL>{}</BaseURL>", escape_xml(backup_url)));
                 mpd.push('\n');
             }
 
@@ -2029,14 +2030,14 @@ pub fn generate_mpd_xml(dash_data: &DashData) -> String {
                 video.segment_base.initialization_range
             ));
             mpd.push('\n');
-            mpd.push_str(r#"        </SegmentBase>"#);
+            mpd.push_str(r"        </SegmentBase>");
             mpd.push('\n');
 
-            mpd.push_str(r#"      </Representation>"#);
+            mpd.push_str(r"      </Representation>");
             mpd.push('\n');
         }
 
-        mpd.push_str(r#"    </AdaptationSet>"#);
+        mpd.push_str(r"    </AdaptationSet>");
         mpd.push('\n');
     }
 
@@ -2057,12 +2058,12 @@ pub fn generate_mpd_xml(dash_data: &DashData) -> String {
             mpd.push('\n');
 
             // BaseURL
-            mpd.push_str(&format!(r#"        <BaseURL>{}</BaseURL>"#, escape_xml(&audio.base_url)));
+            mpd.push_str(&format!(r"        <BaseURL>{}</BaseURL>", escape_xml(&audio.base_url)));
             mpd.push('\n');
 
             // Backup URLs
             for backup_url in &audio.backup_urls {
-                mpd.push_str(&format!(r#"        <BaseURL>{}</BaseURL>"#, escape_xml(backup_url)));
+                mpd.push_str(&format!(r"        <BaseURL>{}</BaseURL>", escape_xml(backup_url)));
                 mpd.push('\n');
             }
 
@@ -2077,21 +2078,21 @@ pub fn generate_mpd_xml(dash_data: &DashData) -> String {
                 audio.segment_base.initialization_range
             ));
             mpd.push('\n');
-            mpd.push_str(r#"        </SegmentBase>"#);
+            mpd.push_str(r"        </SegmentBase>");
             mpd.push('\n');
 
-            mpd.push_str(r#"      </Representation>"#);
+            mpd.push_str(r"      </Representation>");
             mpd.push('\n');
         }
 
-        mpd.push_str(r#"    </AdaptationSet>"#);
+        mpd.push_str(r"    </AdaptationSet>");
         mpd.push('\n');
     }
 
     // Close Period and MPD
-    mpd.push_str(r#"  </Period>"#);
+    mpd.push_str(r"  </Period>");
     mpd.push('\n');
-    mpd.push_str(r#"</MPD>"#);
+    mpd.push_str(r"</MPD>");
 
     mpd
 }

@@ -11,7 +11,7 @@ use crate::impls::ApiError;
 
 impl ClientApiImpl {
     /// Start playback of a specific media
-    /// HTTP API: POST /api/rooms/{room_id}/playback/start
+    /// HTTP API: POST /`api/rooms/{room_id}/playback/start`
     pub async fn start_playback(
         &self,
         user_id: &str,
@@ -36,7 +36,7 @@ impl ClientApiImpl {
     }
 
     /// Stop current playback
-    /// HTTP API: POST /api/rooms/{room_id}/playback/stop
+    /// HTTP API: POST /`api/rooms/{room_id}/playback/stop`
     pub async fn stop_playback(
         &self,
         user_id: &str,
@@ -60,7 +60,7 @@ impl ClientApiImpl {
     }
 
     /// Get current playback state and complete playback information
-    /// HTTP API: GET /api/rooms/{room_id}/playback
+    /// HTTP API: GET /`api/rooms/{room_id}/playback`
     pub async fn get_playback(
         &self,
         user_id: &str,
@@ -112,7 +112,7 @@ impl ClientApiImpl {
                 let provider = providers_manager
                     .get(instance_name)
                     .await
-                    .ok_or_else(|| ApiError::NotFound(format!("Provider instance '{}' not found", instance_name)))?;
+                    .ok_or_else(|| ApiError::NotFound(format!("Provider instance '{instance_name}' not found")))?;
 
                 let ctx = ProviderContext::new("synctv")
                     .with_user_id(user_id)
@@ -240,7 +240,7 @@ impl ClientApiImpl {
         Ok(())
     }
 
-    /// Handle SetPlaybackSpeed command from WebSocket
+    /// Handle `SetPlaybackSpeed` command from WebSocket
     pub async fn handle_set_speed_command(
         &self,
         user_id: &str,

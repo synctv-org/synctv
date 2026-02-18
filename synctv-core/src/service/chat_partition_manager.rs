@@ -122,7 +122,7 @@ impl ChatPartitionManager {
     ///
     /// The task will shut down gracefully when the provided `CancellationToken` is cancelled.
     ///
-    /// Note: Per-room message limit cleanup is handled by ChatService.start_cleanup_task()
+    /// Note: Per-room message limit cleanup is handled by `ChatService.start_cleanup_task()`
     /// which runs more frequently (every 60 seconds) for near real-time enforcement.
     #[must_use]
     pub fn start_auto_management(&self, check_interval_hours: u64, cancel: CancellationToken) -> tokio::task::JoinHandle<()> {

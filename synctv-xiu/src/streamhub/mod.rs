@@ -215,8 +215,23 @@ impl StreamDataTransceiver {
                             // to trigger cleanup of the streams HashMap entry.
                             tracing::warn!("Frame data receiver closed (publisher dropped)");
                             if let Some(sender) = &event_sender {
-                                if let Err(e) = sender.try_send(TransceiverEvent::UnPublish {}) {
-                                    tracing::error!("Failed to send synthetic UnPublish: {e}");
+                                // Use a retry loop to ensure UnPublish is not silently
+                                // dropped when the channel is full (zombie stream prevention).
+                                let mut sent = false;
+                                for _ in 0..3 {
+                                    match sender.try_send(TransceiverEvent::UnPublish {}) {
+                                        Ok(()) => { sent = true; break; }
+                                        Err(mpsc::error::TrySendError::Full(_)) => {
+                                            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+                                        }
+                                        Err(e) => {
+                                            tracing::error!("Failed to send synthetic UnPublish (channel closed): {e}");
+                                            break;
+                                        }
+                                    }
+                                }
+                                if !sent {
+                                    tracing::error!("Failed to send synthetic UnPublish after retries: channel full or closed (zombie stream risk)");
                                 }
                             }
                             break;
@@ -292,8 +307,23 @@ impl StreamDataTransceiver {
                             // H-3: Publisher dropped — send synthetic UnPublish
                             tracing::warn!("Packet data receiver closed (publisher dropped)");
                             if let Some(sender) = &event_sender {
-                                if let Err(e) = sender.try_send(TransceiverEvent::UnPublish {}) {
-                                    tracing::error!("Failed to send synthetic UnPublish: {e}");
+                                // Use a retry loop to ensure UnPublish is not silently
+                                // dropped when the channel is full (zombie stream prevention).
+                                let mut sent = false;
+                                for _ in 0..3 {
+                                    match sender.try_send(TransceiverEvent::UnPublish {}) {
+                                        Ok(()) => { sent = true; break; }
+                                        Err(mpsc::error::TrySendError::Full(_)) => {
+                                            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+                                        }
+                                        Err(e) => {
+                                            tracing::error!("Failed to send synthetic UnPublish (channel closed): {e}");
+                                            break;
+                                        }
+                                    }
+                                }
+                                if !sent {
+                                    tracing::error!("Failed to send synthetic UnPublish after retries: channel full or closed (zombie stream risk)");
                                 }
                             }
                             break;

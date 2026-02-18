@@ -56,9 +56,9 @@ const IP_ATTEMPTS_TTL_SECS: u64 = 600;
 pub struct BruteForceProtection {
     redis_conn: Option<redis::aio::ConnectionManager>,
     key_builder: KeyBuilder,
-    /// In-memory fallback: username -> (attempt_count, last_attempt_timestamp)
+    /// In-memory fallback: username -> (`attempt_count`, `last_attempt_timestamp`)
     local_attempts: Arc<moka::future::Cache<String, (u64, i64)>>,
-    /// In-memory fallback for per-IP tracking: ip -> (attempt_count, last_attempt_timestamp)
+    /// In-memory fallback for per-IP tracking: ip -> (`attempt_count`, `last_attempt_timestamp`)
     local_ip_attempts: Arc<moka::future::Cache<String, (u64, i64)>>,
 }
 
@@ -74,6 +74,7 @@ impl BruteForceProtection {
     /// Create a new brute-force protection service.
     ///
     /// Falls back to in-memory tracking when Redis is not available.
+    #[must_use] 
     pub fn new(redis_conn: Option<redis::aio::ConnectionManager>, key_prefix: String) -> Self {
         Self {
             redis_conn,
@@ -169,7 +170,7 @@ impl BruteForceProtection {
             // Uses a Lua script for atomicity so concurrent failures don't
             // lose updates.
             let script = redis::Script::new(
-                r#"
+                r"
                 local raw = redis.call('GET', KEYS[1])
                 local count = 0
                 if raw then
@@ -184,7 +185,7 @@ impl BruteForceProtection {
                 local new_state = cjson.encode({count = count, last_failure_at = tonumber(ARGV[1])})
                 redis.call('SET', KEYS[1], new_state, 'EX', tonumber(ARGV[2]))
                 return count
-                "#,
+                ",
             );
 
             let result: std::result::Result<u64, _> = tokio::time::timeout(
@@ -260,7 +261,7 @@ impl BruteForceProtection {
             let key = self.key_builder.login_attempts_ip(&ip_str);
 
             let script = redis::Script::new(
-                r#"
+                r"
                 local raw = redis.call('GET', KEYS[1])
                 local count = 0
                 if raw then
@@ -273,7 +274,7 @@ impl BruteForceProtection {
                 local new_state = cjson.encode({count = count, last_failure_at = tonumber(ARGV[1])})
                 redis.call('SET', KEYS[1], new_state, 'EX', tonumber(ARGV[2]))
                 return count
-                "#,
+                ",
             );
 
             let result: std::result::Result<u64, _> = tokio::time::timeout(
@@ -331,16 +332,13 @@ impl BruteForceProtection {
             )
                 .await;
 
-            let redis_result = match redis_result {
-                Ok(inner) => inner,
-                Err(_) => {
-                    tracing::warn!(
-                        ip = %ip,
-                        "Redis timeout in IP brute-force check, falling back to in-memory cache"
-                    );
-                    let (count, ts) = self.local_ip_attempts.get(&key).await.unwrap_or((0, 0));
-                    return Ok((count, ts));
-                }
+            let redis_result = if let Ok(inner) = redis_result { inner } else {
+                tracing::warn!(
+                    ip = %ip,
+                    "Redis timeout in IP brute-force check, falling back to in-memory cache"
+                );
+                let (count, ts) = self.local_ip_attempts.get(&key).await.unwrap_or((0, 0));
+                return Ok((count, ts));
             };
 
             match redis_result {
@@ -384,17 +382,14 @@ impl BruteForceProtection {
                 .await;
 
             // Flatten timeout into a Redis-style error for unified fallback handling
-            let redis_result = match redis_result {
-                Ok(inner) => inner,
-                Err(_) => {
-                    tracing::warn!(
-                        username = %username,
-                        "Redis timeout in brute-force check, falling back to in-memory cache"
-                    );
-                    // Fall through to in-memory lookup below
-                    let (count, ts) = self.local_attempts.get(&key).await.unwrap_or((0, 0));
-                    return Ok((count, ts));
-                }
+            let redis_result = if let Ok(inner) = redis_result { inner } else {
+                tracing::warn!(
+                    username = %username,
+                    "Redis timeout in brute-force check, falling back to in-memory cache"
+                );
+                // Fall through to in-memory lookup below
+                let (count, ts) = self.local_attempts.get(&key).await.unwrap_or((0, 0));
+                return Ok((count, ts));
             };
 
             match redis_result {
@@ -430,7 +425,7 @@ impl BruteForceProtection {
     /// Determine lockout duration based on failure count.
     ///
     /// Returns `Some(seconds)` if locked out, `None` if allowed.
-    fn lockout_duration(attempts: u64) -> Option<u64> {
+    const fn lockout_duration(attempts: u64) -> Option<u64> {
         if attempts >= TIER3_THRESHOLD {
             Some(TIER3_LOCKOUT_SECS)
         } else if attempts >= TIER2_THRESHOLD {

@@ -19,7 +19,7 @@ pub type ProviderFactory =
 /// Each provider type registers a factory function.
 ///
 /// Factories are behind a `parking_lot::RwLock` (registered at startup, rarely mutated).
-/// Unlike `std::sync::RwLock`, parking_lot's RwLock does not poison on panic.
+/// Unlike `std::sync::RwLock`, `parking_lot`'s `RwLock` does not poison on panic.
 /// Instances use `DashMap` for lock-free concurrent reads.
 pub struct ProviderRegistry {
     /// Registered provider factories by type name

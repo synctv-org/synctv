@@ -64,8 +64,8 @@ pub fn is_blocked_ipv4(ip: &Ipv4Addr) -> bool {
 /// Check if an IPv6 address is private, reserved, or otherwise not a valid
 /// public HTTP target.
 ///
-/// Covers: loopback (::1), unspecified (::), unique local (fc00::/7),
-/// link-local (fe80::/10), IPv4-mapped private addresses.
+/// Covers: loopback (`::1`), unspecified (::), unique local (`fc00::/7`),
+/// link-local (`fe80::/10`), IPv4-mapped private addresses.
 #[must_use]
 pub fn is_blocked_ipv6(ip: &Ipv6Addr) -> bool {
     // Loopback (::1)
@@ -117,8 +117,8 @@ pub enum SsrfCheckResult {
 impl SsrfCheckResult {
     /// Returns `true` if the check passed.
     #[must_use]
-    pub fn is_ok(&self) -> bool {
-        matches!(self, SsrfCheckResult::Ok)
+    pub const fn is_ok(&self) -> bool {
+        matches!(self, Self::Ok)
     }
 }
 

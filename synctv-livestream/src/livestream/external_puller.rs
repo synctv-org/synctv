@@ -270,7 +270,7 @@ impl ExternalStreamPuller {
             }
 
             /// Minimum connection duration to consider "successful" for retry reset
-            const MIN_SUCCESSFUL_DURATION: std::time::Duration = std::time::Duration::from_secs(60);
+            const MIN_SUCCESSFUL_DURATION: std::time::Duration = std::time::Duration::from_mins(1);
 
             match result {
                 Ok(()) => {

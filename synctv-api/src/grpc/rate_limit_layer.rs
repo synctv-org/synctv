@@ -47,6 +47,7 @@ impl GrpcRateLimitLayer {
     ///
     /// The tier is determined per-request from the gRPC service path.
     /// The `config` is used for trusted-proxy validation when extracting client IPs.
+    #[must_use] 
     pub fn new(rate_limiter: RateLimiter, window_seconds: u64, config: Arc<Config>) -> Self {
         Self {
             rate_limiter: Arc::new(rate_limiter),
@@ -175,7 +176,7 @@ fn extract_client_id(headers: &http::HeaderMap, config: &Config) -> String {
                 .ok()
                 .map(|token| {
                     let hash = Sha256::digest(token.as_bytes());
-                    format!("user:{:x}", hash)
+                    format!("user:{hash:x}")
                 })
         })
     {

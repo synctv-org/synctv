@@ -1,29 +1,29 @@
-//! PostgreSQL LISTEN/NOTIFY-based change listener for cluster-wide resource cleanup.
+//! `PostgreSQL` LISTEN/NOTIFY-based change listener for cluster-wide resource cleanup.
 //!
 //! This module provides a database-driven change notification mechanism that replaces
-//! the WAL (Write-Ahead Log) approach with PostgreSQL's native LISTEN/NOTIFY feature.
+//! the WAL (Write-Ahead Log) approach with `PostgreSQL`'s native LISTEN/NOTIFY feature.
 //!
 //! ## Architecture
 //!
 //! When critical resources (users, rooms, playlists, media) are deleted from the database,
-//! PostgreSQL triggers send notifications via LISTEN/NOTIFY channels. All cluster nodes
+//! `PostgreSQL` triggers send notifications via LISTEN/NOTIFY channels. All cluster nodes
 //! listen to these channels and perform local cleanup actions:
 //!
-//! - **UserDeleted**: Clear user caches, disconnect user connections, invalidate permissions
-//! - **RoomDeleted**: Clear room caches, disconnect room connections, invalidate room state
-//! - **PlaylistDeleted**: Clear playlist caches
-//! - **MediaDeleted**: Clear media caches
+//! - **`UserDeleted`**: Clear user caches, disconnect user connections, invalidate permissions
+//! - **`RoomDeleted`**: Clear room caches, disconnect room connections, invalidate room state
+//! - **`PlaylistDeleted`**: Clear playlist caches
+//! - **`MediaDeleted`**: Clear media caches
 //!
 //! ## Benefits over WAL
 //!
 //! 1. **Stateless**: No persistent storage required (no PVC in Kubernetes)
-//! 2. **Native**: Uses PostgreSQL's built-in pub/sub (no external dependencies)
+//! 2. **Native**: Uses `PostgreSQL`'s built-in pub/sub (no external dependencies)
 //! 3. **Reliable**: DELETE triggers guarantee notifications are sent
 //! 4. **Simple**: No file rotation, replay logic, or cleanup needed
 //!
 //! ## Database Triggers
 //!
-//! Triggers are created via database migrations (see migrations/xxx_change_triggers.sql):
+//! Triggers are created via database migrations (see `migrations/xxx_change_triggers.sql)`:
 //!
 //! ```sql
 //! CREATE OR REPLACE FUNCTION notify_user_deleted()
@@ -58,7 +58,7 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
-/// Change event types sent via PostgreSQL LISTEN/NOTIFY
+/// Change event types sent via `PostgreSQL` LISTEN/NOTIFY
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ChangeEvent {
@@ -86,7 +86,8 @@ pub enum ChangeEvent {
 
 impl ChangeEvent {
     /// Get the event type as a string for logging
-    pub fn event_type(&self) -> &'static str {
+    #[must_use] 
+    pub const fn event_type(&self) -> &'static str {
         match self {
             Self::UserDeleted { .. } => "user_deleted",
             Self::RoomDeleted { .. } => "room_deleted",
@@ -96,6 +97,7 @@ impl ChangeEvent {
     }
 
     /// Get the resource ID from the event
+    #[must_use] 
     pub fn resource_id(&self) -> &str {
         match self {
             Self::UserDeleted { user_id, .. } => user_id,
@@ -141,7 +143,7 @@ pub trait ChangeHandler: Send + Sync {
     async fn handle_media_deleted(&self, media_id: &str) -> Result<()>;
 }
 
-/// PostgreSQL LISTEN/NOTIFY change listener
+/// `PostgreSQL` LISTEN/NOTIFY change listener
 ///
 /// Listens to database notifications for resource deletions and invokes
 /// the registered handler to perform local cleanup actions.
@@ -152,7 +154,7 @@ pub struct PostgresChangeListener {
 }
 
 impl PostgresChangeListener {
-    /// PostgreSQL notification channels (must match trigger definitions)
+    /// `PostgreSQL` notification channels (must match trigger definitions)
     const CHANNEL_USER_DELETED: &'static str = "synctv_user_deleted";
     const CHANNEL_ROOM_DELETED: &'static str = "synctv_room_deleted";
     const CHANNEL_PLAYLIST_DELETED: &'static str = "synctv_playlist_deleted";
@@ -162,7 +164,7 @@ impl PostgresChangeListener {
     ///
     /// # Arguments
     ///
-    /// * `db_pool` - PostgreSQL connection pool
+    /// * `db_pool` - `PostgreSQL` connection pool
     /// * `handler` - Handler for processing change events
     pub fn new(db_pool: PgPool, handler: Arc<dyn ChangeHandler>) -> Self {
         Self {
@@ -173,13 +175,14 @@ impl PostgresChangeListener {
     }
 
     /// Get the cancellation token for external shutdown signaling
+    #[must_use] 
     pub fn cancel_token(&self) -> CancellationToken {
         self.cancel_token.clone()
     }
 
     /// Start listening for change notifications
     ///
-    /// This spawns a background task that listens to PostgreSQL NOTIFY channels
+    /// This spawns a background task that listens to `PostgreSQL` NOTIFY channels
     /// and processes events through the registered handler.
     ///
     /// The task automatically reconnects if the database connection is lost.
@@ -228,7 +231,7 @@ impl PostgresChangeListener {
                     result = listener.recv() => {
                         match result {
                             Ok(notification) => {
-                                if let Err(e) = self.handle_notification(&notification.channel(), notification.payload()).await {
+                                if let Err(e) = self.handle_notification(notification.channel(), notification.payload()).await {
                                     error!(
                                         channel = %notification.channel(),
                                         payload = %notification.payload(),
@@ -251,7 +254,7 @@ impl PostgresChangeListener {
         Ok(())
     }
 
-    /// Handle a notification from PostgreSQL
+    /// Handle a notification from `PostgreSQL`
     async fn handle_notification(&self, channel: &str, payload: &str) -> Result<()> {
         debug!(channel = %channel, payload = %payload, "Received PostgreSQL notification");
 
@@ -267,9 +270,7 @@ impl PostgresChangeListener {
                         .to_string(),
                     timestamp: data["timestamp"]
                         .as_str()
-                        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-                        .map(|dt| dt.with_timezone(&Utc))
-                        .unwrap_or_else(Utc::now),
+                        .and_then(|s| DateTime::parse_from_rfc3339(s).ok()).map_or_else(Utc::now, |dt| dt.with_timezone(&Utc)),
                 }
             }
             Self::CHANNEL_ROOM_DELETED => {
@@ -282,9 +283,7 @@ impl PostgresChangeListener {
                         .to_string(),
                     timestamp: data["timestamp"]
                         .as_str()
-                        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-                        .map(|dt| dt.with_timezone(&Utc))
-                        .unwrap_or_else(Utc::now),
+                        .and_then(|s| DateTime::parse_from_rfc3339(s).ok()).map_or_else(Utc::now, |dt| dt.with_timezone(&Utc)),
                 }
             }
             Self::CHANNEL_PLAYLIST_DELETED => {
@@ -297,9 +296,7 @@ impl PostgresChangeListener {
                         .to_string(),
                     timestamp: data["timestamp"]
                         .as_str()
-                        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-                        .map(|dt| dt.with_timezone(&Utc))
-                        .unwrap_or_else(Utc::now),
+                        .and_then(|s| DateTime::parse_from_rfc3339(s).ok()).map_or_else(Utc::now, |dt| dt.with_timezone(&Utc)),
                 }
             }
             Self::CHANNEL_MEDIA_DELETED => {
@@ -312,9 +309,7 @@ impl PostgresChangeListener {
                         .to_string(),
                     timestamp: data["timestamp"]
                         .as_str()
-                        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-                        .map(|dt| dt.with_timezone(&Utc))
-                        .unwrap_or_else(Utc::now),
+                        .and_then(|s| DateTime::parse_from_rfc3339(s).ok()).map_or_else(Utc::now, |dt| dt.with_timezone(&Utc)),
                 }
             }
             _ => {

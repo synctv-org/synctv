@@ -216,7 +216,7 @@ impl PermissionService {
                 if cache_degraded_for_recovery.load(Ordering::Acquire) {
                     let should_recover = {
                         let started = degradation_started_for_recovery.lock();
-                        started.map_or(false, |start_time| {
+                        started.is_some_and(|start_time| {
                             start_time.elapsed() >= Duration::from_secs(Self::MAX_DEGRADATION_DURATION_SECS)
                         })
                     };

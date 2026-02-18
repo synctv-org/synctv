@@ -228,7 +228,7 @@ impl ProviderInstanceRepository {
         Ok(())
     }
 
-    /// Migrate plaintext jwt_secret and custom_ca to encrypted format.
+    /// Migrate plaintext `jwt_secret` and `custom_ca` to encrypted format.
     ///
     /// Runs inside a single database transaction so that a crash mid-migration
     /// will not leave a mix of encrypted and plaintext rows. Safe to run

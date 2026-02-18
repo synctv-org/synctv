@@ -107,6 +107,7 @@ impl ProviderRegistry {
     }
 
     /// Get a registered factory function by type.
+    #[must_use] 
     pub fn get_factory(&self, provider_type: &str) -> Option<ProviderFactory> {
         let registry = self.factories.read();
         registry.get(provider_type).copied()

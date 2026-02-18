@@ -63,6 +63,7 @@ pub struct TurnServer {
 pub struct TurnServerList(pub Vec<TurnServer>);
 
 impl TurnServerList {
+    #[must_use] 
     pub const fn new() -> Self {
         Self(Vec::new())
     }
@@ -107,6 +108,7 @@ impl std::str::FromStr for TurnServerList {
 pub struct StunServerList(pub Vec<String>);
 
 impl StunServerList {
+    #[must_use] 
     pub fn new() -> Self {
         Self(vec![
             "stun:stun.l.google.com:19302".to_string(),

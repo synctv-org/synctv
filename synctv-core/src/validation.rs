@@ -16,7 +16,7 @@ pub const USERNAME_MAX: usize = 50;
 
 /// Minimum user-account password length
 pub const PASSWORD_MIN: usize = 8;
-/// Maximum password length (prevent bcrypt DoS; bcrypt input limit is 72 bytes,
+/// Maximum password length (prevent bcrypt `DoS`; bcrypt input limit is 72 bytes,
 /// but we allow up to 128 for pre-hashing schemes)
 pub const PASSWORD_MAX: usize = 128;
 
@@ -31,7 +31,7 @@ pub const ROOM_NAME_MIN: usize = 1;
 /// Maximum room name length
 pub const ROOM_NAME_MAX: usize = 100;
 
-/// Maximum room description length (must match DB constraint rooms_description_length_check)
+/// Maximum room description length (must match DB constraint `rooms_description_length_check`)
 pub const ROOM_DESCRIPTION_MAX: usize = 500;
 
 /// Validation error
@@ -149,7 +149,7 @@ impl PasswordValidator {
 
     /// Create a `PasswordValidator` from a `PasswordComplexityConfig`.
     #[must_use]
-    pub fn from_config(config: &crate::config::PasswordComplexityConfig) -> Self {
+    pub const fn from_config(config: &crate::config::PasswordComplexityConfig) -> Self {
         Self {
             min_length: config.min_length,
             require_uppercase: config.require_uppercase,

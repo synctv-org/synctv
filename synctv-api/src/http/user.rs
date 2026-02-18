@@ -166,6 +166,24 @@ pub async fn delete_my_room(
     Ok(Json(response))
 }
 
+/// Delete the current user's own account (soft-delete)
+///
+/// Sets `deleted_at = NOW()` on the user row and cleans up `OAuth2` mappings.
+/// The current token will return 401 on the next request because the security
+/// pipeline checks for deleted users.
+pub async fn delete_me(
+    auth: AuthUser,
+    State(state): State<AppState>,
+) -> AppResult<axum::http::StatusCode> {
+    state
+        .user_service
+        .delete_self(&auth.user_id)
+        .await
+        .map_err(super::AppError::from)?;
+
+    Ok(axum::http::StatusCode::NO_CONTENT)
+}
+
 /// List rooms created by this user
 /// GET /api/user/rooms/created
 pub async fn list_created_rooms(

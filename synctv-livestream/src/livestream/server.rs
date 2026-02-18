@@ -40,7 +40,7 @@ pub struct LivestreamConfig {
     /// 0 means use the built-in default (50 MB).
     pub gop_cache_max_memory_mb: u64,
     /// Advertised gRPC address of this node for cross-node proxying.
-    /// Used by PublisherManager for re-registration after StreamHub restart.
+    /// Used by `PublisherManager` for re-registration after `StreamHub` restart.
     pub grpc_address: String,
 }
 
@@ -446,6 +446,7 @@ impl LivestreamServer {
         let external_publish_manager = Arc::new(ExternalPublishManager::with_timeouts(
             self.publisher_registry.clone(),
             self.config.node_id.clone(),
+            self.config.grpc_address.clone(),
             event_sender.clone(),
             self.config.cleanup_check_interval_seconds,
             self.config.stream_timeout_seconds,
@@ -475,10 +476,11 @@ impl LivestreamServer {
         // (PublisherManager was created earlier in step 3 to wire the activity callback)
         let local_node_id = self.config.node_id.clone();
         if local_node_id.is_empty() {
-            tracing::error!(
-                "Livestream node_id is empty! HLS local/remote publisher detection will not work correctly. \
+            return Err(crate::error::StreamError::InvalidState(
+                "node_id is required for cluster mode: empty node_id causes stream ownership confusion. \
                  Set node_id in the livestream config."
-            );
+                    .to_string(),
+            ));
         }
         let cluster_secret = self.config.cluster_secret.clone();
         let publisher_manager_handle = tokio::spawn({

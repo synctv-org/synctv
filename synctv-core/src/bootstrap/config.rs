@@ -8,7 +8,7 @@ use crate::Config;
 /// Load configuration from config file or environment variables
 ///
 /// Config file search order:
-/// 1. SYNCTV_CONFIG_PATH environment variable (explicit path)
+/// 1. `SYNCTV_CONFIG_PATH` environment variable (explicit path)
 /// 2. ./config.yaml (current working directory)
 /// 3. /config/config.yaml (Kubernetes mount path)
 /// 4. Fall back to environment variables only

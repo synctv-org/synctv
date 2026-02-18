@@ -55,7 +55,7 @@ pub struct PlaybackInfo {
 
     /// Whether this playback source requires CORS proxying
     ///
-    /// When `true`, the client should route requests through the SyncTV server's
+    /// When `true`, the client should route requests through the `SyncTV` server's
     /// CORS proxy endpoint instead of fetching the URLs directly. This is needed
     /// for providers whose CDNs do not set permissive CORS headers (e.g., Bilibili).
     #[serde(default)]

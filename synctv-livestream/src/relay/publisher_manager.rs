@@ -52,6 +52,8 @@ struct PublisherEntry {
 }
 
 impl PublisherEntry {
+    // Used in test helpers to insert entries without a real registry lookup.
+    #[allow(dead_code)]
     fn new() -> Self {
         Self {
             last_active_secs: AtomicU64::new(Self::now_secs()),
@@ -92,7 +94,7 @@ pub struct PublisherManager {
     /// Active publishers (composite key -> `PublisherEntry`)
     /// Live streaming is media-level, not room-level
     active_publishers: Arc<DashMap<String, Arc<PublisherEntry>>>,
-    /// Sender for StreamHub events -- used to trigger unpublish on heartbeat failure
+    /// Sender for `StreamHub` events -- used to trigger unpublish on heartbeat failure
     /// so that subscribers are notified immediately instead of waiting for Redis TTL expiry.
     hub_event_sender: StreamHubEventSender,
     /// Counter for broadcast lag events (for monitoring)
@@ -119,7 +121,7 @@ impl PublisherManager {
     }
 
     /// Set the advertised gRPC address for this node.
-    /// Used during re-registration after StreamHub restart (L-05).
+    /// Used during re-registration after `StreamHub` restart (L-05).
     #[must_use]
     pub fn with_grpc_address(mut self, grpc_address: String) -> Self {
         self.local_grpc_address = grpc_address;
@@ -212,7 +214,7 @@ impl PublisherManager {
     /// Handle `StreamHub` broadcast events
     ///
     /// Tracks publishers locally for heartbeat maintenance. Publisher registration
-    /// to Redis happens in the authentication phase (SyncTvRtmpAuth::on_publish),
+    /// to Redis happens in the authentication phase (`SyncTvRtmpAuth::on_publish`),
     /// which runs BEFORE the RTMP session is established and can reject connections
     /// on registration failures.
     async fn handle_broadcast_event(&self, event: synctv_xiu::streamhub::define::BroadcastEvent) -> anyhow::Result<()> {
@@ -248,7 +250,7 @@ impl PublisherManager {
     /// Handle Publish event - Track publisher locally for heartbeat maintenance
     ///
     /// NOTE: This does NOT register the publisher to Redis. Registration happens
-    /// in the authentication phase (SyncTvRtmpAuth::on_publish) before the RTMP
+    /// in the authentication phase (`SyncTvRtmpAuth::on_publish`) before the RTMP
     /// session is established. This method only tracks publishers that have already
     /// been successfully authenticated and registered.
     async fn handle_publish(&self, identifier: StreamIdentifier) -> anyhow::Result<()> {
@@ -285,18 +287,23 @@ impl PublisherManager {
                 Arc::new(PublisherEntry::with_user_id(info.user_id))
             }
             Ok(None) => {
+                // Publisher not in registry (was never registered or already expired).
+                // Skip tracking to avoid sending heartbeats with incorrect ownership.
                 warn!(
-                    "Publisher not found in registry during tracking (room={}, media={}), using empty user_id",
+                    "Publisher not found in registry during tracking (room={}, media={}); skipping heartbeat tracking",
                     room_id, media_id
                 );
-                Arc::new(PublisherEntry::new())
+                return Ok(());
             }
             Err(e) => {
-                warn!(
-                    "Failed to query registry for publisher info (room={}, media={}): {}. Using empty user_id",
+                // Redis failure: skip tracking for this cycle to avoid registering with
+                // an empty user_id, which would overwrite correct ownership information.
+                error!(
+                    "Failed to query registry for publisher info (room={}, media={}): {}. \
+                     Skipping heartbeat tracking for this publish event to avoid incorrect ownership",
                     room_id, media_id, e
                 );
-                Arc::new(PublisherEntry::new())
+                return Ok(());
             }
         };
         self.active_publishers.insert(publisher_key.clone(), entry);
@@ -409,7 +416,7 @@ impl PublisherManager {
 
     /// Force re-registration of all tracked active publishers in Redis.
     ///
-    /// Called after StreamHub restart to ensure Redis state is consistent
+    /// Called after `StreamHub` restart to ensure Redis state is consistent
     /// with the local `active_publishers` map. Without this, publishers
     /// that were cleaned up from Redis would remain stale until TTL expiry.
     pub async fn reregister_all_publishers(&self) {
@@ -426,12 +433,12 @@ impl PublisherManager {
         }
 
         if self.local_grpc_address.is_empty() {
-            error!(
-                "Cannot re-register {} publishers: local_grpc_address is empty. \
-                 Cross-node proxying will fail. Set grpc_address in LivestreamConfig.",
+            warn!(
+                "Re-registering {} publishers with empty local_grpc_address. \
+                 Cross-node HLS proxying will fail until grpc_address is set in LivestreamConfig. \
+                 Proceeding with re-registration to restore local publisher ownership in Redis.",
                 snapshot.len()
             );
-            return;
         }
 
         info!(
@@ -478,7 +485,7 @@ impl PublisherManager {
     }
 
     /// Cleanup a publisher: remove from local tracking, unregister from Redis,
-    /// and notify StreamHub. Used by both heartbeat failure and silent publisher
+    /// and notify `StreamHub`. Used by both heartbeat failure and silent publisher
     /// timeout paths.
     async fn cleanup_publisher(&self, room_id: &str, media_id: &str, reason: &str) {
         let publisher_key = format!("{room_id}:{media_id}");
@@ -559,7 +566,7 @@ impl PublisherManager {
                     self.cleanup_publisher(
                         room_id,
                         media_id,
-                        &format!("silent publisher timeout ({}s idle)", idle_secs),
+                        &format!("silent publisher timeout ({idle_secs}s idle)"),
                     ).await;
                     continue;
                 }
@@ -608,7 +615,7 @@ impl PublisherManager {
                         self.cleanup_publisher(
                             room_id,
                             media_id,
-                            &format!("heartbeat failed {} consecutive cycles", failures),
+                            &format!("heartbeat failed {failures} consecutive cycles"),
                         ).await;
                     } else {
                         warn!(

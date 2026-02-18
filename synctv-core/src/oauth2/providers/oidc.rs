@@ -46,7 +46,7 @@ struct ResolvedOidc {
 
 /// Generic OIDC provider
 ///
-/// When created via `create()` (issuer-only mode), the OAuth2 client and endpoints
+/// When created via `create()` (issuer-only mode), the `OAuth2` client and endpoints
 /// are resolved lazily on first use by fetching `{issuer}/.well-known/openid-configuration`.
 /// When created via `create_with_endpoints()`, the provided endpoints are used directly.
 pub struct OidcProvider {
@@ -146,7 +146,7 @@ impl OidcProvider {
         })
     }
 
-    /// Resolve the OAuth2 client, performing .well-known discovery if needed.
+    /// Resolve the `OAuth2` client, performing .well-known discovery if needed.
     async fn get_resolved(&self) -> Result<&ResolvedOidc, Error> {
         self.resolved
             .get_or_try_init(|| async {
@@ -244,7 +244,7 @@ impl Provider for OidcProvider {
             .authorize_url(|| oauth2::CsrfToken::new(state.to_string()))
             .set_pkce_challenge(pkce_challenge)
             .url();
-        Ok((auth_url.to_string(), pkce_verifier.secret().to_string()))
+        Ok((auth_url.to_string(), pkce_verifier.secret().clone()))
     }
 
     async fn get_user_info(&self, code: &str, pkce_verifier: &str) -> Result<OAuth2UserInfo, Error> {

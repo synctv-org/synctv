@@ -41,12 +41,12 @@ pub struct PlaybackService {
     /// Optional cluster broadcaster for cross-replica sync (interior mutability
     /// so the broadcaster can be wired after Arc<RoomService> is already cloned)
     cluster_broadcaster: Arc<parking_lot::RwLock<Option<Arc<dyn PlaybackBroadcaster>>>>,
-    /// L1 in-memory cache for playback state, keyed by room_id
+    /// L1 in-memory cache for playback state, keyed by `room_id`
     playback_cache: Arc<moka::future::Cache<String, RoomPlaybackState>>,
     /// Optional cache invalidation service for cross-replica cache sync
     invalidation_service: Option<Arc<CacheInvalidationService>>,
-    /// SingleFlight to prevent thundering herd on cache miss.
-    /// Uses `String` key (room_id) and `String` error (since `Error` is not `Clone`).
+    /// `SingleFlight` to prevent thundering herd on cache miss.
+    /// Uses `String` key (`room_id`) and `String` error (since `Error` is not `Clone`).
     single_flight: SingleFlight<String, RoomPlaybackState, String>,
 }
 
@@ -188,8 +188,8 @@ impl PlaybackService {
 
     /// Get playback state for a room.
     ///
-    /// Checks the L1 in-memory cache first; on miss, uses SingleFlight to ensure
-    /// only one concurrent DB fetch per room_id, then populates the cache.
+    /// Checks the L1 in-memory cache first; on miss, uses `SingleFlight` to ensure
+    /// only one concurrent DB fetch per `room_id`, then populates the cache.
     pub async fn get_state(&self, room_id: &RoomId) -> Result<RoomPlaybackState> {
         let cache_key = room_id.as_str().to_string();
 

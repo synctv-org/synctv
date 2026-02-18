@@ -141,6 +141,7 @@ pub enum ErrorKind {
 
 impl ErrorKind {
     /// Convert this error kind to an application-level error code.
+    #[must_use] 
     pub const fn to_code(&self) -> i32 {
         match self {
             Self::NotFound => error_codes::NOT_FOUND,
@@ -184,7 +185,8 @@ impl From<synctv_core::Error> for ApiError {
 
 impl ApiError {
     /// Convert this structured error into an `ErrorKind`.
-    pub fn classify(&self) -> ErrorKind {
+    #[must_use] 
+    pub const fn classify(&self) -> ErrorKind {
         match self {
             Self::NotFound(_) => ErrorKind::NotFound,
             Self::Authentication(_) => ErrorKind::Unauthenticated,
@@ -196,6 +198,7 @@ impl ApiError {
     }
 
     /// Get the error message.
+    #[must_use] 
     pub fn message(&self) -> &str {
         match self {
             Self::NotFound(msg)
@@ -208,7 +211,8 @@ impl ApiError {
     }
 
     /// Get the application-level error code for this error.
-    pub fn code(&self) -> i32 {
+    #[must_use] 
+    pub const fn code(&self) -> i32 {
         self.classify().to_code()
     }
 }
@@ -262,9 +266,10 @@ impl From<sqlx::Error> for ApiError {
 }
 
 impl ApiError {
-    /// Convert this error into a proto ErrorMessage with proper code and detail.
+    /// Convert this error into a proto `ErrorMessage` with proper code and detail.
     ///
     /// The detail field is left empty to avoid leaking sensitive information.
+    #[must_use] 
     pub fn to_proto_error(&self) -> crate::proto::client::ErrorMessage {
         crate::proto::client::ErrorMessage {
             message: self.message().to_string(),
@@ -278,6 +283,7 @@ impl ApiError {
 ///
 /// Prefer passing `ApiError` when available for guaranteed correct classification.
 /// Falls back to `classify_error()` for legacy string errors.
+#[must_use] 
 pub fn classify_api_or_string_error(err: &str) -> ErrorKind {
     classify_error(err)
 }
@@ -287,6 +293,7 @@ pub fn classify_api_or_string_error(err: &str) -> ErrorKind {
 /// First attempts to match known `synctv_core::Error` display prefixes
 /// for structured classification. Falls back to keyword matching for
 /// errors that don't originate from the core layer.
+#[must_use] 
 pub fn classify_error(err: &str) -> ErrorKind {
     // Try structured prefix matching first (matches synctv_core::Error::Display output)
     if let Some(kind) = classify_by_prefix(err) {

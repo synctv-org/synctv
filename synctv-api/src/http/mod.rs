@@ -251,7 +251,7 @@ fn build_app_state(config: RouterConfig) -> AppState {
     }
 }
 
-/// Authentication routes (register, login, refresh, OAuth2 exchange, password verify).
+/// Authentication routes (register, login, refresh, `OAuth2` exchange, password verify).
 /// Strict rate limiting: 5 req/min.
 fn register_auth_routes(state: &AppState) -> Router<AppState> {
     Router::new()
@@ -298,6 +298,7 @@ fn register_write_routes(state: &AppState) -> Router<AppState> {
         .route("/api/rooms/{room_id}/playback/start", post(room::start_playback))
         .route("/api/rooms/{room_id}/playback/stop", post(room::stop_playback))
         .route("/api/user", axum::routing::patch(user::update_user))
+        .route("/api/user/me", axum::routing::delete(user::delete_me))
         .route("/api/auth/session", axum::routing::delete(user::logout))
         .route("/api/user/rooms/{room_id}", axum::routing::delete(user::delete_my_room))
         .route("/api/oauth2/{provider}/bind", get(oauth2::get_bind_authorize_url))
@@ -359,7 +360,9 @@ fn register_all_routes(state: AppState) -> Router<AppState> {
             middleware::auth_rate_limit,
         ));
 
-    let router = Router::new()
+    
+
+    Router::new()
         .merge(health_router)
         .merge(public::create_public_router())
         .merge(email_routes)
@@ -446,9 +449,7 @@ fn register_all_routes(state: AppState) -> Router<AppState> {
                     state.clone(),
                     middleware::read_rate_limit,
                 ))
-        );
-
-    router
+        )
 }
 
 /// Build CORS layer based on configuration.

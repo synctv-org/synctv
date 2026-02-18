@@ -210,7 +210,7 @@ impl MediaService {
 
         // Validate all items before starting a transaction
         let mut validated_items = Vec::with_capacity(items.len());
-        for item in items.into_iter() {
+        for item in items {
             // Get provider from registry by instance name
             let provider = self
                 .providers_manager

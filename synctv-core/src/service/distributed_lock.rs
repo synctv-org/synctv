@@ -70,7 +70,7 @@ pub struct DistributedLock {
 impl DistributedLock {
     /// Create a new distributed lock service
     #[must_use]
-    pub fn new(redis: RedisConnectionManager) -> Self {
+    pub const fn new(redis: RedisConnectionManager) -> Self {
         Self {
             redis,
         }
@@ -88,11 +88,11 @@ impl DistributedLock {
 
         // Atomically INCR and set a 24-hour TTL to prevent unbounded key accumulation
         let script = Script::new(
-            r#"
+            r"
             local val = redis.call('INCR', KEYS[1])
             redis.call('EXPIRE', KEYS[1], 86400)
             return val
-            "#,
+            ",
         );
 
         tokio::time::timeout(

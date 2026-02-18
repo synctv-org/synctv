@@ -19,7 +19,7 @@ impl CacheKey for RoomId {
         self.as_str()
     }
     fn from_id(id: &str) -> Self {
-        RoomId(id.to_string())
+        Self(id.to_string())
     }
 }
 
@@ -61,9 +61,9 @@ impl CachedRoom {
         }
     }
 
-    /// Create a new `CachedRoom` with explicit updated_at timestamp
+    /// Create a new `CachedRoom` with explicit `updated_at` timestamp
     #[must_use]
-    pub fn with_updated_at(
+    pub const fn with_updated_at(
         id: String,
         name: String,
         owner_id: String,
@@ -74,7 +74,7 @@ impl CachedRoom {
         Self { id, name, owner_id, is_public, created_at, updated_at }
     }
 
-    /// Get the updated_at timestamp
+    /// Get the `updated_at` timestamp
     #[must_use]
     pub const fn updated_at(&self) -> chrono::DateTime<chrono::Utc> {
         self.updated_at

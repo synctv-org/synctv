@@ -19,7 +19,7 @@ impl CacheKey for UserId {
         self.as_str()
     }
     fn from_id(id: &str) -> Self {
-        UserId::from_string(id.to_string())
+        Self::from_string(id.to_string())
     }
 }
 
@@ -65,9 +65,9 @@ impl CachedUser {
         }
     }
 
-    /// Create a new `CachedUser` with explicit updated_at timestamp
+    /// Create a new `CachedUser` with explicit `updated_at` timestamp
     #[must_use]
-    pub fn with_updated_at(
+    pub const fn with_updated_at(
         id: String,
         username: String,
         role: UserRole,
@@ -91,7 +91,7 @@ impl CachedUser {
         self.status
     }
 
-    /// Get the updated_at timestamp
+    /// Get the `updated_at` timestamp
     #[must_use]
     pub const fn updated_at(&self) -> chrono::DateTime<chrono::Utc> {
         self.updated_at

@@ -1,4 +1,4 @@
-//! Member operations: get_room_members, update_member_permissions, kick, ban, unban
+//! Member operations: `get_room_members`, `update_member_permissions`, kick, ban, unban
 
 use crate::impls::ApiError;
 use synctv_core::models::{RoomId, UserId};

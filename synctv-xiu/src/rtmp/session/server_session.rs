@@ -466,20 +466,20 @@ impl ServerSession {
         const MIN_CHUNK_SIZE: usize = 128;
         const MAX_CHUNK_SIZE: usize = 65536;
         let clamped = chunk_size.clamp(MIN_CHUNK_SIZE, MAX_CHUNK_SIZE);
-        if clamped != chunk_size {
+        if clamped == chunk_size {
+            tracing::info!(
+                "[ S<-C ] [set chunk size]  app_name: {}, stream_name: {}, chunk size: {}",
+                self.app_name,
+                self.stream_name,
+                chunk_size
+            );
+        } else {
             tracing::warn!(
                 "[ S<-C ] [set chunk size] clamped {} -> {} for app={}, stream={}",
                 chunk_size,
                 clamped,
                 self.app_name,
                 self.stream_name,
-            );
-        } else {
-            tracing::info!(
-                "[ S<-C ] [set chunk size]  app_name: {}, stream_name: {}, chunk size: {}",
-                self.app_name,
-                self.stream_name,
-                chunk_size
             );
         }
         self.unpacketizer.update_max_chunk_size(clamped);
@@ -1014,7 +1014,7 @@ impl ServerSession {
                 e
             );
             cleanup_auth().await;
-            return Err(e.into());
+            return Err(e);
         }
 
         self.is_publishing = true;

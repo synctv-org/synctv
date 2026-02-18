@@ -66,6 +66,12 @@ pub struct HealthDetails {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cluster: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub ws_ticket: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub livestream: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
 }
 
@@ -89,7 +95,7 @@ pub async fn liveness_check() -> impl IntoResponse {
 /// Readiness probe - checks if the application is ready to serve traffic
 ///
 /// **Production Enhancement (#25)**: Health check validates critical dependencies:
-/// - Database connectivity (PostgreSQL) - Executes a test query via user_service
+/// - Database connectivity (`PostgreSQL`) - Executes a test query via `user_service`
 /// - Redis connectivity - Sends PING command, gracefully handles "not configured" case
 ///
 /// Kubernetes uses this to determine if the pod should receive traffic.
@@ -136,6 +142,21 @@ pub async fn readiness_check(State(state): State<AppState>) -> impl IntoResponse
         None => None, // No cluster manager, single-node mode
     };
 
+    // Check WebSocket ticket service (if configured)
+    let ws_ticket_status = state.ws_ticket_service.as_ref().map(|svc| {
+        check_ws_ticket_health(svc)
+    });
+
+    // Check email service (if configured) - validates SMTP config is present
+    let email_status = state.email_service.as_ref().map(|svc| {
+        check_email_health(svc)
+    });
+
+    // Check livestream infrastructure (if configured)
+    let livestream_status = state.live_streaming_infrastructure.as_ref().map(|_| {
+        "configured".to_string()
+    });
+
     let status_code = if is_healthy {
         StatusCode::OK
     } else {
@@ -148,6 +169,9 @@ pub async fn readiness_check(State(state): State<AppState>) -> impl IntoResponse
             database: db_status,
             redis: redis_status,
             cluster: cluster_status,
+            ws_ticket: ws_ticket_status,
+            email: email_status,
+            livestream: livestream_status,
             message: if error_messages.is_empty() {
                 None
             } else {
@@ -174,7 +198,7 @@ async fn check_database_health(state: &AppState) -> Result<(), String> {
     }
 }
 
-/// Check cluster health by verifying the ClusterManager is operational.
+/// Check cluster health by verifying the `ClusterManager` is operational.
 ///
 /// Returns `None` if no cluster manager is configured (single-node mode).
 /// Returns `Some(Ok(()))` if the cluster manager is healthy.
@@ -215,6 +239,31 @@ async fn check_redis_health(state: &AppState) -> Result<(), String> {
     }
 }
 
+/// Check WebSocket ticket service health
+///
+/// Reports whether the service is using Redis-backed (multi-replica safe) or
+/// memory-backed (single-replica only) storage.
+fn check_ws_ticket_health(svc: &synctv_core::service::WsTicketService) -> String {
+    if svc.is_redis_backed() {
+        "healthy (redis)".to_string()
+    } else {
+        "healthy (memory)".to_string()
+    }
+}
+
+/// Check email service health
+///
+/// Validates that the email service has SMTP configuration. The service is
+/// considered healthy if it is configured with valid SMTP settings; if no
+/// config is provided the service is present but unconfigured (informational).
+fn check_email_health(svc: &synctv_core::service::EmailService) -> String {
+    if svc.is_configured() {
+        "configured".to_string()
+    } else {
+        "not configured".to_string()
+    }
+}
+
 /// Prometheus metrics endpoint
 pub async fn prometheus_metrics() -> impl IntoResponse {
     (
@@ -252,6 +301,9 @@ mod tests {
                 database: "healthy".to_string(),
                 redis: "healthy".to_string(),
                 cluster: None,
+                ws_ticket: None,
+                email: None,
+                livestream: None,
                 message: None,
             }),
         };
@@ -262,6 +314,9 @@ mod tests {
         assert_eq!(details.database, "healthy");
         assert_eq!(details.redis, "healthy");
         assert!(details.cluster.is_none());
+        assert!(details.ws_ticket.is_none());
+        assert!(details.email.is_none());
+        assert!(details.livestream.is_none());
         assert!(details.message.is_none());
     }
 
@@ -273,6 +328,9 @@ mod tests {
                 database: "healthy".to_string(),
                 redis: "healthy".to_string(),
                 cluster: Some("healthy".to_string()),
+                ws_ticket: None,
+                email: None,
+                livestream: None,
                 message: None,
             }),
         };
@@ -288,6 +346,9 @@ mod tests {
                 database: "unhealthy".to_string(),
                 redis: "healthy".to_string(),
                 cluster: None,
+                ws_ticket: None,
+                email: None,
+                livestream: None,
                 message: Some("Database: connection refused".to_string()),
             }),
         };
@@ -303,12 +364,18 @@ mod tests {
                 database: "healthy".to_string(),
                 redis: "healthy".to_string(),
                 cluster: None,
+                ws_ticket: None,
+                email: None,
+                livestream: None,
                 message: None,
             }),
         };
         let json = serde_json::to_string(&response).unwrap();
         assert!(!json.contains("message"));
         assert!(!json.contains("cluster"));
+        assert!(!json.contains("ws_ticket"));
+        assert!(!json.contains("email"));
+        assert!(!json.contains("livestream"));
     }
 
     #[test]

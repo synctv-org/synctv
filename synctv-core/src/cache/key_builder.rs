@@ -167,10 +167,10 @@ impl KeyBuilder {
 
     // ==================== OAuth2 State ====================
 
-    /// OAuth2 state token (for CSRF protection during authorization flow)
+    /// `OAuth2` state token (for CSRF protection during authorization flow)
     ///
     /// Type: String + TTL (300s)
-    /// Value: JSON with OAuth2State
+    /// Value: JSON with `OAuth2State`
     #[must_use]
     pub fn oauth2_state(&self, state_token: &str) -> String {
         format!("{}:oauth2:state:{}", self.prefix, state_token)
@@ -221,7 +221,7 @@ impl KeyBuilder {
     /// Failed login attempt counter per IP address
     ///
     /// Type: String + TTL (10 minutes)
-    /// Value: JSON with count and last_failure_at
+    /// Value: JSON with count and `last_failure_at`
     #[must_use]
     pub fn login_attempts_ip(&self, ip: &str) -> String {
         format!("{}:auth:login_attempts_ip:{}", self.prefix, ip)

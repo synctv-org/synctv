@@ -291,6 +291,21 @@ pub struct User {
 impl User {
     #[must_use]
     pub fn new(username: String, email: Option<String>, password_hash: String, signup_method: Option<SignupMethod>) -> Self {
+        Self::new_with_status(username, email, password_hash, signup_method, UserStatus::Pending)
+    }
+
+    /// Create a new user with an explicit initial status.
+    ///
+    /// Use this when the caller needs to control whether the user starts as `Active`
+    /// (email verification disabled) or `Pending` (email verification required).
+    #[must_use]
+    pub fn new_with_status(
+        username: String,
+        email: Option<String>,
+        password_hash: String,
+        signup_method: Option<SignupMethod>,
+        initial_status: UserStatus,
+    ) -> Self {
         let now = Utc::now();
         Self {
             id: UserId::new(),
@@ -298,7 +313,7 @@ impl User {
             email,
             password_hash,
             role: UserRole::User,  // Default role
-            status: UserStatus::Pending,  // Default status (requires email verification)
+            status: initial_status,
             signup_method,
             email_verified: false,  // Default to not verified
             created_at: now,

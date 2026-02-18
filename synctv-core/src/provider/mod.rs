@@ -62,9 +62,10 @@ pub fn parse_source_config<T: serde::de::DeserializeOwned>(
 ///
 /// Shared by `RtmpProvider` and `LiveProxyProvider` which both generate
 /// identical playback URLs pointing to synctv's own HLS/FLV endpoints.
-/// The only difference between the two is the `metadata` map (live_proxy adds
+/// The only difference between the two is the `metadata` map (`live_proxy` adds
 /// `source_url` and `provider` fields), which callers can extend after this
 /// function returns.
+#[must_use] 
 pub fn build_live_playback(
     base_url: &str,
     media_id: &str,

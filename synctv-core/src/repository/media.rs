@@ -52,7 +52,7 @@ impl MediaRepository {
         .bind(media.id.as_str())
         .bind(media.playlist_id.as_str())
         .bind(media.room_id.as_str())
-        .bind(media.creator_id.as_ref().map(|id| id.as_str()))
+        .bind(media.creator_id.as_ref().map(super::super::models::id::UserId::as_str))
         .bind(&media.name)
         .bind(media.position)
         .bind(media.source_provider.as_str())
@@ -67,7 +67,7 @@ impl MediaRepository {
 
     /// Batch insert media items.
     ///
-    /// Automatically chunks large batches to stay within PostgreSQL's 65535
+    /// Automatically chunks large batches to stay within `PostgreSQL`'s 65535
     /// bind-parameter limit (each row uses 10 parameters, so we chunk at 1000
     /// rows = 10000 parameters per statement).
     pub async fn create_batch(&self, items: &[Media]) -> Result<Vec<Media>> {
@@ -132,7 +132,7 @@ impl MediaRepository {
                 .bind(item.id.as_str())
                 .bind(item.playlist_id.as_str())
                 .bind(item.room_id.as_str())
-                .bind(item.creator_id.as_ref().map(|id| id.as_str()))
+                .bind(item.creator_id.as_ref().map(super::super::models::id::UserId::as_str))
                 .bind(&item.name)
                 .bind(item.position)
                 .bind(item.source_provider.as_str())
@@ -150,7 +150,7 @@ impl MediaRepository {
     }
 
     /// Batch insert media items within a transaction, automatically chunking
-    /// to stay within PostgreSQL's bind-parameter limit.
+    /// to stay within `PostgreSQL`'s bind-parameter limit.
     pub async fn create_batch_chunked(
         &self,
         items: &[Media],
@@ -433,7 +433,7 @@ impl MediaRepository {
 
     /// Bulk reorder media items using a provided transaction
     ///
-    /// Sorts updates by media_id before acquiring FOR UPDATE locks to prevent
+    /// Sorts updates by `media_id` before acquiring FOR UPDATE locks to prevent
     /// deadlocks when concurrent transactions lock the same rows in different order.
     pub async fn reorder_batch_with_tx(
         &self,

@@ -1,7 +1,7 @@
 //! User notification HTTP endpoints
 //!
 //! REST API for managing user notifications.
-//! Delegates to NotificationApiImpl for shared business logic.
+//! Delegates to `NotificationApiImpl` for shared business logic.
 //!
 //! Uses proto-generated types for request/response to ensure type consistency
 //! with gRPC handlers.
@@ -35,7 +35,7 @@ pub struct ListNotificationsQuery {
 
 fn get_notification_api(state: &AppState) -> Result<&crate::impls::NotificationApiImpl, crate::http::AppError> {
     state.notification_api.as_ref()
-        .map(|arc| arc.as_ref())
+        .map(std::convert::AsRef::as_ref)
         .ok_or_else(|| crate::http::AppError::new(
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
             "Notification service not available",

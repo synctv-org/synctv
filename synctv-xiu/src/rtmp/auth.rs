@@ -29,7 +29,7 @@ pub trait AuthCallback: Send + Sync {
     ///
     /// # Returns
     /// * `Ok(None)` - Auth succeeded, use original `app_name`/`stream_name`
-    /// * `Ok(Some(rewrite))` - Auth succeeded, use rewritten identifiers for StreamHub
+    /// * `Ok(Some(rewrite))` - Auth succeeded, use rewritten identifiers for `StreamHub`
     /// * `Err(...)` - Auth failed, reject the publish
     async fn on_publish(
         &self,

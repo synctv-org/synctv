@@ -6,7 +6,7 @@ use tracing::{error, info, warn};
 const MIGRATION_LOCK_KEY: &str = "synctv:migration";
 const MIGRATION_LOCK_TTL: u64 = 300;
 const MIGRATION_POLL_INTERVAL: Duration = Duration::from_secs(2);
-const MIGRATION_MAX_WAIT: Duration = Duration::from_secs(300);
+const MIGRATION_MAX_WAIT: Duration = Duration::from_mins(5);
 
 /// Run database migrations, optionally using a Redis distributed lock for
 /// multi-replica deployments.
@@ -125,7 +125,7 @@ async fn wait_for_lock_and_migrate(
             Ok(None) => {
                 return Err(anyhow::anyhow!(
                     "Timed out waiting for migration lock after {}s",
-                    attempts as u64 * MIGRATION_POLL_INTERVAL.as_secs()
+                    u64::from(attempts) * MIGRATION_POLL_INTERVAL.as_secs()
                 ));
             }
             Err(e) => {

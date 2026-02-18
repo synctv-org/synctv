@@ -127,6 +127,19 @@ impl AuthInterceptor {
         Ok(request)
     }
 
+    /// Attempt to extract and validate a user ID from gRPC metadata without requiring auth.
+    ///
+    /// Returns `Some(UserId)` if a valid Bearer token is present in the `authorization`
+    /// metadata header. Returns `None` if no header is present or if the token is invalid.
+    ///
+    /// This is used by endpoints that support optional authentication (e.g. `OAuth2` exchange
+    /// for bind flows — login flows need no auth, but bind flows require the caller to prove
+    /// their identity).
+    #[must_use] 
+    pub fn try_extract_user_id(&self, metadata: &tonic::metadata::MetadataMap) -> Option<synctv_core::models::UserId> {
+        self.jwt_validator.validate_grpc_extract_user_id(metadata).ok()
+    }
+
     /// Extract the raw bearer token from gRPC metadata.
     ///
     /// Used to capture the token for async blacklist checking at the service layer,
@@ -254,15 +267,15 @@ impl Debug for ClusterAuthInterceptor {
 pub enum GrpcRateLimitTier {
     /// Authentication endpoints (Login, Register, RefreshToken): 5 req/min
     Auth,
-    /// Media mutation endpoints (AddMedia, RemoveMedia, BatchAdd): 20 req/min
+    /// Media mutation endpoints (`AddMedia`, `RemoveMedia`, BatchAdd): 20 req/min
     Media,
-    /// Write endpoints (CreateRoom, UpdateRoom, JoinRoom, SendChat): 30 req/min
+    /// Write endpoints (`CreateRoom`, `UpdateRoom`, `JoinRoom`, SendChat): 30 req/min
     Write,
-    /// Read endpoints (GetRoom, ListRooms, GetUser, GetPlaylist): 100 req/min
+    /// Read endpoints (`GetRoom`, `ListRooms`, `GetUser`, GetPlaylist): 100 req/min
     Read,
     /// Admin endpoints: 30 req/min
     Admin,
-    /// Email endpoints (SendVerification, PasswordReset): 5 req/min
+    /// Email endpoints (`SendVerification`, PasswordReset): 5 req/min
     Email,
 }
 
@@ -393,7 +406,7 @@ impl GrpcRateLimitInterceptor {
             .and_then(|s| {
                 JwtValidator::extract_bearer_token(s).ok().map(|token| {
                     let hash = Sha256::digest(token.as_bytes());
-                    format!("user:{:x}", hash)
+                    format!("user:{hash:x}")
                 })
             })
         {

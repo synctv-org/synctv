@@ -1,4 +1,4 @@
-//! Auth operations: register, login, refresh_token, logout
+//! Auth operations: register, login, `refresh_token`, logout
 
 use crate::impls::ApiError;
 use super::ClientApiImpl;
@@ -53,12 +53,11 @@ impl ClientApiImpl {
     pub async fn refresh_token(
         &self,
         req: crate::proto::client::RefreshTokenRequest,
-        old_access_token: Option<&str>,
     ) -> Result<crate::proto::client::RefreshTokenResponse, ApiError> {
         // Refresh tokens (returns tuple: (new_access_token, new_refresh_token))
         let (access_token, refresh_token) = self
             .user_service
-            .refresh_token(req.refresh_token, old_access_token)
+            .refresh_token(req.refresh_token)
             .await
             .map_err(ApiError::from)?;
 
@@ -72,7 +71,7 @@ impl ClientApiImpl {
     ///
     /// When Redis is configured, the token's JTI is added to a blacklist with a TTL
     /// equal to the token's remaining lifetime. Subsequent requests with this token
-    /// will be rejected by the SecurityPipeline.
+    /// will be rejected by the `SecurityPipeline`.
     ///
     /// When Redis is NOT configured, this is a no-op on the server side (tokens
     /// remain valid until natural expiration).

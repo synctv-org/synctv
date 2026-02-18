@@ -32,10 +32,10 @@ use super::proto::{
 #[derive(Clone)]
 pub struct HlsProxyClient {
     /// Local cache for TS segments (immutable once created)
-    /// Key: "{room_id}:{media_id}:{segment_name}"
+    /// Key: "{`room_id}:{media_id}:{segment_name`}"
     segment_cache: Cache<String, Bytes>,
     /// Short-lived cache for M3U8 playlists to coalesce concurrent requests.
-    /// Key: "{room_id}:{media_id}", Value: playlist string or empty for "not found"
+    /// Key: "{`room_id}:{media_id`}", Value: playlist string or empty for "not found"
     playlist_cache: Cache<String, Option<String>>,
     /// Cluster authentication secret for gRPC metadata
     cluster_secret: Option<String>,
@@ -55,6 +55,7 @@ impl HlsProxyClient {
     /// * `segment_cache_max_entries` - Max cached segments (default: 1000)
     /// * `playlist_cache_ttl` - TTL for cached M3U8 playlists (default: 1 second)
     /// * `cluster_secret` - Optional cluster authentication secret
+    #[must_use] 
     pub fn new(
         segment_cache_ttl: Duration,
         segment_cache_max_entries: u64,
@@ -82,6 +83,7 @@ impl HlsProxyClient {
     }
 
     /// Create with default settings (90s segment TTL, 1s playlist TTL, 1000 max segment entries).
+    #[must_use] 
     pub fn with_defaults(cluster_secret: Option<String>) -> Self {
         Self::new(
             Duration::from_secs(90),
@@ -186,7 +188,7 @@ impl HlsProxyClient {
             .into_inner();
 
         if response.found {
-            let data = Bytes::from(response.data);
+            let data = response.data;
             // Cache the segment locally
             self.segment_cache.insert(cache_key, data.clone()).await;
             Ok(Some(data))
@@ -196,17 +198,20 @@ impl HlsProxyClient {
     }
 
     /// Returns the number of segment cache hits since startup.
+    #[must_use] 
     pub fn cache_hits(&self) -> u64 {
         self.cache_hits.load(Ordering::Relaxed)
     }
 
     /// Returns the number of segment cache misses since startup.
+    #[must_use] 
     pub fn cache_misses(&self) -> u64 {
         self.cache_misses.load(Ordering::Relaxed)
     }
 
     /// Returns the cache hit rate as a percentage (0.0 - 100.0).
     /// Returns 0.0 if no requests have been made.
+    #[must_use] 
     pub fn cache_hit_rate(&self) -> f64 {
         let hits = self.cache_hits.load(Ordering::Relaxed);
         let misses = self.cache_misses.load(Ordering::Relaxed);

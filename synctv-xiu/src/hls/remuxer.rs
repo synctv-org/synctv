@@ -31,6 +31,7 @@ use crate::mpegts::{
     define::{epsi_stream_type, MPEG_FLAG_IDR_FRAME},
     ts::TsMuxer,
 };
+use crate::flv::define::AvcCodecId;
 
 /// Segment metadata for M3U8 generation
 #[derive(Debug, Clone)]
@@ -119,7 +120,7 @@ impl StreamProcessorState {
 }
 
 /// Callback invoked when media data is received from a publisher.
-/// Arguments: (app_name/room_id, stream_name/media_id).
+/// Arguments: (`app_name/room_id`, `stream_name/media_id`).
 /// Used to record publisher activity for silent publisher detection.
 pub type PublisherActivityCallback = Arc<dyn Fn(&str, &str) + Send + Sync>;
 
@@ -210,7 +211,7 @@ impl CustomHlsRemuxer {
 
         loop {
             let val = tokio::select! {
-                _ = self.cancel_token.cancelled() => {
+                () = self.cancel_token.cancelled() => {
                     tracing::info!("HLS remuxer cancelled (shutdown), draining {} handler tasks", self.handler_tasks.len());
                     self.handler_tasks.abort_all();
                     while self.handler_tasks.join_next().await.is_some() {}
@@ -244,7 +245,7 @@ impl CustomHlsRemuxer {
                                 let active = source();
                                 let mut started = 0u32;
                                 for (app_name, stream_name) in active {
-                                    let key = format!("{}/{}", app_name, stream_name);
+                                    let key = format!("{app_name}/{stream_name}");
                                     if self.stream_registry.contains_key(&key) {
                                         continue; // handler already running
                                     }
@@ -325,7 +326,7 @@ impl CustomHlsRemuxer {
     }
 }
 
-/// Drop guard that sends UnSubscribe to StreamHub on drop.
+/// Drop guard that sends `UnSubscribe` to `StreamHub` on drop.
 /// Ensures cleanup even if the handler panics or returns early.
 struct UnsubscribeGuard {
     event_producer: StreamHubEventSender,
@@ -494,26 +495,41 @@ impl StreamHandler {
         // Unsubscribe when done
         self.unsubscribe_from_stream_hub().await?;
 
-        // Remove from registry after some delay (allow clients to finish)
-        tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+        // Remove from registry after some delay (allow clients to finish).
+        // We capture handler_created_at before sleeping so that when the timer fires
+        // we can detect if a new publisher has already replaced this handler.
+        tokio::time::sleep(tokio::time::Duration::from_mins(1)).await;
 
-        // Only remove if the entry still belongs to this handler (not replaced by a new one)
-        if let Some(entry) = self.stream_registry.get(&registry_key) {
-            if entry.read().created_at == handler_created_at {
-                drop(entry);
-                self.stream_registry.remove(&registry_key);
+        // Only remove/clean up if the entry still belongs to this handler.
+        // If a new publisher started within the 60s window, its registry entry
+        // will have a different created_at — we must not remove it or delete
+        // its segments.
+        let is_still_owner = if let Some(entry) = self.stream_registry.get(&registry_key) {
+            entry.read().created_at == handler_created_at
+        } else {
+            // Entry already removed (e.g. by a concurrent cleanup); nothing to do.
+            false
+        };
+
+        if is_still_owner {
+            self.stream_registry.remove(&registry_key);
+
+            // Explicitly clean up segments for this stream to free memory immediately
+            // rather than waiting for the periodic cleanup cycle (LS-3).
+            // Safe: we confirmed no new publisher owns this stream key.
+            if let Err(e) = self.segment_manager.cleanup_stream(&self.app_name, &self.stream_name).await {
+                tracing::warn!(
+                    "Failed to cleanup segments for {}/{}: {}",
+                    self.app_name,
+                    self.stream_name,
+                    e
+                );
             }
-            // else: new handler has overwritten the entry, don't remove
-        }
-
-        // Explicitly clean up segments for this stream to free memory immediately
-        // rather than waiting for the periodic cleanup cycle (LS-3)
-        if let Err(e) = self.segment_manager.cleanup_stream(&self.app_name, &self.stream_name).await {
-            tracing::warn!(
-                "Failed to cleanup segments for {}/{}: {}",
+        } else {
+            tracing::info!(
+                "HLS cleanup for {}/{}: skipped — a new publisher has taken over within the grace period",
                 self.app_name,
                 self.stream_name,
-                e
             );
         }
 
@@ -665,6 +681,10 @@ struct StreamProcessor {
     video_pid: u16,
     audio_pid: u16,
 
+    // Codec detection: tracks the video codec detected from the stream.
+    // When HEVC is detected, the TsMuxer is re-initialized with PSI_STREAM_HEVC.
+    video_codec_id: Option<u8>,
+
     // Segment tracking
     sequence_no: u64,
     max_segments: usize, // Keep last N segments in M3U8
@@ -674,6 +694,11 @@ struct StreamProcessor {
     last_segment_dts: i64,
     last_dts: i64,
     last_pts: i64,
+
+    /// When set, the next HLS segment will include an #EXT-X-DISCONTINUITY tag.
+    /// This is set when frames are dropped (buffer overflow, timestamp issues)
+    /// so that HLS players know to reset their PTS decoder.
+    discontinuity_pending: bool,
 }
 
 impl StreamProcessor {
@@ -701,12 +726,14 @@ impl StreamProcessor {
             ts_muxer,
             video_pid,
             audio_pid,
+            video_codec_id: None,
             sequence_no: 0,
             max_segments: 6, // Keep last 6 segments
             segment_duration_ms: 10000, // 10 seconds
             last_segment_dts: 0,
             last_dts: 0,
             last_pts: 0,
+            discontinuity_pending: false,
         })
     }
 
@@ -782,6 +809,29 @@ impl StreamProcessor {
                     None => return Ok(()),
                 };
 
+                // Detect codec on first video frame and re-initialize TsMuxer if HEVC.
+                // This ensures the PMT advertises the correct stream_type (0x24 for HEVC,
+                // 0x1B for H.264), preventing players from failing to decode with no error.
+                if self.video_codec_id.is_none() {
+                    self.video_codec_id = Some(video_data.codec_id);
+                    if video_data.codec_id == AvcCodecId::HEVC as u8 {
+                        tracing::info!(
+                            "Detected HEVC video codec for {}/{}, re-initializing TsMuxer with PSI_STREAM_HEVC",
+                            self.app_name, self.stream_name
+                        );
+                        let mut new_muxer = TsMuxer::new();
+                        let audio_pid = new_muxer
+                            .add_stream(epsi_stream_type::PSI_STREAM_AAC, BytesMut::new())
+                            .map_err(|e| HlsRemuxerError::MuxError(format!("Failed to add audio stream: {e:?}")))?;
+                        let video_pid = new_muxer
+                            .add_stream(epsi_stream_type::PSI_STREAM_HEVC, BytesMut::new())
+                            .map_err(|e| HlsRemuxerError::MuxError(format!("Failed to add HEVC video stream: {e:?}")))?;
+                        self.ts_muxer = new_muxer;
+                        self.audio_pid = audio_pid;
+                        self.video_pid = video_pid;
+                    }
+                }
+
                 let mut flags = 0;
                 let mut payload = BytesMut::new();
                 payload.extend_from_slice(&video_data.data);
@@ -820,6 +870,17 @@ impl StreamProcessor {
             }
             _ => return Ok(()),
         };
+
+        // Detect DTS regression (timestamp going backward) which indicates dropped frames
+        // or a stream discontinuity. Set the flag so the next segment gets #EXT-X-DISCONTINUITY.
+        const DTS_REGRESSION_THRESHOLD_MS: i64 = 1000; // ignore sub-1s jitter
+        if self.last_dts > 0 && dts < self.last_dts - DTS_REGRESSION_THRESHOLD_MS {
+            tracing::warn!(
+                "DTS regression detected for {}/{}: last_dts={}, current_dts={} — marking discontinuity",
+                self.app_name, self.stream_name, self.last_dts, dts
+            );
+            self.discontinuity_pending = true;
+        }
 
         // Write to TS muxer
         self.ts_muxer
@@ -868,13 +929,19 @@ impl StreamProcessor {
             ts_data_len
         );
 
+        // Consume the discontinuity flag: if frames were dropped or a DTS regression
+        // was detected, mark this segment so the M3U8 playlist includes
+        // #EXT-X-DISCONTINUITY before it, telling players to reset their PTS decoder.
+        let discontinuity = self.discontinuity_pending;
+        self.discontinuity_pending = false;
+
         // Track segment metadata
         let segment_info = SegmentInfo {
             sequence: self.sequence_no,
             duration: duration_ms,
             ts_name,
             storage_key,
-            discontinuity: false,
+            discontinuity,
             created_at: Instant::now(),
         };
 

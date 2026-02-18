@@ -241,8 +241,12 @@ pub async fn rate_limit_middleware(
     request: Request,
     next: Next,
 ) -> Result<Response, AppError> {
-    // Extract user ID from authorization header if present
-    let user_id = extract_user_id_from_header(&request, &state);
+    // Extract user ID from authorization header if present.
+    // Prefix with "user:" so the key format matches the gRPC rate limit layer
+    // (which uses "user:{token_hash}"), ensuring the same user shares one bucket
+    // regardless of whether they connect via HTTP or gRPC.
+    let user_id = extract_user_id_from_header(&request, &state)
+        .map(|id| format!("user:{id}"));
 
     // Use IP address as fallback if no user ID (for public endpoints).
     // We only trust X-Forwarded-For/X-Real-IP headers when:
@@ -270,21 +274,21 @@ pub async fn rate_limit_middleware(
                 .map(str::trim);
 
             if let Some(ip) = forwarded {
-                ip.to_string()
+                format!("anon:{ip}")
             } else if let Some(ip) = request
                 .headers()
                 .get("X-Real-IP")
                 .and_then(|h| h.to_str().ok())
             {
-                ip.to_string()
+                format!("anon:{ip}")
             } else if let Some(ip) = remote_addr {
-                ip.to_string()
+                format!("anon:{ip}")
             } else {
-                "unknown".to_string()
+                "anon:unknown".to_string()
             }
         } else {
             // Don't trust headers - use socket address directly
-            remote_addr.map_or_else(|| "unknown".to_string(), |ip| ip.to_string())
+            remote_addr.map_or_else(|| "anon:unknown".to_string(), |ip| format!("anon:{ip}"))
         }
     });
 

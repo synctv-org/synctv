@@ -192,14 +192,14 @@ impl From<crate::impls::ApiError> for AppError {
         use crate::impls::ErrorKind;
         let msg = err.to_string();
         match err.classify() {
-            ErrorKind::NotFound => AppError::not_found(msg),
-            ErrorKind::Unauthenticated => AppError::unauthorized(msg),
-            ErrorKind::PermissionDenied => AppError::forbidden(msg),
-            ErrorKind::AlreadyExists => AppError::conflict(msg),
-            ErrorKind::InvalidArgument => AppError::bad_request(msg),
+            ErrorKind::NotFound => Self::not_found(msg),
+            ErrorKind::Unauthenticated => Self::unauthorized(msg),
+            ErrorKind::PermissionDenied => Self::forbidden(msg),
+            ErrorKind::AlreadyExists => Self::conflict(msg),
+            ErrorKind::InvalidArgument => Self::bad_request(msg),
             ErrorKind::Internal => {
                 tracing::error!("Internal error: {msg}");
-                AppError::internal("Internal error")
+                Self::internal("Internal error")
             }
         }
     }
@@ -209,6 +209,7 @@ impl From<crate::impls::ApiError> for AppError {
 ///
 /// Uses the `From<ApiError> for AppError` impl for guaranteed-correct
 /// status code mapping (no keyword-based heuristics).
+#[must_use] 
 pub fn map_api_error(err: crate::impls::ApiError) -> AppError {
     AppError::from(err)
 }

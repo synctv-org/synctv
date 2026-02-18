@@ -183,9 +183,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
 
     // Extract node_id reference before moving cluster_manager
     let cluster_node_id = cluster_manager
-        .as_ref()
-        .map(|cm| cm.node_id().to_string())
-        .unwrap_or_else(|| "single-node".to_string());
+        .as_ref().map_or_else(|| "single-node".to_string(), |cm| cm.node_id().to_string());
 
     // Clone connection_manager for later use
     let connection_manager_for_provider = connection_manager.clone();
@@ -432,9 +430,9 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
             admin_api: None,
             notification_api: None,
             oauth2_api: None, // OAuth2 not used in provider gRPC
-            bilibili_api: Arc::new(crate::impls::BilibiliApiImpl::new(bilibili_provider.clone())),
-            alist_api: Arc::new(crate::impls::AlistApiImpl::new(alist_provider.clone())),
-            emby_api: Arc::new(crate::impls::EmbyApiImpl::new(emby_provider.clone())),
+            bilibili_api: Arc::new(crate::impls::BilibiliApiImpl::new(bilibili_provider)),
+            alist_api: Arc::new(crate::impls::AlistApiImpl::new(alist_provider)),
+            emby_api: Arc::new(crate::impls::EmbyApiImpl::new(emby_provider)),
             redis_conn: redis_conn.clone(),
             security_pipeline: Arc::new(if let Some(ref rc) = redis_conn {
                 let key_builder = synctv_core::cache::KeyBuilder::new(&config.redis.key_prefix);
@@ -479,44 +477,42 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
             "cluster_secret is empty — cluster gRPC service will NOT be registered. \
              Cluster coordination will be disabled. Set cluster_secret in config to enable."
         );
-    } else {
-        if let Some(ref nr) = node_registry {
-            let cluster_server = synctv_cluster::grpc::ClusterServer::new(
-                nr.clone(),
-                cluster_node_id.clone(),
-            ).with_connection_manager(
-                std::sync::Arc::new(connection_manager_for_provider.clone()),
-            );
-            let cluster_interceptor = ClusterAuthInterceptor::new(config.server.cluster_secret.clone());
-            router = router.add_service(
-                synctv_cluster::grpc::ClusterServiceServer::with_interceptor(
-                    cluster_server,
-                    move |req| cluster_interceptor.validate(req),
-                ),
-            );
-            tracing::info!("Cluster gRPC service registered with shared-secret auth (using shared NodeRegistry)");
-        } else if !config.redis.url.is_empty() {
-            // Fallback: create a standalone NodeRegistry for cluster gRPC (single-node mode)
-            match synctv_cluster::discovery::NodeRegistry::new(config.redis.url.clone(), cluster_node_id.clone(), 30, &config.redis.key_prefix) {
-                Ok(fallback_registry) => {
-                    let cluster_server = synctv_cluster::grpc::ClusterServer::new(
-                        std::sync::Arc::new(fallback_registry),
-                        cluster_node_id.clone(),
-                    ).with_connection_manager(
-                        std::sync::Arc::new(connection_manager_for_provider.clone()),
-                    );
-                    let cluster_interceptor = ClusterAuthInterceptor::new(config.server.cluster_secret.clone());
-                    router = router.add_service(
-                        synctv_cluster::grpc::ClusterServiceServer::with_interceptor(
-                            cluster_server,
-                            move |req| cluster_interceptor.validate(req),
-                        ),
-                    );
-                    tracing::info!("Cluster gRPC service registered with shared-secret auth (standalone NodeRegistry)");
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to create NodeRegistry for cluster gRPC: {e}");
-                }
+    } else if let Some(ref nr) = node_registry {
+        let cluster_server = synctv_cluster::grpc::ClusterServer::new(
+            nr.clone(),
+            cluster_node_id.clone(),
+        ).with_connection_manager(
+            std::sync::Arc::new(connection_manager_for_provider.clone()),
+        );
+        let cluster_interceptor = ClusterAuthInterceptor::new(config.server.cluster_secret.clone());
+        router = router.add_service(
+            synctv_cluster::grpc::ClusterServiceServer::with_interceptor(
+                cluster_server,
+                move |req| cluster_interceptor.validate(req),
+            ),
+        );
+        tracing::info!("Cluster gRPC service registered with shared-secret auth (using shared NodeRegistry)");
+    } else if !config.redis.url.is_empty() {
+        // Fallback: create a standalone NodeRegistry for cluster gRPC (single-node mode)
+        match synctv_cluster::discovery::NodeRegistry::new(config.redis.url.clone(), cluster_node_id.clone(), 30, &config.redis.key_prefix) {
+            Ok(fallback_registry) => {
+                let cluster_server = synctv_cluster::grpc::ClusterServer::new(
+                    std::sync::Arc::new(fallback_registry),
+                    cluster_node_id.clone(),
+                ).with_connection_manager(
+                    std::sync::Arc::new(connection_manager_for_provider.clone()),
+                );
+                let cluster_interceptor = ClusterAuthInterceptor::new(config.server.cluster_secret.clone());
+                router = router.add_service(
+                    synctv_cluster::grpc::ClusterServiceServer::with_interceptor(
+                        cluster_server,
+                        move |req| cluster_interceptor.validate(req),
+                    ),
+                );
+                tracing::info!("Cluster gRPC service registered with shared-secret auth (standalone NodeRegistry)");
+            }
+            Err(e) => {
+                tracing::warn!("Failed to create NodeRegistry for cluster gRPC: {e}");
             }
         }
     }

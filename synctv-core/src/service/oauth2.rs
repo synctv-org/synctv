@@ -30,7 +30,7 @@ use crate::{
 // OAuthStateStore trait
 // ============================================================================
 
-/// Storage backend for OAuth2 CSRF state tokens.
+/// Storage backend for `OAuth2` CSRF state tokens.
 ///
 /// Implementations **must** guarantee atomic single-use consumption: a state
 /// stored with [`store`] can only be retrieved once via [`consume`]. Concurrent
@@ -65,12 +65,13 @@ pub struct RedisOAuthStateStore {
 
 impl RedisOAuthStateStore {
     /// Create from an existing Redis `ConnectionManager`.
-    pub fn new(conn: redis::aio::ConnectionManager) -> Self {
+    #[must_use] 
+    pub const fn new(conn: redis::aio::ConnectionManager) -> Self {
         Self { conn }
     }
 }
 
-/// Redis key prefix for OAuth2 state tokens
+/// Redis key prefix for `OAuth2` state tokens
 const OAUTH2_STATE_KEY_PREFIX: &str = "oauth2:state:";
 
 #[async_trait::async_trait]
@@ -161,7 +162,7 @@ pub struct OAuth2UserInfo {
     pub email_verified: bool,
 }
 
-/// An OAuth2 provider entry combining the provider instance and its type
+/// An `OAuth2` provider entry combining the provider instance and its type
 struct OAuth2ProviderEntry {
     provider: Box<dyn OAuth2ProviderTrait>,
     provider_type: OAuth2Provider,
@@ -184,7 +185,7 @@ struct OAuth2ProviderEntry {
 pub struct OAuth2Service {
     repository: UserOAuthProviderRepository,
     /// Map of instance name -> (provider instance, provider enum type)
-    /// M-03: Consolidated from separate providers + provider_types maps to prevent lock ordering issues
+    /// M-03: Consolidated from separate providers + `provider_types` maps to prevent lock ordering issues
     providers: Arc<RwLock<HashMap<String, OAuth2ProviderEntry>>>,
     /// State storage backend — injected via trait object
     state_store: Arc<dyn OAuthStateStore>,
@@ -291,7 +292,7 @@ impl OAuth2Service {
         self.build_authorization_url(instance_name, redirect_url, user_id).await
     }
 
-    /// Shared implementation for building an OAuth2 authorization URL.
+    /// Shared implementation for building an `OAuth2` authorization URL.
     async fn build_authorization_url(
         &self,
         instance_name: &str,
@@ -562,7 +563,7 @@ impl OAuth2Service {
         self.repository.delete_by_user_and_provider(user_id, provider).await
     }
 
-    /// Remove all OAuth2 provider mappings for a user.
+    /// Remove all `OAuth2` provider mappings for a user.
     ///
     /// Used during user deletion to clean up all OAuth bindings.
     /// Returns the number of mappings removed.

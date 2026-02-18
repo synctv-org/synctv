@@ -10,6 +10,7 @@ use std::sync::Arc;
 ///
 /// All callbacks are optional. When `None`, the event is simply ignored.
 /// Callbacks must be `Send + Sync` because they are shared across async tasks.
+#[derive(Default)]
 pub struct StreamEventCallbacks {
     pub on_publisher_start: Option<Arc<dyn Fn() + Send + Sync>>,
     pub on_publisher_stop: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -17,16 +18,6 @@ pub struct StreamEventCallbacks {
     pub on_viewer_leave: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
-impl Default for StreamEventCallbacks {
-    fn default() -> Self {
-        Self {
-            on_publisher_start: None,
-            on_publisher_stop: None,
-            on_viewer_join: None,
-            on_viewer_leave: None,
-        }
-    }
-}
 
 impl std::fmt::Debug for StreamEventCallbacks {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

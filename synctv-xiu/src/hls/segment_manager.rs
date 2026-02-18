@@ -34,7 +34,7 @@ impl Default for CleanupConfig {
     fn default() -> Self {
         Self {
             interval: Duration::from_secs(10),
-            retention: Duration::from_secs(60),
+            retention: Duration::from_mins(1),
         }
     }
 }

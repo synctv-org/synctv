@@ -16,7 +16,7 @@ use crate::error::ProviderClientError;
 /// status code.
 ///
 /// The `context` parameter is a human-readable label for the RPC being called
-/// (e.g., "login", "fs_get") and is included in the status message.
+/// (e.g., "login", "`fs_get`") and is included in the status message.
 ///
 /// Mapping rules:
 /// - Auth errors -> `UNAUTHENTICATED`
@@ -29,6 +29,7 @@ use crate::error::ProviderClientError;
 /// - Not implemented -> `UNIMPLEMENTED`
 /// - Response too large -> `RESOURCE_EXHAUSTED`
 /// - API errors -> mapped by code (401/403/404 -> corresponding status, others -> `INTERNAL`)
+#[must_use] 
 pub fn map_provider_error(context: &str, e: &ProviderClientError) -> Status {
     match e {
         ProviderClientError::Auth(_) => {

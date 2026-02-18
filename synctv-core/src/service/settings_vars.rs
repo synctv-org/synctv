@@ -134,7 +134,7 @@ impl SettingsStorage {
     /// and updates the inner `HashMap` accordingly.
     ///
     /// This keeps the `SettingsStorage` in sync with remote replica changes
-    /// that are propagated via PostgreSQL LISTEN/NOTIFY.
+    /// that are propagated via `PostgreSQL` LISTEN/NOTIFY.
     pub fn start_reload_listener(&self) {
         let inner = self.inner.clone();
         let mut receiver = self.settings_service.subscribe_reloads();

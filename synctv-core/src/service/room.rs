@@ -371,7 +371,7 @@ impl RoomService {
     ///
     /// When a distributed lock is configured (multi-replica mode), a per-room+user
     /// lock prevents the TOCTOU race where concurrent requests could both pass
-    /// validation checks and then conflict on the add_member step.
+    /// validation checks and then conflict on the `add_member` step.
     pub async fn join_room(
         &self,
         room_id: RoomId,
@@ -411,24 +411,21 @@ impl RoomService {
 
         // Check password if required (CPU-intensive bcrypt, done before lock)
         if ctx.settings.require_password.0 {
-            match ctx.password_hash {
-                Some(ref hash) => {
-                    let provided_password = password.ok_or_else(|| {
-                        tracing::warn!(room_id = %room_id, user_id = %user_id, "Password required but not provided");
-                        Error::Authorization("Password required".to_string())
-                    })?;
+            if let Some(ref hash) = ctx.password_hash {
+                let provided_password = password.ok_or_else(|| {
+                    tracing::warn!(room_id = %room_id, user_id = %user_id, "Password required but not provided");
+                    Error::Authorization("Password required".to_string())
+                })?;
 
-                    if !verify_password(&provided_password, hash).await? {
-                        tracing::warn!(room_id = %room_id, user_id = %user_id, "Invalid password provided");
-                        return Err(Error::Authorization("Invalid password".to_string()));
-                    }
-                    tracing::debug!(room_id = %room_id, user_id = %user_id, "Password verified successfully");
-                }
-                None => {
-                    // Room requires password but none is configured -- reject join
-                    tracing::warn!(room_id = %room_id, "Room requires password but none is set");
+                if !verify_password(&provided_password, hash).await? {
+                    tracing::warn!(room_id = %room_id, user_id = %user_id, "Invalid password provided");
                     return Err(Error::Authorization("Invalid password".to_string()));
                 }
+                tracing::debug!(room_id = %room_id, user_id = %user_id, "Password verified successfully");
+            } else {
+                // Room requires password but none is configured -- reject join
+                tracing::warn!(room_id = %room_id, "Room requires password but none is set");
+                return Err(Error::Authorization("Invalid password".to_string()));
             }
         }
 
@@ -473,7 +470,7 @@ impl RoomService {
     ///
     /// Called after all validation (room active, not banned, password checked).
     /// When used with a distributed lock, the lock ensures atomicity of the
-    /// re-validation + add_member sequence.
+    /// re-validation + `add_member` sequence.
     async fn do_join_room(
         &self,
         room: Room,
@@ -1192,9 +1189,9 @@ impl RoomService {
 
     /// Clear all media from room's root playlist
     ///
-    /// Permission check is handled by the API layer (CLEAR_PLAYLIST).
+    /// Permission check is handled by the API layer (`CLEAR_PLAYLIST`).
     /// This method no longer performs its own permission check to avoid
-    /// inconsistency with the API layer's CLEAR_PLAYLIST check.
+    /// inconsistency with the API layer's `CLEAR_PLAYLIST` check.
     pub async fn clear_playlist(&self, room_id: RoomId, _user_id: UserId) -> Result<i64> {
         let root_playlist = self.playlist_service.get_root_playlist(&room_id).await?;
 
@@ -1432,7 +1429,7 @@ impl RoomService {
 
     /// Ban a room (admin only)
     ///
-    /// Sets the is_banned flag. The room retains its previous status (Active/Closed/etc).
+    /// Sets the `is_banned` flag. The room retains its previous status (Active/Closed/etc).
     /// Only global admins can ban rooms.
     pub async fn ban_room(&self, room_id: &RoomId, admin_user_id: &UserId) -> Result<Room> {
         let room = self.room_repo.get_by_id(room_id).await?
@@ -1464,7 +1461,7 @@ impl RoomService {
 
     /// Unban a room (admin only)
     ///
-    /// Clears the is_banned flag. The room returns to its previous status.
+    /// Clears the `is_banned` flag. The room returns to its previous status.
     /// Only global admins can unban rooms.
     pub async fn unban_room(&self, room_id: &RoomId, admin_user_id: &UserId) -> Result<Room> {
         let room = self.room_repo.get_by_id(room_id).await?

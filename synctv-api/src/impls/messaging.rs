@@ -141,7 +141,7 @@ impl StreamMessageHandler {
 
     /// Set the per-connection WebSocket message rate limit from config.
     #[must_use]
-    pub fn with_ws_message_rate_limit(mut self, limit: u32) -> Self {
+    pub const fn with_ws_message_rate_limit(mut self, limit: u32) -> Self {
         self.ws_message_rate_limit = limit;
         self
     }
@@ -520,7 +520,7 @@ impl StreamMessageHandler {
         }
     }
 
-    /// Broadcast UserJoined event to cluster replicas
+    /// Broadcast `UserJoined` event to cluster replicas
     async fn broadcast_user_joined(&self) {
         // Fetch the actual role and permissions from the membership record
         let (role_proto, permissions) =
@@ -600,8 +600,8 @@ impl StreamMessageHandler {
     /// 3. Spawns a task to handle incoming client messages
     /// 4. Returns a sender and a cancellation token for the caller to manage lifecycle
     ///
-    /// Returns a tuple of (sender, CancellationToken), or an error if connection limits
-    /// are exceeded. Drop the CancellationToken or call `cancel()` on it to stop the
+    /// Returns a tuple of (sender, `CancellationToken`), or an error if connection limits
+    /// are exceeded. Drop the `CancellationToken` or call `cancel()` on it to stop the
     /// spawned tasks and trigger cleanup (unregister, unsubscribe).
     pub async fn start(
         &self,
@@ -639,7 +639,7 @@ impl StreamMessageHandler {
         tokio::spawn(async move {
             loop {
                 tokio::select! {
-                    _ = event_token.cancelled() => break,
+                    () = event_token.cancelled() => break,
                     event = rx_events.recv() => {
                         match event {
                             Some(event) => {
@@ -663,7 +663,7 @@ impl StreamMessageHandler {
         tokio::spawn(async move {
             loop {
                 tokio::select! {
-                    _ = msg_token.cancelled() => break,
+                    () = msg_token.cancelled() => break,
                     msg = rx.recv() => {
                         match msg {
                             Some(msg) => {
@@ -694,7 +694,7 @@ impl StreamMessageHandler {
             tokio::spawn(async move {
                 loop {
                     tokio::select! {
-                        _ = disconnect_token.cancelled() => break,
+                        () = disconnect_token.cancelled() => break,
 
                         signal = disconnect_rx.recv() => {
                             let should_disconnect = match &signal {
@@ -1235,7 +1235,7 @@ impl StreamMessageHandler {
         Ok(())
     }
 
-    /// Handle SetPlaybackSpeed command from WebSocket
+    /// Handle `SetPlaybackSpeed` command from WebSocket
     async fn handle_set_speed_command(&self, speed: f64) -> Result<(), String> {
         if speed <= 0.0 || speed > 4.0 {
             return Err("Playback speed must be between 0.0 and 4.0".to_string());

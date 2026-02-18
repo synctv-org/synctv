@@ -113,7 +113,7 @@ impl Provider for GitHubProvider {
             .authorize_url(|| oauth2::CsrfToken::new(state.to_string()))
             .set_pkce_challenge(pkce_challenge)
             .url();
-        Ok((auth_url.to_string(), pkce_verifier.secret().to_string()))
+        Ok((auth_url.to_string(), pkce_verifier.secret().clone()))
     }
 
     async fn get_user_info(&self, code: &str, pkce_verifier: &str) -> Result<OAuth2UserInfo, Error> {

@@ -1,7 +1,7 @@
 //! Unified database maintenance service
 //!
 //! Coordinates all periodic database maintenance in a single background task:
-//! - Partition creation for chat_messages (daily) and audit_logs (monthly)
+//! - Partition creation for `chat_messages` (daily) and `audit_logs` (monthly)
 //! - Cleanup of expired email tokens, old notifications, and expired credentials
 //!
 //! Uses the existing SQL functions defined in migrations but previously uncalled
@@ -149,9 +149,9 @@ impl DatabaseMaintenanceService {
             }
 
             let mut partition_interval =
-                tokio::time::interval(tokio::time::Duration::from_secs(12 * 3600));
+                tokio::time::interval(tokio::time::Duration::from_hours(12));
             let mut cleanup_interval =
-                tokio::time::interval(tokio::time::Duration::from_secs(3600));
+                tokio::time::interval(tokio::time::Duration::from_hours(1));
 
             // Skip the first immediate tick (we already ran at startup)
             partition_interval.tick().await;

@@ -582,7 +582,7 @@ impl RoomMemberRepository {
     /// Ban member from room
     ///
     /// Only bans members that are not already banned (`status != Banned`),
-    /// preserving the original ban audit info (banned_at, banned_by, banned_reason).
+    /// preserving the original ban audit info (`banned_at`, `banned_by`, `banned_reason`).
     pub async fn ban_member(
         &self,
         room_id: &RoomId,
@@ -715,7 +715,7 @@ impl RoomMemberRepository {
         .fetch_all(&self.pool)
         .await?;
 
-        let total_count = rows.first().map(|r| r.get::<i64, _>("total_count")).unwrap_or(0);
+        let total_count = rows.first().map_or(0, |r| r.get::<i64, _>("total_count"));
         let room_ids = rows.into_iter().map(|r| RoomId::from_string(r.get::<String, _>("room_id"))).collect();
 
         Ok((room_ids, total_count))

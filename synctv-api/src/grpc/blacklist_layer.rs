@@ -34,6 +34,7 @@ pub struct BlacklistCheckLayer {
 }
 
 impl BlacklistCheckLayer {
+    #[must_use] 
     pub fn new(jwt_service: JwtService, security_pipeline: SecurityPipeline) -> Self {
         Self {
             jwt_service: Arc::new(jwt_service),

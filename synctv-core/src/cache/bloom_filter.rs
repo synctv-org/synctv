@@ -310,7 +310,7 @@ impl ProtectedCache {
                         rebuilding.store(false, Ordering::Release);
                         tracing::info!("Bloom filter rebuild grace period ended, filter active");
                     }
-                    _ = shutdown.notified() => {
+                    () = shutdown.notified() => {
                         tracing::debug!("Bloom filter reset task shutting down");
                         break;
                     }

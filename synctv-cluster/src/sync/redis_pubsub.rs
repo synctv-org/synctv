@@ -91,6 +91,9 @@ pub struct RedisPubSub {
     cache_invalidation: Option<CacheInvalidationService>,
     deduplicator: Arc<MessageDeduplicator>,
     cancel_token: CancellationToken,
+    /// How far back (in milliseconds) to replay Redis Stream events on first connect.
+    /// Configurable via `ClusterChannelConfig::catchup_window_secs`.
+    catchup_window_ms: u128,
 }
 
 impl RedisPubSub {
@@ -104,10 +107,13 @@ impl RedisPubSub {
         cache_invalidation: Option<CacheInvalidationService>,
         deduplicator: Arc<MessageDeduplicator>,
     ) -> Result<Self> {
-        Self::with_key_prefix(redis_url, message_hub, node_id, "synctv:", admin_event_tx, permission_service, cache_invalidation, deduplicator)
+        Self::with_key_prefix(redis_url, message_hub, node_id, "synctv:", admin_event_tx, permission_service, cache_invalidation, deduplicator, 300)
     }
 
     /// Create a new `RedisPubSub` service with a custom key prefix.
+    ///
+    /// `catchup_window_secs` controls how far back to replay Redis Stream events
+    /// when this node first connects.  Pass `300` for the default (5 minutes).
     pub fn with_key_prefix(
         redis_url: &str,
         message_hub: Arc<RoomMessageHub>,
@@ -117,6 +123,7 @@ impl RedisPubSub {
         permission_service: Option<PermissionService>,
         cache_invalidation: Option<CacheInvalidationService>,
         deduplicator: Arc<MessageDeduplicator>,
+        catchup_window_secs: u64,
     ) -> Result<Self> {
         let redis_client = RedisClient::open(redis_url).context("Failed to create Redis client")?;
 
@@ -132,6 +139,7 @@ impl RedisPubSub {
             cache_invalidation,
             deduplicator,
             cancel_token: CancellationToken::new(),
+            catchup_window_ms: u128::from(catchup_window_secs) * 1000,
         })
     }
 
@@ -637,15 +645,14 @@ impl RedisPubSub {
             streams_to_catchup.push(self.admin_stream_key());
 
             // New node: catch up on recent historical events from each stream.
-            // Instead of reading from "0" (all history), we start from 5 minutes ago
-            // to avoid processing a large backlog in big clusters.
+            // Instead of reading from "0" (all history), we start from `catchup_window_ms`
+            // ago to avoid processing a large backlog in big clusters.
             let catchup_start_id = {
                 let now_ms = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_millis();
-                // 5 minutes = 300,000 ms
-                let start_ms = now_ms.saturating_sub(300_000);
+                let start_ms = now_ms.saturating_sub(self.catchup_window_ms);
                 format!("{start_ms}-0")
             };
             let mut total_caught_up = 0usize;

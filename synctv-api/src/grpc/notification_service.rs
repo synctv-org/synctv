@@ -1,4 +1,4 @@
-//! gRPC NotificationService implementation
+//! gRPC `NotificationService` implementation
 //!
 //! Thin wrapper that delegates to `NotificationApiImpl` from the shared impls layer,
 //! converting between proto types and domain types.
@@ -18,7 +18,7 @@ use crate::proto::client::{
     MarkAllAsReadRequest, MarkAllAsReadResponse, MarkAsReadRequest, MarkAsReadResponse,
 };
 
-/// gRPC NotificationService implementation
+/// gRPC `NotificationService` implementation
 #[derive(Clone)]
 pub struct NotificationServiceImpl {
     notification_api: Arc<NotificationApiImpl>,
@@ -26,11 +26,11 @@ pub struct NotificationServiceImpl {
 
 impl NotificationServiceImpl {
     #[must_use]
-    pub fn new(notification_api: Arc<NotificationApiImpl>) -> Self {
+    pub const fn new(notification_api: Arc<NotificationApiImpl>) -> Self {
         Self { notification_api }
     }
 
-    /// Extract user_id from UserContext (injected by inject_user interceptor)
+    /// Extract `user_id` from `UserContext` (injected by `inject_user` interceptor)
     #[allow(clippy::result_large_err)]
     fn get_user_id(&self, request: &Request<impl std::fmt::Debug>) -> Result<UserId, Status> {
         super::interceptors::extract_user_id(request)

@@ -1,6 +1,6 @@
 //! `OAuth2` HTTP handlers
 //!
-//! Provides `OAuth2` endpoints for browser/frontend-driven OAuth2 flows.
+//! Provides `OAuth2` endpoints for browser/frontend-driven `OAuth2` flows.
 //! Uses proto-generated types for request/response consistency with gRPC.
 //!
 //! ## HTTP vs gRPC endpoint mapping
@@ -53,7 +53,7 @@ pub struct UnlinkProviderQuery {
 
 /// Get `OAuth2` authorization URL for login flow
 ///
-/// GET /api/oauth2/:provider/authorize?redirect_url=<url>
+/// GET /`api/oauth2/:provider/authorize?redirect_url`=<url>
 pub async fn get_authorize_url(
     State(state): State<AppState>,
     Path(provider): Path<String>,
@@ -83,7 +83,12 @@ pub async fn get_authorize_url(
 ///
 /// POST /api/oauth2/:provider/exchange
 /// Body: { "code": "xxx", "state": "xxx" }
+///
+/// For bind flows (where the `OAuth2` state contains a `bind_user_id`), the caller
+/// must be authenticated and the authenticated user must match the `bind_user_id`
+/// stored in the state. For login flows, no authentication is required.
 pub async fn exchange_authorization_code(
+    maybe_auth: Option<super::middleware::AuthUser>,
     State(state): State<AppState>,
     Path(provider): Path<String>,
     Json(req): Json<ExchangeAuthorizationCodeRequest>,
@@ -92,8 +97,10 @@ pub async fn exchange_authorization_code(
         super::AppError::bad_request("OAuth2 is not configured on this server")
     })?;
 
+    let current_user_id = maybe_auth.as_ref().map(|a| &a.user_id);
+
     let result = oauth2_api
-        .exchange_authorization_code(&provider, &req.code, &req.state)
+        .exchange_authorization_code(&provider, &req.code, &req.state, current_user_id)
         .await
         .map_err(|e| {
             error!("Failed to exchange authorization code: {}", e);
@@ -115,11 +122,11 @@ pub async fn exchange_authorization_code(
     }))
 }
 
-/// Get authorization URL for binding OAuth2 provider to authenticated user
+/// Get authorization URL for binding `OAuth2` provider to authenticated user
 ///
-/// GET /api/oauth2/:provider/bind?redirect_url=<url>
+/// GET /`api/oauth2/:provider/bind?redirect_url`=<url>
 ///
-/// Requires authentication. The frontend then redirects to the OAuth2 provider,
+/// Requires authentication. The frontend then redirects to the `OAuth2` provider,
 /// receives code/state, and calls exchange endpoint which will bind the provider.
 pub async fn get_bind_authorize_url(
     auth: AuthUser,
@@ -151,9 +158,9 @@ pub async fn get_bind_authorize_url(
     }))
 }
 
-/// Unlink OAuth2 provider from authenticated user
+/// Unlink `OAuth2` provider from authenticated user
 ///
-/// DELETE /api/oauth2/:provider/unlink?provider_user_id=<optional>
+/// DELETE /`api/oauth2/:provider/unlink?provider_user_id`=<optional>
 pub async fn unlink_provider(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -188,11 +195,11 @@ pub async fn unlink_provider(
     }))
 }
 
-/// List all available OAuth2 provider instances
+/// List all available `OAuth2` provider instances
 ///
 /// GET /api/oauth2/providers
 ///
-/// Returns the configured OAuth2 provider instances that clients can use
+/// Returns the configured `OAuth2` provider instances that clients can use
 /// for login or account binding. No authentication required.
 pub async fn list_available_providers(
     State(state): State<AppState>,
@@ -211,7 +218,7 @@ pub async fn list_available_providers(
 
     let response = providers
         .into_iter()
-        .map(|p| p.into())
+        .map(std::convert::Into::into)
         .collect();
 
     Ok(Json(ListAvailableProvidersResponse {
@@ -219,7 +226,7 @@ pub async fn list_available_providers(
     }))
 }
 
-/// Get linked OAuth2 providers for authenticated user
+/// Get linked `OAuth2` providers for authenticated user
 ///
 /// GET /api/oauth2/linked
 ///
@@ -242,7 +249,7 @@ pub async fn get_linked_providers(
 
     let response = providers
         .into_iter()
-        .map(|p| p.into())
+        .map(std::convert::Into::into)
         .collect();
 
     Ok(Json(GetLinkedProvidersResponse {

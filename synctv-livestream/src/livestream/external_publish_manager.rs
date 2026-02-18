@@ -31,6 +31,9 @@ pub struct ExternalPublishManager {
     pool: StreamPool<ExternalPublishStream>,
     registry: Arc<dyn StreamRegistryTrait>,
     local_node_id: String,
+    /// Advertised gRPC address of this node. Used when registering external publishers
+    /// in Redis so other nodes can discover and relay streams via gRPC.
+    local_grpc_address: String,
     stream_hub_event_sender: StreamHubEventSender,
     /// Shared HTTP client for FLV connections. Built once with TLS (rustls) support
     /// and reused across all external publish streams to avoid per-stream TLS setup cost.
@@ -46,7 +49,17 @@ impl ExternalPublishManager {
         local_node_id: String,
         stream_hub_event_sender: StreamHubEventSender,
     ) -> Self {
-        Self::with_timeouts(registry, local_node_id, stream_hub_event_sender, 60, 300)
+        Self::with_timeouts(registry, local_node_id, String::new(), stream_hub_event_sender, 60, 300)
+    }
+
+    /// Set the advertised gRPC address used when registering external publishers in Redis.
+    ///
+    /// Other cluster nodes use this address to relay streams via gRPC.
+    /// Should be called before the first `get_or_create` invocation.
+    #[must_use]
+    pub fn with_grpc_address(mut self, grpc_address: String) -> Self {
+        self.local_grpc_address = grpc_address;
+        self
     }
 
     /// Start the background cleanup task for stale creation locks.
@@ -61,6 +74,7 @@ impl ExternalPublishManager {
     pub fn with_timeouts(
         registry: Arc<dyn StreamRegistryTrait>,
         local_node_id: String,
+        local_grpc_address: String,
         stream_hub_event_sender: StreamHubEventSender,
         cleanup_check_interval_secs: u64,
         idle_timeout_secs: u64,
@@ -82,6 +96,7 @@ impl ExternalPublishManager {
             pool,
             registry,
             local_node_id,
+            local_grpc_address,
             stream_hub_event_sender,
             http_client,
             _cleanup_handle: cleanup_handle,
@@ -90,7 +105,7 @@ impl ExternalPublishManager {
 
     /// Stop all managed external publish streams, aborting their tasks and clearing the pool.
     ///
-    /// Called during StreamHub restart to ensure zombie streams (still connected
+    /// Called during `StreamHub` restart to ensure zombie streams (still connected
     /// to the old hub instance) are cleaned up before the new hub starts.
     pub async fn stop_all(&self) {
         self.pool.stop_all().await;
@@ -153,11 +168,26 @@ impl ExternalPublishManager {
             self.http_client.clone(),
         ));
 
+        // Validate that we have a gRPC address before registering. Other nodes need this
+        // address to relay the stream via gRPC; registering with an empty address means
+        // cross-node relay will fail silently.
+        if self.local_grpc_address.is_empty() {
+            error!(
+                "Cannot register external publisher for {}/{}: local_grpc_address is empty. \
+                 Other nodes will be unable to relay this stream. \
+                 Set grpc_address in LivestreamConfig.",
+                room_id, media_id
+            );
+            return Err(crate::error::StreamError::InvalidState(
+                "local_grpc_address is empty; cannot register external publisher without a valid gRPC address".to_string(),
+            ));
+        }
+
         // Register as publisher in Redis FIRST so other nodes can discover this stream.
         // If registration fails, don't start the stream at all to avoid orphaned frames.
         if let Err(e) = self
             .registry
-            .try_register_publisher(room_id, media_id, &self.local_node_id, "external_puller", "")
+            .try_register_publisher(room_id, media_id, &self.local_node_id, "external_puller", &self.local_grpc_address)
             .await
         {
             error!("Failed to register external publisher in Redis: {e}");
@@ -235,7 +265,7 @@ pub struct ExternalPublishStream {
     source_url: String,
     stream_hub_event_sender: StreamHubEventSender,
     lifecycle: StreamLifecycle,
-    /// Guard against sending duplicate UnPublish events (stop() + Drop)
+    /// Guard against sending duplicate `UnPublish` events (`stop()` + Drop)
     unpublish_sent: AtomicBool,
     /// Shared HTTP client for FLV connections (supports TLS via rustls).
     http_client: reqwest::Client,

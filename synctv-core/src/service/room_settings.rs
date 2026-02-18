@@ -6,10 +6,10 @@
 //! - L1 Cache: In-memory moka cache (per-instance)
 //! - TTL: 5 minutes with time-based expiration
 //! - Max capacity: 10,000 rooms
-//! - Cache invalidation: Via Redis Streams through CacheInvalidationService
+//! - Cache invalidation: Via Redis Streams through `CacheInvalidationService`
 //!
 //! ## Multi-Replica Synchronization
-//! - Uses Redis Streams (via CacheInvalidationService) for reliable message delivery
+//! - Uses Redis Streams (via `CacheInvalidationService`) for reliable message delivery
 //! - Messages are persisted and won't be lost if a replica disconnects
 //! - Consumer groups ensure every replica processes invalidation messages
 //! - On reconnection, missed messages are automatically delivered
@@ -38,8 +38,8 @@ pub struct RoomSettingsService {
     cache: Arc<moka::future::Cache<RoomId, RoomSettings>>,
     invalidation_service: Option<Arc<CacheInvalidationService>>,
     notification_service: Arc<NotificationService>,
-    /// SingleFlight to prevent thundering herd on cache miss.
-    /// Uses `String` key (room_id) and `String` error (since `Error` is not `Clone`).
+    /// `SingleFlight` to prevent thundering herd on cache miss.
+    /// Uses `String` key (`room_id`) and `String` error (since `Error` is not `Clone`).
     single_flight: SingleFlight<String, RoomSettings, String>,
 }
 
@@ -110,7 +110,7 @@ impl RoomSettingsService {
             crate::spawn::spawn_monitored("room_settings_invalidation_listener", async move {
                 loop {
                     tokio::select! {
-                        _ = cancel.cancelled() => {
+                        () = cancel.cancelled() => {
                             tracing::info!("Room settings invalidation listener shutting down");
                             break;
                         }
@@ -157,7 +157,7 @@ impl RoomSettingsService {
     /// # Performance
     /// - L1 cache hit: < 1ms
     /// - Cache miss + DB query: ~10ms
-    /// - SingleFlight: Prevents thundering herd on cache miss
+    /// - `SingleFlight`: Prevents thundering herd on cache miss
     pub async fn get(&self, room_id: &RoomId) -> Result<RoomSettings> {
         // Try cache first
         if let Some(settings) = self.cache.get(room_id).await {

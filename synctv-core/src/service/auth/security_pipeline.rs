@@ -43,6 +43,7 @@ pub struct SecurityPipeline {
 
 impl SecurityPipeline {
     /// Create a new security pipeline (without Redis -- token blacklist is disabled).
+    #[must_use] 
     pub fn new(user_service: Arc<UserService>) -> Self {
         Self {
             user_service,
@@ -52,7 +53,8 @@ impl SecurityPipeline {
     }
 
     /// Create a new security pipeline with Redis for token blacklisting.
-    pub fn with_redis(
+    #[must_use] 
+    pub const fn with_redis(
         user_service: Arc<UserService>,
         redis_conn: redis::aio::ConnectionManager,
         key_builder: KeyBuilder,

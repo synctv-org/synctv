@@ -254,6 +254,13 @@ cluster:
   #   (requires POD_NAME and POD_NAMESPACE env vars, RBAC permissions)
   leader_election_mode: "redis"
 
+  # How far back (in seconds) to replay Redis Stream events when a new node
+  # first connects to the cluster.  Replaying recent history prevents events
+  # published just before this node subscribed from being silently missed.
+  # Increase in clusters with high event rates; decrease to shorten startup
+  # replay time.  Default: 300 (5 minutes).
+  catchup_window_secs: 300
+
 # ============================================================================
 # Media Providers Configuration
 # ============================================================================

@@ -1,17 +1,17 @@
-//! OAuth2 API Implementation
+//! `OAuth2` API Implementation
 //!
-//! Unified implementation for OAuth2 API operations.
+//! Unified implementation for `OAuth2` API operations.
 //! Used by both HTTP and gRPC handlers.
 //!
-//! ## Frontend-Driven OAuth2 Flow
+//! ## Frontend-Driven `OAuth2` Flow
 //!
-//! This implementation uses a frontend-driven OAuth2 flow where the frontend
-//! handles the redirect from the OAuth2 provider and extracts the authorization
+//! This implementation uses a frontend-driven `OAuth2` flow where the frontend
+//! handles the redirect from the `OAuth2` provider and extracts the authorization
 //! code and state before sending them to the backend.
 //!
 //! Flow:
 //! 1. Frontend calls `get_authorization_url` to get the auth URL
-//! 2. Frontend redirects user to the auth URL (OAuth2 provider)
+//! 2. Frontend redirects user to the auth URL (`OAuth2` provider)
 //! 3. User authorizes on the provider
 //! 4. Provider redirects to **frontend URL** with code and state
 //! 5. Frontend extracts code and state from URL parameters
@@ -28,7 +28,7 @@ use synctv_proto::client::{
 
 use super::ApiError;
 
-/// OAuth2 API implementation
+/// `OAuth2` API implementation
 #[derive(Clone)]
 pub struct OAuth2ApiImpl {
     pub oauth2_service: Arc<OAuth2Service>,
@@ -37,7 +37,7 @@ pub struct OAuth2ApiImpl {
 
 impl OAuth2ApiImpl {
     #[must_use]
-    pub fn new(
+    pub const fn new(
         oauth2_service: Arc<OAuth2Service>,
         user_service: Arc<UserService>,
     ) -> Self {
@@ -47,7 +47,7 @@ impl OAuth2ApiImpl {
         }
     }
 
-    /// Get authorization URL for OAuth2 login flow
+    /// Get authorization URL for `OAuth2` login flow
     ///
     /// Returns the URL to redirect the user to for authorization.
     /// The frontend should redirect the browser to this URL.
@@ -65,9 +65,9 @@ impl OAuth2ApiImpl {
         Ok((auth_url, state))
     }
 
-    /// Get authorization URL for binding OAuth2 provider to existing user
+    /// Get authorization URL for binding `OAuth2` provider to existing user
     ///
-    /// Requires authentication. The user_id should come from the JWT token.
+    /// Requires authentication. The `user_id` should come from the JWT token.
     pub async fn get_authorization_url_for_bind(
         &self,
         user_id: &UserId,
@@ -96,20 +96,25 @@ impl OAuth2ApiImpl {
 
     /// Exchange authorization code for JWT token
     ///
-    /// Frontend calls this after receiving code and state from OAuth2 provider redirect.
+    /// Frontend calls this after receiving code and state from `OAuth2` provider redirect.
     ///
-    /// For login flow (no bind_user_id in state):
+    /// For login flow (no `bind_user_id` in state):
     /// - If user exists: log them in
     /// - If user doesn't exist: create new user account
     ///
-    /// For bind flow (bind_user_id present in state):
-    /// - Binds the OAuth2 provider to the existing user account
+    /// For bind flow (`bind_user_id` present in state):
+    /// - Binds the `OAuth2` provider to the existing user account
     /// - Returns empty tokens (user is already logged in)
+    ///
+    /// The `current_user_id` parameter is required for the bind flow to verify that
+    /// only the intended user (the one who initiated the bind) can complete it.
+    /// Pass `None` for login-only flows (no authentication needed).
     pub async fn exchange_authorization_code(
         &self,
         provider: &str,
         code: &str,
         state: &str,
+        current_user_id: Option<&UserId>,
     ) -> Result<ExchangeCodeResult, ApiError> {
         // 1. Verify state and retrieve stored OAuth2 state
         let oauth_state = self
@@ -134,6 +139,16 @@ impl OAuth2ApiImpl {
 
         // 3. Handle bind flow vs login flow
         if let Some(bind_user_id) = oauth_state.bind_user_id {
+            // Bind flow: verify that the currently authenticated user matches
+            // the user who initiated the bind request. This prevents a malicious
+            // actor from completing another user's OAuth2 bind by replaying the
+            // state token.
+            if current_user_id != Some(&bind_user_id) {
+                return Err(ApiError::Authorization(
+                    "Cannot bind OAuth2 to another user's account".to_string(),
+                ));
+            }
+
             // Bind flow: associate provider with existing user
             self.oauth2_service
                 .upsert_user_provider(&bind_user_id, &provider_type, &user_info.provider_user_id, &user_info)
@@ -238,7 +253,7 @@ impl OAuth2ApiImpl {
         })
     }
 
-    /// List all available OAuth2 provider instances
+    /// List all available `OAuth2` provider instances
     pub async fn list_available_providers(&self) -> Result<Vec<ProviderInfo>, ApiError> {
         let providers = self.oauth2_service.list_available_instances().await;
 
@@ -253,10 +268,10 @@ impl OAuth2ApiImpl {
         Ok(result)
     }
 
-    /// Unlink OAuth2 provider from user account
+    /// Unlink `OAuth2` provider from user account
     ///
-    /// If provider_user_id is provided, only unlinks that specific binding.
-    /// If provider_user_id is None, unlinks all bindings for the provider type.
+    /// If `provider_user_id` is provided, only unlinks that specific binding.
+    /// If `provider_user_id` is None, unlinks all bindings for the provider type.
     ///
     /// Safety: refuses to unlink if this is the user's last authentication method
     /// (no password set and no other OAuth providers linked).
@@ -305,11 +320,11 @@ impl OAuth2ApiImpl {
 
         Ok(UnlinkResult {
             success: removed,
-            removed_count: if removed { 1 } else { 0 },
+            removed_count: i32::from(removed),
         })
     }
 
-    /// Get linked OAuth2 providers for authenticated user
+    /// Get linked `OAuth2` providers for authenticated user
     pub async fn get_linked_providers(
         &self,
         user_id: &UserId,
@@ -344,7 +359,7 @@ pub struct ExchangeCodeResult {
     pub is_bind: bool,
 }
 
-/// OAuth2 provider information
+/// `OAuth2` provider information
 pub struct ProviderInfo {
     pub name: String,
     pub provider_type: String,
@@ -356,14 +371,14 @@ pub struct UnlinkResult {
     pub removed_count: i32,
 }
 
-/// Linked OAuth2 provider information
+/// Linked `OAuth2` provider information
 pub struct LinkedProviderInfo {
     pub provider_type: String,
     pub provider_username: String,
     pub linked_at: i64, // Unix timestamp (seconds)
 }
 
-/// Convert User model to OAuth2UserInfo proto
+/// Convert User model to `OAuth2UserInfo` proto
 fn user_to_oauth2_user_info(user: &User) -> OAuth2UserInfo {
     use synctv_proto::common::{UserRole as ProtoUserRole, UserStatus as ProtoUserStatus};
 
@@ -390,20 +405,20 @@ fn user_to_oauth2_user_info(user: &User) -> OAuth2UserInfo {
     }
 }
 
-/// Convert proto OAuth2ProviderInstance to ProviderInfo
+/// Convert proto `OAuth2ProviderInstance` to `ProviderInfo`
 impl From<ProviderInfo> for OAuth2ProviderInstance {
     fn from(info: ProviderInfo) -> Self {
-        OAuth2ProviderInstance {
+        Self {
             name: info.name,
             r#type: info.provider_type,
         }
     }
 }
 
-/// Convert LinkedProviderInfo to proto LinkedProvider
+/// Convert `LinkedProviderInfo` to proto `LinkedProvider`
 impl From<LinkedProviderInfo> for LinkedProvider {
     fn from(info: LinkedProviderInfo) -> Self {
-        LinkedProvider {
+        Self {
             provider_type: info.provider_type,
             provider_username: info.provider_username,
             linked_at: info.linked_at,

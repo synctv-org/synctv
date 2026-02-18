@@ -19,7 +19,7 @@ use tracing::{debug, info, error, warn};
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Default gRPC port for inter-node streaming (fallback when grpc_address is empty).
+/// Default gRPC port for inter-node streaming (fallback when `grpc_address` is empty).
 /// DEPRECATED: Only used by the legacy `extract_address_from_node_id` fallback.
 const DEFAULT_GRPC_PORT: u16 = 50051;
 
@@ -27,7 +27,7 @@ const DEFAULT_GRPC_PORT: u16 = 50051;
 /// `node_id` format is "{hostname}_{ip}-{suffix}", e.g., "server1_192.168.1.1-abc123"
 /// Returns "ip:port" if IP is found, None otherwise.
 ///
-/// **DEPRECATED**: This is a fragile fallback that parses the node_id format.
+/// **DEPRECATED**: This is a fragile fallback that parses the `node_id` format.
 /// All publisher nodes should set `grpc_address` explicitly during registration.
 /// This function is retained only for backwards compatibility with older nodes.
 fn extract_address_from_node_id(node_id: &str, grpc_port: u16) -> Option<String> {
@@ -49,7 +49,7 @@ pub struct PullStreamManager {
     pool: StreamPool<PullStream>,
     registry: Arc<dyn StreamRegistryTrait>,
     stream_hub_event_sender: StreamHubEventSender,
-    /// gRPC port used when extracting address from node_id (fallback)
+    /// gRPC port used when extracting address from `node_id` (fallback)
     grpc_port: u16,
     /// Shared gRPC connection pool for reusing HTTP/2 channels to publisher nodes.
     /// Shared across all `PullStream`/`GrpcStreamPuller` instances managed by this manager.
@@ -73,10 +73,10 @@ impl PullStreamManager {
         Self::with_timeouts(registry, stream_hub_event_sender, 60, 300)
     }
 
-    /// Set the gRPC port used for fallback address extraction from node_id.
+    /// Set the gRPC port used for fallback address extraction from `node_id`.
     /// If not called, defaults to 50051.
     #[must_use]
-    pub fn with_grpc_port(mut self, port: u16) -> Self {
+    pub const fn with_grpc_port(mut self, port: u16) -> Self {
         self.grpc_port = port;
         self
     }
@@ -107,7 +107,7 @@ impl PullStreamManager {
     ) -> Self {
         let connection_pool = GrpcConnectionPool::with_defaults();
         // Evict stale gRPC connections every 5 minutes in the background
-        let pool_cleanup_handle = connection_pool.spawn_cleanup_task(Duration::from_secs(300));
+        let pool_cleanup_handle = connection_pool.spawn_cleanup_task(Duration::from_mins(5));
         let pool = StreamPool::new(
             Duration::from_secs(cleanup_check_interval_secs),
             Duration::from_secs(idle_timeout_secs),
@@ -128,7 +128,7 @@ impl PullStreamManager {
 
     /// Stop all managed pull streams, aborting their tasks and clearing the pool.
     ///
-    /// Called during StreamHub restart to ensure zombie streams (still connected
+    /// Called during `StreamHub` restart to ensure zombie streams (still connected
     /// to the old hub instance) are cleaned up before the new hub starts.
     pub async fn stop_all(&self) {
         self.pool.stop_all().await;
@@ -204,34 +204,31 @@ impl PullStreamManager {
 
         // Use grpc_address from publisher info. All publisher nodes MUST set this
         // during registration for reliable cross-node proxying.
-        let publisher_address = match publisher_info.validate_grpc_address() {
-            Ok(addr) => addr.to_string(),
-            Err(_) => {
-                // DEPRECATED fallback: extract IP from node_id format.
-                // This path exists only for backwards compatibility with older nodes
-                // that were registered without grpc_address. New deployments should
-                // always set `advertise_grpc_address` in config.
-                warn!(
-                    node_id = %publisher_info.node_id,
-                    grpc_port = self.grpc_port,
-                    "Publisher has no grpc_address (misconfiguration). \
-                     Falling back to deprecated IP extraction from node_id. \
-                     Fix: set advertise_grpc_address in the publisher node's config."
-                );
-                extract_address_from_node_id(&publisher_info.node_id, self.grpc_port)
-                    .ok_or_else(|| {
-                        error!(
-                            node_id = %publisher_info.node_id,
-                            "Cannot extract gRPC address from node_id and grpc_address is empty. \
-                             Set advertise_grpc_address on the publisher node."
-                        );
-                        crate::error::StreamError::InvalidAddress(format!(
-                            "Publisher node '{}' has no grpc_address and node_id format is unrecognized. \
-                             Configure advertise_grpc_address on the publisher node.",
-                            publisher_info.node_id
-                        ))
-                    })?
-            }
+        let publisher_address = if let Ok(addr) = publisher_info.validate_grpc_address() { addr.to_string() } else {
+            // DEPRECATED fallback: extract IP from node_id format.
+            // This path exists only for backwards compatibility with older nodes
+            // that were registered without grpc_address. New deployments should
+            // always set `advertise_grpc_address` in config.
+            warn!(
+                node_id = %publisher_info.node_id,
+                grpc_port = self.grpc_port,
+                "Publisher has no grpc_address (misconfiguration). \
+                 Falling back to deprecated IP extraction from node_id. \
+                 Fix: set advertise_grpc_address in the publisher node's config."
+            );
+            extract_address_from_node_id(&publisher_info.node_id, self.grpc_port)
+                .ok_or_else(|| {
+                    error!(
+                        node_id = %publisher_info.node_id,
+                        "Cannot extract gRPC address from node_id and grpc_address is empty. \
+                         Set advertise_grpc_address on the publisher node."
+                    );
+                    crate::error::StreamError::InvalidAddress(format!(
+                        "Publisher node '{}' has no grpc_address and node_id format is unrecognized. \
+                         Configure advertise_grpc_address on the publisher node.",
+                        publisher_info.node_id
+                    ))
+                })?
         };
 
         let pull_stream = Arc::new(

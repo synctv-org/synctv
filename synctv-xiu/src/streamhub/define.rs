@@ -110,13 +110,14 @@ impl MediaInfo {
     /// their `.len()` / `.capacity()` should be included here so that
     /// `Gop::frame_memory_size` remains accurate.
     #[must_use]
-    pub fn heap_size(&self) -> usize {
+    pub const fn heap_size(&self) -> usize {
         // No heap-allocated fields at present.
         0
     }
 }
 
 /// Frame data using `Bytes` for zero-copy fan-out.
+///
 /// `Bytes::clone()` is O(1) -- only bumps Arc reference count, no data copy.
 /// Publishers create `BytesMut` and call `.freeze()` before wrapping in `FrameData`.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -163,6 +164,7 @@ pub type FrameDataSender = mpsc::Sender<FrameData>;
 pub type FrameDataReceiver = mpsc::Receiver<FrameData>;
 
 /// Default capacity for frame data channels.
+///
 /// Must be large enough to absorb bursts (keyframe + B-frames) without
 /// dropping. 4096 frames ≈ ~160 s at 25 fps, keeping memory bounded while
 /// avoiding silent frame loss under load.

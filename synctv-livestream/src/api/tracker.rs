@@ -72,7 +72,7 @@ pub type UserStreamTracker = Arc<StreamTracker>;
 ///
 /// - **RTMP key** (`by_rtmp` keys, `rtmp_reverse` values):
 ///   `"{app_name}\0{stream_name}"` — null-byte-separated to avoid ambiguity
-///   (app_name and stream_name can contain colons)
+///   (`app_name` and `stream_name` can contain colons)
 ///
 /// - **Publisher key** (used by `PublisherManager` and Redis):
 ///   `"{room_id}:{media_id}"` — matches the stream key format above
@@ -120,7 +120,7 @@ impl StreamTracker {
 
     /// Parse a composite stream key back into `(room_id, media_id)`.
     ///
-    /// Splits on the first `:` — room_id and media_id must not contain colons.
+    /// Splits on the first `:` — `room_id` and `media_id` must not contain colons.
     fn parse_stream_key(key: &str) -> Option<(String, String)> {
         key.split_once(':').map(|(r, m)| (r.to_string(), m.to_string()))
     }
@@ -128,7 +128,7 @@ impl StreamTracker {
     /// Build an RTMP composite key from `(app_name, stream_name)`.
     ///
     /// Format: `"{app_name}\0{stream_name}"` — uses null byte separator to
-    /// avoid ambiguity (RTMP app_name/stream_name can contain colons but
+    /// avoid ambiguity (RTMP `app_name/stream_name` can contain colons but
     /// not null bytes).
     fn rtmp_key(app_name: &str, stream_name: &str) -> String {
         format!("{app_name}\0{stream_name}")
@@ -460,6 +460,7 @@ impl StreamTracker {
 
     /// Spawn a periodic background task that calls `cleanup_stale_entries`
     /// every `interval` duration. Returns the `JoinHandle` for the task.
+    #[must_use] 
     pub fn start_periodic_cleanup(
         self: &Arc<Self>,
         interval: std::time::Duration,

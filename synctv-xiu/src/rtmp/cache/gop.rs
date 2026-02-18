@@ -45,7 +45,7 @@ impl Gop {
         }
     }
 
-    /// Estimate the memory size of a FrameData in bytes.
+    /// Estimate the memory size of a `FrameData` in bytes.
     ///
     /// For `MediaInfo`, we account for both the inline struct size and any
     /// heap-allocated fields (e.g., `String`s).  Currently `MediaInfo` has no
@@ -131,10 +131,15 @@ impl Gop {
     }
 }
 
-/// Default maximum total bytes across all GOPs per stream (50 MB).
+/// Default maximum total bytes across all GOPs per stream (500 MB).
+///
 /// When exceeded, the oldest GOP is dropped even if `gop_num` hasn't been reached.
 /// Prevents OOM under high-bitrate multi-stream scenarios (e.g., 4K at 50 Mbps).
-pub const DEFAULT_MAX_TOTAL_BYTES: usize = 50 * 1024 * 1024;
+///
+/// Previously set to 50 MB which was contradictory with `MAX_MEMORY_PER_GOP` (100 MB) —
+/// a single GOP could exceed the total budget, making caching impossible.
+/// 500 MB allows ~5 GOPs at the per-GOP max, supporting high-quality streams.
+pub const DEFAULT_MAX_TOTAL_BYTES: usize = 500 * 1024 * 1024;
 
 #[derive(Clone)]
 pub struct Gops {

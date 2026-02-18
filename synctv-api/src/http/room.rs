@@ -239,7 +239,7 @@ pub async fn swap_media_items(
 // ==================== Playback Control Endpoints ====================
 
 /// Play (resume playback)
-/// POST /api/rooms/{room_id}/playback/start - Start playback of a specific media
+/// POST /`api/rooms/{room_id}/playback/start` - Start playback of a specific media
 pub async fn start_playback(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -255,7 +255,7 @@ pub async fn start_playback(
     Ok(Json(response))
 }
 
-/// POST /api/rooms/{room_id}/playback/stop - Stop current playback
+/// POST /`api/rooms/{room_id}/playback/stop` - Stop current playback
 pub async fn stop_playback(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -271,7 +271,7 @@ pub async fn stop_playback(
     Ok(Json(response))
 }
 
-/// GET /api/rooms/{room_id}/playback - Get current playback state and complete playback information
+/// GET /`api/rooms/{room_id}/playback` - Get current playback state and complete playback information
 pub async fn get_playback(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -320,8 +320,9 @@ pub async fn check_room(
     Ok(Json(response))
 }
 
-/// List rooms (public endpoint)
+/// List rooms (requires authentication to prevent anonymous enumeration)
 pub async fn list_rooms(
+    _auth: AuthUser,
     State(state): State<AppState>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> AppResult<Json<ListRoomsResponse>> {
@@ -383,7 +384,7 @@ pub async fn check_password(
                 headers
                     .get("X-Real-IP")
                     .and_then(|h| h.to_str().ok())
-                    .map(|s| s.to_string())
+                    .map(std::string::ToString::to_string)
             })
             .unwrap_or_else(|| socket_ip.to_string())
     } else {
@@ -462,7 +463,7 @@ pub async fn clear_playlist(
     Ok(Json(response))
 }
 
-/// GET /api/rooms/:room_id/media/:media_id - Get media record from database
+/// GET /`api/rooms/:room_id/media/:media_id` - Get media record from database
 pub async fn get_media(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -477,7 +478,7 @@ pub async fn get_media(
     Ok(Json(media))
 }
 
-/// GET /api/rooms/:room_id/playlists/:playlist_id - Get single playlist info
+/// GET /`api/rooms/:room_id/playlists/:playlist_id` - Get single playlist info
 pub async fn get_playlist(
     auth: AuthUser,
     State(state): State<AppState>,

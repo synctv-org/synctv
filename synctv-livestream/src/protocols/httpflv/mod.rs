@@ -81,7 +81,7 @@ async fn handle_flv_stream(
 
     // Spawn FLV session using canonical (room_id, media_id) StreamIdentifier
     let mut flv_session = HttpFlvSession::new(
-        room_id.to_string(),
+        room_id.clone(),
         media_id.to_string(),
         state.stream_hub_event_sender,
         tx,

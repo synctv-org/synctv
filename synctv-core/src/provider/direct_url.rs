@@ -36,9 +36,7 @@ impl DirectUrlProvider {
     /// extension. This avoids false positives from `contains()` matching
     /// against query parameters or hostnames (e.g., "cdn.flv.com/video").
     fn detect_format(url: &str) -> String {
-        let path = url::Url::parse(url)
-            .map(|u| u.path().to_string())
-            .unwrap_or_else(|_| url.to_string());
+        let path = url::Url::parse(url).map_or_else(|_| url.to_string(), |u| u.path().to_string());
 
         let ext = path.rsplit('.').next().unwrap_or("").to_lowercase();
         match ext.as_str() {

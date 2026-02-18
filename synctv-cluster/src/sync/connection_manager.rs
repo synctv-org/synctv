@@ -124,9 +124,13 @@ impl Default for ConnectionLimits {
 }
 
 /// TTL for distributed connection counters in Redis (seconds).
+///
 /// Acts as a crash-safety mechanism: if a node crashes without decrementing,
-/// the counter will expire after this duration.
-const DISTRIBUTED_COUNTER_TTL_SECONDS: i64 = 90; // 3x heartbeat interval (30s)
+/// the counter will expire after this duration. Set to 3x the TTL refresh
+/// interval (60s) so that the counter survives two consecutive refresh
+/// failures before expiring and causing incorrect connection counts for
+/// long-lived WebSocket connections (which can last 24+ hours).
+const DISTRIBUTED_COUNTER_TTL_SECONDS: i64 = 180; // 3x TTL refresh interval (60s)
 
 /// TTL for connection metadata keys in Redis (seconds).
 /// Set to max_duration (24h) + buffer (1h) so metadata auto-expires if a node

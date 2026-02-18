@@ -172,7 +172,7 @@ impl ClientApiImpl {
             .get_playlist(&pid)
             .await
             .map_err(ApiError::from)?
-            .ok_or_else(|| ApiError::NotFound(format!("Playlist {} not found", playlist_id)))?;
+            .ok_or_else(|| ApiError::NotFound(format!("Playlist {playlist_id} not found")))?;
 
         // Count child folders and media files
         let child_folders = self.room_service.playlist_service()

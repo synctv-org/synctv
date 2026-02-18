@@ -59,15 +59,23 @@ pub struct Services {
     pub node_registry: Option<Arc<synctv_cluster::discovery::NodeRegistry>>,
     pub health_monitor: Option<Arc<synctv_cluster::discovery::HealthMonitor>>,
     pub load_balancer: Option<Arc<synctv_cluster::discovery::LoadBalancer>>,
-    /// Shared Redis connection for playback caching
+    /// Shared Redis connection for playback caching.
+    ///
+    /// This is a snapshot taken at startup.  In Sentinel mode, a background
+    /// health check in `synctv_core::bootstrap::services` hot-swaps the
+    /// underlying `ConnectionManager` inside `bootstrap::Services.redis_conn`
+    /// (an `Arc<RwLock<>>`).  Services that need to survive a Sentinel master
+    /// failover should access the `Arc<RwLock<>>` directly from the bootstrap
+    /// services.  This field uses a plain `ConnectionManager` for backward
+    /// compatibility with the existing HTTP/gRPC handler APIs.
     pub redis_conn: Option<redis::aio::ConnectionManager>,
-    /// CancellationToken for settings listen task
+    /// `CancellationToken` for settings listen task
     pub settings_cancel: tokio_util::sync::CancellationToken,
-    /// CancellationToken for partition management tasks
+    /// `CancellationToken` for partition management tasks
     pub partition_cancel: tokio_util::sync::CancellationToken,
     /// Leader elector for singleton operations (None in single-node mode)
     pub leader_elector: Option<synctv_cluster::leader::AnyLeaderElector>,
-    /// CancellationToken for leader election loop
+    /// `CancellationToken` for leader election loop
     pub leader_cancel: tokio_util::sync::CancellationToken,
     /// K8s DNS refresh background task abort handle (aborted during shutdown)
     pub dns_refresh_abort: Option<tokio::task::AbortHandle>,
@@ -75,7 +83,7 @@ pub struct Services {
     pub settings_listen_task: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
     /// Audit flush handle for graceful shutdown (flushed before DB pool closure)
     pub audit_flush_handle: Arc<tokio::sync::Mutex<Option<synctv_core::service::AuditFlushHandle>>>,
-    /// Background task JoinHandles to await during graceful shutdown
+    /// Background task `JoinHandles` to await during graceful shutdown
     pub background_handles: Arc<tokio::sync::Mutex<Vec<JoinHandle<()>>>>,
 }
 
@@ -127,7 +135,7 @@ impl SyncTvServer {
         // Start background connection cleanup (every 60 seconds)
         let cleanup_cancel = tokio_util::sync::CancellationToken::new();
         let _conn_cleanup = self.services.connection_manager.spawn_cleanup_task(
-            Duration::from_secs(60),
+            Duration::from_mins(1),
             cleanup_cancel.clone(),
         );
 
@@ -227,8 +235,10 @@ impl SyncTvServer {
         // the cluster manager (which owns the broadcast channel it reads from).
         if let Some(handle) = admin_event_handle {
             info!("Waiting for admin event listener to stop...");
-            let _ = handle.await;
-            info!("Admin event listener stopped");
+            match tokio::time::timeout(Duration::from_secs(30), handle).await {
+                Ok(_) => { info!("Admin event listener stopped"); }
+                Err(_) => { warn!("Admin event listener did not stop within 30s, proceeding"); }
+            }
         }
 
         // Run graceful shutdown
@@ -322,13 +332,21 @@ impl SyncTvServer {
             info!("Cluster manager shut down");
         }
 
-        // 5.5. Await tracked background tasks
+        // 5.5. Await tracked background tasks with a per-task timeout.
+        // Each task gets up to 30 seconds to finish.  If it hasn't stopped by then,
+        // log a warning and move on — we don't want a stuck background task to block
+        // the rest of the shutdown sequence (database pool closure, etc.).
         {
             let mut handles = self.services.background_handles.lock().await;
             if !handles.is_empty() {
                 info!("Waiting for {} background task(s) to finish...", handles.len());
                 for handle in handles.drain(..) {
-                    let _ = handle.await;
+                    match tokio::time::timeout(Duration::from_secs(30), handle).await {
+                        Ok(_) => {}
+                        Err(_) => {
+                            warn!("A background task did not finish within 30s during shutdown, proceeding");
+                        }
+                    }
                 }
                 info!("Background tasks finished");
             }
@@ -343,24 +361,40 @@ impl SyncTvServer {
         // The audit service buffers events in memory and writes them to the DB
         // in batches. If we close the pool first, the final flush would fail and
         // recent audit events would be lost.
+        // A 30-second timeout prevents shutdown from hanging indefinitely if the
+        // audit flush gets stuck (e.g. database connection error during shutdown).
         {
             let mut handle_guard = self.services.audit_flush_handle.lock().await;
             if let Some(flush_handle) = handle_guard.take() {
                 info!("Flushing audit service buffer...");
-                flush_handle.shutdown().await;
-                info!("Audit service buffer flushed");
+                match tokio::time::timeout(Duration::from_secs(30), flush_handle.shutdown()).await {
+                    Ok(()) => {
+                        info!("Audit service buffer flushed");
+                    }
+                    Err(_) => {
+                        warn!("Audit service flush timed out after 30s, some buffered events may be lost; continuing shutdown");
+                    }
+                }
             }
         }
 
         // 6.6. Join the settings listen task BEFORE closing the database pool.
         // The settings task holds a PG LISTEN connection. If we close the pool
         // first, the task may panic or leak the connection.
+        // A 30-second timeout prevents shutdown from hanging indefinitely if the
+        // settings task fails to respond to the cancellation signal.
         {
             let mut task_guard = self.services.settings_listen_task.lock().await;
             if let Some(task) = task_guard.take() {
                 info!("Waiting for settings listen task to stop...");
-                let _ = task.await;
-                info!("Settings listen task stopped");
+                match tokio::time::timeout(Duration::from_secs(30), task).await {
+                    Ok(_) => {
+                        info!("Settings listen task stopped");
+                    }
+                    Err(_) => {
+                        warn!("Settings listen task did not stop within 30s, proceeding with shutdown");
+                    }
+                }
             }
         }
 
@@ -447,13 +481,22 @@ impl SyncTvServer {
         // Previously this created a separate Redis client + ConnectionManager,
         // which was redundant since services.redis_conn is already a multiplexed
         // ConnectionManager that supports concurrent use.
-        let ws_ticket_service = if let Some(ref conn) = self.services.redis_conn {
-            Some(Arc::new(synctv_core::service::WsTicketService::new(
-                Some(conn.clone()),
-                None,
-            )))
-        } else {
-            None
+        //
+        // In cluster mode (cluster_secret is non-empty), Redis is required.
+        // WsTicketService::new() will return an error if cluster_mode is true and
+        // redis_conn is None, preventing silent in-memory fallback in multi-replica setups.
+        let is_cluster_mode = !self.config.server.cluster_secret.is_empty();
+        let ws_ticket_service = match synctv_core::service::WsTicketService::new(
+            self.services.redis_conn.clone(),
+            None,
+            is_cluster_mode,
+        ) {
+            Ok(svc) => Some(Arc::new(svc)),
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "Failed to initialize WebSocket ticket service: {e}"
+                ));
+            }
         };
 
         let http_router = synctv_api::http::create_router_from_config(

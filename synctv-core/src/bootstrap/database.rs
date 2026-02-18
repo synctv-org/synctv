@@ -44,7 +44,7 @@ pub async fn init_database(config: &Config) -> Result<PgPool> {
         })?;
 
     // Set database pool metrics
-    crate::metrics::database::DB_POOL_SIZE_MAX.set(config.database.max_connections as i64);
+    crate::metrics::database::DB_POOL_SIZE_MAX.set(i64::from(config.database.max_connections));
 
     // Spawn periodic task to update pool usage metrics
     let pool_clone = pool.clone();
@@ -52,7 +52,7 @@ pub async fn init_database(config: &Config) -> Result<PgPool> {
         let mut ticker = tokio::time::interval(Duration::from_secs(15));
         loop {
             ticker.tick().await;
-            let size = pool_clone.size() as i64;
+            let size = i64::from(pool_clone.size());
             let idle = pool_clone.num_idle() as i64;
             crate::metrics::database::DB_CONNECTIONS_ACTIVE.set(size - idle);
             crate::metrics::database::DB_CONNECTIONS_IDLE.set(idle);

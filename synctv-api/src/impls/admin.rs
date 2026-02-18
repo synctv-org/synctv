@@ -1159,9 +1159,7 @@ impl AdminApiImpl {
         self.room_service.set_room_settings(&rid, &settings).await.map_err(ApiError::from)?;
 
         // Look up admin username for cluster event
-        let admin_username = self.user_service.get_user(admin_user_id).await
-            .map(|u| u.username.clone())
-            .unwrap_or_else(|_| admin_user_id.as_str().to_string());
+        let admin_username = self.user_service.get_user(admin_user_id).await.map_or_else(|_| admin_user_id.as_str().to_string(), |u| u.username);
 
         // Broadcast RoomSettingsChanged cluster event for cross-replica propagation
         if let Some(ref tx) = self.redis_publish_tx {
@@ -1200,9 +1198,7 @@ impl AdminApiImpl {
         let settings = self.room_service.get_room_settings(&rid).await.unwrap_or_default();
 
         // Look up admin username for cluster event
-        let admin_username = self.user_service.get_user(admin_user_id).await
-            .map(|u| u.username.clone())
-            .unwrap_or_else(|_| admin_user_id.as_str().to_string());
+        let admin_username = self.user_service.get_user(admin_user_id).await.map_or_else(|_| admin_user_id.as_str().to_string(), |u| u.username);
 
         // Broadcast RoomSettingsChanged cluster event for cross-replica propagation
         if let Some(ref tx) = self.redis_publish_tx {

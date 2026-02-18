@@ -223,7 +223,7 @@ pub mod cache {
         ).expect("Failed to register CACHE_FILL_DURATION")
     });
 
-    /// SingleFlight merge counter (how many concurrent requests were deduplicated)
+    /// `SingleFlight` merge counter (how many concurrent requests were deduplicated)
     pub static SINGLEFLIGHT_MERGES: std::sync::LazyLock<CounterVec> = std::sync::LazyLock::new(|| {
         register_counter_vec_with_registry!(
             "cache_singleflight_merges_total",
@@ -624,6 +624,7 @@ pub mod cluster {
     });
 
     /// Total distributed counter TTL refresh operations, labeled by result.
+    ///
     /// Labels: "success", "failure".
     /// Alert condition: if `failure` count increases while `success` stays
     /// flat, distributed rate limiting may silently stop working.
@@ -743,12 +744,12 @@ pub mod stream {
     });
 }
 
-/// StreamHub infrastructure metrics
+/// `StreamHub` infrastructure metrics
 pub mod streamhub {
     use super::{register_counter_vec_with_registry, CounterVec, REGISTRY};
 
-    /// Total number of StreamHub event loop restarts, labeled by exit reason.
-    /// Reasons: "panic" (event_loop panicked), "channel_closed" (all senders dropped).
+    /// Total number of `StreamHub` event loop restarts, labeled by exit reason.
+    /// Reasons: "panic" (`event_loop` panicked), "`channel_closed`" (all senders dropped).
     pub static STREAMHUB_RESTARTS_TOTAL: std::sync::LazyLock<CounterVec> = std::sync::LazyLock::new(|| {
         register_counter_vec_with_registry!(
             "streamhub_restarts_total",

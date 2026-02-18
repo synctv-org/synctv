@@ -823,11 +823,11 @@ impl MemberService {
                     .await?
                     .ok_or_else(|| Error::NotFound("User is not a member of this room".to_string()))?;
 
-                let old_role = member.role.clone();
+                let old_role = member.role;
 
                 let updated = self
                     .member_repo
-                    .update_role(&room_id, &target_user_id, role.clone(), member.version)
+                    .update_role(&room_id, &target_user_id, role, member.version)
                     .await?;
                 Ok((updated, old_role))
             },
@@ -883,11 +883,11 @@ impl MemberService {
                     .await?
                     .ok_or_else(|| Error::NotFound("User is not a member of this room".to_string()))?;
 
-                let old_status = member.status.clone();
+                let old_status = member.status;
 
                 let updated = self
                     .member_repo
-                    .update_status(&room_id, &target_user_id, status.clone(), member.version)
+                    .update_status(&room_id, &target_user_id, status, member.version)
                     .await?;
                 Ok((updated, old_status))
             },

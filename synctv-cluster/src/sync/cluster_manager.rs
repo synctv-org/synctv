@@ -42,6 +42,10 @@ pub struct ClusterConfig {
     pub publish_channel_capacity: usize,
     /// Key prefix for Redis keys and pub/sub channels (e.g., "synctv:")
     pub key_prefix: String,
+    /// How far back (in seconds) to replay Redis Stream events when a new node
+    /// first connects to the cluster.  Mirrors `ClusterChannelConfig::catchup_window_secs`.
+    /// Default: 300 (5 minutes)
+    pub catchup_window_secs: u64,
 }
 
 impl Default for ClusterConfig {
@@ -54,6 +58,7 @@ impl Default for ClusterConfig {
             critical_channel_capacity: 1000,
             publish_channel_capacity: 10_000,
             key_prefix: "synctv:".to_string(),
+            catchup_window_secs: 300,
         }
     }
 }
@@ -141,6 +146,7 @@ impl ClusterManager {
                     permission_service,
                     cache_invalidation,
                     deduplicator.clone(),
+                    config.catchup_window_secs,
                 )?
             );
 
@@ -612,6 +618,7 @@ mod tests {
             critical_channel_capacity: 1000,
             publish_channel_capacity: 10_000,
             key_prefix: "synctv:".to_string(),
+            catchup_window_secs: 300,
         };
 
         let manager = ClusterManager::new(config, None, None).await.unwrap();
@@ -664,6 +671,7 @@ mod tests {
             critical_channel_capacity: 1000,
             publish_channel_capacity: 10_000,
             key_prefix: "synctv:".to_string(),
+            catchup_window_secs: 300,
         };
 
         let manager = ClusterManager::new(config, None, None).await.unwrap();
@@ -705,6 +713,7 @@ mod tests {
             critical_channel_capacity: 1000,
             publish_channel_capacity: 10_000,
             key_prefix: "synctv:".to_string(),
+            catchup_window_secs: 300,
         };
 
         let manager = ClusterManager::new(config, None, None).await.unwrap();

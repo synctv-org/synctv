@@ -277,13 +277,14 @@ $$ LANGUAGE plpgsql;
 -- 第二部分：初始化（首次运行时执行）
 -- ============================================================================
 
--- 步骤1: 为现有的4个分区补充索引
+-- 步骤1: 创建未来6个月的分区
+-- 这些分区会自动包含所有索引
+-- NOTE: Must run before ensure_existing_partitions_indexes so partitions exist
+SELECT create_audit_logs_partitions(6) AS future_partitions;
+
+-- 步骤2: 为现有的4个分区补充索引（幂等，可安全重复执行）
 -- 注意：CREATE INDEX IF NOT EXISTS 是幂等的，重复执行不会报错
 SELECT ensure_existing_partitions_indexes(4) AS initialization_result;
-
--- 步骤2: 创建未来6个月的分区
--- 这些分区会自动包含所有索引
-SELECT create_audit_logs_partitions(6) AS future_partitions;
 
 -- ============================================================================
 -- 第三部分：函数注释

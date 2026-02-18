@@ -27,6 +27,7 @@ type ResponseStream = Pin<Box<dyn Stream<Item = Result<RtmpPacket, Status>> + Se
 const AUTH_SECRET_METADATA_KEY: &str = "x-cluster-secret";
 
 /// Callback invoked when the relay service forwards frames from a local publisher.
+///
 /// Used to record publisher data activity so that silent publisher detection does not
 /// incorrectly time out publishers that are actively sending data via gRPC relay.
 pub type RelayActivityCallback = Arc<dyn Fn(&str, &str) + Send + Sync>;
@@ -228,7 +229,7 @@ impl stream_relay_service_server::StreamRelayService for StreamRelayServiceImpl 
             let mut frame_count: u64 = 0;
             loop {
                 let frame_data = tokio::select! {
-                    _ = child_token.cancelled() => {
+                    () = child_token.cancelled() => {
                         info!("Relay forwarding task cancelled (shutdown)");
                         break;
                     }

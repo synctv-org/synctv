@@ -27,7 +27,7 @@ impl PageParams {
     ///
     /// # Arguments
     /// * `page` - Page number (1-indexed), defaults to 1 if None
-    /// * `page_size` - Items per page, defaults to DEFAULT_PAGE_SIZE if None, capped at MAX_PAGE_SIZE
+    /// * `page_size` - Items per page, defaults to `DEFAULT_PAGE_SIZE` if None, capped at `MAX_PAGE_SIZE`
     ///
     /// # Examples
     /// ```
@@ -130,7 +130,7 @@ impl<T> Page<T> {
         let total_pages = if params.page_size == 0 {
             0
         } else {
-            ((total as f64) / (params.page_size as f64)).ceil() as u32
+            ((total as f64) / f64::from(params.page_size)).ceil() as u32
         };
 
         Self {

@@ -81,7 +81,7 @@ impl PublisherInfo {
 ///
 /// **Distinction from `synctv_cluster::sync::StreamRegistry`**:
 /// - This registry tracks *publisher ownership* (who is publishing, on which node,
-///   with what gRPC address, at what epoch) using room_id/media_id keys.
+///   with what gRPC address, at what epoch) using `room_id/media_id` keys.
 /// - The cluster stream registry tracks *stream presence* for routing/discovery
 ///   using app/stream identifiers.
 /// - Both use Redis; this one is Redis-only (no local cache) because publisher
@@ -298,7 +298,7 @@ impl StreamRegistry {
         let mut conn = self.redis.clone();
 
         // Atomic Lua script: check epoch (if provided), delete publisher, clean up user index
-        let lua_script = r#"
+        let lua_script = r"
             local hash_key = KEYS[1]
             local check_epoch = tonumber(ARGV[1])
 
@@ -332,7 +332,7 @@ impl StreamRegistry {
             redis.call('HDEL', hash_key, 'publisher')
 
             return {1, user_id}
-        "#;
+        ";
 
         // Use -1 to mean "no epoch check" (unconditional delete)
         let epoch_arg: i64 = match expected_epoch {
@@ -586,7 +586,7 @@ impl StreamRegistry {
         // Atomic Lua script: check node_id AND epoch before deleting.
         // This prevents a race where a new publisher registers between
         // our SCAN (which reads epoch) and the delete.
-        let cleanup_script = r#"
+        let cleanup_script = r"
             local hash_key = KEYS[1]
             local expected_node_id = ARGV[1]
             local expected_epoch = tonumber(ARGV[2])
@@ -623,7 +623,7 @@ impl StreamRegistry {
             redis.call('HDEL', hash_key, 'publisher')
 
             return {1, user_id}
-        "#;
+        ";
 
         loop {
             // SCAN for publisher keys
@@ -687,7 +687,7 @@ impl StreamRegistry {
 
                                 if !user_id.is_empty() {
                                     let user_key =
-                                        format!("stream:user_publishers:{}", user_id);
+                                        format!("stream:user_publishers:{user_id}");
                                     let member = format!("{room_id}:{media_id}");
                                     let _: () = redis::cmd("SREM")
                                         .arg(&user_key)

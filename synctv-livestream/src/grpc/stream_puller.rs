@@ -1,6 +1,4 @@
-use bytes::Bytes;
 use std::sync::Arc;
-use std::time::Instant;
 use synctv_xiu::rtmp::session::common::RtmpStreamHandler;
 use synctv_xiu::streamhub::{
     define::{
@@ -55,7 +53,8 @@ impl GrpcStreamPuller {
     /// Preferred over `new()` when a pool is available (e.g., from `PullStreamManager`),
     /// as it reuses HTTP/2 connections to publisher nodes across retry attempts
     /// and across different pull streams targeting the same node.
-    pub fn with_pool(
+    #[must_use] 
+    pub const fn with_pool(
         room_id: String,
         media_id: String,
         publisher_node_addr: String,
@@ -79,20 +78,18 @@ impl GrpcStreamPuller {
         self
     }
 
-    /// Run the puller with retry logic: connect to remote, pull stream, publish to local `StreamHub`.
+    /// Run the puller: connect to remote, pull stream, publish to local `StreamHub`.
     ///
-    /// On transient failures (connection refused, stream interrupted), retries with exponential
-    /// backoff (1s initial, 30s max, with jitter). Gives up after 10 consecutive failures.
-    /// The `PullStreamManager` can recreate the puller on the next viewer request.
+    /// Performs a single connection attempt. If the publisher disconnects or the stream
+    /// ends with an error, this method returns the error immediately so the caller
+    /// (`PullStreamManager`) can clean up state. The external pusher is responsible
+    /// for reconnecting by starting a new publish session.
+    ///
+    /// Internal reconnect logic is intentionally absent: automatic retries here create
+    /// state management complexity (stale local `StreamHub` publications, split ownership
+    /// in Redis) without providing meaningful reliability guarantees. The `PullStreamManager`
+    /// will create a fresh puller on the next viewer request.
     pub async fn run(mut self) -> anyhow::Result<()> {
-        const MAX_RETRIES: u32 = 10;
-        const INITIAL_BACKOFF_MS: u64 = 1000;
-        const MAX_BACKOFF_MS: u64 = 30_000;
-        // Faster backoff for reconnections after a successful stream to minimize
-        // GOP cache staleness and viewer disruption.
-        const RECONNECT_INITIAL_BACKOFF_MS: u64 = 200;
-        const RECONNECT_MAX_BACKOFF_MS: u64 = 5_000;
-
         info!(
             room_id = %self.room_id,
             media_id = %self.media_id,
@@ -100,96 +97,41 @@ impl GrpcStreamPuller {
             "Starting gRPC stream puller"
         );
 
-        let mut attempt: u32 = 0;
-        let mut is_reconnect = false;
-        /// Minimum connection duration to consider "successful" for retry reset
-        const MIN_SUCCESSFUL_DURATION: std::time::Duration = std::time::Duration::from_secs(60);
-
-        loop {
-            attempt += 1;
-
-            // 1. Publish to local StreamHub (re-publish on each retry to get a fresh sender)
-            let data_sender = match self.publish_to_local_stream_hub().await {
-                Ok(sender) => sender,
-                Err(e) => {
-                    error!(
-                        room_id = %self.room_id,
-                        attempt = attempt,
-                        "Failed to publish to local StreamHub: {e}"
-                    );
-                    if attempt > MAX_RETRIES {
-                        return Err(anyhow::anyhow!(
-                            "Gave up after {MAX_RETRIES} retries (last error: publish to StreamHub: {e})"
-                        ));
-                    }
-                    Self::backoff(attempt, INITIAL_BACKOFF_MS, MAX_BACKOFF_MS).await;
-                    continue;
-                }
-            };
-
-            let connect_start = Instant::now();
-            let result = self.connect_and_stream(&data_sender, is_reconnect).await;
-            let stream_duration = connect_start.elapsed();
-
-            // Always clean up local StreamHub before retry or exit
-            if let Err(e) = self.unpublish_from_local_stream_hub().await {
-                warn!("Failed to unpublish from local StreamHub: {e}");
+        // Publish to local StreamHub to get a frame data sender
+        let data_sender = match self.publish_to_local_stream_hub().await {
+            Ok(sender) => sender,
+            Err(e) => {
+                error!(
+                    room_id = %self.room_id,
+                    "Failed to publish to local StreamHub: {e}"
+                );
+                return Err(anyhow::anyhow!("Failed to publish to local StreamHub: {e}"));
             }
+        };
 
-            match result {
-                Ok(()) => {
-                    info!(
-                        room_id = %self.room_id,
-                        media_id = %self.media_id,
-                        "Stream ended normally"
-                    );
-                    return Ok(());
-                }
-                Err(e) => {
-                    // Reset retry counter if the connection was up for a meaningful duration.
-                    // This prevents long-running streams from exhausting retries over transient blips.
-                    if stream_duration > MIN_SUCCESSFUL_DURATION {
-                        info!(
-                            room_id = %self.room_id,
-                            duration_secs = stream_duration.as_secs(),
-                            "Resetting retry counter after successful long connection"
-                        );
-                        attempt = 0;
-                    }
+        let result = self.connect_and_stream(&data_sender, false).await;
 
-                    // Mark subsequent attempts as reconnections for faster GOP recovery.
-                    // After a successful stream, use faster backoff on reconnect to
-                    // minimize the window where viewers have stale GOP cache data.
-                    is_reconnect = true;
+        // Always clean up local StreamHub publication before returning
+        if let Err(e) = self.unpublish_from_local_stream_hub().await {
+            warn!("Failed to unpublish from local StreamHub: {e}");
+        }
 
-                    if attempt >= MAX_RETRIES {
-                        error!(
-                            room_id = %self.room_id,
-                            media_id = %self.media_id,
-                            attempt = attempt,
-                            "Gave up after {MAX_RETRIES} retries: {e}"
-                        );
-                        return Err(anyhow::anyhow!(
-                            "Gave up after {MAX_RETRIES} retries (last error: {e})"
-                        ));
-                    }
-
-                    warn!(
-                        room_id = %self.room_id,
-                        media_id = %self.media_id,
-                        attempt = attempt,
-                        max_retries = MAX_RETRIES,
-                        is_reconnect = is_reconnect,
-                        "Stream pull failed, retrying: {e}"
-                    );
-
-                    // Use faster backoff on reconnection to minimize GOP cache staleness
-                    if is_reconnect && attempt <= 3 {
-                        Self::backoff(attempt, RECONNECT_INITIAL_BACKOFF_MS, RECONNECT_MAX_BACKOFF_MS).await;
-                    } else {
-                        Self::backoff(attempt, INITIAL_BACKOFF_MS, MAX_BACKOFF_MS).await;
-                    }
-                }
+        match result {
+            Ok(()) => {
+                info!(
+                    room_id = %self.room_id,
+                    media_id = %self.media_id,
+                    "Stream ended normally"
+                );
+                Ok(())
+            }
+            Err(e) => {
+                warn!(
+                    room_id = %self.room_id,
+                    media_id = %self.media_id,
+                    "Stream pull ended with error: {e}"
+                );
+                Err(e)
             }
         }
     }
@@ -243,15 +185,15 @@ impl GrpcStreamPuller {
             let frame_data = match packet.frame_type {
                 1 => FrameData::Video {
                     timestamp: packet.timestamp,
-                    data: Bytes::from(packet.data),
+                    data: packet.data,
                 },
                 2 => FrameData::Audio {
                     timestamp: packet.timestamp,
-                    data: Bytes::from(packet.data),
+                    data: packet.data,
                 },
                 3 => FrameData::MetaData {
                     timestamp: packet.timestamp,
-                    data: Bytes::from(packet.data),
+                    data: packet.data,
                 },
                 _ => {
                     warn!("Unknown frame type: {}", packet.frame_type);
@@ -277,11 +219,6 @@ impl GrpcStreamPuller {
         }
 
         Ok(())
-    }
-
-    /// Exponential backoff with jitter (delegated to shared utility).
-    async fn backoff(attempt: u32, initial_ms: u64, max_ms: u64) {
-        crate::util::backoff(attempt, initial_ms, max_ms).await;
     }
 
     /// Publish to local `StreamHub` (similar to xiu `ClientSession::publish_to_stream_hub`)

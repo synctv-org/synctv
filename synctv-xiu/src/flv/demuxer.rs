@@ -9,6 +9,7 @@ use {
         errors::FlvDemuxerError,
         mpeg4_aac::Mpeg4AacProcessor,
         mpeg4_avc::Mpeg4AvcProcessor,
+        mpeg4_hevc::Mpeg4HevcProcessor,
     },
     byteorder::BigEndian,
     bytes::BytesMut,
@@ -116,15 +117,18 @@ impl FlvDemuxerVideoData {
 #[derive(Default)]
 pub struct FlvVideoTagDemuxer {
     avc_processor: Mpeg4AvcProcessor,
+    hevc_processor: Mpeg4HevcProcessor,
 }
 
 impl FlvVideoTagDemuxer {
-    #[must_use] 
-    pub const fn new() -> Self {
+    #[must_use]
+    pub fn new() -> Self {
         Self {
             avc_processor: Mpeg4AvcProcessor::new(),
+            hevc_processor: Mpeg4HevcProcessor::default(),
         }
     }
+
     pub fn demux(
         &mut self,
         timestamp: u32,
@@ -155,10 +159,33 @@ impl FlvVideoTagDemuxer {
                 }
                 _ => {}
             }
+        } else if tag_header.codec_id == AvcCodecId::HEVC as u8 {
+            match tag_header.avc_packet_type {
+                avc_packet_type::AVC_SEQHDR => {
+                    // Load HEVC decoder configuration record
+                    let _ = self.hevc_processor.decoder_configuration_record_load(&mut reader);
+                    return Ok(None);
+                }
+                avc_packet_type::AVC_NALU => {
+                    // For HEVC, pass through the raw NALU data (annex B conversion
+                    // would require full HEVC NALU parsing; raw passthrough works for
+                    // most players that handle HEVC in TS with stream_type 0x24).
+                    let data = reader.extract_remaining_bytes();
+                    let video_data = FlvDemuxerVideoData {
+                        codec_id: AvcCodecId::HEVC as u8,
+                        pts: i64::from(timestamp) + i64::from(tag_header.composition_time),
+                        dts: i64::from(timestamp),
+                        frame_type: tag_header.frame_type,
+                        data,
+                    };
+                    return Ok(Some(video_data));
+                }
+                _ => {}
+            }
         } else {
             tracing::warn!(
                 codec_id = tag_header.codec_id,
-                "Unsupported video codec; only H.264 is supported, dropping frame"
+                "Unsupported video codec; only H.264 and H.265/HEVC are supported, dropping frame"
             );
         }
 

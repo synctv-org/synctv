@@ -961,8 +961,26 @@ impl NodeRegistry {
             let pattern = format!("{}:*", self.key_prefix);
             let mut keys = Vec::new();
             let mut cursor: u64 = 0;
+            /// Maximum number of SCAN iterations to prevent an infinite loop on
+            /// large or unexpectedly-growing keyspaces.  Each iteration requests
+            /// up to 100 keys (COUNT hint), so 1 000 iterations covers ~100 000
+            /// cluster-node keys — far beyond any realistic deployment.
+            const MAX_SCAN_ITERATIONS: usize = 1000;
+            let mut scan_iterations: usize = 0;
 
             loop {
+                if scan_iterations >= MAX_SCAN_ITERATIONS {
+                    tracing::warn!(
+                        pattern = %pattern,
+                        iterations = scan_iterations,
+                        keys_found = keys.len(),
+                        "SCAN loop reached maximum iteration limit; \
+                         keyspace may be larger than expected or cursor is cycling"
+                    );
+                    break;
+                }
+                scan_iterations += 1;
+
                 let op_result: std::result::Result<(u64, Vec<String>), Error> = timeout(
                     Duration::from_secs(REDIS_TIMEOUT_SECS),
                     redis::cmd("SCAN")

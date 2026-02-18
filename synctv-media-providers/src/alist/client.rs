@@ -240,7 +240,7 @@ impl AlistClient {
     ///
     /// # Arguments
     /// * `path` - File path
-    /// * `method` - Method name (e.g., "video_preview")
+    /// * `method` - Method name (e.g., "`video_preview`")
     /// * `password` - Optional password for protected directories
     ///
     /// # Returns

@@ -155,7 +155,7 @@ pub(super) fn room_member_to_proto(
 }
 
 
-/// Convert provider PlaybackInfo to models PlaybackInfo
+/// Convert provider `PlaybackInfo` to models `PlaybackInfo`
 #[must_use]
 pub fn provider_playback_info_to_model(
     info: &synctv_core::provider::traits::PlaybackInfo,
@@ -195,7 +195,7 @@ pub fn provider_playback_info_to_model(
     }
 }
 
-/// Convert models PlaybackResult to proto PlaybackResult
+/// Convert models `PlaybackResult` to proto `PlaybackResult`
 #[must_use]
 pub(super) fn playback_result_to_proto(
     result: &synctv_core::models::media::PlaybackResult,
@@ -225,7 +225,7 @@ pub(super) fn playback_result_to_proto(
     }
 }
 
-/// Convert models PlaybackInfo to proto PlaybackInfo
+/// Convert models `PlaybackInfo` to proto `PlaybackInfo`
 fn playback_info_to_proto(
     info: &synctv_core::models::media::PlaybackInfo,
 ) -> crate::proto::client::PlaybackInfo {
@@ -239,7 +239,7 @@ fn playback_info_to_proto(
     }
 }
 
-/// Convert models PlaybackUrl to proto PlaybackUrl
+/// Convert models `PlaybackUrl` to proto `PlaybackUrl`
 fn playback_url_to_proto(
     url: &synctv_core::models::media::PlaybackUrl,
 ) -> crate::proto::client::PlaybackUrl {
@@ -252,7 +252,7 @@ fn playback_url_to_proto(
     }
 }
 
-/// Convert models PlaybackUrlMetadata to proto PlaybackUrlMetadata
+/// Convert models `PlaybackUrlMetadata` to proto `PlaybackUrlMetadata`
 fn playback_url_metadata_to_proto(
     metadata: &synctv_core::models::media::PlaybackUrlMetadata,
 ) -> crate::proto::client::PlaybackUrlMetadata {
@@ -283,7 +283,7 @@ fn subtitle_to_proto(
     }
 }
 
-/// Convert models SubtitleUrl to proto SubtitleUrl
+/// Convert models `SubtitleUrl` to proto `SubtitleUrl`
 fn subtitle_url_to_proto(
     url: &synctv_core::models::media::SubtitleUrl,
 ) -> crate::proto::client::SubtitleUrl {

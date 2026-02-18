@@ -217,7 +217,7 @@ impl<S: ManagedStream> StreamPool<S> {
             cleanup_check_interval,
             idle_timeout,
             // Clean up creation locks that haven't been used for 10 minutes
-            creation_lock_max_age: Duration::from_secs(10 * 60),
+            creation_lock_max_age: Duration::from_mins(10),
             cancel_token: CancellationToken::new(),
         }
     }
@@ -295,7 +295,7 @@ impl<S: ManagedStream> StreamPool<S> {
     ///
     /// This should be called once during initialization to prevent memory leaks
     /// from failed stream creation attempts that leave orphaned lock entries.
-    /// The task respects the pool's CancellationToken and will stop on shutdown.
+    /// The task respects the pool's `CancellationToken` and will stop on shutdown.
     #[must_use]
     pub fn start_creation_lock_cleanup(&self) -> tokio::task::JoinHandle<()> {
         let creation_locks = Arc::clone(&self.creation_locks);
@@ -307,7 +307,7 @@ impl<S: ManagedStream> StreamPool<S> {
             let mut interval = tokio::time::interval(check_interval);
             loop {
                 tokio::select! {
-                    _ = child_token.cancelled() => {
+                    () = child_token.cancelled() => {
                         debug!("Creation lock cleanup task cancelled (shutdown)");
                         break;
                     }
@@ -333,7 +333,7 @@ impl<S: ManagedStream> StreamPool<S> {
     ///
     /// `on_idle_cleanup` is called during cleanup, before stopping the stream.
     /// Use it for extra teardown (e.g., Redis unregistration).
-    /// The cleanup task respects the pool's CancellationToken and will exit on shutdown.
+    /// The cleanup task respects the pool's `CancellationToken` and will exit on shutdown.
     pub fn insert_and_cleanup<F>(
         &self,
         stream_key: String,
@@ -357,7 +357,7 @@ impl<S: ManagedStream> StreamPool<S> {
         tokio::spawn(
             async move {
                 tokio::select! {
-                    _ = child_token.cancelled() => {
+                    () = child_token.cancelled() => {
                         debug!("Cleanup task cancelled for {} (shutdown)", stream_key);
                     }
                     result = Self::cleanup_loop(
@@ -429,7 +429,7 @@ impl<S: ManagedStream> StreamPool<S> {
                         // instance, exit to avoid two concurrent streams for the same key.
                         let is_same_instance = streams
                             .get(stream_key)
-                            .map_or(false, |map_entry| Arc::ptr_eq(map_entry.value(), stream));
+                            .is_some_and(|map_entry| Arc::ptr_eq(map_entry.value(), stream));
                         if !is_same_instance {
                             debug!(
                                 "Cleanup exiting for {}: stream was replaced by concurrent viewer",

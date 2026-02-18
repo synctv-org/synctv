@@ -11,7 +11,8 @@ pub mod ts {
 pub mod epsi_stream_type {
     pub const PSI_STREAM_MP3: u8 = 0x04; // ISO/IEC 13818-3 Audio
     pub const PSI_STREAM_PRIVATE_DATA: u8 = 0x06;
-    pub const PSI_STREAM_H264: u8 = 0x1b; // H.264
+    pub const PSI_STREAM_H264: u8 = 0x1b; // H.264 (27)
+    pub const PSI_STREAM_HEVC: u8 = 0x24; // H.265/HEVC (36)
     pub const PSI_STREAM_AAC: u8 = 0x0f;
     pub const PSI_STREAM_MPEG4_AAC: u8 = 0x1c;
     pub const PSI_STREAM_AUDIO_OPUS: u8 = 0x9c;

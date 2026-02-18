@@ -2,7 +2,7 @@
 //!
 //! Provides exponential backoff with jitter for operations that may encounter
 //! `OptimisticLockConflict` errors. This pattern is used across multiple services
-//! (PlaybackService, RoomService, MemberService, RoomSettingsService).
+//! (`PlaybackService`, `RoomService`, `MemberService`, `RoomSettingsService`).
 
 use std::future::Future;
 
@@ -19,7 +19,7 @@ pub const DEFAULT_BACKOFF_BASE_MS: u64 = 5;
 /// Retry an async operation that may fail with `OptimisticLockConflict`.
 ///
 /// Uses exponential backoff with jitter to avoid thundering herd:
-/// delay = base_ms * 2^attempt + random(0..base_ms)
+/// delay = `base_ms` * 2^attempt + `random(0..base_ms)`
 ///
 /// # Arguments
 /// * `max_retries` - Maximum number of attempts before giving up

@@ -1,13 +1,13 @@
-//! gRPC OAuth2 service implementation
+//! gRPC `OAuth2` service implementation
 //!
 //! # HTTP vs gRPC endpoint differences
 //!
 //! Both transports expose the same logical operations via `OAuth2ApiImpl`, but
-//! differ in how they handle the OAuth2 redirect flow:
+//! differ in how they handle the `OAuth2` redirect flow:
 //!
 //! - **HTTP** (`GET /api/oauth2/:provider/authorize`): The provider name is a
 //!   URL path segment and the redirect URL is a query parameter. This is the
-//!   natural fit for browser-initiated OAuth2 flows.
+//!   natural fit for browser-initiated `OAuth2` flows.
 //!
 //! - **gRPC** (`GetAuthorizationUrl`): The provider name and redirect URL are
 //!   fields in the `GetAuthorizationUrlRequest` message. Mobile/desktop clients
@@ -19,14 +19,14 @@
 //! # Authentication model
 //!
 //! Public endpoints (no auth required):
-//! - `GetAuthorizationUrl` - initiate OAuth2 login flow
-//! - `ExchangeAuthorizationCode` - complete OAuth2 login flow
+//! - `GetAuthorizationUrl` - initiate `OAuth2` login flow
+//! - `ExchangeAuthorizationCode` - complete `OAuth2` login flow
 //! - `ListAvailableProviders` - discover available providers
 //!
 //! Authenticated endpoints (JWT required):
-//! - `GetAuthorizationUrlForBind` - bind OAuth2 to existing account
-//! - `UnlinkProvider` - remove OAuth2 binding
-//! - `GetLinkedProviders` - list user's OAuth2 bindings
+//! - `GetAuthorizationUrlForBind` - bind `OAuth2` to existing account
+//! - `UnlinkProvider` - remove `OAuth2` binding
+//! - `GetLinkedProviders` - list user's `OAuth2` bindings
 //!
 //! The service is registered WITHOUT a global auth interceptor. Authenticated
 //! endpoints perform inline JWT validation using `AuthInterceptor` directly.
@@ -48,12 +48,12 @@ use std::sync::Arc;
 
 use super::map_api_error;
 
-/// gRPC OAuth2 service with mixed authentication.
+/// gRPC `OAuth2` service with mixed authentication.
 ///
 /// Registered WITHOUT a global auth interceptor. Public endpoints
-/// (GetAuthorizationUrl, ExchangeAuthorizationCode, ListAvailableProviders)
-/// require no authentication. Private endpoints (GetAuthorizationUrlForBind,
-/// UnlinkProvider, GetLinkedProviders) perform inline JWT validation.
+/// (`GetAuthorizationUrl`, `ExchangeAuthorizationCode`, `ListAvailableProviders`)
+/// require no authentication. Private endpoints (`GetAuthorizationUrlForBind`,
+/// `UnlinkProvider`, `GetLinkedProviders`) perform inline JWT validation.
 pub struct OAuth2GrpcService {
     oauth2_api: Arc<crate::impls::OAuth2ApiImpl>,
     /// Auth interceptor for endpoints that require authentication.
@@ -63,7 +63,8 @@ pub struct OAuth2GrpcService {
 }
 
 impl OAuth2GrpcService {
-    pub fn new(
+    #[must_use] 
+    pub const fn new(
         oauth2_api: Arc<crate::impls::OAuth2ApiImpl>,
         auth_interceptor: super::interceptors::AuthInterceptor,
     ) -> Self {
@@ -89,7 +90,7 @@ impl OAuth2GrpcService {
 
 #[tonic::async_trait]
 impl OAuth2Service for OAuth2GrpcService {
-    /// Get authorization URL for OAuth2 login flow (PUBLIC - no auth required)
+    /// Get authorization URL for `OAuth2` login flow (PUBLIC - no auth required)
     async fn get_authorization_url(
         &self,
         request: Request<GetAuthorizationUrlRequest>,
@@ -111,7 +112,7 @@ impl OAuth2Service for OAuth2GrpcService {
         }))
     }
 
-    /// Get authorization URL for binding OAuth2 provider to existing user account
+    /// Get authorization URL for binding `OAuth2` provider to existing user account
     /// (AUTHENTICATED - requires JWT)
     async fn get_authorization_url_for_bind(
         &self,
@@ -140,14 +141,26 @@ impl OAuth2Service for OAuth2GrpcService {
         }))
     }
 
-    /// Exchange authorization code for JWT token (PUBLIC - no auth required)
+    /// Exchange authorization code for JWT token (optional auth)
+    ///
+    /// For login flows, no authentication is required.
+    /// For bind flows (`bind_user_id` present in stored state), the caller must be
+    /// authenticated and the token's user ID must match the `bind_user_id`.
     async fn exchange_authorization_code(
         &self,
         request: Request<ExchangeAuthorizationCodeRequest>,
     ) -> Result<Response<ExchangeAuthorizationCodeResponse>, Status> {
+        // Optionally extract the authenticated user ID from the authorization metadata.
+        // For login flows this will be None (no auth header present).
+        // For bind flows the frontend should include the Bearer token so we can verify
+        // the caller matches the bind_user_id stored in the OAuth2 state.
+        let current_user_id: Option<UserId> = self
+            .auth_interceptor
+            .try_extract_user_id(request.metadata());
+
         let req = request.into_inner();
         let result = self.oauth2_api
-            .exchange_authorization_code(&req.provider, &req.code, &req.state)
+            .exchange_authorization_code(&req.provider, &req.code, &req.state, current_user_id.as_ref())
             .await
             .map_err(|e| {
                 error!("Failed to exchange authorization code: {}", e);
@@ -169,7 +182,7 @@ impl OAuth2Service for OAuth2GrpcService {
         }))
     }
 
-    /// List all available OAuth2 provider instances (PUBLIC - no auth required)
+    /// List all available `OAuth2` provider instances (PUBLIC - no auth required)
     async fn list_available_providers(
         &self,
         _request: Request<ListAvailableProvidersRequest>,
@@ -184,7 +197,7 @@ impl OAuth2Service for OAuth2GrpcService {
 
         let response = providers
             .into_iter()
-            .map(|p| p.into())
+            .map(std::convert::Into::into)
             .collect();
 
         Ok(Response::new(ListAvailableProvidersResponse {
@@ -192,7 +205,7 @@ impl OAuth2Service for OAuth2GrpcService {
         }))
     }
 
-    /// Unlink OAuth2 provider from user account (AUTHENTICATED - requires JWT)
+    /// Unlink `OAuth2` provider from user account (AUTHENTICATED - requires JWT)
     async fn unlink_provider(
         &self,
         request: Request<UnlinkProviderRequest>,
@@ -204,7 +217,7 @@ impl OAuth2Service for OAuth2GrpcService {
             .unlink_provider(
                 &user_id,
                 &req.provider,
-                Some(&req.provider_user_id).filter(|s| !s.is_empty()).map(|s| s.as_str())
+                Some(&req.provider_user_id).filter(|s| !s.is_empty()).map(std::string::String::as_str)
             )
             .await
             .map_err(|e| {
@@ -228,7 +241,7 @@ impl OAuth2Service for OAuth2GrpcService {
         }))
     }
 
-    /// Get linked OAuth2 providers for authenticated user (AUTHENTICATED - requires JWT)
+    /// Get linked `OAuth2` providers for authenticated user (AUTHENTICATED - requires JWT)
     async fn get_linked_providers(
         &self,
         request: Request<GetLinkedProvidersRequest>,
@@ -245,7 +258,7 @@ impl OAuth2Service for OAuth2GrpcService {
 
         let response = providers
             .into_iter()
-            .map(|p| p.into())
+            .map(std::convert::Into::into)
             .collect();
 
         Ok(Response::new(GetLinkedProvidersResponse {

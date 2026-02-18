@@ -1,4 +1,4 @@
-//! User operations: get_profile, set_username, set_password
+//! User operations: `get_profile`, `set_username`, `set_password`
 
 use crate::impls::ApiError;
 use synctv_core::models::UserId;

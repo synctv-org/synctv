@@ -4,14 +4,14 @@
 //! Used by both HTTP and gRPC handlers.
 //!
 //! Split into sub-modules by domain:
-//! - `auth`: register, login, logout, refresh_token
-//! - `user`: get_profile, set_username, set_password
+//! - `auth`: register, login, logout, `refresh_token`
+//! - `user`: `get_profile`, `set_username`, `set_password`
 //! - `room`: create/get/join/leave/delete room, settings, chat, hot rooms
-//! - `member`: get_members, kick, ban, unban, set_permissions
+//! - `member`: `get_members`, kick, ban, unban, `set_permissions`
 //! - `media`: add/remove/edit/swap media, batch operations, playlist items
 //! - `playlist`: create/update/delete/list playlists
-//! - `playback`: play, pause, seek, speed, set_current_media, get_playback_state
-//! - `stream`: publish_key, stream_info, live proxy, validate_live_token
+//! - `playback`: play, pause, seek, speed, `set_current_media`, `get_playback_state`
+//! - `stream`: `publish_key`, `stream_info`, live proxy, `validate_live_token`
 //! - `webrtc`: ICE servers, network quality
 
 mod auth;
@@ -190,7 +190,7 @@ impl ClientApiImpl {
     }
 
     /// Set the resolved built-in STUN URL for ICE server lists.
-    /// Should be called with the external address from a successfully started StunServer.
+    /// Should be called with the external address from a successfully started `StunServer`.
     #[must_use]
     pub fn with_builtin_stun_url(mut self, url: String) -> Self {
         self.builtin_stun_url = Some(url);
@@ -237,7 +237,7 @@ impl ClientApiImpl {
                         .user_service
                         .get_user(target_user_id)
                         .await
-                        .map(|u| u.username.clone())
+                        .map(|u| u.username)
                         .unwrap_or_default();
                     let role_default = self.room_service.permission_service()
                         .calculate_role_default_permissions(&member.role, &room_settings);
@@ -257,7 +257,7 @@ impl ClientApiImpl {
                 .user_service
                 .get_user(changed_by)
                 .await
-                .map(|u| u.username.clone())
+                .map(|u| u.username)
                 .unwrap_or_default();
 
             crate::impls::try_publish_cluster_event(tx, synctv_cluster::sync::PublishRequest {

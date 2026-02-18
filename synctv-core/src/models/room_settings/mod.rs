@@ -408,7 +408,7 @@ impl RoomSettingProvider for AutoPlay {
     }
 
     fn apply_to(&self, settings: &mut RoomSettings, value: &str) -> Result<()> {
-        settings.auto_play = AutoPlay::new(Self::parse_from_str(value)?);
+        settings.auto_play = Self::new(Self::parse_from_str(value)?);
         Ok(())
     }
 }

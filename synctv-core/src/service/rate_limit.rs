@@ -48,7 +48,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use moka::sync::Cache as MokaCache;
 
-/// Type alias for the keyed rate limiter cache used by InMemoryRateLimiter.
+/// Type alias for the keyed rate limiter cache used by `InMemoryRateLimiter`.
 type RateLimiterCache = MokaCache<(u32, u64), Arc<DefaultKeyedRateLimiter<String>>>;
 
 /// Rate limiting error
@@ -81,7 +81,7 @@ impl From<RateLimitError> for crate::Error {
 /// thread-safety internally.
 ///
 /// Note: Governor uses a fixed quota per limiter instance. Since our API allows
-/// callers to specify different (max_requests, window_seconds) per call, we
+/// callers to specify different (`max_requests`, `window_seconds`) per call, we
 /// create separate governor instances for each quota configuration. In practice,
 /// only a few distinct configurations are used (chat, danmaku), so this is fine.
 ///
@@ -90,7 +90,7 @@ impl From<RateLimitError> for crate::Error {
 /// (64 quota configurations).
 #[derive(Clone)]
 struct InMemoryRateLimiter {
-    /// Stores governor keyed limiters per (max_requests, window_seconds) pair.
+    /// Stores governor keyed limiters per (`max_requests`, `window_seconds`) pair.
     /// Uses Moka cache with TTL-based eviction to prevent unbounded growth.
     limiters: Arc<RateLimiterCache>,
 }
@@ -99,7 +99,7 @@ impl InMemoryRateLimiter {
     fn new() -> Self {
         let cache = MokaCache::builder()
             .max_capacity(64)
-            .time_to_idle(Duration::from_secs(600))
+            .time_to_idle(Duration::from_mins(10))
             .build();
         Self {
             limiters: Arc::new(cache),
@@ -132,7 +132,7 @@ impl InMemoryRateLimiter {
     fn check(&self, key: &str, max_requests: u32, window_seconds: u64) -> std::result::Result<(), u64> {
         let limiter = self.get_limiter(max_requests, window_seconds);
         match limiter.check_key(&key.to_string()) {
-            Ok(_) => Ok(()),
+            Ok(()) => Ok(()),
             Err(not_until) => {
                 let wait = not_until.wait_time_from(governor::clock::DefaultClock::default().now());
                 let retry_after_seconds = wait.as_secs().max(1);

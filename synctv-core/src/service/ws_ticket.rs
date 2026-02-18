@@ -105,20 +105,36 @@ impl WsTicketService {
     /// # Arguments
     /// * `redis_conn` - Redis connection manager for distributed ticket storage (recommended for multi-replica)
     /// * `ticket_ttl_secs` - Ticket lifetime in seconds (default: 30)
+    /// * `cluster_mode` - When `true`, Redis is **required**; passing `None` for `redis_conn`
+    ///   in cluster mode returns an error because in-memory storage is incompatible with
+    ///   multi-replica deployments (tickets created on one node are not visible to others).
     ///
-    /// # Note
-    /// If `redis_conn` is `None`, the service will use in-memory storage,
-    /// which is only suitable for single-replica deployments.
-    pub fn new(redis_conn: Option<redis::aio::ConnectionManager>, ticket_ttl_secs: Option<u64>) -> Self {
+    /// # Errors
+    /// Returns an error if `cluster_mode` is `true` and `redis_conn` is `None`.
+    pub fn new(
+        redis_conn: Option<redis::aio::ConnectionManager>,
+        ticket_ttl_secs: Option<u64>,
+        cluster_mode: bool,
+    ) -> Result<Self> {
         let ttl = ticket_ttl_secs.unwrap_or(DEFAULT_TICKET_TTL_SECS);
 
         if redis_conn.is_some() {
-            Self {
+            Ok(Self {
                 redis_conn,
                 memory_store: None,
                 ticket_ttl_secs: ttl,
-            }
+            })
         } else {
+            // In cluster mode Redis is mandatory: tickets must be shared across all replicas.
+            if cluster_mode {
+                return Err(Error::Internal(
+                    "Redis is required for WebSocket ticket service in cluster mode. \
+                     Tickets stored in memory are only visible on the replica that created them, \
+                     causing authentication failures on other replicas. Configure Redis."
+                        .to_string(),
+                ));
+            }
+
             // Fall back to memory storage for single-replica deployments
             warn!(
                 "WebSocket ticket service using in-memory storage. \
@@ -137,18 +153,22 @@ impl WsTicketService {
                 );
             }
 
-            Self {
+            Ok(Self {
                 redis_conn: None,
                 memory_store: Some(MemoryTicketStore::new(ttl)),
                 ticket_ttl_secs: ttl,
-            }
+            })
         }
     }
 
     /// Create a new WebSocket ticket service with Redis (multi-replica mode)
+    ///
+    /// # Panics
+    /// Panics if the internal `new()` call fails (which it cannot when `redis_conn` is `Some`).
     #[must_use]
     pub fn with_redis(redis_conn: redis::aio::ConnectionManager, ticket_ttl_secs: Option<u64>) -> Self {
-        Self::new(Some(redis_conn), ticket_ttl_secs)
+        Self::new(Some(redis_conn), ticket_ttl_secs, false)
+            .expect("new() with Some(redis_conn) never fails")
     }
 
     /// Create a new WebSocket ticket service with memory storage (single-replica mode)
@@ -166,6 +186,14 @@ impl WsTicketService {
     #[must_use]
     pub const fn ticket_ttl_secs(&self) -> u64 {
         self.ticket_ttl_secs
+    }
+
+    /// Return `true` if the service is backed by Redis (multi-replica safe).
+    ///
+    /// Returns `false` when using in-memory storage (single-replica mode).
+    #[must_use]
+    pub const fn is_redis_backed(&self) -> bool {
+        self.redis_conn.is_some()
     }
 
     /// Create a new ticket for a user
@@ -452,5 +480,27 @@ mod tests {
         let debug_str = format!("{service:?}");
         assert!(debug_str.contains("memory_mode"));
         assert!(debug_str.contains("true"));
+    }
+
+    #[test]
+    fn test_cluster_mode_requires_redis() {
+        // In cluster mode, Redis is required; None should produce an error
+        let result = WsTicketService::new(None, None, true);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("Redis is required"),
+            "Error should mention Redis requirement; got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_non_cluster_mode_allows_memory() {
+        // In non-cluster mode, None redis is acceptable (memory fallback)
+        let result = WsTicketService::new(None, None, false);
+        assert!(result.is_ok());
+        let service = result.unwrap();
+        assert!(service.redis_conn.is_none());
+        assert!(service.memory_store.is_some());
     }
 }

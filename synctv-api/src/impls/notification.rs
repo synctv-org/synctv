@@ -16,9 +16,10 @@ use crate::proto::client::{
     NotificationProto, NotificationType as ProtoNotificationType,
 };
 
-/// Convert a domain Notification to a proto NotificationProto.
+/// Convert a domain Notification to a proto `NotificationProto`.
 ///
 /// Shared by both HTTP and gRPC handlers.
+#[must_use] 
 pub fn notification_to_proto(n: Notification) -> NotificationProto {
     let notification_type = match n.notification_type {
         CoreNotificationType::RoomInvitation => ProtoNotificationType::RoomInvitation,
@@ -41,9 +42,10 @@ pub fn notification_to_proto(n: Notification) -> NotificationProto {
     }
 }
 
-/// Convert a proto NotificationType enum value to a domain NotificationType.
+/// Convert a proto `NotificationType` enum value to a domain `NotificationType`.
 ///
 /// Shared by both HTTP and gRPC handlers.
+#[must_use] 
 pub fn proto_notification_type_to_core(value: i32) -> Option<CoreNotificationType> {
     match ProtoNotificationType::try_from(value) {
         Ok(ProtoNotificationType::RoomInvitation) => Some(CoreNotificationType::RoomInvitation),
@@ -69,7 +71,7 @@ pub struct ListNotificationsResult {
 
 impl NotificationApiImpl {
     #[must_use]
-    pub fn new(notification_service: Arc<UserNotificationService>) -> Self {
+    pub const fn new(notification_service: Arc<UserNotificationService>) -> Self {
         Self {
             notification_service,
         }

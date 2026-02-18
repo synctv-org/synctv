@@ -68,7 +68,7 @@ mod patterns {
 /// Common weak passwords rejected on exact match (case-insensitive).
 ///
 /// Sourced from the intersection of NCSC top-100k, HIBP Pwned Passwords
-/// top-1000, and SplashData annual worst-passwords lists. Kept small enough
+/// top-1000, and `SplashData` annual worst-passwords lists. Kept small enough
 /// for an O(n) linear scan (sub-microsecond for ~40 entries).
 const COMMON_PASSWORDS: &[&str] = &[
     // Top-10 most breached

@@ -105,7 +105,7 @@ impl ChatRepository {
 
     /// Delete a message (physical delete)
     ///
-    /// Requires `created_at` to enable partition pruning. Without it, PostgreSQL
+    /// Requires `created_at` to enable partition pruning. Without it, `PostgreSQL`
     /// would scan all partitions to find the row.
     pub async fn delete(&self, message_id: &str, created_at: DateTime<Utc>) -> Result<bool> {
         let result = sqlx::query(

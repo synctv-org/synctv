@@ -322,11 +322,11 @@ impl BilibiliInterface for GrpcBilibiliClient {
 /// Caching wrapper around any `BilibiliInterface` implementation.
 ///
 /// Caches successful responses from read-only query methods using moka.
-/// - Video info queries (parse_video_page, parse_pgc_page, etc.): 5 min TTL
-/// - Play URL queries (get_video_url, get_pgc_url, etc.): 2 min TTL (URLs expire)
+/// - Video info queries (`parse_video_page`, `parse_pgc_page`, etc.): 5 min TTL
+/// - Play URL queries (`get_video_url`, `get_pgc_url`, etc.): 2 min TTL (URLs expire)
 /// - Write/auth methods (login, QR code) are NOT cached.
 ///
-/// Cache key: `"{method}:{serialized_request}"` -- uses serde_json serialization
+/// Cache key: `"{method}:{serialized_request}"` -- uses `serde_json` serialization
 /// of the proto request, which derives `Serialize`.
 pub struct CachedBilibiliClient {
     inner: BilibiliClientArc,
@@ -342,11 +342,11 @@ impl CachedBilibiliClient {
             inner,
             info_cache: moka::future::Cache::builder()
                 .max_capacity(500)
-                .time_to_live(Duration::from_secs(5 * 60))
+                .time_to_live(Duration::from_mins(5))
                 .build(),
             url_cache: moka::future::Cache::builder()
                 .max_capacity(200)
-                .time_to_live(Duration::from_secs(2 * 60))
+                .time_to_live(Duration::from_mins(2))
                 .build(),
         }
     }

@@ -63,7 +63,7 @@ impl ClientApiImpl {
         // Broadcast MediaAdded cluster event for cross-replica propagation
         if let Some(ref tx) = self.redis_publish_tx {
             let username = self.user_service.get_user(&uid).await
-                .map(|u| u.username.clone())
+                .map(|u| u.username)
                 .unwrap_or_default();
             crate::impls::try_publish_cluster_event(tx, synctv_cluster::sync::PublishRequest {
                 event: synctv_cluster::sync::ClusterEvent::MediaAdded {
@@ -106,7 +106,7 @@ impl ClientApiImpl {
         // Broadcast MediaRemoved cluster event for cross-replica propagation
         if let Some(ref tx) = self.redis_publish_tx {
             let username = self.user_service.get_user(&uid).await
-                .map(|u| u.username.clone())
+                .map(|u| u.username)
                 .unwrap_or_default();
             crate::impls::try_publish_cluster_event(tx, synctv_cluster::sync::PublishRequest {
                 event: synctv_cluster::sync::ClusterEvent::MediaRemoved {
@@ -209,7 +209,7 @@ impl ClientApiImpl {
         // Broadcast MediaRemoved for each cleared item so other replicas update playlists
         if let Some(ref tx) = self.redis_publish_tx {
             let username = self.user_service.get_user(&uid).await
-                .map(|u| u.username.clone())
+                .map(|u| u.username)
                 .unwrap_or_default();
             for media in &media_items {
                 crate::impls::try_publish_cluster_event(tx, synctv_cluster::sync::PublishRequest {
@@ -285,7 +285,7 @@ impl ClientApiImpl {
         // Broadcast MediaAdded for each item in the batch
         if let Some(ref tx) = self.redis_publish_tx {
             let username = self.user_service.get_user(&uid).await
-                .map(|u| u.username.clone())
+                .map(|u| u.username)
                 .unwrap_or_default();
             for media in &media_list {
                 crate::impls::try_publish_cluster_event(tx, synctv_cluster::sync::PublishRequest {
@@ -353,7 +353,7 @@ impl ClientApiImpl {
         // Broadcast MediaRemoved for each deleted item
         if let Some(ref tx) = self.redis_publish_tx {
             let username = self.user_service.get_user(&uid).await
-                .map(|u| u.username.clone())
+                .map(|u| u.username)
                 .unwrap_or_default();
             for media_id in &media_id_strings {
                 crate::impls::try_publish_cluster_event(tx, synctv_cluster::sync::PublishRequest {
@@ -688,7 +688,7 @@ impl ClientApiImpl {
         let media = playlist
             .iter()
             .find(|m| m.id == mid)
-            .ok_or_else(|| ApiError::NotFound(format!("Media {} not found", media_id)))?;
+            .ok_or_else(|| ApiError::NotFound(format!("Media {media_id} not found")))?;
 
         Ok(media_to_proto(media))
     }

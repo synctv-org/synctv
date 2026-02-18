@@ -490,7 +490,7 @@ impl CacheInvalidationService {
             .await;
     }
 
-    /// Trim the stream to remove entries older than STREAM_RETENTION_MS (1 hour).
+    /// Trim the stream to remove entries older than `STREAM_RETENTION_MS` (1 hour).
     ///
     /// Uses XTRIM with MINID to time-based trim, converting current timestamp
     /// to a Redis stream ID (which is millisecond-based).
@@ -581,7 +581,7 @@ impl CacheInvalidationService {
     /// Broadcast a cache invalidation message to all OTHER nodes (remote only)
     ///
     /// This sends the message via Redis Streams (if configured).
-    /// Each message includes an `origin` field with the node_id so that the
+    /// Each message includes an `origin` field with the `node_id` so that the
     /// originating node can skip its own messages during consumption.
     ///
     /// Note: This does NOT broadcast locally, as the caller is expected to
@@ -751,7 +751,7 @@ impl CacheInvalidationService {
     /// 5. On `Closed` -> break
     ///
     /// # Arguments
-    /// * `name` - Task name for monitoring (e.g., "room_settings_invalidation_listener")
+    /// * `name` - Task name for monitoring (e.g., "`room_settings_invalidation_listener`")
     /// * `handler` - Async closure called for each received message
     /// * `on_lagged` - Async closure called when the receiver falls behind (should flush caches)
     pub fn spawn_listener<H, Hf, L, Lf>(

@@ -33,8 +33,8 @@ pub struct PullStream {
     epoch: u64,
     /// Cancellation token for graceful shutdown propagation.
     cancel_token: CancellationToken,
-    /// Flag to prevent double UnPublish: set to `true` after `stop()` sends UnPublish.
-    /// The `Drop` implementation checks this to skip its own UnPublish.
+    /// Flag to prevent double `UnPublish`: set to `true` after `stop()` sends `UnPublish`.
+    /// The `Drop` implementation checks this to skip its own `UnPublish`.
     stopped: AtomicBool,
     /// Shared gRPC connection pool for reusing HTTP/2 channels to publisher nodes.
     connection_pool: GrpcConnectionPool,
@@ -193,13 +193,13 @@ impl PullStream {
 
                 let run_result = tokio::select! {
                     r = grpc_puller.run() => r,
-                    _ = child_token.cancelled() => {
+                    () = child_token.cancelled() => {
                         info!("gRPC puller task cancelled for {} / {}", room_id, media_id);
                         timer.observe_duration();
                         synctv_core::metrics::stream::ACTIVE_RELAY_STREAMS.dec();
                         break Ok(());
                     }
-                    _ = async {
+                    () = async {
                         loop {
                             epoch_interval.tick().await;
                             match registry.validate_epoch(&room_id, &media_id, epoch).await {
@@ -242,8 +242,7 @@ impl PullStream {
                         timer.observe_duration();
                         synctv_core::metrics::stream::ACTIVE_RELAY_STREAMS.dec();
                         break Err(anyhow::anyhow!(
-                            "Stale epoch detected during streaming: publisher changed for {} / {}",
-                            room_id, media_id
+                            "Stale epoch detected during streaming: publisher changed for {room_id} / {media_id}"
                         ));
                     }
                 };
@@ -281,8 +280,8 @@ impl PullStream {
 
                         // Wait before rebuilding, but respect cancellation
                         tokio::select! {
-                            _ = tokio::time::sleep(REBUILD_DELAY) => {}
-                            _ = child_token.cancelled() => {
+                            () = tokio::time::sleep(REBUILD_DELAY) => {}
+                            () = child_token.cancelled() => {
                                 info!("gRPC puller rebuild cancelled for {} / {}", room_id, media_id);
                                 break Ok(());
                             }
@@ -306,8 +305,7 @@ impl PullStream {
                                     epoch, room_id, media_id
                                 );
                                 break Err(anyhow::anyhow!(
-                                    "Stale epoch on reconnect: publisher changed for {} / {}",
-                                    room_id, media_id
+                                    "Stale epoch on reconnect: publisher changed for {room_id} / {media_id}"
                                 ));
                             }
                             Err(e) => {
@@ -321,8 +319,7 @@ impl PullStream {
                                         consecutive_epoch_failures, room_id, media_id, e
                                     );
                                     break Err(anyhow::anyhow!(
-                                        "Epoch validation unreachable after {} consecutive failures for {} / {}",
-                                        consecutive_epoch_failures, room_id, media_id
+                                        "Epoch validation unreachable after {consecutive_epoch_failures} consecutive failures for {room_id} / {media_id}"
                                     ));
                                 }
                                 warn!(

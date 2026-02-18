@@ -276,8 +276,8 @@ impl CleanupService {
 
     /// Delete expired media provider credentials with buffer to prevent race conditions
     ///
-    /// Calls the database function cleanup_expired_credentials() which deletes credentials
-    /// that expired more than buffer_hours ago.
+    /// Calls the database function `cleanup_expired_credentials()` which deletes credentials
+    /// that expired more than `buffer_hours` ago.
     async fn delete_expired_credentials(&self) -> Result<u64> {
         let buffer_hours = self.config.expired_credential_buffer_hours as i32;
         let result_json = sqlx::query_scalar::<_, serde_json::Value>(

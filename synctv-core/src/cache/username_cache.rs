@@ -18,9 +18,9 @@ use crate::{cache::CacheInvalidationService, Result};
 /// without cross-replica invalidation.
 const L1_TTL_MINUTES: u64 = 5;
 
-/// Wrapper around a username string for TieredCache serialization.
+/// Wrapper around a username string for `TieredCache` serialization.
 ///
-/// TieredCache stores values as JSON in Redis. A raw `String` would be
+/// `TieredCache` stores values as JSON in Redis. A raw `String` would be
 /// double-quoted (`"\"alice\""`), breaking backward compatibility with
 /// existing Redis data and making debugging harder. This newtype serializes
 /// as `{"username":"alice"}` and is transparent to callers via `From`/`Into`.
@@ -30,7 +30,7 @@ struct CachedUsername {
 }
 
 impl CachedUsername {
-    fn new(username: String) -> Self {
+    const fn new(username: String) -> Self {
         Self { username }
     }
 

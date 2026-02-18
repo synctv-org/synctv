@@ -590,7 +590,6 @@ mod tests {
             cleanup_interval: Duration::from_secs(1),
             critical_channel_capacity: 1000,
             publish_channel_capacity: 10_000,
-            wal_path: None,
         };
 
         let manager = ClusterManager::new(config, None, None).await.unwrap();
@@ -642,7 +641,6 @@ mod tests {
             cleanup_interval: Duration::from_secs(1),
             critical_channel_capacity: 1000,
             publish_channel_capacity: 10_000,
-            wal_path: None,
         };
 
         let manager = ClusterManager::new(config, None, None).await.unwrap();
@@ -683,7 +681,6 @@ mod tests {
             cleanup_interval: Duration::from_secs(1),
             critical_channel_capacity: 1000,
             publish_channel_capacity: 10_000,
-            wal_path: None,
         };
 
         let manager = ClusterManager::new(config, None, None).await.unwrap();

@@ -579,7 +579,7 @@ mod tests {
         assert_eq!(config.media_window_seconds, 60);
         assert_eq!(config.admin_max_requests, 30);
         assert_eq!(config.admin_window_seconds, 60);
-        assert_eq!(config.streaming_max_requests, 50);
+        assert_eq!(config.streaming_max_requests, 200);
         assert_eq!(config.streaming_window_seconds, 60);
         assert_eq!(config.websocket_max_requests, 10);
         assert_eq!(config.websocket_window_seconds, 60);

@@ -18,7 +18,6 @@ A production-grade real-time synchronized video watching platform built in Rust.
 - **synctv-livestream**: Live streaming service (RTMP/HLS/FLV)
 - **synctv-cluster**: Cluster coordination library
 - **synctv-xiu**: Consolidated streaming library (RTMP/HLS/HTTP-FLV protocols)
-- **synctv-sfu**: WebRTC SFU forwarding plane *(experimental -- cluster limitations, see synctv-sfu/README.md)*
 
 ## Quick Start
 
@@ -31,29 +30,57 @@ A production-grade real-time synchronized video watching platform built in Rust.
 
 ### 1. Set Environment Variables
 
+**Option A: Quick Setup (Recommended)**
+
+Use the interactive setup script to create your `.env` file:
+
 ```bash
-# Database
+./scripts/setup-env.sh
+```
+
+This script will:
+- Generate a secure JWT secret automatically
+- Prompt for database and Redis configuration
+- Create a `.env` file from `.env.example`
+- Optionally validate your configuration
+
+**Option B: Manual Setup**
+
+```bash
+# Database (Required)
 export SYNCTV_DATABASE_URL="postgresql://synctv:synctv@localhost:5432/synctv"
 
-# Redis
+# JWT Secret (Required, min 256-bit entropy)
+export SYNCTV_JWT_SECRET="your-secure-RANDOM-string-WITH-mixed-CASE-123-and-SPECIAL!@#$%"
+
+# Redis (Recommended for production)
 export SYNCTV_REDIS_URL="redis://localhost:6379"
 
-# JWT Secret (min 32 chars)
-export SYNCTV_JWT_SECRET="your-secure-random-string-at-least-32-chars"
-
-# Server
+# Server (Optional, these are defaults)
 export SYNCTV_SERVER_GRPC_PORT=50051
 export SYNCTV_SERVER_HTTP_PORT=8080
 ```
 
-### 3. Run Database Migrations
+📚 **See [docs/ENVIRONMENT_VARIABLES.md](docs/ENVIRONMENT_VARIABLES.md) for complete reference** including all available options, examples for different environments, and troubleshooting.
+
+### 3. Validate Configuration (Optional but Recommended)
+
+```bash
+# Validate your configuration before deployment
+cargo run --bin validate-config
+
+# Or use the shell script
+./scripts/validate-config.sh config.yaml
+```
+
+### 4. Run Database Migrations
 
 ```bash
 cargo install sqlx-cli --no-default-features --features postgres
 sqlx migrate run --database-url $SYNCTV_DATABASE_URL
 ```
 
-### 4. Start the Server
+### 5. Start the Server
 
 ```bash
 # Set JWT secret (required for production, min 32 chars)
@@ -121,31 +148,76 @@ Configuration can be provided via:
 2. Config file: `config.yaml` (YAML only)
 3. Defaults (lowest priority)
 
-Example `config.yaml`:
+**Comprehensive Configuration File**
+
+A complete `config.yaml` with all options documented is provided in the repository. It includes:
+- All server, database, and Redis settings
+- WebRTC configuration for audio/video calls
+- OAuth2 provider examples (GitHub, Google, OIDC)
+- Livestream RTMP/HLS/FLV settings
+- Connection limits and security options
+- Production vs development guidance
+- 417 lines of documented configuration
+
+View the complete file: [`config.yaml`](config.yaml)
+
+**Quick Example** (minimal configuration):
 
 ```yaml
 server:
   host: "0.0.0.0"
   grpc_port: 50051
   http_port: 8080
-  enable_reflection: true
 
 database:
   url: "postgresql://synctv:synctv@localhost:5432/synctv"
-  max_connections: 20
-  min_connections: 5
+  max_connections: 100  # Increased for better performance
 
 redis:
   url: "redis://localhost:6379"
-  key_prefix: "synctv:"
 
 jwt:
-  secret: ""  # Set via SYNCTV_JWT_SECRET env var
+  secret: ""  # REQUIRED: Set via SYNCTV_JWT_SECRET env var
 
 logging:
   level: "info"
-  format: "pretty"  # or "json"
+  format: "pretty"  # Use "json" in production
 ```
+
+📚 **See [docs/ENVIRONMENT_VARIABLES.md](docs/ENVIRONMENT_VARIABLES.md)** for environment variable reference
+
+### Configuration Validation
+
+Use the built-in validation tool to catch configuration errors before deployment:
+
+```bash
+# Validate config.yaml
+cargo run --bin validate-config
+
+# Validate specific file
+SYNCTV_CONFIG_PATH=/path/to/config.yaml cargo run --bin validate-config
+
+# Use the shell script wrapper
+./scripts/validate-config.sh config.yaml
+```
+
+**What gets validated:**
+- Syntax and structure (YAML parsing)
+- Required fields presence
+- JWT secret strength (minimum 256-bit entropy)
+- OAuth2 + Redis dependency
+- WebRTC cluster mode requirements
+- Permission hierarchy correctness
+- Network configuration validity
+
+**Use in CI/CD:**
+```yaml
+# GitHub Actions example
+- name: Validate Configuration
+  run: cargo run --bin validate-config
+```
+
+See [docs/config-validation.md](docs/config-validation.md) for detailed documentation.
 
 ## Security
 
@@ -176,8 +248,8 @@ Contributions are welcome! Please read CONTRIBUTING.md for guidelines.
 - [x] Permission system with 64-bit bitmask
 - [x] WebSocket real-time communication
 
-### In Progress
-- [ ] WebRTC SFU for large rooms (basic implementation complete, cluster support blocked)
+### Completed Infrastructure
 - [x] Cross-replica cache invalidation via Redis Streams (durable delivery with catch-up on reconnection)
+- [x] Configuration validation tool with CI/CD integration
 
 **Next Milestone**: Production hardening and performance optimization

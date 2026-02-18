@@ -687,8 +687,8 @@ mod tests {
 
     #[test]
     fn test_token_from_different_secret_is_rejected() {
-        let jwt1 = JwtService::new("secret-key-one-long-enough-1234567890").unwrap();
-        let jwt2 = JwtService::new("secret-key-two-long-enough-1234567890").unwrap();
+        let jwt1 = JwtService::new("secret-KEY-One-LONG-ENOUGH-1234567890!@#$").unwrap();
+        let jwt2 = JwtService::new("secret-KEY-Two-LONG-ENOUGH-0987654321!@#$").unwrap();
         let user_id = UserId::new();
 
         let token = jwt1.sign_token(&user_id, TokenType::Access).unwrap();
@@ -701,7 +701,7 @@ mod tests {
     #[test]
     fn test_custom_token_durations() {
         let jwt = JwtService::with_durations(
-            "custom-secret-key-long-enough-1234567890",
+            "custom-secret-KEY-Long-ENOUGH-1234567890!@#$%^&*()",
             2,  // 2 hour access
             7,  // 7 day refresh
             1,  // 1 hour guest
@@ -729,7 +729,7 @@ mod tests {
 
     #[test]
     fn test_expired_token_is_rejected() {
-        let secret = "expired-token-test-secret-1234567890";
+        let secret = "expired-TOKEN-Test-SECRET-1234567890!@#$%^&*()";
         let jwt = JwtService::with_durations(secret, 1, 1, 1, 0).unwrap();
 
         // Manually craft a token with exp in the past
@@ -811,8 +811,8 @@ mod tests {
 
     #[test]
     fn test_custom_token_wrong_secret_rejected() {
-        let jwt1 = JwtService::new("custom-secret-one-long-enough-1234567890").unwrap();
-        let jwt2 = JwtService::new("custom-secret-two-long-enough-1234567890").unwrap();
+        let jwt1 = JwtService::new("custom-SECRET-One-LONG-ENOUGH-1234567890!@#$").unwrap();
+        let jwt2 = JwtService::new("custom-SECRET-Two-LONG-ENOUGH-0987654321!@#$").unwrap();
 
         let claims = serde_json::json!({"sub": "test"});
         let token = jwt1.sign_custom(&claims).unwrap();

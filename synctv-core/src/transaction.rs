@@ -1,6 +1,48 @@
-//! Unit of Work implementation
+//! Transaction Management
 //!
-//! Provides transactional scope for multi-repository operations.
+//! This module provides utilities for database transaction management.
+//!
+//! ## Best Practices
+//!
+//! ### Standard Transaction Pattern
+//!
+//! The recommended pattern for transactions is:
+//!
+//! ```rust,ignore
+//! let mut tx = pool.begin().await?;
+//!
+//! // Perform multiple operations
+//! operation1(&mut *tx).await?;
+//! operation2(&mut *tx).await?;
+//!
+//! // Commit on success
+//! tx.commit().await?;
+//! ```
+//!
+//! **No explicit rollback needed** - if an error occurs (via `?`), the transaction
+//! will be automatically rolled back when it's dropped.
+//!
+//! ### When to Use Explicit Rollback
+//!
+//! Only use explicit `tx.rollback().await?` in special cases:
+//!
+//! - **Retry loops**: When you need to rollback and retry with fresh locks
+//! - **Early exit without error**: When rolling back is the intended behavior
+//!
+//! Example (CAS retry):
+//! ```rust,ignore
+//! for attempt in 0..MAX_RETRIES {
+//!     let mut tx = pool.begin().await?;
+//!
+//!     if cas_update_success {
+//!         tx.commit().await?;
+//!         return Ok(());
+//!     }
+//!
+//!     // Explicit rollback before retry to release locks immediately
+//!     tx.rollback().await?;
+//! }
+//! ```
 
 use sqlx::{PgPool, Postgres, Transaction};
 
@@ -20,8 +62,37 @@ impl std::error::Error for TransactionError {}
 
 /// Unit of Work for managing database transactions
 ///
-/// Wraps a database transaction and provides access to repositories
-/// that work within the same transactional context.
+/// This is an alternative transaction management pattern that wraps a transaction
+/// and tracks its lifecycle. It's primarily useful for complex scenarios where you
+/// need to pass transaction context across multiple function calls.
+///
+/// ## When to Use
+///
+/// - Complex multi-step operations spanning multiple functions
+/// - When you need to check if a transaction is still active
+/// - When building higher-level transaction abstractions
+///
+/// ## When NOT to Use
+///
+/// For simple, localized transactions, prefer the standard pattern:
+/// ```rust,ignore
+/// let mut tx = pool.begin().await?;
+/// // ... operations
+/// tx.commit().await?;
+/// ```
+///
+/// ## Example
+///
+/// ```rust,ignore
+/// let mut uow = UnitOfWork::begin(&pool).await?;
+/// let tx = uow.transaction()?;
+///
+/// // Pass tx to multiple functions
+/// repo1.save(data, tx).await?;
+/// repo2.update(id, tx).await?;
+///
+/// uow.commit().await?;
+/// ```
 pub struct UnitOfWork {
     tx: Option<Transaction<'static, Postgres>>,
 }

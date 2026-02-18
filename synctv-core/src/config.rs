@@ -1500,6 +1500,7 @@ mod tests {
         let mut config = valid_prod_config();
         config.server.cluster_secret = "shared-secret-123".to_string();
         config.webrtc.mode = WebRTCMode::PeerToPeer;
+        config.webrtc.stun_external_addr = "203.0.113.1:3478".to_string();
         assert!(config.validate().is_ok());
     }
 
@@ -1508,6 +1509,7 @@ mod tests {
         let mut config = valid_prod_config();
         config.server.cluster_secret = "shared-secret-123".to_string();
         config.webrtc.mode = WebRTCMode::SignalingOnly;
+        config.webrtc.stun_external_addr = "203.0.113.1:3478".to_string();
         assert!(config.validate().is_ok());
     }
 

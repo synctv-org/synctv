@@ -200,7 +200,7 @@ mod tests {
 
     // ========== BlacklistCheckLayer Construction ==========
 
-    use synctv_core::service::{TokenBlacklistService, UserService};
+    use synctv_core::service::UserService;
 
     #[tokio::test]
     async fn test_blacklist_check_layer_clone() {

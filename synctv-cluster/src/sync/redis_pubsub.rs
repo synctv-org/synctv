@@ -1608,7 +1608,7 @@ mod tests {
         // Subscribe a client to the room
         let room_id = RoomId::from_string("test_room".to_string());
         let user_id = UserId::from_string("test_user".to_string());
-        let mut rx = message_hub.subscribe(room_id.clone(), user_id.clone(), "conn1".to_string());
+        let rx = message_hub.subscribe(room_id.clone(), user_id.clone(), "conn1".to_string());
 
         // Publish event from node1
         let event = ClusterEvent::ChatMessage {

@@ -139,6 +139,7 @@ fn make_test_user(role: UserRole, status: UserStatus) -> synctv_core::models::Us
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         deleted_at: None,
+        password_changed_at: chrono::Utc::now(),
     }
 }
 
@@ -297,7 +298,6 @@ fn make_test_media() -> synctv_core::models::Media {
         source_config: serde_json::json!({"bvid": "BV1234"}),
         provider_instance_name: Some("bili_main".to_string()),
         added_at: chrono::Utc::now(),
-        deleted_at: None,
     }
 }
 

@@ -300,7 +300,8 @@ impl RoomService {
             None
         };
 
-        // Run all DB operations in a single transaction
+        // Transaction: Create room with all related data atomically.
+        // On error, the transaction will be automatically rolled back.
         let mut tx = self.pool.begin().await?;
 
         // 1. Create room
@@ -627,7 +628,7 @@ impl RoomService {
         .await?;
 
         if deleted.rows_affected() == 0 {
-            tx.rollback().await?;
+            // Transaction will be automatically rolled back on drop
             return Err(Error::NotFound("Room not found or already deleted".to_string()));
         }
 
@@ -951,7 +952,9 @@ impl RoomService {
                 return Ok(());
             }
 
-            // Version mismatch -- rollback and retry
+            // Version mismatch -- explicit rollback before retry.
+            // This is necessary to release locks immediately and allow the next
+            // iteration to acquire a fresh snapshot.
             tx.rollback().await?;
             if attempt + 1 < Self::MAX_RETRIES {
                 let backoff = Self::BACKOFF_BASE_MS * (1 << attempt);
@@ -1330,7 +1333,7 @@ impl RoomService {
         .await?;
 
         if deleted.rows_affected() == 0 {
-            tx.rollback().await?;
+            // Transaction will be automatically rolled back on drop
             return Err(Error::NotFound("Room not found or already deleted".to_string()));
         }
 

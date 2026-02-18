@@ -63,7 +63,7 @@ async fn create_node(redis_url: &str, node_id: &str) -> ClusterManager {
         cleanup_interval: Duration::from_secs(30),
         critical_channel_capacity: 1000,
         publish_channel_capacity: 10_000,
-        wal_path: None,
+        key_prefix: "synctv:".to_string(),
     };
     ClusterManager::new(config, None, None)
         .await
@@ -263,7 +263,7 @@ async fn test_cross_replica_cache_invalidation() {
         cleanup_interval: Duration::from_secs(30),
         critical_channel_capacity: 1000,
         publish_channel_capacity: 10_000,
-        wal_path: None,
+        key_prefix: "synctv:".to_string(),
     };
     let node_a = ClusterManager::new(config_a, None, Some(cache_svc_a))
         .await
@@ -1278,7 +1278,7 @@ async fn test_cross_replica_permission_cache_invalidation_via_cache_service() {
         cleanup_interval: Duration::from_secs(30),
         critical_channel_capacity: 1000,
         publish_channel_capacity: 10_000,
-        wal_path: None,
+        key_prefix: "synctv:".to_string(),
     };
     let node_a = ClusterManager::new(config_a, None, Some(cache_svc_a))
         .await
@@ -1344,7 +1344,7 @@ async fn test_room_hub_connection_manager_state_consistency() {
         cleanup_interval: Duration::from_secs(1),
         critical_channel_capacity: 1000,
         publish_channel_capacity: 10_000,
-        wal_path: None,
+        key_prefix: "synctv:".to_string(),
     };
 
     let manager = ClusterManager::new(config, None, None).await.unwrap();
@@ -1438,7 +1438,7 @@ async fn test_rapid_subscribe_unsubscribe_no_leak() {
         cleanup_interval: Duration::from_secs(1),
         critical_channel_capacity: 1000,
         publish_channel_capacity: 10_000,
-        wal_path: None,
+        key_prefix: "synctv:".to_string(),
     };
 
     let manager = ClusterManager::new(config, None, None).await.unwrap();

@@ -539,8 +539,9 @@ impl AdminService for AdminServiceImpl {
         request: Request<UpdateRoomSettingsRequest>,
     ) -> Result<Response<UpdateRoomSettingsResponse>, Status> {
         self.check_admin(&request).await?;
+        let admin_user_id = super::interceptors::extract_user_id(&request)?;
         let req = request.into_inner();
-        let resp = self.admin_api.update_room_settings(req).await.map_err(map_api_error)?;
+        let resp = self.admin_api.update_room_settings(req, &admin_user_id).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 

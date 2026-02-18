@@ -194,6 +194,9 @@ impl LivestreamServer {
         let node_id_for_cleanup = self.config.node_id.clone();
         // Channel to notify PublisherManager to re-register after StreamHub restart
         let (reregister_tx, reregister_rx) = mpsc::channel::<()>(4);
+        // Channel to notify pull/external managers to stop all streams before StreamHub restart.
+        // This ensures zombie streams (still connected to the old hub) are cleaned up.
+        let (stop_streams_tx, mut stop_streams_rx) = mpsc::channel::<()>(4);
 
         // Compute per-stream GOP cache memory limit from config (0 means use default).
         let per_stream_max_bytes: Option<usize> = if self.config.gop_cache_max_memory_mb > 0 {
@@ -253,6 +256,20 @@ impl LivestreamServer {
                 // so we must create a new one on every restart to keep the RTMP server
                 // functional.
                 let rtmp_session_token = CancellationToken::new();
+                let stream_callbacks = synctv_xiu::rtmp::callbacks::StreamEventCallbacks {
+                    on_publisher_start: Some(Arc::new(|| {
+                        synctv_core::metrics::livestream::LIVESTREAM_ACTIVE_PUBLISHERS.inc();
+                    })),
+                    on_publisher_stop: Some(Arc::new(|| {
+                        synctv_core::metrics::livestream::LIVESTREAM_ACTIVE_PUBLISHERS.dec();
+                    })),
+                    on_viewer_join: Some(Arc::new(|| {
+                        synctv_core::metrics::livestream::LIVESTREAM_ACTIVE_VIEWERS.inc();
+                    })),
+                    on_viewer_leave: Some(Arc::new(|| {
+                        synctv_core::metrics::livestream::LIVESTREAM_ACTIVE_VIEWERS.dec();
+                    })),
+                };
                 let mut rtmp_server = synctv_xiu::rtmp::rtmp::RtmpServer::new(
                     rtmp_address.clone(),
                     rtmp_event_sender.clone(),
@@ -260,6 +277,7 @@ impl LivestreamServer {
                     rtmp_auth.clone(),
                     per_stream_max_bytes,
                 )
+                .with_callbacks(stream_callbacks)
                 .with_cancellation_token(rtmp_session_token.clone());
                 let rtmp_handle = tokio::spawn(async move {
                     if let Err(e) = rtmp_server.run().await {
@@ -294,6 +312,12 @@ impl LivestreamServer {
                 );
 
                 info!("Cancelled all active RTMP sessions due to StreamHub restart");
+
+                // Stop all managed pull/external-publish streams BEFORE restart.
+                // These streams hold channels to the old StreamHub instance and would
+                // become zombies (still running but unable to deliver frames) if not
+                // cleaned up. The receiver task calls stop_all() on both managers.
+                let _ = stop_streams_tx.try_send(());
 
                 // Clean up all local publisher registrations from Redis
                 // This ensures stale state doesn't persist after restart
@@ -413,6 +437,23 @@ impl LivestreamServer {
         ));
         // Start periodic cleanup of stale creation locks to prevent memory leaks
         let external_publish_cleanup = external_publish_manager.start_cleanup_task();
+
+        // 6b. Spawn listener that stops all managed streams on StreamHub restart.
+        // This ensures zombie streams (connected to the old hub) are cleaned up
+        // before the new hub starts accepting events.
+        {
+            let pm = Arc::clone(&pull_manager);
+            let epm = Arc::clone(&external_publish_manager);
+            tokio::spawn(async move {
+                while stop_streams_rx.recv().await.is_some() {
+                    info!("StreamHub restart: stopping all managed pull streams...");
+                    pm.stop_all().await;
+                    info!("StreamHub restart: stopping all managed external publish streams...");
+                    epm.stop_all().await;
+                    info!("StreamHub restart: all managed streams stopped");
+                }
+            });
+        }
 
         // 7. Start PublisherManager -- listens to StreamHub broadcast events
         // and registers/unregisters publishers in Redis for multi-node relay

@@ -707,20 +707,15 @@ impl RoomMessageHub {
             return;
         }
 
-        let mut failure_count = 0u64;
+        let mut pipe = redis::pipe();
         for key in &keys_to_refresh {
-            let result: Result<(), _> = conn.expire(key, ttl_secs).await;
-            if let Err(e) = result {
-                failure_count += 1;
-                warn!("Failed to refresh TTL for room_hub key {key}: {e}");
-            }
+            pipe.expire(key, ttl_secs).ignore();
         }
 
-        if failure_count > 0 {
+        if let Err(e) = pipe.query_async::<()>(&mut conn).await {
             warn!(
                 total_keys = keys_to_refresh.len(),
-                failures = failure_count,
-                "Some room_hub Redis key TTL refreshes failed"
+                "Failed to refresh room_hub Redis key TTLs via pipeline: {e}"
             );
         } else {
             debug!(

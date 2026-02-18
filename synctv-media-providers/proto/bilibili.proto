@@ -95,6 +95,13 @@ message VideoURL {
   repeated uint64 acceptQuality = 2;
   uint64 currentQuality = 3;
   string url = 4;
+  repeated VideoSegment segments = 5;
+}
+
+// A single video segment (Bilibili may split videos into multiple parts).
+message VideoSegment {
+  string url = 1;
+  uint64 size = 2;
 }
 
 message GetVideoURLReq {

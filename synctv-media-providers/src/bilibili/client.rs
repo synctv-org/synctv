@@ -842,8 +842,11 @@ impl BilibiliClient {
                 let accept_quality: Vec<u32> = data.accept_quality.iter().map(|&q| q as u32).collect();
                 let accept_description = data.accept_description;
                 let current_quality = data.quality as u32;
-                let url = data.durl.first()
-                    .map(|d| d.url.clone())
+                let segments: Vec<VideoSegment> = data.durl.iter()
+                    .map(|d| VideoSegment { url: d.url.clone(), size: d.size })
+                    .collect();
+                let url = segments.first()
+                    .map(|s| s.url.clone())
                     .unwrap_or_default();
 
                 Ok(VideoUrlInfo {
@@ -851,6 +854,7 @@ impl BilibiliClient {
                     accept_description,
                     current_quality,
                     url,
+                    segments,
                 })
             }
         }).await
@@ -1095,8 +1099,11 @@ impl BilibiliClient {
                 let accept_quality: Vec<u32> = result.accept_quality.iter().map(|&q| q as u32).collect();
                 let accept_description = result.accept_description;
                 let current_quality = result.quality as u32;
-                let url = result.durl.first()
-                    .map(|d| d.url.clone())
+                let segments: Vec<VideoSegment> = result.durl.iter()
+                    .map(|d| VideoSegment { url: d.url.clone(), size: d.size })
+                    .collect();
+                let url = segments.first()
+                    .map(|s| s.url.clone())
                     .unwrap_or_default();
 
                 Ok(VideoUrlInfo {
@@ -1104,6 +1111,7 @@ impl BilibiliClient {
                     accept_description,
                     current_quality,
                     url,
+                    segments,
                 })
             }
         }).await
@@ -1425,9 +1433,15 @@ impl LiveDanmakuConnection {
             Some(Ok(Message::Binary(data))) => {
                 parse_danmaku_packet(&data)
             }
-            Some(Ok(_)) => Ok(Vec::new()), // Ignore non-binary messages
+            Some(Ok(Message::Close(_))) => {
+                Err(BilibiliError::Parse("Danmaku WebSocket connection closed by server".to_string()))
+            }
+            Some(Ok(_)) => Ok(Vec::new()), // Ignore non-binary messages (ping/pong/text)
             Some(Err(e)) => Err(BilibiliError::Parse(format!("WebSocket error: {}", e))),
-            None => Ok(Vec::new()), // Connection closed
+            None => {
+                // Stream ended = connection closed unexpectedly
+                Err(BilibiliError::Parse("Danmaku WebSocket connection closed".to_string()))
+            }
         }
     }
 
@@ -1524,6 +1538,10 @@ fn build_heartbeat_packet() -> Vec<u8> {
     packet
 }
 
+/// Maximum decompressed size for danmaku packets (16 MB).
+/// Prevents decompression bombs from exhausting memory.
+const MAX_DANMAKU_DECOMPRESS_SIZE: u64 = 16 * 1024 * 1024;
+
 /// Parse danmaku packet from binary data.
 ///
 /// A single binary frame may contain multiple sub-packets (especially when
@@ -1559,21 +1577,23 @@ fn parse_danmaku_packet(data: &[u8]) -> Result<Vec<DanmakuMessage>, BilibiliErro
             let decompressed = match protocol_version {
                 0 | 1 => body.to_vec(),
                 2 => {
-                    // zlib (deflate) compression
+                    // zlib (deflate) compression with size limit
                     use std::io::Read;
-                    let mut decoder = flate2::read::ZlibDecoder::new(body);
+                    let decoder = flate2::read::ZlibDecoder::new(body);
+                    let mut limited = decoder.take(MAX_DANMAKU_DECOMPRESS_SIZE);
                     let mut out = Vec::new();
-                    if decoder.read_to_end(&mut out).is_err() {
+                    if limited.read_to_end(&mut out).is_err() {
                         return Ok(Vec::new());
                     }
                     out
                 }
                 3 => {
-                    // brotli compression
+                    // brotli compression with size limit
                     use std::io::Read;
-                    let mut decoder = brotli::Decompressor::new(body, 4096);
+                    let decoder = brotli::Decompressor::new(body, 4096);
+                    let mut limited = decoder.take(MAX_DANMAKU_DECOMPRESS_SIZE);
                     let mut out = Vec::new();
-                    if decoder.read_to_end(&mut out).is_err() {
+                    if limited.read_to_end(&mut out).is_err() {
                         return Ok(Vec::new());
                     }
                     out
@@ -1698,13 +1718,27 @@ pub struct VideoInfoItem {
     pub live: bool,
 }
 
+/// A single segment (durl) from Bilibili's multi-segment video response.
+#[derive(Debug, Clone)]
+pub struct VideoSegment {
+    pub url: String,
+    pub size: u64,
+}
+
 /// Video URL information
+///
+/// Bilibili may return multiple durl segments for a single video (common for
+/// older videos or certain formats). The `url` field contains the first segment
+/// for backwards compatibility; `segments` contains ALL segments.
 #[derive(Debug, Clone)]
 pub struct VideoUrlInfo {
     pub accept_quality: Vec<u32>,
     pub accept_description: Vec<String>,
     pub current_quality: u32,
+    /// First segment URL (for backwards compatibility with single-segment callers).
     pub url: String,
+    /// All video segments. For single-segment videos this has one entry.
+    pub segments: Vec<VideoSegment>,
 }
 
 /// User information

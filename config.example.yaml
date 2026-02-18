@@ -4,10 +4,10 @@
 #
 # Configuration priority: defaults < config file < environment variables
 #
-# Environment variables use SYNCTV_ prefix with underscore separator:
-#   SYNCTV_SERVER_HOST=0.0.0.0
-#   SYNCTV_DATABASE_URL=postgresql://...
-#   SYNCTV_OAUTH2_GITHUB_CLIENT_ID=xxx
+# Environment variables use SYNCTV_ prefix with double-underscore separator:
+#   SYNCTV__SERVER__HOST=0.0.0.0
+#   SYNCTV__DATABASE__URL=postgresql://...
+#   SYNCTV__OAUTH2__REDIRECT_SCHEME=https
 
 server:
   host: "0.0.0.0"
@@ -33,7 +33,7 @@ server:
   #   cors_allowed_origins: ["https://app.example.com", "https://admin.example.com"]
   #
   # Environment variable:
-  #   SYNCTV_SERVER_CORS_ALLOWED_ORIGINS='["https://app.example.com"]'
+  #   SYNCTV__SERVER__CORS_ALLOWED_ORIGINS='["https://app.example.com"]'
   #
   # WARNING: An empty list in production means ALL cross-origin requests are denied.
   cors_allowed_origins: []
@@ -42,11 +42,15 @@ server:
   cluster_secret: ""
   # Advertise host for cluster node registration (address other nodes use to reach this instance).
   # Falls back to POD_IP env var, then system hostname if empty.
-  # In Kubernetes, set via SYNCTV_SERVER_ADVERTISE_HOST or downward API (status.podIP).
+  # In Kubernetes, set via SYNCTV__SERVER__ADVERTISE_HOST or downward API (status.podIP).
   advertise_host: ""
   # Maximum time in seconds to wait for active connections to drain during shutdown.
   # Defaults to 30 seconds. Increase for deployments with many long-lived connections.
   shutdown_drain_timeout_seconds: 30
+  # Disable the legacy ?token=<jwt> WebSocket query parameter authentication.
+  # When true, only Authorization header and ?ticket= are accepted for WebSocket auth.
+  # Defaults to true (disabled) for security.
+  disable_ws_token_query: true
 
 database:
   url: "postgresql://synctv:synctv@localhost:5432/synctv"
@@ -54,6 +58,9 @@ database:
   min_connections: 5
   connect_timeout_seconds: 10
   idle_timeout_seconds: 600
+  # Maximum lifetime of a connection in seconds before it is closed and replaced.
+  # Defaults to 1800 (30 minutes).
+  max_lifetime_seconds: 1800
 
 # ============================================================================
 # Redis Configuration
@@ -129,6 +136,10 @@ livestream:
   pull_max_backoff_ms: 30000
   # Max FLV tag size to accept in bytes (prevents OOM). Default: 10MB
   max_flv_tag_size_bytes: 10485760
+  # Maximum memory (in megabytes) for the GOP cache across all GOPs per stream.
+  # When exceeded, the oldest GOP is evicted even if gop_cache_size hasn't
+  # been reached. Default: 100 MB. Set to 0 to use the built-in default (50 MB).
+  gop_cache_max_memory_mb: 100
 
 # ============================================================================
 # Email Configuration (SMTP)
@@ -141,7 +152,7 @@ email:
   smtp_host: ""
   smtp_port: 587
   smtp_username: ""
-  smtp_password: ""  # Set via SYNCTV_EMAIL_SMTP_PASSWORD env var
+  smtp_password: ""  # Set via SYNCTV__EMAIL__SMTP_PASSWORD env var
   from_email: ""
   from_name: "SyncTV"
   use_tls: true
@@ -185,6 +196,9 @@ connection_limits:
   idle_timeout_seconds: 300
   # Maximum connection duration in seconds (24 hours)
   max_duration_seconds: 86400
+  # Global per-connection WebSocket message rate limit (messages per second).
+  # Prevents abuse from flooding the server with rapid messages.
+  ws_message_rate_limit_per_second: 50
 
 # ============================================================================
 # Bootstrap Configuration
@@ -197,7 +211,7 @@ bootstrap:
   # Whether to create root user on first startup
   create_root_user: true
   root_username: "root"
-  # Set via SYNCTV_BOOTSTRAP_ROOT_PASSWORD env var.
+  # Set via SYNCTV__BOOTSTRAP__ROOT_PASSWORD env var.
   # In production, must be >= 12 chars with uppercase, lowercase, and digits.
   root_password: "root"
 
@@ -223,6 +237,11 @@ cluster:
   # new pods faster. Without Redis, k8s_dns provides DNS resolution only -- no
   # NodeRegistry, HealthMonitor, or LoadBalancer will be created.
   discovery_mode: "redis"
+  # Leader election mode for singleton operations.
+  # - "redis": Use Redis-based distributed locks (default, works everywhere)
+  # - "k8s_lease": Use Kubernetes coordination.k8s.io/v1 Lease resource
+  #   (requires POD_NAME and POD_NAMESPACE env vars, RBAC permissions)
+  leader_election_mode: "redis"
 
 # ============================================================================
 # Media Providers Configuration
@@ -324,33 +343,27 @@ oauth2:
   providers: ""
 
 # Environment Variables for OAuth2:
-#   Format: SYNCTV_OAUTH2_<INSTANCE_NAME>_<FIELD>
+#   Format: SYNCTV__OAUTH2__<FIELD>
 #   Examples:
-#     SYNCTV_OAUTH2_GITHUB_CLIENT_ID=xxx
-#     SYNCTV_OAUTH2_GITHUB_CLIENT_SECRET=yyy
-#     SYNCTV_OAUTH2_LOGTO1_TYPE=logto
-#     SYNCTV_OAUTH2_LOGTO1_CLIENT_ID=xxx
-#     SYNCTV_OAUTH2_LOGTO1_ENDPOINT=https://logto1.example.com
+#     SYNCTV__OAUTH2__REDIRECT_SCHEME=https
 
 # ============================================================================
 # WebRTC Configuration
 # ============================================================================
 #
-# WebRTC supports 4 operation modes:
+# WebRTC supports 2 operation modes:
 #   - signaling_only: Pure signaling relay (zero cost, ~70% success rate)
 #   - peer_to_peer:   P2P with STUN/TURN (recommended, ~99% success rate)
-#   - hybrid:         P2P for small rooms, SFU for large rooms (default)
-#   - sfu:            All rooms use SFU (enterprise grade)
 
 webrtc:
-  mode: "hybrid"
+  mode: "peer_to_peer"
 
   # --- Built-in STUN Server ---
   enable_builtin_stun: true
   stun_port: 3478
   stun_host: "0.0.0.0"
   # External address for STUN reflexive candidates. In K8s/NAT, set to
-  # the pod IP or service IP (e.g., via SYNCTV_WEBRTC_STUN_EXTERNAL_ADDR).
+  # the pod IP or service IP (e.g., via SYNCTV__WEBRTC__STUN_EXTERNAL_ADDR).
   # If empty, falls back to advertise_host:stun_port.
   # stun_external_addr: ""
 
@@ -360,18 +373,6 @@ webrtc:
   #       ["stun:stun.l.google.com:19302","stun:stun1.l.google.com:19302"]
   #   "webrtc.turn_servers" - JSON array of TURN server objects, e.g.:
   #       [{"urls":["turn:turn.example.com:3478"],"username":"user","credential":"pass"}]
-
-  # --- SFU Configuration (for hybrid/sfu modes) ---
-  sfu_threshold: 5           # Switch to SFU when room has >= N participants
-  enable_simulcast: true     # Multiple quality layers (High/Medium/Low)
-  max_sfu_rooms: 0           # 0 = unlimited
-  max_peers_per_sfu_room: 50
-  # Simulcast layers to use
-  simulcast_layers: ["high", "medium", "low"]
-  # Maximum bitrate per peer in kbps (0 = unlimited)
-  max_bitrate_per_peer: 0
-  # Enable bandwidth estimation
-  enable_bandwidth_estimation: true
 
 # ============================================================================
 # Dynamic ICE Servers Configuration

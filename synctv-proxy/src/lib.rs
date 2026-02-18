@@ -4,7 +4,8 @@
 //! playlists.  Used by per-provider proxy routes in `synctv-api`.
 
 use std::collections::HashMap;
-use std::sync::LazyLock;
+use std::net::SocketAddr;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use axum::{
@@ -38,14 +39,71 @@ const BODY_READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// Maximum number of redirects to follow manually.
 const MAX_REDIRECTS: usize = 10;
 
+/// Custom DNS resolver that checks resolved IPs against SSRF blocklists
+/// at connection time, preventing DNS rebinding TOCTOU attacks.
+///
+/// By injecting this into the reqwest client, every TCP connection attempt
+/// validates the resolved IP before connecting -- not just at request-build
+/// time. This closes the window where a DNS name could resolve to a public
+/// IP during validation but rebind to a private IP by the time the TCP
+/// handshake occurs.
+#[derive(Clone)]
+struct SsrfSafeDnsResolver;
+
+impl reqwest::dns::Resolve for SsrfSafeDnsResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        Box::pin(async move {
+            let host = name.as_str();
+            // Resolve via the system DNS
+            let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host, 0))
+                .await
+                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
+                    Box::new(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        format!("DNS lookup failed for {host}: {e}"),
+                    ))
+                })?
+                .collect();
+
+            if addrs.is_empty() {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("DNS lookup for {host} returned no addresses"),
+                )) as Box<dyn std::error::Error + Send + Sync>);
+            }
+
+            // Filter out blocked IPs; if all are blocked, return an error.
+            let safe_addrs: Vec<SocketAddr> = addrs
+                .into_iter()
+                .filter(|addr| !ssrf::is_blocked_ip(addr.ip()))
+                .collect();
+
+            if safe_addrs.is_empty() {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("All resolved IPs for {host} are private/reserved (SSRF blocked)"),
+                )) as Box<dyn std::error::Error + Send + Sync>);
+            }
+
+            Ok(Box::new(safe_addrs.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
+}
+
 /// Panics during initialization if the HTTP client cannot be built (e.g., TLS backend unavailable).
 /// This is intentional as the proxy cannot function without an HTTP client.
+///
+/// **SSRF Protection**: Uses a custom DNS resolver (`SsrfSafeDnsResolver`) that
+/// checks every resolved IP at TCP-connect time against the SSRF blocklist.
+/// This prevents DNS rebinding attacks where a hostname resolves to a public IP
+/// during pre-request validation but rebinds to a private IP by connection time.
 ///
 /// **Performance Enhancement**: Increased connection pool from 20 to 100 connections per host
 /// to better support high-traffic scenarios where multiple media sources may be accessed
 /// simultaneously (e.g., multi-room streaming, provider API calls).
 static PROXY_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
     reqwest::Client::builder()
+        .dns_resolver(Arc::new(SsrfSafeDnsResolver))
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(REQUEST_TIMEOUT)
         .read_timeout(BODY_READ_TIMEOUT)
@@ -214,6 +272,22 @@ async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response,
         }
     }
 
+    // Determine if reqwest auto-decompressed the response body.
+    // reqwest transparently decodes gzip, deflate, and brotli by default.
+    // If the upstream used one of these encodings, reqwest has already decoded
+    // the body, so we must strip the content-encoding header (otherwise the
+    // client would try to decompress already-decoded data).
+    // For other encodings (e.g. zstd) that reqwest does NOT handle, we must
+    // preserve the header so the client knows to decode it.
+    let reqwest_auto_decompressed = response_headers
+        .get("content-encoding")
+        .and_then(|v| v.to_str().ok())
+        .map(|ce| {
+            let ce_lower = ce.to_lowercase();
+            ce_lower == "gzip" || ce_lower == "deflate" || ce_lower == "br"
+        })
+        .unwrap_or(false);
+
     let mut builder = Response::builder().status(status);
 
     for (name, value) in &response_headers {
@@ -222,7 +296,6 @@ async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response,
             name.as_str(),
             "connection"
                 | "transfer-encoding"
-                | "content-encoding"
                 | "content-length"
                 | "keep-alive"
                 | "proxy-authenticate"
@@ -231,6 +304,10 @@ async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response,
                 | "trailer"
                 | "upgrade"
         ) {
+            continue;
+        }
+        // Only strip content-encoding if reqwest auto-decompressed the body
+        if name.as_str() == "content-encoding" && reqwest_auto_decompressed {
             continue;
         }
         if let Ok(v) = value.to_str() {

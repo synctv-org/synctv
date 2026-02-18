@@ -306,10 +306,22 @@ pub fn oidc_factory(config: &serde_json::Value) -> Result<Box<dyn Provider>, Err
     let config: OidcConfig = serde_json::from_value(config.clone())
         .map_err(|e| Error::InvalidInput(format!("Invalid OIDC config: {e}")))?;
 
-    // Use create_with_endpoints if any custom endpoint is specified
-    let provider = if config.auth_url.is_some()
+    // Validate issuer is not empty when no custom endpoints are provided.
+    // An empty issuer means .well-known discovery will fail at runtime with
+    // an unhelpful "/.well-known/openid-configuration" URL.
+    let has_custom_endpoints = config.auth_url.is_some()
         || config.token_url.is_some()
-        || config.userinfo_url.is_some()
+        || config.userinfo_url.is_some();
+    if config.issuer.is_empty() && !has_custom_endpoints {
+        return Err(Error::InvalidInput(
+            "OIDC provider requires a non-empty 'issuer' URL for .well-known discovery, \
+             or explicit 'auth_url' and 'token_url' endpoints"
+                .to_string(),
+        ));
+    }
+
+    // Use create_with_endpoints if any custom endpoint is specified
+    let provider = if has_custom_endpoints
     {
         OidcProvider::create_with_endpoints(
             config.client_id,
@@ -551,14 +563,29 @@ mod tests {
     }
 
     #[test]
-    fn test_factory_default_empty_issuer() {
+    fn test_factory_default_empty_issuer_rejected() {
         // issuer defaults to "" via #[serde(default)]
         let config = serde_json::json!({
             "client_id": "id",
             "client_secret": "secret",
             "redirect_url": "https://example.com/cb"
         });
-        // Should succeed in creation (issuer-only mode, discovery will fail at runtime)
+        // Should fail at creation time with a clear error (no issuer, no custom endpoints)
+        let result = oidc_factory(&config);
+        assert!(result.is_err());
+        assert!(matches!(result.err(), Some(Error::InvalidInput(_))));
+    }
+
+    #[test]
+    fn test_factory_empty_issuer_with_custom_endpoints_ok() {
+        // Empty issuer is allowed when custom endpoints are provided
+        let config = serde_json::json!({
+            "client_id": "id",
+            "client_secret": "secret",
+            "redirect_url": "https://example.com/cb",
+            "auth_url": "https://provider.example.com/authorize",
+            "token_url": "https://provider.example.com/token"
+        });
         let result = oidc_factory(&config);
         assert!(result.is_ok());
     }

@@ -1,6 +1,7 @@
 use crate::streamhub::define::StreamHubEventSender;
 
 use super::auth::AuthCallback;
+use super::callbacks::StreamEventCallbacks;
 use super::session::server_session;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -18,6 +19,7 @@ pub struct RtmpServer {
     auth: Option<Arc<dyn AuthCallback>>,
     shutdown_token: CancellationToken,
     per_stream_max_bytes: Option<usize>,
+    callbacks: Arc<StreamEventCallbacks>,
 }
 
 impl RtmpServer {
@@ -36,7 +38,15 @@ impl RtmpServer {
             auth,
             shutdown_token: CancellationToken::new(),
             per_stream_max_bytes,
+            callbacks: Arc::new(StreamEventCallbacks::default()),
         }
+    }
+
+    /// Set stream event callbacks (for metrics, logging, etc.)
+    #[must_use]
+    pub fn with_callbacks(mut self, callbacks: StreamEventCallbacks) -> Self {
+        self.callbacks = Arc::new(callbacks);
+        self
     }
 
     /// Set an external cancellation token. The server's internal shutdown token
@@ -73,6 +83,7 @@ impl RtmpServer {
                         self.gop_num,
                         self.auth.clone(),
                         self.per_stream_max_bytes,
+                        Arc::clone(&self.callbacks),
                     );
                     session_tracker.spawn(async move {
                         if let Err(err) = session.run().await {

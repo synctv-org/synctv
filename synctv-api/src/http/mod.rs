@@ -128,6 +128,22 @@ pub fn create_router_from_config(config: RouterConfig) -> axum::Router {
 
 /// Build `AppState` from `RouterConfig`, creating the shared API implementation layers.
 fn build_app_state(config: RouterConfig) -> AppState {
+    // Create shared security pipeline early so it can be shared with client_api for logout
+    let security_pipeline = if let Some(ref redis_conn) = config.redis_conn {
+        let key_builder = synctv_core::cache::KeyBuilder::new(
+            &config.config.redis.key_prefix,
+        );
+        Arc::new(synctv_core::service::SecurityPipeline::with_redis(
+            config.user_service.clone(),
+            redis_conn.clone(),
+            key_builder,
+        ))
+    } else {
+        Arc::new(synctv_core::service::SecurityPipeline::new(
+            config.user_service.clone(),
+        ))
+    };
+
     let client_api = Arc::new(crate::impls::ClientApiImpl::new(
         config.user_service.clone(),
         config.room_service.clone(),
@@ -140,7 +156,8 @@ fn build_app_state(config: RouterConfig) -> AppState {
         config.settings_registry.clone(),
     ).with_redis_publish_tx(config.redis_publish_tx.clone())
      .with_redis_conn(config.redis_conn.clone())
-     .with_rate_limiter(config.rate_limiter.clone()));
+     .with_rate_limiter(config.rate_limiter.clone())
+     .with_security_pipeline(security_pipeline.clone()));
 
     let admin_api = config.settings_service.as_ref().map(|settings_svc| {
         let email_svc = config.email_service.clone().unwrap_or_else(|| {
@@ -186,11 +203,6 @@ fn build_app_state(config: RouterConfig) -> AppState {
     let bilibili_api = Arc::new(crate::impls::BilibiliApiImpl::new(config.bilibili_provider.clone()));
     let alist_api = Arc::new(crate::impls::AlistApiImpl::new(config.alist_provider.clone()));
     let emby_api = Arc::new(crate::impls::EmbyApiImpl::new(config.emby_provider.clone()));
-
-    // Create shared security pipeline for post-JWT checks (steps 2-3)
-    let security_pipeline = Arc::new(synctv_core::service::SecurityPipeline::new(
-        config.user_service.clone(),
-    ));
 
     AppState {
         config: config.config,

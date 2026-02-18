@@ -143,6 +143,33 @@ impl UserService {
         self.repository.create_with_executor(&user, executor).await
     }
 
+    /// Create a user with a specific role (for admin user creation).
+    ///
+    /// Validates input, hashes the password, creates the user with the given
+    /// role atomically, and populates the username cache.
+    pub async fn create_user_with_role(
+        &self,
+        username: String,
+        email: Option<String>,
+        password: String,
+        role: Option<crate::models::UserRole>,
+    ) -> Result<User> {
+        self.validate_username(&username)?;
+        if let Some(ref email) = email {
+            self.validate_email(email)?;
+        }
+        self.validate_password(&password)?;
+
+        let password_hash = hash_password(&password).await?;
+        let mut user = User::new(username.clone(), email, password_hash, Some(SignupMethod::Email));
+        if let Some(role) = role {
+            user.role = role;
+        }
+        let created_user = self.repository.create(&user).await?;
+        self.username_cache.set(&created_user.id, &username).await?;
+        Ok(created_user)
+    }
+
     /// Generate JWT tokens and populate username cache for a newly created user.
     pub async fn finalize_registration(&self, user: &User) -> Result<(String, String)> {
         self.username_cache.set(&user.id, &user.username).await?;

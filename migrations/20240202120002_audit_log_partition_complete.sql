@@ -98,8 +98,8 @@ DECLARE
     partitions JSONB := '[]'::JSONB;
     success_count INTEGER := 0;
 BEGIN
-    -- 从下个月开始创建
-    partition_date := DATE_TRUNC('month', CURRENT_DATE) + INTERVAL '1 month';
+    -- 从当前月开始创建（与 create_chat_message_partitions 行为一致）
+    partition_date := DATE_TRUNC('month', CURRENT_DATE);
 
     FOR i IN 1..months_ahead LOOP
         result := create_audit_logs_partition(partition_date);

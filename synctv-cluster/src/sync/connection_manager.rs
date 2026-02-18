@@ -1220,14 +1220,24 @@ impl ConnectionManager {
         Ok(count <= max as i64)
     }
 
-    /// Decrement a Redis counter (best-effort, errors are logged but not propagated).
+    /// Decrement a Redis counter atomically (best-effort, errors are logged but not propagated).
+    ///
+    /// Uses a Lua script to atomically DECR and DEL if the result is negative,
+    /// avoiding a race where a concurrent INCR between DECR and SET(0) would be lost.
     async fn redis_decr(&self, conn: &redis::aio::ConnectionManager, key: &str) -> Result<(), String> {
         let mut conn = conn.clone();
-        let count: i64 = conn.decr(key, 1i64).await.map_err(|e| format!("Redis DECR failed: {e}"))?;
-        // Prevent counter from going negative (shouldn't happen, but defensive)
-        if count < 0 {
-            let _: Result<(), _> = conn.set::<_, _, ()>(key, 0i64).await;
-        }
+        let script = redis::Script::new(
+            r"local v = redis.call('DECR', KEYS[1])
+              if v < 0 then
+                redis.call('DEL', KEYS[1])
+              end
+              return v"
+        );
+        script
+            .key(key)
+            .invoke_async::<i64>(&mut conn)
+            .await
+            .map_err(|e| format!("Redis atomic DECR script failed: {e}"))?;
         Ok(())
     }
 }

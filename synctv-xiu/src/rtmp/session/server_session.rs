@@ -1,4 +1,5 @@
 use crate::rtmp::auth::AuthCallback;
+use crate::rtmp::callbacks::StreamEventCallbacks;
 use crate::rtmp::chunk::{errors::UnpackErrorValue, packetizer::ChunkPacketizer};
 
 use {
@@ -69,6 +70,8 @@ pub struct ServerSession {
     last_message_time: tokio::time::Instant,
     /// Per-stream GOP cache memory limit in bytes. `None` uses the default.
     per_stream_max_bytes: Option<usize>,
+    /// Optional callbacks for stream lifecycle events (metrics, etc.)
+    callbacks: Arc<StreamEventCallbacks>,
 }
 
 impl ServerSession {
@@ -78,6 +81,7 @@ impl ServerSession {
         gop_num: usize,
         auth: Option<Arc<dyn AuthCallback>>,
         per_stream_max_bytes: Option<usize>,
+        callbacks: Arc<StreamEventCallbacks>,
     ) -> Self {
         let remote_addr = if let Ok(addr) = stream.peer_addr() {
             tracing::info!("server session: {addr}");
@@ -112,6 +116,7 @@ impl ServerSession {
             is_publishing: false,
             last_message_time: tokio::time::Instant::now(),
             per_stream_max_bytes,
+            callbacks,
         }
     }
 
@@ -623,8 +628,10 @@ impl ServerSession {
                 .await;
             }
 
-            // Fixed #116: Decrement Prometheus metrics for publisher disconnect
-            synctv_core::metrics::livestream::LIVESTREAM_ACTIVE_PUBLISHERS.dec();
+            // Fixed #116: Notify publisher disconnect via callback
+            if let Some(cb) = &self.callbacks.on_publisher_stop {
+                cb();
+            }
         } else {
             self.common
                 .unsubscribe_from_stream_hub(self.app_name.clone(), self.stream_name.clone())
@@ -639,8 +646,10 @@ impl ServerSession {
                 .await;
             }
 
-            // Fixed #116: Decrement Prometheus metrics for viewer disconnect
-            synctv_core::metrics::livestream::LIVESTREAM_ACTIVE_VIEWERS.dec();
+            // Fixed #116: Notify viewer disconnect via callback
+            if let Some(cb) = &self.callbacks.on_viewer_leave {
+                cb();
+            }
         }
 
         let mut netstream = NetStreamWriter::new(Arc::clone(&self.io));
@@ -819,8 +828,10 @@ impl ServerSession {
 
         self.state = ServerSessionState::Play;
 
-        // Fixed #116: Add Prometheus metrics for livestream viewers
-        synctv_core::metrics::livestream::LIVESTREAM_ACTIVE_VIEWERS.inc();
+        // Fixed #116: Notify viewer join via callback
+        if let Some(cb) = &self.callbacks.on_viewer_join {
+            cb();
+        }
 
         Ok(())
     }
@@ -993,8 +1004,10 @@ impl ServerSession {
 
         self.is_publishing = true;
 
-        // Fixed #116: Add Prometheus metrics for livestream publishers
-        synctv_core::metrics::livestream::LIVESTREAM_ACTIVE_PUBLISHERS.inc();
+        // Fixed #116: Notify publisher start via callback
+        if let Some(cb) = &self.callbacks.on_publisher_start {
+            cb();
+        }
 
         Ok(())
     }

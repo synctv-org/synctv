@@ -485,8 +485,11 @@ impl StreamDataTransceiver {
                                 .send_prior_data(sender.clone(), info.sub_type)
                                 .await
                             {
-                                tracing::error!("receive_event_loop send_prior_data err: {err}");
-                                break;
+                                // A single subscriber's channel may be closed before
+                                // prior data finishes sending. Skip this subscriber
+                                // instead of breaking the entire event loop.
+                                tracing::warn!("receive_event_loop send_prior_data err (skipping subscriber): {err}");
+                                continue;
                             }
                             match sender {
                                 DataSender::Frame {

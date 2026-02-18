@@ -116,7 +116,7 @@ pub struct ParseVideoPageReq {
     pub sections: bool,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct VideoUrl {
     #[prost(string, repeated, tag = "1")]
     pub accept_description: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
@@ -126,6 +126,17 @@ pub struct VideoUrl {
     pub current_quality: u64,
     #[prost(string, tag = "4")]
     pub url: ::prost::alloc::string::String,
+    #[prost(message, repeated, tag = "5")]
+    pub segments: ::prost::alloc::vec::Vec<VideoSegment>,
+}
+/// A single video segment (Bilibili may split videos into multiple parts).
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct VideoSegment {
+    #[prost(string, tag = "1")]
+    pub url: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "2")]
+    pub size: u64,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]

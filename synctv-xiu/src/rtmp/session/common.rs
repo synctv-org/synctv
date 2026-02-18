@@ -36,8 +36,16 @@ use {
 };
 
 // Fixed #107: Rate limiting constants for DoS prevention
-const MAX_FRAMES_PER_SECOND: usize = 120; // Max 120 FPS (generous for 60 FPS + margin)
+const MAX_VIDEO_FRAMES_PER_SECOND: usize = 120; // Max 120 FPS video (generous for 60 FPS + margin)
+const MAX_AUDIO_FRAMES_PER_SECOND: usize = 200; // Max 200 FPS audio (AAC 48kHz ~47fps, with generous margin)
 const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(1);
+
+/// Distinguishes audio vs video for per-track rate limiting.
+#[derive(Clone, Copy)]
+enum FrameType {
+    Video,
+    Audio,
+}
 
 pub struct Common {
     /* Used to mark the subscriber's the data producer
@@ -63,8 +71,11 @@ pub struct Common {
     /* now used for subscriber session */
     statistic_data_sender: Option<StatisticDataSender>,
 
-    // Fixed #107: Frame rate limiting for DoS prevention (sliding window)
-    frame_timestamps: VecDeque<Instant>,
+    // Fixed #107: Separate per-track rate limiting for DoS prevention (sliding window).
+    // Audio and video use independent rate limiters so that high audio frame rates
+    // (e.g. AAC 48kHz) do not exhaust the video budget and vice versa.
+    video_timestamps: VecDeque<Instant>,
+    audio_timestamps: VecDeque<Instant>,
 }
 
 impl Common {
@@ -88,30 +99,38 @@ impl Common {
             request_url: String::default(),
             stream_handler: Arc::new(RtmpStreamHandler::new()),
             statistic_data_sender: None,
-            frame_timestamps: VecDeque::with_capacity(MAX_FRAMES_PER_SECOND),
+            video_timestamps: VecDeque::with_capacity(MAX_VIDEO_FRAMES_PER_SECOND),
+            audio_timestamps: VecDeque::with_capacity(MAX_AUDIO_FRAMES_PER_SECOND),
         }
     }
 
-    // Fixed #107: Check frame rate limit before accepting new frame
-    fn check_rate_limit(&mut self) -> bool {
+    // Fixed #107: Check per-track frame rate limit before accepting new frame.
+    // Audio and video have independent sliding-window counters so that one track's
+    // high frame rate cannot starve the other.
+    fn check_rate_limit(&mut self, frame_type: FrameType) -> bool {
+        let (timestamps, max_fps) = match frame_type {
+            FrameType::Video => (&mut self.video_timestamps, MAX_VIDEO_FRAMES_PER_SECOND),
+            FrameType::Audio => (&mut self.audio_timestamps, MAX_AUDIO_FRAMES_PER_SECOND),
+        };
+
         let now = Instant::now();
 
         // Remove timestamps outside the sliding window
-        while let Some(&oldest) = self.frame_timestamps.front() {
+        while let Some(&oldest) = timestamps.front() {
             if now.duration_since(oldest) > RATE_LIMIT_WINDOW {
-                self.frame_timestamps.pop_front();
+                timestamps.pop_front();
             } else {
                 break;
             }
         }
 
         // Check if we've exceeded the rate limit
-        if self.frame_timestamps.len() >= MAX_FRAMES_PER_SECOND {
+        if timestamps.len() >= max_fps {
             return false;
         }
 
         // Add current timestamp and allow frame
-        self.frame_timestamps.push_back(now);
+        timestamps.push_back(now);
         true
     }
     pub async fn send_channel_data(&mut self) -> Result<(), SessionError> {
@@ -231,18 +250,24 @@ impl Common {
         data: &mut BytesMut,
         timestamp: &u32,
     ) -> Result<(), SessionError> {
-        // Fixed #107: Apply frame rate limiting to prevent DoS attacks
-        if !self.check_rate_limit() {
+        // Fixed #107: Apply per-track frame rate limiting to prevent DoS attacks
+        if !self.check_rate_limit(FrameType::Video) {
             tracing::warn!(
                 "Video frame dropped: rate limit exceeded ({} FPS max)",
-                MAX_FRAMES_PER_SECOND
+                MAX_VIDEO_FRAMES_PER_SECOND
             );
             return Ok(()); // Drop frame silently
         }
 
+        // Save to GOP cache first (borrows data), then zero-copy into channel.
+        self.stream_handler
+            .save_video_data(data, *timestamp)
+            .await?;
+
+        // Zero-copy: split+freeze avoids a full memcpy on the hot path.
         let channel_data = FrameData::Video {
             timestamp: *timestamp,
-            data: bytes::Bytes::copy_from_slice(data),
+            data: data.split().freeze(),
         };
 
         if let Some(sender) = &self.data_sender {
@@ -263,10 +288,6 @@ impl Common {
             });
         }
 
-        self.stream_handler
-            .save_video_data(data, *timestamp)
-            .await?;
-
         Ok(())
     }
 
@@ -275,18 +296,24 @@ impl Common {
         data: &mut BytesMut,
         timestamp: &u32,
     ) -> Result<(), SessionError> {
-        // Fixed #107: Apply frame rate limiting to prevent DoS attacks
-        if !self.check_rate_limit() {
+        // Fixed #107: Apply per-track frame rate limiting to prevent DoS attacks
+        if !self.check_rate_limit(FrameType::Audio) {
             tracing::warn!(
                 "Audio frame dropped: rate limit exceeded ({} FPS max)",
-                MAX_FRAMES_PER_SECOND
+                MAX_AUDIO_FRAMES_PER_SECOND
             );
             return Ok(()); // Drop frame silently
         }
 
+        // Save to GOP cache first (borrows data), then zero-copy into channel.
+        self.stream_handler
+            .save_audio_data(data, *timestamp)
+            .await?;
+
+        // Zero-copy: split+freeze avoids a full memcpy on the hot path.
         let channel_data = FrameData::Audio {
             timestamp: *timestamp,
-            data: bytes::Bytes::copy_from_slice(data),
+            data: data.split().freeze(),
         };
 
         if let Some(sender) = &self.data_sender {
@@ -307,10 +334,6 @@ impl Common {
             });
         }
 
-        self.stream_handler
-            .save_audio_data(data, *timestamp)
-            .await?;
-
         Ok(())
     }
 
@@ -319,9 +342,12 @@ impl Common {
         data: &mut BytesMut,
         timestamp: &u32,
     ) -> Result<(), SessionError> {
+        // Save to cache first (borrows data), then zero-copy into channel.
+        self.stream_handler.save_metadata(data, *timestamp).await;
+
         let channel_data = FrameData::MetaData {
             timestamp: *timestamp,
-            data: bytes::Bytes::copy_from_slice(data),
+            data: data.split().freeze(),
         };
 
         if let Some(sender) = &self.data_sender {
@@ -341,8 +367,6 @@ impl Common {
                 value: SessionErrorValue::NoneFrameDataSender,
             });
         }
-
-        self.stream_handler.save_metadata(data, *timestamp).await;
 
         Ok(())
     }

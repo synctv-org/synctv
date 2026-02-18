@@ -207,8 +207,8 @@ mod tests {
         let cached_user = crate::cache::user_cache::CachedUser::new(
             "u1".to_string(),
             "alice".to_string(),
-            "user".to_string(),
-            "active".to_string(),
+            crate::models::UserRole::User,
+            crate::models::UserStatus::Active,
             chrono::Utc::now(),
         );
         user_cache.set(&user_id, cached_user).await.unwrap();
@@ -277,8 +277,8 @@ mod tests {
         let cached_user = crate::cache::user_cache::CachedUser::new(
             "u1".to_string(),
             "alice".to_string(),
-            "user".to_string(),
-            "active".to_string(),
+            crate::models::UserRole::User,
+            crate::models::UserStatus::Active,
             chrono::Utc::now(),
         );
         user_cache.set(&user_id, cached_user).await.unwrap();

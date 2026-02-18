@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod cache;
+pub mod callbacks;
 pub mod chunk;
 pub mod config;
 pub mod handshake;

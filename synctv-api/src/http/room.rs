@@ -41,8 +41,12 @@ use crate::proto::client::{
 pub async fn create_room(
     auth: AuthUser,
     State(state): State<AppState>,
-    Json(req): Json<CreateRoomRequest>,
+    Json(mut req): Json<CreateRoomRequest>,
 ) -> AppResult<Json<CreateRoomResponse>> {
+    // Validate and sanitize room name
+    req.name = super::validation::validate_room_name(&req.name)
+        .map_err(|e| super::AppError::bad_request(e.to_string()))?;
+
     tracing::info!(user_id = %auth.user_id, room_name = %req.name, "Creating new room");
 
     let response = state

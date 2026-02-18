@@ -44,14 +44,15 @@ pub async fn logout(
     State(state): State<AppState>,
     body: Option<Json<LogoutBody>>,
 ) -> AppResult<Json<LogoutResponse>> {
-    let access_token = headers
+    let auth_header_str = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.strip_prefix("Bearer ").or_else(|| s.strip_prefix("bearer ")))
-        .ok_or_else(|| super::AppError::unauthorized("Missing or invalid Bearer token"))?;
+        .ok_or_else(|| super::AppError::unauthorized("Missing Authorization header"))?;
+    let access_token = synctv_core::service::auth::JwtValidator::extract_bearer_token(auth_header_str)
+        .map_err(|e| super::AppError::unauthorized(format!("{e}")))?;
 
     let refresh_token = body.and_then(|b| b.0.refresh_token);
-    let response = state.client_api.logout(access_token, refresh_token.as_deref()).await
+    let response = state.client_api.logout(&access_token, refresh_token.as_deref()).await
         .map_err(super::error::map_api_error)?;
     Ok(Json(response))
 }
@@ -137,7 +138,7 @@ pub async fn get_joined_rooms(
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> AppResult<Json<ListParticipatedRoomsResponse>> {
     let page = params.get("page").and_then(|v| v.parse().ok()).unwrap_or(1i32);
-    let page_size = params.get("page_size").and_then(|v| v.parse().ok()).unwrap_or(20i32);
+    let page_size = params.get("page_size").and_then(|v| v.parse::<i32>().ok()).unwrap_or(20).clamp(1, 100);
 
     let response = state
         .client_api
@@ -173,7 +174,7 @@ pub async fn list_created_rooms(
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> AppResult<Json<ListCreatedRoomsResponse>> {
     let page = params.get("page").and_then(|v| v.parse().ok()).unwrap_or(1i32);
-    let page_size = params.get("page_size").and_then(|v| v.parse().ok()).unwrap_or(10i32);
+    let page_size = params.get("page_size").and_then(|v| v.parse::<i32>().ok()).unwrap_or(10).clamp(1, 100);
 
     let req = crate::proto::client::ListCreatedRoomsRequest { page, page_size };
     let response = state

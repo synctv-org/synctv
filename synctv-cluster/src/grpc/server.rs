@@ -151,14 +151,17 @@ impl ClusterService for ClusterServer {
         &self,
         _request: Request<GetNodesRequest>,
     ) -> std::result::Result<Response<GetNodesResponse>, Status> {
-        synctv_core::metrics::grpc::GRPC_REQUESTS_TOTAL
-            .with_label_values(&["cluster", "get_nodes", "ok"])
-            .inc();
-        let _timer = synctv_core::metrics::grpc::GRPC_REQUEST_DURATION
+        let timer = synctv_core::metrics::grpc::GRPC_REQUEST_DURATION
             .with_label_values(&["cluster", "get_nodes", "ok"])
             .start_timer();
-        match self.node_registry.get_all_nodes().await {
+        let result = self.node_registry.get_all_nodes().await;
+        timer.observe_duration();
+
+        match result {
             Ok(nodes) => {
+                synctv_core::metrics::grpc::GRPC_REQUESTS_TOTAL
+                    .with_label_values(&["cluster", "get_nodes", "ok"])
+                    .inc();
                 let proto_nodes: Vec<NodeInfo> = nodes
                     .iter()
                     .map(|n| self.discovery_to_proto_node(n))
@@ -167,8 +170,11 @@ impl ClusterService for ClusterServer {
                 Ok(Response::new(GetNodesResponse { nodes: proto_nodes }))
             }
             Err(e) => {
+                synctv_core::metrics::grpc::GRPC_REQUESTS_TOTAL
+                    .with_label_values(&["cluster", "get_nodes", "error"])
+                    .inc();
                 tracing::error!("Failed to get nodes: {}", e);
-                Ok(Response::new(GetNodesResponse { nodes: Vec::new() }))
+                Err(Status::unavailable(e.to_string()))
             }
         }
     }
@@ -178,10 +184,7 @@ impl ClusterService for ClusterServer {
         &self,
         request: Request<DeregisterNodeRequest>,
     ) -> std::result::Result<Response<DeregisterNodeResponse>, Status> {
-        synctv_core::metrics::grpc::GRPC_REQUESTS_TOTAL
-            .with_label_values(&["cluster", "deregister_node", "ok"])
-            .inc();
-        let _timer = synctv_core::metrics::grpc::GRPC_REQUEST_DURATION
+        let timer = synctv_core::metrics::grpc::GRPC_REQUEST_DURATION
             .with_label_values(&["cluster", "deregister_node", "ok"])
             .start_timer();
         let req = request.into_inner();
@@ -211,6 +214,11 @@ impl ClusterService for ClusterServer {
             // Don't fail the response — best-effort cleanup, TTL will expire anyway
         }
 
+        timer.observe_duration();
+        synctv_core::metrics::grpc::GRPC_REQUESTS_TOTAL
+            .with_label_values(&["cluster", "deregister_node", "ok"])
+            .inc();
+
         tracing::info!(
             node_id = %req.node_id,
             epoch = req.epoch,
@@ -230,9 +238,6 @@ impl ClusterService for ClusterServer {
         &self,
         request: Request<GetUserOnlineStatusRequest>,
     ) -> std::result::Result<Response<GetUserOnlineStatusResponse>, Status> {
-        synctv_core::metrics::grpc::GRPC_REQUESTS_TOTAL
-            .with_label_values(&["cluster", "get_user_online_status", "ok"])
-            .inc();
         let _timer = synctv_core::metrics::grpc::GRPC_REQUEST_DURATION
             .with_label_values(&["cluster", "get_user_online_status", "ok"])
             .start_timer();
@@ -272,6 +277,10 @@ impl ClusterService for ClusterServer {
             })
             .collect();
 
+        synctv_core::metrics::grpc::GRPC_REQUESTS_TOTAL
+            .with_label_values(&["cluster", "get_user_online_status", "ok"])
+            .inc();
+
         Ok(Response::new(GetUserOnlineStatusResponse { statuses }))
     }
 
@@ -284,9 +293,6 @@ impl ClusterService for ClusterServer {
         &self,
         request: Request<GetRoomConnectionsRequest>,
     ) -> std::result::Result<Response<GetRoomConnectionsResponse>, Status> {
-        synctv_core::metrics::grpc::GRPC_REQUESTS_TOTAL
-            .with_label_values(&["cluster", "get_room_connections", "ok"])
-            .inc();
         let _timer = synctv_core::metrics::grpc::GRPC_REQUEST_DURATION
             .with_label_values(&["cluster", "get_room_connections", "ok"])
             .start_timer();
@@ -320,6 +326,10 @@ impl ClusterService for ClusterServer {
                 }
             })
             .collect();
+
+        synctv_core::metrics::grpc::GRPC_REQUESTS_TOTAL
+            .with_label_values(&["cluster", "get_room_connections", "ok"])
+            .inc();
 
         Ok(Response::new(GetRoomConnectionsResponse { connections }))
     }

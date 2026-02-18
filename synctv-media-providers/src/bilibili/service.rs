@@ -11,7 +11,7 @@ use crate::grpc::bilibili::{
     LoginWithQrCodeReq, LoginWithQrCodeResp, LoginWithSmsReq, LoginWithSmsResp, MatchReq,
     MatchResp, NewCaptchaResp, NewQrCodeResp, NewSmsReq, NewSmsResp, ParseLivePageReq,
     ParsePgcPageReq, ParseVideoPageReq, UserInfoReq, UserInfoResp, VideoInfo,
-    VideoPageInfo, VideoUrl,
+    VideoPageInfo, VideoSegment as ProtoVideoSegment, VideoUrl,
 };
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -183,6 +183,10 @@ impl BilibiliInterface for BilibiliService {
             accept_quality: url_info.accept_quality.into_iter().map(u64::from).collect(),
             current_quality: u64::from(url_info.current_quality),
             url: url_info.url,
+            segments: url_info.segments.into_iter().map(|s| ProtoVideoSegment {
+                url: s.url,
+                size: s.size,
+            }).collect(),
         })
     }
 
@@ -218,6 +222,10 @@ impl BilibiliInterface for BilibiliService {
             accept_quality: url_info.accept_quality.into_iter().map(u64::from).collect(),
             current_quality: u64::from(url_info.current_quality),
             url: url_info.url,
+            segments: url_info.segments.into_iter().map(|s| ProtoVideoSegment {
+                url: s.url,
+                size: s.size,
+            }).collect(),
         })
     }
 

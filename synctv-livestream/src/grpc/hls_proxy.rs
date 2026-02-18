@@ -234,6 +234,32 @@ impl HlsProxyClient {
         Ok(StreamRelayServiceClient::new(channel))
     }
 
+    /// Invalidate all cached segments and playlists for a given stream.
+    ///
+    /// Should be called when a publisher epoch changes (e.g., stream restarts)
+    /// to prevent serving stale TS segments from a previous publish session.
+    /// Without this, the 90s segment TTL could serve old data to viewers after
+    /// the publisher reconnects with new content.
+    pub async fn invalidate_stream_cache(&self, room_id: &str, media_id: &str) {
+        let prefix = format!("{room_id}:{media_id}:");
+        let playlist_key = format!("{room_id}:{media_id}");
+
+        // Invalidate playlist cache entry
+        self.playlist_cache.invalidate(&playlist_key).await;
+
+        // Invalidate all segment cache entries matching this stream prefix.
+        // moka's `invalidate_entries_if` allows predicate-based invalidation.
+        self.segment_cache
+            .invalidate_entries_if(move |key: &String, _| key.starts_with(&prefix))
+            .ok();
+
+        debug!(
+            room_id = room_id,
+            media_id = media_id,
+            "Invalidated HLS cache for stream"
+        );
+    }
+
     /// Attach cluster authentication secret to a gRPC request.
     fn attach_auth<T>(&self, request: &mut Request<T>) -> anyhow::Result<()> {
         if let Some(secret) = &self.cluster_secret {

@@ -68,6 +68,7 @@ async fn test_complete_registration_flow() {
         signup_method: Some(SignupMethod::Email),
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
+        password_changed_at: chrono::Utc::now(),
         deleted_at: None,
     };
 
@@ -130,6 +131,7 @@ async fn test_login_with_wrong_password() {
         signup_method: Some(SignupMethod::Email),
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
+        password_changed_at: chrono::Utc::now(),
         deleted_at: None,
     };
 
@@ -167,6 +169,7 @@ async fn test_login_unverified_user_rejected() {
         signup_method: Some(SignupMethod::Email),
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
+        password_changed_at: chrono::Utc::now(),
         deleted_at: None,
     };
 
@@ -238,6 +241,7 @@ async fn test_password_change_invalidates_tokens() {
         signup_method: Some(SignupMethod::Email),
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
+        password_changed_at: chrono::Utc::now(),
         deleted_at: None,
     };
 
@@ -298,6 +302,7 @@ async fn test_concurrent_login_attempts() {
         signup_method: Some(SignupMethod::Email),
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
+        password_changed_at: chrono::Utc::now(),
         deleted_at: None,
     };
 
@@ -359,6 +364,7 @@ async fn test_banned_user_login_rejected() {
         signup_method: Some(SignupMethod::Email),
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
+        password_changed_at: chrono::Utc::now(),
         deleted_at: None,
     };
 
@@ -398,6 +404,7 @@ async fn test_username_case_insensitive_login() {
         signup_method: Some(SignupMethod::Email),
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
+        password_changed_at: chrono::Utc::now(),
         deleted_at: None,
     };
 

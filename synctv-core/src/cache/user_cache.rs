@@ -9,7 +9,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::cache::tiered::{CacheKey, TieredCache, Timestamped};
-use crate::models::UserId;
+use crate::models::{UserId, UserRole, UserStatus};
 use crate::Result;
 
 // --- CacheKey implementation for UserId ---
@@ -34,8 +34,8 @@ pub struct UserCache {
 pub struct CachedUser {
     id: String,
     username: String,
-    role: String,  // UserRole as string (root, admin, user)
-    status: String,  // UserStatus as string (active, pending, banned)
+    role: UserRole,
+    status: UserStatus,
     created_at: chrono::DateTime<chrono::Utc>,
     /// Timestamp of last update - used to prevent stale data from overwriting fresh data
     updated_at: chrono::DateTime<chrono::Utc>,
@@ -47,8 +47,8 @@ impl CachedUser {
     pub fn new(
         id: String,
         username: String,
-        role: String,
-        status: String,
+        role: UserRole,
+        status: UserStatus,
         created_at: chrono::DateTime<chrono::Utc>,
     ) -> Self {
         Self {
@@ -66,12 +66,24 @@ impl CachedUser {
     pub fn with_updated_at(
         id: String,
         username: String,
-        role: String,
-        status: String,
+        role: UserRole,
+        status: UserStatus,
         created_at: chrono::DateTime<chrono::Utc>,
         updated_at: chrono::DateTime<chrono::Utc>,
     ) -> Self {
         Self { id, username, role, status, created_at, updated_at }
+    }
+
+    /// Get the user's role
+    #[must_use]
+    pub const fn role(&self) -> UserRole {
+        self.role
+    }
+
+    /// Get the user's status
+    #[must_use]
+    pub const fn status(&self) -> UserStatus {
+        self.status
     }
 
     /// Get the updated_at timestamp
@@ -188,8 +200,8 @@ mod tests {
         CachedUser {
             id: id.to_string(),
             username: username.to_string(),
-            role: "user".to_string(),
-            status: "active".to_string(),
+            role: UserRole::User,
+            status: UserStatus::Active,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
         }

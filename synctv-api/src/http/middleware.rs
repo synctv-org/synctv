@@ -433,6 +433,7 @@ pub async fn security_headers_middleware(
     request: Request,
     next: Next,
 ) -> Response {
+    let request_path = request.uri().path().to_string();
     let mut response = next.run(request).await;
 
     let headers = response.headers_mut();
@@ -511,18 +512,33 @@ pub async fn security_headers_middleware(
     }
 
     // Cache Control for API responses
-    // Prevents caching of sensitive API responses
+    // Use short cache for HLS/streaming paths to avoid breaking live playback;
+    // apply strict no-store for all other (sensitive) API responses.
+    let is_streaming_path = request_path.contains("/live/hls/")
+        || request_path.contains("/live/flv/")
+        || request_path.ends_with(".m3u8")
+        || request_path.ends_with(".ts")
+        || request_path.ends_with(".flv");
+
     if !headers.contains_key("Cache-Control") {
-        headers.insert(
-            axum::http::header::CACHE_CONTROL,
-            axum::http::HeaderValue::from_static(
-                "no-store, no-cache, must-revalidate, proxy-revalidate"
-            ),
-        );
+        if is_streaming_path {
+            // HLS segments and playlists need short caching for smooth playback
+            headers.insert(
+                axum::http::header::CACHE_CONTROL,
+                axum::http::HeaderValue::from_static("public, max-age=2"),
+            );
+        } else {
+            headers.insert(
+                axum::http::header::CACHE_CONTROL,
+                axum::http::HeaderValue::from_static(
+                    "no-store, no-cache, must-revalidate, proxy-revalidate"
+                ),
+            );
+        }
     }
 
-    // Pragma: no-cache (for HTTP/1.0 compatibility)
-    if !headers.contains_key("Pragma") {
+    // Pragma: no-cache (for HTTP/1.0 compatibility) -- skip for streaming paths
+    if !is_streaming_path && !headers.contains_key("Pragma") {
         headers.insert(
             PRAGMA.clone(),
             axum::http::HeaderValue::from_static("no-cache"),

@@ -77,7 +77,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let addr = std::env::var("PROVIDER_LISTEN_ADDR")
-        .unwrap_or_else(|_| "[::1]:50051".to_string())
+        .unwrap_or_else(|_| "[::]:50051".to_string())
         .parse()?;
 
     info!("Starting Provider gRPC server on {}", addr);
@@ -96,6 +96,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Starting Provider gRPC server with graceful shutdown support");
 
     Server::builder()
+        .max_frame_size(Some(4 * 1024 * 1024))
+        .concurrency_limit_per_connection(100)
         .add_service(AlistServer::with_interceptor(alist_service, move |req| {
             alist_auth.validate(req)
         }))

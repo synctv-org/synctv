@@ -630,7 +630,7 @@ async fn get_room_settings(
 }
 
 async fn set_room_settings(
-    _auth: AuthAdmin,
+    auth: AuthAdmin,
     State(state): State<AppState>,
     Path(room_id): Path<String>,
     Json(req): Json<serde_json::Value>,
@@ -640,7 +640,7 @@ async fn set_room_settings(
 
     let api = require_admin_api(&state)?;
     let resp = api
-        .update_room_settings(admin::UpdateRoomSettingsRequest { room_id, settings })
+        .update_room_settings(admin::UpdateRoomSettingsRequest { room_id, settings }, &auth.user_id)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))

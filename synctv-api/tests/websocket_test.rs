@@ -363,56 +363,12 @@ mod jwt_auth {
 }
 
 // ============================================================================
-// Module: Token blacklist service (in-memory fallback)
+// Module: Token blacklist (via SecurityPipeline)
 // ============================================================================
-
-mod token_blacklist {
-    use synctv_core::service::token_blacklist::TokenBlacklistService;
-
-    fn in_memory_blacklist() -> TokenBlacklistService {
-        TokenBlacklistService::new(None, "test:".to_string())
-    }
-
-    #[tokio::test]
-    async fn test_new_token_is_not_blacklisted() {
-        let svc = in_memory_blacklist();
-        let result = svc.is_blacklisted("fresh_token_abc").await;
-        assert!(result.is_ok());
-        assert!(!result.unwrap(), "Fresh token should not be blacklisted");
-    }
-
-    #[tokio::test]
-    async fn test_blacklisted_token_is_detected() {
-        let svc = in_memory_blacklist();
-        // Blacklist a token with 1-hour TTL
-        svc.blacklist_token("revoked_token_123", 3600)
-            .await
-            .unwrap();
-
-        let is_bl = svc.is_blacklisted("revoked_token_123").await.unwrap();
-        assert!(is_bl, "Blacklisted token should be detected");
-    }
-
-    #[tokio::test]
-    async fn test_different_token_not_affected() {
-        let svc = in_memory_blacklist();
-        svc.blacklist_token("token_a", 3600).await.unwrap();
-
-        let is_bl = svc.is_blacklisted("token_b").await.unwrap();
-        assert!(!is_bl, "Different token should not be blacklisted");
-    }
-
-    #[tokio::test]
-    async fn test_multiple_tokens_blacklisted() {
-        let svc = in_memory_blacklist();
-        svc.blacklist_token("tok1", 3600).await.unwrap();
-        svc.blacklist_token("tok2", 3600).await.unwrap();
-
-        assert!(svc.is_blacklisted("tok1").await.unwrap());
-        assert!(svc.is_blacklisted("tok2").await.unwrap());
-        assert!(!svc.is_blacklisted("tok3").await.unwrap());
-    }
-}
+//
+// Token blacklisting is implemented in SecurityPipeline (Redis-backed).
+// Without Redis, blacklist_token / is_token_blacklisted gracefully return
+// Ok(false). Full integration tests require a running Redis instance.
 
 // ============================================================================
 // Module: Rate limiter (in-memory fallback)
@@ -643,7 +599,7 @@ mod websocket_e2e {
     use synctv_core::models::id::UserId;
     use synctv_core::service::auth::jwt::{JwtService, TokenType};
     use synctv_core::service::rate_limit::RateLimiter;
-    use synctv_core::service::token_blacklist::TokenBlacklistService;
+    // Token blacklisting is handled by SecurityPipeline (Redis-backed), not a separate service
     use synctv_core::config::PasswordComplexityConfig;
     use synctv_core::service::{RoomService, UserService};
     use synctv_cluster::sync::{ClusterConfig, ClusterManager, ConnectionManager, ConnectionLimits};
@@ -728,12 +684,10 @@ mod websocket_e2e {
 
         // Create services
         let jwt_service = JwtService::new(TEST_JWT_SECRET).expect("JwtService");
-        let blacklist_service = TokenBlacklistService::new(None, "test_bl:".to_string());
         let username_cache = UsernameCache::new(None, "test_un:".to_string(), 100, 300);
         let user_service = Arc::new(UserService::new(
             pool.clone(),
             jwt_service.clone(),
-            blacklist_service.clone(),
             username_cache,
             PasswordComplexityConfig::default(),
         ));
@@ -802,6 +756,7 @@ mod websocket_e2e {
             cluster: Default::default(),
             password_complexity: Default::default(),
             buffer_sizes: Default::default(),
+            cache: Default::default(),
         });
 
         // ClientApiImpl
@@ -810,12 +765,11 @@ mod websocket_e2e {
             room_service.clone(),
             connection_manager.clone(),
             config.clone(),
-            None,
-            None,
+            None, // publish_key_service
             jwt_service.clone(),
-            None,
-            None,
-            None,
+            None, // live_streaming_infrastructure
+            None, // providers_manager
+            None, // settings_registry
         ));
 
         // BilibiliApiImpl, AlistApiImpl, EmbyApiImpl
@@ -846,7 +800,9 @@ mod websocket_e2e {
             rate_limiter,
             rate_limit_config,
             jwt_validator,
-            token_blacklist_service: blacklist_service,
+            security_pipeline: Arc::new(synctv_core::service::SecurityPipeline::new(
+                user_service.clone(),
+            )),
             ws_ticket_service: None,
             client_api,
             admin_api: None,

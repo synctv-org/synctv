@@ -48,10 +48,10 @@ use crate::impls::ApiError;
 
 /// Validate a password that is being **set** (create room, set password, update settings).
 fn validate_password_for_set(password: &str) -> Result<(), ApiError> {
-    if password.len() < ROOM_PASSWORD_MIN {
+    if password.chars().count() < ROOM_PASSWORD_MIN {
         return Err(ApiError::InvalidInput(format!("Password too short (minimum {ROOM_PASSWORD_MIN} characters)")));
     }
-    if password.len() > ROOM_PASSWORD_MAX {
+    if password.chars().count() > ROOM_PASSWORD_MAX {
         return Err(ApiError::InvalidInput(format!("Password too long (maximum {ROOM_PASSWORD_MAX} characters)")));
     }
     Ok(())
@@ -59,7 +59,7 @@ fn validate_password_for_set(password: &str) -> Result<(), ApiError> {
 
 /// Validate a password that is being **verified** (join room, check password).
 fn validate_password_for_verify(password: &str) -> Result<(), ApiError> {
-    if password.len() > ROOM_PASSWORD_MAX {
+    if password.chars().count() > ROOM_PASSWORD_MAX {
         return Err(ApiError::InvalidInput(format!("Password too long (maximum {ROOM_PASSWORD_MAX} characters)")));
     }
     Ok(())
@@ -97,6 +97,8 @@ pub struct ClientApiImpl {
     pub redis_conn: Option<redis::aio::ConnectionManager>,
     /// Rate limiter for per-endpoint rate limiting (password checks, etc.)
     pub rate_limiter: Option<synctv_core::service::rate_limit::RateLimiter>,
+    /// Security pipeline for token blacklisting on logout
+    pub security_pipeline: Option<Arc<synctv_core::service::SecurityPipeline>>,
 }
 
 impl ClientApiImpl {
@@ -129,6 +131,7 @@ impl ClientApiImpl {
             redis_publish_tx: None,
             redis_conn: None,
             rate_limiter: None,
+            security_pipeline: None,
         }
     }
 
@@ -148,6 +151,7 @@ impl ClientApiImpl {
             redis_publish_tx: None,
             redis_conn: None,
             rate_limiter: None,
+            security_pipeline: None,
         }
     }
 
@@ -169,6 +173,13 @@ impl ClientApiImpl {
     #[must_use]
     pub fn with_rate_limiter(mut self, rate_limiter: synctv_core::service::rate_limit::RateLimiter) -> Self {
         self.rate_limiter = Some(rate_limiter);
+        self
+    }
+
+    /// Set the security pipeline for token blacklisting on logout
+    #[must_use]
+    pub fn with_security_pipeline(mut self, pipeline: Arc<synctv_core::service::SecurityPipeline>) -> Self {
+        self.security_pipeline = Some(pipeline);
         self
     }
 

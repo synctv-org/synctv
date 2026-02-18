@@ -211,6 +211,9 @@ pub struct ProtectedCache {
     /// When true, `check_exists` and `check_exists_quick` bypass the bloom filter
     /// (return "might exist") to avoid false negatives causing a thundering herd.
     rebuilding: Arc<AtomicBool>,
+    /// Timestamp of the last reset, used to maintain a grace period during which
+    /// the bloom filter bypass remains active to allow organic re-warming.
+    last_reset_at: Arc<tokio::sync::RwLock<Option<std::time::Instant>>>,
 }
 
 /// Default null cache TTL (5 minutes)
@@ -234,6 +237,7 @@ impl ProtectedCache {
             shutdown: Arc::new(tokio::sync::Notify::new()),
             background_task: Arc::new(tokio::sync::Mutex::new(None)),
             rebuilding: Arc::new(AtomicBool::new(false)),
+            last_reset_at: Arc::new(tokio::sync::RwLock::new(None)),
         }
     }
 
@@ -261,11 +265,17 @@ impl ProtectedCache {
     /// cache.start_periodic_reset(Duration::from_secs(24 * 3600)).await;
     /// # };
     /// ```
+    /// Grace period after a bloom filter reset during which the rebuilding
+    /// bypass remains active. This allows the filter to organically re-warm
+    /// through normal traffic before it starts rejecting unknown keys.
+    const REBUILD_GRACE_PERIOD: std::time::Duration = std::time::Duration::from_secs(30);
+
     pub async fn start_periodic_reset(&self, reset_interval: std::time::Duration) {
         let bloom_filter = self.bloom_filter.clone();
         let null_cache = self.null_cache.clone();
         let shutdown = self.shutdown.clone();
         let rebuilding = self.rebuilding.clone();
+        let last_reset_at = self.last_reset_at.clone();
 
         let task = crate::spawn::spawn_monitored("bloom_filter_reset", async move {
             let mut interval = tokio::time::interval(reset_interval);
@@ -280,6 +290,9 @@ impl ProtectedCache {
                         // instead of getting false negatives from an empty filter
                         rebuilding.store(true, Ordering::Release);
 
+                        // Record reset timestamp for grace period tracking
+                        *last_reset_at.write().await = Some(std::time::Instant::now());
+
                         // Clear Bloom filter
                         bloom_filter.clear().await;
 
@@ -287,10 +300,15 @@ impl ProtectedCache {
                         null_cache.invalidate_all();
                         null_cache.run_pending_tasks();
 
-                        // Clear rebuilding flag -- bloom filter is ready for use
-                        rebuilding.store(false, Ordering::Release);
+                        tracing::info!("Periodic Bloom filter reset completed, grace period active for {}s",
+                            Self::REBUILD_GRACE_PERIOD.as_secs());
 
-                        tracing::info!("Periodic Bloom filter reset completed");
+                        // Keep rebuilding=true for the grace period to allow
+                        // organic re-warming before the bloom filter is trusted again.
+                        tokio::time::sleep(Self::REBUILD_GRACE_PERIOD).await;
+
+                        rebuilding.store(false, Ordering::Release);
+                        tracing::info!("Bloom filter rebuild grace period ended, filter active");
                     }
                     _ = shutdown.notified() => {
                         tracing::debug!("Bloom filter reset task shutting down");

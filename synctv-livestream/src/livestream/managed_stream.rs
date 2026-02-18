@@ -244,7 +244,11 @@ impl<S: ManagedStream> StreamPool<S> {
 
     /// Try to reuse an existing healthy stream (fast path, no lock).
     ///
-    /// Increments subscriber count and updates last-active if found.
+    /// **Subscriber count contract**: If this returns `Some`, the subscriber count
+    /// has already been incremented exactly once. The caller MUST NOT increment
+    /// again -- and MUST eventually call `decrement_subscriber_count()` once when
+    /// the viewer disconnects.
+    ///
     /// Returns `None` and removes the unhealthy entry if the stream is stale.
     pub async fn get_existing(&self, stream_key: &str) -> Option<Arc<S>> {
         if let Some(stream) = self.streams.get(stream_key) {

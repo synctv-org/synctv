@@ -10,8 +10,16 @@ use crate::proto::client::{RegisterRequest, RegisterResponse, LoginRequest, Logi
 /// Register a new user
 pub async fn register(
     State(state): State<AppState>,
-    Json(req): Json<RegisterRequest>,
+    Json(mut req): Json<RegisterRequest>,
 ) -> AppResult<Json<RegisterResponse>> {
+    // Validate and sanitize username
+    req.username = super::validation::validate_username(&req.username)
+        .map_err(|e| super::AppError::bad_request(e.to_string()))?;
+
+    // Validate password strength
+    super::validation::validate_password(&req.password)
+        .map_err(|e| super::AppError::bad_request(e.to_string()))?;
+
     let response = state
         .client_api
         .register(req)

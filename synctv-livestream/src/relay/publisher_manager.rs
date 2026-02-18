@@ -209,7 +209,18 @@ impl PublisherManager {
     /// on registration failures.
     async fn handle_broadcast_event(&self, event: synctv_xiu::streamhub::define::BroadcastEvent) -> anyhow::Result<()> {
         match event {
-            synctv_xiu::streamhub::define::BroadcastEvent::Publish { identifier, .. } => {
+            synctv_xiu::streamhub::define::BroadcastEvent::Publish { identifier, pub_type } => {
+                // Only track local RTMP push publishers for heartbeat management.
+                // Remote relay streams (RtmpRelay) are managed by their origin node;
+                // tracking them here would create duplicate heartbeats and incorrect
+                // cleanup on unpublish.
+                if pub_type == synctv_xiu::streamhub::define::PublishType::RtmpRelay {
+                    debug!(
+                        identifier = ?identifier,
+                        "Ignoring relay publish event for heartbeat tracking"
+                    );
+                    return Ok(());
+                }
                 if let Err(e) = self.handle_publish(identifier.clone()).await {
                     error!(
                         error = %e,

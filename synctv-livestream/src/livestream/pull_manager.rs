@@ -126,10 +126,29 @@ impl PullStreamManager {
         }
     }
 
+    /// Stop all managed pull streams, aborting their tasks and clearing the pool.
+    ///
+    /// Called during StreamHub restart to ensure zombie streams (still connected
+    /// to the old hub instance) are cleaned up before the new hub starts.
+    pub async fn stop_all(&self) {
+        self.pool.stop_all().await;
+    }
+
     /// Lazy-load: Get or create pull stream (only triggered by client FLV request)
     ///
     /// Uses double-checked locking to prevent duplicate pull streams for the same key
     /// when multiple viewers request the same stream concurrently.
+    ///
+    /// ## Subscriber count contract
+    ///
+    /// Each call to this method increments the subscriber count exactly once,
+    /// regardless of which path is taken (fast-path reuse, post-lock reuse, or
+    /// creation). The caller is responsible for calling `decrement_subscriber_count()`
+    /// exactly once when the viewer disconnects (typically via `StreamSubscriberGuard`).
+    ///
+    /// - **Fast path** (existing healthy stream): `pool.get_existing()` increments.
+    /// - **Post-lock reuse** (concurrent creation won): `pool.get_existing()` increments.
+    /// - **Creation path** (new stream): explicit `increment_subscriber_count()`.
     pub async fn get_or_create_pull_stream(
         &self,
         room_id: &str,
@@ -137,7 +156,7 @@ impl PullStreamManager {
     ) -> StreamResult<Arc<PullStream>> {
         let stream_key = format!("{room_id}:{media_id}");
 
-        // Fast path: Check if healthy pull stream already exists (no lock needed)
+        // Fast path: reuse healthy stream. get_existing() increments subscriber count.
         if let Some(stream) = self.pool.get_existing(&stream_key).await {
             debug!(
                 "Reusing existing pull stream for {}/{}, subscribers: {}",
@@ -151,7 +170,7 @@ impl PullStreamManager {
         // Acquire per-key creation lock
         let _guard = self.pool.acquire_creation_lock(&stream_key).await;
 
-        // Re-check after acquiring lock
+        // Re-check after acquiring lock. get_existing() increments subscriber count.
         if let Some(stream) = self.pool.get_existing(&stream_key).await {
             debug!(
                 "Reusing pull stream created by concurrent request for {}/{}",
@@ -231,7 +250,8 @@ impl PullStreamManager {
         // Start pull stream (connects via gRPC to publisher)
         pull_stream.start().await?;
 
-        // Initial subscriber
+        // Creation path: increment subscriber count exactly once for the viewer
+        // that triggered creation. (Reuse paths increment inside get_existing().)
         pull_stream.lifecycle().increment_subscriber_count();
 
         // Store in pool with idle cleanup - send UnPublish to StreamHub on cleanup

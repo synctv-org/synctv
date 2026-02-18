@@ -88,12 +88,30 @@ impl ExternalPublishManager {
         }
     }
 
+    /// Stop all managed external publish streams, aborting their tasks and clearing the pool.
+    ///
+    /// Called during StreamHub restart to ensure zombie streams (still connected
+    /// to the old hub instance) are cleaned up before the new hub starts.
+    pub async fn stop_all(&self) {
+        self.pool.stop_all().await;
+    }
+
     /// Get or create an external publish stream.
     ///
     /// If a healthy stream already exists for this `(room_id, media_id)` pair,
     /// the subscriber count is incremented and the existing stream is returned.
     /// Otherwise a new `ExternalStreamPuller` is spawned and the stream is
     /// registered as a publisher in Redis.
+    ///
+    /// ## Subscriber count contract
+    ///
+    /// Each call increments the subscriber count exactly once, regardless of
+    /// which path is taken (fast-path reuse, post-lock reuse, or creation).
+    /// The caller MUST call `decrement_subscriber_count()` exactly once when
+    /// the viewer disconnects (typically via `StreamSubscriberGuard`).
+    ///
+    /// - **Fast path / post-lock reuse**: `pool.get_existing()` increments.
+    /// - **Creation path**: explicit `increment_subscriber_count()`.
     pub async fn get_or_create(
         &self,
         room_id: &str,
@@ -102,7 +120,7 @@ impl ExternalPublishManager {
     ) -> StreamResult<Arc<ExternalPublishStream>> {
         let stream_key = format!("{room_id}:{media_id}");
 
-        // Fast path: Reuse healthy existing stream (no lock needed)
+        // Fast path: reuse healthy stream. get_existing() increments subscriber count.
         if let Some(stream) = self.pool.get_existing(&stream_key).await {
             return Ok(stream);
         }
@@ -110,7 +128,7 @@ impl ExternalPublishManager {
         // Acquire per-key creation lock
         let _guard = self.pool.acquire_creation_lock(&stream_key).await;
 
-        // Re-check after acquiring lock
+        // Re-check after lock. get_existing() increments subscriber count.
         if let Some(stream) = self.pool.get_existing(&stream_key).await {
             debug!(
                 "Reusing external publish stream created by concurrent request for {}/{}",
@@ -158,6 +176,8 @@ impl ExternalPublishManager {
             return Err(e);
         }
 
+        // Creation path: increment subscriber count exactly once for the viewer
+        // that triggered creation. (Reuse paths increment inside get_existing().)
         stream.lifecycle().increment_subscriber_count();
 
         // Spawn idle-cleanup task with Redis unregistration hook
@@ -339,8 +359,29 @@ impl ExternalPublishStream {
                 app_name: self.room_id.clone(),
                 stream_name: self.media_id.clone(),
             };
-            if let Err(e) = self.stream_hub_event_sender.try_send(StreamHubEvent::UnPublish { identifier }) {
-                warn!("Failed to send UnPublish for {}/{}: {}", self.room_id, self.media_id, e);
+            let room_id = self.room_id.clone();
+            let media_id = self.media_id.clone();
+            match self.stream_hub_event_sender.try_send(StreamHubEvent::UnPublish { identifier }) {
+                Ok(()) => {}
+                Err(tokio::sync::mpsc::error::TrySendError::Full(event)) => {
+                    // Channel full -- spawn async task to retry so UnPublish is not silently lost.
+                    let sender = self.stream_hub_event_sender.clone();
+                    warn!(
+                        "ExternalPublishStream stop: channel full, spawning async UnPublish for {}/{}",
+                        room_id, media_id
+                    );
+                    tokio::spawn(async move {
+                        if let Err(e) = sender.send(event).await {
+                            warn!(
+                                "ExternalPublishStream stop: async UnPublish failed for {}/{}: {}",
+                                room_id, media_id, e
+                            );
+                        }
+                    });
+                }
+                Err(e) => {
+                    warn!("Failed to send UnPublish for {}/{}: {}", room_id, media_id, e);
+                }
             }
         }
 

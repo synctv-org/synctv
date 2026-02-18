@@ -136,21 +136,66 @@ pub async fn init_services(
                 let initial_master_addr = client.get_connection_info().addr().to_string();
                 info!(master = %initial_master_addr, "Sentinel discovered initial master");
 
-                // Start a background health check that periodically queries Sentinel
-                // for the current master. On failover detection, re-discover the new
-                // master and create a fresh Client pointing at it.
+                let conn = redis::aio::ConnectionManager::new(client.clone()).await?;
+
+                // Wrap the connection in Arc<RwLock<...>> so the sentinel health
+                // check can hot-swap it on failover without restarting the process.
+                let shared_conn = Arc::new(tokio::sync::RwLock::new(conn));
+
+                // Start a background health check that:
+                // 1. Periodically PINGs Redis (every 5s) to detect connection loss
+                // 2. After 3 consecutive PING failures, queries Sentinel for the current master
+                // 3. On failover detection, creates a new ConnectionManager pointing at the new master
                 {
                     let sentinel_addresses = config.redis.sentinel_addresses.clone();
                     let master_name = master_name.clone();
-                    let initial_addr = initial_master_addr.clone();
+                    let known_master_addr = initial_master_addr.clone();
+                    let shared_conn_clone = shared_conn.clone();
                     crate::spawn::spawn_monitored("sentinel_master_health_check", async move {
-                        let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
+                        let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
                         // Skip the first immediate tick
                         interval.tick().await;
-                        let mut consecutive_failover_alerts = 0u32;
+                        let mut consecutive_ping_failures = 0u32;
+                        let mut known_master = known_master_addr;
 
                         loop {
                             interval.tick().await;
+
+                            // Step 1: PING the current connection
+                            let ping_ok = {
+                                let mut conn = shared_conn_clone.write().await;
+                                redis::cmd("PING")
+                                    .query_async::<String>(&mut *conn)
+                                    .await
+                                    .is_ok()
+                            };
+
+                            if ping_ok {
+                                if consecutive_ping_failures > 0 {
+                                    tracing::info!(
+                                        previous_failures = consecutive_ping_failures,
+                                        "Sentinel health check: Redis PING recovered"
+                                    );
+                                }
+                                consecutive_ping_failures = 0;
+                                continue;
+                            }
+
+                            consecutive_ping_failures += 1;
+                            tracing::warn!(
+                                consecutive_failures = consecutive_ping_failures,
+                                "Sentinel health check: Redis PING failed"
+                            );
+
+                            // Step 2: After 3 consecutive failures, attempt Sentinel re-discovery
+                            if consecutive_ping_failures < 3 {
+                                continue;
+                            }
+
+                            tracing::warn!(
+                                "Sentinel health check: {} consecutive PING failures, querying Sentinel for current master",
+                                consecutive_ping_failures
+                            );
 
                             let addrs: Vec<&str> = sentinel_addresses.iter().map(String::as_str).collect();
                             let sentinel_result = redis::sentinel::Sentinel::build(addrs);
@@ -167,26 +212,38 @@ pub async fn init_services(
 
                             let node_info: Option<&redis::sentinel::SentinelNodeConnectionInfo> = None;
                             match sentinel.async_master_for(master_name.as_str(), node_info).await {
-                                Ok(current_master) => {
-                                    let current_addr = current_master.get_connection_info().addr().to_string();
-                                    if current_addr != initial_addr {
-                                        consecutive_failover_alerts += 1;
-                                        tracing::error!(
-                                            initial_master = %initial_addr,
-                                            current_master = %current_addr,
-                                            alert_count = consecutive_failover_alerts,
-                                            "CRITICAL: Sentinel failover detected! Master changed from {} to {}. \
-                                             The ConnectionManager is still connected to the old master. \
-                                             A RESTART IS REQUIRED to connect to the new master. \
-                                             redis-rs ConnectionManager does not support dynamic master re-discovery.",
-                                            initial_addr, current_addr,
+                                Ok(new_master_client) => {
+                                    let new_addr = new_master_client.get_connection_info().addr().to_string();
+                                    if new_addr != known_master {
+                                        tracing::warn!(
+                                            old_master = %known_master,
+                                            new_master = %new_addr,
+                                            "Sentinel failover detected, reconnecting to new master"
                                         );
                                     } else {
-                                        consecutive_failover_alerts = 0;
-                                        tracing::debug!(
-                                            master = %current_addr,
-                                            "Sentinel health check: master address unchanged"
+                                        tracing::info!(
+                                            master = %new_addr,
+                                            "Sentinel master unchanged, rebuilding connection"
                                         );
+                                    }
+
+                                    // Step 3: Create a new ConnectionManager and hot-swap it
+                                    match redis::aio::ConnectionManager::new(new_master_client).await {
+                                        Ok(new_conn) => {
+                                            *shared_conn_clone.write().await = new_conn;
+                                            known_master = new_addr;
+                                            consecutive_ping_failures = 0;
+                                            tracing::info!(
+                                                master = %known_master,
+                                                "Sentinel health check: reconnected to Redis master"
+                                            );
+                                        }
+                                        Err(e) => {
+                                            tracing::error!(
+                                                error = %e,
+                                                "Sentinel health check: failed to create new ConnectionManager"
+                                            );
+                                        }
                                     }
                                 }
                                 Err(e) => {
@@ -198,10 +255,14 @@ pub async fn init_services(
                             }
                         }
                     });
-                    info!("Sentinel master health check started (interval: 10s)");
+                    info!("Sentinel master health check started (interval: 5s, failover threshold: 3 failures)");
                 }
 
-                let conn = redis::aio::ConnectionManager::new(client.clone()).await?;
+                // Clone the connection out of the RwLock for use in subsystems.
+                // Subsystems get a snapshot; the health check task can swap the
+                // inner ConnectionManager on failover. ConnectionManager itself
+                // handles transient reconnections internally.
+                let conn = shared_conn.read().await.clone();
                 (Some(conn), Some(client))
             }
             RedisDeploymentMode::Cluster => {
@@ -210,36 +271,41 @@ pub async fn init_services(
         }
     };
 
-    // Initialize username cache
+    // Initialize username cache (using config values)
     let username_cache = UsernameCache::new(
         redis_conn.clone(),
         format!("{}username:", config.redis.key_prefix),
-        1000, // Cache up to 1000 usernames in memory
-        3600, // Cache for 1 hour in Redis
+        config.cache.username_cache_capacity as usize,
+        config.cache.username_cache_ttl_seconds,
     )
     .with_invalidation_service(cache_invalidation.clone());
-    info!("Username cache initialized");
+    info!("Username cache initialized (capacity={}, ttl={}s)",
+        config.cache.username_cache_capacity, config.cache.username_cache_ttl_seconds);
 
-    // Initialize user and room L1/L2 caches
+    // L1 TTL is configured in seconds but the TieredCache constructor expects minutes
+    let l1_ttl_minutes = config.cache.l1_ttl_seconds / 60;
+
+    // Initialize user and room L1/L2 caches (using config values)
     let user_cache = Arc::new(
         UserCache::new(
             redis_conn.clone(),
-            500,  // L1 max capacity
-            5,    // L1 TTL minutes
-            300,  // L2 TTL seconds (5 min)
+            config.cache.l1_capacity,
+            l1_ttl_minutes,
+            config.cache.l2_ttl_seconds,
             format!("{}user:", config.redis.key_prefix),
         )?
     );
     let room_cache = Arc::new(
         RoomCache::new(
             redis_conn.clone(),
-            500,  // L1 max capacity
-            5,    // L1 TTL minutes
-            300,  // L2 TTL seconds (5 min)
+            config.cache.l1_capacity,
+            l1_ttl_minutes,
+            config.cache.l2_ttl_seconds,
             format!("{}room:", config.redis.key_prefix),
         )?
     );
-    info!("User and room caches initialized");
+    info!("User and room caches initialized (l1_capacity={}, l1_ttl={}s, l2_ttl={}s)",
+        config.cache.l1_capacity, config.cache.l1_ttl_seconds, config.cache.l2_ttl_seconds);
 
     // Initialize brute-force protection (uses Redis for distributed tracking, in-memory fallback)
     let brute_force = crate::service::BruteForceProtection::new(

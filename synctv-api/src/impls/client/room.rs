@@ -601,10 +601,12 @@ impl ClientApiImpl {
         };
 
         // Query for active, non-banned rooms.
-        // Fetch a large page so sorting by online count is accurate even for
-        // deployments with many rooms.
+        // Fetch a bounded set (4x the requested limit, capped at 200) to reduce DB
+        // and memory overhead while still providing a reasonable candidate pool for
+        // sorting by online count.
+        let fetch_limit = ((limit as u32) * 4).min(200);
         let query = synctv_core::models::RoomListQuery {
-            pagination: synctv_core::models::PageParams::new(Some(1), Some(500)),
+            pagination: synctv_core::models::PageParams::new(Some(1), Some(fetch_limit)),
             search: None,
             status: Some(synctv_core::models::RoomStatus::Active),
             is_banned: Some(false),
@@ -685,7 +687,12 @@ impl ClientApiImpl {
             .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
 
         let limit = req.limit.clamp(1, 100);
-        let messages = self.room_service.get_chat_history(&rid, None, limit).await
+        let before = if req.before > 0 {
+            chrono::DateTime::from_timestamp(req.before, 0)
+        } else {
+            None
+        };
+        let messages = self.room_service.get_chat_history(&rid, before, limit).await
             .map_err(ApiError::from)?;
 
         // Collect unique user IDs to batch fetch usernames

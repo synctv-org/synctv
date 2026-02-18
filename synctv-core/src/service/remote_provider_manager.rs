@@ -586,6 +586,38 @@ impl RemoteProviderManager {
         Ok(())
     }
 
+    /// Reconnect a provider instance atomically.
+    ///
+    /// Invalidates the cached channel and re-creates it from the current DB
+    /// config. If the re-creation fails, the instance remains disabled so
+    /// callers observe a consistent state rather than a half-connected instance.
+    pub async fn reconnect(&self, name: &str) -> crate::Result<()> {
+        // Invalidate the cached channel first
+        self.channel_cache.invalidate(name).await;
+
+        // Reload config from DB and create a fresh channel
+        let config = self
+            .repository
+            .get_by_name(name)
+            .await?
+            .ok_or_else(|| crate::Error::NotFound(format!("Instance '{name}' not found")))?;
+
+        if !config.enabled {
+            return Err(crate::Error::InvalidInput(format!(
+                "Instance '{name}' is disabled; enable it before reconnecting"
+            )));
+        }
+
+        let channel = Self::create_grpc_channel(&config).await?;
+        self.channel_cache.insert(config.name.clone(), channel).await;
+
+        // Notify other replicas
+        self.notify_change(name).await;
+
+        tracing::info!("Reconnected provider instance: {}", name);
+        Ok(())
+    }
+
     /// Health check all remote instances
     ///
     /// Returns a map of instance name to health status.

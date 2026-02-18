@@ -39,6 +39,8 @@ pub struct ClusterConfig {
     /// Capacity for the normal-priority Redis publish channel.
     /// Normal events are dropped with warning when full.
     pub publish_channel_capacity: usize,
+    /// Key prefix for Redis keys and pub/sub channels (e.g., "synctv:")
+    pub key_prefix: String,
 }
 
 impl Default for ClusterConfig {
@@ -50,6 +52,7 @@ impl Default for ClusterConfig {
             cleanup_interval: Duration::from_secs(30),
             critical_channel_capacity: 1000,
             publish_channel_capacity: 10_000,
+            key_prefix: "synctv:".to_string(),
         }
     }
 }
@@ -126,10 +129,11 @@ impl ClusterManager {
             (None, None, None)
         } else {
             let redis_pubsub = Arc::new(
-                RedisPubSub::new(
+                RedisPubSub::with_key_prefix(
                     &config.redis_url,
                     message_hub.clone(),
                     config.node_id.clone(),
+                    &config.key_prefix,
                     admin_event_tx.clone(),
                     permission_service,
                     cache_invalidation,
@@ -590,6 +594,7 @@ mod tests {
             cleanup_interval: Duration::from_secs(1),
             critical_channel_capacity: 1000,
             publish_channel_capacity: 10_000,
+            key_prefix: "synctv:".to_string(),
         };
 
         let manager = ClusterManager::new(config, None, None).await.unwrap();
@@ -641,6 +646,7 @@ mod tests {
             cleanup_interval: Duration::from_secs(1),
             critical_channel_capacity: 1000,
             publish_channel_capacity: 10_000,
+            key_prefix: "synctv:".to_string(),
         };
 
         let manager = ClusterManager::new(config, None, None).await.unwrap();
@@ -681,6 +687,7 @@ mod tests {
             cleanup_interval: Duration::from_secs(1),
             critical_channel_capacity: 1000,
             publish_channel_capacity: 10_000,
+            key_prefix: "synctv:".to_string(),
         };
 
         let manager = ClusterManager::new(config, None, None).await.unwrap();

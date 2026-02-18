@@ -144,6 +144,15 @@ impl AdminApiImpl {
         let (rooms, total) = self.room_service.list_rooms(&query).await
             .map_err(ApiError::from)?;
 
+        // Batch-fetch creator usernames for all rooms
+        let creator_ids: Vec<synctv_core::models::UserId> = rooms
+            .iter()
+            .map(|r| r.created_by.clone())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        let username_map = self.user_service.get_usernames(&creator_ids).await.unwrap_or_default();
+
         let room_list: Vec<_> = rooms
             .into_iter()
             .map(|r| {
@@ -153,7 +162,8 @@ impl AdminApiImpl {
                     .room_connection_count(&r.id)
                     .try_into()
                     .ok();
-                admin_room_to_proto(&r, None, member_count)
+                let creator_username = username_map.get(&r.created_by).map(String::as_str);
+                admin_room_to_proto(&r, None, member_count, creator_username)
             })
             .collect();
 
@@ -170,6 +180,11 @@ impl AdminApiImpl {
         let rid = RoomId::from_string(req.room_id);
         let room = self.room_service.get_room(&rid).await
             .map_err(ApiError::from)?;
+        let creator_username = self.user_service
+            .get_usernames(&[room.created_by.clone()])
+            .await
+            .ok()
+            .and_then(|m| m.into_values().next());
 
         Ok(crate::proto::admin::GetRoomResponse {
             room: Some(admin_room_to_proto(
@@ -179,6 +194,7 @@ impl AdminApiImpl {
                     .room_connection_count(&room.id)
                     .try_into()
                     .ok(),
+                creator_username.as_deref(),
             )),
         })
     }
@@ -199,7 +215,7 @@ impl AdminApiImpl {
                 event: ClusterEvent::RoomDeleted {
                     event_id: nanoid::nanoid!(16),
                     room_id: rid.clone(),
-                    deleted_by: UserId::from_string("admin".to_string()),
+                    deleted_by: admin_user_id.clone(),
                     timestamp: chrono::Utc::now(),
                 },
             });
@@ -358,10 +374,10 @@ impl AdminApiImpl {
         caller_role: synctv_core::models::UserRole,
     ) -> Result<crate::proto::admin::UpdateUserPasswordResponse, ApiError> {
         use crate::http::validation::limits::{PASSWORD_MIN, PASSWORD_MAX};
-        if req.new_password.len() < PASSWORD_MIN {
+        if req.new_password.chars().count() < PASSWORD_MIN {
             return Err(ApiError::InvalidInput(format!("Password must be at least {PASSWORD_MIN} characters")));
         }
-        if req.new_password.len() > PASSWORD_MAX {
+        if req.new_password.chars().count() > PASSWORD_MAX {
             return Err(ApiError::InvalidInput(format!("Password must be at most {PASSWORD_MAX} characters")));
         }
 
@@ -641,10 +657,8 @@ impl AdminApiImpl {
         &self,
         req: crate::proto::admin::ReconnectProviderInstanceRequest,
     ) -> Result<crate::proto::admin::ReconnectProviderInstanceResponse, ApiError> {
-        // Disable then enable to force reconnect
-        self.provider_instance_manager.disable(&req.name).await
-            .map_err(ApiError::from)?;
-        self.provider_instance_manager.enable(&req.name).await
+        // Atomic reconnect: invalidate cached channel and re-create from DB config
+        self.provider_instance_manager.reconnect(&req.name).await
             .map_err(ApiError::from)?;
 
         // Get updated instance
@@ -708,12 +722,12 @@ impl AdminApiImpl {
             return Err(ApiError::InvalidInput("Username, password, and email are required".to_string()));
         }
 
-        // Validate password length using shared constants
+        // Validate password length using shared constants (chars().count() for multi-byte safety)
         use crate::http::validation::limits::{PASSWORD_MIN, PASSWORD_MAX};
-        if req.password.len() < PASSWORD_MIN {
+        if req.password.chars().count() < PASSWORD_MIN {
             return Err(ApiError::InvalidInput(format!("Password must be at least {PASSWORD_MIN} characters")));
         }
-        if req.password.len() > PASSWORD_MAX {
+        if req.password.chars().count() > PASSWORD_MAX {
             return Err(ApiError::InvalidInput(format!("Password must be at most {PASSWORD_MAX} characters")));
         }
 
@@ -731,62 +745,17 @@ impl AdminApiImpl {
             None
         };
 
-        // Hash password before entering the transaction
-        let password_hash = synctv_core::service::hash_password(&req.password)
+        // Delegate to UserService which handles validation, hashing, creation,
+        // and username cache population atomically.
+        let user = self.user_service
+            .create_user_with_role(
+                req.username.clone(),
+                Some(req.email.clone()),
+                req.password,
+                target_role,
+            )
             .await
             .map_err(ApiError::from)?;
-
-        // Build user model with the correct role set from the start, avoiding
-        // the previous two-step register-then-update inconsistency window.
-        let mut new_user = synctv_core::models::User::new(
-            req.username.clone(),
-            Some(req.email.clone()),
-            password_hash,
-            Some(synctv_core::models::SignupMethod::Email),
-        );
-        if let Some(role) = target_role {
-            new_user.role = role;
-        }
-
-        // Insert user in a single transaction with the correct role already set.
-        let pool = self.user_service.pool();
-        let mut tx = pool.begin().await.map_err(ApiError::from)?;
-        let user = match sqlx::query_as::<_, synctv_core::models::User>(
-            r"
-            INSERT INTO users (id, username, email, password_hash, signup_method, role, status, email_verified, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-            RETURNING id, username, email, password_hash, signup_method, role, status, created_at, updated_at, deleted_at, email_verified
-            ",
-        )
-        .bind(new_user.id.as_str())
-        .bind(&new_user.username)
-        .bind(new_user.email.as_ref())
-        .bind(&new_user.password_hash)
-        .bind(new_user.signup_method.map(|m| m.as_str()))
-        .bind(new_user.role)
-        .bind(new_user.status)
-        .bind(new_user.email_verified)
-        .bind(new_user.created_at)
-        .bind(new_user.updated_at)
-        .fetch_one(&mut *tx)
-        .await {
-            Ok(user) => {
-                tx.commit().await.map_err(ApiError::from)?;
-                user
-            }
-            Err(sqlx::Error::Database(ref db_err)) if db_err.constraint().is_some() => {
-                let constraint = db_err.constraint().unwrap_or("");
-                if constraint.contains("username") {
-                    return Err(ApiError::AlreadyExists("Username already taken".to_string()));
-                } else if constraint.contains("email") {
-                    return Err(ApiError::AlreadyExists("Email already taken".to_string()));
-                }
-                return Err(ApiError::AlreadyExists("Username or email already taken".to_string()));
-            }
-            Err(e) => {
-                return Err(ApiError::Internal(e.to_string()));
-            }
-        };
 
         Ok(crate::proto::admin::CreateUserResponse {
             user: Some(admin_user_to_proto(&user)),
@@ -1011,9 +980,21 @@ impl AdminApiImpl {
             .await
             .map_err(ApiError::from)?;
 
+        // Batch-fetch creator usernames for all created rooms
+        let creator_ids: Vec<synctv_core::models::UserId> = created_rooms
+            .iter()
+            .map(|r| r.created_by.clone())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        let username_map = self.user_service.get_usernames(&creator_ids).await.unwrap_or_default();
+
         let mut admin_rooms: Vec<crate::proto::admin::AdminRoom> = created_rooms
             .iter()
-            .map(|r| admin_room_to_proto(r, None, self.connection_manager.room_connection_count(&r.id).try_into().ok()))
+            .map(|r| {
+                let creator_username = username_map.get(&r.created_by).map(String::as_str);
+                admin_room_to_proto(r, None, self.connection_manager.room_connection_count(&r.id).try_into().ok(), creator_username)
+            })
             .collect();
 
         // Add joined rooms not already in list
@@ -1022,9 +1003,11 @@ impl AdminApiImpl {
                 continue;
             }
             if let Ok(room) = self.room_service.get_room(&room_id).await {
+                let creator_username = username_map.get(&room.created_by).map(String::as_str);
                 admin_rooms.push(admin_room_to_proto(
                     &room, None,
                     self.connection_manager.room_connection_count(&room.id).try_into().ok(),
+                    creator_username,
                 ));
             }
         }
@@ -1081,6 +1064,7 @@ impl AdminApiImpl {
             room: Some(admin_room_to_proto(
                 &updated, None,
                 self.connection_manager.room_connection_count(&rid).try_into().ok(),
+                None,
             )),
         })
     }
@@ -1104,6 +1088,7 @@ impl AdminApiImpl {
             room: Some(admin_room_to_proto(
                 &updated, None,
                 self.connection_manager.room_connection_count(&rid).try_into().ok(),
+                None,
             )),
         })
     }
@@ -1119,6 +1104,7 @@ impl AdminApiImpl {
             room: Some(admin_room_to_proto(
                 &room, None,
                 self.connection_manager.room_connection_count(&rid).try_into().ok(),
+                None,
             )),
         })
     }
@@ -1137,6 +1123,7 @@ impl AdminApiImpl {
     pub async fn update_room_settings(
         &self,
         req: crate::proto::admin::UpdateRoomSettingsRequest,
+        admin_user_id: &UserId,
     ) -> Result<crate::proto::admin::UpdateRoomSettingsResponse, ApiError> {
         let rid = RoomId::from_string(req.room_id);
         let settings: synctv_core::models::RoomSettings = serde_json::from_slice(&req.settings)
@@ -1144,14 +1131,19 @@ impl AdminApiImpl {
 
         self.room_service.set_room_settings(&rid, &settings).await.map_err(ApiError::from)?;
 
+        // Look up admin username for cluster event
+        let admin_username = self.user_service.get_user(admin_user_id).await
+            .map(|u| u.username.clone())
+            .unwrap_or_else(|_| admin_user_id.as_str().to_string());
+
         // Broadcast RoomSettingsChanged cluster event for cross-replica propagation
         if let Some(ref tx) = self.redis_publish_tx {
             super::try_publish_cluster_event(tx, PublishRequest {
                 event: ClusterEvent::RoomSettingsChanged {
                     event_id: nanoid::nanoid!(16),
                     room_id: rid.clone(),
-                    user_id: UserId::from_string("admin".to_string()),
-                    username: "admin".to_string(),
+                    user_id: admin_user_id.clone(),
+                    username: admin_username,
                     settings_json: req.settings.clone(),
                     timestamp: chrono::Utc::now(),
                 },
@@ -1164,6 +1156,7 @@ impl AdminApiImpl {
             room: Some(admin_room_to_proto(
                 &room, Some(&settings),
                 self.connection_manager.room_connection_count(&rid).try_into().ok(),
+                None,
             )),
         })
     }
@@ -1179,6 +1172,11 @@ impl AdminApiImpl {
         let room = self.room_service.get_room(&rid).await.map_err(ApiError::from)?;
         let settings = self.room_service.get_room_settings(&rid).await.unwrap_or_default();
 
+        // Look up admin username for cluster event
+        let admin_username = self.user_service.get_user(admin_user_id).await
+            .map(|u| u.username.clone())
+            .unwrap_or_else(|_| admin_user_id.as_str().to_string());
+
         // Broadcast RoomSettingsChanged cluster event for cross-replica propagation
         if let Some(ref tx) = self.redis_publish_tx {
             let settings_json = serde_json::to_vec(&settings).unwrap_or_default();
@@ -1186,8 +1184,8 @@ impl AdminApiImpl {
                 event: ClusterEvent::RoomSettingsChanged {
                     event_id: nanoid::nanoid!(16),
                     room_id: rid.clone(),
-                    user_id: UserId::from_string("admin".to_string()),
-                    username: "admin".to_string(),
+                    user_id: admin_user_id.clone(),
+                    username: admin_username,
                     settings_json,
                     timestamp: chrono::Utc::now(),
                 },
@@ -1198,6 +1196,7 @@ impl AdminApiImpl {
             room: Some(admin_room_to_proto(
                 &room, Some(&settings),
                 self.connection_manager.room_connection_count(&rid).try_into().ok(),
+                None,
             )),
         })
     }
@@ -1410,6 +1409,7 @@ fn admin_room_to_proto(
     room: &synctv_core::models::Room,
     settings: Option<&synctv_core::models::RoomSettings>,
     member_count: Option<i32>,
+    creator_username: Option<&str>,
 ) -> crate::proto::admin::AdminRoom {
     let room_settings = settings.cloned().unwrap_or_default();
     crate::proto::admin::AdminRoom {
@@ -1417,7 +1417,7 @@ fn admin_room_to_proto(
         name: room.name.clone(),
         description: room.description.clone(),
         creator_id: room.created_by.to_string(),
-        creator_username: String::new(), // Would need to fetch user
+        creator_username: creator_username.unwrap_or("").to_string(),
         status: synctv_proto::common::RoomStatus::from(room.status) as i32,
         settings: serde_json::to_vec(&room_settings).unwrap_or_default(),
         member_count: member_count.unwrap_or(0),
@@ -1568,12 +1568,13 @@ mod tests {
     #[test]
     fn test_admin_room_to_proto_basic() {
         let room = make_test_room(RoomStatus::Active);
-        let proto = admin_room_to_proto(&room, None, Some(10));
+        let proto = admin_room_to_proto(&room, None, Some(10), Some("creator_user"));
 
         assert_eq!(proto.id, "admin_room_1");
         assert_eq!(proto.name, "Admin Test Room");
         assert_eq!(proto.description, "Room for admin tests");
         assert_eq!(proto.creator_id, "creator_1");
+        assert_eq!(proto.creator_username, "creator_user");
         assert_eq!(proto.member_count, 10);
         assert!(!proto.is_banned);
     }
@@ -1582,7 +1583,7 @@ mod tests {
     fn test_admin_room_to_proto_banned() {
         let mut room = make_test_room(RoomStatus::Active);
         room.is_banned = true;
-        let proto = admin_room_to_proto(&room, None, None);
+        let proto = admin_room_to_proto(&room, None, None, None);
         assert!(proto.is_banned);
         assert_eq!(proto.member_count, 0);
     }
@@ -1591,7 +1592,7 @@ mod tests {
     fn test_admin_room_to_proto_different_statuses() {
         for status in [RoomStatus::Active, RoomStatus::Pending, RoomStatus::Closed] {
             let room = make_test_room(status);
-            let proto = admin_room_to_proto(&room, None, None);
+            let proto = admin_room_to_proto(&room, None, None, None);
             assert_eq!(
                 proto.status,
                 synctv_proto::common::RoomStatus::from(status) as i32

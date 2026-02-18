@@ -21,6 +21,7 @@ pub struct Config {
     pub cluster: ClusterChannelConfig,
     pub password_complexity: PasswordComplexityConfig,
     pub buffer_sizes: BufferSizesConfig,
+    pub cache: CacheConfig,
 }
 
 impl std::fmt::Debug for Config {
@@ -41,6 +42,7 @@ impl std::fmt::Debug for Config {
             .field("cluster", &self.cluster)
             .field("password_complexity", &self.password_complexity)
             .field("buffer_sizes", &self.buffer_sizes)
+            .field("cache", &self.cache)
             .finish()
     }
 }
@@ -623,7 +625,7 @@ impl Config {
         // Override with environment variables (SYNCTV_JWT_SECRET, SYNCTV_DATABASE_URL, etc.)
         builder = builder.add_source(
             Environment::with_prefix("SYNCTV")
-                .separator("_")
+                .separator("__")
                 .try_parsing(true),
         );
 
@@ -1126,6 +1128,12 @@ pub struct ClusterChannelConfig {
     /// - "k8s_lease": Use Kubernetes coordination.k8s.io/v1 Lease resource
     ///   (requires POD_NAME and POD_NAMESPACE env vars, RBAC permissions)
     pub leader_election_mode: String,
+
+    /// Static peer addresses for non-K8s / non-Redis cluster discovery.
+    /// When configured, each peer is periodically health-checked via gRPC
+    /// and registered into the NodeRegistry if alive.
+    /// Example: ["host1:50051", "host2:50051"]
+    pub peers: Vec<String>,
 }
 
 impl Default for ClusterChannelConfig {
@@ -1135,6 +1143,7 @@ impl Default for ClusterChannelConfig {
             publish_channel_capacity: 10_000,
             discovery_mode: "redis".to_string(),
             leader_election_mode: "redis".to_string(),
+            peers: Vec::new(),
         }
     }
 }
@@ -1183,6 +1192,43 @@ impl Default for BufferSizesConfig {
     }
 }
 
+/// Cache layer configuration
+///
+/// Controls cache capacities and TTLs for the L1 (in-memory) and L2 (Redis) tiers.
+/// All values have sensible defaults matching the previously hardcoded values.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CacheConfig {
+    /// L1 (Moka in-memory) cache max capacity for user/room caches
+    pub l1_capacity: u64,
+    /// L1 cache TTL in seconds
+    pub l1_ttl_seconds: u64,
+    /// L2 (Redis) cache TTL in seconds
+    pub l2_ttl_seconds: u64,
+    /// Username cache L1 max capacity
+    pub username_cache_capacity: u64,
+    /// Username cache L2 (Redis) TTL in seconds
+    pub username_cache_ttl_seconds: u64,
+    /// Permission cache max capacity (reserved for future use)
+    pub permission_cache_capacity: u64,
+    /// Permission cache TTL in seconds (reserved for future use)
+    pub permission_cache_ttl_seconds: u64,
+}
+
+impl Default for CacheConfig {
+    fn default() -> Self {
+        Self {
+            l1_capacity: 500,
+            l1_ttl_seconds: 300,       // 5 minutes (was hardcoded as 5 min TTL)
+            l2_ttl_seconds: 300,       // 5 minutes
+            username_cache_capacity: 1000,
+            username_cache_ttl_seconds: 3600,  // 1 hour
+            permission_cache_capacity: 1000,
+            permission_cache_ttl_seconds: 300,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1205,6 +1251,7 @@ mod tests {
             cluster: ClusterChannelConfig::default(),
             password_complexity: PasswordComplexityConfig::default(),
             buffer_sizes: BufferSizesConfig::default(),
+            cache: CacheConfig::default(),
         });
 
         assert!(!config.database_url().is_empty());
@@ -1246,6 +1293,7 @@ mod tests {
             cluster: ClusterChannelConfig::default(),
             password_complexity: PasswordComplexityConfig::default(),
             buffer_sizes: BufferSizesConfig::default(),
+            cache: CacheConfig::default(),
         };
 
         assert_eq!(config.grpc_address(), "127.0.0.1:50051");
@@ -1290,6 +1338,7 @@ mod tests {
             cluster: ClusterChannelConfig::default(),
             password_complexity: PasswordComplexityConfig::default(),
             buffer_sizes: BufferSizesConfig::default(),
+            cache: CacheConfig::default(),
         }
     }
 

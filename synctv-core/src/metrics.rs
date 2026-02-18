@@ -759,8 +759,8 @@ pub mod streamhub {
 
 /// Livestream metrics
 pub mod livestream {
-    use super::{register_counter_vec_with_registry, register_histogram_vec_with_registry, register_int_gauge_with_registry, CounterVec, HistogramVec, REGISTRY, IntGauge};
-    use prometheus::{IntCounter, Opts};
+    use super::{register_counter_vec_with_registry, register_histogram_vec_with_registry, register_int_gauge_with_registry, CounterVec, HistogramVec, REGISTRY, IntGauge, IntCounterVec};
+    use prometheus::{IntCounter, Opts, register_int_counter_vec_with_registry};
 
     /// Total publisher cleanups due to heartbeat failure.
     pub static PUBLISHER_HEARTBEAT_FAILURES: std::sync::LazyLock<IntCounter> = std::sync::LazyLock::new(|| {
@@ -819,6 +819,15 @@ pub mod livestream {
             &["error_type"],
             REGISTRY.clone()
         ).expect("Failed to register LIVESTREAM_PULL_ERRORS_TOTAL")
+    });
+
+    /// Total relay frames dropped due to backpressure, labeled by stream_id.
+    pub static LIVESTREAM_RELAY_FRAME_DROPS: std::sync::LazyLock<IntCounterVec> = std::sync::LazyLock::new(|| {
+        register_int_counter_vec_with_registry!(
+            Opts::new("livestream_relay_frame_drops_total", "Total relay frames dropped due to backpressure"),
+            &["stream_id"],
+            REGISTRY.clone()
+        ).expect("Failed to register LIVESTREAM_RELAY_FRAME_DROPS")
     });
 
     /// Number of cached GOPs across all active streams.

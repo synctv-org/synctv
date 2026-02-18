@@ -25,36 +25,19 @@ const CRITICAL_STREAM_MAX_RETRIES: u32 = 3;
 /// Initial backoff for critical XADD retries (doubles each attempt).
 const CRITICAL_STREAM_INITIAL_BACKOFF_MS: u64 = 100;
 
-/// Redis Stream key for admin/cluster-wide events (no room_id)
-const ADMIN_STREAM_KEY: &str = "synctv:admin:events:stream";
 /// Max length of each per-room stream (approximate)
 const MAX_STREAM_LENGTH: usize = 10000;
-
-/// Build the Redis Stream key for a specific room
-fn room_stream_key(room_id: &str) -> String {
-    format!("synctv:room:{}:events", room_id)
-}
-
-/// Build the Redis Stream key for a given event.
-/// Room events go to per-room streams; admin events go to the global admin stream.
-fn stream_key_for_event(event: &ClusterEvent) -> String {
-    if let Some(room_id) = event.room_id() {
-        room_stream_key(room_id.as_str())
-    } else {
-        ADMIN_STREAM_KEY.to_string()
-    }
-}
 
 // ---- Unified Pub/Sub channel naming ----
 //
 // Both admin and room events use the same channel naming scheme and are published
 // via PUBLISH + XADD in `publish_event()`. The subscription strategy differs:
 //
-//   - **Admin events**: Pattern subscription (`PSUBSCRIBE synctv:admin:*`)
+//   - **Admin events**: Pattern subscription (`PSUBSCRIBE {prefix}admin:*`)
 //     because admin events are global and infrequent. All nodes receive all admin
 //     events regardless of which rooms they serve.
 //
-//   - **Room events**: Per-room subscriptions (`SUBSCRIBE synctv:room:{room_id}`)
+//   - **Room events**: Per-room subscriptions (`SUBSCRIBE {prefix}room:{room_id}`)
 //     managed dynamically via `RoomLifecycleEvent`s. This avoids receiving traffic
 //     for rooms the node does not serve, which is important in large deployments
 //     with many active rooms.
@@ -62,24 +45,6 @@ fn stream_key_for_event(event: &ClusterEvent) -> String {
 // Dispatch for both paths converges in `dispatch_event()`, which handles
 // deduplication, cache invalidation, permission syncing, and local broadcast
 // uniformly.
-
-/// Admin event Pub/Sub channel.
-const ADMIN_PUBSUB_CHANNEL: &str = "synctv:admin:events";
-
-/// Build the Redis Pub/Sub channel for a specific room.
-fn room_pubsub_channel(room_id: &str) -> String {
-    format!("synctv:room:{room_id}")
-}
-
-/// Build the Redis Pub/Sub channel for a given event.
-/// Room events go to per-room channels; admin events go to the global admin channel.
-fn pubsub_channel_for_event(event: &ClusterEvent) -> String {
-    if let Some(room_id) = event.room_id() {
-        room_pubsub_channel(room_id.as_str())
-    } else {
-        ADMIN_PUBSUB_CHANNEL.to_string()
-    }
-}
 
 use super::dedup::{DedupKey, MessageDeduplicator};
 use super::events::{CacheTarget, ClusterEvent};
@@ -114,6 +79,8 @@ pub struct RedisPubSub {
     last_health_check: AtomicU64,
     message_hub: Arc<RoomMessageHub>,
     node_id: String,
+    /// Key prefix for all Redis keys and channels (e.g., "synctv:")
+    key_prefix: String,
     admin_event_tx: broadcast::Sender<ClusterEvent>,
     permission_service: Option<PermissionService>,
     /// Cache invalidation service for cross-replica user/room/username cache invalidation
@@ -133,6 +100,20 @@ impl RedisPubSub {
         cache_invalidation: Option<CacheInvalidationService>,
         deduplicator: Arc<MessageDeduplicator>,
     ) -> Result<Self> {
+        Self::with_key_prefix(redis_url, message_hub, node_id, "synctv:", admin_event_tx, permission_service, cache_invalidation, deduplicator)
+    }
+
+    /// Create a new `RedisPubSub` service with a custom key prefix.
+    pub fn with_key_prefix(
+        redis_url: &str,
+        message_hub: Arc<RoomMessageHub>,
+        node_id: String,
+        key_prefix: &str,
+        admin_event_tx: broadcast::Sender<ClusterEvent>,
+        permission_service: Option<PermissionService>,
+        cache_invalidation: Option<CacheInvalidationService>,
+        deduplicator: Arc<MessageDeduplicator>,
+    ) -> Result<Self> {
         let redis_client = RedisClient::open(redis_url).context("Failed to create Redis client")?;
 
         Ok(Self {
@@ -141,12 +122,50 @@ impl RedisPubSub {
             last_health_check: AtomicU64::new(0),
             message_hub,
             node_id,
+            key_prefix: key_prefix.to_string(),
             admin_event_tx,
             permission_service,
             cache_invalidation,
             deduplicator,
             cancel_token: CancellationToken::new(),
         })
+    }
+
+    /// Build the Redis Stream key for admin events
+    fn admin_stream_key(&self) -> String {
+        format!("{}admin:events:stream", self.key_prefix)
+    }
+
+    /// Build the Redis Stream key for a specific room
+    fn room_stream_key(&self, room_id: &str) -> String {
+        format!("{}room:{}:events", self.key_prefix, room_id)
+    }
+
+    /// Build the admin Pub/Sub pattern
+    fn admin_pubsub_pattern(&self) -> String {
+        format!("{}admin:*", self.key_prefix)
+    }
+
+    /// Build the room Pub/Sub channel
+    fn room_pubsub_channel(&self, room_id: &str) -> String {
+        format!("{}room:{room_id}", self.key_prefix)
+    }
+
+    /// Build the room Pub/Sub pattern (fallback)
+    fn room_pubsub_pattern(&self) -> String {
+        format!("{}room:*", self.key_prefix)
+    }
+
+    /// Extract room_id from a channel name (e.g., "synctv:room:abc" -> Some("abc"))
+    fn extract_room_id_from_channel<'a>(&self, channel: &'a str) -> Option<&'a str> {
+        let room_prefix = format!("{}room:", self.key_prefix);
+        channel.strip_prefix(&room_prefix)
+    }
+
+    /// Check if a channel is an admin channel
+    fn is_admin_channel(&self, channel: &str) -> bool {
+        let admin_prefix = format!("{}admin:", self.key_prefix);
+        channel.starts_with(&admin_prefix)
     }
 
     /// Get the cancellation token for external shutdown signaling
@@ -174,6 +193,7 @@ impl RedisPubSub {
         // Clone for the publish task
         let publish_client = self.redis_client.clone();
         let node_id = self.node_id.clone();
+        let key_prefix = self.key_prefix.clone();
         let cancel_publisher = self.cancel_token.clone();
 
         /// Maximum number of failed events to buffer for retry after reconnection.
@@ -241,7 +261,7 @@ impl RedisPubSub {
                             continue;
                         }
                         let event_type = req.event.event_type();
-                        match Self::publish_event(&mut conn, &node_id, req.event.clone()).await {
+                        match Self::publish_event(&mut conn, &node_id, &key_prefix, req.event.clone()).await {
                             Ok(subscribers) => {
                                 debug!(
                                     event_type = event_type,
@@ -293,7 +313,7 @@ impl RedisPubSub {
                                     continue;
                                 }
                                 let event_type = req.event.event_type();
-                                match Self::publish_event(&mut conn, &node_id, req.event.clone()).await {
+                                match Self::publish_event(&mut conn, &node_id, &key_prefix, req.event.clone()).await {
                                     Ok(_) => {
                                         debug!(event_type = event_type, "Retry buffer event flushed on shutdown");
                                     }
@@ -315,7 +335,7 @@ impl RedisPubSub {
                                     continue;
                                 }
                                 let event_type = req.event.event_type();
-                                match Self::publish_event(&mut conn, &node_id, req.event.clone()).await {
+                                match Self::publish_event(&mut conn, &node_id, &key_prefix, req.event.clone()).await {
                                     Ok(_) => {
                                         debug!(event_type = event_type, "Drained event published");
                                     }
@@ -331,7 +351,7 @@ impl RedisPubSub {
                     };
                     if let Some(req) = req {
                         let event_type = req.event.event_type();
-                        match Self::publish_event(&mut conn, &node_id, req.event.clone()).await {
+                        match Self::publish_event(&mut conn, &node_id, &key_prefix, req.event.clone()).await {
                             Ok(subscribers) => {
                                 session_healthy = true;
                                 debug!(
@@ -504,34 +524,35 @@ impl RedisPubSub {
         };
 
         // Always subscribe to admin channel pattern (needed for cluster-wide events)
+        let admin_pattern = self.admin_pubsub_pattern();
         match timeout(
             Duration::from_secs(REDIS_TIMEOUT_SECS),
-            pubsub.psubscribe("synctv:admin:*"),
+            pubsub.psubscribe(&admin_pattern),
         )
         .await
         {
             Ok(Ok(())) => {}
             Ok(Err(e)) => {
                 return SubscriberExit::ConnectFailed(
-                    anyhow::anyhow!(e).context("Failed to subscribe to synctv:admin:* pattern"),
+                    anyhow::anyhow!(e).context(format!("Failed to subscribe to {admin_pattern} pattern")),
                 );
             }
             Err(_) => {
                 return SubscriberExit::ConnectFailed(anyhow::anyhow!(
-                    "Timed out subscribing to synctv:admin:* pattern"
+                    "Timed out subscribing to {admin_pattern} pattern"
                 ));
             }
         }
 
         // Subscribe to specific room channels for currently active rooms
-        // (instead of psubscribe("synctv:room:*") which receives all rooms globally)
+        // (instead of psubscribe("{prefix}room:*") which receives all rooms globally)
         let active_rooms = self.message_hub.active_room_ids();
         let mut subscribed_rooms: HashSet<String> = HashSet::new();
 
         if !active_rooms.is_empty() {
             let room_channels: Vec<String> = active_rooms
                 .iter()
-                .map(|rid| room_pubsub_channel(rid.as_str()))
+                .map(|rid| self.room_pubsub_channel(rid.as_str()))
                 .collect();
             let channel_refs: Vec<&str> = room_channels.iter().map(|s| s.as_str()).collect();
 
@@ -553,9 +574,10 @@ impl RedisPubSub {
                         "Failed to subscribe to room channels, falling back to pattern"
                     );
                     // Fallback: use pattern subscription if individual subscribes fail
-                    if let Err(e) = pubsub.psubscribe("synctv:room:*").await {
+                    let room_pattern = self.room_pubsub_pattern();
+                    if let Err(e) = pubsub.psubscribe(&room_pattern).await {
                         return SubscriberExit::ConnectFailed(
-                            anyhow::anyhow!(e).context("Failed to fallback psubscribe to synctv:room:*"),
+                            anyhow::anyhow!(e).context(format!("Failed to fallback psubscribe to {room_pattern}")),
                         );
                     }
                 }
@@ -564,9 +586,10 @@ impl RedisPubSub {
                         room_count = active_rooms.len(),
                         "Timed out subscribing to room channels, falling back to pattern"
                     );
-                    if let Err(e) = pubsub.psubscribe("synctv:room:*").await {
+                    let room_pattern = self.room_pubsub_pattern();
+                    if let Err(e) = pubsub.psubscribe(&room_pattern).await {
                         return SubscriberExit::ConnectFailed(
-                            anyhow::anyhow!(e).context("Failed to fallback psubscribe to synctv:room:*"),
+                            anyhow::anyhow!(e).context(format!("Failed to fallback psubscribe to {room_pattern}")),
                         );
                     }
                 }
@@ -575,7 +598,8 @@ impl RedisPubSub {
 
         info!(
             subscribed_rooms = subscribed_rooms.len(),
-            "Redis subscriber connected, listening to synctv:admin:* pattern and {} room channels",
+            "Redis subscriber connected, listening to {} pattern and {} room channels",
+            admin_pattern,
             subscribed_rooms.len()
         );
 
@@ -602,34 +626,58 @@ impl RedisPubSub {
             // already past them). The current order (subscribe first, then
             // snapshot) is correct because duplicates are safe (deduped) while
             // gaps are not.
-            let mut streams_to_snapshot: Vec<String> = active_rooms
+            let mut streams_to_catchup: Vec<String> = active_rooms
                 .iter()
-                .map(|rid| room_stream_key(rid.as_str()))
+                .map(|rid| self.room_stream_key(rid.as_str()))
                 .collect();
-            streams_to_snapshot.push(ADMIN_STREAM_KEY.to_string());
+            streams_to_catchup.push(self.admin_stream_key());
 
-            for stream_key in streams_to_snapshot {
-                match self.get_latest_stream_id_for(&stream_key).await {
-                    Ok(Some(id)) => {
-                        debug!(stream_key = %stream_key, stream_id = %id, "Initialized stream cursor");
-                        stream_cursors.insert(stream_key, id);
-                    }
-                    Ok(None) => {
-                        stream_cursors.insert(stream_key, "0".to_string());
+            // New node: catch up on recent historical events from each stream
+            // starting from "0-0" so we don't miss state that was published
+            // before this node joined the cluster.
+            let mut total_caught_up = 0usize;
+            let mut total_skipped = 0usize;
+            for stream_key in &streams_to_catchup {
+                match self.read_missed_events_from(stream_key, "0").await {
+                    Ok(events) => {
+                        for (stream_id, channel, event) in events {
+                            let dedup_key = DedupKey::from_event(&event);
+                            if self.deduplicator.should_process(&dedup_key) {
+                                self.dispatch_event(&channel, event).await;
+                                total_caught_up += 1;
+                            } else {
+                                total_skipped += 1;
+                            }
+                            // Update cursor to the latest processed stream ID
+                            stream_cursors.insert(stream_key.clone(), stream_id);
+                        }
+                        // If no events, snapshot the latest stream ID
+                        if !stream_cursors.contains_key(stream_key) {
+                            match self.get_latest_stream_id_for(stream_key).await {
+                                Ok(Some(id)) => {
+                                    stream_cursors.insert(stream_key.clone(), id);
+                                }
+                                _ => {
+                                    stream_cursors.insert(stream_key.clone(), "0".to_string());
+                                }
+                            }
+                        }
                     }
                     Err(e) => {
                         warn!(
                             error = %e,
                             stream_key = %stream_key,
-                            "Failed to read latest stream ID, using '$' as fallback (skip catch-up)"
+                            "Failed to catch up on historical events, using '$' as fallback"
                         );
-                        stream_cursors.insert(stream_key, "$".to_string());
+                        stream_cursors.insert(stream_key.clone(), "$".to_string());
                     }
                 }
             }
             info!(
                 room_count = active_rooms.len(),
-                "Initialized {} stream cursors (rooms + admin)",
+                caught_up = total_caught_up,
+                skipped = total_skipped,
+                "Initialized {} stream cursors after catching up historical events",
                 stream_cursors.len()
             );
         } else {
@@ -646,22 +694,23 @@ impl RedisPubSub {
             let active_rooms = self.message_hub.active_room_ids();
 
             // Prune cursors for rooms that no longer have local subscribers.
+            let admin_sk = self.admin_stream_key();
             let active_stream_keys_set: HashSet<String> = active_rooms
                 .iter()
-                .map(|rid| room_stream_key(rid.as_str()))
+                .map(|rid| self.room_stream_key(rid.as_str()))
                 .collect();
             stream_cursors.retain(|key, _| {
-                key == ADMIN_STREAM_KEY || active_stream_keys_set.contains(key)
+                *key == admin_sk || active_stream_keys_set.contains(key)
             });
 
             // Ensure admin stream is always included
-            if !stream_cursors.contains_key(ADMIN_STREAM_KEY) {
-                stream_cursors.insert(ADMIN_STREAM_KEY.to_string(), "0".to_string());
+            if !stream_cursors.contains_key(&admin_sk) {
+                stream_cursors.insert(admin_sk.clone(), "0".to_string());
             }
 
             // Add cursors for any new rooms that appeared while disconnected
             for rid in &active_rooms {
-                let key = room_stream_key(rid.as_str());
+                let key = self.room_stream_key(rid.as_str());
                 stream_cursors.entry(key).or_insert_with(|| "0".to_string());
             }
 
@@ -669,9 +718,9 @@ impl RedisPubSub {
             let active_stream_keys: Vec<String> = {
                 let mut keys: Vec<String> = active_rooms
                     .iter()
-                    .map(|rid| room_stream_key(rid.as_str()))
+                    .map(|rid| self.room_stream_key(rid.as_str()))
                     .collect();
-                keys.push(ADMIN_STREAM_KEY.to_string());
+                keys.push(admin_sk);
                 keys
             };
 
@@ -828,7 +877,7 @@ impl RedisPubSub {
                             RoomLifecycleEvent::RoomActivated(room_id) => {
                                 let room_id_str = room_id.as_str().to_string();
                                 if subscribed_rooms.insert(room_id_str.clone()) {
-                                    let channel = room_pubsub_channel(&room_id_str);
+                                    let channel = self.room_pubsub_channel(&room_id_str);
                                     match timeout(
                                         Duration::from_secs(REDIS_TIMEOUT_SECS),
                                         pubsub.subscribe(&channel),
@@ -841,7 +890,7 @@ impl RedisPubSub {
                                             // the entire stream history). The deduplicator
                                             // handles any overlap between live PubSub
                                             // delivery and the snapshotted cursor.
-                                            let sk = room_stream_key(&room_id_str);
+                                            let sk = self.room_stream_key(&room_id_str);
                                             match self.get_latest_stream_id_for(&sk).await {
                                                 Ok(Some(id)) => {
                                                     debug!(
@@ -889,7 +938,7 @@ impl RedisPubSub {
                             RoomLifecycleEvent::RoomDeactivated(room_id) => {
                                 let room_id_str = room_id.as_str().to_string();
                                 if subscribed_rooms.remove(&room_id_str) {
-                                    let channel = room_pubsub_channel(&room_id_str);
+                                    let channel = self.room_pubsub_channel(&room_id_str);
                                     match timeout(
                                         Duration::from_secs(REDIS_TIMEOUT_SECS),
                                         pubsub.unsubscribe(&channel),
@@ -899,7 +948,7 @@ impl RedisPubSub {
                                                 room_id = %room_id_str,
                                                 "Dynamically unsubscribed from room channel"
                                             );
-                                            stream_cursors.remove(&room_stream_key(&room_id_str));
+                                            stream_cursors.remove(&self.room_stream_key(&room_id_str));
                                         }
                                         Ok(Err(e)) => {
                                             warn!(
@@ -979,13 +1028,13 @@ impl RedisPubSub {
 
         // Subscribe to newly active rooms
         for room_id in active_rooms.difference(subscribed_rooms).cloned().collect::<Vec<_>>() {
-            let channel = room_pubsub_channel(&room_id);
+            let channel = self.room_pubsub_channel(&room_id);
             match timeout(Duration::from_secs(REDIS_TIMEOUT_SECS), pubsub.subscribe(&channel)).await {
                 Ok(Ok(())) => {
                     subscribed_rooms.insert(room_id.clone());
                     // Snapshot stream cursor for the newly subscribed room so that
                     // reconnect catch-up reads from the right position instead of "0".
-                    let sk = room_stream_key(&room_id);
+                    let sk = self.room_stream_key(&room_id);
                     match self.get_latest_stream_id_for(&sk).await {
                         Ok(Some(id)) => {
                             debug!(
@@ -1020,11 +1069,11 @@ impl RedisPubSub {
 
         // Unsubscribe from deactivated rooms
         for room_id in subscribed_rooms.difference(&active_rooms).cloned().collect::<Vec<_>>() {
-            let channel = room_pubsub_channel(&room_id);
+            let channel = self.room_pubsub_channel(&room_id);
             match timeout(Duration::from_secs(REDIS_TIMEOUT_SECS), pubsub.unsubscribe(&channel)).await {
                 Ok(Ok(())) => {
                     debug!(room_id = %room_id, "Re-synced: unsubscribed from room channel");
-                    stream_cursors.remove(&room_stream_key(&room_id));
+                    stream_cursors.remove(&self.room_stream_key(&room_id));
                 }
                 _ => {
                     warn!(room_id = %room_id, "Re-sync: failed to unsubscribe from room channel");
@@ -1076,13 +1125,13 @@ impl RedisPubSub {
         }
 
         // Handle admin channel events (no room_id)
-        if channel.starts_with("synctv:admin:") {
+        if self.is_admin_channel(channel) {
             let _ = self.admin_event_tx.send(event);
             return;
         }
 
-        // Extract room_id from channel name (synctv:room:{room_id})
-        if let Some(room_id_str) = channel.strip_prefix("synctv:room:") {
+        // Extract room_id from channel name ({prefix}room:{room_id})
+        if let Some(room_id_str) = self.extract_room_id_from_channel(channel) {
             let room_id = RoomId::from_string(room_id_str.to_string());
 
             // Forward kick events to admin channel for cross-replica disconnect handling
@@ -1250,9 +1299,14 @@ impl RedisPubSub {
     async fn publish_event(
         conn: &mut redis::aio::MultiplexedConnection,
         node_id: &str,
+        key_prefix: &str,
         event: ClusterEvent,
     ) -> Result<usize> {
-        let channel = pubsub_channel_for_event(&event);
+        let channel = if let Some(room_id) = event.room_id() {
+            format!("{key_prefix}room:{}", room_id.as_str())
+        } else {
+            format!("{key_prefix}admin:events")
+        };
 
         // Wrap event in envelope with node_id
         let envelope = EventEnvelope {
@@ -1264,8 +1318,12 @@ impl RedisPubSub {
             serde_json::to_string(&envelope).context("Failed to serialize event envelope")?;
 
         // 1. Add to per-room Redis Stream for reliable delivery (catch-up after disconnect)
-        // Room events go to synctv:room:{room_id}:events, admin events to synctv:admin:events:stream
-        let stream_key = stream_key_for_event(&event);
+        // Room events go to {prefix}room:{room_id}:events, admin events to {prefix}admin:events:stream
+        let stream_key = if let Some(room_id) = event.room_id() {
+            format!("{key_prefix}room:{}:events", room_id.as_str())
+        } else {
+            format!("{key_prefix}admin:events:stream")
+        };
         use redis::streams::StreamMaxlen;
 
         let is_critical = event.is_critical();

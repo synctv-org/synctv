@@ -4,7 +4,7 @@
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
 use synctv_core::cache::user_cache::{UserCache, CachedUser};
-use synctv_core::models::UserId;
+use synctv_core::models::{UserId, UserRole, UserStatus};
 use std::time::Duration;
 use chrono::Utc;
 
@@ -12,8 +12,8 @@ fn create_test_user(id: &str, username: &str) -> CachedUser {
     CachedUser::new(
         id.to_string(),
         username.to_string(),
-        "user".to_string(),
-        "active".to_string(),
+        UserRole::User,
+        UserStatus::Active,
         Utc::now(),
     )
 }

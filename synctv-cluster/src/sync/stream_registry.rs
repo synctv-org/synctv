@@ -405,7 +405,7 @@ impl StreamRegistry {
         }
     }
 
-    /// Refresh TTLs for all local streams in Redis
+    /// Refresh TTLs for all local streams in Redis using a pipeline
     async fn refresh_ttls(&self) {
         if let Some(ref conn) = self.redis_conn {
             let local_streams: Vec<String> = self
@@ -421,17 +421,20 @@ impl StreamRegistry {
             let stream_count = local_streams.len();
             let mut conn_clone = conn.clone();
 
+            let mut pipe = redis::pipe();
             for identifier in &local_streams {
                 let meta_key = format!("{}streams:meta:{}", self.redis_key_prefix, identifier);
-                if let Err(e) = conn_clone.expire::<_, ()>(&meta_key, STREAM_METADATA_TTL_SECONDS).await {
-                    warn!(stream = %identifier, "Failed to refresh stream metadata TTL: {e}");
-                }
+                pipe.expire(meta_key, STREAM_METADATA_TTL_SECONDS).ignore();
             }
 
-            debug!(
-                count = stream_count,
-                "Refreshed stream metadata TTLs"
-            );
+            if let Err(e) = pipe.query_async::<()>(&mut conn_clone).await {
+                warn!("Failed to refresh stream metadata TTLs via pipeline ({stream_count} keys): {e}");
+            } else {
+                debug!(
+                    count = stream_count,
+                    "Refreshed stream metadata TTLs"
+                );
+            }
         }
     }
 }

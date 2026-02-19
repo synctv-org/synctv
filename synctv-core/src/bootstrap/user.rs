@@ -8,7 +8,7 @@ use crate::{
     models::{User, UserRole, UserStatus},
     repository::UserRepository,
     service::auth::hash_password,
-    Result,
+    Error, Result,
 };
 
 /// Bootstrap root user on first startup
@@ -46,14 +46,18 @@ pub async fn bootstrap_root_user(pool: &PgPool, config: &BootstrapConfig) -> Res
         return Ok(());
     }
 
-    // Check if username already exists (could be a non-root user)
+    // Issue #40: If the configured root username is taken by a non-root user,
+    // fail loudly. Silently skipping root creation would leave the system
+    // without a root account, which is a critical operational problem.
+    // Operators must either rename the conflicting user or choose a different
+    // root username in the bootstrap config.
     if repository.username_exists(&config.root_username).await? {
-        warn!(
-            "Username '{}' already exists but is not a root user. Skipping root user creation.",
+        return Err(Error::Internal(format!(
+            "Bootstrap failed: root username '{}' is already taken by a non-root user. \
+             Please either change bootstrap.root_username in your config, \
+             or manually promote the existing user to root role.",
             config.root_username
-        );
-        warn!("Please manually promote this user to root role or choose a different username.");
-        return Ok(());
+        )));
     }
 
     // Create root user

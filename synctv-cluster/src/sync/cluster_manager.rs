@@ -123,7 +123,6 @@ impl ClusterManager {
         permission_service: Option<PermissionService>,
         cache_invalidation: Option<synctv_core::cache::CacheInvalidationService>,
     ) -> ClusterResult<Self> {
-        let message_hub = Arc::new(RoomMessageHub::new());
         let deduplicator = Arc::new(MessageDeduplicator::new(
             config.dedup_window,
             config.cleanup_interval,
@@ -131,11 +130,34 @@ impl ClusterManager {
 
         let (admin_event_tx, _) = broadcast::channel(4096);
 
-        // Start Redis pub/sub if Redis URL is provided
-        let (redis_publish_tx, redis_critical_tx, redis_pubsub) = if config.redis_url.is_empty() {
+        // Start Redis pub/sub if Redis URL is provided.
+        // When Redis is configured, also enable distributed subscription state on
+        // the message hub and auto-spawn its TTL refresh task.
+        let (message_hub, redis_publish_tx, redis_critical_tx, redis_pubsub) = if config.redis_url.is_empty() {
             warn!("Redis URL not provided, running in single-node mode");
-            (None, None, None)
+            let hub = Arc::new(RoomMessageHub::new());
+            (hub, None, None, None)
         } else {
+            // Create a Redis connection for the message hub's distributed
+            // subscription state and TTL refresh background task.
+            let hub = {
+                let client = redis::Client::open(config.redis_url.clone())
+                    .map_err(|e| crate::error::Error::Redis(e.to_string()))?;
+                match client.get_connection_manager().await {
+                    Ok(conn) => RoomMessageHub::new()
+                        .with_redis(conn, &config.key_prefix),
+                    Err(e) => {
+                        warn!(
+                            error = %e,
+                            "Failed to create Redis connection for RoomMessageHub TTL refresh; \
+                             falling back to local-only hub (subscription state will not be persisted)"
+                        );
+                        RoomMessageHub::new()
+                    }
+                }
+            };
+            let message_hub = Arc::new(hub);
+
             let redis_pubsub = Arc::new(
                 RedisPubSub::with_key_prefix(
                     &config.redis_url,
@@ -183,7 +205,7 @@ impl ClusterManager {
                 }
             });
 
-            (Some(tx), Some(critical_tx), Some(redis_pubsub))
+            (message_hub, Some(tx), Some(critical_tx), Some(redis_pubsub))
         };
 
         Ok(Self {

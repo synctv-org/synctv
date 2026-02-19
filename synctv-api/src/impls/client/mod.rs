@@ -4,7 +4,7 @@
 //! Used by both HTTP and gRPC handlers.
 //!
 //! Split into sub-modules by domain:
-//! - `auth`: register, login, logout, `refresh_token`
+//! - `auth`: register, login, `refresh_token`
 //! - `user`: `get_profile`, `set_username`, `set_password`
 //! - `room`: create/get/join/leave/delete room, settings, chat, hot rooms
 //! - `member`: `get_members`, kick, ban, unban, `set_permissions`
@@ -48,7 +48,15 @@ use crate::impls::ApiError;
 
 /// Validate a password that is being **set** (create room, set password, update settings).
 fn validate_password_for_set(password: &str) -> Result<(), ApiError> {
-    if password.chars().count() < ROOM_PASSWORD_MIN {
+    // Issue #72: Reject passwords that are purely whitespace. A password of e.g. "   "
+    // looks non-empty to a length check but provides no protection and confuses users.
+    let trimmed = password.trim();
+    if trimmed.is_empty() {
+        return Err(ApiError::InvalidInput(
+            "Room password cannot be empty or whitespace only".to_string(),
+        ));
+    }
+    if trimmed.chars().count() < ROOM_PASSWORD_MIN {
         return Err(ApiError::InvalidInput(format!("Password too short (minimum {ROOM_PASSWORD_MIN} characters)")));
     }
     if password.chars().count() > ROOM_PASSWORD_MAX {
@@ -97,8 +105,6 @@ pub struct ClientApiImpl {
     pub redis_conn: Option<redis::aio::ConnectionManager>,
     /// Rate limiter for per-endpoint rate limiting (password checks, etc.)
     pub rate_limiter: Option<synctv_core::service::rate_limit::RateLimiter>,
-    /// Security pipeline for token blacklisting on logout
-    pub security_pipeline: Option<Arc<synctv_core::service::SecurityPipeline>>,
     /// Resolved built-in STUN URL (e.g. "stun:203.0.113.1:3478"), set only when the
     /// built-in STUN server started successfully with a valid external address.
     /// When `None`, the built-in STUN entry is omitted from ICE server lists.
@@ -135,7 +141,6 @@ impl ClientApiImpl {
             redis_publish_tx: None,
             redis_conn: None,
             rate_limiter: None,
-            security_pipeline: None,
             builtin_stun_url: None,
         }
     }
@@ -156,7 +161,6 @@ impl ClientApiImpl {
             redis_publish_tx: None,
             redis_conn: None,
             rate_limiter: None,
-            security_pipeline: None,
             builtin_stun_url: None,
         }
     }
@@ -179,13 +183,6 @@ impl ClientApiImpl {
     #[must_use]
     pub fn with_rate_limiter(mut self, rate_limiter: synctv_core::service::rate_limit::RateLimiter) -> Self {
         self.rate_limiter = Some(rate_limiter);
-        self
-    }
-
-    /// Set the security pipeline for token blacklisting on logout
-    #[must_use]
-    pub fn with_security_pipeline(mut self, pipeline: Arc<synctv_core::service::SecurityPipeline>) -> Self {
-        self.security_pipeline = Some(pipeline);
         self
     }
 

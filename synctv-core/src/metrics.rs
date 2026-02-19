@@ -272,6 +272,19 @@ pub mod cache {
             REGISTRY.clone()
         ).expect("Failed to register CACHE_OPERATION_DURATION")
     });
+
+    /// Counter for broadcast-channel-lag-triggered full L1 cache flushes.
+    ///
+    /// Issue #32: When the invalidation channel lags, all L1 caches are flushed.
+    /// This counter lets operators observe flush frequency and tune channel capacity.
+    pub static CACHE_LAG_FLUSH_TOTAL: std::sync::LazyLock<CounterVec> = std::sync::LazyLock::new(|| {
+        register_counter_vec_with_registry!(
+            "cache_lag_flush_total",
+            "Total L1 cache flushes triggered by broadcast channel lag",
+            &["component"],
+            REGISTRY.clone()
+        ).expect("Failed to register CACHE_LAG_FLUSH_TOTAL")
+    });
 }
 
 /// Database operations

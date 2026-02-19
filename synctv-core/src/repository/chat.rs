@@ -39,8 +39,12 @@ impl ChatRepository {
         Ok(msg)
     }
 
-    /// Get chat history for a room
-    /// Returns messages in reverse chronological order (newest first)
+    /// Get chat history for a room using legacy timestamp-based cursor.
+    /// Returns messages in reverse chronological order (newest first).
+    ///
+    /// Prefer [`list_by_room_cursor`] for large rooms to avoid the O(N) OFFSET
+    /// scan that the timestamp approach causes when many messages share the same
+    /// timestamp.
     pub async fn list_by_room(
         &self,
         room_id: &RoomId,
@@ -81,6 +85,67 @@ impl ChatRepository {
         };
 
         Ok(messages)
+    }
+
+    /// Get chat history using keyset (cursor) pagination.
+    ///
+    /// Returns at most `limit` messages (capped at 100) ordered by `id DESC`.
+    /// When `before_id` is `Some`, only messages with `id < before_id` are
+    /// returned — this avoids the O(N) OFFSET scan that timestamp-based
+    /// pagination causes for rooms with millions of messages.
+    ///
+    /// Returns `(messages, next_cursor)` where `next_cursor` is the `id` of
+    /// the oldest returned message (to be used as `before_id` in the next call),
+    /// or `None` when no more messages exist.
+    pub async fn list_by_room_cursor(
+        &self,
+        room_id: &RoomId,
+        before_id: Option<&str>,
+        limit: i32,
+    ) -> Result<(Vec<ChatMessage>, Option<String>)> {
+        // Enforce maximum page size to prevent OOM on very large rooms
+        let limit = limit.clamp(1, 100);
+
+        let messages = if let Some(cursor) = before_id {
+            sqlx::query_as::<_, ChatMessage>(
+                r"
+                SELECT id, room_id, user_id, content, message_type, created_at
+                FROM chat_messages
+                WHERE room_id = $1 AND id < $2
+                ORDER BY id DESC
+                LIMIT $3
+                ",
+            )
+            .bind(room_id.as_str())
+            .bind(cursor)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            sqlx::query_as::<_, ChatMessage>(
+                r"
+                SELECT id, room_id, user_id, content, message_type, created_at
+                FROM chat_messages
+                WHERE room_id = $1
+                ORDER BY id DESC
+                LIMIT $2
+                ",
+            )
+            .bind(room_id.as_str())
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?
+        };
+
+        // Determine next cursor: the ID of the oldest (last) message in this page.
+        // If we got a full page there may be more; otherwise we're at the beginning.
+        let next_cursor = if messages.len() as i32 == limit {
+            messages.last().map(|m| m.id.clone())
+        } else {
+            None
+        };
+
+        Ok((messages, next_cursor))
     }
 
     /// Get a specific message by ID

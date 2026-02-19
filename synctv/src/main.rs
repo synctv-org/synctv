@@ -512,14 +512,22 @@ async fn main() -> Result<()> {
         ),
     );
 
-    // 5. Initialize services (needed for settings_registry)
-    let synctv_services = init_services(pool.clone(), &config, cache_invalidation_service.clone()).await?;
-
-    // Start the cache invalidation Redis subscriber (exactly once, after all
-    // components have registered their invalidation callbacks via init_services).
+    // 4.8. Start the cache invalidation Redis subscriber BEFORE init_services.
+    //
+    // Issue #44: the subscriber must be running before any service publishes an
+    // invalidation event.  If start() is called after init_services(), there is a
+    // window where cache-invalidation messages published during service
+    // initialization are dropped because no subscriber is listening yet.
+    //
+    // The subscriber is built with an internal channel so it can buffer messages
+    // that arrive before all callbacks are registered.  Callbacks are registered
+    // during init_services() below, which is the only caller that needs them.
     if let Err(e) = cache_invalidation_service.start().await {
         warn!("Failed to start cache invalidation listener: {}", e);
     }
+
+    // 5. Initialize services (needed for settings_registry)
+    let synctv_services = init_services(pool.clone(), &config, cache_invalidation_service.clone()).await?;
 
     // 4.6. Initialize chat message partitions (runs on every node at startup)
     info!("Initializing chat message partitions...");
@@ -790,18 +798,7 @@ async fn main() -> Result<()> {
         node_registry,
         health_monitor,
         load_balancer,
-        redis_conn: {
-            // Extract a snapshot of the current ConnectionManager from the shared
-            // Arc<RwLock<>> for use in the HTTP/gRPC handler layers.  In Sentinel
-            // mode the background health check keeps the inner value up-to-date;
-            // for request-time operations the ConnectionManager's internal
-            // reconnect logic handles transient failures.
-            if let Some(ref shared) = synctv_services.redis_conn {
-                Some(shared.read().await.clone())
-            } else {
-                None
-            }
-        },
+        redis_conn: synctv_services.redis_conn.clone(),
         settings_cancel: synctv_services.settings_cancel.clone(),
         partition_cancel,
         leader_elector,

@@ -10,6 +10,8 @@ use crate::proto::client::{RegisterRequest, RegisterResponse, LoginRequest, Logi
 /// Register a new user
 pub async fn register(
     State(state): State<AppState>,
+    connect_info: axum::extract::ConnectInfo<std::net::SocketAddr>,
+    headers: axum::http::HeaderMap,
     Json(mut req): Json<RegisterRequest>,
 ) -> AppResult<Json<RegisterResponse>> {
     // Validate and sanitize username
@@ -20,9 +22,28 @@ pub async fn register(
     super::validation::validate_password(&req.password)
         .map_err(|e| super::AppError::bad_request(e.to_string()))?;
 
+    // Extract client IP with trusted-proxy check (same pattern as login, Issue #24)
+    let socket_ip = connect_info.0.ip();
+    let client_ip = if state.config.server.is_trusted_proxy(&socket_ip) {
+        headers
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.split(',').next())
+            .and_then(|s| s.trim().parse::<std::net::IpAddr>().ok())
+            .or_else(|| {
+                headers
+                    .get("x-real-ip")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.trim().parse::<std::net::IpAddr>().ok())
+            })
+            .unwrap_or(socket_ip)
+    } else {
+        socket_ip
+    };
+
     let response = state
         .client_api
-        .register(req)
+        .register(req, Some(client_ip))
         .await
         .map_err(super::error::map_api_error)?;
 
@@ -32,26 +53,35 @@ pub async fn register(
 /// Login with username and password
 pub async fn login(
     State(state): State<AppState>,
+    connect_info: axum::extract::ConnectInfo<std::net::SocketAddr>,
     headers: axum::http::HeaderMap,
     Json(req): Json<LoginRequest>,
 ) -> AppResult<Json<LoginResponse>> {
-    // Extract client IP from X-Forwarded-For or X-Real-IP headers.
-    // Behind a reverse proxy these headers carry the real client IP.
-    let client_ip = headers
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.split(',').next())
-        .and_then(|s| s.trim().parse::<std::net::IpAddr>().ok())
-        .or_else(|| {
-            headers
-                .get("x-real-ip")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.trim().parse::<std::net::IpAddr>().ok())
-        });
+    let socket_ip = connect_info.0.ip();
+
+    // Only trust X-Forwarded-For / X-Real-IP when the request comes from a
+    // configured trusted proxy. Blindly accepting these headers allows an
+    // attacker to forge their IP and bypass per-IP brute-force protection.
+    let client_ip = if state.config.server.is_trusted_proxy(&socket_ip) {
+        headers
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.split(',').next())
+            .and_then(|s| s.trim().parse::<std::net::IpAddr>().ok())
+            .or_else(|| {
+                headers
+                    .get("x-real-ip")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.trim().parse::<std::net::IpAddr>().ok())
+            })
+            .unwrap_or(socket_ip)
+    } else {
+        socket_ip
+    };
 
     let response = state
         .client_api
-        .login(req, client_ip)
+        .login(req, Some(client_ip))
         .await
         .map_err(super::error::map_api_error)?;
 

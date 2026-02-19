@@ -20,7 +20,7 @@ use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, warn};
 
-use crate::models::UserId;
+use crate::models::{RoomId, UserId};
 use crate::{Error, Result};
 
 /// Redis key prefix for WebSocket tickets
@@ -35,6 +35,11 @@ const TICKET_LENGTH: usize = 32;
 pub struct WsTicketData {
     /// User ID associated with this ticket
     pub user_id: String,
+    /// Room ID the ticket is bound to.
+    ///
+    /// Tickets are room-scoped: a ticket created for room A cannot be used to
+    /// authenticate a WebSocket connection to room B (Issue #65).
+    pub room_id: String,
     /// When the ticket was created (Unix timestamp)
     pub created_at: u64,
 }
@@ -196,16 +201,18 @@ impl WsTicketService {
         self.redis_conn.is_some()
     }
 
-    /// Create a new ticket for a user
+    /// Create a new ticket for a user bound to a specific room
     ///
     /// Returns a ticket string that can be used once for WebSocket authentication.
-    /// The ticket expires after `ticket_ttl_secs` seconds.
-    pub async fn create_ticket(&self, user_id: &UserId) -> Result<String> {
+    /// The ticket expires after `ticket_ttl_secs` seconds and is only valid for
+    /// the supplied `room_id` (Issue #65).
+    pub async fn create_ticket(&self, user_id: &UserId, room_id: &RoomId) -> Result<String> {
         // Generate a random ticket
         let ticket = Self::generate_ticket();
 
         let ticket_data = WsTicketData {
             user_id: user_id.as_str().to_string(),
+            room_id: room_id.as_str().to_string(),
             created_at: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -257,9 +264,11 @@ impl WsTicketService {
 
     /// Validate and consume a ticket
     ///
-    /// Returns the user ID associated with the ticket if valid.
-    /// The ticket is deleted after use (one-time use).
-    pub async fn validate_and_consume(&self, ticket: &str) -> Result<UserId> {
+    /// Returns the user ID associated with the ticket if valid and the ticket's
+    /// `room_id` matches the expected `room_id`. The ticket is deleted after use
+    /// (one-time use). Passing a ticket for a different room returns an error so that
+    /// tickets cannot be replayed across rooms (Issue #65).
+    pub async fn validate_and_consume(&self, ticket: &str, expected_room_id: &RoomId) -> Result<UserId> {
         // Try Redis first (multi-replica mode)
         if let Some(ref conn) = self.redis_conn {
             let key = format!("{WS_TICKET_PREFIX}{ticket}");
@@ -291,8 +300,20 @@ impl WsTicketService {
                 Error::Internal(format!("Failed to deserialize ticket data: {e}"))
             })?;
 
+            // Room-bound validation: reject the ticket if it was issued for a different room.
+            if ticket_data.room_id != expected_room_id.as_str() {
+                debug!(
+                    ticket_room = %ticket_data.room_id,
+                    expected_room = %expected_room_id.as_str(),
+                    mode = "redis",
+                    "WebSocket ticket rejected: room mismatch"
+                );
+                return Err(Error::Authorization("Ticket not valid for this room".to_string()));
+            }
+
             debug!(
                 user_id = %ticket_data.user_id,
+                room_id = %ticket_data.room_id,
                 mode = "redis",
                 "WebSocket ticket validated and consumed"
             );
@@ -307,8 +328,20 @@ impl WsTicketService {
                 return Err(Error::Authorization("Invalid or expired ticket".to_string()));
             };
 
+            // Room-bound validation
+            if ticket_data.room_id != expected_room_id.as_str() {
+                debug!(
+                    ticket_room = %ticket_data.room_id,
+                    expected_room = %expected_room_id.as_str(),
+                    mode = "memory",
+                    "WebSocket ticket rejected: room mismatch"
+                );
+                return Err(Error::Authorization("Ticket not valid for this room".to_string()));
+            }
+
             debug!(
                 user_id = %ticket_data.user_id,
+                room_id = %ticket_data.room_id,
                 mode = "memory",
                 "WebSocket ticket validated and consumed"
             );
@@ -372,6 +405,10 @@ mod tests {
         UserId::from_string(id.to_string())
     }
 
+    fn create_test_room_id(id: &str) -> RoomId {
+        RoomId::from_string(id.to_string())
+    }
+
     #[test]
     fn test_ticket_generation() {
         let ticket1 = WsTicketService::generate_ticket();
@@ -390,6 +427,7 @@ mod tests {
     fn test_ticket_data_serialization() {
         let data = WsTicketData {
             user_id: "user123".to_string(),
+            room_id: "room456".to_string(),
             created_at: 1234567890,
         };
 
@@ -397,6 +435,7 @@ mod tests {
         let decoded: WsTicketData = serde_json::from_str(&json).unwrap();
 
         assert_eq!(data.user_id, decoded.user_id);
+        assert_eq!(data.room_id, decoded.room_id);
         assert_eq!(data.created_at, decoded.created_at);
     }
 
@@ -404,13 +443,14 @@ mod tests {
     async fn test_ticket_service_memory_mode() {
         let service = WsTicketService::with_memory(Some(30));
         let user_id = create_test_user_id("user1");
+        let room_id = create_test_room_id("room1");
 
         // Should work in memory mode
-        let ticket = service.create_ticket(&user_id).await;
+        let ticket = service.create_ticket(&user_id, &room_id).await;
         assert!(ticket.is_ok());
 
         // Validate and consume
-        let result = service.validate_and_consume(&ticket.unwrap()).await;
+        let result = service.validate_and_consume(&ticket.unwrap(), &room_id).await;
         assert!(result.is_ok());
         assert_eq!(result.unwrap().as_str(), "user1");
     }
@@ -419,38 +459,56 @@ mod tests {
     async fn test_ticket_one_time_use_memory_mode() {
         let service = WsTicketService::with_memory(Some(30));
         let user_id = create_test_user_id("user1");
+        let room_id = create_test_room_id("room1");
 
-        let ticket = service.create_ticket(&user_id).await.unwrap();
+        let ticket = service.create_ticket(&user_id, &room_id).await.unwrap();
 
         // First use should succeed
-        let result1 = service.validate_and_consume(&ticket).await;
+        let result1 = service.validate_and_consume(&ticket, &room_id).await;
         assert!(result1.is_ok());
 
         // Second use should fail
-        let result2 = service.validate_and_consume(&ticket).await;
+        let result2 = service.validate_and_consume(&ticket, &room_id).await;
         assert!(result2.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_ticket_room_mismatch_rejected() {
+        let service = WsTicketService::with_memory(Some(30));
+        let user_id = create_test_user_id("user1");
+        let room_a = create_test_room_id("room-a");
+        let room_b = create_test_room_id("room-b");
+
+        // Create ticket for room A
+        let ticket = service.create_ticket(&user_id, &room_a).await.unwrap();
+
+        // Using the ticket for room B should fail
+        let result = service.validate_and_consume(&ticket, &room_b).await;
+        assert!(result.is_err(), "Ticket for room A should not be valid for room B");
     }
 
     #[tokio::test]
     async fn test_ticket_expiration_memory_mode() {
         let service = WsTicketService::with_memory(Some(1)); // 1 second TTL
         let user_id = create_test_user_id("user1");
+        let room_id = create_test_room_id("room1");
 
-        let ticket = service.create_ticket(&user_id).await.unwrap();
+        let ticket = service.create_ticket(&user_id, &room_id).await.unwrap();
 
         // Wait for expiration
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
         // Should be expired
-        let result = service.validate_and_consume(&ticket).await;
+        let result = service.validate_and_consume(&ticket, &room_id).await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn test_invalid_ticket_memory_mode() {
         let service = WsTicketService::with_memory(Some(30));
+        let room_id = create_test_room_id("room1");
 
-        let result = service.validate_and_consume("invalid_ticket").await;
+        let result = service.validate_and_consume("invalid_ticket", &room_id).await;
         assert!(result.is_err());
     }
 

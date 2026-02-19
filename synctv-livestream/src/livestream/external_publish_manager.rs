@@ -21,6 +21,12 @@ use synctv_xiu::streamhub::define::{StreamHubEvent, StreamHubEventSender};
 use synctv_xiu::streamhub::stream::StreamIdentifier;
 use tracing::{debug, error, info, warn};
 
+/// Default maximum number of concurrent external pull-to-publish streams.
+///
+/// Issue #56: Unlimited pull streams would exhaust memory on a heavily-loaded node.
+/// This default can be overridden via `ExternalPublishManager::with_max_streams()`.
+const DEFAULT_MAX_CONCURRENT_STREAMS: usize = 100;
+
 /// Manages external pull-to-publish streams.
 ///
 /// Each stream is lazily started on the first viewer request.  The manager
@@ -41,6 +47,9 @@ pub struct ExternalPublishManager {
     /// Handle for the background creation lock cleanup task.
     /// Auto-started in `with_timeouts()` to prevent memory leaks from failed stream creation attempts.
     _cleanup_handle: tokio::task::JoinHandle<()>,
+    /// Maximum number of concurrent pull streams.
+    /// Issue #56: Prevents memory exhaustion from unlimited stream creation.
+    max_concurrent_streams: usize,
 }
 
 impl ExternalPublishManager {
@@ -59,6 +68,18 @@ impl ExternalPublishManager {
     #[must_use]
     pub fn with_grpc_address(mut self, grpc_address: String) -> Self {
         self.local_grpc_address = grpc_address;
+        self
+    }
+
+    /// Set the maximum number of concurrent pull streams (Issue #56).
+    ///
+    /// When this limit is reached, `get_or_create` returns an error instead of
+    /// creating a new stream, preventing memory exhaustion from unlimited stream creation.
+    ///
+    /// Default: `DEFAULT_MAX_CONCURRENT_STREAMS` (100).
+    #[must_use]
+    pub fn with_max_streams(mut self, max: usize) -> Self {
+        self.max_concurrent_streams = max;
         self
     }
 
@@ -100,6 +121,7 @@ impl ExternalPublishManager {
             stream_hub_event_sender,
             http_client,
             _cleanup_handle: cleanup_handle,
+            max_concurrent_streams: DEFAULT_MAX_CONCURRENT_STREAMS,
         }
     }
 
@@ -153,11 +175,27 @@ impl ExternalPublishManager {
             return Ok(stream);
         }
 
+        // Issue #56: Enforce max concurrent pull streams to prevent memory exhaustion.
+        let current_count = self.pool.streams.len();
+        if current_count >= self.max_concurrent_streams {
+            warn!(
+                "Max concurrent pull streams ({}) reached for {}/{}. \
+                 Rejecting new stream request to prevent memory exhaustion.",
+                self.max_concurrent_streams, room_id, media_id
+            );
+            return Err(crate::error::StreamError::InvalidState(format!(
+                "Max concurrent pull streams ({}) reached. Try again later.",
+                self.max_concurrent_streams
+            )));
+        }
+
         info!(
-            "Lazy-load: Creating external publish stream for {}/{} from {}",
+            "Lazy-load: Creating external publish stream for {}/{} from {} ({}/{} active streams)",
             room_id,
             media_id,
-            source_url
+            source_url,
+            current_count + 1,
+            self.max_concurrent_streams,
         );
 
         let stream = Arc::new(ExternalPublishStream::new(
@@ -183,27 +221,40 @@ impl ExternalPublishManager {
             ));
         }
 
-        // Register as publisher in Redis FIRST so other nodes can discover this stream.
-        // If registration fails, don't start the stream at all to avoid orphaned frames.
+        // Issue #50: Start the stream BEFORE registering in Redis to eliminate the
+        // register-before-start race condition.  If registration happened first and
+        // the process crashed between registration and stream startup, a stale phantom
+        // entry would remain in Redis until TTL expiry, preventing any other node from
+        // taking over the stream.
+        //
+        // New ordering:
+        //   1. Start the puller (connect to source, begin frame ingestion)
+        //   2. Register in Redis only after startup succeeds
+        //
+        // Residual risk: if the process crashes between step 1 and step 2, the stream
+        // runs locally but isn't discoverable by other nodes until it re-registers on
+        // the next viewer request.  This is a much smaller window than the reverse order
+        // and self-heals on the next request without manual cleanup.
+
+        // Start the puller (pushes frames into local StreamHub)
+        if let Err(e) = stream.start().await {
+            error!("Failed to start external stream, not registering: {e}");
+            return Err(e);
+        }
+
+        // Register as publisher in Redis now that the stream is confirmed running.
+        // If registration fails, stop the stream to avoid running unregistered.
         if let Err(e) = self
             .registry
             .try_register_publisher(room_id, media_id, &self.local_node_id, "external_puller", &self.local_grpc_address)
             .await
         {
-            error!("Failed to register external publisher in Redis: {e}");
+            error!("Failed to register external publisher in Redis after stream start, stopping stream: {e}");
+            // Roll back: stop the stream since we can't register it
+            let _ = stream.stop().await;
             return Err(crate::error::StreamError::RegistryError(
                 format!("Failed to register publisher in Redis: {e}"),
             ));
-        }
-
-        // Start the puller (pushes frames into local StreamHub)
-        if let Err(e) = stream.start().await {
-            error!("Failed to start external stream after registration, unregistering: {e}");
-            // Roll back: unregister from Redis since stream didn't start
-            if let Err(unreg_err) = self.registry.unregister_publisher(room_id, media_id).await {
-                warn!("Failed to unregister after stream start failure: {unreg_err}");
-            }
-            return Err(e);
         }
 
         // Creation path: increment subscriber count exactly once for the viewer

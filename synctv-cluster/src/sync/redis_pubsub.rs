@@ -13,6 +13,15 @@ use tracing::{debug, error, info, warn};
 /// Timeout for Redis operations in seconds
 const REDIS_TIMEOUT_SECS: u64 = 5;
 
+/// Returns `true` if the Redis error indicates the current connection has become
+/// read-only or is still loading data — both symptoms of a Sentinel failover in
+/// progress.  When detected, callers should drop the connection and reconnect
+/// immediately rather than treating the error as a retryable publish failure.
+fn is_sentinel_failover_error(e: &anyhow::Error) -> bool {
+    let msg = e.to_string();
+    msg.contains("READONLY") || msg.contains("LOADING")
+}
+
 /// Initial backoff delay for subscriber reconnection
 const INITIAL_BACKOFF_SECS: u64 = 1;
 
@@ -373,11 +382,23 @@ impl RedisPubSub {
                                 );
                             }
                             Err(e) => {
-                                error!(
-                                    error = %e,
-                                    event_type = event_type,
-                                    "Failed to publish event, buffering for retry after reconnect"
-                                );
+                                // READONLY or LOADING errors indicate a Sentinel failover.
+                                // Reset backoff so we reconnect quickly to the new master
+                                // instead of waiting through the normal exponential delay.
+                                if is_sentinel_failover_error(&e) {
+                                    warn!(
+                                        error = %e,
+                                        event_type = event_type,
+                                        "Sentinel failover detected (READONLY/LOADING), reconnecting immediately"
+                                    );
+                                    backoff_secs = INITIAL_BACKOFF_SECS;
+                                } else {
+                                    error!(
+                                        error = %e,
+                                        event_type = event_type,
+                                        "Failed to publish event, buffering for retry after reconnect"
+                                    );
+                                }
                                 // Buffer failed request for retry after reconnection
                                 retry_buffer.push(req);
 

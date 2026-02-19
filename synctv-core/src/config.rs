@@ -967,11 +967,25 @@ impl Config {
             );
         }
 
-        // Warn if cluster_secret is empty when Redis is configured (multi-replica mode)
+        // Error if cluster_secret is empty when Redis is configured (Issue #39).
+        //
+        // An empty `cluster_secret` means that ANY node claiming to be part of the
+        // cluster can call inter-node gRPC endpoints without authentication.  Redis
+        // enables cross-replica coordination, so its presence signals that this
+        // deployment intends to run in multi-replica mode, which requires a secret.
+        //
+        // Operators who genuinely want Redis for single-node features (e.g., rate
+        // limiting, token blacklist, cache invalidation) without cluster mode MUST
+        // still set a non-empty `cluster_secret` to acknowledge that they understand
+        // the implications.  A short random value (e.g., `openssl rand -hex 32`) is
+        // sufficient; the value is only used for inter-node gRPC authentication.
         if !self.redis.url.is_empty() && self.server.cluster_secret.is_empty() {
-            tracing::warn!(
-                "Redis is configured but server.cluster_secret is empty. \
-                 In multi-replica deployments, set cluster_secret to secure inter-node gRPC communication."
+            errors.push(
+                "server.cluster_secret must be set when Redis is configured. \
+                 An empty cluster_secret leaves inter-node gRPC endpoints unauthenticated. \
+                 Generate a secret with: openssl rand -hex 32 \
+                 and set it as SYNCTV_SERVER_CLUSTER_SECRET or server.cluster_secret in your config."
+                    .to_string(),
             );
         }
 
@@ -1333,7 +1347,9 @@ mod tests {
                 enable_reflection: false,
                 trusted_proxies: Vec::new(),
                 cors_allowed_origins: Vec::new(),
-                cluster_secret: String::new(),
+                // A non-empty cluster_secret is required whenever Redis is configured (Issue #39).
+                // Tests that explicitly clear this field test the validation error path.
+                cluster_secret: "test-cluster-secret-for-validation".to_string(),
                 advertise_host: String::new(),
                 shutdown_drain_timeout_seconds: 30,
                 disable_ws_token_query: true,
@@ -1349,7 +1365,11 @@ mod tests {
             oauth2: OAuth2Config::default(),
             email: EmailConfig::default(),
             media_providers: MediaProvidersConfig::default(),
-            webrtc: WebRTCConfig::default(),
+            webrtc: WebRTCConfig {
+                // In cluster mode (cluster_secret is set), stun_external_addr is required.
+                stun_external_addr: "203.0.113.1:3478".to_string(),
+                ..WebRTCConfig::default()
+            },
             connection_limits: ConnectionLimitsConfig::default(),
             bootstrap: BootstrapConfig {
                 create_root_user: true,
@@ -1606,5 +1626,26 @@ mod tests {
             "Expected cluster+no-redis error, got: {:?}",
             errors
         );
+    }
+
+    #[test]
+    fn test_validate_redis_configured_requires_cluster_secret() {
+        // Issue #39: Redis configured but cluster_secret empty → must be an error
+        let mut config = valid_prod_config();
+        config.server.cluster_secret = String::new(); // clear the secret
+        // Redis is configured by default in valid_prod_config()
+        let errors = config.validate().unwrap_err();
+        assert!(
+            errors.iter().any(|e| e.contains("cluster_secret must be set when Redis is configured")),
+            "Expected cluster_secret error, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn test_validate_redis_configured_with_cluster_secret_ok() {
+        // valid_prod_config() already sets cluster_secret, so this should pass.
+        let config = valid_prod_config();
+        assert!(config.validate().is_ok(), "Expected Ok with Redis + cluster_secret set");
     }
 }

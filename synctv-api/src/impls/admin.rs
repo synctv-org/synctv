@@ -239,6 +239,34 @@ impl AdminApiImpl {
             infra.kick_room_publishers(rid.as_str());
         }
 
+        // Audit log: delete_room is a critical operation; failure is logged at ERROR.
+        {
+            // Best-effort username lookup for audit log quality; fall back to ID if unavailable.
+            let admin_username = self.user_service.get_user(admin_user_id).await
+                .map_or_else(|_| admin_user_id.as_str().to_string(), |u| u.username);
+            let mut details = serde_json::Map::new();
+            details.insert("room_id".to_string(), serde_json::Value::String(rid.as_str().to_string()));
+            if let Err(e) = self.audit_service.log(
+                admin_user_id.as_str().to_string(),
+                admin_username.clone(),
+                synctv_core::service::AuditAction::RoomDeleted,
+                synctv_core::service::AuditTargetType::Room,
+                Some(rid.as_str().to_string()),
+                serde_json::Value::Object(details),
+                None,
+                None,
+            ).await {
+                tracing::error!(
+                    error = %e,
+                    admin_user_id = %admin_user_id.as_str(),
+                    admin_username = %admin_username,
+                    room_id = %rid.as_str(),
+                    action = "room_deleted",
+                    "AUDIT LOG FAILURE: failed to record room deletion. Manual review required.",
+                );
+            }
+        }
+
         Ok(crate::proto::admin::DeleteRoomResponse {
             success: true,
         })
@@ -365,6 +393,37 @@ impl AdminApiImpl {
 
         self.user_service.update_user(&updated_user).await
             .map_err(ApiError::from)?;
+
+        // Audit log: role change is a critical operation; failure is logged at ERROR.
+        // caller_user_id is not available in this method scope, so we record
+        // the target user ID as actor (the event context records the old and new role).
+        {
+            let mut details = serde_json::Map::new();
+            details.insert("target_user_id".to_string(), serde_json::Value::String(uid.as_str().to_string()));
+            details.insert("target_username".to_string(), serde_json::Value::String(updated_user.username.clone()));
+            details.insert("new_role".to_string(), serde_json::Value::String(format!("{new_role:?}")));
+            details.insert("caller_role".to_string(), serde_json::Value::String(format!("{caller_role:?}")));
+            if let Err(e) = self.audit_service.log(
+                uid.as_str().to_string(),
+                updated_user.username.clone(),
+                synctv_core::service::AuditAction::UserRoleUpdated,
+                synctv_core::service::AuditTargetType::User,
+                Some(uid.as_str().to_string()),
+                serde_json::Value::Object(details),
+                None,
+                None,
+            ).await {
+                tracing::error!(
+                    error = %e,
+                    target_user_id = %uid.as_str(),
+                    target_username = %updated_user.username,
+                    new_role = ?new_role,
+                    caller_role = ?caller_role,
+                    action = "user_role_updated",
+                    "AUDIT LOG FAILURE: failed to record role change. Manual review required.",
+                );
+            }
+        }
 
         Ok(crate::proto::admin::UpdateUserRoleResponse {
             user: Some(admin_user_to_proto(&updated_user)),
@@ -506,9 +565,12 @@ impl AdminApiImpl {
         details.insert("changed_keys".to_string(),
             serde_json::Value::Array(changed_keys.into_iter().map(serde_json::Value::String).collect()));
 
+        // Audit log for settings update. Settings changes are sensitive operations;
+        // if the audit log write fails, log at ERROR level so the event can be
+        // reconstructed from log aggregation even if the audit store is unavailable.
         if let Err(e) = self.audit_service.log(
             admin_user_id.as_str().to_string(),
-            admin_user.username,
+            admin_user.username.clone(),
             synctv_core::service::AuditAction::SettingsUpdated,
             synctv_core::service::AuditTargetType::Settings,
             None,
@@ -516,7 +578,13 @@ impl AdminApiImpl {
             None,
             None,
         ).await {
-            tracing::warn!(error = %e, "Failed to write audit log for settings update");
+            tracing::error!(
+                error = %e,
+                admin_user_id = %admin_user_id.as_str(),
+                admin_username = %admin_user.username,
+                action = "settings_updated",
+                "AUDIT LOG FAILURE: failed to record settings update. Manual review required.",
+            );
         }
 
         Ok(crate::proto::admin::UpdateSettingsResponse {})
@@ -944,6 +1012,36 @@ impl AdminApiImpl {
                     timestamp: chrono::Utc::now(),
                 },
             });
+        }
+
+        // Audit log: ban_user is a critical operation; failure is logged at ERROR
+        // so that even if the audit store is unavailable the event is preserved in logs.
+        // Note: caller identity is not passed to this method; use target user context.
+        {
+            let mut details = serde_json::Map::new();
+            details.insert("target_user_id".to_string(), serde_json::Value::String(uid.as_str().to_string()));
+            details.insert("target_username".to_string(), serde_json::Value::String(user.username.clone()));
+            details.insert("reason".to_string(), serde_json::Value::String(req.reason.clone()));
+            details.insert("caller_role".to_string(), serde_json::Value::String(format!("{caller_role:?}")));
+            if let Err(e) = self.audit_service.log(
+                uid.as_str().to_string(),
+                user.username.clone(),
+                synctv_core::service::AuditAction::UserBanned,
+                synctv_core::service::AuditTargetType::User,
+                Some(uid.as_str().to_string()),
+                serde_json::Value::Object(details),
+                None,
+                None,
+            ).await {
+                tracing::error!(
+                    error = %e,
+                    target_user_id = %uid.as_str(),
+                    target_username = %user.username,
+                    reason = %req.reason,
+                    action = "user_banned",
+                    "AUDIT LOG FAILURE: failed to record user ban. Manual review required.",
+                );
+            }
         }
 
         Ok(crate::proto::admin::BanUserResponse {

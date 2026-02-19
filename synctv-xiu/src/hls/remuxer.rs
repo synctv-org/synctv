@@ -892,7 +892,26 @@ impl StreamProcessor {
 
     async fn finalize_segment(&mut self, current_dts: i64, is_eof: bool) -> Result<(), HlsRemuxerError> {
         let ts_data = self.ts_muxer.get_data();
-        let duration_ms = current_dts - self.last_segment_dts;
+        // Issue #47: Guard against zero or negative segment durations caused by
+        // DTS non-monotonicity, first-segment edge cases, or encoder anomalies.
+        // A segment with zero/negative duration would produce an invalid M3U8 that
+        // players reject with a playlist parse error.
+        let raw_duration_ms = current_dts - self.last_segment_dts;
+        let duration_ms = if raw_duration_ms <= 0 {
+            tracing::warn!(
+                "Invalid segment duration {}ms for {}/{} (current_dts={}, last_segment_dts={}). \
+                 Using target segment duration {}ms as fallback.",
+                raw_duration_ms,
+                self.app_name,
+                self.stream_name,
+                current_dts,
+                self.last_segment_dts,
+                self.segment_duration_ms,
+            );
+            self.segment_duration_ms
+        } else {
+            raw_duration_ms
+        };
         let ts_data_len = ts_data.len();
 
         // Generate TS filename using nanoid (12 chars, like Go's SortUUID)

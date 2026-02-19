@@ -152,9 +152,19 @@ impl StreamRegistry {
         };
         let info_json = serde_json::to_string(&info)?;
 
-        // Atomic Lua script to prevent epoch race condition
+        // Atomic Lua script to prevent epoch TOCTOU race condition.
+        //
+        // Issue #51: The original script incremented the epoch BEFORE the HSETNX
+        // check, so other nodes could briefly observe a spuriously inflated epoch
+        // during the window between INCR and a failed HSETNX (followed by DECR).
+        //
+        // Fix: HSETNX first, then increment epoch ONLY if registration succeeded.
+        // This ensures the epoch counter only changes when ownership actually changes,
+        // eliminating the intermediate-epoch window entirely.
+        //
         // Returns: {registered (1 or 0), epoch}
-        // If HSETNX fails, epoch is decremented (rolled back)
+        //   - registered=1: new publisher registered; epoch is the new epoch value.
+        //   - registered=0: another publisher already exists; epoch is the current epoch.
         let lua_script = r#"
             local epoch_key = KEYS[1]
             local hash_key = KEYS[2]
@@ -163,22 +173,30 @@ impl StreamRegistry {
             local user_key = ARGV[3]
             local user_member = ARGV[4]
 
-            -- Atomically increment epoch
-            local epoch = redis.call('INCR', epoch_key)
+            -- Issue #51: Check HSETNX FIRST before touching the epoch.
+            -- Use a placeholder JSON with epoch=0 for the initial slot reservation.
+            -- Try to reserve the publisher slot (HSETNX returns 1 if set, 0 if exists)
+            local reserved = redis.call('HSETNX', hash_key, 'publisher', info_json_template)
 
-            -- Replace placeholder epoch in JSON (assumes epoch:0 pattern)
-            local info_json = string.gsub(info_json_template, '"epoch":0', '"epoch":' .. epoch)
-
-            -- Try to register (HSETNX returns 1 if set, 0 if exists)
-            local registered = redis.call('HSETNX', hash_key, 'publisher', info_json)
-
-            if registered == 0 then
-                -- Registration failed, rollback epoch
-                redis.call('DECR', epoch_key)
-                return {0, epoch - 1}
+            if reserved == 0 then
+                -- Slot already taken: another publisher is active.
+                -- Read current epoch for the caller's information (no modification).
+                local current_epoch = redis.call('GET', epoch_key)
+                return {0, tonumber(current_epoch) or 0}
             end
 
-            -- Registration successful, set TTL
+            -- Slot reserved: now increment epoch atomically.
+            -- Only now does the epoch change, so other nodes never see a spurious increment.
+            local epoch = redis.call('INCR', epoch_key)
+
+            -- Replace placeholder epoch=0 in JSON with the actual epoch value.
+            local info_json = string.gsub(info_json_template, '"epoch":0', '"epoch":' .. epoch)
+
+            -- Overwrite the placeholder entry with the fully-populated JSON.
+            -- HSET (not HSETNX) because we already own the slot.
+            redis.call('HSET', hash_key, 'publisher', info_json)
+
+            -- Set TTL on the publisher hash
             redis.call('EXPIRE', hash_key, ttl)
 
             -- Add to user reverse index if provided

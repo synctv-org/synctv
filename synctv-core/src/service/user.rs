@@ -79,12 +79,23 @@ impl UserService {
     /// When email verification is required (email service is configured), tokens
     /// are NOT returned -- the user must verify their email first. When email
     /// verification is not required, tokens are returned immediately.
+    ///
+    /// Per-IP brute-force protection is applied before processing: repeated failed
+    /// registration attempts (e.g., validation errors, username conflicts) from the
+    /// same IP are throttled using the same tiers as `login()`.
     pub async fn register(
         &self,
         username: String,
         email: Option<String>,
         password: String,
+        client_ip: Option<std::net::IpAddr>,
     ) -> Result<(User, Option<String>, Option<String>)> {
+        // Check per-IP brute-force before any processing. This throttles automated
+        // mass-registration attempts (credential stuffing, spam account creation).
+        if let Some(ref bf) = self.brute_force {
+            bf.check_allowed(&username, client_ip).await?;
+        }
+
         // Validate input
         self.validate_username(&username)?;
         if let Some(ref email) = email {
@@ -289,7 +300,21 @@ impl UserService {
     ///
     /// This method generates access and refresh tokens for a user who has been
     /// authenticated via `OAuth2`. Unlike `login()`, this skips password verification.
-    pub async fn login_oauth2(&self, user_id: &UserId) -> Result<(User, String, String)> {
+    ///
+    /// Per-IP brute-force protection is applied before token issuance. The provider
+    /// user ID is used as the per-account key (instead of username) since OAuth2 users
+    /// may not have a locally-assigned username yet at the time of lookup.
+    pub async fn login_oauth2(
+        &self,
+        user_id: &UserId,
+        provider_user_id: &str,
+        client_ip: Option<std::net::IpAddr>,
+    ) -> Result<(User, String, String)> {
+        // Check per-IP and per-account brute-force before token issuance.
+        if let Some(ref bf) = self.brute_force {
+            bf.check_allowed(provider_user_id, client_ip).await?;
+        }
+
         // Get user to ensure they exist and are active
         let user = self.repository
             .get_by_id(user_id)
@@ -301,7 +326,20 @@ impl UserService {
             || user.status == crate::models::UserStatus::Banned
             || user.status == crate::models::UserStatus::Pending
         {
+            // Record failure so repeated attempts against locked accounts are throttled
+            if let Some(ref bf) = self.brute_force {
+                if let Err(e) = bf.record_failure(provider_user_id, client_ip).await {
+                    tracing::warn!(error = %e, "Failed to record OAuth2 login failure for brute-force tracking");
+                }
+            }
             return Err(Error::Authentication("Authentication failed".to_string()));
+        }
+
+        // Successful OAuth2 login: reset brute-force counter for this provider user ID
+        if let Some(ref bf) = self.brute_force {
+            if let Err(e) = bf.reset(provider_user_id).await {
+                tracing::warn!(error = %e, "Failed to reset brute-force counter after successful OAuth2 login");
+            }
         }
 
         // Generate JWT tokens
@@ -341,6 +379,14 @@ impl UserService {
             || user.deleted_at.is_some()
         {
             return Err(Error::Authentication("Authentication failed".to_string()));
+        }
+
+        // Re-check email verification: if the requirement was enabled after the token was
+        // issued (or the user's email was un-verified by an admin), deny the refresh.
+        if self.email_verification_required && user.email.is_some() && !user.email_verified {
+            return Err(Error::Authentication(
+                "Email verification required".to_string(),
+            ));
         }
 
         // Reject refresh tokens issued with an old password version

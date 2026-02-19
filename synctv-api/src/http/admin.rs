@@ -156,6 +156,27 @@ fn admin_err_to_app_error(err: crate::impls::ApiError) -> AppError {
 }
 
 // ------------------------------------------------------------------
+// Pagination constants
+// ------------------------------------------------------------------
+
+/// Maximum page size for all list endpoints to ensure consistent API contract.
+const MAX_PAGE_SIZE: i32 = 200;
+
+// ------------------------------------------------------------------
+// ID validation helper
+// ------------------------------------------------------------------
+
+/// Validate a path-parameter ID (user_id, room_id, media_id, etc.).
+///
+/// Returns `Err(AppError)` with a 400 status when the ID is empty, too long,
+/// or contains characters outside `[a-zA-Z0-9_-]`.
+fn validate_path_id(id: &str, field: &'static str) -> Result<(), AppError> {
+    super::validation::validate_id(id, field)
+        .map(|_| ())
+        .map_err(|e| AppError::bad_request(format!("Invalid {field}: {e}")))
+}
+
+// ------------------------------------------------------------------
 // Router
 // ------------------------------------------------------------------
 
@@ -306,7 +327,7 @@ async fn list_users(
     let resp = api
         .list_users(admin::ListUsersRequest {
             page: q.page.unwrap_or(1),
-            page_size: q.page_size.unwrap_or(20).clamp(1, 200),
+            page_size: q.page_size.unwrap_or(20).clamp(1, MAX_PAGE_SIZE),
             status: status_i32,
             role: role_i32,
             search: q.search.unwrap_or_default(),
@@ -321,6 +342,7 @@ async fn get_user(
     State(state): State<AppState>,
     Path(user_id): Path<String>,
 ) -> AppResult<Json<admin::GetUserResponse>> {
+    validate_path_id(&user_id, "user_id")?;
     let api = require_admin_api(&state)?;
     let resp = api
         .get_user(admin::GetUserRequest { user_id })
@@ -344,6 +366,7 @@ async fn delete_user(
     State(state): State<AppState>,
     Path(user_id): Path<String>,
 ) -> AppResult<Json<admin::DeleteUserResponse>> {
+    validate_path_id(&user_id, "user_id")?;
     let api = require_admin_api(&state)?;
     let resp = api
         .delete_user(admin::DeleteUserRequest { user_id })
@@ -358,6 +381,7 @@ async fn set_user_role(
     Path(user_id): Path<String>,
     Json(req): Json<SetUserRoleRequest>,
 ) -> AppResult<Json<admin::UpdateUserRoleResponse>> {
+    validate_path_id(&user_id, "user_id")?;
     let api = require_admin_api(&state)?;
     // Convert string role to proto enum value
     let role_i32 = match req.role.as_str() {
@@ -379,6 +403,7 @@ async fn set_user_password(
     Path(user_id): Path<String>,
     Json(req): Json<SetUserPasswordRequest>,
 ) -> AppResult<Json<admin::UpdateUserPasswordResponse>> {
+    validate_path_id(&user_id, "user_id")?;
     let api = require_admin_api(&state)?;
     let resp = api
         .update_user_password(admin::UpdateUserPasswordRequest {
@@ -398,6 +423,7 @@ async fn set_user_username(
     Path(user_id): Path<String>,
     Json(req): Json<SetUserUsernameRequest>,
 ) -> AppResult<Json<admin::UpdateUserUsernameResponse>> {
+    validate_path_id(&user_id, "user_id")?;
     let api = require_admin_api(&state)?;
     let resp = api
         .update_user_username(admin::UpdateUserUsernameRequest {
@@ -415,6 +441,7 @@ async fn ban_user(
     Path(user_id): Path<String>,
     Json(req): Json<BanRequest>,
 ) -> AppResult<Json<admin::BanUserResponse>> {
+    validate_path_id(&user_id, "user_id")?;
     if req.reason.len() > 500 {
         return Err(AppError::bad_request("Reason too long (max 500 characters)"));
     }
@@ -432,6 +459,7 @@ async fn unban_user(
     State(state): State<AppState>,
     Path(user_id): Path<String>,
 ) -> AppResult<Json<admin::UnbanUserResponse>> {
+    validate_path_id(&user_id, "user_id")?;
     let api = require_admin_api(&state)?;
     let resp = api
         .unban_user(admin::UnbanUserRequest { user_id })
@@ -445,6 +473,7 @@ async fn approve_user(
     State(state): State<AppState>,
     Path(user_id): Path<String>,
 ) -> AppResult<Json<admin::ApproveUserResponse>> {
+    validate_path_id(&user_id, "user_id")?;
     let api = require_admin_api(&state)?;
     let resp = api
         .approve_user(admin::ApproveUserRequest { user_id })
@@ -459,12 +488,13 @@ async fn get_user_rooms(
     Path(user_id): Path<String>,
     Query(q): Query<PaginationQuery>,
 ) -> AppResult<Json<admin::GetUserRoomsResponse>> {
+    validate_path_id(&user_id, "user_id")?;
     let api = require_admin_api(&state)?;
     let resp = api
         .get_user_rooms(admin::GetUserRoomsRequest {
             user_id,
             page: q.page.unwrap_or(1),
-            page_size: q.page_size.unwrap_or(50).clamp(1, 200),
+            page_size: q.page_size.unwrap_or(50).clamp(1, MAX_PAGE_SIZE),
         })
         .await
         .map_err(admin_err_to_app_error)?;
@@ -500,7 +530,7 @@ async fn list_rooms(
     let resp = api
         .list_rooms(admin::ListRoomsRequest {
             page: q.page.unwrap_or(1),
-            page_size: q.page_size.unwrap_or(20).clamp(1, 200),
+            page_size: q.page_size.unwrap_or(20).clamp(1, MAX_PAGE_SIZE),
             status: q.status.unwrap_or_default(),
             search: q.search.unwrap_or_default(),
             creator_id: q.creator_id.unwrap_or_default(),
@@ -516,6 +546,7 @@ async fn get_room(
     State(state): State<AppState>,
     Path(room_id): Path<String>,
 ) -> AppResult<Json<admin::GetRoomResponse>> {
+    validate_path_id(&room_id, "room_id")?;
     let api = require_admin_api(&state)?;
     let resp = api
         .get_room(admin::GetRoomRequest { room_id })
@@ -529,6 +560,7 @@ async fn delete_room(
     State(state): State<AppState>,
     Path(room_id): Path<String>,
 ) -> AppResult<Json<admin::DeleteRoomResponse>> {
+    validate_path_id(&room_id, "room_id")?;
     let api = require_admin_api(&state)?;
     let resp = api
         .delete_room(admin::DeleteRoomRequest { room_id }, &auth.user_id)
@@ -543,6 +575,7 @@ async fn set_room_password(
     Path(room_id): Path<String>,
     Json(req): Json<SetRoomPasswordAdminRequest>,
 ) -> AppResult<Json<admin::UpdateRoomPasswordResponse>> {
+    validate_path_id(&room_id, "room_id")?;
     let api = require_admin_api(&state)?;
     let resp = api
         .update_room_password(admin::UpdateRoomPasswordRequest {
@@ -560,12 +593,13 @@ async fn get_room_members(
     Path(room_id): Path<String>,
     Query(q): Query<PaginationQuery>,
 ) -> AppResult<Json<admin::GetRoomMembersResponse>> {
+    validate_path_id(&room_id, "room_id")?;
     let api = require_admin_api(&state)?;
     let resp = api
         .get_room_members(admin::GetRoomMembersRequest {
             room_id,
             page: q.page.unwrap_or(1),
-            page_size: q.page_size.unwrap_or(100).clamp(1, 500),
+            page_size: q.page_size.unwrap_or(100).clamp(1, MAX_PAGE_SIZE),
         })
         .await
         .map_err(admin_err_to_app_error)?;
@@ -578,6 +612,7 @@ async fn ban_room(
     Path(room_id): Path<String>,
     Json(req): Json<BanRequest>,
 ) -> AppResult<Json<admin::BanRoomResponse>> {
+    validate_path_id(&room_id, "room_id")?;
     if req.reason.len() > 500 {
         return Err(AppError::bad_request("Reason too long (max 500 characters)"));
     }
@@ -595,6 +630,7 @@ async fn unban_room(
     State(state): State<AppState>,
     Path(room_id): Path<String>,
 ) -> AppResult<Json<admin::UnbanRoomResponse>> {
+    validate_path_id(&room_id, "room_id")?;
     let api = require_admin_api(&state)?;
     let resp = api
         .unban_room(admin::UnbanRoomRequest { room_id }, &auth.user_id)
@@ -608,6 +644,7 @@ async fn approve_room(
     State(state): State<AppState>,
     Path(room_id): Path<String>,
 ) -> AppResult<Json<admin::ApproveRoomResponse>> {
+    validate_path_id(&room_id, "room_id")?;
     let api = require_admin_api(&state)?;
     let resp = api
         .approve_room(admin::ApproveRoomRequest { room_id })
@@ -621,6 +658,7 @@ async fn get_room_settings(
     State(state): State<AppState>,
     Path(room_id): Path<String>,
 ) -> AppResult<Json<admin::GetRoomSettingsResponse>> {
+    validate_path_id(&room_id, "room_id")?;
     let api = require_admin_api(&state)?;
     let resp = api
         .get_room_settings(admin::GetRoomSettingsRequest { room_id })
@@ -635,6 +673,7 @@ async fn set_room_settings(
     Path(room_id): Path<String>,
     Json(req): Json<serde_json::Value>,
 ) -> AppResult<Json<admin::UpdateRoomSettingsResponse>> {
+    validate_path_id(&room_id, "room_id")?;
     let settings = serde_json::to_vec(&req)
         .map_err(|e| AppError::bad_request(format!("Invalid settings JSON: {e}")))?;
 
@@ -651,6 +690,7 @@ async fn reset_room_settings(
     State(state): State<AppState>,
     Path(room_id): Path<String>,
 ) -> AppResult<Json<admin::ResetRoomSettingsResponse>> {
+    validate_path_id(&room_id, "room_id")?;
     let api = require_admin_api(&state)?;
     let resp = api
         .reset_room_settings(admin::ResetRoomSettingsRequest { room_id }, &auth.user_id)
@@ -817,6 +857,7 @@ async fn add_admin(
     State(state): State<AppState>,
     Path(user_id): Path<String>,
 ) -> AppResult<Json<admin::AddAdminResponse>> {
+    validate_path_id(&user_id, "user_id")?;
     let api = require_admin_api(&state)?;
     let resp = api
         .add_admin(admin::AddAdminRequest { user_id })
@@ -830,6 +871,7 @@ async fn remove_admin(
     State(state): State<AppState>,
     Path(user_id): Path<String>,
 ) -> AppResult<Json<admin::RemoveAdminResponse>> {
+    validate_path_id(&user_id, "user_id")?;
     let api = require_admin_api(&state)?;
     let resp = api
         .remove_admin(admin::RemoveAdminRequest { user_id })
@@ -1011,12 +1053,13 @@ mod tests {
             ("user", synctv_proto::common::UserRole::User as i32),
         ];
         for (role_str, expected_i32) in role_mappings {
-            let actual = match role_str {
-                "root" => synctv_proto::common::UserRole::Root as i32,
-                "admin" => synctv_proto::common::UserRole::Admin as i32,
-                "user" => synctv_proto::common::UserRole::User as i32,
-                _ => panic!("Unknown role"),
+            let actual_opt = match role_str {
+                "root" => Some(synctv_proto::common::UserRole::Root as i32),
+                "admin" => Some(synctv_proto::common::UserRole::Admin as i32),
+                "user" => Some(synctv_proto::common::UserRole::User as i32),
+                _ => None,
             };
+            let actual = actual_opt.expect("Role must be one of root/admin/user");
             assert_eq!(actual, expected_i32, "Role '{}' mapping mismatch", role_str);
         }
     }
@@ -1077,17 +1120,17 @@ mod tests {
 
     #[test]
     fn test_room_members_page_size_clamp() {
-        // The handler clamps page_size to 1..=500
+        // The handler clamps page_size to 1..=MAX_PAGE_SIZE (200)
         let raw_page_size: i32 = 1000;
-        let clamped = raw_page_size.clamp(1, 500);
-        assert_eq!(clamped, 500);
+        let clamped = raw_page_size.clamp(1, MAX_PAGE_SIZE);
+        assert_eq!(clamped, MAX_PAGE_SIZE);
 
         let raw_page_size: i32 = 0;
-        let clamped = raw_page_size.clamp(1, 500);
+        let clamped = raw_page_size.clamp(1, MAX_PAGE_SIZE);
         assert_eq!(clamped, 1);
 
         let raw_page_size: i32 = 100;
-        let clamped = raw_page_size.clamp(1, 500);
+        let clamped = raw_page_size.clamp(1, MAX_PAGE_SIZE);
         assert_eq!(clamped, 100);
     }
 

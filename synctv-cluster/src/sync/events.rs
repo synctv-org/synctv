@@ -133,8 +133,17 @@ pub enum ClusterEvent {
         event_id: String,
         room_id: RoomId,
         message_type: String, // "offer", "answer", "ice_candidate"
-        from: String,         // "user_id:conn_id" (server-set, prevents forgery)
-        to: String,           // "user_id:conn_id"
+        /// Server-set field: `"<user_id>|<conn_id>"`.
+        ///
+        /// The `|` separator is used instead of `:` because user IDs may contain
+        /// colons (e.g., namespaced IDs).  Using `|` makes parsing unambiguous:
+        /// `from.splitn(2, '|')` always yields exactly `[user_id, conn_id]`.
+        from: String,
+        /// Client-provided target: `"<user_id>:<conn_id>"` or just `"<conn_id>"`.
+        ///
+        /// Parsed on the server with `rsplit_once(':')` so that colons in the
+        /// user_id portion are handled safely.
+        to: String,
         data: String,         // Opaque SDP/ICE data
         timestamp: DateTime<Utc>,
     },

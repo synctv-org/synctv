@@ -1,16 +1,15 @@
-//! Tower middleware layer for async token blacklist and password invalidation checking in gRPC.
+//! Tower middleware layer for async JWT security checking in gRPC.
 //!
-//! Tonic interceptors are synchronous and cannot perform async Redis lookups.
+//! Tonic interceptors are synchronous and cannot perform async database lookups.
 //! This tower layer wraps the entire gRPC server and runs **before** routing
 //! and per-service interceptors. It extracts the raw JWT bearer token from the
-//! HTTP `Authorization` header and performs four security checks:
+//! HTTP `Authorization` header and performs security checks:
 //! 1. JWT verification (validate signature, expiration, and access token type)
-//! 2. Token blacklist check (explicit logout/revocation)
-//! 3. Password invalidation check (tokens issued before password change)
-//! 4. Banned/deleted user check (defense-in-depth against banned users with valid JWTs)
+//! 2. Password invalidation check (tokens issued before password change)
+//! 3. Banned/deleted user check (defense-in-depth against banned users with valid JWTs)
 //!
-//! Requests with blacklisted or invalidated tokens, or from banned/deleted users,
-//! are rejected with `UNAUTHENTICATED` status.
+//! Requests with invalidated tokens or from banned/deleted users are rejected
+//! with `UNAUTHENTICATED` status.
 //! Requests without an `Authorization` header (public endpoints) pass through.
 
 use std::future::Future;
@@ -102,8 +101,8 @@ where
 
         Box::pin(async move {
             if let Some(token) = raw_token {
-                // Unified security check order (matches HTTP AuthUser extractor):
-                // 1. JWT verification  2. Blacklist  3. Password invalidation  4. Banned user
+                // Security check order (matches HTTP AuthUser extractor):
+                // 1. JWT verification  2. Password invalidation  3. Banned/deleted user
 
                 // Step 1: Verify JWT and extract claims
                 let claims = match jwt_service.verify_access_token(&token) {

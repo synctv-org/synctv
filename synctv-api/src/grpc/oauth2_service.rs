@@ -158,9 +158,11 @@ impl OAuth2Service for OAuth2GrpcService {
             .auth_interceptor
             .try_extract_user_id(request.metadata());
 
+        // Extract client IP for brute-force protection (Issue #24)
+        let client_ip = request.remote_addr().map(|addr| addr.ip());
         let req = request.into_inner();
         let result = self.oauth2_api
-            .exchange_authorization_code(&req.provider, &req.code, &req.state, current_user_id.as_ref())
+            .exchange_authorization_code(&req.provider, &req.code, &req.state, current_user_id.as_ref(), client_ip)
             .await
             .map_err(|e| {
                 error!("Failed to exchange authorization code: {}", e);

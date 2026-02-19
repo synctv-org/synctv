@@ -187,26 +187,6 @@ impl KeyBuilder {
         format!("{}:email:code:{}", self.prefix, email)
     }
 
-    // ==================== Token Blacklist ====================
-
-    /// Token blacklist entry
-    ///
-    /// Type: String + TTL (token remaining lifetime)
-    /// Value: "1" (presence indicates blacklisted)
-    #[must_use]
-    pub fn token_blacklist(&self, token_hash: &str) -> String {
-        format!("{}:token:blacklist:{}", self.prefix, token_hash)
-    }
-
-    /// User token invalidation timestamp
-    ///
-    /// Type: String + TTL
-    /// Value: timestamp (all tokens before this are invalid)
-    #[must_use]
-    pub fn token_blacklist_user(&self, user_id: &str) -> String {
-        format!("{}:token:blacklist:user:{}", self.prefix, user_id)
-    }
-
     // ==================== Brute-Force Protection ====================
 
     /// Failed login attempt counter per username
@@ -338,19 +318,6 @@ mod tests {
         assert_eq!(
             builder.email_code("user@example.com"),
             "synctv:email:code:user@example.com"
-        );
-    }
-
-    #[test]
-    fn test_token_blacklist_key() {
-        let builder = KeyBuilder::default();
-        assert_eq!(
-            builder.token_blacklist("sha256hash"),
-            "synctv:token:blacklist:sha256hash"
-        );
-        assert_eq!(
-            builder.token_blacklist_user("user_123"),
-            "synctv:token:blacklist:user:user_123"
         );
     }
 

@@ -83,12 +83,56 @@ async fn run_migrations_with_lock(pool: &PgPool, redis_url: &str) -> Result<()> 
         Ok(None) => wait_for_lock_and_migrate(pool, &lock).await,
         Err(e) => {
             warn!(
-                "Failed to acquire migration lock (Redis error): {}, running migrations directly",
+                "Failed to acquire migration lock (Redis error): {}. \
+                 Falling back to PostgreSQL advisory lock to prevent concurrent migrations.",
                 e
             );
-            run_migrate(pool).await
+            run_migrations_with_pg_advisory_lock(pool).await
         }
     }
+}
+
+/// PostgreSQL advisory lock key for migration coordination.
+///
+/// This is a stable hash of the string "synctv_migration" converted to i64
+/// for use with `pg_try_advisory_lock`. Value computed once at compile time.
+const PG_ADVISORY_LOCK_KEY: i64 = 0x73796E63_74766D69_u64 as i64; // "synctvm i" prefix
+
+/// Run migrations under a PostgreSQL advisory lock.
+///
+/// Used as a fallback when Redis is unavailable at startup, to prevent
+/// multiple replicas from running migrations concurrently and causing
+/// conflicts. PostgreSQL advisory locks are automatically released when
+/// the session ends, providing crash safety.
+async fn run_migrations_with_pg_advisory_lock(pool: &PgPool) -> Result<()> {
+    use sqlx::Acquire;
+
+    // Acquire a PostgreSQL session-level advisory lock.
+    // This is a BLOCKING call — it will wait until the lock is available.
+    // Using pg_advisory_lock (blocking) rather than pg_try_advisory_lock
+    // (non-blocking) to match the Redis lock wait-and-retry behavior.
+    let mut conn = pool.acquire().await
+        .map_err(|e| anyhow::anyhow!("Failed to acquire DB connection for PG advisory lock: {e}"))?;
+
+    info!("Acquiring PostgreSQL advisory lock for migrations (key={})", PG_ADVISORY_LOCK_KEY);
+    sqlx::query("SELECT pg_advisory_lock($1)")
+        .bind(PG_ADVISORY_LOCK_KEY)
+        .execute(conn.acquire().await?)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to acquire PostgreSQL advisory lock: {e}"))?;
+
+    info!("PostgreSQL advisory lock acquired, running migrations");
+
+    // Check if migrations already applied (another node may have just finished)
+    if migrations_already_applied(pool).await {
+        info!("Migrations already applied, skipping (PG advisory lock path)");
+        // Advisory lock is released when `conn` is dropped (session ends)
+        return Ok(());
+    }
+
+    let result = run_migrate(pool).await;
+    // Advisory lock is released when `conn` is dropped at end of scope
+    result
 }
 
 /// Another node holds the lock. Poll until it is released, then verify whether

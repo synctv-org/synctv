@@ -181,7 +181,11 @@ impl ConnectionManager {
     /// Create a new `ConnectionManager`
     #[must_use]
     pub fn new(limits: ConnectionLimits) -> Self {
-        let (disconnect_tx, _) = broadcast::channel(1000); // Buffer for disconnect signals
+        // Use a large buffer (10 000) to minimise lag for critical events such as
+        // ban/kick signals. A lagging receiver that falls behind by more than the
+        // channel capacity would miss signals; the WebSocket handler has a periodic
+        // re-validation backstop to handle the rare case where a signal is lost.
+        let (disconnect_tx, _) = broadcast::channel(10_000);
         Self {
             connections: Arc::new(DashMap::new()),
             user_connections: Arc::new(DashMap::new()),

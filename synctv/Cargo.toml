@@ -47,6 +47,7 @@ dashmap.workspace = true
 hostname.workspace = true
 nanoid.workspace = true
 parking_lot.workspace = true
+percent-encoding.workspace = true
 serde_json.workspace = true
 
 # Logging

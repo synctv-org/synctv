@@ -61,14 +61,12 @@ pub struct Services {
     pub load_balancer: Option<Arc<synctv_cluster::discovery::LoadBalancer>>,
     /// Shared Redis connection for playback caching.
     ///
-    /// This is a snapshot taken at startup.  In Sentinel mode, a background
-    /// health check in `synctv_core::bootstrap::services` hot-swaps the
-    /// underlying `ConnectionManager` inside `bootstrap::Services.redis_conn`
-    /// (an `Arc<RwLock<>>`).  Services that need to survive a Sentinel master
-    /// failover should access the `Arc<RwLock<>>` directly from the bootstrap
-    /// services.  This field uses a plain `ConnectionManager` for backward
-    /// compatibility with the existing HTTP/gRPC handler APIs.
-    pub redis_conn: Option<redis::aio::ConnectionManager>,
+    /// Stored as `Arc<RwLock<ConnectionManager>>` so that the background
+    /// Sentinel health check in `synctv_core::bootstrap::services` can hot-swap
+    /// the inner `ConnectionManager` on master failover.  Request handlers
+    /// call `.read().await.clone()` to obtain a working snapshot; the internal
+    /// `ConnectionManager` `Arc` means the clone is cheap.
+    pub redis_conn: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
     /// `CancellationToken` for settings listen task
     pub settings_cancel: tokio_util::sync::CancellationToken,
     /// `CancellationToken` for partition management tasks
@@ -361,19 +359,49 @@ impl SyncTvServer {
         // The audit service buffers events in memory and writes them to the DB
         // in batches. If we close the pool first, the final flush would fail and
         // recent audit events would be lost.
-        // A 30-second timeout prevents shutdown from hanging indefinitely if the
-        // audit flush gets stuck (e.g. database connection error during shutdown).
+        //
+        // Issue #38: The flush has a 60-second timeout (increased from 30s) to
+        // reduce the chance of losing events when the DB is under stress during
+        // shutdown. Progress is logged every 10s so operators can see whether
+        // the flush is making progress or completely stuck.
         {
             let mut handle_guard = self.services.audit_flush_handle.lock().await;
             if let Some(flush_handle) = handle_guard.take() {
-                info!("Flushing audit service buffer...");
-                match tokio::time::timeout(Duration::from_secs(30), flush_handle.shutdown()).await {
-                    Ok(()) => {
-                        info!("Audit service buffer flushed");
+                info!("Flushing audit service buffer (timeout: 60s)...");
+                // Use a select loop so we can log progress every 10s
+                let flush_timeout = Duration::from_secs(60);
+                let progress_interval = Duration::from_secs(10);
+                let mut elapsed = Duration::ZERO;
+                let flush_fut = flush_handle.shutdown();
+                tokio::pin!(flush_fut);
+                let mut flushed = false;
+                loop {
+                    match tokio::time::timeout(progress_interval, &mut flush_fut).await {
+                        Ok(()) => {
+                            info!("Audit service buffer flushed successfully");
+                            flushed = true;
+                            break;
+                        }
+                        Err(_) => {
+                            elapsed += progress_interval;
+                            if elapsed >= flush_timeout {
+                                warn!(
+                                    "Audit service flush timed out after {}s; \
+                                     some buffered events may be lost. Continuing shutdown.",
+                                    flush_timeout.as_secs()
+                                );
+                                break;
+                            }
+                            info!(
+                                "Audit service flush still in progress ({}/{}s elapsed)...",
+                                elapsed.as_secs(),
+                                flush_timeout.as_secs()
+                            );
+                        }
                     }
-                    Err(_) => {
-                        warn!("Audit service flush timed out after 30s, some buffered events may be lost; continuing shutdown");
-                    }
+                }
+                if !flushed {
+                    warn!("Audit flush did not complete — check DB connectivity during shutdown");
                 }
             }
         }
@@ -442,7 +470,14 @@ impl SyncTvServer {
                 oauth2_service: services.oauth2_service,
                 audit_service: services.audit_service,
                 node_registry: services.node_registry,
-                redis_conn: services.redis_conn,
+                redis_conn: {
+                    // Get a fresh snapshot from the Arc<RwLock<>> for the gRPC layer.
+                    if let Some(ref shared) = services.redis_conn {
+                        Some(shared.read().await.clone())
+                    } else {
+                        None
+                    }
+                },
                 shutdown_rx: Some(shutdown_rx),
                 builtin_stun_url: services.stun_server.as_ref().map(|s| {
                     let addr = s.external_addr();
@@ -486,8 +521,17 @@ impl SyncTvServer {
         // WsTicketService::new() will return an error if cluster_mode is true and
         // redis_conn is None, preventing silent in-memory fallback in multi-replica setups.
         let is_cluster_mode = !self.config.server.cluster_secret.is_empty();
+        // Get a fresh ConnectionManager snapshot from the shared Arc<RwLock<>>
+        // for services that hold their own copy. The ConnectionManager is
+        // internally Arc-backed so the clone is cheap; Sentinel failover is handled
+        // by the background health check which updates the shared RwLock.
+        let redis_conn_snapshot: Option<redis::aio::ConnectionManager> = if let Some(ref shared) = self.services.redis_conn {
+            Some(shared.read().await.clone())
+        } else {
+            None
+        };
         let ws_ticket_service = match synctv_core::service::WsTicketService::new(
-            self.services.redis_conn.clone(),
+            redis_conn_snapshot.clone(),
             None,
             is_cluster_mode,
         ) {
@@ -523,7 +567,7 @@ impl SyncTvServer {
                 live_streaming_infrastructure,
                 rate_limiter: self.services.rate_limiter.clone(),
                 ws_ticket_service,
-                redis_conn: self.services.redis_conn.clone(),
+                redis_conn: redis_conn_snapshot.clone(),
                 builtin_stun_url: self.services.stun_server.as_ref().map(|s| {
                     let addr = s.external_addr();
                     format!("stun:{}:{}", addr.ip(), addr.port())

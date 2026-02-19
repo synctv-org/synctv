@@ -696,14 +696,31 @@ impl ClientApiImpl {
         self.room_service.check_membership(&rid, &uid).await
             .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
 
+        // Enforce a hard max page size of 100 to prevent OOM on large rooms
         let limit = req.limit.clamp(1, 100);
-        let before = if req.before > 0 {
-            chrono::DateTime::from_timestamp(req.before, 0)
+
+        // Cursor takes precedence over the legacy timestamp field.
+        // If cursor is non-empty, use ID-based keyset pagination (avoids O(N) scans).
+        // Otherwise fall back to the legacy timestamp-based pagination for backward compat.
+        let (messages, next_cursor) = if !req.cursor.is_empty() {
+            let before_id = if req.cursor.as_str() == "" { None } else { Some(req.cursor.as_str()) };
+            self.room_service
+                .get_chat_history_cursor(&rid, before_id, limit)
+                .await
+                .map_err(ApiError::from)?
         } else {
-            None
+            // Legacy path: timestamp-based pagination
+            let before = if req.before > 0 {
+                chrono::DateTime::from_timestamp(req.before, 0)
+            } else {
+                None
+            };
+            let msgs = self.room_service.get_chat_history(&rid, before, limit).await
+                .map_err(ApiError::from)?;
+            // Derive a cursor from the oldest message so callers can switch to cursor pagination
+            let cursor = msgs.last().map(|m| m.id.clone());
+            (msgs, cursor)
         };
-        let messages = self.room_service.get_chat_history(&rid, before, limit).await
-            .map_err(ApiError::from)?;
 
         // Collect unique user IDs to batch fetch usernames
         let user_ids: Vec<synctv_core::models::UserId> = messages
@@ -747,6 +764,7 @@ impl ClientApiImpl {
 
         Ok(crate::proto::client::GetChatHistoryResponse {
             messages: proto_messages,
+            next_cursor: next_cursor.unwrap_or_default(),
         })
     }
 }

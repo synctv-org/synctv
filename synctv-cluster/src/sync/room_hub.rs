@@ -93,6 +93,10 @@ pub struct RoomMessageHub {
     /// the stale keys will expire after this duration instead of accumulating forever.
     /// Refreshed on each subscribe operation. Default: 300 seconds (5 minutes).
     redis_key_ttl_secs: i64,
+
+    /// Cancellation token for the auto-spawned TTL refresh background task.
+    /// Cancelled on `shutdown()` to stop the task gracefully.
+    ttl_refresh_cancel: Arc<tokio_util::sync::CancellationToken>,
 }
 
 impl RoomMessageHub {
@@ -107,6 +111,7 @@ impl RoomMessageHub {
             redis_conn: None,
             redis_key_prefix: String::new(),
             redis_key_ttl_secs: 300, // 5 minutes default
+            ttl_refresh_cancel: Arc::new(tokio_util::sync::CancellationToken::new()),
         }
     }
 
@@ -115,11 +120,33 @@ impl RoomMessageHub {
     /// When Redis is configured, subscription relationships are persisted to Redis
     /// for cross-replica visibility and recovery after restarts. Local DashMaps
     /// remain as a fast cache for message routing.
+    ///
+    /// Automatically spawns a background TTL refresh task (at 40% of
+    /// `redis_key_ttl_secs` interval) to prevent active subscription keys from
+    /// expiring. The task is cancelled when `shutdown()` is called.
     #[must_use]
     pub fn with_redis(mut self, conn: redis::aio::ConnectionManager, key_prefix: &str) -> Self {
         self.redis_conn = Some(conn);
         self.redis_key_prefix = key_prefix.to_string();
+
+        // Auto-spawn the TTL refresh task unconditionally whenever Redis is
+        // configured, so callers do not need to remember to call
+        // `spawn_ttl_refresh_task()` manually.  The interval is set to 40% of
+        // the configured TTL so keys are always refreshed well before expiry.
+        let cancel = tokio_util::sync::CancellationToken::new();
+        self.ttl_refresh_cancel = Arc::new(cancel.clone());
+        // Use 40% of TTL as the refresh interval (at most 120s, at least 30s)
+        let refresh_interval_secs = (self.redis_key_ttl_secs as f64 * 0.4).clamp(30.0, 120.0) as u64;
+        let _handle = self.spawn_ttl_refresh_task(Duration::from_secs(refresh_interval_secs), cancel);
+
         self
+    }
+
+    /// Cancel the auto-spawned TTL refresh background task.
+    ///
+    /// Should be called during graceful shutdown to stop the background task.
+    pub fn shutdown(&self) {
+        self.ttl_refresh_cancel.cancel();
     }
 
     /// Set the TTL for Redis subscription keys (crash-safety mechanism).

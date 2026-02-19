@@ -261,25 +261,15 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
 
     // Create server builder with the security checking tower layer.
     // This layer extracts the raw JWT bearer token from the HTTP Authorization
-    // header and performs four async security checks via the shared SecurityPipeline:
+    // header and performs async security checks via the shared SecurityPipeline:
     // 1. JWT verification (validate signature, expiration, access token type)
-    // 2. Token blacklist check (explicit logout/revocation via Redis)
-    // 3. Password invalidation check (tokens issued before password change)
-    // 4. User status check (banned/pending/deleted)
+    // 2. Password invalidation check (tokens issued before password change)
+    // 3. User status check (banned/pending/deleted)
     // It runs before tonic routes and interceptors, so public endpoints (no Authorization header)
     // pass through without security checks.
-    let security_pipeline = if let Some(ref rc) = redis_conn {
-        let key_builder = synctv_core::cache::KeyBuilder::new(&config.redis.key_prefix);
-        synctv_core::service::SecurityPipeline::with_redis(
-            user_service.clone(),
-            rc.clone(),
-            key_builder,
-        )
-    } else {
-        synctv_core::service::SecurityPipeline::new(
-            user_service.clone(),
-        )
-    };
+    let security_pipeline = synctv_core::service::SecurityPipeline::new(
+        user_service.clone(),
+    );
     let blacklist_layer = blacklist_layer::BlacklistCheckLayer::new(
         jwt_service,
         security_pipeline,
@@ -434,18 +424,9 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
             alist_api: Arc::new(crate::impls::AlistApiImpl::new(alist_provider)),
             emby_api: Arc::new(crate::impls::EmbyApiImpl::new(emby_provider)),
             redis_conn: redis_conn.clone(),
-            security_pipeline: Arc::new(if let Some(ref rc) = redis_conn {
-                let key_builder = synctv_core::cache::KeyBuilder::new(&config.redis.key_prefix);
-                synctv_core::service::SecurityPipeline::with_redis(
-                    user_service.clone(),
-                    rc.clone(),
-                    key_builder,
-                )
-            } else {
-                synctv_core::service::SecurityPipeline::new(
-                    user_service.clone(),
-                )
-            }),
+            security_pipeline: Arc::new(synctv_core::service::SecurityPipeline::new(
+                user_service.clone(),
+            )),
         });
 
         // Register provider gRPC services with auth interceptor

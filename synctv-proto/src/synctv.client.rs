@@ -1210,20 +1210,26 @@ pub struct ErrorMessage {
 /// Chat History
 /// Note: room_id extracted from x-room-id metadata
 #[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetChatHistoryRequest {
-    /// Validation: max 500, default 50
+    /// Max page size (clamped to 100 server-side). Default: 50.
     #[prost(int32, tag = "1")]
     pub limit: i32,
-    /// Timestamp for pagination
+    /// Legacy timestamp cursor: return messages created before this UNIX timestamp.
     #[prost(int64, tag = "2")]
     pub before: i64,
+    /// Preferred cursor: return messages with ID \< cursor (opaque, returned by server).
+    #[prost(string, tag = "3")]
+    pub cursor: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetChatHistoryResponse {
     #[prost(message, repeated, tag = "1")]
     pub messages: ::prost::alloc::vec::Vec<ChatMessageReceive>,
+    /// Pass this as cursor in the next request. Empty when no more messages.
+    #[prost(string, tag = "2")]
+    pub next_cursor: ::prost::alloc::string::String,
 }
 /// User Profile Management
 #[derive(serde::Serialize, serde::Deserialize)]

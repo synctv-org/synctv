@@ -115,6 +115,7 @@ impl OAuth2ApiImpl {
         code: &str,
         state: &str,
         current_user_id: Option<&UserId>,
+        client_ip: Option<std::net::IpAddr>,
     ) -> Result<ExchangeCodeResult, ApiError> {
         // 1. Verify state and retrieve stored OAuth2 state
         let oauth_state = self
@@ -176,7 +177,7 @@ impl OAuth2ApiImpl {
             // User exists - generate tokens using OAuth2 login method
             // (user already authenticated by OAuth2 provider)
             self.user_service
-                .login_oauth2(&user_id)
+                .login_oauth2(&user_id, &user_info.provider_user_id, client_ip)
                 .await
                 .map_err(ApiError::from)?
         } else {

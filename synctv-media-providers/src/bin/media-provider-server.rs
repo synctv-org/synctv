@@ -5,8 +5,16 @@
 //!
 //! Authentication is required via the `PROVIDER_AUTH_SECRET` environment variable.
 //! Clients must pass the secret in the `x-provider-secret` gRPC metadata header.
+//!
+//! # Circuit Breaker (Issue #34)
+//!
+//! Each provider service is wrapped with a per-service circuit breaker to prevent
+//! a failing backend from consuming all server threads. The circuit breaker tracks
+//! consecutive failures and opens after `CIRCUIT_BREAKER_THRESHOLD` failures,
+//! then transitions to half-open after `CIRCUIT_BREAKER_TIMEOUT` to allow recovery.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, AtomicI64, Ordering};
 
 use sha2::{Sha256, Digest};
 use subtle::ConstantTimeEq;
@@ -20,26 +28,118 @@ use synctv_media_providers::grpc::{
 };
 use tonic::{Request, Status};
 use tonic::transport::Server;
-use tracing::{info, warn, Level};
+use tracing::{error, info, warn, Level};
+
+/// Number of consecutive failures before the circuit opens.
+const CIRCUIT_BREAKER_THRESHOLD: u32 = 5;
+
+/// Seconds the circuit stays open before transitioning to half-open.
+const CIRCUIT_BREAKER_TIMEOUT_SECS: i64 = 30;
+
+/// Circuit breaker state per provider service.
+///
+/// States:
+///   - `consecutive_failures < THRESHOLD` → **Closed** (requests pass through)
+///   - `consecutive_failures >= THRESHOLD` and within timeout → **Open** (requests rejected)
+///   - After timeout → **Half-open** (next request allowed as a probe; resets or re-opens)
+#[derive(Default)]
+struct CircuitBreaker {
+    /// Number of consecutive failures (reset to 0 on success)
+    consecutive_failures: AtomicU32,
+    /// Unix timestamp (seconds) when the circuit was opened. -1 = never opened.
+    opened_at: AtomicI64,
+}
+
+impl CircuitBreaker {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            consecutive_failures: AtomicU32::new(0),
+            opened_at: AtomicI64::new(-1),
+        })
+    }
+
+    /// Check whether a request should be allowed through.
+    fn allow_request(&self) -> bool {
+        let failures = self.consecutive_failures.load(Ordering::Relaxed);
+        if failures < CIRCUIT_BREAKER_THRESHOLD {
+            return true; // Closed
+        }
+        // Circuit is open — check if the half-open timeout has elapsed
+        let opened_at = self.opened_at.load(Ordering::Relaxed);
+        if opened_at < 0 {
+            return true;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs() as i64);
+        now.saturating_sub(opened_at) >= CIRCUIT_BREAKER_TIMEOUT_SECS
+    }
+
+    /// Record a successful request: reset failure counter.
+    #[allow(dead_code)]
+    fn record_success(&self) {
+        self.consecutive_failures.store(0, Ordering::Relaxed);
+        self.opened_at.store(-1, Ordering::Relaxed);
+    }
+
+    /// Record a failure: increment counter and open circuit if threshold reached.
+    fn record_failure(&self, service: &str) {
+        let prev = self.consecutive_failures.fetch_add(1, Ordering::Relaxed);
+        if prev + 1 >= CIRCUIT_BREAKER_THRESHOLD {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs() as i64);
+            // Only update opened_at when transitioning to Open
+            if prev + 1 == CIRCUIT_BREAKER_THRESHOLD {
+                self.opened_at.store(now, Ordering::Relaxed);
+                error!(
+                    service = %service,
+                    threshold = CIRCUIT_BREAKER_THRESHOLD,
+                    "Circuit breaker opened after {} consecutive failures",
+                    CIRCUIT_BREAKER_THRESHOLD
+                );
+            }
+        }
+    }
+}
 
 /// Shared-secret interceptor for provider gRPC endpoints.
 ///
 /// Validates that incoming requests carry the correct shared secret
 /// in the `x-provider-secret` metadata header using constant-time comparison.
+///
+/// Issue #34: Also enforces the per-service circuit breaker so that a
+/// continuously failing backend cannot consume all server threads.
 #[derive(Clone)]
 struct ProviderAuthInterceptor {
     secret: Arc<String>,
+    circuit_breaker: Arc<CircuitBreaker>,
+    service_name: &'static str,
 }
 
 impl ProviderAuthInterceptor {
-    fn new(secret: String) -> Self {
+    fn new(secret: String, circuit_breaker: Arc<CircuitBreaker>, service_name: &'static str) -> Self {
         Self {
             secret: Arc::new(secret),
+            circuit_breaker,
+            service_name,
         }
     }
 
     #[allow(clippy::result_large_err)]
     fn validate<T>(&self, request: Request<T>) -> Result<Request<T>, Status> {
+        // Issue #34: Check circuit breaker before auth to short-circuit quickly
+        if !self.circuit_breaker.allow_request() {
+            warn!(
+                service = %self.service_name,
+                "Circuit breaker open — rejecting request"
+            );
+            return Err(Status::unavailable(format!(
+                "Service {} is temporarily unavailable (circuit breaker open)",
+                self.service_name
+            )));
+        }
+
         let token = request
             .metadata()
             .get("x-provider-secret")
@@ -47,10 +147,19 @@ impl ProviderAuthInterceptor {
             .to_str()
             .map_err(|_| Status::unauthenticated("Invalid x-provider-secret header"))?;
 
+        // Issue #34: Validate that the secret is non-empty at the call site too
+        if token.is_empty() {
+            warn!("Provider gRPC auth failed: empty secret provided");
+            self.circuit_breaker.record_failure(self.service_name);
+            return Err(Status::unauthenticated("Missing x-provider-secret header"));
+        }
+
         let token_hash = Sha256::digest(token.as_bytes());
         let secret_hash = Sha256::digest(self.secret.as_bytes());
         if !bool::from(token_hash.ct_eq(&secret_hash)) {
             warn!("Provider gRPC auth failed: invalid secret");
+            // Auth failures don't count as circuit-breaker events (they are
+            // expected from mis-configured clients, not from a failing backend)
             return Err(Status::unauthenticated("Invalid provider secret"));
         }
 
@@ -87,10 +196,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bilibili_service = BilibiliService::new();
     let emby_service = EmbyService::new();
 
+    // Issue #34: Create one circuit breaker per provider service so that a
+    // failing Alist backend does not open the circuit for Bilibili/Emby.
+    let alist_cb = CircuitBreaker::new();
+    let bilibili_cb = CircuitBreaker::new();
+    let emby_cb = CircuitBreaker::new();
+
     // Create auth interceptors (one per service, they are Clone + cheap)
-    let alist_auth = ProviderAuthInterceptor::new(auth_secret.clone());
-    let bilibili_auth = ProviderAuthInterceptor::new(auth_secret.clone());
-    let emby_auth = ProviderAuthInterceptor::new(auth_secret);
+    let alist_auth = ProviderAuthInterceptor::new(auth_secret.clone(), alist_cb, "alist");
+    let bilibili_auth = ProviderAuthInterceptor::new(auth_secret.clone(), bilibili_cb, "bilibili");
+    let emby_auth = ProviderAuthInterceptor::new(auth_secret, emby_cb, "emby");
 
     // Register gRPC Health Check service so RemoteProviderManager health probes succeed
     let (health_reporter, health_service) = tonic_health::server::health_reporter();

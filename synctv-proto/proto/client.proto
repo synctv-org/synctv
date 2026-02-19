@@ -869,12 +869,15 @@ message ErrorMessage {
 // Chat History
 // Note: room_id extracted from x-room-id metadata
 message GetChatHistoryRequest {
-    int32 limit = 1; // Validation: max 500, default 50
-    int64 before = 2; // Timestamp for pagination
+    int32 limit = 1;   // Max page size (clamped to 100 server-side). Default: 50.
+    int64 before = 2;  // Legacy timestamp cursor: return messages created before this UNIX timestamp.
+    string cursor = 3; // Preferred cursor: return messages with ID < cursor (opaque, returned by server).
+                       // If both cursor and before are supplied, cursor takes precedence.
 }
 
 message GetChatHistoryResponse {
     repeated ChatMessageReceive messages = 1;
+    string next_cursor = 2; // Pass this as cursor in the next request. Empty when no more messages.
 }
 
 // User Profile Management

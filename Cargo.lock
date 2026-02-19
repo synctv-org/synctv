@@ -5369,6 +5369,7 @@ dependencies = [
  "hostname 0.4.2",
  "nanoid",
  "parking_lot",
+ "percent-encoding",
  "redis",
  "serde_json",
  "sqlx",

@@ -6,11 +6,10 @@ use axum::{
     extract::{Path, Query, State},
     Json,
 };
-use axum::http::HeaderMap;
 
 use super::{middleware::AuthUser, AppResult, AppState};
 use crate::proto::client::{
-    LogoutResponse, GetProfileResponse, SetUsernameRequest,
+    GetProfileResponse, SetUsernameRequest,
     SetPasswordRequest, ListParticipatedRoomsResponse,
     DeleteRoomResponse,
     ListCreatedRoomsResponse,
@@ -25,36 +24,6 @@ pub struct UpdateUserRequest {
     pub password: Option<String>,
     #[serde(default)]
     pub old_password: Option<String>,
-}
-
-/// Optional body for logout containing the refresh token.
-#[derive(serde::Deserialize, Default)]
-pub struct LogoutBody {
-    #[serde(default)]
-    pub refresh_token: Option<String>,
-}
-
-/// Logout user
-///
-/// Extracts the Bearer token from the Authorization header and an optional
-/// refresh token from the JSON body. Both tokens are blacklisted server-side.
-pub async fn logout(
-    _auth: AuthUser,
-    headers: HeaderMap,
-    State(state): State<AppState>,
-    body: Option<Json<LogoutBody>>,
-) -> AppResult<Json<LogoutResponse>> {
-    let auth_header_str = headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .ok_or_else(|| super::AppError::unauthorized("Missing Authorization header"))?;
-    let access_token = synctv_core::service::auth::JwtValidator::extract_bearer_token(auth_header_str)
-        .map_err(|e| super::AppError::unauthorized(format!("{e}")))?;
-
-    let refresh_token = body.and_then(|b| b.0.refresh_token);
-    let response = state.client_api.logout(&access_token, refresh_token.as_deref()).await
-        .map_err(super::error::map_api_error)?;
-    Ok(Json(response))
 }
 
 /// Get current user info

@@ -59,8 +59,6 @@ use crate::proto::client::{
     ListRoomStreamsRequest, ListRoomStreamsResponse,
 };
 
-use synctv_core::service::auth::JwtValidator;
-
 use super::internal_err;
 
 /// Buffer size for the outgoing message channel in `MessageStream` connections.
@@ -230,8 +228,10 @@ impl AuthService for ClientServiceImpl {
         &self,
         request: Request<RegisterRequest>,
     ) -> Result<Response<RegisterResponse>, Status> {
+        // Extract client IP for brute-force protection (Issue #24)
+        let client_ip = request.remote_addr().map(|addr| addr.ip());
         let req = request.into_inner();
-        let response = self.client_api.register(req).await.map_err(map_api_error)?;
+        let response = self.client_api.register(req, client_ip).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -266,28 +266,11 @@ impl AuthService for ClientServiceImpl {
 impl UserService for ClientServiceImpl {
     async fn logout(
         &self,
-        request: Request<LogoutRequest>,
+        _request: Request<LogoutRequest>,
     ) -> Result<Response<LogoutResponse>, Status> {
-        // Extract Bearer token from metadata using the shared validator
-        // (case-insensitive per RFC 7235, consistent with all other gRPC endpoints)
-        let access_token = request
-            .metadata()
-            .get("authorization")
-            .and_then(|v| v.to_str().ok())
-            .map(JwtValidator::extract_bearer_token)
-            .transpose()
-            .map_err(|_| Status::unauthenticated("Missing or invalid Bearer token"))?
-            .ok_or_else(|| Status::unauthenticated("Authorization header required"))?;
-
-        // Extract optional refresh token from metadata
-        let refresh_token = request
-            .metadata()
-            .get("x-refresh-token")
-            .and_then(|v| v.to_str().ok());
-
-        let response = self.client_api.logout(&access_token, refresh_token).await
-            .map_err(map_api_error)?;
-        Ok(Response::new(response))
+        // Logout is stateless: tokens are discarded client-side.
+        // No server-side token invalidation is performed.
+        Ok(Response::new(LogoutResponse { success: true }))
     }
 
     async fn get_profile(

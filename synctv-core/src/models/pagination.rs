@@ -4,6 +4,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::{Error, Result};
+
 /// Default page size for list queries
 pub const DEFAULT_PAGE_SIZE: u32 = 20;
 
@@ -12,6 +14,12 @@ pub const MAX_PAGE_SIZE: u32 = 100;
 
 /// Minimum page number (1-indexed)
 pub const MIN_PAGE: u32 = 1;
+
+/// Maximum allowed offset to prevent full-scan DoS attacks.
+///
+/// Requests with `page * page_size > MAX_OFFSET` are rejected with an error.
+/// At `MAX_PAGE_SIZE = 100` items per page this allows up to 1000 pages (100k items).
+pub const MAX_OFFSET: u64 = 100_000;
 
 /// Pagination parameters for list queries
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -55,6 +63,35 @@ impl PageParams {
             .clamp(1, MAX_PAGE_SIZE);
 
         Self { page, page_size }
+    }
+
+    /// Validate that the computed offset is within the safe range.
+    ///
+    /// Returns `Err(Error::InvalidInput)` when `(page - 1) * page_size > MAX_OFFSET`
+    /// to prevent expensive full-scan DoS attacks via extremely large page numbers.
+    ///
+    /// # Examples
+    /// ```
+    /// use synctv_core::models::PageParams;
+    ///
+    /// // Page 1001 with page_size 100 -> offset 100_000 -- rejected
+    /// let params = PageParams::new(Some(1001), Some(100));
+    /// assert!(params.validate().is_err());
+    ///
+    /// // Page 1000 with page_size 100 -> offset 99_900 -- accepted
+    /// let params = PageParams::new(Some(1000), Some(100));
+    /// assert!(params.validate().is_ok());
+    /// ```
+    pub fn validate(&self) -> Result<()> {
+        if self.offset() > MAX_OFFSET {
+            return Err(Error::InvalidInput(format!(
+                "Requested offset {} exceeds the maximum allowed offset of {}. \
+                 Use a smaller page number.",
+                self.offset(),
+                MAX_OFFSET
+            )));
+        }
+        Ok(())
     }
 
     /// Calculate OFFSET for SQL query

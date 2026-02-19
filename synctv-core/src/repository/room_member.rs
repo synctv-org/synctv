@@ -180,12 +180,23 @@ impl RoomMemberRepository {
         }
 
         // 4. Check max members limit (if option enabled)
+        //    When max_members is 0 or None, treat as unlimited (no enforcement).
+        //    Use SELECT COUNT(*) with FOR UPDATE on the rooms row to get an
+        //    atomic count before the insert — prevents TOCTOU races on capacity.
         if options.check_max_members {
             let max_members = options.max_members;
             if max_members > 0 {
+                // Lock the room row to prevent concurrent joins from bypassing the limit.
+                let _room_lock = sqlx::query(
+                    "SELECT id FROM rooms WHERE id = $1 FOR UPDATE"
+                )
+                .bind(member.room_id.as_str())
+                .fetch_optional(&mut **tx)
+                .await?;
+
                 let count_row = sqlx::query(
                     "SELECT COUNT(*) as count FROM room_members
-                     WHERE room_id = $1 AND left_at IS NULL"
+                     WHERE room_id = $1 AND left_at IS NULL AND status != 'banned'"
                 )
                 .bind(member.room_id.as_str())
                 .fetch_one(&mut **tx)
@@ -193,9 +204,19 @@ impl RoomMemberRepository {
 
                 let count: i64 = count_row.try_get("count")?;
                 if count as u64 >= max_members {
-                    return Err(Error::InvalidInput("Room is full".to_string()));
+                    tracing::warn!(
+                        room_id = %member.room_id.as_str(),
+                        max_members = max_members,
+                        current_count = count,
+                        "Room is full, rejecting join"
+                    );
+                    return Err(Error::InvalidInput(format!(
+                        "Room is full ({}/{} members)",
+                        count, max_members
+                    )));
                 }
             }
+            // max_members == 0 means unlimited — no check needed
         }
 
         // 5. Insert the new member
@@ -323,7 +344,7 @@ impl RoomMemberRepository {
                 u.username
              FROM room_members rm
              JOIN users u ON rm.user_id = u.id
-             WHERE rm.room_id = $1 AND rm.left_at IS NULL
+             WHERE rm.room_id = $1 AND rm.left_at IS NULL AND u.deleted_at IS NULL
              ORDER BY rm.joined_at ASC"
         )
         .bind(room_id.as_str())
@@ -350,7 +371,7 @@ impl RoomMemberRepository {
                 u.username
              FROM room_members rm
              JOIN users u ON rm.user_id = u.id
-             WHERE rm.room_id = $1 AND rm.left_at IS NULL
+             WHERE rm.room_id = $1 AND rm.left_at IS NULL AND u.deleted_at IS NULL
              ORDER BY rm.joined_at ASC"
         )
         .bind(room_id.as_str())
@@ -812,7 +833,7 @@ impl RoomMemberRepository {
                 CASE WHEN rm.left_at IS NULL THEN true ELSE false END as is_active
              FROM room_members rm
              JOIN users u ON rm.user_id = u.id
-             WHERE rm.room_id = $1
+             WHERE rm.room_id = $1 AND u.deleted_at IS NULL
              ORDER BY rm.joined_at ASC"
         )
         .bind(room_id.as_str())

@@ -133,9 +133,13 @@ impl UserStatus {
     }
 
     /// Check if user can login with this status
-    #[must_use] 
+    ///
+    /// Only `Active` users can login. `Pending` users must verify their email first (or await
+    /// admin approval), and `Banned` users are permanently blocked. This is consistent with the
+    /// security pipeline which rejects `Pending` users at token validation time.
+    #[must_use]
     pub const fn can_login(&self) -> bool {
-        matches!(self, Self::Active | Self::Pending)
+        matches!(self, Self::Active)
     }
 
     /// Check if user can create rooms with this status

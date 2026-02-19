@@ -220,13 +220,27 @@ fn check_cluster_health(state: &AppState) -> Option<Result<(), String>> {
     Some(Ok(()))
 }
 
-/// Check Redis connectivity by sending a PING command with timeout
+/// Check Redis connectivity by sending a PING command with timeout.
+///
+/// Issue #41: In cluster mode, Redis is required. If Redis is not configured
+/// and the node is in cluster mode, this returns an error (503).
+/// In single-node mode, Redis is optional and "not configured" is OK.
 async fn check_redis_health(state: &AppState) -> Result<(), String> {
+    let is_cluster_mode = state.cluster_manager.is_some();
+
     match tokio::time::timeout(HEALTH_CHECK_TIMEOUT, state.rate_limiter.health_check()).await {
         Ok(Ok(())) => Ok(()),
         Ok(Err(e)) if e.contains("not configured") => {
-            // Redis not configured - acceptable in some deployments
-            Ok(())
+            // Issue #41: Redis not configured.
+            // In cluster mode this is a fatal misconfiguration — the node cannot
+            // participate in cross-replica coordination without Redis.
+            if is_cluster_mode {
+                warn!("Redis not configured but cluster mode is active — node is not ready");
+                Err("Redis is required for cluster mode but is not configured".to_string())
+            } else {
+                // Single-node mode: Redis is optional
+                Ok(())
+            }
         }
         Ok(Err(e)) => {
             warn!("Redis health check failed: {}", e);

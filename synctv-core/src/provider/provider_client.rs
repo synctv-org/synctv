@@ -22,7 +22,10 @@ use synctv_media_providers::alist::{AlistError, AlistInterface};
 use synctv_media_providers::grpc::alist::{FsGetResp, FsListResp, FsOtherResp};
 
 /// Default per-request timeout for gRPC calls to remote providers.
-const GRPC_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+///
+/// Reduced from 30s to 10s (Issue #35): hung requests under load consume threads.
+/// Providers that genuinely need longer should use explicit deadlines.
+const GRPC_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Macro to generate a boilerplate gRPC client method implementation.
 ///

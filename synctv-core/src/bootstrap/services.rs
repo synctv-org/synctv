@@ -470,20 +470,29 @@ pub async fn init_services(
     ));
     info!("ProvidersManager initialized");
 
-    // Initialize OAuth2 service (optional - requires OAuth2 provider config)
-    // Redis is guaranteed to be available (enforced at startup in main.rs).
-    let oauth2_service = if let Some(ref conn) = redis_conn_plain {
+    // Initialize OAuth2 service (optional - requires OAuth2 provider config and Redis).
+    //
+    // Issue #37: If OAuth2 providers are configured but Redis is not available,
+    // we must fail loudly rather than silently skipping OAuth2 initialization.
+    // Silently skipping would cause OAuth2 login to appear available in the UI
+    // but fail at runtime when a user tries to authenticate.
+    let oauth2_configured = config.oauth2.providers.as_object()
+        .map_or(false, |m| !m.is_empty());
+    let oauth2_service = if oauth2_configured && redis_conn_plain.is_none() {
+        return Err(anyhow::anyhow!(
+            "OAuth2 providers are configured but Redis is not available. \
+             OAuth2 requires Redis for CSRF state storage. \
+             Either configure Redis (set redis.url) or disable OAuth2 providers."
+        ));
+    } else if let Some(ref conn) = redis_conn_plain {
         init_oauth2_service(pool.clone(), config, conn.clone()).await?
     } else {
-        // Redis is required globally. If we reach here, main.rs validation was bypassed.
-        // Log a warning but skip OAuth2 rather than panicking.
-        tracing::warn!("Redis not available, skipping OAuth2 service initialization");
         None
     };
     if oauth2_service.is_some() {
         info!("OAuth2 service initialized");
     } else {
-        info!("OAuth2 service not configured (set SYNCTV_OAUTH2_ENCRYPTION_KEY)");
+        info!("OAuth2 service not configured (no OAuth2 providers in config)");
     }
 
     // Initialize Settings service

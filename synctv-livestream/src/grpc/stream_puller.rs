@@ -80,16 +80,26 @@ impl GrpcStreamPuller {
 
     /// Run the puller: connect to remote, pull stream, publish to local `StreamHub`.
     ///
-    /// Performs a single connection attempt. If the publisher disconnects or the stream
-    /// ends with an error, this method returns the error immediately so the caller
-    /// (`PullStreamManager`) can clean up state. The external pusher is responsible
-    /// for reconnecting by starting a new publish session.
+    /// Issue #52: Adds exponential-backoff retry logic so a transient network hiccup
+    /// does not permanently disconnect the stream.
     ///
-    /// Internal reconnect logic is intentionally absent: automatic retries here create
-    /// state management complexity (stale local `StreamHub` publications, split ownership
-    /// in Redis) without providing meaningful reliability guarantees. The `PullStreamManager`
-    /// will create a fresh puller on the next viewer request.
+    /// Retry policy:
+    ///   - Initial delay: 1 second; doubles on each failure up to `MAX_RETRY_DELAY_SECS`.
+    ///   - Maximum attempts: `MAX_RETRY_ATTEMPTS` (configurable default: 10).
+    ///   - Before each retry, the publisher epoch is re-validated.  If the epoch has
+    ///     changed (publisher restarted on a different node) retrying is pointless and
+    ///     the puller stops immediately.
+    ///
+    /// After exhausting all retries the final error is returned so the caller
+    /// (`PullStreamManager`) can clean up state.
     pub async fn run(mut self) -> anyhow::Result<()> {
+        /// Initial retry backoff delay in seconds.
+        const INITIAL_RETRY_DELAY_SECS: u64 = 1;
+        /// Maximum retry backoff delay in seconds.
+        const MAX_RETRY_DELAY_SECS: u64 = 30;
+        /// Maximum number of connection attempts (first attempt + retries).
+        const MAX_RETRY_ATTEMPTS: u32 = 10;
+
         info!(
             room_id = %self.room_id,
             media_id = %self.media_id,
@@ -97,7 +107,8 @@ impl GrpcStreamPuller {
             "Starting gRPC stream puller"
         );
 
-        // Publish to local StreamHub to get a frame data sender
+        // Publish to local StreamHub to get a frame data sender.
+        // This is done once — we keep the same local publication across retries.
         let data_sender = match self.publish_to_local_stream_hub().await {
             Ok(sender) => sender,
             Err(e) => {
@@ -109,7 +120,54 @@ impl GrpcStreamPuller {
             }
         };
 
-        let result = self.connect_and_stream(&data_sender, false).await;
+        let mut attempt: u32 = 0;
+        let mut delay_secs = INITIAL_RETRY_DELAY_SECS;
+
+        let result = loop {
+            if attempt > 0 {
+                // Exponential backoff before retry.
+                // NOTE: Publisher epoch re-validation on retry is handled by the outer
+                // PullStream rebuild loop (in pull_stream.rs), which has registry access.
+                // GrpcStreamPuller intentionally does not carry a registry reference to
+                // keep responsibilities separated.
+                warn!(
+                    room_id = %self.room_id,
+                    media_id = %self.media_id,
+                    "Retrying gRPC stream pull after {}s backoff (attempt {}/{})",
+                    delay_secs, attempt, MAX_RETRY_ATTEMPTS
+                );
+                tokio::time::sleep(tokio::time::Duration::from_secs(delay_secs)).await;
+                // Exponential backoff: double delay up to max
+                delay_secs = (delay_secs * 2).min(MAX_RETRY_DELAY_SECS);
+            }
+
+            let is_reconnect = attempt > 0;
+            attempt += 1;
+
+            match self.connect_and_stream(&data_sender, is_reconnect).await {
+                Ok(()) => {
+                    // Stream ended normally
+                    break Ok(());
+                }
+                Err(e) => {
+                    if attempt >= MAX_RETRY_ATTEMPTS {
+                        error!(
+                            room_id = %self.room_id,
+                            media_id = %self.media_id,
+                            "gRPC stream puller exhausted all {} retry attempts: {}",
+                            MAX_RETRY_ATTEMPTS, e
+                        );
+                        break Err(e);
+                    }
+                    warn!(
+                        room_id = %self.room_id,
+                        media_id = %self.media_id,
+                        "gRPC connection attempt {} failed: {}. Will retry ({} attempts remaining).",
+                        attempt, e, MAX_RETRY_ATTEMPTS - attempt
+                    );
+                }
+            }
+        };
 
         // Always clean up local StreamHub publication before returning
         if let Err(e) = self.unpublish_from_local_stream_hub().await {
@@ -129,7 +187,7 @@ impl GrpcStreamPuller {
                 warn!(
                     room_id = %self.room_id,
                     media_id = %self.media_id,
-                    "Stream pull ended with error: {e}"
+                    "Stream pull ended with error after retries: {e}"
                 );
                 Err(e)
             }

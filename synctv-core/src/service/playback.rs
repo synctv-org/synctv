@@ -180,7 +180,10 @@ impl PlaybackService {
             }
         }
 
-        // 2. Broadcast to other cluster replicas
+        // 2. Broadcast to other cluster replicas via the synchronous broadcaster.
+        //    This is fire-and-forget at the trait level. Redis-backed cross-replica
+        //    broadcast (with retry, Issue #28) is handled by update_state() which
+        //    calls invalidation_service.update_playback_state() with retry logic.
         if let Some(ref broadcaster) = *self.cluster_broadcaster.read() {
             broadcaster.broadcast_playback_state(state);
         }
@@ -456,10 +459,24 @@ impl PlaybackService {
                 }
 
                 PlayMode::RepeatOne => {
-                    // Repeat current media
+                    // Repeat current media.
+                    // Issue #29: If the currently-playing media was deleted from the
+                    // playlist, find() returns None and we would enter a dead state
+                    // where nothing plays. Fall back to Sequential behavior (advance
+                    // to the next item) so playback continues gracefully.
                     if let Some(ref current_id) = state.playing_media_id {
-                        playlist.iter()
-                            .find(|m| &m.id == current_id)
+                        let found = playlist.iter().find(|m| &m.id == current_id);
+                        if found.is_some() {
+                            found
+                        } else {
+                            // Media was deleted — advance to first item as fallback
+                            tracing::warn!(
+                                room_id = %room_id.as_str(),
+                                media_id = %current_id.as_str(),
+                                "RepeatOne: currently-playing media not found in playlist (deleted?), falling back to first item"
+                            );
+                            playlist.first()
+                        }
                     } else {
                         playlist.first()
                     }
@@ -529,14 +546,23 @@ impl PlaybackService {
                     let cache_key = room_id.as_str().to_string();
                     self.playback_cache.invalidate(&cache_key).await;
 
-                    // Broadcast to other replicas
+                    // Broadcast to other replicas (Issue #28: retry once on failure)
                     if let Some(ref service) = self.invalidation_service {
-                        if let Err(e) = service.update_playback_state(room_id, &saved_state).await {
+                        let bc_result = service.update_playback_state(room_id, &saved_state).await;
+                        if let Err(ref e) = bc_result {
                             tracing::warn!(
                                 error = %e,
                                 room_id = %room_id.as_str(),
-                                "Failed to broadcast playback state update for play_next"
+                                "play_next: broadcast failed (attempt 1/2), retrying..."
                             );
+                            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                            if let Err(e2) = service.update_playback_state(room_id, &saved_state).await {
+                                tracing::error!(
+                                    error = %e2,
+                                    room_id = %room_id.as_str(),
+                                    "play_next: broadcast failed after 2 attempts, replicas may have stale state"
+                                );
+                            }
                         }
                     }
 
@@ -671,13 +697,32 @@ impl PlaybackService {
                     // Broadcast updated state to other replicas so they can write
                     // it directly into their L1 cache, avoiding the stale-read
                     // window that occurs with invalidation-only messages.
+                    //
+                    // Issue #28: Redis broadcast failures are logged at ERROR level.
+                    // A single retry is attempted; if all retries fail, we log
+                    // with enough context for operators to replay the update.
                     if let Some(ref service) = self.invalidation_service {
-                        if let Err(e) = service.update_playback_state(&room_id, &updated_state).await {
+                        let broadcast_result = service.update_playback_state(&room_id, &updated_state).await;
+                        if let Err(ref e) = broadcast_result {
                             tracing::warn!(
                                 error = %e,
                                 room_id = %room_id.as_str(),
-                                "Failed to broadcast playback state update to other replicas"
+                                is_playing = updated_state.is_playing,
+                                current_time = updated_state.current_time,
+                                "Playback broadcast to replicas failed (attempt 1/2), retrying..."
                             );
+                            // Retry once after a brief delay (Issue #28)
+                            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                            if let Err(e2) = service.update_playback_state(&room_id, &updated_state).await {
+                                tracing::error!(
+                                    error = %e2,
+                                    room_id = %room_id.as_str(),
+                                    is_playing = updated_state.is_playing,
+                                    current_time = updated_state.current_time,
+                                    "Playback broadcast failed after 2 attempts. \
+                                     Other replicas may have stale playback state."
+                                );
+                            }
                         }
                     }
 

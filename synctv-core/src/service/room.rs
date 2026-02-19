@@ -471,6 +471,11 @@ impl RoomService {
     /// Called after all validation (room active, not banned, password checked).
     /// When used with a distributed lock, the lock ensures atomicity of the
     /// re-validation + `add_member` sequence.
+    ///
+    /// **Idempotent**: if the user is already a member the call succeeds and
+    /// returns the existing membership record. This handles the concurrent-join
+    /// race (Issue #60) where two simultaneous requests both pass validation and
+    /// then one gets `AlreadyExists` from the repository.
     async fn do_join_room(
         &self,
         room: Room,
@@ -483,9 +488,27 @@ impl RoomService {
         // rejects the join if the room is at capacity.
         use crate::service::member::AddMemberOptions;
         let options = AddMemberOptions::new().with_max_members(0); // 0 = read from RoomSettings
-        let created_member = self.member_service
+        let created_member = match self.member_service
             .add_member_with_options(room_id.clone(), user_id.clone(), RoomRole::Member, options)
-            .await?;
+            .await
+        {
+            Ok(member) => member,
+            Err(Error::AlreadyExists(_)) => {
+                // User is already a member — return the existing record (idempotent).
+                // This handles the concurrent-join race condition where two requests
+                // both pass the pre-validation check before either has written the row.
+                tracing::debug!(
+                    room_id = %room_id,
+                    user_id = %user_id,
+                    "User is already a member of the room (idempotent join)"
+                );
+                self.member_repo
+                    .get(&room_id, &user_id)
+                    .await?
+                    .ok_or_else(|| Error::Internal("Member disappeared after AlreadyExists".to_string()))?
+            }
+            Err(e) => return Err(e),
+        };
 
         // Get all members
         let members = self.member_service.list_members(&room_id).await?;
@@ -1060,6 +1083,17 @@ impl RoomService {
         self.member_service.count_members(room_id).await
     }
 
+    /// Get a specific room member record.
+    ///
+    /// Returns `None` if the user is not (or is no longer) a member of the room.
+    pub async fn get_member(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+    ) -> Result<Option<RoomMember>> {
+        self.member_service.get_member(room_id, user_id).await
+    }
+
     /// Check if user is a member of the room
     pub async fn check_membership(
         &self,
@@ -1250,7 +1284,7 @@ impl RoomService {
 
     // ========== Chat Operations ==========
 
-    /// Get chat history for a room
+    /// Get chat history for a room (legacy timestamp cursor)
     pub async fn get_chat_history(
         &self,
         room_id: &RoomId,
@@ -1258,6 +1292,21 @@ impl RoomService {
         limit: i32,
     ) -> Result<Vec<ChatMessage>> {
         self.chat_repo.list_by_room(room_id, before, limit).await
+    }
+
+    /// Get chat history using keyset (cursor) pagination.
+    ///
+    /// Prefer this over [`get_chat_history`] for large rooms — it avoids the
+    /// O(N) timestamp scan by using `id < cursor` keyset pagination.
+    ///
+    /// Returns `(messages, next_cursor)`.
+    pub async fn get_chat_history_cursor(
+        &self,
+        room_id: &RoomId,
+        before_id: Option<&str>,
+        limit: i32,
+    ) -> Result<(Vec<ChatMessage>, Option<String>)> {
+        self.chat_repo.list_by_room_cursor(room_id, before_id, limit).await
     }
 
     /// Save a chat message to the database

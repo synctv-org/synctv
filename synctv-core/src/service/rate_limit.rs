@@ -144,6 +144,41 @@ impl InMemoryRateLimiter {
 
 use governor::clock::Clock;
 
+/// Extract a low-cardinality tier label from a rate-limit key.
+///
+/// Issue #31: Prometheus metric labels must never include high-cardinality
+/// values such as user IDs, IP addresses, or room IDs — doing so would cause
+/// unbounded label cardinality and OOM in the Prometheus server.
+///
+/// This function maps a full key like `"user:abc123:auth"` to just `"auth"`,
+/// or `"room_password_check:10.0.0.1:room_xyz"` to `"room_password_check"`.
+///
+/// Rules:
+/// 1. Split on `':'` and take the **last** segment that is a known tier name.
+/// 2. If no known tier is found, return `"unknown"`.
+fn extract_rate_limit_tier(key: &str) -> &'static str {
+    // Known tier names used across the codebase.
+    const KNOWN_TIERS: &[&str] = &[
+        "auth", "read", "write", "media", "chat", "danmaku",
+        "room_password_check", "grpc", "api",
+    ];
+    // Walk segments from right to left so the most-specific label wins.
+    for segment in key.rsplit(':') {
+        for &tier in KNOWN_TIERS {
+            if segment == tier {
+                return tier;
+            }
+        }
+    }
+    // Check if the whole key (or its prefix) matches a known tier.
+    for &tier in KNOWN_TIERS {
+        if key.starts_with(tier) {
+            return tier;
+        }
+    }
+    "unknown"
+}
+
 /// Rate limiter using Redis sliding window algorithm
 ///
 /// **Production Enhancement (#26)**: Implements graceful degradation for Redis failures.
@@ -209,8 +244,20 @@ impl RateLimiter {
 
     /// Synchronous rate limit check using the in-memory governor limiter.
     ///
-    /// This is designed for use in gRPC interceptors, which must be synchronous.
-    /// Uses per-instance in-memory rate limiting (not distributed via Redis).
+    /// # WARNING: Per-Instance Only (Not Distributed)
+    ///
+    /// This method **always** uses the in-memory `governor` limiter regardless
+    /// of whether Redis is configured.  gRPC interceptors are synchronous and
+    /// cannot `await` a Redis call, so there is no distributed alternative.
+    ///
+    /// **Implication in multi-replica deployments:**
+    /// The effective global limit is `max_requests × N` where `N` is the number
+    /// of replicas.  To compensate, the gRPC tier limits in
+    /// `GrpcRateLimitTier::max_requests()` are deliberately set to 1/10th of
+    /// the corresponding HTTP limits.  The async tower middleware layer
+    /// (`GrpcRateLimitLayer`) uses `check_rate_limit` (Redis-backed) for
+    /// distributed enforcement and should be preferred when possible.
+    ///
     /// For distributed rate limiting, use `check_rate_limit` (async).
     pub fn check_rate_limit_sync(
         &self,
@@ -288,8 +335,13 @@ impl RateLimiter {
                     "Redis rate limiter unavailable, falling back to in-memory: {}",
                     e
                 );
+                // Issue #31: Extract tier type from the key to avoid high-cardinality
+                // label values. Key format: "prefix:user:<id>:<tier>" or "<tier>:<...>"
+                // We extract the last segment after the last ':' as the tier label.
+                // Never include user IDs, IP addresses, or other per-entity values.
+                let tier_label = extract_rate_limit_tier(key);
                 crate::metrics::rate_limit::RATE_LIMIT_REDIS_FALLBACKS_TOTAL
-                    .with_label_values(&[&redis_key])
+                    .with_label_values(&[tier_label])
                     .inc();
                 let mem_key = format!("{}{}", self.key_prefix, key);
                 return self

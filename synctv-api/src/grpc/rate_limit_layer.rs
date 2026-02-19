@@ -240,6 +240,12 @@ where
         self.inner.poll_ready(cx)
     }
 
+    // WIRING VERIFICATION (Issue #21):
+    // This GrpcRateLimitService is applied at the Server level in grpc/mod.rs via:
+    //   Server::builder().layer(blacklist_layer).layer(distributed_rate_limit_layer)
+    // All registered gRPC services pass through this tower layer before reaching handlers.
+    // When the rate limit is exceeded, `tonic::Status::resource_exhausted` is returned
+    // immediately without calling `inner.call()`, so the request is fully rejected.
     fn call(&mut self, req: http::Request<TonicBody>) -> Self::Future {
         // Clone the inner service (tower best practice: swap ready clone out)
         let mut inner = self.inner.clone();

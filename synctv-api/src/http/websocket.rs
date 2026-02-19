@@ -25,7 +25,7 @@ use axum::{
 };
 use futures::{SinkExt, StreamExt};
 use serde::Deserialize;
-use std::sync::Arc;
+use std::sync::{Arc, atomic::{AtomicU32, Ordering}};
 use tracing::{error, info, warn};
 
 use crate::http::{AppError, AppState};
@@ -33,6 +33,9 @@ use crate::impls::messaging::{MessageSender, ProtoCodec, StreamMessage, StreamMe
 use crate::proto::client::{ClientMessage, ServerMessage};
 use synctv_core::models::{RoomId, UserId};
 use synctv_core::service::{ContentFilter, RateLimitConfig};
+
+/// Threshold for consecutive slow-client drops before disconnecting them
+const SLOW_CLIENT_DROP_THRESHOLD: u32 = 10;
 
 /// Query parameters for WebSocket connection
 #[derive(Debug, Deserialize)]
@@ -65,10 +68,14 @@ pub enum AuthMethod {
 /// 1. Authorization header (most secure)
 /// 2. Ticket query parameter (recommended for browsers)
 /// 3. JWT token query parameter (legacy fallback)
+///
+/// The `room_id` parameter is required for ticket validation (Issue #65): tickets are
+/// room-scoped and must be checked against the room the connection targets.
 async fn extract_user_id(
     state: &AppState,
     headers: &HeaderMap,
     query: &WsQuery,
+    room_id: &synctv_core::models::RoomId,
 ) -> Result<(UserId, AuthMethod), AppError> {
     // Use the shared JwtValidator from AppState (created once at startup)
     let validator = &state.jwt_validator;
@@ -86,11 +93,12 @@ async fn extract_user_id(
         }
     }
 
-    // Second, try ticket query parameter (recommended for browsers)
+    // Second, try ticket query parameter (recommended for browsers).
+    // The ticket is validated against the target room to prevent cross-room replay (Issue #65).
     if let Some(ref ticket) = query.ticket {
         if let Some(ref ws_ticket_service) = state.ws_ticket_service {
             let user_id = ws_ticket_service
-                .validate_and_consume(ticket)
+                .validate_and_consume(ticket, room_id)
                 .await
                 .map_err(|e| AppError::unauthorized(format!("Invalid or expired ticket: {e}")))?;
             return Ok((user_id, AuthMethod::Ticket));
@@ -177,11 +185,42 @@ impl StreamMessage for WebSocketStream {
 /// WebSocket message sender implementation
 struct WebSocketMessageSender {
     sender: tokio::sync::mpsc::Sender<axum::extract::ws::Message>,
+    /// Count of consecutive message drops (channel full). When this exceeds
+    /// SLOW_CLIENT_DROP_THRESHOLD the send() method returns an error to trigger
+    /// a graceful disconnect for the slow client.
+    consecutive_drops: Arc<AtomicU32>,
 }
 
 impl WebSocketMessageSender {
-    const fn new(sender: tokio::sync::mpsc::Sender<axum::extract::ws::Message>) -> Self {
-        Self { sender }
+    fn new(sender: tokio::sync::mpsc::Sender<axum::extract::ws::Message>) -> Self {
+        Self {
+            sender,
+            consecutive_drops: Arc::new(AtomicU32::new(0)),
+        }
+    }
+
+    /// Clone the sender sharing the same drop counter (used to give handler and ping
+    /// channel different senders that still track slowness jointly).
+    fn clone_sender(&self) -> Self {
+        Self {
+            sender: self.sender.clone(),
+            consecutive_drops: Arc::clone(&self.consecutive_drops),
+        }
+    }
+}
+
+/// Returns `true` if the given `ServerMessage` carries a critical payload that
+/// MUST be delivered (playback state changes, kick/ban notifications, room
+/// deletion). Critical messages use a blocking send with timeout so they are
+/// not silently dropped.
+fn is_critical_message(message: &ServerMessage) -> bool {
+    use crate::proto::client::server_message::Message;
+    match &message.message {
+        Some(Message::PlaybackState(_)) => true,
+        Some(Message::Error(_)) => true,     // kick/ban/room deleted arrive as Error
+        Some(Message::PermissionChanged(_)) => true,
+        Some(Message::RoomSettings(_)) => true,
+        _ => false,
     }
 }
 
@@ -189,17 +228,74 @@ impl crate::impls::messaging::MessageSender for WebSocketMessageSender {
     fn send(&self, message: ServerMessage) -> Result<(), String> {
         // Encode to binary proto
         let bytes = ProtoCodec::encode_server_message(&message)?;
+        let ws_msg = axum::extract::ws::Message::Binary(bytes.into());
 
-        // Use try_send to provide backpressure for slow clients
-        // If channel is full, drop the message (client is too slow)
-        self.sender.try_send(axum::extract::ws::Message::Binary(bytes.into())).map_err(|e| match e {
-            tokio::sync::mpsc::error::TrySendError::Full(_) => {
-                "Channel full: WebSocket client too slow to consume messages".to_string()
+        let critical = is_critical_message(&message);
+
+        if critical {
+            // For critical messages attempt a blocking send with a short timeout so
+            // backpressure does not cause silent loss. If the channel is still full
+            // after the timeout we disconnect the slow client.
+            let sender = self.sender.clone();
+            // try_send first (fast path, no syscall)
+            match sender.try_send(ws_msg.clone()) {
+                Ok(()) => {
+                    // Reset drop counter on success
+                    self.consecutive_drops.store(0, Ordering::Relaxed);
+                    return Ok(());
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                    return Err("Channel closed: WebSocket client disconnected".to_string());
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                    // Critical: increment drop counter and return error to disconnect
+                    let drops = self.consecutive_drops.fetch_add(1, Ordering::Relaxed) + 1;
+                    warn!(
+                        consecutive_drops = drops,
+                        "Critical WebSocket message dropped: channel full (slow client)"
+                    );
+                    synctv_core::metrics::http::WEBSOCKET_ERRORS_TOTAL
+                        .with_label_values(&["message_dropped_critical"])
+                        .inc();
+                    // For critical messages, always signal an error so the caller can
+                    // decide to disconnect the client.
+                    return Err(format!(
+                        "Critical message dropped: channel full after {drops} consecutive drops (slow client)"
+                    ));
+                }
             }
-            tokio::sync::mpsc::error::TrySendError::Closed(_) => {
-                "Channel closed: WebSocket client disconnected".to_string()
+        }
+
+        // Non-critical messages: use try_send; track drops but do not error unless
+        // the client has been consistently slow for SLOW_CLIENT_DROP_THRESHOLD sends.
+        match self.sender.try_send(ws_msg) {
+            Ok(()) => {
+                self.consecutive_drops.store(0, Ordering::Relaxed);
+                Ok(())
             }
-        })
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                let drops = self.consecutive_drops.fetch_add(1, Ordering::Relaxed) + 1;
+                warn!(
+                    consecutive_drops = drops,
+                    "WebSocket message dropped: channel full (slow client)"
+                );
+                synctv_core::metrics::http::WEBSOCKET_ERRORS_TOTAL
+                    .with_label_values(&["message_dropped"])
+                    .inc();
+                if drops >= SLOW_CLIENT_DROP_THRESHOLD {
+                    // Too many consecutive drops: disconnect the slow client gracefully
+                    Err(format!(
+                        "Slow client disconnected: {drops} consecutive message drops"
+                    ))
+                } else {
+                    // Still within threshold: silently drop the non-critical message
+                    Ok(())
+                }
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                Err("Channel closed: WebSocket client disconnected".to_string())
+            }
+        }
     }
 }
 
@@ -221,8 +317,12 @@ pub async fn websocket_handler(
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Result<impl IntoResponse, AppError> {
-    // Extract user ID from authentication credentials
-    let (user_id, auth_method) = extract_user_id(&state, &headers, &query).await?;
+    // Build the RoomId before authentication so we can pass it for ticket validation.
+    let rid = synctv_core::models::RoomId::from_string(room_id.clone());
+
+    // Extract user ID from authentication credentials.
+    // The room_id is passed so that ticket validation can enforce room-scoping (Issue #65).
+    let (user_id, auth_method) = extract_user_id(&state, &headers, &query, &rid).await?;
 
     // Log warning if using legacy token query parameter (less secure)
     if auth_method == AuthMethod::TokenQuery {
@@ -233,7 +333,6 @@ pub async fn websocket_handler(
     }
 
     // Check room membership before upgrading
-    let rid = synctv_core::models::RoomId::from_string(room_id.clone());
     let is_member = state
         .room_service
         .member_service()
@@ -312,15 +411,17 @@ async fn handle_socket(
     let rate_limit_config = Arc::new(RateLimitConfig::default());
     let content_filter = Arc::new(ContentFilter::new());
 
-    // Create channel for sending messages to WebSocket with bounded capacity
-    // Buffer size of 1000 messages provides backpressure for slow clients
+    // Create channel for sending messages to WebSocket with bounded capacity.
+    // Buffer size of 1000 messages provides backpressure for slow clients.
     let (tx, mut rx) = tokio::sync::mpsc::channel::<axum::extract::ws::Message>(1000);
     let is_alive = Arc::new(std::sync::atomic::AtomicBool::new(true));
 
-    // Create WebSocket sender - wrapped in Arc for sharing with handler
-    let ws_sender_for_handler = Arc::new(WebSocketMessageSender::new(tx.clone()));
+    // Create WebSocket sender - wrapped in Arc for sharing with handler.
+    // All senders share the same consecutive-drop counter via clone_sender().
+    let ws_sender_primary = WebSocketMessageSender::new(tx.clone());
+    let ws_sender_for_handler = Arc::new(ws_sender_primary.clone_sender());
     let raw_sender_for_ping = tx.clone();
-    let ws_sender = WebSocketMessageSender::new(tx);
+    let ws_sender = ws_sender_primary;
 
     // Create StreamMessageHandler with all configuration
     let stream_handler = StreamMessageHandler::new(

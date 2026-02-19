@@ -15,6 +15,13 @@ use std::sync::Arc;
 use tokio::sync::broadcast;
 use tracing::{debug, warn};
 
+/// Minimum interval between lag-triggered full L1 flushes (Issue #32).
+///
+/// When the broadcast channel lags, flushing ALL L1 caches is expensive and
+/// may cascade into a DB stampede. This constant rate-limits the full flush
+/// so it happens at most once every 5 seconds even under sustained lag.
+const LAG_FLUSH_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Cache manager that coordinates all cache layers
 #[derive(Clone)]
 pub struct CacheManager {
@@ -68,6 +75,12 @@ impl CacheManager {
         let mut receiver = invalidation_service.subscribe();
 
         crate::spawn::spawn_monitored("cache_invalidation_listener", async move {
+            // Issue #32: Track the last time we performed a lag-triggered full
+            // L1 flush so we can rate-limit it to at most once per 5 seconds.
+            let mut last_lag_flush = std::time::Instant::now()
+                .checked_sub(LAG_FLUSH_MIN_INTERVAL)
+                .unwrap_or_else(std::time::Instant::now);
+
             loop {
                 match receiver.recv().await {
                     Ok(msg) => {
@@ -131,14 +144,33 @@ impl CacheManager {
                         break;
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
-                        warn!(
-                            lagged_messages = n,
-                            "CacheManager invalidation listener lagged, flushing all L1 caches"
-                        );
-                        user_cache.clear_l1().await;
-                        room_cache.clear_l1().await;
-                        if let Some(ref uc) = username_cache {
-                            uc.clear_memory().await;
+                        // Issue #32: Rate-limit full L1 flushes to at most once per 5s.
+                        // Without this, a sustained lag storm (e.g., Redis pubsub burst)
+                        // would trigger a continuous cascade of DB re-fetches.
+                        let now = std::time::Instant::now();
+                        let elapsed = now.duration_since(last_lag_flush);
+                        if elapsed >= LAG_FLUSH_MIN_INTERVAL {
+                            warn!(
+                                lagged_messages = n,
+                                "CacheManager invalidation listener lagged, flushing all L1 caches (rate-limited to once per {}s)",
+                                LAG_FLUSH_MIN_INTERVAL.as_secs()
+                            );
+                            user_cache.clear_l1().await;
+                            room_cache.clear_l1().await;
+                            if let Some(ref uc) = username_cache {
+                                uc.clear_memory().await;
+                            }
+                            // Record metric so operators can observe flush frequency
+                            crate::metrics::cache::CACHE_LAG_FLUSH_TOTAL
+                                .with_label_values(&["cache_manager"])
+                                .inc();
+                            last_lag_flush = now;
+                        } else {
+                            warn!(
+                                lagged_messages = n,
+                                skip_flush_secs = (LAG_FLUSH_MIN_INTERVAL - elapsed).as_secs(),
+                                "CacheManager invalidation listener lagged, skipping flush (rate-limited)"
+                            );
                         }
                     }
                 }

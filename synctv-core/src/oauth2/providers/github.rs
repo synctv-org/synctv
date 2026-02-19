@@ -156,13 +156,45 @@ impl Provider for GitHubProvider {
         // The /user endpoint may return an email, but does not indicate
         // whether it is verified. We must call /user/emails to get the
         // actual verification status.
-        let (email, email_verified) = self
+        //
+        // Fallback rules (Issue #33 — conservative email handling):
+        //   • API succeeds, verified email found  → use (email, true)
+        //   • API succeeds, no verified email     → use primary email, verified=false
+        //   • API fails, profile email is None    → error; don't create account
+        //   • API fails, profile email is Some    → use email, verified=false (warn)
+        let (email, email_verified) = match self
             .fetch_verified_email(token.access_token().secret())
             .await
-            .unwrap_or_else(|e| {
-                tracing::warn!("Failed to fetch GitHub emails, falling back to /user email: {e}");
-                (user.email, false)
-            });
+        {
+            Ok((maybe_email, verified)) => (maybe_email, verified),
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    github_user_id = %user.id,
+                    "Failed to fetch GitHub verified email from /user/emails API"
+                );
+                match user.email {
+                    None => {
+                        // Cannot determine email ownership — refuse to create an account.
+                        return Err(Error::Internal(
+                            "Could not retrieve GitHub email address. \
+                             Please ensure your GitHub account has a public or verified \
+                             email address and try again."
+                                .to_string(),
+                        ));
+                    }
+                    Some(fallback_email) => {
+                        // Profile email is available but verification status is unknown.
+                        // Use email with verified=false; manual verification may be needed.
+                        tracing::warn!(
+                            "Using GitHub profile email as unverified fallback — \
+                             manual email verification may be required."
+                        );
+                        (Some(fallback_email), false)
+                    }
+                }
+            }
+        };
 
         Ok(OAuth2UserInfo {
             provider_user_id: user.id.to_string(),

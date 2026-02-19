@@ -14,6 +14,57 @@ use synctv_core::{
 
 use super::{AppError, AppState};
 
+// ------------------------------------------------------------------
+// Request ID middleware (Issue #22)
+// ------------------------------------------------------------------
+
+/// HTTP header name for request/trace ID propagation.
+static X_REQUEST_ID: LazyLock<axum::http::HeaderName> = LazyLock::new(|| {
+    axum::http::HeaderName::from_static("x-request-id")
+});
+
+/// Middleware that generates a unique request ID per request.
+///
+/// - If the client sends an `X-Request-ID` header whose value is a non-empty
+///   alphanumeric ASCII string of at most 64 characters, that value is reused
+///   (allows end-to-end trace correlation from trusted clients).
+/// - Otherwise a fresh 12-character nanoid is generated.
+///
+/// The request ID is:
+/// 1. Recorded in the current tracing span as `request_id` for log correlation.
+/// 2. Echoed back in the `X-Request-ID` response header so callers can correlate
+///    logs with their own request tracking.
+pub async fn request_id_middleware(
+    request: Request,
+    next: Next,
+) -> Response {
+    // Honour an incoming X-Request-ID header when safe to do so.
+    let request_id = request
+        .headers()
+        .get(X_REQUEST_ID.clone())
+        .and_then(|v| v.to_str().ok())
+        .filter(|s| {
+            // Validate: non-empty, max 64 chars, alphanumeric + hyphens/underscores only.
+            let len = s.len();
+            len > 0 && len <= 64 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        })
+        .map(str::to_owned)
+        .unwrap_or_else(|| nanoid::nanoid!(12));
+
+    // Record in current tracing span for log correlation.
+    tracing::Span::current().record("request_id", request_id.as_str());
+    tracing::debug!(request_id = %request_id, "Request received");
+
+    let mut response = next.run(request).await;
+
+    // Echo back in response header so callers can correlate.
+    if let Ok(value) = axum::http::HeaderValue::from_str(&request_id) {
+        response.headers_mut().insert(X_REQUEST_ID.clone(), value);
+    }
+
+    response
+}
+
 /// Pre-validated security header names (validated once at startup via Lazy)
 static X_FRAME_OPTIONS: LazyLock<axum::http::HeaderName> = LazyLock::new(|| {
     axum::http::HeaderName::from_static("x-frame-options")
@@ -149,8 +200,20 @@ where
             return Err(AppError::unauthorized("Not a guest token"));
         }
 
+        let room_id = claims.room_id();
+
+        // Verify the room still exists. A guest token is only valid for the specific room
+        // it was issued for. If the room has been deleted, the token must be rejected so
+        // that stale guest tokens cannot be replayed against newly-created rooms that
+        // happen to reuse the same ID.
+        app_state
+            .room_service
+            .get_room(&room_id)
+            .await
+            .map_err(|_| AppError::unauthorized("Room not found or has been deleted"))?;
+
         Ok(Self {
-            room_id: claims.room_id(),
+            room_id,
             session_id: claims.session_id,
         })
     }
@@ -812,11 +875,10 @@ mod tests {
 
     // === Security Parity: HTTP middleware checks ===
     //
-    // The HTTP AuthUser extractor performs four security checks in order:
+    // The HTTP AuthUser extractor performs security checks in order:
     // 1. JWT verification (validate signature, expiration, and access token type)
-    // 2. Token blacklist check (reject revoked tokens)
-    // 3. Password invalidation check (reject tokens issued before password change)
-    // 4. Banned/deleted user check (reject banned or soft-deleted users)
+    // 2. Password invalidation check (reject tokens issued before password change)
+    // 3. Banned/deleted user check (reject banned or soft-deleted users)
     //
     // These checks mirror the gRPC BlacklistCheckLayer to ensure consistent
     // security enforcement across both transport layers.

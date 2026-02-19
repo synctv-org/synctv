@@ -128,13 +128,26 @@ impl PullStream {
                 )));
             }
             Err(e) => {
-                warn!(
-                    "Failed to validate epoch for pull stream {}/{}: {}. Continuing optimistically.",
+                // Issue #53: Fail-CLOSED on Redis error to prevent split-brain during
+                // network partitions.  If we cannot validate the epoch, we cannot
+                // confirm that our publisher record is still valid.  Optimistic
+                // continuation ("fail-open") risks streaming stale data from the wrong
+                // publisher node during a network partition scenario.
+                //
+                // The caller (ExternalPublishManager / PullStreamManager) treats this
+                // as a failed start and will retry on the next viewer request.
+                error!(
+                    "Failed to validate epoch for pull stream {}/{}: {}. \
+                     Failing closed to prevent potential split-brain. \
+                     Stream will retry when Redis is available.",
                     self.room_id,
                     self.media_id,
                     e
                 );
-                // Continue on error - fail open to avoid blocking streams during Redis issues
+                return Err(crate::error::StreamError::RegistryError(format!(
+                    "Epoch validation failed for {}/{}: {e}",
+                    self.room_id, self.media_id
+                )));
             }
         }
 

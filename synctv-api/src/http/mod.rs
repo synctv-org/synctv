@@ -131,21 +131,10 @@ pub fn create_router_from_config(config: RouterConfig) -> axum::Router {
 
 /// Build `AppState` from `RouterConfig`, creating the shared API implementation layers.
 fn build_app_state(config: RouterConfig) -> AppState {
-    // Create shared security pipeline early so it can be shared with client_api for logout
-    let security_pipeline = if let Some(ref redis_conn) = config.redis_conn {
-        let key_builder = synctv_core::cache::KeyBuilder::new(
-            &config.config.redis.key_prefix,
-        );
-        Arc::new(synctv_core::service::SecurityPipeline::with_redis(
-            config.user_service.clone(),
-            redis_conn.clone(),
-            key_builder,
-        ))
-    } else {
-        Arc::new(synctv_core::service::SecurityPipeline::new(
-            config.user_service.clone(),
-        ))
-    };
+    // Create shared security pipeline for post-JWT checks (password version, user status)
+    let security_pipeline = Arc::new(synctv_core::service::SecurityPipeline::new(
+        config.user_service.clone(),
+    ));
 
     let client_api = Arc::new(crate::impls::ClientApiImpl::new(
         config.user_service.clone(),
@@ -159,8 +148,7 @@ fn build_app_state(config: RouterConfig) -> AppState {
         config.settings_registry.clone(),
     ).with_redis_publish_tx(config.redis_publish_tx.clone())
      .with_redis_conn(config.redis_conn.clone())
-     .with_rate_limiter(config.rate_limiter.clone())
-     .with_security_pipeline(security_pipeline.clone()));
+     .with_rate_limiter(config.rate_limiter.clone()));
 
     // Wire in the resolved STUN URL if the built-in STUN server started successfully
     let client_api = if let Some(stun_url) = config.builtin_stun_url {
@@ -251,8 +239,26 @@ fn build_app_state(config: RouterConfig) -> AppState {
     }
 }
 
+/// Body size limits for specific endpoint categories (Issue #23).
+///
+/// These are applied as `route_layer`s INSIDE the rate-limit route groups so that
+/// the limit is enforced before the handler reads the body, and the global 10 MB
+/// safety net remains as a fallback for routes not explicitly limited here.
+mod body_limits {
+    /// Auth endpoints (login, register, refresh, password verify): 64 KB.
+    /// A typical login JSON body is under 512 bytes; 64 KB is generous.
+    pub const AUTH: usize = 64 * 1024;
+
+    /// Room create / update / settings: 64 KB.
+    pub const ROOM: usize = 64 * 1024;
+
+    /// Media add / edit requests: 512 KB (media metadata may include longer URLs or
+    /// subtitles, but should never be megabyte-scale).
+    pub const MEDIA: usize = 512 * 1024;
+}
+
 /// Authentication routes (register, login, refresh, `OAuth2` exchange, password verify).
-/// Strict rate limiting: 5 req/min.
+/// Strict rate limiting: 5 req/min. Body limit: 64 KB (Issue #23).
 fn register_auth_routes(state: &AppState) -> Router<AppState> {
     Router::new()
         .route("/api/auth/register", post(auth::register))
@@ -260,6 +266,8 @@ fn register_auth_routes(state: &AppState) -> Router<AppState> {
         .route("/api/auth/refresh", post(auth::refresh_token))
         .route("/api/oauth2/{provider}/exchange", post(oauth2::exchange_authorization_code))
         .route("/api/rooms/{room_id}/password/verify", post(room::check_password))
+        // Tighter body limit for authentication endpoints (64 KB)
+        .layer(axum::extract::DefaultBodyLimit::max(body_limits::AUTH))
         .route_layer(axum_middleware::from_fn_with_state(
             state.clone(),
             middleware::auth_rate_limit,
@@ -267,7 +275,7 @@ fn register_auth_routes(state: &AppState) -> Router<AppState> {
 }
 
 /// Media mutation routes (add, delete, reorder, edit, batch operations).
-/// Moderate rate limiting: 20 req/min.
+/// Moderate rate limiting: 20 req/min. Body limit: 512 KB (Issue #23).
 fn register_media_routes(state: &AppState) -> Router<AppState> {
     Router::new()
         .route("/api/rooms/{room_id}/media", post(room::add_media))
@@ -279,6 +287,8 @@ fn register_media_routes(state: &AppState) -> Router<AppState> {
         .route("/api/rooms/{room_id}/media/swap", post(room::swap_media_items))
         .route("/api/rooms/{room_id}/media/{media_id}", axum::routing::delete(room::delete_media))
         .route("/api/rooms/{room_id}/media/{media_id}", axum::routing::patch(room::edit_media))
+        // Media metadata bodies are small (URLs, titles, subtitles)
+        .layer(axum::extract::DefaultBodyLimit::max(body_limits::MEDIA))
         .route_layer(axum_middleware::from_fn_with_state(
             state.clone(),
             middleware::media_rate_limit,
@@ -286,7 +296,7 @@ fn register_media_routes(state: &AppState) -> Router<AppState> {
 }
 
 /// Write routes (room CRUD, membership, playback control, playlists, user updates).
-/// Moderate rate limiting: 30 req/min.
+/// Moderate rate limiting: 30 req/min. Room create/update body limit: 64 KB (Issue #23).
 fn register_write_routes(state: &AppState) -> Router<AppState> {
     Router::new()
         .route("/api/rooms", post(room::create_room))
@@ -299,7 +309,6 @@ fn register_write_routes(state: &AppState) -> Router<AppState> {
         .route("/api/rooms/{room_id}/playback/stop", post(room::stop_playback))
         .route("/api/user", axum::routing::patch(user::update_user))
         .route("/api/user/me", axum::routing::delete(user::delete_me))
-        .route("/api/auth/session", axum::routing::delete(user::logout))
         .route("/api/user/rooms/{room_id}", axum::routing::delete(user::delete_my_room))
         .route("/api/oauth2/{provider}/bind", get(oauth2::get_bind_authorize_url))
         .route("/api/oauth2/{provider}/unlink", axum::routing::delete(oauth2::unlink_provider))
@@ -312,6 +321,8 @@ fn register_write_routes(state: &AppState) -> Router<AppState> {
         .route("/api/rooms/{room_id}/playlists/{playlist_id}", axum::routing::patch(room::update_playlist))
         .route("/api/rooms/{room_id}/playlists/{playlist_id}", axum::routing::delete(room::delete_playlist))
         .route("/api/rooms/{room_id}/settings/reset", post(room::reset_room_settings))
+        // Room/user write bodies should be small (room metadata, settings, passwords)
+        .layer(axum::extract::DefaultBodyLimit::max(body_limits::ROOM))
         .route_layer(axum_middleware::from_fn_with_state(
             state.clone(),
             middleware::write_rate_limit,
@@ -493,11 +504,14 @@ fn build_cors_layer(config: &synctv_core::Config) -> CorsLayer {
     }
 }
 
-/// Apply global middleware layers (CORS, body limit, timeout, security headers, HSTS, tracing)
-/// and bind state.
+/// Apply global middleware layers (CORS, body limit, timeout, security headers, HSTS,
+/// request ID propagation, and tracing) and bind state.
 fn apply_global_layers(router: Router<AppState>, state: &AppState) -> axum::Router {
     let cors = build_cors_layer(&state.config);
 
+    // Global 10 MB safety net (prevents runaway uploads from reaching handlers).
+    // Sensitive endpoints (login, register, chat, room create/update) apply a
+    // much tighter per-route limit applied at the route group level.
     let router = router
         .layer(cors)
         .layer(axum::extract::DefaultBodyLimit::max(10 * 1024 * 1024))
@@ -505,6 +519,8 @@ fn apply_global_layers(router: Router<AppState>, state: &AppState) -> axum::Rout
             axum::http::StatusCode::REQUEST_TIMEOUT,
             std::time::Duration::from_secs(30),
         ))
+        // Request ID: generates/propagates X-Request-ID per request (Issue #22)
+        .layer(axum_middleware::from_fn(middleware::request_id_middleware))
         .layer(axum_middleware::from_fn(middleware::security_headers_middleware));
 
     // Apply HSTS

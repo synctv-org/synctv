@@ -18,6 +18,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use percent_encoding::percent_decode_str;
 use synctv_livestream::AuthCallback;
 use synctv_livestream::api::UserStreamTracker;
 use synctv_livestream::relay::StreamRegistryTrait;
@@ -251,10 +252,21 @@ impl AuthCallback for SyncTvRtmpAuth {
     }
 }
 
-fn extract_token_from_query(query: &str) -> Option<&str> {
+/// Extract and URL-decode the `token` parameter from a query string.
+///
+/// Returns `None` if no `token=` parameter is present.
+/// The token value is percent-decoded (e.g. `%2B` → `+`) so that JWT tokens
+/// containing `+` characters survive URL encoding in RTMP query strings.
+fn extract_token_from_query(query: &str) -> Option<String> {
     for pair in query.split('&') {
-        if let Some(value) = pair.strip_prefix("token=") {
-            return Some(value);
+        if let Some(encoded_value) = pair.strip_prefix("token=") {
+            // Percent-decode the token. Replace encoding errors with U+FFFD
+            // (malformed UTF-8 in a JWT is invalid anyway, but we surface it
+            // later during JWT validation rather than silently dropping here).
+            let decoded = percent_decode_str(encoded_value)
+                .decode_utf8_lossy()
+                .into_owned();
+            return Some(decoded);
         }
     }
     None
@@ -269,25 +281,25 @@ mod tests {
     #[test]
     fn test_extract_token_single_param() {
         let result = extract_token_from_query("token=abc123");
-        assert_eq!(result, Some("abc123"));
+        assert_eq!(result.as_deref(), Some("abc123"));
     }
 
     #[test]
     fn test_extract_token_among_multiple_params() {
         let result = extract_token_from_query("foo=bar&token=my_jwt_token&baz=qux");
-        assert_eq!(result, Some("my_jwt_token"));
+        assert_eq!(result.as_deref(), Some("my_jwt_token"));
     }
 
     #[test]
     fn test_extract_token_first_param() {
         let result = extract_token_from_query("token=first_token&other=value");
-        assert_eq!(result, Some("first_token"));
+        assert_eq!(result.as_deref(), Some("first_token"));
     }
 
     #[test]
     fn test_extract_token_last_param() {
         let result = extract_token_from_query("other=value&token=last_token");
-        assert_eq!(result, Some("last_token"));
+        assert_eq!(result.as_deref(), Some("last_token"));
     }
 
     #[test]
@@ -305,7 +317,7 @@ mod tests {
     #[test]
     fn test_extract_token_empty_value() {
         let result = extract_token_from_query("token=");
-        assert_eq!(result, Some(""));
+        assert_eq!(result.as_deref(), Some(""));
     }
 
     #[test]
@@ -320,7 +332,22 @@ mod tests {
         let jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U";
         let query = format!("token={jwt}");
         let result = extract_token_from_query(&query);
-        assert_eq!(result, Some(jwt));
+        assert_eq!(result.as_deref(), Some(jwt));
+    }
+
+    #[test]
+    fn test_extract_token_percent_encoded_plus() {
+        // JWT tokens with `+` encoded as `%2B` must round-trip correctly (Issue #44)
+        let result = extract_token_from_query("token=foo%2Bbar");
+        assert_eq!(result.as_deref(), Some("foo+bar"));
+    }
+
+    #[test]
+    fn test_extract_token_plus_sign_in_token() {
+        // `+` used literally in query strings (not encoded) should be preserved
+        let result = extract_token_from_query("token=abc+def");
+        // percent_decode_str does NOT convert `+` to space (only %20 is space in strict mode)
+        assert_eq!(result.as_deref(), Some("abc+def"));
     }
 
     // ========== StreamLifecycleEvent ==========
@@ -407,12 +434,9 @@ impl SyncTvRtmpAuth {
             return Err(format!("Room {app_name} is pending, need admin approval").into());
         }
 
-        // Extract token: prefer query string parameter, fall back to stream_name as token
-        let token = if let Some(q) = query {
-            extract_token_from_query(q).unwrap_or(stream_name)
-        } else {
-            stream_name
-        };
+        // Extract token: prefer query string parameter (URL-decoded), fall back to stream_name
+        let token_owned: Option<String> = query.and_then(extract_token_from_query);
+        let token = token_owned.as_deref().unwrap_or(stream_name);
 
         // Validate JWT stream_key
         let claims = self
@@ -566,6 +590,11 @@ impl SyncTvRtmpAuth {
         // already written by try_register_publisher_with_user.  The HSET form
         // provides O(1) single-field lookup on any replica when only one active
         // stream per user is expected, without needing to scan a Set.
+        //
+        // Issue #45: if the HSET pipeline fails after registration succeeded, we
+        // roll back the publisher registration to keep Redis consistent.  Without
+        // rollback, the publisher registration would remain but the user→stream
+        // mapping would be missing, causing lookup inconsistencies on other nodes.
         if let Some(ref conn) = self.redis_conn {
             let mut conn = conn.clone();
             let stream_key = format!("{}:{}", validated.room_id, validated.media_id);
@@ -576,14 +605,31 @@ impl SyncTvRtmpAuth {
                 .query_async(&mut conn)
                 .await;
             if let Err(e) = hset_result {
-                // Non-fatal: log and continue.  The Set-based index is the primary
-                // source of truth for cross-replica lookup.
-                tracing::warn!(
+                // Issue #45: HSET failed after registration — roll back the publisher
+                // registration so we don't leave an inconsistent state where the
+                // publisher slot is occupied but the user→stream mapping is absent.
+                tracing::error!(
                     user_id = %validated.user_id,
                     stream_key = %stream_key,
-                    "Failed to write rtmp:user_streams to Redis (non-fatal): {}",
+                    "Failed to write rtmp:user_streams to Redis after publisher registration: {}. \
+                     Rolling back publisher registration to maintain consistency.",
                     e
                 );
+                if let Err(unreg_err) = self.registry.unregister_publisher(
+                    &validated.room_id,
+                    &validated.media_id,
+                ).await {
+                    tracing::error!(
+                        room_id = %validated.room_id,
+                        media_id = %validated.media_id,
+                        "Rollback of publisher registration also failed: {}. \
+                         Redis TTL will eventually expire the stale entry.",
+                        unreg_err
+                    );
+                }
+                return Err(format!(
+                    "Failed to write user stream mapping to Redis: {e}"
+                ).into());
             }
         }
 

@@ -163,8 +163,12 @@ pub struct OAuth2UserInfo {
 }
 
 /// An `OAuth2` provider entry combining the provider instance and its type
+///
+/// The provider is stored as `Arc<dyn>` rather than `Box<dyn>` so that callers
+/// can clone the `Arc` while holding the read lock and then drop the lock before
+/// invoking any async methods on the provider (Issue #74 — TOCTOU race fix).
 struct OAuth2ProviderEntry {
-    provider: Box<dyn OAuth2ProviderTrait>,
+    provider: Arc<dyn OAuth2ProviderTrait>,
     provider_type: OAuth2Provider,
 }
 
@@ -260,7 +264,7 @@ impl OAuth2Service {
     /// # Arguments
     /// * `instance_name` - Unique instance name (e.g., "github", "logto1", "logto2")
     /// * `provider_type` - Provider type enum
-    /// * `provider` - The provider instance
+    /// * `provider` - The provider instance (wrapped in `Arc` internally for safe cloning)
     pub async fn register_provider(
         &self,
         instance_name: String,
@@ -270,7 +274,11 @@ impl OAuth2Service {
         let mut providers = self.providers.write().await;
 
         info!("Registered OAuth2 provider: {} (type: {})", instance_name, provider_type.as_str());
-        providers.insert(instance_name, OAuth2ProviderEntry { provider, provider_type });
+        // Wrap in Arc so we can clone the reference while holding the read lock (Issue #74)
+        providers.insert(instance_name, OAuth2ProviderEntry {
+            provider: Arc::from(provider),
+            provider_type,
+        });
     }
 
     /// Generate authorization URL with PKCE challenge
@@ -293,6 +301,11 @@ impl OAuth2Service {
     }
 
     /// Shared implementation for building an `OAuth2` authorization URL.
+    ///
+    /// Issue #74 (TOCTOU fix): The provider `Arc` is cloned while holding the read lock,
+    /// then the lock is released before any async I/O takes place. This prevents a race
+    /// where another thread could call `unlink_provider` between the lookup and the
+    /// `new_auth_url()` call.
     async fn build_authorization_url(
         &self,
         instance_name: &str,
@@ -304,15 +317,21 @@ impl OAuth2Service {
             Self::validate_redirect_url_with_allowlist(url, &self.allowed_redirect_domains)?;
         }
 
-        let providers = self.providers.read().await;
-        let entry = providers.get(instance_name)
-            .ok_or_else(|| Error::InvalidInput(format!("OAuth2 provider instance not found: {instance_name}")))?;
+        // Clone the Arc<dyn> under the read lock, then drop the lock before any I/O.
+        let provider: Arc<dyn OAuth2ProviderTrait> = {
+            let providers = self.providers.read().await;
+            providers
+                .get(instance_name)
+                .map(|entry| Arc::clone(&entry.provider))
+                .ok_or_else(|| Error::InvalidInput(format!("OAuth2 provider instance not found: {instance_name}")))?
+            // read lock dropped here
+        };
 
         // Generate state token
         let state_token = nanoid::nanoid!(32);
 
-        // Generate authorization URL with PKCE challenge
-        let (auth_url, pkce_verifier) = entry.provider.new_auth_url(&state_token).await
+        // Generate authorization URL with PKCE challenge (lock is NOT held here)
+        let (auth_url, pkce_verifier) = provider.new_auth_url(&state_token).await
             .internal_with_err("Failed to generate authorization URL")?;
 
         // Store state (including PKCE verifier) for verification during callback
@@ -421,27 +440,38 @@ impl OAuth2Service {
     }
 
     /// Exchange authorization code for user info with PKCE verification
+    ///
+    /// Issue #74 (TOCTOU fix): Provider `Arc` and provider type are captured while
+    /// holding the read lock, then the lock is released before any async network I/O.
+    /// This prevents a race where the provider could be unregistered between the
+    /// `providers.get()` lookup and the `get_user_info()` network call.
     pub async fn exchange_code_for_user_info(
         &self,
         instance_name: &str,
         code: &str,
         pkce_verifier: &str,
     ) -> Result<(OAuth2UserInfo, OAuth2Provider)> {
-        // M-03: Single lock acquisition instead of two separate locks
-        let providers = self.providers.read().await;
-
-        let entry = providers.get(instance_name)
-            .ok_or_else(|| Error::InvalidInput(format!("OAuth2 provider instance not found: {instance_name}")))?;
+        // Clone both the Arc<provider> and the provider_type under the read lock.
+        // After this block the lock is released; subsequent code cannot race with
+        // `unlink_provider` or `register_provider`.
+        let (provider, provider_type): (Arc<dyn OAuth2ProviderTrait>, OAuth2Provider) = {
+            let providers = self.providers.read().await;
+            let entry = providers
+                .get(instance_name)
+                .ok_or_else(|| Error::InvalidInput(format!("OAuth2 provider instance not found: {instance_name}")))?;
+            (Arc::clone(&entry.provider), entry.provider_type.clone())
+            // read lock dropped here
+        };
 
         debug!("Exchanging code for user info from {}", instance_name);
 
-        // Use provider to get user info (with PKCE verifier)
-        let user_info = entry.provider.get_user_info(code, pkce_verifier).await
+        // Network I/O without holding the lock
+        let user_info = provider.get_user_info(code, pkce_verifier).await
             .internal_with_err("Failed to get user info")?;
 
         // Convert provider user info to service user info
         let service_user_info = OAuth2UserInfo {
-            provider: entry.provider_type.clone(),
+            provider: provider_type.clone(),
             provider_user_id: user_info.provider_user_id,
             username: user_info.username,
             email: user_info.email,
@@ -449,7 +479,7 @@ impl OAuth2Service {
             email_verified: user_info.email_verified,
         };
 
-        Ok((service_user_info, entry.provider_type.clone()))
+        Ok((service_user_info, provider_type))
     }
 
     /// Create or update user-OAuth2 provider mapping
@@ -598,26 +628,43 @@ mod tests {
     /// In-memory [`OAuthStateStore`] for unit tests.
     ///
     /// Uses a `Mutex<HashMap>` for atomic single-use consumption without Redis.
-    /// TTL is accepted but not enforced (tests don't wait for expiry).
+    ///
+    /// Issue #26: TTL is now enforced using stored expiry timestamps. On every
+    /// `consume()` call, expired entries are swept from the map so that
+    /// long-running test processes don't accumulate unbounded state entries.
     struct InMemoryOAuthStateStore {
-        states: Mutex<HashMap<String, OAuth2State>>,
+        /// Map of token_id -> (state, expiry_instant)
+        states: Mutex<HashMap<String, (OAuth2State, std::time::Instant)>>,
     }
 
     impl InMemoryOAuthStateStore {
         fn new() -> Self {
             Self { states: Mutex::new(HashMap::new()) }
         }
+
+        /// Remove all entries whose TTL has expired.
+        fn sweep_expired(map: &mut HashMap<String, (OAuth2State, std::time::Instant)>) {
+            let now = std::time::Instant::now();
+            map.retain(|_, (_, expiry)| *expiry > now);
+        }
     }
 
     #[async_trait]
     impl OAuthStateStore for InMemoryOAuthStateStore {
-        async fn store(&self, token_id: &str, state: &OAuth2State, _ttl: std::time::Duration) -> Result<()> {
-            self.states.lock().unwrap().insert(token_id.to_string(), state.clone());
+        async fn store(&self, token_id: &str, state: &OAuth2State, ttl: std::time::Duration) -> Result<()> {
+            let expiry = std::time::Instant::now() + ttl;
+            let mut map = self.states.lock().unwrap();
+            // Sweep expired entries on store to bound memory usage
+            Self::sweep_expired(&mut map);
+            map.insert(token_id.to_string(), (state.clone(), expiry));
             Ok(())
         }
 
         async fn consume(&self, token_id: &str) -> Result<Option<OAuth2State>> {
-            Ok(self.states.lock().unwrap().remove(token_id))
+            let mut map = self.states.lock().unwrap();
+            // Sweep expired entries on every consume to keep the map bounded
+            Self::sweep_expired(&mut map);
+            Ok(map.remove(token_id).map(|(state, _expiry)| state))
         }
     }
 

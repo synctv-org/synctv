@@ -12,6 +12,7 @@ use serde::{de::DeserializeOwned, Serialize};
 use std::fmt::{Debug, Display};
 use std::hash::Hash;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::cache::singleflight::SingleFlight;
 use crate::{Error, Result};
@@ -39,6 +40,15 @@ pub trait CacheKey: Hash + Eq + Clone + Debug + Display + Send + Sync + 'static 
 /// when many concurrent requests miss L1 for the same key, only one
 /// proceeds to query L2 (Redis), and the rest wait for its result.
 ///
+/// # Generation Counter (Issue #30)
+///
+/// Each invalidation increments a global `epoch` counter for this cache
+/// instance. When a `SingleFlight` worker finishes a fetch, it compares the
+/// epoch at the time the fetch started with the current epoch. If they differ,
+/// an invalidation arrived while the fetch was in-flight, which means the
+/// fetched value may be stale. In that case the result is NOT written to L1
+/// cache (we let the next request re-fetch from L2/DB instead).
+///
 /// # Type Parameters
 /// - `K`: Cache key type (e.g. `UserId`, `RoomId`)
 /// - `V`: Cache value type (e.g. `CachedUser`, `CachedRoom`)
@@ -59,6 +69,13 @@ where
     /// `Clone` (due to `sqlx::Error`), so we use `String` for the error type
     /// and convert back to `Error::Internal` at the call site.
     singleflight: SingleFlight<String, Option<V>, String>,
+    /// Generation counter. Incremented on every invalidation.
+    ///
+    /// Issue #30: Before writing a `SingleFlight` result back to L1, we compare
+    /// the epoch snapshot taken at fetch-start with the current value. If they
+    /// differ, the fetch result is discarded to avoid re-populating L1 with
+    /// potentially stale data after an invalidation.
+    epoch: Arc<AtomicU64>,
 }
 
 impl<K, V> TieredCache<K, V>
@@ -112,6 +129,7 @@ where
             key_prefix,
             cache_type,
             singleflight: SingleFlight::new(),
+            epoch: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -149,6 +167,12 @@ where
             let key_str = key.as_str().to_string();
             let cache_type = self.cache_type.clone();
 
+            // Issue #30: Snapshot epoch before the async fetch begins.
+            // After the fetch completes we re-check the epoch; if it changed,
+            // an invalidation arrived mid-flight and the result is stale.
+            let epoch_before = self.epoch.load(Ordering::Acquire);
+            let epoch_arc = self.epoch.clone();
+
             let result = self.singleflight.do_work_with_fallback(
                 sf_key,
                 {
@@ -184,8 +208,21 @@ where
                     "Cache hit (L2)"
                 );
 
-                // Populate L1 cache
-                self.l1_cache.insert(key.clone(), value.clone()).await;
+                // Issue #30: Only populate L1 if no invalidation arrived while
+                // this fetch was in-flight. If the epoch changed, the data may
+                // be stale — skip L1 so the next request re-fetches fresh data.
+                let epoch_after = epoch_arc.load(Ordering::Acquire);
+                if epoch_after == epoch_before {
+                    self.l1_cache.insert(key.clone(), value.clone()).await;
+                } else {
+                    tracing::debug!(
+                        key = %key,
+                        cache_type = %self.cache_type,
+                        epoch_before,
+                        epoch_after,
+                        "Skipping L1 write: invalidation arrived mid-flight (epoch changed)"
+                    );
+                }
 
                 crate::metrics::cache::CACHE_OPERATION_DURATION
                     .with_label_values(&["get"])
@@ -252,8 +289,16 @@ where
     /// L1 is invalidated first to ensure this replica immediately stops serving
     /// stale data, then L2 is cleared so other replicas don't re-populate from
     /// stale Redis data.
+    ///
+    /// Also increments the epoch counter (Issue #30) so that any in-flight
+    /// `SingleFlight` fetches know not to write their result to L1 cache.
     pub async fn invalidate(&self, key: &K) -> Result<()> {
         let start = std::time::Instant::now();
+
+        // Issue #30: Increment epoch BEFORE removing from L1. Any concurrent
+        // SingleFlight fetch that started before this point will see the
+        // new epoch after completing and skip the L1 write.
+        self.epoch.fetch_add(1, Ordering::Release);
 
         // Remove from L1 (in-memory) FIRST so this replica stops serving stale data immediately
         self.l1_cache.invalidate(key).await;
@@ -284,7 +329,12 @@ where
     /// entry from the local in-memory cache and L2 Redis cache.
     /// L1 is cleared first so this replica stops serving stale data immediately,
     /// then L2 is cleared so other replicas don't re-populate from stale Redis data.
+    ///
+    /// Also increments the epoch counter (Issue #30).
     pub async fn invalidate_by_id(&self, id: &str) {
+        // Issue #30: Increment epoch before evicting from L1
+        self.epoch.fetch_add(1, Ordering::Release);
+
         // Remove from L1 (in-memory) FIRST
         let key = K::from_id(id);
         self.l1_cache.invalidate(&key).await;

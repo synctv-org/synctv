@@ -179,9 +179,28 @@ impl ClusterClient {
         Ok(())
     }
 
-    /// Remove a cached channel (e.g., after connection failure)
-    fn invalidate_channel(&self, address: &str) {
+    /// Remove a cached channel for the given address.
+    ///
+    /// Call this when a node re-registers with a new gRPC address or when
+    /// `node_deregistered`/`node_updated` events are received from the cluster.
+    /// Without explicit invalidation, the moka TTL (`CHANNEL_CACHE_TTL_SECS` = 5 minutes)
+    /// means the old channel would continue to be used for up to 5 minutes after
+    /// the node re-registers with a different address.
+    ///
+    /// Also called internally after any RPC failure so that the next call
+    /// creates a fresh channel.
+    pub fn invalidate_channel(&self, address: &str) {
         self.channels.invalidate(address);
+        debug!(address = %address, "Invalidated cached gRPC channel");
+    }
+
+    /// Invalidate all cached channels.
+    ///
+    /// Use this when the cluster topology changes significantly (e.g., after a
+    /// leader election, or when multiple nodes re-register simultaneously).
+    pub fn invalidate_all_channels(&self) {
+        self.channels.invalidate_all();
+        debug!("Invalidated all cached gRPC channels");
     }
 
     /// Fan-out `GetUserOnlineStatus` to all remote nodes in parallel.

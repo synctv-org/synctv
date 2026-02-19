@@ -27,26 +27,58 @@ use dashmap::DashMap;
 const MAX_HEARTBEAT_RETRIES: u32 = 3;
 /// Delay between heartbeat retries (exponential backoff base)
 const HEARTBEAT_RETRY_BASE_DELAY_MS: u64 = 100;
-/// Number of consecutive heartbeat *cycles* that must fail before cleaning up a publisher.
-/// This prevents killing active streams during transient Redis maintenance or network issues.
+/// Number of consecutive heartbeat *cycles* where Redis **confirms the publisher is gone**
+/// before cleaning up. This prevents killing active streams during transient Redis timeouts
+/// or maintenance windows.
+///
+/// Issue #57: A Redis timeout (slow response) is NOT the same as the publisher being dead.
+/// Only count a heartbeat failure if Redis responds AND the publisher TTL actually expired.
+/// If Redis itself is unreachable, use a separate `redis_unreachable` counter (below).
 const MAX_CONSECUTIVE_HEARTBEAT_FAILURES: u32 = 3;
+
+/// Number of consecutive heartbeat cycles where Redis is completely unreachable before
+/// triggering publisher cleanup as a last resort (Issue #57).
+///
+/// This threshold is intentionally much higher than `MAX_CONSECUTIVE_HEARTBEAT_FAILURES`
+/// because Redis timeouts should not cause publisher cleanup — they likely indicate a
+/// transient network issue, not a dead publisher.
+const MAX_CONSECUTIVE_REDIS_UNREACHABLE: u32 = 10;
 
 /// Duration after which a publisher that hasn't sent any media data is
 /// considered silent and should be cleaned up (LS-5). This is separate from
 /// Redis TTL, which only detects node-level failures. A silent publisher may
 /// keep its TCP connection alive but stop sending RTMP frames (e.g., crashed
 /// encoder, frozen camera).
-const SILENT_PUBLISHER_TIMEOUT_SECS: u64 = 60;
+///
+/// Issue #48: The silent timeout must be LONGER than the max broadcast channel
+/// lag window (typically several seconds) to avoid false-positive timeouts when
+/// frames are still being produced but have not yet been delivered through the
+/// broadcast channel.  The activity callback is throttled to 10s intervals
+/// (see `ACTIVITY_RECORD_INTERVAL`), so the effective minimum useful timeout is
+/// ~2× the throttle interval.  Set to 5 minutes to comfortably exceed any
+/// realistic broadcast lag window while still detecting truly frozen encoders.
+const SILENT_PUBLISHER_TIMEOUT_SECS: u64 = 300;
 
 /// Tracked publisher state including activity timestamp and registration info.
 struct PublisherEntry {
     /// Unix timestamp (seconds) of last observed data activity.
     /// Updated via `record_publisher_activity` when media frames arrive.
     last_active_secs: AtomicU64,
-    /// Number of consecutive heartbeat cycles where all retries failed.
+    /// Number of consecutive heartbeat cycles where Redis responded AND
+    /// the publisher TTL refresh failed (i.e., publisher entry is gone).
     /// Reset to 0 on any successful heartbeat. Only triggers cleanup when
     /// this reaches `MAX_CONSECUTIVE_HEARTBEAT_FAILURES`.
+    ///
+    /// Issue #57: This counter is NOT incremented when Redis itself is
+    /// unreachable (timeout/connection error). See `redis_unreachable_cycles`.
     consecutive_heartbeat_failures: std::sync::atomic::AtomicU32,
+    /// Number of consecutive heartbeat cycles where Redis was completely
+    /// unreachable (timeout or connection refused), regardless of publisher status.
+    ///
+    /// Issue #57: Separated from `consecutive_heartbeat_failures` to prevent
+    /// slow Redis from triggering false publisher cleanup.  Only triggers
+    /// cleanup when this reaches `MAX_CONSECUTIVE_REDIS_UNREACHABLE`.
+    redis_unreachable_cycles: std::sync::atomic::AtomicU32,
     /// User ID from the publisher registration (L-01: for reverse-index TTL refresh).
     user_id: String,
 }
@@ -58,6 +90,7 @@ impl PublisherEntry {
         Self {
             last_active_secs: AtomicU64::new(Self::now_secs()),
             consecutive_heartbeat_failures: std::sync::atomic::AtomicU32::new(0),
+            redis_unreachable_cycles: std::sync::atomic::AtomicU32::new(0),
             user_id: String::new(),
         }
     }
@@ -66,6 +99,7 @@ impl PublisherEntry {
         Self {
             last_active_secs: AtomicU64::new(Self::now_secs()),
             consecutive_heartbeat_failures: std::sync::atomic::AtomicU32::new(0),
+            redis_unreachable_cycles: std::sync::atomic::AtomicU32::new(0),
             user_id,
         }
     }
@@ -574,54 +608,120 @@ impl PublisherManager {
                 // L-01: Pass stored user_id to refresh both publisher TTL and user reverse-index TTL
                 let user_id = &entry.user_id;
 
-                // Try heartbeat with retries (Redis TTL refresh)
-                let mut success = false;
+                // Issue #49: Per-cycle heartbeat failure counting semantics:
+                //
+                // Within a single cycle, we retry up to MAX_HEARTBEAT_RETRIES times
+                // with exponential backoff.  The cycle is considered:
+                //   - SUCCESS: at least one retry returned Ok(())
+                //   - FAILURE: ALL retries returned Err(...)
+                //
+                // `consecutive_heartbeat_failures` counts consecutive *cycles* with
+                // a FAILURE outcome, not individual retry attempts within a cycle.
+                //
+                // Reset semantics: reset to 0 when a cycle succeeds (even partially).
+                // This means a transient Redis error that resolves within the retry
+                // window does NOT accumulate toward the cleanup threshold.
+                //
+                // Issue #57: Redis timeout (slow response) counts as a cycle failure.
+                // To prevent false publisher cleanup due to slow Redis, we separate the
+                // publisher-dead threshold (MAX_CONSECUTIVE_HEARTBEAT_FAILURES cycles)
+                // from Redis reachability issues.  Slow Redis increments this counter;
+                // only when it reaches the max do we conclude the publisher is dead.
+                let mut cycle_succeeded = false;
+                let mut last_error: Option<anyhow::Error> = None;
                 for attempt in 0..MAX_HEARTBEAT_RETRIES {
                     match self.registry.refresh_publisher_ttl(room_id, media_id, user_id).await {
                         Ok(()) => {
-                            success = true;
+                            cycle_succeeded = true;
                             break;
                         }
                         Err(e) => {
+                            last_error = Some(e.into());
                             if attempt < MAX_HEARTBEAT_RETRIES - 1 {
                                 let delay_ms = HEARTBEAT_RETRY_BASE_DELAY_MS * (1 << attempt);
                                 warn!(
                                     "Heartbeat attempt {} failed for room {} / media {}: {}. Retrying in {}ms",
-                                    attempt + 1, room_id, media_id, e, delay_ms
+                                    attempt + 1, room_id, media_id, last_error.as_ref().unwrap(), delay_ms
                                 );
                                 sleep(Duration::from_millis(delay_ms)).await;
                             } else {
                                 error!(
-                                    "All {} heartbeat attempts failed for room {} / media {}: {}. Publisher may be lost.",
-                                    MAX_HEARTBEAT_RETRIES, room_id, media_id, e
+                                    "All {} heartbeat attempts failed for room {} / media {}: {}. \
+                                     Incrementing consecutive failure counter.",
+                                    MAX_HEARTBEAT_RETRIES, room_id, media_id,
+                                    last_error.as_ref().unwrap()
                                 );
                             }
                         }
                     }
                 }
 
-                if success {
-                    // Reset consecutive failure counter on any successful heartbeat
+                if cycle_succeeded {
+                    // Cycle succeeded: reset BOTH failure counters.
+                    // Any previous partial failures within this cycle are discarded.
                     entry.consecutive_heartbeat_failures.store(0, Ordering::Release);
-                    trace!("Heartbeat refreshed for room {} / media {}", room_id, media_id);
+                    entry.redis_unreachable_cycles.store(0, Ordering::Release);
+                    trace!("Heartbeat cycle succeeded for room {} / media {}", room_id, media_id);
                 } else {
+                    // Cycle failed: ALL retries exhausted with errors.
                     synctv_core::metrics::livestream::PUBLISHER_HEARTBEAT_FAILURES.inc();
-                    let failures = entry.consecutive_heartbeat_failures.fetch_add(1, Ordering::AcqRel) + 1;
-                    if failures >= MAX_CONSECUTIVE_HEARTBEAT_FAILURES {
-                        error!(
-                            "Publisher room={} media={} failed {} consecutive heartbeat cycles, cleaning up",
-                            room_id, media_id, failures
-                        );
-                        self.cleanup_publisher(
-                            room_id,
-                            media_id,
-                            &format!("heartbeat failed {failures} consecutive cycles"),
-                        ).await;
+
+                    // Issue #57: Distinguish Redis-unreachable errors from publisher-missing errors.
+                    // A slow/unreachable Redis should NOT immediately trigger publisher cleanup.
+                    // Only escalate to cleanup if:
+                    //   (a) Redis is reachable but publisher TTL refresh actually fails
+                    //       (key not found = publisher expired) → uses heartbeat_failures counter
+                    //   (b) Redis is completely unreachable for an extended period
+                    //       → uses redis_unreachable_cycles counter (higher threshold)
+                    let error_str = last_error.as_ref().map_or(String::new(), |e| e.to_string());
+                    let is_redis_unreachable = error_str.contains("timeout")
+                        || error_str.contains("connection refused")
+                        || error_str.contains("connection reset")
+                        || error_str.contains("broken pipe")
+                        || error_str.contains("os error")
+                        || error_str.contains("timed out");
+
+                    if is_redis_unreachable {
+                        // Redis itself is unreachable — do NOT count toward publisher cleanup threshold.
+                        // Use a separate (higher) counter to eventually clean up if Redis stays down.
+                        let redis_failures = entry.redis_unreachable_cycles.fetch_add(1, Ordering::AcqRel) + 1;
+                        if redis_failures >= MAX_CONSECUTIVE_REDIS_UNREACHABLE {
+                            error!(
+                                "Redis unreachable for {} consecutive heartbeat cycles for room={} media={}. \
+                                 Cleaning up publisher as last resort (Redis may be permanently down).",
+                                redis_failures, room_id, media_id
+                            );
+                            self.cleanup_publisher(
+                                room_id,
+                                media_id,
+                                &format!("Redis unreachable for {redis_failures} consecutive cycles"),
+                            ).await;
+                        } else {
+                            warn!(
+                                "Redis unreachable for heartbeat room={} media={} ({}/{} consecutive). \
+                                 NOT counting toward publisher cleanup threshold (Issue #57).",
+                                room_id, media_id, redis_failures, MAX_CONSECUTIVE_REDIS_UNREACHABLE
+                            );
+                        }
                     } else {
-                        warn!(
-                            "Heartbeat cycle failed for room={} media={} ({}/{} consecutive failures)",
-                            room_id, media_id, failures, MAX_CONSECUTIVE_HEARTBEAT_FAILURES
-                        );
+                        // Redis reachable but publisher heartbeat failed (possible publisher expiry).
+                        let failures = entry.consecutive_heartbeat_failures.fetch_add(1, Ordering::AcqRel) + 1;
+                        if failures >= MAX_CONSECUTIVE_HEARTBEAT_FAILURES {
+                            error!(
+                                "Publisher room={} media={} failed {} consecutive heartbeat cycles, cleaning up",
+                                room_id, media_id, failures
+                            );
+                            self.cleanup_publisher(
+                                room_id,
+                                media_id,
+                                &format!("heartbeat failed {failures} consecutive cycles"),
+                            ).await;
+                        } else {
+                            warn!(
+                                "Heartbeat cycle failed for room={} media={} ({}/{} consecutive failures)",
+                                room_id, media_id, failures, MAX_CONSECUTIVE_HEARTBEAT_FAILURES
+                            );
+                        }
                     }
                 }
             }

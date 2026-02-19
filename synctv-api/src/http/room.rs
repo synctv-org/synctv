@@ -69,6 +69,8 @@ pub async fn get_room(
     State(state): State<AppState>,
     Path(room_id): Path<String>,
 ) -> AppResult<Json<GetRoomResponse>> {
+    super::validation::validate_id(&room_id, "room_id")
+        .map_err(|e| super::AppError::bad_request(format!("Invalid room_id: {e}")))?;
     let response = state
         .client_api
         .get_room(&auth.user_id.to_string(), &room_id)
@@ -85,6 +87,8 @@ pub async fn join_room(
     Path(room_id): Path<String>,
     Json(req): Json<JoinRoomRequest>,
 ) -> AppResult<Json<JoinRoomResponse>> {
+    super::validation::validate_id(&room_id, "room_id")
+        .map_err(|e| super::AppError::bad_request(format!("Invalid room_id: {e}")))?;
     let response = state
         .client_api
         .join_room(&auth.user_id.to_string(), &room_id, req)
@@ -100,6 +104,8 @@ pub async fn leave_room(
     State(state): State<AppState>,
     Path(room_id): Path<String>,
 ) -> AppResult<Json<LeaveRoomResponse>> {
+    super::validation::validate_id(&room_id, "room_id")
+        .map_err(|e| super::AppError::bad_request(format!("Invalid room_id: {e}")))?;
     let response = state
         .client_api
         .leave_room(&auth.user_id.to_string(), &room_id)
@@ -116,6 +122,8 @@ pub async fn delete_room(
     State(state): State<AppState>,
     Path(room_id): Path<String>,
 ) -> AppResult<Json<DeleteRoomResponse>> {
+    super::validation::validate_id(&room_id, "room_id")
+        .map_err(|e| super::AppError::bad_request(format!("Invalid room_id: {e}")))?;
     tracing::info!(user_id = %auth.user_id, room_id = %room_id, "Deleting room");
 
     let response = state
@@ -140,6 +148,32 @@ pub async fn add_media(
     Path(room_id): Path<String>,
     Json(req): Json<AddMediaRequest>,
 ) -> AppResult<Json<AddMediaResponse>> {
+    super::validation::validate_id(&room_id, "room_id")
+        .map_err(|e| super::AppError::bad_request(format!("Invalid room_id: {e}")))?;
+    // Issue #71: Validate media URLs in the HTTP layer before forwarding to the service
+    // layer. DirectUrl providers store the URL in source_config["url"]; validate it to
+    // prevent SSRF attacks where an attacker could force the server to make requests
+    // to internal network addresses.
+    if !req.source_config.is_empty() {
+        if let Ok(source_config) = serde_json::from_slice::<serde_json::Value>(&req.source_config) {
+            if let Some(url_str) = source_config.get("url").and_then(|u| u.as_str()) {
+                super::validation::validate_url(url_str).map_err(|e| {
+                    super::AppError::bad_request(format!("Invalid media URL: {e}"))
+                })?;
+            }
+            // Also check urls array if present (subtitle/alternate URLs)
+            if let Some(urls_arr) = source_config.get("urls").and_then(|v| v.as_array()) {
+                for url_val in urls_arr {
+                    if let Some(url_str) = url_val.as_str() {
+                        super::validation::validate_url(url_str).map_err(|e| {
+                            super::AppError::bad_request(format!("Invalid media URL: {e}"))
+                        })?;
+                    }
+                }
+            }
+        }
+    }
+
     let response = state
         .client_api
         .add_media(&auth.user_id.to_string(), &room_id, req)
@@ -155,6 +189,10 @@ pub async fn delete_media(
     State(state): State<AppState>,
     Path((room_id, media_id)): Path<(String, String)>,
 ) -> AppResult<Json<DeleteMediaResponse>> {
+    super::validation::validate_id(&room_id, "room_id")
+        .map_err(|e| super::AppError::bad_request(format!("Invalid room_id: {e}")))?;
+    super::validation::validate_id(&media_id, "media_id")
+        .map_err(|e| super::AppError::bad_request(format!("Invalid media_id: {e}")))?;
     let proto_req = DeleteMediaRequest { media_id };
     let response = state
         .client_api
@@ -438,6 +476,10 @@ pub async fn edit_media(
     Path((room_id, media_id)): Path<(String, String)>,
     Json(mut req): Json<EditMediaRequest>,
 ) -> AppResult<Json<EditMediaResponse>> {
+    super::validation::validate_id(&room_id, "room_id")
+        .map_err(|e| super::AppError::bad_request(format!("Invalid room_id: {e}")))?;
+    super::validation::validate_id(&media_id, "media_id")
+        .map_err(|e| super::AppError::bad_request(format!("Invalid media_id: {e}")))?;
     req.media_id = media_id;
     let response = state
         .client_api
@@ -469,6 +511,10 @@ pub async fn get_media(
     State(state): State<AppState>,
     Path((room_id, media_id)): Path<(String, String)>,
 ) -> AppResult<Json<crate::proto::client::Media>> {
+    super::validation::validate_id(&room_id, "room_id")
+        .map_err(|e| super::AppError::bad_request(format!("Invalid room_id: {e}")))?;
+    super::validation::validate_id(&media_id, "media_id")
+        .map_err(|e| super::AppError::bad_request(format!("Invalid media_id: {e}")))?;
     let media = state
         .client_api
         .get_media(auth.user_id.as_str(), &room_id, &media_id)
@@ -699,7 +745,9 @@ pub async fn get_chat_history(
     let limit = params.get("limit").and_then(|v| v.parse().ok()).unwrap_or(50i32).clamp(1, 100);
     let before = params.get("before").and_then(|v| v.parse().ok()).unwrap_or(0i64);
 
-    let req = crate::proto::client::GetChatHistoryRequest { limit, before };
+    // Read cursor for keyset pagination (takes precedence over before timestamp)
+    let cursor = params.get("cursor").cloned().unwrap_or_default();
+    let req = crate::proto::client::GetChatHistoryRequest { limit, before, cursor };
     let response = state
         .client_api
         .get_chat_history(&auth.user_id.to_string(), &room_id, req)

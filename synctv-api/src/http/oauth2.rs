@@ -90,6 +90,8 @@ pub async fn get_authorize_url(
 pub async fn exchange_authorization_code(
     maybe_auth: Option<super::middleware::AuthUser>,
     State(state): State<AppState>,
+    connect_info: axum::extract::ConnectInfo<std::net::SocketAddr>,
+    headers: axum::http::HeaderMap,
     Path(provider): Path<String>,
     Json(req): Json<ExchangeAuthorizationCodeRequest>,
 ) -> AppResult<Json<ExchangeAuthorizationCodeResponse>> {
@@ -99,8 +101,27 @@ pub async fn exchange_authorization_code(
 
     let current_user_id = maybe_auth.as_ref().map(|a| &a.user_id);
 
+    // Extract client IP for brute-force protection (Issue #24)
+    let socket_ip = connect_info.0.ip();
+    let client_ip = if state.config.server.is_trusted_proxy(&socket_ip) {
+        headers
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.split(',').next())
+            .and_then(|s| s.trim().parse::<std::net::IpAddr>().ok())
+            .or_else(|| {
+                headers
+                    .get("x-real-ip")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.trim().parse::<std::net::IpAddr>().ok())
+            })
+            .unwrap_or(socket_ip)
+    } else {
+        socket_ip
+    };
+
     let result = oauth2_api
-        .exchange_authorization_code(&provider, &req.code, &req.state, current_user_id)
+        .exchange_authorization_code(&provider, &req.code, &req.state, current_user_id, Some(client_ip))
         .await
         .map_err(|e| {
             error!("Failed to exchange authorization code: {}", e);

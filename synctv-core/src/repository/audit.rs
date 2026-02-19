@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use sqlx::PgPool;
+use sqlx::{PgPool, QueryBuilder, Postgres};
 
 use crate::models::PageParams;
 use crate::Result;
@@ -49,83 +49,88 @@ impl AuditLogRepository {
     ///
     /// When no `from` time is specified, defaults to the last 90 days to enable
     /// partition pruning on the `audit_logs` table.
+    ///
+    /// Uses `sqlx::QueryBuilder` for all dynamic SQL construction to ensure
+    /// all values are properly parameterized and immune to SQL injection.
     pub async fn list(&self, query: &AuditLogQuery) -> Result<(Vec<AuditLogRow>, i64)> {
         let default_from = Utc::now() - chrono::Duration::days(90);
         let effective_from = query.from.unwrap_or(default_from);
 
-        // Build WHERE conditions dynamically
-        let mut conditions: Vec<String> = Vec::new();
-        let mut param_idx: u32 = 1;
+        // ── Count query ───────────────────────────────────────────────────────
+        let mut count_builder: QueryBuilder<Postgres> =
+            QueryBuilder::new("SELECT COUNT(*) FROM audit_logs WHERE ");
 
-        if query.actor_id.is_some() {
-            conditions.push(format!("actor_id = ${param_idx}"));
-            param_idx += 1;
-        }
-        if query.action.is_some() {
-            conditions.push(format!("action = ${param_idx}"));
-            param_idx += 1;
-        }
-        if query.target_type.is_some() {
-            conditions.push(format!("target_type = ${param_idx}"));
-            param_idx += 1;
-        }
-        if query.target_id.is_some() {
-            conditions.push(format!("target_id = ${param_idx}"));
-            param_idx += 1;
-        }
         // Always add time range lower bound for partition pruning
-        conditions.push(format!("created_at >= ${param_idx}"));
-        param_idx += 1;
-        if query.to.is_some() {
-            conditions.push(format!("created_at <= ${param_idx}"));
-            param_idx += 1;
+        count_builder.push("created_at >= ");
+        count_builder.push_bind(effective_from);
+
+        if let Some(ref v) = query.actor_id {
+            count_builder.push(" AND actor_id = ");
+            count_builder.push_bind(v);
+        }
+        if let Some(ref v) = query.action {
+            count_builder.push(" AND action = ");
+            count_builder.push_bind(v);
+        }
+        if let Some(ref v) = query.target_type {
+            count_builder.push(" AND target_type = ");
+            count_builder.push_bind(v);
+        }
+        if let Some(ref v) = query.target_id {
+            count_builder.push(" AND target_id = ");
+            count_builder.push_bind(v);
+        }
+        if let Some(ref v) = query.to {
+            count_builder.push(" AND created_at <= ");
+            count_builder.push_bind(v);
         }
 
-        let where_clause = if conditions.is_empty() {
-            String::new()
-        } else {
-            format!("WHERE {}", conditions.join(" AND "))
-        };
+        let total: i64 = count_builder
+            .build_query_scalar()
+            .fetch_one(&self.pool)
+            .await?;
 
-        // Count query
-        let count_sql = format!(
-            "SELECT COUNT(*) FROM audit_logs {where_clause}"
-        );
-
-        // List query with ip_address cast to text for sqlx compatibility
-        let limit_param = param_idx;
-        let offset_param = param_idx + 1;
-        let list_sql = format!(
+        // ── List query ────────────────────────────────────────────────────────
+        let mut list_builder: QueryBuilder<Postgres> = QueryBuilder::new(
             "SELECT id, actor_id, actor_username, action, target_type, target_id, \
              details, host(ip_address)::text AS ip_address, user_agent, created_at \
-             FROM audit_logs {where_clause} \
-             ORDER BY created_at DESC \
-             LIMIT ${limit_param} OFFSET ${offset_param}"
+             FROM audit_logs WHERE ",
         );
 
-        // Bind parameters for count query
-        let mut count_query = sqlx::query_scalar::<_, i64>(&count_sql);
-        if let Some(ref v) = query.actor_id { count_query = count_query.bind(v); }
-        if let Some(ref v) = query.action { count_query = count_query.bind(v); }
-        if let Some(ref v) = query.target_type { count_query = count_query.bind(v); }
-        if let Some(ref v) = query.target_id { count_query = count_query.bind(v); }
-        count_query = count_query.bind(effective_from);
-        if let Some(ref v) = query.to { count_query = count_query.bind(v); }
+        // Always add time range lower bound for partition pruning
+        list_builder.push("created_at >= ");
+        list_builder.push_bind(effective_from);
 
-        let total: i64 = count_query.fetch_one(&self.pool).await?;
+        if let Some(ref v) = query.actor_id {
+            list_builder.push(" AND actor_id = ");
+            list_builder.push_bind(v);
+        }
+        if let Some(ref v) = query.action {
+            list_builder.push(" AND action = ");
+            list_builder.push_bind(v);
+        }
+        if let Some(ref v) = query.target_type {
+            list_builder.push(" AND target_type = ");
+            list_builder.push_bind(v);
+        }
+        if let Some(ref v) = query.target_id {
+            list_builder.push(" AND target_id = ");
+            list_builder.push_bind(v);
+        }
+        if let Some(ref v) = query.to {
+            list_builder.push(" AND created_at <= ");
+            list_builder.push_bind(v);
+        }
 
-        // Bind parameters for list query
-        let mut list_query = sqlx::query_as::<_, AuditLogRow>(&list_sql);
-        if let Some(ref v) = query.actor_id { list_query = list_query.bind(v); }
-        if let Some(ref v) = query.action { list_query = list_query.bind(v); }
-        if let Some(ref v) = query.target_type { list_query = list_query.bind(v); }
-        if let Some(ref v) = query.target_id { list_query = list_query.bind(v); }
-        list_query = list_query.bind(effective_from);
-        if let Some(ref v) = query.to { list_query = list_query.bind(v); }
-        list_query = list_query.bind(query.page.limit() as i64);
-        list_query = list_query.bind(query.page.offset() as i64);
+        list_builder.push(" ORDER BY created_at DESC LIMIT ");
+        list_builder.push_bind(query.page.limit() as i64);
+        list_builder.push(" OFFSET ");
+        list_builder.push_bind(query.page.offset() as i64);
 
-        let rows = list_query.fetch_all(&self.pool).await?;
+        let rows = list_builder
+            .build_query_as::<AuditLogRow>()
+            .fetch_all(&self.pool)
+            .await?;
 
         Ok((rows, total))
     }

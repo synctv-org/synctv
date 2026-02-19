@@ -35,7 +35,10 @@ server:
   # WARNING: An empty list in production means ALL cross-origin requests are denied.
   cors_allowed_origins: []
   # Shared secret for authenticating cluster gRPC calls between nodes.
-  # If empty, cluster endpoints are disabled.
+  # REQUIRED when Redis is configured — startup fails if this is empty and redis.url is set.
+  # This prevents unauthorized inter-node gRPC calls in multi-replica deployments.
+  # Generate a secret with: openssl rand -hex 32
+  # Environment variable: SYNCTV_SERVER_CLUSTER_SECRET
   cluster_secret: ""
   # Advertise host for cluster node registration (address other nodes use to reach this instance).
   # Falls back to POD_IP env var, then system hostname if empty.

@@ -26,9 +26,6 @@ pub struct UserContext {
     pub iat: i64,
     /// Password version from JWT claims, used for password-change invalidation
     pub pv: Option<i32>,
-    /// Raw bearer token, used for blacklist checking at the service layer
-    /// (interceptors are sync and cannot perform async Redis lookups)
-    pub raw_token: String,
 }
 
 /// Room context - contains `UserContext` and `room_id`
@@ -60,21 +57,19 @@ impl AuthInterceptor {
     /// Used for `UserService` and `AdminService`
     #[allow(clippy::result_large_err)]
     pub fn inject_user<T>(&self, mut request: Request<T>) -> Result<Request<T>, Status> {
-        // Extract raw token once (for both validation and blacklist checking)
+        // Extract and validate the bearer token
         let raw_token = Self::extract_raw_token(request.metadata())?;
 
-        // Validate the already-extracted token directly (avoids re-parsing the header)
         let claims = self
             .jwt_validator
             .validate_token(&raw_token)
             .map_err(|e| Status::unauthenticated(format!("Token verification failed: {e}")))?;
 
-        // Inject UserContext with user_id, iat, pv, and raw token
+        // Inject UserContext with user_id, iat, pv
         let user_context = UserContext {
             user_id: claims.sub,
             iat: claims.iat,
             pv: claims.pv,
-            raw_token,
         };
         request.extensions_mut().insert(user_context);
 
@@ -85,10 +80,9 @@ impl AuthInterceptor {
     /// Used for `RoomService` and `MediaService`
     #[allow(clippy::result_large_err)]
     pub fn inject_room<T>(&self, mut request: Request<T>) -> Result<Request<T>, Status> {
-        // Extract raw token once (for both validation and blacklist checking)
+        // Extract and validate the bearer token
         let raw_token = Self::extract_raw_token(request.metadata())?;
 
-        // Validate the already-extracted token directly (avoids re-parsing the header)
         let claims = self
             .jwt_validator
             .validate_token(&raw_token)
@@ -108,7 +102,6 @@ impl AuthInterceptor {
             user_id: claims.sub.clone(),
             iat: claims.iat,
             pv: claims.pv,
-            raw_token: raw_token.clone(),
         };
         request.extensions_mut().insert(user_context);
 
@@ -118,7 +111,6 @@ impl AuthInterceptor {
                 user_id: claims.sub,
                 iat: claims.iat,
                 pv: claims.pv,
-                raw_token,
             },
             room_id,
         };
@@ -280,7 +272,30 @@ pub enum GrpcRateLimitTier {
 }
 
 impl GrpcRateLimitTier {
-    /// Maximum requests per window for this tier
+    /// Maximum requests per window for this tier.
+    ///
+    /// # Per-Instance Scaling Note
+    ///
+    /// These values are used by both the synchronous `GrpcRateLimitInterceptor`
+    /// (in-memory, per-instance) and the async `GrpcRateLimitLayer` (Redis-backed,
+    /// distributed).  The values are intentionally set to **1/10th** of the
+    /// equivalent HTTP rate limit tiers:
+    ///
+    /// - Auth (HTTP: 50/min)   → gRPC: 5/min  per instance
+    /// - Email (HTTP: 50/min)  → gRPC: 5/min  per instance
+    /// - Media (HTTP: 200/min) → gRPC: 20/min per instance
+    /// - Write (HTTP: 300/min) → gRPC: 30/min per instance
+    /// - Admin (HTTP: 300/min) → gRPC: 30/min per instance
+    /// - Read  (HTTP: 1000/min)→ gRPC: 100/min per instance
+    ///
+    /// For the async `GrpcRateLimitLayer` (tower middleware), the Redis-backed
+    /// distributed limiter shares a single counter across all replicas, so the
+    /// configured value IS the global limit.
+    ///
+    /// For the synchronous `GrpcRateLimitInterceptor`, each replica enforces
+    /// the limit independently.  In a 10-replica cluster the effective global
+    /// limit would be `10 × max_requests`.  The 1/10th reduction compensates
+    /// for this so that the global gRPC limit stays roughly aligned with HTTP.
     pub(crate) const fn max_requests(self) -> u32 {
         match self {
             Self::Auth => 5,
@@ -474,8 +489,11 @@ impl GrpcRateLimitInterceptor {
                 client_id = %client_id,
                 tier = ?self.tier,
                 max_requests = self.tier.max_requests(),
-                "gRPC rate limit exceeded"
+                "gRPC rate limit exceeded (per-instance in-memory limiter)"
             );
+            synctv_core::metrics::rate_limit::RATE_LIMIT_REJECTIONS_TOTAL
+                .with_label_values(&["grpc_memory", self.tier.key_suffix()])
+                .inc();
             return Err(Status::resource_exhausted(
                 "Rate limit exceeded. Please retry later.",
             ));
@@ -546,14 +564,12 @@ mod tests {
     }
 
     #[test]
-    fn test_user_context_has_raw_token() {
+    fn test_user_context_fields() {
         let ctx = UserContext {
             user_id: "user1".to_string(),
             iat: 1234567890,
             pv: Some(3),
-            raw_token: "token123".to_string(),
         };
-        assert_eq!(ctx.raw_token, "token123");
         assert_eq!(ctx.user_id, "user1");
         assert_eq!(ctx.iat, 1234567890);
         assert_eq!(ctx.pv, Some(3));

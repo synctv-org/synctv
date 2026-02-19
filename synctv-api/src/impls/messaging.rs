@@ -443,7 +443,11 @@ impl StreamMessageHandler {
                     }
                 }
 
-                // Heartbeat/health check every 30 seconds
+                // Heartbeat/health check every 30 seconds.
+                // Also acts as a periodic membership re-validation backstop:
+                // verifies the user is still a valid (non-banned, non-removed)
+                // member of the room. This catches cases where the disconnect
+                // signal channel lagged and the ban/kick signal was lost.
                 _ = heartbeat_interval.tick() => {
                     if !stream.is_alive() {
                         tracing::info!("Connection no longer alive");
@@ -452,6 +456,37 @@ impl StreamMessageHandler {
                     if let Err(e) = stream.ping() {
                         tracing::info!("Ping failed, connection dead: {}", e);
                         break;
+                    }
+
+                    // Periodic membership re-validation (backstop for lost disconnect signals).
+                    match self.room_service.member_service().get_member(&self.room_id, &self.user_id).await {
+                        Ok(Some(member)) => {
+                            if member.status == synctv_core::models::MemberStatus::Banned {
+                                tracing::info!(
+                                    user_id = %self.user_id.as_str(),
+                                    room_id = %self.room_id.as_str(),
+                                    "Periodic check: user is banned, disconnecting"
+                                );
+                                break;
+                            }
+                        }
+                        Ok(None) => {
+                            tracing::info!(
+                                user_id = %self.user_id.as_str(),
+                                room_id = %self.room_id.as_str(),
+                                "Periodic check: user is no longer a member, disconnecting"
+                            );
+                            break;
+                        }
+                        Err(e) => {
+                            // Log but don't disconnect — transient DB error should not
+                            // kick valid users. Will retry on the next 30-second tick.
+                            tracing::warn!(
+                                error = %e,
+                                user_id = %self.user_id.as_str(),
+                                "Periodic membership check failed (will retry)"
+                            );
+                        }
                     }
                 }
             }
@@ -553,7 +588,14 @@ impl StreamMessageHandler {
             role: role_proto,
             timestamp: chrono::Utc::now(),
         };
-        let _result = self.cluster_manager.broadcast(event);
+        let result = self.cluster_manager.broadcast(event);
+        if !result.redis_sent {
+            tracing::warn!(
+                room_id = %self.room_id.as_str(),
+                user_id = %self.user_id.as_str(),
+                "UserJoined cluster broadcast did not reach Redis (non-critical: join is local-only)"
+            );
+        }
     }
 
     /// Cleanup on disconnect
@@ -954,8 +996,18 @@ impl StreamMessageHandler {
             color: None,
         };
 
-        // Broadcast to cluster (handles both local and Redis)
-        let _result = self.cluster_manager.broadcast(event);
+        // Broadcast to cluster (handles both local and Redis).
+        // Chat is non-critical: log if Redis was not reached but do not fail the operation.
+        let result = self.cluster_manager.broadcast(event);
+        if !result.redis_sent {
+            tracing::warn!(
+                room_id = %self.room_id.as_str(),
+                "ChatMessage cluster broadcast did not reach Redis (message may not be visible on other replicas)"
+            );
+            synctv_core::metrics::cluster::CLUSTER_EVENTS_DROPPED
+                .with_label_values(&["chat_no_redis"])
+                .inc();
+        }
 
         Ok(())
     }
@@ -980,8 +1032,15 @@ impl StreamMessageHandler {
             color,
         };
 
-        // Broadcast to cluster (handles both local and Redis)
-        let _result = self.cluster_manager.broadcast(event);
+        // Broadcast to cluster (handles both local and Redis).
+        // Danmaku is ephemeral and non-critical.
+        let result = self.cluster_manager.broadcast(event);
+        if !result.redis_sent {
+            tracing::debug!(
+                room_id = %self.room_id.as_str(),
+                "Danmaku cluster broadcast did not reach Redis (ephemeral, acceptable)"
+            );
+        }
 
         Ok(())
     }
@@ -1000,19 +1059,39 @@ impl StreamMessageHandler {
             .get_connection_id(&self.room_id, &self.user_id)
             .ok_or_else(|| "Connection not found".to_string())?;
 
+        // Issue #64: validate the target conn_id is still active so stale offers
+        // are rejected early rather than silently dropped.
+        // The 'to' field is formatted as "user_id|conn_id"; we parse the conn_id part.
+        if let Some((_target_user, target_conn)) = offer.to.rsplit_once('|') {
+            if self.connection_manager.get_connection(target_conn).is_none() {
+                tracing::warn!(
+                    room_id = %self.room_id.as_str(),
+                    target_conn = %target_conn,
+                    "WebRTC offer target conn_id is stale (peer reconnected?), dropping offer"
+                );
+                return Err("Target connection is no longer active (peer may have reconnected)".to_string());
+            }
+        }
+
         // P2P relay path: forward offer to target peer via cluster
         let event = ClusterEvent::WebRTCSignaling {
             event_id: nanoid::nanoid!(16),
             room_id: self.room_id.clone(),
             message_type: "offer".to_string(),
-            from: format!("{}:{}", self.user_id.as_str(), conn_id),
+            from: format!("{}|{}", self.user_id.as_str(), conn_id),
             to: offer.to.clone(),
             data: offer.data.clone(),
             timestamp: chrono::Utc::now(),
         };
 
-        // Broadcast to cluster
-        let _result = self.cluster_manager.broadcast(event);
+        // Broadcast to cluster. WebRTC signaling is best-effort.
+        let result = self.cluster_manager.broadcast(event);
+        if !result.redis_sent {
+            tracing::debug!(
+                room_id = %self.room_id.as_str(),
+                "WebRTC offer cluster broadcast did not reach Redis (signaling may fail cross-replica)"
+            );
+        }
 
         Ok(())
     }
@@ -1034,14 +1113,20 @@ impl StreamMessageHandler {
             event_id: nanoid::nanoid!(16),
             room_id: self.room_id.clone(),
             message_type: "answer".to_string(),
-            from: format!("{}:{}", self.user_id.as_str(), conn_id),
+            from: format!("{}|{}", self.user_id.as_str(), conn_id),
             to: answer.to.clone(),
             data: answer.data.clone(),
             timestamp: chrono::Utc::now(),
         };
 
-        // Broadcast to cluster
-        let _result = self.cluster_manager.broadcast(event);
+        // Broadcast to cluster. WebRTC signaling is best-effort.
+        let result = self.cluster_manager.broadcast(event);
+        if !result.redis_sent {
+            tracing::debug!(
+                room_id = %self.room_id.as_str(),
+                "WebRTC answer cluster broadcast did not reach Redis (signaling may fail cross-replica)"
+            );
+        }
 
         Ok(())
     }
@@ -1063,14 +1148,20 @@ impl StreamMessageHandler {
             event_id: nanoid::nanoid!(16),
             room_id: self.room_id.clone(),
             message_type: "ice_candidate".to_string(),
-            from: format!("{}:{}", self.user_id.as_str(), conn_id),
+            from: format!("{}|{}", self.user_id.as_str(), conn_id),
             to: candidate.to.clone(),
             data: candidate.data.clone(),
             timestamp: chrono::Utc::now(),
         };
 
-        // Broadcast to cluster
-        let _result = self.cluster_manager.broadcast(event);
+        // Broadcast to cluster. ICE candidates are best-effort signaling.
+        let result = self.cluster_manager.broadcast(event);
+        if !result.redis_sent {
+            tracing::debug!(
+                room_id = %self.room_id.as_str(),
+                "ICE candidate cluster broadcast did not reach Redis (signaling may fail cross-replica)"
+            );
+        }
 
         Ok(())
     }
@@ -1104,8 +1195,15 @@ impl StreamMessageHandler {
             timestamp: chrono::Utc::now(),
         };
 
-        // Broadcast to cluster
-        let _result = self.cluster_manager.broadcast(event);
+        // WebRTC join is semi-critical: log at warn if not propagated to Redis.
+        let result = self.cluster_manager.broadcast(event);
+        if !result.redis_sent {
+            tracing::warn!(
+                room_id = %self.room_id.as_str(),
+                user_id = %self.user_id.as_str(),
+                "WebRTC join cluster broadcast did not reach Redis (peer may not be visible cross-replica)"
+            );
+        }
 
         Ok(())
     }
@@ -1132,8 +1230,15 @@ impl StreamMessageHandler {
             timestamp: chrono::Utc::now(),
         };
 
-        // Broadcast to cluster
-        let _result = self.cluster_manager.broadcast(event);
+        // WebRTC leave is semi-critical: log at warn if not propagated to Redis.
+        let result = self.cluster_manager.broadcast(event);
+        if !result.redis_sent {
+            tracing::warn!(
+                room_id = %self.room_id.as_str(),
+                user_id = %self.user_id.as_str(),
+                "WebRTC leave cluster broadcast did not reach Redis (peer may remain visible cross-replica)"
+            );
+        }
 
         Ok(())
     }

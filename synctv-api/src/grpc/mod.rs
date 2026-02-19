@@ -54,20 +54,30 @@ pub(crate) fn map_api_error(err: crate::impls::ApiError) -> tonic::Status {
     }
 }
 
-/// Map a provider API string error to an appropriate gRPC status code.
+/// Map a `ProviderError` to an appropriate gRPC status code.
 ///
-/// Uses the keyword-based [`classify_error`](crate::impls::classify_error)
-/// for legacy provider errors that return `String` instead of `ApiError`.
-pub(crate) fn map_provider_error(err: String) -> tonic::Status {
-    use crate::impls::{classify_error, ErrorKind};
-    match classify_error(&err) {
-        ErrorKind::NotFound => tonic::Status::not_found(err),
-        ErrorKind::Unauthenticated => tonic::Status::unauthenticated(err),
-        ErrorKind::PermissionDenied => tonic::Status::permission_denied(err),
-        ErrorKind::AlreadyExists => tonic::Status::already_exists(err),
-        ErrorKind::InvalidArgument => tonic::Status::invalid_argument(err),
-        ErrorKind::Internal => {
-            tracing::error!("Provider internal error: {err}");
+/// Uses typed matching on the `ProviderError` enum instead of
+/// keyword-based string heuristics.
+pub(crate) fn map_provider_error(err: synctv_core::provider::ProviderError) -> tonic::Status {
+    use synctv_core::provider::ProviderError;
+    let msg = err.to_string();
+    match err {
+        ProviderError::NetworkError(_) | ProviderError::ApiError(_) => {
+            tonic::Status::unavailable(msg)
+        }
+        ProviderError::ParseError(_) | ProviderError::InvalidConfig(_)
+        | ProviderError::InvalidUrl(_) | ProviderError::MissingField(_)
+        | ProviderError::InvalidCredentialType | ProviderError::UnsupportedFormat(_) => {
+            tonic::Status::invalid_argument(msg)
+        }
+        ProviderError::NotFound | ProviderError::InstanceNotFound(_) | ProviderError::MissingInstance => {
+            tonic::Status::not_found(msg)
+        }
+        ProviderError::AuthRequired | ProviderError::CredentialRequired => {
+            tonic::Status::unauthenticated(msg)
+        }
+        ProviderError::RouteRegistrationFailed(_) | ProviderError::IoError(_) | ProviderError::JsonError(_) => {
+            tracing::error!("Provider internal error: {msg}");
             tonic::Status::internal("Internal error")
         }
     }
@@ -122,8 +132,8 @@ pub struct GrpcServerConfig<'a> {
     pub oauth2_service: Option<Arc<synctv_core::service::OAuth2Service>>,
     pub audit_service: Arc<synctv_core::service::AuditService>,
     pub node_registry: Option<Arc<synctv_cluster::discovery::NodeRegistry>>,
-    /// Shared Redis connection for playback caching
-    pub redis_conn: Option<redis::aio::ConnectionManager>,
+    /// Shared Redis connection for playback caching (Sentinel-failover safe)
+    pub redis_conn: Option<crate::SharedRedisConn>,
     pub shutdown_rx: Option<tokio::sync::watch::Receiver<bool>>,
     /// Resolved built-in STUN URL (e.g. "stun:203.0.113.1:3478") from a successfully started
     /// STUN server. When `None`, the built-in STUN entry is omitted from ICE server lists.

@@ -67,13 +67,14 @@ ALTER TABLE room_members
 
 -- Consistency constraint: left_at and status must agree.
 -- Active/pending members (status 1,2) must have left_at IS NULL.
--- Banned members (status 3) must have banned_at set.
+-- Banned members (status 3) must have banned_at set AND left_at set
+-- (a banned member has effectively left the room).
 ALTER TABLE room_members
     ADD CONSTRAINT check_room_members_left_at_status
     CHECK (
         (status IN (1, 2) AND left_at IS NULL)
-        OR (status = 3 AND banned_at IS NOT NULL)
-        OR (left_at IS NOT NULL AND status NOT IN (1, 2))
+        OR (status = 3 AND banned_at IS NOT NULL AND left_at IS NOT NULL)
+        OR (left_at IS NOT NULL AND status NOT IN (1, 2, 3))
     );
 
 -- Comments

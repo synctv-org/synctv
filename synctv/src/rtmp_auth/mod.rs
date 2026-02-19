@@ -72,15 +72,17 @@ pub struct SyncTvRtmpAuth {
     grpc_address: String,
     /// Broadcast channel for stream lifecycle events (StreamStarted/StreamStopped)
     stream_event_tx: Option<tokio::sync::broadcast::Sender<StreamLifecycleEvent>>,
+    /// Redis key prefix from config (e.g., "synctv:") for multi-instance isolation
+    key_prefix: String,
     /// Optional Redis connection for cross-replica `user_id → stream_key` mapping.
     ///
     /// When set, each successful publish auth additionally writes:
-    ///   `HSET rtmp:user_streams {user_id} {room_id}:{media_id}`
+    ///   `HSET {key_prefix}rtmp:user_streams {user_id} {room_id}:{media_id}`
     /// with a TTL matching the publisher TTL.  This allows any replica to resolve
     /// which stream a user is publishing without querying the local in-memory tracker
     /// (which is only populated on the replica that authenticated the publisher).
     ///
-    /// On unpublish, the field is removed: `HDEL rtmp:user_streams {user_id}`.
+    /// On unpublish, the field is removed: `HDEL {key_prefix}rtmp:user_streams {user_id}`.
     redis_conn: Option<redis::aio::ConnectionManager>,
 }
 
@@ -95,6 +97,7 @@ impl SyncTvRtmpAuth {
         node_id: String,
         grpc_address: String,
         stream_event_tx: Option<tokio::sync::broadcast::Sender<StreamLifecycleEvent>>,
+        key_prefix: String,
     ) -> Self {
         Self {
             room_service,
@@ -105,8 +108,14 @@ impl SyncTvRtmpAuth {
             node_id,
             grpc_address,
             stream_event_tx,
+            key_prefix,
             redis_conn: None,
         }
+    }
+
+    /// Build the Redis key for the user streams hash, including the configured prefix.
+    fn user_streams_key(&self) -> String {
+        format!("{}rtmp:user_streams", self.key_prefix)
     }
 
     /// Attach a Redis connection for cross-replica user→stream mapping.
@@ -198,11 +207,12 @@ impl AuthCallback for SyncTvRtmpAuth {
                 );
             }
 
-            // Clean up the cross-replica HSET entry (rtmp:user_streams)
+            // Clean up the cross-replica HSET entry ({key_prefix}rtmp:user_streams)
             if let Some(ref conn) = self.redis_conn {
                 let mut conn = conn.clone();
+                let key = self.user_streams_key();
                 let result: Result<(), redis::RedisError> = redis::cmd("HDEL")
-                    .arg("rtmp:user_streams")
+                    .arg(&key)
                     .arg(user_id.as_str())
                     .query_async(&mut conn)
                     .await;
@@ -598,10 +608,11 @@ impl SyncTvRtmpAuth {
         if let Some(ref conn) = self.redis_conn {
             let mut conn = conn.clone();
             let stream_key = format!("{}:{}", validated.room_id, validated.media_id);
+            let redis_key = self.user_streams_key();
             // HSET + EXPIRE in a single pipeline for atomicity
             let hset_result: Result<(i64, i64), redis::RedisError> = redis::pipe()
-                .hset("rtmp:user_streams", &validated.user_id, &stream_key)
-                .expire("rtmp:user_streams", PUBLISHER_TTL_SECS)
+                .hset(&redis_key, &validated.user_id, &stream_key)
+                .expire(&redis_key, PUBLISHER_TTL_SECS)
                 .query_async(&mut conn)
                 .await;
             if let Err(e) = hset_result {
@@ -666,12 +677,13 @@ impl SyncTvRtmpAuth {
             return local.into_iter().next();
         }
 
-        // Slow path: check Redis cross-replica mapping (rtmp:user_streams HGET)
+        // Slow path: check Redis cross-replica mapping ({key_prefix}rtmp:user_streams HGET)
         if let Some(ref conn) = self.redis_conn {
             let mut conn = conn.clone();
+            let key = self.user_streams_key();
             let result: Result<Option<String>, redis::RedisError> =
                 redis::cmd("HGET")
-                    .arg("rtmp:user_streams")
+                    .arg(&key)
                     .arg(user_id)
                     .query_async(&mut conn)
                     .await;

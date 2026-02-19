@@ -372,7 +372,6 @@ impl ClusterEvent {
             | Self::KickUserFromRoom { .. }
             | Self::UserLeft { .. }
             | Self::PermissionChanged { .. }
-            | Self::PlaybackStateChanged { .. }
             | Self::RoomDeleted { .. }
         )
     }

@@ -60,6 +60,15 @@ pub struct BruteForceProtection {
     local_attempts: Arc<moka::future::Cache<String, (u64, i64)>>,
     /// In-memory fallback for per-IP tracking: ip -> (`attempt_count`, `last_attempt_timestamp`)
     local_ip_attempts: Arc<moka::future::Cache<String, (u64, i64)>>,
+    /// Multiplier applied to lockout thresholds when using in-memory fallback.
+    ///
+    /// When Redis is unavailable, each replica maintains an independent counter.
+    /// An attacker can distribute requests across N replicas, effectively getting
+    /// N * threshold attempts before any single replica triggers lockout. To
+    /// compensate, thresholds are reduced by this factor in fallback mode.
+    ///
+    /// Default: 0.34 (~1/3), assuming up to 3 replicas.
+    fallback_threshold_multiplier: f64,
 }
 
 impl std::fmt::Debug for BruteForceProtection {
@@ -71,10 +80,15 @@ impl std::fmt::Debug for BruteForceProtection {
 }
 
 impl BruteForceProtection {
+    /// Default fallback threshold multiplier (~1/3 for 3 replicas).
+    const DEFAULT_FALLBACK_THRESHOLD_MULTIPLIER: f64 = 0.34;
+
     /// Create a new brute-force protection service.
     ///
     /// Falls back to in-memory tracking when Redis is not available.
-    #[must_use] 
+    /// In fallback mode, thresholds are reduced by `DEFAULT_FALLBACK_THRESHOLD_MULTIPLIER`
+    /// to compensate for per-replica independent counting.
+    #[must_use]
     pub fn new(redis_conn: Option<redis::aio::ConnectionManager>, key_prefix: String) -> Self {
         Self {
             redis_conn,
@@ -91,6 +105,7 @@ impl BruteForceProtection {
                     .time_to_live(Duration::from_secs(IP_ATTEMPTS_TTL_SECS))
                     .build(),
             ),
+            fallback_threshold_multiplier: Self::DEFAULT_FALLBACK_THRESHOLD_MULTIPLIER,
         }
     }
 
@@ -106,8 +121,15 @@ impl BruteForceProtection {
     pub async fn check_allowed(&self, username: &str, ip: Option<IpAddr>) -> Result<()> {
         // Check IP-level lockout first
         if let Some(ip_addr) = ip {
-            let (ip_attempts, ip_last_failure_at) = self.get_ip_attempts(&ip_addr).await?;
-            if ip_attempts >= IP_THRESHOLD {
+            let (ip_attempts, ip_last_failure_at, ip_is_fallback) = self.get_ip_attempts(&ip_addr).await?;
+            // Apply reduced threshold when using in-memory fallback to compensate
+            // for per-replica independent counting in multi-replica deployments.
+            let effective_ip_threshold = if ip_is_fallback {
+                ((IP_THRESHOLD as f64) * self.fallback_threshold_multiplier).ceil().max(1.0) as u64
+            } else {
+                IP_THRESHOLD
+            };
+            if ip_attempts >= effective_ip_threshold {
                 let now = chrono::Utc::now().timestamp();
                 let elapsed = (now - ip_last_failure_at).max(0) as u64;
                 if elapsed < IP_LOCKOUT_SECS {
@@ -115,6 +137,8 @@ impl BruteForceProtection {
                     tracing::warn!(
                         ip = %ip_addr,
                         attempts = ip_attempts,
+                        threshold = effective_ip_threshold,
+                        is_fallback = ip_is_fallback,
                         remaining_secs = remaining,
                         "Login attempt blocked: IP temporarily locked"
                     );
@@ -126,8 +150,15 @@ impl BruteForceProtection {
         }
 
         // Check per-username lockout
-        let (attempts, last_failure_at) = self.get_attempts(username).await?;
-        if let Some(lockout_secs) = Self::lockout_duration(attempts) {
+        let (attempts, last_failure_at, is_fallback) = self.get_attempts(username).await?;
+        // Use reduced thresholds in fallback mode to maintain effective protection
+        // across multiple replicas with independent counters.
+        let lockout_secs = if is_fallback {
+            Self::lockout_duration_fallback(attempts, self.fallback_threshold_multiplier)
+        } else {
+            Self::lockout_duration(attempts)
+        };
+        if let Some(lockout_secs) = lockout_secs {
             let now = chrono::Utc::now().timestamp();
             let elapsed = (now - last_failure_at).max(0) as u64;
             if elapsed < lockout_secs {
@@ -137,6 +168,7 @@ impl BruteForceProtection {
                     attempts = attempts,
                     lockout_secs = lockout_secs,
                     remaining_secs = remaining,
+                    is_fallback = is_fallback,
                     "Login attempt blocked: account temporarily locked"
                 );
                 return Err(Error::Authentication(format!(
@@ -319,7 +351,10 @@ impl BruteForceProtection {
     }
 
     /// Get the current failed attempt count and last-failure timestamp for an IP address.
-    async fn get_ip_attempts(&self, ip: &IpAddr) -> Result<(u64, i64)> {
+    ///
+    /// Returns `(count, last_failure_at, is_fallback)` where `is_fallback` indicates
+    /// whether the data came from in-memory cache (true) or Redis (false).
+    async fn get_ip_attempts(&self, ip: &IpAddr) -> Result<(u64, i64, bool)> {
         let ip_str = ip.to_string();
         let key = self.key_builder.login_attempts_ip(&ip_str);
 
@@ -338,17 +373,17 @@ impl BruteForceProtection {
                     "Redis timeout in IP brute-force check, falling back to in-memory cache"
                 );
                 let (count, ts) = self.local_ip_attempts.get(&key).await.unwrap_or((0, 0));
-                return Ok((count, ts));
+                return Ok((count, ts, true));
             };
 
             match redis_result {
                 Ok(Some(raw)) => {
                     if let Ok(state) = serde_json::from_str::<BruteForceState>(&raw) {
-                        return Ok((state.count, state.last_failure_at));
+                        return Ok((state.count, state.last_failure_at, false));
                     }
-                    return Ok((0, 0));
+                    return Ok((0, 0, false));
                 }
-                Ok(None) => return Ok((0, 0)),
+                Ok(None) => return Ok((0, 0, false)),
                 Err(e) => {
                     tracing::warn!(
                         ip = %ip,
@@ -360,16 +395,19 @@ impl BruteForceProtection {
         }
 
         let (count, ts) = self.local_ip_attempts.get(&key).await.unwrap_or((0, 0));
-        Ok((count, ts))
+        Ok((count, ts, true))
     }
 
     /// Get the current failed attempt count and last-failure timestamp for a username.
     ///
-    /// Returns `(count, last_failure_at)` where `last_failure_at` is a Unix timestamp.
+    /// Returns `(count, last_failure_at, is_fallback)` where `last_failure_at` is a Unix
+    /// timestamp and `is_fallback` indicates whether the data came from in-memory cache
+    /// (true) or Redis (false).
+    ///
     /// On Redis error, falls back to the in-memory cache rather than returning 0
     /// (fail-closed). Returning 0 on error would disable brute-force protection
     /// entirely, allowing unlimited login attempts during Redis outages.
-    async fn get_attempts(&self, username: &str) -> Result<(u64, i64)> {
+    async fn get_attempts(&self, username: &str) -> Result<(u64, i64, bool)> {
         let key = self.key_builder.login_attempts(username);
 
         if let Some(ref conn) = self.redis_conn {
@@ -389,7 +427,7 @@ impl BruteForceProtection {
                 );
                 // Fall through to in-memory lookup below
                 let (count, ts) = self.local_attempts.get(&key).await.unwrap_or((0, 0));
-                return Ok((count, ts));
+                return Ok((count, ts, true));
             };
 
             match redis_result {
@@ -397,15 +435,15 @@ impl BruteForceProtection {
                     // Try parsing as JSON state first, fall back to plain integer
                     // for backward compatibility with pre-existing counters.
                     if let Ok(state) = serde_json::from_str::<BruteForceState>(&raw) {
-                        return Ok((state.count, state.last_failure_at));
+                        return Ok((state.count, state.last_failure_at, false));
                     }
                     // Legacy plain integer format (no timestamp available)
                     if let Ok(count) = raw.parse::<u64>() {
-                        return Ok((count, 0));
+                        return Ok((count, 0, false));
                     }
-                    return Ok((0, 0));
+                    return Ok((0, 0, false));
                 }
-                Ok(None) => return Ok((0, 0)),
+                Ok(None) => return Ok((0, 0, false)),
                 Err(e) => {
                     tracing::warn!(
                         username = %username,
@@ -419,10 +457,10 @@ impl BruteForceProtection {
 
         // In-memory fallback (used when Redis is unavailable or errored)
         let (count, ts) = self.local_attempts.get(&key).await.unwrap_or((0, 0));
-        Ok((count, ts))
+        Ok((count, ts, true))
     }
 
-    /// Determine lockout duration based on failure count.
+    /// Determine lockout duration based on failure count (using standard Redis thresholds).
     ///
     /// Returns `Some(seconds)` if locked out, `None` if allowed.
     const fn lockout_duration(attempts: u64) -> Option<u64> {
@@ -436,51 +474,52 @@ impl BruteForceProtection {
             None
         }
     }
+
+    /// Determine lockout duration with adjusted thresholds for in-memory fallback mode.
+    ///
+    /// When Redis is unavailable, each replica maintains an independent counter.
+    /// Thresholds are reduced by `fallback_threshold_multiplier` so the effective
+    /// per-cluster threshold stays close to the intended value.
+    fn lockout_duration_fallback(attempts: u64, multiplier: f64) -> Option<u64> {
+        let t1 = ((TIER1_THRESHOLD as f64) * multiplier).ceil().max(1.0) as u64;
+        let t2 = ((TIER2_THRESHOLD as f64) * multiplier).ceil().max((t1 + 1) as f64) as u64;
+        let t3 = ((TIER3_THRESHOLD as f64) * multiplier).ceil().max((t2 + 1) as f64) as u64;
+
+        if attempts >= t3 {
+            Some(TIER3_LOCKOUT_SECS)
+        } else if attempts >= t2 {
+            Some(TIER2_LOCKOUT_SECS)
+        } else if attempts >= t1 {
+            Some(TIER1_LOCKOUT_SECS)
+        } else {
+            None
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_lockout_duration_no_lockout() {
-        assert_eq!(BruteForceProtection::lockout_duration(0), None);
-        assert_eq!(BruteForceProtection::lockout_duration(1), None);
-        assert_eq!(BruteForceProtection::lockout_duration(4), None);
-    }
-
-    #[test]
-    fn test_lockout_duration_tier1() {
-        assert_eq!(BruteForceProtection::lockout_duration(5), Some(60));
-        assert_eq!(BruteForceProtection::lockout_duration(9), Some(60));
-    }
-
-    #[test]
-    fn test_lockout_duration_tier2() {
-        assert_eq!(BruteForceProtection::lockout_duration(10), Some(300));
-        assert_eq!(BruteForceProtection::lockout_duration(14), Some(300));
-    }
-
-    #[test]
-    fn test_lockout_duration_tier3() {
-        assert_eq!(BruteForceProtection::lockout_duration(15), Some(900));
-        assert_eq!(BruteForceProtection::lockout_duration(100), Some(900));
-    }
+    // Note: lockout_duration tests have been consolidated into
+    // test_lockout_duration_standard_thresholds and test_lockout_duration_fallback_thresholds
+    // at the bottom of this test module.
 
     #[tokio::test]
     async fn test_in_memory_record_and_check() {
         let service = BruteForceProtection::new(None, "test".to_string());
 
+        // In-memory mode uses fallback thresholds (multiplier = 0.34):
+        // Tier 1: ceil(5 * 0.34) = 2
+
         // Initially allowed
         assert!(service.check_allowed("testuser", None).await.is_ok());
 
-        // Record 4 failures - still allowed
-        for _ in 0..4 {
-            service.record_failure("testuser", None).await.unwrap();
-        }
+        // Record 1 failure - still allowed (threshold is 2)
+        service.record_failure("testuser", None).await.unwrap();
         assert!(service.check_allowed("testuser", None).await.is_ok());
 
-        // 5th failure triggers lockout
+        // 2nd failure triggers lockout (fallback tier 1 threshold = 2)
         service.record_failure("testuser", None).await.unwrap();
         assert!(service.check_allowed("testuser", None).await.is_err());
     }
@@ -489,8 +528,8 @@ mod tests {
     async fn test_in_memory_reset() {
         let service = BruteForceProtection::new(None, "test".to_string());
 
-        // Record 5 failures
-        for _ in 0..5 {
+        // Record enough failures to trigger lockout (fallback tier 1 threshold = 2)
+        for _ in 0..2 {
             service.record_failure("testuser", None).await.unwrap();
         }
         assert!(service.check_allowed("testuser", None).await.is_err());
@@ -504,8 +543,8 @@ mod tests {
     async fn test_in_memory_independent_users() {
         let service = BruteForceProtection::new(None, "test".to_string());
 
-        // Lock out user_a
-        for _ in 0..5 {
+        // Lock out user_a (fallback tier 1 threshold = 2)
+        for _ in 0..2 {
             service.record_failure("user_a", None).await.unwrap();
         }
         assert!(service.check_allowed("user_a", None).await.is_err());
@@ -518,22 +557,27 @@ mod tests {
     async fn test_in_memory_tier_escalation() {
         let service = BruteForceProtection::new(None, "test".to_string());
 
-        // 5 failures -> tier 1 lockout (60s)
-        for _ in 0..5 {
+        // Fallback thresholds (multiplier = 0.34):
+        // Tier 1: ceil(5 * 0.34)  = 2
+        // Tier 2: max(ceil(10 * 0.34), 2+1) = max(4, 3) = 4
+        // Tier 3: max(ceil(15 * 0.34), 4+1) = max(6, 5) = 6
+
+        // 2 failures -> tier 1 lockout (60s)
+        for _ in 0..2 {
             service.record_failure("testuser", None).await.unwrap();
         }
         let err = service.check_allowed("testuser", None).await.unwrap_err();
         assert!(err.to_string().contains("60 seconds"));
 
-        // 5 more failures -> tier 2 lockout (300s)
-        for _ in 0..5 {
+        // 2 more failures (total 4) -> tier 2 lockout (300s)
+        for _ in 0..2 {
             service.record_failure("testuser", None).await.unwrap();
         }
         let err = service.check_allowed("testuser", None).await.unwrap_err();
         assert!(err.to_string().contains("300 seconds"));
 
-        // 5 more failures -> tier 3 lockout (900s)
-        for _ in 0..5 {
+        // 2 more failures (total 6) -> tier 3 lockout (900s)
+        for _ in 0..2 {
             service.record_failure("testuser", None).await.unwrap();
         }
         let err = service.check_allowed("testuser", None).await.unwrap_err();
@@ -545,18 +589,47 @@ mod tests {
         let service = BruteForceProtection::new(None, "test".to_string());
         let ip: IpAddr = "192.168.1.100".parse().unwrap();
 
-        // Record 19 failures from the same IP across different usernames - still allowed
-        for i in 0..19 {
+        // Fallback IP threshold: ceil(20 * 0.34) = 7
+        // Record 6 failures from the same IP across different usernames - still allowed
+        for i in 0..6 {
             service.record_failure(&format!("user_{i}"), Some(ip)).await.unwrap();
         }
         assert!(service.check_allowed("any_user", Some(ip)).await.is_ok());
 
-        // 20th failure triggers IP lockout
-        service.record_failure("user_19", Some(ip)).await.unwrap();
+        // 7th failure triggers IP lockout
+        service.record_failure("user_6", Some(ip)).await.unwrap();
         assert!(service.check_allowed("any_user", Some(ip)).await.is_err());
 
         // Different IP should still be allowed
         let other_ip: IpAddr = "10.0.0.1".parse().unwrap();
         assert!(service.check_allowed("any_user", Some(other_ip)).await.is_ok());
+    }
+
+    /// Test that standard Redis thresholds are still correct (used when Redis is available)
+    #[test]
+    fn test_lockout_duration_standard_thresholds() {
+        // Standard thresholds are unchanged
+        assert_eq!(BruteForceProtection::lockout_duration(4), None);
+        assert_eq!(BruteForceProtection::lockout_duration(5), Some(TIER1_LOCKOUT_SECS));
+        assert_eq!(BruteForceProtection::lockout_duration(9), Some(TIER1_LOCKOUT_SECS));
+        assert_eq!(BruteForceProtection::lockout_duration(10), Some(TIER2_LOCKOUT_SECS));
+        assert_eq!(BruteForceProtection::lockout_duration(14), Some(TIER2_LOCKOUT_SECS));
+        assert_eq!(BruteForceProtection::lockout_duration(15), Some(TIER3_LOCKOUT_SECS));
+        assert_eq!(BruteForceProtection::lockout_duration(100), Some(TIER3_LOCKOUT_SECS));
+    }
+
+    /// Test that fallback thresholds are reduced by the multiplier
+    #[test]
+    fn test_lockout_duration_fallback_thresholds() {
+        let m = BruteForceProtection::DEFAULT_FALLBACK_THRESHOLD_MULTIPLIER;
+
+        // Fallback thresholds: ceil(5*0.34)=2, max(ceil(10*0.34),3)=4, max(ceil(15*0.34),5)=6
+        assert_eq!(BruteForceProtection::lockout_duration_fallback(1, m), None);
+        assert_eq!(BruteForceProtection::lockout_duration_fallback(2, m), Some(TIER1_LOCKOUT_SECS));
+        assert_eq!(BruteForceProtection::lockout_duration_fallback(3, m), Some(TIER1_LOCKOUT_SECS));
+        assert_eq!(BruteForceProtection::lockout_duration_fallback(4, m), Some(TIER2_LOCKOUT_SECS));
+        assert_eq!(BruteForceProtection::lockout_duration_fallback(5, m), Some(TIER2_LOCKOUT_SECS));
+        assert_eq!(BruteForceProtection::lockout_duration_fallback(6, m), Some(TIER3_LOCKOUT_SECS));
+        assert_eq!(BruteForceProtection::lockout_duration_fallback(100, m), Some(TIER3_LOCKOUT_SECS));
     }
 }

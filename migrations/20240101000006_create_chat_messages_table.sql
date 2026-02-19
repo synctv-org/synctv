@@ -220,6 +220,11 @@ COMMENT ON FUNCTION check_chat_message_partitions(INTEGER) IS
 -- Initial partition creation
 -- ============================================================================
 
+-- Default partition catches any rows that don't match a specific daily partition.
+-- This prevents insert failures if ChatPartitionManager background task hasn't
+-- created a partition for the target date yet.
+CREATE TABLE IF NOT EXISTS chat_messages_default PARTITION OF chat_messages DEFAULT;
+
 -- Create partitions for current day + next 30 days (fixed daily granularity)
 SELECT create_chat_message_partitions(30) AS initial_partitions;
 

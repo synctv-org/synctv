@@ -71,8 +71,8 @@ pub struct RouterConfig {
     pub rate_limiter: synctv_core::service::rate_limit::RateLimiter,
     /// WebSocket ticket service for secure WebSocket authentication (HTTP only)
     pub ws_ticket_service: Option<Arc<synctv_core::service::WsTicketService>>,
-    /// Shared Redis connection for playback caching
-    pub redis_conn: Option<redis::aio::ConnectionManager>,
+    /// Shared Redis connection for playback caching (Sentinel-failover safe)
+    pub redis_conn: Option<crate::SharedRedisConn>,
     /// Resolved built-in STUN URL (e.g. "stun:203.0.113.1:3478") from a successfully started
     /// STUN server. When `None`, the built-in STUN entry is omitted from ICE server lists.
     pub builtin_stun_url: Option<String>,
@@ -118,8 +118,20 @@ pub struct AppState {
     pub bilibili_api: Arc<crate::impls::BilibiliApiImpl>,
     pub alist_api: Arc<crate::impls::AlistApiImpl>,
     pub emby_api: Arc<crate::impls::EmbyApiImpl>,
-    /// Shared Redis connection for playback caching
-    pub redis_conn: Option<redis::aio::ConnectionManager>,
+    /// Shared Redis connection for playback caching (Sentinel-failover safe)
+    pub redis_conn: Option<crate::SharedRedisConn>,
+}
+
+impl AppState {
+    /// Resolve a fresh Redis `ConnectionManager` clone from the shared `RwLock`.
+    ///
+    /// Returns `None` when Redis is not configured.
+    pub async fn resolve_redis_conn(&self) -> Option<redis::aio::ConnectionManager> {
+        match &self.redis_conn {
+            Some(shared) => Some(shared.read().await.clone()),
+            None => None,
+        }
+    }
 }
 
 /// Create the HTTP router from configuration struct

@@ -185,11 +185,10 @@ config:
     connectTimeoutSeconds: 10
     idleTimeoutSeconds: 600
 
-  ## RedisConfig (url composed from secrets; these are for pool settings)
+  ## RedisConfig (url composed from secrets; these are for connection settings)
   redis:
     host: "redis-master.synctv.svc.cluster.local"
     port: 6379
-    poolSize: 10
     connectTimeoutSeconds: 5
     keyPrefix: "synctv:"
 

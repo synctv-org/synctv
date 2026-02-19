@@ -120,20 +120,37 @@ impl StaticDiscovery {
                         return;
                     }
                     _ = ticker.tick() => {
-                        for peer in &peers {
-                            let alive = Self::probe_peer(
-                                &peer.grpc_address,
-                                connect_timeout,
-                                &cluster_secret,
-                            ).await;
+                        // Probe all peers concurrently using JoinSet
+                        let mut join_set = tokio::task::JoinSet::new();
+
+                        for peer in peers.clone() {
+                            let timeout = connect_timeout;
+                            let secret = cluster_secret.clone();
+                            join_set.spawn(async move {
+                                let alive = Self::probe_peer(
+                                    &peer.grpc_address,
+                                    timeout,
+                                    &secret,
+                                ).await;
+                                (peer, alive)
+                            });
+                        }
+
+                        // Collect results
+                        while let Some(result) = join_set.join_next().await {
+                            let (peer, alive) = match result {
+                                Ok(r) => r,
+                                Err(e) => {
+                                    warn!(error = %e, "Static peer probe task panicked");
+                                    continue;
+                                }
+                            };
 
                             if alive {
-                                // Derive HTTP address from config or gRPC address
                                 let http_address = peer.http_address.clone().unwrap_or_else(|| {
                                     Self::derive_http_address(&peer.grpc_address, default_http_port)
                                 });
 
-                                // Register the peer as a remote node
                                 let node_info = NodeInfo::new(
                                     format!("static_{}", peer.grpc_address.replace([':', '.'], "_")),
                                     peer.grpc_address.clone(),

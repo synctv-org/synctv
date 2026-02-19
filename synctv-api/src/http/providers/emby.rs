@@ -9,7 +9,7 @@ use axum::{
 };
 use serde_json::json;
 
-use crate::http::{AppState, middleware::AuthUser, provider_common::{InstanceQuery, error_response, parse_provider_error}};
+use crate::http::{AppError, AppState, middleware::AuthUser, provider_common::InstanceQuery};
 
 use crate::impls::providers::get_provider_binds;
 
@@ -56,7 +56,7 @@ async fn login(
         }
         Err(e) => {
             tracing::error!("Emby login failed: {}", e);
-            error_response(parse_provider_error(&e)).into_response()
+            AppError::from(e).into_response()
         }
     }
 }
@@ -78,7 +78,7 @@ async fn list(
         }
         Err(e) => {
             tracing::error!("Emby list failed: {}", e);
-            error_response(parse_provider_error(&e)).into_response()
+            AppError::from(e).into_response()
         }
     }
 }
@@ -100,7 +100,7 @@ async fn me(
         }
         Err(e) => {
             tracing::error!("Emby me failed: {}", e);
-            error_response(parse_provider_error(&e)).into_response()
+            AppError::from(e).into_response()
         }
     }
 }

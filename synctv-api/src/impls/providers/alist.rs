@@ -23,7 +23,7 @@ impl AlistApiImpl {
     }
 
     /// Login to Alist
-    pub async fn login(&self, req: LoginRequest, instance_name: Option<&str>) -> Result<LoginResponse, String> {
+    pub async fn login(&self, req: LoginRequest, instance_name: Option<&str>) -> Result<LoginResponse, synctv_core::provider::ProviderError> {
         let (password, hashed) = if req.hashed_password.is_empty() {
             (req.password, false)
         } else {
@@ -40,13 +40,13 @@ impl AlistApiImpl {
         let token = self.provider
             .login(login_req, instance_name)
             .await
-            .map_err(|e| e.to_string())?;
+            ?;
 
         Ok(LoginResponse { token })
     }
 
     /// List Alist directory
-    pub async fn list(&self, req: ListRequest, instance_name: Option<&str>) -> Result<ListResponse, String> {
+    pub async fn list(&self, req: ListRequest, instance_name: Option<&str>) -> Result<ListResponse, synctv_core::provider::ProviderError> {
         let list_req = synctv_media_providers::grpc::alist::FsListReq {
             host: req.host,
             token: req.token,
@@ -60,7 +60,7 @@ impl AlistApiImpl {
         let resp = self.provider
             .fs_list(list_req, instance_name)
             .await
-            .map_err(|e| e.to_string())?;
+            ?;
 
         let content: Vec<FileItem> = resp.content.into_iter().map(|item| FileItem {
             name: item.name,
@@ -79,7 +79,7 @@ impl AlistApiImpl {
     }
 
     /// Get Alist user info
-    pub async fn get_me(&self, req: GetMeRequest, instance_name: Option<&str>) -> Result<GetMeResponse, String> {
+    pub async fn get_me(&self, req: GetMeRequest, instance_name: Option<&str>) -> Result<GetMeResponse, synctv_core::provider::ProviderError> {
         let me_req = synctv_media_providers::grpc::alist::MeReq {
             host: req.host,
             token: req.token,
@@ -88,7 +88,7 @@ impl AlistApiImpl {
         let resp = self.provider
             .me(me_req, instance_name)
             .await
-            .map_err(|e| e.to_string())?;
+            ?;
 
         Ok(GetMeResponse {
             username: resp.username,
@@ -97,7 +97,7 @@ impl AlistApiImpl {
     }
 
     /// Logout
-    pub async fn logout(&self, _req: LogoutRequest) -> Result<LogoutResponse, String> {
+    pub async fn logout(&self, _req: LogoutRequest) -> Result<LogoutResponse, synctv_core::provider::ProviderError> {
         Ok(LogoutResponse {
             message: "Logout successful".to_string(),
         })

@@ -119,11 +119,12 @@ impl ClientApiImpl {
                     .with_room_id(room_id);
 
                 // Use cached playback generation
+                let resolved_conn = self.resolve_redis_conn().await;
                 let provider_result = crate::impls::provider::cached_generate_playback(
                     provider.as_ref(),
                     &ctx,
                     &media.source_config,
-                    self.redis_conn.as_ref(),
+                    resolved_conn.as_ref(),
                 )
                 .await
                 .map_err(|e| ApiError::Internal(format!("generate_playback failed: {e}")))?;

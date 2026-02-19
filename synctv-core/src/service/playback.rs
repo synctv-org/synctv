@@ -808,6 +808,25 @@ impl PlaybackService {
         media_id: Option<MediaId>,
         playlist_id: Option<Option<PlaylistId>>,
     ) -> Result<RoomPlaybackState> {
+        self.update_multiple_with_version(room_id, user_id, playing, current_time, speed, media_id, playlist_id, None).await
+    }
+
+    /// Like `update_multiple`, but with an optional client-side version check.
+    ///
+    /// When `expected_version` is `Some(v)`, the update will only proceed if the
+    /// current state's version matches `v`. This implements client-side optimistic
+    /// locking to prevent last-writer-wins when multiple clients PATCH concurrently.
+    pub async fn update_multiple_with_version(
+        &self,
+        room_id: RoomId,
+        user_id: UserId,
+        playing: Option<bool>,
+        current_time: Option<f64>,
+        speed: Option<f64>,
+        media_id: Option<MediaId>,
+        playlist_id: Option<Option<PlaylistId>>,
+        expected_version: Option<i64>,
+    ) -> Result<RoomPlaybackState> {
         // Check permissions based on what's being updated
         let mut required_perms = PermissionBits::NONE;
         if playing.is_some() {
@@ -846,6 +865,17 @@ impl PlaybackService {
 
             if media.room_id != room_id {
                 return Err(Error::Authorization("Media does not belong to this room".to_string()));
+            }
+        }
+
+        // Client-side version check: reject early if state has changed since
+        // the client last read it, before attempting the DB update.
+        if let Some(expected) = expected_version {
+            let current = self.playback_repo.get(&room_id).await?;
+            if let Some(ref current_state) = current {
+                if current_state.version != expected {
+                    return Err(Error::OptimisticLockConflict);
+                }
             }
         }
 

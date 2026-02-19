@@ -18,5 +18,9 @@ COMMENT ON TABLE audit_logs IS 'Security and operational audit log (partitioned 
 COMMENT ON COLUMN audit_logs.action IS 'Action type: user_created, user_banned, room_deleted, etc.';
 COMMENT ON COLUMN audit_logs.details IS 'Event-specific details (JSON)';
 
+-- Default partition catches any rows that don't match a specific monthly partition.
+-- This prevents insert failures if a new partition hasn't been created yet.
+CREATE TABLE IF NOT EXISTS audit_logs_default PARTITION OF audit_logs DEFAULT;
+
 -- Partition management functions are defined in migration 20240202120002_audit_log_partition_complete.sql
 -- Initial partition creation is also handled there.

@@ -157,11 +157,20 @@ impl CacheInvalidationService {
     /// When a message is received, it's broadcast locally to all cache instances.
     /// On reconnection, pending (unacknowledged) messages are processed first to
     /// catch up on messages missed during the disconnection.
+    ///
+    /// On startup, any stale consumer group left by a previous instance of this
+    /// node (e.g., after SIGKILL or OOM kill) is cleaned up before creating a
+    /// fresh one. This prevents orphaned consumer groups from accumulating in
+    /// Redis.
     pub async fn start(&self) -> Result<()> {
         let Some(client) = self.redis_client.clone() else {
             info!("Redis not configured, cache invalidation is local-only");
             return Ok(());
         };
+
+        // Clean up any stale consumer group left by a previous process with
+        // the same node_id (e.g., after SIGKILL/OOM kill where stop() never ran).
+        self.cleanup_stale_consumer_group().await;
 
         // Create consumer group if it doesn't exist.
         // Use "0" so that on first start, all existing messages are delivered.
@@ -257,6 +266,98 @@ impl CacheInvalidationService {
                 }
             }
         }
+    }
+
+    /// Clean up a stale consumer group left by a previous process with the same node_id.
+    ///
+    /// Uses `XINFO GROUPS` to check if a consumer group matching this node's
+    /// `consumer_group` name already exists. If found, it is destroyed so that a
+    /// fresh group can be created. This handles the case where a previous process
+    /// was killed (SIGKILL, OOM) before `stop()` could run.
+    async fn cleanup_stale_consumer_group(&self) {
+        let Ok(mut conn) = self.get_conn().await else {
+            warn!("Cannot clean up stale consumer group: failed to get Redis connection");
+            return;
+        };
+
+        // XINFO GROUPS <stream> returns info about all consumer groups on the stream.
+        // We use a raw command since the redis crate's typed API for XINFO is limited.
+        let result: redis::RedisResult<Vec<Vec<redis::Value>>> = redis::cmd("XINFO")
+            .arg("GROUPS")
+            .arg(&self.stream_key)
+            .query_async(&mut conn)
+            .await;
+
+        match result {
+            Ok(groups) => {
+                for group_info in &groups {
+                    // Each group is returned as a flat array of key-value pairs:
+                    // ["name", "<group_name>", "consumers", N, "pending", N, ...]
+                    let group_name = Self::extract_group_name(group_info);
+                    if group_name.as_deref() == Some(self.consumer_group.as_str()) {
+                        info!(
+                            stream = %self.stream_key,
+                            group = %self.consumer_group,
+                            "Found stale consumer group from previous process, destroying it"
+                        );
+                        let destroy_result: redis::RedisResult<()> = redis::cmd("XGROUP")
+                            .arg("DESTROY")
+                            .arg(&self.stream_key)
+                            .arg(&self.consumer_group)
+                            .query_async(&mut conn)
+                            .await;
+                        if let Err(e) = destroy_result {
+                            warn!(
+                                error = %e,
+                                stream = %self.stream_key,
+                                group = %self.consumer_group,
+                                "Failed to destroy stale consumer group"
+                            );
+                        }
+                        return;
+                    }
+                }
+                debug!(
+                    stream = %self.stream_key,
+                    group = %self.consumer_group,
+                    "No stale consumer group found"
+                );
+            }
+            Err(e) => {
+                // Stream may not exist yet (first deploy), which is fine.
+                debug!(
+                    error = %e,
+                    stream = %self.stream_key,
+                    "Could not query consumer groups (stream may not exist yet)"
+                );
+            }
+        }
+    }
+
+    /// Extract the "name" field from an XINFO GROUPS response entry.
+    ///
+    /// Each entry is a flat list of alternating key-value pairs:
+    /// `["name", "group-name", "consumers", 1, ...]`
+    fn extract_group_name(group_info: &[redis::Value]) -> Option<String> {
+        let mut iter = group_info.iter();
+        while let Some(key) = iter.next() {
+            let key_str = match key {
+                redis::Value::BulkString(bytes) => std::str::from_utf8(bytes).ok(),
+                redis::Value::SimpleString(s) => Some(s.as_str()),
+                _ => None,
+            };
+            let value = iter.next()?;
+            if key_str == Some("name") {
+                return match value {
+                    redis::Value::BulkString(bytes) => {
+                        std::str::from_utf8(bytes).ok().map(String::from)
+                    }
+                    redis::Value::SimpleString(s) => Some(s.clone()),
+                    _ => None,
+                };
+            }
+        }
+        None
     }
 
     /// Run the Redis subscriber loop using Streams with catch-up on reconnection

@@ -206,6 +206,28 @@ impl PublisherManager {
                  Set grpc_address in LivestreamConfig."
             );
         }
+
+        // Clean up stale Redis registrations from a previous process/restart
+        // of this node. Without this, stale entries would persist until TTL
+        // expiry, causing other nodes to route requests to a node that is no
+        // longer publishing those streams.
+        if !self.local_node_id.is_empty() {
+            match self.registry.cleanup_all_publishers_for_node(&self.local_node_id).await {
+                Ok(()) => {
+                    info!(
+                        "Cleaned up stale publisher registrations for node {}",
+                        self.local_node_id
+                    );
+                }
+                Err(e) => {
+                    error!(
+                        "Failed to cleanup stale publisher registrations for node {}: {}",
+                        self.local_node_id, e
+                    );
+                }
+            }
+        }
+
         info!("Publisher manager started");
 
         // Start heartbeat maintenance task and track its handle
@@ -673,13 +695,21 @@ impl PublisherManager {
                     //       (key not found = publisher expired) → uses heartbeat_failures counter
                     //   (b) Redis is completely unreachable for an extended period
                     //       → uses redis_unreachable_cycles counter (higher threshold)
-                    let error_str = last_error.as_ref().map_or(String::new(), |e| e.to_string());
-                    let is_redis_unreachable = error_str.contains("timeout")
-                        || error_str.contains("connection refused")
-                        || error_str.contains("connection reset")
-                        || error_str.contains("broken pipe")
-                        || error_str.contains("os error")
-                        || error_str.contains("timed out");
+                    //
+                    // Use structured redis::ErrorKind matching instead of string comparison
+                    // to avoid brittle matching against error message text.
+                    let is_redis_unreachable = last_error.as_ref().map_or(false, |e| {
+                        if let Some(redis_err) = e.downcast_ref::<redis::RedisError>() {
+                            matches!(
+                                redis_err.kind(),
+                                redis::ErrorKind::Io
+                                    | redis::ErrorKind::ClusterConnectionNotFound
+                            )
+                        } else {
+                            // Fallback for non-redis errors: check for I/O error source
+                            e.downcast_ref::<std::io::Error>().is_some()
+                        }
+                    });
 
                     if is_redis_unreachable {
                         // Redis itself is unreachable — do NOT count toward publisher cleanup threshold.

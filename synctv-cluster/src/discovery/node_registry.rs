@@ -13,6 +13,10 @@ use tokio::time::{timeout, Duration};
 
 use crate::error::{Error, Result};
 
+/// Staleness threshold in seconds. If `last_refreshed` is older than this,
+/// `is_nodes_stale()` returns `true`.
+const NODES_STALE_THRESHOLD_SECS: u64 = 30;
+
 /// Timeout for Redis operations in seconds
 const REDIS_TIMEOUT_SECS: u64 = 5;
 
@@ -126,6 +130,34 @@ pub enum HeartbeatResult {
     EpochMismatch(u64),
 }
 
+/// Cluster operating mode, reflecting current Redis connectivity.
+///
+/// Transitions:
+/// - `Normal` -> `Degraded`: circuit breaker opens (3 consecutive Redis failures)
+/// - `Degraded` -> `Normal`: circuit breaker closes (successful Redis operation)
+/// - `Degraded` -> `Standalone`: prolonged Redis unavailability (reserved for future use)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClusterMode {
+    /// Redis is reachable; full cluster functionality available.
+    Normal,
+    /// Redis is unreachable (circuit breaker open); serving from local cache.
+    /// Health checks, load balancing, and gRPC fan-out operate on stale data.
+    Degraded,
+    /// Redis has been unreachable for an extended period; node operates solo.
+    /// Reserved for future use (e.g., automatic recovery logic).
+    Standalone,
+}
+
+impl std::fmt::Display for ClusterMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ClusterMode::Normal => write!(f, "Normal"),
+            ClusterMode::Degraded => write!(f, "Degraded"),
+            ClusterMode::Standalone => write!(f, "Standalone"),
+        }
+    }
+}
+
 /// Type alias for our failsafe circuit breaker
 type RedisCircuitBreaker = failsafe::StateMachine<failure_policy::ConsecutiveFailures<backoff::Exponential>, ()>;
 
@@ -158,6 +190,11 @@ pub struct NodeRegistry {
     /// Guard to ensure only one health probe task runs at a time.
     /// Set to `true` when a probe is spawned, reset to `false` when it exits.
     health_probe_running: Arc<AtomicBool>,
+    /// Current cluster operating mode (Normal/Degraded/Standalone).
+    cluster_mode: Arc<parking_lot::RwLock<ClusterMode>>,
+    /// Unix timestamp (seconds) of the last successful `get_all_nodes()` refresh
+    /// from Redis. Used by callers to detect stale local cache data.
+    last_refreshed: Arc<AtomicU64>,
 }
 
 impl NodeRegistry {
@@ -190,6 +227,8 @@ impl NodeRegistry {
             nodes_cache,
             key_prefix: format!("{}cluster:nodes", key_prefix),
             health_probe_running: Arc::new(AtomicBool::new(false)),
+            cluster_mode: Arc::new(parking_lot::RwLock::new(ClusterMode::Normal)),
+            last_refreshed: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -278,7 +317,14 @@ impl NodeRegistry {
     /// stops when the circuit closes or when the NodeRegistry is dropped.
     async fn get_conn_with_breaker(&self) -> Result<redis::aio::MultiplexedConnection> {
         if !self.circuit_breaker.is_call_permitted() {
-            // Circuit is open - spawn background health probe if not already running
+            // Circuit is open - switch to Degraded mode and spawn background health probe
+            {
+                let mut mode = self.cluster_mode.write();
+                if *mode == ClusterMode::Normal {
+                    tracing::warn!("Circuit breaker open, switching to Degraded cluster mode");
+                    *mode = ClusterMode::Degraded;
+                }
+            }
             self.maybe_start_health_probe(self.redis_client.clone());
             return Err(Error::Database(
                 "Redis circuit breaker is open, request rejected".to_string(),
@@ -371,6 +417,15 @@ impl NodeRegistry {
     fn record_operation_result<T: std::fmt::Debug>(&self, result: &std::result::Result<T, impl std::fmt::Display>) {
         if result.is_ok() {
             self.circuit_breaker.on_success();
+            // Transition back to Normal mode on successful operation
+            let mut mode = self.cluster_mode.write();
+            if *mode != ClusterMode::Normal {
+                tracing::info!(
+                    previous_mode = %*mode,
+                    "Redis operation succeeded, switching back to Normal cluster mode"
+                );
+                *mode = ClusterMode::Normal;
+            }
         } else {
             let error = result.as_ref().unwrap_err();
             let error_str = error.to_string();
@@ -940,15 +995,40 @@ impl NodeRegistry {
 
     /// Get all active nodes (cached for [`NODES_CACHE_TTL_SECS`] to avoid
     /// hammering Redis). See the constant's documentation for staleness trade-offs.
+    ///
+    /// In `Degraded` mode (circuit breaker open), falls back to the local cache
+    /// instead of returning an error, so that health checks and load balancing
+    /// can continue operating on stale data.
     pub async fn get_all_nodes(&self) -> Result<Vec<NodeInfo>> {
         // Check the short-lived cache first
         if let Some(cached) = self.nodes_cache.get(&()).await {
             return Ok(cached);
         }
 
-        let result = self.get_all_nodes_uncached().await?;
-        self.nodes_cache.insert((), result.clone()).await;
-        Ok(result)
+        match self.get_all_nodes_uncached().await {
+            Ok(result) => {
+                // Record successful refresh timestamp
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                self.last_refreshed.store(now, Ordering::Relaxed);
+                self.nodes_cache.insert((), result.clone()).await;
+                Ok(result)
+            }
+            Err(e) => {
+                // In Degraded mode, fall back to local cache instead of propagating error
+                if self.cluster_mode() != ClusterMode::Normal {
+                    tracing::debug!(
+                        mode = %self.cluster_mode(),
+                        error = %e,
+                        "get_all_nodes falling back to local cache in degraded mode"
+                    );
+                    return Ok(self.get_all_nodes_local().await);
+                }
+                Err(e)
+            }
+        }
     }
 
     /// Uncached implementation of get_all_nodes for internal use.
@@ -1134,6 +1214,42 @@ impl NodeRegistry {
     pub async fn get_node_local(&self, node_id: &str) -> Option<NodeInfo> {
         let nodes = self.local_nodes.read().await;
         nodes.get(node_id).cloned()
+    }
+
+    /// Returns the current cluster operating mode.
+    ///
+    /// - `Normal`: Redis is reachable, full cluster functionality.
+    /// - `Degraded`: Redis circuit breaker is open, serving from local cache.
+    /// - `Standalone`: prolonged Redis unavailability (reserved).
+    #[must_use]
+    pub fn cluster_mode(&self) -> ClusterMode {
+        *self.cluster_mode.read()
+    }
+
+    /// Returns `true` if the local node cache is stale (i.e., has not been
+    /// successfully refreshed from Redis within [`NODES_STALE_THRESHOLD_SECS`]).
+    ///
+    /// Callers (e.g., health check endpoints) can use this to include a
+    /// "data may be stale" warning in their responses.
+    #[must_use]
+    pub fn is_nodes_stale(&self) -> bool {
+        let last = self.last_refreshed.load(Ordering::Relaxed);
+        if last == 0 {
+            // Never refreshed — consider stale
+            return true;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        now.saturating_sub(last) > NODES_STALE_THRESHOLD_SECS
+    }
+
+    /// Returns the Unix timestamp (seconds) of the last successful refresh
+    /// from Redis. Returns 0 if no refresh has occurred yet.
+    #[must_use]
+    pub fn last_refreshed_at(&self) -> u64 {
+        self.last_refreshed.load(Ordering::Relaxed)
     }
 
     fn node_key(&self, node_id: &str) -> String {

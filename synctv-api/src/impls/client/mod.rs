@@ -101,8 +101,8 @@ pub struct ClientApiImpl {
     pub providers_manager: Option<Arc<synctv_core::service::ProvidersManager>>,
     pub settings_registry: Option<Arc<synctv_core::service::SettingsRegistry>>,
     pub redis_publish_tx: Option<tokio::sync::mpsc::Sender<synctv_cluster::sync::PublishRequest>>,
-    /// Shared Redis connection for playback caching
-    pub redis_conn: Option<redis::aio::ConnectionManager>,
+    /// Shared Redis connection for playback caching (Sentinel-failover safe)
+    pub redis_conn: Option<crate::SharedRedisConn>,
     /// Rate limiter for per-endpoint rate limiting (password checks, etc.)
     pub rate_limiter: Option<synctv_core::service::rate_limit::RateLimiter>,
     /// Resolved built-in STUN URL (e.g. "stun:203.0.113.1:3478"), set only when the
@@ -172,11 +172,23 @@ impl ClientApiImpl {
         self
     }
 
-    /// Set the Redis connection for playback caching
+    /// Set the shared Redis connection for playback caching (Sentinel-failover safe)
     #[must_use]
-    pub fn with_redis_conn(mut self, conn: Option<redis::aio::ConnectionManager>) -> Self {
+    pub fn with_redis_conn(mut self, conn: Option<crate::SharedRedisConn>) -> Self {
         self.redis_conn = conn;
         self
+    }
+
+    /// Resolve a fresh Redis `ConnectionManager` clone from the shared `RwLock`.
+    ///
+    /// Returns `None` when Redis is not configured. The returned clone is cheap
+    /// (internally Arc-backed) and always points to the current Redis master,
+    /// even after a Sentinel failover.
+    pub async fn resolve_redis_conn(&self) -> Option<redis::aio::ConnectionManager> {
+        match &self.redis_conn {
+            Some(shared) => Some(shared.read().await.clone()),
+            None => None,
+        }
     }
 
     /// Set the rate limiter for per-endpoint rate limiting (password checks, etc.)

@@ -229,17 +229,29 @@ impl SyncTvServer {
         ).await;
         info!("gRPC and HTTP servers shut down");
 
-        // Wait for admin event listener to finish before shutting down
-        // the cluster manager (which owns the broadcast channel it reads from).
+        // Shut down cluster manager FIRST so the admin event broadcast channel
+        // closes, allowing the admin_event_handle listener to exit naturally.
+        // Previously, admin_event_handle was awaited before cluster manager
+        // shutdown, causing a guaranteed 30s timeout since the broadcast channel
+        // the listener reads from was still open.
+        if let Some(ref cluster_mgr) = self.services.cluster_manager {
+            info!("Shutting down cluster manager (pre-drain, to close admin event channel)...");
+            cluster_mgr.shutdown().await;
+            info!("Cluster manager shut down (admin event channel closed)");
+        }
+
+        // Now wait for admin event listener — it should exit quickly since its
+        // broadcast channel is closed.
         if let Some(handle) = admin_event_handle {
             info!("Waiting for admin event listener to stop...");
-            match tokio::time::timeout(Duration::from_secs(30), handle).await {
+            match tokio::time::timeout(Duration::from_secs(5), handle).await {
                 Ok(_) => { info!("Admin event listener stopped"); }
-                Err(_) => { warn!("Admin event listener did not stop within 30s, proceeding"); }
+                Err(_) => { warn!("Admin event listener did not stop within 5s, proceeding"); }
             }
         }
 
-        // Run graceful shutdown
+        // Run graceful shutdown (cluster manager shutdown is skipped inside
+        // since we already shut it down above)
         self.shutdown().await;
 
         Ok(())
@@ -323,12 +335,10 @@ impl SyncTvServer {
             info!("K8s DNS refresh loop aborted");
         }
 
-        // 5. Shut down cluster manager (cancels Redis Pub/Sub + heartbeat + deduplicator tasks)
-        if let Some(ref cluster_mgr) = self.services.cluster_manager {
-            info!("Shutting down cluster manager...");
-            cluster_mgr.shutdown().await;
-            info!("Cluster manager shut down");
-        }
+        // 5. Cluster manager shutdown is handled earlier in the start() method
+        // (before awaiting admin_event_handle) so that the broadcast channel closes
+        // and the admin event listener exits naturally. ClusterManager::shutdown()
+        // is idempotent, so this is a no-op if already called.
 
         // 5.5. Await tracked background tasks with a per-task timeout.
         // Each task gets up to 30 seconds to finish.  If it hasn't stopped by then,
@@ -470,14 +480,7 @@ impl SyncTvServer {
                 oauth2_service: services.oauth2_service,
                 audit_service: services.audit_service,
                 node_registry: services.node_registry,
-                redis_conn: {
-                    // Get a fresh snapshot from the Arc<RwLock<>> for the gRPC layer.
-                    if let Some(ref shared) = services.redis_conn {
-                        Some(shared.read().await.clone())
-                    } else {
-                        None
-                    }
-                },
+                redis_conn: services.redis_conn.clone(),
                 shutdown_rx: Some(shutdown_rx),
                 builtin_stun_url: services.stun_server.as_ref().map(|s| {
                     let addr = s.external_addr();
@@ -531,7 +534,7 @@ impl SyncTvServer {
             None
         };
         let ws_ticket_service = match synctv_core::service::WsTicketService::new(
-            redis_conn_snapshot.clone(),
+            redis_conn_snapshot,
             None,
             is_cluster_mode,
         ) {
@@ -567,7 +570,7 @@ impl SyncTvServer {
                 live_streaming_infrastructure,
                 rate_limiter: self.services.rate_limiter.clone(),
                 ws_ticket_service,
-                redis_conn: redis_conn_snapshot.clone(),
+                redis_conn: self.services.redis_conn.clone(),
                 builtin_stun_url: self.services.stun_server.as_ref().map(|s| {
                     let addr = s.external_addr();
                     format!("stun:{}:{}", addr.ip(), addr.port())

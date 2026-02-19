@@ -18,6 +18,7 @@ use tokio_util::sync::CancellationToken;
 use super::node_registry::NodeRegistry;
 #[allow(unused_imports)]
 use futures::future::join_all;
+use tonic::transport::Endpoint;
 use crate::error::Result;
 
 /// Health status of a node
@@ -31,7 +32,7 @@ pub enum NodeHealth {
 /// Configuration for active health probes
 #[derive(Debug, Clone)]
 pub struct HealthProbeConfig {
-    /// TCP connection timeout for health probes
+    /// Timeout for gRPC health probe connections and RPCs
     pub probe_timeout_secs: u64,
     /// Number of consecutive probe failures before marking unhealthy
     pub failure_threshold: u32,
@@ -39,6 +40,9 @@ pub struct HealthProbeConfig {
     pub success_threshold: u32,
     /// Interval between active probes (separate from heartbeat checks)
     pub probe_interval_secs: u64,
+    /// Cluster secret for authenticated gRPC probing.
+    /// If empty, probes are sent without authentication.
+    pub cluster_secret: String,
 }
 
 impl Default for HealthProbeConfig {
@@ -48,6 +52,7 @@ impl Default for HealthProbeConfig {
             failure_threshold: 2,
             success_threshold: 1,
             probe_interval_secs: 15,
+            cluster_secret: String::new(),
         }
     }
 }
@@ -264,13 +269,15 @@ impl HealthMonitor {
             }).collect()
         };
 
-        // Probe all nodes concurrently
+        // Probe all nodes concurrently via gRPC GetNodes
         let probe_timeout = probe_config.probe_timeout_secs;
+        let secret = probe_config.cluster_secret.clone();
         let probe_results: Vec<_> = futures::future::join_all(
             nodes_to_probe.iter().map(|node| {
                 let addr = node.grpc_address.clone();
+                let secret = secret.clone();
                 async move {
-                    Self::probe_node_static(&addr, probe_timeout).await
+                    Self::probe_node_grpc(&addr, probe_timeout, &secret).await
                 }
             })
         ).await;
@@ -336,32 +343,41 @@ impl HealthMonitor {
         states.retain(|node_id, _| active_node_ids.contains(node_id));
     }
 
-    /// Static probe function for use in async context.
-    /// Supports both IPv4 ("host:port") and IPv6 ("[::1]:port") addresses.
-    async fn probe_node_static(grpc_address: &str, timeout_secs: u64) -> bool {
-        // Try parsing as a SocketAddr first (handles IPv6 like [::1]:50051)
-        // then fall back to rsplit_once for "host:port" format
-        let addr = if grpc_address.parse::<std::net::SocketAddr>().is_ok() {
+    /// Probe a node's gRPC service by calling `GetNodes`.
+    ///
+    /// Unlike the previous TCP-only probe, this validates that the
+    /// application-layer gRPC service is responsive, not just that
+    /// the port is open.
+    async fn probe_node_grpc(grpc_address: &str, timeout_secs: u64, cluster_secret: &str) -> bool {
+        let uri = if grpc_address.starts_with("http://") || grpc_address.starts_with("https://") {
             grpc_address.to_string()
-        } else if let Some((host, port_str)) = grpc_address.rsplit_once(':') {
-            if port_str.parse::<u16>().is_err() {
-                return false;
-            }
-            format!("{host}:{port_str}")
         } else {
-            return false;
+            format!("http://{grpc_address}")
         };
 
-        let result = tokio::time::timeout(
-            Duration::from_secs(timeout_secs),
-            tokio::net::TcpStream::connect(&addr),
-        )
-        .await;
+        let connect_timeout = Duration::from_secs(timeout_secs);
+        let endpoint = match Endpoint::from_shared(uri) {
+            Ok(ep) => ep.connect_timeout(connect_timeout).timeout(connect_timeout),
+            Err(_) => return false,
+        };
 
-        match result {
-            Ok(Ok(_)) => true,
-            Ok(Err(_)) | Err(_) => false,
+        let channel = match endpoint.connect().await {
+            Ok(ch) => ch,
+            Err(_) => return false,
+        };
+
+        use crate::grpc::synctv::cluster::cluster_service_client::ClusterServiceClient;
+        use crate::grpc::synctv::cluster::GetNodesRequest;
+        let mut client = ClusterServiceClient::new(channel);
+        let mut request = tonic::Request::new(GetNodesRequest { status_filter: 0 });
+
+        if !cluster_secret.is_empty() {
+            if let Ok(val) = cluster_secret.parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>() {
+                request.metadata_mut().insert("x-cluster-secret", val);
+            }
         }
+
+        client.get_nodes(request).await.is_ok()
     }
 
     /// Gracefully shut down the health monitoring loop.
@@ -502,29 +518,29 @@ mod tests {
         assert!(!status.contains_key("ghost-node"), "Removed node should be pruned");
     }
 
-    // --- probe_node_static ---
+    // --- probe_node_grpc ---
 
     #[tokio::test]
-    async fn test_probe_node_static_invalid_address() {
+    async fn test_probe_node_grpc_invalid_address() {
         // Invalid address should return false
-        assert!(!HealthMonitor::probe_node_static("not-an-address", 1).await);
+        assert!(!HealthMonitor::probe_node_grpc("not-an-address", 1, "").await);
     }
 
     #[tokio::test]
     #[ignore] // Flaky: network-dependent test, may fail in some environments
-    async fn test_probe_node_static_unreachable() {
+    async fn test_probe_node_grpc_unreachable() {
         // Unreachable address should return false (timeout)
-        assert!(!HealthMonitor::probe_node_static("192.0.2.1:12345", 1).await);
+        assert!(!HealthMonitor::probe_node_grpc("192.0.2.1:12345", 1, "").await);
     }
 
     #[tokio::test]
-    async fn test_probe_node_static_no_port() {
-        assert!(!HealthMonitor::probe_node_static("localhost", 1).await);
+    async fn test_probe_node_grpc_no_port() {
+        assert!(!HealthMonitor::probe_node_grpc("localhost", 1, "").await);
     }
 
     #[tokio::test]
-    async fn test_probe_node_static_invalid_port() {
-        assert!(!HealthMonitor::probe_node_static("localhost:abc", 1).await);
+    async fn test_probe_node_grpc_invalid_port() {
+        assert!(!HealthMonitor::probe_node_grpc("localhost:abc", 1, "").await);
     }
 
     // --- ProbeState ---

@@ -11,13 +11,13 @@
 //! DNS provides faster detection of newly-scaled pods; Redis provides the
 //! NodeRegistry, HealthMonitor, and LoadBalancer infrastructure.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::time::{interval, Duration};
 use tokio_util::sync::CancellationToken;
 
-use super::node_registry::NodeInfo;
+use super::node_registry::{NodeInfo, NodeRegistry};
 use crate::error::{Error, Result};
 
 /// Discovered peer from DNS resolution
@@ -55,6 +55,11 @@ pub struct K8sDnsDiscovery {
     peers: Arc<RwLock<Vec<DnsPeer>>>,
     /// Cancellation token for the background refresh loop
     cancel_token: CancellationToken,
+    /// Optional reference to NodeRegistry for syncing discovered peers.
+    /// When set, `refresh()` will register new peers and unregister
+    /// disappeared peers via `NodeRegistry::register_remote()` /
+    /// `NodeRegistry::unregister_remote()`.
+    node_registry: Option<Arc<NodeRegistry>>,
 }
 
 impl K8sDnsDiscovery {
@@ -110,6 +115,7 @@ impl K8sDnsDiscovery {
             self_ip,
             peers: Arc::new(RwLock::new(Vec::new())),
             cancel_token: CancellationToken::new(),
+            node_registry: None,
         })
     }
 
@@ -127,7 +133,16 @@ impl K8sDnsDiscovery {
             self_ip,
             peers: Arc::new(RwLock::new(Vec::new())),
             cancel_token: CancellationToken::new(),
+            node_registry: None,
         }
+    }
+
+    /// Attach a `NodeRegistry` so that DNS-discovered peers are automatically
+    /// registered/unregistered in Redis. Without this, DNS discovery only
+    /// populates the local peer cache but not the shared NodeRegistry.
+    pub fn with_node_registry(mut self, registry: Arc<NodeRegistry>) -> Self {
+        self.node_registry = Some(registry);
+        self
     }
 
     /// Perform a single DNS resolution and return discovered peers.
@@ -183,10 +198,65 @@ impl K8sDnsDiscovery {
     }
 
     /// Resolve peers and update the internal cache.
+    ///
+    /// When a `NodeRegistry` is attached (via [`with_node_registry`]), this also:
+    /// - Registers newly discovered peers via `NodeRegistry::register_remote()`
+    /// - Unregisters peers that have disappeared from DNS via `NodeRegistry::unregister_remote()`
     pub async fn refresh(&self) -> Result<()> {
         match self.resolve_once().await {
             Ok(new_peers) => {
                 let count = new_peers.len();
+
+                // Compute diffs for NodeRegistry sync before updating cache
+                if let Some(ref registry) = self.node_registry {
+                    let old_peers = self.peers.read().await;
+                    let old_ips: HashSet<&str> = old_peers.iter().map(|p| p.ip.as_str()).collect();
+                    let new_ips: HashSet<&str> = new_peers.iter().map(|p| p.ip.as_str()).collect();
+
+                    // Register new peers
+                    for peer in &new_peers {
+                        if !old_ips.contains(peer.ip.as_str()) {
+                            let mut info = NodeInfo::new(
+                                peer.ip.clone(),
+                                peer.grpc_address.clone(),
+                                peer.http_address.clone(),
+                            );
+                            info.metadata.insert("discovery".to_string(), "k8s_dns".to_string());
+                            if let Err(e) = registry.register_remote(info).await {
+                                tracing::warn!(
+                                    peer_ip = %peer.ip,
+                                    error = %e,
+                                    "Failed to register DNS-discovered peer in NodeRegistry"
+                                );
+                            } else {
+                                tracing::info!(
+                                    peer_ip = %peer.ip,
+                                    grpc_address = %peer.grpc_address,
+                                    "DNS-discovered peer registered in NodeRegistry"
+                                );
+                            }
+                        }
+                    }
+
+                    // Unregister disappeared peers
+                    for peer in old_peers.iter() {
+                        if !new_ips.contains(peer.ip.as_str()) {
+                            if let Err(e) = registry.unregister_remote(&peer.ip, None).await {
+                                tracing::warn!(
+                                    peer_ip = %peer.ip,
+                                    error = %e,
+                                    "Failed to unregister disappeared DNS peer from NodeRegistry"
+                                );
+                            } else {
+                                tracing::info!(
+                                    peer_ip = %peer.ip,
+                                    "Disappeared DNS peer unregistered from NodeRegistry"
+                                );
+                            }
+                        }
+                    }
+                }
+
                 let mut cached = self.peers.write().await;
                 *cached = new_peers;
                 tracing::debug!(

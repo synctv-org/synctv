@@ -367,7 +367,14 @@ pub async fn init_services(
     let mut user_service = UserService::new(pool.clone(), jwt_service.clone(), username_cache.clone(), config.password_complexity.clone());
     user_service.set_cache_invalidation(cache_invalidation.clone());
     user_service.set_brute_force_protection(brute_force);
-    info!("UserService initialized");
+    // Enable refresh token rotation (Redis-backed JTI blacklist) when Redis is available
+    if let Some(ref conn) = redis_conn_plain {
+        let key_builder = crate::cache::KeyBuilder::from_config(config);
+        user_service.set_redis_conn(conn.clone(), key_builder);
+        info!("UserService initialized with refresh token rotation (Redis-backed JTI blacklist)");
+    } else {
+        info!("UserService initialized (refresh token rotation disabled: no Redis)");
+    }
 
     // Initialize RoomService
     let mut room_service = RoomService::new(pool.clone(), user_service.clone());

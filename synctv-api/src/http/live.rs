@@ -139,9 +139,15 @@ async fn handle_flv_stream(
     // which decrements the subscriber count and eventually triggers idle cleanup.
     let user_id_clone = user_id.clone();
     let room_id_clone = room_id.clone();
+    let client_api = state.client_api.clone();
+    let reauth_token = token.to_string();
+    let reauth_room_id = room_id_str.clone();
     tokio::spawn(async move {
         let _guard = subscriber_guard; // held for the lifetime of this task
         let mut rx = rx;
+        // Periodic re-authentication interval (30s, matching WebSocket heartbeat frequency)
+        let mut reauth_interval = tokio::time::interval(std::time::Duration::from_secs(30));
+        reauth_interval.tick().await; // consume the immediate first tick
         loop {
             tokio::select! {
                 // Forward FLV data from source
@@ -159,6 +165,20 @@ async fn handle_flv_stream(
                         }
                     } else {
                         debug!("FLV source ended");
+                        break;
+                    }
+                }
+
+                // Periodic re-authentication: verify token still valid, user not banned,
+                // and user still a member of the room
+                _ = reauth_interval.tick() => {
+                    if let Err(e) = client_api.validate_live_token(&reauth_token, &reauth_room_id).await {
+                        info!(
+                            user_id = %user_id_clone.as_str(),
+                            room_id = %room_id_clone.as_str(),
+                            error = %e,
+                            "FLV stream terminated: periodic re-auth failed"
+                        );
                         break;
                     }
                 }

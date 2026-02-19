@@ -127,10 +127,11 @@ impl ClientApiImpl {
                     .as_deref()
                     .unwrap_or(&media.source_provider);
                 if let Some(provider) = pm.get(instance_name).await {
+                    let resolved = self.resolve_redis_conn().await;
                     crate::impls::provider::invalidate_playback_cache(
                         provider.as_ref(),
                         &media.source_config,
-                        self.redis_conn.as_ref(),
+                        resolved.as_ref(),
                     ).await;
                 }
             }
@@ -227,10 +228,11 @@ impl ClientApiImpl {
 
         // Invalidate playback cache for cleared media (best-effort)
         if let Some(pm) = self.providers_manager.as_ref() {
+            let resolved = self.resolve_redis_conn().await;
             crate::impls::provider::invalidate_playback_cache_batch(
                 &media_items,
                 pm,
-                self.redis_conn.as_ref(),
+                resolved.as_ref(),
             ).await;
         }
 
@@ -371,10 +373,11 @@ impl ClientApiImpl {
 
         // Invalidate playback cache for deleted media (best-effort)
         if let Some(pm) = self.providers_manager.as_ref() {
+            let resolved = self.resolve_redis_conn().await;
             crate::impls::provider::invalidate_playback_cache_batch(
                 &media_items,
                 pm,
-                self.redis_conn.as_ref(),
+                resolved.as_ref(),
             ).await;
         }
 

@@ -386,6 +386,11 @@ where
             if let Some(ref conn) = self.redis_conn {
                 let mut conn = conn.clone();
 
+                // Issue #30: Snapshot epoch before the pipeline fetch begins.
+                // After the fetch completes we re-check the epoch; if it changed,
+                // an invalidation arrived mid-flight and the results may be stale.
+                let epoch_before = self.epoch.load(Ordering::Acquire);
+
                 let mut pipe = redis::pipe();
                 for key in &missing_keys {
                     let redis_key = format!("{}{}", self.key_prefix, key.as_str());
@@ -397,12 +402,30 @@ where
                     .await
                     .map_err(|e| Error::Internal(format!("Failed to batch get {}s: {e}", self.cache_type)))?;
 
-                // Update L1 cache and result
+                // Issue #30: Only populate L1 if no invalidation arrived while
+                // the pipeline fetch was in-flight. If the epoch changed, the
+                // data may be stale — skip L1 writes so the next request
+                // re-fetches fresh data (consistent with `get()` behavior).
+                let epoch_after = self.epoch.load(Ordering::Acquire);
+                let epoch_changed = epoch_after != epoch_before;
+
+                if epoch_changed {
+                    tracing::debug!(
+                        cache_type = %self.cache_type,
+                        epoch_before,
+                        epoch_after,
+                        "Skipping L1 writes in get_batch: invalidation arrived mid-flight (epoch changed)"
+                    );
+                }
+
+                // Update result (always) and L1 cache (only if epoch unchanged)
                 for (key, json_opt) in missing_keys.iter().zip(jsons) {
                     if let Some(json) = json_opt {
                         if let Ok(value) = serde_json::from_str::<V>(&json) {
                             result.insert(key.clone(), value.clone());
-                            self.l1_cache.insert(key.clone(), value).await;
+                            if !epoch_changed {
+                                self.l1_cache.insert(key.clone(), value).await;
+                            }
                         }
                     }
                 }

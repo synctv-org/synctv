@@ -917,14 +917,11 @@ impl StreamProcessor {
         // Generate TS filename using nanoid (12 chars, like Go's SortUUID)
         let ts_name = nanoid::nanoid!(12);
 
-        // Generate storage key: app_name/stream_name/ts_name
-        // Use `/` as separator to avoid ambiguity with UUID dashes in room_id/media_id
-        // stream_name format is "room_id:media_id", replace : with / for hierarchical key
-        let storage_key = format!(
-            "{}/{}/{}",
-            self.app_name,
-            self.stream_name.replace(':', "/"),
-            ts_name
+        // Generate storage key using the shared canonical format
+        let storage_key = crate::hls::hls_segment_storage_key(
+            &self.app_name,
+            &self.stream_name,
+            &ts_name,
         );
 
         // Write segment to storage with retry

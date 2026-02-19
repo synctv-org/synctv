@@ -23,11 +23,11 @@ impl EmbyApiImpl {
     }
 
     /// Login to Emby
-    pub async fn login(&self, req: LoginRequest, instance_name: Option<&str>) -> Result<LoginResponse, String> {
+    pub async fn login(&self, req: LoginRequest, instance_name: Option<&str>) -> Result<LoginResponse, synctv_core::provider::ProviderError> {
         let user_info = self.provider
             .login(req.host, req.api_key, instance_name)
             .await
-            .map_err(|e| e.to_string())?;
+            ?;
 
         // Extract admin status from user policy
         let is_admin = user_info.policy
@@ -42,7 +42,7 @@ impl EmbyApiImpl {
     }
 
     /// List Emby library items
-    pub async fn list(&self, req: ListRequest, instance_name: Option<&str>) -> Result<ListResponse, String> {
+    pub async fn list(&self, req: ListRequest, instance_name: Option<&str>) -> Result<ListResponse, synctv_core::provider::ProviderError> {
         let list_req = synctv_media_providers::grpc::emby::FsListReq {
             host: req.host,
             token: req.token,
@@ -56,7 +56,7 @@ impl EmbyApiImpl {
         let resp = self.provider
             .fs_list(list_req, instance_name)
             .await
-            .map_err(|e| e.to_string())?;
+            ?;
 
         // Convert Item to MediaItem
         let items: Vec<MediaItem> = resp.items.into_iter().map(|item| MediaItem {
@@ -76,7 +76,7 @@ impl EmbyApiImpl {
     }
 
     /// Get Emby user info
-    pub async fn get_me(&self, req: GetMeRequest, instance_name: Option<&str>) -> Result<GetMeResponse, String> {
+    pub async fn get_me(&self, req: GetMeRequest, instance_name: Option<&str>) -> Result<GetMeResponse, synctv_core::provider::ProviderError> {
         let me_req = synctv_media_providers::grpc::emby::MeReq {
             host: req.host,
             token: req.token,
@@ -86,7 +86,7 @@ impl EmbyApiImpl {
         let resp = self.provider
             .me(me_req, instance_name)
             .await
-            .map_err(|e| e.to_string())?;
+            ?;
 
         Ok(GetMeResponse {
             id: resp.id,
@@ -95,7 +95,7 @@ impl EmbyApiImpl {
     }
 
     /// Logout
-    pub async fn logout(&self, _req: LogoutRequest) -> Result<LogoutResponse, String> {
+    pub async fn logout(&self, _req: LogoutRequest) -> Result<LogoutResponse, synctv_core::provider::ProviderError> {
         Ok(LogoutResponse {
             message: "Logout successful".to_string(),
         })

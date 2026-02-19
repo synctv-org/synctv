@@ -97,7 +97,10 @@ impl AlistProviderService for AlistProviderGrpcService {
             "username",
         )
         .await
-        .map_err(api_err)?;
+        .map_err(|e| {
+            tracing::error!("Failed to query provider binds: {e}");
+            tonic::Status::internal("Internal error")
+        })?;
 
         let binds = provider_binds
             .into_iter()

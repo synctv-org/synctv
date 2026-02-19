@@ -530,9 +530,8 @@ impl HlsStreamingApi {
         segment_name: &str,
     ) -> Result<Bytes> {
         if let Some(segment_manager) = &infrastructure.segment_manager {
-            // Build storage key: room_id/media_id/segment_name
-            // Uses `/` as separator to avoid ambiguity with UUID dashes
-            let storage_key = format!("{room_id}/{media_id}/{segment_name}");
+            // Build storage key using the shared canonical format (matches remuxer write side)
+            let storage_key = synctv_xiu::hls::hls_segment_storage_key(room_id, media_id, segment_name);
 
             segment_manager
                 .storage()

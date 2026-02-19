@@ -606,6 +606,21 @@ impl ClusterManager {
     }
 }
 
+impl Drop for ClusterManager {
+    fn drop(&mut self) {
+        // Cancel all background tasks (heartbeat, Redis pub/sub, connection manager).
+        // Drop cannot run async code, but CancellationToken::cancel() is synchronous
+        // and will notify all tasks holding a clone of this token to stop.
+        self.cancel_token.cancel();
+        if let Some(ref pubsub) = self.redis_pubsub {
+            pubsub.shutdown();
+        }
+        if let Some(ref cm) = self.connection_manager {
+            cm.shutdown();
+        }
+    }
+}
+
 /// Result of broadcasting an event
 #[derive(Debug, Clone)]
 pub struct BroadcastResult {

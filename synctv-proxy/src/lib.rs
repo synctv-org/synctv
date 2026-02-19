@@ -412,7 +412,8 @@ pub async fn proxy_m3u8_and_rewrite(
         ));
     }
 
-    let m3u8_text = String::from_utf8_lossy(&m3u8_bytes).to_string();
+    let m3u8_text = String::from_utf8(m3u8_bytes.to_vec())
+        .map_err(|e| anyhow::anyhow!("M3U8 response is not valid UTF-8: {e}"))?;
 
     let rewritten = rewrite_m3u8(&m3u8_text, url, proxy_base);
 

@@ -607,6 +607,11 @@ pub struct UpdatePlaybackRequest {
     /// Playlist context when switching media
     #[serde(default)]
     pub playlist_id: Option<String>,
+    /// Expected version for optimistic locking (CAS).
+    /// If provided, the update will only succeed if the current playback state
+    /// version matches this value, preventing last-writer-wins conflicts.
+    #[serde(default)]
+    pub version: Option<i64>,
 }
 
 /// Unified handler for updating playback state via PATCH
@@ -647,9 +652,11 @@ pub async fn update_playback(
     let rid = RoomId::from_string(room_id.clone());
     let uid = UserId::from_string(user_id.clone());
 
-    // Apply all fields atomically in a single DB update
+    // Apply all fields atomically in a single DB update.
+    // When a version is provided, the update uses optimistic locking (CAS)
+    // to prevent concurrent modification conflicts.
     state.room_service.playback_service()
-        .update_multiple(rid, uid, playing, req.position, req.speed, media_id, playlist_id)
+        .update_multiple_with_version(rid, uid, playing, req.position, req.speed, media_id, playlist_id, req.version)
         .await?;
 
     // Return final playback state and playback info

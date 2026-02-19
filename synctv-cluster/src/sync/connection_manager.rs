@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use synctv_core::models::id::{RoomId, UserId};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, info, warn};
 
 /// Disconnect signal for forcing connections to close
@@ -138,6 +138,15 @@ const DISTRIBUTED_COUNTER_TTL_SECONDS: i64 = 180; // 3x TTL refresh interval (60
 /// connections alive by periodically resetting this TTL.
 const CONNECTION_METADATA_TTL_SECONDS: i64 = 90_000; // 25 hours
 
+/// A failed Redis counter operation that should be retried.
+#[derive(Debug, Clone)]
+enum PendingRedisOp {
+    /// Increment a counter key
+    Incr(String),
+    /// Decrement a counter key
+    Decr(String),
+}
+
 /// Connection manager for tracking active gRPC streaming connections
 #[derive(Clone)]
 pub struct ConnectionManager {
@@ -175,6 +184,12 @@ pub struct ConnectionManager {
     /// Cancellation token for the auto-spawned TTL refresh task.
     /// Cancelled on shutdown to stop the background task.
     ttl_refresh_cancel: Arc<tokio_util::sync::CancellationToken>,
+
+    /// Channel for queuing failed Redis counter operations for background retry.
+    /// When a Redis INCR/DECR fails during register/unregister, the operation is
+    /// sent here so a background task can retry it, ensuring eventual consistency
+    /// between local and distributed counters.
+    pending_retries_tx: mpsc::UnboundedSender<PendingRedisOp>,
 }
 
 impl ConnectionManager {
@@ -186,6 +201,9 @@ impl ConnectionManager {
         // channel capacity would miss signals; the WebSocket handler has a periodic
         // re-validation backstop to handle the rare case where a signal is lost.
         let (disconnect_tx, _) = broadcast::channel(10_000);
+        let (pending_retries_tx, _rx) = mpsc::unbounded_channel();
+        // Drop _rx immediately; the retry task is spawned only when Redis is configured
+        // via with_redis(). Without Redis, no operations are ever sent to this channel.
         Self {
             connections: Arc::new(DashMap::new()),
             user_connections: Arc::new(DashMap::new()),
@@ -198,6 +216,7 @@ impl ConnectionManager {
             redis_conn: None,
             redis_key_prefix: String::new(),
             ttl_refresh_cancel: Arc::new(tokio_util::sync::CancellationToken::new()),
+            pending_retries_tx,
         }
     }
 
@@ -207,20 +226,119 @@ impl ConnectionManager {
     /// enforced across all replicas. Without Redis, limits are per-node only.
     ///
     /// Automatically spawns a background TTL refresh task (every 60s) to keep
-    /// Redis connection counters alive for long-lived connections. The task is
-    /// cancelled when `shutdown()` is called.
+    /// Redis connection counters alive for long-lived connections, and a
+    /// pending-retries task that periodically retries failed Redis counter
+    /// operations. Both tasks are cancelled when `shutdown()` is called.
     #[must_use]
     pub fn with_redis(mut self, conn: redis::aio::ConnectionManager, key_prefix: &str) -> Self {
-        self.redis_conn = Some(conn);
+        self.redis_conn = Some(conn.clone());
         self.redis_key_prefix = key_prefix.to_string();
 
         // Auto-spawn the TTL refresh task so callers don't need to remember
         // to call spawn_ttl_refresh_task() manually.
         let cancel = tokio_util::sync::CancellationToken::new();
         self.ttl_refresh_cancel = Arc::new(cancel.clone());
-        let _handle = self.spawn_ttl_refresh_task(Duration::from_secs(60), cancel);
+        let _handle = self.spawn_ttl_refresh_task(Duration::from_secs(60), cancel.clone());
+
+        // Spawn the pending-retries background task.
+        // Re-create the channel so we have a live receiver.
+        let (tx, rx) = mpsc::unbounded_channel();
+        self.pending_retries_tx = tx;
+        Self::spawn_pending_retries_task(conn, rx, cancel);
 
         self
+    }
+
+    /// Spawn a background task that retries failed Redis counter operations.
+    ///
+    /// Drains the `pending_retries_rx` channel every 5 seconds and retries each
+    /// operation. Operations that still fail are re-queued (up to 3 attempts each,
+    /// tracked internally) before being dropped with a warning.
+    fn spawn_pending_retries_task(
+        redis_conn: redis::aio::ConnectionManager,
+        mut rx: mpsc::UnboundedReceiver<PendingRedisOp>,
+        cancel: tokio_util::sync::CancellationToken,
+    ) {
+        tokio::spawn(async move {
+            /// Maximum retry attempts for a single failed operation before dropping it.
+            const MAX_OP_RETRIES: u32 = 3;
+            /// Interval between retry sweeps.
+            const RETRY_INTERVAL: Duration = Duration::from_secs(5);
+
+            let mut pending: Vec<(PendingRedisOp, u32)> = Vec::new();
+            let mut ticker = tokio::time::interval(RETRY_INTERVAL);
+            // Skip the first immediate tick
+            ticker.tick().await;
+
+            loop {
+                tokio::select! {
+                    () = cancel.cancelled() => {
+                        info!("Pending Redis retries task shutting down");
+                        return;
+                    }
+                    _ = ticker.tick() => {
+                        // Drain all newly-queued operations
+                        while let Ok(op) = rx.try_recv() {
+                            pending.push((op, 0));
+                        }
+
+                        if pending.is_empty() {
+                            continue;
+                        }
+
+                        let mut still_pending = Vec::new();
+                        let mut conn = redis_conn.clone();
+
+                        for (op, attempts) in pending.drain(..) {
+                            let result = match &op {
+                                PendingRedisOp::Incr(key) => {
+                                    conn.incr::<_, _, i64>(key, 1i64).await
+                                }
+                                PendingRedisOp::Decr(key) => {
+                                    // Use raw DECR; don't need the atomic script here since
+                                    // this is a compensating retry, not a live operation.
+                                    conn.decr::<_, _, i64>(key, 1i64).await
+                                }
+                            };
+
+                            match result {
+                                Ok(_) => {
+                                    debug!(op = ?op, "Pending Redis retry succeeded");
+                                }
+                                Err(e) => {
+                                    let next_attempt = attempts + 1;
+                                    if next_attempt >= MAX_OP_RETRIES {
+                                        warn!(
+                                            op = ?op,
+                                            attempts = next_attempt,
+                                            error = %e,
+                                            "Dropping failed Redis counter operation after max retries"
+                                        );
+                                    } else {
+                                        debug!(
+                                            op = ?op,
+                                            attempts = next_attempt,
+                                            error = %e,
+                                            "Redis retry failed, will retry again"
+                                        );
+                                        still_pending.push((op, next_attempt));
+                                    }
+                                }
+                            }
+                        }
+
+                        pending = still_pending;
+                    }
+                }
+            }
+        });
+    }
+
+    /// Enqueue a failed Redis counter operation for background retry.
+    fn enqueue_retry(&self, op: PendingRedisOp) {
+        if let Err(e) = self.pending_retries_tx.send(op) {
+            warn!("Failed to enqueue pending Redis retry (channel closed): {e}");
+        }
     }
 
     /// Cancel the auto-spawned TTL refresh task.
@@ -646,22 +764,29 @@ impl ConnectionManager {
                 let user_id_str = conn_info.user_id.as_str().to_string();
                 let room_id_str = conn_info.room_id.as_ref().map(|r| r.as_str().to_string());
                 let connection_id_owned = connection_id.to_string();
+                let retry_tx = self.pending_retries_tx.clone();
 
                 let cleanup = async {
                     let this = &*self;
 
                     // Decrement total distributed counter
                     let total_key = format!("{key_prefix}connections:total");
-                    let _ = this.redis_decr(&conn_clone, &total_key).await;
+                    if let Err(_e) = this.redis_decr(&conn_clone, &total_key).await {
+                        let _ = retry_tx.send(PendingRedisOp::Decr(total_key));
+                    }
 
                     // Decrement user counter
                     let user_key = format!("{key_prefix}connections:user:{user_id_str}");
-                    let _ = this.redis_decr(&conn_clone, &user_key).await;
+                    if let Err(_e) = this.redis_decr(&conn_clone, &user_key).await {
+                        let _ = retry_tx.send(PendingRedisOp::Decr(user_key));
+                    }
 
                     // Decrement room counter
                     if let Some(ref room_id) = room_id_str {
                         let room_key = format!("{key_prefix}connections:room:{room_id}");
-                        let _ = this.redis_decr(&conn_clone, &room_key).await;
+                        if let Err(_e) = this.redis_decr(&conn_clone, &room_key).await {
+                            let _ = retry_tx.send(PendingRedisOp::Decr(room_key));
+                        }
                     }
 
                     // Remove metadata and index entries
@@ -681,8 +806,17 @@ impl ConnectionManager {
                 if tokio::time::timeout(Duration::from_secs(2), cleanup).await.is_err() {
                     warn!(
                         connection_id = %connection_id,
-                        "Redis cleanup timed out during unregister, TTL will handle eventual cleanup"
+                        "Redis cleanup timed out during unregister, enqueueing retries"
                     );
+                    // Enqueue all decrement operations for retry
+                    let total_key = format!("{}connections:total", self.redis_key_prefix);
+                    self.enqueue_retry(PendingRedisOp::Decr(total_key));
+                    let user_key = format!("{}connections:user:{}", self.redis_key_prefix, user_id_str);
+                    self.enqueue_retry(PendingRedisOp::Decr(user_key));
+                    if let Some(ref room_id) = room_id_str {
+                        let room_key = format!("{}connections:room:{room_id}", self.redis_key_prefix);
+                        self.enqueue_retry(PendingRedisOp::Decr(room_key));
+                    }
                 }
             }
 

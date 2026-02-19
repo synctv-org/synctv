@@ -1,10 +1,11 @@
+use redis::AsyncCommands;
 use sqlx::PgPool;
 use std::collections::HashMap;
 
 use std::sync::Arc;
 
 use crate::{
-    cache::{CacheInvalidationService, UsernameCache},
+    cache::{CacheInvalidationService, KeyBuilder, UsernameCache},
     config::PasswordComplexityConfig,
     models::{User, UserId, SignupMethod},
     models::oauth2_client::OAuth2Provider,
@@ -27,6 +28,10 @@ pub struct UserService {
     brute_force: Option<BruteForceProtection>,
     /// Whether email verification is required for login (true when email service is configured)
     email_verification_required: bool,
+    /// Optional Redis connection for refresh token blacklist (rotation)
+    redis_conn: Option<redis::aio::ConnectionManager>,
+    /// Key builder for Redis keys
+    key_builder: KeyBuilder,
 }
 
 impl std::fmt::Debug for UserService {
@@ -39,7 +44,7 @@ impl std::fmt::Debug for UserService {
 
 impl UserService {
     #[must_use]
-    pub const fn new(
+    pub fn new(
         pool: PgPool,
         jwt_service: JwtService,
         username_cache: UsernameCache,
@@ -53,6 +58,8 @@ impl UserService {
             password_complexity,
             brute_force: None,
             email_verification_required: false,
+            redis_conn: None,
+            key_builder: KeyBuilder::default(),
         }
     }
 
@@ -69,6 +76,16 @@ impl UserService {
     /// Enable email verification requirement for login (call when email service is configured)
     pub const fn set_email_verification_required(&mut self, required: bool) {
         self.email_verification_required = required;
+    }
+
+    /// Set the Redis connection and key builder for refresh token rotation blacklist.
+    ///
+    /// When Redis is available, used refresh tokens are blacklisted to prevent
+    /// replay attacks. Without Redis, refresh token rotation is not enforced
+    /// (tokens are still validated for signature, expiration, and password changes).
+    pub fn set_redis_conn(&mut self, conn: redis::aio::ConnectionManager, key_builder: KeyBuilder) {
+        self.redis_conn = Some(conn);
+        self.key_builder = key_builder;
     }
 
     /// Register a new user
@@ -353,18 +370,22 @@ impl UserService {
         Ok((user, access_token, refresh_token))
     }
 
-    /// Refresh access token
+    /// Refresh access token with **Refresh Token Rotation**.
     ///
-    /// **Security Note**: Without Redis-based token blacklisting, this implementation
-    /// does not provide refresh token replay protection. A stolen refresh token can
-    /// be used until it expires naturally. Consider these trade-offs:
-    /// - Tokens are still validated for signature, expiration, and password changes
-    /// - Shorter token lifetimes reduce the replay window
-    /// - Password changes immediately invalidate all tokens
+    /// When Redis is available, each refresh token can only be used once:
+    /// 1. The old refresh token's JTI is checked against a Redis blacklist.
+    /// 2. If the JTI is blacklisted, the request is rejected (possible token theft replay).
+    ///    Additionally, the entire refresh token family for the user is revoked as a
+    ///    precaution (all refresh tokens issued before this moment become invalid).
+    /// 3. After issuing new tokens, the old JTI is added to the blacklist with a TTL
+    ///    equal to the old token's remaining lifetime.
+    ///
+    /// Without Redis, refresh token rotation is not enforced (tokens are still
+    /// validated for signature, expiration, and password version changes).
     pub async fn refresh_token(&self, refresh_token: String) -> Result<(String, String)> {
         // Verify refresh token
         let claims = self.jwt_service.verify_refresh_token(&refresh_token)?;
-        let user_id = UserId::from_string(claims.sub);
+        let user_id = UserId::from_string(claims.sub.clone());
 
         // Get user to ensure they still exist and are active
         let user = self
@@ -401,6 +422,62 @@ impl UserService {
             }
         }
 
+        // Refresh Token Rotation: check blacklist and family revocation (Redis only)
+        if let Some(ref conn) = self.redis_conn {
+            let old_jti = &claims.jti;
+
+            // Check if the entire refresh token family for this user has been revoked
+            // (triggered when a blacklisted JTI is replayed, indicating possible token theft).
+            let family_key = self.key_builder.refresh_token_family_revoked(user_id.as_str());
+            let family_revoked_at: Option<i64> = {
+                let mut conn = conn.clone();
+                conn.get(&family_key).await.unwrap_or(None)
+            };
+            if let Some(revoked_at) = family_revoked_at {
+                // Reject any refresh token issued before the family revocation timestamp
+                if claims.iat <= revoked_at {
+                    tracing::warn!(
+                        user_id = %user_id.as_str(),
+                        jti = %old_jti,
+                        revoked_at = revoked_at,
+                        token_iat = claims.iat,
+                        "Refresh token rejected: token family revoked (possible token theft)"
+                    );
+                    return Err(Error::Authentication("Authentication failed".to_string()));
+                }
+            }
+
+            // Check if this specific JTI has been blacklisted (already used)
+            if !old_jti.is_empty() {
+                let blacklist_key = self.key_builder.refresh_token_blacklist(old_jti);
+                let is_blacklisted: bool = {
+                    let mut conn = conn.clone();
+                    conn.exists(&blacklist_key).await.unwrap_or(false)
+                };
+
+                if is_blacklisted {
+                    // A blacklisted JTI is being replayed! This indicates the refresh token
+                    // was stolen and both the legitimate user and attacker are trying to use it.
+                    // Revoke the entire refresh token family for this user as a precaution.
+                    tracing::warn!(
+                        user_id = %user_id.as_str(),
+                        jti = %old_jti,
+                        "Blacklisted refresh token JTI replayed — revoking entire token family"
+                    );
+
+                    let now = chrono::Utc::now().timestamp();
+                    // Family revocation TTL: use remaining token lifetime + buffer
+                    let family_ttl = ((claims.exp - now).max(0) as u64).saturating_add(3600);
+                    let mut conn = conn.clone();
+                    let _: std::result::Result<(), _> = conn
+                        .set_ex(&family_key, now, family_ttl)
+                        .await;
+
+                    return Err(Error::Authentication("Authentication failed".to_string()));
+                }
+            }
+        }
+
         // Generate new tokens (role will be fetched from DB on each request)
         let new_access_token = self
             .jwt_service
@@ -408,6 +485,28 @@ impl UserService {
         let new_refresh_token = self
             .jwt_service
             .sign_token(&user.id, TokenType::Refresh, user.password_version)?;
+
+        // Blacklist the old refresh token JTI AFTER successfully issuing new tokens.
+        // This ensures atomicity: if token generation fails, the old token remains valid.
+        if let Some(ref conn) = self.redis_conn {
+            let old_jti = &claims.jti;
+            if !old_jti.is_empty() {
+                let blacklist_key = self.key_builder.refresh_token_blacklist(old_jti);
+                let now = chrono::Utc::now().timestamp();
+                // TTL = remaining lifetime of the old token (it can't be used after expiry anyway)
+                let remaining_ttl = (claims.exp - now).max(60) as u64;
+                let mut conn = conn.clone();
+                if let Err(e) = conn.set_ex::<_, _, ()>(&blacklist_key, "1", remaining_ttl).await {
+                    // Log but don't fail: the new tokens are already issued.
+                    // Worst case: the old token could be replayed once more.
+                    tracing::warn!(
+                        jti = %old_jti,
+                        error = %e,
+                        "Failed to blacklist used refresh token JTI in Redis"
+                    );
+                }
+            }
+        }
 
         Ok((new_access_token, new_refresh_token))
     }

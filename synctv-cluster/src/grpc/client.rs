@@ -99,7 +99,14 @@ const CHANNEL_CACHE_MAX_CAPACITY: u64 = 256;
 pub struct ClusterClient {
     node_registry: Arc<NodeRegistry>,
     config: ClusterClientConfig,
-    /// Cached gRPC channels keyed by node gRPC address.
+    /// Cached gRPC channels keyed by `"{node_id}|{address}"`.
+    ///
+    /// Using `(node_id, address)` as the composite key ensures that when a node
+    /// restarts and re-registers with a different gRPC address, the old channel
+    /// (keyed under the old address) is not reused for the new address. Without
+    /// this, a node restart could cause RPCs to be sent to the old (dead) address
+    /// until the cache TTL expires.
+    ///
     /// Entries are automatically evicted after `CHANNEL_CACHE_TTL_SECS` of
     /// inactivity (no get/insert), preventing unbounded growth from stale nodes.
     channels: Cache<String, Channel>,
@@ -123,13 +130,23 @@ impl ClusterClient {
         }
     }
 
-    /// Get or create a cached gRPC channel for a node address.
+    /// Build the composite cache key for a `(node_id, address)` pair.
+    fn channel_cache_key(node_id: &str, address: &str) -> String {
+        format!("{node_id}|{address}")
+    }
+
+    /// Get or create a cached gRPC channel for a node.
+    ///
+    /// The cache key is `"{node_id}|{address}"` so that when a node restarts
+    /// with a new address, the stale channel for the old address is not reused.
     ///
     /// Channels are cached with a TTL; stale entries are automatically evicted
     /// by the moka cache after `CHANNEL_CACHE_TTL_SECS` of inactivity.
-    async fn get_channel(&self, address: &str) -> Result<Channel> {
+    async fn get_channel(&self, node_id: &str, address: &str) -> Result<Channel> {
+        let cache_key = Self::channel_cache_key(node_id, address);
+
         // Return cached channel if available
-        if let Some(channel) = self.channels.get(address) {
+        if let Some(channel) = self.channels.get(&cache_key) {
             return Ok(channel);
         }
 
@@ -150,7 +167,7 @@ impl ClusterClient {
             .await
             .map_err(|e| Error::Rpc(format!("Failed to connect to {address}: {e}")))?;
 
-        self.channels.insert(address.to_string(), channel.clone());
+        self.channels.insert(cache_key, channel.clone());
         Ok(channel)
     }
 
@@ -179,7 +196,7 @@ impl ClusterClient {
         Ok(())
     }
 
-    /// Remove a cached channel for the given address.
+    /// Remove a cached channel for the given node.
     ///
     /// Call this when a node re-registers with a new gRPC address or when
     /// `node_deregistered`/`node_updated` events are received from the cluster.
@@ -189,9 +206,10 @@ impl ClusterClient {
     ///
     /// Also called internally after any RPC failure so that the next call
     /// creates a fresh channel.
-    pub fn invalidate_channel(&self, address: &str) {
-        self.channels.invalidate(address);
-        debug!(address = %address, "Invalidated cached gRPC channel");
+    pub fn invalidate_channel(&self, node_id: &str, address: &str) {
+        let cache_key = Self::channel_cache_key(node_id, address);
+        self.channels.invalidate(&cache_key);
+        debug!(node_id = %node_id, address = %address, "Invalidated cached gRPC channel");
     }
 
     /// Invalidate all cached channels.
@@ -249,64 +267,72 @@ impl ClusterClient {
             remote_nodes.clone()
         };
 
-        // Fan out to all remote nodes in parallel
-        let futures: Vec<_> = query_nodes
+        // Fan out to all remote nodes in parallel using FuturesUnordered
+        // so that on aggregate timeout we can collect already-completed results
+        // instead of discarding everything.
+        use futures::stream::{FuturesUnordered, StreamExt};
+
+        let mut futs: FuturesUnordered<_> = query_nodes
             .iter()
             .map(|node| {
                 let user_ids = user_ids.clone();
                 let address = node.grpc_address.clone();
                 let node_id = node.node_id.clone();
                 async move {
-                    let result = self.query_user_status_single(&address, user_ids).await;
+                    let result = self.query_user_status_single(&node_id, &address, user_ids).await;
                     (node_id, address, result)
                 }
             })
             .collect();
 
-        let results = match tokio::time::timeout(
-            FAN_OUT_AGGREGATE_TIMEOUT,
-            futures::future::join_all(futures),
-        ).await {
-            Ok(results) => results,
-            Err(_) => {
-                warn!(
-                    node_count = query_nodes.len(),
-                    "Fan-out GetUserOnlineStatus aggregate timeout ({:?}), returning empty partial results",
-                    FAN_OUT_AGGREGATE_TIMEOUT,
-                );
-                return Ok(FanOutResult {
-                    data: Vec::new(),
-                    nodes_succeeded: 0,
-                    nodes_failed: query_nodes.len() + skipped_nodes,
-                    failures: query_nodes.iter().map(|n| (n.node_id.clone(), "aggregate timeout".to_string())).collect(),
-                });
-            }
-        };
-
-        // Merge results
         let mut all_statuses: Vec<UserOnlineStatus> = Vec::new();
         let mut nodes_succeeded = 0usize;
         let mut nodes_failed = skipped_nodes;
         let mut failures = Vec::new();
 
-        for (node_id, address, result) in results {
-            match result {
-                Ok(response) => {
-                    nodes_succeeded += 1;
-                    all_statuses.extend(response.statuses);
+        let deadline = tokio::time::Instant::now() + FAN_OUT_AGGREGATE_TIMEOUT;
+        let mut timed_out = false;
+
+        while !futs.is_empty() {
+            tokio::select! {
+                biased;
+                maybe_result = futs.next() => {
+                    if let Some((node_id, address, result)) = maybe_result {
+                        match result {
+                            Ok(response) => {
+                                nodes_succeeded += 1;
+                                all_statuses.extend(response.statuses);
+                            }
+                            Err(e) => {
+                                nodes_failed += 1;
+                                warn!(
+                                    node_id = %node_id,
+                                    address = %address,
+                                    error = %e,
+                                    "Fan-out GetUserOnlineStatus failed for node"
+                                );
+                                self.invalidate_channel(&node_id, &address);
+                                failures.push((node_id, e.to_string()));
+                            }
+                        }
+                    }
                 }
-                Err(e) => {
-                    nodes_failed += 1;
-                    warn!(
-                        node_id = %node_id,
-                        address = %address,
-                        error = %e,
-                        "Fan-out GetUserOnlineStatus failed for node"
-                    );
-                    self.invalidate_channel(&address);
-                    failures.push((node_id, e.to_string()));
+                () = tokio::time::sleep_until(deadline) => {
+                    timed_out = true;
+                    break;
                 }
             }
+        }
+
+        if timed_out {
+            let remaining = futs.len();
+            nodes_failed += remaining;
+            warn!(
+                remaining_nodes = remaining,
+                collected_succeeded = nodes_succeeded,
+                "Fan-out GetUserOnlineStatus aggregate timeout ({:?}), returning partial results",
+                FAN_OUT_AGGREGATE_TIMEOUT,
+            );
         }
 
         debug!(
@@ -327,6 +353,7 @@ impl ClusterClient {
     /// Query a single node for user online status
     async fn query_user_status_single(
         &self,
+        node_id: &str,
         address: &str,
         user_ids: Vec<String>,
     ) -> Result<GetUserOnlineStatusResponse> {
@@ -337,7 +364,7 @@ impl ClusterClient {
             )));
         }
 
-        let channel = self.get_channel(address).await?;
+        let channel = self.get_channel(node_id, address).await?;
         let mut client = self.make_client(channel);
 
         let mut request = tonic::Request::new(GetUserOnlineStatusRequest { user_ids });
@@ -405,64 +432,72 @@ impl ClusterClient {
             remote_nodes.clone()
         };
 
-        // Fan out to all remote nodes in parallel
-        let futures: Vec<_> = query_nodes
+        // Fan out to all remote nodes in parallel using FuturesUnordered
+        // so that on aggregate timeout we can collect already-completed results
+        // instead of discarding everything.
+        use futures::stream::{FuturesUnordered, StreamExt};
+
+        let mut futs: FuturesUnordered<_> = query_nodes
             .iter()
             .map(|node| {
                 let room_id = room_id.clone();
                 let address = node.grpc_address.clone();
                 let node_id = node.node_id.clone();
                 async move {
-                    let result = self.query_room_connections_single(&address, room_id).await;
+                    let result = self.query_room_connections_single(&node_id, &address, room_id).await;
                     (node_id, address, result)
                 }
             })
             .collect();
 
-        let results = match tokio::time::timeout(
-            FAN_OUT_AGGREGATE_TIMEOUT,
-            futures::future::join_all(futures),
-        ).await {
-            Ok(results) => results,
-            Err(_) => {
-                warn!(
-                    node_count = query_nodes.len(),
-                    "Fan-out GetRoomConnections aggregate timeout ({:?}), returning empty partial results",
-                    FAN_OUT_AGGREGATE_TIMEOUT,
-                );
-                return Ok(FanOutResult {
-                    data: Vec::new(),
-                    nodes_succeeded: 0,
-                    nodes_failed: query_nodes.len() + skipped_nodes,
-                    failures: query_nodes.iter().map(|n| (n.node_id.clone(), "aggregate timeout".to_string())).collect(),
-                });
-            }
-        };
-
-        // Merge results
         let mut all_connections: Vec<RoomConnection> = Vec::new();
         let mut nodes_succeeded = 0usize;
         let mut nodes_failed = skipped_nodes;
         let mut failures = Vec::new();
 
-        for (node_id, address, result) in results {
-            match result {
-                Ok(response) => {
-                    nodes_succeeded += 1;
-                    all_connections.extend(response.connections);
+        let deadline = tokio::time::Instant::now() + FAN_OUT_AGGREGATE_TIMEOUT;
+        let mut timed_out = false;
+
+        while !futs.is_empty() {
+            tokio::select! {
+                biased;
+                maybe_result = futs.next() => {
+                    if let Some((node_id, address, result)) = maybe_result {
+                        match result {
+                            Ok(response) => {
+                                nodes_succeeded += 1;
+                                all_connections.extend(response.connections);
+                            }
+                            Err(e) => {
+                                nodes_failed += 1;
+                                warn!(
+                                    node_id = %node_id,
+                                    address = %address,
+                                    error = %e,
+                                    "Fan-out GetRoomConnections failed for node"
+                                );
+                                self.invalidate_channel(&node_id, &address);
+                                failures.push((node_id, e.to_string()));
+                            }
+                        }
+                    }
                 }
-                Err(e) => {
-                    nodes_failed += 1;
-                    warn!(
-                        node_id = %node_id,
-                        address = %address,
-                        error = %e,
-                        "Fan-out GetRoomConnections failed for node"
-                    );
-                    self.invalidate_channel(&address);
-                    failures.push((node_id, e.to_string()));
+                () = tokio::time::sleep_until(deadline) => {
+                    timed_out = true;
+                    break;
                 }
             }
+        }
+
+        if timed_out {
+            let remaining = futs.len();
+            nodes_failed += remaining;
+            warn!(
+                remaining_nodes = remaining,
+                collected_succeeded = nodes_succeeded,
+                "Fan-out GetRoomConnections aggregate timeout ({:?}), returning partial results",
+                FAN_OUT_AGGREGATE_TIMEOUT,
+            );
         }
 
         debug!(
@@ -483,6 +518,7 @@ impl ClusterClient {
     /// Query a single node for room connections
     async fn query_room_connections_single(
         &self,
+        node_id: &str,
         address: &str,
         room_id: String,
     ) -> Result<GetRoomConnectionsResponse> {
@@ -493,7 +529,7 @@ impl ClusterClient {
             )));
         }
 
-        let channel = self.get_channel(address).await?;
+        let channel = self.get_channel(node_id, address).await?;
         let mut client = self.make_client(channel);
 
         let mut request = tonic::Request::new(GetRoomConnectionsRequest { room_id });

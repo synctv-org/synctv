@@ -16,7 +16,7 @@ use axum::{
 use futures::stream::Stream;
 use serde_json::json;
 
-use crate::http::{AppState, error::AppResult, middleware::AuthUser, provider_common::{InstanceQuery, error_response, parse_provider_error}};
+use crate::http::{AppError, AppState, error::AppResult, middleware::AuthUser, provider_common::InstanceQuery};
 use crate::impls::provider::{resolve_media_from_playlist, resolve_provider_playback_result};
 
 use synctv_core::models::{MediaId, RoomId};
@@ -57,14 +57,17 @@ async fn proxy_subtitle(
     let media_id_parsed = MediaId::from_string(media_id);
 
     let result =
-        resolve_provider_playback_result(
-            &auth.user_id,
-            &room_id_parsed,
-            &media_id_parsed,
-            state.bilibili_provider.as_ref(),
-            &state.room_service,
-            state.redis_conn.as_ref(),
-        ).await
+        {
+            let resolved = state.resolve_redis_conn().await;
+            resolve_provider_playback_result(
+                &auth.user_id,
+                &room_id_parsed,
+                &media_id_parsed,
+                state.bilibili_provider.as_ref(),
+                &state.room_service,
+                resolved.as_ref(),
+            ).await
+        }
         .map_err(crate::http::error::map_api_error)?;
 
     // Find subtitle by name across all playback infos
@@ -98,15 +101,17 @@ async fn proxy_m3u8(
     let room_id_parsed = RoomId::from_string(room_id.clone());
     let media_id_parsed = MediaId::from_string(media_id.clone());
 
-    let result =
+    let result = {
+        let resolved = state.resolve_redis_conn().await;
         resolve_provider_playback_result(
             &auth.user_id,
             &room_id_parsed,
             &media_id_parsed,
             state.bilibili_provider.as_ref(),
             &state.room_service,
-            state.redis_conn.as_ref(),
+            resolved.as_ref(),
         ).await
+    }
         .map_err(crate::http::error::map_api_error)?;
 
     let default_info = result
@@ -292,7 +297,7 @@ async fn parse(
         }
         Err(e) => {
             tracing::error!("Bilibili parse failed: {}", e);
-            error_response(parse_provider_error(&e)).into_response()
+            AppError::from(e).into_response()
         }
     }
 }
@@ -314,7 +319,7 @@ async fn login_qr(
         }
         Err(e) => {
             tracing::error!("Failed to generate QR code: {}", e);
-            error_response(parse_provider_error(&e)).into_response()
+            AppError::from(e).into_response()
         }
     }
 }
@@ -336,7 +341,7 @@ async fn qr_check(
         }
         Err(e) => {
             tracing::error!("Failed to check QR status: {}", e);
-            error_response(parse_provider_error(&e)).into_response()
+            AppError::from(e).into_response()
         }
     }
 }
@@ -358,7 +363,7 @@ async fn new_captcha(
         }
         Err(e) => {
             tracing::error!("Failed to get captcha: {}", e);
-            error_response(parse_provider_error(&e)).into_response()
+            AppError::from(e).into_response()
         }
     }
 }
@@ -380,7 +385,7 @@ async fn sms_send(
         }
         Err(e) => {
             tracing::error!("Failed to send SMS: {}", e);
-            error_response(parse_provider_error(&e)).into_response()
+            AppError::from(e).into_response()
         }
     }
 }
@@ -402,7 +407,7 @@ async fn sms_login(
         }
         Err(e) => {
             tracing::error!("Failed to login with SMS: {}", e);
-            error_response(parse_provider_error(&e)).into_response()
+            AppError::from(e).into_response()
         }
     }
 }
@@ -427,7 +432,7 @@ async fn user_info(
         }
         Err(e) => {
             tracing::error!("Failed to get user info: {}", e);
-            error_response(parse_provider_error(&e)).into_response()
+            AppError::from(e).into_response()
         }
     }
 }

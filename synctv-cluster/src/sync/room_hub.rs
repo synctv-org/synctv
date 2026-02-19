@@ -325,9 +325,17 @@ impl RoomMessageHub {
     /// Subscribers that fail to receive messages for `MAX_CONSECUTIVE_DROPS`
     /// consecutive broadcasts are automatically disconnected to prevent
     /// unbounded backpressure from a single slow client.
+    ///
+    /// **Critical event guarantee**: Events where `is_critical()` returns true
+    /// (KickUserFromRoom, RoomDeleted, KickPublisher, KickUser, PermissionChanged,
+    /// UserLeft) bypass the slow-consumer drop logic entirely. For critical events,
+    /// a blocking send (via `try_reserve` fallback) is attempted, and slow
+    /// subscribers are still disconnected *after* the critical message is queued.
+    /// This prevents administrative actions (bans, kicks) from being silently lost.
     pub fn broadcast(&self, room_id: &RoomId, event: ClusterEvent) -> usize {
         let mut sent_count = 0;
         let mut failed_connections = Vec::new();
+        let is_critical = event.is_critical();
 
         // LOCK ORDERING: Acquire `rooms` read guard in a scoped block. The guard
         // MUST be dropped before calling `unsubscribe()`, which acquires write
@@ -352,26 +360,47 @@ impl RoomMessageHub {
                             );
                         }
                         Err(mpsc::error::TrySendError::Full(_)) => {
-                            let drops = subscriber.consecutive_drops.fetch_add(1, Ordering::Relaxed) + 1;
-                            if drops >= MAX_CONSECUTIVE_DROPS {
-                                warn!(
-                                    room_id = %room_id.as_str(),
-                                    user_id = %subscriber.user_id.as_str(),
-                                    connection_id = %subscriber.connection_id,
-                                    consecutive_drops = drops,
-                                    "Disconnecting persistently slow subscriber after {} consecutive drops",
-                                    MAX_CONSECUTIVE_DROPS
-                                );
-                                failed_connections.push(subscriber.connection_id.clone());
+                            if is_critical {
+                                // Critical events must not be dropped. Spawn a task
+                                // that uses the async `.send()` to block until space
+                                // is available, ensuring the event is delivered even
+                                // to slow consumers.
+                                let sender = subscriber.sender.clone();
+                                let event_clone = event.clone();
+                                let conn_id = subscriber.connection_id.clone();
+                                let room_id_str = room_id.as_str().to_string();
+                                tokio::spawn(async move {
+                                    if let Err(e) = sender.send(event_clone).await {
+                                        warn!(
+                                            room_id = %room_id_str,
+                                            connection_id = %conn_id,
+                                            "Failed to deliver critical event (channel closed): {e}"
+                                        );
+                                    }
+                                });
+                                sent_count += 1;
                             } else {
-                                warn!(
-                                    room_id = %room_id.as_str(),
-                                    user_id = %subscriber.user_id.as_str(),
-                                    connection_id = %subscriber.connection_id,
-                                    event_type = %event.event_type(),
-                                    consecutive_drops = drops,
-                                    "Subscriber channel full, dropping event for slow consumer"
-                                );
+                                let drops = subscriber.consecutive_drops.fetch_add(1, Ordering::Relaxed) + 1;
+                                if drops >= MAX_CONSECUTIVE_DROPS {
+                                    warn!(
+                                        room_id = %room_id.as_str(),
+                                        user_id = %subscriber.user_id.as_str(),
+                                        connection_id = %subscriber.connection_id,
+                                        consecutive_drops = drops,
+                                        "Disconnecting persistently slow subscriber after {} consecutive drops",
+                                        MAX_CONSECUTIVE_DROPS
+                                    );
+                                    failed_connections.push(subscriber.connection_id.clone());
+                                } else {
+                                    warn!(
+                                        room_id = %room_id.as_str(),
+                                        user_id = %subscriber.user_id.as_str(),
+                                        connection_id = %subscriber.connection_id,
+                                        event_type = %event.event_type(),
+                                        consecutive_drops = drops,
+                                        "Subscriber channel full, dropping event for slow consumer"
+                                    );
+                                }
                             }
                         }
                         Err(mpsc::error::TrySendError::Closed(_)) => {

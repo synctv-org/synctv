@@ -776,7 +776,12 @@ impl RedisPubSub {
                             // already filters by cursor, but as a defense-in-depth
                             // check, skip events whose stream IDs are not strictly
                             // after the last known cursor.
-                            if stream_id.as_str() <= cursor.as_str() {
+                            //
+                            // Redis Stream IDs are "{timestamp_ms}-{seq}". String
+                            // comparison (lexicographic) is INCORRECT for numeric
+                            // fields (e.g., "9-0" > "10-0" lexicographically).
+                            // Parse into (u64, u64) for correct numeric comparison.
+                            if !stream_id_gt(&stream_id, &cursor) {
                                 total_skipped += 1;
                                 debug!(
                                     stream_key = %stream_key,
@@ -1355,6 +1360,11 @@ impl RedisPubSub {
     /// Publish an event to Redis
     ///
     /// Uses both Pub/Sub (for real-time delivery) and per-room Stream (for reliability).
+    /// XADD and PUBLISH are executed atomically via a Redis pipeline (MULTI/EXEC)
+    /// to prevent duplicate stream entries on retry: if XADD succeeds but PUBLISH
+    /// fails in a non-atomic flow, the caller retries both, producing a duplicate
+    /// in the stream.
+    ///
     /// If a subscriber disconnects, it can catch up by reading only the streams
     /// for rooms that have local subscribers, avoiding the N*M amplification of
     /// a single global stream.
@@ -1379,109 +1389,103 @@ impl RedisPubSub {
         let payload =
             serde_json::to_string(&envelope).context("Failed to serialize event envelope")?;
 
-        // 1. Add to per-room Redis Stream for reliable delivery (catch-up after disconnect)
+        // Stream key for reliable delivery (catch-up after disconnect)
         // Room events go to {prefix}room:{room_id}:events, admin events to {prefix}admin:events:stream
         let stream_key = if let Some(room_id) = event.room_id() {
             format!("{key_prefix}room:{}:events", room_id.as_str())
         } else {
             format!("{key_prefix}admin:events:stream")
         };
-        use redis::streams::StreamMaxlen;
 
         let is_critical = event.is_critical();
-        let mut stream_ok = false;
 
         if is_critical {
-            // Critical events: retry XADD with exponential backoff to avoid
-            // silent data loss during transient Redis failures.
+            // Critical events: retry the atomic XADD+PUBLISH pipeline with
+            // exponential backoff to avoid silent data loss.
             let mut backoff_ms = CRITICAL_STREAM_INITIAL_BACKOFF_MS;
             for attempt in 1..=CRITICAL_STREAM_MAX_RETRIES {
-                let result = timeout(
-                    Duration::from_secs(REDIS_TIMEOUT_SECS),
-                    conn.xadd_maxlen::<_, _, _, _, String>(
-                        &stream_key,
-                        StreamMaxlen::Approx(MAX_STREAM_LENGTH),
-                        "*",
-                        &[("channel", channel.as_str()), ("payload", payload.as_str())],
-                    ),
+                let result = Self::publish_event_atomic(
+                    conn, &stream_key, &channel, &payload,
                 ).await;
 
                 match result {
-                    Ok(Ok(_)) => {
-                        stream_ok = true;
-                        break;
-                    }
-                    Ok(Err(e)) => {
+                    Ok(subscribers) => return Ok(subscribers),
+                    Err(e) => {
                         warn!(
                             error = %e,
                             stream_key = %stream_key,
                             attempt = attempt,
                             max_retries = CRITICAL_STREAM_MAX_RETRIES,
-                            "XADD failed for critical event, retrying"
+                            "Atomic XADD+PUBLISH failed for critical event, retrying"
                         );
-                    }
-                    Err(_) => {
-                        warn!(
-                            stream_key = %stream_key,
-                            attempt = attempt,
-                            max_retries = CRITICAL_STREAM_MAX_RETRIES,
-                            "XADD timed out for critical event, retrying"
-                        );
+                        if attempt < CRITICAL_STREAM_MAX_RETRIES {
+                            tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                            backoff_ms *= 2;
+                        }
                     }
                 }
-                if attempt < CRITICAL_STREAM_MAX_RETRIES {
-                    tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
-                    backoff_ms *= 2;
-                }
             }
-            if !stream_ok {
-                error!(
-                    stream_key = %stream_key,
-                    event_type = event.event_type(),
-                    "XADD failed for critical event after {} retries, event may be lost during catch-up",
-                    CRITICAL_STREAM_MAX_RETRIES
-                );
-            }
-        } else {
-            // Non-critical events: single attempt, warn and continue on failure.
-            let stream_result = timeout(
-                Duration::from_secs(REDIS_TIMEOUT_SECS),
-                conn.xadd_maxlen::<_, _, _, _, String>(
-                    &stream_key,
-                    StreamMaxlen::Approx(MAX_STREAM_LENGTH),
-                    "*",
-                    &[("channel", channel.as_str()), ("payload", payload.as_str())],
-                ),
-            ).await;
-
-            match &stream_result {
-                Ok(Ok(_)) => { stream_ok = true; }
-                Ok(Err(e)) => {
-                    warn!(error = %e, stream_key = %stream_key, "Failed to add event to Redis Stream");
-                }
-                Err(_) => {
-                    warn!(stream_key = %stream_key, "Timed out adding event to Redis Stream");
-                }
-            }
-        }
-
-        // Track stream write failures
-        if !stream_ok {
+            error!(
+                stream_key = %stream_key,
+                event_type = event.event_type(),
+                "Atomic XADD+PUBLISH failed for critical event after {} retries",
+                CRITICAL_STREAM_MAX_RETRIES
+            );
             synctv_core::metrics::cluster::CLUSTER_EVENTS_RECEIVED
                 .with_label_values(&["stream_write_failed"])
                 .inc();
+            // Fall through: return error so the caller can buffer for retry
+            anyhow::bail!("Critical event publish failed after retries");
         }
 
-        // 2. Publish to Pub/Sub for real-time delivery
-        let subscribers: usize = timeout(
+        // Non-critical events: single atomic attempt
+        match Self::publish_event_atomic(conn, &stream_key, &channel, &payload).await {
+            Ok(subscribers) => Ok(subscribers),
+            Err(e) => {
+                warn!(
+                    error = %e,
+                    stream_key = %stream_key,
+                    "Atomic XADD+PUBLISH failed for non-critical event"
+                );
+                synctv_core::metrics::cluster::CLUSTER_EVENTS_RECEIVED
+                    .with_label_values(&["stream_write_failed"])
+                    .inc();
+                Err(e)
+            }
+        }
+    }
+
+    /// Execute XADD and PUBLISH atomically via a Redis pipeline with MULTI/EXEC.
+    ///
+    /// Returns the number of Pub/Sub subscribers that received the message.
+    async fn publish_event_atomic(
+        conn: &mut redis::aio::MultiplexedConnection,
+        stream_key: &str,
+        channel: &str,
+        payload: &str,
+    ) -> Result<usize> {
+        use redis::streams::StreamMaxlen;
+
+        // Build an atomic pipeline: MULTI { XADD, PUBLISH } EXEC
+        let mut pipe = redis::pipe();
+        pipe.atomic();
+        pipe.xadd_maxlen::<_, _, _, _>(
+            stream_key,
+            StreamMaxlen::Approx(MAX_STREAM_LENGTH),
+            "*",
+            &[("channel", channel), ("payload", payload)],
+        );
+        pipe.publish::<_, _>(channel, payload);
+
+        let results: (String, usize) = timeout(
             Duration::from_secs(REDIS_TIMEOUT_SECS),
-            conn.publish(&channel, &payload),
+            pipe.query_async(conn),
         )
         .await
-        .context("Timed out publishing to Redis")?
-        .context("Failed to publish to Redis")?;
+        .context("Timed out executing atomic XADD+PUBLISH")?
+        .context("Failed to execute atomic XADD+PUBLISH")?;
 
-        Ok(subscribers)
+        Ok(results.1)
     }
 
     /// Get or create a shared multiplexed connection for non-Pub/Sub operations.
@@ -1651,6 +1655,28 @@ impl RedisPubSub {
         }
 
         Ok(events)
+    }
+}
+
+/// Parse a Redis Stream ID (`"{timestamp_ms}-{seq}"`) into a `(u64, u64)` tuple.
+///
+/// Returns `None` if the ID is not in the expected format (e.g., `"$"`, `"0"`).
+fn parse_stream_id(id: &str) -> Option<(u64, u64)> {
+    let (ts_str, seq_str) = id.split_once('-')?;
+    let ts = ts_str.parse::<u64>().ok()?;
+    let seq = seq_str.parse::<u64>().ok()?;
+    Some((ts, seq))
+}
+
+/// Returns `true` if `a` is strictly greater than `b` when interpreted as
+/// Redis Stream IDs (`"{timestamp_ms}-{seq}"`).
+///
+/// Falls back to lexicographic comparison if either ID cannot be parsed,
+/// which is correct for well-formed IDs with the same number of digits.
+fn stream_id_gt(a: &str, b: &str) -> bool {
+    match (parse_stream_id(a), parse_stream_id(b)) {
+        (Some(a_parsed), Some(b_parsed)) => a_parsed > b_parsed,
+        _ => a > b,
     }
 }
 

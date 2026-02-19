@@ -21,6 +21,11 @@ impl RoomMemberRepository {
     }
 
     /// Add user to room with role
+    ///
+    /// When an `ON CONFLICT` row exists but the `DO UPDATE ... WHERE` condition
+    /// is not satisfied (user is banned or has left), no row is returned. In
+    /// that case a follow-up query determines the specific reason and returns a
+    /// semantic error (`Authorization` for banned, `InvalidInput` for left).
     pub async fn add(&self, member: &RoomMember) -> Result<RoomMember> {
         let result = sqlx::query_as::<_, RoomMember>(
             "INSERT INTO room_members (
@@ -55,13 +60,21 @@ impl RoomMemberRepository {
         .bind(member.joined_at)
         .bind(member.version)
         .bind(MemberStatus::Banned)
-        .fetch_one(&self.pool)
+        .fetch_optional(&self.pool)
         .await?;
 
-        Ok(result)
+        match result {
+            Some(m) => Ok(m),
+            None => {
+                // The ON CONFLICT WHERE condition was not met. Determine why.
+                self.diagnose_add_conflict(&member.room_id, &member.user_id).await
+            }
+        }
     }
 
     /// Add user to room using a provided executor (pool or transaction)
+    ///
+    /// See [`add`] for the `ON CONFLICT` semantics and error handling.
     pub async fn add_with_executor<'e, E>(&self, member: &RoomMember, executor: E) -> Result<RoomMember>
     where
         E: sqlx::PgExecutor<'e>,
@@ -99,10 +112,16 @@ impl RoomMemberRepository {
         .bind(member.joined_at)
         .bind(member.version)
         .bind(MemberStatus::Banned)
-        .fetch_one(executor)
+        .fetch_optional(executor)
         .await?;
 
-        Ok(result)
+        match result {
+            Some(m) => Ok(m),
+            None => {
+                // The ON CONFLICT WHERE condition was not met. Determine why.
+                self.diagnose_add_conflict(&member.room_id, &member.user_id).await
+            }
+        }
     }
 
     /// Add user to room with role and options in a single transaction
@@ -253,10 +272,16 @@ impl RoomMemberRepository {
         .bind(member.joined_at)
         .bind(member.version)
         .bind(MemberStatus::Banned)
-        .fetch_one(&mut **tx)
+        .fetch_optional(&mut **tx)
         .await?;
 
-        Ok(result)
+        match result {
+            Some(m) => Ok(m),
+            None => {
+                // The ON CONFLICT WHERE condition was not met. Determine why.
+                self.diagnose_add_conflict(&member.room_id, &member.user_id).await
+            }
+        }
     }
 
     /// Remove a user from all rooms (soft delete - set `left_at` on all active memberships).
@@ -713,7 +738,7 @@ impl RoomMemberRepository {
         .fetch_one(&self.pool)
         .await?;
 
-        Ok(count as i32)
+        Ok(i32::try_from(count).unwrap_or(i32::MAX))
     }
 
     /// Get rooms where a user is a member
@@ -943,6 +968,44 @@ impl RoomMemberRepository {
             None => Err(Error::NotFound(
                 "Target not found, already banned, or actor does not outrank target".to_string()
             )),
+        }
+    }
+
+    /// Diagnose why an `ON CONFLICT DO UPDATE ... WHERE` clause did not match.
+    ///
+    /// Queries the existing membership row to determine if the user is banned
+    /// or has already left the room, returning a semantic error.
+    async fn diagnose_add_conflict(&self, room_id: &RoomId, user_id: &UserId) -> Result<RoomMember> {
+        let existing = sqlx::query_as::<_, RoomMember>(
+            "SELECT
+                room_id, user_id, role, status,
+                added_permissions, removed_permissions,
+                admin_added_permissions, admin_removed_permissions,
+                joined_at, left_at, version,
+                banned_at, banned_by, banned_reason
+             FROM room_members
+             WHERE room_id = $1 AND user_id = $2"
+        )
+        .bind(room_id.as_str())
+        .bind(user_id.as_str())
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match existing {
+            Some(m) if m.status == MemberStatus::Banned => {
+                Err(Error::Authorization("User is banned from this room".to_string()))
+            }
+            Some(m) if m.left_at.is_some() => {
+                Err(Error::InvalidInput("User has already left this room".to_string()))
+            }
+            Some(_) => {
+                // Unexpected: row exists, not banned, not left — should have matched
+                Err(Error::Internal("Unexpected conflict adding room member".to_string()))
+            }
+            None => {
+                // No existing row — shouldn't happen with ON CONFLICT
+                Err(Error::Internal("Unexpected state: no conflicting row found".to_string()))
+            }
         }
     }
 

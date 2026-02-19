@@ -32,7 +32,6 @@ data:
       idle_timeout_seconds: {{ .Values.config.database.idleTimeoutSeconds | default 600 }}
 
     redis:
-      pool_size: {{ .Values.config.redis.poolSize | default 10 }}
       connect_timeout_seconds: {{ .Values.config.redis.connectTimeoutSeconds | default 5 }}
       key_prefix: {{ .Values.config.redis.keyPrefix | default "synctv:" | quote }}
 

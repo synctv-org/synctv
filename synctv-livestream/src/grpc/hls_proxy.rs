@@ -105,7 +105,10 @@ impl HlsProxyClient {
         media_id: &str,
         segment_url_base: &str,
     ) -> anyhow::Result<Option<String>> {
-        let cache_key = format!("{room_id}:{media_id}");
+        // Include segment_url_base in cache key so different frontend domains
+        // get correctly-generated playlists instead of serving a cached playlist
+        // with the wrong base URL.
+        let cache_key = format!("{room_id}:{media_id}:{segment_url_base}");
 
         // Check playlist cache first
         if let Some(cached) = self.playlist_cache.get(&cache_key).await {

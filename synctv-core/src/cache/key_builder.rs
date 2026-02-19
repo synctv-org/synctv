@@ -207,6 +207,26 @@ impl KeyBuilder {
         format!("{}:auth:login_attempts_ip:{}", self.prefix, ip)
     }
 
+    // ==================== Refresh Token Blacklist ====================
+
+    /// Blacklisted refresh token JTI (used for refresh token rotation)
+    ///
+    /// Type: String + TTL (remaining token lifetime)
+    /// Value: "1" (presence check only)
+    #[must_use]
+    pub fn refresh_token_blacklist(&self, jti: &str) -> String {
+        format!("{}:auth:rt_blacklist:{}", self.prefix, jti)
+    }
+
+    /// Refresh token family revocation key (per user_id)
+    ///
+    /// Type: String + TTL (max refresh token lifetime)
+    /// Value: Unix timestamp when the family was revoked
+    #[must_use]
+    pub fn refresh_token_family_revoked(&self, user_id: &str) -> String {
+        format!("{}:auth:rt_family_revoked:{}", self.prefix, user_id)
+    }
+
     // ==================== WebSocket Ticket ====================
 
     /// WebSocket ticket (one-time use)

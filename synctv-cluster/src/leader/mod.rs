@@ -149,6 +149,9 @@ pub enum LeadershipEvent {
     Gained { epoch: u64 },
     /// This node lost leadership.
     Lost,
+    /// No node holds leadership after multiple consecutive failures.
+    /// Observers should enter a safe "no leader" state.
+    Vacancy,
 }
 
 /// Trait for types that participate in leader election.
@@ -176,7 +179,7 @@ pub trait LeaderElect {
         tokio::spawn(async move {
             loop {
                 match rx.recv().await {
-                    Ok(LeadershipEvent::Lost) => {
+                    Ok(LeadershipEvent::Lost) | Ok(LeadershipEvent::Vacancy) => {
                         token_clone.cancel();
                         break;
                     }
@@ -203,6 +206,10 @@ pub trait LeaderElect {
 
 /// Default Redis key for leader election lock (used when no prefix is configured).
 const DEFAULT_LEADER_LOCK_KEY: &str = "leader_election";
+
+/// Number of consecutive election failures before declaring a leader vacancy.
+/// At the default renew interval of 10s, 3 failures = ~30s of no leader.
+const LEADER_VACANCY_THRESHOLD: u64 = 3;
 
 /// Leader election using Redis distributed locks.
 ///
@@ -250,6 +257,9 @@ pub struct LeaderElector {
     leadership_lost_at: Arc<parking_lot::Mutex<Option<tokio::time::Instant>>>,
     /// Broadcast channel for leadership change events (observer pattern)
     event_tx: Arc<broadcast::Sender<LeadershipEvent>>,
+    /// Number of consecutive election failures (acquire or renew).
+    /// Used to detect prolonged leader vacancy.
+    consecutive_failures: Arc<AtomicU64>,
 }
 
 /// Configuration for leader election.
@@ -312,6 +322,7 @@ impl LeaderElector {
             leader_epoch: Arc::new(AtomicU64::new(0)),
             leadership_lost_at: Arc::new(parking_lot::Mutex::new(None)),
             event_tx: Arc::new(event_tx),
+            consecutive_failures: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -404,6 +415,10 @@ impl LeaderElector {
     }
 
     /// Try to acquire the lock or renew it if we already hold it.
+    ///
+    /// Detects Sentinel failover errors (READONLY/LOADING) and immediately
+    /// resets local state for a fast retry on the next tick. Tracks consecutive
+    /// failures to detect prolonged leader vacancy.
     async fn try_acquire_or_renew(&self) {
         let current_value = self.lock_value.lock().clone();
 
@@ -412,22 +427,44 @@ impl LeaderElector {
             match self.lock.extend(&self.lock_key, value, self.lease_duration_secs).await {
                 Ok(true) => {
                     debug!(identity = %self.identity, "Leader lease renewed");
+                    self.consecutive_failures.store(0, Ordering::Relaxed);
                     // Still the leader
                 }
                 Ok(false) => {
                     // Lock expired or was taken by someone else
                     warn!(identity = %self.identity, "Leader lease renewal failed (lock lost)");
                     self.lose_leadership();
+                    self.record_election_failure();
                 }
                 Err(e) => {
-                    warn!(
-                        identity = %self.identity,
-                        error = %e,
-                        "Leader lease renewal failed (Redis error)"
-                    );
+                    let error_str = e.to_string();
+                    let is_failover = error_str.contains("READONLY") || error_str.contains("LOADING");
+
+                    if is_failover {
+                        warn!(
+                            identity = %self.identity,
+                            error = %e,
+                            "Sentinel failover detected during lease renewal, resetting leader state for immediate retry"
+                        );
+                    } else {
+                        warn!(
+                            identity = %self.identity,
+                            error = %e,
+                            "Leader lease renewal failed (Redis error)"
+                        );
+                    }
+
                     // Immediately assume we lost leadership on error,
                     // because we can't confirm the lock still exists.
                     self.lose_leadership();
+
+                    if is_failover {
+                        // On failover, clear the grace period so we retry immediately
+                        // on the next tick instead of waiting.
+                        *self.leadership_lost_at.lock() = None;
+                    }
+
+                    self.record_election_failure();
                 }
             }
         } else {
@@ -476,21 +513,70 @@ impl LeaderElector {
                 *self.lock_value.lock() = Some(value);
                 // Clear grace period since we successfully acquired
                 *self.leadership_lost_at.lock() = None;
+                self.consecutive_failures.store(0, Ordering::Relaxed);
                 self.set_leader(true, Some(epoch));
             }
             Ok(None) => {
                 debug!(identity = %self.identity, "Another node is leader");
+                // Another node is leader -- not a failure, reset counter
+                self.consecutive_failures.store(0, Ordering::Relaxed);
                 self.set_leader(false, None);
             }
             Err(e) => {
-                warn!(
-                    identity = %self.identity,
-                    error = %e,
-                    "Failed to acquire leader lock"
-                );
+                let error_str = e.to_string();
+                let is_failover = error_str.contains("READONLY") || error_str.contains("LOADING");
+
+                if is_failover {
+                    warn!(
+                        identity = %self.identity,
+                        error = %e,
+                        "Sentinel failover detected during lock acquisition, will retry immediately"
+                    );
+                    // Clear grace period so next tick retries immediately
+                    *self.leadership_lost_at.lock() = None;
+                } else {
+                    warn!(
+                        identity = %self.identity,
+                        error = %e,
+                        "Failed to acquire leader lock"
+                    );
+                }
+
+                self.record_election_failure();
                 self.set_leader(false, None);
             }
         }
+    }
+
+    /// Record an election failure and check for leader vacancy.
+    ///
+    /// If consecutive failures exceed [`LEADER_VACANCY_THRESHOLD`], emits
+    /// a `LeadershipEvent::Vacancy` event so observers can take action
+    /// (e.g., pause singleton tasks, report degraded status).
+    fn record_election_failure(&self) {
+        let failures = self.consecutive_failures.fetch_add(1, Ordering::Relaxed) + 1;
+        if failures == LEADER_VACANCY_THRESHOLD {
+            warn!(
+                identity = %self.identity,
+                consecutive_failures = failures,
+                "Leader vacancy detected: no node has held leadership for {} consecutive election cycles",
+                failures
+            );
+            let _ = self.event_tx.send(LeadershipEvent::Vacancy);
+        } else if failures > LEADER_VACANCY_THRESHOLD && failures % LEADER_VACANCY_THRESHOLD == 0 {
+            // Periodic reminder at every N failures
+            warn!(
+                identity = %self.identity,
+                consecutive_failures = failures,
+                "Leader vacancy persists"
+            );
+        }
+    }
+
+    /// Returns the number of consecutive election failures.
+    /// Useful for health check endpoints.
+    pub fn consecutive_failures(&self) -> u64 {
+        self.consecutive_failures.load(Ordering::Relaxed)
     }
 
     /// Gracefully resign leadership by releasing the lock.

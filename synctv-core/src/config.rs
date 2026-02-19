@@ -240,12 +240,6 @@ pub enum RedisDeploymentMode {
 #[serde(default)]
 pub struct RedisConfig {
     pub url: String,
-    /// **Note**: This field is currently unused. The Redis connection uses a single
-    /// multiplexed `ConnectionManager` (not a pool of connections), so `pool_size` has
-    /// no effect. It is retained for configuration compatibility; removing it would
-    /// break existing config files. If a true connection pool is ever introduced,
-    /// this field will be wired in.
-    pub pool_size: u32,
     pub connect_timeout_seconds: u64,
     pub key_prefix: String,
     /// Deployment mode: standalone (default), sentinel, or cluster
@@ -301,7 +295,6 @@ impl std::fmt::Debug for RedisConfig {
 
         f.debug_struct("RedisConfig")
             .field("url", &masked_url)
-            .field("pool_size", &self.pool_size)
             .field("connect_timeout_seconds", &self.connect_timeout_seconds)
             .field("key_prefix", &self.key_prefix)
             .field("deployment_mode", &self.deployment_mode)
@@ -316,7 +309,6 @@ impl Default for RedisConfig {
     fn default() -> Self {
         Self {
             url: "redis://localhost:6379".to_string(),
-            pool_size: 10,
             connect_timeout_seconds: 5,
             key_prefix: "synctv:".to_string(),
             deployment_mode: RedisDeploymentMode::Standalone,

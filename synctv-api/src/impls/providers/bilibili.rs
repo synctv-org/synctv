@@ -23,12 +23,12 @@ impl BilibiliApiImpl {
     }
 
     /// Parse Bilibili URL
-    pub async fn parse(&self, req: ParseRequest, instance_name: Option<&str>) -> Result<ParseResponse, String> {
+    pub async fn parse(&self, req: ParseRequest, instance_name: Option<&str>) -> Result<ParseResponse, synctv_core::provider::ProviderError> {
         // Step 1: Match URL
         let match_resp = self.provider
             .r#match(req.url.clone(), instance_name)
             .await
-            .map_err(|e| e.to_string())?;
+            ?;
 
         // Step 2: Parse based on type
         let page_info = match match_resp.r#type.as_str() {
@@ -43,7 +43,7 @@ impl BilibiliApiImpl {
                 self.provider
                     .parse_video_page(parse_req, instance_name)
                     .await
-                    .map_err(|e| e.to_string())?
+                    ?
             }
             "pgc" | "ep" | "ss" => {
                 let parse_req = synctv_media_providers::grpc::bilibili::ParsePgcPageReq {
@@ -55,7 +55,7 @@ impl BilibiliApiImpl {
                 self.provider
                     .parse_pgc_page(parse_req, instance_name)
                     .await
-                    .map_err(|e| e.to_string())?
+                    ?
             }
             "live" => {
                 let parse_req = synctv_media_providers::grpc::bilibili::ParseLivePageReq {
@@ -66,10 +66,12 @@ impl BilibiliApiImpl {
                 self.provider
                     .parse_live_page(parse_req, instance_name)
                     .await
-                    .map_err(|e| e.to_string())?
+                    ?
             }
             _ => {
-                return Err(format!("Unsupported URL type: {}", match_resp.r#type));
+                return Err(synctv_core::provider::ProviderError::UnsupportedFormat(
+                    format!("Unsupported URL type: {}", match_resp.r#type),
+                ));
             }
         };
 
@@ -98,11 +100,11 @@ impl BilibiliApiImpl {
     }
 
     /// Generate QR code for login
-    pub async fn login_qr(&self, _req: LoginQrRequest, instance_name: Option<&str>) -> Result<QrCodeResponse, String> {
+    pub async fn login_qr(&self, _req: LoginQrRequest, instance_name: Option<&str>) -> Result<QrCodeResponse, synctv_core::provider::ProviderError> {
         let resp = self.provider
             .new_qr_code(instance_name)
             .await
-            .map_err(|e| e.to_string())?;
+            ?;
 
         Ok(QrCodeResponse {
             url: resp.url,
@@ -111,7 +113,7 @@ impl BilibiliApiImpl {
     }
 
     /// Check QR code login status
-    pub async fn check_qr(&self, req: CheckQrRequest, instance_name: Option<&str>) -> Result<QrStatusResponse, String> {
+    pub async fn check_qr(&self, req: CheckQrRequest, instance_name: Option<&str>) -> Result<QrStatusResponse, synctv_core::provider::ProviderError> {
         let check_req = synctv_media_providers::grpc::bilibili::LoginWithQrCodeReq {
             key: req.key,
         };
@@ -119,7 +121,7 @@ impl BilibiliApiImpl {
         let resp = self.provider
             .login_with_qr_code(check_req, instance_name)
             .await
-            .map_err(|e| e.to_string())?;
+            ?;
 
         Ok(QrStatusResponse {
             status: resp.status,
@@ -128,11 +130,11 @@ impl BilibiliApiImpl {
     }
 
     /// Get captcha for SMS login
-    pub async fn get_captcha(&self, _req: GetCaptchaRequest, instance_name: Option<&str>) -> Result<CaptchaResponse, String> {
+    pub async fn get_captcha(&self, _req: GetCaptchaRequest, instance_name: Option<&str>) -> Result<CaptchaResponse, synctv_core::provider::ProviderError> {
         let resp = self.provider
             .new_captcha(instance_name)
             .await
-            .map_err(|e| e.to_string())?;
+            ?;
 
         Ok(CaptchaResponse {
             token: resp.token,
@@ -142,7 +144,7 @@ impl BilibiliApiImpl {
     }
 
     /// Send SMS verification code
-    pub async fn send_sms(&self, req: SendSmsRequest, instance_name: Option<&str>) -> Result<SendSmsResponse, String> {
+    pub async fn send_sms(&self, req: SendSmsRequest, instance_name: Option<&str>) -> Result<SendSmsResponse, synctv_core::provider::ProviderError> {
         let sms_req = synctv_media_providers::grpc::bilibili::NewSmsReq {
             phone: req.phone,
             token: req.token,
@@ -153,7 +155,7 @@ impl BilibiliApiImpl {
         let resp = self.provider
             .new_sms(sms_req, instance_name)
             .await
-            .map_err(|e| e.to_string())?;
+            ?;
 
         Ok(SendSmsResponse {
             captcha_key: resp.captcha_key,
@@ -161,7 +163,7 @@ impl BilibiliApiImpl {
     }
 
     /// Login with SMS code
-    pub async fn login_sms(&self, req: LoginSmsRequest, instance_name: Option<&str>) -> Result<LoginSmsResponse, String> {
+    pub async fn login_sms(&self, req: LoginSmsRequest, instance_name: Option<&str>) -> Result<LoginSmsResponse, synctv_core::provider::ProviderError> {
         let login_req = synctv_media_providers::grpc::bilibili::LoginWithSmsReq {
             phone: req.phone,
             code: req.code,
@@ -171,7 +173,7 @@ impl BilibiliApiImpl {
         let resp = self.provider
             .login_with_sms(login_req, instance_name)
             .await
-            .map_err(|e| e.to_string())?;
+            ?;
 
         Ok(LoginSmsResponse {
             cookies: resp.cookies,
@@ -179,7 +181,7 @@ impl BilibiliApiImpl {
     }
 
     /// Get user info
-    pub async fn get_user_info(&self, req: UserInfoRequest, instance_name: Option<&str>) -> Result<UserInfoResponse, String> {
+    pub async fn get_user_info(&self, req: UserInfoRequest, instance_name: Option<&str>) -> Result<UserInfoResponse, synctv_core::provider::ProviderError> {
         let info_req = synctv_media_providers::grpc::bilibili::UserInfoReq {
             cookies: req.cookies,
         };
@@ -187,7 +189,7 @@ impl BilibiliApiImpl {
         let resp = self.provider
             .user_info(info_req, instance_name)
             .await
-            .map_err(|e| e.to_string())?;
+            ?;
 
         Ok(UserInfoResponse {
             is_login: resp.is_login,
@@ -198,7 +200,7 @@ impl BilibiliApiImpl {
     }
 
     /// Logout
-    pub async fn logout(&self, _req: LogoutRequest) -> Result<LogoutResponse, String> {
+    pub async fn logout(&self, _req: LogoutRequest) -> Result<LogoutResponse, synctv_core::provider::ProviderError> {
         Ok(LogoutResponse {
             message: "Logout successful".to_string(),
         })

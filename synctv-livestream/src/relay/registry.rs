@@ -267,12 +267,13 @@ impl StreamRegistry {
         let mut conn = self.redis.clone();
 
         // Refresh publisher key TTL (derived from HEARTBEAT_INTERVAL_SECS * TTL_MULTIPLIER)
+        // Preserve the redis::RedisError type so callers can classify errors structurally
         let _: () = redis::cmd("EXPIRE")
             .arg(&key)
             .arg(PUBLISHER_TTL_SECS)
             .query_async(&mut conn)
             .await
-            .map_err(|e| anyhow!(e.to_string()))?;
+            .map_err(anyhow::Error::from)?;
 
         // Also refresh user reverse-index TTL if user_id is provided
         if !user_id.is_empty() {
@@ -282,7 +283,7 @@ impl StreamRegistry {
                 .arg(PUBLISHER_TTL_SECS)
                 .query_async(&mut conn)
                 .await
-                .map_err(|e| anyhow!(e.to_string()))?;
+                .map_err(anyhow::Error::from)?;
         }
 
         Ok(())

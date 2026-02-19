@@ -939,13 +939,22 @@ impl StreamsHub {
     }
 
     fn unpublish(&mut self, identifier: &StreamIdentifier) -> Result<(), StreamHubError> {
-        match self.streams.get_mut(identifier) {
+        match self.streams.remove(identifier) {
             Some(producer) => {
                 let event = TransceiverEvent::UnPublish {};
-                producer.try_send(event).map_err(|_| StreamHubError {
-                    value: StreamHubErrorValue::SendError,
-                })?;
-                self.streams.remove(identifier);
+                if let Err(e) = producer.try_send(event) {
+                    // Channel full or closed. Since we already removed the sender
+                    // from `streams`, the transceiver holds the only remaining
+                    // sender clone (via the data loops). Dropping `producer` here
+                    // reduces the sender count. When the data loops also finish,
+                    // all senders are dropped, causing `event_receiver.recv()` in
+                    // the transceiver to return `None`, which triggers exit.
+                    // This prevents zombie transceivers when try_send fails.
+                    tracing::warn!(
+                        "unpublish try_send failed for {identifier}: {e}. \
+                         Streams entry removed; transceiver will exit when all senders drop."
+                    );
+                }
                 tracing::info!("unpublish remove stream, stream identifier: {identifier}");
 
                 // Broadcast unpublish event to listeners

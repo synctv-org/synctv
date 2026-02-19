@@ -1,0 +1,216 @@
+//! Partition management integration tests
+//!
+//! Verifies that chat_messages DEFAULT partition routes messages correctly,
+//! and that create_chat_message_partitions() creates future partitions.
+//! Also verifies audit_logs DEFAULT partition.
+//!
+//! Run with: cargo test --test partition_management_tests
+
+use synctv_core::{
+    models::{
+        Room, RoomId, RoomStatus, UserId, User, UserRole, UserStatus, ChatMessage,
+    },
+    repository::{RoomRepository, UserRepository, ChatRepository},
+};
+use chrono::{Utc, Duration};
+use sqlx::PgPool;
+use testcontainers::runners::AsyncRunner;
+use testcontainers::ContainerAsync;
+use testcontainers_modules::postgres::Postgres;
+
+async fn create_test_pool() -> (ContainerAsync<Postgres>, PgPool) {
+    let postgres = Postgres::default()
+        .with_db_name("synctv_test")
+        .with_user("synctv")
+        .with_password("synctv_test")
+        .start()
+        .await
+        .expect("Failed to start Postgres container");
+
+    let connection_string = format!(
+        "postgresql://synctv:synctv_test@127.0.0.1:{}/synctv_test",
+        postgres.get_host_port_ipv4(5432).await.expect("Failed to get port")
+    );
+
+    let pool = PgPool::connect(&connection_string)
+        .await
+        .expect("Failed to create pool");
+
+    sqlx::migrate!("../migrations")
+        .run(&pool)
+        .await
+        .expect("Failed to run migrations");
+
+    (postgres, pool)
+}
+
+fn make_user(username: &str) -> User {
+    let now = Utc::now();
+    User {
+        id: UserId::new(),
+        username: username.to_string(),
+        email: Some(format!("{}@test.com", username)),
+        password_hash: "hash".to_string(),
+        role: UserRole::User,
+        status: UserStatus::Active,
+        email_verified: true,
+        signup_method: None,
+        created_at: now,
+        updated_at: now,
+        password_changed_at: now,
+        password_version: 0,
+        deleted_at: None,
+    }
+}
+
+#[tokio::test]
+async fn test_chat_message_default_partition_routing() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_repo = RoomRepository::new(pool.clone());
+    let chat_repo = ChatRepository::new(pool.clone());
+
+    let owner = user_repo.create(&make_user("partition_owner_1")).await.unwrap();
+    let room = room_repo.create(&{
+        let now = Utc::now();
+        Room {
+            id: RoomId::new(),
+            name: "Partition Test Room".to_string(),
+            description: String::new(),
+            created_by: owner.id.clone(),
+            status: RoomStatus::Active,
+            is_banned: false,
+            created_at: now,
+            updated_at: now,
+            deleted_at: None,
+        }
+    }).await.unwrap();
+
+    // Insert a message with a far-future date (no specific partition exists)
+    // This should route to the DEFAULT partition instead of failing
+    let far_future = Utc::now() + Duration::days(365);
+    let msg = ChatMessage {
+        id: nanoid::nanoid!(12),
+        room_id: room.id.clone(),
+        user_id: owner.id.clone(),
+        content: "Future message".to_string(),
+        message_type: 1,
+        created_at: far_future,
+    };
+
+    let created = chat_repo.create(&msg).await;
+    assert!(created.is_ok(), "Message with far-future date should insert into DEFAULT partition, got: {:?}", created.err());
+
+    // Verify we can retrieve it
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM chat_messages WHERE id = $1"
+    )
+    .bind(&msg.id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(count, 1);
+}
+
+#[tokio::test]
+async fn test_create_chat_message_partitions_function() {
+    let (_container, pool) = create_test_pool().await;
+
+    // Call the partition creation function for 5 days ahead
+    let result: serde_json::Value = sqlx::query_scalar(
+        "SELECT create_chat_message_partitions(5)::TEXT"
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    let parsed: serde_json::Value = serde_json::from_str(&result.as_str().unwrap_or("{}")).unwrap_or_default();
+    assert_eq!(parsed["status"], "completed");
+
+    // Verify partitions exist
+    let partition_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pg_tables
+         WHERE schemaname = 'public'
+           AND tablename LIKE 'chat_messages_%'
+           AND tablename ~ '^chat_messages_[0-9]{4}_[0-9]{2}_[0-9]{2}$'"
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    // Should have at least some partitions (migrations create 31, plus our 6)
+    assert!(partition_count > 0, "Should have chat message partitions");
+}
+
+#[tokio::test]
+async fn test_chat_message_default_partition_exists() {
+    let (_container, pool) = create_test_pool().await;
+
+    // Verify the default partition table exists
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+            SELECT 1 FROM pg_tables
+            WHERE schemaname = 'public' AND tablename = 'chat_messages_default'
+        )"
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    assert!(exists, "chat_messages_default partition should exist");
+}
+
+#[tokio::test]
+async fn test_audit_logs_default_partition_exists() {
+    let (_container, pool) = create_test_pool().await;
+
+    // Verify the default partition table exists
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+            SELECT 1 FROM pg_tables
+            WHERE schemaname = 'public' AND tablename = 'audit_logs_default'
+        )"
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    assert!(exists, "audit_logs_default partition should exist");
+}
+
+#[tokio::test]
+async fn test_audit_logs_default_partition_routing() {
+    let (_container, pool) = create_test_pool().await;
+
+    // Insert an audit log entry with a far-future date
+    let far_future = Utc::now() + Duration::days(365 * 2);
+    let result = sqlx::query(
+        "INSERT INTO audit_logs (actor_id, action, created_at) VALUES ($1, $2, $3)"
+    )
+    .bind("test_actor_1")
+    .bind("test_action")
+    .bind(far_future)
+    .execute(&pool)
+    .await;
+
+    assert!(result.is_ok(), "Audit log with far-future date should insert into DEFAULT partition, got: {:?}", result.err());
+}
+
+#[tokio::test]
+async fn test_check_chat_message_partitions_health() {
+    let (_container, pool) = create_test_pool().await;
+
+    // Call the health check function
+    let result: String = sqlx::query_scalar(
+        "SELECT check_chat_message_partitions(7)::TEXT"
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+    assert_eq!(parsed["status"], "checked");
+    // After migrations, all partitions for the next 30 days should be present
+    // so missing_count for 7 days ahead should be 0
+    assert_eq!(parsed["health_status"], "healthy");
+}

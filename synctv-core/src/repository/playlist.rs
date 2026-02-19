@@ -192,68 +192,53 @@ impl PlaylistRepository {
     /// Create a playlist using a provided executor (pool or transaction).
     ///
     /// **Important:** When `playlist.position` is negative (auto-position), the
-    /// caller MUST ensure the executor is a transaction and should call
-    /// [`get_next_position_for_update`] first to lock the relevant rows. Otherwise,
-    /// concurrent inserts may compute the same position.
+    /// caller MUST pass a transaction as the executor and should call
+    /// [`get_next_position_for_update`] first to lock the relevant rows. This
+    /// method will return an error if auto-position is requested, because the
+    /// inline subquery cannot acquire a `FOR UPDATE` lock, leading to duplicate
+    /// positions under concurrent inserts.
     ///
     /// Pass a non-negative position to use an explicit value.
     pub async fn create_with_executor<'e, E>(&self, playlist: &Playlist, executor: E) -> Result<Playlist>
     where
         E: sqlx::PgExecutor<'e>,
     {
+        if playlist.position < 0 {
+            // Auto-position without a FOR UPDATE lock is unsafe under concurrency.
+            // Callers must use a transaction with get_next_position_for_update()
+            // and pass an explicit (non-negative) position. The self-contained
+            // `create()` method handles this correctly with its own transaction.
+            return Err(crate::Error::InvalidInput(
+                "auto-position (negative position) requires using create() or \
+                 calling get_next_position_for_update() in a transaction first"
+                    .to_string(),
+            ));
+        }
+
         let source_provider_str = playlist.source_provider.as_deref();
         let parent_id_str = playlist.parent_id.as_ref().map(super::super::models::id::PlaylistId::as_str);
 
-        let row = if playlist.position < 0 {
-            // Use subquery for convenience, but callers should prefer
-            // get_next_position_for_update + explicit position in a transaction.
-            sqlx::query(
-                r"
-                INSERT INTO playlists (id, room_id, creator_id, name, parent_id, position,
-                                       source_provider, source_config, provider_instance_name)
-                VALUES ($1, $2, $3, $4, $5,
-                        COALESCE((SELECT MAX(position) + 1 FROM playlists
-                                  WHERE room_id = $2 AND parent_id IS NOT DISTINCT FROM $5), 0),
-                        $6, $7, $8)
-                RETURNING id, room_id, creator_id, name, parent_id, position,
-                          source_provider, source_config, provider_instance_name,
-                          created_at, updated_at
-                "
-            )
-            .bind(playlist.id.as_str())
-            .bind(playlist.room_id.as_str())
-            .bind(playlist.creator_id.as_ref().map(super::super::models::id::UserId::as_str))
-            .bind(&playlist.name)
-            .bind(parent_id_str)
-            .bind(source_provider_str)
-            .bind(&playlist.source_config)
-            .bind(&playlist.provider_instance_name)
-            .fetch_one(executor)
-            .await?
-        } else {
-            // Explicit position provided by caller
-            sqlx::query(
-                r"
-                INSERT INTO playlists (id, room_id, creator_id, name, parent_id, position,
-                                       source_provider, source_config, provider_instance_name)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-                RETURNING id, room_id, creator_id, name, parent_id, position,
-                          source_provider, source_config, provider_instance_name,
-                          created_at, updated_at
-                "
-            )
-            .bind(playlist.id.as_str())
-            .bind(playlist.room_id.as_str())
-            .bind(playlist.creator_id.as_ref().map(super::super::models::id::UserId::as_str))
-            .bind(&playlist.name)
-            .bind(parent_id_str)
-            .bind(playlist.position)
-            .bind(source_provider_str)
-            .bind(&playlist.source_config)
-            .bind(&playlist.provider_instance_name)
-            .fetch_one(executor)
-            .await?
-        };
+        let row = sqlx::query(
+            r"
+            INSERT INTO playlists (id, room_id, creator_id, name, parent_id, position,
+                                   source_provider, source_config, provider_instance_name)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            RETURNING id, room_id, creator_id, name, parent_id, position,
+                      source_provider, source_config, provider_instance_name,
+                      created_at, updated_at
+            "
+        )
+        .bind(playlist.id.as_str())
+        .bind(playlist.room_id.as_str())
+        .bind(playlist.creator_id.as_ref().map(super::super::models::id::UserId::as_str))
+        .bind(&playlist.name)
+        .bind(parent_id_str)
+        .bind(playlist.position)
+        .bind(source_provider_str)
+        .bind(&playlist.source_config)
+        .bind(&playlist.provider_instance_name)
+        .fetch_one(executor)
+        .await?;
 
         Ok(Playlist::from_row(&row)?)
     }

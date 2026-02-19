@@ -699,16 +699,35 @@ impl StreamMessageHandler {
             }
         });
 
-        // Spawn task to handle incoming messages
+        // Spawn task to handle incoming messages (with rate limiting matching run())
         let handler = self.clone();
         let msg_token = cancel_token.clone();
+        let global_msg_rate_limit = self.ws_message_rate_limit;
         tokio::spawn(async move {
+            let mut global_msg_count: u32 = 0;
+            let mut global_msg_window_start = tokio::time::Instant::now();
             loop {
                 tokio::select! {
                     () = msg_token.cancelled() => break,
                     msg = rx.recv() => {
                         match msg {
                             Some(msg) => {
+                                // Global per-connection rate limit check (matching run() logic)
+                                let now = tokio::time::Instant::now();
+                                if now.duration_since(global_msg_window_start) >= std::time::Duration::from_secs(1) {
+                                    global_msg_count = 0;
+                                    global_msg_window_start = now;
+                                }
+                                global_msg_count += 1;
+                                if global_msg_count > global_msg_rate_limit {
+                                    tracing::warn!(
+                                        connection_id = %handler.connection_id,
+                                        limit = global_msg_rate_limit,
+                                        "gRPC start() message rate limit exceeded, dropping message"
+                                    );
+                                    continue;
+                                }
+
                                 if let Err(e) = handler.handle_client_message(&msg).await {
                                     tracing::error!("Failed to handle client message: {}", e);
                                 }

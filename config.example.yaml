@@ -4,10 +4,11 @@
 #
 # Configuration priority: defaults < config file < environment variables
 #
-# Environment variables use SYNCTV_ prefix with double-underscore separator:
-#   SYNCTV__SERVER__HOST=0.0.0.0
-#   SYNCTV__DATABASE__URL=postgresql://...
-#   SYNCTV__OAUTH2__REDIRECT_SCHEME=https
+# Environment variables use SYNCTV_ prefix. Nested fields use double-underscore
+# (__) as separator between the section and field name:
+#   SYNCTV_SERVER__HOST=0.0.0.0
+#   SYNCTV_DATABASE__URL=postgresql://...
+#   SYNCTV_OAUTH2__REDIRECT_SCHEME=https
 
 server:
   host: "0.0.0.0"
@@ -30,7 +31,7 @@ server:
   #   cors_allowed_origins: ["https://app.example.com", "https://admin.example.com"]
   #
   # Environment variable:
-  #   SYNCTV__SERVER__CORS_ALLOWED_ORIGINS='["https://app.example.com"]'
+  #   SYNCTV_SERVER__CORS_ALLOWED_ORIGINS='["https://app.example.com"]'
   #
   # WARNING: An empty list in production means ALL cross-origin requests are denied.
   cors_allowed_origins: []
@@ -42,7 +43,7 @@ server:
   cluster_secret: ""
   # Advertise host for cluster node registration (address other nodes use to reach this instance).
   # Falls back to POD_IP env var, then system hostname if empty.
-  # In Kubernetes, set via SYNCTV__SERVER__ADVERTISE_HOST or downward API (status.podIP).
+  # In Kubernetes, set via SYNCTV_SERVER__ADVERTISE_HOST or downward API (status.podIP).
   advertise_host: ""
   # Maximum time in seconds to wait for active connections to drain during shutdown.
   # Defaults to 30 seconds. Increase for deployments with many long-lived connections.
@@ -83,7 +84,6 @@ database:
 
 redis:
   url: "redis://localhost:6379"
-  pool_size: 10
   connect_timeout_seconds: 5
   key_prefix: "synctv:"
 
@@ -152,7 +152,7 @@ email:
   smtp_host: ""
   smtp_port: 587
   smtp_username: ""
-  smtp_password: ""  # Set via SYNCTV__EMAIL__SMTP_PASSWORD env var
+  smtp_password: ""  # Set via SYNCTV_EMAIL__SMTP_PASSWORD env var
   from_email: ""
   from_name: "SyncTV"
   use_tls: true
@@ -211,9 +211,10 @@ bootstrap:
   # Whether to create root user on first startup
   create_root_user: true
   root_username: "root"
-  # Set via SYNCTV__BOOTSTRAP__ROOT_PASSWORD env var.
-  # In production, must be >= 12 chars with uppercase, lowercase, and digits.
-  root_password: "root"
+  # REQUIRED for production: set a strong password (>= 12 chars, must contain
+  # uppercase, lowercase, and digits). Do NOT use any default value in production.
+  # Set via SYNCTV_BOOTSTRAP__ROOT_PASSWORD env var.
+  # root_password: ""
 
 # ============================================================================
 # Cluster Configuration
@@ -364,9 +365,9 @@ oauth2:
   providers: ""
 
 # Environment Variables for OAuth2:
-#   Format: SYNCTV__OAUTH2__<FIELD>
+#   Format: SYNCTV_OAUTH2__<FIELD>
 #   Examples:
-#     SYNCTV__OAUTH2__REDIRECT_SCHEME=https
+#     SYNCTV_OAUTH2__REDIRECT_SCHEME=https
 
 # ============================================================================
 # WebRTC Configuration
@@ -384,7 +385,7 @@ webrtc:
   stun_port: 3478
   stun_host: "0.0.0.0"
   # External address for STUN reflexive candidates. In K8s/NAT, set to
-  # the pod IP or service IP (e.g., via SYNCTV__WEBRTC__STUN_EXTERNAL_ADDR).
+  # the pod IP or service IP (e.g., via SYNCTV_WEBRTC__STUN_EXTERNAL_ADDR).
   # If empty, falls back to advertise_host:stun_port.
   # stun_external_addr: ""
 

@@ -63,7 +63,9 @@ impl Gop {
         }
     }
 
-    fn save_frame_data(&mut self, data: FrameData) {
+    /// Attempt to save a frame. Returns `true` if the frame was stored,
+    /// `false` if it was dropped due to per-GOP limits.
+    fn save_frame_data(&mut self, data: FrameData) -> bool {
         let total = self.frozen.len() + self.pending.len();
         if total >= MAX_FRAMES_PER_GOP {
             if total == MAX_FRAMES_PER_GOP {
@@ -71,7 +73,7 @@ impl Gop {
                     "GOP reached MAX_FRAMES_PER_GOP ({MAX_FRAMES_PER_GOP}), dropping subsequent frames until next keyframe"
                 );
             }
-            return;
+            return false;
         }
 
         // Check memory limit
@@ -83,11 +85,12 @@ impl Gop {
                 max_memory_mb = (MAX_MEMORY_PER_GOP / 1024 / 1024),
                 "GOP reached memory limit, dropping frame"
             );
-            return;
+            return false;
         }
 
         self.memory_bytes += frame_size;
         self.pending.push(data);
+        true
     }
 
     /// Freeze pending frames into the Arc for zero-copy clone.
@@ -160,7 +163,7 @@ impl Default for Gops {
 impl Gops {
     /// Create a new `Gops` cache with the given GOP count limit and optional
     /// per-stream memory cap. If `max_total_bytes` is `None`, the built-in
-    /// default ([`DEFAULT_MAX_TOTAL_BYTES`], 50 MB) is used.
+    /// default ([`DEFAULT_MAX_TOTAL_BYTES`], 500 MB) is used.
     #[must_use]
     pub fn new(size: usize, max_total_bytes: Option<usize>) -> Self {
         Self {
@@ -251,8 +254,12 @@ impl Gops {
         }
 
         if let Some(gop) = self.gops.back_mut() {
-            self.current_total_bytes += frame_bytes;
-            gop.save_frame_data(data);
+            // Only update total bytes if the frame was actually stored.
+            // Gop::save_frame_data may drop the frame due to per-GOP limits
+            // (MAX_FRAMES_PER_GOP or MAX_MEMORY_PER_GOP).
+            if gop.save_frame_data(data) {
+                self.current_total_bytes += frame_bytes;
+            }
         } else {
             tracing::error!("should not be here!");
         }

@@ -340,6 +340,7 @@ async fn init_livestream(
         node_id.to_string(),
         config.advertise_grpc_address(),
         Some(stream_lifecycle_tx),
+        config.redis.key_prefix.clone(),
     );
     let rtmp_auth_impl = rtmp_auth_impl.with_redis(redis_conn_for_auth);
     let rtmp_auth: Arc<dyn synctv_livestream::AuthCallback> = Arc::new(rtmp_auth_impl);
@@ -476,7 +477,7 @@ async fn main() -> Result<()> {
     let pool = init_database(&config).await?;
 
     // 4. Run migrations (with distributed lock if Redis is available)
-    migrations::run_migrations(&pool, &config.redis.url).await?;
+    migrations::run_migrations(&pool, &config.redis.url, &config.redis.key_prefix).await?;
 
     // 4.3. Bootstrap root user (if enabled and no root user exists)
     info!("Checking root user bootstrap...");
@@ -543,7 +544,7 @@ async fn main() -> Result<()> {
     // (database migrations are already gated by DistributedLock; leader election
     // provides a continuous leadership signal for periodic cleanup tasks).
     let leader_cancel = tokio_util::sync::CancellationToken::new();
-    let leader_elector = {
+    let (leader_elector, leader_election_handle) = {
         let leader_mode = config.cluster.leader_election_mode.as_str();
         match leader_mode {
             #[cfg(feature = "k8s")]
@@ -559,18 +560,18 @@ async fn main() -> Result<()> {
                     K8sLeaderElectorConfig::default(),
                 ).await {
                     Ok(elector) => {
-                        let _leader_handle = elector.start(leader_cancel.clone());
+                        let leader_handle = elector.start(leader_cancel.clone());
                         info!(
                             pod_name = %pod_name,
                             namespace = %namespace,
                             "K8s leader election started"
                         );
-                        Some(synctv_cluster::leader::AnyLeaderElector::K8s(elector))
+                        (Some(synctv_cluster::leader::AnyLeaderElector::K8s(elector)), Some(leader_handle))
                     }
                     Err(e) => {
                         error!("Failed to initialize K8s leader election: {}", e);
                         error!("Ensure POD_NAME and POD_NAMESPACE env vars are set and RBAC is configured");
-                        None
+                        (None, None)
                     }
                 }
             }
@@ -580,7 +581,7 @@ async fn main() -> Result<()> {
                     "K8s Lease-based leader election requires the 'k8s' feature. \
                      Rebuild with: cargo build --features k8s"
                 );
-                None
+                (None, None)
             }
             _ => {
                 // Default: Redis-based leader election
@@ -594,13 +595,13 @@ async fn main() -> Result<()> {
                 if let Some(ref conn) = synctv_services.redis_conn {
                     let plain_conn = conn.read().await.clone();
                     let elector = LeaderElector::new(plain_conn, node_id.clone(), &config.redis.key_prefix);
-                    let _leader_handle = elector.start(leader_cancel.clone());
+                    let leader_handle = elector.start(leader_cancel.clone());
                     info!("Redis-based leader election started (node_id={})", node_id);
-                    Some(synctv_cluster::leader::AnyLeaderElector::Redis(elector))
+                    (Some(synctv_cluster::leader::AnyLeaderElector::Redis(elector)), Some(leader_handle))
                 } else {
                     // Without Redis, this is a single-node deployment; we are always the leader.
                     info!("Redis not configured, skipping leader election (single-node mode)");
-                    None
+                    (None, None)
                 }
             }
         }
@@ -620,6 +621,11 @@ async fn main() -> Result<()> {
     // when leadership is lost (fencing), preventing stale singleton work after demotion.
     // Track background task JoinHandles for graceful shutdown
     let mut main_background_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+
+    // Track the leader election task for graceful shutdown
+    if let Some(handle) = leader_election_handle {
+        main_background_handles.push(handle);
+    }
 
     let leader_guard_token = leader_elector.as_ref().map(synctv_cluster::leader::LeaderElect::leader_guard);
     let singleton_cancel = match &leader_guard_token {

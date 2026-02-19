@@ -349,10 +349,7 @@ impl stream_relay_service_server::StreamRelayService for StreamRelayServiceImpl 
         let segment_manager = self.segment_manager.as_ref()
             .ok_or_else(|| Status::unavailable("HLS not enabled on this node"))?;
 
-        // Build storage key using the shared canonical format (matches remuxer write side)
-        let storage_key = synctv_xiu::hls::hls_segment_storage_key(&req.room_id, &req.media_id, &req.segment_name);
-
-        match segment_manager.storage().read(&storage_key).await {
+        match segment_manager.storage().read(&req.room_id, &req.media_id, &req.segment_name).await {
             Ok(data) => Ok(Response::new(GetHlsSegmentResponse {
                 data,  // Zero-copy: storage returns Bytes, proto field is now Bytes
                 found: true,

@@ -71,7 +71,7 @@ impl MediaProvider for RtmpProvider {
         Ok(())
     }
 
-    fn cache_key(&self, _ctx: &ProviderContext<'_>, source_config: &Value) -> String {
+    fn cache_key(&self, ctx: &ProviderContext<'_>, source_config: &Value) -> String {
         let room_id = source_config
             .get("room_id")
             .and_then(|v| v.as_str())
@@ -80,6 +80,6 @@ impl MediaProvider for RtmpProvider {
             .get("media_id")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown");
-        format!("rtmp:{room_id}:{media_id}")
+        format!("{}:playback:rtmp:{room_id}:{media_id}", ctx.key_prefix)
     }
 }

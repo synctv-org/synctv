@@ -459,9 +459,12 @@ impl LeaderElector {
                     self.lose_leadership();
 
                     if is_failover {
-                        // On failover, clear the grace period so we retry immediately
-                        // on the next tick instead of waiting.
-                        *self.leadership_lost_at.lock() = None;
+                        // On failover, set a short grace period (2s) before retrying
+                        // instead of clearing entirely. This prevents rapid flip-flopping
+                        // if the new primary is not yet ready to accept writes.
+                        *self.leadership_lost_at.lock() = Some(
+                            tokio::time::Instant::now() - Duration::from_secs(self.renew_interval_secs) + Duration::from_secs(2)
+                        );
                     }
 
                     self.record_election_failure();
@@ -530,10 +533,14 @@ impl LeaderElector {
                     warn!(
                         identity = %self.identity,
                         error = %e,
-                        "Sentinel failover detected during lock acquisition, will retry immediately"
+                        "Sentinel failover detected during lock acquisition, will retry after short grace period"
                     );
-                    // Clear grace period so next tick retries immediately
-                    *self.leadership_lost_at.lock() = None;
+                    // Set a short grace period (2s) before retrying instead of clearing
+                    // entirely. This prevents rapid flip-flopping if the new primary is
+                    // not yet ready to accept writes.
+                    *self.leadership_lost_at.lock() = Some(
+                        tokio::time::Instant::now() - Duration::from_secs(self.renew_interval_secs) + Duration::from_secs(2)
+                    );
                 } else {
                     warn!(
                         identity = %self.identity,

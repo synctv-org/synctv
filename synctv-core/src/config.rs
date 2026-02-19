@@ -22,6 +22,7 @@ pub struct Config {
     pub password_complexity: PasswordComplexityConfig,
     pub buffer_sizes: BufferSizesConfig,
     pub cache: CacheConfig,
+    pub http_rate_limits: HttpRateLimitConfig,
 }
 
 impl std::fmt::Debug for Config {
@@ -43,6 +44,7 @@ impl std::fmt::Debug for Config {
             .field("password_complexity", &self.password_complexity)
             .field("buffer_sizes", &self.buffer_sizes)
             .field("cache", &self.cache)
+            .field("http_rate_limits", &self.http_rate_limits)
             .finish()
     }
 }
@@ -1258,6 +1260,78 @@ impl Default for CacheConfig {
     }
 }
 
+/// HTTP API rate limit configuration for different endpoint categories.
+///
+/// This is separate from the domain-level `RateLimitConfig` in
+/// `synctv_core::service::rate_limit` (which controls chat/danmaku rates).
+/// This struct configures the per-category request rate limits applied by
+/// the HTTP middleware layer.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HttpRateLimitConfig {
+    /// Authentication endpoints (login, register) - stricter limits
+    pub auth_max_requests: u32,
+    pub auth_window_seconds: u64,
+
+    /// Write operations (create, update, delete) - moderate limits
+    pub write_max_requests: u32,
+    pub write_window_seconds: u64,
+
+    /// Read operations (get, list) - relaxed limits
+    pub read_max_requests: u32,
+    pub read_window_seconds: u64,
+
+    /// Media operations (add, remove media) - moderate limits
+    pub media_max_requests: u32,
+    pub media_window_seconds: u64,
+
+    /// Admin operations - moderate limits to prevent brute force
+    pub admin_max_requests: u32,
+    pub admin_window_seconds: u64,
+
+    /// Streaming operations (FLV/HLS) - per-user concurrency limits
+    pub streaming_max_requests: u32,
+    pub streaming_window_seconds: u64,
+
+    /// WebSocket connection attempts
+    pub websocket_max_requests: u32,
+    pub websocket_window_seconds: u64,
+}
+
+impl Default for HttpRateLimitConfig {
+    fn default() -> Self {
+        Self {
+            // Auth: 5 requests per minute
+            auth_max_requests: 5,
+            auth_window_seconds: 60,
+
+            // Write: 30 requests per minute
+            write_max_requests: 30,
+            write_window_seconds: 60,
+
+            // Read: 100 requests per minute
+            read_max_requests: 100,
+            read_window_seconds: 60,
+
+            // Media: 20 requests per minute
+            media_max_requests: 20,
+            media_window_seconds: 60,
+
+            // Admin: 30 requests per minute
+            admin_max_requests: 30,
+            admin_window_seconds: 60,
+
+            // Streaming: 200 requests per minute (playlist + segment fetches)
+            streaming_max_requests: 200,
+            streaming_window_seconds: 60,
+
+            // WebSocket: 10 connection attempts per minute
+            websocket_max_requests: 10,
+            websocket_window_seconds: 60,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1281,6 +1355,7 @@ mod tests {
             password_complexity: PasswordComplexityConfig::default(),
             buffer_sizes: BufferSizesConfig::default(),
             cache: CacheConfig::default(),
+            http_rate_limits: HttpRateLimitConfig::default(),
         });
 
         assert!(!config.database_url().is_empty());
@@ -1372,6 +1447,7 @@ mod tests {
             password_complexity: PasswordComplexityConfig::default(),
             buffer_sizes: BufferSizesConfig::default(),
             cache: CacheConfig::default(),
+            http_rate_limits: HttpRateLimitConfig::default(),
         }
     }
 

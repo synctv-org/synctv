@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::sync::RwLock;
 use tokio::time::{timeout, Duration};
+use tokio_util::sync::CancellationToken;
 
 use crate::error::{Error, Result};
 
@@ -195,6 +196,8 @@ pub struct NodeRegistry {
     /// Unix timestamp (seconds) of the last successful `get_all_nodes()` refresh
     /// from Redis. Used by callers to detect stale local cache data.
     last_refreshed: Arc<AtomicU64>,
+    /// Cancellation token for graceful shutdown of background tasks (health probe).
+    cancel_token: CancellationToken,
 }
 
 impl NodeRegistry {
@@ -229,6 +232,7 @@ impl NodeRegistry {
             health_probe_running: Arc::new(AtomicBool::new(false)),
             cluster_mode: Arc::new(parking_lot::RwLock::new(ClusterMode::Normal)),
             last_refreshed: Arc::new(AtomicU64::new(0)),
+            cancel_token: CancellationToken::new(),
         })
     }
 
@@ -342,8 +346,8 @@ impl NodeRegistry {
     /// circuit breaker opens. The task PINGs Redis every 5 seconds. On success,
     /// the circuit transitions to half-open, allowing the next operation to try.
     ///
-    /// The probe task automatically stops when the circuit closes or the
-    /// NodeRegistry is dropped.
+    /// The probe task automatically stops when the circuit closes, the
+    /// `CancellationToken` is cancelled, or the NodeRegistry is dropped.
     fn maybe_start_health_probe(&self, client: redis::Client) {
         // Check if circuit is open before spawning
         if self.circuit_breaker.is_call_permitted() {
@@ -364,6 +368,7 @@ impl NodeRegistry {
         // The guard is reset to `false` when the task exits (success, circuit close, or drop).
         let breaker = self.circuit_breaker.clone();
         let probe_guard = self.health_probe_running.clone();
+        let cancel = self.cancel_token.clone();
         tokio::spawn(async move {
             // Ensure the guard is reset when the task exits, regardless of path.
             struct ProbeGuard(Arc<AtomicBool>);
@@ -378,7 +383,14 @@ impl NodeRegistry {
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
             loop {
-                interval.tick().await;
+                // Use tokio::select! to check cancellation alongside the interval tick
+                tokio::select! {
+                    () = cancel.cancelled() => {
+                        tracing::debug!("Circuit breaker health probe stopping (cancelled)");
+                        break;
+                    }
+                    _ = interval.tick() => {}
+                }
 
                 // Stop probing if circuit is no longer open
                 if breaker.is_call_permitted() {
@@ -965,25 +977,50 @@ impl NodeRegistry {
                     return Ok(());
                 }
             } else {
-                // No epoch provided: best-effort delete (backwards compat).
-                // WARNING: This path bypasses epoch validation, which means a stale
-                // deregister request could remove a re-registered node. Callers should
-                // prefer passing an expected_epoch whenever possible.
+                // No epoch provided: fetch current epoch from Redis, then use
+                // epoch-validated deletion. This prevents a stale deregister
+                // request from removing a re-registered node.
                 tracing::warn!(
                     node_id = %node_id,
-                    "unregister_remote called without expected_epoch, bypassing epoch validation (best-effort delete)"
+                    "unregister_remote called without expected_epoch, fetching current epoch from Redis"
                 );
-                let op_result: std::result::Result<(), Error> = timeout(
+                // Atomic Lua: GET the current epoch, then DEL only if the epoch hasn't changed
+                // between the read and the delete (single script = atomic).
+                let script = redis::Script::new(
+                    r"
+                    local key = KEYS[1]
+                    local existing = redis.call('GET', key)
+                    if not existing then
+                        return -1
+                    end
+                    local existing_info = cjson.decode(existing)
+                    local current_epoch = existing_info.epoch or 0
+                    redis.call('DEL', key)
+                    return current_epoch
+                    ",
+                );
+                let op_result: std::result::Result<i64, Error> = timeout(
                     Duration::from_secs(REDIS_TIMEOUT_SECS),
-                    redis::cmd("DEL")
-                        .arg(&key)
-                        .query_async::<()>(&mut conn),
+                    script.key(&key).invoke_async(&mut conn),
                 )
                 .await
-                .map_err(|_| Error::Timeout("Redis DEL timed out".to_string()))
-                .and_then(|r| r.map_err(|e| Error::Database(format!("Redis DEL failed: {e}"))));
+                .map_err(|_| Error::Timeout("Redis unregister_remote (no epoch) script timed out".to_string()))
+                .and_then(|r| r.map_err(|e| Error::Database(format!("Redis unregister_remote (no epoch) script failed: {e}"))));
                 self.record_operation_result(&op_result);
-                op_result?;
+                let result = op_result?;
+
+                if result == -1 {
+                    tracing::debug!(
+                        node_id = %node_id,
+                        "unregister_remote (no epoch): key not found in Redis"
+                    );
+                } else {
+                    tracing::info!(
+                        node_id = %node_id,
+                        deleted_epoch = result,
+                        "unregister_remote (no epoch): atomically read and deleted node"
+                    );
+                }
             }
         }
 
@@ -1224,6 +1261,14 @@ impl NodeRegistry {
     #[must_use]
     pub fn cluster_mode(&self) -> ClusterMode {
         *self.cluster_mode.read()
+    }
+
+    /// Get the cancellation token for graceful shutdown signaling.
+    ///
+    /// Cancel this token to stop background tasks (e.g., health probe).
+    #[must_use]
+    pub fn cancel_token(&self) -> CancellationToken {
+        self.cancel_token.clone()
     }
 
     /// Returns `true` if the local node cache is stale (i.e., has not been

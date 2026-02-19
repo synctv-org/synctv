@@ -138,6 +138,11 @@ impl MemoryStorageInner {
     }
 }
 
+/// Build internal key from structured components.
+fn make_key(app: &str, stream: &str, name: &str) -> String {
+    format!("{app}/{stream}/{name}")
+}
+
 impl MemoryStorage {
     /// Create new memory storage with default limits (512 MB, 10,000 keys)
     #[must_use]
@@ -201,7 +206,8 @@ impl Default for MemoryStorage {
 
 #[async_trait]
 impl HlsStorage for MemoryStorage {
-    async fn write(&self, key: &str, data: Bytes) -> Result<()> {
+    async fn write(&self, app: &str, stream: &str, name: &str, data: Bytes) -> Result<()> {
+        let key = make_key(app, stream, name);
         let size = data.len();
 
         if self.max_memory_bytes > 0 && size > self.max_memory_bytes {
@@ -217,7 +223,7 @@ impl HlsStorage for MemoryStorage {
         let mut inner = self.inner.write();
 
         // If key already exists, remove the old entry first
-        inner.remove(key);
+        inner.remove(&key);
 
         // Evict old entries if needed
         inner.evict_if_needed(size, self.max_keys, self.max_memory_bytes);
@@ -225,17 +231,18 @@ impl HlsStorage for MemoryStorage {
         let seq = inner.next_seq.fetch_add(1, Ordering::Relaxed);
         let write_time = std::time::Instant::now();
         inner.total_bytes += size;
-        inner.time_index.insert(seq, key.to_string());
-        inner.data.insert(key.to_string(), Entry { data, seq, write_time });
+        inner.time_index.insert(seq, key.clone());
+        inner.data.insert(key.clone(), Entry { data, seq, write_time });
 
         tracing::trace!("Wrote to memory: {} ({} bytes)", key, size);
 
         Ok(())
     }
 
-    async fn read(&self, key: &str) -> Result<Bytes> {
+    async fn read(&self, app: &str, stream: &str, name: &str) -> Result<Bytes> {
+        let key = make_key(app, stream, name);
         let inner = self.inner.read();
-        if let Some(entry) = inner.data.get(key) {
+        if let Some(entry) = inner.data.get(&key) {
             tracing::trace!("Read from memory: {} ({} bytes)", key, entry.data.len());
             Ok(entry.data.clone())
         } else {
@@ -247,25 +254,56 @@ impl HlsStorage for MemoryStorage {
         }
     }
 
-    async fn delete(&self, key: &str) -> Result<()> {
+    async fn delete(&self, app: &str, stream: &str, name: &str) -> Result<()> {
+        let key = make_key(app, stream, name);
         let mut inner = self.inner.write();
-        if inner.remove(key) {
+        if inner.remove(&key) {
             tracing::trace!("Deleted from memory: {}", key);
         }
         Ok(())
     }
 
-    async fn exists(&self, key: &str) -> Result<bool> {
+    async fn exists(&self, app: &str, stream: &str, name: &str) -> Result<bool> {
+        let key = make_key(app, stream, name);
         let inner = self.inner.read();
-        Ok(inner.data.contains_key(key))
+        Ok(inner.data.contains_key(&key))
     }
 
-    async fn delete_by_prefix(&self, prefix: &str) -> Result<usize> {
+    async fn delete_app_stream(&self, app: &str, stream: &str) -> Result<usize> {
+        let prefix = format!("{app}/{stream}/");
         let mut inner = self.inner.write();
 
         let matching_keys: Vec<String> = inner.data
             .keys()
-            .filter(|key| key.starts_with(prefix))
+            .filter(|key| key.starts_with(&prefix))
+            .cloned()
+            .collect();
+
+        let mut deleted = 0;
+        for key in matching_keys {
+            if inner.remove(&key) {
+                deleted += 1;
+            }
+        }
+
+        if deleted > 0 {
+            tracing::debug!(
+                "Deleted {} keys with prefix '{}' from memory storage",
+                deleted,
+                prefix
+            );
+        }
+
+        Ok(deleted)
+    }
+
+    async fn delete_app(&self, app: &str) -> Result<usize> {
+        let prefix = format!("{app}/");
+        let mut inner = self.inner.write();
+
+        let matching_keys: Vec<String> = inner.data
+            .keys()
+            .filter(|key| key.starts_with(&prefix))
             .cloned()
             .collect();
 
@@ -327,33 +365,22 @@ mod tests {
         let storage = MemoryStorage::new();
 
         let data = Bytes::from_static(b"test segment data");
-        let result = storage
-            .write("live-room_123-segment_0", data.clone())
-            .await;
+        let result = storage.write("live", "room_123", "segment_0", data.clone()).await;
         assert!(result.is_ok());
 
-        let read_data = storage
-            .read("live-room_123-segment_0")
-            .await
-            .unwrap();
+        let read_data = storage.read("live", "room_123", "segment_0").await.unwrap();
         assert_eq!(data, read_data);
 
-        let exists = storage
-            .exists("live-room_123-segment_0")
-            .await
-            .unwrap();
+        let exists = storage.exists("live", "room_123", "segment_0").await.unwrap();
         assert!(exists);
 
         assert_eq!(storage.memory_usage().await, data.len());
         assert_eq!(storage.key_count().await, 1);
 
-        let result = storage.delete("live-room_123-segment_0").await;
+        let result = storage.delete("live", "room_123", "segment_0").await;
         assert!(result.is_ok());
 
-        let exists = storage
-            .exists("live-room_123-segment_0")
-            .await
-            .unwrap();
+        let exists = storage.exists("live", "room_123", "segment_0").await.unwrap();
         assert!(!exists);
 
         assert_eq!(storage.memory_usage().await, 0);
@@ -364,14 +391,8 @@ mod tests {
     async fn test_memory_storage_clear() {
         let storage = MemoryStorage::new();
 
-        storage
-            .write("live-room_123-segment_0", Bytes::from_static(b"data1"))
-            .await
-            .unwrap();
-        storage
-            .write("live-room_456-segment_0", Bytes::from_static(b"data2"))
-            .await
-            .unwrap();
+        storage.write("live", "room_123", "segment_0", Bytes::from_static(b"data1")).await.unwrap();
+        storage.write("live", "room_456", "segment_0", Bytes::from_static(b"data2")).await.unwrap();
 
         assert_eq!(storage.key_count().await, 2);
 
@@ -385,7 +406,7 @@ mod tests {
     async fn test_memory_storage_not_found() {
         let storage = MemoryStorage::new();
 
-        let result = storage.read("live-room_123-segment_0").await;
+        let result = storage.read("live", "room_123", "segment_0").await;
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().kind(), ErrorKind::NotFound);
     }
@@ -394,7 +415,7 @@ mod tests {
     async fn test_memory_storage_public_url() {
         let storage = MemoryStorage::new();
 
-        let url = storage.get_public_url("live-room_123-segment_0").await.unwrap();
+        let url = storage.get_public_url("live", "room_123", "segment_0").await.unwrap();
         assert_eq!(url, None);
     }
 
@@ -402,39 +423,39 @@ mod tests {
     async fn test_memory_storage_key_limit_eviction() {
         let storage = MemoryStorage::with_limits(0, 3);
 
-        storage.write("key1", Bytes::from_static(b"data1")).await.unwrap();
-        storage.write("key2", Bytes::from_static(b"data2")).await.unwrap();
-        storage.write("key3", Bytes::from_static(b"data3")).await.unwrap();
+        storage.write("a", "b", "key1", Bytes::from_static(b"data1")).await.unwrap();
+        storage.write("a", "b", "key2", Bytes::from_static(b"data2")).await.unwrap();
+        storage.write("a", "b", "key3", Bytes::from_static(b"data3")).await.unwrap();
         assert_eq!(storage.key_count().await, 3);
 
         // Writing a 4th key should evict the oldest (key1)
-        storage.write("key4", Bytes::from_static(b"data4")).await.unwrap();
+        storage.write("a", "b", "key4", Bytes::from_static(b"data4")).await.unwrap();
         assert_eq!(storage.key_count().await, 3);
-        assert!(!storage.exists("key1").await.unwrap());
-        assert!(storage.exists("key4").await.unwrap());
+        assert!(!storage.exists("a", "b", "key1").await.unwrap());
+        assert!(storage.exists("a", "b", "key4").await.unwrap());
     }
 
     #[tokio::test]
     async fn test_memory_storage_memory_limit_eviction() {
         let storage = MemoryStorage::with_limits(15, 0);
 
-        storage.write("key1", Bytes::from_static(b"12345")).await.unwrap(); // 5 bytes
-        storage.write("key2", Bytes::from_static(b"12345")).await.unwrap(); // 5 bytes, total 10
+        storage.write("a", "b", "key1", Bytes::from_static(b"12345")).await.unwrap(); // 5 bytes
+        storage.write("a", "b", "key2", Bytes::from_static(b"12345")).await.unwrap(); // 5 bytes, total 10
         assert_eq!(storage.key_count().await, 2);
         assert_eq!(storage.memory_usage().await, 10);
 
         // Writing 10 more bytes would exceed 15 byte limit, oldest (key1) should be evicted
-        storage.write("key3", Bytes::from_static(b"1234567890")).await.unwrap(); // 10 bytes
+        storage.write("a", "b", "key3", Bytes::from_static(b"1234567890")).await.unwrap(); // 10 bytes
         assert!(storage.memory_usage().await <= 15);
-        assert!(!storage.exists("key1").await.unwrap());
-        assert!(storage.exists("key3").await.unwrap());
+        assert!(!storage.exists("a", "b", "key1").await.unwrap());
+        assert!(storage.exists("a", "b", "key3").await.unwrap());
     }
 
     #[tokio::test]
     async fn test_memory_storage_reject_oversized() {
         let storage = MemoryStorage::with_limits(10, 0);
 
-        let result = storage.write("big", Bytes::from(vec![0u8; 20])).await;
+        let result = storage.write("a", "b", "big", Bytes::from(vec![0u8; 20])).await;
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidInput);
     }
@@ -445,7 +466,7 @@ mod tests {
 
         for i in 0..100 {
             storage
-                .write(&format!("key{i}"), Bytes::from(vec![0u8; 1024]))
+                .write("a", "b", &format!("key{i}"), Bytes::from(vec![0u8; 1024]))
                 .await
                 .unwrap();
         }
@@ -456,15 +477,47 @@ mod tests {
     async fn test_memory_storage_overwrite_key() {
         let storage = MemoryStorage::with_limits(100, 0);
 
-        storage.write("key1", Bytes::from_static(b"hello")).await.unwrap();
+        storage.write("a", "b", "key1", Bytes::from_static(b"hello")).await.unwrap();
         assert_eq!(storage.memory_usage().await, 5);
 
         // Overwriting same key should update data and not double-count memory
-        storage.write("key1", Bytes::from_static(b"world!")).await.unwrap();
+        storage.write("a", "b", "key1", Bytes::from_static(b"world!")).await.unwrap();
         assert_eq!(storage.memory_usage().await, 6);
         assert_eq!(storage.key_count().await, 1);
 
-        let data = storage.read("key1").await.unwrap();
+        let data = storage.read("a", "b", "key1").await.unwrap();
         assert_eq!(data, Bytes::from_static(b"world!"));
+    }
+
+    #[tokio::test]
+    async fn test_memory_storage_delete_app_stream() {
+        let storage = MemoryStorage::new();
+
+        storage.write("app1", "stream1", "seg0", Bytes::from_static(b"d0")).await.unwrap();
+        storage.write("app1", "stream1", "seg1", Bytes::from_static(b"d1")).await.unwrap();
+        storage.write("app1", "stream2", "seg0", Bytes::from_static(b"d2")).await.unwrap();
+
+        let deleted = storage.delete_app_stream("app1", "stream1").await.unwrap();
+        assert_eq!(deleted, 2);
+
+        assert!(!storage.exists("app1", "stream1", "seg0").await.unwrap());
+        assert!(!storage.exists("app1", "stream1", "seg1").await.unwrap());
+        assert!(storage.exists("app1", "stream2", "seg0").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_memory_storage_delete_app() {
+        let storage = MemoryStorage::new();
+
+        storage.write("app1", "stream1", "seg0", Bytes::from_static(b"d0")).await.unwrap();
+        storage.write("app1", "stream2", "seg0", Bytes::from_static(b"d1")).await.unwrap();
+        storage.write("app2", "stream1", "seg0", Bytes::from_static(b"d2")).await.unwrap();
+
+        let deleted = storage.delete_app("app1").await.unwrap();
+        assert_eq!(deleted, 2);
+
+        assert!(!storage.exists("app1", "stream1", "seg0").await.unwrap());
+        assert!(!storage.exists("app1", "stream2", "seg0").await.unwrap());
+        assert!(storage.exists("app2", "stream1", "seg0").await.unwrap());
     }
 }

@@ -645,7 +645,8 @@ async fn main() -> Result<()> {
     };
 
     let audit_manager = synctv_core::service::AuditPartitionManager::new(pool.clone(), leader_check.clone());
-    let _audit_task = audit_manager.start_auto_management(24, singleton_cancel.clone());
+    let audit_task = audit_manager.start_auto_management(24, singleton_cancel.clone());
+    main_background_handles.push(audit_task);
     info!("Audit log partition management started (leader-gated with fencing)");
 
     let chat_partition_manager = synctv_core::service::ChatPartitionManager::new(
@@ -653,7 +654,8 @@ async fn main() -> Result<()> {
         synctv_services.settings_registry.clone(),
         leader_check.clone(),
     );
-    let _chat_partition_task = chat_partition_manager.start_auto_management(24, singleton_cancel.clone());
+    let chat_partition_task = chat_partition_manager.start_auto_management(24, singleton_cancel.clone());
+    main_background_handles.push(chat_partition_task);
     info!("Chat message partition management started (leader-gated with fencing, check interval: 24 hours)");
 
     let cleanup_service = synctv_core::service::CleanupService::new(
@@ -661,14 +663,16 @@ async fn main() -> Result<()> {
         synctv_core::service::CleanupConfig::default(),
         leader_check.clone(),
     );
-    let _cleanup_task = cleanup_service.start_periodic(24, singleton_cancel.clone());
+    let cleanup_task = cleanup_service.start_periodic(24, singleton_cancel.clone());
+    main_background_handles.push(cleanup_task);
     info!("Periodic data cleanup started (leader-gated with fencing, interval: 24 hours)");
 
     let db_maintenance = synctv_core::service::DatabaseMaintenanceService::new(
         pool.clone(),
         leader_check,
     );
-    let _db_maintenance_task = db_maintenance.spawn_maintenance_loop(singleton_cancel.clone());
+    let db_maintenance_task = db_maintenance.spawn_maintenance_loop(singleton_cancel.clone());
+    main_background_handles.push(db_maintenance_task);
     info!("Database maintenance service started (leader-gated: partitions every 12h, cleanups every 1h)");
 
     // 6. Initialize connection manager with configurable limits (needed early for heartbeat loop)

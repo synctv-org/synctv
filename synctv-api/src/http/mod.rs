@@ -64,6 +64,7 @@ pub struct RouterConfig {
     pub settings_service: Option<Arc<synctv_core::service::SettingsService>>,
     pub settings_registry: Option<Arc<synctv_core::service::SettingsRegistry>>,
     pub email_service: Option<Arc<synctv_core::service::EmailService>>,
+    pub email_token_service: Option<Arc<synctv_core::service::EmailTokenService>>,
     pub publish_key_service: Option<Arc<synctv_core::service::PublishKeyService>>,
     pub notification_service: Option<Arc<synctv_core::service::UserNotificationService>>,
     pub audit_service: Arc<synctv_core::service::AuditService>,
@@ -97,6 +98,8 @@ pub struct AppState {
     pub settings_service: Option<Arc<synctv_core::service::SettingsService>>,
     pub settings_registry: Option<Arc<synctv_core::service::SettingsRegistry>>,
     pub email_service: Option<Arc<synctv_core::service::EmailService>>,
+    /// Shared EmailTokenService (created once at startup, not per-request)
+    pub email_token_service: Option<Arc<synctv_core::service::EmailTokenService>>,
     pub publish_key_service: Option<Arc<synctv_core::service::PublishKeyService>>,
     pub notification_service: Option<Arc<synctv_core::service::UserNotificationService>>,
     pub live_streaming_infrastructure: Option<Arc<LiveStreamingInfrastructure>>,
@@ -202,8 +205,8 @@ fn build_app_state(config: RouterConfig) -> AppState {
         ))
     });
 
-    // H-3: Create shared RateLimitConfig once at startup (not per-request)
-    let rate_limit_config = Arc::new(middleware::RateLimitConfig::default());
+    // H-3: Create shared RateLimitConfig from the config file (not hardcoded defaults)
+    let rate_limit_config = Arc::new(config.config.http_rate_limits.clone());
 
     // H-5: Create shared JwtValidator once at startup (not per-request)
     let jwt_validator = Arc::new(synctv_core::service::auth::JwtValidator::new(
@@ -232,6 +235,7 @@ fn build_app_state(config: RouterConfig) -> AppState {
         settings_service: config.settings_service,
         settings_registry: config.settings_registry,
         email_service: config.email_service,
+        email_token_service: config.email_token_service,
         publish_key_service: config.publish_key_service,
         notification_service: config.notification_service,
         live_streaming_infrastructure: config.live_streaming_infrastructure,

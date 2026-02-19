@@ -7,8 +7,7 @@
 //! 4. Storage abstraction
 
 use std::collections::VecDeque;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use synctv_xiu::hls::{SegmentInfo, StreamProcessorState};
 
 /// Test 1: M3U8 generation with multiple segments
@@ -22,7 +21,6 @@ fn test_m3u8_generation_basic() {
             sequence: i,
             duration: 5000, // 5 seconds
             ts_name: format!("seg{}.ts", i),
-            storage_key: format!("live/test/seg{}.ts", i),
             discontinuity: false,
             created_at: Instant::now(),
         });
@@ -63,7 +61,6 @@ fn test_m3u8_generation_ended_stream() {
         sequence: 0,
         duration: 3000,
         ts_name: "final.ts".to_string(),
-        storage_key: "live/test/final.ts".to_string(),
         discontinuity: false,
         created_at: Instant::now(),
     });
@@ -91,7 +88,6 @@ fn test_m3u8_discontinuity() {
         sequence: 0,
         duration: 5000,
         ts_name: "seg0.ts".to_string(),
-        storage_key: "live/test/seg0.ts".to_string(),
         discontinuity: false,
         created_at: Instant::now(),
     });
@@ -101,7 +97,6 @@ fn test_m3u8_discontinuity() {
         sequence: 1,
         duration: 5000,
         ts_name: "seg1.ts".to_string(),
-        storage_key: "live/test/seg1.ts".to_string(),
         discontinuity: true,
         created_at: Instant::now(),
     });
@@ -133,7 +128,6 @@ fn test_m3u8_custom_url_generator() {
         sequence: 0,
         duration: 5000,
         ts_name: "seg0.ts".to_string(),
-        storage_key: "live/test/seg0.ts".to_string(),
         discontinuity: false,
         created_at: Instant::now(),
     });
@@ -165,7 +159,6 @@ fn test_m3u8_variable_duration() {
         sequence: 0,
         duration: 3000, // 3 seconds
         ts_name: "seg0.ts".to_string(),
-        storage_key: "live/test/seg0.ts".to_string(),
         discontinuity: false,
         created_at: Instant::now(),
     });
@@ -174,7 +167,6 @@ fn test_m3u8_variable_duration() {
         sequence: 1,
         duration: 7000, // 7 seconds (longer)
         ts_name: "seg1.ts".to_string(),
-        storage_key: "live/test/seg1.ts".to_string(),
         discontinuity: false,
         created_at: Instant::now(),
     });
@@ -183,7 +175,6 @@ fn test_m3u8_variable_duration() {
         sequence: 2,
         duration: 5000, // 5 seconds
         ts_name: "seg2.ts".to_string(),
-        storage_key: "live/test/seg2.ts".to_string(),
         discontinuity: false,
         created_at: Instant::now(),
     });
@@ -242,7 +233,6 @@ fn test_m3u8_sliding_window() {
             sequence: i,
             duration: 5000,
             ts_name: format!("seg{}.ts", i),
-            storage_key: format!("live/test/seg{}.ts", i),
             discontinuity: false,
             created_at: Instant::now(),
         });
@@ -277,7 +267,6 @@ fn test_segment_duration_precision() {
         sequence: 0,
         duration: 5123, // 5.123 seconds
         ts_name: "seg0.ts".to_string(),
-        storage_key: "live/test/seg0.ts".to_string(),
         discontinuity: false,
         created_at: Instant::now(),
     });
@@ -286,7 +275,6 @@ fn test_segment_duration_precision() {
         sequence: 1,
         duration: 4567, // 4.567 seconds
         ts_name: "seg1.ts".to_string(),
-        storage_key: "live/test/seg1.ts".to_string(),
         discontinuity: false,
         created_at: Instant::now(),
     });
@@ -315,7 +303,6 @@ fn test_m3u8_url_special_chars() {
         sequence: 0,
         duration: 5000,
         ts_name: "seg 0.ts".to_string(), // Space in filename
-        storage_key: "live/test/seg 0.ts".to_string(),
         discontinuity: false,
         created_at: Instant::now(),
     });
@@ -346,7 +333,6 @@ fn test_m3u8_multiple_discontinuities() {
         sequence: 0,
         duration: 5000,
         ts_name: "seg0.ts".to_string(),
-        storage_key: "live/test/seg0.ts".to_string(),
         discontinuity: false,
         created_at: Instant::now(),
     });
@@ -355,7 +341,6 @@ fn test_m3u8_multiple_discontinuities() {
         sequence: 1,
         duration: 5000,
         ts_name: "seg1.ts".to_string(),
-        storage_key: "live/test/seg1.ts".to_string(),
         discontinuity: true, // First discontinuity
         created_at: Instant::now(),
     });
@@ -364,7 +349,6 @@ fn test_m3u8_multiple_discontinuities() {
         sequence: 2,
         duration: 5000,
         ts_name: "seg2.ts".to_string(),
-        storage_key: "live/test/seg2.ts".to_string(),
         discontinuity: false,
         created_at: Instant::now(),
     });
@@ -373,7 +357,6 @@ fn test_m3u8_multiple_discontinuities() {
         sequence: 3,
         duration: 5000,
         ts_name: "seg3.ts".to_string(),
-        storage_key: "live/test/seg3.ts".to_string(),
         discontinuity: true, // Second discontinuity
         created_at: Instant::now(),
     });

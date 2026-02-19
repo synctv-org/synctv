@@ -490,13 +490,13 @@ pub mod cluster {
         ).expect("Failed to register CLUSTER_CONNECTIONS")
     });
 
-    /// Current number of active rooms on this cluster node.
-    pub static CLUSTER_ROOMS: std::sync::LazyLock<IntGauge> = std::sync::LazyLock::new(|| {
+    /// Current number of active rooms on this node (per-node, not cluster-wide).
+    pub static NODE_ACTIVE_ROOMS: std::sync::LazyLock<IntGauge> = std::sync::LazyLock::new(|| {
         register_int_gauge_with_registry!(
-            "synctv_cluster_rooms_total",
-            "Current number of active rooms on this cluster node",
+            "synctv_node_active_rooms",
+            "Current number of active rooms on this node",
             REGISTRY.clone()
-        ).expect("Failed to register CLUSTER_ROOMS")
+        ).expect("Failed to register NODE_ACTIVE_ROOMS")
     });
 
     /// Total cluster events published, labeled by event type.

@@ -43,7 +43,7 @@ impl RoomMemberRepository {
                 left_at = NULL,
                 joined_at = EXCLUDED.joined_at,
                 version = room_members.version + 1
-             WHERE room_members.status != $9 AND room_members.left_at IS NULL
+             WHERE room_members.status != $9
              RETURNING
                 room_id, user_id, role, status,
                 added_permissions, removed_permissions,
@@ -67,7 +67,7 @@ impl RoomMemberRepository {
             Some(m) => Ok(m),
             None => {
                 // The ON CONFLICT WHERE condition was not met. Determine why.
-                self.diagnose_add_conflict(&member.room_id, &member.user_id).await
+                self.diagnose_add_conflict(&member.room_id, &member.user_id, &self.pool).await
             }
         }
     }
@@ -95,7 +95,7 @@ impl RoomMemberRepository {
                 left_at = NULL,
                 joined_at = EXCLUDED.joined_at,
                 version = room_members.version + 1
-             WHERE room_members.status != $9 AND room_members.left_at IS NULL
+             WHERE room_members.status != $9
              RETURNING
                 room_id, user_id, role, status,
                 added_permissions, removed_permissions,
@@ -119,7 +119,7 @@ impl RoomMemberRepository {
             Some(m) => Ok(m),
             None => {
                 // The ON CONFLICT WHERE condition was not met. Determine why.
-                self.diagnose_add_conflict(&member.room_id, &member.user_id).await
+                self.diagnose_add_conflict(&member.room_id, &member.user_id, &self.pool).await
             }
         }
     }
@@ -215,9 +215,10 @@ impl RoomMemberRepository {
 
                 let count_row = sqlx::query(
                     "SELECT COUNT(*) as count FROM room_members
-                     WHERE room_id = $1 AND left_at IS NULL AND status != 'banned'"
+                     WHERE room_id = $1 AND left_at IS NULL AND status != $2"
                 )
                 .bind(member.room_id.as_str())
+                .bind(MemberStatus::Banned)
                 .fetch_one(&mut **tx)
                 .await?;
 
@@ -255,7 +256,7 @@ impl RoomMemberRepository {
                 left_at = NULL,
                 joined_at = EXCLUDED.joined_at,
                 version = room_members.version + 1
-             WHERE room_members.status != $9 AND room_members.left_at IS NULL
+             WHERE room_members.status != $9
              RETURNING
                 room_id, user_id, role, status,
                 added_permissions, removed_permissions,
@@ -279,7 +280,7 @@ impl RoomMemberRepository {
             Some(m) => Ok(m),
             None => {
                 // The ON CONFLICT WHERE condition was not met. Determine why.
-                self.diagnose_add_conflict(&member.room_id, &member.user_id).await
+                self.diagnose_add_conflict(&member.room_id, &member.user_id, &mut **tx).await
             }
         }
     }
@@ -640,6 +641,7 @@ impl RoomMemberRepository {
             "UPDATE room_members
              SET
                 status = $3,
+                left_at = CURRENT_TIMESTAMP,
                 banned_at = $4,
                 banned_by = $5,
                 banned_reason = $6,
@@ -674,11 +676,12 @@ impl RoomMemberRepository {
             "UPDATE room_members
              SET
                 status = $3,
+                left_at = NULL,
                 banned_at = NULL,
                 banned_by = NULL,
                 banned_reason = NULL,
                 version = version + 1
-             WHERE room_id = $1 AND user_id = $2 AND left_at IS NULL
+             WHERE room_id = $1 AND user_id = $2 AND status = $4
              RETURNING
                 room_id, user_id, role, status,
                 added_permissions, removed_permissions,
@@ -689,6 +692,7 @@ impl RoomMemberRepository {
         .bind(room_id.as_str())
         .bind(user_id.as_str())
         .bind(MemberStatus::Active)
+        .bind(MemberStatus::Banned)
         .fetch_one(&self.pool)
         .await?;
 
@@ -732,9 +736,10 @@ impl RoomMemberRepository {
         let count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) as count
              FROM room_members
-             WHERE room_id = $1 AND left_at IS NULL"
+             WHERE room_id = $1 AND left_at IS NULL AND status != $2"
         )
         .bind(room_id.as_str())
+        .bind(MemberStatus::Banned)
         .fetch_one(&self.pool)
         .await?;
 
@@ -931,6 +936,7 @@ impl RoomMemberRepository {
             "UPDATE room_members AS target
              SET
                 status = $4,
+                left_at = CURRENT_TIMESTAMP,
                 banned_at = $5,
                 banned_by = $6,
                 banned_reason = $7,
@@ -975,7 +981,10 @@ impl RoomMemberRepository {
     ///
     /// Queries the existing membership row to determine if the user is banned
     /// or has already left the room, returning a semantic error.
-    async fn diagnose_add_conflict(&self, room_id: &RoomId, user_id: &UserId) -> Result<RoomMember> {
+    async fn diagnose_add_conflict<'e, E>(&self, room_id: &RoomId, user_id: &UserId, executor: E) -> Result<RoomMember>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
         let existing = sqlx::query_as::<_, RoomMember>(
             "SELECT
                 room_id, user_id, role, status,
@@ -988,7 +997,7 @@ impl RoomMemberRepository {
         )
         .bind(room_id.as_str())
         .bind(user_id.as_str())
-        .fetch_optional(&self.pool)
+        .fetch_optional(executor)
         .await?;
 
         match existing {

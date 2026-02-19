@@ -286,7 +286,7 @@ impl ClusterManager {
 
     /// Start a background heartbeat loop that keeps this node alive in Redis.
     ///
-    /// Calls `NodeRegistry::heartbeat()` every `heartbeat_timeout / 2` seconds.
+    /// Calls `NodeRegistry::heartbeat()` every `heartbeat_timeout / 3` seconds.
     /// If the heartbeat indicates re-registration is needed (key expired or
     /// epoch mismatch), the node automatically re-registers.
     ///

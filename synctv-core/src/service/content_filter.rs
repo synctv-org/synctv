@@ -33,10 +33,10 @@ pub struct ContentFilter {
 
 impl ContentFilter {
     /// Create a new `ContentFilter` with default settings
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self {
-            max_chat_length: 1000,
+            max_chat_length: 2000,
             max_danmaku_length: 100,
             sensitive_words: None,
             strip_html: true,
@@ -225,7 +225,7 @@ mod tests {
     #[test]
     fn test_filter_chat_too_long() {
         let filter = ContentFilter::new();
-        let long_message = "a".repeat(1001);
+        let long_message = "a".repeat(2001);
         let result = filter.filter_chat(&long_message);
         assert!(matches!(
             result,

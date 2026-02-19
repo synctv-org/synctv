@@ -522,7 +522,7 @@ impl MediaProvider for BilibiliProvider {
         Ok(())
     }
 
-    fn cache_key(&self, _ctx: &ProviderContext<'_>, source_config: &Value) -> String {
+    fn cache_key(&self, ctx: &ProviderContext<'_>, source_config: &Value) -> String {
         // Hash only video identifiers, not the full config (which contains cookies)
         if let Ok(config) = BilibiliSourceConfig::try_from(source_config) {
             use sha2::{Sha256, Digest};
@@ -537,26 +537,15 @@ impl MediaProvider for BilibiliProvider {
                     format!("live:{room_id}")
                 }
             };
-            format!("bilibili:{:x}", Sha256::digest(identifier.as_bytes()))
+            format!("{}:playback:bilibili:{:x}", ctx.key_prefix, Sha256::digest(identifier.as_bytes()))
         } else {
-            "bilibili:unknown".to_string()
+            format!("{}:playback:bilibili:unknown", ctx.key_prefix)
         }
     }
 }
 
-/// Standard Bilibili HTTP headers for proxy requests
-fn bilibili_headers() -> HashMap<String, String> {
-    let mut headers = HashMap::new();
-    headers.insert(
-        "Referer".to_string(),
-        "https://www.bilibili.com".to_string(),
-    );
-    headers.insert(
-        "User-Agent".to_string(),
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36".to_string(),
-    );
-    headers
-}
+// Use the shared bilibili_headers() from the parent module.
+use super::bilibili_headers;
 
 #[cfg(test)]
 mod tests {

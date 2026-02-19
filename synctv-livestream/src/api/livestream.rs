@@ -530,12 +530,9 @@ impl HlsStreamingApi {
         segment_name: &str,
     ) -> Result<Bytes> {
         if let Some(segment_manager) = &infrastructure.segment_manager {
-            // Build storage key using the shared canonical format (matches remuxer write side)
-            let storage_key = synctv_xiu::hls::hls_segment_storage_key(room_id, media_id, segment_name);
-
             segment_manager
                 .storage()
-                .read(&storage_key)
+                .read(room_id, media_id, segment_name)
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to read segment: {e}"))
         } else {

@@ -56,6 +56,20 @@ pub fn error_response(e: ProviderError) -> (StatusCode, Json<serde_json::Value>)
     let (status, message, details) = match &e {
         ProviderError::NetworkError(msg) => (StatusCode::BAD_GATEWAY, msg.clone(), msg.clone()),
         ProviderError::ApiError(msg) => (StatusCode::BAD_GATEWAY, msg.clone(), msg.clone()),
+        ProviderError::UpstreamHttp { status: upstream_status, url } => {
+            // Map upstream HTTP status codes to appropriate response status codes.
+            // Client errors (4xx) from the upstream are forwarded as-is so callers
+            // can distinguish "not found on provider" from "synctv bug".
+            // Server errors (5xx) become BAD_GATEWAY since the upstream is at fault.
+            let http_status = StatusCode::from_u16(*upstream_status).unwrap_or(StatusCode::BAD_GATEWAY);
+            let mapped = if http_status.is_client_error() {
+                http_status
+            } else {
+                StatusCode::BAD_GATEWAY
+            };
+            let msg = format!("Upstream HTTP {upstream_status} for {url}");
+            (mapped, msg.clone(), msg)
+        }
         ProviderError::ParseError(msg) => (StatusCode::BAD_REQUEST, msg.clone(), msg.clone()),
         ProviderError::InvalidConfig(msg) => (StatusCode::BAD_REQUEST, msg.clone(), msg.clone()),
         ProviderError::NotFound => (StatusCode::NOT_FOUND, "Resource not found".to_string(), "Resource not found".to_string()),

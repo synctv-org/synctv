@@ -141,8 +141,6 @@ const CONNECTION_METADATA_TTL_SECONDS: i64 = 90_000; // 25 hours
 /// A failed Redis counter operation that should be retried.
 #[derive(Debug, Clone)]
 enum PendingRedisOp {
-    /// Increment a counter key
-    Incr(String),
     /// Decrement a counter key
     Decr(String),
 }
@@ -189,8 +187,18 @@ pub struct ConnectionManager {
     /// When a Redis INCR/DECR fails during register/unregister, the operation is
     /// sent here so a background task can retry it, ensuring eventual consistency
     /// between local and distributed counters.
-    pending_retries_tx: mpsc::UnboundedSender<PendingRedisOp>,
+    ///
+    /// Bounded to `PENDING_RETRY_QUEUE_CAPACITY` to prevent unbounded memory
+    /// growth during prolonged Redis outages. When full, new entries are dropped
+    /// with a warning (TTL-based expiry acts as the safety net).
+    pending_retries_tx: mpsc::Sender<PendingRedisOp>,
 }
+
+/// Maximum capacity of the pending retry queue for failed Redis counter operations.
+/// When the queue is full, new entries are dropped with a warning log. The
+/// TTL-based expiry on Redis keys ensures eventual consistency even if retries
+/// are lost.
+const PENDING_RETRY_QUEUE_CAPACITY: usize = 10_000;
 
 impl ConnectionManager {
     /// Create a new `ConnectionManager`
@@ -201,7 +209,7 @@ impl ConnectionManager {
         // channel capacity would miss signals; the WebSocket handler has a periodic
         // re-validation backstop to handle the rare case where a signal is lost.
         let (disconnect_tx, _) = broadcast::channel(10_000);
-        let (pending_retries_tx, _rx) = mpsc::unbounded_channel();
+        let (pending_retries_tx, _rx) = mpsc::channel(PENDING_RETRY_QUEUE_CAPACITY);
         // Drop _rx immediately; the retry task is spawned only when Redis is configured
         // via with_redis(). Without Redis, no operations are ever sent to this channel.
         Self {
@@ -242,7 +250,7 @@ impl ConnectionManager {
 
         // Spawn the pending-retries background task.
         // Re-create the channel so we have a live receiver.
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel(PENDING_RETRY_QUEUE_CAPACITY);
         self.pending_retries_tx = tx;
         Self::spawn_pending_retries_task(conn, rx, cancel);
 
@@ -256,7 +264,7 @@ impl ConnectionManager {
     /// tracked internally) before being dropped with a warning.
     fn spawn_pending_retries_task(
         redis_conn: redis::aio::ConnectionManager,
-        mut rx: mpsc::UnboundedReceiver<PendingRedisOp>,
+        mut rx: mpsc::Receiver<PendingRedisOp>,
         cancel: tokio_util::sync::CancellationToken,
     ) {
         tokio::spawn(async move {
@@ -291,9 +299,6 @@ impl ConnectionManager {
 
                         for (op, attempts) in pending.drain(..) {
                             let result = match &op {
-                                PendingRedisOp::Incr(key) => {
-                                    conn.incr::<_, _, i64>(key, 1i64).await
-                                }
                                 PendingRedisOp::Decr(key) => {
                                     // Use raw DECR; don't need the atomic script here since
                                     // this is a compensating retry, not a live operation.
@@ -336,8 +341,8 @@ impl ConnectionManager {
 
     /// Enqueue a failed Redis counter operation for background retry.
     fn enqueue_retry(&self, op: PendingRedisOp) {
-        if let Err(e) = self.pending_retries_tx.send(op) {
-            warn!("Failed to enqueue pending Redis retry (channel closed): {e}");
+        if let Err(e) = self.pending_retries_tx.try_send(op) {
+            warn!("Failed to enqueue pending Redis retry (channel full or closed): {e}");
         }
     }
 
@@ -450,11 +455,22 @@ impl ConnectionManager {
         }
 
         // Increment distributed total connection counter (best-effort).
+        // Uses the same atomic INCR+EXPIRE Lua script as redis_incr_and_check()
+        // to prevent a crash between the two operations from leaving a key
+        // without a TTL.
         if let Some(ref conn) = self.redis_conn {
             let total_key = format!("{}connections:total", self.redis_key_prefix);
             let mut conn_clone = conn.clone();
-            let _ = conn_clone.incr::<_, _, i64>(&total_key, 1i64).await;
-            let _ = conn_clone.expire::<_, ()>(&total_key, DISTRIBUTED_COUNTER_TTL_SECONDS).await;
+            let script = redis::Script::new(
+                "local count = redis.call('INCR', KEYS[1]) \
+                 redis.call('EXPIRE', KEYS[1], ARGV[1]) \
+                 return count"
+            );
+            let _ = script
+                .key(&total_key)
+                .arg(DISTRIBUTED_COUNTER_TTL_SECONDS)
+                .invoke_async::<i64>(&mut conn_clone)
+                .await;
         }
 
         // Check distributed per-user limit via Redis (if configured).
@@ -704,7 +720,7 @@ impl ConnectionManager {
             });
         }
 
-        synctv_core::metrics::cluster::CLUSTER_ROOMS.set(
+        synctv_core::metrics::cluster::NODE_ACTIVE_ROOMS.set(
             self.room_connections.len() as i64,
         );
 
@@ -772,20 +788,20 @@ impl ConnectionManager {
                     // Decrement total distributed counter
                     let total_key = format!("{key_prefix}connections:total");
                     if let Err(_e) = this.redis_decr(&conn_clone, &total_key).await {
-                        let _ = retry_tx.send(PendingRedisOp::Decr(total_key));
+                        let _ = retry_tx.try_send(PendingRedisOp::Decr(total_key));
                     }
 
                     // Decrement user counter
                     let user_key = format!("{key_prefix}connections:user:{user_id_str}");
                     if let Err(_e) = this.redis_decr(&conn_clone, &user_key).await {
-                        let _ = retry_tx.send(PendingRedisOp::Decr(user_key));
+                        let _ = retry_tx.try_send(PendingRedisOp::Decr(user_key));
                     }
 
                     // Decrement room counter
                     if let Some(ref room_id) = room_id_str {
                         let room_key = format!("{key_prefix}connections:room:{room_id}");
                         if let Err(_e) = this.redis_decr(&conn_clone, &room_key).await {
-                            let _ = retry_tx.send(PendingRedisOp::Decr(room_key));
+                            let _ = retry_tx.try_send(PendingRedisOp::Decr(room_key));
                         }
                     }
 
@@ -824,7 +840,7 @@ impl ConnectionManager {
             synctv_core::metrics::cluster::CLUSTER_CONNECTIONS.set(
                 self.total_connections.load(Ordering::Relaxed) as i64,
             );
-            synctv_core::metrics::cluster::CLUSTER_ROOMS.set(
+            synctv_core::metrics::cluster::NODE_ACTIVE_ROOMS.set(
                 self.room_connections.len() as i64,
             );
 

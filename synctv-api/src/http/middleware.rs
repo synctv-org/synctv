@@ -2,7 +2,7 @@
 
 use axum::{
     extract::{FromRef, FromRequestParts, OptionalFromRequestParts, Request, State},
-    http::{request::Parts, StatusCode},
+    http::request::Parts,
     middleware::Next,
     response::{IntoResponse, Response},
 };
@@ -206,11 +206,17 @@ where
         // it was issued for. If the room has been deleted, the token must be rejected so
         // that stale guest tokens cannot be replayed against newly-created rooms that
         // happen to reuse the same ID.
-        app_state
+        //
+        // Uses lightweight existence check (SELECT EXISTS) instead of fetching the full
+        // room row, since we only need to confirm the room hasn't been deleted.
+        let exists = app_state
             .room_service
-            .get_room(&room_id)
+            .room_exists(&room_id)
             .await
             .map_err(|_| AppError::unauthorized("Room not found or has been deleted"))?;
+        if !exists {
+            return Err(AppError::unauthorized("Room not found or has been deleted"));
+        }
 
         Ok(Self {
             room_id,
@@ -219,71 +225,12 @@ where
     }
 }
 
-/// Rate limiting configuration for different endpoint categories
-#[derive(Debug, Clone)]
-pub struct RateLimitConfig {
-    /// Authentication endpoints (login, register) - stricter limits
-    pub auth_max_requests: u32,
-    pub auth_window_seconds: u64,
-
-    /// Write operations (create, update, delete) - moderate limits
-    pub write_max_requests: u32,
-    pub write_window_seconds: u64,
-
-    /// Read operations (get, list) - relaxed limits
-    pub read_max_requests: u32,
-    pub read_window_seconds: u64,
-
-    /// Media operations (add, remove media) - moderate limits
-    pub media_max_requests: u32,
-    pub media_window_seconds: u64,
-
-    /// Admin operations - moderate limits to prevent brute force
-    pub admin_max_requests: u32,
-    pub admin_window_seconds: u64,
-
-    /// Streaming operations (FLV/HLS) - per-user concurrency limits
-    pub streaming_max_requests: u32,
-    pub streaming_window_seconds: u64,
-
-    /// WebSocket connection attempts
-    pub websocket_max_requests: u32,
-    pub websocket_window_seconds: u64,
-}
-
-impl Default for RateLimitConfig {
-    fn default() -> Self {
-        Self {
-            // Auth: 5 requests per minute
-            auth_max_requests: 5,
-            auth_window_seconds: 60,
-
-            // Write: 30 requests per minute
-            write_max_requests: 30,
-            write_window_seconds: 60,
-
-            // Read: 100 requests per minute
-            read_max_requests: 100,
-            read_window_seconds: 60,
-
-            // Media: 20 requests per minute
-            media_max_requests: 20,
-            media_window_seconds: 60,
-
-            // Admin: 30 requests per minute
-            admin_max_requests: 30,
-            admin_window_seconds: 60,
-
-            // Streaming: 200 requests per minute (playlist + segment fetches)
-            streaming_max_requests: 200,
-            streaming_window_seconds: 60,
-
-            // WebSocket: 10 connection attempts per minute
-            websocket_max_requests: 10,
-            websocket_window_seconds: 60,
-        }
-    }
-}
+/// HTTP rate limiting configuration for different endpoint categories.
+///
+/// Type alias to the canonical config struct in `synctv_core::config`.
+/// Previously this was a duplicate struct with hardcoded defaults;
+/// now it comes from the config file via `Config.http_rate_limits`.
+pub type RateLimitConfig = synctv_core::HttpRateLimitConfig;
 
 /// Rate limit category for different types of operations
 #[derive(Debug, Clone, Copy)]
@@ -382,17 +329,20 @@ pub async fn rate_limit_middleware(
             Ok(next.run(request).await)
         }
         Err(RateLimitError::RateLimitExceeded { retry_after_seconds }) => {
-            // Rate limit exceeded, return 429 Too Many Requests
-            let response = (
-                StatusCode::TOO_MANY_REQUESTS,
-                [
-                    ("Retry-After", retry_after_seconds.to_string()),
-                    ("X-RateLimit-Limit", max_requests.to_string()),
-                    ("X-RateLimit-Reset", retry_after_seconds.to_string()),
-                ],
-                format!("Rate limit exceeded. Try again in {retry_after_seconds} seconds"),
-            )
-                .into_response();
+            // Rate limit exceeded, return 429 Too Many Requests with standard JSON error format
+            let error = AppError::rate_limited(retry_after_seconds);
+            let mut response = error.into_response();
+            // Add rate-limit headers for client consumption
+            let headers = response.headers_mut();
+            if let Ok(v) = axum::http::HeaderValue::from_str(&retry_after_seconds.to_string()) {
+                headers.insert("Retry-After", v);
+            }
+            if let Ok(v) = axum::http::HeaderValue::from_str(&max_requests.to_string()) {
+                headers.insert("X-RateLimit-Limit", v);
+            }
+            if let Ok(v) = axum::http::HeaderValue::from_str(&retry_after_seconds.to_string()) {
+                headers.insert("X-RateLimit-Reset", v);
+            }
 
             Ok(response)
         }
@@ -400,12 +350,8 @@ pub async fn rate_limit_middleware(
             // This branch should not be reached for check_rate_limit (which
             // degrades to in-memory on Redis errors), but handle defensively.
             tracing::error!("Rate limit check unexpected error: {}. Denying request (fail closed).", e);
-            let response = (
-                StatusCode::TOO_MANY_REQUESTS,
-                "Rate limiting temporarily degraded. Please try again shortly.",
-            )
-                .into_response();
-            Ok(response)
+            let error = AppError::rate_limited(1);
+            Ok(error.into_response())
         }
     }
 }

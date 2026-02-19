@@ -30,6 +30,12 @@ pub enum ProviderError {
     #[error("Provider API error: {0}")]
     ApiError(String),
 
+    #[error("Upstream HTTP {status} for {url}")]
+    UpstreamHttp {
+        status: u16,
+        url: String,
+    },
+
     #[error("Unsupported format: {0}")]
     UnsupportedFormat(String),
 

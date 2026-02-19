@@ -157,12 +157,12 @@ fn test_room_media_combination_unique_keys() {
     ];
 
     for (room, media) in &combinations {
-        // Storage key format
-        let storage_key = format!("live-{}-{}-segment", room, media);
+        // Storage key format (structured: app/stream/name)
+        let storage_key = format!("{}/{}/segment", room, media);
         println!("Storage key: {}", storage_key);
 
         // Registry key format
-        let registry_key = format!("live/{}:{}", room, media);
+        let registry_key = format!("{}/{}", room, media);
         println!("Registry key: {}", registry_key);
 
         // Verify uniqueness
@@ -236,14 +236,13 @@ fn test_special_characters_in_ids() {
     ];
 
     for (room, media) in test_cases {
-        // Storage key should use - as separator
-        let storage_key = format!("live-{}-{}-segment", room, media);
-        assert!(storage_key.contains('-'));
-        assert!(!storage_key.contains(':'));
+        // Storage key uses structured path: app/stream/name
+        let storage_key = format!("{}/{}/segment", room, media);
+        assert!(storage_key.contains('/'));
 
-        // Registry key should use : as separator
-        let registry_key = format!("live/{}:{}", room, media);
-        assert!(registry_key.contains(':'));
+        // Registry key uses room/media format
+        let registry_key = format!("{}/{}", room, media);
+        assert!(registry_key.contains('/'));
 
         // Both should be valid
         assert!(!storage_key.is_empty());

@@ -705,12 +705,60 @@ impl RedisPubSub {
                         }
                     }
                     Err(e) => {
-                        warn!(
-                            error = %e,
-                            stream_key = %stream_key,
-                            "Failed to catch up on historical events, using '$' as fallback"
-                        );
-                        stream_cursors.insert(stream_key.clone(), "$".to_string());
+                        // Retry catch-up read up to 3 times with short delay before
+                        // falling back. Use "0" (stream beginning within catchup
+                        // window) instead of "$" so events are not silently skipped.
+                        let mut retry_ok = false;
+                        for retry in 1..=3 {
+                            warn!(
+                                error = %e,
+                                stream_key = %stream_key,
+                                attempt = retry,
+                                "Failed to catch up on historical events, retrying"
+                            );
+                            tokio::time::sleep(Duration::from_millis(500 * retry as u64)).await;
+                            match self.read_missed_events_from(stream_key, &catchup_start_id).await {
+                                Ok(events) => {
+                                    for (stream_id, channel, event) in events {
+                                        let dedup_key = DedupKey::from_event(&event);
+                                        if self.deduplicator.should_process(&dedup_key) {
+                                            self.dispatch_event(&channel, event).await;
+                                            total_caught_up += 1;
+                                        } else {
+                                            total_skipped += 1;
+                                        }
+                                        stream_cursors.insert(stream_key.clone(), stream_id);
+                                    }
+                                    if !stream_cursors.contains_key(stream_key) {
+                                        match self.get_latest_stream_id_for(stream_key).await {
+                                            Ok(Some(id)) => {
+                                                stream_cursors.insert(stream_key.clone(), id);
+                                            }
+                                            _ => {
+                                                stream_cursors.insert(stream_key.clone(), "0".to_string());
+                                            }
+                                        }
+                                    }
+                                    retry_ok = true;
+                                    break;
+                                }
+                                Err(retry_err) => {
+                                    warn!(
+                                        error = %retry_err,
+                                        stream_key = %stream_key,
+                                        attempt = retry,
+                                        "Catch-up retry failed"
+                                    );
+                                }
+                            }
+                        }
+                        if !retry_ok {
+                            warn!(
+                                stream_key = %stream_key,
+                                "All catch-up retries exhausted, falling back to '0' (stream beginning within catchup window)"
+                            );
+                            stream_cursors.insert(stream_key.clone(), "0".to_string());
+                        }
                     }
                 }
             }

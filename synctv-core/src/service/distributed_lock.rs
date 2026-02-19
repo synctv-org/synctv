@@ -23,6 +23,14 @@
 //! [Redlock algorithm](https://redis.io/docs/manual/patterns/distributed-locks/)
 //! with multiple independent Redis masters.
 //!
+//! **Production recommendation**: If you are deploying with Redis Sentinel,
+//! strongly consider using the Redlock algorithm with multiple independent Redis
+//! masters (minimum 3). Single-instance locking behind Sentinel provides
+//! *availability* (automatic failover) but NOT *correctness* (locks can be lost
+//! during asynchronous replication). Fencing tokens mitigate this for database
+//! writes, but non-idempotent side effects (e.g., sending notifications, billing)
+//! cannot be fenced.
+//!
 //! # Fencing Token Support
 //!
 //! This implementation provides fencing tokens to handle the "split-brain" scenario
@@ -68,12 +76,30 @@ pub struct DistributedLock {
 }
 
 impl DistributedLock {
-    /// Create a new distributed lock service
+    /// Create a new distributed lock service.
+    ///
+    /// If `redis_url` is provided, checks whether it uses Sentinel (contains
+    /// "sentinel" in the URL) and emits a startup warning about lock safety.
     #[must_use]
-    pub const fn new(redis: RedisConnectionManager) -> Self {
+    pub fn new(redis: RedisConnectionManager) -> Self {
         Self {
             redis,
         }
+    }
+
+    /// Create a new distributed lock service and log a warning if the Redis URL
+    /// indicates Sentinel mode. Call this at startup instead of `new()` when the
+    /// Redis URL is available.
+    pub fn new_with_sentinel_check(redis: RedisConnectionManager, redis_url: &str) -> Self {
+        if redis_url.contains("sentinel") || redis_url.contains("SENTINEL") {
+            tracing::warn!(
+                "Distributed lock is using a single Redis instance behind Sentinel. \
+                 Locks may be LOST during Sentinel failover due to asynchronous replication. \
+                 For production Sentinel deployments, consider using the Redlock algorithm \
+                 with multiple independent Redis masters. See module-level documentation."
+            );
+        }
+        Self::new(redis)
     }
 
     /// Generate a fencing token for a lock key using Redis INCR

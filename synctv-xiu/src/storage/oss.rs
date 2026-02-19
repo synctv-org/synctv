@@ -14,19 +14,9 @@ mod inner {
     use async_trait::async_trait;
     use bytes::Bytes;
     use opendal::{Operator, services::S3};
-    use sha2::{Sha256, Digest};
     use std::io::{Result, Error, ErrorKind};
     use std::sync::Arc;
     use std::time::Duration;
-
-    /// Hash storage key to prevent path traversal attacks
-    ///
-    /// Uses SHA256 to convert arbitrary keys into safe object keys
-    fn hash_key(key: &str) -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(key.as_bytes());
-        format!("{:x}", hasher.finalize())
-    }
 
     /// OSS storage configuration
     #[derive(Debug, Clone)]
@@ -86,69 +76,101 @@ mod inner {
             })
         }
 
-        /// Get full object key with base path prefix and hashing
-        fn get_object_key(&self, key: &str) -> String {
-            let hashed = hash_key(key);
+        /// Get full object key: {base_path}{app}/{stream}/{name}
+        fn get_object_key(&self, app: &str, stream: &str, name: &str) -> String {
             if self.config.base_path.is_empty() {
-                hashed
+                format!("{app}/{stream}/{name}")
             } else {
-                format!("{}{}", self.config.base_path, hashed)
+                format!("{}{app}/{stream}/{name}", self.config.base_path)
             }
+        }
+
+        /// Get prefix for listing objects under app/stream/
+        fn get_stream_prefix(&self, app: &str, stream: &str) -> String {
+            if self.config.base_path.is_empty() {
+                format!("{app}/{stream}/")
+            } else {
+                format!("{}{app}/{stream}/", self.config.base_path)
+            }
+        }
+
+        /// Get prefix for listing objects under app/
+        fn get_app_prefix(&self, app: &str) -> String {
+            if self.config.base_path.is_empty() {
+                format!("{app}/")
+            } else {
+                format!("{}{app}/", self.config.base_path)
+            }
+        }
+
+        /// Delete all objects matching a prefix using OpenDAL lister.
+        async fn delete_by_prefix_internal(&self, prefix: &str) -> Result<usize> {
+            let lister = self.operator
+                .lister(prefix)
+                .await
+                .map_err(|e| Error::other(format!("OSS list failed: {e}")))?;
+
+            use futures::TryStreamExt;
+            let mut entries = lister;
+            let mut deleted = 0;
+            while let Some(entry) = entries.try_next().await
+                .map_err(|e| Error::other(format!("OSS list iteration failed: {e}")))? {
+                let path = entry.path();
+                if self.operator.delete(path).await.is_ok() {
+                    deleted += 1;
+                }
+            }
+            Ok(deleted)
         }
     }
 
     #[async_trait]
     impl HlsStorage for OssStorage {
-        async fn write(&self, key: &str, data: Bytes) -> Result<()> {
-            let object_key = self.get_object_key(key);
+        async fn write(&self, app: &str, stream: &str, name: &str, data: Bytes) -> Result<()> {
+            let object_key = self.get_object_key(app, stream, name);
             let size = data.len();
 
-            // Write to OSS using OpenDAL
             self.operator
                 .write(&object_key, data)
                 .await
                 .map_err(|e| Error::other(format!("OSS write failed: {e}")))?;
 
-            tracing::trace!("Wrote to OSS: {} ({} bytes) for key: {}", object_key, size, key);
+            tracing::trace!("Wrote to OSS: {} ({} bytes) for {}/{}/{}", object_key, size, app, stream, name);
 
             Ok(())
         }
 
-        async fn read(&self, key: &str) -> Result<Bytes> {
-            let object_key = self.get_object_key(key);
+        async fn read(&self, app: &str, stream: &str, name: &str) -> Result<Bytes> {
+            let object_key = self.get_object_key(app, stream, name);
 
-            // Read from OSS using OpenDAL
             let buffer = self.operator
                 .read(&object_key)
                 .await
                 .map_err(|e| Error::new(ErrorKind::NotFound, format!("OSS read failed: {e}")))?;
 
-            // Convert OpenDAL Buffer to Bytes
             let data = Bytes::from(buffer.to_vec());
 
-            tracing::trace!("Read from OSS: {} ({} bytes) for key: {}", object_key, data.len(), key);
+            tracing::trace!("Read from OSS: {} ({} bytes) for {}/{}/{}", object_key, data.len(), app, stream, name);
 
             Ok(data)
         }
 
-        async fn delete(&self, key: &str) -> Result<()> {
-            let object_key = self.get_object_key(key);
+        async fn delete(&self, app: &str, stream: &str, name: &str) -> Result<()> {
+            let object_key = self.get_object_key(app, stream, name);
 
-            // Delete from OSS using OpenDAL
             self.operator
                 .delete(&object_key)
                 .await
                 .map_err(|e| Error::other(format!("OSS delete failed: {e}")))?;
 
-            tracing::trace!("Deleted from OSS: {} for key: {}", object_key, key);
+            tracing::trace!("Deleted from OSS: {} for {}/{}/{}", object_key, app, stream, name);
 
             Ok(())
         }
 
-        async fn exists(&self, key: &str) -> Result<bool> {
-            let object_key = self.get_object_key(key);
+        async fn exists(&self, app: &str, stream: &str, name: &str) -> Result<bool> {
+            let object_key = self.get_object_key(app, stream, name);
 
-            // Check if object exists using OpenDAL
             match self.operator.exists(&object_key).await {
                 Ok(exists) => Ok(exists),
                 Err(e) => {
@@ -156,6 +178,20 @@ mod inner {
                     Ok(false)
                 }
             }
+        }
+
+        async fn delete_app_stream(&self, app: &str, stream: &str) -> Result<usize> {
+            let prefix = self.get_stream_prefix(app, stream);
+            let deleted = self.delete_by_prefix_internal(&prefix).await?;
+            tracing::debug!("delete_app_stream {}/{}: deleted {} objects", app, stream, deleted);
+            Ok(deleted)
+        }
+
+        async fn delete_app(&self, app: &str) -> Result<usize> {
+            let prefix = self.get_app_prefix(app);
+            let deleted = self.delete_by_prefix_internal(&prefix).await?;
+            tracing::debug!("delete_app {}: deleted {} objects", app, deleted);
+            Ok(deleted)
         }
 
         async fn cleanup(&self, older_than: Duration) -> Result<usize> {
@@ -212,33 +248,29 @@ mod inner {
             Ok(deleted)
         }
 
-        async fn get_public_url(&self, key: &str) -> Result<Option<String>> {
-            // Get hashed object key (used for both CDN and presigned URLs)
-            let object_key = self.get_object_key(key);
+        async fn get_public_url(&self, app: &str, stream: &str, name: &str) -> Result<Option<String>> {
+            let object_key = self.get_object_key(app, stream, name);
 
-            // If CDN is configured, return CDN URL with hashed key
+            // If CDN is configured, return CDN URL
             if !self.config.public_url_prefix.is_empty() {
                 let cdn_url = format!("{}{}", self.config.public_url_prefix, object_key);
-                tracing::trace!("Generated CDN URL for key '{}': {}", key, cdn_url);
+                tracing::trace!("Generated CDN URL for {}/{}/{}: {}", app, stream, name, cdn_url);
                 return Ok(Some(cdn_url));
             }
 
             // No CDN, generate presigned URL with expiration
-            // Convert u64 seconds to Duration
             let expires_in = Duration::from_secs(self.config.presign_expires_in);
 
-            // Generate presigned read URL with expiration
             let presigned_req = self.operator
                 .presign_read(&object_key, expires_in)
                 .await
                 .map_err(|e| Error::other(format!("Failed to presign URL: {e}")))?;
 
-            // Get the presigned URL
             let url = presigned_req.uri().to_string();
 
             tracing::trace!(
-                "Generated presigned URL for key '{}': expires in {}s",
-                key,
+                "Generated presigned URL for {}/{}/{}: expires in {}s",
+                app, stream, name,
                 self.config.presign_expires_in
             );
 
@@ -265,13 +297,13 @@ mod inner {
 
             let storage = OssStorage::new(config).unwrap();
 
-            // With CDN configured, should return CDN URL with hashed key
-            let url = storage.get_public_url("live-room_123-segment_0").await.unwrap();
+            // With CDN configured, should return CDN URL with structured path
+            let url = storage.get_public_url("live", "room_123", "segment_0").await.unwrap();
             assert!(url.is_some());
             let url_str = url.unwrap();
-            assert!(url_str.starts_with("https://cdn.example.com/hls/hls/"));
-            // URL should contain hash of the key, not the original key
-            assert!(!url_str.contains("live-room_123-segment_0"));
+            assert!(url_str.starts_with("https://cdn.example.com/hls/"));
+            // URL should contain the structured path
+            assert!(url_str.contains("live/room_123/segment_0"));
         }
 
         #[tokio::test]
@@ -289,11 +321,11 @@ mod inner {
 
             let storage = OssStorage::new(config).unwrap();
 
-            let url = storage.get_public_url("room_123-segment_0").await.unwrap();
+            let url = storage.get_public_url("room_123", "media_456", "segment_0").await.unwrap();
             assert!(url.is_some());
             let url_str = url.unwrap();
             assert!(url_str.starts_with("https://minio.example.com:9000/hls/"));
-            assert!(!url_str.contains("room_123-segment_0"));
+            assert!(url_str.contains("room_123/media_456/segment_0"));
         }
     }
 }

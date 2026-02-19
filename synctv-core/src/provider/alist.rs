@@ -310,15 +310,15 @@ impl MediaProvider for AlistProvider {
         })
     }
 
-    fn cache_key(&self, _ctx: &ProviderContext<'_>, source_config: &Value) -> String {
+    fn cache_key(&self, ctx: &ProviderContext<'_>, source_config: &Value) -> String {
         // Cache key must include token hash to prevent cross-user data leakage.
         // Different users have different tokens and may see different files.
         if let Ok(config) = AlistSourceConfig::try_from(source_config) {
             use sha2::{Sha256, Digest};
             let identifier = format!("{}:{}:{}", config.host, config.token, config.path);
-            format!("alist:{:x}", Sha256::digest(identifier.as_bytes()))
+            format!("{}:playback:alist:{:x}", ctx.key_prefix, Sha256::digest(identifier.as_bytes()))
         } else {
-            "alist:unknown".to_string()
+            format!("{}:playback:alist:unknown", ctx.key_prefix)
         }
     }
 

@@ -83,6 +83,26 @@ impl MediaProvider for DirectUrlProvider {
         "direct_url"
     }
 
+    async fn validate_source_config(
+        &self,
+        _ctx: &ProviderContext<'_>,
+        source_config: &Value,
+    ) -> Result<(), ProviderError> {
+        let config = DirectUrlSourceConfig::try_from(source_config)?;
+
+        // Validate URL scheme: only allow http(s)
+        if !config.url.starts_with("http://") && !config.url.starts_with("https://") {
+            return Err(ProviderError::InvalidConfig(
+                "DirectUrl only supports http:// and https:// schemes".to_string(),
+            ));
+        }
+
+        // SSRF protection: reject URLs targeting private/internal networks at add time
+        Self::validate_url_not_internal(&config.url)?;
+
+        Ok(())
+    }
+
     async fn generate_playback(
         &self,
         _ctx: &ProviderContext<'_>,
@@ -138,14 +158,12 @@ impl MediaProvider for DirectUrlProvider {
         })
     }
 
-    fn cache_key(&self, _ctx: &ProviderContext<'_>, source_config: &Value) -> String {
+    fn cache_key(&self, ctx: &ProviderContext<'_>, source_config: &Value) -> String {
         if let Ok(config) = DirectUrlSourceConfig::try_from(source_config) {
-            {
-                use sha2::{Sha256, Digest};
-                format!("direct_url:{:x}", Sha256::digest(config.url.as_bytes()))
-            }
+            use sha2::{Sha256, Digest};
+            format!("{}:playback:direct_url:{:x}", ctx.key_prefix, Sha256::digest(config.url.as_bytes()))
         } else {
-            "direct_url:unknown".to_string()
+            format!("{}:playback:direct_url:unknown", ctx.key_prefix)
         }
     }
 }

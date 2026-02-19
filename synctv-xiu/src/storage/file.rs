@@ -1,35 +1,16 @@
 // File system storage backend for HLS
 //
 // Default storage backend using local filesystem
-// With hash-based path security
-//
-// Storage key format: "app-stream-ts" (flat, no directories)
-// Keys are hashed with SHA256 before using as filenames
+// With structured directory-based paths: base_path/app/stream/name
 
 use super::HlsStorage;
+use crate::storage::validate_storage_key;
 use async_trait::async_trait;
 use bytes::Bytes;
-use sha2::{Sha256, Digest};
 use std::io::Result;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 use tokio::fs;
-
-/// Check if a filename matches the SHA256 hex hash pattern (exactly 64 hex chars).
-/// This prevents accidentally deleting non-HLS files if `base_path` is misconfigured.
-fn is_sha256_filename(name: &str) -> bool {
-    name.len() == 64 && name.chars().all(|c| c.is_ascii_hexdigit())
-}
-
-/// Hash storage key to prevent path traversal attacks
-///
-/// Uses SHA256 to convert arbitrary keys into safe filenames
-/// Example: "live-room123-a1b2c3d4e5f6" -> "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-fn hash_key(key: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(key.as_bytes());
-    format!("{:x}", hasher.finalize())
-}
 
 /// File system storage backend
 pub struct FileStorage {
@@ -44,53 +25,140 @@ impl FileStorage {
         }
     }
 
-    /// Get full file path from hashed key (keys are hashed for security)
-    fn get_path(&self, key: &str) -> PathBuf {
-        let hashed = hash_key(key);
-        self.base_path.join(hashed)
+    /// Get full file path from structured components: base_path/app/stream/name
+    fn get_path(&self, app: &str, stream: &str, name: &str) -> PathBuf {
+        self.base_path.join(app).join(stream).join(name)
     }
 }
 
 #[async_trait]
 impl HlsStorage for FileStorage {
-    async fn write(&self, key: &str, data: Bytes) -> Result<()> {
-        let file_path = self.get_path(key);
+    async fn write(&self, app: &str, stream: &str, name: &str, data: Bytes) -> Result<()> {
+        validate_storage_key(app, stream, name)?;
+        let file_path = self.get_path(app, stream, name);
         let size = data.len();
+
+        // Ensure parent directory exists
+        if let Some(parent) = file_path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+
         fs::write(&file_path, data).await?;
 
-        tracing::trace!("Wrote: {:?} ({} bytes) for key: {}", file_path, size, key);
+        tracing::trace!(
+            "Wrote: {:?} ({} bytes) for {}/{}/{}",
+            file_path, size, app, stream, name
+        );
 
         Ok(())
     }
 
-    async fn read(&self, key: &str) -> Result<Bytes> {
-        let file_path = self.get_path(key);
+    async fn read(&self, app: &str, stream: &str, name: &str) -> Result<Bytes> {
+        validate_storage_key(app, stream, name)?;
+        let file_path = self.get_path(app, stream, name);
         let data = fs::read(&file_path).await?;
 
-        tracing::trace!("Read: {:?} ({} bytes) for key: {}", file_path, data.len(), key);
+        tracing::trace!(
+            "Read: {:?} ({} bytes) for {}/{}/{}",
+            file_path, data.len(), app, stream, name
+        );
 
         Ok(Bytes::from(data))
     }
 
-    async fn delete(&self, key: &str) -> Result<()> {
-        let file_path = self.get_path(key);
+    async fn delete(&self, app: &str, stream: &str, name: &str) -> Result<()> {
+        validate_storage_key(app, stream, name)?;
+        let file_path = self.get_path(app, stream, name);
 
-        // Use tokio async exists check
         if fs::try_exists(&file_path).await.unwrap_or(false) {
             fs::remove_file(&file_path).await?;
-            tracing::trace!("Deleted: {:?} for key: {}", file_path, key);
+            tracing::trace!("Deleted: {:?} for {}/{}/{}", file_path, app, stream, name);
         }
 
         Ok(())
     }
 
-    async fn exists(&self, key: &str) -> Result<bool> {
-        let file_path = self.get_path(key);
+    async fn exists(&self, app: &str, stream: &str, name: &str) -> Result<bool> {
+        validate_storage_key(app, stream, name)?;
+        let file_path = self.get_path(app, stream, name);
         fs::try_exists(&file_path).await
     }
 
+    async fn delete_app_stream(&self, app: &str, stream: &str) -> Result<usize> {
+        crate::storage::validate_component(app, "app")?;
+        crate::storage::validate_component(stream, "stream")?;
+        let dir = self.base_path.join(app).join(stream);
+
+        if !fs::try_exists(&dir).await.unwrap_or(false) {
+            return Ok(0);
+        }
+
+        let mut deleted = 0;
+        let mut entries = fs::read_dir(&dir).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let ft = match entry.file_type().await {
+                Ok(ft) => ft,
+                Err(_) => continue,
+            };
+            if ft.is_file() {
+                if fs::remove_file(entry.path()).await.is_ok() {
+                    deleted += 1;
+                }
+            }
+        }
+
+        // Remove empty stream dir, then try removing empty app dir
+        let _ = fs::remove_dir(&dir).await;
+        let _ = fs::remove_dir(self.base_path.join(app)).await;
+
+        tracing::debug!(
+            "delete_app_stream {}/{}: deleted {} files",
+            app, stream, deleted
+        );
+        Ok(deleted)
+    }
+
+    async fn delete_app(&self, app: &str) -> Result<usize> {
+        crate::storage::validate_component(app, "app")?;
+        let app_dir = self.base_path.join(app);
+
+        if !fs::try_exists(&app_dir).await.unwrap_or(false) {
+            return Ok(0);
+        }
+
+        let mut deleted = 0;
+        let mut stream_dirs = fs::read_dir(&app_dir).await?;
+        while let Some(stream_entry) = stream_dirs.next_entry().await? {
+            let ft = match stream_entry.file_type().await {
+                Ok(ft) => ft,
+                Err(_) => continue,
+            };
+            if !ft.is_dir() {
+                continue;
+            }
+            let stream_dir = stream_entry.path();
+            let mut entries = fs::read_dir(&stream_dir).await?;
+            while let Some(entry) = entries.next_entry().await? {
+                let ft = match entry.file_type().await {
+                    Ok(ft) => ft,
+                    Err(_) => continue,
+                };
+                if ft.is_file() {
+                    if fs::remove_file(entry.path()).await.is_ok() {
+                        deleted += 1;
+                    }
+                }
+            }
+            let _ = fs::remove_dir(&stream_dir).await;
+        }
+
+        let _ = fs::remove_dir(&app_dir).await;
+
+        tracing::debug!("delete_app {}: deleted {} files", app, deleted);
+        Ok(deleted)
+    }
+
     async fn cleanup(&self, older_than: Duration) -> Result<usize> {
-        // Use tokio async exists check
         if !fs::try_exists(&self.base_path).await.unwrap_or(false) {
             tracing::debug!("Cleanup base path does not exist: {:?}", self.base_path);
             return Ok(0);
@@ -98,41 +166,54 @@ impl HlsStorage for FileStorage {
 
         let cutoff_time = SystemTime::now() - older_than;
         let mut deleted = 0;
-        let mut entries = fs::read_dir(&self.base_path).await?;
 
-        // Scan all files in base_path (flat structure with hashed filenames)
-        while let Some(entry) = entries.next_entry().await? {
-            let path = entry.path();
-
-            // Only process files (skip directories) - use async metadata check
-            let file_type = match entry.file_type().await {
+        // Walk base_path/app/stream/files recursively
+        let mut app_dirs = fs::read_dir(&self.base_path).await?;
+        while let Some(app_entry) = app_dirs.next_entry().await? {
+            let ft = match app_entry.file_type().await {
                 Ok(ft) => ft,
                 Err(_) => continue,
             };
-            if !file_type.is_file() {
+            if !ft.is_dir() {
                 continue;
             }
-
-            // Only delete files matching the SHA256 hex filename pattern.
-            // This prevents deleting unrelated files if base_path is misconfigured.
-            let file_name = entry.file_name();
-            let file_name_str = file_name.to_string_lossy();
-            if !is_sha256_filename(&file_name_str) {
-                continue;
-            }
-
-            // Check file modified time
-            if let Ok(metadata) = fs::metadata(&path).await {
-                if let Ok(modified) = metadata.modified() {
-                    if modified < cutoff_time {
-                        // File is older than cutoff, delete it
-                        if fs::remove_file(&path).await.is_ok() {
-                            deleted += 1;
-                            tracing::trace!("Deleted expired file: {:?}", path);
+            let app_dir = app_entry.path();
+            let mut stream_dirs = fs::read_dir(&app_dir).await?;
+            while let Some(stream_entry) = stream_dirs.next_entry().await? {
+                let ft = match stream_entry.file_type().await {
+                    Ok(ft) => ft,
+                    Err(_) => continue,
+                };
+                if !ft.is_dir() {
+                    continue;
+                }
+                let stream_dir = stream_entry.path();
+                let mut entries = fs::read_dir(&stream_dir).await?;
+                while let Some(entry) = entries.next_entry().await? {
+                    let path = entry.path();
+                    let ft = match entry.file_type().await {
+                        Ok(ft) => ft,
+                        Err(_) => continue,
+                    };
+                    if !ft.is_file() {
+                        continue;
+                    }
+                    if let Ok(metadata) = fs::metadata(&path).await {
+                        if let Ok(modified) = metadata.modified() {
+                            if modified < cutoff_time {
+                                if fs::remove_file(&path).await.is_ok() {
+                                    deleted += 1;
+                                    tracing::trace!("Deleted expired file: {:?}", path);
+                                }
+                            }
                         }
                     }
                 }
+                // Remove empty stream dir
+                let _ = fs::remove_dir(&stream_dir).await;
             }
+            // Remove empty app dir
+            let _ = fs::remove_dir(&app_dir).await;
         }
 
         tracing::info!(
@@ -156,47 +237,29 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let storage = FileStorage::new(temp_dir.path());
 
-        // Write (flat key format: app-stream-ts)
         let data = Bytes::from_static(b"test segment data");
-        let result = storage
-            .write("live-room_123-segment_0", data.clone())
-            .await;
+        let result = storage.write("live", "room_123", "segment_0", data.clone()).await;
         assert!(result.is_ok());
 
-        // Read
-        let read_data = storage
-            .read("live-room_123-segment_0")
-            .await
-            .unwrap();
+        let read_data = storage.read("live", "room_123", "segment_0").await.unwrap();
         assert_eq!(data, read_data);
 
-        // Check exists
-        let exists = storage
-            .exists("live-room_123-segment_0")
-            .await
-            .unwrap();
+        let exists = storage.exists("live", "room_123", "segment_0").await.unwrap();
         assert!(exists);
 
-        // Delete
-        let result = storage.delete("live-room_123-segment_0").await;
+        let result = storage.delete("live", "room_123", "segment_0").await;
         assert!(result.is_ok());
 
-        // Check not exists
-        let exists = storage
-            .exists("live-room_123-segment_0")
-            .await
-            .unwrap();
+        let exists = storage.exists("live", "room_123", "segment_0").await.unwrap();
         assert!(!exists);
     }
-
 
     #[tokio::test]
     async fn test_file_storage_public_url() {
         let temp_dir = tempdir().unwrap();
         let storage = FileStorage::new(temp_dir.path());
 
-        // File storage should return None (no public URL)
-        let url = storage.get_public_url("live-room_123-segment_0").await.unwrap();
+        let url = storage.get_public_url("live", "room_123", "segment_0").await.unwrap();
         assert_eq!(url, None);
     }
 
@@ -205,43 +268,66 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let storage = FileStorage::new(temp_dir.path());
 
-        // Write files (flat key format)
-        storage
-            .write("live-room_123-segment_0", Bytes::from_static(b"data0"))
-            .await
-            .unwrap();
-        storage
-            .write("live-room_123-segment_1", Bytes::from_static(b"data1"))
-            .await
-            .unwrap();
-        storage
-            .write("live-room_456-segment_0", Bytes::from_static(b"data2"))
-            .await
-            .unwrap();
+        storage.write("live", "room_123", "segment_0", Bytes::from_static(b"data0")).await.unwrap();
+        storage.write("live", "room_123", "segment_1", Bytes::from_static(b"data1")).await.unwrap();
+        storage.write("live", "room_456", "segment_0", Bytes::from_static(b"data2")).await.unwrap();
 
-        // Sleep a bit
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-        // Write another file (should not be deleted)
-        storage
-            .write("live-room_123-segment_2", Bytes::from_static(b"data3"))
-            .await
-            .unwrap();
+        storage.write("live", "room_123", "segment_2", Bytes::from_static(b"data3")).await.unwrap();
 
-        // Cleanup files older than 50ms
-        let deleted = storage
-            .cleanup(Duration::from_millis(50))
-            .await
-            .unwrap();
+        let deleted = storage.cleanup(Duration::from_millis(50)).await.unwrap();
 
-        // Should delete segment_0, segment_1, and segment from room_456 (all are old)
-        // Note: cleanup now deletes ALL expired files, not just specific prefix
         assert_eq!(deleted, 3);
-        assert!(!storage.exists("live-room_123-segment_0").await.unwrap());
-        assert!(!storage.exists("live-room_123-segment_1").await.unwrap());
-        assert!(storage.exists("live-room_123-segment_2").await.unwrap());
+        assert!(!storage.exists("live", "room_123", "segment_0").await.unwrap());
+        assert!(!storage.exists("live", "room_123", "segment_1").await.unwrap());
+        assert!(storage.exists("live", "room_123", "segment_2").await.unwrap());
+        assert!(!storage.exists("live", "room_456", "segment_0").await.unwrap());
+    }
 
-        // room_456 segment will also be deleted since it's old
-        assert!(!storage.exists("live-room_456-segment_0").await.unwrap());
+    #[tokio::test]
+    async fn test_file_storage_delete_app_stream() {
+        let temp_dir = tempdir().unwrap();
+        let storage = FileStorage::new(temp_dir.path());
+
+        storage.write("app1", "stream1", "seg0", Bytes::from_static(b"d0")).await.unwrap();
+        storage.write("app1", "stream1", "seg1", Bytes::from_static(b"d1")).await.unwrap();
+        storage.write("app1", "stream2", "seg0", Bytes::from_static(b"d2")).await.unwrap();
+
+        let deleted = storage.delete_app_stream("app1", "stream1").await.unwrap();
+        assert_eq!(deleted, 2);
+
+        assert!(!storage.exists("app1", "stream1", "seg0").await.unwrap());
+        assert!(!storage.exists("app1", "stream1", "seg1").await.unwrap());
+        assert!(storage.exists("app1", "stream2", "seg0").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_file_storage_delete_app() {
+        let temp_dir = tempdir().unwrap();
+        let storage = FileStorage::new(temp_dir.path());
+
+        storage.write("app1", "stream1", "seg0", Bytes::from_static(b"d0")).await.unwrap();
+        storage.write("app1", "stream2", "seg0", Bytes::from_static(b"d1")).await.unwrap();
+        storage.write("app2", "stream1", "seg0", Bytes::from_static(b"d2")).await.unwrap();
+
+        let deleted = storage.delete_app("app1").await.unwrap();
+        assert_eq!(deleted, 2);
+
+        assert!(!storage.exists("app1", "stream1", "seg0").await.unwrap());
+        assert!(!storage.exists("app1", "stream2", "seg0").await.unwrap());
+        assert!(storage.exists("app2", "stream1", "seg0").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_file_storage_path_traversal_rejected() {
+        let temp_dir = tempdir().unwrap();
+        let storage = FileStorage::new(temp_dir.path());
+
+        assert!(storage.write("..", "stream", "name", Bytes::from_static(b"x")).await.is_err());
+        assert!(storage.write("app", "..", "name", Bytes::from_static(b"x")).await.is_err());
+        assert!(storage.write("app", "stream", "..", Bytes::from_static(b"x")).await.is_err());
+        assert!(storage.write("a/b", "stream", "name", Bytes::from_static(b"x")).await.is_err());
+        assert!(storage.write("", "stream", "name", Bytes::from_static(b"x")).await.is_err());
     }
 }

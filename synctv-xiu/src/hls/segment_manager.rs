@@ -128,8 +128,7 @@ impl SegmentManager {
     /// # Returns
     /// Number of segments deleted
     pub async fn cleanup_stream(&self, app_name: &str, stream_name: &str) -> std::io::Result<usize> {
-        let prefix = crate::hls::hls_stream_storage_prefix(app_name, stream_name);
-        let deleted = self.storage.delete_by_prefix(&prefix).await?;
+        let deleted = self.storage.delete_app_stream(app_name, stream_name).await?;
         if deleted > 0 {
             tracing::info!(
                 "Cleaned up {} segments for stream {}/{}",
@@ -153,11 +152,11 @@ mod tests {
     async fn test_segment_manager_cleanup() {
         let storage = Arc::new(MemoryStorage::new());
 
-        // Write some segments (flat key format)
-        storage.write("live-room_123-segment_0", Bytes::from_static(b"data0"))
+        // Write some segments
+        storage.write("live", "room_123", "segment_0", Bytes::from_static(b"data0"))
             .await
             .unwrap();
-        storage.write("live-room_123-segment_1", Bytes::from_static(b"data1"))
+        storage.write("live", "room_123", "segment_1", Bytes::from_static(b"data1"))
             .await
             .unwrap();
 
@@ -187,11 +186,11 @@ mod tests {
     async fn test_segment_manager_cleanup_expired() {
         let storage = Arc::new(MemoryStorage::new());
 
-        // Write segments for two rooms (flat key format)
-        storage.write("live-room_123-segment_0", Bytes::from_static(b"data0"))
+        // Write segments for two rooms
+        storage.write("live", "room_123", "segment_0", Bytes::from_static(b"data0"))
             .await
             .unwrap();
-        storage.write("live-room_456-segment_0", Bytes::from_static(b"data1"))
+        storage.write("live", "room_456", "segment_0", Bytes::from_static(b"data1"))
             .await
             .unwrap();
 
@@ -205,7 +204,7 @@ mod tests {
 
         // Both segments are deleted since they're expired
         assert_eq!(deleted, 2);
-        assert!(!storage.exists("live-room_123-segment_0").await.unwrap());
-        assert!(!storage.exists("live-room_456-segment_0").await.unwrap());
+        assert!(!storage.exists("live", "room_123", "segment_0").await.unwrap());
+        assert!(!storage.exists("live", "room_456", "segment_0").await.unwrap());
     }
 }

@@ -60,6 +60,9 @@ pub struct K8sDnsDiscovery {
     /// disappeared peers via `NodeRegistry::register_remote()` /
     /// `NodeRegistry::unregister_remote()`.
     node_registry: Option<Arc<NodeRegistry>>,
+    /// Tracks the registration epoch for each peer IP so that
+    /// `unregister_remote` can pass the correct epoch for validation.
+    peer_epochs: Arc<RwLock<HashMap<String, u64>>>,
 }
 
 impl K8sDnsDiscovery {
@@ -116,6 +119,7 @@ impl K8sDnsDiscovery {
             peers: Arc::new(RwLock::new(Vec::new())),
             cancel_token: CancellationToken::new(),
             node_registry: None,
+            peer_epochs: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
@@ -134,6 +138,7 @@ impl K8sDnsDiscovery {
             peers: Arc::new(RwLock::new(Vec::new())),
             cancel_token: CancellationToken::new(),
             node_registry: None,
+            peer_epochs: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -213,7 +218,7 @@ impl K8sDnsDiscovery {
                     let old_ips: HashSet<&str> = old_peers.iter().map(|p| p.ip.as_str()).collect();
                     let new_ips: HashSet<&str> = new_peers.iter().map(|p| p.ip.as_str()).collect();
 
-                    // Register new peers
+                    // Register new peers and track their epochs
                     for peer in &new_peers {
                         if !old_ips.contains(peer.ip.as_str()) {
                             let mut info = NodeInfo::new(
@@ -222,6 +227,7 @@ impl K8sDnsDiscovery {
                                 peer.http_address.clone(),
                             );
                             info.metadata.insert("discovery".to_string(), "k8s_dns".to_string());
+                            let registration_epoch = info.epoch;
                             if let Err(e) = registry.register_remote(info).await {
                                 tracing::warn!(
                                     peer_ip = %peer.ip,
@@ -229,27 +235,35 @@ impl K8sDnsDiscovery {
                                     "Failed to register DNS-discovered peer in NodeRegistry"
                                 );
                             } else {
+                                // Track the epoch used for registration
+                                self.peer_epochs.write().await.insert(peer.ip.clone(), registration_epoch);
                                 tracing::info!(
                                     peer_ip = %peer.ip,
                                     grpc_address = %peer.grpc_address,
+                                    epoch = registration_epoch,
                                     "DNS-discovered peer registered in NodeRegistry"
                                 );
                             }
                         }
                     }
 
-                    // Unregister disappeared peers
+                    // Unregister disappeared peers with their tracked epoch
                     for peer in old_peers.iter() {
                         if !new_ips.contains(peer.ip.as_str()) {
-                            if let Err(e) = registry.unregister_remote(&peer.ip, None).await {
+                            let tracked_epoch = self.peer_epochs.read().await.get(&peer.ip).copied();
+                            if let Err(e) = registry.unregister_remote(&peer.ip, tracked_epoch).await {
                                 tracing::warn!(
                                     peer_ip = %peer.ip,
+                                    epoch = ?tracked_epoch,
                                     error = %e,
                                     "Failed to unregister disappeared DNS peer from NodeRegistry"
                                 );
                             } else {
+                                // Remove the tracked epoch for the departed peer
+                                self.peer_epochs.write().await.remove(&peer.ip);
                                 tracing::info!(
                                     peer_ip = %peer.ip,
+                                    epoch = ?tracked_epoch,
                                     "Disappeared DNS peer unregistered from NodeRegistry"
                                 );
                             }

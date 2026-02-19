@@ -253,7 +253,7 @@ impl From<synctv_media_providers::ProviderClientError> for ProviderError {
             ProviderClientError::InvalidConfig(msg) => Self::InvalidConfig(msg),
             ProviderClientError::InvalidHeader(msg) => Self::ParseError(msg),
             ProviderClientError::NotImplemented(msg) => Self::ApiError(format!("Not implemented: {msg}")),
-            ProviderClientError::Http { status, url, .. } => Self::ApiError(format!("HTTP {status} for {url}")),
+            ProviderClientError::Http { status, url, .. } => Self::UpstreamHttp { status: status.as_u16(), url },
             ProviderClientError::ResponseTooLarge { size } => Self::ApiError(format!("Response too large ({size} bytes)")),
         }
     }
@@ -318,138 +318,11 @@ impl BilibiliInterface for GrpcBilibiliClient {
 }
 
 
-// ============================================================================
-// Cached Bilibili Client
-// ============================================================================
-
-/// Caching wrapper around any `BilibiliInterface` implementation.
-///
-/// Caches successful responses from read-only query methods using moka.
-/// - Video info queries (`parse_video_page`, `parse_pgc_page`, etc.): 5 min TTL
-/// - Play URL queries (`get_video_url`, `get_pgc_url`, etc.): 2 min TTL (URLs expire)
-/// - Write/auth methods (login, QR code) are NOT cached.
-///
-/// Cache key: `"{method}:{serialized_request}"` -- uses `serde_json` serialization
-/// of the proto request, which derives `Serialize`.
-pub struct CachedBilibiliClient {
-    inner: BilibiliClientArc,
-    /// Cache for video info queries (5 min TTL)
-    info_cache: moka::future::Cache<String, Vec<u8>>,
-    /// Cache for play URL queries (2 min TTL)
-    url_cache: moka::future::Cache<String, Vec<u8>>,
-}
-
-impl CachedBilibiliClient {
-    pub fn new(inner: BilibiliClientArc) -> Self {
-        Self {
-            inner,
-            info_cache: moka::future::Cache::builder()
-                .max_capacity(500)
-                .time_to_live(Duration::from_mins(5))
-                .build(),
-            url_cache: moka::future::Cache::builder()
-                .max_capacity(200)
-                .time_to_live(Duration::from_mins(2))
-                .build(),
-        }
-    }
-}
-
-/// Helper to build a cache key from a method name and a serializable request.
-fn cache_key<T: serde::Serialize>(method: &str, req: &T) -> String {
-    format!("{}:{}", method, serde_json::to_string(req).unwrap_or_default())
-}
-
-/// Macro to implement a cached read-only method.
-///
-/// On cache hit, deserializes the stored bytes back to the response type.
-/// On cache miss, calls the inner client, serializes the successful response,
-/// and stores it. Errors are never cached.
-macro_rules! impl_cached_method {
-    ($self:ident, $cache:ident, $method:literal, $trait_method:ident, $req:expr, $resp_ty:ty) => {{
-        let key = cache_key($method, &$req);
-        if let Some(bytes) = $self.$cache.get(&key).await {
-            if let Ok(resp) = serde_json::from_slice::<$resp_ty>(&bytes) {
-                return Ok(resp);
-            }
-        }
-        let result = $self.inner.$trait_method($req).await;
-        if let Ok(ref resp) = result {
-            if let Ok(bytes) = serde_json::to_vec(resp) {
-                $self.$cache.insert(key, bytes).await;
-            }
-        }
-        result
-    }};
-}
-
-#[async_trait]
-impl BilibiliInterface for CachedBilibiliClient {
-    // Auth/login methods: NOT cached (delegate directly)
-    async fn new_qr_code(&self, request: synctv_media_providers::grpc::bilibili::Empty) -> Result<synctv_media_providers::grpc::bilibili::NewQrCodeResp, BilibiliError> {
-        self.inner.new_qr_code(request).await
-    }
-    async fn login_with_qr_code(&self, request: synctv_media_providers::grpc::bilibili::LoginWithQrCodeReq) -> Result<synctv_media_providers::grpc::bilibili::LoginWithQrCodeResp, BilibiliError> {
-        self.inner.login_with_qr_code(request).await
-    }
-    async fn new_captcha(&self, request: synctv_media_providers::grpc::bilibili::Empty) -> Result<synctv_media_providers::grpc::bilibili::NewCaptchaResp, BilibiliError> {
-        self.inner.new_captcha(request).await
-    }
-    async fn new_sms(&self, request: synctv_media_providers::grpc::bilibili::NewSmsReq) -> Result<synctv_media_providers::grpc::bilibili::NewSmsResp, BilibiliError> {
-        self.inner.new_sms(request).await
-    }
-    async fn login_with_sms(&self, request: synctv_media_providers::grpc::bilibili::LoginWithSmsReq) -> Result<synctv_media_providers::grpc::bilibili::LoginWithSmsResp, BilibiliError> {
-        self.inner.login_with_sms(request).await
-    }
-
-    // Info queries: cached with 5 min TTL
-    async fn parse_video_page(&self, request: synctv_media_providers::grpc::bilibili::ParseVideoPageReq) -> Result<synctv_media_providers::grpc::bilibili::VideoPageInfo, BilibiliError> {
-        impl_cached_method!(self, info_cache, "parse_video_page", parse_video_page, request, synctv_media_providers::grpc::bilibili::VideoPageInfo)
-    }
-    async fn parse_pgc_page(&self, request: synctv_media_providers::grpc::bilibili::ParsePgcPageReq) -> Result<synctv_media_providers::grpc::bilibili::VideoPageInfo, BilibiliError> {
-        impl_cached_method!(self, info_cache, "parse_pgc_page", parse_pgc_page, request, synctv_media_providers::grpc::bilibili::VideoPageInfo)
-    }
-    async fn get_subtitles(&self, request: synctv_media_providers::grpc::bilibili::GetSubtitlesReq) -> Result<synctv_media_providers::grpc::bilibili::GetSubtitlesResp, BilibiliError> {
-        impl_cached_method!(self, info_cache, "get_subtitles", get_subtitles, request, synctv_media_providers::grpc::bilibili::GetSubtitlesResp)
-    }
-    async fn user_info(&self, request: synctv_media_providers::grpc::bilibili::UserInfoReq) -> Result<synctv_media_providers::grpc::bilibili::UserInfoResp, BilibiliError> {
-        impl_cached_method!(self, info_cache, "user_info", user_info, request, synctv_media_providers::grpc::bilibili::UserInfoResp)
-    }
-    async fn r#match(&self, request: synctv_media_providers::grpc::bilibili::MatchReq) -> Result<synctv_media_providers::grpc::bilibili::MatchResp, BilibiliError> {
-        impl_cached_method!(self, info_cache, "match", r#match, request, synctv_media_providers::grpc::bilibili::MatchResp)
-    }
-    async fn parse_live_page(&self, request: synctv_media_providers::grpc::bilibili::ParseLivePageReq) -> Result<synctv_media_providers::grpc::bilibili::VideoPageInfo, BilibiliError> {
-        impl_cached_method!(self, info_cache, "parse_live_page", parse_live_page, request, synctv_media_providers::grpc::bilibili::VideoPageInfo)
-    }
-
-    // URL queries: cached with 2 min TTL (URLs may be short-lived)
-    async fn get_video_url(&self, request: synctv_media_providers::grpc::bilibili::GetVideoUrlReq) -> Result<synctv_media_providers::grpc::bilibili::VideoUrl, BilibiliError> {
-        impl_cached_method!(self, url_cache, "get_video_url", get_video_url, request, synctv_media_providers::grpc::bilibili::VideoUrl)
-    }
-    async fn get_dash_video_url(&self, request: synctv_media_providers::grpc::bilibili::GetDashVideoUrlReq) -> Result<synctv_media_providers::grpc::bilibili::GetDashVideoUrlResp, BilibiliError> {
-        impl_cached_method!(self, url_cache, "get_dash_video_url", get_dash_video_url, request, synctv_media_providers::grpc::bilibili::GetDashVideoUrlResp)
-    }
-    async fn get_pgcurl(&self, request: synctv_media_providers::grpc::bilibili::GetPgcurlReq) -> Result<synctv_media_providers::grpc::bilibili::VideoUrl, BilibiliError> {
-        impl_cached_method!(self, url_cache, "get_pgcurl", get_pgcurl, request, synctv_media_providers::grpc::bilibili::VideoUrl)
-    }
-    async fn get_dash_pgcurl(&self, request: synctv_media_providers::grpc::bilibili::GetDashPgcurlReq) -> Result<synctv_media_providers::grpc::bilibili::GetDashPgcurlResp, BilibiliError> {
-        impl_cached_method!(self, url_cache, "get_dash_pgcurl", get_dash_pgcurl, request, synctv_media_providers::grpc::bilibili::GetDashPgcurlResp)
-    }
-    async fn get_live_streams(&self, request: synctv_media_providers::grpc::bilibili::GetLiveStreamsReq) -> Result<synctv_media_providers::grpc::bilibili::GetLiveStreamsResp, BilibiliError> {
-        impl_cached_method!(self, url_cache, "get_live_streams", get_live_streams, request, synctv_media_providers::grpc::bilibili::GetLiveStreamsResp)
-    }
-
-    // Live danmu info: NOT cached (connection-specific tokens)
-    async fn get_live_danmu_info(&self, request: synctv_media_providers::grpc::bilibili::GetLiveDanmuInfoReq) -> Result<synctv_media_providers::grpc::bilibili::GetLiveDanmuInfoResp, BilibiliError> {
-        self.inner.get_live_danmu_info(request).await
-    }
-}
-
-/// Wrap a Bilibili client with caching
-#[must_use]
-pub fn with_bilibili_cache(inner: BilibiliClientArc) -> BilibiliClientArc {
-    Arc::new(CachedBilibiliClient::new(inner))
-}
+// Note: Local moka-based `CachedBilibiliClient` was removed.
+// Caching is handled solely by the Redis cache-aside layer in the API/service
+// tier, which ensures consistency across replicas in a multi-node deployment.
+// A local in-process cache would serve stale data after another node invalidates
+// the cache, leading to subtle inconsistencies.
 
 // ============================================================================
 // Emby Client

@@ -665,6 +665,16 @@ impl StreamMessageHandler {
 
         let cancel_token = tokio_util::sync::CancellationToken::new();
 
+        // Send initial UserJoined message to the client (mirrors run() behavior)
+        let room_id_str = self.room_id.as_str().to_string();
+        let initial_msg = self.create_user_joined_message(&room_id_str).await;
+        if let Err(e) = self.sender.send(initial_msg) {
+            tracing::error!("Failed to send initial UserJoined message in start(): {e}");
+        }
+
+        // Broadcast UserJoined event to other replicas (mirrors run() behavior)
+        self.broadcast_user_joined().await;
+
         // Use bounded channel to prevent memory exhaustion from fast clients
         let (tx, mut rx) = tokio::sync::mpsc::channel::<ClientMessage>(256);
 
@@ -842,6 +852,56 @@ impl StreamMessageHandler {
                                 );
                                 disconnect_token.cancel();
                                 break;
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        // Spawn periodic heartbeat task for membership re-validation (mirrors run() behavior).
+        // Verifies every 30 seconds that the user is still a valid, non-banned member.
+        // This catches cases where disconnect signals were lost (e.g., channel lag).
+        {
+            let heartbeat_token = cancel_token.clone();
+            let heartbeat_room_id = self.room_id.clone();
+            let heartbeat_user_id = self.user_id.clone();
+            let heartbeat_room_service = Arc::clone(&self.room_service);
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+                interval.tick().await; // Skip the immediate first tick
+                loop {
+                    tokio::select! {
+                        () = heartbeat_token.cancelled() => break,
+                        _ = interval.tick() => {
+                            match heartbeat_room_service.member_service().get_member(&heartbeat_room_id, &heartbeat_user_id).await {
+                                Ok(Some(member)) => {
+                                    if member.status == synctv_core::models::MemberStatus::Banned {
+                                        tracing::info!(
+                                            user_id = %heartbeat_user_id.as_str(),
+                                            room_id = %heartbeat_room_id.as_str(),
+                                            "start() periodic check: user is banned, disconnecting"
+                                        );
+                                        heartbeat_token.cancel();
+                                        break;
+                                    }
+                                }
+                                Ok(None) => {
+                                    tracing::info!(
+                                        user_id = %heartbeat_user_id.as_str(),
+                                        room_id = %heartbeat_room_id.as_str(),
+                                        "start() periodic check: user is no longer a member, disconnecting"
+                                    );
+                                    heartbeat_token.cancel();
+                                    break;
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        error = %e,
+                                        user_id = %heartbeat_user_id.as_str(),
+                                        "start() periodic membership check failed (will retry)"
+                                    );
+                                }
                             }
                         }
                     }
@@ -1273,6 +1333,11 @@ impl StreamMessageHandler {
     /// Rate limited by design: the heartbeat interval on the client side
     /// (typically 3-5 seconds) is the throttle. The server accepts the report
     /// and performs a lightweight state update.
+    ///
+    /// Drift bounds: rejects reports where the reported position deviates
+    /// more than 30 seconds from the expected server-side position (computed
+    /// from last known time + wall-clock elapsed). This prevents clients from
+    /// spoofing arbitrary playback positions.
     async fn handle_playback_progress(
         &self,
         report: &crate::proto::client::PlaybackProgressReport,
@@ -1295,6 +1360,31 @@ impl StreamMessageHandler {
         // Only accept progress reports when playback is active and the
         // reported state matches the server's playing state
         if state.is_playing && report.is_playing {
+            // Drift bounds check: compute expected position from last known
+            // state + elapsed wall-clock time, reject if too far off.
+            let elapsed_secs = chrono::Utc::now()
+                .signed_duration_since(state.updated_at)
+                .num_milliseconds() as f64
+                / 1000.0;
+            let expected_position = state.current_time + (elapsed_secs * state.speed);
+            let drift = (report.current_time - expected_position).abs();
+
+            const MAX_DRIFT_SECONDS: f64 = 30.0;
+            if drift > MAX_DRIFT_SECONDS {
+                tracing::warn!(
+                    user_id = %self.user_id.as_str(),
+                    room_id = %self.room_id.as_str(),
+                    reported = report.current_time,
+                    expected = expected_position,
+                    drift = drift,
+                    "Playback progress report rejected: drift exceeds {} seconds",
+                    MAX_DRIFT_SECONDS
+                );
+                return Err(format!(
+                    "Playback progress drift too large ({drift:.1}s > {MAX_DRIFT_SECONDS}s)"
+                ));
+            }
+
             // Update the canonical position without broadcasting to avoid
             // feedback loops (the client already knows its own position).
             // We use update_state directly to set the current_time.
@@ -1361,8 +1451,8 @@ impl StreamMessageHandler {
 
     /// Handle `SetPlaybackSpeed` command from WebSocket
     async fn handle_set_speed_command(&self, speed: f64) -> Result<(), String> {
-        if speed <= 0.0 || speed > 4.0 {
-            return Err("Playback speed must be between 0.0 and 4.0".to_string());
+        if !(0.25..=4.0).contains(&speed) {
+            return Err("Playback speed must be between 0.25 and 4.0".to_string());
         }
 
         // Permission check (CHANGE_SPEED) is handled by PlaybackService::change_speed()

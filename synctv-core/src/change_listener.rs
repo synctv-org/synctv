@@ -1,7 +1,25 @@
 //! `PostgreSQL` LISTEN/NOTIFY-based change listener for cluster-wide resource cleanup.
 //!
-//! This module provides a database-driven change notification mechanism that replaces
-//! the WAL (Write-Ahead Log) approach with `PostgreSQL`'s native LISTEN/NOTIFY feature.
+//! # Status: Dead code -- retained for potential future use
+//!
+//! This module is **not currently wired into the application bootstrap**. All cache
+//! invalidation is handled by [`CacheInvalidationService`](crate::cache::invalidation::CacheInvalidationService)
+//! via Redis Streams, which covers all deletion paths (both soft and hard deletes)
+//! because they flow through the service/repository layer.
+//!
+//! The `PostgreSQL` LISTEN/NOTIFY triggers still exist in the database migrations
+//! (`notify_user_deleted`, `notify_room_deleted`, etc.) but no code subscribes to
+//! their channels. The triggers fire harmlessly with no listeners.
+//!
+//! ## When to activate this module
+//!
+//! If a future requirement introduces hard deletes that bypass the service layer
+//! (e.g., administrative SQL scripts, external tools), this listener would provide
+//! a safety net to catch those deletions and invalidate caches. To activate:
+//!
+//! 1. Implement [`ChangeHandler`] with a struct that delegates to
+//!    [`CacheManager`](crate::cache::manager::CacheManager) and the connection manager.
+//! 2. Instantiate [`PostgresChangeListener`] in the bootstrap and call `start()`.
 //!
 //! ## Architecture
 //!
@@ -13,42 +31,6 @@
 //! - **`RoomDeleted`**: Clear room caches, disconnect room connections, invalidate room state
 //! - **`PlaylistDeleted`**: Clear playlist caches
 //! - **`MediaDeleted`**: Clear media caches
-//!
-//! ## Benefits over WAL
-//!
-//! 1. **Stateless**: No persistent storage required (no PVC in Kubernetes)
-//! 2. **Native**: Uses `PostgreSQL`'s built-in pub/sub (no external dependencies)
-//! 3. **Reliable**: DELETE triggers guarantee notifications are sent
-//! 4. **Simple**: No file rotation, replay logic, or cleanup needed
-//!
-//! ## Database Triggers
-//!
-//! Triggers are created via database migrations (see `migrations/xxx_change_triggers.sql)`:
-//!
-//! ```sql
-//! CREATE OR REPLACE FUNCTION notify_user_deleted()
-//! RETURNS TRIGGER AS $$
-//! BEGIN
-//!     PERFORM pg_notify('synctv_user_deleted',
-//!         json_build_object('user_id', OLD.id, 'timestamp', CURRENT_TIMESTAMP)::text
-//!     );
-//!     RETURN OLD;
-//! END;
-//! $$ LANGUAGE plpgsql;
-//!
-//! CREATE TRIGGER trigger_user_deleted
-//! AFTER DELETE ON users
-//! FOR EACH ROW EXECUTE FUNCTION notify_user_deleted();
-//! ```
-//!
-//! ## Usage
-//!
-//! ```rust
-//! use synctv_core::change_listener::PostgresChangeListener;
-//!
-//! let listener = PostgresChangeListener::new(db_pool.clone(), handlers).await?;
-//! listener.start().await?;
-//! ```
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -86,7 +68,7 @@ pub enum ChangeEvent {
 
 impl ChangeEvent {
     /// Get the event type as a string for logging
-    #[must_use] 
+    #[must_use]
     pub const fn event_type(&self) -> &'static str {
         match self {
             Self::UserDeleted { .. } => "user_deleted",
@@ -97,7 +79,7 @@ impl ChangeEvent {
     }
 
     /// Get the resource ID from the event
-    #[must_use] 
+    #[must_use]
     pub fn resource_id(&self) -> &str {
         match self {
             Self::UserDeleted { user_id, .. } => user_id,
@@ -111,35 +93,21 @@ impl ChangeEvent {
 /// Handler trait for processing change events
 ///
 /// Implementations perform local cleanup actions when resources are deleted.
+///
+/// TODO: No production implementation exists yet. If activating this module,
+/// implement a struct that delegates to `CacheManager` and the connection manager.
 #[async_trait::async_trait]
 pub trait ChangeHandler: Send + Sync {
     /// Handle a user deletion event
-    ///
-    /// Typical actions:
-    /// - Clear user cache entries
-    /// - Disconnect all user connections
-    /// - Invalidate permission cache
     async fn handle_user_deleted(&self, user_id: &str) -> Result<()>;
 
     /// Handle a room deletion event
-    ///
-    /// Typical actions:
-    /// - Clear room cache entries
-    /// - Disconnect all room connections
-    /// - Clear room playback state cache
-    /// - Invalidate room settings cache
     async fn handle_room_deleted(&self, room_id: &str) -> Result<()>;
 
     /// Handle a playlist deletion event
-    ///
-    /// Typical actions:
-    /// - Clear playlist cache entries
     async fn handle_playlist_deleted(&self, playlist_id: &str) -> Result<()>;
 
     /// Handle a media deletion event
-    ///
-    /// Typical actions:
-    /// - Clear media cache entries
     async fn handle_media_deleted(&self, media_id: &str) -> Result<()>;
 }
 
@@ -147,6 +115,8 @@ pub trait ChangeHandler: Send + Sync {
 ///
 /// Listens to database notifications for resource deletions and invokes
 /// the registered handler to perform local cleanup actions.
+///
+/// **Not currently started** -- see module-level docs for activation instructions.
 pub struct PostgresChangeListener {
     db_pool: PgPool,
     handler: Arc<dyn ChangeHandler>,
@@ -175,7 +145,7 @@ impl PostgresChangeListener {
     }
 
     /// Get the cancellation token for external shutdown signaling
-    #[must_use] 
+    #[must_use]
     pub fn cancel_token(&self) -> CancellationToken {
         self.cancel_token.clone()
     }

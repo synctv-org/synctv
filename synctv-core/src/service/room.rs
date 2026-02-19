@@ -531,6 +531,15 @@ impl RoomService {
     /// Leave a room
     ///
     /// The room creator cannot leave; they must delete the room instead.
+    ///
+    /// **Important for callers**: This method only removes the membership record
+    /// and sends an in-app notification. It does NOT:
+    /// - Disconnect the user's WebSocket/gRPC connections from the room
+    /// - Publish a `ClusterEvent::UserLeft` for cross-replica disconnect propagation
+    ///
+    /// Callers (API layer) MUST handle these two concerns after calling this method.
+    /// See `synctv-api/src/impls/client/room.rs` `leave_room()` for the reference
+    /// implementation that correctly handles WS disconnect and cluster events.
     pub async fn leave_room(&self, room_id: RoomId, user_id: UserId) -> Result<()> {
         tracing::info!(room_id = %room_id, user_id = %user_id, "User leaving room");
 
@@ -744,6 +753,15 @@ impl RoomService {
     }
 
     // ========== Query Operations ==========
+
+    /// Check if a room exists (lightweight existence check, no full row fetch).
+    ///
+    /// Prefer this over `get_room()` when only existence verification is needed
+    /// (e.g., guest token validation), as it avoids fetching and deserializing
+    /// the full room row.
+    pub async fn room_exists(&self, room_id: &RoomId) -> Result<bool> {
+        self.room_repo.exists(room_id).await
+    }
 
     /// Get room with details
     pub async fn get_room(&self, room_id: &RoomId) -> Result<Room> {
@@ -1169,12 +1187,23 @@ impl RoomService {
     }
 
     /// Remove media from playlist
+    ///
+    /// Returns an error if the media is currently playing, since removing it
+    /// would leave playback in an inconsistent state.
     pub async fn remove_media(
         &self,
         room_id: RoomId,
         user_id: UserId,
         media_id: MediaId,
     ) -> Result<()> {
+        // Prohibit removing media that is currently playing
+        let state = self.playback_service.get_state(&room_id).await?;
+        if state.playing_media_id.as_ref() == Some(&media_id) {
+            return Err(Error::InvalidInput(
+                "Cannot remove media that is currently playing".to_string(),
+            ));
+        }
+
         self.media_service.remove_media(room_id, user_id, media_id).await
     }
 
@@ -1226,7 +1255,18 @@ impl RoomService {
     /// Permission check is handled by the API layer (`CLEAR_PLAYLIST`).
     /// This method no longer performs its own permission check to avoid
     /// inconsistency with the API layer's `CLEAR_PLAYLIST` check.
+    ///
+    /// Returns an error if media that is currently playing is in the playlist,
+    /// since removing it would leave playback in an inconsistent state.
     pub async fn clear_playlist(&self, room_id: RoomId, _user_id: UserId) -> Result<i64> {
+        // Check if any media in the playlist is currently playing
+        let state = self.playback_service.get_state(&room_id).await?;
+        if state.playing_media_id.is_some() {
+            return Err(Error::InvalidInput(
+                "Cannot clear playlist while media is currently playing".to_string(),
+            ));
+        }
+
         let root_playlist = self.playlist_service.get_root_playlist(&room_id).await?;
 
         // Delete all media in playlist directly (single query, no N+1)

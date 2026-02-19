@@ -29,15 +29,16 @@ fn require_email_api(state: &AppState) -> Result<EmailApiImpl, AppError> {
         .as_ref()
         .ok_or_else(|| AppError::bad_request("Email service not configured"))?;
 
-    // Build the email token service from the user service pool
-    let email_token_service = std::sync::Arc::new(
-        synctv_core::service::EmailTokenService::new(state.user_service.pool().clone()),
-    );
+    // Use the shared EmailTokenService from AppState (created once at startup)
+    let email_token_service = state
+        .email_token_service
+        .as_ref()
+        .ok_or_else(|| AppError::bad_request("Email token service not configured"))?;
 
     Ok(EmailApiImpl::new(
         state.user_service.clone(),
         email_service.clone(),
-        email_token_service,
+        email_token_service.clone(),
     ))
 }
 

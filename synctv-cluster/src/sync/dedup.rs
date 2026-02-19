@@ -67,6 +67,18 @@ impl DedupKey {
     }
 }
 
+/// Default dedup TTL: 10 minutes.
+///
+/// The dedup TTL must be at least 2x the maximum expected disconnection window
+/// to prevent duplicate processing after a reconnect. For example, if the maximum
+/// expected disconnect duration is 5 minutes (the catchup window), the dedup TTL
+/// should be at least 10 minutes. During a disconnection, events accumulate in
+/// Redis Streams and are replayed on reconnect; if the dedup TTL is shorter than
+/// the disconnect window, events delivered via live Pub/Sub before the disconnect
+/// may have already been evicted from the dedup cache, causing them to be
+/// re-processed when replayed from the stream.
+pub const DEFAULT_DEDUP_TTL: Duration = Duration::from_secs(600);
+
 /// Message deduplicator using moka TTL cache.
 ///
 /// Entries are automatically evicted after `dedup_window` via moka's built-in
@@ -81,7 +93,9 @@ impl MessageDeduplicator {
     /// Create a new deduplicator
     ///
     /// # Arguments
-    /// * `dedup_window` - How long to remember events (default 5 seconds)
+    /// * `dedup_window` - How long to remember events for deduplication. Should
+    ///   be at least 2x the maximum expected disconnection window (see
+    ///   [`DEFAULT_DEDUP_TTL`] for rationale).
     /// * `_cleanup_interval` - Ignored (moka handles cleanup internally), kept for API compatibility
     #[must_use]
     pub fn new(dedup_window: Duration, _cleanup_interval: Duration) -> Self {
@@ -91,14 +105,15 @@ impl MessageDeduplicator {
         Self { cache }
     }
 
-    /// Create with default settings (10 second window)
+    /// Create with default settings (10 minute window).
     ///
-    /// The 10-second window covers 2x the heartbeat interval (5s) without
-    /// excessive memory usage, and matches the `ClusterConfig` default.
+    /// The 10-minute window ensures dedup entries survive reconnection scenarios
+    /// where the catchup window is 5 minutes (default). See [`DEFAULT_DEDUP_TTL`]
+    /// for the full rationale.
     #[must_use]
     pub fn with_defaults() -> Self {
         Self::new(
-            Duration::from_secs(10),
+            DEFAULT_DEDUP_TTL,
             Duration::from_secs(60),
         )
     }

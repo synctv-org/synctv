@@ -79,7 +79,7 @@ async fn proxy_subtitle(
         .map(|s| s.url.clone())
         .ok_or_else(|| anyhow::anyhow!("Subtitle '{name}' not found"))?;
 
-    let provider_headers = bilibili_proxy_headers();
+    let provider_headers = synctv_core::provider::bilibili_headers();
 
     let cfg = synctv_proxy::ProxyConfig {
         url: &subtitle_url,
@@ -242,19 +242,7 @@ async fn resolve_danmu_info(
     }
 }
 
-/// Standard Bilibili proxy headers
-fn bilibili_proxy_headers() -> HashMap<String, String> {
-    let mut h = HashMap::new();
-    h.insert(
-        "Referer".to_string(),
-        "https://www.bilibili.com".to_string(),
-    );
-    h.insert(
-        "User-Agent".to_string(),
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36".to_string(),
-    );
-    h
-}
+// bilibili_proxy_headers() removed: use synctv_core::provider::bilibili_headers() instead.
 
 // ------------------------------------------------------------------
 // Existing provider API handlers

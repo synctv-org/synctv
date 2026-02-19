@@ -1,8 +1,8 @@
 -- Create users table
 CREATE TABLE IF NOT EXISTS users (
     id CHAR(12) PRIMARY KEY,
-    username VARCHAR(50) UNIQUE NOT NULL,
-    email VARCHAR(255) UNIQUE,  -- NULL allowed (e.g., OAuth2 users without email)
+    username VARCHAR(50) NOT NULL,
+    email VARCHAR(255),  -- NULL allowed (e.g., OAuth2 users without email)
     password_hash VARCHAR(255) NOT NULL,
     signup_method VARCHAR(20),  -- NULL for legacy users, 'email' or 'oauth2' for new users
     role SMALLINT NOT NULL DEFAULT 3,  -- 1=root, 2=admin, 3=user
@@ -25,11 +25,11 @@ CREATE TABLE IF NOT EXISTS users (
 );
 
 -- Create indexes
--- Note: UNIQUE constraints on username/email are global (including soft-deleted records)
--- This ensures username/email can NEVER be reused, even after account deletion
+-- Partial unique indexes: usernames and emails can be reused after soft-delete.
+-- Only active (non-deleted) users enforce uniqueness.
 -- For email, NULL values don't count as duplicates (multiple users can have NULL email)
-CREATE INDEX idx_users_username ON users(username) WHERE deleted_at IS NULL;
-CREATE INDEX idx_users_email ON users(email) WHERE deleted_at IS NULL;
+CREATE UNIQUE INDEX idx_users_username ON users(username) WHERE deleted_at IS NULL;
+CREATE UNIQUE INDEX idx_users_email ON users(email) WHERE deleted_at IS NULL;
 CREATE INDEX idx_users_created_at ON users(created_at);
 CREATE INDEX idx_users_deleted_at ON users(deleted_at) WHERE deleted_at IS NOT NULL;
 
@@ -61,8 +61,8 @@ CREATE TRIGGER update_users_updated_at BEFORE UPDATE ON users
 -- Comments
 COMMENT ON TABLE users IS 'User accounts with soft delete support (RBAC: role-based access control)';
 COMMENT ON COLUMN users.id IS '12-character nanoid';
-COMMENT ON COLUMN users.username IS 'Unique username (NEVER reusable, even after deletion)';
-COMMENT ON COLUMN users.email IS 'User email (NULL allowed for OAuth2 users, non-empty values are unique and never reusable)';
+COMMENT ON COLUMN users.username IS 'Unique username among active (non-deleted) users';
+COMMENT ON COLUMN users.email IS 'User email (NULL allowed for OAuth2 users, unique among active users)';
 COMMENT ON COLUMN users.signup_method IS 'Method used to register: email or oauth2';
 COMMENT ON COLUMN users.role IS 'User RBAC role: 1=root, 2=admin, 3=user (global access level)';
 COMMENT ON COLUMN users.status IS 'User account status: 1=active, 2=pending (email verification), 3=banned';

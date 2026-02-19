@@ -4,6 +4,7 @@
 //! and registers alive peers into the NodeRegistry. This enables cluster
 //! formation without Kubernetes DNS or other dynamic discovery mechanisms.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -13,6 +14,9 @@ use tracing::{debug, info, warn};
 
 use crate::discovery::node_registry::NodeInfo;
 use crate::discovery::NodeRegistry;
+
+/// Number of consecutive probe failures before unregistering a peer.
+const FAILURE_THRESHOLD: u32 = 3;
 
 /// Configuration for a single static peer
 #[derive(Debug, Clone)]
@@ -113,6 +117,10 @@ impl StaticDiscovery {
             // Skip immediate first tick; nodes may not be ready yet
             ticker.tick().await;
 
+            // Track consecutive failures and known epochs per peer for unregistration
+            let mut consecutive_failures: HashMap<String, u32> = HashMap::new();
+            let mut peer_epochs: HashMap<String, u64> = HashMap::new();
+
             loop {
                 tokio::select! {
                     () = cancel_token.cancelled() => {
@@ -146,16 +154,22 @@ impl StaticDiscovery {
                                 }
                             };
 
+                            let node_id = format!("static_{}", peer.grpc_address.replace([':', '.'], "_"));
+
                             if alive {
+                                // Reset failure counter on success
+                                consecutive_failures.remove(&peer.grpc_address);
+
                                 let http_address = peer.http_address.clone().unwrap_or_else(|| {
                                     Self::derive_http_address(&peer.grpc_address, default_http_port)
                                 });
 
                                 let node_info = NodeInfo::new(
-                                    format!("static_{}", peer.grpc_address.replace([':', '.'], "_")),
+                                    node_id.clone(),
                                     peer.grpc_address.clone(),
                                     http_address,
                                 );
+                                let registration_epoch = node_info.epoch;
 
                                 if let Err(e) = node_registry.register_remote(node_info).await {
                                     warn!(
@@ -164,10 +178,38 @@ impl StaticDiscovery {
                                         "Failed to register static peer in NodeRegistry"
                                     );
                                 } else {
+                                    peer_epochs.insert(peer.grpc_address.clone(), registration_epoch);
                                     debug!(peer = %peer.grpc_address, "Static peer registered/refreshed");
                                 }
                             } else {
-                                debug!(peer = %peer.grpc_address, "Static peer unreachable, skipping");
+                                let failures = consecutive_failures.entry(peer.grpc_address.clone()).or_insert(0);
+                                *failures += 1;
+
+                                if *failures >= FAILURE_THRESHOLD {
+                                    let epoch = peer_epochs.remove(&peer.grpc_address);
+                                    warn!(
+                                        peer = %peer.grpc_address,
+                                        consecutive_failures = *failures,
+                                        epoch = ?epoch,
+                                        "Static peer unreachable for {} consecutive probes, unregistering",
+                                        *failures
+                                    );
+                                    if let Err(e) = node_registry.unregister_remote(&node_id, epoch).await {
+                                        warn!(
+                                            peer = %peer.grpc_address,
+                                            error = %e,
+                                            "Failed to unregister disappeared static peer"
+                                        );
+                                    }
+                                    // Reset counter after unregistration attempt
+                                    consecutive_failures.remove(&peer.grpc_address);
+                                } else {
+                                    debug!(
+                                        peer = %peer.grpc_address,
+                                        consecutive_failures = *failures,
+                                        "Static peer unreachable, skipping"
+                                    );
+                                }
                             }
                         }
                     }

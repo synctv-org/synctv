@@ -42,8 +42,6 @@ pub struct SegmentInfo {
     pub duration: i64,
     /// TS filename (nanoid, e.g., "a1b2c3d4e5f6")
     pub ts_name: String,
-    /// Storage key (e.g., "`live/room_123/a1b2c3d4e5f6.ts`")
-    pub storage_key: String,
     /// Whether this is a discontinuity point
     pub discontinuity: bool,
     /// Creation time (for cleanup)
@@ -623,19 +621,25 @@ impl StreamHandler {
 /// 3 times with exponential backoff (100ms base, 2s max, with jitter).
 async fn write_with_retry(
     storage: &Arc<dyn HlsStorage>,
-    key: &str,
+    app: &str,
+    stream: &str,
+    name: &str,
     data: Bytes,
 ) -> std::io::Result<()> {
     use backon::{ExponentialBuilder, Retryable};
 
     let storage = Arc::clone(storage);
-    let key = key.to_owned();
+    let app = app.to_owned();
+    let stream = stream.to_owned();
+    let name = name.to_owned();
 
     (|| {
         let storage = storage.clone();
-        let key = key.clone();
+        let app = app.clone();
+        let stream = stream.clone();
+        let name = name.clone();
         let data = data.clone();
-        async move { storage.write(&key, data).await }
+        async move { storage.write(&app, &stream, &name, data).await }
     })
     .retry(
         ExponentialBuilder::default()
@@ -917,30 +921,22 @@ impl StreamProcessor {
         // Generate TS filename using nanoid (12 chars, like Go's SortUUID)
         let ts_name = nanoid::nanoid!(12);
 
-        // Generate storage key using the shared canonical format
-        let storage_key = crate::hls::hls_segment_storage_key(
-            &self.app_name,
-            &self.stream_name,
-            &ts_name,
-        );
-
-        // Write segment to storage with retry
+        // Write segment to storage with retry using structured (app, stream, name)
         let storage = self.segment_manager.storage().clone();
         let data: Bytes = ts_data.into();
-        write_with_retry(&storage, &storage_key, data)
+        write_with_retry(&storage, &self.app_name, &self.stream_name, &ts_name, data)
             .await
             .map_err(|e| {
                 tracing::warn!(
-                    "HLS segment write failed after retries: {} - {}",
-                    storage_key,
-                    e
+                    "HLS segment write failed after retries: {}/{}/{} - {}",
+                    self.app_name, self.stream_name, ts_name, e
                 );
                 HlsRemuxerError::StorageError(e.to_string())
             })?;
 
         tracing::debug!(
-            "Wrote segment: {} ({}ms, {} bytes)",
-            storage_key,
+            "Wrote segment: {}/{}/{} ({}ms, {} bytes)",
+            self.app_name, self.stream_name, ts_name,
             duration_ms,
             ts_data_len
         );
@@ -956,7 +952,6 @@ impl StreamProcessor {
             sequence: self.sequence_no,
             duration: duration_ms,
             ts_name,
-            storage_key,
             discontinuity,
             created_at: Instant::now(),
         };
@@ -1035,7 +1030,6 @@ mod tests {
             sequence: 1,
             duration: 10000,
             ts_name: "test_segment".to_string(),
-            storage_key: "live/room123/test_segment".to_string(),
             discontinuity: false,
             created_at: Instant::now(),
         };
@@ -1060,7 +1054,6 @@ mod tests {
             sequence: 0,
             duration: 10000,
             ts_name: "segment0.ts".to_string(),
-            storage_key: "live/room123/segment0.ts".to_string(),
             discontinuity: false,
             created_at: Instant::now(),
         });
@@ -1069,7 +1062,6 @@ mod tests {
             sequence: 1,
             duration: 10000,
             ts_name: "segment1.ts".to_string(),
-            storage_key: "live/room123/segment1.ts".to_string(),
             discontinuity: false,
             created_at: Instant::now(),
         });
@@ -1101,7 +1093,6 @@ mod tests {
             sequence: 0,
             duration: 10000,
             ts_name: "segment0.ts".to_string(),
-            storage_key: "live/room123/segment0.ts".to_string(),
             discontinuity: true,
             created_at: Instant::now(),
         });
@@ -1128,7 +1119,6 @@ mod tests {
             sequence: 0,
             duration: 10000,
             ts_name: "segment0.ts".to_string(),
-            storage_key: "live/room123/segment0.ts".to_string(),
             discontinuity: false,
             created_at: Instant::now(),
         });
@@ -1155,7 +1145,6 @@ mod tests {
             sequence: 0,
             duration: 10000,
             ts_name: "segment0.ts".to_string(),
-            storage_key: "live/room123/segment0.ts".to_string(),
             discontinuity: false,
             created_at: Instant::now(),
         });
@@ -1204,11 +1193,11 @@ mod tests {
         let data = Bytes::from_static(b"test segment data");
 
         // Should succeed immediately
-        let result = write_with_retry(&storage, "test-key", data.clone()).await;
+        let result = write_with_retry(&storage, "app", "stream", "test-key", data.clone()).await;
         assert!(result.is_ok());
 
         // Verify data was written
-        let read_data = storage.read("test-key").await.unwrap();
+        let read_data = storage.read("app", "stream", "test-key").await.unwrap();
         assert_eq!(data, read_data);
     }
 }

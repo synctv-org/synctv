@@ -65,6 +65,13 @@ pub(crate) fn map_provider_error(err: synctv_core::provider::ProviderError) -> t
         ProviderError::NetworkError(_) | ProviderError::ApiError(_) => {
             tonic::Status::unavailable(msg)
         }
+        ProviderError::UpstreamHttp { status, .. } => {
+            if (400..500).contains(&status) {
+                tonic::Status::failed_precondition(msg)
+            } else {
+                tonic::Status::unavailable(msg)
+            }
+        }
         ProviderError::ParseError(_) | ProviderError::InvalidConfig(_)
         | ProviderError::InvalidUrl(_) | ProviderError::MissingField(_)
         | ProviderError::InvalidCredentialType | ProviderError::UnsupportedFormat(_) => {
@@ -408,6 +415,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
             settings_service: Some(settings_service.clone()),
             settings_registry: None,
             email_service: None,
+            email_token_service: None,
             publish_key_service: None,
             notification_service: None,
             live_streaming_infrastructure: None,

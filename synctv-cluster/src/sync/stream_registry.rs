@@ -178,22 +178,34 @@ impl StreamRegistry {
 
     /// Unregister a stream (called on unpublish)
     ///
-    /// Removes from local cache and Redis.
+    /// Removes from local cache and Redis. Uses a Lua script for atomic
+    /// SREM+DEL, consistent with the registration path, to prevent orphaned
+    /// entries if the process crashes between the two operations.
     pub async fn unregister_stream(&self, identifier: &str) {
         self.local_streams.remove(identifier);
 
-        // Remove from Redis synchronously to ensure cleanup completes
+        // Remove from Redis atomically using a Lua script (SREM + DEL in one round-trip)
         if let Some(ref conn) = self.redis_conn {
             let active_key = format!("{}streams:active", self.redis_key_prefix);
             let meta_key = format!("{}streams:meta:{}", self.redis_key_prefix, identifier);
 
             let mut conn_clone = conn.clone();
 
-            if let Err(e) = conn_clone.srem::<_, _, ()>(&active_key, identifier).await {
-                warn!("Failed to remove stream from active set: {e}");
-            }
-            if let Err(e) = conn_clone.del::<_, ()>(&meta_key).await {
-                warn!("Failed to delete stream metadata: {e}");
+            let script = redis::Script::new(
+                r"
+                redis.call('SREM', KEYS[1], ARGV[1])
+                redis.call('DEL', KEYS[2])
+                return 1
+                ",
+            );
+            if let Err(e) = script
+                .key(&active_key)
+                .key(&meta_key)
+                .arg(identifier)
+                .invoke_async::<()>(&mut conn_clone)
+                .await
+            {
+                warn!("Failed to unregister stream from Redis (atomic script): {e}");
             }
         }
 

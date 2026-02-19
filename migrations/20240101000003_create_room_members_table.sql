@@ -74,7 +74,6 @@ ALTER TABLE room_members
     CHECK (
         (status IN (1, 2) AND left_at IS NULL)
         OR (status = 3 AND banned_at IS NOT NULL AND left_at IS NOT NULL)
-        OR (left_at IS NOT NULL AND status NOT IN (1, 2, 3))
     );
 
 -- Comments
@@ -120,6 +119,7 @@ BEGIN
     WHERE room_id = p_room_id
       AND user_id = p_user_id
       AND version = p_expected_version
+      AND left_at IS NULL
     RETURNING version INTO new_version;
 
     GET DIAGNOSTICS rows_updated = ROW_COUNT;

@@ -564,6 +564,7 @@ impl SyncTvServer {
                 settings_service: Some(settings_service),
                 settings_registry: Some(settings_registry),
                 email_service,
+                email_token_service: self.services.email_token_service.clone(),
                 publish_key_service: Some(publish_key_service),
                 notification_service,
                 audit_service: self.services.audit_service.clone(),

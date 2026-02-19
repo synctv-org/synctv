@@ -9,6 +9,7 @@
 use super::{
     MediaProvider, PlaybackResult, ProviderContext, ProviderError,
 };
+use crate::validation::{validate_url_for_ssrf, ValidationError};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::net::IpAddr;
@@ -106,7 +107,7 @@ impl MediaProvider for LiveProxyProvider {
         Ok(())
     }
 
-    fn cache_key(&self, _ctx: &ProviderContext<'_>, source_config: &Value) -> String {
+    fn cache_key(&self, ctx: &ProviderContext<'_>, source_config: &Value) -> String {
         let room_id = source_config
             .get("room_id")
             .and_then(|v| v.as_str())
@@ -115,18 +116,28 @@ impl MediaProvider for LiveProxyProvider {
             .get("media_id")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown");
-        format!("live_proxy:{room_id}:{media_id}")
+        format!("{}:playback:live_proxy:{room_id}:{media_id}", ctx.key_prefix)
     }
 }
 
 /// Validate that a source URL's host is not a private/internal address (SSRF protection).
 ///
-/// Supports `rtmp://`, `http://`, and `https://` schemes. Strips `rtmp://` prefix and
-/// parses the host portion to check against private IP ranges and well-known internal hostnames.
-///
-/// In addition to static hostname/IP checks, performs **async DNS resolution** to guard
-/// against DNS rebinding attacks where a public-looking domain resolves to a private IP.
+/// Supports `rtmp://`, `http://`, and `https://` schemes.
+/// For HTTP(S) URLs, delegates to the shared `validate_url_for_ssrf` which covers
+/// hostname blocklists, IP range checks, and cloud metadata endpoints.
+/// For RTMP URLs (not parseable by `url::Url`), extracts the host manually and
+/// performs static + DNS resolution checks.
 async fn validate_source_url_host(raw: &str) -> Result<(), ProviderError> {
+    // For HTTP(S) URLs, use the shared comprehensive SSRF validator
+    if raw.starts_with("http://") || raw.starts_with("https://") {
+        return validate_url_for_ssrf(raw).map_err(|e| match e {
+            ValidationError::SSRF(msg) => {
+                ProviderError::InvalidConfig(format!("SSRF protection: {msg}"))
+            }
+            _ => ProviderError::InvalidConfig(e.to_string()),
+        });
+    }
+
     // For RTMP URLs, extract host and port from rtmp://host:port/app/stream format
     let (host_str, port) = if let Some(rest) = raw.strip_prefix("rtmp://") {
         let authority = rest.split('/').next().unwrap_or(rest);
@@ -135,17 +146,6 @@ async fn validate_source_url_host(raw: &str) -> Result<(), ProviderError> {
         } else {
             (authority, 1935u16)
         }
-    } else if let Ok(parsed) = url::Url::parse(raw) {
-        match parsed.host_str() {
-            Some(host) => {
-                let port = parsed.port().unwrap_or(if parsed.scheme() == "https" { 443 } else { 80 });
-                // check_host_not_internal borrows the parsed URL's host_str, so
-                // run the static + DNS check inline here to avoid lifetime issues.
-                check_host_not_internal(host)?;
-                return resolve_and_check_dns(host, port).await;
-            }
-            None => return Err(ProviderError::InvalidConfig("URL has no host".to_string())),
-        };
     } else {
         return Err(ProviderError::InvalidConfig(format!("Cannot parse URL: {raw}")));
     };
@@ -154,22 +154,11 @@ async fn validate_source_url_host(raw: &str) -> Result<(), ProviderError> {
     resolve_and_check_dns(host_str, port).await
 }
 
+/// Check a hostname/IP against the shared SSRF blocklists.
+///
+/// Uses `synctv_media_providers::ssrf` (via `crate::validation`) for comprehensive
+/// hostname and IP range checks including cloud metadata endpoints.
 fn check_host_not_internal(host: &str) -> Result<(), ProviderError> {
-    // Block well-known internal hostnames
-    if matches!(
-        host,
-        "localhost"
-            | "metadata.google.internal"
-            | "instance-data"
-            | "metadata"
-            | "kubernetes.default"
-            | "kubernetes.default.svc"
-    ) {
-        return Err(ProviderError::InvalidConfig(
-            "Source URL targets an internal host".to_string(),
-        ));
-    }
-
     // Check IP addresses against private ranges using the authoritative SSRF validator
     if let Ok(ip) = host.parse::<IpAddr>() {
         if crate::validation::is_private_ip(&ip) {
@@ -177,9 +166,17 @@ fn check_host_not_internal(host: &str) -> Result<(), ProviderError> {
                 "Source URL targets a private IP address".to_string(),
             ));
         }
+        return Ok(());
     }
 
-    Ok(())
+    // Check hostnames against shared blocklist (covers localhost, metadata endpoints, etc.)
+    use synctv_media_providers::ssrf::{check_hostname, SsrfCheckResult};
+    match check_hostname(host) {
+        SsrfCheckResult::Ok => Ok(()),
+        SsrfCheckResult::Blocked(reason) => Err(ProviderError::InvalidConfig(
+            format!("Source URL targets a blocked host: {reason}"),
+        )),
+    }
 }
 
 /// Perform async DNS resolution and reject any address that resolves to a private IP.

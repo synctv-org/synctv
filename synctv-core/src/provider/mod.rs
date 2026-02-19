@@ -122,6 +122,25 @@ pub fn build_live_playback(
     }
 }
 
+/// Standard Bilibili HTTP headers required for CDN requests.
+///
+/// These headers must be sent with all Bilibili media requests (video, audio, subtitles)
+/// to avoid being blocked by Bilibili's CDN. Shared between the provider layer
+/// (playback result headers) and the API proxy layer.
+#[must_use]
+pub fn bilibili_headers() -> std::collections::HashMap<String, String> {
+    let mut headers = std::collections::HashMap::new();
+    headers.insert(
+        "Referer".to_string(),
+        "https://www.bilibili.com".to_string(),
+    );
+    headers.insert(
+        "User-Agent".to_string(),
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36".to_string(),
+    );
+    headers
+}
+
 /// Credential field names that must never be included in API responses.
 ///
 /// These fields are stripped from `source_config` before serialization to

@@ -132,11 +132,10 @@ async fn test_complete_hls_workflow() {
     // Step 1: Simulate HLS remuxer writing segments
     let storage = infrastructure.segment_manager.as_ref().unwrap().storage();
 
-    // Write test segments
+    // Write test segments using structured (app, stream, name)
     for i in 0..3 {
         let segment_data = Bytes::from(format!("TS segment data {}", i));
-        let storage_key = format!("live-test_room-test_media-segment{}", i);
-        storage.write(&storage_key, segment_data).await.unwrap();
+        storage.write("test_room", "test_media", &format!("segment{}", i), segment_data).await.unwrap();
     }
 
     // Step 2: Register stream in HLS registry
@@ -146,7 +145,6 @@ async fn test_complete_hls_workflow() {
             sequence: i,
             duration: 10000,
             ts_name: format!("segment{}", i),
-            storage_key: format!("live-test_room-test_media-segment{}", i),
             discontinuity: false,
             created_at: Instant::now(),
         });
@@ -206,8 +204,7 @@ async fn test_multiple_room_media_combinations() {
         for i in 0..*count {
             let storage = infrastructure.segment_manager.as_ref().unwrap().storage();
             let segment_data = Bytes::from(format!("{}-{}-seg{}", room, media, i));
-            let storage_key = format!("live-{}-{}-seg{}", room, media, i);
-            storage.write(&storage_key, segment_data).await.unwrap();
+            storage.write(room, media, &format!("seg{}", i), segment_data).await.unwrap();
         }
     }
 
@@ -233,21 +230,16 @@ async fn test_storage_key_format_consistency() {
     let infrastructure = create_test_infrastructure();
     let storage = infrastructure.segment_manager.as_ref().unwrap().storage();
 
-    // Write segment with specific key format
-    let key = "live-room123-media456-testsegment";
+    // Write segment with structured key
     let data = Bytes::from("test data");
-    storage.write(key, data.clone()).await.unwrap();
+    storage.write("room123", "media456", "testsegment", data.clone()).await.unwrap();
 
     // Verify key exists
-    assert!(storage.exists(key).await.unwrap());
+    assert!(storage.exists("room123", "media456", "testsegment").await.unwrap());
 
     // Verify can read back
-    let read_data = storage.read(key).await.unwrap();
+    let read_data = storage.read("room123", "media456", "testsegment").await.unwrap();
     assert_eq!(read_data, data);
-
-    // Verify alternative formats do NOT exist
-    assert!(!storage.exists("live/room123/media456/testsegment").await.unwrap());
-    assert!(!storage.exists("live-room123:media456-testsegment").await.unwrap());
 }
 
 #[tokio::test]
@@ -288,7 +280,6 @@ async fn test_hls_url_generation_with_custom_callback() {
         sequence: 0,
         duration: 10000,
         ts_name: "segment0".to_string(),
-        storage_key: "live-room123-media456-segment0".to_string(),
         discontinuity: false,
         created_at: Instant::now(),
     });
@@ -335,14 +326,12 @@ async fn test_segment_cleanup() {
     // Write multiple segments
     for i in 0..5 {
         let data = Bytes::from(format!("segment{}", i));
-        let key = format!("live-room1-media1-seg{}", i);
-        storage.write(&key, data).await.unwrap();
+        storage.write("room1", "media1", &format!("seg{}", i), data).await.unwrap();
     }
 
     // Verify all exist
     for i in 0..5 {
-        let key = format!("live-room1-media1-seg{}", i);
-        assert!(storage.exists(&key).await.unwrap());
+        assert!(storage.exists("room1", "media1", &format!("seg{}", i)).await.unwrap());
     }
 
     // Cleanup segments older than 0 seconds (all)
@@ -352,8 +341,7 @@ async fn test_segment_cleanup() {
 
     // Verify all are deleted
     for i in 0..5 {
-        let key = format!("live-room1-media1-seg{}", i);
-        assert!(!storage.exists(&key).await.unwrap());
+        assert!(!storage.exists("room1", "media1", &format!("seg{}", i)).await.unwrap());
     }
 }
 
@@ -365,17 +353,16 @@ async fn test_concurrent_segment_access() {
     // Write segments
     for i in 0..10 {
         let data = Bytes::from(format!("segment{}", i));
-        let key = format!("live-room1-media1-seg{}", i);
-        storage.write(&key, data).await.unwrap();
+        storage.write("room1", "media1", &format!("seg{}", i), data).await.unwrap();
     }
 
     // Concurrent reads
     let mut handles = vec![];
     for i in 0..10 {
         let storage_clone = storage.clone();
-        let key = format!("live-room1-media1-seg{}", i);
+        let name = format!("seg{}", i);
         let handle = tokio::spawn(async move {
-            storage_clone.read(&key).await.unwrap()
+            storage_clone.read("room1", "media1", &name).await.unwrap()
         });
         handles.push(handle);
     }
@@ -397,7 +384,6 @@ async fn test_hls_playlist_with_discontinuity() {
         sequence: 0,
         duration: 10000,
         ts_name: "segment0".to_string(),
-        storage_key: "live-room1-media1-seg0".to_string(),
         discontinuity: false,
         created_at: Instant::now(),
     });
@@ -405,7 +391,6 @@ async fn test_hls_playlist_with_discontinuity() {
         sequence: 1,
         duration: 10000,
         ts_name: "segment1".to_string(),
-        storage_key: "live-room1-media1-seg1".to_string(),
         discontinuity: true,  // Discontinuity here
         created_at: Instant::now(),
     });
@@ -413,7 +398,6 @@ async fn test_hls_playlist_with_discontinuity() {
         sequence: 2,
         duration: 10000,
         ts_name: "segment2".to_string(),
-        storage_key: "live-room1-media1-seg2".to_string(),
         discontinuity: false,
         created_at: Instant::now(),
     });
@@ -449,7 +433,6 @@ async fn test_hls_playlist_ended_stream() {
         sequence: 0,
         duration: 10000,
         ts_name: "segment0".to_string(),
-        storage_key: "live-room1-media1-seg0".to_string(),
         discontinuity: false,
         created_at: Instant::now(),
     });

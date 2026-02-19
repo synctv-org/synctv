@@ -13,11 +13,45 @@ pub mod oss;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use std::io::Result;
+use std::io::{Error, ErrorKind, Result};
+
+/// Validate a single storage key component (app, stream, or name).
+///
+/// Rejects path traversal sequences, directory separators, null bytes, and empty strings.
+pub fn validate_component(s: &str, label: &str) -> Result<()> {
+    if s.is_empty() {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            format!("Storage {label} must not be empty"),
+        ));
+    }
+    if s == "." || s == ".." {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            format!("Storage {label} must not be '.' or '..'"),
+        ));
+    }
+    if s.contains('/') || s.contains('\\') || s.contains('\0') {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            format!("Storage {label} contains invalid characters"),
+        ));
+    }
+    Ok(())
+}
+
+/// Validate all three storage key components.
+pub fn validate_storage_key(app: &str, stream: &str, name: &str) -> Result<()> {
+    validate_component(app, "app")?;
+    validate_component(stream, "stream")?;
+    validate_component(name, "name")?;
+    Ok(())
+}
 
 /// HLS storage trait for pluggable backends
 ///
-/// Pure key-value storage interface. The storage layer should NOT know about:
+/// Structured key-value storage interface using `(app, stream, name)` components.
+/// The storage layer should NOT know about:
 /// - Segment metadata/lifecycle (handled by `SegmentManager`)
 /// - M3U8 generation (handled by HLS layer)
 ///
@@ -27,62 +61,51 @@ pub trait HlsStorage: Send + Sync {
     /// Write data to storage
     ///
     /// # Arguments
-    /// * `key` - Storage key (e.g., "`live/room_123/segment_0.ts`")
+    /// * `app` - Application name (e.g., room_id)
+    /// * `stream` - Stream name (e.g., media_id)
+    /// * `name` - Segment name (e.g., "a1b2c3d4e5f6")
     /// * `data` - Binary data to store
-    async fn write(&self, key: &str, data: Bytes) -> Result<()>;
+    async fn write(&self, app: &str, stream: &str, name: &str, data: Bytes) -> Result<()>;
 
     /// Read data from storage
     ///
-    /// # Arguments
-    /// * `key` - Storage key
-    ///
     /// # Returns
     /// Binary data or `NotFound` error
-    async fn read(&self, key: &str) -> Result<Bytes>;
+    async fn read(&self, app: &str, stream: &str, name: &str) -> Result<Bytes>;
 
-    /// Delete single key from storage
-    ///
-    /// # Arguments
-    /// * `key` - Storage key
-    async fn delete(&self, key: &str) -> Result<()>;
+    /// Delete single item from storage
+    async fn delete(&self, app: &str, stream: &str, name: &str) -> Result<()>;
 
-    /// Check if key exists
+    /// Check if item exists
+    async fn exists(&self, app: &str, stream: &str, name: &str) -> Result<bool>;
+
+    /// Delete all items under app/stream/
     ///
-    /// # Arguments
-    /// * `key` - Storage key
-    async fn exists(&self, key: &str) -> Result<bool>;
+    /// Used for immediate segment cleanup when a specific stream ends,
+    /// rather than waiting for periodic time-based cleanup.
+    ///
+    /// # Returns
+    /// Number of items deleted
+    async fn delete_app_stream(&self, _app: &str, _stream: &str) -> Result<usize> {
+        Ok(0)
+    }
+
+    /// Delete all items under app/
+    ///
+    /// # Returns
+    /// Number of items deleted
+    async fn delete_app(&self, _app: &str) -> Result<usize> {
+        Ok(0)
+    }
 
     /// Cleanup expired data
     ///
     /// Storage backend scans and deletes all data older than the specified duration.
     /// Upper layer (`SegmentManager`) calls this periodically to cleanup old segments.
     ///
-    /// # Arguments
-    /// * `older_than` - Delete data older than this duration
-    ///
     /// # Returns
     /// Number of keys successfully deleted
-    ///
-    /// # Default Implementation
-    /// No-op by default (returns 0). Storage backends should implement this if possible.
     async fn cleanup(&self, _older_than: std::time::Duration) -> Result<usize> {
-        Ok(0)
-    }
-
-    /// Delete all keys matching a given prefix.
-    ///
-    /// Used for immediate segment cleanup when a specific stream ends,
-    /// rather than waiting for periodic time-based cleanup.
-    ///
-    /// # Arguments
-    /// * `prefix` - Key prefix to match (e.g., "room123-media456-")
-    ///
-    /// # Returns
-    /// Number of keys deleted
-    ///
-    /// # Default Implementation
-    /// No-op by default (returns 0). Storage backends should implement this.
-    async fn delete_by_prefix(&self, _prefix: &str) -> Result<usize> {
         Ok(0)
     }
 
@@ -93,17 +116,11 @@ pub trait HlsStorage: Send + Sync {
     /// - **OSS Storage without CDN**: Generate temporary presigned URL with expiration
     /// - **File/Memory Storage**: Return None, let HTTP layer generate local URLs
     ///
-    /// # Arguments
-    /// * `key` - Storage key
-    ///
     /// # Returns
     /// - `Ok(Some(url))` - Public URL (CDN or presigned) for direct access
     /// - `Ok(None)` - No public URL available (File/Memory storage)
     /// - `Err(e)` - Failed to generate presigned URL
-    ///
-    /// # Default Implementation
-    /// Returns None by default (File/Memory storage don't need public URLs)
-    async fn get_public_url(&self, _key: &str) -> Result<Option<String>> {
+    async fn get_public_url(&self, _app: &str, _stream: &str, _name: &str) -> Result<Option<String>> {
         Ok(None)
     }
 }

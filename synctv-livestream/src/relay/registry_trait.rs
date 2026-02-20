@@ -9,10 +9,10 @@ use super::registry::{PublisherInfo, StreamRegistry};
 /// `StreamRegistry` trait for publisher registration
 #[async_trait]
 pub trait StreamRegistryTrait: Send + Sync {
-    /// Register a publisher for a media in a room (atomic operation)
-    /// Returns true if registered successfully, false if already exists
+    /// Register a publisher for a media in a room (atomic operation).
+    /// Returns `true` if registered successfully, `false` if already exists.
     async fn register_publisher(
-        &mut self,
+        &self,
         room_id: &str,
         media_id: &str,
         node_id: &str,
@@ -80,7 +80,7 @@ pub trait StreamRegistryTrait: Send + Sync {
 #[async_trait]
 impl StreamRegistryTrait for StreamRegistry {
     async fn register_publisher(
-        &mut self,
+        &self,
         room_id: &str,
         media_id: &str,
         node_id: &str,

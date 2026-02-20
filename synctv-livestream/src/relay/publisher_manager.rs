@@ -878,6 +878,8 @@ mod tests {
     #[tokio::test]
     async fn test_handle_publish_success() {
         let registry = Arc::new(MockStreamRegistry::new());
+        // Pre-register publisher so handle_publish can look up the entry
+        registry.try_register_publisher("room123", "media456", "test-node-1", "", "").await.unwrap();
         let (manager, _rx) = test_manager(registry, "test-node-1");
 
         let identifier = StreamIdentifier::Rtmp {
@@ -916,6 +918,8 @@ mod tests {
     #[tokio::test]
     async fn test_handle_publish_tracks_any_stream() {
         let registry = Arc::new(MockStreamRegistry::new());
+        // Pre-register publisher so handle_publish can look up the entry
+        registry.try_register_publisher("room123", "media456", "test-node-1", "", "").await.unwrap();
         let (manager, _rx) = test_manager(registry, "test-node-1");
 
         let identifier = StreamIdentifier::Rtmp {
@@ -1017,6 +1021,8 @@ mod tests {
     #[tokio::test]
     async fn test_record_publisher_activity() {
         let registry = Arc::new(MockStreamRegistry::new());
+        // Pre-register publisher so handle_publish can look up the entry
+        registry.try_register_publisher("room1", "media1", "test-node", "", "").await.unwrap();
         let (manager, _rx) = test_manager(registry, "test-node");
 
         // Insert publisher

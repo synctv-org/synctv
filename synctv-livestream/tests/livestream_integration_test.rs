@@ -27,7 +27,7 @@ struct MockStreamRegistry;
 #[async_trait::async_trait]
 impl synctv_livestream::relay::StreamRegistryTrait for MockStreamRegistry {
     async fn register_publisher(
-        &mut self,
+        &self,
         _room_id: &str,
         _media_id: &str,
         _node_id: &str,
@@ -117,7 +117,7 @@ fn create_test_infrastructure() -> LiveStreamingInfrastructure {
         registry.clone(),
         "test-node".to_string(),
         event_sender.clone(),
-    ));
+    ).expect("failed to create ExternalPublishManager"));
 
     let user_stream_tracker = Arc::new(synctv_livestream::api::StreamTracker::new());
     LiveStreamingInfrastructure::new(registry, event_sender, pull_manager, external_publish_manager, user_stream_tracker)

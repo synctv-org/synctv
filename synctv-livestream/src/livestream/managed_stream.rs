@@ -165,34 +165,26 @@ pub trait ManagedStream: Send + Sync + 'static {
 /// Creation lock entry with last access time for cleanup
 struct CreationLockEntry {
     lock: Arc<tokio::sync::Mutex<()>>,
-    last_accessed: AtomicUsize, // stores seconds since Unix epoch as usize
+    /// Unix timestamp seconds stored as AtomicU64.
+    /// AtomicUsize would overflow on 32-bit targets in 2038.
+    last_accessed: AtomicU64,
 }
 
 impl CreationLockEntry {
     fn new() -> Self {
         Self {
             lock: Arc::new(tokio::sync::Mutex::new(())),
-            last_accessed: AtomicUsize::new(
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |d| d.as_secs() as usize),
-            ),
+            last_accessed: AtomicU64::new(unix_now_secs()),
         }
     }
 
     fn touch(&self) {
-        if let Ok(d) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
-            self.last_accessed.store(d.as_secs() as usize, Ordering::Relaxed);
-        }
+        self.last_accessed.store(unix_now_secs(), Ordering::Relaxed);
     }
 
     fn age_seconds(&self) -> u64 {
-        if let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
-            let last = self.last_accessed.load(Ordering::Relaxed) as u64;
-            now.as_secs().saturating_sub(last)
-        } else {
-            0
-        }
+        let last = self.last_accessed.load(Ordering::Relaxed);
+        unix_now_secs().saturating_sub(last)
     }
 }
 

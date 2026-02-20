@@ -281,9 +281,10 @@ impl PullStream {
                 match run_result {
                     Ok(()) => break Ok(()),
                     Err(e) => {
-                        let error_type = if e.to_string().contains("timeout") {
+                        let err_str = e.to_string();
+                        let error_type = if err_str.contains("timeout") {
                             "timeout"
-                        } else if e.to_string().contains("connection") {
+                        } else if err_str.contains("connection") {
                             "connection"
                         } else {
                             "other"

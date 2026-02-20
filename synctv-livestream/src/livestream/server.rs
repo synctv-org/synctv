@@ -28,6 +28,12 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 use synctv_xiu::streamhub::StreamsHub;
 
+/// Maximum number of StreamHub automatic restart attempts before giving up.
+/// Used to size the stop-streams notification channel to prevent signal loss
+/// under rapid consecutive restarts.
+const HUB_MAX_RESTARTS: u32 = 10;
+
+
 pub struct LivestreamConfig {
     pub rtmp_address: String,
     pub gop_cache_size: usize,
@@ -76,66 +82,63 @@ impl LivestreamHandle {
         self.hub_handle.abort();
     }
 
-    /// Gracefully shutdown all spawned tasks.
+    /// Shutdown all spawned tasks.
     ///
-    /// This method waits for each task to complete (with timeout) before
-    /// proceeding to the next. This ensures proper cleanup of resources.
+    /// Tasks with cancellation tokens (HLS remuxer) are signaled gracefully first,
+    /// then waited on with a timeout. Other tasks (cleanup loops, publisher manager,
+    /// StreamHub) are aborted directly since they lack graceful shutdown signals.
     ///
     /// # Arguments
-    /// * `timeout_secs` - Maximum seconds to wait for each task to complete.
+    /// * `timeout_secs` - Maximum seconds to wait for graceful tasks to complete
+    ///   before falling back to abort.
     ///
     /// # Returns
-    /// `true` if all tasks shut down gracefully, `false` if any task was aborted due to timeout.
+    /// `true` if all token-based tasks shut down within the timeout,
+    /// `false` if any had to be force-aborted.
     pub async fn shutdown_graceful(&mut self, timeout_secs: u64) -> bool {
         use tokio::time::{timeout, Duration};
         let timeout_duration = Duration::from_secs(timeout_secs);
         let mut all_graceful = true;
 
         // Shutdown in reverse startup order
-        info!("Starting graceful shutdown of livestream components...");
+        info!("Starting shutdown of livestream components...");
 
-        // 1. Stop external publish cleanup
+        // 1. Abort external publish cleanup (periodic timer, no graceful signal)
         self.external_publish_cleanup.abort();
-        if timeout(timeout_duration, &mut self.external_publish_cleanup).await.is_ok() { info!("External publish cleanup stopped") } else {
-            warn!("External publish cleanup shutdown timed out");
-            all_graceful = false;
-        }
+        let _ = (&mut self.external_publish_cleanup).await;
+        info!("External publish cleanup stopped");
 
-        // 2. Stop pull manager cleanup
+        // 2. Abort pull manager cleanup (periodic timer, no graceful signal)
         self.pull_manager_cleanup.abort();
-        if timeout(timeout_duration, &mut self.pull_manager_cleanup).await.is_ok() { info!("Pull manager cleanup stopped") } else {
-            warn!("Pull manager cleanup shutdown timed out");
-            all_graceful = false;
-        }
+        let _ = (&mut self.pull_manager_cleanup).await;
+        info!("Pull manager cleanup stopped");
 
-        // 3. Stop publisher manager
+        // 3. Abort publisher manager (event loop, no graceful signal)
         self.publisher_manager_handle.abort();
-        if timeout(timeout_duration, &mut self.publisher_manager_handle).await.is_ok() { info!("Publisher manager stopped") } else {
-            warn!("Publisher manager shutdown timed out");
-            all_graceful = false;
-        }
+        let _ = (&mut self.publisher_manager_handle).await;
+        info!("Publisher manager stopped");
 
-        // 4. Stop HLS remuxer (cancel token triggers graceful drain)
+        // 4. Stop HLS remuxer gracefully via cancellation token, with timeout fallback
         self.hls_shutdown_token.cancel();
-        if timeout(timeout_duration, &mut self.hls_remuxer_handle).await.is_ok() { info!("HLS remuxer stopped") } else {
-            warn!("HLS remuxer shutdown timed out");
+        if timeout(timeout_duration, &mut self.hls_remuxer_handle).await.is_ok() {
+            info!("HLS remuxer stopped gracefully");
+        } else {
+            warn!("HLS remuxer shutdown timed out, aborting");
             self.hls_remuxer_handle.abort();
             all_graceful = false;
         }
 
-        // 5. Stop StreamHub (last, as other components depend on it)
-        // The RTMP server is now managed inside the hub loop and will be
+        // 5. Abort StreamHub (last, as other components depend on it).
+        // The RTMP server is managed inside the hub loop and will be
         // cancelled automatically when the hub task is aborted.
         self.hub_handle.abort();
-        if timeout(timeout_duration, &mut self.hub_handle).await.is_ok() { info!("StreamHub stopped") } else {
-            warn!("StreamHub shutdown timed out");
-            all_graceful = false;
-        }
+        let _ = (&mut self.hub_handle).await;
+        info!("StreamHub stopped");
 
         if all_graceful {
-            info!("Graceful shutdown completed successfully");
+            info!("Shutdown completed successfully");
         } else {
-            warn!("Graceful shutdown completed with some timeouts");
+            warn!("Shutdown completed with some force-aborted tasks");
         }
 
         all_graceful
@@ -204,7 +207,9 @@ impl LivestreamServer {
         let reregister_notify = Arc::new(tokio::sync::Notify::new());
         // Channel to notify pull/external managers to stop all streams before StreamHub restart.
         // This ensures zombie streams (still connected to the old hub) are cleaned up.
-        let (stop_streams_tx, mut stop_streams_rx) = mpsc::channel::<()>(4);
+        // Capacity matches HUB_MAX_RESTARTS so rapid consecutive restarts never drop signals
+        // when the receiver is momentarily busy processing a previous stop_all().
+        let (stop_streams_tx, mut stop_streams_rx) = mpsc::channel::<()>(HUB_MAX_RESTARTS as usize);
 
         // Compute per-stream GOP cache memory limit from config (0 means use default).
         let per_stream_max_bytes: Option<usize> = if self.config.gop_cache_max_memory_mb > 0 {
@@ -228,7 +233,6 @@ impl LivestreamServer {
 
         // 2. Spawn StreamHub event loop with automatic recovery
         let hub_handle = tokio::spawn(async move {
-            const MAX_RESTARTS: u32 = 10;
             const INITIAL_BACKOFF_SECS: u64 = 1;
             const MAX_BACKOFF_SECS: u64 = 30;
 
@@ -315,7 +319,7 @@ impl LivestreamServer {
 
                 warn!(
                     restart_count,
-                    max_restarts = MAX_RESTARTS,
+                    max_restarts = HUB_MAX_RESTARTS,
                     reason,
                     "StreamHub event loop exited unexpectedly, cleaning up local state before restart..."
                 );
@@ -337,7 +341,7 @@ impl LivestreamServer {
                 // Notify PublisherManager to re-register all active publishers immediately
                 reregister_notify_for_hub.notify_one();
 
-                if restart_count >= MAX_RESTARTS {
+                if restart_count >= HUB_MAX_RESTARTS {
                     error!(
                         "StreamHub has restarted {} times, giving up to avoid infinite restart loop",
                         restart_count
@@ -428,9 +432,10 @@ impl LivestreamServer {
             if let Err(e) = remuxer.run().await {
                 error!("HLS remuxer error: {}", e);
 
-                let error_type = if e.to_string().contains("timeout") {
+                let err_str = e.to_string();
+                let error_type = if err_str.contains("timeout") {
                     "timeout"
-                } else if e.to_string().contains("connection") {
+                } else if err_str.contains("connection") {
                     "connection"
                 } else {
                     "other"
@@ -475,7 +480,7 @@ impl LivestreamServer {
             event_sender.clone(),
             self.config.cleanup_check_interval_seconds,
             self.config.stream_timeout_seconds,
-        ));
+        )?);
         // Start periodic cleanup of stale creation locks to prevent memory leaks
         let external_publish_cleanup = external_publish_manager.start_cleanup_task();
 

@@ -98,13 +98,13 @@ impl StreamRegistry {
         Self { redis }
     }
 
-    /// Register a publisher for a media in a room (atomic operation)
-    /// Returns true if registered successfully, false if already exists
+    /// Register a publisher for a media in a room (atomic operation).
+    /// Returns `true` if registered successfully, `false` if already exists.
     ///
     /// Delegates to the atomic Lua-based `try_register_publisher_with_user()`
     /// to prevent epoch inflation on failed registration attempts.
     pub async fn register_publisher(
-        &mut self,
+        &self,
         room_id: &str,
         media_id: &str,
         node_id: &str,
@@ -189,8 +189,10 @@ impl StreamRegistry {
             -- Only now does the epoch change, so other nodes never see a spurious increment.
             local epoch = redis.call('INCR', epoch_key)
 
-            -- Replace placeholder epoch=0 in JSON with the actual epoch value.
-            local info_json = string.gsub(info_json_template, '"epoch":0', '"epoch":' .. epoch)
+            -- Set the actual epoch via cjson (robust, unlike fragile string.gsub).
+            local parsed = cjson.decode(info_json_template)
+            parsed.epoch = epoch
+            local info_json = cjson.encode(parsed)
 
             -- Overwrite the placeholder entry with the fully-populated JSON.
             -- HSET (not HSETNX) because we already own the slot.
@@ -289,11 +291,11 @@ impl StreamRegistry {
         Ok(())
     }
 
-    /// Unregister a publisher
+    /// Unregister a publisher.
     ///
     /// Delegates to `unregister_publisher_immut` which correctly cleans up
     /// both the publisher entry and the user reverse index.
-    pub async fn unregister_publisher(&mut self, room_id: &str, media_id: &str) -> Result<()> {
+    pub async fn unregister_publisher(&self, room_id: &str, media_id: &str) -> Result<()> {
         self.unregister_publisher_immut(room_id, media_id).await
     }
 
@@ -430,8 +432,8 @@ impl StreamRegistry {
         Ok(())
     }
 
-    /// Get publisher info for a media in a room
-    pub async fn get_publisher(&mut self, room_id: &str, media_id: &str) -> Result<Option<PublisherInfo>> {
+    /// Get publisher info for a media in a room.
+    pub async fn get_publisher(&self, room_id: &str, media_id: &str) -> Result<Option<PublisherInfo>> {
         self.get_publisher_immut(room_id, media_id).await
     }
 
@@ -456,8 +458,8 @@ impl StreamRegistry {
     }
 
 
-    /// Check if a stream is active (has a publisher)
-    pub async fn is_stream_active(&mut self, room_id: &str, media_id: &str) -> anyhow::Result<bool> {
+    /// Check if a stream is active (has a publisher).
+    pub async fn is_stream_active(&self, room_id: &str, media_id: &str) -> anyhow::Result<bool> {
         self.is_stream_active_immut(room_id, media_id).await
     }
 
@@ -474,8 +476,8 @@ impl StreamRegistry {
         Ok(exists)
     }
 
-    /// List all active streams (returns tuples of (`room_id`, `media_id`))
-    pub async fn list_active_streams(&mut self) -> Result<Vec<(String, String)>> {
+    /// List all active streams (returns tuples of (`room_id`, `media_id`)).
+    pub async fn list_active_streams(&self) -> Result<Vec<(String, String)>> {
         self.list_active_streams_immut().await
     }
 
@@ -750,7 +752,7 @@ mod tests {
     async fn test_register_publisher_success() {
         let redis_client = redis::Client::open("redis://localhost:6379").unwrap();
         let redis = RedisConnectionManager::new(redis_client).await.unwrap();
-        let mut registry = StreamRegistry::new(redis);
+        let registry = StreamRegistry::new(redis);
 
         // First registration should succeed
         let registered = registry
@@ -776,7 +778,7 @@ mod tests {
     async fn test_register_publisher_duplicate() {
         let redis_client = redis::Client::open("redis://localhost:6379").unwrap();
         let redis = RedisConnectionManager::new(redis_client).await.unwrap();
-        let mut registry = StreamRegistry::new(redis);
+        let registry = StreamRegistry::new(redis);
 
         // First registration should succeed
         let registered = registry
@@ -801,7 +803,7 @@ mod tests {
     async fn test_try_register_publisher() {
         let redis_client = redis::Client::open("redis://localhost:6379").unwrap();
         let redis = RedisConnectionManager::new(redis_client).await.unwrap();
-        let mut registry = StreamRegistry::new(redis);
+        let registry = StreamRegistry::new(redis);
 
         // First try_register should succeed
         let result = registry.try_register_publisher("room123", "media456", "node1").await.unwrap();
@@ -820,7 +822,7 @@ mod tests {
     async fn test_unregister_publisher() {
         let redis_client = redis::Client::open("redis://localhost:6379").unwrap();
         let redis = RedisConnectionManager::new(redis_client).await.unwrap();
-        let mut registry = StreamRegistry::new(redis);
+        let registry = StreamRegistry::new(redis);
 
         // Register publisher
         registry
@@ -843,7 +845,7 @@ mod tests {
     async fn test_get_publisher_not_found() {
         let redis_client = redis::Client::open("redis://localhost:6379").unwrap();
         let redis = RedisConnectionManager::new(redis_client).await.unwrap();
-        let mut registry = StreamRegistry::new(redis);
+        let registry = StreamRegistry::new(redis);
 
         // Non-existent publisher should return None
         let result = registry.get_publisher("nonexistent", "media").await.unwrap();
@@ -855,7 +857,7 @@ mod tests {
     async fn test_list_active_streams() {
         let redis_client = redis::Client::open("redis://localhost:6379").unwrap();
         let redis = RedisConnectionManager::new(redis_client).await.unwrap();
-        let mut registry = StreamRegistry::new(redis);
+        let registry = StreamRegistry::new(redis);
 
         // Register multiple publishers
         registry
@@ -883,7 +885,7 @@ mod tests {
     async fn test_publisher_info_serialization() {
         let redis_client = redis::Client::open("redis://localhost:6379").unwrap();
         let redis = RedisConnectionManager::new(redis_client).await.unwrap();
-        let mut registry = StreamRegistry::new(redis);
+        let registry = StreamRegistry::new(redis);
 
         // Register publisher
         registry

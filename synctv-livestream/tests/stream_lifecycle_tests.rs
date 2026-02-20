@@ -50,7 +50,10 @@ async fn test_stream_key_validation_structure() {
     ];
 
     for invalid in invalid_keys {
-        let is_valid = invalid.contains('/') && invalid.contains("token=");
+        // A valid key must have a non-empty room_id before '/' and contain a token
+        let is_valid = invalid.split_once('/').is_some_and(|(room, rest)| {
+            !room.is_empty() && rest.contains("token=")
+        });
         assert!(!is_valid, "Key '{}' should be invalid", invalid);
     }
 }

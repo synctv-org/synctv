@@ -44,9 +44,6 @@ pub struct ExternalPublishManager {
     /// Shared HTTP client for FLV connections. Built once with TLS (rustls) support
     /// and reused across all external publish streams to avoid per-stream TLS setup cost.
     http_client: reqwest::Client,
-    /// Handle for the background creation lock cleanup task.
-    /// Auto-started in `with_timeouts()` to prevent memory leaks from failed stream creation attempts.
-    _cleanup_handle: tokio::task::JoinHandle<()>,
     /// Maximum number of concurrent pull streams.
     /// Issue #56: Prevents memory exhaustion from unlimited stream creation.
     max_concurrent_streams: usize,
@@ -57,7 +54,7 @@ impl ExternalPublishManager {
         registry: Arc<dyn StreamRegistryTrait>,
         local_node_id: String,
         stream_hub_event_sender: StreamHubEventSender,
-    ) -> Self {
+    ) -> StreamResult<Self> {
         Self::with_timeouts(registry, local_node_id, String::new(), stream_hub_event_sender, 60, 300)
     }
 
@@ -99,30 +96,29 @@ impl ExternalPublishManager {
         stream_hub_event_sender: StreamHubEventSender,
         cleanup_check_interval_secs: u64,
         idle_timeout_secs: u64,
-    ) -> Self {
+    ) -> StreamResult<Self> {
         // Build a shared reqwest::Client with TLS (rustls) support.
         // Reused across all HTTP-FLV pull streams to amortize TLS setup.
         let http_client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
             .build()
-            .expect("failed to build shared reqwest::Client");
+            .map_err(|e| crate::error::StreamError::Internal(
+                format!("failed to build shared HTTP client: {e}")
+            ))?;
 
         let pool = StreamPool::new(
             Duration::from_secs(cleanup_check_interval_secs),
             Duration::from_secs(idle_timeout_secs),
         );
-        // Auto-start creation lock cleanup to prevent memory leaks
-        let cleanup_handle = pool.start_creation_lock_cleanup();
-        Self {
+        Ok(Self {
             pool,
             registry,
             local_node_id,
             local_grpc_address,
             stream_hub_event_sender,
             http_client,
-            _cleanup_handle: cleanup_handle,
             max_concurrent_streams: DEFAULT_MAX_CONCURRENT_STREAMS,
-        }
+        })
     }
 
     /// Stop all managed external publish streams, unregistering from Redis and
@@ -276,17 +272,27 @@ impl ExternalPublishManager {
 
         // Register as publisher in Redis now that the stream is confirmed running.
         // If registration fails, stop the stream to avoid running unregistered.
-        if let Err(e) = self
-            .registry
-            .try_register_publisher(room_id, media_id, &self.local_node_id, "external_puller", &self.local_grpc_address)
-            .await
-        {
+        const REGISTRY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+        let register_result = tokio::time::timeout(
+            REGISTRY_TIMEOUT,
+            self.registry.try_register_publisher(
+                room_id, media_id, &self.local_node_id, "external_puller", &self.local_grpc_address,
+            ),
+        )
+        .await
+        .map_err(|_| crate::error::StreamError::RegistryError(format!(
+            "Registry registration timed out after {}s for {room_id}/{media_id}",
+            REGISTRY_TIMEOUT.as_secs()
+        )))
+        .and_then(|r| r.map_err(|e| crate::error::StreamError::RegistryError(format!(
+            "Failed to register publisher in Redis: {e}"
+        ))));
+
+        if let Err(e) = register_result {
             error!("Failed to register external publisher in Redis after stream start, stopping stream: {e}");
             // Roll back: stop the stream since we can't register it
             let _ = stream.stop().await;
-            return Err(crate::error::StreamError::RegistryError(
-                format!("Failed to register publisher in Redis: {e}"),
-            ));
+            return Err(e);
         }
 
         // Creation path: increment subscriber count exactly once for the viewer
@@ -578,7 +584,7 @@ mod tests {
         let registry = Arc::new(MockStreamRegistry::new()) as Arc<dyn StreamRegistryTrait>;
         let (sender, _) = tokio::sync::mpsc::channel(64);
 
-        let manager = ExternalPublishManager::new(registry, "node-1".to_string(), sender);
+        let manager = ExternalPublishManager::new(registry, "node-1".to_string(), sender).unwrap();
         assert_eq!(manager.pool.streams.len(), 0);
     }
 

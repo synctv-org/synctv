@@ -32,6 +32,7 @@ use synctv_xiu::streamhub::{
     utils::Uuid,
 };
 use tokio::sync::{mpsc, oneshot};
+use tokio::time::Duration;
 use tracing::{debug, error, info, warn};
 
 const MAX_RETRIES: u32 = 10;
@@ -636,9 +637,16 @@ impl ExternalStreamPuller {
             result_sender: event_result_sender,
         };
 
-        self.stream_hub_event_sender
-            .try_send(publish_event)
-            .map_err(|_| anyhow::anyhow!("Failed to send publish event"))?;
+        // Use send().await with timeout instead of try_send() to handle backpressure
+        // gracefully. try_send() would silently fail when the StreamHub channel is
+        // temporarily full under load (e.g., many streams starting simultaneously).
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            self.stream_hub_event_sender.send(publish_event),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("Timed out waiting to send publish event to StreamHub"))?
+        .map_err(|_| anyhow::anyhow!("StreamHub event channel closed"))?;
 
         let result = event_result_receiver
             .await

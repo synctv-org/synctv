@@ -39,7 +39,7 @@ impl Default for MockStreamRegistry {
 #[async_trait]
 impl StreamRegistryTrait for MockStreamRegistry {
     async fn register_publisher(
-        &mut self,
+        &self,
         room_id: &str,
         media_id: &str,
         node_id: &str,
@@ -173,7 +173,7 @@ mod tests {
     // Unit tests using MockStreamRegistry (no Redis required)
     #[tokio::test]
     async fn test_mock_register_publisher_success() {
-        let mut registry = MockStreamRegistry::new();
+        let registry = MockStreamRegistry::new();
 
         // First registration should succeed
         let registered = registry
@@ -193,7 +193,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_register_publisher_duplicate() {
-        let mut registry = MockStreamRegistry::new();
+        let registry = MockStreamRegistry::new();
 
         // First registration should succeed
         let registered = registry
@@ -225,7 +225,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_unregister_publisher() {
-        let mut registry = MockStreamRegistry::new();
+        let registry = MockStreamRegistry::new();
 
         // Register publisher
         registry
@@ -254,7 +254,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_list_active_streams() {
-        let mut registry = MockStreamRegistry::new();
+        let registry = MockStreamRegistry::new();
 
         // Register multiple publishers
         registry
@@ -298,7 +298,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_epoch_increments_on_register() {
-        let mut registry = MockStreamRegistry::new();
+        let registry = MockStreamRegistry::new();
 
         // First registration should have epoch 1
         registry.register_publisher("room1", "media1", "node1", "live").await.unwrap();
@@ -316,7 +316,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_validate_epoch() {
-        let mut registry = MockStreamRegistry::new();
+        let registry = MockStreamRegistry::new();
 
         // Register publisher with epoch 1
         registry.register_publisher("room1", "media1", "node1", "live").await.unwrap();
@@ -337,7 +337,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_cleanup_all_publishers_for_node() {
-        let mut registry = MockStreamRegistry::new();
+        let registry = MockStreamRegistry::new();
 
         // Register publishers on different nodes
         registry.register_publisher("room1", "media1", "node1", "live").await.unwrap();

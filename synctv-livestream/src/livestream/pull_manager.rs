@@ -57,9 +57,6 @@ pub struct PullStreamManager {
     /// Kept alive for the lifetime of the manager; dropped (aborted) when the
     /// manager is dropped.
     _pool_cleanup_handle: tokio::task::JoinHandle<()>,
-    /// Handle for the background creation lock cleanup task.
-    /// Auto-started in `with_timeouts()` to prevent memory leaks from failed stream creation attempts.
-    _cleanup_handle: tokio::task::JoinHandle<()>,
     /// Cluster authentication secret passed to `GrpcStreamPuller` for inter-node gRPC requests.
     cluster_secret: Option<String>,
     /// Optional HLS proxy client for cache invalidation on stale epoch detection.
@@ -127,8 +124,6 @@ impl PullStreamManager {
             Duration::from_secs(cleanup_check_interval_secs),
             Duration::from_secs(idle_timeout_secs),
         );
-        // Auto-start creation lock cleanup to prevent memory leaks
-        let cleanup_handle = pool.start_creation_lock_cleanup();
         Self {
             pool,
             registry,
@@ -136,7 +131,6 @@ impl PullStreamManager {
             grpc_port: DEFAULT_GRPC_PORT,
             connection_pool,
             _pool_cleanup_handle: pool_cleanup_handle,
-            _cleanup_handle: cleanup_handle,
             cluster_secret: None,
             hls_proxy: None,
         }
@@ -203,16 +197,29 @@ impl PullStreamManager {
             media_id
         );
 
-        // Get publisher node address from registry
-        let publisher_info = self.registry.get_publisher(room_id, media_id).await
-            .map_err(|e| {
-                error!("Failed to get publisher for {} / {}: {}", room_id, media_id, e);
-                crate::error::StreamError::RegistryError(format!("Failed to get publisher: {e}"))
-            })?
-            .ok_or_else(|| {
-                warn!("No publisher found for {} / {}", room_id, media_id);
-                crate::error::StreamError::NoPublisher(format!("{room_id} / {media_id}"))
-            })?;
+        // Get publisher node address from registry (with timeout to prevent
+        // indefinite blocking on slow/partitioned Redis)
+        const REGISTRY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+        let publisher_info = tokio::time::timeout(
+            REGISTRY_TIMEOUT,
+            self.registry.get_publisher(room_id, media_id),
+        )
+        .await
+        .map_err(|_| {
+            error!("Timed out querying registry for publisher {} / {}", room_id, media_id);
+            crate::error::StreamError::RegistryError(format!(
+                "Registry query timed out after {}s for {room_id} / {media_id}",
+                REGISTRY_TIMEOUT.as_secs()
+            ))
+        })?
+        .map_err(|e| {
+            error!("Failed to get publisher for {} / {}: {}", room_id, media_id, e);
+            crate::error::StreamError::RegistryError(format!("Failed to get publisher: {e}"))
+        })?
+        .ok_or_else(|| {
+            warn!("No publisher found for {} / {}", room_id, media_id);
+            crate::error::StreamError::NoPublisher(format!("{room_id} / {media_id}"))
+        })?;
 
         // Create pull stream with gRPC puller
         // Store the epoch from publisher info for split-brain detection

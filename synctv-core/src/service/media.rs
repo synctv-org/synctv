@@ -457,7 +457,6 @@ impl MediaService {
             .check_permission(&room_id, &user_id, required_permission)
             .await?;
 
-        // Soft delete
         self.media_repo.delete(&media_id).await?;
 
         tracing::info!(

@@ -211,8 +211,13 @@ impl StreamMessageHandler {
         self.broadcast_user_joined().await;
 
         // Create heartbeat interval OUTSIDE the loop so it doesn't reset
-        // when other select! branches fire
-        let mut heartbeat_interval = tokio::time::interval(std::time::Duration::from_secs(30));
+        // when other select! branches fire.
+        // Add random jitter (±5 s around the 30 s base) so that 1000 concurrent
+        // connections do not all fire their DB membership checks in the same
+        // one-second window (thundering-herd protection).
+        let heartbeat_jitter_secs = nanoid::nanoid!(4).bytes().fold(0u64, |a, b| a.wrapping_add(b as u64)) % 11; // 0..=10
+        let heartbeat_period = std::time::Duration::from_secs(25 + heartbeat_jitter_secs);
+        let mut heartbeat_interval = tokio::time::interval(heartbeat_period);
         heartbeat_interval.tick().await; // Skip the immediate first tick
 
         // Global per-connection message rate limiter (token bucket).
@@ -994,7 +999,9 @@ impl StreamMessageHandler {
         }
 
         // Spawn periodic heartbeat task for membership re-validation (mirrors run() behavior).
-        // Verifies every 30 seconds that the user is still a valid, non-banned member.
+        // Verifies every 25-35 seconds that the user is still a valid, non-banned member.
+        // Jitter prevents the thundering-herd problem where all 1000+ concurrent connections
+        // fire their DB membership checks simultaneously at the same 30-second boundary.
         // This catches cases where disconnect signals were lost (e.g., channel lag).
         {
             let heartbeat_token = cancel_token.clone();
@@ -1002,7 +1009,11 @@ impl StreamMessageHandler {
             let heartbeat_user_id = self.user_id.clone();
             let heartbeat_room_service = Arc::clone(&self.room_service);
             spawn_monitored("messaging_heartbeat", async move {
-                let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+                // Derive jitter from the user_id bytes so each connection gets a
+                // stable-but-different offset within the 25–35 s window.
+                let jitter_secs = heartbeat_user_id.as_str().bytes().fold(0u64, |a, b| a.wrapping_add(b as u64)) % 11; // 0..=10
+                let period = std::time::Duration::from_secs(25 + jitter_secs);
+                let mut interval = tokio::time::interval(period);
                 interval.tick().await; // Skip the immediate first tick
                 loop {
                     tokio::select! {
@@ -1088,11 +1099,14 @@ impl StreamMessageHandler {
                     return Err("Chat is disabled in this room".to_string());
                 }
 
-                // Check rate limit
+                // Check rate limit.
+                // The key includes room_id so that rate limits are per-user
+                // per-room: a user spamming in one room is not throttled in
+                // other rooms they belong to.
                 let rate_limit_key = if is_danmaku {
-                    format!("user:{}:danmaku", self.user_id.as_str())
+                    format!("room:{}:user:{}:danmaku", self.room_id.as_str(), self.user_id.as_str())
                 } else {
-                    format!("user:{}:chat", self.user_id.as_str())
+                    format!("room:{}:user:{}:chat", self.room_id.as_str(), self.user_id.as_str())
                 };
 
                 let rate_limit = if is_danmaku {
@@ -1494,11 +1508,15 @@ impl StreamMessageHandler {
             return Err("Playback position must be non-negative".to_string());
         }
 
-        // Update the server-side playback state with the reported position.
-        // This is best-effort: we don't require SEEK permission for progress
-        // reporting because the client isn't seeking -- it's reporting where
-        // it naturally is. The authoritative playback state stays consistent
-        // because only the actively-playing state is updated.
+        // Only members with SEEK permission may update the canonical playback
+        // state via progress reports. Without this check any room member could
+        // silently rewrite the server-side position by sending crafted progress
+        // messages, effectively acting as an unauthorized seek.
+        self.room_service
+            .check_permission(&self.room_id, &self.user_id, PermissionBits::SEEK)
+            .await
+            .map_err(|e| e.to_string())?;
+
         let playback_service = self.room_service.playback_service();
         let state = playback_service
             .get_state(&self.room_id)

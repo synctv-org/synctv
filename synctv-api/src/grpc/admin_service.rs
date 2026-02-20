@@ -324,8 +324,9 @@ impl AdminService for AdminServiceImpl {
         request: Request<UpdateUserUsernameRequest>,
     ) -> Result<Response<UpdateUserUsernameResponse>, Status> {
         self.check_admin(&request).await?;
+        let admin_user_id = super::interceptors::extract_user_id(&request)?;
         let req = request.into_inner();
-        let resp = self.admin_api.update_user_username(req).await.map_err(map_api_error)?;
+        let resp = self.admin_api.update_user_username(req, &admin_user_id).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -340,8 +341,9 @@ impl AdminService for AdminServiceImpl {
         } else {
             self.check_admin_get_role(&request).await?
         };
+        let admin_user_id = super::interceptors::extract_user_id(&request)?;
         let req = request.into_inner();
-        let resp = self.admin_api.update_user_role(req, caller_role).await.map_err(map_api_error)?;
+        let resp = self.admin_api.update_user_role(req, &admin_user_id, caller_role).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -350,8 +352,9 @@ impl AdminService for AdminServiceImpl {
         request: Request<BanUserRequest>,
     ) -> Result<Response<BanUserResponse>, Status> {
         let caller_role = self.check_admin_get_role(&request).await?;
+        let admin_user_id = super::interceptors::extract_user_id(&request)?;
         let req = request.into_inner();
-        let resp = self.admin_api.ban_user(req, caller_role).await.map_err(map_api_error)?;
+        let resp = self.admin_api.ban_user(req, &admin_user_id, caller_role).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -360,8 +363,9 @@ impl AdminService for AdminServiceImpl {
         request: Request<UnbanUserRequest>,
     ) -> Result<Response<UnbanUserResponse>, Status> {
         self.check_admin(&request).await?;
+        let admin_user_id = super::interceptors::extract_user_id(&request)?;
         let req = request.into_inner();
-        let resp = self.admin_api.unban_user(req).await.map_err(map_api_error)?;
+        let resp = self.admin_api.unban_user(req, &admin_user_id).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -380,8 +384,9 @@ impl AdminService for AdminServiceImpl {
         request: Request<ApproveUserRequest>,
     ) -> Result<Response<ApproveUserResponse>, Status> {
         self.check_admin(&request).await?;
+        let admin_user_id = super::interceptors::extract_user_id(&request)?;
         let req = request.into_inner();
-        let resp = self.admin_api.approve_user(req).await.map_err(map_api_error)?;
+        let resp = self.admin_api.approve_user(req, &admin_user_id).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -481,8 +486,9 @@ impl AdminService for AdminServiceImpl {
         request: Request<AddAdminRequest>,
     ) -> Result<Response<AddAdminResponse>, Status> {
         self.check_root(&request).await?;
+        let admin_user_id = super::interceptors::extract_user_id(&request)?;
         let req = request.into_inner();
-        let resp = self.admin_api.add_admin(req).await.map_err(map_api_error)?;
+        let resp = self.admin_api.add_admin(req, &admin_user_id).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -491,8 +497,9 @@ impl AdminService for AdminServiceImpl {
         request: Request<RemoveAdminRequest>,
     ) -> Result<Response<RemoveAdminResponse>, Status> {
         self.check_root(&request).await?;
+        let admin_user_id = super::interceptors::extract_user_id(&request)?;
         let req = request.into_inner();
-        let resp = self.admin_api.remove_admin(req).await.map_err(map_api_error)?;
+        let resp = self.admin_api.remove_admin(req, &admin_user_id).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 

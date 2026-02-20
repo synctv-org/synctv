@@ -10,7 +10,7 @@ use dashmap::DashMap;
 use tokio::sync::{RwLock, broadcast};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn, error};
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
 
 use crate::models::settings::{get_default_settings, SettingsGroup};
 use crate::repository::SettingsRepository;
@@ -162,6 +162,67 @@ impl SettingsService {
         Ok(setting)
     }
 
+
+    /// Atomically update multiple settings in a single database transaction.
+    ///
+    /// All updates are committed together or rolled back if any write fails, so the
+    /// settings table is never left in a partially-updated state. Cache and local
+    /// listeners are updated only after the transaction commits successfully.
+    pub async fn update_batch(
+        &self,
+        updates: impl IntoIterator<Item = (String, String)>,
+    ) -> Result<Vec<SettingsGroup>, Error> {
+        let updates: Vec<(String, String)> = updates.into_iter().collect();
+        if updates.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let mut tx = self.pool.begin().await
+            .map_err(|e| Error::Internal(format!("Failed to start settings transaction: {e}")))?;
+
+        let mut updated = Vec::with_capacity(updates.len());
+        for (key, value) in &updates {
+            let row = sqlx::query(
+                "UPDATE settings
+                 SET value = $1, updated_at = NOW()
+                 WHERE key = $2
+                 RETURNING key, group_name, value, created_at, updated_at",
+            )
+            .bind(value.as_str())
+            .bind(key.as_str())
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to update setting '{key}': {e}")))?;
+
+            let setting = crate::models::settings::SettingsGroup {
+                key: row.try_get("key")
+                    .map_err(|e| Error::Internal(format!("Failed to read setting key: {e}")))?,
+                group: row.try_get("group_name")
+                    .map_err(|e| Error::Internal(format!("Failed to read setting group: {e}")))?,
+                value: row.try_get("value")
+                    .map_err(|e| Error::Internal(format!("Failed to read setting value: {e}")))?,
+                created_at: row.try_get("created_at")
+                    .map_err(|e| Error::Internal(format!("Failed to read setting created_at: {e}")))?,
+                updated_at: row.try_get("updated_at")
+                    .map_err(|e| Error::Internal(format!("Failed to read setting updated_at: {e}")))?,
+            };
+            updated.push(setting);
+        }
+
+        tx.commit().await
+            .map_err(|e| Error::Internal(format!("Failed to commit settings transaction: {e}")))?;
+
+        // Update cache and notify listeners only after the transaction committed.
+        for setting in &updated {
+            self.cache.insert(setting.key.clone(), setting.clone());
+            let json_value: serde_json::Value = setting.value.parse()
+                .unwrap_or_else(|_| serde_json::json!(&setting.value));
+            self.notify_listeners(&setting.key, &json_value).await;
+            info!("Updated setting '{}' (batch)", setting.key);
+        }
+
+        Ok(updated)
+    }
 
     /// Get a specific setting value by key (e.g., "`server.allow_registration`")
     pub async fn get_value(&self, key: &str) -> Option<String> {

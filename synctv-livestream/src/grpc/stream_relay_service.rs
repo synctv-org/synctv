@@ -17,7 +17,7 @@ use super::proto::{
     GetHlsPlaylistRequest, GetHlsPlaylistResponse,
     GetHlsSegmentRequest, GetHlsSegmentResponse,
 };
-use crate::relay::StreamRegistry;
+use crate::relay::StreamRegistryTrait;
 use crate::protocols::hls::StreamRegistry as HlsStreamRegistry;
 use crate::livestream::segment_manager::SegmentManager;
 
@@ -39,7 +39,7 @@ pub type RelayActivityCallback = Arc<dyn Fn(&str, &str) + Send + Sync>;
 /// GOP cache is handled by xiu's `StreamHub` internally — when a new subscriber
 /// joins, `StreamHub` automatically sends cached GOP frames via `send_prior_data`.
 pub struct StreamRelayServiceImpl {
-    registry: Arc<StreamRegistry>,
+    registry: Arc<dyn StreamRegistryTrait>,
     node_id: String,
     stream_hub_event_sender: StreamHubEventSender,
     /// Shared secret for cluster authentication (constant-time comparison)
@@ -60,7 +60,7 @@ pub struct StreamRelayServiceImpl {
 impl StreamRelayServiceImpl {
     #[must_use]
     pub fn new(
-        registry: Arc<StreamRegistry>,
+        registry: Arc<dyn StreamRegistryTrait>,
         node_id: String,
         stream_hub_event_sender: StreamHubEventSender,
         cancel_token: CancellationToken,
@@ -153,7 +153,7 @@ impl stream_relay_service_server::StreamRelayService for StreamRelayServiceImpl 
 
         // Check if this node is the publisher
         let publisher_info = self.registry
-            .get_publisher_immut(&req.room_id, &req.media_id)
+            .get_publisher(&req.room_id, &req.media_id)
             .await
             .map_err(|e| {
                 tracing::error!("Failed to get publisher: {e}");
@@ -381,8 +381,8 @@ impl StreamRelayServiceImpl {
         };
 
         let identifier = StreamIdentifier::Rtmp {
-            app_name: room_id,
-            stream_name: media_id,
+            app_name: room_id.clone(),
+            stream_name: media_id.clone(),
         };
 
         let unsubscribe_event = StreamHubEvent::UnSubscribe {
@@ -390,8 +390,13 @@ impl StreamRelayServiceImpl {
             info: sub_info,
         };
 
-        if let Err(e) = event_sender.try_send(unsubscribe_event) {
-            warn!("Failed to send unsubscribe event: {}", e);
+        if let Err(e) = event_sender.send(unsubscribe_event).await {
+            warn!(
+                room_id = %room_id,
+                media_id = %media_id,
+                "Failed to send unsubscribe event to StreamHub (channel closed): {}",
+                e
+            );
         }
     }
 }

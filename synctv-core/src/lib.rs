@@ -14,7 +14,6 @@ pub mod resilience;
 pub mod spawn;
 pub mod validation;
 pub mod secrets;
-pub mod change_listener;
 
 #[cfg(test)]
 pub mod test_helpers;

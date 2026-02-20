@@ -502,12 +502,16 @@ impl StreamRegistry {
                 .await
                 .map_err(|e| anyhow!(e.to_string()))?;
 
-            // Parse keys into (room_id, media_id) tuples
+            // Parse keys into (room_id, media_id) tuples.
+            // Use split_once(':') instead of split(':').collect() to correctly handle
+            // room_ids that contain ':' characters — split(':').collect() + len==2 check
+            // would silently drop any such key, and indexing [0]/[1] would give wrong results.
+            // split_once splits only on the FIRST ':': room_id gets everything before it,
+            // media_id gets everything after (including any embedded colons in media_id).
             for k in keys {
                 if let Some(s) = k.strip_prefix("stream:publisher:") {
-                    let parts: Vec<&str> = s.split(':').collect();
-                    if parts.len() == 2 {
-                        streams.push((parts[0].to_string(), parts[1].to_string()));
+                    if let Some((room_id, media_id)) = s.split_once(':') {
+                        streams.push((room_id.to_string(), media_id.to_string()));
                     }
                 }
             }

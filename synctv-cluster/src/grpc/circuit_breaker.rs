@@ -6,6 +6,7 @@
 use failsafe::{backoff, failure_policy, Config as CbConfig, StateMachine};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::RwLock;
 use tracing::{debug, warn};
@@ -13,14 +14,113 @@ use tracing::{debug, warn};
 /// Circuit breaker state for a single gRPC endpoint.
 type EndpointCircuitBreaker = StateMachine<failure_policy::ConsecutiveFailures<backoff::Exponential>, ()>;
 
+/// Wrapper around `EndpointCircuitBreaker` that adds a `probe_in_flight` flag
+/// to prevent the half-open race condition where multiple concurrent callers
+/// all see `is_call_permitted() = true` simultaneously in half-open state.
+struct EndpointBreaker {
+    breaker: EndpointCircuitBreaker,
+    /// Set to `true` when the circuit opens (via `on_error` reaching the
+    /// failure threshold). Cleared to `false` when `on_success` is called
+    /// (probe succeeded, circuit closes).
+    ///
+    /// Used to distinguish calls in `Closed` state (where `was_open` is
+    /// `false` and the probe guard should not apply) from calls in
+    /// `HalfOpen` state (where `was_open` is `true` and only one concurrent
+    /// probe should be allowed).
+    was_open: AtomicBool,
+    /// `true` while a half-open probe call is currently in flight.
+    ///
+    /// Lifecycle:
+    /// - Starts `false`.
+    /// - Set to `true` (via `compare_exchange`) by the single caller that
+    ///   wins the half-open probe race.
+    /// - Reset to `false` when the probe completes via `on_success` or
+    ///   `on_error`, allowing the next cooldown window to try again.
+    probe_in_flight: AtomicBool,
+}
+
+impl EndpointBreaker {
+    fn new(breaker: EndpointCircuitBreaker) -> Self {
+        Self {
+            breaker,
+            was_open: AtomicBool::new(false),
+            probe_in_flight: AtomicBool::new(false),
+        }
+    }
+
+    /// Returns `true` if this call is permitted.
+    ///
+    /// - `Closed` state (`was_open = false`): all concurrent calls pass
+    ///   through normally — no probe guard is applied.
+    /// - `Open` state (cooldown not yet elapsed): all calls are rejected.
+    /// - `Half-open` state (`was_open = true`, cooldown elapsed): only the
+    ///   **first** concurrent caller gets `true`; all others get `false`
+    ///   until the probe completes via `on_success` or `on_error`.
+    fn is_call_permitted(&self) -> bool {
+        // Ask the underlying failsafe state machine.  This also drives the
+        // Open -> HalfOpen transition when the cooldown expires.
+        if !self.breaker.is_call_permitted() {
+            return false;
+        }
+
+        // The underlying breaker returned `true`.  This happens in both
+        // `Closed` and `HalfOpen` states.
+        //
+        // Only apply the single-probe guard when the circuit was previously
+        // open (`was_open = true`).  In `Closed` state `was_open` is always
+        // `false` so all concurrent calls proceed without restriction.
+        if !self.was_open.load(Ordering::Acquire) {
+            return true;
+        }
+
+        // Circuit is (or was) open and has now entered the half-open window.
+        // Use compare_exchange so only the first concurrent caller is allowed
+        // through as the probe; all others are rejected.
+        match self.probe_in_flight.compare_exchange(
+            false,
+            true,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => true,   // Won the race — this caller is the probe
+            Err(_) => false, // Another probe is already in flight; block this caller
+        }
+    }
+
+    fn on_success(&self) {
+        // Probe succeeded: circuit closes.  Clear both flags so subsequent
+        // closed-state callers are never blocked by the half-open guard.
+        self.probe_in_flight.store(false, Ordering::Release);
+        self.was_open.store(false, Ordering::Release);
+        self.breaker.on_success();
+    }
+
+    fn on_error(&self) {
+        // Probe failed (or normal closed-state failure).  Reset the probe
+        // slot so the next cooldown window can attempt a fresh probe.
+        // Keep `was_open = true` if the underlying breaker just re-opened.
+        self.probe_in_flight.store(false, Ordering::Release);
+        self.breaker.on_error();
+        // Reflect the open state: after on_error the failsafe breaker may
+        // have transitioned to Open.  Check via is_call_permitted — if it
+        // now returns false the circuit is open; set was_open accordingly.
+        // We intentionally do NOT consume a probe slot here; this is purely
+        // a state observation.
+        if !self.breaker.is_call_permitted() {
+            self.was_open.store(true, Ordering::Release);
+        }
+    }
+}
+
 /// Create a new circuit breaker for a gRPC endpoint.
 ///
 /// Opens after 3 consecutive failures. Uses exponential backoff starting at
 /// 5 seconds up to 30 seconds before allowing probe requests in half-open state.
-fn create_endpoint_breaker() -> EndpointCircuitBreaker {
+fn create_endpoint_breaker() -> EndpointBreaker {
     let backoff = backoff::exponential(Duration::from_secs(5), Duration::from_secs(30));
     let policy = failure_policy::consecutive_failures(3, backoff);
-    CbConfig::new().failure_policy(policy).build()
+    let breaker = CbConfig::new().failure_policy(policy).build();
+    EndpointBreaker::new(breaker)
 }
 
 /// Circuit breaker registry for gRPC endpoints.
@@ -29,7 +129,7 @@ fn create_endpoint_breaker() -> EndpointCircuitBreaker {
 /// unhealthy nodes during cross-node fan-out queries.
 pub struct GrpcCircuitBreakerRegistry {
     /// Map of endpoint address -> circuit breaker
-    breakers: Arc<RwLock<HashMap<String, EndpointCircuitBreaker>>>,
+    breakers: Arc<RwLock<HashMap<String, EndpointBreaker>>>,
 }
 
 impl GrpcCircuitBreakerRegistry {
@@ -42,8 +142,9 @@ impl GrpcCircuitBreakerRegistry {
 
     /// Check if a call to the given endpoint is permitted by its circuit breaker.
     ///
-    /// Returns `true` if the circuit is closed or half-open (allowing a probe).
-    /// Returns `false` if the circuit is open (endpoint is unhealthy).
+    /// Returns `true` if the circuit is closed or half-open (allowing the single
+    /// probe call). Returns `false` if the circuit is open or another probe is
+    /// already in flight (half-open race protection).
     pub async fn is_call_permitted(&self, address: &str) -> bool {
         let breakers = self.breakers.read().await;
         if let Some(breaker) = breakers.get(address) {
@@ -56,7 +157,8 @@ impl GrpcCircuitBreakerRegistry {
 
     /// Record a successful call to the given endpoint.
     ///
-    /// Resets failure count and transitions from Half-Open -> Closed if applicable.
+    /// Resets the probe_in_flight flag and failure count; transitions from
+    /// Half-Open -> Closed if applicable.
     pub async fn on_success(&self, address: &str) {
         let mut breakers = self.breakers.write().await;
         let breaker = breakers
@@ -68,17 +170,20 @@ impl GrpcCircuitBreakerRegistry {
 
     /// Record a failed call to the given endpoint.
     ///
-    /// Increments failure count and may transition from Closed -> Open or
-    /// Half-Open -> Open if the failure threshold is reached.
+    /// Resets the probe_in_flight flag and increments failure count; may
+    /// transition from Closed -> Open or Half-Open -> Open if the failure
+    /// threshold is reached.
     pub async fn on_error(&self, address: &str) {
         let mut breakers = self.breakers.write().await;
         let breaker = breakers
             .entry(address.to_string())
             .or_insert_with(create_endpoint_breaker);
         breaker.on_error();
+        // `was_open` is set inside `on_error()` if the circuit just opened.
+        let is_open = breaker.was_open.load(Ordering::Acquire);
         warn!(
             address = %address,
-            is_open = !breaker.is_call_permitted(),
+            is_open = is_open,
             "gRPC circuit breaker: failure recorded"
         );
     }
@@ -86,10 +191,11 @@ impl GrpcCircuitBreakerRegistry {
     /// Get the current state of the circuit breaker for an endpoint.
     ///
     /// Returns `true` if the circuit is open (unhealthy), `false` if closed/half-open.
+    /// Note: this queries the underlying failsafe state without consuming a probe slot.
     pub async fn is_open(&self, address: &str) -> bool {
         let breakers = self.breakers.read().await;
         if let Some(breaker) = breakers.get(address) {
-            !breaker.is_call_permitted()
+            !breaker.breaker.is_call_permitted()
         } else {
             false
         }
@@ -107,10 +213,11 @@ impl GrpcCircuitBreakerRegistry {
     /// Get statistics about circuit breaker states.
     ///
     /// Returns (total_endpoints, open_circuits, closed_circuits).
+    /// Queries the underlying failsafe state without consuming probe slots.
     pub async fn stats(&self) -> (usize, usize, usize) {
         let breakers = self.breakers.read().await;
         let total = breakers.len();
-        let open = breakers.values().filter(|b| !b.is_call_permitted()).count();
+        let open = breakers.values().filter(|b| !b.breaker.is_call_permitted()).count();
         let closed = total - open;
         (total, open, closed)
     }
@@ -120,13 +227,14 @@ impl GrpcCircuitBreakerRegistry {
     /// Returns `true` if more than 50% of known endpoints have open circuit
     /// breakers. When degraded, callers should skip fan-out to unhealthy nodes
     /// and return partial results immediately to avoid cascading timeouts.
+    /// Queries the underlying failsafe state without consuming probe slots.
     pub async fn is_cluster_degraded(&self) -> bool {
         let breakers = self.breakers.read().await;
         let total = breakers.len();
         if total == 0 {
             return false;
         }
-        let open = breakers.values().filter(|b| !b.is_call_permitted()).count();
+        let open = breakers.values().filter(|b| !b.breaker.is_call_permitted()).count();
         open * 2 > total // more than 50% open
     }
 
@@ -135,11 +243,12 @@ impl GrpcCircuitBreakerRegistry {
     /// Used during degraded mode to limit fan-out to nodes that are likely
     /// reachable, returning partial results rather than waiting for timeouts
     /// from unhealthy nodes.
+    /// Queries the underlying failsafe state without consuming probe slots.
     pub async fn healthy_endpoints(&self) -> Vec<String> {
         let breakers = self.breakers.read().await;
         breakers
             .iter()
-            .filter(|(_, b)| b.is_call_permitted())
+            .filter(|(_, b)| b.breaker.is_call_permitted())
             .map(|(addr, _)| addr.clone())
             .collect()
     }

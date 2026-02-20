@@ -24,6 +24,12 @@ impl UserOAuthProviderRepository {
         Self { pool }
     }
 
+    /// Return a reference to the underlying connection pool
+    #[must_use]
+    pub const fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+
     /// Insert or update `OAuth2` provider mapping
     pub async fn upsert(
         &self,
@@ -81,12 +87,28 @@ impl UserOAuthProviderRepository {
         provider: &OAuth2Provider,
         provider_user_id: &str,
     ) -> Result<Option<UserOAuthProviderMapping>> {
+        self.find_by_provider_with_executor(provider, provider_user_id, &self.pool).await
+    }
+
+    /// Find user by `OAuth2` provider and provider user ID using a provided executor
+    ///
+    /// Allows the lookup to participate in an existing transaction, which is necessary
+    /// for the atomic find-or-create pattern used in [`OAuth2Service::find_or_create_and_link`].
+    pub async fn find_by_provider_with_executor<'e, E>(
+        &self,
+        provider: &OAuth2Provider,
+        provider_user_id: &str,
+        executor: E,
+    ) -> Result<Option<UserOAuthProviderMapping>>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
         let row = sqlx::query_as::<_, OAuth2ClientRow>(
             "SELECT * FROM oauth2_clients WHERE provider = $1 AND provider_user_id = $2"
         )
         .bind(provider.as_str())
         .bind(provider_user_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(executor)
         .await?;
 
         Ok(row.map(std::convert::Into::into))

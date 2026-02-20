@@ -316,6 +316,9 @@ pub async fn check_room(
     Ok(Json(response))
 }
 
+/// Maximum allowed page size for list_rooms to prevent DB overload and OOM.
+const LIST_ROOMS_MAX_PAGE_SIZE: i32 = 200;
+
 /// List rooms (requires authentication to prevent anonymous enumeration)
 pub async fn list_rooms(
     _auth: AuthUser,
@@ -323,7 +326,11 @@ pub async fn list_rooms(
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> AppResult<Json<ListRoomsResponse>> {
     let page: i32 = params.get("page").and_then(|v| v.parse().ok()).unwrap_or(1);
-    let page_size: i32 = params.get("page_size").and_then(|v| v.parse().ok()).unwrap_or(50);
+    let page_size: i32 = params
+        .get("page_size")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(50)
+        .clamp(1, LIST_ROOMS_MAX_PAGE_SIZE);
     let search = params.get("search").cloned().unwrap_or_default();
 
     let proto_req = ListRoomsRequest {

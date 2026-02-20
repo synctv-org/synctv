@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS users (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     password_changed_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,  -- Last password change timestamp (for token invalidation)
     password_version INTEGER NOT NULL DEFAULT 0,  -- Incremented on each password change (for JWT invalidation via claims.pv)
+    version INTEGER NOT NULL DEFAULT 0,  -- Monotonically increasing integer for optimistic locking (compare-and-increment)
     deleted_at TIMESTAMPTZ NULL,
 
     -- Ensure email is not empty or whitespace-only
@@ -69,33 +70,7 @@ COMMENT ON COLUMN users.status IS 'User account status: 1=active, 2=pending (ema
 COMMENT ON COLUMN users.email_verified IS 'Whether the user email has been verified';
 COMMENT ON COLUMN users.password_changed_at IS 'Timestamp of last password change. Tokens issued before this timestamp are invalid.';
 COMMENT ON COLUMN users.password_version IS 'Monotonically increasing counter, incremented on each password change. Used to invalidate JWTs via the pv claim.';
+COMMENT ON COLUMN users.version IS 'Monotonically increasing integer for optimistic locking. Incremented on each UPDATE. Used by compare-and-increment to detect concurrent modifications.';
 COMMENT ON COLUMN users.deleted_at IS 'Soft delete timestamp (NULL = active user)';
 COMMENT ON CONSTRAINT users_email_not_empty ON users IS 'Ensures email is either NULL or a non-empty string';
 
--- ============================================================================
--- User Deletion Notification (for cluster-wide resource cleanup)
--- ============================================================================
-
-CREATE OR REPLACE FUNCTION notify_user_deleted()
-RETURNS TRIGGER AS $$
-BEGIN
-    -- Send notification to all cluster nodes listening on 'synctv_user_deleted'
-    -- Enables stateless cleanup without requiring PersistentVolumeClaim/WAL
-    PERFORM pg_notify(
-        'synctv_user_deleted',
-        json_build_object(
-            'user_id', OLD.id,
-            'timestamp', CURRENT_TIMESTAMP
-        )::text
-    );
-    RETURN OLD;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER trigger_user_deleted
-AFTER DELETE ON users
-FOR EACH ROW
-EXECUTE FUNCTION notify_user_deleted();
-
-COMMENT ON FUNCTION notify_user_deleted IS
-'Sends a notification when a user is deleted. Cluster nodes listen for this to clear caches and disconnect user connections.';

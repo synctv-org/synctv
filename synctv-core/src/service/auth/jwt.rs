@@ -72,6 +72,8 @@ pub struct GuestClaims {
     pub room_id: String,
     /// Random session ID for this guest
     pub session_id: String,
+    /// JWT ID (unique token identifier for individual token revocation/blacklisting)
+    pub jti: String,
     /// Token type (always "guest")
     pub typ: String,
     /// Issued at (Unix timestamp)
@@ -337,6 +339,7 @@ impl JwtService {
             sub: format!("guest:{}:{}", room_id.as_str(), session_id),
             room_id: room_id.as_str().to_string(),
             session_id,
+            jti: nanoid::nanoid!(16), // Unique JWT ID for individual token revocation
             typ: "guest".to_string(),
             iat: now.timestamp(),
             exp: (now + duration).timestamp(),
@@ -679,6 +682,7 @@ mod tests {
             sub: "user:some_id".into(),
             room_id: "room1".into(),
             session_id: "sess1".into(),
+            jti: "test-jti".into(),
             typ: "guest".into(),
             iat: 0,
             exp: 0,

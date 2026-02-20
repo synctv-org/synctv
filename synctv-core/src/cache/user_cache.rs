@@ -192,6 +192,14 @@ impl UserCache {
     pub async fn clear_l1(&self) {
         self.inner.clear_l1().await;
     }
+
+    /// Clear both L1 (in-memory) and L2 (Redis) caches.
+    ///
+    /// Used during lag-triggered full flushes to prevent stale L2 entries from
+    /// re-populating L1 on this or other replicas.
+    pub async fn clear(&self) {
+        self.inner.clear().await;
+    }
 }
 
 impl std::fmt::Debug for UserCache {

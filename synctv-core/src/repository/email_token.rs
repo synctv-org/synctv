@@ -75,26 +75,32 @@ impl EmailTokenRepository {
     }
 
     /// Mark token as used
+    ///
+    /// Returns `Err(InvalidInput)` if the token does not exist or has already
+    /// been used (`used_at IS NOT NULL`), preventing double-use and race
+    /// conditions where two concurrent requests both try to consume the same
+    /// token.
     pub async fn mark_as_used(&self, token: &str) -> Result<EmailToken> {
         let t = sqlx::query_as::<_, EmailToken>(
             r"
             UPDATE email_tokens
             SET used_at = CURRENT_TIMESTAMP
             WHERE token = $1
+              AND used_at IS NULL
             RETURNING id::TEXT, token, user_id, token_type, expires_at, used_at, created_at
             ",
         )
         .bind(token)
-        .fetch_one(&self.pool)
+        .fetch_optional(&self.pool)
         .await
-        .map_err(|e| match e {
-            sqlx::Error::RowNotFound => {
-                Error::InvalidInput("Token not found".to_string())
-            }
-            _ => Error::Database(e),
-        })?;
+        .map_err(Error::Database)?;
 
-        Ok(t)
+        match t {
+            Some(record) => Ok(record),
+            None => Err(Error::InvalidInput(
+                "Token not found or already used".to_string(),
+            )),
+        }
     }
 
     /// Atomically validate and consume a token.

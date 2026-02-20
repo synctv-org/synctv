@@ -393,7 +393,7 @@ async fn set_user_role(
         _ => return Err(AppError::bad_request(format!("Unknown role: {}", req.role))),
     };
     let resp = api
-        .update_user_role(admin::UpdateUserRoleRequest { user_id, role: role_i32 }, auth.role)
+        .update_user_role(admin::UpdateUserRoleRequest { user_id, role: role_i32 }, &auth.user_id, auth.role)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -421,7 +421,7 @@ async fn set_user_password(
 }
 
 async fn set_user_username(
-    _auth: AuthAdmin,
+    auth: AuthAdmin,
     State(state): State<AppState>,
     Path(user_id): Path<String>,
     Json(req): Json<SetUserUsernameRequest>,
@@ -432,7 +432,7 @@ async fn set_user_username(
         .update_user_username(admin::UpdateUserUsernameRequest {
             user_id,
             new_username: req.username,
-        })
+        }, &auth.user_id)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -451,35 +451,35 @@ async fn ban_user(
 
     let api = require_admin_api(&state)?;
     let resp = api
-        .ban_user(admin::BanUserRequest { user_id, reason: req.reason }, auth.role)
+        .ban_user(admin::BanUserRequest { user_id, reason: req.reason }, &auth.user_id, auth.role)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
 }
 
 async fn unban_user(
-    _auth: AuthAdmin,
+    auth: AuthAdmin,
     State(state): State<AppState>,
     Path(user_id): Path<String>,
 ) -> AppResult<Json<admin::UnbanUserResponse>> {
     validate_path_id(&user_id, "user_id")?;
     let api = require_admin_api(&state)?;
     let resp = api
-        .unban_user(admin::UnbanUserRequest { user_id })
+        .unban_user(admin::UnbanUserRequest { user_id }, &auth.user_id)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
 }
 
 async fn approve_user(
-    _auth: AuthAdmin,
+    auth: AuthAdmin,
     State(state): State<AppState>,
     Path(user_id): Path<String>,
 ) -> AppResult<Json<admin::ApproveUserResponse>> {
     validate_path_id(&user_id, "user_id")?;
     let api = require_admin_api(&state)?;
     let resp = api
-        .approve_user(admin::ApproveUserRequest { user_id })
+        .approve_user(admin::ApproveUserRequest { user_id }, &auth.user_id)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -856,28 +856,28 @@ async fn list_admins(
 }
 
 async fn add_admin(
-    _auth: AuthRoot,
+    auth: AuthRoot,
     State(state): State<AppState>,
     Path(user_id): Path<String>,
 ) -> AppResult<Json<admin::AddAdminResponse>> {
     validate_path_id(&user_id, "user_id")?;
     let api = require_admin_api(&state)?;
     let resp = api
-        .add_admin(admin::AddAdminRequest { user_id })
+        .add_admin(admin::AddAdminRequest { user_id }, &auth.user_id)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
 }
 
 async fn remove_admin(
-    _auth: AuthRoot,
+    auth: AuthRoot,
     State(state): State<AppState>,
     Path(user_id): Path<String>,
 ) -> AppResult<Json<admin::RemoveAdminResponse>> {
     validate_path_id(&user_id, "user_id")?;
     let api = require_admin_api(&state)?;
     let resp = api
-        .remove_admin(admin::RemoveAdminRequest { user_id })
+        .remove_admin(admin::RemoveAdminRequest { user_id }, &auth.user_id)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))

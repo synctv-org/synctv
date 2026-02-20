@@ -10,7 +10,8 @@
 //!
 //! // Initialize during app startup
 //! let registry = SettingsRegistry::new(settings_service);
-//! registry.init().await.unwrap();
+//! let cancel = tokio_util::sync::CancellationToken::new();
+//! registry.init(cancel).await.unwrap();
 //!
 //! // Read - type-safe, returns cached value
 //! if registry.signup_enabled.get().unwrap() {
@@ -370,14 +371,17 @@ impl SettingsRegistry {
     }
 
     /// Initialize storage from database
-    pub async fn init(&self) -> anyhow::Result<()> {
+    ///
+    /// The `cancel` token is forwarded to the background reload listener so it
+    /// can be stopped cleanly during graceful shutdown.
+    pub async fn init(&self, cancel: tokio_util::sync::CancellationToken) -> anyhow::Result<()> {
         // Load raw values from database into shared storage
         // Individual settings will lazy-load on first get()
         self.storage.init().await?;
 
         // Start background listener to keep SettingsStorage in sync with
         // remote replica changes propagated via PostgreSQL LISTEN/NOTIFY
-        self.storage.start_reload_listener();
+        self.storage.start_reload_listener(cancel);
 
         Ok(())
     }

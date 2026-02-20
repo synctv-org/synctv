@@ -1,8 +1,12 @@
 //! Unified database maintenance service
 //!
 //! Coordinates all periodic database maintenance in a single background task:
-//! - Partition creation for `chat_messages` (daily) and `audit_logs` (monthly)
+//! - Partition creation for `audit_logs` (monthly)
 //! - Cleanup of expired email tokens, old notifications, and expired credentials
+//! - Cleanup of chat messages older than the 90-day absolute retention cap
+//!
+//! Note: chat message partition management (creation and old partition dropping)
+//! is handled exclusively by `ChatPartitionManager` to avoid conflicting operations.
 //!
 //! Uses the existing SQL functions defined in migrations but previously uncalled
 //! by application code.
@@ -29,21 +33,6 @@ impl DatabaseMaintenanceService {
     #[must_use]
     pub fn new(pool: PgPool, leader_check: Arc<dyn LeaderCheck>) -> Self {
         Self { pool, leader_check }
-    }
-
-    /// Create chat message partitions for the next `days_ahead` days.
-    pub async fn run_chat_partition_maintenance(&self) -> Result<(), sqlx::Error> {
-        let result = sqlx::query_scalar::<_, serde_json::Value>(
-            "SELECT create_chat_message_partitions($1)",
-        )
-        .bind(60i32)
-        .fetch_one(&self.pool)
-        .await?;
-
-        let success = result["success_count"].as_i64().unwrap_or(0);
-        let total = result["total_requested"].as_i64().unwrap_or(0);
-        info!(success, total, "Chat message partition maintenance completed");
-        Ok(())
     }
 
     /// Create audit log partitions for the next `months_ahead` months.
@@ -88,6 +77,26 @@ impl DatabaseMaintenanceService {
         Ok(())
     }
 
+    /// Delete all chat messages older than the absolute 90-day retention cap.
+    ///
+    /// This enforces the hard retention limit for rooms that are inactive and
+    /// therefore never processed by the per-room count-based cleanup (which only
+    /// targets rooms with recent activity). Partition pruning makes this fast
+    /// because the `created_at` filter maps directly to daily partitions.
+    pub async fn run_cleanup_old_chat_messages(&self) -> Result<(), sqlx::Error> {
+        let result = sqlx::query(
+            "DELETE FROM chat_messages WHERE created_at <= NOW() - INTERVAL '90 days'",
+        )
+        .execute(&self.pool)
+        .await?;
+
+        let deleted = result.rows_affected();
+        if deleted > 0 {
+            info!(deleted, "Old chat message cleanup (90-day cap) completed");
+        }
+        Ok(())
+    }
+
     /// Delete expired provider credentials.
     pub async fn run_cleanup_credentials(&self) -> Result<(), sqlx::Error> {
         let result = sqlx::query_scalar::<_, serde_json::Value>(
@@ -105,10 +114,11 @@ impl DatabaseMaintenanceService {
     }
 
     /// Run all maintenance tasks. Logs errors but does not fail.
+    ///
+    /// Note: chat message partition management is handled exclusively by
+    /// `ChatPartitionManager` which also performs health checks, handles missing
+    /// partitions, and drops old partitions based on the retention period.
     pub async fn run_all_maintenance(&self) {
-        if let Err(e) = self.run_chat_partition_maintenance().await {
-            error!(error = %e, "Chat partition maintenance failed");
-        }
         if let Err(e) = self.run_audit_partition_maintenance().await {
             error!(error = %e, "Audit partition maintenance failed");
         }
@@ -120,6 +130,9 @@ impl DatabaseMaintenanceService {
         }
         if let Err(e) = self.run_cleanup_credentials().await {
             error!(error = %e, "Credential cleanup failed");
+        }
+        if let Err(e) = self.run_cleanup_old_chat_messages().await {
+            error!(error = %e, "Old chat message cleanup failed");
         }
     }
 
@@ -169,9 +182,7 @@ impl DatabaseMaintenanceService {
                             continue;
                         }
                         info!("Running scheduled partition maintenance");
-                        if let Err(e) = service.run_chat_partition_maintenance().await {
-                            error!(error = %e, "Scheduled chat partition maintenance failed");
-                        }
+                        // Note: chat partition management is handled by ChatPartitionManager
                         if let Err(e) = service.run_audit_partition_maintenance().await {
                             error!(error = %e, "Scheduled audit partition maintenance failed");
                         }
@@ -190,6 +201,9 @@ impl DatabaseMaintenanceService {
                         }
                         if let Err(e) = service.run_cleanup_credentials().await {
                             error!(error = %e, "Scheduled credential cleanup failed");
+                        }
+                        if let Err(e) = service.run_cleanup_old_chat_messages().await {
+                            error!(error = %e, "Scheduled old chat message cleanup failed");
                         }
                     }
                 }

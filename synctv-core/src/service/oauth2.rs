@@ -18,9 +18,10 @@ use tracing::{debug, info};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    models::{oauth2_client::OAuth2Provider, UserId},
+    models::{oauth2_client::OAuth2Provider, User, UserId, SignupMethod},
     repository::UserOAuthProviderRepository,
     oauth2::Provider as OAuth2ProviderTrait,
+    service::UserService,
     Error, Result, InternalExt,
 };
 
@@ -592,6 +593,96 @@ impl OAuth2Service {
             Some(mapping) => Ok(Some(mapping.user_id)),
             None => Ok(None),
         }
+    }
+
+    /// Find an existing user by `OAuth2` provider, or create a new one and link the provider,
+    /// all within a single database transaction.
+    ///
+    /// This prevents the race condition where two concurrent `OAuth2` logins for the same
+    /// provider identity both find no existing user and both create separate user records.
+    ///
+    /// ## Behaviour
+    ///
+    /// 1. **Found** — returns the existing [`UserId`] without touching the database further.
+    /// 2. **Not found** — begins a transaction, creates a new user via
+    ///    [`UserService::register_with_executor`], links the `OAuth2` provider mapping, and
+    ///    commits. If the transaction fails the whole operation is rolled back atomically.
+    ///
+    /// On success, `is_new` in the returned tuple indicates whether a new account was created.
+    ///
+    /// ## Arguments
+    /// * `user_service` — used to create the new user inside the transaction
+    /// * `provider` — the `OAuth2` provider enum
+    /// * `user_info` — user info fetched from the provider
+    pub async fn find_or_create_and_link(
+        &self,
+        user_service: &UserService,
+        provider: &OAuth2Provider,
+        user_info: &OAuth2UserInfo,
+    ) -> Result<(UserId, bool)> {
+        // Fast path: user already linked — no transaction needed.
+        if let Some(user_id) = self.find_user_by_provider(provider, &user_info.provider_user_id).await? {
+            return Ok((user_id, false));
+        }
+
+        // Slow path: no existing mapping — create user + link in one transaction.
+        let pool = self.repository.pool();
+        let mut tx = pool.begin().await?;
+
+        // Re-check inside the transaction to guard against the race where another
+        // concurrent request created the user between our initial lookup and here.
+        let existing = self.repository
+            .find_by_provider_with_executor(provider, &user_info.provider_user_id, &mut *tx)
+            .await?;
+
+        if let Some(mapping) = existing {
+            // Another concurrent request already created the mapping — use it.
+            tx.rollback().await?;
+            return Ok((mapping.user_id, false));
+        }
+
+        // Generate a random password (OAuth2 users authenticate via provider, not password).
+        let random_password = nanoid::nanoid!(32);
+
+        // Create the user record inside the transaction.
+        let new_user: User = user_service
+            .register_with_executor(
+                user_info.username.clone(),
+                user_info.email.clone(),
+                random_password,
+                SignupMethod::OAuth2,
+                &mut *tx,
+            )
+            .await?;
+
+        // Link the OAuth2 provider mapping inside the same transaction.
+        self.upsert_user_provider_with_executor(
+            &new_user.id,
+            provider,
+            &user_info.provider_user_id,
+            user_info,
+            &mut *tx,
+        )
+        .await?;
+
+        // Set email_verified if the provider confirmed the email.
+        if user_info.email_verified && user_info.email.is_some() {
+            sqlx::query("UPDATE users SET email_verified = true, updated_at = NOW() WHERE id = $1")
+                .bind(new_user.id.as_str())
+                .execute(&mut *tx)
+                .await
+                .internal_with_err("Failed to set email_verified in transaction")?;
+        }
+
+        tx.commit().await?;
+
+        info!(
+            user_id = %new_user.id.as_str(),
+            provider = %provider.as_str(),
+            "Created new user via OAuth2 and linked provider in single transaction"
+        );
+
+        Ok((new_user.id, true))
     }
 
     /// Get all `OAuth2` providers for a user

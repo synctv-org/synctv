@@ -266,10 +266,43 @@ impl AuthService for ClientServiceImpl {
 impl UserService for ClientServiceImpl {
     async fn logout(
         &self,
-        _request: Request<LogoutRequest>,
+        request: Request<LogoutRequest>,
     ) -> Result<Response<LogoutResponse>, Status> {
-        // Logout is stateless: tokens are discarded client-side.
-        // No server-side token invalidation is performed.
+        // Extract the raw JWT from the Authorization metadata so we can blacklist it.
+        // This ensures a logged-out token cannot be reused until it naturally expires.
+        let raw_token = request
+            .metadata()
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| synctv_core::service::auth::JwtValidator::extract_bearer_token(v).ok());
+
+        if let Some(token) = raw_token {
+            match self.client_api.jwt_service.verify_access_token(&token) {
+                Ok(claims) => {
+                    if !claims.jti.is_empty() {
+                        let now = chrono::Utc::now().timestamp();
+                        let remaining_ttl = (claims.exp - now).max(0) as u64;
+                        if remaining_ttl > 0 {
+                            if let Err(e) = self.user_service.blacklist_access_token(&claims.jti, remaining_ttl).await {
+                                // Log the failure but still return success to the client.
+                                // The token will expire naturally if blacklisting fails.
+                                tracing::warn!(
+                                    error = %e,
+                                    jti = %claims.jti,
+                                    "Failed to blacklist access token on logout; token will expire naturally",
+                                );
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    // Token may be expired or malformed. Still succeed; the client
+                    // is logging out and the token is no longer useful anyway.
+                    tracing::debug!(error = %e, "Could not parse token during logout; skipping blacklist");
+                }
+            }
+        }
+
         Ok(Response::new(LogoutResponse { success: true }))
     }
 
@@ -630,12 +663,18 @@ impl GrpcMessageSender {
 
 impl MessageSender for GrpcMessageSender {
     fn send(&self, message: ServerMessage) -> Result<(), String> {
-        // Use try_send to avoid blocking and provide backpressure
-        // If channel is full, drop the message (client is too slow)
+        // Use try_send to avoid blocking and provide backpressure.
+        // When the channel is full we log a warning here so the dropped message is
+        // always visible in logs, even for callers that ignore the returned error.
         self.sender
             .try_send(message)
             .map_err(|e| match e {
                 tokio::sync::mpsc::error::TrySendError::Full(_) => {
+                    tracing::warn!(
+                        "gRPC outgoing message dropped: client stream buffer is full \
+                         (buffer capacity: {}). Client may be too slow to consume messages.",
+                        MESSAGE_STREAM_BUFFER_SIZE,
+                    );
                     "Channel full: client too slow to consume messages".to_string()
                 }
                 tokio::sync::mpsc::error::TrySendError::Closed(_) => {

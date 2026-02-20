@@ -21,6 +21,7 @@ futures-util = "0.3"
 
 # gRPC
 tonic.workspace = true
+tower.workspace = true
 tonic-prost.workspace = true
 tonic-health.workspace = true
 prost.workspace = true

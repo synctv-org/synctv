@@ -293,6 +293,9 @@ pub struct User {
     /// Monotonically increasing counter, incremented on each password change.
     /// Used to invalidate JWTs via the `pv` claim.
     pub password_version: i32,
+    /// Monotonically increasing integer for optimistic locking.
+    /// Incremented by `UPDATE … SET version = version + 1 WHERE version = <old>`.
+    pub version: i32,
     pub deleted_at: Option<DateTime<Utc>>,
 }
 
@@ -328,6 +331,7 @@ impl User {
             updated_at: now,
             password_changed_at: now,  // Initialize to creation time
             password_version: 0,
+            version: 0,
             deleted_at: None,
         }
     }

@@ -192,6 +192,15 @@ pub struct ConnectionManager {
     /// growth during prolonged Redis outages. When full, new entries are dropped
     /// with a warning (TTL-based expiry acts as the safety net).
     pending_retries_tx: mpsc::Sender<PendingRedisOp>,
+
+    /// Receiver half of the pending-retries channel.
+    ///
+    /// Stored here (wrapped in `Arc<Mutex<Option<...>>>` to satisfy `Clone`) so
+    /// the receiver is not dropped at construction. `with_redis()` takes the
+    /// receiver out of this slot and hands it to `spawn_pending_retries_task`.
+    /// Without this, any retry enqueued before Redis is configured would fail
+    /// silently because the channel would be closed.
+    pending_retries_rx: Arc<tokio::sync::Mutex<Option<mpsc::Receiver<PendingRedisOp>>>>,
 }
 
 /// Maximum capacity of the pending retry queue for failed Redis counter operations.
@@ -209,9 +218,9 @@ impl ConnectionManager {
         // channel capacity would miss signals; the WebSocket handler has a periodic
         // re-validation backstop to handle the rare case where a signal is lost.
         let (disconnect_tx, _) = broadcast::channel(10_000);
-        let (pending_retries_tx, _rx) = mpsc::channel(PENDING_RETRY_QUEUE_CAPACITY);
-        // Drop _rx immediately; the retry task is spawned only when Redis is configured
-        // via with_redis(). Without Redis, no operations are ever sent to this channel.
+        let (pending_retries_tx, pending_retries_rx) = mpsc::channel(PENDING_RETRY_QUEUE_CAPACITY);
+        // Store the receiver so it is not dropped here. with_redis() will take it
+        // and hand it to spawn_pending_retries_task when Redis is configured.
         Self {
             connections: Arc::new(DashMap::new()),
             user_connections: Arc::new(DashMap::new()),
@@ -225,6 +234,7 @@ impl ConnectionManager {
             redis_key_prefix: String::new(),
             ttl_refresh_cancel: Arc::new(tokio_util::sync::CancellationToken::new()),
             pending_retries_tx,
+            pending_retries_rx: Arc::new(tokio::sync::Mutex::new(Some(pending_retries_rx))),
         }
     }
 
@@ -249,9 +259,22 @@ impl ConnectionManager {
         let _handle = self.spawn_ttl_refresh_task(Duration::from_secs(60), cancel.clone());
 
         // Spawn the pending-retries background task.
-        // Re-create the channel so we have a live receiver.
-        let (tx, rx) = mpsc::channel(PENDING_RETRY_QUEUE_CAPACITY);
-        self.pending_retries_tx = tx;
+        // Take the receiver that was stored in new() so it is not dropped.
+        // If for any reason it was already taken (e.g. with_redis called twice),
+        // fall back to creating a fresh channel.
+        let rx = self.pending_retries_rx
+            .try_lock()
+            .ok()
+            .and_then(|mut guard| guard.take());
+        let rx = match rx {
+            Some(rx) => rx,
+            None => {
+                // Fallback: create a fresh channel and update the sender.
+                let (tx, rx) = mpsc::channel(PENDING_RETRY_QUEUE_CAPACITY);
+                self.pending_retries_tx = tx;
+                rx
+            }
+        };
         Self::spawn_pending_retries_task(conn, rx, cancel);
 
         self
@@ -475,14 +498,23 @@ impl ConnectionManager {
                 .await;
         }
 
-        // Check distributed per-user limit via Redis (if configured).
-        // On Redis failure, fall back to local-only check.
-        let redis_user_incremented = if let Some(ref conn) = self.redis_conn {
+        // Enforce per-user connection limit.
+        //
+        // When Redis is configured, use the atomic INCR return value as the
+        // single source of truth for the cross-replica count. If the new count
+        // exceeds the limit we immediately DECR and reject, avoiding any TOCTOU
+        // window where two replicas could both pass the check concurrently.
+        //
+        // When Redis is not configured, fall back to the local DashMap count.
+        if let Some(ref conn) = self.redis_conn {
             let redis_key = format!("{}connections:user:{}", self.redis_key_prefix, user_id.as_str());
             match self.redis_incr_and_check(&redis_key, self.limits.max_per_user).await {
-                Ok(true) => true,  // Allowed, counter incremented
+                Ok(true) => {
+                    // Distributed limit not exceeded; proceed.
+                }
                 Ok(false) => {
-                    // Distributed limit exceeded -- roll back
+                    // Distributed limit exceeded -- roll back total counter and
+                    // the Redis per-user counter that was just incremented.
                     self.total_connections.fetch_sub(1, Ordering::AcqRel);
                     let _ = self.redis_decr(conn, &redis_key).await;
                     return Err(format!(
@@ -491,35 +523,38 @@ impl ConnectionManager {
                     ));
                 }
                 Err(e) => {
-                    // Redis error -- fall back to local-only check
+                    // Redis error -- fall back to local-only check below.
                     warn!("Distributed user connection check failed, using local fallback: {e}");
-                    false
+                    // Fall through to local check.
+                    let user_count = self.user_connections
+                        .get(&user_id)
+                        .map_or(0, |c| c.len());
+                    if user_count >= self.limits.max_per_user {
+                        self.total_connections.fetch_sub(1, Ordering::AcqRel);
+                        return Err(format!(
+                            "Too many connections for this user (max {})",
+                            self.limits.max_per_user
+                        ));
+                    }
                 }
             }
         } else {
-            false
-        };
-
-        // Atomically check per-user limit locally and add connection ID.
-        // Holding the entry ref-mut prevents concurrent registrations for the same
-        // user from both passing the limit check.
-        {
-            let mut user_entry = self.user_connections.entry(user_id.clone()).or_default();
-            if user_entry.len() >= self.limits.max_per_user {
-                // Roll back the total connection reservation
+            // No Redis: enforce limit using the local DashMap count only.
+            let user_count = self.user_connections
+                .get(&user_id)
+                .map_or(0, |c| c.len());
+            if user_count >= self.limits.max_per_user {
                 self.total_connections.fetch_sub(1, Ordering::AcqRel);
-                // Roll back Redis counter if we incremented it
-                if redis_user_incremented {
-                    if let Some(ref conn) = self.redis_conn {
-                        let redis_key = format!("{}connections:user:{}", self.redis_key_prefix, user_id.as_str());
-                        let _ = self.redis_decr(conn, &redis_key).await;
-                    }
-                }
                 return Err(format!(
                     "Too many connections for this user (max {})",
                     self.limits.max_per_user
                 ));
             }
+        }
+
+        // Add the connection to the local user index (used for routing and cleanup).
+        {
+            let mut user_entry = self.user_connections.entry(user_id.clone()).or_default();
             user_entry.push(connection_id.clone());
             // Drop the shard lock before inserting into another DashMap
         }

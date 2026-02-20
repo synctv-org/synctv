@@ -192,6 +192,14 @@ impl UsernameCache {
         self.inner.clear_l1().await;
     }
 
+    /// Clear both L1 (in-memory) and L2 (Redis) username caches.
+    ///
+    /// Used during lag-triggered full flushes to prevent stale L2 entries from
+    /// re-populating L1 on this or other replicas.
+    pub async fn clear(&self) {
+        self.inner.clear().await;
+    }
+
     /// Preload usernames into cache
     ///
     /// Useful for warming up the cache with frequently accessed users.

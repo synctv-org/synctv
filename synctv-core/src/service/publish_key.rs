@@ -104,25 +104,33 @@ impl RedisJtiStore {
 #[async_trait]
 impl JtiStore for RedisJtiStore {
     async fn try_claim(&self, jti: &str, ttl_secs: u64) -> Result<bool> {
-        use redis::AsyncCommands;
-
         // Fast path: already claimed locally
         if self.local_cache.contains_key(jti) {
             return Ok(false);
         }
 
-        // Cross-replica check: Redis SETNX
+        // Cross-replica check: atomic SET key value PX <ms> NX
+        // Using a single SET command with NX and PX flags is atomic in Redis,
+        // eliminating the TOCTOU gap between a separate SETNX + EXPIRE pair.
         let redis_key = format!("{}publish_key:jti:{}", self.key_prefix, jti);
         let mut conn = self.conn.clone();
-        match conn.set_nx::<_, _, bool>(&redis_key, 1).await {
-            Ok(true) => {
-                // We won the SETNX race -- set the TTL and mark locally
-                let _: std::result::Result<(), _> = conn.expire(&redis_key, ttl_secs as i64).await;
+        let ttl_ms = ttl_secs.saturating_mul(1000);
+        let set_result: std::result::Result<Option<String>, _> = redis::cmd("SET")
+            .arg(&redis_key)
+            .arg(1i64)
+            .arg("PX")
+            .arg(ttl_ms)
+            .arg("NX")
+            .query_async(&mut conn)
+            .await;
+        match set_result {
+            Ok(Some(_)) => {
+                // SET returned OK — we claimed the key atomically with its TTL
                 self.local_cache.insert(jti.to_string(), ()).await;
                 Ok(true)
             }
-            Ok(false) => {
-                // Another replica already consumed this JTI
+            Ok(None) => {
+                // SET returned nil — key already existed; JTI already claimed
                 self.local_cache.insert(jti.to_string(), ()).await;
                 Ok(false)
             }

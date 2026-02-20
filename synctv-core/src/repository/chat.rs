@@ -216,6 +216,10 @@ impl ChatRepository {
     /// better performance. Limits the scan to messages within the retention
     /// window (90 days) to enable partition pruning and avoid scanning all
     /// historical partitions.
+    ///
+    /// The redundant `created_at > NOW() - INTERVAL '90 days'` filter on the
+    /// outer DELETE ensures PostgreSQL can apply partition pruning at the
+    /// top-level query without relying on constraint exclusion from the subquery.
     pub async fn cleanup_old_messages(&self, room_id: &RoomId, keep_count: i32) -> Result<u64> {
         if keep_count <= 0 {
             return Ok(0);
@@ -224,7 +228,9 @@ impl ChatRepository {
         let result = sqlx::query(
             r"
             DELETE FROM chat_messages
-            WHERE (id, created_at) IN (
+            WHERE room_id = $1
+              AND created_at > NOW() - INTERVAL '90 days'
+              AND (id, created_at) IN (
                 SELECT id, created_at FROM (
                     SELECT id, created_at,
                            ROW_NUMBER() OVER (ORDER BY created_at DESC) as rn
@@ -238,6 +244,29 @@ impl ChatRepository {
         )
         .bind(room_id.as_str())
         .bind(keep_count)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected())
+    }
+
+    /// Delete ALL messages older than the absolute retention period (90 days).
+    ///
+    /// This enforces the hard 90-day cap for rooms that haven't had recent activity
+    /// and would never be reached by the per-room count-based cleanup, which only
+    /// processes rooms within the activity window.
+    ///
+    /// Should be called periodically (e.g., daily) as a background maintenance task.
+    ///
+    /// # Returns
+    /// Total number of messages deleted
+    pub async fn delete_messages_older_than_retention(&self) -> Result<u64> {
+        let result = sqlx::query(
+            r"
+            DELETE FROM chat_messages
+            WHERE created_at <= NOW() - INTERVAL '90 days'
+            ",
+        )
         .execute(&self.pool)
         .await?;
 

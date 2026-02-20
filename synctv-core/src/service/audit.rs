@@ -12,7 +12,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
@@ -465,6 +465,9 @@ pub struct AuditFlushHandle {
     /// Sender kept alive to control channel lifetime. Dropping it causes the
     /// background receiver loop to terminate after draining remaining items.
     _cancel: tokio::sync::watch::Sender<bool>,
+    /// Guards against sending the shutdown signal more than once (e.g. when
+    /// both `shutdown()` and `Drop` are executed for the same handle).
+    has_signaled: AtomicBool,
 }
 
 impl AuditFlushHandle {
@@ -525,13 +528,33 @@ impl AuditFlushHandle {
         Self {
             join_handle: Some(join_handle),
             _cancel: cancel_tx,
+            has_signaled: AtomicBool::new(false),
+        }
+    }
+
+    /// Send the shutdown signal exactly once.
+    ///
+    /// Returns `true` if this call was the first to send the signal, `false`
+    /// if the signal had already been sent (by a previous `shutdown()` or by
+    /// `Drop`).
+    fn send_shutdown_signal(&self) -> bool {
+        // compare_exchange: set true only if currently false.
+        // Use AcqRel / Acquire for proper ordering.
+        if self
+            .has_signaled
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            let _ = self._cancel.send(true);
+            true
+        } else {
+            false
         }
     }
 
     /// Trigger graceful shutdown and wait for the flush to complete.
     pub async fn shutdown(mut self) {
-        // Sending true signals the background task to drain and exit
-        let _ = self._cancel.send(true);
+        self.send_shutdown_signal();
         if let Some(handle) = self.join_handle.take() {
             let _ = handle.await;
         }
@@ -540,9 +563,10 @@ impl AuditFlushHandle {
 
 impl Drop for AuditFlushHandle {
     fn drop(&mut self) {
-        // Signal shutdown (non-blocking). The background task will drain on
-        // its next iteration.
-        let _ = self._cancel.send(true);
+        // Signal shutdown (non-blocking, idempotent). The background task
+        // will drain on its next iteration. If shutdown() was already called
+        // the signal is not sent again.
+        self.send_shutdown_signal();
     }
 }
 

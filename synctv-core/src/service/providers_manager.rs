@@ -104,11 +104,15 @@ impl ProvidersManager {
         // RTMP factory
         self.register_factory(
             "rtmp",
-            Box::new(|_instance_id, config, _instance_manager| {
+            Box::new(|instance_id, config, _instance_manager| {
                 let base_url = config
                     .get("base_url")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("http://localhost:8080");
+                    .ok_or_else(|| {
+                        crate::Error::Internal(format!(
+                            "providers_manager base_url is not configured for rtmp provider instance '{instance_id}'"
+                        ))
+                    })?;
 
                 Ok(Arc::new(RtmpProvider::new(base_url)))
             }),
@@ -125,11 +129,15 @@ impl ProvidersManager {
         // LiveProxy factory
         self.register_factory(
             "live_proxy",
-            Box::new(|_instance_id, config, _instance_manager| {
+            Box::new(|instance_id, config, _instance_manager| {
                 let base_url = config
                     .get("base_url")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("http://localhost:8080");
+                    .ok_or_else(|| {
+                        crate::Error::Internal(format!(
+                            "providers_manager base_url is not configured for live_proxy provider instance '{instance_id}'"
+                        ))
+                    })?;
 
                 Ok(Arc::new(LiveProxyProvider::new(base_url)))
             }),

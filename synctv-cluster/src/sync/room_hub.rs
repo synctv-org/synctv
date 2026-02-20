@@ -212,7 +212,10 @@ impl RoomMessageHub {
         self.connections
             .insert(connection_id.clone(), (room_id.clone(), user_id.clone()));
 
-        // Persist to Redis for cross-replica visibility (best-effort)
+        // Persist to Redis for cross-replica visibility.
+        // Awaited so callers can rely on the subscription being visible to other
+        // replicas before this function returns. Errors are logged and propagated
+        // so the caller knows if cross-replica state could not be written.
         if let Some(ref conn) = self.redis_conn {
             let room_key = format!("{}room_hub:room:{}", self.redis_key_prefix, room_id.as_str());
             let conn_key = format!("{}room_hub:conn:{}", self.redis_key_prefix, connection_id);
@@ -220,30 +223,19 @@ impl RoomMessageHub {
             let mut conn_clone = conn.clone();
             let user_id_str = user_id.as_str().to_string();
             let room_id_str = room_id.as_str().to_string();
-            let connection_id_clone = connection_id.clone();
             let ttl_secs = self.redis_key_ttl_secs;
 
-            // Spawn best-effort Redis update (don't block the subscribe path).
-            //
-            // SAFETY: This is a fire-and-forget task. If the node crashes before
-            // the Redis write completes, or if the spawned task panics, the stale
-            // subscription key will remain in Redis. This is acceptable because
-            // all Redis keys are written with a TTL (`redis_key_ttl_secs`, default
-            // 300s). Stale entries will expire automatically rather than
-            // accumulating indefinitely.
-            tokio::spawn(async move {
-                // Store room -> {connection_id: user_id} mapping
-                if let Err(e) = conn_clone.hset::<_, _, _, ()>(&room_key, &connection_id_clone, &user_id_str).await {
-                    warn!("Failed to persist room subscription to Redis: {e}");
-                }
-                // Set TTL on room key so stale data expires if the node crashes
-                let _: Result<(), _> = conn_clone.expire::<_, ()>(&room_key, ttl_secs).await;
+            // Store room -> {connection_id: user_id} mapping
+            if let Err(e) = conn_clone.hset::<_, _, _, ()>(&room_key, &connection_id, &user_id_str).await {
+                warn!("Failed to persist room subscription to Redis: {e}");
+            }
+            // Set TTL on room key so stale data expires if the node crashes
+            let _: Result<(), _> = conn_clone.expire::<_, ()>(&room_key, ttl_secs).await;
 
-                // Store connection -> room_id mapping for cleanup, with TTL
-                if let Err(e) = conn_clone.set_ex::<_, _, ()>(&conn_key, &room_id_str, ttl_secs as u64).await {
-                    warn!("Failed to persist connection mapping to Redis: {e}");
-                }
-            });
+            // Store connection -> room_id mapping for cleanup, with TTL
+            if let Err(e) = conn_clone.set_ex::<_, _, ()>(&conn_key, &room_id_str, ttl_secs as u64).await {
+                warn!("Failed to persist connection mapping to Redis: {e}");
+            }
         }
 
         // Emit lifecycle event if this is the first subscriber for the room

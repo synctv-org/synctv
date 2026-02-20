@@ -359,7 +359,7 @@ pub async fn init_services(
     // Initialize Settings registry
     info!("Initializing Settings registry...");
     let settings_registry = SettingsRegistry::new(settings_service.clone());
-    settings_registry.init().await?;
+    settings_registry.init(settings_cancel.clone()).await?;
     info!("Settings registry initialized");
 
     // Initialize Email service (optional - requires SMTP configuration)

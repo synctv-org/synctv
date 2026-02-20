@@ -114,6 +114,10 @@ pub struct ClusterManager {
     admin_event_tx: broadcast::Sender<ClusterEvent>,
     /// Redis Pub/Sub service (stored for graceful shutdown)
     redis_pubsub: Option<Arc<RedisPubSub>>,
+    /// JoinHandle for the Redis publisher task.
+    /// Awaited during shutdown so in-flight events are fully flushed before
+    /// the process exits.
+    publisher_task: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// Cancellation token for background heartbeat task
     cancel_token: CancellationToken,
     /// Node registry + heartbeat handle (behind Mutex for async shutdown from &self)
@@ -163,7 +167,7 @@ impl ClusterManager {
 
         // Start Redis pub/sub using the pre-built client/connection.
         // When Redis is not provided, run in single-node mode (tests).
-        let (message_hub, redis_publish_tx, redis_critical_tx, redis_pubsub) = if let (Some(redis_client), Some(redis_conn)) = (config.redis_client.clone(), config.redis_conn.clone()) {
+        let (message_hub, redis_publish_tx, redis_critical_tx, redis_pubsub, publisher_handle) = if let (Some(redis_client), Some(redis_conn)) = (config.redis_client.clone(), config.redis_conn.clone()) {
             // Reuse the shared connection for the message hub's distributed
             // subscription state and TTL refresh background task.
             let hub = Arc::new(
@@ -186,7 +190,7 @@ impl ClusterManager {
                 )?
             );
 
-            let tx = redis_pubsub.clone().start(config.publish_channel_capacity).await?;
+            let (tx, publisher_handle) = redis_pubsub.clone().start(config.publish_channel_capacity).await?;
             // Critical events share the same Redis publisher but use a separate
             // bounded channel so they are never dropped when the normal channel is full.
             let critical_capacity = config.critical_channel_capacity;
@@ -219,11 +223,11 @@ impl ClusterManager {
                 }
             });
 
-            (hub, Some(tx), Some(critical_tx), Some(redis_pubsub))
+            (hub, Some(tx), Some(critical_tx), Some(redis_pubsub), Some(publisher_handle))
         } else {
             warn!("Redis not provided, running in single-node mode");
             let hub = Arc::new(RoomMessageHub::new());
-            (hub, None, None, None)
+            (hub, None, None, None, None)
         };
 
         Ok(Self {
@@ -234,6 +238,7 @@ impl ClusterManager {
             node_id: config.node_id,
             admin_event_tx,
             redis_pubsub,
+            publisher_task: tokio::sync::Mutex::new(publisher_handle),
             cancel_token: CancellationToken::new(),
             critical_channel_capacity: config.critical_channel_capacity,
             publish_channel_capacity: config.publish_channel_capacity,
@@ -409,16 +414,17 @@ impl ClusterManager {
     /// This method:
     /// 1. Cancels the heartbeat loop
     /// 2. Shuts down Redis Pub/Sub (which drains pending publishes)
-    /// 3. Unregisters this node from Redis
-    /// 4. Shuts down the deduplicator cleanup task
-    /// 5. Awaits background task completion
+    /// 3. Awaits the publisher task's completion (with a 10s timeout)
+    /// 4. Unregisters this node from Redis
+    /// 5. Shuts down the deduplicator cleanup task
+    /// 6. Awaits background task completion
     pub async fn shutdown(&self) {
         info!("Shutting down ClusterManager");
 
         // Cancel heartbeat loop
         self.cancel_token.cancel();
 
-        // Cancel Redis Pub/Sub tasks
+        // Cancel Redis Pub/Sub tasks (signals the publisher and subscriber loops to stop)
         if let Some(ref pubsub) = self.redis_pubsub {
             pubsub.shutdown();
         }
@@ -426,6 +432,26 @@ impl ClusterManager {
         // Shut down ConnectionManager's TTL refresh task
         if let Some(ref cm) = self.connection_manager {
             cm.shutdown();
+        }
+
+        // Await the publisher task so any in-flight events are fully flushed before
+        // we return. A 10-second timeout prevents hanging indefinitely when Redis is
+        // unreachable during shutdown.
+        {
+            let mut publisher_guard = self.publisher_task.lock().await;
+            if let Some(handle) = publisher_guard.take() {
+                match tokio::time::timeout(Duration::from_secs(10), handle).await {
+                    Ok(Ok(())) => {
+                        info!("Redis publisher task completed cleanly during shutdown");
+                    }
+                    Ok(Err(e)) => {
+                        warn!(error = %e, "Redis publisher task panicked during shutdown");
+                    }
+                    Err(_) => {
+                        warn!("Redis publisher task did not finish within 10s timeout during shutdown; proceeding");
+                    }
+                }
+            }
         }
 
         // Wait for the heartbeat task to finish and unregister

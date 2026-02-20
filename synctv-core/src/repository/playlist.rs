@@ -104,26 +104,52 @@ impl PlaylistRepository {
     /// Create a new playlist
     ///
     /// If `playlist.position` is negative, the position is computed within a
-    /// transaction using `SELECT ... FOR UPDATE` to prevent concurrent inserts
+    /// transaction using a PostgreSQL advisory lock to prevent concurrent inserts
     /// from computing the same position. Pass a non-negative position to use
-    /// an explicit value (e.g., when the caller already holds a transaction lock).
+    /// an explicit value (e.g., when the caller already holds a lock).
+    ///
+    /// `SELECT MAX(position) FOR UPDATE` cannot protect empty tables because
+    /// there are no rows to lock when the table is empty. Two concurrent inserts
+    /// can both see `MAX = NULL` and both compute `position = 0`, producing a
+    /// UNIQUE constraint violation. An advisory lock on (room_id, parent_id)
+    /// serializes position computation regardless of whether rows exist.
     pub async fn create(&self, playlist: &Playlist) -> Result<Playlist> {
         if playlist.position < 0 {
-            // Use a transaction with row-level locking to prevent concurrent
-            // inserts from computing the same next position.
+            // Use a transaction with a transaction-scoped PostgreSQL advisory lock
+            // to serialize position computation across concurrent inserts, including
+            // when the table is empty (where FOR UPDATE cannot lock any rows).
             let mut tx = self.pool.begin().await?;
 
             let parent_id_str = playlist.parent_id.as_ref().map(super::super::models::id::PlaylistId::as_str);
 
-            // Lock existing rows for this room+parent to serialize position computation.
-            // FOR UPDATE locks prevent concurrent transactions from reading until we commit.
+            // Derive a stable 64-bit advisory lock key from (room_id, parent_id).
+            // We fold the room_id hash and an optional parent_id hash into a single
+            // i64 so that different (room, parent) pairs use distinct locks.
+            let lock_key: i64 = {
+                use std::hash::{Hash, Hasher};
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                playlist.room_id.as_str().hash(&mut h);
+                parent_id_str.hash(&mut h);
+                // Cast the u64 to i64 via bitwise reinterpretation so PostgreSQL
+                // receives a valid bigint (PostgreSQL bigint = i64).
+                h.finish() as i64
+            };
+
+            // pg_advisory_xact_lock acquires a session-exclusive advisory lock that
+            // is automatically released when the transaction commits or rolls back.
+            // It blocks until the lock is available, serialising concurrent inserts
+            // for the same (room_id, parent_id) pair.
+            sqlx::query("SELECT pg_advisory_xact_lock($1)")
+                .bind(lock_key)
+                .execute(&mut *tx)
+                .await?;
+
             let max_pos: Option<i32> = sqlx::query_scalar(
                 r"
                 SELECT MAX(position)
                 FROM playlists
                 WHERE room_id = $1
                   AND parent_id IS NOT DISTINCT FROM $2
-                FOR UPDATE
                 "
             )
             .bind(playlist.room_id.as_str())
@@ -243,28 +269,49 @@ impl PlaylistRepository {
         Ok(Playlist::from_row(&row)?)
     }
 
-    /// Get next available position in a parent, locking rows with `FOR UPDATE`.
+    /// Get next available position in a parent, using an advisory lock to
+    /// serialize concurrent position computation.
     ///
-    /// Must be called within a transaction. The `FOR UPDATE` lock prevents
-    /// concurrent transactions from reading the same MAX(position) until this
-    /// transaction commits, eliminating the position race condition.
+    /// Must be called within a transaction. The advisory lock is transaction-scoped
+    /// (`pg_advisory_xact_lock`) and is automatically released when the transaction
+    /// commits or rolls back.
+    ///
+    /// Unlike `SELECT MAX(position) FOR UPDATE`, this correctly handles empty
+    /// tables — `FOR UPDATE` on an aggregate cannot lock any rows when none exist,
+    /// allowing two concurrent inserts to both compute `position = 0`.
     pub async fn get_next_position_for_update<'e>(
         &self,
         room_id: &RoomId,
         parent_id: Option<&PlaylistId>,
         tx: &mut sqlx::Transaction<'e, sqlx::Postgres>,
     ) -> Result<i32> {
+        let parent_id_str = parent_id.map(super::super::models::id::PlaylistId::as_str);
+
+        // Acquire a transaction-scoped advisory lock on (room_id, parent_id) to
+        // serialize position computation. The lock is automatically released when
+        // the surrounding transaction commits or rolls back.
+        let lock_key: i64 = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            room_id.as_str().hash(&mut h);
+            parent_id_str.hash(&mut h);
+            h.finish() as i64
+        };
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(lock_key)
+            .execute(&mut **tx)
+            .await?;
+
         let max_pos: Option<i32> = sqlx::query_scalar(
             r"
             SELECT MAX(position)
             FROM playlists
             WHERE room_id = $1
               AND parent_id IS NOT DISTINCT FROM $2
-            FOR UPDATE
             "
         )
         .bind(room_id.as_str())
-        .bind(parent_id.map(super::super::models::id::PlaylistId::as_str))
+        .bind(parent_id_str)
         .fetch_one(&mut **tx)
         .await?;
 

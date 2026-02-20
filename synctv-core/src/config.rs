@@ -88,6 +88,14 @@ pub struct ServerConfig {
     /// browser history, and Referer headers. Defaults to true (disabled) for security;
     /// set to false only if you need backward compatibility with legacy clients.
     pub disable_ws_token_query: bool,
+    /// Bearer token required to access the `/metrics` Prometheus endpoint.
+    /// When set (non-empty), requests to `/metrics` must include an
+    /// `Authorization: Bearer <token>` header with this value.
+    /// When empty (default), the endpoint is open to anyone who can reach it —
+    /// only enable metrics in this mode when the endpoint is network-restricted
+    /// (e.g. inside a Kubernetes cluster with no external ingress).
+    /// Set via `SYNCTV_SERVER_METRICS_BEARER_TOKEN` env var or config file.
+    pub metrics_bearer_token: String,
 }
 
 impl Default for ServerConfig {
@@ -104,6 +112,7 @@ impl Default for ServerConfig {
             advertise_host: String::new(),
             shutdown_drain_timeout_seconds: 30,
             disable_ws_token_query: true,
+            metrics_bearer_token: String::new(),
         }
     }
 }
@@ -760,6 +769,7 @@ impl Config {
         env_override_str("SYNCTV_SERVER_ADVERTISE_HOST", &mut self.server.advertise_host);
         env_override_parse("SYNCTV_SERVER_SHUTDOWN_DRAIN_TIMEOUT_SECONDS", &mut self.server.shutdown_drain_timeout_seconds);
         env_override_bool("SYNCTV_SERVER_DISABLE_WS_TOKEN_QUERY", &mut self.server.disable_ws_token_query);
+        env_override_str("SYNCTV_SERVER_METRICS_BEARER_TOKEN", &mut self.server.metrics_bearer_token);
 
         // -- Database --
         env_override_str("SYNCTV_DATABASE_URL", &mut self.database.url);

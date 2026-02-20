@@ -135,32 +135,22 @@ impl SettingsStorage {
     ///
     /// This keeps the `SettingsStorage` in sync with remote replica changes
     /// that are propagated via `PostgreSQL` LISTEN/NOTIFY.
-    pub fn start_reload_listener(&self) {
-        self.start_reload_listener_with_cancel(None);
-    }
-
-    /// Start the reload listener with an optional `CancellationToken` for
-    /// graceful shutdown. When the token is cancelled, the listener exits
-    /// its loop cleanly.
-    pub fn start_reload_listener_with_cancel(
-        &self,
-        cancel: Option<tokio_util::sync::CancellationToken>,
-    ) {
+    ///
+    /// The `cancel` token must be provided so the task can be stopped during
+    /// graceful shutdown. When the token is cancelled the listener exits its
+    /// loop cleanly without leaking the background task.
+    pub fn start_reload_listener(&self, cancel: tokio_util::sync::CancellationToken) {
         let inner = self.inner.clone();
         let mut receiver = self.settings_service.subscribe_reloads();
 
         crate::spawn::spawn_monitored("settings_reload_listener", async move {
             loop {
-                let recv_result = if let Some(ref token) = cancel {
-                    tokio::select! {
-                        _ = token.cancelled() => {
-                            debug!("SettingsStorage reload listener cancelled");
-                            break;
-                        }
-                        result = receiver.recv() => result,
+                let recv_result = tokio::select! {
+                    _ = cancel.cancelled() => {
+                        debug!("SettingsStorage reload listener cancelled");
+                        break;
                     }
-                } else {
-                    receiver.recv().await
+                    result = receiver.recv() => result,
                 };
 
                 match recv_result {

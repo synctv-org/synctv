@@ -93,6 +93,14 @@ pub fn is_blocked_ipv6(ip: &Ipv6Addr) -> bool {
     if segments[0] & 0xff00 == 0xff00 {
         return true;
     }
+    // Teredo (2001::/32) - tunnels IPv4 via UDP, can reach private networks
+    if segments[0] == 0x2001 && segments[1] == 0x0000 {
+        return true;
+    }
+    // 6to4 (2002::/16) - tunnels IPv4 in IPv6, similarly dangerous
+    if segments[0] == 0x2002 {
+        return true;
+    }
     false
 }
 

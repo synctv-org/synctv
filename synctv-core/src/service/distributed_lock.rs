@@ -683,8 +683,10 @@ impl DistributedLock {
 /// RAII lock guard that releases on explicit `release()` or best-effort on Drop.
 ///
 /// **Preferred usage**: Call `release()` explicitly for guaranteed lock release.
-/// The `Drop` implementation is a safety net that uses `tokio::spawn` for
-/// best-effort async release, but may fail if the runtime is shutting down.
+/// The `Drop` implementation signals a dedicated background task (spawned at
+/// construction time) to perform the unlock, so it works even if the Tokio
+/// runtime is in the process of shutting down — the task is already running and
+/// the oneshot send is non-blocking.
 ///
 /// # Example
 /// ```ignore
@@ -702,9 +704,42 @@ pub struct LockGuard {
     value: Option<String>,
     /// Fencing token for CAS operations (0 if not requested)
     fencing_token: u64,
+    /// Sender half of the oneshot channel used to trigger the background
+    /// unlock task from `Drop`. Wrapped in `Option` so `release()` can take
+    /// it to prevent a double-signal.
+    drop_tx: Option<tokio::sync::oneshot::Sender<(String, String)>>,
 }
 
 impl LockGuard {
+    /// Spawn the background unlock task and return the oneshot sender.
+    ///
+    /// The task waits for either:
+    /// - A `(key, value)` tuple sent by `Drop` (or `release()`), in which case
+    ///   it calls `lock.release()` asynchronously; or
+    /// - The sender to be dropped without sending (the guard was already
+    ///   released explicitly), in which case it does nothing.
+    fn spawn_drop_task(lock: DistributedLock) -> tokio::sync::oneshot::Sender<(String, String)> {
+        let (tx, rx) = tokio::sync::oneshot::channel::<(String, String)>();
+        tokio::spawn(async move {
+            match rx.await {
+                Ok((key, value)) => {
+                    if let Err(e) = lock.release(&key, &value).await {
+                        tracing::error!(
+                            key = %key,
+                            error = %e,
+                            "Background task failed to release lock"
+                        );
+                    }
+                }
+                Err(_) => {
+                    // Sender was dropped without sending — lock was already
+                    // released explicitly via release(). Nothing to do.
+                }
+            }
+        });
+        tx
+    }
+
     /// Create a new lock guard (acquires lock without fencing token)
     pub async fn new(lock: DistributedLock, key: String, ttl_seconds: u64) -> Result<Self> {
         let value = lock
@@ -712,11 +747,14 @@ impl LockGuard {
             .await?
             .ok_or_else(|| Error::Internal(format!("Failed to acquire lock: {key}")))?;
 
+        let drop_tx = Some(Self::spawn_drop_task(lock.clone()));
+
         Ok(Self {
             lock,
             key,
             value: Some(value),
             fencing_token: 0,
+            drop_tx,
         })
     }
 
@@ -733,11 +771,14 @@ impl LockGuard {
             .await?
             .ok_or_else(|| Error::Internal(format!("Failed to acquire lock: {key}")))?;
 
+        let drop_tx = Some(Self::spawn_drop_task(lock.clone()));
+
         Ok(Self {
             lock,
             key,
             value: Some(value),
             fencing_token,
+            drop_tx,
         })
     }
 
@@ -760,6 +801,10 @@ impl LockGuard {
 
     /// Explicitly release the lock (preferred over relying on Drop)
     pub async fn release(mut self) -> Result<bool> {
+        // Disarm the background drop task by dropping the sender without
+        // sending, then perform the release directly on the current task.
+        let _ = self.drop_tx.take();
+
         if let Some(value) = self.value.take() {
             self.lock.release(&self.key, &value).await
         } else {
@@ -772,26 +817,21 @@ impl Drop for LockGuard {
     fn drop(&mut self) {
         // Only attempt release if not already explicitly released
         if let Some(value) = self.value.take() {
-            let lock = self.lock.clone();
-            let key = self.key.clone();
-
-            // Best-effort: try to spawn an async release task.
-            // This may fail if the runtime is shutting down.
-            if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                handle.spawn(async move {
-                    if let Err(e) = lock.release(&key, &value).await {
-                        tracing::error!(
-                            key = %key,
-                            error = %e,
-                            "Failed to release lock in Drop"
-                        );
-                    }
-                });
-            } else {
-                tracing::warn!(
-                    key = %key,
-                    "Cannot release lock in Drop: no tokio runtime available (lock will expire after TTL)"
-                );
+            // Signal the already-running background task to perform the
+            // unlock. The send is non-blocking and safe even if the Tokio
+            // runtime is shutting down, because the task was spawned earlier
+            // while the runtime was healthy.
+            if let Some(tx) = self.drop_tx.take() {
+                let key = self.key.clone();
+                if tx.send((key.clone(), value)).is_err() {
+                    // The background task exited prematurely (should not
+                    // happen in normal operation).
+                    tracing::warn!(
+                        key = %key,
+                        "Lock drop task exited before receiving unlock signal; \
+                         lock will expire after TTL"
+                    );
+                }
             }
         }
     }

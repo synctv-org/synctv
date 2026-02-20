@@ -199,7 +199,33 @@ pub async fn proxy_fetch_and_forward(
             })
         }
     };
-    metrics.on_proxy_complete("hls", elapsed, error_type);
+
+    // Derive the media type label from the Content-Type header of the proxied
+    // response rather than hard-coding "hls".
+    let media_type = match &result {
+        Ok(resp) => {
+            let ct = resp
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            if ct.contains("mpegurl") || ct.contains("m3u8") {
+                "hls"
+            } else if ct.contains("dash") || ct.contains("mpd") {
+                "dash"
+            } else if ct.contains("video/") {
+                "video"
+            } else if ct.contains("audio/") {
+                "audio"
+            } else if ct.contains("octet-stream") {
+                "binary"
+            } else {
+                "other"
+            }
+        }
+        Err(_) => "unknown",
+    };
+    metrics.on_proxy_complete(media_type, elapsed, error_type);
 
     result
 }
@@ -291,9 +317,17 @@ async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response,
 
     let mut builder = Response::builder().status(status);
 
+    // For 206 Partial Content responses the client needs Content-Length to
+    // determine the size of the range so that video players can seek correctly.
+    let is_range_response = status == StatusCode::PARTIAL_CONTENT;
+
     for (name, value) in &response_headers {
-        // Filter hop-by-hop headers per RFC 2616 Section 13.5.1
-        if matches!(
+        // Filter hop-by-hop headers per RFC 2616 Section 13.5.1.
+        // Content-Length is normally stripped (axum sets it from the body),
+        // but for range (206) responses we preserve it so players can seek.
+        if name.as_str() == "content-length" && is_range_response {
+            // Fall through to forward the header.
+        } else if matches!(
             name.as_str(),
             "connection"
                 | "transfer-encoding"

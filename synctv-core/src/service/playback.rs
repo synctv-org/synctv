@@ -160,30 +160,22 @@ impl PlaybackService {
 
     /// Broadcast a playback state change to local clients and cluster replicas.
     ///
+    /// Uses the cluster broadcaster as the single broadcast path. The cluster
+    /// broadcaster calls `ClusterManager::broadcast`, which delivers the event
+    /// to local WebSocket subscribers (via the in-process message hub) AND
+    /// publishes to Redis for remote replicas in one step.
+    ///
+    /// The `notification_service` path is intentionally not used here: calling
+    /// it in addition to the cluster broadcaster would cause local clients to
+    /// receive the same `PlaybackStateChanged` event twice.
+    ///
     /// Best-effort: logs warnings on failure but does not propagate errors,
     /// since broadcasting is not critical to the mutation itself.
     async fn broadcast_state_change(&self, state: &RoomPlaybackState) {
-        // 1. Notify local WebSocket clients
-        if let Some(ref ns) = self.notification_service {
-            if let Err(e) = ns.notify_playback_state_changed(
-                &state.room_id,
-                state.is_playing,
-                state.current_time,
-                state.speed,
-                state.playing_media_id.as_ref().map(|id| id.as_str().to_string()),
-            ).await {
-                tracing::warn!(
-                    error = %e,
-                    room_id = %state.room_id.as_str(),
-                    "Failed to notify local clients of playback state change"
-                );
-            }
-        }
-
-        // 2. Broadcast to other cluster replicas via the synchronous broadcaster.
-        //    This is fire-and-forget at the trait level. Redis-backed cross-replica
-        //    broadcast (with retry, Issue #28) is handled by update_state() which
-        //    calls invalidation_service.update_playback_state() with retry logic.
+        // Single broadcast path: cluster broadcaster handles both local delivery
+        // (via the in-process message hub) and remote delivery (via Redis pub/sub).
+        // Do NOT also call notification_service here — that would send the event
+        // to local WebSocket clients a second time.
         if let Some(ref broadcaster) = *self.cluster_broadcaster.read() {
             broadcaster.broadcast_playback_state(state);
         }

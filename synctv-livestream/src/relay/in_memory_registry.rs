@@ -111,7 +111,13 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
 
     async fn unregister_publisher(&self, room_id: &str, media_id: &str) -> Result<()> {
         let mut publishers = self.publishers.lock().await;
-        publishers.remove(&(room_id.to_string(), media_id.to_string()));
+        let mut epoch_counters = self.epoch_counters.lock().await;
+        let key = (room_id.to_string(), media_id.to_string());
+        publishers.remove(&key);
+        // Remove the epoch counter to prevent unbounded accumulation of entries
+        // for streams that have ended. Without this, epoch_counters grows forever
+        // (one entry per stream that has ever existed).
+        epoch_counters.remove(&key);
         Ok(())
     }
 
@@ -150,7 +156,18 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
 
     async fn unregister_all_user_publishers(&self, user_id: &str) -> Result<()> {
         let mut publishers = self.publishers.lock().await;
+        let mut epoch_counters = self.epoch_counters.lock().await;
+        // Collect keys being removed so we can clean up their epoch counters.
+        let removed_keys: Vec<(String, String)> = publishers
+            .iter()
+            .filter(|(_, info)| info.user_id == user_id)
+            .map(|(key, _)| key.clone())
+            .collect();
         publishers.retain(|_, info| info.user_id != user_id);
+        // Remove epoch counters for all unregistered streams to prevent memory leak.
+        for key in removed_keys {
+            epoch_counters.remove(&key);
+        }
         Ok(())
     }
 
@@ -165,7 +182,18 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
 
     async fn cleanup_all_publishers_for_node(&self, node_id: &str) -> Result<()> {
         let mut publishers = self.publishers.lock().await;
+        let mut epoch_counters = self.epoch_counters.lock().await;
+        // Collect keys being removed so we can clean up their epoch counters.
+        let removed_keys: Vec<(String, String)> = publishers
+            .iter()
+            .filter(|(_, info)| info.node_id == node_id)
+            .map(|(key, _)| key.clone())
+            .collect();
         publishers.retain(|_, info| info.node_id != node_id);
+        // Remove epoch counters for all unregistered streams to prevent memory leak.
+        for key in removed_keys {
+            epoch_counters.remove(&key);
+        }
         Ok(())
     }
 }

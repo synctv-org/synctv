@@ -270,23 +270,55 @@ impl PullStreamManager {
 
         // Start pull stream (connects via gRPC to publisher)
         if let Err(e) = pull_stream.start().await {
-            // Publisher is likely down but its Redis registration hasn't expired yet.
-            // Remove the stale registry entry so subsequent requests fail fast with
-            // NoPublisher instead of repeatedly trying to connect to a dead node.
-            warn!(
-                room_id = %room_id,
-                media_id = %media_id,
-                error = %e,
-                "Pull stream start failed; removing stale publisher registry entry"
+            // Only remove the Redis registry entry on permanent/non-retryable failures.
+            //
+            // Permanent failures (publisher definitively gone or misconfigured):
+            //   - StaleEpoch: publisher changed (split-brain), our record is obsolete
+            //   - NoPublisher: no registry entry exists
+            //   - InvalidAddress: publisher node has an unresolvable address
+            //   - InvalidStreamKey: stream key is malformed/invalid
+            //
+            // Transient failures (keep the registry entry, let TTL manage it):
+            //   - RegistryError: Redis unavailable or slow; the publisher may still be live
+            //   - GrpcError: network hiccup; the publisher node may still be running
+            //   - ConnectionFailed: transient connectivity issue
+            //   - IoError: OS-level I/O error, typically transient
+            //
+            // Deleting the entry on transient errors causes a ~60-second routing outage
+            // because all other nodes route to this stream's Redis entry; once deleted,
+            // no node knows where the stream is until it re-registers (up to TTL expiry).
+            let is_permanent = matches!(
+                e,
+                crate::error::StreamError::StaleEpoch(_)
+                    | crate::error::StreamError::NoPublisher(_)
+                    | crate::error::StreamError::InvalidAddress(_)
+                    | crate::error::StreamError::InvalidStreamKey(_)
             );
-            if let Err(unreg_err) = self.registry.unregister_publisher(room_id, media_id).await {
-                error!(
+
+            if is_permanent {
+                warn!(
                     room_id = %room_id,
                     media_id = %media_id,
-                    error = %unreg_err,
-                    "Failed to unregister stale publisher after pull stream start failure"
+                    error = %e,
+                    "Pull stream start failed with permanent error; removing stale publisher registry entry"
+                );
+                if let Err(unreg_err) = self.registry.unregister_publisher(room_id, media_id).await {
+                    error!(
+                        room_id = %room_id,
+                        media_id = %media_id,
+                        error = %unreg_err,
+                        "Failed to unregister stale publisher after permanent pull stream start failure"
+                    );
+                }
+            } else {
+                warn!(
+                    room_id = %room_id,
+                    media_id = %media_id,
+                    error = %e,
+                    "Pull stream start failed with transient error; keeping publisher registry entry to avoid routing outage"
                 );
             }
+
             return Err(crate::error::StreamError::ConnectionFailed(format!(
                 "Stream temporarily unavailable for {room_id}/{media_id}: publisher unreachable. {e}"
             )));

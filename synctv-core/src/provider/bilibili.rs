@@ -533,8 +533,13 @@ impl MediaProvider for BilibiliProvider {
                 room_id, ..
             } => {
                 // Live streams use HLS — no DASH
+                //
+                // Note: `GetLiveStreamsReq.cid` is named `cid` in the protobuf definition
+                // for historical reasons, but for live streams this field carries the
+                // live **room_id**, not a video content-ID (cid). The Bilibili live API
+                // identifies rooms by room_id, so `room_id` is assigned here.
                 let request = synctv_media_providers::grpc::bilibili::GetLiveStreamsReq {
-                    cid: room_id,
+                    cid: room_id, // semantically room_id — see comment above
                     hls: true,
                     cookies: sanitized_cookies,
                 };
@@ -575,11 +580,14 @@ impl MediaProvider for BilibiliProvider {
                 metadata.insert("room_id".to_string(), json!(room_id));
                 metadata.insert("is_live".to_string(), json!(true));
 
-                let default_mode = playback_infos
-                    .keys()
-                    .next()
-                    .cloned()
-                    .unwrap_or_else(|| "direct".to_string());
+                // Sort keys so the default mode is deterministic across server
+                // restarts and replicas.  HashMap iteration order is randomised
+                // per-process in Rust, so we must sort before picking the first key.
+                let default_mode = {
+                    let mut keys: Vec<&String> = playback_infos.keys().collect();
+                    keys.sort();
+                    keys.into_iter().next().cloned().unwrap_or_else(|| "direct".to_string())
+                };
 
                 Ok(PlaybackResult {
                     playback_infos,

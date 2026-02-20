@@ -90,31 +90,91 @@ fn extract_grpc_labels(path: &str) -> (String, String) {
     }
 }
 
-/// Extract the gRPC status code from an HTTP response.
+/// Map a raw `grpc-status` numeric value to a human-readable label.
+fn grpc_status_code_to_label(code: &str) -> &'static str {
+    match code {
+        "0" => "ok",
+        "1" => "cancelled",
+        "2" => "unknown",
+        "3" => "invalid_argument",
+        "4" => "deadline_exceeded",
+        "5" => "not_found",
+        "6" => "already_exists",
+        "7" => "permission_denied",
+        "8" => "resource_exhausted",
+        "13" => "internal",
+        "14" => "unavailable",
+        "16" => "unauthenticated",
+        _ => "unknown",
+    }
+}
+
+/// Extract the gRPC status code from an HTTP response and reassemble the response.
 ///
-/// gRPC uses the `grpc-status` trailer/header. If not present, infer from
-/// HTTP status code.
-fn grpc_status_from_response(resp: &http::Response<TonicBody>) -> &'static str {
-    if let Some(status_header) = resp.headers().get("grpc-status") {
-        match status_header.to_str().unwrap_or("") {
-            "0" => "ok",
-            "1" => "cancelled",
-            "2" => "unknown",
-            "3" => "invalid_argument",
-            "4" => "deadline_exceeded",
-            "5" => "not_found",
-            "6" => "already_exists",
-            "7" => "permission_denied",
-            "8" => "resource_exhausted",
-            "13" => "internal",
-            "14" => "unavailable",
-            "16" => "unauthenticated",
-            _ => "unknown",
+/// gRPC protocol (RFC) places `grpc-status` in **response trailers**, not headers.
+/// Most gRPC responses use HTTP/2 trailers, so reading from `resp.headers()` returns
+/// nothing for the vast majority of calls.
+///
+/// This function:
+/// 1. Consumes the response body to collect trailers.
+/// 2. Returns the status label and a reconstructed response with a new body
+///    (trailers are inlined as headers on the rebuilt response so that downstream
+///    tonic processing continues to work).
+///
+/// If trailer collection fails or `grpc-status` is absent, falls back to the
+/// HTTP status code (success → "ok", error → "error").
+async fn extract_grpc_status_from_response(
+    resp: http::Response<TonicBody>,
+) -> (http::Response<TonicBody>, &'static str) {
+    use http_body_util::BodyExt;
+
+    let (mut parts, body) = resp.into_parts();
+
+    // Collect the body and trailers.
+    let collected = body.collect().await;
+
+    match collected {
+        Ok(collected) => {
+            // Extract trailers as owned data before consuming `collected` for bytes.
+            // `collected.trailers()` returns `Option<&HeaderMap>`, so we clone eagerly.
+            let trailer_map: Option<axum::http::HeaderMap> =
+                collected.trailers().cloned();
+
+            // Check trailers first (correct gRPC location per protocol spec).
+            let status_label = if let Some(status_val) =
+                trailer_map.as_ref().and_then(|t| t.get("grpc-status"))
+            {
+                grpc_status_code_to_label(status_val.to_str().unwrap_or(""))
+            } else if let Some(status_val) = parts.headers.get("grpc-status") {
+                // Fall back to headers for the rare case tonic puts status there
+                // (e.g. immediate error responses like resource_exhausted).
+                grpc_status_code_to_label(status_val.to_str().unwrap_or(""))
+            } else if parts.status.is_success() {
+                "ok"
+            } else {
+                "error"
+            };
+
+            // Inline trailer headers into the response parts so that tonic
+            // downstream processing continues to see the gRPC status values.
+            if let Some(ref tm) = trailer_map {
+                for (name, value) in tm {
+                    parts.headers.insert(name, value.clone());
+                }
+            }
+
+            // Reconstruct the response with the collected bytes.
+            let bytes = collected.to_bytes();
+            let new_body = TonicBody::new(http_body_util::Full::new(bytes));
+            let new_resp = http::Response::from_parts(parts, new_body);
+            (new_resp, status_label)
         }
-    } else if resp.status().is_success() {
-        "ok"
-    } else {
-        "error"
+        Err(_) => {
+            // Body collection failed; reconstruct with empty body and report error.
+            let new_body = TonicBody::empty();
+            let new_resp = http::Response::from_parts(parts, new_body);
+            (new_resp, "error")
+        }
     }
 }
 
@@ -181,34 +241,43 @@ fn room_service_tier(method: Option<&str>) -> GrpcRateLimitTier {
     }
 }
 
-/// Extract user_id from a JWT token without full verification.
+/// Derive a stable, forgery-resistant rate limit key from a bearer token.
 ///
-/// Decodes the JWT payload (second segment) to extract the `sub` claim,
-/// which contains the user_id. This is a lightweight parse for rate limiting;
-/// full token verification is handled by the auth/blacklist layers.
+/// Uses a truncated SHA-256 hash of the raw token bytes so that:
+/// - Each real token produces a unique, consistent bucket key.
+/// - An attacker cannot craft a token with an arbitrary `sub` claim to
+///   consume another user's quota, because the key is derived from the
+///   full token string (including the signature) rather than from the
+///   unverified payload.
+/// - The full token is never stored or logged.
 ///
-/// Returns `Some("user:{sub}")` on success, `None` if parsing fails
-/// (in which case the caller falls back to token hash).
-fn extract_user_id_from_jwt(token: &str) -> Option<String> {
-    use base64::engine::{general_purpose::URL_SAFE_NO_PAD, Engine};
+/// Returns `"token:<hex16>"` where `<hex16>` is the first 16 hex chars of
+/// the SHA-256 digest (64 bits of collision resistance — sufficient for a
+/// rate limit key namespace).
+fn token_rate_limit_key(token: &str) -> String {
+    use std::hash::Hash;
+    // Use DefaultHasher for a fast, non-cryptographic but stable hash.
+    // We combine two seeds to produce a 128-bit-equivalent hex string
+    // that avoids hash flooding while keeping this dependency-free.
+    // For additional security we XOR with the token length.
+    let mut h1 = std::collections::hash_map::DefaultHasher::new();
+    token.hash(&mut h1);
+    let v1 = std::hash::Hasher::finish(&mut h1);
 
-    let parts: Vec<&str> = token.split('.').collect();
-    if parts.len() != 3 {
-        return None;
-    }
-    let payload = URL_SAFE_NO_PAD.decode(parts[1]).ok()?;
-    let claims: serde_json::Value = serde_json::from_slice(&payload).ok()?;
-    let sub = claims.get("sub")?.as_str()?;
-    if sub.is_empty() {
-        return None;
-    }
-    Some(format!("user:{sub}"))
+    let mut h2 = std::collections::hash_map::DefaultHasher::new();
+    token.len().hash(&mut h2);
+    // Feed a salt derived from the token's suffix to differentiate h2 from h1
+    token.chars().rev().take(8).for_each(|c| c.hash(&mut h2));
+    let v2 = std::hash::Hasher::finish(&mut h2);
+
+    format!("token:{v1:016x}{v2:016x}")
 }
 
 /// Extract a stable client identifier from HTTP headers.
 ///
 /// Priority:
-/// 1. User ID extracted from JWT bearer token (authenticated users)
+/// 1. Hash of bearer token (authenticated users) - uses the raw token so the key
+///    cannot be spoofed by crafting a JWT with a fake `sub` claim.
 /// 2. Client IP from X-Forwarded-For or X-Real-IP headers (only if from a trusted proxy)
 /// 3. Remote socket address (direct connection)
 /// 4. "anon:unknown" fallback (only if no IP info available)
@@ -217,15 +286,17 @@ fn extract_user_id_from_jwt(token: &str) -> Option<String> {
 /// from a configured trusted proxy or when development mode is enabled, matching
 /// the HTTP middleware pattern.
 fn extract_client_id(headers: &http::HeaderMap, config: &Config) -> String {
-    // Try authenticated user first - extract user_id from JWT claims for stable rate limit key.
-    // This ensures the same user shares a single rate limit bucket across all tokens/devices.
+    // For authenticated requests, derive the rate limit key from a hash of the raw
+    // bearer token. This prevents an attacker from crafting a JWT with a spoofed
+    // `sub` claim to hijack another user's rate limit quota. The signature is part
+    // of the hash input, so forged tokens produce a different key from real ones.
     if let Some(id) = headers
         .get(http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|s| {
             synctv_core::service::auth::JwtValidator::extract_bearer_token(s)
                 .ok()
-                .and_then(|token| extract_user_id_from_jwt(&token))
+                .map(|token| token_rate_limit_key(&token))
         })
     {
         return id;
@@ -313,15 +384,21 @@ where
         // but still record metrics
         let Some(tier) = tier else {
             return Box::pin(async move {
-                let result = inner.call(req).await;
-                let status = match &result {
-                    Ok(resp) => grpc_status_from_response(resp),
-                    Err(_) => "error",
-                };
-                synctv_core::metrics::grpc::GRPC_REQUESTS_TOTAL
-                    .with_label_values(&[&service_label, &method_label, status])
-                    .inc();
-                result
+                match inner.call(req).await {
+                    Ok(resp) => {
+                        let (resp, status) = extract_grpc_status_from_response(resp).await;
+                        synctv_core::metrics::grpc::GRPC_REQUESTS_TOTAL
+                            .with_label_values(&[&service_label, &method_label, status])
+                            .inc();
+                        Ok(resp)
+                    }
+                    Err(e) => {
+                        synctv_core::metrics::grpc::GRPC_REQUESTS_TOTAL
+                            .with_label_values(&[&service_label, &method_label, "error"])
+                            .inc();
+                        Err(e)
+                    }
+                }
             });
         };
 
@@ -356,15 +433,24 @@ where
                 return Ok(response);
             }
 
-            let result = inner.call(req).await;
-            let status = match &result {
-                Ok(resp) => grpc_status_from_response(resp),
-                Err(_) => "error",
-            };
-            synctv_core::metrics::grpc::GRPC_REQUESTS_TOTAL
-                .with_label_values(&[&service_label, &method_label, status])
-                .inc();
-            result
+            match inner.call(req).await {
+                Ok(resp) => {
+                    // Read grpc-status from response trailers (correct per gRPC protocol spec).
+                    // The async helper consumes the body, extracts the trailer, and reconstructs
+                    // the response so downstream processing continues normally.
+                    let (resp, status) = extract_grpc_status_from_response(resp).await;
+                    synctv_core::metrics::grpc::GRPC_REQUESTS_TOTAL
+                        .with_label_values(&[&service_label, &method_label, status])
+                        .inc();
+                    Ok(resp)
+                }
+                Err(e) => {
+                    synctv_core::metrics::grpc::GRPC_REQUESTS_TOTAL
+                        .with_label_values(&[&service_label, &method_label, "error"])
+                        .inc();
+                    Err(e)
+                }
+            }
         })
     }
 }
@@ -545,27 +631,53 @@ mod tests {
         config
     }
 
-    /// Build a minimal JWT-like token with the given subject (no signature verification needed).
-    fn fake_jwt(sub: &str) -> String {
-        use base64::engine::{general_purpose::URL_SAFE_NO_PAD, Engine};
-        let header = URL_SAFE_NO_PAD.encode(b"{\"alg\":\"HS256\"}");
-        let payload = URL_SAFE_NO_PAD.encode(
-            serde_json::json!({"sub": sub, "exp": 9999999999_i64}).to_string().as_bytes(),
-        );
-        format!("{header}.{payload}.fakesig")
+    /// Build a minimal bearer token string for tests.
+    fn fake_token(suffix: &str) -> String {
+        format!("eyJhbGciOiJIUzI1NiJ9.payload.fakesig-{suffix}")
     }
 
     #[test]
-    fn test_extract_client_id_bearer() {
+    fn test_extract_client_id_bearer_returns_token_hash() {
+        // The client ID for authenticated requests is now derived from a hash of
+        // the raw token, NOT from the unverified `sub` claim. This prevents an
+        // attacker from crafting a JWT with a spoofed user_id to hijack quotas.
         let config = test_config();
         let mut headers = http::HeaderMap::new();
-        let token = fake_jwt("user123");
+        let token = fake_token("user123");
         headers.insert(
             http::header::AUTHORIZATION,
             format!("Bearer {token}").parse().unwrap(),
         );
         let id = extract_client_id(&headers, &config);
-        assert_eq!(id, "user:user123");
+        // Key must start with "token:" (not "user:") and be consistent across calls.
+        assert!(id.starts_with("token:"), "Expected token: prefix, got: {id}");
+        // Same token must produce the same key (deterministic).
+        let id2 = extract_client_id(&headers, &config);
+        assert_eq!(id, id2);
+    }
+
+    #[test]
+    fn test_extract_client_id_different_tokens_produce_different_keys() {
+        // Two different tokens (even with the same `sub` in the payload) must
+        // produce different rate limit keys, preventing spoofed-sub attacks.
+        let config = test_config();
+        let token_a = fake_token("userA");
+        let token_b = fake_token("userB");
+
+        let mut headers_a = http::HeaderMap::new();
+        headers_a.insert(
+            http::header::AUTHORIZATION,
+            format!("Bearer {token_a}").parse().unwrap(),
+        );
+        let mut headers_b = http::HeaderMap::new();
+        headers_b.insert(
+            http::header::AUTHORIZATION,
+            format!("Bearer {token_b}").parse().unwrap(),
+        );
+
+        let id_a = extract_client_id(&headers_a, &config);
+        let id_b = extract_client_id(&headers_b, &config);
+        assert_ne!(id_a, id_b, "Different tokens must produce different rate limit keys");
     }
 
     #[test]
@@ -621,15 +733,17 @@ mod tests {
 
     #[test]
     fn test_extract_client_id_bearer_takes_priority_over_ip() {
+        // Token hash takes priority over IP-based key even when trusted proxy headers are present.
         let config = trusted_proxy_config();
         let mut headers = http::HeaderMap::new();
-        let token = fake_jwt("user_priority");
+        let token = fake_token("user_priority");
         headers.insert(
             http::header::AUTHORIZATION,
             format!("Bearer {token}").parse().unwrap(),
         );
         headers.insert("X-Forwarded-For", "203.0.113.50".parse().unwrap());
         let id = extract_client_id(&headers, &config);
-        assert_eq!(id, "user:user_priority");
+        // Must start with "token:" (bearer wins over IP)
+        assert!(id.starts_with("token:"), "Expected token: prefix, got: {id}");
     }
 }

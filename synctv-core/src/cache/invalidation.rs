@@ -70,10 +70,6 @@ pub enum InvalidationMessage {
     RoomSettings {
         room_id: String,
     },
-    /// Invalidate token blacklist L1 cache for a user (e.g. after password change)
-    UserTokenInvalidation {
-        user_id: String,
-    },
     /// Invalidate all caches
     All,
 }
@@ -173,8 +169,8 @@ impl CacheInvalidationService {
         self.cleanup_stale_consumer_group().await;
 
         // Create consumer group if it doesn't exist.
-        // Use "0" so that on first start, all existing messages are delivered.
-        // In practice the stream will be empty on first deploy.
+        // Use "$" so the group starts from the latest message (only new messages).
+        // This prevents replaying all historical messages on every restart.
         // If the group already exists, BUSYGROUP error is expected and ignored.
         if let Err(e) = self.create_consumer_group().await {
             // create_consumer_group returns Ok(()) if the group was created,
@@ -229,14 +225,18 @@ impl CacheInvalidationService {
     async fn create_consumer_group(&self) -> Result<()> {
         let mut conn = self.get_conn().await?;
 
-        // XGROUP CREATE <stream> <group> 0 MKSTREAM
-        // Use "0" to read all existing messages on first start. On reconnection,
-        // pending messages are re-read via XREADGROUP ... 0 (catch-up phase).
+        // XGROUP CREATE <stream> <group> $ MKSTREAM
+        // Use "$" so the group starts from the latest message and only processes
+        // new messages going forward. Using "0" would cause the service to replay
+        // ALL historical messages on every restart, triggering a massive cache
+        // invalidation storm. On reconnection, pending (unacknowledged) messages
+        // are caught up via XREADGROUP ... 0 in process_pending_messages().
+        // If the group already exists, BUSYGROUP is expected and ignored below.
         let result: redis::RedisResult<()> = redis::cmd("XGROUP")
             .arg("CREATE")
             .arg(&self.stream_key)
             .arg(&self.consumer_group)
-            .arg("0")
+            .arg("$")
             .arg("MKSTREAM")
             .query_async(&mut conn)
             .await;
@@ -557,32 +557,47 @@ impl CacheInvalidationService {
             _ => None,
         });
 
-        if let Some(payload_str) = payload_str {
-            match serde_json::from_str::<InvalidationMessage>(payload_str) {
-                Ok(invalidation) => {
-                    debug!(
-                        node_id = %node_id,
-                        message_id = %entry.id,
-                        ?invalidation,
-                        "Received cache invalidation message"
-                    );
+        let Some(payload_str) = payload_str else {
+            // No payload field - malformed entry. Do NOT acknowledge so Redis
+            // keeps it in the pending entry list for redelivery or manual inspection.
+            warn!(
+                message_id = %entry.id,
+                "Cache invalidation message has no payload field; skipping XACK (will be redelivered)"
+            );
+            return;
+        };
 
-                    // Broadcast locally
-                    if let Err(e) = local_sender.send(invalidation) {
-                        warn!(error = %e, "Failed to broadcast invalidation locally");
-                    }
+        match serde_json::from_str::<InvalidationMessage>(payload_str) {
+            Ok(invalidation) => {
+                debug!(
+                    node_id = %node_id,
+                    message_id = %entry.id,
+                    ?invalidation,
+                    "Received cache invalidation message"
+                );
+
+                // Broadcast locally
+                if let Err(e) = local_sender.send(invalidation) {
+                    warn!(error = %e, "Failed to broadcast invalidation locally");
                 }
-                Err(e) => {
-                    warn!(
-                        error = %e,
-                        json = %payload_str,
-                        "Failed to parse invalidation message"
-                    );
-                }
+            }
+            Err(e) => {
+                // Parse failed. Do NOT acknowledge - keep the message in the
+                // pending entry list so Redis can redeliver it (e.g. after a
+                // schema fix or schema migration). Malformed messages will
+                // remain in the PEL until either explicitly deleted (XDEL) or
+                // the stream is trimmed (XTRIM).
+                warn!(
+                    error = %e,
+                    message_id = %entry.id,
+                    json = %payload_str,
+                    "Failed to parse cache invalidation message; skipping XACK (will be redelivered)"
+                );
+                return;
             }
         }
 
-        // Acknowledge the message
+        // Acknowledge the message only after successful parse and broadcast.
         let _: redis::RedisResult<()> = redis::cmd("XACK")
             .arg(stream_key)
             .arg(consumer_group)
@@ -625,38 +640,42 @@ impl CacheInvalidationService {
         }
     }
 
-    /// Stop the cache invalidation service and clean up the consumer group.
+    /// Stop the cache invalidation service and trim the stream.
     ///
-    /// Signals the background subscriber to stop, then destroys the Redis
-    /// consumer group so it does not leak when this node shuts down.
+    /// Signals the background subscriber to stop, then trims the Redis stream
+    /// to the configured maximum length. XGROUP DESTROY is intentionally NOT
+    /// used here because it would drop the entire Pending Entry List (PEL),
+    /// losing messages that were delivered but not yet acknowledged. XTRIM
+    /// limits stream growth without discarding unacknowledged messages.
     pub async fn stop(&self) {
         self.shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
 
-        // Clean up the consumer group in Redis to prevent leaked groups from
-        // accumulating when nodes are restarted or scaled down.
+        // Trim the stream on shutdown to prevent unbounded growth.
+        // We do NOT call XGROUP DESTROY because that would silently drop the
+        // entire PEL, losing messages that were delivered but not yet XACK'd.
         if self.redis_client.is_some() {
             match self.get_conn().await {
                 Ok(mut conn) => {
-                    let result: redis::RedisResult<()> = redis::cmd("XGROUP")
-                        .arg("DESTROY")
+                    let result: redis::RedisResult<i64> = redis::cmd("XTRIM")
                         .arg(&self.stream_key)
-                        .arg(&self.consumer_group)
+                        .arg("MAXLEN")
+                        .arg("~")
+                        .arg(MAX_STREAM_LENGTH)
                         .query_async(&mut conn)
                         .await;
                     match result {
-                        Ok(()) => {
+                        Ok(trimmed) => {
                             info!(
                                 stream = %self.stream_key,
-                                group = %self.consumer_group,
-                                "Destroyed consumer group on shutdown"
+                                trimmed,
+                                "Trimmed cache invalidation stream on shutdown"
                             );
                         }
                         Err(e) => {
                             warn!(
                                 error = %e,
                                 stream = %self.stream_key,
-                                group = %self.consumer_group,
-                                "Failed to destroy consumer group on shutdown (may already be removed)"
+                                "Failed to trim cache invalidation stream on shutdown"
                             );
                         }
                     }
@@ -664,7 +683,7 @@ impl CacheInvalidationService {
                 Err(e) => {
                     warn!(
                         error = %e,
-                        "Failed to get Redis connection for consumer group cleanup"
+                        "Failed to get Redis connection for stream trim on shutdown"
                     );
                 }
             }
@@ -812,13 +831,6 @@ impl CacheInvalidationService {
     pub async fn invalidate_room_settings(&self, room_id: &RoomId) -> Result<()> {
         self.broadcast_remote(InvalidationMessage::RoomSettings {
             room_id: room_id.as_str().to_string(),
-        }).await
-    }
-
-    /// Invalidate token blacklist L1 cache for a user (e.g. after password change)
-    pub async fn invalidate_user_token(&self, user_id: &crate::models::UserId) -> Result<()> {
-        self.broadcast_remote(InvalidationMessage::UserTokenInvalidation {
-            user_id: user_id.as_str().to_string(),
         }).await
     }
 

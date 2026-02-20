@@ -11,16 +11,25 @@
 
 use dashmap::DashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tonic::transport::Channel;
 use tracing::{debug, warn};
 
-/// A pooled gRPC channel with creation timestamp for staleness checks.
+/// A pooled gRPC channel with creation timestamp for staleness checks and
+/// a consecutive-error counter for health-based eviction.
 struct PooledChannel {
     channel: Channel,
     created_at: Instant,
+    /// Number of consecutive errors on this connection since the last success.
+    /// When this exceeds `CONNECTION_ERROR_EVICTION_THRESHOLD` the connection
+    /// is considered unhealthy and evicted from the pool.
+    consecutive_errors: AtomicU32,
 }
+
+/// Number of consecutive per-connection errors before the connection is
+/// considered unhealthy and evicted from the pool regardless of its age.
+const CONNECTION_ERROR_EVICTION_THRESHOLD: u32 = 3;
 
 /// Per-node circuit breaker state.
 ///
@@ -33,6 +42,14 @@ struct CircuitBreakerState {
     consecutive_failures: AtomicU32,
     /// Unix timestamp (millis) when the circuit was opened (0 = circuit closed)
     opened_at_millis: AtomicU64,
+    /// `true` while a half-open probe is in flight.
+    ///
+    /// When the cooldown expires, `is_open()` resets `opened_at_millis` to 0
+    /// (transitioning to half-open) and this flag ensures only the first
+    /// concurrent caller is allowed through as the probe. All other concurrent
+    /// callers that race through the `opened_at == 0` check are blocked until
+    /// the probe completes via `record_success` or `record_failure`.
+    probe_in_flight: AtomicBool,
 }
 
 impl CircuitBreakerState {
@@ -40,12 +57,14 @@ impl CircuitBreakerState {
         Self {
             consecutive_failures: AtomicU32::new(0),
             opened_at_millis: AtomicU64::new(0),
+            probe_in_flight: AtomicBool::new(false),
         }
     }
 
     fn record_success(&self) {
         self.consecutive_failures.store(0, Ordering::Release);
         self.opened_at_millis.store(0, Ordering::Release);
+        self.probe_in_flight.store(false, Ordering::Release);
     }
 
     fn record_failure(&self, threshold: u32) {
@@ -55,6 +74,8 @@ impl CircuitBreakerState {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_millis() as u64);
             self.opened_at_millis.store(now_ms, Ordering::Release);
+            // Reset probe_in_flight so the next cooldown window can send a probe.
+            self.probe_in_flight.store(false, Ordering::Release);
             warn!(
                 consecutive_failures = failures,
                 "Circuit breaker opened after {} consecutive failures",
@@ -66,6 +87,12 @@ impl CircuitBreakerState {
     fn is_open(&self, cooldown_ms: u64) -> bool {
         let opened = self.opened_at_millis.load(Ordering::Acquire);
         if opened == 0 {
+            // Circuit is closed (or transitioning to half-open).
+            // If a probe is already in flight, block this concurrent caller to
+            // prevent multiple simultaneous half-open probes.
+            if self.probe_in_flight.load(Ordering::Acquire) {
+                return true; // report as open: another probe is in flight
+            }
             return false;
         }
         let now_ms = std::time::SystemTime::now()
@@ -73,10 +100,30 @@ impl CircuitBreakerState {
             .map_or(0, |d| d.as_millis() as u64);
         let elapsed = now_ms.saturating_sub(opened);
         if elapsed >= cooldown_ms {
-            // Cooldown expired: allow a single probe attempt (half-open state)
-            // Reset opened_at so only one caller probes
-            self.opened_at_millis.store(0, Ordering::Release);
-            false
+            // Cooldown expired: transition to half-open.
+            // Use compare_exchange on opened_at_millis to ensure only one
+            // concurrent caller wins the race and becomes the probe.
+            match self.opened_at_millis.compare_exchange(
+                opened,
+                0,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    // We won the race: claim the probe slot.
+                    self.probe_in_flight.store(true, Ordering::Release);
+                    false // allow this caller through as the probe
+                }
+                Err(_) => {
+                    // Another caller already claimed the probe or reset the
+                    // circuit.  Check current state.
+                    if self.probe_in_flight.load(Ordering::Acquire) {
+                        true // another probe in flight — block this caller
+                    } else {
+                        false // circuit was reset by a successful probe
+                    }
+                }
+            }
         } else {
             true
         }
@@ -150,14 +197,25 @@ impl GrpcConnectionPool {
 
         // Fast path: check for existing healthy connection
         if let Some(entry) = self.connections.get(address) {
-            if entry.created_at.elapsed() < self.max_idle {
+            let age_ok = entry.created_at.elapsed() < self.max_idle;
+            let errors = entry.consecutive_errors.load(Ordering::Acquire);
+            let health_ok = errors < CONNECTION_ERROR_EVICTION_THRESHOLD;
+            if age_ok && health_ok {
                 cb.record_success();
                 return Ok(entry.channel.clone());
             }
-            // Stale -- drop the read guard and remove below
+            // Stale or unhealthy -- drop the read guard and remove below
             drop(entry);
             self.connections.remove(address);
-            debug!(address = address, "Evicted stale gRPC connection from pool");
+            if !age_ok {
+                debug!(address = address, "Evicted stale gRPC connection from pool");
+            } else {
+                debug!(
+                    address = address,
+                    consecutive_errors = errors,
+                    "Evicted unhealthy gRPC connection from pool (error threshold exceeded)"
+                );
+            }
         }
 
         // Slow path: create new connection
@@ -188,11 +246,43 @@ impl GrpcConnectionPool {
             PooledChannel {
                 channel: channel.clone(),
                 created_at: Instant::now(),
+                consecutive_errors: AtomicU32::new(0),
             },
         );
 
         debug!(address = address, "Created new pooled gRPC connection");
         Ok(channel)
+    }
+
+    /// Record an error on a pooled connection.
+    ///
+    /// Increments the consecutive error counter for the given address. If the
+    /// counter reaches `CONNECTION_ERROR_EVICTION_THRESHOLD`, the connection is
+    /// considered unhealthy and will be evicted on the next access or background
+    /// sweep, regardless of its age.
+    ///
+    /// Call this after any gRPC request fails on a channel obtained from this pool.
+    pub fn record_connection_error(&self, address: &str) {
+        if let Some(entry) = self.connections.get(address) {
+            let errors = entry.consecutive_errors.fetch_add(1, Ordering::AcqRel) + 1;
+            if errors >= CONNECTION_ERROR_EVICTION_THRESHOLD {
+                debug!(
+                    address = address,
+                    consecutive_errors = errors,
+                    "gRPC connection marked unhealthy (error threshold reached)"
+                );
+            }
+        }
+    }
+
+    /// Record a successful request on a pooled connection.
+    ///
+    /// Resets the consecutive error counter for the given address so that
+    /// transient errors do not accumulate and cause premature eviction.
+    pub fn record_connection_success(&self, address: &str) {
+        if let Some(entry) = self.connections.get(address) {
+            entry.consecutive_errors.store(0, Ordering::Release);
+        }
     }
 
     /// Remove a specific connection from the pool (e.g., after a connection error).
@@ -202,13 +292,25 @@ impl GrpcConnectionPool {
         }
     }
 
-    /// Remove all stale connections. Can be called periodically from a background task.
+    /// Remove all stale or unhealthy connections.
+    ///
+    /// A connection is evicted if:
+    /// - Its age exceeds `max_idle` (time-based eviction), OR
+    /// - Its consecutive error count has reached `CONNECTION_ERROR_EVICTION_THRESHOLD`
+    ///   (health-based eviction).
+    ///
+    /// Can be called periodically from a background task.
     pub fn evict_stale(&self) {
         let before = self.connections.len();
-        self.connections.retain(|_addr, entry| entry.created_at.elapsed() < self.max_idle);
+        self.connections.retain(|_addr, entry| {
+            let age_ok = entry.created_at.elapsed() < self.max_idle;
+            let health_ok = entry.consecutive_errors.load(Ordering::Acquire)
+                < CONNECTION_ERROR_EVICTION_THRESHOLD;
+            age_ok && health_ok
+        });
         let evicted = before - self.connections.len();
         if evicted > 0 {
-            debug!("Evicted {} stale gRPC connections from pool", evicted);
+            debug!("Evicted {} stale or unhealthy gRPC connections from pool", evicted);
         }
     }
 

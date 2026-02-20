@@ -11,7 +11,7 @@
 
 use axum::{
     extract::State,
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Json},
     routing::get,
     Router,
@@ -234,29 +234,44 @@ fn check_cluster_health(state: &AppState) -> Option<Result<(), String>> {
 
 /// Check Redis connectivity by sending a PING command with timeout.
 ///
+/// Uses the shared raw Redis connection (`state.redis_conn`) rather than the
+/// rate limiter's internal connection. This ensures the health check reports
+/// the status of the application's Redis, not whether the rate limiter's
+/// connection pool happens to be healthy. When the rate limiter is degraded
+/// (e.g. using in-memory fallback due to a transient Redis error), the health
+/// check will still correctly detect that Redis is unavailable.
+///
 /// Issue #41: In cluster mode, Redis is required. If Redis is not configured
 /// and the node is in cluster mode, this returns an error (503).
 /// In single-node mode, Redis is optional and "not configured" is OK.
 async fn check_redis_health(state: &AppState) -> Result<(), String> {
     let is_cluster_mode = state.cluster_manager.is_some();
 
-    match tokio::time::timeout(HEALTH_CHECK_TIMEOUT, state.rate_limiter.health_check()).await {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(e)) if e.contains("not configured") => {
-            // Issue #41: Redis not configured.
-            // In cluster mode this is a fatal misconfiguration — the node cannot
-            // participate in cross-replica coordination without Redis.
-            if is_cluster_mode {
-                warn!("Redis not configured but cluster mode is active — node is not ready");
-                Err("Redis is required for cluster mode but is not configured".to_string())
-            } else {
-                // Single-node mode: Redis is optional
-                Ok(())
-            }
+    // Resolve a fresh ConnectionManager clone from the shared RwLock.
+    // Returns None when Redis is not configured.
+    let redis_conn = state.resolve_redis_conn().await;
+
+    let Some(mut conn) = redis_conn else {
+        // Redis not configured.
+        if is_cluster_mode {
+            warn!("Redis not configured but cluster mode is active — node is not ready");
+            return Err("Redis is required for cluster mode but is not configured".to_string());
         }
+        // Single-node mode: Redis is optional
+        return Ok(());
+    };
+
+    // Send a direct PING to verify the raw connection is responsive.
+    match tokio::time::timeout(
+        HEALTH_CHECK_TIMEOUT,
+        redis::cmd("PING").query_async::<String>(&mut conn),
+    )
+    .await
+    {
+        Ok(Ok(_)) => Ok(()),
         Ok(Err(e)) => {
             warn!("Redis health check failed: {}", e);
-            Err(e)
+            Err(format!("Redis ping failed: {e}"))
         }
         Err(_) => {
             warn!("Redis health check timed out after {}s", HEALTH_CHECK_TIMEOUT.as_secs());
@@ -287,11 +302,48 @@ fn check_email_health(svc: &synctv_core::service::EmailService) -> String {
 }
 
 /// Prometheus metrics endpoint
-pub async fn prometheus_metrics() -> impl IntoResponse {
+///
+/// When `server.metrics_bearer_token` is configured (non-empty), this endpoint
+/// requires an `Authorization: Bearer <token>` header matching the configured
+/// value. Requests without the correct token receive HTTP 401 Unauthorized.
+///
+/// When the token is empty (default), the endpoint is unauthenticated and
+/// operators must ensure it is network-restricted (e.g. not exposed externally).
+pub async fn prometheus_metrics(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let expected_token = &state.config.server.metrics_bearer_token;
+
+    if !expected_token.is_empty() {
+        // Check Authorization: Bearer <token>
+        let provided = headers
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| {
+                synctv_core::service::auth::JwtValidator::extract_bearer_token(s).ok()
+            });
+
+        match provided {
+            Some(ref token) if token == expected_token => {
+                // Token matches — proceed to return metrics
+            }
+            _ => {
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    [(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+                    "Unauthorized".to_string(),
+                )
+                    .into_response();
+            }
+        }
+    }
+
     (
         [(axum::http::header::CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8")],
         metrics::gather_metrics(),
     )
+        .into_response()
 }
 
 #[cfg(test)]

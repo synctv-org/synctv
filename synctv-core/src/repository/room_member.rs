@@ -413,6 +413,10 @@ impl RoomMemberRepository {
     }
 
     /// Update member role with optimistic locking
+    ///
+    /// Only updates members that are still active (`left_at IS NULL`). Members
+    /// who have left the room will not have their role modified; the call returns
+    /// `OptimisticLockConflict` in that case (same as a version mismatch).
     pub async fn update_role(
         &self,
         room_id: &RoomId,
@@ -425,7 +429,7 @@ impl RoomMemberRepository {
              SET
                 role = $3,
                 version = version + 1
-             WHERE room_id = $1 AND user_id = $2 AND version = $4
+             WHERE room_id = $1 AND user_id = $2 AND version = $4 AND left_at IS NULL
              RETURNING
                 room_id, user_id, role, status,
                 added_permissions, removed_permissions,
@@ -447,6 +451,10 @@ impl RoomMemberRepository {
     }
 
     /// Update member status with optimistic locking
+    ///
+    /// Only updates members that are still active (`left_at IS NULL`). Members
+    /// who have left the room will not have their status modified; the call
+    /// returns `OptimisticLockConflict` in that case (same as a version mismatch).
     pub async fn update_status(
         &self,
         room_id: &RoomId,
@@ -459,7 +467,7 @@ impl RoomMemberRepository {
              SET
                 status = $3,
                 version = version + 1
-             WHERE room_id = $1 AND user_id = $2 AND version = $4
+             WHERE room_id = $1 AND user_id = $2 AND version = $4 AND left_at IS NULL
              RETURNING
                 room_id, user_id, role, status,
                 added_permissions, removed_permissions,
@@ -666,6 +674,10 @@ impl RoomMemberRepository {
     }
 
     /// Unban member from room
+    ///
+    /// Uses `fetch_optional` (not `fetch_one`) so that a missing or already-unbanned
+    /// member returns a descriptive `NotFound` error rather than a raw sqlx
+    /// `RowNotFound` panic-like error.
     pub async fn unban_member(
         &self,
         room_id: &RoomId,
@@ -692,10 +704,13 @@ impl RoomMemberRepository {
         .bind(user_id.as_str())
         .bind(MemberStatus::Active)
         .bind(MemberStatus::Banned)
-        .fetch_one(&self.pool)
+        .fetch_optional(&self.pool)
         .await?;
 
-        Ok(result)
+        match result {
+            Some(m) => Ok(m),
+            None => Err(Error::NotFound("Member not found or not banned".to_string())),
+        }
     }
 
     /// Check if user is an active member of room (excludes banned members)

@@ -82,7 +82,8 @@ async fn test_complete_registration_flow() {
     verified_user.status = UserStatus::Active;
     verified_user.email_verified = true;
 
-    let updated_user = user_repo.update(&verified_user).await.expect("Failed to update user");
+    let old_version = verified_user.version;
+    let updated_user = user_repo.update(&verified_user, old_version).await.expect("Failed to update user");
     assert_eq!(updated_user.status, UserStatus::Active);
     assert!(updated_user.email_verified);
 
@@ -268,7 +269,8 @@ async fn test_password_change_invalidates_tokens() {
     updated_user.password_hash = new_password_hash;
     updated_user.updated_at = chrono::Utc::now();
 
-    user_repo.update(&updated_user).await.expect("Failed to update user");
+    let old_version = updated_user.version;
+    user_repo.update(&updated_user, old_version).await.expect("Failed to update user");
 
     // In a real system, old tokens should be invalidated by checking updated_at
     // against token issued_at (iat) or using a token revocation list

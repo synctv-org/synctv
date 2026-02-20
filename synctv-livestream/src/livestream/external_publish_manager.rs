@@ -327,12 +327,13 @@ impl ExternalPublishManager {
                             _ => {}
                         }
 
-                        // Send UnPublish to StreamHub
+                        // Send UnPublish to StreamHub (use send().await to avoid
+                        // silently dropping the event if the channel is momentarily full)
                         let identifier = StreamIdentifier::Rtmp {
                             app_name: room_id.to_string(),
                             stream_name: media_id.to_string(),
                         };
-                        if let Err(e) = hub_sender.try_send(StreamHubEvent::UnPublish { identifier }) {
+                        if let Err(e) = hub_sender.send(StreamHubEvent::UnPublish { identifier }).await {
                             warn!("Failed to send UnPublish for {}: {}", stream_key, e);
                         }
                     }
@@ -550,18 +551,46 @@ impl Drop for ExternalPublishStream {
                 app_name: self.room_id.clone(),
                 stream_name: self.media_id.clone(),
             };
-            if let Err(e) = self
+            let room_id = self.room_id.clone();
+            let media_id = self.media_id.clone();
+            match self
                 .stream_hub_event_sender
                 .try_send(StreamHubEvent::UnPublish { identifier })
             {
-                // During runtime shutdown, the channel may already be closed.
-                // This is best-effort cleanup; Redis TTL will eventually expire the
-                // publisher entry if this UnPublish is lost.
-                warn!(
-                    "ExternalPublishStream drop: failed to send UnPublish for {}/{}: {} \
-                     (best-effort cleanup; Redis TTL will expire stale entry)",
-                    self.room_id, self.media_id, e
-                );
+                Ok(()) => {
+                    debug!(
+                        "ExternalPublishStream drop: sent UnPublish for {}/{}",
+                        room_id, media_id
+                    );
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Full(event)) => {
+                    // Channel full — spawn an async task to await capacity so the
+                    // UnPublish is not silently dropped, leaving the stream registered.
+                    let sender = self.stream_hub_event_sender.clone();
+                    warn!(
+                        "ExternalPublishStream drop: channel full, spawning async UnPublish for {}/{}",
+                        room_id, media_id
+                    );
+                    tokio::spawn(async move {
+                        if let Err(e) = sender.send(event).await {
+                            warn!(
+                                "ExternalPublishStream drop: async UnPublish failed for {}/{}: {} \
+                                 (best-effort cleanup; Redis TTL will expire stale entry)",
+                                room_id, media_id, e
+                            );
+                        }
+                    });
+                }
+                Err(e) => {
+                    // During runtime shutdown, the channel may already be closed.
+                    // This is best-effort cleanup; Redis TTL will eventually expire the
+                    // publisher entry if this UnPublish is lost.
+                    warn!(
+                        "ExternalPublishStream drop: failed to send UnPublish for {}/{}: {} \
+                         (best-effort cleanup; Redis TTL will expire stale entry)",
+                        room_id, media_id, e
+                    );
+                }
             }
         }
 

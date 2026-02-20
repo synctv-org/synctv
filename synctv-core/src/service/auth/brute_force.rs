@@ -118,8 +118,18 @@ impl AttemptTracker for InMemoryAttemptTracker {
     }
 
     async fn record_failure(&self, key: &str, now: i64, _ttl_secs: u64) {
-        let (count, _) = self.cache.get(key).await.unwrap_or((0, now));
-        self.cache.insert(key.to_string(), (count + 1, now)).await;
+        // Use entry().and_upsert_with() for atomic read-modify-write to eliminate
+        // the TOCTOU race between the previous get() + insert() sequence.
+        self.cache
+            .entry(key.to_string())
+            .and_upsert_with(|maybe_entry| {
+                let new_count = match maybe_entry {
+                    Some(entry) => entry.into_value().0 + 1,
+                    None => 1,
+                };
+                std::future::ready((new_count, now))
+            })
+            .await;
     }
 
     async fn reset(&self, key: &str) {

@@ -345,7 +345,6 @@ impl SyncTvServer {
                 connection_manager: services.connection_manager,
                 providers_manager: Some(services.providers_manager),
                 provider_instance_manager: services.provider_instance_manager,
-                provider_instance_repository: services.provider_instance_repository,
                 user_provider_credential_repository: services.user_provider_credential_repository,
                 settings_service: services.settings_service,
                 settings_registry: Some(services.settings_registry),

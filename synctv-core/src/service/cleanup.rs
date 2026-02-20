@@ -1,7 +1,7 @@
 //! Data cleanup service for periodic maintenance tasks
 //!
 //! Coordinates cleanup of:
-//! - Soft-deleted records (users, rooms, media) past retention period
+//! - Soft-deleted records (users, rooms) past retention period
 //! - Expired email verification tokens
 //! - Expired media provider credentials
 //! - Old notifications
@@ -24,8 +24,6 @@ pub struct CleanupConfig {
     pub soft_delete_retention_days: u32,
     /// Days to retain soft-deleted rooms before permanent deletion (0 = never purge)
     pub room_soft_delete_retention_days: u32,
-    /// Days to retain soft-deleted media before permanent deletion (0 = never purge)
-    pub media_soft_delete_retention_days: u32,
     /// Days to retain expired email tokens before deletion (0 = never purge)
     pub expired_token_retention_days: u32,
     /// Hours buffer for expired credential cleanup (prevents race conditions)
@@ -43,7 +41,6 @@ impl Default for CleanupConfig {
         Self {
             soft_delete_retention_days: 90,
             room_soft_delete_retention_days: 90,
-            media_soft_delete_retention_days: 30,
             expired_token_retention_days: 7,
             expired_credential_buffer_hours: 1,
             notification_retention_days: 30,
@@ -60,8 +57,6 @@ pub struct CleanupResult {
     pub users_purged: u64,
     /// Number of soft-deleted rooms permanently deleted
     pub rooms_purged: u64,
-    /// Number of soft-deleted media permanently deleted
-    pub media_purged: u64,
     /// Number of expired email tokens deleted
     pub tokens_deleted: u64,
     /// Number of expired credentials deleted
@@ -122,20 +117,7 @@ impl CleanupService {
             }
         }
 
-        // 3. Purge soft-deleted media
-        if self.config.media_soft_delete_retention_days > 0 {
-            match self.purge_soft_deleted_media().await {
-                Ok(count) => {
-                    result.media_purged = count;
-                    if count > 0 {
-                        info!(count, "Purged soft-deleted media");
-                    }
-                }
-                Err(e) => warn!(error = %e, "Failed to purge soft-deleted media"),
-            }
-        }
-
-        // 4. Delete expired email tokens
+        // 3. Delete expired email tokens
         if self.config.expired_token_retention_days > 0 {
             match self.delete_expired_tokens().await {
                 Ok(count) => {
@@ -235,24 +217,6 @@ impl CleanupService {
         .execute(&self.pool)
         .await
         .internal_with_err("Failed to purge soft-deleted rooms")?;
-
-        Ok(result.rows_affected())
-    }
-
-    /// Permanently delete media that were soft-deleted beyond the retention period
-    async fn purge_soft_deleted_media(&self) -> Result<u64> {
-        let days = self.config.media_soft_delete_retention_days as i32;
-        let result = sqlx::query(
-            r"
-            DELETE FROM media
-            WHERE deleted_at IS NOT NULL
-              AND deleted_at < CURRENT_TIMESTAMP - ($1 || ' days')::INTERVAL
-            ",
-        )
-        .bind(days)
-        .execute(&self.pool)
-        .await
-        .internal_with_err("Failed to purge soft-deleted media")?;
 
         Ok(result.rows_affected())
     }
@@ -408,14 +372,12 @@ impl CleanupService {
                 info!(
                     room_retention_days = service.config.room_soft_delete_retention_days,
                     user_retention_days = service.config.soft_delete_retention_days,
-                    media_retention_days = service.config.media_soft_delete_retention_days,
                     "Starting periodic data cleanup"
                 );
                 let result = service.run_all().await;
 
                 let total = result.users_purged
                     + result.rooms_purged
-                    + result.media_purged
                     + result.tokens_deleted
                     + result.credentials_deleted
                     + result.notifications_deleted
@@ -425,7 +387,6 @@ impl CleanupService {
                     info!(
                         users = result.users_purged,
                         rooms = result.rooms_purged,
-                        media = result.media_purged,
                         tokens = result.tokens_deleted,
                         credentials = result.credentials_deleted,
                         notifications = result.notifications_deleted,
@@ -450,7 +411,6 @@ mod tests {
         let config = CleanupConfig::default();
         assert_eq!(config.soft_delete_retention_days, 90);
         assert_eq!(config.room_soft_delete_retention_days, 90);
-        assert_eq!(config.media_soft_delete_retention_days, 30);
         assert_eq!(config.expired_token_retention_days, 7);
         assert_eq!(config.expired_credential_buffer_hours, 1);
         assert_eq!(config.notification_retention_days, 30);
@@ -463,7 +423,6 @@ mod tests {
         let result = CleanupResult::default();
         assert_eq!(result.users_purged, 0);
         assert_eq!(result.rooms_purged, 0);
-        assert_eq!(result.media_purged, 0);
         assert_eq!(result.tokens_deleted, 0);
         assert_eq!(result.credentials_deleted, 0);
         assert_eq!(result.notifications_deleted, 0);
@@ -475,7 +434,6 @@ mod tests {
         let config = CleanupConfig {
             soft_delete_retention_days: 30,
             room_soft_delete_retention_days: 60,
-            media_soft_delete_retention_days: 14,
             expired_token_retention_days: 3,
             expired_credential_buffer_hours: 2,
             notification_retention_days: 14,
@@ -484,7 +442,6 @@ mod tests {
         };
         assert_eq!(config.soft_delete_retention_days, 30);
         assert_eq!(config.room_soft_delete_retention_days, 60);
-        assert_eq!(config.media_soft_delete_retention_days, 14);
         assert_eq!(config.expired_token_retention_days, 3);
         assert_eq!(config.expired_credential_buffer_hours, 2);
         assert_eq!(config.notification_retention_days, 14);
@@ -497,7 +454,6 @@ mod tests {
         let config = CleanupConfig {
             soft_delete_retention_days: 0,
             room_soft_delete_retention_days: 0,
-            media_soft_delete_retention_days: 0,
             expired_token_retention_days: 0,
             expired_credential_buffer_hours: 0,
             notification_retention_days: 0,
@@ -516,7 +472,6 @@ mod tests {
         let result = CleanupResult {
             users_purged: 5,
             rooms_purged: 3,
-            media_purged: 10,
             tokens_deleted: 20,
             credentials_deleted: 15,
             notifications_deleted: 50,
@@ -524,11 +479,10 @@ mod tests {
         };
         let total = result.users_purged
             + result.rooms_purged
-            + result.media_purged
             + result.tokens_deleted
             + result.credentials_deleted
             + result.notifications_deleted
             + result.chat_messages_deleted;
-        assert_eq!(total, 203);
+        assert_eq!(total, 193);
     }
 }

@@ -69,30 +69,3 @@ COMMENT ON COLUMN media.provider_instance_name IS 'Media provider instance name 
 COMMENT ON INDEX unique_media_name IS 'No duplicate names in same playlist';
 COMMENT ON CONSTRAINT valid_media_name ON media IS 'File name validation: not empty, 1-255 chars, no / character';
 
--- ============================================================================
--- Media Deletion Notification (for cluster-wide resource cleanup)
--- ============================================================================
-
-CREATE OR REPLACE FUNCTION notify_media_deleted()
-RETURNS TRIGGER AS $$
-BEGIN
-    -- Send notification to all cluster nodes listening on 'synctv_media_deleted'
-    -- Enables stateless cleanup without requiring PersistentVolumeClaim/WAL
-    PERFORM pg_notify(
-        'synctv_media_deleted',
-        json_build_object(
-            'media_id', OLD.id,
-            'timestamp', CURRENT_TIMESTAMP
-        )::text
-    );
-    RETURN OLD;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER trigger_media_deleted
-AFTER DELETE ON media
-FOR EACH ROW
-EXECUTE FUNCTION notify_media_deleted();
-
-COMMENT ON FUNCTION notify_media_deleted IS
-'Sends a notification when a media item is deleted. Cluster nodes listen for this to clear media caches.';

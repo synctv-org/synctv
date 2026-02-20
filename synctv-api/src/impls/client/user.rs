@@ -50,13 +50,13 @@ impl ClientApiImpl {
         let user = self.user_service.get_user(&uid).await
             .map_err(ApiError::from)?;
 
-        let old_updated_at = user.updated_at;
+        let old_version = user.version;
         let updated_user = synctv_core::models::User {
             username,
             ..user
         };
 
-        let result_user = self.user_service.update_user(&updated_user, old_updated_at).await
+        let result_user = self.user_service.update_user(&updated_user, old_version).await
             .map_err(ApiError::from)?;
 
         Ok(crate::proto::client::SetUsernameResponse {

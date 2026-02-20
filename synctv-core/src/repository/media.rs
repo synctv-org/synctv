@@ -93,12 +93,32 @@ impl MediaRepository {
     }
 
     /// Internal: insert a single chunk of media items (max 1000).
+    ///
+    /// Each row occupies 10 bind parameters. PostgreSQL's hard limit is 65535
+    /// parameters per statement, giving a safe ceiling of 6553 rows. We enforce
+    /// a tighter 1000-row limit so callers of `create_batch_with_executor`
+    /// receive a clear error rather than a cryptic protocol failure in production.
     async fn create_batch_chunk<'e, E>(items: &[Media], executor: E) -> Result<Vec<Media>>
     where
         E: sqlx::Executor<'e, Database = sqlx::Postgres>,
     {
-        debug_assert!(!items.is_empty());
-        debug_assert!(items.len() <= 1000);
+        /// Number of bind parameters per row.
+        const PARAMS_PER_ROW: usize = 10;
+        /// Maximum rows per INSERT statement (well within the 65535 parameter limit).
+        const MAX_ROWS_PER_CHUNK: usize = 1000;
+
+        if items.is_empty() {
+            return Ok(Vec::new());
+        }
+        if items.len() > MAX_ROWS_PER_CHUNK {
+            return Err(crate::Error::InvalidInput(format!(
+                "Batch insert chunk too large: {} rows exceed the {} row limit \
+                 ({} bind parameters). Use create_batch_chunked to split automatically.",
+                items.len(),
+                MAX_ROWS_PER_CHUNK,
+                items.len() * PARAMS_PER_ROW,
+            )));
+        }
 
         let mut results = Vec::with_capacity(items.len());
 

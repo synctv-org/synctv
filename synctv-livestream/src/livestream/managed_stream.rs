@@ -246,12 +246,41 @@ impl<S: ManagedStream> StreamPool<S> {
     /// the viewer disconnects.
     ///
     /// Returns `None` and removes the unhealthy entry if the stream is stale.
+    ///
+    /// **TOCTOU mitigation**: The health check and subscriber-count increment are
+    /// not natively atomic (the `is_running` flag and `subscriber_count` are separate
+    /// atomics). To close the race window where the stream becomes unhealthy between
+    /// the `is_healthy()` check and `increment_subscriber_count()`, we use the same
+    /// double-check protocol as `cleanup_loop`:
+    ///   1. Check healthy.
+    ///   2. Increment subscriber count.
+    ///   3. Re-check healthy. If now unhealthy, undo the increment and return None.
+    ///
+    /// The cleanup loop performs the symmetric check: it calls `mark_stopping()` then
+    /// re-reads `subscriber_count()`. If it observes count > 0 it aborts cleanup and
+    /// calls `restore_running()`. Together these two double-checks guarantee that
+    /// either the subscriber is attached to a live stream, or cleanup sees the
+    /// subscriber and backs off.
     pub async fn get_existing(&self, stream_key: &str) -> Option<Arc<S>> {
         if let Some(stream) = self.streams.get(stream_key) {
+            // Step 1: Initial health check.
             if stream.lifecycle().is_healthy().await {
+                // Step 2: Optimistically increment the subscriber count.
                 stream.lifecycle().increment_subscriber_count();
-                stream.lifecycle().update_last_active_time();
-                return Some(stream.clone());
+
+                // Step 3: Re-check health after incrementing to detect the race where
+                // the cleanup task called mark_stopping() between steps 1 and 2.
+                // The cleanup loop in cleanup_loop() re-checks subscriber_count after
+                // mark_stopping(), so if we see is_healthy() == false here, the cleanup
+                // task has already committed to stopping — undo the increment and fall
+                // through to treat the stream as gone.
+                if stream.lifecycle().is_healthy().await {
+                    stream.lifecycle().update_last_active_time();
+                    return Some(stream.clone());
+                }
+
+                // Cleanup claimed the stream between our two checks — undo the increment.
+                stream.lifecycle().decrement_subscriber_count();
             }
             drop(stream);
             self.streams.remove(stream_key);

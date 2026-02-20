@@ -173,9 +173,19 @@ where
     Fut: std::future::Future<Output = Result<T, ProviderClientError>>,
 {
     use backon::Retryable;
+    use std::sync::{Arc, Mutex};
+
+    // Shared cell that the notify closure writes and the sleep closure reads.
+    // notify() is called synchronously with the error and the scheduled backoff
+    // duration; if a Retry-After header is present and exceeds the backoff we
+    // store the TOTAL desired sleep so the async sleep() closure can await it.
+    let extra_sleep: Arc<Mutex<Option<std::time::Duration>>> = Arc::new(Mutex::new(None));
+    let extra_sleep_notify = Arc::clone(&extra_sleep);
+    let extra_sleep_sleeper = Arc::clone(&extra_sleep);
+
     op.retry(provider_backoff())
         .when(|e: &ProviderClientError| e.is_retryable())
-        .notify(|e: &ProviderClientError, dur: std::time::Duration| {
+        .notify(move |e: &ProviderClientError, dur: std::time::Duration| {
             // If the server sent a Retry-After header, honor it by sleeping
             // for the additional time beyond what the backoff already provides.
             if let ProviderClientError::Http { retry_after_secs: Some(secs), .. } = e {
@@ -185,12 +195,25 @@ where
                     tracing::info!(
                         "Honoring Retry-After: sleeping extra {extra:?} (server requested {secs}s, backoff was {dur:?})"
                     );
-                    // backon's notify is sync, so we use std::thread::sleep here.
-                    // This is acceptable because retries are infrequent and
-                    // provider calls are already on a dedicated task.
-                    std::thread::sleep(extra);
+                    if let Ok(mut guard) = extra_sleep_notify.lock() {
+                        *guard = Some(dur + extra);
+                    }
+                    return;
                 }
             }
+            // No Retry-After override; clear any leftover value.
+            if let Ok(mut guard) = extra_sleep_notify.lock() {
+                *guard = None;
+            }
+        })
+        .sleep(move |dur: std::time::Duration| {
+            // Check whether the notify closure requested a longer sleep.
+            let sleep_dur = extra_sleep_sleeper
+                .lock()
+                .ok()
+                .and_then(|mut guard| guard.take())
+                .unwrap_or(dur);
+            tokio::time::sleep(sleep_dur)
         })
         .await
 }

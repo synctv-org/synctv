@@ -118,9 +118,6 @@ impl CacheManager {
                                     );
                                 }
                             }
-                            InvalidationMessage::UserTokenInvalidation { .. } => {
-                                // Token blacklist removed - this message is now ignored
-                            }
                             InvalidationMessage::All => {
                                 user_cache.clear_l1().await;
                                 room_cache.clear_l1().await;
@@ -136,7 +133,8 @@ impl CacheManager {
                             | InvalidationMessage::RoomPermission { .. }
                             | InvalidationMessage::PlaybackState { .. }
                             | InvalidationMessage::PlaybackStateUpdate { .. }
-                            | InvalidationMessage::RoomSettings { .. } => {}
+                            | InvalidationMessage::RoomSettings { .. } => {
+                            }
                         }
                     }
                     Err(broadcast::error::RecvError::Closed) => {
@@ -152,13 +150,15 @@ impl CacheManager {
                         if elapsed >= LAG_FLUSH_MIN_INTERVAL {
                             warn!(
                                 lagged_messages = n,
-                                "CacheManager invalidation listener lagged, flushing all L1 caches (rate-limited to once per {}s)",
+                                "CacheManager invalidation listener lagged, flushing all L1 and L2 caches (rate-limited to once per {}s)",
                                 LAG_FLUSH_MIN_INTERVAL.as_secs()
                             );
-                            user_cache.clear_l1().await;
-                            room_cache.clear_l1().await;
+                            // Flush both L1 and L2 so stale Redis entries cannot
+                            // re-populate L1 on this or other replicas.
+                            user_cache.clear().await;
+                            room_cache.clear().await;
                             if let Some(ref uc) = username_cache {
-                                uc.clear_memory().await;
+                                uc.clear().await;
                             }
                             // Record metric so operators can observe flush frequency
                             crate::metrics::cache::CACHE_LAG_FLUSH_TOTAL

@@ -136,7 +136,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, Mutex as TokioMutex};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
@@ -246,7 +246,7 @@ pub struct LeaderElector {
     /// How often to attempt renewal, in seconds (must be < lease_duration_secs)
     renew_interval_secs: u64,
     /// Current lock value (used for renewal and release)
-    lock_value: Arc<parking_lot::Mutex<Option<String>>>,
+    lock_value: Arc<TokioMutex<Option<String>>>,
     /// Redis key used for the leader election lock (includes configured prefix)
     lock_key: String,
     /// Monotonically increasing epoch (fencing token) incremented on each
@@ -254,7 +254,7 @@ pub struct LeaderElector {
     leader_epoch: Arc<AtomicU64>,
     /// Timestamp (Instant) at which leadership was lost. Used to enforce a
     /// grace period before re-acquisition attempts.
-    leadership_lost_at: Arc<parking_lot::Mutex<Option<tokio::time::Instant>>>,
+    leadership_lost_at: Arc<TokioMutex<Option<tokio::time::Instant>>>,
     /// Broadcast channel for leadership change events (observer pattern)
     event_tx: Arc<broadcast::Sender<LeadershipEvent>>,
     /// Number of consecutive election failures (acquire or renew).
@@ -317,10 +317,10 @@ impl LeaderElector {
             identity,
             lease_duration_secs: config.lease_duration_secs,
             renew_interval_secs: config.renew_interval_secs,
-            lock_value: Arc::new(parking_lot::Mutex::new(None)),
+            lock_value: Arc::new(TokioMutex::new(None)),
             lock_key: format!("{}{}", key_prefix, DEFAULT_LEADER_LOCK_KEY),
             leader_epoch: Arc::new(AtomicU64::new(0)),
-            leadership_lost_at: Arc::new(parking_lot::Mutex::new(None)),
+            leadership_lost_at: Arc::new(TokioMutex::new(None)),
             event_tx: Arc::new(event_tx),
             consecutive_failures: Arc::new(AtomicU64::new(0)),
         }
@@ -420,7 +420,7 @@ impl LeaderElector {
     /// resets local state for a fast retry on the next tick. Tracks consecutive
     /// failures to detect prolonged leader vacancy.
     async fn try_acquire_or_renew(&self) {
-        let current_value = self.lock_value.lock().clone();
+        let current_value = self.lock_value.lock().await.clone();
 
         if let Some(ref value) = current_value {
             // We think we're the leader; try to extend the lock.
@@ -433,7 +433,7 @@ impl LeaderElector {
                 Ok(false) => {
                     // Lock expired or was taken by someone else
                     warn!(identity = %self.identity, "Leader lease renewal failed (lock lost)");
-                    self.lose_leadership();
+                    self.lose_leadership().await;
                     self.record_election_failure();
                 }
                 Err(e) => {
@@ -456,13 +456,13 @@ impl LeaderElector {
 
                     // Immediately assume we lost leadership on error,
                     // because we can't confirm the lock still exists.
-                    self.lose_leadership();
+                    self.lose_leadership().await;
 
                     if is_failover {
                         // On failover, set a short grace period (2s) before retrying
                         // instead of clearing entirely. This prevents rapid flip-flopping
                         // if the new primary is not yet ready to accept writes.
-                        *self.leadership_lost_at.lock() = Some(
+                        *self.leadership_lost_at.lock().await = Some(
                             tokio::time::Instant::now() - Duration::from_secs(self.renew_interval_secs) + Duration::from_secs(2)
                         );
                     }
@@ -472,7 +472,7 @@ impl LeaderElector {
             }
         } else {
             // Not currently the leader; check grace period before attempting re-acquire.
-            if self.in_grace_period() {
+            if self.in_grace_period().await {
                 debug!(
                     identity = %self.identity,
                     "In grace period after leadership loss, deferring acquisition"
@@ -485,17 +485,17 @@ impl LeaderElector {
 
     /// Immediately mark this node as no longer the leader, clear the lock
     /// value, and record the time of loss for grace period enforcement.
-    fn lose_leadership(&self) {
+    async fn lose_leadership(&self) {
         self.set_leader(false, None);
-        *self.lock_value.lock() = None;
-        *self.leadership_lost_at.lock() = Some(tokio::time::Instant::now());
+        *self.lock_value.lock().await = None;
+        *self.leadership_lost_at.lock().await = Some(tokio::time::Instant::now());
     }
 
     /// Returns `true` if we recently lost leadership and should wait before
     /// attempting to re-acquire. The grace period equals `renew_interval_secs`
     /// to avoid rapid flip-flopping during transient Redis issues.
-    fn in_grace_period(&self) -> bool {
-        let guard = self.leadership_lost_at.lock();
+    async fn in_grace_period(&self) -> bool {
+        let guard = self.leadership_lost_at.lock().await;
         if let Some(lost_at) = *guard {
             lost_at.elapsed() < Duration::from_secs(self.renew_interval_secs)
         } else {
@@ -513,9 +513,9 @@ impl LeaderElector {
                     epoch = epoch,
                     "Became leader"
                 );
-                *self.lock_value.lock() = Some(value);
+                *self.lock_value.lock().await = Some(value);
                 // Clear grace period since we successfully acquired
-                *self.leadership_lost_at.lock() = None;
+                *self.leadership_lost_at.lock().await = None;
                 self.consecutive_failures.store(0, Ordering::Relaxed);
                 self.set_leader(true, Some(epoch));
             }
@@ -538,7 +538,7 @@ impl LeaderElector {
                     // Set a short grace period (2s) before retrying instead of clearing
                     // entirely. This prevents rapid flip-flopping if the new primary is
                     // not yet ready to accept writes.
-                    *self.leadership_lost_at.lock() = Some(
+                    *self.leadership_lost_at.lock().await = Some(
                         tokio::time::Instant::now() - Duration::from_secs(self.renew_interval_secs) + Duration::from_secs(2)
                     );
                 } else {
@@ -588,7 +588,7 @@ impl LeaderElector {
 
     /// Gracefully resign leadership by releasing the lock.
     async fn resign(&self) {
-        let value = self.lock_value.lock().take();
+        let value = self.lock_value.lock().await.take();
         if let Some(value) = value {
             info!(identity = %self.identity, "Resigning leadership");
             if let Err(e) = self.lock.release(&self.lock_key, &value).await {

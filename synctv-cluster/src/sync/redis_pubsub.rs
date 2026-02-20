@@ -212,7 +212,7 @@ impl RedisPubSub {
     /// # Arguments
     /// * `publish_channel_capacity` - Capacity for the publish channel. Events are
     ///   dropped with a warning when full (e.g., during a prolonged Redis outage).
-    pub async fn start(self: Arc<Self>, publish_channel_capacity: usize) -> Result<mpsc::Sender<PublishRequest>> {
+    pub async fn start(self: Arc<Self>, publish_channel_capacity: usize) -> Result<(mpsc::Sender<PublishRequest>, tokio::task::JoinHandle<()>)> {
         // Create bounded channel for publishing events to prevent OOM under Redis outage
         let (publish_tx, mut publish_rx) = mpsc::channel::<PublishRequest>(publish_channel_capacity);
 
@@ -229,8 +229,9 @@ impl RedisPubSub {
         /// sustained outages.
         const MAX_RETRY_BUFFER: usize = 10000;
 
-        // Spawn task to handle publishing with reconnection logic
-        tokio::spawn(async move {
+        // Spawn task to handle publishing with reconnection logic.
+        // The handle is returned to the caller so shutdown() can await completion.
+        let publisher_handle = tokio::spawn(async move {
             let mut backoff_secs = INITIAL_BACKOFF_SECS;
             // Buffer for retrying failed publishes after reconnection.
             // Using a Vec instead of Option<PublishRequest> ensures that multiple
@@ -517,7 +518,7 @@ impl RedisPubSub {
             }
         });
 
-        Ok(publish_tx)
+        Ok((publish_tx, publisher_handle))
     }
 
     /// Run the subscriber task.

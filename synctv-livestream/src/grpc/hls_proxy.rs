@@ -7,11 +7,41 @@
 
 use bytes::Bytes;
 use moka::future::Cache;
+use moka::Expiry;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tonic::Request;
 use tracing::debug;
+
+/// Per-entry TTL policy for the playlist cache.
+///
+/// - Found playlists (`Some(...)`) use the normal `playlist_cache_ttl` (default
+///   1 second) to coalesce concurrent requests while staying fresh.
+/// - Not-found responses (`None`) use a much shorter TTL (5 seconds) so that a
+///   stream that starts shortly after a "not found" was cached becomes
+///   discoverable quickly.
+struct PlaylistCacheExpiry {
+    /// TTL for found playlist entries.
+    found_ttl: Duration,
+    /// TTL for "not found" (None) entries.  Must be shorter than `found_ttl`.
+    not_found_ttl: Duration,
+}
+
+impl Expiry<String, Option<String>> for PlaylistCacheExpiry {
+    fn expire_after_create(
+        &self,
+        _key: &String,
+        value: &Option<String>,
+        _created_at: Instant,
+    ) -> Option<Duration> {
+        if value.is_some() {
+            Some(self.found_ttl)
+        } else {
+            Some(self.not_found_ttl)
+        }
+    }
+}
 
 use super::connection_pool::GrpcConnectionPool;
 use super::proto::{
@@ -78,9 +108,16 @@ impl HlsProxyClient {
             })
             .build();
 
+        // "Not found" responses are cached with a much shorter TTL (5s) so that
+        // a stream that starts shortly after a "not found" entry was cached
+        // becomes discoverable within a few seconds instead of the full TTL.
+        let not_found_ttl = Duration::from_secs(5);
         let playlist_cache = Cache::builder()
-            .time_to_live(playlist_cache_ttl)
             .max_capacity(500)
+            .expire_after(PlaylistCacheExpiry {
+                found_ttl: playlist_cache_ttl,
+                not_found_ttl,
+            })
             .build();
 
         Self {
@@ -114,9 +151,11 @@ impl HlsProxyClient {
 
     /// Fetch M3U8 playlist from the publisher node via gRPC.
     ///
-    /// Playlists are cached with a short TTL (default 1s) to coalesce concurrent
-    /// requests from multiple viewers polling the same stream. This significantly
-    /// reduces gRPC calls under load while still picking up new segments promptly.
+    /// Found playlists are cached with a short TTL (default 1s) to coalesce
+    /// concurrent requests from multiple viewers polling the same stream.
+    /// "Not found" responses are cached with a much shorter TTL (5s) so that
+    /// a stream that starts shortly after a "not found" was cached becomes
+    /// discoverable quickly without waiting the full playlist TTL.
     pub async fn get_playlist(
         &self,
         grpc_address: &str,

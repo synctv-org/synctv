@@ -13,6 +13,7 @@
 use async_trait::async_trait;
 use redis::AsyncCommands;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use crate::Result;
 
@@ -51,37 +52,43 @@ pub trait TokenBlacklistStore: Send + Sync {
 // InMemoryTokenBlacklistStore
 // ============================================================================
 
-/// In-memory [`TokenBlacklistStore`] using moka caches with TTL-based expiry.
+/// In-memory [`TokenBlacklistStore`] using moka caches with per-entry TTL tracking.
 ///
-/// Used in standalone mode without Redis. The moka cache provides
-/// TTL-based eviction, so blacklisted JTIs and family revocations expire
-/// naturally. Data is lost on restart.
+/// Used in standalone mode without Redis. Moka provides capacity-based eviction
+/// and a long background TTL for memory bounds; per-entry expiry is tracked via
+/// stored `(value, expiry: Instant)` pairs and checked on every read so the
+/// caller-supplied `ttl_secs` is honoured exactly.
+/// Data is lost on restart.
 pub struct InMemoryTokenBlacklistStore {
-    /// JTI -> () (presence = blacklisted)
-    jti_blacklist: Arc<moka::future::Cache<String, ()>>,
-    /// user_key -> revoked_at timestamp
-    family_revoked: Arc<moka::future::Cache<String, i64>>,
+    /// JTI -> expiry Instant (presence + non-expired = blacklisted)
+    jti_blacklist: Arc<moka::future::Cache<String, Instant>>,
+    /// user_key -> (revoked_at timestamp, expiry Instant)
+    family_revoked: Arc<moka::future::Cache<String, (i64, Instant)>>,
 }
 
 impl InMemoryTokenBlacklistStore {
     /// Create a new in-memory token blacklist store.
     ///
     /// - `max_jti_capacity`: maximum number of blacklisted JTIs to track
-    /// - `jti_ttl_secs`: TTL for blacklisted JTIs (should match refresh token lifetime)
-    /// - `family_ttl_secs`: TTL for family revocations (refresh token lifetime + buffer)
+    /// - `jti_ttl_secs`: upper-bound TTL used for moka's background eviction
+    /// - `family_ttl_secs`: upper-bound TTL used for moka's background eviction
+    ///
+    /// The exact per-entry TTL is enforced at read time using the `ttl_secs`
+    /// argument passed to `blacklist()` / `set_family_revoked()`.
     #[must_use]
     pub fn new(max_jti_capacity: u64, jti_ttl_secs: u64, family_ttl_secs: u64) -> Self {
         Self {
             jti_blacklist: Arc::new(
                 moka::future::Cache::builder()
                     .max_capacity(max_jti_capacity)
-                    .time_to_live(std::time::Duration::from_secs(jti_ttl_secs))
+                    // Use the upper-bound TTL for background memory reclamation.
+                    .time_to_live(Duration::from_secs(jti_ttl_secs))
                     .build(),
             ),
             family_revoked: Arc::new(
                 moka::future::Cache::builder()
                     .max_capacity(50_000)
-                    .time_to_live(std::time::Duration::from_secs(family_ttl_secs))
+                    .time_to_live(Duration::from_secs(family_ttl_secs))
                     .build(),
             ),
         }
@@ -91,21 +98,30 @@ impl InMemoryTokenBlacklistStore {
 #[async_trait]
 impl TokenBlacklistStore for InMemoryTokenBlacklistStore {
     async fn is_blacklisted(&self, key: &str) -> bool {
-        self.jti_blacklist.get(key).await.is_some()
+        match self.jti_blacklist.get(key).await {
+            Some(expiry) => Instant::now() < expiry,
+            None => false,
+        }
     }
 
-    async fn blacklist(&self, key: &str, _ttl_secs: u64) -> Result<()> {
-        // In-memory blacklist is infallible
-        self.jti_blacklist.insert(key.to_string(), ()).await;
+    async fn blacklist(&self, key: &str, ttl_secs: u64) -> Result<()> {
+        let expiry = Instant::now() + Duration::from_secs(ttl_secs);
+        self.jti_blacklist.insert(key.to_string(), expiry).await;
         Ok(())
     }
 
     async fn get_family_revoked_at(&self, key: &str) -> Option<i64> {
-        self.family_revoked.get(key).await
+        match self.family_revoked.get(key).await {
+            Some((timestamp, expiry)) if Instant::now() < expiry => Some(timestamp),
+            _ => None,
+        }
     }
 
-    async fn set_family_revoked(&self, key: &str, timestamp: i64, _ttl_secs: u64) {
-        self.family_revoked.insert(key.to_string(), timestamp).await;
+    async fn set_family_revoked(&self, key: &str, timestamp: i64, ttl_secs: u64) {
+        let expiry = Instant::now() + Duration::from_secs(ttl_secs);
+        self.family_revoked
+            .insert(key.to_string(), (timestamp, expiry))
+            .await;
     }
 }
 

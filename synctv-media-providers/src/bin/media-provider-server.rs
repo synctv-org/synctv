@@ -12,9 +12,16 @@
 //! a failing backend from consuming all server threads. The circuit breaker tracks
 //! consecutive failures and opens after `CIRCUIT_BREAKER_THRESHOLD` failures,
 //! then transitions to half-open after `CIRCUIT_BREAKER_TIMEOUT` to allow recovery.
+//!
+//! `record_success` is called via `CircuitBreakerLayer` (a tower middleware layer)
+//! after each RPC call returns a non-error response, allowing the circuit to
+//! recover to the Closed state after transient failures resolve.
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicI64, Ordering};
+use std::task::{Context, Poll};
 
 use sha2::{Sha256, Digest};
 use subtle::ConstantTimeEq;
@@ -28,6 +35,8 @@ use synctv_media_providers::grpc::{
 };
 use tonic::{Request, Status};
 use tonic::transport::Server;
+use tonic::service::LayerExt as _;
+use tower::{Layer, Service};
 use tracing::{error, info, warn, Level};
 
 /// Number of consecutive failures before the circuit opens.
@@ -76,7 +85,6 @@ impl CircuitBreaker {
     }
 
     /// Record a successful request: reset failure counter.
-    #[allow(dead_code)]
     fn record_success(&self) {
         self.consecutive_failures.store(0, Ordering::Relaxed);
         self.opened_at.store(-1, Ordering::Relaxed);
@@ -100,6 +108,74 @@ impl CircuitBreaker {
                 );
             }
         }
+    }
+}
+
+/// Tower [`Layer`] that wraps a gRPC service and signals the circuit breaker
+/// after each RPC call completes.
+///
+/// On a successful response (`Ok`) it calls [`CircuitBreaker::record_success`],
+/// resetting the failure counter and returning the circuit to the Closed state.
+/// On an error response (`Err`) it calls [`CircuitBreaker::record_failure`] so
+/// that repeated backend errors eventually open the circuit.
+#[derive(Clone)]
+struct CircuitBreakerLayer {
+    circuit_breaker: Arc<CircuitBreaker>,
+    service_name: &'static str,
+}
+
+impl CircuitBreakerLayer {
+    fn new(circuit_breaker: Arc<CircuitBreaker>, service_name: &'static str) -> Self {
+        Self { circuit_breaker, service_name }
+    }
+}
+
+impl<S> Layer<S> for CircuitBreakerLayer {
+    type Service = CircuitBreakerService<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        CircuitBreakerService {
+            inner,
+            circuit_breaker: self.circuit_breaker.clone(),
+            service_name: self.service_name,
+        }
+    }
+}
+
+/// Tower [`Service`] produced by [`CircuitBreakerLayer`].
+#[derive(Clone)]
+struct CircuitBreakerService<S> {
+    inner: S,
+    circuit_breaker: Arc<CircuitBreaker>,
+    service_name: &'static str,
+}
+
+impl<S, Req> Service<Req> for CircuitBreakerService<S>
+where
+    S: Service<Req> + Clone + Send + 'static,
+    S::Future: Send + 'static,
+    S::Error: Send + 'static,
+{
+    type Response = S::Response;
+    type Error = S::Error;
+    type Future = Pin<Box<dyn Future<Output = Result<S::Response, S::Error>> + Send + 'static>>;
+
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, req: Req) -> Self::Future {
+        let cb = self.circuit_breaker.clone();
+        let service_name = self.service_name;
+        let fut = self.inner.call(req);
+        Box::pin(async move {
+            let result = fut.await;
+            match &result {
+                Ok(_) => cb.record_success(),
+                Err(_) => cb.record_failure(service_name),
+            }
+            result
+        })
     }
 }
 
@@ -203,12 +279,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let emby_cb = CircuitBreaker::new();
 
     // Create auth interceptors (one per service, they are Clone + cheap)
-    let alist_auth = ProviderAuthInterceptor::new(auth_secret.clone(), alist_cb, "alist");
-    let bilibili_auth = ProviderAuthInterceptor::new(auth_secret.clone(), bilibili_cb, "bilibili");
-    let emby_auth = ProviderAuthInterceptor::new(auth_secret, emby_cb, "emby");
+    let alist_auth = ProviderAuthInterceptor::new(auth_secret.clone(), alist_cb.clone(), "alist");
+    let bilibili_auth = ProviderAuthInterceptor::new(auth_secret.clone(), bilibili_cb.clone(), "bilibili");
+    let emby_auth = ProviderAuthInterceptor::new(auth_secret, emby_cb.clone(), "emby");
 
-    // Register gRPC Health Check service so RemoteProviderManager health probes succeed
+    // Create circuit-breaker layers so record_success is called after every
+    // successful RPC response, allowing the circuit to recover to Closed state.
+    let alist_cb_layer = CircuitBreakerLayer::new(alist_cb, "alist");
+    let bilibili_cb_layer = CircuitBreakerLayer::new(bilibili_cb, "bilibili");
+    let emby_cb_layer = CircuitBreakerLayer::new(emby_cb, "emby");
+
+    // Register gRPC Health Check service.
+    // Keep status as NOT_SERVING during startup; set to SERVING only after all
+    // initialization is complete so load balancers do not route traffic early.
     let (health_reporter, health_service) = tonic_health::server::health_reporter();
+
+    // Build and start server with authentication on all services and graceful shutdown
+    info!("Starting Provider gRPC server with graceful shutdown support");
+
+    // All initialization (service construction, circuit breakers, interceptors) is
+    // complete — mark services as SERVING now so health probes reflect true readiness.
     health_reporter
         .set_serving::<AlistServer<AlistGrpcService>>()
         .await;
@@ -219,23 +309,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .set_serving::<EmbyServer<EmbyService>>()
         .await;
 
-    // Build and start server with authentication on all services and graceful shutdown
-    info!("Starting Provider gRPC server with graceful shutdown support");
+    info!("All provider services initialized and marked SERVING");
 
     Server::builder()
         .max_frame_size(Some(4 * 1024 * 1024))
         .concurrency_limit_per_connection(100)
         .add_service(health_service)
-        .add_service(AlistServer::with_interceptor(alist_service, move |req| {
-            alist_auth.validate(req)
-        }))
-        .add_service(BilibiliServer::with_interceptor(
-            bilibili_service,
-            move |req| bilibili_auth.validate(req),
+        .add_service(alist_cb_layer.named_layer(
+            AlistServer::with_interceptor(alist_service, move |req| alist_auth.validate(req)),
         ))
-        .add_service(EmbyServer::with_interceptor(emby_service, move |req| {
-            emby_auth.validate(req)
-        }))
+        .add_service(bilibili_cb_layer.named_layer(
+            BilibiliServer::with_interceptor(bilibili_service, move |req| {
+                bilibili_auth.validate(req)
+            }),
+        ))
+        .add_service(emby_cb_layer.named_layer(
+            EmbyServer::with_interceptor(emby_service, move |req| emby_auth.validate(req)),
+        ))
         .serve_with_shutdown(addr, shutdown_signal())
         .await?;
 

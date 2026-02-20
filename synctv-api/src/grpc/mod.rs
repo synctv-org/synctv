@@ -127,7 +127,6 @@ pub struct GrpcServerConfig<'a> {
     pub connection_manager: ConnectionManager,
     pub providers_manager: Option<Arc<ProvidersManager>>,
     pub provider_instance_manager: Arc<RemoteProviderManager>,
-    pub provider_instance_repository: Arc<synctv_core::repository::ProviderInstanceRepository>,
     pub user_provider_credential_repository: Arc<synctv_core::repository::UserProviderCredentialRepository>,
     pub settings_service: Arc<SettingsService>,
     pub settings_registry: Option<Arc<SettingsRegistry>>,
@@ -166,7 +165,6 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         connection_manager,
         providers_manager,
         provider_instance_manager,
-        provider_instance_repository: _,
         user_provider_credential_repository,
         settings_service,
         settings_registry,
@@ -366,33 +364,59 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         // RT-1: Spawn a background task that bridges notification creation events
         // to the cluster event system, enabling real-time WebSocket push for
         // persistent user notifications. Without this, clients must poll.
+        // The task listens for the server shutdown signal so it does not leak
+        // when the gRPC server stops.
         if let Some(ref cm) = cluster_manager_for_rt {
             let cm = Arc::clone(cm);
             let mut notification_rx = notif_svc.subscribe_events();
+            // Clone the optional shutdown watch receiver so the bridge task
+            // can stop cleanly when the server receives a shutdown signal.
+            // When no shutdown receiver is configured (e.g., test environments),
+            // the bridge runs until the notification channel closes.
+            let mut bridge_shutdown_rx: Option<tokio::sync::watch::Receiver<bool>> =
+                shutdown_rx.clone();
             tokio::spawn(async move {
                 loop {
-                    match notification_rx.recv().await {
-                        Ok(event) => {
-                            let cluster_event = synctv_cluster::sync::ClusterEvent::UserNotification {
-                                event_id: nanoid::nanoid!(16),
-                                user_id: event.user_id,
-                                notification_id: event.notification.id.to_string(),
-                                title: event.notification.title,
-                                content: event.notification.content,
-                                notification_type: event.notification.notification_type.to_string(),
-                                timestamp: chrono::Utc::now(),
-                            };
-                            cm.broadcast(cluster_event);
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                            tracing::warn!(
-                                lagged = n,
-                                "Notification-to-cluster bridge lagged, some notifications may not have been pushed in real time"
-                            );
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                            tracing::info!("Notification event channel closed, stopping bridge task");
+                    // Build a future that resolves when the shutdown signal fires.
+                    // When no receiver is available, use a pending future so the
+                    // select falls through to the notification arm.
+                    let shutdown_future: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> =
+                        match bridge_shutdown_rx.as_mut() {
+                            Some(rx) => Box::pin(async move { let _ = rx.changed().await; }),
+                            None => Box::pin(std::future::pending()),
+                        };
+
+                    tokio::select! {
+                        // Honour the server-wide shutdown signal.
+                        () = shutdown_future => {
+                            tracing::info!("Notification-to-cluster bridge task stopping (shutdown signal)");
                             break;
+                        }
+                        result = notification_rx.recv() => {
+                            match result {
+                                Ok(event) => {
+                                    let cluster_event = synctv_cluster::sync::ClusterEvent::UserNotification {
+                                        event_id: nanoid::nanoid!(16),
+                                        user_id: event.user_id,
+                                        notification_id: event.notification.id.to_string(),
+                                        title: event.notification.title,
+                                        content: event.notification.content,
+                                        notification_type: event.notification.notification_type.to_string(),
+                                        timestamp: chrono::Utc::now(),
+                                    };
+                                    cm.broadcast(cluster_event);
+                                }
+                                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                                    tracing::warn!(
+                                        lagged = n,
+                                        "Notification-to-cluster bridge lagged, some notifications may not have been pushed in real time"
+                                    );
+                                }
+                                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                    tracing::info!("Notification event channel closed, stopping bridge task");
+                                    break;
+                                }
+                            }
                         }
                     }
                 }
@@ -561,14 +585,33 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         tracing::info!("No Redis configured — skipping cluster gRPC service registration");
     }
 
-    // Register gRPC health check service (standard grpc.health.v1.Health)
+    // Register gRPC health check service (standard grpc.health.v1.Health).
+    // All registered services are marked as SERVING so gRPC health probes
+    // return the correct status rather than UNKNOWN.
     let (health_reporter, health_service) = tonic_health::server::health_reporter();
-    // Mark the overall server as serving
     health_reporter
         .set_serving::<AuthServiceServer<ClientServiceImpl>>()
         .await;
+    health_reporter
+        .set_serving::<UserServiceServer<ClientServiceImpl>>()
+        .await;
+    health_reporter
+        .set_serving::<RoomServiceServer<ClientServiceImpl>>()
+        .await;
+    health_reporter
+        .set_serving::<MediaServiceServer<ClientServiceImpl>>()
+        .await;
+    health_reporter
+        .set_serving::<PublicServiceServer<ClientServiceImpl>>()
+        .await;
+    health_reporter
+        .set_serving::<EmailServiceServer<ClientServiceImpl>>()
+        .await;
+    health_reporter
+        .set_serving::<AdminServiceServer<AdminServiceImpl>>()
+        .await;
     router = router.add_service(health_service);
-    tracing::info!("gRPC health check service registered");
+    tracing::info!("gRPC health check service registered (all services marked SERVING)");
 
     // Register gRPC reflection service if enabled in config
     if config.server.enable_reflection {

@@ -51,15 +51,27 @@ impl NotificationRepository {
     }
 
     /// Get notification by ID
+    ///
+    /// The notifications table is partitioned by `created_at`. Querying by `id`
+    /// alone forces PostgreSQL to scan every partition. Adding a `created_at`
+    /// range filter (last year to now) lets the planner prune irrelevant
+    /// partitions and use a targeted index scan instead.
     pub async fn get_by_id(&self, notification_id: Uuid) -> Result<Option<Notification>> {
+        let now = Utc::now();
+        let one_year_ago = now - chrono::Duration::days(365);
+
         let n = sqlx::query_as::<_, Notification>(
             r"
             SELECT id, user_id, type, title, content, data, is_read, created_at, updated_at
             FROM notifications
             WHERE id = $1
+              AND created_at >= $2
+              AND created_at <= $3
             ",
         )
         .bind(notification_id)
+        .bind(one_year_ago)
+        .bind(now)
         .fetch_optional(&self.pool)
         .await?;
 

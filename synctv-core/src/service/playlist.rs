@@ -205,9 +205,12 @@ impl PlaylistService {
         user_id: UserId,
         request: SetPlaylistRequest,
     ) -> Result<Playlist> {
-        // Check permission
+        // Renaming and reordering existing playlist entries requires REORDER_PLAYLIST,
+        // not ADD_MEDIA. Users who can only add media should not be able to rename or
+        // reorder items they do not own. REORDER_PLAYLIST is an admin-level permission
+        // (included in DEFAULT_ADMIN but not DEFAULT_MEMBER).
         self.permission_service
-            .check_permission(&room_id, &user_id, PermissionBits::ADD_MEDIA)
+            .check_permission(&room_id, &user_id, PermissionBits::REORDER_PLAYLIST)
             .await?;
 
         // Get existing playlist

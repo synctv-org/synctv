@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use sqlx::PgPool;
 use std::collections::HashMap;
 
@@ -502,11 +502,13 @@ impl UserService {
 
     /// Update user (entire user object) with optimistic locking.
     ///
-    /// Pass the `updated_at` value from the previously-read user to detect
-    /// concurrent modifications. Returns `Error::OptimisticLockConflict` if
-    /// the user was modified since it was read.
-    pub async fn update_user(&self, user: &User, old_updated_at: DateTime<Utc>) -> Result<User> {
-        let updated = self.repository.update(user, old_updated_at).await?;
+    /// Pass the `version` value from the previously-read user to detect
+    /// concurrent modifications. The update increments `version` atomically,
+    /// so concurrent writes will see a mismatch and fail.
+    /// Returns `Error::OptimisticLockConflict` if the user was modified since
+    /// it was read.
+    pub async fn update_user(&self, user: &User, old_version: i32) -> Result<User> {
+        let updated = self.repository.update(user, old_version).await?;
         self.notify_user_invalidation(&user.id).await;
         Ok(updated)
     }
@@ -578,6 +580,19 @@ impl UserService {
     pub async fn cleanup_oauth_providers(&self, user_id: &UserId) -> Result<u64> {
         let repo = UserOAuthProviderRepository::new(self.repository.pool().clone());
         repo.delete_all_for_user(user_id).await
+    }
+
+    /// Blacklist an access token JTI so it cannot be used again.
+    ///
+    /// Used on logout to immediately invalidate the current access token even
+    /// before it reaches its natural expiry. The `ttl_secs` should equal the
+    /// remaining lifetime of the token (i.e. `exp - now`).
+    ///
+    /// Fail-closed: if the blacklist store is unavailable this returns an error
+    /// so callers can choose whether to abort or warn-and-continue.
+    pub async fn blacklist_access_token(&self, jti: &str, ttl_secs: u64) -> Result<()> {
+        let key = self.key_builder.refresh_token_blacklist(jti);
+        self.token_blacklist.blacklist(&key, ttl_secs).await
     }
 
     /// Soft-delete the currently authenticated user's own account.

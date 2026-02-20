@@ -15,6 +15,8 @@ use super::LeaderCheck;
 const MAX_PARTITION_RETRIES: u32 = 3;
 /// Base backoff in milliseconds (exponential: 1s, 2s, 4s)
 const PARTITION_RETRY_BASE_MS: u64 = 1_000;
+/// Default number of months of audit log partitions to retain
+const DEFAULT_RETENTION_MONTHS: i32 = 12;
 
 /// Health check result for audit log partitions
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -337,6 +339,14 @@ impl AuditPartitionManager {
                         tracing::error!("Failed to check partition health: {}", e);
                     }
                 }
+
+                // Drop partitions older than the retention period
+                if let Err(e) = manager.drop_old_partitions(DEFAULT_RETENTION_MONTHS).await {
+                    tracing::error!(
+                        error = %e,
+                        "Failed to drop old audit log partitions"
+                    );
+                }
             }
         })
     }
@@ -374,6 +384,9 @@ pub async fn ensure_audit_partitions_on_startup(pool: &PgPool) -> Result<()> {
     if health.health_status != "healthy" {
         warn!("Partition health check: {}", health.health_status);
     }
+
+    // Step 4: Drop partitions older than the retention period
+    manager.drop_old_partitions(DEFAULT_RETENTION_MONTHS).await?;
 
     info!("Audit log partition initialization completed");
 

@@ -33,6 +33,7 @@ use synctv_xiu::streamhub::{
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Duration;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 const MAX_RETRIES: u32 = 10;
@@ -91,6 +92,9 @@ pub struct ExternalStreamPuller {
     /// Set by `new_async()` after validating the URL; the actual TCP/HTTP connection
     /// uses this address instead of re-resolving the hostname.
     resolved_addr: Option<std::net::SocketAddr>,
+    /// Cancellation token for graceful shutdown. When cancelled, the puller
+    /// exits the main loop cleanly and unpublishes from the local `StreamHub`.
+    cancel_token: CancellationToken,
 }
 
 impl ExternalStreamPuller {
@@ -118,6 +122,7 @@ impl ExternalStreamPuller {
             confirm_tx: None,
             http_client: None,
             resolved_addr: None,
+            cancel_token: CancellationToken::new(),
         })
     }
 
@@ -166,6 +171,7 @@ impl ExternalStreamPuller {
             confirm_tx: None,
             http_client: None,
             resolved_addr,
+            cancel_token: CancellationToken::new(),
         })
     }
 
@@ -184,10 +190,21 @@ impl ExternalStreamPuller {
         self
     }
 
+    /// Set a cancellation token for graceful shutdown.
+    ///
+    /// When the token is cancelled, the puller exits the main loop cleanly,
+    /// unpublishes from the local `StreamHub`, and returns `Ok(())`.
+    #[must_use]
+    pub fn with_cancel(mut self, token: CancellationToken) -> Self {
+        self.cancel_token = token;
+        self
+    }
+
     /// Run the puller with retry logic.
     ///
     /// On transient failures (connection refused, stream interrupted), retries with exponential
     /// backoff (1s initial, 30s max, with jitter). Gives up after 10 consecutive failures.
+    /// If the cancellation token is triggered, the loop exits cleanly and returns `Ok(())`.
     pub async fn run(mut self) -> Result<()> {
         info!(
             room_id = %self.room_id,
@@ -200,6 +217,16 @@ impl ExternalStreamPuller {
         let mut attempt: u32 = 0;
 
         loop {
+            // Exit cleanly if cancellation has been requested before starting a new attempt
+            if self.cancel_token.is_cancelled() {
+                info!(
+                    room_id = %self.room_id,
+                    media_id = %self.media_id,
+                    "External stream puller cancelled before attempt"
+                );
+                return Ok(());
+            }
+
             attempt += 1;
 
             // Publish to local StreamHub (re-publish on each retry to get a fresh sender)
@@ -229,7 +256,18 @@ impl ExternalStreamPuller {
                                         "Gave up after {MAX_RETRIES} retries (last error: {e2})"
                                     ));
                                 }
-                                Self::backoff(attempt).await;
+                                // Respect cancellation during backoff
+                                tokio::select! {
+                                    () = self.cancel_token.cancelled() => {
+                                        info!(
+                                            room_id = %self.room_id,
+                                            media_id = %self.media_id,
+                                            "External stream puller cancelled during backoff"
+                                        );
+                                        return Ok(());
+                                    }
+                                    () = Self::backoff(attempt) => {}
+                                }
                                 continue;
                             }
                         }
@@ -244,7 +282,18 @@ impl ExternalStreamPuller {
                                 "Gave up after {MAX_RETRIES} retries (last error: publish to StreamHub: {e})"
                             ));
                         }
-                        Self::backoff(attempt).await;
+                        // Respect cancellation during backoff
+                        tokio::select! {
+                            () = self.cancel_token.cancelled() => {
+                                info!(
+                                    room_id = %self.room_id,
+                                    media_id = %self.media_id,
+                                    "External stream puller cancelled during backoff"
+                                );
+                                return Ok(());
+                            }
+                            () = Self::backoff(attempt) => {}
+                        }
                         continue;
                     }
                 }
@@ -268,6 +317,16 @@ impl ExternalStreamPuller {
             // Always clean up local StreamHub before retry or exit
             if let Err(e) = self.unpublish_from_local_stream_hub().await {
                 warn!("Failed to unpublish from local StreamHub: {e}");
+            }
+
+            // Exit cleanly if cancellation was triggered during streaming
+            if self.cancel_token.is_cancelled() {
+                info!(
+                    room_id = %self.room_id,
+                    media_id = %self.media_id,
+                    "External stream puller cancelled after stream ended"
+                );
+                return Ok(());
             }
 
             /// Minimum connection duration to consider "successful" for retry reset
@@ -313,7 +372,18 @@ impl ExternalStreamPuller {
                         "External stream pull failed, retrying: {e}"
                     );
 
-                    Self::backoff(attempt).await;
+                    // Respect cancellation during backoff
+                    tokio::select! {
+                        () = self.cancel_token.cancelled() => {
+                            info!(
+                                room_id = %self.room_id,
+                                media_id = %self.media_id,
+                                "External stream puller cancelled during retry backoff"
+                            );
+                            return Ok(());
+                        }
+                        () = Self::backoff(attempt) => {}
+                    }
                 }
             }
         }
@@ -413,13 +483,23 @@ impl ExternalStreamPuller {
             None, // per_stream_max_bytes: use default for external pulls
         );
 
-        let result = client.run().await;
+        let result = tokio::select! {
+            r = client.run() => r.map_err(|e| anyhow::anyhow!("RTMP client session error: {e}")),
+            () = self.cancel_token.cancelled() => {
+                info!(
+                    room_id = %self.room_id,
+                    media_id = %self.media_id,
+                    "RTMP stream puller cancelled"
+                );
+                Ok(())
+            }
+        };
 
         // Cleanup: abort bridge task and await to ensure it is fully cleaned up
         bridge_handle.abort();
         let _ = bridge_handle.await;
 
-        result.map_err(|e| anyhow::anyhow!("RTMP client session error: {e}"))
+        result
     }
 
     /// Connect to remote HTTP-FLV source and stream frames to local `StreamHub`.
@@ -479,11 +559,24 @@ impl ExternalStreamPuller {
         // Use per-chunk timeout instead of total request timeout so live streams
         // can run indefinitely as long as data keeps flowing.
         loop {
-            let chunk = match tokio::time::timeout(CHUNK_READ_TIMEOUT, response.chunk()).await {
-                Ok(Ok(Some(c))) => c,
-                Ok(Ok(None)) => break, // Stream ended normally
-                Ok(Err(e)) => return Err(anyhow::anyhow!("Failed to read HTTP chunk: {e}")),
-                Err(_) => return Err(anyhow::anyhow!("No data received for {}s, stream appears dead", CHUNK_READ_TIMEOUT.as_secs())),
+            // Race chunk read against cancellation so shutdown is responsive
+            let chunk = tokio::select! {
+                () = self.cancel_token.cancelled() => {
+                    info!(
+                        room_id = %self.room_id,
+                        media_id = %self.media_id,
+                        "HTTP-FLV stream puller cancelled"
+                    );
+                    return Ok(());
+                }
+                result = tokio::time::timeout(CHUNK_READ_TIMEOUT, response.chunk()) => {
+                    match result {
+                        Ok(Ok(Some(c))) => c,
+                        Ok(Ok(None)) => break, // Stream ended normally
+                        Ok(Err(e)) => return Err(anyhow::anyhow!("Failed to read HTTP chunk: {e}")),
+                        Err(_) => return Err(anyhow::anyhow!("No data received for {}s, stream appears dead", CHUNK_READ_TIMEOUT.as_secs())),
+                    }
+                }
             };
 
             if buffer.len() + chunk.len() > MAX_FLV_BUFFER_SIZE {

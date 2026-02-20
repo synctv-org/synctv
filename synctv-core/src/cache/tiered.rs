@@ -69,6 +69,12 @@ where
     /// `Clone` (due to `sqlx::Error`), so we use `String` for the error type
     /// and convert back to `Error::Internal` at the call site.
     singleflight: SingleFlight<String, Option<V>, String>,
+    /// `SingleFlight` for batch L2 fetches. Keyed on a stable string derived
+    /// from the sorted set of cache keys being fetched. Deduplicates concurrent
+    /// `get_batch()` calls that have the same missing-key set, preventing the
+    /// thundering-herd problem when many requests simultaneously miss L1 and L2
+    /// for the same batch of keys.
+    batch_singleflight: SingleFlight<String, Vec<Option<String>>, String>,
     /// Generation counter. Incremented on every invalidation.
     ///
     /// Issue #30: Before writing a `SingleFlight` result back to L1, we compare
@@ -129,6 +135,7 @@ where
             key_prefix,
             cache_type,
             singleflight: SingleFlight::new(),
+            batch_singleflight: SingleFlight::new(),
             epoch: Arc::new(AtomicU64::new(0)),
         })
     }
@@ -358,6 +365,10 @@ where
     /// # Performance
     /// - L1 (Moka): Sequential lookup is optimal for in-memory cache (no I/O bottleneck)
     /// - L2: Uses backend batch operation (e.g. Redis pipeline for single round-trip)
+    ///
+    /// Uses `SingleFlight` to prevent cache stampede: when many concurrent
+    /// requests have the same set of L2 misses, only one proceeds to query L2
+    /// while the others wait for its result.
     pub async fn get_batch(&self, keys: &[K]) -> Result<std::collections::HashMap<K, V>> {
         let mut result = std::collections::HashMap::new();
         let mut missing_keys = Vec::new();
@@ -377,19 +388,36 @@ where
             // After the fetch completes we re-check the epoch; if it changed,
             // an invalidation arrived mid-flight and the results may be stale.
             let epoch_before = self.epoch.load(Ordering::Acquire);
+            let epoch_arc = self.epoch.clone();
+
+            // Build a stable singleflight key from the sorted missing key IDs.
+            // Sorting ensures that {"a","b"} and {"b","a"} resolve to the same
+            // in-flight request, deduplicating concurrent batch stampedes.
+            let mut sf_key_parts: Vec<&str> = missing_keys.iter().map(|k| k.as_str()).collect();
+            sf_key_parts.sort_unstable();
+            let sf_key = format!("batch:{}:{}", self.cache_type, sf_key_parts.join(","));
 
             let full_keys: Vec<String> = missing_keys
                 .iter()
                 .map(|k| format!("{}{}", self.key_prefix, k.as_str()))
                 .collect();
+            let l2 = self.l2.clone();
+            let cache_type = self.cache_type.clone();
 
-            let jsons = self.l2.get_batch(&full_keys).await?;
+            let jsons: Vec<Option<String>> = self.batch_singleflight.do_work_with_fallback(
+                sf_key,
+                async move {
+                    l2.get_batch(&full_keys).await
+                        .map_err(|e| format!("Failed to batch get {cache_type} from L2: {e}"))
+                },
+                || "SingleFlight worker failed during L2 batch cache fetch".to_string(),
+            ).await.map_err(Error::Internal)?;
 
             // Issue #30: Only populate L1 if no invalidation arrived while
             // the batch fetch was in-flight. If the epoch changed, the
             // data may be stale — skip L1 writes so the next request
             // re-fetches fresh data (consistent with `get()` behavior).
-            let epoch_after = self.epoch.load(Ordering::Acquire);
+            let epoch_after = epoch_arc.load(Ordering::Acquire);
             let epoch_changed = epoch_after != epoch_before;
 
             if epoch_changed {
@@ -431,6 +459,36 @@ where
     pub async fn clear_l1(&self) {
         self.l1_cache.invalidate_all();
         tracing::debug!(cache_type = %self.cache_type, "L1 cache cleared");
+    }
+
+    /// Clear both L1 (in-memory) and L2 (Redis) caches for this cache type.
+    ///
+    /// Used during lag-triggered full flushes so that stale L2 entries cannot
+    /// re-populate L1 on other replicas after the flush. L1 is cleared first.
+    ///
+    /// The epoch counter is incremented so that any in-flight `SingleFlight`
+    /// fetches that started before this call know not to write their result
+    /// back to L1 (Issue #30).
+    pub async fn clear(&self) {
+        // Issue #30: Increment epoch so in-flight fetches discard their results.
+        self.epoch.fetch_add(1, Ordering::Release);
+
+        // Clear L1 first so this replica immediately stops serving stale data.
+        self.l1_cache.invalidate_all();
+
+        // Then remove all L2 entries for this cache's key prefix.
+        if self.l2.is_active() {
+            if let Err(e) = self.l2.delete_by_prefix(&self.key_prefix).await {
+                tracing::error!(
+                    cache_type = %self.cache_type,
+                    prefix = %self.key_prefix,
+                    error = %e,
+                    "Failed to delete L2 entries by prefix during cache flush"
+                );
+            }
+        }
+
+        tracing::debug!(cache_type = %self.cache_type, "L1 and L2 caches cleared");
     }
 }
 

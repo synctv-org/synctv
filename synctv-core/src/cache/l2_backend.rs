@@ -37,6 +37,12 @@ pub trait CacheL2Backend: Send + Sync {
     /// Returns `true` if the value was set (new is newer), `false` if skipped.
     async fn set_if_newer(&self, key: &str, json: &str, ttl_secs: u64, new_ts_iso: &str) -> Result<bool>;
 
+    /// Delete all keys matching the given prefix using a Redis SCAN + DEL loop.
+    ///
+    /// Used during lag-triggered full cache flushes to also evict stale L2
+    /// entries, preventing other replicas from re-populating L1 from stale data.
+    async fn delete_by_prefix(&self, prefix: &str) -> Result<()>;
+
     /// Whether this backend is active (i.e., has a real remote store).
     /// Used for metrics and TTL enforcement decisions.
     fn is_active(&self) -> bool;
@@ -179,6 +185,40 @@ impl CacheL2Backend for RedisCacheL2 {
         Ok(result == 1)
     }
 
+    async fn delete_by_prefix(&self, prefix: &str) -> Result<()> {
+        use redis::AsyncCommands;
+        let mut conn = self.conn.clone();
+
+        // Use SCAN to iterate keys matching the prefix pattern, then DEL in batches.
+        // This avoids blocking Redis with KEYS * on large keyspaces.
+        let pattern = format!("{prefix}*");
+        let mut cursor: u64 = 0;
+        loop {
+            let (next_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+                .arg(cursor)
+                .arg("MATCH")
+                .arg(&pattern)
+                .arg("COUNT")
+                .arg(100u64)
+                .query_async(&mut conn)
+                .await
+                .map_err(|e| Error::Internal(format!("SCAN failed for prefix '{prefix}': {e}")))?;
+
+            if !keys.is_empty() {
+                let _: () = conn
+                    .del(keys.as_slice())
+                    .await
+                    .map_err(|e| Error::Internal(format!("DEL failed for prefix '{prefix}': {e}")))?;
+            }
+
+            cursor = next_cursor;
+            if cursor == 0 {
+                break;
+            }
+        }
+        Ok(())
+    }
+
     fn is_active(&self) -> bool {
         true
     }
@@ -222,6 +262,10 @@ impl CacheL2Backend for NoopCacheL2 {
     async fn set_if_newer(&self, _key: &str, _json: &str, _ttl_secs: u64, _new_ts_iso: &str) -> Result<bool> {
         // No L2 — always allow the caller to proceed with L1 update
         Ok(true)
+    }
+
+    async fn delete_by_prefix(&self, _prefix: &str) -> Result<()> {
+        Ok(())
     }
 
     fn is_active(&self) -> bool {

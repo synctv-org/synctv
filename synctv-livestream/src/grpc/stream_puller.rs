@@ -338,8 +338,13 @@ impl GrpcStreamPuller {
 
         let unpublish_event = StreamHubEvent::UnPublish { identifier };
 
-        if let Err(e) = self.stream_hub_event_sender.try_send(unpublish_event) {
-            warn!("Failed to send unpublish event: {}", e);
+        if let Err(e) = self.stream_hub_event_sender.send(unpublish_event).await {
+            warn!(
+                room_id = %self.room_id,
+                media_id = %self.media_id,
+                "Failed to send unpublish event to StreamHub (channel closed): {}",
+                e
+            );
         }
 
         Ok(())

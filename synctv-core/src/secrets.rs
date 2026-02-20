@@ -187,17 +187,18 @@ impl SecretLoader {
 
 /// Helper to sanitize secret values for safe logging
 ///
-/// Replaces the actual secret with a masked version showing only length.
+/// Returns a fixed-length placeholder regardless of the actual secret length.
+/// This prevents leaking the character count of secrets in logs or UI output.
 /// Use this when you need to log information about secrets without exposing values.
 ///
 /// # Example
 /// ```rust,ignore
 /// let password = "super_secret_123";
-/// println!("Password loaded: {}", mask_secret(password)); // "Password loaded: [SECRET:16 chars]"
+/// println!("Password loaded: {}", mask_secret(password)); // "Password loaded: [SECRET:redacted]"
 /// ```
-#[must_use] 
-pub fn mask_secret(secret: &str) -> String {
-    format!("[SECRET:{} chars]", secret.len())
+#[must_use]
+pub fn mask_secret(_secret: &str) -> &'static str {
+    "[SECRET:redacted]"
 }
 
 /// Validate that required secrets are available before starting the application
@@ -258,8 +259,11 @@ mod tests {
 
     #[test]
     fn test_mask_secret() {
-        assert_eq!(mask_secret("password123"), "[SECRET:11 chars]");
-        assert_eq!(mask_secret(""), "[SECRET:0 chars]");
+        // Fixed-length mask regardless of actual secret length.
+        assert_eq!(mask_secret("password123"), "[SECRET:redacted]");
+        assert_eq!(mask_secret(""), "[SECRET:redacted]");
+        // Verify that secrets of different lengths produce identical output.
+        assert_eq!(mask_secret("short"), mask_secret("a_much_longer_secret_value"));
     }
 
     #[test]

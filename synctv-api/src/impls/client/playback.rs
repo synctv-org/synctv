@@ -114,9 +114,12 @@ impl ClientApiImpl {
                     .await
                     .ok_or_else(|| ApiError::NotFound(format!("Provider instance '{instance_name}' not found")))?;
 
-                let ctx = ProviderContext::new("synctv")
+                let mut ctx = ProviderContext::new("synctv")
                     .with_user_id(user_id)
                     .with_room_id(room_id);
+                if let Some(ref enc) = self.credential_encryption {
+                    ctx = ctx.with_credential_encryption(enc);
+                }
 
                 // Use cached playback generation
                 let resolved_conn = self.resolve_redis_conn().await;

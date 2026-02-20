@@ -289,6 +289,55 @@ impl BilibiliSourceConfig {
     }
 }
 
+impl BilibiliSourceConfig {
+    /// Encrypt the cookies field in a source_config JSON value using the provided encryption.
+    ///
+    /// Replaces the plaintext `cookies` map with an encrypted string value.
+    /// If cookies are empty or encryption is not available, returns the value unchanged.
+    fn encrypt_cookies_in_value(
+        source_config: &Value,
+        encryption: &crate::service::CredentialEncryption,
+    ) -> Result<Value, ProviderError> {
+        let mut config = source_config.clone();
+        if let Some(obj) = config.as_object_mut() {
+            if let Some(cookies_value) = obj.get("cookies") {
+                // Only encrypt if cookies is a non-empty object (not already encrypted string)
+                if let Some(cookies_map) = cookies_value.as_object() {
+                    if !cookies_map.is_empty() {
+                        let encrypted = encryption.encrypt(cookies_value)
+                            .map_err(|e| ProviderError::ApiError(format!("Failed to encrypt Bilibili cookies: {e}")))?;
+                        obj.insert("cookies".to_string(), Value::String(encrypted));
+                    }
+                }
+            }
+        }
+        Ok(config)
+    }
+
+    /// Decrypt the cookies field in a source_config JSON value if it was encrypted.
+    ///
+    /// If the `cookies` field is a string starting with `enc:`, decrypt it back to
+    /// a map. Otherwise, return the value unchanged (backward compatible with plaintext).
+    fn decrypt_cookies_in_value(
+        source_config: &Value,
+        encryption: &crate::service::CredentialEncryption,
+    ) -> Result<Value, ProviderError> {
+        let mut config = source_config.clone();
+        if let Some(obj) = config.as_object_mut() {
+            if let Some(cookies_value) = obj.get("cookies") {
+                if let Some(encrypted_str) = cookies_value.as_str() {
+                    if encrypted_str.starts_with("enc:") {
+                        let decrypted = encryption.decrypt(encrypted_str)
+                            .map_err(|e| ProviderError::ApiError(format!("Failed to decrypt Bilibili cookies: {e}")))?;
+                        obj.insert("cookies".to_string(), decrypted);
+                    }
+                }
+            }
+        }
+        Ok(config)
+    }
+}
+
 impl TryFrom<&Value> for BilibiliSourceConfig {
     type Error = ProviderError;
 
@@ -308,8 +357,15 @@ impl MediaProvider for BilibiliProvider {
         _ctx: &ProviderContext<'_>,
         source_config: &Value,
     ) -> Result<PlaybackResult, ProviderError> {
+        // Decrypt cookies if encryption is configured (handles both encrypted and plaintext)
+        let decrypted_config = if let Some(enc) = _ctx.credential_encryption {
+            BilibiliSourceConfig::decrypt_cookies_in_value(source_config, enc)?
+        } else {
+            source_config.clone()
+        };
+
         // Parse source_config first
-        let config = BilibiliSourceConfig::try_from(source_config)?;
+        let config = BilibiliSourceConfig::try_from(&decrypted_config)?;
 
         // Sanitize cookies at request time as defense-in-depth
         let sanitized_cookies = config.sanitized_cookies();
@@ -595,10 +651,30 @@ impl MediaProvider for BilibiliProvider {
         Ok(())
     }
 
+    async fn prepare_source_config(
+        &self,
+        _ctx: &ProviderContext<'_>,
+        source_config: Value,
+    ) -> Result<Value, ProviderError> {
+        // Encrypt cookies in source_config before storage if encryption is available
+        if let Some(enc) = _ctx.credential_encryption {
+            BilibiliSourceConfig::encrypt_cookies_in_value(&source_config, enc)
+        } else {
+            Ok(source_config)
+        }
+    }
+
     fn cache_key(&self, ctx: &ProviderContext<'_>, source_config: &Value) -> String {
+        // Decrypt cookies if encrypted before hashing for consistent cache keys
+        let decrypted = if let Some(enc) = ctx.credential_encryption {
+            BilibiliSourceConfig::decrypt_cookies_in_value(source_config, enc)
+                .unwrap_or_else(|_| source_config.clone())
+        } else {
+            source_config.clone()
+        };
         // Include a hash of the user's cookies in the cache key to prevent
         // cross-user cache pollution (VIP vs non-VIP get different results).
-        if let Ok(config) = BilibiliSourceConfig::try_from(source_config) {
+        if let Ok(config) = BilibiliSourceConfig::try_from(&decrypted) {
             use sha2::{Sha256, Digest};
             let (identifier, cookies) = match &config {
                 BilibiliSourceConfig::Video { bvid, aid, cid, cookies, .. } => {

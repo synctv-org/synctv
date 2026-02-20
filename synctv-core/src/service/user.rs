@@ -462,14 +462,40 @@ impl UserService {
                     );
 
                     let now = chrono::Utc::now().timestamp();
-                    // Family revocation TTL: use remaining token lifetime + buffer
-                    let family_ttl = ((claims.exp - now).max(0) as u64).saturating_add(3600);
+                    // Family revocation TTL: use the configured refresh token lifetime to ensure
+                    // all valid refresh tokens are covered, even if the replayed token was near
+                    // expiry. Adding a 1-hour buffer for clock skew.
+                    let family_ttl = self.jwt_service.refresh_token_duration_seconds().saturating_add(3600);
                     let mut conn = self.redis_conn.clone();
                     let _: std::result::Result<(), _> = conn
                         .set_ex(&family_key, now, family_ttl)
                         .await;
 
                     return Err(Error::Authentication("Authentication failed".to_string()));
+                }
+            }
+        }
+
+        // Blacklist the old refresh token JTI BEFORE issuing new tokens.
+        // This ensures "revoke old, then issue new" ordering: a concurrent replay
+        // of the old token will hit the blacklist even during the brief signing window.
+        {
+            let old_jti = &claims.jti;
+            if !old_jti.is_empty() {
+                let blacklist_key = self.key_builder.refresh_token_blacklist(old_jti);
+                let now = chrono::Utc::now().timestamp();
+                // TTL = remaining lifetime of the old token (it can't be used after expiry anyway)
+                let remaining_ttl = (claims.exp - now).max(60) as u64;
+                let mut conn = self.redis_conn.clone();
+                if let Err(e) = conn.set_ex::<_, _, ()>(&blacklist_key, "1", remaining_ttl).await {
+                    // Fail closed: if we cannot blacklist the old token, refuse to issue new ones
+                    // to prevent the race window where the old token could be replayed.
+                    tracing::error!(
+                        jti = %old_jti,
+                        error = %e,
+                        "Failed to blacklist used refresh token JTI in Redis — refusing to issue new tokens"
+                    );
+                    return Err(Error::Internal("Failed to rotate refresh token".to_string()));
                 }
             }
         }
@@ -481,28 +507,6 @@ impl UserService {
         let new_refresh_token = self
             .jwt_service
             .sign_token(&user.id, TokenType::Refresh, user.password_version)?;
-
-        // Blacklist the old refresh token JTI AFTER successfully issuing new tokens.
-        // This ensures atomicity: if token generation fails, the old token remains valid.
-        {
-            let old_jti = &claims.jti;
-            if !old_jti.is_empty() {
-                let blacklist_key = self.key_builder.refresh_token_blacklist(old_jti);
-                let now = chrono::Utc::now().timestamp();
-                // TTL = remaining lifetime of the old token (it can't be used after expiry anyway)
-                let remaining_ttl = (claims.exp - now).max(60) as u64;
-                let mut conn = self.redis_conn.clone();
-                if let Err(e) = conn.set_ex::<_, _, ()>(&blacklist_key, "1", remaining_ttl).await {
-                    // Log but don't fail: the new tokens are already issued.
-                    // Worst case: the old token could be replayed once more.
-                    tracing::warn!(
-                        jti = %old_jti,
-                        error = %e,
-                        "Failed to blacklist used refresh token JTI in Redis"
-                    );
-                }
-            }
-        }
 
         Ok((new_access_token, new_refresh_token))
     }

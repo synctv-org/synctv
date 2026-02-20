@@ -243,6 +243,21 @@ pub trait MediaProvider: Send + Sync {
         Ok(()) // Default: no validation
     }
 
+    /// Prepare `source_config` for storage by encrypting sensitive fields.
+    ///
+    /// Called after validation, before the source_config is persisted to the database.
+    /// Providers that store sensitive data (cookies, tokens) in source_config should
+    /// override this to encrypt those fields using `ctx.credential_encryption`.
+    ///
+    /// The default implementation returns the source_config unchanged.
+    async fn prepare_source_config(
+        &self,
+        _ctx: &ProviderContext<'_>,
+        source_config: Value,
+    ) -> Result<Value, ProviderError> {
+        Ok(source_config) // Default: no transformation
+    }
+
     // ========== Lifecycle Hooks (Optional) ==========
 
     /// Called when playback starts

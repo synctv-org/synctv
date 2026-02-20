@@ -467,6 +467,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
             ws_ticket_service: None,
             redis_conn: redis_conn.clone(),
             builtin_stun_url: None,
+            credential_encryption: None,
         });
 
         // Reuse the already-constructed client_api and use actual rate limit config

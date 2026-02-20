@@ -77,6 +77,8 @@ pub struct RouterConfig {
     /// Resolved built-in STUN URL (e.g. "stun:203.0.113.1:3478") from a successfully started
     /// STUN server. When `None`, the built-in STUN entry is omitted from ICE server lists.
     pub builtin_stun_url: Option<String>,
+    /// Credential encryption for protecting sensitive data in source_config
+    pub credential_encryption: Option<synctv_core::service::CredentialEncryption>,
 }
 
 /// Shared application state.
@@ -151,7 +153,8 @@ fn build_app_state(config: RouterConfig) -> AppState {
         config.settings_registry.clone(),
     ).with_redis_publish_tx(config.redis_publish_tx.clone())
      .with_redis_conn(config.redis_conn.clone())
-     .with_rate_limiter(config.rate_limiter.clone()));
+     .with_rate_limiter(config.rate_limiter.clone())
+     .with_credential_encryption(config.credential_encryption.clone()));
 
     // Wire in the resolved STUN URL if the built-in STUN server started successfully
     let client_api = if let Some(ref stun_url) = config.builtin_stun_url {

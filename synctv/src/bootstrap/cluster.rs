@@ -5,7 +5,7 @@ use tracing::{error, info, warn};
 use synctv_core::bootstrap::RedisHandles;
 use synctv_core::Config;
 use synctv_cluster::sync::{ConnectionManager, ClusterManager};
-use synctv_cluster::discovery::{NodeRegistry, HealthMonitor, LoadBalancer, LoadBalancingStrategy};
+use synctv_cluster::discovery::{NodeRegistry, HealthMonitor, LoadBalancer, LoadBalancingStrategy, StaticDiscovery, StaticDiscoveryConfig, StaticPeerConfig};
 #[cfg(feature = "k8s")]
 use synctv_cluster::discovery::K8sDnsDiscovery;
 
@@ -154,6 +154,46 @@ pub async fn init_cluster_discovery(
                  Rebuild with: cargo build --features k8s"
             );
             (None, None, None, None)
+        }
+        "static" => {
+            info!("Using static peer discovery mode");
+            let (nr, hm, lb) = init_cluster_components(redis_handles, cm, config, connection_manager).await;
+
+            // Start static discovery background probe loop if we have a NodeRegistry
+            let static_handle = if let Some(ref registry) = nr {
+                let peer_configs: Vec<StaticPeerConfig> = config.cluster.peers.iter().map(|addr| {
+                    StaticPeerConfig {
+                        grpc_address: addr.clone(),
+                        http_address: None,
+                    }
+                }).collect();
+
+                if peer_configs.is_empty() {
+                    warn!("Static discovery mode selected but no peers configured (cluster.peers is empty)");
+                }
+
+                let static_config = StaticDiscoveryConfig {
+                    peers: peer_configs,
+                    probe_interval_secs: 10,
+                    connect_timeout: Duration::from_secs(3),
+                    cluster_secret: config.server.cluster_secret.clone(),
+                    default_http_port: config.server.http_port,
+                };
+
+                let static_discovery = StaticDiscovery::new(
+                    static_config,
+                    registry.clone(),
+                    cm.cancel_token(),
+                );
+
+                let handle = static_discovery.start();
+                info!("Static peer discovery started");
+                Some(handle)
+            } else {
+                None
+            };
+
+            (nr, hm, lb, static_handle)
         }
         _ => {
             // Default: Redis-based discovery

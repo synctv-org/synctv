@@ -8,33 +8,16 @@
 use synctv_core::{
     models::{Room, RoomId, RoomMember, RoomRole, UserId, MemberStatus},
     repository::{RoomRepository, RoomMemberRepository},
+    test_helpers::containers::TestPostgres,
 };
 use sqlx::PgPool;
-use testcontainers::runners::AsyncRunner;
-use testcontainers::ContainerAsync;
-use testcontainers_modules::postgres::Postgres;
 use std::sync::Arc;
 use tokio::sync::Barrier;
 
-async fn create_test_pool() -> (ContainerAsync<Postgres>, PgPool) {
-    let container = Postgres::default().start().await.expect("Failed to start postgres");
-
-    let port = container.get_host_port_ipv4(5432).await.expect("Failed to get port");
-    let connection_string = format!(
-        "postgresql://postgres:postgres@127.0.0.1:{}/postgres",
-        port,
-    );
-
-    let pool = PgPool::connect(&connection_string)
-        .await
-        .expect("Failed to create pool");
-
-    sqlx::migrate!("../migrations")
-        .run(&pool)
-        .await
-        .expect("Failed to run migrations");
-
-    (container, pool)
+async fn create_test_pool() -> (TestPostgres, PgPool) {
+    let infra = synctv_core::test_helpers::containers::TestInfra::postgres_only().await;
+    let pool = infra.pool.clone();
+    (infra, pool)
 }
 
 fn make_member(room_id: RoomId, user_id: UserId) -> RoomMember {

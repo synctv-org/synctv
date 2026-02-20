@@ -1402,6 +1402,13 @@ pub struct ClusterChannelConfig {
     /// Redis subscription and stream snapshot.
     /// Default: 300 (5 minutes)
     pub catchup_window_secs: u64,
+
+    /// Maximum number of entries per Redis Stream (approximate, uses MAXLEN ~).
+    /// Controls how many events are retained in each per-room stream for catch-up
+    /// after reconnection. In high-throughput scenarios, increase this to avoid
+    /// trimming events that disconnected nodes still need to catch up on.
+    /// Default: 10000
+    pub stream_max_length: usize,
 }
 
 impl Default for ClusterChannelConfig {
@@ -1414,6 +1421,7 @@ impl Default for ClusterChannelConfig {
             leader_election_mode: "redis".to_string(),
             peers: Vec::new(),
             catchup_window_secs: 300,
+            stream_max_length: 10_000,
         }
     }
 }

@@ -313,11 +313,13 @@ impl ConnectionManager {
                                 Err(e) => {
                                     let next_attempt = attempts + 1;
                                     if next_attempt >= MAX_OP_RETRIES {
-                                        warn!(
+                                        tracing::error!(
                                             op = ?op,
                                             attempts = next_attempt,
                                             error = %e,
-                                            "Dropping failed Redis counter operation after max retries"
+                                            "ALERT: Dropping failed Redis counter operation after max retries. \
+                                             Distributed connection count may be inaccurate. \
+                                             Counter will self-correct when TTL expires."
                                         );
                                     } else {
                                         debug!(

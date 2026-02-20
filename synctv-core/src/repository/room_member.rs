@@ -202,19 +202,11 @@ impl RoomMemberRepository {
 
         // 4. Check max members limit (if option enabled)
         //    When max_members is 0 or None, treat as unlimited (no enforcement).
-        //    Use SELECT COUNT(*) with FOR UPDATE on the rooms row to get an
-        //    atomic count before the insert — prevents TOCTOU races on capacity.
+        //    The room row is already locked by step 1 (SELECT ... FOR UPDATE),
+        //    so we can safely count members without a TOCTOU race.
         if options.check_max_members {
             let max_members = options.max_members;
             if max_members > 0 {
-                // Lock the room row to prevent concurrent joins from bypassing the limit.
-                let _room_lock = sqlx::query(
-                    "SELECT id FROM rooms WHERE id = $1 FOR UPDATE"
-                )
-                .bind(member.room_id.as_str())
-                .fetch_optional(&mut **tx)
-                .await?;
-
                 let count_row = sqlx::query(
                     "SELECT COUNT(*) as count FROM room_members
                      WHERE room_id = $1 AND left_at IS NULL AND status != $2"
@@ -664,10 +656,13 @@ impl RoomMemberRepository {
         .bind(chrono::Utc::now())
         .bind(banned_by.as_str())
         .bind(reason)
-        .fetch_one(&self.pool)
+        .fetch_optional(&self.pool)
         .await?;
 
-        Ok(result)
+        match result {
+            Some(m) => Ok(m),
+            None => Err(Error::NotFound("Member not found or already banned".to_string())),
+        }
     }
 
     /// Unban member from room
@@ -809,6 +804,9 @@ impl RoomMemberRepository {
 
     /// Get rooms where a user is a member with full room details and member count (optimized)
     /// Returns (room, role, status, `member_count`) tuples
+    ///
+    /// Uses `COUNT(*) OVER()` window function to atomically get total count and data
+    /// in a single query, avoiding the race condition of separate COUNT + SELECT queries.
     pub async fn list_by_user_with_details(
         &self,
         user_id: &UserId,
@@ -817,19 +815,7 @@ impl RoomMemberRepository {
         let limit = pagination.limit() as i64;
         let offset = pagination.offset() as i64;
 
-        // Get total count
-        let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) as count
-             FROM room_members rm
-             JOIN rooms r ON rm.room_id = r.id
-             WHERE rm.user_id = $1 AND rm.left_at IS NULL AND r.deleted_at IS NULL"
-        )
-        .bind(user_id.as_str())
-        .fetch_one(&self.pool)
-        .await?;
-
-        // Get rooms with user role and member count using LEFT JOIN + GROUP BY
-        // (avoids N+1 correlated subquery that ran COUNT per room)
+        // Single query using COUNT(*) OVER() window function for atomic count + fetch
         let rows = sqlx::query(
             r"
             SELECT
@@ -837,7 +823,8 @@ impl RoomMemberRepository {
                 r.is_banned, r.created_at, r.updated_at, r.deleted_at,
                 rm.role as user_role,
                 rm.status as user_status,
-                COUNT(rm2.user_id)::int as member_count
+                COUNT(rm2.user_id)::int as member_count,
+                COUNT(*) OVER() as total_count
             FROM room_members rm
             JOIN rooms r ON rm.room_id = r.id
             LEFT JOIN room_members rm2 ON r.id = rm2.room_id AND rm2.left_at IS NULL
@@ -854,6 +841,8 @@ impl RoomMemberRepository {
         .bind(offset)
         .fetch_all(&self.pool)
         .await?;
+
+        let total_count = rows.first().map_or(0, |r| r.get::<i64, _>("total_count"));
 
         let results: Result<Vec<(crate::models::Room, RoomRole, MemberStatus, i32)>> = rows
             .into_iter()
@@ -882,7 +871,7 @@ impl RoomMemberRepository {
             })
             .collect();
 
-        Ok((results?, count))
+        Ok((results?, total_count))
     }
 
     /// List all members including inactive (left) (admin view)

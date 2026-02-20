@@ -269,7 +269,28 @@ impl PullStreamManager {
         );
 
         // Start pull stream (connects via gRPC to publisher)
-        pull_stream.start().await?;
+        if let Err(e) = pull_stream.start().await {
+            // Publisher is likely down but its Redis registration hasn't expired yet.
+            // Remove the stale registry entry so subsequent requests fail fast with
+            // NoPublisher instead of repeatedly trying to connect to a dead node.
+            warn!(
+                room_id = %room_id,
+                media_id = %media_id,
+                error = %e,
+                "Pull stream start failed; removing stale publisher registry entry"
+            );
+            if let Err(unreg_err) = self.registry.unregister_publisher(room_id, media_id).await {
+                error!(
+                    room_id = %room_id,
+                    media_id = %media_id,
+                    error = %unreg_err,
+                    "Failed to unregister stale publisher after pull stream start failure"
+                );
+            }
+            return Err(crate::error::StreamError::ConnectionFailed(format!(
+                "Stream temporarily unavailable for {room_id}/{media_id}: publisher unreachable. {e}"
+            )));
+        }
 
         // Creation path: increment subscriber count exactly once for the viewer
         // that triggered creation. (Reuse paths increment inside get_existing().)

@@ -799,6 +799,7 @@ mod websocket_e2e {
             ws_ticket_service: None,
             redis_conn: None,
             builtin_stun_url: None,
+            credential_encryption: None,
         };
 
         let state = synctv_api::AppState {

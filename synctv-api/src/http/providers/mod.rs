@@ -37,6 +37,7 @@ macro_rules! provider_proxy_handlers {
                     app_state.$provider_accessor.as_ref(),
                     &app_state.room_service,
                     resolved_conn.as_ref(),
+                    app_state.credential_encryption.as_ref(),
                 ).await
                 .map_err(crate::http::error::map_api_error)?;
 
@@ -71,6 +72,7 @@ macro_rules! provider_proxy_handlers {
                     app_state.$provider_accessor.as_ref(),
                     &app_state.room_service,
                     resolved_conn.as_ref(),
+                    app_state.credential_encryption.as_ref(),
                 ).await
                 .map_err(crate::http::error::map_api_error)?;
 

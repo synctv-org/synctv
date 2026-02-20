@@ -34,8 +34,9 @@ const CRITICAL_STREAM_MAX_RETRIES: u32 = 3;
 /// Initial backoff for critical XADD retries (doubles each attempt).
 const CRITICAL_STREAM_INITIAL_BACKOFF_MS: u64 = 100;
 
-/// Max length of each per-room stream (approximate)
-const MAX_STREAM_LENGTH: usize = 10000;
+/// Default max length of each per-room stream (approximate).
+/// Can be overridden via `ClusterChannelConfig::stream_max_length`.
+const DEFAULT_MAX_STREAM_LENGTH: usize = 10000;
 
 /// Milliseconds to wait after broadcasting a RoomDeleted event before removing
 /// room subscriptions, giving WebSocket read loops time to drain queued messages.
@@ -103,6 +104,9 @@ pub struct RedisPubSub {
     /// How far back (in milliseconds) to replay Redis Stream events on first connect.
     /// Configurable via `ClusterChannelConfig::catchup_window_secs`.
     catchup_window_ms: u128,
+    /// Maximum number of entries per Redis Stream (approximate).
+    /// Configurable via `ClusterChannelConfig::stream_max_length`.
+    stream_max_length: usize,
 }
 
 impl RedisPubSub {
@@ -116,13 +120,14 @@ impl RedisPubSub {
         cache_invalidation: Option<CacheInvalidationService>,
         deduplicator: Arc<MessageDeduplicator>,
     ) -> Result<Self> {
-        Self::with_key_prefix(redis_client, message_hub, node_id, "synctv:", admin_event_tx, permission_service, cache_invalidation, deduplicator, 300)
+        Self::with_key_prefix(redis_client, message_hub, node_id, "synctv:", admin_event_tx, permission_service, cache_invalidation, deduplicator, 300, DEFAULT_MAX_STREAM_LENGTH)
     }
 
     /// Create a new `RedisPubSub` service with a custom key prefix.
     ///
     /// `catchup_window_secs` controls how far back to replay Redis Stream events
     /// when this node first connects.  Pass `300` for the default (5 minutes).
+    /// `stream_max_length` controls the maximum number of entries per Redis Stream.
     pub fn with_key_prefix(
         redis_client: RedisClient,
         message_hub: Arc<RoomMessageHub>,
@@ -133,6 +138,7 @@ impl RedisPubSub {
         cache_invalidation: Option<CacheInvalidationService>,
         deduplicator: Arc<MessageDeduplicator>,
         catchup_window_secs: u64,
+        stream_max_length: usize,
     ) -> Result<Self> {
         Ok(Self {
             redis_client,
@@ -147,6 +153,7 @@ impl RedisPubSub {
             deduplicator,
             cancel_token: CancellationToken::new(),
             catchup_window_ms: u128::from(catchup_window_secs) * 1000,
+            stream_max_length,
         })
     }
 
@@ -214,6 +221,7 @@ impl RedisPubSub {
         let node_id = self.node_id.clone();
         let key_prefix = self.key_prefix.clone();
         let cancel_publisher = self.cancel_token.clone();
+        let stream_max_length = self.stream_max_length;
 
         /// Maximum number of failed events to buffer for retry after reconnection.
         /// Prevents unbounded memory growth during prolonged Redis outages.
@@ -280,7 +288,7 @@ impl RedisPubSub {
                             continue;
                         }
                         let event_type = req.event.event_type();
-                        match Self::publish_event(&mut conn, &node_id, &key_prefix, req.event.clone()).await {
+                        match Self::publish_event(&mut conn, &node_id, &key_prefix, req.event.clone(), stream_max_length).await {
                             Ok(subscribers) => {
                                 debug!(
                                     event_type = event_type,
@@ -332,7 +340,7 @@ impl RedisPubSub {
                                     continue;
                                 }
                                 let event_type = req.event.event_type();
-                                match Self::publish_event(&mut conn, &node_id, &key_prefix, req.event.clone()).await {
+                                match Self::publish_event(&mut conn, &node_id, &key_prefix, req.event.clone(), stream_max_length).await {
                                     Ok(_) => {
                                         debug!(event_type = event_type, "Retry buffer event flushed on shutdown");
                                     }
@@ -354,7 +362,7 @@ impl RedisPubSub {
                                     continue;
                                 }
                                 let event_type = req.event.event_type();
-                                match Self::publish_event(&mut conn, &node_id, &key_prefix, req.event.clone()).await {
+                                match Self::publish_event(&mut conn, &node_id, &key_prefix, req.event.clone(), stream_max_length).await {
                                     Ok(_) => {
                                         debug!(event_type = event_type, "Drained event published");
                                     }
@@ -370,7 +378,7 @@ impl RedisPubSub {
                     };
                     if let Some(req) = req {
                         let event_type = req.event.event_type();
-                        match Self::publish_event(&mut conn, &node_id, &key_prefix, req.event.clone()).await {
+                        match Self::publish_event(&mut conn, &node_id, &key_prefix, req.event.clone(), stream_max_length).await {
                             Ok(subscribers) => {
                                 session_healthy = true;
                                 debug!(
@@ -1419,6 +1427,7 @@ impl RedisPubSub {
         node_id: &str,
         key_prefix: &str,
         event: ClusterEvent,
+        stream_max_length: usize,
     ) -> Result<usize> {
         let channel = if let Some(room_id) = event.room_id() {
             format!("{key_prefix}room:{}", room_id.as_str())
@@ -1451,7 +1460,7 @@ impl RedisPubSub {
             let mut backoff_ms = CRITICAL_STREAM_INITIAL_BACKOFF_MS;
             for attempt in 1..=CRITICAL_STREAM_MAX_RETRIES {
                 let result = Self::publish_event_atomic(
-                    conn, &stream_key, &channel, &payload,
+                    conn, &stream_key, &channel, &payload, stream_max_length,
                 ).await;
 
                 match result {
@@ -1485,7 +1494,7 @@ impl RedisPubSub {
         }
 
         // Non-critical events: single atomic attempt
-        match Self::publish_event_atomic(conn, &stream_key, &channel, &payload).await {
+        match Self::publish_event_atomic(conn, &stream_key, &channel, &payload, stream_max_length).await {
             Ok(subscribers) => Ok(subscribers),
             Err(e) => {
                 warn!(
@@ -1509,6 +1518,7 @@ impl RedisPubSub {
         stream_key: &str,
         channel: &str,
         payload: &str,
+        stream_max_length: usize,
     ) -> Result<usize> {
         use redis::streams::StreamMaxlen;
 
@@ -1517,7 +1527,7 @@ impl RedisPubSub {
         pipe.atomic();
         pipe.xadd_maxlen::<_, _, _, _>(
             stream_key,
-            StreamMaxlen::Approx(MAX_STREAM_LENGTH),
+            StreamMaxlen::Approx(stream_max_length),
             "*",
             &[("channel", channel), ("payload", payload)],
         );

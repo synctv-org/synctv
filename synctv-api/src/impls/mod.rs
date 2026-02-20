@@ -300,15 +300,6 @@ impl ApiError {
     }
 }
 
-/// Classify either a typed `ApiError` or an untyped error string.
-///
-/// Prefer passing `ApiError` when available for guaranteed correct classification.
-/// Falls back to `classify_error()` for legacy string errors.
-#[must_use] 
-pub fn classify_api_or_string_error(err: &str) -> ErrorKind {
-    classify_error(err)
-}
-
 /// Classify an impls-layer error string into a semantic error kind.
 ///
 /// First attempts to match known `synctv_core::Error` display prefixes

@@ -119,6 +119,8 @@ struct SetUserRoleRequest {
 #[derive(serde::Deserialize)]
 struct SetUserPasswordRequest {
     password: String,
+    #[serde(default)]
+    reason: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -405,12 +407,13 @@ async fn set_user_password(
 ) -> AppResult<Json<admin::UpdateUserPasswordResponse>> {
     validate_path_id(&user_id, "user_id")?;
     let api = require_admin_api(&state)?;
+    let reason = req.reason.unwrap_or_else(|| "Admin forced password reset".to_string());
     let resp = api
         .update_user_password(admin::UpdateUserPasswordRequest {
             user_id,
             new_password: req.password,
-            reason: String::new(),
-            force_logout: false,
+            reason,
+            force_logout: true,
         }, auth.user_id, auth.role)
         .await
         .map_err(admin_err_to_app_error)?;

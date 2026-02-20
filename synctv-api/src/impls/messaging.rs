@@ -18,6 +18,7 @@ use synctv_core::{
     service::{ContentFilter, RateLimitConfig, RateLimiter, RoomService},
 };
 use synctv_cluster::sync::{ClusterEvent, ClusterManager, ConnectionManager};
+use synctv_core::spawn::spawn_monitored;
 
 use crate::proto::client::{ClientMessage, ServerMessage};
 
@@ -764,7 +765,7 @@ impl StreamMessageHandler {
         let sender = self.sender.clone();
 
         let event_token = cancel_token.clone();
-        tokio::spawn(async move {
+        spawn_monitored("messaging_event_dispatch", async move {
             loop {
                 tokio::select! {
                     () = event_token.cancelled() => break,
@@ -818,7 +819,7 @@ impl StreamMessageHandler {
         let handler = self.clone();
         let msg_token = cancel_token.clone();
         let global_msg_rate_limit = self.ws_message_rate_limit;
-        tokio::spawn(async move {
+        spawn_monitored("messaging_client_handler", async move {
             let mut global_msg_count: u32 = 0;
             let mut global_msg_window_start = tokio::time::Instant::now();
             loop {
@@ -868,7 +869,7 @@ impl StreamMessageHandler {
             let connection_manager = self.connection_manager.clone();
             let admin_sender = self.sender.clone();
 
-            tokio::spawn(async move {
+            spawn_monitored("messaging_disconnect_monitor", async move {
                 loop {
                     tokio::select! {
                         () = disconnect_token.cancelled() => break,
@@ -1000,7 +1001,7 @@ impl StreamMessageHandler {
             let heartbeat_room_id = self.room_id.clone();
             let heartbeat_user_id = self.user_id.clone();
             let heartbeat_room_service = Arc::clone(&self.room_service);
-            tokio::spawn(async move {
+            spawn_monitored("messaging_heartbeat", async move {
                 let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
                 interval.tick().await; // Skip the immediate first tick
                 loop {
@@ -1046,7 +1047,7 @@ impl StreamMessageHandler {
         let cleanup_handler = self.clone();
         let cleanup_room_id = self.room_id.as_str().to_string();
         let cleanup_token = cancel_token.clone();
-        tokio::spawn(async move {
+        spawn_monitored("messaging_cleanup", async move {
             cleanup_token.cancelled().await;
             cleanup_handler.cleanup(&cleanup_room_id).await;
         });
@@ -1276,8 +1277,8 @@ impl StreamMessageHandler {
 
         // Issue #64: validate the target conn_id is still active so stale offers
         // are rejected early rather than silently dropped.
-        // The 'to' field is formatted as "user_id|conn_id"; we parse the conn_id part.
-        if let Some((_target_user, target_conn)) = offer.to.rsplit_once('|') {
+        // The 'to' field is formatted as "user_id:conn_id"; we parse the conn_id part.
+        if let Some((_target_user, target_conn)) = offer.to.rsplit_once(':') {
             if self.connection_manager.get_connection(target_conn).is_none() {
                 tracing::warn!(
                     room_id = %self.room_id.as_str(),
@@ -1286,6 +1287,15 @@ impl StreamMessageHandler {
                 );
                 return Err("Target connection is no longer active (peer may have reconnected)".to_string());
             }
+        } else {
+            // 'to' contains only a user_id without a conn_id qualifier.
+            // In multi-device scenarios this is unreliable: the signaling message
+            // will be delivered to whichever connection happens to match first.
+            tracing::warn!(
+                room_id = %self.room_id.as_str(),
+                to = %offer.to,
+                "WebRTC offer 'to' field has no conn_id qualifier; routing may be imprecise in multi-device scenarios"
+            );
         }
 
         // P2P relay path: forward offer to target peer via cluster

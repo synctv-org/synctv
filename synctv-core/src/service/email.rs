@@ -215,72 +215,6 @@ impl EmailService {
         Ok(())
     }
 
-    /// Get verification code (Redis if available, otherwise local memory)
-    #[allow(dead_code)]
-    async fn get_code(&self, email: &str) -> Result<Option<VerificationCode>> {
-        if let Some(ref redis) = self.redis {
-            let key = format!("{EMAIL_CODE_KEY_PREFIX}{email}");
-
-            let mut conn = redis
-                .get_multiplexed_async_connection()
-                .await
-                .internal_with_err("Redis connection failed")?;
-
-            use redis::AsyncCommands;
-            let value: Option<String> = conn
-                .get(&key)
-                .await
-                .internal_with_err("Failed to get verification code from Redis")?;
-
-            match value {
-                Some(json) => {
-                    let code: VerificationCode = serde_json::from_str(&json)
-                        .internal_with_err("Failed to deserialize verification code")?;
-                    Ok(Some(code))
-                }
-                None => Ok(None),
-            }
-        } else {
-            Ok(self.local_codes.get(&email.to_string()))
-        }
-    }
-
-    /// Update verification code (Redis if available, otherwise local memory)
-    #[allow(dead_code)]
-    async fn update_code(&self, email: &str, code: &VerificationCode) -> Result<()> {
-        if self.redis.is_some() {
-            // For Redis, we just store the updated code (TTL refresh is implicit)
-            self.store_code(email, code).await
-        } else {
-            self.local_codes.insert(email.to_string(), code.clone());
-            Ok(())
-        }
-    }
-
-    /// Remove verification code (Redis if available, otherwise local memory)
-    #[allow(dead_code)]
-    async fn remove_code(&self, email: &str) -> Result<()> {
-        if let Some(ref redis) = self.redis {
-            let key = format!("{EMAIL_CODE_KEY_PREFIX}{email}");
-
-            let mut conn = redis
-                .get_multiplexed_async_connection()
-                .await
-                .internal_with_err("Redis connection failed")?;
-
-            use redis::AsyncCommands;
-            let _: () = conn
-                .del(&key)
-                .await
-                .internal_with_err("Failed to remove verification code from Redis")?;
-
-            debug!("Removed verification code from Redis for email {}", &email[..email.len().min(4)]);
-        } else {
-            self.local_codes.invalidate(&email.to_string());
-        }
-        Ok(())
-    }
-
     /// Generate a 6-digit verification code
     fn generate_code() -> String {
         let mut rng = rand::rng();
@@ -428,7 +362,7 @@ impl EmailService {
 
         // Send email
         if let Some(config) = &self.config {
-            if let Err(e) = self.send_email(config, email, &code).await {
+            if let Err(e) = self.send_email_impl(config, email, "Your SyncTV verification code", &code).await {
                 tracing::error!("Failed to send email: {}", e);
                 return Err(Error::Internal(format!("Failed to send email: {e}")));
             }
@@ -575,18 +509,6 @@ impl EmailService {
             Some(err) => Err(err),
             None => Ok(()),
         }
-    }
-
-    /// Send email using SMTP (deprecated - use `send_email_impl` instead)
-    #[allow(dead_code)]
-    async fn send_email(&self, config: &EmailConfig, to: &str, code: &str) -> std::result::Result<(), EmailError> {
-        let subject = "SyncTV - Verification Code";
-        let body = format!(
-            "SyncTV Email Verification\n\nYour verification code is: {}\n\nThis code will expire in {} minutes.\nIf you didn't request this code, please ignore this email.",
-            code, self.code_ttl_minutes
-        );
-
-        self.send_email_impl(config, to, subject, &body).await
     }
 
     /// Send verification email

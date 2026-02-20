@@ -69,6 +69,8 @@ pub struct Services {
     /// Shared Redis connection for playback caching.
     pub redis_client: redis::Client,
     pub redis_conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
+    /// Credential encryption for protecting sensitive data (optional)
+    pub credential_encryption: Option<synctv_core::service::CredentialEncryption>,
 }
 
 /// `SyncTV` server - manages all server components
@@ -275,11 +277,16 @@ impl SyncTvServer {
         Ok(())
     }
 
-    /// Shut down infrastructure components (STUN, livestream, health monitor, node registry).
+    /// Shut down infrastructure components (STUN, livestream, health monitor, node registry, connection manager).
     ///
     /// This is separate from the `ShutdownCoordinator` because these components
     /// have custom shutdown protocols (not just cancellation tokens or join handles).
     async fn shutdown_components(&self) {
+        // Shut down connection manager (stops TTL refresh background task)
+        info!("Shutting down connection manager...");
+        self.services.connection_manager.shutdown();
+        info!("Connection manager shut down");
+
         // Deregister node from cluster registry
         if let Some(ref registry) = self.services.node_registry {
             info!("Deregistering node from cluster registry...");
@@ -431,6 +438,7 @@ impl SyncTvServer {
                     let addr = s.external_addr();
                     format!("stun:{}:{}", addr.ip(), addr.port())
                 }),
+                credential_encryption: self.services.credential_encryption.clone(),
             },
         );
 

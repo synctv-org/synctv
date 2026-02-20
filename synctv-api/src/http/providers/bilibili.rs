@@ -66,6 +66,7 @@ async fn proxy_subtitle(
                 state.bilibili_provider.as_ref(),
                 &state.room_service,
                 resolved.as_ref(),
+                state.credential_encryption.as_ref(),
             ).await
         }
         .map_err(crate::http::error::map_api_error)?;
@@ -110,6 +111,7 @@ async fn proxy_m3u8(
             state.bilibili_provider.as_ref(),
             &state.room_service,
             resolved.as_ref(),
+            None,
         ).await
     }
         .map_err(crate::http::error::map_api_error)?;

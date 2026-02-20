@@ -436,12 +436,13 @@ impl Application {
                 redis_client: Some(infra.redis_handles.client.clone()),
                 redis_conn: Some(infra.redis_handles.conn_snapshot().await),
                 node_id: infra.node_id.clone(),
-                dedup_window: Duration::from_secs(10),
+                dedup_window: Duration::from_secs(infra.config.cluster.catchup_window_secs.saturating_mul(2).max(600)),
                 cleanup_interval: Duration::from_secs(30),
                 critical_channel_capacity: infra.config.cluster.critical_channel_capacity,
                 publish_channel_capacity: infra.config.cluster.publish_channel_capacity,
                 key_prefix: infra.config.redis.key_prefix.clone(),
                 catchup_window_secs: infra.config.cluster.catchup_window_secs,
+                stream_max_length: infra.config.cluster.stream_max_length,
             };
             match ClusterManager::new(
                 cluster_config,
@@ -591,6 +592,7 @@ impl Application {
             load_balancer: cluster.load_balancer,
             redis_client: infra.redis_handles.client.clone(),
             redis_conn: core.services.redis_conn.clone(),
+            credential_encryption: core.services.credential_encryption.clone(),
         };
 
         Self {

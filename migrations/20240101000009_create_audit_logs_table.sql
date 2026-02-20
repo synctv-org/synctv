@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     target_type VARCHAR(50),
     target_id VARCHAR(100),
     details JSONB,
-    ip_address INET,
+    ip_address TEXT,
     user_agent TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (id, created_at)

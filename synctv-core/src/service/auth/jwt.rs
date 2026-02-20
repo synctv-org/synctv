@@ -204,6 +204,20 @@ impl JwtService {
             }
         }
 
+        // Reject low-diversity secrets: require a minimum number of unique characters
+        // to prevent all-same-character strings (e.g., "aaa...a") from passing the
+        // charset-based entropy estimate, which assumes uniform distribution.
+        let unique_chars: std::collections::HashSet<char> = secret.chars().collect();
+        let min_unique = 16usize.min(secret.len() / 4);
+        if unique_chars.len() < min_unique {
+            return Err(Error::Internal(format!(
+                "JWT secret has too few unique characters ({} unique, need at least {}). \
+                 Use a secret with more character variety.",
+                unique_chars.len(),
+                min_unique
+            )));
+        }
+
         // Estimate charset size based on character variety
         let charset_size = {
             let mut size = 0usize;
@@ -296,6 +310,11 @@ impl JwtService {
         if !claims.is_refresh_token() {
             return Err(Error::Authentication("Not a refresh token".to_string()));
         }
+        // Reject tokens with empty jti: refresh token rotation relies on jti for
+        // blacklisting. A missing/empty jti would bypass the blacklist check entirely.
+        if claims.jti.is_empty() {
+            return Err(Error::Authentication("Refresh token missing jti".to_string()));
+        }
         Ok(claims)
     }
 
@@ -372,6 +391,15 @@ impl JwtService {
     #[must_use]
     pub const fn access_token_duration_seconds(&self) -> i64 {
         (self.access_token_duration_hours as i64) * 3600
+    }
+
+    /// Get refresh token duration in seconds
+    ///
+    /// Used by token family revocation to ensure the TTL covers the full refresh
+    /// token lifetime, preventing attackers from outlasting a short TTL.
+    #[must_use]
+    pub const fn refresh_token_duration_seconds(&self) -> u64 {
+        self.refresh_token_duration_days * 86400
     }
 
     /// Sign a custom JSON value as JWT

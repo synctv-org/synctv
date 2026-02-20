@@ -71,6 +71,11 @@ pub enum AuthMethod {
 ///
 /// The `room_id` parameter is required for ticket validation (Issue #65): tickets are
 /// room-scoped and must be checked against the room the connection targets.
+///
+/// For JWT-based paths (header and ?token=), the SecurityPipeline is invoked after
+/// signature verification to enforce password-version, banned, and deleted checks
+/// (parity with the HTTP AuthUser extractor). For the ticket path, the user status
+/// is checked explicitly since tickets don't carry JWT claims.
 async fn extract_user_id(
     state: &AppState,
     headers: &HeaderMap,
@@ -84,11 +89,18 @@ async fn extract_user_id(
     if let Some(auth_header) = headers.get("Authorization") {
         if let Ok(auth_str) = auth_header.to_str() {
             if let Some(token) = auth_str.strip_prefix("Bearer ") {
-                let user_id = validator
-                    .validate_and_extract_user_id(token)
+                let claims = validator
+                    .validate_token(token)
                     .map_err(|e| AppError::unauthorized(format!("Invalid token: {e}")))?;
 
-                return Ok((user_id, AuthMethod::Header));
+                // Run SecurityPipeline checks (password version, banned/deleted status)
+                let authenticated = state
+                    .security_pipeline
+                    .check(&claims)
+                    .await
+                    .map_err(|e| AppError::unauthorized(format!("{e}")))?;
+
+                return Ok((authenticated.user_id, AuthMethod::Header));
             }
         }
     }
@@ -101,6 +113,20 @@ async fn extract_user_id(
                 .validate_and_consume(ticket, room_id)
                 .await
                 .map_err(|e| AppError::unauthorized(format!("Invalid or expired ticket: {e}")))?;
+
+            // Ticket path: verify user status (banned/deleted) since tickets don't carry JWT claims
+            let user = state
+                .user_service
+                .get_user(&user_id)
+                .await
+                .map_err(|_| AppError::unauthorized("User not found"))?;
+            if user.is_deleted()
+                || user.status == synctv_core::models::UserStatus::Banned
+                || user.status == synctv_core::models::UserStatus::Pending
+            {
+                return Err(AppError::unauthorized("Authentication failed"));
+            }
+
             return Ok((user_id, AuthMethod::Ticket));
         }
         return Err(AppError::internal_server_error(
@@ -117,11 +143,18 @@ async fn extract_user_id(
             ));
         }
 
-        let user_id = validator
-            .validate_and_extract_user_id(token)
+        let claims = validator
+            .validate_token(token)
             .map_err(|e| AppError::unauthorized(format!("Invalid token: {e}")))?;
 
-        return Ok((user_id, AuthMethod::TokenQuery));
+        // Run SecurityPipeline checks (password version, banned/deleted status)
+        let authenticated = state
+            .security_pipeline
+            .check(&claims)
+            .await
+            .map_err(|e| AppError::unauthorized(format!("{e}")))?;
+
+        return Ok((authenticated.user_id, AuthMethod::TokenQuery));
     }
 
     Err(AppError::unauthorized(
@@ -357,6 +390,11 @@ pub async fn websocket_handler(
 
     if room.is_banned {
         return Err(AppError::forbidden("This room has been banned"));
+    }
+
+    // Reject connections to closed rooms
+    if room.status.is_closed() {
+        return Err(AppError::forbidden("This room is closed and not accepting new connections"));
     }
 
     // Authentication and membership verified, upgrade to WebSocket

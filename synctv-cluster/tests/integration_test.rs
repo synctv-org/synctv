@@ -68,6 +68,7 @@ async fn create_node(redis_url: &str, node_id: &str) -> ClusterManager {
         publish_channel_capacity: 10_000,
         key_prefix: "synctv:".to_string(),
         catchup_window_secs: 300,
+        stream_max_length: 10_000,
     };
     ClusterManager::new(config, None, None)
         .await
@@ -272,6 +273,7 @@ async fn test_cross_replica_cache_invalidation() {
         publish_channel_capacity: 10_000,
         key_prefix: "synctv:".to_string(),
         catchup_window_secs: 300,
+        stream_max_length: 10_000,
     };
     let node_a = ClusterManager::new(config_a, None, Some(cache_svc_a))
         .await
@@ -1292,6 +1294,7 @@ async fn test_cross_replica_permission_cache_invalidation_via_cache_service() {
         publish_channel_capacity: 10_000,
         key_prefix: "synctv:".to_string(),
         catchup_window_secs: 300,
+        stream_max_length: 10_000,
     };
     let node_a = ClusterManager::new(config_a, None, Some(cache_svc_a))
         .await
@@ -1360,6 +1363,7 @@ async fn test_room_hub_connection_manager_state_consistency() {
         publish_channel_capacity: 10_000,
         key_prefix: "synctv:".to_string(),
         catchup_window_secs: 300,
+        stream_max_length: 10_000,
     };
 
     let manager = ClusterManager::new(config, None, None).await.unwrap();
@@ -1456,6 +1460,7 @@ async fn test_rapid_subscribe_unsubscribe_no_leak() {
         publish_channel_capacity: 10_000,
         key_prefix: "synctv:".to_string(),
         catchup_window_secs: 300,
+        stream_max_length: 10_000,
     };
 
     let manager = ClusterManager::new(config, None, None).await.unwrap();

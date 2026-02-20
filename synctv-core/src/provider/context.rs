@@ -4,6 +4,8 @@
 
 use sqlx::PgPool;
 
+use crate::service::CredentialEncryption;
+
 /// Provider execution context
 ///
 /// Provides access to database, Redis, user information, and other resources
@@ -27,11 +29,14 @@ pub struct ProviderContext<'a> {
 
     /// Redis connection manager (optional)
     pub redis: Option<&'a redis::aio::ConnectionManager>,
+
+    /// Credential encryption for protecting sensitive data in source_config (optional)
+    pub credential_encryption: Option<&'a CredentialEncryption>,
 }
 
 impl<'a> ProviderContext<'a> {
     /// Create new context with defaults
-    #[must_use] 
+    #[must_use]
     pub const fn new(key_prefix: &'a str) -> Self {
         Self {
             user_id: None,
@@ -40,6 +45,7 @@ impl<'a> ProviderContext<'a> {
             key_prefix,
             db: None,
             redis: None,
+            credential_encryption: None,
         }
     }
 
@@ -75,6 +81,13 @@ impl<'a> ProviderContext<'a> {
     #[must_use]
     pub const fn with_redis(mut self, redis: &'a redis::aio::ConnectionManager) -> Self {
         self.redis = Some(redis);
+        self
+    }
+
+    /// Set credential encryption for protecting sensitive data in source_config
+    #[must_use]
+    pub const fn with_credential_encryption(mut self, enc: &'a CredentialEncryption) -> Self {
+        self.credential_encryption = Some(enc);
         self
     }
 

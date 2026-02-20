@@ -99,8 +99,12 @@ impl MigrationLock for DistributedLock {
 ///
 /// Used as a fallback when the Redis lock fails. Uses `pg_try_advisory_lock`
 /// with a retry loop, mirroring the existing behaviour in `migrations.rs`.
+///
+/// The advisory lock is session-scoped, so we must release it on the same
+/// connection that acquired it. The `lock_conn` field holds that connection.
 pub struct PgAdvisoryMigrationLock {
     pool: sqlx::PgPool,
+    lock_conn: tokio::sync::Mutex<Option<sqlx::pool::PoolConnection<sqlx::Postgres>>>,
 }
 
 /// Stable advisory lock key for migration coordination (hash of "synctv_migration").
@@ -108,15 +112,16 @@ const PG_ADVISORY_LOCK_KEY: i64 = 0x73796E63_74766D69_u64 as i64;
 
 impl PgAdvisoryMigrationLock {
     pub fn new(pool: sqlx::PgPool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            lock_conn: tokio::sync::Mutex::new(None),
+        }
     }
 }
 
 #[async_trait::async_trait]
 impl MigrationLock for PgAdvisoryMigrationLock {
     async fn acquire(&self, _key: &str, ttl_secs: u64) -> anyhow::Result<Option<String>> {
-        use sqlx::Acquire;
-
         let max_wait = std::time::Duration::from_secs(ttl_secs);
         let retry_interval = std::time::Duration::from_secs(5);
         let start = tokio::time::Instant::now();
@@ -131,13 +136,13 @@ impl MigrationLock for PgAdvisoryMigrationLock {
             let acquired: (bool,) =
                 sqlx::query_as("SELECT pg_try_advisory_lock($1)")
                     .bind(PG_ADVISORY_LOCK_KEY)
-                    .fetch_one(conn.acquire().await?)
+                    .fetch_one(&mut *conn)
                     .await
                     .map_err(|e| anyhow::anyhow!("Failed to attempt PostgreSQL advisory lock: {e}"))?;
 
             if acquired.0 {
-                // Return a sentinel value; release is a no-op because PG advisory
-                // locks are released when the session ends.
+                // Store the connection so release() can use the same session.
+                *self.lock_conn.lock().await = Some(conn);
                 return Ok(Some("pg_advisory".to_string()));
             }
 
@@ -159,16 +164,23 @@ impl MigrationLock for PgAdvisoryMigrationLock {
     }
 
     async fn release(&self, _key: &str, _lock_value: &str) -> anyhow::Result<bool> {
-        // PG advisory locks acquired via pg_try_advisory_lock are session-scoped;
-        // they are released when the connection is returned to the pool.
-        // We explicitly release here for cleanliness.
-        let result: (bool,) =
-            sqlx::query_as("SELECT pg_advisory_unlock($1)")
-                .bind(PG_ADVISORY_LOCK_KEY)
-                .fetch_one(&self.pool)
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to release PG advisory lock: {e}"))?;
-        Ok(result.0)
+        // Release the advisory lock on the same connection that acquired it.
+        // Session-scoped advisory locks cannot be released from a different connection.
+        let mut guard = self.lock_conn.lock().await;
+        if let Some(ref mut conn) = *guard {
+            let result: (bool,) =
+                sqlx::query_as("SELECT pg_advisory_unlock($1)")
+                    .bind(PG_ADVISORY_LOCK_KEY)
+                    .fetch_one(&mut **conn)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Failed to release PG advisory lock: {e}"))?;
+            // Return the connection to the pool
+            *guard = None;
+            Ok(result.0)
+        } else {
+            // No connection held — lock was never acquired or already released
+            Ok(false)
+        }
     }
 }
 

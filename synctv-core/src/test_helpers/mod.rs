@@ -224,11 +224,13 @@ where
     }
 }
 
-/// Assert that two futures complete within a time delta
+/// Assert that two futures complete concurrently within a time delta.
 ///
-/// Useful for testing concurrent operations.
+/// Both futures are wrapped with `tokio::time::timeout(max_delta_ms)` and
+/// run via `tokio::join!`. If either future exceeds the deadline, the test
+/// panics, ensuring both complete within the allowed window.
 pub async fn assert_concurrent_completion<F1, F2>(
-    _max_delta_ms: u64,
+    max_delta_ms: u64,
     future1: F1,
     future2: F2,
 ) -> (F1::Output, F2::Output)
@@ -236,8 +238,13 @@ where
     F1: std::future::Future,
     F2: std::future::Future,
 {
-    let (result1, result2) = tokio::join!(future1, future2);
-    // In a real implementation, we'd measure the timing delta
+    let timeout = std::time::Duration::from_millis(max_delta_ms);
+    let (r1, r2) = tokio::join!(
+        tokio::time::timeout(timeout, future1),
+        tokio::time::timeout(timeout, future2),
+    );
+    let result1 = r1.expect("future1 did not complete within max_delta_ms");
+    let result2 = r2.expect("future2 did not complete within max_delta_ms");
     (result1, result2)
 }
 

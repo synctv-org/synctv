@@ -951,7 +951,7 @@ pub fn normalize_path(path: &str) -> String {
         let prev = if i > 0 { segments.get(i - 1) } else { None };
         let is_id = matches!(prev, Some(&"rooms" | &"media" | &"chat" | &"playlists" | &"users" | &"notifications" | &"settings" | &"members"));
 
-        if is_id {
+        if is_id || is_dynamic_segment(segment) {
             result.push(":id");
         } else {
             result.push(segment);
@@ -959,6 +959,32 @@ pub fn normalize_path(path: &str) -> String {
     }
 
     result.join("/")
+}
+
+/// Check if a path segment looks like a dynamic ID (UUID, numeric, or nanoid).
+fn is_dynamic_segment(segment: &str) -> bool {
+    // UUID format: 8-4-4-4-12 hex chars (with hyphens, 36 chars total)
+    if segment.len() == 36 && segment.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
+        let parts: Vec<&str> = segment.split('-').collect();
+        if parts.len() == 5
+            && parts[0].len() == 8
+            && parts[1].len() == 4
+            && parts[2].len() == 4
+            && parts[3].len() == 4
+            && parts[4].len() == 12
+        {
+            return true;
+        }
+    }
+    // Pure numeric IDs
+    if segment.chars().all(|c| c.is_ascii_digit()) && !segment.is_empty() {
+        return true;
+    }
+    // Hex strings of 32 chars (UUID without hyphens)
+    if segment.len() == 32 && segment.chars().all(|c| c.is_ascii_hexdigit()) {
+        return true;
+    }
+    false
 }
 
 /// Hot path metrics (Task #119)

@@ -8,6 +8,7 @@
 //! - Metrics and monitoring
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
@@ -50,6 +51,10 @@ pub struct ClusterConfig {
     /// first connects to the cluster.  Mirrors `ClusterChannelConfig::catchup_window_secs`.
     /// Default: 300 (5 minutes)
     pub catchup_window_secs: u64,
+    /// Maximum number of entries per Redis Stream (approximate).
+    /// Mirrors `ClusterChannelConfig::stream_max_length`.
+    /// Default: 10000
+    pub stream_max_length: usize,
 }
 
 impl std::fmt::Debug for ClusterConfig {
@@ -64,6 +69,7 @@ impl std::fmt::Debug for ClusterConfig {
             .field("publish_channel_capacity", &self.publish_channel_capacity)
             .field("key_prefix", &self.key_prefix)
             .field("catchup_window_secs", &self.catchup_window_secs)
+            .field("stream_max_length", &self.stream_max_length)
             .finish()
     }
 }
@@ -74,12 +80,13 @@ impl Default for ClusterConfig {
             redis_client: None,
             redis_conn: None,
             node_id: format!("node_{}", nanoid::nanoid!(8)),
-            dedup_window: Duration::from_secs(10),
+            dedup_window: Duration::from_secs(600),
             cleanup_interval: Duration::from_secs(30),
             critical_channel_capacity: 1000,
             publish_channel_capacity: 10_000,
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
+            stream_max_length: 10_000,
         }
     }
 }
@@ -117,6 +124,9 @@ pub struct ClusterManager {
     publish_channel_capacity: usize,
     /// Optional connection manager for coordinated shutdown
     connection_manager: Option<ConnectionManager>,
+    /// Independent heartbeat failure counter for business logic (network partition detection).
+    /// The Prometheus `CLUSTER_HEARTBEAT_FAILURES` gauge is written but never read for decisions.
+    heartbeat_failure_count: Arc<AtomicU64>,
 }
 
 /// State for the background heartbeat loop, guarded by Mutex for async shutdown
@@ -172,6 +182,7 @@ impl ClusterManager {
                     cache_invalidation,
                     deduplicator.clone(),
                     config.catchup_window_secs,
+                    config.stream_max_length,
                 )?
             );
 
@@ -233,6 +244,7 @@ impl ClusterManager {
                 http_address: String::new(),
             }),
             connection_manager: None,
+            heartbeat_failure_count: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -309,6 +321,7 @@ impl ClusterManager {
     {
         let cancel_token = self.cancel_token.clone();
         let interval_secs = (node_registry.heartbeat_timeout_secs / 3).max(1) as u64;
+        let failure_count = self.heartbeat_failure_count.clone();
 
         let registry_for_task = node_registry.clone();
         let handle = tokio::spawn(async move {
@@ -334,6 +347,7 @@ impl ClusterManager {
                             Ok(HeartbeatResult::Ok) => {
                                 debug!("Heartbeat sent successfully");
                                 // Reset consecutive failure counter on success (for partition detection)
+                                failure_count.store(0, Ordering::Relaxed);
                                 synctv_core::metrics::cluster::CLUSTER_HEARTBEAT_FAILURES.set(0);
                             }
                             Ok(HeartbeatResult::NeedReregistration) => {
@@ -351,9 +365,10 @@ impl ClusterManager {
                                 );
                             }
                             Err(e) => {
-                                // Increment failure counter for network partition detection
-                                synctv_core::metrics::cluster::CLUSTER_HEARTBEAT_FAILURES.inc();
-                                let failures = synctv_core::metrics::cluster::CLUSTER_HEARTBEAT_FAILURES.get();
+                                // Increment independent failure counter for business logic
+                                let failures = failure_count.fetch_add(1, Ordering::Relaxed) + 1;
+                                // Update Prometheus gauge for monitoring only (never read for decisions)
+                                synctv_core::metrics::cluster::CLUSTER_HEARTBEAT_FAILURES.set(failures as i64);
                                 error!(
                                     error = %e,
                                     consecutive_failures = failures,
@@ -665,6 +680,7 @@ mod tests {
             publish_channel_capacity: 10_000,
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
+            stream_max_length: 10_000,
         };
 
         let manager = ClusterManager::new(config, None, None).await.unwrap();
@@ -719,6 +735,7 @@ mod tests {
             publish_channel_capacity: 10_000,
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
+            stream_max_length: 10_000,
         };
 
         let manager = ClusterManager::new(config, None, None).await.unwrap();
@@ -762,6 +779,7 @@ mod tests {
             publish_channel_capacity: 10_000,
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
+            stream_max_length: 10_000,
         };
 
         let manager = ClusterManager::new(config, None, None).await.unwrap();

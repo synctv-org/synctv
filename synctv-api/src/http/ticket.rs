@@ -106,7 +106,7 @@ pub async fn create_ticket(
         ticket,
         room_id: req.room_id.clone(),
         expires_in_secs: ws_ticket_service.ticket_ttl_secs(),
-        usage: format!("Use in WebSocket URL: ws://host/ws/room/{}/ticket=xxx", req.room_id),
+        usage: format!("Use in WebSocket URL: ws://host/ws/room/{}?ticket=xxx", req.room_id),
     };
 
     Ok((StatusCode::OK, Json(response)))

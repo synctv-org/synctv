@@ -277,7 +277,12 @@ impl PlaybackService {
         Ok(state)
     }
 
-    /// Seek to position
+    /// Seek to position.
+    ///
+    /// If the optimistic lock retries are exhausted (e.g., during rapid seek
+    /// bursts), falls back to returning the latest playback state as a
+    /// degraded response so the client knows the current position, rather
+    /// than receiving a bare error.
     pub async fn seek(
         &self,
         room_id: RoomId,
@@ -292,16 +297,31 @@ impl PlaybackService {
             .check_permission(&room_id, &user_id, PermissionBits::SEEK)
             .await?;
 
-        let state = self.update_state(room_id.clone(), |state| {
+        let result = self.update_state(room_id.clone(), |state| {
             state.current_time = current_time;
             state.updated_at = chrono::Utc::now();
             // version is incremented by the SQL UPDATE, not here
         })
-        .await?;
+        .await;
 
-        // Cache invalidation is already handled inside update_state()
-        self.broadcast_state_change(&state).await;
-        Ok(state)
+        match result {
+            Ok(state) => {
+                // Cache invalidation is already handled inside update_state()
+                self.broadcast_state_change(&state).await;
+                Ok(state)
+            }
+            Err(Error::Internal(ref msg)) if msg.contains("maximum retry attempts") => {
+                // Degraded response: seek failed due to contention, but return
+                // the latest state so the client can display the current position.
+                tracing::warn!(
+                    room_id = %room_id.as_str(),
+                    requested_time = current_time,
+                    "Seek failed after max retries, returning latest state as degraded response"
+                );
+                self.get_state(&room_id).await
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// Change playback speed
@@ -315,9 +335,9 @@ impl PlaybackService {
             .check_permission(&room_id, &user_id, PermissionBits::CHANGE_SPEED)
             .await?;
 
-        // Validate speed range
-        if !(0.25..=4.0).contains(&speed) {
-            return Err(Error::InvalidInput("Speed must be between 0.25 and 4.0".to_string()));
+        // Validate speed range (must match DB CHECK constraint: speed > 0 AND speed <= 16.0)
+        if speed <= 0.0 || speed > 16.0 {
+            return Err(Error::InvalidInput("Speed must be between 0 (exclusive) and 16.0".to_string()));
         }
 
         let state = self.update_state(room_id.clone(), |state| {
@@ -454,19 +474,27 @@ impl PlaybackService {
             // Handle different play modes
             let next_media = match mode {
                 PlayMode::Sequential => {
-                    // Find next media by position
-                    let current_pos = if let Some(ref current_id) = state.playing_media_id {
-                        playlist.iter()
-                            .position(|m| &m.id == current_id)
-                            .unwrap_or(0)
+                    // Find next media by position.
+                    // If the current media was deleted concurrently (not found in
+                    // playlist), gracefully fall back to the first item instead of
+                    // skipping it.
+                    if let Some(ref current_id) = state.playing_media_id {
+                        match playlist.iter().position(|m| &m.id == current_id) {
+                            Some(pos) if pos + 1 < playlist.len() => {
+                                Some(&playlist[pos + 1])
+                            }
+                            Some(_) => None, // End of playlist
+                            None => {
+                                tracing::warn!(
+                                    room_id = %room_id.as_str(),
+                                    media_id = %current_id.as_str(),
+                                    "Sequential: currently-playing media not found in playlist (deleted?), falling back to first item"
+                                );
+                                playlist.first()
+                            }
+                        }
                     } else {
-                        0
-                    };
-
-                    if current_pos + 1 < playlist.len() {
-                        Some(&playlist[current_pos + 1])
-                    } else {
-                        None // End of playlist
+                        playlist.first()
                     }
                 }
 
@@ -495,17 +523,26 @@ impl PlaybackService {
                 }
 
                 PlayMode::RepeatAll => {
-                    // Loop back to start
-                    let current_pos = if let Some(ref current_id) = state.playing_media_id {
-                        playlist.iter()
-                            .position(|m| &m.id == current_id)
-                            .unwrap_or(0)
+                    // Loop back to start.
+                    // If current media was deleted, fall back to the first item.
+                    if let Some(ref current_id) = state.playing_media_id {
+                        match playlist.iter().position(|m| &m.id == current_id) {
+                            Some(pos) => {
+                                let next_pos = (pos + 1) % playlist.len();
+                                Some(&playlist[next_pos])
+                            }
+                            None => {
+                                tracing::warn!(
+                                    room_id = %room_id.as_str(),
+                                    media_id = %current_id.as_str(),
+                                    "RepeatAll: currently-playing media not found in playlist (deleted?), falling back to first item"
+                                );
+                                playlist.first()
+                            }
+                        }
                     } else {
-                        0
-                    };
-
-                    let next_pos = (current_pos + 1) % playlist.len();
-                    Some(&playlist[next_pos])
+                        playlist.first()
+                    }
                 }
 
                 PlayMode::Shuffle => {
@@ -566,23 +603,36 @@ impl PlaybackService {
                     let cache_key = room_id.as_str().to_string();
                     self.playback_cache.invalidate(&cache_key).await;
 
-                    // Broadcast to other replicas (Issue #28: retry once on failure)
+                    // Broadcast to other replicas (Issue #28: 3 retries with exponential backoff)
                     if let Some(ref service) = self.invalidation_service {
-                        let bc_result = service.update_playback_state(room_id, &saved_state).await;
-                        if let Err(ref e) = bc_result {
-                            tracing::warn!(
-                                error = %e,
-                                room_id = %room_id.as_str(),
-                                "play_next: broadcast failed (attempt 1/2), retrying..."
-                            );
-                            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                            if let Err(e2) = service.update_playback_state(room_id, &saved_state).await {
-                                tracing::error!(
-                                    error = %e2,
-                                    room_id = %room_id.as_str(),
-                                    "play_next: broadcast failed after 2 attempts, replicas may have stale state"
-                                );
+                        let broadcast_delays = [50u64, 100, 200];
+                        let mut broadcast_ok = false;
+                        for (bc_attempt, delay_ms) in broadcast_delays.iter().enumerate() {
+                            match service.update_playback_state(room_id, &saved_state).await {
+                                Ok(()) => {
+                                    broadcast_ok = true;
+                                    break;
+                                }
+                                Err(e) => {
+                                    if bc_attempt + 1 < broadcast_delays.len() {
+                                        tracing::warn!(
+                                            error = %e,
+                                            room_id = %room_id.as_str(),
+                                            attempt = bc_attempt + 1,
+                                            max_attempts = broadcast_delays.len(),
+                                            "play_next: broadcast failed, retrying..."
+                                        );
+                                        tokio::time::sleep(std::time::Duration::from_millis(*delay_ms)).await;
+                                    }
+                                }
                             }
+                        }
+                        if !broadcast_ok {
+                            tracing::error!(
+                                room_id = %room_id.as_str(),
+                                attempts = broadcast_delays.len(),
+                                "play_next: broadcast failed after all retry attempts, replicas may have stale state"
+                            );
                         }
                     }
 
@@ -718,31 +768,43 @@ impl PlaybackService {
                     // it directly into their L1 cache, avoiding the stale-read
                     // window that occurs with invalidation-only messages.
                     //
-                    // Issue #28: Redis broadcast failures are logged at ERROR level.
-                    // A single retry is attempted; if all retries fail, we log
+                    // Issue #28: Redis broadcast uses exponential backoff (3 retries:
+                    // 50ms, 100ms, 200ms). Final failure is logged at ERROR level
                     // with enough context for operators to replay the update.
+                    // DB write already succeeded, so broadcast failure does not
+                    // affect the return value.
                     if let Some(ref service) = self.invalidation_service {
-                        let broadcast_result = service.update_playback_state(&room_id, &updated_state).await;
-                        if let Err(ref e) = broadcast_result {
-                            tracing::warn!(
-                                error = %e,
+                        let broadcast_delays = [50u64, 100, 200];
+                        let mut broadcast_ok = false;
+                        for (bc_attempt, delay_ms) in broadcast_delays.iter().enumerate() {
+                            match service.update_playback_state(&room_id, &updated_state).await {
+                                Ok(()) => {
+                                    broadcast_ok = true;
+                                    break;
+                                }
+                                Err(e) => {
+                                    if bc_attempt + 1 < broadcast_delays.len() {
+                                        tracing::warn!(
+                                            error = %e,
+                                            room_id = %room_id.as_str(),
+                                            attempt = bc_attempt + 1,
+                                            max_attempts = broadcast_delays.len(),
+                                            "Playback broadcast to replicas failed, retrying..."
+                                        );
+                                        tokio::time::sleep(std::time::Duration::from_millis(*delay_ms)).await;
+                                    }
+                                }
+                            }
+                        }
+                        if !broadcast_ok {
+                            tracing::error!(
                                 room_id = %room_id.as_str(),
                                 is_playing = updated_state.is_playing,
                                 current_time = updated_state.current_time,
-                                "Playback broadcast to replicas failed (attempt 1/2), retrying..."
+                                attempts = broadcast_delays.len(),
+                                "Playback broadcast failed after all retry attempts. \
+                                 Other replicas may have stale playback state for up to 5s."
                             );
-                            // Retry once after a brief delay (Issue #28)
-                            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                            if let Err(e2) = service.update_playback_state(&room_id, &updated_state).await {
-                                tracing::error!(
-                                    error = %e2,
-                                    room_id = %room_id.as_str(),
-                                    is_playing = updated_state.is_playing,
-                                    current_time = updated_state.current_time,
-                                    "Playback broadcast failed after 2 attempts. \
-                                     Other replicas may have stale playback state."
-                                );
-                            }
                         }
                     }
 
@@ -869,10 +931,10 @@ impl PlaybackService {
                 .await?;
         }
 
-        // Validate speed range if provided
+        // Validate speed range if provided (must match DB CHECK constraint: speed > 0 AND speed <= 16.0)
         if let Some(s) = speed {
-            if !(0.25..=4.0).contains(&s) {
-                return Err(Error::InvalidInput("Speed must be between 0.25 and 4.0".to_string()));
+            if s <= 0.0 || s > 16.0 {
+                return Err(Error::InvalidInput("Speed must be between 0 (exclusive) and 16.0".to_string()));
             }
         }
 
@@ -937,16 +999,20 @@ mod tests {
 
     #[test]
     fn test_speed_validation_bounds() {
+        // speed > 0 AND speed <= 16.0
+        let valid = |s: f64| s > 0.0 && s <= 16.0;
+
         // Valid boundary values
-        assert!((0.25..=4.0).contains(&0.25));
-        assert!((0.25..=4.0).contains(&4.0));
-        assert!((0.25..=4.0).contains(&1.0));
+        assert!(valid(0.25));
+        assert!(valid(4.0));
+        assert!(valid(1.0));
+        assert!(valid(16.0));
+        assert!(valid(0.01));
 
         // Invalid boundary values
-        assert!(!(0.25..=4.0).contains(&0.24));
-        assert!(!(0.25..=4.0).contains(&4.1));
-        assert!(!(0.25..=4.0).contains(&0.0));
-        assert!(!(0.25..=4.0).contains(&-1.0));
+        assert!(!valid(0.0));
+        assert!(!valid(-1.0));
+        assert!(!valid(16.1));
     }
 
     #[test]

@@ -17,7 +17,6 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use axum::http;
-use sha2::{Digest, Sha256};
 use tonic::body::Body as TonicBody;
 use tower::{Layer, Service};
 use tracing::warn;
@@ -182,10 +181,34 @@ fn room_service_tier(method: Option<&str>) -> GrpcRateLimitTier {
     }
 }
 
+/// Extract user_id from a JWT token without full verification.
+///
+/// Decodes the JWT payload (second segment) to extract the `sub` claim,
+/// which contains the user_id. This is a lightweight parse for rate limiting;
+/// full token verification is handled by the auth/blacklist layers.
+///
+/// Returns `Some("user:{sub}")` on success, `None` if parsing fails
+/// (in which case the caller falls back to token hash).
+fn extract_user_id_from_jwt(token: &str) -> Option<String> {
+    use base64::engine::{general_purpose::URL_SAFE_NO_PAD, Engine};
+
+    let parts: Vec<&str> = token.split('.').collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    let payload = URL_SAFE_NO_PAD.decode(parts[1]).ok()?;
+    let claims: serde_json::Value = serde_json::from_slice(&payload).ok()?;
+    let sub = claims.get("sub")?.as_str()?;
+    if sub.is_empty() {
+        return None;
+    }
+    Some(format!("user:{sub}"))
+}
+
 /// Extract a stable client identifier from HTTP headers.
 ///
 /// Priority:
-/// 1. SHA-256 hash of JWT bearer token (authenticated users)
+/// 1. User ID extracted from JWT bearer token (authenticated users)
 /// 2. Client IP from X-Forwarded-For or X-Real-IP headers (only if from a trusted proxy)
 /// 3. Remote socket address (direct connection)
 /// 4. "anon:unknown" fallback (only if no IP info available)
@@ -194,17 +217,15 @@ fn room_service_tier(method: Option<&str>) -> GrpcRateLimitTier {
 /// from a configured trusted proxy or when development mode is enabled, matching
 /// the HTTP middleware pattern.
 fn extract_client_id(headers: &http::HeaderMap, config: &Config) -> String {
-    // Try authenticated user first - delegate to unified bearer token extraction
+    // Try authenticated user first - extract user_id from JWT claims for stable rate limit key.
+    // This ensures the same user shares a single rate limit bucket across all tokens/devices.
     if let Some(id) = headers
         .get(http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|s| {
             synctv_core::service::auth::JwtValidator::extract_bearer_token(s)
                 .ok()
-                .map(|token| {
-                    let hash = Sha256::digest(token.as_bytes());
-                    format!("user:{hash:x}")
-                })
+                .and_then(|token| extract_user_id_from_jwt(&token))
         })
     {
         return id;
@@ -524,17 +545,27 @@ mod tests {
         config
     }
 
+    /// Build a minimal JWT-like token with the given subject (no signature verification needed).
+    fn fake_jwt(sub: &str) -> String {
+        use base64::engine::{general_purpose::URL_SAFE_NO_PAD, Engine};
+        let header = URL_SAFE_NO_PAD.encode(b"{\"alg\":\"HS256\"}");
+        let payload = URL_SAFE_NO_PAD.encode(
+            serde_json::json!({"sub": sub, "exp": 9999999999_i64}).to_string().as_bytes(),
+        );
+        format!("{header}.{payload}.fakesig")
+    }
+
     #[test]
     fn test_extract_client_id_bearer() {
         let config = test_config();
         let mut headers = http::HeaderMap::new();
+        let token = fake_jwt("user123");
         headers.insert(
             http::header::AUTHORIZATION,
-            "Bearer my_token_here".parse().unwrap(),
+            format!("Bearer {token}").parse().unwrap(),
         );
         let id = extract_client_id(&headers, &config);
-        assert!(id.starts_with("user:"));
-        assert!(id.len() > 10); // SHA-256 hex is 64 chars
+        assert_eq!(id, "user:user123");
     }
 
     #[test]
@@ -592,12 +623,13 @@ mod tests {
     fn test_extract_client_id_bearer_takes_priority_over_ip() {
         let config = trusted_proxy_config();
         let mut headers = http::HeaderMap::new();
+        let token = fake_jwt("user_priority");
         headers.insert(
             http::header::AUTHORIZATION,
-            "Bearer my_token_here".parse().unwrap(),
+            format!("Bearer {token}").parse().unwrap(),
         );
         headers.insert("X-Forwarded-For", "203.0.113.50".parse().unwrap());
         let id = extract_client_id(&headers, &config);
-        assert!(id.starts_with("user:"), "Bearer token should take priority over IP");
+        assert_eq!(id, "user:user_priority");
     }
 }

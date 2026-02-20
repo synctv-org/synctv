@@ -58,6 +58,8 @@ pub struct MediaService {
     providers_manager: Arc<ProvidersManager>,
     /// Optional notification service for broadcasting media changes to local WebSocket clients
     notification_service: Option<NotificationService>,
+    /// Optional credential encryption for protecting sensitive data in source_config
+    credential_encryption: Option<crate::service::CredentialEncryption>,
 }
 
 impl std::fmt::Debug for MediaService {
@@ -81,12 +83,18 @@ impl MediaService {
             permission_service,
             providers_manager,
             notification_service: None,
+            credential_encryption: None,
         }
     }
 
     /// Set the notification service for broadcasting media changes to local WebSocket clients
     pub fn set_notification_service(&mut self, service: NotificationService) {
         self.notification_service = Some(service);
+    }
+
+    /// Set credential encryption for protecting sensitive data in source_config
+    pub fn set_credential_encryption(&mut self, encryption: crate::service::CredentialEncryption) {
+        self.credential_encryption = Some(encryption);
     }
 
     /// Add media to a playlist
@@ -132,14 +140,23 @@ impl MediaService {
             })?;
 
         // Validate source_config using provider trait method
-        let ctx = ProviderContext::new("synctv")
+        let mut ctx = ProviderContext::new("synctv")
             .with_user_id(user_id.as_str())
             .with_room_id(room_id.as_str());
+        if let Some(ref enc) = self.credential_encryption {
+            ctx = ctx.with_credential_encryption(enc);
+        }
 
         provider
             .validate_source_config(&ctx, &request.source_config)
             .await
             .map_err(|e| Error::InvalidInput(format!("Invalid source_config: {e}")))?;
+
+        // Prepare source_config for storage (encrypt sensitive fields if applicable)
+        let prepared_source_config = provider
+            .prepare_source_config(&ctx, request.source_config.clone())
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to prepare source_config: {e}")))?;
 
         // Use a transaction to atomically get the next position and insert,
         // preventing concurrent adds from getting the same position
@@ -155,7 +172,7 @@ impl MediaService {
             room_id.clone(),
             Some(user_id.clone()),
             request.name.clone(),
-            request.source_config.clone(),
+            prepared_source_config,
             provider.name(),  // Provider type name (e.g., "bilibili")
             request.provider_instance_name.clone(),  // Instance name (e.g., "bilibili_main")
             position,
@@ -229,9 +246,12 @@ impl MediaService {
         }
 
         // Create provider context for validation
-        let ctx = ProviderContext::new("synctv")
+        let mut ctx = ProviderContext::new("synctv")
             .with_user_id(user_id.as_str())
             .with_room_id(room_id.as_str());
+        if let Some(ref enc) = self.credential_encryption {
+            ctx = ctx.with_credential_encryption(enc);
+        }
 
         // Validate all items before starting a transaction
         let mut validated_items = Vec::with_capacity(items.len());
@@ -254,7 +274,13 @@ impl MediaService {
                 .await
                 .map_err(|e| Error::InvalidInput(format!("Invalid source_config for item '{}': {}", item.name, e)))?;
 
-            validated_items.push((item, provider));
+            // Prepare source_config for storage (encrypt sensitive fields if applicable)
+            let prepared_source_config = provider
+                .prepare_source_config(&ctx, item.source_config.clone())
+                .await
+                .map_err(|e| Error::Internal(format!("Failed to prepare source_config for item '{}': {}", item.name, e)))?;
+
+            validated_items.push((item, provider, prepared_source_config));
         }
 
         // Use a transaction to atomically get the next position and batch insert,
@@ -266,13 +292,13 @@ impl MediaService {
 
         // Create media items with provider info
         let mut media_items = Vec::with_capacity(validated_items.len());
-        for (index, (item, provider)) in validated_items.into_iter().enumerate() {
+        for (index, (item, provider, prepared_source_config)) in validated_items.into_iter().enumerate() {
             let media = Media::from_provider(
                 item.playlist_id,
                 room_id.clone(),
                 Some(user_id.clone()),
                 item.name,
-                item.source_config,
+                prepared_source_config,
                 provider.name(),  // Provider type name
                 item.provider_instance_name,  // Instance name
                 start_position + i32::try_from(index).unwrap_or(i32::MAX),
@@ -740,6 +766,7 @@ impl MediaService {
             key_prefix: "synctv",
             db: None,
             redis: None,
+            credential_encryption: None,
         };
 
         // List items

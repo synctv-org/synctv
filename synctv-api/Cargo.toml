@@ -76,6 +76,7 @@ tracing-subscriber.workspace = true
 config.workspace = true
 clap.workspace = true
 regex.workspace = true
+ammonia.workspace = true
 
 [lints]
 workspace = true

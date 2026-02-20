@@ -150,13 +150,14 @@ impl From<synctv_core::provider::ProviderError> for AppError {
             ProviderError::NetworkError(msg) => Self::new(StatusCode::BAD_GATEWAY, msg),
             ProviderError::ApiError(msg) => Self::new(StatusCode::BAD_GATEWAY, msg),
             ProviderError::UpstreamHttp { status, url } => {
+                tracing::error!(upstream_url = %url, status = status, "Upstream HTTP error");
                 let http_status = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
                 let mapped = if http_status.is_client_error() {
                     http_status
                 } else {
                     StatusCode::BAD_GATEWAY
                 };
-                Self::new(mapped, format!("Upstream HTTP {status} for {url}"))
+                Self::new(mapped, format!("Upstream HTTP {status} error"))
             }
             ProviderError::ParseError(msg) => Self::bad_request(msg),
             ProviderError::InvalidConfig(msg) => Self::bad_request(msg),

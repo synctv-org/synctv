@@ -83,6 +83,8 @@ pub struct Services {
     pub settings_listen_task: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
     /// Audit flush handle for graceful shutdown of audit logging
     pub audit_flush_handle: Arc<tokio::sync::Mutex<Option<AuditFlushHandle>>>,
+    /// Credential encryption for protecting sensitive data (optional)
+    pub credential_encryption: Option<crate::service::CredentialEncryption>,
 }
 
 impl Services {
@@ -217,8 +219,10 @@ pub async fn init_services(
     cache_manager.start_invalidation_listener(&cache_invalidation);
     info!("CacheManager initialized with invalidation listener and bloom filter protection");
 
-    // Initialize credential encryption (shared by both repositories)
+    // Initialize credential encryption (shared by both repositories and media providers)
     let credential_encryption = init_credential_encryption();
+    // Keep a clone for use by media providers (source_config cookie encryption)
+    let credential_encryption_for_services = credential_encryption.clone();
 
     // Initialize ProviderInstanceRepository (with optional encryption for jwt_secret/custom_ca)
     let provider_instance_repo = match &credential_encryption {
@@ -397,6 +401,7 @@ pub async fn init_services(
         settings_cancel,
         settings_listen_task: Arc::new(tokio::sync::Mutex::new(Some(settings_listen_task))),
         audit_flush_handle: Arc::new(tokio::sync::Mutex::new(Some(audit_flush_handle))),
+        credential_encryption: credential_encryption_for_services,
     })
 }
 

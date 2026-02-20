@@ -8,6 +8,12 @@ use synctv_core::models::id::{RoomId, UserId};
 use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, info, warn};
 
+/// Timeout for delivering critical events to slow consumers.
+/// Critical events (kick, ban, room deletion) use a bounded wait instead of
+/// fire-and-forget spawn to ensure they are reliably delivered before the
+/// connection is closed.
+const CRITICAL_EVENT_SEND_TIMEOUT: Duration = Duration::from_secs(5);
+
 use super::events::ClusterEvent;
 
 /// Notification about room lifecycle changes (first subscriber / last unsubscribe).
@@ -361,21 +367,38 @@ impl RoomMessageHub {
                         }
                         Err(mpsc::error::TrySendError::Full(_)) => {
                             if is_critical {
-                                // Critical events must not be dropped. Spawn a task
-                                // that uses the async `.send()` to block until space
-                                // is available, ensuring the event is delivered even
-                                // to slow consumers.
+                                // Critical events must not be dropped. Use a
+                                // bounded timeout to wait for channel space rather
+                                // than a fire-and-forget spawn, so delivery is
+                                // tracked and failures are observable.
                                 let sender = subscriber.sender.clone();
                                 let event_clone = event.clone();
                                 let conn_id = subscriber.connection_id.clone();
-                                let room_id_str = room_id.as_str().to_string();
+                                let room_id_clone = room_id.clone();
+                                let event_type = event.event_type().to_string();
                                 tokio::spawn(async move {
-                                    if let Err(e) = sender.send(event_clone).await {
-                                        warn!(
-                                            room_id = %room_id_str,
-                                            connection_id = %conn_id,
-                                            "Failed to deliver critical event (channel closed): {e}"
-                                        );
+                                    match tokio::time::timeout(
+                                        CRITICAL_EVENT_SEND_TIMEOUT,
+                                        sender.send(event_clone),
+                                    ).await {
+                                        Ok(Ok(())) => {}
+                                        Ok(Err(e)) => {
+                                            warn!(
+                                                room_id = %room_id_clone.as_str(),
+                                                connection_id = %conn_id,
+                                                event_type = %event_type,
+                                                "Failed to deliver critical event (channel closed): {e}"
+                                            );
+                                        }
+                                        Err(_) => {
+                                            warn!(
+                                                room_id = %room_id_clone.as_str(),
+                                                connection_id = %conn_id,
+                                                event_type = %event_type,
+                                                timeout_secs = CRITICAL_EVENT_SEND_TIMEOUT.as_secs(),
+                                                "Critical event delivery timed out, slow consumer may miss event"
+                                            );
+                                        }
                                     }
                                 });
                                 sent_count += 1;
@@ -436,7 +459,10 @@ impl RoomMessageHub {
         sent_count
     }
 
-    /// Broadcast an event to a specific user in a room
+    /// Broadcast an event to a specific user in a room.
+    ///
+    /// Like `broadcast()`, critical events bypass the slow-consumer drop logic
+    /// and use a bounded timeout to ensure reliable delivery.
     pub fn broadcast_to_user(
         &self,
         room_id: &RoomId,
@@ -445,6 +471,7 @@ impl RoomMessageHub {
     ) -> usize {
         let mut sent_count = 0;
         let mut failed_connections = Vec::new();
+        let is_critical = event.is_critical();
 
         // LOCK ORDERING: Same pattern as broadcast() -- scoped read guard on
         // `rooms` must be dropped before calling `unsubscribe()`.
@@ -466,26 +493,61 @@ impl RoomMessageHub {
                                 );
                             }
                             Err(mpsc::error::TrySendError::Full(_)) => {
-                                let drops = subscriber.consecutive_drops.fetch_add(1, Ordering::Relaxed) + 1;
-                                if drops >= MAX_CONSECUTIVE_DROPS {
-                                    warn!(
-                                        room_id = %room_id.as_str(),
-                                        user_id = %subscriber.user_id.as_str(),
-                                        connection_id = %subscriber.connection_id,
-                                        consecutive_drops = drops,
-                                        "Disconnecting persistently slow subscriber after {} consecutive drops (targeted)",
-                                        MAX_CONSECUTIVE_DROPS
-                                    );
-                                    failed_connections.push(subscriber.connection_id.clone());
+                                if is_critical {
+                                    // Critical events: same timeout-based delivery as broadcast()
+                                    let sender = subscriber.sender.clone();
+                                    let event_clone = event.clone();
+                                    let conn_id = subscriber.connection_id.clone();
+                                    let room_id_clone = room_id.clone();
+                                    let event_type = event.event_type().to_string();
+                                    tokio::spawn(async move {
+                                        match tokio::time::timeout(
+                                            CRITICAL_EVENT_SEND_TIMEOUT,
+                                            sender.send(event_clone),
+                                        ).await {
+                                            Ok(Ok(())) => {}
+                                            Ok(Err(e)) => {
+                                                warn!(
+                                                    room_id = %room_id_clone.as_str(),
+                                                    connection_id = %conn_id,
+                                                    event_type = %event_type,
+                                                    "Failed to deliver critical event to user (channel closed): {e}"
+                                                );
+                                            }
+                                            Err(_) => {
+                                                warn!(
+                                                    room_id = %room_id_clone.as_str(),
+                                                    connection_id = %conn_id,
+                                                    event_type = %event_type,
+                                                    timeout_secs = CRITICAL_EVENT_SEND_TIMEOUT.as_secs(),
+                                                    "Critical event delivery to user timed out"
+                                                );
+                                            }
+                                        }
+                                    });
+                                    sent_count += 1;
                                 } else {
-                                    warn!(
-                                        room_id = %room_id.as_str(),
-                                        user_id = %subscriber.user_id.as_str(),
-                                        connection_id = %subscriber.connection_id,
-                                        event_type = %event.event_type(),
-                                        consecutive_drops = drops,
-                                        "Subscriber channel full, dropping event for slow consumer"
-                                    );
+                                    let drops = subscriber.consecutive_drops.fetch_add(1, Ordering::Relaxed) + 1;
+                                    if drops >= MAX_CONSECUTIVE_DROPS {
+                                        warn!(
+                                            room_id = %room_id.as_str(),
+                                            user_id = %subscriber.user_id.as_str(),
+                                            connection_id = %subscriber.connection_id,
+                                            consecutive_drops = drops,
+                                            "Disconnecting persistently slow subscriber after {} consecutive drops (targeted)",
+                                            MAX_CONSECUTIVE_DROPS
+                                        );
+                                        failed_connections.push(subscriber.connection_id.clone());
+                                    } else {
+                                        warn!(
+                                            room_id = %room_id.as_str(),
+                                            user_id = %subscriber.user_id.as_str(),
+                                            connection_id = %subscriber.connection_id,
+                                            event_type = %event.event_type(),
+                                            consecutive_drops = drops,
+                                            "Subscriber channel full, dropping event for slow consumer"
+                                        );
+                                    }
                                 }
                             }
                             Err(mpsc::error::TrySendError::Closed(_)) => {

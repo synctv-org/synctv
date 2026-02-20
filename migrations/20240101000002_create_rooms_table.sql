@@ -47,31 +47,5 @@ COMMENT ON COLUMN rooms.description IS 'Room description, max 500 characters';
 COMMENT ON COLUMN rooms.status IS 'Room lifecycle status: 1=active, 2=pending, 3=closed';
 COMMENT ON COLUMN rooms.is_banned IS 'Ban flag set by global admin. Room retains its status when banned/unbanned.';
 
--- ============================================================================
--- Room Deletion Notification (for cluster-wide resource cleanup)
--- ============================================================================
 
-CREATE OR REPLACE FUNCTION notify_room_deleted()
-RETURNS TRIGGER AS $$
-BEGIN
-    -- Send notification to all cluster nodes listening on 'synctv_room_deleted'
-    -- Enables stateless cleanup without requiring PersistentVolumeClaim/WAL
-    PERFORM pg_notify(
-        'synctv_room_deleted',
-        json_build_object(
-            'room_id', OLD.id,
-            'timestamp', CURRENT_TIMESTAMP
-        )::text
-    );
-    RETURN OLD;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER trigger_room_deleted
-AFTER DELETE ON rooms
-FOR EACH ROW
-EXECUTE FUNCTION notify_room_deleted();
-
-COMMENT ON FUNCTION notify_room_deleted IS
-'Sends a notification when a room is deleted. Cluster nodes listen for this to clear room caches, disconnect connections, and invalidate room state.';
 

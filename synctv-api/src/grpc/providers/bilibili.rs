@@ -18,8 +18,6 @@ use crate::grpc::map_provider_error as api_err;
 /// Thin wrapper that delegates to `BilibiliApiImpl`.
 #[derive(Clone)]
 pub struct BilibiliProviderGrpcService {
-    #[allow(dead_code)]
-    app_state: Arc<AppState>,
     api: BilibiliApiImpl,
 }
 
@@ -27,7 +25,7 @@ impl BilibiliProviderGrpcService {
     #[must_use]
     pub fn new(app_state: Arc<AppState>) -> Self {
         let api = BilibiliApiImpl::new(app_state.bilibili_provider.clone());
-        Self { app_state, api }
+        Self { api }
     }
 }
 

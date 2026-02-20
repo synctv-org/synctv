@@ -159,6 +159,7 @@ impl StreamDataTransceiver {
         generation: &Arc<AtomicU64>,
         cached_snapshot: &mut Vec<(Uuid, FrameDataSender, Arc<AtomicU64>)>,
         cached_gen: &mut u64,
+        statistics_data: &Arc<Mutex<StatisticsStream>>,
     ) {
         if let Some(val) = data {
             // Only rebuild snapshot when subscriber set has changed
@@ -182,6 +183,7 @@ impl StreamDataTransceiver {
 
             // Remove closed subscribers and bump generation
             if !closed_ids.is_empty() {
+                let closed_count = closed_ids.len();
                 let mut guard = frame_senders.lock().await;
                 for id in &closed_ids {
                     guard.remove(id);
@@ -191,6 +193,13 @@ impl StreamDataTransceiver {
                 generation.fetch_add(1, Ordering::Release);
                 // Invalidate cached snapshot immediately
                 *cached_gen = cached_gen.wrapping_add(u64::MAX); // Force mismatch
+
+                // Decrement subscriber_count for subscribers removed by fan-out.
+                // Without this, subscriber_count only decrements on explicit UnSubscribe
+                // events, causing permanently inflated counts when subscribers disconnect
+                // without sending UnSubscribe.
+                let mut stats = statistics_data.lock().await;
+                stats.subscriber_count = stats.subscriber_count.saturating_sub(closed_count);
             }
         }
     }
@@ -201,6 +210,7 @@ impl StreamDataTransceiver {
         frame_senders: Arc<Mutex<HashMap<Uuid, SubscriberDropCounter>>>,
         generation: Arc<AtomicU64>,
         event_sender: Option<mpsc::Sender<TransceiverEvent>>,
+        statistics_data: Arc<Mutex<StatisticsStream>>,
     ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             // Cached snapshot: only rebuilt when generation counter changes
@@ -242,6 +252,7 @@ impl StreamDataTransceiver {
                             &generation,
                             &mut cached_snapshot,
                             &mut cached_gen,
+                            &statistics_data,
                         ).await;
                     }
                     _ = exit.recv()=>{
@@ -259,6 +270,7 @@ impl StreamDataTransceiver {
         generation: &Arc<AtomicU64>,
         cached_snapshot: &mut Vec<(Uuid, PacketDataSender, Arc<AtomicU64>)>,
         cached_gen: &mut u64,
+        statistics_data: &Arc<Mutex<StatisticsStream>>,
     ) {
         if let Some(val) = data {
             let current_gen = generation.load(Ordering::Acquire);
@@ -278,6 +290,7 @@ impl StreamDataTransceiver {
             let closed_ids = Self::fan_out_packet(cached_snapshot, val);
 
             if !closed_ids.is_empty() {
+                let closed_count = closed_ids.len();
                 let mut guard = packet_senders.lock().await;
                 for id in &closed_ids {
                     guard.remove(id);
@@ -285,6 +298,10 @@ impl StreamDataTransceiver {
                 }
                 generation.fetch_add(1, Ordering::Release);
                 *cached_gen = cached_gen.wrapping_add(u64::MAX);
+
+                // Decrement subscriber_count for subscribers removed by fan-out.
+                let mut stats = statistics_data.lock().await;
+                stats.subscriber_count = stats.subscriber_count.saturating_sub(closed_count);
             }
         }
     }
@@ -295,6 +312,7 @@ impl StreamDataTransceiver {
         packet_senders: Arc<Mutex<HashMap<Uuid, PacketSubscriberDropCounter>>>,
         generation: Arc<AtomicU64>,
         event_sender: Option<mpsc::Sender<TransceiverEvent>>,
+        statistics_data: Arc<Mutex<StatisticsStream>>,
     ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             let mut cached_snapshot: Vec<(Uuid, PacketDataSender, Arc<AtomicU64>)> = Vec::new();
@@ -334,6 +352,7 @@ impl StreamDataTransceiver {
                             &generation,
                             &mut cached_snapshot,
                             &mut cached_gen,
+                            &statistics_data,
                         ).await;
                     }
                     _ = exit.recv()=>{
@@ -591,6 +610,7 @@ impl StreamDataTransceiver {
                 self.id_to_frame_sender.clone(),
                 Arc::clone(&self.frame_generation),
                 Some(event_sender.clone()),
+                self.statistic_data.clone(),
             );
             tasks.spawn(async move { handle.await.ok(); });
         }
@@ -602,6 +622,7 @@ impl StreamDataTransceiver {
                 self.id_to_packet_sender.clone(),
                 Arc::clone(&self.packet_generation),
                 Some(event_sender.clone()),
+                self.statistic_data.clone(),
             );
             tasks.spawn(async move { handle.await.ok(); });
         }
@@ -978,18 +999,46 @@ impl StreamsHub {
         match self.streams.remove(identifier) {
             Some(producer) => {
                 let event = TransceiverEvent::UnPublish {};
-                if let Err(e) = producer.try_send(event) {
-                    // Channel full or closed. Since we already removed the sender
-                    // from `streams`, the transceiver holds the only remaining
-                    // sender clone (via the data loops). Dropping `producer` here
-                    // reduces the sender count. When the data loops also finish,
-                    // all senders are dropped, causing `event_receiver.recv()` in
-                    // the transceiver to return `None`, which triggers exit.
-                    // This prevents zombie transceivers when try_send fails.
-                    tracing::warn!(
-                        "unpublish try_send failed for {identifier}: {e}. \
-                         Streams entry removed; transceiver will exit when all senders drop."
-                    );
+                match producer.try_send(event) {
+                    Ok(()) => {}
+                    Err(mpsc::error::TrySendError::Full(event)) => {
+                        // Channel full: spawn a task to deliver with a timeout.
+                        // Without this, the transceiver's data loops would keep running
+                        // as zombie tasks until their data channels close naturally.
+                        let id_str = format!("{identifier}");
+                        tokio::spawn(async move {
+                            match tokio::time::timeout(
+                                std::time::Duration::from_secs(5),
+                                producer.send(event),
+                            ).await {
+                                Ok(Ok(())) => {
+                                    tracing::info!(
+                                        "unpublish: delivered UnPublish after backpressure for {id_str}"
+                                    );
+                                }
+                                Ok(Err(_)) => {
+                                    tracing::warn!(
+                                        "unpublish: channel closed for {id_str}; \
+                                         transceiver will exit when all senders drop"
+                                    );
+                                }
+                                Err(_) => {
+                                    tracing::error!(
+                                        "unpublish: timed out sending UnPublish for {id_str}; \
+                                         dropping sender to force transceiver exit"
+                                    );
+                                    // Dropping `producer` reduces sender count, eventually
+                                    // causing transceiver exit when data loops also finish.
+                                }
+                            }
+                        });
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                        tracing::warn!(
+                            "unpublish: channel already closed for {identifier}; \
+                             transceiver has already exited"
+                        );
+                    }
                 }
                 tracing::info!("unpublish remove stream, stream identifier: {identifier}");
 

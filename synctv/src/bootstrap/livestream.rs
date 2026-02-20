@@ -38,6 +38,14 @@ pub async fn init_livestream(
 
     let mut background_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
 
+    // Start periodic cleanup of stale stream tracker entries.
+    // When a publisher crashes without a clean on_unpublish, secondary indexes
+    // can retain orphaned references. This background task cleans them up.
+    let tracker_cleanup_handle = user_stream_tracker.start_periodic_cleanup(
+        std::time::Duration::from_secs(60),
+    );
+    background_handles.push(tracker_cleanup_handle);
+
     let lifecycle_handle = tokio::spawn(async move {
         while let Ok(event) = stream_lifecycle_rx.recv().await {
             match event {

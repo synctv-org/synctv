@@ -254,12 +254,16 @@ pub async fn resolve_provider_playback_url(
     provider: &dyn MediaProvider,
     room_service: &RoomService,
     redis_conn: Option<&redis::aio::ConnectionManager>,
+    credential_encryption: Option<&synctv_core::service::CredentialEncryption>,
 ) -> Result<(String, HashMap<String, String>), ApiError> {
     let media = resolve_media_from_playlist(user_id, room_id, media_id, room_service).await?;
 
-    let ctx = ProviderContext::new("synctv")
+    let mut ctx = ProviderContext::new("synctv")
         .with_user_id(user_id.as_str())
         .with_room_id(room_id.as_str());
+    if let Some(enc) = credential_encryption {
+        ctx = ctx.with_credential_encryption(enc);
+    }
 
     let playback_result = cached_generate_playback(
         provider,
@@ -298,12 +302,16 @@ pub async fn resolve_provider_playback_result(
     provider: &dyn MediaProvider,
     room_service: &RoomService,
     redis_conn: Option<&redis::aio::ConnectionManager>,
+    credential_encryption: Option<&synctv_core::service::CredentialEncryption>,
 ) -> Result<ProviderPlaybackResult, ApiError> {
     let media = resolve_media_from_playlist(user_id, room_id, media_id, room_service).await?;
 
-    let ctx = ProviderContext::new("synctv")
+    let mut ctx = ProviderContext::new("synctv")
         .with_user_id(user_id.as_str())
         .with_room_id(room_id.as_str());
+    if let Some(enc) = credential_encryption {
+        ctx = ctx.with_credential_encryption(enc);
+    }
 
     cached_generate_playback(
         provider,

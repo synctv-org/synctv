@@ -104,7 +104,7 @@ impl AuditLogRepository {
         // ── List query ────────────────────────────────────────────────────────
         let mut list_builder: QueryBuilder<Postgres> = QueryBuilder::new(
             "SELECT id, actor_id, actor_username, action, target_type, target_id, \
-             details, host(ip_address)::text AS ip_address, user_agent, created_at \
+             details, ip_address, user_agent, created_at \
              FROM audit_logs WHERE ",
         );
         Self::push_filters(&mut list_builder, query, effective_from);
@@ -128,7 +128,7 @@ impl AuditLogRepository {
     pub async fn get_by_id(&self, id: i64) -> Result<Option<AuditLogRow>> {
         let row = sqlx::query_as::<_, AuditLogRow>(
             "SELECT id, actor_id, actor_username, action, target_type, target_id, \
-             details, host(ip_address)::text AS ip_address, user_agent, created_at \
+             details, ip_address, user_agent, created_at \
              FROM audit_logs \
              WHERE id = $1 AND created_at >= NOW() - INTERVAL '365 days'"
         )

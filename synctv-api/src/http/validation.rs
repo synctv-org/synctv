@@ -137,7 +137,7 @@ pub fn sanitize_string(input: &str) -> Cow<'_, str> {
 pub fn validate_username(username: &str) -> ValidationResult<String> {
     let sanitized = sanitize_string(username);
 
-    let len = sanitized.len();
+    let len = sanitized.chars().count();
     if len < limits::USERNAME_MIN {
         return Err(ValidationError::TooShort {
             field: "username",
@@ -162,7 +162,7 @@ pub fn validate_username(username: &str) -> ValidationResult<String> {
 
 /// Validate password strength
 pub fn validate_password(password: &str) -> ValidationResult<()> {
-    let len = password.len();
+    let len = password.chars().count();
 
     if len < limits::PASSWORD_MIN {
         return Err(ValidationError::TooShort {
@@ -303,15 +303,13 @@ pub fn validate_chat_message(message: &str) -> ValidationResult<String> {
         });
     }
 
-    // Check for script injection (but allow some HTML for formatting if needed)
-    // For strict security, we could block all HTML
-    if patterns::HTML_TAGS.is_match(&sanitized) {
-        // Strip HTML tags for chat messages
-        let stripped = patterns::HTML_TAGS.replace_all(&sanitized, "").into_owned();
-        return Ok(stripped);
+    // Sanitize HTML using ammonia (allows safe subset like <b>, <i>, <em>, <strong>)
+    let cleaned = ammonia::clean(&sanitized);
+    if cleaned.is_empty() {
+        return Err(ValidationError::Required("message"));
     }
 
-    Ok(sanitized.into_owned())
+    Ok(cleaned)
 }
 
 /// Validate URL format
@@ -546,8 +544,11 @@ mod tests {
         assert!(validate_chat_message("Hello world").is_ok());
         assert!(validate_chat_message("").is_err()); // Empty
         assert!(validate_chat_message(&"a".repeat(5001)).is_err()); // Too long
-        // HTML should be stripped
+        // Safe HTML (like <b>) is preserved by ammonia
         let result = validate_chat_message("<b>Hello</b>").unwrap();
+        assert_eq!(result, "<b>Hello</b>");
+        // Dangerous HTML (like <script>) is stripped
+        let result = validate_chat_message("<script>alert('xss')</script>Hello").unwrap();
         assert_eq!(result, "Hello");
     }
 

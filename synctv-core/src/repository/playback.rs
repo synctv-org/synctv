@@ -19,16 +19,16 @@ impl RoomPlaybackStateRepository {
 
     /// Create or get playback state for room
     ///
-    /// Uses `ON CONFLICT DO UPDATE` to always return via RETURNING, avoiding
-    /// the TOCTOU race of a separate check-then-insert pattern.
+    /// Uses `ON CONFLICT DO NOTHING` followed by a SELECT to avoid triggering
+    /// the `updated_at` BEFORE UPDATE trigger on existing rows.
     pub async fn create_or_get(&self, room_id: &RoomId) -> Result<RoomPlaybackState> {
         let state = RoomPlaybackState::new(room_id.clone());
 
-        let result = sqlx::query_as::<_, RoomPlaybackState>(
+        // Attempt insert; if the row already exists, do nothing
+        sqlx::query(
             "INSERT INTO room_playback_state (room_id, current_time, speed, is_playing, updated_at, version)
              VALUES ($1, $2, $3, $4, $5, $6)
-             ON CONFLICT (room_id) DO UPDATE SET room_id = EXCLUDED.room_id
-             RETURNING room_id, playing_media_id, playing_playlist_id, relative_path, current_time, speed, is_playing, updated_at, version"
+             ON CONFLICT (room_id) DO NOTHING"
         )
         .bind(room_id.as_str())
         .bind(state.current_time)
@@ -36,24 +36,37 @@ impl RoomPlaybackStateRepository {
         .bind(state.is_playing)
         .bind(state.updated_at)
         .bind(state.version)
+        .execute(&self.pool)
+        .await?;
+
+        // Fetch the row (either just inserted or already existing)
+        let result = sqlx::query_as::<_, RoomPlaybackState>(
+            "SELECT room_id, playing_media_id, playing_playlist_id, relative_path, current_time, speed, is_playing, updated_at, version
+             FROM room_playback_state
+             WHERE room_id = $1"
+        )
+        .bind(room_id.as_str())
         .fetch_one(&self.pool)
         .await?;
 
         Ok(result)
     }
 
-    /// Create or get playback state using a provided executor (pool or transaction)
-    pub async fn create_or_get_with_executor<'e, E>(&self, room_id: &RoomId, executor: E) -> Result<RoomPlaybackState>
-    where
-        E: sqlx::PgExecutor<'e>,
+    /// Create or get playback state using a provided transaction
+    ///
+    /// Uses `ON CONFLICT DO NOTHING` followed by a SELECT to avoid triggering
+    /// the `updated_at` BEFORE UPDATE trigger on existing rows.
+    ///
+    /// Accepts `&mut PgConnection` so the connection can be reborrowed for
+    /// the follow-up SELECT query within the same transaction.
+    pub async fn create_or_get_with_executor(&self, room_id: &RoomId, conn: &mut sqlx::PgConnection) -> Result<RoomPlaybackState>
     {
         let state = RoomPlaybackState::new(room_id.clone());
 
-        let result = sqlx::query_as::<_, RoomPlaybackState>(
+        sqlx::query(
             "INSERT INTO room_playback_state (room_id, current_time, speed, is_playing, updated_at, version)
              VALUES ($1, $2, $3, $4, $5, $6)
-             ON CONFLICT (room_id) DO UPDATE SET room_id = EXCLUDED.room_id
-             RETURNING room_id, playing_media_id, playing_playlist_id, relative_path, current_time, speed, is_playing, updated_at, version"
+             ON CONFLICT (room_id) DO NOTHING"
         )
         .bind(room_id.as_str())
         .bind(state.current_time)
@@ -61,7 +74,16 @@ impl RoomPlaybackStateRepository {
         .bind(state.is_playing)
         .bind(state.updated_at)
         .bind(state.version)
-        .fetch_one(executor)
+        .execute(&mut *conn)
+        .await?;
+
+        let result = sqlx::query_as::<_, RoomPlaybackState>(
+            "SELECT room_id, playing_media_id, playing_playlist_id, relative_path, current_time, speed, is_playing, updated_at, version
+             FROM room_playback_state
+             WHERE room_id = $1"
+        )
+        .bind(room_id.as_str())
+        .fetch_one(&mut *conn)
         .await?;
 
         Ok(result)

@@ -86,6 +86,7 @@ pub struct ClientApiConfig {
     pub live_streaming_infrastructure: Option<Arc<synctv_livestream::api::LiveStreamingInfrastructure>>,
     pub providers_manager: Option<Arc<synctv_core::service::ProvidersManager>>,
     pub settings_registry: Option<Arc<synctv_core::service::SettingsRegistry>>,
+    pub credential_encryption: Option<synctv_core::service::CredentialEncryption>,
 }
 
 /// Client API implementation
@@ -109,6 +110,8 @@ pub struct ClientApiImpl {
     /// built-in STUN server started successfully with a valid external address.
     /// When `None`, the built-in STUN entry is omitted from ICE server lists.
     pub builtin_stun_url: Option<String>,
+    /// Credential encryption for protecting sensitive data in source_config
+    pub credential_encryption: Option<synctv_core::service::CredentialEncryption>,
 }
 
 impl ClientApiImpl {
@@ -142,6 +145,7 @@ impl ClientApiImpl {
             redis_conn: None,
             rate_limiter: None,
             builtin_stun_url: None,
+            credential_encryption: None,
         }
     }
 
@@ -162,6 +166,7 @@ impl ClientApiImpl {
             redis_conn: None,
             rate_limiter: None,
             builtin_stun_url: None,
+            credential_encryption: config.credential_encryption,
         }
     }
 
@@ -176,6 +181,13 @@ impl ClientApiImpl {
     #[must_use]
     pub fn with_redis_conn(mut self, conn: Option<crate::SharedRedisConn>) -> Self {
         self.redis_conn = conn;
+        self
+    }
+
+    /// Set credential encryption for protecting sensitive data in source_config
+    #[must_use]
+    pub fn with_credential_encryption(mut self, enc: Option<synctv_core::service::CredentialEncryption>) -> Self {
+        self.credential_encryption = enc;
         self
     }
 

@@ -629,7 +629,9 @@ impl DynamicFolder for EmbyProvider {
             }
             PlayMode::Sequential | PlayMode::RepeatAll => {
                 // Get directory listing with pagination instead of fetching all at once.
+                // Cap at MAX_PAGES to prevent memory exhaustion on huge libraries.
                 const PAGE_SIZE: usize = 50;
+                const MAX_PAGES: usize = 20;
                 let mut all_items = Vec::new();
                 let mut page = 0;
                 loop {
@@ -642,6 +644,13 @@ impl DynamicFolder for EmbyProvider {
                         break;
                     }
                     page += 1;
+                    if page >= MAX_PAGES {
+                        tracing::warn!(
+                            "Emby DynamicFolder next(): hit MAX_PAGES limit ({MAX_PAGES}), \
+                             folder may have more items"
+                        );
+                        break;
+                    }
                 }
                 let items = all_items;
 
@@ -703,8 +712,10 @@ impl DynamicFolder for EmbyProvider {
                 Ok(None)
             }
             PlayMode::Shuffle => {
-                // Get all video/audio items and pick random, using paginated fetching
+                // Get all video/audio items and pick random, using paginated fetching.
+                // Cap at MAX_PAGES to prevent memory exhaustion.
                 const PAGE_SIZE: usize = 50;
+                const MAX_PAGES: usize = 20;
                 let mut all_items = Vec::new();
                 let mut page = 0;
                 loop {
@@ -717,6 +728,12 @@ impl DynamicFolder for EmbyProvider {
                         break;
                     }
                     page += 1;
+                    if page >= MAX_PAGES {
+                        tracing::warn!(
+                            "Emby DynamicFolder next() shuffle: hit MAX_PAGES limit ({MAX_PAGES})"
+                        );
+                        break;
+                    }
                 }
                 let items = all_items;
 

@@ -14,7 +14,7 @@ use synctv_xiu::rtmp::auth::{AuthCallback, AuthPublishRewrite};
 use async_trait::async_trait;
 use std::sync::Arc;
 use synctv_core::service::PublishKeyService;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 use crate::relay::registry_trait::StreamRegistryTrait;
 
 pub struct RtmpAuthCallbackImpl {
@@ -93,8 +93,10 @@ impl AuthCallback for RtmpAuthCallbackImpl {
         );
 
         // Extract token: prefer query string parameter, fall back to stream_name as token
-        let token = if let Some(q) = query {
-            extract_token_from_query(q).unwrap_or(stream_name)
+        let token_owned: Option<String>;
+        let token: &str = if let Some(q) = query {
+            token_owned = extract_token_from_query(q);
+            token_owned.as_deref().unwrap_or(stream_name)
         } else {
             stream_name
         };
@@ -201,34 +203,17 @@ impl AuthCallback for RtmpAuthCallbackImpl {
                 media_id = %media_id,
                 "RTMP publisher unpublished, removed from tracker"
             );
-
-            // Unregister from Redis if registry is configured
-            if let Some(ref registry) = self.registry {
-                if let Err(e) = registry.unregister_publisher(room_id, media_id).await {
-                    error!(
-                        room_id = %room_id,
-                        media_id = %media_id,
-                        "Failed to unregister publisher from Redis: {}", e
-                    );
-                }
-            }
         } else {
             warn!(
                 app_name = %app_name,
                 "on_unpublish: no matching stream found in tracker"
             );
-            // Best-effort: try to unregister using app_name/stream_name directly
-            // (these are the canonical room_id/media_id after auth rewrite)
-            if let Some(ref registry) = self.registry {
-                if let Err(e) = registry.unregister_publisher(app_name, stream_name).await {
-                    error!(
-                        app_name = %app_name,
-                        stream_name = %stream_name,
-                        "Failed to unregister publisher from Redis (fallback): {}", e
-                    );
-                }
-            }
         }
+
+        // Redis unregistration is NOT done here. PublisherManager::handle_unpublish()
+        // handles it when it receives the UnPublish broadcast event. Doing it here
+        // without epoch validation risks deleting a newer publisher's entry if a new
+        // publisher registered between this callback and the PublisherManager's handler.
     }
 
     async fn on_unplay(
@@ -246,10 +231,14 @@ impl AuthCallback for RtmpAuthCallbackImpl {
 }
 
 /// Extract token from query string (e.g. "token=xxx&foo=bar" -> "xxx")
-fn extract_token_from_query(query: &str) -> Option<&str> {
+/// Applies URL percent-decoding so JWT tokens with `+` encoded as `%2B` are handled.
+fn extract_token_from_query(query: &str) -> Option<String> {
     for pair in query.split('&') {
         if let Some(value) = pair.strip_prefix("token=") {
-            return Some(value);
+            let decoded = percent_encoding::percent_decode_str(value)
+                .decode_utf8_lossy()
+                .into_owned();
+            return Some(decoded);
         }
     }
     None

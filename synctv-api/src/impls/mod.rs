@@ -119,6 +119,10 @@ pub mod error_codes {
     pub const FORBIDDEN: i32 = 4001;
     pub const BANNED: i32 = 4002;
 
+    // Push notification codes (5xxx) - not errors, but server-initiated messages
+    // delivered via the ErrorMessage proto field for backward compatibility.
+    pub const NOTIFICATION_PUSH: i32 = 5000;
+
     // Internal errors (9xxx)
     pub const INTERNAL_ERROR: i32 = 9000;
     pub const DATABASE_ERROR: i32 = 9001;

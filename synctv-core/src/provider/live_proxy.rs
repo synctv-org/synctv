@@ -91,11 +91,14 @@ impl MediaProvider for LiveProxyProvider {
             .and_then(|v| v.as_str())
             .ok_or_else(|| ProviderError::InvalidConfig("Missing media_id".to_string()))?;
 
-        // Validate URL format (only RTMP and HTTP-FLV are supported for pulling)
-        if !url.starts_with("rtmp://")
-            && !url.ends_with(".flv")
-            && !url.contains(".flv?")
-        {
+        // Validate URL format (only RTMP and HTTP-FLV are supported for pulling).
+        // Use URL path parsing to avoid false positives from `.flv` appearing
+        // in query parameters or other URL parts.
+        let is_rtmp = url.starts_with("rtmp://");
+        let is_flv = url::Url::parse(url)
+            .map(|u| u.path().ends_with(".flv"))
+            .unwrap_or_else(|_| url.ends_with(".flv"));
+        if !is_rtmp && !is_flv {
             return Err(ProviderError::InvalidConfig(format!(
                 "Unsupported source URL format: {url}. Expected rtmp:// or *.flv"
             )));

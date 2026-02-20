@@ -125,11 +125,25 @@ impl ExternalPublishManager {
         }
     }
 
-    /// Stop all managed external publish streams, aborting their tasks and clearing the pool.
+    /// Stop all managed external publish streams, unregistering from Redis and
+    /// aborting their tasks before clearing the pool.
     ///
     /// Called during `StreamHub` restart to ensure zombie streams (still connected
     /// to the old hub instance) are cleaned up before the new hub starts.
     pub async fn stop_all(&self) {
+        // Unregister each stream from Redis before stopping, so entries don't
+        // persist for the full TTL (up to 5 minutes) after graceful shutdown.
+        let keys: Vec<String> = self.pool.streams.iter().map(|e| e.key().clone()).collect();
+        for key in &keys {
+            if let Some((room_id, media_id)) = key.split_once(':') {
+                if let Err(e) = self.registry.unregister_publisher(room_id, media_id).await {
+                    warn!(
+                        "Failed to unregister external publisher {}/{} from Redis during stop_all: {}",
+                        room_id, media_id, e
+                    );
+                }
+            }
+        }
         self.pool.stop_all().await;
     }
 

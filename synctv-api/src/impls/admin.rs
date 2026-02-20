@@ -38,7 +38,7 @@ pub async fn validate_admin_auth(
         .await
         .map_err(|_| ApiError::Authentication("Failed to verify user".to_string()))?;
 
-    if user.is_deleted() || user.status == UserStatus::Banned {
+    if user.is_deleted() || user.status == UserStatus::Banned || user.status == UserStatus::Pending {
         return Err(ApiError::Authentication("Authentication failed".to_string()));
     }
 
@@ -236,7 +236,7 @@ impl AdminApiImpl {
                 self.kick_stream_cluster(rid.as_str(), media_id, "room_deleted");
             }
 
-            infra.kick_room_publishers(rid.as_str());
+            infra.kick_room_publishers(rid.as_str()).await;
         }
 
         // Audit log: delete_room is a critical operation; failure is logged at ERROR.
@@ -386,12 +386,13 @@ impl AdminApiImpl {
             return Err(ApiError::Authorization("Only root users can change admin user roles".to_string()));
         }
 
+        let old_updated_at = user.updated_at;
         let updated_user = synctv_core::models::User {
             role: new_role,
             ..user
         };
 
-        self.user_service.update_user(&updated_user).await
+        self.user_service.update_user(&updated_user, old_updated_at).await
             .map_err(ApiError::from)?;
 
         // Audit log: role change is a critical operation; failure is logged at ERROR.
@@ -922,7 +923,7 @@ impl AdminApiImpl {
                 self.kick_stream_cluster(room_id, media_id, "user_deleted");
             }
 
-            infra.kick_user_publishers(uid.as_str());
+            infra.kick_user_publishers(uid.as_str()).await;
         }
 
         Ok(crate::proto::admin::DeleteUserResponse { success: true })
@@ -957,8 +958,9 @@ impl AdminApiImpl {
         }
 
         let mut user = self.user_service.get_user(&uid).await.map_err(ApiError::from)?;
+        let old_updated_at = user.updated_at;
         user.username = username;
-        let updated = self.user_service.update_user(&user).await.map_err(ApiError::from)?;
+        let updated = self.user_service.update_user(&user, old_updated_at).await.map_err(ApiError::from)?;
 
         Ok(crate::proto::admin::UpdateUserUsernameResponse {
             user: Some(admin_user_to_proto(&updated)),
@@ -988,11 +990,12 @@ impl AdminApiImpl {
         }
 
         let mut user = user;
+        let old_updated_at = user.updated_at;
 
         // Update user status to Banned. Existing tokens will be rejected by the
         // security pipeline on subsequent requests due to the Banned status.
         user.status = UserStatus::Banned;
-        let updated = self.user_service.update_user(&user).await.map_err(ApiError::from)?;
+        let updated = self.user_service.update_user(&user, old_updated_at).await.map_err(ApiError::from)?;
 
         // Force disconnect all user connections (WebSocket and streaming)
         self.connection_manager.disconnect_user(&uid);
@@ -1000,7 +1003,7 @@ impl AdminApiImpl {
         // Kick active RTMP streams for this user on ALL replicas
         // 1. Local kick (this replica's streams)
         if let Some(infra) = &self.live_streaming_infrastructure {
-            infra.kick_user_publishers(uid.as_str());
+            infra.kick_user_publishers(uid.as_str()).await;
         }
         // 2. Cluster-wide broadcast so other replicas kick their local streams for this user
         if let Some(tx) = &self.redis_publish_tx {
@@ -1060,8 +1063,9 @@ impl AdminApiImpl {
             return Err(ApiError::InvalidInput("User is not banned".to_string()));
         }
 
+        let old_updated_at = user.updated_at;
         user.status = UserStatus::Active;
-        let updated = self.user_service.update_user(&user).await.map_err(ApiError::from)?;
+        let updated = self.user_service.update_user(&user, old_updated_at).await.map_err(ApiError::from)?;
 
         Ok(crate::proto::admin::UnbanUserResponse {
             user: Some(admin_user_to_proto(&updated)),
@@ -1079,8 +1083,9 @@ impl AdminApiImpl {
             return Err(ApiError::InvalidInput("User is not pending approval".to_string()));
         }
 
+        let old_updated_at = user.updated_at;
         user.status = UserStatus::Active;
-        let updated = self.user_service.update_user(&user).await.map_err(ApiError::from)?;
+        let updated = self.user_service.update_user(&user, old_updated_at).await.map_err(ApiError::from)?;
 
         Ok(crate::proto::admin::ApproveUserResponse {
             user: Some(admin_user_to_proto(&updated)),
@@ -1182,7 +1187,7 @@ impl AdminApiImpl {
                 self.kick_stream_cluster(rid.as_str(), media_id, "room_banned");
             }
 
-            infra.kick_room_publishers(rid.as_str());
+            infra.kick_room_publishers(rid.as_str()).await;
         }
 
         Ok(crate::proto::admin::BanRoomResponse {
@@ -1335,8 +1340,9 @@ impl AdminApiImpl {
             return Err(ApiError::InvalidInput("User is already an admin or root".to_string()));
         }
 
+        let old_updated_at = user.updated_at;
         user.role = UserRole::Admin;
-        let updated = self.user_service.update_user(&user).await.map_err(ApiError::from)?;
+        let updated = self.user_service.update_user(&user, old_updated_at).await.map_err(ApiError::from)?;
 
         Ok(crate::proto::admin::AddAdminResponse {
             user: Some(admin_user_to_proto(&updated)),
@@ -1357,8 +1363,9 @@ impl AdminApiImpl {
             return Err(ApiError::InvalidInput("User is not an admin".to_string()));
         }
 
+        let old_updated_at = user.updated_at;
         user.role = UserRole::User;
-        self.user_service.update_user(&user).await.map_err(ApiError::from)?;
+        self.user_service.update_user(&user, old_updated_at).await.map_err(ApiError::from)?;
 
         Ok(crate::proto::admin::RemoveAdminResponse { success: true })
     }
@@ -1800,6 +1807,7 @@ mod tests {
             admin_removed_permissions: 0,
             joined_at: chrono::Utc::now(),
             is_online: false,
+            is_active: true,
             banned_at: None,
             banned_reason: None,
         }

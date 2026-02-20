@@ -291,12 +291,25 @@ async fn parse(
 }
 
 /// Generate Bilibili QR code for login
+///
+/// Rate limited to 5 requests per minute per user.
 async fn login_qr(
     _auth: AuthUser,
     State(state): State<AppState>,
     Query(query): Query<InstanceQuery>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
     tracing::info!("Bilibili login QR request");
+
+    const MAX_REQUESTS: u32 = 5;
+    const WINDOW_SECONDS: u64 = 60;
+    let rate_key = format!("bilibili:login_qr:{}", _auth.user_id);
+    if let Err(e) = state.rate_limiter.check_rate_limit(&rate_key, MAX_REQUESTS, WINDOW_SECONDS).await {
+        tracing::warn!(user_id = %_auth.user_id, "Bilibili login_qr rate limit exceeded");
+        return (StatusCode::TOO_MANY_REQUESTS, Json(json!({
+            "error": "rate_limit_exceeded",
+            "message": e.to_string()
+        }))).into_response();
+    }
 
     let api = &state.bilibili_api;
     let req = crate::proto::providers::bilibili::LoginQrRequest::default();
@@ -313,13 +326,26 @@ async fn login_qr(
 }
 
 /// Check Bilibili QR code login status
+///
+/// Rate limited to 30 requests per minute per user (polling).
 async fn qr_check(
     _auth: AuthUser,
     State(state): State<AppState>,
     Query(query): Query<InstanceQuery>,
     Json(req): Json<crate::proto::providers::bilibili::CheckQrRequest>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
     tracing::info!("Bilibili QR check");
+
+    const MAX_REQUESTS: u32 = 30;
+    const WINDOW_SECONDS: u64 = 60;
+    let rate_key = format!("bilibili:qr_check:{}", _auth.user_id);
+    if let Err(e) = state.rate_limiter.check_rate_limit(&rate_key, MAX_REQUESTS, WINDOW_SECONDS).await {
+        tracing::warn!(user_id = %_auth.user_id, "Bilibili qr_check rate limit exceeded");
+        return (StatusCode::TOO_MANY_REQUESTS, Json(json!({
+            "error": "rate_limit_exceeded",
+            "message": e.to_string()
+        }))).into_response();
+    }
 
     let api = &state.bilibili_api;
 
@@ -335,12 +361,25 @@ async fn qr_check(
 }
 
 /// Get captcha for SMS login
+///
+/// Rate limited to 5 requests per minute per user.
 async fn new_captcha(
     _auth: AuthUser,
     State(state): State<AppState>,
     Query(query): Query<InstanceQuery>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
     tracing::info!("Bilibili new captcha request");
+
+    const MAX_REQUESTS: u32 = 5;
+    const WINDOW_SECONDS: u64 = 60;
+    let rate_key = format!("bilibili:captcha:{}", _auth.user_id);
+    if let Err(e) = state.rate_limiter.check_rate_limit(&rate_key, MAX_REQUESTS, WINDOW_SECONDS).await {
+        tracing::warn!(user_id = %_auth.user_id, "Bilibili captcha rate limit exceeded");
+        return (StatusCode::TOO_MANY_REQUESTS, Json(json!({
+            "error": "rate_limit_exceeded",
+            "message": e.to_string()
+        }))).into_response();
+    }
 
     let api = &state.bilibili_api;
     let req = crate::proto::providers::bilibili::GetCaptchaRequest::default();
@@ -357,13 +396,26 @@ async fn new_captcha(
 }
 
 /// Send SMS verification code
+///
+/// Rate limited to 3 requests per minute per user (SMS sends are expensive).
 async fn sms_send(
     _auth: AuthUser,
     State(state): State<AppState>,
     Query(query): Query<InstanceQuery>,
     Json(req): Json<crate::proto::providers::bilibili::SendSmsRequest>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
     tracing::info!("Bilibili SMS send request");
+
+    const MAX_REQUESTS: u32 = 3;
+    const WINDOW_SECONDS: u64 = 60;
+    let rate_key = format!("bilibili:sms_send:{}", _auth.user_id);
+    if let Err(e) = state.rate_limiter.check_rate_limit(&rate_key, MAX_REQUESTS, WINDOW_SECONDS).await {
+        tracing::warn!(user_id = %_auth.user_id, "Bilibili sms_send rate limit exceeded");
+        return (StatusCode::TOO_MANY_REQUESTS, Json(json!({
+            "error": "rate_limit_exceeded",
+            "message": e.to_string()
+        }))).into_response();
+    }
 
     let api = &state.bilibili_api;
 
@@ -379,13 +431,26 @@ async fn sms_send(
 }
 
 /// Login with SMS code
+///
+/// Rate limited to 5 requests per minute per user.
 async fn sms_login(
     _auth: AuthUser,
     State(state): State<AppState>,
     Query(query): Query<InstanceQuery>,
     Json(req): Json<crate::proto::providers::bilibili::LoginSmsRequest>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
     tracing::info!("Bilibili SMS login request");
+
+    const MAX_REQUESTS: u32 = 5;
+    const WINDOW_SECONDS: u64 = 60;
+    let rate_key = format!("bilibili:sms_login:{}", _auth.user_id);
+    if let Err(e) = state.rate_limiter.check_rate_limit(&rate_key, MAX_REQUESTS, WINDOW_SECONDS).await {
+        tracing::warn!(user_id = %_auth.user_id, "Bilibili sms_login rate limit exceeded");
+        return (StatusCode::TOO_MANY_REQUESTS, Json(json!({
+            "error": "rate_limit_exceeded",
+            "message": e.to_string()
+        }))).into_response();
+    }
 
     let api = &state.bilibili_api;
 

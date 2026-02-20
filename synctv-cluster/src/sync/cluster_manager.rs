@@ -466,6 +466,12 @@ impl ClusterManager {
             local_sent = self.message_hub.broadcast(room_id, event.clone());
         }
 
+        // UserNotification events are user-targeted (no room_id), so they are
+        // delivered via the admin event channel to reach connected WebSocket handlers.
+        if matches!(&event, ClusterEvent::UserNotification { .. }) {
+            let _ = self.admin_event_tx.send(event.clone());
+        }
+
         // Publish to Redis for cross-node sync.
         // Critical events (KickPublisher, KickUser, PermissionChanged) use a
         // separate high-priority channel that never drops events.

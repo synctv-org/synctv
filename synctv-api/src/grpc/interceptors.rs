@@ -278,29 +278,34 @@ pub enum GrpcRateLimitTier {
 }
 
 impl GrpcRateLimitTier {
-    /// Maximum requests per window for this tier.
+    /// Maximum requests per window for this tier, read from config.
     ///
-    /// These values are intentionally set to **1/10th** of the equivalent HTTP
-    /// rate limit tiers:
-    ///
-    /// - Auth (HTTP: 50/min)   → gRPC: 5/min
-    /// - Email (HTTP: 50/min)  → gRPC: 5/min
-    /// - Media (HTTP: 200/min) → gRPC: 20/min
-    /// - Write (HTTP: 300/min) → gRPC: 30/min
-    /// - Admin (HTTP: 300/min) → gRPC: 30/min
-    /// - Read  (HTTP: 1000/min)→ gRPC: 100/min
+    /// Configurable via `grpc_rate_limits` section in the config file or
+    /// `SYNCTV_GRPC_RATE_LIMITS_*` environment variables.
     ///
     /// The async `GrpcRateLimitLayer` (tower middleware) uses a Redis-backed
     /// distributed limiter that shares a single counter across all replicas,
     /// so the configured value IS the global limit.
-    pub(crate) const fn max_requests(self) -> u32 {
+    pub(crate) fn max_requests(self, config: &synctv_core::GrpcRateLimitConfig) -> u32 {
         match self {
-            Self::Auth => 5,
-            Self::Email => 5,
-            Self::Media => 20,
-            Self::Write => 30,
-            Self::Admin => 30,
-            Self::Read => 100,
+            Self::Auth => config.auth_max_requests,
+            Self::Email => config.email_max_requests,
+            Self::Media => config.media_max_requests,
+            Self::Write => config.write_max_requests,
+            Self::Admin => config.admin_max_requests,
+            Self::Read => config.read_max_requests,
+        }
+    }
+
+    /// Window duration in seconds for this tier, read from config.
+    pub(crate) fn window_seconds(self, config: &synctv_core::GrpcRateLimitConfig) -> u64 {
+        match self {
+            Self::Auth => config.auth_window_seconds,
+            Self::Email => config.email_window_seconds,
+            Self::Media => config.media_window_seconds,
+            Self::Write => config.write_window_seconds,
+            Self::Admin => config.admin_window_seconds,
+            Self::Read => config.read_window_seconds,
         }
     }
 

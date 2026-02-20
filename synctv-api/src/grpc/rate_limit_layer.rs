@@ -38,7 +38,6 @@ type BoxError = Box<dyn std::error::Error + Send + Sync>;
 #[derive(Clone)]
 pub struct GrpcRateLimitLayer {
     rate_limiter: Arc<RateLimiter>,
-    window_seconds: u64,
     config: Arc<Config>,
 }
 
@@ -46,12 +45,12 @@ impl GrpcRateLimitLayer {
     /// Create a new distributed rate limit layer.
     ///
     /// The tier is determined per-request from the gRPC service path.
-    /// The `config` is used for trusted-proxy validation when extracting client IPs.
-    #[must_use] 
-    pub fn new(rate_limiter: RateLimiter, window_seconds: u64, config: Arc<Config>) -> Self {
+    /// Rate limit values (max_requests, window_seconds) are read from
+    /// `config.grpc_rate_limits` per tier.
+    #[must_use]
+    pub fn new(rate_limiter: RateLimiter, config: Arc<Config>) -> Self {
         Self {
             rate_limiter: Arc::new(rate_limiter),
-            window_seconds,
             config,
         }
     }
@@ -64,7 +63,6 @@ impl<S> Layer<S> for GrpcRateLimitLayer {
         GrpcRateLimitService {
             inner,
             rate_limiter: self.rate_limiter.clone(),
-            window_seconds: self.window_seconds,
             config: self.config.clone(),
         }
     }
@@ -76,7 +74,6 @@ impl<S> Layer<S> for GrpcRateLimitLayer {
 pub struct GrpcRateLimitService<S> {
     inner: S,
     rate_limiter: Arc<RateLimiter>,
-    window_seconds: u64,
     config: Arc<Config>,
 }
 
@@ -125,21 +122,24 @@ fn grpc_status_from_response(resp: &http::Response<TonicBody>) -> &'static str {
 /// Determine the rate limit tier from the gRPC request path.
 ///
 /// gRPC paths follow the format `/<package>.<ServiceName>/<MethodName>`.
-/// Maps known service names to their corresponding rate limit tiers.
+/// Maps known service names (and specific methods) to their corresponding rate limit tiers.
+///
+/// For UserService and RoomService, read-only RPCs are classified as Read tier
+/// while mutation RPCs remain at Write tier.
 fn tier_from_path(path: &str) -> Option<GrpcRateLimitTier> {
     // gRPC path format: /synctv.client.AuthService/Login
-    // Extract the service portion after the last dot and before the slash
-    let service_name = path
-        .split('/')
-        .nth(1) // "synctv.client.AuthService"
-        .and_then(|full| full.rsplit('.').next()); // "AuthService"
+    let parts: Vec<&str> = path.split('/').collect();
+    let service_name = parts
+        .get(1)
+        .and_then(|full| full.rsplit('.').next());
+    let method_name = parts.get(2).copied();
 
     match service_name {
         Some("AuthService") => Some(GrpcRateLimitTier::Auth),
         Some("EmailService") => Some(GrpcRateLimitTier::Email),
         Some("MediaService") => Some(GrpcRateLimitTier::Media),
-        Some("UserService") => Some(GrpcRateLimitTier::Write),
-        Some("RoomService") => Some(GrpcRateLimitTier::Write),
+        Some("UserService") => Some(user_service_tier(method_name)),
+        Some("RoomService") => Some(room_service_tier(method_name)),
         Some("AdminService") => Some(GrpcRateLimitTier::Admin),
         Some("PublicService") => Some(GrpcRateLimitTier::Read),
         Some("NotificationService") => Some(GrpcRateLimitTier::Read),
@@ -152,6 +152,33 @@ fn tier_from_path(path: &str) -> Option<GrpcRateLimitTier> {
         Some("ClusterService") => None,
         // Unknown services: no rate limiting (they may have their own auth)
         _ => None,
+    }
+}
+
+/// Classify UserService methods into Read or Write tiers.
+///
+/// Read-only methods use the more permissive Read tier. All other methods
+/// (mutations) default to Write tier.
+fn user_service_tier(method: Option<&str>) -> GrpcRateLimitTier {
+    match method {
+        Some("GetProfile" | "GetUser" | "ListCreatedRooms" | "GetSettings") => {
+            GrpcRateLimitTier::Read
+        }
+        _ => GrpcRateLimitTier::Write,
+    }
+}
+
+/// Classify RoomService methods into Read or Write tiers.
+///
+/// Read-only methods use the more permissive Read tier. All other methods
+/// (CreateRoom, JoinRoom, etc.) default to Write tier.
+fn room_service_tier(method: Option<&str>) -> GrpcRateLimitTier {
+    match method {
+        Some(
+            "GetRoom" | "GetRoomSettings" | "GetRoomMembers" | "GetChatHistory"
+            | "GetIceServers" | "GetPlaylist" | "ListRooms",
+        ) => GrpcRateLimitTier::Read,
+        _ => GrpcRateLimitTier::Write,
     }
 }
 
@@ -252,7 +279,6 @@ where
         std::mem::swap(&mut self.inner, &mut inner);
 
         let rate_limiter = self.rate_limiter.clone();
-        let window_seconds = self.window_seconds;
         let config = self.config.clone();
 
         // Determine tier from the request path
@@ -279,20 +305,23 @@ where
         };
 
         let client_id = extract_client_id(req.headers(), &config);
+        let grpc_rate_config = config.grpc_rate_limits.clone();
 
         Box::pin(async move {
             // Use the same key format as HTTP middleware ("ratelimit:{category}:{client_id}")
             // so that rate limits are shared across HTTP and gRPC transports.
             let rate_key = format!("ratelimit:{}:{}", tier.key_suffix(), client_id);
+            let max_reqs = tier.max_requests(&grpc_rate_config);
+            let win_secs = tier.window_seconds(&grpc_rate_config);
 
             if let Err(_e) = rate_limiter
-                .check_rate_limit(&rate_key, tier.max_requests(), window_seconds)
+                .check_rate_limit(&rate_key, max_reqs, win_secs)
                 .await
             {
                 warn!(
                     client_id = %client_id,
                     tier = ?tier,
-                    max_requests = tier.max_requests(),
+                    max_requests = max_reqs,
                     path = %path,
                     "gRPC distributed rate limit exceeded"
                 );
@@ -362,17 +391,57 @@ mod tests {
     }
 
     #[test]
-    fn test_tier_from_path_user() {
+    fn test_tier_from_path_user_read() {
         assert_eq!(
-            tier_from_path("/synctv.client.UserService/GetUser"),
+            tier_from_path("/synctv.client.v1.UserService/GetProfile"),
+            Some(GrpcRateLimitTier::Read)
+        );
+        assert_eq!(
+            tier_from_path("/synctv.client.v1.UserService/ListCreatedRooms"),
+            Some(GrpcRateLimitTier::Read)
+        );
+    }
+
+    #[test]
+    fn test_tier_from_path_user_write() {
+        assert_eq!(
+            tier_from_path("/synctv.client.UserService/UpdateProfile"),
             Some(GrpcRateLimitTier::Write)
         );
     }
 
     #[test]
-    fn test_tier_from_path_room() {
+    fn test_tier_from_path_room_read() {
+        assert_eq!(
+            tier_from_path("/synctv.client.v1.RoomService/GetRoom"),
+            Some(GrpcRateLimitTier::Read)
+        );
+        assert_eq!(
+            tier_from_path("/synctv.client.v1.RoomService/GetRoomSettings"),
+            Some(GrpcRateLimitTier::Read)
+        );
+        assert_eq!(
+            tier_from_path("/synctv.client.v1.RoomService/GetRoomMembers"),
+            Some(GrpcRateLimitTier::Read)
+        );
+        assert_eq!(
+            tier_from_path("/synctv.client.v1.RoomService/GetChatHistory"),
+            Some(GrpcRateLimitTier::Read)
+        );
+        assert_eq!(
+            tier_from_path("/synctv.client.v1.RoomService/GetIceServers"),
+            Some(GrpcRateLimitTier::Read)
+        );
+    }
+
+    #[test]
+    fn test_tier_from_path_room_write() {
         assert_eq!(
             tier_from_path("/synctv.client.RoomService/CreateRoom"),
+            Some(GrpcRateLimitTier::Write)
+        );
+        assert_eq!(
+            tier_from_path("/synctv.client.RoomService/JoinRoom"),
             Some(GrpcRateLimitTier::Write)
         );
     }

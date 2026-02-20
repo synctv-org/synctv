@@ -86,6 +86,9 @@ pub struct StreamMessageHandler {
     sender: Arc<dyn MessageSender>,
     /// Global per-connection WebSocket message rate limit (messages per second)
     ws_message_rate_limit: u32,
+    /// Tracks whether this connection has an active WebRTC session.
+    /// Used by cleanup() to decrement WEBRTC_PEERS_ACTIVE on ungraceful disconnect.
+    has_webrtc_session: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Clone for StreamMessageHandler {
@@ -103,6 +106,7 @@ impl Clone for StreamMessageHandler {
             content_filter: Arc::clone(&self.content_filter),
             sender: Arc::clone(&self.sender),
             ws_message_rate_limit: self.ws_message_rate_limit,
+            has_webrtc_session: Arc::clone(&self.has_webrtc_session),
         }
     }
 }
@@ -136,6 +140,7 @@ impl StreamMessageHandler {
             content_filter,
             sender,
             ws_message_rate_limit: 50, // default, overridden by with_ws_message_rate_limit()
+            has_webrtc_session: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -409,6 +414,30 @@ impl StreamMessageHandler {
                                 break;
                             }
                         }
+                        Ok(ClusterEvent::UserNotification { ref user_id, ref title, ref content, ref notification_type, ref notification_id, .. }) => {
+                            // RT-1: Push persistent notification to user's active WebSocket connection
+                            if *user_id == self.user_id {
+                                let json_data = serde_json::json!({
+                                    "type": "user_notification",
+                                    "notification_id": notification_id,
+                                    "notification_type": notification_type,
+                                    "title": title,
+                                    "content": content,
+                                });
+                                let msg = ServerMessage {
+                                    message: Some(crate::proto::client::server_message::Message::Error(
+                                        crate::proto::client::ErrorMessage {
+                                            message: json_data.to_string(),
+                                            code: crate::impls::error_codes::NOTIFICATION_PUSH,
+                                            detail: String::new(),
+                                        },
+                                    )),
+                                };
+                                if let Err(e) = stream.send(msg) {
+                                    tracing::error!("Failed to push notification to WebSocket: {}", e);
+                                }
+                            }
+                        }
                         Ok(_) => {
                             // Other admin events (KickPublisher, etc.) not relevant to this connection
                         }
@@ -615,6 +644,34 @@ impl StreamMessageHandler {
 
     /// Cleanup on disconnect
     async fn cleanup(&self, room_id: &str) {
+        // RT-2: If this connection had an active WebRTC session, decrement the
+        // metric and broadcast WebRtcLeave so other peers can clean up.
+        if self.has_webrtc_session.swap(false, std::sync::atomic::Ordering::Relaxed) {
+            synctv_core::metrics::http::WEBRTC_PEERS_ACTIVE.dec();
+
+            // Mark the connection as no longer RTC-joined in the connection manager
+            self.connection_manager.mark_rtc_joined(
+                &self.room_id, &self.user_id, &self.connection_id, false,
+            );
+
+            // Broadcast WebRtcLeave so other peers know this user dropped
+            let leave_event = ClusterEvent::WebRTCLeave {
+                event_id: nanoid::nanoid!(16),
+                room_id: self.room_id.clone(),
+                user_id: self.user_id.clone(),
+                conn_id: self.connection_id.clone(),
+                timestamp: chrono::Utc::now(),
+            };
+            self.cluster_manager.broadcast(leave_event);
+
+            tracing::info!(
+                user = %self.username,
+                room = %room_id,
+                connection = %self.connection_id,
+                "WebRTC session cleaned up on disconnect"
+            );
+        }
+
         // Broadcast UserLeft BEFORE unregistering from the connection manager.
         // This order prevents state divergence: if the broadcast reaches subscribers
         // while this connection is still registered, they see a consistent view.
@@ -807,6 +864,7 @@ impl StreamMessageHandler {
             let room_service = Arc::clone(&self.room_service);
             let cluster_manager = Arc::clone(&self.cluster_manager);
             let connection_manager = self.connection_manager.clone();
+            let admin_sender = self.sender.clone();
 
             tokio::spawn(async move {
                 loop {
@@ -859,6 +917,31 @@ impl StreamMessageHandler {
                         }
 
                         admin_event = admin_rx.recv() => {
+                            // RT-1: Push UserNotification to this user's WebSocket
+                            if let Ok(ClusterEvent::UserNotification { user_id: ref uid, ref title, ref content, ref notification_type, ref notification_id, .. }) = admin_event {
+                                if *uid == user_id {
+                                    let json_data = serde_json::json!({
+                                        "type": "user_notification",
+                                        "notification_id": notification_id,
+                                        "notification_type": notification_type,
+                                        "title": title,
+                                        "content": content,
+                                    });
+                                    let msg = ServerMessage {
+                                        message: Some(crate::proto::client::server_message::Message::Error(
+                                            crate::proto::client::ErrorMessage {
+                                                message: json_data.to_string(),
+                                                code: crate::impls::error_codes::NOTIFICATION_PUSH,
+                                                detail: String::new(),
+                                            },
+                                        )),
+                                    };
+                                    if let Err(e) = admin_sender.send(msg) {
+                                        tracing::error!("Failed to push notification in start(): {}", e);
+                                    }
+                                }
+                                continue;
+                            }
                             let should_disconnect = match &admin_event {
                                 Ok(ClusterEvent::KickUser { user_id: uid, .. }) => {
                                     *uid == user_id
@@ -1307,7 +1390,8 @@ impl StreamMessageHandler {
         self.connection_manager
             .mark_rtc_joined(&self.room_id, &self.user_id, &conn_id, true);
 
-        // Track WebRTC peer metrics
+        // Track WebRTC peer metrics and session state for cleanup()
+        self.has_webrtc_session.store(true, std::sync::atomic::Ordering::Relaxed);
         synctv_core::metrics::http::WEBRTC_PEERS_ACTIVE.inc();
 
         // Broadcast Join event to all RTC-joined users in the room
@@ -1343,7 +1427,8 @@ impl StreamMessageHandler {
         self.connection_manager
             .mark_rtc_joined(&self.room_id, &self.user_id, &conn_id, false);
 
-        // Track WebRTC peer metrics
+        // Track WebRTC peer metrics and session state for cleanup()
+        self.has_webrtc_session.store(false, std::sync::atomic::Ordering::Relaxed);
         synctv_core::metrics::http::WEBRTC_PEERS_ACTIVE.dec();
 
         // Broadcast Leave event to all RTC-joined users in the room
@@ -1774,9 +1859,10 @@ fn cluster_event_to_server_message(
         }
         ClusterEvent::KickPublisher { .. } | ClusterEvent::KickUser { .. }
         | ClusterEvent::KickUserFromRoom { .. }
-        | ClusterEvent::RoomCreated { .. } | ClusterEvent::CacheInvalidate { .. } => {
+        | ClusterEvent::RoomCreated { .. } | ClusterEvent::CacheInvalidate { .. }
+        | ClusterEvent::UserNotification { .. } => {
             // Admin/internal events are handled by other channels,
-            // not forwarded to WebSocket clients
+            // not forwarded to WebSocket clients via the room event path
             None
         }
     }

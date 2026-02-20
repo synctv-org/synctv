@@ -234,6 +234,27 @@ pub enum ClusterEvent {
         timestamp: DateTime<Utc>,
     },
 
+    /// A persistent user notification was created.
+    ///
+    /// Broadcast cluster-wide so that the node hosting the user's active WebSocket
+    /// connection can push the notification in real time instead of requiring the
+    /// client to poll.
+    UserNotification {
+        #[serde(default = "generate_event_id")]
+        event_id: String,
+        /// The user who should receive the notification.
+        user_id: UserId,
+        /// Notification ID (UUID string) for client-side deduplication.
+        notification_id: String,
+        /// Notification title for display.
+        title: String,
+        /// Notification content for display.
+        content: String,
+        /// Notification type (e.g. "room_invitation", "system_announcement").
+        notification_type: String,
+        timestamp: DateTime<Utc>,
+    },
+
     /// Generic cache invalidation event.
     ///
     /// Broadcast cluster-wide when a service mutates data that is cached on
@@ -285,6 +306,7 @@ impl ClusterEvent {
             | Self::KickUserFromRoom { event_id, .. }
             | Self::RoomCreated { event_id, .. }
             | Self::RoomDeleted { event_id, .. }
+            | Self::UserNotification { event_id, .. }
             | Self::CacheInvalidate { event_id, .. } => event_id,
         }
     }
@@ -309,7 +331,7 @@ impl ClusterEvent {
             | Self::RoomCreated { room_id, .. }
             | Self::RoomDeleted { room_id, .. } => Some(room_id),
             Self::SystemNotification { .. } | Self::KickUser { .. }
-            | Self::CacheInvalidate { .. } => None,
+            | Self::UserNotification { .. } | Self::CacheInvalidate { .. } => None,
         }
     }
 
@@ -327,7 +349,8 @@ impl ClusterEvent {
             | Self::WebRTCJoin { user_id, .. }
             | Self::WebRTCLeave { user_id, .. }
             | Self::KickUser { user_id, .. }
-            | Self::KickUserFromRoom { user_id, .. } => Some(user_id),
+            | Self::KickUserFromRoom { user_id, .. }
+            | Self::UserNotification { user_id, .. } => Some(user_id),
             Self::RoomCreated { creator_id, .. } => Some(creator_id),
             Self::RoomDeleted { deleted_by, .. } => Some(deleted_by),
             Self::PermissionChanged { changed_by, .. } => Some(changed_by),
@@ -357,6 +380,7 @@ impl ClusterEvent {
             | Self::KickUserFromRoom { timestamp, .. }
             | Self::RoomCreated { timestamp, .. }
             | Self::RoomDeleted { timestamp, .. }
+            | Self::UserNotification { timestamp, .. }
             | Self::CacheInvalidate { timestamp, .. } => timestamp,
         }
     }
@@ -390,6 +414,9 @@ impl ClusterEvent {
             Self::KickUserFromRoom { user_id, room_id, .. } => {
                 format!("kick_user_from_room:{}:{}", user_id.as_str(), room_id.as_str())
             }
+            Self::UserNotification { user_id, notification_id, .. } => {
+                format!("user_notification:{}:{}", user_id.as_str(), notification_id)
+            }
             _ => String::new(),
         }
     }
@@ -415,6 +442,7 @@ impl ClusterEvent {
             Self::KickUserFromRoom { .. } => "kick_user_from_room",
             Self::RoomCreated { .. } => "room_created",
             Self::RoomDeleted { .. } => "room_deleted",
+            Self::UserNotification { .. } => "user_notification",
             Self::CacheInvalidate { .. } => "cache_invalidate",
         }
     }

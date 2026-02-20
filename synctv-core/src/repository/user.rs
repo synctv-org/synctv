@@ -1,5 +1,5 @@
 use std::str::FromStr;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 
 use crate::{
@@ -147,13 +147,17 @@ impl UserRepository {
         Ok(u)
     }
 
-    /// Update user
-    pub async fn update(&self, user: &User) -> Result<User> {
+    /// Update user with optimistic locking.
+    ///
+    /// The caller must pass the `updated_at` value from the previously-read user.
+    /// If another update happened concurrently (i.e. `updated_at` changed),
+    /// returns `Error::OptimisticLockConflict` so the caller can retry.
+    pub async fn update(&self, user: &User, old_updated_at: DateTime<Utc>) -> Result<User> {
         let u = sqlx::query_as::<_, User>(
             r"
             UPDATE users
             SET username = $2, email = $3, password_hash = $4, role = $5, status = $6, updated_at = $7
-            WHERE id = $1 AND deleted_at IS NULL
+            WHERE id = $1 AND deleted_at IS NULL AND updated_at = $8
             RETURNING id, username, email, password_hash, signup_method, role, status, created_at, updated_at, password_changed_at, password_version, deleted_at, email_verified
             ",
         )
@@ -164,11 +168,23 @@ impl UserRepository {
         .bind(user.role)
         .bind(user.status)
         .bind(Utc::now())
+        .bind(old_updated_at)
         .fetch_optional(&self.pool)
-        .await?
-        .ok_or_else(|| Error::NotFound(format!("User {} not found", user.id.as_str())))?;
+        .await?;
 
-        Ok(u)
+        match u {
+            Some(updated) => Ok(updated),
+            None => {
+                // Check if the user exists at all to distinguish
+                // "not found" from "concurrent modification"
+                let exists = self.get_by_id(&user.id).await?.is_some();
+                if exists {
+                    Err(Error::OptimisticLockConflict)
+                } else {
+                    Err(Error::NotFound(format!("User {} not found", user.id.as_str())))
+                }
+            }
+        }
     }
 
     /// Soft delete user

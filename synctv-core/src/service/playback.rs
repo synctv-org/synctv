@@ -400,13 +400,20 @@ impl PlaybackService {
         room_id: &RoomId,
         settings: &RoomSettings,
     ) -> Result<Option<RoomPlaybackState>> {
-        // Use new auto_play settings, falling back to legacy fields for compatibility
+        // Use new auto_play settings, falling back to legacy fields for compatibility.
+        // Precedence: if the new auto_play.mode is explicitly set (not the default
+        // Sequential), use it directly. Only fall back to legacy fields when the
+        // new mode is at its default value.
         let (enabled, mode) = if settings.auto_play.value.enabled || settings.auto_play_next.0 {
-            let mode = settings.auto_play.value.mode;
             let enabled = settings.auto_play.value.enabled || settings.auto_play_next.0;
+            let mode = settings.auto_play.value.mode;
 
-            // If legacy fields suggest a different mode than the new setting, use legacy
-            let mode = if settings.loop_playlist.0 {
+            // Only use legacy fields as fallback when the new mode is at its
+            // default value (Sequential). If the new mode was explicitly set,
+            // honour it and ignore legacy fields.
+            let mode = if mode != PlayMode::Sequential {
+                mode
+            } else if settings.loop_playlist.0 {
                 PlayMode::RepeatAll
             } else if settings.shuffle_playlist.0 {
                 PlayMode::Shuffle
@@ -540,7 +547,15 @@ impl PlaybackService {
             let mut updated_state = state;
             updated_state.playing_media_id = Some(next.id.clone());
             updated_state.playing_playlist_id = Some(next.playlist_id.clone());
-            updated_state.relative_path = next.name.clone();
+            // For dynamic playlists (Alist/Emby), the provider-relative path is
+            // stored in source_config["path"], which differs from the display name.
+            // Fall back to the name for direct/static media that have no path field.
+            updated_state.relative_path = next
+                .source_config
+                .get("path")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+                .unwrap_or_else(|| next.name.clone());
             updated_state.current_time = 0.0;
             updated_state.is_playing = true;
             updated_state.updated_at = chrono::Utc::now();
@@ -879,6 +894,17 @@ impl PlaybackService {
         // which is sufficient to detect conflicts without an extra DB round-trip.
 
         let state = self.update_state(room_id.clone(), |state| {
+            // Snapshot the computed playback position before changing is_playing
+            // or speed, just like set_playing() and change_speed() do individually.
+            // Without this, pausing or changing speed via update_multiple would
+            // store the wrong position.
+            let needs_snapshot =
+                matches!(playing, Some(false)) || speed.is_some();
+            if needs_snapshot && current_time.is_none() {
+                // Only snapshot if the caller didn't provide an explicit position
+                state.current_time = state.computed_current_time();
+            }
+
             if let Some(p) = playing {
                 state.is_playing = p;
             }

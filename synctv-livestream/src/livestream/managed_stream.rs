@@ -26,6 +26,10 @@ pub struct StreamLifecycle {
     last_active_secs: AtomicU64,
     is_running: Arc<AtomicBool>,
     task_handle: Mutex<Option<tokio::task::JoinHandle<Result<()>>>>,
+    /// Stored separately so `Drop` can abort the task without acquiring the async Mutex.
+    /// Dropping a `JoinHandle` only detaches the task (it keeps running); calling
+    /// `AbortHandle::abort()` actually cancels it.
+    abort_handle: parking_lot::Mutex<Option<tokio::task::AbortHandle>>,
 }
 
 /// Get current unix timestamp in seconds.
@@ -43,6 +47,7 @@ impl StreamLifecycle {
             last_active_secs: AtomicU64::new(unix_now_secs()),
             is_running: Arc::new(AtomicBool::new(false)),
             task_handle: Mutex::new(None),
+            abort_handle: parking_lot::Mutex::new(None),
         }
     }
 
@@ -120,6 +125,7 @@ impl StreamLifecycle {
     }
 
     pub async fn set_task_handle(&self, handle: tokio::task::JoinHandle<Result<()>>) {
+        *self.abort_handle.lock() = Some(handle.abort_handle());
         *self.task_handle.lock().await = Some(handle);
     }
 
@@ -141,13 +147,11 @@ impl Drop for StreamLifecycle {
         // Mark as not running so any external health checks fail immediately
         self.is_running.store(false, Ordering::Release);
 
-        // Abort the task handle if it exists to prevent leaked background tasks.
-        // Use try_lock() since we may be inside an async runtime where blocking_lock panics.
-        // If we can't acquire the lock, the task will still be aborted when the Mutex is dropped.
-        if let Ok(mut guard) = self.task_handle.try_lock() {
-            if let Some(handle) = guard.take() {
-                handle.abort();
-            }
+        // Abort the task via the stored AbortHandle. This doesn't need the async
+        // Mutex and always succeeds — unlike try_lock() on the JoinHandle Mutex
+        // which could fail under contention, leaving the task running (detached).
+        if let Some(ah) = self.abort_handle.lock().take() {
+            ah.abort();
         }
     }
 }
@@ -471,15 +475,12 @@ impl<S: ManagedStream> Drop for StreamPool<S> {
         // Cancel all background cleanup tasks
         self.cancel_token.cancel();
 
-        // Abort task handles for all remaining streams to prevent leaked tasks.
-        // Use try_lock() since we may be inside an async runtime where blocking_lock panics.
-        // StreamLifecycle's own Drop will also attempt to abort tasks as a safety net.
+        // Abort tasks for all remaining streams via their AbortHandles.
+        // This is reliable even under async Mutex contention.
         for entry in self.streams.iter() {
             entry.value().lifecycle().is_running.store(false, Ordering::Release);
-            if let Ok(mut guard) = entry.value().lifecycle().task_handle.try_lock() {
-                if let Some(handle) = guard.take() {
-                    handle.abort();
-                }
+            if let Some(ah) = entry.value().lifecycle().abort_handle.lock().take() {
+                ah.abort();
             }
         }
 

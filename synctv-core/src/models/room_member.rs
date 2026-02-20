@@ -283,6 +283,9 @@ pub struct RoomMemberWithUser {
     pub admin_removed_permissions: u64,
     pub joined_at: DateTime<Utc>,
     pub is_online: bool,
+    /// Whether the member is still active (has not left the room).
+    /// Distinct from `is_online` which tracks WebSocket connection status.
+    pub is_active: bool,
     pub banned_at: Option<DateTime<Utc>>,
     pub banned_reason: Option<String>,
 }

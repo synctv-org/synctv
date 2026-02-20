@@ -18,21 +18,50 @@ use crate::{
     Result,
 };
 
+/// Event emitted when a notification is created, for real-time push.
+#[derive(Clone, Debug)]
+pub struct NotificationCreatedEvent {
+    pub user_id: UserId,
+    pub notification: Notification,
+}
+
 /// User notification service
 #[derive(Clone, Debug)]
 pub struct UserNotificationService {
     repository: NotificationRepository,
+    /// Broadcast sender for notification creation events.
+    /// Subscribers (e.g., the messaging layer) receive events and push them
+    /// to connected WebSocket clients in real time.
+    event_tx: tokio::sync::broadcast::Sender<NotificationCreatedEvent>,
 }
 
 impl UserNotificationService {
-    #[must_use] 
-    pub const fn new(repository: NotificationRepository) -> Self {
-        Self { repository }
+    #[must_use]
+    pub fn new(repository: NotificationRepository) -> Self {
+        let (event_tx, _) = tokio::sync::broadcast::channel(256);
+        Self { repository, event_tx }
+    }
+
+    /// Subscribe to notification creation events.
+    ///
+    /// Returns a receiver that will emit `NotificationCreatedEvent` whenever
+    /// a new notification is created. Used by the messaging layer to push
+    /// notifications to connected WebSocket clients.
+    pub fn subscribe_events(&self) -> tokio::sync::broadcast::Receiver<NotificationCreatedEvent> {
+        self.event_tx.subscribe()
     }
 
     /// Create a new notification
     pub async fn create(&self, req: CreateNotificationRequest) -> Result<Notification> {
-        self.repository.create(&req).await
+        let notification = self.repository.create(&req).await?;
+
+        // Best-effort broadcast; ignore errors (no subscribers = no receivers).
+        let _ = self.event_tx.send(NotificationCreatedEvent {
+            user_id: req.user_id,
+            notification: notification.clone(),
+        });
+
+        Ok(notification)
     }
 
     /// Create a room invitation notification

@@ -236,13 +236,16 @@ impl SignupMethod {
         }
     }
 
-    /// Parse signup method from string name (defaults to email for unknown values)
+    /// Parse signup method from string name.
+    ///
+    /// Returns `None` for unrecognized values instead of silently defaulting,
+    /// so callers can handle unknown signup methods explicitly.
     #[must_use]
-    pub fn from_str_name(s: &str) -> Self {
+    pub fn from_str_name(s: &str) -> Option<Self> {
         match s {
-            "email" => Self::Email,
-            "oauth2" => Self::OAuth2,
-            _ => Self::Email, // Default to email
+            "email" => Some(Self::Email),
+            "oauth2" => Some(Self::OAuth2),
+            _ => None,
         }
     }
 }
@@ -263,7 +266,8 @@ impl sqlx::Encode<'_, sqlx::Postgres> for SignupMethod {
 impl<'r> sqlx::Decode<'r, sqlx::Postgres> for SignupMethod {
     fn decode(value: sqlx::postgres::PgValueRef<'r>) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let s = <String as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
-        Ok(Self::from_str_name(&s))
+        Self::from_str_name(&s)
+            .ok_or_else(|| format!("Unknown SignupMethod value: {s}").into())
     }
 }
 

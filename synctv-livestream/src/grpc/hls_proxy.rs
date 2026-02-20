@@ -62,23 +62,20 @@ impl HlsProxyClient {
     #[must_use]
     pub fn new(
         segment_cache_ttl: Duration,
-        segment_cache_max_entries: u64,
+        _segment_cache_max_entries: u64,
         segment_cache_max_bytes: u64,
         playlist_cache_ttl: Duration,
         cluster_secret: Option<String>,
     ) -> Self {
         let segment_cache = Cache::builder()
             .time_to_live(segment_cache_ttl)
-            .max_capacity(segment_cache_max_entries)
+            .max_capacity(segment_cache_max_bytes)
             .weigher(|_key: &String, value: &Bytes| -> u32 {
                 // Weight each entry by its byte size (capped at u32::MAX).
-                // moka uses the sum of weights against `max_capacity` when a
-                // weigher is NOT set, but when a weigher IS set it uses
-                // `weighted_size` for eviction. We keep `max_capacity` as the
-                // entry count limit and use `weighted_size` for the byte limit.
+                // With a weigher, moka treats `max_capacity` as the total weight
+                // limit (in bytes here), not the entry count.
                 value.len().min(u32::MAX as usize) as u32
             })
-            .max_capacity(segment_cache_max_bytes)
             .build();
 
         let playlist_cache = Cache::builder()
@@ -265,10 +262,14 @@ impl HlsProxyClient {
     /// the publisher reconnects with new content.
     pub async fn invalidate_stream_cache(&self, room_id: &str, media_id: &str) {
         let prefix = format!("{room_id}:{media_id}:");
-        let playlist_key = format!("{room_id}:{media_id}");
 
-        // Invalidate playlist cache entry
-        self.playlist_cache.invalidate(&playlist_key).await;
+        // Invalidate all playlist cache entries for this stream.
+        // Playlist keys include segment_url_base ("{room_id}:{media_id}:{segment_url_base}"),
+        // so we use prefix-based invalidation to match all variants.
+        let playlist_prefix = prefix.clone();
+        self.playlist_cache
+            .invalidate_entries_if(move |key: &String, _| key.starts_with(&playlist_prefix))
+            .ok();
 
         // Invalidate all segment cache entries matching this stream prefix.
         // moka's `invalidate_entries_if` allows predicate-based invalidation.

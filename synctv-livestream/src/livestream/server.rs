@@ -431,14 +431,19 @@ impl LivestreamServer {
 
         info!("HLS remuxer started (in-process, no standalone HTTP server)");
 
-        // 5. Create PullStreamManager
+        // 5a. Create HLS proxy client early so PullStreamManager can invalidate
+        //     HLS cache when stale epochs are detected (LIVE-8).
+        let hls_proxy = crate::grpc::HlsProxyClient::with_defaults(self.config.cluster_secret.clone());
+
+        // 5b. Create PullStreamManager
         let pull_manager = Arc::new(PullStreamManager::with_timeouts(
             self.publisher_registry.clone(),
             event_sender.clone(),
             self.config.cleanup_check_interval_seconds,
             self.config.stream_timeout_seconds,
         )
-        .with_cluster_secret(self.config.cluster_secret.clone()));
+        .with_cluster_secret(self.config.cluster_secret.clone())
+        .with_hls_proxy(hls_proxy.clone()));
         // Start periodic cleanup of stale creation locks to prevent memory leaks
         let pull_manager_cleanup = pull_manager.start_cleanup_task();
 
@@ -482,7 +487,6 @@ impl LivestreamServer {
                     .to_string(),
             ));
         }
-        let cluster_secret = self.config.cluster_secret.clone();
         let publisher_manager_handle = tokio::spawn({
             let pm = Arc::clone(&publisher_manager);
             let mut reregister_rx = reregister_rx;
@@ -498,9 +502,7 @@ impl LivestreamServer {
             }
         });
 
-        // 8. Create HLS proxy client for cross-node HLS streaming (cluster mode)
-        let hls_proxy = crate::grpc::HlsProxyClient::with_defaults(cluster_secret);
-
+        // 8. Wire HLS proxy client (created in step 5a) into infrastructure
         // 9. Create LiveStreamingInfrastructure with HLS components wired in
         let infrastructure = Arc::new(
             LiveStreamingInfrastructure::new(

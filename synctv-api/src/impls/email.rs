@@ -68,6 +68,10 @@ impl EmailApiImpl {
         let user = match user {
             Some(u) => u,
             None => {
+                // Add random delay to prevent timing side-channel that leaks
+                // whether an account exists based on response time differences.
+                let delay_ms = rand::random_range(100u64..500u64);
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
                 return Ok(SendVerificationResult {
                     message: generic_message,
                 });
@@ -147,6 +151,10 @@ impl EmailApiImpl {
             .map_err(|e| ApiError::Internal(format!("Database error: {e}")))?;
 
         let Some(user) = user else {
+            // Add random delay to prevent timing side-channel that leaks
+            // whether an account exists based on response time differences.
+            let delay_ms = rand::random_range(100u64..500u64);
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
             return Ok(RequestPasswordResetResult {
                 message: "If an account exists with this email, a password reset code will be sent."
                     .to_string(),

@@ -43,6 +43,41 @@ impl AuditLogRepository {
         Self { pool }
     }
 
+    /// Append the shared WHERE clause filters to a `QueryBuilder`.
+    ///
+    /// The caller must have already pushed the prefix (e.g. `"SELECT ... WHERE "`)
+    /// so that the first condition can be appended directly.
+    fn push_filters<'q>(
+        builder: &mut QueryBuilder<'q, Postgres>,
+        query: &'q AuditLogQuery,
+        effective_from: DateTime<Utc>,
+    ) {
+        // Always add time range lower bound for partition pruning
+        builder.push("created_at >= ");
+        builder.push_bind(effective_from);
+
+        if let Some(ref v) = query.actor_id {
+            builder.push(" AND actor_id = ");
+            builder.push_bind(v);
+        }
+        if let Some(ref v) = query.action {
+            builder.push(" AND action = ");
+            builder.push_bind(v);
+        }
+        if let Some(ref v) = query.target_type {
+            builder.push(" AND target_type = ");
+            builder.push_bind(v);
+        }
+        if let Some(ref v) = query.target_id {
+            builder.push(" AND target_id = ");
+            builder.push_bind(v);
+        }
+        if let Some(ref v) = query.to {
+            builder.push(" AND created_at <= ");
+            builder.push_bind(v);
+        }
+    }
+
     /// List audit logs with filters and pagination.
     ///
     /// Returns `(rows, total_count)`.
@@ -59,31 +94,7 @@ impl AuditLogRepository {
         // ── Count query ───────────────────────────────────────────────────────
         let mut count_builder: QueryBuilder<Postgres> =
             QueryBuilder::new("SELECT COUNT(*) FROM audit_logs WHERE ");
-
-        // Always add time range lower bound for partition pruning
-        count_builder.push("created_at >= ");
-        count_builder.push_bind(effective_from);
-
-        if let Some(ref v) = query.actor_id {
-            count_builder.push(" AND actor_id = ");
-            count_builder.push_bind(v);
-        }
-        if let Some(ref v) = query.action {
-            count_builder.push(" AND action = ");
-            count_builder.push_bind(v);
-        }
-        if let Some(ref v) = query.target_type {
-            count_builder.push(" AND target_type = ");
-            count_builder.push_bind(v);
-        }
-        if let Some(ref v) = query.target_id {
-            count_builder.push(" AND target_id = ");
-            count_builder.push_bind(v);
-        }
-        if let Some(ref v) = query.to {
-            count_builder.push(" AND created_at <= ");
-            count_builder.push_bind(v);
-        }
+        Self::push_filters(&mut count_builder, query, effective_from);
 
         let total: i64 = count_builder
             .build_query_scalar()
@@ -96,31 +107,7 @@ impl AuditLogRepository {
              details, host(ip_address)::text AS ip_address, user_agent, created_at \
              FROM audit_logs WHERE ",
         );
-
-        // Always add time range lower bound for partition pruning
-        list_builder.push("created_at >= ");
-        list_builder.push_bind(effective_from);
-
-        if let Some(ref v) = query.actor_id {
-            list_builder.push(" AND actor_id = ");
-            list_builder.push_bind(v);
-        }
-        if let Some(ref v) = query.action {
-            list_builder.push(" AND action = ");
-            list_builder.push_bind(v);
-        }
-        if let Some(ref v) = query.target_type {
-            list_builder.push(" AND target_type = ");
-            list_builder.push_bind(v);
-        }
-        if let Some(ref v) = query.target_id {
-            list_builder.push(" AND target_id = ");
-            list_builder.push_bind(v);
-        }
-        if let Some(ref v) = query.to {
-            list_builder.push(" AND created_at <= ");
-            list_builder.push_bind(v);
-        }
+        Self::push_filters(&mut list_builder, query, effective_from);
 
         list_builder.push(" ORDER BY created_at DESC LIMIT ");
         list_builder.push_bind(query.page.limit() as i64);

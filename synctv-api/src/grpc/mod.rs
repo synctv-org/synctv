@@ -233,6 +233,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
     };
 
     let rate_limiter_for_layer = rate_limiter.clone();
+    let cluster_manager_for_rt = cluster_manager.clone();
     let client_service = ClientServiceImpl::from_config(ClientServiceConfig {
         user_service: user_service_clone,
         room_service: room_service_clone,
@@ -296,7 +297,6 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
     // Determines tier per-request from the gRPC service path.
     let distributed_rate_limit_layer = rate_limit_layer::GrpcRateLimitLayer::new(
         rate_limiter_for_layer,
-        60,  // 60 second window
         Arc::new(config.clone()),
     );
     let mut server_builder = Server::builder()
@@ -350,13 +350,50 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
     // Register NotificationService if notification_service is configured
     if let Some(notif_svc) = notification_service {
         let notification_interceptor = auth_interceptor.clone();
-        let notification_api = Arc::new(crate::impls::NotificationApiImpl::new(notif_svc));
+        let notification_api = Arc::new(crate::impls::NotificationApiImpl::new(notif_svc.clone()));
         let notif_impl = NotificationServiceImpl::new(notification_api);
         router = router.add_service(NotificationServiceServer::with_interceptor(
             notif_impl,
             move |req| notification_interceptor.inject_user(req),
         ));
         tracing::info!("NotificationService gRPC registered");
+
+        // RT-1: Spawn a background task that bridges notification creation events
+        // to the cluster event system, enabling real-time WebSocket push for
+        // persistent user notifications. Without this, clients must poll.
+        if let Some(ref cm) = cluster_manager_for_rt {
+            let cm = Arc::clone(cm);
+            let mut notification_rx = notif_svc.subscribe_events();
+            tokio::spawn(async move {
+                loop {
+                    match notification_rx.recv().await {
+                        Ok(event) => {
+                            let cluster_event = synctv_cluster::sync::ClusterEvent::UserNotification {
+                                event_id: nanoid::nanoid!(16),
+                                user_id: event.user_id,
+                                notification_id: event.notification.id.to_string(),
+                                title: event.notification.title,
+                                content: event.notification.content,
+                                notification_type: event.notification.notification_type.to_string(),
+                                timestamp: chrono::Utc::now(),
+                            };
+                            cm.broadcast(cluster_event);
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                            tracing::warn!(
+                                lagged = n,
+                                "Notification-to-cluster bridge lagged, some notifications may not have been pushed in real time"
+                            );
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            tracing::info!("Notification event channel closed, stopping bridge task");
+                            break;
+                        }
+                    }
+                }
+            });
+            tracing::info!("Notification-to-cluster bridge task spawned for real-time WebSocket push");
+        }
     }
 
     // Register OAuth2Service if oauth2_service is configured.

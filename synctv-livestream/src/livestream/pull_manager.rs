@@ -9,7 +9,7 @@
 use crate::{
     relay::registry_trait::StreamRegistryTrait,
     error::StreamResult,
-    grpc::GrpcConnectionPool,
+    grpc::{GrpcConnectionPool, HlsProxyClient},
     livestream::pull_stream::PullStream,
     livestream::managed_stream::{ManagedStream, StreamPool},
 };
@@ -63,6 +63,8 @@ pub struct PullStreamManager {
     _cleanup_handle: tokio::task::JoinHandle<()>,
     /// Cluster authentication secret passed to `GrpcStreamPuller` for inter-node gRPC requests.
     cluster_secret: Option<String>,
+    /// Optional HLS proxy client for cache invalidation on stale epoch detection.
+    hls_proxy: Option<HlsProxyClient>,
 }
 
 impl PullStreamManager {
@@ -87,6 +89,13 @@ impl PullStreamManager {
     #[must_use]
     pub fn with_cluster_secret(mut self, secret: Option<String>) -> Self {
         self.cluster_secret = secret;
+        self
+    }
+
+    /// Set the HLS proxy client for cache invalidation on stale epoch detection.
+    #[must_use]
+    pub fn with_hls_proxy(mut self, hls_proxy: HlsProxyClient) -> Self {
+        self.hls_proxy = Some(hls_proxy);
         self
     }
 
@@ -123,6 +132,7 @@ impl PullStreamManager {
             _pool_cleanup_handle: pool_cleanup_handle,
             _cleanup_handle: cleanup_handle,
             cluster_secret: None,
+            hls_proxy: None,
         }
     }
 
@@ -242,6 +252,7 @@ impl PullStreamManager {
                 self.connection_pool.clone(),
             )
             .with_cluster_secret(self.cluster_secret.clone())
+            .with_hls_proxy(self.hls_proxy.clone())
         );
 
         // Start pull stream (connects via gRPC to publisher)

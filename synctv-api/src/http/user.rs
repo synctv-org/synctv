@@ -46,7 +46,10 @@ pub async fn update_user(
     State(state): State<AppState>,
     Json(req): Json<UpdateUserRequest>,
 ) -> AppResult<Json<serde_json::Value>> {
-    // Check if username update is requested
+    let mut updated_fields = Vec::new();
+    let mut result = serde_json::Map::new();
+
+    // Process username update if requested
     if let Some(ref username) = req.username {
         let set_username_req = SetUsernameRequest {
             new_username: username.clone(),
@@ -59,14 +62,11 @@ pub async fn update_user(
             .map_err(super::error::map_api_error)?;
 
         let new_username = response.user.as_ref().map_or_else(|| username.clone(), |u| u.username.clone());
-
-        return Ok(Json(serde_json::json!({
-            "message": "Username updated successfully",
-            "username": new_username
-        })));
+        result.insert("username".to_string(), serde_json::Value::String(new_username));
+        updated_fields.push("username");
     }
 
-    // Check if password update is requested
+    // Process password update if requested
     if let Some(ref password) = req.password {
         // Old password is required to prevent unauthorized password changes
         // from stolen session tokens.
@@ -88,12 +88,18 @@ pub async fn update_user(
             .await
             .map_err(super::error::map_api_error)?;
 
-        return Ok(Json(serde_json::json!({
-            "message": "Password updated successfully"
-        })));
+        updated_fields.push("password");
     }
 
-    Err(super::AppError::bad_request("No valid update fields provided (username or password)"))
+    if updated_fields.is_empty() {
+        return Err(super::AppError::bad_request("No valid update fields provided (username or password)"));
+    }
+
+    result.insert(
+        "message".to_string(),
+        serde_json::Value::String(format!("{} updated successfully", updated_fields.join(" and "))),
+    );
+    Ok(Json(serde_json::Value::Object(result)))
 }
 
 /// Get user's joined rooms (paginated)

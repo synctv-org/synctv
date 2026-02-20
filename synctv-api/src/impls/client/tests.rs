@@ -339,6 +339,7 @@ fn make_test_member(role: RoomRole) -> synctv_core::models::RoomMemberWithUser {
         admin_removed_permissions: 0,
         joined_at: chrono::Utc::now(),
         is_online: true,
+        is_active: true,
         banned_at: None,
         banned_reason: None,
     }

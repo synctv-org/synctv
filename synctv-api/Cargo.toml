@@ -53,6 +53,7 @@ anyhow.workspace = true
 thiserror.workspace = true
 bytes.workspace = true
 nanoid.workspace = true
+rand.workspace = true
 parking_lot.workspace = true
 hostname.workspace = true
 base64.workspace = true

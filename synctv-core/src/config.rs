@@ -23,6 +23,7 @@ pub struct Config {
     pub buffer_sizes: BufferSizesConfig,
     pub cache: CacheConfig,
     pub http_rate_limits: HttpRateLimitConfig,
+    pub grpc_rate_limits: GrpcRateLimitConfig,
 }
 
 impl std::fmt::Debug for Config {
@@ -45,6 +46,7 @@ impl std::fmt::Debug for Config {
             .field("buffer_sizes", &self.buffer_sizes)
             .field("cache", &self.cache)
             .field("http_rate_limits", &self.http_rate_limits)
+            .field("grpc_rate_limits", &self.grpc_rate_limits)
             .finish()
     }
 }
@@ -899,6 +901,20 @@ impl Config {
         env_override_parse("SYNCTV_HTTP_RATE_LIMITS_STREAMING_WINDOW_SECONDS", &mut self.http_rate_limits.streaming_window_seconds);
         env_override_parse("SYNCTV_HTTP_RATE_LIMITS_WEBSOCKET_MAX_REQUESTS", &mut self.http_rate_limits.websocket_max_requests);
         env_override_parse("SYNCTV_HTTP_RATE_LIMITS_WEBSOCKET_WINDOW_SECONDS", &mut self.http_rate_limits.websocket_window_seconds);
+
+        // -- gRPC Rate Limits --
+        env_override_parse("SYNCTV_GRPC_RATE_LIMITS_AUTH_MAX_REQUESTS", &mut self.grpc_rate_limits.auth_max_requests);
+        env_override_parse("SYNCTV_GRPC_RATE_LIMITS_AUTH_WINDOW_SECONDS", &mut self.grpc_rate_limits.auth_window_seconds);
+        env_override_parse("SYNCTV_GRPC_RATE_LIMITS_EMAIL_MAX_REQUESTS", &mut self.grpc_rate_limits.email_max_requests);
+        env_override_parse("SYNCTV_GRPC_RATE_LIMITS_EMAIL_WINDOW_SECONDS", &mut self.grpc_rate_limits.email_window_seconds);
+        env_override_parse("SYNCTV_GRPC_RATE_LIMITS_MEDIA_MAX_REQUESTS", &mut self.grpc_rate_limits.media_max_requests);
+        env_override_parse("SYNCTV_GRPC_RATE_LIMITS_MEDIA_WINDOW_SECONDS", &mut self.grpc_rate_limits.media_window_seconds);
+        env_override_parse("SYNCTV_GRPC_RATE_LIMITS_WRITE_MAX_REQUESTS", &mut self.grpc_rate_limits.write_max_requests);
+        env_override_parse("SYNCTV_GRPC_RATE_LIMITS_WRITE_WINDOW_SECONDS", &mut self.grpc_rate_limits.write_window_seconds);
+        env_override_parse("SYNCTV_GRPC_RATE_LIMITS_ADMIN_MAX_REQUESTS", &mut self.grpc_rate_limits.admin_max_requests);
+        env_override_parse("SYNCTV_GRPC_RATE_LIMITS_ADMIN_WINDOW_SECONDS", &mut self.grpc_rate_limits.admin_window_seconds);
+        env_override_parse("SYNCTV_GRPC_RATE_LIMITS_READ_MAX_REQUESTS", &mut self.grpc_rate_limits.read_max_requests);
+        env_override_parse("SYNCTV_GRPC_RATE_LIMITS_READ_WINDOW_SECONDS", &mut self.grpc_rate_limits.read_window_seconds);
     }
 
     /// Validate configuration at startup (fail fast on misconfigurations)
@@ -1551,6 +1567,69 @@ impl Default for HttpRateLimitConfig {
             // WebSocket: 10 connection attempts per minute
             websocket_max_requests: 10,
             websocket_window_seconds: 60,
+        }
+    }
+}
+
+/// gRPC API rate limit configuration for different endpoint tiers.
+///
+/// Mirrors the HTTP rate limit tiers but with separate values for the gRPC API.
+/// By default, gRPC limits are lower than HTTP because gRPC clients are typically
+/// automated (SDKs, bots) rather than human-driven browsers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GrpcRateLimitConfig {
+    /// Authentication endpoints (Login, Register, RefreshToken)
+    pub auth_max_requests: u32,
+    pub auth_window_seconds: u64,
+
+    /// Email endpoints (SendVerification, PasswordReset)
+    pub email_max_requests: u32,
+    pub email_window_seconds: u64,
+
+    /// Media mutation endpoints (AddMedia, RemoveMedia, BatchAdd)
+    pub media_max_requests: u32,
+    pub media_window_seconds: u64,
+
+    /// Write endpoints (CreateRoom, UpdateRoom, JoinRoom, SendChat)
+    pub write_max_requests: u32,
+    pub write_window_seconds: u64,
+
+    /// Admin endpoints
+    pub admin_max_requests: u32,
+    pub admin_window_seconds: u64,
+
+    /// Read endpoints (GetRoom, ListRooms, GetUser, GetPlaylist)
+    pub read_max_requests: u32,
+    pub read_window_seconds: u64,
+}
+
+impl Default for GrpcRateLimitConfig {
+    fn default() -> Self {
+        Self {
+            // Auth: 5 requests per 60 seconds
+            auth_max_requests: 5,
+            auth_window_seconds: 60,
+
+            // Email: 5 requests per 60 seconds
+            email_max_requests: 5,
+            email_window_seconds: 60,
+
+            // Media: 20 requests per 60 seconds
+            media_max_requests: 20,
+            media_window_seconds: 60,
+
+            // Write: 30 requests per 60 seconds
+            write_max_requests: 30,
+            write_window_seconds: 60,
+
+            // Admin: 30 requests per 60 seconds
+            admin_max_requests: 30,
+            admin_window_seconds: 60,
+
+            // Read: 100 requests per 60 seconds
+            read_max_requests: 100,
+            read_window_seconds: 60,
         }
     }
 }

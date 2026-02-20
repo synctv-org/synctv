@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use redis::AsyncCommands;
 use sqlx::PgPool;
 use std::collections::HashMap;
@@ -109,8 +110,10 @@ impl UserService {
     ) -> Result<(User, Option<String>, Option<String>)> {
         // Check per-IP brute-force before any processing. This throttles automated
         // mass-registration attempts (credential stuffing, spam account creation).
+        // Use a fixed key instead of the attacker-controlled username to prevent
+        // bypassing per-account lockout by varying the username on each attempt.
         if let Some(ref bf) = self.brute_force {
-            bf.check_allowed(&username, client_ip).await?;
+            bf.check_allowed("__registration__", client_ip).await?;
         }
 
         // Validate input
@@ -177,7 +180,20 @@ impl UserService {
         }
         self.validate_password(&password)?;
         let password_hash = hash_password(&password).await?;
-        let user = User::new(username, email, password_hash, Some(signup_method));
+        // OAuth2 users are already authenticated by the provider, so they
+        // start as Active. Email registrations go through the normal
+        // email-verification flow (Pending when verification is required).
+        let initial_status = match signup_method {
+            SignupMethod::OAuth2 => crate::models::UserStatus::Active,
+            SignupMethod::Email => {
+                if self.email_verification_required {
+                    crate::models::UserStatus::Pending
+                } else {
+                    crate::models::UserStatus::Active
+                }
+            }
+        };
+        let user = User::new_with_status(username, email, password_hash, Some(signup_method), initial_status);
         self.repository.create_with_executor(&user, executor).await
     }
 
@@ -295,10 +311,15 @@ impl UserService {
             ));
         }
 
-        // Successful login: reset brute-force counter
+        // Successful login: reset brute-force counters (username + IP)
         if let Some(ref bf) = self.brute_force {
             if let Err(e) = bf.reset(&username).await {
                 tracing::warn!(error = %e, "Failed to reset brute-force counter after successful login");
+            }
+            if let Some(ip) = client_ip {
+                if let Err(e) = bf.reset_ip(&ip).await {
+                    tracing::warn!(error = %e, "Failed to reset IP brute-force counter after successful login");
+                }
             }
         }
 
@@ -352,10 +373,15 @@ impl UserService {
             return Err(Error::Authentication("Authentication failed".to_string()));
         }
 
-        // Successful OAuth2 login: reset brute-force counter for this provider user ID
+        // Successful OAuth2 login: reset brute-force counters (provider user ID + IP)
         if let Some(ref bf) = self.brute_force {
             if let Err(e) = bf.reset(provider_user_id).await {
                 tracing::warn!(error = %e, "Failed to reset brute-force counter after successful OAuth2 login");
+            }
+            if let Some(ip) = client_ip {
+                if let Err(e) = bf.reset_ip(&ip).await {
+                    tracing::warn!(error = %e, "Failed to reset IP brute-force counter after successful OAuth2 login");
+                }
             }
         }
 
@@ -488,6 +514,13 @@ impl UserService {
 
         // Blacklist the old refresh token JTI AFTER successfully issuing new tokens.
         // This ensures atomicity: if token generation fails, the old token remains valid.
+        if self.redis_conn.is_none() {
+            tracing::debug!(
+                user_id = %user_id.as_str(),
+                "Refresh token rotation skipped: Redis not configured. \
+                 Old refresh token remains valid until expiry."
+            );
+        }
         if let Some(ref conn) = self.redis_conn {
             let old_jti = &claims.jti;
             if !old_jti.is_empty() {
@@ -524,9 +557,13 @@ impl UserService {
         self.repository.get_by_email(email).await
     }
 
-    /// Update user (entire user object)
-    pub async fn update_user(&self, user: &User) -> Result<User> {
-        let updated = self.repository.update(user).await?;
+    /// Update user (entire user object) with optimistic locking.
+    ///
+    /// Pass the `updated_at` value from the previously-read user to detect
+    /// concurrent modifications. Returns `Error::OptimisticLockConflict` if
+    /// the user was modified since it was read.
+    pub async fn update_user(&self, user: &User, old_updated_at: DateTime<Utc>) -> Result<User> {
+        let updated = self.repository.update(user, old_updated_at).await?;
         self.notify_user_invalidation(&user.id).await;
         Ok(updated)
     }

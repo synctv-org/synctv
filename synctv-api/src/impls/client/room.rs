@@ -716,14 +716,25 @@ impl ClientApiImpl {
         let limit = req.limit.clamp(1, 100);
 
         // Cursor takes precedence over the legacy timestamp field.
-        // If cursor is non-empty, use ID-based keyset pagination (avoids O(N) scans).
+        // If cursor is non-empty, use (created_at, id) composite keyset pagination
+        // (avoids O(N) scans and nanoid ordering issues).
+        // Cursor format: "<rfc3339_created_at>|<id>"
         // Otherwise fall back to the legacy timestamp-based pagination for backward compat.
-        let (messages, next_cursor) = if !req.cursor.is_empty() {
-            let before_id = if req.cursor.as_str() == "" { None } else { Some(req.cursor.as_str()) };
-            self.room_service
-                .get_chat_history_cursor(&rid, before_id, limit)
+        let (messages, next_cursor_str) = if !req.cursor.is_empty() {
+            let cursor = if let Some((ts_str, id)) = req.cursor.split_once('|') {
+                let ts = chrono::DateTime::parse_from_rfc3339(ts_str)
+                    .map(|dt| dt.with_timezone(&chrono::Utc))
+                    .map_err(|_| ApiError::InvalidInput("Invalid cursor format".to_string()))?;
+                Some((ts, id))
+            } else {
+                None
+            };
+            let (msgs, next) = self.room_service
+                .get_chat_history_cursor(&rid, cursor.as_ref().map(|(ts, id)| (*ts, *id)), limit)
                 .await
-                .map_err(ApiError::from)?
+                .map_err(ApiError::from)?;
+            let next_str = next.map(|(ts, id)| format!("{}|{}", ts.to_rfc3339(), id));
+            (msgs, next_str)
         } else {
             // Legacy path: timestamp-based pagination
             let before = if req.before > 0 {
@@ -734,7 +745,7 @@ impl ClientApiImpl {
             let msgs = self.room_service.get_chat_history(&rid, before, limit).await
                 .map_err(ApiError::from)?;
             // Derive a cursor from the oldest message so callers can switch to cursor pagination
-            let cursor = msgs.last().map(|m| m.id.clone());
+            let cursor = msgs.last().map(|m| format!("{}|{}", m.created_at.to_rfc3339(), m.id));
             (msgs, cursor)
         };
 
@@ -780,7 +791,7 @@ impl ClientApiImpl {
 
         Ok(crate::proto::client::GetChatHistoryResponse {
             messages: proto_messages,
-            next_cursor: next_cursor.unwrap_or_default(),
+            next_cursor: next_cursor_str.unwrap_or_default(),
         })
     }
 }

@@ -460,10 +460,12 @@ impl DynamicFolder for AlistProvider {
             PlayMode::Sequential | PlayMode::RepeatAll => {
                 // Get directory listing with pagination instead of fetching all at once.
                 // Use a reasonable page size and iterate pages to find the current and next items.
+                // Cap at MAX_PAGES to prevent memory exhaustion on huge folders.
                 let parent_path = relative_path.rsplit_once('/').map(|x| x.0)
                     .and_then(|s| if s.is_empty() { None } else { Some(s) });
 
                 const PAGE_SIZE: usize = 50;
+                const MAX_PAGES: usize = 20;
                 let mut all_items = Vec::new();
                 let mut page = 0;
                 loop {
@@ -476,6 +478,13 @@ impl DynamicFolder for AlistProvider {
                         break;
                     }
                     page += 1;
+                    if page >= MAX_PAGES {
+                        tracing::warn!(
+                            "Alist DynamicFolder next(): hit MAX_PAGES limit ({MAX_PAGES}), \
+                             folder may have more items"
+                        );
+                        break;
+                    }
                 }
                 let items = all_items;
 
@@ -574,11 +583,13 @@ impl DynamicFolder for AlistProvider {
                 Ok(None)
             }
             PlayMode::Shuffle => {
-                // Get all video items and pick random, using paginated fetching
+                // Get all video items and pick random, using paginated fetching.
+                // Cap at MAX_PAGES to prevent memory exhaustion.
                 let parent_path = relative_path.rsplit_once('/').map(|x| x.0)
                     .and_then(|s| if s.is_empty() { None } else { Some(s) });
 
                 const PAGE_SIZE: usize = 50;
+                const MAX_PAGES: usize = 20;
                 let mut all_items = Vec::new();
                 let mut page = 0;
                 loop {
@@ -591,6 +602,12 @@ impl DynamicFolder for AlistProvider {
                         break;
                     }
                     page += 1;
+                    if page >= MAX_PAGES {
+                        tracing::warn!(
+                            "Alist DynamicFolder next() shuffle: hit MAX_PAGES limit ({MAX_PAGES})"
+                        );
+                        break;
+                    }
                 }
                 let items = all_items;
 

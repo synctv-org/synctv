@@ -38,8 +38,8 @@ impl RoomMemberRepository {
              SET
                 role = EXCLUDED.role,
                 status = EXCLUDED.status,
-                added_permissions = EXCLUDED.added_permissions,
-                removed_permissions = EXCLUDED.removed_permissions,
+                added_permissions = room_members.added_permissions,
+                removed_permissions = room_members.removed_permissions,
                 left_at = NULL,
                 joined_at = EXCLUDED.joined_at,
                 version = room_members.version + 1
@@ -72,12 +72,14 @@ impl RoomMemberRepository {
         }
     }
 
-    /// Add user to room using a provided executor (pool or transaction)
+    /// Add user to room using a provided connection (pool or transaction)
+    ///
+    /// Accepts `&mut PgConnection` so the connection can be reborrowed for
+    /// the fallback `diagnose_add_conflict` query (fixes reading outside
+    /// the caller's transaction).
     ///
     /// See [`add`] for the `ON CONFLICT` semantics and error handling.
-    pub async fn add_with_executor<'e, E>(&self, member: &RoomMember, executor: E) -> Result<RoomMember>
-    where
-        E: sqlx::PgExecutor<'e>,
+    pub async fn add_with_executor(&self, member: &RoomMember, conn: &mut sqlx::PgConnection) -> Result<RoomMember>
     {
         let result = sqlx::query_as::<_, RoomMember>(
             "INSERT INTO room_members (
@@ -90,8 +92,8 @@ impl RoomMemberRepository {
              SET
                 role = EXCLUDED.role,
                 status = EXCLUDED.status,
-                added_permissions = EXCLUDED.added_permissions,
-                removed_permissions = EXCLUDED.removed_permissions,
+                added_permissions = room_members.added_permissions,
+                removed_permissions = room_members.removed_permissions,
                 left_at = NULL,
                 joined_at = EXCLUDED.joined_at,
                 version = room_members.version + 1
@@ -112,14 +114,14 @@ impl RoomMemberRepository {
         .bind(member.joined_at)
         .bind(member.version)
         .bind(MemberStatus::Banned)
-        .fetch_optional(executor)
+        .fetch_optional(&mut *conn)
         .await?;
 
         match result {
             Some(m) => Ok(m),
             None => {
                 // The ON CONFLICT WHERE condition was not met. Determine why.
-                self.diagnose_add_conflict(&member.room_id, &member.user_id, &self.pool).await
+                self.diagnose_add_conflict(&member.room_id, &member.user_id, &mut *conn).await
             }
         }
     }
@@ -251,8 +253,8 @@ impl RoomMemberRepository {
              SET
                 role = EXCLUDED.role,
                 status = EXCLUDED.status,
-                added_permissions = EXCLUDED.added_permissions,
-                removed_permissions = EXCLUDED.removed_permissions,
+                added_permissions = room_members.added_permissions,
+                removed_permissions = room_members.removed_permissions,
                 left_at = NULL,
                 joined_at = EXCLUDED.joined_at,
                 version = room_members.version + 1
@@ -874,7 +876,8 @@ impl RoomMemberRepository {
             .map(|row| {
                 let is_active: bool = row.try_get("is_active")?;
                 let mut member = self.row_to_member_with_user(row)?;
-                member.is_online = is_active;
+                member.is_active = is_active;
+                // is_online stays false — this method doesn't have WebSocket status info
                 Ok(member)
             })
             .collect()
@@ -1035,6 +1038,7 @@ impl RoomMemberRepository {
             admin_removed_permissions: row.try_get::<i64, _>("admin_removed_permissions")? as u64,
             joined_at: row.try_get("joined_at")?,
             is_online: false, // Will be populated by connection tracking
+            is_active: true,  // Default; overridden by callers that have membership status info
             banned_at: row.try_get("banned_at")?,
             banned_reason: row.try_get("banned_reason")?,
         })

@@ -141,7 +141,7 @@ impl LiveStreamingInfrastructure {
     ///
     /// Looks up all of the user's active streams from the tracker and sends `UnPublish` events.
     /// Used when banning or deleting a user to terminate all their RTMP publish sessions.
-    pub fn kick_user_publishers(&self, user_id: &str) {
+    pub async fn kick_user_publishers(&self, user_id: &str) {
         let streams = self.user_stream_tracker.remove_user(user_id);
         for (room_id, media_id) in streams {
             info!(
@@ -150,6 +150,10 @@ impl LiveStreamingInfrastructure {
                 media_id = %media_id,
                 "Kicking RTMP publisher for banned user"
             );
+            // Remove from Redis registry
+            if let Err(e) = self.registry.unregister_publisher(&room_id, &media_id).await {
+                error!("Failed to unregister publisher from Redis for user {}: {}", user_id, e);
+            }
             if let Err(e) = self.kick_publisher(&room_id, &media_id) {
                 error!("Failed to kick publisher for user {}: {}", user_id, e);
             }
@@ -160,7 +164,7 @@ impl LiveStreamingInfrastructure {
     ///
     /// Uses the room->media index for O(1) lookup instead of scanning all entries.
     /// Used when banning or deleting a room.
-    pub fn kick_room_publishers(&self, room_id: &str) {
+    pub async fn kick_room_publishers(&self, room_id: &str) {
         let media_ids = self.user_stream_tracker.get_room_streams(room_id);
 
         for media_id in media_ids {
@@ -171,6 +175,10 @@ impl LiveStreamingInfrastructure {
                     media_id = %media_id,
                     "Kicking RTMP publisher for banned room"
                 );
+            }
+            // Remove from Redis registry
+            if let Err(e) = self.registry.unregister_publisher(room_id, &media_id).await {
+                error!("Failed to unregister publisher from Redis in room {}: {}", room_id, e);
             }
             if let Err(e) = self.kick_publisher(room_id, &media_id) {
                 error!("Failed to kick publisher in room {}: {}", room_id, e);

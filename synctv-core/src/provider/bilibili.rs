@@ -318,12 +318,20 @@ impl MediaProvider for BilibiliProvider {
                 // Bilibili CDN URLs are typically valid for ~2 hours
                 let expires_at = Some(Utc::now().timestamp() + 2 * 3600);
 
+                // Extract video stream URLs from DASH data so the proxy layer
+                // has URLs to work with (e.g., for M3U8 proxy).
+                let dash_urls: Vec<String> = dash_resp
+                    .dash
+                    .as_ref()
+                    .map(|d| d.video_streams.iter().map(|s| s.base_url.clone()).collect())
+                    .unwrap_or_default();
+
                 // Keep a "dash" PlaybackInfo with headers for proxy layer
                 let mut playback_infos = HashMap::new();
                 playback_infos.insert(
                     "dash".to_string(),
                     PlaybackInfo {
-                        urls: Vec::new(),
+                        urls: dash_urls,
                         format: "mpd".to_string(),
                         headers: bilibili_headers(),
                         subtitles,
@@ -384,11 +392,18 @@ impl MediaProvider for BilibiliProvider {
                 // Bilibili CDN URLs are typically valid for ~2 hours
                 let expires_at = Some(Utc::now().timestamp() + 2 * 3600);
 
+                // Extract video stream URLs from DASH data
+                let pgc_urls: Vec<String> = dash_resp
+                    .dash
+                    .as_ref()
+                    .map(|d| d.video_streams.iter().map(|s| s.base_url.clone()).collect())
+                    .unwrap_or_default();
+
                 let mut playback_infos = HashMap::new();
                 playback_infos.insert(
                     "dash".to_string(),
                     PlaybackInfo {
-                        urls: Vec::new(),
+                        urls: pgc_urls,
                         format: "mpd".to_string(),
                         headers: bilibili_headers(),
                         subtitles,
@@ -523,21 +538,36 @@ impl MediaProvider for BilibiliProvider {
     }
 
     fn cache_key(&self, ctx: &ProviderContext<'_>, source_config: &Value) -> String {
-        // Hash only video identifiers, not the full config (which contains cookies)
+        // Include a hash of the user's cookies in the cache key to prevent
+        // cross-user cache pollution (VIP vs non-VIP get different results).
         if let Ok(config) = BilibiliSourceConfig::try_from(source_config) {
             use sha2::{Sha256, Digest};
-            let identifier = match &config {
-                BilibiliSourceConfig::Video { bvid, aid, cid, .. } => {
-                    format!("video:{}:{}:{}", bvid.as_deref().unwrap_or(""), aid.unwrap_or(0), cid)
+            let (identifier, cookies) = match &config {
+                BilibiliSourceConfig::Video { bvid, aid, cid, cookies, .. } => {
+                    (format!("video:{}:{}:{}", bvid.as_deref().unwrap_or(""), aid.unwrap_or(0), cid), cookies)
                 }
-                BilibiliSourceConfig::Pgc { epid, cid, .. } => {
-                    format!("pgc:{epid}:{cid}")
+                BilibiliSourceConfig::Pgc { epid, cid, cookies, .. } => {
+                    (format!("pgc:{epid}:{cid}"), cookies)
                 }
-                BilibiliSourceConfig::Live { room_id, .. } => {
-                    format!("live:{room_id}")
+                BilibiliSourceConfig::Live { room_id, cookies, .. } => {
+                    (format!("live:{room_id}"), cookies)
                 }
             };
-            format!("{}:playback:bilibili:{:x}", ctx.key_prefix, Sha256::digest(identifier.as_bytes()))
+            // Build a stable string from cookies for hashing
+            let mut cookie_parts: Vec<_> = cookies.iter().collect();
+            cookie_parts.sort_by_key(|(k, _)| k.as_str());
+            let cookies_str: String = cookie_parts.iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join(";");
+            let user_hash = if cookies_str.is_empty() {
+                "anon".to_string()
+            } else {
+                format!("{:x}", Sha256::digest(cookies_str.as_bytes()))
+                    .chars().take(16).collect::<String>()
+            };
+            let full_id = format!("{identifier}:{user_hash}");
+            format!("{}:playback:bilibili:{:x}", ctx.key_prefix, Sha256::digest(full_id.as_bytes()))
         } else {
             format!("{}:playback:bilibili:unknown", ctx.key_prefix)
         }

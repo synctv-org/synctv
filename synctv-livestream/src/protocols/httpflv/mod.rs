@@ -96,12 +96,14 @@ async fn handle_flv_stream(
     // Create subscriber guard if infrastructure is available.
     // The guard decrements the subscriber count when dropped, ensuring
     // the idle-cleanup task correctly tracks active viewers.
+    // If ensure_pull_stream fails, do NOT proceed — the FLV session must
+    // not be spawned without lifecycle tracking.
     let subscriber_guard: Option<StreamSubscriberGuard> = if let Some(ref infra) = state.infrastructure {
         match infra.ensure_pull_stream(&room_id, media_id, None).await {
             Ok(guard) => Some(guard),
             Err(e) => {
                 warn!("Failed to create subscriber guard for FLV session: {}", e);
-                None
+                return Err(StatusCode::SERVICE_UNAVAILABLE);
             }
         }
     } else {

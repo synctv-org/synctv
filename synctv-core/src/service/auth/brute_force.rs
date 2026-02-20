@@ -283,6 +283,27 @@ impl BruteForceProtection {
         Ok(())
     }
 
+    /// Reset the per-IP failed login attempt counter on successful login.
+    ///
+    /// This prevents shared IPs (e.g., behind NAT/VPN) from accumulating
+    /// failures across different users and eventually locking out the IP.
+    pub async fn reset_ip(&self, ip: &IpAddr) -> Result<()> {
+        let ip_str = ip.to_string();
+        let key = self.key_builder.login_attempts_ip(&ip_str);
+
+        if let Some(ref conn) = self.redis_conn {
+            let mut conn = conn.clone();
+            let _: () = tokio::time::timeout(REDIS_OPERATION_TIMEOUT, conn.del(&key))
+                .await
+                .map_err(|_| Error::Internal("Redis timeout: reset IP login attempts".to_string()))?
+                .internal_with_err("Failed to reset IP login attempts")?;
+        } else {
+            self.local_ip_attempts.invalidate(&key).await;
+        }
+
+        Ok(())
+    }
+
     /// Record a failed login attempt for a specific IP address.
     async fn record_ip_failure(&self, ip: &IpAddr) -> Result<()> {
         let now = chrono::Utc::now().timestamp();

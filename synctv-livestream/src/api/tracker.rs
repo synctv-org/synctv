@@ -2,8 +2,14 @@
 //
 // Provides O(1) lookup by user_id, room_id, (room_id, media_id), and
 // RTMP identifiers (app_name, stream_name).
+//
+// All five indexes are wrapped in a single `parking_lot::RwLock` so that
+// insert/remove/cleanup operations are atomic across all maps. This prevents
+// concurrent readers from observing partial state and eliminates races
+// between cleanup and insert.
 
-use dashmap::DashMap;
+use parking_lot::RwLock;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tracing::{debug, info};
 
@@ -50,14 +56,43 @@ impl Drop for StreamSubscriberGuard {
 /// Legacy type alias — prefer `StreamTracker` for new code.
 pub type UserStreamTracker = Arc<StreamTracker>;
 
+/// Inner state holding all five indexes, protected by an outer `RwLock`.
+///
+/// Using regular `HashMap`/`HashSet` instead of `DashMap`/`DashSet` since
+/// the outer lock already provides synchronization.
+struct StreamTrackerInner {
+    /// `user_id` -> Set of `"{room_id}:{media_id}"` composite keys
+    by_user: HashMap<String, HashSet<String>>,
+    /// `room_id` -> Set<`media_id`>
+    by_room: HashMap<String, HashSet<String>>,
+    /// `"{room_id}:{media_id}"` -> `user_id`
+    by_stream: HashMap<String, String>,
+    /// `"{app_name}\0{stream_name}"` -> `"{room_id}:{media_id}"` (RTMP->logical)
+    by_rtmp: HashMap<String, String>,
+    /// `"{room_id}:{media_id}"` -> `"{app_name}\0{stream_name}"` (logical->RTMP, for cleanup)
+    rtmp_reverse: HashMap<String, String>,
+}
+
+impl StreamTrackerInner {
+    fn new() -> Self {
+        Self {
+            by_user: HashMap::new(),
+            by_room: HashMap::new(),
+            by_stream: HashMap::new(),
+            by_rtmp: HashMap::new(),
+            rtmp_reverse: HashMap::new(),
+        }
+    }
+}
+
 /// Tracks active RTMP publishers with five cross-referenced indexes
 /// for fast lookup in any direction:
 ///
-/// 1. `user_id → Set<(room_id, media_id)>` — kick all streams for a user (supports multiple)
-/// 2. `room_id → Set<media_id>` — kick all streams in a room
-/// 3. `(room_id, media_id) → user_id` — find who is publishing a specific stream
-/// 4. `(rtmp_app_name, rtmp_stream_name) → (room_id, media_id)` — map RTMP identifiers to logical stream
-/// 5. `(room_id, media_id) → (rtmp_app_name, rtmp_stream_name)` — reverse map for cleanup
+/// 1. `user_id -> Set<(room_id, media_id)>` — kick all streams for a user (supports multiple)
+/// 2. `room_id -> Set<media_id>` — kick all streams in a room
+/// 3. `(room_id, media_id) -> user_id` — find who is publishing a specific stream
+/// 4. `(rtmp_app_name, rtmp_stream_name) -> (room_id, media_id)` — map RTMP identifiers to logical stream
+/// 5. `(room_id, media_id) -> (rtmp_app_name, rtmp_stream_name)` — reverse map for cleanup
 ///
 /// The RTMP mapping is needed because `stream_name` in RTMP may be a JWT token,
 /// not the `media_id`. On unpublish, we only know `(app_name, stream_name)` and
@@ -77,19 +112,10 @@ pub type UserStreamTracker = Arc<StreamTracker>;
 /// - **Publisher key** (used by `PublisherManager` and Redis):
 ///   `"{room_id}:{media_id}"` — matches the stream key format above
 ///
-/// All mutations atomically update all indexes.
+/// All mutations atomically update all indexes under a single write lock.
 /// A single user may publish to multiple rooms/media simultaneously.
 pub struct StreamTracker {
-    /// `user_id` → Set of `"{room_id}:{media_id}"` composite keys
-    by_user: DashMap<String, dashmap::DashSet<String>>,
-    /// `room_id` → Set<`media_id`>
-    by_room: DashMap<String, dashmap::DashSet<String>>,
-    /// `"{room_id}:{media_id}"` → `user_id`
-    by_stream: DashMap<String, String>,
-    /// `"{app_name}\0{stream_name}"` → `"{room_id}:{media_id}"` (RTMP→logical)
-    by_rtmp: DashMap<String, String>,
-    /// `"{room_id}:{media_id}"` → `"{app_name}\0{stream_name}"` (logical→RTMP, for cleanup)
-    rtmp_reverse: DashMap<String, String>,
+    inner: RwLock<StreamTrackerInner>,
 }
 
 impl Default for StreamTracker {
@@ -102,11 +128,7 @@ impl StreamTracker {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            by_user: DashMap::new(),
-            by_room: DashMap::new(),
-            by_stream: DashMap::new(),
-            by_rtmp: DashMap::new(),
-            rtmp_reverse: DashMap::new(),
+            inner: RwLock::new(StreamTrackerInner::new()),
         }
     }
 
@@ -152,37 +174,38 @@ impl StreamTracker {
         let sk = Self::stream_key(&room_id, &media_id);
         let rk = Self::rtmp_key(rtmp_app_name, rtmp_stream_name);
 
+        let mut inner = self.inner.write();
+
         // If another user was publishing this exact stream, remove them first
-        if let Some((_, old_user)) = self.by_stream.remove(&sk) {
+        if let Some(old_user) = inner.by_stream.remove(&sk) {
             if old_user != user_id {
-                if let Some(user_set) = self.by_user.get(&old_user) {
+                if let Some(user_set) = inner.by_user.get_mut(&old_user) {
                     user_set.remove(&sk);
                     if user_set.is_empty() {
-                        drop(user_set);
-                        self.by_user.remove(&old_user);
+                        inner.by_user.remove(&old_user);
                     }
                 }
             }
         }
 
         // Clean up any old RTMP mapping for this stream
-        if let Some((_, old_rk)) = self.rtmp_reverse.remove(&sk) {
-            self.by_rtmp.remove(&old_rk);
+        if let Some(old_rk) = inner.rtmp_reverse.remove(&sk) {
+            inner.by_rtmp.remove(&old_rk);
         }
 
-        self.by_user
+        inner.by_user
             .entry(user_id.clone())
             .or_default()
             .insert(sk.clone());
 
-        self.by_room
+        inner.by_room
             .entry(room_id)
             .or_default()
             .insert(media_id);
 
-        self.by_stream.insert(sk.clone(), user_id);
-        self.by_rtmp.insert(rk.clone(), sk.clone());
-        self.rtmp_reverse.insert(sk, rk);
+        inner.by_stream.insert(sk.clone(), user_id);
+        inner.by_rtmp.insert(rk.clone(), sk.clone());
+        inner.rtmp_reverse.insert(sk, rk);
 
         // Track active stream metrics
         synctv_core::metrics::http::STREAMS_ACTIVE.inc();
@@ -192,19 +215,20 @@ impl StreamTracker {
     #[must_use]
     pub fn remove_user(&self, user_id: &str) -> Vec<(String, String)> {
         let mut removed = Vec::new();
-        if let Some((_, keys)) = self.by_user.remove(user_id) {
-            for key in keys.iter() {
-                self.by_stream.remove(key.as_str());
+        let mut inner = self.inner.write();
+
+        if let Some(keys) = inner.by_user.remove(user_id) {
+            for key in &keys {
+                inner.by_stream.remove(key.as_str());
                 // Clean up RTMP mapping
-                if let Some((_, rk)) = self.rtmp_reverse.remove(key.as_str()) {
-                    self.by_rtmp.remove(&rk);
+                if let Some(rk) = inner.rtmp_reverse.remove(key.as_str()) {
+                    inner.by_rtmp.remove(&rk);
                 }
-                if let Some((room_id, media_id)) = Self::parse_stream_key(&key) {
-                    if let Some(set) = self.by_room.get(&room_id) {
+                if let Some((room_id, media_id)) = Self::parse_stream_key(key) {
+                    if let Some(set) = inner.by_room.get_mut(&room_id) {
                         set.remove(&media_id);
                         if set.is_empty() {
-                            drop(set);
-                            self.by_room.remove(&room_id);
+                            inner.by_room.remove(&room_id);
                         }
                     }
                     removed.push((room_id, media_id));
@@ -222,24 +246,36 @@ impl StreamTracker {
     /// Remove tracking by (`room_id`, `media_id`). Returns the `user_id` if present.
     #[must_use]
     pub fn remove_stream(&self, room_id: &str, media_id: &str) -> Option<String> {
+        let mut inner = self.inner.write();
+        Self::remove_stream_locked(&mut inner, room_id, media_id, true)
+    }
+
+    /// Internal: remove stream with write lock already held.
+    /// If `clean_rtmp` is true, also removes the RTMP mappings.
+    fn remove_stream_locked(
+        inner: &mut StreamTrackerInner,
+        room_id: &str,
+        media_id: &str,
+        clean_rtmp: bool,
+    ) -> Option<String> {
         let sk = Self::stream_key(room_id, media_id);
-        if let Some((_, user_id)) = self.by_stream.remove(&sk) {
-            // Clean up RTMP mapping
-            if let Some((_, rk)) = self.rtmp_reverse.remove(&sk) {
-                self.by_rtmp.remove(&rk);
-            }
-            if let Some(user_set) = self.by_user.get(&user_id) {
-                user_set.remove(&sk);
-                if user_set.is_empty() {
-                    drop(user_set);
-                    self.by_user.remove(&user_id);
+        if let Some(user_id) = inner.by_stream.remove(&sk) {
+            if clean_rtmp {
+                // Clean up RTMP mapping
+                if let Some(rk) = inner.rtmp_reverse.remove(&sk) {
+                    inner.by_rtmp.remove(&rk);
                 }
             }
-            if let Some(set) = self.by_room.get(room_id) {
+            if let Some(user_set) = inner.by_user.get_mut(&user_id) {
+                user_set.remove(&sk);
+                if user_set.is_empty() {
+                    inner.by_user.remove(&user_id);
+                }
+            }
+            if let Some(set) = inner.by_room.get_mut(room_id) {
                 set.remove(media_id);
                 if set.is_empty() {
-                    drop(set);
-                    self.by_room.remove(room_id);
+                    inner.by_room.remove(room_id);
                 }
             }
             synctv_core::metrics::http::STREAMS_ACTIVE.dec();
@@ -251,18 +287,21 @@ impl StreamTracker {
 
     /// Remove by RTMP identifiers (`app_name`, `stream_name`) — used by `on_unpublish`.
     ///
-    /// Uses the RTMP→logical mapping to resolve `(room_id, media_id)` from the
+    /// Uses the RTMP->logical mapping to resolve `(room_id, media_id)` from the
     /// RTMP identifiers, then removes all tracking entries.
     ///
     /// Returns `Some((user_id, room_id, media_id))` if found, `None` otherwise.
     pub fn remove_by_app_stream(&self, app_name: &str, stream_name: &str) -> Option<(String, String, String)> {
         let rk = Self::rtmp_key(app_name, stream_name);
 
+        let mut inner = self.inner.write();
+
         // Look up logical stream from RTMP mapping
-        if let Some((_, sk)) = self.by_rtmp.remove(&rk) {
-            self.rtmp_reverse.remove(&sk);
+        if let Some(sk) = inner.by_rtmp.remove(&rk) {
+            inner.rtmp_reverse.remove(&sk);
             if let Some((room_id, media_id)) = Self::parse_stream_key(&sk) {
-                if let Some(user_id) = self.remove_stream_internal(&room_id, &media_id) {
+                // Use clean_rtmp=false since we already removed the RTMP mappings above
+                if let Some(user_id) = Self::remove_stream_locked(&mut inner, &room_id, &media_id, false) {
                     debug!(
                         user_id = %user_id,
                         room_id = %room_id,
@@ -276,7 +315,7 @@ impl StreamTracker {
         }
 
         // Fallback: try direct stream key match (app_name = room_id, stream_name = media_id)
-        if let Some(user_id) = self.remove_stream(app_name, stream_name) {
+        if let Some(user_id) = Self::remove_stream_locked(&mut inner, app_name, stream_name, true) {
             debug!(
                 user_id = %user_id,
                 room_id = %app_name,
@@ -289,39 +328,15 @@ impl StreamTracker {
         None
     }
 
-    /// Internal: remove stream without touching RTMP maps (already cleaned by caller).
-    fn remove_stream_internal(&self, room_id: &str, media_id: &str) -> Option<String> {
-        let sk = Self::stream_key(room_id, media_id);
-        if let Some((_, user_id)) = self.by_stream.remove(&sk) {
-            if let Some(user_set) = self.by_user.get(&user_id) {
-                user_set.remove(&sk);
-                if user_set.is_empty() {
-                    drop(user_set);
-                    self.by_user.remove(&user_id);
-                }
-            }
-            if let Some(set) = self.by_room.get(room_id) {
-                set.remove(media_id);
-                if set.is_empty() {
-                    drop(set);
-                    self.by_room.remove(room_id);
-                }
-            }
-            synctv_core::metrics::http::STREAMS_ACTIVE.dec();
-            Some(user_id)
-        } else {
-            None
-        }
-    }
-
     /// Get all (`room_id`, `media_id`) pairs for a user.
     #[must_use]
     pub fn get_user_streams(&self, user_id: &str) -> Vec<(String, String)> {
-        self.by_user
+        let inner = self.inner.read();
+        inner.by_user
             .get(user_id)
             .map(|set| {
                 set.iter()
-                    .filter_map(|key| Self::parse_stream_key(&key))
+                    .filter_map(|key| Self::parse_stream_key(key))
                     .collect()
             })
             .unwrap_or_default()
@@ -330,16 +345,18 @@ impl StreamTracker {
     /// Get all `media_ids` currently publishing in a room.
     #[must_use]
     pub fn get_room_streams(&self, room_id: &str) -> Vec<String> {
-        self.by_room
+        let inner = self.inner.read();
+        inner.by_room
             .get(room_id)
-            .map(|set| set.iter().map(|e| e.clone()).collect())
+            .map(|set| set.iter().cloned().collect())
             .unwrap_or_default()
     }
 
     /// Get `user_id` publishing a specific (`room_id`, `media_id`).
     #[must_use]
     pub fn get_stream_user(&self, room_id: &str, media_id: &str) -> Option<String> {
-        self.by_stream.get(&Self::stream_key(room_id, media_id)).map(|e| e.value().clone())
+        let inner = self.inner.read();
+        inner.by_stream.get(&Self::stream_key(room_id, media_id)).cloned()
     }
 
     /// Get RTMP identifiers (`app_name`, `stream_name`) for a logical (`room_id`, `media_id`).
@@ -348,28 +365,33 @@ impl StreamTracker {
     /// not the logical (`room_id`, `media_id`) pair.
     #[must_use]
     pub fn get_rtmp_identifiers(&self, room_id: &str, media_id: &str) -> Option<(String, String)> {
+        let inner = self.inner.read();
         let sk = Self::stream_key(room_id, media_id);
-        self.rtmp_reverse.get(&sk).and_then(|rk| {
+        inner.rtmp_reverse.get(&sk).and_then(|rk| {
             // rtmp_key format is "{app_name}\0{stream_name}"
             rk.split_once('\0').map(|(app, stream)| (app.to_string(), stream.to_string()))
         })
     }
 
-    /// Iterate over all stream entries. Provides `("room_id:media_id", user_id)`.
-    pub fn iter_streams(&self) -> impl Iterator<Item = dashmap::mapref::multiple::RefMulti<'_, String, String>> {
-        self.by_stream.iter()
+    /// Iterate over all stream entries. Returns owned `Vec` of `(stream_key, user_id)`.
+    #[must_use]
+    pub fn iter_streams(&self) -> Vec<(String, String)> {
+        let inner = self.inner.read();
+        inner.by_stream.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
     }
 
     /// Number of tracked streams.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.by_stream.len()
+        let inner = self.inner.read();
+        inner.by_stream.len()
     }
 
     /// Whether the tracker is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.by_stream.is_empty()
+        let inner = self.inner.read();
+        inner.by_stream.is_empty()
     }
 
     /// Remove stale index entries that are orphaned from the primary `by_stream` map.
@@ -379,77 +401,56 @@ impl StreamTracker {
     /// streams that no longer exist in `by_stream`. This method scans each index
     /// and removes entries whose stream key is no longer present.
     ///
+    /// Holds the write lock for the entire operation, preventing concurrent
+    /// inserts from racing with the cleanup scan.
+    ///
     /// Returns the number of stale entries removed.
     pub fn cleanup_stale_entries(&self) -> usize {
+        let mut inner = self.inner.write();
         let mut removed = 0usize;
 
+        // Collect the set of valid stream keys for cross-referencing.
+        // This avoids borrow-checker issues from borrowing inner.by_stream
+        // while mutating other fields in the same struct.
+        let valid_streams: HashSet<String> = inner.by_stream.keys().cloned().collect();
+
         // Clean by_user: remove stream keys that are not in by_stream
-        let user_keys: Vec<String> = self.by_user.iter().map(|e| e.key().clone()).collect();
+        let user_keys: Vec<String> = inner.by_user.keys().cloned().collect();
         for user_id in user_keys {
-            if let Some(user_set) = self.by_user.get(&user_id) {
-                let stale: Vec<String> = user_set
-                    .iter()
-                    .filter(|sk| !self.by_stream.contains_key(sk.as_str()))
-                    .map(|sk| sk.clone())
-                    .collect();
-                for sk in &stale {
-                    user_set.remove(sk);
-                    removed += 1;
-                }
+            if let Some(user_set) = inner.by_user.get_mut(&user_id) {
+                let before = user_set.len();
+                user_set.retain(|sk| valid_streams.contains(sk));
+                removed += before - user_set.len();
                 if user_set.is_empty() {
-                    drop(user_set);
-                    self.by_user.remove(&user_id);
+                    inner.by_user.remove(&user_id);
                 }
             }
         }
 
         // Clean by_room: remove media_ids whose stream key is not in by_stream
-        let room_keys: Vec<String> = self.by_room.iter().map(|e| e.key().clone()).collect();
+        let room_keys: Vec<String> = inner.by_room.keys().cloned().collect();
         for room_id in room_keys {
-            if let Some(room_set) = self.by_room.get(&room_id) {
-                let stale: Vec<String> = room_set
-                    .iter()
-                    .filter(|media_id| {
-                        !self.by_stream.contains_key(&Self::stream_key(&room_id, media_id))
-                    })
-                    .map(|media_id| media_id.clone())
-                    .collect();
-                for media_id in &stale {
-                    room_set.remove(media_id);
-                    removed += 1;
-                }
+            if let Some(room_set) = inner.by_room.get_mut(&room_id) {
+                let before = room_set.len();
+                room_set.retain(|media_id| {
+                    valid_streams.contains(&Self::stream_key(&room_id, media_id))
+                });
+                removed += before - room_set.len();
                 if room_set.is_empty() {
-                    drop(room_set);
-                    self.by_room.remove(&room_id);
+                    inner.by_room.remove(&room_id);
                 }
             }
         }
 
         // Clean by_rtmp: remove entries whose stream key is not in by_stream
-        let rtmp_keys: Vec<(String, String)> = self
-            .by_rtmp
-            .iter()
-            .map(|e| (e.key().clone(), e.value().clone()))
-            .collect();
-        for (rk, sk) in rtmp_keys {
-            if !self.by_stream.contains_key(&sk) {
-                self.by_rtmp.remove(&rk);
-                removed += 1;
-            }
-        }
+        let before = inner.by_rtmp.len();
+        inner.by_rtmp.retain(|_rk, sk| valid_streams.contains(sk));
+        removed += before - inner.by_rtmp.len();
 
         // Clean rtmp_reverse: remove entries whose stream key is not in by_stream
-        let reverse_keys: Vec<String> = self
-            .rtmp_reverse
-            .iter()
-            .map(|e| e.key().clone())
-            .collect();
-        for sk in reverse_keys {
-            if !self.by_stream.contains_key(&sk) {
-                self.rtmp_reverse.remove(&sk);
-                removed += 1;
-            }
-        }
+        let before = inner.rtmp_reverse.len();
+        inner.rtmp_reverse.retain(|sk, _rk| valid_streams.contains(sk));
+        removed += before - inner.rtmp_reverse.len();
 
         if removed > 0 {
             info!(removed, "Cleaned up stale stream tracker entries");
@@ -460,7 +461,7 @@ impl StreamTracker {
 
     /// Spawn a periodic background task that calls `cleanup_stale_entries`
     /// every `interval` duration. Returns the `JoinHandle` for the task.
-    #[must_use] 
+    #[must_use]
     pub fn start_periodic_cleanup(
         self: &Arc<Self>,
         interval: std::time::Duration,

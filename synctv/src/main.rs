@@ -181,10 +181,13 @@ async fn init_cluster_discovery(
                         // K8s DNS mode without Redis: DNS resolution works, but there is no
                         // NodeRegistry, HealthMonitor, or LoadBalancer. Cluster coordination
                         // (pub/sub, heartbeats, load balancing) requires Redis even in k8s_dns mode.
-                        warn!(
+                        // This is a severe misconfiguration: the cluster silently degrades to
+                        // N independent nodes with no coordination.
+                        error!(
                             "K8s DNS discovery is active but Redis is not configured. \
                              DNS will resolve peers, but cluster health monitoring, load balancing, \
-                             and pub/sub are DISABLED. To enable full cluster functionality, \
+                             and pub/sub are DISABLED. Each replica will operate independently \
+                             with NO cross-node coordination. To enable full cluster functionality, \
                              configure a Redis URL. See: https://docs.synctv.dev/deployment/k8s"
                         );
                         (None, None, None, Some(dns_refresh_handle))
@@ -617,8 +620,6 @@ async fn main() -> Result<()> {
 
     // 5.7. Start singleton background tasks (leader-gated).
     // These tasks check leadership before each run, so only the leader executes them.
-    // Additionally, if a leader_guard is available, the tasks are cancelled immediately
-    // when leadership is lost (fencing), preventing stale singleton work after demotion.
     // Track background task JoinHandles for graceful shutdown
     let mut main_background_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
 
@@ -627,22 +628,15 @@ async fn main() -> Result<()> {
         main_background_handles.push(handle);
     }
 
-    let leader_guard_token = leader_elector.as_ref().map(synctv_cluster::leader::LeaderElect::leader_guard);
-    let singleton_cancel = match &leader_guard_token {
-        Some(guard) => {
-            // Combine: cancel when either the partition_cancel OR the leader guard fires
-            let combined = partition_cancel.clone();
-            let guard_clone = guard.clone();
-            let combined_clone = combined.clone();
-            let guard_handle = tokio::spawn(async move {
-                guard_clone.cancelled().await;
-                combined_clone.cancel();
-            });
-            main_background_handles.push(guard_handle);
-            combined
-        }
-        None => partition_cancel.clone(),
-    };
+    // Singleton tasks already check `leader_check.is_leader()` on every
+    // iteration, so they naturally skip work when this node is not the leader.
+    // Previously, a `leader_guard` CancellationToken was used here that
+    // permanently cancelled singleton tasks on leadership loss. This caused a
+    // bug: after brief leadership loss + regain, the tasks stayed cancelled
+    // because CancellationToken is one-shot and cannot be reset. By using the
+    // shutdown-only `partition_cancel` token, tasks stay alive across
+    // leadership transitions and simply skip work when not leader.
+    let singleton_cancel = partition_cancel.clone();
 
     let audit_manager = synctv_core::service::AuditPartitionManager::new(pool.clone(), leader_check.clone());
     let audit_task = audit_manager.start_auto_management(24, singleton_cancel.clone());

@@ -680,6 +680,11 @@ impl RoomService {
         // Invalidate room cache across all replicas
         self.notify_room_invalidation(&room_id).await;
 
+        // Invalidate permission and playback caches so stale entries don't
+        // linger for the cache TTL after the room is soft-deleted.
+        self.permission_service.invalidate_room_cache(&room_id).await;
+        self.playback_service.invalidate_playback_cache(&room_id).await;
+
         // Audit log
         self.audit_log(
             &user_id,
@@ -1188,23 +1193,66 @@ impl RoomService {
 
     /// Remove media from playlist
     ///
-    /// Returns an error if the media is currently playing, since removing it
-    /// would leave playback in an inconsistent state.
+    /// Uses a transaction with a locking read on the playback state to
+    /// atomically verify the media is not currently playing before deleting it,
+    /// preventing a TOCTOU race where another user could switch playback to
+    /// this media between the check and the delete.
     pub async fn remove_media(
         &self,
         room_id: RoomId,
         user_id: UserId,
         media_id: MediaId,
     ) -> Result<()> {
-        // Prohibit removing media that is currently playing
-        let state = self.playback_service.get_state(&room_id).await?;
-        if state.playing_media_id.as_ref() == Some(&media_id) {
+        // Permission check before starting transaction (uses cache, lightweight)
+        let media = self.media_service.get_media(&media_id).await?
+            .ok_or_else(|| Error::NotFound("Media not found".to_string()))?;
+        if media.room_id != room_id {
+            return Err(Error::Authorization("Media does not belong to this room".to_string()));
+        }
+        let required_permission = if media.creator_id.as_ref() == Some(&user_id) {
+            PermissionBits::DELETE_MOVIE_SELF
+        } else {
+            PermissionBits::DELETE_MOVIE_ANY
+        };
+        self.permission_service
+            .check_permission(&room_id, &user_id, required_permission)
+            .await?;
+
+        // Atomic check-and-delete within a transaction
+        let mut tx = self.pool.begin().await?;
+
+        // Lock the playback state row to prevent concurrent playback switches
+        let playing_media_id: Option<String> = sqlx::query_scalar(
+            "SELECT playing_media_id FROM room_playback_state
+             WHERE room_id = $1
+             FOR UPDATE"
+        )
+        .bind(room_id.as_str())
+        .fetch_optional(&mut *tx)
+        .await?
+        .flatten();
+
+        if playing_media_id.as_deref() == Some(media_id.as_str()) {
             return Err(Error::InvalidInput(
                 "Cannot remove media that is currently playing".to_string(),
             ));
         }
 
-        self.media_service.remove_media(room_id, user_id, media_id).await
+        // Delete the media within the transaction
+        sqlx::query("DELETE FROM media WHERE id = $1")
+            .bind(media_id.as_str())
+            .execute(&mut *tx)
+            .await?;
+
+        tx.commit().await?;
+
+        tracing::info!(
+            room_id = %room_id.as_str(),
+            media_id = %media_id.as_str(),
+            "Media removed from playlist"
+        );
+
+        Ok(())
     }
 
     /// Get playlist (all media in room's root playlist)
@@ -1259,20 +1307,52 @@ impl RoomService {
     /// Returns an error if media that is currently playing is in the playlist,
     /// since removing it would leave playback in an inconsistent state.
     pub async fn clear_playlist(&self, room_id: RoomId, _user_id: UserId) -> Result<i64> {
-        // Check if any media in the playlist is currently playing
-        let state = self.playback_service.get_state(&room_id).await?;
-        if state.playing_media_id.is_some() {
-            return Err(Error::InvalidInput(
-                "Cannot clear playlist while media is currently playing".to_string(),
-            ));
-        }
-
         let root_playlist = self.playlist_service.get_root_playlist(&room_id).await?;
 
-        // Delete all media in playlist directly (single query, no N+1)
-        let count = self.media_service
-            .delete_by_playlist(&root_playlist.id)
-            .await? as i64;
+        // Atomic check-and-clear within a transaction to prevent TOCTOU race
+        // where another user starts playing media between the check and the clear.
+        let mut tx = self.pool.begin().await?;
+
+        // Lock the playback state row to prevent concurrent playback switches
+        let row = sqlx::query(
+            "SELECT playing_media_id, playing_playlist_id FROM room_playback_state
+             WHERE room_id = $1
+             FOR UPDATE"
+        )
+        .bind(room_id.as_str())
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        // Only block clearing if the currently playing media is in this playlist
+        if let Some(row) = row {
+            use sqlx::Row;
+            let playing_media_id: Option<String> = row.try_get("playing_media_id")?;
+            if let Some(ref mid) = playing_media_id {
+                // Check if the playing media belongs to this playlist
+                let in_playlist: bool = sqlx::query_scalar(
+                    "SELECT EXISTS(SELECT 1 FROM media WHERE id = $1 AND playlist_id = $2)"
+                )
+                .bind(mid.as_str())
+                .bind(root_playlist.id.as_str())
+                .fetch_one(&mut *tx)
+                .await?;
+
+                if in_playlist {
+                    return Err(Error::InvalidInput(
+                        "Cannot clear playlist while media from it is currently playing".to_string(),
+                    ));
+                }
+            }
+        }
+
+        // Delete all media in playlist within the transaction
+        let result = sqlx::query("DELETE FROM media WHERE playlist_id = $1")
+            .bind(root_playlist.id.as_str())
+            .execute(&mut *tx)
+            .await?;
+
+        let count = result.rows_affected() as i64;
+        tx.commit().await?;
 
         Ok(count)
     }
@@ -1337,16 +1417,16 @@ impl RoomService {
     /// Get chat history using keyset (cursor) pagination.
     ///
     /// Prefer this over [`get_chat_history`] for large rooms — it avoids the
-    /// O(N) timestamp scan by using `id < cursor` keyset pagination.
+    /// O(N) timestamp scan by using `(created_at, id)` composite keyset pagination.
     ///
     /// Returns `(messages, next_cursor)`.
     pub async fn get_chat_history_cursor(
         &self,
         room_id: &RoomId,
-        before_id: Option<&str>,
+        cursor: Option<(DateTime<Utc>, &str)>,
         limit: i32,
-    ) -> Result<(Vec<ChatMessage>, Option<String>)> {
-        self.chat_repo.list_by_room_cursor(room_id, before_id, limit).await
+    ) -> Result<(Vec<ChatMessage>, Option<(DateTime<Utc>, String)>)> {
+        self.chat_repo.list_by_room_cursor(room_id, cursor, limit).await
     }
 
     /// Save a chat message to the database

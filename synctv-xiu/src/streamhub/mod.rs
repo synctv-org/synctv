@@ -915,15 +915,51 @@ impl StreamsHub {
         let statistic_data_sender = transceiver.get_statistics_data_sender();
         let identifier_clone = identifier.clone();
         let event_sender_clone = event_sender.clone();
+        let hub_sender_for_cleanup = self.hub_event_sender.clone();
 
-        // H-1: Run transceiver with event_sender so spawned loops can send synthetic UnPublish
-        tokio::spawn(async move {
-            if let Err(err) = transceiver.run(event_sender_clone).await {
-                tracing::error!(
-                    "transceiver run error, idetifier: {identifier_clone}, error: {err}",
-                );
-            } else {
-                tracing::info!("transceiver run success, idetifier: {identifier_clone}");
+        // H-1: Run transceiver with event_sender so spawned loops can send synthetic UnPublish.
+        // Wraps the task so that if the transceiver panics or errors out, an UnPublish
+        // event is sent to clean up the dead entry from the `streams` HashMap (LIVE-13).
+        tokio::spawn({
+            let hub_sender = hub_sender_for_cleanup;
+            let identifier_for_cleanup = identifier_clone.clone();
+            async move {
+                use std::panic::AssertUnwindSafe;
+                use futures::FutureExt;
+
+                let result = AssertUnwindSafe(transceiver.run(event_sender_clone))
+                    .catch_unwind()
+                    .await;
+
+                let needs_cleanup = match result {
+                    Ok(Ok(())) => {
+                        tracing::info!("transceiver run success, idetifier: {identifier_clone}");
+                        false
+                    }
+                    Ok(Err(err)) => {
+                        tracing::error!(
+                            "transceiver run error, idetifier: {identifier_clone}, error: {err}",
+                        );
+                        true
+                    }
+                    Err(_panic) => {
+                        tracing::error!(
+                            "transceiver task panicked for {identifier_clone}. \
+                             Sending UnPublish to prevent zombie stream entry."
+                        );
+                        true
+                    }
+                };
+
+                if needs_cleanup {
+                    if let Err(e) = hub_sender.send(StreamHubEvent::UnPublish {
+                        identifier: identifier_for_cleanup.clone(),
+                    }).await {
+                        tracing::error!(
+                            "Failed to send cleanup UnPublish for {identifier_for_cleanup}: {e}"
+                        );
+                    }
+                }
             }
         });
 

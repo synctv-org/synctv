@@ -10,7 +10,7 @@
 use crate::{
     models::{Media, MediaId, PlaylistId, RoomId, UserId, PermissionBits},
     repository::{MediaRepository, PlaylistRepository},
-    service::{permission::PermissionService, ProvidersManager},
+    service::{permission::PermissionService, notification::NotificationService, ProvidersManager},
     provider::{ProviderContext, DirectoryItem},
     Error, Result,
 };
@@ -56,6 +56,8 @@ pub struct MediaService {
     playlist_repo: PlaylistRepository,
     permission_service: PermissionService,
     providers_manager: Arc<ProvidersManager>,
+    /// Optional notification service for broadcasting media changes to local WebSocket clients
+    notification_service: Option<NotificationService>,
 }
 
 impl std::fmt::Debug for MediaService {
@@ -66,7 +68,7 @@ impl std::fmt::Debug for MediaService {
 
 impl MediaService {
     /// Create a new media service
-    #[must_use] 
+    #[must_use]
     pub const fn new(
         media_repo: MediaRepository,
         playlist_repo: PlaylistRepository,
@@ -78,7 +80,13 @@ impl MediaService {
             playlist_repo,
             permission_service,
             providers_manager,
+            notification_service: None,
         }
+    }
+
+    /// Set the notification service for broadcasting media changes to local WebSocket clients
+    pub fn set_notification_service(&mut self, service: NotificationService) {
+        self.notification_service = Some(service);
     }
 
     /// Add media to a playlist
@@ -165,6 +173,23 @@ impl MediaService {
             provider = %request.provider_instance_name,
             "Media added to playlist"
         );
+
+        // Broadcast media added event to local WebSocket clients
+        if let Some(ref ns) = self.notification_service {
+            if let Err(e) = ns.notify_media_added(
+                &room_id,
+                created_media.id.as_str(),
+                &created_media.name,
+                "", // URL is generated dynamically at playback time
+                created_media.position,
+            ).await {
+                tracing::warn!(
+                    error = %e,
+                    room_id = %room_id.as_str(),
+                    "Failed to broadcast media added event"
+                );
+            }
+        }
 
         Ok(created_media)
     }
@@ -267,55 +292,114 @@ impl MediaService {
             "Batch added media to playlist"
         );
 
+        // Broadcast media added events to local WebSocket clients
+        if let Some(ref ns) = self.notification_service {
+            for item in &created_items {
+                if let Err(e) = ns.notify_media_added(
+                    &room_id,
+                    item.id.as_str(),
+                    &item.name,
+                    "",
+                    item.position,
+                ).await {
+                    tracing::warn!(
+                        error = %e,
+                        room_id = %room_id.as_str(),
+                        media_id = %item.id.as_str(),
+                        "Failed to broadcast media added event"
+                    );
+                }
+            }
+        }
+
         Ok(created_items)
     }
 
+    /// Maximum retry attempts for optimistic lock conflicts on media edits
+    const EDIT_MAX_RETRIES: u32 = 3;
+
     /// Edit media item
+    ///
+    /// Uses optimistic locking via `added_at` (immutable per row) to detect
+    /// concurrent modifications. If another edit changes the row between our
+    /// read and write, the conditional UPDATE returns no rows and we retry
+    /// with fresh data.
     pub async fn edit_media(
         &self,
         room_id: RoomId,
         user_id: UserId,
         request: EditMediaRequest,
     ) -> Result<Media> {
-        // Get existing media
-        let mut media = self
-            .media_repo
-            .get_by_id(&request.media_id)
-            .await?
-            .ok_or_else(|| Error::NotFound("Media not found".to_string()))?;
+        for attempt in 0..Self::EDIT_MAX_RETRIES {
+            // Get existing media (fresh on every retry)
+            let mut media = self
+                .media_repo
+                .get_by_id(&request.media_id)
+                .await?
+                .ok_or_else(|| Error::NotFound("Media not found".to_string()))?;
 
-        // Verify media belongs to the room
-        if media.room_id != room_id {
-            return Err(Error::Authorization("Media does not belong to this room".to_string()));
+            // Verify media belongs to the room
+            if media.room_id != room_id {
+                return Err(Error::Authorization("Media does not belong to this room".to_string()));
+            }
+
+            // Check permission: EDIT_MOVIE_SELF if user owns the media, EDIT_MOVIE_ANY otherwise
+            let required_permission = if media.creator_id.as_ref() == Some(&user_id) {
+                PermissionBits::EDIT_MOVIE_SELF
+            } else {
+                PermissionBits::EDIT_MOVIE_ANY
+            };
+            self.permission_service
+                .check_permission(&room_id, &user_id, required_permission)
+                .await?;
+
+            // Capture the old values before applying changes to detect concurrent edits
+            let old_name = media.name.clone();
+            let old_position = media.position;
+
+            // Update fields
+            if let Some(ref name) = request.name {
+                media.name = name.clone();
+            }
+            if let Some(position) = request.position {
+                media.position = position;
+            }
+
+            // Conditional update: only succeed if no other edit changed the row
+            match self.media_repo.update_if_unchanged(
+                &media,
+                &old_name,
+                old_position,
+            ).await {
+                Ok(Some(updated_media)) => {
+                    tracing::info!(
+                        room_id = %room_id.as_str(),
+                        media_id = %request.media_id.as_str(),
+                        "Media edited"
+                    );
+                    return Ok(updated_media);
+                }
+                Ok(None) if attempt + 1 < Self::EDIT_MAX_RETRIES => {
+                    // Concurrent modification detected, retry with fresh data
+                    tracing::debug!(
+                        media_id = %request.media_id.as_str(),
+                        attempt = attempt + 1,
+                        "Concurrent media edit detected, retrying"
+                    );
+                    continue;
+                }
+                Ok(None) => {
+                    return Err(Error::Internal(
+                        "Media edit failed: concurrent modification after retries".to_string(),
+                    ));
+                }
+                Err(e) => return Err(e),
+            }
         }
 
-        // Check permission: EDIT_MOVIE_SELF if user owns the media, EDIT_MOVIE_ANY otherwise
-        let required_permission = if media.creator_id.as_ref() == Some(&user_id) {
-            PermissionBits::EDIT_MOVIE_SELF
-        } else {
-            PermissionBits::EDIT_MOVIE_ANY
-        };
-        self.permission_service
-            .check_permission(&room_id, &user_id, required_permission)
-            .await?;
-
-        // Update fields
-        if let Some(name) = request.name {
-            media.name = name;
-        }
-        if let Some(position) = request.position {
-            media.position = position;
-        }
-
-        let updated_media = self.media_repo.update(&media).await?;
-
-        tracing::info!(
-            room_id = %room_id.as_str(),
-            media_id = %request.media_id.as_str(),
-            "Media edited"
-        );
-
-        Ok(updated_media)
+        Err(Error::Internal(
+            "Media edit failed after maximum retry attempts".to_string(),
+        ))
     }
 
     /// Remove media from playlist
@@ -356,6 +440,17 @@ impl MediaService {
             "Media removed from playlist"
         );
 
+        // Broadcast media removed event to local WebSocket clients
+        if let Some(ref ns) = self.notification_service {
+            if let Err(e) = ns.notify_media_removed(&room_id, media_id.as_str()).await {
+                tracing::warn!(
+                    error = %e,
+                    room_id = %room_id.as_str(),
+                    "Failed to broadcast media removed event"
+                );
+            }
+        }
+
         Ok(())
     }
 
@@ -391,25 +486,29 @@ impl MediaService {
             .check_permission(&room_id, &user_id, PermissionBits::REORDER_PLAYLIST)
             .await?;
 
-        // Verify both media exist and belong to the room
-        let media1 = self
-            .media_repo
-            .get_by_id(&media_id1)
-            .await?
-            .ok_or_else(|| Error::NotFound("Media not found".to_string()))?;
+        // Use a single transaction for both verification and swap to prevent
+        // TOCTOU races where a media item could move between rooms between
+        // the ownership check and the position swap.
+        let mut tx = self.media_repo.pool().begin().await?;
 
-        let media2 = self
-            .media_repo
-            .get_by_id(&media_id2)
-            .await?
-            .ok_or_else(|| Error::NotFound("Media not found".to_string()))?;
+        // Verify both media exist and belong to the room (inside transaction)
+        let media_ids = vec![media_id1.clone(), media_id2.clone()];
+        let media_items = self.media_repo.get_by_ids_with_executor(&media_ids, &mut *tx).await?;
 
-        if media1.room_id != room_id || media2.room_id != room_id {
-            return Err(Error::Authorization("Media does not belong to this room".to_string()));
+        if media_items.len() != 2 {
+            return Err(Error::NotFound("One or more media items not found".to_string()));
         }
 
-        // Swap positions
-        self.media_repo.swap_positions(&media_id1, &media_id2).await?;
+        for media in &media_items {
+            if media.room_id != room_id {
+                return Err(Error::Authorization("Media does not belong to this room".to_string()));
+            }
+        }
+
+        // Swap positions within the same transaction
+        self.media_repo.swap_positions_with_tx(&media_id1, &media_id2, &mut tx).await?;
+
+        tx.commit().await?;
 
         tracing::info!(
             room_id = %room_id.as_str(),
@@ -445,26 +544,33 @@ impl MediaService {
             return Err(Error::NotFound("One or more media items not found".to_string()));
         }
 
-        // Verify all media belong to the room and check ownership
-        let mut all_owned_by_user = true;
+        // Verify all media belong to the room and split into owned/non-owned groups
+        let mut has_owned = false;
+        let mut has_non_owned = false;
         for media in &media_items {
             if media.room_id != room_id {
                 return Err(Error::Authorization("Media does not belong to this room".to_string()));
             }
-            if media.creator_id.as_ref() != Some(&user_id) {
-                all_owned_by_user = false;
+            if media.creator_id.as_ref() == Some(&user_id) {
+                has_owned = true;
+            } else {
+                has_non_owned = true;
             }
         }
 
-        // Check permission: DELETE_MOVIE_SELF if user owns all items, DELETE_MOVIE_ANY otherwise
-        let required_permission = if all_owned_by_user {
-            PermissionBits::DELETE_MOVIE_SELF
-        } else {
-            PermissionBits::DELETE_MOVIE_ANY
-        };
-        self.permission_service
-            .check_permission(&room_id, &user_id, required_permission)
-            .await?;
+        // Check per-group permissions: user needs DELETE_MOVIE_SELF for their own
+        // items and DELETE_MOVIE_ANY for others' items. Only fail if the user
+        // lacks the permission for a group that actually has items.
+        if has_owned {
+            self.permission_service
+                .check_permission(&room_id, &user_id, PermissionBits::DELETE_MOVIE_SELF)
+                .await?;
+        }
+        if has_non_owned {
+            self.permission_service
+                .check_permission(&room_id, &user_id, PermissionBits::DELETE_MOVIE_ANY)
+                .await?;
+        }
 
         // Bulk delete within the same transaction
         let deleted_count = self.media_repo.delete_batch_with_executor(&media_ids, &mut *tx).await?;
@@ -477,6 +583,20 @@ impl MediaService {
             "Bulk removed media from playlist"
         );
 
+        // Broadcast media removed events to local WebSocket clients
+        if let Some(ref ns) = self.notification_service {
+            for mid in &media_ids {
+                if let Err(e) = ns.notify_media_removed(&room_id, mid.as_str()).await {
+                    tracing::warn!(
+                        error = %e,
+                        room_id = %room_id.as_str(),
+                        media_id = %mid.as_str(),
+                        "Failed to broadcast media removed event"
+                    );
+                }
+            }
+        }
+
         Ok(deleted_count)
     }
 
@@ -484,6 +604,8 @@ impl MediaService {
     ///
     /// Reorders multiple media items to new positions in a single transaction.
     /// Uses a single batch query to verify room ownership instead of N individual queries.
+    /// Both verification and reorder happen inside a single transaction to prevent
+    /// TOCTOU races where a media item could move between rooms.
     pub async fn reorder_media_batch(
         &self,
         room_id: RoomId,
@@ -499,9 +621,13 @@ impl MediaService {
             return Ok(());
         }
 
-        // Batch-load all media in a single query to verify room ownership
+        // Use a single transaction for both verification and reorder to prevent
+        // TOCTOU races where a media item could move between rooms.
+        let mut tx = self.media_repo.pool().begin().await?;
+
+        // Batch-load all media in a single query to verify room ownership (inside transaction)
         let media_ids: Vec<MediaId> = updates.iter().map(|(id, _)| id.clone()).collect();
-        let media_items = self.media_repo.get_by_ids(&media_ids).await?;
+        let media_items = self.media_repo.get_by_ids_with_executor(&media_ids, &mut *tx).await?;
 
         if media_items.len() != updates.len() {
             return Err(Error::NotFound("One or more media items not found".to_string()));
@@ -513,8 +639,10 @@ impl MediaService {
             }
         }
 
-        // Bulk reorder
-        self.media_repo.reorder_batch(&updates).await?;
+        // Bulk reorder within the same transaction
+        self.media_repo.reorder_batch_with_tx(&updates, &mut tx).await?;
+
+        tx.commit().await?;
 
         tracing::info!(
             room_id = %room_id.as_str(),

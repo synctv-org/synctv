@@ -89,35 +89,36 @@ impl ChatRepository {
 
     /// Get chat history using keyset (cursor) pagination.
     ///
-    /// Returns at most `limit` messages (capped at 100) ordered by `id DESC`.
-    /// When `before_id` is `Some`, only messages with `id < before_id` are
-    /// returned — this avoids the O(N) OFFSET scan that timestamp-based
-    /// pagination causes for rooms with millions of messages.
+    /// Returns at most `limit` messages (capped at 100) ordered by
+    /// `(created_at DESC, id DESC)`. The cursor is a composite of
+    /// `(cursor_created_at, cursor_id)` — this avoids using nanoid string
+    /// comparison which is NOT lexicographically sortable by time.
     ///
-    /// Returns `(messages, next_cursor)` where `next_cursor` is the `id` of
-    /// the oldest returned message (to be used as `before_id` in the next call),
-    /// or `None` when no more messages exist.
+    /// Returns `(messages, next_cursor)` where `next_cursor` is the
+    /// `(created_at, id)` of the oldest returned message (to be used in the
+    /// next call), or `None` when no more messages exist.
     pub async fn list_by_room_cursor(
         &self,
         room_id: &RoomId,
-        before_id: Option<&str>,
+        cursor: Option<(DateTime<Utc>, &str)>,
         limit: i32,
-    ) -> Result<(Vec<ChatMessage>, Option<String>)> {
+    ) -> Result<(Vec<ChatMessage>, Option<(DateTime<Utc>, String)>)> {
         // Enforce maximum page size to prevent OOM on very large rooms
         let limit = limit.clamp(1, 100);
 
-        let messages = if let Some(cursor) = before_id {
+        let messages = if let Some((cursor_created_at, cursor_id)) = cursor {
             sqlx::query_as::<_, ChatMessage>(
                 r"
                 SELECT id, room_id, user_id, content, message_type, created_at
                 FROM chat_messages
-                WHERE room_id = $1 AND id < $2
-                ORDER BY id DESC
-                LIMIT $3
+                WHERE room_id = $1 AND (created_at, id) < ($2, $3)
+                ORDER BY created_at DESC, id DESC
+                LIMIT $4
                 ",
             )
             .bind(room_id.as_str())
-            .bind(cursor)
+            .bind(cursor_created_at)
+            .bind(cursor_id)
             .bind(limit)
             .fetch_all(&self.pool)
             .await?
@@ -127,7 +128,7 @@ impl ChatRepository {
                 SELECT id, room_id, user_id, content, message_type, created_at
                 FROM chat_messages
                 WHERE room_id = $1
-                ORDER BY id DESC
+                ORDER BY created_at DESC, id DESC
                 LIMIT $2
                 ",
             )
@@ -137,10 +138,11 @@ impl ChatRepository {
             .await?
         };
 
-        // Determine next cursor: the ID of the oldest (last) message in this page.
-        // If we got a full page there may be more; otherwise we're at the beginning.
+        // Determine next cursor: the (created_at, id) of the oldest (last)
+        // message in this page. If we got a full page there may be more;
+        // otherwise we're at the beginning.
         let next_cursor = if messages.len() as i32 == limit {
-            messages.last().map(|m| m.id.clone())
+            messages.last().map(|m| (m.created_at, m.id.clone()))
         } else {
             None
         };
@@ -211,7 +213,9 @@ impl ChatRepository {
     /// Delete old messages for a room (keep only last N messages).
     ///
     /// Uses `ROW_NUMBER()` window function instead of `NOT IN` subquery for
-    /// better performance.
+    /// better performance. Limits the scan to messages within the retention
+    /// window (90 days) to enable partition pruning and avoid scanning all
+    /// historical partitions.
     pub async fn cleanup_old_messages(&self, room_id: &RoomId, keep_count: i32) -> Result<u64> {
         if keep_count <= 0 {
             return Ok(0);
@@ -226,6 +230,7 @@ impl ChatRepository {
                            ROW_NUMBER() OVER (ORDER BY created_at DESC) as rn
                     FROM chat_messages
                     WHERE room_id = $1
+                      AND created_at > NOW() - INTERVAL '90 days'
                 ) ranked
                 WHERE rn > $2
             )
@@ -270,6 +275,7 @@ impl ChatRepository {
                         FROM chat_messages
                         WHERE created_at >= NOW() - make_interval(mins => $2)
                     )
+                      AND created_at > NOW() - INTERVAL '90 days'
                 ) ranked_messages
                 WHERE rn > $1
             )

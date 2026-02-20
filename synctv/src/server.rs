@@ -169,7 +169,7 @@ impl SyncTvServer {
                                         reason = %reason,
                                         "Received cluster-wide user kick"
                                     );
-                                    infra.kick_user_publishers(user_id.as_str());
+                                    infra.kick_user_publishers(user_id.as_str()).await;
                                 }
                                 _ => {}
                             }
@@ -229,18 +229,47 @@ impl SyncTvServer {
         ).await;
         info!("gRPC and HTTP servers shut down");
 
-        // Shut down cluster manager FIRST so the admin event broadcast channel
-        // closes, allowing the admin_event_handle listener to exit naturally.
-        // Previously, admin_event_handle was awaited before cluster manager
-        // shutdown, causing a guaranteed 30s timeout since the broadcast channel
-        // the listener reads from was still open.
+        // Drain active connections BEFORE shutting down the cluster manager.
+        // Events generated during drain (UserLeft, etc.) need the pub/sub
+        // system to be alive so they can be broadcast to other replicas.
+        {
+            let drain_timeout = Duration::from_secs(self.config.server.shutdown_drain_timeout_seconds);
+            let drain_poll_interval = Duration::from_millis(500);
+            let active = self.services.connection_manager.connection_count();
+            if active > 0 {
+                info!(
+                    "Waiting up to {}s for {} active connection(s) to drain...",
+                    drain_timeout.as_secs(),
+                    active
+                );
+                let deadline = tokio::time::Instant::now() + drain_timeout;
+                loop {
+                    let remaining = self.services.connection_manager.connection_count();
+                    if remaining == 0 {
+                        info!("All connections drained");
+                        break;
+                    }
+                    if tokio::time::Instant::now() >= deadline {
+                        warn!(
+                            "Drain timeout reached with {} connection(s) still active, proceeding with shutdown",
+                            remaining
+                        );
+                        break;
+                    }
+                    tokio::time::sleep(drain_poll_interval).await;
+                }
+            }
+        }
+
+        // Now shut down the cluster manager so the admin event broadcast
+        // channel closes, allowing the admin_event_handle listener to exit.
         if let Some(ref cluster_mgr) = self.services.cluster_manager {
-            info!("Shutting down cluster manager (pre-drain, to close admin event channel)...");
+            info!("Shutting down cluster manager (post-drain, closing admin event channel)...");
             cluster_mgr.shutdown().await;
             info!("Cluster manager shut down (admin event channel closed)");
         }
 
-        // Now wait for admin event listener — it should exit quickly since its
+        // Wait for admin event listener — it should exit quickly since its
         // broadcast channel is closed.
         if let Some(handle) = admin_event_handle {
             info!("Waiting for admin event listener to stop...");
@@ -250,51 +279,31 @@ impl SyncTvServer {
             }
         }
 
-        // Run graceful shutdown (cluster manager shutdown is skipped inside
-        // since we already shut it down above)
+        // Run remaining shutdown steps (connection drain is skipped since
+        // we already drained above; cluster manager shutdown is idempotent)
         self.shutdown().await;
 
         Ok(())
     }
 
-    /// Gracefully shut down all server components
+    /// Gracefully shut down remaining server components.
     ///
-    /// **Production Enhancement (#72)**: Implements graceful shutdown with connection draining:
-    /// - Waits for active connections to complete before shutting down (configurable timeout)
-    /// - Polls connection count every 500ms to track drainage progress
+    /// Connection draining and cluster manager shutdown are handled in `start()`
+    /// before this method is called — draining happens first so that events
+    /// generated during drain (UserLeft, etc.) are broadcast through the
+    /// still-alive pub/sub system.
+    ///
+    /// This method handles the remaining shutdown steps:
     /// - Deregisters node from cluster registry for immediate peer discovery of departure
-    /// - Sequentially shuts down components: SFU → STUN → livestream → cluster → database
+    /// - Sequentially shuts down components: STUN -> livestream -> health monitor -> background tasks
+    /// - Flushes audit buffer and closes database pool
     /// - Ensures zero-downtime deployments in Kubernetes (readiness probe fails immediately)
     async fn shutdown(&self) {
         info!("Shutting down SyncTV server...");
 
-        // 1. Wait for active connections to drain (with configurable timeout)
-        let drain_timeout = Duration::from_secs(self.config.server.shutdown_drain_timeout_seconds);
-        let drain_poll_interval = Duration::from_millis(500);
-        let active = self.services.connection_manager.connection_count();
-        if active > 0 {
-            info!(
-                "Waiting up to {}s for {} active connection(s) to drain...",
-                drain_timeout.as_secs(),
-                active
-            );
-            let deadline = tokio::time::Instant::now() + drain_timeout;
-            loop {
-                let remaining = self.services.connection_manager.connection_count();
-                if remaining == 0 {
-                    info!("All connections drained");
-                    break;
-                }
-                if tokio::time::Instant::now() >= deadline {
-                    warn!(
-                        "Drain timeout reached with {} connection(s) still active, proceeding with shutdown",
-                        remaining
-                    );
-                    break;
-                }
-                tokio::time::sleep(drain_poll_interval).await;
-            }
-        }
+        // 1. Connection draining is performed in start() BEFORE cluster manager
+        // shutdown, so that events generated during drain (UserLeft, etc.) are
+        // properly broadcast through the still-alive pub/sub system.
 
         // 1.5. Deregister this node from the cluster registry so other nodes
         // discover the departure immediately instead of waiting for heartbeat timeout.

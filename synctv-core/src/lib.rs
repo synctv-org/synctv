@@ -19,7 +19,7 @@ pub mod change_listener;
 #[cfg(test)]
 pub mod test_helpers;
 
-pub use config::{Config, HttpRateLimitConfig};
+pub use config::{Config, GrpcRateLimitConfig, HttpRateLimitConfig};
 pub use error::{Error, Result, InternalExt};
 pub use transaction::{UnitOfWork, with_transaction};
 pub use cache::KeyBuilder;

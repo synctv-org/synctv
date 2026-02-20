@@ -6,7 +6,7 @@
 use crate::{
     relay::registry_trait::StreamRegistryTrait,
     error::StreamResult,
-    grpc::{GrpcConnectionPool, GrpcStreamPuller},
+    grpc::{GrpcConnectionPool, GrpcStreamPuller, HlsProxyClient},
     livestream::managed_stream::{ManagedStream, StreamLifecycle},
 };
 use synctv_xiu::streamhub::define::{StreamHubEvent, StreamHubEventSender};
@@ -40,6 +40,8 @@ pub struct PullStream {
     connection_pool: GrpcConnectionPool,
     /// Cluster authentication secret passed to `GrpcStreamPuller` for inter-node gRPC requests.
     cluster_secret: Option<String>,
+    /// Optional HLS proxy client for cache invalidation on stale epoch detection.
+    hls_proxy: Option<HlsProxyClient>,
 }
 
 impl ManagedStream for PullStream {
@@ -93,6 +95,7 @@ impl PullStream {
             stopped: AtomicBool::new(false),
             connection_pool,
             cluster_secret: None,
+            hls_proxy: None,
         }
     }
 
@@ -100,6 +103,13 @@ impl PullStream {
     #[must_use]
     pub fn with_cluster_secret(mut self, secret: Option<String>) -> Self {
         self.cluster_secret = secret;
+        self
+    }
+
+    /// Set the HLS proxy client for cache invalidation on stale epoch detection.
+    #[must_use]
+    pub fn with_hls_proxy(mut self, hls_proxy: Option<HlsProxyClient>) -> Self {
+        self.hls_proxy = hls_proxy;
         self
     }
 
@@ -162,6 +172,7 @@ impl PullStream {
         let cluster_secret = self.cluster_secret.clone();
         let epoch = self.epoch;
         let registry = Arc::clone(&self.registry);
+        let hls_proxy = self.hls_proxy.clone();
         // Clone the is_running flag to mark failure in the spawned task
         let is_running_flag = self.lifecycle.is_running_clone();
 
@@ -251,7 +262,11 @@ impl PullStream {
                             }
                         }
                     } => {
-                        // Epoch became stale during streaming
+                        // Epoch became stale during streaming — invalidate HLS cache
+                        // so viewers don't see stale segments for up to 90s TTL.
+                        if let Some(ref hls_proxy) = hls_proxy {
+                            hls_proxy.invalidate_stream_cache(&room_id, &media_id).await;
+                        }
                         timer.observe_duration();
                         synctv_core::metrics::stream::ACTIVE_RELAY_STREAMS.dec();
                         break Err(anyhow::anyhow!(
@@ -317,6 +332,9 @@ impl PullStream {
                                     "Epoch {} is stale on reconnect for {}/{}, publisher changed. Stopping pull stream.",
                                     epoch, room_id, media_id
                                 );
+                                if let Some(ref hls_proxy) = hls_proxy {
+                                    hls_proxy.invalidate_stream_cache(&room_id, &media_id).await;
+                                }
                                 break Err(anyhow::anyhow!(
                                     "Stale epoch on reconnect: publisher changed for {room_id} / {media_id}"
                                 ));

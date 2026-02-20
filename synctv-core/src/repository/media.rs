@@ -196,6 +196,44 @@ impl MediaRepository {
         Ok(Media::from_row(&row)?)
     }
 
+    /// Conditional update: only succeeds if the row's name and position still
+    /// match `old_name`/`old_position`, providing optimistic locking without a
+    /// dedicated version column. Returns `Ok(None)` on conflict (no rows updated).
+    pub async fn update_if_unchanged(
+        &self,
+        media: &Media,
+        old_name: &str,
+        old_position: i32,
+    ) -> Result<Option<Media>> {
+        let source_config_json = serde_json::to_value(&media.source_config)?;
+
+        let row = sqlx::query(
+            r"
+            UPDATE media
+            SET name = $2, position = $3, source_config = $4,
+                provider_instance_name = $5
+             WHERE id = $1 AND name = $6 AND position = $7
+             RETURNING id, playlist_id, room_id, creator_id, name, position,
+                       source_provider, source_config, provider_instance_name,
+                       added_at
+            "
+        )
+        .bind(media.id.as_str())
+        .bind(&media.name)
+        .bind(media.position)
+        .bind(&source_config_json)
+        .bind(&media.provider_instance_name)
+        .bind(old_name)
+        .bind(old_position)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => Ok(Some(Media::from_row(&row)?)),
+            None => Ok(None),
+        }
+    }
+
     /// Get media by ID
     pub async fn get_by_id(&self, media_id: &MediaId) -> Result<Option<Media>> {
         let row = sqlx::query(
